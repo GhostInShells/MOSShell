@@ -1,0 +1,32 @@
+[project]
+name = "ghoshell-moss"
+version = "0.1.0"
+description = "LLM-oriented operating system shell, providing interpreter for llm to control everything"
+authors = [
+    { name = "thirdgerb", email = "thirdgerb@gmail.com" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ghoshell-common>=0.4.0.dev0",
+    "ghoshell-container>=0.3.0.dev1",
+]
+
+[tool.setuptools]
+packages = [
+    { include = "src" },
+]
+
+
+[tool.pdm.build]
+includes = []
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.1.0",
+]
