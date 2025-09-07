@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Iterable, Dict, Literal
+from typing_extensions import Self
 from .channel import Channel
-from .interpreter import Interpreter
-from .command import CommandTask, CommandCall
+from .interpreter import Interpreter, AsyncInterpreter
+from .command import CommandTask, Command
 from ghoshell_container import IoCContainer
+from contextlib import asynccontextmanager
 
 
 class TextOutput(ABC):
@@ -62,6 +64,62 @@ class Controller(ABC):
 #     def read(self, wait_until_done: bool = False) -> bytes | None:
 #         pass
 
+class ShellRuntime(ABC):
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        pass
+
+    @abstractmethod
+    def is_idle(self) -> bool:
+        pass
+
+    @abstractmethod
+    def interpret(self, kind: Literal['clear', 'defer_clear', 'try'] = "clear") -> AsyncInterpreter:
+        pass
+
+    @abstractmethod
+    async def append(self, *commands: CommandTask) -> None:
+        pass
+
+    @abstractmethod
+    async def clear(self, *chans: str) -> None:
+        pass
+
+    @abstractmethod
+    async def defer_clear(self, *chans: str) -> None:
+        pass
+
+    @abstractmethod
+    async def system_prompt(self) -> str:
+        pass
+
+    @abstractmethod
+    async def commands(self) -> Dict[str, List[Command]]:
+        """
+        get commands from shell
+        """
+        pass
+
+    @abstractmethod
+    async def wait_until_idle(self, timeout: float | None = None) -> None:
+        pass
+
+    @abstractmethod
+    async def start(self) -> None:
+        pass
+
+    @abstractmethod
+    async def stop(self) -> None:
+        pass
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
+
 
 class MOSSShell(ABC):
     """
@@ -77,9 +135,7 @@ class MOSSShell(ABC):
     def description(self) -> str:
         pass
 
-    @abstractmethod
-    def system_prompt(self) -> str:
-        pass
+    # --- properties --- #
 
     @property
     @abstractmethod
@@ -89,35 +145,14 @@ class MOSSShell(ABC):
         """
         pass
 
-    # --- properties --- #
-
-    @property
-    @abstractmethod
-    def container(self) -> IoCContainer:
-        pass
-
-    @property
-    @abstractmethod
-    def interpreter(self) -> Interpreter:
-        pass
+    # --- interpret --- #
+    #
+    # @property
+    # @abstractmethod
+    # def interpreter(self) -> Interpreter:
+    #     pass
 
     # --- runtime --- #
-
-    @abstractmethod
-    def append(self, command: CommandTask) -> None:
-        pass
-
-    @abstractmethod
-    def prepend(self, command: CommandTask) -> None:
-        pass
-
-    @abstractmethod
-    def new_command_task(self, call: CommandCall) -> CommandTask:
-        pass
-
-    @abstractmethod
-    def wait_until_idle(self, timeout: float | None = None) -> None:
-        pass
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -128,11 +163,11 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def clear(self, *chans: str) -> None:
+    def clear(self, *chans: str) -> Self:
         pass
 
     @abstractmethod
-    def defer_clear(self, *chans: str) -> None:
+    def defer_clear(self, *chans: str) -> Self:
         pass
 
     @abstractmethod
@@ -140,6 +175,18 @@ class MOSSShell(ABC):
         pass
 
     # --- lifecycle --- #
+
+    @abstractmethod
+    async def runtime(self) -> ShellRuntime:
+        pass
+
+    def __enter__(self):
+        self.bootstrap()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.shutdown()
+        return None
 
     @abstractmethod
     def bootstrap(self) -> None:

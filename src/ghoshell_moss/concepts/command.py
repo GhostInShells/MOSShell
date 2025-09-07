@@ -8,15 +8,6 @@ import time
 RESULT = TypeVar("RESULT")
 
 
-class CommandError(Exception):
-
-    def __init__(self, code: int, message: str, cid: Optional[str]):
-        self.code = code
-        self.message = message
-        self.cid = cid
-        super().__init__(f"Command failed with code {code}: {message}")
-
-
 class CommandToken(TypedDict):
     """
     将大模型流式输出的文本结果, 包装为流式的 Command Token 对象.
@@ -40,93 +31,52 @@ class CommandToken(TypedDict):
     type: Literal['start', 'delta', 'end']
     """tokens type"""
 
-    text: str
+    content: str
     """origin tokens that llm generates"""
 
-    attrs: Optional[Dict[str, Any]]
+    kwargs: Optional[Dict[str, Any]]
     """attributes, only for command start"""
 
 
-class CommandTokenStream:
-    """
-    thread level iterable command token stream
-    """
-
-    @abstractmethod
-    def append(self, token: CommandToken | None):
-        pass
-
-    def __iter__(self):
-        return self
-
-    @abstractmethod
-    def __next__(self) -> CommandToken:
-        """
-        :raise: StopIteration
-        """
-        pass
-
-
-def cmd_start(tokens: str, chan: Optional[str], name: str, attrs: Dict[str, Any], cid: str = "") -> CommandToken:
+def cmd_start(content: str, chan: Optional[str], name: str, kwargs: Dict[str, Any], cid: str = "") -> CommandToken:
     cid = cid or uuid()
     return CommandToken(
         name=name,
         chan=chan,
         type="start",
-        attrs=attrs,
-        text=tokens,
+        kwargs=kwargs,
+        content=content,
         cid=cid,
     )
 
 
-def cmd_end(tokens: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
+def cmd_end(content: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
     return CommandToken(
         name=name,
         chan=chan,
         type="end",
-        text=tokens,
+        content=content,
         cid=cid,
-        attrs=None
+        kwargs=None
     )
 
 
-def cmd_delta(tokens: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
+def cmd_delta(content: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
     return CommandToken(
         name=name,
         chan=chan,
         type="delta",
-        text=tokens,
+        content=content,
         cid=cid,
-        attrs=None,
+        kwargs=None,
     )
 
 
-CommandState = Literal['created', 'queued', 'pending', 'running', 'stopped']
+CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
 
+CommandDeltaType = Literal['_text', '_json', '_xml', '_yaml', '_markdown', '_python', '_stream']
 
-class CommandCall(BaseModel):
-    name: str = Field(description="command name")
-
-    chan: str = Field(description="the command belongs to")
-
-    cid: str = Field(default_factory=uuid, description="command unique id")
-
-    block: bool = Field(default=True, description="don't block")
-
-    args: List[Any] = Field(default_factory=list, description="command arguments")
-
-    kwargs: Dict[str, Any] = Field(default_factory=dict, description="command keyword arguments")
-
-    # state: CommandState = Field('created', description="command state")
-    #
-    # trace: Dict[CommandState, float] = Field(default_factory=dict, description="运行生命周期的时间点记录.")
-    #
-    # #  --- result of the command --- #
-    # code: int = Field(0, description="error code of the command call")
-    # message: Optional[str] = Field(None, description="error message of the command call")
-
-
-CommandDeltaArgType = Literal['__text__', '__json__', '__xml__', '__yaml__', '__markdown__', '__python__', '__stream__']
+CommandType = Literal['function', 'prompt', 'policy']
 
 
 class CommandMeta(BaseModel):
@@ -134,9 +84,10 @@ class CommandMeta(BaseModel):
     命令的原始信息.
     """
     name: str = Field(description="the name of the command")
-    doc: str = Field(default="", description="the doc of the command")
     chan: str = Field(description="the channel name that the command belongs to")
-    delta_arg: Optional[CommandDeltaArgType] = Field(default=None, description="the delta arg type")
+    doc: str = Field(default="", description="the doc of the command")
+    type: CommandType = Field(description="")
+    delta_arg: Optional[CommandDeltaType] = Field(default=None, description="the delta arg type")
     interface: str = Field(
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
                     "但核心思想是 Code As Prompt."
@@ -153,8 +104,18 @@ class CommandTask(ABC, Awaitable[RESULT]):
     """
     大模型的输出被转化成 CmdToken 后, 再通过执行器生成的运行时对象.
     """
-    call: CommandCall
+    cid: str
+    args: List[Any]
+    kwargs: Dict[str, Any]
+    name: str
+    chan: str
     meta: CommandMeta
+    state: CommandState = "created"
+    trace: Dict[CommandState, float] = {}
+    none_block: bool = False
+    errcode: Optional[int] = None
+    errmsg: Optional[str] = None
+    result: Optional[RESULT] = None
 
     @abstractmethod
     def is_done(self) -> bool:
@@ -164,34 +125,39 @@ class CommandTask(ABC, Awaitable[RESULT]):
         pass
 
     @abstractmethod
-    def cancel(self):
+    def cancel(self, reason: str = ""):
         """
         停止命令.
         """
         pass
 
+    def set_state(self, state: CommandState) -> None:
+        self.state = state
+        self.trace[state] = time.time()
+
     @abstractmethod
-    async def write(self, delta: str) -> None:
+    def fail(self, error: Exception | str) -> None:
         pass
 
     @abstractmethod
-    async def wait_until_done(
+    def resolve(self, result: RESULT) -> None:
+        pass
+
+    @abstractmethod
+    async def wait_done(
             self,
             timeout: float | None = None,
-    ) -> RESULT:
+    ) -> None:
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
-        如果定义了 Timeout, 会在 Timeout 后抛出异常.
         """
         pass
 
-    @abstractmethod
-    def __await__(self) -> RESULT:
-        """
-        运行并等待
-        :raise: CommandError
-        """
-        pass
+
+class TaskStack:
+
+    def __init__(self, *tasks: CommandTask) -> None:
+        self.tasks = tasks
 
 
 CommandType = Literal['function', 'policy', 'meta', 'control']
@@ -205,7 +171,7 @@ CommandType = Literal['function', 'policy', 'meta', 'control']
 """
 
 
-class Command(ABC):
+class Command(Generic[RESULT], ABC):
     """
     对大模型可见的命令描述. 包含几个核心功能:
     大模型通常能很好地理解, 并且使用这个函数.
@@ -237,7 +203,7 @@ class Command(ABC):
         pass
 
     @abstractmethod
-    def __call__(self, *args, **kwargs) -> CommandTask:
+    async def __call__(self, *args, **kwargs) -> RESULT:
         """
         基于入参, 出参, 生成一个 CommandCall 交给调度器去执行.
         """
