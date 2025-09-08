@@ -2,13 +2,14 @@ import anyio
 from pydantic import BaseModel, Field
 from typing import (
     TypedDict, Dict, Any, ClassVar, Optional, Union, List, Callable, Type, Coroutine, Iterable, Protocol,
+    TypeVar, Generic, TYPE_CHECKING
 )
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_common.helpers import generate_import_path, uuid
 
 
-class Topic(TypedDict):
+class Topic(TypedDict, total=False):
     """
     在 channel 之间广播的数据结构.
     不关心 topic broker 的通讯协议.
@@ -30,6 +31,9 @@ class Topic(TypedDict):
     data: Dict[str, Any] | List | str | bool | float | int | bytes | None
     """ topic 的数据结构. 基本要求是传递标量. """
 
+    context: Optional[Dict[str, Any]]
+    """链路通讯, 追踪相关的上下文讯息. """
+
 
 def make_topic_prefix(name: str, issuer: str = "", issuer_id: str = "") -> str:
     return f"{name}|{issuer}|{issuer_id}"
@@ -42,6 +46,10 @@ class TopicMeta(TypedDict):
 
 
 class TopicModel(Protocol):
+    issuer: str
+    issuer_id: str
+    req_id: Optional[str]
+    id: str
 
     @classmethod
     @abstractmethod
@@ -117,6 +125,19 @@ class TopicBaseModel(BaseModel, ABC):
         )
 
 
+RESP = TypeVar("RESP", bound=TopicModel)
+
+
+class ReqTopicModel(Generic[RESP], TopicBaseModel, ABC):
+    """
+    请求性质的 Topic. 它通常必须对应一个返回结果.
+    """
+
+    def new_response(self, resp: RESP) -> RESP:
+        resp.req_id = self.id
+        return resp
+
+
 TopicCallback = Union[Callable[[Topic], Coroutine[None, None, None]] | Callable[[Topic], None]]
 TopicModelCallback = Union[Callable[[TopicModel], Coroutine[None, None, None]] | Callable[[TopicModel], None]]
 
@@ -125,6 +146,10 @@ class Topics(ABC):
 
     @abstractmethod
     def on(self, topic_name: str, callback: TopicCallback) -> None:
+        """
+        注册 callback 函数, 同时监听这个 topic.
+        todo: 未来增加更多过滤规则, 最好是通讯协议支持的.
+        """
         pass
 
     @abstractmethod
@@ -146,9 +171,33 @@ class Topics(ABC):
         pass
 
     @abstractmethod
+    async def call(self, req: ReqTopicModel[RESP], timeout: float | None) -> RESP:
+        """
+        发送一个 Topic, 并且等待结果.
+        """
+        pass
+
+    @abstractmethod
     async def recv(self, timeout: float | None = None) -> Topic:
         """
         获取一个被广播的 topic
         :raise TimeoutError: 如果设置了 timeout.
         """
         pass
+
+
+if TYPE_CHECKING:
+    """
+    IDE 检查时用的类型比较. 
+    """
+
+
+    def is_topic_model(cls: TopicModel) -> None:
+        pass
+
+
+    class Foo(TopicBaseModel):
+        pass
+
+
+    is_topic_model(Foo)

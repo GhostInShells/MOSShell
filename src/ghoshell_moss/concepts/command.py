@@ -3,9 +3,31 @@ from typing import TypedDict, Literal, Optional, Dict, Any, Awaitable, List, Gen
 from ghoshell_common.helpers import uuid
 from queue import Queue
 from pydantic import BaseModel, Field
+from enum import Enum
 import time
 
 RESULT = TypeVar("RESULT")
+
+CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
+
+CommandDeltaType = Literal['_text', '_json', '_xml', '_yaml', '_markdown', '_python', '_stream']
+
+
+class CommandType(str, Enum):
+    FUNCTION = "function"
+    """功能, 需要一段时间执行, 执行完后结束. """
+
+    POLICY = "policy"
+    """状态变更函数. 会改变 Command 所属 Channel 的运行策略, 立刻生效. 但只有 run_policy (没有其它命令阻塞时) 才会执行. """
+
+    PROMPTER = "prompter"
+    """返回一个字符串, 用来生成 prompt. 仅当 Agent 自主生成 prompt 时才要用它. 结合 pml """
+
+    META = "meta"
+    """AI 进入元控制状态, 可以自我修改时, 才能使用的函数"""
+
+    CONTROL = "control"
+    """通常只面向人类开放的控制函数. 人类可以通过一个 AI 作为 interface 去控制它. """
 
 
 class CommandToken(TypedDict):
@@ -70,13 +92,6 @@ def cmd_delta(content: str, chan: Optional[str], name: str, cid: str) -> Command
         cid=cid,
         kwargs=None,
     )
-
-
-CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
-
-CommandDeltaType = Literal['_text', '_json', '_xml', '_yaml', '_markdown', '_python', '_stream']
-
-CommandType = Literal['function', 'prompt', 'policy']
 
 
 class CommandMeta(BaseModel):
@@ -158,17 +173,6 @@ class TaskStack:
 
     def __init__(self, *tasks: CommandTask) -> None:
         self.tasks = tasks
-
-
-CommandType = Literal['function', 'policy', 'meta', 'control']
-"""
-命令的基础类型: 
-- function: 功能, 需要一段时间执行, 执行完后结束. 
-- policy:   状态变更函数. 会改变 Command 所属 Channel 的运行策略, 立刻生效. 
-            Channel 在没有 Function 执行时, 会持续执行 policy. 
-- meta:     meta-agent 可以通过 meta 类型命令, 修改这个 channel, 比如创建新的函数. 不对普通 agent 暴露.   
-- control:  control 类型的命令对 channel 有最高控制权限, 通常只向人类进行开放.  
-"""
 
 
 class Command(Generic[RESULT], ABC):

@@ -15,7 +15,7 @@ def test_to_thread():
     async def main():
         t1 = asyncio.to_thread(foo)
         t2 = asyncio.create_task(bar())
-        await asyncio.wait([t1, t2], return_when=asyncio.ALL_COMPLETED)
+        await asyncio.gather(t1, t2)
 
     asyncio.run(main())
     assert order == ["bar", "foo"]

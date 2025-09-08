@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
-from typing import Dict, ClassVar, Any, Type
+from typing import Dict, ClassVar, Any, Type, Iterable
 from ghoshell_common.helpers import generate_import_path
 
 
 class State(BaseModel):
-    version: str = Field(default="", description="state version, optimis lock")
+    version: str = Field(default="", description="state version, Optimistic Lock")
     name: str = Field(description="The name of the state object.")
     description: str = Field(default="", description="The description of the state object.")
     schema: Dict[str, Any] = Field(description="the json schema of the state")
@@ -19,7 +19,7 @@ class StateModel(BaseModel, ABC):
     state_desc: ClassVar[str] = ""
     state_name: ClassVar[str] = ""
 
-    version: str = Field(default="", description="state version, optimis lock")
+    version: str = Field(default="", description="state version, Optimistic Lock")
 
     @classmethod
     def to_state(cls) -> State:
@@ -33,9 +33,9 @@ class StateModel(BaseModel, ABC):
 class StateStore(ABC):
 
     @abstractmethod
-    def register(self, *states: State | StateModel) -> None:
+    def register(self, states: Iterable[State | StateModel], *, share: bool = False) -> None:
         """
-        注册一个状态.
+        注册一个状态. 并且决定是否与整个系统共享.
         """
         pass
 

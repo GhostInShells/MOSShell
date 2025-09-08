@@ -39,7 +39,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
         if name in self._children:
             return self._children[name]
 
-        child_chan = self._chan.get_child(name)
+        child_chan = self._chan.get_channel(name)
         if child_chan is None:
             return None
         child_runtime = ChannelRuntimeImpl(child_chan)
@@ -190,7 +190,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
     async def _execute_single_task(self, cmd_task: CommandTask) -> Optional[List[CommandTask]]:
         try:
             if cmd_task.chan != self._name:
-                child = self._chan.get_child(cmd_task.chan)
+                child = self._chan.get_channel(cmd_task.chan)
                 if child is not None:
                     child.runtime.append(cmd_task)
                 else:
