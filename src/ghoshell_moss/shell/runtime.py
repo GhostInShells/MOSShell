@@ -1,5 +1,5 @@
 from ghoshell_moss.concepts.channel import Channel, ChannelRuntime, ChannelMeta
-from ghoshell_moss.concepts.command import CommandTask, CommandTaskSeq
+from ghoshell_moss.concepts.command import BasicCommandTask, CommandTaskSeq
 from ghoshell_moss.concepts.errors import StopTheLoop, FatalError
 from ghoshell_container import IoCContainer
 from typing import Dict, Optional, Set, Awaitable, List
@@ -28,11 +28,11 @@ class ChannelRuntimeImpl(ChannelRuntime):
         # runtime properties
         self._children: Dict[str, ChannelRuntimeImpl] = {}
         self._running_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._command_task_queue: deque[CommandTask] = deque()
+        self._command_task_queue: deque[BasicCommandTask] = deque()
         self._has_pending_task_event: Optional[asyncio.Event] = None
         self._defer_clear: bool = False
         self._shutdown_event: Optional[asyncio.Event] = None
-        self._running_tasks: Set[CommandTask] = set()
+        self._running_tasks: Set[BasicCommandTask] = set()
 
     def get_child(self, name: str) -> Optional["ChannelRuntimeImpl"]:
         self._check_running()
@@ -102,7 +102,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
             return False
         return self._has_pending_task_event.is_set() or len(self._running_tasks) > 0
 
-    def append(self, *tasks: CommandTask) -> None:
+    def append(self, *tasks: BasicCommandTask) -> None:
         if not self.is_running():
             # todo: log
             return
@@ -113,20 +113,20 @@ class ChannelRuntimeImpl(ChannelRuntime):
                 self.clear()
             self._running_loop.call_soon_threadsafe(self._append, tasks)
 
-    async def _append(self, tasks: List[CommandTask]) -> None:
+    async def _append(self, tasks: List[BasicCommandTask]) -> None:
         for task in tasks:
             task.set_state('pending')
             self._command_task_queue.append(task)
         self._has_pending_task_event.set()
 
-    def prepend(self, *tasks: CommandTask) -> None:
+    def prepend(self, *tasks: BasicCommandTask) -> None:
         tasks = list(tasks)
         if len(tasks) > 0:
             if self._defer_clear:
                 self.clear()
             self._running_loop.call_soon_threadsafe(self._prepend, *tasks)
 
-    async def _prepend(self, tasks: List[CommandTask]) -> None:
+    async def _prepend(self, tasks: List[BasicCommandTask]) -> None:
         for task in tasks:
             task.set_state('pending')
         self._command_task_queue.extendleft(tasks)
@@ -179,7 +179,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
             self._running = False
             self._shutdown_event.set()
 
-    async def _execute_task(self, cmd_task: CommandTask) -> None:
+    async def _execute_task(self, cmd_task: BasicCommandTask) -> None:
         stack = [cmd_task]
         while len(stack) > 0:
             executing = stack.pop(0)
@@ -187,7 +187,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
             if result is not None:
                 stack = result + stack
 
-    async def _execute_single_task(self, cmd_task: CommandTask) -> Optional[List[CommandTask]]:
+    async def _execute_single_task(self, cmd_task: BasicCommandTask) -> Optional[List[BasicCommandTask]]:
         try:
             if cmd_task.chan != self._name:
                 child = self._chan.get_channel(cmd_task.chan)

@@ -3,7 +3,7 @@ from typing import List, Iterable, Dict, Literal, Optional
 from typing_extensions import Self
 from .channel import Channel
 from .interpreter import Interpreter, AsyncInterpreter
-from .command import CommandTask, Command, CommandTaskSeq
+from .command import BasicCommandTask, Command, CommandTaskSeq
 from ghoshell_container import IoCContainer
 from contextlib import asynccontextmanager
 
@@ -112,7 +112,7 @@ class ShellRuntime(ABC):
         pass
 
     @abstractmethod
-    async def append(self, *commands: CommandTask) -> None:
+    async def append(self, *commands: BasicCommandTask) -> None:
         pass
 
     @abstractmethod

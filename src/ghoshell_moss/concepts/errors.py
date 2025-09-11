@@ -2,6 +2,9 @@ class FatalError(Exception):
     pass
 
 
+class InterpretError(Exception):
+    pass
+
 class CommandError(Exception):
 
     def __init__(self, code: int, message: str):

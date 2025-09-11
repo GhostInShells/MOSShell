@@ -65,8 +65,13 @@ class CommandToken(TypedDict):
     chan: Optional[str]
     """the channel name that the command belongs to """
 
-    cid: str
-    """command unique id"""
+    idx: int
+    """token index"""
+
+    part_idx: int
+    """continuous part idx of the command"""
+
+    stream_id: Optional[str]
 
     type: Literal['start', 'delta', 'end']
     """tokens type"""
@@ -76,40 +81,6 @@ class CommandToken(TypedDict):
 
     kwargs: Optional[Dict[str, Any]]
     """attributes, only for command start"""
-
-
-def cmd_start(content: str, chan: Optional[str], name: str, kwargs: Dict[str, Any], cid: str = "") -> CommandToken:
-    cid = cid or uuid()
-    return CommandToken(
-        name=name,
-        chan=chan,
-        type="start",
-        kwargs=kwargs,
-        content=content,
-        cid=cid,
-    )
-
-
-def cmd_end(content: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
-    return CommandToken(
-        name=name,
-        chan=chan,
-        type="end",
-        content=content,
-        cid=cid,
-        kwargs=None
-    )
-
-
-def cmd_delta(content: str, chan: Optional[str], name: str, cid: str) -> CommandToken:
-    return CommandToken(
-        name=name,
-        chan=chan,
-        type="delta",
-        content=content,
-        cid=cid,
-        kwargs=None,
-    )
 
 
 class CommandMeta(BaseModel):
@@ -180,6 +151,14 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
     ):
+        """
+        :param func: origin coroutine function
+        :param meta: the defined command meta information
+        :param available: if given, determine if the command is available dynamically
+        :param interface: if not given, will reflect the origin function signature to generate the interface.
+        :param doc: if given, will change the docstring of the function or generate one dynamically
+        :param comments: if given, will add to the body of the function interface.
+        """
         self._meta = meta or CommandMeta()
         self._name = meta.name or func.__name__
         self._func = func
@@ -193,10 +172,10 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     async def meta(self) -> CommandMeta:
         meta = self._meta.model_copy()
+        meta.name = self._name
         if self._available_fn is not None:
             meta.available = await self._available_fn()
         if meta.available:
-            meta.name = self._name
             meta.interface = await self.get_interface()
         return meta
 
@@ -243,7 +222,81 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             return await task
 
 
-class CommandTask(Generic[RESULT]):
+class CommandTask(Generic[RESULT], ABC):
+    """
+    thread-safe future object for command execution.
+    1. cancel / fail the task thread-safe, cancel a task outside the loop.
+    2. thread-safe wait the result of the task.
+    """
+
+    cid: str
+    tokens: str
+    args: List
+    kwargs: Dict[str, Any]
+    state: CommandState
+    errcode: int = 0
+    errmsg: Optional[str] = None
+    trace: Dict[CommandState, float] = {}
+    result: Optional[RESULT] = None
+
+    @abstractmethod
+    def is_done(self) -> bool:
+        """
+        if the command is done (cancelled, done, failed)
+        """
+        pass
+
+    @abstractmethod
+    def cancel(self, reason: str = "") -> None:
+        """
+        cancel the command if running.
+        """
+        pass
+
+    def set_state(self, state: CommandState) -> None:
+        """
+        set the state of the command with time
+        """
+        self.state = state
+        self.trace[state] = time.time()
+
+    @abstractmethod
+    def fail(self, error: Exception | str) -> None:
+        """
+        fail the task with error.
+        """
+        pass
+
+    @abstractmethod
+    def resolve(self, result: RESULT) -> None:
+        """
+        resolve the result of the task if it is running.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_done(
+            self,
+            *,
+            throw: bool = False,
+            timeout: float | None = None,
+    ) -> Optional[RESULT]:
+        """
+        async wait the task to be done thread-safe
+        :raise TimeoutError: if the task is not done until timeout
+        :raise CancelledError: if the task is cancelled
+        :raise CommandError: if the command failed and already be wrapped
+        """
+        pass
+
+    def wait(self, *, throw: bool = False, timeout: float | None = None) -> Optional[RESULT]:
+        """
+        wait the command to be done in the current thread (blocking). thread-safe.
+        """
+        pass
+
+
+class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
     大模型的输出被转化成 CmdToken 后, 再通过执行器生成的运行时对象.
     实现一个跨线程安全的等待机制.
@@ -307,10 +360,6 @@ class CommandTask(Generic[RESULT]):
                 loop.call_soon_threadsafe(event.set)
             self.set_state(state)
             return True
-
-    def set_state(self, state: CommandState) -> None:
-        self.state = state
-        self.trace[state] = time.time()
 
     @abstractmethod
     def fail(self, error: Exception | str) -> None:
@@ -382,7 +431,7 @@ class CommandTask(Generic[RESULT]):
 
 class CommandTaskSeq:
 
-    def __init__(self, *tasks: CommandTask) -> None:
+    def __init__(self, *tasks: BasicCommandTask) -> None:
         self.tasks = tasks
 
     def __iter__(self):

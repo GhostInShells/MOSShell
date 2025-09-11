@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Callable, Coroutine, Optional, Iterable
-from ghoshell_moss.concepts.command import Command, CommandTask, CommandMeta, RESULT, CommandType
+from ghoshell_moss.concepts.command import Command, BasicCommandTask, CommandMeta, RESULT, CommandType
 from ghoshell_moss.concepts.channel import Channel, ChannelRuntime, ChannelMeta
 from ghoshell_container import set_container
 import anyio
@@ -32,10 +32,10 @@ class PyChannelRuntime(ChannelRuntime):
     def meta(self) -> ChannelMeta:
         pass
 
-    def append(self, *commands: CommandTask) -> None:
+    def append(self, *commands: BasicCommandTask) -> None:
         pass
 
-    def prepend(self, *commands: CommandTask) -> None:
+    def prepend(self, *commands: BasicCommandTask) -> None:
         pass
 
     def clear(self) -> None:
@@ -56,7 +56,7 @@ class PyChannelRuntime(ChannelRuntime):
     def wait_until_idle(self, timeout: float | None = None) -> None:
         pass
 
-    def new_task(self, name: str, *args, **kwargs) -> CommandTask:
+    def new_task(self, name: str, *args, **kwargs) -> BasicCommandTask:
         pass
 
     def get_command_metas(self, types: Optional[CommandType] = None) -> Iterable[CommandMeta]:

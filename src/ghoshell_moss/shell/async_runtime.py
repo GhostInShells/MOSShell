@@ -5,7 +5,7 @@ from ghoshell_container import IoCContainer, Container
 from ghoshell_moss.concepts.channel import Channel
 from ghoshell_moss.concepts.shell import MOSSShell, ShellRuntime
 from ghoshell_moss.concepts.interpreter import AsyncInterpreter, Interpreter
-from ghoshell_moss.concepts.command import CommandTask, CommandTaskSeq, Command
+from ghoshell_moss.concepts.command import BasicCommandTask, CommandTaskSeq, Command
 from ghoshell_moss.concepts.errors import StopTheLoop, FatalError, CommandError
 from typing import Dict, Optional, Set, List, Tuple, Callable, Coroutine, Iterable
 from collections import deque
@@ -20,7 +20,7 @@ class ChannelTask:
     def __init__(
             self,
             channel: Channel,
-            dispatcher: Callable[[str, CommandTask], Coroutine],
+            dispatcher: Callable[[str, BasicCommandTask], Coroutine],
             loop: asyncio.AbstractEventLoop,
             shell_closed: asyncio.Event,
     ):
@@ -33,7 +33,7 @@ class ChannelTask:
         # status
         self._starting = False
         self._started = False
-        self._command_task_queue: deque[CommandTask] = deque()
+        self._command_task_queue: deque[BasicCommandTask] = deque()
         self._close_event: asyncio.Event = asyncio.Event()
         self._running_command_tasks: Set[asyncio.Task] = set()
 
@@ -123,7 +123,7 @@ class ChannelTask:
             return False
         return self._idle_event.is_set()
 
-    async def append(self, *tasks: CommandTask) -> None:
+    async def append(self, *tasks: BasicCommandTask) -> None:
         if not self.is_running():
             # todo: log
             return
@@ -138,7 +138,7 @@ class ChannelTask:
                 self._command_task_queue.append(task)
             self._has_pending_task_event.set()
 
-    async def prepend(self, *tasks: CommandTask) -> None:
+    async def prepend(self, *tasks: BasicCommandTask) -> None:
         if not self.is_running():
             # todo: log
             return
@@ -170,7 +170,7 @@ class ChannelTask:
         self._command_task_queue.clear()
         self._defer_clear = True
 
-    async def _execute_task(self, cmd_task: CommandTask) -> None:
+    async def _execute_task(self, cmd_task: BasicCommandTask) -> None:
         self._idle_event.clear()
         task = self._loop.create_task(self._execute_task_stack(cmd_task))
         try:
@@ -183,7 +183,7 @@ class ChannelTask:
             if len(self._running_command_tasks) == 0 and len(self._command_task_queue) == 0:
                 self._idle_event.set()
 
-    async def _execute_task_stack(self, cmd_task: CommandTask) -> None:
+    async def _execute_task_stack(self, cmd_task: BasicCommandTask) -> None:
         try:
             stack = [cmd_task]
             while len(stack) > 0:
@@ -210,7 +210,7 @@ class ChannelTask:
             if not cmd_task.is_done():
                 cmd_task.cancel("command {cmd_task.chan}:{cmd_task.name} cancelled")
 
-    async def _execute_single_task(self, cmd_task: CommandTask) -> Optional[List[CommandTask]]:
+    async def _execute_single_task(self, cmd_task: BasicCommandTask) -> Optional[List[BasicCommandTask]]:
         cmd_chan = cmd_task.chan
         if cmd_chan != self._name:
             children = self.chan.children()
@@ -360,10 +360,10 @@ class AsyncMOSSShellRuntime(ShellRuntime):
             closing_tasks.append(task.close())
         await asyncio.gather(*closing_tasks)
 
-    async def append(self, *tasks: CommandTask) -> None:
+    async def append(self, *tasks: BasicCommandTask) -> None:
         await self._main_chan_task.append(*tasks)
 
-    async def dispatch(self, channel_name: str, cmd_task: CommandTask) -> None:
+    async def dispatch(self, channel_name: str, cmd_task: BasicCommandTask) -> None:
         """
         确保不成环.
         """

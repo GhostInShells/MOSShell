@@ -1,6 +1,6 @@
 import inspect
 from typing import Optional, Callable, Coroutine, Union, Iterable
-from ghoshell_moss.concepts.command import Command, CommandTask, CommandMeta, RESULT, CommandCall
+from ghoshell_moss.concepts.command import Command, BasicCommandTask, CommandMeta, RESULT, CommandCall
 from ghoshell_moss.helpers.func_parser import parse_function_interface
 from ghoshell_moss.helpers.result import ThreadSafeResult
 from ghoshell_common.helpers import uuid
