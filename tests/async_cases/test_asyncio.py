@@ -1,3 +1,4 @@
+from typing import Awaitable
 import asyncio
 import time
 
@@ -19,3 +20,4 @@ def test_to_thread():
 
     asyncio.run(main())
     assert order == ["bar", "foo"]
+    assert isinstance(bar(), Awaitable)

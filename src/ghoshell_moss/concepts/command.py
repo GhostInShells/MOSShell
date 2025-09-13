@@ -5,7 +5,7 @@ from typing import (
     TypedDict, Literal, Optional, Dict, Any, Awaitable, List, Generic, TypeVar, Tuple, Callable, Coroutine, Union
 )
 from ghoshell_common.helpers import uuid, generate_import_path
-from ghoshell_moss.helpers.func_parser import parse_function_interface, prepare_kwargs_by_signature
+from ghoshell_moss.helpers.func import parse_function_interface, awaitable_caller
 from .errors import CommandError
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -47,6 +47,16 @@ class CommandType(str, Enum):
     CONTROL = "control"
     """通常只面向人类开放的控制函数. 人类可以通过一个 AI 作为 interface 去控制它. """
 
+    @classmethod
+    def all(cls) -> set[str]:
+        return {
+            cls.FUNCTION.value,
+            cls.POLICY.value,
+            cls.PROMPTER.value,
+            cls.META.value,
+            cls.CONTROL.value,
+        }
+
 
 class CommandToken(TypedDict):
     """
@@ -87,14 +97,20 @@ class CommandMeta(BaseModel):
     """
     命令的原始信息.
     """
-    name: str = Field(description="the name of the command")
-    chan: str = Field(description="the channel name that the command belongs to")
+    name: str = Field(default="", description="the name of the command")
+    chan: str = Field(default="", description="the channel name that the command belongs to")
     description: str = Field(default="", description="the doc of the command")
-    type: CommandType = Field(description="")
+    available: bool = Field(default=True, description="whether this command is available")
+    type: CommandType = Field(
+        default=CommandType.FUNCTION.value,
+        description="",
+        json_schema_extra=dict(enum=CommandType.all()),
+    )
     delta_arg: Optional[CommandDeltaType] = Field(default=None, description="the delta arg type")
     call_soon: bool = Field(default=False)
     block: bool = Field(default=True)
     interface: str = Field(
+        default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
                     "但核心思想是 Code As Prompt."
                     "通常是一个 python async 函数的 signature. 形如:"
@@ -117,7 +133,7 @@ class Command(Generic[RESULT], ABC):
     """
 
     @abstractmethod
-    def parse(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def parse_kwargs(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         pass
 
     @abstractmethod
@@ -139,17 +155,20 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     """
     将 python 的 Coroutine 函数封装成 Command
     通过反射获取 interface.
+
+    Example of how to implement a Command
     """
 
     def __init__(
             self,
-            func: Callable[..., Coroutine[None, None, RESULT]],
+            func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
             *,
-            meta: Optional[CommandMeta] = None,
-            available: Optional[Callable[[], Coroutine[None, None, bool]]] = None,
+            name: Optional[str] = None,
+            available: Callable[[], Coroutine[None, None, bool]] | None = None,
             interface: Optional[StringType] = None,
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
+            meta: Optional[CommandMeta] = None,
     ):
         """
         :param func: origin coroutine function
@@ -159,44 +178,37 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         :param doc: if given, will change the docstring of the function or generate one dynamically
         :param comments: if given, will add to the body of the function interface.
         """
-        self._meta = meta or CommandMeta()
-        self._name = meta.name or func.__name__
+        self._name = name or func.__name__
         self._func = func
-        self._is_coroutine_func = inspect.iscoroutinefunction(func)
-        self._interface_fn = interface
-        self._doc_fn = doc
-        self._available_fn = available
-        self._comments_fn = comments
         self._func_itf = parse_function_interface(func)
-        self._meta.description = self._meta.description or self._func_itf.docstring
+        self._is_coroutine_func = inspect.iscoroutinefunction(func)
+        # dynamic method
+        self._dynamic = callable(doc) or callable(available) or callable(comments) or callable(interface)
+        self._interface_fn = awaitable_caller(interface, default="") if interface is not None else None
+        self._doc_fn = awaitable_caller(doc, default=self._func_itf.docstring or "")
+        self._available_fn = awaitable_caller(available, default=True)
+        self._comments_fn = awaitable_caller(comments, default="")
+        # cached meta
+        self._meta = meta or CommandMeta()
+        self._cached_meta: Optional[CommandMeta] = None
 
     async def meta(self) -> CommandMeta:
+        if self._cached_meta is not None:
+            return self._cached_meta.model_copy()
+
         meta = self._meta.model_copy()
-        meta.name = self._name
-        if self._available_fn is not None:
-            meta.available = await self._available_fn()
-        if meta.available:
-            meta.interface = await self.get_interface()
+        meta.description = await self._doc_fn()
+        meta.name = meta.name or self._name
+        meta.available = await self._available_fn()
+        meta.interface = await self._gen_interface(meta.name, meta.description)
+        if not self._dynamic:
+            self._cached_meta = meta
         return meta
 
-    async def _get_doc(self):
-        doc = ""
-        if self._doc_fn is not None:
-            if isinstance(self._doc_fn, str):
-                doc = self._doc_fn
-            else:
-                doc = await self._doc_fn()
-        return doc
-
-    async def get_interface(self) -> str:
+    async def _gen_interface(self, name: str, doc: str) -> str:
         if self._interface_fn is not None:
-            if isinstance(self._interface_fn, str):
-                return self._interface_fn
-            else:
-                return await self._interface_fn()
-
-        doc = await self._get_doc()
-        name = self._name
+            r = await self._interface_fn()
+            return r
         comments = ""
         if self._comments_fn is not None:
             comments = await self._comments_fn()
@@ -209,14 +221,13 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             comments=comments,
         )
 
-    def parse(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def parse_kwargs(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
         return real_kwargs
 
     async def __call__(self, *args, **kwargs) -> RESULT:
         if self._is_coroutine_func:
-            task = asyncio.create_task(self._func(*args, **kwargs))
-            return await task
+            return await self._func(*args, **kwargs)
         else:
             task = asyncio.to_thread(self._func, *args, **kwargs)
             return await task
@@ -315,7 +326,7 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.tokens: str = tokens
         self.args: List = list(args)
         self.kwargs: Dict[str, Any] = kwargs
-        self.real_kwargs: Dict[str, Any] = command.parse(*self.args, **self.kwargs)
+        self.real_kwargs: Dict[str, Any] = command.parse_kwargs(*self.args, **self.kwargs)
         self.state: CommandState = "created"
         self.command: Command = command
         self.errcode: int = 0

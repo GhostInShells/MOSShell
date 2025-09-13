@@ -1,12 +1,13 @@
-from typing import Any, Type, Tuple, List, Dict
+from typing import Any, Type, Tuple, List, Dict, TypeVar, Awaitable, List, Callable, Generic, Optional
 from ast import literal_eval
-from typing import List, Callable
 from dataclasses import dataclass
+from functools import wraps
 import inspect
 
 __all__ = [
     'prepare_kwargs_by_signature',
     'parse_function_interface',
+    'awaitable_caller',
 ]
 
 
@@ -112,3 +113,30 @@ def parse_function_interface(fn: Callable) -> FunctionReflection:
         docstring=docstring,
         comments="",
     )
+
+
+R = TypeVar('R')
+
+
+def awaitable_caller(
+        fn: Callable[..., R] | Callable[..., Awaitable[R]] | R,
+        *,
+        default: Optional[Any] = None,
+) -> Callable[..., Awaitable[R]]:
+    if not callable(fn):
+        async def return_result(*args, **kwargs):
+            return fn if fn is not None else default  # as result
+
+        return return_result
+
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    @wraps(fn)
+    async def wrapper(*args, **kwargs):
+        r = fn(*args, **kwargs)
+        if inspect.isawaitable(r):
+            r = await r
+        return r
+
+    return wrapper
