@@ -86,7 +86,20 @@ class CommandToken(BaseModel):
 
     kwargs: Optional[Dict[str, Any]] = Field(default=None, description="attributes, only for command start")
 
-    def unique_id(self) -> str:
+    def command_id(self) -> str:
+        """
+        each command is presented by many command tokens. all the command tokens share a same command id.
+        """
+        return f"{self.stream_id}-{self.cmd_idx}"
+
+    def command_part_id(self) -> str:
+        """
+        the command tokens has many parts, each part has a unique id.
+        Notice the delta part may be separated by the child command tokens, for example:
+        <start> [<delta> ... <delta>] - child command tokens - [<delta> ... <delta>] <end>.
+
+        the deltas before the child command and after the child command have the different part_id `n` and `n + 1`
+        """
         return f"{self.stream_id}-{self.cmd_idx}-{self.part_idx}"
 
 
