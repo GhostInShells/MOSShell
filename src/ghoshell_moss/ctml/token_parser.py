@@ -4,10 +4,11 @@ from xml import sax
 import logging
 import xml.sax
 from xml.sax import saxutils
-from typing import List, Iterable, Optional, Dict, Callable
+from typing import List, Iterable, Optional, Callable
 from ghoshell_moss.concepts.command import CommandToken
-from ghoshell_moss.concepts.errors import InterpretError, FatalError
-from queue import Queue
+from ghoshell_moss.concepts.errors import FatalError
+
+CommandTokenCallback = Callable[[CommandToken], None]
 
 
 class CMTLElement:
@@ -15,15 +16,16 @@ class CMTLElement:
     Utility class to generate Command Token in XMTL (Command Token Marked Language stream)
     """
 
-    def __init__(self, *, idx: int, stream_id: str, chan: str, name: str, attrs):
-        self.idx = idx
+    def __init__(self, *, cmd_idx: int, stream_id: str, chan: str, name: str, attrs: dict):
+        self.cmd_idx = cmd_idx
         self.ns = chan
         self.name = name
         self.deltas = ""
-        self.part_idx = 0
+        # first part idx is 1
+        self.part_idx = 1
         self._has_delta = False
         self.fullname = self.make_fullname(chan, name)
-        self.attrs = dict(attrs)
+        self.attrs = attrs
         self.stream_id = stream_id
 
     @classmethod
@@ -42,7 +44,7 @@ class CMTLElement:
         return CommandToken(
             name=self.name,
             chan=self.ns,
-            idx=self.idx,
+            cmd_idx=self.cmd_idx,
             part_idx=part_idx,
             stream_id=self.stream_id,
             type="start",
@@ -68,7 +70,7 @@ class CMTLElement:
             return CommandToken(
                 name=self.name,
                 chan=self.ns,
-                idx=self.idx,
+                cmd_idx=self.cmd_idx,
                 part_idx=self.part_idx,
                 stream_id=self.stream_id,
                 type="delta",
@@ -83,7 +85,7 @@ class CMTLElement:
         return CommandToken(
             name=self.name,
             chan=self.ns,
-            idx=self.idx,
+            cmd_idx=self.cmd_idx,
             part_idx=self.part_idx,
             stream_id=self.stream_id,
             type="end",
@@ -102,7 +104,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             self,
             root_tag: str,
             stream_id: str,
-            callback: Callable[[CommandToken | Exception | None], None],
+            callback: CommandTokenCallback,
             *,
             default_chan: str = "",
             logger: Optional[logging.Logger] = None,
@@ -118,7 +120,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._stream_id = stream_id
         self._default_chan = default_chan
         # idx of the command token
-        self._idx = 0
+        self._token_order = 0
+        self._cmd_idx = 0
         # command token callback
         self._callback = callback
         # get the logger
@@ -130,31 +133,38 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
 
     def _send_to_callback(self, token: CommandToken) -> None:
         if not self.done_event.is_set():
+            self._token_order += 1
+            token.order = self._token_order
             self._callback(token)
         else:
             # todo: log
             pass
 
-    def startElementNS(self, name: tuple[str, str], qname: str, attrs: Dict) -> None:
+    def startElementNS(self, name: tuple[str, str], qname: str, attrs: xml.sax.xmlreader.AttributesNSImpl) -> None:
         if self.done_event.is_set():
             return None
         cmd_chan, cmd_name = name
+        dict_attrs = {}
+        if len(attrs) > 0:
+            for qname in attrs.getQNames():
+                dict_attrs[qname] = attrs.getValueByQName(qname)
+
         element = CMTLElement(
-            idx=self._idx,
+            cmd_idx=self._cmd_idx,
             stream_id=self._stream_id,
             chan=cmd_chan or self._default_chan,
             name=cmd_name,
-            attrs=attrs,
+            attrs=dict_attrs,
         )
         if len(self._parsing_element_stack) > 0:
             self._parsing_element_stack[-1].on_child_command()
 
         # using stack to handle elements
         self._parsing_element_stack.append(element)
-        self._idx += 1
         if element.fullname != self._root_tag:
             token = element.start_token()
             self._send_to_callback(token)
+        self._cmd_idx += 1
 
     def endElementNS(self, name: tuple[str, str], qname):
         if len(self._parsing_element_stack) == 0:
@@ -184,8 +194,9 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._logger.exception(exception)
         if self.done_event.is_set():
             return None
-        self._callback(exception)
         self.done_event.set()
+        # todo: wrap the exception
+        raise exception
 
     def warning(self, exception):
         self._logger.warning(exception)
@@ -198,8 +209,8 @@ class CTMLParser:
 
     def __init__(
             self,
+            callback: CommandTokenCallback,
             stream_id: str = "",
-            callback: Callable[[CommandToken], None] | None = None,
             *,
             root_tag: str = "cmtl",
             default_chan: str = "",
@@ -213,7 +224,7 @@ class CTMLParser:
         self._handler = CTMLSaxHandler(
             root_tag,
             stream_id,
-            self._send_callback,
+            callback,
             default_chan=default_chan,
             logger=logger,
         )
@@ -223,16 +234,6 @@ class CTMLParser:
         self._sax_parser.setErrorHandler(self._handler)
         self._stopped = False
         self._started = False
-
-    def _send_callback(self, token: CommandToken | Exception | None) -> None:
-        if isinstance(token, dict) or isinstance(token, CommandToken):
-            self._parsed.append(token)
-            if self._callback is not None:
-                self._callback(token)
-        elif isinstance(token, Exception):
-            raise token
-        else:
-            raise ParserStopped()
 
     def is_running(self) -> bool:
         return self._started and not self._stopped
@@ -274,16 +275,6 @@ class CTMLParser:
     def buffer(self) -> str:
         return self._buffer
 
-    def parsed(self) -> List[CommandToken]:
-        return self._parsed
-
-    def wait_done(self, timeout: float | None = None) -> None:
-        """
-        wait until the parsing is done
-        do not use this before the end_feed in the same thread
-        """
-        self._handler.done_event.wait(timeout=timeout)
-
     def __enter__(self):
         self.start()
         return self
@@ -294,13 +285,14 @@ class CTMLParser:
     @classmethod
     def parse(
             cls,
+            callback: CommandTokenCallback,
             stream: Iterable[str],
             *,
             root_tag: str = "ctml",
             stream_id: str = "",
             default_chan: str = "",
             logger: Optional[logging.Logger] = None,
-    ) -> Iterable[CommandToken]:
+    ) -> None:
         """
         simple example of parsing input stream into command token stream with a thread.
         but not a good practice
@@ -308,29 +300,8 @@ class CTMLParser:
         if isinstance(stream, str):
             stream = [stream]
 
-        q: Queue[CommandToken | Exception | None] = Queue()
-
-        parser = cls(stream_id, q.put_nowait, root_tag=root_tag, default_chan=default_chan, logger=logger)
-        try:
-
-            def _consumer():
-                """
-                async feeding
-                """
-                with parser:
-                    for delta in stream:
-                        parser.feed(delta)
-                    parser.end()
-
-            t = threading.Thread(target=_consumer, daemon=True)
-            t.start()
-            while True:
-                item = q.get(block=True)
-                if item is None:
-                    # reach the end
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                yield item
-        finally:
-            parser.stop()
+        parser = cls(callback, stream_id, root_tag=root_tag, default_chan=default_chan, logger=logger)
+        with parser:
+            for element in stream:
+                parser.feed(element)
+            parser.end()

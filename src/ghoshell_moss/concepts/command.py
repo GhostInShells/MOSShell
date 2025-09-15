@@ -75,7 +75,9 @@ class CommandToken(BaseModel):
 
     name: str = Field(description="command name")
 
-    idx: int = Field(description="token index of the stream")
+    order: int = Field(default=0, description="the output order of the command")
+
+    cmd_idx: int = Field(description="command index of the stream")
 
     part_idx: int = Field(description="continuous part idx of the command. start, delta, delta, end are four parts")
 
@@ -84,6 +86,9 @@ class CommandToken(BaseModel):
     content: str = Field(description="origin tokens that llm generates")
 
     kwargs: Optional[Dict[str, Any]] = Field(default=None, description="attributes, only for command start")
+
+    def unique_id(self) -> str:
+        return f"{self.stream_id}-{self.cmd_idx}-{self.part_idx}"
 
 
 class CommandMeta(BaseModel):
