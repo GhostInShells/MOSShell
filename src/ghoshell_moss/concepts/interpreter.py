@@ -3,56 +3,72 @@ from .command import CommandToken, CommandTask, CommandMeta
 from abc import ABC, abstractmethod
 from typing import Iterable, Callable, Optional, Coroutine
 
+CommandTokenCallback = Callable[[CommandToken], None]
 
-class CommandParser(ABC):
+
+class CommandTokenParseError(Exception):
+    pass
+
+
+class CommandTokenParser(ABC):
+    """
+    parse string stream into command tokens
+    """
 
     @abstractmethod
-    def put(self, delta: str) -> None:
+    def is_running(self) -> bool:
+        """weather this command is running"""
+        pass
+
+    @abstractmethod
+    def with_callback(self, callback: CommandTokenCallback) -> None:
+        pass
+
+    @abstractmethod
+    def is_done(self) -> bool:
+        """weather this parser is done parsing."""
+        pass
+
+    @abstractmethod
+    def start(self) -> None:
+        """start this parser"""
+        pass
+
+    @abstractmethod
+    def feed(self, delta: str) -> None:
+        """feed this parser with the stream delta"""
+        pass
+
+    @abstractmethod
+    def end(self) -> None:
+        """notify the parser that the stream is done"""
+        pass
+
+    @abstractmethod
+    def stop(self) -> None:
         """
-        push the streaming tokens delta into the interpreter.
+        stop the parser and clear the resources.
         """
         pass
 
     @abstractmethod
-    def cancel(self) -> None:
+    def buffer(self) -> str:
         """
-        thread-safe way to cancel the running interpretation
-        """
-        pass
-
-    @abstractmethod
-    def with_command_token_callback(self, callback: Callable[[CommandToken], None]) -> None:
-        """
-        register the callbacks for each parsed command token.
-        usually the put_nowait method of a queue.
+        return the buffered stream content
         """
         pass
 
-    @abstractmethod
-    def with_command_task_callback(self, callback: Callable[[CommandTask], None]) -> None:
-        """
-        register the callbacks for each parsed command task.
-        usually the put_nowait method of a queue.
-        """
-        pass
+    def __enter__(self):
+        self.start()
+        return self
 
-    @abstractmethod
-    def parsed_tokens(self) -> Iterable[CommandToken]:
-        """
-        return the parsed command tokens
-        usually the command token parsing is much faster than the execution.
-        """
-        pass
-
-    @abstractmethod
-    def parsed_tasks(self) -> Iterable[CommandTask]:
-        """
-        return the parsed command tasks in compiling order
-        """
-        pass
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_val is None:
+            self.end()
+        self.stop()
 
 
-class Interpreter(CommandParser, ABC):
+class Interpreter(CommandTokenParser, ABC):
     """
     The Command Interpreter that parse the LLM-generated streaming tokens into Command Tokens,
     and send the compiled command tasks into the shell executor.
@@ -103,7 +119,7 @@ class Interpreter(CommandParser, ABC):
         pass
 
 
-class SyncInterpreter(CommandParser, ABC):
+class SyncInterpreter(CommandTokenParser, ABC):
     """
     The sync interface of the Command Interpreter,
     if we have to use the interface in another thread.

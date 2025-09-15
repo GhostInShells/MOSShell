@@ -6,6 +6,7 @@ import xml.sax
 from xml.sax import saxutils
 from typing import List, Iterable, Optional, Callable
 from ghoshell_moss.concepts.command import CommandToken
+from ghoshell_moss.concepts.interpreter import CommandTokenParser, CommandTokenParseError
 from ghoshell_moss.concepts.errors import FatalError
 
 CommandTokenCallback = Callable[[CommandToken], None]
@@ -196,20 +197,20 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             return None
         self.done_event.set()
         # todo: wrap the exception
-        raise exception
+        raise CommandTokenParseError(f"CTML Parse Exception from sax: {exception}")
 
     def warning(self, exception):
         self._logger.warning(exception)
 
 
-class CTMLParser:
+class CTMLParser(CommandTokenParser):
     """
     parsing input stream into Command Tokens
     """
 
     def __init__(
             self,
-            callback: CommandTokenCallback,
+            callback: CommandTokenCallback | None = None,
             stream_id: str = "",
             *,
             root_tag: str = "cmtl",
@@ -218,6 +219,9 @@ class CTMLParser:
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("CTMLParser")
+        if callback is None:
+            value = []
+            callback = value.append
         self._callback = callback
         self._buffer = ""
         self._parsed: List[CommandToken] = []
@@ -234,9 +238,13 @@ class CTMLParser:
         self._sax_parser.setErrorHandler(self._handler)
         self._stopped = False
         self._started = False
+        self._ended = False
 
     def is_running(self) -> bool:
-        return self._started and not self._stopped
+        return self._started and not self._stopped and not self._ended
+
+    def with_callback(self, callback: CommandTokenCallback) -> None:
+        self._callback = callback
 
     def is_done(self) -> bool:
         return self._handler.done_event.is_set()
@@ -259,6 +267,9 @@ class CTMLParser:
     def end(self) -> None:
         if not self.is_running():
             return
+        if self._ended:
+            return
+        self._ended = True
         self._sax_parser.feed(f'</{self.root_tag}>')
 
     def stop(self) -> None:

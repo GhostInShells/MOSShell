@@ -19,12 +19,12 @@ CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'don
 StringType = Union[str, Callable[[], Coroutine[None, None, str]]]
 
 CommandDeltaType = dict(
-    text_="the delta is any text",
+    text_="the delta is text string",
     json_="the delta is in json format",
-    ct_="the delta follows command token grammar",
     yaml_="the delta is in yaml format",
     markdown_="the delta is in markdown format",
     python_="the delta is python code",
+    commands_="the delta are commands, transport as Iterable[CommandToken]",
 )
 """
 拥有不同的语义的 Delta 类型. 如果一个 Command 的入参包含这些类型, 它生成 Command Token 的 Delta 应该遵循相同逻辑.
@@ -190,9 +190,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._cached_meta: Optional[CommandMeta] = None
         for arg_name in self._func_itf.signature.parameters.keys():
             if arg_name in CommandDeltaType:
-                if meta.delta_arg is not None:
+                if self._meta.delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
-                meta.delta_arg = arg_name
+                self._meta.delta_arg = arg_name
                 # only first delta_arg type. and not allow more than 1
                 break
 
