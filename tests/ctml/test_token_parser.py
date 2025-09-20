@@ -1,12 +1,12 @@
 from ghoshell_moss.concepts.command import CommandToken
 from ghoshell_moss.concepts.interpreter import CommandTokenParseError
-from ghoshell_moss.ctml.token_parser import CTMLParser
+from ghoshell_moss.ctml.token_parser import CTMLTokenParser
 from collections import deque
 
 
 def test_token_parser_baseline():
     q = deque[CommandToken]()
-    parser = CTMLParser(callback=q.append, stream_id="stream")
+    parser = CTMLTokenParser(callback=q.append, stream_id="stream")
     content = "<foo><bar/>h</foo>"
     with parser:
         assert parser.is_running()
@@ -46,7 +46,7 @@ def test_token_parser_baseline():
 def test_delta_token_baseline():
     content = "<foo>hello<bar/>world</foo>"
     q = deque[CommandToken]()
-    CTMLParser.parse(q.append, iter(content))
+    CTMLTokenParser.parse(q.append, iter(content))
 
     text = ""
     for token in q:
@@ -87,7 +87,7 @@ def test_delta_token_baseline():
 def test_token_with_attrs():
     content = "hello<foo bar='123'/>world"
     q = deque[CommandToken]()
-    CTMLParser.parse(q.append, iter(content), root_tag="speak")
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
 
     foo_token_count = 0
     for token in q:
@@ -116,7 +116,7 @@ def test_token_with_attrs():
 def test_token_with_cdata():
     content = 'hello<foo><![CDATA[{"a": 123, "b":"234"}]]></foo>world'
     q = deque[CommandToken]()
-    CTMLParser.parse(q.append, iter(content), root_tag="speak")
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
 
     # expect hte cdata are escaped
     expect = '{"a": 123, "b":"234"}'
@@ -132,7 +132,7 @@ def test_token_with_recursive_cdata():
     q = deque[CommandToken]()
     e = None
     try:
-        CTMLParser.parse(q.append, iter(content), root_tag="speak")
+        CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     except Exception as ex:
         e = ex
     assert isinstance(e, CommandTokenParseError)

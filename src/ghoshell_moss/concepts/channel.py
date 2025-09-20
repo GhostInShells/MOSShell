@@ -191,7 +191,37 @@ class Channel(ABC):
         """
         pass
 
-    # --- decorators --- #
+    # --- lifecycle --- #
+
+    @abstractmethod
+    def run(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
+        """
+        传入一个父容器, 启动 Channel. 同时生成 Runtime.
+        真正运行的是 channel runtime.
+        """
+        pass
+
+    @abstractmethod
+    def stop(self) -> None:
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """
+        标注 Channel 已经开始运行了, 但没有终结.
+        """
+        pass
+
+    @abstractmethod
+    async def on_idle(self) -> None:
+        pass
+
+    @abstractmethod
+    async def on_clear(self) -> None:
+        pass
+
+
+class ChannelDecorators(ABC):
 
     @abstractmethod
     def with_description(self, description: Callable[..., str]) -> Callable[..., str]:
@@ -331,23 +361,6 @@ class Channel(ABC):
     def with_binding(self, contract: Type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
         """
         register default bindings for the given contract.
-        """
-        pass
-
-    # --- lifecycle --- #
-
-    @abstractmethod
-    def run(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
-        """
-        传入一个父容器, 启动 Channel. 同时生成 Runtime.
-        真正运行的是 channel runtime.
-        """
-        pass
-
-    @abstractmethod
-    def is_running(self) -> bool:
-        """
-        标注 Channel 已经开始运行了.
         """
         pass
 

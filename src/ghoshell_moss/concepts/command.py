@@ -3,10 +3,10 @@ import threading
 from abc import ABC, abstractmethod
 from typing import (
     TypedDict, Literal, Optional, Dict, Any, Awaitable, List, Generic, TypeVar, Tuple, Callable, Coroutine, Union,
-    is_typeddict,
+    is_typeddict, Protocol, Iterable,
 )
 from ghoshell_common.helpers import uuid, generate_import_path
-from ghoshell_moss.helpers.func import parse_function_interface, awaitable_caller
+from ghoshell_moss.helpers.func import parse_function_interface, awaitable_caller, unwrap_callable_or_value
 from .errors import CommandError
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -16,16 +16,22 @@ import time
 RESULT = TypeVar("RESULT")
 
 CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
-StringType = Union[str, Callable[[], Coroutine[None, None, str]]]
+StringType = Union[str, Callable[[], str]]
 
-CommandDeltaType = dict(
-    text_="the delta is text string",
-    json_="the delta is in json format",
-    yaml_="the delta is in yaml format",
-    markdown_="the delta is in markdown format",
-    python_="the delta is python code",
-    commands_="the delta are commands, transport as Iterable[CommandToken]",
-)
+
+class CommandDeltaType(str, Enum):
+    TEXT = "text__"
+    TOKENS = "tokens__"
+
+    @classmethod
+    def all(cls) -> set[str]:
+        return {cls.TEXT.value, cls.TOKENS.value}
+
+
+CommandDeltaTypeMap = {
+    CommandDeltaType.TEXT.value: "the deltas are text string",
+    CommandDeltaType.TOKENS.value: "the delta are commands, transporting as Iterable[CommandToken]",
+}
 """
 拥有不同的语义的 Delta 类型. 如果一个 Command 的入参包含这些类型, 它生成 Command Token 的 Delta 应该遵循相同逻辑.
 """
@@ -56,6 +62,16 @@ class CommandType(str, Enum):
             cls.META.value,
             cls.CONTROL.value,
         }
+
+
+class CommandTokenType(str, Enum):
+    START = "start"
+    END = "end"
+    DELTA = "delta"
+
+    @classmethod
+    def all(cls) -> set[str]:
+        return {cls.START.value, cls.END.value, cls.DELTA.value}
 
 
 class CommandToken(BaseModel):
@@ -107,18 +123,35 @@ class CommandMeta(BaseModel):
     """
     命令的原始信息.
     """
-    name: str = Field(default="", description="the name of the command")
-    chan: str = Field(default="", description="the channel name that the command belongs to")
-    description: str = Field(default="", description="the doc of the command")
-    available: bool = Field(default=True, description="whether this command is available")
+    name: str = Field(
+        description="the name of the command"
+    )
+    chan: str = Field(
+        description="the channel name that the command belongs to"
+    )
+    description: str = Field(
+        default="",
+        description="the doc of the command",
+    )
+    available: bool = Field(
+        default=True,
+        description="whether this command is available",
+    )
     type: CommandType = Field(
         default=CommandType.FUNCTION.value,
         description="",
         json_schema_extra=dict(enum=CommandType.all()),
     )
-    delta_arg: Optional[str] = Field(default=None, description="the delta arg type")
+    delta_arg: Optional[str] = Field(
+        default=None,
+        description="the delta arg type",
+        json_schema_extra={"enum": CommandDeltaType.all()},
+    )
     call_soon: bool = Field(default=False)
-    block: bool = Field(default=True)
+    block: bool = Field(
+        default=True,
+        description="whether this command block the channel",
+    )
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
@@ -130,7 +163,10 @@ class CommandMeta(BaseModel):
                     "    pass"
                     "```"
     )
-    args_schema: Optional[Dict[str, Any]] = Field(default=None, description="the json schema. 兼容性实现.")
+    args_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="the json schema. 兼容性实现.",
+    )
 
 
 class Command(Generic[RESULT], ABC):
@@ -143,11 +179,11 @@ class Command(Generic[RESULT], ABC):
     """
 
     @abstractmethod
-    def parse_kwargs(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def is_available(self) -> bool:
         pass
 
     @abstractmethod
-    async def meta(self) -> CommandMeta:
+    def meta(self) -> CommandMeta:
         """
         返回 Command 的元信息.
         """
@@ -171,10 +207,11 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     def __init__(
             self,
+            chan: str,
             func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
             *,
             name: Optional[str] = None,
-            available: Callable[[], Coroutine[None, None, bool]] | None = None,
+            available: Callable[[], bool] | None = None,
             interface: Optional[StringType] = None,
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
@@ -188,49 +225,65 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         :param doc: if given, will change the docstring of the function or generate one dynamically
         :param comments: if given, will add to the body of the function interface.
         """
-        self._name = name or func.__name__
+        self._chan = chan
+        self._func_name = func.__name__
+        if name is None:
+            # channel name as the function prefix
+            name = self._func_name if not self._chan else f"{self._chan}_{self._func_name}"
+        self._name = name
         self._func = func
         self._func_itf = parse_function_interface(func)
         self._is_coroutine_func = inspect.iscoroutinefunction(func)
         # dynamic method
-        self._dynamic = callable(doc) or callable(available) or callable(comments) or callable(interface)
-        self._interface_fn = awaitable_caller(interface, default="") if interface is not None else None
-        self._doc_fn = awaitable_caller(doc, default=self._func_itf.docstring or "")
-        self._available_fn = awaitable_caller(available, default=True)
-        self._comments_fn = awaitable_caller(comments, default="")
-        # cached meta
-        self._meta = meta or CommandMeta()
-        self._cached_meta: Optional[CommandMeta] = None
+        self._interface_or_fn = interface
+        self._doc_or_fn = doc
+        self._available_or_fn = available
+        self._comments_or_fn = comments
+        self._is_dynamic_itf = callable(interface) or callable(doc) or callable(available) or callable(comments)
+        self._meta = meta
+        delta_arg = None
         for arg_name in self._func_itf.signature.parameters.keys():
-            if arg_name in CommandDeltaType:
-                if self._meta.delta_arg is not None:
+            if arg_name in CommandDeltaTypeMap:
+                if delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
-                self._meta.delta_arg = arg_name
+                delta_arg = arg_name
                 # only first delta_arg type. and not allow more than 1
                 break
+        self._delta_arg = delta_arg
 
-    async def meta(self) -> CommandMeta:
-        if self._cached_meta is not None:
-            return self._cached_meta.model_copy()
+    def is_available(self) -> bool:
+        return self._available_or_fn() if self._available_or_fn is not None else True
 
-        meta = self._meta.model_copy()
-        meta.description = await self._doc_fn()
+    def meta(self) -> CommandMeta:
+        if self._meta is not None:
+            meta = self._meta.model_copy()
+            meta.available = self.is_available()
+            return meta
+
+        meta = CommandMeta()
+        meta.description = self._unwrap_string_type(self._doc_or_fn, meta.description)
         meta.name = meta.name or self._name
-        meta.available = await self._available_fn()
-        meta.interface = await self._gen_interface(meta.name, meta.description)
+        meta.interface = self._gen_interface(meta.name, meta.description)
+        meta.available = self.is_available()
+        meta.delta_arg = self._delta_arg
 
-        if not self._dynamic:
-            self._cached_meta = meta
+        if not self._is_dynamic_itf:
+            self._meta = meta
         return meta
 
-    async def _gen_interface(self, name: str, doc: str) -> str:
-        if self._interface_fn is not None:
-            r = await self._interface_fn()
-            return r
-        comments = ""
-        if self._comments_fn is not None:
-            comments = await self._comments_fn()
+    @staticmethod
+    def _unwrap_string_type(value: StringType | None, default: Optional[str]) -> str:
+        if value is None:
+            return ""
+        elif callable(value):
+            return value()
+        return value or default or ""
 
+    def _gen_interface(self, name: str, doc: str) -> str:
+        if self._interface_or_fn is not None:
+            r = self._interface_or_fn()
+            return r
+        comments = self._unwrap_string_type(self._comments_or_fn, None)
         func_itf = self._func_itf
 
         return func_itf.to_interface(
@@ -244,10 +297,11 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         return real_kwargs
 
     async def __call__(self, *args, **kwargs) -> RESULT:
+        real_kwargs = self.parse_kwargs(*args, **kwargs)
         if self._is_coroutine_func:
-            return await self._func(*args, **kwargs)
+            return await self._func(**real_kwargs)
         else:
-            task = asyncio.to_thread(self._func, *args, **kwargs)
+            task = asyncio.to_thread(self._func, **real_kwargs)
             return await task
 
 
@@ -267,6 +321,8 @@ class CommandTask(Generic[RESULT], ABC):
     errmsg: Optional[str] = None
     trace: Dict[CommandState, float] = {}
     result: Optional[RESULT] = None
+    meta: CommandMeta
+    func: Callable[..., Coroutine[None, None, RESULT]]
 
     @abstractmethod
     def is_done(self) -> bool:
@@ -325,7 +381,7 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
 
-class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
+class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
     大模型的输出被转化成 CmdToken 后, 再通过执行器生成的运行时对象.
     实现一个跨线程安全的等待机制.
@@ -334,7 +390,8 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
     def __init__(
             self,
             *,
-            command: Command[RESULT],
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]],
             tokens: str,
             args: list,
             kwargs: Dict[str, Any],
@@ -344,9 +401,9 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.tokens: str = tokens
         self.args: List = list(args)
         self.kwargs: Dict[str, Any] = kwargs
-        self.real_kwargs: Dict[str, Any] = command.parse_kwargs(*self.args, **self.kwargs)
         self.state: CommandState = "created"
-        self.command: Command = command
+        self.meta = meta
+        self.func = func
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
         self.trace: Dict[CommandState, float] = {}
@@ -390,7 +447,6 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.set_state(state)
             return True
 
-    @abstractmethod
     def fail(self, error: Exception | str) -> None:
         if not self._done_event.is_set():
             if isinstance(error, str):
@@ -411,7 +467,6 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self._set_result(None, errcode, errmsg)
             self.set_state("failed")
 
-    @abstractmethod
     def resolve(self, result: RESULT) -> None:
         if not self._done_event.is_set():
             self._set_result(result, 'done', 0, None)
@@ -458,9 +513,77 @@ class BasicCommandTask(Generic[RESULT], CommandTask[RESULT]):
         return self.result
 
 
+class WaitDoneTask(BaseCommandTask):
+    """
+    等待其它任务完成.
+    """
+
+    def __init__(
+            self,
+            tasks: Iterable[CommandTask],
+            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+    ) -> None:
+        meta = CommandMeta(
+            name="_wait_done",
+            chan="",
+            type=CommandType.CONTROL.value,
+        )
+
+        async def wait_done() -> Optional[RESULT]:
+            await asyncio.gather(*[t.wait_done() for t in tasks])
+            if after is not None:
+                return await after()
+            return None
+
+        super().__init__(
+            meta=meta,
+            func=wait_done,
+            tokens="",
+            args=[],
+            kwargs={},
+        )
+
+
+class CancelAfterOthersTask(BaseCommandTask[None]):
+    """
+    等待其它任务完成后, cancel 当前任务.
+    """
+
+    def __init__(
+            self,
+            current: CommandTask,
+            *tasks: CommandTask,
+            tokens: str = "",
+    ) -> None:
+        meta = CommandMeta(
+            name="cancel_" + current.meta.name,
+            chan=current.meta.chan,
+            type=CommandType.CONTROL.value,
+            block=False,
+            call_soon=True,
+        )
+
+        async def wait_done_then_cancel() -> Optional[None]:
+            waiting = list(tasks)
+            if not current.is_done() and len(waiting) > 0:
+                await asyncio.gather(*[t.wait_done() for t in tasks])
+            if not current.is_done():
+                # todo
+                current.cancel()
+                await current.wait_done()
+
+        super().__init__(
+            meta=meta,
+            func=wait_done_then_cancel,
+            tokens=tokens,
+            args=[],
+            kwargs={},
+        )
+
+
 class CommandTaskSeq:
 
-    def __init__(self, *tasks: BasicCommandTask) -> None:
+    def __init__(self, *tasks: BaseCommandTask) -> None:
         self.tasks = tasks
 
     def __iter__(self):

@@ -33,13 +33,19 @@ class CMTLElement:
     def make_fullname(cls, ns: str, name: str) -> str:
         return f"{ns}:{name}" if ns else name
 
-    def start_token(self) -> CommandToken:
+    @staticmethod
+    def make_start_mark(name: str, attrs: dict, self_close: bool) -> str:
         attr_expression = []
-        for k, v in self.attrs.items():
+        for k, v in attrs.items():
             quoted_value = saxutils.quoteattr(v)
             attr_expression.append(f"{k}={quoted_value}")
         exp = " " if len(attr_expression) > 0 else ""
-        content = f"<{self.fullname}{exp}" + " ".join(attr_expression) + ">"
+        self_close_mark = "/" if self_close else ""
+        content = f"<{name}{exp}" + " ".join(attr_expression) + self_close_mark + ">"
+        return content
+
+    def start_token(self) -> CommandToken:
+        content = self.make_start_mark(self.fullname, self.attrs, self_close=False)
         part_idx = self.part_idx
         self.part_idx += 1
         return CommandToken(
@@ -203,7 +209,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._logger.warning(exception)
 
 
-class CTMLParser(CommandTokenParser):
+class CTMLTokenParser(CommandTokenParser):
     """
     parsing input stream into Command Tokens
     """
@@ -219,16 +225,13 @@ class CTMLParser(CommandTokenParser):
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("CTMLParser")
-        if callback is None:
-            value = []
-            callback = value.append
         self._callback = callback
         self._buffer = ""
         self._parsed: List[CommandToken] = []
         self._handler = CTMLSaxHandler(
             root_tag,
             stream_id,
-            callback,
+            self._add_token,
             default_chan=default_chan,
             logger=logger,
         )
@@ -243,8 +246,16 @@ class CTMLParser(CommandTokenParser):
     def is_running(self) -> bool:
         return self._started and not self._stopped and not self._ended
 
+    def parsed(self) -> Iterable[CommandToken]:
+        return self._parsed
+
     def with_callback(self, callback: CommandTokenCallback) -> None:
         self._callback = callback
+
+    def _add_token(self, token: CommandToken) -> None:
+        self._parsed.append(token)
+        if self._callback is not None:
+            self._callback(token)
 
     def is_done(self) -> bool:
         return self._handler.done_event.is_set()

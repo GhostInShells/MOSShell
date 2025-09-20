@@ -118,6 +118,12 @@ def parse_function_interface(fn: Callable) -> FunctionReflection:
 R = TypeVar('R')
 
 
+def unwrap_callable_or_value(func: Callable[[], R] | R) -> R:
+    if callable(func):
+        return func()
+    return func
+
+
 def awaitable_caller(
         fn: Callable[..., R] | Callable[..., Awaitable[R]] | R,
         *,

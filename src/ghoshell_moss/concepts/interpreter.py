@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Iterable, Callable, Optional, Coroutine, List, Dict
 
 CommandTokenCallback = Callable[[CommandToken], None]
+CommandTaskCallback = Callable[[CommandTask], None]
 
 
 class CommandTokenParseError(Exception):
@@ -22,6 +23,9 @@ class CommandTokenParser(ABC):
 
     @abstractmethod
     def with_callback(self, callback: CommandTokenCallback) -> None:
+        """
+        send command token to callback method
+        """
         pass
 
     @abstractmethod
@@ -58,6 +62,10 @@ class CommandTokenParser(ABC):
         """
         pass
 
+    @abstractmethod
+    def parsed(self) -> Iterable[CommandToken]:
+        pass
+
     def __enter__(self):
         self.start()
         return self
@@ -72,61 +80,46 @@ class CommandTokenParser(ABC):
         self.stop()
 
 
-class CommandElementTree(ABC):
-    """
-    The way to parse command token stream into command task, is element tree, a bit like AST.
-    Parent node hold children elements,
-    when add tokens, check if undone child exists and parse tokens into it, until itself reaches end.
-    This abstract just show the parsing logic to you.
-    """
-    children: Dict[str, "CommandElementTree"]
+class CommandTaskParseError(Exception):
+    pass
+
+
+class CommandTaskElement(ABC):
+    current: Optional[CommandTask] = None
+    children: Dict[str, "CommandTaskElement"]
 
     @abstractmethod
-    def id(self) -> str:
-        """
-        return the command id (stream_id + cmd_id) of the command
-        """
+    def with_callback(self, callback: CommandTaskCallback) -> None:
         pass
 
     @abstractmethod
-    def add(self, token: CommandToken) -> None:
-        """
-        notice the token may be delta, end or children command tokens.
-        """
+    def on_token(self, token: CommandToken) -> None:
         pass
 
     @abstractmethod
-    def is_done(self) -> bool:
+    def is_end(self) -> bool:
         pass
 
-    @abstractmethod
-    def parsed(self) -> Iterable[CommandTask]:
+    def all_tasks(self, only_children: bool = False) -> Iterable[CommandTask]:
         """
-        return the tasks from the current command. one command may generate multiple command tasks.
-        because delta parts of the command may generate different command task for each part.
+        先序遍历所有子节点已经生成的 tasks.
         """
-        pass
-
-    def all_parsed(self) -> Iterable[CommandTask]:
-        """
-        return the parsed command task in deep-first order.
-        Notice element parsed tasks order may not be the same as the real command tasks order,
-        since sometimes a parent command task will be called after all the children tasks are done.
-        """
-        yield from self.parsed()
+        if self.current is not None and not only_children:
+            yield self.current
         for child in self.children.values():
-            yield from child.all_parsed()
+            yield from child.all_tasks()
+
+    @abstractmethod
+    def destroy(self) -> None:
+        pass
 
 
 class CommandTaskParser(ABC):
-    """
-    parse the command token stream into command task stream, by CommandElement tree
-    """
 
     @abstractmethod
-    def with_callback(self, callback: Callable[[CommandToken], None]) -> None:
+    def with_callback(self, callback: Callable[[CommandTask], None]):
         """
-        register a new callback
+        send parsed command task to callback method
         """
         pass
 
@@ -135,7 +128,10 @@ class CommandTaskParser(ABC):
         pass
 
     @abstractmethod
-    def feed(self, token: CommandToken) -> None:
+    def parse(self, *tokens: CommandToken) -> None:
+        """
+        parse command tokens into command tasks
+        """
         pass
 
     @abstractmethod
@@ -143,11 +139,21 @@ class CommandTaskParser(ABC):
         pass
 
     @abstractmethod
-    def buffer(self) -> Iterable[CommandTask]:
+    def parsed(self) -> Iterable[CommandTask]:
+        """
+        parsed command tasks in order
+        """
         pass
 
+    def __enter__(self):
+        self.start()
+        return self
 
-class Interpreter(CommandTokenParser, ABC):
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+
+class Interpreter(ABC):
     """
     The Command Interpreter that parse the LLM-generated streaming tokens into Command Tokens,
     and send the compiled command tasks into the shell executor.

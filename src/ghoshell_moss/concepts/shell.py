@@ -2,37 +2,49 @@ from abc import ABC, abstractmethod
 from typing import List, Iterable, Dict, Literal, Optional
 from typing_extensions import Self
 from .channel import Channel
-from .interpreter import Interpreter, AsyncInterpreter
-from .command import BasicCommandTask, Command, CommandTaskSeq
+from .interpreter import Interpreter, SyncInterpreter
+from .command import BaseCommandTask, Command, CommandTaskSeq, CommandTask
 from ghoshell_container import IoCContainer
 from contextlib import asynccontextmanager
 
 
-class TextStream(ABC):
+class OutputStream(ABC):
     """
     shell 发送文本的专用模块.
     """
     id: str
+    """所有文本片段都有独立的全局唯一id, 通常是 command_part_id"""
 
     @abstractmethod
-    async def buffer(self, text: str) -> None:
-        pass
+    async def add(self, text: str, *, complete: bool = False) -> None:
+        """
+        添加文本片段到输出流里.
+        由于文本可以通过 tts 生成语音, 而 tts 有独立的耗时, 所以通常一边解析 command token 一边 buffer 到 tts 中.
+        而音频允许播放的时间则会靠后, 必须等上一段完成后才能开始播放下一段.
 
-    @abstractmethod
-    async def end(self) -> None:
+        :param text: 文本片段
+        :type complete: 输出流是否已经结束.
+        """
         pass
 
     @abstractmethod
     async def play(self) -> None:
         """
-        设置文本允许输出, 进入输出队列.
+        允许文本片段开始播放. 这时可能文本片段本身都未生成完, 如果是流式的 tts, 则可以一边 buffer, 一边 tts, 一边播放. 三者并行.
         """
         pass
 
     @abstractmethod
     async def wait_done(self, timeout: float | None = None) -> None:
         """
-        等待文本输出结束.
+        阻塞等待到文本输出完毕. 当文本输出是一个独立的模块时, 需要依赖这个函数实现阻塞.
+        """
+        pass
+
+    @abstractmethod
+    def as_command_task(self) -> Optional[CommandTask]:
+        """
+        将 wait done 转化为一个 command task.
         """
         pass
 
@@ -43,16 +55,29 @@ class TextStream(ABC):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.end()
+        await self.add("", complete=True)
         await self.wait_done()
+
+
+class Output(Channel, ABC):
+    """
+    输出模块.
+    """
+
+    @abstractmethod
+    def new_stream(self, *, batch_id: Optional[str] = None) -> OutputStream:
+        """
+        创建一个新的输出流, 第一个 stream 应该设置为 play
+        """
+        pass
 
 
 class Controller(ABC):
 
     @abstractmethod
-    def output(self, batch_id: Optional[str] = None, play: bool = True) -> TextStream:
+    def system_prompt(self) -> str:
         """
-        默认需要支持 output.
+        控制模块的默认的 prompt.
         """
         pass
 
@@ -112,7 +137,7 @@ class ShellRuntime(ABC):
         pass
 
     @abstractmethod
-    async def append(self, *commands: BasicCommandTask) -> None:
+    async def append(self, *commands: BaseCommandTask) -> None:
         pass
 
     @abstractmethod
