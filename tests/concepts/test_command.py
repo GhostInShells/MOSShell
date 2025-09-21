@@ -1,3 +1,4 @@
+from typing import AsyncIterable
 from ghoshell_moss.concepts.command import PyCommand, CommandType, CommandMeta
 import asyncio
 import pytest
@@ -22,7 +23,7 @@ def test_pycommand_baseline():
         v = await command(1, b="world")
         assert 6 == v
 
-        meta = await command.meta()
+        meta = command.meta()
         assert meta.name == 'foo'
         assert meta.chan == ""
         assert meta.description == ""
@@ -36,8 +37,8 @@ def test_pycommand_baseline():
 
 @pytest.mark.asyncio
 async def test_pycommand_rename():
-    command = PyCommand(foo, meta=CommandMeta(name="bar"))
-    meta = await command.meta()
+    command = PyCommand(foo, name="bar")
+    meta = command.meta()
     assert meta.name == "bar"
     assert meta.interface == foo_itf_expect.replace("foo", "bar")
 
@@ -57,7 +58,7 @@ async def bar(a: int, *b: str, c: str, d: int = 1) -> int:
 """.strip()
 
     command = PyCommand(bar)
-    meta = await command.meta()
+    meta = command.meta()
     assert meta.interface == bar_itf_expect
 
     # assert the args and kwargs are parsed into kwargs
@@ -88,11 +89,11 @@ async def baz() -> int:
     bar_cmd = PyCommand(Foo().bar)
     baz_cmd = PyCommand(Foo.baz)
     # the self has been ignored
-    bar_meta = await bar_cmd.meta()
+    bar_meta = bar_cmd.meta()
     assert bar_meta.interface == expect_bar
 
     # the cls has been ignored
-    baz_meta = await baz_cmd.meta()
+    baz_meta = baz_cmd.meta()
     assert baz_meta.interface == expect_baz
 
     # and the calling need not pass self or cls
@@ -102,10 +103,18 @@ async def baz() -> int:
 
 @pytest.mark.asyncio
 async def test_method_command():
-    async def bar(a: int, b: str = "hello", text_: str = "") -> int:
+    async def bar(a: int, b: str = "hello", text__: str = "") -> int:
         return 123
 
     command = PyCommand(bar)
-    meta = await command.meta()
+    meta = command.meta()
     assert meta.name == "bar"
-    assert meta.delta_arg == "text_"
+    assert meta.delta_arg == "text__"
+
+    async def baz(a: int, b: str, tokens__: AsyncIterable[str]) -> int:
+        return 123
+
+    command = PyCommand(baz)
+    meta = command.meta()
+    assert meta.name == "baz"
+    assert meta.delta_arg == "tokens__"

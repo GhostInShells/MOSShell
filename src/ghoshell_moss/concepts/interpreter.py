@@ -8,12 +8,13 @@ CommandTaskCallback = Callable[[CommandTask], None]
 
 
 class CommandTokenParseError(Exception):
+    """converge the exceptions during command token parsing into this type"""
     pass
 
 
 class CommandTokenParser(ABC):
     """
-    parse string stream into command tokens
+    parse from string stream into command tokens
     """
 
     @abstractmethod
@@ -80,13 +81,23 @@ class CommandTokenParser(ABC):
         self.stop()
 
 
-class CommandTaskParseError(Exception):
-    pass
-
-
 class CommandTaskElement(ABC):
+    """
+    CommandTaskElement works like AST but in realtime.
+    It accepts command token from a stream, and generate command task concurrently.
+
+    The keypoint is, the command tokens are organized in the recursive pattern,
+    that one command can embrace many children command within it, and handle them by its own means,
+    just like a function call other functions inside it.
+
+    So we need an Element Tree to parse the tokens into command tasks, and send the tasks immediately
+    """
+
     current: Optional[CommandTask] = None
+    """the current command task of this element, created by `start` type command token"""
+
     children: Dict[str, "CommandTaskElement"]
+    """the children element of this element"""
 
     @abstractmethod
     def with_callback(self, callback: CommandTaskCallback) -> None:

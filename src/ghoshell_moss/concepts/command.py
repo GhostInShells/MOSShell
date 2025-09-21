@@ -127,6 +127,7 @@ class CommandMeta(BaseModel):
         description="the name of the command"
     )
     chan: str = Field(
+        default="",
         description="the channel name that the command belongs to"
     )
     description: str = Field(
@@ -214,15 +215,17 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     def __init__(
             self,
-            chan: str,
             func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
             *,
+            chan: str = "",
             name: Optional[str] = None,
             available: Callable[[], bool] | None = None,
             interface: Optional[StringType] = None,
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
             meta: Optional[CommandMeta] = None,
+            call_soon: bool = False,
+            block: bool = True,
     ):
         """
         :param func: origin coroutine function
@@ -247,6 +250,8 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._available_or_fn = available
         self._comments_or_fn = comments
         self._is_dynamic_itf = callable(interface) or callable(doc) or callable(available) or callable(comments)
+        self._call_soon = call_soon
+        self._block = block
         self._meta = meta
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters.keys():
@@ -267,12 +272,13 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             meta.available = self.is_available()
             return meta
 
-        meta = CommandMeta()
+        meta = CommandMeta(name=self._name)
         meta.description = self._unwrap_string_type(self._doc_or_fn, meta.description)
-        meta.name = meta.name or self._name
         meta.interface = self._gen_interface(meta.name, meta.description)
         meta.available = self.is_available()
         meta.delta_arg = self._delta_arg
+        meta.call_soon = self._call_soon
+        meta.block = self._block
 
         if not self._is_dynamic_itf:
             self._meta = meta
@@ -419,6 +425,16 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self._done_lock = threading.Lock()
         self._done = False
         self._awaits: List[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
+
+    @classmethod
+    def create(cls, command: Command[RESULT], tokens: str = "", *args, **kwargs) -> "BaseCommandTask[RESULT]":
+        return cls(
+            meta=command.meta(),
+            func=command.__call__,
+            tokens=tokens,
+            args=list(args),
+            kwargs=kwargs,
+        )
 
     def is_done(self) -> bool:
         """
