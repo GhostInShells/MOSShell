@@ -16,7 +16,7 @@ class OutputStream(ABC):
     """所有文本片段都有独立的全局唯一id, 通常是 command_part_id"""
 
     @abstractmethod
-    async def add(self, text: str, *, complete: bool = False) -> None:
+    def buffer(self, text: str, *, complete: bool = False) -> None:
         """
         添加文本片段到输出流里.
         由于文本可以通过 tts 生成语音, 而 tts 有独立的耗时, 所以通常一边解析 command token 一边 buffer 到 tts 中.
@@ -27,8 +27,11 @@ class OutputStream(ABC):
         """
         pass
 
+    def end(self) -> None:
+        self.buffer("", complete=True)
+
     @abstractmethod
-    async def play(self) -> None:
+    async def output_start(self) -> None:
         """
         允许文本片段开始播放. 这时可能文本片段本身都未生成完, 如果是流式的 tts, 则可以一边 buffer, 一边 tts, 一边播放. 三者并行.
         """
@@ -42,6 +45,10 @@ class OutputStream(ABC):
         pass
 
     @abstractmethod
+    def is_done(self) -> bool:
+        pass
+
+    @abstractmethod
     def as_command_task(self) -> Optional[CommandTask]:
         """
         将 wait done 转化为一个 command task.
@@ -49,15 +56,15 @@ class OutputStream(ABC):
         """
         pass
 
-    # 一个使用的示例.
+    @abstractmethod
+    async def stop(self):
+        pass
 
-    async def __aenter__(self) -> Self:
-        await self.play()
+    def __enter__(self):
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.add("", complete=True)
-        await self.wait_done()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end()
 
 
 class Output(ABC):
@@ -73,7 +80,7 @@ class Output(ABC):
         pass
 
     @abstractmethod
-    def clear(self) -> None:
+    def clear(self) -> List[str]:
         """
         清空所有输出中的 output
         """
@@ -181,7 +188,7 @@ class ShellRuntime(ABC):
         pass
 
     @abstractmethod
-    def interpret(self, kind: Literal['clear', 'defer_clear', 'try'] = "clear") -> AsyncInterpreter:
+    def interpret(self, kind: Literal['clear', 'defer_clear', 'try'] = "clear") -> None:
         pass
 
     @abstractmethod

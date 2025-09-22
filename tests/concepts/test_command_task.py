@@ -67,7 +67,7 @@ async def test_command_task_in_parallel_tasks():
 
     command = PyCommand(foo)
     task = BaseCommandTask.from_command(command, tokens="<foo />")
-    run_task = task.create_task()
+    run_task = asyncio.create_task(task.run())
 
     awaits_tasks = []
     for i in range(10):

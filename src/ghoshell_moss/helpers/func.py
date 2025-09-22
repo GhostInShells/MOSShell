@@ -40,7 +40,10 @@ def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dic
                         # 支持 dict 和 list 的 python 风格默认转换.
                         # 理论上 Command Token 的协议需要先设计好转换.
                         value = literal_eval(value)
-                bound_args.arguments[name] = param.annotation(value)
+                if callable(param.annotation):
+                    bound_args.arguments[name] = param.annotation(value)
+                else:
+                    bound_args.arguments[name] = value
             except (TypeError, ValueError) as e:
                 raise ValueError(f"argument {name} with annotation {param.annotation} is invalid: {e}")
     return bound_args.arguments

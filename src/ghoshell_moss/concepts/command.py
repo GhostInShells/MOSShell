@@ -406,6 +406,29 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
+    async def run(self) -> RESULT:
+        """典型的案例如何使用一个 command task """
+        try:
+            result_task = asyncio.create_task(self.func(*self.args, **self.kwargs))
+            wait_task = asyncio.create_task(self.wait())
+            for done in asyncio.as_completed([result_task, wait_task]):
+                if done is wait_task:
+                    result_task.cancel()
+                    break
+
+            r = await result_task
+            self.resolve(r)
+            return r
+        except asyncio.CancelledError as e:
+            self.cancel(reason=str(e))
+            raise e
+        except Exception as e:
+            self.fail(e)
+            raise e
+        finally:
+            if not self.is_done():
+                self.cancel()
+
 
 class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
@@ -521,33 +544,6 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             raise asyncio.CancelledError(self.errmsg)
         else:
             raise CommandError(self.errcode, self.errmsg or "")
-
-    def create_task(self) -> asyncio.Task:
-        """主要用于测试的方法. 最好不要直接封装到这一层. """
-        return asyncio.create_task(self.run())
-
-    async def run(self) -> RESULT:
-        """典型的案例如何使用一个 command task """
-        try:
-            result_task = asyncio.create_task(self.func(*self.args, **self.kwargs))
-            wait_task = asyncio.create_task(self.wait())
-            for done in asyncio.as_completed([result_task, wait_task]):
-                if done is wait_task:
-                    result_task.cancel()
-                    break
-
-            r = await result_task
-            self.resolve(r)
-            return r
-        except asyncio.CancelledError as e:
-            self.cancel(reason=str(e))
-            raise e
-        except Exception as e:
-            self.fail(e)
-            raise e
-        finally:
-            if not self.is_done():
-                self.cancel()
 
     async def wait(
             self,

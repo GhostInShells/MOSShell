@@ -264,7 +264,7 @@ class NoDeltaCommandTaskElement(BaseCommandTaskElement):
         else:
             _output_stream = self._output_stream
         # 增加新的 stream delta
-        _output_stream.add(token.content)
+        _output_stream.buffer(token.content)
         self._output_stream = _output_stream
 
     def _on_self_start(self) -> None:
