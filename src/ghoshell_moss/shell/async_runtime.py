@@ -242,7 +242,7 @@ class ChannelTask:
         # cmd task may be canceled outside the loop
         running_task = self._loop.create_task(command(*cmd_task.args, **cmd_task.kwargs))
         done, pending = await asyncio.wait(
-            [running_task, cmd_task.wait_done()],
+            [running_task, cmd_task.wait()],
             return_when=asyncio.FIRST_COMPLETED,
         )
         if running_task not in done:

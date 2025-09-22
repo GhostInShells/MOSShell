@@ -199,7 +199,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
 
             running_task = asyncio.create_task(command(*cmd_task.args, **cmd_task.kwargs))
             done, pending = await asyncio.wait(
-                [running_task, cmd_task.wait_done()],
+                [running_task, cmd_task.wait()],
                 return_when=asyncio.FIRST_EXCEPTION,
             )
             if running_task not in done:

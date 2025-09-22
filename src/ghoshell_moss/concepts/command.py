@@ -5,6 +5,7 @@ from typing import (
     TypedDict, Literal, Optional, Dict, Any, Awaitable, List, Generic, TypeVar, Tuple, Callable, Coroutine, Union,
     is_typeddict, Protocol, Iterable,
 )
+from typing_extensions import Self
 from ghoshell_common.helpers import uuid, generate_import_path
 from ghoshell_moss.helpers.func import parse_function_interface, awaitable_caller, unwrap_callable_or_value
 from .errors import CommandError
@@ -15,7 +16,19 @@ import time
 
 RESULT = TypeVar("RESULT")
 
-CommandState = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
+CommandTaskStateType = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
+
+
+class CommandTaskState(str, Enum):
+    CREATED = "created"
+    QUEUED = "queued"
+    PENDING = "pending"
+    RUNNING = "running"
+    FAILED = "failed"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
 StringType = Union[str, Callable[[], str]]
 
 
@@ -329,10 +342,10 @@ class CommandTask(Generic[RESULT], ABC):
     tokens: str
     args: List
     kwargs: Dict[str, Any]
-    state: CommandState
+    state: CommandTaskStateType
     errcode: int = 0
     errmsg: Optional[str] = None
-    trace: Dict[CommandState, float] = {}
+    trace: Dict[CommandTaskStateType, float] = {}
     result: Optional[RESULT] = None
     meta: CommandMeta
     func: Callable[..., Coroutine[None, None, RESULT]]
@@ -351,7 +364,7 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
-    def set_state(self, state: CommandState) -> None:
+    def set_state(self, state: CommandTaskStateType) -> None:
         """
         set the state of the command with time
         """
@@ -373,7 +386,7 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
-    async def wait_done(
+    async def wait(
             self,
             *,
             throw: bool = False,
@@ -387,7 +400,7 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
-    def wait(self, *, throw: bool = False, timeout: float | None = None) -> Optional[RESULT]:
+    def wait_sync(self, *, throw: bool = False, timeout: float | None = None) -> Optional[RESULT]:
         """
         wait the command to be done in the current thread (blocking). thread-safe.
         """
@@ -414,12 +427,14 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.tokens: str = tokens
         self.args: List = list(args)
         self.kwargs: Dict[str, Any] = kwargs
-        self.state: CommandState = "created"
+        self.state: CommandTaskStateType = "created"
         self.meta = meta
         self.func = func
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
-        self.trace: Dict[CommandState, float] = {}
+        self.trace: Dict[CommandTaskStateType, float] = {
+            "created": time.time(),
+        }
         self.result: Optional[RESULT] = None
         self._done_event: threading.Event = threading.Event()
         self._done_lock = threading.Lock()
@@ -427,7 +442,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self._awaits: List[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
 
     @classmethod
-    def create(cls, command: Command[RESULT], tokens: str = "", *args, **kwargs) -> "BaseCommandTask[RESULT]":
+    def from_command(cls, command: Command[RESULT], tokens: str = "", *args, **kwargs) -> "BaseCommandTask":
         return cls(
             meta=command.meta(),
             func=command.__call__,
@@ -455,7 +470,13 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             else:
                 self._awaits.append((loop, event))
 
-    def _set_result(self, result: Optional[RESULT], state: CommandState, errcode: int, errmsg: Optional[str]) -> bool:
+    def _set_result(
+            self,
+            result: Optional[RESULT],
+            state: CommandTaskStateType,
+            errcode: int,
+            errmsg: Optional[str],
+    ) -> bool:
         with self._done_lock:
             if self._done_event.is_set():
                 return False
@@ -487,8 +508,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             else:
                 errcode = 0
                 errmsg = ""
-            self._set_result(None, errcode, errmsg)
-            self.set_state("failed")
+            self._set_result(None, "failed", errcode, errmsg)
 
     def resolve(self, result: RESULT) -> None:
         if not self._done_event.is_set():
@@ -502,7 +522,34 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         else:
             raise CommandError(self.errcode, self.errmsg or "")
 
-    async def wait_done(
+    def create_task(self) -> asyncio.Task:
+        """主要用于测试的方法. 最好不要直接封装到这一层. """
+        return asyncio.create_task(self.run())
+
+    async def run(self) -> RESULT:
+        """典型的案例如何使用一个 command task """
+        try:
+            result_task = asyncio.create_task(self.func(*self.args, **self.kwargs))
+            wait_task = asyncio.create_task(self.wait())
+            for done in asyncio.as_completed([result_task, wait_task]):
+                if done is wait_task:
+                    result_task.cancel()
+                    break
+
+            r = await result_task
+            self.resolve(r)
+            return r
+        except asyncio.CancelledError as e:
+            self.cancel(reason=str(e))
+            raise e
+        except Exception as e:
+            self.fail(e)
+            raise e
+        finally:
+            if not self.is_done():
+                self.cancel()
+
+    async def wait(
             self,
             *,
             throw: bool = False,
@@ -526,7 +573,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.raise_error()
         return self.result
 
-    def wait(self, *, throw: bool = False, timeout: float | None = None) -> Optional[RESULT]:
+    def wait_sync(self, *, throw: bool = False, timeout: float | None = None) -> Optional[RESULT]:
         """
         线程的 wait.
         """
@@ -553,7 +600,7 @@ class WaitDoneTask(BaseCommandTask):
         )
 
         async def wait_done() -> Optional[RESULT]:
-            await asyncio.gather(*[t.wait_done() for t in tasks])
+            await asyncio.gather(*[t.wait() for t in tasks])
             if after is not None:
                 return await after()
             return None
@@ -589,11 +636,11 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
         async def wait_done_then_cancel() -> Optional[None]:
             waiting = list(tasks)
             if not current.is_done() and len(waiting) > 0:
-                await asyncio.gather(*[t.wait_done() for t in tasks])
+                await asyncio.gather(*[t.wait() for t in tasks])
             if not current.is_done():
                 # todo
                 current.cancel()
-                await current.wait_done()
+                await current.wait()
 
         super().__init__(
             meta=meta,
