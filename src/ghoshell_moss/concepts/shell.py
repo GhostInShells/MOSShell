@@ -230,7 +230,7 @@ class ShellRuntime(ABC):
 
 class MOSSShell(ABC):
     """
-    Model-oriented Operating System Shell
+    Model-Operated System Shell
     面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
     """
 

@@ -1,7 +1,6 @@
-import threading
-from .command import CommandToken, CommandTask, CommandMeta
+from ghoshell_moss.concepts.command import CommandToken, CommandTask
 from abc import ABC, abstractmethod
-from typing import Iterable, Callable, Optional, Coroutine, List, Dict
+from typing import Iterable, Callable, Optional, Dict
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
@@ -69,6 +68,7 @@ class CommandTokenParser(ABC):
 
     @abstractmethod
     def parsed(self) -> Iterable[CommandToken]:
+        """返回已经生成的 command token"""
         pass
 
     def __enter__(self):
@@ -106,58 +106,26 @@ class CommandTaskElement(ABC):
 
     @abstractmethod
     def with_callback(self, callback: CommandTaskCallback) -> None:
+        """设置一个 callback, 替换默认的 callback. 通常不需要使用."""
         pass
 
     @abstractmethod
     def on_token(self, token: CommandToken | None) -> None:
+        """
+        接受一个 command token
+        :param token: 如果为 None, 表示 command token 流已经结束.
+        """
         pass
 
     @abstractmethod
     def is_end(self) -> bool:
+        """是否解析已经完成了. """
         pass
 
     @abstractmethod
     def destroy(self) -> None:
+        """手动清理数据结构, 加快垃圾回收, 避免内存泄漏"""
         pass
-
-
-class CommandTaskParser(ABC):
-
-    @abstractmethod
-    def with_callback(self, callback: Callable[[CommandTask], None]):
-        """
-        send parsed command task to callback method
-        """
-        pass
-
-    @abstractmethod
-    def start(self) -> None:
-        pass
-
-    @abstractmethod
-    def parse(self, *tokens: CommandToken) -> None:
-        """
-        parse command tokens into command tasks
-        """
-        pass
-
-    @abstractmethod
-    def stop(self) -> None:
-        pass
-
-    @abstractmethod
-    def parsed(self) -> Iterable[CommandTask]:
-        """
-        parsed command tasks in order
-        """
-        pass
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
 
 
 class Interpreter(ABC):
@@ -169,11 +137,90 @@ class Interpreter(ABC):
     """
 
     id: str
-    """each time interpretation has a unique id with a stream"""
+    """each time stream interpretation has a unique id"""
+
+    @abstractmethod
+    async def feed(self, delta: str) -> None:
+        """
+        向 interpreter 提交文本片段, 会自动触发其它流程.
+
+        example:
+        async with interpreter:
+            async for item in async_iterable_texts:
+                interpreter.feed(item)
+        """
+        pass
+
+    @abstractmethod
+    def parser(self) -> CommandTokenParser:
+        """
+        interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
+
+        example:
+        with interpreter.parser() as parser:
+            async for item in async_iterable_texts:
+            paser.feed(item)
+        注意 Parser 是同步阻塞的, 因此正确的做法是使用 interpreter 自带的 feed 函数实现非阻塞.
+        通常 parser 运行在独立的线程池中.
+        """
+        pass
+
+    @abstractmethod
+    def root_task_element(self) -> CommandTaskElement:
+        """
+        当前 Interpreter 做树形 Command Token 解析时使用的 Element 对象. debug 用.
+        通常运行在独立的线程池中.
+        """
+        pass
+
+    @abstractmethod
+    def parsed_tokens(self) -> Iterable[CommandToken]:
+        """
+        已经解析生成的 tokens.
+        """
+        pass
+
+    @abstractmethod
+    def parsed_tasks(self) -> Iterable[CommandTask]:
+        """
+        已经解析生成的 tasks.
+        """
+        pass
+
+    @abstractmethod
+    def outputted(self) -> Iterable[str]:
+        """已经对外输出的文本内容. """
+        pass
+
+    @abstractmethod
+    def results(self) -> Dict[str, str]:
+        """
+        将所有已经执行完的 task 的 result 作为有序的字符串字典输出
+
+        :return: key is the task name and attrs, value is the result or error of the command
+                 if command task return None, ignore the result of it.
+        """
+        pass
+
+    @abstractmethod
+    def executed(self) -> str:
+        """
+        返回已经被执行的 tokens.
+        """
+        pass
+
+    @abstractmethod
+    def input_text(self) -> str:
+        """
+        返回已经完成输入的文本内容. 必须通过 feed 输入.
+        """
+        pass
 
     @abstractmethod
     async def start(self) -> None:
         """
+        启动解释过程.
+
         start the interpretation, allowed to push the tokens.
         """
         pass
@@ -181,7 +228,23 @@ class Interpreter(ABC):
     @abstractmethod
     async def stop(self) -> None:
         """
+        中断解释过程. 有可能由其它的并行任务来触发, 触发后 feed 不会抛出异常.
+
         stop the interpretation and cancel all the running tasks.
+        """
+        pass
+
+    @abstractmethod
+    def is_stopped(self) -> bool:
+        """
+        判断解释过程是否还在执行中.
+        """
+        pass
+
+    @abstractmethod
+    def is_interrupted(self) -> bool:
+        """
+        解释过程是否被中断.
         """
         pass
 
@@ -191,10 +254,14 @@ class Interpreter(ABC):
 
         async with interpreter as itp:
             # the interpreter started
-            itp.put(text)
-            itp.wait_until_done()
-            # exit the interpretation
+            async for item in async_iterable_texts:
+                # 判断是否被中断. 如果被中断可以 break.
+                if not itp.is_stopped():
+                    itp.feed(item)
 
+            await itp.wait_until_done()
+
+        result = itp.results()
         """
         await self.start()
         return self
@@ -205,8 +272,19 @@ class Interpreter(ABC):
     @abstractmethod
     async def wait_until_done(self) -> bool:
         """
+        等待解释过程完成. 完成有两种情况:
+        1. 输入已经完备.
+        2. 被中断.
+
         wait until the interpretation of command tasks are done (finish, failed or cancelled).
         :return: True if the interpretation is fully finished.
+        """
+        pass
+
+    @abstractmethod
+    def destroy(self) -> None:
+        """
+        为了防止内存泄漏, 增加一个手动清空的方法.
         """
         pass
 

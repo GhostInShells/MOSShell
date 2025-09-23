@@ -1,6 +1,6 @@
 # MOSShell
 
-`MOSShell` (Model-oriented Operating System Shell) is a Bash-like shell not for humans, but for AI models:
+`MOSShell` (Model-Operated System Shell) is a Bash-like shell not for humans, but for AI models:
 a dedicated runtime that translates model reasoning into structured,
 executable commands for real-time tool and robot coordination.
 
