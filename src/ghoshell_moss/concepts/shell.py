@@ -27,18 +27,18 @@ class OutputStream(ABC):
         """
         pass
 
-    def end(self) -> None:
+    def commit(self) -> None:
         self.buffer("", complete=True)
 
     @abstractmethod
-    async def output_start(self) -> None:
+    def output_start(self) -> None:
         """
         允许文本片段开始播放. 这时可能文本片段本身都未生成完, 如果是流式的 tts, 则可以一边 buffer, 一边 tts, 一边播放. 三者并行.
         """
         pass
 
     @abstractmethod
-    async def wait_done(self, timeout: float | None = None) -> None:
+    def wait_done(self, timeout: float | None = None) -> None:
         """
         阻塞等待到文本输出完毕. 当文本输出是一个独立的模块时, 需要依赖这个函数实现阻塞.
         """
@@ -49,7 +49,7 @@ class OutputStream(ABC):
         pass
 
     @abstractmethod
-    def as_command_task(self) -> Optional[CommandTask]:
+    def as_command_task(self, commit: bool = False) -> Optional[CommandTask]:
         """
         将 wait done 转化为一个 command task.
         这个 command task 通常在主轨 (channel name == "") 中运行.
@@ -57,14 +57,8 @@ class OutputStream(ABC):
         pass
 
     @abstractmethod
-    async def stop(self):
+    def close(self):
         pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.end()
 
 
 class Output(ABC):

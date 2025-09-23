@@ -128,7 +128,7 @@ class TopicBaseModel(BaseModel, ABC):
 RESP = TypeVar("RESP", bound=TopicModel)
 
 
-class ReqTopicModel(Generic[RESP], TopicBaseModel, ABC):
+class ReqTopicModel(TopicBaseModel, Generic[RESP], ABC):
     """
     请求性质的 Topic. 它通常必须对应一个返回结果.
     """

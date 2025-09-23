@@ -8,7 +8,7 @@ class State(BaseModel):
     version: str = Field(default="", description="state version, Optimistic Lock")
     name: str = Field(description="The name of the state object.")
     description: str = Field(default="", description="The description of the state object.")
-    schema: Dict[str, Any] = Field(description="the json schema of the state")
+    json_schema: Dict[str, Any] = Field(description="the json schema of the state")
     data: Dict[str, Any] = Field(description="the default value of the state")
 
 
@@ -27,7 +27,7 @@ class StateModel(BaseModel, ABC):
         description = cls.state_desc or cls.__doc__ or ""
         default = cls().model_dump()
         schema = cls.model_json_schema()
-        return State(name=name, description=description, schema=schema, default=default)
+        return State(name=name, description=description, json_schema=schema, default=default)
 
 
 class StateStore(ABC):

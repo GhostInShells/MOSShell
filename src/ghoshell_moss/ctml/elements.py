@@ -33,7 +33,7 @@ class CommandTaskElementContext:
         """
         创建解析树的根节点.
         """
-        return NoDeltaCommandTaskElement(
+        return EmptyCommandTaskElement(
             cid=stream_id,
             current_task=None,
             callback=callback,
@@ -112,7 +112,7 @@ class BaseCommandTaskElement(CommandTaskElement, ABC):
             # otherwise let the unclose child to handle the token
             self._unclose_child.on_token(token)
             # 如果未结束的子节点已经运行结束, 则应该将子节点摘掉.
-            if self._unclose_child.is_end:
+            if self._unclose_child.is_end():
                 self._unclose_child = None
             return
 
@@ -154,7 +154,7 @@ class BaseCommandTaskElement(CommandTaskElement, ABC):
 
         command = self.ctx.commands.get(token.name, None)
         if command is None:
-            child = BaseCommandTaskElement(
+            child = EmptyCommandTaskElement(
                 cid=token.command_id(),
                 current_task=None,
                 callback=self._callback,
@@ -254,10 +254,7 @@ class NoDeltaCommandTaskElement(BaseCommandTaskElement):
             # 不是相同的 command part id, 则需要创建一个新的流, 这样可以分段感知到每一段 output 是否已经执行完了.
             # 核心目标是, 当一个较长的 output 流被 command 分割成多段的话, 每一段都可以阻塞, 同时却可以提前生成 tts.
             # 这样生成 tts 的过程 add(token.content) 并不会被阻塞.
-            task = self._output_stream.as_command_task()
-            self._send_callback(task)
-            # 于是新建一个 output stream.
-            self._output_stream = None
+            self._clear_output_stream()
             _output_stream = self.ctx.output.new_stream(
                 batch_id=token.command_part_id(),
             )
@@ -278,15 +275,12 @@ class NoDeltaCommandTaskElement(BaseCommandTaskElement):
             raise CommandTaskParseError(
                 f"Start new child command {token} within unclosed command {self._unclose_child}"
             )
-        elif self._output_stream is not None:
-            # 结束未完成的 output 流.
-            task = self._output_stream.as_command_task()
-            self._send_callback(task)
-            self._output_stream = None
-
+        self._clear_output_stream()
         self._new_child_element(token)
+        assert self._unclose_child is not None
 
     def _on_cmd_end_token(self, token: CommandToken):
+        self._clear_output_stream()
         if self._unclose_child is not None:
             # 让子节点去处理.
             self._unclose_child.on_token(token)
@@ -296,34 +290,45 @@ class NoDeltaCommandTaskElement(BaseCommandTaskElement):
             return
         elif token.command_id() != self.cid:
             # 自己来处理这个 token, 但 command id 不一致的情况.
-            raise CommandTaskParseError("end current task with invalid command id")
+            raise CommandTaskParseError(
+                f"end current task {self._current_task} with invalid command id {token.command_id()}",
+            )
         else:
             # 结束自身.
             self._on_self_end()
-            self._end = True
 
-    def _on_self_end(self) -> None:
+    def _clear_output_stream(self) -> None:
         if self._output_stream is not None:
             # 发送未发送的 output stream.
+            self._output_stream.commit()
             output_stream_task = self._output_stream.as_command_task()
             self._send_callback(output_stream_task)
             self._output_stream = None
 
+    def _on_self_end(self) -> None:
+        self._end = True
+        if self._current_task is None:
+            return
         if len(self._children_tasks) > 0:
             cancel_after_children_task = CancelAfterOthersTask(
-                self.current,
+                self._current_task,
                 *self._children_tasks,
                 tokens=f"</{self._current_task.meta.name}>",
             )
             # 等待所有 children tasks 完成, 如果自身还未完成, 则取消.
             self._send_callback(cancel_after_children_task)
-        elif self.current is not None:
+        else:
             # 按照 ctml 的规则, 修改规则.
             self._current_task.tokens = CMTLElement.make_start_mark(
                 name=self._current_task.meta.name,
                 attrs=self._current_task.kwargs,
                 self_close=True,
             )
+
+    def destroy(self) -> None:
+        super().destroy()
+        if self._output_stream is not None:
+            self._output_stream.close()
 
 
 class DeltaTypeIsTokensCommandTaskElement(BaseCommandTaskElement):
@@ -359,6 +364,10 @@ class DeltaTypeIsTokensCommandTaskElement(BaseCommandTaskElement):
         else:
             self._token_sender.end()
             self._end = True
+
+
+class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
+    pass
 
 
 class DeltaIsTextCommandTaskElement(BaseCommandTaskElement):

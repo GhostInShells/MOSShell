@@ -1,9 +1,9 @@
 import threading
 
 from ghoshell_moss.concepts.command import PyCommand, BaseCommandTask, CommandTaskState
+from ghoshell_moss.concepts.errors import CommandError
 import pytest
 import asyncio
-import time
 
 
 @pytest.mark.asyncio
@@ -14,7 +14,7 @@ async def test_command_task_baseline():
     command = PyCommand(foo)
 
     # from command create a basic command task
-    task = BaseCommandTask.from_command(command, tokens="<foo />")
+    task = BaseCommandTask.from_command(command, tokens_="<foo />")
 
     await task.run()
 
@@ -32,7 +32,7 @@ def test_command_task_in_multi_thread():
         return 123
 
     command = PyCommand(foo)
-    task = BaseCommandTask.from_command(command, tokens="<foo />")
+    task = BaseCommandTask.from_command(command, tokens_="<foo />")
 
     def thread_1():
         asyncio.run(task.run())
@@ -66,7 +66,7 @@ async def test_command_task_in_parallel_tasks():
         return 123
 
     command = PyCommand(foo)
-    task = BaseCommandTask.from_command(command, tokens="<foo />")
+    task = BaseCommandTask.from_command(command, tokens_="<foo />")
     run_task = asyncio.create_task(task.run())
 
     awaits_tasks = []
@@ -78,3 +78,22 @@ async def test_command_task_in_parallel_tasks():
     assert len(done) == 11
     for r in done:
         assert r == 123
+
+
+@pytest.mark.asyncio
+async def test_command_task_cancel():
+    async def foo() -> int:
+        await asyncio.sleep(0.1)
+        return 123
+
+    command = PyCommand(foo)
+    task = BaseCommandTask.from_command(command, tokens_="<foo />")
+    task.cancel("test")
+    assert task.is_done()
+    with pytest.raises(CommandError):
+        await task.run()
+
+    task2 = task.copy()
+    # cancel come first
+    await asyncio.gather(asyncio.to_thread(task2.cancel), task2.wait(throw=False))
+    assert task2.errcode == CommandError.CANCEL_CODE

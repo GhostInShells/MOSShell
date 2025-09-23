@@ -6,19 +6,21 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_output_baseline():
-    async def buffer_stream(_stream: OutputStream, idx: int):
-        with stream:
-            for c in content:
-                stream.buffer(c)
-            # add a tail at the output end
-            stream.buffer(str(idx))
+async def test_output_in_asyncio():
+    content = "hello world"
+
+    async def buffer_stream(_stream: OutputStream, idx_: int):
+        for c in content:
+            _stream.buffer(c)
+        # add a tail at the output end
+        _stream.buffer(str(idx_))
+        _stream.commit()
 
     output = ArrOutput()
-    content = "hello world"
     for i in range(5):
-        stream = output.new_stream(batch_id=str(i))
         idx = i
+        stream = output.new_stream(batch_id=str(idx))
+        stream = stream
         sending_task = asyncio.create_task(buffer_stream(stream, idx))
 
         # assert the tasks run in order

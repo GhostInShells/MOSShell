@@ -5,7 +5,11 @@ class FatalError(Exception):
 class InterpretError(Exception):
     pass
 
+
 class CommandError(Exception):
+
+    CANCEL_CODE = 10010
+    UNKNOWN_CODE = -1
 
     def __init__(self, code: int, message: str):
         self.code = code

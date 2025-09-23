@@ -12,6 +12,10 @@ class CommandTokenParseError(Exception):
     pass
 
 
+class CommandTaskParseError(Exception):
+    pass
+
+
 class CommandTokenParser(ABC):
     """
     parse from string stream into command tokens
