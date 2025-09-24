@@ -9,6 +9,7 @@ from ghoshell_moss.concepts.command import CommandToken
 from ghoshell_moss.concepts.interpreter import CommandTokenParser, CommandTokenParseError
 from ghoshell_moss.concepts.errors import FatalError
 from ghoshell_moss.helpers.token_filters import SpecialTokenMatcher
+from ghoshell_moss.helpers.event import ThreadSafeEvent
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
 
@@ -191,9 +192,13 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self.done_event.set()
 
     def error(self, exception: Exception):
+        if isinstance(exception, ParserStopped):
+            return
         self._logger.exception(exception)
 
     def fatalError(self, exception: Exception):
+        if isinstance(exception, ParserStopped):
+            return
         self._logger.exception(exception)
         if self.done_event.is_set():
             return None
@@ -216,11 +221,13 @@ class CTMLTokenParser(CommandTokenParser):
             stream_id: str = "",
             *,
             root_tag: str = "ctml",
+            stop_event: Optional[ThreadSafeEvent] = None,
             logger: Optional[logging.Logger] = None,
             special_tokens: Optional[Dict[str, str]] = None,
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("CTMLParser")
+        self._stop_event = stop_event or ThreadSafeEvent()
         self._callback = callback
         self._buffer = ""
         self._parsed: List[CommandToken] = []
@@ -240,7 +247,7 @@ class CTMLTokenParser(CommandTokenParser):
         self._special_tokens_matcher = SpecialTokenMatcher(special_tokens)
 
     def is_running(self) -> bool:
-        return self._started and not self._stopped and not self._ended
+        return self._started and not self._stopped and not self._ended and not self._stop_event.is_set()
 
     def parsed(self) -> Iterable[CommandToken]:
         return self._parsed
@@ -264,14 +271,12 @@ class CTMLTokenParser(CommandTokenParser):
         self._sax_parser.feed(f'<{self.root_tag}>')
 
     def feed(self, delta: str) -> None:
-        if self._stopped:
-            raise ParserStopped()
-        elif self.is_running():
+        if self.is_running():
             self._buffer += delta
             parsed = self._special_tokens_matcher.buffer(delta)
             self._sax_parser.feed(parsed)
         else:
-            return
+            raise ParserStopped()
 
     def end(self) -> None:
         if not self.is_running():
@@ -280,7 +285,8 @@ class CTMLTokenParser(CommandTokenParser):
             return
         self._ended = True
         last_buffer = self._special_tokens_matcher.clear()
-        self._sax_parser.feed(f'{last_buffer}</{self.root_tag}>')
+        end_of_the_inputs = f'{last_buffer}</{self.root_tag}>'
+        self._sax_parser.feed(end_of_the_inputs)
 
     def stop(self) -> None:
         """

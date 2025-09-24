@@ -46,6 +46,7 @@ class CTMLInterpreter(Interpreter):
             stream_id=self.id,
             root_tag=root_tag,
             special_tokens=special_tokens,
+            stop_event=self._stopped_event,
         )
         self._parsed_tokens = []
         self._input_deltas_queue: queue.Queue[str | None] = queue.Queue()
