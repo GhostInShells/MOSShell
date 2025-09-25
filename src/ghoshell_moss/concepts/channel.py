@@ -1,12 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import (
-    Iterable, Optional, Union, Callable, Coroutine, List, Type, TypeVar, Dict, ClassVar, Any,
-    AsyncIterable, Protocol, TYPE_CHECKING,
+    Iterable, Optional, Union, Callable, Coroutine, List, Type, TypeVar, Dict, Any,
+    Protocol,
 )
 from typing_extensions import Self
-from .command import Command, CommandMeta, CommandType
-from .states import StateStore, State
-from .topics import Topics
+from .command import Command, CommandMeta
 from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING
 from pydantic import BaseModel, Field
 
@@ -321,7 +319,7 @@ class Channel(ABC):
 
     @property
     @abstractmethod
-    def builder(self) -> Builder:
+    def build(self) -> Builder:
         """
         用来快速包装各种函数.
         """

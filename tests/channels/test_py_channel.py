@@ -5,28 +5,28 @@ import pytest
 chan = PyChannel(name="test")
 
 
-@chan.builder.command()
+@chan.build.command()
 def add(a: int, b: int) -> int:
     """测试一个同步函数是否能正确被调用. """
     return a + b
 
 
-@chan.builder.with_description()
+@chan.build.with_description()
 def desc() -> str:
     return "hello world"
 
 
-@chan.builder.command()
+@chan.build.command()
 async def foo() -> int:
     return 9527
 
 
-@chan.builder.command()
+@chan.build.command()
 async def bar(text: str) -> str:
     return text
 
 
-@chan.builder.command(name="help")
+@chan.build.command(name="help")
 async def some_command_name_will_be_changed_helplessly() -> str:
     return "help"
 
@@ -42,7 +42,7 @@ class Available:
 available_mutator = Available()
 
 
-@chan.builder.command(available=available_mutator.get)
+@chan.build.command(available=available_mutator.get)
 async def available_test_fn() -> int:
     return 123
 

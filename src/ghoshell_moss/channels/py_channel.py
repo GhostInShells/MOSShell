@@ -182,7 +182,7 @@ class PyChannel(Channel):
         return self._controller
 
     @property
-    def builder(self) -> Builder:
+    def build(self) -> Builder:
         return self._builder
 
 
