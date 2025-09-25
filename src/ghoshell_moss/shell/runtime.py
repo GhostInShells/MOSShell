@@ -57,8 +57,9 @@ class ChannelRuntimeImpl(ChannelRuntime):
         # 是否是 defer clear 状态.
         self._defer_clear: bool = False
 
-        # 运行时状态.
+        # 运行中的 task group, 方便整体 cancel. 由于版本控制在 3.10, 暂时无法使用 asyncio 的 TaskGroup.
         self._executing_task_group: Optional[TaskGroup] = None
+        self._executing_block_task: bool = False
 
     async def get_child(self, name: str) -> Optional["ChannelRuntime"]:
         # 检查是否已经启动了.
@@ -238,6 +239,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
                 self._executing_task_group.start_soon(self._execute_single_task, cmd_task)
             else:
                 # 用 task group 启动, 方便统一中断.
+                self._executing_block_task = True
                 await self._executing_task_group.start(self._execute_task_in_stack, cmd_task, blocking)
 
         except asyncio.CancelledError:
@@ -253,6 +255,9 @@ class ChannelRuntimeImpl(ChannelRuntime):
         except Exception as e:
             # 没有到 Fatal Error 级别的都忽视.
             self.logger.exception(e)
+        finally:
+            if blocking:
+                self._executing_block_task = False
 
     async def _execute_task_in_stack(self, task: CommandTask) -> None:
         try:
@@ -490,7 +495,4 @@ class ChannelRuntimeImpl(ChannelRuntime):
             self._executing_task_group.cancel_scope.cancel()
 
     def _is_self_busy(self) -> bool:
-        raise NotImplementedError
-
-    async def wait_idle(self, timeout: float | None = None) -> bool:
-        raise NotImplementedError
+        return len(self._pending_command_task_queue) > 0 or self._executing_block_task

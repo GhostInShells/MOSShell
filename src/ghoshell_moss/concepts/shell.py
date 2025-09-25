@@ -146,14 +146,6 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    async def wait_idle(self, timeout: float | None = None) -> bool:
-        """
-        等待到闲时为止.
-        timeout 会返回当前是否是闲时的值, 而不会抛出异常.
-        """
-        pass
-
-    @abstractmethod
     async def get_child(self, name: str) -> "ChannelRuntime":
         """
         获取子 channel 的 runtime.
