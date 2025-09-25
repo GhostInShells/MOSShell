@@ -54,7 +54,7 @@ class ThreadSafeEvent:
                     raise asyncio.TimeoutError(f"wait timeout after: {timeout}")
 
             # 测试未到时间直接结束.
-            await asyncio.gather(wait_task, cancel_when_timeout(), return_exceptions=True)
+            await asyncio.gather(wait_task, cancel_when_timeout())
 
     def clear(self) -> None:
         self.thread_event.clear()

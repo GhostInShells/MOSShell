@@ -41,4 +41,4 @@ def test_event_set_and_wait():
 async def test_wait_timeout():
     event = ThreadSafeEvent()
     with pytest.raises(asyncio.TimeoutError):
-        await event.wait_until_timeout(0.1)
+        await event.wait_until_timeout(0.2)

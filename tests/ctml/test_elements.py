@@ -1,4 +1,4 @@
-from typing import Iterable
+from typing import Iterable, List
 import pytest
 
 from ghoshell_moss.ctml.token_parser import CTMLTokenParser
@@ -143,7 +143,7 @@ async def test_parse_and_execute_in_parallel():
         return a
 
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
-    _queue = asyncio.Queue()
+    _queue: asyncio.Queue[BaseCommandTask | None] = asyncio.Queue()
     # 所有的 command task 都会发送给这个 queue
     suite.root.with_callback(_queue.put_nowait)
 
@@ -164,7 +164,7 @@ async def test_parse_and_execute_in_parallel():
                 # 也是测试循环是否被打破了.
                 break
             else:
-                tasks.append(asyncio.create_task(task.start()))
+                tasks.append(task.run())
 
         # 让 results 来承接所有 task 的返回值.
         results.extend(await asyncio.gather(*tasks))
@@ -173,7 +173,7 @@ async def test_parse_and_execute_in_parallel():
         asyncio.to_thread(producer),
         asyncio.create_task(consumer()),
     ]
-    await asyncio.gather(*main_tasks, return_exceptions=True)
+    await asyncio.gather(*main_tasks)
 
     # suite.queue 被 _queue 夺舍了.
     assert len(suite.queue) == 0
