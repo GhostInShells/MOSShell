@@ -156,7 +156,7 @@ class CTMLInterpreter(Interpreter):
                         # check every 0.1 second if the loop is stopped.
                         item = self._input_deltas_queue.get(block=True, timeout=0.1)
                         if item is None:
-                            self._parser.end()
+                            self._parser.commit()
                             break
                         self._parser.feed(item)
                     except queue.Empty:
@@ -223,7 +223,7 @@ class CTMLInterpreter(Interpreter):
     def is_interrupted(self) -> bool:
         return self._interrupted
 
-    async def wait_until_done(self) -> None:
+    async def wait_parse_done(self) -> None:
         if not self._started:
             return
         self.commit()

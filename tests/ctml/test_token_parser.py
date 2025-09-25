@@ -13,10 +13,12 @@ def test_token_parser_baseline():
         assert parser.is_running()
         for c in content:
             parser.feed(c)
-        parser.end()
+        parser.commit()
     assert not parser.is_running()
     assert parser.is_done()
     assert parser.buffer() == content
+    # receive the poison item
+    assert q.pop() is None
     assert len(q) == 7
 
     # output tokens in order
@@ -48,6 +50,8 @@ def test_delta_token_baseline():
     content = "<foo>hello<bar/>world</foo>"
     q = deque[CommandToken]()
     CTMLTokenParser.parse(q.append, iter(content))
+    # received the poison item
+    assert q.pop() is None
 
     text = ""
     for token in q:
@@ -89,6 +93,8 @@ def test_token_with_attrs():
     content = "hello<foo bar='123'/>world"
     q: List[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    # received the poison item
+    assert q.pop() is None
     assert q[0].name == "speak"
     assert q[-1].name == "speak"
 
@@ -124,6 +130,7 @@ def test_token_with_cdata():
     content = 'hello<foo><![CDATA[{"a": 123, "b":"234"}]]></foo>world'
     q = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    assert q.pop() is None
 
     # expect hte cdata are escaped
     expect = '{"a": 123, "b":"234"}'
@@ -138,6 +145,7 @@ def test_token_with_namespace():
     content = "<speaker__say>hello</speaker__say>"
     q = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="ctml")
+    assert q.pop() is None
     for token in q[1:-1]:
         assert token.name == "speaker__say"
 
@@ -157,5 +165,7 @@ def test_space_only_delta():
     content = '<foo> </foo>'
     q = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    assert q.pop() is None
+
     q = q[1:-1]
     assert "".join(t.content for t in q) == content

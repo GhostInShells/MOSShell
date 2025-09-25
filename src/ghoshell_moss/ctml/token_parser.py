@@ -243,6 +243,7 @@ class CTMLTokenParser(CommandTokenParser):
         self._stopped = False
         self._started = False
         self._ended = False
+        self._sent_last_token = False
         special_tokens = special_tokens or {}
         self._special_tokens_matcher = SpecialTokenMatcher(special_tokens)
 
@@ -258,8 +259,13 @@ class CTMLTokenParser(CommandTokenParser):
     def _add_token(self, token: CommandToken | None) -> None:
         if token is not None:
             self._parsed.append(token)
-        if not self._stopped and self._callback is not None:
-            self._callback(token)
+        if self._callback is not None:
+            if token is None:
+                if not self._sent_last_token:
+                    self._callback(token)
+                    self._sent_last_token = True
+            else:
+                self._callback(token)
 
     def is_done(self) -> bool:
         return self._handler.done_event.is_set() or self._stopped
@@ -278,15 +284,15 @@ class CTMLTokenParser(CommandTokenParser):
         else:
             raise ParserStopped()
 
-    def end(self) -> None:
+    def commit(self) -> None:
         if not self.is_running():
             return
         if self._ended:
             return
-        self._ended = True
         last_buffer = self._special_tokens_matcher.clear()
         end_of_the_inputs = f'{last_buffer}</{self.root_tag}>'
         self._sax_parser.feed(end_of_the_inputs)
+        self._ended = True
 
     def stop(self) -> None:
         """
@@ -309,7 +315,7 @@ class CTMLTokenParser(CommandTokenParser):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not exc_val:
-            self.end()
+            self.commit()
         self.stop()
 
     @classmethod
@@ -320,7 +326,6 @@ class CTMLTokenParser(CommandTokenParser):
             *,
             root_tag: str = "ctml",
             stream_id: str = "",
-            default_chan: str = "",
             logger: Optional[logging.Logger] = None,
     ) -> None:
         """
@@ -330,11 +335,11 @@ class CTMLTokenParser(CommandTokenParser):
         if isinstance(stream, str):
             stream = [stream]
 
-        parser = cls(callback, stream_id, root_tag=root_tag, default_chan=default_chan, logger=logger)
+        parser = cls(callback, stream_id, root_tag=root_tag, logger=logger)
         with parser:
             for element in stream:
                 parser.feed(element)
-            parser.end()
+            parser.commit()
 
     @classmethod
     def join_tokens(cls, tokens: Iterable[CommandToken]) -> str:

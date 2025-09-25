@@ -24,13 +24,13 @@ async def test_interpreter_baseline():
     async with interpreter:
         for c in content:
             await interpreter.feed(c)
-
-        await interpreter.wait_until_done()
+        await interpreter.wait_parse_done()
 
     # 所有的 input 被 buffer 了.
     assert content == interpreter.inputted()
     assert len(list(interpreter.parsed_tokens())) == 5
-    assert len(queue) == 3
+    assert len(queue) == 4
+    assert len(interpreter.parsed_tasks()) == 3
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ async def test_interpreter_cancel():
                 await interpreter.feed(c)
                 await asyncio.sleep(0.1)
 
-            await interpreter.wait_until_done()
+            await interpreter.wait_parse_done()
 
     async def cancel():
         await asyncio.sleep(0.2)

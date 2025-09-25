@@ -48,7 +48,7 @@ class CommandTokenParser(ABC):
         pass
 
     @abstractmethod
-    def end(self) -> None:
+    def commit(self) -> None:
         """notify the parser that the stream is done"""
         pass
 
@@ -81,7 +81,7 @@ class CommandTokenParser(ABC):
         """
         if exc_val is None:
             # ending is needed if parse success
-            self.end()
+            self.commit()
         self.stop()
 
 
@@ -280,7 +280,7 @@ class Interpreter(ABC):
         await self.stop()
 
     @abstractmethod
-    async def wait_until_done(self) -> None:
+    async def wait_parse_done(self) -> None:
         """
         等待解释过程完成. 完成有两种情况:
         1. 输入已经完备.

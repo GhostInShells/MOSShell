@@ -457,7 +457,7 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
     def __repr__(self):
-        return f"<CommandTask cid=`{self.cid}` tokens=`{self.tokens}` args=`{self.args}` kwargs=`{self.kwargs}`>"
+        return f"<CommandTask name=`{self.meta.name}` cid=`{self.cid}` tokens=`{self.tokens}` args=`{self.args}` kwargs=`{self.kwargs}`>"
 
 
 class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
