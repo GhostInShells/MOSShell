@@ -1,6 +1,6 @@
 import threading
 
-from ghoshell_moss.concepts.command import PyCommand, BaseCommandTask, CommandTaskState
+from ghoshell_moss.concepts.command import PyCommand, BaseCommandTask, CommandTaskState, CommandTaskStack
 from ghoshell_moss.concepts.errors import CommandError
 import pytest
 import asyncio
@@ -97,3 +97,61 @@ async def test_command_task_cancel():
     # cancel come first
     await asyncio.gather(asyncio.to_thread(task2.cancel), task2.wait(throw=False))
     assert task2.errcode == CommandError.CANCEL_CODE
+
+
+@pytest.mark.asyncio
+async def test_command_task_stack():
+    import time
+    start = time.time()
+
+    async def foo() -> int:
+        return 123
+
+    stack = CommandTaskStack([
+        BaseCommandTask.from_command(PyCommand(foo)),
+        BaseCommandTask.from_command(PyCommand(foo)),
+    ])
+
+    got = []
+    async for i in stack:
+        got.append(i)
+    assert len(got) == 2
+
+    async def iter_tasks():
+        yield BaseCommandTask.from_command(PyCommand(foo))
+        yield BaseCommandTask.from_command(PyCommand(foo))
+        yield BaseCommandTask.from_command(PyCommand(foo))
+
+    stack = CommandTaskStack(iter_tasks())
+    got = []
+    async for i in stack:
+        got.append(i)
+    assert len(got) == 3
+    end = time.time()
+
+    async def bar() -> CommandTaskStack:
+        async def result(ran_tasks):
+            count = 0
+            # 计算有多少个子 task 被运行了.
+            for t in ran_tasks:
+                if t.done():
+                    count += 1
+            return count
+
+        return CommandTaskStack(iter_tasks(), on_success=result)
+
+    bar_task = BaseCommandTask.from_command(PyCommand(bar))
+    # 返回的应该是一个 stack.
+    stack = await bar_task.dry_run()
+    assert isinstance(stack, CommandTaskStack)
+    # 把所有的 stack 再运行一次.
+    i = 0
+    async for r in stack:
+        assert await r.run() == 123
+        i += 1
+        # 只运行两个子 task.
+        if i == 2:
+            break
+
+    await stack.success(bar_task)
+    assert bar_task.result == 2

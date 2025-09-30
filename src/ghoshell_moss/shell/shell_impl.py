@@ -1,13 +1,13 @@
 from typing import Dict, Optional, List, Iterable
 from typing_extensions import Literal, Self
-from ghoshell_moss.concepts.shell import MOSSShell, ChannelRuntime, Output
-from ghoshell_moss.concepts.command import Command, CommandTask
+from ghoshell_moss.concepts.shell import MOSSShell, Output, NewInterpreterKind
+from ghoshell_moss.concepts.command import Command, CommandTask, CommandWrapper
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta
 from ghoshell_moss.concepts.interpreter import Interpreter
 from ghoshell_moss.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.mocks.outputs import ArrOutput
 from ghoshell_moss.shell.main_channel import ShellMainChannel
-from ghoshell_moss.shell.channel_runtime import ChannelRuntimeImpl
+from ghoshell_moss.shell.runtime import ChannelRuntimeImpl
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, TreeNotify
 from ghoshell_common.helpers import uuid
 from ghoshell_container import IoCContainer, Container
@@ -38,7 +38,6 @@ class ShellImpl(MOSSShell):
         self._main_channel = main_channel or ShellMainChannel(
             name="",
             block=True,
-            # todo
             description=description or "",
         )
 
@@ -58,23 +57,22 @@ class ShellImpl(MOSSShell):
             channel=self._main_channel,
             logger=self.logger,
             stop_event=self._stop_event,
-            is_idle_notify=self._idle_notifier,
+            is_idle_notifier=self._idle_notifier,
         )
-        self._channel_runtimes: Dict[str, ChannelRuntime] = {
-            "": self._main_channel_runtime,
-        }
+        # --- configuration --- #
         self._configured_channel_metas: Optional[Dict[str, ChannelMeta]] = None
+        # --- interpreter --- #
         self._interpreter: Optional[Interpreter] = None
 
     def is_running(self) -> bool:
-        return self._started and not self._stop_event.is_set()
+        return self._started and not self._stop_event.is_set() and self._main_channel_runtime.is_running()
 
     def is_idle(self) -> bool:
         return self.is_running() and not self._idle_notifier.is_set()
 
     async def interpret(
             self,
-            kind: Literal['clear', 'defer_clear', 'try'] = "clear",
+            kind: NewInterpreterKind = "clear",
             *,
             stream_id: Optional[int] = None,
     ) -> Interpreter:
@@ -86,7 +84,7 @@ class ShellImpl(MOSSShell):
                 await self.defer_clear()
             elif kind == "clear":
                 await self.clear()
-        callback = self._append_command_task if kind != "try" else None
+        callback = self._append_command_task if kind != "dry_run" else None
         interpreter = CTMLInterpreter(
             commands=self.commands().values(),
             output=self._output,
@@ -102,40 +100,14 @@ class ShellImpl(MOSSShell):
         self._check_running()
         self._running_loop.call_soon_threadsafe(self._main_channel_runtime.append, task)
 
-    async def _get_channel_runtime(self, name: str) -> Optional[ChannelRuntime]:
-        self._check_running()
-        if name in self._channel_runtimes:
-            return self._channel_runtimes[name]
-        runtime = await self._new_channel_runtime(name)
-        if runtime is not None:
-            self._channel_runtimes[name] = runtime
-        return runtime
-
-    async def _new_channel_runtime(self, name: str) -> Optional[ChannelRuntimeImpl]:
-        self._check_running()
-        descendants = self._main_channel.descendants()
-        if name in descendants:
-            channel = descendants[name]
-            runtime = ChannelRuntimeImpl(
-                container=self.container,
-                channel=channel,
-                logger=self.logger,
-                stop_event=self._stop_event,
-                is_idle_notify=self._idle_notifier.child(name),
-            )
-            await runtime.start()
-            self._channel_runtimes[name] = runtime
-            return runtime
-        return None
-
     def with_output(self, output: Output) -> None:
         self._output = output
 
     @property
-    def main(self) -> Channel:
+    def main_channel(self) -> Channel:
         return self._main_channel
 
-    def register(self, parent: str = "", *channels: Channel) -> None:
+    def register(self, *channels: Channel, parent: str = "") -> None:
         if parent == "":
             self._main_channel.with_children(*channels)
         else:
@@ -143,6 +115,11 @@ class ShellImpl(MOSSShell):
             if parent_channel is None:
                 raise KeyError(f"Channel {parent} not found")
             parent_channel.with_children(*channels)
+        for channel in channels:
+            self._running_loop.call_soon_threadsafe(
+                self._main_channel_runtime.get_or_create_child_runtime,
+                channel,
+            )
 
     def configure(self, *metas: ChannelMeta) -> None:
         metas = {}
@@ -151,46 +128,91 @@ class ShellImpl(MOSSShell):
         if len(metas) > 0:
             self._configured_channel_metas = metas
 
+    def channels(self) -> Dict[str, Channel]:
+        channels = {"": self._main_channel}
+        for name, channel in self._main_channel.descendants().items():
+            channels[name] = channel
+        return channels
+
     async def channel_metas(self) -> Dict[str, ChannelMeta]:
+        self._check_running()
+        channels = self.channels()
         if self._configured_channel_metas is not None:
-            metas = self._configured_channel_metas.copy()
             result = {}
-            for name, meta in metas.items():
-                runtime = await self._get_channel_runtime(name)
-                meta.available = runtime.is_running() and runtime.is_available()
-                if meta.available:
-                    commands = runtime.client.commands()
-                    for command_meta in meta.commands:
-                        if command_meta.name not in commands:
-                            command_meta.available = False
-                        else:
-                            command_meta.available = commands[name].is_available()
-                    result[name] = meta
+            for meta in self._configured_channel_metas.values():
+                meta = await self._update_channel_meta_in_runtime(meta, channels)
+                result[meta.name] = meta
             return result
-
         else:
-            result = {}
-            for name, runtime in self._channel_runtimes.items():
-                if runtime.is_running() and runtime.is_available():
-                    meta = runtime.client.meta()
-                    result[name] = meta
-            return result
+            return await self._get_all_channel_metas()
 
-    def commands(self) -> Dict[str, Command]:
+    async def _get_all_channel_metas(self) -> Dict[str, ChannelMeta]:
+        result = {}
+        channels = self.channels()
+        for name, channel in channels.items():
+            meta = channel.client.meta(no_cache=True)
+            result[name] = meta
+        return result
+
+    async def _get_channel_metas_in_runtime(self, metas: Dict[str, ChannelMeta]) -> Dict[str, ChannelMeta]:
+        result = {}
+        # 根据已经配置的
+        channels = self._main_channel.descendants()
+        channels[""] = self._main_channel
+
+        for name, meta in metas.items():
+            result[name] = meta
+        return result
+
+    async def _update_channel_meta_in_runtime(self, meta: ChannelMeta, channels: Dict[str, Channel]) -> ChannelMeta:
+        # 如果这个 meta 并没有实际的 channel 支持, 则将它设置为不可用.
+        meta = meta.model_copy()
+        name = meta.name
+        if name not in channels:
+            meta.available = False
+            return meta
+
+        runtime = await self._main_channel_runtime.get_chan_runtime(name)
+        if runtime is None:
+            meta.available = False
+            return meta
+
+        meta.available = runtime.is_available()
+        if meta.available:
+            # commands map
+            commands = {c.name(): c for c in runtime.commands(recursive=False, available_only=False)}
+            # change available.
+            for command_meta in meta.commands:
+                if command_meta.name not in commands:
+                    command_meta.available = False
+                else:
+                    command_meta.available = commands[name].is_available()
+        return meta
+
+    def commands(self, available: bool = True) -> Dict[str, Command]:
         """
         动态获取 commands. 因为可能会有变动.
         """
         self._check_running()
-        commands = {}
-        for channel in self.channels():
-            if channel.is_running() and channel.client.is_available():
-                for command in channel.client.commands(available_only=True).values():
-                    commands[command.name()] = command
+        commands = {c.name(): c for c in self._main_channel_runtime.commands(recursive=True, available_only=available)}
+        if self._configured_channel_metas is None:
+            return commands
+        else:
+            result = {}
+            for name, meta in self._configured_channel_metas.items():
+                if not meta.available:
+                    continue
+                for command_meta in meta.commands:
+                    if command_meta.name not in commands:
+                        continue
+                    real_command = commands[command_meta.name]
+                    wrapped = CommandWrapper(real_command, meta=command_meta)
+                    result[name] = wrapped
         return commands
 
     async def append(self, *tasks: CommandTask) -> None:
-        for task in tasks:
-            await self._main_channel_runtime.append(task)
+        self._check_running()
+        await self._main_channel_runtime.append(*tasks)
 
     async def clear(self, *chans: str) -> None:
         self._check_running()
@@ -198,21 +220,17 @@ class ShellImpl(MOSSShell):
         if len(names) == 0:
             names = [""]
         for name in names:
-            if name == self._main_channel_client.name():
-                clearing = [self._main_channel_client.clear()]
-                break
-            else:
-                client = self._main_channel_client.get_child_client(name)
-                clearing.append(name)
+            channel_runtime = await self._main_channel_runtime.get_chan_runtime(name)
+            if channel_runtime is not None:
+                await channel_runtime.clear()
+
+    def wait_until_idle(self, timeout: float | None = None) -> bool:
+        self._check_running()
+        return self._idle_notifier.wait_sync(timeout)
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         self._check_running()
-        await self._main_channel_client.wait_until_idle(timeout),
-
-    def get_channel(self, name: str) -> Optional[Channel]:
-        if name == self._main_channel.name():
-            return self._main_channel
-        return self._main_channel.descendants().get(name, None)
+        await asyncio.wait_for(self._idle_notifier.wait(), timeout=timeout)
 
     async def defer_clear(self, *chans: str) -> None:
         self._check_running()
@@ -223,7 +241,7 @@ class ShellImpl(MOSSShell):
         # 可以并行执行.
         clearing = []
         for name in names:
-            child = await self._main_channel_client.get_child_client(name)
+            child = await self._main_channel_client.get_chan_runtime(name)
             clearing.append(child.defer_clear())
         await asyncio.gather(*clearing)
 
@@ -233,10 +251,6 @@ class ShellImpl(MOSSShell):
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError(f"Shell not running")
-
-    def channels(self) -> Iterable[Channel]:
-        yield self._main_channel
-        yield from self._main_channel.descendants().values()
 
     async def start(self) -> None:
         if self._closing:
@@ -248,14 +262,8 @@ class ShellImpl(MOSSShell):
         # 启动容器. 通常已经启动了.
         await asyncio.to_thread(self.container.bootstrap)
 
-        self._main_channel_client = ChannelRuntimeImpl(
-            self.container,
-            self._main_channel,
-            logger=self.logger,
-            stop_event=self._stop_event,
-        )
         # 启动所有的 runtime.
-        await self._main_channel_client.start()
+        await self._main_channel_runtime.start()
         # 启动自己的 task
         self._started = True
 
@@ -265,6 +273,4 @@ class ShellImpl(MOSSShell):
         self._closing = True
         self._stop_event.set()
         # 先关闭所有的 runtime. 递归关闭.
-        await self._main_channel_client.close()
-        # 然后关闭所有的 channel.
-        self._closed = True
+        await self._main_channel_runtime.close()

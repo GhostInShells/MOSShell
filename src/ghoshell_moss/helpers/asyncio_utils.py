@@ -39,13 +39,13 @@ class ThreadSafeEvent:
             else:
                 self.awaits_events.append((loop, event))
 
-    async def wait(self) -> None:
+    async def wait(self) -> bool:
         loop = asyncio.get_running_loop()
         event = asyncio.Event()
         self._add_awaits(loop, event)
-        await event.wait()
+        return await event.wait()
 
-    async def wait_for(self, timeout: float) -> None:
+    async def wait_for(self, timeout: float) -> bool:
         if timeout is None or timeout <= 0.0:
             await self.wait()
         else:
@@ -133,6 +133,9 @@ class TreeNotify:
 
     def is_set(self) -> bool:
         return self.event.is_set()
+
+    def is_self_set(self) -> bool:
+        return self._name not in self._unset_names
 
     async def wait(self) -> None:
         await self.event.wait()

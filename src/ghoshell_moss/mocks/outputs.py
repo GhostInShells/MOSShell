@@ -3,7 +3,9 @@ from typing import Optional, List, Dict
 
 from ghoshell_moss.concepts.command import CommandTask, BaseCommandTask, CommandMeta, PyCommand
 from ghoshell_moss.concepts.shell import Output, OutputStream
+from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
+
 import threading
 from queue import Queue, Empty
 
@@ -14,7 +16,7 @@ class ArrOutputStream(OutputStream):
         self.outputs = outputs
         self.id = id or uuid()
         self.output_queue = Queue()
-        self.output_done_event = threading.Event()
+        self.output_done_event = ThreadSafeEvent()
         self.output_buffer = ""
         self.output_started = False
         self._command_task: Optional[BaseCommandTask] = None
@@ -30,7 +32,7 @@ class ArrOutputStream(OutputStream):
         if complete:
             self.output_queue.put_nowait(None)
 
-    def output_start(self) -> None:
+    def start(self) -> None:
         if self.output_started:
             return
         self.output_started = True
@@ -65,13 +67,21 @@ class ArrOutputStream(OutputStream):
                 self._command_task.tokens = self.output_buffer
             self.output_done_event.set()
 
-    def wait_done(self, timeout: float | None = None) -> None:
-        if not self.output_done_event.wait(timeout):
-            raise TimeoutError
+    def wait_sync(self, timeout: float | None = None) -> bool:
+        return self.output_done_event.wait_sync(timeout)
+
+    async def astart(self) -> None:
+        await asyncio.to_thread(self.start)
+
+    async def wait(self) -> bool:
+        return await self.output_done_event.wait()
+
+    async def aclose(self) -> None:
+        await asyncio.to_thread(self.close)
 
     async def _output_start_and_wait(self) -> None:
-        self.output_start()
-        await asyncio.to_thread(self.output_done_event.wait)
+        self.start()
+        await self.output_done_event.wait()
 
     def as_command_task(self, commit: bool = False) -> Optional[CommandTask]:
         if commit:

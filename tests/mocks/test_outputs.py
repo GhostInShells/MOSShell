@@ -12,6 +12,7 @@ async def test_output_in_asyncio():
     async def buffer_stream(_stream: OutputStream, idx_: int):
         for c in content:
             _stream.buffer(c)
+            await asyncio.sleep(0)
         # add a tail at the output end
         _stream.buffer(str(idx_))
         _stream.commit()

@@ -1,6 +1,7 @@
 from ghoshell_moss.concepts.command import CommandToken, CommandTask
 from abc import ABC, abstractmethod
 from typing import Iterable, Callable, Optional, Dict
+from typing_extensions import Self
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
@@ -257,7 +258,7 @@ class Interpreter(ABC):
         """
         pass
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """
         example to use the interpreter:
 

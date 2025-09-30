@@ -1,15 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import List, Iterable, Dict, Literal, Optional
+from typing import List, Iterable, Dict, Literal, Optional, AsyncIterable
 from typing_extensions import Self
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta, Client
 from ghoshell_moss.concepts.interpreter import Interpreter
-from ghoshell_moss.concepts.command import Command, CommandTask
+from ghoshell_moss.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_container import IoCContainer
+import asyncio
 
 
 class OutputStream(ABC):
     """
-    shell 发送文本的专用模块.
+    shell 发送文本的专用模块. 本身是非阻塞的.
+    todo: 考虑把 OutputStream 通用成 Command.
     """
     id: str
     """所有文本片段都有独立的全局唯一id, 通常是 command_part_id"""
@@ -30,14 +32,14 @@ class OutputStream(ABC):
         self.buffer("", complete=True)
 
     @abstractmethod
-    def output_start(self) -> None:
+    def start(self) -> None:
         """
         允许文本片段开始播放. 这时可能文本片段本身都未生成完, 如果是流式的 tts, 则可以一边 buffer, 一边 tts, 一边播放. 三者并行.
         """
         pass
 
     @abstractmethod
-    def wait_done(self, timeout: float | None = None) -> None:
+    def wait_sync(self, timeout: float | None = None) -> bool:
         """
         阻塞等待到文本输出完毕. 当文本输出是一个独立的模块时, 需要依赖这个函数实现阻塞.
         """
@@ -57,6 +59,23 @@ class OutputStream(ABC):
 
     @abstractmethod
     def close(self):
+        """
+        关闭一个 Stream.
+        """
+        pass
+
+    # --- asyncio --- #
+
+    @abstractmethod
+    async def astart(self) -> None:
+        pass
+
+    @abstractmethod
+    async def wait(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def aclose(self) -> None:
         pass
 
 
@@ -84,90 +103,7 @@ class Output(ABC):
         pass
 
 
-class ChannelRuntime(ABC):
-    """
-    管理 channel 的所有的 command task 运行时状态, 包括阻塞, 执行, 等待.
-    是 shell runtime 管理的核心抽象.
-    """
-    client: Client
-
-    @abstractmethod
-    def name(self) -> str:
-        """
-        channel 的名称.
-        """
-        pass
-
-    @abstractmethod
-    async def append(self, *tasks: CommandTask) -> None:
-        """
-        添加 task 到运行时的队列中.
-        """
-        pass
-
-    @abstractmethod
-    async def clear(self) -> None:
-        """
-        清空所有的运行任务和运行中的任务.
-        """
-        pass
-
-    @abstractmethod
-    async def defer_clear(self) -> None:
-        """
-        设置 channel 为软重启. 当有一个属于当前 channel runtime 的 task 推送进来时, 清空自身和所有子节点.
-        """
-        pass
-
-    @abstractmethod
-    async def clear_pending(self) -> int:
-        """
-        清空自身和子节点队列中的任务.
-        """
-        pass
-
-    @abstractmethod
-    async def cancel_executing(self) -> None:
-        """
-        取消正在运行的所有任务, 包括自身正在运行的任务, 和所有子节点的任务.
-        """
-        pass
-
-    @abstractmethod
-    async def wait_until_idle(self, timeout: float | None = None) -> None:
-        pass
-
-    @abstractmethod
-    def is_running(self) -> bool:
-        """
-        runtime 是否在运行中.
-        """
-        pass
-
-    @abstractmethod
-    def is_available(self) -> bool:
-        pass
-
-    @abstractmethod
-    def is_busy(self) -> bool:
-        """
-        是否正在运行任务, 或者队列中存在任务.
-        """
-        pass
-
-    @abstractmethod
-    async def start(self) -> None:
-        """
-        运行直到结束.
-        """
-        pass
-
-    @abstractmethod
-    async def close(self) -> None:
-        """
-        停止 runtime 运行.
-        """
-        pass
+NewInterpreterKind = Literal['clear', 'defer_clear', 'dry_run']
 
 
 class MOSSShell(ABC):
@@ -189,7 +125,7 @@ class MOSSShell(ABC):
 
     @property
     @abstractmethod
-    def main(self) -> Channel:
+    def main_channel(self) -> Channel:
         """
         Shell 自身的主轨. 主轨同时可以用来注册所有的子轨.
         """
@@ -200,7 +136,7 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def register(self, parent: str = "", *channels: Channel) -> None:
+    def register(self, *channels: Channel, parent: str = "") -> None:
         """
         注册 channel.
         """
@@ -232,34 +168,108 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def wait_until_idle(self, timeout: float | None = None) -> None:
+        """
+        等待到 shell 运行结束.
+        """
         pass
 
     @abstractmethod
     async def channel_metas(self) -> Dict[str, ChannelMeta]:
         """
         返回所有的 Channel Meta 信息.
+        可以被 configure_channel_metas 修改.
         """
         pass
 
     @abstractmethod
-    async def commands(self) -> Dict[str, Command]:
+    def commands(self, available: bool = True) -> Dict[str, Command]:
+        """
+        当前运行时所有的可用的命令.
+        """
         pass
+
+    # --- interpret --- #
 
     @abstractmethod
     async def interpret(
             self,
-            kind: Literal['clear', 'defer_clear', 'try'] = "clear",
+            kind: NewInterpreterKind = "clear",
             *,
             stream_id: Optional[str] = None,
     ) -> Interpreter:
+        """
+        实例化一个 interpreter 用来做解释.
+        """
         pass
+
+    async def parse_tokens(
+            self,
+            text: str | AsyncIterable[str],
+            kind: NewInterpreterKind = "dry_run",
+    ) -> AsyncIterable[CommandToken]:
+        from ghoshell_moss.helpers.stream import create_thread_safe_stream
+        sender, receiver = create_thread_safe_stream()
+
+        async def _parse_token():
+            with sender:
+                interpreter = await self.interpret(kind)
+                interpreter.parser().with_callback(sender.append)
+                async with interpreter:
+                    if isinstance(text, str):
+                        interpreter.feed(text)
+                    else:
+                        async for delta in text:
+                            interpreter.feed(delta)
+                    await interpreter.wait_parse_done()
+
+        t = asyncio.create_task(_parse_token())
+        async for token in receiver:
+            if token is None:
+                break
+            yield token
+        await t
+
+    async def parse_tasks(
+            self,
+            text: str | AsyncIterable[str],
+            kind: NewInterpreterKind = "dry_run",
+    ) -> AsyncIterable[CommandTask]:
+        from ghoshell_moss.helpers.stream import create_thread_safe_stream
+        sender, receiver = create_thread_safe_stream()
+
+        async def _parse_task():
+            with sender:
+                interpreter = await self.interpret(kind)
+                interpreter.with_callback(sender.append)
+                async with interpreter:
+                    if isinstance(text, str):
+                        interpreter.feed(text)
+                    else:
+                        async for delta in text:
+                            interpreter.feed(delta)
+                    await interpreter.wait_parse_done()
+
+        t = asyncio.create_task(_parse_task())
+        async for task in receiver:
+            if task is None:
+                break
+            yield task
+        await t
+
+    # --- runtime methods --- #
 
     @abstractmethod
     async def append(self, *tasks: CommandTask) -> None:
+        """
+        添加 task 到运行时.
+        """
         pass
 
     @abstractmethod
-    async def clear(self, *chans: str) -> None:
+    def clear(self, *chans: str) -> None:
+        """
+        清空指定的 channel. 如果
+        """
         pass
 
     @abstractmethod

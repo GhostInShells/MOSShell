@@ -154,7 +154,7 @@ class PyChannel(Channel):
         else:
             raise RuntimeError("Server not running")
 
-    def with_children(self, parent: Optional[str] = None, *children: "Channel") -> Self:
+    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
         if parent is not None:
             descendant = self.descendants().get(parent)
             if descendant is None:
@@ -183,13 +183,14 @@ class PyChannel(Channel):
         descendants = self.descendants()
         return descendants.get(name, None)
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "Client":
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "Client":
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
         self._client = PyChannelClient(
             children=self.children(),
             container=container,
             builder=self._builder,
+            depth=depth,
         )
         return self._client
 
@@ -213,7 +214,9 @@ class PyChannelClient(Client):
             builder: PyChannelBuilder,
             container: Optional[IoCContainer] = None,
             uid: Optional[str] = None,
+            depth: int = 0
     ):
+        self.depth = depth
         if container is not None:
             container = Container(parent=container, name=f"moss/chan_client/{builder.name}")
         else:

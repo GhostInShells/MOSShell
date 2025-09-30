@@ -1,20 +1,22 @@
 import asyncio
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import (
     TypedDict, Literal, Optional, Dict, Any, Awaitable, List, Generic, TypeVar, Tuple, Callable, Coroutine, Union,
-    is_typeddict, Protocol, Iterable,
+    is_typeddict, Protocol, Iterable, AsyncIterator
 )
 from typing_extensions import Self
 from ghoshell_common.helpers import uuid, generate_import_path
 from ghoshell_moss.helpers.func import parse_function_interface
-from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel
 from .errors import CommandError
 from pydantic import BaseModel, Field
 from enum import Enum
 import traceback
 import inspect
 import time
+import contextvars
 
 RESULT = TypeVar("RESULT")
 
@@ -226,6 +228,40 @@ class Command(Generic[RESULT], ABC):
         pass
 
 
+class CommandWrapper(Command[RESULT]):
+    def __init__(
+            self,
+            command: Command[RESULT],
+            meta: CommandMeta | None = None,
+            name: str | None = None,
+            available: bool | None = None,
+    ):
+        self._command = command
+        self._meta = meta
+        self._name = name
+        self._available = available
+
+    def name(self) -> str:
+        return self._name if self._name is not None else self._command.name()
+
+    def is_available(self) -> bool:
+        return self._available and self._command.is_available()
+
+    def meta(self) -> CommandMeta:
+        if self._meta is not None:
+            meta = self._meta.model_copy()
+        else:
+            meta = self._command.meta()
+
+        if self._name is not None:
+            meta.name = self._name
+            meta.available = self.is_available()
+        return meta
+
+    async def __call__(self, *args, **kwargs) -> RESULT:
+        return await self._command(*args, **kwargs)
+
+
 class PyCommand(Generic[RESULT], Command[RESULT]):
     """
     将 python 的 Coroutine 函数封装成 Command
@@ -351,12 +387,15 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             return await task
 
 
+CommandTaskContextVar = contextvars.ContextVar("MOSShell_CommandTaskContext")
+
+
 class CommandTask(Generic[RESULT], ABC):
     """
     线程安全的 Command Task 对象. 相当于重新实现一遍 asyncio.Task 类似的功能.
-    有区别的原理:
+    有区别的部分:
     1. 建立全局唯一的 cid, 方便在双工通讯中赋值.
-    2. 必须实现线程安全, 因为通讯可能是在多线程里.
+    2. **必须实现线程安全**, 因为通讯可能是在多线程里.
     3. 包含 debug 需要的 state, trace 等信息.
     4. 保留命令的元信息, 包括入参等.
     5. 不是立刻启动, 而是被 channel 调度时才运行.
@@ -377,11 +416,30 @@ class CommandTask(Generic[RESULT], ABC):
     func: Callable[..., Coroutine[None, None, RESULT]] | None
     """如果 Func 为 None, 则表示 task 只能靠外部 resolve 来赋值. """
 
+    context: Dict[str, Any] = {}
+    """可以传递额外的 context, 作为一种协议"""
+
+    def set_context_var(self) -> None:
+        """通过 context var 来传递 context"""
+        CommandTaskContextVar.set(self.context)
+
+    @staticmethod
+    def get_context_var() -> Dict[str, Any]:
+        """获取 context var"""
+        try:
+            return CommandTaskContextVar.get()
+        except LookupError:
+            return dict()
+
     @abstractmethod
     def done(self) -> bool:
         """
         if the command is done (cancelled, done, failed)
         """
+        pass
+
+    @abstractmethod
+    def add_done_callback(self, fn: Callable[[Self], None]):
         pass
 
     @abstractmethod
@@ -410,6 +468,9 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
+    def is_failed(self) -> bool:
+        return self.done() and self.errcode != 0
+
     @abstractmethod
     def resolve(self, result: RESULT) -> None:
         """
@@ -427,13 +488,6 @@ class CommandTask(Generic[RESULT], ABC):
 
     @abstractmethod
     def exception(self) -> Optional[Exception]:
-        pass
-
-    @abstractmethod
-    async def run(self) -> RESULT:
-        """
-        运行 task, 并且生成, 更新当前 task 的结果.
-        """
         pass
 
     @abstractmethod
@@ -464,6 +518,53 @@ class CommandTask(Generic[RESULT], ABC):
         wait the command to be done in the current thread (blocking). thread-safe.
         """
         pass
+
+    async def dry_run(self) -> RESULT:
+        """无状态的运行逻辑"""
+        if self.func is None:
+            return None
+
+        ctx = contextvars.copy_context()
+        self.set_context_var()
+        r = await ctx.run(self.func, *self.args, **self.kwargs)
+        return r
+
+    async def run(self) -> RESULT:
+        """典型的案例如何使用一个 command task. 有状态的运行逻辑. """
+        if self.done():
+            self.raise_exception()
+            return self.result
+
+        if self.func is None:
+            # func 为 none 的情况下, 完全依赖外部运行赋值.
+            return await self.wait(throw=True)
+
+        try:
+            dry_run = asyncio.create_task(self.dry_run())
+            wait = asyncio.create_task(self.wait())
+            # resolve 生效, wait 就会立刻生效.
+            # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
+            done, pending = await asyncio.wait([dry_run, wait], return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            if dry_run in done:
+                result = await dry_run
+                self.resolve(result)
+            else:
+                self.raise_exception()
+            return self.result
+
+        except asyncio.CancelledError:
+            if not self.done():
+                self.cancel(reason="canceled")
+            raise
+        except Exception as e:
+            if not self.done():
+                self.fail(e)
+            raise
+        finally:
+            if not self.done():
+                self.cancel()
 
     def __repr__(self):
         return f"<CommandTask name=`{self.meta.name}` cid=`{self.cid}` tokens=`{self.tokens}` args=`{self.args}` kwargs=`{self.kwargs}`>"
@@ -500,6 +601,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.result: Optional[RESULT] = None
         self._done_event: ThreadSafeEvent = ThreadSafeEvent()
         self._done_lock = threading.Lock()
+        self._done_callbacks = []
+
+    def add_done_callback(self, fn: Callable[[CommandTask], None]):
+        self._done_callbacks.append(fn)
 
     def copy(self, cid: str = "") -> Self:
         cid = cid or uuid()
@@ -555,6 +660,14 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.errmsg = errmsg
             self._done_event.set()
             self.set_state(state)
+            # 运行结束的回调.
+            if len(self._done_callbacks) > 0:
+                for done_callback in self._done_callbacks:
+                    try:
+                        done_callback(self)
+                    except Exception as e:
+                        logging.error(e)
+                        continue
             return True
 
     def fail(self, error: Exception | str) -> None:
@@ -616,40 +729,6 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         if throw:
             self.raise_exception()
         return self.result
-
-    async def run(self) -> RESULT:
-        """典型的案例如何使用一个 command task """
-        if self.done():
-            self.raise_exception()
-            return self.result
-
-        if self.func is None:
-            # func 为 none 的情况下, 完全依赖外部运行赋值.
-            return await self.wait(throw=True)
-
-        async def resolve() -> None:
-            r = await self.func(*self.args, **self.kwargs)
-            self.resolve(r)
-
-        async def wait() -> None:
-            await self.wait()
-            self.raise_exception()
-
-        try:
-            await asyncio.gather(resolve(), wait())
-            return self.result
-
-        except asyncio.CancelledError:
-            if not self.done():
-                self.cancel(reason="canceled")
-            raise
-        except Exception as e:
-            if not self.done():
-                self.fail(e)
-            raise
-        finally:
-            if not self.done():
-                self.cancel()
 
 
 class WaitDoneTask(BaseCommandTask):
@@ -720,20 +799,43 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
         )
 
 
-class CommandTaskSeq:
+class CommandTaskStack:
     """特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回. """
 
-    def __init__(self, success: Callable[[], Any] | Any, *tasks: BaseCommandTask) -> None:
-        self._success = success
-        self.tasks = tasks
+    def __init__(
+            self,
+            iterator: AsyncIterator[CommandTask] | List[CommandTask],
+            on_success: Callable[[List[CommandTask]], Coroutine[None, None, Any]] | Any = None,
+    ) -> None:
+        self._iterator = iterator
+        self._on_success = on_success
+        self._generated = []
 
-    def success(self) -> Any:
-        if self._success and callable(self._success):
-            return self._success()
-        return self._success
+    async def success(self, task: CommandTask) -> None:
+        if self._on_success and callable(self._on_success):
+            # 如果是回调函数, 则用回调函数决定 task.
+            result = await self._on_success(self._generated)
+            task.resolve(result)
+        else:
+            task.resolve(self._on_success)
 
-    def __iter__(self):
-        return iter(self.tasks)
+    def generated(self) -> List[CommandTask]:
+        return self._generated.copy()
+
+    def __aiter__(self) -> AsyncIterator[CommandTask]:
+        return self
+
+    async def __anext__(self) -> CommandTask:
+        if isinstance(self._iterator, List):
+            if len(self._iterator) == 0:
+                raise StopAsyncIteration
+            item = self._iterator.pop(0)
+            self._generated.append(item)
+            return item
+        else:
+            item = await self._iterator.__anext__()
+            self._generated.append(item)
+            return item
 
     def __str__(self):
-        return "".join([t.tokens for t in self.tasks])
+        return ""

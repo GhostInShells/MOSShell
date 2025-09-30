@@ -1,12 +1,15 @@
+import asyncio
+import threading
 from abc import ABC, abstractmethod
 from typing import (
     Iterable, Optional, Union, Callable, Coroutine, List, Type, TypeVar, Dict, Any,
-    Protocol,
+    Protocol, AsyncIterator
 )
 from typing_extensions import Self
 from ghoshell_moss.concepts.command import Command, CommandMeta, CommandTask
 from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING
 from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
 
 FunctionCommand = Union[Callable[..., Coroutine], Callable[..., Any]]
 """通常要求是异步函数, 如果是同步函数的话, 会卸载到线程池运行"""
@@ -48,7 +51,7 @@ class Client(Protocol):
     """
 
     id: str
-    """unique id of the channel instance"""
+    """unique id of the channel client instance"""
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -280,7 +283,7 @@ class Channel(ABC):
     # --- children --- #
 
     @abstractmethod
-    def with_children(self, parent: Optional[str] = None, *children: "Channel") -> Self:
+    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
         """
         添加子 Channel 到当前 Channel. 形成树状关系.
         :raise KeyError: 如果出现重名会发出这个异常.
@@ -318,7 +321,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "Client":
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "Client":
         """
         传入一个父容器, 启动 Channel. 同时生成 Runtime.
         真正运行的是 channel runtime.
@@ -332,3 +335,71 @@ class Channel(ABC):
         用来快速包装各种函数.
         """
         pass
+
+
+class ChannelServer(ABC):
+    """
+    将 Channel 包装成一个 Server, 可以被上层的 Client 调用.
+    上层的 Client 将通过通讯协议, 还原出 Client 树, 但这个 Client 树里所有子 channel 都通过 Server 的通讯协议来传递.
+    从而形成链式的封装关系, 在不同进程里还原出树形的架构.
+
+    举例:
+    ReverseWebsocketClient => ReverseWebsocketServer => ZMQClient => ZMQServer ... => Client
+    """
+    container: IoCContainer
+    loop: asyncio.AbstractEventLoop | None = None
+    channel: Channel | None = None
+
+    async def arun_until_closed(self, channel: Channel) -> None:
+        """
+        运行 Client 服务.
+        """
+        self.loop = asyncio.get_running_loop()
+        self.channel = channel
+        task = await self.create_server_task(channel)
+        await self.wait_closed()
+        if not task.done():
+            task.cancel()
+        await task
+
+    @abstractmethod
+    async def create_server_task(self, channel: Channel) -> asyncio.Task:
+        pass
+
+    @abstractmethod
+    async def wait_closed(self) -> None:
+        pass
+
+    @abstractmethod
+    async def aclose(self) -> None:
+        """
+        主动关闭 server.
+        """
+        pass
+
+    def run_until_closed(self, channel: Channel) -> None:
+        """
+        展示如何同步运行.
+        """
+        asyncio.run(self.arun_until_closed(channel))
+
+    def run_in_thread(self, channel: Channel) -> None:
+        """
+        展示如何在多线程中异步运行.
+        """
+        thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
+        thread.start()
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.aclose)
+
+    @asynccontextmanager
+    async def run(self, channel: Channel) -> AsyncIterator[Self]:
+        """
+        支持 with statement 的运行方式.
+        """
+        running = asyncio.create_task(self.arun_until_closed(channel=channel))
+        yield self
+        await self.aclose()
+        running.cancel()
+        await running
