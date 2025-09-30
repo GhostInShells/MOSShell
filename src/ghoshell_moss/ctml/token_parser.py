@@ -244,7 +244,9 @@ class CTMLTokenParser(CommandTokenParser):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("moss")
         self.stop_event = stop_event or ThreadSafeEvent()
-        self._callback = callback
+        self._callbacks = []
+        if callback is not None:
+            self._callbacks.append(callback)
         self._buffer = ""
         self._parsed: List[CommandToken] = []
         self._handler = CTMLSaxHandler(
@@ -276,13 +278,14 @@ class CTMLTokenParser(CommandTokenParser):
     def _add_token(self, token: CommandToken | None) -> None:
         if token is not None:
             self._parsed.append(token)
-        if self._callback is not None:
+        if len(self._callbacks) > 0:
             if token is None:
                 if not self._sent_last_token:
-                    self._callback(token)
                     self._sent_last_token = True
-            else:
-                self._callback(token)
+                else:
+                    return
+            for callback in self._callbacks:
+                callback(token)
 
     def is_done(self) -> bool:
         return self._handler.done_event.is_set()

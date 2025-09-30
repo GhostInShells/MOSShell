@@ -191,7 +191,7 @@ class MOSSShell(ABC):
     # --- interpret --- #
 
     @abstractmethod
-    async def interpret(
+    def interpret(
             self,
             kind: NewInterpreterKind = "clear",
             *,
@@ -212,9 +212,8 @@ class MOSSShell(ABC):
 
         async def _parse_token():
             with sender:
-                interpreter = await self.interpret(kind)
-                interpreter.parser().with_callback(sender.append)
-                async with interpreter:
+                async with self.interpret(kind) as interpreter:
+                    interpreter.parser().with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
                     else:
@@ -239,9 +238,8 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             with sender:
-                interpreter = await self.interpret(kind)
-                interpreter.with_callback(sender.append)
-                async with interpreter:
+                async with self.interpret(kind) as interpreter:
+                    interpreter.with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
                     else:

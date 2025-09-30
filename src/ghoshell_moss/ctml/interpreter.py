@@ -29,7 +29,9 @@ class CTMLInterpreter(Interpreter):
     ):
         self.id = stream_id or uuid()
         self._logger = logger or logging.getLogger("CTMLInterpreter")
-        self._callback = callback
+        self._callbacks = []
+        if callback is not None:
+            self._callbacks.append(callback)
         # commands map
         self._commands_map = {c.name(): c for c in commands}
         self._root_tag = root_tag
@@ -85,10 +87,11 @@ class CTMLInterpreter(Interpreter):
 
     def _send_command_task(self, task: CommandTask | None) -> None:
         try:
-            if self._callback is not None:
+            if len(self._callbacks) > 0:
                 # 只发送一次 None 作为毒丸.
                 if task is not None or not self._task_sent:
-                    self._callback(task)
+                    for callback in self._callbacks:
+                        callback(task)
                     self._task_sent = task is None
             if task is not None:
                 self._parsed_tasks[task.cid] = task
@@ -125,7 +128,7 @@ class CTMLInterpreter(Interpreter):
         self._input_deltas_queue.put_nowait(None)
 
     def with_callback(self, callback: CommandTaskCallback) -> None:
-        self._callback = callback
+        self._callbacks.append(callback)
 
     def parser(self) -> CommandTokenParser:
         return self._parser

@@ -70,7 +70,7 @@ class ShellImpl(MOSSShell):
     def is_idle(self) -> bool:
         return self.is_running() and not self._idle_notifier.is_set()
 
-    async def interpret(
+    def interpret(
             self,
             kind: NewInterpreterKind = "clear",
             *,
@@ -78,12 +78,12 @@ class ShellImpl(MOSSShell):
     ) -> Interpreter:
         self._check_running()
         if self._interpreter is not None:
-            await self._interpreter.stop()
+            self._running_loop.call_soon_threadsafe(self._interpreter.stop)
             self._interpreter = None
             if kind == "defer_clear":
-                await self.defer_clear()
+                self._running_loop.call_soon_threadsafe(self.defer_clear)
             elif kind == "clear":
-                await self.clear()
+                self._running_loop.call_soon_threadsafe(self.clear)
         callback = self._append_command_task if kind != "dry_run" else None
         interpreter = CTMLInterpreter(
             commands=self.commands().values(),
