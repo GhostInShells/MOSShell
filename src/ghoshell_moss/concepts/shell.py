@@ -212,7 +212,7 @@ class MOSSShell(ABC):
         """
         pass
 
-    async def parse_to_tokens(
+    async def parse_text_to_tokens(
             self,
             text: str | AsyncIterable[str],
             kind: InterpreterKind = "dry_run",
@@ -238,7 +238,30 @@ class MOSSShell(ABC):
             yield token
         await t
 
-    async def parse_to_tasks(
+    async def parse_tokens_to_tasks(
+            self,
+            tokens: AsyncIterable[CommandToken],
+            kind: InterpreterKind = "dry_run",
+    ) -> AsyncIterable[CommandTask]:
+        from ghoshell_moss.helpers.stream import create_thread_safe_stream
+        sender, receiver = create_thread_safe_stream()
+
+        async def _parse_task():
+            with sender:
+                async with self.interpret(kind) as interpreter:
+                    interpreter.with_callback(sender.append)
+                    async for token in tokens:
+                        interpreter.root_task_element().on_token(token)
+                    await interpreter.wait_parse_done()
+
+        t = asyncio.create_task(_parse_task())
+        async for task in receiver:
+            if task is None:
+                break
+            yield task
+        await t
+
+    async def parse_text_to_tasks(
             self,
             text: str | AsyncIterable[str],
             kind: InterpreterKind = "dry_run",

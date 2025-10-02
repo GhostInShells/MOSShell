@@ -563,7 +563,7 @@ class CommandTask(Generic[RESULT], ABC):
         """典型的案例如何使用一个 command task. 有状态的运行逻辑. """
         if self.done():
             self.raise_exception()
-            return self._result
+            return self.result()
 
         if self.func is None:
             # func 为 none 的情况下, 完全依赖外部运行赋值.
@@ -582,7 +582,7 @@ class CommandTask(Generic[RESULT], ABC):
                 self.resolve(result)
             else:
                 self.raise_exception()
-            return self._result
+            return self.result()
 
         except asyncio.CancelledError:
             if not self.done():

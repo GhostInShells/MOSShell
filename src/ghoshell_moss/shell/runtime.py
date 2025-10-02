@@ -714,22 +714,22 @@ class ChannelRuntimeImpl(ChannelRuntime):
         # 准备好 ctx. 包含 channel 的容器, 还有 command task 的 context 数据.
         ctx = contextvars.copy_context()
         self.channel.set_context_var()
-        ctx_ran_cor = ctx.run(cmd_task.run)
+        ctx_ran_cor = ctx.run(cmd_task.dry_run)
 
         # 创建一个可以被 cancel 的 task.
-        run_task = asyncio.create_task(ctx_ran_cor)
+        run_execution = asyncio.create_task(ctx_ran_cor)
         # 这个 task 是不是在运行出结果之前, 外部已经结束了.
         wait_outside_done = asyncio.create_task(cmd_task.wait())
 
         done, pending = await asyncio.wait(
-            [run_task, wait_outside_done],
+            [run_execution, wait_outside_done],
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if run_task not in done and not run_task.done():
+        if run_execution not in done and not run_execution.done():
             # 如果 run task 不在 Done 里, 说明 cmd task 在外部被先结束了.
-            run_task.cancel()
+            run_execution.cancel()
 
-        return await run_task
+        return await run_execution
 
     # --- main loop --- #
 
