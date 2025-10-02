@@ -7,6 +7,8 @@ __all__ = [
     'CommandTokenParser',
     'CommandTaskParserElement',
     "Interpreter",
+    "CommandTokenCallback",
+    "CommandTaskCallback",
 ]
 
 CommandTokenCallback = Callable[[CommandToken | None], None]

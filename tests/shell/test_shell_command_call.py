@@ -25,13 +25,13 @@ async def test_shell_execution_baseline():
         return 456
 
     async with shell:
-        interpreter = shell.interpret()
+        interpreter = shell.interpreter()
         assert isinstance(interpreter, Interpreter)
         assert shell.is_running()
         async with interpreter:
             interpreter.feed("<a:foo /><b:bar />")
             assert shell.is_running()
-            tasks = await interpreter.wait_execution_done(10)
+            tasks = await interpreter.wait_execution_done(1)
 
             assert len(tasks) == 2
             result = []
@@ -61,7 +61,7 @@ async def test_shell_outputted():
         return 123
 
     async with shell:
-        async with shell.interpret() as interpreter:
+        async with shell.interpreter() as interpreter:
             interpreter.feed("<foo />hello")
             await interpreter.wait_execution_done(10)
             assert interpreter.outputted() == ["hello"]
@@ -81,7 +81,7 @@ async def test_shell_task_can_get_channel():
         return chan is a_chan
 
     async with shell:
-        async with shell.interpret() as interpreter:
+        async with shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_execution_done(10)
             assert len(tasks) == 1
@@ -102,7 +102,7 @@ async def test_shell_task_can_get_task():
         return task.cid
 
     async with shell:
-        async with shell.interpret() as interpreter:
+        async with shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_execution_done(10)
             assert len(tasks) == 1
@@ -148,9 +148,11 @@ async def test_shell_loop():
 
     content = '<loop times="2"><a:foo /></loop>'
     async with shell:
-        async with shell.interpret() as interpreter:
+        interpreter = shell.interpreter()
+        async with interpreter:
             for c in content:
                 interpreter.feed(c)
             await interpreter.wait_execution_done()
+        assert interpreter.is_stopped()
     # 执行了两次.
     assert len(outputs) == 2

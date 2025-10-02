@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, Dict, List, AsyncIterable
+from typing import Optional, Iterable, Dict, List, AsyncIterable, Callable, Coroutine
 from ghoshell_moss.concepts.interpreter import (
     Interpreter, CommandTaskCallback, CommandTaskParserElement, CommandTokenParser,
 )
@@ -26,12 +26,14 @@ class CTMLInterpreter(Interpreter):
             root_tag: str = "ctml",
             special_tokens: Optional[Dict[str, str]] = None,
             logger: Optional[logging.Logger] = None,
+            on_startup: Optional[Callable[[str], Coroutine[None, None, None]]] = None,
     ):
         self.id = stream_id or uuid()
         self._logger = logger or logging.getLogger("CTMLInterpreter")
         self._callbacks = []
         if callback is not None:
             self._callbacks.append(callback)
+        self._on_startup = on_startup
 
         # commands map
         self._commands_map = {c.name(): c for c in commands}
@@ -221,11 +223,14 @@ class CTMLInterpreter(Interpreter):
         if self._started:
             return
         self._started = True
+        if self._on_startup:
+            await self._on_startup()
         task = asyncio.create_task(self._main())
         self._main_task = task
 
     async def stop(self) -> None:
         if self._stopped_event.is_set():
+            await self._main_loop_done.wait()
             return
         self._interrupted = self._started and not self._main_loop_done.is_set()
         self._stopped_event.set()

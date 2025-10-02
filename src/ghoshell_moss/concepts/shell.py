@@ -5,6 +5,7 @@ from ghoshell_moss.concepts.channel import Channel, ChannelMeta
 from ghoshell_moss.concepts.interpreter import Interpreter
 from ghoshell_moss.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_container import IoCContainer
+from contextlib import asynccontextmanager
 import asyncio
 
 __all__ = [
@@ -201,7 +202,7 @@ class MOSSShell(ABC):
     # --- interpret --- #
 
     @abstractmethod
-    def interpret(
+    def interpreter(
             self,
             kind: InterpreterKind = "clear",
             *,
@@ -222,7 +223,7 @@ class MOSSShell(ABC):
 
         async def _parse_token():
             with sender:
-                async with self.interpret(kind) as interpreter:
+                async with self.interpreter(kind) as interpreter:
                     interpreter.parser().with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
@@ -248,7 +249,7 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             with sender:
-                async with self.interpret(kind) as interpreter:
+                async with self.interpreter(kind) as interpreter:
                     interpreter.with_callback(sender.append)
                     async for token in tokens:
                         interpreter.root_task_element().on_token(token)
@@ -271,7 +272,7 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             with sender:
-                async with self.interpret(kind) as interpreter:
+                async with self.interpreter(kind) as interpreter:
                     interpreter.with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)

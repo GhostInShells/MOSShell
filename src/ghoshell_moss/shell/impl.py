@@ -74,20 +74,30 @@ class DefaultShell(MOSSShell):
     def is_idle(self) -> bool:
         return self.is_running() and not self._idle_notifier.is_set()
 
-    def interpret(
+    def interpreter(
             self,
             kind: InterpreterKind = "clear",
             *,
             stream_id: Optional[int] = None,
     ) -> Interpreter:
-        self._check_running()
+        close_running_interpreter = None
         if self._interpreter is not None:
-            self._running_loop.call_soon_threadsafe(self._interpreter.stop)
-            self._interpreter = None
-            if kind == "defer_clear":
-                asyncio.run_coroutine_threadsafe(self.defer_clear(), self._running_loop)
-            elif kind == "clear":
-                asyncio.run_coroutine_threadsafe(self.clear(), self._running_loop)
+            if self._interpreter.is_running():
+                close_running_interpreter = self._interpreter
+                self._interpreter = None
+
+        async def _on_start():
+            self._check_running()
+
+            if not self.is_idle():
+                if kind == "defer_clear":
+                    await self.defer_clear()
+                elif kind == "clear":
+                    await self.clear()
+
+                if close_running_interpreter is not None:
+                    await self._interpreter.stop()
+
         callback = self._append_command_task if kind != "dry_run" else None
         interpreter = CTMLInterpreter(
             commands=self.commands().values(),
@@ -95,6 +105,7 @@ class DefaultShell(MOSSShell):
             stream_id=stream_id or uuid(),
             callback=callback,
             logger=self.logger,
+            on_startup=_on_start,
         )
         if callback is not None:
             self._interpreter = interpreter
