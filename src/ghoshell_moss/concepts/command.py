@@ -10,7 +10,7 @@ from typing_extensions import Self
 from ghoshell_common.helpers import uuid, generate_import_path
 from ghoshell_moss.helpers.func import parse_function_interface
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel
-from ghoshell_moss.concepts.errors import CommandError
+from ghoshell_moss.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -18,6 +18,14 @@ import traceback
 import inspect
 import time
 import contextvars
+
+__all__ = [
+    'CommandToken', 'CommandTokenType',
+    'Command', 'CommandMeta', 'PyCommand',
+    'CommandTaskState', 'CommandTaskStateType',
+    'CommandTask', 'BaseCommandTask',
+    'CommandTaskStack',
+]
 
 RESULT = TypeVar("RESULT")
 
@@ -397,27 +405,36 @@ class CommandTask(Generic[RESULT], ABC):
     7. 可复制, 复制后可重入, 方便做循环.
     """
 
+    # --- command info --- #
+
+    meta: CommandMeta
+    func: Callable[..., Coroutine[None, None, RESULT]] | None
+    """如果 Func 为 None, 则表示 task 只能靠外部 resolve 来赋值. """
+
+    # --- command call --- #
+
     cid: str
     tokens: str
     args: List
     kwargs: Dict[str, Any]
+    context: Dict[str, Any] = {}
+    """可以传递额外的 context, 作为一种协议"""
+
+    # --- command state --- #
+
     state: CommandTaskStateType
     errcode: int = 0
     errmsg: Optional[str] = None
-    trace: Dict[CommandTaskStateType, float] = {}
     result: Optional[RESULT] = None
-    meta: CommandMeta
+
+    # --- debug --- #
+
+    trace: Dict[CommandTaskStateType, float] = {}
     exec_chan: Optional[str] = None
-    """被运行的 channel 是"""
+    """记录 task 在哪个 channel 被运行. """
 
     done_at: Optional[str] = None
-    """最后产生结果的代码位置."""
-
-    func: Callable[..., Coroutine[None, None, RESULT]] | None
-    """如果 Func 为 None, 则表示 task 只能靠外部 resolve 来赋值. """
-
-    context: Dict[str, Any] = {}
-    """可以传递额外的 context, 作为一种协议"""
+    """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
 
     def set_context_var(self) -> None:
         """通过 context var 来传递 context"""
@@ -607,7 +624,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.state: CommandTaskStateType = "created"
         self.meta = meta
         self.func = func
-        self.errcode: int = 0
+        self.errcode: Optional[int] = None
         self.errmsg: Optional[str] = None
         self.trace: Dict[CommandTaskStateType, float] = {
             "created": time.time(),
@@ -655,7 +672,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         """
         停止命令.
         """
-        self._set_result(None, 'cancelled', CommandError.CANCEL_CODE, reason)
+        self._set_result(None, 'cancelled', CommandErrorCode.CANCEL_CODE, reason)
 
     def clear(self) -> None:
         self.result = None
@@ -695,15 +712,15 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         if not self._done_event.is_set():
             if isinstance(error, str):
                 errmsg = error
-                errcode = CommandError.UNKNOWN_CODE
+                errcode = CommandErrorCode.UNKNOWN_CODE.value
             elif isinstance(error, CommandError):
                 errcode = error.code
                 errmsg = error.message
             elif isinstance(error, asyncio.CancelledError):
-                errcode = CommandError.CANCEL_CODE
+                errcode = CommandErrorCode.CANCEL_CODE.value
                 errmsg = "".join(traceback.format_exception(error, limit=3))
             elif isinstance(error, Exception):
-                errcode = CommandError.UNKNOWN_CODE
+                errcode = CommandErrorCode.UNKNOWN_CODE.value
                 errmsg = "".join(traceback.format_exception(error, limit=3))
             else:
                 errcode = 0

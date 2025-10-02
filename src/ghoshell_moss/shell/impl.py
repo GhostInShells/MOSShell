@@ -1,5 +1,5 @@
 from typing import Dict, Optional
-from ghoshell_moss.concepts.shell import MOSSShell, Output, NewInterpreterKind
+from ghoshell_moss.concepts.shell import MOSSShell, Output, InterpreterKind
 from ghoshell_moss.concepts.command import Command, CommandTask, CommandWrapper
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta
 from ghoshell_moss.concepts.interpreter import Interpreter
@@ -76,7 +76,7 @@ class DefaultShell(MOSSShell):
 
     def interpret(
             self,
-            kind: NewInterpreterKind = "clear",
+            kind: InterpreterKind = "clear",
             *,
             stream_id: Optional[int] = None,
     ) -> Interpreter:
@@ -85,9 +85,9 @@ class DefaultShell(MOSSShell):
             self._running_loop.call_soon_threadsafe(self._interpreter.stop)
             self._interpreter = None
             if kind == "defer_clear":
-                self._running_loop.call_soon_threadsafe(self.defer_clear)
+                asyncio.run_coroutine_threadsafe(self.defer_clear(), self._running_loop)
             elif kind == "clear":
-                self._running_loop.call_soon_threadsafe(self.clear)
+                asyncio.run_coroutine_threadsafe(self.clear(), self._running_loop)
         callback = self._append_command_task if kind != "dry_run" else None
         interpreter = CTMLInterpreter(
             commands=self.commands().values(),
@@ -102,8 +102,12 @@ class DefaultShell(MOSSShell):
 
     def _append_command_task(self, task: CommandTask | None) -> None:
         self._check_running()
-        if task is not None:
-            self._running_loop.call_soon_threadsafe(self._main_channel_runtime.append, task)
+        try:
+            if task is not None:
+                asyncio.run_coroutine_threadsafe(self._main_channel_runtime.append(task), self._running_loop)
+        except Exception as exc:
+            self.logger.exception(exc)
+            self._stop_event.set()
 
     def with_output(self, output: Output) -> None:
         self._output = output

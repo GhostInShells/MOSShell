@@ -418,7 +418,7 @@ class ChannelServer(ABC):
         thread.start()
 
     def close(self) -> None:
-        self.loop.call_soon_threadsafe(self.aclose)
+        self.loop.run_until_complete(self.aclose())
 
     @asynccontextmanager
     async def run(self, channel: Channel) -> AsyncIterator[Self]:

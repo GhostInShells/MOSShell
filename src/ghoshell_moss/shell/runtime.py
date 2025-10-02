@@ -8,7 +8,7 @@ from ghoshell_moss.concepts.channel import Channel
 from ghoshell_moss.concepts.command import CommandTaskStack, CommandTask, Command
 from ghoshell_moss.concepts.errors import FatalError, CommandError, InterpretError
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel, TreeNotify
-from ghoshell_container import IoCContainer, set_container
+from ghoshell_container import IoCContainer
 import asyncio
 
 
@@ -378,12 +378,12 @@ class ChannelRuntimeImpl(ChannelRuntime):
                 await self._pending_queue_locker.acquire()
                 try:
                     _pending_queue = self._pending_queue
-                    item = await asyncio.wait_for(_pending_queue.get(), timeout=0.1)
+                    item = await _pending_queue.get()
                     if item is None:
                         continue
                     await self._add_executing_task(item)
-                except asyncio.TimeoutError:
-                    continue
+                except asyncio.CancelledError:
+                    break
                 finally:
                     self._pending_queue_locker.release()
 
@@ -764,8 +764,13 @@ class ChannelRuntimeImpl(ChannelRuntime):
         executing_task = asyncio.create_task(self._executing_loop())
 
         try:
+            gathered = asyncio.gather(consume_pending_task, executing_task)
+            stopped = asyncio.create_task(self._stop_event.wait())
+            done, pending = await asyncio.wait([gathered, stopped], return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
             # 如果遇到问题就直接取消.
-            await ensure_tasks_done_or_cancel(consume_pending_task, executing_task, cancel=self._stop_event.wait)
+            await gathered
         except asyncio.CancelledError:
             pass
         except Exception as e:

@@ -1,7 +1,7 @@
 import threading
 
 from ghoshell_moss.concepts.command import PyCommand, BaseCommandTask, CommandTaskState, CommandTaskStack, CommandTask
-from ghoshell_moss.concepts.errors import CommandError
+from ghoshell_moss.concepts.errors import CommandError, CommandErrorCode
 import pytest
 import asyncio
 
@@ -96,7 +96,9 @@ async def test_command_task_cancel():
     task2 = task.copy()
     # cancel come first
     await asyncio.gather(asyncio.to_thread(task2.cancel), task2.wait(throw=False))
-    assert task2.errcode == CommandError.CANCEL_CODE
+    assert task2.errcode == CommandErrorCode.CANCEL_CODE
+    assert task2.cancelled()
+    assert not task2.success()
 
 
 @pytest.mark.asyncio

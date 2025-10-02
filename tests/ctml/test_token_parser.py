@@ -1,6 +1,6 @@
 from typing import List
 from ghoshell_moss.concepts.command import CommandToken, CommandTokenType
-from ghoshell_moss.concepts.interpreter import CommandTokenParseError
+from ghoshell_moss.concepts.errors import InterpretError
 from ghoshell_moss.ctml.token_parser import CTMLTokenParser
 from collections import deque
 
@@ -165,7 +165,7 @@ def test_token_with_recursive_cdata():
         CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     except Exception as ex:
         e = ex
-    assert isinstance(e, CommandTokenParseError)
+    assert isinstance(e, InterpretError)
 
 
 def test_space_only_delta():

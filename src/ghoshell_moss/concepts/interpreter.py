@@ -7,11 +7,6 @@ CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
 
 
-class CommandTokenParseError(Exception):
-    """converge the exceptions during command token parsing into this type"""
-    pass
-
-
 class CommandTaskParseError(Exception):
     pass
 
@@ -294,6 +289,9 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(self, timeout: float | None = None) -> Dict[str, CommandTask]:
+        """
+
+        """
         pass
 
     @abstractmethod

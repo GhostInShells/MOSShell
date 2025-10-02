@@ -2,11 +2,16 @@ import threading
 from abc import ABC, abstractmethod
 from typing import List, Iterable, Dict, Literal, Optional, AsyncIterable
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta
-from ghoshell_moss.concepts.errors import FatalError
 from ghoshell_moss.concepts.interpreter import Interpreter
 from ghoshell_moss.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_container import IoCContainer
 import asyncio
+
+__all__ = [
+    'Output', 'OutputStream',
+    'InterpreterKind',
+    'MOSSShell',
+]
 
 
 class OutputStream(ABC):
@@ -104,7 +109,7 @@ class Output(ABC):
         pass
 
 
-NewInterpreterKind = Literal['clear', 'defer_clear', 'dry_run']
+InterpreterKind = Literal['clear', 'defer_clear', 'dry_run']
 
 
 class MOSSShell(ABC):
@@ -198,7 +203,7 @@ class MOSSShell(ABC):
     @abstractmethod
     def interpret(
             self,
-            kind: NewInterpreterKind = "clear",
+            kind: InterpreterKind = "clear",
             *,
             stream_id: Optional[str] = None,
     ) -> Interpreter:
@@ -207,10 +212,10 @@ class MOSSShell(ABC):
         """
         pass
 
-    async def parse_tokens(
+    async def parse_to_tokens(
             self,
             text: str | AsyncIterable[str],
-            kind: NewInterpreterKind = "dry_run",
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         from ghoshell_moss.helpers.stream import create_thread_safe_stream
         sender, receiver = create_thread_safe_stream()
@@ -233,10 +238,10 @@ class MOSSShell(ABC):
             yield token
         await t
 
-    async def parse_tasks(
+    async def parse_to_tasks(
             self,
             text: str | AsyncIterable[str],
-            kind: NewInterpreterKind = "dry_run",
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         from ghoshell_moss.helpers.stream import create_thread_safe_stream
         sender, receiver = create_thread_safe_stream()
@@ -340,4 +345,3 @@ class SyncShell:
         if not self._running_loop:
             raise RuntimeError(f"Cannot close shell without running")
         self._running_loop.call_soon_threadsafe(self._shell.close)
-

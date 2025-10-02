@@ -6,7 +6,8 @@ import xml.sax
 from xml.sax import saxutils
 from typing import List, Iterable, Optional, Callable, Dict, Set
 from ghoshell_moss.concepts.command import CommandToken
-from ghoshell_moss.concepts.interpreter import CommandTokenParser, CommandTokenParseError
+from ghoshell_moss.concepts.interpreter import CommandTokenParser
+from ghoshell_moss.concepts.errors import InterpretError
 from ghoshell_moss.helpers.token_filters import SpecialTokenMatcher
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 
@@ -249,7 +250,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self._stop_event.is_set() or isinstance(exception, ParserStopped):
             # todo
             return
-        self._exception = CommandTokenParseError(f"parse error: {exception}")
+        self._exception = InterpretError(f"parse error: {exception}")
 
     def fatalError(self, exception: Exception):
         self.done_event.set()
@@ -257,7 +258,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             # todo
             return
         self._logger.exception(exception)
-        self._exception = CommandTokenParseError(f"parse error: {exception}")
+        self._exception = InterpretError(f"parse error: {exception}")
 
     def warning(self, exception):
         self._logger.warning(exception)

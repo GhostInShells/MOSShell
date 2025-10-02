@@ -95,3 +95,17 @@ async def test_wait_for():
 
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(event.wait(), 0.01)
+
+    async def foo():
+        return 123
+
+    assert await asyncio.wait_for(foo(), 0.01) == 123
+
+
+@pytest.mark.asyncio
+async def test_call_soon_thread_safe():
+    queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    loop.call_soon_threadsafe(queue.put_nowait, 1)
+    t = await queue.get()
+    assert t == 1
