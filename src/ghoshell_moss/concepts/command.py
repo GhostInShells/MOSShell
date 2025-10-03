@@ -21,10 +21,11 @@ import contextvars
 
 __all__ = [
     'CommandToken', 'CommandTokenType',
-    'Command', 'CommandMeta', 'PyCommand',
+    'Command', 'CommandMeta', 'PyCommand', 'CommandWrapper',
     'CommandTaskState', 'CommandTaskStateType',
     'CommandTask', 'BaseCommandTask',
     'CommandTaskStack',
+
 ]
 
 RESULT = TypeVar("RESULT")
@@ -241,35 +242,23 @@ class Command(Generic[RESULT], ABC):
 class CommandWrapper(Command[RESULT]):
     def __init__(
             self,
-            command: Command[RESULT],
-            meta: CommandMeta | None = None,
-            name: str | None = None,
-            available: bool | None = None,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[Any, Any, RESULT]],
     ):
-        self._command = command
+        self._func = func
         self._meta = meta
-        self._name = name
-        self._available = available
 
     def name(self) -> str:
-        return self._name if self._name is not None else self._command.name()
+        return self._meta.name
 
     def is_available(self) -> bool:
-        return self._available and self._command.is_available()
+        return self._meta.available
 
     def meta(self) -> CommandMeta:
-        if self._meta is not None:
-            meta = self._meta.model_copy()
-        else:
-            meta = self._command.meta()
-
-        if self._name is not None:
-            meta.name = self._name
-            meta.available = self.is_available()
-        return meta
+        return self._meta
 
     async def __call__(self, *args, **kwargs) -> RESULT:
-        return await self._command(*args, **kwargs)
+        return await self._func(*args, **kwargs)
 
 
 class PyCommand(Generic[RESULT], Command[RESULT]):
@@ -619,6 +608,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             args: list,
             kwargs: Dict[str, Any],
             cid: str | None = None,
+            context: Dict[str, Any] | None = None,
     ) -> None:
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
@@ -632,6 +622,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.trace: Dict[CommandTaskStateType, float] = {
             "created": time.time(),
         }
+        self.context = context or {}
         self._result: Optional[RESULT] = None
         self._done_event: ThreadSafeEvent = ThreadSafeEvent()
         self._done_lock = threading.Lock()

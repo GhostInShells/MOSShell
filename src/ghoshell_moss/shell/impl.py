@@ -228,7 +228,7 @@ class DefaultShell(MOSSShell):
                     if command_meta.name not in commands:
                         continue
                     real_command = commands[command_meta.name]
-                    wrapped = CommandWrapper(real_command, meta=command_meta)
+                    wrapped = CommandWrapper(meta=command_meta, func=real_command.__call__)
                     result[name] = wrapped
         return commands
 

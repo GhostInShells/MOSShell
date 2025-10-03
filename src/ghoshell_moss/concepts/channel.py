@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 __all__ = [
     'FunctionCommand', 'LifecycleFunction', 'PrompterCommand', 'StringType',
     'ChannelMeta', 'Channel', 'ChannelServer', 'ChannelClient',
+    'Builder',
 ]
 
 FunctionCommand = Union[Callable[..., Coroutine], Callable[..., Any]]
@@ -35,6 +36,7 @@ class ChannelMeta(BaseModel):
     可以用来 mock 一个 channel.
     """
     name: str = Field(description="The name of the channel.")
+    channel_id: str = Field(default="", description="The ID of the channel.")
     available: bool = Field(description="Whether the channel is available.")
     description: str = Field(description="The description of the channel.")
     commands: List[CommandMeta] = Field(default_factory=list, description="The list of commands.")
@@ -99,13 +101,6 @@ class ChannelClient(Protocol):
         """
         在 channel 自带的上下文中执行一个 task.
         不递归.
-        """
-        pass
-
-    @abstractmethod
-    def update(self) -> ChannelMeta:
-        """
-        结合所有上下文, 触发更新当前 Channel.
         """
         pass
 
@@ -331,6 +326,11 @@ class Channel(ABC):
         """
         pass
 
+    def all_channels(self) -> Iterable["Channel"]:
+        yield self
+        for channel in self.children().values():
+            yield from channel.all_channels()
+
     @abstractmethod
     def get_channel(self, name: str) -> Optional[Self]:
         """
@@ -373,24 +373,12 @@ class ChannelServer(ABC):
     举例:
     ReverseWebsocketClient => ReverseWebsocketServer => ZMQClient => ZMQServer ... => Client
     """
-    container: IoCContainer
-    loop: asyncio.AbstractEventLoop | None = None
-    channel: Channel | None = None
 
+    @abstractmethod
     async def arun_until_closed(self, channel: Channel) -> None:
         """
         运行 Client 服务.
         """
-        self.loop = asyncio.get_running_loop()
-        self.channel = channel
-        task = await self.create_server_task(channel)
-        await self.wait_closed()
-        if not task.done():
-            task.cancel()
-        await task
-
-    @abstractmethod
-    async def create_server_task(self, channel: Channel) -> asyncio.Task:
         pass
 
     @abstractmethod

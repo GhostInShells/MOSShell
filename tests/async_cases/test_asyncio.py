@@ -109,3 +109,30 @@ async def test_call_soon_thread_safe():
     loop.call_soon_threadsafe(queue.put_nowait, 1)
     t = await queue.get()
     assert t == 1
+
+
+@pytest.mark.asyncio
+async def test_task_await_in_tasks():
+    async def foo():
+        await asyncio.sleep(0.1)
+        return 123
+
+    task = asyncio.create_task(foo())
+
+    async def cancel_foo():
+        task.cancel()
+        return 123
+
+    async def wait_foo():
+        return await task
+
+    cancel_task = asyncio.create_task(cancel_foo())
+    wait_task = asyncio.create_task(wait_foo())
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.gather(task, cancel_task, wait_task)
+
+    assert task.done()
+    assert wait_task.done()
+    assert cancel_task.done()
+    assert await cancel_task == 123

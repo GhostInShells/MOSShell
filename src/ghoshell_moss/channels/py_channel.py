@@ -280,6 +280,7 @@ class PyChannelClient(ChannelClient):
             command_metas.append(command.meta())
         meta = ChannelMeta(
             name=self._builder.name,
+            channel_id=self.id,
             available=self.is_available(),
             description=self.description(),
             children=list(self._children.keys()),
