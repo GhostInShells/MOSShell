@@ -117,6 +117,9 @@ class MOSSShell(ABC):
     """
     Model-Operated System Shell
     面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
+
+    Shell 自身也可以作为 Channel 向上提供, 而自己维护一个完整的运行时. 这需要上一层下发的实际上是 command tokens.
+    这样才能实现本地 shell 的流式处理.
     """
 
     container: IoCContainer

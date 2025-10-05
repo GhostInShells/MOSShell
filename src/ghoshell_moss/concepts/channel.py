@@ -300,14 +300,13 @@ class Channel(ABC):
     def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
         """
         添加子 Channel 到当前 Channel. 形成树状关系.
-        :raise LookupError: 如果出现重名会发出这个异常.
         """
         pass
 
     @abstractmethod
     def new_child(self, name: str) -> Self:
         """
-        生成一个子 channel.
+        生成一个子 channel 并返回它.
         :raise NotImplementError: 没有实现的话.
         """
         pass
@@ -319,24 +318,36 @@ class Channel(ABC):
         """
         pass
 
-    @abstractmethod
     def descendants(self) -> Dict[str, "Channel"]:
         """
         返回所有的子孙 Channel, 先序遍历.
         """
-        pass
+        descendants: Dict[str, "Channel"] = {}
+        for child in self.children().values():
+            descendants[child.name()] = child
+            for descendant in child.descendants().values():
+                descendants[descendant.name()] = descendant
+        return descendants
 
     def all_channels(self) -> Iterable["Channel"]:
         yield self
         for channel in self.children().values():
             yield from channel.all_channels()
 
-    @abstractmethod
     def get_channel(self, name: str) -> Optional[Self]:
         """
         使用 channel 名从树中获取一个 Channel 对象. 包括自身.
         """
-        pass
+        if name == self.name():
+            return self
+        children = self.children()
+        if name in children:
+            return children[name]
+        for child in children.values():
+            got = child.get_channel(name)
+            if got is not None:
+                return got
+        return None
 
     # --- lifecycle --- #
 
@@ -348,7 +359,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
         """
         传入一个父容器, 启动 Channel. 同时生成 Runtime.
         真正运行的是 channel runtime.
@@ -405,8 +416,9 @@ class ChannelServer(ABC):
         thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
         thread.start()
 
+    @abstractmethod
     def close(self) -> None:
-        self.loop.run_until_complete(self.aclose())
+        pass
 
     @asynccontextmanager
     async def run(self, channel: Channel) -> AsyncIterator[Self]:

@@ -184,20 +184,13 @@ class PyChannel(Channel):
                 channels[descendant.name()] = descendant
         return channels
 
-    def get_channel(self, name: str) -> Optional[Self]:
-        if name == self._name:
-            return self
-        descendants = self.descendants()
-        return descendants.get(name, None)
-
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
         self._client = PyChannelClient(
             children=self.children(),
             container=container,
             builder=self._builder,
-            depth=depth,
         )
         return self._client
 
@@ -221,9 +214,7 @@ class PyChannelClient(ChannelClient):
             builder: PyChannelBuilder,
             container: Optional[IoCContainer] = None,
             uid: Optional[str] = None,
-            depth: int = 0
     ):
-        self.depth = depth
         if container is not None:
             container = Container(parent=container, name=f"moss/chan_client/{builder.name}")
         else:
