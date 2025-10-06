@@ -13,17 +13,17 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 __all__ = [
-    'FunctionCommand', 'LifecycleFunction', 'PrompterCommand', 'StringType',
+    'CommandFunction', 'LifecycleFunction', 'PrompterFunction', 'StringType',
     'ChannelMeta', 'Channel', 'ChannelServer', 'ChannelClient',
     'Builder',
 ]
 
-FunctionCommand = Union[Callable[..., Coroutine], Callable[..., Any]]
+CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 """通常要求是异步函数, 如果是同步函数的话, 会卸载到线程池运行"""
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
 
-PrompterCommand = Union[Callable[..., Coroutine[None, None, str]], Callable[..., str]]
+PrompterFunction = Union[Callable[..., Coroutine[None, None, str]], Callable[..., str]]
 
 StringType = Union[str, Callable[[], str]]
 
@@ -37,8 +37,8 @@ class ChannelMeta(BaseModel):
     """
     name: str = Field(description="The name of the channel.")
     channel_id: str = Field(default="", description="The ID of the channel.")
-    available: bool = Field(description="Whether the channel is available.")
-    description: str = Field(description="The description of the channel.")
+    available: bool = Field(default=True, description="Whether the channel is available.")
+    description: str = Field(default="", description="The description of the channel.")
     commands: List[CommandMeta] = Field(default_factory=list, description="The list of commands.")
     children: List[str] = Field(default_factory=list, description="the children channel names")
     # stats: List[State] = Field(default_factory=list, description="The list of state objects.")
@@ -179,7 +179,8 @@ class Builder(ABC):
             # --- 高级参数 --- #
             block: Optional[bool] = None,
             call_soon: bool = False,
-    ) -> Callable[[FunctionCommand], FunctionCommand]:
+            return_command: bool = False,
+    ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
         对于 Channel 而言, Function 通常是会有运行时间的. 阻塞的命令, Channel 会一个一个执行.
@@ -199,6 +200,7 @@ class Builder(ABC):
         :param available: 通过函数定义这个命令是否 available.
         :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
                           如果是 block + call_soon, 会先清空队列.
+        :param return_command: 为真的话, 返回的是一个兼容的 Command 对象.
         """
         pass
 
@@ -386,7 +388,7 @@ class ChannelServer(ABC):
     """
 
     @abstractmethod
-    async def arun_until_closed(self, channel: Channel) -> None:
+    async def arun(self, channel: Channel) -> None:
         """
         运行 Client 服务.
         """
@@ -403,11 +405,19 @@ class ChannelServer(ABC):
         """
         pass
 
+    @abstractmethod
+    def is_running(self) -> bool:
+        pass
+
     def run_until_closed(self, channel: Channel) -> None:
         """
         展示如何同步运行.
         """
         asyncio.run(self.arun_until_closed(channel))
+
+    async def arun_until_closed(self, channel: Channel) -> None:
+        await self.arun(channel)
+        await self.wait_closed()
 
     def run_in_thread(self, channel: Channel) -> None:
         """
@@ -421,12 +431,10 @@ class ChannelServer(ABC):
         pass
 
     @asynccontextmanager
-    async def run(self, channel: Channel) -> AsyncIterator[Self]:
+    async def run_in_ctx(self, channel: Channel) -> AsyncIterator[Self]:
         """
         支持 with statement 的运行方式.
         """
-        running = asyncio.create_task(self.arun_until_closed(channel=channel))
+        await self.arun(channel)
         yield self
         await self.aclose()
-        running.cancel()
-        await running

@@ -1,6 +1,6 @@
 from typing import TypedDict, Dict, Any, ClassVar, Optional, List
 from typing_extensions import Self
-from abc import ABC, abstractmethod
+from abc import ABC
 
 from ghoshell_moss.concepts.channel import ChannelMeta
 from ghoshell_moss.concepts.errors import CommandErrorCode
@@ -86,6 +86,7 @@ class CommandCallEvent(ChannelEventModel):
 
     def not_available(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
+            session_id=self.session_id,
             command_id=self.command_id,
             errcode=CommandErrorCode.NOT_AVAILABLE.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not available",
@@ -93,8 +94,16 @@ class CommandCallEvent(ChannelEventModel):
             chan=self.chan,
         )
 
+    def cancel(self) -> "CommandCancelEvent":
+        return CommandCancelEvent(
+            session_id=self.session_id,
+            command_id=self.command_id,
+            chan=self.chan,
+        )
+
     def done(self, result: Any, errcode: int, errmsg: str) -> "CommandDoneEvent":
         return CommandDoneEvent(
+            session_id=self.session_id,
             command_id=self.command_id,
             errcode=errcode,
             errmsg=errmsg,
@@ -104,6 +113,7 @@ class CommandCallEvent(ChannelEventModel):
 
     def not_found(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
+            session_id=self.session_id,
             command_id=self.command_id,
             errcode=CommandErrorCode.NOT_FOUND.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not found",
@@ -138,7 +148,7 @@ class CommandDoneEvent(ChannelEventModel):
     chan: str = Field(description="channel name")
     command_id: str = Field(description="command id")
     errcode: int = Field(default=0, description="command errcode")
-    errmsg: str = Field(default="", description="command errmsg")
+    errmsg: Optional[str] = Field(default=None, description="command errmsg")
     data: Any = Field(description="result of the command")
 
 

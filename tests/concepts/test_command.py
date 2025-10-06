@@ -122,13 +122,22 @@ async def test_delta_args_command():
 
 @pytest.mark.asyncio
 async def test_command_rename():
-    async def foo():
+    async def _foo():
         return 123
 
-    command = PyCommand(foo, name="bar")
+    command = PyCommand(_foo, name="bar")
     assert command.name() == "bar"
     assert command.meta().name == "bar"
 
-    command = PyCommand(foo, name="bar", chan="test")
+    command = PyCommand(_foo, name="bar", chan="test")
     assert command.name() == "bar"
     assert command.meta().chan == "test"
+
+
+@pytest.mark.asyncio
+async def test_command_with_sync_func():
+    def bar():
+        return 123
+
+    command = PyCommand(bar)
+    assert await command() == 123

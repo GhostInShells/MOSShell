@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 import logging
 import asyncio
 
-__all__ = ['ChannelEventHandler', 'AbsDuplexChannelServer']
+__all__ = ['ChannelEventHandler', 'DuplexChannelServer']
 
 # --- event handlers --- #
 
@@ -21,7 +21,7 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel Client/Server 原有的事件处理逻辑."""
 
 
-class AbsDuplexChannelServer(ChannelServer, ABC):
+class DuplexChannelServer(ChannelServer, ABC):
     """
     实现一个基础的 Duplex Channel Server, 是为了展示 Channel Client/Server 通讯的基本方式.
     注意:
@@ -32,23 +32,23 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
     def __init__(
             self,
             container: Container,
-            client_connection: Connection,
-            server_event_handlers: Dict[str, ChannelEventHandler] | None = None,
+            to_client_connection: Connection,
+            client_event_handlers: Dict[str, ChannelEventHandler] | None = None,
     ):
         self.container = container
         """提供的 ioc 容器"""
 
-        self.connection = client_connection
+        self.connection = to_client_connection
         """从外面传入的 Connection, Channel Server 不关心参数, 只关心交互逻辑. """
 
-        self._server_event_handlers: Dict[str, ChannelEventHandler] = server_event_handlers or {}
+        self._client_event_handlers: Dict[str, ChannelEventHandler] = client_event_handlers or {}
         """注册的事件管理."""
 
         # --- runtime status ---#
 
         self._closing_event: ThreadSafeEvent = ThreadSafeEvent()
         self._closed_event: ThreadSafeEvent = ThreadSafeEvent()
-        self._started: bool = False
+        self._starting: bool = False
 
         # --- runtime properties ---#
 
@@ -66,6 +66,8 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
         self._channel_lifecycle_idle_events: Dict[str, asyncio.Event] = {}
         """channel 生命周期的控制任务. """
 
+        self._main_task: asyncio.Task | None = None
+
     @property
     def logger(self) -> logging.Logger:
         """实现一个运行时的 logger. """
@@ -73,29 +75,26 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
         return self._logger
 
-    async def arun_until_closed(self, channel: Channel) -> None:
-        """生命周期管理."""
-        if self.loop is not None:
-            raise RuntimeError(f'{self} is already running')
-
-        # 初始化, 获取 loop 方便后续有线程安全操作.
+    async def arun(self, channel: Channel) -> None:
+        if self._starting:
+            return
+        self._starting = True
         self.loop = asyncio.get_running_loop()
-        # 获取 channel 本身.
         self.channel = channel
-        # 初始化容器.
-        await asyncio.to_thread(self.container.bootstrap)
-        # 初始化目标 channel, 还有所有的子 channel.
-        await self._bootstrap_channels()
-        # 启动 connection, 允许被连接.
-        await self.connection.start()
-        # 运行事件消费逻辑.
-        task = await asyncio.create_task(self._main())
-        # 标记已经启动.
-        self._started = True
-        await self.wait_closed()
-        if not task.done():
-            task.cancel()
-        await task
+        try:
+            # 初始化容器.
+            await asyncio.to_thread(self.container.bootstrap)
+            # 初始化目标 channel, 还有所有的子 channel.
+            await self._bootstrap_channels()
+            # 启动 connection, 允许被连接.
+            await self.connection.start()
+            # 运行事件消费逻辑.
+            self._main_task = asyncio.create_task(self._main())
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception(e)
+            raise
 
     async def _bootstrap_channels(self) -> None:
         """递归启动所有的 client. """
@@ -107,7 +106,7 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
         await asyncio.gather(*starting)
 
     def _check_running(self):
-        if not self._started:
+        if not self._starting:
             raise RuntimeError(f'{self} is not running')
 
     async def _main(self) -> None:
@@ -115,7 +114,7 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             consume_loop_task = asyncio.create_task(self._consume_client_event_loop())
             stop_task = asyncio.create_task(self._closing_event.wait())
             # 主要用来保证, 当 stop 发生的时候, consume loop 应该中断. 这样响应速度应该更快.
-            done, pending = asyncio.wait([consume_loop_task, stop_task], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait([consume_loop_task, stop_task], return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
 
@@ -123,9 +122,6 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
                 await consume_loop_task
             except asyncio.CancelledError:
                 pass
-            finally:
-                # 通知 connection 关闭.
-                await self.connection.close()
 
         except asyncio.CancelledError:
             self.logger.info("channel server main loop is cancelled")
@@ -145,31 +141,59 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             self._running_command_tasks.clear()
             self._channel_lifecycle_tasks.clear()
             self._channel_lifecycle_idle_events.clear()
+            await self.connection.close()
+            close_all_channels = []
+            for channel in self.channel.all_channels():
+                if channel.is_running():
+                    close_all_channels.append(channel.client.close())
+            await asyncio.gather(*close_all_channels)
+            await asyncio.to_thread(self.container.shutdown)
             # 通知 session 已经彻底结束了.
             self._closed_event.set()
 
     async def wait_closed(self) -> None:
-        if not self._started:
+        if not self._starting:
             return
-        self._closing_event.set()
         await self._closed_event.wait()
 
     async def aclose(self) -> None:
         if self._closing_event.is_set():
+            await self._closed_event.wait()
             return
         self._closing_event.set()
+        try:
+            if self._main_task is not None:
+                await self._main_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception(e)
+            raise
+        finally:
+            self._closed_event.set()
+
+    def is_running(self) -> bool:
+        return self._starting and not (self._closing_event.is_set() or self._closed_event.is_set())
 
     # --- consume client event --- #
 
     async def _consume_client_event_loop(self) -> None:
-        while not self._closing_event.is_set():
-            event = await self.connection.recv()
-            # 所有的事件都异步运行.
-            # 如果希望 Channel Server 完全按照阻塞逻辑来执行, 正确的架构设计应该是:
-            # 1. 服务端下发 command tokens 流.
-            # 2. 本地运行一个 Shell, 消费 command token 生成命令.
-            # 3. 本地的 shell 走独立的调度逻辑.
-            _ = asyncio.create_task(self._consume_single_event(event))
+        try:
+            while not self._closing_event.is_set():
+                event = await self.connection.recv()
+                # 所有的事件都异步运行.
+                # 如果希望 Channel Server 完全按照阻塞逻辑来执行, 正确的架构设计应该是:
+                # 1. 服务端下发 command tokens 流.
+                # 2. 本地运行一个 Shell, 消费 command token 生成命令.
+                # 3. 本地的 shell 走独立的调度逻辑.
+                _ = asyncio.create_task(self._consume_single_event(event))
+        except asyncio.CancelledError:
+            pass
+        except ConnectionClosedError:
+            # todo: log
+            pass
+        except Exception as e:
+            self.logger.exception(e)
 
     async def _consume_single_event(self, event: ChannelEvent) -> None:
         """消费单一事件. 这一层解决 task 生命周期管理. """
@@ -192,8 +216,8 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
         try:
             event_type = event['event_type']
             # 如果有自定义的 event, 先处理.
-            if event_type in self._server_event_handlers:
-                handler = self._server_event_handlers[event_type]
+            if event_type in self._client_event_handlers:
+                handler = self._client_event_handlers[event_type]
                 # 运行这个 event, 判断是否继续.
                 go_on = await handler(self.channel, event)
                 if not go_on:
@@ -202,9 +226,6 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             await self._handle_default_event(event)
 
         except asyncio.CancelledError:
-            # todo: log
-            pass
-        except ConnectionClosedError:
             # todo: log
             pass
         except FatalError as e:
@@ -234,6 +255,11 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
                 self.logger.info("Unknown event: %s", event)
         except ValidationError as err:
             self.logger.error("Received invalid event: %s, err: %s", event, err)
+        except Exception as e:
+            self.logger.exception(e)
+            raise
+        finally:
+            self.logger.info('handled event: %s', event)
 
     async def _handle_command_peek(self, model: CommandPeekEvent) -> None:
         command_id = model.command_id
@@ -443,7 +469,7 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             tokens=event.tokens,
             args=event.args,
             kwargs=event.kwargs,
-            cid=event.id,
+            cid=event.command_id,
             context=event.context,
         )
         # 真正执行这个 task.
@@ -452,10 +478,10 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
             await self._add_running_task(task)
             await self._execute_task(task)
         finally:
-            if not task.done():
-                task.cancel()
             # todo: log
             await self._remove_running_task(task)
+            if not task.done():
+                task.cancel()
             # todo: 通讯如果存在问题, 会导致阻塞. 需要思考.
             result = task.result()
             response = event.done(result, task.errcode, task.errmsg)
@@ -492,3 +518,8 @@ class AbsDuplexChannelServer(ChannelServer, ABC):
                 del self._running_command_tasks[cid]
         finally:
             self._running_command_tasks_lock.release()
+
+    def close(self) -> None:
+        if self._closing_event.is_set():
+            return
+        self._closing_event.set()

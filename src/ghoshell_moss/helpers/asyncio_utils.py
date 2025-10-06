@@ -29,11 +29,9 @@ class ThreadSafeEvent:
         return self.thread_event.wait(timeout)
 
     def set(self) -> None:
-        if self.thread_event.is_set():
-            return
-        self.thread_event.set()
-        if self.debug:
+        if not self.thread_event.is_set() and self.debug:
             self.set_at = get_caller_info(2)
+        self.thread_event.set()
 
         with self._lock:
             for loop, event in self.awaits_events.copy():

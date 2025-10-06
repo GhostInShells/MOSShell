@@ -144,7 +144,7 @@ class DefaultShell(MOSSShell):
     def configure(self, *metas: ChannelMeta) -> None:
         metas = {}
         for meta in metas:
-            metas[meta.name] = meta
+            metas[meta.root_name] = meta
         if len(metas) > 0:
             self._configured_channel_metas = metas
 

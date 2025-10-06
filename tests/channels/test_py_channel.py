@@ -88,3 +88,30 @@ async def test_py_channel_baseline() -> None:
         # description 测试.
         meta = client.meta()
         assert meta.description == desc()
+
+
+@pytest.mark.asyncio
+async def test_py_channel_children() -> None:
+    assert len(chan.children()) == 0
+
+    a_chan = chan.new_child("a")
+    assert isinstance(a_chan, PyChannel)
+    assert chan.children()['a'] is a_chan
+
+    async def zoo():
+        return 123
+
+    zoo_cmd = a_chan.build.command(return_command=True)(zoo)
+    assert isinstance(zoo_cmd, PyCommand)
+
+    async with a_chan.bootstrap():
+        meta = a_chan.client.meta()
+        assert meta.name == "a"
+        assert len(meta.commands) == 1
+        command = a_chan.client.get_command('zoo')
+        # 实际执行的是 zoo.
+        assert await command() == 123
+
+    async with chan.bootstrap():
+        meta = chan.client.meta()
+        assert meta.children == ['a']

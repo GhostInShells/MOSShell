@@ -22,6 +22,7 @@ import contextvars
 __all__ = [
     'CommandToken', 'CommandTokenType',
     'Command', 'CommandMeta', 'PyCommand', 'CommandWrapper',
+    'CommandType',
     'CommandTaskState', 'CommandTaskStateType',
     'CommandTask', 'BaseCommandTask',
     'CommandTaskStack',
@@ -167,7 +168,7 @@ class CommandMeta(BaseModel):
         default=True,
         description="whether this command is available",
     )
-    type: CommandType = Field(
+    type: str = Field(
         default=CommandType.FUNCTION.value,
         description="",
         json_schema_extra=dict(enum=CommandType.all()),

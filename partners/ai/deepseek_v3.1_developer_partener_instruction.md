@@ -1005,7 +1005,7 @@ class CommandTask(Generic[RESULT], ABC):
 
         ctx = contextvars.copy_context()
         self.set_context_var()
-        r = await ctx.run(self.func, *self.args, **self.kwargs)
+        r = await ctx.run_in_ctx(self.func, *self.args, **self.kwargs)
         return r
 
     async def run(self) -> RESULT:
@@ -1051,7 +1051,6 @@ class CommandTask(Generic[RESULT], ABC):
                 f"cid=`{self.cid}` tokens=`{self.tokens}` "
                 f"state=`{self.state}` done_at=`{self.done_at}` "
                 f">")
-
 
 
 class CommandTaskStack:

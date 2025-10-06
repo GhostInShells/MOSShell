@@ -2,8 +2,9 @@ import inspect
 from typing import Type, Optional, List, Callable, Dict, Tuple, Iterable, Any, Coroutine, Awaitable
 from typing_extensions import Self
 
+from ghoshell_moss import CommandTask
 from ghoshell_moss.concepts.channel import (
-    ChannelClient, Builder, Channel, LifecycleFunction, StringType, FunctionCommand, ChannelMeta,
+    ChannelClient, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
 )
 from ghoshell_moss.concepts.command import Command, PyCommand
 from ghoshell_moss.concepts.errors import CommandError, FatalError
@@ -65,8 +66,9 @@ class PyChannelBuilder(Builder):
             available: Optional[Callable[[], bool]] = None,
             block: Optional[bool] = None,
             call_soon: bool = False,
-    ) -> Callable[[FunctionCommand], FunctionCommand]:
-        def wrapper(func: FunctionCommand) -> FunctionCommand:
+            return_command: bool = False,
+    ) -> Callable[[CommandFunction], CommandFunction]:
+        def wrapper(func: CommandFunction) -> CommandFunction:
             command = PyCommand(
                 func,
                 name=name,
@@ -80,6 +82,8 @@ class PyChannelBuilder(Builder):
                 call_soon=call_soon,
             )
             self.commands[command.name()] = command
+            if return_command:
+                return command
             return func
 
         return wrapper
@@ -188,7 +192,7 @@ class PyChannel(Channel):
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
         self._client = PyChannelClient(
-            children=self.children(),
+            children=self._children,
             container=container,
             builder=self._builder,
         )
@@ -269,13 +273,15 @@ class PyChannelClient(ChannelClient):
         command_metas = []
         for command in self.commands(available_only=False).values():
             command_metas.append(command.meta())
+        name = self._builder.name
         meta = ChannelMeta(
-            name=self._builder.name,
+            name=name,
             channel_id=self.id,
             available=self.is_available(),
             description=self.description(),
             children=list(self._children.keys()),
         )
+        meta.commands = command_metas
         return meta
 
     def commands(self, available_only: bool = True) -> Dict[str, Command]:
@@ -410,7 +416,10 @@ class PyChannelClient(ChannelClient):
         self.container.set(ChannelClient, self)
         self.container.bootstrap()
 
-    async def execute(self, name: str, *args, **kwargs) -> Any:
+    async def execute(self, task: CommandTask[R]) -> R:
+        return await self._execute(task.meta.name, *task.args, **task.kwargs)
+
+    async def _execute(self, name: str, *args, **kwargs) -> Any:
         """
         直接在本地运行.
         """
