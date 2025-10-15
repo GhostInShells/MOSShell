@@ -18,24 +18,26 @@ from ghoshell_moss.concepts.command import (
 
 R = TypeVar("R")  # 泛型结果类型
 
+
 class MCPChannelClient(ChannelClient, Generic[R]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
+
     def __init__(
             self,
             *,
             name: str,
             container: IoCContainer,
-            local_channel:  Channel,
+            local_channel: Channel,
             mcp_client: mcp.ClientSession,
-        ):
+    ):
         self._name = name
         self._container = container
         self._local_channel = local_channel
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
 
-        self._commands: Dict[str, Command] = {}        # 映射后的Mosshell Command
-        self._meta: Optional[ChannelMeta] = None       # Channel元信息
-        self._running = False                          # 运行状态标记
+        self._commands: Dict[str, Command] = {}  # 映射后的Mosshell Command
+        self._meta: Optional[ChannelMeta] = None  # Channel元信息
+        self._running = False  # 运行状态标记
 
         self._logger: logging.Logger | None = None
 
@@ -68,7 +70,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
     async def close(self) -> None:
         if not self._running:
             return
-        
+
         # if self._mcp_client:
         #     await self._mcp_client.disconnect()
         # self._commands.clear()
@@ -131,9 +133,10 @@ class MCPChannelClient(ChannelClient, Generic[R]):
         func = self._get_command_func(task.meta)
         if func is None:
             raise LookupError(f'Channel {self._name} can find command {task.meta.name}')
-        return await func(*task.args, **task.kwargs)        
+        return await func(*task.args, **task.kwargs)
 
-    # --- 工具转Command的核心逻辑 --- #
+        # --- 工具转Command的核心逻辑 --- #
+
     def _convert_tools_to_command_metas(self, tools: List[types.Tool]) -> List[CommandMeta]:
         """将MCP工具转换为Mosshell的CommandMeta"""
         metas = []
@@ -155,8 +158,10 @@ class MCPChannelClient(ChannelClient, Generic[R]):
 
     def _generate_code_as_prompt(self, tool: types.Tool) -> str:
         """生成模型可见的Command接口（Code as Prompt）"""
+
         def _parse_input_schema(input_schema: Dict[str, Any], error_prefix=""):
             """解析inputSchema并提取参数信息和参数文档"""
+            # todo: 考虑直接将 json schema 作为 text__ 参数.
             params = []
             param_docs = []
             if input_schema:
@@ -165,13 +170,13 @@ class MCPChannelClient(ChannelClient, Generic[R]):
                     schema = input_schema
                     if isinstance(schema, str):
                         schema = json.loads(schema)
-                    
+
                     if 'properties' in schema:
                         required_params = []
                         optional_params = []
                         required_param_docs = []
                         optional_param_docs = []
-                        
+
                         for param_name, param_info in schema['properties'].items():
                             # 确定参数类型
                             param_type = 'Any'
@@ -188,13 +193,13 @@ class MCPChannelClient(ChannelClient, Generic[R]):
                                     param_type = 'list'
                                 elif param_info['type'] == 'object':
                                     param_type = 'dict'
-                            
+
                             # 确定默认值
                             param_str = f"{param_name}: {param_type}"
                             if param_name not in schema.get('required', []):
                                 default_value = 'None' if param_type != 'bool' else 'False'
                                 param_str += f"={default_value}"
-                            
+
                             # 根据是否必需参数，添加到不同的列表
                             if param_name in schema.get('required', []):
                                 required_params.append(param_str)
@@ -206,7 +211,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
                                 # 添加参数文档
                                 if 'description' in param_info:
                                     optional_param_docs.append(f"    :param {param_name}: {param_info['description']}")
-                        
+
                         # 合并列表，必需参数在前，可选参数在后
                         params = required_params + optional_params
                         param_docs = required_param_docs + optional_param_docs
@@ -216,7 +221,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
 
         # 提取函数名（将连字符替换为下划线）
         function_name = tool.name.replace('-', '_')
-        
+
         # 提取参数信息
         params, param_docs = _parse_input_schema(tool.inputSchema, "")
 
@@ -230,7 +235,8 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             f"    pass"
         )
 
-    def _build_channel_meta(self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult) -> ChannelMeta:
+    def _build_channel_meta(self, initialize_result: types.InitializeResult,
+                            tool_result: types.ListToolsResult) -> ChannelMeta:
         """构建Channel元信息（包含所有工具的CommandMeta）"""
         return ChannelMeta(
             name=self._name,
@@ -242,21 +248,29 @@ class MCPChannelClient(ChannelClient, Generic[R]):
         )
 
     # --- 未使用的生命周期方法（默认空实现） --- #
-    async def policy_run(self) -> None: pass
-    async def policy_pause(self) -> None: pass
-    async def clear(self) -> None: pass
+    async def policy_run(self) -> None:
+        pass
+
+    async def policy_pause(self) -> None:
+        pass
+
+    async def clear(self) -> None:
+        pass
+
     def is_available(self) -> bool:
         return True
 
+
 class MCPChannel(Channel):
     """对接MCP服务的Channel"""
+
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str,
-        block: bool = True,
-        mcp_client: mcp.ClientSession,
+            self,
+            *,
+            name: str,
+            description: str,
+            block: bool = True,
+            mcp_client: mcp.ClientSession,
     ):
         self._name = name
         self._local_channel = PyChannel(name=name, description=description, block=block)
@@ -283,7 +297,7 @@ class MCPChannel(Channel):
             raise RuntimeError(f'Channel {self} has already been started.')
 
         self._client = MCPChannelClient(
-            name=self._name, 
+            name=self._name,
             container=container,
             local_channel=self._local_channel,
             mcp_client=self._mcp_client,
@@ -292,11 +306,14 @@ class MCPChannel(Channel):
         return self._client
 
     # --- 未使用的Channel方法（默认空实现） --- #
-    def with_children(self, *children: Channel, parent: Optional[str] = None) -> Channel:
+    def include_channels(self, *children: Channel, parent: Optional[str] = None) -> Channel:
         raise NotImplementedError("MCPChannel does not support children")
+
     def new_child(self, name: str) -> Channel:
         raise NotImplementedError("MCPChannel does not support children")
+
     def children(self) -> Dict[str, Channel]:
         return {}
+
     def is_running(self) -> bool:
         return self._client is not None and self._client.is_running()

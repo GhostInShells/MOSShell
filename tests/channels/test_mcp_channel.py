@@ -3,6 +3,7 @@ from mcp.client.stdio import stdio_client
 from mcp import ClientSession, StdioServerParameters
 from contextlib import AsyncExitStack
 from ghoshell_moss.channels.mcp_channel import MCPChannel
+from os.path import dirname, join
 import mcp.types as types
 
 
@@ -13,7 +14,7 @@ async def test_mcp_channel_baseline():
         read_stream, write_stream = await exit_stack.enter_async_context(
             stdio_client(StdioServerParameters(
                 command="python",
-                args=["tests/channels/helper/mcp_server_demo.py"],
+                args=[join(dirname(__file__), "helper/mcp_server_demo.py")],
                 env=None
             ))
         )
