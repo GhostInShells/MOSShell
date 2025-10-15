@@ -13,6 +13,7 @@ dependencies = [
     "anyio>=4.10.0",
     "ghoshell-common>=0.4.0.dev0",
     "ghoshell-container>=0.3.0.dev1",
+    "mcp[cli]>=1.17.0",
 ]
 
 [tool.setuptools]
