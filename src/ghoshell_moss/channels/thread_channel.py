@@ -21,6 +21,10 @@ class Server2ClientConnection(Connection):
         self._closed = ThreadSafeEvent()
         self._send_queue = server_2_client_queue
         self._recv_queue = client_2_server_queue
+        self._is_available = True
+
+    def is_available(self) -> bool:
+        return not self._closed.is_set() and self._is_available
 
     async def recv(self, timeout: float | None = None) -> ChannelEvent:
         if self._closed.is_set():
@@ -72,6 +76,9 @@ class Client2ServerConnection(Connection):
         self._closed = ThreadSafeEvent()
         self._send_queue = client_2_server_queue
         self._recv_queue = server_2_client_queue
+
+    def is_available(self) -> bool:
+        return not self._closed.is_set()
 
     async def recv(self, timeout: float | None = None) -> ChannelEvent:
         if self._closed.is_set():

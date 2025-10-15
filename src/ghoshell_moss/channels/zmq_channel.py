@@ -234,6 +234,9 @@ class BaseZMQConnection(Connection, ABC):
 class ZMQServerConnection(BaseZMQConnection):
     """服务端 ZMQ 连接"""
 
+    def is_available(self) -> bool:
+        return not self.is_closed()
+
     async def _heartbeat_loop(self) -> None:
         pass
 
@@ -241,16 +244,13 @@ class ZMQServerConnection(BaseZMQConnection):
 class ZMQClientConnection(BaseZMQConnection):
     """客户端 ZMQ 连接"""
 
+    def is_available(self) -> bool:
+        return not self.is_closed() and time.time() - self._last_activity > self._config.heartbeat_timeout
+
     async def _heartbeat_loop(self) -> None:
         """心跳循环任务（只有客户端需要）"""
         try:
             while not self._closed_event.is_set():
-                # 检查活动超时
-                if time.time() - self._last_activity > self._config.heartbeat_timeout:
-                    logger.warning("Heartbeat timeout, closing connection")
-                    await self.close()
-                    break
-
                 # 发送心跳请求
                 if time.time() - self._last_activity > self._config.heartbeat_interval:
                     try:

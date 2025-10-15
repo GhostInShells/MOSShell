@@ -168,7 +168,6 @@ class DuplexChannelServer(ChannelServer):
             self.logger.exception(e)
             raise
 
-
     def is_running(self) -> bool:
         return self._starting and not (self._closing_event.is_set() or self._closed_event.is_set())
 
@@ -439,38 +438,39 @@ class DuplexChannelServer(ChannelServer):
             # 设置 task 取消.
             task.cancel()
 
-    async def _handle_command_call(self, event: CommandCallEvent) -> None:
+    async def _handle_command_call(self, call_event: CommandCallEvent) -> None:
         """执行一个命令运行的逻辑. """
         # 先取消 lifecycle 的命令.
-        await self._cancel_channel_lifecycle_task(event.chan)
-        channel = self.channel.get_channel(event.chan)
+        await self._cancel_channel_lifecycle_task(call_event.chan)
+        channel = self.channel.get_channel(call_event.chan)
         if channel is None:
-            response = event.not_available("channel %s not found" % event.chan)
+            response = call_event.not_available("channel %s not found" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
         elif not self.channel.is_running():
-            response = event.not_available("channel %s is not running" % event.chan)
+            response = call_event.not_available("channel %s is not running" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
 
         # 获取真实的 command 对象.
-        command = channel.client.get_command(event.name)
+        command = channel.client.get_command(call_event.name)
         if command is None or not command.is_available():
-            response = event.not_available()
+            response = call_event.not_available()
             await self._send_response_to_client(response.to_channel_event())
             return
 
         task = BaseCommandTask(
             meta=command.meta(),
             func=command.__call__,
-            tokens=event.tokens,
-            args=event.args,
-            kwargs=event.kwargs,
-            cid=event.command_id,
-            context=event.context,
+            tokens=call_event.tokens,
+            args=call_event.args,
+            kwargs=call_event.kwargs,
+            cid=call_event.command_id,
+            context=call_event.context,
         )
         # 真正执行这个 task.
         try:
+            # 多余的, 没什么用.
             task.set_state("running")
             await self._add_running_task(task)
             await self._execute_task(task)
@@ -481,11 +481,12 @@ class DuplexChannelServer(ChannelServer):
                 task.cancel()
             # todo: 通讯如果存在问题, 会导致阻塞. 需要思考.
             result = task.result()
-            response = event.done(result, task.errcode, task.errmsg)
+            response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_response_to_client(response.to_channel_event())
 
     async def _execute_task(self, task: CommandTask) -> None:
         try:
+            # 干运行, 拿到同步运行结果.
             execution = asyncio.create_task(task.dry_run())
             # 如果 task 被提前 cancel 了, 执行命令也会被取消.
             wait_done = asyncio.create_task(task.wait())
