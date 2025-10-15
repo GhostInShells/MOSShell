@@ -160,12 +160,12 @@ class PyChannel(Channel):
         else:
             raise RuntimeError("Server not running")
 
-    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
+    def include_channels(self, *children: "Channel", parent: Optional[str] = None) -> Self:
         if parent is not None:
             descendant = self.descendants().get(parent)
             if descendant is None:
                 raise LookupError(f"the children parent name of {parent} does not exist")
-            descendant.with_children(*children)
+            descendant.include_channels(*children)
             return
 
         for child in children:

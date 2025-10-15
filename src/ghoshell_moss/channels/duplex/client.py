@@ -1,11 +1,10 @@
-from typing import TypedDict, Dict, Any, ClassVar, Optional, List, Callable, Coroutine
+from typing import Dict, Any, Optional, Callable, Coroutine
 from typing_extensions import Self
-from abc import ABC
 
 from ghoshell_moss import ChannelClient
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta, Builder, R
-from ghoshell_moss.concepts.errors import CommandError
-from ghoshell_moss.concepts.command import Command, CommandTask, BaseCommandTask, CommandMeta, CommandWrapper
+from ghoshell_moss.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.concepts.command import Command, CommandTask, BaseCommandTask, CommandMeta, CommandWrapper, RESULT
 from ghoshell_moss.channels.py_channel import PyChannel
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from .protocol import *
@@ -29,24 +28,54 @@ class DuplexChannelContext:
             root_local_channel: Channel,
     ):
         self.root_name = root_local_channel.name()
-        self.origin_root_name = ""
+        """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
+        self.remote_root_name = ""
+        """远端的 root channel 名字"""
+
         self.session_id = session_id
         self.container = container or Container(name="duplex channel context container")
         self.connection = connection
-        self.root_local_channel = root_local_channel
-        self.meta_map: Dict[str, ChannelMeta] = {}
-        self.runtime_channels: Dict[str, Channel] = {}
-        self.started = False
-        self.stop_event = ThreadSafeEvent()
-        self.client_event_queue: asyncio.Queue[ChannelEvent | None] = asyncio.Queue()
-        self.server_event_queue_map: Dict[str, asyncio.Queue[ChannelEvent | None]] = {}
-        self._main_task: Optional[asyncio.Task] = None
-        self._logger: logging.Logger | None = None
+        """双工连接本身."""
 
-    async def send_event_to_server(self, event: ChannelEvent):
-        await self.client_event_queue.put(event)
+        self.root_local_channel = root_local_channel
+        """根节点的本地 channel. """
+
+        self.meta_map: Dict[str, ChannelMeta] = {}
+        """所有远端上传的 metas. """
+
+        self.started = False
+        self.available = True
+        self.stop_event = ThreadSafeEvent()
+        """全局的 stop event, 会中断所有的子节点"""
+
+        self.server_event_queue_map: Dict[str, asyncio.Queue[ChannelEvent | None]] = {}
+        """按 channel 名称进行分发的队列."""
+
+        self._main_task: Optional[asyncio.Task] = None
+        """ ctx 的主循环. """
+        self._pending_server_command_calls: Dict[str, CommandTask] = {}
+
+        self._logger: logging.Logger | None = None
+        """logger 的缓存."""
+
+    async def send_event_to_server(self, event: ChannelEvent) -> bool:
+        if self.stop_event.is_set() or not self.connection.is_available():
+            self.logger.warning("Channel %s Connection is stopped or not available" % self.root_name)
+        try:
+            await self.connection.send(event)
+            return True
+        except ConnectionClosedError:
+            self.logger.warning("Channel %s Connection is closed" % self.root_name)
+            self.available = False
+            return False
+        except Exception as e:
+            self.logger.exception(e)
+            return False
 
     def get_server_event_queue(self, name: str) -> asyncio.Queue[ChannelEvent | None]:
+        """
+        :param name: 这里的 name 是 channel 在远端的原名称.
+        """
         if name not in self.server_event_queue_map:
             self.server_event_queue_map[name] = asyncio.Queue()
         return self.server_event_queue_map[name]
@@ -61,56 +90,94 @@ class DuplexChannelContext:
         if self.started:
             return
         self.started = True
+        # 完成初始化.
         await self._bootstrap()
+        # 创建主循环.
         self._main_task = asyncio.create_task(self._main())
 
     async def close(self) -> None:
         if self.stop_event.is_set():
             return
+        # 通知关闭.
         self.stop_event.set()
+        # 尝试通知所有的子节点关闭.
         for queue in self.server_event_queue_map.values():
             queue.put_nowait(None)
+        # 等待主任务结束.
         if self._main_task:
             await self._main_task
 
     def is_available(self, name: str) -> bool:
-        return self.is_running() and name in self.meta_map and self.meta_map[name].available
+        """判断一个 channel 是否可以运行. """
+        connection_is_available = self.is_running() and self.connection.is_available()
+        # 再判断 meta 也是 available 的.
+        return connection_is_available and name in self.meta_map and self.meta_map[name].available
 
     def is_running(self) -> bool:
-        return self.started and not self.stop_event.is_set()
+        """判断 ctx 是否在运行. """
+        return self.started and not self.stop_event.is_set() and not self.connection.is_closed()
 
-    def get_children(self, name: str) -> Dict[str, Channel]:
-        result = {}
-        if name not in self.meta_map:
-            local_channel = self.root_local_channel.get_channel(name)
-            if local_channel is not None:
-                return local_channel.children()
-            # 返回空结果.
-            return result
-        else:
-            meta = self.meta_map[name]
-            result = {}
-            for child_name in meta.children:
-                child_channel = self.get_channel(child_name)
-                result[child_name] = child_channel
-            return result
-
-    def get_channel(self, name: str) -> Optional[Channel]:
-        if name == self.root_name:
-            name = self.origin_root_name
-
-        if name not in self.meta_map:
-            return None
-        elif name in self.runtime_channels:
-            return self.runtime_channels[name]
-
-        server_meta = self.meta_map.get(name)
-        runtime_channel = DuplexChannelStub(
-            name=name,
-            server_meta_name=server_meta.name,
-            ctx=self,
+    async def execute_command_call(self, meta: CommandMeta, event: CommandCallEvent) -> CommandTask:
+        """与远程 server 进行通讯, 发送一个 command call, 并且保障有回调. """
+        cid = event.command_id
+        wait_result_task = BaseCommandTask(
+            meta=meta,
+            func=None,
+            cid=event.command_id,
+            tokens=event.tokens,
+            args=event.args,
+            kwargs=event.kwargs,
+            context=event.context,
         )
-        self.runtime_channels[name] = runtime_channel
+        try:
+            # 清空已经存在的 cid 错误?
+            if cid in self._pending_server_command_calls:
+                t = self._pending_server_command_calls.pop(cid)
+                t.cancel()
+                self.logger.error(f"Command Task {cid} duplicated call")
+            # 添加新的 task.
+            self._pending_server_command_calls[cid] = wait_result_task
+
+            # 等待异步返回结果.
+            success = await self.send_event_to_server(event.to_channel_event())
+            if not success:
+                wait_result_task.fail(CommandErrorCode.FAILED.error("Failed to send command to server"))
+                return wait_result_task
+
+            task_done = asyncio.create_task(wait_result_task.wait())
+            is_stopped = asyncio.create_task(self.stop_event.wait())
+            _, pending = await asyncio.wait(
+                [task_done, is_stopped],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            await task_done
+            return wait_result_task
+
+        except ConnectionClosedError:
+            wait_result_task.fail(CommandErrorCode.FAILED.error("remote connection closed"))
+            return wait_result_task
+
+        except asyncio.CancelledError:
+            if not wait_result_task.done():
+                wait_result_task.cancel()
+                # 发送取消事件, 通知给下游.
+                if self.is_available(event.chan):
+                    await self.send_event_to_server(event.cancel().to_channel_event())
+            return wait_result_task
+        except Exception as e:
+            if not wait_result_task.done():
+                wait_result_task.fail(e)
+                if self.is_running():
+                    await self.send_event_to_server(event.cancel().to_channel_event())
+
+            self.logger.exception(e)
+            return wait_result_task
+
+        finally:
+            if cid in self._pending_server_command_calls:
+                self._pending_server_command_calls.pop(cid)
 
     async def _bootstrap(self):
         await asyncio.to_thread(self.container.bootstrap)
@@ -125,114 +192,110 @@ class DuplexChannelContext:
 
     async def _main(self):
         try:
-            gathered = asyncio.gather(self._main_receiving_loop(), self._main_sending_loop())
-            wait_task = asyncio.create_task(self.stop_event.wait())
-            done, pending = await asyncio.wait([gathered, wait_task], return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-            await gathered
+            # 异常管理放在外侧, 方便阅读代码.
+            receiving_loop = asyncio.create_task(self._main_receiving_loop())
+            is_stopped = asyncio.create_task(self.stop_event.wait())
+            done, pending = asyncio.wait([receiving_loop, is_stopped], return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await receiving_loop
+        except asyncio.CancelledError:
+            raise
+        except ConnectionClosedError:
+            self.logger.info(f"Channel {self.root_name} Connection closed")
+        except Exception as e:
+            self.logger.exception(e)
+            raise
+        finally:
+            self.stop_event.set()
+            for queue in self.server_event_queue_map.values():
+                queue.put_nowait(None)
+
+    async def _main_receiving_loop(self) -> None:
+        try:
+            while not self.stop_event.is_set():
+                # 等待一个事件.
+                event = await self.connection.recv()
+                # 默认的毒丸逻辑. 防止死锁.
+                if event is None:
+                    break
+
+                # sync metas 事件的标准处理.
+                if update_meta := ChannelMetaUpdateEvent.from_channel_event(event):
+                    await self.update_meta(update_meta)
+                    continue
+                # server errors 的标准处理.
+                elif server_error := ChannelMetaUpdateEvent.from_channel_event(event):
+                    self.logger.error(f'Channel {self.root_name} error: {server_error}')
+                    continue
+
+                # 判断回调分发给哪个具体的 channel.
+                if "chan" in event['data']:
+                    chan = event['data']['chan']
+                    # 检查是否是已经注册的 channel.
+                    if chan not in self.meta_map:
+                        self.logger.error(f'Channel {self.root_name} error: {chan} not found')
+                        continue
+
+                    queue = self.get_server_event_queue(chan)
+                    # 分发给指定 channel.
+                    await queue.put(event)
+                else:
+                    # 拿到的 channel 不可理解.
+                    self.logger.error(f'Channel {self.root_name} receive unknown event : {event}')
         except asyncio.CancelledError:
             pass
         except ConnectionClosedError:
-            self.logger.info(f"Channel {self.root_name} Connection closed")
-            self.stop_event.set()
+            pass
         except Exception as e:
             self.logger.exception(e)
         finally:
             self.stop_event.set()
 
-    async def send_event(self, channel_event: ChannelEvent) -> None:
-        try:
-            await self.client_event_queue.put(channel_event)
-        except asyncio.CancelledError:
-            pass
-
     async def update_meta(self, event: ChannelMetaUpdateEvent) -> None:
-        self.origin_root_name = event.root_chan
+        """更新 metas 信息. """
+        self.remote_root_name = event.root_chan
         # 更新 meta map.
         meta_map = {}
         for meta in event.metas:
             meta_map[meta.name] = meta.model_copy()
             if meta.name not in self.server_event_queue_map:
+                # 提前补充好 channel 分发用的 queue.
                 self.server_event_queue_map[meta.name] = asyncio.Queue()
 
         for meta in self.meta_map.values():
             if meta.name not in meta_map:
                 meta.available = False
-        self.meta_map.update(meta_map)
-        root_meta = self.meta_map.get(self.origin_root_name)
-        # 更新剩余的 meta.
-        self._update_channel_with_meta(root_meta, self.root_name)
-
-    def _update_channel_with_meta(self, meta: ChannelMeta, alias: str | None = None):
-        if meta.name not in self.runtime_channels:
-            alias = alias or meta.name
-            runtime_channel = DuplexChannelStub(
-                name=alias,
-                server_meta_name=meta.name,
-                ctx=self,
-            )
-            self.runtime_channels[meta.name] = runtime_channel
-        for child_name in meta.children:
-            child_meta = self.meta_map.get(child_name)
-            self._update_channel_with_meta(child_meta)
-
-    async def _main_receiving_loop(self) -> None:
-        while not self.stop_event.is_set():
-            event = await self.connection.recv()
-            if event is None:
-                self.stop_event.set()
-                break
-
-            if update_meta := ChannelMetaUpdateEvent.from_channel_event(event):
-                await self.update_meta(update_meta)
-                continue
-            elif server_error := ChannelMetaUpdateEvent.from_channel_event(event):
-                self.logger.error(f'Channel {self.root_name} error: {server_error}')
-                continue
-
-            if "chan" in event['data']:
-                chan = event['data']['chan']
-                # 检查是否是已经注册的 channel.
-                if chan not in self.meta_map:
-                    self.logger.error(f'Channel {self.root_name} error: {chan} not found')
-                    continue
-
-                if chan not in self.server_event_queue_map:
-                    self.server_event_queue_map[chan] = asyncio.Queue()
-                queue = self.server_event_queue_map[chan]
-                await queue.put(event)
-            else:
-                self.logger.error(f'Channel {self.root_name} receive unknown event : {event}')
-
-    async def _main_sending_loop(self) -> None:
-        while not self.stop_event.is_set():
-            item = await self.client_event_queue.get()
-            await self.connection.send(item)
+        # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
+        self.meta_map = meta_map
 
 
 class DuplexChannelStub(Channel):
+    """被 channel meta 动态生成的子 channel. """
 
     def __init__(
             self,
             *,
-            name: str,
+            name: str,  # 本地的名称.
             ctx: DuplexChannelContext,
-            server_meta_name: str = "",
+            server_meta_name: str = "",  # 远端真实的名称.
+            local_channel: Channel = None,
     ) -> None:
         self._name = name
-        self._server_meta_name = server_meta_name
+        self._server_meta_name = server_meta_name or name
         self._ctx = ctx
+        self._local_channel = local_channel or PyChannel(name=name)
+        # 运行时缓存.
         self._client: ChannelClient | None = None
-        self._local_channel = ctx.root_local_channel.get_channel(name) or PyChannel(name=name)
         self._started = False
+        self._children_stubs: Dict[str, DuplexChannelStub] = {}
 
     def name(self) -> str:
         return self._name
 
-    def _get_server_meta(self) -> Optional[ChannelMeta]:
-        server_meta_name = self._server_meta_name or self._ctx.origin_root_name
-        return self._ctx.meta_map.get(server_meta_name)
+    def _get_server_channel_meta(self) -> Optional[ChannelMeta]:
+        # 获取自己在 server 端的 channel meta.
+        return self._ctx.meta_map.get(self._server_meta_name)
 
     @property
     def client(self) -> ChannelClient:
@@ -240,35 +303,57 @@ class DuplexChannelStub(Channel):
             raise RuntimeError(f'Channel {self} has not been started yet.')
         return self._client
 
-    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
-        return self._local_channel.with_children(*children, parent=parent)
+    def include_channels(self, *children: "Channel", parent: Optional[str] = None) -> Self:
+        return self._local_channel.include_channels(*children, parent=parent)
 
     def new_child(self, name: str) -> Self:
         return self._local_channel.new_child(name)
 
     def children(self) -> Dict[str, "Channel"]:
-        result = self._local_channel.children()
-        meta = self._get_server_meta()
+        local_children = self._local_channel.children()
+        meta = self._get_server_channel_meta()
         if meta is None:
-            return result
+            return local_children
+
+        # 遍历自己的 meta children.
+        children_stubs = {}
         for child_meta_name in meta.children:
-            channel = self._ctx.get_channel(child_meta_name)
-            result[channel.name()] = channel
+            if child_meta_name in self._children_stubs:
+                # 复制到新字典.
+                children_stubs[child_meta_name] = self._children_stubs[child_meta_name]
+                continue
+            local_child_channel = self._ctx.root_local_channel.get_channel(child_meta_name)
+            stub = DuplexChannelStub(
+                name=child_meta_name,
+                ctx=self._ctx,
+                local_channel=local_child_channel,
+                server_meta_name=child_meta_name,
+            )
+            children_stubs[child_meta_name] = stub
+        # 每次都更新当前的 children stubs.
+        self._children_stubs.clear()
+        self._children_stubs = children_stubs
+        result: Dict[str, Channel] = children_stubs.copy()
+        # 补全本地的 channel.
+        for local_child_name, local_child_channel in local_children.items():
+            if local_child_name not in children_stubs:
+                result[local_child_name] = local_child_channel
         return result
 
     def is_running(self) -> bool:
-        if self._ctx.stop_event.is_set():
-            return False
-        meta = self._ctx.meta_map.get(self._server_meta_name)
-        return self._started and meta is not None
+        return self._started and self._client is not None and self._ctx.is_running()
 
     def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelClient":
         if self._client is not None and self._client.is_running():
-            raise RuntimeError(f'Channel {self} has already been started.')
+            raise RuntimeError(f'Channel {self._name} has already been started.')
+        if not self._ctx.is_running():
+            raise RuntimeError(f'Duplex Channel {self._name} Context is not running')
+
+        meta = self._ctx.meta_map.get(self._server_meta_name, None)
 
         running_client = DuplexChannelClient(
             name=self._name,
-            is_root=False,
+            meta=meta,
             ctx=self._ctx,
             local_channel=self._local_channel,
             container=container,
@@ -290,37 +375,32 @@ class DuplexChannelClient(ChannelClient):
             self,
             *,
             name: str,
-            is_root: bool,
+            server_meta_name: str,
             ctx: DuplexChannelContext,
             local_channel: Channel,
             container: Optional[IoCContainer] = None,
+            channel_id: Optional[str] = None,
     ) -> None:
         """
         """
-        self.container = container or ctx.container
-        self.id = uuid()
-        self._is_root = is_root
         self._name = name
+        self._server_meta_name = server_meta_name
         self._ctx = ctx
+        self.container = container or ctx.container
+        self.id = channel_id or uuid()
         self._local_channel = local_channel
-
         # meta 的讯息.
         self._cached_meta: Optional[ChannelMeta] = None
 
         # 运行时参数
         self._started = False
         self._logger: logging.Logger | None = None
-        self._remote_stop_event = ctx.stop_event
 
-        self._self_close_event = asyncio.Event()
+        self._self_close_event = ThreadSafeEvent()
         self._main_loop_task: Optional[asyncio.Task] = None
         self._main_loop_done_event = ThreadSafeEvent()
         # runtime
         self._pending_server_command_calls: Dict[str, CommandTask] = {}
-
-    @property
-    def server_meta_name(self) -> str:
-        return self._name if not self._is_root else self._ctx.origin_root_name
 
     def is_running(self) -> bool:
         return self._started and self._ctx.is_running()
@@ -342,7 +422,7 @@ class DuplexChannelClient(ChannelClient):
 
     def _build_meta(self) -> ChannelMeta:
         self._check_running()
-        meta_name = self.server_meta_name
+        meta_name = self._server_meta_name
         meta = self._ctx.meta_map.get(meta_name)
         if meta is None:
             return ChannelMeta(
@@ -350,6 +430,8 @@ class DuplexChannelClient(ChannelClient):
                 channel_id=self.id,
                 available=False,
             )
+        # 避免污染.
+        meta = meta.model_copy()
         # 从 server meta 中准备 commands 的原型.
         commands = {}
         for command_meta in meta.commands:
@@ -368,94 +450,71 @@ class DuplexChannelClient(ChannelClient):
         return meta
 
     def is_available(self) -> bool:
-        return self.is_running() and self._ctx.is_available(self.server_meta_name)
+        return self.is_running() and self._ctx.is_available(self._server_meta_name)
 
     def commands(self, available_only: bool = True) -> Dict[str, Command]:
-        meta = self.meta(no_cache=False)
-        result = {}
+        # 先获取本地的命令.
+        result = self._local_channel.client.commands(available_only=available_only)
+        meta = self._ctx.meta_map.get(self._server_meta_name)
+        if meta is None:
+            return result
+        # 再封装远端的命令.
         for command_meta in meta.commands:
-            if not available_only or command_meta.available:
-                func = self._get_command_func(command_meta)
+            if command_meta.name not in result and not available_only or command_meta.available:
+                func = self._get_server_command_func(command_meta)
                 command = CommandWrapper(meta=command_meta, func=func)
                 result[command_meta.name] = command
         return result
 
-    def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
+    def _get_server_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
         name = meta.name
-        # 优先尝试从 local channel 中返回.
-        if self._local_channel is not None:
-            command = self._local_channel.client.get_command(name)
-            if command is not None:
-                self.logger.info(f"Channel {self._name} found command `{meta.name}` from local")
-                return command.__call__
         session_id = self._ctx.session_id
 
-        # 回调服务端.
-        async def _server_caller_as_command(*args, **kwargs):
+        # 回调服务端的函数.
+        async def _call_server_as_func(*args, **kwargs):
+            if not self.is_running():
+                # 告知上游运行失败.
+                raise CommandError(CommandErrorCode.NOT_AVAILABLE, f'Channel {self._name} not available')
+
+            # 尝试透传上游赋予的参数.
             task: CommandTask | None = None
             try:
                 task = CommandTask.get_from_context()
             except LookupError:
                 pass
             cid = task.cid if task else uuid()
+
+            # 生成对下游的调用.
             event = CommandCallEvent(
                 session_id=session_id,
                 name=name,
                 # channel 名称使用 server 侧的名称
-                chan=self.server_meta_name,
+                chan=self._server_meta_name,
                 command_id=cid,
                 args=list(args),
                 kwargs=dict(kwargs),
                 tokens=task.tokens if task else "",
                 context=task.context if task else {},
             )
-            wait_result_task = BaseCommandTask(
-                meta=meta,
-                func=None,
-                cid=event.command_id,
-                tokens=event.tokens,
-                args=event.args,
-                kwargs=event.kwargs,
-                context=event.context,
-            )
-            self._pending_server_command_calls[cid] = wait_result_task
-            try:
-                await self._ctx.send_event_to_server(event.to_channel_event())
-                # 等待异步返回结果.
-                await wait_result_task.wait()
-            except asyncio.CancelledError:
-                if not wait_result_task.done():
-                    wait_result_task.cancel()
-                    await self._ctx.send_event_to_server(event.cancel().to_channel_event())
-                raise
-            except Exception as e:
-                if not wait_result_task.done():
-                    wait_result_task.fail(e)
-                    await self._ctx.send_event_to_server(event.cancel().to_channel_event())
-                self.logger.exception(e)
-                raise
 
-            finally:
-                if cid in self._pending_server_command_calls:
-                    _ = self._pending_server_command_calls.pop(cid)
+            task = await self._ctx.execute_command_call(meta, event)
+            if exp := task.exception():
+                raise exp
+            return task.result()
 
-            # 正常返回.
-            wait_result_task.raise_exception()
-            return wait_result_task.result()
-
-        return _server_caller_as_command
+        return _call_server_as_func
 
     def get_command(self, name: str) -> Optional[Command]:
         meta = self.meta()
         for command_meta in meta.commands:
             if command_meta.name == name:
-                func = self._get_command_func(command_meta)
+                func = self._get_server_command_func(command_meta)
                 return CommandWrapper(meta=command_meta, func=func)
         return None
 
     async def execute(self, task: CommandTask[R]) -> R:
         self._check_running()
-        func = self._get_command_func(task.meta)
+        func = self._get_server_command_func(task.meta)
         if func is None:
             raise LookupError(f'Channel {self._name} can find command {task.meta.name}')
         return await func(*task.args, **task.kwargs)
@@ -521,18 +580,27 @@ class DuplexChannelClient(ChannelClient):
         except Exception as e:
             self.logger.exception(e)
             self._self_close_event.set()
+        finally:
+            self.logger.info("channel %s consume_server_event_loop stopped", self._name)
 
     async def _command_peek_loop(self):
-        while not self._remote_stop_event.is_set() and not self._self_close_event.is_set():
-            if len(self._pending_server_command_calls) > 0:
-                tasks = self._pending_server_command_calls.copy()
-                for task in tasks.values():
-                    peek_event = CommandPeekEvent(
-                        chan=task.meta.chan,
-                        command_id=task.cid,
-                    )
-                    await self._ctx.send_event_to_server(peek_event.to_channel_event())
-            await asyncio.sleep(1)
+        try:
+            while not self._remote_stop_event.is_set() and not self._self_close_event.is_set():
+                if len(self._pending_server_command_calls) > 0:
+                    tasks = self._pending_server_command_calls.copy()
+                    for task in tasks.values():
+                        peek_event = CommandPeekEvent(
+                            chan=task.meta.chan,
+                            command_id=task.cid,
+                        )
+                        await self._ctx.send_event_to_server(peek_event.to_channel_event())
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+        except ConnectionClosedError:
+            self._self_close_event.set()
+        except Exception as e:
+            self.logger.exception(e)
 
     async def _main_loop(self):
         try:
@@ -544,13 +612,26 @@ class DuplexChannelClient(ChannelClient):
         except Exception as e:
             self.logger.exception(e)
         finally:
+            if len(self._pending_server_command_calls) > 0:
+                for t in self._pending_server_command_calls.values():
+                    t.cancel()
+            if self._local_channel is not None and self._local_channel.is_running():
+                await self._local_channel.client.close()
+            await asyncio.to_thread(self.container.shutdown)
             self._main_loop_done_event.set()
 
     async def _consume_server_event(self):
         try:
+            if self._ctx.connection.is_closed():
+                self._self_close_event.set()
+                return
+
             queue = self._ctx.get_server_event_queue(self.server_meta_name)
 
-            item = await queue.get()
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                return
             if item is None:
                 self._self_close_event.set()
                 return
@@ -595,20 +676,19 @@ class DuplexChannelClient(ChannelClient):
 
     async def close(self) -> None:
         if self._self_close_event.is_set():
-            await self._main_loop_done_event.wait()
+            return
         self._self_close_event.set()
-        self._main_loop_task.cancel()
-        try:
-            await self._main_loop_task
-        except asyncio.CancelledError:
-            pass
-
-        if self._local_channel is not None and self._local_channel.is_running():
-            await self._local_channel.client.close()
-        await asyncio.to_thread(self.container.shutdown)
         # 关闭结束 ctx.
         if self._is_root:
             await self._ctx.close()
+        try:
+            if self._main_loop_task:
+                self._main_loop_task.cancel()
+                await self._main_loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception(e)
 
 
 class DuplexChannelProxy(Channel):
@@ -625,7 +705,11 @@ class DuplexChannelProxy(Channel):
         self._server_connection = to_server_connection
         self._local_channel = PyChannel(name=name, description=description, block=block)
         self._client: Optional[DuplexChannelClient] = None
+
         self._ctx: DuplexChannelContext | None = None
+        """运行的时候才会生成 Channel Context"""
+
+        self._children_stubs: Dict[str, DuplexChannelStub] = {}
 
     def name(self) -> str:
         return self._name
@@ -636,8 +720,9 @@ class DuplexChannelProxy(Channel):
             raise RuntimeError(f'Channel {self} has not been started yet.')
         return self._client
 
-    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
-        self._local_channel.with_children(*children, parent=parent)
+    def include_channels(self, *children: "Channel", parent: Optional[str] = None) -> Self:
+        # 新添加的 channel 都放到 local channel 里.
+        self._local_channel.include_channels(*children, parent=parent)
         return self
 
     def new_child(self, name: str) -> Self:
@@ -646,7 +731,29 @@ class DuplexChannelProxy(Channel):
     def children(self) -> Dict[str, "Channel"]:
         if self._ctx is None:
             return self._local_channel.children()
-        return self._ctx.get_children(self._ctx.origin_root_name)
+        # 每次动态检查生成 children channels.
+        children = self._local_channel.children()
+        children_stubs = {}
+        for name, meta in self._ctx.meta_map.items():
+            if name in self._children_stubs:
+                # 已经生成过了.
+                children_stubs[name] = self._children_stubs[name]
+                continue
+            local_child = children.get(name, None)
+            stub = DuplexChannelStub(
+                name=name,
+                ctx=self._ctx,
+                server_meta_name=name,
+                local_channel=local_child,
+            )
+            children_stubs[name] = stub
+        self._children_stubs = children_stubs
+        # 生成一个新的组合.
+        result: Dict[str, Channel] = self._children_stubs.copy()
+        for name, local_child_channel in children.items():
+            if name not in result:
+                result[name] = local_child_channel
+        return result
 
     def is_running(self) -> bool:
         return self._client is not None and self._client.is_running()

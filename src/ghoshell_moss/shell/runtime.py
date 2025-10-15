@@ -267,7 +267,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
 
         if name not in self.channel.children():
             # 动态注册.
-            self.channel.with_children(channel)
+            self.channel.include_channels(channel)
 
         child_runtime = self.make_child_runtime(channel)
         if not child_runtime.is_running():

@@ -31,7 +31,12 @@ class Connection(ABC):
 
     @abstractmethod
     def is_closed(self) -> bool:
-        """判断 connection 是否已经结束了. """
+        """判断 connection 是否已经彻底关闭了. """
+        pass
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """判断 connection 是否还可以用. """
         pass
 
     @abstractmethod

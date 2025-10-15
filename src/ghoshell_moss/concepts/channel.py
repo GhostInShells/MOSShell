@@ -16,6 +16,7 @@ __all__ = [
     'CommandFunction', 'LifecycleFunction', 'PrompterFunction', 'StringType',
     'ChannelMeta', 'Channel', 'ChannelServer', 'ChannelClient',
     'Builder',
+    'R',
 ]
 
 CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
@@ -299,7 +300,7 @@ class Channel(ABC):
     # --- children --- #
 
     @abstractmethod
-    def with_children(self, *children: "Channel", parent: Optional[str] = None) -> Self:
+    def include_channels(self, *children: "Channel", parent: Optional[str] = None) -> Self:
         """
         添加子 Channel 到当前 Channel. 形成树状关系.
         """
@@ -332,6 +333,9 @@ class Channel(ABC):
         return descendants
 
     def all_channels(self) -> Iterable["Channel"]:
+        """
+        语法糖, 返回所有的 channel, 包含自身.
+        """
         yield self
         for channel in self.children().values():
             yield from channel.all_channels()

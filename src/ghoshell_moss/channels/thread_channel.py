@@ -1,13 +1,13 @@
 from typing import Tuple
 from ghoshell_moss.channels.duplex import *
 import asyncio
-import threading
 from queue import Queue, Empty
 from ghoshell_container import Container, IoCContainer
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import Timeleft
 
 
+# --- 测试专用 Channel --- #
 # 测试专用的, 用多线程队列模拟一个 duplex channel.
 
 class Server2ClientConnection(Connection):

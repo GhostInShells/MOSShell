@@ -1,11 +1,7 @@
-import inspect
-from abc import ABC, abstractmethod
 import asyncio
 from typing import List, Tuple, Protocol, Coroutine, Callable, Any, Optional
 from typing_extensions import Self
-from ghoshell_container import get_caller_info
-from contextlib import asynccontextmanager
-from ghoshell_common.helpers import Timeleft
+from collections import deque
 
 import threading
 
@@ -17,7 +13,7 @@ class ThreadSafeEvent:
 
     def __init__(self, debug: bool = False):
         self.thread_event = threading.Event()
-        self.awaits_events: List[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
+        self.awaits_events: deque[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
         self.debug = debug
         self.set_at: Optional[str] = None
         self._lock = threading.Lock()
@@ -29,18 +25,19 @@ class ThreadSafeEvent:
         return self.thread_event.wait(timeout)
 
     def set(self) -> None:
-        if not self.thread_event.is_set() and self.debug:
-            self.set_at = get_caller_info(2)
-        self.thread_event.set()
-
         with self._lock:
-            for loop, event in self.awaits_events.copy():
-                loop.call_soon_threadsafe(event.set)
+            if self.thread_event.is_set():
+                return
+            self.thread_event.set()
+            for loop, event in self.awaits_events:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(event.set)
             self.awaits_events.clear()
 
     def _add_awaits(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> None:
         with self._lock:
-            if self.thread_event.is_set():
+            is_set = self.thread_event.is_set()
+            if is_set:
                 loop.call_soon_threadsafe(event.set)
             else:
                 self.awaits_events.append((loop, event))
@@ -58,9 +55,9 @@ class ThreadSafeEvent:
             return await asyncio.wait_for(self.wait(), timeout)
 
     def clear(self) -> None:
-        self.thread_event.clear()
         with self._lock:
-            for loop, event in self.awaits_events.copy():
+            self.thread_event.clear()
+            for loop, event in self.awaits_events:
                 event.clear()
             self.awaits_events.clear()
 

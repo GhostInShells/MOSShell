@@ -6,6 +6,13 @@ from ghoshell_moss.concepts.command import (
     CommandTaskStack,
 )
 
+from ghoshell_moss.concepts.errors import (
+    CommandError,
+    CommandErrorCode,
+    FatalError,
+    InterpretError,
+)
+
 from ghoshell_moss.concepts.channel import (
     Channel,
     ChannelMeta,

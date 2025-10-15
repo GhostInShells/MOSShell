@@ -1,15 +1,13 @@
-from typing import TypedDict, Dict, Any, ClassVar, Optional, List, Callable, Coroutine
-from typing_extensions import Self
-from abc import ABC, abstractmethod
+from typing import Dict, Callable, Coroutine
 
-from ghoshell_moss.concepts.channel import Channel, ChannelServer, ChannelMeta, Builder, R
-from ghoshell_moss.concepts.errors import FatalError, CommandError, CommandErrorCode
-from ghoshell_moss.concepts.command import Command, CommandTask, BaseCommandTask, CommandMeta, CommandWrapper
+from ghoshell_moss.concepts.channel import Channel, ChannelServer
+from ghoshell_moss.concepts.errors import FatalError, CommandErrorCode
+from ghoshell_moss.concepts.command import CommandTask, BaseCommandTask
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from .protocol import *
 from .connection import *
-from ghoshell_container import Container, IoCContainer
-from pydantic import BaseModel, Field, ValidationError
+from ghoshell_container import Container
+from pydantic import ValidationError
 import logging
 import asyncio
 
@@ -21,7 +19,7 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel Client/Server 原有的事件处理逻辑."""
 
 
-class DuplexChannelServer(ChannelServer, ABC):
+class DuplexChannelServer(ChannelServer):
     """
     实现一个基础的 Duplex Channel Server, 是为了展示 Channel Client/Server 通讯的基本方式.
     注意:
@@ -169,8 +167,7 @@ class DuplexChannelServer(ChannelServer, ABC):
         except Exception as e:
             self.logger.exception(e)
             raise
-        finally:
-            self._closed_event.set()
+
 
     def is_running(self) -> bool:
         return self._starting and not (self._closing_event.is_set() or self._closed_event.is_set())
@@ -267,7 +264,7 @@ class DuplexChannelServer(ChannelServer, ABC):
             command_done = CommandDoneEvent(
                 chan=model.chan,
                 command_id=command_id,
-                errcode=CommandErrorCode.CANCEL_CODE,
+                errcode=CommandErrorCode.CANCELLED,
                 errmsg="canceled",
                 data=None,
             )

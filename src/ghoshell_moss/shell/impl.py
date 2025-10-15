@@ -129,12 +129,12 @@ class DefaultShell(MOSSShell):
 
     def register(self, *channels: Channel, parent: str = "") -> None:
         if parent == "":
-            self._main_channel.with_children(*channels)
+            self._main_channel.include_channels(*channels)
         else:
             parent_channel = self._main_channel.descendants().get(parent, None)
             if parent_channel is None:
                 raise KeyError(f"Channel {parent} not found")
-            parent_channel.with_children(*channels)
+            parent_channel.include_channels(*channels)
         for channel in channels:
             self._running_loop.call_soon_threadsafe(
                 self._main_channel_runtime.get_or_create_child_runtime,

@@ -6,6 +6,7 @@ from ghoshell_moss.concepts.channel import ChannelMeta
 from ghoshell_moss.concepts.errors import CommandErrorCode
 from ghoshell_common.helpers import uuid
 from pydantic import BaseModel, Field
+import time
 
 __all__ = [
     'ChannelEvent', 'ChannelEventModel',
@@ -14,21 +15,24 @@ __all__ = [
     'PausePolicyDoneEvent', 'RunPolicyDoneEvent', 'PausePolicyEvent', 'RunPolicyEvent',
     'ClearCallEvent', 'ClearDoneEvent',
     'ServerErrorEvent',
+    'HeartbeatEvent',
 ]
 
 
 class ChannelEvent(TypedDict):
     event_id: str
     event_type: str
-    session_id: str
-    data: Dict[str, Any]
+    session_id: Optional[str]
+    timestamp: float
+    data: Optional[Dict[str, Any]]
 
 
 class ChannelEventModel(BaseModel, ABC):
     event_type: ClassVar[str] = ""
 
     event_id: str = Field(default_factory=uuid, description="event id for transport")
-    session_id: str = Field(description="channel client id")
+    session_id: str = Field(default="", description="channel client id")
+    timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_channel_event(self) -> ChannelEvent:
         data = self.model_dump(exclude_none=True, exclude={'event_type', 'channel_id', 'channel_name', 'event_id'})
@@ -37,16 +41,24 @@ class ChannelEventModel(BaseModel, ABC):
             event_type=self.event_type,
             session_id=self.session_id,
             data=data,
+            timestamp=self.timestamp,
         )
 
     @classmethod
     def from_channel_event(cls, channel_event: ChannelEvent) -> Optional[Self]:
         if cls.event_type != channel_event['event_type']:
             return None
-        data = channel_event['data']
+        data = channel_event.get('data', {})
         data['event_id'] = channel_event['event_id']
         data['session_id'] = channel_event['session_id']
+        data['timestamp'] = channel_event['timestamp']
         return cls(**data)
+
+
+class HeartbeatEvent(ChannelEventModel):
+    """心跳事件，由客户端发送，服务器响应"""
+    event_type: ClassVar[str] = "moss.heartbeat"
+    direction: str = Field(default="request", description="请求或响应: request/response")
 
 
 # --- client event --- #
