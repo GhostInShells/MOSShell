@@ -9,10 +9,15 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "aiozmq>=1.0.0",
-    "anyio>=4.10.0",
     "ghoshell-common>=0.4.0.dev0",
     "ghoshell-container>=0.3.0.dev1",
+]
+
+[project.optional-dependencies]
+zmq = [
+    "aiozmq>=1.0.0",
+]
+mcp = [
     "mcp[cli]>=1.17.0",
 ]
 
@@ -31,8 +36,11 @@ includes = []
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
     "pytest-asyncio>=1.1.0",
+    "anyio>=4.10.0",
 ]
+

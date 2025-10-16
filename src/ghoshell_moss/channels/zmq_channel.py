@@ -1,5 +1,8 @@
-import zmq
-import zmq.asyncio
+try:
+    import zmq
+    import zmq.asyncio
+except ImportError:
+    raise ImportError(f"zmq module not found, please pip install ghoshell-moss[zmq]")
 from ghoshell_moss.channels.duplex.connection import Connection, ConnectionClosedError
 from ghoshell_moss.channels.duplex.protocol import ChannelEvent, HeartbeatEvent
 from ghoshell_moss.channels.duplex.server import DuplexChannelServer
