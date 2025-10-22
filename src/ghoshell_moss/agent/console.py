@@ -64,7 +64,6 @@ class ChatRenderer:
         self.console.print("=== Chat Started ===")
         self.console.print("Type your message and press Enter to send.")
         self.console.print("Press Enter during AI response to interrupt.\n")
-        self.console.print("/quit to quit the session\n")
 
     def _setup_key_bindings(self):
         """设置键盘快捷键"""
@@ -105,7 +104,7 @@ class ChatRenderer:
     def add_user_message(self, message: str):
         """添加用户消息到历史记录"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.console.print(f"\n[green][{timestamp}] User: {message}[/green]\n")
+        self.console.print(f"\n\n[green][{timestamp}] User: {message}[/green]")
         self.conversation_history.append({
             "role": "user",
             "content": message,
@@ -119,7 +118,7 @@ class ChatRenderer:
         self.is_streaming = True
         self.interrupted = False
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.console.print(f"\n[white][{timestamp}] AI: [/white]", end="")
+        self.console.print(f"\n\n[white][{timestamp}] AI: [/white]")
 
     def update_ai_response(self, chunk: str, is_gray: bool = False):
         """更新AI的流式回复"""
@@ -157,9 +156,10 @@ class ChatRenderer:
 
             # 如果rich可用且没有被中断，添加Markdown渲染
             if not self.interrupted:
-                self.console.print("\n\n")
-                self._add_markdown_rendering(self.current_ai_response)
+                # self._add_markdown_rendering(self.current_ai_response)
+                pass
 
+        self.console.print("\n")
         self.current_ai_response = None
         self.is_streaming = False
         self.interrupted = False
@@ -215,8 +215,6 @@ class ChatRenderer:
                         "> You: ",
                         key_bindings=self.kb
                     )
-                    if user_input == "/quit":
-                        exit(0)
 
                 except (EOFError, KeyboardInterrupt):
                     self.console.print("[yellow]Exiting...[/yellow]")
