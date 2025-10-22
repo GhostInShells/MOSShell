@@ -211,6 +211,9 @@ class CommandMeta(BaseModel):
         description="whether this command block the channel. if block + call soon, will clear the channel first",
     )
 
+    def unique(self) -> str:
+        return f"{self.chan or ''}:{self.name}"
+
 
 class Command(Generic[RESULT], ABC):
     """
@@ -220,6 +223,10 @@ class Command(Generic[RESULT], ABC):
     这个 Command 本身还会被伪装成函数, 让大模型可以直接用代码的形式去调用它.
     Shell 也将支持一个直接执行代码的控制逻辑, 形如 <exec> ... </exec> 的方式, 用 asyncio 语法直接执行它所看到的 Command
     """
+
+    @abstractmethod
+    def unique(self) -> str:
+        pass
 
     @abstractmethod
     def name(self) -> str:
@@ -334,6 +341,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
                 # only first delta_arg type. and not allow more than 1
                 break
         self._delta_arg = delta_arg
+
+    def unique(self) -> str:
+        return f"{self._chan or ''}:{self._name}"
 
     def name(self) -> str:
         return self._name

@@ -1,14 +1,24 @@
 import os
+import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
+
+
+
 import pygame
 import live2d.v3 as live2d
 import asyncio
 import time
 from os.path import join, dirname
-from live2d.v2 import StandardParams
 import ghoshell_moss
 from ghoshell_moss.shell import new_shell
-import math
 import threading
+from ghoshell_container import  Container
+from channels.motion import motion_chan
+from channels.expression import expression_chan
+from channels.arm import left_arm_chan, right_arm_chan
+
+
 
 # 全局状态
 model: live2d.LAppModel | None = None
@@ -31,123 +41,50 @@ def init_live2d(model_path: str):
     model = live2d.LAppModel()
     model.LoadModelJson(model_path)
     model.Resize(300, 400)
-    model.SetAutoBlinkEnable(True)
-    model.SetAutoBreathEnable(True)
+    # model.SetAutoBlinkEnable(True)
+    # model.SetAutoBreathEnable(True)
+    container.bind(live2d.LAppModel, model)
 
 
+container = Container()
 # 创建 Shell
-shell = new_shell()
-
-# 注册各个轨道的命令函数
-face_chan = shell.main_channel.new_child('face')
-pose_chan = shell.main_channel.new_child('pose')
-spine_chan = shell.main_channel.new_child('spine')
-arms_chan = shell.main_channel.new_child('arms')
-
-
-@arms_chan.build.command()
-async def raise_left_arm(duration: float = 1.5):
-    """抬手"""
-    start_time = time.time()
-    while time.time() - start_time < duration:
-        progress = (time.time() - start_time) / duration
-        angle = 30 * progress
-        model.SetParameterValue('PARAM_ARM_L_01', angle)
-        await asyncio.sleep(0.016)
-
-
-@arms_chan.build.command()
-async def raise_right_arm(duration: float = 1.5):
-    """抬手"""
-    start_time = time.time()
-    while time.time() - start_time < duration:
-        progress = (time.time() - start_time) / duration
-        angle = 30 * progress
-        model.SetParameterValue('PARAM_ARM_R_01', angle)
-        await asyncio.sleep(0.016)
+shell = new_shell(container=container)
+shell.main_channel.include_channels(
+    motion_chan,
+    expression_chan,
+    left_arm_chan,
+    right_arm_chan,
+)
 
 
 async def run_demo_sequence(_shell: ghoshell_moss.MOSSShell):
     """使用 CTML 用例数组运行演示序列"""
     # CTML 演示用例数组
     demo_cases = [
-        # # 用例 1: 单个函数执行 - 微笑
+        # # 用例 1: Motion执行
         # {
-        #     "name": "单个微笑表情",
-        #     "ctml": '<face:smile duration="2.0" />',
-        #     "description": "测试单个表情函数的执行"
-        # },
-
-        # # 用例 2: 单个函数执行 - 点头
-        # {
-        #     "name": "单个点头动作",
-        #     "ctml": '<spine:nod duration="1.5" />',
-        #     "description": "测试单个脊柱动作的执行"
-        # },
-
-        # # 用例 3: 同轨顺序执行 - 连续表情变化
-        # {
-        #     "name": "同轨顺序表情变化",
+        #     "name": "测试 motion 能力",
         #     "ctml": """
-        #     <face:smile duration="1.5" />
-        #     <face:surprise duration="1.0" />
-        #     <face:smile duration="1.5" />
+        #     <motion:angry no="0" />
+        #     <motion:happy no="1" />
+        #     <motion:sad no="0" />
         #     """,
-        #     "description": "测试同一轨道内多个函数的顺序执行"
+        #     "description": "测试 motion 能力的执行",
         # },
-
-        # # 用例 4: 异轨并行执行 - 表情+头部动作
+        # # 用例 2: Expression执行
         # {
-        #     "name": "异轨并行执行",
+        #     "name": "测试 expression 能力",
         #     "ctml": """
-        #     <face:smile duration="2.0" />
-        #     <spine:nod duration="1.5" />
+        #     <expression:wisdom duration="5" />
+        #     <motion:happy no="1" />
         #     """,
-        #     "description": "测试不同轨道函数的并行执行"
+        #     "description": "测试 expression 能力的执行",
         # },
-
-        # # 用例 5: 复杂多轨组合 - 完整的小场景
-        # {
-        #     "name": "多轨组合场景",
-        #     "ctml": """
-        #     <gaze:look_left_right duration="3.0" />
-        #     <gaze:blink duration="0.5" />
-        #     <face:smile duration="2.0" />
-        #     <spine:nod duration="1.5" />
-        #     <arms:wave_hand duration="2.0" />
-        #     """,
-        #     "description": "测试多轨道组合执行的复杂场景"
-        # },
-
-        # # 用例 6: 带参数的不同时长组合
-        # {
-        #     "name": "不同时长组合",
-        #     "ctml": """
-        #     <face:smile duration="1.0" />
-        #     <spine:nod duration="2.0" />
-        #     <arms:wave_hand duration="3.0" />
-        #     """,
-        #     "description": "测试不同执行时长的函数组合"
-        # },
-
-        # # 用例 7: 极简组合 - 验证基本功能
-        # {
-        #     "name": "极简组合验证",
-        #     "ctml": """
-        #     <face:smile duration="0.5" />
-        #     <gaze:blink duration="0.5" />
-        #     """,
-        #     "description": "极简组合验证基本功能"
-        # },
-
-        # 用例 8: 测试 raise_arm 函数
+        # 用例 3: Arm执行
         {
-            "name": "测试 raise_arm 函数",
-            "ctml": """
-            <arms:raise_left_arm duration="1.5" />
-            <arms:raise_right_arm duration="1.5" />
-            """,
-            "description": "测试 raise_arm 函数的执行",
+            "name": "测试 arm 能力",
+            "ctml": """<left_arm:up duration="1.5" />""",
+            "description": "测试 arm 能力的执行",
         },
     ]
 

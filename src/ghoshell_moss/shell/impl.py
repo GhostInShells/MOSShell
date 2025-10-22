@@ -1,3 +1,4 @@
+from ast import Tuple
 from typing import Dict, Optional
 from ghoshell_moss.concepts.shell import MOSSShell, Output, InterpreterKind
 from ghoshell_moss.concepts.command import Command, CommandTask, CommandWrapper, BaseCommandTask, CommandMeta, RESULT
@@ -277,8 +278,8 @@ class DefaultShell(MOSSShell):
                         continue
                     real_command = commands[unique_name]
                     wrapped = CommandWrapper(meta=command_meta, func=real_command.__call__)
-                    result[name] = wrapped
-        return commands
+                    result[command_meta.unique()] = wrapped
+            return result
 
     def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         self._check_running()

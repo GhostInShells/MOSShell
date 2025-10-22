@@ -32,7 +32,83 @@
 				"Name": "liuhan",
 				"File": "表情和动作/liuhan.exp3.json"
 			}
-		]
+		],
+		"Motions": {
+			"Angry": [
+				{
+					"Name": "生气",
+					"File": "表情和动作/01_生气.motion3.json"
+				},
+				{
+					"Name": "愤怒",
+					"File": "表情和动作/10_愤怒.motion3.json"
+				}
+			],
+			"Happy": [
+				{
+					"Name": "高兴",
+					"File": "表情和动作/02_高兴.motion3.json"
+				},
+				{
+					"Name": "开心",
+					"File": "表情和动作/04_开心.motion3.json"
+				},
+				{
+					"Name": " lovely",
+					"File": "表情和动作/11_装可爱.motion3.json"
+				}
+			],
+			"Love": [
+				{
+					"Name": "爱情",
+					"File": "表情和动作/03_爱情.motion3.json"
+				}
+			],
+			"TurnHead": [
+				{
+					"Name": "转头",
+					"File": "表情和动作/05_转头.motion3.json"
+				}
+			],
+			"Sad": [
+				{
+					"Name": "大哭",
+					"File": "表情和动作/06_大哭.motion3.json"
+				}
+			],
+			"NodHead": [
+				{
+					"Name": "点头",
+					"File": "表情和动作/07_点头.motion3.json"
+				},
+				{
+					"Name": "点头",
+					"File": "表情和动作/14_点头.motion3.json"
+				}
+			],
+			"Walk": [
+				{
+					"Name": "走路",
+					"File": "表情和动作/08_走路.motion3.json"
+				}
+			],
+			"Sleep": [
+				{
+					"Name": "睡觉",
+					"File": "表情和动作/09_渐入睡眠.motion3.json"
+				}
+			],
+			"ActivateBody": [
+				{
+					"Name": "活动身体",
+					"File": "表情和动作/12_活动身体.motion3.json"
+				},
+				{
+					"Name": "扭腰",
+					"File": "表情和动作/13_扭腰.motion3.json"
+				}
+			]
+		}
 	},
 	"Groups": [
 		{

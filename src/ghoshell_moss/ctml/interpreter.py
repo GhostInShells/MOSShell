@@ -37,12 +37,12 @@ class CTMLInterpreter(Interpreter):
         self._on_startup = on_startup
 
         # commands map
-        self._commands_map = {c.name(): c for c in commands}
+        self._commands_map = {c.unique(): c for c in commands}
         self._channel_command_map = {}
         for command in commands:
             chan = command.meta().chan
             chan_commands = self._channel_command_map.get(chan, {})
-            chan_commands[command.name()] = command
+            chan_commands[command.unique()] = command
             self._channel_command_map[chan] = chan_commands
 
         self._root_tag = root_tag
