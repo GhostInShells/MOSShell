@@ -4,7 +4,7 @@ from ghoshell_moss.shell import new_shell
 from ghoshell_moss.depends import check_agent
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer, Container
-from ghoshell_moss.agent.console import ChatRenderer, ChatRenderOutput
+from ghoshell_moss.agent.console import ChatRenderer
 from ghoshell_common.contracts import workspace_providers
 from pydantic import BaseModel, Field
 
@@ -93,17 +93,20 @@ class SimpleAgent:
         self._started = False
         self._closed_event = asyncio.Event()
         self._error: Optional[Exception] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    async def handle_user_input(self, text: str) -> None:
+    def handle_user_input(self, text: str) -> None:
         try:
-            self.chat.add_user_message(text)
-            await self.response([
+            if not text:
+                if self._response_task is not None:
+                    self._loop.call_soon_threadsafe(self._response_task.cancel)
+                return
+            self._loop.create_task(self.response([
                 {"role": "user", "content": text}
-            ])
+            ]))
             self.raise_error()
         except Exception as e:
             self.chat.print_exception(e)
-            self.chat.app.exit()
 
     async def wait_done(self):
         await self._closed_event.wait()
@@ -135,6 +138,7 @@ class SimpleAgent:
         generated = ""
         execution_data = []
         try:
+            self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
             messages = [
@@ -150,7 +154,6 @@ class SimpleAgent:
             response_stream = await litellm.acompletion(**params)
             # interpreter = self.shell.interpreter()
             # async with interpreter:
-            self.chat.start_ai_response()
             reasoning = False
             async for chunk in response_stream:
                 delta = chunk.choices[0].delta
@@ -181,8 +184,9 @@ class SimpleAgent:
             pass
         finally:
             self._response_done.set()
+            self.chat.finalize_ai_response()
+            self.messages.extend(inputs)
             if generated:
-                self.messages.extend(inputs)
                 self.messages.append({"role": "assistant", "content": generated})
                 execution = "\n\n".join(execution_data)
                 self.messages.append({"role": "system", "content": "## executions:\n\n%s" % execution})
@@ -196,6 +200,7 @@ class SimpleAgent:
         if self._started:
             return
         self._started = True
+        self._loop = asyncio.get_running_loop()
         self.container.bootstrap()
         await self.shell.start()
 
