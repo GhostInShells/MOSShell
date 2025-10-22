@@ -22,7 +22,7 @@ class OutputStream(ABC):
     id: str
     """所有文本片段都有独立的全局唯一id, 通常是 command_part_id"""
 
-    task: Optional[CommandTask] = None
+    cmd_task: Optional[CommandTask] = None
     committed: bool = False
 
     def buffer(self, text: str, *, complete: bool = False) -> None:
@@ -36,8 +36,8 @@ class OutputStream(ABC):
         """
         if not self.committed and text:
             self._buffer(text)
-            if self.task is not None:
-                self.task.tokens = self.buffered()
+            if self.cmd_task is not None:
+                self.cmd_task.tokens = self.buffered()
         if not self.committed and complete:
             self.commit()
 
@@ -60,8 +60,8 @@ class OutputStream(ABC):
         这个 command task 通常在主轨 (channel name == "") 中运行.
         """
         from ghoshell_moss.concepts.command import BaseCommandTask, CommandMeta, CommandWrapper
-        if self.task is not None:
-            return self.task
+        if self.cmd_task is not None:
+            return self.cmd_task
 
         if commit:
             self.commit()
@@ -83,7 +83,7 @@ class OutputStream(ABC):
         )
         task.cid = self.id
         task.tokens = self.buffered()
-        self.task = task
+        self.cmd_task = task
         return task
 
     @abstractmethod

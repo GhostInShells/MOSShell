@@ -8,6 +8,7 @@ from ghoshell_moss.concepts.errors import CommandError
 from ghoshell_moss.ctml.token_parser import CTMLTokenParser
 from ghoshell_moss.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid, Timeleft
 import logging
 import asyncio
@@ -25,7 +26,7 @@ class CTMLInterpreter(Interpreter):
             callback: Optional[CommandTaskCallback] = None,
             root_tag: str = "ctml",
             special_tokens: Optional[Dict[str, str]] = None,
-            logger: Optional[logging.Logger] = None,
+            logger: Optional[LoggerItf] = None,
             on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
     ):
         self.id = stream_id or uuid()

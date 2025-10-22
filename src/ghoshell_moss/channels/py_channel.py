@@ -451,3 +451,4 @@ class PyChannelClient(ChannelClient):
         await self.policy_pause()
         await self.clear()
         await asyncio.to_thread(self.container.shutdown)
+        self.container.shutdown()

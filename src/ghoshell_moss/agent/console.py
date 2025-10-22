@@ -1,7 +1,6 @@
 import asyncio
-from typing import List, Dict, Optional, AsyncGenerator, Callable, Any
+from typing import List, Dict, Optional, Callable, Any
 
-from ghoshell_moss import CommandTask
 from ghoshell_moss.depends import check_agent
 from ghoshell_moss.concepts.shell import Output, OutputStream
 from ghoshell_common.helpers import uuid
@@ -9,20 +8,32 @@ import traceback
 
 if check_agent():
     from prompt_toolkit import Application
-    from prompt_toolkit.layout import Layout, HSplit
+    from prompt_toolkit.layout import Layout, HSplit, Window
     from prompt_toolkit.widgets import TextArea, Label
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.layout.margins import ScrollbarMargin
 
+
+# author is deepseek:v3.1
 
 class ChatRenderer:
     def __init__(self):
-        # 对话历史区域（只读，支持滚动）
-        self.history_area = TextArea(
-            text="=== Chat Started ===\n",
-            read_only=False,
+        # 使用 FormattedTextControl 来支持样式文本
+        # 使用 FormattedTextControl 来支持样式文本
+        self.history_control = FormattedTextControl(
+            text=FormattedText([("", "=== Chat Started ===\n")]),
             focusable=False,
-            scrollbar=True
+        )
+
+        # 创建带滚动条的窗口
+        self.history_window = Window(
+            content=self.history_control,
+            right_margins=[ScrollbarMargin()],  # 添加滚动条
+            scroll_offsets=None,  # 使用默认滚动偏移
+            wrap_lines=True,  # 启用自动换行
         )
 
         # 输入区域
@@ -39,7 +50,7 @@ class ChatRenderer:
         # 创建布局
         self.layout = Layout(HSplit([
             Label("Simple Chat - Press Ctrl+C to exit", style="class:title"),
-            self.history_area,
+            self.history_window,
             Label("─" * 50, style="class:line"),
             self.input_field,
             self.status_bar
@@ -54,8 +65,10 @@ class ChatRenderer:
             'title': 'bg:#000044 #ffffff bold',
             'line': '#888888',
             'status': 'bg:#000044 #ffffff',
-            'user': '#00aa00',
-            'assistant': '#0088ff',
+            'user': '#00aa00',  # 用户消息绿色
+            'assistant': '#ffffff',  # AI消息白色
+            'assistant-gray': '#888888',  # AI消息灰色
+            'error': '#ff0000',  # 错误消息红色
             'time': '#888888 italic'
         })
 
@@ -99,14 +112,40 @@ class ChatRenderer:
         """设置输入处理回调函数"""
         self.on_input_callback = callback
 
-    def print_exception(self, exception: Any, context: str = "") -> None:
-        """
-        在聊天界面中显示异常信息
+    def add_user_message(self, message: str):
+        """添加用户消息到历史记录（绿色）"""
+        self._add_message("user", message)
 
-        Args:
-            exception: 异常对象或字符串
-            context: 异常发生的上下文描述
-        """
+    def start_ai_response(self):
+        """开始AI回复（初始化流式回复）"""
+        self.current_ai_response = ""
+        # 添加一个空的AI消息占位符
+        self._add_message("assistant", "", is_temp=True)
+
+    def update_ai_response(self, chunk: str, is_gray: bool = False):
+        """更新AI的流式回复，可选择灰色或白色"""
+        if self.current_ai_response is None:
+            self.start_ai_response()
+
+        self.current_ai_response += chunk
+
+        # 更新最后一条消息（临时消息）
+        if self.conversation_history and self.conversation_history[-1].get("is_temp", False):
+            # 更新最后一条临时消息
+            self.conversation_history[-1]["content"] = self.current_ai_response
+            # 设置消息样式（灰色或白色）
+            self.conversation_history[-1]["style"] = "assistant-gray" if is_gray else "assistant"
+            self._refresh_history_display()
+
+    def finalize_ai_response(self):
+        """完成AI回复（移除临时标记）"""
+        if self.conversation_history and self.conversation_history[-1].get("is_temp", False):
+            self.conversation_history[-1]["is_temp"] = False
+            self._refresh_history_display()
+        self.current_ai_response = None
+
+    def print_exception(self, exception: Any, context: str = ""):
+        """打印异常信息（红色）"""
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
 
@@ -127,10 +166,11 @@ class ChatRenderer:
 
         # 添加到历史记录
         self.conversation_history.append({
-            "role": "System",
+            "role": "system",
             "content": f"ERROR: {error_msg}",
             "timestamp": timestamp,
-            "is_temp": False
+            "is_temp": False,
+            "style": "error"  # 使用错误样式
         })
 
         # 更新界面显示
@@ -138,36 +178,6 @@ class ChatRenderer:
 
         # 更新状态栏
         self.status_bar.text = "Error occurred"
-
-    def add_user_message(self, message: str):
-        """添加用户消息到历史记录"""
-        self._add_message("User", message)
-
-    def start_ai_response(self):
-        """开始AI回复（初始化流式回复）"""
-        self.current_ai_response = ""
-        # 添加一个空的AI消息占位符
-        self._add_message("AI", "", is_temp=True)
-
-    def update_ai_response(self, chunk: str):
-        """更新AI的流式回复"""
-        if self.current_ai_response is None:
-            self.start_ai_response()
-
-        self.current_ai_response += chunk
-
-        # 更新最后一条消息（临时消息）
-        if self.conversation_history and self.conversation_history[-1].get("is_temp", False):
-            # 更新最后一条临时消息
-            self.conversation_history[-1]["content"] = self.current_ai_response
-            self._refresh_history_display()
-
-    def finalize_ai_response(self):
-        """完成AI回复（移除临时标记）"""
-        if self.conversation_history and self.conversation_history[-1].get("is_temp", False):
-            self.conversation_history[-1]["is_temp"] = False
-            self._refresh_history_display()
-        self.current_ai_response = None
 
     def set_status(self, status: str):
         """更新状态栏"""
@@ -178,12 +188,21 @@ class ChatRenderer:
         from datetime import datetime
         timestamp = datetime.now().strftime("%H:%M:%S")
 
+        # 确定消息样式
+        if role == "user":
+            style = "user"
+        elif role == "assistant":
+            style = "assistant"  # 默认白色
+        else:  # system
+            style = ""  # 默认样式
+
         # 保存到内存
         self.conversation_history.append({
             "role": role,
             "content": content,
             "timestamp": timestamp,
-            "is_temp": is_temp
+            "is_temp": is_temp,
+            "style": style
         })
 
         # 更新界面显示
@@ -191,22 +210,32 @@ class ChatRenderer:
 
     def _refresh_history_display(self):
         """刷新历史区域显示"""
-        display_text = ""
+        formatted_text = []
+
         for msg in self.conversation_history:
             timestamp = msg["timestamp"]
             role = msg["role"]
             content = msg["content"]
+            style = msg.get("style", "")
 
-            # 格式化显示
-            if role == "User":
-                display_text += f"[{timestamp}] {role}: {content}\n"
-            else:
-                display_text += f"[{timestamp}] {role}: {content}\n"
+            # 添加时间戳
+            formatted_text.append(("class:time", f"[{timestamp}] "))
+
+            # 添加角色和内容
+            if role == "user":
+                formatted_text.append(("class:user", f"User: {content}\n"))
+            elif role == "assistant":
+                # 使用指定的样式或默认样式
+                style_class = f"class:{style}" if style else "class:assistant"
+                formatted_text.append((style_class, f"AI: {content}\n"))
+            else:  # system
+                formatted_text.append(("class:error", f"System: {content}\n"))
 
         # 更新界面
-        self.history_area.buffer.text = display_text
+        self.history_control.text = FormattedText(formatted_text)
         # 滚动到底部
-        self.history_area.buffer.cursor_position = len(self.history_area.buffer.text)
+        self.history_window.content = self.history_control
+        self.app.invalidate()
 
     async def run(self):
         """运行聊天界面"""
@@ -232,6 +261,9 @@ class ChatRenderOutputStream(OutputStream):
         self._close_event = close
         self._main_loop_task: Optional[asyncio.Task] = None
 
+    def _commit(self) -> None:
+        self._input_queue.put_nowait(None)
+
     async def _main_loop(self):
         try:
             while not self._close_event.is_set():
@@ -242,20 +274,14 @@ class ChatRenderOutputStream(OutputStream):
 
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            pass
         finally:
             self._close_event.set()
 
-    def buffer(self, text: str, *, complete: bool = False) -> None:
-        if text:
-            self._buffered += text
-            if self._started:
-                self._input_queue.put_nowait(text)
-            if self.task is not None:
-                self.task.tokens = self._buffered
-        if complete:
-            self._input_queue.put_nowait(None)
+    def _buffer(self, text: str) -> None:
+        if self._started:
+            self._input_queue.put_nowait(text)
+        if self.cmd_task is not None:
+            self.cmd_task.tokens = self._buffered
 
     def start(self) -> None:
         if self._started:

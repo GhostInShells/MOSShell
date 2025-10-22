@@ -69,11 +69,25 @@ class DefaultShell(MOSSShell):
         self.container = Container(parent=container, name=f"MOSShell")
         self.container.set(MOSSShell, self)
         # output
-        self.output: Output = output or self.container.get(Output) or ArrOutput()
-        self.container.set(Output, self.output)
-        # logger
-        logger = self.container.get(logging.Logger) or logging.getLogger("moss")
-        self.container.set(logging.Logger, self.logger)
+        if not output:
+            output = ArrOutput()
+        self.output: Output = output
+        self.container.set(Output, output)
+        # --- lifecycle --- #
+        self._starting = False
+        self._started = False
+        self._closing = False
+        self._logger = None
+
+        self._stop_event = ThreadSafeEvent()
+        self._stopped_event = ThreadSafeEvent()
+        self._running_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._idle_notifier = TreeNotify(name="")
+        # --- configuration --- #
+        self._configured_channel_metas: Optional[Dict[str, ChannelMeta]] = None
+        # --- interpreter --- #
+        self._interpreter: Optional[Interpreter] = None
+        self._closed_event: asyncio.Event = asyncio.Event()
 
         # init main channel
         self._main_channel = main_channel or MainChannel(
@@ -82,16 +96,6 @@ class DefaultShell(MOSSShell):
             description=description or "",
         )
 
-        # --- lifecycle --- #
-        self._starting = False
-        self._started = False
-        self._closing = False
-
-        self._stop_event = ThreadSafeEvent()
-        self._stopped_event = ThreadSafeEvent()
-        self._running_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._idle_notifier = TreeNotify(name="")
-
         # --- runtime --- #
         self.main_channel_runtime = ChannelRuntimeImpl(
             container=self.container,
@@ -99,19 +103,16 @@ class DefaultShell(MOSSShell):
             stop_event=self._stop_event,
             is_idle_notifier=self._idle_notifier,
         )
-        # --- configuration --- #
-        self._configured_channel_metas: Optional[Dict[str, ChannelMeta]] = None
-        # --- interpreter --- #
-        self._interpreter: Optional[Interpreter] = None
-        self._closed_event: asyncio.Event = asyncio.Event()
 
     @property
     def logger(self) -> LoggerItf:
-        logger = self.container.get(LoggerItf)
-        if logger is None:
-            logger = logging.getLogger("moss")
-            self.container.set(LoggerItf, logger)
-        return logger
+        if self._logger is None:
+            logger = self.container.get(LoggerItf)
+            if logger is None:
+                logger = logging.getLogger("moss")
+                self.container.set(LoggerItf, logger)
+            self._logger = logger
+        return self._logger
 
     def is_running(self) -> bool:
         return self._started and not self._stop_event.is_set() and self.main_channel_runtime.is_running()
@@ -377,8 +378,9 @@ class DefaultShell(MOSSShell):
             self._interpreter = None
         # 先关闭所有的 runtime. 递归关闭.
         await self.main_channel_runtime.close()
-        self.container.shutdown()
         self._closed_event.set()
+        # 销毁容器.
+        self.container.shutdown()
 
 
 def new_shell(

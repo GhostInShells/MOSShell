@@ -127,6 +127,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
         # status
         self._started = False
         self._stopped = False
+        self._logger = None
 
         # 获取被启动时的 loop, 用来做跨线程的调度.
         self._running_event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -152,11 +153,13 @@ class ChannelRuntimeImpl(ChannelRuntime):
 
     @property
     def logger(self) -> LoggerItf:
-        logger = self.container.get(LoggerItf)
-        if logger is None:
-            logger = logging.getLogger("moss")
-            self.container.set(LoggerItf, logger)
-        return logger
+        if self._logger is None:
+            logger = self.container.get(LoggerItf)
+            if logger is None:
+                logger = logging.getLogger("moss")
+                self.container.set(LoggerItf, logger)
+            self._logger = logger
+        return self._logger
 
     # --- lifecycle --- #
 

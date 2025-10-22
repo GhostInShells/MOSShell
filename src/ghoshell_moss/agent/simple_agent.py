@@ -4,6 +4,8 @@ from ghoshell_moss.shell import new_shell
 from ghoshell_moss.depends import check_agent
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer, Container
+from ghoshell_moss.agent.console import ChatRenderer, ChatRenderOutput
+from ghoshell_common.contracts import workspace_providers
 from pydantic import BaseModel, Field
 
 import os
@@ -76,11 +78,12 @@ class SimpleAgent:
             output: Optional[Output] = None,
             messages: Optional[List[Dict]] = None,
     ):
-        container = container or Container(name="agent")
-        shell = shell or new_shell(container=container, output=output)
+        self.container = Container(name="agent", parent=container)
+        self.container.register(*workspace_providers())
+        self.chat = ChatRenderer()
+        shell = shell or new_shell(container=self.container, output=output)
         model = model or ModelConf()
         self.instruction = instruction
-        self.container = container
         self.shell = shell
         self.model = model
         self.messages: List[Dict] = messages or []
@@ -90,6 +93,17 @@ class SimpleAgent:
         self._started = False
         self._closed_event = asyncio.Event()
         self._error: Optional[Exception] = None
+
+    async def handle_user_input(self, text: str) -> None:
+        try:
+            self.chat.add_user_message(text)
+            await self.response([
+                {"role": "user", "content": text}
+            ])
+            self.raise_error()
+        except Exception as e:
+            self.chat.print_exception(e)
+            self.chat.app.exit()
 
     async def wait_done(self):
         await self._closed_event.wait()
@@ -119,7 +133,6 @@ class SimpleAgent:
             return
 
         generated = ""
-        generated_role = ""
         execution_data = []
         try:
             self._response_done.clear()
@@ -137,14 +150,23 @@ class SimpleAgent:
             response_stream = await litellm.acompletion(**params)
             # interpreter = self.shell.interpreter()
             # async with interpreter:
+            self.chat.start_ai_response()
+            reasoning = False
             async for chunk in response_stream:
-                content = chunk.choices[0].delta.content
-                self.logger.info("received %s", content)
+                delta = chunk.choices[0].delta
+                if "reasoning_content" in delta:
+                    if not reasoning:
+                        reasoning = True
+                    self.chat.update_ai_response(delta.reasoning_content, is_gray=True)
+                    continue
+                elif reasoning:
+                    self.chat.start_ai_response()
+                    reasoning = False
+                content = delta.content
                 if not content:
                     continue
+                self.chat.update_ai_response(content)
                 generated += content
-                print("+++", content)
-                generated_role = chunk.choices[0].role
                 # interpreter.feed(content)
                 # interpreter.commit()
                 # tasks = await interpreter.wait_execution_done()
@@ -161,9 +183,14 @@ class SimpleAgent:
             self._response_done.set()
             if generated:
                 self.messages.extend(inputs)
-                self.messages.append({"role": generated_role, "content": generated})
+                self.messages.append({"role": "assistant", "content": generated})
                 execution = "\n\n".join(execution_data)
                 self.messages.append({"role": "system", "content": "## executions:\n\n%s" % execution})
+
+    async def run(self):
+        async with self:
+            self.chat.set_input_callback(self.handle_user_input)
+            await self.chat.run()
 
     async def start(self):
         if self._started:
@@ -180,6 +207,7 @@ class SimpleAgent:
             await self._response_done.wait()
         await self.shell.close()
         self._closed_event.set()
+        self.container.shutdown()
 
     async def __aenter__(self):
         await self.start()

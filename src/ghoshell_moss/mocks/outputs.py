@@ -59,8 +59,8 @@ class ArrOutputStream(OutputStream):
                     self.outputs.append(self.output_buffer)
                     content_is_not_empty = True
         finally:
-            if self.task is not None:
-                self.task.tokens = self.output_buffer
+            if self.cmd_task is not None:
+                self.cmd_task.tokens = self.output_buffer
             self.output_done_event.set()
 
     def buffered(self) -> str:
