@@ -2,11 +2,12 @@ from contextvars import copy_context
 import json
 import logging
 from typing import Any, Callable, Coroutine, Dict, Generic, List, Optional, TypeVar
+from ghoshell_moss.depends import check_mcp
 
+if check_mcp():
+    import mcp
+    import mcp.types as types
 from ghoshell_container import IoCContainer
-import mcp
-import mcp.types as types
-
 from ghoshell_moss.channels.py_channel import PyChannel
 from ghoshell_moss.concepts.channel import Builder, Channel, ChannelClient, ChannelMeta
 from ghoshell_moss.concepts.command import (

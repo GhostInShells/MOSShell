@@ -1,17 +1,20 @@
-import os
 import pygame
-import live2d.v3 as live2d
+
 import asyncio
 import time
 from os.path import join, dirname
-from live2d.v2 import StandardParams
 import ghoshell_moss
 from ghoshell_moss.shell import new_shell
-import math
-import threading
+from ghoshell_moss.depends import check_demo
+
+if check_demo():
+    import live2d.v3 as live2d_v3
+    from live2d.v2 import StandardParams
+    import math
+    import threading
 
 # 全局状态
-model: live2d.LAppModel | None = None
+model: live2d_v3.LAppModel | None = None
 
 
 # 初始化Pygame和Live2D
@@ -26,9 +29,9 @@ def init_pygame():
 # 初始化Live2D模型
 def init_live2d(model_path: str):
     global model
-    live2d.init()
-    live2d.glInit()
-    model = live2d.LAppModel()
+    live2d_v3.init()
+    live2d_v3.glInit()
+    model = live2d_v3.LAppModel()
     model.LoadModelJson(model_path)
     model.Resize(300, 400)
     model.SetAutoBlinkEnable(True)
@@ -341,7 +344,7 @@ def main():
 
         # 更新和绘制模型
         model.Update()
-        live2d.clearBuffer()
+        live2d_v3.clearBuffer()
         model.Draw()
 
         # 显示完成信息
@@ -353,7 +356,7 @@ def main():
         time.sleep(0.01)
 
     # 清理资源
-    live2d.dispose()
+    live2d_v3.dispose()
     pygame.quit()
     t.join()
 

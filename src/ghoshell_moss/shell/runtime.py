@@ -499,7 +499,7 @@ class ChannelRuntimeImpl(ChannelRuntime):
                     # 这个任务不运行结束, 不会释放运行状态. 它如果是同步阻塞的, 则阻塞后续的 task 消费.
                     await self._execute_task(item)
                 except asyncio.CancelledError as e:
-                    self.logger.error(f"channel {self.name} loop got cancelled: %s", e)
+                    self.logger.info(f"channel `{self.name}` loop got cancelled: %s", e)
                 except Exception as e:
                     self.logger.exception(e)
         except Exception as e:

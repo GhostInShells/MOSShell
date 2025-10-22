@@ -39,9 +39,6 @@ class ArrOutputStream(OutputStream):
         t = threading.Thread(target=self._output_loop, daemon=True)
         t.start()
 
-    def is_done(self) -> bool:
-        return self.output_done_event.is_set()
-
     def _output_loop(self) -> None:
         try:
             content_is_not_empty = False
@@ -67,31 +64,11 @@ class ArrOutputStream(OutputStream):
                 self._command_task.tokens = self.output_buffer
             self.output_done_event.set()
 
-    def wait_sync(self, timeout: float | None = None) -> bool:
-        return self.output_done_event.wait_sync(timeout)
+    def buffered(self) -> str:
+        return self.output_buffer
 
-    async def astart(self) -> None:
-        await asyncio.to_thread(self.start)
-
-    async def wait(self) -> bool:
-        return await self.output_done_event.wait()
-
-    async def aclose(self) -> None:
-        await asyncio.to_thread(self.close)
-
-    async def _output_start_and_wait(self) -> None:
-        self.start()
+    async def wait(self) -> None:
         await self.output_done_event.wait()
-
-    def as_command_task(self, commit: bool = False) -> Optional[CommandTask]:
-        if commit:
-            self.commit()
-        command = PyCommand(self._output_start_and_wait)
-        task = BaseCommandTask.from_command(command)
-        task.cid = self.id
-        task.tokens = self.output_buffer
-        self._command_task = task
-        return task
 
 
 class ArrOutput(Output):
