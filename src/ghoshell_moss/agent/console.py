@@ -6,27 +6,13 @@ import traceback
 from ghoshell_moss.depends import check_agent
 
 if check_agent():
-    from prompt_toolkit import Application
-    from prompt_toolkit.layout import Layout, HSplit, Window
-    from prompt_toolkit.widgets import TextArea, Label
     from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.styles import Style
-    from prompt_toolkit.formatted_text import FormattedText
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.patch_stdout import patch_stdout
     from prompt_toolkit import PromptSession
-
-# 导入rich库
-try:
     from rich.markdown import Markdown
     from rich.console import Console
-    from rich.text import Text
     from rich.panel import Panel
-    from rich.style import Style as RichStyle
 
     RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
 
 
 class ChatRenderer:
