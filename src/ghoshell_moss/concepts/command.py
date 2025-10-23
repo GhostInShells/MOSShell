@@ -211,7 +211,6 @@ class CommandMeta(BaseModel):
         description="whether this command block the channel. if block + call soon, will clear the channel first",
     )
 
-
 class Command(Generic[RESULT], ABC):
     """
     对大模型可见的命令描述. 包含几个核心功能:
