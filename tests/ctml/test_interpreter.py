@@ -1,6 +1,6 @@
 from ghoshell_moss.mocks.outputs import ArrSpeech
 from ghoshell_moss.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.concepts.command import PyCommand
+from ghoshell_moss.concepts.command import PyCommand, make_command_group
 from collections import deque
 import asyncio
 import pytest
@@ -13,7 +13,7 @@ async def test_interpreter_baseline():
 
     queue = deque()
     interpreter = CTMLInterpreter(
-        commands=[PyCommand(foo)],
+        commands=make_command_group(PyCommand(foo)),
         stream_id="test",
         speech=ArrSpeech(),
         callback=queue.append,
@@ -22,6 +22,8 @@ async def test_interpreter_baseline():
     content = "<foo>h</foo>"
 
     async with interpreter:
+        # system prompt is not none
+        assert len(interpreter.meta_system_prompt()) > 0
         for c in content:
             interpreter.feed(c)
         await interpreter.wait_parse_done()
@@ -44,7 +46,7 @@ async def test_interpreter_cancel():
 
     queue = deque()
     interpreter = CTMLInterpreter(
-        commands=[PyCommand(foo)],
+        commands=make_command_group(PyCommand(foo)),
         stream_id="test",
         speech=ArrSpeech(),
         callback=queue.append,

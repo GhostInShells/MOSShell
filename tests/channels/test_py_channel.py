@@ -115,3 +115,22 @@ async def test_py_channel_children() -> None:
     async with chan.bootstrap():
         meta = chan.client.meta()
         assert meta.children == ['a']
+
+
+@pytest.mark.asyncio
+async def test_py_channel_with_children() -> None:
+    main = PyChannel(name="main")
+    main.new_child("a")
+    main.new_child("b")
+    c = PyChannel(name="c")
+    c.new_child("d")
+    main.import_channels(c)
+
+    channels = main.all_channels()
+    assert len(channels) == 5
+    assert channels[""] is main
+    assert channels['c'] is c
+    assert channels['c.d'] is c.children()['d']
+    assert c.get_channel('') is c
+    assert c.get_channel('d') is c.children()['d']
+    assert main.get_channel('c.d') is c.children()['d']

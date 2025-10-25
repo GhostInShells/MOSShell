@@ -18,7 +18,7 @@ async def test_command_task_baseline():
 
     await task.run()
 
-    assert task._result == 123
+    assert task.result() == 123
     assert task.state == CommandTaskState.DONE.value
     assert len(task.trace) == 2
     assert task.tokens == "<foo />"
@@ -156,7 +156,9 @@ async def test_command_task_stack():
             break
 
     await stack.success(bar_task)
-    assert bar_task._result == 2
+    assert bar_task.result() == 2
+    assert bar_task.done()
+    assert bar_task.success()
 
 
 @pytest.mark.asyncio

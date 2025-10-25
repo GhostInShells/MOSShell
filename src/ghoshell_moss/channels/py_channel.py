@@ -173,14 +173,6 @@ class PyChannel(Channel):
     def children(self) -> Dict[str, "Channel"]:
         return self._children
 
-    def descendants(self) -> Dict[str, "Channel"]:
-        channels = {}
-        for child in self._children.values():
-            channels[child.name()] = child
-            for descendant in child.descendants().values():
-                channels[descendant.name()] = descendant
-        return channels
-
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")

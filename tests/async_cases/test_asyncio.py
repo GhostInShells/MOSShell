@@ -136,3 +136,42 @@ async def test_task_await_in_tasks():
     assert wait_task.done()
     assert cancel_task.done()
     assert await cancel_task == 123
+
+
+@pytest.mark.asyncio
+async def test_first_exception_in_gathering():
+    async def foo(a: int):
+        await asyncio.sleep(0.01 * a)
+        raise ValueError(a)
+
+    e = None
+    try:
+        await asyncio.gather(foo(1), foo(2), foo(3), foo(4))
+    except ValueError as err:
+        e = err
+    assert e is not None
+    assert str(e) == str(ValueError(1))
+
+    # all exceptions 返回.
+    e = None
+    try:
+        done = await asyncio.gather(foo(1), foo(2), foo(3), foo(4), return_exceptions=True)
+        i = 0
+        for t in done:
+            i += 1
+            assert str(t) == str(ValueError(i))
+    except ValueError as err:
+        e = err
+    assert e is None
+
+
+@pytest.mark.asyncio
+async def test_run_until_complete_in_loop():
+    event = asyncio.Event()
+
+    def foo():
+        event.set()
+
+    loop = asyncio.get_running_loop()
+    loop.call_soon(foo)
+    await event.wait()

@@ -1,6 +1,7 @@
 from typing import Iterable, Callable, Optional, Dict, List
 from typing_extensions import Self
 from ghoshell_moss.concepts.command import CommandToken, CommandTask
+from ghoshell_moss.concepts.errors import InterpretError
 from abc import ABC, abstractmethod
 
 __all__ = [
@@ -319,7 +320,13 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def wait_execution_done(self, timeout: float | None = None) -> Dict[str, CommandTask]:
+    async def wait_execution_done(
+            self,
+            timeout: float | None = None,
+            *,
+            throw: bool = False,
+            cancel_on_exception: bool = True
+    ) -> Dict[str, CommandTask]:
         """
         等待所有的 task 被执行完毕.
         如果这些 task 没有被任何方式执行, 将会导致持续的阻塞.

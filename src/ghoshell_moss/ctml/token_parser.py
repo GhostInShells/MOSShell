@@ -370,7 +370,10 @@ class CTMLTokenParser(CommandTokenParser):
         self._stopped = True
         self.commit()
         # self._handler.done_event.wait()
-        self._sax_parser.close()
+        try:
+            self._sax_parser.close()
+        except xml.parsers.expat.ExpatError:
+            pass
         # cancel
         self._add_token(None)
 

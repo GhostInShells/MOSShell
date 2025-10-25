@@ -17,7 +17,11 @@ __all__ = [
     'ChannelMeta', 'Channel', 'ChannelServer', 'ChannelClient',
     'Builder',
     'R',
+    'ChannelPaths', 'ChannelFullPath',
 ]
+
+ChannelFullPath = str
+ChannelPaths = List[str]
 
 CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 """通常要求是异步函数, 如果是同步函数的话, 会卸载到线程池运行"""
@@ -273,11 +277,17 @@ class Channel(ABC):
         pass
 
     @staticmethod
-    def join_channel_name(parent: str, name: str) -> str:
+    def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
         """连接两个 channel 的标准语法. """
         if parent:
             return f'{parent}.{name}'
         return name
+
+    @staticmethod
+    def split_channel_path_to_names(channel_path: ChannelFullPath) -> ChannelPaths:
+        if not channel_path:
+            return []
+        return channel_path.split('.')
 
     def set_context_var(self) -> None:
         """与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身. """
@@ -325,7 +335,7 @@ class Channel(ABC):
         """
         pass
 
-    def descendants(self) -> Dict[str, "Channel"]:
+    def descendants(self, prefix: str = "") -> Dict[str, "Channel"]:
         """
         返回所有的子孙 Channel, 先序遍历.
         其中的 key 是 channel 的路径关系.
@@ -335,13 +345,12 @@ class Channel(ABC):
         children = self.children()
         if len(children) == 0:
             return descendants
-        for child in children.values():
-            child_name = child.name()
-            descendants[child_name] = child
-            for descendant_name, descendant in child.descendants().items():
+        for child_name, child in children.items():
+            child_path = Channel.join_channel_path(prefix, child_name)
+            descendants[child_path] = child
+            for descendant_full_path, descendant in child.descendants(child_path).items():
                 # join descendant name with parent name
-                channel_path = Channel.join_channel_name(child_name, descendant_name)
-                descendants[channel_path] = descendant
+                descendants[descendant_full_path] = descendant
         return descendants
 
     def all_channels(self) -> Dict[str, "Channel"]:
@@ -349,34 +358,32 @@ class Channel(ABC):
         语法糖, 返回所有的 channel, 包含自身.
         """
         descendants = self.descendants()
-        descendants[self.name()] = self
+        descendants[""] = self
         return descendants
 
     def get_channel(self, channel_path: str) -> Optional[Self]:
         """
         使用 channel 名从树中获取一个 Channel 对象. 包括自身.
         """
-        if channel_path == self.name():
+        if channel_path == "":
             return self
-        channel_names = channel_path.split('.')
-        first = channel_names.pop(0)
-        if first == self.name():
-            return self
-        return self.recursive_find_sub_channel(self, channel_names)
+
+        channel_path = Channel.split_channel_path_to_names(channel_path)
+        return self.recursive_find_sub_channel(self, channel_path)
 
     @classmethod
-    def recursive_find_sub_channel(cls, root: "Channel", paths: List[str]) -> Optional["Channel"]:
-        names_count = len(paths)
+    def recursive_find_sub_channel(cls, root: "Channel", channel_path: List[str]) -> Optional["Channel"]:
+        names_count = len(channel_path)
         if names_count == 0:
             return None
-        first = paths[0]
+        first = channel_path[0]
         children = root.children()
         if first not in children:
             return None
         new_root = children[first]
         if names_count == 1:
             return new_root
-        return cls.recursive_find_sub_channel(new_root, paths[1:])
+        return cls.recursive_find_sub_channel(new_root, channel_path[1:])
 
     # --- lifecycle --- #
 

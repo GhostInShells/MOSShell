@@ -102,7 +102,7 @@ class CommandCallEvent(ChannelEventModel):
             command_id=self.command_id,
             errcode=CommandErrorCode.NOT_AVAILABLE.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not available",
-            data=None,
+            result=None,
             chan=self.chan,
         )
 
@@ -119,8 +119,8 @@ class CommandCallEvent(ChannelEventModel):
             command_id=self.command_id,
             errcode=errcode,
             errmsg=errmsg,
-            data=result,
             chan=self.chan,
+            result=result,
         )
 
     def not_found(self, msg: str = "") -> "CommandDoneEvent":
@@ -130,7 +130,7 @@ class CommandCallEvent(ChannelEventModel):
             errcode=CommandErrorCode.NOT_FOUND.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not found",
             chan=self.chan,
-            data=None,
+            result=None,
         )
 
 
@@ -161,7 +161,7 @@ class CommandDoneEvent(ChannelEventModel):
     command_id: str = Field(description="command id")
     errcode: int = Field(default=0, description="command errcode")
     errmsg: Optional[str] = Field(default=None, description="command errmsg")
-    data: Any = Field(description="result of the command")
+    result: Any = Field(default=None, description="result of the command")
 
 
 class ClearDoneEvent(ChannelEventModel):
@@ -180,7 +180,7 @@ class PausePolicyDoneEvent(ChannelEventModel):
 
 class ChannelMetaUpdateEvent(ChannelEventModel):
     event_type: ClassVar[str] = "moss.channel.meta.update"
-    metas: List[ChannelMeta] = Field(default_factory=list, description="channel meta")
+    metas: Dict[str, ChannelMeta] = Field(default_factory=dict, description="channel meta")
     root_chan: str = Field(description="channel name")
 
 

@@ -1,4 +1,4 @@
-from ghoshell_moss.shell.impl import DefaultShell
+from ghoshell_moss.shell.shell_impl import DefaultShell
 import pytest
 
 

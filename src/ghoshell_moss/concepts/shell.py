@@ -1,6 +1,7 @@
+import contextlib
 from abc import ABC, abstractmethod
 from typing import List, Dict, Literal, Optional, AsyncIterable
-from ghoshell_moss.concepts.channel import Channel, ChannelMeta
+from ghoshell_moss.concepts.channel import Channel, ChannelMeta, ChannelFullPath
 from ghoshell_moss.concepts.interpreter import Interpreter
 from ghoshell_moss.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_container import IoCContainer
@@ -219,15 +220,6 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def channel_metas(self) -> Dict[str, ChannelMeta]:
-        """
-        当前运行状态中的 Channel meta 信息.
-        key 是 channel path, 例如 foo.bar
-        如果为空, 表示为主 channel.
-        """
-        pass
-
-    @abstractmethod
     def system_prompt(self) -> str:
         """
         如何使用 MOSShell 的系统指令.
@@ -263,7 +255,12 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def commands(self, available: bool = True) -> Dict[str, Command]:
+    async def commands(
+            self,
+            available_only: bool = True,
+            /,
+            config: Dict[ChannelFullPath, Channel] | None = None
+    ) -> Dict[ChannelFullPath, Dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
         注意, key 是 channel path. 例如 foo.bar:baz 表示 command 来自 channel `foo.bar`, 名称是 'baz'
@@ -271,7 +268,21 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
+    async def channel_metas(
+            self,
+            available: bool = True,
+            /,
+            config: Dict[ChannelFullPath, Channel] | None = None
+    ) -> Dict[ChannelFullPath, ChannelMeta]:
+        """
+        当前运行状态中的 Channel meta 信息.
+        key 是 channel path, 例如 foo.bar
+        如果为空, 表示为主 channel.
+        """
+        pass
+
+    @abstractmethod
+    async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         """
         获取一个可以运行的 channel command.
         这个语法可以理解为 from channel_path import command_name
@@ -285,13 +296,25 @@ class MOSSShell(ABC):
 
     # --- interpret --- #
 
-    @abstractmethod
-    def interpreter(
+    @contextlib.asynccontextmanager
+    async def interpreter_in_ctx(
             self,
             kind: InterpreterKind = "clear",
             *,
             stream_id: Optional[str] = None,
-            channel_metas: Optional[Dict[str, ChannelMeta]] = None,
+            channel_metas: Optional[Dict[ChannelFullPath, ChannelMeta]] = None,
+    ) -> Interpreter:
+        interpreter = await self.interpreter(kind=kind, stream_id=stream_id, channel_metas=channel_metas)
+        async with interpreter:
+            yield interpreter
+
+    @abstractmethod
+    async def interpreter(
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            channel_metas: Optional[Dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -319,7 +342,7 @@ class MOSSShell(ABC):
 
         async def _parse_token():
             with sender:
-                async with self.interpreter(kind) as interpreter:
+                async with self.interpreter_in_ctx(kind) as interpreter:
                     interpreter.parser().with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
@@ -348,7 +371,7 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             with sender:
-                async with self.interpreter(kind) as interpreter:
+                async with self.interpreter_in_ctx(kind) as interpreter:
                     interpreter.with_callback(sender.append)
                     async for token in tokens:
                         interpreter.root_task_element().on_token(token)
@@ -374,7 +397,7 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             with sender:
-                async with self.interpreter(kind) as interpreter:
+                async with self.interpreter_in_ctx(kind) as interpreter:
                     interpreter.with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
@@ -393,7 +416,7 @@ class MOSSShell(ABC):
     # --- runtime methods --- #
 
     @abstractmethod
-    def append(self, *tasks: CommandTask) -> None:
+    def add_task(self, *tasks: CommandTask) -> None:
         """
         添加 task 到运行时. 这些 task 会阻塞在 Channel Runtime 队列中直到获取执行机会.
         """

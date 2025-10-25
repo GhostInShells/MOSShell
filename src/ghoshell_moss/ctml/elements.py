@@ -1,15 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List, Iterable
+from typing import Dict, Optional, List
 from ghoshell_moss.concepts.command import (
     CommandTask, Command, CommandToken, CommandTokenType, BaseCommandTask, CommandDeltaType,
     CancelAfterOthersTask,
 )
 from ghoshell_moss.concepts.interpreter import CommandTaskParserElement, CommandTaskCallback, CommandTaskParseError
 from ghoshell_moss.concepts.shell import SpeechStream, Speech
+from ghoshell_moss.concepts.errors import InterpretError
 from ghoshell_moss.helpers.stream import create_thread_safe_stream
 from ghoshell_common.contracts import LoggerItf
 from .token_parser import CMTLSaxElement
-from logging import Logger, getLogger
+from logging import getLogger
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from contextlib import contextmanager
 
@@ -164,7 +165,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         """
         if token.type != CommandTokenType.START.value:
             # todo
-            raise RuntimeError(f"invalid token {token}")
+            raise InterpretError("invalid token %r" % token)
 
         command = self._find_command(token.chan, token.name)
         if command is None:
@@ -394,7 +395,7 @@ class DeltaTypeIsTokensCommandTaskElement(BaseCommandTaskParserElement):
             self._end = True
 
 
-class RootCommandTaskElement(BaseCommandTaskParserElement):
+class RootCommandTaskElement(NoDeltaCommandTaskElement):
 
     def _send_callback_done(self):
         if not self._done_event.is_set() and not self.ctx.stop_event.is_set() and self._callback is not None:
@@ -405,26 +406,22 @@ class RootCommandTaskElement(BaseCommandTaskParserElement):
         if token is None or self.ctx.stop_event.is_set():
             self._send_callback_done()
             return
-        if self._unclose_child is None:
-            self._new_child_element(token)
-            return
-        else:
-            self._unclose_child.on_token(token)
-
-        if self._unclose_child.is_end():
-            self._send_callback_done()
-
-    def _on_delta_token(self, token: CommandToken) -> None:
-        raise NotImplementedError
+        super().on_token(token)
+        # if self._unclose_child is None:
+        #     if token.type == CommandTokenType.START.value:
+        #         self._new_child_element(token)
+        #     elif token.type == CommandTokenType.DELTA.value:
+        #         self._on_delta_token(token)
+        #
+        #     return
+        # else:
+        #     self._unclose_child.on_token(token)
+        #
+        # if self._unclose_child.is_end():
+        #     self._send_callback_done()
 
     def _on_self_start(self) -> None:
         return
-
-    def _on_cmd_start_token(self, token: CommandToken):
-        raise NotImplementedError
-
-    def _on_cmd_end_token(self, token: CommandToken):
-        raise NotImplementedError
 
 
 class DeltaIsTextCommandTaskElement(BaseCommandTaskParserElement):

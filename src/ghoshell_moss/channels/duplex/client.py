@@ -2,7 +2,7 @@ from typing import Dict, Any, Optional, Callable, Coroutine
 from typing_extensions import Self
 
 from ghoshell_moss import ChannelClient
-from ghoshell_moss.concepts.channel import Channel, ChannelMeta, Builder, R
+from ghoshell_moss.concepts.channel import Channel, ChannelMeta, Builder, R, ChannelFullPath
 from ghoshell_moss.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.concepts.command import Command, CommandTask, BaseCommandTask, CommandMeta, CommandWrapper
 from ghoshell_moss.channels.py_channel import PyChannel
@@ -42,7 +42,7 @@ class DuplexChannelContext:
         self.root_local_channel = root_local_channel
         """根节点的本地 channel. """
 
-        self.meta_map: Dict[str, ChannelMeta] = {}
+        self.server_meta_map: Dict[ChannelFullPath, ChannelMeta] = {}
         """所有远端上传的 metas. """
 
         self.started = False
@@ -64,7 +64,7 @@ class DuplexChannelContext:
     def get_meta(self, name: str) -> Optional[ChannelMeta]:
         if not name:
             name = self.remote_root_name
-        return self.meta_map.get(name, None)
+        return self.server_meta_map.get(name, None)
 
     async def send_event_to_server(self, event: ChannelEvent) -> bool:
         if self.stop_event.is_set() or not self.connection.is_available():
@@ -143,6 +143,7 @@ class DuplexChannelContext:
         await self.update_meta(update_metas)
 
     async def _main(self):
+        reason = ""
         try:
             # 异常管理放在外侧, 方便阅读代码.
             receiving_loop = asyncio.create_task(self._main_receiving_loop())
@@ -156,10 +157,13 @@ class DuplexChannelContext:
                 task.cancel()
             await receiving_loop
         except asyncio.CancelledError:
+            reason = "client proxy cancelled"
             raise
         except ConnectionClosedError:
+            reason = "client proxy connection closed"
             self.logger.info(f"Channel {self.root_name} Connection closed")
         except Exception as e:
+            reason = "client proxy error: %s" % str(e)
             self.logger.exception(e)
             raise
         finally:
@@ -167,7 +171,9 @@ class DuplexChannelContext:
             for queue in self.server_event_queue_map.values():
                 queue.put_nowait(None)
             for task in self._pending_server_command_calls.values():
-                task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"Channel {self.root_name} connection closed"))
+                task.fail(
+                    CommandErrorCode.NOT_AVAILABLE.error(f"Channel proxy `{self.root_name}` task failed: {reason}")
+                )
 
     async def _main_receiving_loop(self) -> None:
         try:
@@ -193,7 +199,7 @@ class DuplexChannelContext:
                 if "chan" in event['data']:
                     chan = event['data']['chan']
                     # 检查是否是已经注册的 channel.
-                    if chan not in self.meta_map:
+                    if chan not in self.server_meta_map:
                         self.logger.error(f'Channel {self.root_name} error: {chan} not found')
                         continue
 
@@ -216,18 +222,18 @@ class DuplexChannelContext:
         """更新 metas 信息. """
         self.remote_root_name = event.root_chan
         # 更新 meta map.
-        meta_map = {}
-        for meta in event.metas:
-            meta_map[meta.name] = meta.model_copy()
+        new_server_meta_map = {}
+        for server_channel_path, meta in event.metas.items():
+            new_server_meta_map[server_channel_path] = meta.model_copy()
             if meta.name not in self.server_event_queue_map:
                 # 提前补充好 channel 分发用的 queue.
-                self.server_event_queue_map[meta.name] = asyncio.Queue()
+                self.server_event_queue_map[server_channel_path] = asyncio.Queue()
 
-        for meta in self.meta_map.values():
-            if meta.name not in meta_map:
+        for channel_path, meta in self.server_meta_map.items():
+            if channel_path not in new_server_meta_map:
                 meta.available = False
         # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
-        self.meta_map = meta_map
+        self.server_meta_map = new_server_meta_map
 
     async def _command_peek_loop(self):
         try:
@@ -354,7 +360,7 @@ class DuplexChannelStub(Channel):
 
     def _get_server_channel_meta(self) -> Optional[ChannelMeta]:
         # 获取自己在 server 端的 channel meta.
-        return self._ctx.meta_map.get(self._server_chan_name)
+        return self._ctx.server_meta_map.get(self._server_chan_name)
 
     @property
     def client(self) -> ChannelClient:
@@ -765,7 +771,7 @@ class DuplexChannelProxy(Channel):
         # 每次动态检查生成 children channels.
         local_children = self._local_channel.children()
         children_stubs = {}
-        for name, meta in self._ctx.meta_map.items():
+        for name, meta in self._ctx.server_meta_map.items():
             if name in self._children_stubs:
                 # 已经生成过了.
                 children_stubs[name] = self._children_stubs[name]

@@ -18,6 +18,8 @@ from ghoshell_moss.concepts.channel import (
     ChannelMeta,
     ChannelClient,
     ChannelServer,
+    ChannelFullPath,
+    ChannelPaths,
 )
 
 from ghoshell_moss.concepts.interpreter import (

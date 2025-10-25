@@ -26,7 +26,7 @@ async def test_shell_execution_baseline():
         return 456
 
     async with shell:
-        interpreter = shell.interpreter()
+        interpreter = await shell.interpreter()
         assert isinstance(interpreter, Interpreter)
         assert shell.is_running()
         foo_cmd = shell.get_command("a", "foo")
@@ -64,44 +64,54 @@ async def test_shell_outputted():
         return 123
 
     async with shell:
-        async with shell.interpreter() as interpreter:
+        foo_cmd = await shell.get_command("", "foo")
+        assert foo_cmd is not None
+        async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<foo />hello")
-            await interpreter.wait_execution_done(10)
+            tasks = await interpreter.wait_execution_done(10)
+            task_list = list(tasks.values())
+            assert len(tasks) == 2
+            assert task_list[0].result() == 123
             assert interpreter.outputted() == ["hello"]
 
 
 @pytest.mark.asyncio
 async def test_shell_command_run_in_order():
+    """测试 get command exec in chan 可以使命令进入 channel 队列有序执行. """
     from ghoshell_moss.shell import new_shell
 
     shell = new_shell()
 
     order = {}
 
-    async def foo(i: int):
-        # makesure first call cast more time than last one
-        await asyncio.sleep(0.3 - i / 10)
+    async def foo(i: float):
+        await asyncio.sleep(i)
         order[i] = time.time()
         return i
 
     # register the foo command
     shell.main_channel.build.command(block=True)(foo)
+
     async with shell:
         # get the origin command
-        foo_cmd: foo = shell.get_command("", "foo")
-        values = await asyncio.gather(foo_cmd(1), foo_cmd(2))
-        assert values == [1, 2]
+        foo_cmd: foo = await shell.get_command("", "foo")
+        assert foo_cmd is not None
+
+        values = await asyncio.gather(foo_cmd(0.2), foo_cmd(0.1))
+        assert values == [0.2, 0.1]
         assert len(order) == 2
         # the command execute in concurrent
-        assert order[1] > order[2]
+        assert order[0.1] > order[0.2]
 
-        foo_cmd: foo = shell.get_command("", "foo", exec_in_chan=True)
-        values = await asyncio.gather(foo_cmd(1), foo_cmd(2))
+        # 重新开始.
+        order.clear()
+        foo_cmd: foo = await shell.get_command("", "foo", exec_in_chan=True)
+        values = await asyncio.gather(foo_cmd(0.2), foo_cmd(0.1))
         # the gather order is the same
-        assert values == [1, 2]
+        assert values == [0.2, 0.1]
         assert len(order) == 2
         # second command execute after first one
-        assert order[2] > order[1]
+        assert order[0.1] > order[0.2]
 
 
 @pytest.mark.asyncio
@@ -118,7 +128,7 @@ async def test_shell_task_can_get_channel():
         return chan is a_chan
 
     async with shell:
-        async with shell.interpreter() as interpreter:
+        async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_execution_done(10)
             assert len(tasks) == 1
@@ -139,7 +149,7 @@ async def test_shell_task_can_get_task():
         return task.cid
 
     async with shell:
-        async with shell.interpreter() as interpreter:
+        async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_execution_done(10)
             assert len(tasks) == 1
@@ -162,14 +172,14 @@ async def test_shell_loop():
         chan = Channel.get_from_context()
         # get shell from channel's container
         _shell = chan.client.container.get(MOSSShell)
-        tasks = []
+        _tasks = []
         async for t in _shell.parse_tokens_to_command_tasks(tokens__):
-            tasks.append(t)
+            _tasks.append(t)
 
         async def _iter():
             for i in range(times):
-                for task in tasks:
-                    yield task.copy()
+                for _task in _tasks:
+                    yield _task.copy()
 
         async def on_success(generated: List[CommandTask]):
             await asyncio.gather(*[g.wait() for g in generated])
@@ -183,13 +193,65 @@ async def test_shell_loop():
         outputs.append(1)
         return 123
 
-    content = '<loop times="2"><a:foo /></loop>'
+    content = '<loop times="2">hello<a:foo />world</loop>'
     async with shell:
-        interpreter = shell.interpreter()
+        interpreter = await shell.interpreter()
         async with interpreter:
             for c in content:
                 interpreter.feed(c)
-            await interpreter.wait_execution_done()
+            tasks = await interpreter.wait_execution_done()
+            for task in tasks.values():
+                assert task.done()
         assert interpreter.is_stopped()
     # 执行了两次.
     assert len(outputs) == 2
+
+
+@pytest.mark.asyncio
+async def test_shell_clear():
+    from ghoshell_moss.shell import new_shell
+
+    shell = new_shell()
+    a_chan = shell.main_channel.new_child('a')
+    b_chan = shell.main_channel.new_child('b')
+    c_chan = a_chan.new_child('c')
+
+    sleep = [0.1]
+
+    @a_chan.build.command()
+    async def foo() -> str:
+        await asyncio.sleep(sleep[0])
+        return "foo"
+
+    @b_chan.build.command()
+    async def bar() -> str:
+        await asyncio.sleep(sleep[0])
+        return "bar"
+
+    @c_chan.build.command()
+    async def baz() -> str:
+        await asyncio.sleep(sleep[0])
+        return "baz"
+
+    content = '<a:foo /><b:bar /><a.c:baz />'
+    async with shell:
+        # baseline
+        async with shell.interpreter_in_ctx() as interpreter:
+            interpreter.feed(content)
+            tasks = await interpreter.wait_execution_done()
+            assert len(tasks) == 3
+            assert [t.result() for t in tasks.values()] == ["foo", "bar", "baz"]
+
+        # clear
+        sleep[0] = 10
+        async with shell.interpreter_in_ctx() as interpreter:
+            interpreter.feed(content)
+            await interpreter.wait_parse_done()
+            parsed_tasks = interpreter.parsed_tasks()
+            for t in parsed_tasks.values():
+                assert not t.done()
+            # clear all
+            await shell.clear()
+            parsed_tasks = interpreter.parsed_tasks()
+            for t in parsed_tasks.values():
+                assert t.cancelled()

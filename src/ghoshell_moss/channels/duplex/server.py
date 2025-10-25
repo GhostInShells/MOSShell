@@ -141,7 +141,7 @@ class DuplexChannelServer(ChannelServer):
             self._channel_lifecycle_idle_events.clear()
             await self.connection.close()
             close_all_channels = []
-            for channel in self.channel.all_channels():
+            for channel in self.channel.all_channels().values():
                 if channel.is_running():
                     close_all_channels.append(channel.client.close())
             await asyncio.gather(*close_all_channels)
@@ -265,7 +265,7 @@ class DuplexChannelServer(ChannelServer):
                 command_id=command_id,
                 errcode=CommandErrorCode.CANCELLED,
                 errmsg="canceled",
-                data=None,
+                result=None,
             )
             await self._send_response_to_client(command_done.to_channel_event())
         else:
@@ -274,9 +274,9 @@ class DuplexChannelServer(ChannelServer):
                 command_done = CommandDoneEvent(
                     chan=model.chan,
                     command_id=command_id,
-                    data=cmd_task.result(),
                     errcode=cmd_task.errcode,
                     errmsg=cmd_task.errmsg,
+                    result=cmd_task.result(),
                 )
                 await self._send_response_to_client(command_done.to_channel_event())
 
@@ -416,13 +416,11 @@ class DuplexChannelServer(ChannelServer):
             await self._send_response_to_client(response.to_channel_event())
 
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
-        metas = []
-        names = set(event.channels)
-        for channel in self.channel.all_channels():
+        metas = {}
+        for channel_path, channel in self.channel.all_channels().items():
             if not channel.is_running():
                 continue
-            if not names or channel.name in names:
-                metas.append(channel.client.meta(no_cache=True))
+            metas[channel_path] = channel
         response = ChannelMetaUpdateEvent(
             session_id=event.session_id,
             metas=metas,
@@ -444,11 +442,11 @@ class DuplexChannelServer(ChannelServer):
         await self._cancel_channel_lifecycle_task(call_event.chan)
         channel = self.channel.get_channel(call_event.chan)
         if channel is None:
-            response = call_event.not_available("channel %s not found" % call_event.chan)
+            response = call_event.not_available("channel `%s` not found" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
         elif not self.channel.is_running():
-            response = call_event.not_available("channel %s is not running" % call_event.chan)
+            response = call_event.not_available("channel `%s` is not running" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
 
