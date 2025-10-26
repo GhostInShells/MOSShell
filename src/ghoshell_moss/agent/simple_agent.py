@@ -161,8 +161,7 @@ class SimpleAgent:
             params['messages'] = messages
             params['stream'] = True
             response_stream = await litellm.acompletion(**params)
-            interpreter = self.shell.interpreter()
-            async with interpreter:
+            async with self.shell.interpreter_in_ctx() as interpreter:
                 reasoning = False
                 async for chunk in response_stream:
                     delta = chunk.choices[0].delta
