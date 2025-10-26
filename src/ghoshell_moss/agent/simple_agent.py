@@ -161,7 +161,6 @@ class SimpleAgent:
                 # 注册 agent 的 instruction.
                 messages.append({"role": "system", "content": self.instruction})
 
-                print("++++++++", messages)
                 # 增加历史.
                 messages.extend(self.messages.copy())
                 # 增加 inputs
@@ -189,7 +188,7 @@ class SimpleAgent:
                 interpreter.commit()
                 results = await interpreter.results()
                 if len(results) > 0:
-                    execution_results = "\n".join(results)
+                    execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
                 if execution_results:
                     return [{"role": "system", "content": "## executions:\n\n%s" % execution_results}]
                 else:

@@ -252,8 +252,14 @@ class CTMLInterpreter(Interpreter):
         for task in tasks.values():
             if task.success():
                 result = task.result()
-                if result is not None and not (isinstance(result, str) and result.strip()):
-                    results[task.tokens] = result
+                if result is not None:
+                    try:
+                        cmd_result = str(result).strip()
+                        if cmd_result:
+                            results[task.tokens] = cmd_result
+                    except Exception as e:
+                        self._logger.exception(e)
+                        pass
             else:
                 results[task.tokens] = CommandErrorCode.description(task.errcode, task.errmsg)
                 break

@@ -1,4 +1,4 @@
-from ghoshell_moss.agent.simple_agent import SimpleAgent
+from ghoshell_moss.agent.simple_agent import SimpleAgent, ModelConf
 
 import os
 import sys
@@ -53,7 +53,10 @@ def init_live2d(model_path: str):
 async def run_agent():
     # 创建 Shell
     shell = new_shell(container=container)
-    shell.main_channel.import_channels(body_chan)
+    head_chan.import_channels(
+        expression_chan,
+        mouth_chan,
+    )
     body_chan.import_channels(
         head_chan,
         left_arm_chan,
@@ -64,11 +67,18 @@ async def run_agent():
         left_leg_chan,
         right_leg_chan,
     )
-    head_chan.import_channels(
-        expression_chan,
-        mouth_chan,
+    shell.main_channel.import_channels(body_chan)
+    agent = SimpleAgent(
+        instruction="你是miku",
+        shell=shell,
+        model=ModelConf(
+            kwargs=dict(
+                thinking=dict(
+                    type="disabled",
+                )
+            ),
+        )
     )
-    agent = SimpleAgent(instruction="你是miku", shell=shell)
     await agent.run()
 
 

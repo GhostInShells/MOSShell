@@ -6,6 +6,7 @@ from helper.motions import open_close
 
 mouth_chan = PyChannel(name='mouth')
 
+
 @mouth_chan.build.command()
 async def open(size: float = 1.0):
     """
@@ -18,7 +19,7 @@ async def open(size: float = 1.0):
         size = 1.0
     elif size < 0.0:
         size = 0.0
-    
+
     model = mouth_chan.client.container.force_fetch(live2d.LAppModel)
     model.SetParameterValue("ParamMouthOpenY", size)
     return size
@@ -37,7 +38,7 @@ async def speek(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7
     PARAM = "ParamMouthOpenY"
     # 特殊处理嘴部动作，说话通常从张开开始
     model = mouth_chan.client.container.force_fetch(live2d.LAppModel)
-    
+
     # 调用通用动画函数，注意初始方向设置为打开
     final_value = await open_close(
         model=model,
@@ -51,4 +52,4 @@ async def speek(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7
     print(f"final_value: {final_value}")
     # 确保最终状态是完全闭合
     model.SetParameterValue(PARAM, 0.0)
-    return 0.0
+    return None
