@@ -150,19 +150,25 @@ class SimpleAgent:
             self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
-            messages = [
-                {"role": "system", "content": self.instruction}
-            ]
-            # 增加历史.
-            messages.extend(self.messages.copy())
-            # 增加 inputs
-            messages.extend(inputs)
-
-            params['messages'] = messages
-            params['stream'] = True
-            response_stream = await litellm.acompletion(**params)
             async with self.shell.interpreter_in_ctx() as interpreter:
                 reasoning = False
+
+                moss_instruction = interpreter.moss_instruction()
+                # 系统指令.
+                messages = []
+                if moss_instruction:
+                    messages.append({"role": "system", "content": moss_instruction})
+                # 注册 agent 的 instruction.
+                messages.append({"role": "system", "content": self.instruction})
+
+                print("++++++++", messages)
+                # 增加历史.
+                messages.extend(self.messages.copy())
+                # 增加 inputs
+                messages.extend(inputs)
+                params['messages'] = messages
+                params['stream'] = True
+                response_stream = await litellm.acompletion(**params)
                 async for chunk in response_stream:
                     delta = chunk.choices[0].delta
                     if "reasoning_content" in delta:

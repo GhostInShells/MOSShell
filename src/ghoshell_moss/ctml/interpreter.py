@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, Dict, List, AsyncIterable, Callable, Coroutine
+from typing import Optional, Iterable, Dict, List, AsyncIterable, Callable, Coroutine, Tuple
 
 from ghoshell_moss.concepts.channel import ChannelMeta, ChannelFullPath
 from ghoshell_moss.concepts.interpreter import (
@@ -18,6 +18,43 @@ import asyncio
 import queue
 
 DEFAULT_META_PROMPT = get_moss_meta_prompt()
+
+_Title = str
+_Description = str
+_Interface = str
+
+
+def make_chan_prompt(title: str, description: str, interface: str) -> str:
+    python_interface = f"```python\n{interface}\n```\n" if interface else ""
+    return f"""
+## channel `{title}`
+{description}
+{python_interface}
+"""
+
+
+def make_channels_prompt(channel_metas: Dict[str, ChannelMeta]) -> str:
+    channel_items: List[Tuple[_Title, _Description, _Interface]] = []
+    if len(channel_metas) == 0:
+        return ""
+    if "" in channel_metas:
+        main = channel_metas.pop("")
+        if len(main.commands) > 0:
+            interface = "\n\n".join([c.interface for c in main.commands])
+            channel_items.append(("", "main channel commands (do not need channel namespaces):", interface))
+    for channel_path, channel_meta in channel_metas.items():
+        channel_items.append(
+            (
+                f"## channel `{channel_path}`",
+                channel_meta.description,
+                "\n\n".join([c.interface for c in channel_meta.commands]),
+            )
+        )
+    if len(channel_items) == 0:
+        # 返回空.
+        return ""
+    body = "\n\n".join([make_chan_prompt(*item) for item in channel_items])
+    return f"# MOSS Channels\n\n{body}"
 
 
 class CTMLInterpreter(Interpreter):
@@ -51,7 +88,7 @@ class CTMLInterpreter(Interpreter):
         # 生成 stream id.
         self.id = stream_id or uuid()
         self._meta_instruction = meta_system_prompt
-        self._channel_metas = channel_metas
+        self._channel_metas = channel_metas or {}
         # 准备日志.
         self._logger = logger or logging.getLogger("CTMLInterpreter")
         # 可用的 task 回调.
@@ -157,8 +194,11 @@ class CTMLInterpreter(Interpreter):
         return self._meta_instruction or DEFAULT_META_PROMPT
 
     def moss_instruction(self) -> str:
-        meta_system_prompt = self.meta_system_prompt()
-        return meta_system_prompt
+        channels_prompt = make_channels_prompt(self._channel_metas)
+        if channels_prompt:
+            meta_system_prompt = self.meta_system_prompt()
+            return "\n\n".join([meta_system_prompt, channels_prompt])
+        return ""
 
     def feed(self, delta: str) -> None:
         if not self._committed and not self._stopped_event.is_set():

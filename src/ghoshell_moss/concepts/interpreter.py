@@ -1,7 +1,6 @@
 from typing import Iterable, Callable, Optional, Dict, List
 from typing_extensions import Self
 from ghoshell_moss.concepts.command import CommandToken, CommandTask
-from ghoshell_moss.concepts.errors import InterpretError
 from abc import ABC, abstractmethod
 
 __all__ = [
