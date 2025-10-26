@@ -201,9 +201,6 @@ class DuplexChannelServer(ChannelServer):
             for t in pending:
                 t.cancel()
             await handle_task
-        except asyncio.CancelledError:
-            # todo: log
-            pass
         except Exception as e:
             self.logger.exception(e)
 
@@ -236,7 +233,8 @@ class DuplexChannelServer(ChannelServer):
             if model := CommandCallEvent.from_channel_event(event):
                 await self._handle_command_call(model)
             elif model := CommandPeekEvent.from_channel_event(event):
-                await self._handle_command_peek(model)
+                # await self._handle_command_peek(model)
+                pass
             elif model := CommandCancelEvent.from_channel_event(event):
                 await self._handle_command_cancel(model)
             elif model := SyncChannelMetasEvent.from_channel_event(event):
@@ -473,7 +471,14 @@ class DuplexChannelServer(ChannelServer):
             # 多余的, 没什么用.
             task.set_state("running")
             await self._add_running_task(task)
-            await self._execute_task(channel, task)
+            result = await channel.execute_task(task)
+            task.resolve(result)
+        except asyncio.CancelledError:
+            task.cancel("cancelled")
+            pass
+        except Exception as e:
+            self.logger.exception(e)
+            task.fail(e)
         finally:
             # todo: log
             await self._remove_running_task(task)
@@ -483,22 +488,6 @@ class DuplexChannelServer(ChannelServer):
             result = task.result()
             response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_response_to_client(response.to_channel_event())
-
-    async def _execute_task(self, channel: Channel, task: CommandTask) -> None:
-        try:
-            # 干运行, 拿到同步运行结果.
-            execution = asyncio.create_task(channel.execute_task(task))
-            # 如果 task 被提前 cancel 了, 执行命令也会被取消.
-            closing = asyncio.create_task(self._closing_event.wait())
-            done, pending = await asyncio.wait([execution, closing], return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-            result = await execution
-            task.resolve(result)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            self.logger.exception(e)
 
     async def _add_running_task(self, task: CommandTask) -> None:
         await self._running_command_tasks_lock.acquire()

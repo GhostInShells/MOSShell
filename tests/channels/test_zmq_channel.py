@@ -121,7 +121,7 @@ async def test_zmq_channel_lost_connection():
         address=address,
         socket_type=ZMQSocketType.PAIR,
         heartbeat_interval=0.1,  # 100ms 心跳间隔
-        heartbeat_timeout=0.5,  # 300ms 心跳超时
+        heartbeat_timeout=0.3,  # 300ms 心跳超时
         description="ZMQ channel with reconnect"
     )
 
@@ -158,6 +158,7 @@ async def test_zmq_channel_lost_connection():
         assert not server.is_running()
         with pytest.raises(CommandError):
             result = await cmd()
+            assert not proxy.client.is_available()
 
 
 @pytest.mark.asyncio

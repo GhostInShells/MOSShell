@@ -29,7 +29,7 @@ async def test_shell_execution_baseline():
         interpreter = await shell.interpreter()
         assert isinstance(interpreter, Interpreter)
         assert shell.is_running()
-        foo_cmd = shell.get_command("a", "foo")
+        foo_cmd = await shell.get_command("a", "foo")
         assert foo_cmd is not None
         async with interpreter:
             interpreter.feed("<a:foo /><b:bar />")

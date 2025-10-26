@@ -26,13 +26,13 @@ class DuplexChannelContext:
             container: IoCContainer,
             connection: Connection,
             root_local_channel: Channel,
-            command_peek_interval: float = 1.0,
+            command_peek_interval: float = 2.0,
     ):
         self.root_name = root_local_channel.name()
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
         self.remote_root_name = ""
         """远端的 root channel 名字"""
-        self._command_peek_interval = command_peek_interval if command_peek_interval > 0 else 1.0
+        self._command_peek_interval = command_peek_interval if command_peek_interval > 0 else 2.0
 
         self.session_id = session_id
         self.container = container or Container(name="duplex channel context container")
@@ -64,19 +64,25 @@ class DuplexChannelContext:
     def get_meta(self, name: str) -> Optional[ChannelMeta]:
         return self.server_meta_map.get(name, None)
 
-    async def send_event_to_server(self, event: ChannelEvent) -> bool:
-        if self.stop_event.is_set() or not self.connection.is_available():
+    async def send_event_to_server(self, event: ChannelEvent, throw: bool = True) -> None:
+        if self.stop_event.is_set():
             self.logger.warning("Channel %s Connection is stopped or not available" % self.root_name)
+            if throw:
+                raise ConnectionClosedError(f'Channel {self.root_name} Connection is stopped')
+            return
         try:
+            if not self.connection.is_available():
+                if throw:
+                    raise ConnectionNotAvailable(f'Channel {self.root_name} Connection not available')
+                return
             await self.connection.send(event)
-            return True
-        except ConnectionClosedError:
-            self.logger.warning("Channel %s Connection is closed" % self.root_name)
-            self.available = False
-            return False
+        except (ConnectionClosedError, ConnectionNotAvailable):
+            if throw:
+                raise
         except Exception as e:
             self.logger.exception(e)
-            return False
+            if throw:
+                raise e
 
     def get_server_event_queue(self, name: str) -> asyncio.Queue[ChannelEvent | None]:
         """
@@ -167,17 +173,30 @@ class DuplexChannelContext:
             self.stop_event.set()
             for queue in self.server_event_queue_map.values():
                 queue.put_nowait(None)
-            for task in self._pending_server_command_calls.values():
-                task.fail(
-                    CommandErrorCode.NOT_AVAILABLE.error(f"Channel proxy `{self.root_name}` task failed: {reason}")
-                )
-            self._pending_server_command_calls.clear()
+            await self._clear_pending_server_command_calls(reason)
+
+    async def _clear_pending_server_command_calls(self, reason: str = "") -> None:
+        tasks = self._pending_server_command_calls.copy()
+        self._pending_server_command_calls.clear()
+        for task in tasks.values():
+            if not task.done():
+                reason = reason or f"Channel proxy `{self.root_name}` not available"
+                task.fail(CommandErrorCode.NOT_AVAILABLE.error(reason))
 
     async def _main_receiving_loop(self) -> None:
         try:
             while not self.stop_event.is_set():
+                if not self.connection.is_available():
+                    await self._clear_pending_server_command_calls()
+                    await asyncio.sleep(0.3)
+                    continue
+
                 # 等待一个事件.
-                event = await self.connection.recv()
+                try:
+                    event = await self.connection.recv(0.5)
+                except asyncio.TimeoutError:
+                    continue
+
                 # 默认的毒丸逻辑. 防止死锁.
                 if event is None:
                     break
@@ -191,7 +210,9 @@ class DuplexChannelContext:
                     self.logger.error(f'Channel {self.root_name} error: {server_error}')
                     continue
                 elif command_done := CommandDoneEvent.from_channel_event(event):
+                    # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
                     await self._handle_command_done(command_done)
+                    continue
 
                 # 判断回调分发给哪个具体的 channel.
                 if "chan" in event['data']:
@@ -241,13 +262,14 @@ class DuplexChannelContext:
                     chan=call.chan,
                     command_id=call.command_id,
                 )
-                ok = await self.send_event_to_server(peek_event.to_channel_event())
-                if not ok:
-                    break
+                await self.send_event_to_server(peek_event.to_channel_event())
+                await asyncio.sleep(self._command_peek_interval)
         except asyncio.CancelledError:
             pass
-        except ConnectionClosedError:
-            pass
+        except ConnectionClosedError as e:
+            task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"Channel `{self.root_name}` connection closed: {e}"))
+        except ConnectionNotAvailable as e:
+            task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"Channel `{self.root_name}` connection not available: {e}"))
         except Exception as e:
             self.logger.exception(e)
 
@@ -273,40 +295,42 @@ class DuplexChannelContext:
             self._pending_server_command_calls[cid] = wait_result_task
 
             # 等待异步返回结果.
-            success = await self.send_event_to_server(event.to_channel_event())
-            if not success:
-                wait_result_task.fail(CommandErrorCode.FAILED.error("Failed to send command to server"))
-                return wait_result_task
+            await self.send_event_to_server(event.to_channel_event())
 
             task_done = asyncio.create_task(wait_result_task.wait(throw=False))
             peek_loop = asyncio.create_task(self._peek_command_task_loop(wait_result_task, event))
             is_stopped = asyncio.create_task(self.stop_event.wait())
             _, pending = await asyncio.wait(
-                [task_done, peek_loop, is_stopped],
+                [task_done, is_stopped],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for t in pending:
                 t.cancel()
             # 等到 wait result task
             await task_done
+            try:
+                peek_loop.cancel()
+                await peek_loop
+            except asyncio.CancelledError:
+                pass
             return wait_result_task
 
-        except ConnectionClosedError:
-            wait_result_task.fail(CommandErrorCode.FAILED.error("remote connection closed"))
+        except (ConnectionClosedError, ConnectionNotAvailable):
+            wait_result_task.fail(CommandErrorCode.NOT_AVAILABLE.error("channel connection not available"))
             return wait_result_task
 
         except asyncio.CancelledError:
             if not wait_result_task.done():
-                wait_result_task.cancel()
+                wait_result_task.cancel("cancelled by server")
                 # 发送取消事件, 通知给下游.
                 if self.is_available(event.chan):
-                    await self.send_event_to_server(event.cancel().to_channel_event())
+                    await self.send_event_to_server(event.cancel().to_channel_event(), throw=False)
             return wait_result_task
         except Exception as e:
             if not wait_result_task.done():
                 wait_result_task.fail(e)
                 if self.is_running():
-                    await self.send_event_to_server(event.cancel().to_channel_event())
+                    await self.send_event_to_server(event.cancel().to_channel_event(), throw=False)
 
             self.logger.exception(e)
             return wait_result_task
@@ -320,8 +344,10 @@ class DuplexChannelContext:
             command_id = event.command_id
             if command_id in self._pending_server_command_calls:
                 task = self._pending_server_command_calls[command_id]
-                if event.errcode == 0:
-                    task.resolve(event.data)
+                if task.done():
+                    pass
+                elif event.errcode == 0:
+                    task.resolve(event.result)
                 else:
                     error = CommandError(event.errcode, event.errmsg)
                     task.fail(error)
@@ -597,7 +623,7 @@ class DuplexChannelClient(ChannelClient):
                 session_id=self._ctx.session_id,
                 chan=self._server_chan_path,
             )
-            await self._ctx.send_event_to_server(event.to_channel_event())
+            await self._ctx.send_event_to_server(event.to_channel_event(), throw=False)
         except asyncio.CancelledError:
             # todo: log
             pass
@@ -614,7 +640,7 @@ class DuplexChannelClient(ChannelClient):
                 session_id=self._ctx.session_id,
                 chan=self._server_chan_path,
             )
-            await self._ctx.send_event_to_server(event.to_channel_event())
+            await self._ctx.send_event_to_server(event.to_channel_event(), throw=True)
         except asyncio.CancelledError:
             # todo: log
             pass
@@ -631,7 +657,7 @@ class DuplexChannelClient(ChannelClient):
                 session_id=self._ctx.session_id,
                 chan=self._server_chan_path,
             )
-            await self._ctx.send_event_to_server(event.to_channel_event())
+            await self._ctx.send_event_to_server(event.to_channel_event(), throw=True)
         except asyncio.CancelledError:
             # todo: log
             pass

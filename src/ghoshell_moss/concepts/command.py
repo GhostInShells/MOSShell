@@ -587,7 +587,10 @@ class CommandTask(Generic[RESULT], ABC):
             return await self.wait(throw=True)
 
         try:
-            dry_run = asyncio.create_task(self.dry_run())
+            ctx = contextvars.copy_context()
+            self.set_context_var()
+            dry_run_cor = ctx.run(self.dry_run)
+            dry_run = asyncio.create_task(dry_run_cor)
             wait = asyncio.create_task(self.wait())
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
