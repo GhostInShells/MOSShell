@@ -42,6 +42,9 @@ class MCPChannelClient(ChannelClient, Generic[R]):
 
         self._logger: logging.Logger | None = None
 
+    def name(self) -> str:
+        return self._name
+
     @property
     def logger(self) -> logging.Logger:
         if self._logger is None:

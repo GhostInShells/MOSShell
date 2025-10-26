@@ -465,7 +465,7 @@ class ChannelRuntime:
             # 真的轮到自己执行它了.
             task.set_state("running")
             # 先执行一次 command, 拿到可能的 command_seq, 主要用来做 resolve.
-            result = await self._run_self_channel_task_with_context(task)
+            result = await self.channel.execute_task(task)
             if not isinstance(result, CommandTaskStack):
                 # 返回一个栈, command task 的结果需要在栈外判断.
                 # 等栈运行完了才会赋值.
@@ -530,7 +530,7 @@ class ChannelRuntime:
                     continue
 
                 # 阻塞.
-                result = await self._run_self_channel_task_with_context(sub_task)
+                result = await self.channel.execute_task(sub_task)
                 if isinstance(result, CommandTaskStack):
                     # 递归执行
                     await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
@@ -551,37 +551,6 @@ class ChannelRuntime:
                 if not child.done():
                     child.fail(e)
             owner.fail(e)
-
-    async def _run_self_channel_task_with_context(self, cmd_task: CommandTask) -> Any:
-        """真正运行一个 command task 了. """
-        if cmd_task.done():
-            cmd_task.raise_exception()
-            return cmd_task.result()
-
-        cmd_task.exec_chan = self.name
-        # 准备好 ctx. 包含 channel 的容器, 还有 command task 的 context 数据.
-        ctx = contextvars.copy_context()
-        self.channel.set_context_var()
-        # 将 container 也放入上下文中.
-        set_container(self.channel.client.container)
-        ctx_ran_cor = ctx.run(cmd_task.dry_run)
-
-        # 创建一个可以被 cancel 的 task.
-        run_execution = asyncio.create_task(ctx_ran_cor)
-        # 这个 task 是不是在运行出结果之前, 外部已经结束了.
-        wait_outside_done = asyncio.create_task(cmd_task.wait(throw=False))
-
-        done, pending = await asyncio.wait(
-            [run_execution, wait_outside_done],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if run_execution not in done and not run_execution.done():
-            # 如果 run task 不在 Done 里, 说明 cmd task 在外部被先结束了.
-            run_execution.cancel()
-        if cmd_task.done():
-            cmd_task.raise_exception()
-
-        return await run_execution
 
     # --- main loop --- #
 

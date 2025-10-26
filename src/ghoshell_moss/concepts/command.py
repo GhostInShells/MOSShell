@@ -573,10 +573,7 @@ class CommandTask(Generic[RESULT], ABC):
         """无状态的运行逻辑"""
         if self.func is None:
             return None
-
-        ctx = contextvars.copy_context()
-        self.set_context_var()
-        r = await ctx.run(self.func, *self.args, **self.kwargs)
+        r = await self.func(*self.args, **self.kwargs)
         return r
 
     async def run(self) -> RESULT:

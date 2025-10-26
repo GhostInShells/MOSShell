@@ -263,18 +263,20 @@ class DuplexChannelServer(ChannelServer):
             command_done = CommandDoneEvent(
                 chan=model.chan,
                 command_id=command_id,
-                errcode=CommandErrorCode.CANCELLED,
+                errcode=CommandErrorCode.NOT_FOUND.value,
                 errmsg="canceled",
                 result=None,
             )
+            # todo: log
             await self._send_response_to_client(command_done.to_channel_event())
         else:
-            cmd_task = self._running_command_tasks.pop(command_id)
+            cmd_task = self._running_command_tasks.get(command_id)
+            # todo: log
             if cmd_task.done():
                 command_done = CommandDoneEvent(
                     chan=model.chan,
                     command_id=command_id,
-                    errcode=cmd_task.errcode,
+                    errcode=int(cmd_task.errcode),
                     errmsg=cmd_task.errmsg,
                     result=cmd_task.result(),
                 )
@@ -420,7 +422,7 @@ class DuplexChannelServer(ChannelServer):
         for channel_path, channel in self.channel.all_channels().items():
             if not channel.is_running():
                 continue
-            metas[channel_path] = channel
+            metas[channel_path] = channel.client.meta(no_cache=True)
         response = ChannelMetaUpdateEvent(
             session_id=event.session_id,
             metas=metas,
@@ -471,7 +473,7 @@ class DuplexChannelServer(ChannelServer):
             # 多余的, 没什么用.
             task.set_state("running")
             await self._add_running_task(task)
-            await self._execute_task(task)
+            await self._execute_task(channel, task)
         finally:
             # todo: log
             await self._remove_running_task(task)
@@ -482,14 +484,13 @@ class DuplexChannelServer(ChannelServer):
             response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_response_to_client(response.to_channel_event())
 
-    async def _execute_task(self, task: CommandTask) -> None:
+    async def _execute_task(self, channel: Channel, task: CommandTask) -> None:
         try:
             # 干运行, 拿到同步运行结果.
-            execution = asyncio.create_task(task.dry_run())
+            execution = asyncio.create_task(channel.execute_task(task))
             # 如果 task 被提前 cancel 了, 执行命令也会被取消.
-            wait_done = asyncio.create_task(task.wait())
             closing = asyncio.create_task(self._closing_event.wait())
-            done, pending = await asyncio.wait([execution, wait_done, closing], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait([execution, closing], return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
             result = await execution

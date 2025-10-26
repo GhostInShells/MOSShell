@@ -20,6 +20,7 @@ async def test_thread_channel_start_and_close():
 async def test_thread_channel_raise_in_proxy():
     server, proxy = create_thread_channel("client")
     chan = PyChannel(name="server")
+    # 测试 channel 能够正常被启动.
     async with server.run_in_ctx(chan):
         with pytest.raises(RuntimeError):
             async with proxy.bootstrap():
@@ -42,17 +43,18 @@ async def test_thread_channel_run_in_thread():
 async def test_thread_channel_run_in_tasks():
     server, proxy = create_thread_channel("client")
     chan = PyChannel(name="server")
-    task = asyncio.create_task(server.arun_until_closed(chan))
+    server_run_task = asyncio.create_task(server.arun_until_closed(chan))
 
     async def _cancel():
         await asyncio.sleep(0.2)
         await server.aclose()
 
-    await asyncio.gather(task, _cancel())
+    # 0.2 秒后关闭 server run task
+    await asyncio.gather(server_run_task, _cancel())
     assert not server.is_running()
     await server.wait_closed()
-    assert task.done()
-    await task
+    assert server_run_task.done()
+    await server_run_task
     server.run_in_thread(chan)
 
     await server.aclose()
@@ -100,6 +102,11 @@ async def test_thread_channel_baseline():
             assert "a" in proxy_chan.children()
             assert chan.client.meta().name == "server"
             assert proxy_chan.client.meta().name == "client"
+
+            # 获取这个子 channel, 它应该已经启动了.
+            a_chan = chan.get_channel('a')
+            assert a_chan is not None
+            assert a_chan.is_running()
 
             # 客户端仍然可以调用命令.
             proxy_side_foo = proxy_chan.client.get_command("foo")

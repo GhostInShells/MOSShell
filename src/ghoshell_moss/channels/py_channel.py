@@ -177,6 +177,7 @@ class PyChannel(Channel):
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
         self._client = PyChannelClient(
+            name=self._name,
             children=self._children,
             container=container,
             builder=self._builder,
@@ -198,6 +199,7 @@ class PyChannelClient(ChannelClient):
 
     def __init__(
             self,
+            name: str,
             *,
             children: Dict[str, Channel],
             builder: PyChannelBuilder,
@@ -208,6 +210,7 @@ class PyChannelClient(ChannelClient):
             container = Container(parent=container, name=f"moss/chan_client/{builder.name}")
         else:
             container = Container(name=f"moss/chan_client/{builder.name}")
+        self._name = name
         self.container = container
         self.id = uid or uuid()
         self._children = children
@@ -223,6 +226,9 @@ class PyChannelClient(ChannelClient):
         self._started = False
         self._closing = False
         self._closed_event = threading.Event()
+
+    def name(self) -> str:
+        return self._name
 
     def __del__(self):
         self.container.shutdown()

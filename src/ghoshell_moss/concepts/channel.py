@@ -7,8 +7,8 @@ from typing import (
     Protocol, AsyncIterator, Tuple
 )
 from typing_extensions import Self
-from ghoshell_moss.concepts.command import Command, CommandMeta, CommandTask
-from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING
+from ghoshell_moss.concepts.command import Command, CommandMeta, CommandTask, BaseCommandTask
+from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING, set_container
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
@@ -65,6 +65,10 @@ class ChannelClient(Protocol):
 
     id: str
     """unique id of the channel client instance"""
+
+    @abstractmethod
+    def name(self) -> str:
+        pass
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -408,6 +412,55 @@ class Channel(ABC):
         用来快速包装各种函数.
         """
         pass
+
+    async def execute_task(self, task: CommandTask) -> Any:
+        """运行一个 task 并且给它赋予当前 channel 的上下文. """
+        if not self.is_running():
+            raise RuntimeError(f"Channel {self.name()} not running")
+        if task.done():
+            task.raise_exception()
+            return task.result()
+        task.exec_chan = self.name()
+        # 准备好 ctx. 包含 channel 的容器, 还有 command task 的 context 数据.
+        ctx = contextvars.copy_context()
+        self.set_context_var()
+        # 将 container 也放入上下文中.
+        set_container(self.client.container)
+        task.set_context_var()
+        ctx_ran_cor = ctx.run(task.dry_run)
+        # 创建一个可以被 cancel 的 task.
+        run_execution = asyncio.create_task(ctx_ran_cor)
+        # 这个 task 是不是在运行出结果之前, 外部已经结束了.
+        wait_outside_done = asyncio.create_task(task.wait(throw=False))
+        done, pending = await asyncio.wait(
+            [run_execution, wait_outside_done],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+        if task.done():
+            task.raise_exception()
+        return await run_execution
+
+    def create_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
+        """example to create channel task """
+        command = self.client.get_command(name)
+        if command is None:
+            raise NotImplementedError(f'Channel {self.name()} has no command {name}')
+        task = BaseCommandTask.from_command(command, *args, **kwargs)
+        return task
+
+    async def execute_command(self, command: Command, *args, **kwargs) -> Any:
+        """basic example to execute command."""
+        from ghoshell_moss.concepts.command import BaseCommandTask
+        task = BaseCommandTask.from_command(command, *args, **kwargs)
+        try:
+            result = await self.execute_task(task)
+            task.resolve(result)
+            return result
+        finally:
+            if not task.done():
+                task.cancel("task is executed but not done")
 
 
 class ChannelServer(ABC):
