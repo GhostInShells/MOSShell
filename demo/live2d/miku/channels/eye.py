@@ -35,7 +35,6 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
         progress = (time.time() - start_time) / move_duration
         target_x = current_x + (x - current_x) * progress
         target_y = current_y + (y - current_y) * progress
-        print(f"moving to target - progress: {progress:.2f}, x: {target_x:.2f}, y: {target_y:.2f}")
         model.SetParameterValue(PARAM_BALL_X, target_x)
         model.SetParameterValue(PARAM_BALL_Y, target_y)
         await asyncio.sleep(0.016)
@@ -60,7 +59,6 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
         progress = (time.time() - start_time) / back_duration
         target_x = x + (origin_x - x) * progress
         target_y = y + (origin_y - y) * progress
-        print(f"moving back - progress: {progress:.2f}, x: {target_x:.2f}, y: {target_y:.2f}")
         model.SetParameterValue(PARAM_BALL_X, target_x)
         model.SetParameterValue(PARAM_BALL_Y, target_y)
         await asyncio.sleep(0.016)

@@ -25,7 +25,6 @@ async def move(duration: float = 1.5, angle: float = 10.0):
     while time.time() - start_time < duration:
         progress = (time.time() - start_time) / duration
         target = current_angle + (angle - current_angle) * progress
-        print(f"progress: {progress}, target: {target}")
         model.SetParameterValue('PARAM_ARM_L_01', target)
         await asyncio.sleep(0.016)
 
@@ -46,6 +45,5 @@ async def move(duration: float = 1.5, angle: float = 10.0):
     while time.time() - start_time < duration:
         progress = (time.time() - start_time) / duration
         target = current_angle + (angle - current_angle) * progress
-        print(f"progress: {progress}, target: {target}")
         model.SetParameterValue('PARAM_ARM_R_01', target)
         await asyncio.sleep(0.016)
