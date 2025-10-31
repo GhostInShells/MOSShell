@@ -1,15 +1,14 @@
 import asyncio
 import time
 import numpy as np
-from typing import Optional
-from ghoshell_moss.depends import check_audio
+from ghoshell_moss.depends import check_pulseaudio
 from ghoshell_moss.concepts.speech import StreamAudioPlayer, AudioType
 from ghoshell_common.contracts import LoggerItf
 import queue
 import threading
 import logging
 
-if check_audio():
+if check_pulseaudio():
     import pulsectl
 
 

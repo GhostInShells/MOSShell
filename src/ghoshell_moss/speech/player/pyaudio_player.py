@@ -1,14 +1,15 @@
 import asyncio
 import time
 import numpy as np
-from ghoshell_moss.depends import check_audio
+from ghoshell_moss.depends import check_pyaudio
 from ghoshell_moss.concepts.speech import StreamAudioPlayer, AudioType
+from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import queue
 import threading
 import logging
 
-if check_audio():
+if check_pyaudio():
     import pyaudio
     from typing import Optional
 
@@ -40,6 +41,8 @@ class PyAudioStreamPlayer(StreamAudioPlayer):
         self.device_index = device_index
         self.sample_rate = sample_rate
         self.channels = channels
+        self._play_done_event = ThreadSafeEvent()
+        self._committed = True
         self._estimated_end_time = 0.0
         self._closed = False
         self._lock = asyncio.Lock()
@@ -136,13 +139,15 @@ class PyAudioStreamPlayer(StreamAudioPlayer):
                 self.logger.info(f"等待 {time_to_wait:.2f}s 让音频播放完成")
                 try:
                     await asyncio.wait_for(asyncio.sleep(time_to_wait), timeout)
+                    # 同时等待播放结束.
+                    await self._play_done_event.wait()
                 except asyncio.TimeoutError:
                     self.logger.warning("等待音频播放超时")
                 self.logger.info("音频播放完成")
 
     def is_playing(self) -> bool:
         """检查是否还有音频在播放"""
-        return time.time() < self._estimated_end_time
+        return time.time() < self._estimated_end_time and not self._play_done_event.is_set()
 
     def is_closed(self) -> bool:
         """检查播放器是否已关闭"""
@@ -167,12 +172,17 @@ class PyAudioStreamPlayer(StreamAudioPlayer):
 
             while not self._stop_event.is_set():
                 try:
+                    if self._audio_queue.empty() and not self._play_done_event.is_set():
+                        self._play_done_event.set()
                     # 从队列获取音频数据（阻塞调用，但有超时）
-                    audio_data = self._audio_queue.get(timeout=0.1)
+                    audio_data = self._audio_queue.get(timeout=0.2)
 
                     if audio_data is None:
                         # 收到停止信号
                         break
+
+                    if self._play_done_event.is_set():
+                        self._play_done_event.clear()
 
                     # 写入音频数据（阻塞调用）
                     stream.write(audio_data)
@@ -180,9 +190,6 @@ class PyAudioStreamPlayer(StreamAudioPlayer):
                 except queue.Empty:
                     # 队列为空，继续循环
                     continue
-                except Exception as e:
-                    self.logger.error(f"音频输出错误: {e}")
-                    break
 
         except Exception as e:
             self.logger.error(f"音频工作线程错误: {e}")
@@ -209,7 +216,7 @@ async def test_pyaudio_player():
             sine_wave = 0.3 * np.sin(2 * np.pi * 440 * t)  # 减小音量避免爆音
 
             # 添加音频片段
-            end_time = await player.add(sine_wave, AudioType.PCM_F32LE, 0, sample_rate)
+            end_time = await player.add(sine_wave, audio_type=AudioType.PCM_F32LE, channel=0, rate=sample_rate)
             print(f"预计完成时间: {end_time}")
 
             # 等待播放完成
@@ -239,9 +246,8 @@ async def test_multiple_chunks():
             t = np.linspace(0, duration, samples, endpoint=False)
             chunk = 0.2 * np.sin(2 * np.pi * freq * t)  # 减小音量
 
-            end_time = await player.add(chunk, AudioType.PCM_F32LE, 0, sample_rate)
+            end_time = await player.add(chunk, audio_type=AudioType.PCM_F32LE, channel=1, rate=sample_rate)
             print(f"片段 {i + 1} ({freq}Hz) 预计完成时间: {end_time}")
-            await asyncio.sleep(0.1)  # 模拟实时数据到达的间隔
 
         # 等待所有播放完成
         await player.wait_played()
