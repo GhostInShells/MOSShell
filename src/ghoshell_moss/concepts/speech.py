@@ -210,8 +210,8 @@ class StreamAudioPlayer(ABC):
             chunk: np.ndarray,
             *,
             audio_type: AudioType,
-            channel: int,
             rate: int,
+            channel: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -223,7 +223,7 @@ class StreamAudioPlayer(ABC):
         pass
 
     @abstractmethod
-    async def wait_played(self, timeout: float | None = None) -> None:
+    async def wait_play_done(self, timeout: float | None = None) -> None:
         """
         等待所有输入的音频片段播放结束.
         实际上可能是阻塞到这个结束时间.
