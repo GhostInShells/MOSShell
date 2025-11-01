@@ -21,14 +21,15 @@ class SpeechStream(ABC):
     一个 speech 可以同时创建多个 stream, 但执行 tts 的顺序按先后排列.
     """
 
-    id: str
-    """所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id"""
-
-    cmd_task: Optional[CommandTask] = None
-    """stream 生成的 command task"""
-
-    committed: bool = False
-    """是否完成了这个 stream 的提交. """
+    def __init__(
+            self,
+            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            committed: bool = False,  # 是否完成了这个 stream 的提交
+    ):
+        self.id = id
+        self.cmd_task = cmd_task
+        self.committed = committed
 
     def buffer(self, text: str, *, complete: bool = False) -> None:
         """
@@ -269,6 +270,12 @@ class StreamAudioPlayer(ABC):
         """
         音频输入是否已经关闭了.
         """
+        pass
+
+    def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+        pass
+
+    def on_play_done(self, callback: Callable[[], None]) -> None:
         pass
 
 

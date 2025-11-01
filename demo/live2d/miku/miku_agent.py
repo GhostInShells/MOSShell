@@ -1,4 +1,7 @@
 from ghoshell_moss.agent.simple_agent import SimpleAgent, ModelConf
+from ghoshell_moss.speech import make_baseline_tts_speech
+from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
+from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 
 import os
 import sys
@@ -18,7 +21,6 @@ from channels.arm import left_arm_chan, right_arm_chan
 from channels.elbow import left_elbow_chan, right_elbow_chan
 from channels.necktie import necktie_chan
 from channels.head import head_chan
-from channels.mouth import mouth_chan
 from channels.leg import left_leg_chan, right_leg_chan
 
 # 全局状态
@@ -50,12 +52,67 @@ def init_live2d(model_path: str):
     container.bind(live2d.LAppModel, model)
 
 
+async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.9, min_open: float = 0.0):
+    """
+    说话的嘴部动作
+
+    @param duration: 动画持续时间，单位秒
+    @param speed: 开合速度参数，值越大速度越快，默认1.0
+    @param max_open: 最大张开程度，0 到 1 之间的浮点数，默认为0.7
+    @param min_open: 最小张开程度，0 到 1 之间的浮点数，默认为0.0
+    """
+    from channels.motions import open_close
+    PARAM = "ParamMouthOpenY"
+    # 特殊处理嘴部动作，说话通常从张开开始
+
+    # 调用通用动画函数，注意初始方向设置为打开
+    final_value = await open_close(
+        model=model,
+        param_name=PARAM,
+        duration=duration,
+        speed=speed,
+        max_value=max_open,
+        min_value=min_open,
+        initial_direction="open"  # 说话从打开开始
+    )
+    print(f"final_value: {final_value}")
+    # 确保最终状态是完全闭合
+    model.SetParameterValue(PARAM, 0.0)
+    return None
+
+
+speaking_event = asyncio.Event()
+
+
+def start_speak(*args):
+    speaking_event.set()
+
+
+def stop_speak(*args):
+    speaking_event.clear()
+
+
 async def run_agent():
+    loop = asyncio.get_running_loop()
+
     # 创建 Shell
     shell = new_shell(container=container)
+
+    async def speaking():
+        try:
+            while not shell.is_close():
+                if speaking_event.is_set():
+                    await speak(duration=0.3)
+                else:
+                    await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
+
+    speaking_task = loop.create_task(speaking())
+
     head_chan.import_channels(
         expression_chan,
-        mouth_chan,
+        # mouth_chan, 不把嘴巴给大模型调用.
     )
     body_chan.import_channels(
         head_chan,
@@ -68,9 +125,17 @@ async def run_agent():
         right_leg_chan,
     )
     shell.main_channel.import_channels(body_chan)
+    player = PyAudioStreamPlayer()
+    player.on_play(start_speak)
+    player.on_play_done(stop_speak)
+    tts = VolcengineTTS(
+        conf=VolcengineTTSConf(default_speaker="saturn_zh_female_keainvsheng_tob")
+    )
+
     agent = SimpleAgent(
-        instruction="你是miku",
+        instruction="你是miku, 拥有 live2d 数字人躯体. 你是可爱和热情的数字人. ",
         shell=shell,
+        speech=make_baseline_tts_speech(player=player, tts=tts),
         model=ModelConf(
             kwargs=dict(
                 thinking=dict(
@@ -80,6 +145,8 @@ async def run_agent():
         )
     )
     await agent.run()
+    speaking_task.cancel()
+    await speaking_task
 
 
 async def run_agent_and_render():

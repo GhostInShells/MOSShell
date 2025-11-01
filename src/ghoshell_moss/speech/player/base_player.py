@@ -10,7 +10,7 @@ import queue
 import threading
 import logging
 
-from typing import Optional
+from typing import Optional, Callable
 
 __all__ = ['BaseAudioStreamPlayer']
 
@@ -48,9 +48,17 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._closed = False
 
         # 使用线程安全的队列进行线程间通信
-        self._audio_queue = queue.Queue()
+        self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue()
         self._thread = None
         self._stop_event = threading.Event()
+        self._on_play_callbacks = []
+        self._on_play_done_callbacks = []
+
+    def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+        self._on_play_callbacks.append(callback)
+
+    def on_play_done(self, callback: Callable[[], None]) -> None:
+        self._on_play_done_callbacks.append(callback)
 
     async def start(self) -> None:
         """启动音频播放器"""
@@ -145,8 +153,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
-        data = resampled_audio_data.tobytes()
-        self._audio_queue.put_nowait(data)
+        self._audio_queue.put_nowait(resampled_audio_data)
         self._play_done_event.clear()
 
         # 更新预计结束时间
@@ -193,7 +200,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         pass
 
     @abstractmethod
-    def _audio_stream_write(self, data: bytes):
+    def _audio_stream_write(self, data: np.ndarray):
         pass
 
     def _audio_worker(self):
@@ -207,6 +214,9 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     audio_queue = self._audio_queue
                     if audio_queue.empty() and not self._play_done_event.is_set():
                         self._play_done_event.set()
+                        for callback in self._on_play_done_callbacks:
+                            callback()
+                        continue
                     # 从队列获取音频数据（阻塞调用，但有超时）
                     audio_data = audio_queue.get(timeout=0.2)
 
@@ -217,6 +227,9 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
 
                     if self._play_done_event.is_set():
                         self._play_done_event.clear()
+
+                    for callback in self._on_play_callbacks:
+                        callback(audio_data)
 
                     # 写入音频数据（阻塞调用）
                     self._audio_stream_write(audio_data)

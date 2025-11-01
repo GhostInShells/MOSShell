@@ -75,16 +75,18 @@ class SimpleAgent:
             model: Optional[ModelConf] = None,
             container: Optional[IoCContainer] = None,
             shell: Optional[MOSSShell] = None,
-            output: Optional[Speech] = None,
+            speech: Optional[Speech] = None,
             messages: Optional[List[Dict]] = None,
     ):
         self.container = Container(name="agent", parent=container)
         self.container.register(*workspace_providers())
         self.chat = ChatRenderer()
-        shell = shell or new_shell(container=self.container, output=output)
+        shell = shell or new_shell(container=self.container, speech=speech)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell
+        if speech is not None:
+            self.shell.with_speech(speech)
         self.model = model
         self.messages: List[Dict] = messages or []
         self._inputs = []

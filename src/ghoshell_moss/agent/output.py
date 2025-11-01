@@ -19,7 +19,7 @@ class ChatRenderSpeechStream(SpeechStream):
             on_start: asyncio.Event,
             close: asyncio.Event,
     ):
-        self.id = batch_id
+        super().__init__(id=batch_id)
         self._output = output
         self._buffered = ""
         self._input_queue: asyncio.Queue[str | None] = asyncio.Queue()

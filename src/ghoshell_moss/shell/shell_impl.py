@@ -65,21 +65,23 @@ class DefaultShell(MOSSShell):
             description: Optional[str] = None,
             container: IoCContainer | None = None,
             main_channel: Channel | None = None,
-            output: Optional[Speech] = None,
+            speech: Optional[Speech] = None,
     ):
         self.name = name
         self.container = Container(parent=container, name=f"MOSShell")
         self.container.set(MOSSShell, self)
         self._main_channel = main_channel or MainChannel(name="")
+        self._desc = description
         # output
-        if not output:
-            output = MockSpeech()
-        self.speech: Speech = output
-        self.container.set(Speech, output)
+        if not speech:
+            speech = MockSpeech()
+        self.speech: Speech = speech
+        self.container.set(Speech, speech)
         # --- lifecycle --- #
         self._starting = False
         self._started = False
         self._closing = False
+        self._closed = False
         self._logger = None
 
         # --- interpreter --- #
@@ -106,6 +108,9 @@ class DefaultShell(MOSSShell):
     def is_running(self) -> bool:
         self_running = self._started and not self._closing
         return self_running and self._runtime and self._runtime.is_running()
+
+    def is_close(self) -> bool:
+        return self._closing
 
     def _check_running(self):
         if not self.is_running():
@@ -161,6 +166,8 @@ class DefaultShell(MOSSShell):
         return interpreter
 
     def with_speech(self, speech: Speech) -> None:
+        if self.is_running():
+            raise RuntimeError(f"Shell {self.name} already running")
         self.speech = speech
 
     @property
@@ -231,6 +238,7 @@ class DefaultShell(MOSSShell):
         if self._starting:
             return
         self._starting = True
+        await self.speech.start()
         shell_runtime = ShellRuntime(
             Container(name="shell_runtime", parent=self.container),
             self.main_channel,
@@ -245,8 +253,13 @@ class DefaultShell(MOSSShell):
         if self._closing:
             return
         self._closing = True
+        if self._interpreter is not None:
+            await self._interpreter.stop()
+            self._interpreter = None
         await self._runtime.close()
+        await self.speech.close()
         self._runtime = None
+        self._closed = True
 
 
 def new_shell(
@@ -254,7 +267,7 @@ def new_shell(
         description: Optional[str] = None,
         container: IoCContainer | None = None,
         main_channel: Channel | None = None,
-        output: Optional[Speech] = None,
+        speech: Optional[Speech] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return DefaultShell(
@@ -262,5 +275,5 @@ def new_shell(
         description=description,
         container=container,
         main_channel=main_channel,
-        output=output,
+        speech=speech,
     )

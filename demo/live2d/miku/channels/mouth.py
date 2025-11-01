@@ -1,8 +1,7 @@
 from ghoshell_moss.channels.py_channel import PyChannel
 import live2d.v3 as live2d
-import asyncio
 
-from helper.motions import open_close
+from .motions import open_close
 
 mouth_chan = PyChannel(name='mouth')
 
@@ -26,7 +25,7 @@ async def open(size: float = 1.0):
 
 
 @mouth_chan.build.command()
-async def speek(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7, min_open: float = 0.0):
+async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7, min_open: float = 0.0):
     """
     说话的嘴部动作
 

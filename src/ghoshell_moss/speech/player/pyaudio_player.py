@@ -62,10 +62,10 @@ class PyAudioStreamPlayer(BaseAudioStreamPlayer):
         if self._pyaudio_instance:
             self._pyaudio_instance.terminate()
 
-    def _audio_stream_write(self, data: bytes):
+    def _audio_stream_write(self, data: np.ndarray):
         if self._stream:
             try:
-                self._stream.write(data)
+                self._stream.write(data.tobytes())
             except Exception as e:
                 self.logger.exception(e)
 

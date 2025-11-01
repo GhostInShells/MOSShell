@@ -26,11 +26,13 @@ class TTSSpeechStream(SpeechStream):
             tts_batch: TTSBatch,
             logger: LoggerItf,
     ):
+
+        batch_id = tts_batch.batch_id()
+        super().__init__(id=batch_id)
+
         self.logger = logger
         self.cmd_task = None
         self.committed = False
-        self.id = tts_batch.batch_id()
-
         self._sample_rate = sample_rate
         self._running_loop = loop
         self._audio_type = AudioFormat(audio_format) if isinstance(audio_format, str) else audio_format

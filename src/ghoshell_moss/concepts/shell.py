@@ -83,6 +83,10 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
+    def is_close(self) -> bool:
+        pass
+
+    @abstractmethod
     def is_idle(self) -> bool:
         """
         是否在闲置状态.

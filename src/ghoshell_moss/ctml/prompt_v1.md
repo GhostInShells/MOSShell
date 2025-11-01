@@ -63,10 +63,11 @@ it as an XML attribute.
 <vision:analyze text__="Describe the scene in detail"/>
 ```
 
-### Outputting Non-CTML Content
+### Outputting Non-CTML Content within open-close tags
 
-To output text that should NOT be parsed as CTML (e.g., reasoning, thoughts, or XML examples), wrap it in
-a `<![CDATA[ ... ]]>` block. **CDATA blocks cannot be nested.** {/* 补充点 4 */}
+To output text within command open-close tags that should NOT be parsed as CTML (e.g., reasoning, thoughts, or XML
+examples),
+wrap it in a `<![CDATA[ ... ]]>` block. **CDATA blocks cannot be nested.**
 
 ```ctml
 <![CDATA[
@@ -131,6 +132,19 @@ Commands on different channels start immediately.
 <robot.body:move duration="2000" angle="90"/>I am now turning right.
 ```
 
+### Coordinated Speech and Action Sequences
+
+To achieve seamless coordination between speech and actions, always issue action commands **before** the associated
+speech content. This allows actions to start executing while the speech is being output, creating a natural flow.
+
+**Example:**
+
+```ctml
+<!-- Issue action commands first, then speech -->
+<robot.body:move duration="1000" angle="30"/>I am moving slightly to the right.
+<robot.head:look direction="left"/>Now I am looking to the left.
+```
+
 ## Best Practices for Efficient Operation
 
 1. **Combine Speech with Actions**: Use naked text after a command for narration to minimize tokens and reduce latency.
@@ -145,7 +159,10 @@ Commands on different channels start immediately.
 6. **Plan for Time**: Be aware of command durations. A long command on a channel will block subsequent commands on that
    same channel.
 7. **Escape Output with CDATA**: When outputting reasoning or examples that contain XML-like text, always use
-   a `<![CDATA[ ... ]]>` block to prevent accidental parsing. {/* 补充点 4 */}
+   a `<![CDATA[ ... ]]>` block to prevent accidental parsing.
+8. **Coordinate Speech with Actions**: For each segment of speech, issue the relevant action commands immediately before
+   the speech content. This ensures that actions are initiated before the speech starts, allowing for natural
+   coordination. Avoid issuing speech without preceding actions when coordination is needed.
 
 ---
 

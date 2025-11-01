@@ -11,8 +11,8 @@ from queue import Queue, Empty
 class MockSpeechStream(SpeechStream):
 
     def __init__(self, outputs: List[str], id: str = "", ):
+        super().__init__(id=id or uuid())
         self.outputs = outputs
-        self.id = id or uuid()
         self.output_queue = Queue()
         self.output_done_event = ThreadSafeEvent()
         self.output_buffer = ""
