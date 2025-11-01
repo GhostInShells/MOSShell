@@ -77,7 +77,7 @@ class TTSSpeechStream(SpeechStream):
         if self._has_audio_data:
             await self._player.wait_play_done()
 
-    async def start(self) -> None:
+    async def astart(self) -> None:
         if self._starting:
             await self._started_event.wait()
             return
@@ -93,11 +93,14 @@ class TTSSpeechStream(SpeechStream):
         self._audio_buffer.clear()
         self._started_event.set()
 
-    async def close(self):
+    async def aclose(self):
         await self._tts_batch.close()
         self._audio_buffer.clear()
         if self._started_event.is_set():
             await self._player.clear()
+
+    def close(self) -> None:
+        self._running_loop.create_task(self.aclose)
 
 
 class TTSSpeech(Speech):
@@ -153,7 +156,7 @@ class TTSSpeech(Speech):
         self._streams.clear()
         close_all = []
         for stream in streams.values():
-            close_all.append(stream.close())
+            close_all.append(stream.aclose())
         await asyncio.gather(*close_all)
         return outputted
 

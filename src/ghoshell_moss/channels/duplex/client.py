@@ -480,8 +480,10 @@ class DuplexChannelClient(ChannelClient):
         self._name = name
         self._server_chan_path = server_chan_path
         self._ctx = ctx
-        self.container = container or ctx.container
-        self.id = channel_id or uuid()
+        super().__init__(
+            id=channel_id or uuid(),
+            container=container or ctx.container,
+        )
         self._local_channel = local_channel
         # meta 的讯息.
         self._cached_meta: Optional[ChannelMeta] = None

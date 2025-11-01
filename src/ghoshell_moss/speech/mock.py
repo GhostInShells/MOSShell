@@ -18,7 +18,10 @@ class MockSpeechStream(SpeechStream):
         self.output_buffer = ""
         self.output_started = False
 
-    async def close(self):
+    async def aclose(self):
+        self.close()
+
+    def close(self):
         if self.output_done_event.is_set():
             return
         self.output_done_event.set()
@@ -29,7 +32,7 @@ class MockSpeechStream(SpeechStream):
     def _commit(self) -> None:
         self.output_queue.put_nowait(None)
 
-    async def start(self) -> None:
+    async def astart(self) -> None:
         if self.output_started:
             return
         self.output_started = True
@@ -81,7 +84,7 @@ class MockSpeech(Speech):
         stream_id = stream.id
         if stream_id in self._streams:
             existing_stream = self._streams[stream_id]
-            existing_stream.close()
+            existing_stream.aclose()
         self._streams[stream_id] = stream
         self._outputs[stream_id] = stream_outputs
         return stream
@@ -96,7 +99,7 @@ class MockSpeech(Speech):
     async def clear(self) -> List[str]:
         outputs = []
         for stream in self._streams.values():
-            stream.close()
+            await stream.aclose()
         for stream_output in self._outputs.values():
             outputs.append("".join(stream_output))
         self._streams.clear()

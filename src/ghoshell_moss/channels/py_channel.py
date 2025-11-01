@@ -211,8 +211,10 @@ class PyChannelClient(ChannelClient):
         else:
             container = Container(name=f"moss/chan_client/{builder.name}")
         self._name = name
-        self.container = container
-        self.id = uid or uuid()
+        super().__init__(
+            id=uid or uuid(),
+            container=container,
+        )
         self._children = children
         self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
         self._builder = builder

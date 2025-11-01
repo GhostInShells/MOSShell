@@ -50,7 +50,7 @@ class ChatRenderSpeechStream(SpeechStream):
         if self.cmd_task is not None:
             self.cmd_task.tokens = self._buffered
 
-    async def start(self) -> None:
+    async def astart(self) -> None:
         if self._started:
             return
         if len(self._buffered) > 0:
@@ -59,7 +59,10 @@ class ChatRenderSpeechStream(SpeechStream):
         self._on_start.set()
         self._main_loop_task = asyncio.create_task(self._main_loop())
 
-    async def close(self):
+    async def aclose(self):
+        self.close()
+
+    def close(self) -> None:
         self.commit()
         self._close_event.set()
 

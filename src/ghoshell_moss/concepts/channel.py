@@ -51,20 +51,20 @@ class ChannelMeta(BaseModel):
     # context: str = Field(default="", description="the runtime context of the channel.")
 
 
-class ChannelClient(Protocol):
+class ChannelClient(ABC):
     """
     channel 的运行时方法.
     只有在 channel.start 之后才可使用.
     用于控制 channel 的所有能力.
     """
 
-    container: IoCContainer
-    """
-    运行时 IoC 容器.
-    """
-
-    id: str
-    """unique id of the channel client instance"""
+    def __init__(
+            self,
+            id: str,  # unique id of the channel client instance
+            container: IoCContainer,  # 运行的 ioc 容器.
+    ):
+        self.id = id
+        self.container = container
 
     @abstractmethod
     def name(self) -> str:

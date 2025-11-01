@@ -16,6 +16,7 @@ from ghoshell_moss.concepts.command import (
     CommandTask,
     CommandWrapper,
 )
+from ghoshell_common.helpers import uuid
 
 R = TypeVar("R")  # 泛型结果类型
 
@@ -32,15 +33,16 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             mcp_client: mcp.ClientSession,
     ):
         self._name = name
-        self._container = container
         self._local_channel = local_channel
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
-
         self._commands: Dict[str, Command] = {}  # 映射后的Mosshell Command
         self._meta: Optional[ChannelMeta] = None  # Channel元信息
         self._running = False  # 运行状态标记
-
         self._logger: logging.Logger | None = None
+        super().__init__(
+            id=uuid(),
+            container=container
+        )
 
     def name(self) -> str:
         return self._name
@@ -58,7 +60,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             return
 
         if self._local_channel is not None:
-            await self._local_channel.bootstrap(self._container).start()
+            await self._local_channel.bootstrap(self.container).start()
 
         # 同步远端工具元信息
         try:

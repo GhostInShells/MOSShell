@@ -86,12 +86,12 @@ class SpeechStream(ABC):
         async def _speech_lifecycle() -> None:
             try:
                 # 标记开始播放.
-                await self.start()
+                await self.astart()
                 # 等待输入结束, 播放结束.
                 await self.wait()
             finally:
                 # 关闭播放.
-                await self.close()
+                await self.aclose()
 
         meta = CommandMeta(
             name="__speech__",
@@ -126,17 +126,21 @@ class SpeechStream(ABC):
         pass
 
     @abstractmethod
-    async def start(self) -> None:
+    async def astart(self) -> None:
         """
         start to output
         """
         pass
 
     @abstractmethod
-    async def close(self):
+    async def aclose(self):
         """
         关闭一个 Stream.
         """
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
         pass
 
 

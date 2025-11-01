@@ -28,7 +28,7 @@ async def test_output_in_asyncio():
         cmd_task = stream.as_command_task()
         await asyncio.gather(sending_task, asyncio.create_task(cmd_task.run()))
 
-    outputted = mock_speech.clear()
+    outputted = await mock_speech.clear()
     assert len(outputted) == 5
     idx = 0
     for item in outputted:
@@ -36,5 +36,5 @@ async def test_output_in_asyncio():
         idx += 1
 
     # test clear success
-    outputted2 = mock_speech.clear()
+    outputted2 = await mock_speech.clear()
     assert len(outputted2) == 0

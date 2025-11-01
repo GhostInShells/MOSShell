@@ -177,6 +177,7 @@ async def test_run_until_complete_in_loop():
     await event.wait()
 
 
+@pytest.mark.asyncio
 async def test_catch_cancelled_error():
     async def foo():
         try:
@@ -186,5 +187,22 @@ async def test_catch_cancelled_error():
 
     task = asyncio.create_task(foo())
     task.cancel()
-    # 不会抛出异常.
-    await task
+    # 测试不会抛出异常. 实际上仍然会抛出.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_asyncio_call_soon():
+    event = asyncio.Event()
+    done = []
+
+    async def foo():
+        await asyncio.sleep(0.05)
+        done.append(1)
+        event.set()
+
+    loop = asyncio.get_running_loop()
+    _ = loop.create_task(foo())
+    await event.wait()
+    assert done[0] == 1

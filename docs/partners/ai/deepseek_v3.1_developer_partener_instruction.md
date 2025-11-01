@@ -49,6 +49,7 @@ This allows the model to not just think, but act in real-time, providing a found
 ## 关键的抽象设计
 
 ### ghoshell_moss.concepts.channel
+
 ```python
 __all__ = [
     'CommandFunction', 'LifecycleFunction', 'PrompterFunction', 'StringType',
@@ -462,7 +463,7 @@ class ChannelServer(ABC):
         展示如何在多线程中异步运行.
         """
         thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
-        thread.start()
+        thread.astart()
 
     @abstractmethod
     def close(self) -> None:
