@@ -5,24 +5,17 @@ import time
 
 body_chan = PyChannel(name='body')
 
-policy_pause_event = asyncio.Event()
+
+@body_chan.build.on_policy_run
+async def on_policy_run():
+    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model.StartMotion("Happy", 1, 1)
 
 
-# @body_chan.build.on_policy_run
-# async def on_policy_run():
-#     policy_pause_event.clear()
-#     model = body_chan.client.container.force_fetch(live2d.LAppModel)
-#     while not policy_pause_event.is_set():
-#         # 等待 其他 Motions 完成
-#         while not model.IsMotionFinished():
-#             await asyncio.sleep(0.1)
-#         # Policy的Priority设置为1（较低），是为了确保其他Motion可打断Policy Motion
-#         model.StartMotion("Happy", 1, 1)
-#
-#
-# @body_chan.build.on_policy_pause
-# async def on_policy_pause():
-#     policy_pause_event.set()
+@body_chan.build.on_policy_pause
+async def on_policy_pause():
+    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model.StopAllMotions()
 
 
 async def start_motion(model: live2d.LAppModel, motion_name: str, no: int, duration: float):
