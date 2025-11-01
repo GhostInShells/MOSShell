@@ -1,25 +1,31 @@
 import logging
-from typing import Optional, Dict, Tuple, Any, Callable
+from typing import Optional, Any
 
 import numpy as np
 from typing_extensions import Literal
-from pydantic import BaseModel, Field
-from ghoshell_moss.speech.tts.volcengine_protocol import (
+from pydantic import Field
+from ghoshell_moss.speech.volcengine_tts.protocol import (
     start_connection, start_session, finish_session, finish_connection,
-    receive_message, full_client_request, cancel_session, task_request,
+    receive_message, cancel_session, task_request,
     EventType, wait_for_event, MsgType,
 )
 from ghoshell_moss.concepts.speech import TTS, TTSBatch, TTSInfo, TTSAudioCallback, AudioFormat
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
-from websockets.asyncio.connection import Connection
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 from websockets import connect, ClientConnection
 from collections import deque
 import os
 import json
 import asyncio
+
+__all__ = [
+    'ChineseVoiceEmotion', 'EnglishVoiceEmotion',
+    'SpeakerConf', 'SpeakerInfo', 'SpeakerTypes', 'VoiceConf',
+    'VolcengineTTSConf',
+    'VolcengineTTS', 'VolcengineTTSBatch',
+]
 
 ChineseVoiceEmotion = Literal[
     "happy",  # 开心
@@ -336,7 +342,7 @@ class VolcengineTTSConf(BaseModel):
 
     def to_tts_info(self, current_voice: str = "") -> TTSInfo:
         return TTSInfo(
-            rate=self.sample_rate,
+            sample_rate=self.sample_rate,
             channels=1,
             audio_format=AudioFormat.PCM_S16LE.value,
             voice_schema=VoiceConf.model_json_schema(),
@@ -740,28 +746,3 @@ class VolcengineTTS(TTS):
             finally:
                 self._main_loop_task = None
         self._closed_event.set()
-
-
-if __name__ == "__main__":
-    # 测试验证 tts 可以运行.
-    from ghoshell_common.contracts.logger import get_console_logger
-
-
-    async def baseline():
-        tts = VolcengineTTS(logger=get_console_logger("moss"))
-
-        def print_data_len(data: np.ndarray):
-            print("========== audio", len(data.tobytes()))
-
-        async with tts:
-            for text in ["Hello World", "Hello World"]:
-                batch = tts.new_batch(callback=print_data_len)
-                for char in text:
-                    batch.feed(char)
-                batch.commit()
-                await batch.wait_until_done()
-                print("batch %s done" % batch.batch_id())
-        print("++++++++ tts shall finish")
-
-
-    asyncio.run(baseline())

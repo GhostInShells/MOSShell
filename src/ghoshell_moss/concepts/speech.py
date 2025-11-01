@@ -173,6 +173,12 @@ class Speech(ABC):
     async def close(self) -> None:
         pass
 
+    async def __aenter__(self):
+        await self.start()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
     @abstractmethod
     async def wait_closed(self) -> None:
         pass
@@ -194,7 +200,7 @@ class StreamAudioPlayer(ABC):
     """
 
     audio_type: AudioFormat
-    channel: int
+    channels: int
     sample_rate: int
 
     @abstractmethod

@@ -38,7 +38,8 @@ class TTSSpeechStream(SpeechStream):
         self._tts_batch = tts_batch
         self._player = player
         self._text_buffer = ""
-        self._audio_buffer = asyncio.Queue()
+        self._audio_buffer = []
+        self._starting = False
         self._started_event = ThreadSafeEvent()
         self._has_audio_data = False
 
@@ -56,10 +57,11 @@ class TTSSpeechStream(SpeechStream):
         return self._text_buffer
 
     def _audio_callback(self, data: np.ndarray) -> None:
+        if data is None:
+            return
         self._has_audio_data = True
-        if self._started_event.is_set():
-            # 考虑到线程安全问题, 加一个保险.
-            self._running_loop.call_soon_threadsafe(self._audio_buffer.put_nowait, data)
+        if not self._started_event.is_set():
+            self._audio_buffer.append(data)
         else:
             self._player.add(
                 data,
@@ -74,12 +76,11 @@ class TTSSpeechStream(SpeechStream):
             await self._player.wait_play_done()
 
     async def start(self) -> None:
-        if self._started_event.is_set():
-            # only start once
+        if self._starting:
+            await self._started_event.wait()
             return
-        self._started_event.set()
-        while not self._audio_buffer.empty():
-            data = await self._audio_buffer.get()
+        self._starting = True
+        for data in self._audio_buffer:
             # 将 buffer 的内容
             self._player.add(
                 data,
@@ -87,9 +88,12 @@ class TTSSpeechStream(SpeechStream):
                 audio_type=self._audio_type,
                 rate=self._sample_rate,
             )
+        self._audio_buffer.clear()
+        self._started_event.set()
 
     async def close(self):
         await self._tts_batch.close()
+        self._audio_buffer.clear()
         if self._started_event.is_set():
             await self._player.clear()
 
@@ -120,6 +124,7 @@ class TTSSpeech(Speech):
         batch_id = batch_id or uuid()
         tts_batch = self._tts.new_batch(batch_id=batch_id)
         stream = TTSSpeechStream(
+            loop=self._running_loop,
             audio_format=self._tts_info.audio_format,
             channels=self._tts_info.channels,
             sample_rate=self._tts_info.sample_rate,
@@ -154,6 +159,7 @@ class TTSSpeech(Speech):
         if self._starting:
             return
         self._starting = True
+        self._running_loop = asyncio.get_running_loop()
         await self._player.start()
         await self._tts.start()
         self._started = True

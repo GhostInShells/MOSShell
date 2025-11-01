@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from ghoshell_moss.concepts.speech import StreamAudioPlayer, AudioFormat
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
+import scipy.signal as signal
 import queue
 import threading
 import logging
@@ -89,6 +90,36 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._estimated_end_time = time.time()
         self.logger.info("播放队列已清空")
 
+    @staticmethod
+    def resample(
+            audio_data: np.ndarray,
+            *,
+            origin_rate: int,
+            target_rate: int,
+    ) -> np.ndarray:
+        """使用 scipy.signal.resample 进行采样率转换
+
+        Args:
+            audio_data: 原始音频数据
+            origin_rate: 原始采样率
+            target_rate: 目标采样率
+
+        Returns:
+            np.ndarray: 重采样后的音频数据
+        """
+        if origin_rate == target_rate:
+            return audio_data
+
+        if not isinstance(audio_data, np.ndarray):
+            raise TypeError("audio_data必须是numpy数组")
+
+        if origin_rate <= 0 or target_rate <= 0:
+            raise ValueError("采样率必须大于0")
+
+        number_of_samples = int(len(audio_data) * float(target_rate) / origin_rate)
+        resampled_audio_data: np.ndarray = signal.resample(audio_data, number_of_samples)
+        return resampled_audio_data.astype(np.int16)
+
     def add(
             self,
             chunk: np.ndarray,
@@ -107,18 +138,16 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             audio_data = (chunk * 32767).astype(np.int16)
         else:
             # 假设已经是 int16
-            audio_data = chunk
+            audio_data = chunk.astype(np.int16)
 
         # 计算持续时间
         duration = len(audio_data) / (2 * rate)  # 2 bytes/sample
+        resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
-        try:
-            self._audio_queue.put_nowait(audio_data.tobytes())
-            self._play_done_event.clear()
-        except queue.Full:
-            self.logger.warning("音频队列已满，丢弃音频数据")
-            return time.time()
+        data = resampled_audio_data.tobytes()
+        self._audio_queue.put_nowait(data)
+        self._play_done_event.clear()
 
         # 更新预计结束时间
         current_time = time.time()
@@ -175,14 +204,16 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
 
             while not self._stop_event.is_set():
                 try:
-                    if self._audio_queue.empty() and not self._play_done_event.is_set():
+                    audio_queue = self._audio_queue
+                    if audio_queue.empty() and not self._play_done_event.is_set():
                         self._play_done_event.set()
                     # 从队列获取音频数据（阻塞调用，但有超时）
-                    audio_data = self._audio_queue.get(timeout=0.2)
+                    audio_data = audio_queue.get(timeout=0.2)
 
                     if audio_data is None:
                         # 收到停止信号
-                        break
+                        # 通过下一个循环判断应该怎么处理.
+                        continue
 
                     if self._play_done_event.is_set():
                         self._play_done_event.clear()
