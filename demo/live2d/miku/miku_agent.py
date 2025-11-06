@@ -22,6 +22,8 @@ from channels.elbow import left_elbow_chan, right_elbow_chan
 from channels.necktie import necktie_chan
 from channels.head import head_chan
 from channels.leg import left_leg_chan, right_leg_chan
+from channels.eye import eye_chan
+from channels.eyebrow import eyebrow_left_chan, eyebrow_right_chan
 
 # 全局状态
 model: live2d.LAppModel | None = None
@@ -75,7 +77,6 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.9
         min_value=min_open,
         initial_direction="open"  # 说话从打开开始
     )
-    print(f"final_value: {final_value}")
     # 确保最终状态是完全闭合
     model.SetParameterValue(PARAM, 0.0)
     return None
@@ -113,6 +114,9 @@ async def run_agent():
     head_chan.import_channels(
         expression_chan,
         # mouth_chan, 不把嘴巴给大模型调用.
+        eye_chan,
+        eyebrow_left_chan,
+        eyebrow_right_chan,
     )
     body_chan.import_channels(
         head_chan,

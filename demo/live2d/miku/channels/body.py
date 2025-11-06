@@ -19,13 +19,11 @@ async def on_policy_pause():
 
 
 async def start_motion(model: live2d.LAppModel, motion_name: str, no: int, duration: float):
-    # model.StartMotion(motion_name, no, 4)
     start_time = time.time()
 
     while time.time() - start_time < duration:
         model.StartMotion(motion_name, no, 4)
         while not model.IsMotionFinished():
-            # print(f"{motion_name} motion is running")
             await asyncio.sleep(0.1)
     model.ResetParameters()
 

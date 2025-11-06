@@ -22,7 +22,6 @@ async def open_close(
     :param max_value: 参数的最大值
     :param min_value: 参数的最小值
     :param initial_direction: 初始方向，"close"(闭合) 或 "open"(打开)
-    :return: 动画结束后的值
     """
     # 参数验证
     if max_value > 1.0 or max_value < 0.0:
@@ -106,7 +105,6 @@ async def open_close(
             model.SetParameterValue(param_name, min_value)
             final_value = min_value
 
-        return final_value
     except Exception as e:
         # 如果发生异常，恢复原始状态
         model.SetParameterValue(param_name, original_value)

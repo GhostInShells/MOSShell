@@ -32,7 +32,6 @@ async def move(duration: float = 1.5, angle: float = 10.0):
         await asyncio.sleep(0.016)
     
     value = model.GetParameterValue(model.GetParamIds().index(PARAM))
-    print(f"final value: {value}")
 
 
 @right_leg_chan.build.command()

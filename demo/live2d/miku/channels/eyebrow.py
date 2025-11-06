@@ -20,7 +20,6 @@ async def _smooth_move_eyebrow(model: live2d.LAppModel, param_x, param_y, param_
     :param target_y: 目标Y位置
     :param target_angle: 目标角度
     :param speed: 移动速度，默认1.0为正常速度
-    :return: 最终位置和角度的元组 (x, y, angle)
     """
     # 获取当前眉毛位置和角度
     x_index = model.GetParamIds().index(param_x)
@@ -49,8 +48,6 @@ async def _smooth_move_eyebrow(model: live2d.LAppModel, param_x, param_y, param_
         current_frame_x = current_x + (target_x - current_x) * progress
         current_frame_y = current_y + (target_y - current_y) * progress
         current_frame_angle = current_angle + (target_angle - current_angle) * progress
-
-        print(f"current_frame_x: {current_frame_x}, current_frame_y: {current_frame_y}, current_frame_angle: {current_frame_angle}")
         
         # 更新模型参数
         model.SetParameterValue(param_x, current_frame_x)
@@ -63,11 +60,6 @@ async def _smooth_move_eyebrow(model: live2d.LAppModel, param_x, param_y, param_
     model.SetParameterValue(param_x, target_x)
     model.SetParameterValue(param_y, target_y)
     model.SetParameterValue(param_angle, target_angle)
-    
-    print(f"Eyebrow moved to target: x={target_x}, y={target_y}, angle={target_angle}")
-    
-    # 返回最终位置
-    return (target_x, target_y, target_angle)
 
 
 @eyebrow_left_chan.build.command()
@@ -79,7 +71,6 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     :param y: 垂直位置参数，-1 到 1 之间的浮点数，默认0.0，-1 表示最上，1 表示最下
     :param angle: 角度参数，-1 到 1 之间的浮点数，默认0.0，-1 表示左转最大角度，1 表示右转最大角度
     :param speed: 移动速度，正常速度默认1.0
-    :return: 最终位置和角度的元组 (x, y, angle)
     """
     PARAM_BROW_Y = "PARAM_BROW_L_Y" # MAX 1.0 MIN -1.0
     PARAM_BROW_X = "PARAM_BROW_L_X" # MAX 1.0 MIN -1.0
@@ -88,7 +79,7 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     model = eyebrow_left_chan.client.container.force_fetch(live2d.LAppModel)
     
     # 调用通用平滑移动函数
-    return await _smooth_move_eyebrow(
+    await _smooth_move_eyebrow(
         model=model,
         param_x=PARAM_BROW_X,
         param_y=PARAM_BROW_Y,
@@ -109,7 +100,6 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     :param y: 垂直位置参数，-1 到 1 之间的浮点数，默认0.0，-1 表示最上，1 表示最下
     :param angle: 角度参数，-1 到 1 之间的浮点数，默认0.0，-1 表示右转最大角度，1 表示左转最大角度
     :param speed: 移动速度，正常速度默认1.0
-    :return: 最终位置和角度的元组 (x, y, angle)
     """
     PARAM_BROW_Y = "PARAM_BROW_R_Y" # MAX 1.0 MIN -1.0
     PARAM_BROW_X = "PARAM_BROW_R_X" # MAX 1.0 MIN -1.0
@@ -118,7 +108,7 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     model = eyebrow_right_chan.client.container.force_fetch(live2d.LAppModel)
     
     # 调用通用平滑移动函数
-    return await _smooth_move_eyebrow(
+    await _smooth_move_eyebrow(
         model=model,
         param_x=PARAM_BROW_X,
         param_y=PARAM_BROW_Y,

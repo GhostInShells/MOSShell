@@ -203,6 +203,17 @@ async def run_demo_sequence(_shell: ghoshell_moss.MOSSShell):
         },
     ]
 
+    demo_cases = [
+        # 用例 10: Arm执行
+        {
+            "name": "测试 arm 能力",
+            "ctml": """
+            <body.left_arm:akimbo duration="1.5"/>
+            """,
+            "description": "测试 arm 能力的执行",
+        },
+    ]
+
     all_results = {}
 
     # 执行每个用例
@@ -211,7 +222,7 @@ async def run_demo_sequence(_shell: ghoshell_moss.MOSSShell):
         print(f"描述: {case['description']}")
 
         # 使用 shell 的 interpreter 解析和执行 CTML
-        async with _shell.interpreter() as interpreter:
+        async with _shell.interpreter_in_ctx() as interpreter:
             # 输入 CTML 内容
             interpreter.feed(case["ctml"])
 
