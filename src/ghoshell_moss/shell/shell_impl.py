@@ -5,6 +5,7 @@ from ghoshell_moss.concepts.command import Command, CommandTask, CommandWrapper,
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta, ChannelFullPath
 from ghoshell_moss.concepts.interpreter import Interpreter
 from ghoshell_moss.concepts.errors import CommandErrorCode
+from ghoshell_moss.concepts.states import StateStore, MemoryStateStore
 from ghoshell_moss.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.shell.main_channel import MainChannel
@@ -66,6 +67,7 @@ class DefaultShell(MOSSShell):
             container: IoCContainer | None = None,
             main_channel: Channel | None = None,
             speech: Optional[Speech] = None,
+            state_store: Optional[StateStore] = None,
     ):
         self.name = name
         self.container = Container(parent=container, name=f"MOSShell")
@@ -77,6 +79,12 @@ class DefaultShell(MOSSShell):
             speech = MockSpeech()
         self.speech: Speech = speech
         self.container.set(Speech, speech)
+        # state
+        if not state_store:
+            state_store = MemoryStateStore(owner=self.name)
+        self.state_store: StateStore = state_store
+        self.container.set(StateStore, state_store)
+
         # --- lifecycle --- #
         self._starting = False
         self._started = False

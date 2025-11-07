@@ -1,4 +1,5 @@
 from ghoshell_moss.channels.py_channel import PyChannel
+from ghoshell_moss.concepts.states import StateBaseModel, StateStore
 import live2d.v3 as live2d
 import asyncio
 import time
@@ -16,6 +17,31 @@ async def on_policy_run():
 async def on_policy_pause():
     model = body_chan.client.container.force_fetch(live2d.LAppModel)
     model.StopAllMotions()
+
+
+@body_chan.build.state_model()
+class BodyStateModel(StateBaseModel):
+    state_name = "body"
+    state_desc = "body state model"
+
+    test: int = Field(default=0, description="test value")
+
+
+@body_chan.build.command()
+async def set_body_state(a = 1):
+    """
+    set body state
+    """
+    state_store = body_chan.client.state_store.get_model(BodyStateModel)
+    state_store.test = a
+
+@body_chan.build.command()
+async def get_body_state():
+    """
+    get body state
+    """
+    state_store = body_chan.client.state_store.get_model(BodyStateModel)
+    return state_store.test
 
 
 async def start_motion(model: live2d.LAppModel, motion_name: str, no: int, duration: float):
