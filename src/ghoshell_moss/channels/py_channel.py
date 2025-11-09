@@ -37,7 +37,6 @@ class PyChannelBuilder(Builder):
         self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_start_up_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_stop_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.providers: List[Provider] = []
         self.commands: Dict[str, Command] = {}
         self.contracts: List = []
@@ -379,7 +378,7 @@ class PyChannelClient(ChannelClient):
 
     async def clear(self) -> None:
         clear_tasks = []
-        for clear_func, is_coroutine in self._builder.policy_pause_funcs:
+        for clear_func, is_coroutine in self._builder.on_clear_funcs:
             if is_coroutine:
                 task = asyncio.create_task(clear_func())
             else:
@@ -460,10 +459,10 @@ class PyChannelClient(ChannelClient):
     async def close(self) -> None:
         if self._closing:
             return
-        self._closing = True
-        self._stop_event.set()
         await self.policy_pause()
         await self.clear()
+        self._closing = True
+        self._stop_event.set()
         await asyncio.to_thread(self.container.shutdown)
         self.container.shutdown()
 

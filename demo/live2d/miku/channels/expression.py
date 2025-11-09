@@ -63,9 +63,9 @@ async def blush(duration: float = 0):
 
 
 @expression_chan.build.command()
-async def tired(duration: float = 0):
+async def wearing_glass(duration: float = 0):
     """
-    tired expression (Yanjing)
+    wearing a glass expression
     """
     model = expression_chan.client.container.force_fetch(live2d.LAppModel)
     model.SetExpression("Yanjing")

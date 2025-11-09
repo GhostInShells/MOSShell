@@ -49,7 +49,8 @@ class StateBaseModel(BaseModel, StateModel, ABC):
         name = self.state_name or generate_import_path(self.__class__)
         description = self.state_desc or self.__doc__ or ""
         data = self.model_dump()
-        return State(name=name, description=description, data=data)
+        version = self.version
+        return State(name=name, description=description, data=data, version=version)
 
     def to_state_data(self) -> Dict[str, Any]:
         return self.model_dump()
