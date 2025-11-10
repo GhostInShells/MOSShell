@@ -176,7 +176,7 @@ async def run_agent_and_render():
 
             # 更新和绘制模型
             model.Update()
-            live2d.clearBuffer()
+            live2d.clearBuffer(255, 255, 255, 150.0)
             model.Draw()
 
             # 显示完成信息
