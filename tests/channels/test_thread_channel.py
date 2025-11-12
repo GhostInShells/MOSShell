@@ -84,7 +84,7 @@ async def test_thread_channel_baseline():
     # 在另一个线程中运行.
     async with server.run_in_ctx(chan):
         async with proxy_chan.bootstrap():
-            meta = proxy_chan.client.meta()
+            meta = proxy_chan.broker.meta()
             assert meta is not None
             # 名字被替换了.
             assert meta.name == "client"
@@ -100,8 +100,8 @@ async def test_thread_channel_baseline():
             # 判断仍然有一个子 channel.
             assert "a" in chan.children()
             assert "a" in proxy_chan.children()
-            assert chan.client.meta().name == "server"
-            assert proxy_chan.client.meta().name == "client"
+            assert chan.broker.meta().name == "server"
+            assert proxy_chan.broker.meta().name == "client"
 
             # 获取这个子 channel, 它应该已经启动了.
             a_chan = chan.get_channel('a')
@@ -109,7 +109,7 @@ async def test_thread_channel_baseline():
             assert a_chan.is_running()
 
             # 客户端仍然可以调用命令.
-            proxy_side_foo = proxy_chan.client.get_command("foo")
+            proxy_side_foo = proxy_chan.broker.get_command("foo")
             assert proxy_side_foo is not None
             meta = proxy_side_foo.meta()
             # 这里虽然来自 server, 但是 chan 被改写成了 client.
@@ -139,7 +139,7 @@ async def test_thread_channel_lost_connection():
         # 模拟连接中断（通过关闭 server）
         server.close()
         assert proxy.is_running()
-        foo = proxy.client.get_command("foo")
+        foo = proxy.broker.get_command("foo")
         # 中断后抛出 command error.
         with pytest.raises(CommandError):
             result = await foo()

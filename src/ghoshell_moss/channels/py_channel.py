@@ -4,7 +4,7 @@ from typing_extensions import Self
 
 from ghoshell_moss import CommandTask
 from ghoshell_moss.concepts.channel import (
-    ChannelClient, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
+    ChannelBroker, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
 )
 from ghoshell_moss.concepts.command import Command, PyCommand
 from ghoshell_moss.concepts.errors import CommandError, FatalError
@@ -20,7 +20,7 @@ import asyncio
 import logging
 import threading
 
-__all__ = ['PyChannel', 'PyChannelBuilder', 'PyChannelClient']
+__all__ = ['PyChannel', 'PyChannelBuilder', 'PyChannelBroker']
 
 
 class PyChannelBuilder(Builder):
@@ -64,6 +64,7 @@ class PyChannelBuilder(Builder):
             state_name = "demo"
             state_desc = "demo state model"
         """
+
         def wrapper(model: Type[StateModel]) -> StateModel:
             instance = model()
             self.state_models.append(instance)
@@ -155,7 +156,7 @@ class PyChannel(Channel):
     ):
         self._name = name
         self._description = description
-        self._client: Optional[ChannelClient] = None
+        self._client: Optional[ChannelBroker] = None
         self._children: Dict[str, Channel] = {}
         self._block = block
         # decorators
@@ -169,7 +170,7 @@ class PyChannel(Channel):
         return self._name
 
     @property
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         if self._client is None:
             raise RuntimeError("Server not start")
         elif self._client.is_running():
@@ -190,10 +191,10 @@ class PyChannel(Channel):
     def children(self) -> Dict[str, "Channel"]:
         return self._children
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
-        self._client = PyChannelClient(
+        self._client = PyChannelBroker(
             name=self._name,
             children=self._children,
             container=container,
@@ -212,7 +213,7 @@ class PyChannel(Channel):
         self._children.clear()
 
 
-class PyChannelClient(ChannelClient):
+class PyChannelBroker(ChannelBroker):
 
     def __init__(
             self,
@@ -234,7 +235,10 @@ class PyChannelClient(ChannelClient):
         )
         self._children = children
         self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
-        self._state_store = self.container.get(StateStore) or MemoryStateStore()
+        self._state_store = self.container.get(StateStore)
+        if self._state_store is None:
+            self._state_store = MemoryStateStore(name)
+            self.container.set(StateStore, self._state_store)
         self._builder = builder
         self._meta_cache: Optional[ChannelMeta] = None
         self._stop_event = ThreadSafeEvent()
@@ -426,7 +430,7 @@ class PyChannelClient(ChannelClient):
         # 注册所有的状态模型.
         self._state_store.register(*self._builder.state_models)
         self.container.register(*self._builder.providers)
-        self.container.set(ChannelClient, self)
+        self.container.set(ChannelBroker, self)
         self.container.bootstrap()
 
     async def execute(self, task: CommandTask[R]) -> R:
@@ -467,5 +471,5 @@ class PyChannelClient(ChannelClient):
         self.container.shutdown()
 
     @property
-    def state_store(self) -> StateStore:
+    def states(self) -> StateStore:
         return self._state_store

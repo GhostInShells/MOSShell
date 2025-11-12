@@ -27,7 +27,7 @@ async def test_channel_runtime_impl_baseline():
         await runtime.wait_until_idle()
         assert not runtime.is_busy()
 
-        foo_cmd = runtime.channel.client.get_command("foo")
+        foo_cmd = runtime.channel.broker.get_command("foo")
         assert foo_cmd is not None
         assert foo_cmd.meta().chan == ""
         task = BaseCommandTask.from_command(foo_cmd)

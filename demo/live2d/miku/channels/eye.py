@@ -18,7 +18,7 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
     """
     PARAM_BALL_X = "PARAM_EYE_BALL_X"
     PARAM_BALL_Y = "PARAM_EYE_BALL_Y"
-    model = eye_chan.client.container.force_fetch(live2d.LAppModel)
+    model = eye_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 获取当前眼球位置
     x_index = model.GetParamIds().index(PARAM_BALL_X)
@@ -78,7 +78,7 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
     :param min_open: 最小睁开程度，0 到 1 之间的浮点数，默认为0.0
     """
     PARAM = "PARAM_EYE_L_OPEN"
-    model = eye_left_chan.client.container.force_fetch(live2d.LAppModel)
+    model = eye_left_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 调用通用动画函数
     final_value = await open_close(
@@ -107,7 +107,7 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
     :param min_open: 最小睁开程度，0 到 1 之间的浮点数，默认为0.0
     """
     PARAM = "PARAM_EYE_R_OPEN"
-    model = eye_right_chan.client.container.force_fetch(live2d.LAppModel)
+    model = eye_right_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 调用通用动画函数
     final_value = await open_close(

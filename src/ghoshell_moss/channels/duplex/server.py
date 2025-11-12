@@ -1,6 +1,6 @@
 from typing import Dict, Callable, Coroutine
 
-from ghoshell_moss.concepts.channel import Channel, ChannelServer
+from ghoshell_moss.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_moss.concepts.command import CommandTask, BaseCommandTask
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
@@ -11,7 +11,7 @@ from pydantic import ValidationError
 import logging
 import asyncio
 
-__all__ = ['ChannelEventHandler', 'DuplexChannelServer']
+__all__ = ['ChannelEventHandler', 'DuplexChannelProvider']
 
 # --- event handlers --- #
 
@@ -19,7 +19,7 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel Client/Server 原有的事件处理逻辑."""
 
 
-class DuplexChannelServer(ChannelServer):
+class DuplexChannelProvider(ChannelProvider):
     """
     实现一个基础的 Duplex Channel Server, 是为了展示 Channel Client/Server 通讯的基本方式.
     注意:
@@ -143,7 +143,7 @@ class DuplexChannelServer(ChannelServer):
             close_all_channels = []
             for channel in self.channel.all_channels().values():
                 if channel.is_running():
-                    close_all_channels.append(channel.client.close())
+                    close_all_channels.append(channel.broker.close())
             await asyncio.gather(*close_all_channels)
             await asyncio.to_thread(self.container.shutdown)
             # 通知 session 已经彻底结束了.
@@ -287,11 +287,11 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
             await self._cancel_channel_lifecycle_task(channel_name)
             # 执行 clear 命令.
-            task = asyncio.create_task(channel.client.clear())
+            task = asyncio.create_task(channel.broker.clear())
             self._channel_lifecycle_tasks[channel_name] = task
             await task
         except asyncio.CancelledError:
@@ -345,13 +345,13 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
 
             # 先取消生命周期函数.
             await self._cancel_channel_lifecycle_task(channel_name)
 
-            run_policy_task = asyncio.create_task(channel.client.policy_run())
+            run_policy_task = asyncio.create_task(channel.broker.policy_run())
             self._channel_lifecycle_tasks[channel_name] = run_policy_task
 
             await run_policy_task
@@ -393,10 +393,10 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
 
-            task = asyncio.create_task(channel.client.policy_pause())
+            task = asyncio.create_task(channel.broker.policy_pause())
             self._channel_lifecycle_tasks[channel_name] = task
             await task
         except asyncio.CancelledError:
@@ -420,7 +420,7 @@ class DuplexChannelServer(ChannelServer):
         for channel_path, channel in self.channel.all_channels().items():
             if not channel.is_running():
                 continue
-            metas[channel_path] = channel.client.meta(no_cache=True)
+            metas[channel_path] = channel.broker.meta(no_cache=True)
         response = ChannelMetaUpdateEvent(
             session_id=event.session_id,
             metas=metas,
@@ -451,7 +451,7 @@ class DuplexChannelServer(ChannelServer):
             return
 
         # 获取真实的 command 对象.
-        command = channel.client.get_command(call_event.name)
+        command = channel.broker.get_command(call_event.name)
         if command is None or not command.is_available():
             response = call_event.not_available()
             await self._send_response_to_client(response.to_channel_event())

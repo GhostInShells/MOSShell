@@ -121,7 +121,7 @@ class Client2ServerConnection(Connection):
         pass
 
 
-class ThreadChannelServer(DuplexChannelServer):
+class ThreadChannelServer(DuplexChannelProvider):
 
     def __init__(
             self,

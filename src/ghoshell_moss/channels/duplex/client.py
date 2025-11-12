@@ -1,7 +1,7 @@
 from typing import Dict, Any, Optional, Callable, Coroutine
 from typing_extensions import Self
 
-from ghoshell_moss import ChannelClient
+from ghoshell_moss import ChannelBroker
 from ghoshell_moss.concepts.channel import Channel, ChannelMeta, Builder, R, ChannelFullPath
 from ghoshell_moss.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.concepts.command import Command, CommandTask, BaseCommandTask, CommandMeta, CommandWrapper
@@ -14,7 +14,9 @@ from ghoshell_container import Container, IoCContainer
 import logging
 import asyncio
 
-__all__ = ['DuplexChannelClient', 'DuplexChannelStub', 'DuplexChannelProxy']
+__all__ = ['DuplexChannelBroker', 'DuplexChannelStub', 'DuplexChannelProxy']
+
+from ...concepts.states import StateStore
 
 
 class DuplexChannelContext:
@@ -373,7 +375,7 @@ class DuplexChannelStub(Channel):
         self._ctx = ctx
         self._local_channel = local_channel or PyChannel(name=name)
         # 运行时缓存.
-        self._client: ChannelClient | None = None
+        self._client: ChannelBroker | None = None
         self._started = False
         self._children_stubs: Dict[str, DuplexChannelStub] = {}
 
@@ -385,7 +387,7 @@ class DuplexChannelStub(Channel):
         return self._ctx.server_meta_map.get(self._server_chan_name)
 
     @property
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         if self._client is None:
             raise RuntimeError(f'Channel {self} has not been started yet.')
         return self._client
@@ -434,13 +436,13 @@ class DuplexChannelStub(Channel):
     def is_running(self) -> bool:
         return self._started and self._client is not None and self._ctx.is_running()
 
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelBroker":
         if self._client is not None and self._client.is_running():
             raise RuntimeError(f'Channel {self._name} has already been started.')
         if not self._ctx.is_running():
             raise RuntimeError(f'Duplex Channel {self._name} Context is not running')
 
-        running_client = DuplexChannelClient(
+        running_client = DuplexChannelBroker(
             name=self._name,
             server_chan_path=self._server_chan_name,
             ctx=self._ctx,
@@ -455,7 +457,7 @@ class DuplexChannelStub(Channel):
         return self._local_channel.build
 
 
-class DuplexChannelClient(ChannelClient):
+class DuplexChannelBroker(ChannelBroker):
     """
     实现一个极简的 Duplex Channel, 它核心是可以通过 ChannelMeta 被动态构建出来.
     """
@@ -537,7 +539,7 @@ class DuplexChannelClient(ChannelClient):
 
         # 如果有本地注册的函数, 用它们取代 server 同步过来的.
         if self._local_channel is not None:
-            local_meta = self._local_channel.client.meta()
+            local_meta = self._local_channel.broker.meta()
             for command_meta in local_meta.commands:
                 commands[command_meta.name] = command_meta
         meta.commands = list(commands.values())
@@ -550,7 +552,7 @@ class DuplexChannelClient(ChannelClient):
 
     def commands(self, available_only: bool = True) -> Dict[str, Command]:
         # 先获取本地的命令.
-        result = self._local_channel.client.commands(available_only=available_only)
+        result = self._local_channel.broker.commands(available_only=available_only)
         meta = self._ctx.get_meta(self._server_chan_path)
         if meta is None:
             return result
@@ -619,7 +621,7 @@ class DuplexChannelClient(ChannelClient):
         self._check_running()
         try:
             if self._local_channel is not None:
-                await self._local_channel.client.policy_run()
+                await self._local_channel.broker.policy_run()
 
             event = RunPolicyEvent(
                 session_id=self._ctx.session_id,
@@ -636,7 +638,7 @@ class DuplexChannelClient(ChannelClient):
         self._check_running()
         try:
             if self._local_channel is not None:
-                await self._local_channel.client.policy_pause()
+                await self._local_channel.broker.policy_pause()
 
             event = PausePolicyEvent(
                 session_id=self._ctx.session_id,
@@ -653,7 +655,7 @@ class DuplexChannelClient(ChannelClient):
         self._check_running()
         try:
             if self._local_channel is not None:
-                await self._local_channel.client.policy_pause()
+                await self._local_channel.broker.policy_pause()
 
             event = ClearCallEvent(
                 session_id=self._ctx.session_id,
@@ -689,7 +691,7 @@ class DuplexChannelClient(ChannelClient):
             self.logger.exception(e)
         finally:
             if self._local_channel is not None and self._local_channel.is_running():
-                await self._local_channel.client.close()
+                await self._local_channel.broker.close()
             await asyncio.to_thread(self.container.shutdown)
             self._main_loop_done_event.set()
 
@@ -738,6 +740,11 @@ class DuplexChannelClient(ChannelClient):
     def is_root(self) -> bool:
         return self._name == self._ctx.root_name
 
+    @property
+    def states(self) -> StateStore:
+        # todo: duplex channel use connection adapter
+        return self._local_channel.broker.states
+
     async def close(self) -> None:
         if self._self_close_event.is_set():
             return
@@ -769,7 +776,7 @@ class DuplexChannelProxy(Channel):
         self._server_connection = to_server_connection
         self._local_channel = PyChannel(name=name, description=description, block=block)
         self._server_channel_path = ""
-        self._client: Optional[DuplexChannelClient] = None
+        self._client: Optional[DuplexChannelBroker] = None
         self._ctx: DuplexChannelContext | None = None
         """运行的时候才会生成 Channel Context"""
 
@@ -779,7 +786,7 @@ class DuplexChannelProxy(Channel):
         return self._name
 
     @property
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         if self._client is None:
             raise RuntimeError(f'Channel {self} has not been started yet.')
         return self._client
@@ -840,7 +847,7 @@ class DuplexChannelProxy(Channel):
     def is_running(self) -> bool:
         return self._client is not None and self._client.is_running()
 
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelBroker":
         if self._client is not None and self._client.is_running():
             raise RuntimeError(f'Channel {self} has already been started.')
 
@@ -851,7 +858,7 @@ class DuplexChannelProxy(Channel):
             root_local_channel=self._local_channel,
         )
 
-        client = DuplexChannelClient(
+        client = DuplexChannelBroker(
             name=self._name,
             channel_id=uuid(),
             server_chan_path="",

@@ -19,7 +19,7 @@ async def open(size: float = 1.0):
     elif size < 0.0:
         size = 0.0
 
-    model = mouth_chan.client.container.force_fetch(live2d.LAppModel)
+    model = mouth_chan.broker.container.force_fetch(live2d.LAppModel)
     model.SetParameterValue("ParamMouthOpenY", size)
 
 
@@ -35,7 +35,7 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7
     """
     PARAM = "ParamMouthOpenY"
     # 特殊处理嘴部动作，说话通常从张开开始
-    model = mouth_chan.client.container.force_fetch(live2d.LAppModel)
+    model = mouth_chan.broker.container.force_fetch(live2d.LAppModel)
 
     # 调用通用动画函数，注意初始方向设置为打开
     final_value = await open_close(

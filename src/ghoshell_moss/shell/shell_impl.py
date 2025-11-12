@@ -217,7 +217,7 @@ class DefaultShell(MOSSShell):
         runtime = await self._runtime.get_or_create_runtime(chan)
         if runtime is None:
             return None
-        real_command = runtime.channel.client.get_command(name)
+        real_command = runtime.channel.broker.get_command(name)
         meta = real_command.meta().model_copy()
         meta.chan = chan
         command = CommandWrapper(meta, real_command.__call__)

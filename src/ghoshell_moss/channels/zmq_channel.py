@@ -5,7 +5,7 @@ except ImportError:
     raise ImportError(f"zmq module not found, please pip install ghoshell-moss[zmq]")
 from ghoshell_moss.channels.duplex.connection import Connection, ConnectionClosedError
 from ghoshell_moss.channels.duplex.protocol import ChannelEvent, HeartbeatEvent
-from ghoshell_moss.channels.duplex.server import DuplexChannelServer
+from ghoshell_moss.channels.duplex.server import DuplexChannelProvider
 from ghoshell_moss.channels.duplex.client import DuplexChannelProxy
 from ghoshell_container import Container, IoCContainer
 from abc import ABC, abstractmethod
@@ -273,7 +273,7 @@ class ZMQClientConnection(BaseZMQConnection):
             logger.error("Heartbeat loop error: %s", e)
 
 
-class ZMQChannelServer(DuplexChannelServer):
+class ZMQChannelServer(DuplexChannelProvider):
     def __init__(
             self,
             *,

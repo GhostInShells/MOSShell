@@ -106,15 +106,15 @@ async def test_py_channel_children() -> None:
     assert isinstance(zoo_cmd, PyCommand)
 
     async with a_chan.bootstrap():
-        meta = a_chan.client.meta()
+        meta = a_chan.broker.meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = a_chan.client.get_command('zoo')
+        command = a_chan.broker.get_command('zoo')
         # 实际执行的是 zoo.
         assert await command() == 123
 
     async with chan.bootstrap():
-        meta = chan.client.meta()
+        meta = chan.broker.meta()
         assert meta.children == ['a']
 
 

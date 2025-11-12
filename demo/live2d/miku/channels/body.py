@@ -11,7 +11,7 @@ policy_pause_event = asyncio.Event()
 
 @body_chan.build.on_policy_run
 async def on_policy_run():
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     policy_pause_event.clear()
     while not policy_pause_event.is_set():
         # 等待 其他 Motions 完成
@@ -20,7 +20,7 @@ async def on_policy_run():
         model.ResetExpressions() # 防止表情重叠
         model.ResetExpression()
         # Policy的Priority设置为1（较低），是为了确保其他Motion可打断Policy Motion
-        state_model = await body_chan.client.state_store.get_model(BodyPolicyStateModel)
+        state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
         model.StartMotion(state_model.policy, 0, 1)
 
 
@@ -47,11 +47,11 @@ async def set_default_policy(policy: str = "Happy"):
 
     :param policy:  body policy, default is Happy, choices are Happy, Angry, Love, Sad
     """
-    state_model = await body_chan.client.state_store.get_model(BodyPolicyStateModel)
+    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
     state_model.policy = policy
     global mock_policy
     mock_policy = policy
-    await body_chan.client.state_store.save(state_model)
+    await body_chan.broker.states.save(state_model)
 
 @body_chan.build.with_description()
 def description() -> str:
@@ -76,7 +76,7 @@ async def angry(no: int = 0, duration: float = 5.0):
     :param no:  angry motion number
     :param duration:  angry motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Angry", no, duration)
 
 
@@ -88,7 +88,7 @@ async def happy(no: int = 0, duration: float = 5.0):
     :param no:  happy motion number
     :param duration:  happy motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Happy", no, duration)
 
 
@@ -99,7 +99,7 @@ async def love(duration: float = 5.0):
 
     :param duration:  love motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Love", 0, duration)
 
 
@@ -110,7 +110,7 @@ async def gentle_torso_twist(duration: float = 5.0):
 
     :param duration:  gentle torso twist duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "TurnHead", 0, duration)
 
 
@@ -121,7 +121,7 @@ async def sad(duration: float = 5.0):
 
     :param duration:  sad motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Sad", 0, duration)
 
 
@@ -133,7 +133,7 @@ async def nod_head(no: int = 0, duration: float = 5.0):
     :param no:  nod head motion number
     :param duration:  nod head motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "NodHead", no, duration)
 
 
@@ -144,7 +144,7 @@ async def walk(duration: float = 5.0):
 
     :param duration:  walk motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Walk", 0, duration)
 
 
@@ -155,7 +155,7 @@ async def sleep(duration: float = 5.0):
 
     :param duration:  sleep motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "Sleep", 0, duration)
 
 
@@ -167,5 +167,5 @@ async def activate_body(no: int = 0, duration: float = 5.0):
     :param no:  activate body motion number
     :param duration:  activate body motion duration
     """
-    model = body_chan.client.container.force_fetch(live2d.LAppModel)
+    model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     await start_motion(model, "ActivateBody", no, duration)

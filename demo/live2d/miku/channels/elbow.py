@@ -18,7 +18,7 @@ async def move(duration: float = 1.5, angle: float = 0.0):
                     - 正值：小臂向外伸展，最大角度为10.0
                     - 负值：小臂向内弯折，最小角度为-30.0
     """
-    model = left_elbow_chan.client.container.force_fetch(live2d.LAppModel)
+    model = left_elbow_chan.broker.container.force_fetch(live2d.LAppModel)
 
     index = model.GetParamIds().index('Param4')
     current_angle = model.GetParameterValue(index)
@@ -40,7 +40,7 @@ async def move(duration: float = 1.5, angle: float = 0.0):
                     - 正值：小臂向外伸展，最大角度为10.0
                     - 负值：小臂向内弯折，最小角度为-30.0
     """
-    model = right_elbow_chan.client.container.force_fetch(live2d.LAppModel)
+    model = right_elbow_chan.broker.container.force_fetch(live2d.LAppModel)
 
     index = model.GetParamIds().index('Param5')
     current_angle = model.GetParameterValue(index)

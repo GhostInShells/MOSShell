@@ -116,7 +116,7 @@ class ChannelRuntime:
         except asyncio.CancelledError:
             pass
         if self.channel.is_running():
-            await self.channel.client.close()
+            await self.channel.broker.close()
 
     def _check_running(self):
         if not self._started:
@@ -131,18 +131,18 @@ class ChannelRuntime:
         return self._started and not self._stop_event.is_set() and self.channel.is_running()
 
     def is_available(self) -> bool:
-        return self.is_running() and self.channel.is_running() and self.channel.client.is_available()
+        return self.is_running() and self.channel.is_running() and self.channel.broker.is_available()
 
     def commands(self, available_only: bool = True) -> Dict[str, Command]:
         self._check_running()
         if not self.is_available():
             return {}
-        return self.channel.client.commands(available_only)
+        return self.channel.broker.commands(available_only)
 
     def channel_meta(self) -> ChannelMeta:
         self._check_running()
         # 保持更新.
-        return self.channel.client.meta(no_cache=True)
+        return self.channel.broker.meta(no_cache=True)
 
     def is_busy(self) -> bool:
         """
@@ -370,7 +370,7 @@ class ChannelRuntime:
         try:
             if not self.is_available():
                 return
-            await self.channel.client.policy_pause()
+            await self.channel.broker.policy_pause()
         except asyncio.CancelledError:
             pass
         except FatalError as e:
@@ -385,7 +385,7 @@ class ChannelRuntime:
             if not self.is_available():
                 return
             # 启动 policy.
-            await self.channel.client.policy_run()
+            await self.channel.broker.policy_run()
         except asyncio.CancelledError:
             pass
         except FatalError as e:
@@ -604,7 +604,7 @@ class ChannelRuntime:
         """
         try:
             if self.is_available():
-                await self.channel.client.clear()
+                await self.channel.broker.clear()
         except asyncio.CancelledError:
             self.logger.info(f"channel {self.name} clearing is cancelled")
         except Exception as exc:

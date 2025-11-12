@@ -76,7 +76,7 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     PARAM_BROW_X = "PARAM_BROW_L_X" # MAX 1.0 MIN -1.0
     PARAM_BROW_ANGLE = "PARAM_BROW_L_ANGLE" # MAX 1.0 MIN -1.0
 
-    model = eyebrow_left_chan.client.container.force_fetch(live2d.LAppModel)
+    model = eyebrow_left_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 调用通用平滑移动函数
     await _smooth_move_eyebrow(
@@ -105,7 +105,7 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
     PARAM_BROW_X = "PARAM_BROW_R_X" # MAX 1.0 MIN -1.0
     PARAM_BROW_ANGLE = "PARAM_BROW_R_ANGLE" # MAX 1.0 MIN -1.0
 
-    model = eyebrow_right_chan.client.container.force_fetch(live2d.LAppModel)
+    model = eyebrow_right_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 调用通用平滑移动函数
     await _smooth_move_eyebrow(

@@ -16,7 +16,7 @@ async def move(duration: float = 1.5, angle: float = 10.0):
     :param duration:  执行时间
     :param angle:  提升角度，10.0为最大角度约为身体夹角45度，0.0为最小角度
     """
-    model = left_arm_chan.client.container.force_fetch(live2d.LAppModel)
+    model = left_arm_chan.broker.container.force_fetch(live2d.LAppModel)
 
     index = model.GetParamIds().index('PARAM_ARM_L_01')
     current_angle = model.GetParameterValue(index)
@@ -37,7 +37,7 @@ async def move(duration: float = 1.5, angle: float = 10.0):
     :param duration:  执行时间
     :param angle:  提升角度，10.0为最大角度约为身体夹角45度，0.0为最小角度
     """
-    model = right_arm_chan.client.container.force_fetch(live2d.LAppModel)
+    model = right_arm_chan.broker.container.force_fetch(live2d.LAppModel)
     index = model.GetParamIds().index('PARAM_ARM_R_01')
     current_angle = model.GetParameterValue(index)
 
@@ -56,7 +56,7 @@ async def akimbo(duration: float = 0.5):
     
     :param duration:  执行时间
     """
-    model = left_arm_chan.client.container.force_fetch(live2d.LAppModel)
+    model = left_arm_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 获取左臂和左肘部的参数索引
     arm_index = model.GetParamIds().index('PARAM_ARM_L_01')
@@ -92,7 +92,7 @@ async def akimbo(duration: float = 0.5):
     
     :param duration:  执行时间
     """
-    model = right_arm_chan.client.container.force_fetch(live2d.LAppModel)
+    model = right_arm_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 获取右臂和右肘部的参数索引
     arm_index = model.GetParamIds().index('PARAM_ARM_R_01')

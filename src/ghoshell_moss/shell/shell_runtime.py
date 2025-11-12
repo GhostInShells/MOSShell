@@ -83,7 +83,7 @@ class ShellRuntime:
             # 运行时启动 channel.
             channel_client = channel.bootstrap(self.container)
             await channel_client.start()
-        channel_id = channel.client.id
+        channel_id = channel.broker.id
         if channel_id in self._channel_id_to_runtime_map:
             # 先看是否已经存在.
             channel_runtime = self._channel_id_to_runtime_map[channel_id]
@@ -111,7 +111,7 @@ class ShellRuntime:
         )
 
     def _get_main_channel_runtime(self) -> ChannelRuntime:
-        main_channel_id = self.main_channel.client.id
+        main_channel_id = self.main_channel.broker.id
         return self._channel_id_to_runtime_map[main_channel_id]
 
     def add_task(self, *tasks: CommandTask) -> None:
@@ -342,7 +342,7 @@ class ShellRuntime:
                 continue
             bootstrap_runtimes.append(channel_runtime.start())
             # 注册 path 和 id 之间的关系.
-            client_id = channel.client.id
+            client_id = channel.broker.id
             self._channel_id_to_runtime_map[client_id] = channel_runtime
         # 启动所有的 runtime.
         await asyncio.gather(*bootstrap_runtimes)

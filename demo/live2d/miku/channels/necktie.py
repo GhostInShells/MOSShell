@@ -17,7 +17,7 @@ async def flutter(duration: float = 5.0):
     PARAM_NECKTIE = "PARAM_NECKTIE"
 
 
-    model = necktie_chan.client.container.force_fetch(live2d.LAppModel)
+    model = necktie_chan.broker.container.force_fetch(live2d.LAppModel)
     
     # 设置初始位置为原点
     current_value = 0.0

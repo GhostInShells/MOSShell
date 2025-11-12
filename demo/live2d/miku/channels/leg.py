@@ -19,7 +19,7 @@ async def move(duration: float = 1.5, angle: float = 10.0):
 
     PARAM = "PARAM_LEG_L_Z"
 
-    model = left_leg_chan.client.container.force_fetch(live2d.LAppModel)
+    model = left_leg_chan.broker.container.force_fetch(live2d.LAppModel)
 
     index = model.GetParamIds().index(PARAM)
     current_angle = model.GetParameterValue(index)
@@ -43,7 +43,7 @@ async def move(duration: float = 1.5, angle: float = -10.0):
     :param angle:  身体垂直角度，-10.0为最大角度约为身体垂直夹角30度，0.0为最小角度
     """
     PARAM = "PARAM_LEG_R_Z"
-    model = right_leg_chan.client.container.force_fetch(live2d.LAppModel)
+    model = right_leg_chan.broker.container.force_fetch(live2d.LAppModel)
     index = model.GetParamIds().index(PARAM)    
     current_angle = model.GetParameterValue(index)
 

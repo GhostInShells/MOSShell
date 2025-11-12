@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 __all__ = [
     'CommandFunction', 'LifecycleFunction', 'PrompterFunction', 'StringType',
-    'ChannelMeta', 'Channel', 'ChannelServer', 'ChannelClient',
+    'ChannelMeta', 'Channel', 'ChannelProvider', 'ChannelBroker',
     'Builder',
     'R',
     'ChannelPaths', 'ChannelFullPath',
@@ -52,7 +52,7 @@ class ChannelMeta(BaseModel):
     # context: str = Field(default="", description="the runtime context of the channel.")
 
 
-class ChannelClient(ABC):
+class ChannelBroker(ABC):
     """
     channel 的运行时方法.
     只有在 channel.start 之后才可使用.
@@ -157,7 +157,7 @@ class ChannelClient(ABC):
 
     @property
     @abstractmethod
-    def state_store(self) -> StateStore:
+    def states(self) -> StateStore:
         """
         返回当前 Channel 的状态存储.
         """
@@ -323,7 +323,7 @@ class Channel(ABC):
 
     @property
     @abstractmethod
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         """
         Channel 在 bootstrap 之后返回的运行时.
         :raise RuntimeError: Channel 没有运行
@@ -415,7 +415,7 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
         """
         传入一个 IoC 容器, 启动 Channel 的 Client. !不会递归启动所有的子 Channel.
         """
@@ -441,7 +441,7 @@ class Channel(ABC):
         ctx = contextvars.copy_context()
         self.set_context_var()
         # 将 container 也放入上下文中.
-        set_container(self.client.container)
+        set_container(self.broker.container)
         task.set_context_var()
         ctx_ran_cor = ctx.run(task.dry_run)
         # 创建一个可以被 cancel 的 task.
@@ -460,7 +460,7 @@ class Channel(ABC):
 
     def create_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
         """example to create channel task """
-        command = self.client.get_command(name)
+        command = self.broker.get_command(name)
         if command is None:
             raise NotImplementedError(f'Channel {self.name()} has no command {name}')
         task = BaseCommandTask.from_command(command, *args, **kwargs)
@@ -479,14 +479,14 @@ class Channel(ABC):
                 task.cancel("task is executed but not done")
 
 
-class ChannelServer(ABC):
+class ChannelProvider(ABC):
     """
-    将 Channel 包装成一个 Server, 可以被上层的 Client 调用.
-    上层的 Client 将通过通讯协议, 还原出 Client 树, 但这个 Client 树里所有子 channel 都通过 Server 的通讯协议来传递.
+    将 Channel 包装成一个 Provider 实例, 可以被上层的 Channel Broker 调用.
+    上层的 Broker 将通过通讯协议, 还原出 Broker 树, 但这个 Broker 树里所有子 channel 都通过 Server 的通讯协议来传递.
     从而形成链式的封装关系, 在不同进程里还原出树形的架构.
 
     举例:
-    ReverseWebsocketClient => ReverseWebsocketServer => ZMQClient => ZMQServer ... => Client
+    ReverseWebsocketBroker => ReverseWebsocketServer => ZMQBroker => ZMQServer ... => Broker
     """
 
     @abstractmethod

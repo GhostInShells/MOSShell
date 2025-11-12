@@ -171,7 +171,7 @@ async def test_shell_loop():
 
         chan = Channel.get_from_context()
         # get shell from channel's container
-        _shell = chan.client.container.get(MOSSShell)
+        _shell = chan.broker.container.get(MOSSShell)
         _tasks = []
         async for t in _shell.parse_tokens_to_command_tasks(tokens__):
             _tasks.append(t)
