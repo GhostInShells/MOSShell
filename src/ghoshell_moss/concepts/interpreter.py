@@ -142,7 +142,17 @@ class Interpreter(ABC):
     """each time stream interpretation has a unique id"""
 
     @abstractmethod
-    def meta_instruction(self) -> str:
+    def meta_system_prompt(self) -> str:
+        """
+        给大模型使用 MOSS 的元规则. interpreter 可以定义不同的规则.
+        """
+        pass
+
+    @abstractmethod
+    def moss_instruction(self) -> str:
+        """
+        当前 interpreter 状态下, moss 的完整使用提示. 用于呈现给大模型.
+        """
         pass
 
     @abstractmethod
@@ -210,9 +220,11 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def results(self) -> Dict[str, str]:
+    async def results(self) -> Dict[str, str]:
         """
         将所有已经执行完的 task 的 result 作为有序的字符串字典输出
+        知道第一个运行失败的.
+        其中返回值为 None 或空字符串的不会展示.
 
         :return: key is the task name and attrs, value is the result or error of the command
                  if command task return None, ignore the result of it.
@@ -220,7 +232,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def executed(self) -> str:
+    def executed(self) -> List[CommandTask]:
         """
         返回已经被执行的 tokens.
         """
@@ -260,6 +272,9 @@ class Interpreter(ABC):
 
     @abstractmethod
     def is_running(self) -> bool:
+        """
+        是否正在运行中: start -> end 中间.
+        """
         pass
 
     @abstractmethod
@@ -304,9 +319,16 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def wait_execution_done(self, timeout: float | None = None) -> Dict[str, CommandTask]:
+    async def wait_execution_done(
+            self,
+            timeout: float | None = None,
+            *,
+            throw: bool = False,
+            cancel_on_exception: bool = True
+    ) -> Dict[str, CommandTask]:
         """
-
+        等待所有的 task 被执行完毕.
+        如果这些 task 没有被任何方式执行, 将会导致持续的阻塞.
         """
         pass
 

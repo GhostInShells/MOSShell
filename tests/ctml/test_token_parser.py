@@ -193,7 +193,7 @@ def test_namespace_tag():
 
 
 def test_parser_with_chinese():
-    content = '<foo:bar>你好啊</foo:bar>'
+    content = '<foo.bar:baz>你好啊</foo.bar:baz>'
     q: List[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None

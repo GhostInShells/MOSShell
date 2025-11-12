@@ -1,6 +1,6 @@
 from typing import Dict, Callable, Coroutine
 
-from ghoshell_moss.concepts.channel import Channel, ChannelServer
+from ghoshell_moss.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_moss.concepts.command import CommandTask, BaseCommandTask
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
@@ -11,7 +11,7 @@ from pydantic import ValidationError
 import logging
 import asyncio
 
-__all__ = ['ChannelEventHandler', 'DuplexChannelServer']
+__all__ = ['ChannelEventHandler', 'DuplexChannelProvider']
 
 # --- event handlers --- #
 
@@ -19,7 +19,7 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel Client/Server 原有的事件处理逻辑."""
 
 
-class DuplexChannelServer(ChannelServer):
+class DuplexChannelProvider(ChannelProvider):
     """
     实现一个基础的 Duplex Channel Server, 是为了展示 Channel Client/Server 通讯的基本方式.
     注意:
@@ -141,9 +141,9 @@ class DuplexChannelServer(ChannelServer):
             self._channel_lifecycle_idle_events.clear()
             await self.connection.close()
             close_all_channels = []
-            for channel in self.channel.all_channels():
+            for channel in self.channel.all_channels().values():
                 if channel.is_running():
-                    close_all_channels.append(channel.client.close())
+                    close_all_channels.append(channel.broker.close())
             await asyncio.gather(*close_all_channels)
             await asyncio.to_thread(self.container.shutdown)
             # 通知 session 已经彻底结束了.
@@ -201,9 +201,6 @@ class DuplexChannelServer(ChannelServer):
             for t in pending:
                 t.cancel()
             await handle_task
-        except asyncio.CancelledError:
-            # todo: log
-            pass
         except Exception as e:
             self.logger.exception(e)
 
@@ -236,7 +233,8 @@ class DuplexChannelServer(ChannelServer):
             if model := CommandCallEvent.from_channel_event(event):
                 await self._handle_command_call(model)
             elif model := CommandPeekEvent.from_channel_event(event):
-                await self._handle_command_peek(model)
+                # await self._handle_command_peek(model)
+                pass
             elif model := CommandCancelEvent.from_channel_event(event):
                 await self._handle_command_cancel(model)
             elif model := SyncChannelMetasEvent.from_channel_event(event):
@@ -263,20 +261,22 @@ class DuplexChannelServer(ChannelServer):
             command_done = CommandDoneEvent(
                 chan=model.chan,
                 command_id=command_id,
-                errcode=CommandErrorCode.CANCELLED,
+                errcode=CommandErrorCode.NOT_FOUND.value,
                 errmsg="canceled",
-                data=None,
+                result=None,
             )
+            # todo: log
             await self._send_response_to_client(command_done.to_channel_event())
         else:
-            cmd_task = self._running_command_tasks.pop(command_id)
+            cmd_task = self._running_command_tasks.get(command_id)
+            # todo: log
             if cmd_task.done():
                 command_done = CommandDoneEvent(
                     chan=model.chan,
                     command_id=command_id,
-                    data=cmd_task.result(),
-                    errcode=cmd_task.errcode,
+                    errcode=int(cmd_task.errcode),
                     errmsg=cmd_task.errmsg,
+                    result=cmd_task.result(),
                 )
                 await self._send_response_to_client(command_done.to_channel_event())
 
@@ -287,11 +287,11 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
             await self._cancel_channel_lifecycle_task(channel_name)
             # 执行 clear 命令.
-            task = asyncio.create_task(channel.client.clear())
+            task = asyncio.create_task(channel.broker.clear())
             self._channel_lifecycle_tasks[channel_name] = task
             await task
         except asyncio.CancelledError:
@@ -345,13 +345,13 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
 
             # 先取消生命周期函数.
             await self._cancel_channel_lifecycle_task(channel_name)
 
-            run_policy_task = asyncio.create_task(channel.client.policy_run())
+            run_policy_task = asyncio.create_task(channel.broker.policy_run())
             self._channel_lifecycle_tasks[channel_name] = run_policy_task
 
             await run_policy_task
@@ -393,10 +393,10 @@ class DuplexChannelServer(ChannelServer):
             channel = self.channel.get_channel(channel_name)
             if channel is None or not channel.is_running():
                 return
-            if not channel.client.is_available():
+            if not channel.broker.is_available():
                 return
 
-            task = asyncio.create_task(channel.client.policy_pause())
+            task = asyncio.create_task(channel.broker.policy_pause())
             self._channel_lifecycle_tasks[channel_name] = task
             await task
         except asyncio.CancelledError:
@@ -416,13 +416,11 @@ class DuplexChannelServer(ChannelServer):
             await self._send_response_to_client(response.to_channel_event())
 
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
-        metas = []
-        names = set(event.channels)
-        for channel in self.channel.all_channels():
+        metas = {}
+        for channel_path, channel in self.channel.all_channels().items():
             if not channel.is_running():
                 continue
-            if not names or channel.name in names:
-                metas.append(channel.client.meta(no_cache=True))
+            metas[channel_path] = channel.broker.meta(no_cache=True)
         response = ChannelMetaUpdateEvent(
             session_id=event.session_id,
             metas=metas,
@@ -444,16 +442,16 @@ class DuplexChannelServer(ChannelServer):
         await self._cancel_channel_lifecycle_task(call_event.chan)
         channel = self.channel.get_channel(call_event.chan)
         if channel is None:
-            response = call_event.not_available("channel %s not found" % call_event.chan)
+            response = call_event.not_available("channel `%s` not found" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
         elif not self.channel.is_running():
-            response = call_event.not_available("channel %s is not running" % call_event.chan)
+            response = call_event.not_available("channel `%s` is not running" % call_event.chan)
             await self.connection.send(response.to_channel_event())
             return
 
         # 获取真实的 command 对象.
-        command = channel.client.get_command(call_event.name)
+        command = channel.broker.get_command(call_event.name)
         if command is None or not command.is_available():
             response = call_event.not_available()
             await self._send_response_to_client(response.to_channel_event())
@@ -473,7 +471,14 @@ class DuplexChannelServer(ChannelServer):
             # 多余的, 没什么用.
             task.set_state("running")
             await self._add_running_task(task)
-            await self._execute_task(task)
+            result = await channel.execute_task(task)
+            task.resolve(result)
+        except asyncio.CancelledError:
+            task.cancel("cancelled")
+            pass
+        except Exception as e:
+            self.logger.exception(e)
+            task.fail(e)
         finally:
             # todo: log
             await self._remove_running_task(task)
@@ -483,23 +488,6 @@ class DuplexChannelServer(ChannelServer):
             result = task.result()
             response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_response_to_client(response.to_channel_event())
-
-    async def _execute_task(self, task: CommandTask) -> None:
-        try:
-            # 干运行, 拿到同步运行结果.
-            execution = asyncio.create_task(task.dry_run())
-            # 如果 task 被提前 cancel 了, 执行命令也会被取消.
-            wait_done = asyncio.create_task(task.wait())
-            closing = asyncio.create_task(self._closing_event.wait())
-            done, pending = await asyncio.wait([execution, wait_done, closing], return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-            result = await execution
-            task.resolve(result)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            self.logger.exception(e)
 
     async def _add_running_task(self, task: CommandTask) -> None:
         await self._running_command_tasks_lock.acquire()

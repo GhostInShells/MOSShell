@@ -44,14 +44,14 @@ async def test_zmq_channel_baseline():
             assert proxy.is_running()
 
             # 获取 channel meta
-            meta = proxy.client.meta()
+            meta = proxy.broker.meta()
             assert meta is not None
             assert meta.name == "test_channel"
             assert len(meta.commands) == 1
             assert meta.commands[0].name == "foo"
 
             # 获取命令并执行
-            cmd = proxy.client.get_command("foo")
+            cmd = proxy.broker.get_command("foo")
             assert cmd is not None
 
             # 测试命令执行
@@ -96,7 +96,7 @@ async def test_zmq_channel_with_timeout():
     try:
         async with proxy.bootstrap():
             # 测试正常延迟命令
-            cmd = proxy.client.get_command("delayed_command")
+            cmd = proxy.broker.get_command("delayed_command")
             result = await cmd(0.5)
             assert result == "Delayed by 0.5s"
 
@@ -121,7 +121,7 @@ async def test_zmq_channel_lost_connection():
         address=address,
         socket_type=ZMQSocketType.PAIR,
         heartbeat_interval=0.1,  # 100ms 心跳间隔
-        heartbeat_timeout=0.5,  # 300ms 心跳超时
+        heartbeat_timeout=0.3,  # 300ms 心跳超时
         description="ZMQ channel with reconnect"
     )
 
@@ -146,7 +146,7 @@ async def test_zmq_channel_lost_connection():
         assert proxy.is_running()
 
         # 执行命令
-        cmd = proxy.client.get_command("simple_command")
+        cmd = proxy.broker.get_command("simple_command")
         result = await cmd()
         assert result == "Hello from server"
         result = await cmd()
@@ -158,6 +158,7 @@ async def test_zmq_channel_lost_connection():
         assert not server.is_running()
         with pytest.raises(CommandError):
             result = await cmd()
+            assert not proxy.broker.is_available()
 
 
 @pytest.mark.asyncio
@@ -193,15 +194,15 @@ async def test_zmq_channel_multiple_commands():
     try:
         async with proxy.bootstrap():
             # 验证所有命令都存在
-            meta = proxy.client.meta()
+            meta = proxy.broker.meta()
             assert len(meta.commands) == 3
             command_names = {cmd.name for cmd in meta.commands}
             assert command_names == {"add", "multiply", "greet"}
 
             # 测试所有命令
-            add_cmd = proxy.client.get_command("add")
-            multiply_cmd = proxy.client.get_command("multiply")
-            greet_cmd = proxy.client.get_command("greet")
+            add_cmd = proxy.broker.get_command("add")
+            multiply_cmd = proxy.broker.get_command("multiply")
+            greet_cmd = proxy.broker.get_command("greet")
 
             # 执行加法
             result = await add_cmd(2, 3)

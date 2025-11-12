@@ -1,5 +1,6 @@
 from ghoshell_moss.channels.py_channel import PyChannel
-from ghoshell_moss.concepts.command import PyCommand
+from ghoshell_moss.concepts.command import PyCommand, CommandTask
+from ghoshell_moss.concepts.channel import Channel
 import pytest
 
 chan = PyChannel(name="test")
@@ -105,13 +106,50 @@ async def test_py_channel_children() -> None:
     assert isinstance(zoo_cmd, PyCommand)
 
     async with a_chan.bootstrap():
-        meta = a_chan.client.meta()
+        meta = a_chan.broker.meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = a_chan.client.get_command('zoo')
+        command = a_chan.broker.get_command('zoo')
         # 实际执行的是 zoo.
         assert await command() == 123
 
     async with chan.bootstrap():
-        meta = chan.client.meta()
+        meta = chan.broker.meta()
         assert meta.children == ['a']
+
+
+@pytest.mark.asyncio
+async def test_py_channel_with_children() -> None:
+    main = PyChannel(name="main")
+    main.new_child("a")
+    main.new_child("b")
+    c = PyChannel(name="c")
+    c.new_child("d")
+    main.import_channels(c)
+
+    channels = main.all_channels()
+    assert len(channels) == 5
+    assert channels[""] is main
+    assert channels['c'] is c
+    assert channels['c.d'] is c.children()['d']
+    assert c.get_channel('') is c
+    assert c.get_channel('d') is c.children()['d']
+    assert main.get_channel('c.d') is c.children()['d']
+
+
+@pytest.mark.asyncio
+async def test_py_channel_execute_task() -> None:
+    main = PyChannel(name="main")
+
+    async def foo() -> int:
+        _t = CommandTask.get_from_context()
+        _chan = Channel.get_from_context()
+        assert _t is not None
+        assert _chan is not None
+        return 123
+
+    main.build.command()(foo)
+    async with main.bootstrap() as client:
+        task = main.create_task("foo")
+        result = await main.execute_task(task)
+        assert result == 123

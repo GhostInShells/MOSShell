@@ -4,7 +4,7 @@ import threading
 from abc import ABC, abstractmethod
 from typing import (
     Literal, Optional, Dict, Any, List, Generic, TypeVar, Callable, Coroutine, Union,
-    Iterable, AsyncIterator
+    Iterable, AsyncIterator, Tuple,
 )
 from typing_extensions import Self
 from ghoshell_common.helpers import uuid
@@ -30,12 +30,20 @@ __all__ = [
     'RESULT',
     'CommandDeltaType', 'CommandDeltaTypeMap',
     'CancelAfterOthersTask',
-
+    'make_command_group',
 ]
 
 RESULT = TypeVar("RESULT")
 
-CommandTaskStateType = Literal['created', 'queued', 'pending', 'running', 'failed', 'done', 'cancelled']
+
+class CommandTaskStateType(str, Enum):
+    created = 'created'
+    queued = 'queued'
+    pending = 'pending'
+    running = 'running'
+    failed = 'failed'
+    done = 'done'
+    cancelled = 'cancelled'
 
 
 class CommandTaskState(str, Enum):
@@ -225,14 +233,15 @@ class Command(Generic[RESULT], ABC):
     def name(self) -> str:
         pass
 
-    def unique_name(self) -> str:
-        meta = self.meta()
-        return self.make_uniquename(meta.chan, meta.name)
-
     @staticmethod
     def make_uniquename(chan: str, name: str) -> str:
         prefix = chan + ":" if chan else ""
         return f"{prefix}{name}"
+
+    @staticmethod
+    def split_uniquename(name: str) -> Tuple[str, str]:
+        parts = name.split(":", 1)
+        return (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -411,35 +420,40 @@ class CommandTask(Generic[RESULT], ABC):
     7. 可复制, 复制后可重入, 方便做循环.
     """
 
-    # --- command info --- #
+    def __init__(
+            self,
+            *,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: Dict[str, Any],
+            cid: str | None = None,
+            context: Dict[str, Any] | None = None,
+    ) -> None:
+        self.cid: str = cid or uuid()
+        self.tokens: str = tokens
+        self.args: List = list(args)
+        self.kwargs: Dict[str, Any] = kwargs
+        self.state: str = "created"
+        self.meta = meta
+        self.func = func
+        self.errcode: Optional[int] = None
+        self.errmsg: Optional[str] = None
+        self.context = context or {}
+        self.errcode: int = 0
+        self.errmsg: Optional[str] = None
 
-    meta: CommandMeta
-    func: Callable[..., Coroutine[None, None, RESULT]] | None
-    """如果 Func 为 None, 则表示 task 只能靠外部 resolve 来赋值. """
+        # --- debug --- #
+        self.trace: Dict[str, float] = {
+            "created": time.time(),
+        }
+        self.send_through: List[str] = []
+        self.exec_chan: Optional[str] = None
+        """记录 task 在哪个 channel 被运行. """
 
-    # --- command call --- #
-
-    cid: str
-    tokens: str
-    args: List
-    kwargs: Dict[str, Any]
-    context: Dict[str, Any] = {}
-    """可以传递额外的 context, 作为一种协议"""
-
-    # --- command state --- #
-
-    state: CommandTaskStateType
-    errcode: int = 0
-    errmsg: Optional[str] = None
-
-    # --- debug --- #
-
-    trace: Dict[CommandTaskStateType, float] = {}
-    exec_chan: Optional[str] = None
-    """记录 task 在哪个 channel 被运行. """
-
-    done_at: Optional[str] = None
-    """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
+        self.done_at: Optional[str] = None
+        """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
 
     @abstractmethod
     def result(self) -> Optional[RESULT]:
@@ -465,7 +479,7 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
     def success(self) -> bool:
-        return self.done() and self.state == "done"
+        return self.done() and self.state == "done" and self.errcode == 0
 
     def cancelled(self) -> bool:
         return self.done() and self.state == "cancelled"
@@ -490,12 +504,12 @@ class CommandTask(Generic[RESULT], ABC):
         """
         pass
 
-    def set_state(self, state: CommandTaskStateType) -> None:
+    @abstractmethod
+    def set_state(self, state: CommandTaskStateType | str) -> None:
         """
         set the state of the command with time
         """
-        self.state = state
-        self.trace[state] = time.time()
+        pass
 
     @abstractmethod
     def fail(self, error: Exception | str) -> None:
@@ -559,10 +573,7 @@ class CommandTask(Generic[RESULT], ABC):
         """无状态的运行逻辑"""
         if self.func is None:
             return None
-
-        ctx = contextvars.copy_context()
-        self.set_context_var()
-        r = await ctx.run(self.func, *self.args, **self.kwargs)
+        r = await self.func(*self.args, **self.kwargs)
         return r
 
     async def run(self) -> RESULT:
@@ -576,7 +587,10 @@ class CommandTask(Generic[RESULT], ABC):
             return await self.wait(throw=True)
 
         try:
-            dry_run = asyncio.create_task(self.dry_run())
+            ctx = contextvars.copy_context()
+            self.set_context_var()
+            dry_run_cor = ctx.run(self.dry_run)
+            dry_run = asyncio.create_task(dry_run_cor)
             wait = asyncio.create_task(self.wait())
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
@@ -607,6 +621,8 @@ class CommandTask(Generic[RESULT], ABC):
                 f"args=`{self.args}` kwargs=`{self.kwargs}`"
                 f"cid=`{self.cid}` tokens=`{self.tokens}` "
                 f"state=`{self.state}` done_at=`{self.done_at}` "
+                f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
+                f"send_through=`{self.send_through}` "
                 f">")
 
 
@@ -627,19 +643,15 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             cid: str | None = None,
             context: Dict[str, Any] | None = None,
     ) -> None:
-        self.cid: str = cid or uuid()
-        self.tokens: str = tokens
-        self.args: List = list(args)
-        self.kwargs: Dict[str, Any] = kwargs
-        self.state: CommandTaskStateType = "created"
-        self.meta = meta
-        self.func = func
-        self.errcode: Optional[int] = None
-        self.errmsg: Optional[str] = None
-        self.trace: Dict[CommandTaskStateType, float] = {
-            "created": time.time(),
-        }
-        self.context = context or {}
+        super().__init__(
+            meta=meta,
+            func=func,
+            tokens=tokens,
+            args=args,
+            kwargs=kwargs,
+            cid=cid,
+            context=context,
+        )
         self._result: Optional[RESULT] = None
         self._done_event: ThreadSafeEvent = ThreadSafeEvent()
         self._done_lock = threading.Lock()
@@ -694,10 +706,17 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.errcode = 0
         self.errmsg = None
 
+    def set_state(self, state: CommandTaskStateType | str) -> None:
+        with self._done_lock:
+            if self._done_event.is_set():
+                return None
+            self.state = str(state)
+            self.trace[self.state] = time.time()
+
     def _set_result(
             self,
             result: Optional[RESULT],
-            state: CommandTaskStateType,
+            state: CommandTaskStateType | str,
             errcode: int,
             errmsg: Optional[str],
             done_at: Optional[str] = None,
@@ -711,7 +730,8 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.errmsg = errmsg
             self.done_at = done_at
             self._done_event.set()
-            self.set_state(state)
+            self.state = str(state)
+            self.trace[self.state] = time.time()
             # 运行结束的回调.
             if len(self._done_callbacks) > 0:
                 for done_callback in self._done_callbacks:
@@ -761,17 +781,20 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
         Command Task 的 Await done 要求跨线程安全.
         """
-        if self._done_event.is_set():
-            if throw:
-                self.raise_exception()
+        try:
+            if self._done_event.is_set():
+                if throw:
+                    self.raise_exception()
+                return self._result
+            if timeout is not None:
+                await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
+            else:
+                await self._done_event.wait()
+            if throw and self.errcode != 0:
+                raise CommandError(self.errcode, self.errmsg or "")
             return self._result
-        if timeout is not None:
-            await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
-        else:
-            await self._done_event.wait()
-        if throw and self.errcode != 0:
-            raise CommandError(self.errcode, self.errmsg or "")
-        return self._result
+        except asyncio.CancelledError:
+            pass
 
     def wait_sync(self, *, throw: bool = True, timeout: float | None = None) -> Optional[RESULT]:
         """
@@ -864,13 +887,16 @@ class CommandTaskStack:
         self._on_success = on_success
         self._generated = []
 
-    async def success(self, task: CommandTask) -> None:
+    async def success(self, owner: CommandTask) -> None:
+        """
+        回调 owner.
+        """
         if self._on_success and callable(self._on_success):
             # 如果是回调函数, 则用回调函数决定 task.
             result = await self._on_success(self._generated)
-            task.resolve(result)
+            owner.resolve(result)
         else:
-            task.resolve(self._on_success)
+            owner.resolve(self._on_success)
 
     def generated(self) -> List[CommandTask]:
         return self._generated.copy()
@@ -892,3 +918,14 @@ class CommandTaskStack:
 
     def __str__(self):
         return ""
+
+
+def make_command_group(*commands: Command) -> Dict[str, Dict[str, Command]]:
+    result = {}
+    for command in commands:
+        meta = command.meta()
+        chan = meta.chan
+        if chan not in result:
+            result[chan] = {}
+        result[chan][meta.name] = command
+    return result

@@ -9,8 +9,12 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "ghoshell-common>=0.4.0",
-    "ghoshell-container>=0.3.0",
+    "ghoshell-common>=0.4.0.dev1",
+    "ghoshell-container>=0.3.0.dev1",
+    "zmq>=0.0.0",
+    "numpy>=2.2.6",
+    "click>=8.3.0",
+    "websockets>=15.0.1",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +35,11 @@ llm = [
 agent = [
     "prompt-toolkit>=3.0.52",
     "rich>=14.2.0",
+]
+audio = [
+    "pulsectl>=24.12.0",
+    "pyaudio>=0.2.14",
+    "scipy>=1.15.3",
 ]
 
 [tool.setuptools]

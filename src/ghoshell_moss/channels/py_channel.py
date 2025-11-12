@@ -4,10 +4,11 @@ from typing_extensions import Self
 
 from ghoshell_moss import CommandTask
 from ghoshell_moss.concepts.channel import (
-    ChannelClient, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
+    ChannelBroker, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
 )
 from ghoshell_moss.concepts.command import Command, PyCommand
 from ghoshell_moss.concepts.errors import CommandError, FatalError
+from ghoshell_moss.concepts.states import StateStore, MemoryStateStore, StateModel
 from ghoshell_moss.helpers.func import unwrap_callable_or_value
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel
 from ghoshell_container import (
@@ -19,7 +20,7 @@ import asyncio
 import logging
 import threading
 
-__all__ = ['PyChannel', 'PyChannelBuilder', 'PyChannelClient']
+__all__ = ['PyChannel', 'PyChannelBuilder', 'PyChannelBroker']
 
 
 class PyChannelBuilder(Builder):
@@ -30,12 +31,12 @@ class PyChannelBuilder(Builder):
         self.description = description
         self.description_fn: Optional[StringType] = None
         self.available_fn: Optional[Callable[[], bool]] = None
+        self.state_models: List[StateModel] = []
         self.policy_run_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.policy_pause_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_start_up_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_stop_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.providers: List[Provider] = []
         self.commands: Dict[str, Command] = {}
         self.contracts: List = []
@@ -51,6 +52,23 @@ class PyChannelBuilder(Builder):
         def wrapper(func: Callable[[], bool]) -> Callable[[], bool]:
             self.available_fn = func
             return func
+
+        return wrapper
+
+    def state_model(self) -> Callable[[Type[StateModel]], StateModel]:
+        """
+        注册一个状态模型.
+
+        @chan.build.state_model()
+        class DemoStateModel(StateBaseModel):
+            state_name = "demo"
+            state_desc = "demo state model"
+        """
+
+        def wrapper(model: Type[StateModel]) -> StateModel:
+            instance = model()
+            self.state_models.append(instance)
+            return instance
 
         return wrapper
 
@@ -138,7 +156,7 @@ class PyChannel(Channel):
     ):
         self._name = name
         self._description = description
-        self._client: Optional[ChannelClient] = None
+        self._client: Optional[ChannelBroker] = None
         self._children: Dict[str, Channel] = {}
         self._block = block
         # decorators
@@ -152,7 +170,7 @@ class PyChannel(Channel):
         return self._name
 
     @property
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         if self._client is None:
             raise RuntimeError("Server not start")
         elif self._client.is_running():
@@ -160,14 +178,7 @@ class PyChannel(Channel):
         else:
             raise RuntimeError("Server not running")
 
-    def include_channels(self, *children: "Channel", parent: Optional[str] = None) -> Self:
-        if parent is not None:
-            descendant = self.descendants().get(parent)
-            if descendant is None:
-                raise LookupError(f"the children parent name of {parent} does not exist")
-            descendant.include_channels(*children)
-            return
-
+    def import_channels(self, *children: "Channel") -> Self:
         for child in children:
             self._children[child.name()] = child
         return self
@@ -180,18 +191,11 @@ class PyChannel(Channel):
     def children(self) -> Dict[str, "Channel"]:
         return self._children
 
-    def descendants(self) -> Dict[str, "Channel"]:
-        channels = {}
-        for child in self._children.values():
-            channels[child.name()] = child
-            for descendant in child.descendants().values():
-                channels[descendant.name()] = descendant
-        return channels
-
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelClient":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
         if self._client is not None and self._client.is_running():
             raise RuntimeError("Server already running")
-        self._client = PyChannelClient(
+        self._client = PyChannelBroker(
+            name=self._name,
             children=self._children,
             container=container,
             builder=self._builder,
@@ -209,10 +213,11 @@ class PyChannel(Channel):
         self._children.clear()
 
 
-class PyChannelClient(ChannelClient):
+class PyChannelBroker(ChannelBroker):
 
     def __init__(
             self,
+            name: str,
             *,
             children: Dict[str, Channel],
             builder: PyChannelBuilder,
@@ -223,10 +228,17 @@ class PyChannelClient(ChannelClient):
             container = Container(parent=container, name=f"moss/chan_client/{builder.name}")
         else:
             container = Container(name=f"moss/chan_client/{builder.name}")
-        self.container = container
-        self.id = uid or uuid()
+        self._name = name
+        super().__init__(
+            id=uid or uuid(),
+            container=container,
+        )
         self._children = children
         self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
+        self._state_store = self.container.get(StateStore)
+        if self._state_store is None:
+            self._state_store = MemoryStateStore(name)
+            self.container.set(StateStore, self._state_store)
         self._builder = builder
         self._meta_cache: Optional[ChannelMeta] = None
         self._stop_event = ThreadSafeEvent()
@@ -238,6 +250,9 @@ class PyChannelClient(ChannelClient):
         self._started = False
         self._closing = False
         self._closed_event = threading.Event()
+
+    def name(self) -> str:
+        return self._name
 
     def __del__(self):
         self.container.shutdown()
@@ -367,7 +382,7 @@ class PyChannelClient(ChannelClient):
 
     async def clear(self) -> None:
         clear_tasks = []
-        for clear_func, is_coroutine in self._builder.policy_pause_funcs:
+        for clear_func, is_coroutine in self._builder.on_clear_funcs:
             if is_coroutine:
                 task = asyncio.create_task(clear_func())
             else:
@@ -412,8 +427,10 @@ class PyChannelClient(ChannelClient):
         self._started = True
 
     def _self_boostrap(self) -> None:
+        # 注册所有的状态模型.
+        self._state_store.register(*self._builder.state_models)
         self.container.register(*self._builder.providers)
-        self.container.set(ChannelClient, self)
+        self.container.set(ChannelBroker, self)
         self.container.bootstrap()
 
     async def execute(self, task: CommandTask[R]) -> R:
@@ -446,9 +463,13 @@ class PyChannelClient(ChannelClient):
     async def close(self) -> None:
         if self._closing:
             return
-        self._closing = True
-        self._stop_event.set()
         await self.policy_pause()
         await self.clear()
+        self._closing = True
+        self._stop_event.set()
         await asyncio.to_thread(self.container.shutdown)
         self.container.shutdown()
+
+    @property
+    def states(self) -> StateStore:
+        return self._state_store

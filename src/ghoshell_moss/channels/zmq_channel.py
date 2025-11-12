@@ -5,7 +5,7 @@ except ImportError:
     raise ImportError(f"zmq module not found, please pip install ghoshell-moss[zmq]")
 from ghoshell_moss.channels.duplex.connection import Connection, ConnectionClosedError
 from ghoshell_moss.channels.duplex.protocol import ChannelEvent, HeartbeatEvent
-from ghoshell_moss.channels.duplex.server import DuplexChannelServer
+from ghoshell_moss.channels.duplex.server import DuplexChannelProvider
 from ghoshell_moss.channels.duplex.client import DuplexChannelProxy
 from ghoshell_container import Container, IoCContainer
 from abc import ABC, abstractmethod
@@ -223,8 +223,6 @@ class BaseZMQConnection(Connection, ABC):
         async with self._send_lock:
             try:
                 await self._socket.send_json(event)
-                # 更新最后活动时间（发送成功也算活动）
-                self._last_activity = time.time()
             except zmq.ZMQError as e:
                 if e.errno == zmq.ETERM:
                     raise ConnectionClosedError("Connection closed")
@@ -248,7 +246,13 @@ class ZMQClientConnection(BaseZMQConnection):
     """客户端 ZMQ 连接"""
 
     def is_available(self) -> bool:
-        return not self.is_closed() and time.time() - self._last_activity > self._config.heartbeat_timeout
+        return not self.is_closed() and self.is_activity()
+
+    def is_activity(self) -> bool:
+        passed = time.time() - self._last_activity
+        heartbeat_timeout = self._config.heartbeat_timeout
+        is_active = passed < heartbeat_timeout
+        return is_active
 
     async def _heartbeat_loop(self) -> None:
         """心跳循环任务（只有客户端需要）"""
@@ -269,7 +273,7 @@ class ZMQClientConnection(BaseZMQConnection):
             logger.error("Heartbeat loop error: %s", e)
 
 
-class ZMQChannelServer(DuplexChannelServer):
+class ZMQChannelServer(DuplexChannelProvider):
     def __init__(
             self,
             *,

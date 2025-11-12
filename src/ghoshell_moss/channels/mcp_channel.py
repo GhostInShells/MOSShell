@@ -2,6 +2,8 @@ from contextvars import copy_context
 import json
 import logging
 from typing import Any, Callable, Coroutine, Dict, Generic, List, Optional, TypeVar
+
+from ghoshell_moss.concepts.states import StateStore
 from ghoshell_moss.depends import check_mcp
 
 if check_mcp():
@@ -9,18 +11,19 @@ if check_mcp():
     import mcp.types as types
 from ghoshell_container import IoCContainer
 from ghoshell_moss.channels.py_channel import PyChannel
-from ghoshell_moss.concepts.channel import Builder, Channel, ChannelClient, ChannelMeta
+from ghoshell_moss.concepts.channel import Builder, Channel, ChannelBroker, ChannelMeta
 from ghoshell_moss.concepts.command import (
     Command,
     CommandMeta,
     CommandTask,
     CommandWrapper,
 )
+from ghoshell_common.helpers import uuid
 
 R = TypeVar("R")  # 泛型结果类型
 
 
-class MCPChannelClient(ChannelClient, Generic[R]):
+class MCPChannelBroker(ChannelBroker, Generic[R]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
 
     def __init__(
@@ -32,15 +35,19 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             mcp_client: mcp.ClientSession,
     ):
         self._name = name
-        self._container = container
         self._local_channel = local_channel
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
-
         self._commands: Dict[str, Command] = {}  # 映射后的Mosshell Command
         self._meta: Optional[ChannelMeta] = None  # Channel元信息
         self._running = False  # 运行状态标记
-
         self._logger: logging.Logger | None = None
+        super().__init__(
+            id=uuid(),
+            container=container
+        )
+
+    def name(self) -> str:
+        return self._name
 
     @property
     def logger(self) -> logging.Logger:
@@ -55,7 +62,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             return
 
         if self._local_channel is not None:
-            await self._local_channel.bootstrap(self._container).start()
+            await self._local_channel.bootstrap(self.container).start()
 
         # 同步远端工具元信息
         try:
@@ -67,6 +74,10 @@ class MCPChannelClient(ChannelClient, Generic[R]):
             self._running = True
         except Exception as e:
             raise RuntimeError(f"MCP tool discovery failed: {str(e)}") from e
+
+    @property
+    def states(self) -> StateStore:
+        return self._local_channel.broker.states
 
     async def close(self) -> None:
         if not self._running:
@@ -108,7 +119,7 @@ class MCPChannelClient(ChannelClient, Generic[R]):
         name = meta.name
         # 优先尝试从 local channel 中返回.
         if self._local_channel is not None:
-            command = self._local_channel.client.get_command(name)
+            command = self._local_channel.broker.get_command(name)
             if command is not None:
                 self.logger.info(f"Channel {self._name} found command `{meta.name}` from local")
                 return command.__call__
@@ -277,14 +288,14 @@ class MCPChannel(Channel):
         self._local_channel = PyChannel(name=name, description=description, block=block)
 
         self._mcp_client = mcp_client
-        self._client: Optional[MCPChannelClient] = None
+        self._client: Optional[MCPChannelBroker] = None
 
     # --- Channel 核心方法实现 --- #
     def name(self) -> str:
         return self._name
 
     @property
-    def client(self) -> ChannelClient:
+    def broker(self) -> ChannelBroker:
         if not self._client or not self._client.is_running():
             raise RuntimeError("MCPChannel not bootstrapped")
         return self._client
@@ -293,11 +304,11 @@ class MCPChannel(Channel):
     def build(self) -> Builder:
         return self._local_channel.build
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelClient:
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelBroker:
         if self._client is not None and self._client.is_running():
             raise RuntimeError(f'Channel {self} has already been started.')
 
-        self._client = MCPChannelClient(
+        self._client = MCPChannelBroker(
             name=self._name,
             container=container,
             local_channel=self._local_channel,
@@ -307,7 +318,7 @@ class MCPChannel(Channel):
         return self._client
 
     # --- 未使用的Channel方法（默认空实现） --- #
-    def include_channels(self, *children: Channel, parent: Optional[str] = None) -> Channel:
+    def import_channels(self, *children: Channel) -> Channel:
         raise NotImplementedError("MCPChannel does not support children")
 
     def new_child(self, name: str) -> Channel:

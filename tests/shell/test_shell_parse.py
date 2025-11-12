@@ -1,4 +1,4 @@
-from ghoshell_moss.shell.impl import DefaultShell
+from ghoshell_moss.shell.shell_impl import DefaultShell
 import pytest
 
 
@@ -8,7 +8,7 @@ async def test_shell_parse_tokens_baseline():
     async with shell:
         assert shell.is_running()
         tokens = []
-        async for token in shell.parse_text_to_tokens("<foo />"):
+        async for token in shell.parse_text_to_command_tokens("<foo />"):
             tokens.append(token)
         assert len(tokens) == 4
 

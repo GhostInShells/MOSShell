@@ -5,7 +5,7 @@ from ghoshell_moss.ctml.token_parser import CTMLTokenParser
 from ghoshell_moss.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.concepts.command import PyCommand, BaseCommandTask, Command, CommandToken
 from ghoshell_moss.concepts.interpreter import CommandTaskParserElement
-from ghoshell_moss.mocks.outputs import ArrOutput
+from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent
 from collections import deque
 from dataclasses import dataclass
@@ -36,16 +36,21 @@ class ElementTestSuite:
             for task in self.queue:
                 if task is not None:
                     gathered.append(task.run())
-            await asyncio.gather(*gathered, return_exceptions=True)
+            await asyncio.gather(*gathered, return_exceptions=False)
 
 
 def new_test_suite(*commands: Command) -> ElementTestSuite:
     tasks_queue = deque()
-    output = ArrOutput()
-    command_map = {c.name(): c for c in commands}
+    output = MockSpeech()
+    command_map = {}
+    for command in commands:
+        chan = command.meta().chan
+        if chan not in command_map:
+            command_map[chan] = {}
+        command_map[chan][command.name()] = command
     stop_event = ThreadSafeEvent()
     ctx = CommandTaskElementContext(
-        command_map.values(),
+        command_map,
         output,
         stop_event=stop_event,
     )
@@ -86,7 +91,7 @@ async def test_element_with_no_command():
     assert q[-1] is None
 
     # 假设有正确的输出.
-    assert ctx.output.clear() == ["hello", "world"]
+    assert await ctx.output.clear() == ["hello", "world"]
 
     children = list(suite.root.children.values())
     assert len(children) == 1

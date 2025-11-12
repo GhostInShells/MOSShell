@@ -1,13 +1,17 @@
 from abc import ABC, abstractmethod
 from .protocol import ChannelEvent
 
-__all__ = ['ConnectionClosedError', 'Connection']
+__all__ = ['ConnectionClosedError', 'ConnectionNotAvailable', 'Connection']
 
 
 # --- errors --- #
 
 class ConnectionClosedError(Exception):
     """表示 connection 已经连接失败. """
+    pass
+
+
+class ConnectionNotAvailable(Exception):
     pass
 
 

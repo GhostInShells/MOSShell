@@ -136,3 +136,73 @@ async def test_task_await_in_tasks():
     assert wait_task.done()
     assert cancel_task.done()
     assert await cancel_task == 123
+
+
+@pytest.mark.asyncio
+async def test_first_exception_in_gathering():
+    async def foo(a: int):
+        await asyncio.sleep(0.01 * a)
+        raise ValueError(a)
+
+    e = None
+    try:
+        await asyncio.gather(foo(1), foo(2), foo(3), foo(4))
+    except ValueError as err:
+        e = err
+    assert e is not None
+    assert str(e) == str(ValueError(1))
+
+    # all exceptions 返回.
+    e = None
+    try:
+        done = await asyncio.gather(foo(1), foo(2), foo(3), foo(4), return_exceptions=True)
+        i = 0
+        for t in done:
+            i += 1
+            assert str(t) == str(ValueError(i))
+    except ValueError as err:
+        e = err
+    assert e is None
+
+
+@pytest.mark.asyncio
+async def test_run_until_complete_in_loop():
+    event = asyncio.Event()
+
+    def foo():
+        event.set()
+
+    loop = asyncio.get_running_loop()
+    loop.call_soon(foo)
+    await event.wait()
+
+
+@pytest.mark.asyncio
+async def test_catch_cancelled_error():
+    async def foo():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(foo())
+    task.cancel()
+    # 测试不会抛出异常. 实际上仍然会抛出.
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_asyncio_call_soon():
+    event = asyncio.Event()
+    done = []
+
+    async def foo():
+        await asyncio.sleep(0.05)
+        done.append(1)
+        event.set()
+
+    loop = asyncio.get_running_loop()
+    _ = loop.create_task(foo())
+    await event.wait()
+    assert done[0] == 1

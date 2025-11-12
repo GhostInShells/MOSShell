@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any, ClassVar
-from ghoshell_moss.concepts.shell import MOSSShell, Output
+from ghoshell_moss.concepts.shell import MOSSShell, Speech
 from ghoshell_moss.shell import new_shell
 from ghoshell_moss.depends import check_agent
 from ghoshell_common.contracts import LoggerItf
@@ -75,16 +75,18 @@ class SimpleAgent:
             model: Optional[ModelConf] = None,
             container: Optional[IoCContainer] = None,
             shell: Optional[MOSSShell] = None,
-            output: Optional[Output] = None,
+            speech: Optional[Speech] = None,
             messages: Optional[List[Dict]] = None,
     ):
         self.container = Container(name="agent", parent=container)
         self.container.register(*workspace_providers())
         self.chat = ChatRenderer()
-        shell = shell or new_shell(container=self.container, output=output)
+        shell = shell or new_shell(container=self.container, speech=speech)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell
+        if speech is not None:
+            self.shell.with_speech(speech)
         self.model = model
         self.messages: List[Dict] = messages or []
         self._inputs = []
@@ -132,64 +134,73 @@ class SimpleAgent:
         self._response_task = task
 
     async def _response(self, inputs: List[Dict]) -> None:
+        try:
+            while inputs is not None and len(inputs) > 0:
+                inputs = await self._single_response(inputs)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(e)
+
+    async def _single_response(self, inputs: List[Dict]) -> Optional[List[Dict]]:
         if len(inputs) == 0:
             return
 
         generated = ""
-        execution_data = []
+        execution_results = ""
         try:
             self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
-            messages = [
-                {"role": "system", "content": self.instruction}
-            ]
-            # 增加历史.
-            messages.extend(self.messages.copy())
-            # 增加 inputs
-            messages.extend(inputs)
+            async with self.shell.interpreter_in_ctx() as interpreter:
+                reasoning = False
 
-            params['messages'] = messages
-            params['stream'] = True
-            response_stream = await litellm.acompletion(**params)
-            # interpreter = self.shell.interpreter()
-            # async with interpreter:
-            reasoning = False
-            async for chunk in response_stream:
-                delta = chunk.choices[0].delta
-                if "reasoning_content" in delta:
-                    if not reasoning:
-                        reasoning = True
-                    self.chat.update_ai_response(delta.reasoning_content, is_gray=True)
-                    continue
-                elif reasoning:
-                    self.chat.start_ai_response()
-                    reasoning = False
-                content = delta.content
-                if not content:
-                    continue
-                self.chat.update_ai_response(content)
-                generated += content
-                # interpreter.feed(content)
-                # interpreter.commit()
-                # tasks = await interpreter.wait_execution_done()
-                # for task in tasks.values():
-                #     if task.success():
-                #         result = task.result()
-                #         if result is not None:
-                #             execution_data.append(
-                #                 f"{task.tokens}:\n```\n{task.result()}\n```"
-                #             )
-        except asyncio.CancelledError:
-            pass
+                moss_instruction = interpreter.moss_instruction()
+                # 系统指令.
+                messages = []
+                if moss_instruction:
+                    messages.append({"role": "system", "content": moss_instruction})
+                # 注册 agent 的 instruction.
+                messages.append({"role": "system", "content": self.instruction})
+
+                # 增加历史.
+                messages.extend(self.messages.copy())
+                # 增加 inputs
+                messages.extend(inputs)
+                params['messages'] = messages
+                params['stream'] = True
+                response_stream = await litellm.acompletion(**params)
+                async for chunk in response_stream:
+                    delta = chunk.choices[0].delta
+                    if "reasoning_content" in delta:
+                        if not reasoning:
+                            reasoning = True
+                        self.chat.update_ai_response(delta.reasoning_content, is_gray=True)
+                        continue
+                    elif reasoning:
+                        self.chat.start_ai_response()
+                        reasoning = False
+                    content = delta.content
+                    if not content:
+                        continue
+                    self.chat.update_ai_response(content)
+                    generated += content
+
+                    interpreter.feed(content)
+                interpreter.commit()
+                results = await interpreter.results()
+                if len(results) > 0:
+                    execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
+                if execution_results:
+                    return [{"role": "system", "content": "## executions:\n\n%s" % execution_results}]
+                else:
+                    return None
         finally:
             self._response_done.set()
             self.chat.finalize_ai_response()
             self.messages.extend(inputs)
             if generated:
                 self.messages.append({"role": "assistant", "content": generated})
-                execution = "\n\n".join(execution_data)
-                self.messages.append({"role": "system", "content": "## executions:\n\n%s" % execution})
 
     async def run(self):
         async with self:

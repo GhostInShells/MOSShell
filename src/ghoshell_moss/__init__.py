@@ -16,8 +16,15 @@ from ghoshell_moss.concepts.errors import (
 from ghoshell_moss.concepts.channel import (
     Channel,
     ChannelMeta,
-    ChannelClient,
-    ChannelServer,
+    ChannelBroker,
+    ChannelProvider,
+    ChannelFullPath,
+    ChannelPaths,
+)
+
+from ghoshell_moss.concepts.speech import (
+    Speech,
+    SpeechStream,
 )
 
 from ghoshell_moss.concepts.interpreter import (
@@ -31,7 +38,7 @@ from ghoshell_moss.concepts.shell import (
 )
 
 from ghoshell_moss.channels import (
-    PyChannel, PyChannelBuilder, PyChannelClient
+    PyChannel, PyChannelBuilder, PyChannelBroker
 )
 
 from ghoshell_moss.shell import (
