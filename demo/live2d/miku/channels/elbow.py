@@ -11,10 +11,12 @@ right_elbow_chan = PyChannel(name='right_elbow')
 @left_elbow_chan.build.command()
 async def move(duration: float = 1.5, angle: float = 0.0):
     """
-    移动左臂到指定角度，负角度为下推到身体背后
+    以大臂为参考系，移动左小臂到指定夹角
 
     :param duration:  执行时间
-    :param angle:  提升角度，10.0为最大角度，-30.0为最小角度
+    :param angle:  与大臂形成的夹角
+                    - 正值：小臂向外伸展，最大角度为10.0
+                    - 负值：小臂向内弯折，最小角度为-30.0
     """
     model = left_elbow_chan.client.container.force_fetch(live2d.LAppModel)
 
@@ -31,10 +33,12 @@ async def move(duration: float = 1.5, angle: float = 0.0):
 @right_elbow_chan.build.command()
 async def move(duration: float = 1.5, angle: float = 0.0):
     """
-    移动右臂到指定角度，负角度为下推到身体背后
+    以大臂为参考系，移动右小臂到指定夹角
 
     :param duration:  执行时间
-    :param angle:  提升角度，10.0为最大角度，-30.0为最小角度
+    :param angle:  与大臂形成的夹角
+                    - 正值：小臂向外伸展，最大角度为10.0
+                    - 负值：小臂向内弯折，最小角度为-30.0
     """
     model = right_elbow_chan.client.container.force_fetch(live2d.LAppModel)
 

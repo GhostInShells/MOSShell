@@ -201,6 +201,32 @@ async def run_demo_sequence(_shell: ghoshell_moss.MOSSShell):
             """,
             "description": "测试 eyebrow 能力的执行",
         },
+        # 用例 10: Arm执行
+        {
+            "name": "测试 arm 能力",
+            "ctml": """
+            <body.left_arm:akimbo duration="1.5"/>
+            """,
+            "description": "测试 arm 能力的执行",
+        },
+    ]
+
+    demo_cases = [
+        {
+            "name": "测试 motion 能力",
+            "ctml": """
+ <body:set_default_policy policy="Sad"/>
+<body:sad duration="5.0"/>
+<body.left_arm:move duration="1.5" angle="0.0"/>
+<body.right_arm:move duration="1.5" angle="0.0"/>
+<body.left_elbow:move duration="1.5" angle="-30.0"/>
+<body.right_elbow:move duration="1.5" angle="-30.0"/>
+<body.left_leg:move duration="1.5" angle="0.0"/>
+<body.right_leg:move duration="1.5" angle="0.0"/>
+<body.necktie:flutter duration="5.0"/>
+            """,
+            "description": "测试 motion 能力的执行",
+        },
     ]
 
     all_results = {}
@@ -211,7 +237,7 @@ async def run_demo_sequence(_shell: ghoshell_moss.MOSSShell):
         print(f"描述: {case['description']}")
 
         # 使用 shell 的 interpreter 解析和执行 CTML
-        async with _shell.interpreter() as interpreter:
+        async with await _shell.interpreter() as interpreter:
             # 输入 CTML 内容
             interpreter.feed(case["ctml"])
 

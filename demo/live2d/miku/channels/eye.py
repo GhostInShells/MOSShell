@@ -1,6 +1,6 @@
 from ghoshell_moss.channels.py_channel import PyChannel
 import live2d.v3 as live2d
-from helper.motions import open_close
+from channels.motions import open_close
 import time
 import asyncio
 
@@ -42,14 +42,11 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
     # 确保精确到达目标位置
     model.SetParameterValue(PARAM_BALL_X, x)
     model.SetParameterValue(PARAM_BALL_Y, y)
-    print(f"reached target position: x={x}, y={y}")
     
     # 第二阶段：在目标位置停留指定时间
-    print(f"staying at target position for {duration} seconds")
     await asyncio.sleep(duration)
     
     # 第三阶段：移回原点
-    print("moving back to origin")
     origin_x, origin_y = 0.0, 0.0
     back_duration = abs(x - origin_x) / speed if abs(x - origin_x) > abs(y - origin_y) else abs(y - origin_y) / speed
     back_duration = max(back_duration, 0.1)  # 确保至少有0.1秒的移动时间
@@ -66,13 +63,6 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
     # 确保精确回到原点
     model.SetParameterValue(PARAM_BALL_X, origin_x)
     model.SetParameterValue(PARAM_BALL_Y, origin_y)
-    print("returned to origin position")
-    
-    # 返回最终位置
-    final_x = model.GetParameterValue(x_index)
-    final_y = model.GetParameterValue(y_index)
-    print(f"final position: x={final_x}, y={final_y}")
-    return (final_x, final_y)
 
 
 eye_left_chan = eye_chan.new_child(name='eye_left')
@@ -101,10 +91,8 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
         initial_direction="close"  # 眨眼从闭合开始
     )
     
-    print(f"final value (left eye): {final_value}")
     # 确保最终状态是完全睁开
     model.SetParameterValue(PARAM, 1.0)
-    return final_value
 
 eye_right_chan = eye_chan.new_child(name='eye_right')
 
@@ -132,7 +120,5 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
         initial_direction="close"  # 眨眼从闭合开始
     )
     
-    print(f"final value (right eye): {final_value}")
     # 确保最终状态是完全睁开
     model.SetParameterValue(PARAM, 1.0)
-    return final_value

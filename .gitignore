@@ -172,3 +172,5 @@ cython_debug/
 #.idea/
 
 .vscode/
+
+.setup_env

@@ -8,6 +8,7 @@ from typing import (
 )
 from typing_extensions import Self
 from ghoshell_moss.concepts.command import Command, CommandMeta, CommandTask, BaseCommandTask
+from ghoshell_moss.concepts.states import StateStore, StateModel
 from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING, set_container
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
@@ -154,6 +155,14 @@ class ChannelClient(ABC):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
+    @property
+    @abstractmethod
+    def state_store(self) -> StateStore:
+        """
+        返回当前 Channel 的状态存储.
+        """
+        pass
+
 
 class Builder(ABC):
 
@@ -166,6 +175,13 @@ class Builder(ABC):
 
     @abstractmethod
     def with_available(self) -> Callable[[Callable[[], bool]], Callable[[], bool]]:
+        pass
+
+    @abstractmethod
+    def state_model(self) -> Callable[[Type[StateModel]], StateModel]:
+        """
+        注册一个状态模型.
+        """
         pass
 
     @abstractmethod

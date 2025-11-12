@@ -11,7 +11,6 @@ class State(BaseModel):
     name: str = Field(description="The name of the state object.")
     changed_by: str = Field(default="", description="who change the state object.")
     description: str = Field(default="", description="The description of the state object.")
-    json_schema: Dict[str, Any] = Field(description="the json schema of the state")
     data: Dict[str, Any] = Field(description="the default value of the state")
 
 
@@ -46,13 +45,12 @@ class StateBaseModel(BaseModel, StateModel, ABC):
 
     version: str = Field(default="", description="state version, Optimistic Lock")
 
-    @classmethod
-    def to_state(cls) -> State:
-        name = cls.state_name or generate_import_path(cls)
-        description = cls.state_desc or cls.__doc__ or ""
-        default = cls().model_dump()
-        schema = cls.model_json_schema()
-        return State(name=name, description=description, json_schema=schema, default=default)
+    def to_state(self) -> State:
+        name = self.state_name or generate_import_path(self.__class__)
+        description = self.state_desc or self.__doc__ or ""
+        data = self.model_dump()
+        version = self.version
+        return State(name=name, description=description, data=data, version=version)
 
     def to_state_data(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -161,17 +159,17 @@ class MemoryStateStore(StateStore):
         state_value = state
         if isinstance(state, StateModel):
             state_value = state.to_state()
-        exists = self._states.get(state.name, None)
+        exists = self._states.get(state_value.name, None)
         if exists is not None:
             if state_value.version != exists.version:
                 # 乐观锁不匹配.
                 return False
-        state.version = uuid()
-        state.changed_by = self._owner
-        self._states[state.name] = state_value
+        state_value.version = uuid()
+        state_value.changed_by = self._owner
+        self._states[state_value.name] = state_value
         callbacks = []
         for callback in self._on_change_callbacks:
-            callbacks.append(callback(state))
+            callbacks.append(callback(state_value))
         # todo: 考虑用全异步.
         await asyncio.gather(*callbacks)
         return True

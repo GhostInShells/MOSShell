@@ -8,6 +8,7 @@ from ghoshell_moss.concepts.channel import (
 )
 from ghoshell_moss.concepts.command import Command, PyCommand
 from ghoshell_moss.concepts.errors import CommandError, FatalError
+from ghoshell_moss.concepts.states import StateStore, MemoryStateStore, StateModel
 from ghoshell_moss.helpers.func import unwrap_callable_or_value
 from ghoshell_moss.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel
 from ghoshell_container import (
@@ -30,12 +31,12 @@ class PyChannelBuilder(Builder):
         self.description = description
         self.description_fn: Optional[StringType] = None
         self.available_fn: Optional[Callable[[], bool]] = None
+        self.state_models: List[StateModel] = []
         self.policy_run_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.policy_pause_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_start_up_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.on_stop_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
         self.providers: List[Provider] = []
         self.commands: Dict[str, Command] = {}
         self.contracts: List = []
@@ -51,6 +52,22 @@ class PyChannelBuilder(Builder):
         def wrapper(func: Callable[[], bool]) -> Callable[[], bool]:
             self.available_fn = func
             return func
+
+        return wrapper
+
+    def state_model(self) -> Callable[[Type[StateModel]], StateModel]:
+        """
+        注册一个状态模型.
+
+        @chan.build.state_model()
+        class DemoStateModel(StateBaseModel):
+            state_name = "demo"
+            state_desc = "demo state model"
+        """
+        def wrapper(model: Type[StateModel]) -> StateModel:
+            instance = model()
+            self.state_models.append(instance)
+            return instance
 
         return wrapper
 
@@ -217,6 +234,7 @@ class PyChannelClient(ChannelClient):
         )
         self._children = children
         self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
+        self._state_store = self.container.get(StateStore) or MemoryStateStore()
         self._builder = builder
         self._meta_cache: Optional[ChannelMeta] = None
         self._stop_event = ThreadSafeEvent()
@@ -360,7 +378,7 @@ class PyChannelClient(ChannelClient):
 
     async def clear(self) -> None:
         clear_tasks = []
-        for clear_func, is_coroutine in self._builder.policy_pause_funcs:
+        for clear_func, is_coroutine in self._builder.on_clear_funcs:
             if is_coroutine:
                 task = asyncio.create_task(clear_func())
             else:
@@ -405,6 +423,8 @@ class PyChannelClient(ChannelClient):
         self._started = True
 
     def _self_boostrap(self) -> None:
+        # 注册所有的状态模型.
+        self._state_store.register(*self._builder.state_models)
         self.container.register(*self._builder.providers)
         self.container.set(ChannelClient, self)
         self.container.bootstrap()
@@ -439,9 +459,13 @@ class PyChannelClient(ChannelClient):
     async def close(self) -> None:
         if self._closing:
             return
-        self._closing = True
-        self._stop_event.set()
         await self.policy_pause()
         await self.clear()
+        self._closing = True
+        self._stop_event.set()
         await asyncio.to_thread(self.container.shutdown)
         self.container.shutdown()
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._state_store

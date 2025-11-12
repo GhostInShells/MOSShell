@@ -21,7 +21,6 @@ async def open(size: float = 1.0):
 
     model = mouth_chan.client.container.force_fetch(live2d.LAppModel)
     model.SetParameterValue("ParamMouthOpenY", size)
-    return size
 
 
 @mouth_chan.build.command()
@@ -48,7 +47,5 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7
         min_value=min_open,
         initial_direction="open"  # 说话从打开开始
     )
-    print(f"final_value: {final_value}")
     # 确保最终状态是完全闭合
     model.SetParameterValue(PARAM, 0.0)
-    return None
