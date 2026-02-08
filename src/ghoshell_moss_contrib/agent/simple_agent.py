@@ -314,10 +314,8 @@ class SimpleAgent:
 
             history.extend(inputs)
             if generated:
-                print("++++++++++++++++++++ generated", generated)
                 history.append({"role": "assistant", "content": generated})
             if execution_results:
-                print("++++++++++++++++++++ execution_results", execution_results)
                 history.append({"role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"})
             if self._interrupt_requested:
                 history.append({"role": "system", "content": "Attention: User interrupted your response last time."})
