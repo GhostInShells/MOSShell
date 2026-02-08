@@ -1,9 +1,9 @@
-
-from .abcd import Addition
 from openai.types.completion_usage import CompletionUsage
 
+from .abcd import Addition
+
 __all__ = [
-    'CompletionUsageAddition',
+    "CompletionUsageAddition",
 ]
 
 

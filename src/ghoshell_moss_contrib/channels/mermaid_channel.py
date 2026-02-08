@@ -1,9 +1,9 @@
-import webbrowser
 import urllib.parse
+import webbrowser
 
 from ghoshell_moss import PyChannel
 
-__all__ = ['new_mermaid_chan']
+__all__ = ["new_mermaid_chan"]
 
 """
 实现一个 Mermaid Channel, 让 AI 在对话上下文中可以随时通过浏览器绘制 mermaid 图形来表达思路. 

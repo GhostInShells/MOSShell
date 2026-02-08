@@ -1,13 +1,11 @@
-import logging
-
-from typing import List
-from ghoshell_moss.core.shell.channel_runtime import ChannelRuntime
-from ghoshell_container import Container
-from ghoshell_moss import PyChannel, PyCommand, BaseCommandTask, Channel, CommandTask
 import pytest
+from ghoshell_container import Container
+
+from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel
+from ghoshell_moss.core.shell.channel_runtime import ChannelRuntime
 
 
-async def callback(channel: Channel, paths: List[str], task: CommandTask):
+async def callback(channel: Channel, paths: list[str], task: CommandTask):
     task.fail("test has no child runtime")
 
 
@@ -34,7 +32,7 @@ async def test_channel_runtime_impl_baseline():
         runtime.add_task(task)
         await task.wait()
     assert task.done()
-    assert task._result is 123
+    assert task._result == 123
 
 
 @pytest.mark.asyncio
@@ -48,7 +46,7 @@ async def test_child_channel_runtime_is_not_running():
     async def bar() -> int:
         return 123
 
-    a = main.new_child('a')
+    a = main.new_child("a")
 
     @a.build.command()
     async def foo() -> int:
@@ -58,8 +56,8 @@ async def test_child_channel_runtime_is_not_running():
     async with runtime:
         assert main.is_running()
         assert not a.is_running()
-        assert main.children().get('a') is a
+        assert main.children().get("a") is a
         commands = runtime.commands()
         assert "bar" in commands
-        bar_cmd = commands['bar']
-        assert 123 == await bar_cmd()
+        bar_cmd = commands["bar"]
+        assert await bar_cmd() == 123

@@ -1,5 +1,4 @@
-
-from typing import Dict, Iterable
+from collections.abc import Iterable
 
 
 class SpecialTokenMatcher:
@@ -8,12 +7,12 @@ class SpecialTokenMatcher:
     这样未来可以让模型自己增删特定的功能.
     """
 
-    def __init__(self, matchers: Dict[str, str]):
+    def __init__(self, matchers: dict[str, str]):
         self.matchers = matchers
         self._has_matchers = len(matchers) > 0
         self._matching = ""
         self._legal_tokens = set()
-        for matcher in matchers.keys():
+        for matcher in matchers:
             buffer = ""
             for c in matcher:
                 buffer += c

@@ -1,31 +1,32 @@
-
 import asyncio
-from typing import List, Dict, Optional, Any
-from datetime import datetime
 import traceback
+from datetime import datetime
+from typing import Any, Optional
 
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss_contrib.agent.depends import check_agent
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
+from ghoshell_moss_contrib.agent.depends import check_agent
 
 if check_agent():
-    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit import PromptSession
-    from rich.markdown import Markdown
+    from prompt_toolkit.key_binding import KeyBindings
     from rich.console import Console
+    from rich.markdown import Markdown
     from rich.panel import Panel
 
     RICH_AVAILABLE = True
 
-__all__ = ['ConsoleChat', ]
+__all__ = [
+    "ConsoleChat",
+]
 
 
 class ConsoleChat(BaseChat):
     def __init__(self, logger: LoggerItf | None = None):
         super().__init__()
         # 存储完整的对话历史
-        self.conversation_history: List[Dict] = []
+        self.conversation_history: list[dict] = []
 
         # 当前正在处理的AI回复
         self.current_ai_response: Optional[str] = None
@@ -56,7 +57,7 @@ class ConsoleChat(BaseChat):
     def _setup_key_bindings(self):
         """设置键盘快捷键"""
 
-        @self.kb.add('enter')
+        @self.kb.add("enter")
         def _(event):
             """处理发送消息或中断流式输出"""
             if self.is_streaming:
@@ -91,11 +92,7 @@ class ConsoleChat(BaseChat):
         """添加用户消息到历史记录"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.console.print(f"\n\n[green][{timestamp}] User: {message}[/green]")
-        self.conversation_history.append({
-            "role": "user",
-            "content": message,
-            "timestamp": timestamp
-        })
+        self.conversation_history.append({"role": "user", "content": message, "timestamp": timestamp})
 
     def start_ai_response(self):
         """开始AI回复"""
@@ -137,11 +134,9 @@ class ConsoleChat(BaseChat):
             self.console.print()
 
             # 保存到历史记录
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": self.current_ai_response,
-                "timestamp": timestamp
-            })
+            self.conversation_history.append(
+                {"role": "assistant", "content": self.current_ai_response, "timestamp": timestamp}
+            )
 
             # 如果rich可用且没有被中断，添加Markdown渲染
             if not self.interrupted:
@@ -160,12 +155,7 @@ class ConsoleChat(BaseChat):
         try:
             # 创建Markdown面板
             markdown = Markdown(content)
-            panel = Panel(
-                markdown,
-                title="AI Response",
-                border_style="blue",
-                padding=(1, 2)
-            )
+            panel = Panel(markdown, title="AI Response", border_style="blue", padding=(1, 2))
 
             # 打印Markdown面板
             self.console.print(panel)
@@ -179,9 +169,7 @@ class ConsoleChat(BaseChat):
 
         # 格式化异常信息
         if isinstance(exception, Exception):
-            exc_info = traceback.format_exception(
-                type(exception), exception, exception.__traceback__
-            )
+            exc_info = traceback.format_exception(type(exception), exception, exception.__traceback__)
             error_msg = "".join(exc_info)
         else:
             error_msg = str(exception)
@@ -200,10 +188,7 @@ class ConsoleChat(BaseChat):
             while True:
                 # 使用PromptSession获取用户输入（无颜色提示）
                 try:
-                    user_input = await self.prompt_session.prompt_async(
-                        "> You: ",
-                        key_bindings=self.kb
-                    )
+                    user_input = await self.prompt_session.prompt_async("> You: ", key_bindings=self.kb)
 
                 except (EOFError, KeyboardInterrupt):
                     self.console.print("[yellow]Exiting...[/yellow]")

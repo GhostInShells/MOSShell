@@ -1,17 +1,18 @@
 import asyncio
 
 import fastapi
+import pytest
+import uvicorn
+
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.transports.ws_channel import (
     FastAPIWebSocketChannelProxy,
     WebSocketChannelProvider,
     WebSocketConnectionConfig,
 )
-import pytest
-import uvicorn
-
 
 # todo: fastapi 实现要搬离基线.
+
 
 async def run_fastapi(result_queue: asyncio.Queue):
     """运行FastAPI服务器的函数"""
@@ -41,16 +42,9 @@ async def run_fastapi(result_queue: asyncio.Queue):
 
                 result1 = await cmd(123)
                 result2 = await cmd()
-                await result_queue.put({
-                    "result1": result1,
-                    "result2": result2,
-                    "success": True
-                })
+                await result_queue.put({"result1": result1, "result2": result2, "success": True})
         except Exception as e:
-            await result_queue.put({
-                "result": f"Error: {str(e)}",
-                "success": False
-            })
+            await result_queue.put({"result": f"Error: {str(e)}", "success": False})
 
     config = uvicorn.Config(app, host="0.0.0.0", port=8765)
     server = uvicorn.Server(config)
@@ -63,11 +57,7 @@ async def test_ws_channel_baseline():
     # 使用随机端口避免冲突
     address = "ws://127.0.0.1:8765/ws"
 
-    provider = WebSocketChannelProvider(
-        config=WebSocketConnectionConfig(
-            address=address
-        )
-    )
+    provider = WebSocketChannelProvider(config=WebSocketConnectionConfig(address=address))
 
     # 创建一个简单的测试 channel
     test_channel = PyChannel(name="test_server")

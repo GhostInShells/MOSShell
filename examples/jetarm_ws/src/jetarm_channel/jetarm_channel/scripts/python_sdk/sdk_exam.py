@@ -4,8 +4,10 @@
 """
 
 import time
+
 import serial
-from jetarm_channel.ros_robot_controller_sdk import Board, PacketFunction  # 假设这个SDK文件在同一目录下
+
+from jetarm_channel.ros_robot_controller_sdk import Board  # 假设这个SDK文件在同一目录下
 
 
 def main():

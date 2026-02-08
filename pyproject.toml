@@ -2,10 +2,7 @@
 name = "ghoshell-moss"
 version = "0.1.0-alpha"
 description = "LLM-oriented operating system shell, providing interpreter for llm to control everything"
-authors = [
-    { name = "thirdgerb" },
-    { name = "17wang" }
-]
+authors = [{ name = "thirdgerb" }, { name = "17wang" }]
 license = { text = "Apache License 2.0" }
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,26 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-zmq = [
-    "zmq>=0.0.0",
-    "aiozmq>=1.0.0",
-    "psutil>=7.2.1",
-]
-mcp = [
-    "mcp[cli]>=1.17.0",
-]
-wss = [
-    "websockets>=15.0.1",
-]
-redis = [
-    "fakeredis>=2.32.1",
-    "redis>=7.0.1",
-]
-audio = [
-    "pulsectl>=24.12.0",
-    "pyaudio>=0.2.14",
-    "scipy>=1.15.3",
-]
+zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0", "psutil>=7.2.1"]
+mcp = ["mcp[cli]>=1.17.0"]
+wss = ["websockets>=15.0.1"]
+redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
+audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
 # 所有测试性的依赖放一起
 contrib = [
@@ -52,9 +34,7 @@ contrib = [
 ]
 
 [tool.setuptools]
-packages = [
-    { include = "src" },
-]
+packages = ["src"]
 
 
 [tool.pytest.ini_options]
@@ -77,4 +57,3 @@ dev = [
     "fastapi>=0.121.1",
     "uvicorn>=0.37.0",
 ]
-

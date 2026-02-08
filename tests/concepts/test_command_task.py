@@ -1,9 +1,16 @@
+import asyncio
 import threading
 
-from ghoshell_moss.core.concepts.command import PyCommand, BaseCommandTask, CommandTaskState, CommandTaskStack, CommandTask
-from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 import pytest
-import asyncio
+
+from ghoshell_moss.core.concepts.command import (
+    BaseCommandTask,
+    CommandTask,
+    CommandTaskStack,
+    CommandTaskState,
+    PyCommand,
+)
+from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 
 
 @pytest.mark.asyncio
@@ -104,15 +111,18 @@ async def test_command_task_cancel():
 @pytest.mark.asyncio
 async def test_command_task_stack():
     import time
+
     start = time.time()
 
     async def foo() -> int:
         return 123
 
-    stack = CommandTaskStack([
-        BaseCommandTask.from_command(PyCommand(foo)),
-        BaseCommandTask.from_command(PyCommand(foo)),
-    ])
+    stack = CommandTaskStack(
+        [
+            BaseCommandTask.from_command(PyCommand(foo)),
+            BaseCommandTask.from_command(PyCommand(foo)),
+        ]
+    )
 
     got = []
     async for i in stack:

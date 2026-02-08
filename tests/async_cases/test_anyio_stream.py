@@ -1,5 +1,5 @@
 import anyio
-from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 
 def test_basic_producer_and_consumer():
@@ -23,6 +23,7 @@ def test_basic_producer_and_consumer():
             assert text == "hello world"
 
     anyio.run(main)
+
 
 # def test_stream_in_defer_thread():
 #     async def producer(send: MemoryObjectSendStream[str]):

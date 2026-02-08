@@ -1,7 +1,7 @@
 from mcp.server.fastmcp import FastMCP
-from typing import Any, Dict, Set, Tuple
-import json
+
 mcp = FastMCP("weather")
+
 
 @mcp.tool()
 async def add(x: int, y: int = 2) -> int:
@@ -15,14 +15,14 @@ async def add(x: int, y: int = 2) -> int:
 
 
 @mcp.tool()
-async def foo(a: int, b: Dict[str, int]) -> int:
+async def foo(a: int, b: dict[str, int]) -> int:
     """测试函数。
 
     Args:
         a: 示例参数
         b: 字典函数
     """
-    return a + b.get('i', 0)
+    return a + b.get("i", 0)
 
 
 @mcp.tool()
@@ -45,9 +45,9 @@ async def multi(a: int, b: int, c: int, d: int) -> int:
         c: 测试参数
         d: 测试参数
     """
-    return a+b+c+d
+    return a + b + c + d
 
 
 if __name__ == "__main__":
     # 初始化并运行 server
-    mcp.run(transport='stdio')
+    mcp.run(transport="stdio")

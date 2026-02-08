@@ -1,31 +1,42 @@
-
+import asyncio
+import json
 import logging
-from typing import Optional, Any
+import os
+from collections import deque
+from typing import Any, Literal, Optional
 
 import numpy as np
-from typing_extensions import Literal
-from pydantic import Field
-from ghoshell_moss.speech.volcengine_tts.protocol import (
-    start_connection, start_session, finish_session, finish_connection,
-    receive_message, cancel_session, task_request,
-    EventType, wait_for_event, MsgType,
-)
-from ghoshell_moss.core.concepts.speech import TTS, TTSBatch, TTSInfo, TTSAudioCallback, AudioFormat
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
+from ghoshell_common.helpers import uuid
+from pydantic import Field
+from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
-from websockets import connect, ClientConnection
-from collections import deque
-import os
-import json
-import asyncio
+
+from ghoshell_moss.core.concepts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.speech.volcengine_tts.protocol import (
+    EventType,
+    MsgType,
+    cancel_session,
+    finish_connection,
+    finish_session,
+    receive_message,
+    start_connection,
+    start_session,
+    task_request,
+    wait_for_event,
+)
 
 __all__ = [
-    'ChineseVoiceEmotion', 'EnglishVoiceEmotion',
-    'SpeakerConf', 'SpeakerInfo', 'SpeakerTypes', 'VoiceConf',
-    'VolcengineTTSConf',
-    'VolcengineTTS', 'VolcengineTTSBatch',
+    "ChineseVoiceEmotion",
+    "EnglishVoiceEmotion",
+    "SpeakerConf",
+    "SpeakerInfo",
+    "SpeakerTypes",
+    "VoiceConf",
+    "VolcengineTTS",
+    "VolcengineTTSBatch",
+    "VolcengineTTSConf",
 ]
 
 ChineseVoiceEmotion = Literal[
@@ -52,7 +63,7 @@ ChineseVoiceEmotion = Literal[
     "ASMR",  # 低语
     "news",  # 新闻播报
     "entertainment",  # 娱乐八卦
-    "dialect"  # 方言
+    "dialect",  # 方言
 ]
 
 # 英文音色及其对应的情感参数
@@ -66,10 +77,11 @@ EnglishVoiceEmotion = Literal[
     "ASMR",  # 低语
     "warm",  # 温暖
     "affectionate",  # 深情
-    "authoritative"  # 权威
+    "authoritative",  # 权威
 ]
 
-from typing import Dict, Literal
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -97,83 +109,45 @@ SpeakerTypes = Literal[
     "saturn_zh_female_tiaopigongzhu_tob",
     "saturn_zh_male_shuanglangshaonian_tob",
     "saturn_zh_male_tiancaitongzhuo_tob",
-    "saturn_zh_female_cancan_tob"
+    "saturn_zh_female_cancan_tob",
 ]
 
 # 创建 Speaker 信息字典
-SPEAKER_INFO_MAP: Dict[SpeakerTypes, SpeakerInfo] = {
-    "vivi": SpeakerInfo(
-        display_name="vivi",
-        language="中文、英语",
-        supports_english=False,
-        use_case="视频配音"
-    ),
+SPEAKER_INFO_MAP: dict[SpeakerTypes, SpeakerInfo] = {
+    "vivi": SpeakerInfo(display_name="vivi", language="中文、英语", supports_english=False, use_case="视频配音"),
     "zh_male_dayi_saturn_bigtts": SpeakerInfo(
-        display_name="大壹",
-        language="中文",
-        supports_english=False,
-        use_case="视频配音"
+        display_name="大壹", language="中文", supports_english=False, use_case="视频配音"
     ),
     "zh_female_mizai_saturn_bigtts": SpeakerInfo(
-        display_name="黑猫侦探社咪仔",
-        language="中文",
-        supports_english=False,
-        use_case="视频配音"
+        display_name="黑猫侦探社咪仔", language="中文", supports_english=False, use_case="视频配音"
     ),
     "zh_female_jitangnv_saturn_bigtts": SpeakerInfo(
-        display_name="鸡汤女",
-        language="中文",
-        supports_english=False,
-        use_case="视频配音"
+        display_name="鸡汤女", language="中文", supports_english=False, use_case="视频配音"
     ),
     "zh_female_meilinvyou_saturn_bigtts": SpeakerInfo(
-        display_name="魅力女友",
-        language="中文",
-        supports_english=False,
-        use_case="视频配音"
+        display_name="魅力女友", language="中文", supports_english=False, use_case="视频配音"
     ),
     "zh_female_santongyongns_saturn_bigtts": SpeakerInfo(
-        display_name="流畅女声",
-        language="中文",
-        supports_english=False,
-        use_case="视频配音"
+        display_name="流畅女声", language="中文", supports_english=False, use_case="视频配音"
     ),
     "zh_male_ruyayichen_saturn_bigtts": SpeakerInfo(
-        display_name="儒雅逸辰",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
+        display_name="儒雅逸辰", language="中文", supports_english=False, use_case="角色扮演"
     ),
     "saturn_zh_female_keainvsheng_tob": SpeakerInfo(
-        display_name="可爱女生",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
+        display_name="可爱女生", language="中文", supports_english=False, use_case="角色扮演"
     ),
     "saturn_zh_female_tiaopigongzhu_tob": SpeakerInfo(
-        display_name="调皮公主",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
+        display_name="调皮公主", language="中文", supports_english=False, use_case="角色扮演"
     ),
     "saturn_zh_male_shuanglangshaonian_tob": SpeakerInfo(
-        display_name="爽朗少年",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
+        display_name="爽朗少年", language="中文", supports_english=False, use_case="角色扮演"
     ),
     "saturn_zh_male_tiancaitongzhuo_tob": SpeakerInfo(
-        display_name="天才同桌",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
+        display_name="天才同桌", language="中文", supports_english=False, use_case="角色扮演"
     ),
     "saturn_zh_female_cancan_tob": SpeakerInfo(
-        display_name="知性灿灿",
-        language="中文",
-        supports_english=False,
-        use_case="角色扮演"
-    )
+        display_name="知性灿灿", language="中文", supports_english=False, use_case="角色扮演"
+    ),
 }
 
 # 获取所有 Speaker 类型的列表
@@ -186,8 +160,7 @@ class User(BaseModel):
 
 class AudioParams(BaseModel):
     format: Literal["mp3", "pcm", "ogg_opus"] = Field(default="pcm")
-    sample_rate: int = Field(
-        default=44100, description="8000,16000,22050,24000,32000,44100,48000")
+    sample_rate: int = Field(default=44100, description="8000,16000,22050,24000,32000,44100,48000")
     loudness_rate: Optional[int] = Field(default=0)
     speech_rate: Optional[int] = Field(default=0)
     emotion: Optional[ChineseVoiceEmotion] = Field(default="neutral")
@@ -203,6 +176,7 @@ class Session(BaseModel):
     """
     session 数据.
     """
+
     user: User = Field(default_factory=User)
     event: int = EventType.StartSession.value
     req_params: ReqParams = Field(default_factory=ReqParams)
@@ -228,35 +202,34 @@ class Session(BaseModel):
 class VoiceConf(BaseModel):
     speech_rate: Optional[int] = Field(
         default=None,
-        description="语速，取值范围[-50,100]，100代表2.0倍速，-50代表0.5倍数. 0是正常", ge=-50, le=100,
+        description="语速，取值范围[-50,100]，100代表2.0倍速，-50代表0.5倍数. 0是正常",
+        ge=-50,
+        le=100,
     )
     loudness_rate: Optional[int] = Field(
         default=None,
-        description="音量，取值范围[-50,100]，100代表2.0倍音量，-50代表0.5倍音量. 0是正常", ge=-50, le=100,
+        description="音量，取值范围[-50,100]，100代表2.0倍音量，-50代表0.5倍音量. 0是正常",
+        ge=-50,
+        le=100,
     )
-    emotion: Optional[ChineseVoiceEmotion] = Field(
-        default=None,
-        description="声音情绪, 拥有多种可选择的声音情绪."
-    )
+    emotion: Optional[ChineseVoiceEmotion] = Field(default=None, description="声音情绪, 拥有多种可选择的声音情绪.")
 
 
 class SpeakerConf(BaseModel):
     """
     角色配置, 可以更改.
     """
+
     tone: str = Field(default="saturn_zh_female_cancan_tob")
     description: str = Field(default="", description="角色的描述")
     resource_id: Optional[str] = Field(default=None, description="使用声音复刻的独立的资源")
-    voice: VoiceConf = Field(
-        default_factory=VoiceConf,
-        description="声音配置"
-    )
+    voice: VoiceConf = Field(default_factory=VoiceConf, description="声音配置")
 
-    def to_voice_conf(self) -> Dict:
+    def to_voice_conf(self) -> dict:
         return self.model_dump(exclude={"resource_id"})
 
 
-_Head = Dict[str, Any]
+_Head = dict[str, Any]
 _Url = str
 
 
@@ -264,25 +237,25 @@ class VolcengineTTSConf(BaseModel):
     """
     火山引擎 tts 基础配置.
     """
+
     app_key: str = Field(default="$VOLCENGINE_STREAM_TTS_APP")
     access_token: str = Field(default="$VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
     resource_id: str = Field(default="seed-tts-2.0", description="官方的默认资源")
     sample_rate: int = Field(default=44100, description="生成音频的采样率要求.")
-    audio_format: Literal['pcm'] = Field(default="pcm", description="默认可用的数据格式")
+    audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
 
     disconnect_on_idle: int = Field(
         default=100,
         description="闲置多少秒后退出",
     )
 
-    disable_markdown_filter: bool = Field(
-        default=True, description="支持朗读 markdown 格式. ")
+    disable_markdown_filter: bool = Field(default=True, description="支持朗读 markdown 格式. ")
     url: str = Field(
         default="wss://openspeech.bytedance.com/api/v3/tts/bidirection",
         description="火山的流式语音模型的地址",
     )
 
-    speakers: Dict[str, SpeakerConf] = Field(
+    speakers: dict[str, SpeakerConf] = Field(
         default_factory=lambda: {
             name: SpeakerConf(tone=name, description=speaker_info.description())
             for name, speaker_info in SPEAKER_INFO_MAP.items()
@@ -296,7 +269,7 @@ class VolcengineTTSConf(BaseModel):
 
     @classmethod
     def unwrap_env(cls, value: str, default: str = "") -> str:
-        if value.startswith('$'):
+        if value.startswith("$"):
             return os.environ.get(value[1:], default)
         return value or default
 
@@ -322,23 +295,23 @@ class VolcengineTTSConf(BaseModel):
 
     def to_session(self, speaker: SpeakerConf) -> Session:
         # 生成 additions.
-        additions_data = dict(
-            disable_markdown_filter=self.disable_markdown_filter,
-        )
+        additions_data = {
+            "disable_markdown_filter": self.disable_markdown_filter,
+        }
         additions = json.dumps(additions_data)
         return Session(
             speaker=speaker.tone,
-            req_params=dict(
-                audio_params=AudioParams(
+            req_params={
+                "audio_params": AudioParams(
                     format=self.audio_format,
                     sample_rate=self.sample_rate,
                     loudness_rate=speaker.voice.loudness_rate,
                     speech_rate=speaker.voice.speech_rate,
                     emotion=speaker.voice.emotion,
                 ),
-                speaker=speaker.tone,
-                additions=additions,
-            ),
+                "speaker": speaker.tone,
+                "additions": additions,
+            },
         )
 
     def to_tts_info(self, current_voice: str = "") -> TTSInfo:
@@ -353,14 +326,13 @@ class VolcengineTTSConf(BaseModel):
 
 
 class VolcengineTTSBatch(TTSBatch):
-
     def __init__(
-            self,
-            *,
-            loop: asyncio.AbstractEventLoop,
-            speaker: SpeakerConf,
-            batch_id: str = "",
-            callback: Optional[TTSAudioCallback] = None,
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        speaker: SpeakerConf,
+        batch_id: str = "",
+        callback: Optional[TTSAudioCallback] = None,
     ):
         self.speaker = speaker
         self.callback = callback
@@ -417,12 +389,11 @@ class VolcengineTTSBatch(TTSBatch):
 
 
 class VolcengineTTS(TTS):
-
     def __init__(
-            self,
-            *,
-            conf: VolcengineTTSConf | None = None,
-            logger: LoggerItf | None = None,
+        self,
+        *,
+        conf: VolcengineTTSConf | None = None,
+        logger: LoggerItf | None = None,
     ):
         self.logger = logger or logging.getLogger("volcengine.tts")
 
@@ -459,7 +430,7 @@ class VolcengineTTS(TTS):
         self._current_speaker = config_key
         self._current_speaker_conf = conf.model_copy(deep=True)
 
-    def set_voice(self, config: Dict[str, Any]) -> None:
+    def set_voice(self, config: dict[str, Any]) -> None:
         voice = VoiceConf(**config)
         self._current_speaker_conf.voice = voice
 
@@ -485,7 +456,7 @@ class VolcengineTTS(TTS):
         return tts_batch
 
     async def _main_loop(self):
-        """ tts main connection loop"""
+        """tts main connection loop"""
         # 没有关闭前, 一直执行这个循环.
         while not self._closing_event.is_set():
             try:
@@ -514,7 +485,7 @@ class VolcengineTTS(TTS):
                 self.logger.info("TTS cancelled")
                 pass
             except Exception as e:
-                self.logger.warning(f"TTS main loop got exception: {e}")
+                self.logger.warning("TTS main loop got exception: %s", e)
             finally:
                 self._consume_pending_batches_task = None
                 self.logger.info("TTS main loop is closed")
@@ -560,14 +531,14 @@ class VolcengineTTS(TTS):
             self.logger.info("TTS connection closed")
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Consume batch loop failed")
 
     async def _consume_batch_in_connection(
-            self,
-            batch: VolcengineTTSBatch,
-            connection: ClientConnection,
-            current_resource_id: str,
+        self,
+        batch: VolcengineTTSBatch,
+        connection: ClientConnection,
+        current_resource_id: str,
     ) -> bool:
         if batch.done.is_set():
             return True
@@ -583,12 +554,12 @@ class VolcengineTTS(TTS):
             session = self._conf.to_session(batch.speaker)
             # 开启 session.
             await start_session(
-                connection, session.to_payload_bytes(), batch_id,
+                connection,
+                session.to_payload_bytes(),
+                batch_id,
             )
             # 等待拿到 session 启动的事件.
-            await wait_for_event(
-                connection, MsgType.FullServerResponse, EventType.SessionStarted
-            )
+            await wait_for_event(connection, MsgType.FullServerResponse, EventType.SessionStarted)
             # 开始发送文本的流程.
             send_task = asyncio.create_task(self._send_batch_text_to_server(batch, session, connection))
             # 开始接受音频的流程.
@@ -602,22 +573,22 @@ class VolcengineTTS(TTS):
             result = await send_and_receive
             for r in result:
                 if isinstance(r, Exception):
-                    self.logger.exception(r)
+                    self.logger.exception("Batch task failed")
 
             # 正常完成返回 true
             return True
         except ValueError as e:
             # todo: log update
-            self.logger.exception(e)
+            self.logger.exception("Consume batch failed")
         finally:
             batch.done.set()
             self._running_batch = None
 
     async def _send_batch_text_to_server(
-            self,
-            batch: VolcengineTTSBatch,
-            session: Session,
-            connection: ClientConnection,
+        self,
+        batch: VolcengineTTSBatch,
+        session: Session,
+        connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         try:
@@ -645,7 +616,7 @@ class VolcengineTTS(TTS):
         except (ConnectionClosedOK, ConnectionClosed):
             raise
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.exception("Send batch text failed")
             batch.fail(str(e))
             # 特殊的错误, 则关闭 batch.
             await batch.close()
@@ -653,9 +624,9 @@ class VolcengineTTS(TTS):
             self.logger.info("batch %s send text done", batch_id)
 
     async def _receive_batch_audio_from_server(
-            self,
-            batch: VolcengineTTSBatch,
-            connection: ClientConnection,
+        self,
+        batch: VolcengineTTSBatch,
+        connection: ClientConnection,
     ) -> None:
         callback = batch.callback
         try:
@@ -664,7 +635,7 @@ class VolcengineTTS(TTS):
                 msg = await receive_message(connection)
                 self.logger.debug("session %s receive message %s", batch_id, msg)
                 if msg.type == MsgType.Error:
-                    self.logger.error(f"batch %s received error message {msg}", batch_id)
+                    self.logger.error("batch %s received error message %s", batch_id, msg)
                     batch.done.set()
                     break
                 elif msg.type == MsgType.FullServerResponse:

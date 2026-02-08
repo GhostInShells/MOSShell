@@ -1,9 +1,10 @@
 import asyncio
 
+import pytest
+
+from ghoshell_moss.core.concepts.command import Command, CommandError
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.core.concepts.command import Command, CommandError
-import pytest
 
 
 @pytest.mark.asyncio
@@ -116,7 +117,7 @@ async def test_thread_channel_baseline():
             assert proxy_chan.broker.meta().name == "client"
 
             # 获取这个子 channel, 它应该已经启动了.
-            a_chan = chan.get_channel('a')
+            a_chan = chan.get_channel("a")
             assert a_chan is not None
             assert a_chan.is_running()
 

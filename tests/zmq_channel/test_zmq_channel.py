@@ -1,9 +1,11 @@
-import pytest
 import asyncio
 import random
-from ghoshell_moss.transports.zmq_channel.zmq_channel import create_zmq_channel, ZMQSocketType
-from ghoshell_moss.core.py_channel import PyChannel
+
+import pytest
+
 from ghoshell_moss import CommandError
+from ghoshell_moss.core.py_channel import PyChannel
+from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQSocketType, create_zmq_channel
 
 
 def get_random_port():
@@ -157,8 +159,9 @@ async def test_zmq_channel_lost_connection():
         await asyncio.sleep(0.1)
         assert not provider.is_running()
         with pytest.raises(CommandError):
-            result = await cmd()
-            assert not proxy.broker.is_available()
+            await cmd()
+
+        assert not proxy.broker.is_available()
 
 
 @pytest.mark.asyncio
@@ -248,11 +251,7 @@ async def test_zmq_channel_multiple_commands():
             assert result == "Hello, World!"
 
             # 测试并发命令执行
-            tasks = [
-                add_cmd(1, 2),
-                multiply_cmd(3, 4),
-                greet_cmd("Test")
-            ]
+            tasks = [add_cmd(1, 2), multiply_cmd(3, 4), greet_cmd("Test")]
 
             results = await asyncio.gather(*tasks)
             assert results == [3, 12, "Hello, Test!"]

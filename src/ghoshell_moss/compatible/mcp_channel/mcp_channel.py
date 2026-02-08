@@ -1,29 +1,31 @@
-
 import json
 import logging
-from typing import Any, Callable, Coroutine, Dict, Generic, List, Optional, TypeVar, Tuple
+from collections.abc import Callable, Coroutine
+from typing import Any, Generic, Optional, TypeVar
 
 from ghoshell_moss import CommandError, CommandErrorCode
-from ghoshell_moss.core.concepts.states import StateStore, MemoryStateStore
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
+from ghoshell_moss.core.concepts.states import MemoryStateStore, StateStore
 
 try:
     import mcp
-    import mcp.types as types
+    from mcp import types
 except ImportError:
-    raise ImportError(f"Could not import mcp. Please install ghoshell-moss[mcp].")
+    raise ImportError("Could not import mcp. Please install ghoshell-moss[mcp].")
 
-from ghoshell_container import IoCContainer, Container
+import asyncio
+
+from ghoshell_common.helpers import uuid
+from ghoshell_container import Container, IoCContainer
+
 from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelBroker, ChannelMeta
 from ghoshell_moss.core.concepts.command import (
     Command,
+    CommandDeltaType,
     CommandMeta,
     CommandTask,
     CommandWrapper,
-    CommandDeltaType,
 )
-from ghoshell_common.helpers import uuid
-import asyncio
 
 R = TypeVar("R")  # 泛型结果类型
 
@@ -31,32 +33,29 @@ R = TypeVar("R")  # 泛型结果类型
 class MCPChannelBroker(ChannelBroker, Generic[R]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
 
-    MCP_CONTAINER_TYPES : List[str]= [
-        'array',
-        'object'
-    ]
+    MCP_CONTAINER_TYPES: list[str] = ["array", "object"]
 
-    MCP_PY_TYPES_TRANS_TABLE : Dict[str, str]= {
-        'string': 'str',
-        'integer': 'int',
-        'number': 'float',
-        'boolean': 'bool',
-        'array': 'list',
-        'object': 'dict',
+    MCP_PY_TYPES_TRANS_TABLE: dict[str, str] = {
+        "string": "str",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "array": "list",
+        "object": "dict",
     }
 
-    COMMAND_DELTA_PARAMTER : str = f'{CommandDeltaType.TEXT.value}:str'
+    COMMAND_DELTA_PARAMTER: str = f"{CommandDeltaType.TEXT.value}:str"
 
     def __init__(
-            self,
-            *,
-            name: str,
-            mcp_client: mcp.ClientSession,
-            container: Optional[IoCContainer] = None,
+        self,
+        *,
+        name: str,
+        mcp_client: mcp.ClientSession,
+        container: Optional[IoCContainer] = None,
     ):
         self._name = name
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
-        self._commands: Dict[str, Command] = {}  # 映射后的Mosshell Command
+        self._commands: dict[str, Command] = {}  # 映射后的Mosshell Command
         self._meta: Optional[ChannelMeta] = None  # Channel元信息
         self._running = False  # 运行状态标记
         self._logger: logging.Logger | None = None
@@ -64,7 +63,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         self._container = Container(parent=container, name="mcp_channel:" + self._name)
         self._states: Optional[StateStore] = None
 
-    def children(self) -> Dict[str, "Channel"]:
+    def children(self) -> dict[str, "Channel"]:
         return {}
 
     @property
@@ -123,7 +122,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
     def meta(self) -> ChannelMeta:
         # todo: 还没有实现动态更新, 主要是更新 command
         if not self.is_running():
-            raise RuntimeError(f'Channel client {self._name} is not running')
+            raise RuntimeError(f"Channel client {self._name} is not running")
         return self._meta.model_copy()
 
     async def refresh_meta(self) -> None:
@@ -138,7 +137,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         # todo: 检查状态.
         return
 
-    def commands(self, available_only: bool = True) -> Dict[str, Command]:
+    def commands(self, available_only: bool = True) -> dict[str, Command]:
         # todo: 这里每次更新, 和上面好像冲突.
         meta = self.meta()
         result = {}
@@ -160,8 +159,8 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
     def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
         name = meta.name
 
-        args_schema_properties = meta.args_schema.get('properties', {})
-        required_args_list = meta.args_schema.get('required', [])
+        args_schema_properties = meta.args_schema.get("properties", {})
+        required_args_list = meta.args_schema.get("required", [])
         schema_param_count = len(args_schema_properties)
         required_schema_param_count = len(required_args_list)
 
@@ -172,29 +171,32 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                 if required_schema_param_count > schema_param_count:
                     raise CommandError(
                         code=CommandErrorCode.INVALID_PARAMETER.value,
-                        message=f"MCP tool: invalid parameter count, required parameter: {required_schema_param_count}, schema parameter: {schema_param_count}",
+                        message=(
+                            "MCP tool: invalid parameter count, required parameter: "
+                            f"{required_schema_param_count}, schema parameter: {schema_param_count}"
+                        ),
                     )
 
                 param_count = len(args) + len(kwargs)
                 final_kwargs = {}
-                if schema_param_count == 0: # do nothing
+                if schema_param_count == 0:  # do nothing
                     if not param_count == 0:
                         raise CommandError(
                             code=CommandErrorCode.INVALID_PARAMETER.value,
                             message=f"MCP tool: no parameter, invalid, args={args}, kwargs={kwargs}",
                         )
-                else: # schema_param_count > 1
-                    if not (1 == param_count or required_schema_param_count <= param_count <= schema_param_count ):
+                else:  # schema_param_count > 1
+                    if not (param_count == 1 or required_schema_param_count <= param_count <= schema_param_count):
                         raise CommandError(
                             code=CommandErrorCode.INVALID_PARAMETER.value,
                             message=f"MCP tool: invalid parameters, invalid, args={args}, kwargs={kwargs}",
                         )
-                    if 1 == param_count:
+                    if param_count == 1:
                         if len(args) == 1:
                             if required_schema_param_count == 1:
                                 if type(args[0]) is not str:
                                     [param_name, param_info], *_ = args_schema_properties.items()
-                                    if param_type := param_info.get('type', None):
+                                    if param_type := param_info.get("type", None):
                                         if type(args[0]).__name__ == self._mcp_type_2_py_type(param_type):
                                             final_kwargs[param_name] = args[0]
 
@@ -204,28 +206,30 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                                 except TypeError as e:
                                     raise CommandError(
                                         code=CommandErrorCode.VALUE_ERROR.value,
-                                        message=f"MCP tool: invalid \"text__\" type, {str(e)}",
+                                        message=f'MCP tool: invalid "text__" type, {str(e)}',
                                     )
                                 except json.JSONDecodeError as e:
                                     raise CommandError(
                                         code=CommandErrorCode.VALUE_ERROR.value,
-                                        message=f"MCP tool: invalid \"text__\" parameter format, INVALID JSON schema, {str(e)}",
+                                        message=(
+                                            f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"
+                                        ),
                                     )
                         else:
-                            if 'text__' in kwargs:
-                                final_kwargs = json.loads(kwargs['text__'])
+                            if "text__" in kwargs:
+                                final_kwargs = json.loads(kwargs["text__"])
                             elif required_schema_param_count == 1:
                                 param_name = required_args_list[0]
                                 if param_name not in kwargs:
                                     raise CommandError(
                                         code=CommandErrorCode.INVALID_PARAMETER.value,
-                                        message=f"MCP tool: unknown parameter \"{param_name}\" parameter format.",
+                                        message=f'MCP tool: unknown parameter "{param_name}" parameter format.',
                                     )
                                 final_kwargs.update(kwargs)
                             else:
                                 raise CommandError(
                                     code=CommandErrorCode.INVALID_PARAMETER.value,
-                                    message=f"MCP tool: missing \"text__\" parameters, kwargs={kwargs}",
+                                    message=f'MCP tool: missing "text__" parameters, kwargs={kwargs}',
                                 )
                     else:
                         for arg_name, arg in zip(args_schema_properties.keys(), args):
@@ -239,14 +243,10 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                 # convert to moss Message
                 return mcp_call_tool_result_to_message(mcp_result, name=self.name())
             except mcp.McpError as e:
-                raise CommandError(
-                    code=CommandErrorCode.FAILED.value,
-                    message=f"MCP call failed: {str(e)}"
-                ) from e
+                raise CommandError(code=CommandErrorCode.FAILED.value, message=f"MCP call failed: {str(e)}") from e
             except Exception as e:
                 raise CommandError(
-                    code=CommandErrorCode.FAILED.value,
-                    message=f"MCP tool execution failed: {str(e)}"
+                    code=CommandErrorCode.FAILED.value, message=f"MCP tool execution failed: {str(e)}"
                 ) from e
 
         return _server_caller_as_command
@@ -256,12 +256,12 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
             raise RuntimeError("MCPChannel is not running")
         func = self._get_command_func(task.meta)
         if func is None:
-            raise LookupError(f'Channel {self._name} can find command {task.meta.name}')
+            raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
         return await func(*task.args, **task.kwargs)
 
         # --- 工具转Command的核心逻辑 --- #
 
-    def _convert_tools_to_command_metas(self, tools: List[types.Tool]) -> List[CommandMeta]:
+    def _convert_tools_to_command_metas(self, tools: list[types.Tool]) -> list[CommandMeta]:
         """将MCP工具转换为Mosshell的CommandMeta"""
         metas = []
         for tool in tools:
@@ -270,56 +270,59 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
             # 生成符合Code as Prompt的interface（模型可见的函数签名）
             interface, description = self._generate_code_as_prompt(tool)
 
-            metas.append(CommandMeta(
-                name=tool_name,
-                description=description or "",
-                chan=self._name,
-                interface=interface,
-                available=True,
-                args_schema=tool.inputSchema,
-                delta_arg=CommandDeltaType.TEXT,
-            ))
+            metas.append(
+                CommandMeta(
+                    name=tool_name,
+                    description=description or "",
+                    chan=self._name,
+                    interface=interface,
+                    available=True,
+                    args_schema=tool.inputSchema,
+                    delta_arg=CommandDeltaType.TEXT,
+                )
+            )
         return metas
 
     @staticmethod
     def _mcp_type_2_py_type(param_info_type: str) -> str:
-        param_type = MCPChannelBroker.MCP_PY_TYPES_TRANS_TABLE.get(param_info_type.lower(), 'Any')
+        param_type = MCPChannelBroker.MCP_PY_TYPES_TRANS_TABLE.get(param_info_type.lower(), "Any")
         return param_type
 
-    def _parse_schema(self, schema: Dict) -> Tuple[List, List]:
+    def _parse_schema(self, schema: dict) -> tuple[list, list]:
         required_params = []
         optional_params = []
         required_param_docs = []
         optional_param_docs = []
 
-        for param_name, param_info in schema.get('properties', {}).items():
+        for param_name, param_info in schema.get("properties", {}).items():
             # 确定参数类型
-            param_type = self._mcp_type_2_py_type(param_info.get('type', ''))
+            param_type = self._mcp_type_2_py_type(param_info.get("type", ""))
 
             # 确定默认值
             param_str = f"{param_name}: {param_type}"
-            if param_name not in schema.get('required', []):
-                default_value = 'None' if param_type != 'bool' else 'False'
+            if param_name not in schema.get("required", []):
+                default_value = "None" if param_type != "bool" else "False"
                 param_str += f"={default_value}"
 
             # 根据是否必需参数，添加到不同的列表
-            if param_name in schema.get('required', []):
+            if param_name in schema.get("required", []):
                 required_params.append(param_str)
                 # 添加参数文档
-                if 'description' in param_info:
+                if "description" in param_info:
                     required_param_docs.append(f"    :param {param_name}: {param_info['description']}")
             else:
                 optional_params.append(param_str)
                 # 添加参数文档
-                if 'description' in param_info:
+                if "description" in param_info:
                     optional_param_docs.append(f"    :param {param_name}: {param_info['description']}")
 
         return required_params + optional_params, required_param_docs + optional_param_docs
 
-    def _parse_schema_container(self, schema: Dict) -> Tuple[List, List]:
+    def _parse_schema_container(self, schema: dict) -> tuple[list, list]:
         params = [self.COMMAND_DELTA_PARAMTER]
         try:
-            required_param_docs = [ 'param text__: 用 JSON 描述参数，它的 JSON Schema 如右:',
+            required_param_docs = [
+                "param text__: 用 JSON 描述参数，它的 JSON Schema 如右:",
                 json.dumps(schema),
             ]
         except Exception as e:
@@ -327,8 +330,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
 
         return params, required_param_docs
 
-
-    def _parse_input_schema(self, input_schema: Dict[str, Any], error_prefix="") -> Tuple[List[str], List[str]]:
+    def _parse_input_schema(self, input_schema: dict[str, Any], error_prefix="") -> tuple[list[str], list[str]]:
         """解析inputSchema并提取参数信息和参数文档"""
         # todo: 考虑直接将 json schema 作为 text__ 参数.
         if not input_schema:
@@ -342,7 +344,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
             if isinstance(schema, str):
                 schema = json.loads(schema)
 
-            if 'properties' not in schema:
+            if "properties" not in schema:
                 return params, param_docs
 
             # 合并列表，必需参数在前，可选参数在后
@@ -358,34 +360,35 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         return params, param_docs
 
     def _adjust_description(self, description: str, param_doc: str) -> str:
-        return f'{description}\n{param_doc}\n'
+        return f"{description}\n{param_doc}\n"
 
-    def _generate_code_as_prompt(self, tool: types.Tool) -> Tuple[str, str]:
+    def _generate_code_as_prompt(self, tool: types.Tool) -> tuple[str, str]:
         """生成模型可见的Command接口（Code as Prompt）"""
 
         # 提取函数名（将连字符替换为下划线）
-        function_name = tool.name.replace('-', '_')
+        function_name = tool.name.replace("-", "_")
 
         # 提取参数信息
         params, param_docs = self._parse_input_schema(tool.inputSchema, "")
 
         description = tool.description or ""
-        if len(params) == 1 and self.COMMAND_DELTA_PARAMTER == params[0]:
-            description = self._adjust_description(description, ''.join(param_docs))
+        if len(params) == 1 and params[0] == self.COMMAND_DELTA_PARAMTER:
+            description = self._adjust_description(description, "".join(param_docs))
 
         # 生成Async函数签名（符合Python语法）
         interface = (
             f"async def {function_name}({', '.join(params)}) -> Any:\n"
             f"    '''\n"
             f"    {description}\n"
-            #f"    {''.join(param_docs)}\n"
+            # f"    {''.join(param_docs)}\n"
             f"    '''\n"
             f"    pass"
         )
         return interface, description
 
-    def _build_channel_meta(self, initialize_result: types.InitializeResult,
-                            tool_result: types.ListToolsResult) -> ChannelMeta:
+    def _build_channel_meta(
+        self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
+    ) -> ChannelMeta:
         """构建Channel元信息（包含所有工具的CommandMeta）"""
         return ChannelMeta(
             name=self._name,
@@ -414,11 +417,11 @@ class MCPChannel(Channel):
     """对接MCP服务的Channel"""
 
     def __init__(
-            self,
-            *,
-            name: str,
-            description: str,
-            mcp_client: mcp.ClientSession,
+        self,
+        *,
+        name: str,
+        description: str,
+        mcp_client: mcp.ClientSession,
     ):
         self._name = name
         self._desc = description
@@ -437,11 +440,11 @@ class MCPChannel(Channel):
 
     @property
     def build(self) -> Builder:
-        raise NotImplementedError(f"MCPChannel does not implement `build`")
+        raise NotImplementedError("MCPChannel does not implement `build`")
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelBroker:
         if self._client is not None and self._client.is_running():
-            raise RuntimeError(f'Channel {self} has already been started.')
+            raise RuntimeError(f"Channel {self} has already been started.")
 
         self._client = MCPChannelBroker(
             name=self._name,
@@ -458,7 +461,7 @@ class MCPChannel(Channel):
     def new_child(self, name: str) -> Channel:
         raise NotImplementedError("MCPChannel does not support children")
 
-    def children(self) -> Dict[str, Channel]:
+    def children(self) -> dict[str, Channel]:
         return {}
 
     def is_running(self) -> bool:

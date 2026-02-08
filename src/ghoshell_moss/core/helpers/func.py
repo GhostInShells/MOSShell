@@ -1,17 +1,17 @@
-
-import asyncio
-from typing import Any, Dict, TypeVar, Awaitable, List, Callable, Optional, Coroutine
-from typing_extensions import is_protocol, is_typeddict
+import inspect
 from ast import literal_eval
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import wraps
-import inspect
+from typing import Any, Optional, TypeVar
+
+from typing_extensions import is_protocol, is_typeddict
 
 __all__ = [
-    'prepare_kwargs_by_signature',
-    'parse_function_interface',
-    'awaitable_caller',
-    'unwrap_callable_or_value',
+    "awaitable_caller",
+    "parse_function_interface",
+    "prepare_kwargs_by_signature",
+    "unwrap_callable_or_value",
 ]
 
 
@@ -34,12 +34,12 @@ def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dic
         param = sig.parameters[name]
         if param.annotation != inspect.Parameter.empty:
             try:
-                if param.kind == inspect.Parameter.VAR_POSITIONAL or param.kind == inspect.Parameter.VAR_KEYWORD:
+                if param.kind in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
                     continue
 
                 if isinstance(value, str) and param.annotation is not str:
                     if param.annotation is bool:
-                        value = value.lower() in {'true', 'True', '1'}
+                        value = value.lower() in {"true", "True", "1"}
                     elif param.annotation is dict or param.annotation is list or is_typeddict(param.annotation):
                         # 支持 dict 和 list 的 python 风格默认转换.
                         # 理论上 Command Token 的协议需要先设计好转换.
@@ -67,13 +67,14 @@ class FunctionReflection:
     """
     Reflection generated from function signature, and can also generate function signature.
     """
+
     name: str
     signature: inspect.Signature
     docstring: str
     is_coroutine_function: bool
     comments: str
 
-    def prepare_kwargs(self, *args, **kwargs) -> Dict[str, Any]:
+    def prepare_kwargs(self, *args, **kwargs) -> dict[str, Any]:
         return prepare_kwargs_by_signature(self.signature, args, kwargs)
 
     def to_interface(self, name: str = "", doc: str = "", comments: str = "") -> str:
@@ -93,18 +94,18 @@ class FunctionReflection:
 
         if comments:
             for comment_line in comments.split("\n"):
-                lines.append(indent + '# ' + comment_line)
+                lines.append(indent + "# " + comment_line)
         lines.append(indent + "pass")
         return "\n".join(lines)
 
 
-def to_function_docstring_lines(doc: str) -> List[str]:
+def to_function_docstring_lines(doc: str) -> list[str]:
     """
     将一个字符串变成函数的 docstring 形式的文本块. 并且添加上必要的 indent.
     """
     quote = "'''"
     replace_quote = "\\" + quote  # 转义后的三引号：`\'''`
-    doc_lines = doc.split('\n')
+    doc_lines = doc.split("\n")
     result_lines = [quote]  # 开始 docstring
     for line in doc_lines:
         stripped = line.strip()
@@ -131,7 +132,7 @@ def parse_function_interface(fn: Callable) -> FunctionReflection:
     )
 
 
-R = TypeVar('R')
+R = TypeVar("R")
 
 
 def unwrap_callable_or_value(func: Callable[[], R] | R) -> R:
@@ -141,11 +142,12 @@ def unwrap_callable_or_value(func: Callable[[], R] | R) -> R:
 
 
 def awaitable_caller(
-        fn: Callable[..., R] | Callable[..., Awaitable[R]] | R,
-        *,
-        default: Optional[Any] = None,
+    fn: Callable[..., R] | Callable[..., Awaitable[R]] | R,
+    *,
+    default: Optional[Any] = None,
 ) -> Callable[..., Awaitable[R]]:
     if not callable(fn):
+
         async def return_result(*args, **kwargs):
             return fn if fn is not None else default  # as result
 

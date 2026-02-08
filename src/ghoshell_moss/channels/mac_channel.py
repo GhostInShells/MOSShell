@@ -1,12 +1,14 @@
 import asyncio
 from typing import Any, Optional
+
 from ghoshell_moss.core import PyChannel
 
-__all__ = ['new_mac_control_channel']
+__all__ = ["new_mac_control_channel"]
 
 
 class JXAError(Exception):
     """JXA 执行错误"""
+
     pass
 
 
@@ -54,27 +56,21 @@ async def run(*, timeout: Optional[float] = 30.0, text__: str = "") -> Any:
 
     :return: 返回操作结果. 你必须等操作结果到手后, 才能知道它运行的效果如何.
     """
-    cmd = ['osascript', '-l', 'JavaScript', '-']
+    cmd = ["osascript", "-l", "JavaScript", "-"]
 
     process = None
     try:
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(input=text__.encode('utf-8')),
-            timeout=timeout
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(input=text__.encode("utf-8")), timeout=timeout)
 
         if process.returncode != 0:
-            error_msg = stderr.decode('utf-8', errors='replace').strip()
+            error_msg = stderr.decode("utf-8", errors="replace").strip()
             raise JXAError(f"JXA 执行失败 (code: {process.returncode}): {error_msg}")
 
-        output = stdout.decode('utf-8', errors='replace').strip()
+        output = stdout.decode("utf-8", errors="replace").strip()
 
         # 尝试解析 JSON
         return output
@@ -87,8 +83,8 @@ async def run(*, timeout: Optional[float] = 30.0, text__: str = "") -> Any:
 
 
 def new_mac_control_channel(
-        name: str = "mac_control",
-        description: str = "使用 jxa 语法来操作当前所在 mac",
+    name: str = "mac_control",
+    description: str = "使用 jxa 语法来操作当前所在 mac",
 ) -> PyChannel:
     """
     创建一个控制 mac 的 channel.

@@ -1,15 +1,20 @@
-
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
-    Pose, RobotInfo, Trajectory, Animation, Transition,
-    PoseAnimation,
-)
 from asyncio import Future
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeFuture
+from typing import Optional
+
 from ghoshell_common.helpers import yaml_pretty_dump
+
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeFuture
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
+    Animation,
+    Pose,
+    PoseAnimation,
+    RobotInfo,
+    Trajectory,
+    Transition,
+)
 
 """
 与大脑配合的多轨运动控制方案. 
@@ -21,10 +26,13 @@ from ghoshell_common.helpers import yaml_pretty_dump
 一个 Robot 考虑到要协调控制, 它可能有统一的运动规划建模, 同时控制所有的组件和所有的关节. 
 但是大脑下发的命令, 是动态规划, 实时更新, 而且每个组件的命令并不一样. 
 比如机械臂底盘用 2s 周期左右旋转 5圈, 手腕用 1s 周期上下点头 3次.
-这实际上必须做关键帧级别的全身规划, 比如在点头 1/3 历程时, 底盘完成了旋转, 全身规划要计算出底盘完成旋转这一帧头部所在的位置.
-而且当轨迹被瞬间更新时, 每个关节运行的加速度可能会计算错误, 导致不协调的急停和加速. 总之是一个非常复杂的运动规划问题. 
+这实际上必须做关键帧级别的全身规划, 比如在点头 1/3 历程时, 底盘完成了旋转,
+全身规划要计算出底盘完成旋转这一帧头部所在的位置.
+而且当轨迹被瞬间更新时, 每个关节运行的加速度可能会计算错误,
+导致不协调的急停和加速. 总之是一个非常复杂的运动规划问题.
 
-而当 N 个组件接受了 M 个规划命令, 其中 x (x<m) 个命令因为物理原因失败时, 是否所有的规划都需要终止. 异常协议又是一个致命问题. 
+而当 N 个组件接受了 M 个规划命令, 其中 x (x<m) 个命令因为物理原因失败时,
+是否所有的规划都需要终止. 异常协议又是一个致命问题.
 
 我们回归到 MOSS 体系, 对这个技术命题做简化: 
 
@@ -42,6 +50,7 @@ from ghoshell_common.helpers import yaml_pretty_dump
 
 class ROSActionError(Exception):
     """ROS Action 执行异常"""
+
     pass
 
 
@@ -51,8 +60,9 @@ class JointValueParser(ABC):
     """
 
     @classmethod
+    @abstractmethod
     def name(cls) -> str:
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def from_value_to_position(self, value: float) -> float:
@@ -80,7 +90,7 @@ class MOSSRobotManager(ABC):
         pass
 
     @abstractmethod
-    def joint_value_parsers(self) -> Dict[str, JointValueParser]:
+    def joint_value_parsers(self) -> dict[str, JointValueParser]:
         """
         返回各种预制的关节类型转换.
         给 AI 看到的关节参数, 和实际下发的可能不一样, 所以需要一个 Parser.
@@ -169,7 +179,7 @@ class MOSSRobotManager(ABC):
         robot_trajectory.loop = 1
         return robot_trajectory
 
-    def from_joint_values_to_positions(self, positions: Dict[str, float]) -> Dict[str, float]:
+    def from_joint_values_to_positions(self, positions: dict[str, float]) -> dict[str, float]:
         """
         转换数据结构. 将 AI 看到的关节数据, 转化成底层系统使用的关节数据.
         有时因为可理解的需要, AI 看到的数据 (比如 角度, 距离等) 与底层机器人运行时不同 (比如弧度, 电平).
@@ -193,7 +203,7 @@ class MOSSRobotManager(ABC):
             result[robot_joint_name] = position
         return result
 
-    def from_joint_positions_to_values(self, positions: Dict[str, float]) -> Dict[str, float]:
+    def from_joint_positions_to_values(self, positions: dict[str, float]) -> dict[str, float]:
         """
         将底层系统关节的 position 值换成 RobotInfo 所描述的 value 值.
         """
@@ -251,8 +261,8 @@ class MOSSRobotManager(ABC):
         self.save_animation(saving)
 
     def save_animation(
-            self,
-            animation: Animation,
+        self,
+        animation: Animation,
     ) -> None:
         """
         保存一个序列并生成动画.
@@ -286,13 +296,13 @@ class Move(ThreadSafeFuture):
     """
 
     def __init__(
-            self,
-            controller: str,
-            transitions: List[Transition],
-            *,
-            started_at: Optional[float] = None,
-            future: Optional[Future] = None,
-            loop: Optional[asyncio.AbstractEventLoop] = None,
+        self,
+        controller: str,
+        transitions: list[Transition],
+        *,
+        started_at: Optional[float] = None,
+        future: Optional[Future] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.controller = controller
         """动作归属的控制器, 会校验指令的合法性. """
@@ -312,11 +322,11 @@ class TrajectoryAction(ThreadSafeFuture):
     """
 
     def __init__(
-            self,
-            trajectory: Trajectory,
-            callback_moves: List[Move] | None = None,
-            future: Optional[Future] = None,
-            loop: Optional[asyncio.AbstractEventLoop] = None,
+        self,
+        trajectory: Trajectory,
+        callback_moves: list[Move] | None = None,
+        future: Optional[Future] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.trajectory = trajectory
         self.callback_moves = callback_moves or []
@@ -344,18 +354,15 @@ class Movement:
     """
 
     def __init__(
-            self,
-            robot: RobotInfo,
+        self,
+        robot: RobotInfo,
     ):
         self.robot = robot
-        self.moves: Dict[str, Move] = {}
-        self.trajectory_actions: List[TrajectoryAction] = []
+        self.moves: dict[str, Move] = {}
+        self.trajectory_actions: list[TrajectoryAction] = []
 
     def done(self) -> bool:
-        for action in self.trajectory_actions:
-            if not action.trajectory.done():
-                return False
-        return True
+        return all(action.trajectory.done() for action in self.trajectory_actions)
 
     def stop(self) -> None:
         # 取消所有的 action.
@@ -375,7 +382,7 @@ class Movement:
             moves[move.controller] = move
         self.moves = moves
 
-    def update_move(self, move: Move) -> List[TrajectoryAction]:
+    def update_move(self, move: Move) -> list[TrajectoryAction]:
         controller = self.robot.controllers.get(move.controller)
         if controller is None:
             raise ValueError(f"Move controller {move.controller} not found")
@@ -399,9 +406,9 @@ class Movement:
         return new_actions
 
     def _plan_new_actions(
-            self,
-            new_started_at: float,
-    ) -> List[TrajectoryAction]:
+        self,
+        new_started_at: float,
+    ) -> list[TrajectoryAction]:
         pass
 
 
@@ -438,14 +445,14 @@ class RobotController(ABC):
         pass
 
     @abstractmethod
-    def get_raw_positions(self) -> Dict[str, float]:
+    def get_raw_positions(self) -> dict[str, float]:
         """
         获取全身所有关节的位姿.
         """
         pass
 
     @abstractmethod
-    def update_raw_positions(self, positions: Dict[str, float]) -> None:
+    def update_raw_positions(self, positions: dict[str, float]) -> None:
         pass
 
     @abstractmethod
@@ -523,11 +530,11 @@ class RobotController(ABC):
         """
         pass
 
-    def get_current_position_values(self) -> Dict[str, float]:
+    def get_current_position_values(self) -> dict[str, float]:
         positions = self.get_raw_positions()
         return self.manager().from_joint_positions_to_values(positions)
 
-    def get_controller_positions(self, name: str) -> Dict[str, float]:
+    def get_controller_positions(self, name: str) -> dict[str, float]:
         """
         获取某个特定控制组件的位姿.
         """

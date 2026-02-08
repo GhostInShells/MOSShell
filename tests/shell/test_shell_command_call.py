@@ -1,10 +1,9 @@
-import time
-from typing import List
 import asyncio
+import time
 
 import pytest
 
-from ghoshell_moss import Interpreter, Channel, CommandTask, MOSSShell, CommandTaskStack
+from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell
 
 
 @pytest.mark.asyncio
@@ -12,8 +11,8 @@ async def test_shell_execution_baseline():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child('a')
-    b_chan = shell.main_channel.new_child('b')
+    a_chan = shell.main_channel.new_child("a")
+    b_chan = shell.main_channel.new_child("b")
 
     @a_chan.build.command()
     async def foo() -> int:
@@ -43,13 +42,13 @@ async def test_shell_execution_baseline():
                 result.append(task.result())
             # 获取到结果.
             assert result == [123, 456]
-            assert ['a', 'b'] == [t.exec_chan for t in tasks.values()]
+            assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
             # 验证并发执行.
             task_list = list(tasks.values())
             # 两个任务几乎同时启动.
-            running_gap = abs(task_list[0].trace.get('running') - task_list[1].trace.get('running'))
+            running_gap = abs(task_list[0].trace.get("running") - task_list[1].trace.get("running"))
             assert running_gap < 0.01
-            done_gap = abs(task_list[1].trace.get('done') - task_list[0].trace.get('done'))
+            done_gap = abs(task_list[1].trace.get("done") - task_list[0].trace.get("done"))
             assert done_gap > 0.05
 
 
@@ -77,7 +76,7 @@ async def test_shell_outputted():
 
 @pytest.mark.asyncio
 async def test_shell_command_run_in_order():
-    """测试 get command exec in chan 可以使命令进入 channel 队列有序执行. """
+    """测试 get command exec in chan 可以使命令进入 channel 队列有序执行."""
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
@@ -119,7 +118,7 @@ async def test_shell_task_can_get_channel():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child('a')
+    a_chan = shell.main_channel.new_child("a")
 
     @a_chan.build.command()
     async def foo() -> bool:
@@ -140,7 +139,7 @@ async def test_shell_task_can_get_task():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child('a')
+    a_chan = shell.main_channel.new_child("a")
 
     @a_chan.build.command()
     async def foo() -> str:
@@ -162,7 +161,7 @@ async def test_shell_loop():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child('a')
+    a_chan = shell.main_channel.new_child("a")
 
     @shell.main_channel.build.command()
     async def loop(times: int, tokens__):
@@ -181,7 +180,7 @@ async def test_shell_loop():
                 for _task in _tasks:
                     yield _task.copy()
 
-        async def on_success(generated: List[CommandTask]):
+        async def on_success(generated: list[CommandTask]):
             await asyncio.gather(*[g.wait() for g in generated])
 
         return CommandTaskStack(_iter(), on_success)
@@ -212,9 +211,9 @@ async def test_shell_clear():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child('a')
-    b_chan = shell.main_channel.new_child('b')
-    c_chan = a_chan.new_child('c')
+    a_chan = shell.main_channel.new_child("a")
+    b_chan = shell.main_channel.new_child("b")
+    c_chan = a_chan.new_child("c")
 
     sleep = [0.1]
 
@@ -233,7 +232,7 @@ async def test_shell_clear():
         await asyncio.sleep(sleep[0])
         return "baz"
 
-    content = '<a:foo /><b:bar /><a.c:baz />'
+    content = "<a:foo /><b:bar /><a.c:baz />"
     async with shell:
         # baseline
         async with shell.interpreter_in_ctx() as interpreter:

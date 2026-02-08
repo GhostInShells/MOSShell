@@ -1,11 +1,10 @@
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
-    Joint, Controller, RobotInfo, Trajectory, PoseAnimation
-)
+import pytest
+
 from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import DegreeToRadiansParser, default_parsers
+from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
 from ghoshell_moss_contrib.prototypes.ros2_robot.manager import MemoryRobotManager
 from ghoshell_moss_contrib.prototypes.ros2_robot.mocks import MockRobotController
-from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
-import pytest
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import Controller, Joint, PoseAnimation, RobotInfo, Trajectory
 
 test_robot = RobotInfo(
     name="test_robot",
@@ -30,13 +29,13 @@ test_robot = RobotInfo(
 def test_robot_info():
     assert len(test_robot.controllers) == 1
     assert test_robot.controllers["arm"].name == "arm"
-    assert test_robot.controllers['arm'].joints['shoulder'].name == "shoulder"
-    joint = test_robot.controllers['arm'].joints['shoulder']
+    assert test_robot.controllers["arm"].joints["shoulder"].name == "shoulder"
+    joint = test_robot.controllers["arm"].joints["shoulder"]
     assert joint.value_parser == "degrees_to_radians"
 
 
 def test_robot_manager_baseline():
-    manager = MemoryRobotManager(test_robot, dict(degrees_to_radians=DegreeToRadiansParser()))
+    manager = MemoryRobotManager(test_robot, {"degrees_to_radians": DegreeToRadiansParser()})
     robot = manager.robot()
     assert robot.name == test_robot.name
 
@@ -98,7 +97,7 @@ def test_robot_controller_get_position():
 
 @pytest.mark.asyncio
 async def test_robot_main_channel():
-    _manager = MemoryRobotManager(test_robot, dict(degrees_to_radians=DegreeToRadiansParser()))
+    _manager = MemoryRobotManager(test_robot, {"degrees_to_radians": DegreeToRadiansParser()})
     _controller = MockRobotController(_manager)
     main_channel = build_robot_main_channel(_controller)
     pose = _manager.get_default_pose()

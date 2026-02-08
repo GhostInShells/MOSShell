@@ -1,9 +1,10 @@
-from ghoshell_moss.core.py_channel import PyChannel
 import live2d.v3 as live2d
+
+from ghoshell_moss.core.py_channel import PyChannel
 
 from .motions import open_close
 
-mouth_chan = PyChannel(name='mouth')
+mouth_chan = PyChannel(name="mouth")
 
 
 @mouth_chan.build.command()
@@ -45,7 +46,7 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.7
         speed=speed,
         max_value=max_open,
         min_value=min_open,
-        initial_direction="open"  # 说话从打开开始
+        initial_direction="open",  # 说话从打开开始
     )
     # 确保最终状态是完全闭合
     model.SetParameterValue(PARAM, 0.0)

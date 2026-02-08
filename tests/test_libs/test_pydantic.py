@@ -1,8 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 
 def test_model_with_enum():
     from enum import Enum
+
     from pydantic import BaseModel
 
     class Foo(str, Enum):

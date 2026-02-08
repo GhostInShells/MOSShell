@@ -175,3 +175,4 @@ cython_debug/
 .vscode/
 
 .setup_env
+.uv_cache

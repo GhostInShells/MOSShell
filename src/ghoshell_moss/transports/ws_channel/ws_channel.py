@@ -1,21 +1,22 @@
-
-import json
 import asyncio
+import json
 import logging
-import fastapi
-from typing import Optional
 from dataclasses import dataclass
+from typing import Optional
+
+import fastapi
 
 try:
     import websockets
 except ImportError:
-    raise ImportError(f'Please install websockets by "pip install ghoshell-moss[wss]"')
+    raise ImportError('Please install websockets by "pip install ghoshell-moss[wss]"')
 
-from ghoshell_moss.core.duplex.connection import Connection, ConnectionClosedError, ConnectionNotAvailable
-from ghoshell_moss.core.duplex.protocol import ChannelEvent, HeartbeatEvent
+from ghoshell_container import Container, IoCContainer
+
+from ghoshell_moss.core.duplex.connection import Connection, ConnectionClosedError
+from ghoshell_moss.core.duplex.protocol import ChannelEvent
 from ghoshell_moss.core.duplex.provider import DuplexChannelProvider
 from ghoshell_moss.core.duplex.proxy import DuplexChannelProxy
-from ghoshell_container import Container, IoCContainer
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class FastAPIWebSocketConnection(Connection):
                         timeout=timeout,
                     )
                     event = json.loads(message)
-                    logger.info(f'FastAPIWebSocketConnection Received event: {event}')
+                    logger.info("FastAPIWebSocketConnection Received event: %s", event)
                     return event
                 except asyncio.TimeoutError:
                     raise
@@ -60,7 +61,7 @@ class FastAPIWebSocketConnection(Connection):
             raise RuntimeError("Connection not started")
         async with self._send_lock:
             try:
-                logger.info(f'FastAPIWebSocketConnection Sending event: {event}')
+                logger.info("FastAPIWebSocketConnection Sending event: %s", event)
                 await self._ws.send_text(json.dumps(event))
             except Exception as e:
                 logger.warning("Failed to send message: %s", e)
@@ -88,10 +89,10 @@ class FastAPIWebSocketChannelProxy(DuplexChannelProxy):
     """基于FastAPI的WebSocket Channel代理"""
 
     def __init__(
-            self,
-            *,
-            ws: fastapi.WebSocket,
-            name: str,
+        self,
+        *,
+        ws: fastapi.WebSocket,
+        name: str,
     ):
         connection = FastAPIWebSocketConnection(ws)
         super().__init__(
@@ -103,6 +104,7 @@ class FastAPIWebSocketChannelProxy(DuplexChannelProxy):
 @dataclass
 class WebSocketConnectionConfig:
     """WebSocket Channel配置"""
+
     address: str
     headers: Optional[dict] = None
 
@@ -141,7 +143,7 @@ class WebSocketConnection(Connection):
                         timeout=timeout,
                     )
                     event: ChannelEvent = json.loads(message)
-                    logger.info(f'WebSocketConnection Received event: {event}')
+                    logger.info("WebSocketConnection Received event: %s", event)
                     return event
                 except websockets.ConnectionClosed as e:
                     self._closed_event.set()
@@ -157,10 +159,10 @@ class WebSocketConnection(Connection):
         if not self._ws:
             raise RuntimeError("Connection not started")
         try:
-            logger.info(f'WebSocketConnection Sending event: {event}')
+            logger.info("WebSocketConnection Sending event: %s", event)
             await self._ws.send(json.dumps(event))
-        except Exception as e:
-            logger.warning("Failed to send message: %s", e)
+        except Exception:
+            logger.exception("Failed to send message")
             raise
 
     async def start(self) -> None:
@@ -172,17 +174,17 @@ class WebSocketConnection(Connection):
             self._ws = await websockets.connect(self._config.address, additional_headers=self._config.headers)
             self._ws.start_keepalive()
         except websockets.exceptions.InvalidStatus as e:
-            logger.error(f"Connection failed: {e}")
-            logger.error(f"Status code: {e.response.status_code}")
-            logger.error(f"Response headers: {e.response.headers}")
+            logger.exception("Connection failed")
+            logger.exception("Status code: %s", e.response.status_code)
+            logger.exception("Response headers: %s", e.response.headers)
             self._closed_event.set()
             return
-        except Exception as e:
-            logger.error(f"Failed to connect to {self._config.address}: {str(e)}")
+        except Exception:
+            logger.exception("Failed to connect to %s", self._config.address)
             self._closed_event.set()
             raise
 
-        logger.info(f"WebSocket client connected to {self._config.address}")
+        logger.info("WebSocket client connected to %s", self._config.address)
 
     async def close(self) -> None:
         """关闭客户端（断开服务端连接）"""
@@ -196,14 +198,12 @@ class WebSocketChannelProvider(DuplexChannelProvider):
     """WebSocket Channel提供者"""
 
     def __init__(
-            self,
-            config: WebSocketConnectionConfig,
-            *,
-            container: Optional[IoCContainer] = None,
-
+        self,
+        config: WebSocketConnectionConfig,
+        *,
+        container: Optional[IoCContainer] = None,
     ):
         connection = WebSocketConnection(config)
         super().__init__(
-            provider_connection=connection,
-            container=Container(parent=container, name="WebSocketChannelProvider")
+            provider_connection=connection, container=Container(parent=container, name="WebSocketChannelProvider")
         )

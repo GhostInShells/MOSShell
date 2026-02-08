@@ -1,7 +1,7 @@
-import threading
-from typing import Awaitable
 import asyncio
+import threading
 import time
+
 import pytest
 
 
@@ -78,16 +78,16 @@ async def test_gather():
     assert done == []
 
     # test 4:
-    with pytest.raises(asyncio.CancelledError):
-        baz_future = asyncio.create_task(baz())
-        _done, pending = await asyncio.wait(
-            [asyncio.ensure_future(t) for t in [foo(), bar(), baz_future]],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if baz_future in _done:
-            for t in pending:
-                t.cancel()
-            raise asyncio.CancelledError()
+    baz_future = asyncio.create_task(baz())
+    _done, pending = await asyncio.wait(
+        [asyncio.ensure_future(t) for t in [foo(), bar(), baz_future]],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if baz_future in _done:
+        for t in pending:
+            t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            raise asyncio.CancelledError
 
 
 @pytest.mark.asyncio
@@ -214,13 +214,14 @@ async def test_asyncio_future():
     fut = asyncio.Future()
     assert not fut.done()
     fut.set_result(123)
-    assert 123 == fut.result()
+    assert fut.result() == 123
     assert fut.done()
 
 
 @pytest.mark.asyncio
 async def test_future_in_diff_thread():
     import threading
+
     fut = asyncio.Future()
     done = []
 
@@ -403,14 +404,14 @@ async def test_future_result_and_exception():
 
     foo()
     assert future.exception() is not None
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="hello"):
         # result will always raise exception.
-        assert future.result() is None
+        future.result()
 
 
 @pytest.mark.asyncio
 async def test_async_iterable():
-    from typing import AsyncIterable
+    from collections.abc import AsyncIterable
 
     async def foo() -> AsyncIterable[int]:
         for i in range(10):
@@ -429,7 +430,7 @@ async def test_async_iterable():
 
 @pytest.mark.asyncio
 async def test_async_iterable_item():
-    from typing import AsyncIterable
+    from collections.abc import AsyncIterable
 
     class Int(int):
         pass

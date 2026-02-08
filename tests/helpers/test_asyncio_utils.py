@@ -1,11 +1,15 @@
-from ghoshell_moss.core.helpers.asyncio_utils import (
-    ThreadSafeEvent, ensure_tasks_done_or_cancel, TreeNotify,
-    ThreadSafeFuture,
-)
-from threading import Thread
 import asyncio
-import pytest
 import threading
+from threading import Thread
+
+import pytest
+
+from ghoshell_moss.core.helpers.asyncio_utils import (
+    ThreadSafeEvent,
+    ThreadSafeFuture,
+    TreeNotify,
+    ensure_tasks_done_or_cancel,
+)
 
 
 def test_event_set_and_wait():
@@ -135,7 +139,7 @@ async def test_notify_tree_baseline():
         order.append("baz")
 
     await foo()
-    assert order[2] == 'foo'
+    assert order[2] == "foo"
 
 
 def test_wait_the_event_timeout():

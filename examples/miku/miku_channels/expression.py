@@ -1,8 +1,10 @@
-from ghoshell_moss.core.py_channel import PyChannel
-import live2d.v3 as live2d
 import asyncio
 
-expression_chan = PyChannel(name='expression')
+import live2d.v3 as live2d
+
+from ghoshell_moss.core.py_channel import PyChannel
+
+expression_chan = PyChannel(name="expression")
 
 
 @expression_chan.build.command()

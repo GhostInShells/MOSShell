@@ -1,6 +1,6 @@
-
 from abc import ABC, abstractmethod
 from typing import Any
+
 
 class BaseChat(ABC):
     def __init__(self):
@@ -24,7 +24,7 @@ class BaseChat(ABC):
     @abstractmethod
     def start_ai_response(self):
         """开始AI回复"""
-    
+
     @abstractmethod
     def update_ai_response(self, chunk: str, is_thinking: bool = False):
         """更新AI的流式回复"""
@@ -40,4 +40,3 @@ class BaseChat(ABC):
     @abstractmethod
     async def run(self):
         pass
-

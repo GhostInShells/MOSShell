@@ -1,24 +1,21 @@
 import rclpy
+from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from control_msgs.action import FollowJointTrajectory
-from typing import List
 
 
 class JetArmActionClient(Node):
     def __init__(self):
-        super().__init__('jetarm_action_client')
+        super().__init__("jetarm_action_client")
 
         # 创建 Action 客户端
         self.action_client = ActionClient(
-            self,
-            FollowJointTrajectory,
-            '/joint_trajectory_controller/follow_joint_trajectory'
+            self, FollowJointTrajectory, "/joint_trajectory_controller/follow_joint_trajectory"
         )
 
         self.get_logger().info("Action客户端已初始化")
 
-    def send_goal(self, joint_names: List[str], positions: List[float], time_sec: float = 5.0):
+    def send_goal(self, joint_names: list[str], positions: list[float], time_sec: float = 5.0):
         """发送轨迹目标"""
 
         # 等待 Action 服务器可用
@@ -32,6 +29,7 @@ class JetArmActionClient(Node):
 
         # 创建轨迹点
         from trajectory_msgs.msg import JointTrajectoryPoint
+
         point = JointTrajectoryPoint()
         point.positions = positions
         point.time_from_start.sec = int(time_sec)
@@ -45,7 +43,7 @@ class JetArmActionClient(Node):
 
     def cancel_goal(self):
         """取消当前目标"""
-        if hasattr(self, '_goal_handle') and self._goal_handle:
+        if hasattr(self, "_goal_handle") and self._goal_handle:
             self.get_logger().info("取消目标")
             return self._goal_handle.cancel_goal_async()
 
@@ -58,7 +56,7 @@ def main(args=None):
 
     try:
         # 发送目标
-        joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'r_joint']
+        joint_names = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
         positions = [0.0, 1.0, -1.57, -1.57, 0.2, 0.0]
 
         future = action_client.send_goal(joint_names, positions, 3.0)
@@ -78,5 +76,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

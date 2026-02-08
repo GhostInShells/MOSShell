@@ -1,48 +1,53 @@
-
+import asyncio
 import contextvars
 import inspect
-from typing import Type, Optional, List, Callable, Dict, Tuple, Any, Coroutine, Awaitable
+import logging
+import threading
+from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import copy_context
+from typing import Any, Optional
+
+from ghoshell_common.helpers import uuid
+from ghoshell_container import BINDING, INSTANCE, Container, IoCContainer, Provider, provide
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.channel import (
-    ChannelBroker, Builder, Channel, LifecycleFunction, StringType, CommandFunction, ChannelMeta, R,
+    Builder,
+    Channel,
+    ChannelBroker,
+    ChannelMeta,
+    CommandFunction,
     ContextMessageFunction,
+    LifecycleFunction,
+    R,
+    StringType,
 )
-from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandTask
-from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
-from ghoshell_moss.core.concepts.states import StateStore, MemoryStateStore, StateModel
-from ghoshell_moss.core.helpers.func import unwrap_callable_or_value
+from ghoshell_moss.core.concepts.command import Command, CommandTask, PyCommand
+from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
+from ghoshell_moss.core.concepts.states import MemoryStateStore, StateModel, StateStore
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ensure_tasks_done_or_cancel
-from ghoshell_container import (
-    Container, IoCContainer, INSTANCE, BINDING, Provider, provide, set_container
-)
-from ghoshell_common.helpers import uuid
-from contextvars import copy_context
-import asyncio
-import logging
-import threading
+from ghoshell_moss.core.helpers.func import unwrap_callable_or_value
 
-__all__ = ['PyChannel', 'PyChannelBuilder', 'PyChannelBroker']
+__all__ = ["PyChannel", "PyChannelBroker", "PyChannelBuilder"]
 
 
 class PyChannelBuilder(Builder):
-
     def __init__(self, *, name: str, description: str, block: bool):
         self.name = name
         self.block = block
         self.description = description
         self.description_fn: Optional[StringType] = None
         self.available_fn: Optional[Callable[[], bool]] = None
-        self.state_models: List[StateModel] = []
-        self.policy_run_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.policy_pause_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_clear_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_start_up_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.on_stop_funcs: List[Tuple[LifecycleFunction, bool]] = []
-        self.providers: List[Provider] = []
+        self.state_models: list[StateModel] = []
+        self.policy_run_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self.policy_pause_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self.on_clear_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self.on_start_up_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self.on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self.providers: list[Provider] = []
         self.context_message_function: Optional[ContextMessageFunction] = None
-        self.commands: Dict[str, Command] = {}
-        self.contracts: List = []
+        self.commands: dict[str, Command] = {}
+        self.contracts: list = []
         self.container_instances = {}
 
     def with_description(self) -> Callable[[StringType], StringType]:
@@ -59,7 +64,7 @@ class PyChannelBuilder(Builder):
 
         return wrapper
 
-    def state_model(self) -> Callable[[Type[StateModel]], StateModel]:
+    def state_model(self) -> Callable[[type[StateModel]], StateModel]:
         """
         注册一个状态模型.
 
@@ -69,7 +74,7 @@ class PyChannelBuilder(Builder):
             state_desc = "demo state model"
         """
 
-        def wrapper(model: Type[StateModel]) -> StateModel:
+        def wrapper(model: type[StateModel]) -> StateModel:
             instance = model()
             self.state_models.append(instance)
             return instance
@@ -81,18 +86,18 @@ class PyChannelBuilder(Builder):
         return self
 
     def command(
-            self,
-            *,
-            name: str = "",
-            chan: str | None = None,
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[List[str]] = None,
-            interface: Optional[StringType] = None,
-            available: Optional[Callable[[], bool]] = None,
-            block: Optional[bool] = None,
-            call_soon: bool = False,
-            return_command: bool = False,
+        self,
+        *,
+        name: str = "",
+        chan: str | None = None,
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        tags: Optional[list[str]] = None,
+        interface: Optional[StringType] = None,
+        available: Optional[Callable[[], bool]] = None,
+        block: Optional[bool] = None,
+        call_soon: bool = False,
+        return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         def wrapper(func: CommandFunction) -> CommandFunction:
             command = PyCommand(
@@ -143,11 +148,11 @@ class PyChannelBuilder(Builder):
         self.providers.extend(providers)
         return self
 
-    def with_contracts(self, *contracts: Type) -> Self:
+    def with_contracts(self, *contracts: type) -> Self:
         self.contracts.extend(contracts)
         return self
 
-    def with_binding(self, contract: Type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
+    def with_binding(self, contract: type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
         if binding and isinstance(contract, type) and isinstance(binding, contract):
             self.container_instances[contract] = binding
             return self
@@ -158,26 +163,26 @@ class PyChannelBuilder(Builder):
 
 
 class PyChannel(Channel):
-
     def __init__(
-            self,
-            *,
-            name: str,
-            description: str = "",
-            # todo: block 还是叫 blocking 吧.
-            block: bool = True,
-            dynamic: bool | None = None
+        self,
+        *,
+        name: str,
+        description: str = "",
+        # todo: block 还是叫 blocking 吧.
+        block: bool = True,
+        dynamic: bool | None = None,
     ):
         """
         :param name: channel 的名称.
         :param description: channel 的静态描述, 给模型看的.
         :param block: channel 里默认的 command 类型, 是阻塞的还是非阻塞的.
-        :param dynamic: 这个 channel 对大模型而言是否是动态的. 如果是动态的, 大模型每一帧思考时, 都会从 channel 获取最新的状态.
+        :param dynamic: 这个 channel 对大模型而言是否是动态的.
+                        如果是动态的, 大模型每一帧思考时, 都会从 channel 获取最新的状态.
         """
         self._name = name
         self._description = description
         self._broker: Optional[ChannelBroker] = None
-        self._children: Dict[str, Channel] = {}
+        self._children: dict[str, Channel] = {}
         self._block = block
         self._dynamic = dynamic
         # decorators
@@ -213,7 +218,7 @@ class PyChannel(Channel):
         self._children[name] = child
         return child
 
-    def children(self) -> Dict[str, "Channel"]:
+    def children(self) -> dict[str, "Channel"]:
         return self._children
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
@@ -229,7 +234,7 @@ class PyChannel(Channel):
         )
         return self._broker
 
-    def _get_children_names(self) -> List[str]:
+    def _get_children_names(self) -> list[str]:
         return list(self._children.keys())
 
     def is_running(self) -> bool:
@@ -240,17 +245,16 @@ class PyChannel(Channel):
 
 
 class PyChannelBroker(ChannelBroker):
-
     def __init__(
-            self,
-            name: str,
-            *,
-            set_chan_ctx_fn: Callable[[], None],
-            get_children_fn: Callable[[], List[str]],
-            builder: PyChannelBuilder,
-            container: Optional[IoCContainer] = None,
-            uid: Optional[str] = None,
-            dynamic: bool | None = None,
+        self,
+        name: str,
+        *,
+        set_chan_ctx_fn: Callable[[], None],
+        get_children_fn: Callable[[], list[str]],
+        builder: PyChannelBuilder,
+        container: Optional[IoCContainer] = None,
+        uid: Optional[str] = None,
+        dynamic: bool | None = None,
     ):
         # todo: 考虑移除 channel 级别的 container, 降低分形构建的理解复杂度. 也许不移除才是最好的.
         container = Container(parent=container, name=f"moss/py_channel/{name}/broker")
@@ -271,7 +275,7 @@ class PyChannelBroker(ChannelBroker):
         self._stop_event = ThreadSafeEvent()
         self._failed_exception: Optional[Exception] = None
         self._policy_is_running = ThreadSafeEvent()
-        self._policy_tasks: List[asyncio.Task] = []
+        self._policy_tasks: list[asyncio.Task] = []
         self._policy_lock = threading.Lock()
         self._starting = False
         self._started = False
@@ -359,9 +363,7 @@ class PyChannelBroker(ChannelBroker):
             for refreshed in done:
                 if isinstance(refreshed, Exception):
                     command = commands[idx]
-                    self._logger.error(
-                        "refresh command meta failed on command %s: %s", command, refreshed,
-                    )
+                    self._logger.exception("Refresh command meta failed on command %s", command)
                 idx += 1
 
         for command in commands:
@@ -369,7 +371,7 @@ class PyChannelBroker(ChannelBroker):
                 command_metas.append(command.meta())
             except Exception as exc:
                 # 异常的命令直接不返回了.
-                self._logger.error(f"exception on get meta from command {command.name}: {exc}")
+                self._logger.exception("Exception on get meta from command %s", command.name())
 
         name = self._builder.name
         new_context_messages = []
@@ -377,8 +379,8 @@ class PyChannelBroker(ChannelBroker):
             try:
                 new_context_messages = await refresh_message_task
             except Exception as exc:
-                self._logger.error(f"exception on refresh message task {refresh_message_task}: {exc}")
-                raise exc
+                self._logger.exception("Exception on refresh message task %s", refresh_message_task)
+                raise
 
         meta = ChannelMeta(
             name=name,
@@ -392,7 +394,7 @@ class PyChannelBroker(ChannelBroker):
         meta.commands = command_metas
         return meta
 
-    def commands(self, available_only: bool = True) -> Dict[str, Command]:
+    def commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
@@ -402,8 +404,8 @@ class PyChannelBroker(ChannelBroker):
         return result
 
     def get_command(
-            self,
-            name: str,
+        self,
+        name: str,
     ) -> Optional[Command]:
         return self._builder.commands.get(name, None)
 
@@ -435,7 +437,7 @@ class PyChannelBroker(ChannelBroker):
                     self._policy_is_running.set()
 
         except asyncio.CancelledError:
-            self._logger.info(f"Policy tasks cancelled")
+            self._logger.info("Policy tasks cancelled")
             return
         except Exception as e:
             self._fail(e)
@@ -478,7 +480,7 @@ class PyChannelBroker(ChannelBroker):
             self._fail(e)
 
     def _fail(self, error: Exception) -> None:
-        self._logger.exception(error)
+        self._logger.exception("Channel failed")
         self._starting = False
         self._stop_event.set()
 
@@ -492,13 +494,13 @@ class PyChannelBroker(ChannelBroker):
             clear_tasks.append(task)
         try:
             await asyncio.gather(*clear_tasks, return_exceptions=False)
-        except asyncio.CancelledError as e:
-            self._logger.error(f"Cancelled due to {e}")
-        except FatalError as e:
-            self._logger.exception(e)
+        except asyncio.CancelledError:
+            self._logger.exception("Clear cancelled")
+        except FatalError:
+            self._logger.exception("Clear failed with fatal error")
             raise
-        except Exception as e:
-            self._logger.exception(e)
+        except Exception:
+            self._logger.exception("Clear failed")
 
     async def start(self) -> None:
         if self._starting:
@@ -553,7 +555,7 @@ class PyChannelBroker(ChannelBroker):
         return result
 
     def _get_execute_func(self, name: str) -> Callable[..., Coroutine | Awaitable]:
-        """重写这个函数可以重写调用逻辑实现. """
+        """重写这个函数可以重写调用逻辑实现."""
         command = self.get_command(name)
         if command is None:
             raise NotImplementedError(f"Command '{name}' is not implemented.")
@@ -590,7 +592,7 @@ class PyChannelBroker(ChannelBroker):
             done = await asyncio.gather(*on_stop_calls, return_exceptions=True)
             for r in done:
                 if isinstance(r, Exception):
-                    self._logger.error(f"channel %s on stop function failed: %s", self._name, r)
+                    self._logger.error("channel %s on stop function failed: %s", self._name, r)
 
     @property
     def states(self) -> StateStore:

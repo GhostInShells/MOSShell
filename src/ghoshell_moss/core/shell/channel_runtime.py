@@ -1,17 +1,17 @@
-
-import contextvars
-import logging
-
-from typing import Dict, Optional, Any, List, Tuple, Callable, Coroutine
-from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta
-from ghoshell_moss.core.concepts.command import CommandTaskStack, CommandTask, Command
-from ghoshell_moss.core.concepts.errors import FatalError, CommandError, CommandErrorCode
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_common.contracts import LoggerItf
-from ghoshell_container import IoCContainer, set_container
 import asyncio
+import logging
+from collections.abc import Callable, Coroutine
+from typing import Optional
 
-ChannelPath = List[str]
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_container import IoCContainer
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskStack
+from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode, FatalError
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+
+ChannelPath = list[str]
 DispatchTaskCallback = Callable[[Channel, ChannelPath, CommandTask], Coroutine[None, None, None]]
 
 
@@ -21,12 +21,12 @@ class ChannelRuntime:
     """
 
     def __init__(
-            self,
-            container: IoCContainer,
-            channel: Channel,
-            dispatch_task_callback: DispatchTaskCallback,
-            *,
-            stop_event: Optional[ThreadSafeEvent] = None,
+        self,
+        container: IoCContainer,
+        channel: Channel,
+        dispatch_task_callback: DispatchTaskCallback,
+        *,
+        stop_event: Optional[ThreadSafeEvent] = None,
     ):
         # 容器应该要已经运行过了. 关键的抽象也被设置过.
         # channel runtime 不需要有自己的容器. 也不需要关闭它.
@@ -47,12 +47,12 @@ class ChannelRuntime:
 
         # 输入队列, 只是为了足够快地输入. 当执行 cancel 的时候, executing_queue 会被清空, 但 pending queue 不会被清空.
         # 这种队列是为了 call_soon 的特殊 feature 做准备, 同时又不会在执行时阻塞解析. 解析的速度要求是全并行的.
-        self._pending_queue: asyncio.Queue[Tuple[ChannelPath, CommandTask] | None] = asyncio.Queue()
+        self._pending_queue: asyncio.Queue[tuple[ChannelPath, CommandTask] | None] = asyncio.Queue()
         self._is_idle_event = asyncio.Event()
         self._is_idle_event.set()
 
         # 消费队列. 如果队列里的数据是 None, 表示这个队列被丢弃了.
-        self._executing_queue: asyncio.Queue[Tuple[ChannelPath, CommandTask] | None] = asyncio.Queue()
+        self._executing_queue: asyncio.Queue[tuple[ChannelPath, CommandTask] | None] = asyncio.Queue()
         self._executing_block_task: bool = False
 
         # main loop
@@ -134,7 +134,7 @@ class ChannelRuntime:
     def is_available(self) -> bool:
         return self.is_running() and self.channel.broker.is_connected() and self.channel.broker.is_available()
 
-    def commands(self, available_only: bool = True) -> Dict[str, Command]:
+    def commands(self, available_only: bool = True) -> dict[str, Command]:
         self._check_running()
         if not self.is_available():
             return {}
@@ -162,30 +162,30 @@ class ChannelRuntime:
         if task is None:
             return
         chan = task.meta.chan
-        if chan == "" or chan == self.name:
+        if chan in {"", self.name}:
             self.add_task_with_paths([], task)
         else:
             paths = Channel.split_channel_path_to_names(chan)
             self.add_task_with_paths(paths, task)
 
-    def add_task_with_paths(self, channel_path: List[str], task: CommandTask) -> None:
+    def add_task_with_paths(self, channel_path: list[str], task: CommandTask) -> None:
         if not self.is_running():
-            self.logger.error(f"Channel `{self.name}` is not running, receiving task {task}")
+            self.logger.error("Channel `%s` is not running, receiving task %s", self.name, task)
             return
 
         try:
             _queue = self._pending_queue
-            task.set_state('pending')
+            task.set_state("pending")
             # 记录发送路径.
             task.send_through.append(self.name)
             _queue.put_nowait((channel_path, task))
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Add task failed")
 
     async def clear_pending(self) -> None:
-        """无锁的清空实现. """
+        """无锁的清空实现."""
         self._check_running()
         try:
             # 先清空自身的队列.
@@ -201,7 +201,7 @@ class ChannelRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.logger.exception(exc)
+            self.logger.exception("Clear pending failed")
             # 所有没有管理的异常, 都是致命异常.
             self._stop_event.set()
             raise exc
@@ -218,11 +218,11 @@ class ChannelRuntime:
         except asyncio.CancelledError as e:
             self.logger.info("Cancelling pending task: %r", e)
 
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Consume pending loop failed")
             self._stop_event.set()
         finally:
-            self.logger.info('Finished executing loop')
+            self.logger.info("Finished executing loop")
 
     # --- executing loop --- #
 
@@ -236,7 +236,7 @@ class ChannelRuntime:
         if task is None:
             return
         elif task.done():
-            self.logger.error(f"received executing task `{task}` already done")
+            self.logger.error("received executing task `%s` already done", task)
             return
 
         if self._defer_clear:
@@ -266,8 +266,8 @@ class ChannelRuntime:
                 self._executing_queue.put_nowait((path, task))
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Add executing task failed")
             self._stop_event.set()
 
     async def cancel_executing(self) -> None:
@@ -276,16 +276,16 @@ class ChannelRuntime:
             # 准备并发 cancel 所有的运行.
             await self._cancel_self_executing()
         except asyncio.CancelledError:
-            self.logger.error("channel %s cancel running but canceled", self.name)
+            self.logger.exception("channel %s cancel running but canceled", self.name)
             raise
         except Exception as exc:
             # 理论上不会有异常抛出来.
-            self.logger.exception(exc)
+            self.logger.exception("Cancel executing failed")
             self._stop_event.set()
-            raise FatalError("channel %s cancel executing failed" % self.name) from exc
+            raise FatalError(f"channel {self.name} cancel executing failed") from exc
 
     async def _cancel_self_executing(self) -> None:
-        """取消掉正在运行中的 task. """
+        """取消掉正在运行中的 task."""
         old_queue = self._executing_queue
         # 创建新队列.
         self._executing_queue = asyncio.Queue()
@@ -362,9 +362,9 @@ class ChannelRuntime:
                         continue
 
         except asyncio.CancelledError as e:
-            self.logger.info(f"channel `{self.name}` loop got cancelled: %s", e)
-        except Exception as e:
-            self.logger.exception(e)
+            self.logger.info("channel `%s` loop got cancelled: %s", self.name, e)
+        except Exception:
+            self.logger.exception("Executing loop failed")
             self._stop_event.set()
 
     async def _pause_self_policy(self) -> None:
@@ -374,12 +374,12 @@ class ChannelRuntime:
             await self.channel.broker.policy_pause()
         except asyncio.CancelledError:
             pass
-        except FatalError as e:
-            self.logger.exception(e)
+        except FatalError:
+            self.logger.exception("Pause policy failed with fatal error")
             self._stop_event.set()
             raise
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Pause policy failed")
 
     async def _start_self_policy(self) -> None:
         try:
@@ -389,12 +389,12 @@ class ChannelRuntime:
             await self.channel.broker.policy_run()
         except asyncio.CancelledError:
             pass
-        except FatalError as e:
-            self.logger.exception(e)
+        except FatalError:
+            self.logger.exception("Start policy failed with fatal error")
             self._stop_event.set()
             raise
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Start policy failed")
 
     async def _dispatch_child_task(self, path: ChannelPath, task: CommandTask) -> None:
         if len(path) == 0:
@@ -404,13 +404,17 @@ class ChannelRuntime:
         children = self.channel.children()
         if child_name not in children:
             task.cancel("the channel not found")
-            self.logger.error(f"receive task from channel `{task.meta.chan}` which not found at {self.name}")
+            self.logger.error(
+                "receive task from channel `%s` which not found at %s",
+                task.meta.chan,
+                self.name,
+            )
             return
         child = children[child_name]
         await self._dispatch_task_callback(child, path, task)
 
     async def _execute_task(self, cmd_task: CommandTask) -> None:
-        """执行一个 task. 核心目标是最快速度完成调度逻辑, 或者按需阻塞链路.  """
+        """执行一个 task. 核心目标是最快速度完成调度逻辑, 或者按需阻塞链路."""
         try:
             block = cmd_task.meta.block
             if block:
@@ -420,13 +424,13 @@ class ChannelRuntime:
                 _ = asyncio.create_task(self._execute_self_channel_task_within_group(cmd_task))
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception:
             # 不应该抛出任何异常.
-            self.logger.exception(e)
+            self.logger.exception("Execute task failed")
             self._stop_event.set()
 
     async def _execute_self_channel_task_within_group(self, cmd_task: CommandTask) -> None:
-        """运行属于自己这个 channel 的 task, 让它进入到 executing group 中. """
+        """运行属于自己这个 channel 的 task, 让它进入到 executing group 中."""
         # 运行一个任务. 理论上是很快的调度.
         # 这个任务不运行结束, 不会释放运行状态.
         asyncio_task = asyncio.create_task(self._ensure_self_task_done(cmd_task))
@@ -451,9 +455,9 @@ class ChannelRuntime:
             return
         except FatalError:
             raise
-        except Exception as e:
+        except Exception:
             # 没有到 Fatal Error 级别的都忽视.
-            self.logger.exception(e)
+            self.logger.exception("Execute task loop failed")
         finally:
             if asyncio_task and asyncio_task in self._executing_task_group:
                 self._executing_task_group.remove(asyncio_task)
@@ -461,7 +465,7 @@ class ChannelRuntime:
                 cmd_task.cancel()
 
     async def _ensure_self_task_done(self, task: CommandTask) -> None:
-        """在一个栈中运行 task. 要确保 task 的最终状态一定被更新了, 不是空. """
+        """在一个栈中运行 task. 要确保 task 的最终状态一定被更新了, 不是空."""
         try:
             # 真的轮到自己执行它了.
             task.set_state("running")
@@ -479,11 +483,11 @@ class ChannelRuntime:
 
         except asyncio.CancelledError as e:
             self.logger.info("execute command `%r` is cancelled: %s", task, e)
-            task.cancel("cancelled: %s" % e)
+            task.cancel(f"cancelled: {e}")
             # 冒泡.
             raise
         except FatalError as e:
-            self.logger.exception(e)
+            self.logger.exception("Execute task failed with fatal error")
             self._stop_event.set()
             task.fail(e)
             raise
@@ -491,7 +495,7 @@ class ChannelRuntime:
             self.logger.info("execute command `%r`error: %s", task, e)
             task.fail(e)
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.exception("Execute task failed")
             task.fail(e)
         finally:
             # 不要留尾巴?
@@ -499,10 +503,10 @@ class ChannelRuntime:
                 task.cancel()
 
     async def _fulfill_task_with_its_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandTaskStack,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandTaskStack,
+        depth: int = 0,
     ) -> None:
         try:
             # 非阻塞函数不能返回 stack
@@ -539,7 +543,8 @@ class ChannelRuntime:
                     sub_task.resolve(result)
 
             # 完成了所有子节点的调度后, 通知回调函数.
-            # !!! 注意, 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成, 如果有异常又是否要取消所有的 child task.
+            # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
+            #          如果有异常又是否要取消所有的 child task.
             await stack.success(owner)
             return
         except FatalError:
@@ -547,7 +552,7 @@ class ChannelRuntime:
         except Exception as e:
             # 不要留尾巴?
             # 有异常时, 同时取消所有动态生成的 task 对象. 包括发送出去的. 这样就不会有阻塞了.
-            self.logger.exception(e)
+            self.logger.exception("Fulfill task stack failed")
             for child in stack.generated():
                 if not child.done():
                     child.fail(e)
@@ -572,10 +577,10 @@ class ChannelRuntime:
             await gathered
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            self.logger.exception(e)
+        except Exception:
+            self.logger.exception("Channel main loop failed")
         finally:
-            self.logger.info(f"channel {self.name} main loop done")
+            self.logger.info("channel %s main loop done", self.name)
 
     async def clear(self) -> None:
         self._check_running()
@@ -591,12 +596,12 @@ class ChannelRuntime:
         except asyncio.CancelledError:
             self.logger.info("channel %s clearing is cancelled", self.name)
             raise
-        except FatalError as e:
-            self.logger.exception(e)
+        except FatalError:
+            self.logger.exception("Clear failed with fatal error")
             self._stop_event.set()
             raise
-        except Exception as exc:
-            self.logger.exception(exc)
+        except Exception:
+            self.logger.exception("Clear failed")
             raise
 
     async def _call_self_clear_callback(self) -> None:
@@ -607,9 +612,9 @@ class ChannelRuntime:
             if self.is_available():
                 await self.channel.broker.clear()
         except asyncio.CancelledError:
-            self.logger.info(f"channel {self.name} clearing is cancelled")
-        except Exception as exc:
-            self.logger.exception(exc)
+            self.logger.info("channel %s clearing is cancelled", self.name)
+        except Exception:
+            self.logger.exception("Clear callback failed")
 
     async def defer_clear(self) -> None:
         """
@@ -625,4 +630,3 @@ class ChannelRuntime:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-        return None

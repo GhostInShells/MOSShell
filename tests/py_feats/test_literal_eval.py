@@ -1,4 +1,5 @@
 from ast import literal_eval
+
 import pytest
 
 
@@ -10,4 +11,4 @@ def test_literal_eval():
         literal_eval("true")
     assert literal_eval("[1, 2, 3]") == [1, 2, 3]
     assert literal_eval("(1, 2, 3)") == (1, 2, 3)
-    assert literal_eval("{'a': 1}") == {'a': 1}
+    assert literal_eval("{'a': 1}") == {"a": 1}

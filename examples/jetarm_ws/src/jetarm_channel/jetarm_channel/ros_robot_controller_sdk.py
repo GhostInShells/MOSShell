@@ -1,10 +1,11 @@
 # stm32 python sdk
 import enum
-import time
 import queue
 import struct
-import serial
 import threading
+import time
+
+import serial
 
 
 class PacketControllerState(enum.IntEnum):
@@ -48,22 +49,262 @@ class PacketReportKeyEvents(enum.IntEnum):
 
 
 crc8_table = [
-    0, 94, 188, 226, 97, 63, 221, 131, 194, 156, 126, 32, 163, 253, 31, 65,
-    157, 195, 33, 127, 252, 162, 64, 30, 95, 1, 227, 189, 62, 96, 130, 220,
-    35, 125, 159, 193, 66, 28, 254, 160, 225, 191, 93, 3, 128, 222, 60, 98,
-    190, 224, 2, 92, 223, 129, 99, 61, 124, 34, 192, 158, 29, 67, 161, 255,
-    70, 24, 250, 164, 39, 121, 155, 197, 132, 218, 56, 102, 229, 187, 89, 7,
-    219, 133, 103, 57, 186, 228, 6, 88, 25, 71, 165, 251, 120, 38, 196, 154,
-    101, 59, 217, 135, 4, 90, 184, 230, 167, 249, 27, 69, 198, 152, 122, 36,
-    248, 166, 68, 26, 153, 199, 37, 123, 58, 100, 134, 216, 91, 5, 231, 185,
-    140, 210, 48, 110, 237, 179, 81, 15, 78, 16, 242, 172, 47, 113, 147, 205,
-    17, 79, 173, 243, 112, 46, 204, 146, 211, 141, 111, 49, 178, 236, 14, 80,
-    175, 241, 19, 77, 206, 144, 114, 44, 109, 51, 209, 143, 12, 82, 176, 238,
-    50, 108, 142, 208, 83, 13, 239, 177, 240, 174, 76, 18, 145, 207, 45, 115,
-    202, 148, 118, 40, 171, 245, 23, 73, 8, 86, 180, 234, 105, 55, 213, 139,
-    87, 9, 235, 181, 54, 104, 138, 212, 149, 203, 41, 119, 244, 170, 72, 22,
-    233, 183, 85, 11, 136, 214, 52, 106, 43, 117, 151, 201, 74, 20, 246, 168,
-    116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53
+    0,
+    94,
+    188,
+    226,
+    97,
+    63,
+    221,
+    131,
+    194,
+    156,
+    126,
+    32,
+    163,
+    253,
+    31,
+    65,
+    157,
+    195,
+    33,
+    127,
+    252,
+    162,
+    64,
+    30,
+    95,
+    1,
+    227,
+    189,
+    62,
+    96,
+    130,
+    220,
+    35,
+    125,
+    159,
+    193,
+    66,
+    28,
+    254,
+    160,
+    225,
+    191,
+    93,
+    3,
+    128,
+    222,
+    60,
+    98,
+    190,
+    224,
+    2,
+    92,
+    223,
+    129,
+    99,
+    61,
+    124,
+    34,
+    192,
+    158,
+    29,
+    67,
+    161,
+    255,
+    70,
+    24,
+    250,
+    164,
+    39,
+    121,
+    155,
+    197,
+    132,
+    218,
+    56,
+    102,
+    229,
+    187,
+    89,
+    7,
+    219,
+    133,
+    103,
+    57,
+    186,
+    228,
+    6,
+    88,
+    25,
+    71,
+    165,
+    251,
+    120,
+    38,
+    196,
+    154,
+    101,
+    59,
+    217,
+    135,
+    4,
+    90,
+    184,
+    230,
+    167,
+    249,
+    27,
+    69,
+    198,
+    152,
+    122,
+    36,
+    248,
+    166,
+    68,
+    26,
+    153,
+    199,
+    37,
+    123,
+    58,
+    100,
+    134,
+    216,
+    91,
+    5,
+    231,
+    185,
+    140,
+    210,
+    48,
+    110,
+    237,
+    179,
+    81,
+    15,
+    78,
+    16,
+    242,
+    172,
+    47,
+    113,
+    147,
+    205,
+    17,
+    79,
+    173,
+    243,
+    112,
+    46,
+    204,
+    146,
+    211,
+    141,
+    111,
+    49,
+    178,
+    236,
+    14,
+    80,
+    175,
+    241,
+    19,
+    77,
+    206,
+    144,
+    114,
+    44,
+    109,
+    51,
+    209,
+    143,
+    12,
+    82,
+    176,
+    238,
+    50,
+    108,
+    142,
+    208,
+    83,
+    13,
+    239,
+    177,
+    240,
+    174,
+    76,
+    18,
+    145,
+    207,
+    45,
+    115,
+    202,
+    148,
+    118,
+    40,
+    171,
+    245,
+    23,
+    73,
+    8,
+    86,
+    180,
+    234,
+    105,
+    55,
+    213,
+    139,
+    87,
+    9,
+    235,
+    181,
+    54,
+    104,
+    138,
+    212,
+    149,
+    203,
+    41,
+    119,
+    244,
+    170,
+    72,
+    22,
+    233,
+    183,
+    85,
+    11,
+    136,
+    214,
+    52,
+    106,
+    43,
+    117,
+    151,
+    201,
+    74,
+    20,
+    246,
+    168,
+    116,
+    42,
+    200,
+    150,
+    21,
+    75,
+    169,
+    247,
+    182,
+    232,
+    10,
+    84,
+    215,
+    137,
+    107,
+    53,
 ]
 
 
@@ -86,18 +327,18 @@ class SBusStatus:
 
 class Board:
     buttons_map = {
-        'GAMEPAD_BUTTON_MASK_L2': 0x0001,
-        'GAMEPAD_BUTTON_MASK_R2': 0x0002,
-        'GAMEPAD_BUTTON_MASK_SELECT': 0x0004,
-        'GAMEPAD_BUTTON_MASK_START': 0x0008,
-        'GAMEPAD_BUTTON_MASK_L3': 0x0020,
-        'GAMEPAD_BUTTON_MASK_R3': 0x0040,
-        'GAMEPAD_BUTTON_MASK_CROSS': 0x0100,
-        'GAMEPAD_BUTTON_MASK_CIRCLE': 0x0200,
-        'GAMEPAD_BUTTON_MASK_SQUARE': 0x0800,
-        'GAMEPAD_BUTTON_MASK_TRIANGLE': 0x1000,
-        'GAMEPAD_BUTTON_MASK_L1': 0x4000,
-        'GAMEPAD_BUTTON_MASK_R1': 0x8000
+        "GAMEPAD_BUTTON_MASK_L2": 0x0001,
+        "GAMEPAD_BUTTON_MASK_R2": 0x0002,
+        "GAMEPAD_BUTTON_MASK_SELECT": 0x0004,
+        "GAMEPAD_BUTTON_MASK_START": 0x0008,
+        "GAMEPAD_BUTTON_MASK_L3": 0x0020,
+        "GAMEPAD_BUTTON_MASK_R3": 0x0040,
+        "GAMEPAD_BUTTON_MASK_CROSS": 0x0100,
+        "GAMEPAD_BUTTON_MASK_CIRCLE": 0x0200,
+        "GAMEPAD_BUTTON_MASK_SQUARE": 0x0800,
+        "GAMEPAD_BUTTON_MASK_TRIANGLE": 0x1000,
+        "GAMEPAD_BUTTON_MASK_L1": 0x4000,
+        "GAMEPAD_BUTTON_MASK_R1": 0x8000,
     }
 
     def __init__(self, device="/dev/ttyUSB0", baudrate=1000000, timeout=5):
@@ -131,7 +372,7 @@ class Board:
             PacketFunction.PACKET_FUNC_GAMEPAD: self.packet_report_gamepad,
             PacketFunction.PACKET_FUNC_BUS_SERVO: self.packet_report_serial_servo,
             PacketFunction.PACKET_FUNC_SBUS: self.packet_report_sbus,
-            PacketFunction.PACKET_FUNC_PWM_SERVO: self.packet_report_pwm_servo
+            PacketFunction.PACKET_FUNC_PWM_SERVO: self.packet_report_pwm_servo,
         }
 
         time.sleep(0.5)
@@ -185,13 +426,12 @@ class Board:
             try:
                 data = self.sys_queue.get(block=False)
                 if data[0] == 0x04:
-                    return struct.unpack('<H', data[1:])[0]
-                else:
-                    None
+                    return struct.unpack("<H", data[1:])[0]
+                return None
             except queue.Empty:
                 return None
         else:
-            print('get_battery enable reception first!')
+            print("get_battery enable reception first!")
             return None
 
     def get_button(self):
@@ -208,7 +448,7 @@ class Board:
             except queue.Empty:
                 return None
         else:
-            print('get_button enable reception first!')
+            print("get_button enable reception first!")
             return None
 
     def get_imu(self):
@@ -216,11 +456,11 @@ class Board:
         if self.enable_recv:
             try:
                 # ax, ay, az, gx, gy, gz
-                return struct.unpack('<6f', self.imu_queue.get(block=False))
+                return struct.unpack("<6f", self.imu_queue.get(block=False))
             except queue.Empty:
                 return None
         else:
-            print('get_imu enable reception first!')
+            print("get_imu enable reception first!")
             return None
 
     def get_gamepad(self):
@@ -231,29 +471,32 @@ class Board:
                 gamepad_data = struct.unpack("<HB4b", self.gamepad_queue.get(block=False))
                 # 'lx', 'ly', 'rx', 'ry', 'r2', 'l2', 'hat_x', 'hat_y'
                 axes = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                # 'cross', 'circle', '', 'square', 'triangle', '', 'l1', 'r1', 'l2', 'r2', 'select', 'start', '', 'l3', 'r3', ''
+                # Buttons mapping order:
+                # cross, circle, (empty), square, triangle, (empty),
+                # l1, r1, l2, r2, select, start, (empty),
+                # l3, r3, (empty)
                 buttons = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                 for b in self.buttons_map:
                     if self.buttons_map[b] & gamepad_data[0]:
-                        if b == 'GAMEPAD_BUTTON_MASK_R2':
+                        if b == "GAMEPAD_BUTTON_MASK_R2":
                             axes[4] = 1.0
-                        elif b == 'GAMEPAD_BUTTON_MASK_L2':
+                        elif b == "GAMEPAD_BUTTON_MASK_L2":
                             axes[5] = 1.0
-                        elif b == 'GAMEPAD_BUTTON_MASK_CROSS':
+                        elif b == "GAMEPAD_BUTTON_MASK_CROSS":
                             buttons[0] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_CIRCLE':
+                        elif b == "GAMEPAD_BUTTON_MASK_CIRCLE":
                             buttons[1] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_SQUARE':
+                        elif b == "GAMEPAD_BUTTON_MASK_SQUARE":
                             buttons[3] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_TRIANGLE':
+                        elif b == "GAMEPAD_BUTTON_MASK_TRIANGLE":
                             buttons[4] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_L1':
+                        elif b == "GAMEPAD_BUTTON_MASK_L1":
                             buttons[6] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_R1':
+                        elif b == "GAMEPAD_BUTTON_MASK_R1":
                             buttons[7] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_SELECT':
+                        elif b == "GAMEPAD_BUTTON_MASK_SELECT":
                             buttons[10] = 1
-                        elif b == 'GAMEPAD_BUTTON_MASK_START':
+                        elif b == "GAMEPAD_BUTTON_MASK_START":
                             buttons[11] = 1
 
                 if gamepad_data[2] > 0:
@@ -289,7 +532,7 @@ class Board:
             except queue.Empty:
                 return None
         else:
-            print('get_gamepad enable reception first!')
+            print("get_gamepad enable reception first!")
             return None
 
     def get_sbus(self):
@@ -316,7 +559,7 @@ class Board:
             except queue.Empty:
                 return None
         else:
-            print('get_sbus enable reception first!')
+            print("get_sbus enable reception first!")
             return None
 
     def buf_write(self, func, data):
@@ -343,14 +586,16 @@ class Board:
         self.buf_write(PacketFunction.PACKET_FUNC_MOTOR, data)
 
     def set_motor_pwm(self, speeds):
-        data = [0x20, ]
+        data = [
+            0x20,
+        ]
         for i in speeds:
             data.extend(struct.pack("<Bf", int(i[0] - 1), float(i[1])))
         self.buf_write(PacketFunction.PACKET_FUNC_MOTOR, data)
 
     def set_oled_text(self, line, text):
         data = [line, len(text)]  # 子命令为 0x01 设置 SSID, 第二个字节是字符串长度，该长度包含'\0'字符串结束符
-        data.extend(bytes(text, encoding='utf-8'))
+        data.extend(bytes(text, encoding="utf-8"))
         self.buf_write(PacketFunction.PACKET_FUNC_OLED, data)
 
     def pwm_servo_set_position(self, duration, positions):
@@ -417,7 +662,7 @@ class Board:
 
     def bus_servo_stop(self, servo_id):
         data = [0x03, len(servo_id)]
-        data.extend(struct.pack("<" + 'B' * len(servo_id), *servo_id))
+        data.extend(struct.pack("<" + "B" * len(servo_id), *servo_id))
         self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, data)
 
     def bus_servo_set_position(self, duration, positions):
@@ -554,23 +799,23 @@ def bus_servo_test(board):
 
         board.bus_servo_enable_torque(servo_id, 1)
 
-        print('id:', board.bus_servo_read_id(servo_id))
-        print('offset:', board.bus_servo_read_offset(servo_id), offset_set)
-        print('vin:', board.bus_servo_read_vin(servo_id))
-        print('temp:', board.bus_servo_read_temp(servo_id))
-        print('position:', board.bus_servo_read_position(servo_id))
-        print('angle_limit:', board.bus_servo_read_angle_limit(servo_id), [angle_l, angle_h])
-        print('vin_limit:', board.bus_servo_read_vin_limit(servo_id), [vin_l, vin_h])
-        print('temp_limit:', board.bus_servo_read_temp_limit(servo_id), temp_limit)
-        print('torque_state:', board.bus_servo_read_torque_state(servo_id))
+        print("id:", board.bus_servo_read_id(servo_id))
+        print("offset:", board.bus_servo_read_offset(servo_id), offset_set)
+        print("vin:", board.bus_servo_read_vin(servo_id))
+        print("temp:", board.bus_servo_read_temp(servo_id))
+        print("position:", board.bus_servo_read_position(servo_id))
+        print("angle_limit:", board.bus_servo_read_angle_limit(servo_id), [angle_l, angle_h])
+        print("vin_limit:", board.bus_servo_read_vin_limit(servo_id), [vin_l, vin_h])
+        print("temp_limit:", board.bus_servo_read_temp_limit(servo_id), temp_limit)
+        print("torque_state:", board.bus_servo_read_torque_state(servo_id))
 
 
 def pwm_servo_test(board):
     servo_id = 1
     board.pwm_servo_set_position(0.5, [[servo_id, 1500]])
     board.pwm_servo_set_offset(servo_id, 0)
-    print('offset:', board.pwm_servo_read_offset(servo_id))
-    print('position:', board.pwm_servo_read_position(servo_id))
+    print("offset:", board.pwm_servo_read_offset(servo_id))
+    print("position:", board.pwm_servo_read_position(servo_id))
 
 
 if __name__ == "__main__":
@@ -597,7 +842,7 @@ if __name__ == "__main__":
             res = board.get_button()
             if res is not None:
                 for item in res:
-                    print("  {: .8f} ".format(item), end='')
+                    print("  {: .8f} ".format(item), end="")
                 print()
             # res = board.get_button()
             # if res is not None:

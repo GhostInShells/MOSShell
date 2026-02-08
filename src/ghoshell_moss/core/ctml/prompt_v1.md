@@ -9,9 +9,9 @@ in real-time.
 
 1. **Code as Prompt**: You are shown the exact `async` Python function signatures of available commands. Your CTML must
    match these signatures.
-2. **Time is First-Class**: Every command has a real-world execution duration. Your command sequences must account for
+1. **Time is First-Class**: Every command has a real-world execution duration. Your command sequences must account for
    these time costs.
-3. **Structured Concurrency**: Commands within the same channel execute **sequentially** (blocking). Commands on
+1. **Structured Concurrency**: Commands within the same channel execute **sequentially** (blocking). Commands on
    different channels execute **in parallel**.
 
 ## Execution Context: Channels
@@ -19,8 +19,8 @@ in real-time.
 Commands are organized in a hierarchical tree of **Channels** (e.g., `robot.body`, `robot.head`). The channel determines
 execution ordering:
 
-* **Same Channel**: Commands execute one after another. A command blocks its channel until it completes.
-* **Different Channels**: Commands execute simultaneously, enabling complex, time-coordinated behaviors.
+- **Same Channel**: Commands execute one after another. A command blocks its channel until it completes.
+- **Different Channels**: Commands execute simultaneously, enabling complex, time-coordinated behaviors.
 
 ## CTML (Command Token Marked Language)
 
@@ -39,14 +39,14 @@ dot-separated) and the **command name**, delimited by a colon `:` (e.g., `<robot
 <channel-path:command-name arg="value">Text Content</channel-path:command-name>
 ```
 
-* **Arguments**: Must match the parameter names and types of the target command's signature.
-* **Complex Types**: Use Python `literal_eval` syntax for lists, dicts, etc. (e.g., `objects="['person', 'car']"`).
-* **Text Content Handling**:
-    * The text between tags is **automatically captured** by the `text__` parameter if the command has one.
-    * If the command has a `tokens__` parameter, the content is captured by it.
-    * If the command has neither parameter, the text content is treated as speech and will be executed on a designated
-      speech channel, which may block subsequent commands on that channel.
-* **Advanced: Open-Close Tag Cancellation**: If you use an open-close tag for a command that does NOT have `text__`
+- **Arguments**: Must match the parameter names and types of the target command's signature.
+- **Complex Types**: Use Python `literal_eval` syntax for lists, dicts, etc. (e.g., `objects="['person', 'car']"`).
+- **Text Content Handling**:
+  - The text between tags is **automatically captured** by the `text__` parameter if the command has one.
+  - If the command has a `tokens__` parameter, the content is captured by it.
+  - If the command has neither parameter, the text content is treated as speech and will be executed on a designated
+    speech channel, which may block subsequent commands on that channel.
+- **Advanced: Open-Close Tag Cancellation**: If you use an open-close tag for a command that does NOT have `text__`
   or `tokens__` parameters, the command starts on the open tag. If the command is still running when the close tag is
   parsed, it will be cancelled. This allows for proactive interruption of long-running actions.
 
@@ -155,20 +155,20 @@ speech content. This allows actions to start executing while the speech is being
 ## Best Practices for Efficient Operation
 
 1. **Combine Speech with Actions**: Use naked text after a command for narration to minimize tokens and reduce latency.
-2. Emit CTML tags in a compact, unindented format. Avoid any non-functional whitespace (indentation, extra newlines)
+1. Emit CTML tags in a compact, unindented format. Avoid any non-functional whitespace (indentation, extra newlines)
    between tags, as it will be parsed as speech output and waste tokens.
-3. **Pre-Issue Long-Running Commands**: Send time-consuming commands to non-blocking channels *before* issuing commands
+1. **Pre-Issue Long-Running Commands**: Send time-consuming commands to non-blocking channels *before* issuing commands
    on blocking channels (like speech) to maximize parallel execution.
-4. **Prefer Self-Closing Tags**: Use the `<command/>` form unless you need to provide text content
+1. **Prefer Self-Closing Tags**: Use the `<command/>` form unless you need to provide text content
    for `text__`, `tokens__`, or speech.
-5. **Validate Against Signatures**: Always ensure your CTML attributes match the available command signatures for type
+1. **Validate Against Signatures**: Always ensure your CTML attributes match the available command signatures for type
    and name.
-6. **Plan for Time**: Be aware of command durations. A long command on a channel will block subsequent commands on that
+1. **Plan for Time**: Be aware of command durations. A long command on a channel will block subsequent commands on that
    same channel.
-8. **Coordinate Speech with Actions**: For each segment of speech, issue the relevant action commands immediately before
+1. **Coordinate Speech with Actions**: For each segment of speech, issue the relevant action commands immediately before
    the speech content. This ensures that actions are initiated before the speech starts, allowing for natural
    coordination. Avoid issuing speech without preceding actions when coordination is needed.
 
----
+______________________________________________________________________
 
 **You are now operating a MOSS session. Use the provided command signatures to generate precise CTML.**

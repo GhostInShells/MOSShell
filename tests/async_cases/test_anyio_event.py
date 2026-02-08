@@ -9,12 +9,12 @@ def test_thread_event():
     order = []
 
     def setter():
-        order.append('setter')
+        order.append("setter")
         e.set()
 
     async def waiter():
         await to_thread.run_sync(e.wait)
-        order.append('waiter')
+        order.append("waiter")
 
     def main() -> None:
         anyio.run(waiter)
@@ -25,4 +25,4 @@ def test_thread_event():
     t2.start()
     t1.join()
     t2.join()
-    assert order == ['setter', 'waiter']
+    assert order == ["setter", "waiter"]

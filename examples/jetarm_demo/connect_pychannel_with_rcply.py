@@ -1,7 +1,6 @@
-from ghoshell_moss.transports.zmq_channel.zmq_channel import (
-    ZMQChannelProxy
-)
 import asyncio
+
+from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
 
 trajectory = """
 {
@@ -37,7 +36,7 @@ async def main():
         await broker.refresh_meta()
         meta = broker.meta()
         print(meta.model_dump_json(indent=2))
-        cmd = broker.get_command('run_trajectory')
+        cmd = broker.get_command("run_trajectory")
 
         print("+++++++", cmd.meta())
 

@@ -1,24 +1,24 @@
-
 import asyncio
-from typing import List, Optional, Callable
+from collections.abc import Callable
+from typing import Optional
 
 from ghoshell_moss_contrib.agent.depends import check_agent
 
 if check_agent():
     from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
-from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_common.helpers import uuid
+
+from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 
 
 class ChatRenderSpeechStream(SpeechStream):
-
     def __init__(
-            self,
-            batch_id: str,
-            output: Callable[[str], None],
-            *,
-            on_start: asyncio.Event,
-            close: asyncio.Event,
+        self,
+        batch_id: str,
+        output: Callable[[str], None],
+        *,
+        on_start: asyncio.Event,
+        close: asyncio.Event,
     ):
         super().__init__(id=batch_id)
         self._output = output
@@ -76,7 +76,6 @@ class ChatRenderSpeechStream(SpeechStream):
 
 
 class ChatRenderSpeech(Speech):
-
     def __init__(self, render: ConsoleChat):
         self.render = render
         self.last_stream_close_event = asyncio.Event()
@@ -94,17 +93,12 @@ class ChatRenderSpeech(Speech):
             self._outputted[batch_id].add_task_with_paths(item)
             self.render.update_ai_response(item)
 
-        return ChatRenderSpeechStream(
-            batch_id,
-            _output,
-            on_start=last_stream_close_event,
-            close=new_close_event
-        )
+        return ChatRenderSpeechStream(batch_id, _output, on_start=last_stream_close_event, close=new_close_event)
 
-    def outputted(self) -> List[str]:
+    def outputted(self) -> list[str]:
         return list(self._outputted.values())
 
-    async def clear(self) -> List[str]:
+    async def clear(self) -> list[str]:
         outputted = self.outputted()
         self._outputted.clear()
         self.last_stream_close_event = asyncio.Event()

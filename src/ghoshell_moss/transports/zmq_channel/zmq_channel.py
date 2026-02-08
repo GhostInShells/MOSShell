@@ -1,30 +1,33 @@
-
 try:
     import zmq
     import zmq.asyncio
 except ImportError:
-    raise ImportError(f"zmq module not found, please pip install ghoshell-moss[zmq]")
+    raise ImportError("zmq module not found, please pip install ghoshell-moss[zmq]")
+import asyncio
+import logging
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_container import Container, IoCContainer, get_container
+
 from ghoshell_moss.core.duplex.connection import Connection, ConnectionClosedError
 from ghoshell_moss.core.duplex.protocol import ChannelEvent, HeartbeatEvent
 from ghoshell_moss.core.duplex.provider import DuplexChannelProvider
 from ghoshell_moss.core.duplex.proxy import DuplexChannelProxy
-from ghoshell_common.contracts import LoggerItf
-from ghoshell_container import Container, IoCContainer, get_container
-from abc import ABC, abstractmethod
-from typing import Tuple, Optional
-import time
-import asyncio
-from typing import Optional, Dict, Any
-from dataclasses import dataclass
-from enum import Enum
-import logging
 
 __all__ = [
-    'ZMQChannelProxy', 'ZMQChannelProvider',
-    'ZMQConnectionConfig', 'ZMQProviderConnection', 'ZMQProxyConnection',
-    'ZMQSocketType',
-    'create_zmq_channel',
-    'ConnectionClosedError',
+    "ConnectionClosedError",
+    "ZMQChannelProvider",
+    "ZMQChannelProxy",
+    "ZMQConnectionConfig",
+    "ZMQProviderConnection",
+    "ZMQProxyConnection",
+    "ZMQSocketType",
+    "create_zmq_channel",
 ]
 
 
@@ -43,6 +46,7 @@ class ZMQSocketType(Enum):
 @dataclass
 class ZMQConnectionConfig:
     """ZMQ 连接配置"""
+
     address: str = "tcp://127.0.0.1:5555"
     socket_type: ZMQSocketType = ZMQSocketType.PAIR
     bind: bool = True  # True 表示绑定，False 表示连接
@@ -121,8 +125,7 @@ class BaseZMQConnection(Connection, ABC):
             self._socket.connect(self._config.address)
 
         # 订阅主题（如果是 SUB socket）
-        if (self._config.socket_type == ZMQSocketType.SUB and
-                self._config.subscribe is not None):
+        if self._config.socket_type == ZMQSocketType.SUB and self._config.subscribe is not None:
             self._socket.subscribe(self._config.subscribe)
 
         # 启动心跳任务（只有客户端需要）
@@ -165,10 +168,7 @@ class BaseZMQConnection(Connection, ABC):
                     tasks.append(check_closed_task)
 
                     # 等待第一个完成的任务
-                    done, pending = await asyncio.wait(
-                        tasks,
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
                     # 取消未完成的任务
                     for task in pending:
@@ -264,29 +264,29 @@ class ZMQProxyConnection(BaseZMQConnection):
                     try:
                         heartbeat_event = HeartbeatEvent(direction="request").to_channel_event()
                         await self.send(heartbeat_event)
-                    except Exception as e:
-                        self._logger.warning("Failed to send heartbeat: %s", e)
+                    except Exception:
+                        self._logger.exception("Failed to send heartbeat")
 
                 await asyncio.sleep(self._config.heartbeat_interval / 2)
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            self._logger.error("Heartbeat loop error: %s", e)
+        except Exception:
+            self._logger.exception("Heartbeat loop error")
 
 
 class ZMQChannelProvider(DuplexChannelProvider):
     def __init__(
-            self,
-            *,
-            address: str = "tcp://127.0.0.1:5555",
-            socket_type: ZMQSocketType = ZMQSocketType.PAIR,
-            recv_timeout: Optional[float] = None,
-            send_timeout: Optional[float] = None,
-            linger: int = 0,
-            heartbeat_interval: float = 1.0,
-            heartbeat_timeout: float = 3.0,
-            context: Optional[zmq.asyncio.Context] = None,
-            container: IoCContainer | None = None,
+        self,
+        *,
+        address: str = "tcp://127.0.0.1:5555",
+        socket_type: ZMQSocketType = ZMQSocketType.PAIR,
+        recv_timeout: Optional[float] = None,
+        send_timeout: Optional[float] = None,
+        linger: int = 0,
+        heartbeat_interval: float = 1.0,
+        heartbeat_timeout: float = 3.0,
+        context: Optional[zmq.asyncio.Context] = None,
+        container: IoCContainer | None = None,
     ):
         # 创建 server 连接配置
         config = ZMQConnectionConfig(
@@ -311,19 +311,19 @@ class ZMQChannelProvider(DuplexChannelProvider):
 
 class ZMQChannelProxy(DuplexChannelProxy):
     def __init__(
-            self,
-            *,
-            name: str,
-            address: str = "tcp://127.0.0.1:5555",
-            socket_type: ZMQSocketType = ZMQSocketType.PAIR,
-            recv_timeout: Optional[float] = None,
-            send_timeout: Optional[float] = None,
-            linger: int = 0,
-            identity: Optional[bytes] = None,
-            heartbeat_interval: float = 1.0,
-            heartbeat_timeout: float = 3.0,
-            context: Optional[zmq.asyncio.Context] = None,
-            logger: Optional[LoggerItf] = None,
+        self,
+        *,
+        name: str,
+        address: str = "tcp://127.0.0.1:5555",
+        socket_type: ZMQSocketType = ZMQSocketType.PAIR,
+        recv_timeout: Optional[float] = None,
+        send_timeout: Optional[float] = None,
+        linger: int = 0,
+        identity: Optional[bytes] = None,
+        heartbeat_interval: float = 1.0,
+        heartbeat_timeout: float = 3.0,
+        context: Optional[zmq.asyncio.Context] = None,
+        logger: Optional[LoggerItf] = None,
     ):
         # 创建 client 连接配置
         config = ZMQConnectionConfig(
@@ -347,17 +347,17 @@ class ZMQChannelProxy(DuplexChannelProxy):
 
 
 def create_zmq_channel(
-        name: str,
-        address: str = "tcp://127.0.0.1:5555",
-        socket_type: ZMQSocketType = ZMQSocketType.PAIR,
-        recv_timeout: Optional[float] = None,
-        send_timeout: Optional[float] = None,
-        linger: int = 0,
-        identity: Optional[bytes] = None,
-        heartbeat_interval: float = 1.0,
-        heartbeat_timeout: float = 3.0,
-        container: IoCContainer | None = None,
-) -> Tuple[ZMQChannelProvider, ZMQChannelProxy]:
+    name: str,
+    address: str = "tcp://127.0.0.1:5555",
+    socket_type: ZMQSocketType = ZMQSocketType.PAIR,
+    recv_timeout: Optional[float] = None,
+    send_timeout: Optional[float] = None,
+    linger: int = 0,
+    identity: Optional[bytes] = None,
+    heartbeat_interval: float = 1.0,
+    heartbeat_timeout: float = 3.0,
+    container: IoCContainer | None = None,
+) -> tuple[ZMQChannelProvider, ZMQChannelProxy]:
     """创建配对的 ZMQ server 和 proxy"""
     # 使用共享的上下文以确保正确通信
     ctx = zmq.asyncio.Context.instance()

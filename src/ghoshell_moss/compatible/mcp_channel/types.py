@@ -1,4 +1,3 @@
-
 from mcp import types as mcp_types
 
 from ghoshell_moss.message import Addition

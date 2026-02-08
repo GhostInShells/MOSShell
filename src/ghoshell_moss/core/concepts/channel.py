@@ -1,27 +1,40 @@
-
 import asyncio
 import contextvars
 import threading
 from abc import ABC, abstractmethod
-from typing import (
-    Optional, Union, Callable, Coroutine, List, Type, TypeVar, Dict, Any,
-    AsyncIterator, Protocol,
-)
-from typing_extensions import Self
-from ghoshell_moss.core.concepts.command import Command, CommandMeta, CommandTask, BaseCommandTask
-from ghoshell_moss.core.concepts.states import StateStore, StateModel
-from ghoshell_moss.message import Message
-from ghoshell_container import IoCContainer, INSTANCE, Provider, BINDING, set_container
-from pydantic import BaseModel, Field
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from typing import (
+    Any,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+)
+
+from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, set_container
+from pydantic import BaseModel, Field
+from typing_extensions import Self
+
+from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandMeta, CommandTask
+from ghoshell_moss.core.concepts.states import StateModel, StateStore
+from ghoshell_moss.message import Message
 
 __all__ = [
-    'CommandFunction', 'LifecycleFunction', 'PrompterFunction', 'StringType', 'ContextMessageFunction',
-    'ChannelMeta', 'Channel', 'ChannelProvider', 'ChannelBroker',
-    'Builder',
-    'R',
-    'ChannelPaths', 'ChannelFullPath',
-    'ChannelUtils',
+    "Builder",
+    "Channel",
+    "ChannelBroker",
+    "ChannelFullPath",
+    "ChannelMeta",
+    "ChannelPaths",
+    "ChannelProvider",
+    "ChannelUtils",
+    "CommandFunction",
+    "ContextMessageFunction",
+    "LifecycleFunction",
+    "PrompterFunction",
+    "R",
+    "StringType",
 ]
 
 """
@@ -58,7 +71,7 @@ ChannelFullPath = str
 同时它也描述了一个神经信号 (command call) 经过的路径, 比如从 a -> b -> c 执行.
 """
 
-ChannelPaths = List[str]
+ChannelPaths = list[str]
 """字符串路径的数组表现形式. a.b.c -> ['a', 'b', 'c'] """
 
 CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
@@ -120,8 +133,8 @@ todo: prompt function 体系尚未完成.
 """
 
 ContextMessageFunction = Union[
-    Callable[[], Coroutine[None, None, List[Message]]],
-    Callable[[], List[Message]],
+    Callable[[], Coroutine[None, None, list[Message]]],
+    Callable[[], list[Message]],
 ]
 """
 一种可以注册到 Channel 中的函数, 也是最重要的一种函数. 
@@ -138,7 +151,7 @@ Agent 架构可以把 channel 有序排列, 然后自动拿到一个由很多个
 
 StringType = Union[str, Callable[[], str]]
 
-R = TypeVar('R')
+R = TypeVar("R")
 
 
 class ChannelMeta(BaseModel):
@@ -146,21 +159,16 @@ class ChannelMeta(BaseModel):
     Channel 的元信息数据.
     可以用来 mock 一个 channel.
     """
+
     name: str = Field(description="The origin name of the channel, kind like python module name.")
     description: str = Field(default="", description="The description of the channel.")
     channel_id: str = Field(default="", description="The ID of the channel.")
     available: bool = Field(default=True, description="Whether the channel is available.")
-    commands: List[CommandMeta] = Field(default_factory=list, description="The list of commands.")
-    children: List[str] = Field(default_factory=list, description="the children channel names")
-    context: List[Message] = Field(
-        default_factory=list,
-        description="The channel dynamic context messages"
-    )
+    commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
+    children: list[str] = Field(default_factory=list, description="the children channel names")
+    context: list[Message] = Field(default_factory=list, description="The channel dynamic context messages")
 
-    dynamic: bool = Field(
-        default=True,
-        description="Whether the channel is dynamic, need refresh each time"
-    )
+    dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
 
 
 class ChannelBroker(ABC):
@@ -236,7 +244,7 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    def commands(self, available_only: bool = True) -> Dict[str, Command]:
+    def commands(self, available_only: bool = True) -> dict[str, Command]:
         """
         返回所有 commands. 注意, 只返回 Channel 自身的 Command.
         """
@@ -252,7 +260,8 @@ class ChannelBroker(ABC):
     @abstractmethod
     async def policy_run(self) -> None:
         """
-        回归 policy 运行. 通常在一个队列里没有 function 在运行中时, 会运行 policy. 同时 none-block 的函数也不会中断 policy 运行.
+        回归 policy 运行. 通常在一个队列里没有 function 在运行中时, 会运行 policy.
+        同时 none-block 的函数也不会中断 policy 运行.
         不会递归执行.
 
         todo: policy 现在有开始, 结束, 中断, 生命周期过于复杂. 考虑简化. 此外 policy 命名令人费解, 考虑改成 on_idle
@@ -338,7 +347,7 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def state_model(self) -> Callable[[Type[StateModel]], StateModel]:
+    def state_model(self) -> Callable[[type[StateModel]], StateModel]:
         """
         注册一个状态模型.
         todo: 改成 with 开头的语法.
@@ -354,19 +363,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-            self,
-            *,
-            name: str = "",
-            chan: str | None = None,
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[List[str]] = None,
-            interface: Optional[StringType] = None,
-            available: Optional[Callable[[], bool]] = None,
-            # --- 高级参数 --- #
-            block: Optional[bool] = None,
-            call_soon: bool = False,
-            return_command: bool = False,
+        self,
+        *,
+        name: str = "",
+        chan: str | None = None,
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        tags: Optional[list[str]] = None,
+        interface: Optional[StringType] = None,
+        available: Optional[Callable[[], bool]] = None,
+        # --- 高级参数 --- #
+        block: Optional[bool] = None,
+        call_soon: bool = False,
+        return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
@@ -435,21 +444,21 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def with_contracts(self, *contracts: Type) -> Self:
+    def with_contracts(self, *contracts: type) -> Self:
         """
         声明 IoC 容器需要的依赖. 如果启动时传入的 IoC 容器没有注册这些依赖, 则启动本身会报错, 抛出异常.
         """
         pass
 
     @abstractmethod
-    def with_binding(self, contract: Type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
+    def with_binding(self, contract: type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
         """
         register default bindings for the given contract.
         """
         pass
 
 
-ChannelContextVar = contextvars.ContextVar('MOSShell_Channel')
+ChannelContextVar = contextvars.ContextVar("MOSShell_Channel")
 
 
 class ChannelUtils:
@@ -458,7 +467,7 @@ class ChannelUtils:
     """
 
     @staticmethod
-    def ctx_get_contract(contract: Type[INSTANCE]) -> INSTANCE:
+    def ctx_get_contract(contract: type[INSTANCE]) -> INSTANCE:
         """
         语法糖, 更快从上下文中获取
         """
@@ -479,7 +488,7 @@ class Channel(ABC):
         """
         pass
 
-    def get_contract(self, contract: Type[INSTANCE]) -> INSTANCE:
+    def get_contract(self, contract: type[INSTANCE]) -> INSTANCE:
         """
         语法糖, 快速从 broker 里获取一个注册的实例.
         """
@@ -487,9 +496,9 @@ class Channel(ABC):
 
     @staticmethod
     def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
-        """连接父子 channel 名称的标准语法. """
+        """连接父子 channel 名称的标准语法."""
         if parent:
-            return f'{parent}.{name}'
+            return f"{parent}.{name}"
         return name
 
     @staticmethod
@@ -499,15 +508,15 @@ class Channel(ABC):
         """
         if not channel_path:
             return []
-        return channel_path.split('.')
+        return channel_path.split(".")
 
     def set_context_var(self) -> None:
-        """与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身. """
+        """与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身."""
         ChannelContextVar.set(self)
 
     @staticmethod
     def get_from_context() -> Optional["Channel"]:
-        """在 Command 内部调用这个函数, 可以拿到运行它的 channel. """
+        """在 Command 内部调用这个函数, 可以拿到运行它的 channel."""
         try:
             return ChannelContextVar.get()
         except LookupError:
@@ -541,19 +550,19 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def children(self) -> Dict[str, "Channel"]:
+    def children(self) -> dict[str, "Channel"]:
         """
         返回所有已注册的子 Channel.
         """
         pass
 
-    def descendants(self, prefix: str = "") -> Dict[str, "Channel"]:
+    def descendants(self, prefix: str = "") -> dict[str, "Channel"]:
         """
         返回所有的子孙 Channel, 先序遍历.
         其中的 key 是 channel 的路径关系.
         每次都要动态构建, 有性能成本.
         """
-        descendants: Dict[str, "Channel"] = {}
+        descendants: dict[str, Channel] = {}
         children = self.children()
         if len(children) == 0:
             return descendants
@@ -565,7 +574,7 @@ class Channel(ABC):
                 descendants[descendant_full_path] = descendant
         return descendants
 
-    def all_channels(self) -> Dict[str, "Channel"]:
+    def all_channels(self) -> dict[str, "Channel"]:
         """
         语法糖, 返回所有的 channel, 包含自身.
         key 是以自身为起点的 channel path (相对路径), 用来发现原点.
@@ -585,7 +594,7 @@ class Channel(ABC):
         return self.recursive_find_sub_channel(self, channel_path)
 
     @classmethod
-    def recursive_find_sub_channel(cls, root: "Channel", channel_path: List[str]) -> Optional["Channel"]:
+    def recursive_find_sub_channel(cls, root: "Channel", channel_path: list[str]) -> Optional["Channel"]:
         """
         从子孙节点中递归进行查找.
         """
@@ -649,7 +658,7 @@ class Channel(ABC):
         await recursive_close(self)
 
     async def execute_task(self, task: CommandTask) -> Any:
-        """运行一个 task 并且给它赋予当前 channel 到被运行函数的 context vars 中. """
+        """运行一个 task 并且给它赋予当前 channel 到被运行函数的 context vars 中."""
         if not self.is_running():
             raise RuntimeError(f"Channel {self.name()} not running")
         if task.done():
@@ -678,16 +687,17 @@ class Channel(ABC):
         return await run_execution
 
     def create_command_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
-        """example to create channel task """
+        """example to create channel task"""
         command = self.broker.get_command(name)
         if command is None:
-            raise NotImplementedError(f'Channel {self.name()} has no command {name}')
+            raise NotImplementedError(f"Channel {self.name()} has no command {name}")
         task = BaseCommandTask.from_command(command, *args, **kwargs)
         return task
 
     async def execute_command(self, command: Command, *args, **kwargs) -> Any:
         """basic example to execute command."""
         from ghoshell_moss.core.concepts.command import BaseCommandTask
+
         task = BaseCommandTask.from_command(command, *args, **kwargs)
         try:
             result = await self.execute_task(task)

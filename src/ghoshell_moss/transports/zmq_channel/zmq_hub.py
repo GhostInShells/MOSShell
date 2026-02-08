@@ -1,23 +1,25 @@
+import asyncio
+import logging
+import os
+import signal
+import sys
+import time
+from contextlib import AsyncExitStack
+from typing import Optional
 
-from typing import Dict, Optional, Tuple
+import psutil
+from ghoshell_common.contracts import LoggerItf
+from pydantic import BaseModel, Field
+
 from ghoshell_moss import CommandErrorCode
 from ghoshell_moss.core import PyChannel
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
-from ghoshell_common.contracts import LoggerItf
-from pydantic import BaseModel, Field
-from contextlib import AsyncExitStack
-import logging
-import asyncio
-import sys
-import time
-import os
-import signal
-import psutil
 
 __all__ = [
-    'ZMQProxyConfig', 'ZMQHubConfig',
-    'ZMQChannelHub',
-    'ZMQChannelProxy',
+    "ZMQChannelHub",
+    "ZMQChannelProxy",
+    "ZMQHubConfig",
+    "ZMQProxyConfig",
 ]
 
 
@@ -38,7 +40,7 @@ class ManagedProcess:
         self._monitor_task: Optional[asyncio.Task] = None
 
     async def __aenter__(self):
-        self.logger.info(f"--- 启动子进程: {self.name}")
+        self.logger.info("--- 启动子进程: %s", self.name)
         self.start_time = time.time()
 
         # 启动子进程
@@ -46,7 +48,7 @@ class ManagedProcess:
         creationflags = 0
         start_new_session = False
 
-        if sys.platform == 'win32':
+        if sys.platform == "win32":
             # Windows 特定设置
             creationflags = asyncio.subprocess.CREATE_NEW_PROCESS_GROUP
         else:
@@ -59,7 +61,7 @@ class ManagedProcess:
             stderr=asyncio.subprocess.PIPE,
             env=self.env,
             start_new_session=start_new_session,
-            creationflags=creationflags
+            creationflags=creationflags,
         )
 
         # 启动后台日志监控任务
@@ -74,18 +76,17 @@ class ManagedProcess:
                 line = await stream.readline()
                 if not line:
                     break
-                decoded = line.decode('utf-8', errors='ignore').rstrip()
-                self.logger.log(level, f"[{self.name}] {decoded}")
+                decoded = line.decode("utf-8", errors="ignore").rstrip()
+                self.logger.log(level, "[%s] %s", self.name, decoded)
 
         try:
             await asyncio.gather(
-                read_stream(self.process.stdout, logging.INFO),
-                read_stream(self.process.stderr, logging.ERROR)
+                read_stream(self.process.stdout, logging.INFO), read_stream(self.process.stderr, logging.ERROR)
             )
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            self.logger.error(f"监控子进程 {self.name} 日志时出错: {e}")
+        except Exception:
+            self.logger.exception("监控子进程 %s 日志时出错", self.name)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """退出上下文时，确保清理进程"""
@@ -95,11 +96,11 @@ class ManagedProcess:
         if not self.process or self.process.returncode is not None:
             return
 
-        self.logger.info(f"--- 正在关闭子进程: {self.name} (PID: {self.process.pid})")
+        self.logger.info("--- 正在关闭子进程: %s (PID: %s)", self.name, self.process.pid)
 
         try:
             # 1. 尝试优雅关闭 (SIGTERM / CTRL_BREAK)
-            if sys.platform == 'win32':
+            if sys.platform == "win32":
                 self.process.terminate()
             else:
                 try:
@@ -110,11 +111,11 @@ class ManagedProcess:
             # 等待退出
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=3.0)
-                self.logger.info(f"子进程 {self.name} 已优雅退出")
+                self.logger.info("子进程 %s 已优雅退出", self.name)
             except asyncio.TimeoutError:
                 # 2. 强制关闭 (SIGKILL)
-                self.logger.warning(f"子进程 {self.name} 响应超时，正在强制关闭...")
-                if sys.platform == 'win32':
+                self.logger.warning("子进程 %s 响应超时，正在强制关闭...", self.name)
+                if sys.platform == "win32":
                     self.process.kill()
                 else:
                     try:
@@ -122,10 +123,10 @@ class ManagedProcess:
                     except ProcessLookupError:
                         pass
                 await self.process.wait()
-                self.logger.info(f"子进程 {self.name} 已强制关闭")
+                self.logger.info("子进程 %s 已强制关闭", self.name)
 
-        except Exception as e:
-            self.logger.error(f"关闭子进程 {self.name} 时发生错误: {e}")
+        except Exception:
+            self.logger.exception("关闭子进程 %s 时发生错误", self.name)
 
     @property
     def pid(self) -> Optional[int]:
@@ -154,9 +155,8 @@ class ZMQHubConfig(BaseModel):
     name: str = Field(description="name of the hub")
     description: str = Field(description="description of the hub")
     root_dir: str = Field(description="所有子进程脚本所在的目录地址, 用来和 proxy config.script 获取运行路径.")
-    proxies: Dict[str, ZMQProxyConfig] = Field(
-        default_factory=dict,
-        description="the zmq channel provider configurations, from name to config"
+    proxies: dict[str, ZMQProxyConfig] = Field(
+        default_factory=dict, description="the zmq channel provider configurations, from name to config"
     )
 
 
@@ -175,7 +175,7 @@ class ZMQChannelHub:
 
         # 状态管理：映射 channel_name -> (ChildStack, ManagedProcessInstance)
         # 这样我们可以单独关闭某一个 channel
-        self._active_channels: Dict[str, Tuple[AsyncExitStack, ManagedProcess]] = {}
+        self._active_channels: dict[str, tuple[AsyncExitStack, ManagedProcess]] = {}
 
     def channel_description(self) -> str:
         """生成通道描述，包括所有已配置的子通道及其状态"""
@@ -223,12 +223,10 @@ class ZMQChannelHub:
         # 2. 准备路径和环境
         script_path = os.path.join(self._config.root_dir, config.script)
         if not os.path.exists(script_path):
-            raise CommandErrorCode.NOT_FOUND.error(
-                f"子 Channel {name} 脚本不存在: {script_path}"
-            )
+            raise CommandErrorCode.NOT_FOUND.error(f"子 Channel {name} 脚本不存在: {script_path}")
 
         env = os.environ.copy()
-        env['MOSHELL_PARENT_PID'] = str(os.getpid())
+        env["MOSHELL_PARENT_PID"] = str(os.getpid())
 
         # 3. 创建一个新的上下文栈，用于单独管理这个子进程
         # 将这个子栈压入主栈，确保 Hub 关闭时也能关闭它
@@ -242,18 +240,18 @@ class ZMQChannelHub:
             # 5. 记录状态
             self._active_channels[name] = (child_stack, managed_proc)
 
-        except Exception as e:
-            self._logger.error(f"启动子通道 {name} 失败: {e}")
+        except Exception:
+            self._logger.exception("启动子通道 %s 失败", name)
             # 如果启动失败，立即清理子栈
             await child_stack.aclose()
-            raise e
+            raise
 
     async def terminate_sub_channel_process(self, name: str) -> None:
         """关闭单个子 Channel"""
         if name not in self._active_channels:
             return
 
-        self._logger.info(f"正在终止子通道: {name}")
+        self._logger.info("正在终止子通道: %s", name)
         child_stack, _ = self._active_channels.pop(name)
 
         # 关闭子栈会触发 ManagedProcess.__aexit__
@@ -278,7 +276,7 @@ class ZMQChannelHub:
     async def start_sub_channel(self, name: str, timeout: float = 15.0) -> str:
         """PyChannel Command: 开启子节点"""
         if not name:
-            raise CommandErrorCode.VALUE_ERROR.error(f"channel name cannot be empty")
+            raise CommandErrorCode.VALUE_ERROR.error("channel name cannot be empty")
         proxy_conf = self._config.proxies.get(name)
         if proxy_conf is None:
             raise CommandErrorCode.VALUE_ERROR.error(f"sub channel {name} not registered")
@@ -300,7 +298,7 @@ class ZMQChannelHub:
     async def close_channel(self, name: str, timeout: float = 5.0) -> str:
         """PyChannel Command: 关闭子节点"""
         if not name:
-            raise CommandErrorCode.VALUE_ERROR.error(f"channel name cannot be empty")
+            raise CommandErrorCode.VALUE_ERROR.error("channel name cannot be empty")
         try:
             await asyncio.wait_for(self.terminate_sub_channel_process(name), timeout=timeout)
         except asyncio.TimeoutError:

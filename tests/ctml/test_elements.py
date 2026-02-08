@@ -1,15 +1,16 @@
-from typing import Iterable, List
+import asyncio
+from collections import deque
+from collections.abc import Iterable
+from dataclasses import dataclass
+
 import pytest
 
-from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser
-from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
-from ghoshell_moss.core.concepts.command import PyCommand, BaseCommandTask, Command, CommandToken
+from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandToken, PyCommand
 from ghoshell_moss.core.concepts.interpreter import CommandTaskParserElement
-from ghoshell_moss.speech.mock import MockSpeech
+from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
+from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from collections import deque
-from dataclasses import dataclass
-import asyncio
+from ghoshell_moss.speech.mock import MockSpeech
 
 
 @dataclass
@@ -133,7 +134,7 @@ async def test_element_in_chaos_order():
         return a
 
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
-    await suite.parse(['<fo', 'o /><b', 'ar a="12', '3">he', "llo<", "/bar>"], run=True)
+    await suite.parse(["<fo", "o /><b", 'ar a="12', '3">he', "llo<", "/bar>"], run=True)
     assert suite.queue.pop() is None
     assert [c._result for c in suite.queue] == [123, 123, None, None]
     suite.root.destroy()
@@ -155,7 +156,7 @@ async def test_parse_and_execute_in_parallel():
     def producer():
         # feed the inputs
         with suite.parser:
-            for char in ['<fo', 'o /><b', 'ar a="12', '3">he', "llo<", "/bar>"]:
+            for char in ["<fo", "o /><b", 'ar a="12', '3">he', "llo<", "/bar>"]:
                 suite.parser.feed(delta=char)
 
     tasks = []
@@ -229,13 +230,13 @@ async def test_parse_token_delta_command():
         return result
 
     suite = new_test_suite(PyCommand(foo))
-    content = '<foo><![CDATA[hello<bar/>world]]></foo>'
+    content = "<foo><![CDATA[hello<bar/>world]]></foo>"
     await suite.parse([content], run=True)
     assert suite.queue[0]._result == "hello<bar/>world"
 
     suite = new_test_suite(PyCommand(foo))
     # test without CDATA
-    content = '<foo>hello<bar/>world</foo>'
+    content = "<foo>hello<bar/>world</foo>"
     await suite.parse([content], run=True)
     #  once without cdata, the self-closing tag will separate to start and end token
     assert suite.queue[0]._result == "hello<bar></bar>world"

@@ -1,29 +1,31 @@
-
 try:
     import rclpy
-    from rclpy.node import Node
-    from rclpy.action import ActionClient
-    from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy
     from control_msgs.action import FollowJointTrajectory
+    from rclpy.action import ActionClient
+    from rclpy.node import Node
+    from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import JointState
 except ImportError:
-    raise ImportError('Please run in Ros2 pkg.')
+    raise ImportError("Please run in Ros2 pkg.")
 
-from typing import Dict, Optional, Callable
-from ghoshell_common.contracts import LoggerItf, DefaultFileStorage
-from ghoshell_moss.core.concepts.channel import ChannelProvider, Channel
-from ghoshell_moss_contrib.prototypes.ros2_robot.manager import YamlStorageRobotManager, JointValueParser
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import RobotInfo
-from .ros2_controller import Ros2Controller
+from collections.abc import Callable
+from typing import Optional
+
+from ghoshell_common.contracts import DefaultFileStorage, LoggerItf
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
+from ghoshell_moss_contrib.prototypes.ros2_robot.manager import JointValueParser, YamlStorageRobotManager
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import RobotInfo
 
-__all__ = ['MAIN_CHANNEL_BUILDER', 'Ros2RobotControllerNode', 'run_node']
+from .ros2_controller import Ros2Controller
+
+__all__ = ["MAIN_CHANNEL_BUILDER", "Ros2RobotControllerNode", "run_node"]
 
 MAIN_CHANNEL_BUILDER = Callable[[Channel], Channel]
 
 
 class Ros2LoggerAdapter(LoggerItf):
-
     def __init__(self, logger):
         self._rcutils_logger = logger
 
@@ -64,23 +66,23 @@ class Ros2LoggerAdapter(LoggerItf):
 
 class Ros2RobotControllerNode(Node):
     def __init__(
-            self,
-            *,
-            node_name: str,
-            config_dir: str,
-            robot_yaml_filename: str,
-            provider: ChannelProvider,
-            channel_builder: MAIN_CHANNEL_BUILDER | None = None,
-            default_robot: Optional[RobotInfo] = None,
-            joint_states_topic: str = "/joint_states",
-            follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
-            joint_value_parsers: Optional[Dict[str, JointValueParser]] = None,
-            goal_interval: float = 0.02,  # 50Hz
+        self,
+        *,
+        node_name: str,
+        config_dir: str,
+        robot_yaml_filename: str,
+        provider: ChannelProvider,
+        channel_builder: MAIN_CHANNEL_BUILDER | None = None,
+        default_robot: Optional[RobotInfo] = None,
+        joint_states_topic: str = "/joint_states",
+        follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
+        joint_value_parsers: Optional[dict[str, JointValueParser]] = None,
+        goal_interval: float = 0.02,  # 50Hz
     ):
         super().__init__(node_name)
 
         # 初始化参数
-        self.declare_parameter('goal_interval', goal_interval)
+        self.declare_parameter("goal_interval", goal_interval)
 
         # 获取参数
         self._default_robot = default_robot
@@ -110,10 +112,7 @@ class Ros2RobotControllerNode(Node):
 
         # 创建控制器实例
         self.controller = Ros2Controller(
-            manager=manager,
-            logger=logger,
-            trajectory_action_client=self.action_client,
-            goal_interval=goal_interval
+            manager=manager, logger=logger, trajectory_action_client=self.action_client, goal_interval=goal_interval
         )
 
         # 设置关节状态订阅
@@ -132,23 +131,17 @@ class Ros2RobotControllerNode(Node):
         # 多线程启动 channel.
         self.provider.run_in_thread(self.main_channel)
 
-        self.get_logger().info("Robot %s Controller Node initialized" % self.manager.robot().name)
+        self.get_logger().info("Robot %s Controller Node initialized", self.manager.robot().name)
 
     def _setup_joint_states_subscription(self, topic_name: str):
         """设置关节状态订阅"""
-        import time
 
         qos_profile = QoSProfile(
-            depth=10,
-            history=QoSHistoryPolicy.KEEP_LAST,
-            reliability=QoSReliabilityPolicy.BEST_EFFORT
+            depth=10, history=QoSHistoryPolicy.KEEP_LAST, reliability=QoSReliabilityPolicy.BEST_EFFORT
         )
 
         self.joint_states_subscription = self.create_subscription(
-            JointState,
-            topic_name,
-            self._joint_states_callback,
-            qos_profile
+            JointState, topic_name, self._joint_states_callback, qos_profile
         )
 
         self.get_logger().info(f"Subscribed to joint states: {topic_name}")
@@ -157,7 +150,7 @@ class Ros2RobotControllerNode(Node):
         """处理关节状态消息"""
         try:
             current_time = self.get_clock().now()
-            goal_interval = self.get_parameter('goal_interval').value
+            goal_interval = self.get_parameter("goal_interval").value
 
             # 第一次回调时初始化
             if self._last_joint_callback_time is None:
@@ -211,6 +204,6 @@ def run_node(args, node: Ros2RobotControllerNode):
     except Exception as e:
         node.get_logger().error(f"Node error: {e}")
     finally:
-        if 'node' in locals():
+        if "node" in locals():
             node.destroy_node()
         rclpy.shutdown()

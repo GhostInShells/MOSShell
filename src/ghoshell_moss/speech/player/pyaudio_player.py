@@ -1,8 +1,6 @@
-
-import asyncio
-import numpy as np
 from typing import Optional
-from ghoshell_moss.core.concepts.speech import AudioFormat
+
+import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
 try:
@@ -12,10 +10,11 @@ except ImportError as e:
 
 from ghoshell_moss.speech.player.base_player import BaseAudioStreamPlayer
 
-__all__ = ['PyAudioStreamPlayer']
+__all__ = ["PyAudioStreamPlayer"]
 
 
 # author: deepseek v3.1
+
 
 class PyAudioStreamPlayer(BaseAudioStreamPlayer):
     """
@@ -24,13 +23,13 @@ class PyAudioStreamPlayer(BaseAudioStreamPlayer):
     """
 
     def __init__(
-            self,
-            *,
-            device_index: int = 0,
-            sample_rate: int = 44100,
-            channels: int = 1,
-            logger: LoggerItf | None = None,
-            safety_delay: float = 0.1,
+        self,
+        *,
+        device_index: int = 0,
+        sample_rate: int = 44100,
+        channels: int = 1,
+        logger: LoggerItf | None = None,
+        safety_delay: float = 0.1,
     ):
         """
         基于 PyAudio 的异步音频播放器实现
@@ -54,7 +53,7 @@ class PyAudioStreamPlayer(BaseAudioStreamPlayer):
             channels=self.channels,  # 固定为单声道
             rate=self.sample_rate,  # 固定采样率
             output=True,
-            frames_per_buffer=1024
+            frames_per_buffer=1024,
         )
 
     def _audio_stream_stop(self):
@@ -68,6 +67,5 @@ class PyAudioStreamPlayer(BaseAudioStreamPlayer):
         if self._stream:
             try:
                 self._stream.write(data.tobytes())
-            except Exception as e:
-                self.logger.exception(e)
-
+            except Exception:
+                self.logger.exception("Write audio stream failed")

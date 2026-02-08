@@ -1,16 +1,18 @@
-from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf
+import asyncio
+
+from ghoshell_container import Container
+
+from ghoshell_moss.core.shell import new_shell
 from ghoshell_moss.speech import make_baseline_tts_speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
 from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
-from ghoshell_moss.core.shell import new_shell
-from ghoshell_moss_contrib.agent.chat import ConsoleChat
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
-from ghoshell_container import Container
-import asyncio
+from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
+from ghoshell_moss_contrib.agent.chat import ConsoleChat
 
-container = Container(name='jetarm_agent_container')
+container = Container(name="jetarm_agent_container")
 
-ADDRESS = 'tcp://192.168.1.15:9527'
+ADDRESS = "tcp://192.168.1.15:9527"
 """填入正确的 ip, 需要先对齐 jetarm_ws 运行的机器设备和监听的端口. """
 
 
@@ -42,11 +44,11 @@ async def run_agent():
         shell=shell,
         speech=make_baseline_tts_speech(player=player, tts=tts),
         model=ModelConf(
-            kwargs=dict(
-                thinking=dict(
-                    type="disabled",
-                )
-            ),
+            kwargs={
+                "thinking": {
+                    "type": "disabled",
+                },
+            },
         ),
         chat=ConsoleChat(),
     )

@@ -1,6 +1,8 @@
-from typing import Coroutine, Awaitable
-from ghoshell_moss.core.helpers.func import awaitable_caller
+from collections.abc import Awaitable
+
 import pytest
+
+from ghoshell_moss.core.helpers.func import awaitable_caller
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,9 @@
 import asyncio
 
-from ghoshell_moss.speech.mock import MockSpeech
-from ghoshell_moss.core.concepts.speech import SpeechStream
 import pytest
+
+from ghoshell_moss.core.concepts.speech import SpeechStream
+from ghoshell_moss.speech.mock import MockSpeech
 
 
 @pytest.mark.asyncio

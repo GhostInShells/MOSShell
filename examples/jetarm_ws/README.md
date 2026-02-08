@@ -39,17 +39,17 @@ JetArm 是幻尔的6自由度机械臂实现.
 使用 ssh 协议可以做文件的双向同步, 很多 ide 都支持. 不过我个人的习惯是:
 
 1. 在 jetson 上创建一个专门的开发目录
-2. 在改目录运行 `git init` 初始化一个目标仓库.
-3. 在本地项目中运行 `git remote add jetson ubuntu@ip地址:/home/ubuntu/...目标地址`
-4. 在目标目录中通过 `git config ....` 设置它允许 push 分支覆盖本地分支
-5. 以后通过 git 来同步.
+1. 在改目录运行 `git init` 初始化一个目标仓库.
+1. 在本地项目中运行 `git remote add jetson ubuntu@ip地址:/home/ubuntu/...目标地址`
+1. 在目标目录中通过 `git config ....` 设置它允许 push 分支覆盖本地分支
+1. 以后通过 git 来同步.
 
 ## 确认 ros2 环境
 
 确保在 ubuntu 22.04 中已经安装了 ros2 humble (humble 基于 ubuntu 22.04 提供各种库), 同时没有启动默认的 ros2 路径.
 
-* 检查 ros2 的方法是连接进目标机器, 运行 `ros2` 查看命令.
-* 检查没有默认启动的具体方法是修改 jetarm 的 `~/.zshrc` 文件关联的配置文件, 里面有默认启动的 ros2 路径.
+- 检查 ros2 的方法是连接进目标机器, 运行 `ros2` 查看命令.
+- 检查没有默认启动的具体方法是修改 jetarm 的 `~/.zshrc` 文件关联的配置文件, 里面有默认启动的 ros2 路径.
 
 ## 编译 jetarm_ws
 
@@ -108,24 +108,24 @@ source install/setup.zsh
 ## 核心目录说明
 
 - `src`: 核心库目录
-    - `jetarm_6dof_description`:
-      用来存放 jetarm 的机器人描述相关讯息,
-      也可以启动 rviz `ros2 launch jetarm_6dof_description view_model.launch.py`
-    - `jetarm_driver`:
-      是验证 python 驱动的节点, 想用 python 实现 ros2 control 的 interface. 不过现在不用了.
-    - `jetarm_control`:
-      核心的 ros2 control 实现. 启动这个节点, 机器人就可以驱动了. 详见后面的测试用例. deepseek 等也能给出 ros2
-      control 支持的各种命令.
-      运行这个节点的脚本是 `ros2 launch jetarm_control jetarm_control.launch.py`
-    - `jetarm_moveit2`:
-      这个是基于 ros2 control (jetarm_control) 实现的 moveit 节点, 所有的代码应该都由 moveit2 的 assitant 生成.
-      具体方法可以问模型, 需要提前安装 moveit2 到全局环境里.
+  - `jetarm_6dof_description`:
+    用来存放 jetarm 的机器人描述相关讯息,
+    也可以启动 rviz `ros2 launch jetarm_6dof_description view_model.launch.py`
+  - `jetarm_driver`:
+    是验证 python 驱动的节点, 想用 python 实现 ros2 control 的 interface. 不过现在不用了.
+  - `jetarm_control`:
+    核心的 ros2 control 实现. 启动这个节点, 机器人就可以驱动了. 详见后面的测试用例. deepseek 等也能给出 ros2
+    control 支持的各种命令.
+    运行这个节点的脚本是 `ros2 launch jetarm_control jetarm_control.launch.py`
+  - `jetarm_moveit2`:
+    这个是基于 ros2 control (jetarm_control) 实现的 moveit 节点, 所有的代码应该都由 moveit2 的 assitant 生成.
+    具体方法可以问模型, 需要提前安装 moveit2 到全局环境里.
 
 # 常用测试命令
 
 ## 从 ros control 控制运动轨迹
 
-```bash
+````bash
 ros2 action send_goal /joint_trajectory_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names: ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'r_joint'] 
@@ -153,7 +153,7 @@ ros2 topic list  # 查看存在的 topic
 ros2 topic echo /joint_states --once # 查看关节位置. 
 
 ros2 action list  #  查看存在的轨迹 action. 
-```
+````
 
 ## 运行 channel
 
@@ -164,7 +164,7 @@ ros2 action list  #  查看存在的轨迹 action.
 启动后, channel 可以直接用 python 调试. 调试前最好使用 ghoshell 库本身. 步骤如下:
 
 1. 用某个 ssh 进入 jetson 上 ghoshell 的目录, 运行 `uv venv` 和 `source .venv/bin/activate` 等进入环境.
-2. `which python` 查看 python 是否正确.
-3. 在 jetarm channel 启动的前提下, 运行 `python examples/jetarm_demo/connect_pychannel_with_rcply.py`, 检查 channel
+1. `which python` 查看 python 是否正确.
+1. 在 jetarm channel 启动的前提下, 运行 `python examples/jetarm_demo/connect_pychannel_with_rcply.py`, 检查 channel
    通讯.
-4. 运行 `python examples/jetarm_demo/jetarm_agent.py` 可以启动连接到 jetarm 的 agent
+1. 运行 `python examples/jetarm_demo/jetarm_agent.py` 可以启动连接到 jetarm 的 agent

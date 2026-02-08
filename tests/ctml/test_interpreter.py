@@ -1,9 +1,11 @@
-from ghoshell_moss.speech.mock import MockSpeech
-from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.core.concepts.command import PyCommand, make_command_group
-from collections import deque
 import asyncio
+from collections import deque
+
 import pytest
+
+from ghoshell_moss.core.concepts.command import PyCommand, make_command_group
+from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
+from ghoshell_moss.speech.mock import MockSpeech
 
 
 @pytest.mark.asyncio
@@ -69,4 +71,5 @@ async def test_interpreter_cancel():
     await asyncio.gather(cancel(), consumer())
     inputted = interpreter.inputted()
     # 有一部分输入, 但是输入不完整.
-    assert len(inputted) > 0 and content != inputted
+    assert len(inputted) > 0
+    assert content != inputted

@@ -1,31 +1,33 @@
 import os
 import sys
 
-from ghoshell_common.contracts import LocalWorkspaceProvider, Workspace, WorkspaceConfigs
+from ghoshell_common.contracts import LocalWorkspaceProvider
 
 from ghoshell_moss.speech import make_baseline_tts_speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
 from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
-from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf
+from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
-import pygame
-import live2d.v3 as live2d
 import asyncio
-from os.path import join, dirname
-from ghoshell_moss.core.shell import new_shell
+from os.path import dirname, join
+
+import live2d.v3 as live2d
+import pygame
 from ghoshell_container import Container
-from miku_channels.body import body_chan
-from miku_channels.expression import expression_chan
 from miku_channels.arm import left_arm_chan, right_arm_chan
+from miku_channels.body import body_chan
 from miku_channels.elbow import left_elbow_chan, right_elbow_chan
-from miku_channels.necktie import necktie_chan
-from miku_channels.head import head_chan
-from miku_channels.leg import left_leg_chan, right_leg_chan
+from miku_channels.expression import expression_chan
 from miku_channels.eye import eye_chan
 from miku_channels.eyebrow import eyebrow_left_chan, eyebrow_right_chan
+from miku_channels.head import head_chan
+from miku_channels.leg import left_leg_chan, right_leg_chan
+from miku_channels.necktie import necktie_chan
+
+from ghoshell_moss.core.shell import new_shell
 
 # 全局状态
 model: live2d.LAppModel | None = None
@@ -66,6 +68,7 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.9
     @param min_open: 最小张开程度，0 到 1 之间的浮点数，默认为0.0
     """
     from miku_channels.motions import open_close
+
     PARAM = "ParamMouthOpenY"
     # 特殊处理嘴部动作，说话通常从张开开始
 
@@ -77,11 +80,10 @@ async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.9
         speed=speed,
         max_value=max_open,
         min_value=min_open,
-        initial_direction="open"  # 说话从打开开始
+        initial_direction="open",  # 说话从打开开始
     )
     # 确保最终状态是完全闭合
     model.SetParameterValue(PARAM, 0.0)
-    return None
 
 
 speaking_event = asyncio.Event()
@@ -136,20 +138,18 @@ async def run_agent():
     player = PyAudioStreamPlayer()
     player.on_play(start_speak)
     player.on_play_done(stop_speak)
-    tts = VolcengineTTS(
-        conf=VolcengineTTSConf(default_speaker="saturn_zh_female_keainvsheng_tob")
-    )
+    tts = VolcengineTTS(conf=VolcengineTTSConf(default_speaker="saturn_zh_female_keainvsheng_tob"))
 
     agent = SimpleAgent(
         instruction="你是miku, 拥有 live2d 数字人躯体. 你是可爱和热情的数字人. ",
         shell=shell,
         speech=make_baseline_tts_speech(player=player, tts=tts),
         model=ModelConf(
-            kwargs=dict(
-                thinking=dict(
-                    type="disabled",
-                )
-            ),
+            kwargs={
+                "thinking": {
+                    "type": "disabled",
+                },
+            },
         ),
         container=container,
     )

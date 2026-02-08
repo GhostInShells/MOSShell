@@ -1,11 +1,11 @@
+from mcp import types
 
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.types import MCPCallToolResultAddition
-from ghoshell_moss.message import Message, Text, Base64Image
-import mcp.types as types
+from ghoshell_moss.message import Base64Image, Message, Text
 
 
-def mcp_call_tool_result_to_message(mcp_result: types.CallToolResult, name: str = None) -> Message:
+def mcp_call_tool_result_to_message(mcp_result: types.CallToolResult, name: str | None = None) -> Message:
     if mcp_result.isError:
         raise CommandError(
             code=CommandErrorCode.FAILED.value,

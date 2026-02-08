@@ -1,41 +1,48 @@
-
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List
-from ghoshell_moss.core.concepts.command import (
-    CommandTask, Command, CommandToken, CommandTokenType, BaseCommandTask, CommandDeltaType,
-    CancelAfterOthersTask,
-)
-from ghoshell_moss.core.concepts.interpreter import CommandTaskParserElement, CommandTaskCallback, CommandTaskParseError
-from ghoshell_moss.core.concepts.speech import SpeechStream, Speech
-from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
-from ghoshell_common.contracts import LoggerItf
-from .token_parser import CMTLSaxElement
-from logging import getLogger
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from contextlib import contextmanager
+from logging import getLogger
+from typing import Optional
+
+from ghoshell_common.contracts import LoggerItf
+
+from ghoshell_moss.core.concepts.command import (
+    BaseCommandTask,
+    CancelAfterOthersTask,
+    Command,
+    CommandDeltaType,
+    CommandTask,
+    CommandToken,
+    CommandTokenType,
+)
+from ghoshell_moss.core.concepts.errors import InterpretError
+from ghoshell_moss.core.concepts.interpreter import CommandTaskCallback, CommandTaskParseError, CommandTaskParserElement
+from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+
+from .token_parser import CMTLSaxElement
 
 __all__ = [
-    'CommandTaskElementContext',
-    'BaseCommandTaskParserElement',
-    'DeltaIsTextCommandTaskElement',
-    'NoDeltaCommandTaskElement',
-    'RootCommandTaskElement',
-    'EmptyCommandTaskElement',
-    'DeltaTypeIsTokensCommandTaskElement',
+    "BaseCommandTaskParserElement",
+    "CommandTaskElementContext",
+    "DeltaIsTextCommandTaskElement",
+    "DeltaTypeIsTokensCommandTaskElement",
+    "EmptyCommandTaskElement",
+    "NoDeltaCommandTaskElement",
+    "RootCommandTaskElement",
 ]
 
 
 class CommandTaskElementContext:
-    """语法糖, 用来管理所有 element 共享的组件. """
+    """语法糖, 用来管理所有 element 共享的组件."""
 
     def __init__(
-            self,
-            channel_commands: Dict[str, Dict[str, Command]],
-            output: Speech,
-            logger: Optional[LoggerItf] = None,
-            stop_event: Optional[ThreadSafeEvent] = None,
-            root_tag: str = "ctml",
+        self,
+        channel_commands: dict[str, dict[str, Command]],
+        output: Speech,
+        logger: Optional[LoggerItf] = None,
+        stop_event: Optional[ThreadSafeEvent] = None,
+        root_tag: str = "ctml",
     ):
         self.channel_commands_map = channel_commands
         self.output = output
@@ -47,16 +54,11 @@ class CommandTaskElementContext:
         """
         创建解析树的根节点.
         """
-        return RootCommandTaskElement(
-            cid=stream_id,
-            current_task=None,
-            callback=callback,
-            ctx=self
-        )
+        return RootCommandTaskElement(cid=stream_id, current_task=None, callback=callback, ctx=self)
 
     @contextmanager
     def new_parser(self, callback: CommandTaskCallback, stream_id: str = ""):
-        """语法糖, 用来做上下文管理. """
+        """语法糖, 用来做上下文管理."""
         root = self.new_root(callback, stream_id)
         yield root
         root.destroy()
@@ -68,13 +70,13 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
     """
 
     def __init__(
-            self,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         self.cid = cid
         self.ctx = ctx
@@ -97,7 +99,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         self._current_stream: Optional[SpeechStream] = None
         """当前正在发送的 output stream"""
 
-        self._children_tasks: List[CommandTask] = []
+        self._children_tasks: list[CommandTask] = []
         """子节点发送的 tasks"""
 
         # 正式启动.
@@ -106,7 +108,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         self._on_self_start()
 
     def with_callback(self, callback: CommandTaskCallback) -> None:
-        """设置变更 callback """
+        """设置变更 callback"""
         self._callback = callback
 
     def on_token(self, token: CommandToken | None) -> None:
@@ -152,7 +154,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
 
     def _send_callback(self, task: CommandTask) -> None:
         if not isinstance(task, CommandTask):
-            raise TypeError(f'task must be CommandTask, got {type(task)}')
+            raise TypeError(f"task must be CommandTask, got {type(task)}")
         if self.ctx.stop_event.is_set():
             # 停止了就啥也不干了.
             return None
@@ -176,7 +178,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         """
         if token.type != CommandTokenType.START.value:
             # todo
-            raise InterpretError("invalid token %r" % token)
+            raise InterpretError(f"invalid token {token!r}")
 
         command = self._find_command(token.chan, token.name)
         if command is None:
@@ -270,6 +272,7 @@ class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
     """
     没有 delta 参数的 Command
     """
+
     _output_stream: Optional[SpeechStream] = None
 
     def _on_delta_token(self, token: CommandToken) -> None:
@@ -409,7 +412,6 @@ class DeltaTypeIsTokensCommandTaskElement(BaseCommandTaskParserElement):
 
 
 class RootCommandTaskElement(NoDeltaCommandTaskElement):
-
     def _send_callback_done(self):
         if not self._done_event.is_set() and not self.ctx.stop_event.is_set() and self._callback is not None:
             self._callback(None)
@@ -447,7 +449,6 @@ class DeltaIsTextCommandTaskElement(BaseCommandTaskParserElement):
 
     def _on_delta_token(self, token: CommandToken) -> None:
         self._inner_content += token.content
-        return
 
     def _on_self_start(self) -> None:
         # 开始时不要执行什么.
@@ -477,4 +478,3 @@ class DeltaIsTextCommandTaskElement(BaseCommandTaskParserElement):
 
     def _on_cmd_start_token(self, token: CommandToken):
         self._inner_content += token.content
-        return

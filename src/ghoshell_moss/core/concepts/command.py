@@ -1,50 +1,64 @@
-
 import asyncio
+import contextvars
+import inspect
 import logging
 import threading
+import time
+import traceback
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from enum import Enum
 from typing import (
-    Literal, Optional, Dict, Any, List, Generic, TypeVar, Callable, Coroutine, Union,
-    Iterable, AsyncIterator, Tuple,
+    Any,
+    Generic,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
 )
-from typing_extensions import Self
+
 from ghoshell_common.helpers import uuid
-from ghoshell_moss.core.helpers.func import parse_function_interface
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field
-from enum import Enum
-import traceback
-import inspect
-import time
-import contextvars
+from typing_extensions import Self
+
+from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers.func import parse_function_interface
 
 __all__ = [
-    'CommandToken', 'CommandTokenType',
-    'Command', 'CommandMeta', 'PyCommand', 'CommandWrapper',
-    'CommandError', 'CommandErrorCode',
-    'CommandType',
-    'CommandTaskState', 'CommandTaskStateType',
-    'CommandTask', 'BaseCommandTask',
-    'CommandTaskStack',
-    'RESULT',
-    'CommandDeltaType', 'CommandDeltaTypeMap',
-    'CancelAfterOthersTask',
-    'make_command_group',
+    "RESULT",
+    "BaseCommandTask",
+    "CancelAfterOthersTask",
+    "Command",
+    "CommandDeltaType",
+    "CommandDeltaTypeMap",
+    "CommandError",
+    "CommandErrorCode",
+    "CommandMeta",
+    "CommandTask",
+    "CommandTaskStack",
+    "CommandTaskState",
+    "CommandTaskStateType",
+    "CommandToken",
+    "CommandTokenType",
+    "CommandType",
+    "CommandWrapper",
+    "PyCommand",
+    "make_command_group",
 ]
 
 RESULT = TypeVar("RESULT")
 
 
 class CommandTaskStateType(str, Enum):
-    created = 'created'
-    queued = 'queued'
-    pending = 'pending'
-    running = 'running'
-    failed = 'failed'
-    done = 'done'
-    cancelled = 'cancelled'
+    created = "created"
+    queued = "queued"
+    pending = "pending"
+    running = "running"
+    failed = "failed"
+    done = "done"
+    cancelled = "cancelled"
 
 
 class CommandTaskState(str, Enum):
@@ -83,7 +97,10 @@ class CommandType(str, Enum):
     """功能, 需要一段时间执行, 执行完后结束. """
 
     POLICY = "policy"
-    """状态变更函数. 会改变 Command 所属 Channel 的运行策略, 立刻生效. 但只有 run_policy (没有其它命令阻塞时) 才会执行. """
+    """
+    状态变更函数. 会改变 Command 所属 Channel 的运行策略, 立刻生效.
+    但只有 run_policy (没有其它命令阻塞时) 才会执行.
+    """
 
     PROMPTER = "prompter"
     """返回一个字符串, 用来生成 prompt. 仅当 Agent 自主生成 prompt 时才要用它. 结合 pml """
@@ -125,7 +142,8 @@ class CommandToken(BaseModel):
     * delta: 表示这个 command 所接受到的流式输入.
     * stop: 表示一个 command 已经结束.
     """
-    type: Literal['start', 'delta', 'end'] = Field(description="tokens type")
+
+    type: Literal["start", "delta", "end"] = Field(description="tokens type")
 
     name: str = Field(description="command name")
     chan: str = Field(default="", description="channel name")
@@ -140,7 +158,7 @@ class CommandToken(BaseModel):
 
     content: str = Field(description="origin tokens that llm generates")
 
-    kwargs: Optional[Dict[str, Any]] = Field(default=None, description="attributes, only for command start")
+    kwargs: Optional[dict[str, Any]] = Field(default=None, description="attributes, only for command start")
 
     def command_id(self) -> str:
         """
@@ -166,21 +184,14 @@ class CommandMeta(BaseModel):
     """
     命令的原始信息.
     """
-    name: str = Field(
-        description="the name of the command"
-    )
-    chan: str = Field(
-        default="",
-        description="the channel name that the command belongs to"
-    )
+
+    name: str = Field(description="the name of the command")
+    chan: str = Field(default="", description="the channel name that the command belongs to")
     description: str = Field(
         default="",
         description="the doc of the command",
     )
-    dynamic: bool = Field(
-        default=False,
-        description="whether this command is dynamic or not"
-    )
+    dynamic: bool = Field(default=False, description="whether this command is dynamic or not")
     available: bool = Field(
         default=True,
         description="whether this command is available",
@@ -188,9 +199,9 @@ class CommandMeta(BaseModel):
     type: str = Field(
         default=CommandType.FUNCTION.value,
         description="",
-        json_schema_extra=dict(enum=CommandType.all()),
+        json_schema_extra={"enum": CommandType.all()},
     )
-    tags: List[str] = Field(default_factory=list, description="tags of the command")
+    tags: list[str] = Field(default_factory=list, description="tags of the command")
     delta_arg: Optional[str] = Field(
         default=None,
         description="the delta arg type",
@@ -200,15 +211,15 @@ class CommandMeta(BaseModel):
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
-                    "但核心思想是 Code As Prompt."
-                    "通常是一个 python async 函数的 signature. 形如:"
-                    "```python"
-                    "async def name(arg: typehint = default) -> return_type:"
-                    "    ''' docstring '''"
-                    "    pass"
-                    "```"
+        "但核心思想是 Code As Prompt."
+        "通常是一个 python async 函数的 signature. 形如:"
+        "```python"
+        "async def name(arg: typehint = default) -> return_type:"
+        "    ''' docstring '''"
+        "    pass"
+        "```",
     )
-    args_schema: Optional[Dict[str, Any]] = Field(
+    args_schema: Optional[dict[str, Any]] = Field(
         default=None,
         description="the json schema. 兼容性实现.",
     )
@@ -244,7 +255,7 @@ class Command(Generic[RESULT], ABC):
         return f"{prefix}{name}"
 
     @staticmethod
-    def split_uniquename(name: str) -> Tuple[str, str]:
+    def split_uniquename(name: str) -> tuple[str, str]:
         parts = name.split(":", 1)
         return (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
 
@@ -279,9 +290,9 @@ class Command(Generic[RESULT], ABC):
 
 class CommandWrapper(Command[RESULT]):
     def __init__(
-            self,
-            meta: CommandMeta,
-            func: Callable[..., Coroutine[Any, Any, RESULT]],
+        self,
+        meta: CommandMeta,
+        func: Callable[..., Coroutine[Any, Any, RESULT]],
     ):
         self._func = func
         self._meta = meta
@@ -311,19 +322,19 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     """
 
     def __init__(
-            self,
-            func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
-            *,
-            chan: Optional[str] = None,
-            name: Optional[str] = None,
-            available: Callable[[], bool] | None = None,
-            interface: Optional[StringType] = None,
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            meta: Optional[CommandMeta] = None,
-            tags: Optional[List[str]] = None,
-            call_soon: bool = False,
-            block: bool = True,
+        self,
+        func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
+        *,
+        chan: Optional[str] = None,
+        name: Optional[str] = None,
+        available: Callable[[], bool] | None = None,
+        interface: Optional[StringType] = None,
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        meta: Optional[CommandMeta] = None,
+        tags: Optional[list[str]] = None,
+        call_soon: bool = False,
+        block: bool = True,
     ):
         """
         :param func: origin coroutine function
@@ -350,7 +361,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._tags = tags
         self._meta = meta
         delta_arg = None
-        for arg_name in self._func_itf.signature.parameters.keys():
+        for arg_name in self._func_itf.signature.parameters:
             if arg_name in CommandDeltaTypeMap:
                 if delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
@@ -411,7 +422,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             comments=comments,
         )
 
-    def parse_kwargs(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def parse_kwargs(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
         return real_kwargs
 
@@ -441,20 +452,20 @@ class CommandTask(Generic[RESULT], ABC):
     """
 
     def __init__(
-            self,
-            *,
-            meta: CommandMeta,
-            func: Callable[..., Coroutine[None, None, RESULT]] | None,
-            tokens: str,
-            args: list,
-            kwargs: Dict[str, Any],
-            cid: str | None = None,
-            context: Dict[str, Any] | None = None,
+        self,
+        *,
+        meta: CommandMeta,
+        func: Callable[..., Coroutine[None, None, RESULT]] | None,
+        tokens: str,
+        args: list,
+        kwargs: dict[str, Any],
+        cid: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
-        self.args: List = list(args)
-        self.kwargs: Dict[str, Any] = kwargs
+        self.args: list = list(args)
+        self.kwargs: dict[str, Any] = kwargs
         self.state: str = "created"
         self.meta = meta
         self.func = func
@@ -463,13 +474,13 @@ class CommandTask(Generic[RESULT], ABC):
         self.context = context or {}
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
-        self.last_trace: Tuple[str, float] = ("", 0.0)
+        self.last_trace: tuple[str, float] = ("", 0.0)
 
         # --- debug --- #
-        self.trace: Dict[str, float] = {
+        self.trace: dict[str, float] = {
             "created": time.time(),
         }
-        self.send_through: List[str] = []
+        self.send_through: list[str] = []
         self.exec_chan: Optional[str] = None
         """记录 task 在哪个 channel 被运行. """
 
@@ -568,10 +579,10 @@ class CommandTask(Generic[RESULT], ABC):
 
     @abstractmethod
     async def wait(
-            self,
-            *,
-            throw: bool = True,
-            timeout: float | None = None,
+        self,
+        *,
+        throw: bool = True,
+        timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         async wait the task to be done thread-safe
@@ -603,7 +614,7 @@ class CommandTask(Generic[RESULT], ABC):
         return r
 
     async def run(self) -> RESULT:
-        """典型的案例如何使用一个 command task. 有状态的运行逻辑. """
+        """典型的案例如何使用一个 command task. 有状态的运行逻辑."""
         if self.done():
             self.raise_exception()
             return self.result()
@@ -643,13 +654,15 @@ class CommandTask(Generic[RESULT], ABC):
                 self.cancel()
 
     def __repr__(self):
-        return (f"<CommandTask name=`{self.meta.name}` chan=`{self.meta.chan}` "
-                f"args=`{self.args}` kwargs=`{self.kwargs}`"
-                f"cid=`{self.cid}` tokens=`{self.tokens}` "
-                f"state=`{self.state}` done_at=`{self.done_at}` "
-                f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
-                f"send_through=`{self.send_through}` "
-                f">")
+        return (
+            f"<CommandTask name=`{self.meta.name}` chan=`{self.meta.chan}` "
+            f"args=`{self.args}` kwargs=`{self.kwargs}`"
+            f"cid=`{self.cid}` tokens=`{self.tokens}` "
+            f"state=`{self.state}` done_at=`{self.done_at}` "
+            f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
+            f"send_through=`{self.send_through}` "
+            f">"
+        )
 
 
 class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
@@ -660,15 +673,15 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
 
     def __init__(
-            self,
-            *,
-            meta: CommandMeta,
-            func: Callable[..., Coroutine[None, None, RESULT]] | None,
-            tokens: str,
-            args: list,
-            kwargs: Dict[str, Any],
-            cid: str | None = None,
-            context: Dict[str, Any] | None = None,
+        self,
+        *,
+        meta: CommandMeta,
+        func: Callable[..., Coroutine[None, None, RESULT]] | None,
+        tokens: str,
+        args: list,
+        kwargs: dict[str, Any],
+        cid: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             meta=meta,
@@ -725,7 +738,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         """
         停止命令.
         """
-        self._set_result(None, 'cancelled', CommandErrorCode.CANCELLED, reason)
+        self._set_result(None, "cancelled", CommandErrorCode.CANCELLED, reason)
 
     def clear(self) -> None:
         self._result = None
@@ -743,12 +756,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.trace[self.state] = now
 
     def _set_result(
-            self,
-            result: Optional[RESULT],
-            state: CommandTaskStateType | str,
-            errcode: int,
-            errmsg: Optional[str],
-            done_at: Optional[str] = None,
+        self,
+        result: Optional[RESULT],
+        state: CommandTaskStateType | str,
+        errcode: int,
+        errmsg: Optional[str],
+        done_at: Optional[str] = None,
     ) -> bool:
         with self._done_lock:
             if self._done_event.is_set():
@@ -767,7 +780,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                     try:
                         done_callback(self)
                     except Exception as e:
-                        logging.error(e)
+                        logging.exception("CommandTask done callback failed")
                         continue
             return True
 
@@ -792,7 +805,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
 
     def resolve(self, result: RESULT) -> None:
         if not self._done_event.is_set():
-            self._set_result(result, 'done', 0, None)
+            self._set_result(result, "done", 0, None)
 
     def exception(self) -> Optional[Exception]:
         if self.errcode is None or self.errcode == 0:
@@ -801,10 +814,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return CommandError(self.errcode, self.errmsg or "")
 
     async def wait(
-            self,
-            *,
-            throw: bool = True,
-            timeout: float | None = None,
+        self,
+        *,
+        throw: bool = True,
+        timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
@@ -842,9 +855,9 @@ class WaitDoneTask(BaseCommandTask):
     """
 
     def __init__(
-            self,
-            tasks: Iterable[CommandTask],
-            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+        self,
+        tasks: Iterable[CommandTask],
+        after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
     ) -> None:
         meta = CommandMeta(
             name="_wait_done",
@@ -873,10 +886,10 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
     """
 
     def __init__(
-            self,
-            current: CommandTask,
-            *tasks: CommandTask,
-            tokens: str = "",
+        self,
+        current: CommandTask,
+        *tasks: CommandTask,
+        tokens: str = "",
     ) -> None:
         meta = CommandMeta(
             name="cancel_" + current.meta.name,
@@ -905,12 +918,12 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
 
 
 class CommandTaskStack:
-    """特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回. """
+    """特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回."""
 
     def __init__(
-            self,
-            iterator: AsyncIterator[CommandTask] | List[CommandTask],
-            on_success: Callable[[List[CommandTask]], Coroutine[None, None, Any]] | Any = None,
+        self,
+        iterator: AsyncIterator[CommandTask] | list[CommandTask],
+        on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
     ) -> None:
         self._iterator = iterator
         self._on_success = on_success
@@ -927,14 +940,14 @@ class CommandTaskStack:
         else:
             owner.resolve(self._on_success)
 
-    def generated(self) -> List[CommandTask]:
+    def generated(self) -> list[CommandTask]:
         return self._generated.copy()
 
     def __aiter__(self) -> AsyncIterator[CommandTask]:
         return self
 
     async def __anext__(self) -> CommandTask:
-        if isinstance(self._iterator, List):
+        if isinstance(self._iterator, list):
             if len(self._iterator) == 0:
                 raise StopAsyncIteration
             item = self._iterator.pop(0)
@@ -949,7 +962,7 @@ class CommandTaskStack:
         return ""
 
 
-def make_command_group(*commands: Command) -> Dict[str, Dict[str, Command]]:
+def make_command_group(*commands: Command) -> dict[str, dict[str, Command]]:
     result = {}
     for command in commands:
         meta = command.meta()

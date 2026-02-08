@@ -1,20 +1,29 @@
-
 import io
 import logging
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Callable, List
 
 import websockets
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    'MsgType', 'MsgTypeFlagBits', 'Message', 'EventType',
-    'start_session', 'start_connection', 'receive_message', 'task_request',
-    'finish_session', 'cancel_session', 'finish_connection',
-    'audio_only_client', 'full_client_request', 'wait_for_event',
+    "EventType",
+    "Message",
+    "MsgType",
+    "MsgTypeFlagBits",
+    "audio_only_client",
+    "cancel_session",
+    "finish_connection",
+    "finish_session",
+    "full_client_request",
+    "receive_message",
+    "start_connection",
+    "start_session",
+    "task_request",
+    "wait_for_event",
 ]
 
 
@@ -33,7 +42,7 @@ class MsgType(IntEnum):
     ServerACK = AudioOnlyServer
 
     def __str__(self) -> str:
-        return self.name if self.name else f"MsgType({self.value})"
+        return self.name or f"MsgType({self.value})"
 
 
 class MsgTypeFlagBits(IntEnum):
@@ -155,7 +164,7 @@ class EventType(IntEnum):
     TranslationSubtitleEnd = 655
 
     def __str__(self) -> str:
-        return self.name if self.name else f"EventType({self.value})"
+        return self.name or f"EventType({self.value})"
 
 
 @dataclass
@@ -203,9 +212,7 @@ class Message:
     def from_bytes(cls, data: bytes) -> "Message":
         """Create message object from bytes"""
         if len(data) < 3:
-            raise ValueError(
-                f"Data too short: expected at least 3 bytes, got {len(data)}"
-            )
+            raise ValueError(f"Data too short: expected at least 3 bytes, got {len(data)}")
 
         type_and_flag = data[1]
         msg_type = MsgType(type_and_flag >> 4)
@@ -272,7 +279,7 @@ class Message:
         if remaining:
             raise ValueError(f"Unexpected data after message: {remaining}")
 
-    def _get_writers(self) -> List[Callable[[io.BytesIO], None]]:
+    def _get_writers(self) -> list[Callable[[io.BytesIO], None]]:
         """Get list of writer functions"""
         writers = []
 
@@ -296,7 +303,7 @@ class Message:
         writers.append(self._write_payload)
         return writers
 
-    def _get_readers(self) -> List[Callable[[io.BytesIO], None]]:
+    def _get_readers(self) -> list[Callable[[io.BytesIO], None]]:
         """Get list of reader functions"""
         readers = []
 
@@ -315,9 +322,7 @@ class Message:
             raise ValueError(f"Unsupported message type: {self.type}")
 
         if self.flag == MsgTypeFlagBits.WithEvent:
-            readers.extend(
-                [self._read_event, self._read_session_id, self._read_connect_id]
-            )
+            readers.extend([self._read_event, self._read_session_id, self._read_connect_id])
 
         readers.append(self._read_payload)
         return readers
@@ -424,13 +429,22 @@ class Message:
         """String representation"""
         if self.type in [MsgType.AudioOnlyServer, MsgType.AudioOnlyClient]:
             if self.flag in [MsgTypeFlagBits.PositiveSeq, MsgTypeFlagBits.NegativeSeq]:
-                return f"MsgType: {self.type}, EventType:{self.event}, Sequence: {self.sequence}, PayloadSize: {len(self.payload)}"
+                return (
+                    f"MsgType: {self.type}, EventType:{self.event}, Sequence: {self.sequence}, "
+                    f"PayloadSize: {len(self.payload)}"
+                )
             return f"MsgType: {self.type}, EventType:{self.event}, PayloadSize: {len(self.payload)}"
         elif self.type == MsgType.Error:
-            return f"MsgType: {self.type}, EventType:{self.event}, ErrorCode: {self.error_code}, Payload: {self.payload.decode('utf-8', 'ignore')}"
+            return (
+                f"MsgType: {self.type}, EventType:{self.event}, ErrorCode: {self.error_code}, "
+                f"Payload: {self.payload.decode('utf-8', 'ignore')}"
+            )
         else:
             if self.flag in [MsgTypeFlagBits.PositiveSeq, MsgTypeFlagBits.NegativeSeq]:
-                return f"MsgType: {self.type}, EventType:{self.event}, Sequence: {self.sequence}, Payload: {self.payload.decode('utf-8', 'ignore')}"
+                return (
+                    f"MsgType: {self.type}, EventType:{self.event}, Sequence: {self.sequence}, "
+                    f"Payload: {self.payload.decode('utf-8', 'ignore')}"
+                )
             return f"MsgType: {self.type}, EventType:{self.event}, Payload: {self.payload.decode('utf-8', 'ignore')}"
 
 
@@ -442,19 +456,19 @@ async def receive_message(websocket: websockets.ClientConnection) -> Message:
             raise ValueError(f"Unexpected text message: {data}")
         elif isinstance(data, bytes):
             msg = Message.from_bytes(data)
-            logger.debug(f"Received: {msg}")
+            logger.debug("Received: %s", msg)
             return msg
         else:
             raise ValueError(f"Unexpected message type: {type(data)}")
-    except Exception as e:
-        logger.error(f"Failed to receive message: {e}")
+    except Exception:
+        logger.exception("Failed to receive message")
         raise
 
 
 async def wait_for_event(
-        websocket: websockets.ClientConnection,
-        msg_type: MsgType,
-        event_type: EventType,
+    websocket: websockets.ClientConnection,
+    msg_type: MsgType,
+    event_type: EventType,
 ) -> Message:
     """Wait for specific event"""
     msg = await receive_message(websocket)
@@ -464,23 +478,19 @@ async def wait_for_event(
         return msg
 
 
-async def full_client_request(
-        websocket: websockets.ClientConnection, payload: bytes
-) -> None:
+async def full_client_request(websocket: websockets.ClientConnection, payload: bytes) -> None:
     """Send full client message"""
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.NoSeq)
     msg.payload = payload
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
-async def audio_only_client(
-        websocket: websockets.ClientConnection, payload: bytes, flag: MsgTypeFlagBits
-) -> None:
+async def audio_only_client(websocket: websockets.ClientConnection, payload: bytes, flag: MsgTypeFlagBits) -> None:
     """Send audio-only client message"""
     msg = Message(type=MsgType.AudioOnlyClient, flag=flag)
     msg.payload = payload
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
@@ -489,7 +499,7 @@ async def start_connection(websocket: websockets.ClientConnection) -> None:
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.StartConnection
     msg.payload = b"{}"
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
@@ -498,53 +508,45 @@ async def finish_connection(websocket: websockets.ClientConnection) -> None:
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.FinishConnection
     msg.payload = b"{}"
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
-async def start_session(
-        websocket: websockets.ClientConnection, payload: bytes, session_id: str
-) -> None:
+async def start_session(websocket: websockets.ClientConnection, payload: bytes, session_id: str) -> None:
     """Start session"""
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.StartSession
     msg.session_id = session_id
     msg.payload = payload
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
-async def finish_session(
-        websocket: websockets.ClientConnection, session_id: str
-) -> None:
+async def finish_session(websocket: websockets.ClientConnection, session_id: str) -> None:
     """Finish session"""
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.FinishSession
     msg.session_id = session_id
     msg.payload = b"{}"
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
-async def cancel_session(
-        websocket: websockets.ClientConnection, session_id: str
-) -> None:
+async def cancel_session(websocket: websockets.ClientConnection, session_id: str) -> None:
     """Cancel session"""
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.CancelSession
     msg.session_id = session_id
     msg.payload = b"{}"
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())
 
 
-async def task_request(
-        websocket: websockets.ClientConnection, payload: bytes, session_id: str
-) -> None:
+async def task_request(websocket: websockets.ClientConnection, payload: bytes, session_id: str) -> None:
     """Send task request"""
     msg = Message(type=MsgType.FullClientRequest, flag=MsgTypeFlagBits.WithEvent)
     msg.event = EventType.TaskRequest
     msg.session_id = session_id
     msg.payload = payload
-    logger.debug(f"Sending: {msg}")
+    logger.debug("Sending: %s", msg)
     await websocket.send(msg.marshal())

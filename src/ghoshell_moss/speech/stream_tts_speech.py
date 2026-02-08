@@ -1,31 +1,33 @@
+import asyncio
+import logging
+from typing import Optional
 
-from typing import List, Optional, Dict
-
-from ghoshell_moss.core.concepts.speech import (
-    Speech, SpeechStream, StreamAudioPlayer,
-    TTS, TTSBatch,
-    AudioFormat,
-)
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
-import numpy as np
-import logging
-import asyncio
+
+from ghoshell_moss.core.concepts.speech import (
+    TTS,
+    AudioFormat,
+    Speech,
+    SpeechStream,
+    StreamAudioPlayer,
+    TTSBatch,
+)
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 
 class TTSSpeechStream(SpeechStream):
-
     def __init__(
-            self,
-            *,
-            loop: asyncio.AbstractEventLoop,
-            audio_format: AudioFormat | str,
-            channels: int,
-            sample_rate: int,
-            player: StreamAudioPlayer,
-            tts_batch: TTSBatch,
-            logger: LoggerItf,
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        audio_format: AudioFormat | str,
+        channels: int,
+        sample_rate: int,
+        player: StreamAudioPlayer,
+        tts_batch: TTSBatch,
+        logger: LoggerItf,
     ):
 
         batch_id = tts_batch.batch_id()
@@ -105,20 +107,19 @@ class TTSSpeechStream(SpeechStream):
 
 
 class TTSSpeech(Speech):
-
     def __init__(
-            self,
-            *,
-            player: StreamAudioPlayer,
-            tts: TTS,
-            logger: Optional[LoggerItf] = None,
+        self,
+        *,
+        player: StreamAudioPlayer,
+        tts: TTS,
+        logger: Optional[LoggerItf] = None,
     ):
         self.logger = logger or logging.getLogger("StreamTTSSpeech")
         self._player = player
         self._tts = tts
         self._tts_info = tts.get_info()
-        self._outputted: List[str] = []
-        self._streams: Dict[str, SpeechStream] = {}
+        self._outputted: list[str] = []
+        self._streams: dict[str, SpeechStream] = {}
 
         self._running_loop: Optional[asyncio.AbstractEventLoop] = None
         self._starting = False
@@ -145,11 +146,11 @@ class TTSSpeech(Speech):
         if not self._started or self._closing:
             raise RuntimeError("TTS Speech is not running")
 
-    def outputted(self) -> List[str]:
+    def outputted(self) -> list[str]:
         self._check_running()
         return self._outputted
 
-    async def clear(self) -> List[str]:
+    async def clear(self) -> list[str]:
         self._check_running()
         outputted = self._outputted.copy()
         self._outputted = []

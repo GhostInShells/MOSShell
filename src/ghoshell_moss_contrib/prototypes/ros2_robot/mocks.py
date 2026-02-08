@@ -1,14 +1,12 @@
+from typing import Optional
 
-from typing import Dict, Optional
-
-from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import RobotController, TrajectoryAction, MOSSRobotManager
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController, TrajectoryAction
 
 
 class MockRobotController(RobotController):
-
     def __init__(self, manager: MOSSRobotManager):
         self._manager = manager
-        self._raw_positions: Optional[Dict[str, float]] = None
+        self._raw_positions: Optional[dict[str, float]] = None
 
     def close(self) -> None:
         pass
@@ -25,13 +23,13 @@ class MockRobotController(RobotController):
     def manager(self) -> MOSSRobotManager:
         return self._manager
 
-    def get_raw_positions(self) -> Dict[str, float]:
+    def get_raw_positions(self) -> dict[str, float]:
         if self._raw_positions is None:
             default_positions = self._manager.get_default_pose().positions
             return self._manager.from_joint_values_to_positions(default_positions)
         return self._raw_positions
 
-    def update_raw_positions(self, positions: Dict[str, float]) -> None:
+    def update_raw_positions(self, positions: dict[str, float]) -> None:
         self._raw_positions = positions
 
     def stop_movement(self) -> None:

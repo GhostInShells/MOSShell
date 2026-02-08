@@ -1,24 +1,25 @@
-
 import asyncio
-from typing import List, Tuple, Coroutine, Callable, Any, Optional
-from typing_extensions import Self
-from collections import deque
-from asyncio import Future
-
 import threading
+from asyncio import Future
+from collections import deque
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional
+
+from typing_extensions import Self
 
 __all__ = [
-    'ThreadSafeEvent', 'ensure_tasks_done_or_cancel', 'TreeNotify',
-    'ThreadSafeFuture',
+    "ThreadSafeEvent",
+    "ThreadSafeFuture",
+    "TreeNotify",
+    "ensure_tasks_done_or_cancel",
 ]
 
 
 class ThreadSafeFuture:
-
     def __init__(
-            self,
-            future: Optional[Future] = None,
-            loop: Optional[asyncio.AbstractEventLoop] = None,
+        self,
+        future: Optional[Future] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.future = future or asyncio.Future()
         self.loop = loop or asyncio.get_event_loop()
@@ -58,7 +59,7 @@ class ThreadSafeEvent:
 
     def __init__(self, debug: bool = False):
         self.thread_event = threading.Event()
-        self.awaits_events: deque[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
+        self.awaits_events: deque[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
         self.debug = debug
         self.set_at: Optional[str] = None
         self._lock = threading.Lock()
@@ -108,12 +109,12 @@ class ThreadSafeEvent:
 
 
 async def ensure_tasks_done_or_cancel(
-        *fts: asyncio.Task | Coroutine,
-        timeout: float | None = None,
-        cancel: Callable[[], Coroutine[None, None, Any]] | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
-) -> List:
-    """实现一个通用函数, 确保所有的 tasks or coroutines 必然会被执行或者 cancel """
+    *fts: asyncio.Task | Coroutine,
+    timeout: float | None = None,
+    cancel: Callable[[], Coroutine[None, None, Any]] | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> list:
+    """实现一个通用函数, 确保所有的 tasks or coroutines 必然会被执行或者 cancel"""
     gathering = []
     for task in fts:
         if isinstance(task, asyncio.Task):
@@ -149,7 +150,7 @@ async def ensure_tasks_done_or_cancel(
         for t in gathering:
             t.cancel()
         await gathered
-        raise asyncio.TimeoutError(f'Timed out waiting for {timeout}')
+        raise asyncio.TimeoutError(f"Timed out waiting for {timeout}")
     else:
         await gathered
         raise asyncio.CancelledError

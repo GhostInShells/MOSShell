@@ -1,11 +1,12 @@
-from ghoshell_moss.core.py_channel import PyChannel
-import time
 import asyncio
+import time
+
 import live2d.v3 as live2d
 
+from ghoshell_moss.core.py_channel import PyChannel
 
-left_leg_chan = PyChannel(name='left_leg')
-right_leg_chan = PyChannel(name='right_leg')
+left_leg_chan = PyChannel(name="left_leg")
+right_leg_chan = PyChannel(name="right_leg")
 
 
 @left_leg_chan.build.command()
@@ -30,12 +31,12 @@ async def move(duration: float = 1.5, angle: float = 10.0):
         target = current_angle + (angle - current_angle) * progress
         model.SetParameterValue(PARAM, target)
         await asyncio.sleep(0.016)
-    
+
     value = model.GetParameterValue(model.GetParamIds().index(PARAM))
 
 
 @right_leg_chan.build.command()
-async def move(duration: float = 1.5, angle: float = -10.0):
+async def right_move(duration: float = 1.5, angle: float = -10.0):
     """
     移动右腿到指定角度
 
@@ -44,7 +45,7 @@ async def move(duration: float = 1.5, angle: float = -10.0):
     """
     PARAM = "PARAM_LEG_R_Z"
     model = right_leg_chan.broker.container.force_fetch(live2d.LAppModel)
-    index = model.GetParamIds().index(PARAM)    
+    index = model.GetParamIds().index(PARAM)
     current_angle = model.GetParameterValue(index)
 
     start_time = time.time()

@@ -9,11 +9,11 @@ MOSS 架构中, Shell 和 Channel 可以运行在不同的设备, 不同的进�
 基本原理:
 
 1. provider 端: 通过 ChannelProvider 去运行一个本地 Channel
-2. shell 端: 通过 ChannelProxy 去对接 provider 的通讯, 得到一个 Channel 实例.
+1. shell 端: 通过 ChannelProxy 去对接 provider 的通讯, 得到一个 Channel 实例.
 
 相当于:
 
-* 上行通道: 本地 channel -> provider -> 本地 connection -> shell 侧 connection -> shell 侧 channel proxy
-* 下行通道: shell -> channel proxy -> shell 侧 connection -> 本地 connection -> 本地 provider -> 本地 channel.
+- 上行通道: 本地 channel -> provider -> 本地 connection -> shell 侧 connection -> shell 侧 channel proxy
+- 下行通道: shell -> channel proxy -> shell 侧 connection -> 本地 connection -> 本地 provider -> 本地 channel.
 
-通过这种方式, 可以将本地的树形 channel 一次性提供给远端. 
+通过这种方式, 可以将本地的树形 channel 一次性提供给远端.

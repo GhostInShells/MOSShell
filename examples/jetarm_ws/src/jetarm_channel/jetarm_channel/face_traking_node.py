@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
-# encoding: utf-8
 # Face Tracking 人脸追踪
-import os
-import cv2
-import time
+import operator
 import queue
-import rclpy
 import threading
-import numpy as np
-import sdk.pid as pid
+import time
+
+import cv2
 import mediapipe as mp
-from sdk import fps
-from rclpy.node import Node
+import numpy as np
+import rclpy
 from cv_bridge import CvBridge
-from std_srvs.srv import Trigger
-from sensor_msgs.msg import Image
-from kinematics_msgs.srv import SetRobotPose
-from rclpy.executors import MultiThreadedExecutor
-from servo_controller_msgs.msg import ServosPosition
-from rclpy.callback_groups import ReentrantCallbackGroup
 from kinematics.kinematics_control import set_pose_target
+from kinematics_msgs.srv import SetRobotPose
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from sdk import fps, pid
+from sdk.common import box_center, distance, mp_face_location, show_faces
+from sensor_msgs.msg import Image
 from servo_controller.bus_servo_control import set_servo_position
-from sdk.common import show_faces, mp_face_location, box_center, distance
+from servo_controller_msgs.msg import ServosPosition
+from std_srvs.srv import Trigger
 
 
 class FaceTrackingNode(Node):
@@ -43,23 +42,26 @@ class FaceTrackingNode(Node):
         self.pid_z = pid.PID(0.00006, 0.0, 0.0)
         self.pid_y = pid.PID(0.055, 0.0, 0.0)
         self.detected_face = 0
-        self.joints_pub = self.create_publisher(ServosPosition, '/servo_controller', 1)  # Servo control 舵机控制
+        self.joints_pub = self.create_publisher(ServosPosition, "/servo_controller", 1)  # Servo control 舵机控制
 
-        self.image_sub = self.create_subscription(Image, '/depth_cam/rgb/image_raw', self.image_callback,
-                                                  1)  # Subscribe to the camera 摄像头订阅
+        self.image_sub = self.create_subscription(
+            Image, "/depth_cam/rgb/image_raw", self.image_callback, 1
+        )  # Subscribe to the camera 摄像头订阅
 
-        self.result_publisher = self.create_publisher(Image, '~/image_result',
-                                                      1)  # Publish the image processing result. 图像处理结果发布
+        self.result_publisher = self.create_publisher(
+            Image, "~/image_result", 1
+        )  # Publish the image processing result. 图像处理结果发布
         timer_cb_group = ReentrantCallbackGroup()
-        self.create_service(Trigger, '~/start', self.start_srv_callback)  # Enter the feature 进入玩法
-        self.create_service(Trigger, '~/stop', self.stop_srv_callback,
-                            callback_group=timer_cb_group)  # Exit the feature 退出玩法
-        self.client = self.create_client(Trigger, '/controller_manager/init_finish')
+        self.create_service(Trigger, "~/start", self.start_srv_callback)  # Enter the feature 进入玩法
+        self.create_service(
+            Trigger, "~/stop", self.stop_srv_callback, callback_group=timer_cb_group
+        )  # Exit the feature 退出玩法
+        self.client = self.create_client(Trigger, "/controller_manager/init_finish")
         self.client.wait_for_service()
-        self.client = self.create_client(Trigger, '/kinematics/init_finish')
+        self.client = self.create_client(Trigger, "/kinematics/init_finish")
         self.client.wait_for_service()
 
-        self.kinematics_client = self.create_client(SetRobotPose, '/kinematics/set_pose_target')
+        self.kinematics_client = self.create_client(SetRobotPose, "/kinematics/set_pose_target")
         self.kinematics_client.wait_for_service()
 
         self.timer = self.create_timer(0.0, self.init_process, callback_group=timer_cb_group)
@@ -68,12 +70,12 @@ class FaceTrackingNode(Node):
         self.timer.cancel()
 
         self.init_action()
-        if self.get_parameter('start').value:
+        if self.get_parameter("start").value:
             self.start_srv_callback(Trigger.Request(), Trigger.Response())
 
         threading.Thread(target=self.main, daemon=True).start()
-        self.create_service(Trigger, '~/init_finish', self.get_node_state)
-        self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
+        self.create_service(Trigger, "~/init_finish", self.get_node_state)
+        self.get_logger().info("\033[1;32mstart\033[0m")
 
     def get_node_state(self, request, response):
         response.success = True
@@ -87,9 +89,11 @@ class FaceTrackingNode(Node):
         res = self.send_request(self.kinematics_client, msg)
         if res.pulse:
             servo_data = res.pulse
-            set_servo_position(self.joints_pub, 1.5,
-                               ((10, 500), (5, 500), (4, servo_data[3]), (3, servo_data[2]), (2, servo_data[1]),
-                                (1, servo_data[0])))
+            set_servo_position(
+                self.joints_pub,
+                1.5,
+                ((10, 500), (5, 500), (4, servo_data[3]), (3, servo_data[2]), (2, servo_data[1]), (1, servo_data[0])),
+            )
             time.sleep(1.8)
 
     def send_request(self, client, msg):
@@ -99,7 +103,7 @@ class FaceTrackingNode(Node):
                 return future.result()
 
     def start_srv_callback(self, request, response):
-        self.get_logger().info('\033[1;32m%s\033[0m' % "start face track")
+        self.get_logger().info("\033[1;32mstart face track\033[0m")
 
         self.start = True
         response.success = True
@@ -107,7 +111,7 @@ class FaceTrackingNode(Node):
         return response
 
     def stop_srv_callback(self, request, response):
-        self.get_logger().info('\033[1;32m%s\033[0m' % "stop face track")
+        self.get_logger().info("\033[1;32mstop face track\033[0m")
         self.start = False
         # res = self.send_request(ColorDetect.Request())
         # if res.success:
@@ -141,17 +145,22 @@ class FaceTrackingNode(Node):
             o_h, o_w = bgr_image.shape[:2]
             if len(boxes) > 0:
                 self.detected_face += 1
-                self.detected_face = min(self.detected_face,
-                                         20)  # Ensure that the count is never greater than 20. 让计数总是不大于20
+                self.detected_face = min(
+                    self.detected_face, 20
+                )  # Ensure that the count is never greater than 20. 让计数总是不大于20
 
-                # Start tracking if a face is detected in five consecutive frames to avoid false positives. 连续 5 帧识别到了人脸就开始追踪, 避免误识别
+                # Start tracking if a face is detected in five consecutive frames to avoid false positives.
+                # 连续 5 帧识别到了人脸就开始追踪, 避免误识别
                 if self.detected_face >= 5:
-                    center = [box_center(box) for box in
-                              boxes]  # Calculate the center coordinate of all human faces. 计算所有人脸的中心坐标
-                    dist = [distance(c, (o_w / 2, o_h / 2)) for c in
-                            center]  # Calculate the distance from the center of each detected face to the center of the screen. 计算所有人脸中心坐标到画面中心的距离
-                    face = min(zip(boxes, center, dist), key=lambda k: k[
-                        2])  # Identify the face with the minimum distance to the center of the screen. 找出到画面中心距离最小的人脸
+                    center = [
+                        box_center(box) for box in boxes
+                    ]  # Calculate the center coordinate of all human faces. 计算所有人脸的中心坐标
+                    dist = [distance(c, (o_w / 2, o_h / 2)) for c in center]
+                    # Calculate the distance from each detected face to the screen center.
+                    # 计算所有人脸中心坐标到画面中心的距离
+                    face = min(zip(boxes, center, dist), key=operator.itemgetter(2))
+                    # Identify the face with the minimum distance to the screen center.
+                    # 找出到画面中心距离最小的人脸
 
                     center_x, center_y = face[1]
                     t1 = time.time()
@@ -178,14 +187,24 @@ class FaceTrackingNode(Node):
                         time.sleep(0.02 - t)
                     if res.pulse:
                         servo_data = res.pulse
-                        set_servo_position(self.joints_pub, 0.02,
-                                           ((10, 500), (5, 500), (4, servo_data[3]), (3, servo_data[2]),
-                                            (2, servo_data[1]), (1, int(self.y_dis))))
+                        set_servo_position(
+                            self.joints_pub,
+                            0.02,
+                            (
+                                (10, 500),
+                                (5, 500),
+                                (4, servo_data[3]),
+                                (3, servo_data[2]),
+                                (2, servo_data[1]),
+                                (1, int(self.y_dis)),
+                            ),
+                        )
                     else:
                         set_servo_position(self.joints_pub, 0.02, ((1, int(self.y_dis)),))
 
-                result_image = show_faces(result_image, bgr_image, boxes,
-                                          keypoints)  # Display the detected faces and facial key points on the screen. 在画面中显示识别到的人脸和脸部关键点
+                result_image = show_faces(result_image, bgr_image, boxes, keypoints)
+                # Display the detected faces and facial key points on the screen.
+                # 在画面中显示识别到的人脸和脸部关键点
             else:  # Here is the processing for when no face is detected. 这里是没有识别到人脸的处理
                 if self.detected_face > 0:
                     self.detected_face -= 1
@@ -204,7 +223,7 @@ class FaceTrackingNode(Node):
 
 
 def main():
-    node = FaceTrackingNode('face_tracking')
+    node = FaceTrackingNode("face_tracking")
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     executor.spin()

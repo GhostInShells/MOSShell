@@ -1,37 +1,34 @@
-from typing import Dict, List, Optional
-
-from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import (
-    RobotController, TrajectoryAction, MOSSRobotManager,
-)
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
-    Trajectory
-)
 from ghoshell_common.contracts import LoggerItf
 
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import (
+    MOSSRobotManager,
+    RobotController,
+    TrajectoryAction,
+)
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import Trajectory
+
 try:
-    import rclpy
-    from rclpy.action import ActionClient
-    from control_msgs.action import FollowJointTrajectory
-    from trajectory_msgs.msg import JointTrajectoryPoint
-    from sensor_msgs.msg import JointState
+    import rclpy  # noqa: F401
     from action_msgs.msg import GoalStatus
+    from control_msgs.action import FollowJointTrajectory
+    from rclpy.action import ActionClient
+    from trajectory_msgs.msg import JointTrajectoryPoint
 except ImportError as e:
     raise ImportError(f"Ros2Controller requires ros2 environment rclpy to be installed.: {e}")
 
-import queue
 import logging
+import queue
 import threading
 import time
 
 
 class Ros2Controller(RobotController):
-
     def __init__(
-            self,
-            manager: MOSSRobotManager,
-            trajectory_action_client: ActionClient,
-            logger: LoggerItf | None = None,
-            goal_interval: float = 1.0 / 50,
+        self,
+        manager: MOSSRobotManager,
+        trajectory_action_client: ActionClient,
+        logger: LoggerItf | None = None,
+        goal_interval: float = 1.0 / 50,
     ):
         self._action_client = trajectory_action_client
         self._manager = manager
@@ -40,14 +37,14 @@ class Ros2Controller(RobotController):
         self._close_event = threading.Event()
         self._moving_stopped = threading.Event()
         # 当前存在的轨迹运动命令状态
-        self._traj_actions: List[TrajectoryAction] = []
+        self._traj_actions: list[TrajectoryAction] = []
         self._execute_queue: queue.Queue[TrajectoryAction] = queue.Queue()
         # 做 rclpy goal 的轮询周期.
         self._goal_interval = goal_interval
 
         # raw positions
         self._joint_positions_lock = threading.Lock()
-        self._raw_joint_positions: Dict[str, float] = {}
+        self._raw_joint_positions: dict[str, float] = {}
         self._loop_run_trajectory_actions_thread = threading.Thread(
             target=self._loop_run_trajectory_actions,
             daemon=True,
@@ -61,8 +58,8 @@ class Ros2Controller(RobotController):
                     continue
                 try:
                     self._execute_trajectory_action(action)
-                except Exception as e:
-                    self._logger.exception(e)
+                except Exception:
+                    self._logger.exception("Failed to execute trajectory action")
             except queue.Empty:
                 continue
         self._close_event.set()
@@ -76,7 +73,7 @@ class Ros2Controller(RobotController):
         # todo: 需要想明白这个通讯是否是必要的.
         if not self._action_client.wait_for_server(timeout_sec=10.0):
             self._logger.error("Action服务器不可用")
-            trajectory_action.set_exception(RuntimeError(f"Action 服务器不可用"))
+            trajectory_action.set_exception(RuntimeError("Action 服务器不可用"))
             return
 
         goal = self._create_goal_from_trajectory(trajectory_action.trajectory)
@@ -99,7 +96,7 @@ class Ros2Controller(RobotController):
                 break
 
             if not goal_handle:
-                raise RuntimeError(f"Send goal with out future")
+                raise RuntimeError("Send goal with out future")
 
             goal_future = goal_handle.get_result_async()
             self._logger.info("Goal goal_future from goal handle : %s", goal_handle)
@@ -131,7 +128,7 @@ class Ros2Controller(RobotController):
         except Exception as e:
             if not trajectory_action.done():
                 trajectory_action.set_exception(e)
-            self._logger.error("Goal execution failed: %s", e)
+            self._logger.exception("Goal execution failed")
         finally:
             if not trajectory_action.done():
                 trajectory_action.cancel()
@@ -198,10 +195,10 @@ class Ros2Controller(RobotController):
     def wait_for_available(self, timeout: float | None = None) -> None:
         self._action_client.wait_for_server(timeout_sec=timeout)
 
-    def get_raw_positions(self) -> Dict[str, float]:
+    def get_raw_positions(self) -> dict[str, float]:
         with self._joint_positions_lock:
             return self._raw_joint_positions.copy()
 
-    def update_raw_positions(self, positions: Dict[str, float]) -> None:
+    def update_raw_positions(self, positions: dict[str, float]) -> None:
         with self._joint_positions_lock:
             self._raw_joint_positions = positions

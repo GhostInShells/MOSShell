@@ -1,5 +1,6 @@
-from ghoshell_moss.core.shell.shell_impl import DefaultShell
 import pytest
+
+from ghoshell_moss.core.shell.shell_impl import DefaultShell
 
 
 @pytest.mark.asyncio

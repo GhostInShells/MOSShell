@@ -1,8 +1,7 @@
-
 import asyncio
 import threading
-from typing import Optional, Generic, TypeVar, Tuple
 from collections import deque
+from typing import Generic, Optional, TypeVar
 
 R = TypeVar("R")
 
@@ -24,7 +23,7 @@ class ThreadSafeResult(Generic[R]):
 
     def __init__(self, uid: str = ""):
         self.uid = uid
-        self._waiting: deque[Tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
+        self._waiting: deque[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
         self._event = threading.Event()
         self._result: Optional[R] = None
         self._cancelled_reason: str | None = None
@@ -35,7 +34,7 @@ class ThreadSafeResult(Generic[R]):
         set the result
         """
         if self._event.is_set():
-            raise RuntimeError(f"Already set result")
+            raise RuntimeError("Already set result")
 
         self._result = result
         self._set_event()

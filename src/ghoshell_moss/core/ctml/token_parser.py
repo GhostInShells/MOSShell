@@ -1,23 +1,23 @@
-
-import threading
-from xml import sax
-
 import logging
+import threading
 import xml.sax
+from collections.abc import Callable, Iterable
+from typing import Optional
+from xml import sax
 from xml.sax import saxutils
-from typing import List, Iterable, Optional, Callable, Dict
+
 from ghoshell_moss.core.concepts.command import CommandToken
-from ghoshell_moss.core.concepts.interpreter import CommandTokenParser
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
+from ghoshell_moss.core.concepts.interpreter import CommandTokenParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
 
 __all__ = [
-    'CMTLSaxElement',
-    'ParserStopped',
-    'CTMLSaxHandler',
+    "CMTLSaxElement",
+    "CTMLSaxHandler",
+    "ParserStopped",
 ]
 
 
@@ -27,13 +27,13 @@ class CMTLSaxElement:
     """
 
     def __init__(
-            self,
-            *,
-            cmd_idx: int,
-            stream_id: str,
-            chan: str,
-            name: str,
-            attrs: dict,
+        self,
+        *,
+        cmd_idx: int,
+        stream_id: str,
+        chan: str,
+        name: str,
+        attrs: dict,
     ):
         self.cmd_idx = cmd_idx
         self.name = name
@@ -119,20 +119,21 @@ class CMTLSaxElement:
 
 class ParserStopped(Exception):
     """notify the sax that parsing is stopped"""
+
     pass
 
 
 class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
-    """初步实现 sax 解析. 实现得非常糟糕, 主要是对 sax 的回调机制有误解, 留下了大量冗余状态. 需要考虑重写一个简单版. """
+    """初步实现 sax 解析. 实现得非常糟糕, 主要是对 sax 的回调机制有误解, 留下了大量冗余状态. 需要考虑重写一个简单版."""
 
     def __init__(
-            self,
-            root_tag: str,
-            stream_id: str,
-            callback: CommandTokenCallback,
-            stop_event: ThreadSafeEvent,
-            *,
-            logger: Optional[logging.Logger] = None,
+        self,
+        root_tag: str,
+        stream_id: str,
+        callback: CommandTokenCallback,
+        stop_event: ThreadSafeEvent,
+        *,
+        logger: Optional[logging.Logger] = None,
     ):
         """
         :param root_tag: do not send command token with root_tag
@@ -154,7 +155,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         # get the logger
         self._logger = logger or logging.getLogger("CTMLSaxHandler")
         # simple stack for unfinished element
-        self._parsing_element_stack: List[CMTLSaxElement] = []
+        self._parsing_element_stack: list[CMTLSaxElement] = []
         # event to notify the parsing is over.
         self.done_event = threading.Event()
         self._exception: Optional[Exception] = None
@@ -190,7 +191,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self.is_stopped():
             raise ParserStopped
         dict_attrs = self.parse_attrs(attrs)
-        parts = name.split(':', 2)
+        parts = name.split(":", 2)
         if len(parts) == 2:
             chan, command_name = parts
         else:
@@ -223,7 +224,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self.is_stopped():
             raise ParserStopped
         if len(self._parsing_element_stack) == 0:
-            raise ValueError("CTMLElement end element `%s` without existing one" % name)
+            raise ValueError(f"CTMLElement end element `{name}` without existing one")
         element = self._parsing_element_stack.pop(-1)
         token = element.end_token()
         self._send_to_callback(token)
@@ -281,14 +282,14 @@ class CTMLTokenParser(CommandTokenParser):
     """
 
     def __init__(
-            self,
-            callback: CommandTokenCallback | None = None,
-            stream_id: str = "",
-            *,
-            root_tag: str = "ctml",
-            stop_event: Optional[ThreadSafeEvent] = None,
-            logger: Optional[logging.Logger] = None,
-            special_tokens: Optional[Dict[str, str]] = None,
+        self,
+        callback: CommandTokenCallback | None = None,
+        stream_id: str = "",
+        *,
+        root_tag: str = "ctml",
+        stop_event: Optional[ThreadSafeEvent] = None,
+        logger: Optional[logging.Logger] = None,
+        special_tokens: Optional[dict[str, str]] = None,
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("moss")
@@ -297,7 +298,7 @@ class CTMLTokenParser(CommandTokenParser):
         if callback is not None:
             self._callbacks.append(callback)
         self._buffer = ""
-        self._parsed: List[CommandToken] = []
+        self._parsed: list[CommandToken] = []
         self._handler = CTMLSaxHandler(
             root_tag,
             stream_id,
@@ -348,7 +349,7 @@ class CTMLTokenParser(CommandTokenParser):
         if self._started:
             return
         self._started = True
-        self._sax_parser.feed(f'<{self.root_tag}>')
+        self._sax_parser.feed(f"<{self.root_tag}>")
 
     def feed(self, delta: str) -> None:
         self._handler.raise_error()
@@ -365,7 +366,7 @@ class CTMLTokenParser(CommandTokenParser):
             return
         self._committed = True
         last_buffer = self._special_tokens_matcher.clear()
-        end_of_the_inputs = f'{last_buffer}</{self.root_tag}>'
+        end_of_the_inputs = f"{last_buffer}</{self.root_tag}>"
         self._sax_parser.feed(end_of_the_inputs)
 
     def close(self) -> None:
@@ -399,13 +400,13 @@ class CTMLTokenParser(CommandTokenParser):
 
     @classmethod
     def parse(
-            cls,
-            callback: CommandTokenCallback,
-            stream: Iterable[str],
-            *,
-            root_tag: str = "ctml",
-            stream_id: str = "",
-            logger: Optional[logging.Logger] = None,
+        cls,
+        callback: CommandTokenCallback,
+        stream: Iterable[str],
+        *,
+        root_tag: str = "ctml",
+        stream_id: str = "",
+        logger: Optional[logging.Logger] = None,
     ) -> None:
         """
         simple example of parsing input stream into command token stream with a thread.
@@ -423,4 +424,4 @@ class CTMLTokenParser(CommandTokenParser):
     @classmethod
     def join_tokens(cls, tokens: Iterable[CommandToken]) -> str:
         # todo: 做优化能力, 比如将空的开标记合并.
-        return ''.join([t.content for t in tokens])
+        return "".join([t.content for t in tokens])

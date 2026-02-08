@@ -1,24 +1,33 @@
-
 import asyncio
 import time
-from contextlib import asynccontextmanager
-
-from ghoshell_common.helpers import uuid
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Callable, Any, TypedDict, ClassVar, AsyncIterator
-from typing_extensions import Self
-from ghoshell_moss.core.concepts.command import CommandTask
-from pydantic import BaseModel, Field
-import numpy as np
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from enum import Enum
+from typing import Any, ClassVar, Optional, TypedDict
+
+import numpy as np
+from ghoshell_common.helpers import uuid
+from pydantic import BaseModel, Field
+from typing_extensions import Self
+
+from ghoshell_moss.core.concepts.command import CommandTask
 
 __all__ = [
-    'SpeechEvent', 'NewStreamEvent', 'BufferEvent', 'DoneEvent', 'ClearEvent',
-    'Speech', 'SpeechStream', 'SpeechProvider',
-    'AudioFormat',
-    'StreamAudioPlayer',
-    'TTS', 'TTSBatch',
-    'TTSInfo', 'TTSAudioCallback',
+    "TTS",
+    "AudioFormat",
+    "BufferEvent",
+    "ClearEvent",
+    "DoneEvent",
+    "NewStreamEvent",
+    "Speech",
+    "SpeechEvent",
+    "SpeechProvider",
+    "SpeechStream",
+    "StreamAudioPlayer",
+    "TTSAudioCallback",
+    "TTSBatch",
+    "TTSInfo",
 ]
 
 
@@ -26,7 +35,7 @@ class SpeechEvent(TypedDict):
     event_type: str
     stream_id: str
     timestamp: float
-    data: Optional[Dict[str, Any]]
+    data: Optional[dict[str, Any]]
 
 
 class SpeechEventModel(BaseModel):
@@ -35,7 +44,7 @@ class SpeechEventModel(BaseModel):
     timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_speech_event(self) -> SpeechEvent:
-        data = self.model_dump(exclude_none=True, exclude={'event_type', 'stream_id', 'timestamp'})
+        data = self.model_dump(exclude_none=True, exclude={"event_type", "stream_id", "timestamp"})
         return SpeechEvent(
             event_type=self.event_type,
             stream_id=self.stream_id,
@@ -45,11 +54,11 @@ class SpeechEventModel(BaseModel):
 
     @classmethod
     def from_speech_event(cls, speech_event: SpeechEvent) -> Optional[Self]:
-        if cls.event_type != speech_event['event_type']:
+        if cls.event_type != speech_event["event_type"]:
             return None
-        data = speech_event.get('data', {})
-        data['stream_id'] = speech_event['stream_id']
-        data['timestamp'] = speech_event['timestamp']
+        data = speech_event.get("data", {})
+        data["stream_id"] = speech_event["stream_id"]
+        data["timestamp"] = speech_event["timestamp"]
         return cls(**data)
 
 
@@ -84,10 +93,10 @@ class SpeechStream(ABC):
     """
 
     def __init__(
-            self,
-            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
-            committed: bool = False,  # 是否完成了这个 stream 的提交
+        self,
+        id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+        cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+        committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
         self.cmd_task = cmd_task
@@ -130,7 +139,7 @@ class SpeechStream(ABC):
 
     @abstractmethod
     def _commit(self) -> None:
-        """真实的结束 stream 讯号. 如果 stream 通过 tts 实现, 这个讯号会通知 tts 完成输出. """
+        """真实的结束 stream 讯号. 如果 stream 通过 tts 实现, 这个讯号会通知 tts 完成输出."""
         pass
 
     def as_command_task(self, commit: bool = False) -> Optional[CommandTask]:
@@ -138,6 +147,7 @@ class SpeechStream(ABC):
         将 speech stream 转化为一个 command task, 使之可以发送到 Shell 中阻塞.
         """
         from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandMeta, CommandWrapper
+
         if self.cmd_task is not None:
             return self.cmd_task
 
@@ -221,14 +231,14 @@ class Speech(ABC):
         pass
 
     @abstractmethod
-    def outputted(self) -> List[str]:
+    def outputted(self) -> list[str]:
         """
         清空之前生成的文本片段, speech 必须能感知到所有输出.
         """
         pass
 
     @abstractmethod
-    async def clear(self) -> List[str]:
+    async def clear(self) -> list[str]:
         """
         清空所有输出中的 output
         """
@@ -259,7 +269,6 @@ class Speech(ABC):
 
 
 class SpeechProvider(ABC):
-
     @abstractmethod
     async def arun(self, speech: Speech) -> None:
         pass
@@ -298,8 +307,8 @@ class SpeechProvider(ABC):
 
 
 class AudioFormat(Enum):
-    PCM_S16LE = 's16le'
-    PCM_F32LE = 'float32le'
+    PCM_S16LE = "s16le"
+    PCM_F32LE = "float32le"
 
 
 class StreamAudioPlayer(ABC):
@@ -341,12 +350,12 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def add(
-            self,
-            chunk: np.ndarray,
-            *,
-            audio_type: AudioFormat,
-            rate: int,
-            channels: int = 1,
+        self,
+        chunk: np.ndarray,
+        *,
+        audio_type: AudioFormat,
+        rate: int,
+        channels: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -380,39 +389,34 @@ class StreamAudioPlayer(ABC):
         """
         pass
 
+    @abstractmethod
     def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
-        pass
+        raise NotImplementedError
 
+    @abstractmethod
     def on_play_done(self, callback: Callable[[], None]) -> None:
-        pass
+        raise NotImplementedError
 
 
 class TTSInfo(BaseModel):
     """
     反映出 tts 生成音频的参数, 用于播放时做数据的转换.
     """
+
     sample_rate: int = Field(description="音频的采样率")
     """音频片段的 rate"""
 
     channels: int = Field(default=1, description="音频的通道数")
 
     audio_format: str = Field(
-        default=AudioFormat.PCM_S16LE.value, description="音频的默认格式, 还没设计好所有类型.",
+        default=AudioFormat.PCM_S16LE.value,
+        description="音频的默认格式, 还没设计好所有类型.",
     )
 
-    voice_schema: Optional[Dict] = Field(
-        default=None,
-        description="声音的 schema, 通常用来给模型看"
-    )
+    voice_schema: Optional[dict] = Field(default=None, description="声音的 schema, 通常用来给模型看")
 
-    voices: Dict[str, Dict] = Field(
-        default_factory=dict,
-        description="声音的可选项"
-    )
-    current_voice: str = Field(
-        default="",
-        description="当前的声音"
-    )
+    voices: dict[str, dict] = Field(default_factory=dict, description="声音的可选项")
+    current_voice: str = Field(default="", description="当前的声音")
 
 
 _SampleRate = int
@@ -517,7 +521,7 @@ class TTS(ABC):
         pass
 
     @abstractmethod
-    def set_voice(self, config: Dict[str, Any]) -> None:
+    def set_voice(self, config: dict[str, Any]) -> None:
         """
         设置一个临时的 voice config.
         """

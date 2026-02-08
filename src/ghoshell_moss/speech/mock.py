@@ -1,17 +1,19 @@
+import threading
+from queue import Empty, Queue
+from typing import Optional
 
-from typing import Optional, List, Dict
+from ghoshell_common.helpers import uuid
 
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_common.helpers import uuid
-
-import threading
-from queue import Queue, Empty
 
 
 class MockSpeechStream(SpeechStream):
-
-    def __init__(self, outputs: List[str], id: str = "", ):
+    def __init__(
+        self,
+        outputs: list[str],
+        id: str = "",
+    ):
         super().__init__(id=id or uuid())
         self.outputs = outputs
         self.output_queue = Queue()
@@ -73,10 +75,9 @@ class MockSpeechStream(SpeechStream):
 
 
 class MockSpeech(Speech):
-
     def __init__(self):
         self._streams: dict[str, MockSpeechStream] = {}
-        self._outputs: Dict[str, List[str]] = {}
+        self._outputs: dict[str, list[str]] = {}
         self._closed = ThreadSafeEvent()
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
@@ -90,14 +91,14 @@ class MockSpeech(Speech):
         self._outputs[stream_id] = stream_outputs
         return stream
 
-    def outputted(self) -> List[str]:
+    def outputted(self) -> list[str]:
         data = self._outputs.copy()
         result = []
         for contents in data.values():
             result.append("".join(contents))
         return result
 
-    async def clear(self) -> List[str]:
+    async def clear(self) -> list[str]:
         outputs = []
         for stream in self._streams.values():
             await stream.aclose()

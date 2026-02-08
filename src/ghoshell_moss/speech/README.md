@@ -6,5 +6,4 @@
 
 由于音频播放模块目前设计方案有别于 Channel, 暂时不能直接统一到 Channel.
 
-TODO: Beta 版本考虑完全干掉, 通过通讯协议重构为 Channel Interface. 
-
+TODO: Beta 版本考虑完全干掉, 通过通讯协议重构为 Channel Interface.

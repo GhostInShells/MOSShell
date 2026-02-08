@@ -1,11 +1,10 @@
-import asyncio
 import json
 import logging
-from typing import Dict, List, Any
+from typing import Any
 
 from ghoshell_common.contracts import Workspace, WorkspaceConfigs, YamlConfig
-from ghoshell_container import IoCContainer, Container
-from pydantic import Field, BaseModel
+from ghoshell_container import IoCContainer
+from pydantic import BaseModel, Field
 from python_mpv_jsonipc import MPV
 
 from ghoshell_moss import PyChannel
@@ -40,7 +39,10 @@ WRITABLE_PROPERTIES = [
     "pause",
 ]
 EXCLUDE_COMMANDS = [
-    "play", "stop", "pause", "load_file",
+    "play",
+    "stop",
+    "pause",
+    "load_file",
 ]
 
 mpv_chan = PyChannel(name="mpv_player")
@@ -64,7 +66,8 @@ class VideoConfig(YamlConfig):
 
     def to_str(self):
         return "\n".join(
-            [f"{i + 1}. filename:{v.filename} description:{v.description}" for i, v in enumerate(self.video_list)])
+            [f"{i + 1}. filename:{v.filename} description:{v.description}" for i, v in enumerate(self.video_list)]
+        )
 
 
 def create_property_setter_getter(prop_name):
@@ -73,12 +76,12 @@ def create_property_setter_getter(prop_name):
     async def set_prop(value):
         mpv = mpv_chan.broker.container.force_fetch(MPV)
         setattr(mpv, prop_name, value)
-        logger.info(f"Set {prop_name} to {value}")
+        logger.info("Set %s to %s", prop_name, value)
 
     async def get_prop():
         mpv = mpv_chan.broker.container.force_fetch(MPV)
         value = getattr(mpv, prop_name)
-        logger.info(f"Get {prop_name} = {value}")
+        logger.info("Get %s = %s", prop_name, value)
         return value
 
     # 设置函数名（可选，便于调试）
@@ -87,7 +90,7 @@ def create_property_setter_getter(prop_name):
     return set_prop, get_prop
 
 
-def create_command_executor(command_name: str, command_args: List[Dict[str, Any]]):
+def create_command_executor(command_name: str, command_args: list[dict[str, Any]]):
     async def command_executor(text__: str):
         mpv = mpv_chan.broker.container.force_fetch(MPV)
         command = getattr(mpv, command_name)
@@ -163,7 +166,7 @@ def build_mpv_chan(container: IoCContainer):
     # build mpv property setter to channel
     for prop in WRITABLE_PROPERTIES:
         if prop not in mpv.properties:
-            logger.warning(f"Property {prop} is not defined.")
+            logger.warning("Property %s is not defined.", prop)
             continue
 
         setter, getter = create_property_setter_getter(prop)
@@ -181,8 +184,12 @@ def build_mpv_chan(container: IoCContainer):
 
         func = create_command_executor(mpv_cmd_name, mpv_cmd["args"])
 
+        mpv_cmd_args = mpv_cmd["args"]
         mpv_chan.build.command(
-            doc=f"""{mpv_cmd_name} is a mpv command.\n:params text__: 用 json 序列化的字典类型结构, 其参数定义是{mpv_cmd["args"]}""")(
-            func)
+            doc=(
+                f"{mpv_cmd_name} is a mpv command.\n"
+                f":params text__: 用 json 序列化的字典类型结构, 其参数定义是{mpv_cmd_args}"
+            )
+        )(func)
 
     return mpv_chan

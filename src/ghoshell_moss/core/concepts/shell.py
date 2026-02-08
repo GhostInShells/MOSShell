@@ -1,20 +1,22 @@
-
+import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from typing import List, Dict, Literal, Optional, AsyncIterable
-from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta, ChannelFullPath
-from ghoshell_moss.core.concepts.interpreter import Interpreter
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
-from ghoshell_moss.core.concepts.speech import Speech
+from collections.abc import AsyncIterable
+from typing import Literal, Optional
+
 from ghoshell_container import IoCContainer
-import asyncio
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
+from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_moss.core.concepts.speech import Speech
 
 __all__ = [
-    'InterpreterKind',
-    'MOSSShell',
+    "InterpreterKind",
+    "MOSSShell",
 ]
 
-InterpreterKind = Literal['clear', 'defer_clear', 'run', 'dry_run']
+InterpreterKind = Literal["clear", "defer_clear", "run", "dry_run"]
 
 
 class MOSSShell(ABC):
@@ -50,7 +52,7 @@ class MOSSShell(ABC):
 
     # --- runtime methods --- #
     @abstractmethod
-    def channels(self) -> Dict[str, Channel]:
+    def channels(self) -> dict[str, Channel]:
         """
         返回当前上下文里的所有 channels.
         只有启动后可以获取.
@@ -117,11 +119,8 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def commands(
-            self,
-            available_only: bool = True,
-            /,
-            config: Dict[ChannelFullPath, Channel] | None = None
-    ) -> Dict[ChannelFullPath, Dict[str, Command]]:
+        self, available_only: bool = True, /, config: dict[ChannelFullPath, Channel] | None = None
+    ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
         注意, key 是 channel path. 例如 foo.bar:baz 表示 command 来自 channel `foo.bar`, 名称是 'baz'
@@ -130,12 +129,12 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def channel_metas(
-            self,
-            available: bool = True,
-            /,
-            config: Dict[ChannelFullPath, Channel] | None = None,
-            refresh: bool = False,
-    ) -> Dict[ChannelFullPath, ChannelMeta]:
+        self,
+        available: bool = True,
+        /,
+        config: dict[ChannelFullPath, Channel] | None = None,
+        refresh: bool = False,
+    ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
         key 是 channel path, 例如 foo.bar
@@ -160,11 +159,11 @@ class MOSSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            channel_metas: Optional[Dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[str] = None,
+        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         interpreter = await self.interpreter(kind=kind, stream_id=stream_id, channel_metas=channel_metas)
         async with interpreter:
@@ -172,11 +171,11 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            channel_metas: Optional[Dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[str] = None,
+        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -185,21 +184,24 @@ class MOSSShell(ABC):
                      defer_clear 表示延迟清空, 但一旦有新命令, 就会被清空.
                      run 表示正常运行.
                      dry_run 表示 interpreter 虽然会正常执行, 但不会把生成的 command task 推送给 shell.
-        :param stream_id: 设置一个指定的 stream id, interpreter 整个运行周期生成的 command token 都会用它做标记.
-        :param channel_metas: 如果传入了动态的 channel metas, 则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
+        :param stream_id: 设置一个指定的 stream id,
+                          interpreter 整个运行周期生成的 command token 都会用它做标记.
+        :param channel_metas: 如果传入了动态的 channel metas,
+                              则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
                               是一种动态修改运行时能力的办法.
         """
         pass
 
     async def parse_text_to_command_tokens(
-            self,
-            text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
+        self,
+        text: str | AsyncIterable[str],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
         """
         from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+
         sender, receiver = create_thread_safe_stream()
 
         async def _parse_token():
@@ -221,14 +223,15 @@ class MOSSShell(ABC):
         await t
 
     async def parse_tokens_to_command_tasks(
-            self,
-            tokens: AsyncIterable[CommandToken],
-            kind: InterpreterKind = "dry_run",
+        self,
+        tokens: AsyncIterable[CommandToken],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
         """
         from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+
         sender, receiver = create_thread_safe_stream()
 
         async def _parse_task():
@@ -247,14 +250,15 @@ class MOSSShell(ABC):
         await t
 
     async def parse_text_to_tasks(
-            self,
-            text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
+        self,
+        text: str | AsyncIterable[str],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks (不执行).
         """
         from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+
         sender, receiver = create_thread_safe_stream()
 
         async def _parse_task():
@@ -326,4 +330,3 @@ class MOSSShell(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-        return None

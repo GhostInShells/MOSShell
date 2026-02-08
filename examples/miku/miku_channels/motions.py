@@ -1,20 +1,21 @@
-import live2d.v3 as live2d
 import asyncio
 import time
 
+import live2d.v3 as live2d
+
 
 async def open_close(
-        model: live2d.LAppModel,
-        param_name: str,
-        duration=1.5,
-        speed=1.0,
-        max_value=1.0,
-        min_value=0.0,
-        initial_direction="close",
+    model: live2d.LAppModel,
+    param_name: str,
+    duration=1.5,
+    speed=1.0,
+    max_value=1.0,
+    min_value=0.0,
+    initial_direction="close",
 ):
     """
     通用参数动画函数，用于处理各种参数的开合动画
-    
+
     :param model: Live2D模型实例
     :param param_name: 要控制的参数名称
     :param duration: 动画持续时间，单位秒

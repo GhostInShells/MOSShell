@@ -1,11 +1,12 @@
+import pytest
 from fakeredis.aioredis import FakeRedis, FakeServer
+
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.transports.redis_channel.redis_channel import (
     RedisChannelProvider,
     RedisChannelProxy,
     RedisConnectionConfig,
 )
-import pytest
 
 
 @pytest.mark.asyncio

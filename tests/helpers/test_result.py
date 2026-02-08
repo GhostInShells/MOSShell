@@ -1,9 +1,10 @@
-from ghoshell_moss.core.helpers.result import ThreadSafeResult
-
-import pytest
 import asyncio
 import threading
 import time
+
+import pytest
+
+from ghoshell_moss.core.helpers.result import ThreadSafeResult
 
 
 # todo: remove
@@ -95,8 +96,7 @@ class TestHybridAwait:
 
         # 不设置结果，应该超时
         with pytest.raises(TimeoutError):
-            result = waiter.wait(timeout=0.1)
-            assert result is None
+            waiter.wait(timeout=0.1)
 
     @pytest.mark.asyncio
     async def test_multiple_async_waiters(self):

@@ -3,8 +3,9 @@
 功能：验证图形显示和电容屏触摸输入
 """
 
-import pygame
 import sys
+
+import pygame
 
 # 初始化 Pygame
 pygame.init()
@@ -12,7 +13,7 @@ pygame.init()
 # 设置窗口尺寸 - 通常设置为屏幕分辨率，这里假设一个常见尺寸，您可以根据您的屏幕修改
 screen_width, screen_height = 1280, 800
 screen = pygame.display.set_mode((screen_width, screen_height))
-pygame.display.set_caption('Jetson Touch & Display Test')
+pygame.display.set_caption("Jetson Touch & Display Test")
 
 # 设置字体
 font = pygame.font.Font(None, 36)  # 使用默认字体，大小36
@@ -76,11 +77,7 @@ def main():
             screen.blit(id_text, (int(x) - 10, int(y) - 10))
 
         # 显示说明文字
-        instructions = [
-            "Jetson 图形与触摸测试",
-            f"触摸点: {len(touch_positions)}",
-            "按 ESC 退出"
-        ]
+        instructions = ["Jetson 图形与触摸测试", f"触摸点: {len(touch_positions)}", "按 ESC 退出"]
 
         for i, line in enumerate(instructions):
             text_surface = font.render(line, True, TEXT_COLOR)

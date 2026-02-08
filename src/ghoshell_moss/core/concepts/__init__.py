@@ -1,48 +1,70 @@
-
 from .channel import (
-    CommandFunction, LifecycleFunction, PrompterFunction, StringType, ContextMessageFunction,
-    ChannelMeta, Channel, ChannelProvider, ChannelBroker,
     Builder,
-    R,
-    ChannelPaths, ChannelFullPath,
+    Channel,
+    ChannelBroker,
+    ChannelFullPath,
+    ChannelMeta,
+    ChannelPaths,
+    ChannelProvider,
     ChannelUtils,
+    CommandFunction,
+    ContextMessageFunction,
+    LifecycleFunction,
+    PrompterFunction,
+    R,
+    StringType,
 )
 from .command import (
-    CommandToken, CommandTokenType,
-    Command, CommandMeta, PyCommand, CommandWrapper,
-    CommandError, CommandErrorCode,
-    CommandType,
-    CommandTaskState, CommandTaskStateType,
-    CommandTask, BaseCommandTask,
-    CommandTaskStack,
     RESULT,
-    CommandDeltaType, CommandDeltaTypeMap,
+    BaseCommandTask,
     CancelAfterOthersTask,
+    Command,
+    CommandDeltaType,
+    CommandDeltaTypeMap,
+    CommandError,
+    CommandErrorCode,
+    CommandMeta,
+    CommandTask,
+    CommandTaskStack,
+    CommandTaskState,
+    CommandTaskStateType,
+    CommandToken,
+    CommandTokenType,
+    CommandType,
+    CommandWrapper,
+    PyCommand,
     make_command_group,
 )
-from .errors import (FatalError, InterpretError, CommandErrorCode, CommandError)
+from .errors import CommandError, CommandErrorCode, FatalError, InterpretError
 from .interpreter import (
-    CommandTokenParser,
-    CommandTaskParserElement,
-    Interpreter,
-    CommandTokenCallback,
     CommandTaskCallback,
     CommandTaskParseError,
+    CommandTaskParserElement,
+    CommandTokenCallback,
+    CommandTokenParser,
+    Interpreter,
 )
 from .shell import (
     InterpreterKind,
     MOSSShell,
 )
 from .speech import (
-    SpeechEvent, NewStreamEvent, BufferEvent, DoneEvent, ClearEvent,
-    Speech, SpeechStream, SpeechProvider,
+    TTS,
     AudioFormat,
+    BufferEvent,
+    ClearEvent,
+    DoneEvent,
+    NewStreamEvent,
+    Speech,
+    SpeechEvent,
+    SpeechProvider,
+    SpeechStream,
     StreamAudioPlayer,
-    TTS, TTSBatch,
-    TTSInfo, TTSAudioCallback,
+    TTSAudioCallback,
+    TTSBatch,
+    TTSInfo,
 )
-from .states import (State, StateModel, StateStore, StateBaseModel, MemoryStateStore)
-
+from .states import MemoryStateStore, State, StateBaseModel, StateModel, StateStore
 from .topics import *
 
 """
@@ -52,7 +74,8 @@ from .topics import *
 
 简单解释一下设计思想: 
 
-1. command: 基于 code as prompt 思想, 可以将任何语言的函数定义成一个面向模型的 python async 函数, 模型可以用代码方式理解.
+1. command: 基于 code as prompt 思想, 可以将任何语言的函数定义成一个面向模型的 python async 函数,
+            模型可以用代码方式理解.
             这是一种面向模型的胶水语言思路. 不过现阶段只做到了函数级别.
             在 "面向模型的高级编程语言" 思想中, command 对应了模型可用的 "函数".
             
@@ -75,7 +98,8 @@ from .topics import *
             目前 errors 模块设计未完成, 预计在 beta 版本中完善. 
             
 6. speech:  在 AI 的输出中最重要的是自然语言的输出, 而且这些输出通常要转化为语音.
-            考虑到 realtime actions 中, AI 的输出是语音和动作交替的, shell 必须要感知到一段语音已经播放完, 再执行后面的动作.
+            考虑到 realtime actions 中, AI 的输出是语音和动作交替的,
+            shell 必须要感知到一段语音已经播放完, 再执行后面的动作.
             同时考虑到主流模型无法直接输出语音 item, 还需要走 流式或非流式的 tts
             这些功能点合并到一起, 就需要定义一个特殊的 speech 对象实现.
             

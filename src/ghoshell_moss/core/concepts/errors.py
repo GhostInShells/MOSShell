@@ -1,8 +1,6 @@
-
-from typing import Dict
 from enum import Enum
 
-__all__ = ['FatalError', 'InterpretError', 'CommandErrorCode', 'CommandError']
+__all__ = ["CommandError", "CommandErrorCode", "FatalError", "InterpretError"]
 
 
 class FatalError(Exception):
@@ -11,6 +9,7 @@ class FatalError(Exception):
 
     todo: 还没有用起来.
     """
+
     pass
 
 
@@ -20,6 +19,7 @@ class InterpretError(Exception):
 
     todo: 还没有用起来
     """
+
     pass
 
 
@@ -41,6 +41,7 @@ class CommandErrorCode(int, Enum):
 
     >>> raise CommandErrorCode.CANCELLED.error("error info")
     """
+
     SUCCESS = 0
     CANCELLED = 10010
     NOT_AVAILABLE = 10020

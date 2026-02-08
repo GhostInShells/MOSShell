@@ -1,7 +1,6 @@
-import asyncio
 import webbrowser
 
-from ghoshell_common.contracts import YamlConfig, WorkspaceConfigs, Workspace
+from ghoshell_common.contracts import Workspace, WorkspaceConfigs, YamlConfig
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field
 
@@ -21,10 +20,7 @@ Beta 版本希望实现的是:
 5. 指定目录, 用来存放 AI 生成的收藏数据. 
 """
 
-web_chan = PyChannel(
-    name="web_bookmarks",
-    description="这是一个网页收藏夹. 可以用来打开指定的网页. "
-)
+web_chan = PyChannel(name="web_bookmarks", description="这是一个网页收藏夹. 可以用来打开指定的网页. ")
 
 
 class WebInfo(BaseModel):

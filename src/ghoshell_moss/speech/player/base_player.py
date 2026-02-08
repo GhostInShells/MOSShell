@@ -1,22 +1,24 @@
-
 import asyncio
-import time
-import numpy as np
-from abc import ABC, abstractmethod
-from ghoshell_moss.core.concepts.speech import StreamAudioPlayer, AudioFormat
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_common.contracts import LoggerItf
-import scipy.signal as signal
+import logging
 import queue
 import threading
-import logging
+import time
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Optional
 
-from typing import Optional, Callable
+import numpy as np
+from ghoshell_common.contracts import LoggerItf
+from scipy import signal
 
-__all__ = ['BaseAudioStreamPlayer']
+from ghoshell_moss.core.concepts.speech import AudioFormat, StreamAudioPlayer
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+
+__all__ = ["BaseAudioStreamPlayer"]
 
 
 # author: deepseek v3.1
+
 
 class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
     """
@@ -25,12 +27,12 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            sample_rate: int = 16000,
-            channels: int = 1,
-            logger: LoggerItf | None = None,
-            safety_delay: float = 0.1,
+        self,
+        *,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        logger: LoggerItf | None = None,
+        safety_delay: float = 0.1,
     ):
         """
         基于 PyAudio 的异步音频播放器实现
@@ -102,10 +104,10 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
 
     @staticmethod
     def resample(
-            audio_data: np.ndarray,
-            *,
-            origin_rate: int,
-            target_rate: int,
+        audio_data: np.ndarray,
+        *,
+        origin_rate: int,
+        target_rate: int,
     ) -> np.ndarray:
         """使用 scipy.signal.resample 进行采样率转换
 
@@ -131,12 +133,12 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         return resampled_audio_data.astype(np.int16)
 
     def add(
-            self,
-            chunk: np.ndarray,
-            *,
-            audio_type: AudioFormat,
-            rate: int,
-            channels: int = 1,
+        self,
+        chunk: np.ndarray,
+        *,
+        audio_type: AudioFormat,
+        rate: int,
+        channels: int = 1,
     ) -> float:
         """添加音频片段到播放队列"""
         if self._closed:
@@ -170,7 +172,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         """等待所有音频播放完成"""
         time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()
         if time_to_wait > 0.0:
-            self.logger.info(f"等待 {time_to_wait:.2f}s 让音频播放完成")
+            self.logger.info("等待 %.2fs 让音频播放完成", time_to_wait)
             if timeout is not None and timeout > 0.0:
                 try:
                     await asyncio.wait_for(asyncio.sleep(time_to_wait), timeout)
@@ -240,8 +242,8 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     # 队列为空，继续循环
                     continue
 
-        except Exception as e:
-            self.logger.error(f"音频工作线程错误: {e}")
+        except Exception:
+            self.logger.exception("音频工作线程错误")
         finally:
             # 清理资源
             self._audio_stream_stop()

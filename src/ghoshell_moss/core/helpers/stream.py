@@ -1,26 +1,26 @@
-
-from typing import Generic, TypeVar, Tuple
-from ghoshell_common.helpers import Timeleft
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from collections import deque
 import asyncio
+from collections import deque
+from typing import Generic, TypeVar
 
-I = TypeVar("I")
+from ghoshell_common.helpers import Timeleft
+
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+
+ItemT = TypeVar("ItemT")
 
 
-class ThreadSafeStreamSender(Generic[I]):
-
+class ThreadSafeStreamSender(Generic[ItemT]):
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[I | Exception | None],
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | None],
     ):
         self._added = added
         self._completed = completed
         self._queue = queue
 
-    def append(self, item: I | Exception | None) -> None:
+    def append(self, item: ItemT | Exception | None) -> None:
         if self._completed.is_set():
             return
         if item is None or isinstance(item, Exception):
@@ -45,17 +45,17 @@ class ThreadSafeStreamSender(Generic[I]):
             self.commit()
 
 
-class ThreadSafeStreamReceiver(Generic[I]):
+class ThreadSafeStreamReceiver(Generic[ItemT]):
     """
-    thread-safe receiver that also implements AsyncIterable[I]
+    thread-safe receiver that also implements AsyncIterable[ItemT]
     """
 
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[I | Exception | None],
-            timeout: float | None = None,
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | None],
+        timeout: float | None = None,
     ):
         self._completed = completed
         self._added = added
@@ -65,7 +65,7 @@ class ThreadSafeStreamReceiver(Generic[I]):
     def __iter__(self):
         return self
 
-    def __next__(self) -> I:
+    def __next__(self) -> ItemT:
         if len(self._queue) > 0:
             item = self._queue.popleft()
             if isinstance(item, Exception):
@@ -80,7 +80,7 @@ class ThreadSafeStreamReceiver(Generic[I]):
         else:
             left = self._timeleft.left() or None
             if not self._added.wait_sync(left):
-                raise TimeoutError(f'Timeout waiting for {self._timeleft.timeout}')
+                raise TimeoutError(f"Timeout waiting for {self._timeleft.timeout}")
             item = self._queue.popleft()
             if len(self._queue) == 0:
                 self._added.clear()
@@ -101,7 +101,7 @@ class ThreadSafeStreamReceiver(Generic[I]):
     def __aiter__(self):
         return self
 
-    async def __anext__(self) -> I:
+    async def __anext__(self) -> ItemT:
         if len(self._queue) > 0:
             item = self._queue.popleft()
             if isinstance(item, Exception):
@@ -134,7 +134,7 @@ class ThreadSafeStreamReceiver(Generic[I]):
         self._completed.set()
 
 
-def create_thread_safe_stream(timeout: float | None = None) -> Tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
+def create_thread_safe_stream(timeout: float | None = None) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
     queue = deque()

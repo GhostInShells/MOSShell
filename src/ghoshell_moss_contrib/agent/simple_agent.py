@@ -1,31 +1,28 @@
-
+import asyncio
 import json
 import logging
+import os
 import time
-from typing import Optional, List, Dict, Any, ClassVar
+from typing import Any, ClassVar, Optional
 
+from ghoshell_common.contracts import LoggerItf, Workspace, workspace_providers
 from ghoshell_common.contracts.storage import MemoryStorage
-
-from ghoshell_moss.core.concepts.shell import MOSSShell, Speech
-from ghoshell_moss_contrib.agent.chat.base import BaseChat
-from ghoshell_moss.core.shell import new_shell
-from ghoshell_moss_contrib.agent.depends import check_agent
-from ghoshell_common.contracts import LoggerItf, Workspace
-from ghoshell_container import IoCContainer, Container
-from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
-from ghoshell_common.contracts import workspace_providers
-from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
+from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
-import os
-import asyncio
+from ghoshell_moss.core.concepts.shell import MOSSShell, Speech
+from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
+from ghoshell_moss_contrib.agent.chat.base import BaseChat
+from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
+from ghoshell_moss_contrib.agent.depends import check_agent
 
 if check_agent():
     import litellm
 
 
 class ModelConf(BaseModel):
-    default_env: ClassVar[Dict[str, None | str]] = {
+    default_env: ClassVar[dict[str, None | str]] = {
         "base_url": None,
         "model": "gpt-3.5-turbo",
         "api_key": None,
@@ -53,14 +50,17 @@ class ModelConf(BaseModel):
     max_tokens: int = Field(default=4000, description="max tokens")
     timeout: float = Field(default=30, description="timeout")
     request_timeout: float = Field(default=40, description="request timeout")
-    kwargs: Dict[str, Any] = Field(default_factory=dict, description="kwargs")
-    top_p: Optional[float] = Field(None, description="""
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="kwargs")
+    top_p: Optional[float] = Field(
+        None,
+        description="""
 An alternative to sampling with temperature, called nucleus sampling, where the
 model considers the results of the tokens with top_p probability mass. So 0.1
 means only the tokens comprising the top 10% probability mass are considered.
-""")
+""",
+    )
 
-    def generate_litellm_params(self) -> Dict[str, Any]:
+    def generate_litellm_params(self) -> dict[str, Any]:
         params = self.model_dump(exclude_none=True, exclude={"kwargs"})
         params.update(self.kwargs)
         real_params = {}
@@ -76,17 +76,16 @@ means only the tokens comprising the top 10% probability mass are considered.
 
 
 class SimpleAgent:
-
     def __init__(
-            self,
-            instruction: str,
-            *,
-            talker: Optional[str] = None,
-            model: Optional[ModelConf] = None,
-            container: Optional[IoCContainer] = None,
-            shell: Optional[MOSSShell] = None,
-            speech: Optional[Speech] = None,
-            chat: Optional[BaseChat] = None,
+        self,
+        instruction: str,
+        *,
+        talker: Optional[str] = None,
+        model: Optional[ModelConf] = None,
+        container: Optional[IoCContainer] = None,
+        shell: Optional[MOSSShell] = None,
+        speech: Optional[Speech] = None,
+        chat: Optional[BaseChat] = None,
     ):
         self.container = Container(name="agent", parent=container)
         for provider in workspace_providers():
@@ -104,7 +103,6 @@ class SimpleAgent:
             self.shell.with_speech(speech)
         self.model = model
 
-
         _ws = self.container.get(Workspace)
         self._message_filename = f"message_{int(time.time())}.json"
         if _ws:
@@ -117,7 +115,7 @@ class SimpleAgent:
         self._closed_event = asyncio.Event()
         self._error: Optional[Exception] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._input_queue: asyncio.Queue[List[Dict] | None] | None = None
+        self._input_queue: asyncio.Queue[list[dict] | None] | None = None
         self._logger: Optional[LoggerItf] = None
         self._main_loop_task: Optional[asyncio.Task] = None
 
@@ -132,15 +130,12 @@ class SimpleAgent:
         # 如果有循环，通知中断
         if self._loop:
             # 尝试取消当前响应任务
-            asyncio.run_coroutine_threadsafe(
-                self._cancel_current_response(),
-                self._loop
-            )
+            asyncio.run_coroutine_threadsafe(self._cancel_current_response(), self._loop)
 
     async def _cancel_current_response(self):
         """取消当前响应"""
         async with self._response_cancellation_lock:
-            if hasattr(self, '_current_responding_task') and self._current_responding_task:
+            if hasattr(self, "_current_responding_task") and self._current_responding_task:
                 if not self._current_responding_task.done():
                     self.logger.info("Cancelling current response...")
                     self._current_responding_task.cancel()
@@ -162,9 +157,9 @@ class SimpleAgent:
                 self._loop.call_soon_threadsafe(self._input_queue.put_nowait, None)
                 return
 
-            self._loop.call_soon_threadsafe(self._input_queue.put_nowait, [
-                {"role": "user", "content": text, "name": self.talker}
-            ])
+            self._loop.call_soon_threadsafe(
+                self._input_queue.put_nowait, [{"role": "user", "content": text, "name": self.talker}]
+            )
         except Exception as e:
             self.chat.print_exception(e)
 
@@ -224,7 +219,7 @@ class SimpleAgent:
         if self._error is not None:
             raise RuntimeError(self._error)
 
-    async def _response_loop(self, inputs: List[Dict]) -> None:
+    async def _response_loop(self, inputs: list[dict]) -> None:
         try:
             if not inputs:
                 return
@@ -233,21 +228,21 @@ class SimpleAgent:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.logger.error(e)
+            self.logger.exception("Response loop failed")
             self.chat.print_exception(e)
 
-    def _get_history(self) -> List[Dict]:
+    def _get_history(self) -> list[dict]:
         if not self._history_storage.exists(self._message_filename):
             return []
         history = self._history_storage.get(self._message_filename)
         return json.loads(history)
 
-    def _put_history(self, messages: List[Dict]) -> None:
+    def _put_history(self, messages: list[dict]) -> None:
         messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
         self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
 
-    async def _single_response(self, inputs: List[Dict]) -> Optional[List[Dict]]:
-        self.logger.info(f"Single response received, inputs={inputs}")
+    async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
+        self.logger.info("Single response received, inputs=%s", inputs)
         generated = ""
         execution_results = ""
 
@@ -277,12 +272,12 @@ class SimpleAgent:
                 # 增加 inputs
                 if inputs:
                     messages.extend(inputs)
-                params['messages'] = messages
-                params['stream'] = True
+                params["messages"] = messages
+                params["stream"] = True
                 response_stream = await litellm.acompletion(**params)
                 async for chunk in response_stream:
                     delta = chunk.choices[0].delta
-                    self.logger.debug(f"delta: {delta}")
+                    self.logger.debug("delta: %s", delta)
                     if "reasoning_content" in delta:
                         if not reasoning:
                             reasoning = True
@@ -302,7 +297,7 @@ class SimpleAgent:
                 results = await asyncio.create_task(interpreter.results())
                 if len(results) > 0:
                     execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
-                    self.logger.info(f"execution_results={results}")
+                    self.logger.info("execution_results=%s", results)
                     return []
                 else:
                     return None
@@ -314,9 +309,7 @@ class SimpleAgent:
             if generated:
                 history.append({"role": "assistant", "content": generated})
             if execution_results:
-                history.append({
-                    "role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"
-                })
+                history.append({"role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"})
             if self._interrupt_requested:
                 history.append({"role": "system", "content": "Attention: User interrupted your response last time."})
             self._put_history(history)

@@ -4,6 +4,7 @@ JetArm 总线舵机并行控制验证脚本
 """
 
 import time
+
 from jetarm_channel.ros_robot_controller_sdk import Board
 
 # 配置：请根据实际硬件调整这些参数
@@ -14,18 +15,18 @@ def main():
     board = Board(device="/dev/ttyUSB0", baudrate=1000000, timeout=5)
     board.enable_reception(True)
 
-    while line := input('>'):
+    while line := input(">"):
         if line == "/q":
             exit(0)
         if not line.startswith("/"):
             print("unknown command")
             continue
 
-        parts = line.split(' ', 3)
+        parts = line.split(" ", 3)
         if len(parts) != 3:
             print("unknown command: server position duration")
             continue
-        servo_id = int(parts[0].lstrip('/'))
+        servo_id = int(parts[0].lstrip("/"))
         if servo_id not in SERVO_IDS:
             print("unknown servo id")
             continue

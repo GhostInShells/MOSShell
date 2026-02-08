@@ -1,10 +1,13 @@
-from ghoshell_moss.core.py_channel import PyChannel
-import live2d.v3 as live2d
-from .motions import open_close
-import time
 import asyncio
+import time
 
-eye_chan = PyChannel(name='eye')
+import live2d.v3 as live2d
+
+from ghoshell_moss.core.py_channel import PyChannel
+
+from .motions import open_close
+
+eye_chan = PyChannel(name="eye")
 
 
 @eye_chan.build.command()
@@ -28,8 +31,9 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
     current_y = model.GetParameterValue(y_index)
 
     # 第一阶段：移动到目标位置（根据speed参数控制速度）
-    move_duration = abs(x - current_x) / speed if abs(x - current_x) > abs(y - current_y) else abs(
-        y - current_y) / speed
+    move_duration = (
+        abs(x - current_x) / speed if abs(x - current_x) > abs(y - current_y) else abs(y - current_y) / speed
+    )
     move_duration = max(move_duration, 0.1)  # 确保至少有0.1秒的移动时间
 
     start_time = time.time()
@@ -67,7 +71,7 @@ async def gaze(x: float = 0.0, y: float = 0.0, duration: float = 1.5, speed: flo
     model.SetParameterValue(PARAM_BALL_Y, origin_y)
 
 
-eye_left_chan = eye_chan.new_child(name='eye_left')
+eye_left_chan = eye_chan.new_child(name="eye_left")
 
 
 @eye_left_chan.build.command()
@@ -91,18 +95,23 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
         speed=speed,
         max_value=max_open,
         min_value=min_open,
-        initial_direction="close"  # 眨眼从闭合开始
+        initial_direction="close",  # 眨眼从闭合开始
     )
 
     # 确保最终状态是完全睁开
     model.SetParameterValue(PARAM, 1.0)
 
 
-eye_right_chan = eye_chan.new_child(name='eye_right')
+eye_right_chan = eye_chan.new_child(name="eye_right")
 
 
 @eye_right_chan.build.command()
-async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0, min_open: float = 0.0):
+async def right_blink(
+    duration: float = 1.5,
+    speed: float = 1.0,
+    max_open: float = 1.0,
+    min_open: float = 0.0,
+):
     """
     眨右眼
 
@@ -122,7 +131,7 @@ async def blink(duration: float = 1.5, speed: float = 1.0, max_open: float = 1.0
         speed=speed,
         max_value=max_open,
         min_value=min_open,
-        initial_direction="close"  # 眨眼从闭合开始
+        initial_direction="close",  # 眨眼从闭合开始
     )
 
     # 确保最终状态是完全睁开

@@ -1,4 +1,3 @@
-from typing import List
 import asyncio
 
 import pytest
@@ -16,11 +15,11 @@ async def test_shell_execution_baseline():
     a_chan = PyChannel(name="a")
     b_chan = PyChannel(name="b")
 
-    async def a_message() -> List[Message]:
+    async def a_message() -> list[Message]:
         msg = Message.new(role="system").with_content("hello")
         return [msg]
 
-    def b_message() -> List[Message]:
+    def b_message() -> list[Message]:
         msg = Message.new(role="system").with_content("world")
         return [msg]
 

@@ -1,24 +1,30 @@
+import asyncio
+import logging
+from typing import Optional
 
-from ast import Tuple
-from typing import Dict, Optional
-from ghoshell_moss.core.concepts.shell import MOSSShell, Speech, InterpreterKind
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandWrapper, BaseCommandTask, CommandMeta, RESULT
-from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta, ChannelFullPath
-from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_common.helpers import uuid
+from ghoshell_container import Container, IoCContainer
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.command import (
+    RESULT,
+    BaseCommandTask,
+    Command,
+    CommandMeta,
+    CommandTask,
+    CommandWrapper,
+)
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
-from ghoshell_moss.core.concepts.states import StateStore, MemoryStateStore
+from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell, Speech
+from ghoshell_moss.core.concepts.states import MemoryStateStore, StateStore
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.core.shell.main_channel import MainChannel
 from ghoshell_moss.core.shell.shell_runtime import ShellRuntime
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, TreeNotify
-from ghoshell_common.helpers import uuid
-from ghoshell_common.contracts import LoggerItf
-from ghoshell_container import IoCContainer, Container
-import logging
-import asyncio
+from ghoshell_moss.speech.mock import MockSpeech
 
-__all__ = ['DefaultShell', 'new_shell']
+__all__ = ["DefaultShell", "new_shell"]
 
 
 class ExecuteInChannelRuntimeCommand(Command[RESULT]):
@@ -66,19 +72,18 @@ class ExecuteInChannelRuntimeCommand(Command[RESULT]):
 
 
 class DefaultShell(MOSSShell):
-
     def __init__(
-            self,
-            *,
-            name: str = "shell",
-            description: Optional[str] = None,
-            container: IoCContainer | None = None,
-            main_channel: Channel | None = None,
-            speech: Optional[Speech] = None,
-            state_store: Optional[StateStore] = None,
+        self,
+        *,
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: Channel | None = None,
+        speech: Optional[Speech] = None,
+        state_store: Optional[StateStore] = None,
     ):
         self.name = name
-        self.container = Container(parent=container, name=f"MOSShell")
+        self.container = Container(parent=container, name="MOSShell")
         self.container.set(MOSSShell, self)
         self._main_channel = main_channel or MainChannel(name="", description="")
         self._desc = description
@@ -157,11 +162,11 @@ class DefaultShell(MOSSShell):
             self._runtime.add_task(task)
 
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[int] = None,
-            channel_metas: Dict[ChannelFullPath, ChannelMeta] | None = None,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[int] = None,
+        channel_metas: dict[ChannelFullPath, ChannelMeta] | None = None,
     ) -> Interpreter:
         close_running_interpreter = None
         if self._interpreter is not None:
@@ -207,16 +212,16 @@ class DefaultShell(MOSSShell):
     def main_channel(self) -> Channel:
         return self._main_channel
 
-    def channels(self) -> Dict[str, Channel]:
+    def channels(self) -> dict[str, Channel]:
         return self.main_channel.all_channels()
 
     async def channel_metas(
-            self,
-            available_only: bool = True,
-            /,
-            config: Dict[ChannelFullPath, ChannelMeta] | None = None,
-            refresh: bool = False,
-    ) -> Dict[str, ChannelMeta]:
+        self,
+        available_only: bool = True,
+        /,
+        config: dict[ChannelFullPath, ChannelMeta] | None = None,
+        refresh: bool = False,
+    ) -> dict[str, ChannelMeta]:
         self._check_running()
         if refresh:
             await self._runtime.refresh_metas()
@@ -237,11 +242,8 @@ class DefaultShell(MOSSShell):
         await self._runtime.wait_closed()
 
     async def commands(
-            self,
-            available_only: bool = True,
-            /,
-            config: Dict[ChannelFullPath, ChannelMeta] | None = None
-    ) -> Dict[ChannelFullPath, Dict[str, Command]]:
+        self, available_only: bool = True, /, config: dict[ChannelFullPath, ChannelMeta] | None = None
+    ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
         return await self._runtime.commands(available_only=True, config=config)
 
@@ -311,11 +313,11 @@ class DefaultShell(MOSSShell):
 
 
 def new_shell(
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: Channel | None = None,
-        speech: Optional[Speech] = None,
+    name: str = "shell",
+    description: Optional[str] = None,
+    container: IoCContainer | None = None,
+    main_channel: Channel | None = None,
+    speech: Optional[Speech] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return DefaultShell(

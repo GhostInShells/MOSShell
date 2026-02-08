@@ -1,25 +1,25 @@
+import asyncio
+import logging
+from typing import Optional
 
-from typing import Dict, Optional, List
-from ghoshell_moss.core.concepts.command import CommandTask, Command, CommandWrapper
-from ghoshell_moss.core.concepts.channel import ChannelMeta, Channel
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import IoCContainer
-from ghoshell_moss.core.shell.channel_runtime import ChannelRuntime, ChannelPath
-import logging
-import asyncio
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandWrapper
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.shell.channel_runtime import ChannelPath, ChannelRuntime
 
 _ChannelId = str
 _ChannelFullPath = str
 
 
 class ShellRuntime:
-
     def __init__(
-            self,
-            container: IoCContainer,
-            main_channel: Channel,
+        self,
+        container: IoCContainer,
+        main_channel: Channel,
     ):
         self.id = uuid()
         self.container: IoCContainer = container
@@ -27,9 +27,9 @@ class ShellRuntime:
 
         # --- runtime --- #
         self._event_loop: asyncio.AbstractEventLoop | None = None
-        self._channel_id_to_runtime_map: Dict[_ChannelId, ChannelRuntime] = {}
+        self._channel_id_to_runtime_map: dict[_ChannelId, ChannelRuntime] = {}
         """使用 channel id 指向所有的 channel runtime 实例. """
-        self._channel_path_to_channel_map: Dict[_ChannelId, Channel] = {}
+        self._channel_path_to_channel_map: dict[_ChannelId, Channel] = {}
         """channel path 所指向的 channel id"""
 
         # --- lifecycle --- #
@@ -44,20 +44,20 @@ class ShellRuntime:
     @property
     def logger(self) -> LoggerItf:
         if self._logger is None:
-            self._logger = self.container.get(LoggerItf) or logging.getLogger('moss')
+            self._logger = self.container.get(LoggerItf) or logging.getLogger("moss")
         return self._logger
 
     def _check_running(self) -> None:
         if not self.is_running():
-            raise RuntimeError(f"ShellRuntime is not running")
+            raise RuntimeError("ShellRuntime is not running")
 
     async def get_or_create_runtime(
-            self,
-            channel_path: str,
-            /,
-            channel: Optional[Channel] = None,
+        self,
+        channel_path: str,
+        /,
+        channel: Optional[Channel] = None,
     ) -> Optional[ChannelRuntime]:
-        """获取一个已经初始化的 channel runtime, 基于 a.b.c 这样的 path. """
+        """获取一个已经初始化的 channel runtime, 基于 a.b.c 这样的 path."""
         self._check_running()
 
         # prepare channel
@@ -103,7 +103,7 @@ class ShellRuntime:
         return channel_runtime
 
     async def create_channel_runtime(self, channel: Channel) -> ChannelRuntime:
-        """创建 channel runtime 实例. 不会去启动他们. """
+        """创建 channel runtime 实例. 不会去启动他们."""
         return ChannelRuntime(
             self.container,
             channel,
@@ -136,10 +136,8 @@ class ShellRuntime:
         runtime.add_task_with_paths(paths, task)
 
     async def channel_metas(
-            self,
-            available_only: bool = True,
-            config: Dict[_ChannelFullPath, ChannelMeta] | None = None
-    ) -> Dict[_ChannelFullPath, ChannelMeta]:
+        self, available_only: bool = True, config: dict[_ChannelFullPath, ChannelMeta] | None = None
+    ) -> dict[_ChannelFullPath, ChannelMeta]:
         """
         分层更新 channel metas. 同层同步, 不同层异步.
         """
@@ -198,10 +196,10 @@ class ShellRuntime:
             idx += 1
 
     async def commands(
-            self,
-            available_only: bool = True,
-            config: Optional[Dict[_ChannelFullPath, ChannelMeta]] = None,
-    ) -> Dict[_ChannelFullPath, Dict[str, Command]]:
+        self,
+        available_only: bool = True,
+        config: Optional[dict[_ChannelFullPath, ChannelMeta]] = None,
+    ) -> dict[_ChannelFullPath, dict[str, Command]]:
         self._check_running()
         if not config:
             # 不从 meta, 而是从 runtime 里直接获取 commands.
@@ -245,9 +243,9 @@ class ShellRuntime:
 
     @staticmethod
     def _update_chan_metas_with_config(
-            metas: Dict[_ChannelFullPath, ChannelMeta],
-            config: Dict[_ChannelFullPath, ChannelMeta],
-    ) -> Dict[_ChannelFullPath, ChannelMeta]:
+        metas: dict[_ChannelFullPath, ChannelMeta],
+        config: dict[_ChannelFullPath, ChannelMeta],
+    ) -> dict[_ChannelFullPath, ChannelMeta]:
         result = {}
         for channel_path, meta in config.items():
             if channel_path not in metas:
@@ -317,20 +315,14 @@ class ShellRuntime:
 
     def is_busy(self) -> bool:
         self._check_running()
-        for runtime in self._channel_id_to_runtime_map.values():
-            if not runtime.is_busy():
-                return False
-        return True
+        return all(runtime.is_busy() for runtime in self._channel_id_to_runtime_map.values())
 
     def is_running(self) -> bool:
         return self._started and not self._closing_event.is_set() and self._event_loop is not None
 
     def is_idle(self) -> bool:
         self._check_running()
-        for runtime in self._channel_id_to_runtime_map.values():
-            if runtime.is_busy():
-                return False
-        return True
+        return all(not runtime.is_busy() for runtime in self._channel_id_to_runtime_map.values())
 
     async def wait_idle(self, timeout: float | None = None) -> None:
         if not self.is_running():
@@ -375,14 +367,14 @@ class ShellRuntime:
         # 构建原始的 map.
         self._channel_path_to_channel_map = all_channels
         # 还有自身.
-        self._channel_path_to_channel_map[''] = self.main_channel
+        self._channel_path_to_channel_map[""] = self.main_channel
 
         # 并行初始化所有的 runtime.
         bootstrap_runtimes = []
         for channel_path, channel in all_channels.items():
             channel_runtime = await self.create_channel_runtime(channel)
             if channel_runtime is None:
-                self.logger.error(f"Channel {channel_path} can't create runtime")
+                self.logger.error("Channel %s can't create runtime", channel_path)
                 continue
             bootstrap_runtimes.append(channel_runtime.start())
             # 注册 path 和 id 之间的关系.
@@ -392,7 +384,7 @@ class ShellRuntime:
         await asyncio.gather(*bootstrap_runtimes)
 
     async def _recursive_bootstrap_channel(self, channel: Channel) -> None:
-        """递归地启动这些  channel. """
+        """递归地启动这些  channel."""
         if not channel.is_running():
             # 有些 channel 可能在图里已经启动过了. channel 反正不允许成环.
             broker = channel.bootstrap(self.container)
@@ -417,7 +409,6 @@ class ShellRuntime:
             return
         self._closing_event.set()
         try:
-
             stop_runtimes = []
             for runtime in self._channel_id_to_runtime_map.values():
                 stop_runtimes.append(runtime.close())

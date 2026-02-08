@@ -1,17 +1,20 @@
-from ghoshell_moss.core.py_channel import PyChannel
-import live2d.v3 as live2d
-import time
 import asyncio
+import time
 
-eyebrow_left_chan = PyChannel(name='eyebrow_left')
-eyebrow_right_chan = PyChannel(name='eyebrow_right')
+import live2d.v3 as live2d
+
+from ghoshell_moss.core.py_channel import PyChannel
+
+eyebrow_left_chan = PyChannel(name="eyebrow_left")
+eyebrow_right_chan = PyChannel(name="eyebrow_right")
 
 
-async def _smooth_move_eyebrow(model: live2d.LAppModel, param_x, param_y, param_angle, target_x, target_y, target_angle,
-                               speed):
+async def _smooth_move_eyebrow(
+    model: live2d.LAppModel, param_x, param_y, param_angle, target_x, target_y, target_angle, speed
+):
     """
     通用的眉毛平滑移动函数
-    
+
     :param model: Live2D模型实例
     :param param_x: X参数名
     :param param_y: Y参数名
@@ -31,11 +34,7 @@ async def _smooth_move_eyebrow(model: live2d.LAppModel, param_x, param_y, param_
     current_angle = model.GetParameterValue(angle_index)
 
     # 计算移动持续时间，基于最大的距离和速度
-    max_distance = max(
-        abs(target_x - current_x),
-        abs(target_y - current_y),
-        abs(target_angle - current_angle)
-    )
+    max_distance = max(abs(target_x - current_x), abs(target_y - current_y), abs(target_angle - current_angle))
     move_duration = max_distance / speed if speed > 0 else 0.1
     move_duration = max(move_duration, 0.1)  # 确保至少有0.1秒的移动时间
 
@@ -87,12 +86,12 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
         target_x=x,
         target_y=y,
         target_angle=angle,
-        speed=speed
+        speed=speed,
     )
 
 
 @eyebrow_right_chan.build.command()
-async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float = 1.0):
+async def right_move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float = 1.0):
     """
     平滑移动右眉
 
@@ -116,5 +115,5 @@ async def move(x: float = 0.0, y: float = 0.0, angle: float = 0.0, speed: float 
         target_x=x,
         target_y=y,
         target_angle=angle,
-        speed=speed
+        speed=speed,
     )

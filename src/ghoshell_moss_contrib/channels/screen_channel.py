@@ -1,13 +1,15 @@
-from typing import Dict, List, Optional, Tuple
+import logging
 import time
+from typing import Optional
+
+import mss
+from ghoshell_common.contracts import LoggerItf
 from PIL import Image
+
 from ghoshell_moss import PyChannel
 from ghoshell_moss.message import Base64Image, Message, Text
-from ghoshell_common.contracts import LoggerItf
-import logging
-import mss
 
-__all__ = ['ScreenCapture']
+__all__ = ["ScreenCapture"]
 
 """
 实现一个基本的电脑屏幕截图 channel. 
@@ -35,7 +37,7 @@ class ScreenCapture:
         # mss 相关
         self._mss_initialized = False
         self._mss = None
-        self._monitors_info: Dict[int, dict] = {}
+        self._monitors_info: dict[int, dict] = {}
 
         # 性能统计
         self._capture_count = 0
@@ -53,20 +55,20 @@ class ScreenCapture:
             # 获取显示器信息
             for i, monitor in enumerate(self._mss.monitors[1:], start=1):
                 self._monitors_info[i] = {
-                    'left': monitor['left'],
-                    'top': monitor['top'],
-                    'width': monitor['width'],
-                    'height': monitor['height'],
-                    'index': i
+                    "left": monitor["left"],
+                    "top": monitor["top"],
+                    "width": monitor["width"],
+                    "height": monitor["height"],
+                    "index": i,
                 }
 
-            self.logger.info(f"mss 初始化成功，检测到 {len(self._monitors_info)} 个显示器")
+            self.logger.info("mss 初始化成功，检测到 %s 个显示器", len(self._monitors_info))
 
         except ImportError:
-            self.logger.error("请安装 mss: pip install mss")
+            self.logger.exception("请安装 mss: pip install mss")
             self._mss_initialized = False
-        except Exception as e:
-            self.logger.error(f"mss 初始化失败: {e}")
+        except Exception:
+            self.logger.exception("mss 初始化失败")
             self._mss_initialized = False
 
     def status_description(self) -> str:
@@ -88,8 +90,7 @@ class ScreenCapture:
         monitors_str = "\n".join(monitor_info) if monitor_info else "无"
 
         # 性能统计
-        avg_time = (self._total_capture_time / self._capture_count
-                    if self._capture_count > 0 else 0)
+        avg_time = self._total_capture_time / self._capture_count if self._capture_count > 0 else 0
 
         description = f"""
 屏幕截图模块状态：
@@ -119,11 +120,9 @@ class ScreenCapture:
 
         if old_status != toggle:
             status = "开启" if toggle else "关闭"
-            self.logger.info(f"屏幕截图功能已{status}")
+            self.logger.info("屏幕截图功能已%s", status)
 
-        return None
-
-    async def capture(self) -> Dict[int, Image.Image]:
+    async def capture(self) -> dict[int, Image.Image]:
         """
         捕获一帧屏幕截图（按需调用）
         返回：{显示器编号: PIL Image}
@@ -143,11 +142,7 @@ class ScreenCapture:
 
                 # 转换为 PIL Image
                 # 注意：mss 返回的是 BGRA，需要转换为 RGB
-                img = Image.frombytes('RGB',
-                                      screenshot.size,
-                                      screenshot.bgra,
-                                      'raw',
-                                      'BGRX')
+                img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
 
                 screenshots[monitor_idx] = img
 
@@ -157,16 +152,15 @@ class ScreenCapture:
             self._total_capture_time += capture_time
             self._last_capture_time = start_time
 
-            self.logger.debug(f"截图完成，耗时: {capture_time:.3f}秒，"
-                              f"捕获 {len(screenshots)} 个显示器")
+            self.logger.debug("截图完成，耗时: %.3f秒，捕获 %s 个显示器", capture_time, len(screenshots))
 
             return screenshots
 
-        except Exception as e:
-            self.logger.error(f"截图失败: {e}")
+        except Exception:
+            self.logger.exception("截图失败")
             return {}
 
-    async def screen_messages(self) -> List[Message]:
+    async def screen_messages(self) -> list[Message]:
         """
         生成屏幕截图上下文消息
         在模型思考时被调用
@@ -192,15 +186,12 @@ class ScreenCapture:
         # 添加截图到消息
         for monitor_idx, screenshot in screenshots.items():
             monitor_info = self._monitors_info.get(monitor_idx, {})
-            width = monitor_info.get('width', '未知')
-            height = monitor_info.get('height', '未知')
+            width = monitor_info.get("width", "未知")
+            height = monitor_info.get("height", "未知")
 
             caption = f"显示器 {monitor_idx} 的截图 ({width}×{height})"
 
-            message.with_content(
-                Text(text=caption),
-                Base64Image.from_pil_image(screenshot)
-            )
+            message.with_content(Text(text=caption), Base64Image.from_pil_image(screenshot))
 
         return [message]
 
@@ -234,7 +225,7 @@ class ScreenCapture:
             try:
                 self._mss.close()
                 self.logger.info("mss 资源已释放")
-            except Exception as e:
-                self.logger.error(f"释放 mss 资源失败: {e}")
+            except Exception:
+                self.logger.exception("释放 mss 资源失败")
 
         self._mss_initialized = False

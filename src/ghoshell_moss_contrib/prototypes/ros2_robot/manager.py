@@ -1,28 +1,28 @@
-
+import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
-from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, JointValueParser
-from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import DegreeToRadiansParser, default_parsers
+from typing import Optional
+
+import yaml
+from ghoshell_common.contracts import LoggerItf, Storage
+from ghoshell_common.helpers import yaml_pretty_dump
+from pydantic import ValidationError
+
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import JointValueParser, MOSSRobotManager
+from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import default_parsers
 from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
     RobotInfo,
 )
-from ghoshell_common.contracts import Storage, LoggerItf
-import logging
-import yaml
-from pydantic import ValidationError
-from ghoshell_common.helpers import yaml_pretty_dump
 
 
 class MemoryRobotManager(MOSSRobotManager):
-
-    def __init__(self, robot: RobotInfo, value_parsers: Optional[Dict[str, JointValueParser]] = None):
+    def __init__(self, robot: RobotInfo, value_parsers: Optional[dict[str, JointValueParser]] = None):
         self._robot = robot
         self._value_parsers = value_parsers or default_parsers
 
     def robot(self) -> RobotInfo:
         return self._robot
 
-    def joint_value_parsers(self) -> Dict[str, JointValueParser]:
+    def joint_value_parsers(self) -> dict[str, JointValueParser]:
         return self._value_parsers
 
     def save_robot(self, robot: RobotInfo) -> None:
@@ -30,15 +30,14 @@ class MemoryRobotManager(MOSSRobotManager):
 
 
 class StorageRobotManager(MOSSRobotManager, ABC):
-
     def __init__(
-            self,
-            filename: str,
-            storage: Storage,
-            *,
-            parsers: Optional[Dict[str, JointValueParser]] = None,
-            default_robot: RobotInfo | None = None,
-            logger: LoggerItf | None = None,
+        self,
+        filename: str,
+        storage: Storage,
+        *,
+        parsers: Optional[dict[str, JointValueParser]] = None,
+        default_robot: RobotInfo | None = None,
+        logger: LoggerItf | None = None,
     ):
         self._storage = storage
         self._filename = filename
@@ -64,7 +63,7 @@ class StorageRobotManager(MOSSRobotManager, ABC):
     def _marshal_robot(self, robot: RobotInfo) -> bytes:
         pass
 
-    def joint_value_parsers(self) -> Dict[str, JointValueParser]:
+    def joint_value_parsers(self) -> dict[str, JointValueParser]:
         return self._parsers
 
     def save_robot(self, robot: RobotInfo) -> None:
@@ -73,7 +72,6 @@ class StorageRobotManager(MOSSRobotManager, ABC):
 
 
 class YamlStorageRobotManager(StorageRobotManager):
-
     def _unmarshal_robot(self, content: bytes) -> Optional[RobotInfo]:
         try:
             data = yaml.safe_load(content)

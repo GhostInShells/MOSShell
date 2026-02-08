@@ -1,9 +1,8 @@
-
-from .abcd import Message, Role, MessageMeta
+from .abcd import Message, MessageMeta, Role
 from .contents import Text
 
 __all__ = [
-    'new_text_message',
+    "new_text_message",
 ]
 
 

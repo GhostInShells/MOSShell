@@ -1,16 +1,16 @@
-from typing import List
-from ghoshell_moss.message import Message, new_text_message
-from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.core.concepts.command import PyCommand, CommandTask
-from ghoshell_moss.core.concepts.channel import Channel
 import pytest
+
+from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
+from ghoshell_moss.core.py_channel import PyChannel
+from ghoshell_moss.message import Message, new_text_message
 
 chan = PyChannel(name="test")
 
 
 @chan.build.command()
 def add(a: int, b: int) -> int:
-    """测试一个同步函数是否能正确被调用. """
+    """测试一个同步函数是否能正确被调用."""
     return a + b
 
 
@@ -99,7 +99,7 @@ async def test_py_channel_children() -> None:
 
     a_chan = chan.new_child("a")
     assert isinstance(a_chan, PyChannel)
-    assert chan.children()['a'] is a_chan
+    assert chan.children()["a"] is a_chan
 
     async def zoo():
         return 123
@@ -111,13 +111,13 @@ async def test_py_channel_children() -> None:
         meta = a_chan.broker.meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = a_chan.broker.get_command('zoo')
+        command = a_chan.broker.get_command("zoo")
         # 实际执行的是 zoo.
         assert await command() == 123
 
     async with chan.bootstrap():
         meta = chan.broker.meta()
-        assert meta.children == ['a']
+        assert meta.children == ["a"]
 
 
 @pytest.mark.asyncio
@@ -132,11 +132,11 @@ async def test_py_channel_with_children() -> None:
     channels = main.all_channels()
     assert len(channels) == 5
     assert channels[""] is main
-    assert channels['c'] is c
-    assert channels['c.d'] is c.children()['d']
-    assert c.get_channel('') is c
-    assert c.get_channel('d') is c.children()['d']
-    assert main.get_channel('c.d') is c.children()['d']
+    assert channels["c"] is c
+    assert channels["c.d"] is c.children()["d"]
+    assert c.get_channel("") is c
+    assert c.get_channel("d") is c.children()["d"]
+    assert main.get_channel("c.d") is c.children()["d"]
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_py_channel_context() -> None:
 
     messages = [new_text_message("hello", role="system")]
 
-    def foo() -> List[Message]:
+    def foo() -> list[Message]:
         return messages
 
     # 添加 context message 函数.

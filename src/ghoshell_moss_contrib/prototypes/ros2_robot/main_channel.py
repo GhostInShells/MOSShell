@@ -1,10 +1,11 @@
-
-from ghoshell_moss import PyChannel, CommandErrorCode, ChannelUtils
-from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import Trajectory, Animation, Pose
 import asyncio
 import json
+
 from pydantic import ValidationError
+
+from ghoshell_moss import ChannelUtils, CommandErrorCode, PyChannel
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import Animation, Pose, Trajectory
 
 
 def build_robot_main_channel(controller: RobotController) -> PyChannel:
@@ -135,7 +136,7 @@ def remove_animation(name: str) -> None:
     _controller.manager().remove_animation(name)
 
 
-move_to_doc = f"""
+move_to_doc = """
 移动到一个目标位姿
 
 :param duration: 指定运行所需要的时间, 默认是 1.0 秒. 
@@ -148,7 +149,7 @@ async def move_to(text__: str, duration: float = 1.0) -> None:
         data = json.loads(text__)
         pose = Pose(positions=data)
     except json.JSONDecodeError as e:
-        raise CommandErrorCode.VALUE_ERROR.error("invalid text__ json format: %s" % e)
+        raise CommandErrorCode.VALUE_ERROR.error(f"invalid text__ json format: {e}")
 
     except ValidationError as e:
         raise CommandErrorCode.VALUE_ERROR.error("Invalid text__ format, must follow its JSON Schema")

@@ -1,24 +1,28 @@
-
 import json
 from abc import ABC, abstractmethod
-from typing import (
-    Literal, Set, Optional, Protocol, Dict, Any, ClassVar, Type, List,
-    TypedDict, is_typeddict
-)
-from typing_extensions import Self
-from pydantic import BaseModel, Field, ValidationError
-from enum import Enum
-from ghoshell_common.helpers import uuid_md5, timestamp_ms
 from copy import deepcopy
+from enum import Enum
+from typing import Any, ClassVar, Literal, Optional, Protocol, TypedDict, is_typeddict
+
+from ghoshell_common.helpers import timestamp_ms, uuid_md5
 from PIL import Image
+from pydantic import BaseModel, Field, ValidationError
+from typing_extensions import Self
 
 __all__ = [
-    'Role',
-    'HasAdditional', 'Addition', 'Additional', 'WithAdditional',
-    'MessageStage', 'MessageTypeName',
-    'Message', 'MessageMeta',
-    'Content', 'ContentModel',
-    'Delta', 'DeltaModel',
+    "Addition",
+    "Additional",
+    "Content",
+    "ContentModel",
+    "Delta",
+    "DeltaModel",
+    "HasAdditional",
+    "Message",
+    "MessageMeta",
+    "MessageStage",
+    "MessageTypeName",
+    "Role",
+    "WithAdditional",
 ]
 
 """
@@ -49,8 +53,8 @@ class Role(str, Enum):
     DEVELOPER = "developer"  # 兼容 openai 的 developer 类型消息.
 
     @classmethod
-    def all(cls) -> Set[str]:
-        return set(map(lambda x: x.value, cls))
+    def all(cls) -> set[str]:
+        return {member.value for member in cls}
 
     def new_meta(self, name: Optional[str] = None, stage: str = "") -> "MessageMeta":
         return MessageMeta(role=self.value, name=name, stage=str(stage))
@@ -66,10 +70,11 @@ class MessageTypeName(str, Enum):
         - 举个例子, 链路传输可能包含 debug 类型的消息, 它对图形界面展示很重要, 但对大模型则不需要理解.
     3. 在解析消息/渲染消息时, 对应的 Handler 应该先理解 message type.
     """
+
     DEFAULT = ""  # 默认多模态消息类型
 
 
-Additional = Optional[Dict[str, Dict[str, Any]]]
+Additional = Optional[dict[str, dict[str, Any]]]
 """
 各种数据类型的一种扩展协议.
 它存储 弱类型/可序列化 的数据结构, 用 dict 来表示.
@@ -86,6 +91,7 @@ class HasAdditional(Protocol):
     >>> def foo(obj: HasAdditional):
     >>>     return obj.additional
     """
+
     additional: Additional
 
 
@@ -131,9 +137,7 @@ class Addition(BaseModel, ABC):
         """
         从一个目标对象中读取 Addition 数据结构, 并加工为强类型.
         """
-        if not hasattr(target, 'additional'):
-            return None
-        elif target.additional is None:
+        if not hasattr(target, "additional") or target.additional is None:
             return None
         keyword = cls.keyword()
         data = target.additional.get(keyword, None)
@@ -181,10 +185,10 @@ class AdditionList:
     这个实现不一定要使用. 它的好处是, 可以集中地拼出一个新的 Additions 协议自解释模块.
     """
 
-    def __init__(self, *types: Type[Addition]):
+    def __init__(self, *types: type[Addition]):
         self.types = {t.keyword(): t for t in types}
 
-    def add(self, addition_type: Type[Addition], override: bool = True) -> None:
+    def add(self, addition_type: type[Addition], override: bool = True) -> None:
         """
         注册新的 Addition 类型.
         """
@@ -193,7 +197,7 @@ class AdditionList:
             raise KeyError(f"Addition {keyword} is already added.")
         self.types[keyword] = addition_type
 
-    def schemas(self) -> Dict[str, Dict]:
+    def schemas(self) -> dict[str, dict]:
         """
         返回所有的 Addition 的 Schema.
         """
@@ -216,6 +220,7 @@ class MessageStage(str, Enum):
 
     这样用 stage 标记三个阶段生产的消息体, 在下一轮对话中, 可以从历史记忆里删除掉 reasoning 或者 observe, 保持干净.
     """
+
     DEFAULT = ""
     REASONING = "reasoning"
     OBSERVE = "observe"
@@ -232,6 +237,7 @@ class MessageMeta(BaseModel):
 
     独立出数据结构, 是为了方便将 meta 在不同的数据结构中使用, 而不用持有整个 message.
     """
+
     id: str = Field(
         default_factory=uuid_md5,
         description="消息的全局唯一 ID",
@@ -248,7 +254,7 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息的发送者身份, 兼容 openai 的协议.",
     )
-    additional: Optional[Dict[str, Dict[str, Any]]] = Field(
+    additional: Optional[dict[str, dict[str, Any]]] = Field(
         default=None,
         description="消息体强类型的附属结构",
     )
@@ -264,10 +270,7 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息体的生成结束时间",
     )
-    finish_reason: Optional[str] = Field(
-        default=None,
-        description="消息体中断的原因"
-    )
+    finish_reason: Optional[str] = Field(default=None, description="消息体中断的原因")
 
 
 class Delta(TypedDict):
@@ -276,8 +279,9 @@ class Delta(TypedDict):
 
     这又是一个弱类型的容器, 其中 data 的数据结构没有自解释, 需要结合 type 去还原.
     """
+
     type: str
-    data: Dict
+    data: dict
 
 
 class DeltaModel(BaseModel, ABC):
@@ -297,10 +301,10 @@ class DeltaModel(BaseModel, ABC):
         """
         从 delta 包中还原自身的强类型结构.
         """
-        if delta['type'] != cls.DELTA_TYPE:
+        if delta["type"] != cls.DELTA_TYPE:
             return None
         try:
-            return cls(**delta['data'])
+            return cls(**delta["data"])
         except ValidationError:
             return None
 
@@ -319,8 +323,9 @@ class Content(TypedDict):
     消息的通用内容体. 兼容各种模型.
     原理与 delta 一模一样.
     """
+
     type: str
-    data: Dict
+    data: dict
 
 
 class ContentModel(BaseModel, ABC):
@@ -336,10 +341,10 @@ class ContentModel(BaseModel, ABC):
         """
         从 content 弱类型容器中还原出强类型的数据结构.
         """
-        if content['type'] != cls.CONTENT_TYPE:
+        if content["type"] != cls.CONTENT_TYPE:
             return None
         try:
-            return cls(**content['data'])
+            return cls(**content["data"])
         except ValidationError:
             return None
 
@@ -364,6 +369,7 @@ class Message(BaseModel, WithAdditional):
     4. 本身也是一个兼容弱类型的容器, 除了消息本身必要的讯息外, 其它的讯息都是弱类型的. 避免传输时需要转化各种数据类型.
     5. 完整的内容数据, 都定义在 contents 里
     """
+
     type: str = Field(
         default="",
         description="消息的类型, 对应 MessageTypeName, 用来定义不同的处理逻辑. ",
@@ -372,37 +378,33 @@ class Message(BaseModel, WithAdditional):
         default_factory=MessageMeta,
         description="消息的维度信息, 单独拿出来, 方便被其它数据类型所持有. ",
     )
-    seq: Literal['head', 'delta', 'incomplete', 'completed'] = Field(
+    seq: Literal["head", "delta", "incomplete", "completed"] = Field(
         default="completed",
         description="消息的传输状态, 目前分为首包, 间包和尾包."
-                    "- 首包: 用来提示一个消息流已经被生产. 通常用来通知前端界面, 提前渲染消息容器"
-                    "- 间包: 用最少的讯息传递一个 delta 包, 用于流式传输"
-                    "- 尾包: 包含所有 delta 包粘包后的完整结果, 用来存储或展示."
-                    "尾包分为 completed 和 incomplete 两种. "
-                    "- completed 表示一个消息体完全传输完毕."
-                    "- incomplete 表示虽然没传输完毕, 但可能也要直接使用."
-                    "我们举一个具体的例子, 在模型处理多端输入时, 一个视觉信号让模型要反馈, 但一个 asr 输入还未全部完成;"
-                    "这个时候, 大模型仍然要看到未完成的语音输入, 也就是 incomplete 消息."
-                    "但是下一轮对话, 当 asr 已经完成时, 历史消息里不需要展示 incomplete 包."
-                    "所以 incomplete 主要是用来在大模型思考的关键帧中展示一个粘包中的中间结果."
-
+        "- 首包: 用来提示一个消息流已经被生产. 通常用来通知前端界面, 提前渲染消息容器"
+        "- 间包: 用最少的讯息传递一个 delta 包, 用于流式传输"
+        "- 尾包: 包含所有 delta 包粘包后的完整结果, 用来存储或展示."
+        "尾包分为 completed 和 incomplete 两种. "
+        "- completed 表示一个消息体完全传输完毕."
+        "- incomplete 表示虽然没传输完毕, 但可能也要直接使用."
+        "我们举一个具体的例子, 在模型处理多端输入时, 一个视觉信号让模型要反馈, 但一个 asr 输入还未全部完成;"
+        "这个时候, 大模型仍然要看到未完成的语音输入, 也就是 incomplete 消息."
+        "但是下一轮对话, 当 asr 已经完成时, 历史消息里不需要展示 incomplete 包."
+        "所以 incomplete 主要是用来在大模型思考的关键帧中展示一个粘包中的中间结果.",
     )
     delta: Optional[Delta] = Field(
         default=None,
         description="传输的间包, 非 head/delta 类型不会持有 delta. ",
     )
-    contents: None | List[Content] = Field(
-        default=None,
-        description="弱类型的数据, 通常在尾包里. "
-    )
+    contents: None | list[Content] = Field(default=None, description="弱类型的数据, 通常在尾包里. ")
 
     @classmethod
     def new(
-            cls,
-            *,
-            role: Literal['assistant', 'system', 'developer', 'user', ''] = '',
-            name: Optional[str] = None,
-            id: Optional[str] = None,
+        cls,
+        *,
+        role: Literal["assistant", "system", "developer", "user", ""] = "",
+        name: Optional[str] = None,
+        id: Optional[str] = None,
     ):
         """
         语法糖, 用来创建一条消息.
@@ -444,7 +446,8 @@ class Message(BaseModel, WithAdditional):
         """
         语法糖, 用来添加 content.
         """
-        from .contents import Text, Base64Image
+        from .contents import Base64Image, Text
+
         for content in contents:
             if is_typeddict(content):
                 self.contents = self.contents or []
@@ -462,11 +465,11 @@ class Message(BaseModel, WithAdditional):
 
     def is_completed(self) -> bool:
         """常用语法糖"""
-        return self.seq == 'completed'
+        return self.seq == "completed"
 
     def is_incomplete(self) -> bool:
         """常用语法糖"""
-        return self.seq == 'incomplete'
+        return self.seq == "incomplete"
 
     def is_done(self) -> bool:
         """
@@ -482,7 +485,7 @@ class Message(BaseModel, WithAdditional):
         """
         return not self.contents and not self.delta
 
-    def dump(self) -> Dict[str, Any]:
+    def dump(self) -> dict[str, Any]:
         """
         生成一个 dict 数据对象, 用于传输.
         会返回默认值, 以防修改默认值后无法从序列化中还原.
@@ -551,7 +554,7 @@ class Message(BaseModel, WithAdditional):
         self.meta.completed_at = None
         return self
 
-    def as_completed(self, contents: List[Content] | None = None) -> Self:
+    def as_completed(self, contents: list[Content] | None = None) -> Self:
         """
         基于当前数据, 生成一个 尾包.
         常见用法:
@@ -559,7 +562,7 @@ class Message(BaseModel, WithAdditional):
         >>> # 复制一个新的尾包.
         >>> copy_msg = msg.get_copy().as_completed()
         """
-        if self.seq == 'completed':
+        if self.seq == "completed":
             return self
         contents = contents if contents is not None else self.contents.copy()
         self.seq = "completed"
@@ -569,11 +572,11 @@ class Message(BaseModel, WithAdditional):
         self.meta.completed_at = self.meta.updated_at
         return self
 
-    def as_incomplete(self, contents: List[Content] | None = None) -> Self:
+    def as_incomplete(self, contents: list[Content] | None = None) -> Self:
         """
         与 as complete 类似, 生成一个未完成的尾包.
         """
-        if self.seq == 'completed':
+        if self.seq == "completed":
             return self
         contents = contents if contents is not None else self.contents.copy()
         self.seq = "incomplete"

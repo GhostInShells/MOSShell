@@ -1,14 +1,16 @@
-
 from abc import ABC, abstractmethod
+
 from .protocol import ChannelEvent
 
-__all__ = ['ConnectionClosedError', 'ConnectionNotAvailable', 'Connection', 'ChannelEvent']
+__all__ = ["ChannelEvent", "Connection", "ConnectionClosedError", "ConnectionNotAvailable"]
 
 
 # --- errors --- #
 
+
 class ConnectionClosedError(Exception):
-    """表示 connection 已经连接失败. """
+    """表示 connection 已经连接失败."""
+
     pass
 
 
@@ -36,20 +38,20 @@ class Connection(ABC):
 
     @abstractmethod
     def is_closed(self) -> bool:
-        """判断 connection 是否已经彻底关闭了. """
+        """判断 connection 是否已经彻底关闭了."""
         pass
 
     @abstractmethod
     def is_available(self) -> bool:
-        """判断 connection 是否还可以用. """
+        """判断 connection 是否还可以用."""
         pass
 
     @abstractmethod
     async def close(self) -> None:
-        """关闭这个 connection """
+        """关闭这个 connection"""
         pass
 
     @abstractmethod
     async def start(self) -> None:
-        """启动这个 connection. """
+        """启动这个 connection."""
         pass

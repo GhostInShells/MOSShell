@@ -1,7 +1,9 @@
-from typing import AsyncIterable
-from ghoshell_moss.core.concepts.command import PyCommand, CommandType, CommandMeta
 import asyncio
+from collections.abc import AsyncIterable
+
 import pytest
+
+from ghoshell_moss.core.concepts.command import CommandType, PyCommand
 
 
 async def foo(a: int, b: str = "hello") -> int:
@@ -21,10 +23,10 @@ def test_pycommand_baseline():
 
     async def main():
         v = await command(1, b="world")
-        assert 6 == v
+        assert v == 6
 
         meta = command.meta()
-        assert meta.name == 'foo'
+        assert meta.name == "foo"
         assert meta.chan == ""
         assert meta.description == ""
         assert meta.type is CommandType.FUNCTION.value
@@ -63,13 +65,12 @@ async def bar(a: int, *b: str, c: str, d: int = 1) -> int:
 
     # assert the args and kwargs are parsed into kwargs
     kwargs = command.parse_kwargs(1, "foo", "bar", c="hello")
-    assert kwargs == {"a": 1, "b": ('foo', 'bar'), "c": "hello", "d": 1}
+    assert kwargs == {"a": 1, "b": ("foo", "bar"), "c": "hello", "d": 1}
 
 
 @pytest.mark.asyncio
 async def test_method_command():
     class Foo:
-
         async def bar(self) -> int:
             return 1
 

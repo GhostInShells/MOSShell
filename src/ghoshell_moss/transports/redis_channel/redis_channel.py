@@ -1,22 +1,22 @@
-
 import asyncio
 import json
 import logging
 import uuid
-from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from typing import Optional
 
 try:
     from redis.asyncio import Redis
-    from redis.exceptions import ResponseError, ConnectionError
+    from redis.exceptions import ConnectionError, ResponseError
 except ImportError:
-    raise ImportError(f'redis is not installed, please install it with "pip install ghoshell-moss[redis]"')
+    raise ImportError('redis is not installed, please install it with "pip install ghoshell-moss[redis]"')
+
+from ghoshell_container import Container, IoCContainer
 
 from ghoshell_moss.core.duplex.connection import Connection, ConnectionClosedError
 from ghoshell_moss.core.duplex.protocol import ChannelEvent
 from ghoshell_moss.core.duplex.provider import DuplexChannelProvider
 from ghoshell_moss.core.duplex.proxy import DuplexChannelProxy
-from ghoshell_container import Container, IoCContainer
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +24,17 @@ logger = logging.getLogger(__name__)
 class RedisStreamConnection(Connection):
     """基于Redis Stream的双工通信连接"""
 
-    def __init__(self,
-                 redis: Redis,
-                 write_stream: str,
-                 read_stream: str,
-                 consumer_group: Optional[str] = None,
-                 consumer_id: Optional[str] = None):
+    def __init__(
+        self,
+        redis: Redis,
+        write_stream: str,
+        read_stream: str,
+        consumer_group: Optional[str] = None,
+        consumer_id: Optional[str] = None,
+    ):
         """
         初始化Redis流连接
-        
+
         :param redis: Redis实例
         :param write_stream: 写入消息的流
         :param read_stream: 读取消息的流
@@ -54,19 +56,14 @@ class RedisStreamConnection(Connection):
         """确保消费者组已创建（如果需要）"""
         if self._consumer_group and not self._group_created:
             try:
-                await self._redis.xgroup_create(
-                    self._read_stream,
-                    self._consumer_group,
-                    id="0",
-                    mkstream=True
-                )
+                await self._redis.xgroup_create(self._read_stream, self._consumer_group, id="0", mkstream=True)
                 self._group_created = True
             except ResponseError as e:
                 if "BUSYGROUP" in str(e):
                     # 消费者组已存在
                     self._group_created = True
                 else:
-                    logger.error(f"Failed to create consumer group: {e}")
+                    logger.exception("Failed to create consumer group")
                     raise
 
     async def recv(self, timeout: Optional[float] = None) -> ChannelEvent:
@@ -88,16 +85,14 @@ class RedisStreamConnection(Connection):
                             consumername=self._consumer_id,
                             streams={self._read_stream: self._last_id},
                             count=1,
-                            block=block
+                            block=block,
                         )
                     else:
                         # 不使用消费者组，直接读取
                         result = await self._redis.xread(
-                            streams={self._read_stream: self._last_id},
-                            count=1,
-                            block=block
+                            streams={self._read_stream: self._last_id}, count=1, block=block
                         )
-                        logger.debug(f"Raw Redis read result: {result}")
+                        logger.debug("Raw Redis read result: %s", result)
 
                     if not result:
                         if block == 0:
@@ -121,16 +116,16 @@ class RedisStreamConnection(Connection):
                     #     decode_responses=True,  # Import!!!
                     #     encoding='utf-8'
                     # )
-                    payload = message.get(b'payload') or message.get('payload')
+                    payload = message.get(b"payload") or message.get("payload")
                     if not payload:
-                        logger.warning(f"Received empty payload message: {message}")
+                        logger.warning("Received empty payload message: %s", message)
                         continue
 
                     event = json.loads(payload)
-                    logger.info(f'RedisStreamConnection Received event: {event}')
+                    logger.info("RedisStreamConnection Received event: %s", event)
                     return event
                 except ConnectionError as e:
-                    logger.error(f"Redis connection error: {e}")
+                    logger.exception("Redis connection error")
                     raise ConnectionClosedError(f"Redis connection closed: {e}")
 
     async def send(self, event: ChannelEvent) -> None:
@@ -142,16 +137,17 @@ class RedisStreamConnection(Connection):
             try:
                 # 序列化事件并发送到相应流
                 payload = json.dumps(event)
-                await self._redis.xadd(
+                await self._redis.xadd(self._write_stream, {"payload": payload})
+                logger.info(
+                    "RedisStreamConnection sending event to Redis stream %s: %s",
                     self._write_stream,
-                    {"payload": payload}
+                    event,
                 )
-                logger.info(f"RedisStreamConnection Sending event to Redis stream {self._write_stream}: {event}")
             except ConnectionError as e:
-                logger.error(f"Redis connection error: {e}")
+                logger.exception("Redis connection error")
                 raise ConnectionClosedError(f"Redis connection failed: {e}")
-            except Exception as e:
-                logger.exception(f"Error sending message to Redis: {e}")
+            except Exception:
+                logger.exception("Error sending message to Redis")
                 raise
 
     def is_closed(self) -> bool:
@@ -177,6 +173,7 @@ class RedisStreamConnection(Connection):
 @dataclass
 class RedisConnectionConfig:
     """Redis Channel配置"""
+
     redis: Redis
     write_stream: str
     read_stream: str
@@ -192,17 +189,17 @@ class RedisChannelProxy(DuplexChannelProxy):
     """基于Redis的Channel代理（客户端）"""
 
     def __init__(
-            self,
-            config: RedisConnectionConfig,
-            *,
-            name: str,
+        self,
+        config: RedisConnectionConfig,
+        *,
+        name: str,
     ):
         connection = RedisStreamConnection(
             redis=config.redis,
             write_stream=config.write_stream,
             read_stream=config.read_stream,
             consumer_group=config.consumer_group,
-            consumer_id=config.consumer_id
+            consumer_id=config.consumer_id,
         )
         super().__init__(
             name=name,
@@ -214,19 +211,18 @@ class RedisChannelProvider(DuplexChannelProvider):
     """基于Redis的Channel提供者（服务端）"""
 
     def __init__(
-            self,
-            config: RedisConnectionConfig,
-            *,
-            container: Optional[IoCContainer] = None,
+        self,
+        config: RedisConnectionConfig,
+        *,
+        container: Optional[IoCContainer] = None,
     ):
         connection = RedisStreamConnection(
             redis=config.redis,
             write_stream=config.write_stream,
             read_stream=config.read_stream,
             consumer_group=config.consumer_group,
-            consumer_id=config.consumer_id
+            consumer_id=config.consumer_id,
         )
         super().__init__(
-            provider_connection=connection,
-            container=Container(parent=container, name="RedisChannelProvider")
+            provider_connection=connection, container=Container(parent=container, name="RedisChannelProvider")
         )

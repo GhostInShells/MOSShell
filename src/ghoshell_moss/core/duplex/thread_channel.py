@@ -1,11 +1,17 @@
-
-from typing import Tuple
-from ghoshell_moss.core.duplex import *
 import asyncio
-from queue import Queue, Empty
-from ghoshell_container import Container, IoCContainer
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from queue import Empty, Queue
+
 from ghoshell_common.helpers import Timeleft
+from ghoshell_container import Container, IoCContainer
+
+from ghoshell_moss.core.duplex import (
+    ChannelEvent,
+    Connection,
+    ConnectionClosedError,
+    DuplexChannelProvider,
+    DuplexChannelProxy,
+)
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 """
 # --- 测试专用 Channel --- 
@@ -16,12 +22,11 @@ from ghoshell_common.helpers import Timeleft
 
 
 class Provider2ProxyConnection(Connection):
-
     def __init__(
-            self,
-            *,
-            provider_2_proxy_queue: Queue[ChannelEvent | None],
-            proxy_2_provider_queue: Queue[ChannelEvent],
+        self,
+        *,
+        provider_2_proxy_queue: Queue[ChannelEvent | None],
+        proxy_2_provider_queue: Queue[ChannelEvent],
     ):
         self._closed = ThreadSafeEvent()
         self._send_queue = provider_2_proxy_queue
@@ -33,7 +38,7 @@ class Provider2ProxyConnection(Connection):
 
     async def recv(self, timeout: float | None = None) -> ChannelEvent:
         if self._closed.is_set():
-            raise ConnectionClosedError(f"Connection closed")
+            raise ConnectionClosedError("Connection closed")
         left = Timeleft(timeout or 0.0)
 
         def _recv_from_client() -> ChannelEvent:
@@ -51,7 +56,7 @@ class Provider2ProxyConnection(Connection):
         for t in pending:
             t.cancel()
         if closed in done:
-            raise ConnectionClosedError(f"Connection closed")
+            raise ConnectionClosedError("Connection closed")
         return await receiving
 
     async def send(self, event: ChannelEvent) -> None:
@@ -71,12 +76,11 @@ class Provider2ProxyConnection(Connection):
 
 
 class Proxy2ProviderConnection(Connection):
-
     def __init__(
-            self,
-            *,
-            provider_2_proxy_queue: Queue[ChannelEvent | None],
-            proxy_2_provider_queue: Queue[ChannelEvent],
+        self,
+        *,
+        provider_2_proxy_queue: Queue[ChannelEvent | None],
+        proxy_2_provider_queue: Queue[ChannelEvent],
     ):
         self._closed = ThreadSafeEvent()
         self._send_queue = proxy_2_provider_queue
@@ -87,7 +91,7 @@ class Proxy2ProviderConnection(Connection):
 
     async def recv(self, timeout: float | None = None) -> ChannelEvent:
         if self._closed.is_set():
-            raise ConnectionClosedError(f"Connection closed")
+            raise ConnectionClosedError("Connection closed")
 
         _left = Timeleft(timeout or 0.0)
 
@@ -106,11 +110,11 @@ class Proxy2ProviderConnection(Connection):
         for t in pending:
             t.cancel()
         if closed in done:
-            raise ConnectionClosedError(f"Connection closed")
+            raise ConnectionClosedError("Connection closed")
         result = await receiving
         if result is None:
             self._closed.set()
-            raise ConnectionClosedError(f"Connection closed")
+            raise ConnectionClosedError("Connection closed")
         return result
 
     async def send(self, event: ChannelEvent) -> None:
@@ -127,26 +131,23 @@ class Proxy2ProviderConnection(Connection):
 
 
 class ThreadChannelProvider(DuplexChannelProvider):
-
     def __init__(
-            self,
-            *,
-            provider_connection: Provider2ProxyConnection,
-            container: IoCContainer | None = None,
+        self,
+        *,
+        provider_connection: Provider2ProxyConnection,
+        container: IoCContainer | None = None,
     ):
         super().__init__(
-            provider_connection=provider_connection,
-            container=Container(parent=container, name="ThreadChannelProvider")
+            provider_connection=provider_connection, container=Container(parent=container, name="ThreadChannelProvider")
         )
 
 
 class ThreadChannelProxy(DuplexChannelProxy):
-
     def __init__(
-            self,
-            *,
-            name: str,
-            to_server_connection: Proxy2ProviderConnection,
+        self,
+        *,
+        name: str,
+        to_server_connection: Proxy2ProviderConnection,
     ):
         super().__init__(
             name=name,
@@ -155,9 +156,9 @@ class ThreadChannelProxy(DuplexChannelProxy):
 
 
 def create_thread_channel(
-        name: str,
-        container: IoCContainer | None = None,
-) -> Tuple[ThreadChannelProvider, ThreadChannelProxy]:
+    name: str,
+    container: IoCContainer | None = None,
+) -> tuple[ThreadChannelProvider, ThreadChannelProxy]:
     proxy_2_provider_queue = Queue()
     provider_2_proxy_queue = Queue()
     server_side_connection = Provider2ProxyConnection(

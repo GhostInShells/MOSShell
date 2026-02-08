@@ -1,10 +1,12 @@
-
 def check_agent() -> bool:
     try:
-        import litellm
-        import prompt_toolkit
-        import rich
+        __import__("litellm")
+        __import__("prompt_toolkit")
+        __import__("rich")
+
         return True
 
     except ImportError as e:
-        raise ImportError(f"failed to import agent dependencies, please try to install ghoshell-moss[agent]: {e}")
+        raise ImportError(
+            f"failed to import agent dependencies, please try to install ghoshell-moss[agent]: {e}"
+        ) from e

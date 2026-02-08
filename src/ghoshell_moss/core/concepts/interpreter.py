@@ -1,18 +1,21 @@
-
-from typing import Iterable, Callable, Optional, Dict, List
-from typing_extensions import Self
-from ghoshell_moss.core.concepts.command import CommandToken, CommandTask
-from ghoshell_moss.message import Message
-from .channel import ChannelMeta
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable
+from typing import Optional
+
+from typing_extensions import Self
+
+from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
+from ghoshell_moss.message import Message
+
+from .channel import ChannelMeta
 
 __all__ = [
-    'CommandTokenParser',
-    'CommandTaskParserElement',
-    "Interpreter",
-    "CommandTokenCallback",
     "CommandTaskCallback",
     "CommandTaskParseError",
+    "CommandTaskParserElement",
+    "CommandTokenCallback",
+    "CommandTokenParser",
+    "Interpreter",
 ]
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
@@ -99,12 +102,13 @@ class CommandTaskParserElement(ABC):
 
     So we need an Element Tree to parse the tokens into command tasks, and send the tasks immediately
     """
+
     depth: int
 
     current: Optional[CommandTask] = None
     """the current command task of this element, created by `start` type command token"""
 
-    children: Dict[str, "CommandTaskParserElement"]
+    children: dict[str, "CommandTaskParserElement"]
     """the children element of this element"""
 
     @abstractmethod
@@ -122,7 +126,7 @@ class CommandTaskParserElement(ABC):
 
     @abstractmethod
     def is_end(self) -> bool:
-        """是否解析已经完成了. """
+        """是否解析已经完成了."""
         pass
 
     @abstractmethod
@@ -133,7 +137,8 @@ class CommandTaskParserElement(ABC):
 
 class Interpreter(ABC):
     """
-    命令解释器, 从一个文本流中解析 command token, 同时将流式的 command token 解析为流式的 command task, 然后回调给执行器.
+    命令解释器, 从一个文本流中解析 command token.
+    同时将流式的 command token 解析为流式的 command task, 然后回调给执行器.
 
     The Command Interpreter that parse the LLM-generated streaming tokens into Command Tokens,
     and send the compiled command tasks into the shell executor.
@@ -152,7 +157,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def channels(self) -> Dict[str, ChannelMeta]:
+    def channels(self) -> dict[str, ChannelMeta]:
         pass
 
     @abstractmethod
@@ -163,7 +168,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def context_messages(self, *, channel_names: List[str] | None = None) -> List[Message]:
+    def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
         """
         返回 interpreter 的关联上下文.
         """
@@ -222,7 +227,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def parsed_tasks(self) -> Dict[str, CommandTask]:
+    def parsed_tasks(self) -> dict[str, CommandTask]:
         """
         已经解析生成的 tasks.
         """
@@ -230,11 +235,11 @@ class Interpreter(ABC):
 
     @abstractmethod
     def outputted(self) -> Iterable[str]:
-        """已经对外输出的文本内容. """
+        """已经对外输出的文本内容."""
         pass
 
     @abstractmethod
-    async def results(self) -> Dict[str, str]:
+    async def results(self) -> dict[str, str]:
         """
         将所有已经执行完的 task 的 result 作为有序的字符串字典输出
         知道第一个运行失败的.
@@ -246,7 +251,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def executed(self) -> List[CommandTask]:
+    def executed(self) -> list[CommandTask]:
         """
         返回已经被执行的 tokens.
         """
@@ -318,7 +323,6 @@ class Interpreter(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
-        return None
 
     @abstractmethod
     async def wait_parse_done(self, timeout: float | None = None) -> None:
@@ -334,12 +338,8 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-            self,
-            timeout: float | None = None,
-            *,
-            throw: bool = False,
-            cancel_on_exception: bool = True
-    ) -> Dict[str, CommandTask]:
+        self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
+    ) -> dict[str, CommandTask]:
         """
         等待所有的 task 被执行完毕.
         如果这些 task 没有被任何方式执行, 将会导致持续的阻塞.

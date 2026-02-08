@@ -1,8 +1,7 @@
-
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.py_channel import PyChannel
 
-__all__ = ['MainChannel']
+__all__ = ["MainChannel"]
 
 
 class MainChannel(PyChannel):
@@ -29,6 +28,7 @@ def create_main_channel() -> Channel:
     chan.build.command()(react)
 
     return chan
+
 
 # primitive.py 原语定义成command
 # wait_done 原语

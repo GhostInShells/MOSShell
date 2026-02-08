@@ -1,12 +1,14 @@
-from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.core.concepts.states import StateBaseModel, StateStore
-import live2d.v3 as live2d
 import asyncio
 import time
+
+import live2d.v3 as live2d
 from pydantic import Field
 
+from ghoshell_moss.core.concepts.states import StateBaseModel
+from ghoshell_moss.core.py_channel import PyChannel
+
 body_chan = PyChannel(
-    name='body',
+    name="body",
     description="Live2d body of image MIKU",
     block=True,
 )

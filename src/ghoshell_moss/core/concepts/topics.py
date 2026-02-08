@@ -1,15 +1,21 @@
-
-import anyio
-from pydantic import BaseModel, Field
-from typing import (
-    TypedDict, Dict, Any, ClassVar, Optional, Union, List, Callable, Type, Coroutine, Iterable, Protocol,
-    TypeVar, Generic, TYPE_CHECKING
-)
-from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_common.helpers import generate_import_path, uuid
+from collections.abc import Callable, Coroutine, Iterable
+from typing import (
+    Any,
+    ClassVar,
+    Generic,
+    Optional,
+    Protocol,
+    TypedDict,
+    TypeVar,
+    Union,
+)
 
-__all__ = ['Topic', 'TopicModel', 'TopicCallback', 'TopicBaseModel', 'ReqTopicModel']
+from ghoshell_common.helpers import generate_import_path, uuid
+from pydantic import BaseModel, Field
+from typing_extensions import Self
+
+__all__ = ["ReqTopicModel", "Topic", "TopicBaseModel", "TopicCallback", "TopicModel"]
 
 
 class Topic(TypedDict, total=False):
@@ -17,6 +23,7 @@ class Topic(TypedDict, total=False):
     在 channel 之间广播的数据结构.
     不关心 topic broker 的通讯协议.
     """
+
     id: str
     """每个 topic 有唯一 id. """
 
@@ -31,10 +38,10 @@ class Topic(TypedDict, total=False):
     req_id: Optional[str]
     """如果这个 topic 是对另一个 topic 的回复, 会携带那个 topic 的 id"""
 
-    data: Dict[str, Any] | List | str | bool | float | int | bytes | None
+    data: dict[str, Any] | list | str | bool | float | int | bytes | None
     """ topic 的数据结构. 基本要求是传递标量. """
 
-    context: Optional[Dict[str, Any]]
+    context: Optional[dict[str, Any]]
     """链路通讯, 追踪相关的上下文讯息. """
 
 
@@ -45,7 +52,7 @@ def make_topic_prefix(name: str, issuer: str = "", issuer_id: str = "") -> str:
 class TopicMeta(TypedDict):
     name: str
     description: str
-    schema: Dict[str, Any]
+    schema: dict[str, Any]
 
 
 class TopicModel(Protocol):
@@ -83,10 +90,10 @@ class TopicBaseModel(BaseModel, ABC):
 
     # topic 保留的关键字.
 
-    issuer: str = Field(default='', description='Issuer of the topic')
-    issuer_id: str = Field(default='', description='Issuer of the topic')
-    req_id: Optional[str] = Field(default=None, description='the topic is response to topic id')
-    id: str = Field(default_factory=uuid, description='the topic id')
+    issuer: str = Field(default="", description="Issuer of the topic")
+    issuer_id: str = Field(default="", description="Issuer of the topic")
+    req_id: Optional[str] = Field(default=None, description="the topic is response to topic id")
+    id: str = Field(default_factory=uuid, description="the topic id")
 
     @classmethod
     def get_topic_name(cls) -> str:
@@ -105,16 +112,16 @@ class TopicBaseModel(BaseModel, ABC):
         if topic["name"] != cls.get_topic_name():
             return None
         data = topic["data"]
-        data['issuer'] = topic['issuer']
-        data['issuer_id'] = topic['issuer_id']
-        data['req_id'] = topic.get('req_id', None)
-        data['id'] = topic['id']
+        data["issuer"] = topic["issuer"]
+        data["issuer_id"] = topic["issuer_id"]
+        data["req_id"] = topic.get("req_id", None)
+        data["id"] = topic["id"]
 
         model = cls(**data)
         return model
 
     def new_topic(self, issuer: str = "", req_id: Optional[str] = None) -> Topic:
-        data = self.model_dump(exclude_none=True, exclude={'issuer', 'req_id', 'tid'})
+        data = self.model_dump(exclude_none=True, exclude={"issuer", "req_id", "tid"})
         tid = self.topic_id or uuid()
         self.issuer = issuer or self.issuer
         self.req_id = req_id or self.req_id
@@ -146,7 +153,6 @@ TopicModelCallback = Union[Callable[[TopicModel], Coroutine[None, None, None]] |
 
 
 class Topics(ABC):
-
     @abstractmethod
     def on(self, topic_name: str, callback: TopicCallback) -> None:
         """
@@ -156,7 +162,7 @@ class Topics(ABC):
         pass
 
     @abstractmethod
-    def on_model(self, topic_model: Type[TopicModel], callback: TopicModelCallback) -> None:
+    def on_model(self, topic_model: type[TopicModel], callback: TopicModelCallback) -> None:
         pass
 
     @abstractmethod

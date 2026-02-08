@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 VERSION = "v1"

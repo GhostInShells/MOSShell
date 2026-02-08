@@ -1,8 +1,8 @@
-from typing import List
+from collections import deque
+
 from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenType
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser
-from collections import deque
 
 
 def test_token_parser_baseline():
@@ -98,7 +98,7 @@ def test_delta_token_baseline():
 
 def test_token_with_attrs():
     content = "hello<foo bar='123'/>world"
-    q: List[CommandToken] = []
+    q: list[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     # received the poison item
     assert q.pop() is None
@@ -115,7 +115,7 @@ def test_token_with_attrs():
             foo_token_count += 1
             if token.type == "start":
                 # is string value
-                assert token.kwargs == dict(bar="123")
+                assert token.kwargs == {"bar": "123"}
     assert foo_token_count == 2
 
     first_token = q[0]
@@ -175,7 +175,7 @@ def test_token_with_prefix():
 
 
 def test_token_with_recursive_cdata():
-    content = '<foo><![CDATA[hello<![CDATA[foo]]>world]]></foo>'
+    content = "<foo><![CDATA[hello<![CDATA[foo]]>world]]></foo>"
     q = deque[CommandToken]()
     e = None
     try:
@@ -186,7 +186,7 @@ def test_token_with_recursive_cdata():
 
 
 def test_space_only_delta():
-    content = '<foo> </foo>'
+    content = "<foo> </foo>"
     q = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
@@ -197,7 +197,7 @@ def test_space_only_delta():
 
 def test_namespace_tag():
     content = '<foo:bar a="123" />'
-    q: List[CommandToken] = []
+    q: list[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
     q = q[1:-1]
@@ -206,12 +206,12 @@ def test_namespace_tag():
     start_token = q[0]
     assert start_token.name == "bar"
     assert start_token.chan == "foo"
-    assert start_token.kwargs == dict(a="123")
+    assert start_token.kwargs == {"a": "123"}
 
 
 def test_parser_with_chinese():
-    content = '<foo.bar:baz>你好啊</foo.bar:baz>'
-    q: List[CommandToken] = []
+    content = "<foo.bar:baz>你好啊</foo.bar:baz>"
+    q: list[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
     q = q[1:-1]
@@ -220,10 +220,15 @@ def test_parser_with_chinese():
 
 
 def test_token_parser_with_json():
-    content = '''
-<jetarm:run_trajectory>{"joint_names": ["gripper", "wrist_roll", "wrist_pitch", "elbow_pitch", "shoulder_pitch", "shoulder_roll"], "points": [{"positions": [2.16, 11.16, -60.0, -135.0, 60.0, -0.36], "time_from_start": 0.0}, {"positions": [5.0, 15.0, -55.0, -130.0, 55.0, 2.0], "time_from_start": 1.0}, {"positions": [2.16, 11.16, -60.0, -135.0, 60.0, -0.36], "time_from_start": 2.0}]}</jetarm:run_trajectory>
-'''
-    q: List[CommandToken] = []
+    content = """
+<jetarm:run_trajectory>
+    {"joint_names": ["gripper", "wrist_roll", "wrist_pitch", "elbow_pitch", "shoulder_pitch", "shoulder_roll"],
+    "points": [{"positions": [2.16, 11.16, -60.0, -135.0, 60.0, -0.36], "time_from_start": 0.0},
+    {"positions": [5.0, 15.0, -55.0, -130.0, 55.0, 2.0], "time_from_start": 1.0},
+    {"positions": [2.16, 11.16, -60.0, -135.0, 60.0, -0.36], "time_from_start": 2.0}]}
+</jetarm:run_trajectory>
+"""
+    q: list[CommandToken] = []
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
     q = q[1:-1]

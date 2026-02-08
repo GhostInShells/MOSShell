@@ -1,9 +1,10 @@
-
 from typing import Optional
-from .abcd import DeltaModel
+
 from pydantic import Field
 
-__all__ = ['TextDelta']
+from .abcd import DeltaModel
+
+__all__ = ["TextDelta"]
 
 
 class TextDelta(DeltaModel):
@@ -19,6 +20,7 @@ class FunctionCallDelta(DeltaModel):
     """
     function call 协议.
     """
+
     DELTA_TYPE = "function_call"
 
     call_id: Optional[str] = Field(default=None, description="caller 的 id, 用来 match openai 的 tool call 协议. ")
