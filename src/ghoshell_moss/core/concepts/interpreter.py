@@ -245,6 +245,8 @@ class Interpreter(ABC):
         知道第一个运行失败的.
         其中返回值为 None 或空字符串的不会展示.
 
+        todo: 这是一个 alpha 版为了方便快速实现 react 做的临时机制. 不是正式机制.
+
         :return: key is the task name and attrs, value is the result or error of the command
                  if command task return None, ignore the result of it.
         """
@@ -253,9 +255,18 @@ class Interpreter(ABC):
     @abstractmethod
     def executed(self) -> list[CommandTask]:
         """
-        返回已经被执行的 tokens.
+        返回已经被执行的 tasks.
         """
         pass
+
+    def executed_tokens(self) -> str:
+        """
+        返回当前已经执行完毕的 tokens.
+        """
+        tokens = []
+        for task in self.executed():
+            tokens.append(task.tokens)
+        return "".join(tokens)
 
     @abstractmethod
     def inputted(self) -> str:
@@ -338,7 +349,7 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-        self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
+            self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
     ) -> dict[str, CommandTask]:
         """
         等待所有的 task 被执行完毕.

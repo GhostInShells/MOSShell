@@ -1,4 +1,8 @@
 web_list:
+  - id: "moss-repository"
+    url: "https://github.com/GhostInShells/MOSShell"
+    description: |-
+      MOSShell 当前项目库 github 地址
   - id: "moss-architecture-doc"
     url: "https://ycnrlabqki3v.feishu.cn/wiki/QCKUwAX7tiUs4GkJTkLcMeWqneh"
     description: "MOSS (模型可操作系统 - 流式代码解释器) 系统原理与应用综述"
@@ -14,25 +18,25 @@ web_list:
   - id: "ghostos-repository"
     url: "https://github.com/GhostInShells/ghostos"
     description: |-
-      GhostOS 代码仓库地址，是用来做 ghost in shells 架构思想探索的验证库。
+      GhostOS 代码仓库地址，是 2024 年用来做 ghost in shells 架构思想探索的验证库。目前已经终止迭代.
   - id: "moss-article"
     url: "https://arxiv.org/abs/2409.16120"
     description: |-
-      这是我们24年研究 AI 通过全代码驱动系统的相关论文预印版
+      这是我们24年研究 AI 通过全代码驱动系统的相关论文预印版. 是第一代 MOSS 架构思想. 现在是第二代. 
   - id: "机械臂演示视频汇总"
     url: "https://ycnrlabqki3v.feishu.cn/wiki/FiOOwBKG0iSEONkGRKvcyDHOnaf"
     description: |-
-      这里提供了我们 6dof jetarm 机械臂积累的展示视频
+      这里提供了我们 6dof jetarm 机械臂积累的展示视频. 是当前 MOSShell 的展示视频之一.
   - id: "20年语音交互视频展示视频"
     url: "https://www.bilibili.com/video/BV1tK4y1a75B/?share_source=copy_web&vd_source=d16eb4aa121a670f02fa576471d30a41"
     description: |-
-      朱明 20年项目中，通过微信语音控制网页，通过网页的小视频做对话式视频的案例
+      ZhuMing 20年项目中，通过微信语音控制网页，通过网页的小视频做对话式视频的案例. 是 GhostInShells 项目理念起点的示例之一.
   - id: "20年语音交互控制网页游戏视频"
     url: "https://www.bilibili.com/video/BV1tK4y1a75B/?share_source=copy_web&vd_source=d16eb4aa121a670f02fa576471d30a41&t=290"
     description: |-
-      朱明 20年项目中，通过微信语音控制网页 “方向迷宫” 小游戏的视频，将网页游戏和微信进行了跨设备的同构。
+      ZhuMing 20年项目中，通过微信语音控制网页 “方向迷宫” 小游戏的视频，将网页游戏和微信进行了跨设备的同构。 是 MOSS 控制具身智能思路起点的示例之一.
   - id: "20年关于自然语言编程的视频"
     url: "https://www.bilibili.com/video/BV1tK4y1a75B/?share_source=copy_web&vd_source=d16eb4aa121a670f02fa576471d30a41&t=672"
     description: |-
-      朱明 20年项目中，讨论到未来实现自然语言编程，对话式编程的设想。 
+      ZhuMing 20年项目中，讨论到未来实现自然语言编程，对话式编程的设想。 是 MOSS 代码驱动理念起点的示例之一.
     

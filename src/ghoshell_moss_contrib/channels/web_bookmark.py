@@ -50,7 +50,7 @@ class WebConfig(YamlConfig):
         return web_info_map
 
 
-def build_web_chan(container: IoCContainer) -> PyChannel:
+def build_web_bookmark_chan(container: IoCContainer) -> PyChannel:
     web_config = WebConfig.load(container)
     web_info_map = web_config.to_web_info_map()
 

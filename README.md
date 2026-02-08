@@ -1,6 +1,6 @@
 # 项目概述
 
-项目名为 `MOS-Shell` (Model-oriented Operating System Shell), 包含两个几个核心目标:
+项目名为 `MOS-Shell` (Model-oriented Operating System Shell), 包含几个核心目标:
 
 1. `MOS`: 为 AI 大模型提供一个 "面向模型的操作系统", 可以将 跨设备/跨进程 的功能模块, 以 "树" 的形式提供给模型操作.
 1. `Shell Runtime`: 为 AI Agent 提供一个持续运转的运行时 (Runtime), 联通所有功能模块 (称之为 Channel, 对标 python 的
@@ -11,6 +11,8 @@
    并行多轨控制自己的躯体和软件.
 
 目标是 AI 大模型作为大脑, 不仅可以思考, 还可以 实时/并行/有序 地操作包括 计算机/具身躯体 来进行交互.
+
+更多设计思路请访问: [核心设计思想综述](https://ycnrlabqki3v.feishu.cn/wiki/QCKUwAX7tiUs4GkJTkLcMeWqneh)
 
 MOS-Shell 是 Ghost In Shells (中文名: 灵枢) 项目创建的新交互范式架构, 是第二代 MOSS 架构 (完善了 ChannelApp 和
 Realtime-Actions 思想).

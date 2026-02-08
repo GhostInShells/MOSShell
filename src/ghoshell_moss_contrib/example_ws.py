@@ -45,7 +45,10 @@ def setup_simple_logger(log_file: str) -> logging.Logger:
     return logger
 
 
-def get_example_speech(container: Container | None = None) -> Speech:
+def get_example_speech(
+        container: Container | None = None,
+        default_speaker: str | None= None,
+) -> Speech:
     """
     直接初始化音频模块.
     目前应该只在 mac 上比较好用.
@@ -70,13 +73,16 @@ def get_example_speech(container: Container | None = None) -> Speech:
             "Env $VOLCENGINE_STREAM_TTS_APP or $VOLCENGINE_STREAM_TTS_ACCESS_TOKEN not configured."
             "Maybe examples/.env not set, or you need to set $USE_VOICE_SPEECH `no`"
         )
+    tts_conf = VolcengineTTSConf(
+        app_key=app_key,
+        access_token=app_token,
+        resource_id=resource_id,
+    )
+    if default_speaker:
+        tts_conf.default_speaker = default_speaker
     return TTSSpeech(
         player=PyAudioStreamPlayer(),
-        tts=VolcengineTTS(conf=VolcengineTTSConf(
-            app_key=app_key,
-            access_token=app_token,
-            resource_id=resource_id,
-        )),
+        tts=VolcengineTTS(conf=tts_conf),
         logger=container.get(LoggerItf)
     )
 

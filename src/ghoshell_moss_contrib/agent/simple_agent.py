@@ -242,6 +242,12 @@ class SimpleAgent:
         self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
 
     async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
+        """
+        临时实现的回复模式.
+        todo: 有挺多问题的, 核心问题是 shell interpreter 的生命周期没设计完.
+            计划中除了支持全双工交互外, 还需要支持传统的 react 模式.
+            这其中又要为上下文 token 裁剪设计一个简洁的办法. 目前 interpreter 还没有完工, 所以临时使用这种方式.
+        """
         self.logger.info("Single response received, inputs=%s", inputs)
         generated = ""
         execution_results = ""
@@ -295,6 +301,7 @@ class SimpleAgent:
                     interpreter.feed(content)
                 interpreter.commit()
                 results = await asyncio.create_task(interpreter.results())
+                generated = interpreter.executed_tokens()
                 if len(results) > 0:
                     execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
                     self.logger.info("execution_results=%s", results)
@@ -307,8 +314,10 @@ class SimpleAgent:
 
             history.extend(inputs)
             if generated:
+                print("++++++++++++++++++++ generated", generated)
                 history.append({"role": "assistant", "content": generated})
             if execution_results:
+                print("++++++++++++++++++++ execution_results", execution_results)
                 history.append({"role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"})
             if self._interrupt_requested:
                 history.append({"role": "system", "content": "Attention: User interrupted your response last time."})

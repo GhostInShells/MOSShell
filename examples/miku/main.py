@@ -12,6 +12,14 @@ from os.path import dirname, join
 import live2d.v3 as live2d
 import pygame
 from ghoshell_container import Container
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+try:
+    import miku_channels
+except ImportError:
+    # 加载当前路径.
+    sys.path.append(current_dir)
+
 from miku_channels.arm import left_arm_chan, right_arm_chan
 from miku_channels.body import body_chan
 from miku_channels.elbow import left_elbow_chan, right_elbow_chan
@@ -21,40 +29,18 @@ from miku_channels.eyebrow import eyebrow_left_chan, eyebrow_right_chan
 from miku_channels.head import head_chan
 from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
+from miku_provider import init_live2d, init_pygame
 from ghoshell_moss.core.shell import new_shell
 from ghoshell_moss_contrib.example_ws import workspace_container, get_example_speech
 import pathlib
 
-# 加载当前路径.
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
-
 # 全局状态
-model: live2d.LAppModel | None = None
 WIDTH = 600
 HEIGHT = 800
 
+model: live2d.LAppModel | None = None
 
 # 初始化Pygame和Live2D
-def init_pygame():
-    pygame.init()
-    display = (WIDTH, HEIGHT)
-    screen = pygame.display.set_mode(display, pygame.DOUBLEBUF | pygame.OPENGL)
-    pygame.display.set_caption("Digital Human Demo with PyChannel")
-    return screen, display
-
-
-# 初始化Live2D模型
-def init_live2d(model_path: str, container: Container):
-    global model
-    live2d.init()
-    live2d.glInit()
-    model = live2d.LAppModel()
-    model.LoadModelJson(model_path)
-    model.Resize(WIDTH, HEIGHT)
-    # model.SetAutoBlinkEnable(False)
-    # model.SetAutoBreathEnable(True)
-    container.bind(live2d.LAppModel, model)
 
 
 async def speak(duration: float = 5.0, speed: float = 1.0, max_open: float = 0.9, min_open: float = 0.0):
@@ -160,9 +146,10 @@ async def run_agent(container: Container, speech: Speech | None = None):
 
 async def run_agent_and_render(container: Container, speech: Speech | None = None):
     # 初始化 Pygame 和 Live2D
+    global model
     screen, display = init_pygame()
     model_path = join(dirname(__file__), "model/miku.model3.json")
-    init_live2d(model_path, container)
+    model = init_live2d(model_path, container)
 
     # 保持窗口打开，直到用户关闭
     running = True
@@ -215,7 +202,7 @@ WORKSPACE_DIR = pathlib.Path(__file__).parent.parent.joinpath('.workspace')
 def main():
     # 运行异步主函数
     with workspace_container(WORKSPACE_DIR) as container:
-        speech = get_example_speech(container)
+        speech = get_example_speech(container, default_speaker='saturn_zh_female_keainvsheng_tob')
         asyncio.run(run_agent_and_render(container, speech))
 
 

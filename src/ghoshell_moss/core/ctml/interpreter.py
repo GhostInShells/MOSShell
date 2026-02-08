@@ -309,7 +309,7 @@ class CTMLInterpreter(Interpreter):
                         cmd_result = str(result).strip()
                         if cmd_result:
                             results[task.tokens] = f"{cmd_result}{done_at_str}"
-                    except Exception:
+                    except ValueError:
                         self._logger.exception("Format command result failed")
                         pass
             else:
@@ -322,8 +322,12 @@ class CTMLInterpreter(Interpreter):
         tasks = self.parsed_tasks().copy()
         executions = []
         for task in tasks.values():
-            if CommandTaskStateType.running.value in task.trace:
+            if CommandTaskStateType.is_complete(task.state):
                 executions.append(task)
+            else:
+                break
+            if CommandTaskStateType.is_stopped(task.state):
+                break
         return executions
 
     def inputted(self) -> str:

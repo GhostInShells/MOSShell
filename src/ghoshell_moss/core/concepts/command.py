@@ -60,6 +60,14 @@ class CommandTaskStateType(str, Enum):
     done = "done"
     cancelled = "cancelled"
 
+    @classmethod
+    def is_complete(cls, state: str | Self) -> bool:
+        return state == cls.done or state == cls.failed or state == cls.cancelled
+
+    @classmethod
+    def is_stopped(cls, state: str | Self) -> bool:
+        return state == cls.cancelled or state == cls.failed
+
 
 class CommandTaskState(str, Enum):
     CREATED = "created"
@@ -211,13 +219,13 @@ class CommandMeta(BaseModel):
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
-        "但核心思想是 Code As Prompt."
-        "通常是一个 python async 函数的 signature. 形如:"
-        "```python"
-        "async def name(arg: typehint = default) -> return_type:"
-        "    ''' docstring '''"
-        "    pass"
-        "```",
+                    "但核心思想是 Code As Prompt."
+                    "通常是一个 python async 函数的 signature. 形如:"
+                    "```python"
+                    "async def name(arg: typehint = default) -> return_type:"
+                    "    ''' docstring '''"
+                    "    pass"
+                    "```",
     )
     args_schema: Optional[dict[str, Any]] = Field(
         default=None,
@@ -290,9 +298,9 @@ class Command(Generic[RESULT], ABC):
 
 class CommandWrapper(Command[RESULT]):
     def __init__(
-        self,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[Any, Any, RESULT]],
+            self,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[Any, Any, RESULT]],
     ):
         self._func = func
         self._meta = meta
@@ -322,19 +330,19 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     """
 
     def __init__(
-        self,
-        func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
-        *,
-        chan: Optional[str] = None,
-        name: Optional[str] = None,
-        available: Callable[[], bool] | None = None,
-        interface: Optional[StringType] = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        meta: Optional[CommandMeta] = None,
-        tags: Optional[list[str]] = None,
-        call_soon: bool = False,
-        block: bool = True,
+            self,
+            func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
+            *,
+            chan: Optional[str] = None,
+            name: Optional[str] = None,
+            available: Callable[[], bool] | None = None,
+            interface: Optional[StringType] = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            meta: Optional[CommandMeta] = None,
+            tags: Optional[list[str]] = None,
+            call_soon: bool = False,
+            block: bool = True,
     ):
         """
         :param func: origin coroutine function
@@ -452,15 +460,15 @@ class CommandTask(Generic[RESULT], ABC):
     """
 
     def __init__(
-        self,
-        *,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
+            self,
+            *,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
     ) -> None:
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
@@ -579,10 +587,10 @@ class CommandTask(Generic[RESULT], ABC):
 
     @abstractmethod
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         async wait the task to be done thread-safe
@@ -673,15 +681,15 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
 
     def __init__(
-        self,
-        *,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
+            self,
+            *,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             meta=meta,
@@ -756,12 +764,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.trace[self.state] = now
 
     def _set_result(
-        self,
-        result: Optional[RESULT],
-        state: CommandTaskStateType | str,
-        errcode: int,
-        errmsg: Optional[str],
-        done_at: Optional[str] = None,
+            self,
+            result: Optional[RESULT],
+            state: CommandTaskStateType | str,
+            errcode: int,
+            errmsg: Optional[str],
+            done_at: Optional[str] = None,
     ) -> bool:
         with self._done_lock:
             if self._done_event.is_set():
@@ -814,10 +822,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return CommandError(self.errcode, self.errmsg or "")
 
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
@@ -855,9 +863,9 @@ class WaitDoneTask(BaseCommandTask):
     """
 
     def __init__(
-        self,
-        tasks: Iterable[CommandTask],
-        after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+            self,
+            tasks: Iterable[CommandTask],
+            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
     ) -> None:
         meta = CommandMeta(
             name="_wait_done",
@@ -886,10 +894,10 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
     """
 
     def __init__(
-        self,
-        current: CommandTask,
-        *tasks: CommandTask,
-        tokens: str = "",
+            self,
+            current: CommandTask,
+            *tasks: CommandTask,
+            tokens: str = "",
     ) -> None:
         meta = CommandMeta(
             name="cancel_" + current.meta.name,
@@ -921,9 +929,9 @@ class CommandTaskStack:
     """特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回."""
 
     def __init__(
-        self,
-        iterator: AsyncIterator[CommandTask] | list[CommandTask],
-        on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
+            self,
+            iterator: AsyncIterator[CommandTask] | list[CommandTask],
+            on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
     ) -> None:
         self._iterator = iterator
         self._on_success = on_success
