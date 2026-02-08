@@ -1,6 +1,7 @@
 import os
 import sys
 
+import dotenv
 from ghoshell_common.contracts import LocalWorkspaceProvider, Workspace, WorkspaceConfigs
 
 from ghoshell_moss.speech import make_baseline_tts_speech
@@ -32,6 +33,9 @@ model: live2d.LAppModel | None = None
 container = Container()
 WIDTH = 600
 HEIGHT = 800
+
+WORKSPACE_DIR = ".workspace"
+dotenv.load_dotenv(f"{WORKSPACE_DIR}/.env")
 
 
 # 初始化Pygame和Live2D
