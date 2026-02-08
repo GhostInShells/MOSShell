@@ -31,6 +31,7 @@ contrib = [
     "pyqt6>=6.10.2",
     "python-mpv-jsonipc>=1.2.1",
     "rich>=14.2.0",
+    "javascript>=1!1.2.6"
 ]
 
 [tool.setuptools]
