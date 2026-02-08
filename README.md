@@ -28,9 +28,66 @@ Realtime-Actions 思想). 第一代 MOSS 架构 (全代码驱动 + FunctionToken
 
 如果想要试用项目, 请直接联系 灵枢开发组 配合.
 
+想要阅读架构的设计思想, 推荐直接看 [concepts 目录](src/ghoshell_moss/core/concepts).
+
 ## Examples
 
-本处放置如何使用 Alpha 版本的说明. 预计 2026-02-08 完成.
+在 [examples](examples) 目录下有当前 alpha 版各种用例. 具体的情况请查阅相关目录的 readme 文档. 
+
+体验 examples 的方法: 
+
+> 建议使用 mac, 基线都是在 mac 上测试的. windows 可能兼容存在问题. 
+ 
+## 1. clone 仓库
+
+```bash
+git clone https://github.com/GhostInShells/MOSShell MOSShell
+cd MOSShell
+```
+
+## 2. 创建环境
+
+* 使用 `uv` 创建环境, 运行 `uv venv` . 由于依赖 live2d, 所以默认的 python 版本是 3.12
+* 进入 uv 的环境: `source .venv/bin/activate`
+* 安装所有依赖: 
+
+```bash
+# examples 的依赖大多在 ghoshell-moss[contrib] 中, 没有拆分. 所以需要安装全部依赖. 
+uv sync --active --all-extras
+```
+
+## 3. 配置环境变量
+
+启动 demo 时需要配置模型和音频 (可选), 目前 alpha 版本的基线全部使用的是火山引擎.
+需要把环境变量配置上. 
+
+```bash
+# 复制 env 文件为目标文件. 
+cp examples/.env.example examples/.env
+
+# 修改相关配置项为真值. 
+vim examples/.env
+```
+
+配置时需要在火山引擎创建 大模型流式tts 服务. 不好搞定可以先设置 USE_VOICE_SPEECH 为 `no`
+
+## 4. 运行  moss agent
+
+```bash
+# 基于当前环境的 python 运行 moss_agent 脚本
+.venv/bin/python examples/moss_agent.py
+
+# 打开后建议问它, 你可以做什么. 
+```
+
+已知的问题: 
+1. 语音输入模块 alpha 版本没有开发完.  
+2. 目前使用的 simple agent 是测试专用, 打断的生命周期还有问题.
+3. 由于 shell 的几个控制原语未开发完, 一些行为阻塞逻辑会错乱. 
+4. interpreter 的生命周期计划 beta 完成, 现在交互的 ReACT 模式并不是最佳实践 (模型会连续回复)
+
+更多测试用例, 请看 examples 目录下的各个文件夹 readme. 
+
 
 ## Beta Roadmap
 
