@@ -18,7 +18,7 @@ async def test_output_in_asyncio():
         _stream.buffer(str(idx_))
         _stream.commit()
 
-    mock_speech = MockSpeech()
+    mock_speech = MockSpeech(typing_sleep=0.0)
     for i in range(5):
         idx = i
         stream = mock_speech.new_stream(batch_id=str(idx))

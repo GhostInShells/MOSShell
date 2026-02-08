@@ -1,16 +1,10 @@
 import os
 import sys
 
-import dotenv
-from ghoshell_common.contracts import LocalWorkspaceProvider
-
-from ghoshell_moss.speech import make_baseline_tts_speech
+from ghoshell_moss.speech import make_baseline_tts_speech, Speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
 from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
 
 import asyncio
 from os.path import dirname, join
@@ -27,17 +21,18 @@ from miku_channels.eyebrow import eyebrow_left_chan, eyebrow_right_chan
 from miku_channels.head import head_chan
 from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
-
 from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss_contrib.example_ws import workspace_container, get_example_speech
+import pathlib
+
+# 加载当前路径.
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
 # 全局状态
 model: live2d.LAppModel | None = None
-container = Container()
 WIDTH = 600
 HEIGHT = 800
-
-WORKSPACE_DIR = ".workspace"
-dotenv.load_dotenv(f"{WORKSPACE_DIR}/.env")
 
 
 # 初始化Pygame和Live2D
@@ -50,7 +45,7 @@ def init_pygame():
 
 
 # 初始化Live2D模型
-def init_live2d(model_path: str):
+def init_live2d(model_path: str, container: Container):
     global model
     live2d.init()
     live2d.glInit()
@@ -101,10 +96,8 @@ def stop_speak(*args):
     speaking_event.clear()
 
 
-async def run_agent():
+async def run_agent(container: Container, speech: Speech | None = None):
     loop = asyncio.get_running_loop()
-
-    container.register(LocalWorkspaceProvider(".workspace"))
 
     # 创建 Shell
     shell = new_shell(container=container)
@@ -142,12 +135,15 @@ async def run_agent():
     player = PyAudioStreamPlayer()
     player.on_play(start_speak)
     player.on_play_done(stop_speak)
-    tts = VolcengineTTS(conf=VolcengineTTSConf(default_speaker="saturn_zh_female_keainvsheng_tob"))
+    speech = speech or container.get(Speech)
+    if speech is None:
+        tts = VolcengineTTS(conf=VolcengineTTSConf(default_speaker="saturn_zh_female_keainvsheng_tob"))
+        speech = make_baseline_tts_speech(player=player, tts=tts)
 
     agent = SimpleAgent(
         instruction="你是miku, 拥有 live2d 数字人躯体. 你是可爱和热情的数字人. ",
         shell=shell,
-        speech=make_baseline_tts_speech(player=player, tts=tts),
+        speech=speech,
         model=ModelConf(
             kwargs={
                 "thinking": {
@@ -162,11 +158,11 @@ async def run_agent():
     await speaking_task
 
 
-async def run_agent_and_render():
+async def run_agent_and_render(container: Container, speech: Speech | None = None):
     # 初始化 Pygame 和 Live2D
     screen, display = init_pygame()
     model_path = join(dirname(__file__), "model/miku.model3.json")
-    init_live2d(model_path)
+    init_live2d(model_path, container)
 
     # 保持窗口打开，直到用户关闭
     running = True
@@ -174,10 +170,10 @@ async def run_agent_and_render():
     font = pygame.font.SysFont(None, 24)
 
     # 创建一个任务来运行 agent
-    agent_task = asyncio.create_task(run_agent())
+    agent_task = asyncio.create_task(run_agent(container, speech))
 
     try:
-        while running:
+        while running and not agent_task.done():
             # 处理pygame事件
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -201,20 +197,26 @@ async def run_agent_and_render():
         pass
     finally:
         # 取消agent任务
-        agent_task.cancel()
-        try:
-            await agent_task
-        except asyncio.CancelledError:
-            pass
+        if not agent_task.done():
+            agent_task.cancel()
+            try:
+                await agent_task
+            except asyncio.CancelledError:
+                pass
 
         # 清理资源
         live2d.dispose()
         pygame.quit()
 
 
+WORKSPACE_DIR = pathlib.Path(__file__).parent.parent.joinpath('.workspace')
+
+
 def main():
     # 运行异步主函数
-    asyncio.run(run_agent_and_render())
+    with workspace_container(WORKSPACE_DIR) as container:
+        speech = get_example_speech(container)
+        asyncio.run(run_agent_and_render(container, speech))
 
 
 # 运行主函数

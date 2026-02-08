@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
 
@@ -27,9 +28,23 @@ async def main():
     测试 jetarm 的脚本, 通过 zmq proxy 调用 zmq provider 的方式, 与 jetarm channel 进行通讯.
     然后测试脚本可以运行.
     """
+    # 创建参数解析器
+    parser = argparse.ArgumentParser(description="运行 jetarm 测试轨迹例程")
+
+    # 添加 --address 参数，设置默认值
+    parser.add_argument(
+        "--address",
+        type=str,
+        default=JETARM_ADDRESS,
+        help=f"代理地址，默认值: {JETARM_ADDRESS}",
+    )
+
+    # 解析命令行参数
+    args = parser.parse_args()
+
     chan = ZMQChannelProxy(
         name="jetarm",
-        address=JETARM_ADDRESS,
+        address=args.address,
     )
 
     async with chan.bootstrap() as broker:

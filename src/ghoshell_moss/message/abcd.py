@@ -386,16 +386,16 @@ class Message(BaseModel, WithAdditional):
     seq: Literal["head", "delta", "incomplete", "completed"] = Field(
         default="completed",
         description="消息的传输状态, 目前分为首包, 间包和尾包."
-        "- 首包: 用来提示一个消息流已经被生产. 通常用来通知前端界面, 提前渲染消息容器"
-        "- 间包: 用最少的讯息传递一个 delta 包, 用于流式传输"
-        "- 尾包: 包含所有 delta 包粘包后的完整结果, 用来存储或展示."
-        "尾包分为 completed 和 incomplete 两种. "
-        "- completed 表示一个消息体完全传输完毕."
-        "- incomplete 表示虽然没传输完毕, 但可能也要直接使用."
-        "我们举一个具体的例子, 在模型处理多端输入时, 一个视觉信号让模型要反馈, 但一个 asr 输入还未全部完成;"
-        "这个时候, 大模型仍然要看到未完成的语音输入, 也就是 incomplete 消息."
-        "但是下一轮对话, 当 asr 已经完成时, 历史消息里不需要展示 incomplete 包."
-        "所以 incomplete 主要是用来在大模型思考的关键帧中展示一个粘包中的中间结果.",
+                    "- 首包: 用来提示一个消息流已经被生产. 通常用来通知前端界面, 提前渲染消息容器"
+                    "- 间包: 用最少的讯息传递一个 delta 包, 用于流式传输"
+                    "- 尾包: 包含所有 delta 包粘包后的完整结果, 用来存储或展示."
+                    "尾包分为 completed 和 incomplete 两种. "
+                    "- completed 表示一个消息体完全传输完毕."
+                    "- incomplete 表示虽然没传输完毕, 但可能也要直接使用."
+                    "我们举一个具体的例子, 在模型处理多端输入时, 一个视觉信号让模型要反馈, 但一个 asr 输入还未全部完成;"
+                    "这个时候, 大模型仍然要看到未完成的语音输入, 也就是 incomplete 消息."
+                    "但是下一轮对话, 当 asr 已经完成时, 历史消息里不需要展示 incomplete 包."
+                    "所以 incomplete 主要是用来在大模型思考的关键帧中展示一个粘包中的中间结果.",
     )
     delta: Optional[Delta] = Field(
         default=None,
@@ -405,11 +405,11 @@ class Message(BaseModel, WithAdditional):
 
     @classmethod
     def new(
-        cls,
-        *,
-        role: Literal["assistant", "system", "developer", "user", ""] = "",
-        name: Optional[str] = None,
-        id: Optional[str] = None,
+            cls,
+            *,
+            role: Literal["assistant", "system", "developer", "user", ""] = "",
+            name: Optional[str] = None,
+            id: Optional[str] = None,
     ):
         """
         语法糖, 用来创建一条消息.

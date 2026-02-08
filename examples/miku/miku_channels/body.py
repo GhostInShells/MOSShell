@@ -24,6 +24,8 @@ async def on_policy_run():
         # 等待 其他 Motions 完成
         while not model.IsMotionFinished():
             await asyncio.sleep(0.1)
+        if not body_chan.is_running():
+            break
         model.ResetExpressions()  # 防止表情重叠
         model.ResetExpression()
         # Policy的Priority设置为1（较低），是为了确保其他Motion可打断Policy Motion

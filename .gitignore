@@ -16,7 +16,7 @@ ghostos_ws/
 
 # Distribution / packaging
 .Python
-.python-version
+#.python-version
 build/
 develop-eggs/
 dist/

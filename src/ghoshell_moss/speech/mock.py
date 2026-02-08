@@ -6,13 +6,15 @@ from ghoshell_common.helpers import uuid
 
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+import time
 
 
 class MockSpeechStream(SpeechStream):
     def __init__(
-        self,
-        outputs: list[str],
-        id: str = "",
+            self,
+            outputs: list[str],
+            id: str = "",
+            typing_sleep: float = 0.0,
     ):
         super().__init__(id=id or uuid())
         self.outputs = outputs
@@ -20,6 +22,7 @@ class MockSpeechStream(SpeechStream):
         self.output_done_event = ThreadSafeEvent()
         self.output_buffer = ""
         self.output_started = False
+        self.typing_sleep = typing_sleep
 
     async def aclose(self):
         self.close()
@@ -62,6 +65,8 @@ class MockSpeechStream(SpeechStream):
                 elif self.output_buffer.strip():
                     self.outputs.append(self.output_buffer)
                     content_is_not_empty = True
+                if self.typing_sleep > 0.0:
+                    time.sleep(self.typing_sleep)
         finally:
             if self.cmd_task is not None:
                 self.cmd_task.tokens = self.output_buffer
@@ -75,14 +80,15 @@ class MockSpeechStream(SpeechStream):
 
 
 class MockSpeech(Speech):
-    def __init__(self):
+    def __init__(self, typing_sleep: float = 0.5):
         self._streams: dict[str, MockSpeechStream] = {}
         self._outputs: dict[str, list[str]] = {}
         self._closed = ThreadSafeEvent()
+        self._typing_sleep = typing_sleep
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         stream_outputs = []
-        stream = MockSpeechStream(stream_outputs, id=batch_id)
+        stream = MockSpeechStream(stream_outputs, id=batch_id, typing_sleep=self._typing_sleep)
         stream_id = stream.id
         if stream_id in self._streams:
             existing_stream = self._streams[stream_id]
