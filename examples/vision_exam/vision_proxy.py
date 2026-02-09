@@ -1,16 +1,15 @@
 import asyncio
 
+from ghoshell_moss.message.contents import Base64Image
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
 from ghoshell_moss_contrib.gui.image_viewer import SimpleImageViewer, run_img_viewer
-from ghoshell_moss.message.contents import Base64Image
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 测试专用.
     proxy = ZMQChannelProxy(
         name="vision",
         address="tcp://127.0.0.1:5557",
     )
-
 
     def callback(viewer: SimpleImageViewer):
 
@@ -29,6 +28,5 @@ if __name__ == '__main__':
                                 viewer.set_pil_image(i.to_pil_image())
 
         asyncio.run(main())
-
 
     run_img_viewer(callback)

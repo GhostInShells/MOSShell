@@ -1,22 +1,17 @@
-import os.path
-import pathlib
 import asyncio
+import pathlib
 
-from ghoshell_common.contracts import Workspace, LoggerItf
+from ghoshell_common.contracts import LoggerItf, Workspace
 from ghoshell_container import Container
 
-from ghoshell_moss_contrib.example_ws import workspace_container, get_example_speech
-from ghoshell_moss.channels.mac_channel import new_mac_control_channel
-from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
-from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan
-
-from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf, ConsoleChat
 from ghoshell_moss.core.shell import new_shell
-from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
 
 # 不着急删除, 方便自测时开启.
-from ghoshell_moss_contrib.channels.screen_capture import ScreenCapture
-from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelProxy
+from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
+from ghoshell_moss_contrib.agent import ConsoleChat, ModelConf, SimpleAgent
+from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
+from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan
+from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
 """
 说明: 
@@ -28,7 +23,7 @@ from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelProxy
 """
 
 CURRENT_DIR = pathlib.Path(__file__).parent
-WORKSPACE_DIR = CURRENT_DIR.joinpath('.workspace').absolute()
+WORKSPACE_DIR = CURRENT_DIR.joinpath(".workspace").absolute()
 
 
 def load_instructions(con: Container, files: list[str]) -> str:
@@ -37,11 +32,11 @@ def load_instructions(con: Container, files: list[str]) -> str:
     TODO: 暂时先这么做. Beta 版本会做一个正式的 Agent. Alpha 版本先临时用测试的 simple agent 攒一个.
     """
     ws = con.force_fetch(Workspace)
-    instru_storage = ws.configs().sub_storage('moss_instructions')
+    instru_storage = ws.configs().sub_storage("moss_instructions")
     instructions = []
     for filename in files:
         content = instru_storage.get(filename)
-        instructions.append(content.decode('utf-8'))
+        instructions.append(content.decode("utf-8"))
 
     return "\n\n".join(instructions)
 
@@ -58,10 +53,8 @@ def run_moss_agent(container: Container):
         config=ZMQHubConfig(
             name="hub",
             description="可以启动指定的子通道并运行.",
-
             # todo: 当前版本全部基于约定来做. 快速验证.
-            root_dir=str(CURRENT_DIR.joinpath('moss_zmq_channels').absolute()),
-
+            root_dir=str(CURRENT_DIR.joinpath("moss_zmq_channels").absolute()),
             # todo:
             #    zmq hub 不是 MOSS 架构的目标范式, Alpha 版本未完成 LocalChannelApplications 模块
             #    所以先用 zmq hub 来验证跨进程打开的效果.
@@ -97,12 +90,10 @@ def run_moss_agent(container: Container):
         # 浏览器
         build_web_bookmark_chan(container),
         new_mermaid_chan(),
-
         # todo: 开启这个模块, 可以让 Agent 通过 JXA 操作 mac 电脑. 不过配套的 prompt 并不完善.
         # new_mac_control_channel(description="使用 jxa 语法来操作当前所在 mac, 有明确 mac 操作命令要求时才允许使用."),
         # todo: 开启这个模块, 可以让 Agent 选择屏幕截图.
         # ScreenCapture(logger=logger).as_channel(),
-
         # todo: 如果有 Jetarm demo 的话... 可以开启, 让 moss 可以同时控制数字人.
         # ZMQChannelProxy(
         #     name="jetarm",
@@ -113,9 +104,9 @@ def run_moss_agent(container: Container):
     instructions = load_instructions(
         container,
         [
-            'persona.md',
-            'behaviors.md',
-        ]
+            "persona.md",
+            "behaviors.md",
+        ],
     )
 
     agent = SimpleAgent(
@@ -124,11 +115,11 @@ def run_moss_agent(container: Container):
         instruction=instructions,
         chat=ConsoleChat(logger=logger),
         model=ModelConf(
-            kwargs=dict(
-                thinking=dict(
-                    type="disabled",
-                )
-            ),
+            kwargs={
+                "thinking": {
+                    "type": "disabled",
+                },
+            },
         ),
         shell=shell,
     )
@@ -150,6 +141,6 @@ def run_moss_agent(container: Container):
     asyncio.run(run_agent())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     with workspace_container(WORKSPACE_DIR) as _container:
         run_moss_agent(_container)

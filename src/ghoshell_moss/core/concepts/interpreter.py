@@ -349,7 +349,7 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-            self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
+        self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
     ) -> dict[str, CommandTask]:
         """
         等待所有的 task 被执行完毕.

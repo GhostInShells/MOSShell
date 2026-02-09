@@ -108,18 +108,18 @@ source install/setup.zsh
 ## 核心目录说明
 
 - `src`: 核心库目录
-    - `jetarm_6dof_description`:
-      用来存放 jetarm 的机器人描述相关讯息,
-      也可以启动 rviz `ros2 launch jetarm_6dof_description view_model.launch.py`
-    - `jetarm_driver`:
-      是验证 python 驱动的节点, 想用 python 实现 ros2 control 的 interface. 不过现在不用了.
-    - `jetarm_control`:
-      核心的 ros2 control 实现. 启动这个节点, 机器人就可以驱动了. 详见后面的测试用例. deepseek 等也能给出 ros2
-      control 支持的各种命令.
-      运行这个节点的脚本是 `ros2 launch jetarm_control jetarm_control.launch.py`
-    - `jetarm_moveit2`:
-      这个是基于 ros2 control (jetarm_control) 实现的 moveit 节点, 所有的代码应该都由 moveit2 的 assitant 生成.
-      具体方法可以问模型, 需要提前安装 moveit2 到全局环境里.
+  - `jetarm_6dof_description`:
+    用来存放 jetarm 的机器人描述相关讯息,
+    也可以启动 rviz `ros2 launch jetarm_6dof_description view_model.launch.py`
+  - `jetarm_driver`:
+    是验证 python 驱动的节点, 想用 python 实现 ros2 control 的 interface. 不过现在不用了.
+  - `jetarm_control`:
+    核心的 ros2 control 实现. 启动这个节点, 机器人就可以驱动了. 详见后面的测试用例. deepseek 等也能给出 ros2
+    control 支持的各种命令.
+    运行这个节点的脚本是 `ros2 launch jetarm_control jetarm_control.launch.py`
+  - `jetarm_moveit2`:
+    这个是基于 ros2 control (jetarm_control) 实现的 moveit 节点, 所有的代码应该都由 moveit2 的 assitant 生成.
+    具体方法可以问模型, 需要提前安装 moveit2 到全局环境里.
 
 # 常用测试命令
 

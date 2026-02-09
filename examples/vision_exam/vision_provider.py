@@ -1,6 +1,6 @@
-from ghoshell_moss_contrib.channels.opencv_vision import OpenCVVision
 from ghoshell_moss import get_container
 from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
+from ghoshell_moss_contrib.channels.opencv_vision import OpenCVVision
 
 if __name__ == "__main__":
     # 初始化容器

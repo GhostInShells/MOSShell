@@ -1,17 +1,19 @@
-import os
-from typing import List
-from ghoshell_container import Provider, Container, set_container, get_container
-
-from ghoshell_common.contracts import LocalWorkspaceProvider, LoggerItf, WorkspaceConfigsProvider, Workspace
-from ghoshell_moss.core import Speech
-from pathlib import Path
-from contextlib import contextmanager
 import logging
+import os
+from contextlib import contextmanager
+from pathlib import Path
+
+from ghoshell_common.contracts import LocalWorkspaceProvider, LoggerItf, WorkspaceConfigsProvider
+from ghoshell_container import Container, Provider, get_container, set_container
+
+from ghoshell_moss.core import Speech
 
 __all__ = [
-    'get_container', 'set_container',
-    'init_container', 'workspace_container',
-    'get_example_speech',
+    "get_container",
+    "get_example_speech",
+    "init_container",
+    "set_container",
+    "workspace_container",
 ]
 
 
@@ -30,13 +32,11 @@ def setup_simple_logger(log_file: str) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 创建文件handler
-    file_handler = logging.FileHandler(log_path, encoding='utf-8')
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
 
     # 设置格式（包含文件名和行号）
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s")
     file_handler.setFormatter(formatter)
 
     # 添加到日志器
@@ -46,8 +46,8 @@ def setup_simple_logger(log_file: str) -> logging.Logger:
 
 
 def get_example_speech(
-        container: Container | None = None,
-        default_speaker: str | None= None,
+    container: Container | None = None,
+    default_speaker: str | None = None,
 ) -> Speech:
     """
     直接初始化音频模块.
@@ -62,12 +62,12 @@ def get_example_speech(
     from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 
     container = container or get_container()
-    use_voice = os.environ.get('USE_VOICE_SPEECH', 'no') == 'yes'
+    use_voice = os.environ.get("USE_VOICE_SPEECH", "no") == "yes"
     if not use_voice:
         return MockSpeech()
     app_key = os.environ.get("VOLCENGINE_STREAM_TTS_APP")
     app_token = os.environ.get("VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
-    resource_id = os.environ.get("VOLCENGINE_STREAM_TTS_RESOURCE_ID", 'seed-tts-2.0')
+    resource_id = os.environ.get("VOLCENGINE_STREAM_TTS_RESOURCE_ID", "seed-tts-2.0")
     if not app_key or not app_token:
         raise NotImplementedError(
             "Env $VOLCENGINE_STREAM_TTS_APP or $VOLCENGINE_STREAM_TTS_ACCESS_TOKEN not configured."
@@ -80,38 +80,37 @@ def get_example_speech(
     )
     if default_speaker:
         tts_conf.default_speaker = default_speaker
-    return TTSSpeech(
-        player=PyAudioStreamPlayer(),
-        tts=VolcengineTTS(conf=tts_conf),
-        logger=container.get(LoggerItf)
-    )
+    return TTSSpeech(player=PyAudioStreamPlayer(), tts=VolcengineTTS(conf=tts_conf), logger=container.get(LoggerItf))
 
 
 def init_container(
-        workspace_dir: Path | str,
-        name: str = "moss",
-        providers: List[Provider] | None = None,
-        env_path: Path | None = None,
+    workspace_dir: Path | str,
+    name: str = "moss",
+    providers: list[Provider] | None = None,
+    env_path: Path | None = None,
 ) -> Container:
     if isinstance(workspace_dir, str):
         workspace_dir = Path(workspace_dir).absolute()
 
-    env_path = env_path or workspace_dir.parent.joinpath('.env').resolve()
+    env_path = env_path or workspace_dir.parent.joinpath(".env").resolve()
     # 加载环境变量, .env 文件默认和 workspace 同层.
     if env_path.exists():
         import dotenv
+
         dotenv.load_dotenv(dotenv_path=env_path, override=True, verbose=True)
 
     container = Container(name=name)
     # 注册 workspace
-    container.register(LocalWorkspaceProvider(
-        workspace_dir=str(workspace_dir.absolute()),
-    ))
+    container.register(
+        LocalWorkspaceProvider(
+            workspace_dir=str(workspace_dir.absolute()),
+        )
+    )
     container.register(WorkspaceConfigsProvider())
 
     # 初始化一个简单的日志.
     logger = setup_simple_logger(
-        str(workspace_dir.joinpath('runtime/logs/moss_demo.log').absolute()),
+        str(workspace_dir.joinpath("runtime/logs/moss_demo.log").absolute()),
     )
     container.set(LoggerItf, logger)
 
@@ -124,9 +123,9 @@ def init_container(
 
 @contextmanager
 def workspace_container(
-        workspace_dir: Path | str,
-        name: str = "moss",
-        providers: List[Provider] | None = None,
+    workspace_dir: Path | str,
+    name: str = "moss",
+    providers: list[Provider] | None = None,
 ):
     """
     支持 with statement 的全局 container 初始化.

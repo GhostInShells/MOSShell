@@ -1,4 +1,5 @@
 import threading
+import time
 from queue import Empty, Queue
 from typing import Optional
 
@@ -6,15 +7,14 @@ from ghoshell_common.helpers import uuid
 
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-import time
 
 
 class MockSpeechStream(SpeechStream):
     def __init__(
-            self,
-            outputs: list[str],
-            id: str = "",
-            typing_sleep: float = 0.0,
+        self,
+        outputs: list[str],
+        id: str = "",
+        typing_sleep: float = 0.0,
     ):
         super().__init__(id=id or uuid())
         self.outputs = outputs

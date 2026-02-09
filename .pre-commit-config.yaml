@@ -14,8 +14,8 @@ repos:
       require_serial: true
       additional_dependencies: []
 
-    - id: ruff
-      name: ruff
+    - id: ruff-check
+      name: ruff-check
       description: "Run 'ruff' for extremely fast Python linting"
       entry: uv run --dev ruff check
       pass_filenames: false
