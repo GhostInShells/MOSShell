@@ -1,3 +1,5 @@
+import os
+
 try:
     import zmq
     import zmq.asyncio
@@ -59,6 +61,9 @@ class ZMQConnectionConfig:
     heartbeat_interval: float = 1.0  # 心跳间隔（秒）
     heartbeat_timeout: float = 3.0  # 心跳超时时间（秒）
 
+    def is_ipc_address(self) -> bool:
+        return self.address.startswith("ipc://")
+
 
 # 修改 BaseZMQConnection 类，使其成为抽象基类
 class BaseZMQConnection(Connection, ABC):
@@ -85,6 +90,12 @@ class BaseZMQConnection(Connection, ABC):
         if self._heartbeat_task:
             await self._heartbeat_task
             self._heartbeat_task = None
+
+        if self._config.is_ipc_address():
+            # 对于 IPC 地址，需要手动删除 socket 文件
+            sock_path = self._config.address[6:]  # 去掉 "ipc://" 前缀
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
 
     async def _handle_heartbeat(self, event: ChannelEvent) -> None:
         """服务器处理心跳：响应心跳请求"""

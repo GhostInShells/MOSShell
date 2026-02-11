@@ -6,9 +6,9 @@ from ghoshell_moss.speech.stream_tts_speech import TTSSpeech, TTSSpeechStream
 
 
 def make_baseline_tts_speech(
-        player: StreamAudioPlayer | None = None,
-        tts: TTS | None = None,
-        logger: LoggerItf | None = None,
+    player: StreamAudioPlayer | None = None,
+    tts: TTS | None = None,
+    logger: LoggerItf | None = None,
 ) -> TTSSpeech:
     """
     基线示例.

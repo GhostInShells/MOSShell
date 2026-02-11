@@ -6,7 +6,7 @@ from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PIL import Image, ImageDraw
 
-__all__ = ['SimpleImageViewer', 'run_img_viewer']
+__all__ = ["SimpleImageViewer", "run_img_viewer"]
 
 
 class ImageSignaler(QObject):
@@ -14,9 +14,9 @@ class ImageSignaler(QObject):
 
 
 class SimpleImageViewer(QMainWindow):
-    def __init__(self):
+    def __init__(self, window_title: str = "PIL Live Viewer"):
         super().__init__()
-        self.setWindowTitle("PIL Live Viewer")
+        self.setWindowTitle(window_title)
         self.resize(800, 600)
         self.label = QLabel()
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -33,8 +33,9 @@ class SimpleImageViewer(QMainWindow):
     def _update_pixmap(self):
         if self.current_qimage:
             pixmap = QPixmap.fromImage(self.current_qimage)
-            scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                                   Qt.TransformationMode.SmoothTransformation)
+            scaled = pixmap.scaled(
+                self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
             self.label.setPixmap(scaled)
 
     def resizeEvent(self, event):

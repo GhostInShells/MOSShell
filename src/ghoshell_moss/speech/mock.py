@@ -11,10 +11,10 @@ import time
 
 class MockSpeechStream(SpeechStream):
     def __init__(
-            self,
-            outputs: list[str],
-            id: str = "",
-            typing_sleep: float = 0.0,
+        self,
+        outputs: list[str],
+        id: str = "",
+        typing_sleep: float = 0.0,
     ):
         super().__init__(id=id or uuid())
         self.outputs = outputs

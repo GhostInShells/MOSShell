@@ -196,13 +196,13 @@ async def run_agent_and_render(container: Container, speech: Speech | None = Non
         pygame.quit()
 
 
-WORKSPACE_DIR = pathlib.Path(__file__).parent.parent.joinpath('.workspace')
+WORKSPACE_DIR = pathlib.Path(__file__).parent.parent.joinpath(".workspace")
 
 
 def main():
     # 运行异步主函数
     with workspace_container(WORKSPACE_DIR) as container:
-        speech = get_example_speech(container, default_speaker='saturn_zh_female_keainvsheng_tob')
+        speech = get_example_speech(container, default_speaker="saturn_zh_female_keainvsheng_tob")
         asyncio.run(run_agent_and_render(container, speech))
 
 

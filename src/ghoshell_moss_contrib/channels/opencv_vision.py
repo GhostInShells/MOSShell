@@ -91,15 +91,14 @@ class OpenCVVision:
 
         # 处理按键（'q'退出）
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
+        if key == ord("q"):
             self._logger.info("用户按q键，视觉模块退出")
             return False
 
         current_time = time.time()
 
         # 按目标帧率更新缓存
-        if (self._is_caching_image and
-                current_time - self._last_capture_time >= self._frame_interval):
+        if self._is_caching_image and current_time - self._last_capture_time >= self._frame_interval:
             # 转换颜色空间：BGR -> RGB
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -211,16 +210,16 @@ class OpenCVVision:
         if image is None:
             # 如果有错误信息，可以返回错误提示（可选）
             if self._last_error:
-                error_msg = Message.new(role='system', name="__vision_error__").with_content(
+                error_msg = Message.new(role="system", name="__vision_error__").with_content(
                     Text(text=f"视觉模块错误: {self._last_error}")
                 )
                 return [error_msg]
             return []
 
         # 创建视觉消息
-        timestamp_str = datetime.fromtimestamp(timestamp).strftime('%d.%m.%Y %H:%M:%S')
+        timestamp_str = datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M:%S")
 
-        message = Message.new(role='user', name="__vision_system__").with_content(
+        message = Message.new(role="user", name="__vision_system__").with_content(
             Text(text=f"这是你最新看到的视觉信息，来自你的视野。时间: {timestamp_str}"),
             Base64Image.from_pil_image(image),
         )
@@ -228,7 +227,7 @@ class OpenCVVision:
         return [message]
 
     def description(self) -> str:
-        status = '已开启视觉' if self._is_caching_image else '视觉已经关闭.'
+        status = "已开启视觉" if self._is_caching_image else "视觉已经关闭."
         desc = f"基于OpenCV的视觉感知模块，提供实时图像输入. 当前状态: {status}"
         return desc
 
@@ -237,7 +236,7 @@ class OpenCVVision:
         _channel = PyChannel(
             name="vision",
             description="基于OpenCV的视觉感知模块，提供实时图像输入",
-            block=True  # 这是一个非阻塞的感知Channel
+            block=True,  # 这是一个非阻塞的感知Channel
         )
 
         # 注册上下文消息生成器
@@ -257,8 +256,8 @@ class OpenCVVision:
                 "is_running": self._is_running,
                 "is_caching": self._is_caching_image,
                 "has_cached_image": image is not None,
-                "last_image_time": datetime.fromtimestamp(timestamp).strftime('%H:%M:%S') if timestamp > 0 else "无",
-                "error": self._last_error or "无"
+                "last_image_time": datetime.fromtimestamp(timestamp).strftime("%H:%M:%S") if timestamp > 0 else "无",
+                "error": self._last_error or "无",
             }
             return f"视觉模块状态: {status}"
 
@@ -306,4 +305,3 @@ class OpenCVVision:
             self._logger.error(f"视觉模块运行异常: {e}")
         finally:
             self.close()
-
