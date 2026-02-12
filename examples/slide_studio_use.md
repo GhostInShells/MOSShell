@@ -39,13 +39,19 @@ uv sync --all-extras
 - **AI 会打开一个 UI 窗口**，显示 Slide Studio 界面
 - **选择素材**：告诉 AI "打开[素材名]" 或 "讲解[素材名]"
 
+### 3. 识别pptx自动转换为slide assets
+
+```bash
+.venv/bin/python examples/scripts/slide_studio_converter.py
+```
+
 ## 素材文件结构
 
 Slide Studio 的素材存储在 `examples/.workspace/assets/slide_studio/` 目录下。
 
 ### 素材文件夹结构
 
-```commandline
+```
 examples/.workspace/assets/slide_studio/
 ├── [素材名]/
 │   ├── .meta.yaml          # 素材元数据文件（可选）

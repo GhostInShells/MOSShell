@@ -25,6 +25,7 @@ class SlideAssetInfo(YamlConfig):
     created_at: Optional[float] = Field(default_factory=timestamp_ms, description="创建时间")
     updated_at: Optional[float] = Field(default_factory=timestamp_ms, description="更新时间")
     origin_filetype: str = Field(default="", description="Slide的原始文件类型")  # ppt/pptx/pdf/...
+    origin_filepath: str = Field(default="", description="Slide的原始文件地址")
 
     # extension unmarshalled fields
     _dirname: str = PrivateAttr()
@@ -170,7 +171,9 @@ class SlidePlayer:
 
     async def play(self, name: str):
         """
-        获取指定ppt的详细信息，只有拿到ppt的详细信息后才能调用其他的command
+        Start playing target slide asset.
+
+        @param name: slide asset name
         """
         try:
             self._load_frames(name)
@@ -183,7 +186,9 @@ class SlidePlayer:
 
     async def to_page(self, index: int = 1):
         """
-        跳转至指定页数，从1开始，返回True表示跳转成功，返回False表示当前已是最后一页。
+        Jump to target page
+
+        @param index: target page index
         """
         self._check_playing()
         if index >= len(self.frames):
@@ -195,7 +200,7 @@ class SlidePlayer:
 
     async def to_next_page(self):
         """
-        跳转至下一页，返回True表示跳转成功，返回False表示当前已是最后一页。
+        Jump to next page. Call this only after finishing the current page presentation. Never call it first.
         """
         self._check_playing()
         if self._is_last():
@@ -207,12 +212,14 @@ class SlidePlayer:
 
     async def stop(self):
         """
-        退出ppt演示
+        Stop to play.
         """
         self._clear_frames()
 
-    def description(self):
-        return ""
+    def description(self) -> str:
+        return """
+You must complete the presentation on the current page firstly, then call the command to jump to the next page.
+"""
 
     async def context_messages(self):
         message = Message.new(role="user", name="__slide_frame__")
@@ -263,6 +270,12 @@ class SlideStudio:
     def description(self) -> str:
         return ""
 
+    async def show(self, module="player"):
+        self.player.viewer.show()
+
+    async def hide(self, module="player"):
+        self.player.viewer.hide()
+
     async def context_messages(self):
         message = Message.new(role="user", name="__studio__")
         slide_texts = [f"name:{s.name} description:{s.description}" for s in self._assets.refresh()]
@@ -277,6 +290,9 @@ class SlideStudio:
 
         studio_chan.build.with_description()(self.description)
         studio_chan.build.with_context_messages(self.context_messages)
+
+        studio_chan.build.command()(self.show)
+        studio_chan.build.command()(self.hide)
 
         player_chan = self.player.as_channel()
         creator_chan = self.creator.as_channel()

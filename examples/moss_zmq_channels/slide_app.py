@@ -22,7 +22,8 @@ if __name__ == "__main__":
             address=f"ipc://{__file__}.sock",
             container=_container,
         )
+        # Pyqt6 will block main process, so provider must run in thread.
         provider.run_in_thread(studio.as_channel())
+        # Default show player viewer window.(will not be default soon)
         studio.player.viewer.show()
-
         sys.exit(_app.exec())
