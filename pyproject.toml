@@ -11,6 +11,7 @@ dependencies = [
     "ghoshell-container>=0.3.1",
     "openai>=2.8.1",
     "pillow>=12.1.0",
+    "python-frontmatter>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +35,7 @@ contrib = [
     "javascript>=1!1.2.6",
     "opencv-python>=4.13.0.92",
     "loadenv>=0.1.1",
+    "pymupdf>=1.27.1",
 ]
 
 [tool.setuptools]

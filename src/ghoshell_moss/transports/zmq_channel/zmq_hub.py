@@ -148,7 +148,7 @@ class ManagedProcess:
 class ZMQProxyConfig(BaseModel):
     script: str = Field(description="the script filename of the zmq channel provider")
     description: str = Field(description="the description of the zmq channel provider")
-    address: str = Field(description="the address of the zmq channel provider")
+    address: str = Field(default="", description="the address of the zmq channel provider")
 
 
 class ZMQHubConfig(BaseModel):
@@ -316,6 +316,13 @@ class ZMQChannelHub:
         )
 
         for name, config in self._config.proxies.items():
+            # 如果config没有指定address，在路径下创建socket文件作为通信地址
+            if not config.address:
+                sock_path = os.path.join(self._config.root_dir, config.script + ".sock")
+                if os.path.exists(sock_path):
+                    os.remove(sock_path)
+                config.address = f"ipc://{sock_path}"
+
             sub_channel = ZMQChannelProxy(
                 name=name,
                 address=config.address,

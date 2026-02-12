@@ -72,12 +72,10 @@ def run_moss_agent(container: Container):
                     description="你的视觉通道, 通过这个通道你可以使用摄像头看见",
                     address="tcp://localhost:5557",
                 ),
-                # todo: 暂时未实装, 预计实装它.
-                # "no_ppt": ZMQProxyConfig(
-                #     script="no_ppt_channel.py",
-                #     description="",
-                #     address="tcp://localhost:5558",
-                # )
+                "slide": ZMQProxyConfig(
+                    script="slide_app.py",
+                    description="可以打开你的slide studio gui，通过这个通道你可以呈现并讲述一个slide主题",
+                ),
             },
         ),
         logger=logger,

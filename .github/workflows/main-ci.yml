@@ -1,0 +1,47 @@
+name: Main CI Pipeline
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  statuses: write
+
+concurrency:
+  group: main-ci-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code_changes: ${{ steps.changes.outputs.code_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check for file changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          base: ${{ github.base_ref || github.ref_name }}
+          filters: |
+            code_changes:
+              - '*'
+              - '**/*'
+  # run-tests:
+  #   name: Run Tests
+  #   needs: check-changes
+  #   if: needs.check-changes.outputs.code_changes == 'true'
+  #   uses: ./.github/workflows/run-tests.yml
+
+  check-style:
+    name: Style Check
+    uses: ./.github/workflows/check-style.yml

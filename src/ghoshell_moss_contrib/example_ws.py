@@ -2,6 +2,7 @@ import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from typing import List
 
 from ghoshell_common.contracts import LocalWorkspaceProvider, LoggerItf, WorkspaceConfigsProvider
 from ghoshell_container import Container, Provider, get_container, set_container
@@ -86,7 +87,7 @@ def get_example_speech(
 def init_container(
     workspace_dir: Path | str,
     name: str = "moss",
-    providers: list[Provider] | None = None,
+    providers: List[Provider] | None = None,
     env_path: Path | None = None,
 ) -> Container:
     if isinstance(workspace_dir, str):
@@ -125,7 +126,7 @@ def init_container(
 def workspace_container(
     workspace_dir: Path | str,
     name: str = "moss",
-    providers: list[Provider] | None = None,
+    providers: List[Provider] | None = None,
 ):
     """
     支持 with statement 的全局 container 初始化.
