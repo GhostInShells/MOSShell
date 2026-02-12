@@ -1,16 +1,16 @@
+import logging
 import threading
 import time
 from datetime import datetime
-from typing import List, Optional, Tuple
-from PIL import Image
-import cv2
+from typing import Optional
 
-from ghoshell_moss.message import Message, Base64Image, Text
+import cv2
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer, get_container
+from PIL import Image
+
 from ghoshell_moss import PyChannel
-from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProvider
-import logging
+from ghoshell_moss.message import Base64Image, Message, Text
 
 
 class OpenCVVision:
@@ -58,7 +58,7 @@ class OpenCVVision:
                     # 测试读取一帧
                     ret, _ = self._cap.read()
                     if ret:
-                        self._logger.info(f"摄像头初始化成功，使用索引 {camera_index}")
+                        self._logger.info("摄像头初始化成功，使用索引 %s", camera_index)
                         return True
                     else:
                         self._cap.release()
@@ -66,8 +66,8 @@ class OpenCVVision:
             self._logger.error("无法初始化任何摄像头")
             return False
 
-        except Exception as e:
-            self._logger.error(f"摄像头初始化失败: {e}")
+        except Exception:
+            self._logger.exception("摄像头初始化失败")
             return False
 
     def _capture_frame(self) -> bool:
@@ -152,15 +152,15 @@ class OpenCVVision:
         # 确保窗口被销毁
         try:
             cv2.destroyWindow(self._window_name)
-        except:
-            pass
+        except Exception:
+            self._logger.debug("销毁 OpenCV 窗口失败: %s", self._window_name, exc_info=True)
 
         # 最后调用 destroyAllWindows 确保清理所有窗口
         cv2.destroyAllWindows()
 
         self._logger.info("视觉模块已关闭")
 
-    def get_cached_image(self) -> Tuple[Optional[Image.Image], float]:
+    def get_cached_image(self) -> tuple[Optional[Image.Image], float]:
         """
         线程安全地获取缓存的图像和时间戳
 
@@ -194,7 +194,7 @@ class OpenCVVision:
         self._is_caching_image = True
         self._last_capture_time = 0.0  # 重置时间，立即捕获下一帧
 
-    async def context_messages(self) -> List[Message]:
+    async def context_messages(self) -> list[Message]:
         """
         返回最新的视觉信息作为上下文消息
 
@@ -301,7 +301,7 @@ class OpenCVVision:
 
         except KeyboardInterrupt:
             self._logger.info("收到键盘中断信号")
-        except Exception as e:
-            self._logger.error(f"视觉模块运行异常: {e}")
+        except Exception:
+            self._logger.exception("视觉模块运行异常")
         finally:
             self.close()

@@ -10,7 +10,7 @@ We welcome contributions! These guidelines exist to save everyone time. Followin
 
 ## Development Setup
 
-1. Make sure you have `Python 3.12+` installed.
+1. Make sure you have `Python 3.10+` installed.
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 1. Fork the repository and clone your fork.
 1. Install development dependencies: `make prepare`.

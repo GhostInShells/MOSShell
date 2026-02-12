@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import os
 import sys
 from os.path import dirname, join
@@ -7,10 +8,8 @@ import live2d.v3 as live2d
 import pygame
 from ghoshell_container import Container, get_container
 
-try:
-    import miku_channels
-except ImportError:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if importlib.util.find_spec(miku_channels) is None:
     sys.path.append(current_dir)
 
 from miku_channels.arm import left_arm_chan, right_arm_chan
@@ -22,8 +21,9 @@ from miku_channels.eyebrow import eyebrow_left_chan, eyebrow_right_chan
 from miku_channels.head import head_chan
 from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
-from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
+
 from ghoshell_moss import Channel
+from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
 
 # 全局状态
 model: live2d.LAppModel | None = None

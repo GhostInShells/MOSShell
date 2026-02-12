@@ -1,24 +1,24 @@
+import asyncio
+import importlib.util
 import os
 import sys
-
-from ghoshell_moss.speech import make_baseline_tts_speech, Speech
-from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
-from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
-from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
-
-import asyncio
 from os.path import dirname, join
 
 import live2d.v3 as live2d
 import pygame
 from ghoshell_container import Container
 
+from ghoshell_moss.speech import Speech, make_baseline_tts_speech
+from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
+from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
+from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
-try:
-    import miku_channels
-except ImportError:
+if importlib.util.find_spec(miku_channels) is None:
     # 加载当前路径.
     sys.path.append(current_dir)
+
+import pathlib
 
 from miku_channels.arm import left_arm_chan, right_arm_chan
 from miku_channels.body import body_chan
@@ -30,9 +30,9 @@ from miku_channels.head import head_chan
 from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
 from miku_provider import init_live2d, init_pygame
+
 from ghoshell_moss.core.shell import new_shell
-from ghoshell_moss_contrib.example_ws import workspace_container, get_example_speech
-import pathlib
+from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
 # 全局状态
 WIDTH = 600

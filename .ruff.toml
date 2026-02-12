@@ -1,3 +1,4 @@
+target-version = "py310"
 exclude = ["docs/**"]
 line-length = 120
 

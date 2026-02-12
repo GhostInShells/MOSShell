@@ -1,10 +1,11 @@
 import sys
 import threading
-from typing import Callable
+from collections.abc import Callable
+
+from PIL import Image
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow
-from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
-from PIL import Image, ImageDraw
 
 __all__ = ["SimpleImageViewer", "run_img_viewer"]
 
@@ -46,7 +47,7 @@ class SimpleImageViewer(QMainWindow):
             )
             self.label.setPixmap(scaled)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # noqa: N802
         self._update_pixmap()
         super().resizeEvent(event)
 

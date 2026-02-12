@@ -1,22 +1,17 @@
-import os.path
-import pathlib
 import asyncio
+import pathlib
 
-from ghoshell_common.contracts import Workspace, LoggerItf
+from ghoshell_common.contracts import LoggerItf, Workspace
 from ghoshell_container import Container
 
-from ghoshell_moss_contrib.example_ws import workspace_container, get_example_speech
-from ghoshell_moss.channels.mac_channel import new_mac_control_channel
-from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
-from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan
-
-from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf, ConsoleChat
 from ghoshell_moss.core.shell import new_shell
-from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
 
 # 不着急删除, 方便自测时开启.
-from ghoshell_moss_contrib.channels.screen_capture import ScreenCapture
-from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelProxy
+from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
+from ghoshell_moss_contrib.agent import ConsoleChat, ModelConf, SimpleAgent
+from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
+from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan
+from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
 """
 说明: 
@@ -118,11 +113,11 @@ def run_moss_agent(container: Container):
         instruction=instructions,
         chat=ConsoleChat(logger=logger),
         model=ModelConf(
-            kwargs=dict(
-                thinking=dict(
-                    type="disabled",
-                )
-            ),
+            kwargs={
+                "thinking": {
+                    "type": "disabled",
+                },
+            },
         ),
         shell=shell,
     )

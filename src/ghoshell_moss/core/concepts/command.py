@@ -62,11 +62,11 @@ class CommandTaskStateType(str, Enum):
 
     @classmethod
     def is_complete(cls, state: str | Self) -> bool:
-        return state == cls.done or state == cls.failed or state == cls.cancelled
+        return state in (cls.done, cls.failed, cls.cancelled)
 
     @classmethod
     def is_stopped(cls, state: str | Self) -> bool:
-        return state == cls.cancelled or state == cls.failed
+        return state in (cls.cancelled, cls.failed)
 
 
 class CommandTaskState(str, Enum):

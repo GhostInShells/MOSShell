@@ -1,8 +1,8 @@
 import asyncio
 
+from ghoshell_moss.message.contents import Base64Image
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
 from ghoshell_moss_contrib.gui.image_viewer import SimpleImageViewer, run_img_viewer
-from ghoshell_moss.message.contents import Base64Image
 
 if __name__ == "__main__":
     # 测试专用.
