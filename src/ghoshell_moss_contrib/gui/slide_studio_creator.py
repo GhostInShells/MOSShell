@@ -30,11 +30,19 @@ class ConvertThread(QThread):
             self.log_signal.emit(f"源文件: {self.pptx_path}")
             self.log_signal.emit(f"输出目录: {self.output_dir}")
 
-            image_paths = convert_pptx_to_pngs(
-                self.pptx_path,
-                output_img_dir=self.output_dir,
-                log_callback=self.log_signal.emit
-            )
+            if self.pptx_path.endswith(".pdf"):
+                image_paths = convert_pdf_to_pngs(
+                    self.pptx_path,
+                    self.output_dir,
+                    log_callback=self.log_signal.emit,
+                    with_meta=True
+                )
+            else:
+                image_paths = convert_pptx_to_pngs(
+                    self.pptx_path,
+                    output_img_dir=self.output_dir,
+                    log_callback=self.log_signal.emit
+                )
 
             self.log_signal.emit(f"✅ 转换成功！共生成 {len(image_paths)} 张图片")
             self.finished_signal.emit(True, f"成功生成 {len(image_paths)} 张图片")
@@ -81,9 +89,6 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
     if not os.path.exists(libreoffice_path):
         raise RuntimeError(f"未找到LibreOffice，请确认路径：{libreoffice_path}，或者执行 brew install --cask libreoffice 安装依赖")
 
-    pdf_filename = Path(pptx_path).stem + ".pdf"
-    pdf_path = os.path.join(output_img_dir, pdf_filename)
-
     cmd = [
         libreoffice_path,
         "--headless",
@@ -101,10 +106,9 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
 
     # ---------- 2. PDF → PNG ----------
     log_callback("步骤2/2：使用PyMuPDF将PDF每一页转为PNG...")
-    try:
-        doc = fitz.open(pdf_path)
-    except Exception as e:
-        raise RuntimeError(f"无法打开PDF文件，请检查PyMuPDF安装：{str(e)}")
+    pdf_filename = Path(pptx_path).stem + ".pdf"
+    pdf_path = os.path.join(output_img_dir, pdf_filename)
+    res =  convert_pdf_to_pngs(pdf_path, output_img_dir, log_callback=log_callback, with_meta=False)
 
     meta_yaml = os.path.join(output_img_dir, ".meta.yaml")
     with open(meta_yaml, "w") as _meta:
@@ -116,6 +120,14 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
             created_at=timestamp_ms(),
             updated_at=timestamp_ms(),
         ))
+
+    return res
+
+def convert_pdf_to_pngs(pdf_path, output_img_dir, log_callback=print, with_meta: bool=False):
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        raise RuntimeError(f"无法打开PDF文件，请检查PyMuPDF安装：{str(e)}")
 
     image_paths = []
     for page_num in range(doc.page_count):
@@ -135,8 +147,20 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
     os.remove(pdf_path)  # 如需删除临时PDF，取消注释
 
     log_callback("转换完成！")
-    return image_paths
 
+    if with_meta:
+        meta_yaml = os.path.join(output_img_dir, ".meta.yaml")
+        with open(meta_yaml, "w") as _meta:
+            _meta.write(DEFAULT_META.format(
+                name=Path(pdf_path).stem,
+                description="",
+                origin_filetype=Path(pdf_path).suffix,
+                origin_filepath=pdf_path,
+                created_at=timestamp_ms(),
+                updated_at=timestamp_ms(),
+            ))
+
+    return image_paths
 
 class PPTXConverterWindow(QMainWindow):
     def __init__(self, studio_storage: FileStorage):
