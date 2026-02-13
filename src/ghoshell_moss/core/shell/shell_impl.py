@@ -147,7 +147,7 @@ class DefaultShell(MOSSShell):
                 wait_tasks.append(chan.broker.wait_connected())
         await asyncio.gather(*wait_tasks)
 
-    def is_close(self) -> bool:
+    def is_closed(self) -> bool:
         return self._closing
 
     def _check_running(self):

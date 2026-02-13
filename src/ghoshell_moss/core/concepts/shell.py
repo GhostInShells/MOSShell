@@ -26,15 +26,24 @@ class MOSSShell(ABC):
 
     Shell 自身也可以作为 Channel 向上提供, 而自己维护一个完整的运行时. 这需要上一层下发的实际上是 command tokens.
     这样才能实现本地 shell 的流式处理.
+
+    todo:
+        1. 添加几个语法糖, 方便定义出开箱即用的逻辑.
+        2. 重新整理好 Shell 的生命周期.
+        3. 暴露 topic 监听与分发. 可以通过监听 Topic, 来获取 Channel 的上行通讯.
+        4. 暴露 shell 级别的 states 存储与定义.
     """
 
     container: IoCContainer
+
+    # todo: 干掉 speech 抽象, 或者用更好的方式解决它.
     speech: Speech
 
     @abstractmethod
     def with_speech(self, speech: Speech) -> None:
         """
-        注册 Output 对象.
+        注册 Speech 对象.
+        todo: 准备彻底重构这个实现.
         """
         pass
 
@@ -72,13 +81,6 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def system_prompt(self) -> str:
-        """
-        如何使用 MOSShell 的系统指令.
-        """
-        pass
-
-    @abstractmethod
     def is_running(self) -> bool:
         """
         shell 是否在运行中.
@@ -88,38 +90,43 @@ class MOSSShell(ABC):
     @abstractmethod
     async def wait_connected(self, *channel_paths: str) -> None:
         """
-        强行等待指定的轨道或者所有的轨道完成连接.
+        强行等待指定的轨道, 或者所有的轨道完成连接.
+        通常并不是必要的. 只是为了测试.
         """
         pass
 
     @abstractmethod
-    def is_close(self) -> bool:
+    def is_closed(self) -> bool:
+        """
+        是否已经关闭运行.
+        """
         pass
 
     @abstractmethod
     def is_idle(self) -> bool:
         """
-        是否在闲置状态.
+        是否在闲置状态. 闲置状态指的是没有任何 command 在运行.
         """
         pass
 
     @abstractmethod
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         """
-        等待到 shell 运行结束.
+        等待到 shell 所有的 command 运行结束.
+        todo: 应该可以指定某个具体的 channel.
         """
         pass
 
     @abstractmethod
     async def wait_until_closed(self) -> None:
         """
-        阻塞等到运行结束.
+        阻塞等到 Shell 被关闭.
         """
         pass
 
     @abstractmethod
     async def commands(
-            self, available_only: bool = True, /, config: dict[ChannelFullPath, Channel] | None = None
+            self, available_only: bool = True, /, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -132,7 +139,7 @@ class MOSSShell(ABC):
             self,
             available: bool = True,
             /,
-            config: dict[ChannelFullPath, Channel] | None = None,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
             refresh: bool = False,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
@@ -290,6 +297,10 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def stop_interpretation(self) -> None:
+        """
+        临时实现的中断方法. 原理设计有问题.
+        todo: 重新设计 shell 的中断逻辑.
+        """
         pass
 
     @abstractmethod
@@ -303,8 +314,7 @@ class MOSSShell(ABC):
     @abstractmethod
     async def defer_clear(self, *chans: str) -> None:
         """
-        标记 channel 在得到新命令的时候, 先清空.
-        如果 chans 为空, 则得到任何命令会清空所有管道.
+        标记 channel 在得到新命令的时候, 先清空正在执行的所有命令.
         """
         pass
 

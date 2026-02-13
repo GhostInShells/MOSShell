@@ -31,6 +31,8 @@ __all__ = [
 ]
 
 
+# todo: Speech 抽象过于复杂, 而且本文件还保留了双工通讯协议. 考虑彻底废除. 将 speech channel 化.
+
 class SpeechEvent(TypedDict):
     event_type: str
     stream_id: str
@@ -93,10 +95,10 @@ class SpeechStream(ABC):
     """
 
     def __init__(
-        self,
-        id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-        cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
-        committed: bool = False,  # 是否完成了这个 stream 的提交
+            self,
+            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
         self.cmd_task = cmd_task
@@ -350,12 +352,12 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def add(
-        self,
-        chunk: np.ndarray,
-        *,
-        audio_type: AudioFormat,
-        rate: int,
-        channels: int = 1,
+            self,
+            chunk: np.ndarray,
+            *,
+            audio_type: AudioFormat,
+            rate: int,
+            channels: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)

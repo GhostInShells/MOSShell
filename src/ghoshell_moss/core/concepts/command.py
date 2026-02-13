@@ -52,13 +52,17 @@ RESULT = TypeVar("RESULT")
 
 
 class CommandTaskStateType(str, Enum):
-    created = "created"
-    queued = "queued"
-    pending = "pending"
-    running = "running"
-    failed = "failed"
-    done = "done"
-    cancelled = "cancelled"
+    """
+    the state types of a CommandTask
+    """
+
+    created = "created"  # the command task is just created by interpreter or other
+    queued = "queued"  # the command task is sent to shell runtime
+    pending = "pending"  # the command task is pending in the channel runtime
+    running = "running"  # the task is running
+    failed = "failed"  # the task is failed
+    done = "done"  # the task is resolved
+    cancelled = "cancelled"  # the task is cancelled
 
     @classmethod
     def is_complete(cls, state: str | Self) -> bool:
@@ -70,6 +74,9 @@ class CommandTaskStateType(str, Enum):
 
 
 class CommandTaskState(str, Enum):
+    """
+    todo: 合并代码出现问题, 定义了两个 TaskState
+    """
     CREATED = "created"
     QUEUED = "queued"
     PENDING = "pending"
@@ -83,6 +90,19 @@ StringType = Union[str, Callable[[], str]]
 
 
 class CommandDeltaType(str, Enum):
+    """
+    Command 可以定义特殊的入参名, 这种特殊的入参名支持接受模型流式传输的 tokens 来生成参数.
+    以 CTML 语法举例:
+        当一个函数定义为
+        >>> async def foo(tokens__):
+        ...
+        模型用 CTML 对它的调用可能是 <foo>streaming delta tokens</foo>
+        这其中的 `streaming delta tokens` 不是等组装完才解析, 而是会流式地解析, 最终合成为函数的真实入参.
+
+    todo: 命名过于费解, 需要改动.
+    todo: 考虑支持 ctml__, tokens__, text__, json__ 等几种预设的语法规则.
+    """
+
     TEXT = "text__"
     TOKENS = "tokens__"
 
@@ -96,41 +116,55 @@ CommandDeltaTypeMap = {
     CommandDeltaType.TOKENS.value: "the delta are commands, transporting as Iterable[CommandToken]",
 }
 """
-拥有不同的语义的 Delta 类型. 如果一个 Command 的入参包含这些类型, 它生成 Command Token 的 Delta 应该遵循相同逻辑.
+拥有不同的语义的 Delta 类型. 
+如果一个 Command 函数的入参包含这种特定命名的参数, 它生成 Command Token 的 Delta 应该遵循相同的处理逻辑.
 """
 
 
 class CommandType(str, Enum):
-    FUNCTION = "function"
-    """功能, 需要一段时间执行, 执行完后结束. """
+    """
+    Command 的基础类型, 用来在调用大模型前, 根据情况筛选不同类型的 Command.
+    """
 
-    POLICY = "policy"
-    """
-    状态变更函数. 会改变 Command 所属 Channel 的运行策略, 立刻生效.
-    但只有 run_policy (没有其它命令阻塞时) 才会执行.
-    """
+    FUNCTION = ""
+    """函数, 需要一段时间执行, 执行完后结束. 其值为空, 降低传输成本. """
 
     PROMPTER = "prompter"
-    """返回一个字符串, 用来生成 prompt. 仅当 Agent 自主生成 prompt 时才要用它. 结合 pml """
+    """
+    返回一个字符串, 可以用来生成 prompt. 是构成 PML (prompter markdown language) 语法的核心函数. 
+    PML 指一段 XML 风格的函数调用, 作为模板语法, 将所有函数返回的字符串结果拼到模板中, 生成一个动态的 Prompt. 
+    
+    Agent 可以同时看到自己某块上下文的 PML + prompt,  它通过暴露出来的函数修改 PML, 就可以修改自己的 prompt. 
+    从而达到认知的自治.  
+    """
 
-    META = "meta"
-    """AI 进入元控制状态, 可以自我修改时, 才能使用的函数"""
-
-    CONTROL = "control"
-    """通常只面向人类开放的控制函数. 人类可以通过一个 AI 作为 interface 去控制它. """
+    PRIMITIVE = "primitive"
+    """
+    控制原语类型. 
+    """
 
     @classmethod
     def all(cls) -> set[str]:
         return {
             cls.FUNCTION.value,
-            cls.POLICY.value,
             cls.PROMPTER.value,
-            cls.META.value,
-            cls.CONTROL.value,
+            cls.PRIMITIVE.value,
         }
 
 
 class CommandTokenType(str, Enum):
+    """
+    Command Token 是指, 对大模型输出的 Token 进行标记, 标记它们属于哪一个 Command 调用.
+    通过这种方式, 将大模型输出的 Tokens 流染色成 CommandToken 流, 从而可以被流式解释器去调度.
+
+    以 CTML 语法举例: <foo>streaming tokens</foo>  就包含三个部分:
+     - start: <foo>
+     - deltas: streaming tokens
+     - end: </foo>
+
+    # todo: 考虑更名为 CommandTokenSeq . 因为从 type 的角度看, 未来双工模型输出多模态, delta 可能有 文本/音频/图片/视频 等.
+    """
+
     START = "start"
     END = "end"
     DELTA = "delta"
@@ -145,10 +179,6 @@ class CommandToken(BaseModel):
     将大模型流式输出的文本结果, 包装为流式的 Command Token 对象.
     整个 Command 的生命周期是: start -> ?[delta -> ... -> delta] -> end
     在生命周期中所有被包装的 token 都带有相同的 cid.
-
-    * start: 携带 command 的参数信息.
-    * delta: 表示这个 command 所接受到的流式输入.
-    * stop: 表示一个 command 已经结束.
     """
 
     type: Literal["start", "delta", "end"] = Field(description="tokens type")
@@ -160,10 +190,12 @@ class CommandToken(BaseModel):
 
     cmd_idx: int = Field(description="command index of the stream")
 
-    part_idx: int = Field(description="continuous part idx of the command. start, delta, delta, end are four parts")
+    part_idx: int = Field(description="continuous part idx of the command. "
+                                      "[start, delta, delta, end] are four parts e.g.")
 
     stream_id: Optional[str] = Field(description="the id of the stream the command belongs to")
 
+    # todo: 未来 content 可能要支持多模态, 与 message 的 content 或 delta 兼容. 现阶段不做大改动.
     content: str = Field(description="origin tokens that llm generates")
 
     kwargs: Optional[dict[str, Any]] = Field(default=None, description="attributes, only for command start")
@@ -190,7 +222,8 @@ class CommandToken(BaseModel):
 
 class CommandMeta(BaseModel):
     """
-    命令的原始信息.
+    命令的元信息. 用这个信息, 可以还原出大模型看到的 Command.
+    而 Command 真实的执行逻辑, 对于大模型而言并不重要.
     """
 
     name: str = Field(description="the name of the command")
@@ -219,13 +252,13 @@ class CommandMeta(BaseModel):
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
-        "但核心思想是 Code As Prompt."
-        "通常是一个 python async 函数的 signature. 形如:"
-        "```python"
-        "async def name(arg: typehint = default) -> return_type:"
-        "    ''' docstring '''"
-        "    pass"
-        "```",
+                    "但核心思想是 Code As Prompt."
+                    "通常是一个 python async 函数的 signature. 形如:"
+                    "```python"
+                    "async def name(arg: typehint = default) -> return_type:"
+                    "    ''' docstring '''"
+                    "    pass"
+                    "```",
     )
     args_schema: Optional[dict[str, Any]] = Field(
         default=None,
@@ -282,11 +315,9 @@ class Command(Generic[RESULT], ABC):
     async def refresh_meta(self) -> None:
         """
         更新 command 的元信息.
+        如果是动态的 Command (interface 会变化) 则需要重新生成 meta. 否则不需要执行.
         """
         pass
-
-    def __prompt__(self) -> str:
-        return self.meta().interface
 
     @abstractmethod
     async def __call__(self, *args, **kwargs) -> RESULT:
@@ -302,9 +333,9 @@ class CommandWrapper(Command[RESULT]):
     """
 
     def __init__(
-        self,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[Any, Any, RESULT]],
+            self,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[Any, Any, RESULT]],
     ):
         self._func = func
         self._meta = meta
@@ -334,20 +365,20 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     """
 
     def __init__(
-        self,
-        func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
-        *,
-        chan: Optional[str] = None,
-        name: Optional[str] = None,
-        available: Callable[[], bool] | None = None,
-        interface: Optional[StringType] = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        meta: Optional[CommandMeta] = None,
-        tags: Optional[list[str]] = None,
-        # todo: 思考这两个 feature 是否有更合理的定义方式.
-        call_soon: bool = False,
-        blocking: bool = True,
+            self,
+            func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
+            *,
+            chan: Optional[str] = None,
+            name: Optional[str] = None,
+            available: Callable[[], bool] | None = None,
+            interface: Optional[StringType] = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            meta: Optional[CommandMeta] = None,
+            tags: Optional[list[str]] = None,
+            # todo: 思考这两个 feature 是否有更合理的定义方式.
+            call_soon: bool = False,
+            blocking: bool = True,
     ):
         """
         :param func: origin coroutine function
@@ -451,6 +482,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             return await task
 
 
+# todo: 重构为 CommandTaskCtx 对象, 用来管理运行时在 contextvars 中注入的所有变量.
 CommandTaskContextVar = contextvars.ContextVar("MOSShel_CommandTask")
 
 
@@ -470,16 +502,16 @@ class CommandTask(Generic[RESULT], ABC):
     IDX_ARG = "_idx"
 
     def __init__(
-        self,
-        *,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
-        idx: int = 0,
+            self,
+            *,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
+            idx: int = 0,
     ) -> None:
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
@@ -602,10 +634,10 @@ class CommandTask(Generic[RESULT], ABC):
 
     @abstractmethod
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         async wait the task to be done thread-safe
@@ -647,6 +679,7 @@ class CommandTask(Generic[RESULT], ABC):
             return await self.wait(throw=True)
 
         try:
+            # todo: ctx 接下来统一交给 CommandTaskCtx 管理.
             ctx = contextvars.copy_context()
             self.set_context_var()
             dry_run_cor = ctx.run(self.dry_run)
@@ -692,19 +725,19 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
     大模型的输出被转化成 CmdToken 后, 再通过执行器生成的运行时对象.
     实现一个跨线程安全的等待机制.
-    TODO: refact with asyncio.Future
+    TODO: refact with asyncio.Future?
     """
 
     def __init__(
-        self,
-        *,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
+            self,
+            *,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             meta=meta,
@@ -721,6 +754,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self._done_callbacks = set()
 
     def result(self) -> Optional[RESULT]:
+        # todo: 是否应该在这里 rase exception, 遵循 future 逻辑?
         return self._result
 
     def add_done_callback(self, fn: Callable[[CommandTask], None]):
@@ -779,12 +813,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.trace[self.state] = now
 
     def _set_result(
-        self,
-        result: Optional[RESULT],
-        state: CommandTaskStateType | str,
-        errcode: int,
-        errmsg: Optional[str],
-        done_at: Optional[str] = None,
+            self,
+            result: Optional[RESULT],
+            state: CommandTaskStateType | str,
+            errcode: int,
+            errmsg: Optional[str],
+            done_at: Optional[str] = None,
     ) -> bool:
         with self._done_lock:
             if self._done_event.is_set():
@@ -837,10 +871,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return CommandError(self.errcode, self.errmsg or "")
 
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
@@ -878,14 +912,14 @@ class WaitDoneTask(BaseCommandTask):
     """
 
     def __init__(
-        self,
-        tasks: Iterable[CommandTask],
-        after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+            self,
+            tasks: Iterable[CommandTask],
+            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
     ) -> None:
         meta = CommandMeta(
             name="_wait_done",
             chan="",
-            type=CommandType.CONTROL.value,
+            type=CommandType.PRIMITIVE.value,
         )
 
         async def wait_done() -> Optional[RESULT]:
@@ -909,15 +943,15 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
     """
 
     def __init__(
-        self,
-        current: CommandTask,
-        *tasks: CommandTask,
-        tokens: str = "",
+            self,
+            current: CommandTask,
+            *tasks: CommandTask,
+            tokens: str = "",
     ) -> None:
         meta = CommandMeta(
             name="cancel_" + current.meta.name,
             chan=current.meta.chan,
-            type=CommandType.CONTROL.value,
+            type=CommandType.PRIMITIVE.value,
             block=False,
             call_soon=True,
         )
@@ -941,12 +975,15 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
 
 
 class CommandTaskStack:
-    """特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回."""
+    """
+    特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回.
+    todo: 重新命名, 强调其原语属性.
+    """
 
     def __init__(
-        self,
-        iterator: AsyncIterator[CommandTask] | list[CommandTask],
-        on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
+            self,
+            iterator: AsyncIterator[CommandTask] | list[CommandTask],
+            on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
     ) -> None:
         self._iterator = iterator
         self._on_success = on_success

@@ -90,7 +90,7 @@ async def run_agent(container: Container, speech: Speech | None = None):
 
     async def speaking():
         try:
-            while not shell.is_close():
+            while not shell.is_closed():
                 if speaking_event.is_set():
                     await speak(duration=0.3)
                 else:

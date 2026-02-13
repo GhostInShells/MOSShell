@@ -165,7 +165,21 @@ class ChannelMeta(BaseModel):
     available: bool = Field(default=True, description="Whether the channel is available.")
     commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
     children: list[str] = Field(default_factory=list, description="the children channel names")
-    context: list[Message] = Field(default_factory=list, description="The channel dynamic context messages")
+
+    # about instructions / context messages
+    # ModelContext is built by many messages blocks, we believe the blocks should be :
+    #  - instructions before conversation
+    #  - conversation messages
+    #  - dynamic context message before the inputs
+    #  - inputs messages
+    #  - [messages recalled by inputs]
+    #  - [reasoning messages]
+    #  - generated actions
+    #
+    # so channel as component of the AI Model context, shall provide instructions or context messages.
+
+    instructions: list[Message] = Field(default_factory=list, description="the channel instructions messages")
+    context: list[Message] = Field(default_factory=list, description="The channel context messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
 
@@ -179,6 +193,8 @@ class ChannelBroker(ABC):
 
     如果用 "面向模型的高级编程语言" 角度看,
     可以把 channel broker 理解成 python 的 ModuleType 对象.
+
+    todo: channel broker 应该持有 Channel, 而不是反过来.
     """
 
     @property
@@ -192,16 +208,15 @@ class ChannelBroker(ABC):
     @property
     @abstractmethod
     def id(self) -> str:
+        """
+        broker 的唯一 id.
+        """
         pass
 
     @abstractmethod
     def name(self) -> str:
-        pass
-
-    @abstractmethod
-    def is_running(self) -> bool:
         """
-        是否已经启动了.
+        对应的 channel name.
         """
         pass
 
@@ -215,8 +230,7 @@ class ChannelBroker(ABC):
     @abstractmethod
     async def refresh_meta(self) -> None:
         """
-        阻塞更新当前的 meta.
-        必须主动发起.
+        更新当前的 Channel Meta 信息. 用于支持被动拉取. 不会主动推送更新.
         """
         pass
 
@@ -224,7 +238,9 @@ class ChannelBroker(ABC):
     def is_connected(self) -> bool:
         """
         判断一个 Broker 的连接与通讯是否正常。
+        一个运行中的 Broker 不一定是正确连接的.
         """
+        # 对于非通讯类的 channel, 比如 py-channel, 直接返回 True.
         return True
 
     @abstractmethod
@@ -235,10 +251,17 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
+    def is_running(self) -> bool:
+        """
+        是否已经启动了. 如果 Broker 被 close, is_running 为 false.
+        """
+        pass
+
+    @abstractmethod
     def is_available(self) -> bool:
         """
-        当前 Channel Client 是否可用.
-        当一个 Client 是 running 状态下, 仍然可能会有被暂停等因素导致它暂时不能用.
+        当前 Channel 对于使用者而言, 是否可用.
+        当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
         """
         pass
 
@@ -280,9 +303,14 @@ class ChannelBroker(ABC):
     @abstractmethod
     async def clear(self) -> None:
         """
-        当清空命令被触发的时候.
-        不会递归执行.
-        todo: 考虑改名为 on_clear.
+        当清空命令被触发的时候执行.
+        todo: 改名 on_clear
+        """
+        pass
+
+    async def on_disconnect(self) -> None:
+        """
+        todo: 将这个实现成正规的生命周期函数.
         """
         pass
 
@@ -291,7 +319,7 @@ class ChannelBroker(ABC):
         """
         启动 Channel Broker.
         通常用 with statement 或 async exit stack 去启动.
-        注意, 不会递归执行!!!
+        只会启动当前 channel 自身.
         """
         pass
 
@@ -299,7 +327,7 @@ class ChannelBroker(ABC):
     async def close(self) -> None:
         """
         关闭当前 broker. 同时阻塞销毁资源直到结束.
-        注意, 不会递归执行!!!
+        只会关闭当前 channel 的 broker.
         """
         pass
 
@@ -333,7 +361,7 @@ class Builder(ABC):
     def with_description(self) -> Callable[[StringType], StringType]:
         """
         注册一个全局唯一的函数, 用来动态生成 description.
-        todo: with 开头的不要用 decorator 形式 .
+        todo: with 开头的不要用 decorator 形式 . Deprecated: 不再用这种方式去变更, 让 description 不变.
         """
         pass
 
@@ -410,6 +438,7 @@ class Builder(ABC):
     def on_policy_pause(self, pause_policy: LifecycleFunction) -> LifecycleFunction:
         """
         policy 回调.
+        todo: 考虑彻底移除.
         """
         pass
 
@@ -439,6 +468,7 @@ class Builder(ABC):
         """
         提供依赖的注册能力. runtime.container 将持有这些依赖.
         register default providers for the contracts
+        todo: 要统一考虑 channel 是否要用父子容器.
         """
         pass
 
@@ -490,12 +520,14 @@ class Channel(ABC):
     def get_contract(self, contract: type[INSTANCE]) -> INSTANCE:
         """
         语法糖, 快速从 broker 里获取一个注册的实例.
+        todo: 搬迁到 CommandTaskCtx 中. 然后禁止使用.
         """
         return self.broker.container.force_fetch(contract)
 
     @staticmethod
     def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
-        """连接父子 channel 名称的标准语法."""
+        """连接父子 channel 名称的标准语法. 作为全局的约束方式. """
+        # todo: 校验 name 的类型, 不允许不合法的 name.
         if parent:
             return f"{parent}.{name}"
         return name
@@ -510,12 +542,18 @@ class Channel(ABC):
         return channel_path.split(".")
 
     def set_context_var(self) -> None:
-        """与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身."""
+        """
+        与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身.
+        todo: 当 CommandTaskCtx 实现后, 彻底移除.
+        """
         ChannelContextVar.set(self)
 
     @staticmethod
     def get_from_context() -> Optional["Channel"]:
-        """在 Command 内部调用这个函数, 可以拿到运行它的 channel."""
+        """
+        在 Command 内部调用这个函数, 可以拿到运行它的 channel.
+        todo: 考虑彻底移除. 这个范式过于耦合.
+        """
         try:
             return ChannelContextVar.get()
         except LookupError:
@@ -527,6 +565,7 @@ class Channel(ABC):
         """
         Channel 在 bootstrap 之后返回的运行时.
         :raise RuntimeError: Channel 没有运行
+        # todo: 考虑彻底移除. 统一通过 CommandTaskCtx 去初始化或获取.
         """
         pass
 
@@ -629,6 +668,7 @@ class Channel(ABC):
     async def run_in_ctx(self, container: Optional[IoCContainer] = None) -> AsyncIterator["Channel"]:
         """
         语法糖, 启动当前 Channel 和它所有的子节点.
+        通常仅仅用于单元测试. 也是为了提示如何单独测试一个 Channel.
         """
 
         async def recursive_start(_chan: Channel) -> None:
@@ -657,7 +697,10 @@ class Channel(ABC):
         await recursive_close(self)
 
     async def execute_task(self, task: CommandTask) -> Any:
-        """运行一个 task 并且给它赋予当前 channel 到被运行函数的 context vars 中."""
+        """
+        运行一个 task 并且给它赋予当前 channel 到被运行函数的 context vars 中.
+        todo: 彻底移除这个函数, 用 CommandTaskCtx 替代. 应该是 ChannelBroker 持有 Channel, 而不是相反.
+        """
         if not self.is_running():
             raise RuntimeError(f"Channel {self.name()} not running")
         if task.done():
@@ -707,8 +750,18 @@ class Channel(ABC):
                 task.cancel("task is executed but not done")
 
 
-class DynamicChannel(Protocol):
-    build: Builder
+class DynamicChannel(Channel, ABC):
+    """
+    一个约定, 用来提示一些可构建的动态 Channel.
+    """
+
+    @property
+    @abstractmethod
+    def build(self) -> Builder:
+        """
+        支持通过 Builder 动态构建一个 Channel.
+        """
+        pass
 
 
 class ChannelApp(Protocol):
@@ -721,6 +774,7 @@ class ChannelApp(Protocol):
     而 Channel 就是用来取代 Controller, 和 AI 模型通讯的方式.
 
     新的 MCV 范式是:  data-model / AI-channel / human-viewer
+    todo: 未完全定义清楚, 主要是生命周期问题.
     """
 
     @abstractmethod
@@ -731,14 +785,20 @@ class ChannelApp(Protocol):
         pass
 
 
+ChannelProxy = Channel
+"""
+Channel Proxy 是一种特殊的 Channel, 它和 Channel Provider 成对出现. 
+Provider 将本地的 Channel 以通讯协议的形式封装, 而 ChannelProxy 则用相同的通讯协议去还原这个 Channel. 
+举例: ZmqChannelProvider.run(local_channel) => connection => ZmqChannelProxy, 这里的 ChannelProxy 对于模型而言和 local 一样.
+"""
+
+
 class ChannelProvider(ABC):
     """
-    将 Channel 包装成一个 Provider 实例, 可以被上层的 Channel Broker 调用.
-    上层的 Broker 将通过通讯协议, 还原出 Broker 树, 但这个 Broker 树里所有子 channel 都通过 Server 的通讯协议来传递.
-    从而形成链式的封装关系, 在不同进程里还原出树形的架构.
+    通过 Provider 运行一个 Local Channel, 提供通讯协议. 使用相同通讯协议的 Proxy 可以在远端还原出这个 Channel.
 
-    举例:
-    ReverseWebsocketBroker => ReverseWebsocketServer => ZMQBroker => ZMQServer ... => Broker
+    从而形成链式的封装关系, 在不同进程里还原出树形的架构.
+    Provider 和 Proxy 通常成对出现.
     """
 
     async def __aenter__(self):

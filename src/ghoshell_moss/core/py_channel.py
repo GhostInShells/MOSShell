@@ -14,6 +14,7 @@ from typing_extensions import Self
 from ghoshell_moss.core.concepts.channel import (
     Builder,
     Channel,
+    DynamicChannel,
     ChannelBroker,
     ChannelMeta,
     CommandFunction,
@@ -162,7 +163,7 @@ class PyChannelBuilder(Builder):
         return self
 
 
-class PyChannel(Channel):
+class PyChannel(DynamicChannel):
     def __init__(
         self,
         *,
