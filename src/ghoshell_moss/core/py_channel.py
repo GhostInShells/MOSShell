@@ -95,7 +95,7 @@ class PyChannelBuilder(Builder):
         tags: Optional[list[str]] = None,
         interface: Optional[StringType] = None,
         available: Optional[Callable[[], bool]] = None,
-        block: Optional[bool] = None,
+        blocking: Optional[bool] = None,
         call_soon: bool = False,
         return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
@@ -109,7 +109,7 @@ class PyChannelBuilder(Builder):
                 tags=tags,
                 interface=interface,
                 available=available,
-                block=block if block is not None else self.block,
+                blocking=blocking if blocking is not None else self.block,
                 call_soon=call_soon,
             )
             self.commands[command.name()] = command
@@ -480,7 +480,7 @@ class PyChannelBroker(ChannelBroker):
             self._fail(e)
 
     def _fail(self, error: Exception) -> None:
-        self._logger.exception("Channel failed")
+        self._logger.exception("Channel failed: %s", error)
         self._starting = False
         self._stop_event.set()
 

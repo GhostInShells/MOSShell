@@ -6,7 +6,7 @@ from typing import Literal, Optional
 
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, DynamicChannel
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.speech import Speech
@@ -42,7 +42,7 @@ class MOSSShell(ABC):
 
     @property
     @abstractmethod
-    def main_channel(self) -> Channel:
+    def main_channel(self) -> DynamicChannel:
         """
         Shell 自身的主轨. 主轨同时可以用来注册所有的子轨.
         主轨的名称必须是空字符串.
@@ -119,7 +119,7 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def commands(
-        self, available_only: bool = True, /, config: dict[ChannelFullPath, Channel] | None = None
+            self, available_only: bool = True, /, config: dict[ChannelFullPath, Channel] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -129,11 +129,11 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def channel_metas(
-        self,
-        available: bool = True,
-        /,
-        config: dict[ChannelFullPath, Channel] | None = None,
-        refresh: bool = False,
+            self,
+            available: bool = True,
+            /,
+            config: dict[ChannelFullPath, Channel] | None = None,
+            refresh: bool = False,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -159,11 +159,11 @@ class MOSSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[str] = None,
-        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         interpreter = await self.interpreter(kind=kind, stream_id=stream_id, channel_metas=channel_metas)
         async with interpreter:
@@ -171,11 +171,11 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[str] = None,
-        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -193,9 +193,9 @@ class MOSSShell(ABC):
         pass
 
     async def parse_text_to_command_tokens(
-        self,
-        text: str | AsyncIterable[str],
-        kind: InterpreterKind = "dry_run",
+            self,
+            text: str | AsyncIterable[str],
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
@@ -223,9 +223,9 @@ class MOSSShell(ABC):
         await t
 
     async def parse_tokens_to_command_tasks(
-        self,
-        tokens: AsyncIterable[CommandToken],
-        kind: InterpreterKind = "dry_run",
+            self,
+            tokens: AsyncIterable[CommandToken],
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
@@ -250,9 +250,9 @@ class MOSSShell(ABC):
         await t
 
     async def parse_text_to_tasks(
-        self,
-        text: str | AsyncIterable[str],
-        kind: InterpreterKind = "dry_run",
+            self,
+            text: str | AsyncIterable[str],
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks (不执行).

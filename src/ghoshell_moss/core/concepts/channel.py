@@ -23,6 +23,7 @@ from ghoshell_moss.message import Message
 __all__ = [
     "Builder",
     "Channel",
+    "DynamicChannel",
     "ChannelBroker",
     "ChannelFullPath",
     "ChannelMeta",
@@ -37,31 +38,29 @@ __all__ = [
     "StringType",
 ]
 
-"""
-关于 Channel (中文名: 经络) : 
-
-MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型. 
-
-所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
-
-同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
-神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
-
-
-Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
-1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变. 
-2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人. 
-3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
-4. 与 Shell 进行全双工实时通讯
-
-可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元. 
-
-todo: 目前 channel 的设计思想还没完全完成. 下一步还有 interface/extend/implementation 等面向对象的构建思路.
-
-举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
-
-所以可以有 N 个人形肢体, 注册到同一个 channel interface 上. 
-"""
+# 关于 Channel (中文名: 经络) :
+#
+# MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
+#
+# 所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
+#
+# 同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
+# 神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
+#
+#
+# Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
+# 1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变.
+# 2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人.
+# 3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
+# 4. 与 Shell 进行全双工实时通讯
+#
+# 可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
+#
+# todo: 目前 channel 的设计思想还没完全完成. 下一步还有 interface/extend/implementation 等面向对象的构建思路.
+#
+# 举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
+#
+# 所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
 
 ChannelFullPath = str
 """
@@ -363,19 +362,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-        self,
-        *,
-        name: str = "",
-        chan: str | None = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
-        available: Optional[Callable[[], bool]] = None,
-        # --- 高级参数 --- #
-        block: Optional[bool] = None,
-        call_soon: bool = False,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            chan: str | None = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType] = None,
+            available: Optional[Callable[[], bool]] = None,
+            # --- 高级参数 --- #
+            blocking: Optional[bool] = None,
+            call_soon: bool = False,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
@@ -392,7 +391,7 @@ class Builder(ABC):
                             # comments
                             pass
         :param tags: 标记函数的分类. 可以用来做筛选, 如果有这个逻辑的话.
-        :param block: 这个函数是否会阻塞 channel. 默认都会阻塞.
+        :param blocking: 这个函数是否会阻塞 channel. 默认都会阻塞.
         :param available: 通过函数定义这个命令是否 available.
         :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
                           如果是 block + call_soon, 会先清空队列.
@@ -706,6 +705,10 @@ class Channel(ABC):
         finally:
             if not task.done():
                 task.cancel("task is executed but not done")
+
+
+class DynamicChannel(Protocol):
+    build: Builder
 
 
 class ChannelApp(Protocol):

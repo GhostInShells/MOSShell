@@ -89,7 +89,7 @@ async def test_shell_command_run_in_order():
         return i
 
     # register the foo command
-    shell.main_channel.build.command(block=True)(foo)
+    shell.main_channel.build.command(blocking=True)(foo)
 
     async with shell:
         # get the origin command

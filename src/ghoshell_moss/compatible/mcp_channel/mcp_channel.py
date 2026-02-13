@@ -44,7 +44,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         "object": "dict",
     }
 
-    COMMAND_DELTA_PARAMTER: str = f"{CommandDeltaType.TEXT.value}:str"
+    COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
 
     def __init__(
         self,
@@ -52,6 +52,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         name: str,
         mcp_client: mcp.ClientSession,
         container: Optional[IoCContainer] = None,
+        blocking: bool = False,
     ):
         self._name = name
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
@@ -62,6 +63,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         self._id = uuid()
         self._container = Container(parent=container, name="mcp_channel:" + self._name)
         self._states: Optional[StateStore] = None
+        self._blocking = blocking
 
     def children(self) -> dict[str, "Channel"]:
         return {}
@@ -279,6 +281,8 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                     available=True,
                     args_schema=tool.inputSchema,
                     delta_arg=CommandDeltaType.TEXT,
+                    # mcp channel 默认不是阻塞的?
+                    blocking=self._blocking,
                 )
             )
         return metas
@@ -319,7 +323,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         return required_params + optional_params, required_param_docs + optional_param_docs
 
     def _parse_schema_container(self, schema: dict) -> tuple[list, list]:
-        params = [self.COMMAND_DELTA_PARAMTER]
+        params = [self.COMMAND_DELTA_PARAMETER]
         try:
             required_param_docs = [
                 "param text__: 用 JSON 描述参数，它的 JSON Schema 如右:",
@@ -372,7 +376,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         params, param_docs = self._parse_input_schema(tool.inputSchema, "")
 
         description = tool.description or ""
-        if len(params) == 1 and params[0] == self.COMMAND_DELTA_PARAMTER:
+        if len(params) == 1 and params[0] == self.COMMAND_DELTA_PARAMETER:
             description = self._adjust_description(description, "".join(param_docs))
 
         # 生成Async函数签名（符合Python语法）
@@ -422,11 +426,13 @@ class MCPChannel(Channel):
         name: str,
         description: str,
         mcp_client: mcp.ClientSession,
+        blocking: bool = False
     ):
         self._name = name
         self._desc = description
         self._mcp_client = mcp_client
-        self._client: Optional[MCPChannelBroker] = None
+        self._broker: Optional[MCPChannelBroker] = None
+        self._blocking = blocking
 
     # --- Channel 核心方法实现 --- #
     def name(self) -> str:
@@ -434,25 +440,26 @@ class MCPChannel(Channel):
 
     @property
     def broker(self) -> ChannelBroker:
-        if not self._client or not self._client.is_running():
+        if not self._broker or not self._broker.is_running():
             raise RuntimeError("MCPChannel not bootstrapped")
-        return self._client
+        return self._broker
 
     @property
     def build(self) -> Builder:
         raise NotImplementedError("MCPChannel does not implement `build`")
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelBroker:
-        if self._client is not None and self._client.is_running():
+        if self._broker is not None and self._broker.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
-        self._client = MCPChannelBroker(
+        self._broker = MCPChannelBroker(
             name=self._name,
             container=container,
             mcp_client=self._mcp_client,
+            blocking=self._blocking,
         )
 
-        return self._client
+        return self._broker
 
     # --- 未使用的Channel方法（默认空实现） --- #
     def import_channels(self, *children: Channel) -> Channel:
@@ -465,4 +472,4 @@ class MCPChannel(Channel):
         return {}
 
     def is_running(self) -> bool:
-        return self._client is not None and self._client.is_running()
+        return self._broker is not None and self._broker.is_running()

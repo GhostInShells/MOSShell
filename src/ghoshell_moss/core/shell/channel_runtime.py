@@ -178,11 +178,14 @@ class ChannelRuntime:
             task.set_state("pending")
             # 记录发送路径.
             task.send_through.append(self.name)
+            # 通过队列来实现有序.
             _queue.put_nowait((channel_path, task))
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except Exception as e:
             self.logger.exception("Add task failed")
+            # 不要拦截致命的 exception.
+            raise e
 
     async def clear_pending(self) -> None:
         """无锁的清空实现."""
@@ -249,7 +252,7 @@ class ChannelRuntime:
             # call soon
             if self.is_self_path(path) and task.meta.call_soon:
                 # 清空队列先.
-                block = task.meta.block
+                block = task.meta.blocking
                 if block:
                     # 先清空.
                     await self.cancel_executing()
@@ -416,7 +419,7 @@ class ChannelRuntime:
     async def _execute_task(self, cmd_task: CommandTask) -> None:
         """执行一个 task. 核心目标是最快速度完成调度逻辑, 或者按需阻塞链路."""
         try:
-            block = cmd_task.meta.block
+            block = cmd_task.meta.blocking
             if block:
                 await self._execute_self_channel_task_within_group(cmd_task)
             else:
@@ -510,7 +513,7 @@ class ChannelRuntime:
     ) -> None:
         try:
             # 非阻塞函数不能返回 stack
-            if not owner.meta.block:
+            if not owner.meta.blocking:
                 # todo: 这个是不是 fatal 的问题呢? 应该不是.
                 raise CommandErrorCode.INVALID_USAGE.error(
                     f"none-block command {owner} returned a command stack which is not allowed",
@@ -529,7 +532,7 @@ class ChannelRuntime:
                     continue
 
                 # 非阻塞
-                if not sub_task.meta.block:
+                if not sub_task.meta.blocking:
                     # 异步执行了.
                     _ = asyncio.create_task(self._execute_self_channel_task_within_group(sub_task))
                     continue

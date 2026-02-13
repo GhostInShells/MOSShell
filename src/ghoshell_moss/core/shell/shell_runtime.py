@@ -21,7 +21,12 @@ class ShellRuntime:
         container: IoCContainer,
         main_channel: Channel,
     ):
+        """
+        :param container: 接受外部的 IOC 容器.
+        :param main_channel: 根 Channel, 用来配置原语.
+        """
         self.id = uuid()
+        # todo: 既然是从外部拿的 ioc 容器, 就不应该自行去初始化. 谁创建, 谁初始化是基本规则.
         self.container: IoCContainer = container
         self.main_channel: Channel = main_channel
 
@@ -31,6 +36,8 @@ class ShellRuntime:
         """使用 channel id 指向所有的 channel runtime 实例. """
         self._channel_path_to_channel_map: dict[_ChannelId, Channel] = {}
         """channel path 所指向的 channel id"""
+        self._task_idx: int = 1
+        """运行时启动后, 对执行的 task 所做的编号. """
 
         # --- lifecycle --- #
 
@@ -118,15 +125,20 @@ class ShellRuntime:
     def add_task(self, *tasks: CommandTask) -> None:
         """
         添加 task 到运行时. 这些 task 会阻塞在 Channel Runtime 队列中直到获取执行机会.
+        todo: 这个函数本身是没有锁的, 并发的时候就会出现问题. shell 并发获取 task 是否是合理的? 没有完全想明白.
         """
         if not self.is_running():
-            # todo: log
+            # todo: 优化完整的日志体系.
+            self.logger.warning("ShellRuntime is not running, ignore tasks %s", list(tasks))
             return
         main_runtime = self._get_main_channel_runtime()
         for task in tasks:
             if task.done():
                 # 不处理.
                 continue
+            # runtime 对 task 进行编号. 并且递增排序.
+            task.idx = self._task_idx
+            self._task_idx += 1
             channel_paths = Channel.split_channel_path_to_names(task.meta.chan)
             main_runtime.add_task_with_paths(channel_paths, task)
 
@@ -159,34 +171,44 @@ class ShellRuntime:
             result = self._update_chan_metas_with_config(result, config)
         return result
 
-    async def refresh_metas(self) -> None:
+    async def refresh_metas(self, timeout: float = 0.0) -> None:
+        """
+        更新当前 Shell 的所有动态 channel meta, 获取最新的讯息.
+        """
         channels = self.main_channel.all_channels()
         if len(channels) == 0:
             return
 
-        # 先更新这一层需要更新的.
+        # todo: 先标记一下批量更新 meta 的更新思路.
+        #    1. 增加 timeout 逻辑. 但不抛出异常, 仅在 timeout 允许范围内完成 更新.
+        #    2. refresh_channels 定义成 dict, 其值创建 asyncio.Task
+        #    3. 加入 timeout 逻辑, 当 timeout 发生后, 其它的 refresh meta 函数会直接忽略.
+
         refreshing_channels = []
         refreshing_calls = []
         for channel_path, channel in channels.items():
+            # 判断 channel 是否要运行.
             if not channel.is_running():
                 continue
             if not channel.broker.is_available():
                 continue
+
+            # 更新的同时, 必须考虑创建 runtime. 如果有大量的 channel 不存在, 则会导致阻塞. 这里需要思考并行.
             runtime = await self.get_or_create_runtime(channel_path, channel=channel)
             # 如果 runtime 不能运行, 则不刷新.
             if runtime is None or not runtime.is_available():
                 continue
             channel_meta = runtime.channel_meta()
-            if channel_path == "hub.no_ppt":
-                pass
-            # 判断 channel 是否是动态的.
+            # 判断 channel 是否是动态的. 只有 dynamic 为 True 才需要更新 meta.
             if channel_meta.dynamic:
                 refreshing_channels.append(channel_path)
                 refreshing_calls.append(channel.broker.refresh_meta())
 
         if len(refreshing_channels) == 0:
+            # 避免冗余的调用.
             return
 
+        # todo: 日志也要一并更新优化.
         completions = await asyncio.gather(*refreshing_calls, return_exceptions=True)
         idx = 0
         for r in completions:

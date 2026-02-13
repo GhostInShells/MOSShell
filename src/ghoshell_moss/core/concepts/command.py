@@ -238,7 +238,7 @@ class CommandMeta(BaseModel):
         default=False,
         description="if true, this command is called soon when append to the channel",
     )
-    block: bool = Field(
+    blocking: bool = Field(
         default=True,
         description="whether this command block the channel. if block + call soon, will clear the channel first",
     )
@@ -297,6 +297,10 @@ class Command(Generic[RESULT], ABC):
 
 
 class CommandWrapper(Command[RESULT]):
+    """
+    快速包装一个临时的 Command 对象.
+    """
+
     def __init__(
         self,
         meta: CommandMeta,
@@ -341,16 +345,20 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         comments: Optional[StringType] = None,
         meta: Optional[CommandMeta] = None,
         tags: Optional[list[str]] = None,
+        # todo: 思考这两个 feature 是否有更合理的定义方式.
         call_soon: bool = False,
-        block: bool = True,
+        blocking: bool = True,
     ):
         """
         :param func: origin coroutine function
-        :param meta: the defined command meta information
         :param available: if given, determine if the command is available dynamically
         :param interface: if not given, will reflect the origin function signature to generate the interface.
         :param doc: if given, will change the docstring of the function or generate one dynamically
         :param comments: if given, will add to the body of the function interface.
+        :param meta: the defined command meta information. if none, will generate one dynamically
+        :param tags: tag the command if someplace want to filter commands. the tags need to be unique and common.
+        :param call_soon: the command will be called right after it is sent to the channel.
+        :param blocking: blocking command will be called only when channel is idle, one at a time.
         """
         self._chan = chan
         self._func_name = func.__name__
@@ -365,7 +373,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._comments_or_fn = comments
         self._is_dynamic_itf = callable(interface) or callable(doc) or callable(available) or callable(comments)
         self._call_soon = call_soon
-        self._block = block
+        self._blocking = blocking
         self._tags = tags
         self._meta = meta
         delta_arg = None
@@ -397,7 +405,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         meta.delta_arg = self._delta_arg
         meta.call_soon = self._call_soon
         meta.tags = self._tags or []
-        meta.block = self._block
+        meta.blocking = self._blocking
         # 标记 meta 是否是动态变更的.
         meta.dynamic = self._is_dynamic_itf
         return meta
@@ -459,6 +467,8 @@ class CommandTask(Generic[RESULT], ABC):
     7. 可复制, 复制后可重入, 方便做循环.
     """
 
+    IDX_ARG = "_idx"
+
     def __init__(
         self,
         *,
@@ -469,6 +479,7 @@ class CommandTask(Generic[RESULT], ABC):
         kwargs: dict[str, Any],
         cid: str | None = None,
         context: dict[str, Any] | None = None,
+        idx: int = 0,
     ) -> None:
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
@@ -483,6 +494,10 @@ class CommandTask(Generic[RESULT], ABC):
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
         self.last_trace: tuple[str, float] = ("", 0.0)
+        self.idx = idx
+        """ command task 在 shell 执行的 task 中的排序. 传入这个参数本身没有意义. 最终都以 Shell 的定义为准. """
+        if self.IDX_ARG in self.kwargs:
+            del self.kwargs[self.IDX_ARG]
 
         # --- debug --- #
         self.trace: dict[str, float] = {
