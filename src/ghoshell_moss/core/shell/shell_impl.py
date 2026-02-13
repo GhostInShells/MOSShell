@@ -87,6 +87,7 @@ class DefaultShell(MOSSShell):
         self.container.set(MOSSShell, self)
         self._main_channel = main_channel or MainChannel(name="", description="")
         self._desc = description
+
         # output
         if not speech:
             speech = MockSpeech()

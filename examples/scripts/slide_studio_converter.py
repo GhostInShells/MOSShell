@@ -9,6 +9,7 @@ from ghoshell_common.contracts import Workspace
 
 if __name__ == "__main__":
     import pathlib
+
     CURRENT_DIR = pathlib.Path(__file__).parent
     WORKSPACE_DIR = CURRENT_DIR.parent.joinpath(".workspace").absolute()
     with workspace_container(WORKSPACE_DIR) as _container:

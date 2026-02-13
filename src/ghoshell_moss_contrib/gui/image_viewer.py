@@ -78,6 +78,7 @@ class SimpleImageViewer(QMainWindow):
         """
         self.signaler.show_window.emit(False)
 
+
 def run_img_viewer(callback: Callable[[SimpleImageViewer], None]):
     app = QApplication(sys.argv)
     viewer = SimpleImageViewer()
