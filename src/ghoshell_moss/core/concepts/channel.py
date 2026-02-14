@@ -23,7 +23,7 @@ from ghoshell_moss.message import Message
 __all__ = [
     "Builder",
     "Channel",
-    "DynamicChannel",
+    "MutableChannel",
     "ChannelBroker",
     "ChannelFullPath",
     "ChannelMeta",
@@ -727,7 +727,7 @@ class Channel(ABC):
                 task.cancel("task is executed but not done")
 
 
-class DynamicChannel(Channel, ABC):
+class MutableChannel(Channel, ABC):
     """
     一个约定, 用来提示一些可构建的动态 Channel.
     """

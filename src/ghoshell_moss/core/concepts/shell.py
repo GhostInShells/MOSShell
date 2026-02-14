@@ -6,7 +6,7 @@ from typing import Literal, Optional
 
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, DynamicChannel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.speech import Speech
@@ -51,7 +51,7 @@ class MOSSShell(ABC):
 
     @property
     @abstractmethod
-    def main_channel(self) -> DynamicChannel:
+    def main_channel(self) -> MutableChannel:
         """
         Shell 自身的主轨. 主轨同时可以用来注册所有的子轨.
         主轨的名称必须是空字符串.
