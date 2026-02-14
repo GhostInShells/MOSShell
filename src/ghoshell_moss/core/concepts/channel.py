@@ -565,14 +565,6 @@ class Channel(ABC):
     # --- children --- #
 
     @abstractmethod
-    def import_channels(self, *children: "Channel") -> Self:
-        """
-        添加子 Channel 到当前 Channel. 形成树状关系.
-        效果可以比较 python 的 import module_name
-        """
-        pass
-
-    @abstractmethod
     def children(self) -> dict[str, "Channel"]:
         """
         返回所有已注册的子 Channel.
@@ -739,6 +731,14 @@ class DynamicChannel(Channel, ABC):
     """
     一个约定, 用来提示一些可构建的动态 Channel.
     """
+
+    @abstractmethod
+    def import_channels(self, *children: "Channel") -> Self:
+        """
+        添加子 Channel 到当前 Channel. 形成树状关系.
+        效果可以比较 python 的 import module_name
+        """
+        pass
 
     @property
     @abstractmethod

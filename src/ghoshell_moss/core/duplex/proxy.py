@@ -579,9 +579,6 @@ class DuplexChannelStub(Channel):
             raise RuntimeError(f"Channel {self} has not been started yet.")
         return self._broker
 
-    def import_channels(self, *children: "Channel") -> Self:
-        raise NotImplementedError(f"Duplex Channel {self._name} not allowed to import channels")
-
     def children(self) -> dict[str, "Channel"]:
         server_chan_meta = self._get_server_channel_meta()
         if server_chan_meta is None:
@@ -973,9 +970,6 @@ class DuplexChannelProxy(Channel):
         if self._broker is None:
             raise RuntimeError(f"Channel {self} has not been started yet.")
         return self._broker
-
-    def import_channels(self, *children: "Channel") -> Self:
-        raise NotImplementedError(f"Duplex Channel {self._name} cannot import channels")
 
     def children(self) -> dict[str, "Channel"]:
         # todo: 目前没有加锁, 可能需要有锁实现?

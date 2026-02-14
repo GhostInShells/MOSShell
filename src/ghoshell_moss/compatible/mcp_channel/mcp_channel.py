@@ -462,8 +462,6 @@ class MCPChannel(Channel):
         return self._broker
 
     # --- 未使用的Channel方法（默认空实现） --- #
-    def import_channels(self, *children: Channel) -> Channel:
-        raise NotImplementedError("MCPChannel does not support children")
 
     def children(self) -> dict[str, Channel]:
         return {}
