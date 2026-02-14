@@ -31,6 +31,7 @@ __all__ = [
     "BaseCommandTask",
     "CancelAfterOthersTask",
     "Command",
+    "CommandUniqueName",
     "CommandDeltaType",
     "CommandDeltaTypeMap",
     "CommandError",
@@ -277,6 +278,9 @@ class CommandMeta(BaseModel):
     )
 
 
+CommandUniqueName = str
+
+
 class Command(Generic[RESULT], ABC):
     """
     对大模型可见的命令描述. 包含几个核心功能:
@@ -291,7 +295,7 @@ class Command(Generic[RESULT], ABC):
         pass
 
     @staticmethod
-    def make_uniquename(chan: str, name: str) -> str:
+    def make_uniquename(chan: str, name: str) -> CommandUniqueName:
         prefix = chan + ":" if chan else ""
         return f"{prefix}{name}"
 
@@ -710,14 +714,17 @@ class CommandTask(Generic[RESULT], ABC):
                 self.cancel()
 
     def __repr__(self):
+        tokens = self.tokens
+        if len(tokens) > 50:
+            tokens = f"{tokens[:50]}..."
         return (
             f"<CommandTask name=`{self.meta.name}` chan=`{self.meta.chan}` "
             f"args=`{self.args}` kwargs=`{self.kwargs}`"
-            f"cid=`{self.cid}` tokens=`{self.tokens}` "
+            f"cid=`{self.cid}` "
             f"state=`{self.state}` done_at=`{self.done_at}` "
             f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
             f"send_through=`{self.send_through}` "
-            f">"
+            f">{tokens}</CommandTask>"
         )
 
 

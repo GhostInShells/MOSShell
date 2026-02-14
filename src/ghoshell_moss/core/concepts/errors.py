@@ -63,6 +63,8 @@ class CommandErrorCode(int, Enum):
     NOT_AVAILABLE = 402
     # 命令不存在.
     NOT_FOUND = 404
+    NOT_RUNNING = 405
+    NOT_CONNECTED = 406
 
     # 命令执行异常.
     FAILED = 500
