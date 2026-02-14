@@ -1,7 +1,7 @@
 import pytest
 from ghoshell_container import Container
 
-from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel
+from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel, new_chan
 from ghoshell_moss.core.shell.channel_runtime import ChannelRuntime
 
 
@@ -46,7 +46,8 @@ async def test_child_channel_runtime_is_not_running():
     async def bar() -> int:
         return 123
 
-    a = main.new_child("a")
+    a = new_chan("a")
+    main.import_channels(a)
 
     @a.build.command()
     async def foo() -> int:

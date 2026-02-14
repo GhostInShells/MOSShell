@@ -49,12 +49,12 @@ class DuplexChannelContext:
     """
 
     def __init__(
-        self,
-        *,
-        name: str,
-        connection: Connection,
-        container: Optional[IoCContainer] = None,
-        command_peek_interval: float = 2.0,
+            self,
+            *,
+            name: str,
+            connection: Connection,
+            container: Optional[IoCContainer] = None,
+            command_peek_interval: float = 2.0,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -553,11 +553,11 @@ class DuplexChannelStub(Channel):
     """被 channel meta 动态生成的子 channel."""
 
     def __init__(
-        self,
-        *,
-        name: str,  # 本地的名称.
-        ctx: DuplexChannelContext,
-        server_chan_name: str = "",  # 远端真实的名称.
+            self,
+            *,
+            name: str,  # 本地的名称.
+            ctx: DuplexChannelContext,
+            server_chan_name: str = "",  # 远端真实的名称.
     ) -> None:
         self._name = name
         self._server_chan_name = server_chan_name or name
@@ -581,9 +581,6 @@ class DuplexChannelStub(Channel):
 
     def import_channels(self, *children: "Channel") -> Self:
         raise NotImplementedError(f"Duplex Channel {self._name} not allowed to import channels")
-
-    def new_child(self, name: str) -> Self:
-        raise NotImplementedError(f"Duplex Channel {self._name} not allowed to create child")
 
     def children(self) -> dict[str, "Channel"]:
         server_chan_meta = self._get_server_channel_meta()
@@ -641,12 +638,12 @@ class DuplexChannelBroker(ChannelBroker):
     """
 
     def __init__(
-        self,
-        *,
-        name: str,
-        provider_chan_path: str,
-        ctx: DuplexChannelContext,
-        is_root: bool = False,
+            self,
+            *,
+            name: str,
+            provider_chan_path: str,
+            ctx: DuplexChannelContext,
+            is_root: bool = False,
     ) -> None:
         """
         :param name: channel local name
@@ -805,7 +802,7 @@ class DuplexChannelBroker(ChannelBroker):
             raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
         return await func(*task.args, **task.kwargs)
 
-    async def policy_run(self) -> None:
+    async def on_idle(self) -> None:
         self._check_running()
         try:
             event = RunPolicyEvent(
@@ -833,7 +830,7 @@ class DuplexChannelBroker(ChannelBroker):
         except Exception:
             self.logger.exception("Send pause policy event failed")
 
-    async def clear(self) -> None:
+    async def on_clear(self) -> None:
         self._check_running()
         try:
             event = ClearCallEvent(
@@ -955,10 +952,10 @@ class DuplexChannelBroker(ChannelBroker):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-        self,
-        *,
-        name: str,
-        to_server_connection: Connection,
+            self,
+            *,
+            name: str,
+            to_server_connection: Connection,
     ):
         self._name = name
         self._server_connection = to_server_connection
@@ -979,9 +976,6 @@ class DuplexChannelProxy(Channel):
 
     def import_channels(self, *children: "Channel") -> Self:
         raise NotImplementedError(f"Duplex Channel {self._name} cannot import channels")
-
-    def new_child(self, name: str) -> Self:
-        raise NotImplementedError(f"Duplex Channel {self._name} cannot create child")
 
     def children(self) -> dict[str, "Channel"]:
         # todo: 目前没有加锁, 可能需要有锁实现?

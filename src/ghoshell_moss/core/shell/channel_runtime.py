@@ -389,7 +389,7 @@ class ChannelRuntime:
             if not self.is_available():
                 return
             # 启动 policy.
-            await self.channel.broker.policy_run()
+            await self.channel.broker.on_idle()
         except asyncio.CancelledError:
             pass
         except FatalError:
@@ -613,7 +613,7 @@ class ChannelRuntime:
         """
         try:
             if self.is_available():
-                await self.channel.broker.clear()
+                await self.channel.broker.on_clear()
         except asyncio.CancelledError:
             self.logger.info("channel %s clearing is cancelled", self.name)
         except Exception:

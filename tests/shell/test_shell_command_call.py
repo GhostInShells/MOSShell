@@ -2,8 +2,7 @@ import asyncio
 import time
 
 import pytest
-
-from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell
+from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell, new_chan
 
 
 @pytest.mark.asyncio
@@ -11,8 +10,9 @@ async def test_shell_execution_baseline():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
-    b_chan = shell.main_channel.new_child("b")
+    a_chan = new_chan("a")
+    b_chan = new_chan("b")
+    shell.main_channel.import_channels(a_chan, b_chan)
 
     @a_chan.build.command()
     async def foo() -> int:
@@ -118,7 +118,8 @@ async def test_shell_task_can_get_channel():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
+    a_chan = new_chan("a")
+    shell.main_channel.import_channels(a_chan)
 
     @a_chan.build.command()
     async def foo() -> bool:
@@ -139,7 +140,8 @@ async def test_shell_task_can_get_task():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
+    a_chan = new_chan("a")
+    shell.main_channel.import_channels(a_chan)
 
     @a_chan.build.command()
     async def foo() -> str:
@@ -161,7 +163,8 @@ async def test_shell_loop():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
+    a_chan = new_chan("a")
+    shell.main_channel.import_channels(a_chan)
 
     @shell.main_channel.build.command()
     async def loop(times: int, tokens__):
@@ -211,9 +214,11 @@ async def test_shell_clear():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
-    b_chan = shell.main_channel.new_child("b")
-    c_chan = a_chan.new_child("c")
+    a_chan = new_chan("a")
+    b_chan = new_chan("b")
+    shell.main_channel.import_channels(a_chan, b_chan)
+    c_chan = new_chan("c")
+    a_chan.import_channels(c_chan)
 
     sleep = [0.1]
 

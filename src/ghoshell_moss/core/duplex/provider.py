@@ -197,7 +197,7 @@ class DuplexChannelProvider(ChannelProvider):
         clearing = []
         for channel in self.channel.all_channels().values():
             if channel.is_running():
-                clearing.append(channel.broker.clear())
+                clearing.append(channel.broker.on_clear())
         done = await asyncio.gather(*clearing, return_exceptions=True)
         for val in done:
             if isinstance(val, Exception):
@@ -417,7 +417,7 @@ class DuplexChannelProvider(ChannelProvider):
                 return
             await self._cancel_channel_lifecycle_task(channel_name)
             # 执行 clear 命令.
-            task = asyncio.create_task(channel.broker.clear())
+            task = asyncio.create_task(channel.broker.on_clear())
             self._channel_lifecycle_tasks[channel_name] = task
             await task
         except asyncio.CancelledError:
@@ -477,7 +477,7 @@ class DuplexChannelProvider(ChannelProvider):
             # 先取消生命周期函数.
             await self._cancel_channel_lifecycle_task(channel_name)
 
-            run_policy_task = asyncio.create_task(channel.broker.policy_run())
+            run_policy_task = asyncio.create_task(channel.broker.on_idle())
             self._channel_lifecycle_tasks[channel_name] = run_policy_task
 
             await run_policy_task

@@ -1,7 +1,6 @@
 import pytest
 from pydantic import Field
-
-from ghoshell_moss import Interpreter
+from ghoshell_moss import Interpreter, PyChannel, new_chan
 from ghoshell_moss.core.concepts.states import StateBaseModel
 
 
@@ -10,7 +9,8 @@ async def test_shell_state_store_baseline():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    chan = shell.main_channel.new_child("a")
+    chan = new_chan(name='a')
+    shell.main_channel.import_channels(chan)
 
     @chan.build.state_model()
     class TestStateModel(StateBaseModel):
@@ -20,7 +20,7 @@ async def test_shell_state_store_baseline():
         value: int = Field(default=0, description="test value")
 
     @chan.build.command()
-    async def set_value(value: int) -> int:
+    async def set_value(value: int) -> None:
         test_state = await chan.broker.states.get_model(TestStateModel)
         test_state.value = value
         await chan.broker.states.save(test_state)
@@ -58,8 +58,9 @@ async def test_shell_state_store_share():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    a_chan = shell.main_channel.new_child("a")
-    b_chan = shell.main_channel.new_child("b")
+    a_chan = new_chan("a")
+    b_chan = new_chan("b")
+    shell.main_channel.import_channels(a_chan, b_chan)
 
     @a_chan.build.state_model()
     class TestStateModel(StateBaseModel):

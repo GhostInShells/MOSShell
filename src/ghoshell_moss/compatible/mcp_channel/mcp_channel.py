@@ -47,12 +47,12 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
     COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
 
     def __init__(
-        self,
-        *,
-        name: str,
-        mcp_client: mcp.ClientSession,
-        container: Optional[IoCContainer] = None,
-        blocking: bool = False,
+            self,
+            *,
+            name: str,
+            mcp_client: mcp.ClientSession,
+            container: Optional[IoCContainer] = None,
+            blocking: bool = False,
     ):
         self._name = name
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
@@ -172,7 +172,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
             try:
                 if required_schema_param_count > schema_param_count:
                     raise CommandError(
-                        code=CommandErrorCode.INVALID_PARAMETER.value,
+                        code=CommandErrorCode.VALUE_ERROR.value,
                         message=(
                             "MCP tool: invalid parameter count, required parameter: "
                             f"{required_schema_param_count}, schema parameter: {schema_param_count}"
@@ -184,13 +184,13 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                 if schema_param_count == 0:  # do nothing
                     if not param_count == 0:
                         raise CommandError(
-                            code=CommandErrorCode.INVALID_PARAMETER.value,
+                            code=CommandErrorCode.VALUE_ERROR.value,
                             message=f"MCP tool: no parameter, invalid, args={args}, kwargs={kwargs}",
                         )
                 else:  # schema_param_count > 1
                     if not (param_count == 1 or required_schema_param_count <= param_count <= schema_param_count):
                         raise CommandError(
-                            code=CommandErrorCode.INVALID_PARAMETER.value,
+                            code=CommandErrorCode.VALUE_ERROR.value,
                             message=f"MCP tool: invalid parameters, invalid, args={args}, kwargs={kwargs}",
                         )
                     if param_count == 1:
@@ -224,13 +224,13 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                                 param_name = required_args_list[0]
                                 if param_name not in kwargs:
                                     raise CommandError(
-                                        code=CommandErrorCode.INVALID_PARAMETER.value,
+                                        code=CommandErrorCode.VALUE_ERROR.value,
                                         message=f'MCP tool: unknown parameter "{param_name}" parameter format.',
                                     )
                                 final_kwargs.update(kwargs)
                             else:
                                 raise CommandError(
-                                    code=CommandErrorCode.INVALID_PARAMETER.value,
+                                    code=CommandErrorCode.VALUE_ERROR.value,
                                     message=f'MCP tool: missing "text__" parameters, kwargs={kwargs}',
                                 )
                     else:
@@ -391,7 +391,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         return interface, description
 
     def _build_channel_meta(
-        self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
+            self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
     ) -> ChannelMeta:
         """构建Channel元信息（包含所有工具的CommandMeta）"""
         return ChannelMeta(
@@ -404,13 +404,13 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         )
 
     # --- 未使用的生命周期方法（默认空实现） --- #
-    async def policy_run(self) -> None:
+    async def on_idle(self) -> None:
         pass
 
     async def policy_pause(self) -> None:
         pass
 
-    async def clear(self) -> None:
+    async def on_clear(self) -> None:
         pass
 
     def is_available(self) -> bool:
@@ -421,12 +421,12 @@ class MCPChannel(Channel):
     """对接MCP服务的Channel"""
 
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str,
-        mcp_client: mcp.ClientSession,
-        blocking: bool = False
+            self,
+            *,
+            name: str,
+            description: str,
+            mcp_client: mcp.ClientSession,
+            blocking: bool = False
     ):
         self._name = name
         self._desc = description
@@ -463,9 +463,6 @@ class MCPChannel(Channel):
 
     # --- 未使用的Channel方法（默认空实现） --- #
     def import_channels(self, *children: Channel) -> Channel:
-        raise NotImplementedError("MCPChannel does not support children")
-
-    def new_child(self, name: str) -> Channel:
         raise NotImplementedError("MCPChannel does not support children")
 
     def children(self) -> dict[str, Channel]:

@@ -15,7 +15,7 @@ def build_robot_main_channel(controller: RobotController) -> PyChannel:
     """
     # 初始化 Channel
     name = controller.manager().robot().name
-    main_channel = PyChannel(name=name, block=True)
+    main_channel = PyChannel(name=name, blocking=True)
 
     # 绑定到 broker.
     main_channel.build.with_binding(RobotController, controller)

@@ -286,7 +286,7 @@ class SlideStudio:
         return [message]
 
     def as_channel(self):
-        studio_chan = PyChannel(name="slide_studio", block=True)
+        studio_chan = PyChannel(name="slide_studio", blocking=True)
 
         studio_chan.build.with_description()(self.description)
         studio_chan.build.with_context_messages(self.context_messages)

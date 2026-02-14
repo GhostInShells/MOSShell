@@ -123,10 +123,12 @@ async def test_py_channel_children() -> None:
 @pytest.mark.asyncio
 async def test_py_channel_with_children() -> None:
     main = PyChannel(name="main")
-    main.new_child("a")
-    main.new_child("b")
+    a_chan = PyChannel(name="a")
+    b_chan = PyChannel(name="b")
+    main.import_channels(a_chan, b_chan)
     c = PyChannel(name="c")
-    c.new_child("d")
+    d = PyChannel(name="d")
+    c.import_channels(d)
     main.import_channels(c)
 
     channels = main.all_channels()

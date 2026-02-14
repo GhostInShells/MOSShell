@@ -845,7 +845,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         if not self._done_event.is_set():
             if isinstance(error, str):
                 errmsg = error
-                errcode = CommandErrorCode.UNKNOWN_CODE.value
+                errcode = CommandErrorCode.UNKNOWN_ERROR.value
             elif isinstance(error, CommandError):
                 errcode = error.code
                 errmsg = error.message
@@ -853,7 +853,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errcode = CommandErrorCode.CANCELLED.value
                 errmsg = "".join(traceback.format_exception(error, limit=3))
             elif isinstance(error, Exception):
-                errcode = CommandErrorCode.UNKNOWN_CODE.value
+                errcode = CommandErrorCode.UNKNOWN_ERROR.value
                 errmsg = "".join(traceback.format_exception(error, limit=3))
             else:
                 errcode = 0

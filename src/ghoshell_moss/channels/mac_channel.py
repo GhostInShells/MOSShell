@@ -92,7 +92,7 @@ def new_mac_control_channel(
     mac_jxa_channel = PyChannel(
         name=name,
         description=description,
-        block=True,
+        blocking=True,
     )
 
     mac_jxa_channel.build.command()(run)

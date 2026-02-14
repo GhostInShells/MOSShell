@@ -236,7 +236,7 @@ class OpenCVVision:
         _channel = PyChannel(
             name="vision",
             description="基于OpenCV的视觉感知模块，提供实时图像输入",
-            block=True,  # 这是一个非阻塞的感知Channel
+            blocking=True,  # 这是一个非阻塞的感知Channel
         )
 
         # 注册上下文消息生成器

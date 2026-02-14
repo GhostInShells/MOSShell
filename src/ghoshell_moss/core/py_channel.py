@@ -87,18 +87,18 @@ class PyChannelBuilder(Builder):
         return self
 
     def command(
-        self,
-        *,
-        name: str = "",
-        chan: str | None = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
-        available: Optional[Callable[[], bool]] = None,
-        blocking: Optional[bool] = None,
-        call_soon: bool = False,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            chan: str | None = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType] = None,
+            available: Optional[Callable[[], bool]] = None,
+            blocking: Optional[bool] = None,
+            call_soon: bool = False,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         def wrapper(func: CommandFunction) -> CommandFunction:
             command = PyCommand(
@@ -165,18 +165,18 @@ class PyChannelBuilder(Builder):
 
 class PyChannel(DynamicChannel):
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str = "",
-        # todo: block 还是叫 blocking 吧.
-        block: bool = True,
-        dynamic: bool | None = None,
+            self,
+            *,
+            name: str,
+            description: str = "",
+            # todo: block 还是叫 blocking 吧.
+            blocking: bool = True,
+            dynamic: bool | None = None,
     ):
         """
         :param name: channel 的名称.
         :param description: channel 的静态描述, 给模型看的.
-        :param block: channel 里默认的 command 类型, 是阻塞的还是非阻塞的.
+        :param blocking: channel 里默认的 command 类型, 是阻塞的还是非阻塞的.
         :param dynamic: 这个 channel 对大模型而言是否是动态的.
                         如果是动态的, 大模型每一帧思考时, 都会从 channel 获取最新的状态.
         """
@@ -184,13 +184,13 @@ class PyChannel(DynamicChannel):
         self._description = description
         self._broker: Optional[ChannelBroker] = None
         self._children: dict[str, Channel] = {}
-        self._block = block
+        self._block = blocking
         self._dynamic = dynamic
         # decorators
         self._builder = PyChannelBuilder(
             name=name,
             description=description,
-            block=block,
+            block=blocking,
         )
 
     def name(self) -> str:
@@ -214,8 +214,16 @@ class PyChannel(DynamicChannel):
             self._children[child.name()] = child
         return self
 
-    def new_child(self, name: str) -> Self:
-        child = PyChannel(name=name)
+    def new_child(
+            self,
+            name: str,
+            description: str = "",
+            blocking: bool = True,
+    ) -> Self:
+        """
+        语法糖, 用来做单元测试.
+        """
+        child = PyChannel(name=name, description=description, blocking=blocking)
         self._children[name] = child
         return child
 
@@ -247,15 +255,15 @@ class PyChannel(DynamicChannel):
 
 class PyChannelBroker(ChannelBroker):
     def __init__(
-        self,
-        name: str,
-        *,
-        set_chan_ctx_fn: Callable[[], None],
-        get_children_fn: Callable[[], list[str]],
-        builder: PyChannelBuilder,
-        container: Optional[IoCContainer] = None,
-        uid: Optional[str] = None,
-        dynamic: bool | None = None,
+            self,
+            name: str,
+            *,
+            set_chan_ctx_fn: Callable[[], None],
+            get_children_fn: Callable[[], list[str]],
+            builder: PyChannelBuilder,
+            container: Optional[IoCContainer] = None,
+            uid: Optional[str] = None,
+            dynamic: bool | None = None,
     ):
         # todo: 考虑移除 channel 级别的 container, 降低分形构建的理解复杂度. 也许不移除才是最好的.
         container = Container(parent=container, name=f"moss/py_channel/{name}/broker")
@@ -405,8 +413,8 @@ class PyChannelBroker(ChannelBroker):
         return result
 
     def get_command(
-        self,
-        name: str,
+            self,
+            name: str,
     ) -> Optional[Command]:
         return self._builder.commands.get(name, None)
 
@@ -415,7 +423,7 @@ class PyChannelBroker(ChannelBroker):
         self._meta_cache = await self._generate_meta_with_ctx()
         return self._meta_cache
 
-    async def policy_run(self) -> None:
+    async def on_idle(self) -> None:
         ctx = contextvars.copy_context()
         self._set_chan_ctx_fn()
         await ctx.run(self._policy_run)
@@ -485,7 +493,7 @@ class PyChannelBroker(ChannelBroker):
         self._starting = False
         self._stop_event.set()
 
-    async def clear(self) -> None:
+    async def on_clear(self) -> None:
         clear_tasks = []
         for clear_func, is_coroutine in self._builder.on_clear_funcs:
             if is_coroutine:
@@ -573,7 +581,7 @@ class PyChannelBroker(ChannelBroker):
         ctx = copy_context()
         self._set_chan_ctx_fn()
         await ctx.run(self.policy_pause)
-        await self.clear()
+        await self.on_clear()
         await ctx.run(self._run_on_stop)
         self._stop_event.set()
         # 自己的 container 自己才可以关闭.

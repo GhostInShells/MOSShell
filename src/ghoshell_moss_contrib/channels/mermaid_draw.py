@@ -21,7 +21,7 @@ def new_mermaid_chan() -> PyChannel:
     channel = PyChannel(
         name="mermaid",
         description="在浏览器中绘制 Mermaid 架构图、流程图等",
-        block=True,
+        blocking=True,
     )
 
     channel.build.command()(draw_mermaid)

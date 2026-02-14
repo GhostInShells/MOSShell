@@ -10,7 +10,7 @@ from ghoshell_moss.core.py_channel import PyChannel
 body_chan = PyChannel(
     name="body",
     description="Live2d body of image MIKU",
-    block=True,
+    blocking=True,
 )
 
 policy_pause_event = asyncio.Event()

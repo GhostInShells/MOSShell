@@ -304,7 +304,7 @@ class ZMQChannelHub:
         except asyncio.TimeoutError:
             raise CommandErrorCode.TIMEOUT.error(f"close channel {name} timeout")
         except Exception as e:
-            raise CommandErrorCode.UNKNOWN_CODE.error(f"close channel {name} error: {e}")
+            raise CommandErrorCode.UNKNOWN_ERROR.error(f"close channel {name} error: {e}")
 
         return f"Channel {name} closed."
 
@@ -312,7 +312,7 @@ class ZMQChannelHub:
         _channel = PyChannel(
             name=self._config.name,
             description=self._config.description,
-            block=True,
+            blocking=True,
         )
 
         for name, config in self._config.proxies.items():

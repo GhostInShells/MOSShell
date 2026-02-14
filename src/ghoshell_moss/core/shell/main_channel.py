@@ -22,7 +22,7 @@ def create_main_channel() -> Channel:
     chan = MainChannel(
         name="",
         description="",
-        block=True,
+        blocking=True,
     )
 
     chan.build.command()(react)

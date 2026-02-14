@@ -189,12 +189,9 @@ class ChannelBroker(ABC):
     channel 运行后提供出来的通用 API.
     只有在 channel.bootstrap 之后才可使用.
     用于控制 channel 的所有能力.
-    channel broker 并不是递归的. 它不持有子节点.
 
     如果用 "面向模型的高级编程语言" 角度看,
     可以把 channel broker 理解成 python 的 ModuleType 对象.
-
-    todo: channel broker 应该持有 Channel, 而不是反过来.
     """
 
     @property
@@ -280,13 +277,10 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def policy_run(self) -> None:
+    async def on_idle(self) -> None:
         """
-        回归 policy 运行. 通常在一个队列里没有 function 在运行中时, 会运行 policy.
-        同时 none-block 的函数也不会中断 policy 运行.
-        不会递归执行.
-
-        todo: policy 现在有开始, 结束, 中断, 生命周期过于复杂. 考虑简化. 此外 policy 命名令人费解, 考虑改成 on_idle
+        进入闲时状态.
+        闲时状态指当前 Broker 及其 子 Channel 都没有 CommandTask 在运行的时候.
         """
         pass
 
@@ -301,10 +295,9 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def clear(self) -> None:
+    async def on_clear(self) -> None:
         """
-        当清空命令被触发的时候执行.
-        todo: 改名 on_clear
+        当轨道命令被触发清空时候执行.
         """
         pass
 
@@ -580,14 +573,6 @@ class Channel(ABC):
         pass
 
     @abstractmethod
-    def new_child(self, name: str) -> Self:
-        """
-        生成一个子 channel 并返回它.
-        :raise NotImplementError: 没有实现的话.
-        """
-        pass
-
-    @abstractmethod
     def children(self) -> dict[str, "Channel"]:
         """
         返回所有已注册的子 Channel.
@@ -783,6 +768,43 @@ class ChannelApp(Protocol):
         返回一个 Channel 实例.
         """
         pass
+
+
+_ChannelBrokerCtx = contextvars.ContextVar("MOSSCommandTaskCtx.Broker")
+_CommandTaskCtx = contextvars.ContextVar("MOSSCommandTaskCtx.Task")
+
+
+class CommandTaskCTX:
+    """
+    Command Task 运行时可以从执行上下文 contextvars 里拿到的数据.
+    """
+
+    @classmethod
+    def init(
+            cls,
+            broker: ChannelBroker,
+            task: CommandTask,
+    ) -> None:
+        _ChannelBrokerCtx.set(broker)
+        _CommandTaskCtx.set(task)
+
+    @classmethod
+    def broker(cls) -> ChannelBroker:
+        return _ChannelBrokerCtx.get()
+
+    @classmethod
+    def task(cls) -> CommandTask:
+        return _CommandTaskCtx.get()
+
+    @classmethod
+    def container(cls) -> IoCContainer:
+        broker = cls.broker()
+        return broker.container
+
+    @classmethod
+    def get_contract(cls, contract: type[INSTANCE]) -> INSTANCE:
+        broker = cls.broker()
+        return broker.container.force_fetch(contract)
 
 
 ChannelProxy = Channel

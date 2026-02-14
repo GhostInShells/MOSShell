@@ -73,10 +73,11 @@ async def test_thread_channel_baseline():
         return 456
 
     chan = PyChannel(name="provider")
+    a_chan = PyChannel(name="a")
     # provider channel 注册 foo.
     foo_cmd: Command = chan.build.command(return_command=True)(foo)
     assert isinstance(foo_cmd, Command)
-    a_chan = chan.new_child("a")
+    chan.import_channels(a_chan)
     # a_chan 增加 command bar.
     a_chan.build.command()(bar)
 
@@ -208,7 +209,8 @@ async def test_thread_channel_has_child():
     async def foo() -> int:
         return 123
 
-    sub1 = chan.new_child("sub1")
+    sub1 = PyChannel(name="sub1")
+    chan.import_channels(sub1)
 
     @sub1.build.command()
     async def bar() -> int:
