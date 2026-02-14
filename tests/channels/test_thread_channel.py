@@ -18,6 +18,22 @@ async def test_thread_channel_start_and_close():
 
 
 @pytest.mark.asyncio
+async def test_channel_run_in_ctx_closes_child_channels():
+    root = PyChannel(name="root")
+    child = root.new_child("child")
+    grandchild = child.new_child("grandchild")
+
+    async with root.run_in_ctx():
+        assert root.is_running()
+        assert child.is_running()
+        assert grandchild.is_running()
+
+    assert not root.is_running()
+    assert not child.is_running()
+    assert not grandchild.is_running()
+
+
+@pytest.mark.asyncio
 async def test_thread_channel_raise_in_proxy():
     provider, proxy = create_thread_channel("client")
     chan = PyChannel(name="provider")
@@ -33,9 +49,21 @@ async def test_thread_channel_run_in_thread():
     provider, proxy = create_thread_channel("client")
     chan = PyChannel(name="provider")
     provider.run_in_thread(chan)
-
     await provider.aclose()
     await provider.wait_closed()
+    assert not chan.is_running()
+    assert not provider.is_running()
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_run_in_ctx():
+    provider, proxy = create_thread_channel("client")
+    chan = PyChannel(name="provider")
+    async with provider.run_in_ctx(chan):
+        async with proxy.run_in_ctx():
+            await proxy.broker.wait_connected()
+            assert chan.is_running()
+            assert provider.is_running()
     assert not chan.is_running()
     assert not provider.is_running()
 
