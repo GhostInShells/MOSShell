@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, AsyncIterator
 from typing import Literal, Optional
 
 from ghoshell_container import IoCContainer
@@ -164,7 +164,7 @@ class MOSSShell(ABC):
         *,
         stream_id: Optional[str] = None,
         channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-    ) -> Interpreter:
+    ) -> AsyncIterator[Interpreter]:
         interpreter = await self.interpreter(kind=kind, stream_id=stream_id, channel_metas=channel_metas)
         async with interpreter:
             yield interpreter
