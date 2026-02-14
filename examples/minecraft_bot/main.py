@@ -77,7 +77,7 @@ bot_chan = PyChannel(name=BOT_USERNAME.lower())
 to_follow_player = ""
 
 
-@bot_chan.build.on_policy_run
+@bot_chan.build.on_idle
 async def on_policy_run():
     global to_follow_player
     while to_follow_player != "":
@@ -110,7 +110,7 @@ async def stop_follow_player():
     to_follow_player = ""
 
 
-@bot_chan.build.with_context_messages
+@bot_chan.build.context_messages
 async def context_messages():
     pos = bot.entity.position
     message = Message.new(role="user", name="__minecraft_bot__").with_content(

@@ -8,11 +8,12 @@ from .channel import (
     ChannelProvider,
     ChannelUtils,
     CommandFunction,
-    ContextMessageFunction,
+    MessageFunction,
     LifecycleFunction,
     PrompterFunction,
     R,
     StringType,
+    MutableChannel,
 )
 from .command import (
     RESULT,
@@ -64,7 +65,7 @@ from .speech import (
     TTSBatch,
     TTSInfo,
 )
-from .states import MemoryStateStore, State, StateBaseModel, StateModel, StateStore
+from .states import BaseStateStore, State, StateBaseModel, StateModel, StateStore
 from .topics import *
 
 """

@@ -18,7 +18,7 @@ from ghoshell_moss.core.concepts.command import (
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell, Speech
-from ghoshell_moss.core.concepts.states import MemoryStateStore, StateStore
+from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.shell.main_channel import MainChannel
 from ghoshell_moss.core.shell.shell_runtime import ShellRuntime
@@ -95,7 +95,7 @@ class DefaultShell(MOSSShell):
         self.container.set(Speech, speech)
         # state
         if not state_store:
-            state_store = MemoryStateStore(owner=self.name)
+            state_store = BaseStateStore(owner=self.name)
         self.state_store: StateStore = state_store
         self.container.set(StateStore, state_store)
 
@@ -285,6 +285,7 @@ class DefaultShell(MOSSShell):
             return
         self.logger.info("Shell starting")
         self._starting = True
+        await self.state_store.start()
         await self.speech.start()
         shell_runtime = ShellRuntime(
             Container(name="shell_runtime", parent=self.container),
@@ -305,6 +306,7 @@ class DefaultShell(MOSSShell):
             await self._interpreter.stop()
             self._interpreter = None
         await self._runtime.close()
+        await self.state_store.close()
         self._logger.info("Shell %s runtime closed", self.name)
         await self.speech.close()
         self._logger.info("Shell %s speech closed", self.name)

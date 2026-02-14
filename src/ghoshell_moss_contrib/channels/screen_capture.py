@@ -206,7 +206,7 @@ class ScreenCapture:
         )
 
         # 注册上下文消息生成器
-        channel.build.with_context_messages(self.screen_messages)
+        channel.build.context_messages(self.screen_messages)
 
         # 注册控制命令
         channel.build.command()(self.set_capturing)

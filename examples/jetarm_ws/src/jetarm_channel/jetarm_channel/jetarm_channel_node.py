@@ -2,7 +2,7 @@ from os.path import abspath, dirname, join
 
 import rclpy
 
-from ghoshell_moss import Channel
+from ghoshell_moss import Channel, MutableChannel
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProvider
 from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
 from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import default_parsers
@@ -12,7 +12,7 @@ from .robot import jetarm_robot
 from .ros2_node import Ros2RobotControllerNode, run_node
 
 
-def main_channel_builder(main_channel: Channel, controller: RobotController) -> Channel:
+def main_channel_builder(main_channel: MutableChannel, controller: RobotController) -> Channel:
     body_chan.build.with_binding(RobotController, controller)
     body_chan.build.with_binding(MOSSRobotManager, controller.manager())
     main_channel.import_channels(body_chan)

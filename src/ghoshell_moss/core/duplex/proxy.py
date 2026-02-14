@@ -35,7 +35,7 @@ from .protocol import (
 
 __all__ = ["DuplexChannelBroker", "DuplexChannelProxy", "DuplexChannelStub"]
 
-from ghoshell_moss.core.concepts.states import MemoryStateStore, StateStore
+from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 
 """
 DuplexChannel Proxy 一侧的实现, 
@@ -110,7 +110,7 @@ class DuplexChannelContext:
         if self._states is None:
             _states = self.container.get(StateStore)
             if _states is None:
-                _states = MemoryStateStore(self.root_name)
+                _states = BaseStateStore(self.root_name)
                 self.container.set(StateStore, _states)
             self._states = _states
         return self._states

@@ -330,7 +330,7 @@ class ZMQChannelHub:
             )
             _channel.import_channels(sub_channel)
 
-        _channel.build.with_description()(self.channel_description)
+        _channel.build.description()(self.channel_description)
         _channel.build.command()(self.start_sub_channel)
         _channel.build.command()(self.close_channel)
 

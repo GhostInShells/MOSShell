@@ -22,7 +22,7 @@ def build_robot_main_channel(controller: RobotController) -> PyChannel:
     main_channel.build.with_binding(MOSSRobotManager, controller.manager())
 
     # 注册整个 robot 的 description 生成函数.
-    main_channel.build.with_description()(
+    main_channel.build.description()(
         build_robot_description,
     )
 

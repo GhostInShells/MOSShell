@@ -14,11 +14,6 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
-@chan.build.with_description()
-def desc() -> str:
-    return "hello world"
-
-
 @chan.build.command()
 async def foo() -> int:
     return 9527
@@ -52,11 +47,11 @@ async def available_test_fn() -> int:
 
 @pytest.mark.asyncio
 async def test_py_channel_baseline() -> None:
-    async with chan.bootstrap() as client:
+    async with chan.bootstrap() as broker:
         assert chan.name() == "test"
 
         # commands 存在.
-        commands = list(client.commands().values())
+        commands = list(broker.commands().values())
         assert len(commands) > 0
 
         # 所有的命令应该都以 channel 开头.
@@ -64,33 +59,29 @@ async def test_py_channel_baseline() -> None:
             assert command.meta().chan == "test"
 
         # 不用全名来获取函数.
-        foo_cmd = client.get_command("foo")
+        foo_cmd = broker.get_command("foo")
         assert foo_cmd is not None
         assert await foo_cmd() == 9527
 
         # 测试名称有效.
-        help_cmd = client.get_command("help")
+        help_cmd = broker.get_command("help")
         assert help_cmd is not None
         assert await help_cmd() == "help"
 
         # 测试乱取拿不到东西
-        none_cmd = client.get_command("never_exists_command")
+        none_cmd = broker.get_command("never_exists_command")
         assert none_cmd is None
         # full name 不正确也拿不到.
-        help_cmd = client.get_command("help")
+        help_cmd = broker.get_command("help")
         assert help_cmd is not None
 
         # available 测试.
-        available_test_cmd = client.get_command("available_test_fn")
+        available_test_cmd = broker.get_command("available_test_fn")
         assert available_test_cmd is not None
         assert available_mutator.available
         assert available_test_cmd.is_available() == available_mutator.available
         available_mutator.available = False
         assert available_test_cmd.is_available() == available_mutator.available
-
-        # description 测试.
-        meta = client.meta()
-        assert meta.description == desc()
 
 
 @pytest.mark.asyncio
@@ -210,7 +201,7 @@ async def test_py_channel_context() -> None:
         return messages
 
     # 添加 context message 函数.
-    main.build.with_context_messages(foo)
+    main.build.context_messages(foo)
 
     async with main.bootstrap() as broker:
         # 启动时 meta 中包含了生成的 messages.

@@ -23,8 +23,8 @@ async def test_shell_execution_baseline():
         msg = Message.new(role="system").with_content("world")
         return [msg]
 
-    a_chan.build.with_context_messages(a_message)
-    b_chan.build.with_context_messages(b_message)
+    a_chan.build.context_messages(a_message)
+    b_chan.build.context_messages(b_message)
     shell.main_channel.import_channels(a_chan, b_chan)
 
     @a_chan.build.command()

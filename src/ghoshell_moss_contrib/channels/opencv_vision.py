@@ -240,8 +240,8 @@ class OpenCVVision:
         )
 
         # 注册上下文消息生成器
-        _channel.build.with_context_messages(self.context_messages)
-        _channel.build.with_description()(self.description)
+        _channel.build.context_messages(self.context_messages)
+        _channel.build.description()(self.description)
 
         # 注册控制命令
         _channel.build.command()(self.start_looking)

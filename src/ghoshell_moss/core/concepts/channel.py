@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandMeta, CommandTask
-from ghoshell_moss.core.concepts.states import StateModel, StateStore
+from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
 from ghoshell_moss.message import Message
 
 __all__ = [
@@ -31,7 +31,7 @@ __all__ = [
     "ChannelProvider",
     "ChannelUtils",
     "CommandFunction",
-    "ContextMessageFunction",
+    "MessageFunction",
     "LifecycleFunction",
     "PrompterFunction",
     "R",
@@ -131,7 +131,7 @@ AI 的 meta 模式可以通过理解 prompt 函数的存在, 定义 prompt 模�
 todo: prompt function 体系尚未完成. 
 """
 
-ContextMessageFunction = Union[
+MessageFunction = Union[
     Callable[[], Coroutine[None, None, list[Message]]],
     Callable[[], list[Message]],
 ]
@@ -351,15 +351,19 @@ class Builder(ABC):
     """
 
     @abstractmethod
-    def with_description(self) -> Callable[[StringType], StringType]:
+    def description(self) -> Callable[[StringType], StringType]:
         """
         注册一个全局唯一的函数, 用来动态生成 description.
-        todo: with 开头的不要用 decorator 形式 . Deprecated: 不再用这种方式去变更, 让 description 不变.
+        todo: 删除, 全部迁移到 instructions.
         """
         pass
 
     @abstractmethod
-    def with_available(self) -> Callable[[Callable[[], bool]], Callable[[], bool]]:
+    def is_dynamic(self) -> bool:
+        pass
+
+    @abstractmethod
+    def available(self) -> Callable[[Callable[[], bool]], Callable[[], bool]]:
         """
         注册一个函数, 用来标记 Channel 是否是 available 状态.
         todo: with 开头的不要用 decorator 形式 .
@@ -367,18 +371,34 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def state_model(self) -> Callable[[type[StateModel]], StateModel]:
+    def is_available(self) -> bool:
+        pass
+
+    @abstractmethod
+    def state_model(self, model: type[StateModel] | StateModel) -> type[StateModel] | StateModel:
         """
         注册一个状态模型.
-        todo: 改成 with 开头的语法.
+        todo: 重做这个函数, 目前实现不符合预期.
         """
         pass
 
     @abstractmethod
-    def with_context_messages(self, func: ContextMessageFunction) -> Self:
+    def context_messages(self, func: MessageFunction) -> MessageFunction:
         """
         注册一个上下文生成函数. 用来生成 channel 运行时动态的上下文.
         """
+        pass
+
+    @abstractmethod
+    async def get_context_message(self) -> list[Message]:
+        pass
+
+    @abstractmethod
+    def instruction_messages(self, func: MessageFunction) -> MessageFunction:
+        pass
+
+    @abstractmethod
+    async def get_instruction_messages(self) -> list[Message]:
         pass
 
     @abstractmethod
@@ -421,25 +441,22 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def on_policy_run(self, run_policy: LifecycleFunction) -> LifecycleFunction:
+    def commands(self) -> list[Command]:
+        pass
+
+    @abstractmethod
+    def get_command(self, name: str) -> Command | None:
+        pass
+
+    @abstractmethod
+    def on_idle(self, run_policy: LifecycleFunction) -> LifecycleFunction:
         """
         注册一个函数, 当 Channel 运行 policy 时, 会执行这个函数.
         """
         pass
 
     @abstractmethod
-    def on_policy_pause(self, pause_policy: LifecycleFunction) -> LifecycleFunction:
-        """
-        policy 回调.
-        todo: 考虑彻底移除.
-        """
-        pass
-
-    @abstractmethod
-    def on_clear(self, clear_func: LifecycleFunction) -> LifecycleFunction:
-        """
-        清空
-        """
+    async def run_idling(self):
         pass
 
     @abstractmethod
@@ -450,6 +467,10 @@ class Builder(ABC):
         pass
 
     @abstractmethod
+    async def run_start_up(self) -> None:
+        pass
+
+    @abstractmethod
     def on_stop(self, stop_func: LifecycleFunction) -> LifecycleFunction:
         """
         关闭时的回调.
@@ -457,26 +478,18 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def with_providers(self, *providers: Provider) -> Self:
-        """
-        提供依赖的注册能力. runtime.container 将持有这些依赖.
-        register default providers for the contracts
-        todo: 要统一考虑 channel 是否要用父子容器.
-        """
+    async def run_stop(self) -> None:
         pass
 
     @abstractmethod
-    def with_contracts(self, *contracts: type) -> Self:
-        """
-        声明 IoC 容器需要的依赖. 如果启动时传入的 IoC 容器没有注册这些依赖, 则启动本身会报错, 抛出异常.
-        """
-        pass
-
-    @abstractmethod
-    def with_binding(self, contract: type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
+    def with_binding(self, contract: type[INSTANCE], binding: INSTANCE) -> Self:
         """
         register default bindings for the given contract.
         """
+        pass
+
+    @abstractmethod
+    def update_container(self, container: IoCContainer) -> None:
         pass
 
 

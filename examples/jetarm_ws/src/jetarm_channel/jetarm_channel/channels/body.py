@@ -11,11 +11,11 @@ body_chan = PyChannel(name="body")
 policy_pause_event = asyncio.Event()
 
 
-@body_chan.build.on_policy_run
+@body_chan.build.on_idle
 async def on_policy_run():
     policy_pause_event.clear()
     while not policy_pause_event.is_set():
-        state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+        state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
         if state_model.policy == "breathing":
             await _breathing()
         elif state_model.policy == "waving":
@@ -30,18 +30,14 @@ async def on_policy_run():
             break
 
 
-@body_chan.build.on_policy_pause
-async def on_policy_pause():
-    policy_pause_event.set()
-
-
-@body_chan.build.state_model()
 class BodyPolicyStateModel(StateBaseModel):
     state_name = "body"
     state_desc = "body state model"
 
     policy: str = Field(default="breathing", description="body policy")
 
+
+body_chan.build.state_model(BodyPolicyStateModel)
 
 mock_policy = "breathing"
 
@@ -53,14 +49,14 @@ async def set_default_policy(policy: str = "breathing"):
 
     :param policy:  body policy, default is breathing, choices are breathing, waving, thinking and reset_pose
     """
-    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
     state_model.policy = policy
     global mock_policy
     mock_policy = policy
     await body_chan.broker.states.save(state_model)
 
 
-@body_chan.build.with_description()
+@body_chan.build.description()
 def description() -> str:
     """获取当前body policy"""
     return f"当前body policy是{mock_policy}"
@@ -94,7 +90,7 @@ async def waving():
     """
     波浪wave
     """
-    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "waving":
         return
     await _waving()
@@ -424,7 +420,7 @@ async def thinking():
     """
     思考
     """
-    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "thinking":
         return
     await _thinking()
@@ -534,7 +530,7 @@ async def breathing():
     """
     呼吸（一次）
     """
-    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "breathing":
         return
     await _breathing()

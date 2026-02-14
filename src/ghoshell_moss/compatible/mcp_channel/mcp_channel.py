@@ -5,7 +5,7 @@ from typing import Any, Generic, Optional, TypeVar
 
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
-from ghoshell_moss.core.concepts.states import MemoryStateStore, StateStore
+from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 
 try:
     import mcp
@@ -108,7 +108,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         if self._states is None:
             _states = self._container.get(StateStore)
             if _states is None:
-                _states = MemoryStateStore(self._name)
+                _states = BaseStateStore(self._name)
                 self._container.set(StateStore, _states)
             self._states = _states
         return self._states

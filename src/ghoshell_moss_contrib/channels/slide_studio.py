@@ -245,8 +245,8 @@ You must complete the presentation on the current page firstly, then call the co
     def as_channel(self) -> PyChannel:
         player_chan = PyChannel(name="player")
 
-        player_chan.build.with_description()(self.description)
-        player_chan.build.with_context_messages(self.context_messages)
+        player_chan.build.description()(self.description)
+        player_chan.build.context_messages(self.context_messages)
 
         player_chan.build.command()(self.play)
         player_chan.build.command()(self.to_page)
@@ -288,8 +288,8 @@ class SlideStudio:
     def as_channel(self):
         studio_chan = PyChannel(name="slide_studio", blocking=True)
 
-        studio_chan.build.with_description()(self.description)
-        studio_chan.build.with_context_messages(self.context_messages)
+        studio_chan.build.description()(self.description)
+        studio_chan.build.context_messages(self.context_messages)
 
         studio_chan.build.command()(self.show)
         studio_chan.build.command()(self.hide)

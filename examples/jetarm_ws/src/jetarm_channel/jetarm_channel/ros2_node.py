@@ -13,7 +13,7 @@ from typing import Optional
 
 from ghoshell_common.contracts import DefaultFileStorage, LoggerItf
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, MutableChannel
 from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import RobotController
 from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
 from ghoshell_moss_contrib.prototypes.ros2_robot.manager import JointValueParser, YamlStorageRobotManager
@@ -23,7 +23,7 @@ from .ros2_controller import Ros2Controller
 
 __all__ = ["MAIN_CHANNEL_BUILDER", "Ros2RobotControllerNode", "run_node"]
 
-MAIN_CHANNEL_BUILDER = Callable[[Channel, RobotController], Channel]
+MAIN_CHANNEL_BUILDER = Callable[[MutableChannel, RobotController], Channel]
 
 
 class Ros2LoggerAdapter(LoggerItf):
@@ -67,18 +67,18 @@ class Ros2LoggerAdapter(LoggerItf):
 
 class Ros2RobotControllerNode(Node):
     def __init__(
-        self,
-        *,
-        node_name: str,
-        config_dir: str,
-        robot_yaml_filename: str,
-        provider: ChannelProvider,
-        channel_builder: MAIN_CHANNEL_BUILDER | None = None,
-        default_robot: Optional[RobotInfo] = None,
-        joint_states_topic: str = "/joint_states",
-        follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
-        joint_value_parsers: Optional[dict[str, JointValueParser]] = None,
-        goal_interval: float = 0.02,  # 50Hz
+            self,
+            *,
+            node_name: str,
+            config_dir: str,
+            robot_yaml_filename: str,
+            provider: ChannelProvider,
+            channel_builder: MAIN_CHANNEL_BUILDER | None = None,
+            default_robot: Optional[RobotInfo] = None,
+            joint_states_topic: str = "/joint_states",
+            follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
+            joint_value_parsers: Optional[dict[str, JointValueParser]] = None,
+            goal_interval: float = 0.02,  # 50Hz
     ):
         super().__init__(node_name)
 

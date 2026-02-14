@@ -12,22 +12,19 @@ async def test_shell_state_store_baseline():
     chan = new_chan(name='a')
     shell.main_channel.import_channels(chan)
 
-    @chan.build.state_model()
+    @chan.build.state_model
     class TestStateModel(StateBaseModel):
-        state_name = "test"
-        state_desc = "test state model"
-
-        value: int = Field(default=0, description="test value")
+        value: int = Field(default=1, description="test value")
 
     @chan.build.command()
     async def set_value(value: int) -> None:
-        test_state = await chan.broker.states.get_model(TestStateModel)
+        test_state = chan.broker.states.get_model(TestStateModel)
         test_state.value = value
         await chan.broker.states.save(test_state)
 
     @chan.build.command()
     async def get_value() -> int:
-        test_state = await chan.broker.states.get_model(TestStateModel)
+        test_state = chan.broker.states.get_model(TestStateModel)
         return test_state.value
 
     async with shell:
@@ -56,28 +53,28 @@ async def test_shell_state_store_baseline():
 @pytest.mark.asyncio
 async def test_shell_state_store_share():
     from ghoshell_moss.core.shell import new_shell
+    import asyncio
 
     shell = new_shell()
     a_chan = new_chan("a")
     b_chan = new_chan("b")
     shell.main_channel.import_channels(a_chan, b_chan)
 
-    @a_chan.build.state_model()
+    @a_chan.build.state_model
+    @b_chan.build.state_model
     class TestStateModel(StateBaseModel):
-        state_name = "test"
-        state_desc = "test state model"
-
         value: int = Field(default=0, description="test value")
 
     @a_chan.build.command()
-    async def set_value(value: int) -> int:
-        test_state = await a_chan.broker.states.get_model(TestStateModel)
+    async def set_value(value: int) -> None:
+        test_state = a_chan.broker.states.get_model(TestStateModel)
         test_state.value = value
         await a_chan.broker.states.save(test_state)
 
     @b_chan.build.command()
     async def get_value() -> int:
-        test_state = await b_chan.broker.states.get_model(TestStateModel)
+        await asyncio.sleep(0.3)
+        test_state = b_chan.broker.states.get_model(TestStateModel)
         return test_state.value
 
     async with shell:

@@ -57,7 +57,7 @@ def main(args=None):
     main_channel = PyChannel(name="test_channel")
     main_channel.build.with_binding(
         LoggerItf,
-        action_client.get_logger,
+        action_client.get_logger(),
     )
 
     @main_channel.build.command()

@@ -16,7 +16,7 @@ body_chan = PyChannel(
 policy_pause_event = asyncio.Event()
 
 
-@body_chan.build.on_policy_run
+@body_chan.build.on_idle
 async def on_policy_run():
     model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     policy_pause_event.clear()
@@ -29,13 +29,9 @@ async def on_policy_run():
         model.ResetExpressions()  # 防止表情重叠
         model.ResetExpression()
         # Policy的Priority设置为1（较低），是为了确保其他Motion可打断Policy Motion
-        state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+        state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
         model.StartMotion(state_model.policy, 0, 1)
 
-
-@body_chan.build.on_policy_pause
-async def on_policy_pause():
-    policy_pause_event.set()
 
 
 @body_chan.build.state_model()
@@ -57,14 +53,14 @@ async def set_default_policy(policy: str = "Happy"):
 
     :param policy:  body policy, default is Happy, choices are Happy, Angry, Love, Sad
     """
-    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
     state_model.policy = policy
     global mock_policy
     mock_policy = policy
     await body_chan.broker.states.save(state_model)
 
 
-@body_chan.build.with_description()
+@body_chan.build.description()
 def description() -> str:
     """获取当前body policy"""
     return f"当前body policy是{mock_policy}"
