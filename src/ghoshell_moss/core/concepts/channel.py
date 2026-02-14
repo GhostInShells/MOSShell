@@ -642,12 +642,9 @@ class Channel(ABC):
 
         async def recursive_close(_chan: Channel) -> None:
             children = _chan.children()
-            if len(children) == 0:
-                return
             group_stop = []
             for child in children.values():
-                if not child.is_running():
-                    group_stop.append(recursive_close(child))
+                group_stop.append(recursive_close(child))
             await asyncio.gather(*group_stop)
             if _chan.is_running():
                 await _chan.broker.close()
