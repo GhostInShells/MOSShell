@@ -14,7 +14,7 @@ from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if importlib.util.find_spec(miku_channels) is None:
+if importlib.util.find_spec("miku_channels") is None:
     # 加载当前路径.
     sys.path.append(current_dir)
 

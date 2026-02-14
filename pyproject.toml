@@ -12,6 +12,7 @@ dependencies = [
     "openai>=2.8.1",
     "pillow>=12.1.0",
     "python-frontmatter>=1.1.0",
+    "reachy-mini[gstreamer]>=1.3.1",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,13 @@ contrib = [
     "opencv-python>=4.13.0.92",
     "loadenv>=0.1.1",
     "pymupdf>=1.27.1",
+]
+
+reachy-mini = [
+    "reachy-mini>=1.3.1",
+    "reachy-mini[mujoco]>=1.3.1",
+    "ultralytics",
+    "supervision",
 ]
 
 [tool.setuptools]

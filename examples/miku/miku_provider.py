@@ -9,7 +9,7 @@ import pygame
 from ghoshell_container import Container, get_container
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if importlib.util.find_spec(miku_channels) is None:
+if importlib.util.find_spec("miku_channels") is None:
     sys.path.append(current_dir)
 
 from miku_channels.arm import left_arm_chan, right_arm_chan
