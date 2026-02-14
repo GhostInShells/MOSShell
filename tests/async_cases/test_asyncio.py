@@ -454,3 +454,26 @@ async def test_async_iterable_item():
     async for k in items:
         arr.append(k)
     assert len(arr) == 10
+
+
+@pytest.mark.asyncio
+async def test_wait_for_exception():
+    exp = []
+
+    async def foo():
+        try:
+            await asyncio.sleep(1)
+        except Exception as e:
+            exp.append(e)
+
+    catch = False
+    foo_task = asyncio.ensure_future(foo())
+    try:
+        await asyncio.wait_for(foo_task, 0.01)
+    except asyncio.TimeoutError:
+        catch = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await foo_task
+    assert catch
+    assert len(exp) == 0
