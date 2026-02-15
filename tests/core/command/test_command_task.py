@@ -7,7 +7,7 @@ from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     CommandTask,
     CommandTaskStack,
-    CommandTaskState,
+    CommandTaskStateType,
     PyCommand,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
@@ -26,7 +26,7 @@ async def test_command_task_baseline():
     await task.run()
 
     assert task.result() == 123
-    assert task.state == CommandTaskState.DONE.value
+    assert task.state == CommandTaskStateType.done.value
     assert len(task.trace) == 2
     assert task.tokens == "<foo />"
     assert task.done()

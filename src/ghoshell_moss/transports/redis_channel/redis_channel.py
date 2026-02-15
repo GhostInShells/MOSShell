@@ -193,6 +193,7 @@ class RedisChannelProxy(DuplexChannelProxy):
         config: RedisConnectionConfig,
         *,
         name: str,
+        description: str = "",
     ):
         connection = RedisStreamConnection(
             redis=config.redis,
@@ -204,6 +205,7 @@ class RedisChannelProxy(DuplexChannelProxy):
         super().__init__(
             name=name,
             to_server_connection=connection,
+            description=description,
         )
 
 

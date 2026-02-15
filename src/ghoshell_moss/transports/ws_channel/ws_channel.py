@@ -93,10 +93,12 @@ class FastAPIWebSocketChannelProxy(DuplexChannelProxy):
         *,
         ws: fastapi.WebSocket,
         name: str,
+        description: str = "",
     ):
         connection = FastAPIWebSocketConnection(ws)
         super().__init__(
             name=name,
+            description=description,
             to_server_connection=connection,
         )
 

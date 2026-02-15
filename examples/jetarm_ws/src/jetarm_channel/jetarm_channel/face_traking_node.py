@@ -208,8 +208,8 @@ class FaceTrackingNode(Node):
                 if self.detected_face > 0:
                     self.detected_face -= 1
                 else:
-                    self.pid_z.on_clear()
-                    self.pid_y.on_clear()
+                    self.pid_z.clear()
+                    self.pid_y.clear()
 
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(result_image, "bgr8"))
             self.fps.update()

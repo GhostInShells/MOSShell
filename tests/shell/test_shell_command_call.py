@@ -2,7 +2,7 @@ import asyncio
 import time
 
 import pytest
-from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell, new_chan
+from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell, new_chan, ChannelCtx
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_shell_task_can_get_channel():
     @a_chan.build.command()
     async def foo() -> bool:
         # 可以在运行时获取到 channel 本体.
-        chan = Channel.get_from_context()
+        chan = ChannelCtx.channel()
         return chan is a_chan
 
     async with shell:
@@ -171,7 +171,7 @@ async def test_shell_loop():
         if times == 0:
             return None
 
-        chan = Channel.get_from_context()
+        chan = ChannelCtx.channel()
         # get shell from channel's container
         _shell = chan.broker.container.get(MOSSShell)
         _tasks = []

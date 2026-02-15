@@ -7,9 +7,8 @@ from typing import Any, Optional
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
-from typing_extensions import Self
 
-from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelBroker, ChannelFullPath, ChannelMeta, R
+from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelBroker, ChannelFullPath, ChannelMeta
 from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandMeta, CommandTask, CommandWrapper
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -18,17 +17,13 @@ from .connection import Connection, ConnectionClosedError, ConnectionNotAvailabl
 from .protocol import (
     ChannelEvent,
     ChannelMetaUpdateEvent,
-    ClearCallEvent,
-    ClearDoneEvent,
+    ClearEvent,
     CommandCallEvent,
     CommandDoneEvent,
-    CommandPeekEvent,
     CreateSessionEvent,
-    PausePolicyDoneEvent,
-    PausePolicyEvent,
+    PauseEvent,
     ReconnectSessionEvent,
-    RunPolicyDoneEvent,
-    RunPolicyEvent,
+    IdleEvent,
     SessionCreatedEvent,
     SyncChannelMetasEvent,
 )
@@ -164,9 +159,9 @@ class DuplexChannelContext:
         return self.provider_to_broker_event_queue_map[name]
 
     @property
-    def logger(self) -> logging.Logger:
+    def logger(self) -> LoggerItf:
         if self._logger is None:
-            self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
+            self._logger = self.container.get(LoggerItf) or logging.getLogger("moss")
         return self._logger
 
     async def start(self) -> None:
@@ -569,6 +564,10 @@ class DuplexChannelStub(Channel):
     def name(self) -> str:
         return self._name
 
+    def description(self) -> str:
+        meta = self._get_server_channel_meta()
+        return meta.description if meta else ""
+
     def _get_server_channel_meta(self) -> Optional[ChannelMeta]:
         # 获取自己在 server 端的 channel meta.
         return self._ctx.provider_meta_map.get(self._server_chan_name)
@@ -616,7 +615,7 @@ class DuplexChannelStub(Channel):
             raise RuntimeError(f"Duplex Channel {self._name} Context is not running")
 
         broker = DuplexChannelBroker(
-            name=self._name,
+            channel=self,
             provider_chan_path=self._server_chan_name,
             ctx=self._ctx,
             is_root=False,
@@ -637,7 +636,7 @@ class DuplexChannelBroker(ChannelBroker):
     def __init__(
             self,
             *,
-            name: str,
+            channel: Channel,
             provider_chan_path: str,
             ctx: DuplexChannelContext,
             is_root: bool = False,
@@ -647,58 +646,33 @@ class DuplexChannelBroker(ChannelBroker):
         :param provider_chan_path: the origin channel name from the remote server
         :param ctx: shared ctx of all the channels.
         """
-        self._name = name
-        self._provider_chan_path = provider_chan_path
         self._ctx = ctx
+        self._provider_chan_path = provider_chan_path
         self._is_root = is_root
-        # 重新定义 id.
         meta = ctx.get_meta(self._provider_chan_path)
-
-        self._id = meta.channel_id if meta else uuid()
-
-        # 运行时参数
-        self._starting = False
-        self._started_at: Optional[float] = None
-        self._logger: logging.Logger | None = self.container.get(LoggerItf) or logging.getLogger(__name__)
-
-        self._self_close_event = ThreadSafeEvent()
-        self._main_loop_task: Optional[asyncio.Task] = None
+        super().__init__(
+            channel=channel,
+            container=ctx.container,
+            uid=meta.channel_id if meta else uuid(),
+            logger=ctx.logger,
+        )
         self._main_loop_done_event = ThreadSafeEvent()
-
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def container(self) -> IoCContainer:
-        return self._ctx.container
-
-    @property
-    def id(self) -> str:
-        return self._id
+        self._stopping_event = ThreadSafeEvent()
 
     def is_running(self) -> bool:
-        return self._starting and self._ctx.is_running() and not self._self_close_event.is_set()
+        return super().is_running() and self._ctx.is_running() and not self._stopping_event.is_set()
 
-    @property
-    def logger(self) -> logging.Logger:
-        return self._ctx.logger
+    def prepare_container(self, container: IoCContainer | None) -> Container:
+        container = super().prepare_container(container)
+        container.set(LoggerItf, self._ctx.logger)
+        container.set(StateStore, self._ctx.states)
+        return container
 
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError(f"Channel client {self._name} is not running")
 
-    def meta(self) -> ChannelMeta:
-        self._check_running()
-        return self._build_meta_from_ctx()
-
-    async def refresh_meta(self) -> None:
-        self._check_running()
-        # 永远不同步获取 meta.
-        refresh = self._is_root
-        if refresh:
-            await self._ctx.refresh_meta()
-
-    def _build_meta_from_ctx(self) -> ChannelMeta:
+    async def generate_meta(self) -> ChannelMeta:
         meta = self._ctx.get_meta(self._provider_chan_path)
         if meta is None:
             return ChannelMeta(
@@ -792,54 +766,35 @@ class DuplexChannelBroker(ChannelBroker):
                 return CommandWrapper(meta=command_meta, func=func)
         return None
 
-    async def execute(self, task: CommandTask[R]) -> R:
-        self._check_running()
-        func = self._get_server_command_func(task.meta)
-        if func is None:
-            raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
-        return await func(*task.args, **task.kwargs)
-
     async def on_idle(self) -> None:
-        self._check_running()
         try:
-            event = RunPolicyEvent(
+            event = IdleEvent(
                 session_id=self._ctx.session_id,
                 chan=self._provider_chan_path,
             )
             await self._ctx.send_event_to_provider(event.to_channel_event(), throw=False)
-        except asyncio.CancelledError:
-            # todo: log
-            pass
-        except Exception:
-            self.logger.exception("Send run policy event failed")
+        except Exception as e:
+            self.logger.exception(e)
 
-    async def policy_pause(self) -> None:
-        self._check_running()
+    async def on_pause(self) -> None:
         try:
-            event = PausePolicyEvent(
+            event = PauseEvent(
                 session_id=self._ctx.session_id,
                 chan=self._provider_chan_path,
             )
             await self._ctx.send_event_to_provider(event.to_channel_event(), throw=True)
-        except asyncio.CancelledError:
-            # todo: log
-            pass
-        except Exception:
-            self.logger.exception("Send pause policy event failed")
+        except Exception as e:
+            self.logger.exception(e)
 
     async def on_clear(self) -> None:
-        self._check_running()
         try:
-            event = ClearCallEvent(
+            event = ClearEvent(
                 session_id=self._ctx.session_id,
                 chan=self._provider_chan_path,
             )
             await self._ctx.send_event_to_provider(event.to_channel_event(), throw=True)
-        except asyncio.CancelledError:
-            # todo: log
-            pass
-        except Exception:
-            self.logger.exception("Send clear event failed")
+        except Exception as e:
+            self.logger.exception(e)
 
     async def _consume_server_event_loop(self):
         try:
@@ -848,30 +803,32 @@ class DuplexChannelBroker(ChannelBroker):
         except asyncio.CancelledError:
             # todo: log
             pass
-        except Exception:
-            self.logger.exception("Consume server event loop failed")
-            self._self_close_event.set()
+        except Exception as e:
+            self.logger.exception(e)
+            self._stopping_event.set()
         finally:
-            self.logger.info("channel %s consume_server_event_loop stopped", self._name)
+            tmp, args = self.log_format()
+            self.logger.info(f"{tmp} consume_server_event_loop stopped", *args)
 
-    async def _main_loop(self):
+    async def on_running(self):
         try:
             consume_loop_task = asyncio.create_task(self._consume_server_event_loop())
             await consume_loop_task
         except asyncio.CancelledError:
             pass
-        except Exception:
-            self.logger.exception("DuplexChannelBroker main loop failed")
+        except Exception as e:
+            tmp, args = self.log_format()
+            self.logger.error(f"{tmp} main loop failed: %s", *args, e)
             raise
         finally:
-            # 内层不允许shutdown外层传递的container.
-            # await asyncio.to_thread(self.container.shutdown)
             self._main_loop_done_event.set()
+            tmp, args = self.log_format()
+            self.logger.error(f"{tmp} main loop stopped", *args)
 
     async def _consume_server_event(self):
         try:
             if self._ctx.connection.is_closed():
-                self._self_close_event.set()
+                self._stopping_event.set()
                 return
 
             queue = self._ctx.get_server_event_queue(self._provider_chan_path)
@@ -881,7 +838,7 @@ class DuplexChannelBroker(ChannelBroker):
             except asyncio.TimeoutError:
                 return
             if item is None:
-                self._self_close_event.set()
+                self._stopping_event.set()
                 return
             if item.get("timestamp") < self._started_at:
                 self.logger.warning("receive overdue events %s", item)
@@ -896,55 +853,27 @@ class DuplexChannelBroker(ChannelBroker):
                 self.logger.info("unknown server event %s", item)
         except asyncio.CancelledError:
             pass
-        except Exception:
-            self.logger.exception("Consume server event failed")
+        except Exception as e:
+            tmp, args = self.log_format()
+            self.logger.error(f"{tmp} Consume server event failed: %s", *args, e)
 
-    async def start(self) -> None:
-        if self._starting:
-            self.logger.info("DuplexChannelBroker[name=%s] already started", self._name)
-            return
-        self.logger.info("DuplexChannelBroker[name=%s] starting", self._name)
-        self._starting = True
-        self._started_at = time.time()
+    async def on_start_up(self) -> None:
         if not self._ctx.is_running():
             # 启动 ctx.
             await self._ctx.start()
-        # 建立拉取数据的联系.
         self._ctx.connect_broker(self._provider_chan_path)
-        self._main_loop_task = asyncio.create_task(self._main_loop())
-        self.logger.info("DuplexChannelBroker[name=%s] started", self._name)
 
     def is_root(self) -> bool:
         return self._is_root
 
-    @property
-    def states(self) -> StateStore:
-        return self._ctx.states
-
-    async def close(self) -> None:
-        if self._self_close_event.is_set():
-            return
-        self._self_close_event.set()
-
-        try:
-            if self._main_loop_task:
-                self._main_loop_task.cancel()
-                await self._main_loop_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            self.logger.exception("DuplexChannelBroker close failed")
-            raise
-        finally:
-            self._started_at = None
-            self._starting = False
-            if self.is_root():
-                # root 节点可以关闭 ctx.
-                await self._ctx.close()
-            else:
-                # 关闭结束 ctx.
-                self._ctx.disconnect_broker(self._provider_chan_path)
-                self._ctx = None
+    async def on_close(self) -> None:
+        if self.is_root():
+            # root 节点可以关闭 ctx.
+            await self._ctx.close()
+        else:
+            # 关闭结束 ctx.
+            self._ctx.disconnect_broker(self._provider_chan_path)
+            self._ctx = None
 
 
 class DuplexChannelProxy(Channel):
@@ -952,9 +881,11 @@ class DuplexChannelProxy(Channel):
             self,
             *,
             name: str,
+            description: str = "",
             to_server_connection: Connection,
     ):
         self._name = name
+        self._description = description
         self._server_connection = to_server_connection
         self._server_channel_path = ""
         self._broker: Optional[DuplexChannelBroker] = None
@@ -964,6 +895,9 @@ class DuplexChannelProxy(Channel):
 
     def name(self) -> str:
         return self._name
+
+    def description(self) -> str:
+        return self._description
 
     @property
     def broker(self) -> ChannelBroker:
@@ -1020,7 +954,7 @@ class DuplexChannelProxy(Channel):
         )
 
         client = DuplexChannelBroker(
-            name=self._name,
+            channel=self,
             provider_chan_path="",
             ctx=self._ctx,
             # 标记是根节点.

@@ -148,9 +148,11 @@ class ThreadChannelProxy(DuplexChannelProxy):
         *,
         name: str,
         to_server_connection: Proxy2ProviderConnection,
+        description: str = "",
     ):
         super().__init__(
             name=name,
+            description=description,
             to_server_connection=to_server_connection,
         )
 

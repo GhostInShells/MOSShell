@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ghoshell_moss.core.concepts.command import Command, CommandError
+from ghoshell_moss.core import Brokers, Command, CommandError
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
 
@@ -12,8 +12,10 @@ async def test_thread_channel_start_and_close():
     provider, proxy = create_thread_channel("client")
     chan = PyChannel(name="provider")
     async with provider.run_in_ctx(chan):
-        assert chan.is_running()
-    assert not chan.is_running()
+        broker = provider.brokers().get("")
+        assert broker is not None
+        assert broker.is_running()
+    assert not broker.is_running()
     assert not provider.is_running()
 
 
@@ -86,18 +88,19 @@ async def test_thread_channel_baseline():
     # 在另一个线程中运行.
     async with provider.run_in_ctx(chan):
         # 判断 channel 已经启动.
-        assert chan.is_running()
-        assert chan.broker.is_connected()
-        assert chan.broker.is_running()
-        meta = chan.broker.meta()
+        main_broker = provider.brokers().main_broker()
+        assert main_broker.is_running()
+        assert main_broker.is_connected()
+        assert main_broker.is_running()
+        meta = main_broker.meta()
         assert meta.available
         assert len(meta.commands) > 0
         assert meta.name == "provider"
 
-        async with proxy_chan.bootstrap():
+        async with proxy_chan.bootstrap() as proxy_broker:
             # 阻塞等待连接成功.
-            await proxy_chan.broker.wait_connected()
-            meta = proxy_chan.broker.meta()
+            await proxy_broker.wait_connected()
+            meta = proxy_broker.meta()
             assert meta is not None
             # 名字被替换了.
             assert meta.name == "client"
@@ -114,8 +117,8 @@ async def test_thread_channel_baseline():
             # 判断仍然有一个子 channel.
             assert "a" in chan.children()
             assert "a" in proxy_chan.children()
-            assert chan.broker.meta().name == "provider"
-            assert proxy_chan.broker.meta().name == "client"
+            assert main_broker.meta().name == "provider"
+            assert proxy_broker.meta().name == "client"
 
             # 获取这个子 channel, 它应该已经启动了.
             a_chan = chan.get_channel("a")
@@ -123,14 +126,14 @@ async def test_thread_channel_baseline():
             assert a_chan.is_running()
 
             # 客户端仍然可以调用命令.
-            proxy_side_foo = proxy_chan.broker.get_command("foo")
+            proxy_side_foo = proxy_broker.get_command("foo")
             assert proxy_side_foo is not None
             meta = proxy_side_foo.meta()
             # 这里虽然来自 provider, 但是 chan 被改写成了 client.
             assert meta.chan == "client"
             result = await proxy_side_foo()
             assert result == 123
-        assert not proxy_chan.is_running()
+        assert not proxy_broker.is_running()
     assert not provider.is_running()
 
 
@@ -218,16 +221,18 @@ async def test_thread_channel_has_child():
 
     provider, proxy = create_thread_channel("client")
     provider.run_in_thread(chan)
-    async with proxy.run_in_ctx():
-        assert proxy.is_running()
-        await proxy.broker.wait_connected()
+    async with Brokers.new(proxy) as brokers:
+        proxy_broker = brokers.get('')
+        assert proxy_broker is not None
+        assert proxy_broker.is_running()
+        await proxy_broker.wait_connected()
+
         assert "sub1" in proxy.children()
-        # 判断子 channel 存在.
-        _sub1 = proxy.get_channel("sub1")
-        assert _sub1 is not None
-        assert sub1.is_running()
-        bar = sub1.broker.get_command("bar")
-        value = await sub1.execute_command(bar)
+        # # 判断子 channel 存在.
+        _sub1_broker = brokers.get("sub1")
+        assert _sub1_broker is not None
+        assert _sub1_broker.is_running()
+        value = await _sub1_broker.execute_command('bar')
         assert value == 456
 
     provider.close()
@@ -244,7 +249,7 @@ async def test_thread_channel_exception():
 
     provider, proxy = create_thread_channel("client")
     provider.run_in_thread(chan)
-    async with proxy.run_in_ctx():
+    async with proxy.bootstrap_brokers():
         await proxy.broker.wait_connected()
         assert proxy.broker.is_available()
         assert proxy.is_running()

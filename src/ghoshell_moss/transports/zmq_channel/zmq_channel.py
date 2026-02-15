@@ -325,6 +325,7 @@ class ZMQChannelProxy(DuplexChannelProxy):
         self,
         *,
         name: str,
+        description: str = "",
         address: str = "tcp://127.0.0.1:5555",
         socket_type: ZMQSocketType = ZMQSocketType.PAIR,
         recv_timeout: Optional[float] = None,
@@ -353,6 +354,7 @@ class ZMQChannelProxy(DuplexChannelProxy):
         connection = ZMQProxyConnection(config, logger=logger)
         super().__init__(
             name=name,
+            description=description,
             to_server_connection=connection,
         )
 

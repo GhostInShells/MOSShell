@@ -281,7 +281,7 @@ async def dry_test():
     container = init()
     await asyncio.sleep(1)
 
-    async with bot_chan.run_in_ctx(container=container):
+    async with bot_chan.bootstrap_brokers(container=container) as brokers:
         res = await find_blocks("oak_log")
         await dig_target(x=8, y=73, z=21)
         pass
