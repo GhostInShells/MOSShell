@@ -389,7 +389,7 @@ class ChannelRuntime:
             if not self.is_available():
                 return
             # 启动 policy.
-            await self.channel.broker.on_idle()
+            await self.channel.broker.idle()
         except asyncio.CancelledError:
             pass
         except FatalError:
@@ -473,7 +473,8 @@ class ChannelRuntime:
             # 真的轮到自己执行它了.
             task.set_state("running")
             # 先执行一次 command, 拿到可能的 command_seq, 主要用来做 resolve.
-            result = await self.channel.execute_task(task)
+            await self.channel.broker.execute_task_soon(task)
+            result = await task
             if not isinstance(result, CommandTaskStack):
                 # 返回一个栈, command task 的结果需要在栈外判断.
                 # 等栈运行完了才会赋值.
@@ -538,12 +539,11 @@ class ChannelRuntime:
                     continue
 
                 # 阻塞.
-                result = await self.channel.execute_task(sub_task)
+                await self.channel.broker.execute_task_soon(sub_task)
+                result = await sub_task
                 if isinstance(result, CommandTaskStack):
                     # 递归执行
                     await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
-                else:
-                    sub_task.resolve(result)
 
             # 完成了所有子节点的调度后, 通知回调函数.
             # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
@@ -613,7 +613,7 @@ class ChannelRuntime:
         """
         try:
             if self.is_available():
-                await self.channel.broker.on_clear()
+                await self.channel.broker.clear_all()
         except asyncio.CancelledError:
             self.logger.info("channel %s clearing is cancelled", self.name)
         except Exception:

@@ -13,20 +13,16 @@ __all__ = [
     "ChannelEvent",
     "ChannelEventModel",
     "ChannelMetaUpdateEvent",
-    "ClearCallEvent",
-    "ClearDoneEvent",
+    "ClearEvent",
     "CommandCallEvent",
     "CommandCancelEvent",
     "CommandDoneEvent",
-    "CommandPeekEvent",
     "CreateSessionEvent",
     "HeartbeatEvent",
-    "PausePolicyDoneEvent",
-    "PausePolicyEvent",
+    "PauseEvent",
     "ProviderErrorEvent",
     "ReconnectSessionEvent",
-    "RunPolicyDoneEvent",
-    "RunPolicyEvent",
+    "IdleEvent",
     "SessionCreatedEvent",
     "SyncChannelMetasEvent",
 ]
@@ -53,7 +49,7 @@ class ChannelEventModel(BaseModel, ABC):
     event_type: ClassVar[str] = ""
 
     event_id: str = Field(default_factory=uuid, description="event id for transport")
-    session_id: str = Field(default="", description="channel client id")
+    session_id: str = Field(default="", description="channel proxy id")
     timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_channel_event(self) -> ChannelEvent:
@@ -76,6 +72,10 @@ class ChannelEventModel(BaseModel, ABC):
         data["timestamp"] = channel_event["timestamp"]
         return cls(**data)
 
+    def __str__(self):
+        value = super.__str__(self)
+        return value[:200]
+
 
 class HeartbeatEvent(ChannelEventModel):
     """心跳事件，由客户端发送，服务器响应"""
@@ -87,31 +87,31 @@ class HeartbeatEvent(ChannelEventModel):
 # --- proxy event --- #
 
 
-class RunPolicyEvent(ChannelEventModel):
+class IdleEvent(ChannelEventModel):
     """开始运行 channel 的 policy"""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.policy.run"
+    event_type: ClassVar[str] = "moss.channel.proxy.idle"
     chan: str = Field(description="channel name")
 
 
-class PausePolicyEvent(ChannelEventModel):
+class PauseEvent(ChannelEventModel):
     """暂停某个 channel 的 policy 运行状态"""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.policy.pause"
+    event_type: ClassVar[str] = "moss.channel.proxy.pause"
     chan: str = Field(description="channel name")
 
 
-class ClearCallEvent(ChannelEventModel):
+class ClearEvent(ChannelEventModel):
     """发出讯号给某个 channel, 执行状态清空的逻辑"""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.clear.call"
+    event_type: ClassVar[str] = "moss.channel.proxy.clear"
     chan: str = Field(description="channel name")
 
 
 class CommandCallEvent(ChannelEventModel):
     """发起一个 command 的调用."""
 
-    # todo: 未来要加一个用 command_id 轮询 server 状态的事件. 用来避免通讯丢失.
+    # todo: 未来要加一个用 command_id 轮询 provider 状态的事件. 用来避免通讯丢失.
 
     event_type: ClassVar[str] = "moss.channel.proxy.command.call"
     name: str = Field(description="command name")
@@ -158,12 +158,6 @@ class CommandCallEvent(ChannelEventModel):
             chan=self.chan,
             result=None,
         )
-
-
-class CommandPeekEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.proxy.command.peek"
-    chan: str = Field(description="channel name")
-    command_id: str = Field(description="command id")
 
 
 class CommandCancelEvent(ChannelEventModel):
@@ -215,20 +209,6 @@ class CommandDoneEvent(ChannelEventModel):
     errcode: int = Field(default=0, description="command errcode")
     errmsg: Optional[str] = Field(default=None, description="command errmsg")
     result: Any = Field(default=None, description="result of the command")
-
-
-class ClearDoneEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.clear.done"
-    chan: str = Field(description="channel name")
-
-
-class RunPolicyDoneEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.policy.run_done"
-
-
-class PausePolicyDoneEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.policy.pause_done"
-    chan: str = Field(description="channel name")
 
 
 class ChannelMetaUpdateEvent(ChannelEventModel):

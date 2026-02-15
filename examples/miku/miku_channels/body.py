@@ -16,7 +16,7 @@ body_chan = PyChannel(
 policy_pause_event = asyncio.Event()
 
 
-@body_chan.build.on_idle
+@body_chan.build.idle
 async def on_policy_run():
     model = body_chan.broker.container.force_fetch(live2d.LAppModel)
     policy_pause_event.clear()

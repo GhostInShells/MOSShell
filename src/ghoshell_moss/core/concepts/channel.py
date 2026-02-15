@@ -2,39 +2,47 @@ import asyncio
 import contextvars
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import (
     Any,
     Optional,
     Protocol,
-    TypeVar,
     Union,
+    AsyncIterable,
+    Callable,
+    Coroutine,
+    Iterable,
 )
 
-from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, set_container
+from ghoshell_container import INSTANCE, IoCContainer, get_container
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 
-from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandMeta, CommandTask
-from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
+from ghoshell_moss.core.concepts.command import (
+    BaseCommandTask, Command, CommandMeta, CommandTask,
+    CommandTaskContextVar,
+)
+from ghoshell_moss.core.concepts.states import StateModel, StateStore
 from ghoshell_moss.message import Message
+from ghoshell_common.contracts import LoggerItf
 
 __all__ = [
-    "Builder",
     "Channel",
+    "Builder",
     "MutableChannel",
+    "TaskDoneCallback",
+    "RefreshMetaCallback",
     "ChannelBroker",
+    # "Brokers",
     "ChannelFullPath",
     "ChannelMeta",
     "ChannelPaths",
     "ChannelProvider",
-    "ChannelUtils",
+    "ChannelCtx",
     "CommandFunction",
     "MessageFunction",
     "LifecycleFunction",
     "PrompterFunction",
-    "R",
     "StringType",
 ]
 
@@ -150,8 +158,6 @@ Agent 架构可以把 channel 有序排列, 然后自动拿到一个由很多个
 
 StringType = Union[str, Callable[[], str]]
 
-R = TypeVar("R")
-
 
 class ChannelMeta(BaseModel):
     """
@@ -183,172 +189,24 @@ class ChannelMeta(BaseModel):
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
 
-
-class ChannelBroker(ABC):
-    """
-    channel 运行后提供出来的通用 API.
-    只有在 channel.bootstrap 之后才可使用.
-    用于控制 channel 的所有能力.
-
-    如果用 "面向模型的高级编程语言" 角度看,
-    可以把 channel broker 理解成 python 的 ModuleType 对象.
-    """
-
-    @property
-    @abstractmethod
-    def container(self) -> IoCContainer:
-        """
-        broker 所持有的 ioc 容器.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def id(self) -> str:
-        """
-        broker 的唯一 id.
-        """
-        pass
-
-    @abstractmethod
-    def name(self) -> str:
-        """
-        对应的 channel name.
-        """
-        pass
-
-    @abstractmethod
-    def meta(self) -> ChannelMeta:
-        """
-        返回 Channel 自身的 Meta.
-        """
-        pass
-
-    @abstractmethod
-    async def refresh_meta(self) -> None:
-        """
-        更新当前的 Channel Meta 信息. 用于支持被动拉取. 不会主动推送更新.
-        """
-        pass
-
-    @abstractmethod
-    def is_connected(self) -> bool:
-        """
-        判断一个 Broker 的连接与通讯是否正常。
-        一个运行中的 Broker 不一定是正确连接的.
-        """
-        # 对于非通讯类的 channel, 比如 py-channel, 直接返回 True.
-        return True
-
-    @abstractmethod
-    async def wait_connected(self) -> None:
-        """
-        等待 broker 到连接成功.
-        """
-        pass
-
-    @abstractmethod
-    def is_running(self) -> bool:
-        """
-        是否已经启动了. 如果 Broker 被 close, is_running 为 false.
-        """
-        pass
-
-    @abstractmethod
-    def is_available(self) -> bool:
-        """
-        当前 Channel 对于使用者而言, 是否可用.
-        当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
-        """
-        pass
-
-    @abstractmethod
-    def commands(self, available_only: bool = True) -> dict[str, Command]:
-        """
-        返回所有 commands. 注意, 只返回 Channel 自身的 Command.
-        """
-        pass
-
-    @abstractmethod
-    def get_command(self, name: str) -> Optional[Command]:
-        """
-        查找一个 command. 只返回自身的 command.
-        """
-        pass
-
-    @abstractmethod
-    async def on_idle(self) -> None:
-        """
-        进入闲时状态.
-        闲时状态指当前 Broker 及其 子 Channel 都没有 CommandTask 在运行的时候.
-        """
-        pass
-
-    @abstractmethod
-    async def policy_pause(self) -> None:
-        """
-        接受到了新的命令, 要中断 policy
-        不会递归执行.
-
-        todo: policy pause 是一个错误的范式. 考虑 beta 版本移除.
-        """
-        pass
-
-    @abstractmethod
-    async def on_clear(self) -> None:
-        """
-        当轨道命令被触发清空时候执行.
-        """
-        pass
-
-    async def on_disconnect(self) -> None:
-        """
-        todo: 将这个实现成正规的生命周期函数.
-        """
-        pass
-
-    @abstractmethod
-    async def start(self) -> None:
-        """
-        启动 Channel Broker.
-        通常用 with statement 或 async exit stack 去启动.
-        只会启动当前 channel 自身.
-        """
-        pass
-
-    @abstractmethod
-    async def close(self) -> None:
-        """
-        关闭当前 broker. 同时阻塞销毁资源直到结束.
-        只会关闭当前 channel 的 broker.
-        """
-        pass
-
-    async def __aenter__(self):
-        await self.start()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    @property
-    @abstractmethod
-    def states(self) -> StateStore:
-        """
-        返回当前 Channel 的状态存储.
-
-        todo: 现在的 state store 还是验证阶段.
-        """
-        pass
+    @classmethod
+    def new_empty(cls, id: str, channel: "Channel") -> Self:
+        return cls(
+            name=channel.name(),
+            description=channel.description(),
+            dynamic=True,
+            channel_id=id,
+            available=False,
+        )
 
 
 class Builder(ABC):
     """
     用来动态构建一个 Channel 的通用接口.
     目前主要用于 py channel.
-
-    todo: decorator 风格没有统一, 同时有 with + decorator 两种语法习惯. 需要统一.
     """
+
+    # ---- decorators ---- #
 
     @abstractmethod
     def description(self) -> Callable[[StringType], StringType]:
@@ -359,19 +217,11 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def is_dynamic(self) -> bool:
-        pass
-
-    @abstractmethod
     def available(self) -> Callable[[Callable[[], bool]], Callable[[], bool]]:
         """
         注册一个函数, 用来标记 Channel 是否是 available 状态.
         todo: with 开头的不要用 decorator 形式 .
         """
-        pass
-
-    @abstractmethod
-    def is_available(self) -> bool:
         pass
 
     @abstractmethod
@@ -390,15 +240,7 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    async def get_context_message(self) -> list[Message]:
-        pass
-
-    @abstractmethod
     def instruction_messages(self, func: MessageFunction) -> MessageFunction:
-        pass
-
-    @abstractmethod
-    async def get_instruction_messages(self) -> list[Message]:
         pass
 
     @abstractmethod
@@ -441,44 +283,36 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def commands(self) -> list[Command]:
-        pass
-
-    @abstractmethod
-    def get_command(self, name: str) -> Command | None:
-        pass
-
-    @abstractmethod
-    def on_idle(self, run_policy: LifecycleFunction) -> LifecycleFunction:
+    def idle(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         注册一个函数, 当 Channel 运行 policy 时, 会执行这个函数.
         """
         pass
 
     @abstractmethod
-    async def run_idling(self):
-        pass
-
-    @abstractmethod
-    def on_start_up(self, start_func: LifecycleFunction) -> LifecycleFunction:
+    def start_up(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         启动时执行的回调.
         """
         pass
 
     @abstractmethod
-    async def run_start_up(self) -> None:
-        pass
-
-    @abstractmethod
-    def on_stop(self, stop_func: LifecycleFunction) -> LifecycleFunction:
+    def close(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         关闭时的回调.
         """
         pass
 
     @abstractmethod
-    async def run_stop(self) -> None:
+    def running(self, func: LifecycleFunction) -> LifecycleFunction:
+        """
+        整个开启时间运行的逻辑.
+        注意, 这个函数不会和 idle / pause 冲突.
+        """
+        pass
+
+    @abstractmethod
+    def pause(self, func: LifecycleFunction) -> LifecycleFunction:
         pass
 
     @abstractmethod
@@ -488,26 +322,101 @@ class Builder(ABC):
         """
         pass
 
+    # ---- builder method ---- #
+
+    @abstractmethod
+    def is_dynamic(self) -> bool:
+        pass
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def get_context_message(self) -> list[Message]:
+        pass
+
+    @abstractmethod
+    async def get_instruction_messages(self) -> list[Message]:
+        pass
+
+    @abstractmethod
+    def commands(self) -> list[Command]:
+        pass
+
+    @abstractmethod
+    def get_command(self, name: str) -> Command | None:
+        pass
+
+    @abstractmethod
+    async def on_idle(self):
+        pass
+
+    @abstractmethod
+    async def on_start_up(self) -> None:
+        pass
+
+    @abstractmethod
+    async def on_close(self) -> None:
+        pass
+
+    @abstractmethod
+    async def on_pause(self) -> None:
+        pass
+
+    @abstractmethod
+    async def on_running(self) -> None:
+        pass
+
     @abstractmethod
     def update_container(self, container: IoCContainer) -> None:
         pass
 
 
-ChannelContextVar = contextvars.ContextVar("MOSShell_Channel")
+ChannelBrokerContextVar = contextvars.ContextVar("moss.ctx.Broker")
 
 
-class ChannelUtils:
+class ChannelCtx:
     """
     提供 Channel 相关的一些工具函数.
     """
 
-    @staticmethod
-    def ctx_get_contract(contract: type[INSTANCE]) -> INSTANCE:
-        """
-        语法糖, 更快从上下文中获取
-        """
-        _chan = Channel.get_from_context()
-        return _chan.get_contract(contract)
+    @classmethod
+    def init(
+            cls,
+            broker: Optional["ChannelBroker"] = None,
+            task: Optional[CommandTask] = None,
+    ) -> None:
+        if broker:
+            ChannelBrokerContextVar.set(broker)
+        if task is not None:
+            CommandTaskContextVar.set(task)
+
+    @classmethod
+    def channel(cls) -> "Channel":
+        broker = cls.broker()
+        return broker.channel
+
+    @classmethod
+    def broker(cls) -> "ChannelBroker":
+        return ChannelBrokerContextVar.get()
+
+    @classmethod
+    def task(cls) -> CommandTask | None:
+        try:
+            return CommandTaskContextVar.get()
+        except LookupError:
+            return None
+
+    @classmethod
+    def container(cls) -> IoCContainer:
+        broker = cls.broker()
+        return broker.container
+
+    @classmethod
+    def get_contract(cls, contract: type[INSTANCE]) -> INSTANCE:
+        broker = cls.broker()
+        return broker.container.force_fetch(contract)
 
 
 class Channel(ABC):
@@ -523,55 +432,41 @@ class Channel(ABC):
         """
         pass
 
-    def get_contract(self, contract: type[INSTANCE]) -> INSTANCE:
+    @abstractmethod
+    def id(self) -> str:
         """
-        语法糖, 快速从 broker 里获取一个注册的实例.
-        todo: 搬迁到 CommandTaskCtx 中. 然后禁止使用.
+        Channel 实例也只能用 id 来判断唯一性.
         """
-        return self.broker.container.force_fetch(contract)
+        pass
+
+    @abstractmethod
+    def description(self) -> str:
+        pass
 
     @staticmethod
     def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
         """连接父子 channel 名称的标准语法. 作为全局的约束方式. """
         # todo: 校验 name 的类型, 不允许不合法的 name.
         if parent:
+            if not name:
+                return parent
             return f"{parent}.{name}"
         return name
 
     @staticmethod
-    def split_channel_path_to_names(channel_path: ChannelFullPath) -> ChannelPaths:
+    def split_channel_path_to_names(channel_path: ChannelFullPath, limit: int = -1) -> ChannelPaths:
         """
         解析出 channel 名称轨迹的标准语法.
         """
         if not channel_path:
             return []
-        return channel_path.split(".")
-
-    def set_context_var(self) -> None:
-        """
-        与 get from context 配套使用, 可以在 Command 运行时拿到 Channel 本身.
-        todo: 当 CommandTaskCtx 实现后, 彻底移除.
-        """
-        ChannelContextVar.set(self)
-
-    @staticmethod
-    def get_from_context() -> Optional["Channel"]:
-        """
-        在 Command 内部调用这个函数, 可以拿到运行它的 channel.
-        todo: 考虑彻底移除. 这个范式过于耦合.
-        """
-        try:
-            return ChannelContextVar.get()
-        except LookupError:
-            return None
+        return channel_path.split(".", limit)
 
     @property
     @abstractmethod
-    def broker(self) -> ChannelBroker:
+    def broker(self) -> Optional["ChannelBroker"]:
         """
         Channel 在 bootstrap 之后返回的运行时.
-        :raise RuntimeError: Channel 没有运行
-        # todo: 考虑彻底移除. 统一通过 CommandTaskCtx 去初始化或获取.
         """
         pass
 
@@ -594,6 +489,7 @@ class Channel(ABC):
         children = self.children()
         if len(children) == 0:
             return descendants
+        # 深度优先遍历.
         for child_name, child in children.items():
             child_path = Channel.join_channel_path(prefix, child_name)
             descendants[child_path] = child
@@ -602,14 +498,16 @@ class Channel(ABC):
                 descendants[descendant_full_path] = descendant
         return descendants
 
-    def all_channels(self) -> dict[str, "Channel"]:
+    def all_channels(self) -> dict[ChannelFullPath, "Channel"]:
         """
         语法糖, 返回所有的 channel, 包含自身.
         key 是以自身为起点的 channel path (相对路径), 用来发现原点.
         """
-        descendants = self.descendants()
-        descendants[""] = self
-        return descendants
+        all_channels = {"": self}
+        for path, channel in self.descendants().items():
+            # 保持顺序.
+            all_channels[path] = channel
+        return all_channels
 
     def get_channel(self, channel_path: str) -> Optional[Self]:
         """
@@ -654,91 +552,6 @@ class Channel(ABC):
         """
         pass
 
-    @asynccontextmanager
-    async def run_in_ctx(self, container: Optional[IoCContainer] = None) -> AsyncIterator["Channel"]:
-        """
-        语法糖, 启动当前 Channel 和它所有的子节点.
-        通常仅仅用于单元测试. 也是为了提示如何单独测试一个 Channel.
-        """
-
-        async def recursive_start(_chan: Channel) -> None:
-            await _chan.bootstrap(container).start()
-            group_start = []
-            for child in _chan.children().values():
-                if not child.is_running():
-                    group_start.append(recursive_start(child))
-            await asyncio.gather(*group_start)
-
-        async def recursive_close(_chan: Channel) -> None:
-            children = _chan.children()
-            if len(children) == 0:
-                return
-            group_stop = []
-            for child in children.values():
-                if not child.is_running():
-                    group_stop.append(recursive_close(child))
-            await asyncio.gather(*group_stop)
-            if _chan.is_running():
-                await _chan.broker.close()
-
-        # 递归运行.
-        await recursive_start(self)
-        yield self
-        await recursive_close(self)
-
-    async def execute_task(self, task: CommandTask) -> Any:
-        """
-        运行一个 task 并且给它赋予当前 channel 到被运行函数的 context vars 中.
-        todo: 彻底移除这个函数, 用 CommandTaskCtx 替代. 应该是 ChannelBroker 持有 Channel, 而不是相反.
-        """
-        if not self.is_running():
-            raise RuntimeError(f"Channel {self.name()} not running")
-        if task.done():
-            task.raise_exception()
-            return task.result()
-        task.exec_chan = self.name()
-        # 准备好 ctx. 包含 channel 的容器, 还有 command task 的 context 数据.
-        ctx = contextvars.copy_context()
-        self.set_context_var()
-        # 将 container 也放入上下文中.
-        set_container(self.broker.container)
-        task.set_context_var()
-        ctx_ran_cor = ctx.run(task.dry_run)
-        # 创建一个可以被 cancel 的 task.
-        run_execution = asyncio.create_task(ctx_ran_cor)
-        # 这个 task 是不是在运行出结果之前, 外部已经结束了.
-        wait_outside_done = asyncio.create_task(task.wait(throw=False))
-        done, pending = await asyncio.wait(
-            [run_execution, wait_outside_done],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-        if task.done():
-            task.raise_exception()
-        return await run_execution
-
-    def create_command_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
-        """example to create channel task"""
-        command = self.broker.get_command(name)
-        if command is None:
-            raise NotImplementedError(f"Channel {self.name()} has no command {name}")
-        task = BaseCommandTask.from_command(command, *args, **kwargs)
-        return task
-
-    async def execute_command(self, command: Command, *args, **kwargs) -> Any:
-        """basic example to execute command."""
-        from ghoshell_moss.core.concepts.command import BaseCommandTask
-
-        task = BaseCommandTask.from_command(command, *args, **kwargs)
-        try:
-            result = await self.execute_task(task)
-            task.resolve(result)
-            return result
-        finally:
-            if not task.done():
-                task.cancel("task is executed but not done")
-
 
 class MutableChannel(Channel, ABC):
     """
@@ -762,6 +575,254 @@ class MutableChannel(Channel, ABC):
         pass
 
 
+TaskDoneCallback = Callable[[CommandTask], None] | Callable[[CommandTask], Coroutine[None, None, None]]
+RefreshMetaCallback = Callable[[ChannelMeta], None] | Callable[[ChannelMeta], Coroutine[None, None, None]]
+
+
+class ChannelBroker(ABC):
+    """
+    Channel 具体能力的调用方式.
+    是对 Channel 的实例化.
+    设计思路上 Channel 类似 Python Module 的源代码.
+    而 ChannelBroker 相当于编译后的 ModuleType.
+
+    使用 Broker 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
+
+    >>> chan: Channel
+    >>> con: IoCContainer
+    >>> broker = chan.bootstrap(con)
+    >>> async with broker:
+    >>>     ...
+
+    为什么不叫 Client 呢? 因为 Channel 可能运行在 Client 和 Server 两侧. 它们会通过通讯被同构.
+    """
+
+    @property
+    @abstractmethod
+    def channel(self) -> "Channel":
+        """
+        Broker 持有 Channel 本身. 类似实例持有源码.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def states(self) -> StateStore:
+        """
+        可以在多个 Channel 之间实现状态的共享.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def logger(self) -> LoggerItf:
+        """
+        提供日志, 避免用户用 logging.getLogger 导致无法治理日志.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def container(self) -> IoCContainer:
+        """
+        持有 IoC 容器用来解决复杂的调用依赖.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        """
+        broker 的唯一 id.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """
+        对应的 channel name.
+        """
+        pass
+
+    @abstractmethod
+    async def clear_self(self) -> None:
+        """
+        清空 Broker 当前运行的状态.
+        """
+        pass
+
+    @abstractmethod
+    async def refresh_meta(
+            self,
+            callback: bool = True,
+    ) -> None:
+        """
+        只更新自己的 meta
+        """
+        pass
+
+    @abstractmethod
+    def meta(self) -> ChannelMeta:
+        """
+        获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
+        """
+        pass
+
+    @abstractmethod
+    def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
+        """
+        注册 meta 被刷新后的回调.
+        """
+        pass
+
+    @abstractmethod
+    def is_connected(self) -> bool:
+        """
+        判断一个 Broker 的连接与通讯是否正常。
+        一个运行中的 Broker 不一定是正确连接的.
+        举例, Server 端的 ChannelBroker 启动后, 可能并未连接到 Provider 端的 ChannelBroker.
+        """
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """
+        是否已经启动了. start < running < close
+        它用来管理主要的生命周期.
+        """
+        pass
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """
+        当前 Channel 对于使用者 (AI) 而言, 是否可用.
+        当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
+        """
+        pass
+
+    @abstractmethod
+    def commands(self, available_only: bool = True) -> dict[str, Command]:
+        """
+        返回所有 commands. 注意, 只返回 Channel 自身的 Command.
+        """
+        pass
+
+    @abstractmethod
+    def get_command(self, name: str) -> Optional[Command]:
+        """
+        查找一个 command. 只返回自身的 command.
+        """
+        pass
+
+    @abstractmethod
+    async def idle(self) -> None:
+        """
+        让 Broker 执行 Idle 生命周期, 以数字人或机器人为例, 可能会有呼吸动画, 或者闲时人脸追踪等等.
+        idle 只会对当前轨道生效, 不是递归的.
+        """
+        pass
+
+    @abstractmethod
+    async def pause(self) -> None:
+        """
+        让 Broker 进入 Pause 生命周期. Pause 和 Clear 一样, 都是递归发生作用的. 对所有子节点生效.
+        """
+        pass
+
+    @abstractmethod
+    async def execute_task_soon(self, task: CommandTask) -> None:
+        """
+        将一个 Task 推入到执行栈中. 阻塞到完成入栈为止. 仍然要在外侧 await.
+
+        ChannelBroker 运行的基本逻辑是:
+        1. 一次只能运行一个阻塞指令, 可能是 blocking command task, idle, pause 三者之一.
+        2. none-blocking 的 task 不会阻塞, 但是可以被 clear.
+        3. clear 会清空掉所有的运行状态.
+        举例:
+        >>> async def run_task(broker: ChannelBroker, t:CommandTask):
+        >>>     await broker.execute_task_soon(t)
+        >>>     return await t
+        """
+        pass
+
+    @abstractmethod
+    def on_task_done(self, callback: TaskDoneCallback) -> None:
+        """
+        注册当 Task 运行结束后的回调.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_connected(self) -> None:
+        """
+        等待 broker 到连接成功.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_closing(self) -> None:
+        """
+        等待 Broker 被中断.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_closed(self) -> None:
+        """
+        等待 Broker 彻底中断.
+        """
+        pass
+
+    def create_command_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
+        """
+        example to create channel task
+        通过 Broker 创建一个新的的 CommandTask.
+        """
+        command = self.get_command(name)
+        if command is None:
+            raise LookupError(f"Channel {self.name} has no command {name}")
+        task = BaseCommandTask.from_command(command, *args, **kwargs)
+        return task
+
+    async def execute_command(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """
+        执行命令并且阻塞等待拿到结果.
+        """
+        task = self.create_command_task(name, *args, **kwargs)
+        await self.execute_task_soon(task)
+        return await task
+
+    @abstractmethod
+    async def start(self) -> None:
+        """
+        启动 Broker
+        """
+        pass
+
+    @abstractmethod
+    async def close(self) -> None:
+        """
+        关闭 Broker.
+        """
+        pass
+
+    @abstractmethod
+    def close_sync(self) -> None:
+        """
+        同步关闭一个 Broker.
+        只有特殊情况下需要使用.
+        """
+        pass
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+
 class ChannelApp(Protocol):
     """
     简单定义一种有状态 Channel 的范式.
@@ -783,41 +844,107 @@ class ChannelApp(Protocol):
         pass
 
 
-_ChannelBrokerCtx = contextvars.ContextVar("MOSSCommandTaskCtx.Broker")
-_CommandTaskCtx = contextvars.ContextVar("MOSSCommandTaskCtx.Task")
-
-
-class CommandTaskCTX:
-    """
-    Command Task 运行时可以从执行上下文 contextvars 里拿到的数据.
-    """
-
-    @classmethod
-    def init(
-            cls,
-            broker: ChannelBroker,
-            task: CommandTask,
-    ) -> None:
-        _ChannelBrokerCtx.set(broker)
-        _CommandTaskCtx.set(task)
-
-    @classmethod
-    def broker(cls) -> ChannelBroker:
-        return _ChannelBrokerCtx.get()
-
-    @classmethod
-    def task(cls) -> CommandTask:
-        return _CommandTaskCtx.get()
-
-    @classmethod
-    def container(cls) -> IoCContainer:
-        broker = cls.broker()
-        return broker.container
-
-    @classmethod
-    def get_contract(cls, contract: type[INSTANCE]) -> INSTANCE:
-        broker = cls.broker()
-        return broker.container.force_fetch(contract)
+#
+# class Brokers:
+#     """
+#     测试工具, 用来快速实例化一个 channel 树的所有 broker
+#     """
+#
+#     def __init__(self, main: "Channel", container: IoCContainer, brokers: dict[str, "ChannelBroker"]):
+#         self.main_channel = main
+#         self.container = container
+#         self.broker_map = brokers
+#         self._start = False
+#         self._close = False
+#
+#     async def iter(self) -> AsyncIterable[tuple[ChannelFullPath, "ChannelBroker"]]:
+#         """
+#         动态获取 broker, 可能会临时初始化它们.
+#         """
+#         valid = set()
+#         all_channels = self.main_channel.all_channels()
+#         for path, channel in all_channels.items():
+#             valid.add(path)
+#             # 已经注册过.
+#             if path in self.broker_map:
+#                 yield path, self.broker_map.get(path)
+#             else:
+#                 broker = channel.bootstrap(self.container)
+#                 await broker.start()
+#                 self.broker_map[path] = broker
+#                 yield path, broker
+#
+#         invalid = []
+#         for path in self.broker_map.keys():
+#             if path not in valid:
+#                 invalid.append(path)
+#
+#         # 关闭掉不对的 broker
+#         close_invalid = []
+#         if len(invalid) > 0:
+#             for path in invalid:
+#                 broker = self.broker_map.get(path)
+#                 if broker is not None:
+#                     del self.broker_map[path]
+#                 close_invalid.append(broker.close())
+#             await asyncio.gather(*close_invalid)
+#
+#     def get(self, path: ChannelFullPath) -> "ChannelBroker":
+#         broker = self.broker_map.get(path)
+#         if broker is None:
+#             raise LookupError(f'broker {path} not found')
+#         return broker
+#
+#     def main_broker(self) -> "ChannelBroker":
+#         return self.get('')
+#
+#     async def fetch(self, path: ChannelFullPath) -> Optional["ChannelBroker"]:
+#         channel = self.main_channel.get_channel(path)
+#         broker = self.broker_map.get(path)
+#         if channel is None:
+#             if broker is not None:
+#                 await broker.close()
+#                 del self.broker_map[path]
+#             return None
+#         if broker is None:
+#             broker = channel.bootstrap(self.container)
+#             self.broker_map[path] = broker
+#             await broker.start()
+#         return broker
+#
+#     @classmethod
+#     def new(cls, channel: "Channel", container: Optional[IoCContainer] = None) -> Self:
+#         container = container or get_container()
+#         brokers = {}
+#         for path, _channel in channel.all_channels().items():
+#             brokers[path] = _channel.bootstrap(container)
+#
+#         return cls(channel, container, brokers)
+#
+#     async def start(self):
+#         if self._start:
+#             return
+#         self._start = True
+#         start_all = []
+#         for broker in self.broker_map.values():
+#             start_all.append(asyncio.create_task(broker.start()))
+#         await asyncio.gather(*start_all)
+#
+#     async def __aenter__(self) -> Self:
+#         await self.start()
+#         return self
+#
+#     async def close(self):
+#         if self._close:
+#             return
+#         self._close = True
+#         close_all = []
+#         for broker in self.broker_map.values():
+#             close_all.append(asyncio.create_task(broker.close()))
+#         await asyncio.gather(*close_all)
+#
+#     async def __aexit__(self, exc_type, exc_val, exc_tb):
+#         await self.close()
 
 
 ChannelProxy = Channel
@@ -841,6 +968,16 @@ class ChannelProvider(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()
+
+    @property
+    @abstractmethod
+    def channel(self) -> Channel:
+        pass
+
+    @property
+    @abstractmethod
+    def broker(self) -> ChannelBroker:
+        pass
 
     @abstractmethod
     async def arun(self, channel: Channel) -> None:
@@ -902,7 +1039,7 @@ class ChannelProvider(ABC):
         pass
 
     @asynccontextmanager
-    async def run_in_ctx(self, channel: Channel) -> AsyncIterator[Self]:
+    async def run_in_ctx(self, channel: Channel) -> AsyncIterable[Self]:
         """
         支持 async with statement 的运行方式调用 channel server, 通常用于测试.
         """

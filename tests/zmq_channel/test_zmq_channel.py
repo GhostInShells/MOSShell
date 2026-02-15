@@ -182,12 +182,12 @@ async def test_zmq_channel_lasy_bind():
         return "Hello"
 
     async with proxy.bootstrap() as broker:
-        assert not broker.is_available()
+        assert not broker.is_connected()
 
         # 启动连接.
         provider.run_in_thread(provider_channel)
         await broker.wait_connected()
-        assert broker.is_available()
+        assert broker.is_connected()
         cmd = broker.get_command("hello")
         assert await cmd() == "Hello"
 

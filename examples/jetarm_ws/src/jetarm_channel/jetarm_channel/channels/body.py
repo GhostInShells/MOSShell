@@ -11,7 +11,7 @@ body_chan = PyChannel(name="body")
 policy_pause_event = asyncio.Event()
 
 
-@body_chan.build.on_idle
+@body_chan.build.idle
 async def on_policy_run():
     policy_pause_event.clear()
     while not policy_pause_event.is_set():

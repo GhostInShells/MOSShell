@@ -76,6 +76,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
     def id(self) -> str:
         return self._id
 
+    @property
     def name(self) -> str:
         return self._name
 
@@ -127,7 +128,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
             raise RuntimeError(f"Channel client {self._name} is not running")
         return self._meta.model_copy()
 
-    async def refresh_meta(self) -> None:
+    async def refresh_all_metas(self) -> None:
         # todo: shall refresh command metas
         return None
 
@@ -404,13 +405,13 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         )
 
     # --- 未使用的生命周期方法（默认空实现） --- #
-    async def on_idle(self) -> None:
+    async def idle(self) -> None:
         pass
 
     async def policy_pause(self) -> None:
         pass
 
-    async def on_clear(self) -> None:
+    async def clear_all(self) -> None:
         pass
 
     def is_available(self) -> bool:

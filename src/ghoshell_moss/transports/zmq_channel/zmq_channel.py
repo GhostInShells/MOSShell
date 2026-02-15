@@ -247,7 +247,7 @@ class BaseZMQConnection(Connection, ABC):
 class ZMQProviderConnection(BaseZMQConnection):
     """提供方 ZMQ 连接"""
 
-    def is_available(self) -> bool:
+    def is_connected(self) -> bool:
         return not self.is_closed()
 
     async def _heartbeat_loop(self) -> None:
@@ -257,7 +257,7 @@ class ZMQProviderConnection(BaseZMQConnection):
 class ZMQProxyConnection(BaseZMQConnection):
     """使用方 ZMQ 连接"""
 
-    def is_available(self) -> bool:
+    def is_connected(self) -> bool:
         return not self.is_closed() and self.is_activity()
 
     def is_activity(self) -> bool:
@@ -325,6 +325,7 @@ class ZMQChannelProxy(DuplexChannelProxy):
         self,
         *,
         name: str,
+        description: str = "",
         address: str = "tcp://127.0.0.1:5555",
         socket_type: ZMQSocketType = ZMQSocketType.PAIR,
         recv_timeout: Optional[float] = None,
@@ -353,7 +354,8 @@ class ZMQChannelProxy(DuplexChannelProxy):
         connection = ZMQProxyConnection(config, logger=logger)
         super().__init__(
             name=name,
-            to_server_connection=connection,
+            description=description,
+            to_provider_connection=connection,
         )
 
 

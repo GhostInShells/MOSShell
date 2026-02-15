@@ -12,7 +12,7 @@ from ghoshell_common.contracts import LoggerItf
 from pydantic import BaseModel, Field
 
 from ghoshell_moss import CommandErrorCode
-from ghoshell_moss.core import PyChannel
+from ghoshell_moss.core import PyChannel, ChannelCtx
 from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
 
 __all__ = [
@@ -284,7 +284,7 @@ class ZMQChannelHub:
         await self.connect_or_reconnect_sub_channel_process(name, proxy_conf)
 
         # 等待 ZMQ 连接就绪
-        current_chan = PyChannel.get_from_context()
+        current_chan = ChannelCtx.channel()
         sub_channel = current_chan.get_channel(name)
         try:
             await asyncio.wait_for(sub_channel.broker.wait_connected(), timeout=timeout)
@@ -335,6 +335,6 @@ class ZMQChannelHub:
         _channel.build.command()(self.close_channel)
 
         # 注册异步关闭钩子
-        _channel.build.on_stop(self.close)
+        _channel.build.close(self.close)
 
         return _channel

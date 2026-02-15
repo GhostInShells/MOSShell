@@ -39,7 +39,6 @@ __all__ = [
     "CommandMeta",
     "CommandTask",
     "CommandTaskStack",
-    "CommandTaskState",
     "CommandTaskStateType",
     "CommandToken",
     "CommandTokenType",
@@ -47,6 +46,7 @@ __all__ = [
     "CommandWrapper",
     "PyCommand",
     "make_command_group",
+    'CommandTaskContextVar',
 ]
 
 RESULT = TypeVar("RESULT")
@@ -61,6 +61,7 @@ class CommandTaskStateType(str, Enum):
     queued = "queued"  # the command task is sent to shell runtime
     pending = "pending"  # the command task is pending in the channel runtime
     running = "running"  # the task is running
+    executing = "executing"
     failed = "failed"  # the task is failed
     done = "done"  # the task is resolved
     cancelled = "cancelled"  # the task is cancelled
@@ -73,18 +74,8 @@ class CommandTaskStateType(str, Enum):
     def is_stopped(cls, state: str | Self) -> bool:
         return state in (cls.cancelled, cls.failed)
 
-
-class CommandTaskState(str, Enum):
-    """
-    todo: 合并代码出现问题, 定义了两个 TaskState
-    """
-    CREATED = "created"
-    QUEUED = "queued"
-    PENDING = "pending"
-    RUNNING = "running"
-    FAILED = "failed"
-    DONE = "done"
-    CANCELLED = "cancelled"
+    def __str__(self):
+        return self.value
 
 
 StringType = Union[str, Callable[[], str]]
@@ -306,6 +297,9 @@ class Command(Generic[RESULT], ABC):
 
     @abstractmethod
     def is_available(self) -> bool:
+        """
+        是否是可用的.
+        """
         pass
 
     @abstractmethod
@@ -340,14 +334,29 @@ class CommandWrapper(Command[RESULT]):
             self,
             meta: CommandMeta,
             func: Callable[..., Coroutine[Any, Any, RESULT]],
+            available_fn: Callable[[], bool] | None = None,
+            ctx: contextvars.Context | None = None,
     ):
         self._func = func
         self._meta = meta
+        self._ctx = ctx
+        self._available_fn = available_fn
+
+    @classmethod
+    def wrap(cls, command: Command[RESULT], ctx: contextvars.Context | None = None) -> Command[RESULT]:
+        return CommandWrapper(
+            meta=command.meta(),
+            func=command.__call__,
+            ctx=ctx,
+            available_fn=command.is_available,
+        )
 
     def name(self) -> str:
         return self._meta.name
 
     def is_available(self) -> bool:
+        if self._available_fn is not None:
+            return self._meta.available and self._available_fn()
         return self._meta.available
 
     def meta(self) -> CommandMeta:
@@ -357,6 +366,8 @@ class CommandWrapper(Command[RESULT]):
         return None
 
     async def __call__(self, *args, **kwargs) -> RESULT:
+        if self._ctx:
+            return await self._ctx.run(self._func, *args, **kwargs)
         return await self._func(*args, **kwargs)
 
 
@@ -486,8 +497,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             return await task
 
 
-# todo: 重构为 CommandTaskCtx 对象, 用来管理运行时在 contextvars 中注入的所有变量.
-CommandTaskContextVar = contextvars.ContextVar("MOSShel_CommandTask")
+CommandTaskContextVar = contextvars.ContextVar("moss.ctx.CommandTask")
 
 
 class CommandTask(Generic[RESULT], ABC):
@@ -547,25 +557,11 @@ class CommandTask(Generic[RESULT], ABC):
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
 
     @abstractmethod
-    def result(self) -> Optional[RESULT]:
+    def result(self, throw: bool = True) -> Optional[RESULT]:
         """
-        返回 task 的结果, 但并不抛出异常.
-
-        todo: 需要改成默认抛出异常, 与 asyncio.Future 的原理一致.
+        返回 task 的结果, 可以选择是否抛出异常. 这点和 Future 不一样.
         """
         pass
-
-    def set_context_var(self) -> None:
-        """通过 context var 来传递 context"""
-        CommandTaskContextVar.set(self)
-
-    @classmethod
-    def get_from_context(cls) -> Optional["CommandTask"]:
-        """
-        从 context var 中获取 task.
-        :raise: LookupError
-        """
-        return CommandTaskContextVar.get()
 
     @abstractmethod
     def done(self) -> bool:
@@ -685,7 +681,7 @@ class CommandTask(Generic[RESULT], ABC):
         try:
             # todo: ctx 接下来统一交给 CommandTaskCtx 管理.
             ctx = contextvars.copy_context()
-            self.set_context_var()
+            CommandTaskContextVar.set(self)
             dry_run_cor = ctx.run(self.dry_run)
             dry_run = asyncio.create_task(dry_run_cor)
             wait = asyncio.create_task(self.wait())
@@ -712,6 +708,14 @@ class CommandTask(Generic[RESULT], ABC):
         finally:
             if not self.done():
                 self.cancel()
+
+    def __await__(self):
+        def generator():
+            while not self.done():
+                yield
+            return self.result()
+
+        return generator()
 
     def __repr__(self):
         tokens = self.tokens
@@ -760,8 +764,9 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self._done_lock = threading.Lock()
         self._done_callbacks = set()
 
-    def result(self) -> Optional[RESULT]:
-        # todo: 是否应该在这里 rase exception, 遵循 future 逻辑?
+    def result(self, throw: bool = True) -> Optional[RESULT]:
+        if throw:
+            self.raise_exception()
         return self._result
 
     def add_done_callback(self, fn: Callable[[CommandTask], None]):
@@ -780,6 +785,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             tokens=self.tokens,
             args=self.args,
             kwargs=self.kwargs,
+            context=self.context,
         )
 
     @classmethod

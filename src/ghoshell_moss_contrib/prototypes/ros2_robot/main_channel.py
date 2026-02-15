@@ -3,7 +3,7 @@ import json
 
 from pydantic import ValidationError
 
-from ghoshell_moss import ChannelUtils, CommandErrorCode, PyChannel
+from ghoshell_moss import ChannelCtx, CommandErrorCode, PyChannel
 from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
 from ghoshell_moss_contrib.prototypes.ros2_robot.models import Animation, Pose, Trajectory
 
@@ -53,7 +53,7 @@ def build_robot_description() -> str:
     """
     用于生成这个机器人的描述.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     return _controller.robot_state()
 
 
@@ -89,7 +89,7 @@ async def run_trajectory(text__: str) -> None:
     except Exception as e:
         raise CommandErrorCode.VALUE_ERROR.error("Invalid text__ format, must follow its JSON Schema")
 
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     # 运行这个轨迹动画.
     future = _controller.run_trajectory(trajectory)
     await normalized_wait_fut(future)
@@ -100,7 +100,7 @@ async def play(name: str) -> None:
     让机器人运行一个已经注册过的动画 (animation).
     :param name: 动画的名称. 必须是机器人信息里定义存在的动画.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     fut = _controller.play_animation_name(name)
     await normalized_wait_fut(fut)
 
@@ -122,7 +122,7 @@ def save_animation(text__: str) -> None:
     except Exception as e:
         raise CommandErrorCode.VALUE_ERROR.error("Invalid text__ format, must follow its JSON Schema")
 
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     # 保存动画.
     _controller.manager().save_animation(animation)
 
@@ -132,7 +132,7 @@ def remove_animation(name: str) -> None:
     移除一个保存过的动画.
     :param name: 动画的名称.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     _controller.manager().remove_animation(name)
 
 
@@ -154,7 +154,7 @@ async def move_to(text__: str, duration: float = 1.0) -> None:
     except ValidationError as e:
         raise CommandErrorCode.VALUE_ERROR.error("Invalid text__ format, must follow its JSON Schema")
 
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     fut = _controller.move_to_pose(pose, duration=duration)
     await normalized_wait_fut(fut)
 
@@ -165,7 +165,7 @@ async def move_to_pose(name: str, duration: float = 1.0) -> None:
     :param name: 已经保存过的位姿名称.
     :param duration: 这个执行轨迹预计消耗的时间.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     # 找到目标姿态.
     pose = _controller.manager().get_pose(name)
     future = _controller.move_to_pose(pose, duration)
@@ -178,7 +178,7 @@ async def read_pose(name: str) -> str:
     读取一个已经存在的 pose 讯息.
     :return: 目标 pose 的所有关节位置的 json, 方便你深入理解位姿.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     pose = _controller.manager().get_pose(name)
     # 返回它的 json 值.
     return pose.model_dump_json()
@@ -189,7 +189,7 @@ def remove_pose(name: str) -> None:
     移除一个已经定义的 pose.
     :param name: 必须是已经定义过的 pose 名称.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     manager = _controller.manager()
     manager.remove_pose(name)
 
@@ -199,7 +199,7 @@ async def reset_pose(duration: float = 1.0) -> None:
     机器人将重置到当前的默认姿态.
     :param duration: 预期重置到默认位姿所花的时间, 单位是秒.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     fut = _controller.reset_pose(duration)
     await normalized_wait_fut(fut)
 
@@ -209,7 +209,7 @@ def set_default_pose(name: str) -> None:
     修改机器人的默认姿态, 为一个已知的位姿.
     接下来 reset_pose 时机器人都会回到这个位姿.
     """
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     manager = _controller.manager()
     manager.set_default_pose(name)
 
@@ -231,7 +231,7 @@ def save_pose(text__: str) -> None:
     except Exception as e:
         raise CommandErrorCode.VALUE_ERROR.error("Invalid text__ format, must follow its JSON Schema")
 
-    _controller = ChannelUtils.ctx_get_contract(RobotController)
+    _controller = ChannelCtx.get_contract(RobotController)
     manager = _controller.manager()
     # 保存一个位姿.
     manager.save_pose(pose)

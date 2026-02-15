@@ -46,33 +46,51 @@ class CommandErrorCode(int, Enum):
     >= 400 是不可接受的异常, 会立刻中断 interpreter 的执行逻辑. 并且清空整批规划.
     """
 
+    # AI 需要感知到的普通运行结果.
     SUCCESS = 0
+    # 最常用的异常方式, 建议用它包装所有的 AI 需要感知的异常.
+    FAILED = 100
+
+    # --- 不需要立刻响应, 而且 AI 也不需要关心的异常. 通常是系统调度结果. --- #
 
     # 命令被取消.
-    CANCELLED = 100
+    CANCELLED = 200
     # 命令被清空.
-    CLEARED = 200
+    CLEARED = 201
+    # 命令超时被设置失败.
+    TIMEOUT = 202
     # 命令被中断.
-    INTERRUPTED = 300
+    INTERRUPTED = 203
+
+    # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 
     # 不合法的使用时机.
-    INVALID_USAGE = 400
+    INVALID_USAGE = 401
     # 参数不正确.
-    VALUE_ERROR = 401
+    VALUE_ERROR = 402
     # 命令不可用.
-    NOT_AVAILABLE = 402
+    NOT_AVAILABLE = 403
     # 命令不存在.
     NOT_FOUND = 404
+    # channel 没有启动.
     NOT_RUNNING = 405
+    # channel 未连接.
     NOT_CONNECTED = 406
 
-    # 命令执行异常.
-    FAILED = 500
-    TIMEOUT = 501
-    UNKNOWN_ERROR = 503
+    # --- 命令执行不可接受的异常 --- #
+    # 对于 AI 而言必须要立刻感知的致命异常.
+    FATAL = 500
+    UNKNOWN_ERROR = 505
 
     def error(self, message: str) -> CommandError:
         return CommandError(self.value, message)
+
+    def match(self, error: Exception | None) -> bool:
+        if not error:
+            return False
+        if not isinstance(error, CommandError):
+            return False
+        return error.code == self.value
 
     @classmethod
     def get_error_code_name(cls, value: int) -> str:

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import threading
 
 import pytest
@@ -7,10 +8,11 @@ from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     CommandTask,
     CommandTaskStack,
-    CommandTaskState,
+    CommandTaskStateType,
     PyCommand,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
+from ghoshell_moss.core.concepts.channel import ChannelCtx
 
 
 @pytest.mark.asyncio
@@ -26,7 +28,7 @@ async def test_command_task_baseline():
     await task.run()
 
     assert task.result() == 123
-    assert task.state == CommandTaskState.DONE.value
+    assert task.state == CommandTaskStateType.done.value
     assert len(task.trace) == 2
     assert task.tokens == "<foo />"
     assert task.done()
@@ -174,9 +176,39 @@ async def test_command_task_stack():
 @pytest.mark.asyncio
 async def test_command_task_in_context():
     async def foo() -> str:
-        task = CommandTask.get_from_context()
+        task = ChannelCtx.task()
         return task.cid
 
     # 可以拿到外部传递的数据.
     foo_task = BaseCommandTask.from_command(PyCommand(foo))
     assert await foo_task.run() == foo_task.cid
+
+
+def test_await_task_in_threads():
+    async def foo() -> int:
+        return 123
+
+    # 跨线程创建.
+    foo_task = BaseCommandTask.from_command(PyCommand(foo))
+
+    done = []
+
+    def thread_await_task():
+        async def wait():
+            await foo_task
+            done.append(True)
+
+        asyncio.run(wait())
+
+    threads = []
+    for i in range(10):
+        t = threading.Thread(target=thread_await_task)
+        t.start()
+        threads.append(t)
+
+    # 运行并且等待 task 结束.
+    asyncio.run(foo_task.run())
+    for t in threads:
+        t.join()
+
+    assert len(done) == 10

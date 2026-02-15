@@ -77,7 +77,7 @@ bot_chan = PyChannel(name=BOT_USERNAME.lower())
 to_follow_player = ""
 
 
-@bot_chan.build.on_idle
+@bot_chan.build.idle
 async def on_policy_run():
     global to_follow_player
     while to_follow_player != "":
@@ -281,7 +281,7 @@ async def dry_test():
     container = init()
     await asyncio.sleep(1)
 
-    async with bot_chan.run_in_ctx(container=container):
+    async with bot_chan.bootstrap(container=container):
         res = await find_blocks("oak_log")
         await dig_target(x=8, y=73, z=21)
         pass

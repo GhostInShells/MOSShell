@@ -999,7 +999,7 @@ class CommandTask(Generic[RESULT], ABC):
 
         ctx = contextvars.copy_context()
         self.set_context_var()
-        r = await ctx.run_in_ctx(self.func, *self.args, **self.kwargs)
+        r = await ctx.run(self.func, *self.args, **self.kwargs)
         return r
 
     async def run(self) -> RESULT:
@@ -1013,8 +1013,8 @@ class CommandTask(Generic[RESULT], ABC):
             return await self.wait(throw=True)
 
         try:
-            dry_run = asyncio.create_command_task(self.dry_run())
-            wait = asyncio.create_command_task(self.wait())
+            dry_run = asyncio.create_task(self.dry_run())
+            wait = asyncio.create_task(self.wait())
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
             done, pending = await asyncio.wait([dry_run, wait], return_when=asyncio.FIRST_COMPLETED)

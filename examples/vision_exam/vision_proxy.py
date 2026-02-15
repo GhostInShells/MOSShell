@@ -20,7 +20,7 @@ if __name__ == "__main__":
                     await asyncio.sleep(2)
                     if not proxy.is_running():
                         continue
-                    await proxy.broker.refresh_meta()
+                    await proxy.broker.refresh_all_metas()
                     meta = proxy.broker.meta()
                     for msg in meta.context:
                         for ct in msg.contents:

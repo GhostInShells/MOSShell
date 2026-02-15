@@ -20,20 +20,20 @@ class ConnectionNotAvailable(Exception):
 
 class Connection(ABC):
     """
-    Server 与 client 之间的通讯连接, 用来接受和发布事件.
-    Server 持有的应该是 ClientConnection
-    而 Client 持有的应该是 ServerConnection.
+    provider 与 proxy 之间的通讯连接, 用来接受和发布事件.
+    provider 持有的应该是 proxyConnection
+    而 proxy 持有的应该是 providerConnection.
     但两者的接口目前看起来应该是相似的.
     """
 
     @abstractmethod
     async def recv(self, timeout: float | None = None) -> ChannelEvent:
-        """从通讯事件循环中获取一个事件. client 获取的是 server event, server 获取的是 client event"""
+        """从通讯事件循环中获取一个事件. proxy 获取的是 provider event, provider 获取的是 proxy event"""
         pass
 
     @abstractmethod
     async def send(self, event: ChannelEvent) -> None:
-        """发送一个事件给远端, client 发送的是 client event, server 发送的是 server event."""
+        """发送一个事件给远端, proxy 发送的是 proxy event, provider 发送的是 provider event."""
         pass
 
     @abstractmethod
@@ -42,7 +42,7 @@ class Connection(ABC):
         pass
 
     @abstractmethod
-    def is_available(self) -> bool:
+    def is_connected(self) -> bool:
         """判断 connection 是否还可以用."""
         pass
 

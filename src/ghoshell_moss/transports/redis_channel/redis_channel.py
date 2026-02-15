@@ -153,7 +153,7 @@ class RedisStreamConnection(Connection):
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
 
-    def is_available(self) -> bool:
+    def is_connected(self) -> bool:
         return not self.is_closed() and self._redis is not None
 
     async def close(self) -> None:
@@ -193,6 +193,7 @@ class RedisChannelProxy(DuplexChannelProxy):
         config: RedisConnectionConfig,
         *,
         name: str,
+        description: str = "",
     ):
         connection = RedisStreamConnection(
             redis=config.redis,
@@ -203,7 +204,8 @@ class RedisChannelProxy(DuplexChannelProxy):
         )
         super().__init__(
             name=name,
-            to_server_connection=connection,
+            to_provider_connection=connection,
+            description=description,
         )
 
 

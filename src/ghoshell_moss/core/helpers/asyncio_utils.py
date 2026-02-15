@@ -104,7 +104,8 @@ class ThreadSafeEvent:
         with self._lock:
             self.thread_event.clear()
             for loop, event in self.awaits_events:
-                event.clear()
+                if loop.is_running():
+                    loop.call_soon_threadsafe(event.clear)
             self.awaits_events.clear()
 
 

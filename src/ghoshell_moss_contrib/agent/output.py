@@ -90,7 +90,7 @@ class ChatRenderSpeech(Speech):
         self._outputted[batch_id] = []
 
         def _output(item: str):
-            self._outputted[batch_id].add_task_with_paths(item)
+            self._outputted[batch_id].push_task_with_paths(item)
             self.render.update_ai_response(item)
 
         return ChatRenderSpeechStream(batch_id, _output, on_start=last_stream_close_event, close=new_close_event)

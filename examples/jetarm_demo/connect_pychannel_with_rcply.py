@@ -48,7 +48,7 @@ async def main():
     )
 
     async with chan.bootstrap() as broker:
-        await broker.refresh_meta()
+        await broker.refresh_all_metas()
         meta = broker.meta()
         print(meta.model_dump_json(indent=2))
         cmd = broker.get_command("run_trajectory")

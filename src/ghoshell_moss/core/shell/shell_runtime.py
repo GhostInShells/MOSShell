@@ -202,7 +202,7 @@ class ShellRuntime:
             # 判断 channel 是否是动态的. 只有 dynamic 为 True 才需要更新 meta.
             if channel_meta.dynamic:
                 refreshing_channels.append(channel_path)
-                refreshing_calls.append(channel.broker.refresh_meta())
+                refreshing_calls.append(channel.broker.refresh_all_metas())
 
         if len(refreshing_channels) == 0:
             # 避免冗余的调用.
