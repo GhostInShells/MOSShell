@@ -51,7 +51,7 @@ class ReachyMiniMoss:
         if frame is not None:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # convert to RGB
             img_pil = Image.fromarray(frame_rgb)
-            img_pil.save("temp.png")
+            # img_pil.save("temp.png")
             msg.with_content(
                 Text(text="This image is what you see")
             ).with_content(
@@ -61,6 +61,11 @@ class ReachyMiniMoss:
         msg.with_content(
             Text(text=f"Current head pose is {self.mini.get_current_head_pose()}")
         )
+
+        if self._is_keep_looking_user:
+            msg.with_content(
+                Text(text=f"You are keep looking user")
+            )
 
         return [msg]
 
@@ -109,16 +114,37 @@ class ReachyMiniMoss:
         await self.aclose()
 
 
-async def run_agent(container, speech):
+async def run_agent(container, speech, root_dir):
     from ghoshell_moss import new_shell
     from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf
+    from ghoshell_moss.transports.zmq_channel import ZMQChannelHub
+    from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQHubConfig, ZMQProxyConfig
+
+    # hub channel
+    zmq_hub = ZMQChannelHub(
+        config=ZMQHubConfig(
+            name="hub",
+            description="可以启动指定的子通道并运行.",
+            # todo: 当前版本全部基于约定来做. 快速验证.
+            root_dir=root_dir,
+            proxies={
+                "slide": ZMQProxyConfig(
+                    script="slide_app.py",
+                    description="可以打开你的slide studio gui，通过这个通道你可以呈现并讲述一个slide主题",
+                ),
+            },
+        ),
+    )
 
     with ReachyMini() as _mini:
         async with ReachyMiniMoss(_mini) as moss:
             shell = new_shell(container=container, speech=speech)
-            shell.main_channel.import_channels(moss.as_channel())
+            shell.main_channel.import_channels(
+                moss.as_channel(),
+                # zmq_hub.as_channel()
+            )
             agent = SimpleAgent(
-                instruction="你是reachy mini机器人, 热情且可爱",
+                instruction="你叫小灵，拥有一个reachy mini的实体机器人，你的性格热情可爱，并且给你配置了TTS功能，你说的话都可以被用户听到哦",
                 shell=shell,
                 speech=speech,
                 model=ModelConf(
@@ -137,12 +163,14 @@ async def run_agent(container, speech):
 def main():
     import pathlib
     ws_dir = pathlib.Path(__file__).parent.parent.joinpath(".workspace")
+    current_dir = pathlib.Path(__file__).parent
+    root_dir = str(current_dir.parent.joinpath("moss_zmq_channels").absolute())
 
     from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
     with workspace_container(ws_dir) as container:
         speech = get_example_speech(container, default_speaker="saturn_zh_female_keainvsheng_tob")
-        asyncio.run(run_agent(container, speech))
+        asyncio.run(run_agent(container, speech, root_dir))
 
 if __name__ == "__main__":
     main()
