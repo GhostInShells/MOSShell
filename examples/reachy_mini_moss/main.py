@@ -1,15 +1,19 @@
 import asyncio
 import logging
+import os
 
 import cv2
 from PIL import Image
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_container import Container, get_container
 from reachy_mini import ReachyMini
 from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
 
+from examples.reachy_mini_moss.audio.player import ReachyMiniStreamPlayer
 from examples.reachy_mini_moss.reachy_mini_dances_library import DanceMove
 from examples.reachy_mini_moss.reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
 from examples.reachy_mini_moss.vision.head_tracker import HeadTracker
-from ghoshell_moss import PyChannel, Message, Base64Image, Text
+from ghoshell_moss import PyChannel, Message, Base64Image, Text, Speech
 
 from examples.reachy_mini_moss.vision.yolo.model import stringify_positions
 
@@ -123,7 +127,7 @@ class ReachyMiniMoss:
         await self.aclose()
 
 
-async def run_agent(container, speech, root_dir):
+async def run_agent(container, root_dir):
     from ghoshell_moss import new_shell
     from ghoshell_moss_contrib.agent import SimpleAgent, ModelConf
     from ghoshell_moss.transports.zmq_channel import ZMQChannelHub
@@ -147,6 +151,7 @@ async def run_agent(container, speech, root_dir):
 
     with ReachyMini() as _mini:
         async with ReachyMiniMoss(_mini) as moss:
+            speech = get_speech(_mini, container, default_speaker="saturn_zh_female_keainvsheng_tob")
             shell = new_shell(container=container, speech=speech)
             shell.main_channel.import_channels(
                 moss.as_channel(),
@@ -169,17 +174,48 @@ async def run_agent(container, speech, root_dir):
             await agent.run()
 
 
+def get_speech(
+    mini: ReachyMini,
+    container: Container | None = None,
+    default_speaker: str | None = None,
+) -> Speech:
+    from ghoshell_moss.speech import TTSSpeech
+    from ghoshell_moss.speech.mock import MockSpeech
+    from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
+
+    container = container or get_container()
+    use_voice = os.environ.get("USE_VOICE_SPEECH", "no") == "yes"
+    if not use_voice:
+        return MockSpeech()
+    app_key = os.environ.get("VOLCENGINE_STREAM_TTS_APP")
+    app_token = os.environ.get("VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
+    resource_id = os.environ.get("VOLCENGINE_STREAM_TTS_RESOURCE_ID", "seed-tts-2.0")
+    if not app_key or not app_token:
+        raise NotImplementedError(
+            "Env $VOLCENGINE_STREAM_TTS_APP or $VOLCENGINE_STREAM_TTS_ACCESS_TOKEN not configured."
+            "Maybe examples/.env not set, or you need to set $USE_VOICE_SPEECH `no`"
+        )
+    tts_conf = VolcengineTTSConf(
+        app_key=app_key,
+        access_token=app_token,
+        resource_id=resource_id,
+        sample_rate=mini.media.get_output_audio_samplerate(),
+    )
+    if default_speaker:
+        tts_conf.default_speaker = default_speaker
+    return TTSSpeech(player=ReachyMiniStreamPlayer(mini), tts=VolcengineTTS(conf=tts_conf), logger=container.get(LoggerItf))
+
+
 def main():
     import pathlib
     ws_dir = pathlib.Path(__file__).parent.parent.joinpath(".workspace")
     current_dir = pathlib.Path(__file__).parent
     root_dir = str(current_dir.parent.joinpath("moss_zmq_channels").absolute())
 
-    from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
+    from ghoshell_moss_contrib.example_ws import workspace_container
 
     with workspace_container(ws_dir) as container:
-        speech = get_example_speech(container, default_speaker="saturn_zh_female_keainvsheng_tob")
-        asyncio.run(run_agent(container, speech, root_dir))
+        asyncio.run(run_agent(container, root_dir))
 
 if __name__ == "__main__":
     main()
