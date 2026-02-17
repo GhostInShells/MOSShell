@@ -17,8 +17,8 @@ from scipy.spatial.transform import Rotation as R
 
 from reachy_mini import ReachyMini
 from reachy_mini.utils.interpolation import linear_pose_interpolation
-from .yolo_head_location import HeadLocation
-
+from examples.reachy_mini_moss.vision.yolo.head_detector import HeadDetector
+from examples.reachy_mini_moss.vision.yolo.model import Position, get_position_by_track_id
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 class CameraWorker:
     """Thread-safe camera worker with frame buffering and face tracking."""
 
-    def __init__(self, reachy_mini: ReachyMini, head_location: HeadLocation = None) -> None:
+    def __init__(self, reachy_mini: ReachyMini, head_detector: HeadDetector = None) -> None:
         """Initialize."""
         self.reachy_mini = reachy_mini
-        self.head_location = head_location
+        self.head_detector = head_detector
 
         # Thread-safe frame storage
         self.latest_frame: NDArray[np.uint8] | None = None
@@ -48,6 +48,8 @@ class CameraWorker:
             0.0,
         ]  # x, y, z, roll, pitch, yaw
         self.face_tracking_lock = threading.Lock()
+        self.face_positons: List[Position] = []
+        self.current_track_id = -1
 
         # Face tracking timing variables (same as main_works.py)
         self.last_face_detected_time: float | None = None
@@ -67,18 +69,21 @@ class CameraWorker:
             # Return a copy in original BGR format (OpenCV native)
             return self.latest_frame.copy()
 
-    def get_face_tracking_offsets(
+    def get_face_tracking_data(
         self,
-    ) -> Tuple[float, float, float, float, float, float]:
-        """Get current face tracking offsets (thread-safe)."""
+    ) -> Tuple[List[float], List[Position], int]:
+        """Get current face tracking data offsets and positions (thread-safe)."""
         with self.face_tracking_lock:
-            offsets = self.face_tracking_offsets
-            return offsets[0], offsets[1], offsets[2], offsets[3], offsets[4], offsets[5]
+            return self.face_tracking_offsets.copy(), self.face_positons.copy(), self.current_track_id
 
     def set_head_tracking_enabled(self, enabled: bool) -> None:
         """Enable/disable head tracking."""
         self.is_head_tracking_enabled = enabled
         logger.info(f"Head tracking {'enabled' if enabled else 'disabled'}")
+
+    def set_tracking_id(self, tracking_id: int) -> None:
+        with self.face_tracking_lock:
+            self.current_track_id = tracking_id
 
     def start(self) -> None:
         """Start the camera worker loop in a thread."""
@@ -129,17 +134,21 @@ class CameraWorker:
                     self.previous_head_tracking_state = self.is_head_tracking_enabled
 
                     # Handle face tracking if enabled and head tracker available
-                    if self.is_head_tracking_enabled and self.head_location is not None:
-                        eye_center, _ = self.head_location.get_head_position(frame)
+                    if self.is_head_tracking_enabled and self.head_detector is not None:
+                        _, self.face_positons = self.head_detector.get_head_positions(frame)
+                        if len(self.face_positons) > 0:
+                            position = get_position_by_track_id(positions=self.face_positons, track_id=self.current_track_id)
+                            if not position:
+                                position = self.face_positons[0]
+                                self.current_track_id = position.track_id
 
-                        if eye_center is not None:
                             # Face detected - immediately switch to tracking
                             self.last_face_detected_time = current_time
                             self.interpolation_start_time = None  # Stop any interpolation
 
                             # Convert normalized coordinates to pixel coordinates
                             h, w, _ = frame.shape
-                            eye_center_norm = (eye_center + 1) / 2
+                            eye_center_norm = (position.center + 1) / 2
                             eye_center_pixels = [
                                 eye_center_norm[0] * w,
                                 eye_center_norm[1] * h,

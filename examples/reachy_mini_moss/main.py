@@ -11,6 +11,8 @@ from examples.reachy_mini_moss.reachy_mini_dances_library.collection.dance impor
 from examples.reachy_mini_moss.vision.head_tracker import HeadTracker
 from ghoshell_moss import PyChannel, Message, Base64Image, Text
 
+from examples.reachy_mini_moss.vision.yolo.model import stringify_positions
+
 logger = logging.getLogger('reachy_mini_moss')
 logger.setLevel(logging.INFO)
 
@@ -40,8 +42,13 @@ class ReachyMiniMoss:
     async def dance(self, name: str):
         await self.mini.async_play_move(DanceMove(name))
 
-    async def keep_looking_user(self, yes: bool=True):
-        self._is_keep_looking_user = yes
+    async def start_tracking_face(self, tracking_id: int=-1):
+        self._is_keep_looking_user = True
+        self._head_tracker.set_tracking_id(tracking_id)
+
+    async def stop_tracking_face(self):
+        self._is_keep_looking_user = False
+        self._head_tracker.set_tracking_id(-1)
 
     async def context_messages(self):
         msg = Message.new(role="user", name="__reachy_mini__")
@@ -57,15 +64,16 @@ class ReachyMiniMoss:
             ).with_content(
                 Base64Image.from_pil_image(img_pil)
             )
+        if self._is_keep_looking_user and self._head_tracker.face_tracking_positions:
+            msg.with_content(
+                Text(text=f"You are keep looking user with head tracking"),
+                Text(text=f"Head tracking information is {stringify_positions(self._head_tracker.face_tracking_positions)}"),
+                Text(text=f"Current tracking id is {self._head_tracker.current_tracking_id}")
+            )
 
         msg.with_content(
             Text(text=f"Current head pose is {self.mini.get_current_head_pose()}")
         )
-
-        if self._is_keep_looking_user:
-            msg.with_content(
-                Text(text=f"You are keep looking user")
-            )
 
         return [msg]
 
@@ -95,7 +103,8 @@ class ReachyMiniMoss:
         chan.build.command(doc=f"Dance name can be chosen in {AVAILABLE_MOVES.keys()}")(self.dance)
         chan.build.command()(self.wake_up)
         chan.build.command()(self.goto_sleep)
-        chan.build.command()(self.keep_looking_user)
+        chan.build.command()(self.start_tracking_face)
+        chan.build.command()(self.stop_tracking_face)
 
         return chan
 
