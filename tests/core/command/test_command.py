@@ -28,7 +28,6 @@ def test_pycommand_baseline():
         meta = command.meta()
         assert meta.name == "foo"
         assert meta.chan == ""
-        assert meta.description == ""
         assert meta.type is CommandType.FUNCTION.value
         assert meta.delta_arg is None
         assert meta.available

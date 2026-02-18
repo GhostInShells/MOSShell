@@ -646,7 +646,7 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def clear_self(self) -> None:
+    async def clear(self) -> None:
         """
         清空 Broker 当前运行的状态.
         """
@@ -704,7 +704,7 @@ class ChannelBroker(ABC):
     @abstractmethod
     def commands(self, available_only: bool = True) -> dict[str, Command]:
         """
-        返回所有 commands. 注意, 只返回 Channel 自身的 Command.
+        返回当前 ChannelBroker 自身的 commands. key 是 command 自身的名字.
         """
         pass
 

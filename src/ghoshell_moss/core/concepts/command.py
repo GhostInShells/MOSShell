@@ -220,10 +220,6 @@ class CommandMeta(BaseModel):
 
     name: str = Field(description="the name of the command")
     chan: str = Field(default="", description="the channel name that the command belongs to")
-    description: str = Field(
-        default="",
-        description="the doc of the command",
-    )
     dynamic: bool = Field(default=False, description="whether this command is dynamic or not")
     available: bool = Field(
         default=True,
@@ -445,8 +441,8 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     def _generate_meta(self) -> CommandMeta:
         meta = CommandMeta(name=self._name)
         meta.chan = self._chan or ""
-        meta.description = self._unwrap_string_type(self._doc_or_fn, meta.description)
-        meta.interface = self._gen_interface(meta.name, meta.description)
+        doc = self._unwrap_string_type(self._doc_or_fn, "")
+        meta.interface = self._gen_interface(meta.name, doc)
         meta.available = self.is_available()
         meta.delta_arg = self._delta_arg
         meta.call_soon = self._call_soon

@@ -327,7 +327,7 @@ class ChannelTreeRuntime:
         # 先确认清空 pending, 面得有并行错误.
         await self._clear_self()
         # 清空自己自身的 broker.
-        refresh_tasks = [asyncio.create_task(self._broker.clear_self())]
+        refresh_tasks = [asyncio.create_task(self._broker.clear())]
         # 清空子孙 runtime.
         for runtime in self._children_runtimes.values():
             # 先序遍历, 递归清空.

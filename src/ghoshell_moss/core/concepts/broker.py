@@ -252,13 +252,13 @@ class AbsChannelBroker(ChannelBroker, ABC):
     async def clear_all(self) -> None:
         if not self.is_running():
             return
-        clear_tasks = [self._loop.create_task(self.clear_self())]
+        clear_tasks = [self._loop.create_task(self.clear())]
         for broker in self._children_brokers.values():
             if broker.is_running():
                 clear_tasks.append(broker.clear_all())
         await asyncio.gather(*clear_tasks)
 
-    async def clear_self(self) -> None:
+    async def clear(self) -> None:
         """
         当轨道命令被触发清空时候执行.
         """
