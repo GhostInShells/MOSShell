@@ -1,4 +1,7 @@
+import asyncio
+import json
 import logging
+from typing import List, Dict
 
 import numpy as np
 from numpy import typing as npt
@@ -47,6 +50,14 @@ class Antennas:
         self._state = state
         self.logger = logger
 
+        self.is_idle = asyncio.Event()
+        self.idle_move_enable = asyncio.Event()
+        self.idle_move_enable.set()
+        self.idle_move_params: List[Dict] = [
+            {"left": 30, "right": -30, "duration": 1.0},
+            {"left": -10, "right": 10, "duration": 1.0},
+        ]
+
     async def move(self, left: float=0, right: float=0, duration: float=2.0):
         """
         Move the antenna to the given position and duration.
@@ -76,6 +87,25 @@ class Antennas:
             duration=duration,
         ))
 
+    async def set_idle_move(self,  text__: str):
+        """
+        Give a params to move antennas on idle state
+
+        Args:
+            text__ (str): using JSON to implement the cyclic reciprocation of antenna movements, like `[{"left": 30, "right": -30, "duration": 1.0}, {"left": -10, "right": 10, "duration": 1.0}]`
+        """
+
+        self.idle_move_params = json.loads(text__)
+
+    async def idle_move_switch(self, enable: bool=True):
+        """
+        Enable antenna move on idle state or not.
+        """
+        if enable:
+            self.idle_move_enable.set()
+        else:
+            self.idle_move_enable.clear()
+
     def _get_current_position(self):
         r_rad, l_rad = self.mini.get_present_antenna_joint_positions()
         r_degree, l_degree = round(np.rad2deg(r_rad), 1), round(np.rad2deg(l_rad), 1)
@@ -89,7 +119,24 @@ class Antennas:
             Text(text=f"Current antennas right degree:{r_degree}, left degree: {l_degree}")
         )
 
+        if self.idle_move_enable.is_set():
+            msg.with_content(
+                Text(text=f"You are moving antenna on idle with move {self.idle_move_params}")
+            )
+
         return [msg]
+
+    async def on_policy_run(self):
+        await self.reset(duration=1.0)
+        self.is_idle.set()
+        while self._state.waken.is_set() and self.is_idle.is_set() and self.idle_move_enable.is_set():
+            for params in self.idle_move_params:
+                await self.move(**params)
+                await asyncio.sleep(0.1)
+
+    async def on_policy_pause(self):
+        self.is_idle.clear()
+        await self.reset(duration=0.5)
 
     def as_channel(self) -> PyChannel:
         description = """
@@ -100,7 +147,11 @@ Two antennas are on the head like your ears, one on each side.
         antennas = PyChannel(name="antennas", description=description.strip(), block=True)
 
         antennas.build.with_context_messages(self.context_messages)
+        antennas.build.on_policy_run(self.on_policy_run)
+        antennas.build.on_policy_pause(self.on_policy_pause)
         antennas.build.command()(self.move)
         antennas.build.command()(self.reset)
+        antennas.build.command()(self.set_idle_move)
+        antennas.build.command()(self.idle_move_switch)
 
         return antennas
