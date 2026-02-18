@@ -97,7 +97,7 @@ async def test_thread_channel_baseline():
         assert main_broker.is_running()
         assert main_broker.is_connected()
         assert main_broker.is_running()
-        proxy_side_foo_meta = main_broker.meta()
+        proxy_side_foo_meta = main_broker.self_meta()
         assert proxy_side_foo_meta.available
         assert len(proxy_side_foo_meta.commands) > 0
         assert proxy_side_foo_meta.name == "provider"
@@ -110,14 +110,14 @@ async def test_thread_channel_baseline():
             proxy_broker = proxy_runtime.broker
             # 阻塞等待连接成功.
             await proxy_broker.wait_connected()
-            proxy_meta = proxy_broker.meta()
+            proxy_meta = proxy_broker.self_meta()
             assert proxy_meta.name == "proxy"
             assert proxy_meta is not None
             # 名字被替换了.
             assert proxy_meta.available is True
             # 存在目标命令.
-            assert len(proxy_meta.commands) == 1
-            foo_cmd_meta = proxy_meta.commands[0]
+            assert len(proxy_meta.self_commands) == 1
+            foo_cmd_meta = proxy_meta.self_commands[0]
             # 服务端和客户端的 command 使用的 chan 会变更
             # proxy.a / proxy.b
             assert foo_cmd_meta.name == foo_cmd.meta().name
@@ -129,7 +129,7 @@ async def test_thread_channel_baseline():
             # 判断 proxy 也有 children
             proxy_chan_children = proxy_chan.children()
             assert "a" in proxy_chan_children
-            assert main_broker.meta().name == "provider"
+            assert main_broker.self_meta().name == "provider"
             assert proxy_meta.name == "proxy"
 
             # 获取这个子 channel, 它应该已经启动了.
@@ -138,9 +138,9 @@ async def test_thread_channel_baseline():
             assert a_chan.is_running()
 
             # 客户端仍然可以调用命令.
-            proxy_side_foo = proxy_broker.get_command("foo")
+            proxy_side_foo = proxy_broker.get_self_command("foo")
             assert proxy_side_foo is not None
-            proxy_side_foo_meta = proxy_side_foo.meta()
+            proxy_side_foo_meta = proxy_side_foo.self_meta()
             # 这里虽然来自 provider, 但是 chan 被改写成了 proxy.
             assert proxy_side_foo_meta.chan == "proxy"
             result = await proxy_side_foo()
@@ -169,7 +169,7 @@ async def test_thread_channel_lost_connection():
         # 模拟连接中断（通过关闭 provider）
         provider.close()
         assert proxy.is_running()
-        foo = proxy.broker.get_command("foo")
+        foo = proxy.broker.get_self_command("foo")
         # 中断后抛出 command error.
         with pytest.raises(CommandError):
             result = await foo()
@@ -197,17 +197,17 @@ async def test_thread_channel_refresh_meta():
         # 验证连接正常
         assert runtime.broker.is_running()
 
-        foo = runtime.get_command("foo")
-        assert "hello" in foo.meta().interface
+        foo = runtime.get_self_command("foo")
+        assert "hello" in foo.self_meta().interface
 
         foo_doc = "world"
 
         # 没有立刻变更:
-        foo1 = runtime.get_command("foo")
-        assert "hello" in foo1.meta().interface
+        foo1 = runtime.get_self_command("foo")
+        assert "hello" in foo1.self_meta().interface
 
         await runtime.refresh_all_metas()
-        foo2 = proxy.broker.get_command("foo")
+        foo2 = proxy.broker.get_self_command("foo")
 
         assert foo2 is not foo1
         assert "hello" not in foo2.meta().interface
@@ -264,7 +264,7 @@ async def test_thread_channel_exception():
         await proxy_broker.wait_connected()
         assert proxy_broker.is_available()
         assert proxy_broker.is_running()
-        _foo = proxy_broker.get_command("foo")
+        _foo = proxy_broker.get_self_command("foo")
         with pytest.raises(CommandError):
             await _foo()
 

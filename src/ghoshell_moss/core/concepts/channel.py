@@ -20,7 +20,7 @@ from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask, Command, CommandMeta, CommandTask,
-    CommandTaskContextVar,
+    CommandTaskContextVar, CommandUniqueName,
 )
 from ghoshell_moss.core.concepts.states import StateModel, StateStore
 from ghoshell_moss.message import Message
@@ -312,10 +312,6 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def pause(self, func: LifecycleFunction) -> LifecycleFunction:
-        pass
-
-    @abstractmethod
     def with_binding(self, contract: type[INSTANCE], binding: INSTANCE) -> Self:
         """
         register default bindings for the given contract.
@@ -358,10 +354,6 @@ class Builder(ABC):
 
     @abstractmethod
     async def on_close(self) -> None:
-        pass
-
-    @abstractmethod
-    async def on_pause(self) -> None:
         pass
 
     @abstractmethod
@@ -575,8 +567,9 @@ class MutableChannel(Channel, ABC):
         pass
 
 
+ChannelInterface = dict[ChannelFullPath, ChannelMeta]
 TaskDoneCallback = Callable[[CommandTask], None] | Callable[[CommandTask], Coroutine[None, None, None]]
-RefreshMetaCallback = Callable[[ChannelMeta], None] | Callable[[ChannelMeta], Coroutine[None, None, None]]
+RefreshMetaCallback = Callable[[ChannelInterface], None] | Callable[[ChannelInterface], Coroutine[None, None, None]]
 
 
 class ChannelBroker(ABC):
@@ -646,35 +639,45 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def clear(self) -> None:
-        """
-        清空 Broker 当前运行的状态.
-        """
-        pass
-
-    @abstractmethod
     async def refresh_meta(
             self,
             callback: bool = True,
     ) -> None:
         """
-        只更新自己的 meta
+        更新元信息.
         """
         pass
 
-    @abstractmethod
-    def meta(self) -> ChannelMeta:
+    def self_meta(self) -> ChannelMeta:
         """
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
         """
+        return self.interface().get("")
+
+    @abstractmethod
+    def interface(self) -> dict[ChannelFullPath, ChannelMeta]:
+        """
+        返回当前模块自身的所有 meta 信息.
+        dict 本身是有序的.
+        """
         pass
 
     @abstractmethod
-    def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
+    def children(self) -> dict[str, Channel]:
         """
-        注册 meta 被刷新后的回调.
+        当前持有的子 Channel.
         """
         pass
+
+    @abstractmethod
+    def descendants(self) -> dict[ChannelFullPath, Self]:
+        pass
+
+    def all_brokers(self) -> dict[ChannelFullPath, Self]:
+        result = {"": self}
+        descendants = self.descendants()
+        result.update(descendants)
+        return result
 
     @abstractmethod
     def is_connected(self) -> bool:
@@ -702,48 +705,57 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    def commands(self, available_only: bool = True) -> dict[str, Command]:
+    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         """
-        返回当前 ChannelBroker 自身的 commands. key 是 command 自身的名字.
-        """
-        pass
-
-    @abstractmethod
-    def get_command(self, name: str) -> Optional[Command]:
-        """
-        查找一个 command. 只返回自身的 command.
+        返回当前 ChannelBroker 自身的 commands.
+        key 是 command 在当前 Broker 内部的唯一名字.
         """
         pass
 
     @abstractmethod
-    async def idle(self) -> None:
+    def get_self_command(self, name: str) -> Optional[Command]:
         """
-        让 Broker 执行 Idle 生命周期, 以数字人或机器人为例, 可能会有呼吸动画, 或者闲时人脸追踪等等.
-        idle 只会对当前轨道生效, 不是递归的.
-        """
-        pass
-
-    @abstractmethod
-    async def pause(self) -> None:
-        """
-        让 Broker 进入 Pause 生命周期. Pause 和 Clear 一样, 都是递归发生作用的. 对所有子节点生效.
+        获取一个
         """
         pass
 
     @abstractmethod
-    async def execute_task_soon(self, task: CommandTask) -> None:
+    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+        pass
+
+    @abstractmethod
+    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+        pass
+
+    @abstractmethod
+    async def clear(self) -> None:
+        """
+        清空当前 Broker 所有的运行状态.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_idle(self) -> None:
+        pass
+
+    async def push_task(self, task: CommandTask) -> None:
         """
         将一个 Task 推入到执行栈中. 阻塞到完成入栈为止. 仍然要在外侧 await.
 
         ChannelBroker 运行的基本逻辑是:
-        1. 一次只能运行一个阻塞指令, 可能是 blocking command task, idle, pause 三者之一.
+        1. 一次只能运行一个阻塞 task
         2. none-blocking 的 task 不会阻塞, 但是可以被 clear.
         3. clear 会清空掉所有的运行状态.
         举例:
         >>> async def run_task(broker: ChannelBroker, t:CommandTask):
-        >>>     await broker.execute_task_soon(t)
+        >>>     await broker.push_task(t)
         >>>     return await t
         """
+        paths = Channel.split_channel_path_to_names(task.chan)
+        await self.push_task_with_paths(paths, task)
+
+    @abstractmethod
+    async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         pass
 
     @abstractmethod
@@ -754,16 +766,13 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def wait_connected(self) -> None:
-        """
-        等待 broker 到连接成功.
-        """
+    def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
         pass
 
     @abstractmethod
-    async def wait_closing(self) -> None:
+    async def wait_connected(self) -> None:
         """
-        等待 Broker 被中断.
+        等待 broker 到连接成功.
         """
         pass
 
@@ -774,7 +783,13 @@ class ChannelBroker(ABC):
         """
         pass
 
-    def create_command_task(self, name: str, *args: Any, **kwargs: Any) -> CommandTask:
+    def create_command_task(
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
+    ) -> CommandTask:
         """
         example to create channel task
         通过 Broker 创建一个新的的 CommandTask.
@@ -782,15 +797,29 @@ class ChannelBroker(ABC):
         command = self.get_command(name)
         if command is None:
             raise LookupError(f"Channel {self.name} has no command {name}")
-        task = BaseCommandTask.from_command(command, *args, **kwargs)
+        args = args or ()
+        kwargs = kwargs or {}
+        chan, command_name = Command.split_uniquename(name)
+        task = BaseCommandTask.from_command(
+            command,
+            chan,
+            *args,
+            **kwargs,
+        )
         return task
 
-    async def execute_command(self, name: str, *args: Any, **kwargs: Any) -> Any:
+    async def execute_command(
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
+    ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.
         """
-        task = self.create_command_task(name, *args, **kwargs)
-        await self.execute_task_soon(task)
+        task = self.create_command_task(name, args=args, kwargs=kwargs)
+        await self.push_task(task)
         return await task
 
     @abstractmethod
@@ -815,11 +844,13 @@ class ChannelBroker(ABC):
         """
         pass
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_val:
+            self.logger.exception(exc_val)
         await self.close()
 
 

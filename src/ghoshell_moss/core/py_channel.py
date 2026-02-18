@@ -18,9 +18,10 @@ from ghoshell_moss.core.concepts.channel import (
     LifecycleFunction,
     ChannelCtx,
     StringType,
+    ChannelPaths,
 )
 from ghoshell_moss.core.concepts.broker import AbsChannelBroker
-from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
+from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandTask
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore
 from ghoshell_common.helpers import uuid
 
@@ -291,14 +292,8 @@ class PyChannel(MutableChannel):
         )
         return self._broker
 
-    def _get_children_names(self) -> list[str]:
-        return list(self._children.keys())
-
     def is_running(self) -> bool:
         return self._broker is not None and self._broker.is_running()
-
-    def __del__(self):
-        self._children.clear()
 
 
 class PyChannelBroker(AbsChannelBroker):
@@ -325,7 +320,11 @@ class PyChannelBroker(AbsChannelBroker):
         if not self.is_running():
             raise RuntimeError(f"Channel {self} not running")
 
-    async def generate_meta(self) -> ChannelMeta:
+    def children(self) -> dict[str, Channel]:
+        result = self._channel.children()
+        return result
+
+    async def generate_self_meta(self) -> ChannelMeta:
         dynamic = self._dynamic or False
         command_metas = []
         commands = self._builder.commands()
@@ -363,7 +362,6 @@ class PyChannelBroker(AbsChannelBroker):
             channel_id=self.id,
             available=self._builder.is_available(),
             description=self.channel.description(),
-            children=list(self.channel.children().keys()),
             context=new_context_messages,
             instructions=new_instruction_messages,
         )
@@ -371,7 +369,9 @@ class PyChannelBroker(AbsChannelBroker):
         meta.commands = command_metas
         return meta
 
-    def commands(self, available_only: bool = True) -> dict[str, Command]:
+    # ---- commands ---- #
+
+    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
@@ -388,9 +388,9 @@ class PyChannelBroker(AbsChannelBroker):
             return None
         ctx = contextvars.copy_context()
         ChannelCtx.init(self)
-        return CommandWrapper.wrap(command)
+        return CommandWrapper.wrap(command, ctx)
 
-    def get_command(
+    def get_self_command(
             self,
             name: str,
     ) -> Optional[Command]:
@@ -411,14 +411,9 @@ class PyChannelBroker(AbsChannelBroker):
             self.logger.exception(e)
             raise
 
-    async def on_pause(self) -> None:
-        await self._builder.on_pause()
-
-    async def on_clear(self) -> None:
-        pass
-
     async def on_start_up(self) -> None:
         # 准备 start up 的运行.
+        await self.refresh_meta()
         await self._builder.on_start_up()
 
     async def on_close(self) -> None:

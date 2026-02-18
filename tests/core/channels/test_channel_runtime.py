@@ -22,9 +22,9 @@ async def test_channel_runtime_execution():
         await runtime.wait_blocking_task_done()
         assert runtime.is_blocking_task_empty()
 
-        foo_cmd = runtime.get_command("foo")
+        foo_cmd = runtime.get_self_command("foo")
         assert foo_cmd is not None
-        assert foo_cmd.meta().chan == ""
+        assert foo_cmd.self_meta().chan == ""
         task = BaseCommandTask.from_command(foo_cmd)
         await runtime.put_task(task)
         await task.wait()
@@ -94,7 +94,7 @@ async def test_child_channel_runtime_running():
         assert a_runtime is not None
         assert a_runtime.is_running()
         assert main.children().get("a") is a
-        commands = runtime.commands()
+        commands = runtime.self_commands()
         assert "bar" in commands
 
         bar_cmd = commands["bar"]

@@ -51,14 +51,14 @@ async def test_redis_channel_baseline():
                 assert proxy.is_running()
 
                 # 获取 channel meta
-                meta = broker.meta()
+                meta = broker.self_meta()
                 assert meta is not None
                 assert meta.name == "test_redis_channel"
-                assert len(meta.commands) == 1
-                assert meta.commands[0].name == "foo"
+                assert len(meta.self_commands) == 1
+                assert meta.self_commands[0].name == "foo"
 
                 # 获取命令并执行
-                cmd = broker.get_command("foo")
+                cmd = broker.get_self_command("foo")
                 assert cmd is not None
 
                 # 测试命令执行

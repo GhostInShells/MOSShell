@@ -514,6 +514,7 @@ class CommandTask(Generic[RESULT], ABC):
     def __init__(
             self,
             *,
+            chan: str,
             meta: CommandMeta,
             func: Callable[..., Coroutine[None, None, RESULT]] | None,
             tokens: str,
@@ -523,6 +524,7 @@ class CommandTask(Generic[RESULT], ABC):
             context: dict[str, Any] | None = None,
             idx: int = 0,
     ) -> None:
+        self.chan = chan
         self.cid: str = cid or uuid()
         self.tokens: str = tokens
         self.args: list = list(args)
@@ -545,7 +547,7 @@ class CommandTask(Generic[RESULT], ABC):
         self.trace: dict[str, float] = {
             "created": time.time(),
         }
-        self.send_through: list[str] = []
+        self.send_through: list[str] = ['']
         self.exec_chan: Optional[str] = None
         """记录 task 在哪个 channel 被运行. """
 
@@ -738,6 +740,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     def __init__(
             self,
             *,
+            chan: str,
             meta: CommandMeta,
             func: Callable[..., Coroutine[None, None, RESULT]] | None,
             tokens: str,
@@ -747,6 +750,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
+            chan=chan,
             meta=meta,
             func=func,
             tokens=tokens,
@@ -785,11 +789,18 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         )
 
     @classmethod
-    def from_command(cls, command_: Command[RESULT], *args, tokens_: str = "", **kwargs) -> "BaseCommandTask":
+    def from_command(
+            cls,
+            command_: Command[RESULT],
+            chan_: str = "",
+            *args,
+            **kwargs,
+    ) -> "BaseCommandTask":
         return cls(
+            chan=chan_,
             meta=command_.meta(),
             func=command_.__call__,
-            tokens=tokens_,
+            tokens="",
             args=list(args),
             kwargs=kwargs,
         )
@@ -986,28 +997,27 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
 class CommandTaskStack:
     """
     特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回.
-    todo: 重新命名, 强调其原语属性.
     """
 
     def __init__(
             self,
             iterator: AsyncIterator[CommandTask] | list[CommandTask],
-            on_success: Callable[[list[CommandTask]], Coroutine[None, None, Any]] | Any = None,
+            callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
     ) -> None:
         self._iterator = iterator
-        self._on_success = on_success
+        self._on_callback = callback
         self._generated = []
 
-    async def success(self, owner: CommandTask) -> None:
+    async def callback(self, owner: CommandTask) -> None:
         """
         回调 owner.
         """
-        if self._on_success and callable(self._on_success):
+        if self._on_callback and callable(self._on_callback):
             # 如果是回调函数, 则用回调函数决定 task.
-            result = await self._on_success(self._generated)
+            result = await self._on_callback(self._generated)
             owner.resolve(result)
         else:
-            owner.resolve(self._on_success)
+            owner.resolve(None)
 
     def generated(self) -> list[CommandTask]:
         return self._generated.copy()

@@ -152,7 +152,7 @@ async def test_command_task_stack():
                     count += 1
             return count
 
-        return CommandTaskStack(iter_tasks(), on_success=result)
+        return CommandTaskStack(iter_tasks(), callback=result)
 
     bar_task = BaseCommandTask.from_command(PyCommand(bar))
     # 返回的应该是一个 stack.
@@ -167,7 +167,7 @@ async def test_command_task_stack():
         if i == 2:
             break
 
-    await stack.success(bar_task)
+    await stack.callback(bar_task)
     assert bar_task.result() == 2
     assert bar_task.done()
     assert bar_task.success()

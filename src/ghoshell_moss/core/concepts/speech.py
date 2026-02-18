@@ -176,6 +176,7 @@ class SpeechStream(ABC):
         )
 
         command = CommandWrapper(meta, _speech_lifecycle)
+        # todo
         task = BaseCommandTask.from_command(
             command,
         )

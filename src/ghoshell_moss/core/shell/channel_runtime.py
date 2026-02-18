@@ -138,12 +138,12 @@ class ChannelRuntime:
         self._check_running()
         if not self.is_available():
             return {}
-        return self.channel.broker.commands(available_only)
+        return self.channel.broker.self_commands(available_only)
 
     def channel_meta(self) -> ChannelMeta:
         self._check_running()
         # 保持更新. 返回值自我应该复制, 保证不污染.
-        return self.channel.broker.meta()
+        return self.channel.broker.self_meta()
 
     def is_busy(self) -> bool:
         """
@@ -473,7 +473,7 @@ class ChannelRuntime:
             # 真的轮到自己执行它了.
             task.set_state("running")
             # 先执行一次 command, 拿到可能的 command_seq, 主要用来做 resolve.
-            await self.channel.broker.execute_task_soon(task)
+            await self.channel.broker.push_task(task)
             result = await task
             if not isinstance(result, CommandTaskStack):
                 # 返回一个栈, command task 的结果需要在栈外判断.
@@ -539,7 +539,7 @@ class ChannelRuntime:
                     continue
 
                 # 阻塞.
-                await self.channel.broker.execute_task_soon(sub_task)
+                await self.channel.broker.push_task(sub_task)
                 result = await sub_task
                 if isinstance(result, CommandTaskStack):
                     # 递归执行
@@ -548,7 +548,7 @@ class ChannelRuntime:
             # 完成了所有子节点的调度后, 通知回调函数.
             # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
             #          如果有异常又是否要取消所有的 child task.
-            await stack.success(owner)
+            await stack.callback(owner)
             return
         except FatalError:
             raise

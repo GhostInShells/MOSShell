@@ -653,13 +653,13 @@ class DuplexChannelBroker(AbsChannelBroker):
         if not self.is_running():
             raise RuntimeError(f"Channel proxy {self._name} is not running")
 
-    async def generate_meta(self) -> ChannelMeta:
+    async def generate_self_meta(self) -> ChannelMeta:
         if self.is_running() and self._ctx.is_connected():
             if self.is_root():
                 await self._ctx.refresh_meta()
         return self._generate_meta_in_ctx()
 
-    def meta(self) -> ChannelMeta:
+    def self_meta(self) -> ChannelMeta:
         # 不基于 cache meta. 任何时候都从 ctx 中获取.
         return self._generate_meta_in_ctx()
 
@@ -695,7 +695,7 @@ class DuplexChannelBroker(AbsChannelBroker):
     async def wait_connected(self) -> None:
         return await self._ctx.wait_connected()
 
-    def commands(self, available_only: bool = True) -> dict[str, Command]:
+    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         # 先获取本地的命令.
         result = {}
         # 拿出原始的 meta.
@@ -748,8 +748,8 @@ class DuplexChannelBroker(AbsChannelBroker):
 
         return _call_provider_as_func
 
-    def get_command(self, name: str) -> Optional[Command]:
-        meta = self.meta()
+    def get_self_command(self, name: str) -> Optional[Command]:
+        meta = self.self_meta()
         for command_meta in meta.commands:
             if command_meta.name == name:
                 func = self._get_provider_command_func(command_meta)

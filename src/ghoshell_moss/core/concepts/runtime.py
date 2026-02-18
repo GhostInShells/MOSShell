@@ -181,7 +181,7 @@ class ChannelTreeRuntime:
     def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         if not self.is_running():
             return {}
-        result = {self._path: self._broker.meta()}
+        result = {self._path: self._broker.self_meta()}
         for runtime in self._children_runtimes.values():
             for path, meta in runtime.metas().items():
                 result[path] = meta
@@ -215,7 +215,7 @@ class ChannelTreeRuntime:
         if not self.is_running():
             return {}
         result: dict[CommandUniqueName, Command] = {}
-        for name, command in self._broker.commands(available_only=available_only).items():
+        for name, command in self._broker.self_commands(available_only=available_only).items():
             unique_name = Command.make_uniquename(self._path, name)
             result[unique_name] = CommandWrapper(
                 meta=command.meta().model_copy(update={"chan": self._path}),
@@ -229,7 +229,7 @@ class ChannelTreeRuntime:
 
     def get_command_by_paths(self, paths: ChannelPaths, name: str) -> Optional[Command]:
         if len(paths) == 0:
-            command = self._broker.get_command(name)
+            command = self._broker.get_self_command(name)
             return command
 
         child_name = paths[0]
@@ -305,7 +305,7 @@ class ChannelTreeRuntime:
                     # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务. 这其中也递归地包含子节点的任务.
                     await self.clear()
                 # 立刻将它放入 broker 的执行队列. 它会被尽快执行.
-                await self._broker.execute_task_soon(task)
+                await self._broker.push_task(task)
                 # 并不阻塞等待结果, 而是立刻返回.
                 return
 
@@ -536,7 +536,7 @@ class ChannelTreeRuntime:
             # 所以非阻塞任务任何时候都会优先执行. 它不会被子孙阻塞, 也不会阻塞后面的任务.
             if not task.meta.blocking:
                 # 非阻塞任务立刻执行.
-                await self._broker.execute_task_soon(task)
+                await self._broker.push_task(task)
                 # 而且不需要阻塞等待.
                 return
 
@@ -581,7 +581,7 @@ class ChannelTreeRuntime:
             # 先不着急, 复制一份, 用来处理特殊的返回值逻辑.
             execute_task = task.copy()
             # 让 broker 去执行它.
-            await self._broker.execute_task_soon(execute_task)
+            await self._broker.push_task(execute_task)
             # 等待 execute_task 运行结束.
             origin_task_done = asyncio.create_task(task.wait(throw=False))
             execute_task_done = asyncio.create_task(execute_task.wait(throw=False))
@@ -657,11 +657,11 @@ class ChannelTreeRuntime:
                 # 非阻塞
                 elif not sub_task.meta.blocking:
                     # 异步执行了.
-                    await self._broker.execute_task_soon(sub_task)
+                    await self._broker.push_task(sub_task)
                     continue
 
                 # 阻塞.
-                await self.channel.broker.execute_task_soon(sub_task)
+                await self.channel.broker.push_task(sub_task)
                 result = await sub_task
                 if isinstance(result, CommandTaskStack):
                     # 递归执行
@@ -670,7 +670,7 @@ class ChannelTreeRuntime:
             # 完成了所有子节点的调度后, 通知回调函数.
             # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
             #          如果有异常又是否要取消所有的 child task.
-            await stack.success(owner)
+            await stack.callback(owner)
             return
         except Exception as e:
             # 不要留尾巴?

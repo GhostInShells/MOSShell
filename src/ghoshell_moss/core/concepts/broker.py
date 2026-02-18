@@ -1,28 +1,191 @@
-from .channel import ChannelBroker
+import contextlib
+
 import asyncio
 import contextvars
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from typing import (
-    Optional, Iterable,
+    Optional, Iterable, Any, TypeVar, Generic
 )
 
 from ghoshell_container import IoCContainer, Container
 
-from ghoshell_moss.core.concepts.command import CommandTask, CommandTaskStateType
+from ghoshell_moss.core.concepts.command import (
+    CommandTask, CommandTaskStateType, CommandTaskStack, CommandUniqueName, Command,
+)
 from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore
+from ghoshell_moss.core.concepts.channel import (
+    ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelBroker,
+    ChannelFullPath, ChannelPaths,
+)
+from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
-from .errors import CommandErrorCode
-from .channel import ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelFullPath
 import logging
 
-__all__ = ['AbsChannelBroker']
+__all__ = ['AbsChannelBroker', 'ChannelImportLib']
+
+_ChannelId = str
+_TaskWithPaths = tuple[ChannelPaths, CommandTask]
 
 
-class AbsChannelBroker(ChannelBroker, ABC):
+class ChannelImportLib:
+    """
+    唯一的 lib 用来管理所有可以被 import 的 channel broker
+    """
+
+    def __init__(self, main: ChannelBroker, container: IoCContainer | None = None):
+        self._main = main
+        self._name = "MossChannelImportLib/{}/{}".format(main.name, main.id)
+        self._container = Container(
+            name=self._name,
+            parent=container,
+        )
+        # 绑定自身到容器中. 凡是用这个容器启动的 broker, 都可以拿到 ChannelImportLib 并获取子 channel broker.
+        self._container.set(ChannelImportLib, self)
+        self._logger: Optional[LoggerItf] = None
+        self._brokers: dict[_ChannelId, ChannelBroker] = {}
+        self._brokers_lock: asyncio.Lock = asyncio.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._start: bool = False
+        self._close: bool = False
+
+    def get_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+        if channel is self._main.channel:
+            # 根节点不启动.
+            return self._main
+
+        if not self.is_running():
+            return None
+
+        channel_id = channel.id()
+        return self._brokers.get(channel_id)
+
+    async def get_or_create_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+        if broker := self.get_channel_broker(channel):
+            return broker
+        # 第一次创建.
+        broker = await asyncio.create_task(self._build_channel_broker(channel))
+        return broker
+
+    async def _build_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+        channel_id = channel.id()
+        # 只有创建这一段需要上锁.
+        try:
+            await self._brokers_lock.acquire()
+            if not self.is_running():
+                return None
+            broker = self._brokers.get(channel_id)
+            # 只要 broker 存在就立刻返回.
+            if broker is not None:
+                return broker
+            # 用自身的容器启动 ChannelImportLib.
+            broker = channel.bootstrap(self._container)
+            self._brokers[channel_id] = broker
+        finally:
+            self._brokers_lock.release()
+
+        try:
+            # 阻塞等到 broker 启动.
+            await asyncio.create_task(broker.start())
+            return broker
+        except Exception as e:
+            self.logger.exception(
+                "%s failed to build channel %s, id=%s: %s",
+                self._name, channel.name(), channel.id(), e
+            )
+        finally:
+            self.logger.info(
+                "%s succeed to build channel %s, id=%s",
+                self._name, channel.name(), channel.id()
+            )
+
+    @property
+    def main(self) -> ChannelBroker:
+        return self._main
+
+    @property
+    def logger(self):
+        if self._logger is None:
+            self._logger = self._container.get(LoggerItf)
+            if self._logger is None:
+                logger = logging.getLogger('moss')
+                self._logger = logger
+                self._container.set(LoggerItf, logger)
+        return self._logger
+
+    def is_running(self) -> bool:
+        return self._start and not self._close
+
+    async def start(self) -> None:
+        if self._start:
+            return
+        self._start = True
+        self._loop = asyncio.get_event_loop()
+        await asyncio.to_thread(self._container.bootstrap)
+
+    def find_descendants(self, channel: Channel) -> dict[ChannelFullPath, ChannelBroker]:
+        result = {}
+        broker = self.get_channel_broker(channel)
+        if broker is None or not broker.is_running():
+            return result
+        for name, child in broker.children().items():
+            child_broker = self.get_channel_broker(child)
+            result[name] = child_broker
+            if child_broker is not None and child_broker.is_running():
+                descendants = self.find_descendants(child)
+                for path, descendant in descendants.items():
+                    real_path = Channel.join_channel_path(name, path)
+                    result[real_path] = descendant
+        return result
+
+    def recursively_find_broker(self, broker: ChannelBroker, path: ChannelFullPath) -> ChannelBroker | None:
+        paths = Channel.split_channel_path_to_names(path, 2)
+        child_name = paths[0]
+        further_path = paths[1] if len(paths) > 1 else ""
+        if child_name == "":
+            return broker
+        child_channel = broker.children().get(child_name)
+        if child_channel is None:
+            return None
+        child_broker = self.get_channel_broker(child_channel)
+        if child_broker is None:
+            return None
+        return self.recursively_find_broker(child_broker, further_path)
+
+    async def close(self) -> None:
+        if self._close:
+            return
+        self._close = True
+        try:
+            await self._brokers_lock.acquire()
+            clear_brokers = []
+            clear_broker_tasks = []
+            for broker in self._brokers.values():
+                if broker.is_running():
+                    clear_task = self._loop.create_task(broker.close())
+                    clear_brokers.append(broker)
+                    clear_broker_tasks.append(clear_task)
+            done = await asyncio.gather(*clear_broker_tasks, return_exceptions=True)
+            idx = 0
+            for t in done:
+                if isinstance(t, Exception):
+                    broker = clear_brokers[idx]
+                    self.logger.exception(
+                        "%s close broker %s, id=%s failed: %s",
+                        self._name, broker.name, broker.id, t)
+                idx += 1
+        finally:
+            self._brokers_lock.release()
+            if self._loop:
+                self._loop.run_in_executor(None, self._container.shutdown)
+
+
+CHANNEL = TypeVar('CHANNEL', bound=Channel)
+
+
+class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
     """
     实现基础的 Channel Broker, 用来给所有的 Broker 提供基准的生命周期.
     """
@@ -30,7 +193,7 @@ class AbsChannelBroker(ChannelBroker, ABC):
     def __init__(
             self,
             *,
-            channel: "Channel",
+            channel: CHANNEL,
             container: IoCContainer | None = None,
             logger: LoggerItf | None = None
     ):
@@ -38,10 +201,25 @@ class AbsChannelBroker(ChannelBroker, ABC):
         self._name = channel.name()
         self._uid = channel.id()
         # 用不同的容器隔离依赖. 经过 prepare container 才进行封装.
-        self._container: IoCContainer = Container(
+        container = Container(
             name=f'MossChannelBroker/{self._name}/{self._uid}',
             parent=container,
         )
+        self._container: IoCContainer = container
+        self._logger: LoggerItf | None = logger
+        self._state_store: StateStore | None = None
+        self._importlib: ChannelImportLib | None = None
+        if not container.bound(ChannelImportLib):
+            self._importlib = ChannelImportLib(self, self.container)
+            container.set(ChannelImportLib, self._importlib)
+        self._logger: LoggerItf | None = logger
+        if not container.bound(LoggerItf):
+            self._logger = logging.getLogger("moss")
+            container.set(LoggerItf, self._logger)
+        self._states_store: StateStore | None = None
+        if not container.bound(StateStore):
+            self._state_store = BaseStateStore(owner=self._uid)
+            container.set(StateStore, self._state_store)
 
         self._starting = False
         self._started = False
@@ -49,30 +227,34 @@ class AbsChannelBroker(ChannelBroker, ABC):
         # 用线程安全的事件. 考虑到 broker 未来可能会跨线程被使用.
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
-        self._children_brokers: dict[str, ChannelBroker] = {}
 
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._state_store: StateStore | None = None
-        self._logger: LoggerItf | None = logger
-
-        self._cached_meta: ChannelMeta = ChannelMeta.new_empty(self._uid, self.channel)
-        # blocking lifecycle task 用来保证无论哪一层, 都不能有同时两个以上的生命周期任务在执行.
-        self._lifecycle_task: asyncio.Task | None = None
-        # 生命周期函数需要加锁.
-        self._blocking_action_lock = asyncio.Lock()
-        # 运行执行的并行任务.
-        self._none_blocking_cmd_tasks: set[CommandTask] = set()
-        self._executing_block_cm_task: CommandTask | None = None
+        self._cached_metas: dict[ChannelFullPath, ChannelMeta] = {"": ChannelMeta.new_empty(self._uid, self.channel)}
         # 可以注册监听, 监听 refresh meta 动作.
         self._on_refresh_meta_callbacks: list[Callable[[ChannelMeta], Coroutine[None, None, None]]] = []
+        self._refresh_meta_lock = asyncio.Lock()
 
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._main_loop_task: Optional[asyncio.Task] = None
+
+        self._blocking_action_lock = asyncio.Lock()
+        self._lifecycle_task: asyncio.Task | None = None
+        self._pending_task_queue: asyncio.Queue[_TaskWithPaths | None] = asyncio.Queue()
+
+        # 运行执行的并行任务.
+        self._consuming_command_task: CommandTask | None = None
+        self._executing_command_task: CommandTask | None = None
+        self._executing_cmd_tasks: set[CommandTask] = set()
+        self._idled_event = asyncio.Event()
+        self._has_task_queued = asyncio.Event()
         self._task_done_callbacks: list[TaskDoneCallback] = []
+
+        self._exit_stack = contextlib.AsyncExitStack()
 
         # log_prefix
         self.log_prefix = "[Channel %s %s][%s]" % (self._name, self._uid, self.__class__.__name__)
 
     @property
-    def channel(self) -> "Channel":
+    def channel(self) -> CHANNEL:
         return self._channel
 
     @property
@@ -93,6 +275,12 @@ class AbsChannelBroker(ChannelBroker, ABC):
         return self._logger
 
     @property
+    def importlib(self) -> ChannelImportLib:
+        if self._importlib is None:
+            self._importlib = self.container.force_fetch(ChannelImportLib)
+        return self._importlib
+
+    @property
     def container(self) -> IoCContainer:
         """
         broker 所持有的 ioc 容器.
@@ -101,10 +289,6 @@ class AbsChannelBroker(ChannelBroker, ABC):
 
     def prepare_container(self, container: IoCContainer) -> IoCContainer:
         # 重写这个函数完成自定义.
-        if not container.bound(LoggerItf):
-            container.set(LoggerItf, logging.getLogger("moss"))
-        if not container.bound(StateStore):
-            container.set(StateStore, BaseStateStore(owner=self._uid))
         return container
 
     @property
@@ -121,57 +305,152 @@ class AbsChannelBroker(ChannelBroker, ABC):
         """
         return self._name
 
-    def meta(self) -> ChannelMeta:
+    # --- abstract -- #
+
+    @abstractmethod
+    async def on_start_up(self) -> None:
+        pass
+
+    @abstractmethod
+    def children(self) -> dict[str, Channel]:
+        """
+        需要实现的函数.
+        """
+        pass
+
+    @abstractmethod
+    async def generate_self_meta(self) -> ChannelMeta:
+        """
+        重新生成 meta 数据对象.
+        """
+        pass
+
+    # --- children -- #
+
+    def get_children_brokers(self) -> dict[str, ChannelBroker]:
+        children = self.children()
+        result = {}
+        for name, child in children.items():
+            broker = self.importlib.get_channel_broker(child)
+            if broker is not None and broker.is_running():
+                result[name] = broker
+        return result
+
+    def get_child_broker(self, name: str) -> ChannelBroker | None:
+        child = self.children().get(name)
+        if child is None:
+            return None
+        return self.importlib.get_channel_broker(child)
+
+    def descendants(self) -> dict[ChannelFullPath, ChannelBroker]:
+        return self.importlib.find_descendants(self.channel)
+
+    # --- interface --- #
+
+    def interface(self) -> dict[ChannelFullPath, ChannelMeta]:
         """
         返回 Channel 自身的 Meta.
         """
         if not self.is_connected():
-            return ChannelMeta.new_empty(self._uid, self.channel)
-        return self._cached_meta
+            return {"": ChannelMeta.new_empty(self._uid, self.channel)}
+        # 还是复制一份.
+        return {name: meta.model_copy() for name, meta in self._cached_metas.items()}
 
     def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
         self._on_refresh_meta_callbacks.append(callback)
 
-    async def refresh_meta(
+    async def refresh_meta(self, callback: bool = True) -> None:
+        await asyncio.shield(self._refresh_meta(callback))
+
+    async def _refresh_meta(
             self,
             callback: bool = True,
     ) -> None:
         """
-        更新当前的 Channel Meta 信息. 用于支持被动拉取. 不会主动推送更新.
+        更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
         """
         ctx = contextvars.copy_context()
         # 生成时添加 ctx.
         ChannelCtx.init(self)
         try:
+            await self._refresh_meta_lock.acquire()
             if not self._starting or self._closing_event.is_set():
                 meta = ChannelMeta.new_empty(channel=self.channel, id=self._uid)
             else:
-                meta = await ctx.run(self.generate_meta)
+                meta = await ctx.run(self.generate_self_meta)
+            new_cached_metas = {"": meta}
+
+            async def create_child_interfaces(
+                    _child_name: str,
+                    _child: Channel,
+            ) -> tuple[str, dict[ChannelFullPath, ChannelMeta]]:
+                try:
+                    child_broker = await self.importlib.get_or_create_channel_broker(_child)
+                    if not child_broker or not child_broker.is_running():
+                        return _child_name, {}
+                    await child_broker.refresh_meta(callback=False)
+                    _interfaces = child_broker.interface()
+                    _result = {}
+                    for channel_path, _meta in _interfaces.items():
+                        new_channel_path = Channel.join_channel_path(_child_name, channel_path)
+                        _result[new_channel_path] = _meta
+                    return _child_name, _result
+
+                except asyncio.CancelledError:
+                    raise
+                except asyncio.TimeoutError:
+                    raise
+                except Exception as e:
+                    self._logger.exception(
+                        "%s failed to create child %s interface: %s",
+                        self.log_prefix, _child_name, e
+                    )
+                    raise
+
+            children = self.children()
+            gathering = []
+            for child_name, child in children.items():
+                child_task = self._loop.create_task(create_child_interfaces(child_name, child))
+                gathering.append(child_task)
+            # 按顺序更新.
+            done = await asyncio.gather(*gathering)
+            valid_children = []
+            for r in done:
+                if isinstance(r, Exception):
+                    self._logger.exception(
+                        "%s failed to create child interface: %s",
+                        self.log_prefix, r
+                    )
+                else:
+                    child_name, result = r
+                    valid_children.append(child_name)
+                    new_cached_metas.update(result)
+
+            # 终于完成更新.
+            meta.children = valid_children
+            self._cached_metas = new_cached_metas
+
+            # 创建异步的回调.
+            if callback and self._on_refresh_meta_callbacks:
+                for callback in self._on_refresh_meta_callbacks:
+                    if inspect.iscoroutinefunction(callback):
+                        _ = asyncio.create_task(callback(new_cached_metas))
+                    else:
+                        self._loop.run_in_executor(None, callback, new_cached_metas)
         except asyncio.CancelledError:
             return
         except Exception as exc:
             self.logger.exception("%s refresh self meta failed %s", self.log_prefix, exc)
             # 出现异常后, 刷新一个异常的 meta.
             meta = ChannelMeta.new_empty(channel=self.channel, id=self._uid)
+            self._cached_metas = {"": meta}
+        finally:
+            self._refresh_meta_lock.release()
+            self.logger.info(
+                "%s refreshed meta", self.log_prefix,
+            )
 
-        self._cached_meta = meta
-        self.logger.info(
-            "%s refreshed meta", self.log_prefix,
-        )
-        # 创建异步的回调.
-        if callback and self._on_refresh_meta_callbacks:
-            for callback in self._on_refresh_meta_callbacks:
-                if inspect.iscoroutinefunction(callback):
-                    _ = asyncio.create_task(callback(meta))
-                else:
-                    _ = asyncio.create_task(asyncio.to_thread(callback, meta))
-
-    @abstractmethod
-    async def generate_meta(self) -> ChannelMeta:
-        """
-        重新生成 meta 数据对象.
-        """
-        pass
+    # --- status --- #
 
     def is_running(self) -> bool:
         """
@@ -184,11 +463,17 @@ class AbsChannelBroker(ChannelBroker, ABC):
         当前 Channel 对于使用者而言, 是否可用.
         当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
         """
-        return self.is_running() and self.is_connected() and self.meta().available
+        return self.is_running() and self.is_connected() and self.self_meta().available
+
+    # --- on task done --- #
 
     def on_task_done(self, callback: TaskDoneCallback) -> None:
         # 注册 task 回调.
         self._task_done_callbacks.append(callback)
+
+    def _add_task_done_callback(self, task: CommandTask) -> None:
+        if len(self._task_done_callbacks) > 0:
+            task.add_done_callback(self._task_done_callback)
 
     def _task_done_callback(self, task: CommandTask) -> None:
         import inspect
@@ -204,7 +489,31 @@ class AbsChannelBroker(ChannelBroker, ABC):
                 # 同步运行.
                 self._loop.run_in_executor(None, callback, task)
 
-    async def idle(self) -> None:
+    # --- commands --- #
+
+    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+        commands = self.self_commands(available_only).copy()
+        for name, child in self.children().items():
+            child_broker = self.importlib.get_channel_broker(child)
+            if child_broker and child_broker.is_running():
+                child_commands = child_broker.commands(available_only)
+                for unique_name, command in child_commands.items():
+                    new_unique_name = Command.make_uniquename(name, unique_name)
+                    commands[new_unique_name] = command
+        return commands
+
+    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+        chan, command_name = Command.split_uniquename(name)
+        if chan == "":
+            return self.get_self_command(command_name)
+        broker = self.importlib.recursively_find_broker(self, chan)
+        if broker is None:
+            return None
+        return broker.get_self_command(command_name)
+
+    # --- lifecycle --- #
+
+    async def _idle(self) -> None:
         """
         进入闲时状态.
         闲时状态指当前 Broker 及其 子 Channel 都没有 CommandTask 在运行的时候.
@@ -221,6 +530,13 @@ class AbsChannelBroker(ChannelBroker, ABC):
             # idle 是一个在生命周期中单独执行的函数.
             task = asyncio.create_task(on_idle_cor)
             self._lifecycle_task = task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._logger.exception(
+                "%s idle task failed %s", self.log_prefix, exc
+            )
+            # 不返回.
         finally:
             self._blocking_action_lock.release()
             self.logger.info("%s idling", self.log_prefix)
@@ -234,11 +550,8 @@ class AbsChannelBroker(ChannelBroker, ABC):
         pass
 
     async def _clear_lifecycle_task(self) -> None:
-        # 先将 task 关闭掉.
-        if self._executing_block_cm_task is not None and not self._executing_block_cm_task.done():
-            self._executing_block_cm_task.fail(CommandErrorCode.CLEARED.error(f"cleared by broker"))
-        self._executing_block_cm_task = None
         # 终止阻塞中的任务.
+        self._idled_event.clear()
         if self._lifecycle_task and not self._lifecycle_task.done():
             self._lifecycle_task.cancel()
             try:
@@ -249,88 +562,341 @@ class AbsChannelBroker(ChannelBroker, ABC):
                 self.logger.exception("%s clear lifecycle task failed: %s", self.log_prefix, e)
         self._lifecycle_task = None
 
-    async def clear_all(self) -> None:
+    async def clear(self) -> None:
         if not self.is_running():
             return
-        clear_tasks = [self._loop.create_task(self.clear())]
-        for broker in self._children_brokers.values():
-            if broker.is_running():
-                clear_tasks.append(broker.clear_all())
-        await asyncio.gather(*clear_tasks)
+        await self.clear_self()
 
-    async def clear(self) -> None:
+        async def clear_child(_child: Channel):
+            child_broker = await self._importlib.get_or_create_channel_broker(_child)
+            if child_broker and child_broker.is_running():
+                await child_broker.clear()
+
+        clear_tasks = []
+        children = self.children()
+        for child in children.values():
+            clear_tasks.append(clear_child(child))
+        done = await asyncio.gather(*clear_tasks)
+        for r in done:
+            if isinstance(r, Exception):
+                self._logger.exception("%s clear child failed: %s", self.log_prefix, r)
+
+    async def clear_self(self) -> None:
         """
         当轨道命令被触发清空时候执行.
         """
         if not self._started or self._closed_event.is_set():
             return
         try:
-            await asyncio.sleep(0.0)
             await self._blocking_action_lock.acquire()
-            await self._clear_lifecycle_task()
-            if len(self._none_blocking_cmd_tasks) > 0:
-                for t in self._none_blocking_cmd_tasks:
+            await asyncio.sleep(0.0)
+            _pending_task_queue = self._pending_task_queue
+            self._pending_task_queue = asyncio.Queue()
+            while not _pending_task_queue.empty():
+                item = await _pending_task_queue.get()
+                if item is not None:
+                    paths, task = item
+                    if not task.done():
+                        task.fail(CommandErrorCode.CLEARED.error("cleared by broker"))
+            _pending_task_queue.put_nowait(None)
+
+            # 设置 task 为 fail 即可. 主循环永远会清除它.
+            consuming_command_task = self._consuming_command_task
+            if consuming_command_task is not None:
+                if not consuming_command_task.done():
+                    consuming_command_task.fail(CommandErrorCode.CLEARED.error(f"cleared by broker"))
+            # 并行执行的 task 也需要被清除.
+            if len(self._executing_cmd_tasks) > 0:
+                for t in self._executing_cmd_tasks:
                     if not t.done():
                         t.fail(CommandErrorCode.CLEARED.error(f"cleared by broker"))
-            self._none_blocking_cmd_tasks.clear()
-            # 阻塞等待到清空结束.
-            # 同步阻塞等待 clear 执行完毕.
-            ctx = contextvars.copy_context()
-            ChannelCtx.init(self)
-            cor = ctx.run(self.on_clear)
-            await cor
+            self._executing_cmd_tasks.clear()
+        except Exception as e:
+            self.logger.exception("%s clear self failed: %s", self.log_prefix, e)
+            raise
         finally:
             self._blocking_action_lock.release()
             self.logger.info("%s cleared", self.log_prefix)
 
-    async def pause(self) -> None:
+    # --- main loop --- #
+
+    async def wait_idle(self) -> None:
         """
-        设置当前 Broker 为 pause 状态.
-        pause 状态下 Channel Broker 应该要进入某种安全姿态.
+        阻塞等待到闲时.
         """
-        if not self._started or self._closed_event.is_set():
+        if not self.is_running():
             return
-        # 先清空所有的运动.
-        await self.clear_all()
+        wait_1 = asyncio.create_task(self._idled_event.wait())
+        wait_2 = asyncio.create_task(self._closing_event.wait())
+        done, pending = await asyncio.wait([wait_1, wait_2], return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+
+    async def _wait_children_blocking_done(self) -> None:
+        async def wait_child_empty(_child: Channel):
+            broker = await self._importlib.get_or_create_channel_broker(_child)
+            if broker and broker.is_running():
+                await broker.wait_idle()
+            return
+
+        wait_all = []
+        children = self.children()
+        if len(children) > 0:
+            for child in children.values():
+                wait_all.append(wait_child_empty(child))
+            _ = await asyncio.gather(*wait_all)
+
+    async def _consume_task_loop(self) -> None:
         try:
-            await asyncio.sleep(0.0)
-            await self._blocking_action_lock.acquire()
-            await self._clear_lifecycle_task()
-            ctx = contextvars.copy_context()
-            ChannelCtx.init(self)
-            pause_cor = ctx.run(self.on_pause)
-            self._lifecycle_task = asyncio.create_task(pause_cor)
+            while not self._closing_event.is_set():
+                _pending_queue = self._pending_task_queue
+                # 如果队列是空的, 则要看看是否能够启动 idle.
+                if _pending_queue.empty():
+                    self._has_task_queued.clear()
+                    if not self._idled_event.is_set():
+                        has_next_cmd_task = asyncio.create_task(self._has_task_queued.wait())
+                        children_none_block = asyncio.create_task(self._wait_children_blocking_done())
+
+                        done, pending = await asyncio.wait(
+                            [has_next_cmd_task, children_none_block],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for t in pending:
+                            t.cancel()
+                        # 先拿到了子孙节点都被清空了.
+                        if children_none_block in done:
+                            # 这种情况下就真的可以 idle 了.
+                            await self._idle()
+                            self._idled_event.set()
+                    else:
+                        await self._has_task_queued.wait()
+                    continue
+                else:
+                    # 阻塞等待下一个结果.
+                    try:
+                        item = await asyncio.wait_for(_pending_queue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        continue
+
+                # 可能拿到了 clear 清空后的毒丸.
+                if item is None:
+                    self.logger.info("%s receive none from pending task queue", self.log_prefix)
+                    continue
+                # 拿到新命令后, 就清空生命周期函数.
+                paths, task = item
+                # handle task 函数是阻塞的, 这意味着:
+                # 1. 它会阻塞后续拿到新的任务.
+                # 2. 如果它执行了子任务, 其实不会阻塞.
+                # 3. 如果它执行了 none-blocking 的任务, 也不会阻塞.
+                # 4. 只有它执行的目标任务是自己的任务, 才会阻塞. 而且要阻塞等待儿孙们都执行完了, 才轮到自己执行.
+                self._consuming_command_task = task
+                await self._clear_lifecycle_task()
+                await self._consume_task(paths, task)
+                self._consuming_command_task = None
+        except asyncio.CancelledError as e:
+            # 允许被 cancel.
+            self.logger.info("%s Cancel consuming pending task loop: %r", self.log_prefix, e)
         finally:
-            self.logger.info("%s is pausing", self.log_prefix)
-            self._blocking_action_lock.release()
+            self._closing_event.set()
+            self.logger.info("%s Finished executing loop", self.log_prefix)
 
-    @abstractmethod
-    async def on_pause(self) -> None:
-        pass
-
-    @abstractmethod
-    async def on_clear(self) -> None:
-        """
-        当轨道命令被触发清空时候执行.
-        """
-        pass
-
-    async def start(self) -> None:
-        """
-        启动 Channel Broker.
-        通常用 with statement 或 async exit stack 去启动.
-        只会启动当前 channel 自身.
-        """
-        if self._starting:
+    async def _dispatch_children_task(self, paths: ChannelPaths, task: CommandTask) -> None:
+        self._executing_command_task = task
+        child_name = paths[0]
+        # 子节点在路径上不存在.
+        child = self.children().get(child_name)
+        if child is None:
+            task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.meta.chan}` not found"))
             return
-        self._starting = True
-        self._loop = asyncio.get_running_loop()
-        container = self.container
-        self.prepare_container(container)
-        # bootstrap container
-        await asyncio.to_thread(container.bootstrap)
-        # 启动 states 和 topics 模块.
+
+        broker = await self.importlib.get_or_create_channel_broker(child)
+        if broker is None:
+            task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.meta.chan}` not found"))
+            return
+        task.send_through.append(child_name)
+        # 直接发送给子树.
+        further_paths = paths[1:]
+        await broker.push_task_with_paths(further_paths, task)
+
+    async def _consume_task(self, paths: ChannelPaths, task: CommandTask) -> None:
+        """
+        尝试运行一个 task. 这个运行周期是全局唯一, 阻塞的.
+        """
+        try:
+            # 确保这个任务也可以被 clear 掉.
+            await asyncio.sleep(0)
+            # 检查是不是子节点的任务.
+            if len(paths) > 0:
+                await self._dispatch_children_task(paths, task)
+                return
+
+            # 执行任务, 并且解决回调的问题.
+            await asyncio.sleep(0)
+            # 执行任务.
+            await self._execute_self_task(task)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.info("%s handle pending task exception: %r", self.log_prefix, e)
+            # 所有在执行 handle pending task 阶段抛出的异常, 都不向上中断.
+
+    async def _get_task_result(self, task: CommandTask) -> Any:
+        # 准备执行.
+        task.exec_chan = self.name
+        await asyncio.sleep(0)
+        self.logger.info("%s start task %s", self.log_prefix, task.cid)
+        # 初始化函数运行上下文.
+        ctx = contextvars.copy_context()
+        ChannelCtx.init(self, task)
+        # 使用 dry run 来管理生命周期.
+        return await ctx.run(task.dry_run)
+
+    async def _execute_self_task(self, task: CommandTask, depth: int = 0) -> None:
+        self._add_task_done_callback(task)
+        # 非阻塞函数不能返回 stack
+        if depth > 10:
+            task.fail(CommandErrorCode.INVALID_USAGE.error("stackoverflow"))
+            return
+        self._executing_cmd_tasks.add(task)
+        # 确保 task 被执行了.
+        asyncio_task = asyncio.create_task(self._ensure_task_executed(task, depth))
+        if task.meta.blocking:
+            # 阻塞等待 blocking 任务执行完毕.
+            await asyncio_task
+
+    async def _ensure_task_executed(self, task: CommandTask, depth: int) -> None:
+        """
+        运行属于自己这个 channel 的 task, 让它进入到 executing group 中.
+        """
+        try:
+            task = self._parse_task(task)
+            if task is None:
+                return
+
+            get_result_from_task = self._loop.create_task(self._get_task_result(task))
+            origin_task_done = asyncio.create_task(task.wait(throw=False))
+            wait_broker_close = asyncio.create_task(self._closing_event.wait())
+            done, pending = await asyncio.wait(
+                [origin_task_done, get_result_from_task, wait_broker_close],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if origin_task_done in done:
+                # origin task 已经运行结束.
+                return
+            elif wait_broker_close in done:
+                task.fail(CommandErrorCode.NOT_RUNNING.error("broker closed"))
+                return
+            result = await get_result_from_task
+            # 如果返回值是 stack, 则意味着要循环堆栈.
+            if isinstance(result, CommandTaskStack):
+                # 执行完所有的堆栈. 同时设置真实被执行的任务.
+                await self._fulfill_task_with_its_result_stack(task, result, depth=depth)
+            else:
+                # 赋值给原来的 task.
+                task.resolve(result)
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            raise
+        except Exception as e:
+            if not task.done():
+                task.fail(e)
+            self.logger.error("%s task %s failed: %s", self.log_prefix, task.cid, e)
+            raise
+        finally:
+            if not task.done():
+                self.logger.info("%s failed to ensure task done: %s", self.log_prefix, task)
+                task.fail(CommandErrorCode.UNKNOWN_ERROR.error(f"execution failed"))
+            if task in self._executing_cmd_tasks:
+                self._executing_cmd_tasks.remove(task)
+
+    async def _fulfill_task_with_its_result_stack(
+            self,
+            owner: CommandTask,
+            stack: CommandTaskStack,
+            depth: int = 0,
+    ) -> None:
+        try:
+            if not owner.meta.blocking:
+                owner.fail(CommandErrorCode.INVALID_USAGE.error(f"invalid command: none blocking task return stack"))
+                return
+            if depth > 10:
+                owner.fail(CommandErrorCode.INVALID_USAGE.error("stackoverflow"))
+                return
+
+            self.logger.info(
+                "%s Fulfilling task with stack, depth=%s task=%s",
+                self.log_prefix, depth, owner,
+            )
+            # 遍历生成的新栈.
+            async for sub_task in stack:
+                await asyncio.sleep(0)
+                if owner.done():
+                    # 不要继续执行了.
+                    break
+                paths = Channel.split_channel_path_to_names(sub_task.meta.chan)
+                if len(paths) > 0:
+                    # 发送给子孙了.
+                    await self._dispatch_children_task(paths, sub_task)
+                    continue
+
+                # 递归阻塞等待任务被执行.
+                await self._execute_self_task(sub_task, depth + 1)
+                if sub_task.meta.blocking:
+                    result = await sub_task
+                    if isinstance(result, CommandTaskStack):
+                        # 递归执行
+                        await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
+
+            # 完成了所有子节点的调度后, 通知回调函数.
+            # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
+            #          如果有异常又是否要取消所有的 child task.
+            await stack.callback(owner)
+            return
+        except Exception as e:
+            # 不要留尾巴?
+            # 有异常时, 同时取消所有动态生成的 task 对象. 包括发送出去的. 这样就不会有阻塞了.
+            if not owner.done():
+                self.logger.exception(
+                    "%s Fulfill task stack failed, task=%s, exception=%s",
+                    self.log_prefix, owner, e,
+                )
+                for child in stack.generated():
+                    if not child.done():
+                        child.fail(e)
+                owner.fail(e)
+            raise e
+
+    # --- 开始与结束 --- #
+
+    @contextlib.asynccontextmanager
+    async def _container_ctx(self):
+        self._container = self.prepare_container(self._container)
+        await self._loop.run_in_executor(None, self._container.bootstrap)
+        yield
+        self._loop.run_in_executor(None, self._container.shutdown)
+
+    @contextlib.asynccontextmanager
+    async def _importlib_ctx(self):
+        if self._importlib is None:
+            self._importlib = self._container.get(ChannelImportLib) or ChannelImportLib(self, self._container)
+        if self._importlib.main is self:
+            await self._importlib.start()
+        yield
+        if self._importlib.main is self:
+            await self._importlib.close()
+
+    @contextlib.asynccontextmanager
+    async def _states_ctx(self):
         await self.states.start()
+        yield
+        await self.states.close()
+
+    @contextlib.asynccontextmanager
+    async def _start_and_close_ctx(self):
         ctx = contextvars.copy_context()
         ChannelCtx.init(self)
         cor = ctx.run(self.on_start_up)
@@ -338,12 +904,30 @@ class AbsChannelBroker(ChannelBroker, ABC):
             "%s started", self.log_prefix,
         )
         await cor
-        self._running_task = asyncio.create_task(ctx.run(self._keep_running_task))
-        self._started = True
-        # 刷新 meta.
-        await self.refresh_meta()
+        yield
+        try:
+            ctx = contextvars.copy_context()
+            on_close_cor = ctx.run(self.on_close)
+            await on_close_cor
+        except Exception as e:
+            self.logger.exception("%s close failed: %s", self.log_prefix, e)
 
-    async def _keep_running_task(self) -> None:
+    @contextlib.asynccontextmanager
+    async def _running_task_ctx(self):
+        ctx = contextvars.copy_context()
+        ChannelCtx.init(self)
+        self._running_task = asyncio.create_task(ctx.run(self._execute_running_task))
+        yield
+        if self._running_task and not self._running_task.done():
+            self._running_task.cancel()
+            try:
+                await self._running_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.logger.exception("%s close running task failed %s", self.log_prefix, e)
+
+    async def _execute_running_task(self) -> None:
         try:
             await self.on_running()
         except asyncio.CancelledError:
@@ -353,12 +937,42 @@ class AbsChannelBroker(ChannelBroker, ABC):
         finally:
             self.logger.info("%s keep_running_task finished", self.log_prefix)
 
-    @abstractmethod
-    async def on_start_up(self) -> None:
-        pass
+    @contextlib.asynccontextmanager
+    async def _main_loop_ctx(self):
+        self._main_loop_task = asyncio.create_task(self._consume_task_loop())
+        yield
+        try:
+            await self.clear_self()
+            if self._main_loop_task and not self._main_loop_task.done():
+                self._main_loop_task.cancel()
+                try:
+                    await self._main_loop_task
+                except asyncio.CancelledError:
+                    pass
+            self._main_loop_task = None
+        except Exception as e:
+            self.logger.exception(e)
+            raise
 
-    async def wait_closing(self) -> None:
-        await self._closing_event.wait()
+    async def start(self):
+        """
+        启动 Channel Broker.
+        通常用 with statement 或 async exit stack 去启动.
+        只会启动当前 channel 自身.
+        """
+        if self._starting:
+            return
+        self._starting = True
+        self._loop = asyncio.get_running_loop()
+        await self._exit_stack.__aenter__()
+        await self._exit_stack.enter_async_context(self._container_ctx())
+        await self._exit_stack.enter_async_context(self._importlib_ctx())
+        await self._exit_stack.enter_async_context(self._states_ctx())
+        await self._exit_stack.enter_async_context(self._start_and_close_ctx())
+        await self._exit_stack.enter_async_context(self._running_task_ctx())
+        await self._exit_stack.enter_async_context(self._main_loop_ctx())
+        self._started = True
+        return self
 
     async def wait_closed(self) -> None:
         await self._closed_event.wait()
@@ -369,49 +983,19 @@ class AbsChannelBroker(ChannelBroker, ABC):
         # 运行关闭逻辑.
         self._loop.create_task(self.close())
 
-    async def close(self) -> None:
+    async def close(self):
         """
         关闭当前 broker. 同时阻塞销毁资源直到结束.
         只会关闭当前 channel 的 broker.
         """
-        if self._closing_event.is_set():
+        if self._closed_event.is_set():
             return
-        self._closing_event.set()
         try:
             self.logger.info(
                 "%s start to close", self.log_prefix,
             )
             # 停止所有行为.
-            await self.clear_all()
-            if self._running_task and not self._running_task.done():
-                self._running_task.cancel()
-                try:
-                    await self._running_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    self.logger.exception("%s close running task failed %s", self.log_prefix, e)
-
-            self._running_task = None
-            ctx = contextvars.copy_context()
-            ChannelCtx.init(self)
-            on_close_cor = ctx.run(self.on_close)
-            try:
-                # 等待运行全部结束.
-                await on_close_cor
-            except Exception as e:
-                self.logger.exception("%s close self failed: %s", self.log_prefix, e)
-
-            # 关闭 state store. 每个 Broker 都得有自己的 state store.
-            if self._state_store:
-                await self._state_store.close()
-            self._state_store = None
-
-            # 关闭容器运行.
-            self.logger.info(
-                "%s prepare to shutdown", self.log_prefix,
-            )
-            await asyncio.to_thread(self.container.shutdown)
+            await self._exit_stack.aclose()
         finally:
             self._closed_event.set()
             if self._logger:
@@ -428,8 +1012,9 @@ class AbsChannelBroker(ChannelBroker, ABC):
         self._state_store = None
         self._logger = None
         self._lifecycle_task = None
-        self._none_blocking_cmd_tasks.clear()
+        self._executing_cmd_tasks.clear()
         self._on_refresh_meta_callbacks.clear()
+        self._importlib = None
 
     @abstractmethod
     async def on_close(self) -> None:
@@ -439,10 +1024,38 @@ class AbsChannelBroker(ChannelBroker, ABC):
     async def on_running(self) -> None:
         pass
 
-    async def execute_task_soon(self, task: CommandTask) -> None:
+    # --- execute tasks --- #
+
+    async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         """
-        在 Broker 中执行一个 command task. 会尽快返回, 由 Task 自身完成阻塞.
+        基于路径将任务入栈.
         """
+        task = self._parse_task(task)
+        if task is None:
+            return
+        # 设置运行通道记录.
+        # 设置 task id 到 pending map 里.
+        try:
+            # 是自己的, 而且是要立刻执行的任务.
+            # call soon 这类任务
+            if len(paths) == 0 and task.meta.call_soon:
+                if task.meta.blocking:
+                    # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务. 这其中也递归地包含子节点的任务.
+                    await self.clear()
+                # 立刻将它放入 broker 的执行队列. 它会被尽快执行.
+                await self._consume_task(paths, task)
+                # 并不阻塞等待结果, 而是立刻返回.
+                return
+
+            # 普通的任务, 则会被丢入阻塞队列中排队执行.
+            self._has_task_queued.set()
+            _queue = self._pending_task_queue
+            # 入栈.
+            _queue.put_nowait((paths, task))
+        except asyncio.QueueFull:
+            task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
+
+    def _parse_task(self, task: CommandTask) -> CommandTask | None:
         if task.done():
             return
         elif not self.is_running():
@@ -463,64 +1076,4 @@ class AbsChannelBroker(ChannelBroker, ABC):
             )
             task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"channel {self.name} not available"))
             return
-
-        try:
-            await asyncio.sleep(0)
-            await self._blocking_action_lock.acquire()
-            # 如果是阻塞类型的任务, 必须清空主要执行中的任务.
-            task.set_state(CommandTaskStateType.executing)
-            task.add_done_callback(self._task_done_callback)
-            if task.meta.blocking:
-                # 清除其它 lifecycle 任务.
-                await self._clear_lifecycle_task()
-                # 通过一个 task 确保 task 一定会被执行完.
-                cor = self._ensure_task_done(task)
-                ensure_task_done = asyncio.create_task(cor)
-                self._lifecycle_task = ensure_task_done
-                self._executing_block_cm_task = task
-            else:
-                cor = self._ensure_task_done(task)
-                _ = asyncio.create_task(cor)
-                self._none_blocking_cmd_tasks.add(task)
-        finally:
-            self._blocking_action_lock.release()
-            self.logger.info("%s executing task %s", self.log_prefix, task.cid)
-
-    async def _ensure_task_done(self, task: CommandTask) -> None:
-        if task.done():
-            return
-
-        # 准备执行.
-        task.exec_chan = self.name
-        try:
-            await asyncio.sleep(0)
-            # 在这里让出控制权, 保证 finally 一定被执行.
-            self.logger.info("%s start task %s", self.log_prefix, task.cid)
-            # 初始化函数运行上下文.
-            ctx = contextvars.copy_context()
-            ChannelCtx.init(self, task)
-            # 使用 dry run 来管理生命周期.
-            run_cor = ctx.run(task.dry_run)
-            execution_task = asyncio.create_task(run_cor)
-            task_done_outside = asyncio.create_task(task.wait(throw=False))
-            done, pending = await asyncio.wait([execution_task, task_done_outside], return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
-            # 为结果赋值.
-            if not task.done():
-                result = await execution_task
-                task.resolve(result)
-            self.logger.info("%s resolved task %s", self.log_prefix, task.cid)
-
-        except Exception as e:
-            self.logger.error("%s task %s failed: %s", self.log_prefix, task.cid, e)
-            if not task.done():
-                task.fail(e)
-            raise
-        finally:
-            if not task.done():
-                task.fail(CommandErrorCode.UNKNOWN_ERROR.error(f"task not done after execution"))
-            self.logger.info(
-                "%s done task %s at state", self.log_prefix, task.cid, task.state,
-            )
-
+        return task

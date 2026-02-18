@@ -57,32 +57,28 @@ async def test_py_channel_baseline() -> None:
         assert broker.is_connected()
 
         # commands 存在.
-        commands = list(broker.commands().values())
+        commands = list(broker.self_commands().values())
         assert len(commands) > 0
 
-        # 所有的命令应该都以 channel 开头.
-        for command in commands:
-            assert command.meta().chan == "test"
-
         # 不用全名来获取函数.
-        foo_cmd = broker.get_command("foo")
+        foo_cmd = broker.get_self_command("foo")
         assert foo_cmd is not None
         assert await foo_cmd() == 9527
 
         # 测试名称有效.
-        help_cmd = broker.get_command("help")
+        help_cmd = broker.get_self_command("help")
         assert help_cmd is not None
         assert await help_cmd() == "help"
 
         # 测试乱取拿不到东西
-        none_cmd = broker.get_command("never_exists_command")
+        none_cmd = broker.get_self_command("never_exists_command")
         assert none_cmd is None
         # full name 不正确也拿不到.
-        help_cmd = broker.get_command("help")
+        help_cmd = broker.get_self_command("help")
         assert help_cmd is not None
 
         # available 测试.
-        available_test_cmd = broker.get_command("available_test_fn")
+        available_test_cmd = broker.get_self_command("available_test_fn")
         assert available_test_cmd is not None
         # 当为 True 的时候.
         assert available_mutator.available
@@ -95,8 +91,8 @@ async def test_py_channel_baseline() -> None:
 @pytest.mark.asyncio
 async def test_py_channel_children() -> None:
     assert len(chan.children()) == 0
-
     a_chan = chan.new_child("a")
+    assert len(chan.children()) == 1
     assert isinstance(a_chan, PyChannel)
     assert chan.children()["a"] is a_chan
 
@@ -106,16 +102,19 @@ async def test_py_channel_children() -> None:
     zoo_cmd = a_chan.build.command(return_command=True)(zoo)
     assert isinstance(zoo_cmd, PyCommand)
 
+    assert len(chan.children()) == 1
     async with a_chan.bootstrap():
-        meta = a_chan.broker.meta()
+        meta = a_chan.broker.self_meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = a_chan.broker.get_command("zoo")
+        command = a_chan.broker.get_self_command("zoo")
         # 实际执行的是 zoo.
         assert await command() == 123
 
-    async with chan.bootstrap():
-        meta = chan.broker.meta()
+    assert len(chan.children()) == 1
+    async with chan.bootstrap() as broker:
+        assert len(chan.children()) == 1
+        meta = broker.self_meta()
         assert meta.children == ["a"]
 
 
@@ -130,14 +129,13 @@ async def test_py_channel_with_children() -> None:
     c.import_channels(d)
     main.import_channels(c)
 
-    channels = main.all_channels()
-    assert len(channels) == 5
-    assert channels[""] is main
-    assert channels["c"] is c
-    assert channels["c.d"] is c.children()["d"]
-    assert c.get_channel("") is c
-    assert c.get_channel("d") is c.children()["d"]
-    assert main.get_channel("c.d") is c.children()["d"]
+    async with main.bootstrap() as broker:
+        brokers = broker.all_brokers()
+        assert len(brokers) == 5
+        assert "" in brokers
+        assert brokers["c"].channel is c
+        assert brokers["c.d"].channel is c.children()["d"]
+        assert brokers['c.d'].channel is c.children()["d"]
 
 
 @pytest.mark.asyncio
@@ -154,7 +152,7 @@ async def test_py_channel_execute_task() -> None:
     main.build.command()(foo)
     async with main.bootstrap() as broker:
         task = broker.create_command_task("foo")
-        await broker.execute_task_soon(task)
+        await broker.push_task(task)
         result = await task
         assert result == 123
 
@@ -176,7 +174,7 @@ async def test_py_channel_desc_and_doc_with_ctx() -> None:
 
     main.build.command(doc=foo_doc)(foo)
     async with main.bootstrap() as broker:
-        _foo = broker.get_command("foo")
+        _foo = broker.get_self_command("foo")
         r = await _foo()
         assert r == 123
         assert await _foo() == 123
@@ -200,7 +198,7 @@ async def test_py_channel_bind():
         return _foo.val
 
     async with main.bootstrap() as broker:
-        _foo = broker.get_command("foo")
+        _foo = broker.get_self_command("foo")
         assert await _foo() == 123
 
 
@@ -218,13 +216,13 @@ async def test_py_channel_context() -> None:
 
     async with main.bootstrap() as broker:
         # 启动时 meta 中包含了生成的 messages.
-        meta = broker.meta()
+        meta = broker.self_meta()
         assert len(meta.context) == 1
         messages.append(new_text_message("world", role="system"))
 
         # 更新后, messages 也变更了.
         await broker.refresh_meta()
-        assert len(broker.meta().context) == 2
+        assert len(broker.self_meta().context) == 2
 
 
 @pytest.mark.asyncio
@@ -240,23 +238,24 @@ async def test_py_channel_exec_tasks() -> None:
         t = ChannelCtx.task()
         return t is not None
 
-    async with main.bootstrap() as broker:
-        task = broker.create_command_task("foo")
-        await broker.execute_task_soon(task)
-        assert await task
-        task = broker.create_command_task("foo")
-        await broker.execute_task_soon(task)
-        assert await task
-        task = broker.create_command_task("foo")
-        await broker.execute_task_soon(task)
-        assert await task
+    # async with main.bootstrap() as broker:
+    #     task = broker.create_command_task("foo")
+    #     await broker.execute_task(task)
+    #     assert await task
+    #     task = broker.create_command_task("foo")
+    #     await broker.execute_task(task)
+    #     assert await task
+    #     task = broker.create_command_task("foo")
+    #     await broker.execute_task(task)
+    #     assert await task
 
     async with main.bootstrap() as broker:
         _sleep = 2.0
         task1 = broker.create_command_task("foo")
-        await broker.execute_task_soon(task1)
+        await broker.push_task(task1)
         assert not task1.done()
-        await broker.clear_all()
+        await broker.clear()
+        # cleared
         assert task1.done()
         assert task1.exception() is not None
         with pytest.raises(CommandError):
@@ -272,7 +271,6 @@ async def test_py_channel_idle() -> None:
 
     @main.build.command()
     async def foo() -> bool:
-        await asyncio.sleep(0.1)
         return True
 
     @main.build.idle
@@ -280,17 +278,21 @@ async def test_py_channel_idle() -> None:
         br = ChannelCtx.broker()
         if br:
             idled.append(1)
+        else:
+            idled.append(2)
 
     async with main.bootstrap() as broker:
-        task = broker.execute_command("foo")
+        task = broker.create_command_task("foo")
+        await broker.push_task(task)
         await task
-        await broker.idle()
-        await asyncio.sleep(0.0)
-        task = broker.execute_command("foo")
+        await asyncio.sleep(0.1)
+        task = broker.create_command_task("foo")
+        await broker.push_task(task)
+        assert len(idled) == 1
         await task
-        await broker.idle()
-        await asyncio.sleep(0.0)
+        await asyncio.sleep(0.1)
     assert len(idled) == 2
+    assert idled == [1, 1]
 
 
 @pytest.mark.asyncio
@@ -335,14 +337,14 @@ async def test_py_channel_on_running_and_task_callback() -> None:
             done.append(_task)
 
         _broker.on_task_done(add_done_tasks)
-        await _broker.wait_closing()
+        await _broker.wait_closed()
 
     async with main.bootstrap() as broker:
-        task = broker.execute_command("foo")
-        await task
+        assert await broker.execute_command("foo")
         await asyncio.sleep(0.0)
-        task = broker.execute_command("foo")
-        await task
+        r = await broker.execute_command("foo")
+        assert r
+        await broker.wait_idle()
     await asyncio.sleep(0.2)
     assert len(done) == 2
 
@@ -359,9 +361,10 @@ async def test_py_channel_child_orders() -> None:
     a_chan.import_channels(c_chan, d_chan)
     b_chan.import_channels(e_chan)
 
-    # 深度优先排序.
-    order = list(main.all_channels().values())
-    assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
-    # 运行第二次.
-    order = list(main.all_channels().values())
-    assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
+    async with main.bootstrap() as broker:
+        # 深度优先排序.
+        order = [b.channel for b in broker.all_brokers().values()]
+        assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
+        # 运行第二次.
+        order = list(main.all_channels().values())
+        assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]

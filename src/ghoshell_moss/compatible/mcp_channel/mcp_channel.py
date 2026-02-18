@@ -122,7 +122,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
     def is_running(self) -> bool:
         return self._running
 
-    def meta(self) -> ChannelMeta:
+    def self_meta(self) -> ChannelMeta:
         # todo: 还没有实现动态更新, 主要是更新 command
         if not self.is_running():
             raise RuntimeError(f"Channel client {self._name} is not running")
@@ -140,9 +140,9 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         # todo: 检查状态.
         return
 
-    def commands(self, available_only: bool = True) -> dict[str, Command]:
+    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         # todo: 这里每次更新, 和上面好像冲突.
-        meta = self.meta()
+        meta = self.self_meta()
         result = {}
         for command_meta in meta.commands:
             if not available_only or command_meta.available:
@@ -151,8 +151,8 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
                 result[command_meta.name] = command
         return result
 
-    def get_command(self, name: str) -> Optional[Command]:
-        meta = self.meta()
+    def get_self_command(self, name: str) -> Optional[Command]:
+        meta = self.self_meta()
         for command_meta in meta.commands:
             if command_meta.name == name:
                 func = self._get_command_func(command_meta)
