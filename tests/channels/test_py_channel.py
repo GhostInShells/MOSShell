@@ -4,6 +4,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.message import Message, new_text_message
+from ghoshell_moss.message.contents import Text
 
 chan = PyChannel(name="test")
 
@@ -219,3 +220,5 @@ async def test_py_channel_context() -> None:
         # 更新后, messages 也变更了.
         await broker.refresh_meta()
         assert len(broker.meta().context) == 2
+        assert broker.meta().context[0].contents[0] == Text(text="hello").to_content()
+        assert broker.meta().context[1].contents[0] == Text(text="world").to_content()
