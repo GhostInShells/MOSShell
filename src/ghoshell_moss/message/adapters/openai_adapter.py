@@ -35,7 +35,7 @@ def parse_message_to_chat_completion_param(
     system_user_name: str = "__moss_system__",
 ) -> list[dict]:
     message = message.as_completed()
-    if len(message.contents) == 0:
+    if not message.contents:
         return []
 
     content_parts = []

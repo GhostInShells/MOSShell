@@ -9,13 +9,14 @@ from ghoshell_container import Container, get_container
 from reachy_mini import ReachyMini
 from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
 
+from examples.moss_agent import load_instructions
 from examples.reachy_mini_moss.audio.player import ReachyMiniStreamPlayer
+from examples.reachy_mini_moss.channels.antennas import Antennas
+from examples.reachy_mini_moss.channels.head import Head
 from examples.reachy_mini_moss.reachy_mini_dances_library import DanceMove
 from examples.reachy_mini_moss.reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
-from examples.reachy_mini_moss.vision.head_tracker import HeadTracker
+from examples.reachy_mini_moss.state import ReachyMiniState
 from ghoshell_moss import PyChannel, Message, Base64Image, Text, Speech
-
-from examples.reachy_mini_moss.vision.yolo.model import stringify_positions
 
 logger = logging.getLogger('reachy_mini_moss')
 logger.setLevel(logging.INFO)
@@ -24,38 +25,37 @@ logger.setLevel(logging.INFO)
 class ReachyMiniMoss:
     def __init__(self, mini: ReachyMini):
         self.mini = mini
+        self._state = ReachyMiniState()
 
-        self._head_tracker = HeadTracker(mini)
-        self._waken = asyncio.Event()
+        self._head = Head(mini, self._state, logger)
+        self._antennas = Antennas(mini, self._state, logger)
 
         self._bootstrapped = asyncio.Event()
-
-        self._is_keep_looking_user = False
 
     async def wake_up(self):
         self.mini.enable_motors()
         self.mini.wake_up()
-        self._waken.set()
+        self._state.waken.set()
 
     async def goto_sleep(self):
-        self._is_keep_looking_user = False
+        self._state.tracking.clear()
         self.mini.goto_sleep()
         self.mini.disable_motors()
-        self._waken.clear()
+        self._state.waken.clear()
 
     async def dance(self, name: str):
         await self.mini.async_play_move(DanceMove(name))
 
-    async def start_tracking_face(self, tracking_id: int=-1):
-        self._is_keep_looking_user = True
-        self._head_tracker.set_tracking_id(tracking_id)
-
-    async def stop_tracking_face(self):
-        self._is_keep_looking_user = False
-        self._head_tracker.set_tracking_id(-1)
-
     async def context_messages(self):
         msg = Message.new(role="user", name="__reachy_mini__")
+
+        appearance_img = Image.open("appearance.png")
+        structure_img = Image.open("structure.png")
+        msg.with_content(
+            Text(text="These two images shows your appearance and structure"),
+            Base64Image.from_pil_image(appearance_img),
+            Base64Image.from_pil_image(structure_img),
+        )
 
         # mini vision
         frame = self.mini.media.get_frame()
@@ -68,52 +68,33 @@ class ReachyMiniMoss:
             ).with_content(
                 Base64Image.from_pil_image(img_pil)
             )
-        if self._is_keep_looking_user and self._head_tracker.face_tracking_positions:
-            msg.with_content(
-                Text(text=f"You are keep looking user with head tracking"),
-                Text(text=f"Head tracking information is {stringify_positions(self._head_tracker.face_tracking_positions)}"),
-                Text(text=f"Current tracking id is {self._head_tracker.current_tracking_id}")
-            )
-
-        msg.with_content(
-            Text(text=f"Current head pose is {self.mini.get_current_head_pose()}")
-        )
-
         return [msg]
-
-    async def on_policy_run(self):
-        logger.info(f"Running on-policy run, waken is {self._waken.is_set()}")
-        # await self._waken.wait()
-        # double check
-        if self._waken.is_set() and self._is_keep_looking_user:
-            logger.info("self._head_tracker.enabled.set()")
-            self._head_tracker.enabled.set()
-
-    async def on_policy_pause(self):
-        logger.info("Running on-policy pause")
-        self._head_tracker.enabled.clear()
 
     def as_channel(self) -> PyChannel:
         logger.info("as channel")
         assert self._bootstrapped.is_set()
 
-        chan = PyChannel(name="reachy_mini", description=f"sleep head pose is {SLEEP_HEAD_POSE}", block=True)
+        body = PyChannel(name="reachy_mini", description=f"sleep head pose is {SLEEP_HEAD_POSE}", block=True)
 
-        chan.build.with_context_messages(self.context_messages)
+        body.build.with_context_messages(self.context_messages)
+        dance_docstrings = []
+        for name, move in AVAILABLE_MOVES.items():
+            func, params, meta = move
+            dance_docstrings.append(f"name: {name} description: {meta.get("description", "")} subcycles per beat: {params.get('subcycles_per_beat', 1.0)}")
 
-        chan.build.on_policy_run(self.on_policy_run)
-        chan.build.on_policy_pause(self.on_policy_pause)
+        body.build.command(doc=f"Dance can be chosen in \n{"\n".join(dance_docstrings)}")(self.dance)
+        body.build.command()(self.wake_up)
+        body.build.command()(self.goto_sleep)
 
-        chan.build.command(doc=f"Dance name can be chosen in {AVAILABLE_MOVES.keys()}")(self.dance)
-        chan.build.command()(self.wake_up)
-        chan.build.command()(self.goto_sleep)
-        chan.build.command()(self.start_tracking_face)
-        chan.build.command()(self.stop_tracking_face)
+        body.import_channels(
+            self._head.as_channel(),
+            self._antennas.as_channel(),
+        )
 
-        return chan
+        return body
 
     async def bootstrap(self):
-        await self._head_tracker.start()
+        await self._head.bootstrap()
         self._bootstrapped.set()
 
     async def __aenter__(self):
@@ -121,7 +102,7 @@ class ReachyMiniMoss:
         return self
 
     async def aclose(self):
-        await self._head_tracker.stop()
+        await self._head.aclose()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.aclose()
@@ -151,14 +132,19 @@ async def run_agent(container, root_dir):
 
     with ReachyMini() as _mini:
         async with ReachyMiniMoss(_mini) as moss:
-            speech = get_speech(_mini, container, default_speaker="saturn_zh_female_keainvsheng_tob")
+            speech = get_speech(_mini, container, default_speaker="zh_female_santongyongns_saturn_bigtts")
             shell = new_shell(container=container, speech=speech)
             shell.main_channel.import_channels(
                 moss.as_channel(),
                 # zmq_hub.as_channel()
             )
+            instructions = load_instructions(
+                container,
+                ["persona.md"],
+                "reachy_mini_instructions",
+            )
             agent = SimpleAgent(
-                instruction="你叫小灵，拥有一个reachy mini的实体机器人，你的性格热情可爱，并且给你配置了TTS功能，你说的话都可以被用户听到哦",
+                instruction=instructions,
                 shell=shell,
                 speech=speech,
                 model=ModelConf(
