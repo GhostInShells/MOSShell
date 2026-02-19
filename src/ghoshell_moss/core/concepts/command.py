@@ -173,23 +173,21 @@ class CommandToken(BaseModel):
     在生命周期中所有被包装的 token 都带有相同的 cid.
     """
 
-    type: Literal["start", "delta", "end"] = Field(description="tokens type")
+    seq: Literal["start", "delta", "end"] = Field(description="tokens seq")
+    type: Literal[''] = Field(default="", description="token type, default is text")
 
     name: str = Field(description="command name")
     chan: str = Field(default="", description="channel name")
+    call_id: Optional[int] = Field(None, description="生成 command 时对应的 call_id")
 
     order: int = Field(default=0, description="the output order of the command")
-
     cmd_idx: int = Field(description="command index of the stream")
-
     part_idx: int = Field(description="continuous part idx of the command. "
                                       "[start, delta, delta, end] are four parts e.g.")
 
     stream_id: Optional[str] = Field(description="the id of the stream the command belongs to")
 
-    # todo: 未来 content 可能要支持多模态, 与 message 的 content 或 delta 兼容. 现阶段不做大改动.
     content: str = Field(description="origin tokens that llm generates")
-
     kwargs: Optional[dict[str, Any]] = Field(default=None, description="attributes, only for command start")
 
     def command_id(self) -> str:
@@ -207,6 +205,9 @@ class CommandToken(BaseModel):
         the deltas before the child command and after the child command have the different part_id `n` and `n + 1`
         """
         return f"{self.stream_id}-{self.cmd_idx}-{self.part_idx}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True, exclude_defaults=True)
 
     def __str__(self):
         return self.content
@@ -485,7 +486,11 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         return real_kwargs
 
     async def __call__(self, *args, **kwargs) -> RESULT:
-        real_kwargs = self.parse_kwargs(*args, **kwargs)
+        try:
+            real_kwargs = self.parse_kwargs(*args, **kwargs)
+        except Exception as e:
+            raise ValueError(f"command parse args failed: %s", e)
+
         if self._is_coroutine_func:
             return await self._func(**real_kwargs)
         else:
@@ -522,7 +527,7 @@ class CommandTask(Generic[RESULT], ABC):
             kwargs: dict[str, Any],
             cid: str | None = None,
             context: dict[str, Any] | None = None,
-            idx: int = 0,
+            call_id: str | int | None = None,
     ) -> None:
         self.chan = chan
         self.cid: str = cid or uuid()
@@ -538,7 +543,6 @@ class CommandTask(Generic[RESULT], ABC):
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
         self.last_trace: tuple[str, float] = ("", 0.0)
-        self.idx = idx
         """ command task 在 shell 执行的 task 中的排序. 传入这个参数本身没有意义. 最终都以 Shell 的定义为准. """
         if self.IDX_ARG in self.kwargs:
             del self.kwargs[self.IDX_ARG]
@@ -553,6 +557,19 @@ class CommandTask(Generic[RESULT], ABC):
 
         self.done_at: Optional[str] = None
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
+        self.call_id: str = str(call_id) if call_id is not None else ""
+
+    def caller_name(self) -> str:
+        """
+        用三元信息标定一个调用名.
+        """
+        parts = []
+        if self.chan:
+            parts.append(self.chan)
+        parts.append(self.meta.name)
+        if self.call_id:
+            parts.append(self.call_id)
+        return ":".join(parts)
 
     @abstractmethod
     def result(self, throw: bool = True) -> Optional[RESULT]:
@@ -720,8 +737,8 @@ class CommandTask(Generic[RESULT], ABC):
         if len(tokens) > 50:
             tokens = f"{tokens[:50]}..."
         return (
-            f"<CommandTask name=`{self.meta.name}` chan=`{self.meta.chan}` "
-            f"args=`{self.args}` kwargs=`{self.kwargs}`"
+            f"<CommandTask name=`{self.caller_name()}` "
+            f"args=`{self.args}` kwargs=`{str(self.kwargs)}`"
             f"cid=`{self.cid}` "
             f"state=`{self.state}` done_at=`{self.done_at}` "
             f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
@@ -748,6 +765,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             kwargs: dict[str, Any],
             cid: str | None = None,
             context: dict[str, Any] | None = None,
+            call_id: str | int | None = None,
     ) -> None:
         super().__init__(
             chan=chan,
@@ -758,6 +776,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             kwargs=kwargs,
             cid=cid,
             context=context,
+            call_id=call_id,
         )
         self._result: Optional[RESULT] = None
         self._done_event: ThreadSafeEvent = ThreadSafeEvent()
@@ -779,6 +798,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     def copy(self, cid: str = "") -> Self:
         cid = cid or uuid()
         return BaseCommandTask(
+            chan=self.chan,
             cid=cid,
             meta=self.meta.model_copy(),
             func=self.func,
@@ -786,6 +806,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             args=self.args,
             kwargs=self.kwargs,
             context=self.context,
+            call_id=self.call_id,
         )
 
     @classmethod
@@ -793,16 +814,17 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             cls,
             command_: Command[RESULT],
             chan_: str = "",
-            *args,
-            **kwargs,
+            tokens_: str = "",
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> "BaseCommandTask":
         return cls(
             chan=chan_,
             meta=command_.meta(),
             func=command_.__call__,
-            tokens="",
-            args=list(args),
-            kwargs=kwargs,
+            tokens=tokens_,
+            args=list(args) if args is not None else [],
+            kwargs=kwargs if kwargs is not None else {},
         )
 
     def done(self) -> bool:

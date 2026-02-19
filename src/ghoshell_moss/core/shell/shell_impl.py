@@ -53,7 +53,7 @@ class ExecuteInChannelRuntimeCommand(Command[RESULT]):
         await self._command.refresh_meta()
 
     async def __call__(self, *args, **kwargs) -> RESULT:
-        task = BaseCommandTask.from_command(self._command, *args, **kwargs)
+        task = BaseCommandTask.from_command(self._command, args=args, kwargs=kwargs)
         try:
             # push task into the shell
             runtime = await self._shell.runtime.get_or_create_runtime(task.meta.chan)

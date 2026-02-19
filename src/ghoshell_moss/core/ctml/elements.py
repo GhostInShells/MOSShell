@@ -143,10 +143,10 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
             return
 
         # 接受一个 start token.
-        if token.type == CommandTokenType.START:
+        if token.seq == CommandTokenType.START:
             self._on_cmd_start_token(token)
         # 接受一个 end token
-        elif token.type == CommandTokenType.END:
+        elif token.seq == CommandTokenType.END:
             self._on_cmd_end_token(token)
         # 接受一个 delta 类型的 token.
         else:
@@ -176,7 +176,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         """
         基于 start token 创建一个子节点.
         """
-        if token.type != CommandTokenType.START.value:
+        if token.seq != CommandTokenType.START.value:
             # todo
             raise InterpretError(f"invalid token {token!r}")
 
@@ -192,6 +192,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         else:
             meta = command.meta()
             task = BaseCommandTask(
+                chan=token.chan,
                 meta=meta,
                 func=command.__call__,
                 tokens=token.content,
@@ -199,6 +200,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
                 args=[],
                 kwargs=token.kwargs,
                 cid=token.command_id(),
+                call_id=token.call_id,
             )
             if meta.delta_arg == CommandDeltaType.TOKENS.value:
                 child = DeltaTypeIsTokensCommandTaskElement(

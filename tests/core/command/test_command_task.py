@@ -184,6 +184,15 @@ async def test_command_task_in_context():
     assert await foo_task.run() == foo_task.cid
 
 
+def test_task_caller_name():
+    async def foo() -> str:
+        return ""
+
+    task = BaseCommandTask.from_command(PyCommand(foo), chan_="a")
+    task.call_id = "2"
+    assert task.caller_name() == "a:foo:2"
+
+
 def test_await_task_in_threads():
     async def foo() -> int:
         return 123

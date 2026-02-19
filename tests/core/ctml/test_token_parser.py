@@ -2,7 +2,7 @@ from collections import deque
 
 from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenType
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser
+from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, literal_parser
 
 
 def test_token_parser_baseline():
@@ -69,11 +69,11 @@ def test_delta_token_baseline():
     for token in q:
         if token.name != "foo":
             continue
-        elif token.type == "start":
+        elif token.seq == "start":
             assert token.part_idx == 0
-        elif token.type == "delta":
+        elif token.seq == "delta":
             assert token.part_idx in (1, 2)
-        elif token.type == "end":
+        elif token.seq == "end":
             assert token.part_idx == 3
 
     delta_part_1 = ""
@@ -113,7 +113,7 @@ def test_token_with_attrs():
         if token.name == "foo":
             assert token.cmd_idx == 1
             foo_token_count += 1
-            if token.type == "start":
+            if token.seq == "start":
                 # is string value
                 assert token.kwargs == {"bar": "123"}
     assert foo_token_count == 2
@@ -125,11 +125,11 @@ def test_token_with_attrs():
     assert first_token.name == "speak"
     assert first_token.cmd_idx == 0
     assert first_token.part_idx == 1
-    assert first_token.type == CommandTokenType.DELTA.value
+    assert first_token.seq == CommandTokenType.DELTA.value
 
     assert last_token.name == "speak"
     assert last_token.cmd_idx == 0
-    assert last_token.type == CommandTokenType.DELTA.value
+    assert last_token.seq == CommandTokenType.DELTA.value
     assert last_token.part_idx == 2
 
 
@@ -143,7 +143,7 @@ def test_token_with_cdata():
     expect = '{"a": 123, "b":"234"}'
     foo_deltas = ""
     for token in q[1:-1]:
-        if token.name == "foo" and token.type == "delta":
+        if token.name == "foo" and token.seq == "delta":
             foo_deltas += token.content
     assert expect == foo_deltas
 
@@ -229,8 +229,35 @@ def test_token_parser_with_json():
 </jetarm:run_trajectory>
 """
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", )
     assert q.pop() is None
     q = q[1:-1]
 
     assert "".join([t.content for t in q]) == content
+
+
+def test_token_parser_with_idx():
+    content = "<a:foo:3 literal-a='[1, 2]'></a:foo:3><bar/>"
+    q: list[CommandToken] = []
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser])
+    q = q[1:-1]
+    token = q.pop(0)
+    assert token.seq == "start"
+    assert token.call_id == 3
+    assert token.order == 1
+    assert token.kwargs['a'] == [1, 2]
+    next_token = None
+    for token in q:
+        if token.name == "bar":
+            next_token = token
+            break
+    assert next_token is not None
+    assert next_token.seq == "start"
+    assert next_token.cmd_idx == 2
+    assert next_token.call_id is None
+
+    content = "<a:foo:1 literal-a='[1, 2]'></a:foo:1><bar/>"
+    q: list[CommandToken] = []
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True)
+    got_content = "".join([t.content for t in q[1:-2]])
+    assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar:2></bar:2>'

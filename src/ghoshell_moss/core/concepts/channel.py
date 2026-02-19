@@ -807,8 +807,8 @@ class ChannelBroker(ABC):
         task = BaseCommandTask.from_command(
             command,
             chan,
-            *args,
-            **kwargs,
+            args=args,
+            kwargs=kwargs,
         )
         return task
 
