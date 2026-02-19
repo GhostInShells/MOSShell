@@ -8,6 +8,7 @@ from collections.abc import Callable, Coroutine
 from typing import (
     Optional, Iterable, Any, TypeVar, Generic
 )
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer, Container
 
@@ -141,7 +142,9 @@ class ChannelImportLib:
         return result
 
     def recursively_find_broker(self, broker: ChannelBroker, path: ChannelFullPath) -> ChannelBroker | None:
-        paths = Channel.split_channel_path_to_names(path, 2)
+        if path == "":
+            return broker
+        paths = Channel.split_channel_path_to_names(path, 1)
         child_name = paths[0]
         further_path = paths[1] if len(paths) > 1 else ""
         if child_name == "":
@@ -153,6 +156,17 @@ class ChannelImportLib:
         if child_broker is None:
             return None
         return self.recursively_find_broker(child_broker, further_path)
+
+    async def recursively_fetch_broker(self, root: ChannelBroker, paths: ChannelPaths) -> ChannelBroker | None:
+        if len(paths) == 0:
+            return root
+        child_name = paths[0]
+        further_path = paths[1:]
+        child = root.children().get(child_name)
+        if child is None:
+            return None
+        child_broker = await self.get_or_create_channel_broker(child)
+        return await self.recursively_fetch_broker(child_broker, further_path)
 
     async def close(self) -> None:
         if self._close:
@@ -335,6 +349,10 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
             if broker is not None and broker.is_running():
                 result[name] = broker
         return result
+
+    async def fetch_broker(self, path: ChannelFullPath) -> ChannelBroker | None:
+        paths = Channel.split_channel_path_to_names(path)
+        return await self.importlib.recursively_fetch_broker(self, paths)
 
     def get_child_broker(self, name: str) -> ChannelBroker | None:
         child = self.children().get(name)

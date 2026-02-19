@@ -368,3 +368,58 @@ async def test_py_channel_child_orders() -> None:
         # 运行第二次.
         order = list(main.all_channels().values())
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
+
+
+@pytest.mark.asyncio
+async def test_py_channel_parent_idle() -> None:
+    main = PyChannel(name="main")
+    a_chan = PyChannel(name="a_chan")
+    b_chan = PyChannel(name="b_chan")
+    main.import_channels(a_chan, b_chan)
+
+    order = []
+
+    @main.build.command()
+    @a_chan.build.command()
+    @b_chan.build.command()
+    async def foo(sleep: float) -> None:
+        task = ChannelCtx.task()
+        await asyncio.sleep(sleep)
+        order.append(task)
+
+    async with main.bootstrap() as broker:
+        task1 = broker.create_command_task("foo", args=(0.1,))
+        task2 = broker.create_command_task("a_chan:foo", args=(0.3,))
+        task3 = broker.create_command_task("b_chan:foo", args=(0.1,))
+        task4 = broker.create_command_task("foo", args=(0.2,))
+        # 先执行完.
+        await broker.push_task(task1)
+        # task2 后执行.
+        await broker.push_task(task2)
+        # task3 比2 先执行完.
+        await broker.push_task(task3)
+        # task4 已经执行完.
+        await broker.push_task(task4)
+        # 等待运行完.
+        await broker.wait_idle()
+        assert order == [task1, task3, task4, task2]
+
+
+@pytest.mark.asyncio
+async def test_channel_fetch_level2():
+    main = PyChannel(name="main")
+    a_chan = PyChannel(name="a_chan")
+    b_chan = PyChannel(name="b_chan")
+    a_chan.import_channels(b_chan)
+    main.import_channels(a_chan, b_chan)
+    async with main.bootstrap() as broker:
+        b1 = await broker.fetch_broker("b_chan")
+        b2 = await broker.fetch_broker("a_chan.b_chan")
+        assert b1 is not None
+        assert b1 is b2
+
+
+def test_channel_split_path():
+    _chan = "a.b.c"
+    got = PyChannel.split_channel_path_to_names(_chan, 1)
+    assert len(got) == 2

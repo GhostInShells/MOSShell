@@ -680,6 +680,10 @@ class ChannelBroker(ABC):
         return result
 
     @abstractmethod
+    async def fetch_broker(self, path: ChannelFullPath) -> Optional[Self]:
+        pass
+
+    @abstractmethod
     def is_connected(self) -> bool:
         """
         判断一个 Broker 的连接与通讯是否正常。
