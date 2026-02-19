@@ -2,7 +2,7 @@ import asyncio
 import time
 
 import pytest
-from ghoshell_moss import Channel, CommandTask, CommandTaskStack, Interpreter, MOSSShell, new_chan, ChannelCtx
+from ghoshell_moss import Channel, CommandTask, CommandResultStack, Interpreter, MOSSShell, new_chan, ChannelCtx
 
 
 @pytest.mark.asyncio
@@ -188,7 +188,7 @@ async def test_shell_loop():
         async def on_success(generated: list[CommandTask]):
             await asyncio.gather(*[g.wait() for g in generated])
 
-        return CommandTaskStack(_iter(), on_success)
+        return CommandResultStack(_iter(), on_success)
 
     outputs = []
 

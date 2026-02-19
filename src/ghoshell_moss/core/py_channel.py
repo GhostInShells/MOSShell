@@ -20,8 +20,8 @@ from ghoshell_moss.core.concepts.channel import (
     StringType,
     ChannelPaths,
 )
-from ghoshell_moss.core.concepts.broker import AbsChannelBroker
-from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandTask
+from ghoshell_moss.core.concepts.broker import AbsChannelTreeBroker
+from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore
 from ghoshell_common.helpers import uuid
 
@@ -296,7 +296,7 @@ class PyChannel(MutableChannel):
         return self._broker is not None and self._broker.is_running()
 
 
-class PyChannelBroker(AbsChannelBroker):
+class PyChannelBroker(AbsChannelTreeBroker):
     def __init__(
             self,
             channel: PyChannel,
@@ -324,7 +324,7 @@ class PyChannelBroker(AbsChannelBroker):
         result = self._channel.children()
         return result
 
-    async def generate_self_meta(self) -> ChannelMeta:
+    async def _generate_self_meta(self) -> ChannelMeta:
         dynamic = self._dynamic or False
         command_metas = []
         commands = self._builder.commands()
@@ -371,6 +371,9 @@ class PyChannelBroker(AbsChannelBroker):
 
     # ---- commands ---- #
 
+    def _is_available(self) -> bool:
+        return self._builder.is_available()
+
     def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
@@ -401,7 +404,8 @@ class PyChannelBroker(AbsChannelBroker):
 
     async def on_idle(self) -> None:
         try:
-            self._check_running()
+            if not self.is_running():
+                return
             await self._builder.on_idle()
 
         except asyncio.CancelledError:
@@ -413,7 +417,6 @@ class PyChannelBroker(AbsChannelBroker):
 
     async def on_start_up(self) -> None:
         # 准备 start up 的运行.
-        await self.refresh_meta()
         await self._builder.on_start_up()
 
     async def on_close(self) -> None:

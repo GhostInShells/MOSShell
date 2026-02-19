@@ -44,7 +44,7 @@ async def test_redis_channel_baseline():
 
         provider.run_in_thread(test_channel)
 
-        async with provider.run_in_ctx(test_channel):
+        async with provider.arun(test_channel):
             async with proxy.bootstrap() as broker:
                 # 验证 proxy 已连接
                 await proxy.broker.wait_connected()

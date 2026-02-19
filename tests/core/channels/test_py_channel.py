@@ -51,6 +51,7 @@ async def available_test_fn() -> int:
 @pytest.mark.asyncio
 async def test_py_channel_baseline() -> None:
     async with chan.bootstrap() as broker:
+        await broker.refresh_metas()
         assert chan.name() == "test"
         assert broker.is_connected()
         assert broker.is_running()
@@ -103,11 +104,11 @@ async def test_py_channel_children() -> None:
     assert isinstance(zoo_cmd, PyCommand)
 
     assert len(chan.children()) == 1
-    async with a_chan.bootstrap():
-        meta = a_chan.broker.self_meta()
+    async with a_chan.bootstrap() as broker:
+        meta = broker.self_meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = a_chan.broker.get_self_command("zoo")
+        command = broker.get_self_command("zoo")
         # 实际执行的是 zoo.
         assert await command() == 123
 
@@ -130,12 +131,11 @@ async def test_py_channel_with_children() -> None:
     main.import_channels(c)
 
     async with main.bootstrap() as broker:
-        brokers = broker.all_brokers()
-        assert len(brokers) == 5
-        assert "" in brokers
-        assert brokers["c"].channel is c
-        assert brokers["c.d"].channel is c.children()["d"]
-        assert brokers['c.d'].channel is c.children()["d"]
+        metas = broker.metas()
+        assert len(metas) == 5
+        assert "" in metas
+        assert metas["c"].channel_id == c.id()
+        assert metas["c.d"].channel_id == c.children()["d"].id()
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ async def test_py_channel_context() -> None:
         messages.append(new_text_message("world", role="system"))
 
         # 更新后, messages 也变更了.
-        await broker.refresh_meta()
+        await broker.refresh_metas()
         assert len(broker.self_meta().context) == 2
 
 
@@ -366,7 +366,7 @@ async def test_py_channel_child_orders() -> None:
         order = [b.channel for b in broker.all_brokers().values()]
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
         # 运行第二次.
-        order = list(main.all_channels().values())
+        order = [b.channel for b in broker.all_brokers().values()]
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
 
 
@@ -388,21 +388,27 @@ async def test_py_channel_parent_idle() -> None:
         order.append(task)
 
     async with main.bootstrap() as broker:
+        assert broker.is_running()
         task1 = broker.create_command_task("foo", args=(0.1,))
-        task2 = broker.create_command_task("a_chan:foo", args=(0.3,))
+        task2 = broker.create_command_task("a_chan:foo", args=(0.4,))
         task3 = broker.create_command_task("b_chan:foo", args=(0.1,))
         task4 = broker.create_command_task("foo", args=(0.2,))
         # 先执行完.
-        await broker.push_task(task1)
-        # task2 后执行.
-        await broker.push_task(task2)
-        # task3 比2 先执行完.
-        await broker.push_task(task3)
-        # task4 已经执行完.
-        await broker.push_task(task4)
-        # 等待运行完.
+        await broker.push_task(task1, task2, task3, task4)
+        assert not broker.is_idle()
+        # 等待运行完. 子命令都运行完, 父轨才会 idle.
+        await task1
         await broker.wait_idle()
+        assert task3.exec_chan == "b_chan"
         assert order == [task1, task3, task4, task2]
+        metas = broker.metas()
+        assert len(metas) == 3
+        assert "" in metas
+        assert "a_chan" in metas
+        assert "b_chan" in metas
+        assert metas[""].children == ["a_chan", "b_chan"]
+        for meta in metas.values():
+            assert len(meta.commands) == 1
 
 
 @pytest.mark.asyncio

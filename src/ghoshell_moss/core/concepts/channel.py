@@ -454,89 +454,6 @@ class Channel(ABC):
             return []
         return channel_path.split(".", limit)
 
-    @property
-    @abstractmethod
-    def broker(self) -> Optional["ChannelBroker"]:
-        """
-        Channel 在 bootstrap 之后返回的运行时.
-        """
-        pass
-
-    # --- children --- #
-
-    @abstractmethod
-    def children(self) -> dict[str, "Channel"]:
-        """
-        返回所有已注册的子 Channel.
-        """
-        pass
-
-    def descendants(self, prefix: str = "") -> dict[str, "Channel"]:
-        """
-        返回所有的子孙 Channel, 先序遍历.
-        其中的 key 是 channel 的路径关系.
-        每次都要动态构建, 有性能成本.
-        """
-        descendants: dict[str, Channel] = {}
-        children = self.children()
-        if len(children) == 0:
-            return descendants
-        # 深度优先遍历.
-        for child_name, child in children.items():
-            child_path = Channel.join_channel_path(prefix, child_name)
-            descendants[child_path] = child
-            for descendant_full_path, descendant in child.descendants(child_path).items():
-                # join descendant name with parent name
-                descendants[descendant_full_path] = descendant
-        return descendants
-
-    def all_channels(self) -> dict[ChannelFullPath, "Channel"]:
-        """
-        语法糖, 返回所有的 channel, 包含自身.
-        key 是以自身为起点的 channel path (相对路径), 用来发现原点.
-        """
-        all_channels = {"": self}
-        for path, channel in self.descendants().items():
-            # 保持顺序.
-            all_channels[path] = channel
-        return all_channels
-
-    def get_channel(self, channel_path: str) -> Optional[Self]:
-        """
-        使用 channel 名从树中获取一个 Channel 对象. 包括自身.
-        """
-        if channel_path == "":
-            return self
-
-        channel_path = Channel.split_channel_path_to_names(channel_path)
-        return self.recursive_find_sub_channel(self, channel_path)
-
-    @classmethod
-    def recursive_find_sub_channel(cls, root: "Channel", channel_path: list[str]) -> Optional["Channel"]:
-        """
-        从子孙节点中递归进行查找.
-        """
-        names_count = len(channel_path)
-        if names_count == 0:
-            return None
-        first = channel_path[0]
-        children = root.children()
-        if first not in children:
-            return None
-        new_root = children[first]
-        if names_count == 1:
-            return new_root
-        return cls.recursive_find_sub_channel(new_root, channel_path[1:])
-
-    # --- lifecycle --- #
-
-    @abstractmethod
-    def is_running(self) -> bool:
-        """
-        自身是不是 running 状态, 如果是, 则可以拿到 broker
-        """
-        pass
-
     @abstractmethod
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
         """
@@ -598,6 +515,13 @@ class ChannelBroker(ABC):
         """
         pass
 
+    @abstractmethod
+    def children(self) -> dict[str, Channel]:
+        """
+        当前持有的子 Channel.
+        """
+        pass
+
     @property
     @abstractmethod
     def states(self) -> StateStore:
@@ -639,8 +563,9 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    async def refresh_meta(
+    async def refresh_metas(
             self,
+            force: bool = True,
             callback: bool = True,
     ) -> None:
         """
@@ -652,35 +577,14 @@ class ChannelBroker(ABC):
         """
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
         """
-        return self.interface().get("")
+        return self.metas().get("")
 
     @abstractmethod
-    def interface(self) -> dict[ChannelFullPath, ChannelMeta]:
+    def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         """
         返回当前模块自身的所有 meta 信息.
         dict 本身是有序的.
         """
-        pass
-
-    @abstractmethod
-    def children(self) -> dict[str, Channel]:
-        """
-        当前持有的子 Channel.
-        """
-        pass
-
-    @abstractmethod
-    def descendants(self) -> dict[ChannelFullPath, Self]:
-        pass
-
-    def all_brokers(self) -> dict[ChannelFullPath, Self]:
-        result = {"": self}
-        descendants = self.descendants()
-        result.update(descendants)
-        return result
-
-    @abstractmethod
-    async def fetch_broker(self, path: ChannelFullPath) -> Optional[Self]:
         pass
 
     @abstractmethod
@@ -706,6 +610,32 @@ class ChannelBroker(ABC):
         当前 Channel 对于使用者 (AI) 而言, 是否可用.
         当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
         """
+        pass
+
+    @abstractmethod
+    def is_idle(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def wait_idle(self) -> None:
+        pass
+
+    @abstractmethod
+    async def wait_connected(self) -> None:
+        """
+        等待 broker 到连接成功.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_closed(self) -> None:
+        """
+        等待 Broker 彻底中断.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_started(self) -> None:
         pass
 
     @abstractmethod
@@ -738,11 +668,7 @@ class ChannelBroker(ABC):
         """
         pass
 
-    @abstractmethod
-    async def wait_idle(self) -> None:
-        pass
-
-    async def push_task(self, task: CommandTask) -> None:
+    async def push_task(self, *tasks: CommandTask) -> None:
         """
         将一个 Task 推入到执行栈中. 阻塞到完成入栈为止. 仍然要在外侧 await.
 
@@ -755,8 +681,9 @@ class ChannelBroker(ABC):
         >>>     await broker.push_task(t)
         >>>     return await t
         """
-        paths = Channel.split_channel_path_to_names(task.chan)
-        await self.push_task_with_paths(paths, task)
+        for task in tasks:
+            paths = Channel.split_channel_path_to_names(task.chan)
+            await self.push_task_with_paths(paths, task)
 
     @abstractmethod
     async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
@@ -771,20 +698,6 @@ class ChannelBroker(ABC):
 
     @abstractmethod
     def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
-        pass
-
-    @abstractmethod
-    async def wait_connected(self) -> None:
-        """
-        等待 broker 到连接成功.
-        """
-        pass
-
-    @abstractmethod
-    async def wait_closed(self) -> None:
-        """
-        等待 Broker 彻底中断.
-        """
         pass
 
     def create_command_task(
@@ -998,12 +911,6 @@ class ChannelProvider(ABC):
     Provider 和 Proxy 通常成对出现.
     """
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.aclose()
-
     @property
     @abstractmethod
     def channel(self) -> Channel:
@@ -1015,27 +922,27 @@ class ChannelProvider(ABC):
         pass
 
     @abstractmethod
-    async def arun(self, channel: Channel) -> None:
+    async def wait_closed(self) -> None:
         """
-        运行 Client 服务.
+        等待 provider 运行到结束为止.
         """
         pass
 
     @abstractmethod
-    async def wait_closed(self) -> None:
-        """
-        等待 server 运行到结束为止.
-        """
+    async def wait_stop(self) -> None:
         pass
 
     @abstractmethod
     def wait_closed_sync(self) -> None:
+        """
+        同步等待运行结束.
+        """
         pass
 
     @abstractmethod
     async def aclose(self) -> None:
         """
-        主动关闭 server.
+        主动关闭
         """
         pass
 
@@ -1056,8 +963,8 @@ class ChannelProvider(ABC):
         """
         展示如何在 async 中持续运行到结束.
         """
-        await self.arun(channel)
-        await self.wait_closed()
+        async with self.arun(channel):
+            await self.wait_stop()
 
     def run_in_thread(self, channel: Channel) -> None:
         """
@@ -1074,10 +981,9 @@ class ChannelProvider(ABC):
         pass
 
     @asynccontextmanager
-    async def run_in_ctx(self, channel: Channel) -> AsyncIterable[Self]:
+    @abstractmethod
+    async def arun(self, channel: Channel) -> None:
         """
-        支持 async with statement 的运行方式调用 channel server, 通常用于测试.
+        支持 async with statement 的运行方式启动一个 channel.
         """
-        await self.arun(channel)
-        yield self
-        await self.aclose()
+        pass

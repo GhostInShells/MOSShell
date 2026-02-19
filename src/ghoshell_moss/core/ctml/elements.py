@@ -353,7 +353,7 @@ class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
                 *self._children_tasks,
             )
             cancel_after_children_task.tokens = CMTLSaxElement.make_end_mark(
-                self._current_task.meta.chan,
+                self._current_task.chan,
                 self._current_task.meta.name,
             )
             # 等待所有 children tasks 完成, 如果自身还未完成, 则取消.
@@ -467,7 +467,7 @@ class DeltaIsTextCommandTaskElement(BaseCommandTaskParserElement):
                 attrs = self._current_task.kwargs.copy()
                 del attrs[CommandDeltaType.TEXT.value]
                 self._current_task.tokens = CMTLSaxElement.make_start_mark(
-                    current_task_meta.chan,
+                    self._current_task.chan,
                     current_task_meta.name,
                     attrs=attrs,
                     self_close=True,

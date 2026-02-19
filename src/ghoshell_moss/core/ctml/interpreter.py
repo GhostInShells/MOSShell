@@ -10,7 +10,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft, uuid
 
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskStateType, CommandToken
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskState, CommandToken
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
@@ -322,11 +322,11 @@ class CTMLInterpreter(Interpreter):
         tasks = self.parsed_tasks().copy()
         executions = []
         for task in tasks.values():
-            if CommandTaskStateType.is_complete(task.state):
+            if CommandTaskState.is_complete(task.state):
                 executions.append(task)
             else:
                 break
-            if CommandTaskStateType.is_stopped(task.state):
+            if CommandTaskState.is_stopped(task.state):
                 break
         return executions
 

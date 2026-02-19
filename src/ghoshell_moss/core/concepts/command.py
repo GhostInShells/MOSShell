@@ -38,8 +38,8 @@ __all__ = [
     "CommandErrorCode",
     "CommandMeta",
     "CommandTask",
-    "CommandTaskStack",
-    "CommandTaskStateType",
+    "CommandResultStack",
+    "CommandTaskState",
     "CommandToken",
     "CommandTokenType",
     "CommandType",
@@ -52,7 +52,7 @@ __all__ = [
 RESULT = TypeVar("RESULT")
 
 
-class CommandTaskStateType(str, Enum):
+class CommandTaskState(str, Enum):
     """
     the state types of a CommandTask
     """
@@ -97,6 +97,7 @@ class CommandDeltaType(str, Enum):
 
     TEXT = "text__"
     TOKENS = "tokens__"
+    CTML = "ctml__"
 
     @classmethod
     def all(cls) -> set[str]:
@@ -105,7 +106,7 @@ class CommandDeltaType(str, Enum):
 
 CommandDeltaTypeMap = {
     CommandDeltaType.TEXT.value: "the deltas are text string",
-    CommandDeltaType.TOKENS.value: "the delta are commands, transporting as Iterable[CommandToken]",
+    CommandDeltaType.CTML.value: "the deltas are ctml string",
 }
 """
 拥有不同的语义的 Delta 类型. 
@@ -267,6 +268,8 @@ class CommandMeta(BaseModel):
 
 
 CommandUniqueName = str
+_ChannelFullPath = str
+_CommandName = str
 
 
 class Command(Generic[RESULT], ABC):
@@ -391,6 +394,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             # todo: 思考这两个 feature 是否有更合理的定义方式.
             call_soon: bool = False,
             blocking: bool = True,
+            delta_types: Optional[set] = None
     ):
         """
         :param func: origin coroutine function
@@ -419,9 +423,10 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._blocking = blocking
         self._tags = tags
         self._meta = meta
+        self._delta_types = delta_types if delta_types is not None else CommandDeltaType.all()
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters:
-            if arg_name in CommandDeltaTypeMap:
+            if arg_name in self._delta_types:
                 if delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
                 delta_arg = arg_name
@@ -612,7 +617,7 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
-    def set_state(self, state: CommandTaskStateType | str) -> None:
+    def set_state(self, state: CommandTaskState | str) -> None:
         """
         set the state of the command with time
         """
@@ -737,10 +742,10 @@ class CommandTask(Generic[RESULT], ABC):
         if len(tokens) > 50:
             tokens = f"{tokens[:50]}..."
         return (
-            f"<CommandTask name=`{self.caller_name()}` "
+            f"<CommandTask chan=`{self.chan}` name=`{self.meta.name}` call_id=`{self.call_id}``"
             f"args=`{self.args}` kwargs=`{str(self.kwargs)}`"
             f"cid=`{self.cid}` "
-            f"state=`{self.state}` done_at=`{self.done_at}` "
+            f"state=`{self.state}` done_at=`{self.done_at}` exec_chan=`{self.exec_chan}` "
             f"errcode=`{self.errcode}` errmsg=`{self.errmsg}` "
             f"send_through=`{self.send_through}` "
             f">{tokens}</CommandTask>"
@@ -845,7 +850,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.errcode = 0
         self.errmsg = None
 
-    def set_state(self, state: CommandTaskStateType | str) -> None:
+    def set_state(self, state: CommandTaskState | str) -> None:
         with self._done_lock:
             if self._done_event.is_set():
                 return None
@@ -857,7 +862,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     def _set_result(
             self,
             result: Optional[RESULT],
-            state: CommandTaskStateType | str,
+            state: CommandTaskState | str,
             errcode: int,
             errmsg: Optional[str],
             done_at: Optional[str] = None,
@@ -992,7 +997,7 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
     ) -> None:
         meta = CommandMeta(
             name="cancel_" + current.meta.name,
-            chan=current.meta.chan,
+            chan=current.chan,
             type=CommandType.PRIMITIVE.value,
             block=False,
             call_soon=True,
@@ -1016,7 +1021,7 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
         )
 
 
-class CommandTaskStack:
+class CommandResultStack:
     """
     特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回.
     """

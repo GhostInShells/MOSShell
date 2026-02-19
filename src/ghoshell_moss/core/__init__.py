@@ -6,7 +6,6 @@ from .duplex import (
     DuplexChannelBroker,
     DuplexChannelProvider,
     DuplexChannelProxy,
-    DuplexChannelStub,
 )
 from .duplex.protocol import *
 from .py_channel import PyChannel, PyChannelBroker, PyChannelBuilder

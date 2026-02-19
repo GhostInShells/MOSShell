@@ -8,10 +8,13 @@ from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
 from ghoshell_moss.core.concepts.channel import (
-    Builder, Channel, ChannelBroker, ChannelFullPath, ChannelMeta, ChannelCtx,
+    Channel, ChannelFullPath, ChannelMeta, ChannelCtx, ChannelPaths,
 )
 from ghoshell_moss.core.concepts.broker import AbsChannelBroker
-from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandMeta, CommandTask, CommandWrapper
+from ghoshell_moss.core.concepts.command import (
+    BaseCommandTask, Command, CommandMeta, CommandTask, CommandWrapper,
+    CommandUniqueName,
+)
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
@@ -23,14 +26,12 @@ from .protocol import (
     CommandCallEvent,
     CommandDoneEvent,
     CreateSessionEvent,
-    PauseEvent,
     ReconnectSessionEvent,
-    IdleEvent,
     SessionCreatedEvent,
     SyncChannelMetasEvent,
 )
 
-__all__ = ["DuplexChannelBroker", "DuplexChannelProxy", "DuplexChannelStub"]
+__all__ = ["DuplexChannelBroker", "DuplexChannelProxy", ]
 
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 
@@ -82,10 +83,6 @@ class DuplexChannelContext:
         """记录一次更新 meta 的任务已经完成, 用于做更新的阻塞. """
 
         self._pending_provider_command_calls: dict[str, CommandTask] = {}
-
-        self.provider_to_broker_event_queue_map: dict[str, asyncio.Queue[ChannelEvent | None]] = {}
-        """按 channel 名称进行分发的队列."""
-
         self._main_task: Optional[asyncio.Task] = None
 
         self._logger: logging.Logger = self.container.get(LoggerItf) or logging.getLogger(__name__)
@@ -125,6 +122,25 @@ class DuplexChannelContext:
             await self._sync_meta_done_event.wait()
             self._logger.info("refresh duplex channel %s context meta done", self.root_name)
 
+    def is_idle(self) -> bool:
+        tasks = self._pending_provider_command_calls.copy()
+        for task in tasks.values():
+            if not task.done() and task.meta.blocking:
+                return False
+        return True
+
+    async def wait_idle(self) -> None:
+        while True:
+            tasks = self._pending_provider_command_calls.copy()
+            waiting = []
+            for task in tasks.values():
+                if not task.done() and task.meta.blocking:
+                    waiting.append(task.wait(throw=False))
+            if len(waiting) > 0:
+                _ = await asyncio.gather(*waiting)
+            if self.is_idle():
+                break
+
     async def send_event_to_provider(self, event: ChannelEvent, throw: bool = True) -> None:
         if self.stop_event.is_set():
             self.logger.warning("Channel %s connection is stopped or not available", self.root_name)
@@ -149,17 +165,6 @@ class DuplexChannelContext:
         except asyncio.CancelledError:
             pass
 
-    def get_provider_event_queue(self, name: str) -> asyncio.Queue[ChannelEvent | None]:
-        """
-        :param name: 这里的 name 是 channel 在远端的原名称.
-        """
-        if name == self.remote_root_name:
-            # 用 "" 表示根节点.
-            name = ""
-        if name not in self.provider_to_broker_event_queue_map:
-            self.provider_to_broker_event_queue_map[name] = asyncio.Queue()
-        return self.provider_to_broker_event_queue_map[name]
-
     @property
     def logger(self) -> LoggerItf:
         if self._logger is None:
@@ -180,14 +185,6 @@ class DuplexChannelContext:
         self._started.set()
         self.logger.info("DuplexChannelContext[name=%s] started", self.root_name)
 
-    def connect_broker(self, channel_name: str) -> None:
-        if channel_name in self.provider_meta_map:
-            self.provider_to_broker_event_queue_map[channel_name] = asyncio.Queue()
-
-    def disconnect_broker(self, channel_name: str) -> None:
-        if channel_name in self.provider_to_broker_event_queue_map:
-            del self.provider_to_broker_event_queue_map[channel_name]
-
     async def wait_connected(self) -> None:
         await self._connected_event.wait()
 
@@ -196,9 +193,6 @@ class DuplexChannelContext:
             return
         # 通知关闭.
         self.stop_event.set()
-        # 尝试通知所有的子节点关闭.
-        for queue in self.provider_to_broker_event_queue_map.values():
-            queue.put_nowait(None)
         # 等待主任务结束.
         try:
             if self._main_task:
@@ -280,8 +274,6 @@ class DuplexChannelContext:
             raise
         finally:
             self.stop_event.set()
-            for queue in self.provider_to_broker_event_queue_map.values():
-                queue.put_nowait(None)
             await self._clear_connection_status()
 
     async def _clear_connection_status(self):
@@ -399,25 +391,13 @@ class DuplexChannelContext:
                     _ = asyncio.create_task(self._handle_command_done_event(command_done))
                     continue
 
-                # 判断回调分发给哪个具体的 channel.
-                if "chan" in event["data"]:
-                    chan = event["data"]["chan"]
-                    # 检查是否是已经注册的 channel.
-                    if chan not in self.provider_meta_map:
-                        self.logger.warning(
-                            "Channel %s receive event error: channel %s queue not found, drop event %s",
-                            self.root_name,
-                            chan,
-                            event,
-                        )
-                        continue
-
-                    queue = self.get_provider_event_queue(chan)
-                    # 分发给指定 channel.
-                    await queue.put(event)
                 else:
-                    # 拿到的 channel 不可理解.
-                    self.logger.error("Channel %s receive unknown event: %s", self.root_name, event)
+                    self.logger.warning(
+                        "Channel %s receive event error: unknown event %s",
+                        self.root_name,
+                        event,
+                    )
+
         except asyncio.CancelledError:
             pass
 
@@ -455,58 +435,56 @@ class DuplexChannelContext:
         # 更新失联状态.
         self._connected_event.set()
 
-    async def execute_command_call(self, meta: CommandMeta, event: CommandCallEvent) -> CommandTask:
-        """与远程 provider 进行通讯, 发送一个 command call, 并且保障有回调."""
-        cid = event.command_id
-        command_call_task_stub = BaseCommandTask(
-            meta=meta,
-            func=None,
-            cid=event.command_id,
-            tokens=event.tokens,
-            args=event.args,
-            kwargs=event.kwargs,
-            context=event.context,
-        )
+    async def send_command_task(self, task: CommandTask) -> CommandCallEvent:
         try:
+            cid = task.cid
             # 清空已经存在的 cid 错误?
             if cid in self._pending_provider_command_calls:
                 t = self._pending_provider_command_calls.pop(cid)
                 t.cancel()
                 self.logger.error("Command Task %s duplicated call", cid)
+            event = CommandCallEvent(
+                session_id=self.session_id,
+                name=task.meta.name,
+                # channel 名称使用 provider 侧的名称, 用来对 channel 寻址.
+                chan=task.chan,
+                command_id=task.cid,
+                args=list(task.args),
+                kwargs=dict(task.kwargs),
+                tokens=task.tokens if task else "",
+                context=task.context if task else {},
+                call_id=task.call_id if task else "",
+            )
             # 添加新的 task.
-            self._pending_provider_command_calls[cid] = command_call_task_stub
-
-            # 等待异步返回结果.
             await self.send_event_to_provider(event.to_channel_event(), throw=True)
-            task_done = asyncio.create_task(command_call_task_stub.wait(throw=False))
-            await self._wait_task_done_or_stopped(task_done)
-            return command_call_task_stub
-
-        except (ConnectionClosedError, ConnectionNotAvailable):
-            # 连接失败后.
-            command_call_task_stub.fail(CommandErrorCode.NOT_AVAILABLE.error("channel connection not available"))
-            return command_call_task_stub
-
+            self._pending_provider_command_calls[cid] = task
+            return event
         except asyncio.CancelledError:
-            # 取消也会正常返回.
-            if not command_call_task_stub.done():
-                command_call_task_stub.cancel("cancelled by provider")
-                # 发送取消事件, 通知给下游.
-                if self.is_channel_available(event.chan):
-                    await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
-            return command_call_task_stub
-        except Exception as e:
-            self.logger.exception("Execute command call failed")
-            # 拿到了不知名的异常后.
-            if not command_call_task_stub.done():
-                command_call_task_stub.fail(e)
-                if self.is_channel_available(event.chan):
-                    await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
+            task.cancel()
             raise
+        except Exception as exc:
+            self.logger.exception(exc)
+            task.fail(exc)
+            raise
+
+    async def expect_task_done(self, event: CommandCallEvent, task: CommandTask) -> None:
+        try:
+            if task.done():
+                return
+            await task.wait(throw=False)
+            # 来自服务端的异常.
+            if task.cid in self._pending_provider_command_calls and self.is_channel_available(task.chan):
+                if exp := task.exception():
+                    await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.exception(exc)
         finally:
-            # 必须移除自身在列表的存在.
-            if cid in self._pending_provider_command_calls:
-                del self._pending_provider_command_calls[cid]
+            if not task.done():
+                task.cancel()
+            if task.cid in self._pending_provider_command_calls:
+                del self._pending_provider_command_calls[task.cid]
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
         try:
@@ -527,94 +505,6 @@ class DuplexChannelContext:
             raise
 
 
-class DuplexChannelStub(Channel):
-    """被 channel meta 动态生成的子 channel."""
-
-    def __init__(
-            self,
-            *,
-            name: str,  # 本地的名称.
-            ctx: DuplexChannelContext,
-            provider_chan_name: str = "",  # 远端真实的名称.
-    ) -> None:
-        self._name = name
-        self._provider_chan_name = provider_chan_name or name
-        self._uid = uuid()
-        self._ctx = ctx
-        # 运行时缓存.
-        self._broker: ChannelBroker | None = None
-        self._children_stubs: dict[str, DuplexChannelStub] = {}
-
-    def name(self) -> str:
-        return self._name
-
-    def id(self) -> str:
-        return self._uid
-
-    def description(self) -> str:
-        meta = self._get_provider_channel_meta()
-        return meta.description if meta else ""
-
-    def _get_provider_channel_meta(self) -> Optional[ChannelMeta]:
-        # 获取自己在 provider 端的 channel meta.
-        return self._ctx.provider_meta_map.get(self._provider_chan_name)
-
-    @property
-    def broker(self) -> ChannelBroker:
-        if self._broker is None:
-            raise RuntimeError(f"Channel {self} has not been started yet.")
-        return self._broker
-
-    def children(self) -> dict[str, "Channel"]:
-        provider_chan_meta = self._get_provider_channel_meta()
-        if provider_chan_meta is None:
-            # 没有远端的 channel meta.
-            return {}
-
-        # 遍历自己的 meta children.
-        children_stubs = {}
-        for child_channel_name in provider_chan_meta.children:
-            if child_channel_name in self._children_stubs:
-                # 这个 stub 已经被创建过了. 复制到新字典.
-                children_stubs[child_channel_name] = self._children_stubs[child_channel_name]
-                continue
-            # 获取这个子节点的远程 channel 路径.
-            child_provider_chan_path = Channel.join_channel_path(self._provider_chan_name, child_channel_name)
-            stub = DuplexChannelStub(
-                name=child_channel_name,
-                ctx=self._ctx,
-                provider_chan_name=child_provider_chan_path,
-            )
-            children_stubs[child_channel_name] = stub
-        # 每次都更新当前的 children stubs.
-        self._children_stubs.clear()
-        self._children_stubs = children_stubs
-        result: dict[str, Channel] = children_stubs.copy()
-        return result
-
-    def is_running(self) -> bool:
-        return self._broker is not None and self._ctx.is_running()
-
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "ChannelBroker":
-        if self._broker is not None and self._broker.is_running():
-            raise RuntimeError(f"Channel {self._name} has already been started.")
-        if not self._ctx.is_running():
-            raise RuntimeError(f"Duplex Channel {self._name} Context is not running")
-
-        broker = DuplexChannelBroker(
-            channel=self,
-            provider_chan_path=self._provider_chan_name,
-            ctx=self._ctx,
-            is_root=False,
-        )
-        self._broker = broker
-        return broker
-
-    @property
-    def build(self) -> Builder:
-        raise NotImplementedError(f"Duplex Channel {self._name} not allowed to build channel")
-
-
 class DuplexChannelBroker(AbsChannelBroker):
     """
     实现一个极简的 Duplex Channel, 它核心是可以通过 ChannelMeta 被动态构建出来.
@@ -626,22 +516,18 @@ class DuplexChannelBroker(AbsChannelBroker):
             channel: Channel,
             provider_chan_path: str,
             ctx: DuplexChannelContext,
-            is_root: bool = False,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
-        self._is_root = is_root
         super().__init__(
             channel=channel,
             container=ctx.container,
             logger=ctx.logger,
         )
-        self._main_loop_done_event = ThreadSafeEvent()
-        self._stopping_event = ThreadSafeEvent()
         self.log_prefix = f"[DuplexChannelBroker name={self._name} id={self.id} cls={self.__class__}]"
 
     def is_running(self) -> bool:
-        return super().is_running() and self._ctx.is_running() and not self._stopping_event.is_set()
+        return super().is_running() and self._ctx.is_running()
 
     def prepare_container(self, container: IoCContainer | None) -> IoCContainer:
         container.set(LoggerItf, self._ctx.logger)
@@ -649,45 +535,41 @@ class DuplexChannelBroker(AbsChannelBroker):
         container = super().prepare_container(container)
         return container
 
+    def children(self) -> dict[str, Channel]:
+        # 不需要展开节点.
+        return {}
+
+    async def on_running(self) -> None:
+        return
+
+    async def _generate_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
+        await self._ctx.refresh_meta()
+        metas = self._ctx.provider_meta_map
+        self_meta = metas.get('')
+        if self_meta:
+            self_meta = self_meta.model_copy(update={"name": self._name})
+            metas[''] = self_meta
+        return metas
+
+    def _is_available(self) -> bool:
+        return self._ctx.is_channel_available(self._provider_chan_path)
+
+    async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+        event = await self._ctx.send_command_task(task)
+        _ = asyncio.create_task(self._ctx.expect_task_done(event, task))
+
+    async def _main_loop(self) -> None:
+        pass
+
+    def is_idle(self) -> bool:
+        return self._ctx.is_idle()
+
+    async def wait_idle(self) -> None:
+        await self._ctx.wait_idle()
+
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError(f"Channel proxy {self._name} is not running")
-
-    async def generate_self_meta(self) -> ChannelMeta:
-        if self.is_running() and self._ctx.is_connected():
-            if self.is_root():
-                await self._ctx.refresh_meta()
-        return self._generate_meta_in_ctx()
-
-    def self_meta(self) -> ChannelMeta:
-        # 不基于 cache meta. 任何时候都从 ctx 中获取.
-        return self._generate_meta_in_ctx()
-
-    def _generate_meta_in_ctx(self) -> ChannelMeta:
-        meta = self._ctx.get_meta(self._provider_chan_path)
-        if meta is None:
-            return ChannelMeta(
-                name=self._name,
-                channel_id=self.id,
-                available=False,
-                dynamic=True,
-            )
-        # 避免污染.
-        meta = meta.model_copy()
-        # 从 provider meta 中准备 commands 的原型.
-        if meta.name != self._name:
-            commands = {}
-            for command_meta in meta.commands:
-                # 命令替换名称为自身的名称. 给调用方看.
-                command_meta = command_meta.model_copy(update={"chan": self._name})
-                commands[command_meta.name] = command_meta
-            meta.commands = list(commands.values())
-            # 修改别名.
-            meta.name = self._name
-        return meta
-
-    def is_available(self) -> bool:
-        return self.is_running() and self._ctx.is_channel_available(self._provider_chan_path)
 
     def is_connected(self) -> bool:
         return self.is_running() and self._ctx.is_channel_connected(self._provider_chan_path)
@@ -705,20 +587,56 @@ class DuplexChannelBroker(AbsChannelBroker):
         # 再封装远端的命令.
         for command_meta in meta.commands:
             if command_meta.name not in result and not available_only or command_meta.available:
-                func = self._get_provider_command_func(command_meta)
+                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
                 command = CommandWrapper(meta=command_meta, func=func)
                 result[command_meta.name] = command
         return result
 
-    def _get_provider_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
-        name = meta.name
-        session_id = self._ctx.session_id
+    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+        result = {}
+        if not self.is_running():
+            return {}
+        for channel_path, meta in self.metas().items():
+            for command_meta in meta.commands:
+                unique_name = Command.make_uniquename(channel_path, command_meta.name)
+                func = self._get_provider_command_func(channel_path, command_meta)
+                command = CommandWrapper(meta=command_meta, func=func)
+                result[unique_name] = command
+        return result
+
+    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+        """
+        不需要递归获取了.
+        """
+        if not self.is_running():
+            return None
+        channel_path, command_name = Command.split_uniquename(name)
+        channel_meta = self._ctx.get_meta(channel_path)
+        if channel_meta is None:
+            return None
+        for command_meta in channel_meta.commands:
+            if command_meta.name == command_name:
+                func = self._get_provider_command_func(channel_path, command_meta)
+                command = CommandWrapper(meta=command_meta, func=func)
+                return command
+        return None
+
+    def _get_provider_command_func(
+            self,
+            chan: ChannelFullPath,
+            meta: CommandMeta,
+    ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
         async def _call_provider_as_func(*args, **kwargs):
             if not self.is_available():
                 # 告知上游运行失败.
                 raise CommandError(CommandErrorCode.NOT_AVAILABLE, f"Channel {self._name} not available")
+            if chan not in self._ctx.provider_meta_map:
+                raise CommandErrorCode.NOT_FOUND.error(f"channel {chan} is not found")
+            _chan_meta = self._ctx.provider_meta_map.get(chan)
+            if not _chan_meta.available:
+                raise CommandErrorCode.NOT_AVAILABLE.error(f"channel {chan} is not available")
 
             # 尝试透传上游赋予的参数.
             task: CommandTask | None = None
@@ -729,21 +647,19 @@ class DuplexChannelBroker(AbsChannelBroker):
             cid = task.cid if task else uuid()
 
             # 生成对下游的调用.
-            event = CommandCallEvent(
-                session_id=session_id,
-                name=name,
-                # channel 名称使用 provider 侧的名称, 用来对 channel 寻址.
-                chan=self._provider_chan_path,
-                command_id=cid,
-                args=list(args),
-                kwargs=dict(kwargs),
-                tokens=task.tokens if task else "",
-                context=task.context if task else {},
-            )
+            if task is None:
+                task = BaseCommandTask(
+                    chan=chan,
+                    meta=meta,
+                    tokens="",
+                    func=None,
+                    args=list(args),
+                    kwargs=dict(kwargs),
+                    cid=cid,
+                )
 
-            task = await self._ctx.execute_command_call(meta, event)
-            if exp := task.exception():
-                raise exp
+            event = await self._ctx.send_command_task(task)
+            await self._ctx.expect_task_done(event, task)
             return task.result()
 
         return _call_provider_as_func
@@ -752,32 +668,12 @@ class DuplexChannelBroker(AbsChannelBroker):
         meta = self.self_meta()
         for command_meta in meta.commands:
             if command_meta.name == name:
-                func = self._get_provider_command_func(command_meta)
+                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
                 return CommandWrapper(meta=command_meta, func=func)
         return None
 
-    async def on_idle(self) -> None:
-        try:
-            event = IdleEvent(
-                session_id=self._ctx.session_id,
-                chan=self._provider_chan_path,
-            )
-            await self._ctx.send_event_to_provider(event.to_channel_event(), throw=False)
-        except Exception as e:
-            self.logger.exception(e)
-
-    async def on_pause(self) -> None:
-        try:
-            event = PauseEvent(
-                session_id=self._ctx.session_id,
-                chan=self._provider_chan_path,
-            )
-            await self._ctx.send_event_to_provider(event.to_channel_event(), throw=True)
-        except Exception as e:
-            self.logger.exception(e)
-
-    async def on_clear(self) -> None:
-        if not self.is_root():
+    async def clear(self) -> None:
+        if not self._ctx.is_running():
             return
         try:
             event = ClearEvent(
@@ -788,71 +684,12 @@ class DuplexChannelBroker(AbsChannelBroker):
         except Exception as e:
             self.logger.exception(e)
 
-    async def _consume_provider_event_loop(self):
-        try:
-            while self.is_running():
-                await self._consume_provider_event()
-        except asyncio.CancelledError:
-            # todo: log
-            pass
-        except Exception as e:
-            self.logger.exception(e)
-            self._stopping_event.set()
-        finally:
-            self.logger.info(f"%s consume_provider_event_loop stopped", self.log_prefix)
-
-    async def on_running(self):
-        try:
-            consume_loop_task = asyncio.create_task(self._consume_provider_event_loop())
-            await consume_loop_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.error(f"%s main loop failed: %s", self.log_prefix, e)
-            raise
-        finally:
-            self._main_loop_done_event.set()
-            self.logger.error(f"%s main loop stopped", self.log_prefix)
-
-    async def _consume_provider_event(self):
-        try:
-            if self._ctx.connection.is_closed():
-                self._stopping_event.set()
-                return
-
-            queue = self._ctx.get_provider_event_queue(self._provider_chan_path)
-
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                return
-            if item is None:
-                self._stopping_event.set()
-                return
-            else:
-                self.logger.info("unknown provider event %s", item)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.error(f"%s Consume provider event failed: %s", self.log_prefix, e)
-
     async def on_start_up(self) -> None:
-        if not self._ctx.is_running():
-            # 启动 ctx.
-            await self._ctx.start()
-        self._ctx.connect_broker(self._provider_chan_path)
-
-    def is_root(self) -> bool:
-        return self._is_root
+        # 启动 ctx.
+        await self._ctx.start()
 
     async def on_close(self) -> None:
-        if self.is_root():
-            # root 节点可以关闭 ctx.
-            await self._ctx.close()
-        else:
-            # 关闭结束 ctx.
-            self._ctx.disconnect_broker(self._provider_chan_path)
-            self._ctx = None
+        await self._ctx.close()
 
 
 class DuplexChannelProxy(Channel):
@@ -870,8 +707,6 @@ class DuplexChannelProxy(Channel):
         self._provider_channel_path = ""
         self._broker: Optional[DuplexChannelBroker] = None
         self._ctx: DuplexChannelContext | None = None
-        """运行的时候才会生成 Channel Context"""
-        self._children_stubs: dict[str, DuplexChannelStub] = {}
 
     def name(self) -> str:
         return self._name
@@ -881,51 +716,6 @@ class DuplexChannelProxy(Channel):
 
     def id(self) -> str:
         return self._uid
-
-    @property
-    def broker(self) -> ChannelBroker:
-        if self._broker is None:
-            raise RuntimeError(f"Channel {self} has not been started yet.")
-        return self._broker
-
-    def children(self) -> dict[str, "Channel"]:
-        if self._ctx is None:
-            return {}
-        children_stubs = {}
-        # 服务端的已经不存在了. 则自己也不一定存在了.
-        ctx_provider_meta_map = self._ctx.provider_meta_map
-        if self._provider_channel_path not in ctx_provider_meta_map:
-            return {}
-
-        # 从 provider meta 里判断自己的孩子们.
-        provider_meta = self._ctx.provider_meta_map[self._provider_channel_path]
-        for child_name in provider_meta.children:
-            child_provider_channel_path = Channel.join_channel_path(self._provider_channel_path, child_name)
-            # 儿子节点不存在.
-            if child_provider_channel_path not in ctx_provider_meta_map:
-                # 跳过. 这种情况肯定是有 bug.
-                # todo: log
-                continue
-
-            if child_name in self._children_stubs:
-                # 这个说明, 相同命名和路径的 stub 已经创建过了.
-                children_stubs[child_name] = self._children_stubs[child_name]
-            else:
-                # 准备一个 local channel.
-                stub = DuplexChannelStub(
-                    name=child_name,
-                    ctx=self._ctx,
-                    provider_chan_name=child_provider_channel_path,
-                )
-                # 增加之前不存在的 child.
-                children_stubs[child_name] = stub
-        self._children_stubs = children_stubs
-        # 生成一个新的组合.
-        result: dict[str, Channel] = self._children_stubs.copy()
-        return result
-
-    def is_running(self) -> bool:
-        return self._broker is not None and self._broker.is_running()
 
     def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "DuplexChannelBroker":
         if self._broker is not None and self._broker.is_running():
@@ -937,16 +727,10 @@ class DuplexChannelProxy(Channel):
             connection=self._provider_connection,
         )
 
-        proxy = DuplexChannelBroker(
+        broker = DuplexChannelBroker(
             channel=self,
             provider_chan_path="",
             ctx=self._ctx,
-            # 标记是根节点.
-            is_root=True,
         )
-        self._broker = proxy
-        return proxy
-
-    @property
-    def build(self) -> Builder:
-        raise NotImplementedError(f"Duplex Channel {self._name} cannot build channel")
+        self._broker = broker
+        return broker

@@ -19,10 +19,8 @@ __all__ = [
     "CommandDoneEvent",
     "CreateSessionEvent",
     "HeartbeatEvent",
-    "PauseEvent",
     "ProviderErrorEvent",
     "ReconnectSessionEvent",
-    "IdleEvent",
     "SessionCreatedEvent",
     "SyncChannelMetasEvent",
 ]
@@ -87,20 +85,6 @@ class HeartbeatEvent(ChannelEventModel):
 # --- proxy event --- #
 
 
-class IdleEvent(ChannelEventModel):
-    """开始运行 channel 的 policy"""
-
-    event_type: ClassVar[str] = "moss.channel.proxy.idle"
-    chan: str = Field(description="channel name")
-
-
-class PauseEvent(ChannelEventModel):
-    """暂停某个 channel 的 policy 运行状态"""
-
-    event_type: ClassVar[str] = "moss.channel.proxy.pause"
-    chan: str = Field(description="channel name")
-
-
 class ClearEvent(ChannelEventModel):
     """发出讯号给某个 channel, 执行状态清空的逻辑"""
 
@@ -121,6 +105,7 @@ class CommandCallEvent(ChannelEventModel):
     kwargs: dict[str, Any] = Field(default_factory=dict, description="kwargs of the command")
     tokens: str = Field("", description="command tokens")
     context: dict[str, Any] = Field(default_factory=dict, description="context of the command")
+    call_id: str = Field(default="")
 
     def not_available(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(

@@ -7,7 +7,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskStack
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandResultStack
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode, FatalError
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
@@ -475,7 +475,7 @@ class ChannelRuntime:
             # 先执行一次 command, 拿到可能的 command_seq, 主要用来做 resolve.
             await self.channel.broker.push_task(task)
             result = await task
-            if not isinstance(result, CommandTaskStack):
+            if not isinstance(result, CommandResultStack):
                 # 返回一个栈, command task 的结果需要在栈外判断.
                 # 等栈运行完了才会赋值.
                 task.resolve(result)
@@ -509,7 +509,7 @@ class ChannelRuntime:
     async def _fulfill_task_with_its_result_stack(
         self,
         owner: CommandTask,
-        stack: CommandTaskStack,
+        stack: CommandResultStack,
         depth: int = 0,
     ) -> None:
         try:
@@ -541,7 +541,7 @@ class ChannelRuntime:
                 # 阻塞.
                 await self.channel.broker.push_task(sub_task)
                 result = await sub_task
-                if isinstance(result, CommandTaskStack):
+                if isinstance(result, CommandResultStack):
                     # 递归执行
                     await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
 

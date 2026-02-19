@@ -93,7 +93,7 @@ async def run_game_with_zmq_provider(address: str = "tcp://localhost:5555", con:
         container=con,
     )
     _miku = miku_body()
-    task = asyncio.create_task(provider.arun(_miku))
+    task = asyncio.create_task(provider.run_until_closed(_miku))
 
     try:
         while running:
@@ -138,6 +138,6 @@ async def run_provider(address: str = "tcp://localhost:5555"):
     )
 
     try:
-        await provider.arun(_body_chan)
+        await provider.run_until_closed(_body_chan)
     except KeyboardInterrupt:
         pass
