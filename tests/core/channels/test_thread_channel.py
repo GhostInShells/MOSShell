@@ -91,7 +91,7 @@ async def test_thread_channel_baseline():
         main_runtime = provider.runtime
         metas = main_runtime.metas()
         assert len(metas) == 2
-        assert 'a' in metas
+        assert "a" in metas
         assert main_runtime.name == "provider"
         assert main_runtime.is_running()
         assert main_runtime.is_connected()

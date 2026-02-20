@@ -33,7 +33,6 @@ async def on_policy_run():
         model.StartMotion(state_model.policy, 0, 1)
 
 
-
 @body_chan.build.state_model()
 class BodyPolicyStateModel(StateBaseModel):
     state_name = "body"

@@ -37,12 +37,12 @@ class CommandTaskElementContext:
     """语法糖, 用来管理所有 element 共享的组件."""
 
     def __init__(
-            self,
-            channel_commands: dict[str, dict[str, Command]],
-            speech: Speech,
-            logger: Optional[LoggerItf] = None,
-            stop_event: Optional[ThreadSafeEvent] = None,
-            root_tag: str = "ctml",
+        self,
+        channel_commands: dict[str, dict[str, Command]],
+        speech: Speech,
+        logger: Optional[LoggerItf] = None,
+        stop_event: Optional[ThreadSafeEvent] = None,
+        root_tag: str = "ctml",
     ):
         self.channel_commands_map = channel_commands
         self.speech = speech
@@ -70,13 +70,13 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
     """
 
     def __init__(
-            self,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         self.cid = cid
         self.ctx = ctx

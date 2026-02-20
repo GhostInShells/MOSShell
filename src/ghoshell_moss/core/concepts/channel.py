@@ -20,8 +20,12 @@ from pydantic import BaseModel, Field
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.command import (
-    BaseCommandTask, Command, CommandMeta, CommandTask,
-    CommandTaskContextVar, CommandUniqueName,
+    BaseCommandTask,
+    Command,
+    CommandMeta,
+    CommandTask,
+    CommandTaskContextVar,
+    CommandUniqueName,
 )
 from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
 from ghoshell_moss.message import Message
@@ -250,19 +254,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-            self,
-            *,
-            name: str = "",
-            chan: str | None = None,
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[list[str]] = None,
-            interface: Optional[StringType] = None,
-            available: Optional[Callable[[], bool]] = None,
-            # --- 高级参数 --- #
-            blocking: Optional[bool] = None,
-            call_soon: bool = False,
-            return_command: bool = False,
+        self,
+        *,
+        name: str = "",
+        chan: str | None = None,
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        tags: Optional[list[str]] = None,
+        interface: Optional[StringType] = None,
+        available: Optional[Callable[[], bool]] = None,
+        # --- 高级参数 --- #
+        blocking: Optional[bool] = None,
+        call_soon: bool = False,
+        return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
@@ -379,9 +383,9 @@ class ChannelCtx:
     """
 
     def __init__(
-            self,
-            runtime: Optional["ChannelRuntime"] = None,
-            task: Optional[CommandTask] = None,
+        self,
+        runtime: Optional["ChannelRuntime"] = None,
+        task: Optional[CommandTask] = None,
     ):
         self._runtime = runtime
         self._task = task
@@ -460,7 +464,7 @@ class Channel(ABC):
 
     @staticmethod
     def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
-        """连接父子 channel 名称的标准语法. 作为全局的约束方式. """
+        """连接父子 channel 名称的标准语法. 作为全局的约束方式."""
         # todo: 校验 name 的类型, 不允许不合法的 name.
         if parent:
             if not name:
@@ -593,9 +597,9 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def refresh_metas(
-            self,
-            force: bool = True,
-            callback: bool = True,
+        self,
+        force: bool = True,
+        callback: bool = True,
     ) -> None:
         """
         更新元信息.
@@ -730,11 +734,11 @@ class ChannelRuntime(ABC):
         pass
 
     def create_command_task(
-            self,
-            name: CommandUniqueName,
-            *,
-            args: tuple | None = None,
-            kwargs: dict | None = None,
+        self,
+        name: CommandUniqueName,
+        *,
+        args: tuple | None = None,
+        kwargs: dict | None = None,
     ) -> CommandTask:
         """
         example to create channel task
@@ -755,11 +759,11 @@ class ChannelRuntime(ABC):
         return task
 
     async def execute_command(
-            self,
-            name: CommandUniqueName,
-            *,
-            args: tuple | None = None,
-            kwargs: dict | None = None,
+        self,
+        name: CommandUniqueName,
+        *,
+        args: tuple | None = None,
+        kwargs: dict | None = None,
     ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.

@@ -117,7 +117,7 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def commands(
-            self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
+        self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -127,8 +127,8 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def channel_metas(
-            self,
-            available: bool = True,
+        self,
+        available: bool = True,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -154,11 +154,11 @@ class MOSSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[str] = None,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> Interpreter:
         interpreter = await self.interpreter(kind=kind, stream_id=stream_id, config=config)
         async with interpreter:
@@ -166,12 +166,12 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-            prepare_timeout: float = 2.0,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[str] = None,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        prepare_timeout: float = 2.0,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -190,9 +190,9 @@ class MOSSShell(ABC):
         pass
 
     async def parse_text_to_command_tokens(
-            self,
-            text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
+        self,
+        text: str | AsyncIterable[str],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
@@ -220,9 +220,9 @@ class MOSSShell(ABC):
         await t
 
     async def parse_tokens_to_command_tasks(
-            self,
-            tokens: AsyncIterable[CommandToken],
-            kind: InterpreterKind = "dry_run",
+        self,
+        tokens: AsyncIterable[CommandToken],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
@@ -247,9 +247,9 @@ class MOSSShell(ABC):
         await t
 
     async def parse_text_to_tasks(
-            self,
-            text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
+        self,
+        text: str | AsyncIterable[str],
+        kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks (不执行).

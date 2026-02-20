@@ -47,12 +47,12 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
     COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
 
     def __init__(
-            self,
-            *,
-            name: str,
-            mcp_client: mcp.ClientSession,
-            container: Optional[IoCContainer] = None,
-            blocking: bool = False,
+        self,
+        *,
+        name: str,
+        mcp_client: mcp.ClientSession,
+        container: Optional[IoCContainer] = None,
+        blocking: bool = False,
     ):
         self._name = name
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
@@ -392,7 +392,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         return interface, description
 
     def _build_channel_meta(
-            self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
+        self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
     ) -> ChannelMeta:
         """构建Channel元信息（包含所有工具的CommandMeta）"""
         return ChannelMeta(
@@ -421,14 +421,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
 class MCPChannel(Channel):
     """对接MCP服务的Channel"""
 
-    def __init__(
-            self,
-            *,
-            name: str,
-            description: str,
-            mcp_client: mcp.ClientSession,
-            blocking: bool = False
-    ):
+    def __init__(self, *, name: str, description: str, mcp_client: mcp.ClientSession, blocking: bool = False):
         self._name = name
         self._desc = description
         self._mcp_client = mcp_client

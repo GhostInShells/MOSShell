@@ -43,11 +43,11 @@ class DuplexChannelProvider(ChannelProvider):
     """
 
     def __init__(
-            self,
-            provider_connection: Connection,
-            proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
-            receive_interval_seconds: float = 0.5,
-            container: Container = None,
+        self,
+        provider_connection: Connection,
+        proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
+        receive_interval_seconds: float = 0.5,
+        container: Container = None,
     ):
         self._container = Container(
             name=f"moss.duplex_provider.{self.__class__.__name__}",
@@ -148,9 +148,7 @@ class DuplexChannelProvider(ChannelProvider):
     @contextlib.asynccontextmanager
     async def arun(self, channel: Channel) -> None:
         if self._starting:
-            self.logger.info(
-                f"%s already started, channel=%s", self._log_prefix, channel.name()
-            )
+            self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
             return
         self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
         self._starting = True
@@ -300,8 +298,7 @@ class DuplexChannelProvider(ChannelProvider):
                 if event["session_id"] != self._session_id:
                     # 丢弃不同 session 的事件.
                     self.logger.info(
-                        "%s channel session %s mismatch, drop event %s",
-                        self._log_prefix, self._session_id, event
+                        "%s channel session %s mismatch, drop event %s", self._log_prefix, self._session_id, event
                     )
                     # 频繁要求服务端同步 session.
                     await self._sync_session(new=False)

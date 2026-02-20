@@ -21,10 +21,10 @@ class ThreadSafeStreamSender(Generic[ItemT]):
     """
 
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[ItemT | Exception | None],
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | None],
     ):
         self._added = added
         """通过一个 added event 来做发送 item 信号的通讯. 用于阻塞等待. """
@@ -83,11 +83,11 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     """
 
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[ItemT | Exception | None],
-            timeout: float | None = None,
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | None],
+        timeout: float | None = None,
     ):
         self._completed = completed
         self._added = added

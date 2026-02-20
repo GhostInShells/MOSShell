@@ -228,6 +228,7 @@ async def test_py_channel_context() -> None:
 @pytest.mark.asyncio
 async def test_py_channel_exec_tasks() -> None:
     import asyncio
+
     main = PyChannel(name="main")
 
     _sleep = 0.0
@@ -265,6 +266,7 @@ async def test_py_channel_exec_tasks() -> None:
 @pytest.mark.asyncio
 async def test_py_channel_idle() -> None:
     import asyncio
+
     main = PyChannel(name="main")
 
     idled = []

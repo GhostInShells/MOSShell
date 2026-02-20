@@ -16,6 +16,7 @@ class State(BaseModel):
     State 是在 Shell 和 Channel 之间共享的状态数据.
     State 本身是可传输的数据结构.
     """
+
     name: str = Field(description="The name of the state object.")
     uid: str = Field(default_factory=uuid, description="The unique identifier for the state.")
     issuer: str = Field(default="", description="who change the state object.")
@@ -57,12 +58,13 @@ class StateBaseModel(BaseModel, StateModel, ABC):
     通过强类型的方式对 State 进行建模.
     基于 pydantic BaseModel 实现.
     """
+
     uid: str = Field(default="", description="The unique identifier for the state.")
     issuer: str = Field(default="", description="who change the state object.")
 
     def to_state(self) -> State:
         name = self.get_state_name()
-        data = self.model_dump(exclude={'uid', 'issuer'})
+        data = self.model_dump(exclude={"uid", "issuer"})
         uid = self.uid or uuid()
         issuer = self.issuer
         return State(name=name, data=data, uid=uid, issuer=issuer)

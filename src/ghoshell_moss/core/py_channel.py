@@ -108,18 +108,18 @@ class PyChannelBuilder(Builder):
         return self._instruction_messages_function()
 
     def command(
-            self,
-            *,
-            name: str = "",
-            chan: str | None = None,
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[list[str]] = None,
-            interface: Optional[StringType] = None,
-            available: Optional[Callable[[], bool]] = None,
-            blocking: Optional[bool] = None,
-            call_soon: bool = False,
-            return_command: bool = False,
+        self,
+        *,
+        name: str = "",
+        chan: str | None = None,
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        tags: Optional[list[str]] = None,
+        interface: Optional[StringType] = None,
+        available: Optional[Callable[[], bool]] = None,
+        blocking: Optional[bool] = None,
+        call_soon: bool = False,
+        return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
 
         def wrapper(func: CommandFunction) -> CommandFunction:
@@ -213,13 +213,13 @@ class PyChannelBuilder(Builder):
 
 class PyChannel(MutableChannel):
     def __init__(
-            self,
-            *,
-            name: str,
-            description: str = "",
-            # todo: block 还是叫 blocking 吧.
-            blocking: bool = True,
-            dynamic: bool | None = None,
+        self,
+        *,
+        name: str,
+        description: str = "",
+        # todo: block 还是叫 blocking 吧.
+        blocking: bool = True,
+        dynamic: bool | None = None,
     ):
         """
         :param name: channel 的名称.
@@ -264,10 +264,10 @@ class PyChannel(MutableChannel):
         return self
 
     def new_child(
-            self,
-            name: str,
-            description: str = "",
-            blocking: bool = True,
+        self,
+        name: str,
+        description: str = "",
+        blocking: bool = True,
     ) -> Self:
         """
         语法糖, 用来做单元测试.
@@ -295,11 +295,11 @@ class PyChannel(MutableChannel):
 
 class PyChannelRuntime(AbsChannelTreeRuntime):
     def __init__(
-            self,
-            channel: PyChannel,
-            container: Optional[IoCContainer] = None,
-            *,
-            dynamic: bool | None = None,
+        self,
+        channel: PyChannel,
+        container: Optional[IoCContainer] = None,
+        *,
+        dynamic: bool | None = None,
     ):
         self._builder = channel.build
         super().__init__(
@@ -398,8 +398,8 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         return CommandWrapper.wrap(command, func=_run_with_runtime)
 
     def get_self_command(
-            self,
-            name: str,
+        self,
+        name: str,
     ) -> Optional[Command]:
         return self._wrap_origin_command(self._builder.get_command(name))
 

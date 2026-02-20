@@ -8,11 +8,19 @@ from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
 from ghoshell_moss.core.concepts.channel import (
-    Channel, ChannelFullPath, ChannelMeta, ChannelCtx, ChannelPaths,
+    Channel,
+    ChannelFullPath,
+    ChannelMeta,
+    ChannelCtx,
+    ChannelPaths,
 )
 from ghoshell_moss.core.concepts.runtime import AbsChannelRuntime, AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import (
-    BaseCommandTask, Command, CommandMeta, CommandTask, CommandWrapper,
+    BaseCommandTask,
+    Command,
+    CommandMeta,
+    CommandTask,
+    CommandWrapper,
     CommandUniqueName,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
@@ -31,7 +39,10 @@ from .protocol import (
     SyncChannelMetasEvent,
 )
 
-__all__ = ["DuplexChannelRuntime", "DuplexChannelProxy", ]
+__all__ = [
+    "DuplexChannelRuntime",
+    "DuplexChannelProxy",
+]
 
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore, State
 
@@ -47,11 +58,11 @@ class DuplexChannelContext:
     """
 
     def __init__(
-            self,
-            *,
-            name: str,
-            connection: Connection,
-            container: Optional[IoCContainer] = None,
+        self,
+        *,
+        name: str,
+        connection: Connection,
+        container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -514,11 +525,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     """
 
     def __init__(
-            self,
-            *,
-            channel: Channel,
-            provider_chan_path: str,
-            ctx: DuplexChannelContext,
+        self,
+        *,
+        channel: Channel,
+        provider_chan_path: str,
+        ctx: DuplexChannelContext,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
@@ -548,10 +559,10 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     async def _generate_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
         await self._ctx.refresh_meta()
         metas = self._ctx.provider_meta_map
-        self_meta = metas.get('')
+        self_meta = metas.get("")
         if self_meta:
             self_meta = self_meta.model_copy(update={"name": self._name})
-            metas[''] = self_meta
+            metas[""] = self_meta
         return metas
 
     def _is_available(self) -> bool:
@@ -628,9 +639,9 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return None
 
     def _get_provider_command_func(
-            self,
-            chan: ChannelFullPath,
-            meta: CommandMeta,
+        self,
+        chan: ChannelFullPath,
+        meta: CommandMeta,
     ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
@@ -703,11 +714,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-            self,
-            *,
-            name: str,
-            description: str = "",
-            to_provider_connection: Connection,
+        self,
+        *,
+        name: str,
+        description: str = "",
+        to_provider_connection: Connection,
     ):
         self._name = name
         self._description = description

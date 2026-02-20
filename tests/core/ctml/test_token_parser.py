@@ -229,7 +229,11 @@ def test_token_parser_with_json():
 </jetarm:run_trajectory>
 """
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", )
+    CTMLTokenParser.parse(
+        q.append,
+        iter(content),
+        root_tag="speak",
+    )
     assert q.pop() is None
     q = q[1:-1]
 
@@ -245,7 +249,7 @@ def test_token_parser_with_idx():
     assert token.seq == "start"
     assert token.call_id == 3
     assert token.order == 1
-    assert token.kwargs['a'] == [1, 2]
+    assert token.kwargs["a"] == [1, 2]
     next_token = None
     for token in q:
         if token.name == "bar":

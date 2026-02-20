@@ -3,7 +3,12 @@ import time
 
 import pytest
 from ghoshell_moss import (
-    CommandTask, CommandResultStack, Interpreter, MOSSShell, new_chan, ChannelCtx,
+    CommandTask,
+    CommandResultStack,
+    Interpreter,
+    MOSSShell,
+    new_chan,
+    ChannelCtx,
     CommandError,
 )
 

@@ -67,18 +67,18 @@ class Ros2LoggerAdapter(LoggerItf):
 
 class Ros2RobotControllerNode(Node):
     def __init__(
-            self,
-            *,
-            node_name: str,
-            config_dir: str,
-            robot_yaml_filename: str,
-            provider: ChannelProvider,
-            channel_builder: MAIN_CHANNEL_BUILDER | None = None,
-            default_robot: Optional[RobotInfo] = None,
-            joint_states_topic: str = "/joint_states",
-            follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
-            joint_value_parsers: Optional[dict[str, JointValueParser]] = None,
-            goal_interval: float = 0.02,  # 50Hz
+        self,
+        *,
+        node_name: str,
+        config_dir: str,
+        robot_yaml_filename: str,
+        provider: ChannelProvider,
+        channel_builder: MAIN_CHANNEL_BUILDER | None = None,
+        default_robot: Optional[RobotInfo] = None,
+        joint_states_topic: str = "/joint_states",
+        follow_joint_trajectory_server_name: str = "/joint_trajectory_controller/follow_joint_trajectory",
+        joint_value_parsers: Optional[dict[str, JointValueParser]] = None,
+        goal_interval: float = 0.02,  # 50Hz
     ):
         super().__init__(node_name)
 

@@ -4,27 +4,35 @@ import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
-from typing import (
-    Optional, Iterable, Any, TypeVar, Generic
-)
+from typing import Optional, Iterable, Any, TypeVar, Generic
 from typing_extensions import Self
 
 from ghoshell_container import IoCContainer, Container
 
 from ghoshell_moss.core.concepts.command import (
-    CommandTask, CommandResultStack, CommandUniqueName, Command, CommandTaskState,
+    CommandTask,
+    CommandResultStack,
+    CommandUniqueName,
+    Command,
+    CommandTaskState,
 )
 from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore, State
 from ghoshell_moss.core.concepts.channel import (
-    ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelRuntime,
-    ChannelFullPath, ChannelPaths,
+    ChannelCtx,
+    Channel,
+    ChannelMeta,
+    TaskDoneCallback,
+    RefreshMetaCallback,
+    ChannelRuntime,
+    ChannelFullPath,
+    ChannelPaths,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
 
-__all__ = ['AbsChannelRuntime', 'ChannelImportLib', 'AbsChannelTreeRuntime']
+__all__ = ["AbsChannelRuntime", "ChannelImportLib", "AbsChannelTreeRuntime"]
 
 _ChannelId = str
 _TaskWithPaths = tuple[ChannelPaths, CommandTask]
@@ -93,8 +101,7 @@ class ChannelImportLib:
             return runtime
         except Exception as e:
             self.logger.exception(
-                "%s failed to build channel %s, id=%s: %s",
-                self._name, channel.name(), channel.id(), e
+                "%s failed to build channel %s, id=%s: %s", self._name, channel.name(), channel.id(), e
             )
             return None
         finally:
@@ -109,7 +116,7 @@ class ChannelImportLib:
         if self._logger is None:
             self._logger = self._container.get(LoggerItf)
             if self._logger is None:
-                logger = logging.getLogger('moss')
+                logger = logging.getLogger("moss")
                 self._logger = logger
                 self._container.set(LoggerItf, logger)
         return self._logger
@@ -190,8 +197,8 @@ class ChannelImportLib:
                 if isinstance(t, Exception):
                     runtime = clear_runtimes[idx]
                     self.logger.exception(
-                        "%s close runtime %s, id=%s failed: %s",
-                        self._name, runtime.name, runtime.id, t)
+                        "%s close runtime %s, id=%s failed: %s", self._name, runtime.name, runtime.id, t
+                    )
                 idx += 1
         finally:
             self._runtimes_lock.release()
@@ -199,7 +206,7 @@ class ChannelImportLib:
                 self._loop.run_in_executor(None, self._container.shutdown)
 
 
-CHANNEL = TypeVar('CHANNEL', bound=Channel)
+CHANNEL = TypeVar("CHANNEL", bound=Channel)
 
 
 class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
@@ -208,19 +215,19 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            channel: CHANNEL,
-            container: IoCContainer | None = None,
-            logger: LoggerItf | None = None,
-            state_store: StateStore | None = None,
+        self,
+        *,
+        channel: CHANNEL,
+        container: IoCContainer | None = None,
+        logger: LoggerItf | None = None,
+        state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
         self._uid = channel.id()
         # 用不同的容器隔离依赖. 经过 prepare container 才进行封装.
         container = Container(
-            name=f'MossChannelRuntime/{self._name}/{self._uid}',
+            name=f"MossChannelRuntime/{self._name}/{self._uid}",
             parent=container,
         )
         self._container: IoCContainer = container
@@ -270,7 +277,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def logger(self) -> LoggerItf:
         if self._logger is None:
             # 日志总要有吧.
-            self._logger = self.container.get(LoggerItf) or logging.getLogger('moss')
+            self._logger = self.container.get(LoggerItf) or logging.getLogger("moss")
         return self._logger
 
     @property
@@ -341,9 +348,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-            self,
-            force: bool = True,
-            callback: bool = True,
+        self,
+        force: bool = True,
+        callback: bool = True,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -352,7 +359,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         try:
             if not self._starting or self._closing_event.is_set():
                 return
-            if not force and '' in self._cached_metas:
+            if not force and "" in self._cached_metas:
                 # 完成过刷新.
                 return
             # 生成时添加 ctx.
@@ -374,7 +381,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         finally:
             self._refresh_meta_lock.release()
             self.logger.info(
-                "%s refreshed meta", self.log_prefix,
+                "%s refreshed meta",
+                self.log_prefix,
             )
 
     # --- status --- #
@@ -403,19 +411,25 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             return
         elif not self.is_running():
             self.logger.error(
-                "%s failed task %s: not running", self.log_prefix, task.cid,
+                "%s failed task %s: not running",
+                self.log_prefix,
+                task.cid,
             )
             task.fail(CommandErrorCode.NOT_RUNNING.error(f"channel {self.name} not running"))
             return
         elif not self.is_connected():
             self.logger.info(
-                "%s failed task %s: not connected", self.log_prefix, task.cid,
+                "%s failed task %s: not connected",
+                self.log_prefix,
+                task.cid,
             )
             task.fail(CommandErrorCode.NOT_CONNECTED.error(f"channel {self.name} not connected"))
             return
         elif not self.is_available():
             self.logger.info(
-                "%s failed task %s: not available", self.log_prefix, task.cid,
+                "%s failed task %s: not available",
+                self.log_prefix,
+                task.cid,
             )
             task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"channel {self.name} not available"))
             return
@@ -456,6 +470,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     def _task_done_callback(self, task: CommandTask) -> None:
         import inspect
+
         if not self.is_running():
             return
         if len(self._task_done_callbacks) == 0:
@@ -523,7 +538,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         ctx = ChannelCtx(self)
         cor = ctx.run(self.on_start_up)
         self.logger.info(
-            "%s started", self.log_prefix,
+            "%s started",
+            self.log_prefix,
         )
         await cor
         yield
@@ -637,7 +653,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._closing_event.set()
         try:
             self.logger.info(
-                "%s start to close", self.log_prefix,
+                "%s start to close",
+                self.log_prefix,
             )
             # 停止所有行为.
             await self._exit_stack.aclose()
@@ -645,7 +662,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             self._closed_event.set()
             if self._logger:
                 self._logger.info(
-                    "%s closed", self.log_prefix,
+                    "%s closed",
+                    self.log_prefix,
                 )
             # 做必要的清空.
             self.destroy()
@@ -664,16 +682,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
 
 class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
-
     # --- main loop --- #
 
-    def __init__(
-            self,
-            *,
-            channel: CHANNEL,
-            container: IoCContainer | None = None,
-            logger: LoggerItf | None = None
-    ):
+    def __init__(self, *, channel: CHANNEL, container: IoCContainer | None = None, logger: LoggerItf | None = None):
         super().__init__(
             channel=channel,
             container=container,
@@ -737,8 +748,8 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
     async def _generate_children_metas(self, force: bool) -> tuple[list[str], dict[ChannelFullPath, ChannelMeta]]:
 
         async def create_child_interfaces(
-                _child_name: str,
-                _child: Channel,
+            _child_name: str,
+            _child: Channel,
         ) -> tuple[str, dict[ChannelFullPath, ChannelMeta]] | None:
             try:
                 child_runtime = await self.importlib.get_or_create_channel_runtime(_child)
@@ -758,10 +769,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             except asyncio.TimeoutError:
                 raise
             except Exception as e:
-                self._logger.exception(
-                    "%s failed to create child %s interface: %s",
-                    self.log_prefix, _child_name, e
-                )
+                self._logger.exception("%s failed to create child %s interface: %s", self.log_prefix, _child_name, e)
                 raise
 
         children = self.imported()
@@ -777,10 +785,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 done = await asyncio.gather(*gathering)
                 for r in done:
                     if isinstance(r, Exception):
-                        self._logger.exception(
-                            "%s failed to create child interface: %s",
-                            self.log_prefix, r
-                        )
+                        self._logger.exception("%s failed to create child interface: %s", self.log_prefix, r)
                     elif r is None:
                         continue
                     else:
@@ -792,7 +797,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
         commands = self.self_commands(available_only).copy()
-        result = {'': commands}
+        result = {"": commands}
         for name, child in self.imported().items():
             child_runtime = self.importlib.get_channel_runtime(child)
             if child_runtime and child_runtime.is_running():
@@ -844,9 +849,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.exception(
-                "%s idle task failed %s", self.log_prefix, exc
-            )
+            self._logger.exception("%s idle task failed %s", self.log_prefix, exc)
             # 不返回.
         finally:
             self._blocking_action_lock.release()
@@ -1064,10 +1067,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandResultStack,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandResultStack,
+        depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:
@@ -1079,7 +1082,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
             self.logger.info(
                 "%s Fulfilling task with stack, depth=%s task=%s",
-                self.log_prefix, depth, owner,
+                self.log_prefix,
+                depth,
+                owner,
             )
             # 遍历生成的新栈.
             async for sub_task in stack:
@@ -1112,7 +1117,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             if not owner.done():
                 self.logger.exception(
                     "%s Fulfill task stack failed, task=%s, exception=%s",
-                    self.log_prefix, owner, e,
+                    self.log_prefix,
+                    owner,
+                    e,
                 )
                 for child in stack.generated():
                     if not child.done():

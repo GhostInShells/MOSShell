@@ -9,7 +9,7 @@ async def test_shell_state_store_baseline():
     from ghoshell_moss.core.shell import new_shell
 
     shell = new_shell()
-    chan = new_chan(name='a')
+    chan = new_chan(name="a")
     shell.main_channel.import_channels(chan)
 
     @chan.build.state_model

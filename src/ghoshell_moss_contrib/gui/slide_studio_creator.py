@@ -6,8 +6,17 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QMessageBox
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QLineEdit,
+    QTextEdit,
+    QFileDialog,
+    QMessageBox,
 )
 
 from ghoshell_common.contracts import FileStorage
@@ -16,6 +25,7 @@ from ghoshell_common.helpers import timestamp_ms
 
 class ConvertThread(QThread):
     """转换工作线程"""
+
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
@@ -31,9 +41,7 @@ class ConvertThread(QThread):
             self.log_signal.emit(f"输出目录: {self.output_dir}")
 
             image_paths = convert_pptx_to_pngs(
-                self.pptx_path,
-                output_img_dir=self.output_dir,
-                log_callback=self.log_signal.emit
+                self.pptx_path, output_img_dir=self.output_dir, log_callback=self.log_signal.emit
             )
 
             self.log_signal.emit(f"✅ 转换成功！共生成 {len(image_paths)} 张图片")
@@ -62,6 +70,7 @@ created_at: {created_at}
 updated_at: {updated_at}
 """.strip()
 
+
 def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
     """
     Mac系统下将PPTX每页转为PNG图片（PDF中转方案）
@@ -79,18 +88,14 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
     log_callback("步骤1/2：使用LibreOffice转换为PDF...")
     libreoffice_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
     if not os.path.exists(libreoffice_path):
-        raise RuntimeError(f"未找到LibreOffice，请确认路径：{libreoffice_path}，或者执行 brew install --cask libreoffice 安装依赖")
+        raise RuntimeError(
+            f"未找到LibreOffice，请确认路径：{libreoffice_path}，或者执行 brew install --cask libreoffice 安装依赖"
+        )
 
     pdf_filename = Path(pptx_path).stem + ".pdf"
     pdf_path = os.path.join(output_img_dir, pdf_filename)
 
-    cmd = [
-        libreoffice_path,
-        "--headless",
-        "--convert-to", "pdf",
-        "--outdir", output_img_dir,
-        pptx_path
-    ]
+    cmd = [libreoffice_path, "--headless", "--convert-to", "pdf", "--outdir", output_img_dir, pptx_path]
 
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -108,20 +113,22 @@ def convert_pptx_to_pngs(pptx_path, output_img_dir, log_callback=print):
 
     meta_yaml = os.path.join(output_img_dir, ".meta.yaml")
     with open(meta_yaml, "w") as _meta:
-        _meta.write(DEFAULT_META.format(
-            name=Path(pptx_path).stem,
-            description="",
-            origin_filetype=Path(pptx_path).suffix,
-            origin_filepath=pptx_path,
-            created_at=timestamp_ms(),
-            updated_at=timestamp_ms(),
-        ))
+        _meta.write(
+            DEFAULT_META.format(
+                name=Path(pptx_path).stem,
+                description="",
+                origin_filetype=Path(pptx_path).suffix,
+                origin_filepath=pptx_path,
+                created_at=timestamp_ms(),
+                updated_at=timestamp_ms(),
+            )
+        )
 
     image_paths = []
     for page_num in range(doc.page_count):
         page = doc.load_page(page_num)
         pix = page.get_pixmap()
-        output_file = os.path.join(output_img_dir, f"slide_{page_num+1:03d}.png")
+        output_file = os.path.join(output_img_dir, f"slide_{page_num + 1:03d}.png")
         pix.save(output_file)
 
         description_md = output_file + ".md"
@@ -212,9 +219,7 @@ class PPTXConverterWindow(QMainWindow):
         self.full_path_label.setText(full_path)
 
     def on_browse_pptx(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择PPTX文件", "", "PPTX文件 (*.pptx);;所有文件 (*.*)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择PPTX文件", "", "PPTX文件 (*.pptx);;所有文件 (*.*)")
         if file_path:
             self.pptx_path_edit.setText(file_path)
 
