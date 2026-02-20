@@ -1,44 +1,30 @@
 import logging
 import os
 from collections import defaultdict
-from typing import List, Optional, Tuple
+from typing import List, Optional, ClassVar, Any
 
 import frontmatter
+import litellm
 from PIL import Image
 from ghoshell_common.contracts import YamlConfig, WorkspaceConfigs, LoggerItf, Storage, FileStorage
 from ghoshell_common.helpers import timestamp_ms
 from ghoshell_container import IoCContainer, Container
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, BaseModel
 
 from ghoshell_moss import PyChannel, CommandError, CommandErrorCode
 from ghoshell_moss.message import Message, Base64Image, Text
 from ghoshell_moss_contrib.gui.image_viewer import SimpleImageViewer
 
 
-class SlideAssetInfo(YamlConfig):
-    relative_path = ".meta.yaml"
-
-    name: str = Field(default="", description="Slide的标识名")  # 面向人和大模型的文本描述
-    description: str = Field(default="", description="Slide的描述")  # 面向人和大模型的文本描述
-
-    # system unmodified fields
-    created_at: Optional[float] = Field(default_factory=timestamp_ms, description="创建时间")
-    updated_at: Optional[float] = Field(default_factory=timestamp_ms, description="更新时间")
-    origin_filetype: str = Field(default="", description="Slide的原始文件类型")  # ppt/pptx/pdf/...
-    origin_filepath: str = Field(default="", description="Slide的原始文件地址")
-
-    # extension unmarshalled fields
-    _dirname: str = PrivateAttr()
-
-    @property
-    def origin_filename(self):
-        return f".origin.{self.origin_filetype}"
-
-    @property
-    def dirname(self):
-        return self._dirname
+# ============ Exception ============
+class SlideFrameError(Exception):
+    pass
 
 
+class SlideAssetError(Exception):
+    pass
+
+# ============ Slide Entity ============
 class SlideFrame:
     def __init__(self):
         self.filename: Optional[str] = None
@@ -52,51 +38,35 @@ class SlideFrame:
         self.finished = True
 
 
-class SlideAssets:
-    def __init__(self, storage: FileStorage):
+class SlideAsset(YamlConfig):
+    relative_path = ".meta.yaml"
+
+    name: str = Field(default="", description="Slide的标识名")  # 面向人和大模型的文本描述
+    description: str = Field(default="", description="Slide的描述")  # 面向人和大模型的文本描述
+
+    # system unmodified fields
+    created_at: Optional[float] = Field(default_factory=timestamp_ms, description="创建时间")
+    updated_at: Optional[float] = Field(default_factory=timestamp_ms, description="更新时间")
+    origin_filetype: str = Field(default="", description="Slide的原始文件类型")  # ppt/pptx/pdf/...
+    origin_filepath: str = Field(default="", description="Slide的原始文件地址")
+
+    # extension unmarshalled fields
+    _dirname: str = PrivateAttr()
+    _storage: FileStorage = PrivateAttr()
+
+    @property
+    def origin_filename(self):
+        return f".origin.{self.origin_filetype}"
+
+    @property
+    def dirname(self):
+        return self._dirname
+
+    def set_storage(self, storage: FileStorage):
         self._storage = storage
-        self._slides: List[SlideAssetInfo] = []
-        self.refresh()
 
-    def refresh(self) -> List[SlideAssetInfo]:
-        """
-        同步最新素材库信息
-        """
-
-        slides = []
-
-        with os.scandir(self._storage.abspath()) as entries:
-            for entry in entries:
-                if entry.is_dir() and entry.name not in [".", ".."]:
-                    slides.append(entry.name)
-
-        res = []
-        for slide_dirname in slides:
-            slide_storage: FileStorage | Storage = self._storage.sub_storage(slide_dirname)
-            configs = WorkspaceConfigs(slide_storage)
-            slide_config = configs.get_or_create(SlideAssetInfo())
-            slide_config._dirname = slide_dirname
-            if not slide_config.name:
-                slide_config.name = slide_dirname
-            res.append(slide_config)
-        self._slides = res
-        return self._slides
-
-    def list(self) -> List[SlideAssetInfo]:
-        return self._slides
-
-    def get(self, name: str) -> Optional[SlideAssetInfo]:
-        for slide in self._slides:
-            if slide.name == name:
-                return slide
-        return None
-
-    def load_frames(self, name: str) -> Tuple[SlideAssetInfo, List[SlideFrame]]:
-        info = self.get(name)
-        if not info:
-            raise CommandError(CommandErrorCode.NOT_AVAILABLE, message=f"slide {name} not found")
-
-        slide_storage: FileStorage | Storage = self._storage.sub_storage(info.dirname)
+    def load_frames(self):
+        slide_storage: FileStorage | Storage = self._storage.sub_storage(self.dirname)
         filenames = slide_storage.dir("", False)
 
         frame_map: defaultdict[str, SlideFrame] = defaultdict(SlideFrame)
@@ -118,15 +88,198 @@ class SlideAssets:
                 frame.image = Image.open(file_abs_path)
 
         frames = frame_map.values()
-        return info, sorted(frames, key=lambda f: f.filename)
+        return sorted(frames, key=lambda f: f.filename)
+
+
+class SlideAssets:
+    def __init__(self, storage: FileStorage):
+        self._storage = storage
+        self._slides: List[SlideAsset] = []
+        self.refresh()
+
+    def refresh(self) -> List[SlideAsset]:
+        """
+        同步最新素材库信息
+        """
+
+        slides = []
+
+        with os.scandir(self._storage.abspath()) as entries:
+            for entry in entries:
+                if entry.is_dir() and entry.name not in [".", ".."]:
+                    slides.append(entry.name)
+
+        res = []
+        for slide_dirname in slides:
+            slide_storage: FileStorage | Storage = self._storage.sub_storage(slide_dirname)
+            configs = WorkspaceConfigs(slide_storage)
+            slide_config = configs.get_or_create(SlideAsset())
+            slide_config._dirname = slide_dirname
+            slide_config.set_storage(slide_storage)
+            if not slide_config.name:
+                slide_config.name = slide_dirname
+            res.append(slide_config)
+        self._slides = res
+        return self._slides
+
+    def list(self) -> List[SlideAsset]:
+        return self._slides
+
+    def get(self, name: str) -> Optional[SlideAsset]:
+        for slide in self._slides:
+            if slide.name == name:
+                return slide
+        return None
+
+    def create(self, dirname: str, name: str, description: str) -> SlideAsset:
+        if self._storage.sub_storage(dirname).exists(".meta.yaml"):
+            raise FileExistsError(f"file path {name} already exists")
+
+        slide_storage: FileStorage | Storage = self._storage.sub_storage(dirname)
+        asset = SlideAsset()
+        asset.name = name
+        asset.description = description
+        asset._dirname = dirname
+        asset._storage = slide_storage
+
+        configs = WorkspaceConfigs(slide_storage)
+        configs.save(asset)
+
+        return asset
 
     def as_channel(self):
         pass
 
+# ============ Creator ============
+class ImageModelConf(BaseModel):
+    default_env: ClassVar[dict[str, None | str]] = {
+        "base_url": None,
+        "model": "doubao-seedream-4-5-251128",
+        "api_key": None,
+        "custom_llm_provider": None,
+    }
+
+    base_url: Optional[str] = Field(
+        default="$SLIDE_CREATOR_LLM_BASE_URL",
+        description="base url for chat completion",
+    )
+    model: str = Field(
+        default="$SLIDE_CREATOR_LLM_MODEL",
+        description="llm model name that server provided",
+    )
+    api_key: Optional[str] = Field(
+        default="$SLIDE_CREATOR_LLM_API_KEY",
+        description="api key",
+    )
+    custom_llm_provider: Optional[str] = Field(
+        default="$SLIDE_CREATOR_LLM_PROVIDER",
+        description="custom LLM provider name",
+    )
+    n: int = Field(default=1, description="number of iterations")
+    timeout: float = Field(default=30, description="timeout")
+    request_timeout: float = Field(default=40, description="request timeout")
+    size: str = Field(default="1280x720", description="image size")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="kwargs")
+
+    def generate_litellm_params(self) -> dict[str, Any]:
+        params = self.model_dump(exclude_none=True, exclude={"kwargs"})
+        params.update(self.kwargs)
+        real_params = {}
+        for key, value in params.items():
+            if isinstance(value, str) and value.startswith("$"):
+                default_value = self.default_env.get(key, "")
+                real_value = os.environ.get(value[1:], default_value)
+                if real_value is not None:
+                    real_params[key] = real_value
+            else:
+                real_params[key] = value
+        return real_params
+
 
 class SlideCreator:
-    def __init__(self, assets: SlideAssets, logger: LoggerItf):
+    def __init__(self, assets: SlideAssets, logger: LoggerItf, model: Optional[ImageModelConf] = None):
         self._assets = assets
+        self._model_conf = model or ImageModelConf()
+
+        # gui
+        self.viewer = SimpleImageViewer(window_title="Slide Studio Creator")
+
+        self._editing_asset: Optional[SlideAsset] = None
+        self._editing_frame: Optional[SlideFrame] = None
+
+    async def new_asset(self, dirname: str, name: str, description: str):
+        self._editing_asset = self._assets.create(dirname, name, description)
+
+    async def open_asset(self, name: str):
+        a = self._assets.get(name)
+        if not a:
+            raise SlideAssetError(f"Asset {name} does not exist")
+
+    async def update_asset(self, name: str="", description: str=""):
+        if not self._editing_asset:
+            raise SlideAssetError(f"No asset under editing")
+        if name:
+            self._editing_asset.name = name
+        if description:
+            self._editing_asset.description = description
+
+    async def new_frame(self, prompt: str, max_images: int=1):
+        """
+        Generate a slide image as new frame.
+
+        Args:
+            prompt(str): the prompt to display
+            max_images(int): the maximum number of images to generate
+        """
+        response = await litellm.aimage_generation(
+            prompt=prompt,
+            response_format="url",
+            extra_body={
+                "sequential_image_generation": "auto",
+                "sequential_image_generation_options": {"max_images": max_images},
+                "watermark": True,
+            }
+        )
+
+    async def caption_frame(self, title: str="", outline: str="", content: str=""):
+        """
+        Give the caption to the editing frame.
+
+        Args:
+            title(str): the title of the editing frame
+            outline(str): the outline of the editing frame
+            content(str): the content of the editing frame
+        """
+        pass
+
+    async def context_messages(self) -> List[Message]:
+        msg = Message.new(role="user", name="__slide_creator__")
+        if not self._editing_asset:
+            msg.with_content(
+                Text="Start with `new_asset`",
+            )
+            return [msg]
+
+        frames = [
+            f"Page number:{i + 1} Title={f.title} Outline={f.outline}"
+            for i, f in enumerate(self._editing_asset.load_frames())
+        ]
+        msg.with_content(
+            Text(text=f"Current editing slide asset name: {self._editing_asset.name}"),
+            Text(text=f"Finished frames:\n{'\n'.join(frames)}"),
+        )
+
+        if self._editing_frame:
+            msg.with_content(
+                Text(text=f"This is editing frame. title: {self._editing_frame.title}, outline: {self._editing_frame.outline}, image: "),
+                Base64Image.from_pil_image(self._editing_frame.image)
+            )
+        else:
+            msg.with_content(
+                Text(text=f"There has no editing frame now."),
+            )
+
+        return [msg]
 
     def as_channel(self) -> PyChannel:
         chan = PyChannel(name="creator")
@@ -134,6 +287,7 @@ class SlideCreator:
         return chan
 
 
+# ============ Player ============
 class SlidePlayer:
     def __init__(self, assets: SlideAssets, logger: LoggerItf):
         self._assets = assets
@@ -144,13 +298,16 @@ class SlidePlayer:
 
         # current playing slide information
         self.is_playing = False
-        self.loaded: Optional[SlideAssetInfo] = None
+        self.loaded: Optional[SlideAsset] = None
         self.frames: List[SlideFrame] = []
         self.current_frame_index = -1
 
     def _load_frames(self, slide_name: str):
         self._clear_frames()
-        self.loaded, self.frames = self._assets.load_frames(slide_name)
+
+        self.loaded = self._assets.get(slide_name)
+        if self.loaded:
+            self.frames = self.loaded.load_frames()
 
     def _clear_frames(self):
         self.is_playing = False
@@ -256,6 +413,7 @@ You must complete the presentation on the current page firstly, then call the co
         return player_chan
 
 
+# ============ Studio ============
 class SlideStudio:
     def __init__(self, assets: SlideAssets, container: IoCContainer = None):
         # context
