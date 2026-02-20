@@ -62,7 +62,7 @@ async def test_channel_runtime_clear():
 @pytest.mark.asyncio
 async def test_child_channel_runtime_running():
     """
-    由于现在 Channel Broker 不再递归启动了, 所以不应该有任何子 channel 被启动.
+    由于现在 Channel Runtime 不再递归启动了, 所以不应该有任何子 channel 被启动.
     """
     main = PyChannel(name="")
 

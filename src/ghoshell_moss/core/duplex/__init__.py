@@ -15,4 +15,4 @@ from ghoshell_moss.core.duplex.protocol import (
     SyncChannelMetasEvent,
 )
 from ghoshell_moss.core.duplex.provider import ChannelEventHandler, DuplexChannelProvider
-from ghoshell_moss.core.duplex.proxy import DuplexChannelBroker, DuplexChannelProxy
+from ghoshell_moss.core.duplex.proxy import DuplexChannelRuntime, DuplexChannelProxy

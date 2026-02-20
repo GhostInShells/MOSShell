@@ -3,7 +3,7 @@ from .duplex import (
     Connection,
     ConnectionClosedError,
     ConnectionNotAvailable,
-    DuplexChannelBroker,
+    DuplexChannelRuntime,
     DuplexChannelProvider,
     DuplexChannelProxy,
 )

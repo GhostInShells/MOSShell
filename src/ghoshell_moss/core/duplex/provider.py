@@ -38,7 +38,7 @@ class DuplexChannelProvider(ChannelProvider):
     """
     实现一个基础的 Duplex Channel provider, 是为了展示 Channel proxy/provider 通讯的基本方式.
     注意:
-    1. 有的 channel provider, 可以同时有多个 broker session 连接它. 有的 provider 只能有一个 broker session 连接.
+    1. 有的 channel provider, 可以同时有多个 runtime session 连接它. 有的 provider 只能有一个 runtime session 连接.
     2. 有的 channel 是有状态的, 比如每个 session 的状态都相互隔离. 但有的 channel, 所有的函数应该是可以随便调用的.
     """
 
@@ -76,7 +76,7 @@ class DuplexChannelProvider(ChannelProvider):
 
         # --- runtime properties ---#
 
-        self._root_broker: Optional[ChannelRuntime] = None
+        self._root_runtime: Optional[ChannelRuntime] = None
         self._channel: Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._logger: logging.Logger | None = None
@@ -104,10 +104,10 @@ class DuplexChannelProvider(ChannelProvider):
         return self._channel
 
     @property
-    def broker(self) -> ChannelRuntime:
-        if self._root_broker is None:
+    def runtime(self) -> ChannelRuntime:
+        if self._root_runtime is None:
             raise RuntimeError("Channel provider has not been initialized.")
-        return self._root_broker
+        return self._root_runtime
 
     @contextlib.asynccontextmanager
     async def _bootstrap_container_stack(self) -> None:
@@ -116,10 +116,10 @@ class DuplexChannelProvider(ChannelProvider):
         await asyncio.to_thread(self._container.shutdown)
 
     @contextlib.asynccontextmanager
-    async def _bootstrap_broker_stack(self) -> None:
-        await self._root_broker.start()
+    async def _bootstrap_runtime_stack(self) -> None:
+        await self._root_runtime.start()
         yield
-        await self._root_broker.close()
+        await self._root_runtime.close()
 
     @contextlib.asynccontextmanager
     async def _bootstrap_connection_stack(self) -> None:
@@ -156,12 +156,12 @@ class DuplexChannelProvider(ChannelProvider):
         self._starting = True
         self._loop = asyncio.get_running_loop()
         self._channel = channel
-        self._root_broker = channel.bootstrap(self._container)
+        self._root_runtime = channel.bootstrap(self._container)
 
         try:
             async with contextlib.AsyncExitStack() as stack:
                 await stack.enter_async_context(self._bootstrap_container_stack())
-                await stack.enter_async_context(self._bootstrap_broker_stack())
+                await stack.enter_async_context(self._bootstrap_runtime_stack())
                 await stack.enter_async_context(self._bootstrap_connection_stack())
                 await stack.enter_async_context(self._bootstrap_main_loop_stack())
                 yield self
@@ -209,7 +209,7 @@ class DuplexChannelProvider(ChannelProvider):
                 if not task.done():
                     task.cancel()
         self._running_command_tasks.clear()
-        await self._root_broker.clear()
+        await self._root_runtime.clear()
 
     async def wait_closed(self) -> None:
         if not self._starting:
@@ -230,7 +230,7 @@ class DuplexChannelProvider(ChannelProvider):
     def is_running(self) -> bool:
         return self._starting and not (self._stopping_event.is_set() or self._closed_event.is_set())
 
-    # --- consume broker event --- #
+    # --- consume runtime event --- #
 
     async def _clear_session_status(self) -> None:
         if self._session_id:
@@ -315,11 +315,11 @@ class DuplexChannelProvider(ChannelProvider):
                 # 有的是阻塞的, 有的不是阻塞的.
                 await self._consume_single_event(event)
         except asyncio.CancelledError:
-            self.logger.warning("%s consume broker event loop is cancelled", self._log_prefix)
+            self.logger.warning("%s consume runtime event loop is cancelled", self._log_prefix)
         except ConnectionClosedError:
-            self.logger.warning("%s consume broker event loop is closed", self._log_prefix)
+            self.logger.warning("%s consume runtime event loop is closed", self._log_prefix)
         except Exception as e:
-            self.logger.exception("%s consume broker event loop failed: %s", self._log_prefix, e)
+            self.logger.exception("%s consume runtime event loop failed: %s", self._log_prefix, e)
             raise
 
     async def _consume_single_event(self, event: ChannelEvent) -> None:
@@ -386,7 +386,7 @@ class DuplexChannelProvider(ChannelProvider):
         """执行 clear 逻辑."""
         channel_name = event.chan
         try:
-            node = await self._root_broker.fetch_sub_broker(channel_name)
+            node = await self._root_runtime.fetch_sub_runtime(channel_name)
             if not node:
                 return
             # 执行 clear 命令.
@@ -423,11 +423,11 @@ class DuplexChannelProvider(ChannelProvider):
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
         try:
             try:
-                await self._root_broker.refresh_metas(callback=False)
+                await self._root_runtime.refresh_metas(callback=False)
             except Exception as e:
                 self.logger.exception("%s run meta event %s failed: %s", self._log_prefix, event, e)
 
-            metas = self._root_broker.metas()
+            metas = self._root_runtime.metas()
             response = ChannelMetaUpdateEvent(
                 session_id=event.session_id,
                 metas=metas.copy(),
@@ -448,7 +448,7 @@ class DuplexChannelProvider(ChannelProvider):
     async def _handle_command_call(self, call_event: CommandCallEvent) -> None:
         """执行一个命令运行的逻辑."""
         # 先取消 lifecycle 的命令.
-        node = await self._root_broker.fetch_sub_broker(call_event.chan)
+        node = await self._root_runtime.fetch_sub_runtime(call_event.chan)
         if node is None:
             response = call_event.not_available()
             await self._send_event_to_proxy(response.to_channel_event())
@@ -477,7 +477,7 @@ class DuplexChannelProvider(ChannelProvider):
             # 多余的, 没什么用.
             task.set_state("running")
             await self._add_running_task(task)
-            await self._root_broker.push_task(task)
+            await self._root_runtime.push_task(task)
             await task
         except asyncio.CancelledError:
             task.cancel("cancelled")

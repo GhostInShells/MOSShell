@@ -12,10 +12,10 @@ async def test_thread_channel_start_and_close():
     provider, proxy = create_thread_channel("proxy")
     chan = PyChannel(name="provider")
     async with provider.arun(chan):
-        broker = provider.broker
-        assert broker is not None
-        assert broker.is_running()
-    assert not broker.is_running()
+        runtime = provider.runtime
+        assert runtime is not None
+        assert runtime.is_running()
+    assert not runtime.is_running()
     assert not provider.is_running()
 
 
@@ -88,26 +88,26 @@ async def test_thread_channel_baseline():
     # 在另一个线程中运行.
     async with provider.arun(chan):
         # 判断 channel 已经启动.
-        main_broker = provider.broker
-        metas = main_broker.metas()
+        main_runtime = provider.runtime
+        metas = main_runtime.metas()
         assert len(metas) == 2
         assert 'a' in metas
-        assert main_broker.name == "provider"
-        assert main_broker.is_running()
-        assert main_broker.is_connected()
-        assert main_broker.is_running()
-        proxy_side_foo_meta = main_broker.self_meta()
+        assert main_runtime.name == "provider"
+        assert main_runtime.is_running()
+        assert main_runtime.is_connected()
+        assert main_runtime.is_running()
+        proxy_side_foo_meta = main_runtime.self_meta()
         assert proxy_side_foo_meta.available
         assert len(proxy_side_foo_meta.commands) > 0
         assert proxy_side_foo_meta.name == "provider"
 
-        async with proxy_chan.bootstrap() as proxy_broker:
-            await proxy_broker.wait_connected()
-            await proxy_broker.refresh_metas()
-            metas = proxy_broker.metas()
+        async with proxy_chan.bootstrap() as proxy_runtime:
+            await proxy_runtime.wait_connected()
+            await proxy_runtime.refresh_metas()
+            metas = proxy_runtime.metas()
             assert len(metas) == 2
             # 阻塞等待连接成功.
-            proxy_meta = proxy_broker.self_meta()
+            proxy_meta = proxy_runtime.self_meta()
             assert proxy_meta.name == "proxy"
             assert proxy_meta is not None
             # 名字被替换了.
@@ -122,19 +122,19 @@ async def test_thread_channel_baseline():
             # 判断仍然有一个子 channel.
             assert "a" in chan.children()
             # 判断 proxy 也有 children
-            metas = proxy_broker.metas()
+            metas = proxy_runtime.metas()
             assert "a" in metas
-            assert main_broker.self_meta().name == "provider"
+            assert main_runtime.self_meta().name == "provider"
             assert proxy_meta.name == "proxy"
 
             # 客户端仍然可以调用命令.
-            proxy_side_foo = proxy_broker.get_self_command("foo")
+            proxy_side_foo = proxy_runtime.get_self_command("foo")
             assert proxy_side_foo is not None
 
             result = await proxy_side_foo()
             assert result == 123
 
-        assert not proxy_broker.is_running()
+        assert not proxy_runtime.is_running()
     assert not provider.is_running()
 
 
@@ -149,22 +149,22 @@ def test_thread_channel_lost_connection():
 
     async def proxy_main():
         # 启动 proxy
-        async with proxy.bootstrap() as proxy_broker:
-            await proxy_broker.wait_connected()
+        async with proxy.bootstrap() as proxy_runtime:
+            await proxy_runtime.wait_connected()
             # 验证连接正常
-            assert proxy_broker.is_running()
-            _foo = proxy_broker.get_self_command("foo")
+            assert proxy_runtime.is_running()
+            _foo = proxy_runtime.get_self_command("foo")
             assert _foo is not None
 
             # 模拟连接中断（通过关闭 provider）
             provider.close()
             assert not provider.is_running()
-            assert proxy_broker.is_running()
-            _foo = proxy_broker.get_self_command("foo")
+            assert proxy_runtime.is_running()
+            _foo = proxy_runtime.get_self_command("foo")
             # 中断后抛出 command error.
             with pytest.raises(CommandError):
                 result = await _foo()
-            assert not proxy_broker.is_running()
+            assert not proxy_runtime.is_running()
 
     asyncio.run(proxy_main())
     provider.close()
@@ -254,11 +254,11 @@ async def test_thread_channel_exception():
 
     provider, proxy = create_thread_channel("proxy")
     provider.run_in_thread(chan)
-    async with proxy.bootstrap() as proxy_broker:
-        await proxy_broker.wait_connected()
-        assert proxy_broker.is_available()
-        assert proxy_broker.is_running()
-        _foo = proxy_broker.get_self_command("foo")
+    async with proxy.bootstrap() as proxy_runtime:
+        await proxy_runtime.wait_connected()
+        assert proxy_runtime.is_available()
+        assert proxy_runtime.is_running()
+        _foo = proxy_runtime.get_self_command("foo")
         with pytest.raises(CommandError):
             await _foo()
 
@@ -283,16 +283,16 @@ async def test_thread_channel_idle():
     provider, proxy = create_thread_channel("proxy")
     provider.run_in_thread(chan)
     try:
-        async with proxy.bootstrap() as proxy_broker:
-            await proxy_broker.wait_connected()
-            assert proxy_broker.is_idle()
-            assert provider.broker.is_idle()
+        async with proxy.bootstrap() as proxy_runtime:
+            await proxy_runtime.wait_connected()
+            assert proxy_runtime.is_idle()
+            assert provider.runtime.is_idle()
             assert len(idled) == 1
 
-            r = await proxy_broker.execute_command("foo")
+            r = await proxy_runtime.execute_command("foo")
             assert r == 123
-            assert proxy_broker.is_idle()
-            # assert provider.broker.is_idle()
+            assert proxy_runtime.is_idle()
+            # assert provider.runtime.is_idle()
             assert len(idled) == 2
 
     finally:

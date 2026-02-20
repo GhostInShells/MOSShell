@@ -86,7 +86,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
             self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
         return self._logger
 
-    # --- ChannelBroker 核心方法实现 --- #
+    # --- ChannelRuntime 核心方法实现 --- #
     async def start(self) -> None:
         """启动MCP客户端并同步工具元信息"""
         if self._running:
@@ -432,7 +432,7 @@ class MCPChannel(Channel):
         self._name = name
         self._desc = description
         self._mcp_client = mcp_client
-        self._broker: Optional[MCPChannelRuntime] = None
+        self._runtime: Optional[MCPChannelRuntime] = None
         self._blocking = blocking
 
     # --- Channel 核心方法实现 --- #
@@ -440,27 +440,27 @@ class MCPChannel(Channel):
         return self._name
 
     @property
-    def broker(self) -> ChannelRuntime:
-        if not self._broker or not self._broker.is_running():
+    def runtime(self) -> ChannelRuntime:
+        if not self._runtime or not self._runtime.is_running():
             raise RuntimeError("MCPChannel not bootstrapped")
-        return self._broker
+        return self._runtime
 
     @property
     def build(self) -> Builder:
         raise NotImplementedError("MCPChannel does not implement `build`")
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelRuntime:
-        if self._broker is not None and self._broker.is_running():
+        if self._runtime is not None and self._runtime.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
-        self._broker = MCPChannelRuntime(
+        self._runtime = MCPChannelRuntime(
             name=self._name,
             container=container,
             mcp_client=self._mcp_client,
             blocking=self._blocking,
         )
 
-        return self._broker
+        return self._runtime
 
     # --- 未使用的Channel方法（默认空实现） --- #
 
@@ -468,4 +468,4 @@ class MCPChannel(Channel):
         return {}
 
     def is_running(self) -> bool:
-        return self._broker is not None and self._broker.is_running()
+        return self._runtime is not None and self._runtime.is_running()

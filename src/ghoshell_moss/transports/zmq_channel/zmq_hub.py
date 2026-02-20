@@ -287,7 +287,7 @@ class ZMQChannelHub:
         current_chan = ChannelCtx.channel()
         sub_channel = current_chan.get_channel(name)
         try:
-            await asyncio.wait_for(sub_channel.broker.wait_connected(), timeout=timeout)
+            await asyncio.wait_for(sub_channel.runtime.wait_connected(), timeout=timeout)
         except asyncio.TimeoutError:
             # 如果连接超时，应该把刚启动的进程杀掉，避免残留
             await self.terminate_sub_channel_process(name)

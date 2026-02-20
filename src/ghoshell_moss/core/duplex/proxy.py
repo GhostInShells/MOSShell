@@ -31,7 +31,7 @@ from .protocol import (
     SyncChannelMetasEvent,
 )
 
-__all__ = ["DuplexChannelBroker", "DuplexChannelProxy", ]
+__all__ = ["DuplexChannelRuntime", "DuplexChannelProxy", ]
 
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore, State
 
@@ -43,7 +43,7 @@ todo: 全部改名为 Proxy
 
 class DuplexChannelContext:
     """
-    创建一个 Context 对象, 是所有 Duplex Channel Brokers 共同依赖的.
+    创建一个 Context 对象, 是所有 Duplex Channel Runtimes 共同依赖的.
     """
 
     def __init__(
@@ -508,7 +508,7 @@ class DuplexChannelContext:
             raise
 
 
-class DuplexChannelBroker(AbsChannelRuntime):
+class DuplexChannelRuntime(AbsChannelRuntime):
     """
     实现一个极简的 Duplex Channel, 它核心是可以通过 ChannelMeta 被动态构建出来.
     """
@@ -527,7 +527,7 @@ class DuplexChannelBroker(AbsChannelRuntime):
             container=ctx.container,
             logger=ctx.logger,
         )
-        self.log_prefix = f"[DuplexChannelBroker name={self._name} id={self.id} cls={self.__class__}]"
+        self.log_prefix = f"[DuplexChannelRuntime name={self._name} id={self.id} cls={self.__class__}]"
 
     def is_running(self) -> bool:
         return super().is_running() and self._ctx.is_running()
@@ -714,7 +714,7 @@ class DuplexChannelProxy(Channel):
         self._uid = uuid()
         self._provider_connection = to_provider_connection
         self._provider_channel_path = ""
-        self._broker: Optional[DuplexChannelBroker] = None
+        self._runtime: Optional[DuplexChannelRuntime] = None
         self._ctx: DuplexChannelContext | None = None
 
     def name(self) -> str:
@@ -726,8 +726,8 @@ class DuplexChannelProxy(Channel):
     def id(self) -> str:
         return self._uid
 
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "DuplexChannelBroker":
-        if self._broker is not None and self._broker.is_running():
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "DuplexChannelRuntime":
+        if self._runtime is not None and self._runtime.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
         self._ctx = DuplexChannelContext(
@@ -736,10 +736,10 @@ class DuplexChannelProxy(Channel):
             connection=self._provider_connection,
         )
 
-        broker = DuplexChannelBroker(
+        runtime = DuplexChannelRuntime(
             channel=self,
             provider_chan_path="",
             ctx=self._ctx,
         )
-        self._broker = broker
-        return broker
+        self._runtime = runtime
+        return runtime

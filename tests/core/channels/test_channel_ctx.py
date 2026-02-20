@@ -12,12 +12,12 @@ async def test_channel_ctx_not_effect_outside():
 
     foo_cmd = PyCommand(foo)
 
-    assert ChannelCtx.broker() is None
+    assert ChannelCtx.runtime() is None
     assert ChannelCtx.task() is None
     assert await foo() is None
     assert await foo_cmd() is None
 
-    assert ChannelCtx.broker() is None
+    assert ChannelCtx.runtime() is None
     assert ChannelCtx.task() is None
     assert await foo() is None
     assert await foo_cmd() is None
@@ -27,7 +27,7 @@ async def test_channel_ctx_not_effect_outside():
     assert await ctx.run(foo) is task
     assert await ctx.run(foo_cmd) is task
 
-    assert ChannelCtx.broker() is None
+    assert ChannelCtx.runtime() is None
     assert ChannelCtx.task() is None
     assert await foo() is None
     assert await foo_cmd() is None

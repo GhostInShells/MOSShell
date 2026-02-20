@@ -4,7 +4,7 @@
 用来构建 Channel 到 Shell 的跨进程通讯.
 
 MOSS 架构中, Shell 和 Channel 可以运行在不同的设备, 不同的进程上.
-只需要建立通讯通道, shell 就可以持有 channel 的远程连接 (broker).
+只需要建立通讯通道, shell 就可以持有 channel 的远程连接 (runtime).
 
 基本原理:
 

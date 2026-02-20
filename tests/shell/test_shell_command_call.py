@@ -89,7 +89,7 @@ async def test_shell_command_run_in_order():
     start_at = {}
     end_at = {}
 
-    assert ChannelCtx.broker() is None
+    assert ChannelCtx.runtime() is None
 
     async def foo(i: float):
         order.append(i)
@@ -193,7 +193,7 @@ async def test_shell_loop():
 
         chan = ChannelCtx.channel()
         # get shell from channel's container
-        _shell = chan.broker._container.get(MOSSShell)
+        _shell = chan.runtime._container.get(MOSSShell)
         _tasks = []
         async for t in _shell.parse_tokens_to_command_tasks(tokens__):
             _tasks.append(t)

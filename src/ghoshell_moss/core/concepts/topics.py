@@ -12,7 +12,7 @@ __all__ = ["ReqTopicModel", "Topic", "TopicBaseModel", "TopicCallback", "TopicMo
 class Topic(TypedDict, total=False):
     """
     在 channel 之间广播的数据结构.
-    不关心 topic broker 的通讯协议.
+    不关心 topic runtime 的通讯协议.
     """
 
     id: str

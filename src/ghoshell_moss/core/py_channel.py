@@ -231,7 +231,7 @@ class PyChannel(MutableChannel):
         self._name = name
         self._id = uuid()
         self._description = description
-        self._broker: Optional[ChannelRuntime] = None
+        self._runtime: Optional[ChannelRuntime] = None
         self._children: dict[str, Channel] = {}
         self._block = blocking
         self._dynamic = dynamic
@@ -255,8 +255,8 @@ class PyChannel(MutableChannel):
         return self._builder
 
     @property
-    def broker(self) -> ChannelRuntime | None:
-        return self._broker
+    def runtime(self) -> ChannelRuntime | None:
+        return self._runtime
 
     def import_channels(self, *children: "Channel") -> Self:
         for child in children:
@@ -280,17 +280,17 @@ class PyChannel(MutableChannel):
         return self._children
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
-        if self._broker is not None and self._broker.is_running():
+        if self._runtime is not None and self._runtime.is_running():
             raise RuntimeError("Server already running")
-        self._broker = PyChannelRuntime(
+        self._runtime = PyChannelRuntime(
             channel=self,
             container=container,
             dynamic=self._dynamic,
         )
-        return self._broker
+        return self._runtime
 
     def is_running(self) -> bool:
-        return self._broker is not None and self._broker.is_running()
+        return self._runtime is not None and self._runtime.is_running()
 
 
 class PyChannelRuntime(AbsChannelTreeRuntime):
@@ -390,12 +390,12 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         if command is None:
             return None
 
-        async def _run_with_broker(*args, **kwargs):
+        async def _run_with_runtime(*args, **kwargs):
             ctx = ChannelCtx(self)
             async with ctx.in_ctx():
                 return await command(*args, **kwargs)
 
-        return CommandWrapper.wrap(command, func=_run_with_broker)
+        return CommandWrapper.wrap(command, func=_run_with_runtime)
 
     def get_self_command(
             self,

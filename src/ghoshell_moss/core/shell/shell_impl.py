@@ -71,7 +71,7 @@ class DefaultShell(MOSSShell):
         self._interpreter: Optional[Interpreter] = None
 
         # --- runtime --- #
-        self._main_broker: Optional[ChannelRuntime] = None
+        self._main_runtime: Optional[ChannelRuntime] = None
         self._log_prefix = "[MOSSShell name=%s] " % self._name
 
     @property
@@ -110,7 +110,7 @@ class DefaultShell(MOSSShell):
         yield self._ioc_context_manager
         yield self._state_store_context_manager
         yield self._speech_context_manager
-        yield self._broker_context_manager
+        yield self._runtime_context_manager
         yield self._main_loop_context_manager
 
     @contextlib.asynccontextmanager
@@ -156,16 +156,16 @@ class DefaultShell(MOSSShell):
         await self.speech.close()
 
     @contextlib.asynccontextmanager
-    async def _broker_context_manager(self):
+    async def _runtime_context_manager(self):
         """
-        开启 channel broker.
+        开启 channel runtime.
         """
-        self._main_broker = self._main_channel.bootstrap(self._container)
-        # 开启 Broker
-        await self._main_broker.start()
+        self._main_runtime = self._main_channel.bootstrap(self._container)
+        # 开启 Runtime
+        await self._main_runtime.start()
         yield
-        # 关闭 Broker. k
-        await self._main_broker.close()
+        # 关闭 Runtime. k
+        await self._main_runtime.close()
 
     @contextlib.asynccontextmanager
     async def _main_loop_context_manager(self):
@@ -195,7 +195,7 @@ class DefaultShell(MOSSShell):
                     if not self.is_running():
                         item.fail(CommandErrorCode.NOT_RUNNING.error("shell is not running"))
                         continue
-                    await self._main_broker.push_task(item)
+                    await self._main_runtime.push_task(item)
                     # 清零.
                     failed_count = 0
                 except asyncio.CancelledError:
@@ -219,7 +219,7 @@ class DefaultShell(MOSSShell):
     @property
     def runtime(self) -> ChannelRuntime:
         self._check_running()
-        return self._main_broker
+        return self._main_runtime
 
     @property
     def logger(self) -> LoggerItf:
@@ -230,21 +230,21 @@ class DefaultShell(MOSSShell):
 
     def is_running(self) -> bool:
         self_running = self._start and not self._closing_event.is_set()
-        return self_running and self._main_broker and self._main_broker.is_running()
+        return self_running and self._main_runtime and self._main_runtime.is_running()
 
     async def wait_connected(self, *channel_paths: str) -> None:
         if not self.is_running():
             return
         paths = list(channel_paths)
         if len(paths) == 0:
-            await self._main_broker.wait_connected()
+            await self._main_runtime.wait_connected()
 
         waiting = []
         for path in paths:
-            broker = await self._main_broker.fetch_sub_broker(path)
-            if broker is None or not broker.is_running():
+            runtime = await self._main_runtime.fetch_sub_runtime(path)
+            if runtime is None or not runtime.is_running():
                 continue
-            waiting.append(broker.wait_connected())
+            waiting.append(runtime.wait_connected())
         if len(waiting) > 0:
             await asyncio.gather(*waiting)
 
@@ -252,9 +252,9 @@ class DefaultShell(MOSSShell):
         if not self.is_running():
             return
         if timeout is None:
-            await self._main_broker.wait_idle()
+            await self._main_runtime.wait_idle()
         else:
-            await asyncio.wait_for(self._main_broker.wait_idle(), timeout=timeout)
+            await asyncio.wait_for(self._main_runtime.wait_idle(), timeout=timeout)
 
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
@@ -264,7 +264,7 @@ class DefaultShell(MOSSShell):
             raise RuntimeError(f"Shell {self._name} not running")
 
     def is_idle(self) -> bool:
-        return self.is_running() and self._main_broker.is_idle()
+        return self.is_running() and self._main_runtime.is_idle()
 
     def _interpreter_callback_task(self, task: CommandTask | None) -> None:
         if task is not None:
@@ -330,7 +330,7 @@ class DefaultShell(MOSSShell):
         if not self.is_running():
             return
         # 保证这个任务最终被执行完毕吧.
-        refresh_meta_task = self._event_loop.create_task(self._main_broker.refresh_metas(force=True))
+        refresh_meta_task = self._event_loop.create_task(self._main_runtime.refresh_metas(force=True))
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
             done, pending = await asyncio.wait([refresh_meta_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
@@ -347,7 +347,7 @@ class DefaultShell(MOSSShell):
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
-        metas = self._main_broker.metas()
+        metas = self._main_runtime.metas()
         result = {}
 
         if config is not None:
@@ -414,7 +414,7 @@ class DefaultShell(MOSSShell):
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
-        commands = self._main_broker.commands(available_only=available_only)
+        commands = self._main_runtime.commands(available_only=available_only)
         if config is None:
             return commands
 
@@ -440,11 +440,11 @@ class DefaultShell(MOSSShell):
 
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         self._check_running()
-        broker = await self._main_broker.fetch_sub_broker(chan)
-        if broker is None or not broker.is_available():
+        runtime = await self._main_runtime.fetch_sub_runtime(chan)
+        if runtime is None or not runtime.is_available():
             return None
 
-        real_command = broker.get_self_command(name)
+        real_command = runtime.get_self_command(name)
         if not exec_in_chan:
             return real_command
         return self._wrap_real_command(chan, real_command, None)
@@ -456,25 +456,25 @@ class DefaultShell(MOSSShell):
         origin_func = command.__call__
         if isinstance(command, CommandWrapper):
             origin_func = command.func
-        _broker = ChannelCtx.broker()
+        _runtime = ChannelCtx.runtime()
         _task = ChannelCtx.task()
-        print("++++++++++++", _broker, _task)
+        print("++++++++++++", _runtime, _task)
 
         # 创建一个入栈函数.
         async def _exec_in_chan_func(*args, **kwargs) -> Any:
             # 检查是不是在 channel 里被运行的.
-            _broker = ChannelCtx.broker()
-            if _broker is not None:
+            _runtime = ChannelCtx.runtime()
+            if _runtime is not None:
                 # 如果是在 channel 里运行的, 则直接调用其真函数运行结果即可.
                 return await origin_func(*args, **kwargs)
 
-            # 并不是在 broker 里运行的, 检查是否有 task 对象.
+            # 并不是在 runtime 里运行的, 检查是否有 task 对象.
             task = ChannelCtx.task()
             if task is not None:
                 # 如果上下文里已经有了 task, 则仍然执行结果.
                 return await origin_func(*args, **kwargs)
             else:
-                # 发送到 broker 里, 等待 Channel 运行它.
+                # 发送到 runtime 里, 等待 Channel 运行它.
                 task = BaseCommandTask.from_command(
                     command,
                     chan,
@@ -517,7 +517,7 @@ class DefaultShell(MOSSShell):
 
         clear_queue = self._event_loop.create_task(_clear_old_queue())
         await clear_queue
-        _ = await asyncio.gather(self.speech.clear(), self._main_broker.clear())
+        _ = await asyncio.gather(self.speech.clear(), self._main_runtime.clear())
 
 
 def new_shell(

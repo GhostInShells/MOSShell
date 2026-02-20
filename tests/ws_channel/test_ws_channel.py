@@ -28,18 +28,18 @@ async def run_fastapi(result_queue: asyncio.Queue):
             name="test_channel",
         )
         try:
-            async with proxy.bootstrap() as broker:
-                await broker.wait_connected()
+            async with proxy.bootstrap() as runtime:
+                await runtime.wait_connected()
                 # 验证 proxy 已连接
                 assert proxy.is_running()
-                # 验证 broker meta
-                meta = proxy.broker.self_meta()
+                # 验证 runtime meta
+                meta = proxy.runtime.self_meta()
                 assert meta is not None
                 assert meta._name == "test_channel"
                 assert len(meta.commands) == 1
                 assert meta.commands[0]._name == "foo"
 
-                cmd = proxy.broker.get_self_command("foo")
+                cmd = proxy.runtime.get_self_command("foo")
                 assert cmd is not None
 
                 result1 = await cmd(123)

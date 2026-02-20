@@ -32,7 +32,7 @@ _TaskWithPaths = tuple[ChannelPaths, CommandTask]
 
 class ChannelImportLib:
     """
-    唯一的 lib 用来管理所有可以被 import 的 channel broker
+    唯一的 lib 用来管理所有可以被 import 的 channel runtime
     """
 
     def __init__(self, main: ChannelRuntime, container: IoCContainer | None = None):
@@ -42,16 +42,16 @@ class ChannelImportLib:
             name=self._name,
             parent=container,
         )
-        # 绑定自身到容器中. 凡是用这个容器启动的 broker, 都可以拿到 ChannelImportLib 并获取子 channel broker.
+        # 绑定自身到容器中. 凡是用这个容器启动的 runtime, 都可以拿到 ChannelImportLib 并获取子 channel runtime.
         self._container.set(ChannelImportLib, self)
         self._logger: Optional[LoggerItf] = None
-        self._brokers: dict[_ChannelId, ChannelRuntime] = {}
-        self._brokers_lock: asyncio.Lock = asyncio.Lock()
+        self._runtimes: dict[_ChannelId, ChannelRuntime] = {}
+        self._runtimes_lock: asyncio.Lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._start: bool = False
         self._close: bool = False
 
-    def get_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
+    def get_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
         if channel is self._main.channel:
             # 根节点不启动.
             return self._main
@@ -60,37 +60,37 @@ class ChannelImportLib:
             return None
 
         channel_id = channel.id()
-        return self._brokers.get(channel_id)
+        return self._runtimes.get(channel_id)
 
-    async def get_or_create_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
-        if broker := self.get_channel_broker(channel):
-            await broker.wait_started()
-            if broker.is_running():
-                return broker
+    async def get_or_create_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+        if runtime := self.get_channel_runtime(channel):
+            await runtime.wait_started()
+            if runtime.is_running():
+                return runtime
             else:
                 return None
         # 第一次创建.
-        broker = await self._build_channel_broker(channel)
-        await broker.wait_started()
-        return broker
+        runtime = await self._build_channel_runtime(channel)
+        await runtime.wait_started()
+        return runtime
 
-    async def _build_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
+    async def _build_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
         # 只有创建这一段需要上锁.
         if not self.is_running():
             return None
-        await self._brokers_lock.acquire()
+        await self._runtimes_lock.acquire()
         try:
             channel_id = channel.id()
-            broker = self._brokers.get(channel_id)
-            # 只要 broker 存在就立刻返回.
-            if broker is not None:
-                return broker
+            runtime = self._runtimes.get(channel_id)
+            # 只要 runtime 存在就立刻返回.
+            if runtime is not None:
+                return runtime
             # 用自身的容器启动 ChannelImportLib.
-            broker = channel.bootstrap(self._container)
+            runtime = channel.bootstrap(self._container)
             # 避免抢锁嵌套成环.
-            self._brokers[channel_id] = broker
-            _ = asyncio.create_task(broker.start())
-            return broker
+            self._runtimes[channel_id] = runtime
+            _ = asyncio.create_task(runtime.start())
+            return runtime
         except Exception as e:
             self.logger.exception(
                 "%s failed to build channel %s, id=%s: %s",
@@ -98,7 +98,7 @@ class ChannelImportLib:
             )
             return None
         finally:
-            self._brokers_lock.release()
+            self._runtimes_lock.release()
 
     @property
     def main(self) -> ChannelRuntime:
@@ -126,36 +126,36 @@ class ChannelImportLib:
 
     def find_descendants(self, channel: Channel) -> dict[ChannelFullPath, ChannelRuntime]:
         result = {}
-        broker = self.get_channel_broker(channel)
-        if broker is None or not broker.is_running():
+        runtime = self.get_channel_runtime(channel)
+        if runtime is None or not runtime.is_running():
             return result
-        for name, child in broker.imported().items():
-            child_broker = self.get_channel_broker(child)
-            result[name] = child_broker
-            if child_broker is not None and child_broker.is_running():
+        for name, child in runtime.imported().items():
+            child_runtime = self.get_channel_runtime(child)
+            result[name] = child_runtime
+            if child_runtime is not None and child_runtime.is_running():
                 descendants = self.find_descendants(child)
                 for path, descendant in descendants.items():
                     real_path = Channel.join_channel_path(name, path)
                     result[real_path] = descendant
         return result
 
-    def recursively_find_broker(self, broker: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
+    def recursively_find_runtime(self, runtime: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
         if path == "":
-            return broker
+            return runtime
         paths = Channel.split_channel_path_to_names(path, 1)
         child_name = paths[0]
         further_path = paths[1] if len(paths) > 1 else ""
         if child_name == "":
-            return broker
-        child_channel = broker.imported().get(child_name)
+            return runtime
+        child_channel = runtime.imported().get(child_name)
         if child_channel is None:
             return None
-        child_broker = self.get_channel_broker(child_channel)
-        if child_broker is None:
+        child_runtime = self.get_channel_runtime(child_channel)
+        if child_runtime is None:
             return None
-        return self.recursively_find_broker(child_broker, further_path)
+        return self.recursively_find_runtime(child_runtime, further_path)
 
-    async def recursively_fetch_broker(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
+    async def recursively_fetch_runtime(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
         if len(paths) == 0:
             return root
         child_name = paths[0]
@@ -163,38 +163,38 @@ class ChannelImportLib:
         child = root.imported().get(child_name)
         if child is None:
             return None
-        child_broker = await self.get_or_create_channel_broker(child)
-        return await self.recursively_fetch_broker(child_broker, further_path)
+        child_runtime = await self.get_or_create_channel_runtime(child)
+        return await self.recursively_fetch_runtime(child_runtime, further_path)
 
     async def close(self) -> None:
         if self._close:
             return
         self._close = True
-        await self._brokers_lock.acquire()
+        await self._runtimes_lock.acquire()
         try:
-            clear_brokers = []
-            clear_broker_tasks = []
-            closing_broker_ids = set()
-            for broker in self._brokers.values():
-                if broker.is_running():
-                    if broker.id in closing_broker_ids:
+            clear_runtimes = []
+            clear_runtime_tasks = []
+            closing_runtime_ids = set()
+            for runtime in self._runtimes.values():
+                if runtime.is_running():
+                    if runtime.id in closing_runtime_ids:
                         continue
-                    closing_broker_ids.add(broker.id)
-                    clear_task = self._loop.create_task(broker.close())
-                    clear_brokers.append(broker)
-                    clear_broker_tasks.append(clear_task)
-            done = await asyncio.gather(*clear_broker_tasks, return_exceptions=True)
+                    closing_runtime_ids.add(runtime.id)
+                    clear_task = self._loop.create_task(runtime.close())
+                    clear_runtimes.append(runtime)
+                    clear_runtime_tasks.append(clear_task)
+            done = await asyncio.gather(*clear_runtime_tasks, return_exceptions=True)
             idx = 0
-            self._brokers.clear()
+            self._runtimes.clear()
             for t in done:
                 if isinstance(t, Exception):
-                    broker = clear_brokers[idx]
+                    runtime = clear_runtimes[idx]
                     self.logger.exception(
-                        "%s close broker %s, id=%s failed: %s",
-                        self._name, broker.name, broker.id, t)
+                        "%s close runtime %s, id=%s failed: %s",
+                        self._name, runtime.name, runtime.id, t)
                 idx += 1
         finally:
-            self._brokers_lock.release()
+            self._runtimes_lock.release()
             if self._loop:
                 self._loop.run_in_executor(None, self._container.shutdown)
 
@@ -204,7 +204,7 @@ CHANNEL = TypeVar('CHANNEL', bound=Channel)
 
 class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
-    实现基础的 Channel Broker, 用来给所有的 Broker 提供基准的生命周期.
+    实现基础的 Channel Runtime, 用来给所有的 Runtime 提供基准的生命周期.
     """
 
     def __init__(
@@ -220,7 +220,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._uid = channel.id()
         # 用不同的容器隔离依赖. 经过 prepare container 才进行封装.
         container = Container(
-            name=f'MossChannelBroker/{self._name}/{self._uid}',
+            name=f'MossChannelRuntime/{self._name}/{self._uid}',
             parent=container,
         )
         self._container: IoCContainer = container
@@ -234,7 +234,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._starting = False
         self._started = asyncio.Event()
         self._running_task: Optional[asyncio.Task] = None
-        # 用线程安全的事件. 考虑到 broker 未来可能会跨线程被使用.
+        # 用线程安全的事件. 考虑到 runtime 未来可能会跨线程被使用.
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
 
@@ -282,7 +282,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     @property
     def container(self) -> IoCContainer:
         """
-        broker 所持有的 ioc 容器.
+        runtime 所持有的 ioc 容器.
         """
         return self._container
 
@@ -290,14 +290,14 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 重写这个函数完成自定义.
         return container
 
-    async def fetch_sub_broker(self, path: ChannelFullPath) -> ChannelRuntime | None:
+    async def fetch_sub_runtime(self, path: ChannelFullPath) -> ChannelRuntime | None:
         paths = Channel.split_channel_path_to_names(path)
-        return await self.importlib.recursively_fetch_broker(self, paths)
+        return await self.importlib.recursively_fetch_runtime(self, paths)
 
     @property
     def id(self) -> str:
         """
-        broker 的唯一 id.
+        runtime 的唯一 id.
         """
         return self._uid
 
@@ -381,14 +381,14 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     def is_running(self) -> bool:
         """
-        是否已经启动了. 如果 Broker 被 close, is_running 为 false.
+        是否已经启动了. 如果 Runtime 被 close, is_running 为 false.
         """
         return self._started.is_set() and not self._closing_event.is_set()
 
     def is_available(self) -> bool:
         """
         当前 Channel 对于使用者而言, 是否可用.
-        当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
+        当一个 Runtime 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
         """
         return self.is_running() and self.is_connected() and self._is_available()
 
@@ -597,7 +597,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def start(self):
         """
-        启动 Channel Broker.
+        启动 Channel Runtime.
         通常用 with statement 或 async exit stack 去启动.
         只会启动当前 channel 自身.
         """
@@ -629,8 +629,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def close(self):
         """
-        关闭当前 broker. 同时阻塞销毁资源直到结束.
-        只会关闭当前 channel 的 broker.
+        关闭当前 runtime. 同时阻塞销毁资源直到结束.
+        只会关闭当前 channel 的 runtime.
         """
         if self._closing_event.is_set():
             return
@@ -690,13 +690,13 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         self._idled_event = asyncio.Event()
         self._has_task_queued = asyncio.Event()
 
-    def get_children_brokers(self) -> dict[str, ChannelRuntime]:
+    def get_children_runtimes(self) -> dict[str, ChannelRuntime]:
         children = self.imported()
         result = {}
         for name, child in children.items():
-            broker = self.importlib.get_channel_broker(child)
-            if broker is not None and broker.is_running():
-                result[name] = broker
+            runtime = self.importlib.get_channel_runtime(child)
+            if runtime is not None and runtime.is_running():
+                result[name] = runtime
         return result
 
     @abstractmethod
@@ -706,16 +706,16 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         """
         pass
 
-    def get_child_broker(self, name: str) -> ChannelRuntime | None:
+    def get_child_runtime(self, name: str) -> ChannelRuntime | None:
         child = self.imported().get(name)
         if child is None:
             return None
-        return self.importlib.get_channel_broker(child)
+        return self.importlib.get_channel_runtime(child)
 
     def descendants(self) -> dict[ChannelFullPath, ChannelRuntime]:
         return self.importlib.find_descendants(self.channel)
 
-    def all_brokers(self) -> dict[ChannelFullPath, Self]:
+    def all_runtimes(self) -> dict[ChannelFullPath, Self]:
         result: dict[ChannelFullPath, ChannelRuntime] = {"": self}
         descendants = self.descendants()
         result.update(descendants)
@@ -741,12 +741,12 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 _child: Channel,
         ) -> tuple[str, dict[ChannelFullPath, ChannelMeta]] | None:
             try:
-                child_broker = await self.importlib.get_or_create_channel_broker(_child)
-                if not child_broker or not child_broker.is_running():
+                child_runtime = await self.importlib.get_or_create_channel_runtime(_child)
+                if not child_runtime or not child_runtime.is_running():
                     return None
                 # 不强制生成.
-                await child_broker.refresh_metas(callback=False, force=force)
-                _interfaces = child_broker.metas()
+                await child_runtime.refresh_metas(callback=False, force=force)
+                _interfaces = child_runtime.metas()
                 _result = {}
                 for channel_path, _meta in _interfaces.items():
                     new_channel_path = Channel.join_channel_path(_child_name, channel_path)
@@ -794,9 +794,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         commands = self.self_commands(available_only).copy()
         result = {'': commands}
         for name, child in self.imported().items():
-            child_broker = self.importlib.get_channel_broker(child)
-            if child_broker and child_broker.is_running():
-                child_commands = child_broker.commands(available_only)
+            child_runtime = self.importlib.get_channel_runtime(child)
+            if child_runtime and child_runtime.is_running():
+                child_commands = child_runtime.commands(available_only)
                 for further_path, command_map in child_commands.items():
                     new_full_path = Channel.join_channel_path(name, further_path)
                     result[new_full_path] = command_map
@@ -806,10 +806,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         chan, command_name = Command.split_uniquename(name)
         if chan == "":
             return self.get_self_command(command_name)
-        broker = self.importlib.recursively_find_broker(self, chan)
-        if broker is None:
+        runtime = self.importlib.recursively_find_runtime(self, chan)
+        if runtime is None:
             return None
-        return broker.get_self_command(command_name)
+        return runtime.get_self_command(command_name)
 
     async def wait_idle(self) -> None:
         """
@@ -828,7 +828,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
     async def idle(self) -> None:
         """
         进入闲时状态.
-        闲时状态指当前 Broker 及其 子 Channel 都没有 CommandTask 在运行的时候.
+        闲时状态指当前 Runtime 及其 子 Channel 都没有 CommandTask 在运行的时候.
         """
         if not self.is_running():
             return
@@ -856,7 +856,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
     async def on_idle(self) -> None:
         """
         进入闲时状态.
-        闲时状态指当前 Broker 及其 子 Channel 都没有 CommandTask 在运行的时候.
+        闲时状态指当前 Runtime 及其 子 Channel 都没有 CommandTask 在运行的时候.
         """
         pass
 
@@ -879,9 +879,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     async def _wait_children_idled(self) -> None:
         async def wait_child_empty(_child: Channel):
-            broker = await self._importlib.get_or_create_channel_broker(_child)
-            if broker and broker.is_running():
-                await broker.wait_idle()
+            runtime = await self._importlib.get_or_create_channel_runtime(_child)
+            if runtime and runtime.is_running():
+                await runtime.wait_idle()
             return
 
         wait_all = []
@@ -895,10 +895,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         children = self.imported()
         if len(children) > 0:
             for child in children.values():
-                broker = self.importlib.get_channel_broker(child)
-                if not broker.is_running():
+                runtime = self.importlib.get_channel_runtime(child)
+                if not runtime.is_running():
                     continue
-                elif not broker.is_idle():
+                elif not runtime.is_idle():
                     return False
         return True
 
@@ -953,14 +953,14 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
 
-        broker = await self.importlib.get_or_create_channel_broker(child)
-        if broker is None:
+        runtime = await self.importlib.get_or_create_channel_runtime(child)
+        if runtime is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
         task.send_through.append(child_name)
         # 直接发送给子树.
         further_paths = paths[1:]
-        await broker.push_task_with_paths(further_paths, task)
+        await runtime.push_task_with_paths(further_paths, task)
 
     async def _consume_task(self, paths: ChannelPaths, task: CommandTask) -> None:
         """
@@ -1026,9 +1026,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
             get_result_from_task = self._loop.create_task(self._get_task_result(task))
             origin_task_done = asyncio.create_task(task.wait(throw=False))
-            wait_broker_close = asyncio.create_task(self._closing_event.wait())
+            wait_runtime_close = asyncio.create_task(self._closing_event.wait())
             done, pending = await asyncio.wait(
-                [origin_task_done, get_result_from_task, wait_broker_close],
+                [origin_task_done, get_result_from_task, wait_runtime_close],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for t in pending:
@@ -1036,8 +1036,8 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             if origin_task_done in done:
                 # origin task 已经运行结束.
                 return
-            elif wait_broker_close in done:
-                task.fail(CommandErrorCode.NOT_RUNNING.error("broker closed"))
+            elif wait_runtime_close in done:
+                task.fail(CommandErrorCode.NOT_RUNNING.error("runtime closed"))
                 return
             result = await get_result_from_task
             # 如果返回值是 stack, 则意味着要循环堆栈.
@@ -1132,7 +1132,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 if task.meta.blocking:
                     # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务. 这其中也递归地包含子节点的任务.
                     await self.clear()
-                # 立刻将它放入 broker 的执行队列. 它会被尽快执行.
+                # 立刻将它放入 runtime 的执行队列. 它会被尽快执行.
                 await self._consume_task(paths, task)
                 # 并不阻塞等待结果, 而是立刻返回.
                 return
@@ -1151,9 +1151,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         await self._clear_pending_and_executing()
 
         async def clear_child(_child: Channel):
-            child_broker = await self._importlib.get_or_create_channel_broker(_child)
-            if child_broker and child_broker.is_running():
-                await child_broker.clear()
+            child_runtime = await self._importlib.get_or_create_channel_runtime(_child)
+            if child_runtime and child_runtime.is_running():
+                await child_runtime.clear()
 
         clear_tasks = []
         children = self.imported()
@@ -1181,19 +1181,19 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 if item is not None:
                     paths, task = item
                     if not task.done():
-                        task.fail(CommandErrorCode.CLEARED.error("cleared by broker"))
+                        task.fail(CommandErrorCode.CLEARED.error("cleared by runtime"))
             _pending_task_queue.put_nowait(None)
 
             # 设置 task 为 fail 即可. 主循环永远会清除它.
             consuming_command_task = self._consuming_command_task
             if consuming_command_task is not None:
                 if not consuming_command_task.done():
-                    consuming_command_task.fail(CommandErrorCode.CLEARED.error(f"cleared by broker"))
+                    consuming_command_task.fail(CommandErrorCode.CLEARED.error(f"cleared by runtime"))
             # 并行执行的 task 也需要被清除.
             if len(self._executing_cmd_tasks) > 0:
                 for t in self._executing_cmd_tasks:
                     if not t.done():
-                        t.fail(CommandErrorCode.CLEARED.error(f"cleared by broker"))
+                        t.fail(CommandErrorCode.CLEARED.error(f"cleared by runtime"))
             self._executing_cmd_tasks.clear()
         except Exception as e:
             self.logger.exception("%s clear self failed: %s", self.log_prefix, e)

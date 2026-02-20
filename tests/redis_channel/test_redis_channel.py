@@ -45,20 +45,20 @@ async def test_redis_channel_baseline():
         provider.run_in_thread(test_channel)
 
         async with provider.arun(test_channel):
-            async with proxy.bootstrap() as broker:
+            async with proxy.bootstrap() as runtime:
                 # 验证 proxy 已连接
-                await broker.wait_connected()
-                assert broker.is_running()
+                await runtime.wait_connected()
+                assert runtime.is_running()
 
                 # 获取 channel meta
-                meta = broker.self_meta()
+                meta = runtime.self_meta()
                 assert meta is not None
                 assert meta.name == "test_redis_channel"
                 assert len(meta.commands) == 1
                 assert meta.commands[0].name == "foo"
 
                 # 获取命令并执行
-                cmd = broker.get_self_command("foo")
+                cmd = runtime.get_self_command("foo")
                 assert cmd is not None
 
                 # 测试命令执行

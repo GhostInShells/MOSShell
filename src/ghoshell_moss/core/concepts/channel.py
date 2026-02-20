@@ -34,7 +34,7 @@ __all__ = [
     "TaskDoneCallback",
     "RefreshMetaCallback",
     "ChannelRuntime",
-    # "Brokers",
+    # "Runtimes",
     "ChannelFullPath",
     "ChannelMeta",
     "ChannelPaths",
@@ -370,7 +370,7 @@ class Builder(ABC):
         pass
 
 
-ChannelBrokerContextVar = contextvars.ContextVar("moss.ctx.Broker")
+ChannelRuntimeContextVar = contextvars.ContextVar("moss.ctx.Runtime")
 
 
 class ChannelCtx:
@@ -380,10 +380,10 @@ class ChannelCtx:
 
     def __init__(
             self,
-            broker: Optional["ChannelRuntime"] = None,
+            runtime: Optional["ChannelRuntime"] = None,
             task: Optional[CommandTask] = None,
     ):
-        self._broker = broker
+        self._runtime = runtime
         self._task = task
 
     async def run(self, fn: Callable[..., Coroutine], *args, **kwargs) -> Any:
@@ -392,27 +392,27 @@ class ChannelCtx:
 
     @classmethod
     def channel(cls) -> "Channel":
-        broker = cls.broker()
-        return broker.channel
+        runtime = cls.runtime()
+        return runtime.channel
 
     @contextlib.asynccontextmanager
     async def in_ctx(self):
-        broker_token = None
+        runtime_token = None
         task_token = None
-        if self._broker:
-            broker_token = ChannelBrokerContextVar.set(self._broker)
+        if self._runtime:
+            runtime_token = ChannelRuntimeContextVar.set(self._runtime)
         if self._task:
             task_token = CommandTaskContextVar.set(self._task)
         yield
-        if broker_token:
-            ChannelBrokerContextVar.reset(broker_token)
+        if runtime_token:
+            ChannelRuntimeContextVar.reset(runtime_token)
         if task_token:
             CommandTaskContextVar.reset(task_token)
 
     @classmethod
-    def broker(cls) -> Optional["ChannelRuntime"]:
+    def runtime(cls) -> Optional["ChannelRuntime"]:
         try:
-            return ChannelBrokerContextVar.get()
+            return ChannelRuntimeContextVar.get()
         except LookupError:
             return None
 
@@ -425,13 +425,13 @@ class ChannelCtx:
 
     @classmethod
     def container(cls) -> IoCContainer:
-        broker = cls.broker()
-        return broker.container
+        runtime = cls.runtime()
+        return runtime.container
 
     @classmethod
     def get_contract(cls, contract: type[INSTANCE]) -> INSTANCE:
-        broker = cls.broker()
-        return broker.container.force_fetch(contract)
+        runtime = cls.runtime()
+        return runtime.container.force_fetch(contract)
 
 
 class Channel(ABC):
@@ -480,7 +480,7 @@ class Channel(ABC):
     @abstractmethod
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         """
-        传入一个 IoC 容器, 获取 Channel 的 broker 实例.
+        传入一个 IoC 容器, 获取 Channel 的 runtime 实例.
         """
         pass
 
@@ -517,14 +517,14 @@ class ChannelRuntime(ABC):
     Channel 具体能力的调用方式.
     是对 Channel 的实例化.
     设计思路上 Channel 类似 Python Module 的源代码.
-    而 ChannelBroker 相当于编译后的 ModuleType.
+    而 ChannelRuntime 相当于编译后的 ModuleType.
 
-    使用 Broker 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
+    使用 Runtime 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
 
     >>> chan: Channel
     >>> con: IoCContainer
-    >>> broker = chan.bootstrap(con)
-    >>> async with broker:
+    >>> runtime = chan.bootstrap(con)
+    >>> async with runtime:
     >>>     ...
 
     为什么不叫 Client 呢? 因为 Channel 可能运行在 Client 和 Server 两侧. 它们会通过通讯被同构.
@@ -534,7 +534,7 @@ class ChannelRuntime(ABC):
     @abstractmethod
     def channel(self) -> "Channel":
         """
-        Broker 持有 Channel 本身. 类似实例持有源码.
+        Runtime 持有 Channel 本身. 类似实例持有源码.
         """
         pass
 
@@ -545,9 +545,9 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    async def fetch_sub_broker(self, path: ChannelFullPath) -> Self | None:
+    async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
         """
-        在当前 Broker 的上下文空间里, 寻找一个可能存在的子孙节点.
+        在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
         """
         pass
 
@@ -579,7 +579,7 @@ class ChannelRuntime(ABC):
     @abstractmethod
     def id(self) -> str:
         """
-        broker 的唯一 id.
+        runtime 的唯一 id.
         """
         pass
 
@@ -619,9 +619,9 @@ class ChannelRuntime(ABC):
     @abstractmethod
     def is_connected(self) -> bool:
         """
-        判断一个 Broker 的连接与通讯是否正常。
-        一个运行中的 Broker 不一定是正确连接的.
-        举例, Server 端的 ChannelBroker 启动后, 可能并未连接到 Provider 端的 ChannelBroker.
+        判断一个 Runtime 的连接与通讯是否正常。
+        一个运行中的 Runtime 不一定是正确连接的.
+        举例, Server 端的 ChannelRuntime 启动后, 可能并未连接到 Provider 端的 ChannelRuntime.
         """
         pass
 
@@ -637,7 +637,7 @@ class ChannelRuntime(ABC):
     def is_available(self) -> bool:
         """
         当前 Channel 对于使用者 (AI) 而言, 是否可用.
-        当一个 Broker 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
+        当一个 Runtime 是 running & connected 状态下, 仍然可能会因为种种原因临时被禁用.
         """
         pass
 
@@ -652,14 +652,14 @@ class ChannelRuntime(ABC):
     @abstractmethod
     async def wait_connected(self) -> None:
         """
-        等待 broker 到连接成功.
+        等待 runtime 到连接成功.
         """
         pass
 
     @abstractmethod
     async def wait_closed(self) -> None:
         """
-        等待 Broker 彻底中断.
+        等待 Runtime 彻底中断.
         """
         pass
 
@@ -670,8 +670,8 @@ class ChannelRuntime(ABC):
     @abstractmethod
     def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         """
-        返回当前 ChannelBroker 自身的 commands.
-        key 是 command 在当前 Broker 内部的唯一名字.
+        返回当前 ChannelRuntime 自身的 commands.
+        key 是 command 在当前 Runtime 内部的唯一名字.
         """
         pass
 
@@ -693,7 +693,7 @@ class ChannelRuntime(ABC):
     @abstractmethod
     async def clear(self) -> None:
         """
-        清空当前 Broker 所有的运行状态.
+        清空当前 Runtime 所有的运行状态.
         """
         pass
 
@@ -701,13 +701,13 @@ class ChannelRuntime(ABC):
         """
         将一个 Task 推入到执行栈中. 阻塞到完成入栈为止. 仍然要在外侧 await.
 
-        ChannelBroker 运行的基本逻辑是:
+        ChannelRuntime 运行的基本逻辑是:
         1. 一次只能运行一个阻塞 task
         2. none-blocking 的 task 不会阻塞, 但是可以被 clear.
         3. clear 会清空掉所有的运行状态.
         举例:
-        >>> async def run_task(broker: ChannelRuntime, t:CommandTask):
-        >>>     await broker.push_task(t)
+        >>> async def run_task(runtime: ChannelRuntime, t:CommandTask):
+        >>>     await runtime.push_task(t)
         >>>     return await t
         """
         for task in tasks:
@@ -738,7 +738,7 @@ class ChannelRuntime(ABC):
     ) -> CommandTask:
         """
         example to create channel task
-        通过 Broker 创建一个新的的 CommandTask.
+        通过 Runtime 创建一个新的的 CommandTask.
         """
         command = self.get_command(name)
         if command is None:
@@ -771,21 +771,21 @@ class ChannelRuntime(ABC):
     @abstractmethod
     async def start(self) -> None:
         """
-        启动 Broker
+        启动 Runtime
         """
         pass
 
     @abstractmethod
     async def close(self) -> None:
         """
-        关闭 Broker.
+        关闭 Runtime.
         """
         pass
 
     @abstractmethod
     def close_sync(self) -> None:
         """
-        同步关闭一个 Broker.
+        同步关闭一个 Runtime.
         只有特殊情况下需要使用.
         """
         pass
@@ -822,89 +822,89 @@ class ChannelApp(Protocol):
 
 
 #
-# class Brokers:
+# class Runtimes:
 #     """
-#     测试工具, 用来快速实例化一个 channel 树的所有 broker
+#     测试工具, 用来快速实例化一个 channel 树的所有 runtime
 #     """
 #
-#     def __init__(self, main: "Channel", container: IoCContainer, brokers: dict[str, "ChannelBroker"]):
+#     def __init__(self, main: "Channel", container: IoCContainer, runtimes: dict[str, "ChannelRuntime"]):
 #         self.main_channel = main
 #         self.container = container
-#         self.broker_map = brokers
+#         self.runtime_map = runtimes
 #         self._start = False
 #         self._close = False
 #
-#     async def iter(self) -> AsyncIterable[tuple[ChannelFullPath, "ChannelBroker"]]:
+#     async def iter(self) -> AsyncIterable[tuple[ChannelFullPath, "ChannelRuntime"]]:
 #         """
-#         动态获取 broker, 可能会临时初始化它们.
+#         动态获取 runtime, 可能会临时初始化它们.
 #         """
 #         valid = set()
 #         all_channels = self.main_channel.all_channels()
 #         for path, channel in all_channels.items():
 #             valid.add(path)
 #             # 已经注册过.
-#             if path in self.broker_map:
-#                 yield path, self.broker_map.get(path)
+#             if path in self.runtime_map:
+#                 yield path, self.runtime_map.get(path)
 #             else:
-#                 broker = channel.bootstrap(self.container)
-#                 await broker.start()
-#                 self.broker_map[path] = broker
-#                 yield path, broker
+#                 runtime = channel.bootstrap(self.container)
+#                 await runtime.start()
+#                 self.runtime_map[path] = runtime
+#                 yield path, runtime
 #
 #         invalid = []
-#         for path in self.broker_map.keys():
+#         for path in self.runtime_map.keys():
 #             if path not in valid:
 #                 invalid.append(path)
 #
-#         # 关闭掉不对的 broker
+#         # 关闭掉不对的 runtime
 #         close_invalid = []
 #         if len(invalid) > 0:
 #             for path in invalid:
-#                 broker = self.broker_map.get(path)
-#                 if broker is not None:
-#                     del self.broker_map[path]
-#                 close_invalid.append(broker.close())
+#                 runtime = self.runtime_map.get(path)
+#                 if runtime is not None:
+#                     del self.runtime_map[path]
+#                 close_invalid.append(runtime.close())
 #             await asyncio.gather(*close_invalid)
 #
-#     def get(self, path: ChannelFullPath) -> "ChannelBroker":
-#         broker = self.broker_map.get(path)
-#         if broker is None:
-#             raise LookupError(f'broker {path} not found')
-#         return broker
+#     def get(self, path: ChannelFullPath) -> "ChannelRuntime":
+#         runtime = self.runtime_map.get(path)
+#         if runtime is None:
+#             raise LookupError(f'runtime {path} not found')
+#         return runtime
 #
-#     def main_broker(self) -> "ChannelBroker":
+#     def main_runtime(self) -> "ChannelRuntime":
 #         return self.get('')
 #
-#     async def fetch(self, path: ChannelFullPath) -> Optional["ChannelBroker"]:
+#     async def fetch(self, path: ChannelFullPath) -> Optional["ChannelRuntime"]:
 #         channel = self.main_channel.get_channel(path)
-#         broker = self.broker_map.get(path)
+#         runtime = self.runtime_map.get(path)
 #         if channel is None:
-#             if broker is not None:
-#                 await broker.close()
-#                 del self.broker_map[path]
+#             if runtime is not None:
+#                 await runtime.close()
+#                 del self.runtime_map[path]
 #             return None
-#         if broker is None:
-#             broker = channel.bootstrap(self.container)
-#             self.broker_map[path] = broker
-#             await broker.start()
-#         return broker
+#         if runtime is None:
+#             runtime = channel.bootstrap(self.container)
+#             self.runtime_map[path] = runtime
+#             await runtime.start()
+#         return runtime
 #
 #     @classmethod
 #     def new(cls, channel: "Channel", container: Optional[IoCContainer] = None) -> Self:
 #         container = container or get_container()
-#         brokers = {}
+#         runtimes = {}
 #         for path, _channel in channel.all_channels().items():
-#             brokers[path] = _channel.bootstrap(container)
+#             runtimes[path] = _channel.bootstrap(container)
 #
-#         return cls(channel, container, brokers)
+#         return cls(channel, container, runtimes)
 #
 #     async def start(self):
 #         if self._start:
 #             return
 #         self._start = True
 #         start_all = []
-#         for broker in self.broker_map.values():
-#             start_all.append(asyncio.create_task(broker.start()))
+#         for runtime in self.runtime_map.values():
+#             start_all.append(asyncio.create_task(runtime.start()))
 #         await asyncio.gather(*start_all)
 #
 #     async def __aenter__(self) -> Self:
@@ -916,8 +916,8 @@ class ChannelApp(Protocol):
 #             return
 #         self._close = True
 #         close_all = []
-#         for broker in self.broker_map.values():
-#             close_all.append(asyncio.create_task(broker.close()))
+#         for runtime in self.runtime_map.values():
+#             close_all.append(asyncio.create_task(runtime.close()))
 #         await asyncio.gather(*close_all)
 #
 #     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -947,7 +947,7 @@ class ChannelProvider(ABC):
 
     @property
     @abstractmethod
-    def broker(self) -> ChannelRuntime:
+    def runtime(self) -> ChannelRuntime:
         pass
 
     @abstractmethod

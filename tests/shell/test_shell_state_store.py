@@ -18,13 +18,13 @@ async def test_shell_state_store_baseline():
 
     @chan.build.command()
     async def set_value(value: int) -> None:
-        test_state = chan.broker.states.get_model(TestStateModel)
+        test_state = chan.runtime.states.get_model(TestStateModel)
         test_state.value = value
-        await chan.broker.states.save(test_state)
+        await chan.runtime.states.save(test_state)
 
     @chan.build.command()
     async def get_value() -> int:
-        test_state = chan.broker.states.get_model(TestStateModel)
+        test_state = chan.runtime.states.get_model(TestStateModel)
         return test_state.value
 
     async with shell:
@@ -67,14 +67,14 @@ async def test_shell_state_store_share():
 
     @a_chan.build.command()
     async def set_value(value: int) -> None:
-        test_state = a_chan.broker.states.get_model(TestStateModel)
+        test_state = a_chan.runtime.states.get_model(TestStateModel)
         test_state.value = value
-        await a_chan.broker.states.save(test_state)
+        await a_chan.runtime.states.save(test_state)
 
     @b_chan.build.command()
     async def get_value() -> int:
         await asyncio.sleep(0.3)
-        test_state = b_chan.broker.states.get_model(TestStateModel)
+        test_state = b_chan.runtime.states.get_model(TestStateModel)
         return test_state.value
 
     async with shell:
