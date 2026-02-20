@@ -37,15 +37,15 @@ class CommandTaskElementContext:
     """语法糖, 用来管理所有 element 共享的组件."""
 
     def __init__(
-        self,
-        channel_commands: dict[str, dict[str, Command]],
-        output: Speech,
-        logger: Optional[LoggerItf] = None,
-        stop_event: Optional[ThreadSafeEvent] = None,
-        root_tag: str = "ctml",
+            self,
+            channel_commands: dict[str, dict[str, Command]],
+            speech: Speech,
+            logger: Optional[LoggerItf] = None,
+            stop_event: Optional[ThreadSafeEvent] = None,
+            root_tag: str = "ctml",
     ):
         self.channel_commands_map = channel_commands
-        self.output = output
+        self.speech = speech
         self.logger = logger or getLogger("moss")
         self.stop_event = stop_event or ThreadSafeEvent()
         self.root_tag = root_tag
@@ -70,13 +70,13 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
     """
 
     def __init__(
-        self,
-        cid: str,
-        current_task: Optional[CommandTask],
-        *,
-        depth: int = 0,
-        callback: Optional[CommandTaskCallback] = None,
-        ctx: CommandTaskElementContext,
+            self,
+            cid: str,
+            current_task: Optional[CommandTask],
+            *,
+            depth: int = 0,
+            callback: Optional[CommandTaskCallback] = None,
+            ctx: CommandTaskElementContext,
     ) -> None:
         self.cid = cid
         self.ctx = ctx
@@ -275,33 +275,33 @@ class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
     没有 delta 参数的 Command
     """
 
-    _output_stream: Optional[SpeechStream] = None
+    _speech_stream: Optional[SpeechStream] = None
 
     def _on_delta_token(self, token: CommandToken) -> None:
-        if self._output_stream is None:
+        if self._speech_stream is None:
             # 没有创建过 output stream, 则创建一个.
             # 用来处理需要发送的 delta content.
-            _output_stream = self.ctx.output.new_stream(
+            _speech_stream = self.ctx.speech.new_stream(
                 batch_id=token.command_part_id(),
             )
-            output_stream_task = _output_stream.as_command_task()
+            output_stream_task = _speech_stream.as_command_task()
             self._send_callback(output_stream_task)
-        elif self._output_stream.id != token.command_part_id():
+        elif self._speech_stream.id != token.command_part_id():
             # 创建过 output_stream, 则需要比较是否是相同的 command part id.
             # 不是相同的 command part id, 则需要创建一个新的流, 这样可以分段感知到每一段 output 是否已经执行完了.
             # 核心目标是, 当一个较长的 output 流被 command 分割成多段的话, 每一段都可以阻塞, 同时却可以提前生成 tts.
             # 这样生成 tts 的过程 add(token.content) 并不会被阻塞.
             self._clear_output_stream()
-            _output_stream = self.ctx.output.new_stream(
+            _speech_stream = self.ctx.speech.new_stream(
                 batch_id=token.command_part_id(),
             )
-            output_stream_task = _output_stream.as_command_task()
+            output_stream_task = _speech_stream.as_command_task()
             self._send_callback(output_stream_task)
         else:
-            _output_stream = self._output_stream
+            _speech_stream = self._speech_stream
         # 增加新的 stream delta
-        _output_stream.buffer(token.content)
-        self._output_stream = _output_stream
+        _speech_stream.buffer(token.content)
+        self._speech_stream = _speech_stream
 
     def _on_self_start(self) -> None:
         # 直接发送命令自身.
@@ -337,10 +337,10 @@ class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
             self._on_self_end()
 
     def _clear_output_stream(self) -> None:
-        if self._output_stream is not None:
+        if self._speech_stream is not None:
             # 发送未发送的 output stream.
-            self._output_stream.commit()
-            self._output_stream = None
+            self._speech_stream.commit()
+            self._speech_stream = None
 
     def _on_self_end(self) -> None:
         self._end = True
@@ -367,11 +367,6 @@ class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
                 attrs=self._current_task.kwargs,
                 self_close=True,
             )
-
-    def destroy(self) -> None:
-        super().destroy()
-        if self._output_stream is not None:
-            self._output_stream.close()
 
 
 class EmptyCommandTaskElement(NoDeltaCommandTaskElement):

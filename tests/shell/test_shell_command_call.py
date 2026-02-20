@@ -2,7 +2,10 @@ import asyncio
 import time
 
 import pytest
-from ghoshell_moss import Channel, CommandTask, CommandResultStack, Interpreter, MOSSShell, new_chan, ChannelCtx
+from ghoshell_moss import (
+    CommandTask, CommandResultStack, Interpreter, MOSSShell, new_chan, ChannelCtx,
+    CommandError,
+)
 
 
 @pytest.mark.asyncio
@@ -45,8 +48,9 @@ async def test_shell_execution_baseline():
             assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
             # 验证并发执行.
             task_list = list(tasks.values())
+            assert len(task_list) > 1
             # 两个任务几乎同时启动.
-            running_gap = abs(task_list[0].trace.get("running") - task_list[1].trace.get("running"))
+            running_gap = abs(task_list[0].trace.get("executing") - task_list[1].trace.get("executing"))
             assert running_gap < 0.01
             done_gap = abs(task_list[1].trace.get("done") - task_list[0].trace.get("done"))
             assert done_gap > 0.05
@@ -81,11 +85,17 @@ async def test_shell_command_run_in_order():
 
     shell = new_shell()
 
-    order = {}
+    order = []
+    start_at = {}
+    end_at = {}
+
+    assert ChannelCtx.broker() is None
 
     async def foo(i: float):
+        order.append(i)
+        start_at[i] = time.time()
         await asyncio.sleep(i)
-        order[i] = time.time()
+        end_at[i] = time.time()
         return i
 
     # register the foo command
@@ -93,24 +103,30 @@ async def test_shell_command_run_in_order():
 
     async with shell:
         # get the origin command
-        foo_cmd: foo = await shell.get_command("", "foo")
+        foo_cmd: foo = await shell.get_command("", "foo", exec_in_chan=False)
         assert foo_cmd is not None
 
         values = await asyncio.gather(foo_cmd(0.2), foo_cmd(0.1))
         assert values == [0.2, 0.1]
-        assert len(order) == 2
-        # the command execute in concurrent
-        assert order[0.1] > order[0.2]
+        assert len(start_at) == 2
+        assert len(end_at) == 2
+        # the command execute in concurrent, 消耗时间多的一方后执行完.
+        assert end_at[0.1] < end_at[0.2]
+        assert start_at[0.1] - start_at[0.2] < 0.1
 
         # 重新开始.
+        end_at.clear()
+        start_at.clear()
         order.clear()
         foo_cmd: foo = await shell.get_command("", "foo", exec_in_chan=True)
+        # 实际上仍然会推送到队列里执行.
         values = await asyncio.gather(foo_cmd(0.2), foo_cmd(0.1))
         # the gather order is the same
         assert values == [0.2, 0.1]
-        assert len(order) == 2
-        # second command execute after first one
-        assert order[0.1] > order[0.2]
+        assert len(end_at) == 2
+        # second command execute after first on
+        first, last = order
+        assert end_at[first] < start_at[last]
 
 
 @pytest.mark.asyncio
@@ -157,6 +173,8 @@ async def test_shell_task_can_get_task():
             tasks = await interpreter.wait_execution_done(10)
             assert len(tasks) == 1
             first = list(tasks.values())[0]
+            assert first.done()
+            assert first.exec_chan == "a"
             assert first.cid == first.result()
 
 
@@ -175,7 +193,7 @@ async def test_shell_loop():
 
         chan = ChannelCtx.channel()
         # get shell from channel's container
-        _shell = chan.broker.container.get(MOSSShell)
+        _shell = chan.broker._container.get(MOSSShell)
         _tasks = []
         async for t in _shell.parse_tokens_to_command_tasks(tokens__):
             _tasks.append(t)
@@ -239,11 +257,17 @@ async def test_shell_clear():
         await asyncio.sleep(sleep[0])
         return "baz"
 
-    content = "<a:foo /><b:bar /><a.c:baz />"
+    content = "<a:foo /><b:bar:1 /><a.c:baz />"
     async with shell:
+        await shell.wait_connected()
+        assert len(shell.channel_metas()) == 4
+        assert "a.c" in shell.commands()
         # baseline
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed(content)
+            interpreter.commit()
+            await interpreter.wait_parse_done()
+            assert len(interpreter.parsed_tasks()) == 3
             tasks = await interpreter.wait_execution_done()
             assert len(tasks) == 3
             assert [t.result() for t in tasks.values()] == ["foo", "bar", "baz"]
@@ -254,10 +278,12 @@ async def test_shell_clear():
             interpreter.feed(content)
             await interpreter.wait_parse_done()
             parsed_tasks = interpreter.parsed_tasks()
+            assert len(parsed_tasks) > 0
             for t in parsed_tasks.values():
                 assert not t.done()
             # clear all
             await shell.clear()
             parsed_tasks = interpreter.parsed_tasks()
             for t in parsed_tasks.values():
-                assert t.cancelled()
+                e = t.exception()
+                assert isinstance(e, CommandError)

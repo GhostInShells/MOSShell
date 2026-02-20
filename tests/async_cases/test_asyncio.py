@@ -3,6 +3,7 @@ import threading
 import time
 
 import pytest
+import contextlib
 
 
 def test_to_thread():
@@ -477,3 +478,24 @@ async def test_wait_for_exception():
         await foo_task
     assert catch
     assert len(exp) == 0
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager():
+    log = []
+
+    @contextlib.asynccontextmanager
+    async def foo():
+        idx = len(log)
+        log.append("start_%s" % idx)
+        yield
+        log.append("end_%s" % idx)
+
+    async with contextlib.AsyncExitStack() as stack:
+        await stack.enter_async_context(foo())
+        await stack.enter_async_context(foo())
+        await stack.enter_async_context(foo())
+        await stack.enter_async_context(foo())
+        await stack.enter_async_context(foo())
+
+    assert len(log) == 10

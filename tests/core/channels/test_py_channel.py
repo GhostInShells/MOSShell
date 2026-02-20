@@ -419,8 +419,8 @@ async def test_channel_fetch_level2():
     a_chan.import_channels(b_chan)
     main.import_channels(a_chan, b_chan)
     async with main.bootstrap() as broker:
-        b1 = await broker.fetch_broker("b_chan")
-        b2 = await broker.fetch_broker("a_chan.b_chan")
+        b1 = await broker.fetch_sub_broker("b_chan")
+        b2 = await broker.fetch_sub_broker("a_chan.b_chan")
         assert b1 is not None
         assert b1 is b2
 

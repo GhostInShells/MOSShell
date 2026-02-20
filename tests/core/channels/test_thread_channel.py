@@ -264,3 +264,37 @@ async def test_thread_channel_exception():
 
     provider.close()
     await provider.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_idle():
+    chan = PyChannel(name="provider")
+
+    idled = []
+
+    @chan.build.command()
+    async def foo() -> int:
+        return 123
+
+    @chan.build.idle
+    async def idle():
+        idled.append(True)
+
+    provider, proxy = create_thread_channel("proxy")
+    provider.run_in_thread(chan)
+    try:
+        async with proxy.bootstrap() as proxy_broker:
+            await proxy_broker.wait_connected()
+            assert proxy_broker.is_idle()
+            assert provider.broker.is_idle()
+            assert len(idled) == 1
+
+            r = await proxy_broker.execute_command("foo")
+            assert r == 123
+            assert proxy_broker.is_idle()
+            assert provider.broker.is_idle()
+            assert len(idled) == 2
+
+    finally:
+        provider.close()
+    await provider.wait_closed()

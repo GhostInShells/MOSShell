@@ -129,7 +129,7 @@ class CTMLInterpreter(Interpreter):
         self._parsing_exception: Optional[Exception] = None
 
         # output related
-        self._output = speech
+        self._speech = speech
         self._outputted: Optional[list[str]] = None
 
         # create token parser
@@ -148,7 +148,7 @@ class CTMLInterpreter(Interpreter):
         # create task element
         self._task_element_ctx = CommandTaskElementContext(
             channel_commands=self._channel_command_map,
-            output=self._output,
+            speech=self._speech,
             logger=self._logger,
             stop_event=self._stopped_event,
         )
@@ -289,7 +289,7 @@ class CTMLInterpreter(Interpreter):
 
     def outputted(self) -> Iterable[str]:
         if self._outputted is None:
-            return self._output.outputted()
+            return self._speech.outputted()
         return self._outputted
 
     async def results(self) -> dict[str, str]:
@@ -419,7 +419,7 @@ class CTMLInterpreter(Interpreter):
         for cmd in self._parsed_tasks.values():
             if not cmd.done():
                 cmd.cancel("interpretation stopped")
-        stop_all = [self._output.clear()]
+        stop_all = [self._speech.clear()]
         if self._main_parsing_task is not None:
             self._main_parsing_task.cancel()
             stop_all.append(self._main_parsing_task)

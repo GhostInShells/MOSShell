@@ -16,75 +16,13 @@ from ghoshell_moss.core.concepts.command import CommandTask
 __all__ = [
     "TTS",
     "AudioFormat",
-    "BufferEvent",
-    "ClearEvent",
-    "DoneEvent",
-    "NewStreamEvent",
     "Speech",
-    "SpeechEvent",
-    "SpeechProvider",
     "SpeechStream",
     "StreamAudioPlayer",
     "TTSAudioCallback",
     "TTSBatch",
     "TTSInfo",
 ]
-
-
-# todo: Speech 抽象过于复杂, 而且本文件还保留了双工通讯协议. 考虑彻底废除. 将 speech channel 化.
-
-class SpeechEvent(TypedDict):
-    event_type: str
-    stream_id: str
-    timestamp: float
-    data: Optional[dict[str, Any]]
-
-
-class SpeechEventModel(BaseModel):
-    event_type: ClassVar[str] = ""
-    stream_id: str = Field(default_factory=uuid, description="event id for transport")
-    timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
-
-    def to_speech_event(self) -> SpeechEvent:
-        data = self.model_dump(exclude_none=True, exclude={"event_type", "stream_id", "timestamp"})
-        return SpeechEvent(
-            event_type=self.event_type,
-            stream_id=self.stream_id,
-            timestamp=self.timestamp,
-            data=data,
-        )
-
-    @classmethod
-    def from_speech_event(cls, speech_event: SpeechEvent) -> Optional[Self]:
-        if cls.event_type != speech_event["event_type"]:
-            return None
-        data = speech_event.get("data", {})
-        data["stream_id"] = speech_event["stream_id"]
-        data["timestamp"] = speech_event["timestamp"]
-        return cls(**data)
-
-
-class NewStreamEvent(SpeechEventModel):
-    event_type: ClassVar[str] = "speech.new_stream"
-
-
-class BufferEvent(SpeechEventModel):
-    event_type: ClassVar[str] = "speech.buffer"
-
-    buffer: str = Field(default="", description="buffer text")
-    buffered: str = Field(default="", description="buffered text")
-
-
-class CommitEvent(SpeechEventModel):
-    event_type: ClassVar[str] = "speech.commit"
-
-
-class DoneEvent(SpeechEventModel):
-    event_type: ClassVar[str] = "speech.done"
-
-
-class ClearEvent(SpeechEventModel):
-    event_type: ClassVar[str] = "speech.clear"
 
 
 class SpeechStream(ABC):
@@ -218,6 +156,9 @@ class SpeechStream(ABC):
 
     @abstractmethod
     def close(self) -> None:
+        """
+        需要支持同步调用.
+        """
         pass
 
 
@@ -269,44 +210,6 @@ class Speech(ABC):
     async def run_until_closed(self) -> None:
         async with self:
             await self.wait_closed()
-
-
-class SpeechProvider(ABC):
-    @abstractmethod
-    async def arun(self, speech: Speech) -> None:
-        pass
-
-    @abstractmethod
-    async def wait_closed(self) -> None:
-        """
-        等待 provider 运行到结束为止.
-        """
-        pass
-
-    async def arun_until_closed(self, speech: Speech) -> None:
-        await self.arun(speech)
-        await self.wait_closed()
-
-    @asynccontextmanager
-    async def run_in_ctx(self, speech: Speech) -> AsyncIterator[Self]:
-        """
-        支持 async with statement 的运行方式调用 channel server, 通常用于测试.
-        """
-        await self.arun(speech)
-        yield self
-        await self.aclose()
-
-    @abstractmethod
-    async def recv(self) -> SpeechEvent:
-        pass
-
-    @abstractmethod
-    async def send(self, event: SpeechEvent) -> None:
-        pass
-
-    @abstractmethod
-    async def aclose(self) -> None:
-        pass
 
 
 class AudioFormat(Enum):

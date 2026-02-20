@@ -15,7 +15,7 @@ from ghoshell_container import IoCContainer, Container
 from ghoshell_moss.core.concepts.command import (
     CommandTask, CommandResultStack, CommandUniqueName, Command, CommandTaskState,
 )
-from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore
+from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore, State
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelBroker,
     ChannelFullPath, ChannelPaths,
@@ -130,7 +130,7 @@ class ChannelImportLib:
         broker = self.get_channel_broker(channel)
         if broker is None or not broker.is_running():
             return result
-        for name, child in broker.children().items():
+        for name, child in broker.imported().items():
             child_broker = self.get_channel_broker(child)
             result[name] = child_broker
             if child_broker is not None and child_broker.is_running():
@@ -148,7 +148,7 @@ class ChannelImportLib:
         further_path = paths[1] if len(paths) > 1 else ""
         if child_name == "":
             return broker
-        child_channel = broker.children().get(child_name)
+        child_channel = broker.imported().get(child_name)
         if child_channel is None:
             return None
         child_broker = self.get_channel_broker(child_channel)
@@ -161,7 +161,7 @@ class ChannelImportLib:
             return root
         child_name = paths[0]
         further_path = paths[1:]
-        child = root.children().get(child_name)
+        child = root.imported().get(child_name)
         if child is None:
             return None
         child_broker = await self.get_or_create_channel_broker(child)
@@ -213,7 +213,8 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
             *,
             channel: CHANNEL,
             container: IoCContainer | None = None,
-            logger: LoggerItf | None = None
+            logger: LoggerItf | None = None,
+            state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -225,19 +226,11 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         )
         self._container: IoCContainer = container
         self._logger: LoggerItf | None = logger
-        self._state_store: StateStore | None = None
+        self._state_store: StateStore | None = state_store
+        # import lib 是最重要的.
         self._importlib: ChannelImportLib | None = None
-        if not container.bound(ChannelImportLib):
-            self._importlib = ChannelImportLib(self, self.container)
-            container.set(ChannelImportLib, self._importlib)
+
         self._logger: LoggerItf | None = logger
-        if not container.bound(LoggerItf):
-            self._logger = logging.getLogger("moss")
-            container.set(LoggerItf, self._logger)
-        self._states_store: StateStore | None = None
-        if not container.bound(StateStore):
-            self._state_store = BaseStateStore(owner=self._uid)
-            container.set(StateStore, self._state_store)
 
         self._starting = False
         self._started = asyncio.Event()
@@ -251,6 +244,7 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         self._on_refresh_meta_callbacks: list[Callable[[ChannelMeta], Coroutine[None, None, None]]] = []
         self._refresh_meta_lock = asyncio.Lock()
 
+        self._defer_clear_mark = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._main_loop_task: Optional[asyncio.Task] = None
         self._task_done_callbacks: list[TaskDoneCallback] = []
@@ -277,13 +271,13 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
     def logger(self) -> LoggerItf:
         if self._logger is None:
             # 日志总要有吧.
-            self._logger = self.container.force_fetch(LoggerItf)
+            self._logger = self.container.get(LoggerItf) or logging.getLogger('moss')
         return self._logger
 
     @property
     def importlib(self) -> ChannelImportLib:
-        if self._importlib is None:
-            self._importlib = self.container.force_fetch(ChannelImportLib)
+        if not self._importlib:
+            raise RuntimeError(f"channel is not running")
         return self._importlib
 
     @property
@@ -296,6 +290,10 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
     def prepare_container(self, container: IoCContainer) -> IoCContainer:
         # 重写这个函数完成自定义.
         return container
+
+    async def fetch_sub_broker(self, path: ChannelFullPath) -> ChannelBroker | None:
+        paths = Channel.split_channel_path_to_names(path)
+        return await self.importlib.recursively_fetch_broker(self, paths)
 
     @property
     def id(self) -> str:
@@ -328,6 +326,9 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         # 还是复制一份.
         if "" not in self._cached_metas:
             return {"": ChannelMeta.new_empty(self._uid, self.channel)}
+        return self._get_cached_meta()
+
+    def _get_cached_meta(self) -> dict[ChannelFullPath, ChannelMeta]:
         return {name: meta.model_copy() for name, meta in self._cached_metas.items()}
 
     def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
@@ -355,9 +356,8 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
             if not force and '' in self._cached_metas:
                 # 完成过刷新.
                 return
-            ctx = contextvars.copy_context()
             # 生成时添加 ctx.
-            ChannelCtx.init(self)
+            ctx = ChannelCtx(self)
             metas = await ctx.run(self._generate_metas, force)
             self._cached_metas = metas
             # 创建异步的回调.
@@ -433,11 +433,15 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         # 设置 task id 到 pending map 里.
         self._add_task_done_callback(task)
         try:
+            if self._defer_clear_mark:
+                self._defer_clear_mark = False
+                await self._clear()
             await self._push_task_with_paths(paths, task)
         except Exception as exc:
             self.logger.exception(exc)
             if not task.done():
                 task.fail(exc)
+            raise exc
 
     @abstractmethod
     async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
@@ -465,9 +469,16 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
                 # 同步运行.
                 self._loop.run_in_executor(None, callback, task)
 
-    @abstractmethod
     async def clear(self) -> None:
+        self._defer_clear_mark = False
+        await self._clear()
+
+    @abstractmethod
+    async def _clear(self) -> None:
         pass
+
+    def defer_clear(self) -> None:
+        self._defer_clear_mark = True
 
     # --- 开始与结束 --- #
 
@@ -481,7 +492,11 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
     @contextlib.asynccontextmanager
     async def _importlib_ctx(self):
         if self._importlib is None:
-            self._importlib = self._container.get(ChannelImportLib) or ChannelImportLib(self, self._container)
+            _importlib = self._container.get(ChannelImportLib)
+            if _importlib is None:
+                _importlib = ChannelImportLib(self, self._container)
+                self.container.set(ChannelImportLib, _importlib)
+            self._importlib = _importlib
         if self._importlib.main is self:
             await self._importlib.start()
         yield
@@ -490,14 +505,23 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
 
     @contextlib.asynccontextmanager
     async def _states_ctx(self):
-        await self.states.start()
+        if self._state_store is None:
+            state_store = self.container.get(StateStore)
+            if state_store is None:
+                state_store = BaseStateStore(owner=self._uid)
+            self._state_store = state_store
+        self._state_store.register(*self.default_states())
+        await self._state_store.start()
         yield
-        await self.states.close()
+        await self._state_store.close()
+
+    @abstractmethod
+    def default_states(self) -> list[State]:
+        pass
 
     @contextlib.asynccontextmanager
     async def _start_and_close_ctx(self):
-        ctx = contextvars.copy_context()
-        ChannelCtx.init(self)
+        ctx = ChannelCtx(self)
         cor = ctx.run(self.on_start_up)
         self.logger.info(
             "%s started", self.log_prefix,
@@ -505,7 +529,7 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         await cor
         yield
         try:
-            ctx = contextvars.copy_context()
+            ctx = ChannelCtx(self)
             on_close_cor = ctx.run(self.on_close)
             await on_close_cor
         except Exception as e:
@@ -517,8 +541,7 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
 
     @contextlib.asynccontextmanager
     async def _running_task_ctx(self):
-        ctx = contextvars.copy_context()
-        ChannelCtx.init(self)
+        ctx = ChannelCtx(self)
         self._running_task = asyncio.create_task(ctx.run(self._execute_running_task))
         yield
         if self._running_task and not self._running_task.done():
@@ -586,7 +609,8 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         await self._exit_stack.__aenter__()
         for ctx_func in self._async_exit_ctx_funcs():
             await self._exit_stack.enter_async_context(ctx_func())
-        await self.refresh_metas(force=False)
+        if self.is_connected():
+            await self.refresh_metas(force=False)
         self._started.set()
         return self
 
@@ -668,7 +692,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         self._has_task_queued = asyncio.Event()
 
     def get_children_brokers(self) -> dict[str, ChannelBroker]:
-        children = self.children()
+        children = self.imported()
         result = {}
         for name, child in children.items():
             broker = self.importlib.get_channel_broker(child)
@@ -677,14 +701,14 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         return result
 
     @abstractmethod
-    def children(self) -> dict[str, Channel]:
+    def imported(self) -> dict[str, Channel]:
         """
         当前持有的子 Channel.
         """
         pass
 
     def get_child_broker(self, name: str) -> ChannelBroker | None:
-        child = self.children().get(name)
+        child = self.imported().get(name)
         if child is None:
             return None
         return self.importlib.get_channel_broker(child)
@@ -741,7 +765,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
                 )
                 raise
 
-        children = self.children()
+        children = self.imported()
         result = {}
         children_names = []
         if len(children) > 0:
@@ -767,20 +791,17 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
                             result[_path] = _descendant_meta
         return children_names, result
 
-    async def fetch_broker(self, path: ChannelFullPath) -> ChannelBroker | None:
-        paths = Channel.split_channel_path_to_names(path)
-        return await self.importlib.recursively_fetch_broker(self, paths)
-
-    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
         commands = self.self_commands(available_only).copy()
-        for name, child in self.children().items():
+        result = {'': commands}
+        for name, child in self.imported().items():
             child_broker = self.importlib.get_channel_broker(child)
             if child_broker and child_broker.is_running():
                 child_commands = child_broker.commands(available_only)
-                for unique_name, command in child_commands.items():
-                    new_unique_name = Command.make_uniquename(name, unique_name)
-                    commands[new_unique_name] = command
-        return commands
+                for further_path, command_map in child_commands.items():
+                    new_full_path = Channel.join_channel_path(name, further_path)
+                    result[new_full_path] = command_map
+        return result
 
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:
         chan, command_name = Command.split_uniquename(name)
@@ -816,8 +837,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         await self._blocking_action_lock.acquire()
         try:
             await asyncio.sleep(0.0)
-            ctx = contextvars.copy_context()
-            ChannelCtx.init(self)
+            ctx = ChannelCtx(self)
             on_idle_cor = ctx.run(self.on_idle)
             # idle 是一个在生命周期中单独执行的函数.
             task = asyncio.create_task(on_idle_cor)
@@ -866,14 +886,14 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
             return
 
         wait_all = []
-        children = self.children()
+        children = self.imported()
         if len(children) > 0:
             for child in children.values():
                 wait_all.append(wait_child_empty(child))
             _ = await asyncio.gather(*wait_all)
 
     def _is_children_idled(self) -> bool:
-        children = self.children()
+        children = self.imported()
         if len(children) > 0:
             for child in children.values():
                 broker = self.importlib.get_channel_broker(child)
@@ -916,12 +936,8 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
                 # 2. 如果它执行了子任务, 其实不会阻塞.
                 # 3. 如果它执行了 none-blocking 的任务, 也不会阻塞.
                 # 4. 只有它执行的目标任务是自己的任务, 才会阻塞. 而且要阻塞等待儿孙们都执行完了, 才轮到自己执行.
-                self._consuming_command_task = task
-                try:
-                    await self._clear_lifecycle_task()
-                    await self._consume_task(paths, task)
-                finally:
-                    self._consuming_command_task = None
+
+                await self._consume_task(paths, task)
         except asyncio.CancelledError as e:
             # 允许被 cancel.
             self.logger.info("%s Cancel consuming pending task loop: %r", self.log_prefix, e)
@@ -933,7 +949,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         self._executing_command_task = task
         child_name = paths[0]
         # 子节点在路径上不存在.
-        child = self.children().get(child_name)
+        child = self.imported().get(child_name)
         if child is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
@@ -951,8 +967,10 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         """
         尝试运行一个 task. 这个运行周期是全局唯一, 阻塞的.
         """
+        self._consuming_command_task = task
         try:
             # 确保这个任务也可以被 clear 掉.
+            await self._clear_lifecycle_task()
             await asyncio.sleep(0)
             # 检查是不是子节点的任务.
             if len(paths) > 0:
@@ -969,17 +987,17 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         except Exception as e:
             self.logger.info("%s handle pending task exception: %r", self.log_prefix, e)
             # 所有在执行 handle pending task 阶段抛出的异常, 都不向上中断.
+        finally:
+            self._consuming_command_task = None
 
     async def _get_task_result(self, task: CommandTask) -> Any:
         # 准备执行.
-        task.exec_chan = self.name
         await asyncio.sleep(0)
         self.logger.info("%s start task %s", self.log_prefix, task.cid)
         # 初始化函数运行上下文.
-        ctx = contextvars.copy_context()
-        ChannelCtx.init(self, task)
         # 使用 dry run 来管理生命周期.
-        return await ctx.run(task.dry_run)
+        async with ChannelCtx(self, task).in_ctx():
+            return await task.dry_run()
 
     async def _execute_self_task(self, task: CommandTask, depth: int = 0) -> None:
         task.set_state(CommandTaskState.executing)
@@ -991,7 +1009,10 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         self._executing_cmd_tasks.add(task)
         # 确保 task 被执行了.
         asyncio_task = asyncio.create_task(self._ensure_task_executed(task, depth))
-        if task.meta.blocking:
+        if task.meta.interruptable:
+            # 对于可被中断的任务, 它应该被放到 lifecycle task 里, 有新任务进来就会中断它.
+            self._lifecycle_task = asyncio_task
+        elif task.meta.blocking:
             # 阻塞等待 blocking 任务执行完毕.
             await asyncio_task
 
@@ -1127,8 +1148,8 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
 
-    async def clear(self):
-        await self._clear_pending_and_executine()
+    async def _clear(self):
+        await self._clear_pending_and_executing()
 
         async def clear_child(_child: Channel):
             child_broker = await self._importlib.get_or_create_channel_broker(_child)
@@ -1136,7 +1157,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
                 await child_broker.clear()
 
         clear_tasks = []
-        children = self.children()
+        children = self.imported()
         for child in children.values():
             clear_tasks.append(clear_child(child))
         if len(clear_tasks) > 0:
@@ -1145,7 +1166,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
                 if isinstance(r, Exception):
                     self._logger.exception("%s clear child failed: %s", self.log_prefix, r)
 
-    async def _clear_pending_and_executine(self) -> None:
+    async def _clear_pending_and_executing(self) -> None:
         """
         当轨道命令被触发清空时候执行.
         """

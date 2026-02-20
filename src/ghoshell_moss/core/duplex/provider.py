@@ -386,7 +386,7 @@ class DuplexChannelProvider(ChannelProvider):
         """执行 clear 逻辑."""
         channel_name = event.chan
         try:
-            node = await self._root_broker.fetch_broker(channel_name)
+            node = await self._root_broker.fetch_sub_broker(channel_name)
             if not node:
                 return
             # 执行 clear 命令.
@@ -448,7 +448,7 @@ class DuplexChannelProvider(ChannelProvider):
     async def _handle_command_call(self, call_event: CommandCallEvent) -> None:
         """执行一个命令运行的逻辑."""
         # 先取消 lifecycle 的命令.
-        node = await self._root_broker.fetch_broker(call_event.chan)
+        node = await self._root_broker.fetch_sub_broker(call_event.chan)
         if node is None:
             response = call_event.not_available()
             await self._send_event_to_proxy(response.to_channel_event())

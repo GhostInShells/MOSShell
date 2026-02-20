@@ -92,7 +92,7 @@ async def test_element_with_no_command():
     assert q[-1] is None
 
     # 假设有正确的输出.
-    assert await ctx.output.clear() == ["hello", "world"]
+    assert await ctx.speech.clear() == ["hello", "world"]
 
     children = list(suite.root.children.values())
     assert len(children) == 1

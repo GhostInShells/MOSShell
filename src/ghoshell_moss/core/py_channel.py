@@ -18,11 +18,10 @@ from ghoshell_moss.core.concepts.channel import (
     LifecycleFunction,
     ChannelCtx,
     StringType,
-    ChannelPaths,
 )
 from ghoshell_moss.core.concepts.broker import AbsChannelTreeBroker
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore
+from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore, State
 from ghoshell_common.helpers import uuid
 
 __all__ = ["PyChannel", "PyChannelBroker", "PyChannelBuilder"]
@@ -41,7 +40,7 @@ class PyChannelBuilder(Builder):
         self._on_pause_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._context_messages_function: Optional[MessageFunction] = None
         self._instruction_messages_function: Optional[MessageFunction] = None
-        self._state_models: list[StateModel] = []
+        self._states: list[State] = []
         self._commands: dict[str, Command] = {}
         self._container_instances = {}
         self._dynamic = False
@@ -78,13 +77,11 @@ class PyChannelBuilder(Builder):
         saving = model
         if isinstance(model, type):
             saving = model()
-        self._state_models.append(saving)
+        self._states.append(saving.to_state())
         return model
 
-    def get_states(self, owner: str, parent: StateStore | None = None) -> StateStore:
-        store = BaseStateStore(owner=owner, parent=parent)
-        store.register(*self._state_models)
-        return store
+    def default_states(self) -> list[State]:
+        return self._states
 
     def context_messages(self, func: MessageFunction) -> MessageFunction:
         self._context_messages_function = func
@@ -304,8 +301,11 @@ class PyChannelBroker(AbsChannelTreeBroker):
             *,
             dynamic: bool | None = None,
     ):
-        super().__init__(channel=channel, container=container)
         self._builder = channel.build
+        super().__init__(
+            channel=channel,
+            container=container,
+        )
         self._dynamic = dynamic
 
     def is_connected(self) -> bool:
@@ -320,7 +320,7 @@ class PyChannelBroker(AbsChannelTreeBroker):
         if not self.is_running():
             raise RuntimeError(f"Channel {self} not running")
 
-    def children(self) -> dict[str, Channel]:
+    def imported(self) -> dict[str, Channel]:
         result = self._channel.children()
         return result
 
@@ -389,9 +389,13 @@ class PyChannelBroker(AbsChannelTreeBroker):
         """
         if command is None:
             return None
-        ctx = contextvars.copy_context()
-        ChannelCtx.init(self)
-        return CommandWrapper.wrap(command, ctx)
+
+        async def _run_with_broker(*args, **kwargs):
+            ctx = ChannelCtx(self)
+            async with ctx.in_ctx():
+                return await command(*args, **kwargs)
+
+        return CommandWrapper.wrap(command, func=_run_with_broker)
 
     def get_self_command(
             self,
@@ -421,6 +425,9 @@ class PyChannelBroker(AbsChannelTreeBroker):
 
     async def on_close(self) -> None:
         await self._builder.on_close()
+
+    def default_states(self) -> list[State]:
+        return self._builder.default_states()
 
     def prepare_container(self, container: IoCContainer | None) -> IoCContainer:
         self._builder.update_container(container)

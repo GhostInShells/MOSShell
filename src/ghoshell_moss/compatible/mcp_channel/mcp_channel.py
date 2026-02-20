@@ -65,7 +65,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
         self._states: Optional[StateStore] = None
         self._blocking = blocking
 
-    def children(self) -> dict[str, "Channel"]:
+    def imported(self) -> dict[str, "Channel"]:
         return {}
 
     @property

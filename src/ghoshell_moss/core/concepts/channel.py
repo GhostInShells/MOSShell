@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import contextvars
 import threading
 from abc import ABC, abstractmethod
@@ -22,7 +23,7 @@ from ghoshell_moss.core.concepts.command import (
     BaseCommandTask, Command, CommandMeta, CommandTask,
     CommandTaskContextVar, CommandUniqueName,
 )
-from ghoshell_moss.core.concepts.states import StateModel, StateStore
+from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
 
@@ -233,6 +234,10 @@ class Builder(ABC):
         pass
 
     @abstractmethod
+    def default_states(self) -> list[State]:
+        pass
+
+    @abstractmethod
     def context_messages(self, func: MessageFunction) -> MessageFunction:
         """
         注册一个上下文生成函数. 用来生成 channel 运行时动态的上下文.
@@ -373,25 +378,43 @@ class ChannelCtx:
     提供 Channel 相关的一些工具函数.
     """
 
-    @classmethod
-    def init(
-            cls,
+    def __init__(
+            self,
             broker: Optional["ChannelBroker"] = None,
             task: Optional[CommandTask] = None,
-    ) -> None:
-        if broker:
-            ChannelBrokerContextVar.set(broker)
-        if task is not None:
-            CommandTaskContextVar.set(task)
+    ):
+        self._broker = broker
+        self._task = task
+
+    async def run(self, fn: Callable[..., Coroutine], *args, **kwargs) -> Any:
+        async with self.in_ctx():
+            return await fn(*args, **kwargs)
 
     @classmethod
     def channel(cls) -> "Channel":
         broker = cls.broker()
         return broker.channel
 
+    @contextlib.asynccontextmanager
+    async def in_ctx(self):
+        broker_token = None
+        task_token = None
+        if self._broker:
+            broker_token = ChannelBrokerContextVar.set(self._broker)
+        if self._task:
+            task_token = CommandTaskContextVar.set(self._task)
+        yield
+        if broker_token:
+            ChannelBrokerContextVar.reset(broker_token)
+        if task_token:
+            CommandTaskContextVar.reset(task_token)
+
     @classmethod
-    def broker(cls) -> "ChannelBroker":
-        return ChannelBrokerContextVar.get()
+    def broker(cls) -> Optional["ChannelBroker"]:
+        try:
+            return ChannelBrokerContextVar.get()
+        except LookupError:
+            return None
 
     @classmethod
     def task(cls) -> CommandTask | None:
@@ -516,9 +539,15 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    def children(self) -> dict[str, Channel]:
+    def imported(self) -> dict[str, Channel]:
         """
         当前持有的子 Channel.
+        """
+        pass
+
+    async def fetch_sub_broker(self, path: ChannelFullPath) -> Self | None:
+        """
+        在当前 Broker 的上下文空间里, 寻找一个可能存在的子孙节点.
         """
         pass
 
@@ -654,7 +683,7 @@ class ChannelBroker(ABC):
         pass
 
     @abstractmethod
-    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
         pass
 
     @abstractmethod

@@ -107,7 +107,7 @@ class StateStore(ABC):
         pass
 
     @abstractmethod
-    def listening(self) -> list[str]:
+    def listening(self) -> set[str]:
         pass
 
     @abstractmethod

@@ -35,9 +35,9 @@ async def run_fastapi(result_queue: asyncio.Queue):
                 # 验证 broker meta
                 meta = proxy.broker.self_meta()
                 assert meta is not None
-                assert meta.name == "test_channel"
+                assert meta._name == "test_channel"
                 assert len(meta.commands) == 1
-                assert meta.commands[0].name == "foo"
+                assert meta.commands[0]._name == "foo"
 
                 cmd = proxy.broker.get_self_command("foo")
                 assert cmd is not None

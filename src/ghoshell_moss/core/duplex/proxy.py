@@ -33,7 +33,7 @@ from .protocol import (
 
 __all__ = ["DuplexChannelBroker", "DuplexChannelProxy", ]
 
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
+from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore, State
 
 """
 DuplexChannel Proxy 一侧的实现, 
@@ -417,7 +417,10 @@ class DuplexChannelContext:
         # 更新 meta map.
         new_provider_meta_map = {}
         for provider_channel_path, meta in event.metas.items():
-            new_provider_meta_map[provider_channel_path] = meta.model_copy()
+            meta = meta.model_copy()
+            if provider_channel_path == "":
+                meta.name = self.root_name
+            new_provider_meta_map[provider_channel_path] = meta
 
         if not event.all:
             # 不是全量更新时, 也把旧的 meta 加回来.
@@ -535,7 +538,7 @@ class DuplexChannelBroker(AbsChannelBroker):
         container = super().prepare_container(container)
         return container
 
-    def children(self) -> dict[str, Channel]:
+    def imported(self) -> dict[str, Channel]:
         # 不需要展开节点.
         return {}
 
@@ -575,7 +578,10 @@ class DuplexChannelBroker(AbsChannelBroker):
         return self.is_running() and self._ctx.is_channel_connected(self._provider_chan_path)
 
     async def wait_connected(self) -> None:
-        return await self._ctx.wait_connected()
+        if not self.is_running():
+            return
+        await self._ctx.wait_connected()
+        self._cached_metas = self._ctx.provider_meta_map
 
     def self_commands(self, available_only: bool = True) -> dict[str, Command]:
         # 先获取本地的命令.
@@ -672,7 +678,7 @@ class DuplexChannelBroker(AbsChannelBroker):
                 return CommandWrapper(meta=command_meta, func=func)
         return None
 
-    async def clear(self) -> None:
+    async def _clear(self) -> None:
         if not self._ctx.is_running():
             return
         try:
@@ -690,6 +696,9 @@ class DuplexChannelBroker(AbsChannelBroker):
 
     async def on_close(self) -> None:
         await self._ctx.close()
+
+    def default_states(self) -> list[State]:
+        return []
 
 
 class DuplexChannelProxy(Channel):

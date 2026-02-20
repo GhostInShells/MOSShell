@@ -265,6 +265,10 @@ class CommandMeta(BaseModel):
         default=True,
         description="whether this command block the channel. if block + call soon, will clear the channel first",
     )
+    interruptable: bool = Field(
+        default=False,
+        description="interruptable command task will be cancelled when next blocking task is pending",
+    )
 
 
 CommandUniqueName = str
@@ -343,13 +347,31 @@ class CommandWrapper(Command[RESULT]):
         self._available_fn = available_fn
 
     @classmethod
-    def wrap(cls, command: Command[RESULT], ctx: contextvars.Context | None = None) -> Command[RESULT]:
+    def wrap(
+            cls,
+            command: Command[RESULT],
+            *,
+            func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
+            ctx: contextvars.Context | None = None,
+            meta: CommandMeta | None = None,
+    ) -> Command[RESULT]:
+
+        if func is None:
+            if isinstance(command, CommandWrapper):
+                func = command._func
+            else:
+                func = command.__call__
+
         return CommandWrapper(
-            meta=command.meta(),
-            func=command.__call__,
+            meta=meta or command.meta(),
+            func=func,
             ctx=ctx,
             available_fn=command.is_available,
         )
+
+    @property
+    def func(self) -> Callable:
+        return self._func
 
     def name(self) -> str:
         return self._meta.name
@@ -898,14 +920,20 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errmsg = error.message
             elif isinstance(error, asyncio.CancelledError):
                 errcode = CommandErrorCode.CANCELLED.value
-                errmsg = "".join(traceback.format_exception(error, limit=3))
+                errmsg = ""
             elif isinstance(error, Exception):
                 errcode = CommandErrorCode.UNKNOWN_ERROR.value
-                errmsg = "".join(traceback.format_exception(error, limit=3))
+                # 忽略回调.
+                errmsg = str(error)
             else:
                 errcode = 0
                 errmsg = ""
-            self._set_result(None, "failed", errcode, errmsg)
+            self._set_result(
+                None,
+                "cancelled" if errcode == CommandErrorCode.CANCELLED.value else "failed",
+                errcode,
+                errmsg,
+            )
 
     def resolve(self, result: RESULT) -> None:
         if not self._done_event.is_set():
@@ -1013,6 +1041,7 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
                 await current.wait()
 
         super().__init__(
+            chan=current.chan,
             meta=meta,
             func=wait_done_then_cancel,
             tokens=tokens,

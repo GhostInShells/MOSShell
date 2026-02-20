@@ -38,6 +38,7 @@ async def test_shell_execution_baseline():
         return 456
 
     async with shell:
+        assert shell.is_running()
         await shell.wait_connected()
         interpreter = await shell.interpreter()
         metas = interpreter.channels()
