@@ -15,7 +15,7 @@ from examples.reachy_mini_moss.channels.antennas import Antennas
 from examples.reachy_mini_moss.channels.head import Head
 from examples.reachy_mini_moss.reachy_mini_dances_library import DanceMove
 from examples.reachy_mini_moss.reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
-from examples.reachy_mini_moss.state import ReachyMiniState
+from examples.reachy_mini_moss.state import ReachyMiniState, BodyYawMove
 from ghoshell_moss import PyChannel, Message, Base64Image, Text, Speech
 
 logger = logging.getLogger('reachy_mini_moss')
@@ -25,17 +25,21 @@ logger.setLevel(logging.INFO)
 class ReachyMiniMoss:
     def __init__(self, mini: ReachyMini):
         self.mini = mini
+        self.mini.set_target_body_yaw(0.0)
         self._state = ReachyMiniState()
+        self._state.twisting.set()
 
         self._head = Head(mini, self._state, logger)
         self._antennas = Antennas(mini, self._state, logger)
 
         self._bootstrapped = asyncio.Event()
+        self._enable_twisting = asyncio.Event()
 
     async def wake_up(self):
         self.mini.enable_motors()
         self.mini.wake_up()
         self._state.waken.set()
+        await asyncio.sleep(1)
 
     async def goto_sleep(self):
         self._state.tracking.clear()
@@ -68,7 +72,41 @@ class ReachyMiniMoss:
             ).with_content(
                 Base64Image.from_pil_image(img_pil)
             )
+
+        if self._state.twisting.is_set():
+            msg.with_content(
+                Text(text="You are twisting on idle.")
+            )
+
         return [msg]
+
+    async def start_twisting(self):
+        self._state.twisting.set()
+
+    async def stop_twisting(self):
+        self.mini.set_target_body_yaw(0.0)
+        self._state.twisting.clear()
+        self._enable_twisting.clear()
+
+    async def on_policy_run(self):
+        if not self._state.waken.is_set():
+            return
+        if not self._state.twisting.is_set():
+            return
+
+        self._enable_twisting.set()
+        while self._enable_twisting.is_set():
+            await self.mini.async_play_move(
+                BodyYawMove(self._state.start_body_yaw, 10, 1.5),
+            )
+            self._state.start_body_yaw = 10
+            await self.mini.async_play_move(
+                BodyYawMove(self._state.start_body_yaw, -10, 1.5),
+            )
+            self._state.start_body_yaw = -10
+
+    async def on_policy_pause(self):
+        self._enable_twisting.clear()
 
     def as_channel(self) -> PyChannel:
         logger.info("as channel")
@@ -85,6 +123,11 @@ class ReachyMiniMoss:
         body.build.command(doc=f"Dance can be chosen in \n{"\n".join(dance_docstrings)}")(self.dance)
         body.build.command()(self.wake_up)
         body.build.command()(self.goto_sleep)
+
+        body.build.command()(self.start_twisting)
+        body.build.command()(self.stop_twisting)
+        body.build.on_policy_run(self.on_policy_run)
+        body.build.on_policy_pause(self.on_policy_pause)
 
         body.import_channels(
             self._head.as_channel(),
