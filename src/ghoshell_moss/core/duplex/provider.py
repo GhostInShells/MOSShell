@@ -7,7 +7,7 @@ from ghoshell_common.helpers import uuid
 from ghoshell_container import Container
 from pydantic import ValidationError
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelBroker
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
 from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -76,7 +76,7 @@ class DuplexChannelProvider(ChannelProvider):
 
         # --- runtime properties ---#
 
-        self._root_broker: Optional[ChannelBroker] = None
+        self._root_broker: Optional[ChannelRuntime] = None
         self._channel: Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._logger: logging.Logger | None = None
@@ -104,7 +104,7 @@ class DuplexChannelProvider(ChannelProvider):
         return self._channel
 
     @property
-    def broker(self) -> ChannelBroker:
+    def broker(self) -> ChannelRuntime:
         if self._root_broker is None:
             raise RuntimeError("Channel provider has not been initialized.")
         return self._root_broker

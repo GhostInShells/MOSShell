@@ -1,7 +1,6 @@
 import contextlib
 
 import asyncio
-import contextvars
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
@@ -17,7 +16,7 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore, State
 from ghoshell_moss.core.concepts.channel import (
-    ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelBroker,
+    ChannelCtx, Channel, ChannelMeta, TaskDoneCallback, RefreshMetaCallback, ChannelRuntime,
     ChannelFullPath, ChannelPaths,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
@@ -25,7 +24,7 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
 
-__all__ = ['AbsChannelBroker', 'ChannelImportLib', 'AbsChannelTreeBroker']
+__all__ = ['AbsChannelRuntime', 'ChannelImportLib', 'AbsChannelTreeRuntime']
 
 _ChannelId = str
 _TaskWithPaths = tuple[ChannelPaths, CommandTask]
@@ -36,7 +35,7 @@ class ChannelImportLib:
     唯一的 lib 用来管理所有可以被 import 的 channel broker
     """
 
-    def __init__(self, main: ChannelBroker, container: IoCContainer | None = None):
+    def __init__(self, main: ChannelRuntime, container: IoCContainer | None = None):
         self._main = main
         self._name = "MossChannelImportLib/{}/{}".format(main.name, main.id)
         self._container = Container(
@@ -46,13 +45,13 @@ class ChannelImportLib:
         # 绑定自身到容器中. 凡是用这个容器启动的 broker, 都可以拿到 ChannelImportLib 并获取子 channel broker.
         self._container.set(ChannelImportLib, self)
         self._logger: Optional[LoggerItf] = None
-        self._brokers: dict[_ChannelId, ChannelBroker] = {}
+        self._brokers: dict[_ChannelId, ChannelRuntime] = {}
         self._brokers_lock: asyncio.Lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._start: bool = False
         self._close: bool = False
 
-    def get_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+    def get_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
         if channel is self._main.channel:
             # 根节点不启动.
             return self._main
@@ -63,7 +62,7 @@ class ChannelImportLib:
         channel_id = channel.id()
         return self._brokers.get(channel_id)
 
-    async def get_or_create_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+    async def get_or_create_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
         if broker := self.get_channel_broker(channel):
             await broker.wait_started()
             if broker.is_running():
@@ -75,7 +74,7 @@ class ChannelImportLib:
         await broker.wait_started()
         return broker
 
-    async def _build_channel_broker(self, channel: Channel) -> ChannelBroker | None:
+    async def _build_channel_broker(self, channel: Channel) -> ChannelRuntime | None:
         # 只有创建这一段需要上锁.
         if not self.is_running():
             return None
@@ -102,7 +101,7 @@ class ChannelImportLib:
             self._brokers_lock.release()
 
     @property
-    def main(self) -> ChannelBroker:
+    def main(self) -> ChannelRuntime:
         return self._main
 
     @property
@@ -125,7 +124,7 @@ class ChannelImportLib:
         self._loop = asyncio.get_event_loop()
         await asyncio.to_thread(self._container.bootstrap)
 
-    def find_descendants(self, channel: Channel) -> dict[ChannelFullPath, ChannelBroker]:
+    def find_descendants(self, channel: Channel) -> dict[ChannelFullPath, ChannelRuntime]:
         result = {}
         broker = self.get_channel_broker(channel)
         if broker is None or not broker.is_running():
@@ -140,7 +139,7 @@ class ChannelImportLib:
                     result[real_path] = descendant
         return result
 
-    def recursively_find_broker(self, broker: ChannelBroker, path: ChannelFullPath) -> ChannelBroker | None:
+    def recursively_find_broker(self, broker: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
         if path == "":
             return broker
         paths = Channel.split_channel_path_to_names(path, 1)
@@ -156,7 +155,7 @@ class ChannelImportLib:
             return None
         return self.recursively_find_broker(child_broker, further_path)
 
-    async def recursively_fetch_broker(self, root: ChannelBroker, paths: ChannelPaths) -> ChannelBroker | None:
+    async def recursively_fetch_broker(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
         if len(paths) == 0:
             return root
         child_name = paths[0]
@@ -203,7 +202,7 @@ class ChannelImportLib:
 CHANNEL = TypeVar('CHANNEL', bound=Channel)
 
 
-class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
+class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
     实现基础的 Channel Broker, 用来给所有的 Broker 提供基准的生命周期.
     """
@@ -291,7 +290,7 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
         # 重写这个函数完成自定义.
         return container
 
-    async def fetch_sub_broker(self, path: ChannelFullPath) -> ChannelBroker | None:
+    async def fetch_sub_broker(self, path: ChannelFullPath) -> ChannelRuntime | None:
         paths = Channel.split_channel_path_to_names(path)
         return await self.importlib.recursively_fetch_broker(self, paths)
 
@@ -664,7 +663,7 @@ class AbsChannelBroker(Generic[CHANNEL], ChannelBroker, ABC):
     # --- execute tasks --- #
 
 
-class AbsChannelTreeBroker(AbsChannelBroker, ABC):
+class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     # --- main loop --- #
 
@@ -691,7 +690,7 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         self._idled_event = asyncio.Event()
         self._has_task_queued = asyncio.Event()
 
-    def get_children_brokers(self) -> dict[str, ChannelBroker]:
+    def get_children_brokers(self) -> dict[str, ChannelRuntime]:
         children = self.imported()
         result = {}
         for name, child in children.items():
@@ -707,17 +706,17 @@ class AbsChannelTreeBroker(AbsChannelBroker, ABC):
         """
         pass
 
-    def get_child_broker(self, name: str) -> ChannelBroker | None:
+    def get_child_broker(self, name: str) -> ChannelRuntime | None:
         child = self.imported().get(name)
         if child is None:
             return None
         return self.importlib.get_channel_broker(child)
 
-    def descendants(self) -> dict[ChannelFullPath, ChannelBroker]:
+    def descendants(self) -> dict[ChannelFullPath, ChannelRuntime]:
         return self.importlib.find_descendants(self.channel)
 
     def all_brokers(self) -> dict[ChannelFullPath, Self]:
-        result: dict[ChannelFullPath, ChannelBroker] = {"": self}
+        result: dict[ChannelFullPath, ChannelRuntime] = {"": self}
         descendants = self.descendants()
         result.update(descendants)
         return result

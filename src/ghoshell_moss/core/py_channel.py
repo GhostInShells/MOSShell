@@ -11,7 +11,7 @@ from ghoshell_moss.core.concepts.channel import (
     Builder,
     Channel,
     MutableChannel,
-    ChannelBroker,
+    ChannelRuntime,
     ChannelMeta,
     CommandFunction,
     MessageFunction,
@@ -19,12 +19,12 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     StringType,
 )
-from ghoshell_moss.core.concepts.broker import AbsChannelTreeBroker
+from ghoshell_moss.core.concepts.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore, State
 from ghoshell_common.helpers import uuid
 
-__all__ = ["PyChannel", "PyChannelBroker", "PyChannelBuilder"]
+__all__ = ["PyChannel", "PyChannelRuntime", "PyChannelBuilder"]
 
 
 class PyChannelBuilder(Builder):
@@ -231,7 +231,7 @@ class PyChannel(MutableChannel):
         self._name = name
         self._id = uuid()
         self._description = description
-        self._broker: Optional[ChannelBroker] = None
+        self._broker: Optional[ChannelRuntime] = None
         self._children: dict[str, Channel] = {}
         self._block = blocking
         self._dynamic = dynamic
@@ -255,7 +255,7 @@ class PyChannel(MutableChannel):
         return self._builder
 
     @property
-    def broker(self) -> ChannelBroker | None:
+    def broker(self) -> ChannelRuntime | None:
         return self._broker
 
     def import_channels(self, *children: "Channel") -> Self:
@@ -279,10 +279,10 @@ class PyChannel(MutableChannel):
     def children(self) -> dict[str, "Channel"]:
         return self._children
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         if self._broker is not None and self._broker.is_running():
             raise RuntimeError("Server already running")
-        self._broker = PyChannelBroker(
+        self._broker = PyChannelRuntime(
             channel=self,
             container=container,
             dynamic=self._dynamic,
@@ -293,7 +293,7 @@ class PyChannel(MutableChannel):
         return self._broker is not None and self._broker.is_running()
 
 
-class PyChannelBroker(AbsChannelTreeBroker):
+class PyChannelRuntime(AbsChannelTreeRuntime):
     def __init__(
             self,
             channel: PyChannel,

@@ -6,7 +6,7 @@ from typing import Literal, Optional
 
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelBroker
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter
@@ -66,7 +66,7 @@ class MOSSShell(ABC):
 
     @property
     @abstractmethod
-    def runtime(self) -> ChannelBroker:
+    def runtime(self) -> ChannelRuntime:
         pass
 
     # --- runtime methods --- #

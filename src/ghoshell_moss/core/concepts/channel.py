@@ -33,7 +33,7 @@ __all__ = [
     "MutableChannel",
     "TaskDoneCallback",
     "RefreshMetaCallback",
-    "ChannelBroker",
+    "ChannelRuntime",
     # "Brokers",
     "ChannelFullPath",
     "ChannelMeta",
@@ -380,7 +380,7 @@ class ChannelCtx:
 
     def __init__(
             self,
-            broker: Optional["ChannelBroker"] = None,
+            broker: Optional["ChannelRuntime"] = None,
             task: Optional[CommandTask] = None,
     ):
         self._broker = broker
@@ -410,7 +410,7 @@ class ChannelCtx:
             CommandTaskContextVar.reset(task_token)
 
     @classmethod
-    def broker(cls) -> Optional["ChannelBroker"]:
+    def broker(cls) -> Optional["ChannelRuntime"]:
         try:
             return ChannelBrokerContextVar.get()
         except LookupError:
@@ -478,7 +478,7 @@ class Channel(ABC):
         return channel_path.split(".", limit)
 
     @abstractmethod
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelBroker":
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         """
         传入一个 IoC 容器, 获取 Channel 的 broker 实例.
         """
@@ -512,7 +512,7 @@ TaskDoneCallback = Callable[[CommandTask], None] | Callable[[CommandTask], Corou
 RefreshMetaCallback = Callable[[ChannelInterface], None] | Callable[[ChannelInterface], Coroutine[None, None, None]]
 
 
-class ChannelBroker(ABC):
+class ChannelRuntime(ABC):
     """
     Channel 具体能力的调用方式.
     是对 Channel 的实例化.
@@ -706,7 +706,7 @@ class ChannelBroker(ABC):
         2. none-blocking 的 task 不会阻塞, 但是可以被 clear.
         3. clear 会清空掉所有的运行状态.
         举例:
-        >>> async def run_task(broker: ChannelBroker, t:CommandTask):
+        >>> async def run_task(broker: ChannelRuntime, t:CommandTask):
         >>>     await broker.push_task(t)
         >>>     return await t
         """
@@ -947,7 +947,7 @@ class ChannelProvider(ABC):
 
     @property
     @abstractmethod
-    def broker(self) -> ChannelBroker:
+    def broker(self) -> ChannelRuntime:
         pass
 
     @abstractmethod

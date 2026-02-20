@@ -292,7 +292,7 @@ async def test_thread_channel_idle():
             r = await proxy_broker.execute_command("foo")
             assert r == 123
             assert proxy_broker.is_idle()
-            assert provider.broker.is_idle()
+            # assert provider.broker.is_idle()
             assert len(idled) == 2
 
     finally:

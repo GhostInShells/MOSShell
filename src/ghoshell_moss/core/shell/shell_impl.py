@@ -6,7 +6,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelBroker, ChannelCtx
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime, ChannelCtx
 from ghoshell_moss.core.concepts.command import (
     RESULT,
     BaseCommandTask,
@@ -71,7 +71,7 @@ class DefaultShell(MOSSShell):
         self._interpreter: Optional[Interpreter] = None
 
         # --- runtime --- #
-        self._main_broker: Optional[ChannelBroker] = None
+        self._main_broker: Optional[ChannelRuntime] = None
         self._log_prefix = "[MOSSShell name=%s] " % self._name
 
     @property
@@ -217,7 +217,7 @@ class DefaultShell(MOSSShell):
     # --- lifetime functions --- #
 
     @property
-    def runtime(self) -> ChannelBroker:
+    def runtime(self) -> ChannelRuntime:
         self._check_running()
         return self._main_broker
 

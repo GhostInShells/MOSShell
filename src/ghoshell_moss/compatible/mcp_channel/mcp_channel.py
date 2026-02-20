@@ -18,7 +18,7 @@ import asyncio
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelBroker, ChannelMeta
+from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelRuntime, ChannelMeta
 from ghoshell_moss.core.concepts.command import (
     Command,
     CommandDeltaType,
@@ -30,7 +30,7 @@ from ghoshell_moss.core.concepts.command import (
 R = TypeVar("R")  # 泛型结果类型
 
 
-class MCPChannelBroker(ChannelBroker, Generic[R]):
+class MCPChannelRuntime(ChannelRuntime, Generic[R]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
 
     MCP_CONTAINER_TYPES: list[str] = ["array", "object"]
@@ -290,7 +290,7 @@ class MCPChannelBroker(ChannelBroker, Generic[R]):
 
     @staticmethod
     def _mcp_type_2_py_type(param_info_type: str) -> str:
-        param_type = MCPChannelBroker.MCP_PY_TYPES_TRANS_TABLE.get(param_info_type.lower(), "Any")
+        param_type = MCPChannelRuntime.MCP_PY_TYPES_TRANS_TABLE.get(param_info_type.lower(), "Any")
         return param_type
 
     def _parse_schema(self, schema: dict) -> tuple[list, list]:
@@ -432,7 +432,7 @@ class MCPChannel(Channel):
         self._name = name
         self._desc = description
         self._mcp_client = mcp_client
-        self._broker: Optional[MCPChannelBroker] = None
+        self._broker: Optional[MCPChannelRuntime] = None
         self._blocking = blocking
 
     # --- Channel 核心方法实现 --- #
@@ -440,7 +440,7 @@ class MCPChannel(Channel):
         return self._name
 
     @property
-    def broker(self) -> ChannelBroker:
+    def broker(self) -> ChannelRuntime:
         if not self._broker or not self._broker.is_running():
             raise RuntimeError("MCPChannel not bootstrapped")
         return self._broker
@@ -449,11 +449,11 @@ class MCPChannel(Channel):
     def build(self) -> Builder:
         raise NotImplementedError("MCPChannel does not implement `build`")
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelBroker:
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelRuntime:
         if self._broker is not None and self._broker.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
-        self._broker = MCPChannelBroker(
+        self._broker = MCPChannelRuntime(
             name=self._name,
             container=container,
             mcp_client=self._mcp_client,

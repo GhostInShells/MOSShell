@@ -8,5 +8,5 @@ from .duplex import (
     DuplexChannelProxy,
 )
 from .duplex.protocol import *
-from .py_channel import PyChannel, PyChannelBroker, PyChannelBuilder
+from .py_channel import PyChannel, PyChannelRuntime, PyChannelBuilder
 from .shell import DefaultShell, MainChannel, new_shell

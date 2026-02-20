@@ -10,7 +10,7 @@ from ghoshell_container import Container, IoCContainer
 from ghoshell_moss.core.concepts.channel import (
     Channel, ChannelFullPath, ChannelMeta, ChannelCtx, ChannelPaths,
 )
-from ghoshell_moss.core.concepts.broker import AbsChannelBroker
+from ghoshell_moss.core.concepts.runtime import AbsChannelRuntime, AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask, Command, CommandMeta, CommandTask, CommandWrapper,
     CommandUniqueName,
@@ -508,7 +508,7 @@ class DuplexChannelContext:
             raise
 
 
-class DuplexChannelBroker(AbsChannelBroker):
+class DuplexChannelBroker(AbsChannelRuntime):
     """
     实现一个极简的 Duplex Channel, 它核心是可以通过 ChannelMeta 被动态构建出来.
     """
