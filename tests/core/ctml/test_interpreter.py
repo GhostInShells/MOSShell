@@ -28,7 +28,7 @@ async def test_interpreter_baseline():
         assert len(interpreter.meta_system_prompt()) > 0
         for c in content:
             interpreter.feed(c)
-        await interpreter.wait_parse_done()
+        await interpreter.wait_compiled()
 
     # 所有的 input 被 buffer 了.
     assert content == interpreter.inputted()
@@ -38,7 +38,7 @@ async def test_interpreter_baseline():
             assert token.chan == ""
 
     assert len(queue) == 4
-    assert len(interpreter.parsed_tasks()) == 3
+    assert len(interpreter.compiled_tasks()) == 3
 
 
 @pytest.mark.asyncio

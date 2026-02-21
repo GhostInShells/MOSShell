@@ -26,7 +26,7 @@ from .command import (
     CommandErrorCode,
     CommandMeta,
     CommandTask,
-    CommandResultStack,
+    CommandStackResult,
     CommandTaskState,
     CommandToken,
     CommandTokenType,
@@ -39,9 +39,9 @@ from .errors import CommandError, CommandErrorCode, FatalError, InterpretError
 from .interpreter import (
     CommandTaskCallback,
     CommandTaskParseError,
-    CommandTaskParserElement,
+    CommandTokenParserElement,
     CommandTokenCallback,
-    CommandTokenParser,
+    TextTokenParser,
     Interpreter,
 )
 from .shell import (

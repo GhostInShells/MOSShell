@@ -11,7 +11,7 @@ from ghoshell_container import IoCContainer, Container
 
 from ghoshell_moss.core.concepts.command import (
     CommandTask,
-    CommandResultStack,
+    CommandStackResult,
     CommandUniqueName,
     Command,
     CommandTaskState,
@@ -992,7 +992,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 return
             result = await get_result_from_task
             # 如果返回值是 stack, 则意味着要循环堆栈.
-            if isinstance(result, CommandResultStack):
+            if isinstance(result, CommandStackResult):
                 # 执行完所有的堆栈. 同时设置真实被执行的任务.
                 await self._fulfill_task_with_its_result_stack(task, result, depth=depth)
             else:
@@ -1017,7 +1017,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
     async def _fulfill_task_with_its_result_stack(
         self,
         owner: CommandTask,
-        stack: CommandResultStack,
+        stack: CommandStackResult,
         depth: int = 0,
     ) -> None:
         try:
@@ -1050,7 +1050,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 await self._execute_self_task(sub_task, depth + 1)
                 if sub_task.meta.blocking:
                     result = await sub_task
-                    if isinstance(result, CommandResultStack):
+                    if isinstance(result, CommandStackResult):
                         # 递归执行
                         await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
 

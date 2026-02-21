@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandToken, PyCommand
-from ghoshell_moss.core.concepts.interpreter import CommandTaskParserElement
+from ghoshell_moss.core.concepts.interpreter import CommandTokenParserElement
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -17,7 +17,7 @@ from ghoshell_moss.speech.mock import MockSpeech
 class ElementTestSuite:
     ctx: CommandTaskElementContext
     parser: CTMLTokenParser
-    root: CommandTaskParserElement
+    root: CommandTokenParserElement
     queue: deque[BaseCommandTask | None]
     stop_event: ThreadSafeEvent
 

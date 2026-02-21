@@ -1,8 +1,7 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable
-from typing import Literal, Optional
+from typing import Literal, Optional, AsyncIterable, AsyncIterator
 
 from ghoshell_container import IoCContainer
 
@@ -117,7 +116,7 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def commands(
-        self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
+            self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -127,8 +126,8 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def channel_metas(
-        self,
-        available: bool = True,
+            self,
+            available: bool = True,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -154,24 +153,24 @@ class MOSSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[str] = None,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-    ) -> Interpreter:
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+    ) -> AsyncIterable[Interpreter]:
         interpreter = await self.interpreter(kind=kind, stream_id=stream_id, config=config)
         async with interpreter:
             yield interpreter
 
     @abstractmethod
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[str] = None,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-        prepare_timeout: float = 2.0,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            prepare_timeout: float = 2.0,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -190,9 +189,9 @@ class MOSSShell(ABC):
         pass
 
     async def parse_text_to_command_tokens(
-        self,
-        text: str | AsyncIterable[str],
-        kind: InterpreterKind = "dry_run",
+            self,
+            text: str | AsyncIterable[str],
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
@@ -204,13 +203,13 @@ class MOSSShell(ABC):
         async def _parse_token():
             with sender:
                 async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.parser().with_callback(sender.append)
+                    interpreter.text_token_parser().with_callback(sender.append)
                     if isinstance(text, str):
                         interpreter.feed(text)
                     else:
                         async for delta in text:
                             interpreter.feed(delta)
-                    await interpreter.wait_parse_done()
+                    await interpreter.wait_compiled()
 
         t = asyncio.create_task(_parse_token())
         async for token in receiver:
@@ -220,61 +219,78 @@ class MOSSShell(ABC):
         await t
 
     async def parse_tokens_to_command_tasks(
-        self,
-        tokens: AsyncIterable[CommandToken],
-        kind: InterpreterKind = "dry_run",
-    ) -> AsyncIterable[CommandTask]:
+            self,
+            tokens: AsyncIterable[CommandToken],
+            kind: InterpreterKind = "dry_run",
+    ) -> AsyncIterator[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
         """
-        from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
-
-        sender, receiver = create_thread_safe_stream()
+        _queue = asyncio.Queue[CommandTask | None | Exception]()
 
         async def _parse_task():
-            with sender:
+            try:
                 async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.with_callback(sender.append)
+                    interpreter.with_task_callback(_queue.put_nowait)
+                    parser = interpreter.command_token_parser()
                     async for token in tokens:
-                        interpreter.root_task_element().on_token(token)
-                    await interpreter.wait_parse_done()
+                        parser.on_token(token)
+
+                    await interpreter.wait_compiled()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                _queue.put_nowait(e)
+            finally:
+                _queue.put_nowait(None)
 
         t = asyncio.create_task(_parse_task())
-        async for task in receiver:
-            if task is None:
+        while True:
+            item = await _queue.get()
+            if item is None:
                 break
-            yield task
-        await t
+            elif isinstance(item, Exception):
+                raise item
+            else:
+                yield item
 
     async def parse_text_to_tasks(
-        self,
-        text: str | AsyncIterable[str],
-        kind: InterpreterKind = "dry_run",
+            self,
+            text: str | AsyncIterable[str],
+            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
-        语法糖, 用来展示如何将 text 直接生成 command tasks (不执行).
+        语法糖, 用来展示如何将 text 直接生成 command tasks
         """
-        from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+        _queue = asyncio.Queue[CommandTask | None | Exception]()
 
-        sender, receiver = create_thread_safe_stream()
+        if isinstance(text, str):
+            text = [text]
 
         async def _parse_task():
-            with sender:
+            try:
                 async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.with_callback(sender.append)
-                    if isinstance(text, str):
-                        interpreter.feed(text)
-                    else:
-                        async for delta in text:
-                            interpreter.feed(delta)
-                    await interpreter.wait_parse_done()
+                    interpreter.with_task_callback(_queue.put_nowait)
+                    async for chunk in text:
+                        interpreter.feed(chunk)
+                    interpreter.commit()
+                    await interpreter.wait_compiled()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                _queue.put_nowait(e)
+            finally:
+                _queue.put_nowait(None)
 
         t = asyncio.create_task(_parse_task())
-        async for task in receiver:
-            if task is None:
+        while True:
+            item = await _queue.get()
+            if item is None:
                 break
-            yield task
-        await t
+            elif isinstance(item, Exception):
+                raise item
+            else:
+                yield item
 
     # --- runtime methods --- #
 

@@ -7,7 +7,7 @@ import pytest
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     CommandTask,
-    CommandResultStack,
+    CommandStackResult,
     CommandTaskState,
     PyCommand,
 )
@@ -119,7 +119,7 @@ async def test_command_task_stack():
     async def foo() -> int:
         return 123
 
-    stack = CommandResultStack(
+    stack = CommandStackResult(
         [
             BaseCommandTask.from_command(PyCommand(foo)),
             BaseCommandTask.from_command(PyCommand(foo)),
@@ -136,14 +136,14 @@ async def test_command_task_stack():
         yield BaseCommandTask.from_command(PyCommand(foo))
         yield BaseCommandTask.from_command(PyCommand(foo))
 
-    stack = CommandResultStack(iter_tasks())
+    stack = CommandStackResult(iter_tasks())
     got = []
     async for i in stack:
         got.append(i)
     assert len(got) == 3
     end = time.time()
 
-    async def bar() -> CommandResultStack:
+    async def bar() -> CommandStackResult:
         async def result(ran_tasks):
             count = 0
             # 计算有多少个子 task 被运行了.
@@ -152,12 +152,12 @@ async def test_command_task_stack():
                     count += 1
             return count
 
-        return CommandResultStack(iter_tasks(), callback=result)
+        return CommandStackResult(iter_tasks(), callback=result)
 
     bar_task = BaseCommandTask.from_command(PyCommand(bar))
     # 返回的应该是一个 stack.
     stack = await bar_task.dry_run()
-    assert isinstance(stack, CommandResultStack)
+    assert isinstance(stack, CommandStackResult)
     # 把所有的 stack 再运行一次.
     i = 0
     async for r in stack:

@@ -25,6 +25,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskContextVar,
     CommandUniqueName,
 )
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
@@ -252,19 +253,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-        self,
-        *,
-        name: str = "",
-        chan: str | None = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
-        available: Optional[Callable[[], bool]] = None,
-        # --- 高级参数 --- #
-        blocking: Optional[bool] = None,
-        call_soon: bool = False,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            chan: str | None = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType] = None,
+            available: Optional[Callable[[], bool]] = None,
+            # --- 高级参数 --- #
+            blocking: Optional[bool] = None,
+            call_soon: bool = False,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
@@ -381,9 +382,9 @@ class ChannelCtx:
     """
 
     def __init__(
-        self,
-        runtime: Optional["ChannelRuntime"] = None,
-        task: Optional[CommandTask] = None,
+            self,
+            runtime: Optional["ChannelRuntime"] = None,
+            task: Optional[CommandTask] = None,
     ):
         self._runtime = runtime
         self._task = task
@@ -433,7 +434,13 @@ class ChannelCtx:
     @classmethod
     def get_contract(cls, contract: type[INSTANCE]) -> INSTANCE:
         runtime = cls.runtime()
-        return runtime.container.force_fetch(contract)
+        if runtime is None:
+            raise CommandErrorCode.INVALID_USAGE.error(f"not running in channel ctx")
+
+        item = runtime.container.get(contract)
+        if item is None:
+            raise CommandErrorCode.NOT_FOUND.error(f"contract {contract} not found")
+        return item
 
 
 class Channel(ABC):
@@ -600,7 +607,7 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
@@ -743,11 +750,11 @@ class ChannelRuntime(ABC):
         pass
 
     def create_command_task(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> CommandTask:
         """
         example to create channel task
@@ -768,11 +775,11 @@ class ChannelRuntime(ABC):
         return task
 
     async def execute_command(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.
@@ -885,10 +892,10 @@ class ChannelImportLib(ABC):
         return all_runtimes
 
     def find_descendants(
-        self,
-        channel: Channel,
-        bloodline: set | None = None,
-        depth: int = 0,
+            self,
+            channel: Channel,
+            bloodline: set | None = None,
+            depth: int = 0,
     ) -> dict[ChannelFullPath, ChannelRuntime]:
         """
         语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.

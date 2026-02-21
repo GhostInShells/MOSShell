@@ -8,7 +8,7 @@ from xml.sax import saxutils
 
 from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.concepts.interpreter import CommandTokenParser
+from ghoshell_moss.core.concepts.interpreter import TextTokenParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
 from ast import literal_eval
@@ -378,7 +378,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             raise self._exception
 
 
-class CTMLTokenParser(CommandTokenParser):
+class CTMLTokenParser(TextTokenParser):
     """
     parsing input stream into Command Tokens
     """

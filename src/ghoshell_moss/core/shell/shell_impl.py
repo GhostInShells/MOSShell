@@ -6,15 +6,15 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime, ChannelCtx
+from ghoshell_moss.core.concepts.channel import (
+    Channel, ChannelFullPath, ChannelMeta, ChannelRuntime, ChannelCtx, MutableChannel,
+)
 from ghoshell_moss.core.concepts.command import (
-    RESULT,
     BaseCommandTask,
     Command,
     CommandMeta,
     CommandTask,
     CommandWrapper,
-    CommandUniqueName,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.concepts.interpreter import Interpreter
@@ -323,7 +323,7 @@ class DefaultShell(MOSSShell):
         self._speech = speech
 
     @property
-    def main_channel(self) -> Channel:
+    def main_channel(self) -> MutableChannel:
         return self._main_channel
 
     async def refresh_metas(self, timeout: float | None = None) -> None:

@@ -14,8 +14,8 @@ from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTas
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
-    CommandTaskParserElement,
-    CommandTokenParser,
+    CommandTokenParserElement,
+    TextTokenParser,
     Interpreter,
 )
 from ghoshell_moss.core.concepts.speech import Speech
@@ -270,21 +270,21 @@ class CTMLInterpreter(Interpreter):
         self._committed = True
         self._input_deltas_queue.put_nowait(None)
 
-    def with_callback(self, *callbacks: CommandTaskCallback) -> None:
+    def with_task_callback(self, *callbacks: CommandTaskCallback) -> None:
         callbacks = list(callbacks)
         callbacks.extend(self._callbacks)
         self._callbacks = callbacks
 
-    def parser(self) -> CommandTokenParser:
+    def text_token_parser(self) -> TextTokenParser:
         return self._parser
 
-    def root_task_element(self) -> CommandTaskParserElement:
+    def command_token_parser(self) -> CommandTokenParserElement:
         return self._root_element
 
     def parsed_tokens(self) -> Iterable[CommandToken]:
         return self._parsed_tokens.copy()
 
-    def parsed_tasks(self) -> dict[str, CommandTask]:
+    def compiled_tasks(self) -> dict[str, CommandTask]:
         return self._parsed_tasks.copy()
 
     def outputted(self) -> Iterable[str]:
@@ -319,7 +319,7 @@ class CTMLInterpreter(Interpreter):
         return results
 
     def executed(self) -> list[CommandTask]:
-        tasks = self.parsed_tasks().copy()
+        tasks = self.compiled_tasks().copy()
         executions = []
         for task in tasks.values():
             if CommandTaskState.is_complete(task.state):
@@ -441,7 +441,7 @@ class CTMLInterpreter(Interpreter):
     def is_interrupted(self) -> bool:
         return self._interrupted
 
-    async def wait_parse_done(self, timeout: float | None = None, throw: bool = True) -> None:
+    async def wait_compiled(self, timeout: float | None = None, throw: bool = True) -> None:
         try:
             if not self._started:
                 return
@@ -485,12 +485,12 @@ class CTMLInterpreter(Interpreter):
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)
-        await self.wait_parse_done(timeout, throw=throw)
+        await self.wait_compiled(timeout, throw=throw)
         if throw and not timeleft.alive():
             raise asyncio.TimeoutError("Timed out while waiting for parsed command tasks to finish")
 
         gathering = []
-        tasks = self.parsed_tasks()
+        tasks = self.compiled_tasks()
         if len(tasks) == 0:
             return tasks
 

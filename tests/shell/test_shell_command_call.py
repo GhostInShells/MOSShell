@@ -4,7 +4,7 @@ import time
 import pytest
 from ghoshell_moss import (
     CommandTask,
-    CommandResultStack,
+    CommandStackResult,
     Interpreter,
     MOSSShell,
     new_chan,
@@ -196,9 +196,7 @@ async def test_shell_loop():
         if times == 0:
             return None
 
-        chan = ChannelCtx.channel()
-        # get shell from channel's container
-        _shell = chan.runtime._container.get(MOSSShell)
+        _shell = ChannelCtx.get_contract(MOSSShell)
         _tasks = []
         async for t in _shell.parse_tokens_to_command_tasks(tokens__):
             _tasks.append(t)
@@ -211,7 +209,7 @@ async def test_shell_loop():
         async def on_success(generated: list[CommandTask]):
             await asyncio.gather(*[g.wait() for g in generated])
 
-        return CommandResultStack(_iter(), on_success)
+        return CommandStackResult(_iter(), on_success)
 
     outputs = []
 
@@ -271,8 +269,8 @@ async def test_shell_clear():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed(content)
             interpreter.commit()
-            await interpreter.wait_parse_done()
-            assert len(interpreter.parsed_tasks()) == 3
+            await interpreter.wait_compiled()
+            assert len(interpreter.compiled_tasks()) == 3
             tasks = await interpreter.wait_execution_done()
             assert len(tasks) == 3
             assert [t.result() for t in tasks.values()] == ["foo", "bar", "baz"]
@@ -281,14 +279,14 @@ async def test_shell_clear():
         sleep[0] = 10
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed(content)
-            await interpreter.wait_parse_done()
-            parsed_tasks = interpreter.parsed_tasks()
+            await interpreter.wait_compiled()
+            parsed_tasks = interpreter.compiled_tasks()
             assert len(parsed_tasks) > 0
             for t in parsed_tasks.values():
                 assert not t.done()
             # clear all
             await shell.clear()
-            parsed_tasks = interpreter.parsed_tasks()
+            parsed_tasks = interpreter.compiled_tasks()
             for t in parsed_tasks.values():
                 e = t.exception()
                 assert isinstance(e, CommandError)

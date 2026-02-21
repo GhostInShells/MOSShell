@@ -12,9 +12,9 @@ from .channel import ChannelMeta
 __all__ = [
     "CommandTaskCallback",
     "CommandTaskParseError",
-    "CommandTaskParserElement",
+    "CommandTokenParserElement",
     "CommandTokenCallback",
-    "CommandTokenParser",
+    "TextTokenParser",
     "Interpreter",
 ]
 
@@ -26,7 +26,7 @@ class CommandTaskParseError(Exception):
     pass
 
 
-class CommandTokenParser(ABC):
+class TextTokenParser(ABC):
     """
     parse from string stream into command tokens
     """
@@ -91,7 +91,7 @@ class CommandTokenParser(ABC):
         self.close()
 
 
-class CommandTaskParserElement(ABC):
+class CommandTokenParserElement(ABC):
     """
     CommandTaskElement works like AST but in realtime.
     It accepts command token from a stream, and generate command task concurrently.
@@ -108,7 +108,7 @@ class CommandTaskParserElement(ABC):
     current: Optional[CommandTask] = None
     """the current command task of this element, created by `start` type command token"""
 
-    children: dict[str, "CommandTaskParserElement"]
+    children: dict[str, "CommandTokenParserElement"]
     """the children element of this element"""
 
     @abstractmethod
@@ -150,14 +150,14 @@ class Interpreter(ABC):
     """each time stream interpretation has a unique id"""
 
     @abstractmethod
+    def channels(self) -> dict[str, ChannelMeta]:
+        pass
+
+    @abstractmethod
     def meta_system_prompt(self) -> str:
         """
         给大模型使用 MOSS 的元规则. interpreter 可以定义不同的规则.
         """
-        pass
-
-    @abstractmethod
-    def channels(self) -> dict[str, ChannelMeta]:
         pass
 
     @abstractmethod
@@ -194,11 +194,14 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def with_callback(self, *callbacks: CommandTaskCallback) -> None:
+    def with_task_callback(self, *callbacks: CommandTaskCallback) -> None:
+        """
+        task callback
+        """
         pass
 
     @abstractmethod
-    def parser(self) -> CommandTokenParser:
+    def text_token_parser(self) -> TextTokenParser:
         """
         interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
 
@@ -212,7 +215,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def root_task_element(self) -> CommandTaskParserElement:
+    def command_token_parser(self) -> CommandTokenParserElement:
         """
         当前 Interpreter 做树形 Command Token 解析时使用的 Element 对象. debug 用.
         通常运行在独立的线程池中.
@@ -227,7 +230,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def parsed_tasks(self) -> dict[str, CommandTask]:
+    def compiled_tasks(self) -> dict[str, CommandTask]:
         """
         已经解析生成的 tasks.
         """
@@ -336,7 +339,7 @@ class Interpreter(ABC):
         await self.stop()
 
     @abstractmethod
-    async def wait_parse_done(self, timeout: float | None = None) -> None:
+    async def wait_compiled(self, timeout: float | None = None) -> None:
         """
         等待解释过程完成. 完成有两种情况:
         1. 输入已经完备.
@@ -349,7 +352,7 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-        self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
+            self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
     ) -> dict[str, CommandTask]:
         """
         等待所有的 task 被执行完毕.

@@ -15,7 +15,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTokenType,
 )
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.concepts.interpreter import CommandTaskCallback, CommandTaskParseError, CommandTaskParserElement
+from ghoshell_moss.core.concepts.interpreter import CommandTaskCallback, CommandTaskParseError, CommandTokenParserElement
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
@@ -23,7 +23,7 @@ from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
 from .token_parser import CMTLSaxElement
 
 __all__ = [
-    "BaseCommandTaskParserElement",
+    "BaseCommandTokenParserElement",
     "CommandTaskElementContext",
     "DeltaIsTextCommandTaskElement",
     "DeltaTypeIsTokensCommandTaskElement",
@@ -50,7 +50,7 @@ class CommandTaskElementContext:
         self.stop_event = stop_event or ThreadSafeEvent()
         self.root_tag = root_tag
 
-    def new_root(self, callback: CommandTaskCallback, stream_id: str = "") -> CommandTaskParserElement:
+    def new_root(self, callback: CommandTaskCallback, stream_id: str = "") -> CommandTokenParserElement:
         """
         创建解析树的根节点.
         """
@@ -64,7 +64,7 @@ class CommandTaskElementContext:
         root.destroy()
 
 
-class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
+class BaseCommandTokenParserElement(CommandTokenParserElement, ABC):
     """
     标准的 command task 节点.
     """
@@ -87,7 +87,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         self.children = {}
         """所有的子节点"""
 
-        self._unclose_child: Optional[CommandTaskParserElement] = None
+        self._unclose_child: Optional[CommandTokenParserElement] = None
         """没有结束的子节点"""
 
         self._callback = callback
@@ -270,7 +270,7 @@ class BaseCommandTaskParserElement(CommandTaskParserElement, ABC):
         del self._current_task
 
 
-class NoDeltaCommandTaskElement(BaseCommandTaskParserElement):
+class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
     """
     没有 delta 参数的 Command
     """
@@ -373,7 +373,7 @@ class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
     pass
 
 
-class DeltaTypeIsTokensCommandTaskElement(BaseCommandTaskParserElement):
+class DeltaTypeIsTokensCommandTaskElement(BaseCommandTokenParserElement):
     """
     当 delta type 是 tokens 时, 会自动拼装 tokens 为一个 Iterable / AsyncIterable 对象给目标 command.
 
@@ -436,7 +436,7 @@ class RootCommandTaskElement(NoDeltaCommandTaskElement):
         return
 
 
-class DeltaIsTextCommandTaskElement(BaseCommandTaskParserElement):
+class DeltaIsTextCommandTaskElement(BaseCommandTokenParserElement):
     """
     当 delta type 是 text 时, 这种解析逻辑是所有的中间 token 都视作文本
     等所有的文本都加载完, 才会发送这个 task.
