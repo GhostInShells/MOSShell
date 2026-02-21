@@ -320,11 +320,11 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         if not self.is_running():
             raise RuntimeError(f"Channel {self} not running")
 
-    def imported(self) -> dict[str, Channel]:
+    def sub_channels(self) -> dict[str, Channel]:
         result = self._channel.children()
         return result
 
-    async def _generate_self_meta(self) -> ChannelMeta:
+    async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
         dynamic = self._dynamic or False
         command_metas = []
         commands = self._builder.commands()
@@ -367,14 +367,14 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         )
         meta.dynamic = dynamic
         meta.commands = command_metas
-        return meta
+        return {"": meta}
 
     # ---- commands ---- #
 
     def _is_available(self) -> bool:
         return self._builder.is_available()
 
-    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
@@ -397,7 +397,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
         return CommandWrapper.wrap(command, func=_run_with_runtime)
 
-    def get_self_command(
+    def get_own_command(
         self,
         name: str,
     ) -> Optional[Command]:

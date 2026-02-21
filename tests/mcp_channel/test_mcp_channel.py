@@ -45,14 +45,14 @@ async def test_mcp_channel_baseline():
             )
 
             async with mcp_channel.bootstrap() as client:
-                commands = list(client.self_commands().values())
+                commands = list(client.own_commands().values())
                 assert len(commands) > 0
 
                 # print('')
                 # for i, cmd in enumerate(commands):
                 #     print(f"{i}: {cmd.name()} {cmd.meta().model_dump_json()}")
 
-                available_test_cmd = client.get_self_command("add")
+                available_test_cmd = client.get_command("add")
                 assert available_test_cmd is not None
 
                 # args
@@ -102,7 +102,7 @@ async def test_mcp_channel_baseline():
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
                 # foo
-                available_test_cmd = client.get_self_command("foo")
+                available_test_cmd = client.get_command("foo")
                 assert available_test_cmd is not None
 
                 # text__, default
@@ -112,7 +112,7 @@ async def test_mcp_channel_baseline():
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                available_test_cmd = client.get_self_command("bar")
+                available_test_cmd = client.get_command("bar")
                 assert available_test_cmd is not None
 
                 # kwargs
@@ -125,7 +125,7 @@ async def test_mcp_channel_baseline():
                 with pytest.raises(CommandError):
                     await available_test_cmd("aaa")
 
-                available_test_cmd = client.get_self_command("multi")
+                available_test_cmd = client.get_command("multi")
                 assert available_test_cmd is not None
 
                 with pytest.raises(CommandError):

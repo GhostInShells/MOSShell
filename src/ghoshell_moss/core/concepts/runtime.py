@@ -26,19 +26,20 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelRuntime,
     ChannelFullPath,
     ChannelPaths,
+    ChannelImportLib,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
 
-__all__ = ["AbsChannelRuntime", "ChannelImportLib", "AbsChannelTreeRuntime"]
+__all__ = ["AbsChannelRuntime", "BaseImportLib", "AbsChannelTreeRuntime"]
 
 _ChannelId = str
 _TaskWithPaths = tuple[ChannelPaths, CommandTask]
 
 
-class ChannelImportLib:
+class BaseImportLib(ChannelImportLib):
     """
     唯一的 lib 用来管理所有可以被 import 的 channel runtime
     """
@@ -51,7 +52,7 @@ class ChannelImportLib:
             parent=container,
         )
         # 绑定自身到容器中. 凡是用这个容器启动的 runtime, 都可以拿到 ChannelImportLib 并获取子 channel runtime.
-        self._container.set(ChannelImportLib, self)
+        self._container.set(BaseImportLib, self)
         self._logger: Optional[LoggerItf] = None
         self._runtimes: dict[_ChannelId, ChannelRuntime] = {}
         self._runtimes_lock: asyncio.Lock = asyncio.Lock()
@@ -78,21 +79,23 @@ class ChannelImportLib:
             else:
                 return None
         # 第一次创建.
-        runtime = await self._build_channel_runtime(channel)
+        runtime = await self.compile_channel(channel)
+        if runtime is None:
+            return None
         await runtime.wait_started()
         return runtime
 
-    async def _build_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+    async def compile_channel(self, channel: Channel) -> ChannelRuntime | None:
         # 只有创建这一段需要上锁.
         if not self.is_running():
             return None
+        channel_id = channel.id()
+        runtime = self._runtimes.get(channel_id)
+        # 只要 runtime 存在就立刻返回.
+        if runtime is not None:
+            return runtime
         await self._runtimes_lock.acquire()
         try:
-            channel_id = channel.id()
-            runtime = self._runtimes.get(channel_id)
-            # 只要 runtime 存在就立刻返回.
-            if runtime is not None:
-                return runtime
             # 用自身的容器启动 ChannelImportLib.
             runtime = channel.bootstrap(self._container)
             # 避免抢锁嵌套成环.
@@ -130,48 +133,6 @@ class ChannelImportLib:
         self._start = True
         self._loop = asyncio.get_event_loop()
         await asyncio.to_thread(self._container.bootstrap)
-
-    def find_descendants(self, channel: Channel) -> dict[ChannelFullPath, ChannelRuntime]:
-        result = {}
-        runtime = self.get_channel_runtime(channel)
-        if runtime is None or not runtime.is_running():
-            return result
-        for name, child in runtime.imported().items():
-            child_runtime = self.get_channel_runtime(child)
-            result[name] = child_runtime
-            if child_runtime is not None and child_runtime.is_running():
-                descendants = self.find_descendants(child)
-                for path, descendant in descendants.items():
-                    real_path = Channel.join_channel_path(name, path)
-                    result[real_path] = descendant
-        return result
-
-    def recursively_find_runtime(self, runtime: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
-        if path == "":
-            return runtime
-        paths = Channel.split_channel_path_to_names(path, 1)
-        child_name = paths[0]
-        further_path = paths[1] if len(paths) > 1 else ""
-        if child_name == "":
-            return runtime
-        child_channel = runtime.imported().get(child_name)
-        if child_channel is None:
-            return None
-        child_runtime = self.get_channel_runtime(child_channel)
-        if child_runtime is None:
-            return None
-        return self.recursively_find_runtime(child_runtime, further_path)
-
-    async def recursively_fetch_runtime(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
-        if len(paths) == 0:
-            return root
-        child_name = paths[0]
-        further_path = paths[1:]
-        child = root.imported().get(child_name)
-        if child is None:
-            return None
-        child_runtime = await self.get_or_create_channel_runtime(child)
-        return await self.recursively_fetch_runtime(child_runtime, further_path)
 
     async def close(self) -> None:
         if self._close:
@@ -234,7 +195,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._logger: LoggerItf | None = logger
         self._state_store: StateStore | None = state_store
         # import lib 是最重要的.
-        self._importlib: ChannelImportLib | None = None
+        self._importlib: BaseImportLib | None = None
 
         self._logger: LoggerItf | None = logger
 
@@ -245,9 +206,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
 
-        self._cached_metas: dict[ChannelFullPath, ChannelMeta] = {}
+        self._own_metas_cache: dict[ChannelFullPath, ChannelMeta] = {}
         # 可以注册监听, 监听 refresh meta 动作.
-        self._on_refresh_meta_callbacks: list[Callable[[ChannelMeta], Coroutine[None, None, None]]] = []
         self._refresh_meta_lock = asyncio.Lock()
 
         self._defer_clear_mark = False
@@ -255,9 +215,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._main_loop_task: Optional[asyncio.Task] = None
         self._task_done_callbacks: list[TaskDoneCallback] = []
         self._exit_stack = contextlib.AsyncExitStack()
-
         # log_prefix
-        self.log_prefix = "[Channel %s %s][%s]" % (self._name, self._uid, self.__class__.__name__)
+        self.log_prefix = "[Channel `%s`][%s][%s] " % (self._name, self.__class__.__name__, self._uid)
 
     @property
     def channel(self) -> CHANNEL:
@@ -281,7 +240,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         return self._logger
 
     @property
-    def importlib(self) -> ChannelImportLib:
+    def importlib(self) -> BaseImportLib:
         if not self._importlib:
             raise RuntimeError(f"channel is not running")
         return self._importlib
@@ -323,25 +282,49 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     # --- interface --- #
 
+    def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        return self._own_metas_cache
+
     def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         """
         返回 Channel 自身的 Meta.
         """
         if not self.is_running() or not self.is_connected():
             return {"": ChannelMeta.new_empty(self._uid, self.channel)}
+        own_metas = self.own_metas()
         # 还是复制一份.
-        if "" not in self._cached_metas:
+        if "" not in own_metas:
             return {"": ChannelMeta.new_empty(self._uid, self.channel)}
-        return self._get_cached_meta()
+        metas = own_metas.copy()
+        self_meta = metas[""]
 
-    def _get_cached_meta(self) -> dict[ChannelFullPath, ChannelMeta]:
-        return {name: meta.model_copy() for name, meta in self._cached_metas.items()}
+        # 递归获取.
+        children_names = self_meta.children
+        children = self.sub_channels()
+        if len(children) == 0:
+            return metas
+        for child_name, child in children.items():
+            child_runtime = self._importlib.get_channel_runtime(child)
+            if not child_runtime or not child_runtime.is_running():
+                continue
+            if child_name not in children_names:
+                children_names.append(child_name)
+            descendant_metas = child_runtime.metas()
+            for full_path, meta in descendant_metas.items():
+                new_full_path = Channel.join_channel_path(child_name, full_path)
+                if new_full_path in metas:
+                    continue
+                metas[new_full_path] = meta
 
-    def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
-        self._on_refresh_meta_callbacks.append(callback)
+        self_meta.children = children_names
+        return metas
+
+    async def refresh_own_metas(self, force: bool) -> None:
+        ctx = ChannelCtx(self)
+        self._own_metas_cache = await ctx.run(self._generate_own_metas, force)
 
     @abstractmethod
-    async def _generate_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
+    async def _generate_own_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
         """
         重新生成 meta 数据对象.
         """
@@ -349,8 +332,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def refresh_metas(
         self,
-        force: bool = True,
-        callback: bool = True,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -359,20 +340,13 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         try:
             if not self._starting or self._closing_event.is_set():
                 return
-            if not force and "" in self._cached_metas:
-                # 完成过刷新.
+            if not self.is_connected():
                 return
+
             # 生成时添加 ctx.
-            ctx = ChannelCtx(self)
-            metas = await ctx.run(self._generate_metas, force)
-            self._cached_metas = metas
+            await self.refresh_own_metas(force=True)
             # 创建异步的回调.
-            if callback and self._on_refresh_meta_callbacks:
-                for callback_fn in self._on_refresh_meta_callbacks:
-                    if inspect.iscoroutinefunction(callback_fn):
-                        _ = asyncio.create_task(callback_fn(metas))
-                    else:
-                        self._loop.run_in_executor(None, callback_fn, metas)
+            await self._refresh_children_metas()
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -384,6 +358,22 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 "%s refreshed meta",
                 self.log_prefix,
             )
+
+    async def _refresh_children_metas(self) -> None:
+        children = self.sub_channels()
+        if len(children) == 0:
+            return
+        refreshing = []
+        for child in children.values():
+            runtime = self._importlib.get_channel_runtime(child)
+            if not runtime or not runtime.is_running():
+                continue
+            refreshing.append(runtime.refresh_metas())
+        if len(refreshing) > 0:
+            done = await asyncio.gather(*refreshing, return_exceptions=True)
+            for t in done:
+                if isinstance(t, Exception):
+                    self.logger.error(f"%s refresh children meta failed %s", self.log_prefix, t)
 
     # --- status --- #
 
@@ -448,7 +438,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         try:
             if self._defer_clear_mark:
                 self._defer_clear_mark = False
-                await self._clear()
+                await self.clear_own()
             await self._push_task_with_paths(paths, task)
         except Exception as exc:
             self.logger.exception(exc)
@@ -485,11 +475,28 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def clear(self) -> None:
         self._defer_clear_mark = False
-        await self._clear()
+        await self.clear_own()
+        await self.clear_sub_channels()
 
     @abstractmethod
-    async def _clear(self) -> None:
+    async def clear_own(self) -> None:
         pass
+
+    async def clear_sub_channels(self):
+        async def clear_child(_child: Channel):
+            child_runtime = await self._importlib.get_or_create_channel_runtime(_child)
+            if child_runtime and child_runtime.is_running():
+                await child_runtime.clear()
+
+        clear_tasks = []
+        children = self.sub_channels()
+        for child in children.values():
+            clear_tasks.append(clear_child(child))
+        if len(clear_tasks) > 0:
+            done = await asyncio.gather(*clear_tasks)
+            for r in done:
+                if isinstance(r, Exception):
+                    self._logger.exception("%s clear child failed: %s", self.log_prefix, r)
 
     def defer_clear(self) -> None:
         self._defer_clear_mark = True
@@ -506,10 +513,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     @contextlib.asynccontextmanager
     async def _importlib_ctx(self):
         if self._importlib is None:
-            _importlib = self._container.get(ChannelImportLib)
+            _importlib = self._container.get(BaseImportLib)
             if _importlib is None:
-                _importlib = ChannelImportLib(self, self._container)
-                self.container.set(ChannelImportLib, _importlib)
+                _importlib = BaseImportLib(self, self._container)
+                self.container.set(BaseImportLib, _importlib)
             self._importlib = _importlib
         if self._importlib.main is self:
             await self._importlib.start()
@@ -580,7 +587,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         except Exception as e:
             self.logger.exception("%s keep_running_task failed: %s", self.log_prefix, e)
         finally:
-            self.logger.info("%s keep_running_task finished", self.log_prefix)
+            self.logger.debug("%s keep_running_task finished", self.log_prefix)
 
     @contextlib.asynccontextmanager
     async def _main_loop_ctx(self):
@@ -624,10 +631,34 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         await self._exit_stack.__aenter__()
         for ctx_func in self._async_exit_ctx_funcs():
             await self._exit_stack.enter_async_context(ctx_func())
+            self.logger.debug("%s start stack %s entered", self.log_prefix, ctx_func)
         if self.is_connected():
-            await self.refresh_metas(force=False)
+            # 在启动时更新自己的 metas.
+            await self.refresh_own_metas(False)
+        # 递归启动子节点.
+        await self._start_sub_channels()
         self._started.set()
+        self.logger.info("%s started", self.log_prefix)
         return self
+
+    async def _start_sub_channels(self) -> None:
+        children = self.sub_channels()
+        if len(children) == 0:
+            return
+
+        async def _start_child(_channel: Channel):
+            runtime = await self._importlib.compile_channel(_channel)
+            if runtime is not None:
+                await runtime.wait_started()
+
+        start_all = []
+        for child in children.values():
+            start_all.append(_start_child(child))
+        # 递归启动.
+        done = await asyncio.gather(*start_all, return_exceptions=True)
+        for t in done:
+            if isinstance(t, Exception):
+                self.logger.exception("%s failed to start sub channel %s", self.log_prefix, t)
 
     async def wait_started(self) -> None:
         if self._closing_event.is_set():
@@ -653,7 +684,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._closing_event.set()
         try:
             self.logger.info(
-                "%s start to close",
+                "%s begin to close",
                 self.log_prefix,
             )
             # 停止所有行为.
@@ -674,11 +705,11 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._channel = None
         self._state_store = None
         self._logger = None
-        self._on_refresh_meta_callbacks.clear()
         self._task_done_callbacks.clear()
         self._importlib = None
 
-    # --- execute tasks --- #
+
+# --- execute tasks --- #
 
 
 class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
@@ -701,104 +732,17 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         self._idled_event = asyncio.Event()
         self._has_task_queued = asyncio.Event()
 
-    def get_children_runtimes(self) -> dict[str, ChannelRuntime]:
-        children = self.imported()
-        result = {}
-        for name, child in children.items():
-            runtime = self.importlib.get_channel_runtime(child)
-            if runtime is not None and runtime.is_running():
-                result[name] = runtime
-        return result
-
     @abstractmethod
-    def imported(self) -> dict[str, Channel]:
+    def sub_channels(self) -> dict[str, Channel]:
         """
         当前持有的子 Channel.
         """
         pass
 
-    def get_child_runtime(self, name: str) -> ChannelRuntime | None:
-        child = self.imported().get(name)
-        if child is None:
-            return None
-        return self.importlib.get_channel_runtime(child)
-
-    def descendants(self) -> dict[ChannelFullPath, ChannelRuntime]:
-        return self.importlib.find_descendants(self.channel)
-
-    def all_runtimes(self) -> dict[ChannelFullPath, Self]:
-        result: dict[ChannelFullPath, ChannelRuntime] = {"": self}
-        descendants = self.descendants()
-        result.update(descendants)
-        return result
-
-    @abstractmethod
-    async def _generate_self_meta(self) -> ChannelMeta:
-        pass
-
-    async def _generate_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
-        self_meta = await self._generate_self_meta()
-        new_cached_metas: dict[ChannelFullPath, ChannelMeta] = {"": self_meta}
-        children_names, children_metas = await self._generate_children_metas(force)
-        new_cached_metas.update(children_metas)
-        # 终于完成更新.
-        self_meta.children = children_names
-        return new_cached_metas
-
-    async def _generate_children_metas(self, force: bool) -> tuple[list[str], dict[ChannelFullPath, ChannelMeta]]:
-
-        async def create_child_interfaces(
-            _child_name: str,
-            _child: Channel,
-        ) -> tuple[str, dict[ChannelFullPath, ChannelMeta]] | None:
-            try:
-                child_runtime = await self.importlib.get_or_create_channel_runtime(_child)
-                if not child_runtime or not child_runtime.is_running():
-                    return None
-                # 不强制生成.
-                await child_runtime.refresh_metas(callback=False, force=force)
-                _interfaces = child_runtime.metas()
-                _result = {}
-                for channel_path, _meta in _interfaces.items():
-                    new_channel_path = Channel.join_channel_path(_child_name, channel_path)
-                    _result[new_channel_path] = _meta
-                return _child_name, _result
-
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                raise
-            except Exception as e:
-                self._logger.exception("%s failed to create child %s interface: %s", self.log_prefix, _child_name, e)
-                raise
-
-        children = self.imported()
-        result = {}
-        children_names = []
-        if len(children) > 0:
-            gathering = []
-            for child_name, child in children.items():
-                child_task = self._loop.create_task(create_child_interfaces(child_name, child))
-                gathering.append(child_task)
-            # 按顺序更新.
-            if len(gathering) > 0:
-                done = await asyncio.gather(*gathering)
-                for r in done:
-                    if isinstance(r, Exception):
-                        self._logger.exception("%s failed to create child interface: %s", self.log_prefix, r)
-                    elif r is None:
-                        continue
-                    else:
-                        child_name, child_metas = r
-                        children_names.append(child_name)
-                        for _path, _descendant_meta in child_metas.items():
-                            result[_path] = _descendant_meta
-        return children_names, result
-
     def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
-        commands = self.self_commands(available_only).copy()
+        commands = self.own_commands(available_only).copy()
         result = {"": commands}
-        for name, child in self.imported().items():
+        for name, child in self.sub_channels().items():
             child_runtime = self.importlib.get_channel_runtime(child)
             if child_runtime and child_runtime.is_running():
                 child_commands = child_runtime.commands(available_only)
@@ -807,14 +751,18 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     result[new_full_path] = command_map
         return result
 
+    @abstractmethod
+    def get_own_command(self, name: str) -> Optional[Command]:
+        pass
+
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:
         chan, command_name = Command.split_uniquename(name)
         if chan == "":
-            return self.get_self_command(command_name)
+            return self.get_own_command(command_name)
         runtime = self.importlib.recursively_find_runtime(self, chan)
         if runtime is None:
             return None
-        return runtime.get_self_command(command_name)
+        return runtime.get_command(command_name)
 
     async def wait_idle(self) -> None:
         """
@@ -888,18 +836,18 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             return
 
         wait_all = []
-        children = self.imported()
+        children = self.sub_channels()
         if len(children) > 0:
             for child in children.values():
                 wait_all.append(wait_child_empty(child))
             _ = await asyncio.gather(*wait_all)
 
     def _is_children_idled(self) -> bool:
-        children = self.imported()
+        children = self.sub_channels()
         if len(children) > 0:
             for child in children.values():
                 runtime = self.importlib.get_channel_runtime(child)
-                if not runtime.is_running():
+                if not runtime or not runtime.is_running():
                     continue
                 elif not runtime.is_idle():
                     return False
@@ -951,7 +899,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         self._executing_command_task = task
         child_name = paths[0]
         # 子节点在路径上不存在.
-        child = self.imported().get(child_name)
+        child = self.sub_channels().get(child_name)
         if child is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
@@ -1154,25 +1102,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
 
-    async def _clear(self):
-        await self._clear_pending_and_executing()
-
-        async def clear_child(_child: Channel):
-            child_runtime = await self._importlib.get_or_create_channel_runtime(_child)
-            if child_runtime and child_runtime.is_running():
-                await child_runtime.clear()
-
-        clear_tasks = []
-        children = self.imported()
-        for child in children.values():
-            clear_tasks.append(clear_child(child))
-        if len(clear_tasks) > 0:
-            done = await asyncio.gather(*clear_tasks)
-            for r in done:
-                if isinstance(r, Exception):
-                    self._logger.exception("%s clear child failed: %s", self.log_prefix, r)
-
-    async def _clear_pending_and_executing(self) -> None:
+    async def clear_own(self) -> None:
         """
         当轨道命令被触发清空时候执行.
         """

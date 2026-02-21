@@ -51,14 +51,14 @@ async def test_redis_channel_baseline():
                 assert runtime.is_running()
 
                 # 获取 channel meta
-                meta = runtime.self_meta()
+                meta = runtime.own_meta()
                 assert meta is not None
                 assert meta.name == "test_redis_channel"
                 assert len(meta.commands) == 1
                 assert meta.commands[0].name == "foo"
 
                 # 获取命令并执行
-                cmd = runtime.get_self_command("foo")
+                cmd = runtime.get_command("foo")
                 assert cmd is not None
 
                 # 测试命令执行

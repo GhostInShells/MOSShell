@@ -538,7 +538,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             container=ctx.container,
             logger=ctx.logger,
         )
-        self.log_prefix = f"[DuplexChannelRuntime name={self._name} id={self.id} cls={self.__class__}]"
 
     def is_running(self) -> bool:
         return super().is_running() and self._ctx.is_running()
@@ -549,15 +548,19 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         container = super().prepare_container(container)
         return container
 
-    def imported(self) -> dict[str, Channel]:
+    def sub_channels(self) -> dict[str, Channel]:
         # 不需要展开节点.
         return {}
 
     async def on_running(self) -> None:
         return
 
-    async def _generate_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
-        await self._ctx.refresh_meta()
+    def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        return self._ctx.provider_meta_map
+
+    async def _generate_own_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
+        if force:
+            await self._ctx.refresh_meta()
         metas = self._ctx.provider_meta_map
         self_meta = metas.get("")
         if self_meta:
@@ -594,9 +597,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         await self._ctx.wait_connected()
         self._cached_metas = self._ctx.provider_meta_map
 
-    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         # 先获取本地的命令.
         result = {}
+        if not self.is_running():
+            return {}
         # 拿出原始的 meta.
         meta = self._ctx.get_meta(self._provider_chan_path)
         if meta is None:
@@ -622,9 +627,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return result
 
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:
-        """
-        不需要递归获取了.
-        """
+        # 不需要递归获取了.
         if not self.is_running():
             return None
         channel_path, command_name = Command.split_uniquename(name)
@@ -681,15 +684,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
-    def get_self_command(self, name: str) -> Optional[Command]:
-        meta = self.self_meta()
-        for command_meta in meta.commands:
-            if command_meta.name == name:
-                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
-                return CommandWrapper(meta=command_meta, func=func)
-        return None
-
-    async def _clear(self) -> None:
+    async def clear_own(self) -> None:
         if not self._ctx.is_running():
             return
         try:

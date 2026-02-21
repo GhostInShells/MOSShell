@@ -9,13 +9,11 @@ from typing import (
     Optional,
     Protocol,
     Union,
-    AsyncIterable,
     Callable,
     Coroutine,
-    Iterable,
 )
 
-from ghoshell_container import INSTANCE, IoCContainer, get_container
+from ghoshell_container import INSTANCE, IoCContainer
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 
@@ -38,7 +36,7 @@ __all__ = [
     "TaskDoneCallback",
     "RefreshMetaCallback",
     "ChannelRuntime",
-    # "Runtimes",
+    "ChannelImportLib",
     "ChannelFullPath",
     "ChannelMeta",
     "ChannelPaths",
@@ -543,10 +541,15 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    def imported(self) -> dict[str, Channel]:
+    def sub_channels(self) -> dict[str, Channel]:
         """
         当前持有的子 Channel.
         """
+        pass
+
+    @property
+    @abstractmethod
+    def importlib(self) -> "ChannelImportLib":
         pass
 
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
@@ -598,15 +601,14 @@ class ChannelRuntime(ABC):
     @abstractmethod
     async def refresh_metas(
         self,
-        force: bool = True,
-        callback: bool = True,
     ) -> None:
         """
-        更新元信息.
+        更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
+        更新后从 metas 取到的值是给模型可以查阅的.
         """
         pass
 
-    def self_meta(self) -> ChannelMeta:
+    def own_meta(self) -> ChannelMeta:
         """
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
         """
@@ -616,7 +618,7 @@ class ChannelRuntime(ABC):
     def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         """
         返回当前模块自身的所有 meta 信息.
-        dict 本身是有序的.
+        dict 本身是有序的, 深度优先遍历.
         """
         pass
 
@@ -647,10 +649,16 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     def is_idle(self) -> bool:
+        """
+        判断是否进入到了闲时.
+        """
         pass
 
     @abstractmethod
     async def wait_idle(self) -> None:
+        """
+        阻塞等待到闲时.
+        """
         pass
 
     @abstractmethod
@@ -669,10 +677,13 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def wait_started(self) -> None:
+        """
+        阻塞等待到启动.
+        """
         pass
 
     @abstractmethod
-    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         """
         返回当前 ChannelRuntime 自身的 commands.
         key 是 command 在当前 Runtime 内部的唯一名字.
@@ -680,18 +691,17 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    def get_self_command(self, name: str) -> Optional[Command]:
-        """
-        获取一个
-        """
-        pass
-
-    @abstractmethod
     def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
+        """
+        列出所有的 commands.
+        """
         pass
 
     @abstractmethod
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+        """
+        使用 unique name 获取一个 command.
+        """
         pass
 
     @abstractmethod
@@ -720,6 +730,9 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+        """
+        按路径的方式分配 task. 在 runtime 中排列执行.
+        """
         pass
 
     @abstractmethod
@@ -727,10 +740,6 @@ class ChannelRuntime(ABC):
         """
         注册当 Task 运行结束后的回调.
         """
-        pass
-
-    @abstractmethod
-    def on_refresh_meta(self, callback: RefreshMetaCallback) -> None:
         pass
 
     def create_command_task(
@@ -804,6 +813,139 @@ class ChannelRuntime(ABC):
         await self.close()
 
 
+class ChannelImportLib(ABC):
+    """
+    在一个上下文中, 所有 ChannelRuntime 应该共享的 Importlib.
+    用来避免一个 Channel 被多个 Channel 引用, 从而实例化出多个 Runtime.
+    类似 python 的 __import__
+    """
+
+    @property
+    @abstractmethod
+    def main(self) -> ChannelRuntime:
+        """
+        实例化的起点 Channel. 类似 main.py
+        """
+        pass
+
+    @abstractmethod
+    def get_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+        """
+        获取一个已经启动过的 Channel Runtime.
+        """
+        pass
+
+    @abstractmethod
+    async def get_or_create_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+        """
+        获取一个 Channel Runtime, 如果没有启动的话就启动它.
+        """
+        pass
+
+    @abstractmethod
+    async def compile_channel(self, channel: Channel) -> ChannelRuntime | None:
+        """ """
+        pass
+
+    @property
+    @abstractmethod
+    def logger(self) -> LoggerItf:
+        """
+        返回日志对象.
+        """
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """
+        importlib 是否已经启动了.
+        """
+        pass
+
+    @abstractmethod
+    async def start(self) -> None:
+        """
+        启动.
+        """
+        pass
+
+    def descendants(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
+        root_runtime = self.recursively_find_runtime(self.main, root)
+        if root_runtime is None:
+            return {}
+        return self.find_descendants(root_runtime.channel)
+
+    def all(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
+        root_runtime = self.recursively_find_runtime(self.main, root)
+        if root_runtime is None:
+            return {}
+        all_runtimes = {"": root_runtime}
+        for path, runtime in self.descendants(root).items():
+            all_runtimes[path] = runtime
+        return all_runtimes
+
+    def find_descendants(
+        self,
+        channel: Channel,
+        bloodline: set | None = None,
+        depth: int = 0,
+    ) -> dict[ChannelFullPath, ChannelRuntime]:
+        """
+        语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.
+        """
+        runtime = self.get_channel_runtime(channel)
+        if runtime is None or not runtime.is_running():
+            return {}
+        result = {}
+        bloodline = bloodline or set()
+        if channel in bloodline:
+            parent = [c.name for c in bloodline]
+            raise RuntimeError(f"import loop of {channel.name()} id={channel.id()}, parent={parent}")
+        bloodline.add(channel)
+        for name, child in runtime.sub_channels().items():
+            child_runtime = self.get_channel_runtime(child)
+            result[name] = child_runtime
+            if child_runtime is not None and child_runtime.is_running():
+                descendants = self.find_descendants(child, bloodline, depth + 1)
+                for path, descendant in descendants.items():
+                    real_path = Channel.join_channel_path(name, path)
+                    result[real_path] = descendant
+        # 退栈.
+        bloodline.remove(channel)
+        return result
+
+    def recursively_find_runtime(self, runtime: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
+        if path == "":
+            return runtime
+        paths = Channel.split_channel_path_to_names(path, 1)
+        child_name = paths[0]
+        further_path = paths[1] if len(paths) > 1 else ""
+        if child_name == "":
+            return runtime
+        child_channel = runtime.sub_channels().get(child_name)
+        if child_channel is None:
+            return None
+        child_runtime = self.get_channel_runtime(child_channel)
+        if child_runtime is None:
+            return None
+        return self.recursively_find_runtime(child_runtime, further_path)
+
+    async def recursively_fetch_runtime(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
+        if len(paths) == 0:
+            return root
+        child_name = paths[0]
+        further_path = paths[1:]
+        child = root.sub_channels().get(child_name)
+        if child is None:
+            return None
+        child_runtime = await self.get_or_create_channel_runtime(child)
+        return await self.recursively_fetch_runtime(child_runtime, further_path)
+
+    @abstractmethod
+    async def close(self) -> None:
+        pass
+
+
 class ChannelApp(Protocol):
     """
     简单定义一种有状态 Channel 的范式.
@@ -823,109 +965,6 @@ class ChannelApp(Protocol):
         返回一个 Channel 实例.
         """
         pass
-
-
-#
-# class Runtimes:
-#     """
-#     测试工具, 用来快速实例化一个 channel 树的所有 runtime
-#     """
-#
-#     def __init__(self, main: "Channel", container: IoCContainer, runtimes: dict[str, "ChannelRuntime"]):
-#         self.main_channel = main
-#         self.container = container
-#         self.runtime_map = runtimes
-#         self._start = False
-#         self._close = False
-#
-#     async def iter(self) -> AsyncIterable[tuple[ChannelFullPath, "ChannelRuntime"]]:
-#         """
-#         动态获取 runtime, 可能会临时初始化它们.
-#         """
-#         valid = set()
-#         all_channels = self.main_channel.all_channels()
-#         for path, channel in all_channels.items():
-#             valid.add(path)
-#             # 已经注册过.
-#             if path in self.runtime_map:
-#                 yield path, self.runtime_map.get(path)
-#             else:
-#                 runtime = channel.bootstrap(self.container)
-#                 await runtime.start()
-#                 self.runtime_map[path] = runtime
-#                 yield path, runtime
-#
-#         invalid = []
-#         for path in self.runtime_map.keys():
-#             if path not in valid:
-#                 invalid.append(path)
-#
-#         # 关闭掉不对的 runtime
-#         close_invalid = []
-#         if len(invalid) > 0:
-#             for path in invalid:
-#                 runtime = self.runtime_map.get(path)
-#                 if runtime is not None:
-#                     del self.runtime_map[path]
-#                 close_invalid.append(runtime.close())
-#             await asyncio.gather(*close_invalid)
-#
-#     def get(self, path: ChannelFullPath) -> "ChannelRuntime":
-#         runtime = self.runtime_map.get(path)
-#         if runtime is None:
-#             raise LookupError(f'runtime {path} not found')
-#         return runtime
-#
-#     def main_runtime(self) -> "ChannelRuntime":
-#         return self.get('')
-#
-#     async def fetch(self, path: ChannelFullPath) -> Optional["ChannelRuntime"]:
-#         channel = self.main_channel.get_channel(path)
-#         runtime = self.runtime_map.get(path)
-#         if channel is None:
-#             if runtime is not None:
-#                 await runtime.close()
-#                 del self.runtime_map[path]
-#             return None
-#         if runtime is None:
-#             runtime = channel.bootstrap(self.container)
-#             self.runtime_map[path] = runtime
-#             await runtime.start()
-#         return runtime
-#
-#     @classmethod
-#     def new(cls, channel: "Channel", container: Optional[IoCContainer] = None) -> Self:
-#         container = container or get_container()
-#         runtimes = {}
-#         for path, _channel in channel.all_channels().items():
-#             runtimes[path] = _channel.bootstrap(container)
-#
-#         return cls(channel, container, runtimes)
-#
-#     async def start(self):
-#         if self._start:
-#             return
-#         self._start = True
-#         start_all = []
-#         for runtime in self.runtime_map.values():
-#             start_all.append(asyncio.create_task(runtime.start()))
-#         await asyncio.gather(*start_all)
-#
-#     async def __aenter__(self) -> Self:
-#         await self.start()
-#         return self
-#
-#     async def close(self):
-#         if self._close:
-#             return
-#         self._close = True
-#         close_all = []
-#         for runtime in self.runtime_map.values():
-#             close_all.append(asyncio.create_task(runtime.close()))
-#         await asyncio.gather(*close_all)
-#
-#     async def __aexit__(self, exc_type, exc_val, exc_tb):
-#         await self.close()
 
 
 ChannelProxy = Channel

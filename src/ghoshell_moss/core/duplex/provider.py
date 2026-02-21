@@ -420,7 +420,7 @@ class DuplexChannelProvider(ChannelProvider):
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
         try:
             try:
-                await self._root_runtime.refresh_metas(callback=False)
+                await self._root_runtime.refresh_metas()
             except Exception as e:
                 self.logger.exception("%s run meta event %s failed: %s", self._log_prefix, event, e)
 
@@ -452,7 +452,7 @@ class DuplexChannelProvider(ChannelProvider):
             return
 
         # 获取真实的 command 对象.
-        command = node.get_self_command(call_event.name)
+        command = node.get_command(call_event.name)
         if command is None or not command.is_available():
             response = call_event.not_available()
             await self._send_event_to_proxy(response.to_channel_event())

@@ -46,14 +46,14 @@ async def test_zmq_channel_baseline():
             assert proxy_runtime.is_running()
 
             # 获取 channel meta
-            meta = proxy_runtime.self_meta()
+            meta = proxy_runtime.own_meta()
             assert meta is not None
             assert meta.name == "proxy"
             assert len(meta.commands) == 1
             assert meta.commands[0].name == "foo"
 
             # 获取命令并执行
-            cmd = proxy_runtime.get_self_command("foo")
+            cmd = proxy_runtime.get_command("foo")
             assert cmd is not None
 
             # 测试命令执行
@@ -98,7 +98,8 @@ async def test_zmq_channel_with_timeout():
         async with proxy.bootstrap() as runtime:
             await runtime.wait_connected()
             # 测试正常延迟命令
-            cmd = runtime.get_self_command("delayed_command")
+            cmd = runtime.get_command("delayed_command")
+            assert cmd is not None
             result = await cmd(0.5)
             assert result == "Delayed by 0.5s"
 
@@ -148,7 +149,7 @@ async def test_zmq_channel_lost_connection():
         assert runtime.is_running()
 
         # 执行命令
-        cmd = runtime.get_self_command("simple_command")
+        cmd = runtime.get_command("simple_command")
         result = await cmd()
         assert result == "Hello from provider"
         result = await cmd()
@@ -189,7 +190,7 @@ async def test_zmq_channel_lasy_bind():
         async with provider.arun(provider_channel):
             await runtime.wait_connected()
             assert runtime.is_connected()
-            cmd = runtime.get_self_command("hello")
+            cmd = runtime.get_command("hello")
             assert await cmd() == "Hello"
 
 
@@ -226,15 +227,15 @@ async def test_zmq_channel_multiple_commands():
         async with proxy.bootstrap() as runtime:
             await runtime.wait_connected()
             # 验证所有命令都存在
-            meta = runtime.self_meta()
+            meta = runtime.own_meta()
             assert len(meta.commands) == 3
             command_names = {cmd.name for cmd in meta.commands}
             assert command_names == {"add", "multiply", "greet"}
 
             # 测试所有命令
-            add_cmd = runtime.get_self_command("add")
-            multiply_cmd = runtime.get_self_command("multiply")
-            greet_cmd = runtime.get_self_command("greet")
+            add_cmd = runtime.get_command("add")
+            multiply_cmd = runtime.get_command("multiply")
+            greet_cmd = runtime.get_command("greet")
 
             # 执行加法
             result = await add_cmd(2, 3)

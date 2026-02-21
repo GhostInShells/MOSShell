@@ -65,7 +65,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         self._states: Optional[StateStore] = None
         self._blocking = blocking
 
-    def imported(self) -> dict[str, "Channel"]:
+    def sub_channels(self) -> dict[str, "Channel"]:
         return {}
 
     @property
@@ -122,7 +122,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
     def is_running(self) -> bool:
         return self._running
 
-    def self_meta(self) -> ChannelMeta:
+    def own_meta(self) -> ChannelMeta:
         # todo: 还没有实现动态更新, 主要是更新 command
         if not self.is_running():
             raise RuntimeError(f"Channel client {self._name} is not running")
@@ -140,9 +140,9 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         # todo: 检查状态.
         return
 
-    def self_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         # todo: 这里每次更新, 和上面好像冲突.
-        meta = self.self_meta()
+        meta = self.own_meta()
         result = {}
         for command_meta in meta.commands:
             if not available_only or command_meta.available:
@@ -152,7 +152,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         return result
 
     def get_self_command(self, name: str) -> Optional[Command]:
-        meta = self.self_meta()
+        meta = self.own_meta()
         for command_meta in meta.commands:
             if command_meta.name == name:
                 func = self._get_command_func(command_meta)

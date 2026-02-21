@@ -21,7 +21,7 @@ async def test_channel_runtime_execution():
         await runtime.wait_idle()
         assert runtime.is_idle()
 
-        foo_cmd = runtime.get_self_command("foo")
+        foo_cmd = runtime.get_command("foo")
         assert foo_cmd is not None
         assert foo_cmd.meta().chan == ""
         task = BaseCommandTask.from_command(foo_cmd)
@@ -81,7 +81,7 @@ async def test_child_channel_runtime_running():
         assert "a" in main.children()
 
         assert main.children().get("a") is a
-        commands = runtime.self_commands()
+        commands = runtime.own_commands()
         assert "bar" in commands
 
         bar_cmd = commands["bar"]

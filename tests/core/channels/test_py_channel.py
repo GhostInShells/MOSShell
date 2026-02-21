@@ -58,28 +58,28 @@ async def test_py_channel_baseline() -> None:
         assert runtime.is_connected()
 
         # commands 存在.
-        commands = list(runtime.self_commands().values())
+        commands = list(runtime.own_commands().values())
         assert len(commands) > 0
 
         # 不用全名来获取函数.
-        foo_cmd = runtime.get_self_command("foo")
+        foo_cmd = runtime.get_command("foo")
         assert foo_cmd is not None
         assert await foo_cmd() == 9527
 
         # 测试名称有效.
-        help_cmd = runtime.get_self_command("help")
+        help_cmd = runtime.get_command("help")
         assert help_cmd is not None
         assert await help_cmd() == "help"
 
         # 测试乱取拿不到东西
-        none_cmd = runtime.get_self_command("never_exists_command")
+        none_cmd = runtime.get_command("never_exists_command")
         assert none_cmd is None
         # full name 不正确也拿不到.
-        help_cmd = runtime.get_self_command("help")
+        help_cmd = runtime.get_command("help")
         assert help_cmd is not None
 
         # available 测试.
-        available_test_cmd = runtime.get_self_command("available_test_fn")
+        available_test_cmd = runtime.get_command("available_test_fn")
         assert available_test_cmd is not None
         # 当为 True 的时候.
         assert available_mutator.available
@@ -105,17 +105,19 @@ async def test_py_channel_children() -> None:
 
     assert len(chan.children()) == 1
     async with a_chan.bootstrap() as runtime:
-        meta = runtime.self_meta()
+        meta = runtime.own_meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
-        command = runtime.get_self_command("zoo")
+        command = runtime.get_command("zoo")
         # 实际执行的是 zoo.
         assert await command() == 123
 
     assert len(chan.children()) == 1
     async with chan.bootstrap() as runtime:
-        assert len(chan.children()) == 1
-        meta = runtime.self_meta()
+        assert len(runtime.sub_channels()) == 1
+        metas = runtime.metas()
+        assert len(metas) == 2
+        meta = runtime.own_meta()
         assert meta.children == ["a"]
 
 
@@ -174,7 +176,7 @@ async def test_py_channel_desc_and_doc_with_ctx() -> None:
 
     main.build.command(doc=foo_doc)(foo)
     async with main.bootstrap() as runtime:
-        _foo = runtime.get_self_command("foo")
+        _foo = runtime.get_command("foo")
         r = await _foo()
         assert r == 123
         assert await _foo() == 123
@@ -198,7 +200,7 @@ async def test_py_channel_bind():
         return _foo.val
 
     async with main.bootstrap() as runtime:
-        _foo = runtime.get_self_command("foo")
+        _foo = runtime.get_command("foo")
         assert await _foo() == 123
 
 
@@ -216,13 +218,13 @@ async def test_py_channel_context() -> None:
 
     async with main.bootstrap() as runtime:
         # 启动时 meta 中包含了生成的 messages.
-        meta = runtime.self_meta()
+        meta = runtime.own_meta()
         assert len(meta.context) == 1
         messages.append(new_text_message("world", role="system"))
 
         # 更新后, messages 也变更了.
         await runtime.refresh_metas()
-        assert len(runtime.self_meta().context) == 2
+        assert len(runtime.own_meta().context) == 2
 
 
 @pytest.mark.asyncio
@@ -365,10 +367,11 @@ async def test_py_channel_child_orders() -> None:
 
     async with main.bootstrap() as runtime:
         # 深度优先排序.
-        order = [b.channel for b in runtime.all_runtimes().values()]
+        all_runtimes = runtime.importlib.all()
+        order = [b.channel for b in all_runtimes.values()]
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
         # 运行第二次.
-        order = [b.channel for b in runtime.all_runtimes().values()]
+        order = [b.channel for b in all_runtimes.values()]
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
 
 

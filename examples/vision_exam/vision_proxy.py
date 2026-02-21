@@ -21,7 +21,7 @@ if __name__ == "__main__":
                     if not proxy.is_running():
                         continue
                     await proxy.broker.refresh_all_metas()
-                    meta = proxy.broker.self_meta()
+                    meta = proxy.broker.own_meta()
                     for msg in meta.context:
                         for ct in msg.contents:
                             if i := Base64Image.from_content(ct):

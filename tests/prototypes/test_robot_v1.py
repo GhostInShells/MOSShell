@@ -103,12 +103,8 @@ async def test_robot_main_channel():
     pose = _manager.get_default_pose()
     traj = Trajectory.from_pose(pose)
 
-    async with main_channel.bootstrap():
-        meta = main_channel.runtime.self_meta()
-        # 检查下 meta 可以被正确生成.
-        # assert _manager.robot().name in meta.description
-
-        command = main_channel.runtime.get_self_command("run_trajectory")
+    async with main_channel.bootstrap() as runtime:
+        command = runtime.get_command("run_trajectory")
         r = await command(traj.model_dump_json())
         assert r is None
         values = _controller.get_current_position_values()

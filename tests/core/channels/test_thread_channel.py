@@ -96,7 +96,7 @@ async def test_thread_channel_baseline():
         assert main_runtime.is_running()
         assert main_runtime.is_connected()
         assert main_runtime.is_running()
-        proxy_side_foo_meta = main_runtime.self_meta()
+        proxy_side_foo_meta = main_runtime.own_meta()
         assert proxy_side_foo_meta.available
         assert len(proxy_side_foo_meta.commands) > 0
         assert proxy_side_foo_meta.name == "provider"
@@ -107,7 +107,7 @@ async def test_thread_channel_baseline():
             metas = proxy_runtime.metas()
             assert len(metas) == 2
             # 阻塞等待连接成功.
-            proxy_meta = proxy_runtime.self_meta()
+            proxy_meta = proxy_runtime.own_meta()
             assert proxy_meta.name == "proxy"
             assert proxy_meta is not None
             # 名字被替换了.
@@ -124,11 +124,11 @@ async def test_thread_channel_baseline():
             # 判断 proxy 也有 children
             metas = proxy_runtime.metas()
             assert "a" in metas
-            assert main_runtime.self_meta().name == "provider"
+            assert main_runtime.own_meta().name == "provider"
             assert proxy_meta.name == "proxy"
 
             # 客户端仍然可以调用命令.
-            proxy_side_foo = proxy_runtime.get_self_command("foo")
+            proxy_side_foo = proxy_runtime.get_command("foo")
             assert proxy_side_foo is not None
 
             result = await proxy_side_foo()
@@ -153,14 +153,14 @@ def test_thread_channel_lost_connection():
             await proxy_runtime.wait_connected()
             # 验证连接正常
             assert proxy_runtime.is_running()
-            _foo = proxy_runtime.get_self_command("foo")
+            _foo = proxy_runtime.get_command("foo")
             assert _foo is not None
 
             # 模拟连接中断（通过关闭 provider）
             provider.close()
             assert not provider.is_running()
             assert proxy_runtime.is_running()
-            _foo = proxy_runtime.get_self_command("foo")
+            _foo = proxy_runtime.get_command("foo")
             # 中断后抛出 command error.
             with pytest.raises(CommandError):
                 result = await _foo()
@@ -192,7 +192,7 @@ async def test_thread_channel_refresh_meta():
             # 验证连接正常
             assert runtime.is_running()
 
-            foo = runtime.get_self_command("foo")
+            foo = runtime.get_command("foo")
             assert "hello" in foo.meta().interface
 
             foo_doc = "world"
@@ -200,13 +200,18 @@ async def test_thread_channel_refresh_meta():
             assert generated_foo_doc == foo_doc
 
             # 没有立刻变更:
-            foo1 = runtime.get_self_command("foo")
+            foo1 = runtime.get_command("foo")
             assert foo1 is not None
             assert "hello" in foo1.meta().interface
 
             # 刷新了 meta 才会变更.
             await runtime.refresh_metas()
-            foo2 = runtime.get_self_command("foo")
+            # 这时判断, provider 侧已经更新了.
+            provider_foo = provider.runtime.get_command("foo")
+            assert provider_foo is not None
+            assert "world" in provider_foo.meta().interface
+
+            foo2 = runtime.get_command("foo")
 
             assert foo2 is not foo1
             assert "hello" not in foo2.meta().interface
@@ -234,8 +239,9 @@ async def test_thread_channel_has_child():
         async with proxy.bootstrap() as runtime:
             assert runtime.is_running()
             await runtime.wait_connected()
+            metas = runtime.metas()
 
-            assert "sub1" in runtime.metas()
+            assert "sub1" in metas
             # # 判断子 channel 存在.
             value = await runtime.execute_command("sub1:bar")
             assert value == 456
@@ -254,15 +260,17 @@ async def test_thread_channel_exception():
 
     provider, proxy = create_thread_channel("proxy")
     provider.run_in_thread(chan)
-    async with proxy.bootstrap() as proxy_runtime:
-        await proxy_runtime.wait_connected()
-        assert proxy_runtime.is_available()
-        assert proxy_runtime.is_running()
-        _foo = proxy_runtime.get_self_command("foo")
-        with pytest.raises(CommandError):
-            await _foo()
+    try:
+        async with proxy.bootstrap() as proxy_runtime:
+            await proxy_runtime.wait_connected()
+            assert proxy_runtime.is_available()
+            assert proxy_runtime.is_running()
+            _foo = proxy_runtime.get_command("foo")
+            with pytest.raises(CommandError):
+                await _foo()
 
-    provider.close()
+    finally:
+        provider.close()
     await provider.wait_closed()
 
 

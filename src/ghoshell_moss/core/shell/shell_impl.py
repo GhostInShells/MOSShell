@@ -330,7 +330,7 @@ class DefaultShell(MOSSShell):
         if not self.is_running():
             return
         # 保证这个任务最终被执行完毕吧.
-        refresh_meta_task = self._event_loop.create_task(self._main_runtime.refresh_metas(force=True))
+        refresh_meta_task = self._event_loop.create_task(self._main_runtime.refresh_metas())
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
             done, pending = await asyncio.wait([refresh_meta_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
@@ -444,7 +444,7 @@ class DefaultShell(MOSSShell):
         if runtime is None or not runtime.is_available():
             return None
 
-        real_command = runtime.get_self_command(name)
+        real_command = runtime.get_command(name)
         if not exec_in_chan:
             return real_command
         return self._wrap_real_command(chan, real_command, None)
@@ -456,9 +456,6 @@ class DefaultShell(MOSSShell):
         origin_func = command.__call__
         if isinstance(command, CommandWrapper):
             origin_func = command.func
-        _runtime = ChannelCtx.runtime()
-        _task = ChannelCtx.task()
-        print("++++++++++++", _runtime, _task)
 
         # 创建一个入栈函数.
         async def _exec_in_chan_func(*args, **kwargs) -> Any:
