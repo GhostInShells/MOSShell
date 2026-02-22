@@ -542,8 +542,6 @@ class CommandTask(Generic[RESULT], ABC):
     7. 可复制, 复制后可重入, 方便做循环.
     """
 
-    IDX_ARG = "_idx"
-
     def __init__(
             self,
             *,
@@ -572,8 +570,6 @@ class CommandTask(Generic[RESULT], ABC):
         self.errmsg: Optional[str] = None
         self.last_trace: tuple[str, float] = ("", 0.0)
         """ command task 在 shell 执行的 task 中的排序. 传入这个参数本身没有意义. 最终都以 Shell 的定义为准. """
-        if self.IDX_ARG in self.kwargs:
-            del self.kwargs[self.IDX_ARG]
 
         # --- debug --- #
         self.trace: dict[str, float] = {

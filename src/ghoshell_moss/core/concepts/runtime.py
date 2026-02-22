@@ -947,6 +947,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         # 初始化函数运行上下文.
         # 使用 dry run 来管理生命周期.
         async with ChannelCtx(self, task).in_ctx():
+            # dry run 不会清空 task 状态.
             return await task.dry_run()
 
     async def _execute_self_task(self, task: CommandTask, depth: int = 0) -> None:

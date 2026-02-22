@@ -13,7 +13,7 @@ __all__ = ['wait']
 
 
 async def wait(
-        ctml__,
+        tokens__,
         timeout: float | None = None,
         return_when: str = "ALL_COMPLETE",
         channels: str = "",
@@ -22,12 +22,11 @@ async def wait(
     核心阻塞原语, 可以阻塞等待 一段 CTML 指令 彻底结束.
     用这种方式, 能把你输出的命令分成几组, 分段来执行, 保证其阻塞效果.
 
-    :param ctml__: 嵌套的 CTML 指令, 会由 wait 原语统一管理.
+    :param tokens__: 嵌套的 CTML 指令, 会由 wait 原语统一管理.
     :param timeout: 超时时间, 不为空的话, 在时间到达后会主动中断所有的指令, 让执行继续.
     :param return_when: 定义 ctml__ 命令整体结束的时机:
         ALL_COMPLETE: 等待所有指令运行结束后, 才继续执行后续指令.
         FIRST_COMPLETE: 当有一个指令执行成功时, 将其它指令设置为取消.
-        FIRST_EXCEPTION: 当有一个指令异常时, 取消所有的指令.
     :param channels: 指定 return when 生效对应的 channel 名, 用 , 隔开. 为空的话, 则 return_when 针对所有指令.
 
     CTML 用法:
@@ -37,12 +36,7 @@ async def wait(
         指定生效的通道: `<wait channels="a" return_when="FIRST_COMPLETE"><a: foo/><b:bar></wait>` 这时 b:bar 先执行完, a:foo 也不会被终止.
     """
     shell = ChannelCtx.get_contract(MOSSShell)
-    iterable_tasks = shell.parse_tokens_to_command_tasks(ctml__)
-
-    # 准备 wait timeout.
-    wait_timeout_task = None
-    if timeout > 0:
-        wait_timeout_task = asyncio.create_task(asyncio.sleep(timeout))
+    iterable_tasks = shell.parse_tokens_to_command_tasks(tokens__)
 
     channel_names = []
     if channels:
@@ -66,42 +60,24 @@ async def wait(
 
             if _return_when == "FIRST_COMPLETE":
                 wait_done = asyncio.create_task(asyncio.wait(
-                    [t.wait(throw=False) for t in wait_task_group],
+                    [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
+                    timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 ))
-            elif _return_when == "FIRST_EXCEPTION":
-                wait_done = asyncio.create_task(asyncio.wait(
-                    wait_task_group,
-                    return_when=asyncio.FIRST_EXCEPTION,
-                ))
-
-            else:  # return_when == "ALL_COMPLETE":
-                wait_done = asyncio.create_task(asyncio.wait(
-                    [t.wait(throw=False) for t in wait_task_group],
+            elif return_when == "ALL_COMPLETE":
+                wait_done = asyncio.wait(
+                    [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
+                    timeout=timeout,
                     return_when=asyncio.ALL_COMPLETED,
-                ))
-                _return_when = "ALL_COMPLETE"
-
-            if wait_timeout_task:
-                done, pending = await asyncio.wait(
-                    [wait_done, wait_timeout_task],
-                    return_when=asyncio.FIRST_COMPLETED,
                 )
-                for t in pending:
-                    t.cancel()
-
-                if wait_timeout_task in done:
-                    canceling = 0
-                    for t in tasks:
-                        if not t.done():
-                            canceling += 1
-                    return "cancel %d cause timeout" % canceling
+                _return_when = "ALL_COMPLETE"
             else:
-                done, pending = await wait_done
-                for t in pending:
-                    t.cancel()
+                raise ValueError(f"invalid return_when: {return_when}")
+            done, pending = await wait_done
+            for t in pending:
+                t.cancel()
 
-                return return_when
+            return return_when
 
         except asyncio.CancelledError:
             pass

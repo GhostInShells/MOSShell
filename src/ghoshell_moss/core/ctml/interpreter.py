@@ -74,18 +74,18 @@ def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
 
 class CTMLInterpreter(Interpreter):
     def __init__(
-        self,
-        *,
-        commands: dict[ChannelFullPath, dict[str, Command]],
-        speech: Speech,
-        stream_id: Optional[str] = None,
-        callback: Optional[CommandTaskCallback] = None,
-        root_tag: str = "ctml",
-        special_tokens: Optional[dict[str, str]] = None,
-        logger: Optional[LoggerItf] = None,
-        on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-        meta_system_prompt: Optional[str] = None,
-        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            *,
+            commands: dict[ChannelFullPath, dict[str, Command]],
+            speech: Speech,
+            stream_id: Optional[str] = None,
+            callback: Optional[CommandTaskCallback] = None,
+            root_tag: str = "ctml",
+            special_tokens: Optional[dict[str, str]] = None,
+            logger: Optional[LoggerItf] = None,
+            on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+            meta_system_prompt: Optional[str] = None,
+            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -415,16 +415,11 @@ class CTMLInterpreter(Interpreter):
             self._parser.close()
         except ParserStopped:
             pass
-
-        for cmd in self._parsed_tasks.values():
-            if not cmd.done():
-                cmd.cancel("interpretation stopped")
-        stop_all = [self._speech.clear()]
-        if self._main_parsing_task is not None:
-            self._main_parsing_task.cancel()
-            stop_all.append(self._main_parsing_task)
-        ignore = await asyncio.gather(*stop_all, return_exceptions=True)
-        for _ in ignore:
+        try:
+            if self._main_parsing_task:
+                self._main_parsing_task.cancel()
+                await self._main_parsing_task
+        except asyncio.CancelledError:
             pass
 
         self._logger.info("interpreter %s stopped", self.id)
@@ -478,10 +473,10 @@ class CTMLInterpreter(Interpreter):
                     raise InterpretError(f"Interpret failed: {exc}") from exc
 
     async def wait_execution_done(
-        self,
-        timeout: float | None = None,
-        throw: bool = False,
-        cancel_on_exception: bool = True,
+            self,
+            timeout: float | None = None,
+            throw: bool = False,
+            cancel_on_exception: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)
@@ -494,17 +489,9 @@ class CTMLInterpreter(Interpreter):
         if len(tasks) == 0:
             return tasks
 
-        for task in tasks.values():
-            gathering.append(task.wait(throw=False))
-
-        gathered = asyncio.gather(*gathering, return_exceptions=False)
-        wait_stopped = asyncio.create_task(self._stopped_event.wait())
-        timeout_task = None
-        remaining_time = timeleft.left()
-        waiting_tasks = [gathered, wait_stopped]
-        if remaining_time > 0.0:
-            timeout_task = asyncio.create_task(asyncio.sleep(remaining_time))
-            waiting_tasks.append(timeout_task)
+        waiting_tasks = []
+        for t in tasks.values():
+            waiting_tasks.append(asyncio.create_task(t.wait(throw=True)))
 
         err = None
         try:
@@ -512,17 +499,11 @@ class CTMLInterpreter(Interpreter):
             done, pending = await asyncio.wait(
                 waiting_tasks,
                 timeout=timeleft.left() or None,
-                return_when=asyncio.FIRST_COMPLETED,
+                return_when=asyncio.ALL_COMPLETED,
             )
             for t in pending:
                 t.cancel()
-            try:
-                await gathered
-            except asyncio.CancelledError:
-                pass
 
-            if timeout_task in done:
-                raise asyncio.TimeoutError("Timed out while waiting for parsed command tasks to finish")
             # 返回所有的 tasks.
             return tasks
         except asyncio.CancelledError:
