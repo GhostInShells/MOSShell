@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ghoshell_container import Container
 
-from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.core.shell import new_ctml_shell
 from ghoshell_moss.speech import make_baseline_tts_speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
 from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
@@ -20,7 +20,7 @@ ADDRESS = "tcp://192.168.1.15:9527"
 async def run_agent(address: str = ADDRESS, container: Container | None = None):
     container = container or get_container()
     # 创建 Shell
-    shell = new_shell(container=container)
+    shell = new_ctml_shell(container=container)
 
     jetarm_chan = ZMQChannelProxy(
         name="jetarm",

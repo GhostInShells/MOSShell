@@ -10,7 +10,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft, uuid
 
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskState, CommandToken
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskState, CommandToken, CommandMeta
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
@@ -21,7 +21,7 @@ from ghoshell_moss.core.concepts.interpreter import (
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.prompt import get_moss_meta_prompt
-from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, ParserStopped
+from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, ParserStopped, AttrWithTypeSuffixParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import Message
 
@@ -48,21 +48,26 @@ def make_chan_prompt(channel_path: str, description: str, interface: str) -> str
 """
 
 
+def make_command_interface(commands: Iterable[CommandMeta]) -> str:
+    return "\n\n".join([c.interface for c in commands])
+
+
 def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
     channel_items: list[tuple[_Title, _Description, _Interface]] = []
+    channel_metas = channel_metas.copy()
     if len(channel_metas) == 0:
         return ""
-    if "" in channel_metas:
-        main = channel_metas.pop("")
-        if len(main.commands) > 0:
-            interface = "\n\n".join([c.interface for c in main.commands])
-            channel_items.append(("", "main channel commands (do not need channel namespaces):", interface))
+    main_channel_meta = channel_metas.pop('')
+    if main_channel_meta:
+        channel_items.append(
+            ("root_channel", main_channel_meta.description, make_command_interface(main_channel_meta.commands))
+        )
     for channel_path, channel_meta in channel_metas.items():
         channel_items.append(
             (
                 channel_path,
                 channel_meta.description,
-                "\n\n".join([c.interface for c in channel_meta.commands]),
+                make_command_interface(channel_meta.commands),
             )
         )
     if len(channel_items) == 0:
@@ -139,6 +144,7 @@ class CTMLInterpreter(Interpreter):
             root_tag=root_tag,
             special_tokens=special_tokens,
             stop_event=self._stopped_event,
+            attr_parsers=[AttrWithTypeSuffixParser()],
         )
         # 用线程安全队列就可以. 考虑到队列可能不是在同一个 loop 里添加
         self._input_deltas_queue: queue.Queue[str | None] = queue.Queue()
@@ -203,11 +209,12 @@ class CTMLInterpreter(Interpreter):
     def _on_task_done(self, command_task: CommandTask) -> None:
         if self._stopped_event.is_set():
             return
-        # 发现任何任务出错.
+        # 发现任何任务出错超出预期.
         if exception := command_task.exception():
-            # 中断所有的运行.
-            self._stopped_event.set()
-            self._parsing_exception = exception
+            if CommandErrorCode.interpretation_fatal(exception):
+                # 中断所有的运行.
+                self._stopped_event.set()
+                self._parsing_exception = exception
 
     def meta_system_prompt(self) -> str:
         return self._meta_instruction or DEFAULT_META_PROMPT
@@ -404,7 +411,7 @@ class CTMLInterpreter(Interpreter):
         task = asyncio.create_task(self._main_parsing_loop())
         self._main_parsing_task = task
 
-    async def stop(self) -> None:
+    async def stop(self, interrupt: bool = False) -> None:
         if self._stopped_event.is_set():
             await self._parsing_loop_done.wait()
             return
@@ -421,6 +428,11 @@ class CTMLInterpreter(Interpreter):
                 await self._main_parsing_task
         except asyncio.CancelledError:
             pass
+
+        if interrupt:
+            for t in self._parsed_tasks.values():
+                if not t.done():
+                    t.fail(CommandErrorCode.INTERRUPTED.error("interpreter stopped"))
 
         self._logger.info("interpreter %s stopped", self.id)
         # 关闭所有未执行完的任务.
@@ -475,58 +487,63 @@ class CTMLInterpreter(Interpreter):
     async def wait_execution_done(
             self,
             timeout: float | None = None,
+            *,
+            return_when: str = asyncio.ALL_COMPLETED,
             throw: bool = False,
-            cancel_on_exception: bool = True,
+            clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)
+        # 阻塞等待解析完成.
         await self.wait_compiled(timeout, throw=throw)
+
+        # 编译完已经超时了.
         if throw and not timeleft.alive():
             raise asyncio.TimeoutError("Timed out while waiting for parsed command tasks to finish")
 
-        gathering = []
+        # 拿到编译完的 tasks.
         tasks = self.compiled_tasks()
         if len(tasks) == 0:
             return tasks
 
+        # 按约定等待所有 task.
         waiting_tasks = []
         for t in tasks.values():
-            waiting_tasks.append(asyncio.create_task(t.wait(throw=True)))
+            waiting_tasks.append(asyncio.create_task(t.wait(throw=False)))
 
         err = None
         try:
-            # ignore
+            # 阻塞等待运行完成.
             done, pending = await asyncio.wait(
                 waiting_tasks,
                 timeout=timeleft.left() or None,
-                return_when=asyncio.ALL_COMPLETED,
+                return_when=return_when,
             )
             for t in pending:
                 t.cancel()
+
+            if throw:
+                for task in tasks.values():
+                    if exp := task.exception():
+                        # 根据结果判断是否抛出异常.
+                        raise exp
 
             # 返回所有的 tasks.
             return tasks
         except asyncio.CancelledError:
             self._logger.info("wait execution done is cancelled")
-            return tasks
-        except InterpretError as e:
-            # interpreter error 可以抛出.
-            err = e
-            if throw:
-                raise
+            pass
         except Exception as e:
+            # 发生了预期外的异常.
             self._logger.exception("Wait execution done failed")
-            # 不抛出其它异常.
-            err = InterpretError(f"Interpreter failed: {e}")
-            if throw:
-                raise err
+            err = e
+            raise e
         finally:
-            if err is not None and cancel_on_exception:
+            if clear_undone:
                 for task in tasks.values():
                     if not task.done():
                         # 取消所有未完成的任务.
-                        task.fail(err or "wait execution failed")
-
+                        task.fail(err or CommandErrorCode.CLEARED.error("wait execution done"))
         return tasks
 
     def __del__(self) -> None:

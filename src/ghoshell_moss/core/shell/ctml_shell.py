@@ -23,35 +23,35 @@ from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.core.shell.main_channel import MainChannel
+from ghoshell_moss.core.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
 import contextlib
 
-__all__ = ["DefaultShell", "new_shell"]
+__all__ = ["CTMLShell", "new_ctml_shell"]
 
 
-class DefaultShell(MOSSShell):
+class CTMLShell(MOSSShell):
     def __init__(
-        self,
-        *,
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: Channel | None = None,
-        speech: Optional[Speech] = None,
-        state_store: Optional[StateStore] = None,
+            self,
+            *,
+            name: str = "shell",
+            description: Optional[str] = None,
+            container: IoCContainer | None = None,
+            main_channel: Channel | None = None,
+            speech: Optional[Speech] = None,
+            state_store: Optional[StateStore] = None,
     ):
         self._name = name
         self._desc = description
 
         self._container = Container(parent=container, name="MOSShell")
         self._container.set(MOSSShell, self)
-        self._main_channel = main_channel or MainChannel(name="", description="")
+        self._main_channel = main_channel or create_ctml_main_chan()
 
         self._speech: Speech | None = speech
 
         # state
-        self._state_store: StateStore | None = None
+        self._state_store: StateStore | None = state_store
 
         # logger
         self._logger = None
@@ -271,12 +271,12 @@ class DefaultShell(MOSSShell):
             self.push_task(task)
 
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[int] = None,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        prepare_timeout: float = 2.0,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[int] = None,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            prepare_timeout: float = 2.0,
     ) -> Interpreter:
         self._check_running()
 
@@ -341,9 +341,9 @@ class DefaultShell(MOSSShell):
             await refresh_meta_task
 
     def channel_metas(
-        self,
-        available_only: bool = True,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            available_only: bool = True,
+            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
@@ -406,11 +406,11 @@ class DefaultShell(MOSSShell):
         await self._closed_event.wait()
 
     def commands(
-        self,
-        available_only: bool = True,
-        *,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        exec_in_chan: bool = False,
+            self,
+            available_only: bool = True,
+            *,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            exec_in_chan: bool = False,
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
@@ -517,15 +517,15 @@ class DefaultShell(MOSSShell):
         _ = await asyncio.gather(self.speech.clear(), self._main_runtime.clear())
 
 
-def new_shell(
-    name: str = "shell",
-    description: Optional[str] = None,
-    container: IoCContainer | None = None,
-    main_channel: Channel | None = None,
-    speech: Optional[Speech] = None,
+def new_ctml_shell(
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: Channel | None = None,
+        speech: Optional[Speech] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
-    return DefaultShell(
+    return CTMLShell(
         name=name,
         description=description,
         container=container,

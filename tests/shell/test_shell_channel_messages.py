@@ -8,9 +8,9 @@ from ghoshell_moss.message import Message
 
 @pytest.mark.asyncio
 async def test_shell_execution_baseline():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
 
     a_chan = PyChannel(name="a")
     b_chan = PyChannel(name="b")

@@ -3,6 +3,8 @@ import asyncio
 from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandStackResult,
+    PyCommand,
+    BaseCommandTask,
 )
 from ghoshell_moss.core.concepts.errors import (
     CommandErrorCode
@@ -41,6 +43,9 @@ async def wait(
     channel_names = []
     if channels:
         channel_names = channels.split(",")
+    timeout_task = None
+    if timeout is not None and timeout > 0.0:
+        timeout_task = asyncio.create_task(asyncio.sleep(timeout))
 
     async def _wait_for_done(tasks: list[CommandTask]) -> str | None:
         # 创建 wait task group.
@@ -49,6 +54,8 @@ async def wait(
         _return_when = return_when
         try:
             wait_task_group = []
+            if timeout_task:
+                wait_task_group.append(timeout_task)
             if len(channel_names) == 0:
                 wait_task_group = tasks
             else:
@@ -61,23 +68,38 @@ async def wait(
             if _return_when == "FIRST_COMPLETE":
                 wait_done = asyncio.create_task(asyncio.wait(
                     [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
-                    timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 ))
             elif return_when == "ALL_COMPLETE":
                 wait_done = asyncio.wait(
                     [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
-                    timeout=timeout,
                     return_when=asyncio.ALL_COMPLETED,
                 )
                 _return_when = "ALL_COMPLETE"
             else:
                 raise ValueError(f"invalid return_when: {return_when}")
-            done, pending = await wait_done
-            for t in pending:
-                t.cancel()
 
-            return return_when
+            if not timeout_task:
+                done, pending = await wait_done
+                for t in pending:
+                    t.cancel()
+                return return_when
+            else:
+                wait_done_task = asyncio.create_task(wait_done)
+                done, pending = await asyncio.wait(
+                    [timeout_task, wait_done_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+                if wait_done in done:
+                    return _return_when
+                else:
+                    canceling = 0
+                    for t in tasks:
+                        if not t.done():
+                            canceling += 1
+                    return f"timeout and cancel {canceling} command"
 
         except asyncio.CancelledError:
             pass
@@ -89,4 +111,30 @@ async def wait(
     return CommandStackResult(
         iterable_tasks,
         _wait_for_done,
+    )
+
+
+async def _sleep(timeout: float):
+    await asyncio.sleep(timeout)
+    return
+
+
+_sleep_command = PyCommand(_sleep)
+
+
+async def sleep(seconds: float, chan: str = ""):
+    """
+
+    """
+    if chan == "":
+        await asyncio.sleep(seconds)
+        return
+    runtime = ChannelCtx.runtime()
+    sub = await runtime.fetch_sub_runtime(chan)
+    if sub is None:
+        raise ValueError(f"invalid chan: {chan}")
+
+    task = BaseCommandTask.from_command(_sleep_command, chan_=chan, kwargs={"seconds": seconds})
+    return CommandStackResult(
+        [task],
     )

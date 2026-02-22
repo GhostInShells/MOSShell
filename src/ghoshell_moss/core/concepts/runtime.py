@@ -176,12 +176,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-        self,
-        *,
-        channel: CHANNEL,
-        container: IoCContainer | None = None,
-        logger: LoggerItf | None = None,
-        state_store: StateStore | None = None,
+            self,
+            *,
+            channel: CHANNEL,
+            container: IoCContainer | None = None,
+            logger: LoggerItf | None = None,
+            state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -331,7 +331,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -1016,10 +1016,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-        self,
-        owner: CommandTask,
-        stack: CommandStackResult,
-        depth: int = 0,
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:
@@ -1049,11 +1049,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
                 # 递归阻塞等待任务被执行.
                 await self._execute_self_task(sub_task, depth + 1)
-                if sub_task.meta.blocking:
-                    result = await sub_task
-                    if isinstance(result, CommandStackResult):
-                        # 递归执行
-                        await self._fulfill_task_with_its_result_stack(sub_task, result, depth + 1)
 
             # 完成了所有子节点的调度后, 通知回调函数.
             # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,

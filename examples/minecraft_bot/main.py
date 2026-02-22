@@ -10,7 +10,7 @@ from ghoshell_container import Container
 from javascript import On, require
 
 from ghoshell_moss import PyChannel
-from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.core.shell import new_ctml_shell
 from ghoshell_moss.message import Message, Text
 from ghoshell_moss.speech import make_baseline_tts_speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
@@ -257,7 +257,7 @@ async def main():
         player = PyAudioStreamPlayer()
         tts = VolcengineTTS(conf=VolcengineTTSConf(default_speaker="zh_male_ruyayichen_saturn_bigtts"))
         speech = make_baseline_tts_speech(player=player, tts=tts)
-    shell = new_shell(speech=speech)
+    shell = new_ctml_shell(speech=speech)
     shell.main_channel.import_channels(bot_chan)
     agent = SimpleAgent(
         instruction=f"你叫{BOT_USERNAME}，举止谈吐儒雅脱俗，生活在minecraft世界中",

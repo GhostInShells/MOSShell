@@ -256,7 +256,7 @@ class MOSSShell(ABC):
 
     async def parse_text_to_tasks(
             self,
-            text: str | AsyncIterable[str],
+            text: str | AsyncIterable[str] | list[str],
             kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandTask]:
         """
@@ -271,8 +271,12 @@ class MOSSShell(ABC):
             try:
                 async with self.interpreter_in_ctx(kind) as interpreter:
                     interpreter.with_task_callback(_queue.put_nowait)
-                    async for chunk in text:
-                        interpreter.feed(chunk)
+                    if isinstance(text, list):
+                        for chunk in text:
+                            interpreter.feed(chunk)
+                    else:
+                        async for chunk in text:
+                            interpreter.feed(chunk)
                     interpreter.commit()
                     await interpreter.wait_compiled()
             except asyncio.CancelledError:

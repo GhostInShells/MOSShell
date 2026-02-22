@@ -11,7 +11,7 @@ from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
 from ghoshell_moss.core.concepts.shell import MOSSShell, Speech
-from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.core.shell import new_ctml_shell
 from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
 from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
@@ -95,7 +95,7 @@ class SimpleAgent:
 
         self.chat: BaseChat = chat or ConsoleChat()
         self.talker = talker
-        shell = shell or new_shell(container=self.container, speech=speech)
+        shell = shell or new_ctml_shell(container=self.container, speech=speech)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell

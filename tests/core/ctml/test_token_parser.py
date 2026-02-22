@@ -2,7 +2,8 @@ from collections import deque
 
 from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenType
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, literal_parser
+from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, default_parsers, AttrPrefixParser
+from ast import literal_eval
 
 
 def test_token_parser_baseline():
@@ -240,10 +241,21 @@ def test_token_parser_with_json():
     assert "".join([t.content for t in q]) == content
 
 
+def test_token_parser_with_attr_suffix():
+    content = "<a:foo:3 a:list='[1, 2]' b:lambda='2*3' c:dict='{\"foo\": 123}' />"
+    q: list[CommandToken] = []
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
+    q = q[1:-1]
+    for token in q:
+        if token.seq == "start":
+            assert token.call_id == 3
+            assert token.kwargs == {"a": [1, 2], 'b': 6, 'c': {'foo': 123}}
+
+
 def test_token_parser_with_idx():
     content = "<a:foo:3 literal-a='[1, 2]'></a:foo:3><bar/>"
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser])
+    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
     q = q[1:-1]
     token = q.pop(0)
     assert token.seq == "start"
@@ -262,6 +274,11 @@ def test_token_parser_with_idx():
 
     content = "<a:foo:1 literal-a='[1, 2]'></a:foo:1><bar/>"
     q: list[CommandToken] = []
+    literal_parser = AttrPrefixParser(
+        desc="",
+        prefix="literal-",
+        parser=lambda v: literal_eval(v)
+    )
     CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True)
     got_content = "".join([t.content for t in q[1:-2]])
     assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar:2></bar:2>'

@@ -6,9 +6,9 @@ from ghoshell_moss.core.concepts.states import StateBaseModel
 
 @pytest.mark.asyncio
 async def test_shell_state_store_baseline():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     chan = new_chan(name="a")
     shell.main_channel.import_channels(chan)
 
@@ -52,10 +52,10 @@ async def test_shell_state_store_baseline():
 
 @pytest.mark.asyncio
 async def test_shell_state_store_share():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
     import asyncio
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     b_chan = new_chan("b")
     shell.main_channel.import_channels(a_chan, b_chan)

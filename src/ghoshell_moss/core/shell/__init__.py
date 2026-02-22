@@ -1,2 +1,2 @@
-from ghoshell_moss.core.shell.main_channel import MainChannel
-from ghoshell_moss.core.shell.shell_impl import DefaultShell, new_shell
+from ghoshell_moss.core.shell.ctml_main import create_ctml_main_chan
+from ghoshell_moss.core.shell.ctml_shell import CTMLShell, new_ctml_shell

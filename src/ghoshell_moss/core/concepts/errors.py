@@ -85,6 +85,15 @@ class CommandErrorCode(int, Enum):
     def error(self, message: str) -> CommandError:
         return CommandError(self.value, message)
 
+    @classmethod
+    def interpretation_fatal(cls, err: Exception) -> bool:
+        if err is None:
+            return False
+        if not isinstance(err, CommandError):
+            return True
+        # 400 以上的异常对解释流程是致命的.
+        return err.code >= 400
+
     def match(self, error: Exception | None) -> bool:
         if not error:
             return False

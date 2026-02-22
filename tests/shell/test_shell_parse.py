@@ -1,11 +1,11 @@
 import pytest
 
-from ghoshell_moss.core.shell.shell_impl import DefaultShell
+from ghoshell_moss.core.shell.shell_impl import CTMLShell
 
 
 @pytest.mark.asyncio
 async def test_shell_parse_tokens_baseline():
-    shell = DefaultShell()
+    shell = CTMLShell()
     async with shell:
         assert shell.is_running()
         tokens = []
@@ -16,7 +16,7 @@ async def test_shell_parse_tokens_baseline():
 
 @pytest.mark.asyncio
 async def test_shell_parse_tasks_baseline():
-    shell = DefaultShell()
+    shell = CTMLShell()
     async with shell:
         tasks = []
         async for token in shell.parse_text_to_tasks("<foo>hello</foo><bar/>"):
@@ -27,7 +27,7 @@ async def test_shell_parse_tasks_baseline():
 
 @pytest.mark.asyncio
 async def test_shell_parse_tokens_to_tasks():
-    shell = DefaultShell()
+    shell = CTMLShell()
 
     @shell.main_channel.build.command()
     async def foo():

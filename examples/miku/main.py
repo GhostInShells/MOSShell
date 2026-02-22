@@ -31,7 +31,7 @@ from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
 from miku_provider import init_live2d, init_pygame
 
-from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.core.shell import new_ctml_shell
 from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
 # 全局状态
@@ -86,7 +86,7 @@ async def run_agent(container: Container, speech: Speech | None = None):
     loop = asyncio.get_running_loop()
 
     # 创建 Shell
-    shell = new_shell(container=container)
+    shell = new_ctml_shell(container=container)
 
     async def speaking():
         try:

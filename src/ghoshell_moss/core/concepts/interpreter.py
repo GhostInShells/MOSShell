@@ -1,3 +1,4 @@
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from typing import Optional
@@ -288,11 +289,10 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def stop(self) -> None:
+    async def stop(self, interrupt: bool = False) -> None:
         """
-        中断解释过程. 有可能由其它的并行任务来触发, 触发后 feed 不会抛出异常.
-
-        stop the interpretation and cancel all the running tasks.
+        stop the interpretation
+        :param interrupt: 是否同时清空解析出来的任务. 不清空的话, 任务本身并不会被中断.
         """
         pass
 
@@ -352,11 +352,19 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-            self, timeout: float | None = None, *, throw: bool = False, cancel_on_exception: bool = True
+            self,
+            timeout: float | None = None,
+            *,
+            return_when: str = asyncio.ALL_COMPLETED,
+            throw: bool = False,
+            clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
-        等待所有的 task 被执行完毕.
-        如果这些 task 没有被任何方式执行, 将会导致持续的阻塞.
+        阻塞等待所有生成的 task, 并且按 return when 的规则返回.
+        :param timeout: 设置等待的超时时间.
+        :param throw: 如果 task 运行遇到异常了, 是否对外抛出.
+        :param return_when: 退出 wait execution done 的时机.
+        :param clear_undone: 退出这个函数时, 是否要设置未完成的 Task 为 Cleared
         """
         pass
 

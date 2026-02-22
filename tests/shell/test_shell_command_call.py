@@ -15,9 +15,9 @@ from ghoshell_moss import (
 
 @pytest.mark.asyncio
 async def test_shell_execution_baseline():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     b_chan = new_chan("b")
     shell.main_channel.import_channels(a_chan, b_chan)
@@ -63,9 +63,9 @@ async def test_shell_execution_baseline():
 
 @pytest.mark.asyncio
 async def test_shell_outputted():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
 
     @shell.main_channel.build.command()
     async def foo() -> int:
@@ -86,9 +86,9 @@ async def test_shell_outputted():
 @pytest.mark.asyncio
 async def test_shell_command_run_in_order():
     """测试 get command exec in chan 可以使命令进入 channel 队列有序执行."""
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
 
     order = []
     start_at = {}
@@ -136,9 +136,9 @@ async def test_shell_command_run_in_order():
 
 @pytest.mark.asyncio
 async def test_shell_task_can_get_channel():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     shell.main_channel.import_channels(a_chan)
 
@@ -158,9 +158,9 @@ async def test_shell_task_can_get_channel():
 
 @pytest.mark.asyncio
 async def test_shell_task_can_get_task():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     shell.main_channel.import_channels(a_chan)
 
@@ -185,9 +185,9 @@ async def test_shell_task_can_get_task():
 
 @pytest.mark.asyncio
 async def test_shell_loop():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     shell.main_channel.import_channels(a_chan)
 
@@ -234,9 +234,9 @@ async def test_shell_loop():
 
 @pytest.mark.asyncio
 async def test_shell_clear():
-    from ghoshell_moss.core.shell import new_shell
+    from ghoshell_moss.core.shell import new_ctml_shell
 
-    shell = new_shell()
+    shell = new_ctml_shell()
     a_chan = new_chan("a")
     b_chan = new_chan("b")
     shell.main_channel.import_channels(a_chan, b_chan)

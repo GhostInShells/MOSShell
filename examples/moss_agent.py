@@ -4,7 +4,7 @@ import pathlib
 from ghoshell_common.contracts import LoggerItf, Workspace
 from ghoshell_container import Container
 
-from ghoshell_moss.core.shell import new_shell
+from ghoshell_moss.core.shell import new_ctml_shell
 
 # 不着急删除, 方便自测时开启.
 from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
@@ -82,7 +82,7 @@ def run_moss_agent(container: Container):
     )
 
     speech = get_example_speech(container)
-    shell = new_shell(container=container, speech=speech)
+    shell = new_ctml_shell(container=container, speech=speech)
     shell.main_channel.import_channels(
         zmq_hub.as_channel(),
         # 浏览器

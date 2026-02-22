@@ -66,7 +66,7 @@ async def test_interpreter_cancel():
 
     async def cancel():
         await asyncio.sleep(0.2)
-        await interpreter.stop()
+        await interpreter.stop(interrupt=True)
 
     await asyncio.gather(cancel(), consumer())
     inputted = interpreter.inputted()

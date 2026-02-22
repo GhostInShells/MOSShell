@@ -21,8 +21,9 @@ __all__ = [
     "ParserStopped",
     "AttrParser",
     "AttrPrefixParser",
+    "AttrWithTypeSuffixParser",
     "CTMLTokenParser",
-    "literal_parser",
+    "default_parsers",
 ]
 
 
@@ -32,15 +33,15 @@ class CMTLSaxElement:
     """
 
     def __init__(
-        self,
-        *,
-        cmd_idx: int,
-        stream_id: str,
-        chan: str,
-        name: str,
-        attrs: dict[str, str],
-        parsed: dict[str, Any] | None = None,
-        call_id: int | None = None,
+            self,
+            *,
+            cmd_idx: int,
+            stream_id: str,
+            chan: str,
+            name: str,
+            attrs: dict[str, str],
+            parsed: dict[str, Any] | None = None,
+            call_id: int | None = None,
     ):
         self.cmd_idx = cmd_idx
         self.call_id = call_id
@@ -51,7 +52,7 @@ class CMTLSaxElement:
         self.part_idx = 0
         self._has_delta = False
         self.attrs = attrs
-        self.parsed = parsed
+        self.parsed_attrs = parsed
         self.stream_id = stream_id
 
     @classmethod
@@ -92,7 +93,7 @@ class CMTLSaxElement:
             stream_id=self.stream_id,
             call_id=self.call_id,
             seq="start",
-            kwargs=self.parsed or self.attrs,
+            kwargs=self.parsed_attrs if self.parsed_attrs is not None else self.attrs,
             content=content,
         )
 
@@ -152,12 +153,47 @@ class AttrParser(Protocol):
         pass
 
 
+class AttrWithTypeSuffixParser(AttrParser):
+
+    def __init__(
+            self,
+            description: str = "允许属性跟随后缀, 形如 a:str",
+            parser_map: dict[str, Callable[[str], Any]] | None = None,
+    ):
+        self.description = description
+        self._parser_map = parser_map or {
+            'str': str,
+            'int': int,
+            'float': float,
+            'bool': bool,
+            'list': lambda v: list(literal_eval(v)),
+            'dict': lambda v: dict(literal_eval(v)),
+            'literal': literal_eval,
+            'lambda': lambda v: eval(f"lambda: {v}")(),
+        }
+
+    def parse(self, name: str, value: str) -> Optional[tuple[str, Any]]:
+        parts = name.split(':', 1)
+        if len(parts) == 1:
+            return None
+        key = parts[0]
+        type_name = parts[1]
+        if type_name not in self._parser_map:
+            return None
+        parser = self._parser_map[type_name]
+        try:
+            return key, parser(value)
+        except (TypeError, ValueError):
+            # 无法解析的情况.
+            return None
+
+
 class AttrPrefixParser(AttrParser):
     def __init__(
-        self,
-        desc: str,
-        prefix: str,
-        parser: Callable[[str], Any],
+            self,
+            desc: str,
+            prefix: str,
+            parser: Callable[[str], Any],
     ):
         self.description = desc
         self._prefix = prefix
@@ -166,7 +202,7 @@ class AttrPrefixParser(AttrParser):
     def parse(self, name: str, value: str) -> Optional[tuple[str, Any]]:
         if not name.startswith(self._prefix):
             return None
-        attr_name = name[len(self._prefix) :]
+        attr_name = name[len(self._prefix):]
         try:
             parsed = self._parser(value)
             return attr_name, parsed
@@ -174,26 +210,31 @@ class AttrPrefixParser(AttrParser):
             return None
 
 
-literal_parser = AttrPrefixParser(
-    desc="凡是用 literal- 开头的参数, 都会执行 ast.literal_eval 解析值.",
-    prefix="literal-",
-    parser=lambda v: literal_eval(v),
-)
+default_parsers = [
+    AttrWithTypeSuffixParser(
+        description="允许属性跟随后缀, 形如 a:str",
+    ),
+    AttrPrefixParser(
+        desc="凡是用 literal- 开头的参数, 都会执行 ast.literal_eval 解析值.",
+        prefix="literal-",
+        parser=lambda v: literal_eval(v),
+    ),
+]
 
 
 class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
     """初步实现 sax 解析. 实现得非常糟糕, 主要是对 sax 的回调机制有误解, 留下了大量冗余状态. 需要考虑重写一个简单版."""
 
     def __init__(
-        self,
-        root_tag: str,
-        stream_id: str,
-        callback: CommandTokenCallback,
-        stop_event: ThreadSafeEvent,
-        *,
-        attr_parsers: list[AttrParser] | None = None,
-        logger: Optional[logging.Logger] = None,
-        ensure_call_id: bool = False,
+            self,
+            root_tag: str,
+            stream_id: str,
+            callback: CommandTokenCallback,
+            stop_event: ThreadSafeEvent,
+            *,
+            attr_parsers: list[AttrParser] | None = None,
+            logger: Optional[logging.Logger] = None,
+            ensure_call_id: bool = False,
     ):
         """
         :param root_tag: do not send command token with root_tag
@@ -204,7 +245,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         """自身的关机"""
         self._stop_event = stop_event
         """全局的关机"""
-        self._attr_parsers = attr_parsers or []
+        self._attr_parsers = attr_parsers or default_parsers
         self._ensure_call_id = ensure_call_id
 
         self._root_tag = root_tag
@@ -273,13 +314,13 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._start_command_token_element(chan, command_name, dict_attrs, parsed_attrs=parsed, call_id=call_id)
 
     def _start_command_token_element(
-        self,
-        chan: str,
-        name: str,
-        attrs: dict,
-        *,
-        parsed_attrs: dict | None = None,
-        call_id: Optional[int] = None,
+            self,
+            chan: str,
+            name: str,
+            attrs: dict,
+            *,
+            parsed_attrs: dict | None = None,
+            call_id: Optional[int] = None,
     ) -> None:
         if call_id is None and self._ensure_call_id:
             call_id = self._cmd_idx
@@ -302,8 +343,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._cmd_idx += 1
 
     def parse_attrs(
-        self,
-        attrs: xml.sax.xmlreader.AttributesImpl | dict,
+            self,
+            attrs: xml.sax.xmlreader.AttributesImpl | dict,
     ) -> tuple[dict[str, str], dict[str, Any] | None]:
         values = dict(attrs)
         if len(self._attr_parsers) == 0:
@@ -384,16 +425,16 @@ class CTMLTokenParser(TextTokenParser):
     """
 
     def __init__(
-        self,
-        callback: CommandTokenCallback | None = None,
-        stream_id: str = "",
-        *,
-        root_tag: str = "ctml",
-        stop_event: Optional[ThreadSafeEvent] = None,
-        logger: Optional[logging.Logger] = None,
-        special_tokens: Optional[dict[str, str]] = None,
-        attr_parsers: list[AttrParser] | None = None,
-        with_call_id: bool = False,
+            self,
+            callback: CommandTokenCallback | None = None,
+            stream_id: str = "",
+            *,
+            root_tag: str = "ctml",
+            stop_event: Optional[ThreadSafeEvent] = None,
+            logger: Optional[logging.Logger] = None,
+            special_tokens: Optional[dict[str, str]] = None,
+            attr_parsers: list[AttrParser] | None = None,
+            with_call_id: bool = False,
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("moss")
@@ -506,15 +547,15 @@ class CTMLTokenParser(TextTokenParser):
 
     @classmethod
     def parse(
-        cls,
-        callback: CommandTokenCallback,
-        stream: Iterable[str],
-        *,
-        root_tag: str = "ctml",
-        stream_id: str = "",
-        logger: Optional[logging.Logger] = None,
-        attr_parsers: Optional[list[AttrParser]] = None,
-        with_call_id: bool = False,
+            cls,
+            callback: CommandTokenCallback,
+            stream: Iterable[str],
+            *,
+            root_tag: str = "ctml",
+            stream_id: str = "",
+            logger: Optional[logging.Logger] = None,
+            attr_parsers: Optional[list[AttrParser]] = None,
+            with_call_id: bool = False,
     ) -> None:
         """
         simple example of parsing input stream into command token stream with a thread.
