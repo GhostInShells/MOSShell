@@ -217,7 +217,6 @@ class PyChannel(MutableChannel):
         *,
         name: str,
         description: str = "",
-        # todo: block 还是叫 blocking 吧.
         blocking: bool = True,
         dynamic: bool | None = None,
     ):
@@ -231,7 +230,6 @@ class PyChannel(MutableChannel):
         self._name = name
         self._id = uuid()
         self._description = description
-        self._runtime: Optional[ChannelRuntime] = None
         self._children: dict[str, Channel] = {}
         self._block = blocking
         self._dynamic = dynamic
@@ -253,10 +251,6 @@ class PyChannel(MutableChannel):
     @property
     def build(self) -> Builder:
         return self._builder
-
-    @property
-    def runtime(self) -> ChannelRuntime | None:
-        return self._runtime
 
     def import_channels(self, *children: "Channel") -> Self:
         for child in children:
@@ -280,17 +274,12 @@ class PyChannel(MutableChannel):
         return self._children
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
-        if self._runtime is not None and self._runtime.is_running():
-            raise RuntimeError("Server already running")
-        self._runtime = PyChannelRuntime(
+        runtime = PyChannelRuntime(
             channel=self,
             container=container,
             dynamic=self._dynamic,
         )
-        return self._runtime
-
-    def is_running(self) -> bool:
-        return self._runtime is not None and self._runtime.is_running()
+        return runtime
 
 
 class PyChannelRuntime(AbsChannelTreeRuntime):

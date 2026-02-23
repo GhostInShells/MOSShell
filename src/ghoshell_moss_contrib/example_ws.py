@@ -57,7 +57,7 @@ def get_example_speech(
         还有许多工作量, 需要把默认的服务选项配到 workspace 里才对.
         而且通过 provider 的方式注册单例.
     """
-    from ghoshell_moss.speech import TTSSpeech
+    from ghoshell_moss.speech import BaseTTSSpeech
     from ghoshell_moss.speech.mock import MockSpeech
     from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
     from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
@@ -81,7 +81,9 @@ def get_example_speech(
     )
     if default_speaker:
         tts_conf.default_speaker = default_speaker
-    return TTSSpeech(player=PyAudioStreamPlayer(), tts=VolcengineTTS(conf=tts_conf), logger=container.get(LoggerItf))
+    return BaseTTSSpeech(
+        player=PyAudioStreamPlayer(), tts=VolcengineTTS(conf=tts_conf), logger=container.get(LoggerItf)
+    )
 
 
 def init_container(

@@ -352,12 +352,12 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_execution_done(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
         阻塞等待所有生成的 task, 并且按 return when 的规则返回.

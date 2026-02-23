@@ -14,14 +14,15 @@ from typing_extensions import Self, TypedDict
 from ghoshell_moss.core.concepts.command import CommandTask
 
 __all__ = [
-    "TTS",
     "AudioFormat",
     "Speech",
     "SpeechStream",
     "StreamAudioPlayer",
+    "TTS",
     "TTSAudioCallback",
     "TTSBatch",
     "TTSInfo",
+    "TTSSpeech",
 ]
 
 
@@ -141,18 +142,22 @@ class SpeechStream(ABC):
         pass
 
     @abstractmethod
-    async def astart(self) -> None:
-        """
-        start to output
-        """
+    async def astart(self) -> Self:
         pass
 
     @abstractmethod
     async def aclose(self):
-        """
-        关闭一个 Stream.
-        """
         pass
+
+    async def __aenter__(self):
+        await self.astart()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_val is not None:
+            self.commit()
+            await self.wait()
+        await self.aclose()
 
     @abstractmethod
     def close(self) -> None:
@@ -321,8 +326,8 @@ class TTSInfo(BaseModel):
 
     voice_schema: Optional[dict] = Field(default=None, description="声音的 schema, 通常用来给模型看")
 
-    voices: dict[str, dict] = Field(default_factory=dict, description="声音的可选项")
-    current_voice: str = Field(default="", description="当前的声音")
+    tones: dict[str, str] = Field(default_factory=dict, description="tone name and description")
+    current_tone: str = Field(default="", description="当前的声音")
 
 
 _SampleRate = int
@@ -419,7 +424,7 @@ class TTS(ABC):
         pass
 
     @abstractmethod
-    def use_voice(self, config_key: str) -> None:
+    def use_tone(self, config_key: str) -> None:
         """
         选择一个配置好的音色.
         :param config_key: 与 tts_info 中一致.
@@ -452,3 +457,9 @@ class TTS(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+
+class TTSSpeech(Speech, ABC):
+    @abstractmethod
+    def tts(self) -> TTS:
+        pass

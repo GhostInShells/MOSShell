@@ -7,21 +7,21 @@ import asyncio
 
 @pytest.mark.asyncio
 async def test_wait_primitive():
-    a_chan = PyChannel(name='a')
-    b_chan = PyChannel(name='b')
+    a_chan = PyChannel(name="a")
+    b_chan = PyChannel(name="b")
 
     ordered = []
 
     @a_chan.build.command()
     @b_chan.build.command()
     async def foo():
-        ordered.append('foo')
+        ordered.append("foo")
         return 123
 
     @b_chan.build.command()
     async def bar():
         await asyncio.sleep(0.2)
-        ordered.append('bar')
+        ordered.append("bar")
         return 456
 
     shell = new_ctml_shell()
@@ -33,7 +33,7 @@ async def test_wait_primitive():
             interpreter.commit()
             await interpreter.wait_execution_done()
             # bar is later because sleep
-            assert ordered == ['foo', 'foo', 'bar']
+            assert ordered == ["foo", "foo", "bar"]
 
         # 验证添加了 wait 后改变了排序.
         ordered.clear()
@@ -44,7 +44,7 @@ async def test_wait_primitive():
             # bar is executed before second foo
             for t in tasks.values():
                 assert t.success()
-            assert ordered == ['foo', 'bar', 'foo']
+            assert ordered == ["foo", "bar", "foo"]
 
         # 验证多组 wait
         ordered.clear()
@@ -56,7 +56,7 @@ async def test_wait_primitive():
             # bar is executed before second foo
             for t in tasks.values():
                 assert t.success()
-            assert ordered == ['foo', 'bar', 'foo', 'bar']
+            assert ordered == ["foo", "bar", "foo", "bar"]
 
         # 验证 timeout
         ordered.clear()
@@ -65,4 +65,4 @@ async def test_wait_primitive():
             interpreter.commit()
             tasks = await interpreter.wait_execution_done()
             # 只有 foo 成功了. 其它的都被 timeout 了.
-            assert ordered == ['foo', 'foo']
+            assert ordered == ["foo", "foo"]

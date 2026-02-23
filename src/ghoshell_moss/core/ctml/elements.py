@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from logging import getLogger
-from typing import Optional
+from typing import Optional, Generic
 
 from ghoshell_common.contracts import LoggerItf
 
@@ -10,23 +10,29 @@ from ghoshell_moss.core.concepts.command import (
     CancelAfterOthersTask,
     Command,
     CommandDeltaType,
+    CommandDeltaValue,
+    ValueOfCommandDeltaTypeMap,
     CommandTask,
     CommandToken,
     CommandTokenType,
 )
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.concepts.interpreter import CommandTaskCallback, CommandTaskParseError, CommandTokenParserElement
+from ghoshell_moss.core.concepts.interpreter import (
+    CommandTaskCallback,
+    CommandTaskParseError,
+    CommandTokenParserElement,
+)
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.core.helpers.stream import create_thread_safe_stream
+from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT
 
 from .token_parser import CMTLSaxElement
 
 __all__ = [
     "BaseCommandTokenParserElement",
     "CommandTaskElementContext",
-    "DeltaIsTextCommandTaskElement",
-    "DeltaTypeIsTokensCommandTaskElement",
+    "DeltaIsTextElement",
+    "DeltaIsCommandTokensElement",
     "EmptyCommandTaskElement",
     "NoDeltaCommandTaskElement",
     "RootCommandTaskElement",
@@ -202,22 +208,33 @@ class BaseCommandTokenParserElement(CommandTokenParserElement, ABC):
                 cid=token.command_id(),
                 call_id=token.call_id,
             )
-            if meta.delta_arg == CommandDeltaType.TOKENS.value:
-                child = DeltaTypeIsTokensCommandTaskElement(
-                    cid=token.command_id(),
-                    current_task=task,
-                    callback=self._callback,
-                    ctx=self.ctx,
-                    depth=self.depth + 1,
-                )
-            elif meta.delta_arg == CommandDeltaType.TEXT.value:
-                child = DeltaIsTextCommandTaskElement(
-                    cid=token.command_id(),
-                    current_task=task,
-                    callback=self._callback,
-                    ctx=self.ctx,
-                    depth=self.depth + 1,
-                )
+            if meta.delta_arg is not None:
+                DeltaValue = ValueOfCommandDeltaTypeMap.get(meta.delta_arg, None)
+                if DeltaValue is CommandDeltaValue.COMMAND_TOKEN_STREAM:
+                    child = DeltaIsCommandTokensElement(
+                        cid=token.command_id(),
+                        current_task=task,
+                        callback=self._callback,
+                        ctx=self.ctx,
+                        depth=self.depth + 1,
+                    )
+                elif DeltaValue is CommandDeltaValue.TEXT_CHUNKS_STREAM:
+                    child = DeltaIsTextChunkElement(
+                        cid=token.command_id(),
+                        current_task=task,
+                        callback=self._callback,
+                        ctx=self.ctx,
+                        depth=self.depth + 1,
+                    )
+                else:
+                    child = DeltaIsTextElement(
+                        cid=token.command_id(),
+                        current_task=task,
+                        callback=self._callback,
+                        ctx=self.ctx,
+                        depth=self.depth + 1,
+                    )
+
             else:
                 child = NoDeltaCommandTaskElement(
                     cid=token.command_id(),
@@ -373,7 +390,7 @@ class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
     pass
 
 
-class DeltaTypeIsTokensCommandTaskElement(BaseCommandTokenParserElement):
+class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     """
     当 delta type 是 tokens 时, 会自动拼装 tokens 为一个 Iterable / AsyncIterable 对象给目标 command.
 
@@ -387,56 +404,68 @@ class DeltaTypeIsTokensCommandTaskElement(BaseCommandTokenParserElement):
     如果 foo 函数是运行在另一个通过双工通讯连接的 channel, 则这种做法能够达到最优的流式传输.
     """
 
+    def __init__(
+        self,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
+    ) -> None:
+        sender, receiver = create_sender_and_receiver()
+        self._sender = sender
+        self._receiver = receiver
+        super().__init__(
+            cid,
+            current_task,
+            depth=depth,
+            callback=callback,
+            ctx=ctx,
+        )
+
     def _on_self_start(self) -> None:
-        sender, receiver = create_thread_safe_stream()
-        self._token_sender = sender
-        self._current_task.kwargs[CommandDeltaType.TOKENS.value] = receiver
+        delta_arg_name = self._current_task.meta.delta_arg
+        self._current_task.kwargs[delta_arg_name] = self._receiver
         # 直接发送当前任务.
         self._send_callback(self._current_task)
 
     def _on_delta_token(self, token: CommandToken) -> None:
-        self._token_sender.append(token)
+        parsed = self._parse_delta(token)
+        self._sender.append(parsed)
+
+    @abstractmethod
+    def _parse_delta(self, token: CommandToken) -> ItemT:
+        pass
 
     def _on_cmd_start_token(self, token: CommandToken):
-        self._token_sender.append(token)
+        parsed = self._parse_delta(token)
+        self._sender.append(parsed)
 
     def _on_cmd_end_token(self, token: CommandToken):
         if token.command_id() != self.cid:
-            self._token_sender.append(token)
+            parsed = self._parse_delta(token)
+            self._sender.append(parsed)
         else:
-            self._token_sender.commit()
+            self._sender.commit()
             self._end = True
 
-
-class RootCommandTaskElement(NoDeltaCommandTaskElement):
-    def _send_callback_done(self):
-        if not self._done_event.is_set() and not self.ctx.stop_event.is_set() and self._callback is not None:
-            self._callback(None)
-        self._done_event.set()
-
-    def on_token(self, token: CommandToken | None) -> None:
-        if token is None or self.ctx.stop_event.is_set():
-            self._send_callback_done()
-            return
-        super().on_token(token)
-        # if self._unclose_child is None:
-        #     if token.type == CommandTokenType.START.value:
-        #         self._new_child_element(token)
-        #     elif token.type == CommandTokenType.DELTA.value:
-        #         self._on_delta_token(token)
-        #
-        #     return
-        # else:
-        #     self._unclose_child.on_token(token)
-        #
-        # if self._unclose_child.is_end():
-        #     self._send_callback_done()
-
-    def _on_self_start(self) -> None:
-        return
+    def destroy(self) -> None:
+        super().destroy()
+        self._sender.commit()
 
 
-class DeltaIsTextCommandTaskElement(BaseCommandTokenParserElement):
+class DeltaIsCommandTokensElement(DeltaStreamElement[CommandToken]):
+    def _parse_delta(self, token: CommandToken) -> ItemT:
+        return token
+
+
+class DeltaIsTextChunkElement(DeltaStreamElement[CommandToken]):
+    def _parse_delta(self, token: CommandToken) -> ItemT:
+        return token.content
+
+
+class DeltaIsTextElement(BaseCommandTokenParserElement):
     """
     当 delta type 是 text 时, 这种解析逻辑是所有的中间 token 都视作文本
     等所有的文本都加载完, 才会发送这个 task.
@@ -475,3 +504,31 @@ class DeltaIsTextCommandTaskElement(BaseCommandTokenParserElement):
 
     def _on_cmd_start_token(self, token: CommandToken):
         self._inner_content += token.content
+
+
+class RootCommandTaskElement(NoDeltaCommandTaskElement):
+    def _send_callback_done(self):
+        if not self._done_event.is_set() and not self.ctx.stop_event.is_set() and self._callback is not None:
+            self._callback(None)
+        self._done_event.set()
+
+    def on_token(self, token: CommandToken | None) -> None:
+        if token is None or self.ctx.stop_event.is_set():
+            self._send_callback_done()
+            return
+        super().on_token(token)
+        # if self._unclose_child is None:
+        #     if token.type == CommandTokenType.START.value:
+        #         self._new_child_element(token)
+        #     elif token.type == CommandTokenType.DELTA.value:
+        #         self._on_delta_token(token)
+        #
+        #     return
+        # else:
+        #     self._unclose_child.on_token(token)
+        #
+        # if self._unclose_child.is_end():
+        #     self._send_callback_done()
+
+    def _on_self_start(self) -> None:
+        return

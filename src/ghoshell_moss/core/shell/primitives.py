@@ -6,19 +6,17 @@ from ghoshell_moss.core.concepts.command import (
     PyCommand,
     BaseCommandTask,
 )
-from ghoshell_moss.core.concepts.errors import (
-    CommandErrorCode
-)
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core import ChannelCtx, MOSSShell
 
-__all__ = ['wait']
+__all__ = ["wait"]
 
 
 async def wait(
-        tokens__,
-        timeout: float | None = None,
-        return_when: str = "ALL_COMPLETE",
-        channels: str = "",
+    tokens__,
+    timeout: float | None = None,
+    return_when: str = "ALL_COMPLETE",
+    channels: str = "",
 ):
     """
     核心阻塞原语, 可以阻塞等待 一段 CTML 指令 彻底结束.
@@ -66,10 +64,12 @@ async def wait(
                     raise CommandErrorCode.VALUE_ERROR.error(f"generated command not in channels: {channel_names}")
 
             if _return_when == "FIRST_COMPLETE":
-                wait_done = asyncio.create_task(asyncio.wait(
-                    [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
-                    return_when=asyncio.FIRST_COMPLETED,
-                ))
+                wait_done = asyncio.create_task(
+                    asyncio.wait(
+                        [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                )
             elif return_when == "ALL_COMPLETE":
                 wait_done = asyncio.wait(
                     [asyncio.create_task(t.wait(throw=False)) for t in wait_task_group],
@@ -123,9 +123,7 @@ _sleep_command = PyCommand(_sleep)
 
 
 async def sleep(seconds: float, chan: str = ""):
-    """
-
-    """
+    """ """
     if chan == "":
         await asyncio.sleep(seconds)
         return

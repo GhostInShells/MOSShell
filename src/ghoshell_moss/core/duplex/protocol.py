@@ -15,6 +15,7 @@ __all__ = [
     "ChannelMetaUpdateEvent",
     "ClearEvent",
     "CommandCallEvent",
+    "CommandDeltaEvent",
     "CommandCancelEvent",
     "CommandDoneEvent",
     "CreateSessionEvent",
@@ -90,6 +91,15 @@ class ClearEvent(ChannelEventModel):
 
     event_type: ClassVar[str] = "moss.channel.proxy.clear"
     chan: str = Field(description="channel name")
+
+
+class CommandDeltaEvent(ChannelEventModel):
+    """delta 传输事件"""
+
+    event_type: ClassVar[str] = "moss.channel.proxy.command.delta"
+    command_id: str = Field(description="command id")
+    chunk: Optional[str] = Field(default=None, description="chunk")
+    command_token: Optional[dict] = Field(default=None, description="command token")
 
 
 class CommandCallEvent(ChannelEventModel):

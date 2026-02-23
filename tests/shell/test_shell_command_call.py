@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+from typing import Any
 from ghoshell_moss import (
     CommandTask,
     CommandStackResult,
@@ -10,6 +11,7 @@ from ghoshell_moss import (
     new_chan,
     ChannelCtx,
     CommandError,
+    CommandToken,
 )
 
 
@@ -290,3 +292,66 @@ async def test_shell_clear():
             for t in parsed_tasks.values():
                 e = t.exception()
                 assert isinstance(e, CommandError)
+
+
+@pytest.mark.asyncio
+async def test_shell_delta_types():
+    from ghoshell_moss.core.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    @shell.main_channel.build.command()
+    async def chunks(chunks__) -> int:
+        count = 0
+        async for c in chunks__:
+            assert isinstance(c, str)
+            count += 1
+        return count
+
+    @shell.main_channel.build.command()
+    async def text(text__) -> int:
+        assert isinstance(text__, str)
+        return len(text__)
+
+    @shell.main_channel.build.command()
+    async def tokens(tokens__) -> int:
+        count = 0
+        async for c in tokens__:
+            assert isinstance(c, CommandToken)
+            count += 1
+        return count
+
+    @shell.main_channel.build.command()
+    async def parse_ctml(ctml__) -> int:
+        count = 0
+        async for c in ctml__:
+            assert isinstance(c, CommandToken)
+            count += 1
+        return count
+
+    @shell.main_channel.build.command()
+    async def json(json__) -> Any:
+        import json
+
+        return json.loads(json__)
+
+    contents = [
+        "<chunks>hello world</chunks>",
+        "<text>hello world</text>",
+        "<tokens><foo /><bar /></tokens>",
+        "<parse_ctml><foo /><bar /></parse_ctml>",
+        "<json>{'a': 123}</json>",
+    ]
+
+    async with shell:
+        await shell.wait_connected()
+        # baseline
+        async with shell.interpreter_in_ctx() as interpreter:
+            for content in contents:
+                interpreter.feed(content)
+            interpreter.commit()
+            await interpreter.wait_compiled()
+            compiled = interpreter.compiled_tasks()
+            assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
+            for t in compiled.values():
+                t.raise_exception()

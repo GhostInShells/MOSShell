@@ -2,7 +2,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.py_channel import PyChannel
 from .primitives import *
 
-__all__ = ["MainChannel", 'create_ctml_main_chan']
+__all__ = ["MainChannel", "create_ctml_main_chan"]
 
 
 class MainChannel(PyChannel):
@@ -19,6 +19,7 @@ def create_ctml_main_chan() -> Channel:
     chan.build.command()(wait)
 
     return chan
+
 
 # primitive.py 原语定义成command
 # wait_done 原语

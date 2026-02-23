@@ -1,7 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
-from typing import Any, Optional
+from typing import Any, Optional, Callable, Coroutine, AsyncIterable
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
@@ -22,6 +21,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandWrapper,
     CommandUniqueName,
+    CommandToken,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -32,7 +32,9 @@ from .protocol import (
     ChannelMetaUpdateEvent,
     ClearEvent,
     CommandCallEvent,
+    CommandDeltaEvent,
     CommandDoneEvent,
+    CommandCancelEvent,
     CreateSessionEvent,
     ReconnectSessionEvent,
     SessionCreatedEvent,
@@ -93,13 +95,15 @@ class DuplexChannelContext:
         self._sync_meta_done_event = ThreadSafeEvent()
         """记录一次更新 meta 的任务已经完成, 用于做更新的阻塞. """
 
-        self._pending_provider_command_calls: dict[str, CommandTask] = {}
+        self._pending_provider_command_tasks: dict[str, CommandTask] = {}
+        self._command_call_deltas_sender_tasks: dict[str, asyncio.Task] = {}
         self._main_task: Optional[asyncio.Task] = None
 
         self._logger: logging.Logger = self.container.get(LoggerItf) or logging.getLogger(__name__)
         """logger 的缓存."""
 
         self._states = None
+        self._log_prefix = "[DuplexChannelContext][%s] " % self.root_name
 
     def get_meta(self, provider_chan_path: str) -> Optional[ChannelMeta]:
         """
@@ -134,7 +138,7 @@ class DuplexChannelContext:
             self._logger.info("refresh duplex channel %s context meta done", self.root_name)
 
     def is_idle(self) -> bool:
-        tasks = self._pending_provider_command_calls.copy()
+        tasks = self._pending_provider_command_tasks.copy()
         for task in tasks.values():
             if not task.done() and task.meta.blocking:
                 return False
@@ -142,7 +146,7 @@ class DuplexChannelContext:
 
     async def wait_idle(self) -> None:
         while True:
-            tasks = self._pending_provider_command_calls.copy()
+            tasks = self._pending_provider_command_tasks.copy()
             waiting = []
             for task in tasks.values():
                 if not task.done() and task.meta.blocking:
@@ -297,7 +301,7 @@ class DuplexChannelContext:
             self._sync_meta_started_event.clear()
             self.session_id = ""
             self.provider_meta_map.clear()
-            await self._clear_pending_provider_command_calls()
+            await self._clear_pending_provider_command_tasks()
 
     async def _wait_task_done_or_stopped(self, task: asyncio.Task) -> bool:
         """
@@ -312,16 +316,21 @@ class DuplexChannelContext:
             t.cancel()
         return task in done
 
-    async def _clear_pending_provider_command_calls(self, reason: str = "") -> None:
+    async def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
         """
         清空所有未完成的任务.
         """
-        tasks = self._pending_provider_command_calls.copy()
-        self._pending_provider_command_calls.clear()
+        tasks = self._pending_provider_command_tasks.copy()
+        self._pending_provider_command_tasks.clear()
+        senders = self._command_call_deltas_sender_tasks.copy()
+        self._command_call_deltas_sender_tasks.clear()
         for task in tasks.values():
             if not task.done():
                 reason = reason or f"Channel proxy `{self.root_name}` not available"
                 task.fail(CommandErrorCode.NOT_AVAILABLE.error(reason))
+        # cancel delta sender.
+        for t in senders.values():
+            t.cancel()
 
     async def _main_receiving_loop(self) -> None:
         # 等待到全部启动成功.
@@ -449,14 +458,52 @@ class DuplexChannelContext:
         # 更新失联状态.
         self._connected_event.set()
 
+    async def _send_delta_args(self, task: CommandTask, deltas: AsyncIterable[CommandToken | str]) -> None:
+        cid = task.cid
+        try:
+            async for delta in deltas:
+                if task.done():
+                    break
+
+                if isinstance(delta, CommandToken):
+                    event = CommandDeltaEvent(
+                        command_id=cid,
+                        session_id=self.session_id,
+                        command_token=delta.model_dump(),
+                    )
+                    await self.send_event_to_provider(event.to_channel_event())
+                elif isinstance(delta, str):
+                    event = CommandDeltaEvent(
+                        command_id=cid,
+                        session_id=self.session_id,
+                        chunk=delta,
+                    )
+                    await self.send_event_to_provider(event.to_channel_event())
+            final = CommandDeltaEvent(command_id=cid, session_id=self.session_id)
+            await self.send_event_to_provider(final.to_channel_event())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            event = CommandCancelEvent(chan=task.chan, session_id=self.session_id, command_id=cid)
+            await self.send_event_to_provider(event.to_channel_event())
+            self.logger.exception("%s failed to send delta args %s", self._log_prefix, exc)
+            raise
+
     async def send_command_task(self, task: CommandTask) -> CommandCallEvent:
         try:
             cid = task.cid
             # 清空已经存在的 cid 错误?
-            if cid in self._pending_provider_command_calls:
-                t = self._pending_provider_command_calls.pop(cid)
+            if cid in self._pending_provider_command_tasks:
+                t = self._pending_provider_command_tasks.pop(cid)
                 t.cancel()
                 self.logger.error("Command Task %s duplicated call", cid)
+
+            deltas = None
+            if task.meta.delta_arg is not None:
+                delta_value = task.kwargs.get(task.meta.delta_arg)
+                if not isinstance(delta_value, str):
+                    deltas = task.kwargs.pop(task.meta.delta_arg)
+
             event = CommandCallEvent(
                 session_id=self.session_id,
                 name=task.meta.name,
@@ -471,7 +518,9 @@ class DuplexChannelContext:
             )
             # 添加新的 task.
             await self.send_event_to_provider(event.to_channel_event(), throw=True)
-            self._pending_provider_command_calls[cid] = task
+            self._pending_provider_command_tasks[cid] = task
+            if deltas is not None:
+                self._command_call_deltas_sender_tasks = asyncio.create_task(self._send_delta_args(task, deltas))
             return event
         except asyncio.CancelledError:
             task.cancel()
@@ -487,7 +536,7 @@ class DuplexChannelContext:
                 return
             await task.wait(throw=False)
             # 来自服务端的异常.
-            if task.cid in self._pending_provider_command_calls and self.is_channel_available(task.chan):
+            if task.cid in self._pending_provider_command_tasks and self.is_channel_available(task.chan):
                 if exp := task.exception():
                     await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
         except asyncio.CancelledError:
@@ -497,13 +546,17 @@ class DuplexChannelContext:
         finally:
             if not task.done():
                 task.cancel()
-            if task.cid in self._pending_provider_command_calls:
-                del self._pending_provider_command_calls[task.cid]
+            if task.cid in self._pending_provider_command_tasks:
+                _ = self._pending_provider_command_tasks.pop(task.cid)
+            if task.cid in self._command_call_deltas_sender_tasks:
+                sender = self._command_call_deltas_sender_tasks.pop(task.cid)
+                if not sender.done():
+                    sender.cancel()
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
         try:
             command_id = event.command_id
-            task = self._pending_provider_command_calls.pop(command_id)
+            task = self._pending_provider_command_tasks.pop(command_id)
             if task is not None:
                 if task.done():
                     pass

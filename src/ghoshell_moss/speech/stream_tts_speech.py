@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Optional
+from typing_extensions import Self
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
@@ -9,7 +10,7 @@ from ghoshell_common.helpers import uuid
 from ghoshell_moss.core.concepts.speech import (
     TTS,
     AudioFormat,
-    Speech,
+    TTSSpeech,
     SpeechStream,
     StreamAudioPlayer,
     TTSBatch,
@@ -45,6 +46,7 @@ class TTSSpeechStream(SpeechStream):
         self._audio_buffer = []
         self._starting = False
         self._started_event = ThreadSafeEvent()
+        self._closed_event = ThreadSafeEvent()
         self._has_audio_data = False
 
         # 注册 callback 回调.
@@ -96,16 +98,19 @@ class TTSSpeechStream(SpeechStream):
         self._started_event.set()
 
     async def aclose(self):
-        await self._tts_batch.close()
-        self._audio_buffer.clear()
+        if self._closed_event.is_set():
+            return
+        self._closed_event.set()
         if self._started_event.is_set():
             await self._player.clear()
+        self._audio_buffer.clear()
+        await self._tts_batch.close()
 
     def close(self) -> None:
         self._running_loop.create_task(self.aclose)
 
 
-class TTSSpeech(Speech):
+class BaseTTSSpeech(TTSSpeech):
     def __init__(
         self,
         *,
@@ -113,7 +118,7 @@ class TTSSpeech(Speech):
         tts: TTS,
         logger: Optional[LoggerItf] = None,
     ):
-        self.logger = logger or logging.getLogger("StreamTTSSpeech")
+        self.logger = logger or logging.getLogger("moss")
         self._player = player
         self._tts = tts
         self._tts_info = tts.get_info()
@@ -125,6 +130,9 @@ class TTSSpeech(Speech):
         self._started = False
         self._closing = False
         self._closed_event = ThreadSafeEvent()
+
+    def tts(self) -> TTS:
+        return self._tts
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         batch_id = batch_id or uuid()

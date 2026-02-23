@@ -2,14 +2,14 @@ import asyncio
 import threading
 
 from ghoshell_moss.core.helpers.stream import (
-    create_thread_safe_stream,
+    create_sender_and_receiver,
 )
 
 
 def test_thread_send_async_receive():
     content = "hello world"
     done = []
-    sender, receiver = create_thread_safe_stream()
+    sender, receiver = create_sender_and_receiver()
 
     def sending():
         with sender:
@@ -41,7 +41,7 @@ def test_thread_send_async_receive():
 def test_thread_send_and_receive():
     content = "hello world"
     done = []
-    sender, receiver = create_thread_safe_stream()
+    sender, receiver = create_sender_and_receiver()
 
     def sending():
         with sender:

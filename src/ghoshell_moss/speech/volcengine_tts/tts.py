@@ -314,18 +314,22 @@ class VolcengineTTSConf(BaseModel):
             },
         )
 
-    def to_tts_info(self, current_voice: str = "") -> TTSInfo:
+    def to_tts_info(self, current_tone: str = "") -> TTSInfo:
         return TTSInfo(
             sample_rate=self.sample_rate,
             channels=1,
             audio_format=AudioFormat.PCM_S16LE.value,
             voice_schema=VoiceConf.model_json_schema(),
-            voices={key: value.to_voice_conf() for key, value in self.speakers.items()},
-            current_voice=current_voice or self.default_speaker,
+            tones={key: value.description for key, value in self.speakers.items()},
+            current_tone=current_tone or self.default_speaker,
         )
 
 
 class VolcengineTTSBatch(TTSBatch):
+    """
+    todo: 实现性能和垃圾回收的优化.
+    """
+
     def __init__(
         self,
         *,
@@ -375,8 +379,10 @@ class VolcengineTTSBatch(TTSBatch):
             self.done.set()
 
     async def close(self) -> None:
-        self.commit()
+        if self.done.is_set():
+            return
         self.done.set()
+        self.commit()
 
     async def wait_until_done(self, timeout: float | None = None):
         if timeout is not None and timeout > 0.0:
@@ -423,7 +429,7 @@ class VolcengineTTS(TTS):
     def get_info(self) -> TTSInfo:
         return self._conf.to_tts_info(self._current_speaker)
 
-    def use_voice(self, config_key: str) -> None:
+    def use_tone(self, config_key: str) -> None:
         if config_key not in self._conf.speakers:
             raise LookupError(f"The voice {config_key} not found")
         conf = self._conf.speakers[config_key]

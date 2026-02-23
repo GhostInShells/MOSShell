@@ -7,7 +7,12 @@ from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
 from ghoshell_moss.core.concepts.channel import (
-    Channel, ChannelFullPath, ChannelMeta, ChannelRuntime, ChannelCtx, MutableChannel,
+    Channel,
+    ChannelFullPath,
+    ChannelMeta,
+    ChannelRuntime,
+    ChannelCtx,
+    MutableChannel,
 )
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
@@ -32,14 +37,14 @@ __all__ = ["CTMLShell", "new_ctml_shell"]
 
 class CTMLShell(MOSSShell):
     def __init__(
-            self,
-            *,
-            name: str = "shell",
-            description: Optional[str] = None,
-            container: IoCContainer | None = None,
-            main_channel: Channel | None = None,
-            speech: Optional[Speech] = None,
-            state_store: Optional[StateStore] = None,
+        self,
+        *,
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: Channel | None = None,
+        speech: Optional[Speech] = None,
+        state_store: Optional[StateStore] = None,
     ):
         self._name = name
         self._desc = description
@@ -271,12 +276,12 @@ class CTMLShell(MOSSShell):
             self.push_task(task)
 
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[int] = None,
-            config: dict[ChannelFullPath, ChannelMeta] | None = None,
-            prepare_timeout: float = 2.0,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[int] = None,
+        config: dict[ChannelFullPath, ChannelMeta] | None = None,
+        prepare_timeout: float = 2.0,
     ) -> Interpreter:
         self._check_running()
 
@@ -341,9 +346,9 @@ class CTMLShell(MOSSShell):
             await refresh_meta_task
 
     def channel_metas(
-            self,
-            available_only: bool = True,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        available_only: bool = True,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
@@ -406,11 +411,11 @@ class CTMLShell(MOSSShell):
         await self._closed_event.wait()
 
     def commands(
-            self,
-            available_only: bool = True,
-            *,
-            config: dict[ChannelFullPath, ChannelMeta] | None = None,
-            exec_in_chan: bool = False,
+        self,
+        available_only: bool = True,
+        *,
+        config: dict[ChannelFullPath, ChannelMeta] | None = None,
+        exec_in_chan: bool = False,
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
@@ -518,11 +523,11 @@ class CTMLShell(MOSSShell):
 
 
 def new_ctml_shell(
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: Channel | None = None,
-        speech: Optional[Speech] = None,
+    name: str = "shell",
+    description: Optional[str] = None,
+    container: IoCContainer | None = None,
+    main_channel: Channel | None = None,
+    speech: Optional[Speech] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(

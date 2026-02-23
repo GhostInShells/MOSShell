@@ -57,7 +57,7 @@ def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
     channel_metas = channel_metas.copy()
     if len(channel_metas) == 0:
         return ""
-    main_channel_meta = channel_metas.pop('')
+    main_channel_meta = channel_metas.pop("")
     if main_channel_meta:
         channel_items.append(
             ("root_channel", main_channel_meta.description, make_command_interface(main_channel_meta.commands))
@@ -79,18 +79,18 @@ def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
 
 class CTMLInterpreter(Interpreter):
     def __init__(
-            self,
-            *,
-            commands: dict[ChannelFullPath, dict[str, Command]],
-            speech: Speech,
-            stream_id: Optional[str] = None,
-            callback: Optional[CommandTaskCallback] = None,
-            root_tag: str = "ctml",
-            special_tokens: Optional[dict[str, str]] = None,
-            logger: Optional[LoggerItf] = None,
-            on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-            meta_system_prompt: Optional[str] = None,
-            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        *,
+        commands: dict[ChannelFullPath, dict[str, Command]],
+        speech: Speech,
+        stream_id: Optional[str] = None,
+        callback: Optional[CommandTaskCallback] = None,
+        root_tag: str = "ctml",
+        special_tokens: Optional[dict[str, str]] = None,
+        logger: Optional[LoggerItf] = None,
+        on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+        meta_system_prompt: Optional[str] = None,
+        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -485,12 +485,12 @@ class CTMLInterpreter(Interpreter):
                     raise InterpretError(f"Interpret failed: {exc}") from exc
 
     async def wait_execution_done(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)

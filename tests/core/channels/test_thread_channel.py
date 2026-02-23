@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ghoshell_moss.core import Command, CommandError
+from ghoshell_moss.core import Command, CommandError, CommandToken
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
 
@@ -38,7 +38,6 @@ async def test_thread_channel_run_in_thread():
 
     await provider.aclose()
     await provider.wait_closed()
-    assert not chan.is_running()
     assert not provider.is_running()
 
 
@@ -62,7 +61,6 @@ async def test_thread_channel_run_in_tasks():
 
     await provider.aclose()
     await provider.wait_closed()
-    assert not chan.is_running()
     assert not provider.is_running()
 
 
@@ -295,14 +293,58 @@ async def test_thread_channel_idle():
             await proxy_runtime.wait_connected()
             assert proxy_runtime.is_idle()
             assert provider.runtime.is_idle()
+            await proxy_runtime.wait_idle()
             assert len(idled) == 1
 
             r = await proxy_runtime.execute_command("foo")
             assert r == 123
             assert proxy_runtime.is_idle()
+            await proxy_runtime.wait_idle()
             # assert provider.runtime.is_idle()
             assert len(idled) == 2
 
     finally:
         provider.close()
     await provider.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_with_delta_func():
+    chan = PyChannel(name="provider")
+
+    @chan.build.command()
+    async def chunks(chunks__) -> int:
+        count = 0
+        async for chunk in chunks__:
+            count += 1
+        return count
+
+    @chan.build.command()
+    async def text(text__) -> str:
+        return text__
+
+    async def generate():
+        for i in range(10):
+            yield "i"
+
+    @chan.build.command()
+    async def tokens(tokens__) -> int:
+        count = 0
+        async for token in tokens__:
+            count += 1
+        return count
+
+    async def generate_tokens():
+        for i in range(10):
+            yield CommandToken(seq="delta", name="tokens", content="%d" % i)
+
+    provider, proxy = create_thread_channel("proxy")
+    async with provider.arun(chan):
+        async with proxy.bootstrap() as runtime:
+            await runtime.wait_connected()
+            value = await runtime.execute_command("chunks", kwargs=dict(chunks__=generate()))
+            assert value == 10
+            value = await runtime.execute_command("text", kwargs=dict(text__="hello"))
+            assert value == "hello"
+            value = await runtime.execute_command("tokens", kwargs=dict(tokens__=generate_tokens()))
+            assert value == 10

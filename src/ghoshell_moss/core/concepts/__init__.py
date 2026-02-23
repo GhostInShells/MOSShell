@@ -21,7 +21,7 @@ from .command import (
     CancelAfterOthersTask,
     Command,
     CommandDeltaType,
-    CommandDeltaTypeMap,
+    ValueOfCommandDeltaTypeMap,
     CommandError,
     CommandErrorCode,
     CommandMeta,

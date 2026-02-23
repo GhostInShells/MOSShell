@@ -8,9 +8,15 @@ from ghoshell_container import Container
 from pydantic import ValidationError
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
-from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask
-from ghoshell_moss.core.concepts.errors import FatalError
+from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken
+from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
+from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers.stream import (
+    create_sender_and_receiver,
+    ThreadSafeStreamReceiver,
+    ThreadSafeStreamSender,
+)
 
 from .connection import Connection, ConnectionClosedError, ConnectionNotAvailable
 from .protocol import (
@@ -18,6 +24,7 @@ from .protocol import (
     ChannelMetaUpdateEvent,
     ClearEvent,
     CommandCallEvent,
+    CommandDeltaEvent,
     CommandCancelEvent,
     CreateSessionEvent,
     ProviderErrorEvent,
@@ -83,6 +90,7 @@ class DuplexChannelProvider(ChannelProvider):
         self._log_prefix = "[DuplexChannelProvider %s]" % self.__class__.__name__
 
         self._running_command_tasks: dict[str, CommandTask] = {}
+        self._running_command_delta_stream: dict[str, tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]] = {}
         """正在运行, 没有结果的 command tasks"""
 
         self._running_command_tasks_lock = asyncio.Lock()
@@ -91,10 +99,10 @@ class DuplexChannelProvider(ChannelProvider):
         self._main_loop_task: asyncio.Task | None = None
 
     @property
-    def logger(self) -> logging.Logger:
+    def logger(self) -> LoggerItf:
         """实现一个运行时的 logger."""
         if self._logger is None:
-            self._logger = self._container.get(logging.Logger) or logging.getLogger("moss")
+            self._logger = self._container.get(LoggerItf) or logging.getLogger("moss")
         return self._logger
 
     @property
@@ -207,6 +215,10 @@ class DuplexChannelProvider(ChannelProvider):
                 if not task.done():
                     task.cancel()
         self._running_command_tasks.clear()
+        if len(self._running_command_delta_stream) > 0:
+            for sender, receiver in self._running_command_delta_stream.values():
+                sender.fail(CommandErrorCode.CLEARED.error("cleared"))
+        self._running_command_delta_stream.clear()
         await self._root_runtime.clear()
 
     async def wait_closed(self) -> None:
@@ -369,6 +381,8 @@ class DuplexChannelProvider(ChannelProvider):
 
             elif model := ClearEvent.from_channel_event(event):
                 await self._handel_clear(model)
+            elif model := CommandDeltaEvent.from_channel_event(event):
+                await self._handle_command_delta_arg(model)
             else:
                 self.logger.info("%s unknown event: %s", self._log_prefix, event)
         except ValidationError:
@@ -442,6 +456,19 @@ class DuplexChannelProvider(ChannelProvider):
             # 设置 task 取消.
             task.cancel()
 
+    async def _handle_command_delta_arg(self, event: CommandDeltaEvent) -> None:
+        cid = event.command_id
+        if cid not in self._running_command_delta_stream:
+            return
+        sender, receiver = self._running_command_delta_stream[cid]
+        if event.command_token:
+            command_token = CommandToken(**event.command_token)
+            sender.append(command_token)
+        elif event.chunk:
+            sender.append(event.chunk)
+        else:
+            sender.commit()
+
     async def _handle_command_call(self, call_event: CommandCallEvent) -> None:
         """执行一个命令运行的逻辑."""
         # 先取消 lifecycle 的命令.
@@ -493,6 +520,10 @@ class DuplexChannelProvider(ChannelProvider):
     async def _add_running_task(self, task: CommandTask) -> None:
         await self._running_command_tasks_lock.acquire()
         try:
+            if task.meta.delta_arg is not None and task.meta.delta_arg not in task.kwargs:
+                sender, receiver = create_sender_and_receiver()
+                task.kwargs[task.meta.delta_arg] = receiver
+                self._running_command_delta_stream[task.cid] = (sender, receiver)
             self._running_command_tasks[task.cid] = task
         finally:
             self._running_command_tasks_lock.release()

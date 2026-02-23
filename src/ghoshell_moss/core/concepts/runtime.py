@@ -176,12 +176,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            channel: CHANNEL,
-            container: IoCContainer | None = None,
-            logger: LoggerItf | None = None,
-            state_store: StateStore | None = None,
+        self,
+        *,
+        channel: CHANNEL,
+        container: IoCContainer | None = None,
+        logger: LoggerItf | None = None,
+        state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -236,7 +236,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def logger(self) -> LoggerItf:
         if self._logger is None:
             # 日志总要有吧.
-            self._logger = self.container.get(LoggerItf) or logging.getLogger("moss")
+            self._logger = self._container.get(LoggerItf) or logging.getLogger("moss")
         return self._logger
 
     @property
@@ -331,7 +331,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-            self,
+        self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -474,6 +474,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 self._loop.run_in_executor(None, callback, task)
 
     async def clear(self) -> None:
+        if not self.is_running():
+            return
         self._defer_clear_mark = False
         await self.clear_own()
         await self.clear_sub_channels()
@@ -505,7 +507,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @contextlib.asynccontextmanager
     async def _container_ctx(self):
-        self._container = self.prepare_container(self._container)
+        self._container = self.prepare_container(self._container) or self._container
         await self._loop.run_in_executor(None, self._container.bootstrap)
         yield
         self._loop.run_in_executor(None, self._container.shutdown)
@@ -700,11 +702,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             self.destroy()
 
     def destroy(self) -> None:
-        self._container = None
         # 防止互相持有.
         self._channel = None
         self._state_store = None
-        self._logger = None
         self._task_done_callbacks.clear()
         self._importlib = None
 
@@ -1016,10 +1016,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandStackResult,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandStackResult,
+        depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:

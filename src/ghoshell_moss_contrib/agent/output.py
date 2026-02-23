@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Callable
 from typing import Optional
+from typing_extensions import Self
 
 from ghoshell_moss_contrib.agent.depends import check_agent
 

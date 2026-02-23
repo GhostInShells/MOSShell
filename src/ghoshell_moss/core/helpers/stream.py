@@ -6,13 +6,19 @@ from ghoshell_common.helpers import Timeleft
 
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
+__all__ = [
+    "ThreadSafeStreamReceiver",
+    "ThreadSafeStreamSender",
+    "create_sender_and_receiver",
+    "create_typed_sender_and_receiver",
+    "ItemT",
+]
+
 ItemT = TypeVar("ItemT")
 
 
 # 实现线程安全的 Stream 对象, 预计同时支持 asyncio 与 sync 两种调用方式.
 # 能够支持阻塞逻辑.
-#
-# todo: 还需要大量的单元测试验证.
 
 
 class ThreadSafeStreamSender(Generic[ItemT]):
@@ -180,7 +186,20 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
         self._completed.set()
 
 
-def create_thread_safe_stream(timeout: float | None = None) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
+def create_sender_and_receiver(
+    timeout: float | None = None,
+) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
+    added = ThreadSafeEvent()
+    completed = ThreadSafeEvent()
+    queue = deque()
+    return ThreadSafeStreamSender(added, completed, queue), ThreadSafeStreamReceiver(added, completed, queue, timeout)
+
+
+def create_typed_sender_and_receiver(
+    item_type: type[ItemT],
+    *,
+    timeout: float | None = None,
+) -> tuple[ThreadSafeStreamSender[ItemT], ThreadSafeStreamReceiver[ItemT]]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
     queue = deque()

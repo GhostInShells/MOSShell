@@ -1,6 +1,6 @@
 import pytest
 
-from ghoshell_moss.core.shell.shell_impl import CTMLShell
+from ghoshell_moss.core.shell.ctml_shell import CTMLShell
 
 
 @pytest.mark.asyncio
