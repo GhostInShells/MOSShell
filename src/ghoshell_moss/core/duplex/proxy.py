@@ -39,7 +39,11 @@ from .protocol import (
     ReconnectSessionEvent,
     SessionCreatedEvent,
     SyncChannelMetasEvent,
+    ProxyPubTopicEvent,
+    ProviderSubTopicEvent,
+    ProviderPubTopicEvent,
 )
+from ghoshell_moss.core.topic import TopicService
 
 __all__ = [
     "DuplexChannelRuntime",
@@ -60,11 +64,11 @@ class DuplexChannelContext:
     """
 
     def __init__(
-        self,
-        *,
-        name: str,
-        connection: Connection,
-        container: Optional[IoCContainer] = None,
+            self,
+            *,
+            name: str,
+            connection: Connection,
+            container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -98,6 +102,7 @@ class DuplexChannelContext:
         self._pending_provider_command_tasks: dict[str, CommandTask] = {}
         self._command_call_deltas_sender_tasks: dict[str, asyncio.Task] = {}
         self._main_task: Optional[asyncio.Task] = None
+        self._subscribe_topic_tasks: dict[str, asyncio.Task] = {}
 
         self._logger: logging.Logger = self.container.get(LoggerItf) or logging.getLogger(__name__)
         """logger 的缓存."""
@@ -302,6 +307,7 @@ class DuplexChannelContext:
             self.session_id = ""
             self.provider_meta_map.clear()
             await self._clear_pending_provider_command_tasks()
+            await self._clear_subscribe_topic_tasks()
 
     async def _wait_task_done_or_stopped(self, task: asyncio.Task) -> bool:
         """
@@ -382,10 +388,12 @@ class DuplexChannelContext:
                         continue
                     await self._clear_connection_status()
                     self.session_id = create_session.session_id
+                    await self._create_topic_subscribers_for_provider(create_session)
                     # 标记创建连接成功.
                     event = SessionCreatedEvent(session_id=self.session_id)
                     await self.send_event_to_provider(event.to_channel_event())
                     continue
+
 
                 elif update_meta := ChannelMetaUpdateEvent.from_channel_event(event):
                     # 如果是 provider 发送了更新状态的结果, 则更新连接状态.
@@ -406,7 +414,12 @@ class DuplexChannelContext:
                     # 拿到了其它正常的指令. 继续往下走.
                     pass
 
-                if command_done := CommandDoneEvent.from_channel_event(event):
+                if pub_topic := ProviderPubTopicEvent.from_channel_event(event):
+                    _ = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
+                    _ = await self._sub_topic_for_provider(sub_topic.topic_name)
+
+                elif command_done := CommandDoneEvent.from_channel_event(event):
                     # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
                     _ = asyncio.create_task(self._handle_command_done_event(command_done))
                     continue
@@ -420,6 +433,54 @@ class DuplexChannelContext:
 
         except asyncio.CancelledError:
             pass
+
+    async def _handle_provider_pub_topic(self, pub_topic: ProviderPubTopicEvent) -> None:
+        # todo: exception handler
+        topic_service = self.container.get(TopicService)
+        if topic_service is None:
+            return
+        await topic_service.pub(pub_topic.topic)
+
+    async def _sub_topic_for_provider(self, topic_name: str) -> None:
+        topic_service = self.container.get(TopicService)
+        if topic_service is None:
+            return
+        if topic_name in self._subscribe_topic_tasks:
+            return
+
+        async def _subscribe_topic(_topic_name: str) -> None:
+            async with topic_service.subscribe(_topic_name) as subscriber:
+                while subscriber.is_running():
+                    if not self.connection.is_connected():
+                        return
+                    topic = await subscriber.poll()
+                    event = ProxyPubTopicEvent(topic=topic, session_id=self.session_id)
+                    await self.send_event_to_provider(event.to_channel_event())
+
+        self._subscribe_topic_tasks[topic_name] = asyncio.create_task(_subscribe_topic(topic_name))
+
+    async def _clear_subscribe_topic_tasks(self) -> None:
+        if len(self._subscribe_topic_tasks) > 0:
+            tasks = self._subscribe_topic_tasks.copy()
+            self._subscribe_topic_tasks.clear()
+            for t in tasks.values():
+                t.cancel()
+
+    async def _create_topic_subscribers_for_provider(self, create_session: CreateSessionEvent) -> None:
+        """
+        在 create session 的同时, 创建监听通道.
+        """
+        # todo: exception handler
+        if len(create_session.listening_topics) == 0:
+            return
+
+        topic_service = self.container.get(TopicService)
+        if topic_service is None:
+            return
+
+        await self._clear_subscribe_topic_tasks()
+        for topic_name in create_session.listening_topics:
+            await self._sub_topic_for_provider(topic_name)
 
     async def _send_sync_meta_event(self) -> None:
         """
@@ -578,11 +639,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     """
 
     def __init__(
-        self,
-        *,
-        channel: Channel,
-        provider_chan_path: str,
-        ctx: DuplexChannelContext,
+            self,
+            *,
+            channel: Channel,
+            provider_chan_path: str,
+            ctx: DuplexChannelContext,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
@@ -695,9 +756,9 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return None
 
     def _get_provider_command_func(
-        self,
-        chan: ChannelFullPath,
-        meta: CommandMeta,
+            self,
+            chan: ChannelFullPath,
+            meta: CommandMeta,
     ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
@@ -762,11 +823,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str = "",
-        to_provider_connection: Connection,
+            self,
+            *,
+            name: str,
+            description: str = "",
+            to_provider_connection: Connection,
     ):
         self._name = name
         self._description = description

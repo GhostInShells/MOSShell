@@ -434,3 +434,41 @@ def test_channel_split_path():
     _chan = "a.b.c"
     got = PyChannel.split_channel_path_to_names(_chan, 1)
     assert len(got) == 2
+
+
+@pytest.mark.asyncio
+async def test_py_channel_topics():
+    from ghoshell_moss.core import ErrorTopic
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    produce_done = asyncio.Event()
+    consume_done = asyncio.Event()
+    consumed = []
+
+    @child.build.running
+    async def producer():
+        _runtime = ChannelCtx.runtime()
+        for i in range(10):
+            await _runtime.pub_topic(ErrorTopic(errmsg="hello"))
+        produce_done.set()
+
+    @main.build.running
+    async def consumer():
+        _runtime = ChannelCtx.runtime()
+        async with _runtime.topic_subscriber(ErrorTopic) as subscriber:
+            count = 0
+            while subscriber.is_running():
+                topic = await subscriber.poll_model()
+                consumed.append(topic)
+                count += 1
+                if count == 10:
+                    break
+        consume_done.set()
+
+    async with main.bootstrap() as runtime:
+        assert runtime.is_running()
+        await produce_done.wait()
+        await consume_done.wait()
+    assert len(consumed) == 10

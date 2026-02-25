@@ -8,6 +8,7 @@ from typing_extensions import Self, TypedDict
 
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
+from ghoshell_moss.core.concepts.topic import Topic
 
 __all__ = [
     "ChannelEvent",
@@ -24,6 +25,9 @@ __all__ = [
     "ReconnectSessionEvent",
     "SessionCreatedEvent",
     "SyncChannelMetasEvent",
+    "ProviderPubTopicEvent",
+    "ProviderSubTopicEvent",
+    "ProxyPubTopicEvent",
 ]
 
 """
@@ -91,6 +95,11 @@ class ClearEvent(ChannelEventModel):
 
     event_type: ClassVar[str] = "moss.channel.proxy.clear"
     chan: str = Field(description="channel name")
+
+
+class ProxyPubTopicEvent(ChannelEventModel):
+    event_type: ClassVar[str] = "moss.channel.proxy.pub_topic"
+    topic: Topic = Field(description="published topic")
 
 
 class CommandDeltaEvent(ChannelEventModel):
@@ -195,6 +204,20 @@ class CreateSessionEvent(ChannelEventModel):
     """
 
     event_type: ClassVar[str] = "moss.channel.provider.session.create"
+    listening_topics: list[str] = Field(
+        default_factory=list,
+        description="listening topics",
+    )
+
+
+class ProviderPubTopicEvent(ChannelEventModel):
+    event_type: ClassVar[str] = "moss.channel.provider.pub_topic"
+    topic: Topic = Field(description="published topic")
+
+
+class ProviderSubTopicEvent(ChannelEventModel):
+    event_type: ClassVar[str] = "moss.channel.provider.sub_topic"
+    topic_name: str = Field(description="topic name")
 
 
 class CommandDoneEvent(ChannelEventModel):

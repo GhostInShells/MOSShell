@@ -59,7 +59,7 @@ from .speech import (
     TTSInfo,
 )
 from .states import BaseStateStore, State, StateBaseModel, StateModel, StateStore
-from .topics import *
+from .topic import *
 
 """
 基于代码完成自解释的思路, 定义了 MOSS 架构中所有的关键抽象. 

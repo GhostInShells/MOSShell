@@ -27,6 +27,9 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.states import StateModel, StateStore, State
+from ghoshell_moss.core.concepts.topic import (
+    TopicService, TopicModel, Subscriber, Publisher, SubscribeKeep, Topic, TOPIC_MODEL,
+)
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
 
@@ -253,19 +256,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-        self,
-        *,
-        name: str = "",
-        chan: str | None = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
-        available: Optional[Callable[[], bool]] = None,
-        # --- 高级参数 --- #
-        blocking: Optional[bool] = None,
-        call_soon: bool = False,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            chan: str | None = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType] = None,
+            available: Optional[Callable[[], bool]] = None,
+            # --- 高级参数 --- #
+            blocking: Optional[bool] = None,
+            call_soon: bool = False,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         返回 decorator 将一个函数注册到当前 Channel 里.
@@ -382,9 +385,9 @@ class ChannelCtx:
     """
 
     def __init__(
-        self,
-        runtime: Optional["ChannelRuntime"] = None,
-        task: Optional[CommandTask] = None,
+            self,
+            runtime: Optional["ChannelRuntime"] = None,
+            task: Optional[CommandTask] = None,
     ):
         self._runtime = runtime
         self._task = task
@@ -559,6 +562,38 @@ class ChannelRuntime(ABC):
     def importlib(self) -> "ChannelImportLib":
         pass
 
+    def topic_publisher(self) -> Publisher:
+        """
+        创建一个独立的 publisher 可以在链路中广播 topic.
+        """
+        return self.importlib.topics.publisher(
+            creator=f"chan/{self.id}",
+        )
+
+    async def pub_topic(self, topic: TopicModel | Topic, topic_name: str = "") -> None:
+        """
+        发送一个 topic 到链路中, 其它监听的 channel 或者 shell 都能拿到这个事件.
+        """
+        await self.importlib.topics.pub(topic, name=topic_name, creator=f"chan/{self.id}")
+
+    def topic_subscriber(
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: str = "",
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
+    ) -> Subscriber[TOPIC_MODEL]:
+        """
+        创建一个 Subscriber 来获取链路中的 Topic 广播.
+        """
+        return self.importlib.topics.subscribe_model(
+            model=model,
+            topic_name=topic_name,
+            maxsize=maxsize,
+            keep=keep,
+        )
+
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
         """
         在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
@@ -607,7 +642,7 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
@@ -750,11 +785,11 @@ class ChannelRuntime(ABC):
         pass
 
     def create_command_task(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> CommandTask:
         """
         example to create channel task
@@ -775,11 +810,11 @@ class ChannelRuntime(ABC):
         return task
 
     async def execute_command(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.
@@ -862,6 +897,11 @@ class ChannelImportLib(ABC):
         """
         pass
 
+    @property
+    @abstractmethod
+    def topics(self) -> TopicService:
+        pass
+
     @abstractmethod
     def is_running(self) -> bool:
         """
@@ -892,10 +932,10 @@ class ChannelImportLib(ABC):
         return all_runtimes
 
     def find_descendants(
-        self,
-        channel: Channel,
-        bloodline: set | None = None,
-        depth: int = 0,
+            self,
+            channel: Channel,
+            bloodline: set | None = None,
+            depth: int = 0,
     ) -> dict[ChannelFullPath, ChannelRuntime]:
         """
         语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.

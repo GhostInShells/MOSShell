@@ -5,6 +5,7 @@ import pytest
 from ghoshell_moss.core import Command, CommandError, CommandToken
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
+from ghoshell_moss.core.concepts.topic import ErrorTopic
 
 
 @pytest.mark.asyncio
@@ -348,3 +349,8 @@ async def test_thread_channel_with_delta_func():
             assert value == "hello"
             value = await runtime.execute_command("tokens", kwargs=dict(tokens__=generate_tokens()))
             assert value == 10
+
+
+async def test_thread_proxy_and_provider_topic_transport():
+    # todo: test topics
+    pass

@@ -1,11 +1,8 @@
 import contextlib
 
 import asyncio
-import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Coroutine
-from typing import Optional, Iterable, Any, TypeVar, Generic
-from typing_extensions import Self
+from typing import Optional, Iterable, Any, TypeVar, Generic, Callable
 
 from ghoshell_container import IoCContainer, Container
 
@@ -17,12 +14,12 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskState,
 )
 from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore, State
+from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     Channel,
     ChannelMeta,
     TaskDoneCallback,
-    RefreshMetaCallback,
     ChannelRuntime,
     ChannelFullPath,
     ChannelPaths,
@@ -56,7 +53,9 @@ class BaseImportLib(ChannelImportLib):
         self._logger: Optional[LoggerItf] = None
         self._runtimes: dict[_ChannelId, ChannelRuntime] = {}
         self._runtimes_lock: asyncio.Lock = asyncio.Lock()
+        self._topics: TopicService | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._async_exit_stack = contextlib.AsyncExitStack()
         self._start: bool = False
         self._close: bool = False
 
@@ -115,6 +114,12 @@ class BaseImportLib(ChannelImportLib):
         return self._main
 
     @property
+    def topics(self) -> TopicService:
+        if not self.is_running():
+            raise RuntimeError('Not running')
+        return self._topics
+
+    @property
     def logger(self):
         if self._logger is None:
             self._logger = self._container.get(LoggerItf)
@@ -127,17 +132,44 @@ class BaseImportLib(ChannelImportLib):
     def is_running(self) -> bool:
         return self._start and not self._close
 
+    @contextlib.asynccontextmanager
+    async def _container_ctx_manager(self):
+        await asyncio.to_thread(self._container.bootstrap)
+        yield
+        await asyncio.to_thread(self._container.shutdown)
+
+    @contextlib.asynccontextmanager
+    async def _topics_ctx_manager(self):
+        self._topics = self._container.get(TopicService)
+        if not self._topics:
+            self._topics = self._create_default_topics()
+            self._container.set(TopicService, self._topics)
+        topic_started = False
+        if not self._topics.is_running():
+            await self._topics.start()
+            topic_started = True
+        yield
+        if topic_started:
+            await self._topics.close()
+
     async def start(self) -> None:
         if self._start:
             return
         self._start = True
         self._loop = asyncio.get_event_loop()
-        await asyncio.to_thread(self._container.bootstrap)
+        await self._async_exit_stack.__aenter__()
+        await self._async_exit_stack.enter_async_context(self._container_ctx_manager())
+        await self._async_exit_stack.enter_async_context(self._topics_ctx_manager())
+
+    def _create_default_topics(self) -> TopicService:
+        from ghoshell_moss.core.topic import QueueBasedTopicService
+        return QueueBasedTopicService(sender=self.main.id)
 
     async def close(self) -> None:
         if self._close:
             return
         self._close = True
+        # todo: 实现更可靠的生命周期.
         await self._runtimes_lock.acquire()
         try:
             clear_runtimes = []
@@ -163,6 +195,7 @@ class BaseImportLib(ChannelImportLib):
                 idx += 1
         finally:
             self._runtimes_lock.release()
+            await self._async_exit_stack.__aexit__(None, None, None)
             if self._loop:
                 self._loop.run_in_executor(None, self._container.shutdown)
 
@@ -176,12 +209,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-        self,
-        *,
-        channel: CHANNEL,
-        container: IoCContainer | None = None,
-        logger: LoggerItf | None = None,
-        state_store: StateStore | None = None,
+            self,
+            *,
+            channel: CHANNEL,
+            container: IoCContainer | None = None,
+            logger: LoggerItf | None = None,
+            state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -331,7 +364,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -1016,10 +1049,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-        self,
-        owner: CommandTask,
-        stack: CommandStackResult,
-        depth: int = 0,
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:

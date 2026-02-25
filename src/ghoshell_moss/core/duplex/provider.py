@@ -12,6 +12,7 @@ from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, Co
 from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.topic import QueueBasedTopicService, TopicService, Topic
 from ghoshell_moss.core.helpers.stream import (
     create_sender_and_receiver,
     ThreadSafeStreamReceiver,
@@ -31,6 +32,9 @@ from .protocol import (
     ReconnectSessionEvent,
     SessionCreatedEvent,
     SyncChannelMetasEvent,
+    ProviderPubTopicEvent,
+    ProviderSubTopicEvent,
+    ProxyPubTopicEvent,
 )
 
 __all__ = ["ChannelEventHandler", "DuplexChannelProvider"]
@@ -39,6 +43,37 @@ __all__ = ["ChannelEventHandler", "DuplexChannelProvider"]
 
 ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bool]]
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel proxy/provider 原有的事件处理逻辑."""
+
+
+class ProviderTopicService(QueueBasedTopicService):
+
+    def __init__(
+            self,
+            get_session_id: Callable[[], str],
+            connection: Connection,
+            sender: str = "",
+            *,
+            logger: LoggerItf | None = None,
+    ):
+        super().__init__(sender=sender, logger=logger)
+        self._connection = connection
+        self._get_session_id_fn = get_session_id
+
+    async def _on_topic_published(self, topic: Topic) -> None:
+        try:
+            if self._connection.is_connected() and not self._connection.is_closed():
+                event = ProviderPubTopicEvent(topic=topic, session_id=self._get_session_id_fn())
+                await self._connection.send(event.to_channel_event())
+        except (ConnectionClosedError, ConnectionNotAvailable):
+            pass
+
+    async def _on_topic_subscribed(self, topic_name: str) -> None:
+        try:
+            if self._connection.is_connected() and not self._connection.is_closed():
+                event = ProviderSubTopicEvent(topic=topic_name, session_id=self._get_session_id_fn())
+                await self._connection.send(event.to_channel_event())
+        except (ConnectionClosedError, ConnectionNotAvailable):
+            pass
 
 
 class DuplexChannelProvider(ChannelProvider):
@@ -50,12 +85,13 @@ class DuplexChannelProvider(ChannelProvider):
     """
 
     def __init__(
-        self,
-        provider_connection: Connection,
-        proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
-        receive_interval_seconds: float = 0.5,
-        container: Container = None,
+            self,
+            provider_connection: Connection,
+            proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
+            receive_interval_seconds: float = 0.5,
+            container: Container = None,
     ):
+        self._uid = uuid()
         self._container = Container(
             name=f"moss.duplex_provider.{self.__class__.__name__}",
             parent=container,
@@ -87,7 +123,7 @@ class DuplexChannelProvider(ChannelProvider):
         self._channel: Channel | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._logger: logging.Logger | None = None
-        self._log_prefix = "[DuplexChannelProvider %s]" % self.__class__.__name__
+        self._log_prefix = "[DuplexChannelProvider %s %s]" % (self.__class__.__name__, self._uid)
 
         self._running_command_tasks: dict[str, CommandTask] = {}
         self._running_command_delta_stream: dict[str, tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]] = {}
@@ -97,6 +133,9 @@ class DuplexChannelProvider(ChannelProvider):
         """加个 lock 避免竞态, 不确定是否是必要的."""
 
         self._main_loop_task: asyncio.Task | None = None
+
+    def _get_session_id(self) -> str:
+        return self._session_id or ''
 
     @property
     def logger(self) -> LoggerItf:
@@ -162,6 +201,19 @@ class DuplexChannelProvider(ChannelProvider):
         self._starting = True
         self._loop = asyncio.get_running_loop()
         self._channel = channel
+
+        # 注册 topic service.
+        if not self._container.bound(TopicService):
+            self._container.set(
+                TopicService,
+                ProviderTopicService(
+                    self._get_session_id,
+                    self._connection,
+                    sender=f"DuplexChannelProvider/{self._uid}",
+                    logger=self.logger,
+                ),
+            )
+        # 启动时, topic service 同样会注入到根节点的 importlib 中.
         self._root_runtime = channel.bootstrap(self._container)
 
         try:
@@ -252,7 +304,11 @@ class DuplexChannelProvider(ChannelProvider):
             self._session_id = uuid()
             self._session_creating_event.clear()
         try:
-            event = CreateSessionEvent(session_id=self._session_id).to_channel_event()
+            event = CreateSessionEvent(
+                session_id=self._session_id,
+                # 提供当前正在监听的事件.
+                listening_topics=self._root_runtime.importlib.topics.listening(),
+            ).to_channel_event()
             await self._send_event_to_proxy(event)
             self._session_creating_event.set()
         except asyncio.CancelledError:
@@ -383,6 +439,8 @@ class DuplexChannelProvider(ChannelProvider):
                 await self._handel_clear(model)
             elif model := CommandDeltaEvent.from_channel_event(event):
                 await self._handle_command_delta_arg(model)
+            elif model := ProxyPubTopicEvent.from_channel_event(event):
+                await self._handle_proxy_topic(model)
             else:
                 self.logger.info("%s unknown event: %s", self._log_prefix, event)
         except ValidationError:
@@ -392,6 +450,14 @@ class DuplexChannelProvider(ChannelProvider):
             raise
         finally:
             self.logger.info("%s handled event: %s", self._log_prefix, event)
+
+    async def _handle_proxy_topic(self, event: ProxyPubTopicEvent) -> None:
+        try:
+            await self._root_runtime.pub_topic(event.topic)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception("%s receive proxy topic failed: %s", self._log_prefix, e)
 
     async def _handel_clear(self, event: ClearEvent):
         """执行 clear 逻辑."""
