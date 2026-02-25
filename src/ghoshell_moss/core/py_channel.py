@@ -219,6 +219,7 @@ class PyChannel(MutableChannel):
         description: str = "",
         blocking: bool = True,
         dynamic: bool | None = None,
+        uid: str | None = None,
     ):
         """
         :param name: channel 的名称.
@@ -228,7 +229,7 @@ class PyChannel(MutableChannel):
                         如果是动态的, 大模型每一帧思考时, 都会从 channel 获取最新的状态.
         """
         self._name = name
-        self._id = uuid()
+        self._id = uid or uuid()
         self._description = description
         self._children: dict[str, Channel] = {}
         self._block = blocking

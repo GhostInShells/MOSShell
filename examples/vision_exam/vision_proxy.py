@@ -11,6 +11,7 @@ if __name__ == "__main__":
         address="tcp://127.0.0.1:5557",
     )
 
+
     def callback(viewer: SimpleImageViewer):
 
         async def main():
@@ -18,15 +19,16 @@ if __name__ == "__main__":
                 await broker.wait_connected()
                 while True:
                     await asyncio.sleep(2)
-                    if not proxy.is_running():
+                    if not broker.is_running():
                         continue
-                    await proxy.broker.refresh_all_metas()
-                    meta = proxy.broker.own_meta()
+                    await broker.refresh_metas()
+                    meta = broker.own_meta()
                     for msg in meta.context:
                         for ct in msg.contents:
                             if i := Base64Image.from_content(ct):
                                 viewer.set_pil_image(i.to_pil_image())
 
         asyncio.run(main())
+
 
     run_img_viewer(callback)
