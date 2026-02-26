@@ -11,8 +11,8 @@ from .channel import (
     MessageFunction,
     LifecycleFunction,
     PrompterFunction,
-    StringType,
     MutableChannel,
+    ChannelInterface,
 )
 from .runtime import AbsChannelRuntime, AbsChannelTreeRuntime
 from .command import (

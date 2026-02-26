@@ -57,6 +57,7 @@ __all__ = [
     "LifecycleFunction",
     "PrompterFunction",
     "StringType",
+    "ChannelInterface",
 ]
 
 # 关于 Channel (中文名: 经络) :
@@ -970,6 +971,41 @@ class ChannelApp(Protocol):
     def as_channel(self) -> Channel:
         """
         返回一个 Channel 实例.
+        """
+        pass
+
+
+class ChannelInterface(ABC):
+    """
+    另一种标准 Channel 的定义范式.
+
+    开发者实现一个 ChannelInterface 的 Abstract 类, 定义必要的函数 (Command 或生命周期函数)
+    然后提前实现好 make_channel 函数.
+
+    >>> class SomeChannelInterface(ChannelInterface):
+    >>>      @abstractmethod
+    >>>      def foo(self) -> int:
+    >>>          pass
+    >>>
+    >>>      def make_channel(self, name, description) -> Channel:
+    >>>           from ghoshell_moss import PyChannel
+    >>>           channel = PyChannel(name=name, description=description)
+    >>>           # 注册好 interface 上的函数.
+    >>>           channel.build.command()(self.foo)
+    >>>           return channel
+
+    这样具体的实现就可以替换了.
+    而且 ChannelInterface 本身也可以注册到容器中, 方便通过 IoC 容器来获取.
+    """
+
+    @abstractmethod
+    def make_channel(
+            self,
+            name: str = "",
+            description: str = "",
+    ) -> Channel:
+        """
+        子抽象类应该要实现这个函数.
         """
         pass
 
