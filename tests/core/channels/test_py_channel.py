@@ -439,6 +439,7 @@ def test_channel_split_path():
 @pytest.mark.asyncio
 async def test_py_channel_topics():
     from ghoshell_moss.core import ErrorTopic
+
     main = PyChannel(name="main")
     child = PyChannel(name="child")
     main.import_channels(child)

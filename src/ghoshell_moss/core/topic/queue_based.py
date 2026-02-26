@@ -18,15 +18,15 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
     """
 
     def __init__(
-            self,
-            service_stopped: asyncio.Event,
-            *,
-            model: type[TOPIC_MODEL] | None,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal['latest', 'oldest'] = "latest",
-            logger: LoggerItf | None = None
+        self,
+        service_stopped: asyncio.Event,
+        *,
+        model: type[TOPIC_MODEL] | None,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
+        logger: LoggerItf | None = None,
     ):
         self._model = model
         self._listening = topic_name or model.default_topic_name()
@@ -34,7 +34,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
         self._queue: asyncio.Queue[Topic | None] = asyncio.Queue(maxsize=maxsize)
         self._receive_lock = asyncio.Lock()
         self._service_stopped = service_stopped
-        self._logger = logger or logging.getLogger('moss')
+        self._logger = logger or logging.getLogger("moss")
         self._keep_policy = keep
         self._started = False
         self._closed = False
@@ -131,20 +131,19 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 
 
 class QueueBasedPublisher(Publisher):
-
     def __init__(
-            self,
-            *,
-            creator: str,
-            publish_queue: asyncio.Queue,
-            service_stopped_event: asyncio.Event,
-            uid: str | None = None,
-            logger: LoggerItf | None = None,
+        self,
+        *,
+        creator: str,
+        publish_queue: asyncio.Queue,
+        service_stopped_event: asyncio.Event,
+        uid: str | None = None,
+        logger: LoggerItf | None = None,
     ):
         self._publish_queue = publish_queue
         self._service_stopped_event = service_stopped_event
         self._creator = creator
-        self._logger = logger or logging.getLogger('moss')
+        self._logger = logger or logging.getLogger("moss")
         self._additions = []
         self._uid = uid or uuid()
         self._log_prefix = f"[QueueBasedPublisher %s id=%s]" % (self._creator, self._uid)
@@ -184,12 +183,7 @@ class QueueBasedTopicService(TopicService):
     实现最基本的协程 topic service.
     """
 
-    def __init__(
-            self,
-            sender: str = "",
-            *,
-            logger: LoggerItf | None = None
-    ):
+    def __init__(self, sender: str = "", *, logger: LoggerItf | None = None):
         self._sender = sender or uuid()
         self._creator = f"TopicService/{self._sender}"
         self._started = False
@@ -200,7 +194,7 @@ class QueueBasedTopicService(TopicService):
         self._publish_queue: asyncio.Queue[Topic] = asyncio.Queue()
         self._publish_queue_empty = asyncio.Event()
         self._main_loop_task: Optional[asyncio.Task] = None
-        self._logger = logger or logging.getLogger('moss')
+        self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[QueueBasedTopicService] "
 
     async def start(self):
@@ -322,7 +316,8 @@ class QueueBasedTopicService(TopicService):
             self._logger.exception(
                 "%s send topic %s to subscribe %s failed: %r",
                 self._log_prefix,
-                topic.meta, subscriber.id,
+                topic.meta,
+                subscriber.id,
                 e,
             )
 
@@ -333,41 +328,48 @@ class QueueBasedTopicService(TopicService):
         return list(self._subscribers.keys())
 
     def subscribe(
-            self,
-            topic_name: str,
-            *,
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal['latest', 'oldest'] = "latest",
+        self,
+        topic_name: str,
+        *,
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[None]:
         return self._create_subscriber(
-            topic_name=topic_name, uid=uid, maxsize=maxsize, keep=keep, model=None,
+            topic_name=topic_name,
+            uid=uid,
+            maxsize=maxsize,
+            keep=keep,
+            model=None,
         )
 
     def subscribe_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal['latest', 'oldest'] = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         return self._create_subscriber(
-            topic_name=topic_name, uid=uid, maxsize=maxsize, keep=keep, model=model,
+            topic_name=topic_name,
+            uid=uid,
+            maxsize=maxsize,
+            keep=keep,
+            model=model,
         )
 
     def _create_subscriber(
-            self,
-            model: type[TopicModel] | None,
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal['latest', 'oldest'] = "latest",
+        self,
+        model: type[TopicModel] | None,
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber:
-        """
-        """
+        """ """
         # 没有 await, 预计不会让出控制权. 所以这一版不加锁了.
         subscriber = QueueBasedSubscriber(
             self._main_loop_stopped_event,

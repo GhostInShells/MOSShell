@@ -8,14 +8,21 @@ from typing_extensions import Self
 import time
 
 __all__ = [
-    'Topic', 'TOPIC_MODEL', 'TopicModel', 'TopicService', 'Subscriber', 'Publisher', 'ClosedError',
-    'TopicName',
-    'SubscribeKeep',
-    'LogTopic', 'ErrorTopic',
+    "Topic",
+    "TOPIC_MODEL",
+    "TopicModel",
+    "TopicService",
+    "Subscriber",
+    "Publisher",
+    "ClosedError",
+    "TopicName",
+    "SubscribeKeep",
+    "LogTopic",
+    "ErrorTopic",
 ]
 
 TopicName = str
-SubscribeKeep = Literal['latest', 'oldest']
+SubscribeKeep = Literal["latest", "oldest"]
 _TopicType = str
 
 
@@ -24,6 +31,7 @@ class TopicMeta(BaseModel):
     定义 topic 可被复用的元信息.
     在传输和解析过程中它的数据结构不变, 也不占用 meta 之外的 keyword.
     """
+
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
     name: str = Field(default="", description="Name of the topic.")
     type: str = Field(default="", description="Type of the topic.")
@@ -61,9 +69,8 @@ class Topic(BaseModel, WithAdditional):
 
     可以慢慢迭代.
     """
-    meta: TopicMeta = Field(
-        description="meta information"
-    )
+
+    meta: TopicMeta = Field(description="meta information")
 
     data: dict = Field(
         description="the data of the topic",
@@ -81,10 +88,7 @@ class Topic(BaseModel, WithAdditional):
 
 
 class TopicModel(BaseModel, ABC):
-    meta: TopicMeta = Field(
-        default_factory=TopicMeta,
-        description="meta information"
-    )
+    meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
 
     @classmethod
     @abstractmethod
@@ -116,14 +120,14 @@ class TopicModel(BaseModel, ABC):
         return cls.model_json_schema()
 
     def to_topic(
-            self,
-            *,
-            name: str = "",
-            overdue: float = 0.0,
-            creator: str = "",
-            sender: str = "",
+        self,
+        *,
+        name: str = "",
+        overdue: float = 0.0,
+        creator: str = "",
+        sender: str = "",
     ) -> Topic:
-        data = self.model_dump(exclude={'meta'})
+        data = self.model_dump(exclude={"meta"})
         meta = self.meta
         meta.name = name or self.default_topic_name()
         meta.overdue = overdue
@@ -141,7 +145,8 @@ class LogTopic(TopicModel):
     实验性的范式, 考虑让 provider channel 实现的 logger 本质上是通过 topics 发送日志 topic
     然后 proxy 侧写入 topic.
     """
-    level: Literal['debug', 'info', 'warning', 'error'] = 'info'
+
+    level: Literal["debug", "info", "warning", "error"] = "info"
     message: str = Field(description="日志的正文讯息")
 
     @classmethod
@@ -237,7 +242,6 @@ class Subscriber(Generic[TOPIC_MODEL], ABC):
 
 
 class Publisher(ABC):
-
     @abstractmethod
     def with_additions(self, *additions: Addition) -> Self:
         """
@@ -262,10 +266,10 @@ class Publisher(ABC):
 
     @abstractmethod
     async def pub(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
@@ -323,24 +327,24 @@ class TopicService(ABC):
 
     @abstractmethod
     def subscribe(
-            self,
-            topic_name: str,
-            *,
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        topic_name: str,
+        *,
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[None]:
         pass
 
     @abstractmethod
     def subscribe_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 subscriber.
@@ -359,11 +363,11 @@ class TopicService(ABC):
 
     @abstractmethod
     async def pub(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
-            creator: str = "",
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
+        creator: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.

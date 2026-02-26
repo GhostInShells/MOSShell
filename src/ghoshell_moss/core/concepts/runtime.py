@@ -116,7 +116,7 @@ class BaseImportLib(ChannelImportLib):
     @property
     def topics(self) -> TopicService:
         if not self.is_running():
-            raise RuntimeError('Not running')
+            raise RuntimeError("Not running")
         return self._topics
 
     @property
@@ -163,6 +163,7 @@ class BaseImportLib(ChannelImportLib):
 
     def _create_default_topics(self) -> TopicService:
         from ghoshell_moss.core.topic import QueueBasedTopicService
+
         return QueueBasedTopicService(sender=self.main.id)
 
     async def close(self) -> None:
@@ -209,12 +210,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            channel: CHANNEL,
-            container: IoCContainer | None = None,
-            logger: LoggerItf | None = None,
-            state_store: StateStore | None = None,
+        self,
+        *,
+        channel: CHANNEL,
+        container: IoCContainer | None = None,
+        logger: LoggerItf | None = None,
+        state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -364,7 +365,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-            self,
+        self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -1049,10 +1050,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandStackResult,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandStackResult,
+        depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:

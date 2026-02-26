@@ -46,14 +46,13 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 
 
 class ProviderTopicService(QueueBasedTopicService):
-
     def __init__(
-            self,
-            get_session_id: Callable[[], str],
-            connection: Connection,
-            sender: str = "",
-            *,
-            logger: LoggerItf | None = None,
+        self,
+        get_session_id: Callable[[], str],
+        connection: Connection,
+        sender: str = "",
+        *,
+        logger: LoggerItf | None = None,
     ):
         super().__init__(sender=sender, logger=logger)
         self._connection = connection
@@ -85,11 +84,11 @@ class DuplexChannelProvider(ChannelProvider):
     """
 
     def __init__(
-            self,
-            provider_connection: Connection,
-            proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
-            receive_interval_seconds: float = 0.5,
-            container: Container = None,
+        self,
+        provider_connection: Connection,
+        proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
+        receive_interval_seconds: float = 0.5,
+        container: Container = None,
     ):
         self._uid = uuid()
         self._container = Container(
@@ -135,7 +134,7 @@ class DuplexChannelProvider(ChannelProvider):
         self._main_loop_task: asyncio.Task | None = None
 
     def _get_session_id(self) -> str:
-        return self._session_id or ''
+        return self._session_id or ""
 
     @property
     def logger(self) -> LoggerItf:

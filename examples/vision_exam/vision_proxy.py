@@ -11,7 +11,6 @@ if __name__ == "__main__":
         address="tcp://127.0.0.1:5557",
     )
 
-
     def callback(viewer: SimpleImageViewer):
 
         async def main():
@@ -29,6 +28,5 @@ if __name__ == "__main__":
                                 viewer.set_pil_image(i.to_pil_image())
 
         asyncio.run(main())
-
 
     run_img_viewer(callback)

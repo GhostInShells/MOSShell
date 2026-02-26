@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTok
 from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.speech import Speech
+from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
 
 __all__ = [
     "InterpreterKind",
@@ -48,6 +49,32 @@ class MOSSShell(ABC):
         """
         注册 Speech 对象.
         todo: 准备彻底重构这个实现.
+        """
+        pass
+
+    @abstractmethod
+    async def pub_topic(
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
+    ) -> None:
+        """
+        shell 广播 topic
+        """
+        pass
+
+    @abstractmethod
+    def subscribe_topic(
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        name: str = "",
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
+    ) -> Subscriber[TOPIC_MODEL]:
+        """
+        shell 层监听 topic.
         """
         pass
 

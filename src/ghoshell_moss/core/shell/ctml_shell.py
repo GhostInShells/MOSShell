@@ -6,6 +6,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
+from ghoshell_moss.core.concepts.topic import TopicModel, Subscriber, Topic, TOPIC_MODEL, SubscribeKeep
 from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelFullPath,
@@ -42,7 +43,7 @@ class CTMLShell(MOSSShell):
         name: str = "shell",
         description: Optional[str] = None,
         container: IoCContainer | None = None,
-        main_channel: Channel | None = None,
+        main_channel: MutableChannel | None = None,
         speech: Optional[Speech] = None,
         state_store: Optional[StateStore] = None,
     ):
@@ -330,6 +331,32 @@ class CTMLShell(MOSSShell):
     @property
     def main_channel(self) -> MutableChannel:
         return self._main_channel
+
+    async def pub_topic(self, topic: Topic | TopicModel, *, name: str = "") -> None:
+        if not self.is_running():
+            raise RuntimeError(f"Shell {self._name} not running")
+        if isinstance(topic, TopicModel):
+            topic = topic.to_topic()
+        if not isinstance(topic, Topic):
+            raise ValueError(f"Topic {topic} is not Topic or TopicModel type")
+
+        return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
+
+    def subscribe_topic(
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        name: str = "",
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
+    ) -> Subscriber[TOPIC_MODEL]:
+        self._check_running()
+        return self._main_runtime.importlib.topics.subscribe_model(
+            model,
+            topic_name=name,
+            maxsize=maxsize,
+            keep=keep,
+        )
 
     async def refresh_metas(self, timeout: float | None = None) -> None:
         if not self.is_running():
