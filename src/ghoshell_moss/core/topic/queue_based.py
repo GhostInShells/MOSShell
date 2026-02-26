@@ -176,6 +176,7 @@ class QueueBasedPublisher(Publisher):
             topic.meta.name = name
         topic.meta.creator = self._creator
         await self._publish_queue.put(topic)
+        await asyncio.sleep(0.0)
 
 
 class QueueBasedTopicService(TopicService):

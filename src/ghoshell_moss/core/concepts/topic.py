@@ -10,7 +10,8 @@ import time
 __all__ = [
     'Topic', 'TOPIC_MODEL', 'TopicModel', 'TopicService', 'Subscriber', 'Publisher', 'ClosedError',
     'TopicName',
-    'ErrorTopic', 'SubscribeKeep',
+    'SubscribeKeep',
+    'LogTopic', 'ErrorTopic',
 ]
 
 TopicName = str
@@ -19,6 +20,10 @@ _TopicType = str
 
 
 class TopicMeta(BaseModel):
+    """
+    定义 topic 可被复用的元信息.
+    在传输和解析过程中它的数据结构不变, 也不占用 meta 之外的 keyword.
+    """
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
     name: str = Field(default="", description="Name of the topic.")
     type: str = Field(default="", description="Type of the topic.")
@@ -40,6 +45,9 @@ class TopicMeta(BaseModel):
     )
 
     def __str__(self):
+        """
+        方便日志打印. todo: 或许应该放全量信息? 或者放到 __repr__ 中? 没想清楚.
+        """
         return f"<Topic name={self.name} id={self.id}>"
 
 
@@ -81,6 +89,9 @@ class TopicModel(BaseModel, ABC):
     @classmethod
     @abstractmethod
     def topic_type(cls) -> str:
+        """
+        定义 topic 的类型. 对于使用 Topic 而非 TopicModel 的场景, 需要依赖 topic type 还原指定的 TopicModel.
+        """
         pass
 
     @property
@@ -90,10 +101,18 @@ class TopicModel(BaseModel, ABC):
     @classmethod
     @abstractmethod
     def default_topic_name(cls) -> str:
+        """
+        定义 topic name, 理论上一种 topic type 可以对应不同的 topic name 实现定向的分流.
+        参考了 ros2 的模式.
+        不过实际上, 可能绝大多数的 topic name 都使用默认的.
+        """
         pass
 
     @classmethod
     def topic_schema(cls) -> dict:
+        """
+        通过这种方式, 一个服务可以展示它所有发送的 topic 和监听的 topic, 得到一个自解释的 schema 列表.
+        """
         return cls.model_json_schema()
 
     def to_topic(
@@ -115,6 +134,23 @@ class TopicModel(BaseModel, ABC):
             data=data,
             additional=None,
         )
+
+
+class LogTopic(TopicModel):
+    """
+    实验性的范式, 考虑让 provider channel 实现的 logger 本质上是通过 topics 发送日志 topic
+    然后 proxy 侧写入 topic.
+    """
+    level: Literal['debug', 'info', 'warning', 'error'] = 'info'
+    message: str = Field(description="日志的正文讯息")
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return "provider/log"
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return "provider/log"
 
 
 class ErrorTopic(TopicModel):

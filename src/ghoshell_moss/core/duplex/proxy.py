@@ -393,8 +393,6 @@ class DuplexChannelContext:
                     event = SessionCreatedEvent(session_id=self.session_id)
                     await self.send_event_to_provider(event.to_channel_event())
                     continue
-
-
                 elif update_meta := ChannelMetaUpdateEvent.from_channel_event(event):
                     # 如果是 provider 发送了更新状态的结果, 则更新连接状态.
                     await self._handle_update_channel_meta(update_meta)
@@ -442,6 +440,9 @@ class DuplexChannelContext:
         await topic_service.pub(pub_topic.topic)
 
     async def _sub_topic_for_provider(self, topic_name: str) -> None:
+        """
+        创建 provider 聆听的 topic 监听逻辑, 监听 proxy 侧的 topics 并直接发送给 provider.
+        """
         topic_service = self.container.get(TopicService)
         if topic_service is None:
             return
@@ -709,7 +710,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         if not self.is_running():
             return
         await self._ctx.wait_connected()
-        self._cached_metas = self._ctx.provider_meta_map
 
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         # 先获取本地的命令.

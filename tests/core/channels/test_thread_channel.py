@@ -1,11 +1,13 @@
 import asyncio
+import time
 
 import pytest
 
 from ghoshell_moss.core import Command, CommandError, CommandToken
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.core.concepts.topic import ErrorTopic
+from ghoshell_moss.core import ChannelCtx
+from ghoshell_moss.core.concepts.topic import ErrorTopic, LogTopic, TopicService
 
 
 @pytest.mark.asyncio
@@ -278,6 +280,7 @@ async def test_thread_channel_idle():
     chan = PyChannel(name="provider")
 
     idled = []
+    idled_done = asyncio.Event()
 
     @chan.build.command()
     async def foo() -> int:
@@ -285,7 +288,10 @@ async def test_thread_channel_idle():
 
     @chan.build.idle
     async def idle():
-        idled.append(True)
+        try:
+            idled.append(True)
+        finally:
+            idled_done.set()
 
     provider, proxy = create_thread_channel("proxy")
     provider.run_in_thread(chan)
@@ -296,11 +302,13 @@ async def test_thread_channel_idle():
             assert provider.runtime.is_idle()
             await proxy_runtime.wait_idle()
             assert len(idled) == 1
+            idled_done.clear()
 
             r = await proxy_runtime.execute_command("foo")
             assert r == 123
             assert proxy_runtime.is_idle()
             await proxy_runtime.wait_idle()
+            await idled_done.wait()
             # assert provider.runtime.is_idle()
             assert len(idled) == 2
 
@@ -351,6 +359,127 @@ async def test_thread_channel_with_delta_func():
             assert value == 10
 
 
-async def test_thread_proxy_and_provider_topic_transport():
-    # todo: test topics
-    pass
+@pytest.mark.asyncio
+async def test_thread_provider_pub_topic():
+    chan = PyChannel(name="provider")
+
+    wait_connected = asyncio.Event()
+
+    @chan.build.running
+    async def send_topic() -> None:
+        await wait_connected.wait()
+        _runtime = ChannelCtx.runtime()
+        async with _runtime.topic_publisher() as publisher:
+            for i in range(10):
+                await asyncio.sleep(0.0)
+                await publisher.pub(LogTopic(level="info", message=str(i)))
+
+    provider, proxy = create_thread_channel("proxy")
+
+    main = PyChannel(name="main")
+    main.import_channels(proxy)
+
+    received = []
+
+    async with provider.arun(chan):
+        assert provider.container.get(TopicService) is provider.runtime.importlib.topics
+        async with main.bootstrap() as runtime:
+            proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+            await proxy_runtime.wait_connected()
+            # 保证连接后才有消息体广播.
+            wait_connected.set()
+
+            # 接受 provider 侧的 topic.
+            async with runtime.topic_subscriber(LogTopic) as subscriber:
+                count = 0
+                while count < 10:
+                    topic = await subscriber.poll_model()
+                    received.append(topic)
+                    count += 1
+    assert len(received) == 10
+
+
+@pytest.mark.asyncio
+async def test_thread_proxy_pub_topic():
+    chan = PyChannel(name="provider")
+    a_chan = PyChannel(name="a_channel")
+    chan.import_channels(a_chan)
+
+    provider, proxy = create_thread_channel("proxy")
+
+    main = PyChannel(name="main")
+    main.import_channels(proxy)
+
+    received = []
+    receive_done = asyncio.Event()
+
+    @a_chan.build.running
+    async def receive_topic() -> None:
+        """
+        这次是 provider 的 a_channel 监听事件.
+        """
+        _runtime = ChannelCtx.runtime()
+        async with _runtime.topic_subscriber(LogTopic) as subscriber:
+            count = 0
+            while count < 10:
+                topic = await subscriber.poll_model()
+                received.append(topic)
+                count += 1
+        receive_done.set()
+
+    async with main.bootstrap() as runtime:
+        proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+        async with provider.arun(chan):
+            await proxy_runtime.wait_connected()
+            # 保证连接后才有消息体广播.
+
+            # 从 proxy 侧的 main channel 发送消息给 provider 侧.
+            async with runtime.topic_publisher() as publisher:
+                for i in range(10):
+                    await asyncio.sleep(0.0)
+                    await publisher.pub(LogTopic(level="info", message=str(i)))
+            await receive_done.wait()
+    assert len(received) == 10
+
+
+@pytest.mark.asyncio
+async def test_thread_provider_lazy_subscribe():
+    chan = PyChannel(name="provider")
+    a_chan = PyChannel(name="a_channel")
+    chan.import_channels(a_chan)
+
+    provider, proxy = create_thread_channel("proxy")
+
+    main = PyChannel(name="main")
+    main.import_channels(proxy)
+
+    received = []
+    receive_done = asyncio.Event()
+
+    @a_chan.build.running
+    async def receive_topic() -> None:
+        """
+        这次是 provider 的 a_channel 监听事件.
+        """
+        _runtime = ChannelCtx.runtime()
+        async with _runtime.topic_subscriber(LogTopic) as subscriber:
+            count = 0
+            while count < 10:
+                topic = await subscriber.poll_model()
+                received.append(topic)
+                count += 1
+        receive_done.set()
+
+    # provider 侧先运行, 已经开始监听.
+    async with provider.arun(chan):
+        async with main.bootstrap() as runtime:
+            # proxy 侧后运行, 这时 provider 已经开始监听了. 要在建连后重新开始监听.
+            proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+            await proxy_runtime.wait_connected()
+            # 从 proxy 侧的 main channel 发送消息给 provider 侧.
+            async with runtime.topic_publisher() as publisher:
+                for i in range(10):
+                    await asyncio.sleep(0.0)
+                    await publisher.pub(LogTopic(level="info", message=str(i)))
+            await receive_done.wait()
+    assert len(received) == 10

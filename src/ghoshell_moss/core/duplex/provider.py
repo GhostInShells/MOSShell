@@ -4,7 +4,7 @@ import logging
 from typing import Callable, Coroutine, Optional
 
 from ghoshell_common.helpers import uuid
-from ghoshell_container import Container
+from ghoshell_container import Container, IoCContainer
 from pydantic import ValidationError
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
@@ -155,6 +155,10 @@ class DuplexChannelProvider(ChannelProvider):
         if self._root_runtime is None:
             raise RuntimeError("Channel provider has not been initialized.")
         return self._root_runtime
+
+    @property
+    def container(self) -> IoCContainer:
+        return self._container
 
     @contextlib.asynccontextmanager
     async def _bootstrap_container_stack(self) -> None:
