@@ -250,7 +250,7 @@ class PyChannel(MutableChannel):
         return self._description
 
     @property
-    def build(self) -> Builder:
+    def build(self) -> PyChannelBuilder:
         return self._builder
 
     def import_channels(self, *children: "Channel") -> Self:
@@ -291,7 +291,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         *,
         dynamic: bool | None = None,
     ):
-        self._builder = channel.build
+        self._builder: PyChannelBuilder = channel.build
         super().__init__(
             channel=channel,
             container=container,
