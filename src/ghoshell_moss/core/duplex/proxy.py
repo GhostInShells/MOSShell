@@ -64,6 +64,7 @@ class DuplexChannelContext:
         *,
         name: str,
         connection: Connection,
+        close_connection_on_close: bool = False,
         container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
@@ -76,6 +77,8 @@ class DuplexChannelContext:
         self.container = Container(parent=container, name="duplex channel context:" + self.root_name)
         self.connection = connection
         """双工连接本身."""
+
+        self._close_connection_on_close = close_connection_on_close
 
         self.session_id: str = ""
         self.provider_meta_map: dict[ChannelFullPath, ChannelMeta] = {}
@@ -214,6 +217,12 @@ class DuplexChannelContext:
                 await self._main_task
         except asyncio.CancelledError:
             pass
+        if self._close_connection_on_close:
+            # Best-effort release underlying transport.
+            try:
+                await self.connection.close()
+            except Exception:
+                self.logger.exception("DuplexChannelContext[%s] close connection failed", self.root_name)
         await asyncio.to_thread(self.container.shutdown)
 
     def is_connected(self) -> bool:
@@ -499,9 +508,9 @@ class DuplexChannelContext:
                 self.logger.error("Command Task %s duplicated call", cid)
 
             deltas = None
-            if task.meta.delta_arg is not None:
+            if task.meta.delta_arg is not None and task.meta.delta_arg in task.kwargs:
                 delta_value = task.kwargs.get(task.meta.delta_arg)
-                if not isinstance(delta_value, str):
+                if delta_value is not None and not isinstance(delta_value, str):
                     deltas = task.kwargs.pop(task.meta.delta_arg)
 
             event = CommandCallEvent(
@@ -520,7 +529,7 @@ class DuplexChannelContext:
             await self.send_event_to_provider(event.to_channel_event(), throw=True)
             self._pending_provider_command_tasks[cid] = task
             if deltas is not None:
-                self._command_call_deltas_sender_tasks = asyncio.create_task(self._send_delta_args(task, deltas))
+                self._command_call_deltas_sender_tasks[cid] = asyncio.create_task(self._send_delta_args(task, deltas))
             return event
         except asyncio.CancelledError:
             task.cancel()
@@ -767,11 +776,13 @@ class DuplexChannelProxy(Channel):
         name: str,
         description: str = "",
         to_provider_connection: Connection,
+        close_connection_on_close: bool = False,
     ):
         self._name = name
         self._description = description
         self._uid = uuid()
         self._provider_connection = to_provider_connection
+        self._close_connection_on_close = close_connection_on_close
         self._provider_channel_path = ""
         self._runtime: Optional[DuplexChannelRuntime] = None
         self._ctx: DuplexChannelContext | None = None
@@ -785,7 +796,7 @@ class DuplexChannelProxy(Channel):
     def id(self) -> str:
         return self._uid
 
-    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> "DuplexChannelRuntime":
+    def bootstrap(self, container: Optional[IoCContainer] = None, depth: int = 0) -> DuplexChannelRuntime:
         if self._runtime is not None and self._runtime.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
@@ -793,6 +804,7 @@ class DuplexChannelProxy(Channel):
             name=self._name,
             container=container,
             connection=self._provider_connection,
+            close_connection_on_close=self._close_connection_on_close,
         )
 
         runtime = DuplexChannelRuntime(

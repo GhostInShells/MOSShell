@@ -93,8 +93,9 @@ ignore = [
     "F401", # unused-import
     "F811", # redefined-while-unused
 ]
-"configs/*" = [
-    "N802", # invalid-function-name
+
+"examples/*" = [
+    "FURB118", # invalid-function-name
 ]
 
 "tests/*" = [
@@ -102,7 +103,7 @@ ignore = [
     "T201", # allow print in tests,
     "S110", # allow ignoring exceptions in tests code (currently)
     "S311", # random is fine in tests
-
+    "FURB118", # invalid-function-name
 ]
 
 "src/ghoshell_moss/core/ctml/token_parser.py" = [
