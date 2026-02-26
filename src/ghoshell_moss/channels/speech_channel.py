@@ -12,6 +12,9 @@ __all__ = ["SpeechChannel", "TTSSpeechChannel"]
 
 
 class SpeechChannel(Channel):
+    """
+    实现音频的独立 Channel.
+    """
     def __init__(
         self,
         name: str,

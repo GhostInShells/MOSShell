@@ -1,7 +1,6 @@
 import asyncio
 import logging
-from typing import Optional
-from typing_extensions import Self
+from typing import Optional, Callable, Coroutine
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
@@ -29,6 +28,7 @@ class TTSSpeechStream(SpeechStream):
         player: StreamAudioPlayer,
         tts_batch: TTSBatch,
         logger: LoggerItf,
+        close_last: Optional[Callable[[], Coroutine[None, None, None]]] = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -42,6 +42,7 @@ class TTSSpeechStream(SpeechStream):
         self._channels = channels
         self._tts_batch = tts_batch
         self._player = player
+        self._close_last = close_last
         self._text_buffer = ""
         self._audio_buffer = []
         self._starting = False
@@ -86,6 +87,10 @@ class TTSSpeechStream(SpeechStream):
             await self._started_event.wait()
             return
         self._starting = True
+        if self._close_last:
+            # 确认关闭上一个.
+            await self._close_last()
+            self._close_last = None
         for data in self._audio_buffer:
             # 将 buffer 的内容
             self._player.add(
@@ -101,6 +106,9 @@ class TTSSpeechStream(SpeechStream):
         if self._closed_event.is_set():
             return
         self._closed_event.set()
+        if self._close_last:
+            await self._close_last()
+            self._close_last = None
         if self._started_event.is_set():
             await self._player.clear()
         self._audio_buffer.clear()
@@ -123,7 +131,8 @@ class BaseTTSSpeech(TTSSpeech):
         self._tts = tts
         self._tts_info = tts.get_info()
         self._outputted: list[str] = []
-        self._streams: dict[str, SpeechStream] = {}
+        # self._streams: dict[str, SpeechStream] = {}
+        self._last_stream: Optional[TTSSpeechStream] = None
 
         self._running_loop: Optional[asyncio.AbstractEventLoop] = None
         self._starting = False
@@ -137,6 +146,9 @@ class BaseTTSSpeech(TTSSpeech):
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         batch_id = batch_id or uuid()
         tts_batch = self._tts.new_batch(batch_id=batch_id)
+        close_last = None
+        if self._last_stream:
+            close_last = self._last_stream.aclose
         stream = TTSSpeechStream(
             loop=self._running_loop,
             audio_format=self._tts_info.audio_format,
@@ -145,8 +157,9 @@ class BaseTTSSpeech(TTSSpeech):
             player=self._player,
             tts_batch=tts_batch,
             logger=self.logger,
+            close_last=close_last,
         )
-        self._streams[stream.id] = stream
+        self._last_stream = stream
         return stream
 
     def _check_running(self):
@@ -161,12 +174,9 @@ class BaseTTSSpeech(TTSSpeech):
         self._check_running()
         outputted = self._outputted.copy()
         self._outputted = []
-        streams = self._streams.copy()
-        self._streams.clear()
-        close_all = []
-        for stream in streams.values():
-            close_all.append(stream.aclose())
-        await asyncio.gather(*close_all)
+        if self._last_stream:
+            await self._last_stream.aclose()
+            self._last_stream = None
         return outputted
 
     async def start(self) -> None:
@@ -182,6 +192,7 @@ class BaseTTSSpeech(TTSSpeech):
         if self._closing:
             return
         self._closing = True
+        await self.clear()
         await self._tts.close()
         await self._player.close()
         self._closed_event.set()

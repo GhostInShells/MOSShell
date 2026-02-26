@@ -83,7 +83,7 @@ class SpeechStream(ABC):
         """真实的结束 stream 讯号. 如果 stream 通过 tts 实现, 这个讯号会通知 tts 完成输出."""
         pass
 
-    def as_command_task(self, commit: bool = False) -> Optional[CommandTask]:
+    def as_command_task(self, commit: bool = False, chan: str = "") -> Optional[CommandTask]:
         """
         将 speech stream 转化为一个 command task, 使之可以发送到 Shell 中阻塞.
         """
@@ -111,7 +111,7 @@ class SpeechStream(ABC):
         meta = CommandMeta(
             name="__speech__",
             # 默认主轨运行.
-            chan="",
+            chan=chan,
         )
 
         command = CommandWrapper(meta, _speech_lifecycle)
