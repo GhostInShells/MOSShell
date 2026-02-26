@@ -34,7 +34,7 @@ class Terminal(ChannelInterface, ABC):
         """
         pass
 
-    def make_channel(self, name: str = "", description: str = "") -> Channel:
+    def as_channel(self, name: str = "", description: str = "") -> Channel:
         channel = PyChannel(
             name=name or "terminal",
             description=description or "able to execute command in terminal",

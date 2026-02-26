@@ -968,7 +968,7 @@ class ChannelApp(Protocol):
     """
 
     @abstractmethod
-    def as_channel(self) -> Channel:
+    def as_channel(self, name: str = "", description: str = "") -> Channel:
         """
         返回一个 Channel 实例.
         """
@@ -977,7 +977,7 @@ class ChannelApp(Protocol):
 
 class ChannelInterface(ABC):
     """
-    另一种标准 Channel 的定义范式.
+    ChannelApp 范式的可继承版本. 提供一种标准的 Channel 抽象设计策略.
 
     开发者实现一个 ChannelInterface 的 Abstract 类, 定义必要的函数 (Command 或生命周期函数)
     然后提前实现好 make_channel 函数.
@@ -999,7 +999,7 @@ class ChannelInterface(ABC):
     """
 
     @abstractmethod
-    def make_channel(
+    def as_channel(
             self,
             name: str = "",
             description: str = "",
