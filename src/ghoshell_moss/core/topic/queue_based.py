@@ -59,7 +59,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
                 elif keep_policy == "latest":
                     if not self._queue.empty():
                         oldest = self._queue.get_nowait()
-                        self._logger.info("%s drop oldest topic %s cause full", self._log_prefix, oldest.id)
+                        self._logger.info("%s drop oldest topic %s cause full", self._log_prefix, oldest)
                     self._queue.put_nowait(topic)
                 else:
                     return

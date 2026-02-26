@@ -84,3 +84,81 @@ async def test_topic_publishers_and_consumers():
 
     await asyncio.gather(*consumers)
     assert len(received) == 5 * 5 * 7
+
+
+@pytest.mark.asyncio
+async def test_topic_keep_latest():
+    service = QueueBasedTopicService(
+        sender="test",
+    )
+
+    consumer_started = asyncio.Event()
+    producer_done = asyncio.Event()
+    consumer_done = asyncio.Event()
+
+    async def produce():
+        await consumer_started.wait()
+        publisher = service.publisher("publisher")
+        async with publisher:
+            for idx in range(5):
+                await publisher.pub(ErrorTopic(errmsg=str(idx)))
+        producer_done.set()
+
+    received = []
+
+    async def consumer(_subscriber: Subscriber):
+        async with _subscriber:
+            consumer_started.set()
+            await producer_done.wait()
+            while _subscriber.is_running():
+                item = await _subscriber.poll_model()
+                received.append(item)
+        consumer_done.set()
+
+    async with service:
+        producer_task = asyncio.create_task(produce())
+        subscriber = service.subscribe_model(ErrorTopic, maxsize=1, keep="latest")
+        consumer_task = asyncio.create_task(consumer(subscriber))
+        await producer_task
+    await consumer_task
+    assert len(received) == 1
+    assert received[0].errmsg == "4"
+
+
+@pytest.mark.asyncio
+async def test_topic_keep_oldest():
+    service = QueueBasedTopicService(
+        sender="test",
+    )
+
+    consumer_started = asyncio.Event()
+    producer_done = asyncio.Event()
+    consumer_done = asyncio.Event()
+
+    async def produce():
+        await consumer_started.wait()
+        publisher = service.publisher("publisher")
+        async with publisher:
+            for idx in range(5):
+                await publisher.pub(ErrorTopic(errmsg=str(idx)))
+        producer_done.set()
+
+    received = []
+
+    async def consumer(_subscriber: Subscriber):
+        async with _subscriber:
+            consumer_started.set()
+            await producer_done.wait()
+            while _subscriber.is_running():
+                item = await _subscriber.poll_model()
+                received.append(item)
+        consumer_done.set()
+
+    async with service:
+        producer_task = asyncio.create_task(produce())
+        subscriber = service.subscribe_model(ErrorTopic, maxsize=1, keep="oldest")
+        consumer_task = asyncio.create_task(consumer(subscriber))
+        await producer_task
+    await consumer_task
+    assert len(received) == 1
+    assert received[0].errmsg == "0"
