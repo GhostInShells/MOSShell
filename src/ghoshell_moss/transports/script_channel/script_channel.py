@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from ghoshell_common.helpers import Timeleft
 from ghoshell_container import Container, IoCContainer, get_container
 
 from ghoshell_moss.core.duplex.connection import ChannelEvent, Connection, ConnectionClosedError
@@ -16,15 +17,22 @@ from ghoshell_moss.core.duplex.proxy import DuplexChannelProxy
 
 logger = logging.getLogger(__name__)
 
+CHANNEL_EVENT_PREFIX = "moss_channel_event:"
+CHANNEL_EVENT_PREFIX_BYTES = CHANNEL_EVENT_PREFIX.encode("utf-8")
+
 
 class _JSONLineIO:
     @staticmethod
     def dumps(event: ChannelEvent) -> bytes:
-        return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        payload = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        return CHANNEL_EVENT_PREFIX_BYTES + payload + b"\n"
 
     @staticmethod
     def loads(line: bytes) -> ChannelEvent:
-        return json.loads(line.decode("utf-8"))
+        if not line.startswith(CHANNEL_EVENT_PREFIX_BYTES):
+            raise ValueError("missing channel event prefix")
+        payload = line[len(CHANNEL_EVENT_PREFIX_BYTES) :].strip()
+        return json.loads(payload.decode("utf-8"))
 
 
 class StdioProviderConnection(Connection):
@@ -39,6 +47,8 @@ class StdioProviderConnection(Connection):
         *,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        monitor_parent_process: bool = True,
+        parent_check_interval: float = 0.5,
         logger: logging.Logger | None = None,
     ):
         self._reader = reader
@@ -48,26 +58,50 @@ class StdioProviderConnection(Connection):
         self._send_lock = asyncio.Lock()
         self._logger = logger or logging.getLogger(__name__)
 
+        self._monitor_parent_process = monitor_parent_process
+        self._parent_check_interval = parent_check_interval
+        self._parent_pid = os.getppid()
+        self._parent_monitor_task: asyncio.Task | None = None
+
     async def recv(self, timeout: Optional[float] = None) -> ChannelEvent:
         if self._closed_event.is_set():
             raise ConnectionClosedError("Connection closed")
 
         async with self._recv_lock:
-            try:
-                line = await asyncio.wait_for(self._reader.readline(), timeout=timeout)
-            except asyncio.TimeoutError:
-                raise
+            timeleft = Timeleft(timeout or 0.0) if timeout is not None else None
+            while True:
+                remaining = None if timeleft is None else (timeleft.left() or 0.0)
+                if self._monitor_parent_process:
+                    if remaining is None:
+                        remaining = self._parent_check_interval
+                    else:
+                        remaining = min(remaining, self._parent_check_interval)
+                try:
+                    line = await asyncio.wait_for(self._reader.readline(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    if self._closed_event.is_set():
+                        raise ConnectionClosedError("Connection closed")
+                    if timeleft is None:
+                        continue
+                    if (timeleft.left() or 0.0) <= 0.0:
+                        raise
+                    continue
 
-            if not line:
-                self._closed_event.set()
-                raise ConnectionClosedError("Connection closed")
+                if not line:
+                    self._closed_event.set()
+                    raise ConnectionClosedError("Connection closed")
 
-            try:
-                event = _JSONLineIO.loads(line)
-            except Exception as exc:
-                self._logger.warning("Invalid event line from stdin: %s", exc)
-                raise
-            return event
+                if not line.startswith(CHANNEL_EVENT_PREFIX_BYTES):
+                    # Provider stdin should normally be clean, but ignore noise.
+                    self._logger.debug("Ignoring non-protocol line from stdin: %r", line)
+                    continue
+
+                try:
+                    event = _JSONLineIO.loads(line)
+                except Exception as exc:
+                    self._logger.warning("Invalid protocol line from stdin: %s", exc)
+                    continue
+                return event
 
     async def send(self, event: ChannelEvent) -> None:
         if self._closed_event.is_set():
@@ -91,6 +125,9 @@ class StdioProviderConnection(Connection):
         if self._closed_event.is_set():
             return
         self._closed_event.set()
+
+        if self._parent_monitor_task is not None:
+            self._parent_monitor_task.cancel()
         try:
             self._writer.close()
             await self._writer.wait_closed()
@@ -98,7 +135,37 @@ class StdioProviderConnection(Connection):
             return
 
     async def start(self) -> None:
-        return
+        if self._parent_monitor_task is not None or not self._monitor_parent_process:
+            return
+
+        async def _monitor_parent() -> None:
+            try:
+                while not self._closed_event.is_set():
+                    try:
+                        current_ppid = os.getppid()
+                    except Exception:
+                        current_ppid = self._parent_pid
+
+                    if current_ppid != self._parent_pid:
+                        self._logger.warning(
+                            "Parent process changed from %s to %s; closing provider connection",
+                            self._parent_pid,
+                            current_ppid,
+                        )
+                        self._closed_event.set()
+                        try:
+                            self._writer.close()
+                        except Exception as exc:
+                            self._logger.debug("Failed to close provider stdout writer: %s", exc)
+                        return
+
+                    await asyncio.sleep(self._parent_check_interval)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                self._logger.exception("Provider parent process monitor error")
+
+        self._parent_monitor_task = asyncio.create_task(_monitor_parent())
 
 
 class SubprocessStdioConnection(Connection):
@@ -112,6 +179,7 @@ class SubprocessStdioConnection(Connection):
         cwd: str | None = None,
         python_executable: str | None = None,
         args: list[str] | None = None,
+        stderr: str = "pipe",
         logger: logging.Logger | None = None,
     ):
         self._script_path = str(Path(script_path).expanduser())
@@ -119,6 +187,7 @@ class SubprocessStdioConnection(Connection):
         self._cwd = cwd
         self._python_executable = python_executable or sys.executable
         self._args = list(args or [])
+        self._stderr = stderr
         self._logger = logger or logging.getLogger(__name__)
 
         self._process: asyncio.subprocess.Process | None = None
@@ -127,7 +196,8 @@ class SubprocessStdioConnection(Connection):
         self._recv_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         self._stdout_buffer = bytearray()
-        self._monitor_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._wait_task: asyncio.Task | None = None
 
     def is_closed(self) -> bool:
         return self._closed_event.is_set()
@@ -149,18 +219,42 @@ class SubprocessStdioConnection(Connection):
         env.update(self._env)
         env.setdefault("PYTHONUNBUFFERED", "1")
 
+        if self._stderr not in {"pipe", "inherit"}:
+            raise ValueError(f"invalid stderr mode: {self._stderr}")
+
+        stderr_opt: int | None
+        if self._stderr == "inherit":
+            stderr_opt = None
+        else:
+            stderr_opt = asyncio.subprocess.PIPE
+
         self._process = await asyncio.create_subprocess_exec(
             self._python_executable,
             str(script),
             *self._args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=stderr_opt,
             env=env,
             cwd=self._cwd,
         )
         self._start_time = time.time()
-        self._monitor_task = asyncio.create_task(self._monitor_stderr())
+        if self._stderr == "pipe":
+            self._stderr_task = asyncio.create_task(self._monitor_stderr())
+        self._wait_task = asyncio.create_task(self._monitor_wait())
+
+    async def _monitor_wait(self) -> None:
+        if self._process is None:
+            return
+        try:
+            return_code = await self._process.wait()
+            if not self._closed_event.is_set():
+                self._logger.info("script_channel subprocess exited with code=%s", return_code)
+                self._closed_event.set()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self._logger.exception("script_channel subprocess wait monitor error")
 
     @property
     def pid(self) -> int | None:
@@ -218,12 +312,25 @@ class SubprocessStdioConnection(Connection):
                 self._closed_event.set()
                 raise ConnectionClosedError("Connection closed")
 
-            line = await self._readline_unlimited(timeout)
-            try:
-                return _JSONLineIO.loads(line)
-            except Exception as exc:
-                self._logger.warning("Invalid event line from subprocess stdout: %s", exc)
-                raise
+            timeleft = Timeleft(timeout or 0.0) if timeout is not None else None
+            while True:
+                remaining = None if timeleft is None else (timeleft.left() or 0.0)
+                line = await self._readline_unlimited(remaining)
+
+                if not line.startswith(CHANNEL_EVENT_PREFIX_BYTES):
+                    # Allow target scripts to print to stdout without breaking protocol.
+                    try:
+                        text = line.decode("utf-8", errors="ignore").rstrip()
+                    except Exception:
+                        text = repr(line)
+                    self._logger.debug("[script_channel stdout] %s", text)
+                    continue
+
+                try:
+                    return _JSONLineIO.loads(line)
+                except Exception as exc:
+                    self._logger.warning("Invalid protocol line from subprocess stdout: %s", exc)
+                    continue
 
     async def send(self, event: ChannelEvent) -> None:
         if self._closed_event.is_set():
@@ -247,8 +354,10 @@ class SubprocessStdioConnection(Connection):
             return
         self._closed_event.set()
 
-        if self._monitor_task is not None:
-            self._monitor_task.cancel()
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+        if self._wait_task is not None:
+            self._wait_task.cancel()
 
         if self._process is None:
             return
@@ -311,6 +420,7 @@ class ScriptChannelProxy(DuplexChannelProxy):
         cwd: str | None = None,
         python_executable: str | None = None,
         args: list[str] | None = None,
+        stderr: str = "pipe",
         logger: logging.Logger | None = None,
     ):
         provider_script = str(Path(provider_launcher).expanduser())
@@ -340,6 +450,7 @@ class ScriptChannelProxy(DuplexChannelProxy):
             cwd=cwd,
             python_executable=python_executable,
             args=provider_args,
+            stderr=stderr,
             logger=logger,
         )
         super().__init__(

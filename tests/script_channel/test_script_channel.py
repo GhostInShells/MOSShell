@@ -70,3 +70,47 @@ async def test_script_channel_close_releases_process(tmp_path: Path):
 
     # After closing runtime, proxy connection should be closed.
     assert proxy._provider_connection.is_closed()
+
+
+@pytest.mark.asyncio
+async def test_script_channel_ignores_stdout_noise(tmp_path: Path):
+    launcher = _write_provider_launcher(tmp_path)
+
+    # Target script that prints to stdout.
+    target = str((Path(__file__).resolve().parents[1] / "module_fixtures" / "script_module_with_stdout.py").resolve())
+
+    proxy = ScriptChannelProxy(
+        name="script_proxy",
+        description="script-backed channel",
+        provider_launcher=launcher,
+        provider_target=target,
+        channel_autostart=True,
+    )
+
+    async with proxy.bootstrap() as runtime:
+        await runtime.wait_connected()
+        cmd = runtime.get_command("add")
+        assert cmd is not None
+        assert await cmd(1, 2) == 3
+
+
+@pytest.mark.asyncio
+async def test_script_channel_stderr_inherit_does_not_break(tmp_path: Path):
+    launcher = _write_provider_launcher(tmp_path)
+
+    target = str((Path(__file__).resolve().parents[1] / "module_fixtures" / "script_module_with_stderr.py").resolve())
+
+    proxy = ScriptChannelProxy(
+        name="script_proxy",
+        description="script-backed channel",
+        provider_launcher=launcher,
+        provider_target=target,
+        channel_autostart=True,
+        stderr="inherit",
+    )
+
+    async with proxy.bootstrap() as runtime:
+        await runtime.wait_connected()
+        cmd = runtime.get_command("add")
+        assert cmd is not None
+        assert await cmd(1, 2) == 3

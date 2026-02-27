@@ -16,6 +16,7 @@ def channel(
     name: str | None = None,
     description: str = "",
     python_executable: str | None = None,
+    stderr: str = "pipe",
     env: dict[str, str] | None = None,
     cwd: str | None = None,
     provider_include: list[str] | None = None,
@@ -31,8 +32,9 @@ def channel(
     with :class:`~ghoshell_moss.channels.module_channel.ModuleChannel`.
 
     Notes:
-        The stdio transport uses provider stdout as protocol stream, so the
-        target script should not print to stdout.
+        The stdio transport uses provider stdout as protocol stream.
+        Protocol lines are prefixed, so target scripts can print to stdout
+        without breaking the channel (non-protocol lines will be ignored).
     """
 
     target_path = Path(target_script).expanduser()
@@ -50,6 +52,7 @@ def channel(
         provider_launcher=launcher,
         provider_target=str(target_path),
         python_executable=python_executable,
+        stderr=stderr,
         env=env,
         cwd=cwd,
         provider_include=provider_include,
@@ -66,6 +69,7 @@ def run(
     name: str | None = None,
     description: str = "",
     python_executable: str | None = None,
+    stderr: str = "pipe",
     env: dict[str, str] | None = None,
     cwd: str | None = None,
     provider_include: list[str] | None = None,
@@ -85,6 +89,7 @@ def run(
         name=name,
         description=description,
         python_executable=python_executable,
+        stderr=stderr,
         env=env,
         cwd=cwd,
         provider_include=provider_include,
