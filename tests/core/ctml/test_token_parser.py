@@ -287,3 +287,5 @@ def test_ctml_attr_with_args():
     CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
     q = q[1:-1]
     token = q.pop(0)
+    assert token.seq == "start"
+    assert token.args == [1, 2]

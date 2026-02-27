@@ -180,8 +180,12 @@ class MOSSShell(ABC):
             *,
             stream_id: Optional[str] = None,
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            ignore_wrong_command: bool = False,
     ) -> "Interpreter":
-        interpreter = await self.interpreter(kind=kind, stream_id=stream_id, config=config)
+        interpreter = await self.interpreter(
+            kind=kind, stream_id=stream_id, config=config,
+            ignore_wrong_command=ignore_wrong_command,
+        )
         async with interpreter:
             yield interpreter
 
@@ -193,6 +197,7 @@ class MOSSShell(ABC):
             stream_id: Optional[str] = None,
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             prepare_timeout: float = 2.0,
+            ignore_wrong_command: bool = False,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -207,6 +212,7 @@ class MOSSShell(ABC):
                               则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
                               是一种动态修改运行时能力的办法.
         :param prepare_timeout: 准备过度阶段允许的时间.
+        :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
         """
         pass
 
@@ -280,6 +286,8 @@ class MOSSShell(ABC):
             self,
             text: str | AsyncIterable[str] | list[str],
             kind: InterpreterKind = "dry_run",
+            *,
+            ignore_wrong_command: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks
@@ -291,7 +299,7 @@ class MOSSShell(ABC):
 
         async def _parse_task():
             try:
-                async with self.interpreter_in_ctx(kind) as interpreter:
+                async with self.interpreter_in_ctx(kind, ignore_wrong_command=ignore_wrong_command) as interpreter:
                     interpreter.on_task_compiled(_queue.put_nowait)
                     if isinstance(text, list):
                         for chunk in text:

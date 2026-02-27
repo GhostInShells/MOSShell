@@ -283,6 +283,7 @@ class CTMLShell(MOSSShell):
         stream_id: Optional[int] = None,
         config: dict[ChannelFullPath, ChannelMeta] | None = None,
         prepare_timeout: float = 2.0,
+        ignore_wrong_command: bool = False,
     ) -> Interpreter:
         self._check_running()
 
@@ -316,6 +317,7 @@ class CTMLShell(MOSSShell):
             callback=callback,
             logger=self.logger,
             channel_metas=config,
+            ignore_wrong_command=ignore_wrong_command,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.

@@ -158,7 +158,8 @@ class CommandToken(BaseModel):
     stream_id: Optional[str] = Field(default=None, description="the id of the stream the command belongs to")
 
     content: str = Field(default="", description="origin tokens that llm generates")
-    kwargs: Optional[dict[str, Any]] = Field(default=None, description="attributes, only for command start")
+    args: Optional[list[Any]] = Field(default=None, description="command position arguments, only for start token")
+    kwargs: Optional[dict[str, Any]] = Field(default=None, description="attributes, only for start token")
 
     def command_id(self) -> str:
         """

@@ -92,6 +92,7 @@ class CTMLInterpreter(Interpreter):
             on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
             meta_system_prompt: Optional[str] = None,
             channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            ignore_wrong_command: bool = False,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -104,6 +105,7 @@ class CTMLInterpreter(Interpreter):
         :param on_startup: 可以定义额外的启动函数.
         :param meta_system_prompt: MOSS 解释器的基础语法规则, 如果为空则使用默认的.
         :param channel_metas: 用来定义当前所拥有的 channels 信息, 用来提供给大模型.
+        :param ignore_wrong_command: 是否忽略不存在的 command.
         """
         # 生成 stream id.
         self.id = stream_id or uuid()
@@ -158,6 +160,7 @@ class CTMLInterpreter(Interpreter):
             speech=self._speech,
             logger=self._logger,
             stop_event=self._stopped_event,
+            ignore_wrong_command=ignore_wrong_command,
         )
         self._root_element = self._task_element_ctx.new_root(
             callback=self._send_command_task,

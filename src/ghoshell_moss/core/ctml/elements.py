@@ -43,18 +43,20 @@ class CommandTaskElementContext:
     """语法糖, 用来管理所有 element 共享的组件."""
 
     def __init__(
-        self,
-        channel_commands: dict[str, dict[str, Command]],
-        speech: Speech,
-        logger: Optional[LoggerItf] = None,
-        stop_event: Optional[ThreadSafeEvent] = None,
-        root_tag: str = "ctml",
+            self,
+            channel_commands: dict[str, dict[str, Command]],
+            speech: Speech,
+            logger: Optional[LoggerItf] = None,
+            stop_event: Optional[ThreadSafeEvent] = None,
+            root_tag: str = "ctml",
+            ignore_wrong_command: bool = False,
     ):
         self.channel_commands_map = channel_commands
         self.speech = speech
         self.logger = logger or getLogger("moss")
         self.stop_event = stop_event or ThreadSafeEvent()
         self.root_tag = root_tag
+        self.ignore_wrong_command = ignore_wrong_command
 
     def new_root(self, callback: CommandTaskCallback, stream_id: str = "") -> CommandTokenParserElement:
         """
@@ -76,13 +78,13 @@ class BaseCommandTokenParserElement(CommandTokenParserElement, ABC):
     """
 
     def __init__(
-        self,
-        cid: str,
-        current_task: Optional[CommandTask],
-        *,
-        depth: int = 0,
-        callback: Optional[CommandTaskCallback] = None,
-        ctx: CommandTaskElementContext,
+            self,
+            cid: str,
+            current_task: Optional[CommandTask],
+            *,
+            depth: int = 0,
+            callback: Optional[CommandTaskCallback] = None,
+            ctx: CommandTaskElementContext,
     ) -> None:
         self.cid = cid
         self.ctx = ctx
@@ -184,17 +186,23 @@ class BaseCommandTokenParserElement(CommandTokenParserElement, ABC):
         """
         if token.seq != CommandTokenType.START.value:
             # todo
-            raise InterpretError(f"invalid token {token!r}")
+            raise InterpretError(f"invalid tokens {token.content}")
 
         command = self._find_command(token.chan, token.name)
         if command is None:
-            child = EmptyCommandTaskElement(
-                cid=token.command_id(),
-                current_task=None,
-                callback=self._callback,
-                ctx=self.ctx,
-                depth=self.depth + 1,
-            )
+            if self.ctx.ignore_wrong_command or (token.chan == "" and token.name == self.ctx.root_tag):
+                # todo: 改造两种情况, 全局情况完全忽视. 否则应该定义一个返回异常提示的 command.
+                child = EmptyCommandTaskElement(
+                    cid=token.command_id(),
+                    current_task=None,
+                    callback=self._callback,
+                    ctx=self.ctx,
+                    depth=self.depth + 1,
+                )
+            else:
+                raise InterpretError(
+                    f"command `{token.name}` from channel `{token.chan}` not found, use provided command only!",
+                )
         else:
             meta = command.meta()
             task = BaseCommandTask(
@@ -203,7 +211,7 @@ class BaseCommandTokenParserElement(CommandTokenParserElement, ABC):
                 func=command.__call__,
                 tokens=token.content,
                 # ctml 语法不支持 args, 只支持 kwargs.
-                args=[],
+                args=token.args,
                 kwargs=token.kwargs,
                 cid=token.command_id(),
                 call_id=token.call_id,
@@ -405,13 +413,13 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     """
 
     def __init__(
-        self,
-        cid: str,
-        current_task: Optional[CommandTask],
-        *,
-        depth: int = 0,
-        callback: Optional[CommandTaskCallback] = None,
-        ctx: CommandTaskElementContext,
+            self,
+            cid: str,
+            current_task: Optional[CommandTask],
+            *,
+            depth: int = 0,
+            callback: Optional[CommandTaskCallback] = None,
+            ctx: CommandTaskElementContext,
     ) -> None:
         sender, receiver = create_sender_and_receiver()
         self._sender = sender

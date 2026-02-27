@@ -86,6 +86,28 @@ async def test_shell_outputted():
 
 
 @pytest.mark.asyncio
+async def test_shell_ctml_with_args():
+    from ghoshell_moss.core.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    @shell.main_channel.build.command()
+    async def foo(*args: int) -> int:
+        result = 0
+        for arg in args:
+            result += arg
+        return result
+
+    async with shell:
+        async with shell.interpreter_in_ctx() as interpreter:
+            interpreter.feed("<foo _args='[1, 2, 3]'/>")
+            tasks = await interpreter.wait_execution_done(10)
+            task_list = list(tasks.values())
+            assert len(tasks) == 1
+            assert task_list[0].result() == 1 + 2 + 3
+
+
+@pytest.mark.asyncio
 async def test_shell_command_run_in_order():
     """测试 get command exec in chan 可以使命令进入 channel 队列有序执行."""
     from ghoshell_moss.core.shell import new_ctml_shell

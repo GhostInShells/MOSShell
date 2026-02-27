@@ -54,6 +54,7 @@ def new_test_suite(*commands: Command) -> ElementTestSuite:
         command_map,
         output,
         stop_event=stop_event,
+        ignore_wrong_command=True,
     )
     root = ctx.new_root(tasks_queue.append, stream_id="test")
     token_parser = CTML2CommandTokenParser(
