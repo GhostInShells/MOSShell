@@ -1,21 +1,19 @@
 import asyncio
+import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
-from typing import Optional
+from typing import Optional, Callable, Iterable, AsyncIterable
 
 from typing_extensions import Self
-
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
+from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.message import Message
-
-from .channel import ChannelMeta
 
 __all__ = [
     "CommandTaskCallback",
     "CommandTaskParseError",
     "CommandTokenParserElement",
     "CommandTokenCallback",
-    "TextTokenParser",
+    "StringTokenParser",
     "Interpreter",
 ]
 
@@ -27,7 +25,7 @@ class CommandTaskParseError(Exception):
     pass
 
 
-class TextTokenParser(ABC):
+class StringTokenParser(ABC):
     """
     parse from string stream into command tokens
     """
@@ -151,20 +149,38 @@ class Interpreter(ABC):
     """each time stream interpretation has a unique id"""
 
     @abstractmethod
-    def channels(self) -> dict[str, ChannelMeta]:
+    def channels(self) -> dict[ChannelFullPath, ChannelMeta]:
+        """
+        返回当前 interpreter 的所有 channels.
+        """
         pass
 
     @abstractmethod
     def meta_system_prompt(self) -> str:
         """
-        给大模型使用 MOSS 的元规则. interpreter 可以定义不同的规则.
+        给大模型使用 MOSS 的元规则.
+        具体的 interpreter 可以定义不同的规则.
+        举例: CTMLInterpreter 定义的是 CTML 规则.
         """
         pass
 
     @abstractmethod
-    def moss_instruction(self) -> str:
+    def instruction_messages(self) -> str:
         """
-        当前 interpreter 状态下, moss 的完整使用提示. 用于呈现给大模型.
+        当前 interpreter 状态下, channels 的完整提示词. 用于呈现给大模型.
+        在 Model Context 对话历史中, 可以认为最简单的上下文拓扑是:
+
+        - instructions: 提示和指令. 尽可能少变更, 而且需要合并.
+        - conversations: 对话历史.
+        - context: 当前的状态, 可变的部分. 而且要让模型理解这块是随时变化的.
+        + new turn:
+            - inputs: turn-based Model 本轮的输入.
+            - recall: 结合上下文, 自动生成的 recall
+            - reasoning: 思考过程
+            - actions: 行动过程.
+            - outputs: 输出
+            - observation: 需要观察的讯息.
+
         """
         pass
 
@@ -172,6 +188,7 @@ class Interpreter(ABC):
     def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
         """
         返回 interpreter 的关联上下文.
+        对应 Model Context 中的 conversation 部分.
         """
         pass
 
@@ -194,22 +211,31 @@ class Interpreter(ABC):
         """
         pass
 
-    @abstractmethod
-    def with_task_callback(self, *callbacks: CommandTaskCallback) -> None:
+    async def interpret(self, deltas: AsyncIterable[str]) -> None:
         """
-        task callback
+        一个完整的解析过程, 需要包含 feed 和 commit.
+        """
+        async for delta in deltas:
+            self.feed(delta)
+        self.commit()
+
+    @abstractmethod
+    def on_task_compiled(self, *callbacks: CommandTaskCallback) -> None:
+        """
+        注册 task 被创建时候的回调.
         """
         pass
 
     @abstractmethod
-    def text_token_parser(self) -> TextTokenParser:
+    def string_token_parser(self) -> StringTokenParser:
         """
         interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
 
-        example:
-        with interpreter.parser() as parser:
-            async for item in async_iterable_texts:
-            paser.feed(item)
+        >>> def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
+        >>>     with interpreter.string_token_parser() as parser:
+        >>>         async for delta in deltas:
+        >>>         parser.feed(delta)
+
         注意 Parser 是同步阻塞的, 因此正确的做法是使用 interpreter 自带的 feed 函数实现非阻塞.
         通常 parser 运行在独立的线程池中.
         """
@@ -231,6 +257,13 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
+    def received_text(self) -> str:
+        """
+        返回已经完成输入的文本内容. 必须通过 feed 输入.
+        """
+        pass
+
+    @abstractmethod
     def compiled_tasks(self) -> dict[str, CommandTask]:
         """
         已经解析生成的 tasks.
@@ -239,21 +272,7 @@ class Interpreter(ABC):
 
     @abstractmethod
     def outputted(self) -> Iterable[str]:
-        """已经对外输出的文本内容."""
-        pass
-
-    @abstractmethod
-    async def results(self) -> dict[str, str]:
-        """
-        将所有已经执行完的 task 的 result 作为有序的字符串字典输出
-        知道第一个运行失败的.
-        其中返回值为 None 或空字符串的不会展示.
-
-        todo: 这是一个 alpha 版为了方便快速实现 react 做的临时机制. 不是正式机制.
-
-        :return: key is the task name and attrs, value is the result or error of the command
-                 if command task return None, ignore the result of it.
-        """
+        """已经对外输出的文本内容. todo: 删除这个函数. """
         pass
 
     @abstractmethod
@@ -273,13 +292,6 @@ class Interpreter(ABC):
         return "".join(tokens)
 
     @abstractmethod
-    def inputted(self) -> str:
-        """
-        返回已经完成输入的文本内容. 必须通过 feed 输入.
-        """
-        pass
-
-    @abstractmethod
     async def start(self) -> None:
         """
         启动解释过程.
@@ -289,10 +301,13 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def stop(self, interrupt: bool = False) -> None:
+    async def stop(
+            self,
+            cancel_executing: bool = False,
+    ) -> None:
         """
         stop the interpretation
-        :param interrupt: 是否同时清空解析出来的任务. 不清空的话, 任务本身并不会被中断.
+        :param cancel_executing: 是否同时清空解析出来的任务. 不清空的话, 任务本身并不会被中断.
         """
         pass
 
@@ -317,6 +332,7 @@ class Interpreter(ABC):
         """
         pass
 
+    @abstractmethod
     async def __aenter__(self) -> Self:
         """
         example to use the interpreter:
@@ -332,11 +348,11 @@ class Interpreter(ABC):
 
         result = itp.results()
         """
-        await self.start()
-        return self
+        pass
 
+    @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.stop()
+        pass
 
     @abstractmethod
     async def wait_compiled(self, timeout: float | None = None) -> None:
@@ -346,18 +362,31 @@ class Interpreter(ABC):
         2. 被中断.
 
         wait until the interpretation of command tasks are done (finish, failed or cancelled).
-        :return: True if the interpretation is fully finished.
+        """
+        pass
+
+    @abstractmethod
+    async def wait_results(self) -> dict[str, str]:
+        """
+        将所有已经执行完的 task 的 result 作为有序的字符串字典输出
+        知道第一个运行失败的.
+        其中返回值为 None 或空字符串的不会展示.
+
+        todo: 这是一个 alpha 版为了方便快速实现 react 做的临时机制. 不是正式机制.
+
+        :return: key is the task name and attrs, value is the result or error of the command
+                 if command task return None, ignore the result of it.
         """
         pass
 
     @abstractmethod
     async def wait_execution_done(
-        self,
-        timeout: float | None = None,
-        *,
-        return_when: str = asyncio.ALL_COMPLETED,
-        throw: bool = False,
-        clear_undone: bool = True,
+            self,
+            timeout: float | None = None,
+            *,
+            return_when: str = asyncio.ALL_COMPLETED,
+            throw: bool = False,
+            clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
         阻塞等待所有生成的 task, 并且按 return when 的规则返回.
@@ -365,12 +394,5 @@ class Interpreter(ABC):
         :param throw: 如果 task 运行遇到异常了, 是否对外抛出.
         :param return_when: 退出 wait execution done 的时机.
         :param clear_undone: 退出这个函数时, 是否要设置未完成的 Task 为 Cleared
-        """
-        pass
-
-    @abstractmethod
-    def __del__(self) -> None:
-        """
-        为了防止内存泄漏, 增加一个手动清空的方法.
         """
         pass

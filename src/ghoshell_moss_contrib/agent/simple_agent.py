@@ -260,7 +260,7 @@ class SimpleAgent:
             async with self.shell.interpreter_in_ctx() as interpreter:
                 reasoning = False
 
-                moss_instruction = interpreter.moss_instruction()
+                moss_instruction = interpreter.instruction_messages()
                 # 系统指令.
                 messages = []
                 if moss_instruction:
@@ -300,7 +300,7 @@ class SimpleAgent:
 
                     interpreter.feed(content)
                 interpreter.commit()
-                results = await asyncio.create_task(interpreter.results())
+                results = await asyncio.create_task(interpreter.wait_results())
                 generated = interpreter.executed_tokens()
                 if len(results) > 0:
                     execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])

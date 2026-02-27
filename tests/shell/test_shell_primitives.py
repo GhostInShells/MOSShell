@@ -49,7 +49,7 @@ async def test_wait_primitive():
         # 验证多组 wait
         ordered.clear()
         async with shell.interpreter_in_ctx() as interpreter:
-            print(interpreter.moss_instruction())
+            print(interpreter.instruction_messages())
             interpreter.feed("<wait><a:foo/><b:bar/></wait><wait><a:foo/><b:bar/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_execution_done()

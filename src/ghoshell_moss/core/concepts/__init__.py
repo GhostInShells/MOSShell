@@ -41,7 +41,7 @@ from .interpreter import (
     CommandTaskParseError,
     CommandTokenParserElement,
     CommandTokenCallback,
-    TextTokenParser,
+    StringTokenParser,
     Interpreter,
 )
 from .shell import (

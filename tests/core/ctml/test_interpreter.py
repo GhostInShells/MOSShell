@@ -31,7 +31,7 @@ async def test_interpreter_baseline():
         await interpreter.wait_compiled()
 
     # 所有的 input 被 buffer 了.
-    assert content == interpreter.inputted()
+    assert content == interpreter.received_text()
     assert len(list(interpreter.parsed_tokens())) == 5
     for token in interpreter.parsed_tokens():
         if token.name == "foo":
@@ -66,10 +66,10 @@ async def test_interpreter_cancel():
 
     async def cancel():
         await asyncio.sleep(0.2)
-        await interpreter.stop(interrupt=True)
+        await interpreter.stop(cancel_executing=True)
 
     await asyncio.gather(cancel(), consumer())
-    inputted = interpreter.inputted()
+    inputted = interpreter.received_text()
     # 有一部分输入, 但是输入不完整.
     assert len(inputted) > 0
     assert content != inputted

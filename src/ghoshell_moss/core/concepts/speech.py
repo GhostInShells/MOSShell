@@ -183,6 +183,7 @@ class Speech(ABC):
     def outputted(self) -> list[str]:
         """
         清空之前生成的文本片段, speech 必须能感知到所有输出.
+        todo: 打算删除这个 feature.
         """
         pass
 
