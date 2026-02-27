@@ -1,13 +1,11 @@
 import asyncio
-import time
-
 import pytest
 
 from ghoshell_moss.core import Command, CommandError, CommandToken
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core import ChannelCtx
-from ghoshell_moss.core.concepts.topic import ErrorTopic, LogTopic, TopicService
+from ghoshell_moss.core.concepts.topic import LogTopic, TopicService
 
 
 @pytest.mark.asyncio
@@ -483,3 +481,54 @@ async def test_thread_provider_lazy_subscribe():
                     await publisher.pub(LogTopic(level="info", message=str(i)))
             await receive_done.wait()
     assert len(received) == 10
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_do_not_share_local_topic():
+    chan = PyChannel(name="provider")
+    a_chan = PyChannel(name="a_channel")
+    chan.import_channels(a_chan)
+
+    provider, proxy = create_thread_channel("proxy")
+
+    # provider 侧先运行, 已经开始监听.
+    async with provider.arun(chan):
+        async with proxy.bootstrap() as proxy_runtime:
+            # proxy 侧后运行, 这时 provider 已经开始监听了. 要在建连后重新开始监听.
+            await proxy_runtime.wait_connected()
+
+            async with proxy_runtime.topic_subscriber(LogTopic) as subscriber:
+                poll_task = asyncio.create_task(subscriber.poll_model())
+                async with provider.runtime.topic_publisher() as publisher:
+                    for i in range(10):
+                        await asyncio.sleep(0.0)
+                        topic = LogTopic(level="info", message=str(i))
+                        # 关键在这里, topic 改成 local 类型.
+                        topic.meta.local = True
+                        await publisher.pub(topic)
+                await asyncio.sleep(0.1)
+
+                # 仍然没有收到.
+                assert not poll_task.done()
+
+    provider, proxy = create_thread_channel("proxy")
+    # 第二次, 交换发送者和接受者.
+    async with provider.arun(chan):
+        async with proxy.bootstrap() as proxy_runtime:
+            # proxy 侧后运行, 这时 provider 已经开始监听了. 要在建连后重新开始监听.
+            await proxy_runtime.wait_connected()
+
+            async with provider.runtime.topic_subscriber(LogTopic) as subscriber:
+                poll_task = asyncio.create_task(subscriber.poll_model())
+                # proxy 侧发送.
+                async with proxy_runtime.topic_publisher() as publisher:
+                    for i in range(10):
+                        await asyncio.sleep(0.0)
+                        topic = LogTopic(level="info", message=str(i))
+                        # 关键在这里, topic 改成 local 类型.
+                        topic.meta.local = True
+                        await publisher.pub(topic)
+                await asyncio.sleep(0.1)
+
+                # 仍然没有收到.
+                assert not poll_task.done()

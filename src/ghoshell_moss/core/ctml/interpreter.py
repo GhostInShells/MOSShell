@@ -87,7 +87,7 @@ class CTMLInterpreter(Interpreter):
             stream_id: Optional[str] = None,
             callback: Optional[CommandTaskCallback] = None,
             root_tag: str = "ctml",
-            special_tokens: Optional[dict[str, str]] = None,
+            tokens_replacement: Optional[dict[str, str]] = None,
             logger: Optional[LoggerItf] = None,
             on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
             meta_system_prompt: Optional[str] = None,
@@ -100,7 +100,7 @@ class CTMLInterpreter(Interpreter):
         :param stream_id: 让 interpreter 有一个唯一的 id.
         :param callback: command task callback
         :param root_tag: 决定生成 command token 的起始和结尾标记. 通常没有功能性.
-        :param special_tokens: 如果传入, 在解析时会把 输出的 key token 转换成 value token 然后解析. 用来做快速匹配.
+        :param tokens_replacement: 如果传入, 在解析时会把 输出的 key token 转换成 value token 然后解析. 用来做快速匹配.
         :param logger: 日志.
         :param on_startup: 可以定义额外的启动函数.
         :param meta_system_prompt: MOSS 解释器的基础语法规则, 如果为空则使用默认的.
@@ -132,7 +132,7 @@ class CTMLInterpreter(Interpreter):
                 self._commands_map[unique_name] = command
 
         self._root_tag = root_tag
-        self._special_tokens = special_tokens or {}
+        self._special_tokens = tokens_replacement or {}
         self._stopped_event = ThreadSafeEvent()
         self._parsing_exception: Optional[Exception] = None
 
@@ -145,7 +145,7 @@ class CTMLInterpreter(Interpreter):
             callback=self._receive_command_token,
             stream_id=self.id,
             root_tag=root_tag,
-            special_tokens=special_tokens,
+            tokens_replacement=tokens_replacement,
             stop_event=self._stopped_event,
             attr_parsers=[AttrWithTypeSuffixParser()],
         )

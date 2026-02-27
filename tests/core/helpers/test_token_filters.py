@@ -1,4 +1,4 @@
-from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
+from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 
 
 def test_special_token_matcher_baseline():
@@ -13,6 +13,6 @@ def test_special_token_matcher_baseline():
         ("<foo>$<bar></bar></foo>^^^#", "<foo><foo /><bar></bar></foo><baz /><bar />"),
     ]
     for content, expected in cases:
-        matcher = SpecialTokenMatcher(special_tokens)
+        matcher = TokensReplacementMatcher(special_tokens)
         result = "".join(list(matcher.parse(content)))
         assert result == expected, expected

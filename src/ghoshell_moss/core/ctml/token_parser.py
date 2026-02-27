@@ -10,7 +10,7 @@ from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import StringTokenParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
+from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ast import literal_eval
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
@@ -464,7 +464,7 @@ class CTML2CommandTokenParser(StringTokenParser):
             root_tag: str = "ctml",
             stop_event: Optional[ThreadSafeEvent] = None,
             logger: Optional[logging.Logger] = None,
-            special_tokens: Optional[dict[str, str]] = None,
+            tokens_replacement: Optional[dict[str, str]] = None,
             attr_parsers: list[AttrParser] | None = None,
             with_call_id: bool = False,
     ):
@@ -485,8 +485,8 @@ class CTML2CommandTokenParser(StringTokenParser):
             attr_parsers=attr_parsers,
             ensure_call_id=with_call_id,
         )
-        special_tokens = special_tokens or {}
-        self._special_tokens_matcher = SpecialTokenMatcher(special_tokens)
+        tokens_replacement = tokens_replacement or {}
+        self._tokens_replacement_matcher = TokensReplacementMatcher(tokens_replacement)
 
         # lifecycle
         self._sax_parser = sax.make_parser()
@@ -536,7 +536,7 @@ class CTML2CommandTokenParser(StringTokenParser):
             raise ParserStopped()
         else:
             self._buffer += delta
-            parsed = self._special_tokens_matcher.buffer(delta)
+            parsed = self._tokens_replacement_matcher.buffer(delta)
             self._sax_parser.feed(parsed)
 
     def commit(self) -> None:
@@ -544,7 +544,7 @@ class CTML2CommandTokenParser(StringTokenParser):
         if self._committed:
             return
         self._committed = True
-        last_buffer = self._special_tokens_matcher.clear()
+        last_buffer = self._tokens_replacement_matcher.clear()
         end_of_the_inputs = f"{last_buffer}</{self.root_tag}>"
         self._sax_parser.feed(end_of_the_inputs)
 

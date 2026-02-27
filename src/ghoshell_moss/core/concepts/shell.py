@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, AsyncIterable, AsyncIterator
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer
 
@@ -11,6 +12,7 @@ from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
+from ghoshell_moss.core.concepts.expressions import Expressions
 
 __all__ = [
     "InterpreterKind",
@@ -44,6 +46,13 @@ class MOSSShell(ABC):
         """
         注册 Speech 对象.
         todo: 准备彻底重构这个实现.
+        """
+        pass
+
+    @abstractmethod
+    def with_expressions(self, expressions: Expressions) -> Self:
+        """
+        注册 expressions 模块.
         """
         pass
 
@@ -198,21 +207,36 @@ class MOSSShell(ABC):
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             prepare_timeout: float = 2.0,
             ignore_wrong_command: bool = False,
+            token_replacements: dict[str, str] | None = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
         :param kind: 实例化 Interpreter 时的前置行为:
-                     clear 表示清空所有运行中命令.
-                     defer_clear 表示延迟清空, 但一旦有新命令, 就会被清空.
-                     run 表示正常运行.
-                     dry_run 表示 interpreter 虽然会正常执行, 但不会把生成的 command task 推送给 shell.
+                    clear 表示清空所有运行中命令.
+                    defer_clear 表示延迟清空, 但一旦有新命令, 就会被清空.
+                    run 表示正常运行.
+                    dry_run 表示 interpreter 虽然会正常执行, 但不会把生成的 command task 推送给 shell.
+
         :param stream_id: 设置一个指定的 stream id,
-                          interpreter 整个运行周期生成的 command token 都会用它做标记.
+                     interpreter 整个运行周期生成的 command token 都会用它做标记.
+
         :param config: 如果传入了动态的 channel metas,
-                              则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
-                              是一种动态修改运行时能力的办法.
+                    则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
+                    是一种动态修改运行时能力的办法.
+
         :param prepare_timeout: 准备过度阶段允许的时间.
+
         :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
+
+        :param token_replacements: 根据 key 替换 interpreter feed 获得的一部分 token, 将之替换为 value.
+                    这种做法可以用 instruction 里的 token 置换输出时的 token. 响应速度和费用能够有调整.
+
+                    假设用 n 个代理 token, 平均每个代理 token 消耗是 m, 代理掉 v 个token, 在 t 次多轮对话中平均使用了 k 个代理 token.
+                    t 轮 instruction 多消耗的 token: n * m * t
+                    t 轮输出实际减少的 tokens:  (v - m) * k * t
+                    所以 (v - m) * k * 3 > n * m    就有正收益.
+                    假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
+
         """
         pass
 

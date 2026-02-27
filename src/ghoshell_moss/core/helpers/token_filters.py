@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 
 
-class SpecialTokenMatcher:
+class TokensReplacementMatcher:
     """
     一个简单的字符串过滤器, 用来加工特殊字符, 将它转换成指定字符.
     这样未来可以让模型自己增删特定的功能.

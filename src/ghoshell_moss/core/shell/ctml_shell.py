@@ -1,11 +1,13 @@
 import asyncio
 import logging
 from typing import Optional, Iterable, Callable, Any
+from typing_extensions import Self
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
+from ghoshell_moss.core.concepts.expressions import Expressions
 from ghoshell_moss.core.concepts.topic import TopicModel, Subscriber, Topic, TOPIC_MODEL, SubscribeKeep
 from ghoshell_moss.core.concepts.channel import (
     Channel,
@@ -38,14 +40,14 @@ __all__ = ["CTMLShell", "new_ctml_shell"]
 
 class CTMLShell(MOSSShell):
     def __init__(
-        self,
-        *,
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: MutableChannel | None = None,
-        speech: Optional[Speech] = None,
-        state_store: Optional[StateStore] = None,
+            self,
+            *,
+            name: str = "shell",
+            description: Optional[str] = None,
+            container: IoCContainer | None = None,
+            main_channel: MutableChannel | None = None,
+            speech: Optional[Speech] = None,
+            state_store: Optional[StateStore] = None,
     ):
         self._name = name
         self._desc = description
@@ -55,6 +57,7 @@ class CTMLShell(MOSSShell):
         self._main_channel = main_channel or create_ctml_main_chan()
 
         self._speech: Speech | None = speech
+        self._expressions: Optional[Expressions] = None
 
         # state
         self._state_store: StateStore | None = state_store
@@ -277,13 +280,14 @@ class CTMLShell(MOSSShell):
             self.push_task(task)
 
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        stream_id: Optional[int] = None,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        prepare_timeout: float = 2.0,
-        ignore_wrong_command: bool = False,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[int] = None,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            prepare_timeout: float = 2.0,
+            ignore_wrong_command: bool = False,
+            token_replacements: dict[str, str] | None = None,
     ) -> Interpreter:
         self._check_running()
 
@@ -306,6 +310,9 @@ class CTMLShell(MOSSShell):
                 self._interpreter.commit()
             self._interpreter = None
 
+        if token_replacements is None and self._expressions is not None:
+            token_replacements = self._expressions.special_tokens()
+
         # 阻塞等待刷新结果.
         await self.refresh_metas(timeout=prepare_timeout)
         config = self.channel_metas(available_only=True, config=config)
@@ -318,6 +325,7 @@ class CTMLShell(MOSSShell):
             logger=self.logger,
             channel_metas=config,
             ignore_wrong_command=ignore_wrong_command,
+            tokens_replacement=token_replacements,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
@@ -329,6 +337,11 @@ class CTMLShell(MOSSShell):
         if self.is_running():
             raise RuntimeError(f"Shell {self._name} already running")
         self._speech = speech
+
+    def with_expressions(self, expressions: Expressions) -> Self:
+        self._expressions = expressions
+        # todo: 将它变成一个 channel.
+        return self
 
     @property
     def main_channel(self) -> MutableChannel:
@@ -345,12 +358,12 @@ class CTMLShell(MOSSShell):
         return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
     def subscribe_topic(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        name: str = "",
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            name: str = "",
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe_model(
@@ -375,9 +388,9 @@ class CTMLShell(MOSSShell):
             await refresh_meta_task
 
     def channel_metas(
-        self,
-        available_only: bool = True,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            available_only: bool = True,
+            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
@@ -440,11 +453,11 @@ class CTMLShell(MOSSShell):
         await self._closed_event.wait()
 
     def commands(
-        self,
-        available_only: bool = True,
-        *,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        exec_in_chan: bool = False,
+            self,
+            available_only: bool = True,
+            *,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            exec_in_chan: bool = False,
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
@@ -552,11 +565,11 @@ class CTMLShell(MOSSShell):
 
 
 def new_ctml_shell(
-    name: str = "shell",
-    description: Optional[str] = None,
-    container: IoCContainer | None = None,
-    main_channel: Channel | None = None,
-    speech: Optional[Speech] = None,
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: Channel | None = None,
+        speech: Optional[Speech] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(

@@ -959,27 +959,6 @@ class ChannelImportLib(ABC):
         pass
 
 
-class ChannelApp(Protocol):
-    """
-    简单定义一种有状态 Channel 的范式.
-    基本思路是, 这个 App 运行的时候, 可以渲染图形界面或开启什么程序.
-    同时它通过暴露一个 Channel, 使 App 可以和 Shell 进行通讯. 通过 Provider / Proxy 范式提供给 Shell 控制.
-
-    对于未来的 AI App 而言, 假设其仍然为 MCV (model->controller->viewer) 架构, 模型扮演的应该是 Controller.
-    而 Channel 就是用来取代 Controller, 和 AI 模型通讯的方式.
-
-    新的 MCV 范式是:  data-model / AI-channel / human-viewer
-    todo: 未完全定义清楚, 主要是生命周期问题.
-    """
-
-    @abstractmethod
-    def as_channel(self, name: str = "", description: str = "") -> Channel:
-        """
-        返回一个 Channel 实例.
-        """
-        pass
-
-
 class ChannelInterface(ABC):
     """
     ChannelApp 范式的可继承版本. 提供一种标准的 Channel 抽象设计策略.
