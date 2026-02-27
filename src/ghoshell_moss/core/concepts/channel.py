@@ -471,6 +471,11 @@ class MutableChannel(Channel, ABC):
         """
         pass
 
+    # todo: 支持别名.
+    # @abstractmethod
+    # def import_as(self, channel: "Channel", alias: str) -> Self:
+    #     pass
+
     @property
     @abstractmethod
     def build(self) -> Builder:
@@ -987,7 +992,7 @@ class ChannelInterface(ABC):
     >>>      def foo(self) -> int:
     >>>          pass
     >>>
-    >>>      def make_channel(self, name, description) -> Channel:
+    >>>      def as_channel(self, name, description) -> Channel:
     >>>           from ghoshell_moss import PyChannel
     >>>           channel = PyChannel(name=name, description=description)
     >>>           # 注册好 interface 上的函数.
@@ -996,6 +1001,13 @@ class ChannelInterface(ABC):
 
     这样具体的实现就可以替换了.
     而且 ChannelInterface 本身也可以注册到容器中, 方便通过 IoC 容器来获取.
+
+
+    >>> def build_channel(container: IoCContainer) -> Channel:
+    >>>    return container.make(SomeChannelInterface).as_channel()
+
+    也可以考虑类名就是 name, docstring 就是 description.
+    这样未来 AI 创建一个 ChannelInterface 时, 有非常明确的要实现功能, 而且不需要去理解
     """
 
     @abstractmethod
