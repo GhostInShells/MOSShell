@@ -33,6 +33,7 @@ __all__ = [
     "Command",
     "CommandUniqueName",
     "CommandDeltaType",
+    "CommandDeltaValue",
     "ValueOfCommandDeltaTypeMap",
     "CommandError",
     "CommandErrorCode",
@@ -530,20 +531,20 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             comments=comments,
         )
 
-    def parse_kwargs(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
-        return real_kwargs
+    def parse_kwargs(self, *args: Any, **kwargs: Any) -> tuple[tuple, dict[str, Any]]:
+        args, real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
+        return args, real_kwargs
 
     async def __call__(self, *args, **kwargs) -> RESULT:
         try:
-            real_kwargs = self.parse_kwargs(*args, **kwargs)
+            real_args, real_kwargs = self.parse_kwargs(*args, **kwargs)
         except Exception as e:
             raise ValueError(f"command parse args failed: %s", e)
 
         if self._is_coroutine_func:
-            return await self._func(**real_kwargs)
+            return await self._func(*real_args, **real_kwargs)
         else:
-            task = asyncio.to_thread(self._func, **real_kwargs)
+            task = asyncio.to_thread(self._func, *real_args, **real_kwargs)
             return await task
 
 
@@ -729,7 +730,10 @@ class CommandTask(Generic[RESULT], ABC):
         return r
 
     async def run(self) -> RESULT:
-        """典型的案例如何使用一个 command task. 有状态的运行逻辑."""
+        """
+        典型的案例展示如何使用一个 command task. 有状态的运行逻辑.
+        实际在链路中通常运行的是 dry run.
+        """
         if self.done():
             self.raise_exception()
             return self.result()
@@ -740,15 +744,15 @@ class CommandTask(Generic[RESULT], ABC):
 
         set_token = CommandTaskContextVar.set(self)
         try:
-            dry_run = asyncio.create_task(self.dry_run())
-            wait = asyncio.create_task(self.wait())
+            dry_run_task = asyncio.create_task(self.dry_run())
+            wait_done_task = asyncio.create_task(self.wait())
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
-            done, pending = await asyncio.wait([dry_run, wait], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait([dry_run_task, wait_done_task], return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
-            if dry_run in done:
-                result = await dry_run
+            if dry_run_task in done:
+                result = await dry_run_task
                 self.resolve(result)
             else:
                 self.raise_exception()
@@ -756,7 +760,7 @@ class CommandTask(Generic[RESULT], ABC):
 
         except asyncio.CancelledError:
             if not self.done():
-                self.cancel(reason="canceled")
+                self.cancel(reason="command execution canceled")
             raise
         except Exception as e:
             if not self.done():

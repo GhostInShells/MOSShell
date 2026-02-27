@@ -252,7 +252,7 @@ def test_token_parser_with_attr_suffix():
             assert token.kwargs == {"a": [1, 2], "b": 6, "c": {"foo": 123}}
 
 
-def test_token_parser_with_idx():
+def test_ctml_with_suffix_idx():
     content = "<a:foo:3 literal-a='[1, 2]'></a:foo:3><bar/>"
     q: list[CommandToken] = []
     CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
@@ -275,6 +275,15 @@ def test_token_parser_with_idx():
     content = "<a:foo:1 literal-a='[1, 2]'></a:foo:1><bar/>"
     q: list[CommandToken] = []
     literal_parser = AttrPrefixParser(desc="", prefix="literal-", parser=lambda v: literal_eval(v))
-    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True)
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser],
+                                  with_call_id=True)
     got_content = "".join([t.content for t in q[1:-2]])
     assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar:2></bar:2>'
+
+
+def test_ctml_attr_with_args():
+    content = "<a:foo _args='[1, 2]'></a:foo>"
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
+    q = q[1:-1]
+    token = q.pop(0)

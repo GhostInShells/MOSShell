@@ -414,6 +414,9 @@ class CTMLInterpreter(Interpreter):
                 self._logger.exception("Interpreter quit on exception %s", exc_val)
         await self.stop()
 
+    def exception(self) -> Optional[Exception]:
+        return self._parsing_exception
+
     async def start(self) -> None:
         """
         todo: 使用 AsyncExitStack

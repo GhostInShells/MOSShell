@@ -29,16 +29,15 @@ async def test_interpreter_baseline():
         for c in content:
             interpreter.feed(c)
         await interpreter.wait_compiled()
+        # 所有的 input 被 buffer 了.
+        assert content == interpreter.received_text()
+        assert len(list(interpreter.parsed_tokens())) == 5
+        for token in interpreter.parsed_tokens():
+            if token.name == "foo":
+                assert token.chan == ""
 
-    # 所有的 input 被 buffer 了.
-    assert content == interpreter.received_text()
-    assert len(list(interpreter.parsed_tokens())) == 5
-    for token in interpreter.parsed_tokens():
-        if token.name == "foo":
-            assert token.chan == ""
-
-    assert len(queue) == 4
-    assert len(interpreter.compiled_tasks()) == 3
+        assert len(queue) == 4
+        assert len(interpreter.compiled_tasks()) == 3
 
 
 @pytest.mark.asyncio

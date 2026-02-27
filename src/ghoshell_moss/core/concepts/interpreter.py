@@ -355,6 +355,14 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
+    def exception(self) -> Optional[Exception]:
+        pass
+
+    def raise_exception(self):
+        if exp := self.exception():
+            raise exp
+
+    @abstractmethod
     async def wait_compiled(self, timeout: float | None = None) -> None:
         """
         等待解释过程完成. 完成有两种情况:
