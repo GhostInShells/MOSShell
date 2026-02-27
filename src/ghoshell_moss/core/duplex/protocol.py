@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Optional
 from ghoshell_common.helpers import uuid
 from pydantic import BaseModel, Field
 from typing_extensions import Self, TypedDict
-
+from ghoshell_moss.core.concepts.command import CommandTaskResult
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.topic import Topic
@@ -143,7 +143,7 @@ class CommandCallEvent(ChannelEventModel):
             chan=self.chan,
         )
 
-    def done(self, result: Any, errcode: int, errmsg: str) -> "CommandDoneEvent":
+    def done(self, result: CommandTaskResult | None, errcode: int, errmsg: str) -> "CommandDoneEvent":
         return CommandDoneEvent(
             session_id=self.session_id,
             command_id=self.command_id,
@@ -226,7 +226,7 @@ class CommandDoneEvent(ChannelEventModel):
     command_id: str = Field(description="command id")
     errcode: int = Field(default=0, description="command errcode")
     errmsg: Optional[str] = Field(default=None, description="command errmsg")
-    result: Any = Field(default=None, description="result of the command")
+    result: CommandTaskResult | None = Field(default=None, description="result of the command")
 
 
 class ChannelMetaUpdateEvent(ChannelEventModel):

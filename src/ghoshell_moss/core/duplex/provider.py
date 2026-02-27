@@ -61,6 +61,10 @@ class ProviderTopicService(QueueBasedTopicService):
     async def _on_topic_published(self, topic: Topic) -> None:
         try:
             if self._connection.is_connected() and not self._connection.is_closed():
+                # 不会跨网络传输.
+                if topic.meta.local:
+                    return
+
                 event = ProviderPubTopicEvent(topic=topic, session_id=self._get_session_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
@@ -582,7 +586,7 @@ class DuplexChannelProvider(ChannelProvider):
             await self._remove_running_task(task)
             if not task.done():
                 task.cancel()
-            result = task.result(throw=False)
+            result = task.task_result().serializable() if task.success() else None
             response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_event_to_proxy(response.to_channel_event())
 

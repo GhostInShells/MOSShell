@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandStackResult,
     CommandTaskState,
     PyCommand,
+    CommandTaskResult,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.concepts.channel import ChannelCtx
@@ -221,3 +222,29 @@ def test_await_task_in_threads():
         t.join()
 
     assert len(done) == 10
+
+
+@pytest.mark.asyncio
+async def test_command_task_result():
+    class Bar:
+        bar = 123
+
+    async def foo() -> Bar:
+        return Bar()
+
+    command = PyCommand(foo)
+    task = BaseCommandTask.from_command(command)
+    task.call_id = "2"
+    await task.run()
+    task_result = task.task_result()
+    assert task_result.caller == "foo:2"
+    assert len(task_result.observe()) > 0
+
+    async def baz():
+        return CommandTaskResult(result="hello")
+
+    command = PyCommand(baz)
+    task = BaseCommandTask.from_command(command)
+    await task.run()
+    assert task.result() == "hello"
+    assert task.task_result().caller is not None

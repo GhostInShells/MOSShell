@@ -162,6 +162,7 @@ class CTMLInterpreter(Interpreter):
             stop_event=self._stopped_event,
             ignore_wrong_command=ignore_wrong_command,
         )
+        self._task_done_order: list[str] = []
         self._root_element = self._task_element_ctx.new_root(
             callback=self._send_command_task,
             stream_id=self.id,
@@ -213,6 +214,7 @@ class CTMLInterpreter(Interpreter):
     def _on_task_done(self, command_task: CommandTask) -> None:
         if self._stopped_event.is_set():
             return
+        self._task_done_order.append(command_task.cid)
         # 发现任何任务出错超出预期.
         if exception := command_task.exception():
             if CommandErrorCode.interpretation_fatal(exception):

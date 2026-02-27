@@ -22,6 +22,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
     CommandUniqueName,
     CommandToken,
+    CommandTaskResult,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -64,11 +65,11 @@ class DuplexChannelContext:
     """
 
     def __init__(
-        self,
-        *,
-        name: str,
-        connection: Connection,
-        container: Optional[IoCContainer] = None,
+            self,
+            *,
+            name: str,
+            connection: Connection,
+            container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -455,6 +456,9 @@ class DuplexChannelContext:
                     if not self.connection.is_connected():
                         return
                     topic = await subscriber.poll()
+                    # 不支持 local 类型的 topic 跨进程通讯.
+                    if topic.meta.local:
+                        continue
                     event = ProxyPubTopicEvent(topic=topic, session_id=self.session_id)
                     await self.send_event_to_provider(event.to_channel_event())
 
@@ -616,22 +620,27 @@ class DuplexChannelContext:
                     sender.cancel()
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
+        command_id = event.command_id
+        task = self._pending_provider_command_tasks.pop(command_id)
+        if task is None:
+            self.logger.info("receive command done event %s match no command", event)
+            return
         try:
-            command_id = event.command_id
-            task = self._pending_provider_command_tasks.pop(command_id)
-            if task is not None:
-                if task.done():
-                    pass
-                elif event.errcode == 0:
-                    task.resolve(event.result)
-                else:
-                    error = CommandError(event.errcode, event.errmsg)
-                    task.fail(error)
+            if task.done():
+                pass
+            elif event.errcode == 0:
+                result = CommandTaskResult.from_serializable(event.result)
+                task.resolve(result)
             else:
-                self.logger.info("receive command done event %s match no command", event)
+                error = CommandError(event.errcode, event.errmsg)
+                task.fail(error)
         except Exception as e:
             self.logger.exception("Handle command done event failed %s", e)
             raise
+        finally:
+            if not task.done():
+                self.logger.exception("Handle command done event failed, task not done: %s", task)
+                task.cancel("unfixed task")
 
 
 class DuplexChannelRuntime(AbsChannelRuntime):
@@ -640,11 +649,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     """
 
     def __init__(
-        self,
-        *,
-        channel: Channel,
-        provider_chan_path: str,
-        ctx: DuplexChannelContext,
+            self,
+            *,
+            channel: Channel,
+            provider_chan_path: str,
+            ctx: DuplexChannelContext,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
@@ -756,9 +765,9 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return None
 
     def _get_provider_command_func(
-        self,
-        chan: ChannelFullPath,
-        meta: CommandMeta,
+            self,
+            chan: ChannelFullPath,
+            meta: CommandMeta,
     ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
@@ -823,11 +832,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str = "",
-        to_provider_connection: Connection,
+            self,
+            *,
+            name: str,
+            description: str = "",
+            to_provider_connection: Connection,
     ):
         self._name = name
         self._description = description

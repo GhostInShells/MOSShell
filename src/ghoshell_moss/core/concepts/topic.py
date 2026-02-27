@@ -35,6 +35,7 @@ class TopicMeta(BaseModel):
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
     name: str = Field(default="", description="Name of the topic.")
     type: str = Field(default="", description="Type of the topic.")
+    local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
     creator: str = Field(
         default="",
         description="The unique identifier of the topic creator, in RESTFul format.",
@@ -51,12 +52,6 @@ class TopicMeta(BaseModel):
         default=0.0,
         description="Overdue after created, in seconds ",
     )
-
-    def __str__(self):
-        """
-        方便日志打印. todo: 或许应该放全量信息? 或者放到 __repr__ 中? 没想清楚.
-        """
-        return f"<Topic name={self.name} id={self.id}>"
 
 
 class Topic(BaseModel, WithAdditional):
@@ -375,7 +370,10 @@ class TopicService(ABC):
     def publisher(self, creator: str, uid: str | None = None) -> Publisher:
         """
         创建一个 publisher.
-        创建一个 subscriber.
+
+        :param creator: 确认发送者的身份.
+        :param uid: 为发送者建立唯一 id.
+
         >>> async def publish(service: TopicService):
         >>>     publisher = service.publisher(...)
         >>>     async with publisher:

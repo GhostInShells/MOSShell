@@ -10,6 +10,7 @@ from ghoshell_container import Provider, IoCContainer
 import asyncio
 import logging
 import anyio
+import time
 
 
 class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
@@ -18,15 +19,15 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
     """
 
     def __init__(
-        self,
-        service_stopped: asyncio.Event,
-        *,
-        model: type[TOPIC_MODEL] | None,
-        topic_name: str = "",
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: Literal["latest", "oldest"] = "latest",
-        logger: LoggerItf | None = None,
+            self,
+            service_stopped: asyncio.Event,
+            *,
+            model: type[TOPIC_MODEL] | None,
+            topic_name: str = "",
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: Literal["latest", "oldest"] = "latest",
+            logger: LoggerItf | None = None,
     ):
         self._model = model
         self._listening = topic_name or model.default_topic_name()
@@ -132,13 +133,14 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 
 class QueueBasedPublisher(Publisher):
     def __init__(
-        self,
-        *,
-        creator: str,
-        publish_queue: asyncio.Queue,
-        service_stopped_event: asyncio.Event,
-        uid: str | None = None,
-        logger: LoggerItf | None = None,
+            self,
+            *,
+            creator: str,
+            publish_queue: asyncio.Queue,
+            service_stopped_event: asyncio.Event,
+            uid: str | None = None,
+            logger: LoggerItf | None = None,
+            frequent: float = 0.0,
     ):
         self._publish_queue = publish_queue
         self._service_stopped_event = service_stopped_event
@@ -147,6 +149,8 @@ class QueueBasedPublisher(Publisher):
         self._additions = []
         self._uid = uid or uuid()
         self._log_prefix = f"[QueueBasedPublisher %s id=%s]" % (self._creator, self._uid)
+        self._frequent = frequent
+        self._last_sent: float = 0.0
 
     def with_additions(self, *additions: Addition) -> Self:
         self._additions.extend(additions)
@@ -169,6 +173,10 @@ class QueueBasedPublisher(Publisher):
         if not self.is_running():
             self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.id)
             return
+        if self._frequent > 0 and self._last_sent + self._frequent > time.time():
+            self._logger.error("%s drop topic %s cause too frequent", self._log_prefix, topic.id)
+            return
+
         if isinstance(topic, TopicModel):
             topic = topic.to_topic()
         if name:
@@ -328,12 +336,12 @@ class QueueBasedTopicService(TopicService):
         return list(self._subscribers.keys())
 
     def subscribe(
-        self,
-        topic_name: str,
-        *,
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: Literal["latest", "oldest"] = "latest",
+            self,
+            topic_name: str,
+            *,
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[None]:
         return self._create_subscriber(
             topic_name=topic_name,
@@ -344,13 +352,13 @@ class QueueBasedTopicService(TopicService):
         )
 
     def subscribe_model(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        topic_name: str = "",
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: Literal["latest", "oldest"] = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: str = "",
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         return self._create_subscriber(
             topic_name=topic_name,
@@ -361,13 +369,13 @@ class QueueBasedTopicService(TopicService):
         )
 
     def _create_subscriber(
-        self,
-        model: type[TopicModel] | None,
-        *,
-        topic_name: str = "",
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: Literal["latest", "oldest"] = "latest",
+            self,
+            model: type[TopicModel] | None,
+            *,
+            topic_name: str = "",
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber:
         """ """
         # 没有 await, 预计不会让出控制权. 所以这一版不加锁了.

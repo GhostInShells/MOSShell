@@ -454,7 +454,9 @@ class Message(BaseModel, WithAdditional):
         from .contents import Base64Image, Text
 
         for content in contents:
-            if is_typeddict(content):
+            if content is None:
+                continue
+            elif is_typeddict(content):
                 self.contents = self.contents or []
                 self.contents.append(content)
             elif isinstance(content, ContentModel):

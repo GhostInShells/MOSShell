@@ -27,6 +27,10 @@ class Text(ContentModel):
         description="Text of the message",
     )
 
+    @classmethod
+    def new(cls, text: str) -> "Text":
+        return cls(text=text)
+
 
 class Base64Image(ContentModel):
     """
