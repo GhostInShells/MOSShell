@@ -12,7 +12,6 @@ async def foo(a: int, b: str = "hello") -> int:
 
 foo_itf_expect = """
 async def foo(a: int, b: str = 'hello') -> int:
-    pass
 """.strip()
 
 
@@ -55,7 +54,6 @@ async def bar(a: int, *b: str, c: str, d: int = 1) -> int:
     '''
     example with args and kwargs
     '''
-    pass
 """.strip()
 
     command = PyCommand(bar)
@@ -81,11 +79,9 @@ async def test_method_command():
 
     expect_bar = """
 async def bar() -> int:
-    pass
 """.strip()
     expect_baz = """
 async def baz() -> int:
-    pass
 """.strip()
 
     bar_cmd = PyCommand(Foo().bar)

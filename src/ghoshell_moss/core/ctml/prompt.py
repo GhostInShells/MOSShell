@@ -1,9 +1,9 @@
 from pathlib import Path
 
-VERSION = "v1"
+VERSION = "v2.en"
 
 
-def get_moss_meta_prompt() -> str:
-    path = Path(__file__).parent.joinpath(f"prompt_{VERSION}.md")
+def get_moss_meta_prompt(version: str = VERSION) -> str:
+    path = Path(__file__).parent.joinpath(f"prompts/ctml_{version}.md")
     with path.open() as f:
         return f.read()
