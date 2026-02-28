@@ -1,20 +1,20 @@
 import asyncio
+import contextlib
 import logging
-from typing import Optional, Iterable, Callable, Any
-from typing_extensions import Self
+from collections.abc import Callable, Iterable
+from typing import Any, Optional
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
+from typing_extensions import Self
 
-from ghoshell_moss.core.concepts.expressions import Expressions
-from ghoshell_moss.core.concepts.topic import TopicModel, Subscriber, Topic, TOPIC_MODEL, SubscribeKeep
 from ghoshell_moss.core.concepts.channel import (
     Channel,
+    ChannelCtx,
     ChannelFullPath,
     ChannelMeta,
     ChannelRuntime,
-    ChannelCtx,
     MutableChannel,
 )
 from ghoshell_moss.core.concepts.command import (
@@ -25,15 +25,16 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
+from ghoshell_moss.core.concepts.expressions import Expressions
 from ghoshell_moss.core.concepts.interpreter import Interpreter
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
-from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
+from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
-import contextlib
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
@@ -131,7 +132,7 @@ class CTMLShell(MOSSShell):
             logger = self._container.get(LoggerItf)
             if logger is None:
                 logger = logging.getLogger("moss")
-                self._container.set(LoggerItf, self._logger)
+                self._container.set(LoggerItf, logger)
             self._logger = logger
 
         yield
@@ -143,7 +144,7 @@ class CTMLShell(MOSSShell):
             state_store = self._container.get(StateStore)
             if state_store is None:
                 state_store = BaseStateStore(owner=f"shell/{self._name}")
-                self._container.set(StateStore, self._state_store)
+                self._container.set(StateStore, state_store)
             self._state_store = state_store
         await self._state_store.start()
         yield
