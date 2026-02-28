@@ -44,27 +44,28 @@ async def test_redis_channel_baseline():
 
         provider.run_in_thread(test_channel)
 
-        async with provider.arun(test_channel):
-            async with proxy.bootstrap() as runtime:
-                # 验证 proxy 已连接
-                await runtime.wait_connected()
-                assert runtime.is_running()
+        async with proxy.bootstrap() as runtime:
+            # 验证 proxy 已连接
+            await runtime.wait_connected()
+            assert runtime.is_running()
 
-                # 获取 channel meta
-                meta = runtime.own_meta()
-                assert meta is not None
-                assert meta.name == "test_redis_channel"
-                assert len(meta.commands) == 1
-                assert meta.commands[0].name == "foo"
+            # 获取 channel meta
+            meta = runtime.own_meta()
+            assert meta is not None
+            assert meta.name == "test_redis_channel"
+            assert len(meta.commands) == 1
+            assert meta.commands[0].name == "foo"
 
-                # 获取命令并执行
-                cmd = runtime.get_command("foo")
-                assert cmd is not None
+            # 获取命令并执行
+            cmd = runtime.get_command("foo")
+            assert cmd is not None
 
-                # 测试命令执行
-                result = await cmd(123)
-                assert result == "Received: 123"
+            # 测试命令执行
+            result = await cmd(123)
+            assert result == "Received: 123"
 
-                # 测试带默认值的调用
-                result = await cmd()
-                assert result == "Received: 42"
+            # 测试带默认值的调用
+            result = await cmd()
+            assert result == "Received: 42"
+        provider.close()
+        provider.wait_closed_sync()

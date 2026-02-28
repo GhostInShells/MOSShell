@@ -92,7 +92,7 @@ class MockSpeech(Speech):
         stream_id = stream.id
         if stream_id in self._streams:
             existing_stream = self._streams[stream_id]
-            existing_stream.aclose()
+            existing_stream.close()
         self._streams[stream_id] = stream
         self._outputs[stream_id] = stream_outputs
         return stream

@@ -58,8 +58,16 @@ async def test_thread_channel_run_in_tasks():
     await provider.wait_closed()
     assert provider_run_task.done()
     await provider_run_task
-    provider.run_in_thread(chan)
+    # 正常退出了.
 
+
+@pytest.mark.asyncio
+async def test_thread_channel_run_in_thread():
+    provider, proxy = create_thread_channel("proxy")
+    chan = PyChannel(name="provider")
+    # 重新创建 provider.
+    provider = provider.copy()
+    provider.run_in_thread(chan)
     await provider.aclose()
     await provider.wait_closed()
     assert not provider.is_running()
