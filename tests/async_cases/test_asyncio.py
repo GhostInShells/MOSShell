@@ -1,7 +1,6 @@
 import asyncio
 import threading
 import time
-
 import pytest
 import contextlib
 
@@ -499,3 +498,17 @@ async def test_async_context_manager():
         await stack.enter_async_context(foo())
 
     assert len(log) == 10
+
+
+@pytest.mark.asyncio
+async def test_async_iterable():
+    from typing import AsyncIterable
+
+    async def generator_method() -> AsyncIterable[int]:
+        for i in range(10):
+            yield i
+
+    result = []
+    async for k in generator_method():
+        result.append(k)
+    assert len(result) == 10

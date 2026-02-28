@@ -358,7 +358,7 @@ class CTMLShell(MOSSShell):
 
         return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
-    def subscribe_topic(
+    def subscribe_topic_model(
             self,
             model: type[TOPIC_MODEL],
             *,
@@ -369,6 +369,20 @@ class CTMLShell(MOSSShell):
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe_model(
             model,
+            topic_name=name,
+            maxsize=maxsize,
+            keep=keep,
+        )
+
+    def subscribe_topic(
+            self,
+            name: str,
+            *,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
+    ) -> Subscriber:
+        self._check_running()
+        return self._main_runtime.importlib.topics.subscribe(
             topic_name=name,
             maxsize=maxsize,
             keep=keep,

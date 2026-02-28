@@ -24,11 +24,76 @@ InterpreterKind = Literal["clear", "append", "dry_run"]
 
 class MOSSShell(ABC):
     """
-    Model-Operated System Shell
+    Model-Operated Operating System Shell
     面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
 
-    Shell 自身也可以作为 Channel 向上提供, 而自己维护一个完整的运行时. 这需要上一层下发的实际上是 command tokens.
-    这样才能实现本地 shell 的流式处理.
+    这个技术实现的核心目标, 是通过一个双工运行的 Runtime, 为一个持久化智能体提供 Realtime 感知, 交互和控制能力. 以及提供几乎无限的反身性.
+
+    Shell 设计的全双工交互的极简形式:
+
+    创建一个 Shell 实例.
+    >>> def create_shell(...) -> MOSSShell:
+    >>>     ...
+
+    为 Shell 赋予各种 Channel, 其中一些 Channel 是可以有 安装/卸载/打开/关闭 范式的.
+
+    >>> def build_shell(shell: MOSSShell, channels: list[Channel]) -> MOSSShell:
+    >>>     shell.main_channel.import_channels(*channels)
+    >>>     return shell
+
+    在这个 Channels 的体系中应该要包含一个完整的 AIOS 范式, 包含:
+    + Instructions: AI 自身 instructions 模块的修改.
+    + Memories: AI 的记忆体系
+    + Mind: 思维管理控制
+        - Skills: AI 通过 Skill 管理的注意力机制, 可以专注于做不同的任务.
+        - TasksManager:  AI 的多任务管理, 支持树形嵌套, 可以在多个 Tasks 中切换, 并且可以为 task 维护独立上下文.
+    + Tools: 可以用的各种工具.
+        + Desktops:  AI 自己拥有的桌面软件, 操作它所在的操作系统.
+            - Apps: AI 可以管理的本地应用, 每个应用拥有独立的 Runtime.
+        - Terminal: AI 可以直接操作和修改的命令行.
+        + Assets: AI 可以管理的各种本地资源.
+        - Modules: AI 可以在自己的 Runtime 里管理所有可被调用的 python 模块.
+    + LAN: 局域网里可以使用的各种工具.
+        + HomeAssistant: 智能家居
+        + AI Assistants: 可以对话的各种 AI
+    + Sencors: 所有可被调用的感知模块.
+    + UserInterfaces: 可以和人类交互的各种界面.
+    + Bodies: 可以控制的各种物理躯体.
+
+    然后 Shell 运行可以通过 Topic 来进行通讯, 用 CSP 范式来创建持久运行 Agent 逻辑:
+
+    >>> async def main_shell_loop(shell: MOSSShell) -> None:
+    >>>
+    >>>     async def model_create_response() -> AsyncIterable[str]:
+    >>>         "模型创建回复的逻辑"
+    >>>         ...
+    >>>
+    >>>     async def receive_input_topic_loop():
+    >>>         "持续获取输入消息, 并且消费输入"
+    >>>         async with shell.subscribe_topic('input/messages') as subscriber:
+    >>>             message = await subscriber.poll()
+    >>>             ...  # 解析执行 topic, 发送后续的执行 topic
+    >>>
+    >>>     async def run_agent_loop():
+    >>>         "持续响应 agent 的事件"
+    >>>         async with shell.subscribe_topic('agent/event') as subscriber:
+    >>>             event = await subscriber.poll()
+    >>>             ...  # 解析 event, 确认响应逻辑
+    >>>             interpreter = await shell.interpreter()
+    >>>             # 使用关键帧生成的解释器, 完成上下文响应.
+    >>>             async with interpreter:
+    >>>                 # 来执行模型生成.
+    >>>                 async for token in model_create_response():
+    >>>                     interpreter.feed(token)
+    >>>                 interpreter.commit()
+    >>>                 ... # 等待 interpreter 结果并执行.
+    >>>
+    >>>     # 启动 Shell
+    >>>     async with shell:
+    >>>           # 执行这些 loop, 直到关键点结束.
+    >>>           await asyncio.gather(receive_input_topic_loop(), run_agent_loop())
+
+    在 Shell 能够持续, 稳定运行的情况下, AI (Ghost) 运行在 Shell 中, 持续地与现实世界交互.
     """
 
     @property
@@ -69,7 +134,7 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def subscribe_topic(
+    def subscribe_topic_model(
             self,
             model: type[TOPIC_MODEL],
             *,
@@ -80,6 +145,16 @@ class MOSSShell(ABC):
         """
         shell 层监听 topic.
         """
+        pass
+
+    @abstractmethod
+    def subscribe_topic(
+            self,
+            name: str,
+            *,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
+    ) -> Subscriber:
         pass
 
     # --- channels --- #
