@@ -581,9 +581,10 @@ class CommandTaskResult(BaseModel):
         description="给大模型查看, 但不对外输出的消息体. "
                     "通常用于 multi-agent 等场景, 才返回包含 role, name 的消息体. 否则应该由 Agent 负责配置.",
     )
-    operator: str | None = Field(
-        default=None,
-        description="和 Agent 架构约定好的行为算子, 驱动 Agent / Ghost 接受消息后产生行为. 如果没有约定, 不要定义"
+    observe: bool = Field(
+        default=False,
+        description="默认的 interpreter 交互协议. 当 Interpreter 生成的 Task 返回一个 observe==True 的结果时,"
+                    "Interpreter 应该停止运行逻辑, 取消后续所有的命令. ",
     )
 
     def serializable(self) -> Self:
@@ -611,7 +612,12 @@ class CommandTaskResult(BaseModel):
             serialized_content = "%r" % self.result
         return serialized_content
 
-    def observe(self, name: str = "__command_result__", role: str = "user") -> list[Message]:
+    def as_messages(
+            self,
+            *,
+            name: str | None = None,
+            role: str = "user",
+    ) -> list[Message]:
         """
         生成可以被模型观察的消息体.
 
@@ -624,6 +630,7 @@ class CommandTaskResult(BaseModel):
         if self.result is None and len(self.messages) == 0:
             return []
         result_message = None
+        name = name or self.caller or "__command_result__"
         if self.result is not None:
             result_message = Message.new(role=role, name=name)
             if self.caller is not None:
@@ -634,9 +641,9 @@ class CommandTaskResult(BaseModel):
         if result_message is not None:
             messages.append(result_message)
         for message in self.messages:
-            if message.name is None:
+            if message.name is None and message.contents:
                 # 合并消息体, 和 result 合并到一起.
-                result_message.with_content(message.contents)
+                result_message.with_content(*message.contents)
             else:
                 messages.append(message)
         return messages
@@ -1068,6 +1075,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             task_result = CommandTaskResult(
                 result=result,
             )
+        #  必须设置 caller name.
         task_result.caller = self.caller_name()
         self._task_result = task_result
         self._set_result(result, "done", 0, None)

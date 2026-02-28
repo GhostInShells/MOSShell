@@ -290,8 +290,8 @@ class DuplexChannelContext:
                 e,
                 reason,
             )
-        except Exception:
-            self.logger.exception("proxy proxy error")
+        except Exception as e:
+            self.logger.exception("proxy proxy error: %s", e)
             raise
         finally:
             self.stop_event.set()
@@ -310,19 +310,6 @@ class DuplexChannelContext:
             await self._clear_pending_provider_command_tasks()
             await self._clear_subscribe_topic_tasks()
 
-    async def _wait_task_done_or_stopped(self, task: asyncio.Task) -> bool:
-        """
-        语法糖, 等待一个任务完成, 但是如果全局 stopped 了, 或者断连了, 就会返回 False.
-        """
-        wait_stopped = asyncio.create_task(self.stop_event.wait())
-        done, pending = await asyncio.wait(
-            [task, wait_stopped],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-        return task in done
-
     async def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
         """
         清空所有未完成的任务.
@@ -333,8 +320,8 @@ class DuplexChannelContext:
         self._command_call_deltas_sender_tasks.clear()
         for task in tasks.values():
             if not task.done():
-                reason = reason or f"Channel proxy `{self.root_name}` not available"
-                task.fail(CommandErrorCode.NOT_AVAILABLE.error(reason))
+                reason = reason or f"Channel proxy `{self.root_name}` cleared"
+                task.fail(CommandErrorCode.CLEARED.error(reason))
         # cancel delta sender.
         for t in senders.values():
             t.cancel()
@@ -601,9 +588,11 @@ class DuplexChannelContext:
             if task.done():
                 return
             await task.wait(throw=False)
-            # 来自服务端的异常.
+            # 判断 task 还在 pending_provider_command_tasks 中, 意味着下游任务还未结束.
             if task.cid in self._pending_provider_command_tasks and self.is_channel_available(task.chan):
                 if exp := task.exception():
+                    await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
+                elif task.cancelled():
                     await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
         except asyncio.CancelledError:
             raise

@@ -238,7 +238,7 @@ async def test_command_task_result():
     await task.run()
     task_result = task.task_result()
     assert task_result.caller == "foo:2"
-    assert len(task_result.observe()) > 0
+    assert len(task_result.as_messages()) > 0
 
     async def baz():
         return CommandTaskResult(result="hello")

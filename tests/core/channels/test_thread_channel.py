@@ -138,6 +138,8 @@ async def test_thread_channel_baseline():
             proxy_side_foo = proxy_runtime.get_command("foo")
             assert proxy_side_foo is not None
 
+            assert proxy_runtime.is_available()
+            assert provider.is_running()
             result = await proxy_side_foo()
             assert result == 123
 

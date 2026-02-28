@@ -32,7 +32,8 @@ class CommandError(Exception):
     def __init__(self, code: int = -1, message: str = ""):
         self.code = code
         self.message = message
-        super().__init__(f"Command failed with code `{code}`: {message}")
+        error_msg = CommandErrorCode.description(code, message)
+        super().__init__(error_msg)
 
 
 class CommandErrorCode(int, Enum):
@@ -115,4 +116,4 @@ class CommandErrorCode(int, Enum):
         if errcode == cls.SUCCESS:
             return "success"
         name = cls.get_error_code_name(errcode)
-        return "failed `{}`: {}".format(name, errmsg or "no errmsg")
+        return "{}: {}".format(name, errmsg or "no errmsg")
