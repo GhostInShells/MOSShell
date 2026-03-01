@@ -60,13 +60,10 @@ class PyChannelBuilder(Builder):
     def is_dynamic(self) -> bool:
         return self._dynamic
 
-    def available(self) -> Callable[[Callable[[], bool]], Callable[[], bool]]:
-        def wrapper(func: Callable[[], bool]) -> Callable[[], bool]:
-            self._dynamic = True
-            self._available_fn = func
-            return func
-
-        return wrapper
+    def available(self, func: Callable[[], bool]) -> Callable[[], bool]:
+        self._dynamic = True
+        self._available_fn = func
+        return func
 
     def is_available(self) -> bool:
         if self._available_fn is not None:
@@ -111,7 +108,6 @@ class PyChannelBuilder(Builder):
         self,
         *,
         name: str = "",
-        chan: str | None = None,
         doc: Optional[StringType] = None,
         comments: Optional[StringType] = None,
         tags: Optional[list[str]] = None,
@@ -126,7 +122,7 @@ class PyChannelBuilder(Builder):
             command = PyCommand(
                 func,
                 name=name,
-                chan=chan if chan is not None else self._name,
+                chan=self._name,
                 doc=doc,
                 comments=comments,
                 tags=tags,

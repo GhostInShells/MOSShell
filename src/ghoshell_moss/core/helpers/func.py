@@ -95,6 +95,7 @@ class FunctionReflection:
         if comments:
             for comment_line in comments.split("\n"):
                 lines.append(indent + "# " + comment_line)
+            lines.append(indent + "pass")
         return "\n".join(lines)
 
 
