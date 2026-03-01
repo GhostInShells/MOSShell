@@ -23,7 +23,10 @@ def create_ctml_main_chan() -> Channel:
     chan.build.command()(wait)
     # sleep 原语
     chan.build.command()(sleep)
+    # clear 原语
     chan.build.command()(clear)
+    # wait idle 原语.
+    chan.build.command()(wait_idle)
 
     return chan
 

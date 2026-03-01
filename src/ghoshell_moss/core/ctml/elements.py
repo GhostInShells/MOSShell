@@ -15,13 +15,15 @@ from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandToken,
     CommandTokenType,
+    PyCommand,
 )
-from ghoshell_moss.core.concepts.errors import InterpretError
+from ghoshell_moss.core.concepts.errors import InterpretError, CommandErrorCode
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
     CommandTaskParseError,
     CommandTokenParserElement,
 )
+from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT
@@ -37,6 +39,14 @@ __all__ = [
     "NoDeltaCommandTaskElement",
     "RootCommandTaskElement",
 ]
+
+
+async def invalid_command():
+    task = ChannelCtx.task()
+    raise CommandErrorCode.NOT_FOUND.error(f"command {task.caller_name()} not found")
+
+
+invalid_command = PyCommand(invalid_command)
 
 
 class CommandTaskElementContext:

@@ -4,7 +4,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelCtx, ChannelRuntime,
 )
 
-__all__ = ["clear"]
+__all__ = ["wait_idle"]
 
 
 async def _wait_children_idle(runtime: ChannelRuntime, timeout: float | None):
@@ -22,7 +22,13 @@ async def _wait_children_idle(runtime: ChannelRuntime, timeout: float | None):
     async def wait_child(_name: str):
         sub_runtime = await runtime.fetch_sub_runtime(_name)
         if sub_runtime and sub_runtime.is_running():
-            await sub_runtime.wait_idle()
+            if timeout is None:
+                await sub_runtime.wait_idle()
+            else:
+                try:
+                    await asyncio.wait_for(sub_runtime.wait_idle(), timeout)
+                except asyncio.TimeoutError:
+                    await sub_runtime.clear()
 
     for name in children:
         sub_name = name
@@ -36,6 +42,9 @@ async def wait_idle(chan: str = "", timeout: float | None = None):
     :param chan: 指定等待哪个轨道执行完毕.
     :param timeout: 如果设置了超时, 会清空目标轨道.
     """
+    if timeout is not None and timeout < 0:
+        raise ValueError("timeout must be greater than or equal to 0.")
+
     runtime = ChannelCtx.runtime()
     if runtime is None:
         return
@@ -49,4 +58,7 @@ async def wait_idle(chan: str = "", timeout: float | None = None):
             try:
                 await asyncio.wait_for(children_runtime.wait_idle(), timeout)
             except asyncio.TimeoutError:
-                pass
+                # 直接清空子轨.
+                await children_runtime.clear()
+        else:
+            await children_runtime.wait_idle()

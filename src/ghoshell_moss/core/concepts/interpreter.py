@@ -197,6 +197,14 @@ class Interpretation(BaseModel):
         default_factory=list,
         description="运行结果中需要观察的消息体."
     )
+    interrupted: bool = Field(
+        default=False,
+        description="是否被强行打断"
+    )
+    exception: str = Field(
+        default="",
+        description="运行的异常",
+    )
 
     def on_task_generated(self, task: CommandTask | None) -> None:
         if task is None:
@@ -320,7 +328,7 @@ class Interpreter(ABC):
         return messages
 
     @abstractmethod
-    def feed(self, delta: str) -> None:
+    def feed(self, delta: str, throw: bool = True) -> bool:
         """
         向 interpreter 提交文本片段, interpreter 会异步解析这些输入流, 并且执行调度逻辑.
         >>> async def run_interpreter(interpreter: Interpreter, items: AsyncIterable[str]):
@@ -328,6 +336,11 @@ class Interpreter(ABC):
         >>>         async for item in items:
         >>>             interpreter.feed(item)
         >>>         interpreter.commit()
+
+        :param delta: 传输的文本片段.
+        :param throw: 设置为 True, 如果解析过程异常, 会抛出 error. 可以用来做中断.
+        :raise InterpreterError:
+        :return: 如果状态正常, 提交成功返回 True, 否则返回 False.
         """
         pass
 
@@ -455,7 +468,7 @@ class Interpreter(ABC):
         return "".join(tokens)
 
     @abstractmethod
-    async def stop(
+    async def close(
             self,
             cancel_executing: bool = True,
     ) -> Interpretation | None:
@@ -471,6 +484,10 @@ class Interpreter(ABC):
         """
         判断解释过程是否还在执行中.
         """
+        pass
+
+    @abstractmethod
+    def is_closed(self) -> bool:
         pass
 
     @abstractmethod

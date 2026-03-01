@@ -266,6 +266,9 @@ class MOSSShell(ABC):
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             ignore_wrong_command: bool = False,
     ) -> "Interpreter":
+        """
+        简单的语法糖.
+        """
         interpreter = await self.interpreter(
             kind=kind, stream_id=stream_id, config=config,
             ignore_wrong_command=ignore_wrong_command,

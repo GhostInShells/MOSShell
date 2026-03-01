@@ -139,7 +139,8 @@ class CTMLInterpreter(Interpreter):
         self._root_tag = root_tag
         self._special_tokens = tokens_replacement or {}
         self._stopped_event = ThreadSafeEvent()
-        self._parsing_exception: Optional[Exception] = None
+        self._closed = False
+        self._parsing_exception: Optional[InterpretError] = None
 
         # output related
         self._speech = speech
@@ -195,6 +196,19 @@ class CTMLInterpreter(Interpreter):
         self._task_sent_done = False
         self._parsing_loop_done = asyncio.Event()  # 标记解析完成.
 
+    def _set_interpreter_error(self, error: InterpretError) -> None:
+        if self._parsing_exception is not None:
+            return
+        self._parsing_exception = error
+        self._interpretation.exception = str(error)
+        self._interpretation.observe = True
+        self._interpretation.messages.append(
+            Message.new(role="system").with_content(
+                f"Interpret Error: {error}",
+            ).as_completed()
+        )
+        self._stopped_event.set()
+
     @property
     def id(self) -> str:
         return self._id
@@ -237,9 +251,9 @@ class CTMLInterpreter(Interpreter):
                         )
                 self._task_sent_done = task is None
         except Exception as e:
-            self._parsing_exception = InterpretError(f"Send command failed: {e}")
+            err = InterpretError(f"Send command failed: {e}")
+            self._set_interpreter_error(err)
             self._logger.exception("%s Send command task %s failed: %s", self._log_prefix, task, e)
-            self._stopped_event.set()
 
     def _on_task_done(self, command_task: CommandTask) -> None:
         if self._stopped_event.is_set():
@@ -334,13 +348,29 @@ class CTMLInterpreter(Interpreter):
                 )
         return messages
 
-    def feed(self, delta: str) -> None:
-        if not self._committed and not self._stopped_event.is_set():
-            if self._parsing_exception is not None:
-                raise self._parsing_exception
+    def feed(self, delta: str, throw: bool = False) -> bool:
+        if self._committed:
+            if throw:
+                raise InterpretError(f"interpreter already committed ")
+            return False
 
-            self._interpretation.feed_inputs.append(delta)
-            self._input_deltas_queue.put_nowait(delta)
+        if self._closed:
+            if throw:
+                raise InterpretError(f"interpreter already closed")
+            return False
+
+        if self._parsing_exception is not None:
+            if throw:
+                raise self._parsing_exception
+            return False
+        if self._stopped_event.is_set():
+            if throw:
+                raise InterpretError(f"Interpretation stopped")
+            return False
+
+        self._interpretation.feed_inputs.append(delta)
+        self._input_deltas_queue.put_nowait(delta)
+        return True
 
     async def parse(self, deltas: AsyncIterable[str]) -> None:
         try:
@@ -406,15 +436,15 @@ class CTMLInterpreter(Interpreter):
                     except queue.Empty:
                         continue
         except asyncio.CancelledError:
-            self._logger.info("interpreter %s cancelled", self.id)
+            self._logger.info("%s interpretation cancelled", self._log_prefix)
         except ParserStopped as e:
-            self._logger.info("interpreter %s parser stopped", self.id)
+            self._logger.info("%s parser stopped: %s", self._log_prefix, e)
             # self._parsing_exception = InterpretError(f"Parse output stream failed: {e}")
             self._stopped_event.set()
         except Exception as exc:
-            self._logger.exception("Interpret failed")
-            self._parsing_exception = InterpretError(f"Interpret failed: {exc}")
-            self._stopped_event.set()
+            self._logger.exception("%s Interpret failed: %s", self._log_prefix, exc)
+            err = InterpretError(f"Interpret failed: {exc}")
+            self._set_interpreter_error(err)
             raise
         finally:
             pass
@@ -431,11 +461,14 @@ class CTMLInterpreter(Interpreter):
                     continue
         except asyncio.CancelledError:
             pass
+        except InterpretError as e:
+            self._logger.exception("%s Parse command task failed %s", self._log_prefix, e)
+            self._set_interpreter_error(e)
         except Exception as e:
             # todo
             self._logger.exception("%s Parse command task failed", self._log_prefix)
-            self._parsing_exception = InterpretError(f"Parse command task failed at `{type(e)}`: {e}")
-            self._stopped_event.set()
+            err = InterpretError(f"Parse command task failed at `{type(e)}`: {e}")
+            self._set_interpreter_error(err)
         finally:
             # todo
             pass
@@ -461,7 +494,7 @@ class CTMLInterpreter(Interpreter):
         if exc_val is not None:
             if not isinstance(exc_val, InterpretError):
                 self._logger.exception("Interpreter quit on exception %s", exc_val)
-        await self.stop(cancel_executing=False)
+        await self.close(cancel_executing=False)
 
     def exception(self) -> Optional[Exception]:
         return self._parsing_exception
@@ -479,16 +512,16 @@ class CTMLInterpreter(Interpreter):
         task = asyncio.create_task(self._main_parsing_loop())
         self._main_parsing_task = task
 
-    async def stop(self, cancel_executing: bool = True) -> Interpretation | None:
+    async def close(self, cancel_executing: bool = True) -> Interpretation | None:
         """
         todo: 使用 AsyncExitStack
         """
-        if self._stopped_event.is_set():
+        if self._closed:
             return None
-
-        self._logger.info("interpreter %s stopping", self.id)
-        self._interrupted = self._started and not self._parsing_loop_done.is_set()
+        self._closed = True
         self._stopped_event.set()
+        self._logger.info("interpreter %s stopping", self.id)
+        self._interpretation.interrupted = self._started and not self._parsing_loop_done.is_set()
         try:
             self._parser.close()
         except ParserStopped:
@@ -515,16 +548,20 @@ class CTMLInterpreter(Interpreter):
     def is_stopped(self) -> bool:
         return self._stopped_event.is_set()
 
+    def is_closed(self) -> bool:
+        return self._closed
+
     def is_running(self) -> bool:
-        return self._started and not self._stopped_event.is_set()
+        return self._started and not self._stopped_event.is_set() and not self._closed
 
     def is_interrupted(self) -> bool:
-        return self._interrupted
+        return self._interpretation.interrupted
 
     async def wait_compiled(self, timeout: float | None = None, throw: bool = True) -> None:
         try:
             if not self._started:
                 return
+            self._started = True
             self.commit()
             # 等待主循环结束.
             wait_parsing_loop = asyncio.create_task(self._parsing_loop_done.wait())
@@ -549,13 +586,17 @@ class CTMLInterpreter(Interpreter):
         except ParserStopped:
             self._logger.info("wait parser done: parser is stopped")
             pass
-        except InterpretError:
+        except InterpretError as e:
+            self._logger.exception("%s stopped due to exception: %s", self._log_prefix, e)
+            self._set_interpreter_error(e)
             if throw:
                 raise
         except Exception as exc:
             self._logger.exception("Wait parse done failed")
+            err = InterpretError(f"Interpret failed: {exc}")
+            self._set_interpreter_error(err)
             if throw:
-                raise InterpretError(f"Interpret failed: {exc}") from exc
+                raise err
 
     async def wait(
             self,

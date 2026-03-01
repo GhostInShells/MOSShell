@@ -311,7 +311,7 @@ class CTMLShell(MOSSShell):
             if self._interpreter and self._interpreter.is_running():
                 # 停止旧的 interpreter 继续提交新的信息.
                 undone_tasks = self._interpreter.undone_tasks()
-                interrupted_interpretation = await self._interpreter.stop(cancel_executing=False)
+                interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
             self._interpreter = None
 
         if token_replacements is None and self._expressions is not None:
@@ -465,7 +465,7 @@ class CTMLShell(MOSSShell):
             # 考虑线程安全问题. 先简单做一层防御.
             old = self._interpreter
             self._interpreter = None
-            stop_task = self._event_loop.create_task(old.stop(cancel_executing=True))
+            stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
             return await stop_task
         return None
 
