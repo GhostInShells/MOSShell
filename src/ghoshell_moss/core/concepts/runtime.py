@@ -1005,12 +1005,12 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         """
         运行属于自己这个 channel 的 task, 让它进入到 executing group 中.
         """
-        try:
-            task = self._parse_task(task)
-            if task is None:
-                return
+        task = self._parse_task(task)
+        if task is None:
+            return
 
-            get_result_from_task = self._loop.create_task(self._get_task_result(task))
+        get_result_from_task = self._loop.create_task(self._get_task_result(task))
+        try:
             origin_task_done = asyncio.create_task(task.wait(throw=False))
             wait_runtime_close = asyncio.create_task(self._closing_event.wait())
             done, pending = await asyncio.wait(
@@ -1048,6 +1048,12 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 task.fail(CommandErrorCode.UNKNOWN_ERROR.error(f"execution failed"))
             if task in self._executing_cmd_tasks:
                 self._executing_cmd_tasks.remove(task)
+            if not get_result_from_task.done():
+                try:
+                    get_result_from_task.cancel()
+                    await get_result_from_task
+                except asyncio.CancelledError:
+                    pass
 
     async def _fulfill_task_with_its_result_stack(
             self,
