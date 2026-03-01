@@ -512,3 +512,27 @@ async def test_async_iterable():
     async for k in generator_method():
         result.append(k)
     assert len(result) == 10
+
+
+@pytest.mark.asyncio
+async def test_raise_in_wait():
+    async def foo():
+        await asyncio.sleep(0.05)
+        raise ValueError()
+
+    async def bar():
+        await asyncio.sleep(0.1)
+        return 123
+
+    t1 = asyncio.create_task(foo())
+    t2 = asyncio.create_task(bar())
+
+    done, pending = await asyncio.wait([t1, t2], return_when=asyncio.ALL_COMPLETED)
+    # 抛出异常仍然会等待到结束.
+    assert len(pending) == 0
+
+    t3 = asyncio.create_task(bar())
+    t4 = asyncio.create_task(bar())
+    done, pending = await asyncio.wait([t3, t4], return_when=asyncio.FIRST_EXCEPTION)
+    # 不抛出异常, 仍然是等待全部结束.
+    assert len(pending) == 0

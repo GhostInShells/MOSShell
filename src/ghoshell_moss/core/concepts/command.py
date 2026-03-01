@@ -50,6 +50,7 @@ __all__ = [
     "PyCommand",
     "make_command_group",
     "CommandTaskContextVar",
+    'ObserveError',
 ]
 
 RESULT = TypeVar("RESULT")
@@ -639,8 +640,6 @@ class CommandTaskResult(BaseModel):
         name = name or self.caller or "__command_result__"
         if self.result is not None:
             result_message = Message.new(role=role, name=name)
-            if self.caller is not None:
-                result_message.with_content(Text(text="`%s` result:\n\n" % self.caller))
             serialized_content = self.serialize_result()
             result_message.with_content(Text(text=serialized_content))
         messages = []
@@ -653,6 +652,32 @@ class CommandTaskResult(BaseModel):
             else:
                 messages.append(message)
         return messages
+
+    def join_result(self, *results: Self | Observe) -> None:
+        """
+        合并多个 result.
+        """
+        for result in results:
+            _result = result
+            if isinstance(_result, Observe):
+                _result = CommandTaskResult.from_observe(_result)
+
+            if _result.observe is True:
+                _result.observe = True
+            if len(_result.output) > 0:
+                self.output.extend(_result.output)
+            messages = _result.as_messages()
+            if len(messages) > 0:
+                self.messages.extend(messages)
+
+
+class ObserveError(Exception):
+    """
+    一种抛出中断的办法.
+    """
+    def __init__(self, observe: Observe):
+        self.observe = observe
+        super().__init__()
 
 
 class CommandTask(Generic[RESULT], ABC):
@@ -820,6 +845,7 @@ class CommandTask(Generic[RESULT], ABC):
         :raise TimeoutError: if the task is not done until timeout
         :raise CancelledError: if the task is cancelled
         :raise CommandError: if the command failed and already be wrapped
+        :raise ObserveError: if the command return Observe
         """
         pass
 
@@ -1048,7 +1074,11 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
 
     def fail(self, error: Exception | str) -> None:
         if not self._done_event.is_set():
-            if isinstance(error, str):
+            if isinstance(error, ObserveError):
+                self.resolve(error.observe)
+                return
+
+            elif isinstance(error, str):
                 errmsg = error
                 errcode = CommandErrorCode.UNKNOWN_ERROR.value
             elif isinstance(error, CommandError):
@@ -1134,8 +1164,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
             else:
                 await self._done_event.wait()
-            if throw and self.errcode != 0:
-                raise CommandError(self.errcode, self.errmsg or "")
+            if throw:
+                if self.errcode != 0:
+                    raise CommandError(self.errcode, self.errmsg or "")
+                elif self._task_result and self._task_result.observe:
+                    # observe 可以中断 wait FIRST_EXCEPTION
+                    raise CommandErrorCode.OBSERVE.error("observe")
             return self._result
         except asyncio.CancelledError:
             pass
@@ -1160,6 +1194,7 @@ class WaitDoneTask(BaseCommandTask):
             self,
             tasks: Iterable[CommandTask],
             after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+            chan: str = "",
     ) -> None:
         meta = CommandMeta(
             name="_wait_done",
@@ -1175,6 +1210,7 @@ class WaitDoneTask(BaseCommandTask):
 
         super().__init__(
             meta=meta,
+            chan=chan,
             func=wait_done,
             tokens="",
             args=[],

@@ -65,6 +65,9 @@ class CommandErrorCode(int, Enum):
 
     # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 
+    # 返回值实际上是 OBSERVE 动作, 仍然用 error 来通知.
+    OBSERVE = 400
+
     # 不合法的使用时机.
     INVALID_USAGE = 401
     # 参数不正确.

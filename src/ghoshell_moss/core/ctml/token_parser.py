@@ -172,6 +172,7 @@ class AttrWithTypeSuffixParser(AttrParser):
             "bool": bool,
             "list": lambda v: list(literal_eval(v)),
             "dict": lambda v: dict(literal_eval(v)),
+            "None": literal_eval,
             "literal": literal_eval,
             "lambda": lambda v: eval(f"lambda: {v}")(),
         }
@@ -217,11 +218,6 @@ class AttrPrefixParser(AttrParser):
 default_parsers = [
     AttrWithTypeSuffixParser(
         description="允许属性跟随后缀, 形如 a:str",
-    ),
-    AttrPrefixParser(
-        desc="凡是用 literal- 开头的参数, 都会执行 ast.literal_eval 解析值.",
-        prefix="literal-",
-        parser=lambda v: literal_eval(v),
     ),
 ]
 
@@ -393,6 +389,13 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             if got is not None:
                 new_name, new_value = got
                 return new_name, new_value
+
+        try:
+            _value = literal_eval(value)
+            value = _value
+        except (SyntaxError, TypeError, ValueError):
+            pass
+
         return name, value
 
     def endElement(self, name: str):

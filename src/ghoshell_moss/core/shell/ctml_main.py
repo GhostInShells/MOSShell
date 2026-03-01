@@ -2,16 +2,19 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.py_channel import PyChannel
 from .primitives import *
 
-__all__ = ["MainChannel", "create_ctml_main_chan"]
+__all__ = ["CTMLMainChannel", "create_ctml_main_chan"]
 
 
-class MainChannel(PyChannel):
+class CTMLMainChannel(PyChannel):
+    """
+    ctml 的主 channel.
+    """
     pass
 
 
 def create_ctml_main_chan() -> Channel:
-    chan = MainChannel(
-        name="",
+    chan = CTMLMainChannel(
+        name="__main__",
         description="系统的主 Channel, 在这里定义了各种控制原语.",
         blocking=True,
     )
