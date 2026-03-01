@@ -1,10 +1,5 @@
 import asyncio
 
-from ghoshell_moss.core.concepts.command import (
-    CommandStackResult,
-    PyCommand,
-    BaseCommandTask,
-)
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx, ChannelRuntime,
 )
@@ -35,13 +30,10 @@ async def _clear_children(runtime: ChannelRuntime):
     await asyncio.gather(*group_clear, return_exceptions=False)
 
 
-_clear_command = PyCommand(_clear_children)
-
-
 async def clear(chan: str = ""):
     """
     清空指定 Channel 和所有子轨的运行状态, 会递归地清空.
-    :param chan: 指定在哪个 Channel 进行清空, 默认在根 Channel
+    :param chan: 指定在清空哪个 Channel 的执行状态, 默认在根 Channel
     """
     runtime = ChannelCtx.runtime()
     if runtime is None:

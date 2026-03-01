@@ -25,7 +25,7 @@ async def test_interpreter_baseline():
 
     async with interpreter:
         # system prompt is not none
-        assert len(interpreter.meta_system_prompt()) > 0
+        assert len(interpreter.meta_instruction()) > 0
         for c in content:
             interpreter.feed(c)
         await interpreter.wait_compiled()

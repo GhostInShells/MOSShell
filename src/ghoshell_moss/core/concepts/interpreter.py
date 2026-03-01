@@ -156,7 +156,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def meta_system_prompt(self) -> str:
+    def meta_instruction(self) -> str:
         """
         给大模型使用 MOSS 的元规则.
         具体的 interpreter 可以定义不同的规则.
@@ -165,7 +165,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def instruction_messages(self) -> str:
+    def instruction_messages(self) -> list[Message]:
         """
         当前 interpreter 状态下, channels 的完整提示词. 用于呈现给大模型.
         在 Model Context 对话历史中, 可以认为最简单的上下文拓扑是:
@@ -191,6 +191,18 @@ class Interpreter(ABC):
         对应 Model Context 中的 conversation 部分.
         """
         pass
+
+    def merge_messages(self, history: list[Message], inputs: list[Message]) -> list[Message]:
+        """
+        遵循系统规则合并消息体.
+        """
+        meta_message = Message.new(role="system").with_content(self.meta_instruction()).as_completed()
+        messages = [meta_message]
+        messages.extend(self.instruction_messages())
+        messages.extend(history)
+        messages.extend(self.context_messages())
+        messages.extend(inputs)
+        return messages
 
     @abstractmethod
     def feed(self, delta: str) -> None:
@@ -223,6 +235,13 @@ class Interpreter(ABC):
     def on_task_compiled(self, *callbacks: CommandTaskCallback) -> None:
         """
         注册 task 被创建时候的回调.
+        """
+        pass
+
+    @abstractmethod
+    def on_task_done(self, *callbacks: CommandTaskCallback) -> None:
+        """
+        注册 task 运行完毕时的回调.
         """
         pass
 

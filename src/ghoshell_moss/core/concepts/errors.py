@@ -90,7 +90,7 @@ class CommandErrorCode(int, Enum):
         return CommandError(self.value, message)
 
     @classmethod
-    def interpretation_fatal(cls, err: Exception) -> bool:
+    def need_observe(cls, err: Exception) -> bool:
         if err is None:
             return False
         if not isinstance(err, CommandError):

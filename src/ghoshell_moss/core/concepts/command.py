@@ -816,8 +816,17 @@ class CommandTask(Generic[RESULT], ABC):
         """
         task 未完成时返回 None. 否则生成 CommandTaskResult 对象.
         这是专门为 CommandTask 设计的对象.
+
         对于 AI 所看见的上下文而言, command 的返回值是 result()
         对于 Agent / Ghost 工程而言, command 的返回值其实是这个 CommandTaskResult.
+        其中 observe 为 True 表示需要观察一次结果.
+
+        通常有三种方式可以让 observe 为 True:
+        1. command 返回 command task result 本身, 其中 observe 为 True
+        2. 出现了严重异常, 所以需要 observe
+        3. command 返回了一个 Observe 对象.
+
+        :return: None 是 task 本身没有执行完毕. 否则一定返回 result.
         """
         pass
 
@@ -1125,7 +1134,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return None
         if self._task_result is None:
             exp = self.exception()
-            if exp is not None:
+            if exp is not None and CommandErrorCode.need_observe(exp):
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
@@ -1136,6 +1145,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 )
                 self._task_result = task_result
             else:
+                # 返回空对象.
                 self._task_result = CommandTaskResult()
         return self._task_result
 

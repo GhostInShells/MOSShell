@@ -113,8 +113,10 @@ class CTMLInterpreter(Interpreter):
         self._channel_metas = channel_metas or {}
         # 准备日志.
         self._logger = logger or logging.getLogger("CTMLInterpreter")
+        self._logger_prefix = "[CTMLInterpreter %s] " % self.id
         # 可用的 task 回调.
         self._on_task_created_callbacks: list[CommandTaskCallback] = []
+        self._on_task_done_callbacks: list[CommandTaskCallback] = []
         if callback is not None:
             self._on_task_created_callbacks.append(callback)
         # 启动时执行的命令.
@@ -204,56 +206,95 @@ class CTMLInterpreter(Interpreter):
                     # 注册 task 的回调, 如果出了异常就干脆中断整个流程, 也别解析了.
                     task.add_done_callback(self._on_task_done)
                 for callback in self._on_task_created_callbacks:
-                    callback(task)
+                    try:
+                        callback(task)
+                    except Exception as exc:
+                        self._logger.exception(
+                            "%s on task creation callback %s exception: %s", self._logger_prefix, task, exc,
+                        )
                 self._task_sent_done = task is None
         except Exception as e:
             self._parsing_exception = InterpretError(f"Send command failed: {e}")
-            self._logger.exception("Send command task failed")
+            self._logger.exception("%s Send command task %s failed: %s", self._logger_prefix, task, e)
             self._stopped_event.set()
 
     def _on_task_done(self, command_task: CommandTask) -> None:
         if self._stopped_event.is_set():
             return
+        if not command_task.done():
+            self._logger.error(
+                "%s Command task is not done but send to interpreter on task %s done",
+                self._logger_prefix, command_task,
+            )
+            command_task.cancel("system error")
         self._task_done_order.append(command_task.cid)
         # 发现任何任务出错超出预期.
-        if exception := command_task.exception():
-            if CommandErrorCode.interpretation_fatal(exception):
+        if result := command_task.task_result():
+            if result.observe:
                 # 中断所有的运行.
                 self._stopped_event.set()
-                self._parsing_exception = exception
+        if len(self._on_task_done_callbacks) > 0:
+            for callback in self._on_task_done_callbacks:
+                try:
+                    callback(command_task)
+                except Exception as e:
+                    self._logger.exception(
+                        "%s call command task done callback %s failed: %s", self._logger_prefix, callback, e,
+                    )
 
-    def meta_system_prompt(self) -> str:
+    def meta_instruction(self) -> str:
         return self._meta_instruction or DEFAULT_META_PROMPT
 
     def channels(self) -> dict[str, ChannelMeta]:
         return self._channel_metas
 
-    def instruction_messages(self) -> str:
-        channels_prompt = make_channels_prompt(self._channel_metas)
-        if channels_prompt:
-            meta_system_prompt = self.meta_system_prompt()
-            return "\n\n".join([meta_system_prompt, channels_prompt])
-        return ""
+    def instruction_messages(self) -> list[Message]:
+        messages = []
+        interface_message = Message.new(role='system')
+        for channel_path, channel_meta in self._channel_metas.items():
+            path_name = channel_path or "__main__"
+            interface_message.with_content(
+                f"\n=== interface:{path_name} ===\n",
+                channel_meta.description,
+                "\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
+                f"\n=== end interface:{path_name} ===\n",
+            )
+        messages.append(interface_message.as_completed())
+        for channel_path, channel_meta in self._channel_metas.items():
+            path_name = channel_path or "__main__"
+            if len(channel_meta.instructions) > 0:
+                messages.append(
+                    Message.new(role="system").with_content(
+                        f"\n=== instructions:{path_name} ===\n",
+                    ),
+                )
+                messages.extend(channel_meta.instructions)
+                messages.append(
+                    Message.new(role="system").with_content(
+                        f"\n=== end instructions:{path_name} ===\n",
+                    ),
+                )
+        return messages
 
     def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
         channel_names = channel_names or self._channel_metas.keys()
         messages = []
         for channel_path_name in channel_names:
+            path_name = channel_path_name or "__main__"
             meta = self._channel_metas.get(channel_path_name)
             if meta is not None and meta.context:
                 messages.append(
                     Message.new(role="system")
                     .with_content(
-                        f"<channel-context:{channel_path_name}>",
+                        f"=== context:{path_name} ===",
                     )
                     .as_completed(),
                 )
-
                 messages.extend(meta.context)
                 messages.append(
                     Message.new(role="system")
                     .with_content(
-                        f"</channel-context:{channel_path_name}>",
+                        f"=== end context:{path_name} ===",
                     )
                     .as_completed(),
                 )
@@ -271,8 +312,8 @@ class CTMLInterpreter(Interpreter):
         try:
             async for delta in deltas:
                 self.feed(delta)
-        except Exception:
-            self._logger.exception("Stream parse failed")
+        except Exception as e:
+            self._logger.exception("Stream parse failed: %s", e)
             self._stopped_event.set()
         finally:
             self.commit()
@@ -284,9 +325,10 @@ class CTMLInterpreter(Interpreter):
         self._input_deltas_queue.put_nowait(None)
 
     def on_task_compiled(self, *callbacks: CommandTaskCallback) -> None:
-        callbacks = list(callbacks)
-        callbacks.extend(self._on_task_created_callbacks)
-        self._on_task_created_callbacks = callbacks
+        self._on_task_created_callbacks.extend(callbacks)
+
+    def on_task_done(self, *callbacks: CommandTaskCallback) -> None:
+        self._on_task_done_callbacks.extend(callbacks)
 
     def string_token_parser(self) -> StringTokenParser:
         return self._parser
