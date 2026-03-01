@@ -9,7 +9,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.states import StateStore
-from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
 from ghoshell_moss.core.concepts.expressions import Expressions
@@ -435,7 +435,7 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    async def stop_interpretation(self) -> None:
+    async def stop_interpretation(self) -> Optional[Interpretation]:
         """
         临时实现的中断方法. 原理设计有问题.
         todo: 重新设计 shell 的中断逻辑.

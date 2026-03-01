@@ -31,7 +31,7 @@ async def test_wait_primitive():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<a:foo/><b:bar/><a:foo/>")
             interpreter.commit()
-            await interpreter.wait_execution_done()
+            await interpreter.wait()
             # bar is later because sleep
             assert ordered == ["foo", "foo", "bar"]
 
@@ -40,7 +40,7 @@ async def test_wait_primitive():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait><a:foo/><b:bar/></wait><a:foo/>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             # bar is executed before second foo
             for t in tasks.values():
                 assert t.success()
@@ -51,7 +51,7 @@ async def test_wait_primitive():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait><a:foo/><b:bar/></wait><wait><a:foo/><b:bar/></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             # bar is executed before second foo
             for t in tasks.values():
                 assert t.success()
@@ -62,7 +62,7 @@ async def test_wait_primitive():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait timeout:float='0.1'><a:foo/><b:bar/><a:foo/><b:bar/></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             # 只有 foo 成功了. 其它的都被 timeout 了.
             assert ordered == ["foo", "foo"]
 
@@ -100,7 +100,7 @@ async def test_wait_return_when_first_complete():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait return_when='FIRST_COMPLETE'><a:slow_task/><b:fast_task/></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             assert len(tasks) == 1
 
             # 验证fast_task先完成，slow_task被取消
@@ -140,7 +140,7 @@ async def test_wait_return_when_all_complete():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait return_when='ALL_COMPLETE'><a:task_a/><b:task_b/></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证两个任务都完成了
             assert execution_log == ["a_start", "b_start", "a_end", "b_end"]
@@ -181,7 +181,7 @@ async def test_wait_with_exception():
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<wait><a:failing_task/><b:normal_task/></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证异常传播
             assert execution_log == ["failing_start", "normal_start", "failing_end"]
@@ -198,14 +198,14 @@ async def test_wait_empty_commands():
             # 测试空wait
             interpreter.feed("<wait></wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             assert len(tasks) == 1
 
             # 测试只有空白字符的wait
             interpreter.feed("<wait>   \n\t  </wait>")
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             assert len(tasks) == 1
 
 
@@ -240,7 +240,7 @@ async def test_wait_nested_structure():
                 </wait>
             """)
             interpreter.commit()
-            await interpreter.wait_execution_done()
+            await interpreter.wait()
 
             # 验证执行顺序：内层wait完成后才执行task_4
             # 注意：由于都是同一个channel，可能按顺序执行，但wait确保同步点
@@ -286,7 +286,7 @@ async def test_wait_with_mixed_blocking_modes():
                 </wait>
             """)
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证执行日志
             # 注意：非阻塞任务可能和阻塞任务并行执行
@@ -323,7 +323,7 @@ async def test_wait_cancellation_propagation():
             # 启动一个会被超时取消的任务
             interpreter.feed('<wait timeout="0.05"><a:cancellable_task/></wait>')
             interpreter.commit()
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
             # 验证任务被正确取消
             await asyncio.sleep(0.01)
             assert task_started

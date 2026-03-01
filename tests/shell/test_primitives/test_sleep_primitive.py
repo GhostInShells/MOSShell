@@ -74,7 +74,7 @@ async def test_sleep_in_ctml_without_channel():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证执行顺序和时间
             assert len(execution_order) == 2
@@ -137,7 +137,7 @@ async def test_sleep_in_ctml_with_channel():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证执行顺序
             # 由于 sleep 在音频 channel 上，它不应该阻塞主 channel
@@ -189,7 +189,7 @@ async def test_sleep_with_wait_primitives():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证执行顺序和时间
             assert execution_order == ["A", "B", "C"]
@@ -234,7 +234,7 @@ async def test_sleep_cancellation():
             interpreter.feed('<wait timeout="0.05"><sleep duration="1.0"/></wait>')
             interpreter.commit()
 
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证 sleep 被取消了
             assert len(tasks) == 1
@@ -284,7 +284,7 @@ async def test_sleep_with_multiple_channels():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait()
 
             # 验证日志顺序
             # after_sleeps 应该立即记录，因为 sleeps 是在不同 channel 上
@@ -337,7 +337,7 @@ async def test_sleep_in_nested_structure():
             """)
             interpreter.commit()
 
-            await interpreter.wait_execution_done()
+            await interpreter.wait()
 
             # 验证执行顺序
             # A 应该先执行

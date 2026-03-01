@@ -645,12 +645,15 @@ class CommandTaskResult(BaseModel):
         messages = []
         if result_message is not None:
             messages.append(result_message)
+        merging = True
         for message in self.messages:
-            if message.name is None and message.contents:
+            if merging and message.name is None and message.contents:
                 # 合并消息体, 和 result 合并到一起.
                 result_message.with_content(*message.contents)
             else:
+                # 不再合并.
                 messages.append(message)
+                merging = False
         return messages
 
     def join_result(self, *results: Self | Observe) -> None:
@@ -663,7 +666,7 @@ class CommandTaskResult(BaseModel):
                 _result = CommandTaskResult.from_observe(_result)
 
             if _result.observe is True:
-                _result.observe = True
+                self.observe = True
             if len(_result.output) > 0:
                 self.output.extend(_result.output)
             messages = _result.as_messages()

@@ -26,7 +26,7 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.concepts.expressions import Expressions
-from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
@@ -294,11 +294,13 @@ class CTMLShell(MOSSShell):
 
         # 方便理解不同类型的处理逻辑. 看待 interpreter 的副作用问题.
         callback = None
+        interrupted_interpretation = None
+        undone_tasks = None
         if kind == "clear":
             # clear 会先清空.
             await self.clear()
             # 清除当前存在的 interpretation.
-            await self.stop_interpretation()
+            interrupted_interpretation = await self.stop_interpretation()
             callback = self._interpreter_callback_task
         elif kind == "dry_run":
             # dry_run 不会对 shell 产生真实影响, 可以用来做纯解析.
@@ -308,7 +310,8 @@ class CTMLShell(MOSSShell):
             callback = self._interpreter_callback_task
             if self._interpreter and self._interpreter.is_running():
                 # 停止旧的 interpreter 继续提交新的信息.
-                self._interpreter.commit()
+                undone_tasks = self._interpreter.undone_tasks()
+                interrupted_interpretation = await self._interpreter.stop(cancel_executing=False)
             self._interpreter = None
 
         if token_replacements is None and self._expressions is not None:
@@ -319,6 +322,8 @@ class CTMLShell(MOSSShell):
         config = self.channel_metas(available_only=True, config=config)
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
+            interrupted=interrupted_interpretation,
+            undone_tasks=undone_tasks,
             commands=commands,
             speech=self.speech,
             stream_id=stream_id or uuid(),
@@ -454,13 +459,15 @@ class CTMLShell(MOSSShell):
         # 线程安全加入 tasks.
         self._event_loop.call_soon_threadsafe(self._push_task_queue.put_nowait, *tasks)
 
-    async def stop_interpretation(self) -> None:
+    async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
         if self._interpreter is not None and self._interpreter.is_running():
             # 考虑线程安全问题. 先简单做一层防御.
-            stop_task = self._event_loop.create_task(self._interpreter.stop())
+            old = self._interpreter
             self._interpreter = None
-            await stop_task
+            stop_task = self._event_loop.create_task(old.stop(cancel_executing=True))
+            return await stop_task
+        return None
 
     async def wait_until_closed(self) -> None:
         if not self.is_running():

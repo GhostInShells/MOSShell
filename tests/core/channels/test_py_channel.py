@@ -476,6 +476,18 @@ async def test_py_channel_topics():
 
 
 @pytest.mark.asyncio
+async def test_py_channel_instruction_message():
+    main = PyChannel(name="main")
+
+    @main.build.instruction_messages
+    async def messages():
+        return [Message.new()]
+
+    async with main.bootstrap() as runtime:
+        assert len(runtime.metas()[''].instructions) == 1
+
+
+@pytest.mark.asyncio
 async def test_py_channel_observe_command():
     from ghoshell_moss.types import Observe
 

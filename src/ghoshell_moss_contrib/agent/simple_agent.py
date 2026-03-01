@@ -299,7 +299,7 @@ class SimpleAgent:
 
                     interpreter.feed(content)
                 interpreter.commit()
-                results = await asyncio.create_task(interpreter.wait_results())
+                results = await asyncio.create_task(interpreter.wait_stopped())
                 generated = interpreter.executed_tokens()
                 if len(results) > 0:
                     execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])

@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import logging
 import queue
 from collections.abc import AsyncIterable, Callable, Coroutine, Iterable
@@ -11,13 +10,14 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft, uuid
 
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTaskState, CommandToken, CommandMeta
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandMeta
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
     CommandTokenParserElement,
     StringTokenParser,
     Interpreter,
+    Interpretation,
 )
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
@@ -82,6 +82,8 @@ class CTMLInterpreter(Interpreter):
     def __init__(
             self,
             *,
+            interrupted: Interpretation | None = None,
+            undone_tasks: list[CommandTask] | None = None,
             commands: dict[ChannelFullPath, dict[str, Command]],
             speech: Speech,
             stream_id: Optional[str] = None,
@@ -108,12 +110,13 @@ class CTMLInterpreter(Interpreter):
         :param ignore_wrong_command: 是否忽略不存在的 command.
         """
         # 生成 stream id.
-        self.id = stream_id or uuid()
+        self._id = stream_id or uuid()
+        self._interrupted_interpretation = interrupted
         self._meta_instruction = meta_system_prompt
         self._channel_metas = channel_metas or {}
         # 准备日志.
         self._logger = logger or logging.getLogger("CTMLInterpreter")
-        self._logger_prefix = "[CTMLInterpreter %s] " % self.id
+        self._log_prefix = "[CTMLInterpreter %s] " % self.id
         # 可用的 task 回调.
         self._on_task_created_callbacks: list[CommandTaskCallback] = []
         self._on_task_done_callbacks: list[CommandTaskCallback] = []
@@ -164,18 +167,27 @@ class CTMLInterpreter(Interpreter):
             stop_event=self._stopped_event,
             ignore_wrong_command=ignore_wrong_command,
         )
-        self._task_done_order: list[str] = []
         self._root_element = self._task_element_ctx.new_root(
             callback=self._send_command_task,
             stream_id=self.id,
         )
 
+        self._handling_tasks: dict[str, CommandTask] = {}  # 解析生成的 tasks.
+
         # input buffer
-        self._input_buffer: str = ""
+        self._interpretation = Interpretation(
+            id=self._id,
+            meta_instruction=self._get_meta_instruction(),
+            instruction_messages=self._get_instruction_messages(),
+            context_messages=self._get_context_messages()
+        )
+        if undone_tasks is not None and len(undone_tasks) > 0:
+            for task in undone_tasks:
+                # 分享 task 和 task done.
+                self._handling_tasks[task.cid] = task
+                task.add_done_callback(self._on_task_done)
 
         #  --- runtime --- #
-        self._parsed_tasks: dict[str, CommandTask] = {}  # 解析生成的 tasks.
-        self._parsed_tokens = []  # 解析生成的 tokens.
         self._main_parsing_task: Optional[asyncio.Task] = None  # 解析的主循环.
         self._started = False
         self._committed = False
@@ -183,12 +195,22 @@ class CTMLInterpreter(Interpreter):
         self._task_sent_done = False
         self._parsing_loop_done = asyncio.Event()  # 标记解析完成.
 
+    @property
+    def id(self) -> str:
+        return self._id
+
+    def interrupted(self) -> Interpretation | None:
+        return self._interrupted_interpretation
+
+    def interpretation(self) -> Interpretation:
+        return self._interpretation
+
     def _receive_command_token(self, token: CommandToken | None) -> None:
         """将 token 记录到解析后的 tokens 中."""
         if self._stopped_event.is_set():
             return
         if token is not None:
-            self._parsed_tokens.append(token)
+            self._interpretation.command_tokens.append(token)
         self._parsed_tokens_queue.put(token)
 
     def _send_command_task(self, task: CommandTask | None) -> None:
@@ -202,7 +224,8 @@ class CTMLInterpreter(Interpreter):
                 # 只发送一次 None 作为毒丸.
                 if task is not None:
                     # 添加新的 task.
-                    self._parsed_tasks[task.cid] = task
+                    self._handling_tasks[task.cid] = task
+                    self._interpretation.on_task_generated(task)
                     # 注册 task 的回调, 如果出了异常就干脆中断整个流程, 也别解析了.
                     task.add_done_callback(self._on_task_done)
                 for callback in self._on_task_created_callbacks:
@@ -210,12 +233,12 @@ class CTMLInterpreter(Interpreter):
                         callback(task)
                     except Exception as exc:
                         self._logger.exception(
-                            "%s on task creation callback %s exception: %s", self._logger_prefix, task, exc,
+                            "%s on task creation callback %s exception: %s", self._log_prefix, task, exc,
                         )
                 self._task_sent_done = task is None
         except Exception as e:
             self._parsing_exception = InterpretError(f"Send command failed: {e}")
-            self._logger.exception("%s Send command task %s failed: %s", self._logger_prefix, task, e)
+            self._logger.exception("%s Send command task %s failed: %s", self._log_prefix, task, e)
             self._stopped_event.set()
 
     def _on_task_done(self, command_task: CommandTask) -> None:
@@ -224,10 +247,10 @@ class CTMLInterpreter(Interpreter):
         if not command_task.done():
             self._logger.error(
                 "%s Command task is not done but send to interpreter on task %s done",
-                self._logger_prefix, command_task,
+                self._log_prefix, command_task,
             )
             command_task.cancel("system error")
-        self._task_done_order.append(command_task.cid)
+        self._interpretation.on_done_task(command_task)
         # 发现任何任务出错超出预期.
         if result := command_task.task_result():
             if result.observe:
@@ -239,16 +262,22 @@ class CTMLInterpreter(Interpreter):
                     callback(command_task)
                 except Exception as e:
                     self._logger.exception(
-                        "%s call command task done callback %s failed: %s", self._logger_prefix, callback, e,
+                        "%s call command task done callback %s failed: %s", self._log_prefix, callback, e,
                     )
 
-    def meta_instruction(self) -> str:
+    def _get_meta_instruction(self) -> str:
         return self._meta_instruction or DEFAULT_META_PROMPT
+
+    def meta_instruction(self) -> str:
+        return self._interpretation.meta_instruction
 
     def channels(self) -> dict[str, ChannelMeta]:
         return self._channel_metas
 
     def instruction_messages(self) -> list[Message]:
+        return self._interpretation.instruction_messages
+
+    def _get_instruction_messages(self) -> list[Message]:
         messages = []
         interface_message = Message.new(role='system')
         for channel_path, channel_meta in self._channel_metas.items():
@@ -277,6 +306,11 @@ class CTMLInterpreter(Interpreter):
         return messages
 
     def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
+        if channel_names is None:
+            return self._interpretation.context_messages
+        return self._get_context_messages(channel_names=channel_names)
+
+    def _get_context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
         channel_names = channel_names or self._channel_metas.keys()
         messages = []
         for channel_path_name in channel_names:
@@ -305,7 +339,7 @@ class CTMLInterpreter(Interpreter):
             if self._parsing_exception is not None:
                 raise self._parsing_exception
 
-            self._input_buffer += delta
+            self._interpretation.feed_inputs.append(delta)
             self._input_deltas_queue.put_nowait(delta)
 
     async def parse(self, deltas: AsyncIterable[str]) -> None:
@@ -337,56 +371,26 @@ class CTMLInterpreter(Interpreter):
         return self._root_element
 
     def parsed_tokens(self) -> Iterable[CommandToken]:
-        return self._parsed_tokens.copy()
+        return self._interpretation.command_tokens.copy()
 
     def compiled_tasks(self) -> dict[str, CommandTask]:
-        return self._parsed_tasks.copy()
+        return self._handling_tasks.copy()
 
     def outputted(self) -> Iterable[str]:
         if self._outputted is None:
             return self._speech.outputted()
         return self._outputted
 
-    async def wait_results(self) -> dict[str, str]:
-        tasks = await self.wait_execution_done()
-        results = {}
-        for task in tasks.values():
-            done_at = task.last_trace[1]
-            if done_at:
-                done_at_str = datetime.datetime.fromtimestamp(done_at or 0.0).strftime("%Y-%m-%d %H:%M:%S")
-                done_at_str = f"[done at:{done_at_str}] "
-            else:
-                done_at_str = ""
-            if task.success():
-                result = task.result()
-                if result is not None:
-                    try:
-                        cmd_result = str(result).strip()
-                        if cmd_result:
-                            results[task.tokens] = f"{cmd_result}{done_at_str}"
-                    except ValueError:
-                        self._logger.exception("Format command result failed")
-                        pass
-            else:
-                error_info = CommandErrorCode.description(task.errcode, task.errmsg)
-                results[task.tokens] = f"{error_info}{done_at_str}"
-                break
-        return results
-
-    def executed(self) -> list[CommandTask]:
-        tasks = self.compiled_tasks().copy()
-        executions = []
-        for task in tasks.values():
-            if CommandTaskState.is_complete(task.state):
-                executions.append(task)
-            else:
-                break
-            if CommandTaskState.is_stopped(task.state):
-                break
-        return executions
+    async def wait_stopped(self) -> Interpretation:
+        _ = await self.wait(
+            return_when=asyncio.ALL_COMPLETED,
+            throw=False,
+            clear_undone=False,
+        )
+        return self._interpretation
 
     def received_text(self) -> str:
-        return self._input_buffer
+        return "".join(self._interpretation.feed_inputs)
 
     def _token_parse_loop(self) -> None:
         try:
@@ -429,7 +433,7 @@ class CTMLInterpreter(Interpreter):
             pass
         except Exception as e:
             # todo
-            self._logger.exception("Parse command task failed")
+            self._logger.exception("%s Parse command task failed", self._log_prefix)
             self._parsing_exception = InterpretError(f"Parse command task failed at `{type(e)}`: {e}")
             self._stopped_event.set()
         finally:
@@ -444,7 +448,7 @@ class CTMLInterpreter(Interpreter):
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self._logger.exception("Interpreter main parsing loop failed: %s", e)
+            self._logger.exception("%s Interpreter main parsing loop failed: %s", self._log_prefix, e)
         finally:
             # 主循环如果发生错误, interpreter 会终止. 这时并不会结束所有的任务.
             self._parsing_loop_done.set()
@@ -454,12 +458,10 @@ class CTMLInterpreter(Interpreter):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if not self.is_stopped():
-            await self.stop(cancel_executing=False)
         if exc_val is not None:
             if not isinstance(exc_val, InterpretError):
                 self._logger.exception("Interpreter quit on exception %s", exc_val)
-        await self.stop()
+        await self.stop(cancel_executing=False)
 
     def exception(self) -> Optional[Exception]:
         return self._parsing_exception
@@ -477,13 +479,13 @@ class CTMLInterpreter(Interpreter):
         task = asyncio.create_task(self._main_parsing_loop())
         self._main_parsing_task = task
 
-    async def stop(self, cancel_executing: bool = False) -> None:
+    async def stop(self, cancel_executing: bool = True) -> Interpretation | None:
         """
         todo: 使用 AsyncExitStack
         """
         if self._stopped_event.is_set():
-            await self._parsing_loop_done.wait()
-            return
+            return None
+
         self._logger.info("interpreter %s stopping", self.id)
         self._interrupted = self._started and not self._parsing_loop_done.is_set()
         self._stopped_event.set()
@@ -499,7 +501,7 @@ class CTMLInterpreter(Interpreter):
             pass
 
         if cancel_executing:
-            for t in self._parsed_tasks.values():
+            for t in self._handling_tasks.values():
                 if not t.done():
                     t.fail(CommandErrorCode.INTERRUPTED.error("interpreter stopped"))
 
@@ -508,6 +510,7 @@ class CTMLInterpreter(Interpreter):
         if self._interrupted:
             self._parsing_exception = InterpretError("Interpretation is interrupted")
         self.destroy()
+        return self._interpretation
 
     def is_stopped(self) -> bool:
         return self._stopped_event.is_set()
@@ -554,7 +557,7 @@ class CTMLInterpreter(Interpreter):
             if throw:
                 raise InterpretError(f"Interpret failed: {exc}") from exc
 
-    async def wait_execution_done(
+    async def wait(
             self,
             timeout: float | None = None,
             *,
@@ -623,7 +626,7 @@ class CTMLInterpreter(Interpreter):
         self._channel_metas = None
         self._channel_command_map.clear()
         self._on_task_created_callbacks.clear()
-        self._parsed_tasks.clear()
+        self._handling_tasks.clear()
         if self._outputted:
             self._outputted.clear()
         if self._root_element:
