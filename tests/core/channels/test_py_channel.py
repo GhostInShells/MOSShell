@@ -473,3 +473,23 @@ async def test_py_channel_topics():
         await produce_done.wait()
         await consume_done.wait()
     assert len(consumed) == 10
+
+
+@pytest.mark.asyncio
+async def test_py_channel_observe_command():
+    from ghoshell_moss.types import Observe
+
+    main = PyChannel(name="main")
+
+    @main.build.command()
+    async def bar() -> Observe | None:
+        return Observe()
+
+    async with main.bootstrap() as runtime:
+        assert runtime.is_running()
+        bar_task = runtime.create_command_task("bar")
+        await runtime.push_task(bar_task)
+        result = await bar_task
+        assert result is None
+        task_result = bar_task.task_result()
+        assert task_result.observe

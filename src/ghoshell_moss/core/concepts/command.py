@@ -24,6 +24,7 @@ from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.message import Message, Content, Text
+from ghoshell_moss.types import Observe
 import json
 
 __all__ = [
@@ -585,6 +586,13 @@ class CommandTaskResult(BaseModel):
                     "Interpreter 应该停止运行逻辑, 取消后续所有的命令. ",
     )
 
+    @classmethod
+    def from_observe(cls, observe: Observe) -> Self:
+        return cls(
+            messages=observe.messages,
+            observe=True,
+        )
+
     def serializable(self) -> Self:
         result = self.model_copy()
         result.result = self.serialize_result()
@@ -771,7 +779,7 @@ class CommandTask(Generic[RESULT], ABC):
         return self.done() and self.errcode != 0
 
     @abstractmethod
-    def resolve(self, result: RESULT | CommandTaskResult) -> None:
+    def resolve(self, result: RESULT | CommandTaskResult | Observe) -> None:
         """
         resolve the result of the task if it is running.
         可以接受 CommandTaskResult 对象. 设置成 result 的应该是 CommandTaskResult 的 result
@@ -1063,9 +1071,13 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errmsg,
             )
 
-    def resolve(self, result: RESULT | CommandTaskResult) -> None:
+    def resolve(self, result: RESULT | CommandTaskResult | Observe) -> None:
         if self._done_event.is_set():
             return
+        if isinstance(result, Observe):
+            # 转化 Observe 为 CommandTaskResult
+            result = CommandTaskResult.from_observe(result)
+        # 如果数据类型不是 CommandTaskResult, 需要转化一次.
         if result and isinstance(result, CommandTaskResult):
             task_result = result
             result = task_result.result
