@@ -1,6 +1,6 @@
 from pathlib import Path
 
-VERSION = "v2.en"
+VERSION = "v2.zh"
 
 
 def get_moss_meta_prompt(version: str = VERSION) -> str:
