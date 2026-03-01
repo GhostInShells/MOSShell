@@ -8,7 +8,7 @@ from ghoshell_moss.message import Message
 
 @pytest.mark.asyncio
 async def test_shell_execution_baseline():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
 

@@ -33,7 +33,7 @@ from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.core.shell.ctml_main import create_ctml_main_chan
+from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
 
 __all__ = ["CTMLShell", "new_ctml_shell"]

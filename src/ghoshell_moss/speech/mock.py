@@ -65,7 +65,7 @@ class MockSpeechStream(SpeechStream):
                 elif self.output_buffer.strip():
                     self.outputs.append(self.output_buffer)
                     content_is_not_empty = True
-                if self.typing_sleep > 0.0:
+                if item.strip() and self.typing_sleep > 0.0:
                     time.sleep(self.typing_sleep)
         finally:
             if self.cmd_task is not None:

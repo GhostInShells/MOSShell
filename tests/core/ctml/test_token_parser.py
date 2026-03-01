@@ -255,7 +255,13 @@ def test_token_parser_with_attr_suffix():
 def test_ctml_with_suffix_idx():
     content = "<a:foo:3 literal-a='[1, 2]'></a:foo:3><bar/>"
     q: list[CommandToken] = []
-    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
+    parsers = default_parsers.copy()
+    parsers.append(AttrPrefixParser(
+        desc="",
+        prefix="literal-",
+        parser=lambda v: literal_eval(v)
+    ))
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=parsers)
     q = q[1:-1]
     token = q.pop(0)
     assert token.seq == "start"

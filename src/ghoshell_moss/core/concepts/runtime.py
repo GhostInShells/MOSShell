@@ -29,6 +29,7 @@ from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
+import time
 
 __all__ = ["AbsChannelRuntime", "BaseImportLib", "AbsChannelTreeRuntime"]
 
@@ -210,12 +211,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-        self,
-        *,
-        channel: CHANNEL,
-        container: IoCContainer | None = None,
-        logger: LoggerItf | None = None,
-        state_store: StateStore | None = None,
+            self,
+            *,
+            channel: CHANNEL,
+            container: IoCContainer | None = None,
+            logger: LoggerItf | None = None,
+            state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -365,7 +366,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -894,10 +895,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         try:
             await self.wait_started()
             while not self._closing_event.is_set():
+                await asyncio.sleep(0)
                 _pending_queue = self._pending_task_queue
                 # 如果队列是空的, 则要看看是否能够启动 idle.
                 if _pending_queue.empty() and not self._idled_event.is_set():
-                    await asyncio.sleep(0)
                     if self._is_children_idled():
                         # 这种情况下就真的可以 idle 了.
                         await self.idle()
@@ -905,7 +906,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                         continue
                 # 阻塞等待下一个结果.
                 try:
-                    item = await asyncio.wait_for(_pending_queue.get(), timeout=0.2)
+                    item = await asyncio.wait_for(_pending_queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
 
@@ -930,7 +931,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             self.logger.info("%s Finished executing loop", self.log_prefix)
 
     async def _dispatch_children_task(self, paths: ChannelPaths, task: CommandTask) -> None:
-        self._executing_command_task = task
+        await asyncio.sleep(0)
         child_name = paths[0]
         # 子节点在路径上不存在.
         child = self.sub_channels().get(child_name)
@@ -952,17 +953,15 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         尝试运行一个 task. 这个运行周期是全局唯一, 阻塞的.
         """
         self._consuming_command_task = task
+        await asyncio.sleep(0)
         try:
             # 确保这个任务也可以被 clear 掉.
             await self._clear_lifecycle_task()
-            await asyncio.sleep(0)
             # 检查是不是子节点的任务.
             if len(paths) > 0:
                 await self._dispatch_children_task(paths, task)
                 return
 
-            # 执行任务, 并且解决回调的问题.
-            await asyncio.sleep(0)
             # 执行任务.
             await self._execute_self_task(task)
 
@@ -987,6 +986,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
     async def _execute_self_task(self, task: CommandTask, depth: int = 0) -> None:
         task.set_state(CommandTaskState.executing)
         task.exec_chan = self._name
+        await asyncio.sleep(0)
         # 非阻塞函数不能返回 stack
         if depth > 10:
             task.fail(CommandErrorCode.INVALID_USAGE.error("stackoverflow"))
@@ -1050,10 +1050,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 self._executing_cmd_tasks.remove(task)
 
     async def _fulfill_task_with_its_result_stack(
-        self,
-        owner: CommandTask,
-        stack: CommandStackResult,
-        depth: int = 0,
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
     ) -> None:
         try:
             if not owner.meta.blocking:

@@ -19,7 +19,10 @@ def create_ctml_main_chan() -> Channel:
         blocking=True,
     )
 
+    # wait 原语
     chan.build.command()(wait)
+    # sleep 原语
+    chan.build.command()(sleep)
 
     return chan
 

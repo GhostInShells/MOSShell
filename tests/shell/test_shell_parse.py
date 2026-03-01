@@ -1,6 +1,6 @@
 import pytest
 
-from ghoshell_moss.core.shell.ctml_shell import CTMLShell
+from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.concepts.errors import InterpretError
 
 

@@ -4,7 +4,7 @@ import pathlib
 from ghoshell_common.contracts import LoggerItf, Workspace
 from ghoshell_container import Container
 
-from ghoshell_moss.core.shell import new_ctml_shell
+from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
 # 不着急删除, 方便自测时开启.
 from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig

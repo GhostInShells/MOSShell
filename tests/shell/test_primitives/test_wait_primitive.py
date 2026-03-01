@@ -1,5 +1,5 @@
-from ghoshell_moss.core.shell.primitives import wait
-from ghoshell_moss.core.shell import new_ctml_shell
+from ghoshell_moss.core.ctml.shell.primitives import wait
+from ghoshell_moss.core.ctml.shell import new_ctml_shell
 from ghoshell_moss.core import PyChannel
 import pytest
 import asyncio

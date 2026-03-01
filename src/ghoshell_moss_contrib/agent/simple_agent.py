@@ -10,8 +10,7 @@ from ghoshell_common.contracts.storage import MemoryStorage
 from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core.concepts.shell import MOSSShell, Speech
-from ghoshell_moss.core.shell import new_ctml_shell
+from ghoshell_moss.core import MOSSShell, Speech, new_ctml_shell
 from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
 from ghoshell_moss_contrib.agent.chat.console import ConsoleChat

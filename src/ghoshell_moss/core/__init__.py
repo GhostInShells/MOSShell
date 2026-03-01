@@ -9,4 +9,4 @@ from .duplex import (
 )
 from .duplex.protocol import *
 from .py_channel import PyChannel, PyChannelRuntime, PyChannelBuilder
-from .shell import CTMLShell, create_ctml_main_chan, new_ctml_shell
+from .ctml.shell import CTMLShell, create_ctml_main_chan, new_ctml_shell
