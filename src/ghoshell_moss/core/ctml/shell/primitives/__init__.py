@@ -5,3 +5,4 @@ from .wait_idle import wait_idle
 from .noop import noop
 from .observe import observe
 from .interrupt import interrupt_command
+from .condition import branch

@@ -50,7 +50,15 @@ def make_chan_prompt(channel_path: str, description: str, interface: str) -> str
 
 
 def make_command_interface(commands: Iterable[CommandMeta]) -> str:
-    return "\n\n".join([c.interface for c in commands])
+    lines = []
+    for cmd_meta in commands:
+        if not cmd_meta.available:
+            continue
+        if not cmd_meta.blocking:
+            lines.append("# not blocking")
+        lines.append(cmd_meta.interface)
+        lines.append("\n")
+    return "\n".join(lines)
 
 
 def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
@@ -310,8 +318,9 @@ class CTMLInterpreter(Interpreter):
         # 生成代码 interface.
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
+            not_available = "" if channel_meta.available else "(not available)"
             interface_message.with_content(
-                f"=== interface:{path_name} ===\n",
+                f"=== interface:{path_name} {not_available}===\n",
                 channel_meta.description,
                 "\n\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
                 f"\n=== end interface:{path_name} ===\n",
@@ -319,6 +328,8 @@ class CTMLInterpreter(Interpreter):
         messages.append(interface_message.as_completed())
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
+            if not channel_meta.available:
+                continue
             if len(channel_meta.instructions) > 0:
                 first = None
                 last = None
@@ -351,7 +362,7 @@ class CTMLInterpreter(Interpreter):
         for channel_path_name in channel_names:
             path_name = channel_path_name or "__main__"
             meta = self._channel_metas.get(channel_path_name)
-            if meta is not None and meta.context:
+            if meta is not None and meta.available and len(meta.context) > 0:
                 messages.append(
                     Message.new(role="system")
                     .with_content(

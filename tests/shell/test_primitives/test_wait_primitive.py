@@ -328,3 +328,38 @@ async def test_wait_cancellation_propagation():
             await asyncio.sleep(0.01)
             assert task_started
             assert task_cleaned_up  # 确保清理逻辑被执行
+
+
+@pytest.mark.asyncio
+async def test_wait_in_channels():
+    shell = new_ctml_shell()
+
+    cancelled = []
+
+    async def foo():
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append("foo")
+
+    async def say():
+        await asyncio.sleep(0.1)
+
+    for i in range(10):
+        channel = PyChannel(name=f"chan{i}")
+        channel.build.command()(foo)
+        shell.main_channel.import_channels(channel)
+
+    speech = PyChannel(name="speech")
+    speech.build.command()(say)
+    shell.main_channel.import_channels(speech)
+    async with shell:
+        async with shell.interpreter_in_ctx() as interpreter:
+            interpreter.feed('<wait chans="speech">')
+            for i in range(10):
+                interpreter.feed(f"<chan{i}:foo/>")
+            interpreter.feed(f"<speech:say/></wait>")
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks(3, clear_undone=False)
+            assert len(cancelled) == 10
