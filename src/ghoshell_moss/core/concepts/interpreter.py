@@ -185,7 +185,7 @@ class Interpretation(BaseModel):
         description="运行结束, 并且运行成功的 task cid => task caller"
     )
     executed_tokens: list[str] = Field(
-        default="",
+        default_factory=list,
         description="被执行过的输入文本."
     )
 
