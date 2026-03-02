@@ -265,7 +265,7 @@ class MOSSShell(ABC):
             stream_id: Optional[str] = None,
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             ignore_wrong_command: bool = False,
-    ) -> "Interpreter":
+    ) -> AsyncIterator[Interpreter]:
         """
         简单的语法糖.
         """

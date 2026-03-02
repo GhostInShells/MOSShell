@@ -550,6 +550,10 @@ class DuplexChannelContext:
                 t = self._pending_provider_command_tasks.pop(cid)
                 t.cancel()
                 self.logger.error("Command Task %s duplicated call", cid)
+            if cid in self._command_call_deltas_sender_tasks:
+                sender = self._command_call_deltas_sender_tasks.pop(cid)
+                if not sender.done():
+                    sender.cancel()
 
             deltas = None
             if task.meta.delta_arg is not None:
@@ -573,7 +577,7 @@ class DuplexChannelContext:
             await self.send_event_to_provider(event.to_channel_event(), throw=True)
             self._pending_provider_command_tasks[cid] = task
             if deltas is not None:
-                self._command_call_deltas_sender_tasks = asyncio.create_task(self._send_delta_args(task, deltas))
+                self._command_call_deltas_sender_tasks[cid] = asyncio.create_task(self._send_delta_args(task, deltas))
             return event
         except asyncio.CancelledError:
             task.cancel()

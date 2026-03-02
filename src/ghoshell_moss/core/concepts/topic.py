@@ -75,7 +75,7 @@ class Topic(BaseModel, WithAdditional):
         if self.meta.overdue == 0.0:
             # 永不过期.
             return False
-        return self.meta.created_at + self.meta.overdue > time.time()
+        return self.meta.created_at + self.meta.overdue <= time.time()
 
 
 class TopicModel(BaseModel, ABC):

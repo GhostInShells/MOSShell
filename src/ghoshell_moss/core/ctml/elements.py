@@ -504,10 +504,14 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
             return None
         if self._current_task is not None:
             current_task_meta = self._current_task.meta
-            self._current_task.kwargs[CommandDeltaType.TEXT.value] = self._inner_content
+            # For text-like delta values (including special cases like `json__`),
+            # write into the command's declared delta argument name.
+            delta_arg_name = current_task_meta.delta_arg or CommandDeltaType.TEXT.value
+            self._current_task.kwargs[delta_arg_name] = self._inner_content
             if not self._inner_content:
                 attrs = self._current_task.kwargs.copy()
-                del attrs[CommandDeltaType.TEXT.value]
+                if delta_arg_name in attrs:
+                    del attrs[delta_arg_name]
                 self._current_task.tokens = CMTLSaxElement.make_start_mark(
                     self._current_task.chan,
                     current_task_meta.name,
