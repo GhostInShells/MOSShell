@@ -49,8 +49,6 @@ class CommandErrorCode(int, Enum):
 
     # AI 需要感知到的普通运行结果.
     SUCCESS = 0
-    # 最常用的异常方式, 建议用它包装所有的 AI 需要感知的异常.
-    FAILED = 100
 
     # --- 不需要立刻响应, 而且 AI 也不需要关心的异常. 通常是系统调度结果. --- #
 
@@ -62,6 +60,9 @@ class CommandErrorCode(int, Enum):
     TIMEOUT = 202
     # 命令被中断.
     INTERRUPTED = 203
+
+    # --- 需要 AI 感知的异常. --- #
+    FAILED = 300
 
     # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 
@@ -90,13 +91,47 @@ class CommandErrorCode(int, Enum):
         return CommandError(self.value, message)
 
     @classmethod
-    def need_observe(cls, err: Exception) -> bool:
+    def is_cancelled(cls, err: Exception | int) -> bool:
         if err is None:
             return False
-        if not isinstance(err, CommandError):
-            return True
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return False
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
+        return 200 <= code < 300
+
+    @classmethod
+    def is_failed(cls, err: Exception | int) -> bool:
+        if err is None:
+            return False
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return True
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
+        return code >= 300
+
+    @classmethod
+    def is_critical(cls, err: Exception | int) -> bool:
+        if err is None:
+            return False
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return True
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
         # 400 以上的异常对解释流程是致命的.
-        return err.code >= 400
+        return code >= 400
 
     def match(self, error: Exception | None) -> bool:
         if not error:

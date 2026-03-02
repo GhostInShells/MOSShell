@@ -119,6 +119,7 @@ class PyChannelBuilder(Builder):
         interface: Optional[StringType] = None,
         available: Optional[Callable[[], bool]] = None,
         blocking: Optional[bool] = None,
+        priority: int = 0,
         call_soon: bool = False,
         return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
@@ -134,6 +135,7 @@ class PyChannelBuilder(Builder):
                 interface=interface,
                 available=available,
                 blocking=blocking if blocking is not None else self._blocking,
+                priority=priority,
                 call_soon=call_soon,
             )
             self.add_command(command)

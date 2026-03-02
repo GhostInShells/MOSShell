@@ -310,7 +310,7 @@ class CTMLShell(MOSSShell):
             callback = self._interpreter_callback_task
             if self._interpreter and self._interpreter.is_running():
                 # 停止旧的 interpreter 继续提交新的信息.
-                undone_tasks = self._interpreter.undone_tasks()
+                undone_tasks = self._interpreter.incomplete_tasks()
                 interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
             self._interpreter = None
 

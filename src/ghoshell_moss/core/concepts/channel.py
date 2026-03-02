@@ -274,6 +274,7 @@ class Builder(ABC):
             # --- 高级参数 --- #
             blocking: Optional[bool] = None,
             call_soon: bool = False,
+            priority: int = 0,
             return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
@@ -282,6 +283,28 @@ class Builder(ABC):
         函数会自动反射出 signature, 作为给大模型查看的讯息.
         大模型只会看到函数的签名和注释, 不会看到原始代码.
 
+        :param name: 不为空, 则改写这个函数的名称.
+        :param doc: 重定义函数的docstring, 如果传入的是一个函数, 则会在每次刷新时, 动态调用这个函数, 生成它的 docstring.
+        :param comments: 改写函数的 body 部分, 用注释形式提供的字符串. 每行前会自动添加 '#'. 不用手动添加.
+        :param interface: 大模型看到的函数代码形式. 一旦定义了这个, doc, name, comments 就都会失效.
+                注意, 必须写成 Python Async 的形式.
+
+                async def foo(...) -> ...:
+                  '''docstring'''
+                  # comments
+        :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
+        :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
+                这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.
+        :param blocking: 这个函数是否会阻塞 channel. 为 None 的话跟随 channel 的默认定义.
+                blocking = True 类型的 Command 执行完毕前, 会阻塞后续 Command 执行, 通常是在机器人等需要时序规划的场景中.
+                blocking = False 类型则会并发执行. 对于没有先后顺序的工具, 可以设置并行.
+        :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
+                如果是 (blocking and call_soon) == True, 会在入队时立刻清空队列.
+
+        :param priority: 命令优先级, <0 时, 有新的命令加入, 就会被自动取消. >0 时, 之前所有优先级比自己低的都会立刻取消.
+                高级功能, 不理解的情况下请不要改动它.
+
+        :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
         CommandFunction 最佳实践是:
 
         >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
@@ -307,32 +330,6 @@ class Builder(ABC):
         >>>     finally:
         >>>         # 有运行结束逻辑.
         >>>         ...
-
-        :param name: 不为空, 则改写这个函数的名称.
-        :param doc: 重定义函数的docstring, 如果传入的是一个函数, 则会在每次刷新时, 动态调用这个函数, 生成它的 docstring.
-
-        :param comments: 改写函数的 body 部分, 用注释形式提供的字符串. 每行前会自动添加 '#'. 不用手动添加.
-
-        :param interface: 大模型看到的函数代码形式. 一旦定义了这个, doc, name, comments 就都会失效.
-                注意, 必须写成 Python Async 的形式.
-
-                async def foo(...) -> ...:
-                  '''docstring'''
-                  # comments
-
-        :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
-
-        :param blocking: 这个函数是否会阻塞 channel. 为 None 的话跟随 channel 的默认定义.
-                blocking = True 类型的 Command 执行完毕前, 会阻塞后续 Command 执行, 通常是在机器人等需要时序规划的场景中.
-                blocking = False 类型则会并发执行. 对于没有先后顺序的工具, 可以设置并行.
-
-        :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
-                这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.
-
-        :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
-                如果是 (blocking and call_soon) == True, 会在入队时立刻清空队列.
-
-        :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
         """
         pass
 
@@ -803,6 +800,13 @@ class ChannelRuntime(ABC):
     async def clear(self) -> None:
         """
         清空当前 Runtime 所有的运行状态.
+        """
+        pass
+
+    @abstractmethod
+    async def clear_sub_channels(self) -> None:
+        """
+        清空当前 Runtime 所有子 channel 的 runtime
         """
         pass
 

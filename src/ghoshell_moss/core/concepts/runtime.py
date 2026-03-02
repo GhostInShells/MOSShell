@@ -1207,6 +1207,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 确认是自身的任务, 并且 call soon.
             is_self_task = len(paths) == 0
             is_blocking_task = task.meta.blocking
+            priority = task.meta.priority
 
             # 进入 pending 列表.
             if is_self_task:
@@ -1216,17 +1217,16 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 if task.meta.call_soon:
                     if is_blocking_task:
                         # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务.
-                        # 不会包含子节点, 只会清空当前队列.
-                        self._clear_own_task_by_priority(task.chan, None)
+                        # 设置清空等级为最高.
+                        priority = None
                     else:
                         # 立刻将它执行, none blocking 任务确认会进入到并行运行.
                         await self._execute_self_task_nonblock(task, depth=0)
                         # 并不阻塞等待结果, 而是立刻返回.
                         return
-                # 优先级检查. 高优先级的指令, 会尝试做清空.
-                elif task.meta.priority > 0:
-                    # 来一次优先级的 pk.
-                    self._clear_own_task_by_priority(task.chan, task.meta.priority)
+            # 来一次优先级的 pk.
+            if is_blocking_task:
+                self._clear_own_task_by_priority(task.chan, priority)
             self._pending_tasks[task_id] = task
             # 普通的任务, 则会被丢入阻塞队列中排队执行.
             _queue = self._pending_task_queue
@@ -1240,19 +1240,27 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         根据优先级清空自身的任务.
         如果 priority 为空, 表示最高优先级, 不做比较.
         """
+
+        reason = "interrupted by higher priority command"
+        if self._executing_blocking_task is not None and not self._executing_blocking_task.done():
+            # < 0 的 task 任何时候都会被取消.
+            if self._executing_blocking_task.meta.priority < 0:
+                self._executing_blocking_task.cancel(reason)
+
+        # 接下来只有 priory > 0 的才有资格去取消任务.
         if priority is not None and priority <= 0:
             # 误操作, 没有资格做比较.
             return
-        reason = "interrupted by higher priority command"
-        if self._executing_blocking_task is not None:
+        if self._executing_blocking_task is not None and not self._executing_blocking_task.done():
             if priority is None or self._executing_blocking_task.meta.priority < priority:
                 self._executing_blocking_task.cancel(reason)
         for task in self._pending_tasks.values():
             # 预先清空队列中优先级低于自身的命令.
             if task.chan != chan:
                 continue
-            if priority is None or task.meta.blocking and task.meta.priority < priority:
-                task.cancel(reason)
+            if priority is None or (task.meta.blocking and task.meta.priority < priority):
+                if not task.done():
+                    task.cancel(reason)
 
     async def clear_own(self) -> None:
         """

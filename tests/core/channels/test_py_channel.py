@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -505,3 +506,114 @@ async def test_py_channel_observe_command():
         assert result is None
         task_result = bar_task.task_result()
         assert task_result.observe
+
+
+@pytest.mark.asyncio
+async def test_py_channel_call_soon_command():
+    main = PyChannel(name="main")
+
+    exec_log = []
+
+    @main.build.command()
+    async def foo() -> None:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            exec_log.append("cancelled")
+
+    @main.build.command(
+        call_soon=True,
+        blocking=True,
+    )
+    async def bar() -> None:
+        return
+
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        await runtime.push_task(_foo)
+        # makesure foo has bee called
+        await asyncio.sleep(0.1)
+        await runtime.push_task(_bar)
+        await _bar
+        assert exec_log == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_py_channel_priority_command():
+    main = PyChannel(name="main")
+
+    cancelled = []
+
+    @main.build.command(
+        priority=-1,
+    )
+    async def foo() -> None:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            cancelled.append("foo")
+
+    bar_sleep = 0.1
+    @main.build.command(
+        priority=0
+    )
+    async def bar() -> None:
+        nonlocal bar_sleep
+        try:
+            await asyncio.sleep(bar_sleep)
+        except asyncio.CancelledError:
+            cancelled.append("bar")
+
+    @main.build.command(
+        priority=1
+    )
+    async def baz() -> None:
+        return
+
+    @main.build.command(
+        priority=100,
+        blocking=False,
+    )
+    async def nonblock() -> None:
+        try:
+            await asyncio.sleep(bar_sleep)
+        except asyncio.CancelledError:
+            cancelled.append("nonblock")
+
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        await runtime.push_task(_foo)
+        await asyncio.sleep(0.01)
+        await runtime.push_task(_bar)
+        await _bar
+        assert cancelled == ["foo"]
+
+    cancelled.clear()
+    bar_sleep = 1.0
+    async with main.bootstrap() as runtime:
+        _bar = runtime.create_command_task("bar")
+        _baz = runtime.create_command_task("baz")
+        _nonblock = runtime.create_command_task("nonblock")
+        await runtime.push_task(_bar)
+        await asyncio.sleep(0.1)
+        await runtime.push_task(_baz, _nonblock)
+        await _baz
+        assert not _nonblock.done()
+        assert cancelled == ["bar"]
+        _nonblock.cancel()
+
+    cancelled.clear()
+    bar_sleep = 1.0
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        _baz = runtime.create_command_task("baz")
+        await runtime.push_task(_foo)
+        await asyncio.sleep(0.05)
+        await runtime.push_task(_bar)
+        await asyncio.sleep(0.05)
+        await runtime.push_task(_baz)
+        await _baz
+        assert cancelled == ["foo", "bar"]

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Callable, Iterable, AsyncIterable
 
 from typing_extensions import Self
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.message import Message
@@ -172,21 +173,25 @@ class Interpretation(BaseModel):
         default_factory=list,
         description="运行时解析生成的 command tokens",
     )
-    generated_tasks: list[str] = Field(
+    executed_inputs: list[str] = Field(
         default_factory=list,
-        description="解析生成的 task 的 cid"
+        description="被执行过的输入文本."
     )
-    done_tasks: dict[str, str] = Field(
+    compiled: dict[str, str] = Field(
+        default_factory=dict,
+        description="解析生成的 task 的 cid => task caller"
+    )
+    cancelled: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束的 task cid => task caller",
     )
-    succeed_tasks: dict[str, str] = Field(
+    failed: dict[str, str] = Field(
+        default_factory=dict,
+        description="运行结束, 失败的 task cid => task caller",
+    )
+    succeed: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束, 并且运行成功的 task cid => task caller"
-    )
-    executed_tokens: list[str] = Field(
-        default_factory=list,
-        description="被执行过的输入文本."
     )
 
     output: list[Message] = Field(
@@ -206,27 +211,32 @@ class Interpretation(BaseModel):
         description="运行的异常",
     )
 
-    def on_task_generated(self, task: CommandTask | None) -> None:
+    def on_task_compiled(self, task: CommandTask | None) -> None:
         if task is None:
             return
-        self.generated_tasks.append(task.cid)
+        self.compiled[task.cid] = task.caller_name()
 
     def on_done_task(self, task: CommandTask) -> None:
         if not task.done():
             return
-        if task.cid in self.done_tasks:
+        if self.done:
             return
-        # 注册 done task
-        self.done_tasks[task.cid] = task.caller_name()
-
+        task_id = task.cid
         # 注册执行成功的 tokens.
         if task.success():
-            self.succeed_tasks[task.cid] = task.caller_name()
-            self.executed_tokens.append(task.tokens)
+            self.executed_inputs.append(task.tokens)
+            self.succeed[task_id] = task.caller_name()
+        # 记录 cancel 类别的.
+        elif CommandErrorCode.is_cancelled(task.errcode):
+            self.cancelled[task_id] = task.caller_name()
+        # 记录异常的.
+        else:
+            self.failed[task_id] = task.caller_name()
 
         # 合并 task 运行结果.
         result = task.task_result()
-        if result.observe:
+        # 根据协议判定要 observe.
+        if result.observe or CommandErrorCode.is_critical(task.errcode):
             self.observe = True
         if len(result.output) > 0:
             self.output.extend(result.output)
@@ -255,7 +265,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def interrupted(self) -> Interpretation | None:
+    def last(self) -> Interpretation | None:
         """
         上一轮被中断的解释结果.
         """
@@ -352,29 +362,13 @@ class Interpreter(ABC):
         """
         pass
 
-    @contextlib.asynccontextmanager
-    async def commit_ctx(self):
-        """
-        语法糖, 方便执行
-        >>> async def run_interpreter(interpreter: Interpreter, items: AsyncIterable[str]):
-        >>>     # 保证回收 interpreter 资源.
-        >>>     async with interpreter:
-        >>>         # 保证提交了 commit
-        >>>         async with interpreter.commit_ctx():
-        >>>             async for item in items:
-        >>>                 if not interpreter.feed(item):
-        >>>                     break
-        >>>         await interpreter.wait_stopped()
-        """
-        yield
-        self.commit()
-
     async def interpret(self, deltas: AsyncIterable[str]) -> None:
         """
         语法糖, 一个完整的解析过程, 需要包含 feed 和 commit.
         """
         async for delta in deltas:
-            self.feed(delta)
+            if not self.feed(delta):
+                break
         self.commit()
 
     @abstractmethod
@@ -436,11 +430,18 @@ class Interpreter(ABC):
         """
         pass
 
-    def done_tasks(self) -> list[CommandTask]:
+    @abstractmethod
+    def managing_tasks(self) -> dict[str, CommandTask]:
+        """
+        管理的 tasks, 可能包含上一轮生成的.
+        """
+        pass
+
+    def completed_tasks(self) -> list[CommandTask]:
         """
         返回已经被执行的 tasks. 包含被取消或者出错的.
         """
-        tasks = self.compiled_tasks().copy()
+        tasks = self.managing_tasks().copy()
         executed = []
         for task in tasks.values():
             if not task.done():
@@ -448,11 +449,11 @@ class Interpreter(ABC):
             executed.append(task)
         return executed
 
-    def undone_tasks(self) -> list[CommandTask]:
+    def incomplete_tasks(self) -> list[CommandTask]:
         """
         返回已经解析成功, 但没有被执行完的 tasks.
         """
-        tasks = self.compiled_tasks().copy()
+        tasks = self.managing_tasks().copy()
         pending = []
         for task in tasks.values():
             if not task.done():
@@ -464,7 +465,7 @@ class Interpreter(ABC):
         返回当前已经执行完毕的 tokens.
         """
         tokens = []
-        for task in self.done_tasks():
+        for task in self.completed_tasks():
             tokens.append(task.tokens)
         return "".join(tokens)
 
@@ -546,7 +547,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def wait(
+    async def wait_tasks(
             self,
             timeout: float | None = None,
             *,

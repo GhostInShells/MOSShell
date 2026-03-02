@@ -43,7 +43,7 @@ async def test_shell_execution_baseline():
         async with interpreter:
             interpreter.feed("<a:foo /><b:bar />")
             assert shell.is_running()
-            tasks = await interpreter.wait(1)
+            tasks = await interpreter.wait_tasks(1)
 
             assert len(tasks) == 2
             result = []
@@ -78,7 +78,7 @@ async def test_shell_outputted():
         assert foo_cmd is not None
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<foo />hello")
-            tasks = await interpreter.wait(10)
+            tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
             assert len(tasks) == 2
             assert task_list[0].result() == 123
@@ -100,7 +100,7 @@ async def test_shell_ctml_with_args():
     async with shell:
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<foo _args='[1, 2, 3]'/>")
-            tasks = await interpreter.wait(10)
+            tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
             assert len(tasks) == 1
             assert task_list[0].result() == 1 + 2 + 3
@@ -174,7 +174,7 @@ async def test_shell_task_can_get_channel():
     async with shell:
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<a:foo />")
-            tasks = await interpreter.wait(10)
+            tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
             assert list(tasks.values())[0].result() is True
 
@@ -198,7 +198,7 @@ async def test_shell_task_can_get_task():
     async with shell:
         async with shell.interpreter_in_ctx() as interpreter:
             interpreter.feed("<a:foo />")
-            tasks = await interpreter.wait(10)
+            tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
             first = list(tasks.values())[0]
             assert first.done()
@@ -247,7 +247,7 @@ async def test_shell_loop():
         async with interpreter:
             for c in content:
                 interpreter.feed(c)
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             for task in tasks.values():
                 assert task.done()
         assert interpreter.is_stopped()
@@ -294,7 +294,7 @@ async def test_shell_clear():
             interpreter.commit()
             await interpreter.wait_compiled()
             assert len(interpreter.compiled_tasks()) == 3
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             assert len(tasks) == 3
             assert [t.result() for t in tasks.values()] == ["foo", "bar", "baz"]
 

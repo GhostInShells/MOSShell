@@ -15,7 +15,7 @@ class CTMLMainChannel(PyChannel):
 def create_ctml_main_chan() -> Channel:
     chan = CTMLMainChannel(
         name="__main__",
-        description="系统的主 Channel, 在这里定义了各种控制原语.",
+        description="CTML Main Channel with primitives",
         blocking=True,
     )
 
@@ -27,9 +27,11 @@ def create_ctml_main_chan() -> Channel:
     chan.build.command()(clear)
     # wait idle 原语.
     chan.build.command()(wait_idle)
+    chan.build.command()(noop)
+    chan.build.command()(observe)
+    chan.build.add_command(interrupt_command)
 
     return chan
-
 
 # primitive.py 原语定义成command
 # wait_done 原语

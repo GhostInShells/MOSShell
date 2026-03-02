@@ -96,7 +96,7 @@ async def test_clear_specific_channel():
             interpreter.feed("<clear chan='audio'/>")
             interpreter.commit()
             # 验证只有 audio 任务被取消
-            await interpreter.wait()
+            await interpreter.wait_tasks()
             assert not video_cancelled  # video 任务应该还在运行
             assert audio_cancelled
 
@@ -146,7 +146,7 @@ async def test_clear_recursive():
             # 在根 Channel 调用 clear，应该递归清空所有子 Channel
             interpreter.feed("<clear/>")
             interpreter.commit()
-            await interpreter.wait()
+            await interpreter.wait_tasks()
             # 验证所有层级的任务都被取消
             assert level1_cancelled
             assert level2_cancelled
@@ -194,7 +194,7 @@ async def test_clear_with_wait_and_sleep():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             assert execution_log == ["bg_start", "bg_cancelled"]
@@ -215,7 +215,7 @@ async def test_clear_empty_channels():
             interpreter.feed("<clear/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 应该正常完成，不抛出异常
             assert len(tasks) == 1
@@ -279,7 +279,7 @@ async def test_clear_in_ctml_complex_scenario():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             # 音乐和音效应该都启动了

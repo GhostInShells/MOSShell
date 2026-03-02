@@ -1,8 +1,5 @@
 import pytest
 import asyncio
-import contextlib
-
-from ghoshell_moss.core.ctml.shell.primitives.wait_idle import wait_idle
 from ghoshell_moss.core import PyChannel, new_ctml_shell
 
 
@@ -38,7 +35,7 @@ async def test_wait_idle_basic():
             interpreter.commit()
 
             # 等待执行完成
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证任务已完成
             assert "task_started" in execution_log
@@ -79,7 +76,7 @@ async def test_wait_idle_with_timeout():
             interpreter.feed('<wait_idle timeout:float="0.1"/>')  # 100ms 超时
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该被取消
             assert task_cancelled
@@ -132,7 +129,7 @@ async def test_wait_idle_specific_channel():
             interpreter.feed('<wait_idle chan="audio"/><audio_done_but_video_not/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             assert expect
 
 
@@ -172,7 +169,7 @@ async def test_wait_idle_recursive():
             interpreter.feed("<wait_idle/><level1:level1_task/><wait_idle/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             assert execution_order == [
@@ -196,7 +193,7 @@ async def test_wait_idle_with_empty_channels():
             interpreter.feed("<wait_idle/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 应该正常完成，不抛出异常
             assert len(tasks) == 1
@@ -217,7 +214,7 @@ async def test_wait_idle_negative_timeout():
             interpreter.feed('<wait_idle timeout:float="-1.0"/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该失败
             assert len(tasks) == 1
@@ -266,7 +263,7 @@ async def test_wait_idle_with_other_primitives():
             assert "bg_end" not in execution_log
             assert "run_after_idle" in execution_log
             assert interpreter.is_running()
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             assert "bg_end" in execution_log
 
 
@@ -298,7 +295,7 @@ async def test_wait_idle_zero_timeout():
             interpreter.feed('<wait_idle timeout:float="0.0"/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该被取消
             assert task_cancelled

@@ -445,9 +445,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             comments: Optional[StringType] = None,
             meta: Optional[CommandMeta] = None,
             tags: Optional[list[str]] = None,
-            # todo: 思考这两个 feature 是否有更合理的定义方式.
             call_soon: bool = False,
             blocking: bool = True,
+            priority: int = 0,
             delta_types: Optional[set] = None,
     ):
         """
@@ -460,6 +460,8 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         :param tags: tag the command if someplace want to filter commands. the tags need to be unique and common.
         :param call_soon: the command will be called right after it is sent to the channel.
         :param blocking: blocking command will be called only when channel is idle, one at a time.
+        :param priority: the priority of the command. see command meta
+        :param delta_types: don't set it if you do not know why
         """
         self._chan = chan
         self._func_name = func.__name__
@@ -477,6 +479,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._blocking = blocking
         self._tags = tags
         self._meta = meta
+        self._priority = priority
         self._delta_types = delta_types if delta_types is not None else list(ValueOfCommandDeltaTypeMap.keys())
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters:
@@ -510,6 +513,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         meta.blocking = self._blocking
         # 标记 meta 是否是动态变更的.
         meta.dynamic = self._is_dynamic_itf
+        meta.priority = self._priority
         return meta
 
     def meta(self) -> CommandMeta:
@@ -1119,7 +1123,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errmsg = ""
             self._set_result(
                 None,
-                "cancelled" if errcode == CommandErrorCode.CANCELLED.value else "failed",
+                "cancelled" if CommandErrorCode.is_cancelled(errcode) else "failed",
                 errcode,
                 errmsg,
             )
@@ -1148,7 +1152,9 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return None
         if self._task_result is None:
             exp = self.exception()
-            if exp is not None and CommandErrorCode.need_observe(exp):
+            # failed 以上级别的异常要记录.
+            # cancel 不要. 因为 cancel 可能很多.
+            if exp is not None and CommandErrorCode.is_failed(exp):
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
@@ -1178,6 +1184,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
         Command Task 的 Await done 要求跨线程安全.
+        :throw: 如果为 True, 有异常, 或者有 observe == True 都会抛出异常.
         """
         try:
             if self._done_event.is_set():
@@ -1193,7 +1200,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                     raise CommandError(self.errcode, self.errmsg or "")
                 elif self._task_result and self._task_result.observe:
                     # observe 可以中断 wait FIRST_EXCEPTION
-                    raise CommandErrorCode.OBSERVE.error("observe")
+                    raise CommandErrorCode.OBSERVE.error("need observe")
             return self._result
         except asyncio.CancelledError:
             pass

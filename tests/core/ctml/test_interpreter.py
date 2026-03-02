@@ -61,7 +61,7 @@ async def test_interpreter_cancel():
                 interpreter.feed(c)
                 await asyncio.sleep(0.1)
 
-            await interpreter.wait()
+            await interpreter.wait_tasks()
 
     async def cancel():
         await asyncio.sleep(0.2)
