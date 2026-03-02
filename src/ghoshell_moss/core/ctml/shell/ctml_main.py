@@ -29,6 +29,8 @@ def create_ctml_main_chan() -> Channel:
     chan.build.command()(wait_idle)
     chan.build.command()(noop)
     chan.build.command()(observe)
+    chan.build.command()(branch)
+    chan.build.command()(loop)
     chan.build.add_command(interrupt_command)
 
     return chan

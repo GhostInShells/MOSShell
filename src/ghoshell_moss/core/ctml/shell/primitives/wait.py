@@ -82,22 +82,23 @@ async def wait(
             if len(wait_task_group) == 0:
                 return
 
+            _timeout = timeleft.left() or None
             if _return_when == "FIRST_COMPLETE":
                 wait_done = asyncio.wait(
                     wait_task_group,
-                    timeout=timeleft.left() or None,
+                    timeout=_timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             elif _return_when == "ALL_COMPLETE":
                 wait_done = asyncio.wait(
                     wait_task_group,
-                    timeout=timeleft.left() or None,
+                    timeout=_timeout,
                     return_when=asyncio.ALL_COMPLETED,
                 )
             else:
                 wait_done = asyncio.wait(
                     wait_task_group,
-                    timeout=timeleft.left() or None,
+                    timeout=_timeout,
                     return_when=asyncio.FIRST_EXCEPTION,
                 )
 
@@ -127,4 +128,5 @@ async def wait(
     return CommandStackResult(
         iterable_tasks,
         _wait_for_done,
+        timeout=timeout,
     )

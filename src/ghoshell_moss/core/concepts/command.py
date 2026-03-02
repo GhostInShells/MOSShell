@@ -776,6 +776,12 @@ class CommandTask(Generic[RESULT], ABC):
     def success(self) -> bool:
         return self.done() and self.state == "done" and self.errcode == 0
 
+    def observe(self) -> bool:
+        result = self.task_result()
+        if result:
+            return result.observe
+        return False
+
     def cancelled(self) -> bool:
         return self.done() and self.state == "cancelled"
 
@@ -1303,14 +1309,29 @@ class CommandStackResult:
             self,
             iterator: AsyncIterator[CommandTask] | list[CommandTask],
             callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
+            timeout: float | None = None,
     ) -> None:
         self._iterator = iterator
         self._on_callback = callback
         self._generated = []
         self._iterator_done = asyncio.Event()
+        self._timeout = timeout
+        self._wait_timeout_task :asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
+        self._wait_timeout_task = asyncio.create_task(self._wait_timeout())
         return self
+
+    def _on_task_done(self, task: CommandTask) -> None:
+        if task.observe():
+            self._iterator_done.set()
+
+    async def _wait_timeout(self):
+        if self._timeout is not None:
+            await asyncio.sleep(self._timeout)
+            self._iterator_done.set()
+            for task in self._generated:
+                task.cancel()
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._iterator_done.set()
@@ -1319,17 +1340,24 @@ class CommandStackResult:
             for task in self._generated:
                 if not task.done():
                     task.fail(exc_val)
+        if self._wait_timeout_task is not None:
+            self._wait_timeout_task.cancel()
 
-    async def callback(self, owner: CommandTask) -> None:
+    async def callback(self, owner: CommandTask) -> Self | None:
         """
         回调 owner.
         """
         if self._on_callback and callable(self._on_callback):
             # 如果是回调函数, 则用回调函数决定 task.
             result = await self._on_callback(self._generated)
+            if isinstance(result, CommandStackResult):
+                # but not resolve
+                return result
             owner.resolve(result)
+            return None
         else:
             owner.resolve(None)
+            return None
 
     def generated(self) -> list[CommandTask]:
         return self._generated.copy()
@@ -1344,11 +1372,13 @@ class CommandStackResult:
             if len(self._iterator) == 0:
                 raise StopAsyncIteration
             item = self._iterator.pop(0)
+            item.add_done_callback(self._on_task_done)
             self._generated.append(item)
             return item
         else:
             try:
                 item = await self._iterator.__anext__()
+                item.add_done_callback(self._on_task_done)
             except StopAsyncIteration:
                 self._iterator_done.set()
                 raise StopAsyncIteration

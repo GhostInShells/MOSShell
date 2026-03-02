@@ -1027,7 +1027,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # dry run 不会清空 task 状态.
             return await task.dry_run()
 
-    async def _execute_self_task_nonblock(self, task: CommandTask, depth: int = 0) -> None:
+    async def _execute_self_task_nonblock(self, task: CommandTask, depth: int = 0) -> asyncio.Task | None:
         """
         阻塞完成一个任务的运行准备.
         这里没有让出逻辑.
@@ -1046,7 +1046,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         task.exec_chan = self.channel.id()
         # 非阻塞函数不能返回 stack
         # 确保 task 被执行了. 但是不要阻塞主链路.
-        _ = self._loop.create_task(self._ensure_task_executed(task, depth))
+        return self._loop.create_task(self._ensure_task_executed(task, depth))
 
     async def _add_executing_task(self, task: CommandTask) -> None:
         await self._blocking_action_lock.acquire()
@@ -1077,6 +1077,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         task = self._parse_task(task)
         if task is None:
             return
+        await self._add_executing_task(task)
 
         get_result_from_task = self._loop.create_task(self._get_task_result(task))
         try:
@@ -1098,7 +1099,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 如果返回值是 stack, 则意味着要循环堆栈.
             if isinstance(result, CommandStackResult):
                 # 执行完所有的堆栈. 同时设置真实被执行的任务.
-                await self._fulfill_task_with_its_result_stack(task, result, depth=depth)
+                await self._fulfill_task_with_its_result_stack(task, result, depth=depth),
             else:
                 # 赋值给原来的 task.
                 task.resolve(result)
@@ -1135,6 +1136,27 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             stack: CommandStackResult,
             depth: int = 0,
     ) -> None:
+        result = stack
+        while result is not None:
+            get_stack_result = asyncio.create_task(
+                self._run_result_stack(owner, result, depth=depth),
+            )
+            self_done = asyncio.create_task(owner.wait(throw=False))
+            done, pending = await asyncio.wait(
+                [get_stack_result, self_done],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            result = await get_stack_result
+
+    async def _run_result_stack(
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
+    ) -> CommandStackResult | None:
+        result = None
         try:
             if not owner.meta.blocking:
                 owner.fail(CommandErrorCode.INVALID_USAGE.error(f"invalid command: none blocking task return stack"))
@@ -1163,17 +1185,21 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                         continue
 
                     # 递归阻塞等待任务被执行.
-                    await self._execute_self_task_nonblock(sub_task, depth + 1)
                     if sub_task.meta.blocking:
                         # 自己的任务仍然要阻塞一下.
-                        await sub_task.wait(throw=False)
+                        await self._ensure_task_executed(sub_task, depth=depth + 1)
+                    else:
+                        _ = asyncio.create_task(self._ensure_task_executed(sub_task, depth=depth))
 
                 # 完成了所有子节点的调度后, 通知回调函数.
                 # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
                 #          如果有异常又是否要取消所有的 child task.
-                await stack.callback(owner)
+                result = await stack.callback(owner)
+                return result
         except asyncio.CancelledError:
-            pass
+            if not owner.done():
+                owner.cancel()
+            raise
         except Exception as e:
             # 有异常时, 同时取消所有动态生成的 task 对象. 包括发送出去的. 这样就不会有阻塞了.
             self.logger.exception(
@@ -1188,7 +1214,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             owner.fail(e)
         finally:
             # owner 结束时, 子任务可能并未完成.
-            if not owner.done():
+            if result is None and not owner.done():
                 owner.cancel()
 
     async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:

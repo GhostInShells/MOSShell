@@ -6,3 +6,4 @@ from .noop import noop
 from .observe import observe
 from .interrupt import interrupt_command
 from .condition import branch
+from .loop import loop
