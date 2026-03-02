@@ -404,7 +404,7 @@ async def test_py_channel_parent_idle() -> None:
         # 等待运行完. 子命令都运行完, 父轨才会 idle.
         await task1
         await runtime.wait_idle()
-        assert task3.exec_chan == "b_chan"
+        assert task3.exec_chan == b_chan.id()
         assert order == [task1, task3, task4, task2]
         metas = runtime.metas()
         assert len(metas) == 3

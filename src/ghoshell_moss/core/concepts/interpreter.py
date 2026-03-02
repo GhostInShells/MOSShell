@@ -185,7 +185,7 @@ class Interpretation(BaseModel):
         description="运行结束, 并且运行成功的 task cid => task caller"
     )
     executed_tokens: list[str] = Field(
-        default="",
+        default_factory=list,
         description="被执行过的输入文本."
     )
 
@@ -362,7 +362,8 @@ class Interpreter(ABC):
         >>>         # 保证提交了 commit
         >>>         async with interpreter.commit_ctx():
         >>>             async for item in items:
-        >>>                 interpreter.feed(item)
+        >>>                 if not interpreter.feed(item):
+        >>>                     break
         >>>         await interpreter.wait_stopped()
         """
         yield
@@ -399,7 +400,7 @@ class Interpreter(ABC):
         >>> def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
         >>>     with interpreter.string_token_parser() as parser:
         >>>         async for delta in deltas:
-        >>>         parser.feed(delta)
+        >>>             parser.feed(delta)
 
         注意 Parser 是同步阻塞的, 因此正确的做法是使用 interpreter 自带的 feed 函数实现非阻塞.
         通常 parser 运行在独立的线程池中.
@@ -508,17 +509,6 @@ class Interpreter(ABC):
     async def __aenter__(self) -> Self:
         """
         example to use the interpreter:
-
-        async with interpreter as itp:
-            # the interpreter started
-            async for item in async_iterable_texts:
-                # 判断是否被中断. 如果被中断可以 break.
-                if not itp.is_stopped():
-                    itp.feed(item)
-
-            await itp.wait_until_done()
-
-        result = itp.results()
         """
         pass
 

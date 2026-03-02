@@ -252,6 +252,16 @@ class Builder(ABC):
         pass
 
     @abstractmethod
+    def add_command(
+            self,
+            command: Command,
+    ) -> None:
+        """
+        添加一个 Command 对象.
+        """
+        pass
+
+    @abstractmethod
     def command(
             self,
             *,

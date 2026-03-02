@@ -104,6 +104,11 @@ class PyChannelBuilder(Builder):
             return await self._instruction_messages_function()
         return self._instruction_messages_function()
 
+    def add_command(self, command: Command) -> None:
+        if not isinstance(command, Command):
+            raise ValueError("Command must be of type Command, not {}".format(type(command)))
+        self._commands[command.name()] = command
+
     def command(
         self,
         *,
@@ -131,7 +136,7 @@ class PyChannelBuilder(Builder):
                 blocking=blocking if blocking is not None else self._blocking,
                 call_soon=call_soon,
             )
-            self._commands[command.name()] = command
+            self.add_command(command)
             if return_command:
                 return command
             return func

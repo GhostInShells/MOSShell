@@ -30,6 +30,8 @@ async def test_clear_basic_functionality():
             task_cancelled = True
             execution_log.append("task_cancelled")
             raise
+        except Exception as e:
+            raise
         finally:
             cmd_done.set()
 

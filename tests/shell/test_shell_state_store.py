@@ -49,7 +49,7 @@ async def test_shell_state_store_baseline():
                 result.append(task.result())
             # 获取到结果.
             assert result == [None, 123]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "a"]
+            assert [t.exec_chan for t in tasks.values()] == [chan.id(), chan.id()]
 
 
 @pytest.mark.asyncio
@@ -101,4 +101,4 @@ async def test_shell_state_store_share():
                 result.append(task.result())
             # 获取到结果.
             assert result == [None, 123]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
+            assert [t.exec_chan for t in tasks.values()] == [a_chan.id(), b_chan.id()]

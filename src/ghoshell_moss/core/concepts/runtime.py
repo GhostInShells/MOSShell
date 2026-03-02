@@ -34,7 +34,6 @@ import time
 __all__ = ["AbsChannelRuntime", "BaseImportLib", "AbsChannelTreeRuntime"]
 
 _ChannelId = str
-_TaskWithPaths = tuple[ChannelPaths, CommandTask]
 
 
 class BaseImportLib(ChannelImportLib):
@@ -432,8 +431,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     # --- on task done --- #
 
     def _parse_task(self, task: CommandTask) -> CommandTask | None:
+        if task is None:
+            return None
         if task.done():
-            return
+            return None
         elif not self.is_running():
             self.logger.error(
                 "%s failed task %s: not running",
@@ -441,7 +442,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 task.cid,
             )
             task.fail(CommandErrorCode.NOT_RUNNING.error(f"channel {self.name} not running"))
-            return
+            return None
         elif not self.is_connected():
             self.logger.info(
                 "%s failed task %s: not connected",
@@ -449,7 +450,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 task.cid,
             )
             task.fail(CommandErrorCode.NOT_CONNECTED.error(f"channel {self.name} not connected"))
-            return
+            return None
         elif not self.is_available():
             self.logger.info(
                 "%s failed task %s: not available",
@@ -457,7 +458,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 task.cid,
             )
             task.fail(CommandErrorCode.NOT_AVAILABLE.error(f"channel {self.name} not available"))
-            return
+            return None
         return task
 
     async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
@@ -744,7 +745,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._importlib = None
 
 
-# --- execute tasks --- #
+_TaskId = str
+_TaskIdWithPaths = tuple[ChannelPaths, _TaskId]
 
 
 class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
@@ -757,15 +759,18 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             logger=logger,
         )
         self._blocking_action_lock = asyncio.Lock()
-        self._lifecycle_task: asyncio.Task | None = None
-        self._pending_task_queue: asyncio.Queue[_TaskWithPaths | None] = asyncio.Queue()
+        self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
 
-        # 运行执行的并行任务.
-        self._consuming_command_task: CommandTask | None = None
-        self._executing_command_task: CommandTask | None = None
-        self._executing_cmd_tasks: set[CommandTask] = set()
+        # 运行状态池.
+        # 生命周期任务.
+        self._lifecycle_task: asyncio.Task | None = None
+        # 在队列中阻塞的任务.
+        self._pending_tasks: dict[_TaskId, CommandTask] = {}
+        # 在执行中的异步任务.
+        self._executing_self_tasks: dict[_TaskId, CommandTask] = {}
+        # 在执行中的非异步任务.
+        self._executing_blocking_task: CommandTask | None = None
         self._idled_event = asyncio.Event()
-        self._has_task_queued = asyncio.Event()
 
     @abstractmethod
     def sub_channels(self) -> dict[str, Channel]:
@@ -847,20 +852,22 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         pass
 
     async def _clear_lifecycle_task(self) -> None:
+        """
+        终止进行中的生命周期函数.
+        """
         # 终止阻塞中的任务.
+        self._idled_event.clear()
         await self._blocking_action_lock.acquire()
         try:
-            self._idled_event.clear()
             if self._lifecycle_task and not self._lifecycle_task.done():
                 self._lifecycle_task.cancel()
-                try:
-                    await self._lifecycle_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    self.logger.exception("%s clear lifecycle task failed: %s", self.log_prefix, e)
-            self._lifecycle_task = None
+                await self._lifecycle_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception("%s clear lifecycle task failed: %s", self.log_prefix, e)
         finally:
+            self._lifecycle_task = None
             self._blocking_action_lock.release()
 
     async def _wait_children_idled(self) -> None:
@@ -893,14 +900,20 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     async def _main_loop(self) -> None:
         try:
+            # 等待启动再开始.
             await self.wait_started()
             while not self._closing_event.is_set():
-                await asyncio.sleep(0)
+                # 确保让出.
+                await asyncio.sleep(0.0)
                 _pending_queue = self._pending_task_queue
                 # 如果队列是空的, 则要看看是否能够启动 idle.
                 if _pending_queue.empty() and not self._idled_event.is_set():
+                    # 存在执行中的任务, 继续去拉取.
+                    if self._executing_blocking_task or len(self._pending_tasks) > 0:
+                        continue
+                    # 可以执行 idle 了.
                     if self._is_children_idled():
-                        # 这种情况下就真的可以 idle 了.
+                        # 这种情况下就真的可以 idle 了. 速度应该很快.
                         await self.idle()
                         self._idled_event.set()
                         continue
@@ -915,14 +928,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     self.logger.info("%s receive none from pending task queue", self.log_prefix)
                     continue
                 # 拿到新命令后, 就清空生命周期函数.
-                paths, task = item
-                # handle task 函数是阻塞的, 这意味着:
-                # 1. 它会阻塞后续拿到新的任务.
-                # 2. 如果它执行了子任务, 其实不会阻塞.
-                # 3. 如果它执行了 none-blocking 的任务, 也不会阻塞.
-                # 4. 只有它执行的目标任务是自己的任务, 才会阻塞. 而且要阻塞等待儿孙们都执行完了, 才轮到自己执行.
-
-                await self._consume_task(paths, task)
+                paths, task_id = item
+                # consume 动作认为是阻塞的, 它会快速执行, 然后去拉下一个 task.
+                # 它唯一的目标就是快速消费.
+                await self._consume_task(paths, task_id)
         except asyncio.CancelledError as e:
             # 允许被 cancel.
             self.logger.info("%s Cancel consuming pending task loop: %r", self.log_prefix, e)
@@ -932,6 +941,8 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     async def _dispatch_children_task(self, paths: ChannelPaths, task: CommandTask) -> None:
         await asyncio.sleep(0)
+        if task.done():
+            return
         child_name = paths[0]
         # 子节点在路径上不存在.
         child = self.sub_channels().get(child_name)
@@ -948,30 +959,63 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         further_paths = paths[1:]
         await runtime.push_task_with_paths(further_paths, task)
 
-    async def _consume_task(self, paths: ChannelPaths, task: CommandTask) -> None:
+    async def _consume_task(self, paths: ChannelPaths, task_id: str) -> None:
         """
         尝试运行一个 task. 这个运行周期是全局唯一, 阻塞的.
         """
-        self._consuming_command_task = task
-        await asyncio.sleep(0)
+        if task_id not in self._pending_tasks:
+            return None
+        consuming = None
         try:
-            # 确保这个任务也可以被 clear 掉.
-            await self._clear_lifecycle_task()
-            # 检查是不是子节点的任务.
-            if len(paths) > 0:
-                await self._dispatch_children_task(paths, task)
+            # consuming 过程中让出一次.
+            await asyncio.sleep(0)
+            # 阻塞任务存在的时候, 必须等到阻塞任务完成, 或者它被取消.
+            # 这里不做优先级检查, 因为入队时做过了.
+            if self._executing_blocking_task is not None and not self._executing_blocking_task.done():
+                # 等待阻塞任务因为任何原因完成.
+                await self._executing_blocking_task.wait(throw=False)
+                # 只有 consuming 环节可以控制 executing blocking task
+                self._executing_blocking_task = None
+
+            try:
+                consuming = self._pending_tasks.pop(task_id)
+            except KeyError:
+                return None
+            if consuming.done():
+                consuming = None
                 return
 
-            # 执行任务.
-            await self._execute_self_task(task)
+            is_self_task = len(paths) == 0
+            is_blocking_task = consuming.meta.blocking
+            # 检查是不是子节点的任务.
+            if not is_self_task:
+                # 分配给子节点.
+                await self._dispatch_children_task(paths, consuming)
+                consuming = None
+                return
+
+            if is_blocking_task:
+                # 只有 consume 层可以设置 blocking task. 协程安全操作.
+                self._executing_blocking_task = consuming
+            # 执行自己的任务. 但并不阻塞.
+            await self._clear_lifecycle_task()
+            await self._execute_self_task_nonblock(consuming)
+            consuming = None
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.logger.info("%s handle pending task exception: %r", self.log_prefix, e)
-            # 所有在执行 handle pending task 阶段抛出的异常, 都不向上中断.
+            self.logger.exception("%s handle pending task exception: %r", self.log_prefix, e)
         finally:
-            self._consuming_command_task = None
+            # 这个时候, consuming_command_task 正常应该都设置为 None 了.
+            if consuming is not None:
+                # 不合法的情况, 要检查原因.
+                self.logger.error(
+                    "%s consuming task not handled: %r",
+                    self.log_prefix,
+                    consuming,
+                )
+                consuming.cancel()
 
     async def _get_task_result(self, task: CommandTask) -> Any:
         # 准备执行.
@@ -983,28 +1027,53 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # dry run 不会清空 task 状态.
             return await task.dry_run()
 
-    async def _execute_self_task(self, task: CommandTask, depth: int = 0) -> None:
-        task.set_state(CommandTaskState.executing)
-        task.exec_chan = self._name
-        await asyncio.sleep(0)
-        # 非阻塞函数不能返回 stack
+    async def _execute_self_task_nonblock(self, task: CommandTask, depth: int = 0) -> None:
+        """
+        阻塞完成一个任务的运行准备.
+        这里没有让出逻辑.
+        task 虽然被执行了, 但
+        """
+        # 又要检查一次.
+        if task is None or task.done():
+            return
         if depth > 10:
             task.fail(CommandErrorCode.INVALID_USAGE.error("stackoverflow"))
             return
-        self._executing_cmd_tasks.add(task)
-        # 确保 task 被执行了.
-        asyncio_task = asyncio.create_task(self._ensure_task_executed(task, depth))
-        if task.meta.interruptable:
-            # 对于可被中断的任务, 它应该被放到 lifecycle task 里, 有新任务进来就会中断它.
-            self._lifecycle_task = asyncio_task
-        elif task.meta.blocking:
-            # 阻塞等待 blocking 任务执行完毕.
-            await asyncio_task
+        # 确保 task 被加入了状态池.
+        await self._add_executing_task(task)
+        task.set_state(CommandTaskState.executing)
+        # 设置 channel id 来标记执行者.
+        task.exec_chan = self.channel.id()
+        # 非阻塞函数不能返回 stack
+        # 确保 task 被执行了. 但是不要阻塞主链路.
+        _ = self._loop.create_task(self._ensure_task_executed(task, depth))
+
+    async def _add_executing_task(self, task: CommandTask) -> None:
+        await self._blocking_action_lock.acquire()
+        try:
+            cid = task.cid
+            if cid in self._executing_self_tasks:
+                return
+            self._executing_self_tasks[cid] = task
+            task.add_done_callback(self._on_executing_task_done)
+        finally:
+            self._blocking_action_lock.release()
+
+    def _on_executing_task_done(self, task: CommandTask) -> None:
+        if not self.is_running():
+            return
+        # 确保垃圾回收.
+        cid = task.cid
+        try:
+            _ = self._executing_self_tasks.pop(cid)
+        except KeyError:
+            pass
 
     async def _ensure_task_executed(self, task: CommandTask, depth: int) -> None:
         """
         运行属于自己这个 channel 的 task, 让它进入到 executing group 中.
         """
+        # 由于是异步执行的, 再检查一次.
         task = self._parse_task(task)
         if task is None:
             return
@@ -1046,14 +1115,19 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             if not task.done():
                 self.logger.info("%s failed to ensure task done: %s", self.log_prefix, task)
                 task.fail(CommandErrorCode.UNKNOWN_ERROR.error(f"execution failed"))
-            if task in self._executing_cmd_tasks:
-                self._executing_cmd_tasks.remove(task)
+            # 还要确保 get result 这个函数被清空了.
+            if task is self._executing_blocking_task:
+                self._executing_blocking_task = None
             if not get_result_from_task.done():
                 try:
                     get_result_from_task.cancel()
                     await get_result_from_task
                 except asyncio.CancelledError:
                     pass
+                except Exception as e:
+                    self.logger.exception(
+                        "%s task %s cancel get result failed: %s", self.log_prefix, task, e,
+                    )
 
     async def _fulfill_task_with_its_result_stack(
             self,
@@ -1076,98 +1150,136 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 owner,
             )
             # 遍历生成的新栈.
-            async for sub_task in stack:
-                await asyncio.sleep(0)
-                if owner.done():
-                    # 不要继续执行了.
-                    break
-                paths = Channel.split_channel_path_to_names(sub_task.chan)
-                if len(paths) > 0:
-                    # 发送给子孙了.
-                    await self._dispatch_children_task(paths, sub_task)
-                    continue
+            async with stack:
+                async for sub_task in stack:
+                    await asyncio.sleep(0)
+                    if owner.done():
+                        # 不要继续执行了.
+                        break
+                    paths = Channel.split_channel_path_to_names(sub_task.chan)
+                    if len(paths) > 0:
+                        # 发送给子孙了.
+                        await self._dispatch_children_task(paths, sub_task)
+                        continue
 
-                # 递归阻塞等待任务被执行.
-                await self._execute_self_task(sub_task, depth + 1)
+                    # 递归阻塞等待任务被执行.
+                    await self._execute_self_task_nonblock(sub_task, depth + 1)
+                    if sub_task.meta.blocking:
+                        # 自己的任务仍然要阻塞一下.
+                        await sub_task.wait(throw=False)
 
-            # 完成了所有子节点的调度后, 通知回调函数.
-            # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
-            #          如果有异常又是否要取消所有的 child task.
-            await stack.callback(owner)
-            return
+                # 完成了所有子节点的调度后, 通知回调函数.
+                # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
+                #          如果有异常又是否要取消所有的 child task.
+                await stack.callback(owner)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            # 不要留尾巴?
             # 有异常时, 同时取消所有动态生成的 task 对象. 包括发送出去的. 这样就不会有阻塞了.
+            self.logger.exception(
+                "%s Fulfill task stack failed, task=%s, exception=%s",
+                self.log_prefix,
+                owner,
+                e,
+            )
+            for child in stack.generated():
+                if not child.done():
+                    child.fail(e)
+            owner.fail(e)
+        finally:
+            # owner 结束时, 子任务可能并未完成.
             if not owner.done():
-                self.logger.exception(
-                    "%s Fulfill task stack failed, task=%s, exception=%s",
-                    self.log_prefix,
-                    owner,
-                    e,
-                )
-                for child in stack.generated():
-                    if not child.done():
-                        child.fail(e)
-                owner.fail(e)
-            raise e
+                owner.cancel()
 
     async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         """
         基于路径将任务入栈.
+        入栈是高优的同步任务.
         """
         try:
             # 是自己的, 而且是要立刻执行的任务.
-            # call soon 这类任务
-            await self._clear_lifecycle_task()
-            if len(paths) == 0 and task.meta.call_soon:
-                if task.meta.blocking:
-                    # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务. 这其中也递归地包含子节点的任务.
-                    await self.clear()
-                # 立刻将它放入 runtime 的执行队列. 它会被尽快执行.
-                await self._consume_task(paths, task)
-                # 并不阻塞等待结果, 而是立刻返回.
+            task = self._parse_task(task)
+            if task is None:
                 return
+            task_id = task.cid
+            # set pending
+            task.set_state(CommandTaskState.pending.value)
+            # 确认是自身的任务, 并且 call soon.
+            is_self_task = len(paths) == 0
+            is_blocking_task = task.meta.blocking
 
+            # 进入 pending 列表.
+            if is_self_task:
+                # 清理运行中的 lifecycle task
+                await self._clear_lifecycle_task()
+                # call soon
+                if task.meta.call_soon:
+                    if is_blocking_task:
+                        # 需要立刻执行, 而且是一个阻塞类的任务, 则会清空所有运行中的任务.
+                        # 不会包含子节点, 只会清空当前队列.
+                        self._clear_own_task_by_priority(task.chan, None)
+                    else:
+                        # 立刻将它执行, none blocking 任务确认会进入到并行运行.
+                        await self._execute_self_task_nonblock(task, depth=0)
+                        # 并不阻塞等待结果, 而是立刻返回.
+                        return
+                # 优先级检查. 高优先级的指令, 会尝试做清空.
+                elif task.meta.priority > 0:
+                    # 来一次优先级的 pk.
+                    self._clear_own_task_by_priority(task.chan, task.meta.priority)
+            self._pending_tasks[task_id] = task
             # 普通的任务, 则会被丢入阻塞队列中排队执行.
             _queue = self._pending_task_queue
             # 入栈.
-            _queue.put_nowait((paths, task))
-            # set pending
-            task.set_state(CommandTaskState.pending.value)
-            self._has_task_queued.set()
+            _queue.put_nowait((paths, task_id))
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
+
+    def _clear_own_task_by_priority(self, chan: str, priority: int | None):
+        """
+        根据优先级清空自身的任务.
+        如果 priority 为空, 表示最高优先级, 不做比较.
+        """
+        if priority is not None and priority <= 0:
+            # 误操作, 没有资格做比较.
+            return
+        reason = "interrupted by higher priority command"
+        if self._executing_blocking_task is not None:
+            if priority is None or self._executing_blocking_task.meta.priority < priority:
+                self._executing_blocking_task.cancel(reason)
+        for task in self._pending_tasks.values():
+            # 预先清空队列中优先级低于自身的命令.
+            if task.chan != chan:
+                continue
+            if priority is None or task.meta.blocking and task.meta.priority < priority:
+                task.cancel(reason)
 
     async def clear_own(self) -> None:
         """
         当轨道命令被触发清空时候执行.
+        仅仅清空自身的运行中状态.
         """
         if not self._started.is_set() or self._closed_event.is_set():
             return
         await self._blocking_action_lock.acquire()
         try:
-            await asyncio.sleep(0.0)
-            _pending_task_queue = self._pending_task_queue
-            self._pending_task_queue = asyncio.Queue()
-            while not _pending_task_queue.empty():
-                item = await _pending_task_queue.get()
-                if item is not None:
-                    paths, task = item
+            clear_err = CommandErrorCode.CLEARED.error("cleared by runtime")
+            if len(self._pending_tasks) > 0:
+                pending_tasks = self._pending_tasks.copy()
+                self._pending_tasks.clear()
+                for task in pending_tasks.values():
                     if not task.done():
-                        task.fail(CommandErrorCode.CLEARED.error("cleared by runtime"))
-            _pending_task_queue.put_nowait(None)
+                        task.fail(clear_err)
+            # 清空存在的 tasks. 避免内存泄漏. 虽然有队列在拉取.
+            self._pending_tasks.clear()
 
-            # 设置 task 为 fail 即可. 主循环永远会清除它.
-            consuming_command_task = self._consuming_command_task
-            if consuming_command_task is not None:
-                if not consuming_command_task.done():
-                    consuming_command_task.fail(CommandErrorCode.CLEARED.error(f"cleared by runtime"))
             # 并行执行的 task 也需要被清除.
-            if len(self._executing_cmd_tasks) > 0:
-                for t in self._executing_cmd_tasks:
+            if len(self._executing_self_tasks) > 0:
+                executing_tasks = self._executing_self_tasks.copy()
+                self._executing_self_tasks.clear()
+                for t in executing_tasks.values():
                     if not t.done():
-                        t.fail(CommandErrorCode.CLEARED.error(f"cleared by runtime"))
-            self._executing_cmd_tasks.clear()
+                        t.fail(clear_err)
         except Exception as e:
             self.logger.exception("%s clear self failed: %s", self.log_prefix, e)
             raise

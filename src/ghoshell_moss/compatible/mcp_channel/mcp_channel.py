@@ -90,7 +90,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
             task.fail(CommandErrorCode.NOT_FOUND.error(f"command {task.meta.name} not found"))
             return
         task.exec_chan = self.name
-        task.set_state(CommandTaskState.running)
+        task.set_state(CommandTaskState.executing.value)
         try:
             result = await task.func(*task.args, **task.kwargs)
             task.resolve(result)

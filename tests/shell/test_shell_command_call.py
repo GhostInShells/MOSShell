@@ -52,7 +52,7 @@ async def test_shell_execution_baseline():
                 result.append(task.result())
             # 获取到结果.
             assert result == [123, 456]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
+            assert [t.exec_chan for t in tasks.values()] == [a_chan.id(), b_chan.id()]
             # 验证并发执行.
             task_list = list(tasks.values())
             assert len(task_list) > 1
@@ -202,7 +202,7 @@ async def test_shell_task_can_get_task():
             assert len(tasks) == 1
             first = list(tasks.values())[0]
             assert first.done()
-            assert first.exec_chan == "a"
+            assert first.exec_chan == a_chan.id()
             assert first.cid == first.result()
 
 

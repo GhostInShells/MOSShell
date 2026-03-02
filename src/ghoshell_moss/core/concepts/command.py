@@ -64,7 +64,6 @@ class CommandTaskState(str, Enum):
     created = "created"  # the command task is just created by interpreter or other
     queued = "queued"  # the command task is sent to shell runtime
     pending = "pending"  # the command task is pending in the channel runtime
-    running = "running"  # the task is running
     executing = "executing"
     failed = "failed"  # the task is failed
     done = "done"  # the task is resolved
@@ -286,15 +285,21 @@ class CommandMeta(BaseModel):
 
     call_soon: bool = Field(
         default=False,
-        description="if true, this command is called soon when append to the channel",
+        description="如果为 True, 它在进入 Channel 队列时, 就会立刻触发执行."
+                    "如果是 None blocking, 则会立刻开始运行."
+                    "如果是 Blocking, 意味着它会立刻清空整个队列自身, 但不代表清空子队列",
     )
     blocking: bool = Field(
         default=True,
-        description="whether this command block the channel. if block + call soon, will clear the channel first",
+        description="执行完成后, 后面的命令, 包括 blocking = None 的命令才会开始执行."
+                    "blocking = False 的命令想要立刻执行, 也需要配合 call soon.",
     )
-    interruptable: bool = Field(
-        default=False,
-        description="interruptable command task will be cancelled when next blocking task is pending",
+    priority: int = Field(
+        default=0,
+        description="命令的优先级, 主要用于相同优先级的命令. 遵循以下基本规则:"
+                    "相同优先级的命令, 一个执行完了才能执行另一个. "
+                    "如果下一个高优先级的命令入队, 前一个会被立刻取消. "
+                    "如果优先级为负值, 任何新任务在排队, 都会被立刻取消."
     )
 
 
@@ -678,6 +683,7 @@ class ObserveError(Exception):
     """
     一种抛出中断的办法.
     """
+
     def __init__(self, observe: Observe):
         self.observe = observe
         super().__init__()
@@ -1050,7 +1056,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         with self._done_lock:
             if self._done_event.is_set():
                 return None
-            self.state = str(state)
+            if isinstance(state, CommandTaskState):
+                state = state.value
+            if state in self.trace:
+                # 只设置一次.
+                return None
+            self.state = state
             now = round(time.time(), 4)
             self.last_trace = (self.state, now)
             self.trace[self.state] = now
@@ -1289,6 +1300,18 @@ class CommandStackResult:
         self._iterator = iterator
         self._on_callback = callback
         self._generated = []
+        self._iterator_done = asyncio.Event()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._iterator_done.set()
+        if exc_val is not None:
+            # 退出时如果发生了异常, 则必须要清空所有未完成任务.
+            for task in self._generated:
+                if not task.done():
+                    task.fail(exc_val)
 
     async def callback(self, owner: CommandTask) -> None:
         """
@@ -1308,6 +1331,8 @@ class CommandStackResult:
         return self
 
     async def __anext__(self) -> CommandTask:
+        if self._iterator_done.is_set():
+            raise StopAsyncIteration
         if isinstance(self._iterator, list):
             if len(self._iterator) == 0:
                 raise StopAsyncIteration
@@ -1315,12 +1340,13 @@ class CommandStackResult:
             self._generated.append(item)
             return item
         else:
-            item = await self._iterator.__anext__()
+            try:
+                item = await self._iterator.__anext__()
+            except StopAsyncIteration:
+                self._iterator_done.set()
+                raise StopAsyncIteration
             self._generated.append(item)
             return item
-
-    def __str__(self):
-        return ""
 
 
 def make_command_group(*commands: Command) -> dict[str, dict[str, Command]]:
