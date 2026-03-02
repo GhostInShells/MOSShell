@@ -222,6 +222,27 @@ default_parsers = [
 ]
 
 
+def get_error_context(xml_string, exception, window=20):
+    """
+    xml_string: 原始 XML 字符串
+    exception: 捕获到的 SAXParseException
+    window: 错误位置前后截取的字符长度
+    """
+    lines = xml_string.splitlines()
+    line_no = exception.getLineNumber() - 1  # 索引从 0 开始
+    col_no = exception.getColumnNumber() - 1
+
+    if line_no < len(lines):
+        error_line = lines[line_no]
+        # 截取错误位置附近的内容，方便肉眼定位
+        start = max(0, col_no - window)
+        end = min(len(error_line), col_no + window)
+        context = error_line[start:end]
+        marker = " " * (col_no - start) + "^"
+        return f"Line {line_no + 1}, Col {col_no + 1}:\n{context}\n{marker}"
+    return "Unknown location"
+
+
 class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
     """初步实现 sax 解析. 实现得非常糟糕, 主要是对 sax 的回调机制有误解, 留下了大量冗余状态. 需要考虑重写一个简单版."""
 
@@ -263,6 +284,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         # event to notify the parsing is over.
         self.done_event = threading.Event()
         self._exception: Optional[Exception] = None
+        self._parsing_text = ""
+
+    def add_text(self, text: str):
+        self._parsing_text += text
 
     def is_stopped(self) -> bool:
         return self._stopped or self._stop_event.is_set()
@@ -436,7 +461,11 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self._stop_event.is_set() or isinstance(exception, ParserStopped):
             # todo
             return
-        self._exception = InterpretError(f"parse error: {exception}")
+        if isinstance(exception, xml.sax.SAXParseException):
+            exp_str = get_error_context(self._parsing_text, exception)
+        else:
+            exp_str = str(exception)
+        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and open-close tag rules")
 
     def fatalError(self, exception: Exception):
         self.done_event.set()
@@ -444,7 +473,11 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             # todo
             return
         self._logger.exception(exception)
-        self._exception = InterpretError(f"parse error: {exception}")
+        if isinstance(exception, xml.sax.SAXParseException):
+            exp_str = get_error_context(self._parsing_text, exception)
+        else:
+            exp_str = str(exception)
+        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and open-close tag rules")
 
     def warning(self, exception):
         self._logger.warning(exception)
@@ -540,6 +573,7 @@ class CTML2CommandTokenParser(StringTokenParser):
         else:
             self._buffer += delta
             parsed = self._tokens_replacement_matcher.buffer(delta)
+            self._handler.add_text(delta)
             self._sax_parser.feed(parsed)
 
     def commit(self) -> None:

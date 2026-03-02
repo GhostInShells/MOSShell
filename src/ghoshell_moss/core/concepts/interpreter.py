@@ -177,23 +177,27 @@ class Interpretation(BaseModel):
         default_factory=list,
         description="被执行过的输入文本."
     )
-    compiled: dict[str, str] = Field(
+
+    compiled_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="解析生成的 task 的 cid => task caller"
     )
-    cancelled: dict[str, str] = Field(
+    pending_tasks: dict[str, str] = Field(
+        default_factory=dict,
+        description="未完成的 task 的 cid => task caller"
+    )
+    cancelled_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束的 task cid => task caller",
     )
-    failed: dict[str, str] = Field(
+    failed_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束, 失败的 task cid => task caller",
     )
-    succeed: dict[str, str] = Field(
+    success_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束, 并且运行成功的 task cid => task caller"
     )
-
     output: list[Message] = Field(
         default_factory=list,
         description="运行结果中需要输出的消息体. "
@@ -212,26 +216,29 @@ class Interpretation(BaseModel):
     )
 
     def on_task_compiled(self, task: CommandTask | None) -> None:
-        if task is None:
+        if task is None or task.meta.name.startswith('_'):
             return
-        self.compiled[task.cid] = task.caller_name()
+        self.compiled_tasks[task.cid] = task.caller_name()
+        self.pending_tasks[task.cid] = task.caller_name()
 
     def on_done_task(self, task: CommandTask) -> None:
-        if not task.done():
+        if not task.done() or task.meta.name.startswith('_'):
             return
         if self.done:
             return
         task_id = task.cid
+        if task_id in self.pending_tasks:
+            self.pending_tasks.pop(task_id)
         # 注册执行成功的 tokens.
         if task.success():
             self.executed_inputs.append(task.tokens)
-            self.succeed[task_id] = task.caller_name()
+            self.success_tasks[task_id] = task.caller_name()
         # 记录 cancel 类别的.
         elif CommandErrorCode.is_cancelled(task.errcode):
-            self.cancelled[task_id] = task.caller_name()
+            self.cancelled_tasks[task_id] = task.caller_name()
         # 记录异常的.
         else:
-            self.failed[task_id] = task.caller_name()
+            self.failed_tasks[task_id] = task.caller_name()
 
         # 合并 task 运行结果.
         result = task.task_result()
@@ -241,6 +248,33 @@ class Interpretation(BaseModel):
         if len(result.output) > 0:
             self.output.extend(result.output)
         self.messages.extend(result.as_messages())
+
+    def output_messages(self) -> list[Message]:
+        """
+        提供给对客户端输出的消息.
+        """
+        return self.output.copy()
+
+    def observe_messages(self) -> list[Message]:
+        messages = self.messages.copy()
+        if self.interrupted or self.exception:
+            status_message = Message.new(role="system")
+            lines = []
+            if self.interrupted:
+                lines.append("Interrupted!")
+            if self.exception:
+                lines.append("Exception: %s" % self.exception)
+            if len(self.success_tasks) > 0:
+                lines.append("success: %d" % len(self.success_tasks))
+            if len(self.cancelled_tasks) > 0:
+                lines.append("canceled: %d" % len(self.cancelled_tasks))
+            if len(self.failed_tasks) > 0:
+                lines.append("failed: %d" % len(self.failed_tasks))
+            if len(self.pending_tasks) > 0:
+                lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
+            status_message.with_content("\n".join(lines))
+            messages.append(status_message)
+        return messages
 
 
 class Interpreter(ABC):
@@ -437,7 +471,7 @@ class Interpreter(ABC):
         """
         pass
 
-    def completed_tasks(self) -> list[CommandTask]:
+    def done_tasks(self) -> list[CommandTask]:
         """
         返回已经被执行的 tasks. 包含被取消或者出错的.
         """
@@ -465,7 +499,7 @@ class Interpreter(ABC):
         返回当前已经执行完毕的 tokens.
         """
         tokens = []
-        for task in self.completed_tasks():
+        for task in self.done_tasks():
             tokens.append(task.tokens)
         return "".join(tokens)
 

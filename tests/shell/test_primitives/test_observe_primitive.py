@@ -32,6 +32,7 @@ async def test_interrupt_in_ctml():
             assert len(interpreter.compiled_tasks()) == 11
             # when observe done, interpreter is stopped
             await interpreter.wait_stopped()
-            assert len(interpreter.completed_tasks()) == 1
+            # task not done while observe raise
+            assert len(interpreter.done_tasks()) == 1
             await interpreter.close(cancel_executing=True)
-            assert len(interpreter.completed_tasks()) == 11
+            assert len(interpreter.done_tasks()) == 11

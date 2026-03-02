@@ -24,7 +24,7 @@ from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.prompt import get_moss_meta_prompt
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, ParserStopped, AttrWithTypeSuffixParser
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.message import Message
+from ghoshell_moss.message import Message, Text
 
 __all__ = [
     "DEFAULT_META_PROMPT",
@@ -92,9 +92,10 @@ class CTMLInterpreter(Interpreter):
             tokens_replacement: Optional[dict[str, str]] = None,
             logger: Optional[LoggerItf] = None,
             on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-            meta_system_prompt: Optional[str] = None,
+            moss_meta_instruction: Optional[str] = None,
             channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             ignore_wrong_command: bool = False,
+            clear_after_exit: bool = False,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -105,15 +106,17 @@ class CTMLInterpreter(Interpreter):
         :param tokens_replacement: 如果传入, 在解析时会把 输出的 key token 转换成 value token 然后解析. 用来做快速匹配.
         :param logger: 日志.
         :param on_startup: 可以定义额外的启动函数.
-        :param meta_system_prompt: MOSS 解释器的基础语法规则, 如果为空则使用默认的.
+        :param moss_meta_instruction: MOSS 解释器的基础语法规则, 如果为空则使用默认的.
         :param channel_metas: 用来定义当前所拥有的 channels 信息, 用来提供给大模型.
         :param ignore_wrong_command: 是否忽略不存在的 command.
+        :param clear_after_exit: clear undone tasks after exit.
         """
         # 生成 stream id.
         self._id = stream_id or uuid()
         self._interrupted_interpretation = interrupted
-        self._meta_instruction = meta_system_prompt
+        self._meta_instruction = moss_meta_instruction
         self._channel_metas = channel_metas or {}
+        self._clear_after_exit = clear_after_exit
         # 准备日志.
         self._logger = logger or logging.getLogger("CTMLInterpreter")
         self._log_prefix = "[CTMLInterpreter %s] " % self.id
@@ -187,7 +190,7 @@ class CTMLInterpreter(Interpreter):
             for task in undone_tasks:
                 # 分享 task 和 task done.
                 self._managing_tasks[task.cid] = task
-                task.add_done_callback(self._on_task_done_callback)
+                task.add_done_callback(self._task_done_callback)
 
         #  --- runtime --- #
         self._main_parsing_task: Optional[asyncio.Task] = None  # 解析的主循环.
@@ -205,13 +208,7 @@ class CTMLInterpreter(Interpreter):
             return
         self._parsing_exception = error
         self._interpretation.observe = True
-        self._interpretation.messages.append(
-            Message.new(role="system").with_content(
-                f"Interpret Error: {error}",
-            ).as_completed()
-        )
         self._interpretation.exception = str(error)
-        self._interpretation.done = True
         self._stopped_event.set()
 
     @property
@@ -250,7 +247,7 @@ class CTMLInterpreter(Interpreter):
                 self._compiled_tasks[task.cid] = task
                 self._interpretation.on_task_compiled(task)
                 # 注册 task 的回调, 如果出了异常就干脆中断整个流程, 也别解析了.
-                task.add_done_callback(self._on_task_done_callback)
+                task.add_done_callback(self._task_done_callback)
 
             if len(self._on_task_created_callbacks) > 0:
                 for callback in self._on_task_created_callbacks:
@@ -266,19 +263,24 @@ class CTMLInterpreter(Interpreter):
             self._set_interpreter_error(err)
             self._logger.exception("%s Send command task %s failed: %s", self._log_prefix, task, e)
 
-    def _on_task_done_callback(self, command_task: CommandTask) -> None:
+    def _task_done_callback(self, command_task: CommandTask) -> None:
         if not command_task.done():
             self._logger.error(
                 "%s Command task is not done but send to interpreter on task %s done",
                 self._log_prefix, command_task,
             )
             command_task.cancel("system error")
+        self._interpretation.on_done_task(command_task)
         if self._stopped_event.is_set():
             return
-        self._interpretation.on_done_task(command_task)
         # 发现任何任务出错超出预期.
         if self._interpretation.observe:
-            # 中断所有的运行.
+            if self._clear_after_exit:
+                # 中断所有的运行.
+                tasks = self._managing_tasks.values()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel("interpreter stopped for observe")
             self._stopped_event.set()
 
         if len(self._on_task_done_callbacks) > 0:
@@ -305,29 +307,37 @@ class CTMLInterpreter(Interpreter):
     def _get_instruction_messages(self) -> list[Message]:
         messages = []
         interface_message = Message.new(role='system')
+        # 生成代码 interface.
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
             interface_message.with_content(
-                f"\n=== interface:{path_name} ===\n",
+                f"=== interface:{path_name} ===\n",
                 channel_meta.description,
-                "\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
+                "\n\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
                 f"\n=== end interface:{path_name} ===\n",
             )
         messages.append(interface_message.as_completed())
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
             if len(channel_meta.instructions) > 0:
-                messages.append(
-                    Message.new(role="system").with_content(
-                        f"\n=== instructions:{path_name} ===\n",
-                    ),
-                )
-                messages.extend(channel_meta.instructions)
-                messages.append(
-                    Message.new(role="system").with_content(
-                        f"\n=== end instructions:{path_name} ===\n",
-                    ),
-                )
+                first = None
+                last = None
+                for channel_instruction_message in channel_meta.instructions:
+                    if not channel_instruction_message.is_done():
+                        continue
+                    elif first is None:
+                        first = channel_instruction_message.get_copy()
+                        first.contents.insert(0, Text.new(f"\n=== instructions:{path_name} ===\n").to_content())
+                        messages.append(first)
+                        last = first
+                        continue
+                    else:
+                        last = channel_instruction_message.get_copy()
+                        messages.append(last)
+                if last:
+                    last.contents.append(
+                        Text.new(f"\n=== end instructions:{path_name} ===\n").to_content(),
+                    )
         return messages
 
     def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
@@ -345,7 +355,7 @@ class CTMLInterpreter(Interpreter):
                 messages.append(
                     Message.new(role="system")
                     .with_content(
-                        f"=== context:{path_name} ===",
+                        f"\n=== context:{path_name} ===\n",
                     )
                     .as_completed(),
                 )
@@ -353,7 +363,7 @@ class CTMLInterpreter(Interpreter):
                 messages.append(
                     Message.new(role="system")
                     .with_content(
-                        f"=== end context:{path_name} ===",
+                        f"\n=== end context:{path_name} ===\n",
                     )
                     .as_completed(),
                 )
@@ -449,6 +459,9 @@ class CTMLInterpreter(Interpreter):
             self._logger.info("%s parser stopped: %s", self._log_prefix, e)
             # self._parsing_exception = InterpretError(f"Parse output stream failed: {e}")
             self._stopped_event.set()
+        except InterpretError as e:
+            self._logger.exception("%s Interpret failed: %s", self._log_prefix, e)
+            self._set_interpreter_error(e)
         except Exception as exc:
             self._logger.exception("%s Interpret failed: %s", self._log_prefix, exc)
             err = InterpretError(f"Interpret failed: {exc}")
@@ -536,7 +549,6 @@ class CTMLInterpreter(Interpreter):
             return None
         self._closed = True
         self._interpretation.interrupted = not self._stopped_event.is_set()
-        self._interpretation.done = True
         self._stopped_event.set()
         self._logger.info("%s interpreter stopping", self._log_prefix)
         try:
@@ -556,7 +568,7 @@ class CTMLInterpreter(Interpreter):
         except asyncio.CancelledError:
             pass
 
-        if cancel_executing:
+        if cancel_executing or self._clear_after_exit:
             for t in self._managing_tasks.values():
                 if not t.done():
                     t.fail(CommandErrorCode.INTERRUPTED.error("interpreter stopped"))
@@ -567,6 +579,7 @@ class CTMLInterpreter(Interpreter):
             self._parsing_exception = InterpretError("Interpretation is interrupted")
         if self._parsing_exception:
             self._interpretation.exception = str(self._parsing_exception)
+        self._interpretation.done = True
         r = self._interpretation
         return r
 

@@ -264,13 +264,17 @@ class MOSSShell(ABC):
             *,
             stream_id: Optional[str] = None,
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            clear_after_exit: bool = False,
             ignore_wrong_command: bool = False,
     ) -> "Interpreter":
         """
         简单的语法糖.
         """
         interpreter = await self.interpreter(
-            kind=kind, stream_id=stream_id, config=config,
+            kind=kind,
+            stream_id=stream_id,
+            config=config,
+            clear_after_exit=clear_after_exit,
             ignore_wrong_command=ignore_wrong_command,
         )
         async with interpreter:
@@ -286,6 +290,7 @@ class MOSSShell(ABC):
             prepare_timeout: float = 2.0,
             ignore_wrong_command: bool = False,
             token_replacements: dict[str, str] | None = None,
+            clear_after_exit: bool = False,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -315,6 +320,7 @@ class MOSSShell(ABC):
                     所以 (v - m) * k * 3 > n * m    就有正收益.
                     假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
 
+        :param clear_after_exit: clear undone tasks after exit.
         """
         pass
 

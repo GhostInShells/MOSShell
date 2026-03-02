@@ -1,5 +1,6 @@
 import pytest
 from ghoshell_moss.core import PyChannel, new_ctml_shell, InterpretError
+from ghoshell_common.helpers import yaml_pretty_dump
 import time
 
 
@@ -53,11 +54,21 @@ async def test_interpreter_feed_stop_by_error():
     测试 wait_idle 与其他原语的配合
     """
     shell = new_ctml_shell()
+
+    bg = PyChannel(name="bg")
+
+    @bg.build.command()
+    async def foo():
+        return
+
+    shell.main_channel.import_channels(bg)
+
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with shell.interpreter_in_ctx(clear_after_exit=True) as interpreter:
+            interpretation = interpreter.interpretation()
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
-                <bg:background_work/>
+                <bg:foo/>
                 <sleep duration:floa
             """)
             interpreter.feed("<<<<skskdkjfskd")
@@ -70,8 +81,7 @@ async def test_interpreter_feed_stop_by_error():
             with pytest.raises(InterpretError):
                 interpreter.feed("<<<<skskdkjfskd", throw=True)
 
-            interpretation = await interpreter.close()
-            assert len(interpretation.exception) > 0
+        assert len(interpretation.exception) > 0
 
 
 @pytest.mark.asyncio

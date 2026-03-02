@@ -433,7 +433,7 @@ class Message(BaseModel, WithAdditional):
             name=name,
             id=id or uuid_md5(),
         )
-        return cls(meta=meta)
+        return cls(meta=meta, seq="completed")
 
     @property
     def role(self) -> str:
@@ -464,22 +464,23 @@ class Message(BaseModel, WithAdditional):
         语法糖, 用来添加 content.
         """
         from .contents import Base64Image, Text
+        if self.contents is None:
+            self.contents = []
 
         for content in contents:
             if content is None:
                 continue
             elif is_typeddict(content):
-                self.contents = self.contents or []
-                self.contents.append(content)
+                content = content
             elif isinstance(content, ContentModel):
-                self.contents = self.contents or []
-                self.contents.append(content.to_content())
+                content = content.to_content()
             elif isinstance(content, str):
-                self.contents = self.contents or []
-                self.contents.append(Text(text=content).to_content())
+                content = Text(text=content).to_content()
             elif isinstance(content, Image.Image):
-                self.contents = self.contents or []
-                self.contents.append(Base64Image.from_pil_image(content).to_content())
+                content = Base64Image.from_pil_image(content).to_content()
+            else:
+                continue
+            self.contents.append(content)
         return self
 
     def is_completed(self) -> bool:
@@ -604,3 +605,15 @@ class Message(BaseModel, WithAdditional):
         self.meta.updated_at = timestamp_ms()
         self.meta.completed_at = None
         return self
+
+    def __str__(self):
+        lines = []
+        if not self.contents:
+            return ""
+        for content in self.contents:
+            if content["type"] == "text":
+                lines.append(content['data']['text'])
+            else:
+                lines.append("content type: %s" % content['type'])
+        return "\n".join(lines)
+
