@@ -296,24 +296,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if token is None:
             # send the poison item means end
             self._callback(None)
-        elif not self.done_event.is_set():
+        else:
             token.order = self._token_order
             self._token_order += 1
             self._callback(token)
-        else:
-            # todo: log
-            pass
-
-    def startElementNS(self, name: tuple[str, str], qname: str, attrs: xml.sax.xmlreader.AttributesNSImpl):
-        if self.is_stopped():
-            raise ParserStopped
-        chan, command_name = name
-        dict_attrs = {}
-        for attr_qname in attrs.getQNames():
-            _, name = attrs.getNameByQName(attr_qname)
-            attr_value = attrs.getValueByQName(attr_qname)
-            dict_attrs[name] = attr_value
-        self._start_command_token_element(chan, command_name, dict_attrs)
 
     def startElement(self, name: str, attrs: xml.sax.xmlreader.AttributesImpl | dict) -> None:
         if self.is_stopped():
@@ -434,9 +420,6 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if len(self._parsing_element_stack) == 0:
             self.done_event.set()
 
-    def endElementNS(self, name: tuple[str, str], qname: str):
-        self.endElement(qname)
-
     def characters(self, content: str):
         if self.is_stopped():
             raise ParserStopped
@@ -456,6 +439,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         pass
 
     def error(self, exception: Exception):
+        if self.done_event.is_set():
+            return
         self.done_event.set()
         self._logger.error(exception)
         if self._stop_event.is_set() or isinstance(exception, ParserStopped):
@@ -468,6 +453,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and open-close tag rules")
 
     def fatalError(self, exception: Exception):
+        if self.done_event.is_set():
+            return
         self.done_event.set()
         if self._stop_event.is_set() or isinstance(exception, ParserStopped):
             # todo
@@ -582,6 +569,10 @@ class CTML2CommandTokenParser(StringTokenParser):
             return
         self._committed = True
         last_buffer = self._tokens_replacement_matcher.clear()
+        self._buffer += last_buffer
+        if len(self._buffer) == 0:
+            self._handler.done_event.set()
+            return
         end_of_the_inputs = f"{last_buffer}</{self.root_tag}>"
         self._sax_parser.feed(end_of_the_inputs)
 
@@ -600,6 +591,9 @@ class CTML2CommandTokenParser(StringTokenParser):
             pass
         # cancel
         self._add_token(None)
+
+    def wait_done(self) -> None:
+        self._handler.done_event.wait()
 
     def buffer(self) -> str:
         return self._buffer

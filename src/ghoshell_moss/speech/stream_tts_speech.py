@@ -19,16 +19,16 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 class TTSSpeechStream(SpeechStream):
     def __init__(
-        self,
-        *,
-        loop: asyncio.AbstractEventLoop,
-        audio_format: AudioFormat | str,
-        channels: int,
-        sample_rate: int,
-        player: StreamAudioPlayer,
-        tts_batch: TTSBatch,
-        logger: LoggerItf,
-        close_last: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+            self,
+            *,
+            loop: asyncio.AbstractEventLoop,
+            audio_format: AudioFormat | str,
+            channels: int,
+            sample_rate: int,
+            player: StreamAudioPlayer,
+            tts_batch: TTSBatch,
+            logger: LoggerItf,
+            close_last: Optional[Callable[[], Coroutine[None, None, None]]] = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -49,6 +49,7 @@ class TTSSpeechStream(SpeechStream):
         self._started_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
         self._has_audio_data = False
+        self._log_prefix = "[TTSSpeechStream id=%s] " % batch_id
 
         # 注册 callback 回调.
         tts_batch.with_callback(self._audio_callback)
@@ -78,14 +79,17 @@ class TTSSpeechStream(SpeechStream):
             )
 
     async def wait(self) -> None:
-        await self._tts_batch.wait_until_done()
+        await self._tts_batch.wait_done()
+        self.logger.info("%s wait batch done", self._log_prefix)
         if self._has_audio_data:
             await self._player.wait_play_done()
+        self.logger.info("%s wait play done", self._log_prefix)
 
     async def astart(self) -> None:
         if self._starting:
             await self._started_event.wait()
             return
+        self.logger.info("%s Starting TTS stream", self._log_prefix)
         self._starting = True
         if self._close_last:
             # 确认关闭上一个.
@@ -105,14 +109,19 @@ class TTSSpeechStream(SpeechStream):
     async def aclose(self):
         if self._closed_event.is_set():
             return
+        self.logger.info("%s close TTS stream", self._log_prefix)
         self._closed_event.set()
+        self._audio_buffer.clear()
+        close_all = [self._tts_batch.close()]
         if self._close_last:
-            await self._close_last()
+            close_all.append(self._close_last())
             self._close_last = None
         if self._started_event.is_set():
-            await self._player.clear()
-        self._audio_buffer.clear()
-        await self._tts_batch.close()
+            close_all.append(self._player.clear())
+        done = await asyncio.gather(*close_all, return_exceptions=True)
+        for t in done:
+            if isinstance(t, Exception):
+                self.logger.error("%s close stream failed: %s", t)
 
     def close(self) -> None:
         self._running_loop.create_task(self.aclose)
@@ -120,11 +129,11 @@ class TTSSpeechStream(SpeechStream):
 
 class BaseTTSSpeech(TTSSpeech):
     def __init__(
-        self,
-        *,
-        player: StreamAudioPlayer,
-        tts: TTS,
-        logger: Optional[LoggerItf] = None,
+            self,
+            *,
+            player: StreamAudioPlayer,
+            tts: TTS,
+            logger: Optional[LoggerItf] = None,
     ):
         self.logger = logger or logging.getLogger("moss")
         self._player = player
@@ -133,7 +142,7 @@ class BaseTTSSpeech(TTSSpeech):
         self._outputted: list[str] = []
         # self._streams: dict[str, SpeechStream] = {}
         self._last_stream: Optional[TTSSpeechStream] = None
-
+        self._log_prefix = "[BaseTTSSpeech]"
         self._running_loop: Optional[asyncio.AbstractEventLoop] = None
         self._starting = False
         self._started = False
@@ -162,18 +171,24 @@ class BaseTTSSpeech(TTSSpeech):
         self._last_stream = stream
         return stream
 
+    def is_running(self) -> bool:
+        return self._started and not self._closing
+
     def _check_running(self):
         if not self._started or self._closing:
             raise RuntimeError("TTS Speech is not running")
 
     def outputted(self) -> list[str]:
-        self._check_running()
+        if not self.is_running():
+            return []
         return self._outputted
 
     async def clear(self) -> list[str]:
-        self._check_running()
+        if not self.is_running():
+            return []
+        self.logger.info("%s clear", self._log_prefix)
         outputted = self._outputted.copy()
-        self._outputted = []
+        self._outputted.clear()
         if self._last_stream:
             await self._last_stream.aclose()
             self._last_stream = None
@@ -186,6 +201,7 @@ class BaseTTSSpeech(TTSSpeech):
         self._running_loop = asyncio.get_running_loop()
         await self._player.start()
         await self._tts.start()
+        self.logger.info("%s started", self._log_prefix)
         self._started = True
 
     async def close(self) -> None:
@@ -196,7 +212,7 @@ class BaseTTSSpeech(TTSSpeech):
         await self._tts.close()
         await self._player.close()
         self._closed_event.set()
-        self.logger.info("TTS Speech is closed")
+        self.logger.info("%s is closed", self._log_prefix)
 
     async def wait_closed(self) -> None:
         await self._closed_event.wait()

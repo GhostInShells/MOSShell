@@ -1199,12 +1199,13 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
             if exp is not None and CommandErrorCode.is_failed(exp):
+                item = Message.new(role="user", name=self.caller_name()).with_content(
+                    "Exception: %r" % exp
+                )
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
-                        Message.new().as_completed(
-                            Text.new("Exception: %r" % exp)
-                        )
+                        item,
                     ],
                 )
                 self._task_result = task_result
@@ -1305,7 +1306,7 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
             tokens: str = "",
     ) -> None:
         meta = CommandMeta(
-            name="cancel_" + current.meta.name,
+            name="_cancel_" + current.meta.name,
             chan=current.chan,
             type=CommandType.PRIMITIVE.value,
             block=False,
@@ -1354,6 +1355,7 @@ class CommandStackResult:
         self._generated = []
         self._iterator_done = asyncio.Event()
         self._timeout = timeout
+        self._exception = None
         self._wait_timeout_task: asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
@@ -1375,6 +1377,7 @@ class CommandStackResult:
         self._iterator_done.set()
         if exc_val is not None:
             # 退出时如果发生了异常, 则必须要清空所有未完成任务.
+            self._exception = exc_val
             for task in self._generated:
                 if not task.done():
                     task.fail(exc_val)
@@ -1385,6 +1388,9 @@ class CommandStackResult:
         """
         回调 owner.
         """
+        if self._exception is not None:
+            owner.fail(self._exception)
+            return
         if self._on_callback and callable(self._on_callback):
             # 如果是回调函数, 则用回调函数决定 task.
             result = await self._on_callback(self._generated)

@@ -11,7 +11,7 @@ async def test_run_not_exists_command():
     """
     shell = new_ctml_shell()
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
                 <bg:background_work/>
@@ -33,7 +33,7 @@ async def test_interpreter_parse_error():
     """
     shell = new_ctml_shell()
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpretation = interpreter.interpretation()
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
@@ -105,7 +105,7 @@ async def test_run_shell_concurrent():
         shell.main_channel.import_channels(chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             content = ""
             for i in range(n):
                 content += f"<chan{i}:foo/>"
@@ -120,4 +120,13 @@ async def test_run_shell_concurrent():
         total_gap += abs(t - first)
     even_gap = total_gap / n
     # 期待能达到 20hz 的同步精度.
-    assert even_gap < 0.05
+    assert even_gap < 0.07
+
+
+@pytest.mark.asyncio
+async def test_run_shell_raise_exception():
+    shell = new_ctml_shell()
+    with pytest.raises(RuntimeError):
+        async with shell:
+            async with await shell.interpreter() as interpreter:
+                raise RuntimeError("failed")

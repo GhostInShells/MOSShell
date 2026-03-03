@@ -99,8 +99,6 @@ class SimpleAgent:
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell
-        if speech is not None:
-            self.shell.with_speech(speech)
         self.model = model
 
         _ws = self.container.get(Workspace)
@@ -238,8 +236,10 @@ class SimpleAgent:
         return json.loads(history)
 
     def _put_history(self, messages: list[dict]) -> None:
-        messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
-        self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
+        # 暂时关闭保存.
+        # messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
+        # self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
+        pass
 
     async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
         """
@@ -256,7 +256,7 @@ class SimpleAgent:
             self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
-            async with self.shell.interpreter_in_ctx() as interpreter:
+            async with await self.shell.interpreter() as interpreter:
                 interpretation = interpreter.interpretation()
                 reasoning = False
                 # 系统指令.
@@ -290,6 +290,10 @@ class SimpleAgent:
                     return []
                 else:
                     return None
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception("Response loop failed %s", e)
         finally:
             self._response_done.set()
             self.chat.finalize_ai_response()

@@ -64,7 +64,7 @@ async def test_sleep_in_ctml_without_channel():
         return f"executed at {elapsed:.3f}s"
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 发送 CTML：先执行 foo，然后 sleep，再执行 foo
             interpreter.feed("""
                 <foo/>
@@ -128,7 +128,7 @@ async def test_sleep_in_ctml_with_channel():
     shell.main_channel.import_channels(main_chan, audio_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 发送 CTML：同时启动主任务和音频 sleep
             interpreter.feed("""
                 <main:main_task/>
@@ -174,7 +174,7 @@ async def test_sleep_with_wait_primitives():
         return name
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             start_time = time.time()
 
             # 使用 wait 来组织一组包含 sleep 的命令
@@ -228,7 +228,7 @@ async def test_sleep_cancellation():
         return "quick"
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动一个长时间 sleep，然后用 wait 的 timeout 取消它
             interpreter.feed('<wait timeout="0.05"><sleep duration="1.0"/></wait>')
             interpreter.commit()
@@ -270,7 +270,7 @@ async def test_sleep_with_multiple_channels():
         return msg
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             start_time = time.time()
 
             # 在多个 channel 上同时启动 sleep
@@ -322,7 +322,7 @@ async def test_sleep_in_nested_structure():
         return name
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 嵌套结构：外层 wait 包含内层 wait，内层包含 sleep
             interpreter.feed("""
                 <wait>

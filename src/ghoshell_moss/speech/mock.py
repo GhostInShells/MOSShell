@@ -80,7 +80,7 @@ class MockSpeechStream(SpeechStream):
 
 
 class MockSpeech(Speech):
-    def __init__(self, typing_sleep: float = 0.5):
+    def __init__(self, typing_sleep: float = 0.0):
         self._streams: dict[str, MockSpeechStream] = {}
         self._outputs: dict[str, list[str]] = {}
         self._closed = ThreadSafeEvent()
@@ -96,6 +96,9 @@ class MockSpeech(Speech):
         self._streams[stream_id] = stream
         self._outputs[stream_id] = stream_outputs
         return stream
+
+    def is_running(self) -> bool:
+        return True
 
     def outputted(self) -> list[str]:
         data = self._outputs.copy()

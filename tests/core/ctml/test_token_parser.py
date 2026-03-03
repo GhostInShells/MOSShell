@@ -1,3 +1,5 @@
+import threading
+import time
 from collections import deque
 
 from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenType
@@ -295,3 +297,40 @@ def test_ctml_attr_with_args():
     token = q.pop(0)
     assert token.seq == "start"
     assert token.args == [1, 2]
+
+
+def test_token_parser_in_threads():
+    got = []
+
+    _content = "<a:foo _args='[1, 2]'></a:foo>"
+
+    def iter_content():
+        for c in _content:
+            time.sleep(0.01)
+            yield c
+
+    def in_thread_parse():
+        q: list[CommandToken] = []
+        CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=default_parsers)
+        got.append(list(q))
+
+    threads = []
+    for i in range(10):
+        t = threading.Thread(target=in_thread_parse)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    assert len(got) == 10
+    expect = ""
+    for tokens in got:
+        content = ""
+        for token in tokens:
+            if token is not None:
+                content += token.content
+
+        if not expect:
+            expect = content
+            continue
+        assert content == expect

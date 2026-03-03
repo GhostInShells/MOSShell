@@ -12,10 +12,10 @@ async def test_output_in_asyncio():
 
     async def buffer_stream(_stream: SpeechStream, idx_: int):
         for c in content:
-            _stream.buffer(c)
+            _stream.feed(c)
             await asyncio.sleep(0)
         # add a tail at the mock_speech end
-        _stream.buffer(str(idx_))
+        _stream.feed(str(idx_))
         _stream.commit()
 
     mock_speech = MockSpeech(typing_sleep=0.0)

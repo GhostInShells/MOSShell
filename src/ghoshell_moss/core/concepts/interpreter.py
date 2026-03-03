@@ -68,6 +68,10 @@ class StringTokenParser(ABC):
         pass
 
     @abstractmethod
+    def wait_done(self) -> None:
+        pass
+
+    @abstractmethod
     def buffer(self) -> str:
         """
         return the buffered stream content
@@ -247,7 +251,9 @@ class Interpretation(BaseModel):
             self.observe = True
         if len(result.output) > 0:
             self.output.extend(result.output)
-        self.messages.extend(result.as_messages())
+        result_messages = result.as_messages()
+        if len(result_messages) > 0:
+            self.messages.extend(result_messages)
 
     def output_messages(self) -> list[Message]:
         """
@@ -272,8 +278,9 @@ class Interpretation(BaseModel):
                 lines.append("failed: %d" % len(self.failed_tasks))
             if len(self.pending_tasks) > 0:
                 lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
-            status_message.with_content("\n".join(lines))
-            messages.append(status_message)
+            if len(lines) > 0:
+                status_message.with_content("\n".join(lines))
+                messages.append(status_message)
         return messages
 
 

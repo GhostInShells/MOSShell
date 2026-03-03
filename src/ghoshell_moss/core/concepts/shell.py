@@ -107,21 +107,6 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def with_speech(self, speech: Speech) -> None:
-        """
-        注册 Speech 对象.
-        todo: 准备彻底重构这个实现.
-        """
-        pass
-
-    @abstractmethod
-    def with_expressions(self, expressions: Expressions) -> Self:
-        """
-        注册 expressions 模块.
-        """
-        pass
-
-    @abstractmethod
     async def pub_topic(
             self,
             topic: Topic | TopicModel,
@@ -266,7 +251,7 @@ class MOSSShell(ABC):
             config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             clear_after_exit: bool = False,
             ignore_wrong_command: bool = False,
-    ) -> "Interpreter":
+    ) -> Self:
         """
         简单的语法糖.
         """
@@ -371,7 +356,6 @@ class MOSSShell(ABC):
                     parser = interpreter.command_token_parser()
                     async for token in tokens:
                         parser.on_token(token)
-
                     await interpreter.wait_compiled()
             except asyncio.CancelledError:
                 raise

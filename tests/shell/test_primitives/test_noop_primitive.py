@@ -15,7 +15,7 @@ async def test_interrupt_in_ctml():
     shell = new_ctml_shell()
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 发送 CTML：先执行 foo，然后 sleep，再执行 foo
             interpreter.feed(f"<noop/>")
             interpreter.commit()

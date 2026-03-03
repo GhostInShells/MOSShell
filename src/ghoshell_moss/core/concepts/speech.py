@@ -1,17 +1,15 @@
 import asyncio
-import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Any, ClassVar, Optional
 
 import numpy as np
-from ghoshell_common.helpers import uuid
 from pydantic import BaseModel, Field
 from typing_extensions import Self, TypedDict
-
-from ghoshell_moss.core.concepts.command import CommandTask
+from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
+from ghoshell_moss.core.concepts.channel import ChannelCtx
+import json
 
 __all__ = [
     "AudioFormat",
@@ -34,16 +32,16 @@ class SpeechStream(ABC):
     """
 
     def __init__(
-        self,
-        id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-        cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
-        committed: bool = False,  # 是否完成了这个 stream 的提交
+            self,
+            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
         self.cmd_task = cmd_task
         self.committed = committed
 
-    def buffer(self, text: str, *, complete: bool = False) -> None:
+    def feed(self, text: str, *, complete: bool = False) -> None:
         """
         添加文本片段到输出流里.
         由于文本可以通过 tts 生成语音, 而 tts 有独立的耗时, 所以通常一边解析 command token 一边 buffer 到 tts 中.
@@ -149,14 +147,17 @@ class SpeechStream(ABC):
     async def aclose(self):
         pass
 
+    async def run(self, chunks: AsyncIterator[str]) -> None:
+        async for chunk in chunks:
+            self.feed(chunk)
+        self.commit()
+        await self.wait()
+
     async def __aenter__(self):
         await self.astart()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_val is not None:
-            self.commit()
-            await self.wait()
         await self.aclose()
 
     @abstractmethod
@@ -180,11 +181,7 @@ class Speech(ABC):
         pass
 
     @abstractmethod
-    def outputted(self) -> list[str]:
-        """
-        清空之前生成的文本片段, speech 必须能感知到所有输出.
-        todo: 打算删除这个 feature.
-        """
+    def is_running(self) -> bool:
         pass
 
     @abstractmethod
@@ -262,12 +259,12 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def add(
-        self,
-        chunk: np.ndarray,
-        *,
-        audio_type: AudioFormat,
-        rate: int,
-        channels: int = 1,
+            self,
+            chunk: np.ndarray,
+            *,
+            audio_type: AudioFormat,
+            rate: int,
+            channels: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -383,7 +380,15 @@ class TTSBatch(ABC):
         pass
 
     @abstractmethod
-    async def wait_until_done(self, timeout: float | None = None):
+    def is_committed(self) -> bool:
+        pass
+
+    @abstractmethod
+    def is_closed(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def wait_done(self, timeout: float | None = None):
         """
         阻塞等待这个 batch 结束. 包含两种情况:
         1. closed: 被提前关闭.
@@ -440,6 +445,13 @@ class TTS(ABC):
         pass
 
     @abstractmethod
+    def get_voice(self) -> dict[str, Any]:
+        """
+        返回当前的 voice 配置.
+        """
+        pass
+
+    @abstractmethod
     async def start(self) -> None:
         """
         启动 tts 服务. 理论上一创建 Batch 就会尽快进行解析.
@@ -464,3 +476,85 @@ class TTSSpeech(Speech, ABC):
     @abstractmethod
     def tts(self) -> TTS:
         pass
+
+    def commands(self) -> list[Command]:
+        tts = self.tts()
+        tts_info = tts.get_info()
+        tones = tts_info.tones
+        tone_descriptions = []
+        for _tone, description in tones.items():
+            tone_descriptions.append(f"-  {_tone}: {description}")
+        descriptions = "\n".join(tone_descriptions)
+
+        def tone_doc() -> str:
+            _tts_info = tts.get_info()
+            current_tone = _tts_info.current_tone
+
+            docstring = (f"可以随时切换你所使用的音色.你的当前音色: {current_tone}.\n"
+                         f"可以使用的音色:{descriptions}.")
+            return docstring
+
+        async def use_tone(tone: str) -> None:
+            _tones = tts_info.tones
+            if tone not in _tones:
+                raise ValueError(f"Tone {tone} not in {tones}")
+            tts.use_tone(tone)
+
+        use_tone_command = PyCommand(
+            use_tone,
+            doc=tone_doc,
+        )
+
+        tts_info = tts.get_info()
+        voice_schema_str = json.dumps(tts_info.voice_schema)
+
+        def voice_doc() -> str:
+            current_voice = tts.get_voice()
+            return (f"可以用来设置你说话的声音状态, 一直生效.\n"
+                    f":param text__: json 结构, schema 也是 voice schema. "
+                    f"你当前的声音状态是: {json.dumps(current_voice)}.\n"
+                    )
+
+        async def set_voice(text__) -> None:
+            try:
+                config = json.loads(text__)
+            except json.JSONDecodeError:
+                raise ValueError(f"Invalid JSON: {text__}")
+            tts.set_voice(config)
+
+        set_voice_command = PyCommand(
+            set_voice,
+            doc=voice_doc,
+        )
+
+        say_doc = ("变更说话时默认的声音. 只在这句话生效."
+                   f":param voice: 字典类型, voice schema 是 {voice_schema_str}"
+                   ":param chunks__: 会转换为语音的自然语言内容.")
+
+        async def say(chunks__, voice: dict | None = None) -> None:
+            """
+            使用指定的声音设置来说话.
+            :param chunks__: 会转换为语音的自然语言内容. 注意语音播报中使用 tts 等
+            :param voice: 字典类型, 结构同 use voice. 只在这句话生效. 为空则使用默认声音.
+            """
+            origin_voice = tts.get_voice()
+            try:
+                if voice is not None:
+                    tts.set_voice(voice)
+                task = ChannelCtx.task()
+                runtime = ChannelCtx.runtime()
+                if runtime is None:
+                    return
+                batch_id = task.cid if task else None
+                stream = self.new_stream(batch_id=batch_id)
+                async with stream:
+                    await stream.run(chunks__)
+            finally:
+                tts.set_voice(origin_voice)
+
+        say_command = PyCommand(
+            say,
+            doc=say_doc,
+        )
+
+        return [use_tone_command, set_voice_command, say_command]

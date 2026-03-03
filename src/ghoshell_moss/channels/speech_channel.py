@@ -47,7 +47,7 @@ class SpeechChannel(Channel):
         stream = self._speech.new_stream(batch_id=batch_id)
         async with stream:
             async for chunk in chunks__:
-                stream.buffer(chunk)
+                stream.feed(chunk)
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         if self._runtime and self._runtime.is_running():

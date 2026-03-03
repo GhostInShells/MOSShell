@@ -44,9 +44,6 @@ async def loop(times: int, ctml__):
         for t in got:
             if not t.success() or t.observe():
                 return CommandTaskResult().join_result(t.result())
-        new_tasks = []
-        for t in got:
-            new_tasks.append(t.copy())
         if 0 < times == loop_times:
             return CommandTaskResult(
                 observe=True,
@@ -61,6 +58,13 @@ async def loop(times: int, ctml__):
                     Message.new(role="system").with_content("loop stopped after 100 times!")
                 ]
             )
+        _iterable_tasks = shell.parse_tokens_to_command_tasks(ctml__)
+        new_tasks = []
+        async for _task in _iterable_tasks:
+            new_tasks.append(_task)
+
+        for t in got:
+            new_tasks.append(t.copy())
         return CommandStackResult(
             new_tasks,
             on_result,

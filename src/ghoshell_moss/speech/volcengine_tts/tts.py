@@ -331,12 +331,13 @@ class VolcengineTTSBatch(TTSBatch):
     """
 
     def __init__(
-        self,
-        *,
-        loop: asyncio.AbstractEventLoop,
-        speaker: SpeakerConf,
-        batch_id: str = "",
-        callback: Optional[TTSAudioCallback] = None,
+            self,
+            *,
+            loop: asyncio.AbstractEventLoop,
+            speaker: SpeakerConf,
+            batch_id: str = "",
+            logger: LoggerItf,
+            callback: Optional[TTSAudioCallback] = None,
     ):
         self.speaker = speaker
         self.callback = callback
@@ -350,6 +351,8 @@ class VolcengineTTSBatch(TTSBatch):
         self._batch_id = batch_id or uuid()
         self._text_lock = asyncio.Lock()
         self.texts: asyncio.Queue[str | None] = asyncio.Queue()
+        self._log_prefix = f"[VolcTTSBatch] id={batch_id}  "
+        self._logger = logger
 
     def batch_id(self) -> str:
         return self._batch_id
@@ -366,25 +369,33 @@ class VolcengineTTSBatch(TTSBatch):
         self.text_buffer += text
         # 已经有过数据了.
         if self._has_valid_text:
+            self._logger.debug("%s feed text %s", self._log_prefix, text)
             self._running_loop.call_soon_threadsafe(self.texts.put_nowait, text)
         # 这里只能 lstrip
         elif stripped := self.text_buffer.lstrip():
+            self._logger.debug("%s feed first legal text %s", self._log_prefix, stripped)
             self._running_loop.call_soon_threadsafe(self.texts.put_nowait, stripped)
             self._has_valid_text = True
 
     def commit(self):
         self.committed = True
+        self._logger.info("%s batch commited", self._log_prefix)
         self._running_loop.call_soon_threadsafe(self.texts.put_nowait, None)
-        if not self.text_buffer.strip():
-            self.done.set()
+
+    def is_closed(self) -> bool:
+        return self.done.is_set()
+
+    def is_committed(self) -> bool:
+        return self.committed
 
     async def close(self) -> None:
         if self.done.is_set():
             return
-        self.done.set()
+        self._logger.info("%s batch close", self._log_prefix)
         self.commit()
+        self.done.set()
 
-    async def wait_until_done(self, timeout: float | None = None):
+    async def wait_done(self, timeout: float | None = None):
         if timeout is not None and timeout > 0.0:
             await asyncio.wait_for(self.done.wait(), timeout=timeout)
         else:
@@ -396,12 +407,13 @@ class VolcengineTTSBatch(TTSBatch):
 
 class VolcengineTTS(TTS):
     def __init__(
-        self,
-        *,
-        conf: VolcengineTTSConf | None = None,
-        logger: LoggerItf | None = None,
+            self,
+            *,
+            conf: VolcengineTTSConf | None = None,
+            logger: LoggerItf | None = None,
     ):
-        self.logger = logger or logging.getLogger("volcengine.tts")
+        self.logger = logger or logging.getLogger("moss")
+        self._log_prefix = "[VolcengineTTS] "
 
         # ---- 配置状态 --- #
         # 当前生成的 Batches.
@@ -433,12 +445,17 @@ class VolcengineTTS(TTS):
         if config_key not in self._conf.speakers:
             raise LookupError(f"The voice {config_key} not found")
         conf = self._conf.speakers[config_key]
+        self.logger.info("%s Using tone %s", self._log_prefix, config_key)
         self._current_speaker = config_key
         self._current_speaker_conf = conf.model_copy(deep=True)
 
     def set_voice(self, config: dict[str, Any]) -> None:
         voice = VoiceConf(**config)
         self._current_speaker_conf.voice = voice
+        self.logger.info("%s set current vocie %s", self._log_prefix, config)
+
+    def get_voice(self) -> dict[str, Any]:
+        return self._current_speaker_conf.voice.model_dump()
 
     def _check_running(self) -> None:
         if not self._started or self._closing_event.is_set():
@@ -446,6 +463,7 @@ class VolcengineTTS(TTS):
 
     def new_batch(self, batch_id: str = "", *, callback: TTSAudioCallback | None = None) -> TTSBatch:
         self._check_running()
+        self.logger.info("%s create new tts batch %s", self._log_prefix, batch_id)
         batch = self._create_batch(batch_id, callback)
         self._pending_batches_queue.put_nowait(batch)
         self._has_any_batch_event.set()
@@ -458,6 +476,7 @@ class VolcengineTTS(TTS):
             speaker=speaker_conf,
             batch_id=batch_id,
             callback=callback,
+            logger=self.logger,
         )
         return tts_batch
 
@@ -465,6 +484,8 @@ class VolcengineTTS(TTS):
         """tts main connection loop"""
         # 没有关闭前, 一直执行这个循环.
         while not self._closing_event.is_set():
+            task = None
+            batch = None
             try:
                 if len(self._unfinished_batches) > 0:
                     batch = self._unfinished_batches.popleft()
@@ -482,23 +503,30 @@ class VolcengineTTS(TTS):
                 # 创建一个可以 cancel 的 task. 它自己应该不要抛出 cancel 异常.
                 self._consume_pending_batches_task = task
                 # 阻塞等待这个消费循环结束.
-                try:
-                    await task
-                finally:
-                    self._consume_pending_batches_task = None
+                await task
             except asyncio.CancelledError:
                 # 不需要记录.
-                self.logger.info("TTS cancelled")
+                self.logger.info("%s TTS cancelled", self._log_prefix)
                 pass
             except Exception as e:
-                self.logger.warning("TTS main loop got exception: %s", e)
+                self.logger.warning("%s TTS main loop got exception: %s", self._log_prefix, e)
             finally:
+                if task is not None and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                # make sure batch is closed
+                if batch is not None and not batch.is_closed():
+                    await batch.close()
                 self._consume_pending_batches_task = None
-                self.logger.info("TTS main loop is closed")
+                self.logger.info("%s TTS main loop is closed", self._log_prefix)
+                self._consume_pending_batches_task = None
 
     async def _start_consuming_batch_loop(self, batch: VolcengineTTSBatch):
         try:
-            if batch.done.is_set():
+            if batch.is_closed():
                 # 已经被关闭了.
                 return
             speaker = batch.speaker
@@ -508,18 +536,18 @@ class VolcengineTTS(TTS):
             header = self._conf.gen_header(connection_id=connection_id, resource_id=resource_id)
             url = self._conf.url
             # 创建初始连接.
-            self.logger.info("prepare to connect to %s with header %s", url, header)
+            self.logger.info("%s prepare to connect to %s with header %s", self._log_prefix, url, header)
             async with connect(url, additional_headers=header) as ws:
                 # 建连确认.
                 await start_connection(ws)
-                self.logger.debug("start connection %s", connection_id)
+                self.logger.debug("%s start connection %s", self._log_prefix, connection_id)
                 # 接受确认的事件. 完成握手.
                 await wait_for_event(
                     ws,
                     MsgType.FullServerResponse,
                     EventType.ConnectionStarted,
                 )
-                self.logger.debug("connection %s started", connection_id)
+                self.logger.debug("%s connection %s started", self._log_prefix, connection_id)
 
                 # 消费完第一个 batch.
                 goon = await self._consume_batch_in_connection(batch, connection=ws, current_resource_id=resource_id)
@@ -527,26 +555,28 @@ class VolcengineTTS(TTS):
                 if goon:
                     await self._consume_pending_batches(connection=ws, resource_id=resource_id)
                 # 全部结束了, 就退出来. 等待外层继续调度.
-                self.logger.info("consume batch loop %s is done", connection_id)
+                self.logger.info("%s consume batch loop %s is done", self._log_prefix, connection_id)
                 # 发送退出信号. 不等待握手了.
                 await finish_connection(ws)
 
         except ConnectionClosedOK:
-            self.logger.info("TTS connection closed ok")
+            self.logger.info("%s TTS connection closed ok", self._log_prefix)
         except ConnectionClosed:
-            self.logger.info("TTS connection closed")
+            self.logger.info("%s TTS connection closed", self._log_prefix)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            self.logger.exception("Consume batch loop failed")
+        except Exception as e:
+            self.logger.exception("%s Consume batch loop failed: %s", self._log_prefix, e)
+        finally:
+            self.logger.info("%s consuming batch loop done", self._log_prefix)
 
     async def _consume_batch_in_connection(
-        self,
-        batch: VolcengineTTSBatch,
-        connection: ClientConnection,
-        current_resource_id: str,
+            self,
+            batch: VolcengineTTSBatch,
+            connection: ClientConnection,
+            current_resource_id: str,
     ) -> bool:
-        if batch.done.is_set():
+        if batch.is_closed():
             return True
         batch_id = batch.batch_id()
         try:
@@ -565,45 +595,57 @@ class VolcengineTTS(TTS):
                 batch_id,
             )
             # 等待拿到 session 启动的事件.
-            await wait_for_event(connection, MsgType.FullServerResponse, EventType.SessionStarted)
+            msg = await wait_for_event(connection, MsgType.FullServerResponse, EventType.SessionStarted)
+            self.logger.info("%s receive session connected %s", self._log_prefix, msg)
             # 开始发送文本的流程.
             send_task = asyncio.create_task(self._send_batch_text_to_server(batch, session, connection))
             # 开始接受音频的流程.
             receive_task = asyncio.create_task(self._receive_batch_audio_from_server(batch, connection))
             # 等两个都完成, 才能进入下一步.
             send_and_receive = asyncio.gather(send_task, receive_task, return_exceptions=True)
-            batch_closed = asyncio.create_task(batch.done.wait())
+            batch_closed = asyncio.create_task(batch.wait_done())
             done, pending = await asyncio.wait([send_and_receive, batch_closed], return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
+            if batch_closed in done:
+                self.logger.error("%s batch %s closed before send and receive", self._log_prefix, batch_id)
             result = await send_and_receive
             for r in result:
                 if isinstance(r, Exception):
-                    self.logger.exception("Batch task failed")
+                    self.logger.exception("%s Batch task failed: %s", self._log_prefix, r)
 
             # 正常完成返回 true
             return True
         except ValueError as e:
             # todo: log update
-            self.logger.exception("Consume batch failed")
+            self.logger.exception("%s Consume batch failed: %s", self._log_prefix, e)
         finally:
-            batch.done.set()
+            if not batch.is_closed():
+                await batch.close()
             self._running_batch = None
 
     async def _send_batch_text_to_server(
-        self,
-        batch: VolcengineTTSBatch,
-        session: Session,
-        connection: ClientConnection,
+            self,
+            batch: VolcengineTTSBatch,
+            session: Session,
+            connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         try:
-            while not batch.done.is_set():
+            self.logger.info("%s start to send text of batch %s", self._log_prefix, batch_id)
+            first = True
+            while not batch.is_closed():
                 # 发送文本.
                 text = await batch.texts.get()
                 if text is None:
                     # 拿到了毒丸.
+                    self.logger.info("%s get text from batch %s finished", self._log_prefix, batch_id)
                     break
+                self.logger.debug("%s send text %r of batch %s", self._log_prefix, text, batch_id)
+                if first:
+                    self.logger.info("%s send first text of batch %s", self._log_prefix, batch_id)
+                    first = False
+
                 # 发送给服务端.
                 payload = session.to_request_payload_bytes(text)
                 await task_request(
@@ -622,32 +664,35 @@ class VolcengineTTS(TTS):
         except (ConnectionClosedOK, ConnectionClosed):
             raise
         except Exception as e:
-            self.logger.exception("Send batch text failed")
+            self.logger.exception("%s Send batch text failed: %s", self._log_prefix, e)
             batch.fail(str(e))
-            # 特殊的错误, 则关闭 batch.
-            await batch.close()
         finally:
-            self.logger.info("batch %s send text done", batch_id)
+            self.logger.info("%s batch %s send text done", self._log_prefix, batch_id)
 
     async def _receive_batch_audio_from_server(
-        self,
-        batch: VolcengineTTSBatch,
-        connection: ClientConnection,
+            self,
+            batch: VolcengineTTSBatch,
+            connection: ClientConnection,
     ) -> None:
+        batch_id = batch.batch_id()
         callback = batch.callback
         try:
-            batch_id = batch.batch_id()
-            while not batch.done.is_set():
+            first = True
+            while not batch.is_closed():
                 msg = await receive_message(connection)
-                self.logger.debug("session %s receive message %s", batch_id, msg)
+                self.logger.debug("%s session %s receive message %s", self._log_prefix, batch_id, msg)
+                if msg.session_id != batch_id:
+                    self.logger.info(
+                        "%s new batch %s receive old batch message %s", self._log_prefix, batch_id, msg,
+                    )
                 if msg.type == MsgType.Error:
-                    self.logger.error("batch %s received error message %s", batch_id, msg)
-                    batch.done.set()
+                    self.logger.error(
+                        "%s batch %s received error message %s", self._log_prefix, batch_id, msg,
+                    )
                     break
                 elif msg.type == MsgType.FullServerResponse:
                     if msg.event in {EventType.SessionFinished, EventType.SessionCanceled}:
-                        # todo: log
-                        self.logger.info("session finished %s", batch_id)
+                        self.logger.info("%s session finished %s", self._log_prefix, batch_id)
                         # break the loop
                         break
                     elif msg.event == EventType.TTSSentenceStart:
@@ -660,21 +705,23 @@ class VolcengineTTS(TTS):
                 if msg.type == MsgType.AudioOnlyServer:
                     # 首包
                     audio_data = msg.payload
-                    if msg.session_id != batch_id:
-                        self.logger.info("session id mismatch %s to batch %s", msg.session_id, batch_id)
-                        continue
+                    if first:
+                        self.logger.info("%s receive first audio of batch %s", self._log_prefix, batch_id)
+                        first = False
                     if len(audio_data) > 0 and callback:
                         # todo: 先写死是 int16
                         np_data = np.frombuffer(audio_data, dtype=np.int16)
                         callback(np_data)
-            self.logger.info("batch %s receive task done", batch_id)
+            self.logger.info("%s batch %s receive task done", self._log_prefix, batch_id)
         except asyncio.CancelledError:
             pass
         except (ConnectionClosedOK, ConnectionClosed):
             pass
+        except Exception as e:
+            self.logger.exception("%s Receive batch %s audio failed: %s", self._log_prefix, batch_id, e)
+            raise e
         finally:
-            # batch 永远要设置为关闭.
-            batch.done.set()
+            self.logger.info("%s Receive batch %s audio done", self._log_prefix, batch_id)
 
     async def _consume_pending_batches(self, connection: ClientConnection, resource_id: str) -> None:
         while not self._closing_event.is_set():
@@ -690,8 +737,8 @@ class VolcengineTTS(TTS):
             except asyncio.TimeoutError:
                 # 超时还没拿到新的 batch, tts 就关闭 connection 了.
                 self.logger.info(
-                    "close connection after disconnect timeout %s",
-                    self._conf.disconnect_on_idle,
+                    "%s close connection after disconnect timeout %s",
+                    self._log_prefix, self._conf.disconnect_on_idle,
                 )
                 return
 
@@ -721,7 +768,7 @@ class VolcengineTTS(TTS):
     async def close(self) -> None:
         if self._closing_event.is_set():
             return
-        self.logger.info("closing...")
+        self.logger.info("%s closing...", self._log_prefix)
         self._closing_event.set()
         if self._main_loop_task is not None:
             self._main_loop_task.cancel()

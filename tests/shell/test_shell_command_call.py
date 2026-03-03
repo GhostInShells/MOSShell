@@ -76,7 +76,7 @@ async def test_shell_outputted():
     async with shell:
         foo_cmd = await shell.get_command("", "foo")
         assert foo_cmd is not None
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<foo />hello")
             tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
@@ -98,7 +98,7 @@ async def test_shell_ctml_with_args():
         return result
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<foo _args='[1, 2, 3]'/>")
             tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
@@ -172,7 +172,7 @@ async def test_shell_task_can_get_channel():
         return chan is a_chan
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
@@ -196,7 +196,7 @@ async def test_shell_task_can_get_task():
         return ""
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
@@ -289,7 +289,7 @@ async def test_shell_clear():
         assert len(shell.channel_metas()) == 4
         assert "a.c" in shell.commands()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
@@ -300,7 +300,7 @@ async def test_shell_clear():
 
         # clear
         sleep[0] = 10
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             await interpreter.wait_compiled()
             parsed_tasks = interpreter.compiled_tasks()
@@ -367,7 +367,7 @@ async def test_shell_delta_types():
     async with shell:
         await shell.wait_connected()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             for content in contents:
                 interpreter.feed(content)
             interpreter.commit()

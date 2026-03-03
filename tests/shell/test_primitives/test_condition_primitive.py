@@ -32,7 +32,7 @@ async def test_condition_basic_functionality():
 
     async with shell:
         # 启动子 Channel 上的长时间任务
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             for msg in interpreter.instruction_messages():
                 print(msg)
             interpreter.feed("<branch><chan:check/><chan:foo/><chan:bar/></branch>")

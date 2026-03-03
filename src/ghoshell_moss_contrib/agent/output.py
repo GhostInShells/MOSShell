@@ -14,12 +14,12 @@ from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
 
 class ChatRenderSpeechStream(SpeechStream):
     def __init__(
-        self,
-        batch_id: str,
-        output: Callable[[str], None],
-        *,
-        on_start: asyncio.Event,
-        close: asyncio.Event,
+            self,
+            batch_id: str,
+            output: Callable[[str], None],
+            *,
+            on_start: asyncio.Event,
+            close: asyncio.Event,
     ):
         super().__init__(id=batch_id)
         self._output = output
@@ -107,6 +107,9 @@ class ChatRenderSpeech(Speech):
 
     async def start(self) -> None:
         pass
+
+    def is_running(self) -> bool:
+        return not self._closed_event.is_set()
 
     async def close(self) -> None:
         self._closed_event.set()

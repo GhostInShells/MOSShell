@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import queue
-from collections.abc import AsyncIterable, Callable, Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from itertools import starmap
 from typing import Optional
 from typing_extensions import Self
@@ -89,6 +89,7 @@ def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
 class CTMLInterpreter(Interpreter):
     def __init__(
             self,
+            kind: str,
             *,
             interrupted: Interpretation | None = None,
             undone_tasks: list[CommandTask] | None = None,
@@ -121,6 +122,7 @@ class CTMLInterpreter(Interpreter):
         """
         # 生成 stream id.
         self._id = stream_id or uuid()
+        self._kind = kind
         self._interrupted_interpretation = interrupted
         self._meta_instruction = moss_meta_instruction
         self._channel_metas = channel_metas or {}
@@ -158,7 +160,7 @@ class CTMLInterpreter(Interpreter):
         self._outputted: Optional[list[str]] = None
 
         # create token parser
-        self._parser = CTML2CommandTokenParser(
+        self._text_to_token_parser = CTML2CommandTokenParser(
             callback=self._receive_command_token,
             stream_id=self.id,
             root_tag=root_tag,
@@ -381,6 +383,8 @@ class CTMLInterpreter(Interpreter):
         return messages
 
     def feed(self, delta: str, throw: bool = False) -> bool:
+        if not isinstance(delta, str):
+            raise ValueError("delta must be a string")
         if self._committed:
             if throw:
                 raise InterpretError(f"interpreter already committed ")
@@ -399,20 +403,9 @@ class CTMLInterpreter(Interpreter):
             if throw:
                 raise InterpretError(f"Interpretation stopped")
             return False
-
         self._interpretation.feed_inputs.append(delta)
         self._input_deltas_queue.put_nowait(delta)
         return True
-
-    async def parse(self, deltas: AsyncIterable[str]) -> None:
-        try:
-            async for delta in deltas:
-                self.feed(delta)
-        except Exception as e:
-            self._logger.exception("Stream parse failed: %s", e)
-            self._stopped_event.set()
-        finally:
-            self.commit()
 
     def commit(self) -> None:
         if self._committed:
@@ -427,7 +420,7 @@ class CTMLInterpreter(Interpreter):
         self._on_task_done_callbacks.extend(callbacks)
 
     def string_token_parser(self) -> StringTokenParser:
-        return self._parser
+        return self._text_to_token_parser
 
     def command_token_parser(self) -> CommandTokenParserElement:
         return self._root_element
@@ -437,11 +430,6 @@ class CTMLInterpreter(Interpreter):
 
     def compiled_tasks(self) -> dict[str, CommandTask]:
         return self._compiled_tasks.copy()
-
-    def outputted(self) -> Iterable[str]:
-        if self._outputted is None:
-            return self._speech.outputted()
-        return self._outputted
 
     async def wait_stopped(self) -> Interpretation:
         if self.is_running():
@@ -453,17 +441,19 @@ class CTMLInterpreter(Interpreter):
 
     def _token_parse_loop(self) -> None:
         try:
-            with self._parser:
-                while not self._stopped_event.is_set() and not self._parser.is_done():
+            with self._text_to_token_parser:
+                while not self._stopped_event.is_set() and not self._text_to_token_parser.is_done():
                     try:
                         # check every 0.1 second if the loop is stopped.
                         item = self._input_deltas_queue.get(block=True, timeout=0.1)
-                        if item is None:
-                            self._parser.commit()
-                            break
-                        self._parser.feed(item)
                     except queue.Empty:
                         continue
+                    if item is None:
+                        self._text_to_token_parser.commit()
+                        break
+                    self._text_to_token_parser.feed(item)
+                self._text_to_token_parser.wait_done()
+
         except asyncio.CancelledError:
             self._logger.info("%s interpretation cancelled", self._log_prefix)
         except ParserStopped as e:
@@ -479,7 +469,7 @@ class CTMLInterpreter(Interpreter):
             self._set_interpreter_error(err)
             raise
         finally:
-            pass
+            self._logger.info("%s token parser loop stopped", self._log_prefix)
 
     def _task_parse_loop(self) -> None:
         try:
@@ -487,10 +477,15 @@ class CTMLInterpreter(Interpreter):
                 try:
                     item = self._parsed_tokens_queue.get(block=True, timeout=0.1)
                     self._root_element.on_token(item)
-                    if item is None or self._root_element.is_end():
-                        break
                 except queue.Empty:
                     continue
+                if item is not None and item.stream_id != self.id:
+                    raise InterpretError(
+                        "interpreter %s receive token from other stream: %s", self.id, item.stream_id,
+                    )
+
+                if item is None or self._root_element.is_end():
+                    break
         except asyncio.CancelledError:
             pass
         except InterpretError as e:
@@ -502,8 +497,7 @@ class CTMLInterpreter(Interpreter):
             err = InterpretError(f"Parse command task failed at `{type(e)}`: {e}")
             self._set_interpreter_error(err)
         finally:
-            # todo
-            pass
+            self._root_element.destroy()
 
     async def _wait_interpreter_stop(self) -> None:
         await self._parsing_loop_done.wait()
@@ -563,7 +557,7 @@ class CTMLInterpreter(Interpreter):
         self._stopped_event.set()
         self._logger.info("%s interpreter stopping", self._log_prefix)
         try:
-            self._parser.close()
+            self._text_to_token_parser.close()
         except ParserStopped:
             pass
         try:
@@ -710,7 +704,7 @@ class CTMLInterpreter(Interpreter):
         return tasks
 
     def destroy(self) -> None:
-        self._parser.close()
+        self._text_to_token_parser.close()
         # 确保所有的 element 被销毁了. 否则会有内存泄漏的风险.
         self._commands_map.clear()
         self._channel_metas = None
