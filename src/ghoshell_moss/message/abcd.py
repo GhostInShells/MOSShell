@@ -612,8 +612,8 @@ class Message(BaseModel, WithAdditional):
             return ""
         for content in self.contents:
             if content["type"] == "text":
-                lines.append(content['data']['text'])
+                lines.append(content["data"]["text"])
             else:
-                lines.append("content type: %s" % content['type'])
+                lines.append("content type: %s" % content["type"])
         return "\n".join(lines)
 
