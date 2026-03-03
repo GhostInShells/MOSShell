@@ -475,6 +475,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             if self._defer_clear_mark:
                 self._defer_clear_mark = False
                 await self.clear_own()
+            # 准备入参.
+            task.prepare()
             await self._push_task_with_paths(paths, task)
         except Exception as exc:
             self.logger.exception(exc)

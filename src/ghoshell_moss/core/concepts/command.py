@@ -307,6 +307,10 @@ CommandUniqueName = str
 _ChannelFullPath = str
 _CommandName = str
 
+CommandArgs = list | tuple
+CommandKwargs = dict
+CommandPartial = Callable[[CommandArgs, CommandKwargs], Coroutine[None, None, tuple[CommandArgs, CommandKwargs]]]
+
 
 class Command(Generic[RESULT], ABC):
     """
@@ -354,6 +358,10 @@ class Command(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
+    def partial(self) -> Optional[CommandPartial]:
+        pass
+
+    @abstractmethod
     async def __call__(self, *args, **kwargs) -> RESULT:
         """
         基于入参, 出参, 生成一个 CommandCall 交给调度器去执行.
@@ -372,11 +380,13 @@ class CommandWrapper(Command[RESULT]):
             func: Callable[..., Coroutine[Any, Any, RESULT]],
             available_fn: Callable[[], bool] | None = None,
             ctx: contextvars.Context | None = None,
+            partial: CommandPartial | None = None,
     ):
         self._func = func
         self._meta = meta
         self._ctx = ctx
         self._available_fn = available_fn
+        self._partial = partial
 
     @classmethod
     def wrap(
@@ -386,6 +396,7 @@ class CommandWrapper(Command[RESULT]):
             func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
             ctx: contextvars.Context | None = None,
             meta: CommandMeta | None = None,
+            partial: CommandPartial | None = None,
     ) -> Command[RESULT]:
 
         if func is None:
@@ -399,11 +410,15 @@ class CommandWrapper(Command[RESULT]):
             func=func,
             ctx=ctx,
             available_fn=command.is_available,
+            partial=partial,
         )
 
     @property
     def func(self) -> Callable:
         return self._func
+
+    def partial(self) -> Optional[CommandPartial]:
+        return self._partial
 
     def name(self) -> str:
         return self._meta.name
@@ -437,6 +452,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             self,
             func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
             *,
+            partial: CommandPartial | None = None,
             chan: Optional[str] = None,
             name: Optional[str] = None,
             available: Callable[[], bool] | None = None,
@@ -467,6 +483,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._func_name = func.__name__
         self._name = name or self._func_name
         self._func = func
+        self._partial = partial
         self._func_itf = parse_function_interface(func)
         self._is_coroutine_func = inspect.iscoroutinefunction(func)
         # dynamic method
@@ -500,6 +517,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     async def refresh_meta(self) -> None:
         if self._is_dynamic_itf:
             self._meta = await asyncio.to_thread(self._generate_meta)
+
+    def partial(self) -> Optional[CommandPartial]:
+        return self._partial
 
     def _generate_meta(self) -> CommandMeta:
         meta = CommandMeta(name=self._name)
@@ -712,6 +732,7 @@ class CommandTask(Generic[RESULT], ABC):
             chan: str,
             meta: CommandMeta,
             func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            partial: CommandPartial | None = None,
             tokens: str,
             args: list,
             kwargs: dict[str, Any],
@@ -727,6 +748,7 @@ class CommandTask(Generic[RESULT], ABC):
         self.state: str = "created"
         self.meta = meta
         self.func = func
+        self.partial = partial
         self.errcode: Optional[int] = None
         self.errmsg: Optional[str] = None
         self.context = context or {}
@@ -742,6 +764,7 @@ class CommandTask(Generic[RESULT], ABC):
         self.send_through: list[str] = [""]
         self.exec_chan: Optional[str] = None
         """记录 task 在哪个 channel 被运行. """
+        self._prepare_command_task: asyncio.Task | None = None
 
         self.done_at: Optional[str] = None
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
@@ -758,6 +781,13 @@ class CommandTask(Generic[RESULT], ABC):
         if self.call_id:
             parts.append(self.call_id)
         return ":".join(parts)
+
+    def prepare(self):
+        """
+        约定的 command task 预先加工参数的周期.
+        """
+        if self.partial is not None and self._prepare_command_task is None:
+            self._prepare_command_task = asyncio.create_task(self.partial(self.args, self.kwargs))
 
     @abstractmethod
     def result(self, throw: bool = True) -> Optional[RESULT]:
@@ -895,6 +925,11 @@ class CommandTask(Generic[RESULT], ABC):
         """无状态的运行逻辑"""
         if self.func is None:
             return None
+        if self._prepare_command_task is not None:
+            args, kwargs = await self._prepare_command_task
+            self._prepare_command_task = None
+            self.args = args
+            self.kwargs = kwargs
         r = await self.func(*self.args, **self.kwargs)
         return r
 
@@ -982,6 +1017,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             cid: str | None = None,
             context: dict[str, Any] | None = None,
             call_id: str | int | None = None,
+            partial: CommandPartial | None = None,
     ) -> None:
         super().__init__(
             chan=chan,
@@ -993,6 +1029,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             cid=cid,
             context=context,
             call_id=call_id,
+            partial=partial,
         )
         self._result: Optional[RESULT] = None
         self._done_event: ThreadSafeEvent = ThreadSafeEvent()
@@ -1042,6 +1079,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             tokens=tokens_,
             args=list(args) if args is not None else [],
             kwargs=kwargs if kwargs is not None else {},
+            partial=command_.partial()
         )
 
     def done(self) -> bool:
@@ -1316,7 +1354,7 @@ class CommandStackResult:
         self._generated = []
         self._iterator_done = asyncio.Event()
         self._timeout = timeout
-        self._wait_timeout_task :asyncio.Task | None = None
+        self._wait_timeout_task: asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
         self._wait_timeout_task = asyncio.create_task(self._wait_timeout())
