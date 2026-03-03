@@ -10,8 +10,9 @@ from ghoshell_common.contracts.storage import MemoryStorage
 from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core import MOSSShell, Speech, new_ctml_shell
-from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
+from ghoshell_moss.core import MOSSShell, Speech, new_ctml_shell, Interpretation
+from ghoshell_moss.message import parse_messages_to_params, Message
+
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
 from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
 from ghoshell_moss_contrib.agent.depends import check_agent
@@ -230,7 +231,7 @@ class SimpleAgent:
             self.logger.exception("Response loop failed")
             self.chat.print_exception(e)
 
-    def _get_history(self) -> list[dict]:
+    def _get_history(self) -> list[dict | Message]:
         if not self._history_storage.exists(self._message_filename):
             return []
         history = self._history_storage.get(self._message_filename)
@@ -249,34 +250,19 @@ class SimpleAgent:
         """
         self.logger.info("Single response received, inputs=%s", inputs)
         generated = ""
-        execution_results = ""
-
         history = self._get_history()
+        interpretation: Interpretation | None = None
         try:
             self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
             async with self.shell.interpreter_in_ctx() as interpreter:
+                interpretation = interpreter.interpretation()
                 reasoning = False
-
-                moss_instruction = interpreter.instruction_messages()
                 # 系统指令.
-                messages = []
-                if moss_instruction:
-                    messages.append({"role": "system", "content": moss_instruction})
-                # 注册 agent 的 instruction.
-                messages.append({"role": "system", "content": self.instruction})
+                merged = interpreter.merge_messages(history, inputs)
+                messages = parse_messages_to_params(merged)
 
-                # 增加历史.
-                messages.extend(history)
-                # 增加 context
-                context = interpreter.context_messages()
-                if len(context) > 0:
-                    parsed = parse_messages_to_params(context)
-                    messages.extend(parsed)
-                # 增加 inputs
-                if inputs:
-                    messages.extend(inputs)
                 params["messages"] = messages
                 params["stream"] = True
                 response_stream = await litellm.acompletion(**params)
@@ -299,25 +285,17 @@ class SimpleAgent:
 
                     interpreter.feed(content)
                 interpreter.commit()
-                results = await asyncio.create_task(interpreter.wait_stopped())
-                generated = interpreter.executed_tokens()
-                if len(results) > 0:
-                    execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
-                    self.logger.info("execution_results=%s", results)
+                interpretation = await asyncio.create_task(interpreter.wait_stopped())
+                if interpretation.observe:
                     return []
                 else:
                     return None
         finally:
             self._response_done.set()
             self.chat.finalize_ai_response()
-
             history.extend(inputs)
-            if generated:
-                history.append({"role": "assistant", "content": generated})
-            if execution_results:
-                history.append({"role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"})
-            if self._interrupt_requested:
-                history.append({"role": "system", "content": "Attention: User interrupted your response last time."})
+            if interpretation is not None:
+                history.extend(interpretation.observe_messages())
             self._put_history(history)
 
     async def run(self):

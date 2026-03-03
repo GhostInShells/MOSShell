@@ -344,7 +344,7 @@ class Interpreter(ABC):
         """
         pass
 
-    def merge_messages(self, history: list[Message], inputs: list[Message]) -> list[Message]:
+    def merge_messages(self, history: list[Message|dict], inputs: list[Message|dict]) -> list[Message|dict]:
         """
         遵循系统规则合并消息体, 生成一个模型上下文.
         此处也是提示如何使用 interpreter 来定义上下文.

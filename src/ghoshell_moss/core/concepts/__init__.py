@@ -43,6 +43,7 @@ from .interpreter import (
     CommandTokenCallback,
     StringTokenParser,
     Interpreter,
+    Interpretation,
 )
 from .shell import (
     InterpreterKind,

@@ -1046,7 +1046,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         task.exec_chan = self.channel.id()
         # 非阻塞函数不能返回 stack
         # 确保 task 被执行了. 但是不要阻塞主链路.
-        return self._loop.create_task(self._ensure_task_executed(task, depth))
+        return self._loop.create_task(self._ensure_task_executed(task, depth, throw=False))
 
     async def _add_executing_task(self, task: CommandTask) -> None:
         await self._blocking_action_lock.acquire()
@@ -1069,7 +1069,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         except KeyError:
             pass
 
-    async def _ensure_task_executed(self, task: CommandTask, depth: int) -> None:
+    async def _ensure_task_executed(self, task: CommandTask, depth: int, throw: bool) -> None:
         """
         运行属于自己这个 channel 的 task, 让它进入到 executing group 中.
         """
@@ -1106,12 +1106,14 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
-            raise
+            if throw:
+                raise
         except Exception as e:
             if not task.done():
                 task.fail(e)
             self.logger.error("%s task %s failed: %s", self.log_prefix, task.cid, e)
-            raise
+            if throw:
+                raise e
         finally:
             if not task.done():
                 self.logger.info("%s failed to ensure task done: %s", self.log_prefix, task)
@@ -1122,6 +1124,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             if not get_result_from_task.done():
                 try:
                     get_result_from_task.cancel()
+                    # 确保函数执行到了 finally
                     await get_result_from_task
                 except asyncio.CancelledError:
                     pass
@@ -1187,9 +1190,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     # 递归阻塞等待任务被执行.
                     if sub_task.meta.blocking:
                         # 自己的任务仍然要阻塞一下.
-                        await self._ensure_task_executed(sub_task, depth=depth + 1)
+                        await self._ensure_task_executed(sub_task, depth=depth + 1, throw=True)
                     else:
-                        _ = asyncio.create_task(self._ensure_task_executed(sub_task, depth=depth))
+                        _ = asyncio.create_task(self._ensure_task_executed(sub_task, depth=depth, throw=False))
 
                 # 完成了所有子节点的调度后, 通知回调函数.
                 # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,
