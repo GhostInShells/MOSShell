@@ -50,7 +50,7 @@ __all__ = [
     "PyCommand",
     "make_command_group",
     "CommandTaskContextVar",
-    'ObserveError',
+    "ObserveError",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -676,7 +676,7 @@ class CommandTaskResult(BaseModel):
             messages.append(result_message)
         merging = True
         for message in self.messages:
-            if merging and message.name is None and message.contents:
+            if merging and message.name is None and message.contents and result_message:
                 # 合并消息体, 和 result 合并到一起.
                 result_message.with_content(*message.contents)
             else:
@@ -1079,7 +1079,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             tokens=tokens_,
             args=list(args) if args is not None else [],
             kwargs=kwargs if kwargs is not None else {},
-            partial=command_.partial()
+            partial=command_.partial(),
         )
 
     def done(self) -> bool:
@@ -1202,8 +1202,8 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
-                        Message.new().as_completed(
-                            Text.new("Exception: %r" % exp)
+                        Message.new().as_head().as_completed(
+                            [Text.new("Exception: %r" % exp)]
                         )
                     ],
                 )
