@@ -33,7 +33,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             sample_rate: int = 16000,
             channels: int = 1,
             logger: LoggerItf | None = None,
-            safety_delay: float = 0.1,
+            safety_delay: float = 0.2,
     ):
         """
         基于 PyAudio 的异步音频播放器实现
@@ -159,13 +159,13 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             audio_data = chunk.astype(np.int16)
 
         # 计算持续时间
-        duration = len(audio_data) / (2 * rate)  # 2 bytes/sample
+        duration = len(audio_data) / rate
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
         self._audio_queue.put_nowait(resampled_audio_data)
         if self._play_done_event.is_set():
-            self.logger.info("%s player start to playing audio", self._log_prefix)
+            self.logger.debug("%s player start to playing audio", self._log_prefix)
             self._play_done_event.clear()
         if duration > 0.0:
             # 更新预计结束时间

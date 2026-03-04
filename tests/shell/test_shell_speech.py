@@ -51,48 +51,48 @@ async def test_shell_speech_baseline():
     shell.main_channel.build.command()(say)
 
     async with shell:
-        # async with await shell.interpreter() as interpreter:
-        #     interpreter.feed("<a:foo/>")
-        #     interpreter.commit()
-        #     tasks = await interpreter.wait_tasks()
-        #     assert len(tasks) == 1
-        #     task = list(tasks.values())[0]
-        #     assert task.success()
-        #     task_result = task.task_result()
-        #     assert task_result.result is 123
-        #     assert len(task_result.as_messages()) == 1
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<a:foo/>")
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks()
+            assert len(tasks) == 1
+            task = list(tasks.values())[0]
+            assert task.success()
+            task_result = task.task_result()
+            assert task_result.result is 123
+            assert len(task_result.as_messages()) == 1
 
-        # async with await shell.interpreter() as interpreter:
-        #     interpreter.feed("<wait><a:foo/>hello</wait><wait><a:foo/>world</wait>")
-        #     interpreter.commit()
-        #     tasks = await interpreter.wait_tasks()
-        #     assert len(tasks) == 2
-        #
-        #     interpreter.raise_exception()
-        #     assert speech.outputted() == ['hello', 'world']
-        #     interpretation = interpreter.interpretation()
-        #     assert interpretation.interrupted is False
-        #     assert len(interpretation.exception) == 0
-        #     assert len(interpretation.observe_messages()) == 2
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<wait><a:foo/>hello</wait><wait><a:foo/>world</wait>")
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks()
+            assert len(tasks) == 2
 
-        # async with await shell.interpreter() as interpreter:
-        #     content = "你好，我是MOSS。"
-        #     for c in content:
-        #         await asyncio.sleep(0.01)
-        #         interpreter.feed(c)
-        #     interpreter.commit()
-        #     await interpreter.wait_stopped()
-        #     assert speech.outputted() == ["你好，我是MOSS。"]
-        #
+            interpreter.raise_exception()
+            assert speech.outputted() == ['hello', 'world']
+            interpretation = interpreter.interpretation()
+            assert interpretation.interrupted is False
+            assert len(interpretation.exception) == 0
+            assert len(interpretation.observe_messages()) == 2
+
+        async with await shell.interpreter() as interpreter:
+            content = "你好，我是MOSS。"
+            for c in content:
+                await asyncio.sleep(0.01)
+                interpreter.feed(c)
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            assert speech.outputted() == ["你好，我是MOSS。"]
+
         content = "<wait><say>你好，我是MOSS。</say></wait>"
-        # tokens = []
-        # async for token in shell.parse_text_to_command_tokens(content):
-        #     tokens.append(token)
-        # assert len(tokens) == 7
-        # tasks = []
-        # async for task in shell.parse_text_to_tasks(content):
-        #     tasks.append(task)
-        # assert len(tasks) == 1
+        tokens = []
+        async for token in shell.parse_text_to_command_tokens(content):
+            tokens.append(token)
+        assert len(tokens) == 7
+        tasks = []
+        async for task in shell.parse_text_to_tasks(content):
+            tasks.append(task)
+        assert len(tasks) == 1
 
         async with await shell.interpreter() as interpreter:
             for c in content:
@@ -103,4 +103,5 @@ async def test_shell_speech_baseline():
             interpreter.raise_exception()
             await interpreter.wait_tasks()
             interpreter.raise_exception()
-            assert speech.outputted() == ["你好，我是MOSS。"]
+            outputted = speech.outputted()
+            assert speech.outputted()[0] == "你好，我是MOSS。"

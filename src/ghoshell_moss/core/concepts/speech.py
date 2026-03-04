@@ -510,37 +510,17 @@ class TTSSpeech(Speech, ABC):
 
         def voice_doc() -> str:
             current_voice = tts.get_voice()
-            return (f"可以用来设置你说话的声音状态, 一直生效.\n"
-                    f":param text__: json 结构, schema 也是 voice schema. "
+            return (f"使用指定的声音状态说话. 仅在需要不同于默认声音状态的时候才使用. \n"
+                    f":param voice: json 结构, json schema 是 {voice_schema_str}\n "
+                    f":param chunks__: 你说的话内容. "
+                    f":param as_default: 将本轮设置的声音状态变成默认."
                     f"你当前的声音状态是: {json.dumps(current_voice)}.\n"
                     )
 
-        async def set_voice(text__) -> None:
-            try:
-                config = json.loads(text__)
-            except json.JSONDecodeError:
-                raise ValueError(f"Invalid JSON: {text__}")
-            tts.set_voice(config)
-
-        set_voice_command = PyCommand(
-            set_voice,
-            doc=voice_doc,
-        )
-
-        say_doc = ("变更说话时默认的声音. 只在这句话生效."
-                   f":param voice: 字典类型, voice schema 是 {voice_schema_str}"
-                   ":param chunks__: 会转换为语音的自然语言内容.")
-
-        async def say(chunks__, voice: dict | None = None) -> None:
-            """
-            使用指定的声音设置来说话.
-            :param chunks__: 会转换为语音的自然语言内容. 注意语音播报中使用 tts 等
-            :param voice: 字典类型, 结构同 use voice. 只在这句话生效. 为空则使用默认声音.
-            """
+        async def say(voice: dict, chunks__, as_default: bool = False) -> None:
             origin_voice = tts.get_voice()
             try:
-                if voice is not None:
-                    tts.set_voice(voice)
+                tts.set_voice(voice)
                 task = ChannelCtx.task()
                 runtime = ChannelCtx.runtime()
                 if runtime is None:
@@ -550,11 +530,12 @@ class TTSSpeech(Speech, ABC):
                 async with stream:
                     await stream.run(chunks__)
             finally:
-                tts.set_voice(origin_voice)
+                if not as_default:
+                    tts.set_voice(origin_voice)
 
         say_command = PyCommand(
             say,
-            doc=say_doc,
+            doc=voice_doc,
         )
 
-        return [use_tone_command, set_voice_command, say_command]
+        return [use_tone_command, say_command]
