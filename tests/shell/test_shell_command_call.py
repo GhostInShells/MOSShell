@@ -361,7 +361,7 @@ async def test_shell_delta_types():
         "<text>hello world</text>",
         "<tokens><foo /><bar /></tokens>",
         "<parse_ctml><foo /><bar /></parse_ctml>",
-        "<json>{'a': 123}</json>",
+        '<json>{"a": 123}</json>',
     ]
 
     async with shell:
@@ -376,3 +376,9 @@ async def test_shell_delta_types():
             assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
             for t in compiled.values():
                 t.raise_exception()
+            tasks = await interpreter.wait(2)
+            task_results = []
+            for task in tasks.values():
+                assert task.success()
+                task_results.append(task.result())
+            assert task_results == [1, 11, 4, 4, {"a": 123}]

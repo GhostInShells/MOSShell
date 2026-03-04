@@ -1055,7 +1055,7 @@ class ChannelInterface(ABC):
     ChannelApp 范式的可继承版本. 提供一种标准的 Channel 抽象设计策略.
 
     开发者实现一个 ChannelInterface 的 Abstract 类, 定义必要的函数 (Command 或生命周期函数)
-    然后提前实现好 make_channel 函数.
+    然后提前实现好 as_channel 函数.
 
     >>> class SomeChannelInterface(ChannelInterface):
     >>>      @abstractmethod
