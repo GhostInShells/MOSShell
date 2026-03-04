@@ -27,10 +27,10 @@ class ThreadSafeStreamSender(Generic[ItemT]):
     """
 
     def __init__(
-        self,
-        added: ThreadSafeEvent,
-        completed: ThreadSafeEvent,
-        queue: deque[ItemT | Exception | None],
+            self,
+            added: ThreadSafeEvent,
+            completed: ThreadSafeEvent,
+            queue: deque[ItemT | Exception | None],
     ):
         self._added = added
         """通过一个 added event 来做发送 item 信号的通讯. 用于阻塞等待. """
@@ -89,11 +89,11 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     """
 
     def __init__(
-        self,
-        added: ThreadSafeEvent,
-        completed: ThreadSafeEvent,
-        queue: deque[ItemT | Exception | None],
-        timeout: float | None = None,
+            self,
+            added: ThreadSafeEvent,
+            completed: ThreadSafeEvent,
+            queue: deque[ItemT | Exception | None],
+            timeout: float | None = None,
     ):
         self._completed = completed
         self._added = added
@@ -150,6 +150,9 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     def __aiter__(self):
         return self
 
+    async def _async_iterate(self):
+        pass
+
     async def __anext__(self) -> ItemT:
         if len(self._queue) > 0:
             item = self._queue.popleft()
@@ -187,7 +190,7 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
 
 
 def create_sender_and_receiver(
-    timeout: float | None = None,
+        timeout: float | None = None,
 ) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
@@ -196,9 +199,9 @@ def create_sender_and_receiver(
 
 
 def create_typed_sender_and_receiver(
-    item_type: type[ItemT],
-    *,
-    timeout: float | None = None,
+        item_type: type[ItemT],
+        *,
+        timeout: float | None = None,
 ) -> tuple[ThreadSafeStreamSender[ItemT], ThreadSafeStreamReceiver[ItemT]]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()

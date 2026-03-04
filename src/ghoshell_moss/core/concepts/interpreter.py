@@ -1,21 +1,19 @@
 import asyncio
-import contextlib
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Iterable, AsyncIterable
-
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.message import Message
 from pydantic import BaseModel, Field
+import queue
 
 __all__ = [
     "CommandTaskCallback",
-    "CommandTaskParseError",
-    "CommandTokenParserElement",
+    "CommandTokenParser",
     "CommandTokenCallback",
-    "StringTokenParser",
+    "TextTokenParser",
     "Interpreter",
     "Interpretation",
 ]
@@ -24,18 +22,22 @@ CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
 
 
-class CommandTaskParseError(Exception):
-    pass
-
-
-class StringTokenParser(ABC):
+class TextTokenParser(ABC):
     """
     parse from string stream into command tokens
+
+    目标是实现:
+    >>> def run_parser(parser: TextTokenParser, tokens: Iterable[str], callback: CommandTokenCallback) -> None:
+    >>>     with parser.with_callback(callback):
+    >>>          for token in tokens:
+    >>>             parser.feed(token)
+    >>>          parser.commit()
     """
 
     @abstractmethod
     def with_callback(self, *callbacks: CommandTokenCallback) -> None:
         """
+        注册生成 command token 的回调.
         send command token to callback method
         """
         pass
@@ -43,11 +45,6 @@ class StringTokenParser(ABC):
     @abstractmethod
     def is_done(self) -> bool:
         """weather this parser is done parsing."""
-        pass
-
-    @abstractmethod
-    def start(self) -> None:
-        """start this parser"""
         pass
 
     @abstractmethod
@@ -61,20 +58,16 @@ class StringTokenParser(ABC):
         pass
 
     @abstractmethod
-    def close(self) -> None:
+    def stop(self) -> None:
         """
-        stop the parser and clear the resources.
+        立刻停止解析, 也不会抛出异常.
         """
         pass
 
     @abstractmethod
-    def wait_done(self) -> None:
-        pass
-
-    @abstractmethod
-    def buffer(self) -> str:
+    def buffered(self) -> str:
         """
-        return the buffered stream content
+        返回粘包后的输入文本.
         """
         pass
 
@@ -83,21 +76,19 @@ class StringTokenParser(ABC):
         """返回已经生成的 command token"""
         pass
 
+    @abstractmethod
     def __enter__(self):
-        self.start()
-        return self
+        pass
 
+    @abstractmethod
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
         example for how to use parser manually
         """
-        if exc_val is None:
-            # ending is needed if parse success
-            self.commit()
-        self.close()
+        pass
 
 
-class CommandTokenParserElement(ABC):
+class CommandTokenParser(ABC):
     """
     CommandTaskElement works like AST but in realtime.
     It accepts command token from a stream, and generate command task concurrently.
@@ -108,14 +99,6 @@ class CommandTokenParserElement(ABC):
 
     So we need an Element Tree to parse the tokens into command tasks, and send the tasks immediately
     """
-
-    depth: int
-
-    current: Optional[CommandTask] = None
-    """the current command task of this element, created by `start` type command token"""
-
-    children: dict[str, "CommandTokenParserElement"]
-    """the children element of this element"""
 
     @abstractmethod
     def with_callback(self, callback: CommandTaskCallback) -> None:
@@ -134,6 +117,12 @@ class CommandTokenParserElement(ABC):
     def is_end(self) -> bool:
         """是否解析已经完成了."""
         pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.destroy()
 
     @abstractmethod
     def destroy(self) -> None:
@@ -351,7 +340,7 @@ class Interpreter(ABC):
         """
         pass
 
-    def merge_messages(self, history: list[Message|dict], inputs: list[Message|dict]) -> list[Message|dict]:
+    def merge_messages(self, history: list[Message | dict], inputs: list[Message | dict]) -> list[Message | dict]:
         """
         遵循系统规则合并消息体, 生成一个模型上下文.
         此处也是提示如何使用 interpreter 来定义上下文.
@@ -427,13 +416,13 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def string_token_parser(self) -> StringTokenParser:
+    def text_token_parser(self) -> TextTokenParser:
         """
         interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
         command task 会自动回调 interpreter 执行.
 
         >>> def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
-        >>>     with interpreter.string_token_parser() as parser:
+        >>>     with interpreter.text_token_parser() as parser:
         >>>         async for delta in deltas:
         >>>             parser.feed(delta)
 
@@ -443,7 +432,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def command_token_parser(self) -> CommandTokenParserElement:
+    def command_token_parser(self) -> CommandTokenParser:
         """
         当前 Interpreter 做树形 Command Token 解析时使用的 Element 对象. debug 用.
         通常运行在独立的线程池中.
@@ -604,3 +593,132 @@ class Interpreter(ABC):
         :param clear_undone: 退出这个函数时, 是否要设置未完成的 Task 为 Cleared
         """
         pass
+
+    # --- interpreter 的无状态解析函数 --- #
+
+    async def aparse_text_to_command_tokens(
+            self,
+            texts: AsyncIterable[str],
+            *,
+            stopped: Callable[[], bool] | None = None,
+    ) -> AsyncIterable[CommandToken]:
+        """
+        将同步函数封装成异步函数, 同时仍然能正确抛出异常.
+        """
+        q = queue.Queue()
+        callback = asyncio.Queue()
+        stop_event = asyncio.Event()
+
+        def real_stop():
+            """
+            判定强行中断实机.
+            """
+            nonlocal stop_event
+            if stop_event.is_set():
+                return True
+            if stopped and stopped():
+                return True
+            return False
+
+        async def consume():
+            """
+            消费传入的 texts.
+            """
+            nonlocal texts
+            async for text in texts:
+                q.put(text)
+            q.put(None)
+
+        cor = asyncio.to_thread(self.parse_text_to_command_tokens, q, callback.put_nowait, stopped=real_stop)
+        parsing_task = asyncio.create_task(cor)
+
+        async def read_from():
+            """
+            读取消息.
+            """
+            while not real_stop():
+                item = await callback.get()
+                if item is None:
+                    break
+                yield item
+            await parsing_task
+
+        consume_task = asyncio.create_task(consume())
+        try:
+            async for got in read_from():
+                yield got
+        except Exception:
+            q.put(None)
+            stop_event.set()
+            raise
+        finally:
+            # 冗余的回收.
+            if not parsing_task.done():
+                parsing_task.cancel()
+            if not consume_task.done():
+                consume_task.cancel()
+
+    async def parse_tokens_to_command_tasks(
+            self,
+            tokens_queue: asyncio.Queue[CommandToken | None],
+            tasks_queue: asyncio.Queue[CommandTask | None],
+            *,
+            stopped: Callable[[], bool] | None = None,
+    ):
+        """
+        可以运行在协程中, 解析输入的 tokens 流, 返回 Command Tasks. 用毒丸做判断.
+        raise InterpreterError
+        """
+        parser = self.command_token_parser()
+        parser.with_callback(tasks_queue.put_nowait)
+        if stopped is None:
+            def empty_stopped():
+                return False
+
+            stopped = empty_stopped
+        try:
+            with parser:
+                while not stopped() and not parser.is_end():
+                    try:
+                        item = await asyncio.wait_for(tokens_queue.get(), 0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    if item is None:
+                        break
+                    parser.on_token(item)
+        finally:
+            tasks_queue.put_nowait(None)
+            parser.destroy()
+
+    def parse_text_to_command_tokens(
+            self,
+            text_queue: queue.Queue[str | None],
+            command_token_callback: Callable[[CommandToken | None], None],
+            *,
+            stopped: Callable[[], bool] | None = None,
+    ):
+        """
+        通常运行在独立线程中, 解析输入的 Text 流, 返回 Command Token 流. 用毒丸做判断.
+        raise InterpreterError
+        """
+        text_token_parser = self.text_token_parser()
+        text_token_parser.with_callback(command_token_callback)
+        if stopped is None:
+            def empty_stopped():
+                return False
+
+            stopped = empty_stopped
+        with text_token_parser:
+            while not text_token_parser.is_done():
+                if stopped():
+                    text_token_parser.stop()
+                    break
+                try:
+                    # check every 0.1 second if the loop is stopped.
+                    item = text_queue.get(block=True, timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    text_token_parser.commit()
+                    break
+                text_token_parser.feed(item)

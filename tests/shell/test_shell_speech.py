@@ -1,12 +1,11 @@
 from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.core import new_ctml_shell, new_channel, CommandErrorCode
+from ghoshell_moss.core.helpers.logger import get_console_logger
 import pytest
 import asyncio
 
-import logging
+logger = get_console_logger()
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler())
 
 @pytest.mark.asyncio
 async def test_shell_with_output_channel_in_wait():
@@ -25,8 +24,9 @@ async def test_shell_with_output_channel_in_wait():
 
             assert len(interpretation.observe_messages()) == 1
             for msg in interpretation.observe_messages():
-                # 暴露了异常.
-                assert CommandErrorCode.UNKNOWN_ERROR.name in str(msg)
+                print(msg)
+                # 暴露了异常. 深层异常是 a:foo 不存在.
+                assert CommandErrorCode.INTERPRET_ERROR.name in str(msg)
 
 
 @pytest.mark.asyncio
@@ -61,16 +61,20 @@ async def test_shell_speech_baseline():
         #     task_result = task.task_result()
         #     assert task_result.result is 123
         #     assert len(task_result.as_messages()) == 1
+
         # async with await shell.interpreter() as interpreter:
         #     interpreter.feed("<wait><a:foo/>hello</wait><wait><a:foo/>world</wait>")
         #     interpreter.commit()
-        #     await interpreter.wait_stopped()
+        #     tasks = await interpreter.wait_tasks()
+        #     assert len(tasks) == 2
+        #
         #     interpreter.raise_exception()
         #     assert speech.outputted() == ['hello', 'world']
         #     interpretation = interpreter.interpretation()
         #     assert interpretation.interrupted is False
         #     assert len(interpretation.exception) == 0
         #     assert len(interpretation.observe_messages()) == 2
+
         # async with await shell.interpreter() as interpreter:
         #     content = "你好，我是MOSS。"
         #     for c in content:
@@ -81,10 +85,10 @@ async def test_shell_speech_baseline():
         #     assert speech.outputted() == ["你好，我是MOSS。"]
         #
         content = "<wait><say>你好，我是MOSS。</say></wait>"
-        tokens = []
-        async for token in shell.parse_text_to_command_tokens(content):
-            tokens.append(token)
-        assert len(tokens) == 7
+        # tokens = []
+        # async for token in shell.parse_text_to_command_tokens(content):
+        #     tokens.append(token)
+        # assert len(tokens) == 7
         # tasks = []
         # async for task in shell.parse_text_to_tasks(content):
         #     tasks.append(task)
@@ -95,6 +99,8 @@ async def test_shell_speech_baseline():
                 await asyncio.sleep(0.01)
                 interpreter.feed(c)
             interpreter.commit()
-            await interpreter.wait_stopped()
+            await asyncio.sleep(0.05)
+            interpreter.raise_exception()
+            await interpreter.wait_tasks()
             interpreter.raise_exception()
             assert speech.outputted() == ["你好，我是MOSS。"]

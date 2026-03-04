@@ -312,111 +312,84 @@ class MOSSShell(ABC):
     async def parse_text_to_command_tokens(
             self,
             text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
         """
-        from ghoshell_moss.core.helpers.stream import create_sender_and_receiver
+        interpreter = await self.interpreter('dry_run')
+        if isinstance(text, str):
+            async def generate():
+                yield text
 
-        sender, receiver = create_sender_and_receiver()
-
-        async def _parse_token():
-            with sender:
-                async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.string_token_parser().with_callback(sender.append)
-                    if isinstance(text, str):
-                        interpreter.feed(text)
-                    else:
-                        async for delta in text:
-                            interpreter.feed(delta)
-                    await interpreter.wait_compiled()
-
-        t = asyncio.create_task(_parse_token())
-        async for token in receiver:
+            text_stream = generate()
+        else:
+            text_stream = text
+        async for token in interpreter.aparse_text_to_command_tokens(text_stream):
             if token is None:
                 break
             yield token
-        await t
 
     async def parse_tokens_to_command_tasks(
             self,
             tokens: AsyncIterable[CommandToken],
-            kind: InterpreterKind = "dry_run",
-    ) -> AsyncIterator[CommandTask]:
+            *,
+            ignore_wrong_command: bool = False,
+    ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
         """
-        _queue = asyncio.Queue[CommandTask | None | Exception]()
+        _token_queue = asyncio.Queue[CommandToken | None]()
+        _task_queue = asyncio.Queue[CommandTask | None | Exception]()
+        interpreter = await self.interpreter('dry_run', ignore_wrong_command=ignore_wrong_command)
 
-        async def _parse_task():
+        async def sender():
             try:
-                async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.on_task_compiled(_queue.put_nowait)
-                    parser = interpreter.command_token_parser()
-                    async for token in tokens:
-                        parser.on_token(token)
-                    await interpreter.wait_compiled()
-            except asyncio.CancelledError:
-                raise
+                async for token in tokens:
+                    await _token_queue.put(token)
             except Exception as e:
-                _queue.put_nowait(e)
+                raise e
             finally:
-                _queue.put_nowait(None)
+                _token_queue.put_nowait(None)
 
-        t = asyncio.create_task(_parse_task())
-        while True:
-            item = await _queue.get()
-            if item is None:
-                break
-            elif isinstance(item, Exception):
-                raise item
-            else:
+        sender_task = asyncio.create_task(sender())
+        consumer_task = asyncio.create_task(interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue))
+        try:
+            while True:
+                await asyncio.sleep(0.0)
+                item = await _task_queue.get()
+                if item is None:
+                    break
                 yield item
+            await consumer_task
+        finally:
+            if not sender_task.done():
+                sender_task.cancel()
 
     async def parse_text_to_tasks(
             self,
             text: str | AsyncIterable[str] | list[str],
-            kind: InterpreterKind = "dry_run",
             *,
             ignore_wrong_command: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks
         """
-        _queue = asyncio.Queue[CommandTask | None | Exception]()
 
-        if isinstance(text, str):
-            text = [text]
-
-        async def _parse_task():
-            try:
-                async with self.interpreter_in_ctx(kind, ignore_wrong_command=ignore_wrong_command) as interpreter:
-                    interpreter.on_task_compiled(_queue.put_nowait)
-                    if isinstance(text, list):
-                        for chunk in text:
-                            interpreter.feed(chunk)
-                    else:
-                        async for chunk in text:
-                            interpreter.feed(chunk)
-                    interpreter.commit()
-                    await interpreter.wait_compiled()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                _queue.put_nowait(e)
-            finally:
-                _queue.put_nowait(None)
-
-        t = asyncio.create_task(_parse_task())
-        while True:
-            item = await _queue.get()
-            if item is None:
-                break
-            elif isinstance(item, Exception):
-                raise item
+        async def generate_text():
+            if isinstance(text, str):
+                yield text
+                return
+            elif isinstance(text, list):
+                for content in text:
+                    yield content
+                return
             else:
-                yield item
+                async for content in text:
+                    yield content
+
+        tokens = self.parse_text_to_command_tokens(generate_text())
+        async for task in self.parse_tokens_to_command_tasks(tokens, ignore_wrong_command=ignore_wrong_command):
+            yield task
 
     # --- runtime methods --- #
 

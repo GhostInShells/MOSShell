@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import queue
 from collections.abc import Callable, Coroutine, Iterable
 from itertools import starmap
 from typing import Optional
@@ -14,17 +13,18 @@ from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandTok
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
-    CommandTokenParserElement,
-    StringTokenParser,
+    CommandTokenParser,
+    TextTokenParser,
     Interpreter,
     Interpretation,
 )
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.prompt import get_moss_meta_prompt
-from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, ParserStopped, AttrWithTypeSuffixParser
+from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, AttrWithTypeSuffixParser, ctml_default_parsers
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import Message, Text
+import queue
 
 __all__ = [
     "DEFAULT_META_PROMPT",
@@ -105,6 +105,7 @@ class CTMLInterpreter(Interpreter):
             channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             ignore_wrong_command: bool = False,
             clear_after_exit: bool = False,
+            ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -133,6 +134,7 @@ class CTMLInterpreter(Interpreter):
         # 可用的 task 回调.
         self._on_task_created_callbacks: list[CommandTaskCallback] = []
         self._on_task_done_callbacks: list[CommandTaskCallback] = []
+        self._ctml_attr_parser = ctml_attr_parser or ctml_default_parsers
         if callback is not None:
             self._on_task_created_callbacks.append(callback)
         # 启动时执行的命令.
@@ -150,42 +152,21 @@ class CTMLInterpreter(Interpreter):
                 self._commands_map[unique_name] = command
 
         self._root_tag = root_tag
-        self._special_tokens = tokens_replacement or {}
+        self._token_replacement = tokens_replacement or {}
         self._stopped_event = ThreadSafeEvent()
         self._closed = False
         self._parsing_exception: Optional[InterpretError] = None
+        self._ignore_wrong_command = ignore_wrong_command
 
         # output related
         self._speech = speech
         self._outputted: Optional[list[str]] = None
-
-        # create token parser
-        self._text_to_token_parser = CTML2CommandTokenParser(
-            callback=self._receive_command_token,
-            stream_id=self.id,
-            root_tag=root_tag,
-            tokens_replacement=tokens_replacement,
-            stop_event=self._stopped_event,
-            attr_parsers=[AttrWithTypeSuffixParser()],
-        )
         # 用线程安全队列就可以. 考虑到队列可能不是在同一个 loop 里添加
         self._input_deltas_queue: queue.Queue[str | None] = queue.Queue()
         # 内部传输 tokens 的通道.
         self._parsed_tokens_queue: queue.Queue[CommandToken | None] = queue.Queue()
 
         # create task element
-        self._task_element_ctx = CommandTaskElementContext(
-            channel_commands=self._channel_command_map,
-            speech=self._speech,
-            logger=self._logger,
-            stop_event=self._stopped_event,
-            ignore_wrong_command=ignore_wrong_command,
-        )
-        self._root_element = self._task_element_ctx.new_root(
-            callback=self._send_command_task,
-            stream_id=self.id,
-        )
-
         self._managing_tasks: dict[str, CommandTask] = {}  # 解析生成的 tasks.
         self._compiled_tasks: dict[str, CommandTask] = {}
 
@@ -203,7 +184,8 @@ class CTMLInterpreter(Interpreter):
                 task.add_done_callback(self._task_done_callback)
 
         #  --- runtime --- #
-        self._main_parsing_task: Optional[asyncio.Task] = None  # 解析的主循环.
+        self._main_parsing_loop_task: Optional[asyncio.Task] = None  # 解析的主循环.
+        self._tasks_done_then_stop_task: Optional[asyncio.Task] = None
         self._wait_interpreter_stop_task: Optional[asyncio.Task] = None
         self._started = False
         self._committed = False
@@ -419,11 +401,30 @@ class CTMLInterpreter(Interpreter):
     def on_task_done(self, *callbacks: CommandTaskCallback) -> None:
         self._on_task_done_callbacks.extend(callbacks)
 
-    def string_token_parser(self) -> StringTokenParser:
-        return self._text_to_token_parser
+    def text_token_parser(self) -> TextTokenParser:
+        """
+        实现无副作用的 TokenParser 返回.
+        """
+        # create token parser
+        return CTML2CommandTokenParser(
+            callback=None,
+            stream_id=self.id,
+            root_tag=self._root_tag,
+            tokens_replacement=self._token_replacement,
+            attr_parsers=self._ctml_attr_parser,
+        )
 
-    def command_token_parser(self) -> CommandTokenParserElement:
-        return self._root_element
+    def command_token_parser(self) -> CommandTokenParser:
+        ctx = CommandTaskElementContext(
+            channel_commands=self._channel_command_map,
+            speech=self._speech,
+            logger=self._logger,
+            ignore_wrong_command=self._ignore_wrong_command,
+        )
+        return ctx.new_root(
+            callback=None,
+            stream_id=self.id,
+        )
 
     def parsed_tokens(self) -> Iterable[CommandToken]:
         return self._interpretation.command_tokens.copy()
@@ -439,85 +440,76 @@ class CTMLInterpreter(Interpreter):
     def received_text(self) -> str:
         return "".join(self._interpretation.feed_inputs)
 
-    def _token_parse_loop(self) -> None:
+    def _text_token_parse_loop(self) -> None:
         try:
-            with self._text_to_token_parser:
-                while not self._stopped_event.is_set() and not self._text_to_token_parser.is_done():
-                    try:
-                        # check every 0.1 second if the loop is stopped.
-                        item = self._input_deltas_queue.get(block=True, timeout=0.1)
-                    except queue.Empty:
-                        continue
-                    if item is None:
-                        self._text_to_token_parser.commit()
-                        break
-                    self._text_to_token_parser.feed(item)
-                self._text_to_token_parser.wait_done()
-
+            self.parse_text_to_command_tokens(
+                self._input_deltas_queue,
+                self._receive_command_token,
+                stopped=self._stopped_event.is_set,
+            )
         except asyncio.CancelledError:
-            self._logger.info("%s interpretation cancelled", self._log_prefix)
-        except ParserStopped as e:
-            self._logger.info("%s parser stopped: %s", self._log_prefix, e)
-            # self._parsing_exception = InterpretError(f"Parse output stream failed: {e}")
-            self._stopped_event.set()
-        except InterpretError as e:
-            self._logger.exception("%s Interpret failed: %s", self._log_prefix, e)
-            self._set_interpreter_error(e)
+            pass
         except Exception as exc:
             self._logger.exception("%s Interpret failed: %s", self._log_prefix, exc)
-            err = InterpretError(f"Interpret failed: {exc}")
-            self._set_interpreter_error(err)
             raise
         finally:
-            self._logger.info("%s token parser loop stopped", self._log_prefix)
+            self._logger.info("%s text token parser loop stopped", self._log_prefix)
 
-    def _task_parse_loop(self) -> None:
+    def _command_token_parse_loop(self) -> None:
+        task_parser = self.command_token_parser()
         try:
-            while not self._stopped_event.is_set():
+            task_parser.with_callback(self._send_command_task)
+            while not self._stopped_event.is_set() and not task_parser.is_end():
                 try:
                     item = self._parsed_tokens_queue.get(block=True, timeout=0.1)
-                    self._root_element.on_token(item)
                 except queue.Empty:
                     continue
                 if item is not None and item.stream_id != self.id:
                     raise InterpretError(
-                        "interpreter %s receive token from other stream: %s", self.id, item.stream_id,
+                        "%s receive token from other stream: %s" % (self._log_prefix, item.stream_id)
                     )
+                task_parser.on_token(item)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._logger.exception("%s Parse command task failed", self._log_prefix)
+            raise e
+        finally:
+            task_parser.destroy()
 
-                if item is None or self._root_element.is_end():
-                    break
+    async def _wait_task_done_then_stop(self) -> None:
+        """
+        唯一的目的, 是为了 tasks done 后设置 stopped 为 True.
+        """
+        wait_parse_done = asyncio.create_task(self._parsing_loop_done.wait())
+        wait_stopped = asyncio.create_task(self._stopped_event.wait())
+        done, pending = await asyncio.wait([wait_parse_done, wait_stopped], return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if self._stopped_event.is_set():
+            return
+        tasks = self._managing_tasks.values()
+        wait_all_task_done = asyncio.gather(*[t.wait(throw=False) for t in tasks])
+        wait_stopped = asyncio.create_task(self._stopped_event.wait())
+        done, pending = await asyncio.wait([wait_all_task_done, wait_stopped], return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if wait_all_task_done in done:
+            self._stopped_event.set()
+
+    async def _main_parsing_loop(self) -> None:
+        try:
+            token_parse_loop = asyncio.to_thread(self._text_token_parse_loop)
+            task_parse_loop = asyncio.to_thread(self._command_token_parse_loop)
+            await asyncio.gather(token_parse_loop, task_parse_loop)
         except asyncio.CancelledError:
             pass
         except InterpretError as e:
             self._logger.exception("%s Parse command task failed %s", self._log_prefix, e)
             self._set_interpreter_error(e)
         except Exception as e:
-            # todo
-            self._logger.exception("%s Parse command task failed", self._log_prefix)
-            err = InterpretError(f"Parse command task failed at `{type(e)}`: {e}")
-            self._set_interpreter_error(err)
-        finally:
-            self._root_element.destroy()
-
-    async def _wait_interpreter_stop(self) -> None:
-        await self._parsing_loop_done.wait()
-        wait_all_done = []
-        for task in self._managing_tasks.values():
-            wait_all_done.append(task.wait(throw=False))
-        _ = await asyncio.gather(*wait_all_done)
-        if not self._stopped_event.is_set():
-            self._stopped_event.set()
-            self._interpretation.done = True
-
-    async def _main_parsing_loop(self) -> None:
-        try:
-            token_parse_loop = asyncio.to_thread(self._token_parse_loop)
-            task_parse_loop = asyncio.to_thread(self._task_parse_loop)
-            await asyncio.gather(token_parse_loop, task_parse_loop)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
             self._logger.exception("%s Interpreter main parsing loop failed: %s", self._log_prefix, e)
+            self._set_interpreter_error(InterpretError(f'interpreter failed: {e}'))
         finally:
             # 主循环如果发生错误, interpreter 会终止. 这时并不会结束所有的任务.
             self._parsing_loop_done.set()
@@ -544,8 +536,8 @@ class CTMLInterpreter(Interpreter):
             await self._on_startup()
         # 启动主循环.
         task = asyncio.create_task(self._main_parsing_loop())
-        self._main_parsing_task = task
-        self._wait_interpreter_stop_task = asyncio.create_task(self._wait_interpreter_stop())
+        self._main_parsing_loop_task = task
+        self._tasks_done_then_stop_task = asyncio.create_task(self._wait_task_done_then_stop())
 
     async def close(self, cancel_executing: bool = True) -> Interpretation | None:
         if not self._started:
@@ -557,19 +549,15 @@ class CTMLInterpreter(Interpreter):
         self._stopped_event.set()
         self._logger.info("%s interpreter stopping", self._log_prefix)
         try:
-            self._text_to_token_parser.close()
-        except ParserStopped:
-            pass
-        try:
-            if self._main_parsing_task and not self._main_parsing_task.done():
-                self._main_parsing_task.cancel()
-                await self._main_parsing_task
+            if self._main_parsing_loop_task and not self._main_parsing_loop_task.done():
+                self._main_parsing_loop_task.cancel()
+                await self._main_parsing_loop_task
         except asyncio.CancelledError:
             pass
         try:
-            if self._wait_interpreter_stop_task and not self._wait_interpreter_stop_task.done():
-                self._wait_interpreter_stop_task.cancel()
-                await self._wait_interpreter_stop_task
+            if self._tasks_done_then_stop_task and not self._tasks_done_then_stop_task.done():
+                self._tasks_done_then_stop_task.cancel()
+                await self._tasks_done_then_stop_task
         except asyncio.CancelledError:
             pass
 
@@ -625,9 +613,6 @@ class CTMLInterpreter(Interpreter):
                 raise self._parsing_exception
         except asyncio.CancelledError:
             self._logger.info("wait parser done is cancelled")
-            pass
-        except ParserStopped:
-            self._logger.info("wait parser done: parser is stopped")
             pass
         except InterpretError as e:
             self._logger.exception("%s stopped due to exception: %s", self._log_prefix, e)
@@ -704,7 +689,6 @@ class CTMLInterpreter(Interpreter):
         return tasks
 
     def destroy(self) -> None:
-        self._text_to_token_parser.close()
         # 确保所有的 element 被销毁了. 否则会有内存泄漏的风险.
         self._commands_map.clear()
         self._channel_metas = None
@@ -712,7 +696,6 @@ class CTMLInterpreter(Interpreter):
         self._on_task_created_callbacks.clear()
         self._managing_tasks.clear()
         self._compiled_tasks.clear()
+        self._speech = None
         if self._outputted:
             self._outputted.clear()
-        if self._root_element:
-            self._root_element.destroy()

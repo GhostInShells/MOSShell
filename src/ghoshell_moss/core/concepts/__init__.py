@@ -29,7 +29,7 @@ from .command import (
     CommandStackResult,
     CommandTaskState,
     CommandToken,
-    CommandTokenType,
+    CommandTokenSeq,
     CommandType,
     CommandWrapper,
     PyCommand,
@@ -38,10 +38,9 @@ from .command import (
 from .errors import CommandError, CommandErrorCode, FatalError, InterpretError
 from .interpreter import (
     CommandTaskCallback,
-    CommandTaskParseError,
-    CommandTokenParserElement,
+    CommandTokenParser,
     CommandTokenCallback,
-    StringTokenParser,
+    TextTokenParser,
     Interpreter,
     Interpretation,
 )

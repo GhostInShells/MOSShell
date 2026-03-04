@@ -270,7 +270,7 @@ class CTMLShell(MOSSShell):
 
     def _check_running(self):
         if not self.is_running():
-            raise RuntimeError(f"Shell {self._name} not running")
+            raise RuntimeError(f"Shell `{self._name}` not running")
 
     def is_idle(self) -> bool:
         return self.is_running() and self._main_runtime.is_idle()

@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, AsyncIterable
 from enum import Enum
 from typing import (
     Any,
@@ -16,7 +16,7 @@ from typing import (
     Union,
 )
 
-from ghoshell_common.helpers import uuid
+from ghoshell_common.helpers import uuid, Timeleft
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -44,7 +44,7 @@ __all__ = [
     "CommandTaskResult",
     "CommandTaskState",
     "CommandToken",
-    "CommandTokenType",
+    "CommandTokenSeq",
     "CommandType",
     "CommandWrapper",
     "PyCommand",
@@ -115,7 +115,7 @@ class CommandType(str, Enum):
         }
 
 
-class CommandTokenType(str, Enum):
+class CommandTokenSeq(str, Enum):
     """
     Command Token 是指, 对大模型输出的 Token 进行标记, 标记它们属于哪一个 Command 调用.
     通过这种方式, 将大模型输出的 Tokens 流染色成 CommandToken 流, 从而可以被流式解释器去调度.
@@ -125,7 +125,6 @@ class CommandTokenType(str, Enum):
      - deltas: streaming tokens
      - end: </foo>
 
-    # todo: 考虑更名为 CommandTokenSeq . 因为从 type 的角度看, 未来双工模型输出多模态, delta 可能有 文本/音频/图片/视频 等.
     """
 
     START = "start"
@@ -500,7 +499,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._delta_types = delta_types if delta_types is not None else list(ValueOfCommandDeltaTypeMap.keys())
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters:
-            if arg_name in self._delta_types:
+            if arg_name.endswith("__") or arg_name in self._delta_types:
                 if delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
                 delta_arg = arg_name
@@ -923,14 +922,18 @@ class CommandTask(Generic[RESULT], ABC):
 
     async def dry_run(self) -> RESULT:
         """无状态的运行逻辑"""
+        args = self.args
+        kwargs = self.kwargs
+        # if not prepared
+        self.prepare()
+        if self._prepare_command_task is not None:
+            _args, _kwargs = await self._prepare_command_task
+            self._prepare_command_task = None
+            args = args
+            kwargs = kwargs
         if self.func is None:
             return None
-        if self._prepare_command_task is not None:
-            args, kwargs = await self._prepare_command_task
-            self._prepare_command_task = None
-            self.args = args
-            self.kwargs = kwargs
-        r = await self.func(*self.args, **self.kwargs)
+        r = await self.func(*args, **kwargs)
         return r
 
     async def run(self) -> RESULT:
@@ -942,14 +945,11 @@ class CommandTask(Generic[RESULT], ABC):
             self.raise_exception()
             return self.result()
 
-        if self.func is None:
-            # func 为 none 的情况下, 完全依赖外部运行赋值.
-            return await self.wait(throw=True)
-
         set_token = CommandTaskContextVar.set(self)
         try:
+            self.prepare()
             dry_run_task = asyncio.create_task(self.dry_run())
-            wait_done_task = asyncio.create_task(self.wait())
+            wait_done_task = asyncio.create_task(self.wait(throw=False))
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
             done, pending = await asyncio.wait([dry_run_task, wait_done_task], return_when=asyncio.FIRST_COMPLETED)
@@ -959,8 +959,9 @@ class CommandTask(Generic[RESULT], ABC):
                 result = await dry_run_task
                 self.resolve(result)
             else:
+                result = None
                 self.raise_exception()
-            return self.result()
+            return result
 
         except asyncio.CancelledError:
             if not self.done():
@@ -1200,7 +1201,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             # cancel 不要. 因为 cancel 可能很多.
             if exp is not None and CommandErrorCode.is_failed(exp):
                 item = Message.new(role="user", name=self.caller_name()).with_content(
-                    "Exception: %r" % exp
+                    "Failed: %r" % exp
                 )
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
@@ -1231,24 +1232,21 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         Command Task 的 Await done 要求跨线程安全.
         :throw: 如果为 True, 有异常, 或者有 observe == True 都会抛出异常.
         """
-        try:
-            if self._done_event.is_set():
-                if throw:
-                    self.raise_exception()
-                return self._result
-            if timeout is not None:
-                await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
-            else:
-                await self._done_event.wait()
+        if self._done_event.is_set():
             if throw:
-                if self.errcode != 0:
-                    raise CommandError(self.errcode, self.errmsg or "")
-                elif self._task_result and self._task_result.observe:
-                    # observe 可以中断 wait FIRST_EXCEPTION
-                    raise CommandErrorCode.OBSERVE.error("need observe")
+                self.raise_exception()
             return self._result
-        except asyncio.CancelledError:
-            pass
+        if timeout is not None:
+            await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
+        else:
+            await self._done_event.wait()
+        if throw:
+            if self.errcode != 0:
+                raise CommandError(self.errcode, self.errmsg or "")
+            elif self._task_result and self._task_result.observe:
+                # observe 可以中断 wait FIRST_EXCEPTION
+                raise CommandErrorCode.OBSERVE.error("need observe")
+        return self._result
 
     def wait_sync(self, *, throw: bool = True, timeout: float | None = None) -> Optional[RESULT]:
         """
@@ -1312,20 +1310,29 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
             block=False,
             call_soon=True,
         )
+        _tasks = list(tasks)
 
-        async def wait_done_then_cancel() -> Optional[None]:
-            waiting = list(tasks)
-            if not current.done() and len(waiting) > 0:
-                await asyncio.gather(*[t.wait() for t in tasks])
-            if not current.done():
-                # todo
+        async def wait_partial(args: list, kwargs: dict) -> tuple[list, dict]:
+            nonlocal _tasks
+            if current.done():
+                return args, kwargs
+            if len(_tasks) == 0:
                 current.cancel()
-                await current.wait()
+                return args, kwargs
+
+            group_wait = []
+            for task in _tasks:
+                group_wait.append(task.wait(throw=False))
+            await asyncio.gather(*group_wait)
+            if not current.done():
+                current.cancel()
+            return args, kwargs
 
         super().__init__(
             chan=current.chan,
             meta=meta,
-            func=wait_done_then_cancel,
+            func=None,
+            partial=wait_partial,
             tokens=tokens,
             args=[],
             kwargs={},
@@ -1346,32 +1353,42 @@ class CommandStackResult:
 
     def __init__(
             self,
-            iterator: AsyncIterator[CommandTask] | list[CommandTask],
+            iterator: AsyncIterable[CommandTask] | list[CommandTask],
             callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
             timeout: float | None = None,
     ) -> None:
-        self._iterator = iterator
-        self._on_callback = callback
+        if isinstance(iterator, list):
+            async def generate():
+                for item in iterator:
+                    yield item
+
+            self._iterator = generate()
+        else:
+            self._iterator = aiter(iterator)
         self._generated = []
+        self._on_callback = callback
         self._iterator_done = asyncio.Event()
-        self._timeout = timeout
+        self._timeleft = Timeleft(timeout) if timeout is not None and timeout > 0.0 else None
         self._exception = None
         self._wait_timeout_task: asyncio.Task | None = None
+        self._wait_owner_done: asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
         self._wait_timeout_task = asyncio.create_task(self._wait_timeout())
         return self
 
     def _on_task_done(self, task: CommandTask) -> None:
+        # 基础规则, 如果触发了 observe 就退出.
         if task.observe():
             self._iterator_done.set()
 
     async def _wait_timeout(self):
-        if self._timeout is not None:
-            await asyncio.sleep(self._timeout)
+        if self._timeleft is not None:
+            await asyncio.sleep(self._timeleft.left())
             self._iterator_done.set()
+            # 超时后生成出来的也全部超时.
             for task in self._generated:
-                task.cancel()
+                task.cancel("timeout")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._iterator_done.set()
@@ -1381,13 +1398,15 @@ class CommandStackResult:
             for task in self._generated:
                 if not task.done():
                     task.fail(exc_val)
-        if self._wait_timeout_task is not None:
+        if self._wait_timeout_task is not None and not self._wait_timeout_task.done():
             self._wait_timeout_task.cancel()
 
     async def callback(self, owner: CommandTask) -> Self | None:
         """
         回调 owner.
         """
+        if owner.done():
+            return
         if self._exception is not None:
             owner.fail(self._exception)
             return
@@ -1412,22 +1431,14 @@ class CommandStackResult:
     async def __anext__(self) -> CommandTask:
         if self._iterator_done.is_set():
             raise StopAsyncIteration
-        if isinstance(self._iterator, list):
-            if len(self._iterator) == 0:
-                raise StopAsyncIteration
-            item = self._iterator.pop(0)
+        try:
+            item = await self._iterator.__anext__()
             item.add_done_callback(self._on_task_done)
-            self._generated.append(item)
-            return item
-        else:
-            try:
-                item = await self._iterator.__anext__()
-                item.add_done_callback(self._on_task_done)
-            except StopAsyncIteration:
-                self._iterator_done.set()
-                raise StopAsyncIteration
-            self._generated.append(item)
-            return item
+        except StopAsyncIteration:
+            self._iterator_done.set()
+            raise StopAsyncIteration
+        self._generated.append(item)
+        return item
 
 
 def make_command_group(*commands: Command) -> dict[str, dict[str, Command]]:

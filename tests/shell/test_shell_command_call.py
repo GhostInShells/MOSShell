@@ -207,55 +207,6 @@ async def test_shell_task_can_get_task():
 
 
 @pytest.mark.asyncio
-async def test_shell_loop():
-    from ghoshell_moss.core.ctml.shell import new_ctml_shell
-
-    shell = new_ctml_shell()
-    a_chan = new_chan("a")
-    shell.main_channel.import_channels(a_chan)
-
-    @shell.main_channel.build.command()
-    async def loop(times: int, tokens__):
-        if times == 0:
-            return None
-
-        _shell = ChannelCtx.get_contract(MOSSShell)
-        _tasks = []
-        async for t in _shell.parse_tokens_to_command_tasks(tokens__):
-            _tasks.append(t)
-
-        async def _iter():
-            for i in range(times):
-                for _task in _tasks:
-                    yield _task.copy()
-
-        async def on_success(generated: list[CommandTask]):
-            await asyncio.gather(*[g.wait() for g in generated])
-
-        return CommandStackResult(_iter(), on_success)
-
-    outputs = []
-
-    @a_chan.build.command()
-    async def foo() -> int:
-        outputs.append(1)
-        return 123
-
-    content = '<loop times="2">hello<a:foo />world</loop>'
-    async with shell:
-        interpreter = await shell.interpreter()
-        async with interpreter:
-            for c in content:
-                interpreter.feed(c)
-            tasks = await interpreter.wait_tasks()
-            for task in tasks.values():
-                assert task.done()
-        assert interpreter.is_stopped()
-    # 执行了两次.
-    assert len(outputs) == 2
-
-
-@pytest.mark.asyncio
 async def test_shell_clear():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
@@ -316,6 +267,49 @@ async def test_shell_clear():
 
 
 @pytest.mark.asyncio
+async def test_shell_delta_prepare():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    contents = [
+        "<chunks>hello world</chunks>",
+        "<text>hello world</text>",
+        "<tokens><foo /><bar /></tokens>",
+        "<parse_ctml><foo /><bar /></parse_ctml>",
+        "<json>{'a': 123}</json>",
+    ]
+
+    async with shell:
+        await shell.wait_connected()
+        # baseline
+        async with await shell.interpreter() as interpreter:
+
+            # 先确认 token 解析符合预期.
+            async def gen():
+                for c in contents:
+                    yield c
+
+            tokens = []
+            async for token in interpreter.aparse_text_to_command_tokens(gen()):
+                tokens.append(token)
+            assert len(tokens) > 0
+            mapping = {}
+            for t in tokens:
+                if t.command_id() not in mapping:
+                    mapping[t.command_id()] = []
+                if t.seq == "delta":
+                    continue
+                # 只记录开闭标签.
+                mapping[t.command_id()].append(t)
+            # 开闭标签成对出现.
+            for group in mapping.values():
+                assert len(group) == 2, group
+                assert group[0].seq == "start"
+                assert group[1].seq == "end"
+
+
+@pytest.mark.asyncio
 async def test_shell_delta_types():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
@@ -368,10 +362,12 @@ async def test_shell_delta_types():
         await shell.wait_connected()
         # baseline
         async with await shell.interpreter() as interpreter:
+
             for content in contents:
                 interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
+            interpreter.raise_exception()
             compiled = interpreter.compiled_tasks()
             assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
             for t in compiled.values():

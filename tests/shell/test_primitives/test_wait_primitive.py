@@ -1,6 +1,7 @@
 from ghoshell_moss.core.ctml.shell.primitives import wait
 from ghoshell_moss.core.ctml.shell import new_ctml_shell
 from ghoshell_moss.core import PyChannel
+from ghoshell_moss.speech import MockSpeech
 import pytest
 import asyncio
 
@@ -34,7 +35,7 @@ async def test_wait_primitive():
 
     @b_chan.build.command()
     async def bar():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.3)
         ordered.append("bar")
         return 456
 
@@ -74,11 +75,33 @@ async def test_wait_primitive():
         # 验证 timeout
         ordered.clear()
         async with await shell.interpreter() as interpreter:
-            interpreter.feed("<wait timeout:float='0.1'><a:foo/><b:bar/><a:foo/><b:bar/></wait>")
+            interpreter.feed("<wait timeout:float='0.2'><a:foo/><b:bar/><a:foo/><b:bar/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
             # 只有 foo 成功了. 其它的都被 timeout 了.
             assert ordered == ["foo", "foo"]
+
+
+@pytest.mark.asyncio
+async def test_shell_wait_talk():
+    speech = MockSpeech()
+    shell = new_ctml_shell(speech=speech)
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            for c in "hello world":
+                interpreter.feed(c)
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            assert speech.outputted() == ["hello world"]
+
+        async with await shell.interpreter() as interpreter:
+            for c in "<wait>hello world</wait>":
+                interpreter.feed(c)
+            interpreter.commit()
+            await asyncio.sleep(0.3)
+            assert speech.outputted() == ["hello world"]
+            await interpreter.wait_stopped()
+            assert speech.outputted() == ["hello world"]
 
 
 @pytest.mark.asyncio
@@ -93,7 +116,7 @@ async def test_wait_return_when_first_complete():
     @a_chan.build.command()
     async def slow_task():
         execution_log.append("slow_start")
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
         execution_log.append("slow_end")
         completion_order.append("slow")
         return "slow_result"

@@ -30,9 +30,6 @@ async def test_loop_basic_functionality():
 
 @pytest.mark.asyncio
 async def test_loop_times_zero():
-    """
-    测试 clear 基本功能：清空子轨道的运行状态
-    """
     shell = new_ctml_shell()
     chan = PyChannel(name="a")
     ran = []
@@ -52,10 +49,7 @@ async def test_loop_times_zero():
 
 
 @pytest.mark.asyncio
-async def test_loop_times_zero():
-    """
-    测试 clear 基本功能：清空子轨道的运行状态
-    """
+async def test_loop_times_101():
     shell = new_ctml_shell()
     chan = PyChannel(name="a")
     ran = []
@@ -72,6 +66,48 @@ async def test_loop_times_zero():
             await interpreter.wait_stopped()
             interpreter.raise_exception()
             assert len(ran) == 200
+
+
+@pytest.mark.asyncio
+async def test_loop_times_negative_maxsize():
+    shell = new_ctml_shell()
+    chan = PyChannel(name="a")
+    ran = []
+
+    @chan.build.command()
+    async def foo():
+        ran.append(1)
+
+    shell.main_channel.import_channels(chan)
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<loop times='-1'><a:foo/><a:foo/></loop>")
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            interpreter.raise_exception()
+            assert len(ran) == 200
+
+
+@pytest.mark.asyncio
+async def test_loop_with_chunks():
+    shell = new_ctml_shell()
+    said = []
+
+    @shell.main_channel.build.command()
+    async def say(chunks__):
+        content = ""
+        async for chunk in chunks__:
+            content += chunk
+        said.append(content)
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<loop times='2'><say>hello</say><say>hello</say></loop>")
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            assert len(said) == 4
+            for line in said:
+                assert line == "hello"
 
 
 @pytest.mark.asyncio

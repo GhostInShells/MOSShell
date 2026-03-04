@@ -87,3 +87,34 @@ def test_thread_send_and_receive():
     t1.join()
     t2.join()
     assert content == done[0]
+
+
+@pytest.mark.asyncio
+async def test_fractal_stream():
+    sender1, receiver1 = create_sender_and_receiver()
+
+    async def sender1_func():
+        nonlocal sender1
+        with sender1:
+            for i in "hello":
+                await asyncio.sleep(0.01)
+                sender1.append(i)
+
+    sender2, receiver2 = create_sender_and_receiver()
+
+    async def sender2_func():
+        nonlocal sender2, receiver1
+        with sender2:
+            async for i in receiver1:
+                await asyncio.sleep(0.01)
+                sender2.append(i)
+
+    got = []
+
+    async def consume2():
+        async for char in receiver2:
+            got.append(char)
+
+    await asyncio.gather(sender1_func(), sender2_func(), consume2())
+
+    assert len(got) == len("hello")

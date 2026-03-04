@@ -15,8 +15,10 @@ class MockSpeechStream(SpeechStream):
         outputs: list[str],
         id: str = "",
         typing_sleep: float = 0.0,
+        speech_id: str = "",
     ):
         super().__init__(id=id or uuid())
+        self.speech_id = speech_id
         self.outputs = outputs
         self.output_queue = Queue()
         self.output_done_event = ThreadSafeEvent()
@@ -85,10 +87,16 @@ class MockSpeech(Speech):
         self._outputs: dict[str, list[str]] = {}
         self._closed = ThreadSafeEvent()
         self._typing_sleep = typing_sleep
+        self._uid = uuid()
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         stream_outputs = []
-        stream = MockSpeechStream(stream_outputs, id=batch_id, typing_sleep=self._typing_sleep)
+        stream = MockSpeechStream(
+            stream_outputs,
+            id=batch_id,
+            typing_sleep=self._typing_sleep,
+            speech_id=self._uid,
+        )
         stream_id = stream.id
         if stream_id in self._streams:
             existing_stream = self._streams[stream_id]
