@@ -11,15 +11,16 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 class MockSpeechStream(SpeechStream):
     def __init__(
-        self,
-        outputs: list[str],
-        id: str = "",
-        typing_sleep: float = 0.0,
-        speech_id: str = "",
+            self,
+            speech_outputs: list[str],
+            id: str = "",
+            typing_sleep: float = 0.0,
+            speech_id: str = "",
     ):
         super().__init__(id=id or uuid())
         self.speech_id = speech_id
-        self.outputs = outputs
+        self.speech_outputs = speech_outputs
+        self.outputs = []
         self.output_queue = Queue()
         self.output_done_event = ThreadSafeEvent()
         self.output_buffer = ""
@@ -73,6 +74,7 @@ class MockSpeechStream(SpeechStream):
             if self.cmd_task is not None:
                 self.cmd_task.tokens = self.output_buffer
             self.output_done_event.set()
+            self.speech_outputs.append("".join(self.outputs))
 
     def buffered(self) -> str:
         return self.output_buffer
@@ -84,15 +86,14 @@ class MockSpeechStream(SpeechStream):
 class MockSpeech(Speech):
     def __init__(self, typing_sleep: float = 0.0):
         self._streams: dict[str, MockSpeechStream] = {}
-        self._outputs: dict[str, list[str]] = {}
+        self._outputs = []
         self._closed = ThreadSafeEvent()
         self._typing_sleep = typing_sleep
         self._uid = uuid()
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
-        stream_outputs = []
         stream = MockSpeechStream(
-            stream_outputs,
+            self._outputs,
             id=batch_id,
             typing_sleep=self._typing_sleep,
             speech_id=self._uid,
@@ -102,25 +103,21 @@ class MockSpeech(Speech):
             existing_stream = self._streams[stream_id]
             existing_stream.close()
         self._streams[stream_id] = stream
-        self._outputs[stream_id] = stream_outputs
         return stream
 
     def is_running(self) -> bool:
         return True
 
     def outputted(self) -> list[str]:
-        data = self._outputs.copy()
-        result = []
-        for contents in data.values():
-            result.append("".join(contents))
+        result = self._outputs.copy()
         return result
 
     async def clear(self) -> list[str]:
         outputs = []
         for stream in self._streams.values():
             await stream.aclose()
-        for stream_output in self._outputs.values():
-            outputs.append("".join(stream_output))
+        for stream_output in self._outputs:
+            outputs.append(stream_output)
         self._streams.clear()
         self._outputs.clear()
         return outputs

@@ -668,11 +668,15 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
 
 class DeltaIsCommandTokensElement(DeltaStreamElement[CommandToken]):
     def _parse_delta(self, token: CommandToken) -> ItemT:
+        if token is None:
+            raise RuntimeError("why token is None")
         return token
 
 
 class DeltaIsTextChunkElement(DeltaStreamElement[CommandToken]):
     def _parse_delta(self, token: CommandToken) -> ItemT:
+        if token is None:
+            raise RuntimeError("why token is None")
         return token.content
 
 

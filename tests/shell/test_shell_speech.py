@@ -141,3 +141,40 @@ async def test_shell_speech_baseline():
             interpreter.raise_exception()
             outputted = speech.outputted()
             assert speech.outputted()[0] == "你好，我是MOSS。"
+
+
+@pytest.mark.asyncio
+async def test_shell_speech_10_times():
+    speech = MockSpeech(typing_sleep=0.0)
+    shell = new_ctml_shell(speech=speech)
+    a_chan = new_channel(name="a")
+
+    @a_chan.build.command()
+    async def foo():
+        return 123
+
+    shell.main_channel.import_channels(a_chan)
+
+    async def say(chunks__):
+        async with speech.new_stream() as stream:
+            async for chunk in chunks__:
+                stream.feed(chunk)
+            stream.commit()
+            await stream.wait()
+
+    shell.main_channel.build.command()(say)
+    content = "hello<wait><say>你好，我是MOSS。</say></wait> world"
+
+    async with shell:
+        for i in range(10):
+            async with await shell.interpreter() as interpreter:
+                for c in content:
+                    await asyncio.sleep(0.001)
+                    interpreter.feed(c)
+                interpreter.commit()
+                interpreter.raise_exception()
+                await interpreter.wait_tasks()
+                interpreter.raise_exception()
+                outputted = speech.outputted()
+                print(outputted)
+                assert outputted[1] == "你好，我是MOSS。"
