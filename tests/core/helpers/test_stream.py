@@ -118,3 +118,57 @@ async def test_fractal_stream():
     await asyncio.gather(sender1_func(), sender2_func(), consume2())
 
     assert len(got) == len("hello")
+
+
+def test_thread_send_and_receive():
+    content = "hello world"
+    done = []
+    sender, receiver = create_sender_and_receiver()
+
+    def sending():
+        with sender:
+            for char in content:
+                sender.append(char)
+
+    def sync_receiving():
+        buffer = ""
+        with receiver:
+            for char in receiver:
+                buffer += char
+        done.append(buffer)
+
+    t1 = threading.Thread(target=sending)
+    t2 = threading.Thread(target=sync_receiving)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert content == done[0]
+
+
+@pytest.mark.asyncio
+async def test_fractal_stream_sync():
+    sender1, receiver1 = create_sender_and_receiver()
+
+    with sender1:
+        for i in "hello":
+            await asyncio.sleep(0.01)
+            sender1.append(i)
+    sender1.commit()
+    sender1.commit()
+    sender1.commit()
+    sender1.commit()
+
+    sender2, receiver2 = create_sender_and_receiver()
+
+    with sender2:
+        async for i in receiver1:
+            await asyncio.sleep(0.01)
+            sender2.append(i)
+
+    got = []
+
+    async for char in receiver2:
+        got.append(char)
+
+    assert len(got) == len("hello")

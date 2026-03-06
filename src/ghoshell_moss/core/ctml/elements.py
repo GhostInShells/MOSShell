@@ -584,7 +584,6 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
         super().destroy()
 
 
-
 class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
     """
     一个空节点.

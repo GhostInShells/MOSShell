@@ -346,6 +346,7 @@ class MOSSShell(ABC):
             try:
                 async for token in tokens:
                     await _token_queue.put(token)
+                    await asyncio.sleep(0.0)
             except Exception as e:
                 raise e
             finally:
@@ -355,11 +356,11 @@ class MOSSShell(ABC):
         consumer_task = asyncio.create_task(interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue))
         try:
             while True:
-                await asyncio.sleep(0.0)
                 item = await _task_queue.get()
                 if item is None:
                     break
                 yield item
+                await asyncio.sleep(0.0)
             await consumer_task
         finally:
             if not sender_task.done():
