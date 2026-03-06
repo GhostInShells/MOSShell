@@ -58,7 +58,8 @@ async def test_text_token_parser_with_invalid_input():
         t = asyncio.create_task(
             asyncio.to_thread(
                 interpreter.parse_text_to_command_tokens,
-                input_queue, receiver.append,
+                input_queue,
+                receiver.append,
                 stopped=stopped.is_set,
             ),
         )

@@ -331,13 +331,13 @@ class VolcengineTTSBatch(TTSBatch):
     """
 
     def __init__(
-            self,
-            *,
-            loop: asyncio.AbstractEventLoop,
-            speaker: SpeakerConf,
-            batch_id: str = "",
-            logger: LoggerItf,
-            callback: Optional[TTSAudioCallback] = None,
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        speaker: SpeakerConf,
+        batch_id: str = "",
+        logger: LoggerItf,
+        callback: Optional[TTSAudioCallback] = None,
     ):
         self.speaker = speaker
         self.callback = callback
@@ -407,10 +407,10 @@ class VolcengineTTSBatch(TTSBatch):
 
 class VolcengineTTS(TTS):
     def __init__(
-            self,
-            *,
-            conf: VolcengineTTSConf | None = None,
-            logger: LoggerItf | None = None,
+        self,
+        *,
+        conf: VolcengineTTSConf | None = None,
+        logger: LoggerItf | None = None,
     ):
         self.logger = logger or logging.getLogger("moss")
         self._log_prefix = "[VolcengineTTS] "
@@ -571,10 +571,10 @@ class VolcengineTTS(TTS):
             self.logger.info("%s consuming batch loop done", self._log_prefix)
 
     async def _consume_batch_in_connection(
-            self,
-            batch: VolcengineTTSBatch,
-            connection: ClientConnection,
-            current_resource_id: str,
+        self,
+        batch: VolcengineTTSBatch,
+        connection: ClientConnection,
+        current_resource_id: str,
     ) -> bool:
         if batch.is_closed():
             return True
@@ -625,10 +625,10 @@ class VolcengineTTS(TTS):
             self._running_batch = None
 
     async def _send_batch_text_to_server(
-            self,
-            batch: VolcengineTTSBatch,
-            session: Session,
-            connection: ClientConnection,
+        self,
+        batch: VolcengineTTSBatch,
+        session: Session,
+        connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         try:
@@ -670,9 +670,9 @@ class VolcengineTTS(TTS):
             self.logger.info("%s batch %s send text done", self._log_prefix, batch_id)
 
     async def _receive_batch_audio_from_server(
-            self,
-            batch: VolcengineTTSBatch,
-            connection: ClientConnection,
+        self,
+        batch: VolcengineTTSBatch,
+        connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         callback = batch.callback
@@ -683,11 +683,17 @@ class VolcengineTTS(TTS):
                 self.logger.debug("%s session %s receive message %s", self._log_prefix, batch_id, msg)
                 if msg.session_id != batch_id:
                     self.logger.info(
-                        "%s new batch %s receive old batch message %s", self._log_prefix, batch_id, msg,
+                        "%s new batch %s receive old batch message %s",
+                        self._log_prefix,
+                        batch_id,
+                        msg,
                     )
                 if msg.type == MsgType.Error:
                     self.logger.error(
-                        "%s batch %s received error message %s", self._log_prefix, batch_id, msg,
+                        "%s batch %s received error message %s",
+                        self._log_prefix,
+                        batch_id,
+                        msg,
                     )
                     break
                 elif msg.type == MsgType.FullServerResponse:
@@ -738,7 +744,8 @@ class VolcengineTTS(TTS):
                 # 超时还没拿到新的 batch, tts 就关闭 connection 了.
                 self.logger.info(
                     "%s close connection after disconnect timeout %s",
-                    self._log_prefix, self._conf.disconnect_on_idle,
+                    self._log_prefix,
+                    self._conf.disconnect_on_idle,
                 )
                 return
 

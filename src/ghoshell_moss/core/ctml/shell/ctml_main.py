@@ -9,6 +9,7 @@ class CTMLMainChannel(PyChannel):
     """
     ctml 的主 channel.
     """
+
     pass
 
 
@@ -34,6 +35,7 @@ def create_ctml_main_chan() -> Channel:
     chan.build.add_command(interrupt_command)
 
     return chan
+
 
 # primitive.py 原语定义成command
 # wait_done 原语

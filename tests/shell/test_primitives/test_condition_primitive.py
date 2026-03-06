@@ -20,11 +20,11 @@ async def test_condition_basic_functionality():
 
     @chan.build.command()
     async def foo():
-        done.append('foo')
+        done.append("foo")
 
     @chan.build.command()
     async def bar():
-        done.append('bar')
+        done.append("bar")
 
     shell = new_ctml_shell()
     shell.main_channel.import_channels(chan)
@@ -39,4 +39,4 @@ async def test_condition_basic_functionality():
             interpreter.commit()
             # 验证任务被取消
             await interpreter.wait_stopped()
-            assert done == ['foo']
+            assert done == ["foo"]

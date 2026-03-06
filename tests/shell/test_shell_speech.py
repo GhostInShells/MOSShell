@@ -69,7 +69,7 @@ async def test_shell_speech_baseline_prepare():
             assert len(tasks) == 2
 
             interpreter.raise_exception()
-            assert speech.outputted() == ['hello', 'world']
+            assert speech.outputted() == ["hello", "world"]
             interpretation = interpreter.interpretation()
             assert interpretation.interrupted is False
             assert len(interpretation.exception) == 0

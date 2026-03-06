@@ -284,7 +284,6 @@ async def test_shell_delta_prepare():
         await shell.wait_connected()
         # baseline
         async with await shell.interpreter() as interpreter:
-
             # 先确认 token 解析符合预期.
             async def gen():
                 for c in contents:
@@ -362,7 +361,6 @@ async def test_shell_delta_types():
         await shell.wait_connected()
         # baseline
         async with await shell.interpreter() as interpreter:
-
             for content in contents:
                 interpreter.feed(content)
             interpreter.commit()

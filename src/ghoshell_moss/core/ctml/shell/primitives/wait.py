@@ -14,10 +14,10 @@ __all__ = ["wait"]
 
 
 async def wait(
-        ctml__,
-        timeout: float | None = None,
-        return_when: Literal['ALL_COMPLETE', 'FIRST_COMPLETE', 'FIRST_EXCEPTION'] = "FIRST_EXCEPTION",
-        chans: str | None = None,
+    ctml__,
+    timeout: float | None = None,
+    return_when: Literal["ALL_COMPLETE", "FIRST_COMPLETE", "FIRST_EXCEPTION"] = "FIRST_EXCEPTION",
+    chans: str | None = None,
 ):
     """
     Core blocking primitive for grouping and synchronizing CTML command execution.
@@ -57,7 +57,7 @@ async def wait(
     if chans is None:
         channel_names = []
     else:
-        channel_names = chans.split(',')
+        channel_names = chans.split(",")
 
     tasks = []
     async for task in iterable_tasks:

@@ -1,7 +1,8 @@
 import asyncio
 
 from ghoshell_moss.core.concepts.channel import (
-    ChannelCtx, ChannelRuntime,
+    ChannelCtx,
+    ChannelRuntime,
 )
 
 __all__ = ["wait_idle"]

@@ -32,10 +32,10 @@ class SpeechStream(ABC):
     """
 
     def __init__(
-            self,
-            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
-            committed: bool = False,  # 是否完成了这个 stream 的提交
+        self,
+        id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+        cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+        committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
         self.cmd_task = cmd_task
@@ -259,12 +259,12 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def add(
-            self,
-            chunk: np.ndarray,
-            *,
-            audio_type: AudioFormat,
-            rate: int,
-            channels: int = 1,
+        self,
+        chunk: np.ndarray,
+        *,
+        audio_type: AudioFormat,
+        rate: int,
+        channels: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -490,8 +490,7 @@ class TTSSpeech(Speech, ABC):
             _tts_info = tts.get_info()
             current_tone = _tts_info.current_tone
 
-            docstring = (f"可以随时切换你所使用的音色.你的当前音色: {current_tone}.\n"
-                         f"可以使用的音色:{descriptions}.")
+            docstring = f"可以随时切换你所使用的音色.你的当前音色: {current_tone}.\n可以使用的音色:{descriptions}."
             return docstring
 
         async def use_tone(tone: str) -> None:
@@ -510,12 +509,13 @@ class TTSSpeech(Speech, ABC):
 
         def voice_doc() -> str:
             current_voice = tts.get_voice()
-            return (f"使用指定的声音状态说话. 仅在需要不同于默认声音状态的时候才使用. \n"
-                    f":param voice: json 结构, json schema 是 {voice_schema_str}\n "
-                    f":param chunks__: 你说的话内容. "
-                    f":param as_default: 将本轮设置的声音状态变成默认."
-                    f"你当前的声音状态是: {json.dumps(current_voice)}.\n"
-                    )
+            return (
+                f"使用指定的声音状态说话. 仅在需要不同于默认声音状态的时候才使用. \n"
+                f":param voice: json 结构, json schema 是 {voice_schema_str}\n "
+                f":param chunks__: 你说的话内容. "
+                f":param as_default: 将本轮设置的声音状态变成默认."
+                f"你当前的声音状态是: {json.dumps(current_voice)}.\n"
+            )
 
         async def say(voice: dict, chunks__, as_default: bool = False) -> None:
             origin_voice = tts.get_voice()

@@ -20,6 +20,7 @@ ItemT = TypeVar("ItemT")
 # 实现线程安全的 Stream 对象, 预计同时支持 asyncio 与 sync 两种调用方式.
 # 能够支持阻塞逻辑.
 
+
 class _Committed:
     pass
 
@@ -30,10 +31,10 @@ class ThreadSafeStreamSender(Generic[ItemT]):
     """
 
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[ItemT | Exception | _Committed],
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | _Committed],
     ):
         self._added = added
         """通过一个 added event 来做发送 item 信号的通讯. 用于阻塞等待. """
@@ -86,11 +87,11 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     """
 
     def __init__(
-            self,
-            added: ThreadSafeEvent,
-            completed: ThreadSafeEvent,
-            queue: deque[ItemT | Exception | None],
-            timeout: float | None = None,
+        self,
+        added: ThreadSafeEvent,
+        completed: ThreadSafeEvent,
+        queue: deque[ItemT | Exception | None],
+        timeout: float | None = None,
     ):
         self._completed = completed
         self._added = added
@@ -155,7 +156,7 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
 
 
 def create_sender_and_receiver(
-        timeout: float | None = None,
+    timeout: float | None = None,
 ) -> tuple[ThreadSafeStreamSender, ThreadSafeStreamReceiver]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()
@@ -164,9 +165,9 @@ def create_sender_and_receiver(
 
 
 def create_typed_sender_and_receiver(
-        item_type: type[ItemT],
-        *,
-        timeout: float | None = None,
+    item_type: type[ItemT],
+    *,
+    timeout: float | None = None,
 ) -> tuple[ThreadSafeStreamSender[ItemT], ThreadSafeStreamReceiver[ItemT]]:
     added = ThreadSafeEvent()
     completed = ThreadSafeEvent()

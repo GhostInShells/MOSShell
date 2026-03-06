@@ -162,6 +162,7 @@ async def test_sleep_with_wait_primitives():
 
     # 从 wait 模块导入 wait（假设已经实现）
     from ghoshell_moss.core.ctml.shell.primitives.wait import wait
+
     shell.main_channel.build.command()(wait)
 
     execution_order = []
@@ -310,6 +311,7 @@ async def test_sleep_in_nested_structure():
 
     # 从 wait 模块导入 wait
     from ghoshell_moss.core.ctml.shell.primitives.wait import wait
+
     shell.main_channel.build.command()(wait)
 
     execution_order = []
@@ -342,11 +344,7 @@ async def test_sleep_in_nested_structure():
             # A 应该先执行
             # 然后内层 wait 执行：sleep 0.1s，然后 B
             # 最后 C
-            expected_order = [
-                "start_A", "end_A",
-                "start_B", "end_B",
-                "start_C", "end_C"
-            ]
+            expected_order = ["start_A", "end_A", "start_B", "end_B", "start_C", "end_C"]
 
             # 由于 sleep 在内层 wait，B 应该在 sleep 后执行
             # 但实际顺序可能因实现而异，这里我们主要验证所有任务都执行了

@@ -1,4 +1,4 @@
-__all__ = ['noop']
+__all__ = ["noop"]
 
 
 async def noop() -> None:

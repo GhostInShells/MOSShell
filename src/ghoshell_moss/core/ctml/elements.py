@@ -52,15 +52,15 @@ class CommandTaskElementContext:
     """语法糖, 用来管理所有 element 共享的组件."""
 
     def __init__(
-            self,
-            channel_commands: dict[str, dict[str, Command]],
-            speech: Speech,
-            logger: Optional[LoggerItf] = None,
-            # stop_event: Optional[ThreadSafeEvent] = None,
-            root_tag: str = "ctml",
-            ignore_wrong_command: bool = False,
-            callback: Optional[CommandTaskCallback] = None,
-            delta_type_map: Optional[dict[str, Any]] = None,
+        self,
+        channel_commands: dict[str, dict[str, Command]],
+        speech: Speech,
+        logger: Optional[LoggerItf] = None,
+        # stop_event: Optional[ThreadSafeEvent] = None,
+        root_tag: str = "ctml",
+        ignore_wrong_command: bool = False,
+        callback: Optional[CommandTaskCallback] = None,
+        delta_type_map: Optional[dict[str, Any]] = None,
     ):
         self.channel_commands_map = channel_commands
         # 主音频模块.
@@ -79,7 +79,11 @@ class CommandTaskElementContext:
         """
         return RootCommandTaskElement(
             self.root_tag,
-            stream_id=stream_id, cid=stream_id, current_task=None, callback=callback, ctx=self,
+            stream_id=stream_id,
+            cid=stream_id,
+            current_task=None,
+            callback=callback,
+            ctx=self,
         )
 
     def send_callback(self, task: CommandTask | None) -> None:
@@ -114,15 +118,15 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
     """
 
     def __init__(
-            self,
-            name: str,
-            stream_id: str,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        name: str,
+        stream_id: str,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         self._name = name
         self.stream_id = stream_id
@@ -154,7 +158,11 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         self._destroyed = False
         self._done_is_delivered = False
         self._log_prefix = "[CommandTokenParser][cls=%s] sid=%s cid=%s depth=%d name=%s, " % (
-            self.__class__.__name__, self.stream_id, cid, depth, self._name,
+            self.__class__.__name__,
+            self.stream_id,
+            cid,
+            depth,
+            self._name,
         )
         # 初始化自身节点.
         self._on_self_init()
@@ -297,7 +305,9 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         """
         if token.seq != CommandTokenSeq.START.value:
             self.ctx.logger.error(
-                "%s create new child but receive token which is not start: %s", self._log_prefix, token,
+                "%s create new child but receive token which is not start: %s",
+                self._log_prefix,
+                token,
             )
             raise InterpretError(f"invalid tokens {token.content}")
         # 判断这个 token 是不是 root token.
@@ -305,7 +315,9 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         if command is None:
             if self.ctx.ignore_wrong_command:
                 self.ctx.logger.warning(
-                    "%s ignore wrong command %s, create empty one", self._log_prefix, token,
+                    "%s ignore wrong command %s, create empty one",
+                    self._log_prefix,
+                    token,
                 )
                 child = EmptyCommandTaskElement(
                     name=Command.make_uniquename(token.chan, token.name),
@@ -321,7 +333,9 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
                 # 抛出致命异常, 拒绝解析.
                 err = f"command `{token.name}` from channel `{token.chan}` not found, use provided command only!"
                 self.ctx.logger.error(
-                    "%s receive invalid command token %s", self._log_prefix, token,
+                    "%s receive invalid command token %s",
+                    self._log_prefix,
+                    token,
                 )
                 raise InterpretError(err)
         else:
@@ -535,8 +549,7 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
             return
         elif token.command_id() != self.cid:
             self.ctx.logger.error(
-                "%s element end current task %s with invalid token %r",
-                self._log_prefix, self._current_task, token
+                "%s element end current task %s with invalid token %r", self._log_prefix, self._current_task, token
             )
             # 自己来处理这个 token, 但 command id 不一致的情况.
             self.raise_interrupt()
@@ -588,6 +601,7 @@ class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
     """
     一个空节点.
     """
+
     pass
 
 
@@ -606,15 +620,15 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     """
 
     def __init__(
-            self,
-            name: str,
-            stream_id: str,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        name: str,
+        stream_id: str,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         sender, receiver = create_sender_and_receiver()
         self._sender = sender
@@ -724,7 +738,6 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
 
 
 class RootCommandTaskElement(NoDeltaCommandTaskElement):
-
     def on_token(self, token: CommandToken | None) -> None:
         if self._is_root_token(token):
             if token.seq == "start":

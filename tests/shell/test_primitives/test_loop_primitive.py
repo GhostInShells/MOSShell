@@ -313,7 +313,7 @@ async def test_loop_interruption_and_resume():
             # 第二轮：恢复执行（从上次中断的地方继续逻辑）
             async with await shell.interpreter() as interpreter2:
                 # 处理中断
-                interpreter2.feed('<task:handle_interruption/>')
+                interpreter2.feed("<task:handle_interruption/>")
 
                 # 继续剩余的迭代
                 remaining = 10 - iterations_before_interrupt

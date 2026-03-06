@@ -88,24 +88,24 @@ def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
 
 class CTMLInterpreter(Interpreter):
     def __init__(
-            self,
-            kind: str,
-            *,
-            interrupted: Interpretation | None = None,
-            undone_tasks: list[CommandTask] | None = None,
-            commands: dict[ChannelFullPath, dict[str, Command]],
-            speech: Speech,
-            stream_id: Optional[str] = None,
-            callback: Optional[CommandTaskCallback] = None,
-            root_tag: str = "ctml",
-            tokens_replacement: Optional[dict[str, str]] = None,
-            logger: Optional[LoggerItf] = None,
-            on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-            moss_meta_instruction: Optional[str] = None,
-            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-            ignore_wrong_command: bool = False,
-            clear_after_exit: bool = False,
-            ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
+        self,
+        kind: str,
+        *,
+        interrupted: Interpretation | None = None,
+        undone_tasks: list[CommandTask] | None = None,
+        commands: dict[ChannelFullPath, dict[str, Command]],
+        speech: Speech,
+        stream_id: Optional[str] = None,
+        callback: Optional[CommandTaskCallback] = None,
+        root_tag: str = "ctml",
+        tokens_replacement: Optional[dict[str, str]] = None,
+        logger: Optional[LoggerItf] = None,
+        on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+        moss_meta_instruction: Optional[str] = None,
+        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        ignore_wrong_command: bool = False,
+        clear_after_exit: bool = False,
+        ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -175,7 +175,7 @@ class CTMLInterpreter(Interpreter):
             id=self._id,
             meta_instruction=self._get_meta_instruction(),
             instruction_messages=self._get_instruction_messages(),
-            context_messages=self._get_context_messages()
+            context_messages=self._get_context_messages(),
         )
         if undone_tasks is not None and len(undone_tasks) > 0:
             for task in undone_tasks:
@@ -247,7 +247,10 @@ class CTMLInterpreter(Interpreter):
                         callback(task)
                     except Exception as exc:
                         self._logger.exception(
-                            "%s on task creation callback %s exception: %s", self._log_prefix, task, exc,
+                            "%s on task creation callback %s exception: %s",
+                            self._log_prefix,
+                            task,
+                            exc,
                         )
                 self._task_sent_done = task is None
         except Exception as e:
@@ -259,7 +262,8 @@ class CTMLInterpreter(Interpreter):
         if not command_task.done():
             self._logger.error(
                 "%s Command task is not done but send to interpreter on task %s done",
-                self._log_prefix, command_task,
+                self._log_prefix,
+                command_task,
             )
             command_task.cancel("system error")
         self._interpretation.on_done_task(command_task)
@@ -281,7 +285,10 @@ class CTMLInterpreter(Interpreter):
                     callback(command_task)
                 except Exception as e:
                     self._logger.exception(
-                        "%s call command task done callback %s failed: %s", self._log_prefix, callback, e,
+                        "%s call command task done callback %s failed: %s",
+                        self._log_prefix,
+                        callback,
+                        e,
                     )
 
     def _get_meta_instruction(self) -> str:
@@ -298,7 +305,7 @@ class CTMLInterpreter(Interpreter):
 
     def _get_instruction_messages(self) -> list[Message]:
         messages = []
-        interface_message = Message.new(role='system')
+        interface_message = Message.new(role="system")
         # 生成代码 interface.
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
@@ -465,9 +472,7 @@ class CTMLInterpreter(Interpreter):
                 except queue.Empty:
                     continue
                 if item is not None and item.stream_id != self.id:
-                    raise InterpretError(
-                        "%s receive token from other stream: %s" % (self._log_prefix, item.stream_id)
-                    )
+                    raise InterpretError("%s receive token from other stream: %s" % (self._log_prefix, item.stream_id))
                 task_parser.on_token(item)
         except asyncio.CancelledError:
             pass
@@ -509,7 +514,7 @@ class CTMLInterpreter(Interpreter):
             self._set_interpreter_error(e)
         except Exception as e:
             self._logger.exception("%s Interpreter main parsing loop failed: %s", self._log_prefix, e)
-            self._set_interpreter_error(InterpretError(f'interpreter failed: {e}'))
+            self._set_interpreter_error(InterpretError(f"interpreter failed: {e}"))
         finally:
             # 主循环如果发生错误, interpreter 会终止. 这时并不会结束所有的任务.
             self._parsing_loop_done.set()
@@ -627,12 +632,12 @@ class CTMLInterpreter(Interpreter):
                 raise err
 
     async def wait_tasks(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)

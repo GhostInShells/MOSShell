@@ -253,8 +253,8 @@ class Builder(ABC):
 
     @abstractmethod
     def add_command(
-            self,
-            command: Command,
+        self,
+        command: Command,
     ) -> None:
         """
         添加一个 Command 对象.
@@ -263,19 +263,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-            self,
-            *,
-            name: str = "",
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[list[str]] = None,
-            interface: Optional[StringType] = None,
-            available: Optional[Callable[[], bool]] = None,
-            # --- 高级参数 --- #
-            blocking: Optional[bool] = None,
-            call_soon: bool = False,
-            priority: int = 0,
-            return_command: bool = False,
+        self,
+        *,
+        name: str = "",
+        doc: Optional[StringType] = None,
+        comments: Optional[StringType] = None,
+        tags: Optional[list[str]] = None,
+        interface: Optional[StringType] = None,
+        available: Optional[Callable[[], bool]] = None,
+        # --- 高级参数 --- #
+        blocking: Optional[bool] = None,
+        call_soon: bool = False,
+        priority: int = 0,
+        return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         decorator
@@ -402,9 +402,9 @@ class ChannelCtx:
     """
 
     def __init__(
-            self,
-            runtime: Optional["ChannelRuntime"] = None,
-            task: Optional[CommandTask] = None,
+        self,
+        runtime: Optional["ChannelRuntime"] = None,
+        task: Optional[CommandTask] = None,
     ):
         self._runtime = runtime
         self._task = task
@@ -627,12 +627,12 @@ class ChannelRuntime(ABC):
         await self.importlib.topics.pub(topic, name=topic_name, creator=f"chan/{self.id}")
 
     def topic_subscriber(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        topic_name: str = "",
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 Subscriber 来获取链路中的 Topic 广播.
@@ -692,7 +692,7 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def refresh_metas(
-            self,
+        self,
     ) -> None:
         """
         更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
@@ -842,11 +842,11 @@ class ChannelRuntime(ABC):
         pass
 
     def create_command_task(
-            self,
-            name: CommandUniqueName,
-            *,
-            args: tuple | None = None,
-            kwargs: dict | None = None,
+        self,
+        name: CommandUniqueName,
+        *,
+        args: tuple | None = None,
+        kwargs: dict | None = None,
     ) -> CommandTask:
         """
         example to create channel task
@@ -867,11 +867,11 @@ class ChannelRuntime(ABC):
         return task
 
     async def execute_command(
-            self,
-            name: CommandUniqueName,
-            *,
-            args: tuple | None = None,
-            kwargs: dict | None = None,
+        self,
+        name: CommandUniqueName,
+        *,
+        args: tuple | None = None,
+        kwargs: dict | None = None,
     ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.
@@ -989,10 +989,10 @@ class ChannelImportLib(ABC):
         return all_runtimes
 
     def find_descendants(
-            self,
-            channel: Channel,
-            bloodline: set | None = None,
-            depth: int = 0,
+        self,
+        channel: Channel,
+        bloodline: set | None = None,
+        depth: int = 0,
     ) -> dict[ChannelFullPath, ChannelRuntime]:
         """
         语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.
@@ -1082,9 +1082,9 @@ class ChannelInterface(ABC):
 
     @abstractmethod
     def as_channel(
-            self,
-            name: str = "",
-            description: str = "",
+        self,
+        name: str = "",
+        description: str = "",
     ) -> Channel:
         """
         子抽象类应该要实现这个函数.

@@ -13,22 +13,23 @@
 它的核心概念和抽象设计在目录 `../concepts` 下. 本目录则是关于 CTML 的实现.
 
 CTML 是一种 XML-like 的语法, 旨在让大模型输出 xml 语法同时通过 MOSShell 流式控制它可以交互的设备.
-核心的 CTML 规则目前请查阅 `./prompts/ctml_v2.zh.md` 文件. 
+核心的 CTML 规则目前请查阅 `./prompts/ctml_v2.zh.md` 文件.
 
-你可以实现的任务如下: 
+你可以实现的任务如下:
 
 ## prompts 优化
 
 在 `./prompts` 目录下存放了不同版本的 CTML 语法规则. 作为 MOSShell 的 CTML 版本实现的 meta instruction.
-这一块你可以: 
+这一块你可以:
 
 1. 协助用户撰写 prompt
-2. 协助用户翻译 prompt 的不同语言版本. 
+1. 协助用户翻译 prompt 的不同语言版本.
 
 ## 原语开发
 
-CTML 通过一系列函数化的控制原语来实现复杂的时序控制功能. 
-* 相关原语实现在 `./shell/primatives`
-* 原语的单元测试在 `../../../../tests/shell/test_primitives` 目录下. 
+CTML 通过一系列函数化的控制原语来实现复杂的时序控制功能.
 
-原语的技术实现非常复杂. 你的主要任务是帮助用户开发原语的单元测试. 
+- 相关原语实现在 `./shell/primatives`
+- 原语的单元测试在 `../../../../tests/shell/test_primitives` 目录下.
+
+原语的技术实现非常复杂. 你的主要任务是帮助用户开发原语的单元测试.

@@ -8,7 +8,7 @@ from ghoshell_moss.core.concepts.command import (
 from ghoshell_moss.message import Message
 from ghoshell_moss.core import ChannelCtx, MOSSShell
 
-__all__ = ['loop']
+__all__ = ["loop"]
 
 
 async def loop(times: int, ctml__):
@@ -58,14 +58,11 @@ async def loop(times: int, ctml__):
                 observe=True,
                 messages=[
                     Message.new(role="system").with_content("loop done at {}".format(times)),
-                ]
+                ],
             )
         if loop_times >= 100:
             return CommandTaskResult(
-                observe=True,
-                messages=[
-                    Message.new(role="system").with_content("loop stopped after 100 times!")
-                ]
+                observe=True, messages=[Message.new(role="system").with_content("loop stopped after 100 times!")]
             )
 
         new_tasks = shell.parse_tokens_to_command_tasks(_generator())

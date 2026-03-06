@@ -47,8 +47,8 @@ def setup_simple_logger(log_file: str) -> logging.Logger:
 
 
 def get_example_speech(
-        container: Container | None = None,
-        default_speaker: str | None = None,
+    container: Container | None = None,
+    default_speaker: str | None = None,
 ) -> Speech:
     """
     直接初始化音频模块.
@@ -90,10 +90,10 @@ def get_example_speech(
 
 
 def init_container(
-        workspace_dir: Path | str,
-        name: str = "moss",
-        providers: List[Provider] | None = None,
-        env_path: Path | None = None,
+    workspace_dir: Path | str,
+    name: str = "moss",
+    providers: List[Provider] | None = None,
+    env_path: Path | None = None,
 ) -> Container:
     if isinstance(workspace_dir, str):
         workspace_dir = Path(workspace_dir).absolute()
@@ -129,9 +129,9 @@ def init_container(
 
 @contextmanager
 def workspace_container(
-        workspace_dir: Path | str,
-        name: str = "moss",
-        providers: List[Provider] | None = None,
+    workspace_dir: Path | str,
+    name: str = "moss",
+    providers: List[Provider] | None = None,
 ):
     """
     支持 with statement 的全局 container 初始化.

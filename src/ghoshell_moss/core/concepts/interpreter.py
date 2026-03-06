@@ -135,50 +135,27 @@ class Interpretation(BaseModel):
     Interpreter 一次运行的结果.
     """
 
-    done: bool = Field(
-        default=False,
-        description="是否已经运行结束."
-    )
-    id: str = Field(
-        description="interpretation id"
-    )
-    meta_instruction: str = Field(
-        default="",
-        description="这一轮快照中的元指令"
-    )
+    done: bool = Field(default=False, description="是否已经运行结束.")
+    id: str = Field(description="interpretation id")
+    meta_instruction: str = Field(default="", description="这一轮快照中的元指令")
     instruction_messages: list[Message] = Field(
         default_factory=list,
         description="提示词",
     )
-    context_messages: list[Message] = Field(
-        default_factory=list,
-        description="上下文讯息"
-    )
+    context_messages: list[Message] = Field(default_factory=list, description="上下文讯息")
     observe: bool = Field(
         default=False,
         description="这个运行结果是否需要 AI 观察",
     )
-    feed_inputs: list[str] = Field(
-        default_factory=list,
-        description="通过 interpreter feed 输入的文本"
-    )
+    feed_inputs: list[str] = Field(default_factory=list, description="通过 interpreter feed 输入的文本")
     command_tokens: list[CommandToken] = Field(
         default_factory=list,
         description="运行时解析生成的 command tokens",
     )
-    executed_inputs: list[str] = Field(
-        default_factory=list,
-        description="被执行过的输入文本."
-    )
+    executed_inputs: list[str] = Field(default_factory=list, description="被执行过的输入文本.")
 
-    compiled_tasks: dict[str, str] = Field(
-        default_factory=dict,
-        description="解析生成的 task 的 cid => task caller"
-    )
-    pending_tasks: dict[str, str] = Field(
-        default_factory=dict,
-        description="未完成的 task 的 cid => task caller"
-    )
+    compiled_tasks: dict[str, str] = Field(default_factory=dict, description="解析生成的 task 的 cid => task caller")
+    pending_tasks: dict[str, str] = Field(default_factory=dict, description="未完成的 task 的 cid => task caller")
     cancelled_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束的 task cid => task caller",
@@ -188,34 +165,24 @@ class Interpretation(BaseModel):
         description="运行结束, 失败的 task cid => task caller",
     )
     success_tasks: dict[str, str] = Field(
-        default_factory=dict,
-        description="运行结束, 并且运行成功的 task cid => task caller"
+        default_factory=dict, description="运行结束, 并且运行成功的 task cid => task caller"
     )
-    output: list[Message] = Field(
-        default_factory=list,
-        description="运行结果中需要输出的消息体. "
-    )
-    messages: list[Message] = Field(
-        default_factory=list,
-        description="运行结果中需要观察的消息体."
-    )
-    interrupted: bool = Field(
-        default=False,
-        description="是否被强行打断"
-    )
+    output: list[Message] = Field(default_factory=list, description="运行结果中需要输出的消息体. ")
+    messages: list[Message] = Field(default_factory=list, description="运行结果中需要观察的消息体.")
+    interrupted: bool = Field(default=False, description="是否被强行打断")
     exception: str = Field(
         default="",
         description="运行的异常",
     )
 
     def on_task_compiled(self, task: CommandTask | None) -> None:
-        if task is None or task.meta.name.startswith('_'):
+        if task is None or task.meta.name.startswith("_"):
             return
         self.compiled_tasks[task.cid] = task.caller_name()
         self.pending_tasks[task.cid] = task.caller_name()
 
     def on_done_task(self, task: CommandTask) -> None:
-        if not task.done() or task.meta.name.startswith('_'):
+        if not task.done() or task.meta.name.startswith("_"):
             return
         if self.done:
             return
@@ -501,8 +468,8 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def close(
-            self,
-            cancel_executing: bool = True,
+        self,
+        cancel_executing: bool = True,
     ) -> Interpretation | None:
         """
         stop the interpretation
@@ -578,12 +545,12 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_tasks(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
         阻塞等待所有生成的 task, 并且按 return when 的规则返回.
@@ -597,10 +564,10 @@ class Interpreter(ABC):
     # --- interpreter 的无状态解析函数 --- #
 
     async def aparse_text_to_command_tokens(
-            self,
-            texts: AsyncIterable[str],
-            *,
-            stopped: Callable[[], bool] | None = None,
+        self,
+        texts: AsyncIterable[str],
+        *,
+        stopped: Callable[[], bool] | None = None,
     ) -> AsyncIterable[CommandToken]:
         """
         将同步函数封装成异步函数, 同时仍然能正确抛出异常.
@@ -659,11 +626,11 @@ class Interpreter(ABC):
                 consume_task.cancel()
 
     async def parse_tokens_to_command_tasks(
-            self,
-            tokens_queue: asyncio.Queue[CommandToken | None],
-            tasks_queue: asyncio.Queue[CommandTask | None],
-            *,
-            stopped: Callable[[], bool] | None = None,
+        self,
+        tokens_queue: asyncio.Queue[CommandToken | None],
+        tasks_queue: asyncio.Queue[CommandTask | None],
+        *,
+        stopped: Callable[[], bool] | None = None,
     ):
         """
         可以运行在协程中, 解析输入的 tokens 流, 返回 Command Tasks. 用毒丸做判断.
@@ -672,6 +639,7 @@ class Interpreter(ABC):
         parser = self.command_token_parser()
         parser.with_callback(tasks_queue.put_nowait)
         if stopped is None:
+
             def empty_stopped():
                 return False
 
@@ -691,11 +659,11 @@ class Interpreter(ABC):
             parser.destroy()
 
     def parse_text_to_command_tokens(
-            self,
-            text_queue: queue.Queue[str | None],
-            command_token_callback: Callable[[CommandToken | None], None],
-            *,
-            stopped: Callable[[], bool] | None = None,
+        self,
+        text_queue: queue.Queue[str | None],
+        command_token_callback: Callable[[CommandToken | None], None],
+        *,
+        stopped: Callable[[], bool] | None = None,
     ):
         """
         通常运行在独立线程中, 解析输入的 Text 流, 返回 Command Token 流. 用毒丸做判断.
@@ -704,6 +672,7 @@ class Interpreter(ABC):
         text_token_parser = self.text_token_parser()
         text_token_parser.with_callback(command_token_callback)
         if stopped is None:
+
             def empty_stopped():
                 return False
 

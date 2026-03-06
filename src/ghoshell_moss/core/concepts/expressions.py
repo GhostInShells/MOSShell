@@ -5,22 +5,13 @@ __all__ = ["Expressions"]
 
 
 class ExpressionItem(BaseModel):
-    chars: str = Field(
-        description="expression 所使用的符号"
-    )
-    description: str = Field(
-        description="expression 对应的描述."
-    )
-    ctml: str = Field(
-        description="expression 所对应的 ctml"
-    )
+    chars: str = Field(description="expression 所使用的符号")
+    description: str = Field(description="expression 对应的描述.")
+    ctml: str = Field(description="expression 所对应的 ctml")
 
 
 class ExpressionData(BaseModel):
-    items: list[ExpressionItem] = Field(
-        default_factory=list,
-        description="所有已经创建的符号."
-    )
+    items: list[ExpressionItem] = Field(default_factory=list, description="所有已经创建的符号.")
 
 
 class Expressions(ABC):

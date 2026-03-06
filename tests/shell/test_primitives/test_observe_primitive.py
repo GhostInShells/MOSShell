@@ -10,6 +10,7 @@ async def test_interrupt_in_ctml():
     """
     shell = new_ctml_shell()
     cancelled = []
+
     async def foo():
         try:
             await asyncio.sleep(1)

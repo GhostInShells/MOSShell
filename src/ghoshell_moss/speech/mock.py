@@ -11,11 +11,11 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 class MockSpeechStream(SpeechStream):
     def __init__(
-            self,
-            speech_outputs: list[str],
-            id: str = "",
-            typing_sleep: float = 0.0,
-            speech_id: str = "",
+        self,
+        speech_outputs: list[str],
+        id: str = "",
+        typing_sleep: float = 0.0,
+        speech_id: str = "",
     ):
         super().__init__(id=id or uuid())
         self.speech_id = speech_id

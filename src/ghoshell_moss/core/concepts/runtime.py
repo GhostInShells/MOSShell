@@ -210,12 +210,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            channel: CHANNEL,
-            container: IoCContainer | None = None,
-            logger: LoggerItf | None = None,
-            state_store: StateStore | None = None,
+        self,
+        *,
+        channel: CHANNEL,
+        container: IoCContainer | None = None,
+        logger: LoggerItf | None = None,
+        state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -365,7 +365,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-            self,
+        self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -1101,7 +1101,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 如果返回值是 stack, 则意味着要循环堆栈.
             if isinstance(result, CommandStackResult):
                 # 执行完所有的堆栈. 同时设置真实被执行的任务.
-                await self._fulfill_task_with_its_result_stack(task, result, depth=depth),
+                (await self._fulfill_task_with_its_result_stack(task, result, depth=depth),)
             else:
                 # 赋值给原来的 task.
                 task.resolve(result)
@@ -1132,14 +1132,17 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     pass
                 except Exception as e:
                     self.logger.exception(
-                        "%s task %s cancel get result failed: %s", self.log_prefix, task, e,
+                        "%s task %s cancel get result failed: %s",
+                        self.log_prefix,
+                        task,
+                        e,
                     )
 
     async def _fulfill_task_with_its_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandStackResult,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandStackResult,
+        depth: int = 0,
     ) -> None:
         result = stack
         while result is not None:
@@ -1156,10 +1159,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             result = await get_stack_result
 
     async def _run_result_stack(
-            self,
-            owner: CommandTask,
-            stack: CommandStackResult,
-            depth: int = 0,
+        self,
+        owner: CommandTask,
+        stack: CommandStackResult,
+        depth: int = 0,
     ) -> CommandStackResult | None:
         result = None
         try:

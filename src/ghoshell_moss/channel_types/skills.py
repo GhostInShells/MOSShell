@@ -1,5 +1,3 @@
-
-
 """
 Skills Channel 设计思路.
 1. 它是一个 Channels 树的根节点.

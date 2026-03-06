@@ -19,16 +19,16 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 class TTSSpeechStream(SpeechStream):
     def __init__(
-            self,
-            *,
-            loop: asyncio.AbstractEventLoop,
-            audio_format: AudioFormat | str,
-            channels: int,
-            sample_rate: int,
-            player: StreamAudioPlayer,
-            tts_batch: TTSBatch,
-            logger: LoggerItf,
-            close_last: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        audio_format: AudioFormat | str,
+        channels: int,
+        sample_rate: int,
+        player: StreamAudioPlayer,
+        tts_batch: TTSBatch,
+        logger: LoggerItf,
+        close_last: Optional[Callable[[], Coroutine[None, None, None]]] = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -129,11 +129,11 @@ class TTSSpeechStream(SpeechStream):
 
 class BaseTTSSpeech(TTSSpeech):
     def __init__(
-            self,
-            *,
-            player: StreamAudioPlayer,
-            tts: TTS,
-            logger: Optional[LoggerItf] = None,
+        self,
+        *,
+        player: StreamAudioPlayer,
+        tts: TTS,
+        logger: Optional[LoggerItf] = None,
     ):
         self.logger = logger or logging.getLogger("moss")
         self._player = player

@@ -13,10 +13,10 @@ from .ctml.shell import CTMLShell, create_ctml_main_chan, new_ctml_shell
 
 
 def new_channel(
-        name: str,
-        description: str = "",
-        *,
-        blocking: bool = True,
+    name: str,
+    description: str = "",
+    *,
+    blocking: bool = True,
 ) -> MutableChannel:
     """
     创建 MutableChannel.

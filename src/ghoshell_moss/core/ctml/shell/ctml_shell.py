@@ -41,15 +41,15 @@ __all__ = ["CTMLShell", "new_ctml_shell"]
 
 class CTMLShell(MOSSShell):
     def __init__(
-            self,
-            *,
-            name: str = "shell",
-            description: Optional[str] = None,
-            container: IoCContainer | None = None,
-            main_channel: MutableChannel | None = None,
-            speech: Optional[Speech] = None,
-            state_store: Optional[StateStore] = None,
-            logger: LoggerItf | None = None,
+        self,
+        *,
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: MutableChannel | None = None,
+        speech: Optional[Speech] = None,
+        state_store: Optional[StateStore] = None,
+        logger: LoggerItf | None = None,
     ):
         self._name = name
         self._desc = description
@@ -280,15 +280,15 @@ class CTMLShell(MOSSShell):
             self.push_task(task)
 
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[int] = None,
-            config: dict[ChannelFullPath, ChannelMeta] | None = None,
-            prepare_timeout: float = 2.0,
-            ignore_wrong_command: bool = False,
-            token_replacements: dict[str, str] | None = None,
-            clear_after_exit: bool = False,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[int] = None,
+        config: dict[ChannelFullPath, ChannelMeta] | None = None,
+        prepare_timeout: float = 2.0,
+        ignore_wrong_command: bool = False,
+        token_replacements: dict[str, str] | None = None,
+        clear_after_exit: bool = False,
     ) -> Interpreter:
         self._check_running()
 
@@ -357,12 +357,12 @@ class CTMLShell(MOSSShell):
         return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
     def subscribe_topic_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            name: str = "",
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        name: str = "",
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe_model(
@@ -373,11 +373,11 @@ class CTMLShell(MOSSShell):
         )
 
     def subscribe_topic(
-            self,
-            name: str,
-            *,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        name: str,
+        *,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber:
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe(
@@ -401,9 +401,9 @@ class CTMLShell(MOSSShell):
             await refresh_meta_task
 
     def channel_metas(
-            self,
-            available_only: bool = True,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        self,
+        available_only: bool = True,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
@@ -468,11 +468,11 @@ class CTMLShell(MOSSShell):
         await self._closed_event.wait()
 
     def commands(
-            self,
-            available_only: bool = True,
-            *,
-            config: dict[ChannelFullPath, ChannelMeta] | None = None,
-            exec_in_chan: bool = False,
+        self,
+        available_only: bool = True,
+        *,
+        config: dict[ChannelFullPath, ChannelMeta] | None = None,
+        exec_in_chan: bool = False,
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
@@ -580,12 +580,12 @@ class CTMLShell(MOSSShell):
 
 
 def new_ctml_shell(
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: Channel | None = None,
-        speech: Optional[Speech] = None,
-        logger: Optional[LoggerItf] = None,
+    name: str = "shell",
+    description: Optional[str] = None,
+    container: IoCContainer | None = None,
+    main_channel: Channel | None = None,
+    speech: Optional[Speech] = None,
+    logger: Optional[LoggerItf] = None,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(

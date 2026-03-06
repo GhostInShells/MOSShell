@@ -172,12 +172,7 @@ async def test_wait_idle_recursive():
             tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
-            assert execution_order == [
-                "level1_start",
-                "level2_start",
-                "level2_end",
-                "level1_end"
-            ]
+            assert execution_order == ["level1_start", "level2_start", "level2_end", "level1_end"]
 
 
 @pytest.mark.asyncio

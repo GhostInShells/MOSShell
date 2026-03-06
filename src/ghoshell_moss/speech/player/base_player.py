@@ -28,12 +28,12 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
     """
 
     def __init__(
-            self,
-            *,
-            sample_rate: int = 16000,
-            channels: int = 1,
-            logger: LoggerItf | None = None,
-            safety_delay: float = 0.2,
+        self,
+        *,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        logger: LoggerItf | None = None,
+        safety_delay: float = 0.2,
     ):
         """
         基于 PyAudio 的异步音频播放器实现
@@ -104,15 +104,17 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._estimated_end_time = time.time()
         self._play_done_event.set()
         self.logger.info(
-            "%s player is cleared, estimated_end_time is %.2f", self._log_prefix, self._estimated_end_time,
+            "%s player is cleared, estimated_end_time is %.2f",
+            self._log_prefix,
+            self._estimated_end_time,
         )
 
     @staticmethod
     def resample(
-            audio_data: np.ndarray,
-            *,
-            origin_rate: int,
-            target_rate: int,
+        audio_data: np.ndarray,
+        *,
+        origin_rate: int,
+        target_rate: int,
     ) -> np.ndarray:
         """使用 scipy.signal.resample 进行采样率转换
 
@@ -138,14 +140,14 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         return resampled_audio_data.astype(np.int16)
 
     def add(
-            self,
-            chunk: np.ndarray,
-            *,
-            audio_type: AudioFormat,
-            rate: int,
-            channels: int = 1,
+        self,
+        chunk: np.ndarray,
+        *,
+        audio_type: AudioFormat,
+        rate: int,
+        channels: int = 1,
     ) -> float:
-        """添加音频片段到播放队列, 返回一个期望的终结时间. """
+        """添加音频片段到播放队列, 返回一个期望的终结时间."""
         if self._closed:
             self.logger.warning("%s player receive audio but is closed", self._log_prefix)
             return time.time()
