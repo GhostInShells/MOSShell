@@ -116,6 +116,7 @@ class SimpleAgent:
         self._input_queue: asyncio.Queue[list[dict] | None] | None = None
         self._logger: Optional[LoggerItf] = None
         self._main_loop_task: Optional[asyncio.Task] = None
+        self._history_messages: list[dict | Message] = []
 
         # 打断优化
         self._interrupt_requested = False
@@ -230,16 +231,13 @@ class SimpleAgent:
             self.chat.print_exception(e)
 
     def _get_history(self) -> list[dict | Message]:
-        if not self._history_storage.exists(self._message_filename):
-            return []
-        history = self._history_storage.get(self._message_filename)
-        return json.loads(history)
+        return self._history_messages
 
     def _put_history(self, messages: list[dict]) -> None:
         # 暂时关闭保存.
         # messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
         # self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
-        pass
+       self._history_messages.extend(messages)
 
     async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
         """
@@ -299,7 +297,8 @@ class SimpleAgent:
             self.chat.finalize_ai_response()
             history.extend(inputs)
             if interpretation is not None:
-                history.extend(interpretation.observe_messages())
+                observe_messages = interpretation.execution_messages()
+                history.extend(observe_messages)
             self._put_history(history)
 
     async def run(self):
