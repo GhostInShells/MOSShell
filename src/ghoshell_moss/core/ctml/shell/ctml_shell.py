@@ -49,6 +49,7 @@ class CTMLShell(MOSSShell):
         main_channel: MutableChannel | None = None,
         speech: Optional[Speech] = None,
         state_store: Optional[StateStore] = None,
+        experimental: bool = True,
         logger: LoggerItf | None = None,
     ):
         self._name = name
@@ -56,7 +57,7 @@ class CTMLShell(MOSSShell):
 
         self._container = Container(parent=container, name="MOSShell")
         self._container.set(MOSSShell, self)
-        self._main_channel = main_channel or create_ctml_main_chan()
+        self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental)
 
         self._speech: Speech = speech
         self._expressions: Optional[Expressions] = None
@@ -587,6 +588,7 @@ def new_ctml_shell(
     main_channel: Channel | None = None,
     speech: Optional[Speech] = None,
     logger: Optional[LoggerItf] = None,
+    experimental: bool = True,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
@@ -596,4 +598,5 @@ def new_ctml_shell(
         main_channel=main_channel,
         speech=speech,
         logger=logger,
+        experimental=experimental,
     )

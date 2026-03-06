@@ -166,11 +166,11 @@ class DuplexChannelContext:
         if self.stop_event.is_set():
             self.logger.warning("Channel %s connection is stopped or not available", self.root_name)
             if throw:
-                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped")
+                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped with {event}")
             return
         elif not self.connection.is_connected():
             if throw:
-                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available")
+                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available with {event}")
             return
 
         try:
@@ -796,8 +796,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
+    async def wait_children_idled(self) -> None:
+        return
+
     async def clear_own(self) -> None:
-        if not self._ctx.is_running():
+        if not self._ctx.is_running() or not self._ctx.is_connected():
             return
         try:
             event = ClearEvent(

@@ -13,7 +13,7 @@ class CTMLMainChannel(PyChannel):
     pass
 
 
-def create_ctml_main_chan() -> Channel:
+def create_ctml_main_chan(experimental: bool = True) -> Channel:
     chan = CTMLMainChannel(
         name="__main__",
         description="CTML Main Channel with primitives",
@@ -21,7 +21,8 @@ def create_ctml_main_chan() -> Channel:
     )
 
     # wait 原语
-    chan.build.command()(wait)
+    if experimental:
+        chan.build.command()(wait)
     # sleep 原语
     chan.build.command()(sleep)
     # clear 原语
@@ -35,7 +36,6 @@ def create_ctml_main_chan() -> Channel:
     chan.build.add_command(interrupt_command)
 
     return chan
-
 
 # primitive.py 原语定义成command
 # wait_done 原语

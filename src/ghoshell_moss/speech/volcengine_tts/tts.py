@@ -1,9 +1,10 @@
 import asyncio
+import base64
 import json
 import logging
 import os
 from collections import deque
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, AsyncIterator, ClassVar
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
@@ -12,7 +13,7 @@ from pydantic import Field
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
-from ghoshell_moss.core.concepts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo
+from ghoshell_moss.core.concepts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.speech.volcengine_tts.protocol import (
     EventType,
@@ -98,7 +99,6 @@ class SpeakerInfo(BaseModel):
 
 # 定义所有 Speaker 类型
 SpeakerTypes = Literal[
-    "vivi",
     "zh_male_dayi_saturn_bigtts",
     "zh_female_mizai_saturn_bigtts",
     "zh_female_jitangnv_saturn_bigtts",
@@ -114,7 +114,6 @@ SpeakerTypes = Literal[
 
 # 创建 Speaker 信息字典
 SPEAKER_INFO_MAP: dict[SpeakerTypes, SpeakerInfo] = {
-    "vivi": SpeakerInfo(display_name="vivi", language="中文、英语", supports_english=False, use_case="视频配音"),
     "zh_male_dayi_saturn_bigtts": SpeakerInfo(
         display_name="大壹", language="中文", supports_english=False, use_case="视频配音"
     ),
@@ -245,7 +244,7 @@ class VolcengineTTSConf(BaseModel):
     audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
 
     disconnect_on_idle: int = Field(
-        default=100,
+        default=300,
         description="闲置多少秒后退出",
     )
 
@@ -257,13 +256,13 @@ class VolcengineTTSConf(BaseModel):
 
     speakers: dict[str, SpeakerConf] = Field(
         default_factory=lambda: {
-            name: SpeakerConf(tone=name, description=speaker_info.description())
+            speaker_info.display_name: SpeakerConf(tone=name, description=speaker_info.description())
             for name, speaker_info in SPEAKER_INFO_MAP.items()
         },
-        description="the speakers list",
+        description="the speakers list. 可以自行配置. ",
     )
     default_speaker: str = Field(
-        default="default",
+        default="知性灿灿",
         description="the default speaker",
     )
 
@@ -326,9 +325,7 @@ class VolcengineTTSConf(BaseModel):
 
 
 class VolcengineTTSBatch(TTSBatch):
-    """
-    todo: 实现性能和垃圾回收的优化.
-    """
+    instance_count: ClassVar[int] = 0
 
     def __init__(
         self,
@@ -336,26 +333,92 @@ class VolcengineTTSBatch(TTSBatch):
         loop: asyncio.AbstractEventLoop,
         speaker: SpeakerConf,
         batch_id: str = "",
+        channels: int,
+        audio_format: str,
+        sample_rate: int,
+        voice: dict | None,
+        tone: str,
         logger: LoggerItf,
         callback: Optional[TTSAudioCallback] = None,
     ):
-        self.speaker = speaker
+        self.default_speaker = speaker
         self.callback = callback
-        self.started = ThreadSafeEvent()
+        self.tone = tone
+        self.voice: dict | None = voice
+        self.channel = channels
+        self.audio_format = audio_format
+        self.sample_rate = sample_rate
         self.committed = False
         self.done = ThreadSafeEvent()
         self.text_buffer = ""
         self.exception: Optional[Exception] = None
+        self._started = ThreadSafeEvent()
         self._running_loop = loop
         self._has_valid_text = False
         self._batch_id = batch_id or uuid()
         self._text_lock = asyncio.Lock()
+        self._chunks: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
         self.texts: asyncio.Queue[str | None] = asyncio.Queue()
-        self._log_prefix = f"[VolcTTSBatch] id={batch_id}  "
+        self._log_prefix = f"[VolcTTSBatch][id={batch_id}  voice={self.voice} tone={self.tone}]"
         self._logger = logger
+        VolcengineTTSBatch.instance_count += 1
+
+    def speaker(self) -> SpeakerConf:
+        conf = self.default_speaker.model_copy()
+        if self.voice is not None:
+            voice_conf = VoiceConf(**self.voice)
+            conf.voice = voice_conf
+        return conf
+
+    def __del__(self):
+        # 检查内存泄漏.
+        VolcengineTTSBatch.instance_count -= 1
+
+    async def append(self, audio: np.ndarray) -> None:
+        await self._chunks.put(audio)
 
     def batch_id(self) -> str:
         return self._batch_id
+
+    async def start(self) -> None:
+        self._started.set()
+
+    def is_started(self) -> bool:
+        return self._started.is_set()
+
+    async def wait_started(self) -> None:
+        if self._started.is_set():
+            return
+        elif self.done.is_set():
+            return
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(self._started.wait()),
+                asyncio.create_task(self.done.wait()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+
+    async def items(self) -> AsyncIterator[TTSItem]:
+        if not self._started:
+            return
+        while True:
+            audio = await self._chunks.get()
+            if audio is None:
+                break
+            item = TTSItem(
+                tone=self.tone,
+                voice=self.voice,
+                audio_format=self.audio_format,
+                channels=self.channel,
+                sample_rate=self.sample_rate,
+                audio=audio,
+                text="",
+            )
+            yield item
+        return
 
     def with_callback(self, callback: TTSAudioCallback) -> None:
         self.callback = callback
@@ -366,14 +429,16 @@ class VolcengineTTSBatch(TTSBatch):
         self.commit()
 
     def feed(self, text: str):
+        if self.done.is_set():
+            return
         self.text_buffer += text
         # 已经有过数据了.
         if self._has_valid_text:
-            self._logger.debug("%s feed text %s", self._log_prefix, text)
+            self._logger.debug("%s feed text `%s`", self._log_prefix, text)
             self._running_loop.call_soon_threadsafe(self.texts.put_nowait, text)
         # 这里只能 lstrip
         elif stripped := self.text_buffer.lstrip():
-            self._logger.debug("%s feed first legal text %s", self._log_prefix, stripped)
+            self._logger.debug("%s feed first legal text `%s`", self._log_prefix, stripped)
             self._running_loop.call_soon_threadsafe(self.texts.put_nowait, stripped)
             self._has_valid_text = True
 
@@ -391,9 +456,10 @@ class VolcengineTTSBatch(TTSBatch):
     async def close(self) -> None:
         if self.done.is_set():
             return
-        self._logger.info("%s batch close", self._log_prefix)
         self.commit()
         self.done.set()
+        self._logger.info("%s batch close. instances count: %d", self._log_prefix, self.instance_count)
+        self._chunks.put_nowait(None)
 
     async def wait_done(self, timeout: float | None = None):
         if timeout is not None and timeout > 0.0:
@@ -437,6 +503,7 @@ class VolcengineTTS(TTS):
         self._has_any_batch_event = asyncio.Event()
 
         self._consume_pending_batches_task: Optional[asyncio.Task] = None
+        self._default_tts_info = self.get_info()
 
     def get_info(self) -> TTSInfo:
         return self._conf.to_tts_info(self._current_speaker)
@@ -448,6 +515,9 @@ class VolcengineTTS(TTS):
         self.logger.info("%s Using tone %s", self._log_prefix, config_key)
         self._current_speaker = config_key
         self._current_speaker_conf = conf.model_copy(deep=True)
+
+    def current_tone(self) -> str:
+        return self._current_speaker
 
     def set_voice(self, config: dict[str, Any]) -> None:
         voice = VoiceConf(**config)
@@ -461,22 +531,42 @@ class VolcengineTTS(TTS):
         if not self._started or self._closing_event.is_set():
             raise RuntimeError("TTS is closed")
 
-    def new_batch(self, batch_id: str = "", *, callback: TTSAudioCallback | None = None) -> TTSBatch:
+    def new_batch(
+        self,
+        batch_id: str = "",
+        *,
+        callback: TTSAudioCallback | None = None,
+        voice: dict[str, Any] | None = None,
+        tone: str | None = None,
+    ) -> TTSBatch:
         self._check_running()
         self.logger.info("%s create new tts batch %s", self._log_prefix, batch_id)
-        batch = self._create_batch(batch_id, callback)
+        batch = self._create_batch(batch_id, callback, voice, tone)
         self._pending_batches_queue.put_nowait(batch)
         self._has_any_batch_event.set()
         return batch
 
-    def _create_batch(self, batch_id: str = "", callback: TTSAudioCallback | None = None) -> VolcengineTTSBatch:
+    def _create_batch(
+        self,
+        batch_id: str = "",
+        callback: TTSAudioCallback | None = None,
+        voice: dict[str, Any] | None = None,
+        tone: str | None = None,
+    ) -> VolcengineTTSBatch:
         speaker_conf = self._current_speaker_conf
+        if tone is not None and tone != self.current_tone():
+            speaker_conf = self._conf.speakers.get(tone, speaker_conf)
         tts_batch = VolcengineTTSBatch(
             loop=self._running_loop,
             speaker=speaker_conf,
+            voice=voice,
+            tone=tone or speaker_conf.tone,
             batch_id=batch_id,
             callback=callback,
             logger=self.logger,
+            audio_format=self._default_tts_info.audio_format,
+            channels=self._default_tts_info.channels,
+            sample_rate=self._default_tts_info.sample_rate,
         )
         return tts_batch
 
@@ -529,7 +619,7 @@ class VolcengineTTS(TTS):
             if batch.is_closed():
                 # 已经被关闭了.
                 return
-            speaker = batch.speaker
+            speaker = batch.speaker()
             # 当前火山的 resource id
             resource_id = speaker.resource_id or self._conf.resource_id
             connection_id = uuid()
@@ -581,13 +671,15 @@ class VolcengineTTS(TTS):
         batch_id = batch.batch_id()
         try:
             self._running_batch = batch
-            resource_id = batch.speaker.resource_id or current_resource_id
+            # 阻塞等待到 batch 被允许开始.
+            await batch.wait_started()
+            resource_id = batch.default_speaker.resource_id or current_resource_id
             if resource_id != current_resource_id:
                 # 连接不一致, 将未完成的 batch 入队, 关闭整个连接.
                 self._unfinished_batches.append(batch)
                 return False
 
-            session = self._conf.to_session(batch.speaker)
+            session = self._conf.to_session(batch.speaker())
             # 开启 session.
             await start_session(
                 connection,
@@ -603,12 +695,20 @@ class VolcengineTTS(TTS):
             receive_task = asyncio.create_task(self._receive_batch_audio_from_server(batch, connection))
             # 等两个都完成, 才能进入下一步.
             send_and_receive = asyncio.gather(send_task, receive_task, return_exceptions=True)
+            # 等待 done.
             batch_closed = asyncio.create_task(batch.wait_done())
             done, pending = await asyncio.wait([send_and_receive, batch_closed], return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
+
+            # batch 被提前关闭了.
             if batch_closed in done:
-                self.logger.error("%s batch %s closed before send and receive", self._log_prefix, batch_id)
+                self.logger.warning("%s batch %s closed before send and receive", self._log_prefix, batch_id)
+                send_and_receive.cancel()
+                send_task.cancel()
+                receive_task.cancel()
+                return False
+
             result = await send_and_receive
             for r in result:
                 if isinstance(r, Exception):
@@ -616,10 +716,13 @@ class VolcengineTTS(TTS):
 
             # 正常完成返回 true
             return True
+        except asyncio.CancelledError:
+            self.logger.info("%s Consume batch cancelled", self._log_prefix)
+            pass
         except ValueError as e:
-            # todo: log update
             self.logger.exception("%s Consume batch failed: %s", self._log_prefix, e)
         finally:
+            # 保证必须要关闭 batch.
             if not batch.is_closed():
                 await batch.close()
             self._running_batch = None
@@ -636,6 +739,7 @@ class VolcengineTTS(TTS):
             first = True
             while not batch.is_closed():
                 # 发送文本.
+                await asyncio.sleep(0)
                 text = await batch.texts.get()
                 if text is None:
                     # 拿到了毒丸.
@@ -679,6 +783,7 @@ class VolcengineTTS(TTS):
         try:
             first = True
             while not batch.is_closed():
+                await asyncio.sleep(0)
                 msg = await receive_message(connection)
                 self.logger.debug("%s session %s receive message %s", self._log_prefix, batch_id, msg)
                 if msg.session_id != batch_id:
@@ -714,10 +819,13 @@ class VolcengineTTS(TTS):
                     if first:
                         self.logger.info("%s receive first audio of batch %s", self._log_prefix, batch_id)
                         first = False
-                    if len(audio_data) > 0 and callback:
+                    if len(audio_data) > 0:
                         # todo: 先写死是 int16
                         np_data = np.frombuffer(audio_data, dtype=np.int16)
-                        callback(np_data)
+                        if callback:
+                            callback(np_data)
+                        # 给 batch 自己添加音频信息.
+                        await batch.append(np_data)
             self.logger.info("%s batch %s receive task done", self._log_prefix, batch_id)
         except asyncio.CancelledError:
             pass

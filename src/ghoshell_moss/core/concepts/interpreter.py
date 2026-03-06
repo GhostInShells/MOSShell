@@ -6,6 +6,7 @@ from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.message import Message
+from ghoshell_common.contracts import LoggerItf
 from pydantic import BaseModel, Field
 import queue
 
@@ -106,7 +107,7 @@ class CommandTokenParser(ABC):
         pass
 
     @abstractmethod
-    def on_token(self, token: CommandToken | None) -> None:
+    def on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
         """
         接受一个 command token
         :param token: 如果为 None, 表示 command token 流已经结束.
@@ -259,6 +260,11 @@ class Interpreter(ABC):
     @abstractmethod
     def id(self) -> str:
         """each time stream interpretation has a unique id"""
+        pass
+
+    @property
+    @abstractmethod
+    def logger(self) -> LoggerItf:
         pass
 
     @abstractmethod
@@ -572,9 +578,13 @@ class Interpreter(ABC):
         """
         将同步函数封装成异步函数, 同时仍然能正确抛出异常.
         """
-        q = queue.Queue()
-        callback = asyncio.Queue()
+        text_queue = queue.Queue()
+        token_queue = asyncio.Queue()
+        loop = asyncio.get_event_loop()
         stop_event = asyncio.Event()
+
+        def callback(token: CommandToken | None) -> None:
+            loop.call_soon_threadsafe(token_queue.put_nowait, token)
 
         def real_stop():
             """
@@ -593,10 +603,10 @@ class Interpreter(ABC):
             """
             nonlocal texts
             async for text in texts:
-                q.put(text)
-            q.put(None)
+                text_queue.put(text)
+            text_queue.put(None)
 
-        cor = asyncio.to_thread(self.parse_text_to_command_tokens, q, callback.put_nowait, stopped=real_stop)
+        cor = asyncio.to_thread(self.parse_text_to_command_tokens, text_queue, callback, stopped=real_stop)
         parsing_task = asyncio.create_task(cor)
 
         async def read_from():
@@ -604,7 +614,7 @@ class Interpreter(ABC):
             读取消息.
             """
             while not real_stop():
-                item = await callback.get()
+                item = await token_queue.get()
                 if item is None:
                     break
                 yield item
@@ -614,10 +624,15 @@ class Interpreter(ABC):
         try:
             async for got in read_from():
                 yield got
-        except Exception:
-            q.put(None)
-            stop_event.set()
+        except asyncio.CancelledError:
             raise
+        except Exception as e:
+            text_queue.put(None)
+            stop_event.set()
+            self.logger.exception(
+                "[Interpreter][%s] failed parsing text into command tokens: %r", self.__class__.__name__, e
+            )
+            raise e
         finally:
             # 冗余的回收.
             if not parsing_task.done():
@@ -628,7 +643,7 @@ class Interpreter(ABC):
     async def parse_tokens_to_command_tasks(
         self,
         tokens_queue: asyncio.Queue[CommandToken | None],
-        tasks_queue: asyncio.Queue[CommandTask | None],
+        task_callback: Callable[[CommandTask | None], None],
         *,
         stopped: Callable[[], bool] | None = None,
     ):
@@ -637,7 +652,7 @@ class Interpreter(ABC):
         raise InterpreterError
         """
         parser = self.command_token_parser()
-        parser.with_callback(tasks_queue.put_nowait)
+        # parser.with_callback(task_callback)
         if stopped is None:
 
             def empty_stopped():
@@ -653,9 +668,23 @@ class Interpreter(ABC):
                         continue
                     if item is None:
                         break
-                    parser.on_token(item)
+                    tasks = parser.on_token(item)
+                    if tasks is not None:
+                        for task in tasks:
+                            # print("++++++++++++++++++++ wait compiled task", task)
+                            # run partial on compiled
+                            await task.on_compiled()
+                            task_callback(task)
+                    await asyncio.sleep(0.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.exception(
+                "[Interpreter][%s] failed parsing tokens into command tasks: %r", self.__class__.__name__, e
+            )
+            raise e
         finally:
-            tasks_queue.put_nowait(None)
+            task_callback(None)
             parser.destroy()
 
     def parse_text_to_command_tokens(

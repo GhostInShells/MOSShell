@@ -23,14 +23,15 @@ class MockSpeechStream(SpeechStream):
         self.outputs = []
         self.output_queue = Queue()
         self.output_done_event = ThreadSafeEvent()
+        self._start_synthesizing = ThreadSafeEvent()
         self.output_buffer = ""
         self.output_started = False
         self.typing_sleep = typing_sleep
 
-    async def aclose(self):
-        self.close()
+    async def close(self):
+        self.close_sync()
 
-    def close(self):
+    def close_sync(self):
         if self.output_done_event.is_set():
             return
         self.output_done_event.set()
@@ -41,17 +42,26 @@ class MockSpeechStream(SpeechStream):
     def _commit(self) -> None:
         self.output_queue.put_nowait(None)
 
-    async def astart(self) -> None:
+    async def fail(self, err: Exception) -> None:
+        pass
+
+    async def start_play(self) -> None:
         if self.output_started:
             return
         self.output_started = True
         t = threading.Thread(target=self._output_loop, daemon=True)
         t.start()
 
+    def is_closed(self) -> bool:
+        return self.output_done_event.is_set()
+
     def _output_loop(self) -> None:
         try:
             content_is_not_empty = False
             while not self.output_done_event.is_set():
+                if not self._start_synthesizing.is_set():
+                    if not self._start_synthesizing.wait_sync(0.1):
+                        continue
                 try:
                     self.output_queue.empty()
                     item = self.output_queue.get(block=True, timeout=0.1)
@@ -79,8 +89,11 @@ class MockSpeechStream(SpeechStream):
     def buffered(self) -> str:
         return self.output_buffer
 
-    async def wait(self) -> None:
+    async def wait_played(self) -> None:
         await self.output_done_event.wait()
+
+    async def start_synthesis(self) -> None:
+        self._start_synthesizing.set()
 
 
 class MockSpeech(Speech):
@@ -101,7 +114,7 @@ class MockSpeech(Speech):
         stream_id = stream.id
         if stream_id in self._streams:
             existing_stream = self._streams[stream_id]
-            existing_stream.close()
+            existing_stream.close_sync()
         self._streams[stream_id] = stream
         return stream
 
@@ -115,7 +128,7 @@ class MockSpeech(Speech):
     async def clear(self) -> list[str]:
         outputs = []
         for stream in self._streams.values():
-            await stream.aclose()
+            await stream.close()
         for stream_output in self._outputs:
             outputs.append(stream_output)
         self._streams.clear()

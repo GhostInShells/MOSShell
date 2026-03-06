@@ -355,7 +355,9 @@ class MOSSShell(ABC):
                 _token_queue.put_nowait(None)
 
         sender_task = asyncio.create_task(sender())
-        consumer_task = asyncio.create_task(interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue))
+        consumer_task = asyncio.create_task(
+            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait),
+        )
         try:
             while True:
                 item = await _task_queue.get()

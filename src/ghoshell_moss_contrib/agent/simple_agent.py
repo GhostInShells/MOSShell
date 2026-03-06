@@ -95,7 +95,7 @@ class SimpleAgent:
 
         self.chat: BaseChat = chat or ConsoleChat()
         self.talker = talker
-        shell = shell or new_ctml_shell(container=self.container, speech=speech)
+        shell = shell or new_ctml_shell(container=self.container, speech=speech, experimental=False)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell
@@ -223,7 +223,7 @@ class SimpleAgent:
             if not inputs:
                 return
             while inputs is not None and not self._interrupt_requested:
-                inputs = await asyncio.create_task(self._single_response(inputs))
+                inputs = await self._single_response(inputs)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -246,7 +246,7 @@ class SimpleAgent:
             计划中除了支持全双工交互外, 还需要支持传统的 react 模式.
             这其中又要为上下文 token 裁剪设计一个简洁的办法. 目前 interpreter 还没有完工, 所以临时使用这种方式.
         """
-        self.logger.info("Single response received, inputs=%s", inputs)
+        self.logger.info("[SimpleAgent] Single response started, inputs=%s", inputs)
         generated = ""
         history = self._get_history()
         interpretation: Interpretation | None = None
@@ -255,6 +255,7 @@ class SimpleAgent:
             self._response_done.clear()
             params = self.model.generate_litellm_params()
             async with await self.shell.interpreter() as interpreter:
+                self.logger.info("[SimpleAgent] interpreter created")
                 interpretation = interpreter.interpretation()
                 reasoning = False
                 # 系统指令.
@@ -263,8 +264,13 @@ class SimpleAgent:
 
                 params["messages"] = messages
                 params["stream"] = True
+                self.logger.info("[SimpleAgent] prepare llm call")
                 response_stream = await litellm.acompletion(**params)
+                first = False
                 async for chunk in response_stream:
+                    if not first:
+                        self.logger.info("[SimpleAgent] receive first token")
+                        first = True
                     delta = chunk.choices[0].delta
                     self.logger.debug("delta: %s", delta)
                     if "reasoning_content" in delta:
@@ -283,7 +289,7 @@ class SimpleAgent:
 
                     interpreter.feed(content)
                 interpreter.commit()
-                interpretation = await asyncio.create_task(interpreter.wait_stopped())
+                interpretation = await interpreter.wait_stopped()
                 if interpretation.observe:
                     return []
                 else:

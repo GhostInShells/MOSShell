@@ -42,11 +42,8 @@ async def test_shell_speech_baseline_prepare():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        async with speech.new_stream() as stream:
-            async for chunk in chunks__:
-                stream.feed(chunk)
-            stream.commit()
-            await stream.wait()
+        stream = speech.new_stream()
+        await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
 
@@ -120,11 +117,8 @@ async def test_shell_speech_baseline():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        async with speech.new_stream() as stream:
-            async for chunk in chunks__:
-                stream.feed(chunk)
-            stream.commit()
-            await stream.wait()
+        stream = speech.new_stream()
+        await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
     content = "<wait><say>你好，我是MOSS。</say></wait>"
@@ -156,11 +150,8 @@ async def test_shell_speech_10_times():
     shell.main_channel.import_channels(a_chan)
 
     async def say(chunks__):
-        async with speech.new_stream() as stream:
-            async for chunk in chunks__:
-                stream.feed(chunk)
-            stream.commit()
-            await stream.wait()
+        stream = speech.new_stream()
+        await stream.speak(chunks__)
 
     shell.main_channel.build.command()(say)
     content = "hello<wait><say>你好，我是MOSS。</say></wait> world"

@@ -13,15 +13,14 @@ __all__ = ["wait"]
 
 
 async def wait(
-    ctml__,
-    timeout: float | None = None,
-    return_when: Literal["ALL_COMPLETE", "FIRST_COMPLETE", "FIRST_EXCEPTION"] = "FIRST_EXCEPTION",
-    chans: str | None = None,
+        ctml__,
+        timeout: float | None = None,
+        return_when: Literal["ALL_COMPLETE", "FIRST_COMPLETE", "FIRST_EXCEPTION"] = "FIRST_EXCEPTION",
+        chans: str | None = None,
 ):
     """
     Core blocking primitive for grouping and synchronizing CTML command execution.
-
-    This primitive allows you to segment your command output into groups, ensuring
+    This primitive allows you to: segment your **multi-channels commands** into groups, ensuring
     that commands within a `<wait>` block complete according to the specified
     synchronization policy before proceeding.
 
@@ -73,7 +72,7 @@ async def wait(
             if len(channel_names) == 0 or _task.chan in channel_names:
                 wait_tasks.append(_task)
         if len(wait_tasks) == 0:
-            raise ValueError(f"No tasks to wait for channels: `{chans}`")
+            return
 
         wait_task_group = []
         for _task in wait_tasks:
@@ -114,6 +113,8 @@ async def wait(
                     _task.cancel("cancel by wait")
 
     async def _generate_result(_tasks: list[CommandTask]):
+        if len(_tasks) == 0:
+            return
         await asyncio.gather(*[t.wait(throw=False) for t in _tasks])
         result = CommandTaskResult()
         try:

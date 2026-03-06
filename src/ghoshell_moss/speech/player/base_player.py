@@ -209,7 +209,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
 
     def is_playing(self) -> bool:
         """检查是否还有音频在播放"""
-        return time.time() < self._estimated_end_time and not self._play_done_event.is_set()
+        return time.time() < self._estimated_end_time or not self._play_done_event.is_set()
 
     def is_closed(self) -> bool:
         """检查播放器是否已关闭"""

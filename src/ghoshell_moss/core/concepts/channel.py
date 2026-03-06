@@ -758,6 +758,10 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
+    async def wait_children_idled(self) -> None:
+        pass
+
+    @abstractmethod
     async def wait_connected(self) -> None:
         """
         等待 runtime 到连接成功.

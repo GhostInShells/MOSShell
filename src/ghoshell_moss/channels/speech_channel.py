@@ -45,9 +45,7 @@ class SpeechChannel(Channel):
         task = ChannelCtx.task()
         batch_id = task.cid if task else None
         stream = self._speech.new_stream(batch_id=batch_id)
-        async with stream:
-            async for chunk in chunks__:
-                stream.feed(chunk)
+        await stream.speak(chunks__)
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         if self._runtime and self._runtime.is_running():
@@ -55,7 +53,7 @@ class SpeechChannel(Channel):
 
         channel = PyChannel(name=self._name, description=self._description, blocking=True)
 
-        # 注册说话的命令.
+        # 注册说话的命令. 可能被覆盖.
         channel.build.command()(self.say)
 
         # 注册生命周期.

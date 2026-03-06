@@ -25,11 +25,10 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelPaths,
     ChannelImportLib,
 )
-from ghoshell_moss.core.concepts.errors import CommandErrorCode, CommandError
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
-import time
 
 __all__ = ["AbsChannelRuntime", "BaseImportLib", "AbsChannelTreeRuntime"]
 
@@ -521,6 +520,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def clear_own(self) -> None:
         pass
 
+    @abstractmethod
+    async def wait_children_idled(self) -> None:
+        pass
+
     async def clear_sub_channels(self):
         async def clear_child(_child: Channel):
             child_runtime = await self._importlib.get_or_create_channel_runtime(_child)
@@ -842,7 +845,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 不返回.
         finally:
             self._blocking_action_lock.release()
-            self.logger.info("%s idling", self.log_prefix)
+            self.logger.info("%s idling, pending tasks %d", self.log_prefix, len(self._pending_tasks))
 
     @abstractmethod
     async def on_idle(self) -> None:
@@ -871,7 +874,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             self._lifecycle_task = None
             self._blocking_action_lock.release()
 
-    async def _wait_children_idled(self) -> None:
+    async def wait_children_idled(self) -> None:
         async def wait_child_empty(_child: Channel):
             runtime = await self._importlib.get_or_create_channel_runtime(_child)
             if runtime and runtime.is_running():
@@ -1124,6 +1127,8 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 还要确保 get result 这个函数被清空了.
             if task is self._executing_blocking_task:
                 self._executing_blocking_task = None
+            if task.cid in self._pending_tasks:
+                del self._pending_tasks[task.cid]
             if not get_result_from_task.done():
                 try:
                     get_result_from_task.cancel()
@@ -1243,7 +1248,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             is_self_task = len(paths) == 0
             is_blocking_task = task.meta.blocking
             # 阻塞等待 compiled. 等得过久怎么办? 就得靠 shell clear 了.
-            await self._ensure_task_compiled(task)
             priority = task.meta.priority
             # 进入 pending 列表.
             if is_self_task:
@@ -1270,32 +1274,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             _queue.put_nowait((paths, task_id))
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
-
-    async def _ensure_task_compiled(self, task: CommandTask) -> None:
-        try:
-            if task.compiled():
-                return
-            on_compiled_task = self._loop.create_task(task.on_compiled())
-            on_task_done = self._loop.create_task(task.wait(throw=False))
-            done, pending = asyncio.wait(
-                [
-                    on_compiled_task,
-                    on_task_done,
-                ],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-            await on_compiled_task
-        except asyncio.CancelledError:
-            if not task.done():
-                task.cancel()
-        except CommandError:
-            pass
-        except Exception as e:
-            self.logger.exception("%s ensure task %s compiled failed: %s", self.log_prefix, task, e)
-            if not task.done():
-                task.fail(e)
 
     def _clear_own_task_by_priority(self, chan: str, cid: str, priority: int | None):
         """

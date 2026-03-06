@@ -473,7 +473,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             exp_str = get_error_context(self._parsing_text, exception)
         else:
             exp_str = str(exception)
-        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and open-close tag rules")
+        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and close tag rules")
 
     def warning(self, exception):
         self._logger.warning(exception)

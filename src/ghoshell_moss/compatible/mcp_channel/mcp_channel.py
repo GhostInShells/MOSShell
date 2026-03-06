@@ -117,6 +117,9 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     async def clear_own(self) -> None:
         return
 
+    async def wait_children_idled(self) -> None:
+        pass
+
     def default_states(self) -> list:
         return []
 

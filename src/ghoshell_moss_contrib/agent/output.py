@@ -52,7 +52,10 @@ class ChatRenderSpeechStream(SpeechStream):
         if self.cmd_task is not None:
             self.cmd_task.tokens = self._buffered
 
-    async def astart(self) -> None:
+    async def fail(self, err: Exception) -> None:
+        return
+
+    async def start_play(self) -> None:
         if self._started:
             return
         if len(self._buffered) > 0:
@@ -61,17 +64,23 @@ class ChatRenderSpeechStream(SpeechStream):
         self._on_start.set()
         self._main_loop_task = asyncio.create_task(self._main_loop())
 
-    async def aclose(self):
-        self.close()
+    async def close(self):
+        self.close_sync()
 
-    def close(self) -> None:
+    def close_sync(self) -> None:
         self.commit()
         self._close_event.set()
+
+    async def start_synthesis(self) -> None:
+        return
+
+    def is_closed(self) -> bool:
+        return self._close_event.is_set()
 
     def buffered(self) -> str:
         return self._buffered
 
-    async def wait(self) -> None:
+    async def wait_played(self) -> None:
         if self._main_loop_task:
             await self._main_loop_task
 

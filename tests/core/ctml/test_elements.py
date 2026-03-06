@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import pytest
 
 from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandToken, PyCommand
-from ghoshell_moss.core.concepts.interpreter import CommandTokenParser
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext, RootCommandTaskElement
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser
 from ghoshell_moss.core.helpers import ThreadSafeEvent, get_console_logger
