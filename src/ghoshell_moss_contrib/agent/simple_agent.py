@@ -237,7 +237,7 @@ class SimpleAgent:
         # 暂时关闭保存.
         # messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
         # self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
-       self._history_messages.extend(messages)
+        self._history_messages.extend(messages)
 
     async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
         """

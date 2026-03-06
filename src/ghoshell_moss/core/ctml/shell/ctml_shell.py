@@ -450,7 +450,8 @@ class CTMLShell(MOSSShell):
     def push_task(self, *tasks: CommandTask) -> None:
         self._check_running()
         # 线程安全加入 tasks.
-        self._event_loop.call_soon_threadsafe(self._push_task_queue.put_nowait, *tasks)
+        for t in tasks:
+            self._push_task_queue.put_nowait(t)
 
     async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
@@ -557,6 +558,7 @@ class CTMLShell(MOSSShell):
             """
             清空一个队列的安全做法.
             """
+            nonlocal _queue
             _queue.put_nowait(None)
             while not _queue.empty():
                 try:
@@ -572,7 +574,6 @@ class CTMLShell(MOSSShell):
                     _queue.put_nowait(None)
                     continue
             _queue.put_nowait(None)
-            _queue.task_done()
 
         clear_queue = self._event_loop.create_task(_clear_old_queue())
         await clear_queue

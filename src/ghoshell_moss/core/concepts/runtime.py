@@ -25,7 +25,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelPaths,
     ChannelImportLib,
 )
-from ghoshell_moss.core.concepts.errors import CommandErrorCode
+from ghoshell_moss.core.concepts.errors import CommandErrorCode, CommandError
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
@@ -476,7 +476,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 self._defer_clear_mark = False
                 await self.clear_own()
             # 准备入参.
-            task.prepare()
             await self._push_task_with_paths(paths, task)
         except Exception as exc:
             self.logger.exception(exc)
@@ -1043,9 +1042,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             return
         # 确保 task 被加入了状态池.
         await self._add_executing_task(task)
-        task.set_state(CommandTaskState.executing)
-        # 设置 channel id 来标记执行者.
-        task.exec_chan = self.channel.id()
         # 非阻塞函数不能返回 stack
         # 确保 task 被执行了. 但是不要阻塞主链路.
         return self._loop.create_task(self._ensure_task_executed(task, depth, throw=False))
@@ -1057,6 +1053,11 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             if cid in self._executing_self_tasks:
                 return
             self._executing_self_tasks[cid] = task
+            if cid in self._pending_tasks:
+                del self._pending_tasks[cid]
+            task.set_state(CommandTaskState.executing)
+            # 设置 channel id 来标记执行者.
+            task.exec_chan = self.channel.id()
             task.add_done_callback(self._on_executing_task_done)
         finally:
             self._blocking_action_lock.release()
@@ -1241,8 +1242,9 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 确认是自身的任务, 并且 call soon.
             is_self_task = len(paths) == 0
             is_blocking_task = task.meta.blocking
+            # 阻塞等待 compiled. 等得过久怎么办? 就得靠 shell clear 了.
+            await self._ensure_task_compiled(task)
             priority = task.meta.priority
-
             # 进入 pending 列表.
             if is_self_task:
                 # 清理运行中的 lifecycle task
@@ -1260,7 +1262,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                         return
             # 来一次优先级的 pk.
             if is_blocking_task:
-                self._clear_own_task_by_priority(task.chan, priority)
+                self._clear_own_task_by_priority(task.chan, task.cid, priority)
             self._pending_tasks[task_id] = task
             # 普通的任务, 则会被丢入阻塞队列中排队执行.
             _queue = self._pending_task_queue
@@ -1269,7 +1271,33 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
 
-    def _clear_own_task_by_priority(self, chan: str, priority: int | None):
+    async def _ensure_task_compiled(self, task: CommandTask) -> None:
+        try:
+            if task.compiled():
+                return
+            on_compiled_task = self._loop.create_task(task.on_compiled())
+            on_task_done = self._loop.create_task(task.wait(throw=False))
+            done, pending = asyncio.wait(
+                [
+                    on_compiled_task,
+                    on_task_done,
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            await on_compiled_task
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+        except CommandError:
+            pass
+        except Exception as e:
+            self.logger.exception("%s ensure task %s compiled failed: %s", self.log_prefix, task, e)
+            if not task.done():
+                task.fail(e)
+
+    def _clear_own_task_by_priority(self, chan: str, cid: str, priority: int | None):
         """
         根据优先级清空自身的任务.
         如果 priority 为空, 表示最高优先级, 不做比较.
@@ -1286,11 +1314,13 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # 误操作, 没有资格做比较.
             return
         if self._executing_blocking_task is not None and not self._executing_blocking_task.done():
-            if priority is None or self._executing_blocking_task.meta.priority < priority:
+            if self._executing_blocking_task.cid == cid:
+                pass
+            elif priority is None or self._executing_blocking_task.meta.priority < priority:
                 self._executing_blocking_task.cancel(reason)
         for task in self._pending_tasks.values():
             # 预先清空队列中优先级低于自身的命令.
-            if task.chan != chan:
+            if task.chan != chan or task.cid == cid:
                 continue
             if priority is None or (task.meta.blocking and task.meta.priority < priority):
                 if not task.done():

@@ -2,11 +2,11 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 from enum import Enum
-from typing import Any, ClassVar, Optional
+from typing import Any, Optional
 
 import numpy as np
 from pydantic import BaseModel, Field
-from typing_extensions import Self, TypedDict
+from typing_extensions import Self
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 import json

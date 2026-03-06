@@ -63,41 +63,9 @@ class SpeechChannel(Channel):
         channel.build.close(self._speech.close)
 
         if isinstance(self._speech, TTSSpeech):
-            tts = self._speech.tts()
-
-            def tone_doc() -> str:
-                tts_info = tts.get_info()
-                current_tone = tts_info.current_tone
-                tones = tts_info.tones
-                tone_descriptions = []
-                for tone, description in tones.items():
-                    tone_descriptions.append(f"  {tone}: {description}")
-                descriptions = "\n".join(tone_descriptions)
-
-                docstring = f"可以随时切换你所使用的音色.你的当前音色: {current_tone}可以使用的音色:{descriptions}"
-                return docstring
-
-            @channel.build.command(doc=tone_doc)
-            async def use_tone(tone: str) -> None:
-                tts_info = tts.get_info()
-                tones = tts_info.tones
-                if tone not in tones:
-                    raise ValueError(f"Tone {tone} not in {tones}")
-                tts.use_tone(tone)
-
-            def voice_doc() -> str:
-                tts_info = tts.get_info()
-                schema_str = json.dumps(tts_info.voice_schema)
-                return f"可以用来设置你说话的声音.:param json__: schema is {schema_str}"
-
-            @channel.build.command(doc=voice_doc)
-            async def set_voice(json__) -> None:
-                try:
-                    config = json.loads(json__)
-                except json.JSONDecodeError:
-                    raise ValueError(f"Invalid JSON: {json__}")
-
-                tts.set_voice(config)
+            # 注册 tts 原生 command
+            for command in self._speech.commands():
+                channel.build.add_command(command)
 
         return channel.bootstrap(container=container)
 

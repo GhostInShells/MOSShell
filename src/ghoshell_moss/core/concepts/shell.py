@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, AsyncIterable, AsyncIterator
+from typing import Literal, Optional, AsyncIterable
 from typing_extensions import Self
 
 from ghoshell_container import IoCContainer
@@ -10,9 +10,7 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, Channe
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
-from ghoshell_moss.core.concepts.expressions import Expressions
 
 __all__ = [
     "InterpreterKind",
@@ -79,14 +77,17 @@ class MOSSShell(ABC):
     >>>         async with shell.subscribe_topic('agent/event') as subscriber:
     >>>             event = await subscriber.poll()
     >>>             ...  # 解析 event, 确认响应逻辑
-    >>>             interpreter = await shell.interpreter()
+    >>>             i: Interpreter = await shell.interpreter('clear')
+    >>>             # 获得运行结果.
+    >>>             interpretation = i.interpretation()
     >>>             # 使用关键帧生成的解释器, 完成上下文响应.
     >>>             async with interpreter:
     >>>                 # 来执行模型生成.
     >>>                 async for token in model_create_response():
-    >>>                     interpreter.feed(token)
-    >>>                 interpreter.commit()
+    >>>                     i.feed(token)
+    >>>                 i.commit()
     >>>                 ... # 等待 interpreter 结果并执行.
+    >>>                 interpretation = await i.wait_stopped()
     >>>
     >>>     # 启动 Shell
     >>>     async with shell:

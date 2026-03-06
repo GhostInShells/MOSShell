@@ -7,8 +7,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskResult,
     ObserveError,
 )
-from ghoshell_moss.core import ChannelCtx, MOSSShell
-from ghoshell_common.helpers import Timeleft
+from ghoshell_moss.core import ChannelCtx, MOSSShell, CommandError
 
 __all__ = ["wait"]
 
@@ -99,12 +98,20 @@ async def wait(
                 timeout=_timeout,
                 return_when=asyncio.FIRST_EXCEPTION,
             )
-        done, pending = await wait_done
-        for t in pending:
-            t.cancel()
-        for _task in _tasks:
-            if not _task.done():
-                _task.cancel("cancel by wait")
+        try:
+            done, pending = await wait_done
+            for t in pending:
+                t.cancel()
+            for t in done:
+                await t
+        except asyncio.CancelledError:
+            pass
+        except CommandError:
+            pass
+        finally:
+            for _task in _tasks:
+                if not _task.done():
+                    _task.cancel("cancel by wait")
 
     async def _generate_result(_tasks: list[CommandTask]):
         await asyncio.gather(*[t.wait(throw=False) for t in _tasks])

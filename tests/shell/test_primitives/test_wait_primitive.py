@@ -219,7 +219,6 @@ async def test_wait_with_exception():
             interpreter.feed("<wait><a:failing_task/><b:normal_task/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
-
             # 验证异常传播
             assert execution_log == ["failing_start", "normal_start", "failing_end"]
 

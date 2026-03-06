@@ -172,7 +172,8 @@ class AttrWithTypeSuffixParser(AttrParser):
             "bool": bool,
             "list": lambda v: list(literal_eval(v)),
             "dict": lambda v: dict(literal_eval(v)),
-            "None": literal_eval,
+            "None": lambda v: None,
+            "none": lambda v: None,
             "literal": literal_eval,
             "lambda": lambda v: eval(f"lambda: {v}")(),
         }

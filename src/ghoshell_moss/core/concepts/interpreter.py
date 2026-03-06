@@ -217,7 +217,7 @@ class Interpretation(BaseModel):
         """
         return self.output.copy()
 
-    def observe_messages(self) -> list[Message]:
+    def execution_messages(self) -> list[Message]:
         messages = self.messages.copy()
         if self.interrupted or self.exception:
             status_message = Message.new(role="system")

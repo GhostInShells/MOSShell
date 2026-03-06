@@ -96,7 +96,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._audio_queue = queue.Queue()
         while not old_queue.empty():
             try:
-                old_queue.get_nowait()
+                _ = old_queue.get_nowait()
             except queue.Empty:
                 break
         old_queue.put_nowait(None)
@@ -252,10 +252,10 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     # 通过下一个循环判断应该怎么处理.
                     continue
                 self._play_done_event.clear()
+                # 写入音频数据（期望是阻塞调用）
+                self._audio_stream_write(audio_data)
                 for callback in self._on_play_callbacks:
                     callback(audio_data)
-                    # 写入音频数据（期望是阻塞调用）
-                    self._audio_stream_write(audio_data)
 
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)

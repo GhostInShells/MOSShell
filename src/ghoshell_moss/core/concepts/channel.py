@@ -269,7 +269,7 @@ class Builder(ABC):
         doc: Optional[StringType] = None,
         comments: Optional[StringType] = None,
         tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
+        interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
         available: Optional[Callable[[], bool]] = None,
         # --- 高级参数 --- #
         blocking: Optional[bool] = None,
@@ -287,11 +287,15 @@ class Builder(ABC):
         :param doc: 重定义函数的docstring, 如果传入的是一个函数, 则会在每次刷新时, 动态调用这个函数, 生成它的 docstring.
         :param comments: 改写函数的 body 部分, 用注释形式提供的字符串. 每行前会自动添加 '#'. 不用手动添加.
         :param interface: 大模型看到的函数代码形式. 一旦定义了这个, doc, name, comments 就都会失效.
-                注意, 必须写成 Python Async 的形式.
+                支持三种传参方式:
+                - str: 直接用字符串来定义模型看到的函数签名.
+                    注意, 必须写成 Python Async 的形式.
+                    async def foo(...) -> ...:
+                      '''docstring'''
+                      # comments
+                - callalble[[], str]: 生成模型签名的函数
+                - async function: 会反射这个 function 来生成一个模型签名的字符串.
 
-                async def foo(...) -> ...:
-                  '''docstring'''
-                  # comments
         :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
         :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
                 这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.
