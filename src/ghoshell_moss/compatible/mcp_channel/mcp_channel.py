@@ -4,6 +4,7 @@ from typing import Any, Generic, Optional, TypeVar
 
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
+from ghoshell_moss.speech.volcengine_tts.protocol import Message
 
 try:
     import mcp
@@ -21,6 +22,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandDeltaType,
     CommandMeta,
     CommandTask,
+    CommandTaskResult,
     CommandTaskState,
     CommandWrapper,
 )
@@ -239,8 +241,13 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                     name=meta.name,
                     arguments=final_kwargs,
                 )
-                # convert to moss Message
-                return mcp_call_tool_result_to_message(mcp_result, name=self.name)
+                message = mcp_call_tool_result_to_message(mcp_result, name=self.name)
+                return CommandTaskResult(
+                    result=message,
+                    messages=[message],
+                )
+            except CommandError as e:
+                raise e
             except mcp.McpError as e:
                 raise CommandError(code=CommandErrorCode.FAILED.value, message=f"MCP call failed: {str(e)}") from e
             except Exception as e:
@@ -250,13 +257,16 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
 
         return _server_caller_as_command
 
-    async def execute(self, task: CommandTask[R]) -> R:
+    async def execute(self, task: CommandTask[R]) -> CommandTaskResult:
         if not self.is_running():
             raise RuntimeError("MCPChannel is not running")
         func = self._get_command_func(task.meta)
         if func is None:
             raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
-        return await func(*task.args, **task.kwargs)
+
+        result: CommandTaskResult = await func(*task.args, **task.kwargs)
+        result.caller = task.caller_name()
+        return result
 
         # --- 工具转Command的核心逻辑 --- #
 
