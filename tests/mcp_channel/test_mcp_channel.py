@@ -10,14 +10,11 @@ from mcp.client.stdio import stdio_client
 from ghoshell_moss import CommandError
 from ghoshell_moss.compatible.mcp_channel.mcp_channel import MCPChannel
 from ghoshell_moss.compatible.mcp_channel.types import MCPCallToolResultAddition
+from ghoshell_moss.core.concepts.command import CommandTaskResult, CommandErrorCode
 from ghoshell_moss.message import Message
 
 
 def get_mcp_call_tool_result(message: Message) -> MCPCallToolResultAddition:
-    """
-    测试用例里应该只有一个 MCPStructuredContent
-    """
-
     return MCPCallToolResultAddition.read(message)
 
 
@@ -44,89 +41,151 @@ async def test_mcp_channel_baseline():
                 mcp_client=session,
             )
 
-            async with mcp_channel.bootstrap() as client:
-                commands = list(client.own_commands().values())
-                assert len(commands) > 0
+            async with mcp_channel.bootstrap() as runtime:
+                commands = list(runtime.own_commands().values())
+                assert len(commands) == 4
 
-                # print('')
-                # for i, cmd in enumerate(commands):
-                #     print(f"{i}: {cmd.name()} {cmd.meta().model_dump_json()}")
-
-                available_test_cmd = client.get_command("add")
+                available_test_cmd = runtime.get_command("add")
                 assert available_test_cmd is not None
 
-                # args
-                res: Message = await available_test_cmd(1, 2)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(1, 2)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
+                assert task_result.caller is None
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # kwargs
-                res: Message = await available_test_cmd(x=1, y=2)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(x=1, y=2)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # args + kwargs
-                res: Message = await available_test_cmd(1, y=2)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(1, y=2)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # args, default
-                # 无法区分第一个参数是原始函数还是text__
-                res: Message = await available_test_cmd(1)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(1)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # kwargs, default
-                res: Message = await available_test_cmd(x=1)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(x=1)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # text__
                 text__: str = json.dumps({"x": 1, "y": 2})
-                res: Message = await available_test_cmd(text__=text__)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(text__=text__)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # args: text__
-                res: Message = await available_test_cmd(text__)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(text__)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # text__, default
                 text__: str = json.dumps({"x": 1})
-                res: Message = await available_test_cmd(text__=text__)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(text__=text__)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # foo
-                available_test_cmd = client.get_command("foo")
+                available_test_cmd = runtime.get_command("foo")
                 assert available_test_cmd is not None
 
-                # text__, default
                 text__: str = json.dumps({"a": 1, "b": {"i": 2}})
-                res: Message = await available_test_cmd(text__=text__)
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(text__=text__)
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                available_test_cmd = client.get_command("bar")
+                available_test_cmd = runtime.get_command("bar")
                 assert available_test_cmd is not None
 
-                # kwargs
-                res: Message = await available_test_cmd(s="aaa")
-                mcp_call_tool_result = get_mcp_call_tool_result(res)
+                task_result: CommandTaskResult = await available_test_cmd(s="aaa")
+                assert task_result.result is not None
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
-                # args,
-                with pytest.raises(CommandError):
+
+@pytest.mark.asyncio
+async def test_mcp_channel_exception():
+    exit_stack = AsyncExitStack()
+    async with exit_stack:
+        read_stream, write_stream = await exit_stack.enter_async_context(
+            stdio_client(
+                StdioServerParameters(
+                    command=sys.executable, args=[join(dirname(__file__), "helper/mcp_server_demo.py")], env=None
+                )
+            )
+        )
+        session = ClientSession(read_stream, write_stream)
+        async with session:
+            await session.initialize()
+            tool_res = await session.list_tools()
+            assert tool_res is not None
+
+            mcp_channel = MCPChannel(
+                name="mcp",
+                description="MCP channel",
+                mcp_client=session,
+            )
+
+            async with mcp_channel.bootstrap() as runtime:
+                available_test_cmd = runtime.get_command("bar")
+                assert available_test_cmd is not None
+                with pytest.raises(CommandError) as exc_info:
                     await available_test_cmd("aaa")
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                # only 1 arg, default cast to 'text__'
+                assert "invalid `text__` parameter format" in exc_info.value.message
+                assert "INVALID JSON schema" in exc_info.value.message
 
-                available_test_cmd = client.get_command("multi")
+                available_test_cmd = runtime.get_command("multi")
                 assert available_test_cmd is not None
-
-                with pytest.raises(CommandError):
+                with pytest.raises(CommandError) as exc_info:
+                    # missing arg "d"
                     await available_test_cmd(1, 2, a=2, c=3)
+                assert exc_info.value.code == CommandErrorCode.FAILED.value
+                assert "MCP tool: call failed" in exc_info.value.message
+                # mcp.ClientSession call_tool
+                assert "Field required [type=missing, input_value={'a': 2, 'b': 2, 'c': 3}, input_type=dict]" in exc_info.value.message
+
+                available_test_cmd = runtime.get_command("add")
+                assert available_test_cmd is not None
+                with pytest.raises(CommandError) as exc_info:
+                    await available_test_cmd("invalid_json")
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                assert "invalid `text__` parameter format" in exc_info.value.message
+                assert "INVALID JSON schema" in exc_info.value.message
+
+                available_test_cmd = runtime.get_command("foo")
+                assert available_test_cmd is not None
+                with pytest.raises(CommandError) as exc_info:
+                    await available_test_cmd(12345)
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                assert 'invalid "text__" type' in exc_info.value.message
+                # json.loads() -> TypeError
+                assert "the JSON object must be str, bytes or bytearray, not int" in exc_info.value.message
+
+                available_test_cmd = runtime.get_command("bar")
+                assert available_test_cmd is not None
+                with pytest.raises(CommandError) as exc_info:
+                    await available_test_cmd(s="aaa", extra_param="extra")
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                assert "invalid parameters" in exc_info.value.message.lower()
+                assert "too many parameters passed" in exc_info.value.message
+
+                available_test_cmd = runtime.get_command("multi")
+                assert available_test_cmd is not None
+                with pytest.raises(CommandError) as exc_info:
+                    await available_test_cmd(a=1, b=2)
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                assert "invalid parameters" in exc_info.value.message.lower()
+                assert "too few parameters passed" in exc_info.value.message

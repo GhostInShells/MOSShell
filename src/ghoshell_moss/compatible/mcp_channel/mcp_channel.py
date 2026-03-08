@@ -188,9 +188,15 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                         )
                 else:  # schema_param_count > 1
                     if not (param_count == 1 or required_schema_param_count <= param_count <= schema_param_count):
+                        message = f"MCP tool: invalid parameters, "
+                        if required_schema_param_count > param_count:
+                            message += f"too few parameters passed: (pass:{param_count}, required:{required_schema_param_count}), "
+                        elif param_count > schema_param_count:
+                            message += f"too many parameters passed: (pass:{param_count}, schema:{schema_param_count}), "
+                        message += f'args={args}, kwargs={kwargs}'
                         raise CommandError(
                             code=CommandErrorCode.VALUE_ERROR.value,
-                            message=f"MCP tool: invalid parameters, invalid, args={args}, kwargs={kwargs}",
+                            message=message,
                         )
                     if param_count == 1:
                         if len(args) == 1:
