@@ -10,7 +10,7 @@ from mcp.client.stdio import stdio_client
 from ghoshell_moss import CommandError
 from ghoshell_moss.compatible.mcp_channel.mcp_channel import MCPChannel
 from ghoshell_moss.compatible.mcp_channel.types import MCPCallToolResultAddition
-from ghoshell_moss.core.concepts.command import CommandTaskResult, CommandErrorCode
+from ghoshell_moss.core.concepts.command import CommandTaskResult, CommandErrorCode, BaseCommandTask
 from ghoshell_moss.message import Message
 
 
@@ -155,7 +155,10 @@ async def test_mcp_channel_exception():
                 assert exc_info.value.code == CommandErrorCode.FAILED.value
                 assert "MCP tool: call failed" in exc_info.value.message
                 # mcp.ClientSession call_tool
-                assert "Field required [type=missing, input_value={'a': 2, 'b': 2, 'c': 3}, input_type=dict]" in exc_info.value.message
+                assert (
+                    "Field required [type=missing, input_value={'a': 2, 'b': 2, 'c': 3}, input_type=dict]"
+                    in exc_info.value.message
+                )
 
                 available_test_cmd = runtime.get_command("add")
                 assert available_test_cmd is not None
@@ -189,3 +192,84 @@ async def test_mcp_channel_exception():
                 assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
                 assert "invalid parameters" in exc_info.value.message.lower()
                 assert "too few parameters passed" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_mcp_channel_execute():
+    exit_stack = AsyncExitStack()
+    async with exit_stack:
+        read_stream, write_stream = await exit_stack.enter_async_context(
+            stdio_client(
+                StdioServerParameters(
+                    command=sys.executable, args=[join(dirname(__file__), "helper/mcp_server_demo.py")], env=None
+                )
+            )
+        )
+        session = ClientSession(read_stream, write_stream)
+        async with session:
+            await session.initialize()
+            tool_res = await session.list_tools()
+            assert tool_res is not None
+
+            mcp_channel = MCPChannel(
+                name="mcp",
+                description="MCP channel",
+                mcp_client=session,
+            )
+
+            async with mcp_channel.bootstrap() as runtime:
+                add_cmd = runtime.get_command("add")
+                assert add_cmd is not None
+
+                task = BaseCommandTask.from_command(
+                    add_cmd,
+                    chan_="mcp",
+                    args=(1, 2),
+                )
+
+                task_result: CommandTaskResult = await runtime.execute(task)
+                assert task_result is not None
+                assert task_result.result is not None
+                assert task_result.caller == task.caller_name()
+                assert len(task_result.messages) == 1
+
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
+                assert mcp_call_tool_result.isError is False
+                assert mcp_call_tool_result.structuredContent["result"] == 3
+
+                bar_cmd = runtime.get_command("bar")
+                assert bar_cmd is not None
+
+                task = BaseCommandTask.from_command(
+                    bar_cmd,
+                    chan_="mcp",
+                    kwargs={"s": "hello"},
+                )
+
+                task_result: CommandTaskResult = await runtime.execute(task)
+                assert task_result is not None
+                assert task_result.result is not None
+                assert task_result.caller == task.caller_name()
+                assert len(task_result.messages) == 1
+
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
+                assert mcp_call_tool_result.isError is False
+                assert mcp_call_tool_result.structuredContent["result"] == 5
+
+                foo_cmd = runtime.get_command("foo")
+                assert foo_cmd is not None
+
+                task = BaseCommandTask.from_command(
+                    foo_cmd,
+                    chan_="mcp",
+                    kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})},
+                )
+
+                task_result: CommandTaskResult = await runtime.execute(task)
+                assert task_result is not None
+                assert task_result.result is not None
+                assert task_result.caller == task.caller_name()
+
+                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
+                assert mcp_call_tool_result.isError is False
+                assert mcp_call_tool_result.structuredContent["result"] == 30
