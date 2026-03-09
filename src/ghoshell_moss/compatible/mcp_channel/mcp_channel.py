@@ -5,6 +5,7 @@ from typing import Any, Generic, Optional, TypeVar
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
 from ghoshell_moss.speech.volcengine_tts.protocol import Message
+from ghoshell_moss.types import Observe
 
 try:
     import mcp
@@ -247,11 +248,8 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                     name=meta.name,
                     arguments=final_kwargs,
                 )
-                message = mcp_call_tool_result_to_message(mcp_result, name=self.name)
-                return CommandTaskResult(
-                    result=message,
-                    messages=[message],
-                )
+                # convert to moss Message
+                return mcp_call_tool_result_to_message(mcp_result, name=self.name)
             except CommandError as e:
                 raise e
             except mcp.McpError as e:
@@ -263,16 +261,22 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
 
         return _server_caller_as_command
 
-    async def execute(self, task: CommandTask[R]) -> CommandTaskResult:
+    async def execute(self, task: CommandTask[R]) -> R:
         if not self.is_running():
             raise RuntimeError("MCPChannel is not running")
         func = self._get_command_func(task.meta)
         if func is None:
             raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
 
-        result: CommandTaskResult = await func(*task.args, **task.kwargs)
-        result.caller = task.caller_name()
-        return result
+        try:
+            message = await func(*task.args, **task.kwargs)
+            task.resolve(message)
+            return message
+        except CommandError as e:
+            task.fail(e)
+        except Exception as e:
+            # unknown exception, stop execute
+            raise e
 
         # --- 工具转Command的核心逻辑 --- #
 
