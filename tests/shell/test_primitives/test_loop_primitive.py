@@ -20,7 +20,7 @@ async def test_loop_basic_functionality():
 
     shell.main_channel.import_channels(chan)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<loop times='100'><a:foo/></loop>")
             interpreter.commit()
             await interpreter.wait_stopped()
@@ -30,9 +30,6 @@ async def test_loop_basic_functionality():
 
 @pytest.mark.asyncio
 async def test_loop_times_zero():
-    """
-    测试 clear 基本功能：清空子轨道的运行状态
-    """
     shell = new_ctml_shell()
     chan = PyChannel(name="a")
     ran = []
@@ -43,7 +40,7 @@ async def test_loop_times_zero():
 
     shell.main_channel.import_channels(chan)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<loop times='0'><a:foo/><a:foo/></loop>")
             interpreter.commit()
             await interpreter.wait_stopped()
@@ -52,10 +49,7 @@ async def test_loop_times_zero():
 
 
 @pytest.mark.asyncio
-async def test_loop_times_zero():
-    """
-    测试 clear 基本功能：清空子轨道的运行状态
-    """
+async def test_loop_times_101():
     shell = new_ctml_shell()
     chan = PyChannel(name="a")
     ran = []
@@ -66,12 +60,54 @@ async def test_loop_times_zero():
 
     shell.main_channel.import_channels(chan)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<loop times='101'><a:foo/><a:foo/></loop>")
             interpreter.commit()
             await interpreter.wait_stopped()
             interpreter.raise_exception()
             assert len(ran) == 200
+
+
+@pytest.mark.asyncio
+async def test_loop_times_negative_maxsize():
+    shell = new_ctml_shell()
+    chan = PyChannel(name="a")
+    ran = []
+
+    @chan.build.command()
+    async def foo():
+        ran.append(1)
+
+    shell.main_channel.import_channels(chan)
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<loop times='-1'><a:foo/><a:foo/></loop>")
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            interpreter.raise_exception()
+            assert len(ran) == 200
+
+
+@pytest.mark.asyncio
+async def test_loop_with_chunks():
+    shell = new_ctml_shell()
+    said = []
+
+    @shell.main_channel.build.command()
+    async def say(chunks__):
+        content = ""
+        async for chunk in chunks__:
+            content += chunk
+        said.append(content)
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<loop times='2'><say>hello</say><say>hello</say></loop>")
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            assert len(said) == 4
+            for line in said:
+                assert line == "hello"
 
 
 @pytest.mark.asyncio
@@ -90,7 +126,7 @@ async def test_loop_times_negative():
 
     shell.main_channel.import_channels(chan)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait timeout='0.2'><loop times='-1'><a:foo/><a:foo/></loop></wait>")
             interpreter.commit()
             await interpreter.wait_stopped()
@@ -114,7 +150,7 @@ async def test_loop_times_negative_with_others():
 
     shell.main_channel.import_channels(chan)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<loop times='-1'><a:foo/><sleep duration='0.005'/><a:foo/></loop>")
             interpreter.commit()
             await asyncio.sleep(0.1)
@@ -148,7 +184,7 @@ async def test_loop_with_dynamic_times():
     shell.main_channel.import_channels(chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 注意：这个测试假设loop原语支持动态次数
             # 如果当前不支持，可以注释掉或修改
             interpreter.feed("""
@@ -201,7 +237,7 @@ async def test_loop_with_concurrent_channels():
     shell.main_channel.import_channels(audio_chan, visual_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 循环3次，每次同时触发音频和视觉
             interpreter.feed("""
                 <loop times="3">
@@ -257,7 +293,7 @@ async def test_loop_interruption_and_resume():
 
     async with shell:
         # 第一轮：开始循环但被中断
-        async with shell.interpreter_in_ctx() as interpreter1:
+        async with await shell.interpreter() as interpreter1:
             interpreter1.feed('<loop times="10"><task:perform_task/></loop>')
             interpreter1.commit()
 
@@ -275,9 +311,9 @@ async def test_loop_interruption_and_resume():
             await interpreter1.wait_stopped()
 
             # 第二轮：恢复执行（从上次中断的地方继续逻辑）
-            async with shell.interpreter_in_ctx() as interpreter2:
+            async with await shell.interpreter() as interpreter2:
                 # 处理中断
-                interpreter2.feed('<task:handle_interruption/>')
+                interpreter2.feed("<task:handle_interruption/>")
 
                 # 继续剩余的迭代
                 remaining = 10 - iterations_before_interrupt

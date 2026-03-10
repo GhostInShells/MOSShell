@@ -7,9 +7,9 @@ class AdapterChannel(Channel):
     """
 
     def __init__(
-            self,
-            name: str,
-            description: str,
-            origin: Channel,
+        self,
+        name: str,
+        description: str,
+        origin: Channel,
     ) -> None:
         pass

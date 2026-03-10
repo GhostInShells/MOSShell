@@ -5,7 +5,10 @@ import pytest
 
 from ghoshell_moss.core.concepts.command import PyCommand, make_command_group
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
+from ghoshell_moss.core.helpers import get_console_logger
 from ghoshell_moss.speech.mock import MockSpeech
+
+logger = get_console_logger(level="ERROR")
 
 
 @pytest.mark.asyncio
@@ -15,10 +18,12 @@ async def test_interpreter_baseline():
 
     queue = deque()
     interpreter = CTMLInterpreter(
+        kind="",
         commands=make_command_group(PyCommand(foo)),
         stream_id="test",
         speech=MockSpeech(),
         callback=queue.append,
+        logger=logger,
     )
 
     content = "<foo>h</foo>"
@@ -28,6 +33,7 @@ async def test_interpreter_baseline():
         assert len(interpreter.meta_instruction()) > 0
         for c in content:
             interpreter.feed(c)
+        interpreter.commit()
         await interpreter.wait_compiled()
         # 所有的 input 被 buffer 了.
         assert content == interpreter.received_text()
@@ -47,6 +53,7 @@ async def test_interpreter_cancel():
 
     queue = deque()
     interpreter = CTMLInterpreter(
+        kind="",
         commands=make_command_group(PyCommand(foo)),
         stream_id="test",
         speech=MockSpeech(),

@@ -8,7 +8,7 @@ from ghoshell_moss.core.concepts.command import (
 from ghoshell_moss.message import Message
 from ghoshell_moss.core import ChannelCtx, MOSSShell
 
-__all__ = ['loop']
+__all__ = ["loop"]
 
 
 async def loop(times: int, ctml__):
@@ -22,7 +22,16 @@ async def loop(times: int, ctml__):
     :param ctml__: the looping CTML
     """
     shell = ChannelCtx.get_contract(MOSSShell)
-    iterable_tasks = shell.parse_tokens_to_command_tasks(ctml__)
+    tokens = []
+    async for token in ctml__:
+        tokens.append(token)
+
+    async def _generator():
+        for _token in tokens:
+            await asyncio.sleep(0.0)
+            yield _token
+
+    iterable_tasks = shell.parse_tokens_to_command_tasks(_generator())
 
     tasks = []
     async for task in iterable_tasks:
@@ -44,23 +53,19 @@ async def loop(times: int, ctml__):
         for t in got:
             if not t.success() or t.observe():
                 return CommandTaskResult().join_result(t.result())
-        new_tasks = []
-        for t in got:
-            new_tasks.append(t.copy())
         if 0 < times == loop_times:
             return CommandTaskResult(
                 observe=True,
                 messages=[
                     Message.new(role="system").with_content("loop done at {}".format(times)),
-                ]
+                ],
             )
         if loop_times >= 100:
             return CommandTaskResult(
-                observe=True,
-                messages=[
-                    Message.new(role="system").with_content("loop stopped after 100 times!")
-                ]
+                observe=True, messages=[Message.new(role="system").with_content("loop stopped after 100 times!")]
             )
+
+        new_tasks = shell.parse_tokens_to_command_tasks(_generator())
         return CommandStackResult(
             new_tasks,
             on_result,

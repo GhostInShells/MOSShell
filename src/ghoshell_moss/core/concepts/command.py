@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, AsyncIterable
 from enum import Enum
 from typing import (
     Any,
@@ -14,9 +14,10 @@ from typing import (
     Optional,
     TypeVar,
     Union,
+    ClassVar,
 )
 
-from ghoshell_common.helpers import uuid
+from ghoshell_common.helpers import uuid, Timeleft
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -44,7 +45,7 @@ __all__ = [
     "CommandTaskResult",
     "CommandTaskState",
     "CommandToken",
-    "CommandTokenType",
+    "CommandTokenSeq",
     "CommandType",
     "CommandWrapper",
     "PyCommand",
@@ -115,7 +116,7 @@ class CommandType(str, Enum):
         }
 
 
-class CommandTokenType(str, Enum):
+class CommandTokenSeq(str, Enum):
     """
     Command Token 是指, 对大模型输出的 Token 进行标记, 标记它们属于哪一个 Command 调用.
     通过这种方式, 将大模型输出的 Tokens 流染色成 CommandToken 流, 从而可以被流式解释器去调度.
@@ -125,7 +126,6 @@ class CommandTokenType(str, Enum):
      - deltas: streaming tokens
      - end: </foo>
 
-    # todo: 考虑更名为 CommandTokenSeq . 因为从 type 的角度看, 未来双工模型输出多模态, delta 可能有 文本/音频/图片/视频 等.
     """
 
     START = "start"
@@ -299,7 +299,7 @@ class CommandMeta(BaseModel):
         description="命令的优先级, 主要用于相同优先级的命令. 遵循以下基本规则:"
                     "相同优先级的命令, 一个执行完了才能执行另一个. "
                     "如果下一个高优先级的命令入队, 前一个会被立刻取消. "
-                    "如果优先级为负值, 任何新任务在排队, 都会被立刻取消."
+                    "如果优先级为负值, 任何新任务在排队, 都会被立刻取消.",
     )
 
 
@@ -309,7 +309,7 @@ _CommandName = str
 
 CommandArgs = list | tuple
 CommandKwargs = dict
-CommandPartial = Callable[[CommandArgs, CommandKwargs], Coroutine[None, None, tuple[CommandArgs, CommandKwargs]]]
+CommandPartial = Callable[[...], Coroutine[None, None, tuple[CommandArgs, CommandKwargs]]]
 
 
 class Command(Generic[RESULT], ABC):
@@ -350,7 +350,7 @@ class Command(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
-    async def refresh_meta(self) -> None:
+    def refresh_meta(self) -> None:
         """
         更新 command 的元信息.
         如果是动态的 Command (interface 会变化) 则需要重新生成 meta. 否则不需要执行.
@@ -359,6 +359,10 @@ class Command(Generic[RESULT], ABC):
 
     @abstractmethod
     def partial(self) -> Optional[CommandPartial]:
+        """
+        CommandTask 在执行前需要运行的逻辑, 对入参进行第一遍加工.
+        默认在 command task 的 on_compiled 生命周期执行.
+        """
         pass
 
     @abstractmethod
@@ -381,12 +385,14 @@ class CommandWrapper(Command[RESULT]):
             available_fn: Callable[[], bool] | None = None,
             ctx: contextvars.Context | None = None,
             partial: CommandPartial | None = None,
+            refresh: Callable[[], None] | None = None,
     ):
         self._func = func
         self._meta = meta
         self._ctx = ctx
         self._available_fn = available_fn
         self._partial = partial
+        self._refresh = refresh
 
     @classmethod
     def wrap(
@@ -396,7 +402,6 @@ class CommandWrapper(Command[RESULT]):
             func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
             ctx: contextvars.Context | None = None,
             meta: CommandMeta | None = None,
-            partial: CommandPartial | None = None,
     ) -> Command[RESULT]:
 
         if func is None:
@@ -410,7 +415,8 @@ class CommandWrapper(Command[RESULT]):
             func=func,
             ctx=ctx,
             available_fn=command.is_available,
-            partial=partial,
+            partial=command.partial(),
+            refresh=command.refresh_meta,
         )
 
     @property
@@ -431,7 +437,9 @@ class CommandWrapper(Command[RESULT]):
     def meta(self) -> CommandMeta:
         return self._meta
 
-    async def refresh_meta(self) -> None:
+    def refresh_meta(self) -> None:
+        if self._refresh:
+            self._refresh()
         return None
 
     async def __call__(self, *args, **kwargs) -> RESULT:
@@ -456,7 +464,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             chan: Optional[str] = None,
             name: Optional[str] = None,
             available: Callable[[], bool] | None = None,
-            interface: Optional[StringType] = None,
+            interface: Optional[StringType | Callable[..., Coroutine[None, None, RESULT]]] = None,
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
             meta: Optional[CommandMeta] = None,
@@ -470,6 +478,10 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         :param func: origin coroutine function
         :param available: if given, determine if the command is available dynamically
         :param interface: if not given, will reflect the origin function signature to generate the interface.
+                if given
+                - str: instead of the real signature
+                - callable[[], str]: dynamic generate the signature when fresh meta
+                - async function: generate interface from it.
         :param doc: if given, will change the docstring of the function or generate one dynamically
         :param comments: if given, will add to the body of the function interface.
         :param meta: the defined command meta information. if none, will generate one dynamically
@@ -483,15 +495,23 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._func_name = func.__name__
         self._name = name or self._func_name
         self._func = func
-        self._partial = partial
         self._func_itf = parse_function_interface(func)
+        self._partial = partial
         self._is_coroutine_func = inspect.iscoroutinefunction(func)
         # dynamic method
-        self._interface_or_fn = interface
+        if interface:
+            if inspect.iscoroutinefunction(interface):
+                self._interface_or_fn = parse_function_interface(interface).to_interface()
+            else:
+                self._interface_or_fn = interface
+        else:
+            self._interface_or_fn = None
         self._doc_or_fn = doc
         self._available_or_fn = available
         self._comments_or_fn = comments
-        self._is_dynamic_itf = callable(interface) or callable(doc) or callable(available) or callable(comments)
+        self._is_dynamic_itf = (
+                callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
+        )
         self._call_soon = call_soon
         self._blocking = blocking
         self._tags = tags
@@ -500,7 +520,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._delta_types = delta_types if delta_types is not None else list(ValueOfCommandDeltaTypeMap.keys())
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters:
-            if arg_name in self._delta_types:
+            if arg_name.endswith("__") or arg_name in self._delta_types:
                 if delta_arg is not None:
                     raise AttributeError(f"function {func} has more than one delta arg {meta.delta_arg} and {arg_name}")
                 delta_arg = arg_name
@@ -514,12 +534,14 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     def is_available(self) -> bool:
         return self._available_or_fn() if self._available_or_fn is not None else True
 
-    async def refresh_meta(self) -> None:
+    def refresh_meta(self) -> None:
         if self._is_dynamic_itf:
-            self._meta = await asyncio.to_thread(self._generate_meta)
+            self._meta = self._generate_meta()
 
     def partial(self) -> Optional[CommandPartial]:
-        return self._partial
+        if self._partial is not None:
+            return self._partial
+        return None
 
     def _generate_meta(self) -> CommandMeta:
         meta = CommandMeta(name=self._name)
@@ -553,7 +575,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     def _gen_interface(self, name: str, doc: str) -> str:
         if self._interface_or_fn is not None:
-            r = self._interface_or_fn()
+            r = self._unwrap_string_type(self._interface_or_fn, None)
             return r
         comments = self._unwrap_string_type(self._comments_or_fn, None)
         func_itf = self._func_itf
@@ -564,9 +586,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             comments=comments,
         )
 
-    def parse_kwargs(self, *args: Any, **kwargs: Any) -> tuple[tuple, dict[str, Any]]:
-        args, real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
-        return args, real_kwargs
+    def parse_kwargs(self, *args, **kwargs) -> tuple[tuple, dict[str, Any]]:
+        real_args, real_kwargs = self._func_itf.prepare_kwargs(*args, **kwargs)
+        return real_args, real_kwargs
 
     async def __call__(self, *args, **kwargs) -> RESULT:
         try:
@@ -592,18 +614,17 @@ class CommandTaskResult(BaseModel):
     3. 它可以添加 messages 消息体, 作为可查看的消息给大模型.
     4. 它返回一个 operator 算子. 如果这个算子符合 Agent / Ghost 的协议的话,
     """
+
     result: Any | None = Field(
         default=None,
         description="command 的真实返回值",
     )
     caller: str | None = Field(
-        default=None,
-        description="生成 CommandTask 的 caller name. 通常不用设置. 在 resolve 时自动添加."
+        default=None, description="生成 CommandTask 的 caller name. 通常不用设置. 在 resolve 时自动添加."
     )
 
     output: list[Message] = Field(
-        default_factory=list,
-        description="对外部输出的消息体, 通常不用设置 role / name, 让 Agent 去设置. "
+        default_factory=list, description="对外部输出的消息体, 通常不用设置 role / name, 让 Agent 去设置. "
     )
     messages: list[Message] = Field(
         default_factory=list,
@@ -643,7 +664,7 @@ class CommandTaskResult(BaseModel):
 
     def serialize_result(self) -> Any:
         try:
-            serialized_content = json.dumps(self.result)
+            serialized_content = json.dumps(self.result, ensure_ascii=False)
         except (json.JSONDecodeError, ValueError, TypeError):
             serialized_content = "%r" % self.result
         return serialized_content
@@ -726,6 +747,8 @@ class CommandTask(Generic[RESULT], ABC):
     7. 可复制, 复制后可重入, 方便做循环.
     """
 
+    instances_count: ClassVar[int] = 0
+
     def __init__(
             self,
             *,
@@ -764,11 +787,16 @@ class CommandTask(Generic[RESULT], ABC):
         self.send_through: list[str] = [""]
         self.exec_chan: Optional[str] = None
         """记录 task 在哪个 channel 被运行. """
-        self._prepare_command_task: asyncio.Task | None = None
 
+        # 编译检查阶段.
+        self._compiled_task: Optional[asyncio.Task] = None
         self.done_at: Optional[str] = None
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
         self.call_id: str = str(call_id) if call_id is not None else ""
+        CommandTask.instances_count += 1
+
+    def __del__(self):
+        CommandTask.instances_count -= 1
 
     def caller_name(self) -> str:
         """
@@ -782,12 +810,16 @@ class CommandTask(Generic[RESULT], ABC):
             parts.append(self.call_id)
         return ":".join(parts)
 
-    def prepare(self):
+    def compiled(self) -> bool:
+        return self.partial is None or self._compiled_task is not None
+
+    async def on_compiled(self) -> None:
         """
         约定的 command task 预先加工参数的周期.
+        一个 command 只会执行一次.
         """
-        if self.partial is not None and self._prepare_command_task is None:
-            self._prepare_command_task = asyncio.create_task(self.partial(self.args, self.kwargs))
+        if self._compiled_task is None and self.partial is not None:
+            self._compiled_task = asyncio.shield(self.partial(*self.args, **self.kwargs))
 
     @abstractmethod
     def result(self, throw: bool = True) -> Optional[RESULT]:
@@ -908,13 +940,6 @@ class CommandTask(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
-    def copy(self, cid: str = "") -> Self:
-        """
-        返回一个状态清空的 command task, 一定会生成新的 cid.
-        """
-        pass
-
-    @abstractmethod
     def wait_sync(self, *, throw: bool = True, timeout: float | None = None) -> Optional[RESULT]:
         """
         wait the command to be done in the current thread (blocking). thread-safe.
@@ -923,14 +948,15 @@ class CommandTask(Generic[RESULT], ABC):
 
     async def dry_run(self) -> RESULT:
         """无状态的运行逻辑"""
+        # if not prepared
+        await self.on_compiled()
         if self.func is None:
             return None
-        if self._prepare_command_task is not None:
-            args, kwargs = await self._prepare_command_task
-            self._prepare_command_task = None
-            self.args = args
-            self.kwargs = kwargs
-        r = await self.func(*self.args, **self.kwargs)
+        if self._compiled_task is not None:
+            args, kwargs = await self._compiled_task
+        else:
+            args, kwargs = self.args, self.kwargs
+        r = await self.func(*args, **kwargs)
         return r
 
     async def run(self) -> RESULT:
@@ -942,14 +968,10 @@ class CommandTask(Generic[RESULT], ABC):
             self.raise_exception()
             return self.result()
 
-        if self.func is None:
-            # func 为 none 的情况下, 完全依赖外部运行赋值.
-            return await self.wait(throw=True)
-
         set_token = CommandTaskContextVar.set(self)
         try:
             dry_run_task = asyncio.create_task(self.dry_run())
-            wait_done_task = asyncio.create_task(self.wait())
+            wait_done_task = asyncio.create_task(self.wait(throw=False))
             # resolve 生效, wait 就会立刻生效.
             # 否则 wait 先生效, 也一定会触发 cancel, 确保 resolve task 被 wait 了, 而且执行过 cancel.
             done, pending = await asyncio.wait([dry_run_task, wait_done_task], return_when=asyncio.FIRST_COMPLETED)
@@ -959,8 +981,9 @@ class CommandTask(Generic[RESULT], ABC):
                 result = await dry_run_task
                 self.resolve(result)
             else:
+                result = None
                 self.raise_exception()
-            return self.result()
+            return result
 
         except asyncio.CancelledError:
             if not self.done():
@@ -1002,7 +1025,6 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
     大模型的输出被转化成 CmdToken 后, 再通过执行器生成的运行时对象.
     实现一个跨线程安全的等待机制.
-    TODO: refact with asyncio.Future?
     """
 
     def __init__(
@@ -1071,6 +1093,8 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             tokens_: str = "",
             args: tuple | None = None,
             kwargs: dict | None = None,
+            cid: str | None = None,
+            call_id: str | int | None = None,
     ) -> "BaseCommandTask":
         return cls(
             chan=chan_,
@@ -1080,6 +1104,8 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             args=list(args) if args is not None else [],
             kwargs=kwargs if kwargs is not None else {},
             partial=command_.partial(),
+            cid=cid,
+            call_id=call_id,
         )
 
     def done(self) -> bool:
@@ -1133,14 +1159,20 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self._done_event.set()
             self.state = str(state)
             self.trace[self.state] = time.time()
+            self.func = None
+            self.partial = None
+            self._real_args = None
+            self._real_kwargs = None
             # 运行结束的回调.
             if len(self._done_callbacks) > 0:
                 for done_callback in self._done_callbacks:
                     try:
                         done_callback(self)
                     except Exception as e:
-                        logging.exception("CommandTask done callback failed")
+                        logging.exception("CommandTask done callback failed: %r", e)
                         continue
+            # 避免互相持有.
+            self._done_callbacks.clear()
             return True
 
     def fail(self, error: Exception | str) -> None:
@@ -1199,12 +1231,11 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
             if exp is not None and CommandErrorCode.is_failed(exp):
+                item = Message.new(role="user", name=self.caller_name()).with_content("Failed: %r" % exp)
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
-                        Message.new().as_head().as_completed(
-                            [Text.new("Exception: %r" % exp)]
-                        )
+                        item,
                     ],
                 )
                 self._task_result = task_result
@@ -1230,24 +1261,21 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         Command Task 的 Await done 要求跨线程安全.
         :throw: 如果为 True, 有异常, 或者有 observe == True 都会抛出异常.
         """
-        try:
-            if self._done_event.is_set():
-                if throw:
-                    self.raise_exception()
-                return self._result
-            if timeout is not None:
-                await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
-            else:
-                await self._done_event.wait()
+        if self._done_event.is_set():
             if throw:
-                if self.errcode != 0:
-                    raise CommandError(self.errcode, self.errmsg or "")
-                elif self._task_result and self._task_result.observe:
-                    # observe 可以中断 wait FIRST_EXCEPTION
-                    raise CommandErrorCode.OBSERVE.error("need observe")
+                self.raise_exception()
             return self._result
-        except asyncio.CancelledError:
-            pass
+        if timeout is not None:
+            await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
+        else:
+            await self._done_event.wait()
+        if throw:
+            if self.errcode != 0:
+                raise CommandError(self.errcode, self.errmsg or "")
+            elif self._task_result and self._task_result.observe:
+                # observe 可以中断 wait FIRST_EXCEPTION
+                raise CommandErrorCode.OBSERVE.error("need observe")
+        return self._result
 
     def wait_sync(self, *, throw: bool = True, timeout: float | None = None) -> Optional[RESULT]:
         """
@@ -1305,26 +1333,34 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
             tokens: str = "",
     ) -> None:
         meta = CommandMeta(
-            name="cancel_" + current.meta.name,
+            name="_cancel_" + current.meta.name,
             chan=current.chan,
             type=CommandType.PRIMITIVE.value,
-            block=False,
+            blocking=False,
             call_soon=True,
         )
+        _tasks = list(tasks)
 
-        async def wait_done_then_cancel() -> Optional[None]:
-            waiting = list(tasks)
-            if not current.done() and len(waiting) > 0:
-                await asyncio.gather(*[t.wait() for t in tasks])
-            if not current.done():
-                # todo
+        async def _cancel_after_done() -> None:
+            nonlocal _tasks
+            if current.done():
+                return
+            if len(_tasks) == 0:
                 current.cancel()
-                await current.wait()
+                return
+
+            group_wait = []
+            for task in _tasks:
+                group_wait.append(task.wait(throw=False))
+            await asyncio.gather(*group_wait)
+            if not current.done():
+                current.cancel()
 
         super().__init__(
             chan=current.chan,
             meta=meta,
-            func=wait_done_then_cancel,
+            func=_cancel_after_done,
+            partial=None,
             tokens=tokens,
             args=[],
             kwargs={},
@@ -1345,46 +1381,64 @@ class CommandStackResult:
 
     def __init__(
             self,
-            iterator: AsyncIterator[CommandTask] | list[CommandTask],
+            iterator: AsyncIterable[CommandTask] | list[CommandTask],
             callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
             timeout: float | None = None,
     ) -> None:
-        self._iterator = iterator
-        self._on_callback = callback
+        if isinstance(iterator, list):
+
+            async def generate():
+                for item in iterator:
+                    yield item
+
+            self._iterator = generate()
+        else:
+            self._iterator = aiter(iterator)
         self._generated = []
+        self._on_callback = callback
         self._iterator_done = asyncio.Event()
-        self._timeout = timeout
+        self._timeleft = Timeleft(timeout) if timeout is not None and timeout > 0.0 else None
+        self._exception = None
         self._wait_timeout_task: asyncio.Task | None = None
+        self._wait_owner_done: asyncio.Task | None = None
 
     async def __aenter__(self) -> Self:
         self._wait_timeout_task = asyncio.create_task(self._wait_timeout())
         return self
 
     def _on_task_done(self, task: CommandTask) -> None:
+        # 基础规则, 如果触发了 observe 就退出.
         if task.observe():
             self._iterator_done.set()
 
     async def _wait_timeout(self):
-        if self._timeout is not None:
-            await asyncio.sleep(self._timeout)
+        if self._timeleft is not None:
+            await asyncio.sleep(self._timeleft.left())
             self._iterator_done.set()
+            # 超时后生成出来的也全部超时.
             for task in self._generated:
-                task.cancel()
+                task.cancel("timeout")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._iterator_done.set()
         if exc_val is not None:
             # 退出时如果发生了异常, 则必须要清空所有未完成任务.
+            self._exception = exc_val
             for task in self._generated:
                 if not task.done():
                     task.fail(exc_val)
-        if self._wait_timeout_task is not None:
+        if self._wait_timeout_task is not None and not self._wait_timeout_task.done():
             self._wait_timeout_task.cancel()
 
     async def callback(self, owner: CommandTask) -> Self | None:
         """
         回调 owner.
         """
+        if owner.done():
+            return
+        if self._exception is not None:
+            owner.fail(self._exception)
+            return
         if self._on_callback and callable(self._on_callback):
             # 如果是回调函数, 则用回调函数决定 task.
             result = await self._on_callback(self._generated)
@@ -1406,22 +1460,14 @@ class CommandStackResult:
     async def __anext__(self) -> CommandTask:
         if self._iterator_done.is_set():
             raise StopAsyncIteration
-        if isinstance(self._iterator, list):
-            if len(self._iterator) == 0:
-                raise StopAsyncIteration
-            item = self._iterator.pop(0)
+        try:
+            item = await self._iterator.__anext__()
             item.add_done_callback(self._on_task_done)
-            self._generated.append(item)
-            return item
-        else:
-            try:
-                item = await self._iterator.__anext__()
-                item.add_done_callback(self._on_task_done)
-            except StopAsyncIteration:
-                self._iterator_done.set()
-                raise StopAsyncIteration
-            self._generated.append(item)
-            return item
+        except StopAsyncIteration:
+            self._iterator_done.set()
+            raise StopAsyncIteration
+        self._generated.append(item)
+        return item
 
 
 def make_command_group(*commands: Command) -> dict[str, dict[str, Command]]:

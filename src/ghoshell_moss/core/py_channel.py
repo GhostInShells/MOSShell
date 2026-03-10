@@ -322,25 +322,11 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         command_metas = []
         commands = self._builder.commands()
 
-        refreshing_commands = []
-        refreshing_command_tasks = []
         for command in commands:
             # 只添加需要动态更新的 command.
             if command.meta().dynamic:
-                refreshing_commands.append(command)
-                refreshing_command_tasks.append(command.refresh_meta())
+                command.refresh_meta()
                 dynamic = True
-
-        # 更新所有的 动态 commands.
-        if len(refreshing_commands) > 0:
-            done = await asyncio.gather(*refreshing_command_tasks, return_exceptions=True)
-            idx = 0
-            for refreshed in done:
-                if isinstance(refreshed, Exception):
-                    command = commands[idx]
-                    self.logger.exception("Refresh command meta failed on command %s", command)
-                idx += 1
-
         for command in commands:
             command_metas.append(command.meta())
 

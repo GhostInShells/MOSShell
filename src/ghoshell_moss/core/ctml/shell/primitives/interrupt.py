@@ -1,7 +1,7 @@
 from ghoshell_moss.core.concepts.command import PyCommand
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 
-__all__ = ['interrupt_command', 'interrupt']
+__all__ = ["interrupt_command", "interrupt"]
 
 
 async def interrupt():

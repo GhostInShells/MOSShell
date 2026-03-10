@@ -17,48 +17,49 @@ in real-time.
 ## Concepts
 
 1. **Command**: 系统提供给你使用的原子能力, 会以 python 函数代码的形式呈现.
-2. **Channel**: 管理一组 commands, 同时可以提供动态的提示词和上下文.
-3. **CTML**: 一种 XML 形式的语法, 能够让你的输出实时地调用各种 command. 
+1. **Channel**: 管理一组 commands, 同时可以提供动态的提示词和上下文.
+1. **CTML**: 一种 XML 形式的语法, 能够让你的输出实时地调用各种 command.
 
 ## Command
 
-每个 Command 以 python async 函数 Signature 方式呈现. 例如: 
+每个 Command 以 python async 函数 Signature 方式呈现. 例如:
 
 ```python
 async def foo(arg1: type) -> result type:
     """docstring"""
 ```
 
-你与命令交互的方式是: 
+你与命令交互的方式是:
 
-1. 通过 CTML 调用命令. 
-1. Command 执行完毕后, 你在下一轮对话会看到结果. 
-1. Command 发生严重异常时, 会中断你上轮输出时正在执行的指令, 并且立刻触发你新一轮的响应. 
-1. 如果有 Command 明确返回 **Observe 对象** 时, 它会立刻触发你新一轮的响应.  
+1. 通过 CTML 调用命令.
+1. Command 执行完毕后, 你在下一轮对话会看到结果.
+1. Command 发生严重异常时, 会中断你上轮输出时正在执行的指令, 并且立刻触发你新一轮的响应.
+1. 如果有 Command 明确返回 **Observe 对象** 时, 它会立刻触发你新一轮的响应.
 
 ## Channel
 
 ### Execution Context
 
-Commands are organized in a hierarchical tree of **Channels** (e.g., `robot.body`, `robot.head`). 
+Commands are organized in a hierarchical tree of **Channels** (e.g., `robot.body`, `robot.head`).
 
-指定 channel 的 command, 其传输过程是从树型 channel 的根节点, 一层层向下传递. 
+指定 channel 的 command, 其传输过程是从树型 channel 的根节点, 一层层向下传递.
 
 The channel determines execution ordering:
 
 - **Same Channel**: Commands execute one after another. A command blocks its channel until it completes.
 - **Different Channels**: Commands execute simultaneously, enabling complex, time-coordinated behaviors.
-- 父子阻塞:  父通道执行 blocking Command 时, 会阻塞后续的命令进入子通道. 而子通道执行命令并不阻塞父通道. 
+- 父子阻塞: 父通道执行 blocking Command 时, 会阻塞后续的命令进入子通道. 而子通道执行命令并不阻塞父通道.
 
 ### Lifecycle
 
-Channel 运行状态称之为 `running`. 在 `running` 的过程中会经过以下几个阶段: 
+Channel 运行状态称之为 `running`. 在 `running` 的过程中会经过以下几个阶段:
 
 - executing: 正在阻塞地执行一个 command
 - task done: 一个 command 执行结束
-- idle: 当前通道及其子通道都没有新的 command. 
+- idle: 当前通道及其子通道都没有新的 command.
 
-对 Channel 执行状态治理有两种方式: 
+对 Channel 执行状态治理有两种方式:
+
 - clear: 清空自身和子通道里所有 pending 的命令和执行中的命令
 - defer clear: 直到接受到自身或子通道新指令的时候, 才执行 clear.
 
@@ -81,8 +82,8 @@ dot-separated) and the **command name**, delimited by a colon `:` (e.g., `<robot
 
 - **Arguments**: Must match the parameter names and types of the target command's signature.
 - **类型解析**: 系统默认使用 `literal_eval` 方式解析你传入的参数值的字符串. 解析异常时会认为是纯字符串. 你也 可选地 可以在参数名后添加后缀, 来约束类型.
-  - 常用后缀: str, float, bool, list, dict. 使用方式形如 `<foo arg_name:list="[1, 2]" />` 
-  - lambda 后缀: 允许你传入一个不含 `;` 的 lambda 表达式, 自动拼上 `lambda :`.  例如 `<foo arg:lambda="3*4" />` 会先执行 `lambda:3*4` 将其结果传给 `arg`
+  - 常用后缀: str, float, bool, list, dict. 使用方式形如 `<foo arg_name:list="[1, 2]" />`
+  - lambda 后缀: 允许你传入一个不含 `;` 的 lambda 表达式, 自动拼上 `lambda :`. 例如 `<foo arg:lambda="3*4" />` 会先执行 `lambda:3*4` 将其结果传给 `arg`
 - **position argument** 语法: 允许用 `_args` 作为参数名, 接受一个数组, 来传递函数的位置参数. 比如 `async def foo(a:int, b:int, *c:int)` 可以用 `<foo _args="[1, 2, 3, 4] />` 来传参, 结果是 `a=1, b=2, c=(3, 4)`
 - **开标记特殊参数规则**:
   - 只有定义了特殊入参类型的函数, 才允许, 并且必须用开标记的方式传参. 开标记中间的 charactors 会
@@ -94,7 +95,7 @@ dot-separated) and the **command name**, delimited by a colon `:` (e.g., `<robot
   or `tokens__` parameters, the command starts on the open tag. If the command is still running when the close tag is
   parsed, it will be cancelled. This allows for proactive interruption of long-running actions.
 
-### Task index 
+### Task index
 
 ### Special Parameter Constraint
 

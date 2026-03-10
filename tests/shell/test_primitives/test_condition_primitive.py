@@ -20,11 +20,11 @@ async def test_condition_basic_functionality():
 
     @chan.build.command()
     async def foo():
-        done.append('foo')
+        done.append("foo")
 
     @chan.build.command()
     async def bar():
-        done.append('bar')
+        done.append("bar")
 
     shell = new_ctml_shell()
     shell.main_channel.import_channels(chan)
@@ -32,11 +32,11 @@ async def test_condition_basic_functionality():
 
     async with shell:
         # 启动子 Channel 上的长时间任务
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             for msg in interpreter.instruction_messages():
                 print(msg)
             interpreter.feed("<branch><chan:check/><chan:foo/><chan:bar/></branch>")
             interpreter.commit()
             # 验证任务被取消
             await interpreter.wait_stopped()
-            assert done == ['foo']
+            assert done == ["foo"]

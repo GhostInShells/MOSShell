@@ -76,7 +76,7 @@ async def test_shell_outputted():
     async with shell:
         foo_cmd = await shell.get_command("", "foo")
         assert foo_cmd is not None
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<foo />hello")
             tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
@@ -98,7 +98,7 @@ async def test_shell_ctml_with_args():
         return result
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<foo _args='[1, 2, 3]'/>")
             tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
@@ -172,7 +172,7 @@ async def test_shell_task_can_get_channel():
         return chan is a_chan
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
@@ -196,7 +196,7 @@ async def test_shell_task_can_get_task():
         return ""
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
             tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
@@ -204,55 +204,6 @@ async def test_shell_task_can_get_task():
             assert first.done()
             assert first.exec_chan == a_chan.id()
             assert first.cid == first.result()
-
-
-@pytest.mark.asyncio
-async def test_shell_loop():
-    from ghoshell_moss.core.ctml.shell import new_ctml_shell
-
-    shell = new_ctml_shell()
-    a_chan = new_chan("a")
-    shell.main_channel.import_channels(a_chan)
-
-    @shell.main_channel.build.command()
-    async def loop(times: int, tokens__):
-        if times == 0:
-            return None
-
-        _shell = ChannelCtx.get_contract(MOSSShell)
-        _tasks = []
-        async for t in _shell.parse_tokens_to_command_tasks(tokens__):
-            _tasks.append(t)
-
-        async def _iter():
-            for i in range(times):
-                for _task in _tasks:
-                    yield _task.copy()
-
-        async def on_success(generated: list[CommandTask]):
-            await asyncio.gather(*[g.wait() for g in generated])
-
-        return CommandStackResult(_iter(), on_success)
-
-    outputs = []
-
-    @a_chan.build.command()
-    async def foo() -> int:
-        outputs.append(1)
-        return 123
-
-    content = '<loop times="2">hello<a:foo />world</loop>'
-    async with shell:
-        interpreter = await shell.interpreter()
-        async with interpreter:
-            for c in content:
-                interpreter.feed(c)
-            tasks = await interpreter.wait_tasks()
-            for task in tasks.values():
-                assert task.done()
-        assert interpreter.is_stopped()
-    # 执行了两次.
-    assert len(outputs) == 2
 
 
 @pytest.mark.asyncio
@@ -289,7 +240,7 @@ async def test_shell_clear():
         assert len(shell.channel_metas()) == 4
         assert "a.c" in shell.commands()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
@@ -300,7 +251,7 @@ async def test_shell_clear():
 
         # clear
         sleep[0] = 10
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             await interpreter.wait_compiled()
             parsed_tasks = interpreter.compiled_tasks()
@@ -313,6 +264,48 @@ async def test_shell_clear():
             for t in parsed_tasks.values():
                 e = t.exception()
                 assert isinstance(e, CommandError)
+
+
+@pytest.mark.asyncio
+async def test_shell_delta_prepare():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    contents = [
+        "<chunks>hello world</chunks>",
+        "<text>hello world</text>",
+        "<tokens><foo /><bar /></tokens>",
+        "<parse_ctml><foo /><bar /></parse_ctml>",
+        "<json>{'a': 123}</json>",
+    ]
+
+    async with shell:
+        await shell.wait_connected()
+        # baseline
+        async with await shell.interpreter() as interpreter:
+            # 先确认 token 解析符合预期.
+            async def gen():
+                for c in contents:
+                    yield c
+
+            tokens = []
+            async for token in interpreter.aparse_text_to_command_tokens(gen()):
+                tokens.append(token)
+            assert len(tokens) > 0
+            mapping = {}
+            for t in tokens:
+                if t.command_id() not in mapping:
+                    mapping[t.command_id()] = []
+                if t.seq == "delta":
+                    continue
+                # 只记录开闭标签.
+                mapping[t.command_id()].append(t)
+            # 开闭标签成对出现.
+            for group in mapping.values():
+                assert len(group) == 2, group
+                assert group[0].seq == "start"
+                assert group[1].seq == "end"
 
 
 @pytest.mark.asyncio
@@ -367,11 +360,12 @@ async def test_shell_delta_types():
     async with shell:
         await shell.wait_connected()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             for content in contents:
                 interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
+            interpreter.raise_exception()
             compiled = interpreter.compiled_tasks()
             assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
             for t in compiled.values():

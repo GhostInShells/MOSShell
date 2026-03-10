@@ -7,7 +7,7 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core import ChannelCtx, MOSSShell
 
-__all__ = ['branch']
+__all__ = ["branch"]
 
 
 async def branch(ctml__):

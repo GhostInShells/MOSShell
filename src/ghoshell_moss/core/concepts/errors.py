@@ -13,16 +13,6 @@ class FatalError(Exception):
     pass
 
 
-class InterpretError(Exception):
-    """
-    解释器解释异常, 是可以恢复的异常.
-
-    todo: 还没有用起来
-    """
-
-    pass
-
-
 class CommandError(Exception):
     """
     Command 运行时异常的封装, 所有的 command 的最佳实践都是用 CommandError 替代原来的 error.
@@ -34,6 +24,15 @@ class CommandError(Exception):
         self.message = message
         error_msg = CommandErrorCode.description(code, message)
         super().__init__(error_msg)
+
+
+class InterpretError(CommandError):
+    """
+    解释器解释异常, 是可以恢复的异常.
+    """
+
+    def __init__(self, message: str = ""):
+        super().__init__(CommandErrorCode.INTERPRET_ERROR.value, message)
 
 
 class CommandErrorCode(int, Enum):
@@ -81,6 +80,7 @@ class CommandErrorCode(int, Enum):
     NOT_RUNNING = 405
     # channel 未连接.
     NOT_CONNECTED = 406
+    INTERPRET_ERROR = 407
 
     # --- 命令执行不可接受的异常 --- #
     # 对于 AI 而言必须要立刻感知的致命异常.

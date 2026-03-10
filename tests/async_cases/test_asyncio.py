@@ -536,3 +536,18 @@ async def test_raise_in_wait():
     done, pending = await asyncio.wait([t3, t4], return_when=asyncio.FIRST_EXCEPTION)
     # 不抛出异常, 仍然是等待全部结束.
     assert len(pending) == 0
+
+
+@pytest.mark.asyncio
+async def test_gather_in_order():
+    order = []
+
+    async def foo():
+        await asyncio.sleep(0.05)
+        order.append("foo")
+
+    async def bar():
+        order.append("bar")
+
+    await asyncio.gather(foo(), bar())
+    assert order == ["bar", "foo"]

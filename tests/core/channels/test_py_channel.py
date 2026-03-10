@@ -485,7 +485,7 @@ async def test_py_channel_instruction_message():
         return [Message.new()]
 
     async with main.bootstrap() as runtime:
-        assert len(runtime.metas()[''].instructions) == 1
+        assert len(runtime.metas()[""].instructions) == 1
 
 
 @pytest.mark.asyncio
@@ -555,9 +555,8 @@ async def test_py_channel_priority_command():
             cancelled.append("foo")
 
     bar_sleep = 0.1
-    @main.build.command(
-        priority=0
-    )
+
+    @main.build.command(priority=0)
     async def bar() -> None:
         nonlocal bar_sleep
         try:
@@ -565,9 +564,7 @@ async def test_py_channel_priority_command():
         except asyncio.CancelledError:
             cancelled.append("bar")
 
-    @main.build.command(
-        priority=1
-    )
+    @main.build.command(priority=1)
     async def baz() -> None:
         return
 

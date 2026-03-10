@@ -13,6 +13,7 @@ from scipy import signal
 
 from ghoshell_moss.core.concepts.speech import AudioFormat, StreamAudioPlayer
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_common.helpers import Timeleft
 
 __all__ = ["BaseAudioStreamPlayer"]
 
@@ -32,13 +33,14 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         sample_rate: int = 16000,
         channels: int = 1,
         logger: LoggerItf | None = None,
-        safety_delay: float = 0.1,
+        safety_delay: float = 0.2,
     ):
         """
         基于 PyAudio 的异步音频播放器实现
         使用单独的线程处理阻塞的音频输出操作
         """
-        self.logger = logger or logging.getLogger("PyAudioPlayer")
+        self.logger = logger or logging.getLogger("moss")
+        self._log_prefix = "[StreamAudioPlayer][%s] " % self.__class__.__name__
         self.audio_type = AudioFormat.PCM_S16LE
         # self.device_index = device_index
         self.sample_rate = sample_rate
@@ -72,7 +74,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         # todo: 改成 asyncio.to_thread task
         self._thread = threading.Thread(target=self._audio_worker, daemon=True)
         self._thread.start()
-        self.logger.info("PyAudio 播放器已启动")
+        self.logger.info("%s player is started", self._log_prefix)
 
     async def close(self) -> None:
         """关闭音频播放器"""
@@ -85,7 +87,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             self._audio_queue.put(None)
             self._thread.join(timeout=2.0)
 
-        self.logger.info("PyAudio 播放器已关闭")
+        self.logger.info("%s player is closed", self._log_prefix)
 
     async def clear(self) -> None:
         """清空播放队列并重置"""
@@ -94,13 +96,18 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._audio_queue = queue.Queue()
         while not old_queue.empty():
             try:
-                old_queue.get_nowait()
+                _ = old_queue.get_nowait()
             except queue.Empty:
                 break
-
+        old_queue.put_nowait(None)
         # 重置时间估计
         self._estimated_end_time = time.time()
-        self.logger.info("播放队列已清空")
+        self._play_done_event.set()
+        self.logger.info(
+            "%s player is cleared, estimated_end_time is %.2f",
+            self._log_prefix,
+            self._estimated_end_time,
+        )
 
     @staticmethod
     def resample(
@@ -123,10 +130,10 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             return audio_data
 
         if not isinstance(audio_data, np.ndarray):
-            raise TypeError("audio_data必须是numpy数组")
+            raise TypeError("audio_data must be numpy ndarray")
 
         if origin_rate <= 0 or target_rate <= 0:
-            raise ValueError("采样率必须大于0")
+            raise ValueError("sample rate must greater than 0")
 
         number_of_samples = int(len(audio_data) * float(target_rate) / origin_rate)
         resampled_audio_data: np.ndarray = signal.resample(audio_data, number_of_samples)
@@ -140,8 +147,9 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         rate: int,
         channels: int = 1,
     ) -> float:
-        """添加音频片段到播放队列"""
+        """添加音频片段到播放队列, 返回一个期望的终结时间."""
         if self._closed:
+            self.logger.warning("%s player receive audio but is closed", self._log_prefix)
             return time.time()
 
         # 格式转换
@@ -153,43 +161,55 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             audio_data = chunk.astype(np.int16)
 
         # 计算持续时间
-        duration = len(audio_data) / (2 * rate)  # 2 bytes/sample
+        duration = len(audio_data) / rate
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
         self._audio_queue.put_nowait(resampled_audio_data)
-        self._play_done_event.clear()
+        if self._play_done_event.is_set():
+            self.logger.debug("%s player start to playing audio", self._log_prefix)
+            self._play_done_event.clear()
+        if duration > 0.0:
+            # 更新预计结束时间
+            current_time = time.time()
+            if current_time > self._estimated_end_time:
+                self._estimated_end_time = current_time + duration
+            else:
+                self._estimated_end_time += duration
+            return self._estimated_end_time
 
-        # 更新预计结束时间
-        current_time = time.time()
-        if current_time > self._estimated_end_time:
-            self._estimated_end_time = current_time + duration
-        else:
-            self._estimated_end_time += duration
-        return self._estimated_end_time
+    def _time_to_wait(self) -> float:
+        time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()
+        if time_to_wait > 0.0:
+            return time_to_wait
+        return 0.0
 
     async def wait_play_done(self, timeout: Optional[float] = None) -> bool:
         """等待所有音频播放完成"""
-        time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()
-        if time_to_wait > 0.0:
-            self.logger.info("等待 %.2fs 让音频播放完成", time_to_wait)
-            if timeout is not None and timeout > 0.0:
+        timeleft = None
+        if timeout is not None and timeout > 0.0:
+            timeleft = Timeleft(timeout)
+        time_to_wait = self._time_to_wait()
+        self.logger.info("%s start to wait %.2fs for playing", self._log_prefix, time_to_wait)
+        while time_to_wait > 0.0:
+            # 循环检查预计等待的最后播放时间.
+            if timeleft:
                 try:
-                    await asyncio.wait_for(asyncio.sleep(time_to_wait), timeout)
+                    await asyncio.wait_for(asyncio.sleep(time_to_wait), timeout=timeleft.left())
                 except asyncio.TimeoutError:
-                    self.logger.warning("等待音频播放超时")
+                    self.logger.info("%s wait for playing done timeout", self._log_prefix)
                     return False
             else:
                 await asyncio.sleep(time_to_wait)
-
+            time_to_wait = self._time_to_wait()
         # 同时等待播放结束.
         await self._play_done_event.wait()
-        self.logger.info("音频播放完成")
+        self.logger.info("%s wait for play done successful", self._log_prefix)
         return True
 
     def is_playing(self) -> bool:
         """检查是否还有音频在播放"""
-        return time.time() < self._estimated_end_time and not self._play_done_event.is_set()
+        return time.time() < self._estimated_end_time or not self._play_done_event.is_set()
 
     def is_closed(self) -> bool:
         """检查播放器是否已关闭"""
@@ -211,40 +231,35 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         """音频工作线程：处理阻塞的音频输出操作"""
         try:
             self._audio_stream_start()
-            self.logger.info("PyAudio 输出流已创建")
+            self.logger.info("%s audio stream start", self._log_prefix)
 
             while not self._stop_event.is_set():
+                audio_queue = self._audio_queue
+                if audio_queue.empty() and not self._play_done_event.is_set():
+                    self._play_done_event.set()
+                    for callback in self._on_play_done_callbacks:
+                        callback()
+                    continue
                 try:
-                    audio_queue = self._audio_queue
-                    if audio_queue.empty() and not self._play_done_event.is_set():
-                        self._play_done_event.set()
-                        for callback in self._on_play_done_callbacks:
-                            callback()
-                        continue
                     # 从队列获取音频数据（阻塞调用，但有超时）
                     audio_data = audio_queue.get(timeout=0.2)
-
-                    if audio_data is None:
-                        # 收到停止信号
-                        # 通过下一个循环判断应该怎么处理.
-                        continue
-
-                    if self._play_done_event.is_set():
-                        self._play_done_event.clear()
-
-                    for callback in self._on_play_callbacks:
-                        callback(audio_data)
-
-                    # 写入音频数据（阻塞调用）
-                    self._audio_stream_write(audio_data)
-
                 except queue.Empty:
                     # 队列为空，继续循环
                     continue
 
-        except Exception:
-            self.logger.exception("音频工作线程错误")
+                if audio_data is None:
+                    # 收到停止信号
+                    # 通过下一个循环判断应该怎么处理.
+                    continue
+                self._play_done_event.clear()
+                # 写入音频数据（期望是阻塞调用）
+                self._audio_stream_write(audio_data)
+                for callback in self._on_play_callbacks:
+                    callback(audio_data)
+
+        except Exception as e:
+            self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)
         finally:
             # 清理资源
             self._audio_stream_stop()
-            self.logger.info("音频工作线程已退出")
+            self.logger.info("%s audio stream stopped", self._log_prefix)

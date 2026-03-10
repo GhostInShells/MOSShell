@@ -1,8 +1,23 @@
 from ghoshell_moss.core.ctml.shell.primitives import wait
 from ghoshell_moss.core.ctml.shell import new_ctml_shell
 from ghoshell_moss.core import PyChannel
+from ghoshell_moss.speech import MockSpeech
 import pytest
 import asyncio
+
+
+@pytest.mark.asyncio
+async def test_wait_invalid_command():
+    shell = new_ctml_shell()
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<wait><a:foo/><b:bar/><a:foo/></wait>")
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks()
+            interpreter.raise_exception()
+            assert len(tasks) == 1
+            tasks = list(tasks.values())
+            assert tasks[0].exception() is not None
 
 
 @pytest.mark.asyncio
@@ -20,7 +35,7 @@ async def test_wait_primitive():
 
     @b_chan.build.command()
     async def bar():
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.3)
         ordered.append("bar")
         return 456
 
@@ -28,7 +43,7 @@ async def test_wait_primitive():
     shell.main_channel.import_channels(a_chan, b_chan)
     shell.main_channel.build.command()(wait)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo/><b:bar/><a:foo/>")
             interpreter.commit()
             await interpreter.wait_tasks()
@@ -37,7 +52,7 @@ async def test_wait_primitive():
 
         # 验证添加了 wait 后改变了排序.
         ordered.clear()
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait><a:foo/><b:bar/></wait><a:foo/>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
@@ -48,7 +63,7 @@ async def test_wait_primitive():
 
         # 验证多组 wait
         ordered.clear()
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait><a:foo/><b:bar/></wait><wait><a:foo/><b:bar/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
@@ -59,12 +74,34 @@ async def test_wait_primitive():
 
         # 验证 timeout
         ordered.clear()
-        async with shell.interpreter_in_ctx() as interpreter:
-            interpreter.feed("<wait timeout:float='0.1'><a:foo/><b:bar/><a:foo/><b:bar/></wait>")
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<wait timeout:float='0.2'><a:foo/><b:bar/><a:foo/><b:bar/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
             # 只有 foo 成功了. 其它的都被 timeout 了.
             assert ordered == ["foo", "foo"]
+
+
+@pytest.mark.asyncio
+async def test_shell_wait_talk():
+    speech = MockSpeech()
+    shell = new_ctml_shell(speech=speech)
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            for c in "hello world":
+                interpreter.feed(c)
+            interpreter.commit()
+            await interpreter.wait_stopped()
+            assert speech.outputted() == ["hello world"]
+
+        async with await shell.interpreter() as interpreter:
+            for c in "<wait>hello world</wait>":
+                interpreter.feed(c)
+            interpreter.commit()
+            await asyncio.sleep(0.3)
+            assert speech.outputted() == ["hello world"]
+            await interpreter.wait_stopped()
+            assert speech.outputted() == ["hello world"]
 
 
 @pytest.mark.asyncio
@@ -79,7 +116,7 @@ async def test_wait_return_when_first_complete():
     @a_chan.build.command()
     async def slow_task():
         execution_log.append("slow_start")
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
         execution_log.append("slow_end")
         completion_order.append("slow")
         return "slow_result"
@@ -97,7 +134,7 @@ async def test_wait_return_when_first_complete():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait return_when='FIRST_COMPLETE'><a:slow_task/><b:fast_task/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
@@ -137,7 +174,7 @@ async def test_wait_return_when_all_complete():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait return_when='ALL_COMPLETE'><a:task_a/><b:task_b/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
@@ -178,11 +215,10 @@ async def test_wait_with_exception():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<wait><a:failing_task/><b:normal_task/></wait>")
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
-
             # 验证异常传播
             assert execution_log == ["failing_start", "normal_start", "failing_end"]
 
@@ -194,7 +230,7 @@ async def test_wait_empty_commands():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 测试空wait
             interpreter.feed("<wait></wait>")
             interpreter.commit()
@@ -228,7 +264,7 @@ async def test_wait_nested_structure():
 
     async with shell:
         # 测试嵌套wait：外层wait包含内层wait
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("""
                 <wait>
                     <a:task num="1"/>
@@ -276,7 +312,7 @@ async def test_wait_with_mixed_blocking_modes():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 混合阻塞和非阻塞命令
             interpreter.feed("""
                 <wait>
@@ -319,7 +355,7 @@ async def test_wait_cancellation_propagation():
     shell.main_channel.build.command()(wait)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动一个会被超时取消的任务
             interpreter.feed('<wait timeout="0.05"><a:cancellable_task/></wait>')
             interpreter.commit()
@@ -355,7 +391,7 @@ async def test_wait_in_channels():
     speech.build.command()(say)
     shell.main_channel.import_channels(speech)
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed('<wait chans="speech">')
             for i in range(10):
                 interpreter.feed(f"<chan{i}:foo/>")

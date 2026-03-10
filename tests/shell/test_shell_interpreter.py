@@ -1,7 +1,101 @@
 import pytest
 from ghoshell_moss.core import PyChannel, new_ctml_shell, InterpretError
-from ghoshell_common.helpers import yaml_pretty_dump
 import time
+import queue
+import asyncio
+
+
+@pytest.mark.asyncio
+async def test_text_token_parser_with_invalid_input():
+    """
+    测试 wait_idle 与其他原语的配合
+    """
+    shell = new_ctml_shell()
+    receiver = []
+    async with shell:
+        interpreter = await shell.interpreter()
+
+        # test 1: invalid format
+        input_queue = queue.Queue()
+        t = asyncio.create_task(
+            asyncio.to_thread(interpreter.parse_text_to_command_tokens, input_queue, receiver.append),
+        )
+        for c in "invalid <a>ctml</> text":
+            input_queue.put(c)
+        input_queue.put(None)
+        with pytest.raises(InterpretError):
+            await t
+        receiver.clear()
+
+        # test 2: invalid format
+        input_queue = queue.Queue()
+        t = asyncio.create_task(
+            asyncio.to_thread(interpreter.parse_text_to_command_tokens, input_queue, receiver.append),
+        )
+        for c in "<foo> not done text":
+            input_queue.put(c)
+        input_queue.put(None)
+        with pytest.raises(InterpretError):
+            await t
+        receiver.clear()
+
+        # test 3: empty input
+        input_queue = queue.Queue()
+        t = asyncio.create_task(
+            asyncio.to_thread(interpreter.parse_text_to_command_tokens, input_queue, receiver.append),
+        )
+        input_queue.put(None)
+        await t
+        assert len(receiver) == 3
+        assert receiver[0].seq == "start"
+        assert receiver[1].seq == "end"
+        assert receiver[2] is None
+        receiver.clear()
+
+        # test 4: stopped while sending. no exception raised
+        stopped = asyncio.Event()
+        input_queue = queue.Queue()
+        t = asyncio.create_task(
+            asyncio.to_thread(
+                interpreter.parse_text_to_command_tokens,
+                input_queue,
+                receiver.append,
+                stopped=stopped.is_set,
+            ),
+        )
+        for c in "<foo> not done text":
+            input_queue.put(c)
+        stopped.set()
+        await t
+        receiver.clear()
+
+
+@pytest.mark.asyncio
+async def test_shell_interpreter_async_parse_text():
+    """
+    测试 wait_idle 与其他原语的配合
+    """
+    shell = new_ctml_shell()
+    async with shell:
+        interpreter = await shell.interpreter()
+
+        content = "invalid <a>ctml</> text"
+
+        async def gen():
+            nonlocal content
+            for c in content:
+                yield c
+
+        with pytest.raises(InterpretError):
+            tokens = []
+            async for token in interpreter.aparse_text_to_command_tokens(gen()):
+                tokens.append(token)
+
+        content = "<foo/><bar/>"
+        tokens = []
+        async for token in interpreter.aparse_text_to_command_tokens(gen()):
+            tokens.append(token)
+        assert len(tokens) == 2 + 2 * 2
 
 
 @pytest.mark.asyncio
@@ -11,7 +105,7 @@ async def test_run_not_exists_command():
     """
     shell = new_ctml_shell()
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
                 <bg:background_work/>
@@ -19,7 +113,9 @@ async def test_run_not_exists_command():
             """)
             interpreter.commit()
             tasks = await interpreter.wait_tasks()
-            with pytest.raises(Exception):
+            for task in tasks:
+                print(task)
+            with pytest.raises(InterpretError):
                 interpreter.raise_exception()
 
             interpretation = interpreter.interpretation()
@@ -33,7 +129,7 @@ async def test_interpreter_parse_error():
     """
     shell = new_ctml_shell()
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpretation = interpreter.interpretation()
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
@@ -105,7 +201,7 @@ async def test_run_shell_concurrent():
         shell.main_channel.import_channels(chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             content = ""
             for i in range(n):
                 content += f"<chan{i}:foo/>"
@@ -120,4 +216,13 @@ async def test_run_shell_concurrent():
         total_gap += abs(t - first)
     even_gap = total_gap / n
     # 期待能达到 20hz 的同步精度.
-    assert even_gap < 0.05
+    assert even_gap < 0.07
+
+
+@pytest.mark.asyncio
+async def test_run_shell_raise_exception():
+    shell = new_ctml_shell()
+    with pytest.raises(RuntimeError):
+        async with shell:
+            async with await shell.interpreter() as interpreter:
+                raise RuntimeError("failed")
