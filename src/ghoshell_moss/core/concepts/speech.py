@@ -622,18 +622,17 @@ class TTSSpeech(Speech, ABC):
         """
         tts = self.tts()
         tts_info = tts.get_info()
-        tones = tts_info.tones
-        tone_descriptions = []
-        for _tone, description in tones.items():
-            tone_descriptions.append(f"`{_tone}`: {description}")
-        tone_descriptions_str = ";".join(tone_descriptions)
-
-        tts_info = tts.get_info()
         voice_schema_str = json.dumps(tts_info.voice_schema, ensure_ascii=False, indent=0)
 
         def say_doc() -> str:
             current_voice = tts.get_voice()
             current_tone = tts.current_tone()
+            tones = tts_info.tones
+            tone_descriptions = []
+            for _tone, description in tones.items():
+                tone_descriptions.append(f"`{_tone}`: {description}")
+            tone_descriptions_str = ";".join(tone_descriptions)
+
             return (
                 f"使用指定的声音状态说话. 当它在 __main__ channel 时, 默认可以省略. \n"
                 f":param voice: 声音的速度, 音调等. json 结构, json schema 是 {voice_schema_str}\n "
