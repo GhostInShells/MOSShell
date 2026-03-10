@@ -697,7 +697,7 @@ class CommandTaskResult(BaseModel):
             messages.append(result_message)
         merging = True
         for message in self.messages:
-            if merging and message.name is None and message.contents:
+            if merging and message.name is None and message.contents and result_message:
                 # 合并消息体, 和 result 合并到一起.
                 result_message.with_content(*message.contents)
             else:

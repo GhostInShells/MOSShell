@@ -23,6 +23,7 @@ def create_ctml_main_chan(experimental: bool = True) -> Channel:
     # wait 原语
     if experimental:
         chan.build.command()(wait)
+        chan.build.command()(sample)
     # sleep 原语
     chan.build.command()(sleep)
     # clear 原语
