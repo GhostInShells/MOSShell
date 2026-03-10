@@ -89,24 +89,24 @@ class CTMLInterpreter(Interpreter):
     instances_count: ClassVar[int] = 0
 
     def __init__(
-            self,
-            kind: str,
-            *,
-            interrupted: Interpretation | None = None,
-            undone_tasks: list[CommandTask] | None = None,
-            commands: dict[ChannelFullPath, dict[str, Command]],
-            speech: Speech,
-            stream_id: Optional[str] = None,
-            callback: Optional[CommandTaskCallback] = None,
-            root_tag: str = "ctml",
-            tokens_replacement: Optional[dict[str, str]] = None,
-            logger: Optional[LoggerItf] = None,
-            on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-            moss_meta_instruction: Optional[str] = None,
-            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-            ignore_wrong_command: bool = False,
-            clear_after_exit: bool = False,
-            ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
+        self,
+        kind: str,
+        *,
+        interrupted: Interpretation | None = None,
+        undone_tasks: list[CommandTask] | None = None,
+        commands: dict[ChannelFullPath, dict[str, Command]],
+        speech: Speech,
+        stream_id: Optional[str] = None,
+        callback: Optional[CommandTaskCallback] = None,
+        root_tag: str = "ctml",
+        tokens_replacement: Optional[dict[str, str]] = None,
+        logger: Optional[LoggerItf] = None,
+        on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+        moss_meta_instruction: Optional[str] = None,
+        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        ignore_wrong_command: bool = False,
+        clear_after_exit: bool = False,
+        ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -645,12 +645,12 @@ class CTMLInterpreter(Interpreter):
                 raise err
 
     async def wait_tasks(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)

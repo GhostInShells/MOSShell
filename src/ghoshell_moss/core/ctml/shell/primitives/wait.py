@@ -13,10 +13,10 @@ __all__ = ["wait"]
 
 
 async def wait(
-        ctml__,
-        timeout: float | None = None,
-        return_when: Literal["ALL_COMPLETE", "FIRST_COMPLETE", "FIRST_EXCEPTION"] = "FIRST_EXCEPTION",
-        chans: str | None = None,
+    ctml__,
+    timeout: float | None = None,
+    return_when: Literal["ALL_COMPLETE", "FIRST_COMPLETE", "FIRST_EXCEPTION"] = "FIRST_EXCEPTION",
+    chans: str | None = None,
 ):
     """
     Core blocking primitive for grouping and synchronizing CTML command execution.

@@ -53,15 +53,15 @@ class CommandTaskElementContext:
     instances_count: ClassVar[int] = 0
 
     def __init__(
-            self,
-            channel_commands: dict[str, dict[str, Command]],
-            speech: Speech,
-            logger: Optional[LoggerItf] = None,
-            # stop_event: Optional[ThreadSafeEvent] = None,
-            root_tag: str = "ctml",
-            ignore_wrong_command: bool = False,
-            callback: Optional[CommandTaskCallback] = None,
-            delta_type_map: Optional[dict[str, Any]] = None,
+        self,
+        channel_commands: dict[str, dict[str, Command]],
+        speech: Speech,
+        logger: Optional[LoggerItf] = None,
+        # stop_event: Optional[ThreadSafeEvent] = None,
+        root_tag: str = "ctml",
+        ignore_wrong_command: bool = False,
+        callback: Optional[CommandTaskCallback] = None,
+        delta_type_map: Optional[dict[str, Any]] = None,
     ):
         self.channel_commands_map = channel_commands
         # 主音频模块.
@@ -132,15 +132,15 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
     instances_count: ClassVar[int] = 0
 
     def __init__(
-            self,
-            name: str,
-            stream_id: str,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        name: str,
+        stream_id: str,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         self._name = name
         self.stream_id = stream_id
@@ -645,15 +645,15 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     """
 
     def __init__(
-            self,
-            name: str,
-            stream_id: str,
-            cid: str,
-            current_task: Optional[CommandTask],
-            *,
-            depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
-            ctx: CommandTaskElementContext,
+        self,
+        name: str,
+        stream_id: str,
+        cid: str,
+        current_task: Optional[CommandTask],
+        *,
+        depth: int = 0,
+        callback: Optional[CommandTaskCallback] = None,
+        ctx: CommandTaskElementContext,
     ) -> None:
         sender, receiver = create_sender_and_receiver()
         self._sender = sender
@@ -730,6 +730,9 @@ class DeltaIsTextChunkElement(DeltaStreamElement[CommandToken]):
     def _parse_delta(self, token: CommandToken) -> ItemT:
         if token is None:
             raise RuntimeError("why token is None")
+        if token.seq == "start":
+            self.ctx.logger.error("%s text chunks__ receive ctml token %s", self._log_prefix, token)
+            raise InterpretError(f"`chunks__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
         return token.content
 
 
@@ -748,9 +751,13 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
         # 开始时不要执行什么.
         return None
 
-    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask] | None:
-        self._inner_content += token.content
-        return None
+    def on_sub_start_token(self, token: CommandToken) -> None:
+        self.ctx.logger.error("%s text text__ receive ctml token %s", self._log_prefix, token)
+        raise InterpretError(f"`text__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
+
+    def on_sub_end_token(self, token: CommandToken) -> None:
+        self.ctx.logger.error("%s text text__ receive ctml token %s", self._log_prefix, token)
+        raise InterpretError(f"`text__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
 
     def on_own_end(self) -> list[CommandTask] | None:
         result = super().on_own_end()
@@ -780,10 +787,6 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
         result = result or []
         result.append(self._current_task)
         return result
-
-    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask] | None:
-        self._inner_content += token.content
-        return None
 
 
 class RootCommandTaskElement(NoDeltaCommandTaskElement):
