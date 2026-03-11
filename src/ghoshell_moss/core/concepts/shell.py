@@ -246,6 +246,7 @@ class MOSSShell(ABC):
         self,
         kind: InterpreterKind = "clear",
         *,
+        meta_instruction: str | None = None,
         stream_id: Optional[str] = None,
         config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
         clear_after_exit: bool = False,
@@ -256,6 +257,7 @@ class MOSSShell(ABC):
         """
         interpreter = await self.interpreter(
             kind=kind,
+            meta_instruction=meta_instruction,
             stream_id=stream_id,
             config=config,
             clear_after_exit=clear_after_exit,
@@ -293,6 +295,7 @@ class MOSSShell(ABC):
                     是一种动态修改运行时能力的办法.
 
         :param prepare_timeout: 准备过度阶段允许的时间.
+        :param meta_instruction: 可以用来替换系统默认的 moss 语法 prompt. 通常只在调试时需要修改.
 
         :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
 
