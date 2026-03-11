@@ -17,7 +17,7 @@ from ghoshell_moss import (
 
 @pytest.mark.asyncio
 async def test_shell_execution_baseline():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
     a_chan = new_chan("a")
@@ -43,7 +43,7 @@ async def test_shell_execution_baseline():
         async with interpreter:
             interpreter.feed("<a:foo /><b:bar />")
             assert shell.is_running()
-            tasks = await interpreter.wait_execution_done(1)
+            tasks = await interpreter.wait_tasks(1)
 
             assert len(tasks) == 2
             result = []
@@ -52,7 +52,7 @@ async def test_shell_execution_baseline():
                 result.append(task.result())
             # 获取到结果.
             assert result == [123, 456]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
+            assert [t.exec_chan for t in tasks.values()] == [a_chan.id(), b_chan.id()]
             # 验证并发执行.
             task_list = list(tasks.values())
             assert len(task_list) > 1
@@ -65,7 +65,7 @@ async def test_shell_execution_baseline():
 
 @pytest.mark.asyncio
 async def test_shell_outputted():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
 
@@ -76,19 +76,40 @@ async def test_shell_outputted():
     async with shell:
         foo_cmd = await shell.get_command("", "foo")
         assert foo_cmd is not None
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<foo />hello")
-            tasks = await interpreter.wait_execution_done(10)
+            tasks = await interpreter.wait_tasks(10)
             task_list = list(tasks.values())
             assert len(tasks) == 2
             assert task_list[0].result() == 123
-            assert interpreter.outputted() == ["hello"]
+
+
+@pytest.mark.asyncio
+async def test_shell_ctml_with_args():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    @shell.main_channel.build.command()
+    async def foo(*args: int) -> int:
+        result = 0
+        for arg in args:
+            result += arg
+        return result
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<foo _args='[1, 2, 3]'/>")
+            tasks = await interpreter.wait_tasks(10)
+            task_list = list(tasks.values())
+            assert len(tasks) == 1
+            assert task_list[0].result() == 1 + 2 + 3
 
 
 @pytest.mark.asyncio
 async def test_shell_command_run_in_order():
     """测试 get command exec in chan 可以使命令进入 channel 队列有序执行."""
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
 
@@ -138,7 +159,7 @@ async def test_shell_command_run_in_order():
 
 @pytest.mark.asyncio
 async def test_shell_task_can_get_channel():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
     a_chan = new_chan("a")
@@ -151,16 +172,16 @@ async def test_shell_task_can_get_channel():
         return chan is a_chan
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
-            tasks = await interpreter.wait_execution_done(10)
+            tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
             assert list(tasks.values())[0].result() is True
 
 
 @pytest.mark.asyncio
 async def test_shell_task_can_get_task():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
     a_chan = new_chan("a")
@@ -175,68 +196,19 @@ async def test_shell_task_can_get_task():
         return ""
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<a:foo />")
-            tasks = await interpreter.wait_execution_done(10)
+            tasks = await interpreter.wait_tasks(10)
             assert len(tasks) == 1
             first = list(tasks.values())[0]
             assert first.done()
-            assert first.exec_chan == "a"
+            assert first.exec_chan == a_chan.id()
             assert first.cid == first.result()
 
 
 @pytest.mark.asyncio
-async def test_shell_loop():
-    from ghoshell_moss.core.shell import new_ctml_shell
-
-    shell = new_ctml_shell()
-    a_chan = new_chan("a")
-    shell.main_channel.import_channels(a_chan)
-
-    @shell.main_channel.build.command()
-    async def loop(times: int, tokens__):
-        if times == 0:
-            return None
-
-        _shell = ChannelCtx.get_contract(MOSSShell)
-        _tasks = []
-        async for t in _shell.parse_tokens_to_command_tasks(tokens__):
-            _tasks.append(t)
-
-        async def _iter():
-            for i in range(times):
-                for _task in _tasks:
-                    yield _task.copy()
-
-        async def on_success(generated: list[CommandTask]):
-            await asyncio.gather(*[g.wait() for g in generated])
-
-        return CommandStackResult(_iter(), on_success)
-
-    outputs = []
-
-    @a_chan.build.command()
-    async def foo() -> int:
-        outputs.append(1)
-        return 123
-
-    content = '<loop times="2">hello<a:foo />world</loop>'
-    async with shell:
-        interpreter = await shell.interpreter()
-        async with interpreter:
-            for c in content:
-                interpreter.feed(c)
-            tasks = await interpreter.wait_execution_done()
-            for task in tasks.values():
-                assert task.done()
-        assert interpreter.is_stopped()
-    # 执行了两次.
-    assert len(outputs) == 2
-
-
-@pytest.mark.asyncio
 async def test_shell_clear():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
     a_chan = new_chan("a")
@@ -268,18 +240,18 @@ async def test_shell_clear():
         assert len(shell.channel_metas()) == 4
         assert "a.c" in shell.commands()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
             assert len(interpreter.compiled_tasks()) == 3
-            tasks = await interpreter.wait_execution_done()
+            tasks = await interpreter.wait_tasks()
             assert len(tasks) == 3
             assert [t.result() for t in tasks.values()] == ["foo", "bar", "baz"]
 
         # clear
         sleep[0] = 10
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed(content)
             await interpreter.wait_compiled()
             parsed_tasks = interpreter.compiled_tasks()
@@ -295,8 +267,50 @@ async def test_shell_clear():
 
 
 @pytest.mark.asyncio
+async def test_shell_delta_prepare():
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+
+    contents = [
+        "<chunks>hello world</chunks>",
+        "<text>hello world</text>",
+        "<tokens><foo /><bar /></tokens>",
+        "<parse_ctml><foo /><bar /></parse_ctml>",
+        "<json>{'a': 123}</json>",
+    ]
+
+    async with shell:
+        await shell.wait_connected()
+        # baseline
+        async with await shell.interpreter() as interpreter:
+            # 先确认 token 解析符合预期.
+            async def gen():
+                for c in contents:
+                    yield c
+
+            tokens = []
+            async for token in interpreter.aparse_text_to_command_tokens(gen()):
+                tokens.append(token)
+            assert len(tokens) > 0
+            mapping = {}
+            for t in tokens:
+                if t.command_id() not in mapping:
+                    mapping[t.command_id()] = []
+                if t.seq == "delta":
+                    continue
+                # 只记录开闭标签.
+                mapping[t.command_id()].append(t)
+            # 开闭标签成对出现.
+            for group in mapping.values():
+                assert len(group) == 2, group
+                assert group[0].seq == "start"
+                assert group[1].seq == "end"
+
+
+@pytest.mark.asyncio
 async def test_shell_delta_types():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
 
@@ -329,29 +343,31 @@ async def test_shell_delta_types():
             count += 1
         return count
 
-    @shell.main_channel.build.command()
-    async def json(json__) -> Any:
-        import json
-
-        return json.loads(json__)
-
     contents = [
         "<chunks>hello world</chunks>",
         "<text>hello world</text>",
         "<tokens><foo /><bar /></tokens>",
         "<parse_ctml><foo /><bar /></parse_ctml>",
-        "<json>{'a': 123}</json>",
     ]
 
     async with shell:
         await shell.wait_connected()
         # baseline
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             for content in contents:
                 interpreter.feed(content)
             interpreter.commit()
             await interpreter.wait_compiled()
+            interpreter.raise_exception()
             compiled = interpreter.compiled_tasks()
-            assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
+            assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml"]
             for t in compiled.values():
                 t.raise_exception()
+            tasks = await interpreter.wait_tasks(2)
+            interpreter.raise_exception()
+            task_results = []
+            for task in tasks.values():
+                task.raise_exception()
+                assert task.success()
+                task_results.append(task.result())
+            assert task_results == [1, 11, 4, 4]

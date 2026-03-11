@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -404,7 +405,7 @@ async def test_py_channel_parent_idle() -> None:
         # 等待运行完. 子命令都运行完, 父轨才会 idle.
         await task1
         await runtime.wait_idle()
-        assert task3.exec_chan == "b_chan"
+        assert task3.exec_chan == b_chan.id()
         assert order == [task1, task3, task4, task2]
         metas = runtime.metas()
         assert len(metas) == 3
@@ -473,3 +474,143 @@ async def test_py_channel_topics():
         await produce_done.wait()
         await consume_done.wait()
     assert len(consumed) == 10
+
+
+@pytest.mark.asyncio
+async def test_py_channel_instruction_message():
+    main = PyChannel(name="main")
+
+    @main.build.instruction_messages
+    async def messages():
+        return [Message.new()]
+
+    async with main.bootstrap() as runtime:
+        assert len(runtime.metas()[""].instructions) == 1
+
+
+@pytest.mark.asyncio
+async def test_py_channel_observe_command():
+    from ghoshell_moss.types import Observe
+
+    main = PyChannel(name="main")
+
+    @main.build.command()
+    async def bar() -> Observe | None:
+        return Observe()
+
+    async with main.bootstrap() as runtime:
+        assert runtime.is_running()
+        bar_task = runtime.create_command_task("bar")
+        await runtime.push_task(bar_task)
+        result = await bar_task
+        assert result is None
+        task_result = bar_task.task_result()
+        assert task_result.observe
+
+
+@pytest.mark.asyncio
+async def test_py_channel_call_soon_command():
+    main = PyChannel(name="main")
+
+    exec_log = []
+
+    @main.build.command()
+    async def foo() -> None:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            exec_log.append("cancelled")
+
+    @main.build.command(
+        call_soon=True,
+        blocking=True,
+    )
+    async def bar() -> None:
+        return
+
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        await runtime.push_task(_foo)
+        # makesure foo has bee called
+        await asyncio.sleep(0.1)
+        await runtime.push_task(_bar)
+        await _bar
+        assert exec_log == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_py_channel_priority_command():
+    main = PyChannel(name="main")
+
+    cancelled = []
+
+    @main.build.command(
+        priority=-1,
+    )
+    async def foo() -> None:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            cancelled.append("foo")
+
+    bar_sleep = 0.1
+
+    @main.build.command(priority=0)
+    async def bar() -> None:
+        nonlocal bar_sleep
+        try:
+            await asyncio.sleep(bar_sleep)
+        except asyncio.CancelledError:
+            cancelled.append("bar")
+
+    @main.build.command(priority=1)
+    async def baz() -> None:
+        return
+
+    @main.build.command(
+        priority=100,
+        blocking=False,
+    )
+    async def nonblock() -> None:
+        try:
+            await asyncio.sleep(bar_sleep)
+        except asyncio.CancelledError:
+            cancelled.append("nonblock")
+
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        await runtime.push_task(_foo)
+        await asyncio.sleep(0.01)
+        await runtime.push_task(_bar)
+        await _bar
+        assert cancelled == ["foo"]
+
+    cancelled.clear()
+    bar_sleep = 1.0
+    async with main.bootstrap() as runtime:
+        _bar = runtime.create_command_task("bar")
+        _baz = runtime.create_command_task("baz")
+        _nonblock = runtime.create_command_task("nonblock")
+        await runtime.push_task(_bar)
+        await asyncio.sleep(0.1)
+        await runtime.push_task(_baz, _nonblock)
+        await _baz
+        assert not _nonblock.done()
+        assert cancelled == ["bar"]
+        _nonblock.cancel()
+
+    cancelled.clear()
+    bar_sleep = 1.0
+    async with main.bootstrap() as runtime:
+        _foo = runtime.create_command_task("foo")
+        _bar = runtime.create_command_task("bar")
+        _baz = runtime.create_command_task("baz")
+        await runtime.push_task(_foo)
+        await asyncio.sleep(0.05)
+        await runtime.push_task(_bar)
+        await asyncio.sleep(0.05)
+        await runtime.push_task(_baz)
+        await _baz
+        assert cancelled == ["foo", "bar"]

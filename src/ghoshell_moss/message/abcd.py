@@ -362,6 +362,15 @@ class ContentModel(BaseModel, ABC):
             data=self.model_dump(exclude_none=True),
         )
 
+    @classmethod
+    @abstractmethod
+    def from_delta(cls, delta: Delta | DeltaModel) -> Self | None:
+        pass
+
+    @abstractmethod
+    def buffer_delta(self, delta: Delta | DeltaModel) -> bool:
+        pass
+
 
 class Message(BaseModel, WithAdditional):
     """
@@ -384,6 +393,7 @@ class Message(BaseModel, WithAdditional):
         description="消息的维度信息, 单独拿出来, 方便被其它数据类型所持有. ",
     )
     seq: Literal["head", "delta", "incomplete", "completed"] = Field(
+        # 默认都认为自己是尾包.
         default="completed",
         description="消息的传输状态, 目前分为首包, 间包和尾包."
         "- 首包: 用来提示一个消息流已经被生产. 通常用来通知前端界面, 提前渲染消息容器"
@@ -421,7 +431,7 @@ class Message(BaseModel, WithAdditional):
             name=name,
             id=id or uuid_md5(),
         )
-        return cls(meta=meta)
+        return cls(meta=meta, seq="completed")
 
     @property
     def role(self) -> str:
@@ -453,19 +463,23 @@ class Message(BaseModel, WithAdditional):
         """
         from .contents import Base64Image, Text
 
+        if self.contents is None:
+            self.contents = []
+
         for content in contents:
-            if is_typeddict(content):
-                self.contents = self.contents or []
-                self.contents.append(content)
+            if content is None:
+                continue
+            elif is_typeddict(content):
+                content = content
             elif isinstance(content, ContentModel):
-                self.contents = self.contents or []
-                self.contents.append(content.to_content())
+                content = content.to_content()
             elif isinstance(content, str):
-                self.contents = self.contents or []
-                self.contents.append(Text(text=content).to_content())
+                content = Text(text=content).to_content()
             elif isinstance(content, Image.Image):
-                self.contents = self.contents or []
-                self.contents.append(Base64Image.from_pil_image(content).to_content())
+                content = Base64Image.from_pil_image(content).to_content()
+            else:
+                continue
+            self.contents.append(content)
         return self
 
     def is_completed(self) -> bool:
@@ -536,13 +550,14 @@ class Message(BaseModel, WithAdditional):
         """
         if delta is not None and isinstance(delta, DeltaModel):
             delta = delta.to_delta()
-        self.seq = "head"
-        self.delta = delta
-        self.contents = None
-        self.meta.created_at = timestamp_ms()
-        self.meta.updated_at = None
-        self.meta.completed_at = None
-        return self
+        head = self.model_copy()
+        head.seq = "head"
+        head.delta = delta
+        head.contents = None
+        head.meta.created_at = timestamp_ms()
+        head.meta.updated_at = None
+        head.meta.completed_at = None
+        return head
 
     def as_delta(self, delta: DeltaModel | Delta) -> Self:
         """
@@ -552,12 +567,13 @@ class Message(BaseModel, WithAdditional):
         """
         if isinstance(delta, DeltaModel):
             delta = delta.to_delta()
-        self.seq = "delta"
-        self.delta = delta
-        self.contents = None
-        self.meta.updated_at = timestamp_ms()
-        self.meta.completed_at = None
-        return self
+        copied = self.model_copy()
+        copied.seq = "delta"
+        copied.delta = delta
+        copied.contents = None
+        copied.meta.updated_at = timestamp_ms()
+        copied.meta.completed_at = None
+        return copied
 
     def as_completed(self, contents: list[Content] | None = None) -> Self:
         """
@@ -567,26 +583,34 @@ class Message(BaseModel, WithAdditional):
         >>> # 复制一个新的尾包.
         >>> copy_msg = msg.get_copy().as_completed()
         """
-        if self.seq == "completed":
+        if contents is None and self.seq == "completed":
             return self
+        copied = self.model_copy()
+        if contents and not isinstance(contents, list):
+            raise ValueError("contents must be a list, %s given" % type(contents))
         contents = contents if contents is not None else self.contents.copy()
-        self.seq = "completed"
-        self.delta = None
-        self.contents = contents
-        self.meta.updated_at = timestamp_ms()
-        self.meta.completed_at = self.meta.updated_at
-        return self
+        copied.seq = "completed"
+        copied.delta = None
+        copied.contents = []
+        for c in contents:
+            if not isinstance(c, dict):
+                raise ValueError("contents must be a dict, %s given" % type(c))
+            copied.contents.append(c)
+        copied.meta.updated_at = timestamp_ms()
+        copied.meta.completed_at = self.meta.updated_at
+        return copied
 
     def as_incomplete(self, contents: list[Content] | None = None) -> Self:
         """
         与 as complete 类似, 生成一个未完成的尾包.
         """
-        if self.seq == "completed":
+        if contents is None and self.seq == "incomplete":
             return self
+        copied = self.model_copy()
         contents = contents if contents is not None else self.contents.copy()
-        self.seq = "incomplete"
-        self.delta = None
-        self.contents = contents
-        self.meta.updated_at = timestamp_ms()
-        self.meta.completed_at = None
-        return self
+        copied.seq = "incomplete"
+        copied.delta = None
+        copied.contents = contents
+        copied.meta.updated_at = timestamp_ms()
+        copied.meta.completed_at = None
+        return copied

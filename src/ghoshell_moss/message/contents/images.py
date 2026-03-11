@@ -7,25 +7,9 @@ from PIL import Image
 from pydantic import Field
 from typing_extensions import Self
 
-from .abcd import ContentModel
+from ghoshell_moss.message.abcd import ContentModel, Delta, DeltaModel
 
-__all__ = ["Base64Image", "ImageUrl", "Text"]
-
-"""
-自带的常用多模态消息体类型. 
-"""
-
-
-class Text(ContentModel):
-    """
-    最基础的文本类型.
-    """
-
-    CONTENT_TYPE = "text"
-    text: str = Field(
-        default="",
-        description="Text of the message",
-    )
+__all__ = ["Base64Image", "ImageUrl"]
 
 
 class Base64Image(ContentModel):
@@ -121,6 +105,13 @@ class Base64Image(ContentModel):
         """Get data URL for embedding in HTML or other contexts"""
         return f"data:{self.mime_type};base64,{self.encoded}"
 
+    @classmethod
+    def from_delta(cls, delta: Delta | DeltaModel) -> Self | None:
+        return None
+
+    def buffer_delta(self, delta: Delta | DeltaModel) -> bool:
+        return False
+
 
 class ImageUrl(ContentModel):
     """
@@ -132,18 +123,9 @@ class ImageUrl(ContentModel):
         description="Image URL of the message",
     )
 
+    @classmethod
+    def from_delta(cls, delta: Delta | DeltaModel) -> Self | None:
+        return None
 
-class FunctionCall(ContentModel):
-    CONTENT_TYPE = "function_call"
-
-    call_id: Optional[str] = Field(default=None, description="caller 的 id, 用来 match openai 的 tool call 协议. ")
-    name: str = Field(description="方法的名字.")
-    arguments: str = Field(description="方法的参数. ")
-
-
-class FunctionOutput(ContentModel):
-    CONTENT_TYPE = "function_output"
-
-    call_id: Optional[str] = Field(default=None, description="caller 的 id, 用来 match openai 的 tool call 协议. ")
-    name: Optional[str] = Field(default=None, description="方法的名字.")
-    content: str = Field(default="", description="方法的返回值")
+    def buffer_delta(self, delta: Delta | DeltaModel) -> bool:
+        return False

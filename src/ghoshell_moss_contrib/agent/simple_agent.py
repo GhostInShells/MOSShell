@@ -10,9 +10,9 @@ from ghoshell_common.contracts.storage import MemoryStorage
 from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core.concepts.shell import MOSSShell, Speech
-from ghoshell_moss.core.shell import new_ctml_shell
-from ghoshell_moss.message.adapters.openai_adapter import parse_messages_to_params
+from ghoshell_moss.core import MOSSShell, Speech, new_ctml_shell, Interpretation
+from ghoshell_moss.message import parse_messages_to_params, Message
+
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
 from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
 from ghoshell_moss_contrib.agent.depends import check_agent
@@ -95,12 +95,10 @@ class SimpleAgent:
 
         self.chat: BaseChat = chat or ConsoleChat()
         self.talker = talker
-        shell = shell or new_ctml_shell(container=self.container, speech=speech)
+        shell = shell or new_ctml_shell(container=self.container, speech=speech, experimental=False)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell
-        if speech is not None:
-            self.shell.with_speech(speech)
         self.model = model
 
         _ws = self.container.get(Workspace)
@@ -118,6 +116,7 @@ class SimpleAgent:
         self._input_queue: asyncio.Queue[list[dict] | None] | None = None
         self._logger: Optional[LoggerItf] = None
         self._main_loop_task: Optional[asyncio.Task] = None
+        self._history_messages: list[dict | Message] = []
 
         # 打断优化
         self._interrupt_requested = False
@@ -224,22 +223,21 @@ class SimpleAgent:
             if not inputs:
                 return
             while inputs is not None and not self._interrupt_requested:
-                inputs = await asyncio.create_task(self._single_response(inputs))
+                inputs = await self._single_response(inputs)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self.logger.exception("Response loop failed")
             self.chat.print_exception(e)
 
-    def _get_history(self) -> list[dict]:
-        if not self._history_storage.exists(self._message_filename):
-            return []
-        history = self._history_storage.get(self._message_filename)
-        return json.loads(history)
+    def _get_history(self) -> list[dict | Message]:
+        return self._history_messages
 
     def _put_history(self, messages: list[dict]) -> None:
-        messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
-        self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
+        # 暂时关闭保存.
+        # messages_str = json.dumps(messages, indent=4, ensure_ascii=False)
+        # self._history_storage.put(self._message_filename, messages_str.encode("utf-8"))
+        self._history_messages.extend(messages)
 
     async def _single_response(self, inputs: list[dict]) -> Optional[list[dict]]:
         """
@@ -248,40 +246,32 @@ class SimpleAgent:
             计划中除了支持全双工交互外, 还需要支持传统的 react 模式.
             这其中又要为上下文 token 裁剪设计一个简洁的办法. 目前 interpreter 还没有完工, 所以临时使用这种方式.
         """
-        self.logger.info("Single response received, inputs=%s", inputs)
+        self.logger.info("[SimpleAgent] Single response started, inputs=%s", inputs)
         generated = ""
-        execution_results = ""
-
         history = self._get_history()
+        interpretation: Interpretation | None = None
         try:
             self.chat.start_ai_response()
             self._response_done.clear()
             params = self.model.generate_litellm_params()
-            async with self.shell.interpreter_in_ctx() as interpreter:
+            async with await self.shell.interpreter() as interpreter:
+                self.logger.info("[SimpleAgent] interpreter created")
+                interpretation = interpreter.interpretation()
                 reasoning = False
-
-                moss_instruction = interpreter.moss_instruction()
                 # 系统指令.
-                messages = []
-                if moss_instruction:
-                    messages.append({"role": "system", "content": moss_instruction})
-                # 注册 agent 的 instruction.
-                messages.append({"role": "system", "content": self.instruction})
+                merged = interpreter.merge_messages(history, inputs)
+                messages = parse_messages_to_params(merged)
 
-                # 增加历史.
-                messages.extend(history)
-                # 增加 context
-                context = interpreter.context_messages()
-                if len(context) > 0:
-                    parsed = parse_messages_to_params(context)
-                    messages.extend(parsed)
-                # 增加 inputs
-                if inputs:
-                    messages.extend(inputs)
                 params["messages"] = messages
                 params["stream"] = True
+                self.logger.info("[SimpleAgent] prepare llm call")
                 response_stream = await litellm.acompletion(**params)
+                first = False
                 async for chunk in response_stream:
+                    await asyncio.sleep(0.0)
+                    if not first:
+                        self.logger.info("[SimpleAgent] receive first token")
+                        first = True
                     delta = chunk.choices[0].delta
                     self.logger.debug("delta: %s", delta)
                     if "reasoning_content" in delta:
@@ -300,25 +290,22 @@ class SimpleAgent:
 
                     interpreter.feed(content)
                 interpreter.commit()
-                results = await asyncio.create_task(interpreter.results())
-                generated = interpreter.executed_tokens()
-                if len(results) > 0:
-                    execution_results = "\n---\n".join([f"{tokens}:\n{result}" for tokens, result in results.items()])
-                    self.logger.info("execution_results=%s", results)
+                interpretation = await interpreter.wait_stopped()
+                if interpretation.observe:
                     return []
                 else:
                     return None
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.exception("Response loop failed %s", e)
         finally:
             self._response_done.set()
             self.chat.finalize_ai_response()
-
             history.extend(inputs)
-            if generated:
-                history.append({"role": "assistant", "content": generated})
-            if execution_results:
-                history.append({"role": "system", "content": f"Commands Outputs:\n ```\n{execution_results}\n```"})
-            if self._interrupt_requested:
-                history.append({"role": "system", "content": "Attention: User interrupted your response last time."})
+            if interpretation is not None:
+                observe_messages = interpretation.execution_messages()
+                history.extend(observe_messages)
             self._put_history(history)
 
     async def run(self):

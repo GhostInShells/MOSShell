@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ghoshell_container import Container
 
-from ghoshell_moss.core.shell import new_ctml_shell
+from ghoshell_moss.core import new_ctml_shell
 from ghoshell_moss.speech import make_baseline_tts_speech
 from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
 from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf

@@ -22,6 +22,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
     CommandUniqueName,
     CommandToken,
+    CommandTaskResult,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -165,11 +166,11 @@ class DuplexChannelContext:
         if self.stop_event.is_set():
             self.logger.warning("Channel %s connection is stopped or not available", self.root_name)
             if throw:
-                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped")
+                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped with {event}")
             return
         elif not self.connection.is_connected():
             if throw:
-                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available")
+                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available with {event}")
             return
 
         try:
@@ -289,8 +290,8 @@ class DuplexChannelContext:
                 e,
                 reason,
             )
-        except Exception:
-            self.logger.exception("proxy proxy error")
+        except Exception as e:
+            self.logger.exception("proxy proxy error: %s", e)
             raise
         finally:
             self.stop_event.set()
@@ -309,19 +310,6 @@ class DuplexChannelContext:
             await self._clear_pending_provider_command_tasks()
             await self._clear_subscribe_topic_tasks()
 
-    async def _wait_task_done_or_stopped(self, task: asyncio.Task) -> bool:
-        """
-        语法糖, 等待一个任务完成, 但是如果全局 stopped 了, 或者断连了, 就会返回 False.
-        """
-        wait_stopped = asyncio.create_task(self.stop_event.wait())
-        done, pending = await asyncio.wait(
-            [task, wait_stopped],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-        return task in done
-
     async def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
         """
         清空所有未完成的任务.
@@ -332,8 +320,8 @@ class DuplexChannelContext:
         self._command_call_deltas_sender_tasks.clear()
         for task in tasks.values():
             if not task.done():
-                reason = reason or f"Channel proxy `{self.root_name}` not available"
-                task.fail(CommandErrorCode.NOT_AVAILABLE.error(reason))
+                reason = reason or f"Channel proxy `{self.root_name}` cleared"
+                task.fail(CommandErrorCode.CLEARED.error(reason))
         # cancel delta sender.
         for t in senders.values():
             t.cancel()
@@ -455,6 +443,9 @@ class DuplexChannelContext:
                     if not self.connection.is_connected():
                         return
                     topic = await subscriber.poll()
+                    # 不支持 local 类型的 topic 跨进程通讯.
+                    if topic.meta.local:
+                        continue
                     event = ProxyPubTopicEvent(topic=topic, session_id=self.session_id)
                     await self.send_event_to_provider(event.to_channel_event())
 
@@ -559,6 +550,10 @@ class DuplexChannelContext:
                 t = self._pending_provider_command_tasks.pop(cid)
                 t.cancel()
                 self.logger.error("Command Task %s duplicated call", cid)
+            if cid in self._command_call_deltas_sender_tasks:
+                sender = self._command_call_deltas_sender_tasks.pop(cid)
+                if not sender.done():
+                    sender.cancel()
 
             deltas = None
             if task.meta.delta_arg is not None:
@@ -582,7 +577,7 @@ class DuplexChannelContext:
             await self.send_event_to_provider(event.to_channel_event(), throw=True)
             self._pending_provider_command_tasks[cid] = task
             if deltas is not None:
-                self._command_call_deltas_sender_tasks = asyncio.create_task(self._send_delta_args(task, deltas))
+                self._command_call_deltas_sender_tasks[cid] = asyncio.create_task(self._send_delta_args(task, deltas))
             return event
         except asyncio.CancelledError:
             task.cancel()
@@ -597,9 +592,11 @@ class DuplexChannelContext:
             if task.done():
                 return
             await task.wait(throw=False)
-            # 来自服务端的异常.
+            # 判断 task 还在 pending_provider_command_tasks 中, 意味着下游任务还未结束.
             if task.cid in self._pending_provider_command_tasks and self.is_channel_available(task.chan):
                 if exp := task.exception():
+                    await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
+                elif task.cancelled():
                     await self.send_event_to_provider(event.cancel().to_channel_event(), throw=False)
         except asyncio.CancelledError:
             raise
@@ -616,22 +613,27 @@ class DuplexChannelContext:
                     sender.cancel()
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
+        command_id = event.command_id
+        task = self._pending_provider_command_tasks.pop(command_id)
+        if task is None:
+            self.logger.info("receive command done event %s match no command", event)
+            return
         try:
-            command_id = event.command_id
-            task = self._pending_provider_command_tasks.pop(command_id)
-            if task is not None:
-                if task.done():
-                    pass
-                elif event.errcode == 0:
-                    task.resolve(event.result)
-                else:
-                    error = CommandError(event.errcode, event.errmsg)
-                    task.fail(error)
+            if task.done():
+                pass
+            elif event.errcode == 0:
+                result = CommandTaskResult.from_serializable(event.result)
+                task.resolve(result)
             else:
-                self.logger.info("receive command done event %s match no command", event)
+                error = CommandError(event.errcode, event.errmsg)
+                task.fail(error)
         except Exception as e:
             self.logger.exception("Handle command done event failed %s", e)
             raise
+        finally:
+            if not task.done():
+                self.logger.exception("Handle command done event failed, task not done: %s", task)
+                task.cancel("unfixed task")
 
 
 class DuplexChannelRuntime(AbsChannelRuntime):
@@ -798,8 +800,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
+    async def wait_children_idled(self) -> None:
+        return
+
     async def clear_own(self) -> None:
-        if not self._ctx.is_running():
+        if not self._ctx.is_running() or not self._ctx.is_connected():
             return
         try:
             event = ClearEvent(

@@ -156,7 +156,7 @@ def stop():
     stop current playing video or audio
     """
     mpv = mpv_chan.broker.container.force_fetch(MPV)
-    mpv.stop()
+    mpv.close()
 
 
 def build_mpv_chan(container: IoCContainer):

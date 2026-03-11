@@ -137,8 +137,16 @@ class ThreadChannelProvider(DuplexChannelProvider):
         provider_connection: Provider2ProxyConnection,
         container: IoCContainer | None = None,
     ):
+        self._origin_connection = provider_connection
+        self._origin_container = container
         super().__init__(
             provider_connection=provider_connection, container=Container(parent=container, name="ThreadChannelProvider")
+        )
+
+    def copy(self) -> "ThreadChannelProvider":
+        return ThreadChannelProvider(
+            provider_connection=self._origin_connection,
+            container=self._origin_container,
         )
 
 

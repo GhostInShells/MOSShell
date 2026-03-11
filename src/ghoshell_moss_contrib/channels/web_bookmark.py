@@ -54,7 +54,7 @@ def build_web_bookmark_chan(container: IoCContainer) -> PyChannel:
     web_config = WebConfig.load(container)
     web_info_map = web_config.to_web_info_map()
 
-    async def open_web(id_or_url: str):
+    async def open_web(id_or_url: str) -> None:
         url = id_or_url
         if id_or_url in web_info_map:
             url = web_info_map[id_or_url].url
@@ -63,6 +63,7 @@ def build_web_bookmark_chan(container: IoCContainer) -> PyChannel:
     open_web_docstring = f"""
 用给定的 id 去打开一个网页。存在的网页 id：
 {web_config.to_str()}
+这个功能帮助用户打开网页, 但你却不能直接看到. 
 
 :param id_or_url: 要打开的网页的URL, 或者一个指定的 web id。
 

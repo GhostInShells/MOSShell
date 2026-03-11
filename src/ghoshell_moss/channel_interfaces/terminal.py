@@ -14,9 +14,9 @@ class Terminal(ChannelInterface, ABC):
 
     @abstractmethod
     async def exec(
-            self,
-            command: str,
-            timeout: float = 10.0,
+        self,
+        command: str,
+        timeout: float = 10.0,
     ) -> tuple[EXIT_CODE, STDOUT, STDERR]:
         """
         Execute a shell command and return structured results.

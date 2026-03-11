@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.states import StateBaseModel
 
 @pytest.mark.asyncio
 async def test_shell_state_store_baseline():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
     chan = new_chan(name="a")
@@ -40,7 +40,7 @@ async def test_shell_state_store_baseline():
         async with interpreter:
             interpreter.feed('<a:set_value value="123" /><a:get_value />')
             assert shell.is_running()
-            tasks = await interpreter.wait_execution_done(1)
+            tasks = await interpreter.wait_tasks(1)
 
             assert len(tasks) == 2
             result = []
@@ -49,12 +49,12 @@ async def test_shell_state_store_baseline():
                 result.append(task.result())
             # 获取到结果.
             assert result == [None, 123]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "a"]
+            assert [t.exec_chan for t in tasks.values()] == [chan.id(), chan.id()]
 
 
 @pytest.mark.asyncio
 async def test_shell_state_store_share():
-    from ghoshell_moss.core.shell import new_ctml_shell
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
     import asyncio
 
     shell = new_ctml_shell()
@@ -92,7 +92,7 @@ async def test_shell_state_store_share():
         async with interpreter:
             interpreter.feed('<a:set_value value="123" /><b:get_value />')
             assert shell.is_running()
-            tasks = await interpreter.wait_execution_done(1)
+            tasks = await interpreter.wait_tasks(1)
 
             assert len(tasks) == 2
             result = []
@@ -101,4 +101,4 @@ async def test_shell_state_store_share():
                 result.append(task.result())
             # 获取到结果.
             assert result == [None, 123]
-            assert [t.exec_chan for t in tasks.values()] == ["a", "b"]
+            assert [t.exec_chan for t in tasks.values()] == [a_chan.id(), b_chan.id()]

@@ -8,7 +8,7 @@ from ghoshell_container import Container, IoCContainer
 from pydantic import ValidationError
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
-from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken
+from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken, CommandTaskState
 from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -61,6 +61,10 @@ class ProviderTopicService(QueueBasedTopicService):
     async def _on_topic_published(self, topic: Topic) -> None:
         try:
             if self._connection.is_connected() and not self._connection.is_closed():
+                # 不会跨网络传输.
+                if topic.meta.local:
+                    return
+
                 event = ProviderPubTopicEvent(topic=topic, session_id=self._get_session_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
@@ -199,9 +203,10 @@ class DuplexChannelProvider(ChannelProvider):
     async def arun(self, channel: Channel) -> None:
         if self._starting:
             self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
-            return
-        self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
+            raise RuntimeError(f"Channel {channel.name()} already started.")
+
         self._starting = True
+        self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
         self._loop = asyncio.get_running_loop()
         self._channel = channel
 
@@ -219,15 +224,13 @@ class DuplexChannelProvider(ChannelProvider):
         # 启动时, topic service 同样会注入到根节点的 importlib 中.
         self._root_runtime = channel.bootstrap(self._container)
 
-        try:
-            async with contextlib.AsyncExitStack() as stack:
-                await stack.enter_async_context(self._bootstrap_container_stack())
-                await stack.enter_async_context(self._bootstrap_runtime_stack())
-                await stack.enter_async_context(self._bootstrap_connection_stack())
-                await stack.enter_async_context(self._bootstrap_main_loop_stack())
-                yield self
-        finally:
-            self._closed_event.set()
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self._bootstrap_container_stack())
+            await stack.enter_async_context(self._bootstrap_runtime_stack())
+            await stack.enter_async_context(self._bootstrap_connection_stack())
+            await stack.enter_async_context(self._bootstrap_main_loop_stack())
+            yield self
+        self._closed_event.set()
 
     def _check_running(self):
         if not self._starting:
@@ -568,7 +571,7 @@ class DuplexChannelProvider(ChannelProvider):
         # 真正执行这个 task.
         try:
             # 多余的, 没什么用.
-            task.set_state("running")
+            task.set_state(CommandTaskState.executing.value)
             await self._add_running_task(task)
             await self._root_runtime.push_task(task)
             await task
@@ -582,7 +585,7 @@ class DuplexChannelProvider(ChannelProvider):
             await self._remove_running_task(task)
             if not task.done():
                 task.cancel()
-            result = task.result(throw=False)
+            result = task.task_result().serializable() if task.success() else None
             response = call_event.done(result, task.errcode, task.errmsg)
             await self._send_event_to_proxy(response.to_channel_event())
 

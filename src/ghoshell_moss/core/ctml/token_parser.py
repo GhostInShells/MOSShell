@@ -1,7 +1,7 @@
 import logging
 import threading
 import xml.sax
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Optional, Any, Callable, Iterable, Protocol
 from xml import sax
 from xml.sax import saxutils
@@ -9,8 +9,8 @@ from xml.sax import saxutils
 from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import TextTokenParser
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.core.helpers.token_filters import SpecialTokenMatcher
+from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
+from ghoshell_common.helpers import Timeleft
 from ast import literal_eval
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
@@ -22,9 +22,11 @@ __all__ = [
     "AttrParser",
     "AttrPrefixParser",
     "AttrWithTypeSuffixParser",
-    "CTMLTokenParser",
-    "default_parsers",
+    "CTML2CommandTokenParser",
+    "ctml_default_parsers",
 ]
+
+_POSITION_ARGS_KEY = "_args"
 
 
 class CMTLSaxElement:
@@ -40,7 +42,8 @@ class CMTLSaxElement:
         chan: str,
         name: str,
         attrs: dict[str, str],
-        parsed: dict[str, Any] | None = None,
+        parsed_args: list[str] | None = None,
+        parsed_kwargs: dict[str, Any] | None = None,
         call_id: int | None = None,
     ):
         self.cmd_idx = cmd_idx
@@ -52,7 +55,8 @@ class CMTLSaxElement:
         self.part_idx = 0
         self._has_delta = False
         self.attrs = attrs
-        self.parsed_attrs = parsed
+        self.parsed_args = parsed_args
+        self.parsed_kwargs = parsed_kwargs
         self.stream_id = stream_id
 
     @classmethod
@@ -93,7 +97,8 @@ class CMTLSaxElement:
             stream_id=self.stream_id,
             call_id=self.call_id,
             seq="start",
-            kwargs=self.parsed_attrs if self.parsed_attrs is not None else self.attrs,
+            args=self.parsed_args or [],
+            kwargs=self.parsed_kwargs if self.parsed_kwargs is not None else self.attrs,
             content=content,
         )
 
@@ -167,6 +172,8 @@ class AttrWithTypeSuffixParser(AttrParser):
             "bool": bool,
             "list": lambda v: list(literal_eval(v)),
             "dict": lambda v: dict(literal_eval(v)),
+            "None": lambda v: None,
+            "none": lambda v: None,
             "literal": literal_eval,
             "lambda": lambda v: eval(f"lambda: {v}")(),
         }
@@ -209,16 +216,32 @@ class AttrPrefixParser(AttrParser):
             return None
 
 
-default_parsers = [
+ctml_default_parsers = [
     AttrWithTypeSuffixParser(
         description="允许属性跟随后缀, 形如 a:str",
     ),
-    AttrPrefixParser(
-        desc="凡是用 literal- 开头的参数, 都会执行 ast.literal_eval 解析值.",
-        prefix="literal-",
-        parser=lambda v: literal_eval(v),
-    ),
 ]
+
+
+def get_error_context(xml_string, exception, window=20):
+    """
+    xml_string: 原始 XML 字符串
+    exception: 捕获到的 SAXParseException
+    window: 错误位置前后截取的字符长度
+    """
+    lines = xml_string.splitlines()
+    line_no = exception.getLineNumber() - 1  # 索引从 0 开始
+    col_no = exception.getColumnNumber() - 1
+
+    if line_no < len(lines):
+        error_line = lines[line_no]
+        # 截取错误位置附近的内容，方便肉眼定位
+        start = max(0, col_no - window)
+        end = min(len(error_line), col_no + window)
+        context = error_line[start:end]
+        marker = " " * (col_no - start) + "^"
+        return f"Line {line_no + 1}, Col {col_no + 1}:\n{context}\n{marker}"
+    return "Unknown location"
 
 
 class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
@@ -229,7 +252,6 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         root_tag: str,
         stream_id: str,
         callback: CommandTokenCallback,
-        stop_event: ThreadSafeEvent,
         *,
         attr_parsers: list[AttrParser] | None = None,
         logger: Optional[logging.Logger] = None,
@@ -242,9 +264,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         """
         self._stopped = False
         """自身的关机"""
-        self._stop_event = stop_event
-        """全局的关机"""
-        self._attr_parsers = attr_parsers or default_parsers
+        self._attr_parsers = attr_parsers or ctml_default_parsers
         self._ensure_call_id = ensure_call_id
 
         self._root_tag = root_tag
@@ -255,39 +275,33 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         # command token callback
         self._callback = callback
         # get the logger
-        self._logger = logger or logging.getLogger("CTMLSaxHandler")
+        self._logger = logger or logging.getLogger("moss")
+        self._log_prefix = f"[{self.__class__.__name__}][{self._root_tag}]"
         # simple stack for unfinished element
         self._parsing_element_stack: list[CMTLSaxElement] = []
         self._attr_parsers = attr_parsers or []
         # event to notify the parsing is over.
         self.done_event = threading.Event()
         self._exception: Optional[Exception] = None
+        self._parsing_text = ""
+
+    def buffer_input(self, text: str):
+        """
+        方便发生异常时可以定位错误在哪里.
+        """
+        self._parsing_text += text
 
     def is_stopped(self) -> bool:
-        return self._stopped or self._stop_event.is_set()
+        return self._stopped
 
     def _send_to_callback(self, token: CommandToken | None) -> None:
         if token is None:
             # send the poison item means end
             self._callback(None)
-        elif not self.done_event.is_set():
+        else:
             token.order = self._token_order
             self._token_order += 1
             self._callback(token)
-        else:
-            # todo: log
-            pass
-
-    def startElementNS(self, name: tuple[str, str], qname: str, attrs: xml.sax.xmlreader.AttributesNSImpl):
-        if self.is_stopped():
-            raise ParserStopped
-        chan, command_name = name
-        dict_attrs = {}
-        for attr_qname in attrs.getQNames():
-            _, name = attrs.getNameByQName(attr_qname)
-            attr_value = attrs.getValueByQName(attr_qname)
-            dict_attrs[name] = attr_value
-        self._start_command_token_element(chan, command_name, dict_attrs)
 
     def startElement(self, name: str, attrs: xml.sax.xmlreader.AttributesImpl | dict) -> None:
         if self.is_stopped():
@@ -309,8 +323,15 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
                 call_id = int(call_id)
         except ValueError:
             call_id = None
-        dict_attrs, parsed = self.parse_attrs(attrs)
-        self._start_command_token_element(chan, command_name, dict_attrs, parsed_attrs=parsed, call_id=call_id)
+        args, dict_attrs, parsed_kwargs = self.parse_attrs(attrs)
+        self._start_command_token_element(
+            chan,
+            command_name,
+            dict_attrs,
+            parsed_args=args,
+            parsed_kwargs=parsed_kwargs,
+            call_id=call_id,
+        )
 
     def _start_command_token_element(
         self,
@@ -318,7 +339,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         name: str,
         attrs: dict,
         *,
-        parsed_attrs: dict | None = None,
+        parsed_args: list | None = None,
+        parsed_kwargs: dict | None = None,
         call_id: Optional[int] = None,
     ) -> None:
         if call_id is None and self._ensure_call_id:
@@ -329,7 +351,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             name=name,
             chan=chan,
             attrs=attrs,
-            parsed=parsed_attrs,
+            parsed_args=parsed_args,
+            parsed_kwargs=parsed_kwargs,
             call_id=call_id,
         )
         if len(self._parsing_element_stack) > 0:
@@ -344,15 +367,47 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
     def parse_attrs(
         self,
         attrs: xml.sax.xmlreader.AttributesImpl | dict,
-    ) -> tuple[dict[str, str], dict[str, Any] | None]:
-        values = dict(attrs)
+    ) -> tuple[list[Any], dict[str, str], dict[str, Any]]:
+        origin_attrs = dict(attrs)
+        dict_attrs = origin_attrs.copy()
+        if _POSITION_ARGS_KEY in dict_attrs:
+            value = dict_attrs.pop(_POSITION_ARGS_KEY)
+
+            try:
+                args = literal_eval(value)
+            except ValueError as e:
+                self._logger.error(
+                    "%s receive position args value error: %s, %s",
+                    self._log_prefix,
+                    e,
+                    origin_attrs,
+                )
+                raise InterpretError(
+                    f"Invalid position args: {value}. {_POSITION_ARGS_KEY} must be python literal list",
+                )
+            if isinstance(args, tuple) or isinstance(args, set):
+                args = list(args)
+        else:
+            args = []
+        if not isinstance(args, list):
+            self._logger.error(
+                "%s receive position args can not parsed to list: %s",
+                self._log_prefix,
+                origin_attrs,
+            )
+            raise InterpretError(
+                f"Invalid position args: {args}. {_POSITION_ARGS_KEY} must be python literal list",
+            )
+
         if len(self._attr_parsers) == 0:
-            return values, None
+            return args, origin_attrs, dict_attrs
         result = {}
-        for name, value in values.items():
+        for name, value in dict_attrs.items():
+            if name == _POSITION_ARGS_KEY:
+                continue
             key, val = self._parse_attr(name, value)
             result[key] = val
-        return values, result
+        return args, origin_attrs, result
 
     def _parse_attr(self, name: str, value: str) -> tuple[str, Any]:
         for parser in self._attr_parsers:
@@ -360,6 +415,13 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             if got is not None:
                 new_name, new_value = got
                 return new_name, new_value
+
+        try:
+            _value = literal_eval(value)
+            value = _value
+        except (SyntaxError, TypeError, ValueError):
+            pass
+
         return name, value
 
     def endElement(self, name: str):
@@ -372,9 +434,6 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._send_to_callback(token)
         if len(self._parsing_element_stack) == 0:
             self.done_event.set()
-
-    def endElementNS(self, name: tuple[str, str], qname: str):
-        self.endElement(qname)
 
     def characters(self, content: str):
         if self.is_stopped():
@@ -395,20 +454,26 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         pass
 
     def error(self, exception: Exception):
+        if self.done_event.is_set():
+            return
         self.done_event.set()
         self._logger.error(exception)
-        if self._stop_event.is_set() or isinstance(exception, ParserStopped):
-            # todo
-            return
-        self._exception = InterpretError(f"parse error: {exception}")
+        if isinstance(exception, xml.sax.SAXParseException):
+            exp_str = get_error_context(self._parsing_text, exception)
+        else:
+            exp_str = str(exception)
+        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and open-close tag rules")
 
     def fatalError(self, exception: Exception):
-        self.done_event.set()
-        if self._stop_event.is_set() or isinstance(exception, ParserStopped):
-            # todo
+        if self.done_event.is_set():
             return
+        self.done_event.set()
         self._logger.exception(exception)
-        self._exception = InterpretError(f"parse error: {exception}")
+        if isinstance(exception, xml.sax.SAXParseException):
+            exp_str = get_error_context(self._parsing_text, exception)
+        else:
+            exp_str = str(exception)
+        self._exception = InterpretError(f"CTML parse fatal error: {exp_str}. Check CDATA and close tag rules")
 
     def warning(self, exception):
         self._logger.warning(exception)
@@ -418,9 +483,24 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             raise self._exception
 
 
-class CTMLTokenParser(TextTokenParser):
+class CTML2CommandTokenParser(TextTokenParser):
     """
     parsing input stream into Command Tokens
+    实现这个设计时, 正在从 Python 多线程思维向 Async 思维转向, 两种风格在打架.
+    这一版未来需要彻底重做. 但基本的 feature 不变.
+
+    目前的用法过于复杂:
+    >>> def run_parser(parser: CTML2CommandTokenParser, tokens: Iterable[str], callback: CommandTokenCallback) -> None:
+    >>>     with parser.with_callback(callback):
+    >>>          for token in tokens:
+    >>>             parser.feed(token)
+    >>>          parser.commit()
+    >>>          parser.wait_done()
+
+    在一个线程里完成回调.
+    目前主要的问题是, 这个 Parser 从上游拿到退出通知, 导致全生命周期耦合. 还是 golang 的 ctx 思路.
+    它既然被管控, 应该完全被上层控制, 不要理解上层.
+    python 应该通过 with statement 正确的解决一切生命周期问题. 而不是通过特别复杂的链路讯号.
     """
 
     def __init__(
@@ -429,15 +509,14 @@ class CTMLTokenParser(TextTokenParser):
         stream_id: str = "",
         *,
         root_tag: str = "ctml",
-        stop_event: Optional[ThreadSafeEvent] = None,
         logger: Optional[logging.Logger] = None,
-        special_tokens: Optional[dict[str, str]] = None,
+        tokens_replacement: Optional[dict[str, str]] = None,
         attr_parsers: list[AttrParser] | None = None,
         with_call_id: bool = False,
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("moss")
-        self.stop_event = stop_event or ThreadSafeEvent()
+        self._log_prefix = f"[{self.__class__.__name__}][{self.root_tag}]"
         self._callbacks = []
         if callback is not None:
             self._callbacks.append(callback)
@@ -446,92 +525,130 @@ class CTMLTokenParser(TextTokenParser):
         self._handler = CTMLSaxHandler(
             root_tag,
             stream_id,
-            self._add_token,
-            self.stop_event,
+            self._deliver_token,
             logger=self.logger,
-            attr_parsers=attr_parsers,
+            attr_parsers=attr_parsers or [],
             ensure_call_id=with_call_id,
         )
-        special_tokens = special_tokens or {}
-        self._special_tokens_matcher = SpecialTokenMatcher(special_tokens)
+        tokens_replacement = tokens_replacement or {}
+        self._tokens_replacement_matcher = TokensReplacementMatcher(tokens_replacement)
 
         # lifecycle
-        self._sax_parser = sax.make_parser()
-        self._sax_parser.setFeature(sax.handler.feature_namespaces, False)
-        self._sax_parser.setFeature(sax.handler.feature_namespace_prefixes, False)
-
-        self._sax_parser.setContentHandler(self._handler)
-        self._sax_parser.setErrorHandler(self._handler)
-
+        self._sax_parser = None
         self._stopped = False
+        self._closed = False
         self._started = False
         self._committed = False
-        self._sent_last_token = False
+        self._last_token_delivered = False
 
     def parsed(self) -> Iterable[CommandToken]:
         return self._parsed
+
+    def stop(self) -> None:
+        self.logger.error(f"%s stop by outside", self._log_prefix)
+        self._stopped = True
 
     def with_callback(self, *callbacks: CommandTokenCallback) -> None:
         callbacks = list(callbacks)
         callbacks.extend(self._callbacks)
         self._callbacks = callbacks
 
-    def _add_token(self, token: CommandToken | None) -> None:
+    def wait_done(self) -> None:
+        if self.is_running():
+            self._handler.done_event.wait()
+
+    def _deliver_token(self, token: CommandToken | None) -> None:
         if token is not None:
+            if self._last_token_delivered:
+                self.logger.error(f"%s Delivered token %s is already delivered", self._log_prefix, token)
+                return
             self._parsed.append(token)
+        if self._stopped:
+            # 不发送任何信息
+            return
         if len(self._callbacks) > 0:
             if token is None:
-                if not self._sent_last_token:
-                    self._sent_last_token = True
+                if not self._last_token_delivered:
+                    self._last_token_delivered = True
                 else:
                     return
             for callback in self._callbacks:
-                callback(token)
+                try:
+                    callback(token)
+                except Exception as e:
+                    self.logger.exception("%s deliver token failed %s", self._log_prefix, e)
 
     def is_done(self) -> bool:
-        return self._handler.done_event.is_set()
+        return self._sax_parser is not None and self._handler.done_event.is_set()
 
     def start(self) -> None:
+        if self._closed:
+            raise RuntimeError(f"CTML2CommandTokenParser is already stopped ")
         if self._started:
             return
         self._started = True
+        self._sax_parser = sax.make_parser()
+        self._sax_parser.setFeature(sax.handler.feature_namespaces, False)
+        self._sax_parser.setFeature(sax.handler.feature_namespace_prefixes, False)
+        self._sax_parser.setContentHandler(self._handler)
+        self._sax_parser.setErrorHandler(self._handler)
         self._sax_parser.feed(f"<{self.root_tag}>")
 
-    def feed(self, delta: str) -> None:
-        self._handler.raise_error()
-        if self._stopped:
+    def is_running(self) -> bool:
+        return self._started and not self._closed and self._sax_parser is not None
+
+    def _check_running(self):
+        if not self._started:
+            raise RuntimeError(f"CTML2CommandTokenParser is not started yet")
+        if not self.is_running():
             raise ParserStopped()
-        else:
-            self._buffer += delta
-            parsed = self._special_tokens_matcher.buffer(delta)
-            self._sax_parser.feed(parsed)
+        if self._handler:
+            self._handler.raise_error()
+
+    def feed(self, delta: str) -> None:
+        self._check_running()
+        self._buffer += delta
+        parsed = self._tokens_replacement_matcher.buffer(delta)
+        self._handler.buffer_input(delta)
+        self._sax_parser.feed(parsed)
 
     def commit(self) -> None:
-        self._handler.raise_error()
         if self._committed:
+            # 只执行一次.
             return
         self._committed = True
-        last_buffer = self._special_tokens_matcher.clear()
-        end_of_the_inputs = f"{last_buffer}</{self.root_tag}>"
-        self._sax_parser.feed(end_of_the_inputs)
+        # 正常退出时, 需要发送消息.
+        if not self._handler.done_event.is_set():
+            # 获取未完成的粘包.
+            last_buffer = self._tokens_replacement_matcher.clear()
+            self._buffer += last_buffer
+            # 发送尾包.
+            end_of_the_inputs = f"{last_buffer}</{self.root_tag}>"
+            self._sax_parser.feed(end_of_the_inputs)
 
     def close(self) -> None:
         """
         stop the parser and clear the resources.
         """
-        if self._stopped:
+        if self._closed:
+            # 可重入.
             return
-        self._stopped = True
+        if not self._started:
+            return
+        self._closed = True
+        # 通知下游结束.
         self.commit()
-        # self._handler.done_event.wait()
+        # 退出后也设置自身结束.
+        self._handler.done_event.set()
         try:
+            # 关闭 parser.
             self._sax_parser.close()
-        except xml.parsers.expat.ExpatError:
+        except xml.parsers.expat.ExpatError as e:
+            self.logger.exception("close sax parser failed: %s", e)
             pass
-        # cancel
-        self._add_token(None)
+        self._deliver_token(None)
 
-    def buffer(self) -> str:
+    def buffered(self) -> str:
         return self._buffer
 
     def __enter__(self):
@@ -539,10 +656,16 @@ class CTMLTokenParser(TextTokenParser):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # 确保退出.
         self.close()
         if exc_val is not None:
+            if isinstance(exc_val, ParserStopped):
+                # ParserStopped 中断自身循环. 不用对外抛出.
+                return True
+            self.logger.exception("%s exception during context manager: %s", self._log_prefix, exc_val)
             return None
-        self._handler.raise_error()
+        if not self._stopped:
+            self._handler.raise_error()
 
     @classmethod
     def parse(

@@ -1,21 +1,25 @@
+import threading
+import time
 from collections import deque
 
-from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenType
+import pytest
+
+from ghoshell_moss.core.concepts.command import CommandToken, CommandTokenSeq
 from ghoshell_moss.core.concepts.errors import InterpretError
-from ghoshell_moss.core.ctml.token_parser import CTMLTokenParser, default_parsers, AttrPrefixParser
+from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, ctml_default_parsers, AttrPrefixParser
 from ast import literal_eval
 
 
 def test_token_parser_baseline():
     q = deque[CommandToken]()
-    parser = CTMLTokenParser(callback=q.append, stream_id="stream")
+    parser = CTML2CommandTokenParser(callback=q.append, stream_id="stream")
     content = "<foo><bar/>h</foo>"
     with parser:
         for c in content:
             parser.feed(c)
         parser.commit()
     assert parser.is_done()
-    assert parser.buffer() == content
+    assert parser.buffered() == content
     # receive the poison item
     assert q.pop() is None
     assert len(q) == 7
@@ -36,19 +40,23 @@ def test_token_parser_baseline():
             assert token.cmd_idx == 2
 
     part_idx = 0
+    has_delta = False
     for token in q:
+        if token.seq == "delta":
+            has_delta = True
         if token.name == "foo":
             # the cmd idx is the same since only one foo exists
             assert token.cmd_idx == 1
             # the part idx increase since only 'h' as delta
             assert token.part_idx == part_idx
             part_idx += 1
+    assert has_delta
 
 
 def test_token_parser_with_args():
     content = '<foo a="1" b="[2, 3]"/>'
     q = deque[CommandToken | None]()
-    CTMLTokenParser.parse(q.append, iter(content))
+    CTML2CommandTokenParser.parse(q.append, iter(content))
     assert q.pop() is None
     assert q[1].name == "foo"
     assert q[1].kwargs == {"a": "1", "b": "[2, 3]"}
@@ -57,7 +65,7 @@ def test_token_parser_with_args():
 def test_delta_token_baseline():
     content = "<foo>hello<bar/>world</foo>"
     q = deque[CommandToken | None]()
-    CTMLTokenParser.parse(q.append, iter(content))
+    CTML2CommandTokenParser.parse(q.append, iter(content))
     # received the poison item
     assert q.pop() is None
 
@@ -100,7 +108,7 @@ def test_delta_token_baseline():
 def test_token_with_attrs():
     content = "hello<foo bar='123'/>world"
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     # received the poison item
     assert q.pop() is None
     assert q[0].name == "speak"
@@ -126,18 +134,18 @@ def test_token_with_attrs():
     assert first_token.name == "speak"
     assert first_token.cmd_idx == 0
     assert first_token.part_idx == 1
-    assert first_token.seq == CommandTokenType.DELTA.value
+    assert first_token.seq == CommandTokenSeq.DELTA.value
 
     assert last_token.name == "speak"
     assert last_token.cmd_idx == 0
-    assert last_token.seq == CommandTokenType.DELTA.value
+    assert last_token.seq == CommandTokenSeq.DELTA.value
     assert last_token.part_idx == 2
 
 
 def test_token_with_cdata():
     content = 'hello<foo><![CDATA[{"a": 123, "b":"234"}]]></foo>world'
     q = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
 
     # expect hte cdata are escaped
@@ -161,7 +169,7 @@ def test_token_with_cdata_content():
 ]]></mac_jxa:run_jxa>
 """
     q = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="ctml")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="ctml")
     assert q.pop() is None
     assert len(q) > 1
 
@@ -169,7 +177,7 @@ def test_token_with_cdata_content():
 def test_token_with_prefix():
     content = "<speaker__say>hello</speaker__say>"
     q = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="ctml")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="ctml")
     assert q.pop() is None
     for token in q[1:-1]:
         assert token.name == "speaker__say"
@@ -180,7 +188,7 @@ def test_token_with_recursive_cdata():
     q = deque[CommandToken]()
     e = None
     try:
-        CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+        CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     except Exception as ex:
         e = ex
     assert isinstance(e, InterpretError)
@@ -189,7 +197,7 @@ def test_token_with_recursive_cdata():
 def test_space_only_delta():
     content = "<foo> </foo>"
     q = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
 
     q = q[1:-1]
@@ -199,7 +207,7 @@ def test_space_only_delta():
 def test_namespace_tag():
     content = '<foo:bar a="123" />'
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
     q = q[1:-1]
     assert len(q) == 2
@@ -210,10 +218,29 @@ def test_namespace_tag():
     assert start_token.kwargs == {"a": "123"}
 
 
+def test_arg_with_parsers():
+    content = '<foo:bar a="123" b:str="123"/>'
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(
+        q.append,
+        iter(content),
+        root_tag="speak",
+        attr_parsers=ctml_default_parsers,
+    )
+    assert q.pop() is None
+    q = q[1:-1]
+    assert len(q) == 2
+
+    start_token = q[0]
+    assert start_token.name == "bar"
+    assert start_token.chan == "foo"
+    assert start_token.kwargs == {"a": 123, "b": "123"}
+
+
 def test_parser_with_chinese():
     content = "<foo.bar:baz>你好啊</foo.bar:baz>"
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak")
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak")
     assert q.pop() is None
     q = q[1:-1]
 
@@ -230,7 +257,7 @@ def test_token_parser_with_json():
 </jetarm:run_trajectory>
 """
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(
+    CTML2CommandTokenParser.parse(
         q.append,
         iter(content),
         root_tag="speak",
@@ -244,7 +271,7 @@ def test_token_parser_with_json():
 def test_token_parser_with_attr_suffix():
     content = "<a:foo:3 a:list='[1, 2]' b:lambda='2*3' c:dict='{\"foo\": 123}' />"
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
     q = q[1:-1]
     for token in q:
         if token.seq == "start":
@@ -252,10 +279,12 @@ def test_token_parser_with_attr_suffix():
             assert token.kwargs == {"a": [1, 2], "b": 6, "c": {"foo": 123}}
 
 
-def test_token_parser_with_idx():
+def test_ctml_with_suffix_idx():
     content = "<a:foo:3 literal-a='[1, 2]'></a:foo:3><bar/>"
     q: list[CommandToken] = []
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=default_parsers)
+    parsers = ctml_default_parsers.copy()
+    parsers.append(AttrPrefixParser(desc="", prefix="literal-", parser=lambda v: literal_eval(v)))
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=parsers)
     q = q[1:-1]
     token = q.pop(0)
     assert token.seq == "start"
@@ -275,6 +304,79 @@ def test_token_parser_with_idx():
     content = "<a:foo:1 literal-a='[1, 2]'></a:foo:1><bar/>"
     q: list[CommandToken] = []
     literal_parser = AttrPrefixParser(desc="", prefix="literal-", parser=lambda v: literal_eval(v))
-    CTMLTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True)
+    CTML2CommandTokenParser.parse(
+        q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True
+    )
     got_content = "".join([t.content for t in q[1:-2]])
     assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar:2></bar:2>'
+
+
+def test_ctml_attr_with_args():
+    content = "<a:foo _args='[1, 2]'></a:foo>"
+    q: list[CommandToken] = []
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    q = q[1:-1]
+    token = q.pop(0)
+    assert token.seq == "start"
+    assert token.args == [1, 2]
+
+
+def test_token_parser_in_threads():
+    got = []
+
+    _content = "<a:foo _args='[1, 2]'></a:foo>"
+
+    def iter_content():
+        for c in _content:
+            time.sleep(0.01)
+            yield c
+
+    def in_thread_parse():
+        q: list[CommandToken] = []
+        CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+        got.append(list(q))
+
+    threads = []
+    for i in range(10):
+        t = threading.Thread(target=in_thread_parse)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+    assert len(got) == 10
+    expect = ""
+    for tokens in got:
+        content = ""
+        for token in tokens:
+            if token is not None:
+                content += token.content
+
+        if not expect:
+            expect = content
+            continue
+        assert content == expect
+
+
+def test_token_parser_receive_empty():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        yield from []
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    # 拿到了 CTML 开头, 和 None 结尾.
+    assert len(q) == 3
+    assert q.pop() is None
+    assert len(q) == 2
+
+
+def test_token_parser_raise_on_invalid_args():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        for c in "<foo:bar _args='{1: 2}'/>":
+            yield c
+
+    with pytest.raises(InterpretError):
+        CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)

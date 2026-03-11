@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 
-def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dict) -> dict:
+def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
     """
     parse args and kwargs into a dict of kwargs.
     Written with help from deepseek:v3
@@ -59,7 +59,7 @@ def prepare_kwargs_by_signature(sig: inspect.Signature, args: tuple, kwargs: dic
                 bound_args.arguments[name] = value
             except (TypeError, ValueError) as e:
                 raise ValueError(f"argument {name} with annotation {param.annotation} is invalid: {e}")
-    return bound_args.arguments
+    return bound_args.args, bound_args.kwargs
 
 
 @dataclass(frozen=False)
@@ -74,7 +74,7 @@ class FunctionReflection:
     is_coroutine_function: bool
     comments: str
 
-    def prepare_kwargs(self, *args, **kwargs) -> dict[str, Any]:
+    def prepare_kwargs(self, *args, **kwargs) -> tuple[tuple, dict[str, Any]]:
         return prepare_kwargs_by_signature(self.signature, args, kwargs)
 
     def to_interface(self, name: str = "", doc: str = "", comments: str = "") -> str:
@@ -95,7 +95,7 @@ class FunctionReflection:
         if comments:
             for comment_line in comments.split("\n"):
                 lines.append(indent + "# " + comment_line)
-        lines.append(indent + "pass")
+            lines.append(indent + "pass")
         return "\n".join(lines)
 
 

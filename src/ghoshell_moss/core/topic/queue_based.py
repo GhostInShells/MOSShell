@@ -10,6 +10,7 @@ from ghoshell_container import Provider, IoCContainer
 import asyncio
 import logging
 import anyio
+import time
 
 
 class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
@@ -54,7 +55,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
         try:
             if self._queue.full():
                 if keep_policy == "oldest":
-                    self._logger.info("%s drop topic %s cause full", self._log_prefix, topic.id)
+                    self._logger.info("%s drop topic %s cause full", self._log_prefix, topic.meta.id)
                     return
                 elif keep_policy == "latest":
                     if not self._queue.empty():
@@ -66,7 +67,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
             else:
                 self._queue.put_nowait(topic)
         except asyncio.QueueFull:
-            self._logger.error("%s drop topic %s cause full", self._log_prefix, topic.id)
+            self._logger.error("%s drop topic %s cause full", self._log_prefix, topic.meta.id)
         finally:
             self._receive_lock.release()
 
@@ -139,6 +140,7 @@ class QueueBasedPublisher(Publisher):
         service_stopped_event: asyncio.Event,
         uid: str | None = None,
         logger: LoggerItf | None = None,
+        frequent: float = 0.0,
     ):
         self._publish_queue = publish_queue
         self._service_stopped_event = service_stopped_event
@@ -147,6 +149,8 @@ class QueueBasedPublisher(Publisher):
         self._additions = []
         self._uid = uid or uuid()
         self._log_prefix = f"[QueueBasedPublisher %s id=%s]" % (self._creator, self._uid)
+        self._frequent = frequent
+        self._last_sent: float = 0.0
 
     def with_additions(self, *additions: Addition) -> Self:
         self._additions.extend(additions)
@@ -167,8 +171,12 @@ class QueueBasedPublisher(Publisher):
 
     async def pub(self, topic: Topic | TopicModel, *, name: str = "") -> None:
         if not self.is_running():
-            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.id)
+            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
+        if self._frequent > 0 and self._last_sent + self._frequent > time.time():
+            self._logger.error("%s drop topic %s cause too frequent", self._log_prefix, topic.meta.id)
+            return
+
         if isinstance(topic, TopicModel):
             topic = topic.to_topic()
         if name:
@@ -398,7 +406,7 @@ class QueueBasedTopicService(TopicService):
 
     async def pub(self, topic: Topic | TopicModel, *, name: str = "", creator: str = "") -> None:
         if not self.is_running():
-            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.id)
+            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
         if isinstance(topic, TopicModel):
             topic = topic.to_topic()

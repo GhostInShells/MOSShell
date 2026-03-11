@@ -1,18 +1,20 @@
 import asyncio
+import contextlib
 import logging
-from typing import Optional, Iterable, Callable, Any
+from collections.abc import Callable, Iterable
+from typing import Any, Optional
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
+from typing_extensions import Self
 
-from ghoshell_moss.core.concepts.topic import TopicModel, Subscriber, Topic, TOPIC_MODEL, SubscribeKeep
 from ghoshell_moss.core.concepts.channel import (
     Channel,
+    ChannelCtx,
     ChannelFullPath,
     ChannelMeta,
     ChannelRuntime,
-    ChannelCtx,
     MutableChannel,
 )
 from ghoshell_moss.core.concepts.command import (
@@ -23,15 +25,16 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
-from ghoshell_moss.core.concepts.interpreter import Interpreter
+from ghoshell_moss.core.concepts.expressions import Expressions
+from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell
-from ghoshell_moss.core.concepts.speech import Speech
+from ghoshell_moss.core.concepts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
-from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.core.shell.ctml_main import create_ctml_main_chan
+from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
-import contextlib
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
@@ -46,21 +49,24 @@ class CTMLShell(MOSSShell):
         main_channel: MutableChannel | None = None,
         speech: Optional[Speech] = None,
         state_store: Optional[StateStore] = None,
+        experimental: bool = True,
+        logger: LoggerItf | None = None,
     ):
         self._name = name
         self._desc = description
 
         self._container = Container(parent=container, name="MOSShell")
         self._container.set(MOSSShell, self)
-        self._main_channel = main_channel or create_ctml_main_chan()
+        self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental)
 
-        self._speech: Speech | None = speech
+        self._speech: Speech = speech
+        self._expressions: Optional[Expressions] = None
 
         # state
         self._state_store: StateStore | None = state_store
 
         # logger
-        self._logger = None
+        self._logger = logger
 
         # --- lifecycle --- #
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -89,12 +95,6 @@ class CTMLShell(MOSSShell):
         if self._state_store is None:
             raise RuntimeError("State store is not set")
         return self._state_store
-
-    @property
-    def speech(self) -> Speech:
-        if self._speech is None:
-            raise RuntimeError("Speech is not set")
-        return self._speech
 
     async def __aenter__(self):
         if self._start:
@@ -128,7 +128,7 @@ class CTMLShell(MOSSShell):
             logger = self._container.get(LoggerItf)
             if logger is None:
                 logger = logging.getLogger("moss")
-                self._container.set(LoggerItf, self._logger)
+                self._container.set(LoggerItf, logger)
             self._logger = logger
 
         yield
@@ -140,7 +140,7 @@ class CTMLShell(MOSSShell):
             state_store = self._container.get(StateStore)
             if state_store is None:
                 state_store = BaseStateStore(owner=f"shell/{self._name}")
-                self._container.set(StateStore, self._state_store)
+                self._container.set(StateStore, state_store)
             self._state_store = state_store
         await self._state_store.start()
         yield
@@ -157,9 +157,13 @@ class CTMLShell(MOSSShell):
                 speech = MockSpeech()
                 self._container.set(Speech, speech)
             self._speech = speech
-        await self.speech.start()
+        # 注册 tts 的 command.
+        if isinstance(self._speech, TTSSpeech):
+            for command in self._speech.commands():
+                self.main_channel.build.add_command(command)
+        await self._speech.start()
         yield
-        await self.speech.close()
+        await self._speech.close()
 
     @contextlib.asynccontextmanager
     async def _runtime_context_manager(self):
@@ -267,7 +271,7 @@ class CTMLShell(MOSSShell):
 
     def _check_running(self):
         if not self.is_running():
-            raise RuntimeError(f"Shell {self._name} not running")
+            raise RuntimeError(f"Shell `{self._name}` not running")
 
     def is_idle(self) -> bool:
         return self.is_running() and self._main_runtime.is_idle()
@@ -280,19 +284,25 @@ class CTMLShell(MOSSShell):
         self,
         kind: InterpreterKind = "clear",
         *,
+        meta_instruction: str | None = None,
         stream_id: Optional[int] = None,
         config: dict[ChannelFullPath, ChannelMeta] | None = None,
         prepare_timeout: float = 2.0,
+        ignore_wrong_command: bool = False,
+        token_replacements: dict[str, str] | None = None,
+        clear_after_exit: bool = False,
     ) -> Interpreter:
         self._check_running()
 
         # 方便理解不同类型的处理逻辑. 看待 interpreter 的副作用问题.
         callback = None
+        interrupted_interpretation = None
+        undone_tasks = None
         if kind == "clear":
             # clear 会先清空.
             await self.clear()
             # 清除当前存在的 interpretation.
-            await self.stop_interpretation()
+            interrupted_interpretation = await self.stop_interpretation()
             callback = self._interpreter_callback_task
         elif kind == "dry_run":
             # dry_run 不会对 shell 产生真实影响, 可以用来做纯解析.
@@ -302,31 +312,38 @@ class CTMLShell(MOSSShell):
             callback = self._interpreter_callback_task
             if self._interpreter and self._interpreter.is_running():
                 # 停止旧的 interpreter 继续提交新的信息.
-                self._interpreter.commit()
+                undone_tasks = self._interpreter.incomplete_tasks()
+                interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
             self._interpreter = None
 
+        if token_replacements is None and self._expressions is not None:
+            token_replacements = self._expressions.special_tokens()
+
         # 阻塞等待刷新结果.
-        await self.refresh_metas(timeout=prepare_timeout)
+        if kind != "dry_run":
+            await self.refresh_metas(timeout=prepare_timeout)
         config = self.channel_metas(available_only=True, config=config)
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
+            kind=kind,
+            moss_meta_instruction=meta_instruction,
+            interrupted=interrupted_interpretation,
+            undone_tasks=undone_tasks,
             commands=commands,
-            speech=self.speech,
+            speech=self._speech,
             stream_id=stream_id or uuid(),
             callback=callback,
             logger=self.logger,
             channel_metas=config,
+            ignore_wrong_command=ignore_wrong_command,
+            tokens_replacement=token_replacements,
+            clear_after_exit=clear_after_exit,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
         if callback is not None:
             self._interpreter = interpreter
         return interpreter
-
-    def with_speech(self, speech: Speech) -> None:
-        if self.is_running():
-            raise RuntimeError(f"Shell {self._name} already running")
-        self._speech = speech
 
     @property
     def main_channel(self) -> MutableChannel:
@@ -342,7 +359,7 @@ class CTMLShell(MOSSShell):
 
         return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
-    def subscribe_topic(
+    def subscribe_topic_model(
         self,
         model: type[TOPIC_MODEL],
         *,
@@ -353,6 +370,20 @@ class CTMLShell(MOSSShell):
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe_model(
             model,
+            topic_name=name,
+            maxsize=maxsize,
+            keep=keep,
+        )
+
+    def subscribe_topic(
+        self,
+        name: str,
+        *,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
+    ) -> Subscriber:
+        self._check_running()
+        return self._main_runtime.importlib.topics.subscribe(
             topic_name=name,
             maxsize=maxsize,
             keep=keep,
@@ -422,15 +453,18 @@ class CTMLShell(MOSSShell):
     def push_task(self, *tasks: CommandTask) -> None:
         self._check_running()
         # 线程安全加入 tasks.
-        self._event_loop.call_soon_threadsafe(self._push_task_queue.put_nowait, *tasks)
+        for t in tasks:
+            self._push_task_queue.put_nowait(t)
 
-    async def stop_interpretation(self) -> None:
+    async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
         if self._interpreter is not None and self._interpreter.is_running():
             # 考虑线程安全问题. 先简单做一层防御.
-            stop_task = self._event_loop.create_task(self._interpreter.stop())
+            old = self._interpreter
             self._interpreter = None
-            await stop_task
+            stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
+            return await stop_task
+        return None
 
     async def wait_until_closed(self) -> None:
         if not self.is_running():
@@ -527,6 +561,7 @@ class CTMLShell(MOSSShell):
             """
             清空一个队列的安全做法.
             """
+            nonlocal _queue
             _queue.put_nowait(None)
             while not _queue.empty():
                 try:
@@ -542,11 +577,10 @@ class CTMLShell(MOSSShell):
                     _queue.put_nowait(None)
                     continue
             _queue.put_nowait(None)
-            _queue.task_done()
 
         clear_queue = self._event_loop.create_task(_clear_old_queue())
         await clear_queue
-        _ = await asyncio.gather(self.speech.clear(), self._main_runtime.clear())
+        _ = await asyncio.gather(self._speech.clear(), self._main_runtime.clear())
 
 
 def new_ctml_shell(
@@ -555,6 +589,8 @@ def new_ctml_shell(
     container: IoCContainer | None = None,
     main_channel: Channel | None = None,
     speech: Optional[Speech] = None,
+    logger: Optional[LoggerItf] = None,
+    experimental: bool = True,
 ) -> MOSSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
@@ -563,4 +599,6 @@ def new_ctml_shell(
         container=container,
         main_channel=main_channel,
         speech=speech,
+        logger=logger,
+        experimental=experimental,
     )

@@ -1,5 +1,7 @@
 import asyncio
 
+import ghoshell_moss.core.concepts.topic as topic_concepts
+from ghoshell_moss.core.concepts.topic import Topic, TopicMeta
 from ghoshell_moss.core.topic import QueueBasedTopicService, ErrorTopic, Subscriber
 import pytest
 
@@ -162,3 +164,20 @@ async def test_topic_keep_oldest():
     await consumer_task
     assert len(received) == 1
     assert received[0].errmsg == "0"
+
+
+def test_topic_is_overdue_logic(monkeypatch):
+    topic = Topic(
+        meta=TopicMeta(
+            created_at=100.0,
+            overdue=10.0,
+        ),
+        data={},
+        additional=None,
+    )
+
+    monkeypatch.setattr(topic_concepts.time, "time", lambda: 105.0)
+    assert topic.is_overdue() is False
+
+    monkeypatch.setattr(topic_concepts.time, "time", lambda: 111.0)
+    assert topic.is_overdue() is True

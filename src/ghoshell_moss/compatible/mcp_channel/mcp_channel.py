@@ -1,11 +1,9 @@
 import json
-import logging
 from collections.abc import Callable, Coroutine
 from typing import Any, Generic, Optional, TypeVar
 
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 
 try:
     import mcp
@@ -13,24 +11,25 @@ try:
 except ImportError:
     raise ImportError("Could not import mcp. Please install ghoshell-moss[mcp].")
 
-import asyncio
 
 from ghoshell_common.helpers import uuid
-from ghoshell_container import Container, IoCContainer
+from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelRuntime, ChannelMeta
+from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import (
     Command,
     CommandDeltaType,
     CommandMeta,
     CommandTask,
+    CommandTaskState,
     CommandWrapper,
 )
+from ghoshell_moss.core.concepts.runtime import AbsChannelRuntime
 
 R = TypeVar("R")  # 泛型结果类型
 
 
-class MCPChannelRuntime(ChannelRuntime, Generic[R]):
+class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
 
     MCP_CONTAINER_TYPES: list[str] = ["array", "object"]
@@ -49,100 +48,102 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
     def __init__(
         self,
         *,
-        name: str,
+        channel: "MCPChannel",
         mcp_client: mcp.ClientSession,
         container: Optional[IoCContainer] = None,
         blocking: bool = False,
     ):
-        self._name = name
+        super().__init__(channel=channel, container=container)
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
-        self._commands: dict[str, Command] = {}  # 映射后的Mosshell Command
         self._meta: Optional[ChannelMeta] = None  # Channel元信息
-        self._running = False  # 运行状态标记
-        self._logger: logging.Logger | None = None
-        self._id = uuid()
-        self._container = Container(parent=container, name="mcp_channel:" + self._name)
-        self._states: Optional[StateStore] = None
         self._blocking = blocking
 
     def sub_channels(self) -> dict[str, "Channel"]:
         return {}
 
-    @property
-    def container(self) -> IoCContainer:
-        return self._container
+    async def on_start_up(self) -> None:
+        if self._mcp_client is None:
+            raise RuntimeError("MCP client is not set")
 
-    @property
-    def id(self) -> str:
-        return self._id
+        # 同步远端工具元信息（session 初始化由调用方管理，这里只拉取 tools）
+        tools = await self._mcp_client.list_tools()
+        self._meta = self._build_channel_meta(tool_result=tools)
 
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def logger(self) -> logging.Logger:
-        if self._logger is None:
-            self._logger = self.container.get(logging.Logger) or logging.getLogger("moss")
-        return self._logger
-
-    # --- ChannelRuntime 核心方法实现 --- #
-    async def start(self) -> None:
-        """启动MCP客户端并同步工具元信息"""
-        if self._running:
-            return
-
-        # 同步远端工具元信息
-        try:
-            await asyncio.to_thread(self._container.bootstrap)
-            initialize_result = await self._mcp_client.initialize()  # 初始化MCP连接
-            tools = await self._mcp_client.list_tools()
-
-            # 转换为Mosshell Command和ChannelMeta
-            self._meta = self._build_channel_meta(initialize_result, tools)
-            self._running = True
-        except Exception as e:
-            raise RuntimeError(f"MCP tool discovery failed: {str(e)}") from e
-
-    @property
-    def states(self) -> StateStore:
-        if self._states is None:
-            _states = self._container.get(StateStore)
-            if _states is None:
-                _states = BaseStateStore(self._name)
-                self._container.set(StateStore, _states)
-            self._states = _states
-        return self._states
-
-    async def close(self) -> None:
-        if not self._running:
-            return
-        await asyncio.to_thread(self._container.shutdown)
-
-    def is_running(self) -> bool:
-        return self._running
-
-    def own_meta(self) -> ChannelMeta:
-        # todo: 还没有实现动态更新, 主要是更新 command
-        if not self.is_running():
-            raise RuntimeError(f"Channel client {self._name} is not running")
-        return self._meta.model_copy()
-
-    async def refresh_all_metas(self) -> None:
-        # todo: shall refresh command metas
-        return None
-
-    def is_connected(self) -> bool:
-        # todo: 检查状态.
-        return self.is_running()
-
-    async def wait_connected(self) -> None:
-        # todo: 检查状态.
+    async def on_close(self) -> None:
+        # mcp session 生命周期由外部管理；这里不主动 close
         return
 
+    async def on_running(self) -> None:
+        # 保持运行直到 close() 触发。
+        await self._closing_event.wait()
+
+    async def _main_loop(self) -> None:
+        # 该 runtime 不依赖内部任务队列；仅等待退出。
+        await self._closing_event.wait()
+
+    async def _push_task_with_paths(self, paths: list[str], task: CommandTask) -> None:
+        # 兼容 ChannelRuntime 的任务调度：直接执行并 resolve/fail。
+        if len(paths) > 0:
+            task.fail(CommandErrorCode.NOT_FOUND.error(f"MCPChannel has no sub channel: {'.'.join(paths)}"))
+            return
+        if task.func is None:
+            task.fail(CommandErrorCode.NOT_FOUND.error(f"command {task.meta.name} not found"))
+            return
+        task.exec_chan = self.name
+        task.set_state(CommandTaskState.executing.value)
+        try:
+            result = await task.func(*task.args, **task.kwargs)
+            task.resolve(result)
+        except Exception as exc:
+            task.fail(exc)
+
+    async def wait_connected(self) -> None:
+        return
+
+    def is_connected(self) -> bool:
+        # 注意：AbsChannelRuntime.start() 会在 `_started` 置位之前调用 is_connected()
+        # 来决定是否需要 refresh metas；这里不能依赖 is_running()。
+        return self._mcp_client is not None and not self._closing_event.is_set()
+
+    def _is_available(self) -> bool:
+        return True
+
+    def is_idle(self) -> bool:
+        return True
+
+    async def wait_idle(self) -> None:
+        return
+
+    async def clear_own(self) -> None:
+        return
+
+    async def wait_children_idled(self) -> None:
+        pass
+
+    def default_states(self) -> list:
+        return []
+
+    def commands(self, available_only: bool = True) -> dict[str, dict[str, Command]]:
+        return {"": self.own_commands(available_only)}
+
+    def get_command(self, name: str) -> Optional[Command]:
+        chan, cmd_name = Command.split_uniquename(name)
+        if chan:
+            return None
+        return self.get_self_command(cmd_name)
+
+    async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
+        if self._meta is None or force:
+            if self._mcp_client is None:
+                return {"": ChannelMeta.new_empty(self.id, self.channel)}
+            tools = await self._mcp_client.list_tools()
+            self._meta = self._build_channel_meta(tool_result=tools)
+        return {"": self._meta.model_copy()}
+
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
-        # todo: 这里每次更新, 和上面好像冲突.
-        meta = self.own_meta()
+        meta = self._meta
+        if meta is None:
+            raise RuntimeError(f"Channel client {self.name} is not running")
         result = {}
         for command_meta in meta.commands:
             if not available_only or command_meta.available:
@@ -160,8 +161,6 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         return None
 
     def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
-        name = meta.name
-
         args_schema_properties = meta.args_schema.get("properties", {})
         required_args_list = meta.args_schema.get("required", [])
         schema_param_count = len(args_schema_properties)
@@ -183,7 +182,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
                 param_count = len(args) + len(kwargs)
                 final_kwargs = {}
                 if schema_param_count == 0:  # do nothing
-                    if not param_count == 0:
+                    if param_count != 0:
                         raise CommandError(
                             code=CommandErrorCode.VALUE_ERROR.value,
                             message=f"MCP tool: no parameter, invalid, args={args}, kwargs={kwargs}",
@@ -244,7 +243,7 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
                     arguments=final_kwargs,
                 )
                 # convert to moss Message
-                return mcp_call_tool_result_to_message(mcp_result, name=self.name())
+                return mcp_call_tool_result_to_message(mcp_result, name=self.name)
             except mcp.McpError as e:
                 raise CommandError(code=CommandErrorCode.FAILED.value, message=f"MCP call failed: {str(e)}") from e
             except Exception as e:
@@ -391,15 +390,13 @@ class MCPChannelRuntime(ChannelRuntime, Generic[R]):
         )
         return interface, description
 
-    def _build_channel_meta(
-        self, initialize_result: types.InitializeResult, tool_result: types.ListToolsResult
-    ) -> ChannelMeta:
+    def _build_channel_meta(self, *, tool_result: types.ListToolsResult) -> ChannelMeta:
         """构建Channel元信息（包含所有工具的CommandMeta）"""
         return ChannelMeta(
-            name=self._name,
-            channel_id=self._name,
+            name=self.name,
+            channel_id=self.channel.id(),
             available=True,
-            description=initialize_result.instructions or "",
+            description=self.channel.description(),
             commands=self._convert_tools_to_command_metas(tools=tool_result.tools),
             children=[],
         )
@@ -424,6 +421,7 @@ class MCPChannel(Channel):
     def __init__(self, *, name: str, description: str, mcp_client: mcp.ClientSession, blocking: bool = False):
         self._name = name
         self._desc = description
+        self._id = uuid()
         self._mcp_client = mcp_client
         self._runtime: Optional[MCPChannelRuntime] = None
         self._blocking = blocking
@@ -431,6 +429,12 @@ class MCPChannel(Channel):
     # --- Channel 核心方法实现 --- #
     def name(self) -> str:
         return self._name
+
+    def id(self) -> str:
+        return self._id
+
+    def description(self) -> str:
+        return self._desc
 
     @property
     def runtime(self) -> ChannelRuntime:
@@ -447,7 +451,7 @@ class MCPChannel(Channel):
             raise RuntimeError(f"Channel {self} has already been started.")
 
         self._runtime = MCPChannelRuntime(
-            name=self._name,
+            channel=self,
             container=container,
             mcp_client=self._mcp_client,
             blocking=self._blocking,

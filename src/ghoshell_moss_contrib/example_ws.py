@@ -21,8 +21,8 @@ __all__ = [
 def setup_simple_logger(log_file: str) -> logging.Logger:
     """设置简单的文件日志记录器"""
     # 创建日志器
-    logger = logging.getLogger("mosshell")
-    logger.setLevel(logging.INFO)
+    logger = logging.getLogger("moss")
+    logger.setLevel(logging.DEBUG)
 
     # 避免重复添加handler
     if logger.handlers:
@@ -37,7 +37,7 @@ def setup_simple_logger(log_file: str) -> logging.Logger:
     file_handler.setLevel(logging.DEBUG)
 
     # 设置格式（包含文件名和行号）
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s")
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s  - %(filename)s:%(lineno)d ")
     file_handler.setFormatter(formatter)
 
     # 添加到日志器
@@ -81,8 +81,11 @@ def get_example_speech(
     )
     if default_speaker:
         tts_conf.default_speaker = default_speaker
+    logger = container.get(LoggerItf)
     return BaseTTSSpeech(
-        player=PyAudioStreamPlayer(), tts=VolcengineTTS(conf=tts_conf), logger=container.get(LoggerItf)
+        player=PyAudioStreamPlayer(logger=logger),
+        tts=VolcengineTTS(conf=tts_conf, logger=logger),
+        logger=logger,
     )
 
 

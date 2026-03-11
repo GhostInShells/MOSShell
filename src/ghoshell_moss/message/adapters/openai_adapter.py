@@ -1,5 +1,4 @@
-from collections.abc import Iterable
-
+from typing import Iterable, Any
 from openai.types.chat.chat_completion_assistant_message_param import (
     ChatCompletionAssistantMessageParam,
 )
@@ -21,12 +20,15 @@ from ghoshell_moss.message.abcd import Message
 __all__ = ["parse_message_to_chat_completion_param", "parse_messages_to_params"]
 
 
-def parse_messages_to_params(messages: Iterable[Message]) -> list[dict]:
+def parse_messages_to_params(messages: Iterable[Message | Any]) -> list[dict]:
     result = []
     for message in messages:
-        got = parse_message_to_chat_completion_param(message)
-        if len(got) > 0:
-            result.extend(got)
+        if isinstance(message, Message):
+            got = parse_message_to_chat_completion_param(message)
+            if len(got) > 0:
+                result.extend(got)
+        else:
+            result.append(message)
     return result
 
 

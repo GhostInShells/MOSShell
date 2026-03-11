@@ -35,6 +35,7 @@ class TopicMeta(BaseModel):
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
     name: str = Field(default="", description="Name of the topic.")
     type: str = Field(default="", description="Type of the topic.")
+    local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
     creator: str = Field(
         default="",
         description="The unique identifier of the topic creator, in RESTFul format.",
@@ -51,12 +52,6 @@ class TopicMeta(BaseModel):
         default=0.0,
         description="Overdue after created, in seconds ",
     )
-
-    def __str__(self):
-        """
-        方便日志打印. todo: 或许应该放全量信息? 或者放到 __repr__ 中? 没想清楚.
-        """
-        return f"<Topic name={self.name} id={self.id}>"
 
 
 class Topic(BaseModel, WithAdditional):
@@ -80,7 +75,7 @@ class Topic(BaseModel, WithAdditional):
         if self.meta.overdue == 0.0:
             # 永不过期.
             return False
-        return self.meta.created_at + self.meta.overdue > time.time()
+        return self.meta.created_at + self.meta.overdue <= time.time()
 
 
 class TopicModel(BaseModel, ABC):
@@ -116,12 +111,12 @@ class TopicModel(BaseModel, ABC):
         return cls.model_json_schema()
 
     def to_topic(
-            self,
-            *,
-            name: str = "",
-            overdue: float = 0.0,
-            creator: str = "",
-            sender: str = "",
+        self,
+        *,
+        name: str = "",
+        overdue: float = 0.0,
+        creator: str = "",
+        sender: str = "",
     ) -> Topic:
         data = self.model_dump(exclude={"meta"})
         meta = self.meta
@@ -262,10 +257,10 @@ class Publisher(ABC):
 
     @abstractmethod
     async def pub(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
@@ -323,24 +318,24 @@ class TopicService(ABC):
 
     @abstractmethod
     def subscribe(
-            self,
-            topic_name: str,
-            *,
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        topic_name: str,
+        *,
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[None]:
         pass
 
     @abstractmethod
     def subscribe_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 subscriber.
@@ -359,11 +354,11 @@ class TopicService(ABC):
 
     @abstractmethod
     async def pub(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
-            creator: str = "",
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
+        creator: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
@@ -375,7 +370,10 @@ class TopicService(ABC):
     def publisher(self, creator: str, uid: str | None = None) -> Publisher:
         """
         创建一个 publisher.
-        创建一个 subscriber.
+
+        :param creator: 确认发送者的身份.
+        :param uid: 为发送者建立唯一 id.
+
         >>> async def publish(service: TopicService):
         >>>     publisher = service.publisher(...)
         >>>     async with publisher:
