@@ -46,6 +46,59 @@ def test_event_set_and_wait():
 
 
 @pytest.mark.asyncio
+async def test_event_set_and_wait_in_same_loop():
+    event = ThreadSafeEvent()
+    assert not event.is_set()
+    event.set()
+    assert event.is_set()
+    await event.wait()
+    event.clear()
+    assert not event.is_set()
+    try:
+        await event.wait_for(0.01)
+    except asyncio.TimeoutError:
+        pass
+
+
+def test_event_set_and_wait_in_defer_loop():
+    event = ThreadSafeEvent()
+
+    async def call_event_clear(_e: ThreadSafeEvent):
+        # 等待 1
+        await _e.wait()
+        # 清空 2
+        _e.clear()
+        # 等待设置 3
+        await _e.wait()
+        # 清空 4
+        _e.clear()
+
+    def _call_event_clear():
+        asyncio.run(call_event_clear(event))
+
+    async def call_event_set(_e: ThreadSafeEvent):
+        # 设置 1
+        _e.set()
+        # 等待清空2
+        while _e.is_set():
+            await asyncio.sleep(0.01)
+        # 设置3
+        _e.set()
+
+    def _call_event_set():
+        asyncio.run(call_event_set(event))
+
+    t1 = Thread(target=_call_event_clear)
+    t2 = Thread(target=_call_event_set)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    # 最终结果是清空4
+    assert not event.is_set()
+
+
+@pytest.mark.asyncio
 async def test_wait_timeout():
     event = ThreadSafeEvent()
     with pytest.raises(asyncio.TimeoutError):

@@ -4,6 +4,7 @@ from asyncio import Future
 from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import Any, Optional
+import weakref
 
 from typing_extensions import Self
 
@@ -58,55 +59,76 @@ class ThreadSafeEvent:
     """
 
     def __init__(self, debug: bool = False):
-        self.thread_event = threading.Event()
-        self.awaits_events: deque[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
+        self._thread_event = threading.Event()
+        # self.awaits_events: deque[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = deque()
+        # WeakKeyDictionary: key=loop, value=event
+        # Automatically removes entries when loop is garbage collected
+        self._loop_events: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event] = (
+            weakref.WeakKeyDictionary()
+        )
+
         self.debug = debug
         self.set_at: Optional[str] = None
         self._lock = threading.Lock()
 
     def is_set(self) -> bool:
-        return self.thread_event.is_set()
+        return self._thread_event.is_set()
 
     def wait_sync(self, timeout: float | None = None) -> bool:
-        return self.thread_event.wait(timeout)
+        return self._thread_event.wait(timeout)
 
     def set(self) -> None:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if self._thread_event.is_set():
+            return
         with self._lock:
-            if self.thread_event.is_set():
-                return
-            self.thread_event.set()
-            for loop, event in self.awaits_events:
-                if loop.is_running():
+            for loop, event in self._loop_events.items():
+                if loop is running:
+                    event.set()
+                elif loop and not loop.is_closed():
                     loop.call_soon_threadsafe(event.set)
-            self.awaits_events.clear()
+            self._thread_event.set()
 
-    def _add_awaits(self, loop: asyncio.AbstractEventLoop, event: asyncio.Event) -> None:
+    def _get_or_create_await_event(self, loop: asyncio.AbstractEventLoop) -> asyncio.Event:
         with self._lock:
-            is_set = self.thread_event.is_set()
-            if is_set:
-                loop.call_soon_threadsafe(event.set)
+            is_set = self._thread_event.is_set()
+            if loop in self._loop_events:
+                event = self._loop_events[loop]
             else:
-                self.awaits_events.append((loop, event))
+                event = asyncio.Event()
+                self._loop_events[loop] = event
+            if is_set:
+                event.set()
+            return event
 
-    async def wait(self) -> bool:
+    async def wait(self) -> None:
         loop = asyncio.get_running_loop()
-        event = asyncio.Event()
-        self._add_awaits(loop, event)
-        return await event.wait()
+        event = self._get_or_create_await_event(loop)
+        await event.wait()
 
-    async def wait_for(self, timeout: float) -> bool:
+    async def wait_for(self, timeout: float | None) -> None:
         if timeout is None or timeout <= 0.0:
             await self.wait()
         else:
-            return await asyncio.wait_for(self.wait(), timeout)
+            await asyncio.wait_for(self.wait(), timeout)
 
     def clear(self) -> None:
+        if not self._thread_event.is_set():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
         with self._lock:
-            self.thread_event.clear()
-            for loop, event in self.awaits_events:
-                if loop.is_running():
+            for loop, event in self._loop_events.items():
+                if loop is running:
+                    event.clear()
+                elif not loop.is_closed():
                     loop.call_soon_threadsafe(event.clear)
-            self.awaits_events.clear()
+            self._thread_event.clear()
 
 
 async def ensure_tasks_done_or_cancel(

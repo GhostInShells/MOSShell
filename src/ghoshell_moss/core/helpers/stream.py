@@ -141,6 +141,7 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
                 if self._completed.is_set():
                     # 已经拿到了所有的结果.
                     raise StopAsyncIteration
+                self._added.clear()
                 left = self._timeleft.left() or None
                 if left and left > 0.0:
                     await asyncio.wait_for(self._added.wait(), timeout=left)
