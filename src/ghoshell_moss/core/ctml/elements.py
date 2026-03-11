@@ -772,7 +772,8 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
             self._current_task.kwargs[CommandDeltaType.TEXT.value] = deltas_value
             if not self._inner_content:
                 attrs = self._current_task.kwargs.copy()
-                del attrs[CommandDeltaType.TEXT.value]
+                if delta_arg_name in attrs:
+                    del attrs[delta_arg_name]
                 self._current_task.tokens = CMTLSaxElement.make_start_mark(
                     self._current_task.chan,
                     current_task_meta.name,

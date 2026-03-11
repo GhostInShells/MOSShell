@@ -1,9 +1,7 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, AsyncIterable
-from typing_extensions import Self
-
+from typing import Literal, Optional, AsyncIterable, AsyncIterator
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelRuntime
@@ -252,7 +250,7 @@ class MOSSShell(ABC):
         config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
         clear_after_exit: bool = False,
         ignore_wrong_command: bool = False,
-    ) -> Self:
+    ) -> AsyncIterator[Interpreter]:
         """
         简单的语法糖.
         """
@@ -271,6 +269,7 @@ class MOSSShell(ABC):
         self,
         kind: InterpreterKind = "clear",
         *,
+        meta_instruction: str | None = None,
         stream_id: Optional[str] = None,
         config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
         prepare_timeout: float = 2.0,

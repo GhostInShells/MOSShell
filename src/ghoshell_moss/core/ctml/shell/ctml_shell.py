@@ -284,6 +284,7 @@ class CTMLShell(MOSSShell):
         self,
         kind: InterpreterKind = "clear",
         *,
+        meta_instruction: str | None = None,
         stream_id: Optional[int] = None,
         config: dict[ChannelFullPath, ChannelMeta] | None = None,
         prepare_timeout: float = 2.0,
@@ -325,6 +326,7 @@ class CTMLShell(MOSSShell):
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
             kind=kind,
+            moss_meta_instruction=meta_instruction,
             interrupted=interrupted_interpretation,
             undone_tasks=undone_tasks,
             commands=commands,

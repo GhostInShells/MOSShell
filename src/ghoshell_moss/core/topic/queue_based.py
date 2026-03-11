@@ -55,7 +55,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
         try:
             if self._queue.full():
                 if keep_policy == "oldest":
-                    self._logger.info("%s drop topic %s cause full", self._log_prefix, topic.id)
+                    self._logger.info("%s drop topic %s cause full", self._log_prefix, topic.meta.id)
                     return
                 elif keep_policy == "latest":
                     if not self._queue.empty():
@@ -67,7 +67,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
             else:
                 self._queue.put_nowait(topic)
         except asyncio.QueueFull:
-            self._logger.error("%s drop topic %s cause full", self._log_prefix, topic.id)
+            self._logger.error("%s drop topic %s cause full", self._log_prefix, topic.meta.id)
         finally:
             self._receive_lock.release()
 
@@ -171,10 +171,10 @@ class QueueBasedPublisher(Publisher):
 
     async def pub(self, topic: Topic | TopicModel, *, name: str = "") -> None:
         if not self.is_running():
-            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.id)
+            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
         if self._frequent > 0 and self._last_sent + self._frequent > time.time():
-            self._logger.error("%s drop topic %s cause too frequent", self._log_prefix, topic.id)
+            self._logger.error("%s drop topic %s cause too frequent", self._log_prefix, topic.meta.id)
             return
 
         if isinstance(topic, TopicModel):
@@ -406,7 +406,7 @@ class QueueBasedTopicService(TopicService):
 
     async def pub(self, topic: Topic | TopicModel, *, name: str = "", creator: str = "") -> None:
         if not self.is_running():
-            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.id)
+            self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
         if isinstance(topic, TopicModel):
             topic = topic.to_topic()

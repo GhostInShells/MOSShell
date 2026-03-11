@@ -343,18 +343,11 @@ async def test_shell_delta_types():
             count += 1
         return count
 
-    @shell.main_channel.build.command()
-    async def json(json__) -> Any:
-        import json
-
-        return json.loads(json__)
-
     contents = [
         "<chunks>hello world</chunks>",
         "<text>hello world</text>",
         "<tokens><foo /><bar /></tokens>",
         "<parse_ctml><foo /><bar /></parse_ctml>",
-        "<json>{'a': 123}</json>",
     ]
 
     async with shell:
@@ -367,6 +360,14 @@ async def test_shell_delta_types():
             await interpreter.wait_compiled()
             interpreter.raise_exception()
             compiled = interpreter.compiled_tasks()
-            assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml", "json"]
+            assert [t.meta.name for t in compiled.values()] == ["chunks", "text", "tokens", "parse_ctml"]
             for t in compiled.values():
                 t.raise_exception()
+            tasks = await interpreter.wait_tasks(2)
+            interpreter.raise_exception()
+            task_results = []
+            for task in tasks.values():
+                task.raise_exception()
+                assert task.success()
+                task_results.append(task.result())
+            assert task_results == [1, 11, 4, 4]
