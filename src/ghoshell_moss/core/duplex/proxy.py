@@ -65,11 +65,11 @@ class DuplexChannelContext:
     """
 
     def __init__(
-            self,
-            *,
-            name: str,
-            connection: Connection,
-            container: Optional[IoCContainer] = None,
+        self,
+        *,
+        name: str,
+        connection: Connection,
+        container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -166,11 +166,11 @@ class DuplexChannelContext:
         if self.stop_event.is_set():
             self.logger.warning("Channel %s connection is stopped or not available", self.root_name)
             if throw:
-                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped")
+                raise ConnectionClosedError(f"Channel {self.root_name} Connection is stopped with {event}")
             return
         elif not self.connection.is_connected():
             if throw:
-                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available")
+                raise ConnectionNotAvailable(f"Channel {self.root_name} Connection not available with {event}")
             return
 
         try:
@@ -642,11 +642,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     """
 
     def __init__(
-            self,
-            *,
-            channel: Channel,
-            provider_chan_path: str,
-            ctx: DuplexChannelContext,
+        self,
+        *,
+        channel: Channel,
+        provider_chan_path: str,
+        ctx: DuplexChannelContext,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
@@ -758,9 +758,9 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return None
 
     def _get_provider_command_func(
-            self,
-            chan: ChannelFullPath,
-            meta: CommandMeta,
+        self,
+        chan: ChannelFullPath,
+        meta: CommandMeta,
     ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
@@ -800,8 +800,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
+    async def wait_children_idled(self) -> None:
+        return
+
     async def clear_own(self) -> None:
-        if not self._ctx.is_running():
+        if not self._ctx.is_running() or not self._ctx.is_connected():
             return
         try:
             event = ClearEvent(
@@ -825,11 +828,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-            self,
-            *,
-            name: str,
-            description: str = "",
-            to_provider_connection: Connection,
+        self,
+        *,
+        name: str,
+        description: str = "",
+        to_provider_connection: Connection,
     ):
         self._name = name
         self._description = description

@@ -1,8 +1,5 @@
 import pytest
 import asyncio
-import contextlib
-
-from ghoshell_moss.core.ctml.shell.primitives.wait_idle import wait_idle
 from ghoshell_moss.core import PyChannel, new_ctml_shell
 
 
@@ -32,13 +29,13 @@ async def test_wait_idle_basic():
 
     async with shell:
         # 创建解释器
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动子轨道任务
             interpreter.feed("<child:long_task/><wait_idle/>")
             interpreter.commit()
 
             # 等待执行完成
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证任务已完成
             assert "task_started" in execution_log
@@ -71,7 +68,7 @@ async def test_wait_idle_with_timeout():
     shell.main_channel.import_channels(child_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动非常长的任务
             interpreter.feed("<child:very_long_task/>")
 
@@ -79,7 +76,7 @@ async def test_wait_idle_with_timeout():
             interpreter.feed('<wait_idle timeout:float="0.1"/>')  # 100ms 超时
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该被取消
             assert task_cancelled
@@ -125,14 +122,14 @@ async def test_wait_idle_specific_channel():
         expect = audio_done and not video_done
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 在两个子轨道上启动任务
             interpreter.feed("<audio:audio_task/><video:video_task/>")
             # 只等待 audio 轨道
             interpreter.feed('<wait_idle chan="audio"/><audio_done_but_video_not/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             assert expect
 
 
@@ -167,20 +164,15 @@ async def test_wait_idle_recursive():
     shell.main_channel.import_channels(level1_chan, level2_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动多层任务
             interpreter.feed("<wait_idle/><level1:level1_task/><wait_idle/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
-            assert execution_order == [
-                "level1_start",
-                "level2_start",
-                "level2_end",
-                "level1_end"
-            ]
+            assert execution_order == ["level1_start", "level2_start", "level2_end", "level1_end"]
 
 
 @pytest.mark.asyncio
@@ -191,12 +183,12 @@ async def test_wait_idle_with_empty_channels():
     shell = new_ctml_shell()
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 在没有子任务的情况下调用 wait_idle
             interpreter.feed("<wait_idle/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 应该正常完成，不抛出异常
             assert len(tasks) == 1
@@ -212,12 +204,12 @@ async def test_wait_idle_negative_timeout():
     shell = new_ctml_shell()
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 负超时应该抛出错误
             interpreter.feed('<wait_idle timeout:float="-1.0"/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该失败
             assert len(tasks) == 1
@@ -252,7 +244,7 @@ async def test_wait_idle_with_other_primitives():
     shell.main_channel.import_channels(bg_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 复杂场景：启动后台任务，sleep，然后 wait_idle
             interpreter.feed("""
                 <bg:background_work/>
@@ -266,7 +258,7 @@ async def test_wait_idle_with_other_primitives():
             assert "bg_end" not in execution_log
             assert "run_after_idle" in execution_log
             assert interpreter.is_running()
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
             assert "bg_end" in execution_log
 
 
@@ -292,13 +284,13 @@ async def test_wait_idle_zero_timeout():
     shell.main_channel.import_channels(child_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动任务
             interpreter.feed("<child:task/>")
             interpreter.feed('<wait_idle timeout:float="0.0"/>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 任务应该被取消
             assert task_cancelled

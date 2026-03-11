@@ -104,6 +104,11 @@ class PyChannelBuilder(Builder):
             return await self._instruction_messages_function()
         return self._instruction_messages_function()
 
+    def add_command(self, command: Command) -> None:
+        if not isinstance(command, Command):
+            raise ValueError("Command must be of type Command, not {}".format(type(command)))
+        self._commands[command.name()] = command
+
     def command(
         self,
         *,
@@ -114,6 +119,7 @@ class PyChannelBuilder(Builder):
         interface: Optional[StringType] = None,
         available: Optional[Callable[[], bool]] = None,
         blocking: Optional[bool] = None,
+        priority: int = 0,
         call_soon: bool = False,
         return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
@@ -129,9 +135,10 @@ class PyChannelBuilder(Builder):
                 interface=interface,
                 available=available,
                 blocking=blocking if blocking is not None else self._blocking,
+                priority=priority,
                 call_soon=call_soon,
             )
-            self._commands[command.name()] = command
+            self.add_command(command)
             if return_command:
                 return command
             return func
@@ -315,25 +322,11 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         command_metas = []
         commands = self._builder.commands()
 
-        refreshing_commands = []
-        refreshing_command_tasks = []
         for command in commands:
             # 只添加需要动态更新的 command.
             if command.meta().dynamic:
-                refreshing_commands.append(command)
-                refreshing_command_tasks.append(command.refresh_meta())
+                command.refresh_meta()
                 dynamic = True
-
-        # 更新所有的 动态 commands.
-        if len(refreshing_commands) > 0:
-            done = await asyncio.gather(*refreshing_command_tasks, return_exceptions=True)
-            idx = 0
-            for refreshed in done:
-                if isinstance(refreshed, Exception):
-                    command = commands[idx]
-                    self.logger.exception("Refresh command meta failed on command %s", command)
-                idx += 1
-
         for command in commands:
             command_metas.append(command.meta())
 

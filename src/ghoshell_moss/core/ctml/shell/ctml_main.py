@@ -9,24 +9,32 @@ class CTMLMainChannel(PyChannel):
     """
     ctml 的主 channel.
     """
+
     pass
 
 
-def create_ctml_main_chan() -> Channel:
+def create_ctml_main_chan(experimental: bool = True) -> Channel:
     chan = CTMLMainChannel(
         name="__main__",
-        description="系统的主 Channel, 在这里定义了各种控制原语.",
+        description="CTML Main Channel with primitives",
         blocking=True,
     )
 
     # wait 原语
-    chan.build.command()(wait)
+    if experimental:
+        chan.build.command()(wait)
+        chan.build.command()(sample)
+        chan.build.command()(observe)
     # sleep 原语
     chan.build.command()(sleep)
     # clear 原语
     chan.build.command()(clear)
     # wait idle 原语.
     chan.build.command()(wait_idle)
+    chan.build.command()(noop)
+    chan.build.command()(branch)
+    chan.build.command()(loop)
+    chan.build.add_command(interrupt_command)
 
     return chan
 

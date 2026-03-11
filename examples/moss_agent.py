@@ -82,7 +82,7 @@ def run_moss_agent(container: Container):
     )
 
     speech = get_example_speech(container)
-    shell = new_ctml_shell(container=container, speech=speech)
+    shell = new_ctml_shell(container=container, speech=speech, experimental=False)
     shell.main_channel.import_channels(
         zmq_hub.as_channel(),
         # 浏览器

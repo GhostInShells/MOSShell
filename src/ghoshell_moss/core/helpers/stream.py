@@ -21,6 +21,10 @@ ItemT = TypeVar("ItemT")
 # 能够支持阻塞逻辑.
 
 
+class _Committed:
+    pass
+
+
 class ThreadSafeStreamSender(Generic[ItemT]):
     """
     实现线程安全的对象发送者.
@@ -30,7 +34,7 @@ class ThreadSafeStreamSender(Generic[ItemT]):
         self,
         added: ThreadSafeEvent,
         completed: ThreadSafeEvent,
-        queue: deque[ItemT | Exception | None],
+        queue: deque[ItemT | Exception | _Committed],
     ):
         self._added = added
         """通过一个 added event 来做发送 item 信号的通讯. 用于阻塞等待. """
@@ -42,20 +46,14 @@ class ThreadSafeStreamSender(Generic[ItemT]):
     def fail(self, error: Exception):
         if self._completed.is_set():
             return
-        self._completed.set()
         self._queue.append(error)
         self._added.set()
+        self._completed.set()
 
-    def append(self, item: ItemT | None) -> None:
+    def append(self, item: ItemT) -> None:
         if self._completed.is_set():
             # 当输入已经结束时, 不再接受新的对象.
             return
-        if item is None:
-            # 异常和 None item 都用来表示发送流已经结束.
-            # commit 函数可以重入.
-            self.commit()
-            return
-
         # 通过 deque 做线程安全的 buffer.
         self._queue.append(item)
         # 标记已经有输入的新 item.
@@ -66,11 +64,11 @@ class ThreadSafeStreamSender(Generic[ItemT]):
         if self._completed.is_set():
             # 可重入.
             return
-        self._completed.set()
         # 发送毒丸, 用来提示流的结束.
-        self._queue.append(None)
+        self._queue.append(_Committed)
         # 毒丸也需要事件标记.
         self._added.set()
+        self._completed.set()
 
     def __enter__(self):
         return self
@@ -103,43 +101,22 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     def __iter__(self):
         return self
 
-    def __next__(self) -> ItemT:
-        if len(self._queue) > 0:
-            # 队列不为空的情况.
-            item = self._queue.popleft()
-            if isinstance(item, Exception):
-                # 接受到异常, 抛出. 所以 ItemT 不支持用异常.
-                raise item
-            elif item is None:
-                # 接受到毒丸, 结束遍历.
-                raise StopIteration
-            else:
-                return item
-
-        elif self._completed.is_set():
-            # 已经拿到了所有的结果.
-            raise StopIteration
-
-        else:
-            # 判断时间是否超时.
-            left = self._timeleft.left() or None
-            # 阻塞等待到下一个 item 输入.
-            if not self._added.wait_sync(left):
-                raise TimeoutError(f"Timeout waiting for {self._timeleft.timeout}")
-
-            item = None
+    def __next__(self):
+        while True:
             if len(self._queue) > 0:
                 item = self._queue.popleft()
-
-            if len(self._queue) == 0:
-                self._added.clear()
-
-            if isinstance(item, Exception):
-                raise item
-            elif item is None:
-                raise StopIteration
-            else:
+                if item is _Committed:
+                    raise StopIteration
+                elif isinstance(item, Exception):
+                    raise item
                 return item
+            else:
+                if self._completed.is_set():
+                    if len(self._queue) > 0:
+                        continue
+                    raise StopIteration
+                self._added.wait_sync(self._timeleft.left() or None)
+                continue
 
     def __enter__(self):
         return self
@@ -150,34 +127,27 @@ class ThreadSafeStreamReceiver(Generic[ItemT]):
     def __aiter__(self):
         return self
 
-    async def __anext__(self) -> ItemT:
-        if len(self._queue) > 0:
-            item = self._queue.popleft()
-            if isinstance(item, Exception):
-                raise item
-            elif item is None:
-                raise StopAsyncIteration
-            else:
-                return item
-        elif self._completed.is_set():
-            # 已经拿到了所有的结果.
-            raise StopAsyncIteration
-        else:
-            left = self._timeleft.left() or None
-            await asyncio.wait_for(self._added.wait(), timeout=left)
-            item = None
+    async def __anext__(self):
+        while True:
             if len(self._queue) > 0:
                 item = self._queue.popleft()
-
-            if len(self._queue) == 0:
-                self._added.clear()
-
-            if isinstance(item, Exception):
-                raise item
-            elif item is None:
-                raise StopAsyncIteration
+                if isinstance(item, Exception):
+                    raise item
+                elif item is _Committed:
+                    raise StopAsyncIteration
+                else:
+                    return item
             else:
-                return item
+                if self._completed.is_set():
+                    # 已经拿到了所有的结果.
+                    raise StopAsyncIteration
+                self._added.clear()
+                left = self._timeleft.left() or None
+                if left and left > 0.0:
+                    await asyncio.wait_for(self._added.wait(), timeout=left)
+                    continue
+                else:
+                    await self._added.wait()
 
     async def __aenter__(self):
         return self

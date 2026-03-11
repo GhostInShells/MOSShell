@@ -30,6 +30,8 @@ async def test_clear_basic_functionality():
             task_cancelled = True
             execution_log.append("task_cancelled")
             raise
+        except Exception as e:
+            raise
         finally:
             cmd_done.set()
 
@@ -39,7 +41,7 @@ async def test_clear_basic_functionality():
 
     async with shell:
         # 启动子 Channel 上的长时间任务
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<child:long_running_task/><clear/>")
             interpreter.commit()
             # 验证任务被取消
@@ -89,12 +91,12 @@ async def test_clear_specific_channel():
 
     async with shell:
         # 在 audio 和 video Channel 上启动任务
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<audio:audio_task/><video:video_task/>")
             interpreter.feed("<clear chan='audio'/>")
             interpreter.commit()
             # 验证只有 audio 任务被取消
-            await interpreter.wait()
+            await interpreter.wait_tasks()
             assert not video_cancelled  # video 任务应该还在运行
             assert audio_cancelled
 
@@ -139,12 +141,12 @@ async def test_clear_recursive():
 
     async with shell:
         # 启动多层任务
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             interpreter.feed("<level1:level1_task/>")
             # 在根 Channel 调用 clear，应该递归清空所有子 Channel
             interpreter.feed("<clear/>")
             interpreter.commit()
-            await interpreter.wait()
+            await interpreter.wait_tasks()
             # 验证所有层级的任务都被取消
             assert level1_cancelled
             assert level2_cancelled
@@ -183,7 +185,7 @@ async def test_clear_with_wait_and_sleep():
     shell.main_channel.import_channels(bg_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动后台任务，然后 sleep，再 clear
             interpreter.feed("""
                 <bg:background_task/>
@@ -192,7 +194,7 @@ async def test_clear_with_wait_and_sleep():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             assert execution_log == ["bg_start", "bg_cancelled"]
@@ -208,12 +210,12 @@ async def test_clear_empty_channels():
     shell.main_channel.build.command()(clear)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 在没有任何子任务的情况下调用 clear
             interpreter.feed("<clear/>")
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 应该正常完成，不抛出异常
             assert len(tasks) == 1
@@ -265,7 +267,7 @@ async def test_clear_in_ctml_complex_scenario():
     shell.main_channel.import_channels(music_chan, effects_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 模拟一个交互场景：播放背景音乐，播放音效，等待音效完成，然后清除所有
             interpreter.feed("""
                 <music:play_music/>
@@ -277,7 +279,7 @@ async def test_clear_in_ctml_complex_scenario():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             # 音乐和音效应该都启动了

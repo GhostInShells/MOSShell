@@ -6,18 +6,18 @@ from dataclasses import dataclass
 import pytest
 
 from ghoshell_moss.core.concepts.command import BaseCommandTask, Command, CommandToken, PyCommand
-from ghoshell_moss.core.concepts.interpreter import CommandTokenParserElement
-from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
+from ghoshell_moss.core.ctml.elements import CommandTaskElementContext, RootCommandTaskElement
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers import ThreadSafeEvent, get_console_logger
 from ghoshell_moss.speech.mock import MockSpeech
+import logging
 
 
 @dataclass
 class ElementTestSuite:
     ctx: CommandTaskElementContext
     parser: CTML2CommandTokenParser
-    root: CommandTokenParserElement
+    root: RootCommandTaskElement
     queue: deque[BaseCommandTask | None]
     stop_event: ThreadSafeEvent
 
@@ -37,7 +37,10 @@ class ElementTestSuite:
             for task in self.queue:
                 if task is not None:
                     gathered.append(task.run())
-            await asyncio.gather(*gathered, return_exceptions=False)
+            done = await asyncio.gather(*gathered, return_exceptions=False)
+            for r in done:
+                if isinstance(r, Exception):
+                    raise r
 
 
 def new_test_suite(*commands: Command) -> ElementTestSuite:
@@ -48,18 +51,21 @@ def new_test_suite(*commands: Command) -> ElementTestSuite:
         chan = command.meta().chan
         if chan not in command_map:
             command_map[chan] = {}
+        # 假的 command map.
         command_map[chan][command.name()] = command
     stop_event = ThreadSafeEvent()
     ctx = CommandTaskElementContext(
         command_map,
         output,
-        stop_event=stop_event,
         ignore_wrong_command=True,
+        logger=get_console_logger(logging.DEBUG),
     )
     root = ctx.new_root(tasks_queue.append, stream_id="test")
+    logger = get_console_logger()
     token_parser = CTML2CommandTokenParser(
         callback=root.on_token,
         stream_id="test",
+        logger=logger,
     )
     return ElementTestSuite(
         ctx=ctx,
@@ -84,9 +90,11 @@ async def test_element_with_no_command():
     assert len(list(parser.parsed())) == (1 + 2 + 1 + 2 + 1 + 2 + 1)
 
     # 模拟执行所有的命令
+    run_all = []
     for cmd_task in q:
         if cmd_task is not None:
-            await cmd_task.run()
+            run_all.append(cmd_task.run())
+    await asyncio.gather(*run_all, return_exceptions=False)
     # 由于没有任何真实的 command, 所以实际上只有两个 output stream 被执行了.
     assert len(q) == 3
     # 最后一个 item 是毒丸.
@@ -95,16 +103,10 @@ async def test_element_with_no_command():
     # 假设有正确的输出.
     assert await ctx.speech.clear() == ["hello", "world"]
 
-    children = list(suite.root.children.values())
-    assert len(children) == 1
+    children = list(suite.root.children)
+    assert len(children) == 3
     assert children[0].depth == 1
-
-    count = 0
-    for child in children[0].children.values():
-        assert child.depth == 2
-        count += 1
-    # 三个空命令.
-    assert count == 3
+    assert len(suite.root.inner_tasks) == 2
 
 
 @pytest.mark.asyncio
@@ -117,10 +119,11 @@ async def test_element_baseline():
 
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
     await suite.parse(['<foo /><bar a="123">', "hello", "</bar>"], run=True)
+
     assert len(list(suite.parser.parsed())) == (1 + 2 + 1 + 1 + 1 + 1)
     assert len(suite.queue) == 4 + 1  # 最后一个是 None
     assert suite.queue.pop() is None
-    assert [c._result for c in suite.queue] == [123, 123, None, None]
+    assert [c.result() for c in suite.queue] == [123, 123, None, None]
     # the <foo /> is changed to <foo/> for fewer tokens usage
     assert "".join(c.tokens for c in suite.queue) == '<foo/><bar a="123">hello</bar>'
     suite.root.destroy()
@@ -217,7 +220,7 @@ async def test_parse_text_command_with_kwargs():
     await suite.parse([content], run=True)
     assert suite.queue.pop() is None
     # a + b + text__
-    assert suite.queue[0]._result == "hello world"
+    assert suite.queue[0].result() == "hello world"
     assert "".join(t.tokens for t in suite.queue) == content
 
 

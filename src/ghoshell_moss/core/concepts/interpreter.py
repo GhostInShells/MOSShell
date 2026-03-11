@@ -1,20 +1,20 @@
 import asyncio
-import contextlib
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Iterable, AsyncIterable
-
 from typing_extensions import Self
+from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.message import Message
+from ghoshell_common.contracts import LoggerItf
 from pydantic import BaseModel, Field
+import queue
 
 __all__ = [
     "CommandTaskCallback",
-    "CommandTaskParseError",
-    "CommandTokenParserElement",
+    "CommandTokenParser",
     "CommandTokenCallback",
-    "StringTokenParser",
+    "TextTokenParser",
     "Interpreter",
     "Interpretation",
 ]
@@ -23,18 +23,22 @@ CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
 
 
-class CommandTaskParseError(Exception):
-    pass
-
-
-class StringTokenParser(ABC):
+class TextTokenParser(ABC):
     """
     parse from string stream into command tokens
+
+    目标是实现:
+    >>> def run_parser(parser: TextTokenParser, tokens: Iterable[str], callback: CommandTokenCallback) -> None:
+    >>>     with parser.with_callback(callback):
+    >>>          for token in tokens:
+    >>>             parser.feed(token)
+    >>>          parser.commit()
     """
 
     @abstractmethod
     def with_callback(self, *callbacks: CommandTokenCallback) -> None:
         """
+        注册生成 command token 的回调.
         send command token to callback method
         """
         pass
@@ -42,11 +46,6 @@ class StringTokenParser(ABC):
     @abstractmethod
     def is_done(self) -> bool:
         """weather this parser is done parsing."""
-        pass
-
-    @abstractmethod
-    def start(self) -> None:
-        """start this parser"""
         pass
 
     @abstractmethod
@@ -60,16 +59,16 @@ class StringTokenParser(ABC):
         pass
 
     @abstractmethod
-    def close(self) -> None:
+    def stop(self) -> None:
         """
-        stop the parser and clear the resources.
+        立刻停止解析, 也不会抛出异常.
         """
         pass
 
     @abstractmethod
-    def buffer(self) -> str:
+    def buffered(self) -> str:
         """
-        return the buffered stream content
+        返回粘包后的输入文本.
         """
         pass
 
@@ -78,21 +77,19 @@ class StringTokenParser(ABC):
         """返回已经生成的 command token"""
         pass
 
+    @abstractmethod
     def __enter__(self):
-        self.start()
-        return self
+        pass
 
+    @abstractmethod
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
         example for how to use parser manually
         """
-        if exc_val is None:
-            # ending is needed if parse success
-            self.commit()
-        self.close()
+        pass
 
 
-class CommandTokenParserElement(ABC):
+class CommandTokenParser(ABC):
     """
     CommandTaskElement works like AST but in realtime.
     It accepts command token from a stream, and generate command task concurrently.
@@ -104,21 +101,13 @@ class CommandTokenParserElement(ABC):
     So we need an Element Tree to parse the tokens into command tasks, and send the tasks immediately
     """
 
-    depth: int
-
-    current: Optional[CommandTask] = None
-    """the current command task of this element, created by `start` type command token"""
-
-    children: dict[str, "CommandTokenParserElement"]
-    """the children element of this element"""
-
     @abstractmethod
     def with_callback(self, callback: CommandTaskCallback) -> None:
         """设置一个 callback, 替换默认的 callback. 通常不需要使用."""
         pass
 
     @abstractmethod
-    def on_token(self, token: CommandToken | None) -> None:
+    def on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
         """
         接受一个 command token
         :param token: 如果为 None, 表示 command token 流已经结束.
@@ -129,6 +118,12 @@ class CommandTokenParserElement(ABC):
     def is_end(self) -> bool:
         """是否解析已经完成了."""
         pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.destroy()
 
     @abstractmethod
     def destroy(self) -> None:
@@ -141,96 +136,109 @@ class Interpretation(BaseModel):
     Interpreter 一次运行的结果.
     """
 
-    done: bool = Field(
-        default=False,
-        description="是否已经运行结束."
-    )
-    id: str = Field(
-        description="interpretation id"
-    )
-    meta_instruction: str = Field(
-        default="",
-        description="这一轮快照中的元指令"
-    )
+    done: bool = Field(default=False, description="是否已经运行结束.")
+    id: str = Field(description="interpretation id")
+    meta_instruction: str = Field(default="", description="这一轮快照中的元指令")
     instruction_messages: list[Message] = Field(
         default_factory=list,
         description="提示词",
     )
-    context_messages: list[Message] = Field(
-        default_factory=list,
-        description="上下文讯息"
-    )
+    context_messages: list[Message] = Field(default_factory=list, description="上下文讯息")
     observe: bool = Field(
         default=False,
         description="这个运行结果是否需要 AI 观察",
     )
-    feed_inputs: list[str] = Field(
-        default_factory=list,
-        description="通过 interpreter feed 输入的文本"
-    )
+    feed_inputs: list[str] = Field(default_factory=list, description="通过 interpreter feed 输入的文本")
     command_tokens: list[CommandToken] = Field(
         default_factory=list,
         description="运行时解析生成的 command tokens",
     )
-    generated_tasks: list[str] = Field(
-        default_factory=list,
-        description="解析生成的 task 的 cid"
-    )
-    done_tasks: dict[str, str] = Field(
+    executed_inputs: list[str] = Field(default_factory=list, description="被执行过的输入文本.")
+
+    compiled_tasks: dict[str, str] = Field(default_factory=dict, description="解析生成的 task 的 cid => task caller")
+    pending_tasks: dict[str, str] = Field(default_factory=dict, description="未完成的 task 的 cid => task caller")
+    cancelled_tasks: dict[str, str] = Field(
         default_factory=dict,
         description="运行结束的 task cid => task caller",
     )
-    succeed_tasks: dict[str, str] = Field(
+    failed_tasks: dict[str, str] = Field(
         default_factory=dict,
-        description="运行结束, 并且运行成功的 task cid => task caller"
+        description="运行结束, 失败的 task cid => task caller",
     )
-    executed_tokens: list[str] = Field(
-        default="",
-        description="被执行过的输入文本."
+    success_tasks: dict[str, str] = Field(
+        default_factory=dict, description="运行结束, 并且运行成功的 task cid => task caller"
     )
-
-    output: list[Message] = Field(
-        default_factory=list,
-        description="运行结果中需要输出的消息体. "
-    )
-    messages: list[Message] = Field(
-        default_factory=list,
-        description="运行结果中需要观察的消息体."
-    )
-    interrupted: bool = Field(
-        default=False,
-        description="是否被强行打断"
-    )
+    output: list[Message] = Field(default_factory=list, description="运行结果中需要输出的消息体. ")
+    messages: list[Message] = Field(default_factory=list, description="运行结果中需要观察的消息体.")
+    interrupted: bool = Field(default=False, description="是否被强行打断")
     exception: str = Field(
         default="",
         description="运行的异常",
     )
 
-    def on_task_generated(self, task: CommandTask | None) -> None:
-        if task is None:
+    def on_task_compiled(self, task: CommandTask | None) -> None:
+        if task is None or task.meta.name.startswith("_"):
             return
-        self.generated_tasks.append(task.cid)
+        self.compiled_tasks[task.cid] = task.caller_name()
+        self.pending_tasks[task.cid] = task.caller_name()
 
     def on_done_task(self, task: CommandTask) -> None:
-        if not task.done():
+        if not task.done() or task.meta.name.startswith("_"):
             return
-        if task.cid in self.done_tasks:
+        if self.done:
             return
-        # 注册 done task
-        self.done_tasks[task.cid] = task.caller_name()
-
+        task_id = task.cid
+        if task_id in self.pending_tasks:
+            self.pending_tasks.pop(task_id)
         # 注册执行成功的 tokens.
         if task.success():
-            self.succeed_tasks[task.cid] = task.caller_name()
-            self.executed_tokens.append(task.tokens)
+            self.executed_inputs.append(task.tokens)
+            self.success_tasks[task_id] = task.caller_name()
+        # 记录 cancel 类别的.
+        elif CommandErrorCode.is_cancelled(task.errcode):
+            self.cancelled_tasks[task_id] = task.caller_name()
+        # 记录异常的.
+        else:
+            self.failed_tasks[task_id] = task.caller_name()
 
         # 合并 task 运行结果.
         result = task.task_result()
-        if result.observe:
+        # 根据协议判定要 observe.
+        if result.observe or CommandErrorCode.is_critical(task.errcode):
             self.observe = True
         if len(result.output) > 0:
             self.output.extend(result.output)
-        self.messages.extend(result.as_messages())
+        result_messages = result.as_messages()
+        if len(result_messages) > 0:
+            self.messages.extend(result_messages)
+
+    def output_messages(self) -> list[Message]:
+        """
+        提供给对客户端输出的消息.
+        """
+        return self.output.copy()
+
+    def execution_messages(self) -> list[Message]:
+        messages = self.messages.copy()
+        if self.interrupted or self.exception:
+            status_message = Message.new(role="system")
+            lines = []
+            if self.interrupted:
+                lines.append("Interrupted!")
+            if self.exception:
+                lines.append("Exception: %s" % self.exception)
+            if len(self.success_tasks) > 0:
+                lines.append("success: %d" % len(self.success_tasks))
+            if len(self.cancelled_tasks) > 0:
+                lines.append("canceled: %d" % len(self.cancelled_tasks))
+            if len(self.failed_tasks) > 0:
+                lines.append("failed: %d" % len(self.failed_tasks))
+            if len(self.pending_tasks) > 0:
+                lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
+            if len(lines) > 0:
+                status_message.with_content("\n".join(lines))
+                messages.append(status_message)
+        return messages
 
 
 class Interpreter(ABC):
@@ -254,8 +262,13 @@ class Interpreter(ABC):
         """each time stream interpretation has a unique id"""
         pass
 
+    @property
     @abstractmethod
-    def interrupted(self) -> Interpretation | None:
+    def logger(self) -> LoggerItf:
+        pass
+
+    @abstractmethod
+    def last(self) -> Interpretation | None:
         """
         上一轮被中断的解释结果.
         """
@@ -300,7 +313,7 @@ class Interpreter(ABC):
         """
         pass
 
-    def merge_messages(self, history: list[Message], inputs: list[Message]) -> list[Message]:
+    def merge_messages(self, history: list[Message | dict], inputs: list[Message | dict]) -> list[Message | dict]:
         """
         遵循系统规则合并消息体, 生成一个模型上下文.
         此处也是提示如何使用 interpreter 来定义上下文.
@@ -352,28 +365,13 @@ class Interpreter(ABC):
         """
         pass
 
-    @contextlib.asynccontextmanager
-    async def commit_ctx(self):
-        """
-        语法糖, 方便执行
-        >>> async def run_interpreter(interpreter: Interpreter, items: AsyncIterable[str]):
-        >>>     # 保证回收 interpreter 资源.
-        >>>     async with interpreter:
-        >>>         # 保证提交了 commit
-        >>>         async with interpreter.commit_ctx():
-        >>>             async for item in items:
-        >>>                 interpreter.feed(item)
-        >>>         await interpreter.wait_stopped()
-        """
-        yield
-        self.commit()
-
     async def interpret(self, deltas: AsyncIterable[str]) -> None:
         """
         语法糖, 一个完整的解析过程, 需要包含 feed 和 commit.
         """
         async for delta in deltas:
-            self.feed(delta)
+            if not self.feed(delta):
+                break
         self.commit()
 
     @abstractmethod
@@ -391,15 +389,15 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def string_token_parser(self) -> StringTokenParser:
+    def text_token_parser(self) -> TextTokenParser:
         """
         interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
         command task 会自动回调 interpreter 执行.
 
         >>> def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
-        >>>     with interpreter.string_token_parser() as parser:
+        >>>     with interpreter.text_token_parser() as parser:
         >>>         async for delta in deltas:
-        >>>         parser.feed(delta)
+        >>>             parser.feed(delta)
 
         注意 Parser 是同步阻塞的, 因此正确的做法是使用 interpreter 自带的 feed 函数实现非阻塞.
         通常 parser 运行在独立的线程池中.
@@ -407,7 +405,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def command_token_parser(self) -> CommandTokenParserElement:
+    def command_token_parser(self) -> CommandTokenParser:
         """
         当前 Interpreter 做树形 Command Token 解析时使用的 Element 对象. debug 用.
         通常运行在独立的线程池中.
@@ -435,11 +433,18 @@ class Interpreter(ABC):
         """
         pass
 
+    @abstractmethod
+    def managing_tasks(self) -> dict[str, CommandTask]:
+        """
+        管理的 tasks, 可能包含上一轮生成的.
+        """
+        pass
+
     def done_tasks(self) -> list[CommandTask]:
         """
         返回已经被执行的 tasks. 包含被取消或者出错的.
         """
-        tasks = self.compiled_tasks().copy()
+        tasks = self.managing_tasks().copy()
         executed = []
         for task in tasks.values():
             if not task.done():
@@ -447,11 +452,11 @@ class Interpreter(ABC):
             executed.append(task)
         return executed
 
-    def undone_tasks(self) -> list[CommandTask]:
+    def incomplete_tasks(self) -> list[CommandTask]:
         """
         返回已经解析成功, 但没有被执行完的 tasks.
         """
-        tasks = self.compiled_tasks().copy()
+        tasks = self.managing_tasks().copy()
         pending = []
         for task in tasks.values():
             if not task.done():
@@ -469,8 +474,8 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def close(
-            self,
-            cancel_executing: bool = True,
+        self,
+        cancel_executing: bool = True,
     ) -> Interpretation | None:
         """
         stop the interpretation
@@ -508,17 +513,6 @@ class Interpreter(ABC):
     async def __aenter__(self) -> Self:
         """
         example to use the interpreter:
-
-        async with interpreter as itp:
-            # the interpreter started
-            async for item in async_iterable_texts:
-                # 判断是否被中断. 如果被中断可以 break.
-                if not itp.is_stopped():
-                    itp.feed(item)
-
-            await itp.wait_until_done()
-
-        result = itp.results()
         """
         pass
 
@@ -556,13 +550,13 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    async def wait(
-            self,
-            timeout: float | None = None,
-            *,
-            return_when: str = asyncio.ALL_COMPLETED,
-            throw: bool = False,
-            clear_undone: bool = True,
+    async def wait_tasks(
+        self,
+        timeout: float | None = None,
+        *,
+        return_when: str = asyncio.ALL_COMPLETED,
+        throw: bool = False,
+        clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
         阻塞等待所有生成的 task, 并且按 return when 的规则返回.
@@ -572,3 +566,157 @@ class Interpreter(ABC):
         :param clear_undone: 退出这个函数时, 是否要设置未完成的 Task 为 Cleared
         """
         pass
+
+    # --- interpreter 的无状态解析函数 --- #
+
+    async def aparse_text_to_command_tokens(
+        self,
+        texts: AsyncIterable[str],
+        *,
+        stopped: Callable[[], bool] | None = None,
+    ) -> AsyncIterable[CommandToken]:
+        """
+        将同步函数封装成异步函数, 同时仍然能正确抛出异常.
+        """
+        text_queue = queue.Queue()
+        token_queue = asyncio.Queue()
+        loop = asyncio.get_event_loop()
+        stop_event = asyncio.Event()
+
+        def callback(token: CommandToken | None) -> None:
+            loop.call_soon_threadsafe(token_queue.put_nowait, token)
+
+        def real_stop():
+            """
+            判定强行中断实机.
+            """
+            nonlocal stop_event
+            if stop_event.is_set():
+                return True
+            if stopped and stopped():
+                return True
+            return False
+
+        async def consume():
+            """
+            消费传入的 texts.
+            """
+            nonlocal texts
+            async for text in texts:
+                text_queue.put(text)
+            text_queue.put(None)
+
+        cor = asyncio.to_thread(self.parse_text_to_command_tokens, text_queue, callback, stopped=real_stop)
+        parsing_task = asyncio.create_task(cor)
+
+        async def read_from():
+            """
+            读取消息.
+            """
+            while not real_stop():
+                item = await token_queue.get()
+                if item is None:
+                    break
+                yield item
+            await parsing_task
+
+        consume_task = asyncio.create_task(consume())
+        try:
+            async for got in read_from():
+                yield got
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            text_queue.put(None)
+            stop_event.set()
+            self.logger.exception(
+                "[Interpreter][%s] failed parsing text into command tokens: %r", self.__class__.__name__, e
+            )
+            raise e
+        finally:
+            # 冗余的回收.
+            if not parsing_task.done():
+                parsing_task.cancel()
+            if not consume_task.done():
+                consume_task.cancel()
+
+    async def parse_tokens_to_command_tasks(
+        self,
+        tokens_queue: asyncio.Queue[CommandToken | None],
+        task_callback: Callable[[CommandTask | None], None],
+        *,
+        stopped: Callable[[], bool] | None = None,
+    ):
+        """
+        可以运行在协程中, 解析输入的 tokens 流, 返回 Command Tasks. 用毒丸做判断.
+        raise InterpreterError
+        """
+        parser = self.command_token_parser()
+        # parser.with_callback(task_callback)
+        if stopped is None:
+
+            def empty_stopped():
+                return False
+
+            stopped = empty_stopped
+        try:
+            with parser:
+                while not stopped() and not parser.is_end():
+                    try:
+                        item = await asyncio.wait_for(tokens_queue.get(), 0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    if item is None:
+                        break
+                    tasks = parser.on_token(item)
+                    if tasks is not None:
+                        for task in tasks:
+                            # print("++++++++++++++++++++ wait compiled task", task)
+                            # run partial on compiled
+                            await task.on_compiled()
+                            task_callback(task)
+                    await asyncio.sleep(0.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.exception(
+                "[Interpreter][%s] failed parsing tokens into command tasks: %r", self.__class__.__name__, e
+            )
+            raise e
+        finally:
+            task_callback(None)
+            parser.destroy()
+
+    def parse_text_to_command_tokens(
+        self,
+        text_queue: queue.Queue[str | None],
+        command_token_callback: Callable[[CommandToken | None], None],
+        *,
+        stopped: Callable[[], bool] | None = None,
+    ):
+        """
+        通常运行在独立线程中, 解析输入的 Text 流, 返回 Command Token 流. 用毒丸做判断.
+        raise InterpreterError
+        """
+        text_token_parser = self.text_token_parser()
+        text_token_parser.with_callback(command_token_callback)
+        if stopped is None:
+
+            def empty_stopped():
+                return False
+
+            stopped = empty_stopped
+        with text_token_parser:
+            while not text_token_parser.is_done():
+                if stopped():
+                    text_token_parser.stop()
+                    break
+                try:
+                    # check every 0.1 second if the loop is stopped.
+                    item = text_queue.get(block=True, timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    text_token_parser.commit()
+                    break
+                text_token_parser.feed(item)

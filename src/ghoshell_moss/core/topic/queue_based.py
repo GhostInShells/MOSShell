@@ -19,15 +19,15 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
     """
 
     def __init__(
-            self,
-            service_stopped: asyncio.Event,
-            *,
-            model: type[TOPIC_MODEL] | None,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
-            logger: LoggerItf | None = None,
+        self,
+        service_stopped: asyncio.Event,
+        *,
+        model: type[TOPIC_MODEL] | None,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
+        logger: LoggerItf | None = None,
     ):
         self._model = model
         self._listening = topic_name or model.default_topic_name()
@@ -133,14 +133,14 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 
 class QueueBasedPublisher(Publisher):
     def __init__(
-            self,
-            *,
-            creator: str,
-            publish_queue: asyncio.Queue,
-            service_stopped_event: asyncio.Event,
-            uid: str | None = None,
-            logger: LoggerItf | None = None,
-            frequent: float = 0.0,
+        self,
+        *,
+        creator: str,
+        publish_queue: asyncio.Queue,
+        service_stopped_event: asyncio.Event,
+        uid: str | None = None,
+        logger: LoggerItf | None = None,
+        frequent: float = 0.0,
     ):
         self._publish_queue = publish_queue
         self._service_stopped_event = service_stopped_event
@@ -336,12 +336,12 @@ class QueueBasedTopicService(TopicService):
         return list(self._subscribers.keys())
 
     def subscribe(
-            self,
-            topic_name: str,
-            *,
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
+        self,
+        topic_name: str,
+        *,
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[None]:
         return self._create_subscriber(
             topic_name=topic_name,
@@ -352,13 +352,13 @@ class QueueBasedTopicService(TopicService):
         )
 
     def subscribe_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         return self._create_subscriber(
             topic_name=topic_name,
@@ -369,13 +369,13 @@ class QueueBasedTopicService(TopicService):
         )
 
     def _create_subscriber(
-            self,
-            model: type[TopicModel] | None,
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
+        self,
+        model: type[TopicModel] | None,
+        *,
+        topic_name: str = "",
+        uid: str | None = None,
+        maxsize: int = 0,
+        keep: Literal["latest", "oldest"] = "latest",
     ) -> Subscriber:
         """ """
         # 没有 await, 预计不会让出控制权. 所以这一版不加锁了.

@@ -19,9 +19,10 @@ async def test_shell_parse_tokens_baseline():
             tokens.append(token)
         assert len(tokens) == 4
 
+        tasks = []
         with pytest.raises(InterpretError):
-            async for token in shell.parse_text_to_command_tokens("<bar />"):
-                tokens.append(token)
+            async for task in shell.parse_text_to_tasks("<bar />"):
+                tasks.append(task)
 
 
 @pytest.mark.asyncio
@@ -51,3 +52,23 @@ async def test_shell_parse_tokens_to_tasks():
         async for t in tasks:
             got.append(t)
         assert len(got) == 3
+
+
+@pytest.mark.asyncio
+async def test_shell_attrs_parsing():
+    shell = CTMLShell()
+
+    @shell.main_channel.build.command()
+    async def foo(f: float | None, i: int, b: bool, c: list, d: dict):
+        return f, i, b, c, d
+
+    async with shell:
+        assert shell.is_running()
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<foo f='0.2' i='1' b='False' c='[1, 2]' d='{}'/>")
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks()
+            interpreter.raise_exception()
+            assert len(tasks) == 1
+            task = list(tasks.values())[0]
+            assert await task == (0.2, 1, False, [1, 2], {})

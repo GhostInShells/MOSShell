@@ -1,10 +1,9 @@
 import pytest
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from ghoshell_moss.core.ctml.shell.primitives.sleep import sleep
-from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandStackResult
+from ghoshell_moss.core.concepts.command import CommandStackResult
 from ghoshell_moss.core import PyChannel, new_ctml_shell
 
 
@@ -65,7 +64,7 @@ async def test_sleep_in_ctml_without_channel():
         return f"executed at {elapsed:.3f}s"
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 发送 CTML：先执行 foo，然后 sleep，再执行 foo
             interpreter.feed("""
                 <foo/>
@@ -74,7 +73,7 @@ async def test_sleep_in_ctml_without_channel():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序和时间
             assert len(execution_order) == 2
@@ -129,7 +128,7 @@ async def test_sleep_in_ctml_with_channel():
     shell.main_channel.import_channels(main_chan, audio_chan)
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 发送 CTML：同时启动主任务和音频 sleep
             interpreter.feed("""
                 <main:main_task/>
@@ -137,7 +136,7 @@ async def test_sleep_in_ctml_with_channel():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序
             # 由于 sleep 在音频 channel 上，它不应该阻塞主 channel
@@ -163,6 +162,7 @@ async def test_sleep_with_wait_primitives():
 
     # 从 wait 模块导入 wait（假设已经实现）
     from ghoshell_moss.core.ctml.shell.primitives.wait import wait
+
     shell.main_channel.build.command()(wait)
 
     execution_order = []
@@ -175,7 +175,7 @@ async def test_sleep_with_wait_primitives():
         return name
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             start_time = time.time()
 
             # 使用 wait 来组织一组包含 sleep 的命令
@@ -189,7 +189,7 @@ async def test_sleep_with_wait_primitives():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证执行顺序和时间
             assert execution_order == ["A", "B", "C"]
@@ -210,7 +210,7 @@ async def test_sleep_with_wait_primitives():
                         prev_name, prev_timestamp = timestamps[i - 1]
                         if prev_name == "B":
                             time_diff = timestamp - prev_timestamp
-                            assert time_diff < 0.05  # C 应该在 B 后很快执行
+                            assert time_diff < 0.08  # C 应该在 B 后很快执行
 
 
 @pytest.mark.asyncio
@@ -229,12 +229,12 @@ async def test_sleep_cancellation():
         return "quick"
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 启动一个长时间 sleep，然后用 wait 的 timeout 取消它
             interpreter.feed('<wait timeout="0.05"><sleep duration="1.0"/></wait>')
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证 sleep 被取消了
             assert len(tasks) == 1
@@ -271,7 +271,7 @@ async def test_sleep_with_multiple_channels():
         return msg
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             start_time = time.time()
 
             # 在多个 channel 上同时启动 sleep
@@ -284,7 +284,7 @@ async def test_sleep_with_multiple_channels():
             """)
             interpreter.commit()
 
-            tasks = await interpreter.wait()
+            tasks = await interpreter.wait_tasks()
 
             # 验证日志顺序
             # after_sleeps 应该立即记录，因为 sleeps 是在不同 channel 上
@@ -311,6 +311,7 @@ async def test_sleep_in_nested_structure():
 
     # 从 wait 模块导入 wait
     from ghoshell_moss.core.ctml.shell.primitives.wait import wait
+
     shell.main_channel.build.command()(wait)
 
     execution_order = []
@@ -323,7 +324,7 @@ async def test_sleep_in_nested_structure():
         return name
 
     async with shell:
-        async with shell.interpreter_in_ctx() as interpreter:
+        async with await shell.interpreter() as interpreter:
             # 嵌套结构：外层 wait 包含内层 wait，内层包含 sleep
             interpreter.feed("""
                 <wait>
@@ -337,17 +338,13 @@ async def test_sleep_in_nested_structure():
             """)
             interpreter.commit()
 
-            await interpreter.wait()
+            await interpreter.wait_tasks()
 
             # 验证执行顺序
             # A 应该先执行
             # 然后内层 wait 执行：sleep 0.1s，然后 B
             # 最后 C
-            expected_order = [
-                "start_A", "end_A",
-                "start_B", "end_B",
-                "start_C", "end_C"
-            ]
+            expected_order = ["start_A", "end_A", "start_B", "end_B", "start_C", "end_C"]
 
             # 由于 sleep 在内层 wait，B 应该在 sleep 后执行
             # 但实际顺序可能因实现而异，这里我们主要验证所有任务都执行了

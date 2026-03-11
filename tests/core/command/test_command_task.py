@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandStackResult,
     CommandTaskState,
     PyCommand,
+    CancelAfterOthersTask,
     CommandTaskResult,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
@@ -248,3 +249,19 @@ async def test_command_task_result():
     await task.run()
     assert task.result() == "hello"
     assert task.task_result().caller is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_task():
+    async def foo():
+        await asyncio.sleep(10)
+        return 123
+
+    foo_cmd = PyCommand(foo)
+    task = BaseCommandTask.from_command(foo_cmd)
+    cancel_task = CancelAfterOthersTask(task)
+
+    got = await asyncio.gather(task.run(), cancel_task.run(), return_exceptions=True)
+    for r in got:
+        pass
+    assert task.cancelled()

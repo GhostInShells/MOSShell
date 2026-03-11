@@ -2,17 +2,13 @@ import asyncio
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, AsyncIterable, AsyncIterator
-from typing_extensions import Self
-
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
-from ghoshell_moss.core.concepts.expressions import Expressions
 
 __all__ = [
     "InterpreterKind",
@@ -79,14 +75,17 @@ class MOSSShell(ABC):
     >>>         async with shell.subscribe_topic('agent/event') as subscriber:
     >>>             event = await subscriber.poll()
     >>>             ...  # 解析 event, 确认响应逻辑
-    >>>             interpreter = await shell.interpreter()
+    >>>             i: Interpreter = await shell.interpreter('clear')
+    >>>             # 获得运行结果.
+    >>>             interpretation = i.interpretation()
     >>>             # 使用关键帧生成的解释器, 完成上下文响应.
     >>>             async with interpreter:
     >>>                 # 来执行模型生成.
     >>>                 async for token in model_create_response():
-    >>>                     interpreter.feed(token)
-    >>>                 interpreter.commit()
+    >>>                     i.feed(token)
+    >>>                 i.commit()
     >>>                 ... # 等待 interpreter 结果并执行.
+    >>>                 interpretation = await i.wait_stopped()
     >>>
     >>>     # 启动 Shell
     >>>     async with shell:
@@ -107,26 +106,11 @@ class MOSSShell(ABC):
         pass
 
     @abstractmethod
-    def with_speech(self, speech: Speech) -> None:
-        """
-        注册 Speech 对象.
-        todo: 准备彻底重构这个实现.
-        """
-        pass
-
-    @abstractmethod
-    def with_expressions(self, expressions: Expressions) -> Self:
-        """
-        注册 expressions 模块.
-        """
-        pass
-
-    @abstractmethod
     async def pub_topic(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
+        self,
+        topic: Topic | TopicModel,
+        *,
+        name: str = "",
     ) -> None:
         """
         shell 广播 topic
@@ -135,12 +119,12 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def subscribe_topic_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            name: str = "",
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        model: type[TOPIC_MODEL],
+        *,
+        name: str = "",
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         shell 层监听 topic.
@@ -149,11 +133,11 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def subscribe_topic(
-            self,
-            name: str,
-            *,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
+        self,
+        name: str,
+        *,
+        maxsize: int = 0,
+        keep: SubscribeKeep = "latest",
     ) -> Subscriber:
         pass
 
@@ -222,7 +206,7 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def commands(
-            self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
+        self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -232,8 +216,8 @@ class MOSSShell(ABC):
 
     @abstractmethod
     def channel_metas(
-            self,
-            available: bool = True,
+        self,
+        available: bool = True,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -259,18 +243,22 @@ class MOSSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-            ignore_wrong_command: bool = False,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        stream_id: Optional[str] = None,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        clear_after_exit: bool = False,
+        ignore_wrong_command: bool = False,
     ) -> AsyncIterator[Interpreter]:
         """
         简单的语法糖.
         """
         interpreter = await self.interpreter(
-            kind=kind, stream_id=stream_id, config=config,
+            kind=kind,
+            stream_id=stream_id,
+            config=config,
+            clear_after_exit=clear_after_exit,
             ignore_wrong_command=ignore_wrong_command,
         )
         async with interpreter:
@@ -278,14 +266,16 @@ class MOSSShell(ABC):
 
     @abstractmethod
     async def interpreter(
-            self,
-            kind: InterpreterKind = "clear",
-            *,
-            stream_id: Optional[str] = None,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-            prepare_timeout: float = 2.0,
-            ignore_wrong_command: bool = False,
-            token_replacements: dict[str, str] | None = None,
+        self,
+        kind: InterpreterKind = "clear",
+        *,
+        meta_instruction: str | None = None,
+        stream_id: Optional[str] = None,
+        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+        prepare_timeout: float = 2.0,
+        ignore_wrong_command: bool = False,
+        token_replacements: dict[str, str] | None = None,
+        clear_after_exit: bool = False,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -315,118 +305,95 @@ class MOSSShell(ABC):
                     所以 (v - m) * k * 3 > n * m    就有正收益.
                     假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
 
+        :param clear_after_exit: clear undone tasks after exit.
         """
         pass
 
     async def parse_text_to_command_tokens(
-            self,
-            text: str | AsyncIterable[str],
-            kind: InterpreterKind = "dry_run",
+        self,
+        text: str | AsyncIterable[str],
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
         """
-        from ghoshell_moss.core.helpers.stream import create_sender_and_receiver
+        interpreter = await self.interpreter("dry_run")
+        if isinstance(text, str):
 
-        sender, receiver = create_sender_and_receiver()
+            async def generate():
+                yield text
 
-        async def _parse_token():
-            with sender:
-                async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.string_token_parser().with_callback(sender.append)
-                    if isinstance(text, str):
-                        interpreter.feed(text)
-                    else:
-                        async for delta in text:
-                            interpreter.feed(delta)
-                    await interpreter.wait_compiled()
-
-        t = asyncio.create_task(_parse_token())
-        async for token in receiver:
+            text_stream = generate()
+        else:
+            text_stream = text
+        async for token in interpreter.aparse_text_to_command_tokens(text_stream):
             if token is None:
                 break
             yield token
-        await t
 
     async def parse_tokens_to_command_tasks(
-            self,
-            tokens: AsyncIterable[CommandToken],
-            kind: InterpreterKind = "dry_run",
-    ) -> AsyncIterator[CommandTask]:
+        self,
+        tokens: AsyncIterable[CommandToken],
+        *,
+        ignore_wrong_command: bool = False,
+    ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
         """
-        _queue = asyncio.Queue[CommandTask | None | Exception]()
+        _token_queue = asyncio.Queue[CommandToken | None]()
+        _task_queue = asyncio.Queue[CommandTask | None | Exception]()
+        interpreter = await self.interpreter("dry_run", ignore_wrong_command=ignore_wrong_command)
 
-        async def _parse_task():
+        async def sender():
             try:
-                async with self.interpreter_in_ctx(kind) as interpreter:
-                    interpreter.on_task_compiled(_queue.put_nowait)
-                    parser = interpreter.command_token_parser()
-                    async for token in tokens:
-                        parser.on_token(token)
-
-                    await interpreter.wait_compiled()
-            except asyncio.CancelledError:
-                raise
+                async for token in tokens:
+                    await _token_queue.put(token)
+                    await asyncio.sleep(0.0)
             except Exception as e:
-                _queue.put_nowait(e)
+                raise e
             finally:
-                _queue.put_nowait(None)
+                _token_queue.put_nowait(None)
 
-        t = asyncio.create_task(_parse_task())
-        while True:
-            item = await _queue.get()
-            if item is None:
-                break
-            elif isinstance(item, Exception):
-                raise item
-            else:
+        sender_task = asyncio.create_task(sender())
+        consumer_task = asyncio.create_task(
+            interpreter.parse_tokens_to_command_tasks(_token_queue, _task_queue.put_nowait),
+        )
+        try:
+            while True:
+                item = await _task_queue.get()
+                if item is None:
+                    break
                 yield item
+                await asyncio.sleep(0.0)
+            await consumer_task
+        finally:
+            if not sender_task.done():
+                sender_task.cancel()
 
     async def parse_text_to_tasks(
-            self,
-            text: str | AsyncIterable[str] | list[str],
-            kind: InterpreterKind = "dry_run",
-            *,
-            ignore_wrong_command: bool = False,
+        self,
+        text: str | AsyncIterable[str] | list[str],
+        *,
+        ignore_wrong_command: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks
         """
-        _queue = asyncio.Queue[CommandTask | None | Exception]()
 
-        if isinstance(text, str):
-            text = [text]
-
-        async def _parse_task():
-            try:
-                async with self.interpreter_in_ctx(kind, ignore_wrong_command=ignore_wrong_command) as interpreter:
-                    interpreter.on_task_compiled(_queue.put_nowait)
-                    if isinstance(text, list):
-                        for chunk in text:
-                            interpreter.feed(chunk)
-                    else:
-                        async for chunk in text:
-                            interpreter.feed(chunk)
-                    interpreter.commit()
-                    await interpreter.wait_compiled()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                _queue.put_nowait(e)
-            finally:
-                _queue.put_nowait(None)
-
-        t = asyncio.create_task(_parse_task())
-        while True:
-            item = await _queue.get()
-            if item is None:
-                break
-            elif isinstance(item, Exception):
-                raise item
+        async def generate_text():
+            if isinstance(text, str):
+                yield text
+                return
+            elif isinstance(text, list):
+                for content in text:
+                    yield content
+                return
             else:
-                yield item
+                async for content in text:
+                    yield content
+
+        tokens = self.parse_text_to_command_tokens(generate_text())
+        async for task in self.parse_tokens_to_command_tasks(tokens, ignore_wrong_command=ignore_wrong_command):
+            yield task
 
     # --- runtime methods --- #
 

@@ -8,7 +8,7 @@ from ghoshell_container import Container, IoCContainer
 from pydantic import ValidationError
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
-from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken
+from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken, CommandTaskState
 from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -571,7 +571,7 @@ class DuplexChannelProvider(ChannelProvider):
         # 真正执行这个 task.
         try:
             # 多余的, 没什么用.
-            task.set_state("running")
+            task.set_state(CommandTaskState.executing.value)
             await self._add_running_task(task)
             await self._root_runtime.push_task(task)
             await task

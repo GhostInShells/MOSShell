@@ -105,11 +105,11 @@ async def test_zmq_channel_with_timeout():
 
             # 测试超时命令（应该会超时）
             # 注意：这里我们期望超时，所以应该捕获 TimeoutError
-            with pytest.raises(CommandError):
-                result = await asyncio.wait_for(cmd(3.0), timeout=0.5)
-
+            with pytest.raises(asyncio.TimeoutError):
+                result = await asyncio.wait_for(cmd(3.0), timeout=0.2)
     finally:
         provider.close()
+        await provider.wait_closed()
 
 
 @pytest.mark.asyncio

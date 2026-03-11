@@ -13,16 +13,6 @@ class FatalError(Exception):
     pass
 
 
-class InterpretError(Exception):
-    """
-    解释器解释异常, 是可以恢复的异常.
-
-    todo: 还没有用起来
-    """
-
-    pass
-
-
 class CommandError(Exception):
     """
     Command 运行时异常的封装, 所有的 command 的最佳实践都是用 CommandError 替代原来的 error.
@@ -34,6 +24,15 @@ class CommandError(Exception):
         self.message = message
         error_msg = CommandErrorCode.description(code, message)
         super().__init__(error_msg)
+
+
+class InterpretError(CommandError):
+    """
+    解释器解释异常, 是可以恢复的异常.
+    """
+
+    def __init__(self, message: str = ""):
+        super().__init__(CommandErrorCode.INTERPRET_ERROR.value, message)
 
 
 class CommandErrorCode(int, Enum):
@@ -49,8 +48,6 @@ class CommandErrorCode(int, Enum):
 
     # AI 需要感知到的普通运行结果.
     SUCCESS = 0
-    # 最常用的异常方式, 建议用它包装所有的 AI 需要感知的异常.
-    FAILED = 100
 
     # --- 不需要立刻响应, 而且 AI 也不需要关心的异常. 通常是系统调度结果. --- #
 
@@ -62,6 +59,9 @@ class CommandErrorCode(int, Enum):
     TIMEOUT = 202
     # 命令被中断.
     INTERRUPTED = 203
+
+    # --- 需要 AI 感知的异常. --- #
+    FAILED = 300
 
     # --- 不合法的异常, 需要 AI 立刻去响应. --- #
 
@@ -80,6 +80,7 @@ class CommandErrorCode(int, Enum):
     NOT_RUNNING = 405
     # channel 未连接.
     NOT_CONNECTED = 406
+    INTERPRET_ERROR = 407
 
     # --- 命令执行不可接受的异常 --- #
     # 对于 AI 而言必须要立刻感知的致命异常.
@@ -90,13 +91,47 @@ class CommandErrorCode(int, Enum):
         return CommandError(self.value, message)
 
     @classmethod
-    def need_observe(cls, err: Exception) -> bool:
+    def is_cancelled(cls, err: Exception | int) -> bool:
         if err is None:
             return False
-        if not isinstance(err, CommandError):
-            return True
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return False
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
+        return 200 <= code < 300
+
+    @classmethod
+    def is_failed(cls, err: Exception | int) -> bool:
+        if err is None:
+            return False
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return True
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
+        return code >= 300
+
+    @classmethod
+    def is_critical(cls, err: Exception | int) -> bool:
+        if err is None:
+            return False
+        if isinstance(err, Exception):
+            if not isinstance(err, CommandError):
+                return True
+            code = err.code
+        elif isinstance(err, int):
+            code = err
+        else:
+            return False
         # 400 以上的异常对解释流程是致命的.
-        return err.code >= 400
+        return code >= 400
 
     def match(self, error: Exception | None) -> bool:
         if not error:
