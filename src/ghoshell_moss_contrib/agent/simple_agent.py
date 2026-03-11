@@ -268,6 +268,7 @@ class SimpleAgent:
                 response_stream = await litellm.acompletion(**params)
                 first = False
                 async for chunk in response_stream:
+                    await asyncio.sleep(0.0)
                     if not first:
                         self.logger.info("[SimpleAgent] receive first token")
                         first = True

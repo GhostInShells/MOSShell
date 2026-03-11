@@ -24,6 +24,7 @@ def create_ctml_main_chan(experimental: bool = True) -> Channel:
     if experimental:
         chan.build.command()(wait)
         chan.build.command()(sample)
+        chan.build.command()(observe)
     # sleep 原语
     chan.build.command()(sleep)
     # clear 原语
@@ -31,7 +32,6 @@ def create_ctml_main_chan(experimental: bool = True) -> Channel:
     # wait idle 原语.
     chan.build.command()(wait_idle)
     chan.build.command()(noop)
-    chan.build.command()(observe)
     chan.build.command()(branch)
     chan.build.command()(loop)
     chan.build.add_command(interrupt_command)

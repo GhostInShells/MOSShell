@@ -152,12 +152,12 @@ async def test_sample_invalid_pick_zero():
             assert len(interpretation.messages) > 0
             error_msg_found = False
             for msg in interpretation.messages:
-                #if msg.type == "text" and msg.contents:
+                # if msg.type == "text" and msg.contents:
                 if not msg.contents:
                     continue
                 for content in msg.contents:
-                    assert content['type'] == 'text'
-                    if "pick must be >= 1" in content['data']['text']:
+                    assert content["type"] == "text"
+                    if "pick must be >= 1" in content["data"]["text"]:
                         error_msg_found = True
                         break
             assert error_msg_found, f"Expected error message not found in {interpretation.messages}"
@@ -200,7 +200,7 @@ async def test_sample_invalid_pick_exceed():
                 if not msg.contents:
                     continue
                 for content in msg.contents:
-                    if "requires at least" in content['data']['text']:
+                    if "requires at least" in content["data"]["text"]:
                         error_msg_found = True
                         break
             assert error_msg_found, f"Expected error message not found in {interpretation.messages}"

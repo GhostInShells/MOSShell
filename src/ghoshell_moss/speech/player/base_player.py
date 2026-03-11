@@ -84,7 +84,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         # 等待工作线程结束
         if self._thread and self._thread.is_alive():
             # 放入停止信号
-            self._audio_queue.put(None)
+            self._audio_queue.put_nowait(None)
             self._thread.join(timeout=2.0)
 
         self.logger.info("%s player is closed", self._log_prefix)
