@@ -122,7 +122,6 @@ class ConversationTurn(BaseModel, WithAdditional):
             data['inputs'] = inputs
         if instructions:
             data['instruction'] = instructions
-        data['variables'] = self.variables.model_copy()
         new_turn = ConversationTurn(**data)
         new_turn.last_turn_id = self.turn_id
         new_turn.index = self.index + 1
@@ -343,7 +342,7 @@ class Conversation(BaseModel, WithAdditional):
         meta = ConversationMeta(**data)
         return cls(
             meta=meta,
-            recap=recap or [],
+            recap=recap,
         )
 
     def add_turn(self, turn: ConversationTurn):
@@ -352,7 +351,7 @@ class Conversation(BaseModel, WithAdditional):
         """
         if len(self.history) > 0:
             last_turn = self.history[-1]
-            turn.last_turn_id = last_turn.id
+            turn.last_turn_id = last_turn.turn_id
             turn.index = last_turn.index + 1
         self.history.append(turn)
 
@@ -375,7 +374,7 @@ class Conversation(BaseModel, WithAdditional):
         turns = []
         for turn in self.history:
             # use summary as truncate point
-            if recap_strategy and recap_strategy in turn.reca:
+            if recap_strategy and recap_strategy in turn.recaps:
                 turns = [turn]
             else:
                 turns.append(turn)
@@ -418,7 +417,7 @@ class Conversation(BaseModel, WithAdditional):
         if len(self.history) == 0:
             data = {}
             if turn_id:
-                data["id"] = turn_id
+                data["turn_id"] = turn_id
             if trace_id:
                 data["trace_id"] = trace_id
             return ConversationTurn(**data)
@@ -450,19 +449,17 @@ class Conversation(BaseModel, WithAdditional):
         history = self.history
         length = len(self.history)
         cut_from = length - remain_turns - 1
+
         if cut_from < 0:
-            remain_turns = history
+            remaining_history = history
         else:
-            remain_turns = history[cut_from:]
+            remaining_history = history[cut_from:]
 
         return Conversation(
             meta=fork_meta,
-            title=self.title,
-            description=self.description,
-            summary=self.summary,
             recap=recap,
             # 关键, 清空 history 从头开始.
-            history=[turn.model_copy(deep=True) for turn in remain_turns],
+            history=[turn.model_copy(deep=True) for turn in remaining_history],
         )
 
     def delete_turn(self, turn_id: str) -> bool:
