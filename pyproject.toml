@@ -40,9 +40,9 @@ contrib = [
     "pymupdf>=1.27.1",
 ]
 
-[tool.setuptools]
-packages = ["src"]
-
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["*test*", ".discuss*"]
 
 [tool.pdm.build]
 includes = []
