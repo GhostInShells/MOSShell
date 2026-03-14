@@ -261,23 +261,6 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
 
         return _server_caller_as_command
 
-    async def execute(self, task: CommandTask[R]) -> R:
-        if not self.is_running():
-            raise RuntimeError("MCPChannel is not running")
-        func = self._get_command_func(task.meta)
-        if func is None:
-            raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
-
-        try:
-            message = await func(*task.args, **task.kwargs)
-            task.resolve(message)
-            return message
-        except CommandError as e:
-            task.fail(e)
-        except Exception as e:
-            # unknown exception, stop execute
-            raise e
-
         # --- 工具转Command的核心逻辑 --- #
 
     def _convert_tools_to_command_metas(self, tools: list[types.Tool]) -> list[CommandMeta]:

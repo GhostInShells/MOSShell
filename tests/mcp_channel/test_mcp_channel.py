@@ -217,34 +217,20 @@ async def test_mcp_channel_execute():
             )
 
             async with mcp_channel.bootstrap() as runtime:
-                add_cmd = runtime.get_command("add")
-                assert add_cmd is not None
+                #task = runtime.create_command_task("add", args=(1, 2))
+                #await runtime.push_task(task)
+                message = await runtime.execute_command("add", args=(1, 2))
+                assert message is not None
 
-                task = BaseCommandTask.from_command(
-                    add_cmd,
-                    chan_="mcp",
-                    args=(1, 2),
-                )
-
-                await runtime.execute(task)
-                task_result = task.task_result()
-                assert task_result is not None
-                assert task_result.result is not None
-
-                mcp_call_tool_result = get_mcp_call_tool_result(task_result.result)
+                mcp_call_tool_result = get_mcp_call_tool_result(message)
                 assert mcp_call_tool_result.isError is False
                 assert mcp_call_tool_result.structuredContent["result"] == 3
 
                 bar_cmd = runtime.get_command("bar")
                 assert bar_cmd is not None
+                task = runtime.create_command_task("bar", kwargs={"s": "hello"})
 
-                task = BaseCommandTask.from_command(
-                    bar_cmd,
-                    chan_="mcp",
-                    kwargs={"s": "hello"},
-                )
-
-                await runtime.execute(task)
+                await runtime.push_task(task)
                 task_result = task.task_result()
                 assert task_result is not None
                 assert task_result.result is not None
@@ -255,14 +241,9 @@ async def test_mcp_channel_execute():
 
                 foo_cmd = runtime.get_command("foo")
                 assert foo_cmd is not None
+                task = runtime.create_command_task("foo", kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})}, )
 
-                task = BaseCommandTask.from_command(
-                    foo_cmd,
-                    chan_="mcp",
-                    kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})},
-                )
-
-                await runtime.execute(task)
+                await runtime.push_task(task)
                 task_result = task.task_result()
                 assert task_result is not None
                 assert task_result.result is not None
@@ -296,87 +277,95 @@ async def test_mcp_channel_execute_exception():
             )
 
             async with mcp_channel.bootstrap() as runtime:
-                # Test 1: bar command with invalid JSON (single arg "aaa")
-                bar_cmd = runtime.get_command("bar")
-                assert bar_cmd is not None
+                # Test 0: execute command
+                with pytest.raises(CommandError) as e:
+                    _ = await runtime.execute_command("bar", args=("aaa",), )
 
-                task = BaseCommandTask.from_command(
-                    bar_cmd,
-                    chan_="mcp",
+                # Test 1: bar command with invalid JSON (single arg "aaa")
+                assert runtime.get_command("bar") is not None
+                task = runtime.create_command_task(
+                    name="bar",
                     args=("aaa",),  # invalid JSON
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid `text__` parameter format" in task.errmsg
-                assert "INVALID JSON schema" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
+                msg = e.args[0]
+                assert "invalid `text__` parameter format" in msg
+                assert "INVALID JSON schema" in msg
 
                 # Test 2: multi command with missing required arg "d"
-                multi_cmd = runtime.get_command("multi")
-                assert multi_cmd is not None
-
-                task = BaseCommandTask.from_command(
-                    multi_cmd,
-                    chan_="mcp",
+                assert runtime.get_command("multi") is not None
+                task = runtime.create_command_task(
+                    name="multi",
                     args=(1, 2),
                     kwargs={"a": 2, "c": 3},  # missing "d"
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.FAILED.value
-                assert "MCP tool: call failed" in task.errmsg
-                assert "Field required" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.FAILED.value
+                msg = e.args[0]
+                assert "MCP tool: call failed" in msg
+                assert "Field required" in msg
 
                 # Test 3: add command with invalid JSON string
-                add_cmd = runtime.get_command("add")
-                assert add_cmd is not None
-
-                task = BaseCommandTask.from_command(
-                    add_cmd,
-                    chan_="mcp",
+                assert runtime.get_command("add") is not None
+                task = runtime.create_command_task(
+                    name="add",
                     args=("invalid_json",),
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid `text__` parameter format" in task.errmsg
-                assert "INVALID JSON schema" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
+                msg = e.args[0]
+                assert "invalid `text__` parameter format" in msg
+                assert "INVALID JSON schema" in msg
 
                 # Test 4: foo command with non-string arg (int)
-                foo_cmd = runtime.get_command("foo")
-                assert foo_cmd is not None
-
-                task = BaseCommandTask.from_command(
-                    foo_cmd,
-                    chan_="mcp",
+                assert runtime.get_command("foo") is not None
+                task = runtime.create_command_task(
+                    name="foo",
                     args=(12345,),  # should be string for JSON parsing
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.VALUE_ERROR.value
-                assert 'invalid "text__" type' in task.errmsg
-                assert "the JSON object must be str, bytes or bytearray, not int" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
+                msg = e.args[0]
+                assert 'invalid "text__" type' in msg
+                assert "the JSON object must be str, bytes or bytearray, not int" in msg
 
                 # Test 5: bar command with too many parameters
-                task = BaseCommandTask.from_command(
-                    bar_cmd,
-                    chan_="mcp",
+                task = runtime.create_command_task(
+                    name="bar",
                     kwargs={"s": "aaa", "extra_param": "extra"},
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid parameters" in task.errmsg.lower()
-                assert "too many parameters passed" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
+                msg = e.args[0]
+                assert "invalid parameters" in msg.lower()
+                assert "too many parameters passed" in msg
 
                 # Test 6: multi command with too few parameters
-                task = BaseCommandTask.from_command(
-                    multi_cmd,
-                    chan_="mcp",
+                task = runtime.create_command_task(
+                    name="multi",
                     kwargs={"a": 1, "b": 2},  # missing required params
                 )
 
-                await runtime.execute(task)
-                assert task.errcode == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid parameters" in task.errmsg.lower()
-                assert "too few parameters passed" in task.errmsg
+                await runtime.push_task(task)
+                e = task.exception()
+                assert isinstance(e, CommandError)
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
+                msg = e.args[0]
+                assert "invalid parameters" in msg.lower()
+                assert "too few parameters passed" in msg
