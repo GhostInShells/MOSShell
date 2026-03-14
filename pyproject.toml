@@ -23,6 +23,11 @@ wss = ["websockets>=15.0.1"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
+cli = [
+    "ghoshell-common[codex]",
+    "rich>=14.3.2",
+]
+
 # 所有测试性的依赖放一起. 注意, 由于 live2d-py 0.5.0 以上版本依赖 python 3.12, 所以需要设置本地 python
 contrib = [
     "litellm>=1.78.5",
@@ -39,6 +44,10 @@ contrib = [
     "loadenv>=0.1.1",
     "pymupdf>=1.27.1",
 ]
+
+
+[project.scripts]
+ghoshell = "ghoshell_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
