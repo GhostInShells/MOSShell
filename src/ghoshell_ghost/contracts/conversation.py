@@ -523,6 +523,9 @@ class ConversationStore(ABC):
     所以实际运行的时候, 可能是通过队列等方式来实现保存的.
 
     如果要用 Asyncio 来调用, 需要使用 asyncio.to_thread 卸载到线程.
+
+    Note: 关于并行思维架构中上下文分发的设计讨论，请参考
+          `.design/2026-03-15-conversation_storage_and_parallel_thought_context_distribution.md`
     """
 
     @abstractmethod
