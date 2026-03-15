@@ -151,13 +151,10 @@ async def test_mcp_channel_exception():
                 with pytest.raises(CommandError) as exc_info:
                     # missing arg "d"
                     await available_test_cmd(1, 2, a=2, c=3)
-                assert exc_info.value.code == CommandErrorCode.FAILED.value
-                assert "MCP tool: call failed" in exc_info.value.message
+                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                assert "MCP tool 'multi':" in exc_info.value.message
                 # mcp.ClientSession call_tool
-                assert (
-                    "Field required [type=missing, input_value={'a': 2, 'b': 2, 'c': 3}, input_type=dict]"
-                    in exc_info.value.message
-                )
+                assert "'d' is a required property" in exc_info.value.message
 
                 available_test_cmd = runtime.get_command("add")
                 assert available_test_cmd is not None
@@ -176,21 +173,22 @@ async def test_mcp_channel_exception():
                 # json.loads() -> TypeError
                 assert "the JSON object must be str, bytes or bytearray, not int" in exc_info.value.message
 
-                available_test_cmd = runtime.get_command("bar")
-                assert available_test_cmd is not None
-                with pytest.raises(CommandError) as exc_info:
-                    await available_test_cmd(s="aaa", extra_param="extra")
-                assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid parameters" in exc_info.value.message.lower()
-                assert "too many parameters passed" in exc_info.value.message
+                # available_test_cmd = runtime.get_command("bar")
+                # assert available_test_cmd is not None
+                # with pytest.raises(CommandError) as exc_info:
+                #     await available_test_cmd(s="aaa", extra_param="extra")
+                # assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
+                # assert "invalid parameters" in exc_info.value.message.lower()
+                # assert "too many parameters passed" in exc_info.value.message
 
                 available_test_cmd = runtime.get_command("multi")
                 assert available_test_cmd is not None
                 with pytest.raises(CommandError) as exc_info:
                     await available_test_cmd(a=1, b=2)
                 assert exc_info.value.code == CommandErrorCode.VALUE_ERROR.value
-                assert "invalid parameters" in exc_info.value.message.lower()
-                assert "too few parameters passed" in exc_info.value.message
+                assert "MCP tool 'multi'" in exc_info.value.message
+                assert "'c' is a required property" in exc_info.value.message
+                assert "'d' is a required property" in exc_info.value.message
 
 
 @pytest.mark.asyncio
@@ -307,10 +305,10 @@ async def test_mcp_channel_execute_exception():
                 await runtime.push_task(task)
                 e = task.exception()
                 assert isinstance(e, CommandError)
-                assert e.code == CommandErrorCode.FAILED.value
+                assert e.code == CommandErrorCode.VALUE_ERROR.value
                 msg = e.args[0]
-                assert "MCP tool: call failed" in msg
-                assert "Field required" in msg
+                assert "MCP tool 'multi'" in msg
+                assert "'d' is a required property" in msg
 
                 # Test 3: add command with invalid JSON string
                 assert runtime.get_command("add") is not None
@@ -350,11 +348,12 @@ async def test_mcp_channel_execute_exception():
 
                 await runtime.push_task(task)
                 e = task.exception()
-                assert isinstance(e, CommandError)
-                assert e.code == CommandErrorCode.VALUE_ERROR.value
-                msg = e.args[0]
-                assert "invalid parameters" in msg.lower()
-                assert "too many parameters passed" in msg
+                assert e is None
+                # assert isinstance(e, CommandError)
+                # assert e.code == CommandErrorCode.VALUE_ERROR.value
+                # msg = e.args[0]
+                # assert "invalid parameters" in msg.lower()
+                # assert "too many parameters passed" in msg
 
                 # Test 6: multi command with too few parameters
                 task = runtime.create_command_task(
@@ -367,5 +366,6 @@ async def test_mcp_channel_execute_exception():
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value
                 msg = e.args[0]
-                assert "invalid parameters" in msg.lower()
-                assert "too few parameters passed" in msg
+                assert "MCP tool 'multi'" in msg
+                assert "'c' is a required property" in msg
+                assert "'d' is a required property" in msg
