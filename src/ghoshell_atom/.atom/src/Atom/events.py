@@ -1,5 +1,6 @@
 from ghoshell_ghost.concepts.eventbus import EventModel
-from ghoshell_ghost.atom.framework.events import *
+# 加载系统框架默认的 events.
+from ghoshell_atom.framework.events import *
 
 """
 Atom 全局使用的 events 声明. 
