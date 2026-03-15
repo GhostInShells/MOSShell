@@ -275,7 +275,7 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息体的生成结束时间",
     )
-    finish_reason: Optional[str] = Field(default=None, description="消息体中断的原因")
+    stop_reason: Optional[str] = Field(default=None, description="消息体中断的原因")
 
 
 class Delta(TypedDict):

@@ -139,3 +139,14 @@ async def test_command_with_sync_func():
 
     command = PyCommand(bar)
     assert await command() == 123
+
+
+@pytest.mark.asyncio
+async def test_pydantic_understand_schema():
+    from pydantic import validate_call, TypeAdapter
+
+    def bar(b: int):
+        return b
+
+    adapter = TypeAdapter(bar)
+    assert "properties" in adapter.json_schema()

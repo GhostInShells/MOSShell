@@ -2,8 +2,12 @@ import json
 from collections.abc import Callable, Coroutine
 from typing import Any, Generic, Optional, TypeVar
 
+from jsonschema import Draft202012Validator, Draft201909Validator, Draft7Validator, Draft6Validator
+
 from ghoshell_moss import CommandError, CommandErrorCode
 from ghoshell_moss.compatible.mcp_channel.utils import mcp_call_tool_result_to_message
+from ghoshell_moss.speech.volcengine_tts.protocol import Message
+from ghoshell_moss.types import Observe
 
 try:
     import mcp
@@ -21,6 +25,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandDeltaType,
     CommandMeta,
     CommandTask,
+    CommandTaskResult,
     CommandTaskState,
     CommandWrapper,
 )
@@ -41,6 +46,13 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
         "boolean": "bool",
         "array": "list",
         "object": "dict",
+    }
+
+    DIALECT_DRAFT_TABLE: dict[str, Any] = {
+        #"": Draft202012Validator,
+        "draft-07": Draft7Validator,
+        "draft-06": Draft6Validator,
+        "draft/2019-09": Draft201909Validator,
     }
 
     COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
@@ -160,83 +172,100 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 return CommandWrapper(meta=command_meta, func=func)
         return None
 
+    def _get_validator(self, args_schema: dict):
+        dialect = args_schema.get('$schema', '')
+        if type(dialect) is not str:
+            dialect = ''
+        dialect = dialect.lower()
+        Validator = Draft202012Validator
+        for dialect_key, _Validator in self.DIALECT_DRAFT_TABLE.items():
+            if dialect_key in dialect:
+                Validator = _Validator
+        return Validator(args_schema)
+
     def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
         args_schema_properties = meta.args_schema.get("properties", {})
         required_args_list = meta.args_schema.get("required", [])
-        schema_param_count = len(args_schema_properties)
+        #schema_param_count = len(args_schema_properties)
         required_schema_param_count = len(required_args_list)
+
+        def _assemble_params(*args, **kwargs):
+            final_kwargs = {}
+            param_count = len(args) + len(kwargs)
+
+            if param_count != 1:
+                for arg_name, arg in zip(args_schema_properties.keys(), args):
+                    final_kwargs[arg_name] = arg
+                final_kwargs.update(kwargs)
+                return final_kwargs
+
+            # param_count == 1:
+            if len(args) == 1:
+                if required_schema_param_count == 1:
+                    if type(args[0]) is not str:
+                        param_name = required_args_list[0]
+                        final_kwargs[param_name] = args[0]
+                        return final_kwargs
+
+                text__ = args[0]
+
+            else: # len(kwargs) == 1:
+                # Prioritize parsing "text__"
+                if "text__" in kwargs:
+                    text__ = kwargs["text__"]
+
+                elif required_schema_param_count == 1:
+                    return kwargs
+
+                #if "text__" not in kwargs:
+                else:
+                    raise CommandError(
+                        code=CommandErrorCode.VALUE_ERROR.value,
+                        message=f'MCP tool: missing "text__" parameters, kwargs={kwargs}',
+                    )
+
+            try:
+                final_kwargs = json.loads(text__)
+            except TypeError as e:
+                raise CommandError(
+                    code=CommandErrorCode.VALUE_ERROR.value,
+                    message=f'MCP tool: invalid "text__" type, {str(e)}',
+                )
+            except json.JSONDecodeError as e:
+                raise CommandError(
+                    code=CommandErrorCode.VALUE_ERROR.value,
+                    message=(
+                        f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"
+                    ),
+                )
+            return final_kwargs
+
 
         # 回调服务端.
         async def _server_caller_as_command(*args, **kwargs):
             # 调用MCP客户端执行工具
             try:
-                if required_schema_param_count > schema_param_count:
-                    raise CommandError(
-                        code=CommandErrorCode.VALUE_ERROR.value,
-                        message=(
-                            "MCP tool: invalid parameter count, required parameter: "
-                            f"{required_schema_param_count}, schema parameter: {schema_param_count}"
-                        ),
-                    )
 
-                param_count = len(args) + len(kwargs)
-                final_kwargs = {}
-                if schema_param_count == 0:  # do nothing
-                    if param_count != 0:
-                        raise CommandError(
-                            code=CommandErrorCode.VALUE_ERROR.value,
-                            message=f"MCP tool: no parameter, invalid, args={args}, kwargs={kwargs}",
-                        )
-                else:  # schema_param_count > 1
-                    if not (param_count == 1 or required_schema_param_count <= param_count <= schema_param_count):
-                        raise CommandError(
-                            code=CommandErrorCode.VALUE_ERROR.value,
-                            message=f"MCP tool: invalid parameters, invalid, args={args}, kwargs={kwargs}",
-                        )
-                    if param_count == 1:
-                        if len(args) == 1:
-                            if required_schema_param_count == 1:
-                                if type(args[0]) is not str:
-                                    [param_name, param_info], *_ = args_schema_properties.items()
-                                    if param_type := param_info.get("type", None):
-                                        if type(args[0]).__name__ == self._mcp_type_2_py_type(param_type):
-                                            final_kwargs[param_name] = args[0]
+                final_kwargs = _assemble_params(*args, **kwargs)
 
-                            if not len(final_kwargs):
-                                try:
-                                    final_kwargs = json.loads(args[0])
-                                except TypeError as e:
-                                    raise CommandError(
-                                        code=CommandErrorCode.VALUE_ERROR.value,
-                                        message=f'MCP tool: invalid "text__" type, {str(e)}',
-                                    )
-                                except json.JSONDecodeError as e:
-                                    raise CommandError(
-                                        code=CommandErrorCode.VALUE_ERROR.value,
-                                        message=(
-                                            f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"
-                                        ),
-                                    )
-                        else:
-                            if "text__" in kwargs:
-                                final_kwargs = json.loads(kwargs["text__"])
-                            elif required_schema_param_count == 1:
-                                param_name = required_args_list[0]
-                                if param_name not in kwargs:
-                                    raise CommandError(
-                                        code=CommandErrorCode.VALUE_ERROR.value,
-                                        message=f'MCP tool: unknown parameter "{param_name}" parameter format.',
-                                    )
-                                final_kwargs.update(kwargs)
-                            else:
-                                raise CommandError(
-                                    code=CommandErrorCode.VALUE_ERROR.value,
-                                    message=f'MCP tool: missing "text__" parameters, kwargs={kwargs}',
-                                )
-                    else:
-                        for arg_name, arg in zip(args_schema_properties.keys(), args):
-                            final_kwargs[arg_name] = arg
-                        final_kwargs.update(kwargs)
+                # 使用 jsonschema 验证参数是否符合 schema
+                if meta.args_schema:
+                    # http://modelcontextprotocol.io/specification/draft/basic
+                    # Schema Dialect
+                    validator = self._get_validator(meta.args_schema)
+                    if errs := validator.iter_errors(final_kwargs):
+                        msgs = []
+                        for e in errs:
+                            msg = e.message
+                            if e.json_path and e.json_path[0] != "$":
+                                msg += f" at {e.json_path}"
+                            msgs.append(msg)
+                        if msgs:
+                            message = f"MCP tool '{meta.name}': {';'.join(msgs)}"
+                            raise CommandError(
+                                code=CommandErrorCode.VALUE_ERROR.value,
+                                message=message,
+                            )
 
                 mcp_result = await self._mcp_client.call_tool(
                     name=meta.name,
@@ -244,6 +273,8 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 )
                 # convert to moss Message
                 return mcp_call_tool_result_to_message(mcp_result, name=self.name)
+            except CommandError as e:
+                raise e
             except mcp.McpError as e:
                 raise CommandError(code=CommandErrorCode.FAILED.value, message=f"MCP call failed: {str(e)}") from e
             except Exception as e:
@@ -252,14 +283,6 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 ) from e
 
         return _server_caller_as_command
-
-    async def execute(self, task: CommandTask[R]) -> R:
-        if not self.is_running():
-            raise RuntimeError("MCPChannel is not running")
-        func = self._get_command_func(task.meta)
-        if func is None:
-            raise LookupError(f"Channel {self._name} can find command {task.meta.name}")
-        return await func(*task.args, **task.kwargs)
 
         # --- 工具转Command的核心逻辑 --- #
 
