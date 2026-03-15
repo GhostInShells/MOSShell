@@ -215,8 +215,8 @@ async def test_mcp_channel_execute():
             )
 
             async with mcp_channel.bootstrap() as runtime:
-                #task = runtime.create_command_task("add", args=(1, 2))
-                #await runtime.push_task(task)
+                # task = runtime.create_command_task("add", args=(1, 2))
+                # await runtime.push_task(task)
                 message = await runtime.execute_command("add", args=(1, 2))
                 assert message is not None
 
@@ -239,7 +239,10 @@ async def test_mcp_channel_execute():
 
                 foo_cmd = runtime.get_command("foo")
                 assert foo_cmd is not None
-                task = runtime.create_command_task("foo", kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})}, )
+                task = runtime.create_command_task(
+                    "foo",
+                    kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})},
+                )
 
                 await runtime.push_task(task)
                 task_result = task.task_result()
@@ -277,7 +280,10 @@ async def test_mcp_channel_execute_exception():
             async with mcp_channel.bootstrap() as runtime:
                 # Test 0: execute command
                 with pytest.raises(CommandError) as e:
-                    _ = await runtime.execute_command("bar", args=("aaa",), )
+                    _ = await runtime.execute_command(
+                        "bar",
+                        args=("aaa",),
+                    )
 
                 # Test 1: bar command with invalid JSON (single arg "aaa")
                 assert runtime.get_command("bar") is not None

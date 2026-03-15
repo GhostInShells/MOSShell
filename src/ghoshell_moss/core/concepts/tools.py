@@ -42,11 +42,12 @@ class ToolMeta(BaseModel):
                 "description": self.description,
                 "strict": self.strict,
                 "parameters": self.parameters,
-            }
+            },
         }
 
     def to_openai_function_def(self) -> dict:
         from openai.types.shared_params import FunctionDefinition
+
         return FunctionDefinition(
             name=self.name,
             description=self.description,
@@ -59,7 +60,7 @@ class ToolMeta(BaseModel):
             input_schema=self.parameters,
             name=self.name,
             description=self.description,
-            allowed_callers=['direct'],
+            allowed_callers=["direct"],
             defer_loading=True,
         )
 

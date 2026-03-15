@@ -49,7 +49,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     }
 
     DIALECT_DRAFT_TABLE: dict[str, Any] = {
-        #"": Draft202012Validator,
+        # "": Draft202012Validator,
         "draft-07": Draft7Validator,
         "draft-06": Draft6Validator,
         "draft/2019-09": Draft201909Validator,
@@ -173,9 +173,9 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
         return None
 
     def _get_validator(self, args_schema: dict):
-        dialect = args_schema.get('$schema', '')
+        dialect = args_schema.get("$schema", "")
         if type(dialect) is not str:
-            dialect = ''
+            dialect = ""
         dialect = dialect.lower()
         Validator = Draft202012Validator
         for dialect_key, _Validator in self.DIALECT_DRAFT_TABLE.items():
@@ -186,7 +186,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
         args_schema_properties = meta.args_schema.get("properties", {})
         required_args_list = meta.args_schema.get("required", [])
-        #schema_param_count = len(args_schema_properties)
+        # schema_param_count = len(args_schema_properties)
         required_schema_param_count = len(required_args_list)
 
         def _assemble_params(*args, **kwargs):
@@ -209,7 +209,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
 
                 text__ = args[0]
 
-            else: # len(kwargs) == 1:
+            else:  # len(kwargs) == 1:
                 # Prioritize parsing "text__"
                 if "text__" in kwargs:
                     text__ = kwargs["text__"]
@@ -217,7 +217,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 elif required_schema_param_count == 1:
                     return kwargs
 
-                #if "text__" not in kwargs:
+                # if "text__" not in kwargs:
                 else:
                     raise CommandError(
                         code=CommandErrorCode.VALUE_ERROR.value,
@@ -234,18 +234,14 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
             except json.JSONDecodeError as e:
                 raise CommandError(
                     code=CommandErrorCode.VALUE_ERROR.value,
-                    message=(
-                        f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"
-                    ),
+                    message=(f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"),
                 )
             return final_kwargs
-
 
         # 回调服务端.
         async def _server_caller_as_command(*args, **kwargs):
             # 调用MCP客户端执行工具
             try:
-
                 final_kwargs = _assemble_params(*args, **kwargs)
 
                 # 使用 jsonschema 验证参数是否符合 schema
