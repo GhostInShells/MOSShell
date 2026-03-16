@@ -3,10 +3,10 @@ from typing import TYPE_CHECKING, Iterable
 from typing_extensions import Self
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
-
 from ghoshell_ghost.concepts.modes import GhostMode
 from ghoshell_ghost.concepts.session import Session
 from ghoshell_ghost.concepts.eventbus import EventModel
+from ghoshell_ghost.contracts.configs import ConfigType
 
 
 class GhostRuntime(ABC):
@@ -171,7 +171,14 @@ class Ghost(ABC):
     @abstractmethod
     def event_models(self) -> Iterable[type[EventModel]]:
         """
-        当前 Ghost 实例中所有支持的 EventModel. 需要集中注册.
+        当前 Ghost 实例中所有支持的 EventModel. 需要集中注册, 方便自解释.
+        """
+        pass
+
+    @abstractmethod
+    def config_models(self) -> Iterable[type[ConfigType]]:
+        """
+        当前 Ghost 实例中所有的 ConfigType. 需要集中注册, 方便自解释.
         """
         pass
 
@@ -227,7 +234,6 @@ class Ghost(ABC):
         """
         pass
 
-    @abstractmethod
     def modes(self) -> dict[str, "GhostMode"]:
         """
         Ghost 可以静态地读取出系统所有定义的 Mode.
@@ -244,7 +250,6 @@ class Ghost(ABC):
         # 可以认为是一种 "廉价的过度设计" (提高认知成本, 必要, 第一轮开发没有实际代价)
         return {'': self.default_mode()}
 
-    @abstractmethod
     def error_mode(self) -> "GhostMode":
         """
         非常关键的概念. Ghost 进入一个标准运行时后, 一定是选择了某个 Mode 在运行.
