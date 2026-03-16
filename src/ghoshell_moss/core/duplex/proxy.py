@@ -542,7 +542,7 @@ class DuplexChannelContext:
             self.logger.exception("%s failed to send delta args %s", self._log_prefix, exc)
             raise
 
-    async def send_command_task(self, task: CommandTask) -> CommandCallEvent:
+    async def send_command_task(self, task: CommandTask, paths: Optional[ChannelPaths]=None) -> CommandCallEvent:
         try:
             cid = task.cid
             # 清空已经存在的 cid 错误?
@@ -561,11 +561,14 @@ class DuplexChannelContext:
                 if not isinstance(delta_value, str):
                     deltas = task.kwargs.pop(task.meta.delta_arg)
 
+            chan = task.chan
+            if paths is not None:
+                chan = Channel.join_channel_path("", *paths)
             event = CommandCallEvent(
                 session_id=self.session_id,
                 name=task.meta.name,
                 # channel 名称使用 provider 侧的名称, 用来对 channel 寻址.
-                chan=task.chan,
+                chan=chan,
                 command_id=task.cid,
                 args=list(task.args),
                 kwargs=dict(task.kwargs),
@@ -689,7 +692,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return self._ctx.is_channel_available(self._provider_chan_path)
 
     async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
-        event = await self._ctx.send_command_task(task)
+        event = await self._ctx.send_command_task(task, paths)
         _ = asyncio.create_task(self._ctx.expect_task_done(event, task))
 
     async def _main_loop(self) -> None:
@@ -730,16 +733,17 @@ class DuplexChannelRuntime(AbsChannelRuntime):
                 result[command_meta.name] = command
         return result
 
-    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
+    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
         result = {}
         if not self.is_running():
             return {}
         for channel_path, meta in self.metas().items():
             for command_meta in meta.commands:
-                unique_name = Command.make_uniquename(channel_path, command_meta.name)
                 func = self._get_provider_command_func(channel_path, command_meta)
+                if channel_path not in result:
+                    result[channel_path] = {}
                 command = CommandWrapper(meta=command_meta, func=func)
-                result[unique_name] = command
+                result[channel_path][command_meta.name] = command
         return result
 
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:

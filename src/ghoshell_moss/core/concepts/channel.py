@@ -518,14 +518,16 @@ class Channel(ABC):
         pass
 
     @staticmethod
-    def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
+    def join_channel_path(parent: ChannelFullPath, *names: str) -> ChannelFullPath:
         """连接父子 channel 名称的标准语法. 作为全局的约束方式."""
         # todo: 校验 name 的类型, 不允许不合法的 name.
+        res = parent
         if parent:
-            if not name:
-                return parent
-            return f"{parent}.{name}"
-        return name
+            for name in names:
+                if not name:
+                    continue
+                res = f"{res}.{name}"
+        return res
 
     @staticmethod
     def split_channel_path_to_names(channel_path: ChannelFullPath, limit: int = -1) -> ChannelPaths:

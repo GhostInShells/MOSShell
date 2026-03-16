@@ -1,6 +1,7 @@
 import asyncio
 import pytest
 
+from ghoshell_moss import new_ctml_shell
 from ghoshell_moss.core import Command, CommandError, CommandToken
 from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
 from ghoshell_moss.core.py_channel import PyChannel
@@ -542,3 +543,33 @@ async def test_thread_channel_do_not_share_local_topic():
 
                 # 仍然没有收到.
                 assert not poll_task.done()
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_shell():
+    chan = PyChannel(name="provider")
+
+    res = []
+    @chan.build.command()
+    async def foo():
+        res.append("1")
+
+    provider, proxy_chan = create_thread_channel("proxy")
+    async with provider.arun(chan):
+        shell = new_ctml_shell()
+        shell.main_channel.import_channels(proxy_chan)
+        async with shell:
+            await shell.wait_connected("proxy")
+            metas = shell.channel_metas()
+            assert 'proxy' in metas
+            shell_commands = shell.commands()
+            assert "proxy" in shell_commands
+
+            async with shell.interpreter_in_ctx() as interpreter:
+                interpreter.feed("<proxy:foo/>")
+                interpreter.commit()
+                tasks = await interpreter.wait_tasks()
+                assert len(tasks) == 1
+                interpreter.raise_exception()
+
+    assert res == ["1"]
