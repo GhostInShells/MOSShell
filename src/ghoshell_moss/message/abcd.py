@@ -517,11 +517,17 @@ class Message(BaseModel, WithAdditional):
 
     def as_contents(self) -> Iterable[ContentModel]:
         """
-        通过这种方式, 将当前消息协议 Protocol 为 '' 的, 自动转化成 ContentModel 可以放入别的协议.
+        通过这种方式, 将当前消息协议 Protocol 为 '' 的, 自动转化成 ContentModel
+        如果不支持 message meta, 可以兼容这个协议.
+        只需要转换 Text/Image 即可, meta 等信息都可以作为 Text 保存 (XML 语法)
+
+        核心目标是为了兼容 Anthropic 的消息协议
         """
         from ghoshell_moss.message.contents import ContentModelsDict, Text
         tag = self.xml_tag()
+        # 返回消息的开标记.
         yield Text.new(f'<{tag}>')
+        # 返回 Meta 信息.
         yield Text.new(self.meta.to_xml())
         if self.contents:
             for c in self.contents:
