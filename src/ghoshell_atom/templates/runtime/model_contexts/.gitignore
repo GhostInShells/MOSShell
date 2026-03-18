@@ -1,0 +1,4 @@
+*
+!.gitignore
+!uuid.model_context.yaml
+!README.md
