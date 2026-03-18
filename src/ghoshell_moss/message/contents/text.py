@@ -32,5 +32,6 @@ class Text(ContentModel):
     def marshal(self) -> str:
         return self.text
 
-    def unmarshal(self, content: str) -> Self:
+    @classmethod
+    def unmarshal(cls, content: str) -> dict:
         return {'text': content}

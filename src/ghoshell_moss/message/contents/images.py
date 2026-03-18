@@ -111,7 +111,8 @@ class Base64Image(ContentModel):
     def marshal(self) -> str:
         return self.data_url
 
-    def unmarshal(self, content: str) -> dict:
+    @classmethod
+    def unmarshal(cls, content: str) -> dict:
         parts = content.split(";base64,", 1)
         if len(parts) != 2:
             raise ValueError(f"invalid image content {content}")
