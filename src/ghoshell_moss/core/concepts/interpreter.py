@@ -333,7 +333,7 @@ class Interpreter(ABC):
             - outputs: 输出
             - observation: 需要观察的讯息.
         """
-        meta_message = Message.new(role="system").with_content(self.meta_instruction()).as_completed()
+        meta_message = Message.new(role="system").with_content(self.meta_instruction())
         messages = [meta_message]
         messages.extend(self.instruction_messages())
         messages.extend(history)

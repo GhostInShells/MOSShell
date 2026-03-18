@@ -327,7 +327,7 @@ class CTMLInterpreter(Interpreter):
                 "\n\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
                 f"\n=== end interface:{path_name} ===\n",
             )
-        messages.append(interface_message.as_completed())
+        messages.append(interface_message)
         for channel_path, channel_meta in self._channel_metas.items():
             path_name = channel_path or "__main__"
             if not channel_meta.available:
@@ -370,7 +370,7 @@ class CTMLInterpreter(Interpreter):
                     .with_content(
                         f"\n=== context:{path_name} ===\n",
                     )
-                    .as_completed(),
+                    ,
                 )
                 messages.extend(meta.context)
                 messages.append(
@@ -378,7 +378,7 @@ class CTMLInterpreter(Interpreter):
                     .with_content(
                         f"\n=== end context:{path_name} ===\n",
                     )
-                    .as_completed(),
+                    ,
                 )
         return messages
 

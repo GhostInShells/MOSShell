@@ -5,10 +5,10 @@ import pytest
 
 from ghoshell_moss.core.concepts.command import PyCommand, make_command_group
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
-from ghoshell_moss.core.helpers import get_console_logger
+# from ghoshell_moss.core.helpers import get_console_logger
 from ghoshell_moss.speech.mock import MockSpeech
 
-logger = get_console_logger(level="ERROR")
+# logger = get_console_logger(level="ERROR")
 
 
 @pytest.mark.asyncio
@@ -23,7 +23,7 @@ async def test_interpreter_baseline():
         stream_id="test",
         speech=MockSpeech(),
         callback=queue.append,
-        logger=logger,
+        # logger=logger,
     )
 
     content = "<foo>h</foo>"

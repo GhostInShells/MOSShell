@@ -58,14 +58,14 @@ def new_test_suite(*commands: Command) -> ElementTestSuite:
         command_map,
         output,
         ignore_wrong_command=True,
-        logger=get_console_logger(logging.DEBUG),
+        # logger=get_console_logger(logging.DEBUG),
     )
     root = ctx.new_root(tasks_queue.append, stream_id="test")
-    logger = get_console_logger()
+    # logger = get_console_logger()
     token_parser = CTML2CommandTokenParser(
         callback=root.on_token,
         stream_id="test",
-        logger=logger,
+        # logger=logger,
     )
     return ElementTestSuite(
         ctx=ctx,

@@ -52,7 +52,7 @@ async def branch(ctml__):
         result = CommandTaskResult()
         _ = await asyncio.gather(*[t.wait(throw=False) for t in got])
         for r in got:
-            result.join_result(r.result())
+            result.join_result(r.task_result())
         return result
 
     return CommandStackResult(

@@ -1,14 +1,17 @@
-from .text import Text, TextDelta
-from .functions import FunctionOutput, FunctionCall, FunctionCallDelta
+from .text import Text
 from .images import Base64Image, ImageUrl
+
+"""
+deprecated:
+自定义的 content 不再迭代. 
+"""
 
 ContentModels = [
     Text,
-    FunctionOutput,
-    FunctionCall,
     Base64Image,
     ImageUrl,
 ]
-"""
-可以用来解决粘包逻辑. 
-"""
+ContentModelsDict = {
+    m.content_type(): m for m in ContentModels
+}
+
