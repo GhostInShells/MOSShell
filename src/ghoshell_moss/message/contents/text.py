@@ -2,7 +2,7 @@ from typing_extensions import Self
 
 from pydantic import Field
 
-from ghoshell_moss.message.abcd import ContentModel
+from ghoshell_moss.message.abcd import ContentModel, Content
 
 __all__ = ["Text"]
 
@@ -13,7 +13,7 @@ __all__ = ["Text"]
 
 class Text(ContentModel):
     """
-    最基础的文本类型.
+    最基础的文本类型. 经过多轮改造, 保留用于兼容一些历史单测.
     """
 
     text: str = Field(
@@ -25,13 +25,5 @@ class Text(ContentModel):
     def new(cls, text: str) -> Self:
         return cls(text=text)
 
-    @classmethod
-    def content_type(cls) -> str:
-        return 'text'
-
-    def marshal(self) -> str:
+    def to_content(self) -> Content:
         return self.text
-
-    @classmethod
-    def unmarshal(cls, content: str) -> dict:
-        return {'text': content}

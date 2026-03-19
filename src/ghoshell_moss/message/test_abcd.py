@@ -3,23 +3,13 @@
 验证核心数据类型的基本功能
 """
 
-import json
-from datetime import datetime, timezone
-
-import pytest
+from datetime import datetime
 
 from ghoshell_moss.message.abcd import (
     Message,
     MessageMeta,
-    Role,
-    Content,
     Addition,
     WithAdditional,
-)
-from ghoshell_moss.message.contents import (
-    Text,
-    Base64Image,
-    ImageUrl,
 )
 
 
@@ -28,14 +18,12 @@ def test_message_meta_basic():
     meta = MessageMeta(
         role="user",
         name="test_user",
-        stage="thinking",
         issuer="terminal",
         issuer_id="term_001",
     )
 
     assert meta.role == "user"
     assert meta.name == "test_user"
-    assert meta.stage == "thinking"
     assert meta.issuer == "terminal"
     assert meta.issuer_id == "term_001"
     assert isinstance(meta.id, str) and len(meta.id) > 0
@@ -45,7 +33,6 @@ def test_message_meta_basic():
     xml = meta.to_xml()
     assert "role='user'" in xml
     assert "name='test_user'" in xml
-    assert "stage='thinking'" in xml
     assert xml.startswith("<meta") and xml.endswith("/>")
 
 
@@ -61,60 +48,12 @@ def test_message_creation():
     msg.with_content("Hello world")
     assert msg.contents is not None
     assert len(msg.contents) == 1
-    assert msg.contents[0]["type"] == "text"
-    assert msg.contents[0]["data"] == "Hello world"
+    assert msg.contents[0] == "Hello world"
 
     # 测试 is_empty
     empty_msg = Message.new()
     assert empty_msg.is_empty() == True
     assert msg.is_empty() == False
-
-
-def test_content_model_text():
-    """测试 Text ContentModel 转换"""
-    text_obj = Text(text="Hello world")
-
-    # 测试 marshal
-    marshaled = text_obj.marshal()
-    assert marshaled == "Hello world"
-
-    # 测试 to_content
-    content = text_obj.to_content()
-    assert content["type"] == "text"
-    assert content["data"] == "Hello world"
-
-    # 测试 from_content
-    recovered = Text.from_content(content)
-    assert recovered is not None
-    assert recovered.text == "Hello world"
-
-    # 测试 unmarshal
-    data = Text.unmarshal("Test text")
-    assert data == {"text": "Test text"}
-
-
-def test_content_model_image_url():
-    """测试 ImageUrl ContentModel 转换"""
-    url = "https://example.com/image.jpg"
-    img_obj = ImageUrl(url=url)
-
-    # 测试 marshal
-    marshaled = img_obj.marshal()
-    assert marshaled == url
-
-    # 测试 to_content
-    content = img_obj.to_content()
-    assert content["type"] == "image_url"
-    assert content["data"] == url
-
-    # 测试 from_content
-    recovered = ImageUrl.from_content(content)
-    assert recovered is not None
-    assert recovered.url == url
-
-    # 测试 unmarshal
-    data = ImageUrl.unmarshal(url)
-    assert data == {"url": url}
 
 
 def test_message_serialization():
@@ -140,11 +79,13 @@ def test_message_serialization():
     assert parsed.contents is not None
     assert len(parsed.contents) == 2
 
-    # 测试 XML 转换
-    xml = msg.to_xml()
-    assert xml.startswith("<message>") or xml.startswith("<message:")
-    assert "Hello" in xml
-    assert "World" in xml
+    # 测试 to_contents() 方法
+    contents = list(msg.to_contents())
+    assert len(contents) == 4  # 开始标签 + meta + 2个内容 + 结束标签
+    assert isinstance(contents[0], str) and contents[0].startswith("<message>")
+    assert contents[1] == "Hello"
+    assert contents[2] == "World"
+    assert isinstance(contents[3], str) and contents[3] == "</message>"
 
 
 def test_addition_system():
@@ -181,46 +122,3 @@ def test_addition_system():
     # 测试 get_or_create
     existing = addition.get_or_create(target)
     assert existing.field1 == addition.field1 and existing.field2 == addition.field2  # 值相等
-
-
-def test_role_enum():
-    """测试 Role 枚举功能"""
-    assert Role.USER.value == "user"
-    assert Role.ASSISTANT.value == "assistant"
-    assert Role.SYSTEM.value == "system"
-    assert Role.DEVELOPER.value == "developer"
-
-    # 测试 all() 方法
-    all_roles = Role.all()
-    assert "user" in all_roles
-    assert "assistant" in all_roles
-    assert "system" in all_roles
-    assert "developer" in all_roles
-
-    # 测试 new_meta 方法
-    meta = Role.USER.new_meta(name="test_user", stage="thinking")
-    assert meta.role == "user"
-    assert meta.name == "test_user"
-    assert meta.stage == "thinking"
-
-
-def test_message_with_raw_protocol():
-    """测试带原始协议的消息"""
-    raw_data = {
-        "role": "user",
-        "content": "Hello",
-        "name": "test_user"
-    }
-
-    msg = Message.from_raw(
-        protocol="openai",
-        raw_data=raw_data,
-        type="chat.completion",
-        meta=MessageMeta(role="user", name="test_user")
-    )
-
-    assert msg.protocol == "openai"
-    assert msg.raw == raw_data
-    assert msg.type == "chat.completion"
-    assert msg.meta.role == "user"
-    assert msg.meta.name == "test_user"

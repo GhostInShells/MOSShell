@@ -1,14 +1,13 @@
 import json
 from abc import ABC, abstractmethod
-from copy import deepcopy
-from enum import Enum
-from typing import Any, Callable, Literal, Optional, Protocol, Required, Iterable, TypeVar, Generic, NamedTuple
+from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias
 
-from ghoshell_common.helpers import timestamp_ms, uuid_md5, generate_module_and_attr_name
+from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, AwareDatetime
-from typing_extensions import Self, TypedDict, is_typeddict
-from datetime import datetime, UTC, timezone
+from typing_extensions import Self
+from datetime import datetime, timezone
+from pydantic_ai import UserContent, MultiModalContent, BinaryImage
 
 __all__ = [
     "Addition",
@@ -18,62 +17,21 @@ __all__ = [
     "HasAdditional",
     "Message",
     "MessageMeta",
-    "MessageTypeName",
-    "Role",
     "WithAdditional",
-    "MessageAdapter",
-    "MessageTransformer",
-    "RawT",
-    "ToRawT",
-    "MessageProtocol",
 ]
 
 """
-实现一个通用的消息协议。
+实现一个消息协议容器. 这个容器经过了几个阶段的改造: 
+- 一阶段: ghostos 项目中定义了面向 openai 的消息协议, 用来解决自己的 multi-ghosts 等问题. 
+- 二阶段: 为了实现 MOSS 架构在 channel meta 中依赖的消息定义, 重新定义了 message, 并且费劲做了协议兼容. 
 
-1. 提供可以兼容 openai、gemini、claude 等主流模型消息协议的容器。
-2. 可以无限扩展，而不需要重新定义消息结构。
-3. 支持存储, 通过 adapter 可以定义对模型的请求. 
+目前是三阶段, 考虑完全导向 pydantic ai 或者 anthropic 协议. 维护消息协议太辛苦, 但它又是系统最底层.
+
+从设计思想上, Message 放弃了流式传输层协议, 回到存储和同步协议: 
+1. 提供可以兼容 openai、gemini、claude 等主流模型消息协议的容器。考虑直接使用 Pydantic AI
+2. 彻底放弃 OpenAI 的强类型约定. 目前行业共同指向了消息体自解释, 也是殊途同归. 
+3. 放弃下行 (模型生成), 专注于上行消息协议. 
 """
-
-
-class Role(str, Enum):
-    """
-    消息体的角色, 兼容 OpenAI, 未来会有更多类型的消息.
-    由于消息本身兼顾应用侧传输, 和 AI 侧的上下文, 所以会存在一些 AI 看不到, 由系统发送的消息类型.
-    默认模型调用时会根据消息角色进行过滤, 只保留符合条件的类型.
-    """
-
-    UNKNOWN = ""
-    USER = "user"  # 代表用户的消息
-    ASSISTANT = "assistant"  # 代表 ai 自身
-    SYSTEM = "system"  # 兼容 openai 的 system 类型, 现在已经切换为 developer 类型了.
-    DEVELOPER = "developer"  # 兼容 openai 的 developer 类型消息.
-
-    @classmethod
-    def all(cls) -> set[str]:
-        return {member.value for member in cls}
-
-    def new_meta(self, name: Optional[str] = None, stage: str = "") -> "MessageMeta":
-        return MessageMeta(role=self.value, name=name, stage=str(stage))
-
-    def __str__(self):
-        return self.value
-
-
-class MessageTypeName(str, Enum):
-    """
-    系统定义的一些消息类型.
-
-    关于 MessageType 和 ContentType 的定位区别：
-    1. content type 是多模态消息的不同类型，比如文本、音频、图片等等。
-    2. message type 是高阶类型，定义了整个 Ghost 实现中哪些模块需要理解这个消息。
-        - 举个例子, 链路传输可能包含 debug 类型的消息, 它对图形界面展示很重要, 但对大模型则不需要理解.
-    3. 在解析消息/渲染消息时, 对应的 Handler 应该先理解 message type.
-    """
-
-    DEFAULT = ""  # 默认多模态消息类型
-
 
 Additional = Optional[dict[str, dict[str, Any]]]
 """
@@ -81,6 +39,7 @@ Additional = Optional[dict[str, dict[str, Any]]]
 它存储 弱类型/可序列化 的数据结构, 用 dict 来表示.
 但它实际对应一个强类型的数据结构, 用 pydantic.BaseModel 来定义.
 这样可以从弱类型容器中, 拿到一个强类型的数据结构, 但又不需要提前定义它. 
+这个数据不对 AI 暴露, 属于 Ghost In Shells 架构自身定义的交互数据. 
 """
 
 
@@ -210,6 +169,9 @@ class AdditionList:
         return result
 
 
+_now_utc = lambda: datetime.now(timezone.utc)
+
+
 class MessageMeta(BaseModel):
     """
     消息的元信息, 用来标记消息的维度.
@@ -224,44 +186,72 @@ class MessageMeta(BaseModel):
     """
 
     id: str = Field(
-        default_factory=uuid_md5,
+        default_factory=uuid,
         description="消息的全局唯一 ID",
-    )
-    stage: str = Field(
-        default='',
-        description="生产消息所属的阶段, 可以用于在历史消息中过滤消息. ",
-    )
-    role: str = Field(
-        default="",
-        description="消息体的角色",
-    )
-    name: Optional[str] = Field(
-        default=None,
-        description="消息的发送者身份. 作为 ghost in shells 架构中的标准概念.",
-    )
-    issuer: Optional[str] = Field(
-        default=None,
-        description="发送者的身份讯息. 在 ghost in shells 架构里, 输入和输出都是多端的. "
     )
     issuer_id: Optional[str] = Field(
         default=None,
         description="用来对 issuer 进行寻址. "
     )
+
+    role: str | None = Field(
+        default=None,
+        description="消息体的角色类型. 来自 感知器/用户/AI/功能 等等",
+    )
+    issuer: Optional[str] = Field(
+        default=None,
+        description="消息的发送",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="消息的发送者身份. 作为 ghost in shells 架构中的标准概念.",
+    )
     created_at: AwareDatetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=_now_utc,
         description="消息的创建时间, 一个消息只有一个创建时间",
     )
-    stop_reason: Optional[str] = Field(default=None, description="消息体中断的原因")
-
+    completed_at: AwareDatetime | None = Field(
+        default=None,
+        description="消息的结束时间",
+    )
+    incomplete: bool | None = Field(
+        default=None,
+        description="消息是否未结束",
+    )
     attributes: dict[str, Any] = Field(
         default_factory=dict,
         description="额外的 attributes 属性. "
     )
 
+    def as_incomplete(self) -> Self:
+        """
+        Ghost In Shells 特殊的协议标记.
+        由于时间是第一公民, 所以消息协议的开头与结尾时间很重要.
+        更重要的是, 按 ghost in shells 的设计, 模型可以看到未结束的信息.
+        比如响应的瞬间, 用户的 asr 解析尚未完成.
+        """
+        self.incomplete = True
+        self.completed_at = None
+        return self
+
+    def as_completed(self) -> Self:
+        """
+        标记消息为已经结束的消息.
+        """
+        self.incomplete = None
+        self.completed_at = _now_utc()
+
     def to_xml(self) -> str:
+        """
+        生成 XML 讯息, 其中时序感是默认必要的.
+        """
         attributes = self.attributes.copy()
-        update = self.model_dump(exclude_none=True, exclude={'attributes', 'id'})
-        attributes.update(update)
+        # 排除掉 ghost in shells 架构自身的关键维度信息.
+        update = self.model_dump(exclude_none=True, exclude={'attributes', 'id', 'issuer_id', 'stage'})
+        if len(update) > 0:
+            attributes.update(update)
+        if len(attributes) == 0:
+            return ''
         parts = []
         for attr, value in attributes.items():
             if value == '':
@@ -271,13 +261,10 @@ class MessageMeta(BaseModel):
         return f'<meta {attr_str} />'
 
 
-class Content(TypedDict):
-    """
-    消息的通用内容体. 目标是以字符串的形式呈现.
-    """
-
-    type: Required[str]
-    data: str
+Content: TypeAlias = str | MultiModalContent
+"""
+完全导向 pydantic ai 的技术实现. 而且只用 UserContent, 做上行通讯. 放弃下行协议存储. 
+"""
 
 
 class ContentModel(BaseModel, ABC):
@@ -286,122 +273,43 @@ class ContentModel(BaseModel, ABC):
     可以用来展示成指定的 <xml> 格式文本.
     """
 
-    @classmethod
     @abstractmethod
-    def content_type(cls) -> str:
-        pass
-
-    @classmethod
-    def from_content(cls, content: Content) -> Self | None:
-        """
-        从 content 弱类型容器中还原出强类型的数据结构.
-        """
-        if content["type"] != cls.content_type():
-            return None
-        try:
-            data = cls.unmarshal(content['data'])
-            return cls(**data)
-        except ValidationError:
-            return None
-
-    @abstractmethod
-    def marshal(self) -> str:
-        pass
-
-    @classmethod
-    @abstractmethod
-    def unmarshal(cls, content: str) -> dict:
-        pass
-
     def to_content(self) -> Content:
         """
         将强类型的数据结构, 转成弱类型的 content 对象.
         """
-        return Content(
-            type=self.content_type(),
-            data=self.marshal(),
-        )
+        pass
 
 
-ContextType = Content | ContentModel | str | Image.Image | BaseModel
-
-MessageProtocol = str | Literal['', 'anthropic', 'pydantic_ai', 'openai', 'gemini']
+ContextType = ContentModel | str | Image.Image | BaseModel
 
 
 class Message(BaseModel, WithAdditional):
     """
-    模型传输过程中的消息体. 本质上是兼具 存储/传输/展示 功能的通用数据容器.
+    MOSS 体系上行给模型的消息体. 目前完全倾向 Pydantic AI 数据结构.
 
     目标是:
-    1. 兼容几乎所有的模型, 及其多模态消息类型.
+    1. 兼容几乎所有的模型, 及其多模态消息类型. 依赖 Pydantic AI.
     2. 可以跨网络传输, 所有数据可以序列化.
     3. 可以用于本地存储.
-    4. 本身也是一个兼容弱类型的容器, 除了消息本身必要的讯息外, 其它的讯息都是弱类型的. 避免传输时需要转化各种数据类型.
     """
 
-    protocol: MessageProtocol = Field(
-        default='',
-        description="消息协议的类型, 用来将 raw 反解析成一个具体的协议",
+    protocol: Literal['pydantic_ai'] = Field(
+        default='pydantic_ai',
+        description="消息协议的类型. 未来可能要考虑扩充支持 raw 消息类型",
     )
     type: str = Field(
         default="",
         description="目标消息协议里的子类型. 用来生成具体的消息对象. ",
     )
-    version: str = Field(
-        default='',
-        description="与 protocol 一致的版本控制. 未来势必陷入转义地狱. "
-    )
     meta: MessageMeta = Field(
         default_factory=MessageMeta,
         description="消息的维度信息, 单独拿出来, 方便被其它数据类型所持有. ",
     )
-    raw: dict | str | None = Field(
-        default=None,
-        description="原始消息协议的可序列化数据. 用来反序列化. "
+    contents: list[Content] = Field(
+        default_factory=list,
+        description="消息里的原始 Content 对象.",
     )
-
-    contents: list[Content] | None = Field(
-        default=None,
-        description="moss 自身要用到的消息体, 仅在 protocol 为 '' 时有意义. ",
-    )
-
-    __raw__: Any | None = None
-    '''原始的消息数据, 序列化时不会使用. 但是在类型转换时应该优先检查. '''
-
-    @classmethod
-    def from_raw(
-            cls,
-            protocol: str,
-            raw_data: dict,
-            type: str,
-            *,
-            version: str = '',
-            meta: MessageMeta | None = None,
-            raw: Any | None = None,
-            additions: list[Addition] | None = None,
-    ):
-        meta = meta or MessageMeta()
-        r = cls(
-            meta=meta,
-            type=type,
-            protocol=protocol,
-            version=version,
-            raw=raw_data,
-        )
-        r.__raw__ = raw
-        if additions:
-            r.with_additions(*additions)
-        return r
-
-    @staticmethod
-    def content_to_xml(content: Content) -> str:
-        """
-        将 content 对象转化成 xml.
-        """
-        tag = content['type']
-        if not tag:
-            return content['data']
-        return f'<{tag}>{content}</{tag}>'
 
     @classmethod
     def new(
@@ -419,7 +327,7 @@ class Message(BaseModel, WithAdditional):
         meta = MessageMeta(
             role=role,
             name=name,
-            id=id or uuid_md5(),
+            id=id or uuid(),
         )
         return cls(meta=meta)
 
@@ -444,12 +352,10 @@ class Message(BaseModel, WithAdditional):
         """
         return self.meta.id
 
-    def with_content(self, *contents: ContextType) -> Self:
+    def with_content(self, *contents: ContextType | Content) -> Self:
         """
-        用来添加 content.
-        :deprecated: 希望未来用不同类型的 raw message. 不要自己迭代了.
+        用来添加 content. 简单做一个向前兼容的.
         """
-        from .contents import Base64Image, Text
 
         if self.contents is None:
             self.contents = []
@@ -457,28 +363,28 @@ class Message(BaseModel, WithAdditional):
         for item in contents:
             if item is None:
                 continue
-            elif is_typeddict(item):
-                _content = item
             elif isinstance(item, ContentModel):
                 _content = item.to_content()
             elif isinstance(item, str) and item:
-                _content = Text(text=item).to_content()
-            elif isinstance(item, Image.Image):
-                _content = Base64Image.from_pil_image(item).to_content()
-            elif isinstance(item, BaseModel):
-                _content = Content(
-                    type=generate_module_and_attr_name(item) or '',
-                    data=item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False),
-                )
-            elif isinstance(item, dict):
                 _content = item
+            elif isinstance(item, Image.Image):
+                _content = BinaryImage(item)
+            elif isinstance(item, BaseModel):
+                tag = generate_module_and_attr_name(item) or ''
+                serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
+                if tag:
+                    _content = f'<pydantic-model cls="{tag}">{serialized}</pydantic-model>'
+                else:
+                    _content = serialized
+            elif isinstance(item, dict) or isinstance(item, list):
+                _content = json.dumps(item)
             else:
-                continue
+                _content = item
             self.contents.append(_content)
         return self
 
     def is_empty(self) -> bool:
-        return self.contents is None and self.raw is None
+        return len(self.contents) == 0
 
     def dump(self) -> dict[str, Any]:
         """
@@ -494,231 +400,15 @@ class Message(BaseModel, WithAdditional):
         """
         return self.model_dump_json(indent=indent, ensure_ascii=False, exclude_none=True)
 
-    def xml_tag(self) -> str:
-        tag = 'message'
-        if self.protocol:
-            tag += f':{self.protocol}'
-            if self.version:
-                tag += f'-{self.version}'
-        return tag
-
-    def to_xml(self) -> str:
+    def to_contents(self) -> Iterable[UserContent]:
         """
-        将消息体化作 xml 信息.
+        将整个消息体返回成 Pydantic AI 的 User Content.
         """
-        tag = self.xml_tag()
-        meta_str = self.meta.to_xml()
-        content_parts = []
-        if self.contents:
-            for c in self.contents:
-                content_parts.append(self.content_to_xml(c))
-        content_str = ' '.join(content_parts)
-        return f'<{tag}>{meta_str}{content_str}</{tag}>'
-
-    def as_contents(self) -> Iterable[ContentModel]:
-        """
-        通过这种方式, 将当前消息协议 Protocol 为 '' 的, 自动转化成 ContentModel
-        如果不支持 message meta, 可以兼容这个协议.
-        只需要转换 Text/Image 即可, meta 等信息都可以作为 Text 保存 (XML 语法)
-
-        核心目标是为了兼容 Anthropic 的消息协议
-        """
-        from ghoshell_moss.message.contents import ContentModelsDict, Text
-        tag = self.xml_tag()
-        # 返回消息的开标记.
-        yield Text.new(f'<{tag}>')
-        # 返回 Meta 信息.
-        yield Text.new(self.meta.to_xml())
-        if self.contents:
-            for c in self.contents:
-                if c['type'] in ContentModelsDict:
-                    model_type = ContentModelsDict[c['type']]
-                    model = model_type.from_content(c)
-                    if model is not None:
-                        yield model
-                    continue
-                else:
-                    yield Text.new(Message.content_to_xml(c))
-        yield Text.new(f'</{tag}>')
-
-    def __str__(self):
-        return self.to_xml()
-
-
-RawT = TypeVar('RawT')
-
-
-class MessageAdapter(Generic[RawT], ABC):
-    """
-    消息协议转换器.
-    """
-
-    @classmethod
-    @abstractmethod
-    def protocol(cls) -> str:
-        pass
-
-    @abstractmethod
-    def raw_to_message(self, raw: RawT) -> Message:
-        """
-        将一个原始类型, 变成可存储传输的 Message 类型.
-        """
-        pass
-
-    @abstractmethod
-    def message_to_raw(self, message: Message) -> RawT | None:
-        """
-        将一个 Message 类型, 存储为 Raw 类型.
-        """
-        pass
-
-
-FromRawT = TypeVar('FromRawT')
-ToRawT = TypeVar('ToRawT')
-
-
-class MessageProtocolBridge(Generic[FromRawT, ToRawT], ABC):
-    """
-    消息协议转换器. 不关 Message 的事情了.
-    """
-
-    @classmethod
-    def from_protocol(cls) -> str:
-        pass
-
-    @classmethod
-    def to_protocol(cls) -> str:
-        pass
-
-    @abstractmethod
-    def transform(self, item: FromRawT) -> ToRawT | None:
-        pass
-
-
-class Expect(Generic[RawT]):
-    def __init__(self, protocol: str, expect_type: type[RawT], type_checker: Callable[[Any], bool] | None = None):
-        self.protocol = protocol
-        self.expect_type = expect_type
-        self.type_checker = type_checker
-
-    def check_type(self, item: Any) -> bool | None:
-        if self.type_checker is None:
-            return None
-        return self.type_checker(item)
-
-
-class MessageTransformer:
-    """
-    多重类型转换.
-    """
-
-    def __init__(self, adapters: list[MessageAdapter], bridges: list[MessageProtocolBridge]):
-        self._adapters: dict[str, MessageAdapter] = {}
-        self._bridges: dict[str, dict[str, MessageProtocolBridge]] = {}
-        for adapter in adapters:
-            self._adapters[adapter.protocol()] = adapter
-
-        for bridge in bridges:
-            from_protocol = bridge.from_protocol()
-            if from_protocol not in self._bridges:
-                self._bridges[from_protocol] = {}
-            self._bridges[from_protocol][bridge.to_protocol()] = bridge
-
-    @staticmethod
-    def expect(
-            protocol: str,
-            raw_type: type[ToRawT],
-            *,
-            type_checker: Callable[[Any], None] | None = None,
-    ) -> Expect[ToRawT]:
-        """
-        用来做类型提示. 可以节省引用一个类.
-        """
-        return Expect(protocol, raw_type, type_checker=type_checker)
-
-    def raw_to_message(self, raw: RawT, protocol: str) -> Message | None:
-        if raw is None:
-            return None
-        if isinstance(raw, Message):
-            return raw
-
-        if protocol not in self._adapters:
-            return None
-        # 只转换一层.
-        return self._adapters[protocol].raw_to_message(raw)
-
-    def message_to_raw(
-            self,
-            message: Message,
-            expect: Expect[ToRawT] | None = None,
-    ) -> ToRawT | None:
-        """
-        做消息类型的多重转换.
-
-        >>> def parse(transformer: MessageTransformer, msg: Message) -> str:
-        >>>     # 一个极端的例子
-        >>>     return transformer.message_to_raw(msg, transformer.expect('str', str))
-        """
-        raw_protocol = message.protocol
-        if raw_protocol == "":
-            raw_message = message
-        elif raw_protocol not in self._adapters:
-            return None
-        else:
-            raw_message = self._adapters[raw_protocol].message_to_raw(message)
-
-        if expect is None:
-            # 直接返回 raw message, 无论是什么类型.
-            return raw_message
-        if expect.protocol == raw_protocol:
-            # 返回符合目标的协议.
-            return raw_message
-
-        # 还是原始消息协议.
-        if raw_message.protocol == "":
-            # 走 adapter 逻辑.
-            if expect.protocol not in self._adapters:
-                return None
-            adapter = self._adapters[expect.protocol]
-            return adapter.message_to_raw(message)
-
-        # 走桥逻辑.
-        if raw_protocol in self._bridges:
-            if expect.protocol in self._bridges[raw_protocol]:
-                bridge = self._bridges[raw_protocol][expect.protocol]
-                return bridge.transform(raw_message)
-        return None
-
-    def parse_messages_to_raw(
-            self,
-            messages: list[Message],
-            expect: Expect[RawT] | None = None,
-    ) -> Iterable[RawT]:
-        for message in messages:
-            raw = self.message_to_raw(message, expect)
-            if raw is not None:
-                if expect is None or expect.check_type(raw) is not False:
-                    yield raw
-
-    def parse_raw_to_messages(
-            self,
-            protocol: str,
-            raw: list[RawT],
-            *,
-            additions: list[Addition] | None = None,
-            issuer: str | None = None,
-            issuer_id: str | None = None,
-    ) -> Iterable[Message]:
-        """
-        将目标类型的消息, 转换成 moss 的消息容器.
-        """
-        for msg in raw:
-            item = self.raw_to_message(msg, protocol)
-            if item is not None:
-                if additions:
-                    item.with_additions(*additions)
-                if issuer:
-                    item.meta.issuer = issuer
-                if issuer_id:
-                    item.meta.issuer_id = issuer_id
-                yield item
+        if self.is_empty():
+            yield from []
+            return
+        tag = "message"
+        yield f'<{tag}>{self.meta.to_xml()}'
+        for content in self.contents:
+            yield content
+        yield f'</{tag}>'

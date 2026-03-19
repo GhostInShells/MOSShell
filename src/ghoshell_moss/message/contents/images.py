@@ -7,9 +7,10 @@ from PIL import Image
 from pydantic import Field
 from typing_extensions import Self
 
-from ghoshell_moss.message.abcd import ContentModel
+from ghoshell_moss.message.abcd import ContentModel, Content
+from pydantic_ai import ImageUrl
 
-__all__ = ["Base64Image", "ImageUrl"]
+__all__ = ["Base64Image"]
 
 
 class Base64Image(ContentModel):
@@ -29,9 +30,8 @@ class Base64Image(ContentModel):
         examples=["iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="],
     )
 
-    @classmethod
-    def content_type(cls) -> str:
-        return "base64_image"
+    def to_content(self) -> ImageUrl:
+        return ImageUrl(url=self.data_url)
 
     @classmethod
     def from_binary(cls, mime_type: str, binary: bytes) -> Self:
@@ -107,36 +107,3 @@ class Base64Image(ContentModel):
     def data_url(self) -> str:
         """Get data URL for embedding in HTML or other contexts"""
         return f"data:{self.mime_type};base64,{self.encoded}"
-
-    def marshal(self) -> str:
-        return self.data_url
-
-    @classmethod
-    def unmarshal(cls, content: str) -> dict:
-        parts = content.split(";base64,", 1)
-        if len(parts) != 2:
-            raise ValueError(f"invalid image content {content}")
-        mime_type = parts[0].lstrip('data:')
-        encoded = parts[1]
-        return {'mime_type': mime_type, 'encoded': encoded}
-
-
-class ImageUrl(ContentModel):
-    """
-    用 url 提供的图片类型.
-    """
-
-    url: str = Field(
-        description="Image URL of the message",
-    )
-
-    @classmethod
-    def content_type(cls) -> str:
-        return 'image_url'
-
-    def marshal(self) -> str:
-        return self.url
-
-    @classmethod
-    def unmarshal(cls, content: str) -> dict:
-        return {'url': content}
