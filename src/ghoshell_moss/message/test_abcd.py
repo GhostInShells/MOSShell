@@ -80,7 +80,7 @@ def test_message_serialization():
     assert len(parsed.contents) == 2
 
     # 测试 to_contents() 方法
-    contents = list(msg.to_contents())
+    contents = list(msg.as_contents())
     assert len(contents) == 4  # 开始标签 + meta + 2个内容 + 结束标签
     assert isinstance(contents[0], str) and contents[0].startswith("<message>")
     assert contents[1] == "Hello"

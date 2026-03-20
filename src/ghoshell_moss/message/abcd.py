@@ -1,6 +1,6 @@
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias
+from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias, is_typeddict
 
 from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
@@ -360,6 +360,29 @@ class Message(BaseModel, WithAdditional):
         """
         return self.meta.id
 
+    @classmethod
+    def to_content(cls, item: ContextType | Content) -> Content:
+        if isinstance(item, str):
+            _content = item
+        elif isinstance(item, dict) and 'kind' in item:
+            _content = item
+        elif isinstance(item, ContentModel):
+            _content = item.to_content()
+        elif isinstance(item, Image.Image):
+            _content = BinaryImage(item)
+        elif isinstance(item, BaseModel):
+            tag = generate_module_and_attr_name(item) or ''
+            serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
+            if tag:
+                _content = f'<pydantic-model cls="{tag}">{serialized}</pydantic-model>'
+            else:
+                _content = serialized
+        elif isinstance(item, dict) or isinstance(item, list):
+            _content = json.dumps(item)
+        else:
+            _content = item
+        return _content
+
     def with_content(self, *contents: ContextType | Content) -> Self:
         """
         用来添加 content. 简单做一个向前兼容的.
@@ -371,23 +394,7 @@ class Message(BaseModel, WithAdditional):
         for item in contents:
             if item is None:
                 continue
-            elif isinstance(item, ContentModel):
-                _content = item.to_content()
-            elif isinstance(item, str) and item:
-                _content = item
-            elif isinstance(item, Image.Image):
-                _content = BinaryImage(item)
-            elif isinstance(item, BaseModel):
-                tag = generate_module_and_attr_name(item) or ''
-                serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
-                if tag:
-                    _content = f'<pydantic-model cls="{tag}">{serialized}</pydantic-model>'
-                else:
-                    _content = serialized
-            elif isinstance(item, dict) or isinstance(item, list):
-                _content = json.dumps(item)
-            else:
-                _content = item
+            _content = self.to_content(item)
             self.contents.append(_content)
         return self
 
@@ -408,7 +415,7 @@ class Message(BaseModel, WithAdditional):
         """
         return self.model_dump_json(indent=indent, ensure_ascii=False, exclude_none=True)
 
-    def to_contents(
+    def as_contents(
             self,
             with_meta: bool = True,
             tag: str = 'message',

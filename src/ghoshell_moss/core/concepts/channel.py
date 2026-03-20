@@ -589,9 +589,10 @@ class ChannelRuntime(ABC):
 
     >>> chan: Channel
     >>> con: IoCContainer
-    >>> runtime = chan.bootstrap(con)
-    >>> async with runtime:
-    >>>     ...
+    >>> async def example(chan: Channel, con: IoCContainer):
+    >>>     runtime = chan.bootstrap(con)
+    >>>     async with runtime:
+    >>>         ...
 
     为什么不叫 Client 呢? 因为 Channel 可能运行在 Client 和 Server 两侧. 它们会通过通讯被同构.
     """

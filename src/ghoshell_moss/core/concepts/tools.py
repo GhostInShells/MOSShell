@@ -1,10 +1,14 @@
-from typing import Generic, TypeVar, Tuple, Type
-from abc import ABC, abstractmethod
+from typing import Generic, TypeVar, Callable
+from abc import ABC
 from typing_extensions import Self
 from pydantic import BaseModel, Field
-from ghoshell_moss.core.concepts.command import CommandMeta, Command
+from ghoshell_moss.core.concepts.command import CommandMeta, Command, CommandTask, BaseCommandTask
+from ghoshell_moss.message import Message
+from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam
-from anthropic.types import Message
+from pydantic_ai import Tool as PydanticTool, ToolReturn
+
+CommandTaskCallback = Callable[[CommandTask], None]
 
 
 class ToolMeta(BaseModel):
@@ -18,20 +22,20 @@ class ToolMeta(BaseModel):
         default=True,
         description="whether the tool is strictly or not",
     )
-    parameters: dict = Field(
+    parameters: dict[str, object] = Field(
         description="the parameters json schema of the tool",
     )
 
     @classmethod
     def from_command_meta(cls, command_meta: CommandMeta, chan: str = "", *, strict: bool = False) -> Self | None:
-        if command_meta.args_schema is None:
+        if command_meta.json_schema is None:
             return None
         name = Command.make_uniquename(chan, command_meta.name)
         return cls(
             name=name,
             description=command_meta.description,
             strict=strict,
-            parameters=command_meta.args_schema,
+            parameters=command_meta.json_schema,
         )
 
     def to_ai_function(self) -> dict:
@@ -45,17 +49,19 @@ class ToolMeta(BaseModel):
             },
         }
 
-    def to_openai_function_def(self) -> dict:
-        from openai.types.shared_params import FunctionDefinition
-
+    def to_openai_function_def(self) -> FunctionDefinition:
+        """
+        to openai function definition.
+        """
+        parameters = self.parameters.copy()
         return FunctionDefinition(
             name=self.name,
             description=self.description,
-            parameters=self.parameters,
+            parameters=parameters,
             strict=self.strict,
         )
 
-    def to_anthropic_tool(self) -> ToolParam:
+    def to_anthropic_tool_param(self) -> ToolParam:
         return ToolParam(
             input_schema=self.parameters,
             name=self.name,
@@ -68,30 +74,91 @@ class ToolMeta(BaseModel):
 R = TypeVar("R", bound=ToolMeta)
 
 
-class Tool(Generic[R], ABC):
+class CommandAsTool(Generic[R], ABC):
     """
-    兼容工具调用.
+    Wrap Command as Tool
     """
 
-    @abstractmethod
+    def __init__(
+            self,
+            command: Command[R],
+            *,
+            task_callback: CommandTaskCallback | None = None,
+            channel_path: str = '',
+    ):
+        self.channel_path = channel_path
+        self.command = command
+        self.task_callback = task_callback
+
     def meta(self) -> ToolMeta:
         """
         meta info about the tool.
         """
-        pass
+        return ToolMeta.from_command_meta(self.command.meta())
 
-    @abstractmethod
-    async def call(self, parameters: dict, *, call_id: str | None = None) -> R:
+    async def task_call(self, args: list, kwargs: dict, *, call_id: str | None = None) -> tuple[R, list[Message]]:
         """
-        call and get result.
-        :param parameters: the parameters match the parameters json schema of the tool meta
+        call and get result with result and messages
+
+        :param args: the arguments of the tool
+        :param kwargs: the keyword arguments of the tool
         :param call_id: id of the call
         """
-        pass
+        task = self.create_task(args, kwargs, call_id=call_id)
+        if self.task_callback is not None:
+            self.task_callback(task)
+            await task.wait(throw=True)
+        else:
+            await task.run()
+        r = task.result()
+        messages = task.task_result().as_messages(with_serialized_result=False)
+        return r, messages
 
-    @abstractmethod
-    async def call_for_messages(self, parameters: dict, *, call_id: str | None = None) -> list[Message]:
+    async def call(self, *args, **kwargs) -> R:
         """
-        call and get message as result.
+        execute the command and get result
         """
-        pass
+        if self.task_callback is not None:
+            task = self.create_task(args, kwargs)
+            return await task
+        else:
+            return await self.command(*args, **kwargs)
+
+    async def call_with_tool_return(self, *args, **kwargs) -> ToolReturn:
+        """
+        return pydantic tool return.
+        """
+        r, messages = await self.task_call(*args, **kwargs)
+        content = None
+        if len(messages) > 0:
+            content = []
+            for m in messages:
+                content.extend(m.as_contents())
+        return ToolReturn(return_value=r, content=content if len(content) > 0 else None)
+
+    def create_task(self, args: list | tuple, kwargs: dict, *, call_id: str | None = None) -> CommandTask:
+        """
+        create task from the arguments and keyword arguments
+        """
+        task = BaseCommandTask.from_command(
+            self.command,
+            chan_=self.channel_path,
+            args=args,
+            kwargs=kwargs,
+            call_id=call_id,
+        )
+        return task
+
+    def as_pydantic_tool(self) -> PydanticTool:
+        """
+        adapt into pydantic tool
+        """
+        meta = self.command.meta()
+        return PydanticTool.from_schema(
+            self.call,
+            name=Command.make_uniquename(self.channel_path, meta.name),
+            description=meta.description,
+            json_schema=meta.json_schema,
+            takes_ctx=False,
+            sequential=True,
+        )

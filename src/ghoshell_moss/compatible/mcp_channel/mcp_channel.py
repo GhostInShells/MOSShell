@@ -184,8 +184,8 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
         return Validator(args_schema)
 
     def _get_command_func(self, meta: CommandMeta) -> Callable[[...], Coroutine[None, None, Any]] | None:
-        args_schema_properties = meta.args_schema.get("properties", {})
-        required_args_list = meta.args_schema.get("required", [])
+        args_schema_properties = meta.json_schema.get("properties", {})
+        required_args_list = meta.json_schema.get("required", [])
         # schema_param_count = len(args_schema_properties)
         required_schema_param_count = len(required_args_list)
 
@@ -245,10 +245,10 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 final_kwargs = _assemble_params(*args, **kwargs)
 
                 # 使用 jsonschema 验证参数是否符合 schema
-                if meta.args_schema:
+                if meta.json_schema:
                     # http://modelcontextprotocol.io/specification/draft/basic
                     # Schema Dialect
-                    validator = self._get_validator(meta.args_schema)
+                    validator = self._get_validator(meta.json_schema)
                     if errs := validator.iter_errors(final_kwargs):
                         msgs = []
                         for e in errs:
@@ -298,7 +298,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                     chan=self._name,
                     interface=interface,
                     available=True,
-                    args_schema=tool.inputSchema,
+                    json_schema=tool.inputSchema,
                     delta_arg=CommandDeltaType.TEXT,
                     # mcp channel 默认不是阻塞的?
                     blocking=self._blocking,

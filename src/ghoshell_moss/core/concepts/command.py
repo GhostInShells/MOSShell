@@ -269,15 +269,15 @@ class CommandMeta(BaseModel):
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
-        "但核心思想是 Code As Prompt."
-        "通常是一个 python async 函数的 signature. 形如:"
-        "```python"
-        "async def name(arg: typehint = default) -> return_type:"
-        "    ''' docstring '''"
-        "    pass"
-        "```",
+                    "但核心思想是 Code As Prompt."
+                    "通常是一个 python async 函数的 signature. 形如:"
+                    "```python"
+                    "async def name(arg: typehint = default) -> return_type:"
+                    "    ''' docstring '''"
+                    "    pass"
+                    "```",
     )
-    args_schema: Optional[dict[str, Any]] = Field(
+    json_schema: Optional[dict[str, Any]] = Field(
         default=None,
         description="the json schema. 兼容性实现.",
     )
@@ -287,20 +287,20 @@ class CommandMeta(BaseModel):
     call_soon: bool = Field(
         default=False,
         description="如果为 True, 它在进入 Channel 队列时, 就会立刻触发执行."
-        "如果是 None blocking, 则会立刻开始运行."
-        "如果是 Blocking, 意味着它会立刻清空整个队列自身, 但不代表清空子队列",
+                    "如果是 None blocking, 则会立刻开始运行."
+                    "如果是 Blocking, 意味着它会立刻清空整个队列自身, 但不代表清空子队列",
     )
     blocking: bool = Field(
         default=True,
         description="执行完成后, 后面的命令, 包括 blocking = None 的命令才会开始执行."
-        "blocking = False 的命令想要立刻执行, 也需要配合 call soon.",
+                    "blocking = False 的命令想要立刻执行, 也需要配合 call soon.",
     )
     priority: int = Field(
         default=0,
         description="命令的优先级, 主要用于相同优先级的命令. 遵循以下基本规则:"
-        "相同优先级的命令, 一个执行完了才能执行另一个. "
-        "如果下一个高优先级的命令入队, 前一个会被立刻取消. "
-        "如果优先级为负值, 任何新任务在排队, 都会被立刻取消.",
+                    "相同优先级的命令, 一个执行完了才能执行另一个. "
+                    "如果下一个高优先级的命令入队, 前一个会被立刻取消. "
+                    "如果优先级为负值, 任何新任务在排队, 都会被立刻取消.",
     )
 
 
@@ -380,13 +380,13 @@ class CommandWrapper(Command[RESULT]):
     """
 
     def __init__(
-        self,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[Any, Any, RESULT]],
-        available_fn: Callable[[], bool] | None = None,
-        ctx: contextvars.Context | None = None,
-        partial: CommandPartial | None = None,
-        refresh: Callable[[], None] | None = None,
+            self,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[Any, Any, RESULT]],
+            available_fn: Callable[[], bool] | None = None,
+            ctx: contextvars.Context | None = None,
+            partial: CommandPartial | None = None,
+            refresh: Callable[[], None] | None = None,
     ):
         self._func = func
         self._meta = meta
@@ -397,12 +397,12 @@ class CommandWrapper(Command[RESULT]):
 
     @classmethod
     def wrap(
-        cls,
-        command: Command[RESULT],
-        *,
-        func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
-        ctx: contextvars.Context | None = None,
-        meta: CommandMeta | None = None,
+            cls,
+            command: Command[RESULT],
+            *,
+            func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
+            ctx: contextvars.Context | None = None,
+            meta: CommandMeta | None = None,
     ) -> Command[RESULT]:
 
         if func is None:
@@ -458,22 +458,22 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
     """
 
     def __init__(
-        self,
-        func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
-        *,
-        partial: CommandPartial | None = None,
-        chan: Optional[str] = None,
-        name: Optional[str] = None,
-        available: Callable[[], bool] | None = None,
-        interface: Optional[StringType | Callable[..., Coroutine[None, None, RESULT]]] = None,
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        meta: Optional[CommandMeta] = None,
-        tags: Optional[list[str]] = None,
-        call_soon: bool = False,
-        blocking: bool = True,
-        priority: int = 0,
-        delta_types: Optional[set] = None,
+            self,
+            func: Callable[..., Coroutine[None, None, RESULT]] | Callable[..., RESULT],
+            *,
+            partial: CommandPartial | None = None,
+            chan: Optional[str] = None,
+            name: Optional[str] = None,
+            available: Callable[[], bool] | None = None,
+            interface: Optional[StringType | Callable[..., Coroutine[None, None, RESULT]]] = None,
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            meta: Optional[CommandMeta] = None,
+            tags: Optional[list[str]] = None,
+            call_soon: bool = False,
+            blocking: bool = True,
+            priority: int = 0,
+            delta_types: Optional[set] = None,
     ):
         """
         :param func: origin coroutine function
@@ -511,7 +511,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._available_or_fn = available
         self._comments_or_fn = comments
         self._is_dynamic_itf = (
-            callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
+                callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
         )
         self._call_soon = call_soon
         self._blocking = blocking
@@ -563,7 +563,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             try:
                 adapter = TypeAdapter(self._func)
                 schema = adapter.json_schema()
-                meta.args_schema = schema
+                meta.json_schema = schema or dict(type="object")
             except TypeError:
                 pass
 
@@ -640,12 +640,12 @@ class CommandTaskResult(BaseModel):
     messages: list[Message] = Field(
         default_factory=list,
         description="给大模型查看, 但不对外输出的消息体. "
-        "通常用于 multi-agent 等场景, 才返回包含 role, name 的消息体. 否则应该由 Agent 负责配置.",
+                    "通常用于 multi-agent 等场景, 才返回包含 role, name 的消息体. 否则应该由 Agent 负责配置.",
     )
     observe: bool = Field(
         default=False,
         description="默认的 interpreter 交互协议. 当 Interpreter 生成的 Task 返回一个 observe==True 的结果时,"
-        "Interpreter 应该停止运行逻辑, 取消后续所有的命令. ",
+                    "Interpreter 应该停止运行逻辑, 取消后续所有的命令. ",
     )
 
     @classmethod
@@ -677,14 +677,15 @@ class CommandTaskResult(BaseModel):
         try:
             serialized_content = json.dumps(self.result, ensure_ascii=False)
         except (json.JSONDecodeError, ValueError, TypeError):
-            serialized_content = "%r" % self.result
+            serialized_content = repr(self.result)
         return serialized_content
 
     def as_messages(
-        self,
-        *,
-        name: str | None = None,
-        role: str = "user",
+            self,
+            *,
+            name: str | None = None,
+            role: str = "user",
+            with_serialized_result: bool = True,
     ) -> list[Message]:
         """
         生成可以被模型观察的消息体.
@@ -699,11 +700,12 @@ class CommandTaskResult(BaseModel):
         if self.result is None and len(self.messages) == 0:
             return []
         result_message = None
-        name = name or self.caller or "__command_result__"
-        if self.result is not None:
+        if with_serialized_result and self.result is not None:
+            name = name or self.caller or "__command_result__"
             result_message = Message.new(role=role, name=name)
             serialized_content = self.serialize_result()
             result_message.with_content(Text(text=serialized_content))
+
         messages = []
         if result_message is not None:
             messages.append(result_message)
@@ -762,18 +764,18 @@ class CommandTask(Generic[RESULT], ABC):
     instances_count: ClassVar[int] = 0
 
     def __init__(
-        self,
-        *,
-        chan: str,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        partial: CommandPartial | None = None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
-        call_id: str | int | None = None,
+            self,
+            *,
+            chan: str,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            partial: CommandPartial | None = None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
+            call_id: str | int | None = None,
     ) -> None:
         self.chan = chan
         self.cid: str = cid or uuid()
@@ -937,10 +939,10 @@ class CommandTask(Generic[RESULT], ABC):
 
     @abstractmethod
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         async wait the task to be done thread-safe
@@ -1040,18 +1042,18 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     """
 
     def __init__(
-        self,
-        *,
-        chan: str,
-        meta: CommandMeta,
-        func: Callable[..., Coroutine[None, None, RESULT]] | None,
-        tokens: str,
-        args: list,
-        kwargs: dict[str, Any],
-        cid: str | None = None,
-        context: dict[str, Any] | None = None,
-        call_id: str | int | None = None,
-        partial: CommandPartial | None = None,
+            self,
+            *,
+            chan: str,
+            meta: CommandMeta,
+            func: Callable[..., Coroutine[None, None, RESULT]] | None,
+            tokens: str,
+            args: list,
+            kwargs: dict[str, Any],
+            cid: str | None = None,
+            context: dict[str, Any] | None = None,
+            call_id: str | int | None = None,
+            partial: CommandPartial | None = None,
     ) -> None:
         super().__init__(
             chan=chan,
@@ -1099,14 +1101,14 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
 
     @classmethod
     def from_command(
-        cls,
-        command_: Command[RESULT],
-        chan_: str = "",
-        tokens_: str = "",
-        args: tuple | None = None,
-        kwargs: dict | None = None,
-        cid: str | None = None,
-        call_id: str | int | None = None,
+            cls,
+            command_: Command[RESULT],
+            chan_: str = "",
+            tokens_: str = "",
+            args: tuple | list | None = None,
+            kwargs: dict | None = None,
+            cid: str | None = None,
+            call_id: str | int | None = None,
     ) -> "BaseCommandTask":
         return cls(
             chan=chan_,
@@ -1153,12 +1155,12 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             self.trace[self.state] = now
 
     def _set_result(
-        self,
-        result: Optional[RESULT],
-        state: CommandTaskState | str,
-        errcode: int,
-        errmsg: Optional[str],
-        done_at: Optional[str] = None,
+            self,
+            result: Optional[RESULT],
+            state: CommandTaskState | str,
+            errcode: int,
+            errmsg: Optional[str],
+            done_at: Optional[str] = None,
     ) -> bool:
         with self._done_lock:
             if self._done_event.is_set():
@@ -1263,10 +1265,10 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             return CommandError(self.errcode, self.errmsg or "")
 
     async def wait(
-        self,
-        *,
-        throw: bool = True,
-        timeout: float | None = None,
+            self,
+            *,
+            throw: bool = True,
+            timeout: float | None = None,
     ) -> Optional[RESULT]:
         """
         等待命令被执行完毕. 但不会主动运行这个任务. 仅仅是等待.
@@ -1306,10 +1308,10 @@ class WaitDoneTask(BaseCommandTask):
     """
 
     def __init__(
-        self,
-        tasks: Iterable[CommandTask],
-        after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
-        chan: str = "",
+            self,
+            tasks: Iterable[CommandTask],
+            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
+            chan: str = "",
     ) -> None:
         meta = CommandMeta(
             name="_wait_done",
@@ -1339,10 +1341,10 @@ class CancelAfterOthersTask(BaseCommandTask[None]):
     """
 
     def __init__(
-        self,
-        current: CommandTask,
-        *tasks: CommandTask,
-        tokens: str = "",
+            self,
+            current: CommandTask,
+            *tasks: CommandTask,
+            tokens: str = "",
     ) -> None:
         meta = CommandMeta(
             name="_cancel_" + current.meta.name,
@@ -1392,10 +1394,10 @@ class CommandStackResult:
     """
 
     def __init__(
-        self,
-        iterator: AsyncIterable[CommandTask] | list[CommandTask],
-        callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
-        timeout: float | None = None,
+            self,
+            iterator: AsyncIterable[CommandTask] | list[CommandTask],
+            callback: Callable[[list[CommandTask]], Coroutine[None, None, Any]] = None,
+            timeout: float | None = None,
     ) -> None:
         if isinstance(iterator, list):
 
