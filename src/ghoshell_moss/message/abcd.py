@@ -241,15 +241,16 @@ class MessageMeta(BaseModel):
         self.incomplete = None
         self.completed_at = _now_utc()
 
-    def to_xml(self) -> str:
-        """
-        生成 XML 讯息, 其中时序感是默认必要的.
-        """
+    def gen_attributes(self) -> dict[str, Any]:
         attributes = self.attributes.copy()
         # 排除掉 ghost in shells 架构自身的关键维度信息.
         update = self.model_dump(exclude_none=True, exclude={'attributes', 'id', 'issuer_id', 'stage'})
         if len(update) > 0:
             attributes.update(update)
+        return attributes
+
+    def gen_attributes_str(self) -> str:
+        attributes = self.gen_attributes()
         if len(attributes) == 0:
             return ''
         parts = []
@@ -258,6 +259,13 @@ class MessageMeta(BaseModel):
                 continue
             parts.append(f"{attr}='{value}'")
         attr_str = ' '.join(parts)
+        return attr_str
+
+    def to_xml(self) -> str:
+        """
+        生成 XML 讯息, 其中时序感是默认必要的.
+        """
+        attr_str = self.gen_attributes_str()
         return f'<meta {attr_str} />'
 
 
@@ -400,15 +408,25 @@ class Message(BaseModel, WithAdditional):
         """
         return self.model_dump_json(indent=indent, ensure_ascii=False, exclude_none=True)
 
-    def to_contents(self) -> Iterable[UserContent]:
+    def to_contents(
+            self,
+            with_meta: bool = True,
+            tag: str = 'message',
+    ) -> Iterable[UserContent]:
         """
         将整个消息体返回成 Pydantic AI 的 User Content.
         """
         if self.is_empty():
             yield from []
             return
-        tag = "message"
-        yield f'<{tag}>{self.meta.to_xml()}'
+        if not with_meta:
+            yield from self.contents
+            return
+
+        attrs = self.meta.gen_attributes_str()
+        if with_meta and attrs:
+            yield f'<{tag} {attrs}>'
         for content in self.contents:
             yield content
-        yield f'</{tag}>'
+        if attrs:
+            yield f'</{tag}>'

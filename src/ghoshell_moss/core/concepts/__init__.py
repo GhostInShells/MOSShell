@@ -46,7 +46,7 @@ from .interpreter import (
 )
 from .shell import (
     InterpreterKind,
-    MOSSShell,
+    MOSShell,
 )
 from .speech import (
     AudioFormat,

@@ -10,7 +10,7 @@ from ghoshell_common.contracts.storage import MemoryStorage
 from ghoshell_container import Container, IoCContainer
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core import MOSSShell, Speech, new_ctml_shell, Interpretation
+from ghoshell_moss.core import MOSShell, Speech, new_ctml_shell, Interpretation
 from ghoshell_moss.message import parse_messages_to_params, Message
 
 from ghoshell_moss_contrib.agent.chat.base import BaseChat
@@ -83,7 +83,7 @@ class SimpleAgent:
         talker: Optional[str] = None,
         model: Optional[ModelConf] = None,
         container: Optional[IoCContainer] = None,
-        shell: Optional[MOSSShell] = None,
+        shell: Optional[MOSShell] = None,
         speech: Optional[Speech] = None,
         chat: Optional[BaseChat] = None,
     ):

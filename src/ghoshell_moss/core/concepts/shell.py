@@ -12,13 +12,13 @@ from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOP
 
 __all__ = [
     "InterpreterKind",
-    "MOSSShell",
+    "MOSShell",
 ]
 
 InterpreterKind = Literal["clear", "append", "dry_run"]
 
 
-class MOSSShell(ABC):
+class MOSShell(ABC):
     """
     Model-Operated Operating System Shell
     面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
@@ -28,12 +28,12 @@ class MOSSShell(ABC):
     Shell 设计的全双工交互的极简形式:
 
     创建一个 Shell 实例.
-    >>> def create_shell(...) -> MOSSShell:
+    >>> def create_shell(...) -> MOSShell:
     >>>     ...
 
     为 Shell 赋予各种 Channel, 其中一些 Channel 是可以有 安装/卸载/打开/关闭 范式的.
 
-    >>> def build_shell(shell: MOSSShell, channels: list[Channel]) -> MOSSShell:
+    >>> def build_shell(shell: MOSShell, channels: list[Channel]) -> MOSShell:
     >>>     shell.main_channel.import_channels(*channels)
     >>>     return shell
 
@@ -58,7 +58,7 @@ class MOSSShell(ABC):
 
     然后 Shell 运行可以通过 Topic 来进行通讯, 用 CSP 范式来创建持久运行 Agent 逻辑:
 
-    >>> async def main_shell_loop(shell: MOSSShell) -> None:
+    >>> async def main_shell_loop(shell: MOSShell) -> None:
     >>>
     >>>     async def model_create_response() -> AsyncIterable[str]:
     >>>         "模型创建回复的逻辑"
@@ -94,6 +94,11 @@ class MOSSShell(ABC):
 
     在 Shell 能够持续, 稳定运行的情况下, AI (Ghost) 运行在 Shell 中, 持续地与现实世界交互.
     """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
 
     @property
     @abstractmethod

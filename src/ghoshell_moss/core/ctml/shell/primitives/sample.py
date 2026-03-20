@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandStackResult,
     CommandTaskResult,
 )
-from ghoshell_moss.core import ChannelCtx, MOSSShell
+from ghoshell_moss.core import ChannelCtx, MOSShell
 
 __all__ = ["sample"]
 
@@ -29,7 +29,7 @@ async def sample(ctml__, pick: int = 1):
         3. Execute all tasks in random order (pick equals task count):
            <sample pick="3"><t1/><t2/><t3/></sample>
     """
-    shell = ChannelCtx.get_contract(MOSSShell)
+    shell = ChannelCtx.get_contract(MOSShell)
     iterable_tasks = shell.parse_tokens_to_command_tasks(ctml__)
 
     tasks = []

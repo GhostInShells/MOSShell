@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing_extensions import Self
 from .ghost import Ghost
 from .session import Session
-from ghoshell_moss import MOSSShell
+from ghoshell_moss import MOSShell
 
 
 class GhostRuntime(ABC):
@@ -19,7 +19,7 @@ class GhostRuntime(ABC):
 
     @property
     @abstractmethod
-    def shell(self) -> MOSSShell:
+    def shell(self) -> MOSShell:
         pass
 
     def close(self) -> None:

@@ -27,7 +27,7 @@ from ghoshell_moss.core.concepts.command import (
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.concepts.expressions import Expressions
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSSShell
+from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
 from ghoshell_moss.core.concepts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
@@ -39,24 +39,24 @@ from ghoshell_moss.speech.mock import MockSpeech
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
 
-class CTMLShell(MOSSShell):
+class CTMLShell(MOSShell):
     def __init__(
-        self,
-        *,
-        name: str = "shell",
-        description: Optional[str] = None,
-        container: IoCContainer | None = None,
-        main_channel: MutableChannel | None = None,
-        speech: Optional[Speech] = None,
-        state_store: Optional[StateStore] = None,
-        experimental: bool = True,
-        logger: LoggerItf | None = None,
+            self,
+            *,
+            name: str = "shell",
+            description: Optional[str] = None,
+            container: IoCContainer | None = None,
+            main_channel: MutableChannel | None = None,
+            speech: Optional[Speech] = None,
+            state_store: Optional[StateStore] = None,
+            experimental: bool = True,
+            logger: LoggerItf | None = None,
     ):
         self._name = name
         self._desc = description
 
         self._container = Container(parent=container, name="MOSShell")
-        self._container.set(MOSSShell, self)
+        self._container.set(MOSShell, self)
         self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental)
 
         self._speech: Speech = speech
@@ -89,6 +89,10 @@ class CTMLShell(MOSSShell):
     @property
     def container(self) -> IoCContainer:
         return self._container
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     @property
     def states(self) -> StateStore:
@@ -281,16 +285,16 @@ class CTMLShell(MOSSShell):
             self.push_task(task)
 
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        meta_instruction: str | None = None,
-        stream_id: Optional[int] = None,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        prepare_timeout: float = 2.0,
-        ignore_wrong_command: bool = False,
-        token_replacements: dict[str, str] | None = None,
-        clear_after_exit: bool = False,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            meta_instruction: str | None = None,
+            stream_id: Optional[int] = None,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            prepare_timeout: float = 2.0,
+            ignore_wrong_command: bool = False,
+            token_replacements: dict[str, str] | None = None,
+            clear_after_exit: bool = False,
     ) -> Interpreter:
         self._check_running()
 
@@ -360,12 +364,12 @@ class CTMLShell(MOSSShell):
         return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
     def subscribe_topic_model(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        name: str = "",
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            name: str = "",
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe_model(
@@ -376,11 +380,11 @@ class CTMLShell(MOSSShell):
         )
 
     def subscribe_topic(
-        self,
-        name: str,
-        *,
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            name: str,
+            *,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber:
         self._check_running()
         return self._main_runtime.importlib.topics.subscribe(
@@ -404,9 +408,9 @@ class CTMLShell(MOSSShell):
             await refresh_meta_task
 
     def channel_metas(
-        self,
-        available_only: bool = True,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            self,
+            available_only: bool = True,
+            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
@@ -472,11 +476,11 @@ class CTMLShell(MOSSShell):
         await self._closed_event.wait()
 
     def commands(
-        self,
-        available_only: bool = True,
-        *,
-        config: dict[ChannelFullPath, ChannelMeta] | None = None,
-        exec_in_chan: bool = False,
+            self,
+            available_only: bool = True,
+            *,
+            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            exec_in_chan: bool = False,
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         self._check_running()
 
@@ -584,14 +588,14 @@ class CTMLShell(MOSSShell):
 
 
 def new_ctml_shell(
-    name: str = "shell",
-    description: Optional[str] = None,
-    container: IoCContainer | None = None,
-    main_channel: Channel | None = None,
-    speech: Optional[Speech] = None,
-    logger: Optional[LoggerItf] = None,
-    experimental: bool = True,
-) -> MOSSShell:
+        name: str = "shell",
+        description: Optional[str] = None,
+        container: IoCContainer | None = None,
+        main_channel: Channel | None = None,
+        speech: Optional[Speech] = None,
+        logger: Optional[LoggerItf] = None,
+        experimental: bool = True,
+) -> MOSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
         name=name,

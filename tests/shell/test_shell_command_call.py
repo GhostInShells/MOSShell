@@ -7,7 +7,7 @@ from ghoshell_moss import (
     CommandTask,
     CommandStackResult,
     Interpreter,
-    MOSSShell,
+    MOSShell,
     new_chan,
     ChannelCtx,
     CommandError,

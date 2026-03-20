@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskResult,
 )
 from ghoshell_moss.message import Message
-from ghoshell_moss.core import ChannelCtx, MOSSShell
+from ghoshell_moss.core import ChannelCtx, MOSShell
 
 __all__ = ["loop"]
 
@@ -21,7 +21,7 @@ async def loop(times: int, ctml__):
     :param times: the number of times to loop, if <0, means endless loop
     :param ctml__: the looping CTML
     """
-    shell = ChannelCtx.get_contract(MOSSShell)
+    shell = ChannelCtx.get_contract(MOSShell)
     tokens = []
     async for token in ctml__:
         tokens.append(token)

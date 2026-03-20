@@ -7,7 +7,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskResult,
     ObserveError,
 )
-from ghoshell_moss.core import ChannelCtx, MOSSShell, CommandError
+from ghoshell_moss.core import ChannelCtx, MOSShell, CommandError
 
 __all__ = ["wait"]
 
@@ -49,7 +49,7 @@ async def wait(
         4. Wait for specific channels done and terminate others
            `<wait chans="speech"><a:foo/><b:bar/><speech:say>something</speech:say></wait>
     """
-    shell = ChannelCtx.get_contract(MOSSShell)
+    shell = ChannelCtx.get_contract(MOSShell)
     iterable_tasks = shell.parse_tokens_to_command_tasks(ctml__)
 
     if chans is None:
