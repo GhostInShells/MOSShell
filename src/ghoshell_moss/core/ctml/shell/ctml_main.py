@@ -1,8 +1,14 @@
+from typing import Literal
+
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.command import PyCommand
 from ghoshell_moss.core.py_channel import PyChannel
 from .primitives import *
 
-__all__ = ["CTMLMainChannel", "create_ctml_main_chan"]
+__all__ = [
+    "CTMLMainChannel", "create_ctml_main_chan",
+    "default_primitives", "default_primitive_map", "experimental_primitives",
+]
 
 
 class CTMLMainChannel(PyChannel):
@@ -13,33 +19,45 @@ class CTMLMainChannel(PyChannel):
     pass
 
 
-def create_ctml_main_chan(experimental: bool = True) -> Channel:
+default_primitives = [
+    wait,
+    sample,
+    observe,
+    sleep,
+    clear,
+    wait_idle,
+    noop,
+    branch,
+    loop,
+]
+
+experimental_primitives = ['wait', 'sample', 'observe']
+
+default_primitive_map: dict[str, PyCommand] = {
+    func.__name__: PyCommand(func) for func in default_primitives
+}
+
+
+def create_ctml_main_chan(
+        experimental: bool = True,
+        *primitives: str | Literal['*'],
+) -> Channel:
     chan = CTMLMainChannel(
         name="__main__",
         description="CTML Main Channel with primitives",
         blocking=True,
     )
+    primitives = list(primitives)
+    allow_all = len(primitives) == 0 or '*' in primitives
+    if allow_all:
+        primitives = list(default_primitive_map.keys())
 
-    # wait 原语
-    if experimental:
-        chan.build.command()(wait)
-        chan.build.command()(sample)
-        chan.build.command()(observe)
-    # sleep 原语
-    chan.build.command()(sleep)
-    # clear 原语
-    chan.build.command()(clear)
-    # wait idle 原语.
-    chan.build.command()(wait_idle)
-    chan.build.command()(noop)
-    chan.build.command()(branch)
-    chan.build.command()(loop)
-    chan.build.add_command(interrupt_command)
-
+    # 添加默认原语
+    for name in primitives:
+        if not experimental and name in experimental_primitives:
+            # 跳过实验性质的功能.
+            continue
+        primitive_command = default_primitive_map.get(name)
+        if primitive_command is not None:
+            chan.build.add_command(primitive_command)
     return chan
-
-
-# primitive.py 原语定义成command
-# wait_done 原语
-# shell 调用自己，stop，避免循环
-#   shell等待所有的命令执行完，但是避免 wait_done

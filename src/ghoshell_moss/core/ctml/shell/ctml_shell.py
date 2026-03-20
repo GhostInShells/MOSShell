@@ -9,6 +9,7 @@ from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 from typing_extensions import Self
 
+from ghoshell_moss import TopicService
 from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelCtx,
@@ -43,21 +44,24 @@ class CTMLShell(MOSShell):
     def __init__(
             self,
             *,
-            name: str = "shell",
+            name: str = "MOSShell",
             description: Optional[str] = None,
             container: IoCContainer | None = None,
             main_channel: MutableChannel | None = None,
             speech: Optional[Speech] = None,
             state_store: Optional[StateStore] = None,
-            experimental: bool = True,
             logger: LoggerItf | None = None,
+            experimental: bool = True,
+            primitives: list[str] | None = None,
     ):
         self._name = name
         self._desc = description
 
-        self._container = Container(parent=container, name="MOSShell")
+        self._container = Container(name=name, parent=container)
         self._container.set(MOSShell, self)
-        self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental)
+        # register primitives
+        primitives = primitives or []
+        self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental, *primitives)
 
         self._speech: Speech = speech
         self._expressions: Optional[Expressions] = None
@@ -96,9 +100,14 @@ class CTMLShell(MOSShell):
 
     @property
     def states(self) -> StateStore:
+        self._check_running()
         if self._state_store is None:
             raise RuntimeError("State store is not set")
         return self._state_store
+
+    def topics(self) -> TopicService:
+        self._check_running()
+        return self._main_runtime.importlib.topics
 
     async def __aenter__(self):
         if self._start:
@@ -595,6 +604,7 @@ def new_ctml_shell(
         speech: Optional[Speech] = None,
         logger: Optional[LoggerItf] = None,
         experimental: bool = True,
+        primitives: list[str] | None = None,
 ) -> MOSShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
@@ -605,4 +615,5 @@ def new_ctml_shell(
         speech=speech,
         logger=logger,
         experimental=experimental,
+        primitives=primitives,
     )
