@@ -2,20 +2,24 @@ from pathlib import Path
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 
-VERSION = "v2.zh"
+VERSION = "v0_2_0.zh"
 
 __all__ = [
     'get_moss_ctml_meta_instruction',
 ]
+
 
 def get_moss_ctml_meta_instruction(version: str = VERSION) -> str:
     path = Path(__file__).parent.joinpath(f"prompts/ctml_{version}.md")
     with path.open() as f:
         return f.read()
 
+
 def make_channel_context_messages(channel_path: str, channel_meta: ChannelMeta) -> list[Message]:
     path_name = channel_path or "__main__"
     message = Message.new(role="system")
+    pass
+
 
 def make_channel_instruction_messages(channel_path: str, channel_meta: ChannelMeta) -> list[Message]:
     messages = []
