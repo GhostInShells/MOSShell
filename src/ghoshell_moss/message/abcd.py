@@ -1,7 +1,7 @@
 import json
+import html
 from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias, is_typeddict
-
 from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, AwareDatetime
@@ -193,6 +193,10 @@ class MessageMeta(BaseModel):
         default=None,
         description="用来对 issuer 进行寻址. "
     )
+    tag: str = Field(
+        default='message',
+        description="message tag that wrap the message information.",
+    )
 
     role: str | None = Field(
         default=None,
@@ -244,7 +248,7 @@ class MessageMeta(BaseModel):
     def gen_attributes(self) -> dict[str, Any]:
         attributes = self.attributes.copy()
         # 排除掉 ghost in shells 架构自身的关键维度信息.
-        update = self.model_dump(exclude_none=True, exclude={'attributes', 'id', 'issuer_id', 'stage'})
+        update = self.model_dump(exclude_none=True, exclude={'attributes', 'id', 'issuer_id', 'stage', 'tag'})
         if len(update) > 0:
             attributes.update(update)
         return attributes
@@ -257,7 +261,9 @@ class MessageMeta(BaseModel):
         for attr, value in attributes.items():
             if value == '':
                 continue
-            parts.append(f"{attr}='{value}'")
+            # in case value has invalid mark
+            value = html.escape(value, quote=True)
+            parts.append(f'{attr}="{value}"')
         attr_str = ' '.join(parts)
         return attr_str
 
@@ -266,7 +272,8 @@ class MessageMeta(BaseModel):
         生成 XML 讯息, 其中时序感是默认必要的.
         """
         attr_str = self.gen_attributes_str()
-        return f'<meta {attr_str} />'
+        tag = self.tag or 'meta'
+        return f'<{tag} {attr_str}/>'
 
 
 Content: TypeAlias = str | MultiModalContent

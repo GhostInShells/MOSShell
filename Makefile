@@ -54,12 +54,6 @@ prepare: install-uv install-python uv-venv install-prek ## Setup uv, Python 3.10
 
 MDFORMAT := $(shell if [ -x .venv/bin/mdformat ]; then echo .venv/bin/mdformat; else echo "uv run --dev mdformat"; fi)
 
-.PHONY: format
-format: ## Run format
-	@echo "==> Formatting"
-	@uv run --dev ruff format
-	@git ls-files -z '*.md' | xargs -0 $(MDFORMAT)
-
 .PHONY: lint
 lint: ## Run lint
 	@echo "==> Linting"

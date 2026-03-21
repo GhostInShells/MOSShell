@@ -36,6 +36,7 @@ experimental_primitives = ['wait', 'sample', 'observe']
 default_primitive_map: dict[str, PyCommand] = {
     func.__name__: PyCommand(func) for func in default_primitives
 }
+default_primitive_map['interrupt'] = interrupt_command
 
 
 def create_ctml_main_chan(

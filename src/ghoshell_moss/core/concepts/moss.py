@@ -12,6 +12,13 @@ from pydantic_ai import ToolReturn, UserContent
 from enum import Enum
 import asyncio
 
+__all__ = [
+    'Priority', 'PriorityLevel', 'IgnorePolicy',
+    'InputTopic', 'Snapshot',
+    'IdleHook', 'RespondHook', 'Respond',
+    'MOSS', 'MOSSRuntime', 'MOSSToolSet',
+]
+
 PriorityLevel = Literal['DEBUG', 'INFO', 'NOTICE', 'WARNING', 'ERROR', 'CRITICAL', 'FATAL', 'DEFAULT']
 """ scope of the input messages level, less and equal then """
 
@@ -136,16 +143,21 @@ class Snapshot(BaseModel):
         description="inputs messages that should be handled"
     )
 
-    def to_messages(self) -> Iterable[Message]:
+    def to_messages(
+            self,
+    ) -> Iterable[Message]:
         yield from self.executed
         yield from self.runtime_status
         yield from self.context
         yield from self.incomplete_inputs
         yield from self.inputs
 
-    def to_user_contents(self, with_meta: bool = True) -> Iterable[UserContent]:
+    def to_user_contents(
+            self,
+            with_meta: bool = True,
+    ) -> Iterable[UserContent]:
         for message in self.to_messages():
-            yield from message.to_contents(with_meta=with_meta)
+            yield from message.as_contents(with_meta=with_meta)
 
 
 class Respond(ABC):
@@ -217,11 +229,18 @@ class MOSSRuntime(ABC):
         pass
 
     @abstractmethod
-    def snapshot(self) -> Snapshot:
+    def snapshot(
+            self,
+            *,
+            context: bool = True,
+            inputs: bool = True,
+    ) -> Snapshot:
         """
         return snapshot immediately.
         if cursor is not change, always return the newest snapshot.
         if not ack snapshot, the snapshot will not change
+        :param context: with context messages
+        :param inputs: with popped input messages
         """
         pass
 
@@ -232,13 +251,20 @@ class MOSSRuntime(ABC):
         """
         pass
 
-    async def pop_snapshot(self) -> Snapshot:
+    async def pop_snapshot(
+            self,
+            *,
+            context: bool = True,
+            inputs: bool = True,
+    ) -> Snapshot:
         """
         generate new snapshot and make sure ack it.
         """
-        snapshot = self.snapshot()
-        await self.ack_snapshot(snapshot)
-        return snapshot
+        snapshot = self.snapshot(context=context, inputs=inputs)
+        try:
+            return snapshot
+        finally:
+            await self.ack_snapshot(snapshot)
 
     def add_inputs(
             self,
@@ -262,12 +288,11 @@ class MOSSRuntime(ABC):
         pass
 
     @property
-    @abstractmethod
     def topics(self) -> TopicService:
         """
         获取 topic 实例. 可以在整个 MOSS 体系内完成广播通讯.
         """
-        pass
+        return self.shell.topics()
 
     @abstractmethod
     async def create_task(self, cor: Coroutine) -> asyncio.Task:
@@ -275,6 +300,10 @@ class MOSSRuntime(ABC):
         创建一个 task, 被 MOSS 自身的生命周期所管理.
         可以用在各种技术实现内部.
         """
+        pass
+
+    @abstractmethod
+    async def refresh_metas(self) -> None:
         pass
 
     # --- 面向 AI 暴露的控制函数 --- #
@@ -403,61 +432,82 @@ class MOSSToolSet(ABC):
     不过需要目标框架自行兼容 Pydantic AI 的消息协议.
     """
 
-    @abstractmethod
+    def __init__(self, runtime: MOSSRuntime):
+        self.runtime = runtime
+
     def meta_instruction(self) -> str:
         """
         return MOSS meta instruction about what it is.
         """
-        pass
+        return self.runtime.shell.meta_instruction()
 
-    @abstractmethod
-    async def moss_instructions(self) -> str:
+    async def moss_instructions(self) -> ToolReturn:
         """
         understand how to use MOSS Runtime.
         """
-        pass
+        instruction_messages = self.runtime.shell.channel_instructions()
+        messages = []
+        for channel_name, channel_instruction_messages in instruction_messages.items():
+            messages.extend(channel_instruction_messages)
+        tool_return = ToolReturn(return_value=None, content=None)
+        if len(messages) > 0:
+            content = []
+            for msg in messages:
+                content.extend(msg.as_contents())
+            tool_return.content = content
+        return tool_return
 
-    @abstractmethod
     async def moss_context_messages(self) -> ToolReturn:
         """
         :returns: the context messages of all the channels from MOSS Runtime.
         """
-        pass
+        context_messages = self.runtime.shell.channel_context_messages()
+        messages = []
+        for channel_name, channel_context_messages in context_messages.items():
+            messages.extend(channel_context_messages)
+        tool_return = ToolReturn(return_value=None, content=None)
+        if len(messages) > 0:
+            content = []
+            for msg in messages:
+                content.extend(msg.as_contents())
+            tool_return.content = content
+        return tool_return
 
-    @abstractmethod
     async def moss_add(self, commands: str) -> ToolReturn:
         """
         add new commands in MOSS protocol into runtime.
         MOSS Runtime will compile the commands and then return the status immediately.
         :returns: status of the MOSS runtime.
         """
-        pass
+        await self.runtime.add(commands)
+        snapshot = await self.runtime.pop_snapshot(inputs=False, context=False)
+        return self.snapshot_to_tool_return(snapshot)
 
-    @abstractmethod
     async def moss_call_soon(self, commands: str) -> ToolReturn:
         """
         clear the moss runtime and add new commands in MOSS protocol soon.
         MOSS Runtime will compile the commands then return the status immediately.
         :returns: status of the MOSS runtime.
         """
-        pass
+        await self.runtime.call_soon(commands)
+        snapshot = await self.runtime.pop_snapshot(inputs=False, context=False)
+        return self.snapshot_to_tool_return(snapshot)
 
-    @abstractmethod
     async def moss_interrupt(
             self,
-            observe: bool = True,
+            observe: bool = False,
     ) -> ToolReturn:
         """
         interrupt the execution of MOSS runtime.
         :returns: status of the MOSS runtime. if observe is True, returns the inputs and context messages with it
         """
-        pass
+        await self.runtime.interrupt()
+        snapshot = await self.runtime.pop_snapshot(inputs=observe, context=observe)
+        return self.snapshot_to_tool_return(snapshot)
 
-    @abstractmethod
     async def moss_observe(
             self,
             timeout: float | None = None,
-            level: PriorityLevel = 'INFO',
     ) -> ToolReturn:
         """
         observe the moss runtime, return when:
@@ -466,28 +516,39 @@ class MOSSToolSet(ABC):
         3. any execution fatal error or command compiling error occurs.
         :returns: context messages, inputs and status of the MOSS runtime.
         """
-        pass
+        await self.runtime.observe(timeout)
+        snapshot = await self.runtime.pop_snapshot(context=True, inputs=True)
+        return self.snapshot_to_tool_return(snapshot)
 
-    @abstractmethod
     async def moss_focus(
             self,
             level: PriorityLevel,
             policy: IgnorePolicy = 'buffer',
-    ) -> ToolReturn:
+    ) -> None:
         """
         managing MOSS Runtime focus level and policy to handle input messages.
         :param level: you can raise the level to prevent interruption.
         :param policy: you can change the policy to handle any inputs that priority less than the level
         """
-        pass
+        await self.runtime.focus(level, policy)
 
-    @abstractmethod
+    @staticmethod
+    def snapshot_to_tool_return(
+            snapshot: Snapshot,
+            *,
+            with_meta: bool = True,
+    ) -> ToolReturn:
+        return ToolReturn(
+            return_value=None,
+            content=list(snapshot.to_user_contents(with_meta=with_meta)),
+        )
+
     async def __aenter__(self) -> Self:
-        pass
+        await self.runtime.__aenter__()
+        return self
 
-    @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        await self.runtime.__aexit__(exc_type, exc_val, exc_tb)
 
 
 # MOSShell 的高级抽象封装, 目的是:
@@ -565,7 +626,7 @@ class MOSS(ABC):
         pass
 
     @abstractmethod
-    def on_idle(self, hook: IdleHook) -> None:
+    def on_idle(self, hook: IdleHook) -> Self:
         """
         注册 Idle Hook. 为了让 MOSSRuntime 能够同时承载一个 Agent 的生命周期.
         当一次 Agent 的 respond 结束后, 就进入 Idle 生命周期. 可以用工程方式定义它的行为逻辑.

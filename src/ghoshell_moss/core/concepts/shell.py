@@ -8,7 +8,8 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, Channe
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep
+from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep, TopicService
+from ghoshell_moss.message import Message
 
 __all__ = [
     "InterpreterKind",
@@ -108,6 +109,10 @@ class MOSShell(ABC):
     @property
     @abstractmethod
     def states(self) -> StateStore:
+        pass
+
+    @abstractmethod
+    def topics(self) -> TopicService:
         pass
 
     @abstractmethod
@@ -232,6 +237,21 @@ class MOSShell(ABC):
         pass
 
     @abstractmethod
+    def meta_instruction(self) -> str:
+        pass
+
+    @abstractmethod
+    def channel_instructions(self) -> dict[str, list[Message]]:
+        pass
+
+    @abstractmethod
+    def channel_context_messages(self) -> dict[str, list[Message]]:
+        """
+        context messages of all the channels.
+        """
+        pass
+
+    @abstractmethod
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         """
         获取一个可以运行的 channel command.
@@ -245,6 +265,10 @@ class MOSShell(ABC):
         pass
 
     # --- interpret --- #
+
+    @abstractmethod
+    def interpreting(self) -> Optional[Interpreter]:
+        pass
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(

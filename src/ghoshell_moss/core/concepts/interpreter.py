@@ -5,7 +5,7 @@ from typing_extensions import Self
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.tools import ToolMeta, Tool
+from ghoshell_moss.core.concepts.tools import ToolMeta, CommandAsTool
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
 from pydantic import BaseModel, Field
@@ -265,6 +265,11 @@ class Interpreter(ABC):
 
     @property
     @abstractmethod
+    def kind(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
     def logger(self) -> LoggerItf:
         pass
 
@@ -475,8 +480,8 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def close(
-        self,
-        cancel_executing: bool = True,
+            self,
+            cancel_executing: bool = True,
     ) -> Interpretation | None:
         """
         stop the interpretation
@@ -552,12 +557,12 @@ class Interpreter(ABC):
 
     @abstractmethod
     async def wait_tasks(
-        self,
-        timeout: float | None = None,
-        *,
-        return_when: str = asyncio.ALL_COMPLETED,
-        throw: bool = False,
-        clear_undone: bool = True,
+            self,
+            timeout: float | None = None,
+            *,
+            return_when: str = asyncio.ALL_COMPLETED,
+            throw: bool = False,
+            clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         """
         阻塞等待所有生成的 task, 并且按 return when 的规则返回.
@@ -570,39 +575,20 @@ class Interpreter(ABC):
 
     # --- tools 兼容.  --- #
 
-    def tools(self) -> list[Tool]:
+    @abstractmethod
+    def tools(self) -> Iterable[CommandAsTool]:
         """
-        openai & anthropic compatible tool
+        openai & anthropic & pydantic ai compatible tool
         """
-        raise NotImplementedError("not implemented")
-
-    def tool_metas(self) -> list[ToolMeta]:
-        """
-        openai & anthropic compatible tools
-        """
-        tools = []
-        for chan_name, channel in self.channels().items():
-            for command_meta in channel.command_metas():
-                meta = ToolMeta.from_command_meta(command_meta, chan=chan_name)
-                if meta is not None:
-                    tools.append(meta)
-        return tools
-
-    async def call_tools(self, calls: dict[str, dict]) -> dict[str, list[Message]]:
-        """
-        call tools and wait for completions.
-
-        just create tasks, then await asyncio.gather(*tasks), return task.task_result().as_messages()
-        """
-        raise NotImplementedError("not implemented")
+        pass
 
     # --- interpreter 的无状态解析函数 --- #
 
     async def aparse_text_to_command_tokens(
-        self,
-        texts: AsyncIterable[str],
-        *,
-        stopped: Callable[[], bool] | None = None,
+            self,
+            texts: AsyncIterable[str],
+            *,
+            stopped: Callable[[], bool] | None = None,
     ) -> AsyncIterable[CommandToken]:
         """
         将同步函数封装成异步函数, 同时仍然能正确抛出异常.
@@ -670,11 +656,11 @@ class Interpreter(ABC):
                 consume_task.cancel()
 
     async def parse_tokens_to_command_tasks(
-        self,
-        tokens_queue: asyncio.Queue[CommandToken | None],
-        task_callback: Callable[[CommandTask | None], None],
-        *,
-        stopped: Callable[[], bool] | None = None,
+            self,
+            tokens_queue: asyncio.Queue[CommandToken | None],
+            task_callback: Callable[[CommandTask | None], None],
+            *,
+            stopped: Callable[[], bool] | None = None,
     ):
         """
         可以运行在协程中, 解析输入的 tokens 流, 返回 Command Tasks. 用毒丸做判断.
@@ -683,7 +669,6 @@ class Interpreter(ABC):
         parser = self.command_token_parser()
         # parser.with_callback(task_callback)
         if stopped is None:
-
             def empty_stopped():
                 return False
 
@@ -717,11 +702,11 @@ class Interpreter(ABC):
             parser.destroy()
 
     def parse_text_to_command_tokens(
-        self,
-        text_queue: queue.Queue[str | None],
-        command_token_callback: Callable[[CommandToken | None], None],
-        *,
-        stopped: Callable[[], bool] | None = None,
+            self,
+            text_queue: queue.Queue[str | None],
+            command_token_callback: Callable[[CommandToken | None], None],
+            *,
+            stopped: Callable[[], bool] | None = None,
     ):
         """
         通常运行在独立线程中, 解析输入的 Text 流, 返回 Command Token 流. 用毒丸做判断.
@@ -730,7 +715,6 @@ class Interpreter(ABC):
         text_token_parser = self.text_token_parser()
         text_token_parser.with_callback(command_token_callback)
         if stopped is None:
-
             def empty_stopped():
                 return False
 

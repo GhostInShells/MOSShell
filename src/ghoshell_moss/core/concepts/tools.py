@@ -74,7 +74,7 @@ class ToolMeta(BaseModel):
 R = TypeVar("R", bound=ToolMeta)
 
 
-class CommandAsTool(Generic[R], ABC):
+class CommandAsTool(Generic[R]):
     """
     Wrap Command as Tool
     """

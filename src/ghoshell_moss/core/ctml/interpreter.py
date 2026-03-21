@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from itertools import starmap
 from typing import Optional, ClassVar, Callable, Coroutine, Iterable
@@ -6,9 +7,8 @@ from typing_extensions import Self
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft, uuid
-
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandMeta
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandMeta, BaseCommandTask
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
@@ -18,8 +18,9 @@ from ghoshell_moss.core.concepts.interpreter import (
     Interpretation,
 )
 from ghoshell_moss.core.concepts.speech import Speech
+from ghoshell_moss.core.concepts.tools import CommandAsTool, ToolMeta, R
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
-from ghoshell_moss.core.ctml.prompt import get_moss_meta_prompt
+from ghoshell_moss.core.ctml.prompt import get_moss_ctml_meta_instruction
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, AttrWithTypeSuffixParser, ctml_default_parsers
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import Message, Text
@@ -32,7 +33,7 @@ __all__ = [
     "make_channels_prompt",
 ]
 
-DEFAULT_META_PROMPT = get_moss_meta_prompt()
+DEFAULT_META_PROMPT = get_moss_ctml_meta_instruction()
 
 _Title = str
 _Description = str
@@ -89,24 +90,24 @@ class CTMLInterpreter(Interpreter):
     instances_count: ClassVar[int] = 0
 
     def __init__(
-        self,
-        kind: str,
-        *,
-        interrupted: Interpretation | None = None,
-        undone_tasks: list[CommandTask] | None = None,
-        commands: dict[ChannelFullPath, dict[str, Command]],
-        speech: Speech,
-        stream_id: Optional[str] = None,
-        callback: Optional[CommandTaskCallback] = None,
-        root_tag: str = "ctml",
-        tokens_replacement: Optional[dict[str, str]] = None,
-        logger: Optional[LoggerItf] = None,
-        on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
-        moss_meta_instruction: Optional[str] = None,
-        channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-        ignore_wrong_command: bool = False,
-        clear_after_exit: bool = False,
-        ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
+            self,
+            kind: str,
+            *,
+            interrupted: Interpretation | None = None,
+            undone_tasks: list[CommandTask] | None = None,
+            commands: dict[ChannelFullPath, dict[str, Command]],
+            speech: Speech,
+            stream_id: Optional[str] = None,
+            callback: Optional[CommandTaskCallback] = None,
+            root_tag: str = "ctml",
+            tokens_replacement: Optional[dict[str, str]] = None,
+            logger: Optional[LoggerItf] = None,
+            on_startup: Optional[Callable[[], Coroutine[None, None, None]]] = None,
+            moss_meta_instruction: Optional[str] = None,
+            channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            ignore_wrong_command: bool = False,
+            clear_after_exit: bool = False,
+            ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -210,6 +211,21 @@ class CTMLInterpreter(Interpreter):
     @property
     def id(self) -> str:
         return self._id
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    def tools(self) -> Iterable[CommandAsTool]:
+        for channel_path, meta in self._channel_metas.items():
+            commands = self._commands_map.get(channel_path, None)
+            if commands is None:
+                continue
+            for command_meta in meta.commands:
+                unique_name = Command.make_uniquename(channel_path, command_meta.name)
+                if unique_name in commands:
+                    command = commands[unique_name]
+                    yield CommandAsTool(command, channel_path=channel_path, task_callback=self._send_command_task)
 
     @property
     def logger(self) -> LoggerItf:
@@ -645,12 +661,12 @@ class CTMLInterpreter(Interpreter):
                 raise err
 
     async def wait_tasks(
-        self,
-        timeout: float | None = None,
-        *,
-        return_when: str = asyncio.ALL_COMPLETED,
-        throw: bool = False,
-        clear_undone: bool = True,
+            self,
+            timeout: float | None = None,
+            *,
+            return_when: str = asyncio.ALL_COMPLETED,
+            throw: bool = False,
+            clear_undone: bool = True,
     ) -> dict[str, CommandTask]:
         # 先等待到解释器结束.
         timeleft = Timeleft(timeout or 0.0)

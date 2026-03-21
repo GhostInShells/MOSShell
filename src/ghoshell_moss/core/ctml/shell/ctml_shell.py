@@ -7,9 +7,9 @@ from typing import Any, Optional
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
-from typing_extensions import Self
 
-from ghoshell_moss import TopicService
+from ghoshell_moss.message import Message
+from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelCtx,
@@ -93,6 +93,18 @@ class CTMLShell(MOSShell):
     @property
     def container(self) -> IoCContainer:
         return self._container
+
+    def meta_instruction(self) -> str:
+        pass
+
+    def channel_instructions(self) -> dict[str, list[Message]]:
+        pass
+
+    def channel_context_messages(self) -> dict[str, list[Message]]:
+        pass
+
+    def interpreting(self) -> Optional[Interpreter]:
+        return self._interpreter
 
     @property
     def name(self) -> str:
