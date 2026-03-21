@@ -613,6 +613,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             task = asyncio.to_thread(self._func, *real_args, **real_kwargs)
             return await task
 
+    def __prompt__(self) -> str:
+        return self.meta().interface
+
 
 CommandTaskContextVar = contextvars.ContextVar("moss.ctx.CommandTask")
 
@@ -833,7 +836,7 @@ class CommandTask(Generic[RESULT], ABC):
         一个 command 只会执行一次.
         """
         if self._compiled_task is None and self.partial is not None:
-            self._compiled_task = asyncio.shield(self.partial(*self.args, **self.kwargs))
+            self._compiled_task = asyncio.create_task(self.partial(*self.args, **self.kwargs))
 
     @abstractmethod
     def result(self, throw: bool = True) -> Optional[RESULT]:

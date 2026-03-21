@@ -8,7 +8,7 @@ from ghoshell_moss.core.concepts.channel import (
 __all__ = ["clear"]
 
 
-async def _clear_children(runtime: ChannelRuntime):
+async def _clear_children(runtime: ChannelRuntime) -> None:
     """
     由于执行的命令本身不需要清空, 所以 clear 本质上是清空子轨道.
     """
@@ -17,7 +17,7 @@ async def _clear_children(runtime: ChannelRuntime):
         return
     children = runtime.sub_channels()
     if len(children) == 0:
-        return None
+        return
     group_clear = []
 
     async def clear_child(_name: str):
@@ -29,6 +29,7 @@ async def _clear_children(runtime: ChannelRuntime):
         sub_name = name
         group_clear.append(clear_child(sub_name))
     await asyncio.gather(*group_clear, return_exceptions=False)
+    return
 
 
 async def clear(chan: str = ""):

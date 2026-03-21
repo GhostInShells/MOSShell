@@ -56,7 +56,7 @@
 ## 核心知识索引
 
 关于这个项目的核心知识所在: 
-- [](./src/ghoshell_moss/core/ctml/prompts/ctml_v2.zh.md) CTML 的说明 prompt. 了解它就足以了解整个 MOSS 架构的目标. 
+- [](./src/ghoshell_moss/core/ctml/prompts/ctml_v0_2_0.zh.md) CTML 的说明 prompt. 了解它就足以了解整个 MOSS 架构的目标. 
 - [](./src/ghoshell_moss) 是 MOSShell 的实现. 核心概念在 [](./src/ghoshell_moss/core/concepts) 内. 这些概念面向内核开发者.
 - [](./src/ghoshell_moss_contrib) 基于 MOSShell 库的实验性功能. 
 - [](./src/ghoshell_ghost) ghost 的原型开发. 未来会从 moss 库中拆出. 

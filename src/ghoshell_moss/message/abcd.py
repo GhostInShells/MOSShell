@@ -210,8 +210,8 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息的发送者身份. 作为 ghost in shells 架构中的标准概念.",
     )
-    created_at: AwareDatetime = Field(
-        default_factory=_now_utc,
+    created_at: AwareDatetime | None = Field(
+        default=None,
         description="消息的创建时间, 一个消息只有一个创建时间",
     )
     completed_at: AwareDatetime | None = Field(
@@ -262,6 +262,7 @@ class MessageMeta(BaseModel):
             if value == '':
                 continue
             # in case value has invalid mark
+            value = str(value)
             value = html.escape(value, quote=True)
             parts.append(f'{attr}="{value}"')
         attr_str = ' '.join(parts)
