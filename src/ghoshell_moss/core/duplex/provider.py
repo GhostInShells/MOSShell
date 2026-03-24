@@ -1,7 +1,8 @@
 import asyncio
 import contextlib
 import logging
-from typing import Callable, Coroutine, Optional
+from typing import Callable, Coroutine, Optional, AsyncIterator
+from typing_extensions import Self
 
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
@@ -46,6 +47,7 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 
 
 class ProviderTopicService(QueueBasedTopicService):
+    """专门为 provider 准备的 topic."""
     def __init__(
         self,
         get_session_id: Callable[[], str],
@@ -73,7 +75,7 @@ class ProviderTopicService(QueueBasedTopicService):
     async def _on_topic_subscribed(self, topic_name: str) -> None:
         try:
             if self._connection.is_connected() and not self._connection.is_closed():
-                event = ProviderSubTopicEvent(topic=topic_name, session_id=self._get_session_id_fn())
+                event = ProviderSubTopicEvent(topic_name=topic_name, session_id=self._get_session_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
             pass
@@ -164,19 +166,19 @@ class DuplexChannelProvider(ChannelProvider):
         return self._container
 
     @contextlib.asynccontextmanager
-    async def _bootstrap_container_stack(self) -> None:
+    async def _bootstrap_container_stack(self) -> AsyncIterator[None]:
         await asyncio.to_thread(self._container.bootstrap)
         yield
         await asyncio.to_thread(self._container.shutdown)
 
     @contextlib.asynccontextmanager
-    async def _bootstrap_runtime_stack(self) -> None:
+    async def _bootstrap_runtime_stack(self) -> AsyncIterator[None]:
         await self._root_runtime.start()
         yield
         await self._root_runtime.close()
 
     @contextlib.asynccontextmanager
-    async def _bootstrap_connection_stack(self) -> None:
+    async def _bootstrap_connection_stack(self) -> AsyncIterator[None]:
         await self._connection.start()
         yield
         try:
@@ -185,7 +187,7 @@ class DuplexChannelProvider(ChannelProvider):
             self.logger.exception("%s close connection failed: %s", self._log_prefix, exc)
 
     @contextlib.asynccontextmanager
-    async def _bootstrap_main_loop_stack(self):
+    async def _bootstrap_main_loop_stack(self) -> AsyncIterator[None]:
         # 运行事件消费逻辑.
         await self._clear_running_status()
         self._main_loop_task = asyncio.create_task(self._main_loop())
@@ -200,7 +202,7 @@ class DuplexChannelProvider(ChannelProvider):
             self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
 
     @contextlib.asynccontextmanager
-    async def arun(self, channel: Channel) -> None:
+    async def arun(self, channel: Channel) -> AsyncIterator[Self]:
         if self._starting:
             self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
             raise RuntimeError(f"Channel {channel.name()} already started.")

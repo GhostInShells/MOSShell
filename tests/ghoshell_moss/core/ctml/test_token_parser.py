@@ -375,8 +375,64 @@ def test_token_parser_raise_on_invalid_args():
     q: list[CommandToken] = []
 
     def iter_content():
+        # args shall be an array
         for c in "<foo:bar _args='{1: 2}'/>":
             yield c
 
     with pytest.raises(InterpretError):
         CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+
+
+def test_token_with_scope():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<foo:bar><baz /></foo:bar>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    for token in q:
+        if token and token.name == "baz":
+            # 被赋予了命名空间.
+            assert token.chan == "foo"
+
+
+def test_token_with_scope_func():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ name='foo'><baz /><_ name='foo.bar'>hello<zoo /></_><_><coo />world</_></_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    count = 0
+    for token in q:
+        if token and token.name == "baz":
+            # 被赋予了命名空间.
+            count += 1
+            assert token.chan == "foo"
+        if token and token.name == "zoo":
+            count += 1
+            assert token.chan == "foo.bar"
+        if token and token.name == "coo":
+            count += 1
+            assert token.chan == "foo"
+        if token and token.seq == 'delta':
+            assert token.chan in ['foo.bar', 'foo']
+    assert count > 1
+
+
+def test_token_with_call_id():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ name='foo'><bar _id='123' /></_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    for token in q:
+        if token and token.name == "baz" and token.seq == 'start':
+            assert token.call_id == '123'

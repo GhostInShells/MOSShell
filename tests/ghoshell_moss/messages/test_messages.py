@@ -13,4 +13,4 @@ def test_message_baseline():
 
 def test_message_meta_attributes_str():
     meta = MessageMeta()
-    assert meta.gen_attributes_str() == ""
+    assert 'created' in meta.gen_attributes_str()

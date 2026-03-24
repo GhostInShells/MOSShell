@@ -558,20 +558,12 @@ class MOSSToolSet(ABC):
 # 4. 支持 pydantic ai 实现的双工 Agent. 将流式控制范式推进到流式 思考-观察-行动 范式.
 #
 # 坚持 Facade 思路, 不暴露任何对用户没有用的 API. 降低用户的心智复杂度.
-# 让用户自己读源码了解底层的实现与封装.
+# 用户可以自己读源码了解底层的实现与封装.
 class MOSS(ABC):
     """
     MOSS 架构的高阶 interface.
     为 MOSShell 提供和 Agent / MCP / Tool 的集成方式.
     """
-
-    @classmethod
-    def get_from_environment(cls, *args, **kwargs) -> Self:
-        """
-        MOSS 架构的核心要求, 必须从任何运行时环境中获取进程级别单例.
-        :raise NotImplementedError: 如果这个 feature 在具体的 MOSS 中无法实现.
-        """
-        raise NotImplementedError(f'current moss type {cls.__name__} do not support get from environment')
 
     @property
     @abstractmethod

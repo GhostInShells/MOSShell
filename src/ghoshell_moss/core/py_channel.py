@@ -38,8 +38,10 @@ class PyChannelBuilder(Builder):
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_pause_funcs: list[tuple[LifecycleFunction, bool]] = []
+
         self._context_messages_function: Optional[MessageFunction] = None
         self._instruction_messages_function: Optional[MessageFunction] = None
+
         self._states: list[State] = []
         self._commands: dict[str, Command] = {}
         self._container_instances = {}

@@ -10,7 +10,10 @@ from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import TextTokenParser
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
-from ghoshell_common.helpers import Timeleft
+from ghoshell_moss.core.ctml.v1_0_0.constants import (
+    POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
+    CALL_ID_RESERVE_KEY,
+)
 from ast import literal_eval
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
@@ -26,7 +29,11 @@ __all__ = [
     "ctml_default_parsers",
 ]
 
-_POSITION_ARGS_KEY = "_args"
+_POSITION_ARGS_KEY = POSITION_ARGS_KEY
+_SCOPE_SHORTCUT = SCOPE_SHORTCUT
+_SCOPE_COMMAND_NAME = SCOPE_COMMAND_NAME
+_CALL_ID_RESERVE_KEY = CALL_ID_RESERVE_KEY
+_SCOPE_CHANNEL_NAME_KEY = SCOPE_CHANNEL_NAME_KEY
 
 
 class CMTLSaxElement:
@@ -35,16 +42,16 @@ class CMTLSaxElement:
     """
 
     def __init__(
-        self,
-        *,
-        cmd_idx: int,
-        stream_id: str,
-        chan: str,
-        name: str,
-        attrs: dict[str, str],
-        parsed_args: list[str] | None = None,
-        parsed_kwargs: dict[str, Any] | None = None,
-        call_id: int | None = None,
+            self,
+            *,
+            cmd_idx: int,
+            stream_id: str,
+            chan: str,
+            name: str,
+            attrs: dict[str, str],
+            parsed_args: list[str] | None = None,
+            parsed_kwargs: dict[str, Any] | None = None,
+            call_id: str | None = None,
     ):
         self.cmd_idx = cmd_idx
         self.call_id = call_id
@@ -60,7 +67,7 @@ class CMTLSaxElement:
         self.stream_id = stream_id
 
     @classmethod
-    def make_fullname(cls, chan: Optional[str], name: str, call_id: Optional[int] = None) -> str:
+    def make_fullname(cls, chan: Optional[str], name: str, call_id: Optional[str] = None) -> str:
         parts = []
         if chan:
             parts.append(chan)
@@ -70,7 +77,7 @@ class CMTLSaxElement:
         return ":".join(parts)
 
     @classmethod
-    def make_start_mark(cls, chan: str, name: str, attrs: dict, self_close: bool, call_id: Optional[int] = None) -> str:
+    def make_start_mark(cls, chan: str, name: str, attrs: dict, self_close: bool, call_id: Optional[str] = None) -> str:
         attr_expression = []
         for k, v in attrs.items():
             quoted_value = saxutils.quoteattr(str(v))
@@ -86,11 +93,15 @@ class CMTLSaxElement:
         return f"</{cls.make_fullname(chan, name, call_id)}>"
 
     def start_token(self) -> CommandToken:
+        """
+        generate start token by the sax element
+        """
         content = self.make_start_mark(self.chan, self.name, self.attrs, self_close=False, call_id=self.call_id)
         part_idx = self.part_idx
         self.part_idx += 1
         return CommandToken(
             name=self.name,
+            # current channel or new scope.
             chan=self.chan,
             cmd_idx=self.cmd_idx,
             part_idx=part_idx,
@@ -103,12 +114,18 @@ class CMTLSaxElement:
         )
 
     def on_child_command(self):
+        """
+        remark the delta streaming is broker.
+        """
         if self._has_delta:
             self._has_delta = False
             self.deltas = ""
             self.part_idx += 1
 
     def add_delta(self, delta: str, gen_token: bool = True) -> Optional[CommandToken]:
+        """
+        generate delta token by the sax element
+        """
         if gen_token and len(delta) > 0:
             self.deltas += delta
             self._has_delta = True
@@ -126,6 +143,9 @@ class CMTLSaxElement:
         return None
 
     def end_token(self) -> CommandToken:
+        """
+        generate end token by the sax element
+        """
         if self._has_delta:
             self.part_idx += 1
         return CommandToken(
@@ -160,9 +180,9 @@ class AttrParser(Protocol):
 
 class AttrWithTypeSuffixParser(AttrParser):
     def __init__(
-        self,
-        description: str = "允许属性跟随后缀, 形如 a:str",
-        parser_map: dict[str, Callable[[str], Any]] | None = None,
+            self,
+            description: str = "允许属性跟随后缀, 形如 a:str",
+            parser_map: dict[str, Callable[[str], Any]] | None = None,
     ):
         self.description = description
         self._parser_map = parser_map or {
@@ -196,10 +216,10 @@ class AttrWithTypeSuffixParser(AttrParser):
 
 class AttrPrefixParser(AttrParser):
     def __init__(
-        self,
-        desc: str,
-        prefix: str,
-        parser: Callable[[str], Any],
+            self,
+            desc: str,
+            prefix: str,
+            parser: Callable[[str], Any],
     ):
         self.description = desc
         self._prefix = prefix
@@ -208,7 +228,7 @@ class AttrPrefixParser(AttrParser):
     def parse(self, name: str, value: str) -> Optional[tuple[str, Any]]:
         if not name.startswith(self._prefix):
             return None
-        attr_name = name[len(self._prefix) :]
+        attr_name = name[len(self._prefix):]
         try:
             parsed = self._parser(value)
             return attr_name, parsed
@@ -248,14 +268,18 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
     """初步实现 sax 解析. 实现得非常糟糕, 主要是对 sax 的回调机制有误解, 留下了大量冗余状态. 需要考虑重写一个简单版."""
 
     def __init__(
-        self,
-        root_tag: str,
-        stream_id: str,
-        callback: CommandTokenCallback,
-        *,
-        attr_parsers: list[AttrParser] | None = None,
-        logger: Optional[logging.Logger] = None,
-        ensure_call_id: bool = False,
+            self,
+            root_tag: str,
+            stream_id: str,
+            callback: CommandTokenCallback,
+            *,
+            attr_parsers: list[AttrParser] | None = None,
+            logger: Optional[logging.Logger] = None,
+            ensure_call_id: bool = False,
+            scope_shortcut: str = _SCOPE_SHORTCUT,
+            scope_command_name: str = _SCOPE_COMMAND_NAME,
+            call_id_reserve_key: str = _CALL_ID_RESERVE_KEY,
+            scope_channel_name_key: str = _SCOPE_CHANNEL_NAME_KEY,
     ):
         """
         :param root_tag: do not send command token with root_tag
@@ -266,6 +290,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         """自身的关机"""
         self._attr_parsers = attr_parsers or ctml_default_parsers
         self._ensure_call_id = ensure_call_id
+        self._scope_shortcut = scope_shortcut
+        self._scope_command_name = scope_command_name
+        self._scope_channel_name_key = scope_channel_name_key
+        self._call_id_reserve_key = call_id_reserve_key
 
         self._root_tag = root_tag
         self._stream_id = stream_id
@@ -284,6 +312,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self.done_event = threading.Event()
         self._exception: Optional[Exception] = None
         self._parsing_text = ""
+        self._scope = ''
 
     def buffer_input(self, text: str):
         """
@@ -309,21 +338,34 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         parts = name.split(":", 2)
         call_id = None
         if len(parts) == 1:
+            # 没有命名空间时, 默认是名字.
             chan = ""
             command_name = parts[0]
         elif len(parts) == 2:
+            # 有命名空间时, 优先按命名空间语法.
             chan, command_name = parts
         elif len(parts) == 3:
             chan, command_name, call_id = parts
         else:
             chan = ""
             command_name = parts[0]
-        try:
-            if call_id is not None:
-                call_id = int(call_id)
-        except ValueError:
-            call_id = None
+
         args, dict_attrs, parsed_kwargs = self.parse_attrs(attrs)
+        if self._call_id_reserve_key in parsed_kwargs:
+            # 尝试从 parsed_kwargs 中获取 call_id.
+            call_id = parsed_kwargs.pop(self._call_id_reserve_key)
+            call_id = str(call_id)
+
+        # 判断是否是 scope.
+        if command_name == self._scope_shortcut:
+            command_name = self._scope_command_name
+        if command_name == self._scope_command_name:
+            # CTML v1.0.0 规则, 使用指定的 key 返回 channel name.
+            if not chan:
+                if self._scope_channel_name_key in parsed_kwargs:
+                    chan = parsed_kwargs.pop(self._scope_channel_name_key)
+
+        # 创建 command token
         self._start_command_token_element(
             chan,
             command_name,
@@ -334,17 +376,24 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         )
 
     def _start_command_token_element(
-        self,
-        chan: str,
-        name: str,
-        attrs: dict,
-        *,
-        parsed_args: list | None = None,
-        parsed_kwargs: dict | None = None,
-        call_id: Optional[int] = None,
+            self,
+            chan: str,
+            name: str,
+            attrs: dict,
+            *,
+            parsed_args: list | None = None,
+            parsed_kwargs: dict | None = None,
+            call_id: Optional[str] = None,
     ) -> None:
         if call_id is None and self._ensure_call_id:
-            call_id = self._cmd_idx
+            call_id = str(self._cmd_idx)
+        if len(self._parsing_element_stack) > 0:
+            last_unclose_element = self._parsing_element_stack[-1]
+            last_unclose_element.on_child_command()
+            # 生成
+            scope = last_unclose_element.chan
+            chan = chan or scope
+
         element = CMTLSaxElement(
             cmd_idx=self._cmd_idx,
             stream_id=self._stream_id,
@@ -355,8 +404,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             parsed_kwargs=parsed_kwargs,
             call_id=call_id,
         )
-        if len(self._parsing_element_stack) > 0:
-            self._parsing_element_stack[-1].on_child_command()
+
 
         # using stack to handle elements
         self._parsing_element_stack.append(element)
@@ -365,8 +413,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         self._cmd_idx += 1
 
     def parse_attrs(
-        self,
-        attrs: xml.sax.xmlreader.AttributesImpl | dict,
+            self,
+            attrs: xml.sax.xmlreader.AttributesImpl | dict,
     ) -> tuple[list[Any], dict[str, str], dict[str, Any]]:
         origin_attrs = dict(attrs)
         dict_attrs = origin_attrs.copy()
@@ -490,12 +538,12 @@ class CTML2CommandTokenParser(TextTokenParser):
     这一版未来需要彻底重做. 但基本的 feature 不变.
 
     目前的用法过于复杂:
-    >>> def run_parser(parser: CTML2CommandTokenParser, tokens: Iterable[str], callback: CommandTokenCallback) -> None:
-    >>>     with parser.with_callback(callback):
-    >>>          for token in tokens:
-    >>>             parser.feed(token)
-    >>>          parser.commit()
-    >>>          parser.wait_done()
+    >>> def run_parser(parser: CTML2CommandTokenParser, tokens: Iterable[str]) -> None:
+    >>>     with parser:
+    >>>         for token in tokens:
+    >>>            parser.feed(token)
+    >>>         parser.commit()
+    >>>         parser.wait_done()
 
     在一个线程里完成回调.
     目前主要的问题是, 这个 Parser 从上游拿到退出通知, 导致全生命周期耦合. 还是 golang 的 ctx 思路.
@@ -504,15 +552,15 @@ class CTML2CommandTokenParser(TextTokenParser):
     """
 
     def __init__(
-        self,
-        callback: CommandTokenCallback | None = None,
-        stream_id: str = "",
-        *,
-        root_tag: str = "ctml",
-        logger: Optional[logging.Logger] = None,
-        tokens_replacement: Optional[dict[str, str]] = None,
-        attr_parsers: list[AttrParser] | None = None,
-        with_call_id: bool = False,
+            self,
+            callback: CommandTokenCallback | None = None,
+            stream_id: str = "",
+            *,
+            root_tag: str = "ctml",
+            logger: Optional[logging.Logger] = None,
+            tokens_replacement: Optional[dict[str, str]] = None,
+            attr_parsers: list[AttrParser] | None = None,
+            with_call_id: bool = False,
     ):
         self.root_tag = root_tag
         self.logger = logger or logging.getLogger("moss")
@@ -598,6 +646,9 @@ class CTML2CommandTokenParser(TextTokenParser):
         return self._started and not self._closed and self._sax_parser is not None
 
     def _check_running(self):
+        """
+        check running or failed already
+        """
         if not self._started:
             raise RuntimeError(f"CTML2CommandTokenParser is not started yet")
         if not self.is_running():
@@ -669,15 +720,15 @@ class CTML2CommandTokenParser(TextTokenParser):
 
     @classmethod
     def parse(
-        cls,
-        callback: CommandTokenCallback,
-        stream: Iterable[str],
-        *,
-        root_tag: str = "ctml",
-        stream_id: str = "",
-        logger: Optional[logging.Logger] = None,
-        attr_parsers: Optional[list[AttrParser]] = None,
-        with_call_id: bool = False,
+            cls,
+            callback: CommandTokenCallback,
+            stream: Iterable[str],
+            *,
+            root_tag: str = "ctml",
+            stream_id: str = "",
+            logger: Optional[logging.Logger] = None,
+            attr_parsers: Optional[list[AttrParser]] = None,
+            with_call_id: bool = False,
     ) -> None:
         """
         simple example of parsing input stream into command token stream with a thread.

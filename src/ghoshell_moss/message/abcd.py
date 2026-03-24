@@ -1,12 +1,15 @@
+import doctest
 import json
 import html
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias, is_typeddict
 from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError, AwareDatetime
+from pydantic import BaseModel, Field, ValidationError, AwareDatetime, NaiveDatetime
 from typing_extensions import Self
 from datetime import datetime, timezone
+from dateutil import tz
 from pydantic_ai import UserContent, MultiModalContent, BinaryImage
 
 __all__ = [
@@ -99,12 +102,14 @@ class Addition(BaseModel, ABC):
         """
         if not hasattr(target, "additional") or target.additional is None:
             return None
+        if not isinstance(target.additional, dict):
+            return None
         keyword = cls.keyword()
         data = target.additional.get(keyword, None)
         if data is None:
             return None
         try:
-            wrapped = cls(**data)
+            wrapped = cls.model_construct(**data)
             return wrapped
         except ValidationError as e:
             # 如果协议未对齐, 解析失败, 通常不抛出异常.
@@ -169,7 +174,7 @@ class AdditionList:
         return result
 
 
-_now_utc = lambda: datetime.now(timezone.utc)
+_now_utc: Callable[[], str] = lambda: datetime.now(tz.gettz()).isoformat()
 
 
 class MessageMeta(BaseModel):
@@ -189,37 +194,28 @@ class MessageMeta(BaseModel):
         default_factory=uuid,
         description="消息的全局唯一 ID",
     )
-    issuer_id: Optional[str] = Field(
-        default=None,
-        description="用来对 issuer 进行寻址. "
-    )
     tag: str = Field(
         default='message',
-        description="message tag that wrap the message information.",
+        description='',
     )
-
     role: str | None = Field(
         default=None,
         description="消息体的角色类型. 来自 感知器/用户/AI/功能 等等",
-    )
-    issuer: Optional[str] = Field(
-        default=None,
-        description="消息的发送",
     )
     name: Optional[str] = Field(
         default=None,
         description="消息的发送者身份. 作为 ghost in shells 架构中的标准概念.",
     )
-    created_at: AwareDatetime | None = Field(
+    issuer: Optional[str] = Field(
         default=None,
+        description="消息的发送",
+    )
+    created: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
         description="消息的创建时间, 一个消息只有一个创建时间",
     )
-    completed_at: AwareDatetime | None = Field(
-        default=None,
-        description="消息的结束时间",
-    )
-    incomplete: bool | None = Field(
-        default=None,
+    complete: bool = Field(
+        default=True,
         description="消息是否未结束",
     )
     attributes: dict[str, Any] = Field(
@@ -227,28 +223,14 @@ class MessageMeta(BaseModel):
         description="额外的 attributes 属性. "
     )
 
-    def as_incomplete(self) -> Self:
-        """
-        Ghost In Shells 特殊的协议标记.
-        由于时间是第一公民, 所以消息协议的开头与结尾时间很重要.
-        更重要的是, 按 ghost in shells 的设计, 模型可以看到未结束的信息.
-        比如响应的瞬间, 用户的 asr 解析尚未完成.
-        """
-        self.incomplete = True
-        self.completed_at = None
-        return self
-
-    def as_completed(self) -> Self:
-        """
-        标记消息为已经结束的消息.
-        """
-        self.incomplete = None
-        self.completed_at = _now_utc()
-
     def gen_attributes(self) -> dict[str, Any]:
         attributes = self.attributes.copy()
         # 排除掉 ghost in shells 架构自身的关键维度信息.
-        update = self.model_dump(exclude_none=True, exclude={'attributes', 'id', 'issuer_id', 'stage', 'tag'})
+        update = self.model_dump(
+            exclude_none=True,
+            exclude_defaults=True,
+            exclude={'attributes', 'id', 'issuer', 'tag'},
+        )
         if len(update) > 0:
             attributes.update(update)
         return attributes
@@ -262,6 +244,8 @@ class MessageMeta(BaseModel):
             if value == '':
                 continue
             # in case value has invalid mark
+            if isinstance(value, datetime):
+                value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat()
             value = str(value)
             value = html.escape(value, quote=True)
             parts.append(f'{attr}="{value}"')
@@ -273,7 +257,7 @@ class MessageMeta(BaseModel):
         生成 XML 讯息, 其中时序感是默认必要的.
         """
         attr_str = self.gen_attributes_str()
-        tag = self.tag or 'meta'
+        tag = 'meta'
         return f'<{tag} {attr_str}/>'
 
 
@@ -334,17 +318,29 @@ class Message(BaseModel, WithAdditional):
             role: str = "",
             name: Optional[str] = None,
             id: Optional[str] = None,
+            issuer: Optional[str] = None,
+            tag: Optional[str] = None,
+            complete: bool | None = None,
     ):
         """
         语法糖, 用来极简地一条消息.
 
         >>> msg = Message.new()
         """
-        meta = MessageMeta(
-            role=role,
-            name=name,
-            id=id or uuid(),
-        )
+        data = {}
+        if role is not None:
+            data['role'] = role
+        if name is not None:
+            data['name'] = name
+        if id is not None:
+            data['id'] = id
+        if issuer is not None:
+            data['issuer'] = issuer
+        if tag is not None:
+            data['tag'] = tag
+        if complete is not None:
+            data['complete'] = complete
+        meta = MessageMeta.model_construct(**data)
         return cls(meta=meta)
 
     @property
@@ -426,7 +422,7 @@ class Message(BaseModel, WithAdditional):
     def as_contents(
             self,
             with_meta: bool = True,
-            tag: str = 'message',
+            tag: str = '',
     ) -> Iterable[UserContent]:
         """
         将整个消息体返回成 Pydantic AI 的 User Content.
@@ -438,10 +434,32 @@ class Message(BaseModel, WithAdditional):
             yield from self.contents
             return
 
+        attr_str = ''
+        tag = tag or self.meta.tag or 'message'
         attrs = self.meta.gen_attributes_str()
-        if with_meta and attrs:
-            yield f'<{tag} {attrs}>'
+        if attrs:
+            attr_str = ' ' + attrs
+        yield f'<{tag}{attr_str}>'
         for content in self.contents:
             yield content
-        if attrs:
-            yield f'</{tag}>'
+        yield f'</{tag}>'
+
+    def get_copy(self) -> Self:
+        return self.model_copy(deep=True)
+
+    def to_xml(self) -> str:
+        """
+        debug method
+        """
+        result = []
+        for content in self.as_contents(with_meta=True):
+            if isinstance(content, str):
+                result.append(content)
+            else:
+                result.append(repr(content))
+        return ''.join(result)
+
+
+if __name__ == '__main__':
+    m = Message()
+    print(m.to_xml())

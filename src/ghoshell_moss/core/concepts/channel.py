@@ -10,6 +10,10 @@ from typing import (
     Union,
     Callable,
     Coroutine,
+    AsyncIterator,
+    Awaitable,
+    Generic,
+    TypeVar,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
@@ -253,8 +257,8 @@ class Builder(ABC):
 
     @abstractmethod
     def add_command(
-        self,
-        command: Command,
+            self,
+            command: Command,
     ) -> None:
         """
         添加一个 Command 对象.
@@ -263,19 +267,19 @@ class Builder(ABC):
 
     @abstractmethod
     def command(
-        self,
-        *,
-        name: str = "",
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
-        available: Optional[Callable[[], bool]] = None,
-        # --- 高级参数 --- #
-        blocking: Optional[bool] = None,
-        call_soon: bool = False,
-        priority: int = 0,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
+            available: Optional[Callable[[], bool]] = None,
+            # --- 高级参数 --- #
+            blocking: Optional[bool] = None,
+            call_soon: bool = False,
+            priority: int = 0,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         decorator
@@ -406,9 +410,9 @@ class ChannelCtx:
     """
 
     def __init__(
-        self,
-        runtime: Optional["ChannelRuntime"] = None,
-        task: Optional[CommandTask] = None,
+            self,
+            runtime: Optional["ChannelRuntime"] = None,
+            task: Optional[CommandTask] = None,
     ):
         self._runtime = runtime
         self._task = task
@@ -632,12 +636,12 @@ class ChannelRuntime(ABC):
         await self.importlib.topics.pub(topic, name=topic_name, creator=f"chan/{self.id}")
 
     def topic_subscriber(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        topic_name: str = "",
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: str = "",
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 Subscriber 来获取链路中的 Topic 广播.
@@ -697,7 +701,7 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
@@ -851,11 +855,11 @@ class ChannelRuntime(ABC):
         pass
 
     def create_command_task(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> CommandTask:
         """
         example to create channel task
@@ -876,11 +880,11 @@ class ChannelRuntime(ABC):
         return task
 
     async def execute_command(
-        self,
-        name: CommandUniqueName,
-        *,
-        args: tuple | None = None,
-        kwargs: dict | None = None,
+            self,
+            name: CommandUniqueName,
+            *,
+            args: tuple | None = None,
+            kwargs: dict | None = None,
     ) -> Any:
         """
         执行命令并且阻塞等待拿到结果.
@@ -998,10 +1002,10 @@ class ChannelImportLib(ABC):
         return all_runtimes
 
     def find_descendants(
-        self,
-        channel: Channel,
-        bloodline: set | None = None,
-        depth: int = 0,
+            self,
+            channel: Channel,
+            bloodline: set | None = None,
+            depth: int = 0,
     ) -> dict[ChannelFullPath, ChannelRuntime]:
         """
         语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.
@@ -1059,6 +1063,8 @@ class ChannelImportLib(ABC):
         pass
 
 
+# --- for develop --- #
+
 class ChannelInterface(ABC):
     """
     ChannelApp 范式的可继承版本. 提供一种标准的 Channel 抽象设计策略.
@@ -1091,14 +1097,84 @@ class ChannelInterface(ABC):
 
     @abstractmethod
     def as_channel(
-        self,
-        name: str = "",
-        description: str = "",
+            self,
+            name: str = "",
+            description: str = "",
     ) -> Channel:
         """
         子抽象类应该要实现这个函数.
         """
         pass
+
+
+R = TypeVar("R")
+
+
+class CommandExecutor(Generic[R]):
+    """
+    将 Command 包装成运行时对象.
+    它被调用时, 实际上会把 CommandTask 发送给 ChannelRuntime.
+    """
+
+    def __init__(
+            self,
+            command: Command[R],
+            runtime: ChannelRuntime,
+            *,
+            channel_path: ChannelFullPath = '',
+    ):
+        self._command = command
+        self._runtime = runtime
+        self._channel_path = channel_path
+
+    async def execute(self, *args, **kwargs) -> CommandTask[R]:
+        task = BaseCommandTask.from_command(
+            command_=self._command,
+            args=args,
+            kwargs=kwargs,
+            chan_=self._channel_path,
+        )
+        await self._runtime.push_task(task)
+        return task
+
+    async def __call__(self, *args, **kwargs) -> R:
+        task = await self.execute(*args, **kwargs)
+        return await task
+
+    def __prompt__(self) -> str:
+        return self._command.meta().interface
+
+
+class ChannelExecutor:
+    """
+    可以用代码的方式理解和使用的 ChannelExecutor.
+    todo: 想明白要怎么开发. push task 可能要改成同步的更简单.
+    """
+
+    def __init__(
+            self,
+            channel_path: ChannelFullPath,
+            runtime: ChannelRuntime,
+    ):
+        self._runtime = runtime
+        self._channel_path = channel_path
+
+    def __getitem__(self, item: ChannelFullPath) -> Self:
+        runtime = self._runtime.importlib.recursively_find_runtime(self._runtime, self._channel_path)
+        if runtime is None:
+            raise LookupError(f"Channel not found: {self._channel_path}")
+        return ChannelExecutor(channel_path=item, runtime=runtime)
+
+    def __getattr__(self, item: str) -> Callable[[...], Awaitable]:
+        command = self._runtime.get_command(item)
+        if command is None:
+            raise AttributeError(f"Channel does not hav command: {item}")
+
+        def wrapper(*args, **kwargs) -> Awaitable:
+            task = BaseCommandTask.from_command(command, chan_=self._channel_path, args=args, kwargs=kwargs)
+            return task
+
+        return wrapper
 
 
 ChannelProxy = Channel
@@ -1188,7 +1264,7 @@ class ChannelProvider(ABC):
 
     @asynccontextmanager
     @abstractmethod
-    async def arun(self, channel: Channel) -> None:
+    async def arun(self, channel: Channel) -> AsyncIterator[Self]:
         """
         支持 async with statement 的运行方式启动一个 channel.
         """
