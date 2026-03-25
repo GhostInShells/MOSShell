@@ -51,7 +51,6 @@ __all__ = [
     "DuplexChannelProxy",
 ]
 
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore, State
 
 """
 DuplexChannel Proxy 一侧的实现, 
@@ -118,17 +117,6 @@ class DuplexChannelContext:
         # 发送更新 meta 的指令.
         channel_path_meta_map = self.provider_meta_map
         return channel_path_meta_map.get(provider_chan_path, None)
-
-    @property
-    def states(self) -> StateStore:
-        # todo: 实现 duplex state 通讯.
-        if self._states is None:
-            _states = self.container.get(StateStore)
-            if _states is None:
-                _states = BaseStateStore(self.root_name)
-                self.container.set(StateStore, _states)
-            self._states = _states
-        return self._states
 
     async def refresh_meta(self) -> None:
         if not self.connection.is_connected():
@@ -661,7 +649,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
     def prepare_container(self, container: IoCContainer | None) -> IoCContainer:
         container.set(LoggerItf, self._ctx.logger)
-        container.set(StateStore, self._ctx.states)
         container = super().prepare_container(container)
         return container
 
@@ -821,9 +808,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
     async def on_close(self) -> None:
         await self._ctx.close()
-
-    def default_states(self) -> list[State]:
-        return []
 
 
 class DuplexChannelProxy(Channel):

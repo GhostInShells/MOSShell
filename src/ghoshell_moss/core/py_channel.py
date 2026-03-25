@@ -3,7 +3,7 @@ import inspect
 import logging
 from typing import Optional, Callable
 
-from ghoshell_container import BINDING, INSTANCE, Container, IoCContainer
+from ghoshell_container import BINDING, INSTANCE, IoCContainer
 from typing_extensions import Self
 
 from ghoshell_moss.message import Message
@@ -21,7 +21,6 @@ from ghoshell_moss.core.concepts.channel import (
 )
 from ghoshell_moss.core.concepts.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
-from ghoshell_moss.core.concepts.states import StateModel, State
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 
@@ -43,7 +42,6 @@ class PyChannelBuilder(Builder):
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
 
-        self._states: list[State] = []
         self._commands: dict[str, Command] = {}
         self._container_instances = {}
         self._dynamic = False
@@ -76,16 +74,6 @@ class PyChannelBuilder(Builder):
         if self._available_fn is not None:
             return self._available_fn()
         return True
-
-    def state_model(self, model: type[StateModel] | StateModel) -> type[StateModel] | StateModel:
-        saving = model
-        if isinstance(model, type):
-            saving = model()
-        self._states.append(saving.to_state())
-        return model
-
-    def default_states(self) -> list[State]:
-        return self._states
 
     def context_messages(self, func: MessageFunction, reset: bool = False) -> MessageFunction:
         if reset:
@@ -446,9 +434,6 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
     async def on_close(self) -> None:
         await self._builder.on_close()
-
-    def default_states(self) -> list[State]:
-        return self._builder.default_states()
 
     def prepare_container(self, container: IoCContainer | None) -> IoCContainer:
         self._builder.update_container(container)

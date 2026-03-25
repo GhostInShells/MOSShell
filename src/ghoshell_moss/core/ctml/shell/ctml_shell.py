@@ -30,11 +30,10 @@ from ghoshell_moss.core.concepts.expressions import Expressions
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
 from ghoshell_moss.core.concepts.speech import Speech, TTSSpeech
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
-from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_interfaces, make_context_messages
+from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_context_messages
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
@@ -51,7 +50,6 @@ class CTMLShell(MOSShell):
             container: IoCContainer | None = None,
             main_channel: MutableChannel | None = None,
             speech: Optional[Speech] = None,
-            state_store: Optional[StateStore] = None,
             logger: LoggerItf | None = None,
             experimental: bool = True,
             primitives: list[str] | None = None,
@@ -71,7 +69,6 @@ class CTMLShell(MOSShell):
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
 
         # state
-        self._state_store: StateStore | None = state_store
 
         # logger
         self._logger = logger
@@ -114,13 +111,6 @@ class CTMLShell(MOSShell):
     def name(self) -> str:
         return self._name
 
-    @property
-    def states(self) -> StateStore:
-        self._check_running()
-        if self._state_store is None:
-            raise RuntimeError("State store is not set")
-        return self._state_store
-
     def topics(self) -> TopicService:
         self._check_running()
         return self._main_runtime.importlib.topics
@@ -143,7 +133,6 @@ class CTMLShell(MOSShell):
 
     def _bootstrap_stacks(self) -> Iterable[Callable]:
         yield self._ioc_context_manager
-        yield self._state_store_context_manager
         yield self._speech_context_manager
         yield self._runtime_context_manager
         yield self._main_loop_context_manager
@@ -163,17 +152,6 @@ class CTMLShell(MOSShell):
         yield
         await asyncio.to_thread(self._container.shutdown)
 
-    @contextlib.asynccontextmanager
-    async def _state_store_context_manager(self):
-        if self._state_store is None:
-            state_store = self._container.get(StateStore)
-            if state_store is None:
-                state_store = BaseStateStore(owner=f"shell/{self._name}")
-                self._container.set(StateStore, state_store)
-            self._state_store = state_store
-        await self._state_store.start()
-        yield
-        await self._state_store.close()
 
     @contextlib.asynccontextmanager
     async def _speech_context_manager(self):

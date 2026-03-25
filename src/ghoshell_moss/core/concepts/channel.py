@@ -29,7 +29,6 @@ from ghoshell_moss.core.concepts.command import (
     CommandUniqueName,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
-from ghoshell_moss.core.concepts.states import StateStore
 from ghoshell_moss.core.concepts.topic import (
     TopicService,
     TopicModel,
@@ -633,14 +632,6 @@ class ChannelRuntime(ABC):
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
         """
         在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def states(self) -> StateStore:
-        """
-        可以在多个 Channel 之间实现状态的共享.
         """
         pass
 

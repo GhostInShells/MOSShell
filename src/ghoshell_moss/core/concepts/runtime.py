@@ -13,7 +13,6 @@ from ghoshell_moss.core.concepts.command import (
     Command,
     CommandTaskState,
 )
-from ghoshell_moss.core.concepts.states import StateStore, BaseStateStore, State
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
@@ -214,7 +213,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         channel: CHANNEL,
         container: IoCContainer | None = None,
         logger: LoggerItf | None = None,
-        state_store: StateStore | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -226,7 +224,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         )
         self._container: IoCContainer = container
         self._logger: LoggerItf | None = logger
-        self._state_store: StateStore | None = state_store
         # import lib 是最重要的.
         self._importlib: BaseImportLib | None = None
 
@@ -254,16 +251,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     @property
     def channel(self) -> CHANNEL:
         return self._channel
-
-    @property
-    def states(self) -> StateStore:
-        """
-        返回当前 Channel 的状态存储.
-        """
-        if self._state_store is None:
-            # 必须依赖一个 state store.
-            self._state_store = self._container.force_fetch(StateStore)
-        return self._state_store
 
     @property
     def logger(self) -> LoggerItf:
@@ -567,22 +554,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             await self._importlib.close()
 
     @contextlib.asynccontextmanager
-    async def _states_ctx(self):
-        if self._state_store is None:
-            state_store = self.container.get(StateStore)
-            if state_store is None:
-                state_store = BaseStateStore(owner=self._uid)
-            self._state_store = state_store
-        self._state_store.register(*self.default_states())
-        await self._state_store.start()
-        yield
-        await self._state_store.close()
-
-    @abstractmethod
-    def default_states(self) -> list[State]:
-        pass
-
-    @contextlib.asynccontextmanager
     async def _start_and_close_ctx(self):
         ctx = ChannelCtx(self)
         cor = ctx.run(self.on_start_up)
@@ -655,7 +626,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def _async_exit_ctx_funcs(self) -> Iterable[Callable]:
         yield self._container_ctx
         yield self._importlib_ctx
-        yield self._states_ctx
         yield self._start_and_close_ctx
         yield self._running_task_ctx
         yield self._main_loop_ctx
@@ -743,10 +713,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     def destroy(self) -> None:
         # 防止互相持有.
-        self._channel = None
-        self._state_store = None
         self._task_done_callbacks.clear()
-        self._importlib = None
+        del self._channel
+        del self._importlib
 
 
 _TaskId = str
