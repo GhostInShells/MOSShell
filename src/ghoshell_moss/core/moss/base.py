@@ -10,6 +10,11 @@ from ghoshell_moss.core.concepts.moss import (
 from ghoshell_moss.core.concepts.speech import Speech
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml import new_ctml_shell
+from ghoshell_moss.core.ctml.v1_0_0.prompts import (
+    make_interfaces,
+    make_context_messages,
+    make_instruction_messages,
+)
 from ghoshell_container import IoCContainer, Container
 from ghoshell_common.contracts import LoggerItf
 import logging
@@ -23,7 +28,11 @@ class BaseMOSSToolset(MOSSToolSet):
         self._exited = False
 
     def meta_instruction(self) -> str:
-        pass
+        return self._main_runtime.shell.meta_instruction()
+
+    @property
+    def runtime(self) -> MOSSRuntime:
+        return self._main_runtime
 
     async def moss_instructions(self) -> str:
         pass
@@ -37,17 +46,17 @@ class BaseMOSSToolset(MOSSToolSet):
     async def moss_call_soon(self, commands: str) -> ToolReturn:
         await self._main_runtime.call_soon(commands)
         snapshot = await self._main_runtime.pop_snapshot()
-        return self._snapshot_to_tool_return(snapshot, executed=True, inputs=True, context=True)
+        return self._snapshot_to_tool_return(snapshot)
 
     async def moss_interrupt(self) -> ToolReturn:
         await self._main_runtime.interrupt()
         snapshot = await self._main_runtime.pop_snapshot()
-        return self._snapshot_to_tool_return(snapshot, executed=True, inputs=True, context=True)
+        return self._snapshot_to_tool_return(snapshot)
 
     async def moss_observe(self, timeout: float | None = None) -> ToolReturn:
         await self._main_runtime.observe(timeout)
         snapshot = await self._main_runtime.pop_snapshot()
-        return self._snapshot_to_tool_return(snapshot, executed=True, inputs=True, context=True)
+        return self._snapshot_to_tool_return(snapshot)
 
     async def moss_focus(self, level: PriorityLevel, policy: IgnorePolicy = 'buffer') -> None:
         await self._main_runtime.focus(level, policy)
@@ -55,14 +64,10 @@ class BaseMOSSToolset(MOSSToolSet):
     @staticmethod
     def _snapshot_to_tool_return(
             snapshot: Snapshot,
-            *,
-            executed: bool,
-            context: bool,
-            inputs: bool,
     ) -> ToolReturn:
         return ToolReturn(
             return_value=None,
-            content=list(snapshot.to_user_contents(with_meta=True, executed=executed, inputs=inputs, context=context)),
+            content=list(snapshot.to_user_contents(with_meta=True)),
         )
 
     async def __aenter__(self) -> Self:
@@ -102,11 +107,6 @@ class BaseMOSSImpl(MOSS, ABC):
         )
         self._respond_hooks: list[RespondHook] = []
         self._idle_hooks: list[IdleHook] = []
-
-    @classmethod
-    @abstractmethod
-    def get_from_environment(cls, *args, **kwargs) -> Self:
-        pass
 
     @property
     def container(self) -> IoCContainer:

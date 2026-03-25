@@ -1,14 +1,12 @@
 import asyncio
-import json
 import logging
-from itertools import starmap
 from typing import Optional, ClassVar, Callable, Coroutine, Iterable
 from typing_extensions import Self
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft, uuid
 from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
-from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandMeta, BaseCommandTask
+from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
     CommandTaskCallback,
@@ -18,19 +16,18 @@ from ghoshell_moss.core.concepts.interpreter import (
     Interpretation,
 )
 from ghoshell_moss.core.concepts.speech import Speech
-from ghoshell_moss.core.concepts.tools import CommandAsTool, ToolMeta, R
+from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
-from ghoshell_moss.core.ctml.prompt import get_moss_ctml_meta_instruction
+from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, AttrWithTypeSuffixParser, ctml_default_parsers
+from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_context_messages, make_interfaces
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.message import Message, Text
+from ghoshell_moss.message import Message
 import queue
 
 __all__ = [
     "DEFAULT_META_PROMPT",
     "CTMLInterpreter",
-    "make_chan_prompt",
-    "make_channels_prompt",
 ]
 
 DEFAULT_META_PROMPT = get_moss_ctml_meta_instruction()
@@ -38,52 +35,6 @@ DEFAULT_META_PROMPT = get_moss_ctml_meta_instruction()
 _Title = str
 _Description = str
 _Interface = str
-
-
-def make_chan_prompt(channel_path: str, description: str, interface: str) -> str:
-    python_interface = f"```python\n{interface}\n```\n" if interface else ""
-    return f"""
-## channel `{channel_path}`
-{description}
-{python_interface}
-"""
-
-
-def make_command_interface(commands: Iterable[CommandMeta]) -> str:
-    lines = []
-    for cmd_meta in commands:
-        if not cmd_meta.available:
-            continue
-        if not cmd_meta.blocking:
-            lines.append("# not blocking")
-        lines.append(cmd_meta.interface)
-        lines.append("\n")
-    return "\n".join(lines)
-
-
-def make_channels_prompt(channel_metas: dict[str, ChannelMeta]) -> str:
-    channel_items: list[tuple[_Title, _Description, _Interface]] = []
-    channel_metas = channel_metas.copy()
-    if len(channel_metas) == 0:
-        return ""
-    main_channel_meta = channel_metas.pop("")
-    if main_channel_meta:
-        channel_items.append(
-            ("root_channel", main_channel_meta.description, make_command_interface(main_channel_meta.commands))
-        )
-    for channel_path, channel_meta in channel_metas.items():
-        channel_items.append(
-            (
-                channel_path,
-                channel_meta.description,
-                make_command_interface(channel_meta.commands),
-            )
-        )
-    if len(channel_items) == 0:
-        # 返回空.
-        return ""
-    body = "\n\n".join(list(starmap(make_chan_prompt, channel_items)))
-    return f"# MOSS Channels\n\n{body}"
 
 
 class CTMLInterpreter(Interpreter):
@@ -150,7 +101,7 @@ class CTMLInterpreter(Interpreter):
                 if not command.is_available():
                     # 不加入不可运行的指令.
                     continue
-                unique_name = Command.make_uniquename(channel_path, command_name)
+                unique_name = Command.make_unique_name(channel_path, command_name)
                 self._commands_map[unique_name] = command
 
         self._root_tag = root_tag
@@ -176,9 +127,9 @@ class CTMLInterpreter(Interpreter):
         # input buffer
         self._interpretation = Interpretation(
             id=self._id,
-            meta_instruction=self._get_meta_instruction(),
-            instruction_messages=self._get_instruction_messages(),
-            context_messages=self._get_context_messages(),
+            meta_instruction=moss_meta_instruction or get_moss_ctml_meta_instruction(),
+            channel_instructions=make_instruction_messages(self._channel_metas),
+            channel_context=make_context_messages(self._channel_metas),
         )
         if undone_tasks is not None and len(undone_tasks) > 0:
             for task in undone_tasks:
@@ -222,7 +173,7 @@ class CTMLInterpreter(Interpreter):
             if commands is None:
                 continue
             for command_meta in meta.commands:
-                unique_name = Command.make_uniquename(channel_path, command_meta.name)
+                unique_name = Command.make_unique_name(channel_path, command_meta.name)
                 if unique_name in commands:
                     command = commands[unique_name]
                     yield CommandAsTool(command, channel_path=channel_path, task_callback=self._send_command_task)
@@ -318,85 +269,17 @@ class CTMLInterpreter(Interpreter):
                         e,
                     )
 
-    def _get_meta_instruction(self) -> str:
-        return self._meta_instruction or DEFAULT_META_PROMPT
-
     def meta_instruction(self) -> str:
         return self._interpretation.meta_instruction
 
     def channels(self) -> dict[str, ChannelMeta]:
         return self._channel_metas
 
-    def instruction_messages(self) -> list[Message]:
-        return self._interpretation.instruction_messages
+    def channel_instructions(self) -> str:
+        return self._interpretation.channel_instructions
 
-    def _get_instruction_messages(self) -> list[Message]:
-        messages = []
-        interface_message = Message.new(role="system")
-        # 生成代码 interface.
-        for channel_path, channel_meta in self._channel_metas.items():
-            path_name = channel_path or "__main__"
-            not_available = "" if channel_meta.available else "(not available)"
-            interface_message.with_content(
-                f"=== interface:{path_name} {not_available}===\n",
-                channel_meta.description,
-                "\n\n```python\n" + make_command_interface(channel_meta.commands) + "\n```\n",
-                f"\n=== end interface:{path_name} ===\n",
-            )
-        messages.append(interface_message)
-        for channel_path, channel_meta in self._channel_metas.items():
-            path_name = channel_path or "__main__"
-            if not channel_meta.available:
-                continue
-            if len(channel_meta.instructions) > 0:
-                first = None
-                last = None
-                for channel_instruction_message in channel_meta.instructions:
-                    if not channel_instruction_message.is_done():
-                        continue
-                    elif first is None:
-                        first = channel_instruction_message.get_copy()
-                        first.contents.insert(0, Text.new(f"\n=== instructions:{path_name} ===\n").to_content())
-                        messages.append(first)
-                        last = first
-                        continue
-                    else:
-                        last = channel_instruction_message.get_copy()
-                        messages.append(last)
-                if last:
-                    last.contents.append(
-                        Text.new(f"\n=== end instructions:{path_name} ===\n").to_content(),
-                    )
-        return messages
-
-    def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
-        if channel_names is None:
-            return self._interpretation.context_messages
-        return self._get_context_messages(channel_names=channel_names)
-
-    def _get_context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
-        channel_names = channel_names or self._channel_metas.keys()
-        messages = []
-        for channel_path_name in channel_names:
-            path_name = channel_path_name or "__main__"
-            meta = self._channel_metas.get(channel_path_name)
-            if meta is not None and meta.available and len(meta.context) > 0:
-                messages.append(
-                    Message.new(role="system")
-                    .with_content(
-                        f"\n=== context:{path_name} ===\n",
-                    )
-                    ,
-                )
-                messages.extend(meta.context)
-                messages.append(
-                    Message.new(role="system")
-                    .with_content(
-                        f"\n=== end context:{path_name} ===\n",
-                    )
-                    ,
-                )
-        return messages
+    def channel_context(self) -> list[Message]:
+        return self._interpretation.channel_context
 
     def feed(self, delta: str, throw: bool = False) -> bool:
         if not isinstance(delta, str):

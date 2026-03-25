@@ -1,6 +1,6 @@
 import asyncio
-import contextvars
 import inspect
+import logging
 from typing import Optional, Callable
 
 from ghoshell_container import BINDING, INSTANCE, Container, IoCContainer
@@ -21,8 +21,9 @@ from ghoshell_moss.core.concepts.channel import (
 )
 from ghoshell_moss.core.concepts.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
-from ghoshell_moss.core.concepts.states import BaseStateStore, StateModel, StateStore, State
+from ghoshell_moss.core.concepts.states import StateModel, State
 from ghoshell_common.helpers import uuid
+from ghoshell_common.contracts import LoggerItf
 
 __all__ = ["PyChannel", "PyChannelRuntime", "PyChannelBuilder"]
 
@@ -39,13 +40,14 @@ class PyChannelBuilder(Builder):
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_pause_funcs: list[tuple[LifecycleFunction, bool]] = []
 
-        self._context_messages_function: Optional[MessageFunction] = None
-        self._instruction_messages_function: Optional[MessageFunction] = None
+        self._context_messages_functions: list[MessageFunction] = []
+        self._instruction_functions: StringType | None = None
 
         self._states: list[State] = []
         self._commands: dict[str, Command] = {}
         self._container_instances = {}
         self._dynamic = False
+        self._logger = logging.getLogger("moss")
 
     def description(self) -> Callable[[StringType], StringType]:
         """
@@ -58,6 +60,9 @@ class PyChannelBuilder(Builder):
             return func
 
         return wrapper
+
+    def with_logger(self, logger: LoggerItf) -> None:
+        self._logger = logger
 
     def is_dynamic(self) -> bool:
         return self._dynamic
@@ -82,29 +87,51 @@ class PyChannelBuilder(Builder):
     def default_states(self) -> list[State]:
         return self._states
 
-    def context_messages(self, func: MessageFunction) -> MessageFunction:
-        self._context_messages_function = func
+    def context_messages(self, func: MessageFunction, reset: bool = False) -> MessageFunction:
+        if reset:
+            self._context_messages_functions.clear()
+        self._context_messages_functions.append(func)
         self._dynamic = True
         return func
 
     async def get_context_message(self) -> list[Message]:
-        if self._context_messages_function is None:
+        """
+        使用所有的 context messages 函数生成
+        """
+        if not self._context_messages_functions:
             return []
-        if inspect.iscoroutinefunction(self._context_messages_function):
-            return await self._context_messages_function()
-        return self._context_messages_function()
+        message_cor = []
+        for func in self._context_messages_functions:
+            if inspect.iscoroutinefunction(func):
+                message_cor.append(func())
+            else:
+                message_cor.append(asyncio.to_thread(func))
+        messages = []
+        # 并发生成 messages.
+        if len(message_cor) > 0:
+            done = await asyncio.gather(*message_cor, return_exceptions=True)
+            for result in done:
+                if isinstance(result, Exception):
+                    self._logger.error(
+                        'refresh channel %s failed with message func error: %s',
+                        self._name, result,
+                    )
+                    continue
+                context_messages = result
+                messages.extend(context_messages)
+        return messages
 
-    def instruction_messages(self, func: MessageFunction) -> MessageFunction:
-        self._instruction_messages_function = func
+    def instruction(self, func: StringType) -> StringType:
+        self._instruction_functions = func
         self._dynamic = True
         return func
 
-    async def get_instruction_messages(self) -> list[Message]:
-        if self._instruction_messages_function is None:
-            return []
-        if inspect.iscoroutinefunction(self._instruction_messages_function):
-            return await self._instruction_messages_function()
-        return self._instruction_messages_function()
+    async def get_instruction_messages(self) -> str:
+        if self._instruction_functions is None:
+            return ''
+        if inspect.iscoroutinefunction(self._instruction_functions):
+            return await self._instruction_functions()
+        return self._instruction_functions()
 
     def add_command(self, command: Command) -> None:
         if not isinstance(command, Command):
@@ -112,18 +139,18 @@ class PyChannelBuilder(Builder):
         self._commands[command.name()] = command
 
     def command(
-        self,
-        *,
-        name: str = "",
-        doc: Optional[StringType] = None,
-        comments: Optional[StringType] = None,
-        tags: Optional[list[str]] = None,
-        interface: Optional[StringType] = None,
-        available: Optional[Callable[[], bool]] = None,
-        blocking: Optional[bool] = None,
-        priority: int = 0,
-        call_soon: bool = False,
-        return_command: bool = False,
+            self,
+            *,
+            name: str = "",
+            doc: Optional[StringType] = None,
+            comments: Optional[StringType] = None,
+            tags: Optional[list[str]] = None,
+            interface: Optional[StringType] = None,
+            available: Optional[Callable[[], bool]] = None,
+            blocking: Optional[bool] = None,
+            priority: int = 0,
+            call_soon: bool = False,
+            return_command: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
 
         def wrapper(func: CommandFunction) -> CommandFunction:
@@ -218,13 +245,13 @@ class PyChannelBuilder(Builder):
 
 class PyChannel(MutableChannel):
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str = "",
-        blocking: bool = True,
-        dynamic: bool | None = None,
-        uid: str | None = None,
+            self,
+            *,
+            name: str,
+            description: str = "",
+            blocking: bool = True,
+            dynamic: bool | None = None,
+            uid: str | None = None,
     ):
         """
         :param name: channel 的名称.
@@ -264,10 +291,10 @@ class PyChannel(MutableChannel):
         return self
 
     def new_child(
-        self,
-        name: str,
-        description: str = "",
-        blocking: bool = True,
+            self,
+            name: str,
+            description: str = "",
+            blocking: bool = True,
     ) -> Self:
         """
         语法糖, 用来做单元测试.
@@ -290,11 +317,11 @@ class PyChannel(MutableChannel):
 
 class PyChannelRuntime(AbsChannelTreeRuntime):
     def __init__(
-        self,
-        channel: PyChannel,
-        container: Optional[IoCContainer] = None,
-        *,
-        dynamic: bool | None = None,
+            self,
+            channel: PyChannel,
+            container: Optional[IoCContainer] = None,
+            *,
+            dynamic: bool | None = None,
     ):
         self._builder: PyChannelBuilder = channel.build
         super().__init__(
@@ -321,33 +348,45 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
     async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
         dynamic = self._dynamic or False
-        command_metas = []
-        commands = self._builder.commands()
-
-        for command in commands:
-            # 只添加需要动态更新的 command.
-            if command.meta().dynamic:
-                command.refresh_meta()
-                dynamic = True
-        for command in commands:
-            command_metas.append(command.meta())
-
         name = self._name
-        instruction_message_task = asyncio.create_task(self._builder.get_instruction_messages())
-        context_message_task = asyncio.create_task(self._builder.get_context_message())
-        new_context_messages = await context_message_task
-        new_instruction_messages = await instruction_message_task
+        description = self.channel.description()
+        try:
+            command_metas = []
+            commands = self._builder.commands()
 
-        meta = ChannelMeta(
-            name=name,
-            channel_id=self.id,
-            available=self._builder.is_available(),
-            description=self.channel.description(),
-            context=new_context_messages,
-            instructions=new_instruction_messages,
-        )
-        meta.dynamic = dynamic
-        meta.commands = command_metas
+            for command in commands:
+                # 只添加需要动态更新的 command.
+                if command.meta().dynamic:
+                    command.refresh_meta()
+                    dynamic = True
+            for command in commands:
+                command_metas.append(command.meta())
+
+            context_message_task = asyncio.create_task(self._builder.get_context_message())
+            new_context_messages = await context_message_task
+            instruction_message_task = asyncio.create_task(self._builder.get_instruction_messages())
+            new_instruction_messages = await instruction_message_task
+
+            meta = ChannelMeta(
+                name=name,
+                channel_id=self.id,
+                available=self._builder.is_available(),
+                description=description,
+                context=new_context_messages,
+                instruction=new_instruction_messages,
+            )
+            meta.dynamic = dynamic
+            meta.commands = command_metas
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            meta = ChannelMeta(
+                name=name,
+                description=description,
+                available=False,
+                failure="channel not available with system failure: %s" % e,
+                dynamic=True,
+            )
         return {"": meta}
 
     # ---- commands ---- #
@@ -379,8 +418,8 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         return CommandWrapper.wrap(command, func=_run_with_runtime)
 
     def get_own_command(
-        self,
-        name: str,
+            self,
+            name: str,
     ) -> Optional[Command]:
         return self._wrap_origin_command(self._builder.get_command(name))
 
@@ -402,6 +441,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
     async def on_start_up(self) -> None:
         # 准备 start up 的运行.
+        self._builder.with_logger(self.logger)
         await self._builder.on_start_up()
 
     async def on_close(self) -> None:

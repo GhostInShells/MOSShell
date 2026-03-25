@@ -33,6 +33,8 @@ from ghoshell_moss.core.concepts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.states import BaseStateStore, StateStore
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
+from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
+from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_interfaces, make_context_messages
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
@@ -53,6 +55,7 @@ class CTMLShell(MOSShell):
             logger: LoggerItf | None = None,
             experimental: bool = True,
             primitives: list[str] | None = None,
+            meta_instruction: str | None = None,
     ):
         self._name = name
         self._desc = description
@@ -65,6 +68,7 @@ class CTMLShell(MOSShell):
 
         self._speech: Speech = speech
         self._expressions: Optional[Expressions] = None
+        self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
 
         # state
         self._state_store: StateStore | None = state_store
@@ -95,13 +99,13 @@ class CTMLShell(MOSShell):
         return self._container
 
     def meta_instruction(self) -> str:
-        pass
+        return self._ctml_meta_instruction
 
-    def channel_instructions(self) -> dict[str, list[Message]]:
-        pass
+    def channel_instructions(self) -> str:
+        return make_instruction_messages(self.channel_metas(available_only=False), name=self._name)
 
-    def channel_context_messages(self) -> dict[str, list[Message]]:
-        pass
+    def channel_context_messages(self) -> list[Message]:
+        return make_context_messages(self.channel_metas(available_only=False), name=self._name)
 
     def interpreting(self) -> Optional[Interpreter]:
         return self._interpreter
@@ -311,7 +315,7 @@ class CTMLShell(MOSShell):
             *,
             meta_instruction: str | None = None,
             stream_id: Optional[int] = None,
-            config: dict[ChannelFullPath, ChannelMeta] | None = None,
+            config: list[ChannelFullPath] | None = None,
             prepare_timeout: float = 2.0,
             ignore_wrong_command: bool = False,
             token_replacements: dict[str, str] | None = None,
@@ -351,7 +355,7 @@ class CTMLShell(MOSShell):
         commands = self.commands(available_only=True, config=config)
         interpreter = CTMLInterpreter(
             kind=kind,
-            moss_meta_instruction=meta_instruction,
+            moss_meta_instruction=meta_instruction or self.meta_instruction(),
             interrupted=interrupted_interpretation,
             undone_tasks=undone_tasks,
             commands=commands,
@@ -430,48 +434,24 @@ class CTMLShell(MOSShell):
 
     def channel_metas(
             self,
-            available_only: bool = True,
-            config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
+            available_only: bool = False,
+            config: Optional[list[ChannelFullPath]] = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
         metas = self._main_runtime.metas()
         result = {}
-
-        if config is not None:
+        if config:
             # 对齐人工配置项.
-            for channel_full_path, channel_meta in config.items():
-                origin_channel_meta = metas.get(channel_full_path)
-                if origin_channel_meta is None:
-                    continue
+            new_metas = {}
+            for path in config:
+                if path in metas:
+                    new_metas[path] = metas[path]
+            metas = new_metas
 
-                config_meta = channel_meta.model_copy()
-                # 状态对齐.
-                config_meta.available = config_meta.available and origin_channel_meta.available
-                if available_only and not config_meta.available:
-                    continue
-                config_meta.channel_id = origin_channel_meta.channel_id
-                config_meta.dynamic = True
-                # instruction 用配置好的.
-                config_meta.instructions = config_meta.instructions or origin_channel_meta.instructions
-                # 这里用更新的.
-                config_meta.context = origin_channel_meta.context
-                commands = []
-                exists = set(cmd.name for cmd in origin_channel_meta.commands)
-                for cmd in config_meta.commands:
-                    if cmd.name not in exists:
-                        continue
-                    commands.append(cmd)
-                config_meta.commands = commands
-                result[ChannelMeta.channel_full_path] = config_meta
-            return result
-
-        elif not available_only:
-            # 直接返回.
-            return metas
         # 检查 available only.
         for channel_path, channel_meta in metas.items():
-            if channel_meta.available:
+            if channel_meta.available or not available_only:
                 result[channel_path] = channel_meta
         return result
 

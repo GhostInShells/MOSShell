@@ -12,7 +12,7 @@ from ghoshell_moss.core.concepts.interpreter import TextTokenParser
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ghoshell_moss.core.ctml.v1_0_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
-    CALL_ID_RESERVE_KEY,
+    CALL_ID_RESERVE_KEY, MAIN_CHANNEL_NAME,
 )
 from ast import literal_eval
 
@@ -350,6 +350,9 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             chan = ""
             command_name = parts[0]
 
+        if chan == MAIN_CHANNEL_NAME:
+            chan = ""
+
         args, dict_attrs, parsed_kwargs = self.parse_attrs(attrs)
         if self._call_id_reserve_key in parsed_kwargs:
             # 尝试从 parsed_kwargs 中获取 call_id.
@@ -404,7 +407,6 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             parsed_kwargs=parsed_kwargs,
             call_id=call_id,
         )
-
 
         # using stack to handle elements
         self._parsing_element_stack.append(element)

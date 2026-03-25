@@ -139,12 +139,15 @@ class Interpretation(BaseModel):
 
     done: bool = Field(default=False, description="是否已经运行结束.")
     id: str = Field(description="interpretation id")
+
     meta_instruction: str = Field(default="", description="这一轮快照中的元指令")
-    instruction_messages: list[Message] = Field(
-        default_factory=list,
+
+    channel_instructions: str = Field(
+        default='',
         description="提示词",
     )
-    context_messages: list[Message] = Field(default_factory=list, description="上下文讯息")
+    channel_context: list[Message] = Field(default_factory=list, description="上下文讯息")
+
     observe: bool = Field(
         default=False,
         description="这个运行结果是否需要 AI 观察",
@@ -305,21 +308,32 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def instruction_messages(self) -> list[Message]:
+    def channel_instructions(self) -> str:
         """
         当前 interpreter 状态下, channels 的完整提示词. 用于呈现给大模型.
         """
         pass
 
+    def instruction(self, prompts: list[str] | None = None) -> str:
+        """
+        MOSS 架构默认的 system prompt.
+        """
+        instructions = [self.meta_instruction()]
+        channel_instructions = self.channel_instructions()
+        instructions.append(channel_instructions)
+        if prompts:
+            instructions.extend(prompts)
+        return '\n'.join(instructions)
+
     @abstractmethod
-    def context_messages(self, *, channel_names: list[str] | None = None) -> list[Message]:
+    def channel_context(self) -> list[Message]:
         """
         返回 interpreter 的关联上下文.
         对应 Model Context 中的 conversation 部分.
         """
         pass
 
-    def merge_messages(self, history: list[Message | dict], inputs: list[Message | dict]) -> list[Message | dict]:
+    def merge_messages(self, history: list[Message | dict], inputs: list[Message | dict]) -> list[Message]:
         """
         遵循系统规则合并消息体, 生成一个模型上下文.
         此处也是提示如何使用 interpreter 来定义上下文.
@@ -338,11 +352,10 @@ class Interpreter(ABC):
             - outputs: 输出
             - observation: 需要观察的讯息.
         """
-        meta_message = Message.new(role="system").with_content(self.meta_instruction())
-        messages = [meta_message]
-        messages.extend(self.instruction_messages())
+        instructions = self.instruction()
+        messages = [Message.new(tag=None).with_content(instructions)]
         messages.extend(history)
-        messages.extend(self.context_messages())
+        messages.extend(self.channel_context())
         messages.extend(inputs)
         return messages
 

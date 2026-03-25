@@ -80,7 +80,7 @@ class CommandTaskElementContext:
         self.channel_commands_map.clear()
         CommandTaskElementContext.instances_count -= 1
 
-    def new_root(self, callback: CommandTaskCallback, stream_id: str = "") -> "RootCommandTaskElement":
+    def new_root(self, callback: CommandTaskCallback | None, stream_id: str = "") -> "RootCommandTaskElement":
         """
         创建解析树的根节点.
         """
@@ -336,7 +336,7 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
                     token,
                 )
                 child = EmptyCommandTaskElement(
-                    name=Command.make_uniquename(token.chan, token.name),
+                    name=Command.make_unique_name(token.chan, token.name),
                     stream_id=self.stream_id,
                     cid=token.command_id(),
                     current_task=None,

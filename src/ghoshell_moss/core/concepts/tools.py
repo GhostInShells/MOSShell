@@ -30,7 +30,7 @@ class ToolMeta(BaseModel):
     def from_command_meta(cls, command_meta: CommandMeta, chan: str = "", *, strict: bool = False) -> Self | None:
         if command_meta.json_schema is None:
             return None
-        name = Command.make_uniquename(chan, command_meta.name)
+        name = Command.make_unique_name(chan, command_meta.name)
         return cls(
             name=name,
             description=command_meta.description,
@@ -156,7 +156,7 @@ class CommandAsTool(Generic[R]):
         meta = self.command.meta()
         return PydanticTool.from_schema(
             self.call,
-            name=Command.make_uniquename(self.channel_path, meta.name),
+            name=Command.make_unique_name(self.channel_path, meta.name),
             description=meta.description,
             json_schema=meta.json_schema,
             takes_ctx=False,

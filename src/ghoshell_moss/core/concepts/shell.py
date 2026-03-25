@@ -117,10 +117,10 @@ class MOSShell(ABC):
 
     @abstractmethod
     async def pub_topic(
-        self,
-        topic: Topic | TopicModel,
-        *,
-        name: str = "",
+            self,
+            topic: Topic | TopicModel,
+            *,
+            name: str = "",
     ) -> None:
         """
         shell 广播 topic
@@ -129,12 +129,12 @@ class MOSShell(ABC):
 
     @abstractmethod
     def subscribe_topic_model(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        name: str = "",
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            name: str = "",
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         shell 层监听 topic.
@@ -143,11 +143,11 @@ class MOSShell(ABC):
 
     @abstractmethod
     def subscribe_topic(
-        self,
-        name: str,
-        *,
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            name: str,
+            *,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber:
         pass
 
@@ -216,7 +216,7 @@ class MOSShell(ABC):
 
     @abstractmethod
     def commands(
-        self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
+            self, available_only: bool = True, *, config: dict[ChannelFullPath, ChannelMeta] | None = None
     ) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         当前运行时所有的可用的命令.
@@ -226,8 +226,9 @@ class MOSShell(ABC):
 
     @abstractmethod
     def channel_metas(
-        self,
-        available: bool = True,
+            self,
+            available_only: bool = False,
+            config: Optional[list[ChannelFullPath]] = None,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -238,14 +239,20 @@ class MOSShell(ABC):
 
     @abstractmethod
     def meta_instruction(self) -> str:
+        """
+        meta instruction of the MOSS
+        """
         pass
 
     @abstractmethod
-    def channel_instructions(self) -> dict[str, list[Message]]:
+    def channel_instructions(self) -> str:
+        """
+        instructions of all channels
+        """
         pass
 
     @abstractmethod
-    def channel_context_messages(self) -> dict[str, list[Message]]:
+    def channel_context_messages(self) -> list[Message]:
         """
         context messages of all the channels.
         """
@@ -272,14 +279,14 @@ class MOSShell(ABC):
 
     @contextlib.asynccontextmanager
     async def interpreter_in_ctx(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        meta_instruction: str | None = None,
-        stream_id: Optional[str] = None,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-        clear_after_exit: bool = False,
-        ignore_wrong_command: bool = False,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            meta_instruction: str | None = None,
+            stream_id: Optional[str] = None,
+            config: Optional[list[ChannelFullPath]] = None,
+            clear_after_exit: bool = False,
+            ignore_wrong_command: bool = False,
     ) -> AsyncIterator[Interpreter]:
         """
         简单的语法糖.
@@ -297,16 +304,16 @@ class MOSShell(ABC):
 
     @abstractmethod
     async def interpreter(
-        self,
-        kind: InterpreterKind = "clear",
-        *,
-        meta_instruction: str | None = None,
-        stream_id: Optional[str] = None,
-        config: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
-        prepare_timeout: float = 2.0,
-        ignore_wrong_command: bool = False,
-        token_replacements: dict[str, str] | None = None,
-        clear_after_exit: bool = False,
+            self,
+            kind: InterpreterKind = "clear",
+            *,
+            stream_id: Optional[str] = None,
+            config: Optional[list[ChannelFullPath]] = None,
+            prepare_timeout: float = 2.0,
+            ignore_wrong_command: bool = False,
+            token_replacements: dict[str, str] | None = None,
+            clear_after_exit: bool = False,
+            meta_instruction: str | None = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.
@@ -324,7 +331,6 @@ class MOSShell(ABC):
                     是一种动态修改运行时能力的办法.
 
         :param prepare_timeout: 准备过度阶段允许的时间.
-        :param meta_instruction: 可以用来替换系统默认的 moss 语法 prompt. 通常只在调试时需要修改.
 
         :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
 
@@ -338,12 +344,13 @@ class MOSShell(ABC):
                     假设 m = 1, v = 10, k=3, n=20,  每轮多消耗 20 个点,  每轮减少 80 个点开销. 大意如此.
 
         :param clear_after_exit: clear undone tasks after exit.
+        :param meta_instruction: 可以用来替换系统默认的 moss 语法 prompt. 通常只在调试时需要修改.
         """
         pass
 
     async def parse_text_to_command_tokens(
-        self,
-        text: str | AsyncIterable[str],
+            self,
+            text: str | AsyncIterable[str],
     ) -> AsyncIterable[CommandToken]:
         """
         语法糖, 用来展示如何把文本生成 command tokens.
@@ -363,10 +370,10 @@ class MOSShell(ABC):
             yield token
 
     async def parse_tokens_to_command_tasks(
-        self,
-        tokens: AsyncIterable[CommandToken],
-        *,
-        ignore_wrong_command: bool = False,
+            self,
+            tokens: AsyncIterable[CommandToken],
+            *,
+            ignore_wrong_command: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 command tokens 生成 command tasks.
@@ -402,10 +409,10 @@ class MOSShell(ABC):
                 sender_task.cancel()
 
     async def parse_text_to_tasks(
-        self,
-        text: str | AsyncIterable[str] | list[str],
-        *,
-        ignore_wrong_command: bool = False,
+            self,
+            text: str | AsyncIterable[str] | list[str],
+            *,
+            ignore_wrong_command: bool = False,
     ) -> AsyncIterable[CommandTask]:
         """
         语法糖, 用来展示如何将 text 直接生成 command tasks

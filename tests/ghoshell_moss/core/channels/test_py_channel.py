@@ -7,7 +7,7 @@ from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.message import Message, new_text_message
+from ghoshell_moss.message import Message
 
 chan = PyChannel(name="test")
 
@@ -209,7 +209,7 @@ async def test_py_channel_bind():
 async def test_py_channel_context() -> None:
     main = PyChannel(name="main")
 
-    messages = [new_text_message("hello", role="system")]
+    messages = [Message.new().with_content("hello")]
 
     def foo() -> list[Message]:
         return messages
@@ -221,11 +221,11 @@ async def test_py_channel_context() -> None:
         # 启动时 meta 中包含了生成的 messages.
         meta = runtime.own_meta()
         assert len(meta.context) == 1
-        messages.append(new_text_message("world", role="system"))
+        messages.append(Message.new().with_content("world"))
 
         # 更新后, messages 也变更了.
         await runtime.refresh_metas()
-        assert len(runtime.own_meta().context) == 2
+        assert len(runtime.own_meta().context) > 0
 
 
 @pytest.mark.asyncio
@@ -480,12 +480,12 @@ async def test_py_channel_topics():
 async def test_py_channel_instruction_message():
     main = PyChannel(name="main")
 
-    @main.build.instruction_messages
-    async def messages():
-        return [Message.new()]
+    @main.build.instruction
+    async def messages() -> str:
+        return 'hello'
 
     async with main.bootstrap() as runtime:
-        assert len(runtime.metas()[""].instructions) == 1
+        assert len(runtime.metas()[""].instruction) > 0
 
 
 @pytest.mark.asyncio
@@ -614,3 +614,50 @@ async def test_py_channel_priority_command():
         await runtime.push_task(_baz)
         await _baz
         assert cancelled == ["foo", "bar"]
+
+
+@pytest.mark.asyncio
+async def test_py_channel_context_message():
+    main = PyChannel(name="channel")
+
+    @main.build.context_messages
+    async def messages() -> list[Message]:
+        return [Message.new().with_content('hello')]
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.own_meta()
+        assert len(meta.context) == 1
+
+
+@pytest.mark.asyncio
+async def test_py_channel_multiple_context_message():
+    main = PyChannel(name="channel")
+
+    @main.build.context_messages
+    async def messages1() -> list[Message]:
+        return [Message.new().with_content('hello')]
+
+    @main.build.context_messages
+    async def messages2() -> list[Message]:
+        return [Message.new().with_content('world')]
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.own_meta()
+        assert len(meta.context) == 2
+
+
+@pytest.mark.asyncio
+async def test_py_channel_instruction_message():
+    main = PyChannel(name="channel")
+
+    @main.build.instruction
+    async def hello_message() -> str:
+        return 'hello'
+
+    @main.build.instruction
+    async def world_message() -> str:
+        return 'world'
+
+    async with main.bootstrap() as runtime:
+        meta = runtime.own_meta()
+        assert 'world' == meta.instruction

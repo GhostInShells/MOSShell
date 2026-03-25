@@ -432,8 +432,10 @@ class MOSSToolSet(ABC):
     不过需要目标框架自行兼容 Pydantic AI 的消息协议.
     """
 
-    def __init__(self, runtime: MOSSRuntime):
-        self.runtime = runtime
+    @property
+    @abstractmethod
+    def runtime(self) -> MOSSRuntime:
+        pass
 
     def meta_instruction(self) -> str:
         """
@@ -495,14 +497,13 @@ class MOSSToolSet(ABC):
 
     async def moss_interrupt(
             self,
-            observe: bool = False,
     ) -> ToolReturn:
         """
         interrupt the execution of MOSS runtime.
         :returns: status of the MOSS runtime. if observe is True, returns the inputs and context messages with it
         """
         await self.runtime.interrupt()
-        snapshot = await self.runtime.pop_snapshot(inputs=observe, context=observe)
+        snapshot = await self.runtime.pop_snapshot(inputs=True, context=True)
         return self.snapshot_to_tool_return(snapshot)
 
     async def moss_observe(

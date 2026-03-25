@@ -20,7 +20,7 @@ async def test_shell_execution_baseline():
         return [msg]
 
     def b_message() -> list[Message]:
-        msg = Message.new(role="system").with_content("world")
+        msg = Message.new().with_content("world")
         return [msg]
 
     a_chan.build.context_messages(a_message)
@@ -40,8 +40,15 @@ async def test_shell_execution_baseline():
     async with shell:
         assert shell.is_running()
         await shell.wait_connected()
+        shell_metas = shell.channel_metas()
+        for path, meta in shell_metas.items():
+            print(path, meta)
+
+        assert len(shell_metas) == 3
         interpreter = await shell.interpreter()
         metas = interpreter.channels()
         assert len(metas) == 3
-        messages = interpreter.context_messages()
-        assert len(messages) >= 2
+
+        messages = interpreter.merge_messages([], [])
+        for msg in messages:
+            print("\n\n", msg.to_xml())

@@ -10,7 +10,6 @@ from .channel import (
     CommandFunction,
     MessageFunction,
     LifecycleFunction,
-    PrompterFunction,
     MutableChannel,
     ChannelInterface,
 )
@@ -99,11 +98,7 @@ from .topic import *
             
             预计在某个正式版本中, 彻底废除 speech 模块, 使用普通的 channel 来替代它. 
             
-7. states:  一种多个 channel 共享的状态广播机制, 可以用前端 vue/react 框架的 state 去理解它. 
-            当大模型修改了某个 state 数据结构时, 会广播给所有监听这个 state 的 channel, 从而变更对应行为.
-            举个简单的例子, 当模型选择 "情绪低落" 时, 所有的肢体轨道都应该对这个状态做反应. 
-
-8. topics:  alpha 版本未完成的实验性功能. 预计 channel 之间可以通过 topic 进行状态通讯. 
+7. topics:  alpha 版本未完成的实验性功能. 预计 channel 之间可以通过 topic 进行状态通讯. 
             可以理解为 ros/ros2 体系的 topic 对象. 
             一个视觉的 channel 可以广播 "注意对象" 的相对座标, 驱动其它软件比如数字人的 channel 调整面部朝向.
             在 MOSS 架构下的 Topic 帧率应该没有 ros2 高 (ros2 基于 dds 分发, 而 MOSS 基于云端 mqtt 广播)

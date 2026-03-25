@@ -139,7 +139,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
         return {"": self.own_commands(available_only)}
 
     def get_command(self, name: str) -> Optional[Command]:
-        chan, cmd_name = Command.split_uniquename(name)
+        chan, cmd_name = Command.split_unique_name(name)
         if chan:
             return None
         return self.get_self_command(cmd_name)

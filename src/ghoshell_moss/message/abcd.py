@@ -174,7 +174,7 @@ class AdditionList:
         return result
 
 
-_now_utc: Callable[[], str] = lambda: datetime.now(tz.gettz()).isoformat()
+_now_utc: Callable[[], datetime] = lambda: datetime.now(tz.gettz())
 
 
 class MessageMeta(BaseModel):
@@ -190,13 +190,13 @@ class MessageMeta(BaseModel):
     2. output
     """
 
+    tag: str | None = Field(
+        default=None,
+        description="if the message is wrapped with xml as default"
+    )
     id: str = Field(
         default_factory=uuid,
         description="消息的全局唯一 ID",
-    )
-    tag: str = Field(
-        default='message',
-        description='',
     )
     role: str | None = Field(
         default=None,
@@ -211,12 +211,16 @@ class MessageMeta(BaseModel):
         description="消息的发送",
     )
     created: AwareDatetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=_now_utc,
         description="消息的创建时间, 一个消息只有一个创建时间",
     )
-    complete: bool = Field(
+    completed: AwareDatetime | None = Field(
+        default=None,
+        description="消息结束的时间戳",
+    )
+    timestamp: bool = Field(
         default=True,
-        description="消息是否未结束",
+        description='if meta show timestamp'
     )
     attributes: dict[str, Any] = Field(
         default_factory=dict,
@@ -229,7 +233,7 @@ class MessageMeta(BaseModel):
         update = self.model_dump(
             exclude_none=True,
             exclude_defaults=True,
-            exclude={'attributes', 'id', 'issuer', 'tag'},
+            exclude={'attributes', 'id', 'tag'},
         )
         if len(update) > 0:
             attributes.update(update)
@@ -240,12 +244,11 @@ class MessageMeta(BaseModel):
         if len(attributes) == 0:
             return ''
         parts = []
+        timestamp = self.timestamp
         for attr, value in attributes.items():
-            if value == '':
-                continue
             # in case value has invalid mark
-            if isinstance(value, datetime):
-                value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat()
+            if isinstance(value, datetime) and timestamp:
+                value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat(timespec='seconds')
             value = str(value)
             value = html.escape(value, quote=True)
             parts.append(f'{attr}="{value}"')
@@ -257,7 +260,7 @@ class MessageMeta(BaseModel):
         生成 XML 讯息, 其中时序感是默认必要的.
         """
         attr_str = self.gen_attributes_str()
-        tag = 'meta'
+        tag = 'message'
         return f'<{tag} {attr_str}/>'
 
 
@@ -314,32 +317,32 @@ class Message(BaseModel, WithAdditional):
     @classmethod
     def new(
             cls,
+            tag: str  | None = 'message',
             *,
-            role: str = "",
+            role: str | None = None,
             name: Optional[str] = None,
-            id: Optional[str] = None,
             issuer: Optional[str] = None,
-            tag: Optional[str] = None,
-            complete: bool | None = None,
+            id: Optional[str] = None,
+            attributes: dict[str, Any] | None = None,
+            timestamp: bool = True,
     ):
         """
         语法糖, 用来极简地一条消息.
 
         >>> msg = Message.new()
         """
-        data = {}
+        data: dict[str, Any] = {'tag': tag}
         if role is not None:
             data['role'] = role
         if name is not None:
             data['name'] = name
-        if id is not None:
-            data['id'] = id
         if issuer is not None:
             data['issuer'] = issuer
-        if tag is not None:
-            data['tag'] = tag
-        if complete is not None:
-            data['complete'] = complete
+        if id is not None:
+            data['id'] = id
+        if attributes is not None:
+            data['attributes'] = attributes
+        data['timestamp'] = timestamp
         meta = MessageMeta.model_construct(**data)
         return cls(meta=meta)
 
@@ -419,10 +422,13 @@ class Message(BaseModel, WithAdditional):
         """
         return self.model_dump_json(indent=indent, ensure_ascii=False, exclude_none=True)
 
+    def as_completed(self) -> Self:
+        self.meta.completed = _now_utc()
+        return self
+
     def as_contents(
             self,
             with_meta: bool = True,
-            tag: str = '',
     ) -> Iterable[UserContent]:
         """
         将整个消息体返回成 Pydantic AI 的 User Content.
@@ -430,13 +436,13 @@ class Message(BaseModel, WithAdditional):
         if self.is_empty():
             yield from []
             return
-        if not with_meta:
+        if not with_meta or self.meta.tag is None:
             yield from self.contents
             return
 
-        attr_str = ''
-        tag = tag or self.meta.tag or 'message'
+        tag = self.meta.tag or 'message'
         attrs = self.meta.gen_attributes_str()
+        attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
         yield f'<{tag}{attr_str}>'
@@ -454,12 +460,7 @@ class Message(BaseModel, WithAdditional):
         result = []
         for content in self.as_contents(with_meta=True):
             if isinstance(content, str):
-                result.append(content)
+                result.append("\n" + content)
             else:
-                result.append(repr(content))
+                result.append("\n%r" % content)
         return ''.join(result)
-
-
-if __name__ == '__main__':
-    m = Message()
-    print(m.to_xml())

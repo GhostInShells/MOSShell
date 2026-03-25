@@ -800,7 +800,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         pass
 
     def get_command(self, name: CommandUniqueName) -> Optional[Command]:
-        chan, command_name = Command.split_uniquename(name)
+        chan, command_name = Command.split_unique_name(name)
         if chan == "":
             return self.get_own_command(command_name)
         runtime = self.importlib.recursively_find_runtime(self, chan)

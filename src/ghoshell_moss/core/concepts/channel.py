@@ -58,7 +58,6 @@ __all__ = [
     "CommandFunction",
     "MessageFunction",
     "LifecycleFunction",
-    "PrompterFunction",
     "StringType",
     "ChannelInterface",
 ]
@@ -81,35 +80,10 @@ __all__ = [
 #
 # 可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
 #
-# todo: 目前 channel 的设计思想还没完全完成. 下一步还有 interface/extend/implementation 等面向对象的构建思路.
-#
 # 举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
 #
 # 所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
 
-PrompterFunction = Union[Callable[..., Coroutine[None, None, str]], Callable[..., str]]
-"""
-可以生成 prompt 的函数类型. 它的返回值是一个字符串. 
-
-为何这种函数从 command 中单独区分开来呢? 
-
-因为它是最重要的大模型反身性控制工具, 让模型可以自己定义自己的 prompt. 
-举个例子, 有一个字符串的 prompt 模板: 
-
->>> # persona
->>> <my_persona name="my_name">
->>> # behaviors
->>> <my_behavior name="my_name">
-
-其中用 ctml 定义了 prompt 函数调用, 并行运行这些 prompt 函数, 拿到结果后可以拼成一个字符串,
-这个字符串就是 AI 自治的某个 prompt 片段.
-
-AI 的 meta 模式可以通过理解 prompt 函数的存在, 定义 prompt 模板, 生成 prompt 结果.
-
-微软的 POML 就是类似的思路. 不过不需要那么复杂的数据结构嵌套, 用 prompt 函数 + 纯 python 代码即可自解释.    
-
-todo: prompt function 体系尚未完成. 
-"""
 
 
 class ChannelMeta(BaseModel):
@@ -120,6 +94,7 @@ class ChannelMeta(BaseModel):
 
     name: str = Field(description="The origin name of the channel, kind like python module name.")
     description: str = Field(default="", description="The description of the channel.")
+    failure: str = Field(default="", description="The failure status of the channel.")
     channel_id: str = Field(default="", description="The ID of the channel.")
     available: bool = Field(default=True, description="Whether the channel is available.")
     commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
@@ -137,7 +112,7 @@ class ChannelMeta(BaseModel):
     #
     # so channel as component of the AI Model context, shall provide instructions or context messages.
 
-    instructions: list[Message] = Field(default_factory=list, description="the channel instructions messages")
+    instruction: str = Field(default='', description="the channel instruction messages")
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
@@ -179,7 +154,11 @@ MessageFunction = Union[
 AI 通过双工通讯, 在每个关键帧思考的瞬间, 提取对应的消息体替换到上下文中. 
 """
 
-StringType = Union[str, Callable[[], str]]
+StringType = Union[
+    str,
+    Callable[[], str],
+    Callable[[], Coroutine[None, None, str]],
+]
 
 LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
 """
@@ -222,7 +201,7 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def context_messages(self, func: MessageFunction) -> MessageFunction:
+    def context_messages(self, func: MessageFunction, reset: bool = False) -> MessageFunction:
         """
         decorator
         注册一个上下文生成函数. 用来生成 channel 运行时动态的上下文.
@@ -239,19 +218,17 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def instruction_messages(self, func: MessageFunction) -> MessageFunction:
+    def instruction(self, func: StringType) -> StringType:
         """
         decorator
         注册一个上下文生成函数. 用来生成 channel 运行时的使用说明.
         这部分上下文会出现在模型交互历史之前, 靠近 system prompt.
 
         当 channel 每次刷新后, 都会通过它生成动态的 instructions.
-        >>> async def building(chan: MutableChannel) -> None:
-        >>>     async def instructions() -> list[Message]:
-        >>>         return [
-        >>>             Message.new(role="system").with_content("instructions")
-        >>>         ]
-        >>>     chan.build.instruction_messages(instructions)
+        >>> def building(chan: MutableChannel) -> None:
+        >>>     def instructions() -> str:
+        >>>         return 'instructions'
+        >>>     chan.build.instruction(instructions)
         """
         pass
 
@@ -870,7 +847,7 @@ class ChannelRuntime(ABC):
             raise LookupError(f"Channel {self.name} has no command {name}")
         args = args or ()
         kwargs = kwargs or {}
-        chan, command_name = Command.split_uniquename(name)
+        chan, command_name = Command.split_unique_name(name)
         task = BaseCommandTask.from_command(
             command,
             chan,

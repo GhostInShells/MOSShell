@@ -736,7 +736,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             return {}
         for channel_path, meta in self.metas().items():
             for command_meta in meta.commands:
-                unique_name = Command.make_uniquename(channel_path, command_meta.name)
+                unique_name = Command.make_unique_name(channel_path, command_meta.name)
                 func = self._get_provider_command_func(channel_path, command_meta)
                 command = CommandWrapper(meta=command_meta, func=func)
                 result[unique_name] = command
@@ -746,7 +746,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         # 不需要递归获取了.
         if not self.is_running():
             return None
-        channel_path, command_name = Command.split_uniquename(name)
+        channel_path, command_name = Command.split_unique_name(name)
         channel_meta = self._ctx.get_meta(channel_path)
         if channel_meta is None:
             return None

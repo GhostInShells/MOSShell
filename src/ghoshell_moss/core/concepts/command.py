@@ -327,12 +327,12 @@ class Command(Generic[RESULT], ABC):
         pass
 
     @staticmethod
-    def make_uniquename(chan: str, name: str) -> CommandUniqueName:
+    def make_unique_name(chan: str, name: str) -> CommandUniqueName:
         prefix = chan + ":" if chan else ""
         return f"{prefix}{name}"
 
     @staticmethod
-    def split_uniquename(name: str) -> tuple[str, str]:
+    def split_unique_name(name: str) -> tuple[str, str]:
         parts = name.split(":", 1)
         return (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
 
