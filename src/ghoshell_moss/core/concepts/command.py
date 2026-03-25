@@ -465,7 +465,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             chan: Optional[str] = None,
             name: Optional[str] = None,
             available: Callable[[], bool] | None = None,
-            interface: Optional[StringType | Callable[..., Coroutine[None, None, RESULT]]] = None,
+            interface: Optional[str | Callable[..., Coroutine[None, None, RESULT]]] = None,
             doc: Optional[StringType] = None,
             comments: Optional[StringType] = None,
             meta: Optional[CommandMeta] = None,
@@ -481,7 +481,6 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         :param interface: if not given, will reflect the origin function signature to generate the interface.
                 if given
                 - str: instead of the real signature
-                - callable[[], str]: dynamic generate the signature when fresh meta
                 - async function: generate interface from it.
         :param doc: if given, will change the docstring of the function or generate one dynamically
         :param comments: if given, will add to the body of the function interface.
@@ -499,19 +498,18 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._func_itf = parse_function_interface(func)
         self._partial = partial
         self._is_coroutine_func = inspect.iscoroutinefunction(func)
-        # dynamic method
+        self._interface_or_fn: Optional[str] = None
         if interface:
             if inspect.iscoroutinefunction(interface):
                 self._interface_or_fn = parse_function_interface(interface).to_interface()
             else:
                 self._interface_or_fn = interface
-        else:
-            self._interface_or_fn = None
+        # dynamic method
         self._doc_or_fn = doc
         self._available_or_fn = available
         self._comments_or_fn = comments
         self._is_dynamic_itf = (
-                callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
+            callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
         )
         self._call_soon = call_soon
         self._blocking = blocking
@@ -537,6 +535,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     def refresh_meta(self) -> None:
         if self._is_dynamic_itf:
+            # refresh only command is dynamic.
             self._meta = self._generate_meta()
 
     def partial(self) -> Optional[CommandPartial]:

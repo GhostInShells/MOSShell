@@ -150,3 +150,33 @@ async def test_pydantic_understand_schema():
 
     adapter = TypeAdapter(bar)
     assert "properties" in adapter.json_schema()
+
+
+@pytest.mark.asyncio
+async def test_command_is_dynamic():
+    def is_available() -> bool:
+        return True
+
+    def doc() -> str:
+        return "doc"
+
+    async def foo() -> int:
+        return 123
+
+    command1 = PyCommand(foo, doc=doc)
+    assert command1.meta().dynamic
+
+    command2 = PyCommand(foo)
+    assert not command2.meta().dynamic
+
+    command3 = PyCommand(foo, comments="comment", doc="doc")
+    assert not command3.meta().dynamic
+
+    command4 = PyCommand(foo, comments=doc)
+    assert command4.meta().dynamic
+
+    command5 = PyCommand(foo, available=is_available)
+    assert command5.meta().dynamic
+
+    command6 = PyCommand(foo, interface=foo)
+    assert not command6.meta().dynamic
