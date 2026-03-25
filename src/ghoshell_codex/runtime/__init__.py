@@ -1,3 +1,3 @@
-from .reflector import RuntimeModuleReflector, reflect_module, reflect_module_by_import_path
+from .reflector import RuntimeModuleReflector, reflect_module, reflect_module_by_import_path, reflect_any_by_import_path
 from .compiler import RuntimeModuleCompiler
 from .executor import RuntimeModuleExecutor

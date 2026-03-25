@@ -5,7 +5,7 @@ from importlib import import_module
 
 __all__ = [
     'RuntimeModuleReflector',
-    'reflect_module', 'reflect_module_by_import_path',
+    'reflect_module', 'reflect_module_by_import_path', 'reflect_any_by_import_path',
     'RuntimeModuleCompiler',
     'runtime_compile',
 ]

@@ -9,3 +9,4 @@ __all__ = ['main', 'main_entry']
 
 # Auto-import all command modules
 import ghoshell_cli.codex
+import ghoshell_cli.moss

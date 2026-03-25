@@ -1,8 +1,7 @@
 import abc
 from typing import Any, Optional, Dict, Tuple, Iterable, Protocol
-from types import ModuleType
 from typing_extensions import is_typeddict
-from ._utils import (
+from ghoshell_codex.runtime._utils import (
     get_modulename_of_value,
     get_callable_definition,
     is_pydantic_type,
@@ -13,27 +12,25 @@ from ._utils import (
 from dataclasses import is_dataclass
 import inspect
 
-"""
-将上下文引用的 变量/方法/类型 反射成大模型可以理解的 Prompt. 
-在运行时中完成反射. 
-
-主要解决一个问题, 如何让大模型在 python 运行时中理解一个 python module 怎么使用. 
-包含的讯息不仅有当前的源代码, 还要包含当前源代码的引用对象. 
-
-本质上有三种机制: 
-+ 类: 展示折叠的, 或者全部的源码. 
-+ 方法: 展示折叠的, 或者全部的源码. 
-+ 属性: 展示属性的 typehint. 又有几种做法: 
-    - 赋值: 类似 `x:int=123` 的形式展示. 
-    - 类型: 没有赋值, 只有 `x: foo` 的方式展示. 
-    - 字符串类型: 用字符串的方式来描述类型. 比如 `x: "<foo.Bar>"`. 其类型说明是打印结果. 
-    - doc: 在 python 的规范里, 属性可以在其下追加字符串作为它的说明. 
-
-预计有以下几种机制: 
-
-1. 在代码里手写注释或者字符串说明. 
-2. 如果变量拥有 __prompt__ 属性, 通过它 (可以是方法或字符串) 生成 prompt. 
-"""
+# 将上下文引用的 变量/方法/类型 反射成大模型可以理解的 Prompt.
+# 在运行时中完成反射.
+#
+# 主要解决一个问题, 如何让大模型在 python 运行时中理解一个 python module 怎么使用.
+# 包含的讯息不仅有当前的源代码, 还要包含当前源代码的引用对象.
+#
+# 本质上有三种机制:
+# + 类: 展示折叠的, 或者全部的源码.
+# + 方法: 展示折叠的, 或者全部的源码.
+# + 属性: 展示属性的 typehint. 又有几种做法:
+#     - 赋值: 类似 `x:int=123` 的形式展示.
+#     - 类型: 没有赋值, 只有 `x: foo` 的方式展示.
+#     - 字符串类型: 用字符串的方式来描述类型. 比如 `x: "<foo.Bar>"`. 其类型说明是打印结果.
+#     - doc: 在 python 的规范里, 属性可以在其下追加字符串作为它的说明.
+#
+# 预计有以下几种机制:
+#
+# 1. 在代码里手写注释或者字符串说明.
+# 2. 如果变量拥有 __prompt__ 属性, 通过它 (可以是方法或字符串) 生成 prompt.
 
 __all__ = [
     'reflect_prompt_from_value',
@@ -163,7 +160,10 @@ def reflect_imported_attr(
 
     # module 相关的过滤逻辑.
     value_modulename = get_modulename_of_value(value)
-    if value_modulename is None:
+    if not value_modulename:
+        return None
+    elif '.' not in value_modulename:
+        # builtin
         return None
     elif value_modulename == current_module:
         return None

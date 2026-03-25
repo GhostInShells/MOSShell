@@ -87,6 +87,30 @@
 1. 没有明确贡献指南
 2. 没有人力整理文档
 
+## 开发工具 - ghoshell
+
+项目提供了 `ghoshell` 命令行工具用于动态代码分析和运行时反射。该工具基于 **"code as prompt"** 哲学，直接从 Python 运行时获取代码接口信息，比静态文件分析更准确。
+需要在项目 uv 虚拟环境已安装时可以使用. 
+
+```bash
+# 查看模块-属性接口（完整源码 + 依赖类型定义）
+.venv/bin/ghoshell codex get-interface <module_path:attribute>
+# 查看模块源代码
+.venv/bin/ghoshell codex get-source <module_path>
+# 查看模块信息（类/函数/变量概览）
+.venv/bin/ghoshell codex info <module_path>
+# 查看 moss 架构核心概念
+.venv/bin/ghoshell moss concepts
+```
+
+### 对 AI 协作的价值
+
+该工具对 AI 协作者有巨大价值：
+1. **快速理解**：无需手动查找文件，直接获取运行时代码接口
+2. **精确实现**：确保实现完全符合抽象接口定义
+3. **发现模式**：通过查看多个概念文件，理解项目架构模式
+4. **减少错误**：基于运行时代码分析，避免静态分析的偏差
+
 ## 协作方式
 
 在开发协作时, 记得充分和人类工程师商量即可. 暂时以人类的判断为准. 
