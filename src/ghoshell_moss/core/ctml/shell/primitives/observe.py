@@ -1,4 +1,4 @@
-from ghoshell_moss.types import Observe
+from ghoshell_moss.core.concepts.command import Observe
 
 __all__ = ["observe"]
 

@@ -490,7 +490,7 @@ async def test_py_channel_instruction_message():
 
 @pytest.mark.asyncio
 async def test_py_channel_observe_command():
-    from ghoshell_moss.types import Observe
+    from ghoshell_moss.core.concepts.command import Observe
 
     main = PyChannel(name="main")
 

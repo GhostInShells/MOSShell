@@ -1,7 +1,7 @@
 import pytest
 from ghoshell_container import Container
 
-from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel, new_chan
+from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel, new_channel
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 import asyncio
 
@@ -70,7 +70,7 @@ async def test_child_channel_runtime_running():
     async def bar() -> int:
         return 123
 
-    a = new_chan("a")
+    a = new_channel("a")
     main.import_channels(a)
 
     @a.build.command()

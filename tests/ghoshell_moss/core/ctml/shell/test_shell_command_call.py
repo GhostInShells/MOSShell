@@ -8,7 +8,7 @@ from ghoshell_moss import (
     CommandStackResult,
     Interpreter,
     MOSShell,
-    new_chan,
+    new_channel,
     ChannelCtx,
     CommandError,
     CommandToken,
@@ -20,8 +20,8 @@ async def test_shell_execution_baseline():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
-    a_chan = new_chan("a")
-    b_chan = new_chan("b")
+    a_chan = new_channel("a")
+    b_chan = new_channel("b")
     shell.main_channel.import_channels(a_chan, b_chan)
 
     @a_chan.build.command()
@@ -162,7 +162,7 @@ async def test_shell_task_can_get_channel():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
-    a_chan = new_chan("a")
+    a_chan = new_channel("a")
     shell.main_channel.import_channels(a_chan)
 
     @a_chan.build.command()
@@ -184,7 +184,7 @@ async def test_shell_task_can_get_task():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
-    a_chan = new_chan("a")
+    a_chan = new_channel("a")
     shell.main_channel.import_channels(a_chan)
 
     @a_chan.build.command()
@@ -211,10 +211,10 @@ async def test_shell_clear():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
     shell = new_ctml_shell()
-    a_chan = new_chan("a")
-    b_chan = new_chan("b")
+    a_chan = new_channel("a")
+    b_chan = new_channel("b")
     shell.main_channel.import_channels(a_chan, b_chan)
-    c_chan = new_chan("c")
+    c_chan = new_channel("c")
     a_chan.import_channels(c_chan)
 
     sleep = [0.1]

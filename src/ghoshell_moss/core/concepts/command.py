@@ -25,7 +25,6 @@ from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.message import Message, Content, Text
-from ghoshell_moss.types import Observe
 import json
 
 __all__ = [
@@ -52,6 +51,7 @@ __all__ = [
     "make_command_group",
     "CommandTaskContextVar",
     "ObserveError",
+    "Observe",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -509,7 +509,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._available_or_fn = available
         self._comments_or_fn = comments
         self._is_dynamic_itf = (
-            callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
+                callable(self._interface_or_fn) or callable(doc) or callable(available) or callable(comments)
         )
         self._call_soon = call_soon
         self._blocking = blocking
@@ -619,6 +619,26 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 CommandTaskContextVar = contextvars.ContextVar("moss.ctx.CommandTask")
 
 
+class Observe(BaseModel):
+    """
+    Command 的特殊返回值, 当 Command 返回这一结构时, 会立刻中断 Shell Interpreter 的返回值.
+    """
+
+    messages: list[Message] = Field(
+        default_factory=list, description="ghoshell_moss.core.concepts.command:CommandTask 的特殊返回值类型."
+    )
+
+
+class ObserveError(Exception):
+    """
+    一种抛出中断的办法.
+    """
+
+    def __init__(self, observe: Observe):
+        self.observe = observe
+        super().__init__()
+
+
 class CommandTaskResult(BaseModel):
     """
     Command Task 的标准返回值.
@@ -651,7 +671,7 @@ class CommandTaskResult(BaseModel):
     )
 
     @classmethod
-    def from_observe(cls, observe: Observe) -> Self:
+    def from_observe(cls, observe: "Observe") -> Self:
         return cls(
             messages=observe.messages,
             observe=True,
@@ -738,16 +758,6 @@ class CommandTaskResult(BaseModel):
             messages = _result.as_messages()
             if len(messages) > 0:
                 self.messages.extend(messages)
-
-
-class ObserveError(Exception):
-    """
-    一种抛出中断的办法.
-    """
-
-    def __init__(self, observe: Observe):
-        self.observe = observe
-        super().__init__()
 
 
 class CommandTask(Generic[RESULT], ABC):
