@@ -551,3 +551,20 @@ async def test_gather_in_order():
 
     await asyncio.gather(foo(), bar())
     assert order == ["bar", "foo"]
+
+
+@pytest.mark.asyncio
+async def test_task_done_with_callback():
+    async def foo():
+        return 123
+
+    order = []
+
+    def done(t):
+        order.append(t)
+
+    task = asyncio.create_task(foo())
+    task.add_done_callback(done)
+    await task
+    assert len(order) == 1
+    assert order[0].done()

@@ -2,7 +2,7 @@ import contextlib
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Optional, Iterable, Any, TypeVar, Generic, Callable
+from typing import Optional, Iterable, Any, TypeVar, Generic, Callable, Coroutine
 
 from ghoshell_container import IoCContainer, Container
 
@@ -28,6 +28,8 @@ from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
+import janus
+import anyio
 
 __all__ = ["AbsChannelRuntime", "BaseImportLib", "AbsChannelTreeRuntime"]
 
@@ -208,11 +210,11 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     """
 
     def __init__(
-        self,
-        *,
-        channel: CHANNEL,
-        container: IoCContainer | None = None,
-        logger: LoggerItf | None = None,
+            self,
+            *,
+            channel: CHANNEL,
+            container: IoCContainer | None = None,
+            logger: LoggerItf | None = None,
     ):
         self._channel: CHANNEL = channel
         self._name = channel.name()
@@ -231,7 +233,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
         self._starting = False
         self._started = asyncio.Event()
-        self._running_task: Optional[asyncio.Task] = None
+        self._channel_running_lifecycle_task: Optional[asyncio.Task] = None
         # 用线程安全的事件. 考虑到 runtime 未来可能会跨线程被使用.
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
@@ -243,6 +245,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._defer_clear_mark = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._main_loop_task: Optional[asyncio.Task] = None
+        # maintain a task group for cancel them during runtime.
+        self._runtime_asyncio_task_group: set[asyncio.Task] = set()
+        # register task done callback
         self._task_done_callbacks: list[TaskDoneCallback] = []
         self._exit_stack = contextlib.AsyncExitStack()
         # log_prefix
@@ -351,7 +356,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         pass
 
     async def refresh_metas(
-        self,
+            self,
     ) -> None:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
@@ -577,12 +582,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     @contextlib.asynccontextmanager
     async def _running_task_ctx(self):
         ctx = ChannelCtx(self)
-        self._running_task = asyncio.create_task(ctx.run(self._execute_running_task))
+        self._channel_running_lifecycle_task = asyncio.create_task(ctx.run(self._execute_running_task))
         yield
-        if self._running_task and not self._running_task.done():
-            self._running_task.cancel()
+        if self._channel_running_lifecycle_task and not self._channel_running_lifecycle_task.done():
+            self._channel_running_lifecycle_task.cancel()
             try:
-                await self._running_task
+                await self._channel_running_lifecycle_task
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -619,9 +624,41 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             self.logger.exception(e)
             raise
 
+    @contextlib.asynccontextmanager
+    async def _clear_runtime_asyncio_tasks(self):
+        yield
+        tasks = self._runtime_asyncio_task_group.copy()
+        self._runtime_asyncio_task_group.clear()
+        await_tasks = []
+        for t in tasks:
+            if t.done():
+                continue
+            t.cancel()
+            await_tasks.append(t)
+        for t in await_tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
     @abstractmethod
     async def _main_loop(self) -> None:
         pass
+
+    async def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
+        """
+        create asyncio task during runtime
+        """
+        if self._loop is None:
+            raise RuntimeError('channel not running')
+        task = self._loop.create_task(cor)
+        self._runtime_asyncio_task_group.add(task)
+        task.add_done_callback(self._remove_done_asyncio_task)
+        return task
+
+    def _remove_done_asyncio_task(self, task: asyncio.Task) -> None:
+        if task in self._runtime_asyncio_task_group:
+            self._runtime_asyncio_task_group.remove(task)
 
     def _async_exit_ctx_funcs(self) -> Iterable[Callable]:
         yield self._container_ctx
@@ -731,9 +768,12 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             container=container,
             logger=logger,
         )
-        self._blocking_action_lock = asyncio.Lock()
-        self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
+        # 线程安全队列.
+        self._blocking_action_queue = janus.Queue()
 
+        self._blocking_action_lock = asyncio.Lock()
+        # 通知有 pending task 的队列.
+        self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
         # 运行状态池.
         # 生命周期任务.
         self._lifecycle_task: asyncio.Task | None = None
@@ -743,6 +783,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         self._executing_self_tasks: dict[_TaskId, CommandTask] = {}
         # 在执行中的非异步任务.
         self._executing_blocking_task: CommandTask | None = None
+        # is self idle event
         self._idled_event = asyncio.Event()
 
     @abstractmethod
@@ -791,7 +832,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     # --- lifecycle --- #
 
-    async def idle(self) -> None:
+    async def _idle(self) -> None:
         """
         进入闲时状态.
         闲时状态指当前 Runtime 及其 子 Channel 都没有 CommandTask 在运行的时候.
@@ -887,7 +928,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     # 可以执行 idle 了.
                     if self._is_children_idled():
                         # 这种情况下就真的可以 idle 了. 速度应该很快.
-                        await self.idle()
+                        await self._idle()
                         self._idled_event.set()
                         continue
                 # 阻塞等待下一个结果.
@@ -956,7 +997,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 return None
             if consuming.done():
                 consuming = None
-                return
+                return None
 
             is_self_task = len(paths) == 0
             is_blocking_task = consuming.meta.blocking
@@ -965,14 +1006,14 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                 # 分配给子节点.
                 await self._dispatch_children_task(paths, consuming)
                 consuming = None
-                return
+                return None
 
             if is_blocking_task:
                 # 只有 consume 层可以设置 blocking task. 协程安全操作.
                 self._executing_blocking_task = consuming
             # 执行自己的任务. 但并不阻塞.
             await self._clear_lifecycle_task()
-            await self._execute_self_task_nonblock(consuming)
+            await self._execute_self_task_none_block(consuming)
             consuming = None
 
         except asyncio.CancelledError:
@@ -1000,7 +1041,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             # dry run 不会清空 task 状态.
             return await task.dry_run()
 
-    async def _execute_self_task_nonblock(self, task: CommandTask, depth: int = 0) -> asyncio.Task | None:
+    async def _execute_self_task_none_block(self, task: CommandTask, depth: int = 0) -> asyncio.Task | None:
         """
         阻塞完成一个任务的运行准备.
         这里没有让出逻辑.
@@ -1008,10 +1049,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         """
         # 又要检查一次.
         if task is None or task.done():
-            return
+            return None
         if depth > 10:
             task.fail(CommandErrorCode.INVALID_USAGE.error("stackoverflow"))
-            return
+            return None
         # 确保 task 被加入了状态池.
         await self._add_executing_task(task)
         # 非阻塞函数不能返回 stack
@@ -1114,10 +1155,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                     )
 
     async def _fulfill_task_with_its_result_stack(
-        self,
-        owner: CommandTask,
-        stack: CommandStackResult,
-        depth: int = 0,
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
     ) -> None:
         result = stack
         while result is not None:
@@ -1134,10 +1175,10 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             result = await get_stack_result
 
     async def _run_result_stack(
-        self,
-        owner: CommandTask,
-        stack: CommandStackResult,
-        depth: int = 0,
+            self,
+            owner: CommandTask,
+            stack: CommandStackResult,
+            depth: int = 0,
     ) -> CommandStackResult | None:
         result = None
         try:
@@ -1230,7 +1271,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                         priority = None
                     else:
                         # 立刻将它执行, none blocking 任务确认会进入到并行运行.
-                        await self._execute_self_task_nonblock(task, depth=0)
+                        await self._execute_self_task_none_block(task, depth=0)
                         # 并不阻塞等待结果, 而是立刻返回.
                         return
             # 来一次优先级的 pk.
