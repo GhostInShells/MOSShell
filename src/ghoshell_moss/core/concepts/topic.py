@@ -3,7 +3,7 @@ from typing import Generic, TypeVar, Literal
 
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import uuid
-from ghoshell_moss.message import WithAdditional, Additional, Addition
+from ghoshell_moss.message import WithAdditional, Addition
 from typing_extensions import Self
 import time
 
@@ -35,6 +35,7 @@ class TopicMeta(BaseModel):
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
     name: str = Field(default="", description="Name of the topic.")
     type: str = Field(default="", description="Type of the topic.")
+    # local 实现的两种方式: 1. 不跨网络传输. 2. 监听者发现 sender 不相同, 直接丢弃.
     local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
     creator: str = Field(
         default="",
@@ -42,7 +43,7 @@ class TopicMeta(BaseModel):
     )
     sender: str = Field(
         default="",
-        description="the address of whom sent this topic.",
+        description="the address of whom (topic service) sent this topic.",
     )
     created_at: float = Field(
         default_factory=lambda: round(time.time(), 4),
@@ -72,6 +73,7 @@ class Topic(BaseModel, WithAdditional):
     )
 
     def is_overdue(self) -> bool:
+        """topic 是否过期. 过期的 Service 应该直接丢弃. """
         if self.meta.overdue == 0.0:
             # 永不过期.
             return False
@@ -127,7 +129,6 @@ class TopicModel(BaseModel, ABC):
         return Topic(
             meta=meta,
             data=data,
-            additional=None,
         )
 
 
@@ -291,6 +292,9 @@ class TopicService(ABC):
 
     @abstractmethod
     async def wait_sent(self):
+        """
+        wait all the topic are sent
+        """
         pass
 
     async def __aenter__(self):
