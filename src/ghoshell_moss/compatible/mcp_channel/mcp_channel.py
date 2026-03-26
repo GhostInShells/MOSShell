@@ -27,7 +27,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskState,
     CommandWrapper,
 )
-from ghoshell_moss.core.concepts.runtime import AbsChannelRuntime
+from ghoshell_moss.core.runtime import AbsChannelRuntime
 
 R = TypeVar("R")  # 泛型结果类型
 

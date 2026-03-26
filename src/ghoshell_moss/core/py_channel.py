@@ -19,7 +19,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     StringType,
 )
-from ghoshell_moss.core.concepts.runtime import AbsChannelTreeRuntime
+from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf

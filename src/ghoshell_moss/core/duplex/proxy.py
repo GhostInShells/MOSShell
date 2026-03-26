@@ -13,7 +13,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     ChannelPaths,
 )
-from ghoshell_moss.core.concepts.runtime import AbsChannelRuntime, AbsChannelTreeRuntime
+from ghoshell_moss.core.runtime import AbsChannelRuntime, AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,
