@@ -22,7 +22,7 @@ from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field, TypeAdapter
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
-from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.message import Message, Content, Text
 import json
@@ -1025,12 +1025,24 @@ class CommandTask(Generic[RESULT], ABC):
                 self.cancel()
 
     def __await__(self):
-        def generator():
-            while not self.done():
-                yield
-            return self.result()
+        if self.done():
+            async def _already_done():
+                return self.result(throw=True)
 
-        return generator()
+            return _already_done().__await__()
+        future = ThreadSafeFuture()
+        def _resolve_future(_task: CommandTask):
+            if future.done():
+                return
+            elif _task.cancelled():
+                future.cancel()
+            elif _task.is_failed():
+                future.set_exception(_task.exception())
+            else:
+                future.set_result(_task.result())
+
+        self.add_done_callback(_resolve_future)
+        return future.__await__()
 
     def __repr__(self):
         tokens = self.tokens
