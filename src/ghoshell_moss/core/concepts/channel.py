@@ -595,6 +595,9 @@ class ChannelRuntime(ABC):
     @property
     @abstractmethod
     def importlib(self) -> "ChannelImportLib":
+        """
+        import lib shared by all channel runtime in the same scope (from main channel)
+        """
         pass
 
     def topic_publisher(self) -> Publisher:
@@ -602,14 +605,14 @@ class ChannelRuntime(ABC):
         创建一个独立的 publisher 可以在链路中广播 topic.
         """
         return self.importlib.topics.publisher(
-            creator=f"chan/{self.id}",
+            creator=f"channel/{self.id}",
         )
 
     async def pub_topic(self, topic: TopicModel | Topic, topic_name: str = "") -> None:
         """
         发送一个 topic 到链路中, 其它监听的 channel 或者 shell 都能拿到这个事件.
         """
-        await self.importlib.topics.pub(topic, name=topic_name, creator=f"chan/{self.id}")
+        await self.importlib.topics.pub(topic, name=topic_name, creator=f"channel/{self.id}")
 
     def topic_subscriber(
             self,
@@ -629,6 +632,7 @@ class ChannelRuntime(ABC):
             keep=keep,
         )
 
+    @abstractmethod
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
         """
         在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
@@ -732,6 +736,9 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     async def wait_children_idled(self) -> None:
+        """
+        wait sub channels idle
+        """
         pass
 
     @abstractmethod

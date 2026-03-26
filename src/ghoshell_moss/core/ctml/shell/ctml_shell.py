@@ -37,6 +37,7 @@ from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, ma
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
+import janus
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
@@ -78,7 +79,7 @@ class CTMLShell(MOSShell):
         self._exit_stack = contextlib.AsyncExitStack()
 
         self._main_loop_task: Optional[asyncio.Task] = None
-        self._push_task_queue: asyncio.Queue[CommandTask | None] = asyncio.Queue()
+        self._push_task_queue: janus.Queue[CommandTask | None] | None = None
 
         self._start: bool = False
         self._closing_event = ThreadSafeEvent()
@@ -119,7 +120,8 @@ class CTMLShell(MOSShell):
         if self._start:
             return
         self._start = True
-        self._event_loop = asyncio.get_event_loop()
+        self._event_loop = asyncio.get_running_loop()
+        self._push_task_queue = janus.Queue()
         # 进入开机过程.
         await self._exit_stack.__aenter__()
         for ctx_manager in self._bootstrap_stacks():
@@ -151,7 +153,6 @@ class CTMLShell(MOSShell):
 
         yield
         await asyncio.to_thread(self._container.shutdown)
-
 
     @contextlib.asynccontextmanager
     async def _speech_context_manager(self):
@@ -201,11 +202,13 @@ class CTMLShell(MOSShell):
             while not self._closing_event.is_set():
                 try:
                     _queue = self._push_task_queue
-                    item = await asyncio.wait_for(_queue.get(), timeout=1)
+                    item = await asyncio.wait_for(_queue.async_q.get(), timeout=1)
                     if item is None:
                         # 接受毒丸防止死锁.
                         continue
                 except asyncio.TimeoutError:
+                    continue
+                except janus.AsyncQueueShutDown:
                     continue
 
                 try:
@@ -437,7 +440,7 @@ class CTMLShell(MOSShell):
         self._check_running()
         # 线程安全加入 tasks.
         for t in tasks:
-            self._push_task_queue.put_nowait(t)
+            self._push_task_queue.sync_q.put_nowait(t)
 
     async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
@@ -538,31 +541,8 @@ class CTMLShell(MOSShell):
             return
         _queue = self._push_task_queue
         # 直接换新的 _queue.
-        self._push_task_queue = asyncio.Queue()
-
-        async def _clear_old_queue() -> None:
-            """
-            清空一个队列的安全做法.
-            """
-            nonlocal _queue
-            _queue.put_nowait(None)
-            while not _queue.empty():
-                try:
-                    # queue.get 如果不暂停它, 它会死锁住
-                    item = await asyncio.wait_for(_queue.get(), timeout=1)
-                    if item is None:
-                        break
-                    elif isinstance(item, CommandTask):
-                        item.fail(CommandErrorCode.CLEARED.error("cleared by shell"))
-                except asyncio.TimeoutError:
-                    # 不非空, 但自己没拿到.
-                    # 塞一个毒丸, 确认在 clear 之前一定要亲手拿到毒丸.
-                    _queue.put_nowait(None)
-                    continue
-            _queue.put_nowait(None)
-
-        clear_queue = self._event_loop.create_task(_clear_old_queue())
-        await clear_queue
+        self._push_task_queue = janus.Queue()
+        _queue.close()
         _ = await asyncio.gather(self._speech.clear(), self._main_runtime.clear())
 
 
