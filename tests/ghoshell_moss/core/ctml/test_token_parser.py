@@ -403,7 +403,7 @@ def test_token_with_scope_func():
 
     def iter_content():
         # args shall be an array
-        for c in "<_ name='foo'><baz /><_ name='foo.bar'>hello<zoo /></_><_><coo />world</_></_>":
+        for c in "<_ channel='foo'><baz /><_ channel='foo.bar'>hello<zoo /></_><_><coo />world</_></_>":
             yield c
 
     CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)

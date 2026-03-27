@@ -5,11 +5,12 @@
 
 from datetime import datetime
 
-from ghoshell_moss.message.abcd import (
+from ghoshell_moss.message import (
     Message,
     MessageMeta,
     Addition,
     WithAdditional,
+    Text,
 )
 
 
@@ -18,22 +19,18 @@ def test_message_meta_basic():
     meta = MessageMeta(
         role="user",
         name="test_user",
-        issuer="terminal",
-        issuer_id="term_001",
     )
 
     assert meta.role == "user"
     assert meta.name == "test_user"
-    assert meta.issuer == "terminal"
-    assert meta.issuer_id == "term_001"
     assert isinstance(meta.id, str) and len(meta.id) > 0
-    assert isinstance(meta.created_at, datetime)
+    assert isinstance(meta.created, datetime)
 
     # 测试 XML 转换
     xml = meta.to_xml()
-    assert "role='user'" in xml
-    assert "name='test_user'" in xml
-    assert xml.startswith("<meta") and xml.endswith("/>")
+    assert 'role="user"' in xml
+    assert 'name="test_user"' in xml
+    assert xml.startswith("<message") and xml.endswith("/>")
 
 
 def test_message_creation():
@@ -48,7 +45,7 @@ def test_message_creation():
     msg.with_content("Hello world")
     assert msg.contents is not None
     assert len(msg.contents) == 1
-    assert msg.contents[0] == "Hello world"
+    assert Text.from_content(msg.contents[0]).text == "Hello world"
 
     # 测试 is_empty
     empty_msg = Message.new()
@@ -82,10 +79,10 @@ def test_message_serialization():
     # 测试 to_contents() 方法
     contents = list(msg.as_contents())
     assert len(contents) == 4  # 开始标签 + meta + 2个内容 + 结束标签
-    assert isinstance(contents[0], str) and contents[0].startswith("<message>")
-    assert contents[1] == "Hello"
-    assert contents[2] == "World"
-    assert isinstance(contents[3], str) and contents[3] == "</message>"
+    assert Text.from_content(contents[0]).text.startswith("<message ")
+    assert Text.from_content(contents[1]).text == "Hello"
+    assert Text.from_content(contents[2]).text == "World"
+    assert Text.from_content(contents[3]).text == "</message>"
 
 
 def test_addition_system():

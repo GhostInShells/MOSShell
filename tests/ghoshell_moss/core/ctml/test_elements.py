@@ -140,7 +140,7 @@ async def test_element_in_chaos_order():
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
     await suite.parse(["<fo", "o /><b", 'ar a="12', '3">he', "llo<", "/bar>"], run=True)
     assert suite.queue.pop() is None
-    assert [c._result for c in suite.queue] == [123, 123, None, None]
+    assert [c.result() for c in suite.queue] == [123, 123, None, None]
     suite.root.destroy()
 
 
@@ -200,13 +200,13 @@ async def test_parse_text_command():
     await suite.parse(["<foo/>"], run=True)
 
     assert len(suite.queue) == 2
-    assert suite.queue[0]._result == ""
+    assert suite.queue[0].result() == ""
     assert suite.queue[0].tokens == "<foo/>"
 
     suite = new_test_suite(PyCommand(foo))
     await suite.parse(["<foo> </foo>"], run=True)
     assert suite.queue.pop() is None
-    assert suite.queue[0]._result == " "
+    assert suite.queue[0].result() == " "
     assert "".join(t.tokens for t in suite.queue) == "<foo> </foo>"
 
 
@@ -236,11 +236,11 @@ async def test_parse_token_delta_command():
     suite = new_test_suite(PyCommand(foo))
     content = "<foo><![CDATA[hello<bar/>world]]></foo>"
     await suite.parse([content], run=True)
-    assert suite.queue[0]._result == "hello<bar/>world"
+    assert suite.queue[0].result() == "hello<bar/>world"
 
     suite = new_test_suite(PyCommand(foo))
     # test without CDATA
     content = "<foo>hello<bar/>world</foo>"
     await suite.parse([content], run=True)
     #  once without cdata, the self-closing tag will separate to start and end token
-    assert suite.queue[0]._result == "hello<bar></bar>world"
+    assert suite.queue[0].result() == "hello<bar></bar>world"

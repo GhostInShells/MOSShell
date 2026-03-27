@@ -2,6 +2,7 @@ import pytest
 
 from ghoshell_moss.core.ctml.shell.primitives.sample import sample
 from ghoshell_moss.core import PyChannel, new_ctml_shell
+from ghoshell_moss.message import Text
 
 
 @pytest.mark.asyncio
@@ -156,8 +157,9 @@ async def test_sample_invalid_pick_zero():
                 if not msg.contents:
                     continue
                 for content in msg.contents:
-                    assert isinstance(content, str)
-                    if "pick must be >= 1" in content:
+                    text = Text.from_content(content)
+                    assert text is not None
+                    if "pick must be >= 1" in text.text:
                         error_msg_found = True
                         break
             assert error_msg_found, f"Expected error message not found in {interpretation.messages}"
@@ -200,7 +202,9 @@ async def test_sample_invalid_pick_exceed():
                 if not msg.contents:
                     continue
                 for content in msg.contents:
-                    if isinstance(content, str) and "requires at least" in content:
+                    text = Text.from_content(content)
+                    assert text is not None
+                    if "requires at least" in text.text:
                         error_msg_found = True
                         break
             assert error_msg_found, f"Expected error message not found in {interpretation.messages}"

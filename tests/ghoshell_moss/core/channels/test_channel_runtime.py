@@ -28,7 +28,7 @@ async def test_channel_runtime_execution():
         await runtime.push_task(task)
         await task.wait()
     assert task.done()
-    assert task._result == 123
+    assert task.result() == 123
 
 
 @pytest.mark.asyncio

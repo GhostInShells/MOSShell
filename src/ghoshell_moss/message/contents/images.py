@@ -1,109 +1,85 @@
 import base64
+import io
+import mimetypes
 import pathlib
-from io import BytesIO
-from typing import Optional
+from typing import Optional, Any
 
 from PIL import Image
-from pydantic import Field
 from typing_extensions import Self
 
-from ghoshell_moss.message.abcd import ContentModel, Content
-from pydantic_ai import ImageUrl
+from ghoshell_moss.message.contents.abcd import ContentModel
 
 __all__ = ["Base64Image"]
 
 
 class Base64Image(ContentModel):
     """
-    Base64 encoded image with metadata
-
-    用法:
-        msg = Message.new().with_content(Base64Image.from_pil_image(image))
+    By: Gemini
+    基于 Base64 的图像消息体。
+    结构完全对齐 Anthropic 的 Base64ImageSourceParam:
+    {
+        "type": "base64",
+        "media_type": "image/jpeg",
+        "data": "..."
+    }
     """
 
-    mime_type: str = Field(
-        default="application/octet-stream",
-        description="mime type of the image",
-    )
-    encoded: str = Field(
-        description="Base64 encoded image data",
-        examples=["iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="],
-    )
-
-    def to_content(self) -> ImageUrl:
-        return ImageUrl(url=self.data_url)
+    @classmethod
+    def content_type(cls) -> str:
+        return 'image'
 
     @classmethod
-    def from_binary(cls, mime_type: str, binary: bytes) -> Self:
-        """Create Base64Image from binary data"""
-        encoded = base64.b64encode(binary).decode("utf-8")
-        return cls(mime_type=mime_type, encoded=encoded)
+    def from_binary(cls, media_type: str, data: bytes) -> Self:
+        """从二进制数据直接创建"""
+        b64_data = base64.b64encode(data).decode("utf-8")
+        source = {
+            "type": "base64",
+            "media_type": media_type,
+            "data": b64_data
+        }
+        return cls(source=source)
 
     @classmethod
     def from_pil_image(cls, image: Image.Image, format: Optional[str] = None) -> Self:
         """
-        Create Base64Image from PIL Image
-
-        Args:
-            image: PIL Image object
-            format: Image format (e.g., 'PNG', 'JPEG'). If None, uses image.format or defaults to 'PNG'
+        从 PIL 对象转换。
+        在机器人实时视觉流（如 G1 的摄像头快照）中这是最高频的入口。
         """
-        if format is None:
-            format = image.format or "PNG"
+        img_format = format or image.format or "PNG"
+        # 统一下 media_type 的表达
+        ext = img_format.lower()
+        if ext == "jpg": ext = "jpeg"
+        media_type = f"image/{ext}"
 
-        # Convert format to lowercase for consistency
-        image_type = format.lower()
-
-        # Save image to bytes buffer
-        buffer = BytesIO()
-        image.save(buffer, format=format)
-        binary_data = buffer.getvalue()
-
-        return cls.from_binary(image_type, binary_data)
+        buffered = io.BytesIO()
+        image.save(buffered, format=img_format)
+        return cls.from_binary(media_type, buffered.getvalue())
 
     @classmethod
     def from_file(cls, file_path: str | pathlib.Path) -> Self:
-        """
-        Create Base64Image from image file
+        """从本地文件读取"""
+        path = pathlib.Path(file_path)
+        media_type, _ = mimetypes.guess_type(path)
+        if not media_type:
+            # 默认兜底
+            media_type = f"image/{path.suffix.lstrip('.')}" or "image/png"
 
-        Args:
-            file_path: Path to image file
-        """
-        if isinstance(file_path, pathlib.Path):
-            file_path = str(file_path.absolute())
-
-        # Open image with PIL to get format
-        image = Image.open(file_path)
-        format = image.format or "PNG"
-
-        # Read binary data
-        binary_data = pathlib.Path(file_path).read_bytes()
-        mimetype = cls.get_mime_type(format)
-        return cls.from_binary(mimetype, binary_data)
+        with open(path, "rb") as f:
+            return cls.from_binary(media_type, f.read())
 
     def to_pil_image(self) -> Image.Image:
-        """Convert Base64Image back to PIL Image"""
-        # Decode base64
-        binary_data = base64.b64decode(self.encoded)
-        # Create PIL Image from bytes
-        image = Image.open(BytesIO(binary_data))
-        return image
+        """还原回 PIL 对象，方便本地做图像处理或在 TUI/UI 中展示"""
+        if not self.source or "data" not in self.source:
+            raise ValueError("Invalid image source")
 
-    @classmethod
-    def get_mime_type(cls, image_type: str) -> str:
-        """Get MIME type for the image"""
-        mime_map = {
-            "png": "image/png",
-            "jpeg": "image/jpeg",
-            "jpg": "image/jpeg",
-            "gif": "image/gif",
-            "bmp": "image/bmp",
-            "webp": "image/webp",
-            "tiff": "image/tiff",
-        }
-        return mime_map.get(image_type.lower(), "application/octet-stream")
+        img_data = base64.b64decode(self.source["data"])
+        return Image.open(io.BytesIO(img_data))
 
     @property
     def data_url(self) -> str:
-        """Get data URL for embedding in HTML or other contexts"""
-        return f"data:{self.mime_type};base64,{self.encoded}"
+        """生成可以直接在 HTML 或一些交互式终端里渲染的 Data URL"""
+        if not self.source:
+            return ""
+        m_type = self.source.get("media_type", "image/png")
+        data = self.source.get("data", "")
+        return f"data:{m_type};base64,{data}"

@@ -1,46 +1,41 @@
-import doctest
 import json
 import html
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias, is_typeddict
+from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias
 from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError, AwareDatetime, NaiveDatetime
+from pydantic import BaseModel, Field, ValidationError, AwareDatetime, dataclasses
 from typing_extensions import Self
-from datetime import datetime, timezone
+from datetime import datetime
 from dateutil import tz
-from pydantic_ai import UserContent, MultiModalContent, BinaryImage
+from .contents import ContentModel, Content, Text, Base64Image
 
 __all__ = [
     "Addition",
     "Additional",
-    "Content",
-    "ContentModel",
     "HasAdditional",
     "Message",
     "MessageMeta",
     "WithAdditional",
 ]
 
-"""
-实现一个消息协议容器. 这个容器经过了几个阶段的改造: 
-- 一阶段: ghostos 项目中定义了面向 openai 的消息协议, 用来解决自己的 multi-ghosts 等问题. 
-- 二阶段: 为了实现 MOSS 架构在 channel meta 中依赖的消息定义, 重新定义了 message, 并且费劲做了协议兼容. 
-
-目前是三阶段, 考虑完全导向 pydantic ai 或者 anthropic 协议. 维护消息协议太辛苦, 但它又是系统最底层.
-
-从设计思想上, Message 放弃了流式传输层协议, 回到存储和同步协议: 
-1. 提供可以兼容 openai、gemini、claude 等主流模型消息协议的容器。考虑直接使用 Pydantic AI
-2. 彻底放弃 OpenAI 的强类型约定. 目前行业共同指向了消息体自解释, 也是殊途同归. 
-3. 放弃下行 (模型生成), 专注于上行消息协议. 
-"""
+# 实现一个消息协议容器. 这个容器经过了几个阶段的改造:
+# - 一阶段: ghostos 项目中定义了面向 openai 的消息协议, 用来解决自己的 multi-ghosts 等问题.
+# - 二阶段: 为了实现 MOSS 架构在 channel meta 中依赖的消息定义, 重新定义了 message, 并且费劲做了协议兼容.
+# - 三阶段: 考虑完全导向 pydantic ai. 期望 pydantic ai 的消息协议更通用.
+#
+# 目前是四阶段, pydantic ai 的类库太重, 而它反序列化很困难, 仍然只适用于
+#
+# 从设计思想上, Message 放弃了流式传输层协议/存储, 回到上行消息协议:
+# 1. 提供可以兼容 openai、gemini、claude 等主流模型消息协议的容器。直接使用 Pydantic AI 生态.
+# 2. 彻底放弃 OpenAI 的强类型约定. 目前行业共同指向了消息体自解释, 也是殊途同归.
+# 3. 放弃下行 (模型生成), 专注于上行消息协议.
 
 Additional = Optional[dict[str, dict[str, Any]]]
 """
-各种数据类型的一种扩展协议.
-它存储 弱类型/可序列化 的数据结构, 用 dict 来表示.
-但它实际对应一个强类型的数据结构, 用 pydantic.BaseModel 来定义.
+使用弱类型容器保存强类型数据结构的思想. 
+它实际对应一个强类型的数据结构, 用 pydantic.BaseModel 来定义.
 这样可以从弱类型容器中, 拿到一个强类型的数据结构, 但又不需要提前定义它. 
 这个数据不对 AI 暴露, 属于 Ghost In Shells 架构自身定义的交互数据. 
 """
@@ -142,57 +137,20 @@ class WithAdditional:
         return self
 
 
-class AdditionList:
-    """
-    一个简单的全局数据对象, 可以用于注册所有系统用到的 Addition
-    然后把它们用 schema 的形式下发.
-
-    这个实现不一定要使用. 它的好处是, 可以集中地拼出一个新的 Additions 协议自解释模块.
-    """
-
-    def __init__(self, *types: type[Addition]):
-        self.types = {t.keyword(): t for t in types}
-
-    def add(self, addition_type: type[Addition], override: bool = True) -> None:
-        """
-        注册新的 Addition 类型.
-        """
-        keyword = addition_type.keyword()
-        if override and keyword in self.types:
-            raise KeyError(f"Addition {keyword} is already added.")
-        self.types[keyword] = addition_type
-
-    def schemas(self) -> dict[str, dict]:
-        """
-        返回所有的 Addition 的 Schema.
-        """
-        result = {}
-        for t in self.types.values():
-            keyword = t.keyword()
-            schema = t.model_json_schema()
-            result[keyword] = schema
-        return result
-
-
 _now_utc: Callable[[], datetime] = lambda: datetime.now(tz.gettz())
 
 
 class MessageMeta(BaseModel):
     """
-    消息的元信息, 用来标记消息的维度.
-    独立出数据结构, 是为了方便将 meta 在不同的数据结构中使用, 而不用持有整个 message.
-
-    这部分的数据也可能直接反应到模型看到的消息协议上 (content).
-    举例, Anthropic 等消息协议, 并没有特别明确的强类型约束, 类似 role / name 等字段都需要基于约定来定义.
-
-    实际上对于模型请求而言, 只需要两种协议罢了:
-    1. input
-    2. output
+    消息的元信息, 用来标记消息的关键维度.
+    独立出数据结构, 是为了方便将 meta 在 ghost in shells 的交互逻辑使用. 同时 **可以** 不污染消息 content.
+    Meta 原生目标, 是当一个 Message 容器用 with_meta 的方式返回 contents 时, 带上必要的附加讯息, 比如时间戳.
+    贯彻时间是第一公民的目标.
     """
 
-    tag: str | None = Field(
-        default=None,
-        description="if the message is wrapped with xml as default"
+    tag: str = Field(
+        default="message",
+        description="当 Message 使用 meta 生成 xml 结构时, 用于包括 content 的 xml 标记. 如果为空, 意味着不包裹."
     )
     id: str = Field(
         default_factory=uuid,
@@ -206,10 +164,6 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息的发送者身份. 作为 ghost in shells 架构中的标准概念.",
     )
-    issuer: Optional[str] = Field(
-        default=None,
-        description="消息的发送",
-    )
     created: AwareDatetime = Field(
         default_factory=_now_utc,
         description="消息的创建时间, 一个消息只有一个创建时间",
@@ -217,10 +171,6 @@ class MessageMeta(BaseModel):
     completed: AwareDatetime | None = Field(
         default=None,
         description="消息结束的时间戳",
-    )
-    timestamp: bool = Field(
-        default=True,
-        description='if meta show timestamp'
     )
     attributes: dict[str, Any] = Field(
         default_factory=dict,
@@ -239,12 +189,11 @@ class MessageMeta(BaseModel):
             attributes.update(update)
         return attributes
 
-    def gen_attributes_str(self) -> str:
+    def gen_attributes_str(self, timestamp: bool = True) -> str:
         attributes = self.gen_attributes()
         if len(attributes) == 0:
             return ''
         parts = []
-        timestamp = self.timestamp
         for attr, value in attributes.items():
             # in case value has invalid mark
             if isinstance(value, datetime) and timestamp:
@@ -264,47 +213,19 @@ class MessageMeta(BaseModel):
         return f'<{tag} {attr_str}/>'
 
 
-Content: TypeAlias = str | MultiModalContent
-"""
-完全导向 pydantic ai 的技术实现. 而且只用 UserContent, 做上行通讯. 放弃下行协议存储. 
-"""
-
-
-class ContentModel(BaseModel, ABC):
-    """
-    多模态消息单元的强类型定义.
-    可以用来展示成指定的 <xml> 格式文本.
-    """
-
-    @abstractmethod
-    def to_content(self) -> Content:
-        """
-        将强类型的数据结构, 转成弱类型的 content 对象.
-        """
-        pass
-
-
-ContextType = ContentModel | str | Image.Image | BaseModel
+ContextType = ContentModel | str | Image.Image | BaseModel | Content
 
 
 class Message(BaseModel, WithAdditional):
     """
-    MOSS 体系上行给模型的消息体. 目前完全倾向 Pydantic AI 数据结构.
-
-    目标是:
-    1. 兼容几乎所有的模型, 及其多模态消息类型. 依赖 Pydantic AI.
-    2. 可以跨网络传输, 所有数据可以序列化.
-    3. 可以用于本地存储.
+    MOSS 体系上行给模型的消息体.
+    核心目标:
+    1. 持有 pydantic ai 的 contents.
+    2. 基于 meta 提供 moss 架构所必要的关键元信息.
+    3. 默认将 meta 信息用 xml 格式序列化到上下文中.
+    4. 支持消息协议的多层嵌套. 用 xml 包裹.
     """
 
-    protocol: Literal['pydantic_ai'] = Field(
-        default='pydantic_ai',
-        description="消息协议的类型. 未来可能要考虑扩充支持 raw 消息类型",
-    )
-    type: str = Field(
-        default="",
-        description="目标消息协议里的子类型. 用来生成具体的消息对象. ",
-    )
     meta: MessageMeta = Field(
         default_factory=MessageMeta,
         description="消息的维度信息, 单独拿出来, 方便被其它数据类型所持有. ",
@@ -317,15 +238,14 @@ class Message(BaseModel, WithAdditional):
     @classmethod
     def new(
             cls,
-            tag: str  | None = 'message',
+            tag: str | None = 'message',
             *,
             role: str | None = None,
             name: Optional[str] = None,
-            issuer: Optional[str] = None,
             id: Optional[str] = None,
             attributes: dict[str, Any] | None = None,
             timestamp: bool = True,
-    ):
+    ) -> Self:
         """
         语法糖, 用来极简地一条消息.
 
@@ -336,8 +256,6 @@ class Message(BaseModel, WithAdditional):
             data['role'] = role
         if name is not None:
             data['name'] = name
-        if issuer is not None:
-            data['issuer'] = issuer
         if id is not None:
             data['id'] = id
         if attributes is not None:
@@ -345,6 +263,14 @@ class Message(BaseModel, WithAdditional):
         data['timestamp'] = timestamp
         meta = MessageMeta.model_construct(**data)
         return cls(meta=meta)
+
+    def is_completed(self) -> bool:
+        return self.meta.completed is not None
+
+    def as_complete(self, copy: bool = False) -> Self:
+        item = self if copy is False else self.model_copy(deep=True)
+        item.meta.completed = _now_utc()
+        return item
 
     @property
     def role(self) -> str:
@@ -369,25 +295,29 @@ class Message(BaseModel, WithAdditional):
 
     @classmethod
     def to_content(cls, item: ContextType | Content) -> Content:
+        """
+        以字符串优先的方式提供基础类型的数据转换.
+        """
         if isinstance(item, str):
+            _content = Text.new(item).to_content()
+        elif isinstance(item, dict) and 'type' in item:
+            # 盲目兼容.
             _content = item
-        elif isinstance(item, dict) and 'kind' in item:
+        elif hasattr(item, 'kind'):
             _content = item
         elif isinstance(item, ContentModel):
             _content = item.to_content()
         elif isinstance(item, Image.Image):
-            _content = BinaryImage(item)
+            _content = Base64Image.from_pil_image(item)
         elif isinstance(item, BaseModel):
-            tag = generate_module_and_attr_name(item) or ''
             serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
-            if tag:
-                _content = f'<pydantic-model cls="{tag}">{serialized}</pydantic-model>'
-            else:
-                _content = serialized
+            _content = Text.new(serialized).to_content()
         elif isinstance(item, dict) or isinstance(item, list):
-            _content = json.dumps(item)
+            serialized = json.dumps(item)
+            _content = Text.new(serialized).to_content()
         else:
-            _content = item
+            value = str(item)
+            _content = Text.new(value).to_content()
         return _content
 
     def with_content(self, *contents: ContextType | Content) -> Self:
@@ -428,27 +358,45 @@ class Message(BaseModel, WithAdditional):
 
     def as_contents(
             self,
+            *,
             with_meta: bool = True,
-    ) -> Iterable[UserContent]:
+            timestamp: bool = True,
+    ) -> Iterable[Content]:
         """
         将整个消息体返回成 Pydantic AI 的 User Content.
         """
         if self.is_empty():
             yield from []
             return
-        if not with_meta or self.meta.tag is None:
+
+        tag = self.meta.tag
+        # 没有 tag 的情况下, 认为不包裹消息.
+        if not with_meta or not tag:
             yield from self.contents
             return
 
-        tag = self.meta.tag or 'message'
-        attrs = self.meta.gen_attributes_str()
+        attrs = self.meta.gen_attributes_str(timestamp=timestamp)
         attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
-        yield f'<{tag}{attr_str}>'
+        yield Text.new(f'<{tag}{attr_str}>').to_content()
         for content in self.contents:
             yield content
-        yield f'</{tag}>'
+        yield Text.new(f'</{tag}>').to_content()
+
+    def with_messages(
+            self,
+            *messages: Self,
+            with_meta: bool = True,
+            timestamp: bool = True,
+    ) -> Self:
+        """
+        join other messages.
+        """
+        for msg in messages:
+            for content in msg.as_contents(with_meta=with_meta, timestamp=timestamp):
+                self.contents.append(content)
+        return self
 
     def get_copy(self) -> Self:
         return self.model_copy(deep=True)
@@ -460,7 +408,7 @@ class Message(BaseModel, WithAdditional):
         result = []
         for content in self.as_contents(with_meta=True):
             if isinstance(content, str):
-                result.append("\n" + content)
+                result.append(content)
             else:
-                result.append("\n%r" % content)
-        return ''.join(result)
+                result.append(repr(content))
+        return '\n'.join(result)
