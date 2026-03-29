@@ -1,13 +1,12 @@
 import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Optional, AsyncIterator, Callable, TypedDict, AsyncIterable
+from typing import Any, Optional, Callable, TypedDict, AsyncIterable
 
 import numpy as np
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
-from ghoshell_moss.core.concepts.channel import ChannelCtx
 import json
 
 __all__ = [

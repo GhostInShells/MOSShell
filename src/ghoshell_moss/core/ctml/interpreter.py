@@ -15,7 +15,7 @@ from ghoshell_moss.core.concepts.interpreter import (
     Interpreter,
     Interpretation,
 )
-from ghoshell_moss.core.concepts.speech import Speech
+from ghoshell_moss.core.contracts.speech import Speech
 from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction

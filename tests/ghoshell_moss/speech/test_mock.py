@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ghoshell_moss.core.concepts.speech import SpeechStream
+from ghoshell_moss.core.contracts.speech import SpeechStream
 from ghoshell_moss.speech.mock import MockSpeech
 
 

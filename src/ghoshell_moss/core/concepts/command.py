@@ -815,7 +815,7 @@ class CommandTask(Generic[RESULT], ABC):
         """记录 task 在哪个 channel 被运行. """
 
         # 编译检查阶段.
-        self._compiled_task: Optional[asyncio.Task] = None
+        self.on_compiled_task: Optional[asyncio.Task] = None
         self.done_at: Optional[str] = None
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
         self.call_id: str = str(call_id) if call_id is not None else ""
@@ -837,15 +837,15 @@ class CommandTask(Generic[RESULT], ABC):
         return ":".join(parts)
 
     def compiled(self) -> bool:
-        return self.partial is None or self._compiled_task is not None
+        return self.partial is None or self.on_compiled_task is not None
 
     async def on_compiled(self) -> None:
         """
         约定的 command task 预先加工参数的周期.
         一个 command 只会执行一次.
         """
-        if self._compiled_task is None and self.partial is not None:
-            self._compiled_task = asyncio.create_task(self.partial(*self.args, **self.kwargs))
+        if self.on_compiled_task is None and self.partial is not None:
+            self.on_compiled_task = asyncio.create_task(self.partial(*self.args, **self.kwargs))
 
     @abstractmethod
     def result(self, throw: bool = True) -> Optional[RESULT]:
@@ -978,8 +978,8 @@ class CommandTask(Generic[RESULT], ABC):
         await self.on_compiled()
         if self.func is None:
             return None
-        if self._compiled_task is not None:
-            args, kwargs = await self._compiled_task
+        if self.on_compiled_task is not None:
+            args, kwargs = await self.on_compiled_task
         else:
             args, kwargs = self.args, self.kwargs
         r = await self.func(*args, **kwargs)
@@ -1031,6 +1031,7 @@ class CommandTask(Generic[RESULT], ABC):
 
             return _already_done().__await__()
         future = ThreadSafeFuture()
+
         def _resolve_future(_task: CommandTask):
             if future.done():
                 return
@@ -1091,23 +1092,23 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             call_id=call_id,
             partial=partial,
         )
-        self._result: Optional[RESULT] = None
-        self._done_event: ThreadSafeEvent = ThreadSafeEvent()
-        self._done_lock = threading.Lock()
-        self._done_callbacks = set()
-        self._task_result: Optional[CommandTaskResult] = None
+        self.__result: Optional[RESULT] = None
+        self.__done_event: ThreadSafeEvent = ThreadSafeEvent()
+        self.__done_lock = threading.Lock()
+        self.__done_callbacks = set()
+        self.__task_result: Optional[CommandTaskResult] = None
 
     def result(self, throw: bool = True) -> Optional[RESULT]:
         if throw:
             self.raise_exception()
-        return self._result
+        return self.__result
 
     def add_done_callback(self, fn: Callable[[CommandTask], None]):
-        self._done_callbacks.add(fn)
+        self.__done_callbacks.add(fn)
 
     def remove_done_callback(self, fn: Callable[[CommandTask], None]):
-        if fn in self._done_callbacks:
-            self._done_callbacks.remove(fn)
+        if fn in self.__done_callbacks:
+            self.__done_callbacks.remove(fn)
 
     def copy(self, cid: str = "") -> Self:
         cid = cid or uuid()
@@ -1150,7 +1151,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         """
         命令已经结束.
         """
-        return self._done_event.is_set()
+        return self.__done_event.is_set()
 
     def cancel(self, reason: str = ""):
         """
@@ -1159,14 +1160,14 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self._set_result(None, "cancelled", CommandErrorCode.CANCELLED, reason)
 
     def clear(self) -> None:
-        self._result = None
-        self._done_event.clear()
+        self.__result = None
+        self.__done_event.clear()
         self.errcode = 0
         self.errmsg = None
 
     def set_state(self, state: CommandTaskState | str) -> None:
-        with self._done_lock:
-            if self._done_event.is_set():
+        with self.__done_lock:
+            if self.__done_event.is_set():
                 return None
             if isinstance(state, CommandTaskState):
                 state = state.value
@@ -1186,35 +1187,38 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             errmsg: Optional[str],
             done_at: Optional[str] = None,
     ) -> bool:
-        with self._done_lock:
-            if self._done_event.is_set():
+        with self.__done_lock:
+            if self.__done_event.is_set():
                 return False
             done_at = done_at or get_caller_info(3)
-            self._result = result
+            self.__result = result
             self.errcode = errcode
             self.errmsg = errmsg
             self.done_at = done_at
-            self._done_event.set()
+            self.__done_event.set()
             self.state = str(state)
             self.trace[self.state] = time.time()
             self.func = None
             self.partial = None
             self._real_args = None
             self._real_kwargs = None
+            if self.on_compiled_task is not None and not self.on_compiled_task.done():
+                # cancel compile task also.
+                self.on_compiled_task.cancel()
             # 运行结束的回调.
-            if len(self._done_callbacks) > 0:
-                for done_callback in self._done_callbacks:
+            if len(self.__done_callbacks) > 0:
+                for done_callback in self.__done_callbacks:
                     try:
                         done_callback(self)
                     except Exception as e:
                         logging.exception("CommandTask done callback failed: %r", e)
                         continue
             # 避免互相持有.
-            self._done_callbacks.clear()
+            self.__done_callbacks.clear()
             return True
 
     def fail(self, error: Exception | str) -> None:
-        if not self._done_event.is_set():
+        if not self.__done_event.is_set():
             if isinstance(error, ObserveError):
                 self.resolve(error.observe)
                 return
@@ -1243,7 +1247,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             )
 
     def resolve(self, result: RESULT | CommandTaskResult | Observe) -> None:
-        if self._done_event.is_set():
+        if self.__done_event.is_set():
             return
         if isinstance(result, Observe):
             # 转化 Observe 为 CommandTaskResult
@@ -1258,13 +1262,13 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             )
         #  必须设置 caller name.
         task_result.caller = self.caller_name()
-        self._task_result = task_result
+        self.__task_result = task_result
         self._set_result(result, "done", 0, None)
 
     def task_result(self) -> Optional[CommandTaskResult]:
-        if not self._done_event.is_set():
+        if not self.__done_event.is_set():
             return None
-        if self._task_result is None:
+        if self.__task_result is None:
             exp = self.exception()
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
@@ -1276,11 +1280,11 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                         item,
                     ],
                 )
-                self._task_result = task_result
+                self.__task_result = task_result
             else:
                 # 返回空对象.
-                self._task_result = CommandTaskResult()
-        return self._task_result
+                self.__task_result = CommandTaskResult()
+        return self.__task_result
 
     def exception(self) -> Optional[Exception]:
         if self.errcode is None or self.errcode == 0:
@@ -1299,31 +1303,31 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         Command Task 的 Await done 要求跨线程安全.
         :throw: 如果为 True, 有异常, 或者有 observe == True 都会抛出异常.
         """
-        if self._done_event.is_set():
+        if self.__done_event.is_set():
             if throw:
                 self.raise_exception()
-            return self._result
+            return self.__result
         if timeout is not None:
-            await asyncio.wait_for(self._done_event.wait(), timeout=timeout)
+            await asyncio.wait_for(self.__done_event.wait(), timeout=timeout)
         else:
-            await self._done_event.wait()
+            await self.__done_event.wait()
         if throw:
             if self.errcode != 0:
                 raise CommandError(self.errcode, self.errmsg or "")
-            elif self._task_result and self._task_result.observe:
+            elif self.__task_result and self.__task_result.observe:
                 # observe 可以中断 wait FIRST_EXCEPTION
                 raise CommandErrorCode.OBSERVE.error("need observe")
-        return self._result
+        return self.__result
 
     def wait_sync(self, *, throw: bool = True, timeout: float | None = None) -> Optional[RESULT]:
         """
         线程的 wait.
         """
-        if not self._done_event.wait_sync():
+        if not self.__done_event.wait_sync():
             raise TimeoutError(f"wait timeout: {timeout}")
         if throw:
             self.raise_exception()
-        return self._result
+        return self.__result
 
 
 class WaitDoneTask(BaseCommandTask):
@@ -1410,11 +1414,6 @@ class CommandStackResult:
     特殊的数据结构, 用来标记一个 task 序列, 也可以由 task 返回.
     当 Command 返回这个数据结构时, Runtime 应该要依次执行其生成的子 tasks, 最后回调它的 callback 函数.
     这个方法是用来实现 Command 原语的关键功能, 通过 task 栈的方式提供递归的栈生成.
-
-    >>> def handle(owner: CommandTask, result: CommandStackResult):
-    >>>     async for task in result:
-    >>>         print(task)
-    >>>     result.callback(owner)
     """
 
     def __init__(

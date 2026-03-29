@@ -13,7 +13,7 @@ from pydantic import Field
 from websockets import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
-from ghoshell_moss.core.concepts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem
+from ghoshell_moss.core.contracts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.speech.volcengine_tts.protocol import (
     EventType,

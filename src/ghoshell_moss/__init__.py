@@ -15,8 +15,11 @@ Ghoshell MOSS 库的 facade, 用来存放最常用的类库引用.
 """
 
 
-def new_channel(name: str, description: str = "", blocking: bool = True) -> PyChannel:
+def new_channel(name: str, description: str = "", blocking: bool = True) -> MutableChannel:
     """
     语法糖, 快速定义一个 Channel.
     """
     return PyChannel(name=name, description=description, blocking=blocking)
+
+def new_builder(name: str, description: str = "") -> Builder:
+    return PyChannelBuilder(name=name, description=description)

@@ -149,7 +149,7 @@ class MessageMeta(BaseModel):
     """
 
     tag: str = Field(
-        default="message",
+        default="",
         description="当 Message 使用 meta 生成 xml 结构时, 用于包括 content 的 xml 标记. 如果为空, 意味着不包裹."
     )
     id: str = Field(
@@ -238,7 +238,7 @@ class Message(BaseModel, WithAdditional):
     @classmethod
     def new(
             cls,
-            tag: str | None = 'message',
+            tag: str = 'message',
             *,
             role: str | None = None,
             name: Optional[str] = None,

@@ -11,7 +11,7 @@ import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from scipy import signal
 
-from ghoshell_moss.core.concepts.speech import AudioFormat, StreamAudioPlayer
+from ghoshell_moss.core.contracts.speech import AudioFormat, StreamAudioPlayer
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import Timeleft
 

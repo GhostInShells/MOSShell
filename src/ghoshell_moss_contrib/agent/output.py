@@ -9,7 +9,7 @@ if check_agent():
     from ghoshell_moss_contrib.agent.chat.console import ConsoleChat
 from ghoshell_common.helpers import uuid
 
-from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
+from ghoshell_moss.core.contracts.speech import Speech, SpeechStream
 
 
 class ChatRenderSpeechStream(SpeechStream):

@@ -1,4 +1,5 @@
 from enum import Enum
+from typing_extensions import Self
 
 __all__ = ["CommandError", "CommandErrorCode", "FatalError", "InterpretError"]
 
@@ -24,6 +25,34 @@ class CommandError(Exception):
         self.message = message
         error_msg = CommandErrorCode.description(code, message)
         super().__init__(error_msg)
+
+    @classmethod
+    def from_error(cls, err: Exception) -> Self:
+        import asyncio
+        if err is None or not isinstance(err, Exception):
+            errcode = CommandErrorCode.UNKNOWN_ERROR.value
+            errmsg = f"raise error from invalid type {type(err)}"
+
+        elif isinstance(err, CommandError):
+            errcode = err.code
+            errmsg = err.message
+        elif isinstance(err, asyncio.CancelledError):
+            errcode = CommandErrorCode.CANCELLED.value
+            errmsg = ""
+        elif isinstance(err, asyncio.TimeoutError):
+            errcode = CommandErrorCode.TIMEOUT.value
+            errmsg = ""
+        elif isinstance(err, AttributeError):
+            errcode = CommandErrorCode.INVALID_USAGE.value
+            errmsg = ""
+        elif isinstance(err, Exception):
+            errcode = CommandErrorCode.UNKNOWN_ERROR.value
+            # 忽略回调.
+            errmsg = str(err)
+        else:
+            errcode = CommandErrorCode.UNKNOWN_ERROR.value
+            errmsg = str(err)
+        return cls(errcode, errmsg)
 
 
 class InterpretError(CommandError):

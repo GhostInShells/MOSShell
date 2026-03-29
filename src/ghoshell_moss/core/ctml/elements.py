@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from logging import getLogger
-from typing import Optional, Generic, Any, ClassVar
+from typing import Optional, Generic, Any, ClassVar, Literal, AsyncIterator
 
 from ghoshell_common.contracts import LoggerItf
 
@@ -16,6 +16,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandToken,
     CommandTokenSeq,
     PyCommand,
+    CommandMeta,
 )
 from ghoshell_moss.core.concepts.errors import InterpretError, CommandErrorCode
 from ghoshell_moss.core.concepts.interpreter import (
@@ -23,10 +24,11 @@ from ghoshell_moss.core.concepts.interpreter import (
     CommandTokenParser,
 )
 from ghoshell_moss.core.concepts.channel import ChannelCtx
-from ghoshell_moss.core.concepts.speech import Speech, SpeechStream
+from ghoshell_moss.core.contracts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT
-
+from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME
 from .token_parser import CMTLSaxElement
+import asyncio
 
 __all__ = [
     "BaseCommandTokenParserElement",
@@ -47,21 +49,135 @@ async def invalid_command():
 invalid_command = PyCommand(invalid_command)
 
 
+class ScopeOpenTask(BaseCommandTask[None]):
+    """
+    start a channel scope
+    """
+
+    def __init__(self, channel: str, tokens: str = ''):
+        meta = CommandMeta(
+            name=SCOPE_COMMAND_NAME,
+            chan=channel,
+            blocking=True,
+        )
+        super().__init__(
+            chan=channel,
+            meta=meta,
+            func=None,
+            partial=None,
+            tokens=tokens,
+            args=[],
+            kwargs={},
+        )
+
+
+class ScopeCloseTask(BaseCommandTask[str]):
+    """
+    close a channel scope
+    """
+
+    def __init__(
+            self,
+            channel: str,
+            *tasks: CommandTask,
+            tokens: str = '',
+            until: Literal['self', 'all', 'any'] = 'self',
+            timeout: float | None = None,
+    ) -> None:
+        meta = CommandMeta(
+            name=SCOPE_COMMAND_NAME,
+            chan=channel,
+            blocking=True,
+        )
+        self._channel = channel
+        self._tasks = list(tasks)
+        self._timeout = timeout
+        self._until = until
+        self._scope_result = ''
+        super().__init__(
+            chan=channel,
+            meta=meta,
+            func=self._wait_all_task_done,
+            partial=self._start_to_wait_on_compiled,
+            tokens=tokens,
+            args=[],
+            kwargs={},
+        )
+
+    async def _start_to_wait_on_compiled(self, *args, **kwargs) -> tuple[list, dict]:
+        canceled = 0
+        err = ''
+        try:
+            _waiting_list = []
+            for task in self._tasks:
+                if task.chan == self._channel or self._until != 'self':
+                    _wait_task = asyncio.create_task(task.wait(throw=True))
+                    _waiting_list.append(_wait_task)
+            if self._until == 'any':
+                return_when = asyncio.FIRST_COMPLETED
+            else:
+                return_when = asyncio.ALL_COMPLETED
+            done, pending = await asyncio.wait(_waiting_list, return_when=return_when, timeout=self._timeout)
+            for t in pending:
+                t.cancel()
+        except asyncio.CancelledError:
+            pass
+        except asyncio.TimeoutError:
+            err = f'timeout after {self._timeout} seconds'
+        except Exception as e:
+            err = f'err: {e}'
+        finally:
+            for _t in self._tasks:
+                if not _t.done():
+                    _t.cancel()
+                    canceled += 1
+        if err:
+            self._scope_result = f'scope cancel %d tasks after err %s' % (canceled, err)
+        return [], {}
+
+    async def _wait_all_task_done(self) -> str:
+        return self._scope_result
+
+
+class EmptyContentTask(BaseCommandTask[None]):
+
+    def __init__(self, channel: str, chunks__: AsyncIterator[str]):
+        meta = CommandMeta(
+            name=CONTENT_COMMAND_NAME,
+            chan=channel,
+            blocking=True,
+        )
+        super().__init__(
+            chan=channel,
+            meta=meta,
+            partial=self.__content__,
+            func=None,
+            tokens='',
+            args=[],
+            kwargs={'chunks__': chunks__},
+        )
+
+    async def __content__(self, chunks__: AsyncIterator[str]) -> tuple[list, dict]:
+        async for chunk in chunks__:
+            self.tokens += chunk
+        return [], {}
+
+
 class CommandTaskElementContext:
     """语法糖, 用来管理所有 element 共享的组件."""
 
     instances_count: ClassVar[int] = 0
 
     def __init__(
-        self,
-        channel_commands: dict[str, dict[str, Command]],
-        speech: Speech,
-        logger: Optional[LoggerItf] = None,
-        # stop_event: Optional[ThreadSafeEvent] = None,
-        root_tag: str = "ctml",
-        ignore_wrong_command: bool = False,
-        callback: Optional[CommandTaskCallback] = None,
-        delta_type_map: Optional[dict[str, Any]] = None,
+            self,
+            channel_commands: dict[str, dict[str, Command]],
+            speech: Speech,
+            logger: Optional[LoggerItf] = None,
+            # stop_event: Optional[ThreadSafeEvent] = None,
+            root_tag: str = "ctml",
+            ignore_wrong_command: bool = False,
+            callback: Optional[CommandTaskCallback] = None,
+            delta_type_map: Optional[dict[str, Any]] = None,
     ):
         self.channel_commands_map = channel_commands
         # 主音频模块.
@@ -132,15 +248,15 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
     instances_count: ClassVar[int] = 0
 
     def __init__(
-        self,
-        name: str,
-        stream_id: str,
-        cid: str,
-        current_task: Optional[CommandTask],
-        *,
-        depth: int = 0,
-        callback: Optional[CommandTaskCallback] = None,
-        ctx: CommandTaskElementContext,
+            self,
+            name: str,
+            stream_id: str,
+            cid: str,
+            current_task: Optional[CommandTask],
+            *,
+            depth: int = 0,
+            callback: Optional[CommandTaskCallback] = None,
+            ctx: CommandTaskElementContext,
     ) -> None:
         self._name = name
         self.stream_id = stream_id
@@ -496,15 +612,7 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
     """
     没有 delta 参数的节点类型.
     也就是说这种类型的 Command 不支持 delta 数据, 也不支持子节点.
-    不支持 Delta 数据的默认逻辑是, 将之视为音频片段.
-
-    这种节点的 Cancel 标记理论上是无效的. 但我们隐藏一个防蠢规则:
-    中间的数据仍然会生成节点, 而且自己结束时会生成一个尾标记任务.
-    如果这个尾标记任务已经进入队列执行, 无论如何都会清空前一个任务. 技术上基于 Command Partial 来实现.
-
-    相当于:
-    - task start: 开启运行.
-    - task end: cancel 它.
+    基于 CTML 1.0 的规则, 我们把这种
     """
 
     _speech_stream: Optional[SpeechStream] = None
@@ -645,15 +753,15 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     """
 
     def __init__(
-        self,
-        name: str,
-        stream_id: str,
-        cid: str,
-        current_task: Optional[CommandTask],
-        *,
-        depth: int = 0,
-        callback: Optional[CommandTaskCallback] = None,
-        ctx: CommandTaskElementContext,
+            self,
+            name: str,
+            stream_id: str,
+            cid: str,
+            current_task: Optional[CommandTask],
+            *,
+            depth: int = 0,
+            callback: Optional[CommandTaskCallback] = None,
+            ctx: CommandTaskElementContext,
     ) -> None:
         sender, receiver = create_sender_and_receiver()
         self._sender = sender

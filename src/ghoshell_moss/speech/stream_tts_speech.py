@@ -6,7 +6,7 @@ import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 
-from ghoshell_moss.core.concepts.speech import (
+from ghoshell_moss.core.contracts.speech import (
     TTS,
     AudioFormat,
     TTSSpeech,
