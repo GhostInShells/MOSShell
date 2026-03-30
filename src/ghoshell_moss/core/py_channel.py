@@ -435,7 +435,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
     async def on_close(self) -> None:
         await self._builder.on_close()
 
-    def prepare_container(self, container: IoCContainer | None) -> IoCContainer:
+    def prepare_container(self, container: IoCContainer) -> IoCContainer:
         self._builder.update_container(container)
         container = super().prepare_container(container)
         return container

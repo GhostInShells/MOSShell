@@ -3,6 +3,7 @@ import contextlib
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional, Iterable, TypeVar, Generic, Callable, Coroutine
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer, Container
 
@@ -45,12 +46,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._channel: CHANNEL = channel
         self._name = channel.name()
         self._uid = channel.id()
-        # 用不同的容器隔离依赖. 经过 prepare container 才进行封装.
-        container = Container(
-            name=f"MossChannelRuntime/{self._name}/{self._uid}",
-            parent=container,
-        )
-        self._container: IoCContainer = container
+        container: IoCContainer = container or Container(name="Channel/%s/%s" % (self._name, self._uid))
+        self._container = self.prepare_container(container)
         self._logger: LoggerItf | None = logger
         # import lib 是最重要的.
         self._importlib: BaseImportLib | None = None
@@ -364,13 +361,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     # --- 开始与结束 --- #
 
     @contextlib.asynccontextmanager
-    async def _container_ctx(self):
-        self._container = self.prepare_container(self._container) or self._container
-        await self._loop.run_in_executor(None, self._container.bootstrap)
-        yield
-        self._loop.run_in_executor(None, self._container.shutdown)
-
-    @contextlib.asynccontextmanager
     async def _importlib_ctx(self):
         if self._importlib is None:
             _importlib = self._container.get(BaseImportLib)
@@ -487,20 +477,19 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             self._runtime_asyncio_task_group.remove(task)
 
     def _async_exit_ctx_funcs(self) -> Iterable[Callable]:
-        yield self._container_ctx
         yield self._importlib_ctx
         yield self._start_and_close_ctx
         yield self._running_task_ctx
         yield self._main_loop_ctx
 
-    async def start(self):
+    async def start(self) -> Self:
         """
         启动 Channel Runtime.
         通常用 with statement 或 async exit stack 去启动.
         只会启动当前 channel 自身.
         """
         if self._starting:
-            return
+            return self
         self._starting = True
         self._loop = asyncio.get_running_loop()
         await self._exit_stack.__aenter__()

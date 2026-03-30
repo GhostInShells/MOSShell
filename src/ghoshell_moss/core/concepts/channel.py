@@ -877,7 +877,7 @@ class ChannelRuntime(ABC):
         return await task
 
     @abstractmethod
-    async def start(self) -> None:
+    async def start(self) -> Self:
         """
         启动 Runtime
         """
