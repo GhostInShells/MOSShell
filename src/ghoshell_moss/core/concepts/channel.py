@@ -830,7 +830,7 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    async def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
+    def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
         """
         create asyncio task during runtime
         the task will be canceled if the runtime is closed.

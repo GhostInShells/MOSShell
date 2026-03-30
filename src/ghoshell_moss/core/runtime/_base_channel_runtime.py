@@ -319,7 +319,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         for callback in self._task_done_callbacks:
             if inspect.iscoroutinefunction(callback):
                 # todo: 似乎要考虑线程安全.
-                self._loop.create_task(callback(task))
+                self.create_asyncio_task(callback(task))
             else:
                 # 同步运行.
                 self._loop.run_in_executor(None, callback, task)
@@ -461,7 +461,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def _main_loop(self) -> None:
         pass
 
-    async def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
+    def create_asyncio_task(self, cor: Coroutine) -> asyncio.Task:
         """
         create asyncio task during runtime
         """

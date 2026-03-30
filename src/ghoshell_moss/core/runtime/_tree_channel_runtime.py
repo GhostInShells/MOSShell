@@ -39,9 +39,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             container=container,
             logger=logger,
         )
-        # 线程安全队列.
-        self._blocking_action_queue = janus.Queue()
-
         self._blocking_action_lock = asyncio.Lock()
         # 通知有 pending task 的队列.
         self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
@@ -328,7 +325,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         await self._add_executing_task(task)
         # 非阻塞函数不能返回 stack
         # 确保 task 被执行了. 但是不要阻塞主链路.
-        return self._loop.create_task(self._ensure_task_executed(task, depth, throw=False))
+        return self.create_asyncio_task(self._ensure_task_executed(task, depth, throw=False))
 
     async def _add_executing_task(self, task: CommandTask) -> None:
         await self._blocking_action_lock.acquire()
@@ -366,7 +363,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             return
         await self._add_executing_task(task)
 
-        get_result_from_task = self._loop.create_task(self._get_task_result(task))
+        get_result_from_task = self.create_asyncio_task(self._get_task_result(task))
         try:
             origin_task_done = asyncio.create_task(task.wait(throw=False))
             wait_runtime_close = asyncio.create_task(self._closing_event.wait())
