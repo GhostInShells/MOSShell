@@ -402,7 +402,7 @@ class CTMLShell(MOSShell):
         if not self.is_running():
             return
         # 保证这个任务最终被执行完毕吧.
-        refresh_meta_task = self._event_loop.create_task(self._main_runtime.refresh_metas())
+        refresh_meta_task = self._main_runtime.refresh_metas()
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
             done, pending = await asyncio.wait([refresh_meta_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)

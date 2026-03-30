@@ -568,3 +568,21 @@ async def test_task_done_with_callback():
     await task
     assert len(order) == 1
     assert order[0].done()
+
+
+@pytest.mark.asyncio
+async def test_task_wait_in_many():
+    async def foo():
+        return 123
+
+    task = asyncio.create_task(foo())
+
+    order = []
+
+    async def wait():
+        order.append(await task)
+
+    _ = await asyncio.gather(wait(), wait(), wait(), wait(), wait())
+    assert len(order) == 5
+    for t in order:
+        assert t == 123

@@ -251,6 +251,8 @@ async def test_thread_channel_has_child():
             metas = runtime.metas()
 
             assert "sub1" in metas
+            sub1_meta = metas["sub1"]
+            assert len(sub1_meta.commands) == 1
             # # 判断子 channel 存在.
             value = await runtime.execute_command("sub1:bar")
             assert value == 456
@@ -432,6 +434,8 @@ async def test_thread_proxy_pub_topic():
             while count < 10:
                 topic = await subscriber.poll_model()
                 received.append(topic)
+                if topic.message == 'end':
+                    break
                 count += 1
         receive_done.set()
 
@@ -446,6 +450,7 @@ async def test_thread_proxy_pub_topic():
                 for i in range(10):
                     await asyncio.sleep(0.0)
                     await publisher.pub(LogTopic(level="info", message=str(i)))
+                await publisher.pub(LogTopic(level="info", message='end'))
             await receive_done.wait()
     assert len(received) == 10
 

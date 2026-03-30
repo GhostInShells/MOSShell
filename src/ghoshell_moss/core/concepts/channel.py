@@ -118,13 +118,14 @@ class ChannelMeta(BaseModel):
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
 
     @classmethod
-    def new_empty(cls, id: str, channel: "Channel") -> Self:
+    def new_empty(cls, id: str, channel: "Channel", failure: str = "") -> Self:
         return cls(
             name=channel.name(),
             description=channel.description(),
             dynamic=True,
             channel_id=id,
             available=False,
+            failure=failure,
         )
 
 
@@ -593,6 +594,9 @@ class ChannelRuntime(ABC):
         """
         pass
 
+    def virtual_sub_channels(self) -> dict[str, Channel]:
+        return {}
+
     @property
     @abstractmethod
     def importlib(self) -> "ChannelImportLib":
@@ -673,9 +677,13 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    async def refresh_metas(
+    async def refresh_own_metas(self, force: bool = False) -> None:
+        pass
+
+    @abstractmethod
+    def refresh_metas(
             self,
-    ) -> None:
+    ) -> asyncio.Future[None]:
         """
         更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
         更新后从 metas 取到的值是给模型可以查阅的.
@@ -687,6 +695,9 @@ class ChannelRuntime(ABC):
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
         """
         return self.metas().get("")
+
+    def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        pass
 
     @abstractmethod
     def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
@@ -848,7 +859,7 @@ class ChannelRuntime(ABC):
             task.fail(CommandErrorCode.NOT_CONNECTED.error(f"Channel {self.name} is not connected"))
         try:
             async with ChannelCtx(self, task).in_ctx():
-                task.set_state('executing')
+                task.set_state('ex')
                 # dry run 不会清空 task 状态.
                 result = await task.dry_run()
                 task.resolve(result)
@@ -952,18 +963,6 @@ class ChannelImportLib(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_or_create_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
-        """
-        获取一个 Channel Runtime, 如果没有启动的话就启动它.
-        """
-        pass
-
-    @abstractmethod
-    async def compile_channel(self, channel: Channel) -> ChannelRuntime | None:
-        """ """
-        pass
-
     @property
     @abstractmethod
     def logger(self) -> LoggerItf:
@@ -1060,12 +1059,29 @@ class ChannelImportLib(ABC):
         child = root.sub_channels().get(child_name)
         if child is None:
             return None
-        child_runtime = await self.get_or_create_channel_runtime(child)
+        child_runtime = self.get_channel_runtime(child)
         return await self.recursively_fetch_runtime(child_runtime, further_path)
 
     @abstractmethod
     async def close(self) -> None:
         pass
+
+    def commands(self, channel: Channel, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
+        """
+        递归获取一个 channel 所有的子命令, 按路径完成分组.
+        """
+        runtime = self.get_running_runtime(channel)
+        if runtime is None:
+            return {}
+        commands = {"": runtime.own_commands(available_only)}
+        children = self.get_children_runtimes(channel)
+        if len(children) > 0:
+            for child_name, runtime in children.items():
+                sub_commands = runtime.commands(available_only=True)
+                for sub_path, command_group in sub_commands.items():
+                    full_path = Channel.join_channel_path(child_name, sub_path)
+                    commands[full_path] = command_group
+        return commands
 
 
 ChannelProxy = Channel

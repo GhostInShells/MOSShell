@@ -287,17 +287,18 @@ async def test_py_channel_idle() -> None:
             idled.append(2)
 
     async with main.bootstrap() as runtime:
-        task = runtime.create_command_task("foo")
-        await runtime.push_task(task)
-        await task
-        await asyncio.sleep(0.1)
-        task = runtime.create_command_task("foo")
-        await runtime.push_task(task)
         assert len(idled) == 1
+        task = runtime.create_command_task("foo")
+        await runtime.push_task(task)
         await task
         await asyncio.sleep(0.1)
-    assert len(idled) == 2
-    assert idled == [1, 1]
+        task = runtime.create_command_task("foo")
+        await runtime.push_task(task)
+        assert len(idled) == 2
+        await task
+        await asyncio.sleep(0.1)
+    assert len(idled) == 3
+    assert idled == [1, 1, 1]
 
 
 @pytest.mark.asyncio

@@ -167,7 +167,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self_meta.children = children_names
         return metas
 
-    async def refresh_own_metas(self, force: bool) -> None:
+    async def refresh_own_metas(self, force: bool = False) -> None:
         ctx = ChannelCtx(self)
         self._own_metas_cache = await ctx.run(self._generate_own_metas, force)
 
@@ -178,34 +178,43 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         """
         pass
 
-    async def refresh_metas(
+    def refresh_metas(
             self,
-    ) -> None:
+    ) -> asyncio.Future[None]:
         """
         更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
         """
-        await self._refresh_meta_lock.acquire()
-        try:
-            if not self._starting or self._closing_event.is_set():
-                return
-            if not self.is_connected():
-                return
-
-            # 生成时添加 ctx.
-            await self.refresh_own_metas(force=True)
-            # 创建异步的回调.
-            await self._refresh_children_metas()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            self.logger.exception("%s refresh self meta failed %s", self.log_prefix, exc)
-            # 出现异常后, 刷新一个异常的 meta.
-        finally:
-            self._refresh_meta_lock.release()
-            self.logger.info(
-                "%s refreshed meta",
-                self.log_prefix,
-            )
+        if not self._starting or self._closing_event.is_set():
+            f = asyncio.Future()
+            f.set_result(None)
+            return f
+        if not self.is_connected():
+            f = asyncio.Future()
+            f.set_result(None)
+            return f
+        return self.importlib.refresh(self.channel.id(), wait=True)
+        # await self._refresh_meta_lock.acquire()
+        # try:
+        #     if not self._starting or self._closing_event.is_set():
+        #         return
+        #     if not self.is_connected():
+        #         return
+        #
+        #     # 生成时添加 ctx.
+        #     await self.refresh_own_metas(force=True)
+        #     # 创建异步的回调.
+        #     await self._refresh_children_metas()
+        # except asyncio.CancelledError:
+        #     return
+        # except Exception as exc:
+        #     self.logger.exception("%s refresh self meta failed %s", self.log_prefix, exc)
+        #     # 出现异常后, 刷新一个异常的 meta.
+        # finally:
+        #     self._refresh_meta_lock.release()
+        #     self.logger.info(
+        #         "%s refreshed meta",
+        #         self.log_prefix,
+        #     )
 
     async def _refresh_children_metas(self) -> None:
         children = self.sub_channels()
@@ -362,17 +371,17 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @contextlib.asynccontextmanager
     async def _importlib_ctx(self):
-        if self._importlib is None:
-            _importlib = self._container.get(BaseImportLib)
-            if _importlib is None:
-                _importlib = BaseImportLib(self, self._container)
-                self.container.set(BaseImportLib, _importlib)
-            self._importlib = _importlib
-        if self._importlib.main is self:
-            await self._importlib.start()
-        yield
-        if self._importlib.main is self:
-            await self._importlib.close()
+        try:
+            if self._importlib is None:
+                _importlib = self._container.get(BaseImportLib)
+                if _importlib is None:
+                    _importlib = BaseImportLib(self, self._container)
+                    self.container.set(BaseImportLib, _importlib)
+                self._importlib = _importlib
+            yield
+        finally:
+            if self._importlib.main is self:
+                await self._importlib.close()
 
     @contextlib.asynccontextmanager
     async def _start_and_close_ctx(self):
@@ -482,6 +491,17 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         yield self._running_task_ctx
         yield self._main_loop_ctx
 
+    async def _main_runtime_loop(self) -> None:
+        async with contextlib.AsyncExitStack() as ctx:
+            for ctx_func in self._async_exit_ctx_funcs():
+                await self._exit_stack.enter_async_context(ctx_func())
+                self.logger.debug("%s context stack %s entered", self.log_prefix, ctx_func)
+            if self.is_connected():
+                pass
+            self._started.set()
+            self.logger.info("%s started", self.log_prefix)
+            await self._closing_event.wait()
+
     async def start(self) -> Self:
         """
         启动 Channel Runtime.
@@ -496,12 +516,11 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         for ctx_func in self._async_exit_ctx_funcs():
             await self._exit_stack.enter_async_context(ctx_func())
             self.logger.debug("%s start stack %s entered", self.log_prefix, ctx_func)
-        if self.is_connected():
-            # 在启动时更新自己的 metas.
-            await self.refresh_own_metas(False)
         # 递归启动子节点.
-        await self._start_sub_channels()
         self._started.set()
+        # 拥有 importlib 的根节点的话, 需要启动.
+        if self._importlib.main is self:
+            await self._importlib.start()
         self.logger.info("%s started", self.log_prefix)
         return self
 

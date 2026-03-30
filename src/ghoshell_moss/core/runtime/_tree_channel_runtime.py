@@ -19,7 +19,6 @@ from ghoshell_moss.core.concepts.channel import (
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
-import janus
 from ._base_channel_runtime import AbsChannelRuntime
 
 __all__ = ["AbsChannelTreeRuntime"]
@@ -154,7 +153,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
 
     async def wait_children_idled(self) -> None:
         async def wait_child_empty(_child: Channel):
-            runtime = await self._importlib.get_or_create_channel_runtime(_child)
+            runtime = self._importlib.get_channel_runtime(_child)
             if runtime and runtime.is_running():
                 await runtime.wait_idle()
             return
@@ -232,7 +231,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
 
-        runtime = await self.importlib.get_or_create_channel_runtime(child)
+        runtime = self.importlib.get_channel_runtime(child)
         if runtime is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
