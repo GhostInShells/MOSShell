@@ -229,6 +229,7 @@ async def test_mcp_channel_execute():
                 task = runtime.create_command_task("bar", kwargs={"s": "hello"})
 
                 await runtime.push_task(task)
+                await task
                 task_result = task.task_result()
                 assert task_result is not None
                 assert task_result.result is not None
@@ -245,6 +246,7 @@ async def test_mcp_channel_execute():
                 )
 
                 await runtime.push_task(task)
+                await task
                 task_result = task.task_result()
                 assert task_result is not None
                 assert task_result.result is not None
@@ -293,6 +295,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value
@@ -309,6 +312,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value
@@ -324,6 +328,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value
@@ -339,6 +344,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value
@@ -353,6 +359,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task
                 e = task.exception()
                 assert e is None
                 # assert isinstance(e, CommandError)
@@ -368,6 +375,7 @@ async def test_mcp_channel_execute_exception():
                 )
 
                 await runtime.push_task(task)
+                await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
                 assert e.code == CommandErrorCode.VALUE_ERROR.value

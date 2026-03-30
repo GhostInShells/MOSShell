@@ -19,6 +19,7 @@ from typing import (
 from ghoshell_container import INSTANCE, IoCContainer, get_container
 from pydantic import BaseModel, Field
 from typing_extensions import Self
+from ghoshell_moss.core.concepts.errors import CommandError
 
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
@@ -61,6 +62,7 @@ __all__ = [
     "ChannelInterface",
 ]
 
+
 # 关于 Channel (中文名: 经络) :
 #
 # MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
@@ -82,7 +84,6 @@ __all__ = [
 # 举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
 #
 # 所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
-
 
 
 class ChannelMeta(BaseModel):
@@ -409,14 +410,14 @@ class ChannelCtx:
         return runtime.channel
 
     @contextlib.asynccontextmanager
-    async def in_ctx(self):
+    async def in_ctx(self) -> AsyncIterator[Self]:
         runtime_token = None
         task_token = None
         if self._runtime:
             runtime_token = ChannelRuntimeContextVar.set(self._runtime)
         if self._task:
             task_token = CommandTaskContextVar.set(self._task)
-        yield
+        yield self
         if runtime_token:
             ChannelRuntimeContextVar.reset(runtime_token)
         if task_token:
@@ -837,6 +838,26 @@ class ChannelRuntime(ABC):
         """
         pass
 
+    async def execute_task(self, task: CommandTask) -> None:
+        """
+        simple way to execute task in runtime without queue logic.
+        """
+        if not self.is_running():
+            task.fail(CommandErrorCode.NOT_RUNNING.error(f"Channel {self.name} is not running"))
+        elif not self.is_connected():
+            task.fail(CommandErrorCode.NOT_CONNECTED.error(f"Channel {self.name} is not connected"))
+        try:
+            async with ChannelCtx(self, task).in_ctx():
+                task.set_state('executing')
+                # dry run 不会清空 task 状态.
+                result = await task.dry_run()
+                task.resolve(result)
+        except Exception as e:
+            task.fail(e)
+        finally:
+            if not task.done():
+                task.cancel('unknown')
+
     def create_command_task(
             self,
             name: CommandUniqueName,
@@ -847,6 +868,7 @@ class ChannelRuntime(ABC):
         """
         example to create channel task
         通过 Runtime 创建一个新的的 CommandTask.
+        不会执行.
         """
         command = self.get_command(name)
         if command is None:
@@ -1044,120 +1066,6 @@ class ChannelImportLib(ABC):
     @abstractmethod
     async def close(self) -> None:
         pass
-
-
-# --- for develop --- #
-
-class ChannelInterface(ABC):
-    """
-    ChannelApp 范式的可继承版本. 提供一种标准的 Channel 抽象设计策略.
-
-    开发者实现一个 ChannelInterface 的 Abstract 类, 定义必要的函数 (Command 或生命周期函数)
-    然后提前实现好 as_channel 函数.
-
-    >>> class SomeChannelInterface(ChannelInterface):
-    >>>      @abstractmethod
-    >>>      def foo(self) -> int:
-    >>>          pass
-    >>>
-    >>>      def as_channel(self, name, description) -> Channel:
-    >>>           from ghoshell_moss import PyChannel
-    >>>           channel = PyChannel(name=name, description=description)
-    >>>           # 注册好 interface 上的函数.
-    >>>           channel.build.command()(self.foo)
-    >>>           return channel
-
-    这样具体的实现就可以替换了.
-    而且 ChannelInterface 本身也可以注册到容器中, 方便通过 IoC 容器来获取.
-
-
-    >>> def build_channel(container: IoCContainer) -> Channel:
-    >>>    return container.make(SomeChannelInterface).as_channel()
-
-    也可以考虑类名就是 name, docstring 就是 description.
-    这样未来 AI 创建一个 ChannelInterface 时, 有非常明确的要实现功能, 而且不需要去理解
-    """
-
-    @abstractmethod
-    def as_channel(
-            self,
-            name: str = "",
-            description: str = "",
-    ) -> Channel:
-        """
-        子抽象类应该要实现这个函数.
-        """
-        pass
-
-
-R = TypeVar("R")
-
-
-class CommandExecutor(Generic[R]):
-    """
-    将 Command 包装成运行时对象.
-    它被调用时, 实际上会把 CommandTask 发送给 ChannelRuntime.
-    """
-
-    def __init__(
-            self,
-            command: Command[R],
-            runtime: ChannelRuntime,
-            *,
-            channel_path: ChannelFullPath = '',
-    ):
-        self._command = command
-        self._runtime = runtime
-        self._channel_path = channel_path
-
-    async def execute(self, *args, **kwargs) -> CommandTask[R]:
-        task = BaseCommandTask.from_command(
-            command_=self._command,
-            args=args,
-            kwargs=kwargs,
-            chan_=self._channel_path,
-        )
-        await self._runtime.push_task(task)
-        return task
-
-    async def __call__(self, *args, **kwargs) -> R:
-        task = await self.execute(*args, **kwargs)
-        return await task
-
-    def __prompt__(self) -> str:
-        return self._command.meta().interface
-
-
-class ChannelExecutor:
-    """
-    可以用代码的方式理解和使用的 ChannelExecutor.
-    todo: 想明白要怎么开发. push task 可能要改成同步的更简单.
-    """
-
-    def __init__(
-            self,
-            channel_path: ChannelFullPath,
-            runtime: ChannelRuntime,
-    ):
-        self._runtime = runtime
-        self._channel_path = channel_path
-
-    def __getitem__(self, item: ChannelFullPath) -> Self:
-        runtime = self._runtime.importlib.recursively_find_runtime(self._runtime, self._channel_path)
-        if runtime is None:
-            raise LookupError(f"Channel not found: {self._channel_path}")
-        return ChannelExecutor(channel_path=item, runtime=runtime)
-
-    def __getattr__(self, item: str) -> Callable[[...], Awaitable]:
-        command = self._runtime.get_command(item)
-        if command is None:
-            raise AttributeError(f"Channel does not hav command: {item}")
-
-        def wrapper(*args, **kwargs) -> Awaitable:
-            task = BaseCommandTask.from_command(command, chan_=self._channel_path, args=args, kwargs=kwargs)
-            return task
-
-        return wrapper
 
 
 ChannelProxy = Channel

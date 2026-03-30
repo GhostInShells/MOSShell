@@ -341,7 +341,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def clear_sub_channels(self):
         async def clear_child(_child: Channel):
-            child_runtime = await self._importlib.get_or_create_channel_runtime(_child)
+            child_runtime = self._importlib.get_channel_runtime(_child)
             if child_runtime and child_runtime.is_running():
                 await child_runtime.clear()
 

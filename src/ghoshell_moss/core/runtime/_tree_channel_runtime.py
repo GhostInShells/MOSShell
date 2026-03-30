@@ -481,7 +481,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
                         # 自己的任务仍然要阻塞一下.
                         await self._ensure_task_executed(sub_task, depth=depth + 1, throw=True)
                     else:
-                        _ = asyncio.create_task(self._ensure_task_executed(sub_task, depth=depth, throw=False))
+                        self.create_asyncio_task(self._ensure_task_executed(sub_task, depth=depth, throw=False))
 
                 # 完成了所有子节点的调度后, 通知回调函数.
                 # !!! 注意: 在这个递归逻辑中, owner 自行决定是否要等待所有的 child task 完成,

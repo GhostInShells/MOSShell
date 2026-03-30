@@ -99,13 +99,8 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
         if task.func is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"command {task.meta.name} not found"))
             return
-        task.exec_chan = self.name
-        task.set_state(CommandTaskState.executing.value)
-        try:
-            result = await task.func(*task.args, **task.kwargs)
-            task.resolve(result)
-        except Exception as exc:
-            task.fail(exc)
+        self.create_asyncio_task(self.execute_task(task))
+
 
     async def wait_connected(self) -> None:
         return
