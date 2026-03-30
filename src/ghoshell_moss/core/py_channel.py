@@ -357,7 +357,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
             meta = ChannelMeta(
                 name=name,
-                channel_id=self.id,
+                channel_id=self.channel.id(),
                 available=self._builder.is_available(),
                 description=description,
                 context=new_context_messages,
