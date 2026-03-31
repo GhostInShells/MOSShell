@@ -573,7 +573,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return None
         return runtime
 
-    def get_children_runtime(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
+    def get_children_runtimes(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
         channel_id = channel.id()
         if channel_id not in self._runtimes:
             return {}

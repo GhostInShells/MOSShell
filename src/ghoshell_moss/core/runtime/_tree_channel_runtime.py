@@ -151,20 +151,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             self._lifecycle_task = None
             self._blocking_action_lock.release()
 
-    async def wait_children_idled(self) -> None:
-        async def wait_child_empty(_child: Channel):
-            runtime = self._importlib.get_channel_runtime(_child)
-            if runtime and runtime.is_running():
-                await runtime.wait_idle()
-            return
-
-        wait_all = []
-        children = self.sub_channels()
-        if len(children) > 0:
-            for child in children.values():
-                wait_all.append(wait_child_empty(child))
-            _ = await asyncio.gather(*wait_all)
-
     def _is_children_idled(self) -> bool:
         children = self.sub_channels()
         if len(children) > 0:

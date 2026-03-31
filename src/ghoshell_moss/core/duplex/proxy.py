@@ -787,8 +787,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
-    async def wait_children_idled(self) -> None:
-        return
 
     async def clear_own(self) -> None:
         if not self._ctx.is_running() or not self._ctx.is_connected():

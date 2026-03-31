@@ -749,12 +749,11 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    @abstractmethod
     async def wait_children_idled(self) -> None:
         """
         wait sub channels idle
         """
-        pass
+        await self.tree.wait_channel_children_idle(self.channel)
 
     @abstractmethod
     async def wait_connected(self) -> None:
@@ -966,6 +965,19 @@ class ChannelTree(ABC):
         """
         pass
 
+    async def wait_channel_children_idle(self, channel: Channel) -> None:
+        """
+        等待一个节点所有的子节点都 idle.
+        如果目标节点的 runtime 不存在, 也会立刻返回.
+        """
+        children = self.get_children_runtimes(channel)
+        if len(children) > 0:
+            wait_all = []
+            for child_name, runtime in children.items():
+                wait_all.append(runtime.wait_idle())
+            _ = await asyncio.gather(*wait_all, return_exceptions=True)
+        return
+
     @property
     @abstractmethod
     def logger(self) -> LoggerItf:
@@ -994,7 +1006,7 @@ class ChannelTree(ABC):
         pass
 
     @abstractmethod
-    def get_children_runtime(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
+    def get_children_runtimes(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
         """
         获取一个节点所有已经激活的子节点.
         """

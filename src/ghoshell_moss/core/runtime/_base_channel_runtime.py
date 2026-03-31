@@ -104,7 +104,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 重写这个函数完成自定义.
         return container
 
-
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> ChannelRuntime | None:
         paths = Channel.split_channel_path_to_names(path)
         return await self.tree.recursively_fetch_runtime(self, paths)
@@ -343,10 +342,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @abstractmethod
     async def clear_own(self) -> None:
-        pass
-
-    @abstractmethod
-    async def wait_children_idled(self) -> None:
         pass
 
     async def clear_sub_channels(self):
