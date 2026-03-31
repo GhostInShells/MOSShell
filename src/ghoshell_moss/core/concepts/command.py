@@ -15,6 +15,7 @@ from typing import (
     TypeVar,
     Union,
     ClassVar,
+    Protocol,
 )
 
 from ghoshell_common.helpers import uuid, Timeleft
@@ -26,6 +27,7 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafe
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.message import Message, Content, Text
 import json
+import contextlib
 
 __all__ = [
     "RESULT",
@@ -344,6 +346,13 @@ class Command(Generic[RESULT], ABC):
         pass
 
     @abstractmethod
+    def is_dynamic(self) -> bool:
+        """
+        是否是需要更新的.
+        """
+        pass
+
+    @abstractmethod
     def meta(self) -> CommandMeta:
         """
         返回 Command 的元信息.
@@ -374,6 +383,15 @@ class Command(Generic[RESULT], ABC):
         pass
 
 
+class CommandCtx(Protocol):
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 class CommandWrapper(Command[RESULT]):
     """
     快速包装一个临时的 Command 对象.
@@ -384,16 +402,20 @@ class CommandWrapper(Command[RESULT]):
             meta: CommandMeta,
             func: Callable[..., Coroutine[Any, Any, RESULT]],
             available_fn: Callable[[], bool] | None = None,
-            ctx: contextvars.Context | None = None,
             partial: CommandPartial | None = None,
             refresh: Callable[[], None] | None = None,
+            meta_func: Callable[[], CommandMeta] | None = None,
+            ctx_fn: Callable[[], CommandCtx] | None = None,
+            dynamic: bool = False,
     ):
         self._func = func
         self._meta = meta
-        self._ctx = ctx
         self._available_fn = available_fn
         self._partial = partial
         self._refresh = refresh
+        self._meta_func = meta_func
+        self._ctx_fn = ctx_fn
+        self._dynamic = dynamic
 
     @classmethod
     def wrap(
@@ -401,8 +423,8 @@ class CommandWrapper(Command[RESULT]):
             command: Command[RESULT],
             *,
             func: Callable[..., Coroutine[Any, Any, RESULT]] | None = None,
-            ctx: contextvars.Context | None = None,
             meta: CommandMeta | None = None,
+            ctx_fn: Callable[[], CommandCtx] | None = None,
     ) -> Command[RESULT]:
 
         if func is None:
@@ -411,13 +433,16 @@ class CommandWrapper(Command[RESULT]):
             else:
                 func = command.__call__
 
+        meta = meta or command.meta()
         return CommandWrapper(
-            meta=meta or command.meta(),
+            meta=meta,
             func=func,
-            ctx=ctx,
             available_fn=command.is_available,
             partial=command.partial(),
             refresh=command.refresh_meta,
+            meta_func=command.meta,
+            ctx_fn=ctx_fn,
+            dynamic=command.is_dynamic(),
         )
 
     @property
@@ -430,23 +455,39 @@ class CommandWrapper(Command[RESULT]):
     def name(self) -> str:
         return self._meta.name
 
+    def is_dynamic(self) -> bool:
+        return self._dynamic
+
     def is_available(self) -> bool:
         if self._available_fn is not None:
-            return self._meta.available and self._available_fn()
+            with self._in_ctx():
+                return self._meta.available and self._available_fn()
         return self._meta.available
 
     def meta(self) -> CommandMeta:
+        if self._meta_func is not None:
+            with self._in_ctx():
+                return self._meta_func()
         return self._meta
 
     def refresh_meta(self) -> None:
         if self._refresh:
-            self._refresh()
+            with self._in_ctx():
+                self._refresh()
         return None
 
+    @contextlib.contextmanager
+    def _in_ctx(self):
+        if not self._ctx_fn:
+            yield
+            return
+        _ctx = self._ctx_fn()
+        with _ctx:
+            yield
+
     async def __call__(self, *args, **kwargs) -> RESULT:
-        if self._ctx:
-            return await self._ctx.run(self._func, *args, **kwargs)
-        return await self._func(*args, **kwargs)
+        with self._in_ctx():
+            return await self._func(*args, **kwargs)
 
 
 class PyCommand(Generic[RESULT], Command[RESULT]):
@@ -532,6 +573,9 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
 
     def is_available(self) -> bool:
         return self._available_or_fn() if self._available_or_fn is not None else True
+
+    def is_dynamic(self) -> bool:
+        return self._is_dynamic_itf
 
     def refresh_meta(self) -> None:
         if self._is_dynamic_itf:

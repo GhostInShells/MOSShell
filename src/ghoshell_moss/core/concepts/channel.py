@@ -3,6 +3,7 @@ import contextlib
 import contextvars
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from typing import (
     Any,
@@ -11,6 +12,7 @@ from typing import (
     Callable,
     Coroutine,
     AsyncIterator,
+    Iterator,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
@@ -24,6 +26,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandTaskContextVar,
     CommandUniqueName,
+    CommandCtx,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.topic import (
@@ -185,6 +188,7 @@ LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[.
 
 class Builder(ABC):
     """
+    Decorators manager.
     用来动态构建一个 Channel 的通用接口.
     """
 
@@ -350,7 +354,7 @@ class Builder(ABC):
         pass
 
     @abstractmethod
-    def start_up(self, func: LifecycleFunction) -> LifecycleFunction:
+    def startup(self, func: LifecycleFunction) -> LifecycleFunction:
         """
         启动时执行的生命周期函数
         """
@@ -395,11 +399,11 @@ class ChannelCtx:
         self._runtime = runtime
         self._task = task
 
-    async def run(self, fn: Callable[..., Coroutine], *args, **kwargs) -> Any:
+    async def run(self, fn: Callable[..., Awaitable[Any]], *args, **kwargs) -> Any:
         """
         将指定的 Runtime 和 CommandTask 注入到一个函数的上下文中.
         """
-        async with self.in_ctx():
+        with self.in_ctx():
             return await fn(*args, **kwargs)
 
     @classmethod
@@ -408,21 +412,25 @@ class ChannelCtx:
         返回调用这个函数的 Channel.
         """
         runtime = cls.runtime()
+        if runtime is None:
+            raise CommandErrorCode.INVALID_USAGE.error(f"not running in channel ctx")
         return runtime.channel
 
-    @contextlib.asynccontextmanager
-    async def in_ctx(self) -> AsyncIterator[Self]:
+    @contextlib.contextmanager
+    def in_ctx(self):
         runtime_token = None
         task_token = None
-        if self._runtime:
-            runtime_token = ChannelRuntimeContextVar.set(self._runtime)
-        if self._task:
-            task_token = CommandTaskContextVar.set(self._task)
-        yield self
-        if runtime_token:
-            ChannelRuntimeContextVar.reset(runtime_token)
-        if task_token:
-            CommandTaskContextVar.reset(task_token)
+        try:
+            if self._runtime:
+                runtime_token = ChannelRuntimeContextVar.set(self._runtime)
+            if self._task:
+                task_token = CommandTaskContextVar.set(self._task)
+            yield
+        finally:
+            if runtime_token:
+                ChannelRuntimeContextVar.reset(runtime_token)
+            if task_token:
+                CommandTaskContextVar.reset(task_token)
 
     @classmethod
     def runtime(cls) -> Optional["ChannelRuntime"]:
@@ -746,6 +754,13 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
+    async def refresh_own_metas(self) -> None:
+        """
+        刷新自身的 meta
+        """
+        pass
+
+    @abstractmethod
     def own_commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
         """
         返回当前 ChannelRuntime 自身的 commands.
@@ -822,7 +837,7 @@ class ChannelRuntime(ABC):
         elif not self.is_connected():
             task.fail(CommandErrorCode.NOT_CONNECTED.error(f"Channel {self.name} is not connected"))
         try:
-            async with ChannelCtx(self, task).in_ctx():
+            with ChannelCtx(self, task).in_ctx():
                 task.set_state('ex')
                 # dry run 不会清空 task 状态.
                 result = await task.dry_run()
@@ -1024,6 +1039,9 @@ class ChannelTree(ABC):
         启动.
         """
         pass
+
+    def refresh_all(self) -> asyncio.Future[None]:
+        return self.refresh(self.main.channel.id(), wait=True)
 
     @abstractmethod
     def refresh(self, id: ChannelId, wait: bool = False) -> asyncio.Future[None]:

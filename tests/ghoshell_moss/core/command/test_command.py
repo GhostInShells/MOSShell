@@ -3,7 +3,7 @@ from collections.abc import AsyncIterable
 
 import pytest
 
-from ghoshell_moss.core.concepts.command import CommandType, PyCommand
+from ghoshell_moss.core.concepts.command import CommandType, PyCommand, CommandWrapper
 
 
 async def foo(a: int, b: str = "hello") -> int:
@@ -180,3 +180,34 @@ async def test_command_is_dynamic():
 
     command6 = PyCommand(foo, interface=foo)
     assert not command6.meta().dynamic
+
+
+@pytest.mark.asyncio
+async def test_command_refresh_meta():
+    expect = "hello"
+
+    def doc() -> str:
+        nonlocal expect
+        return expect
+
+    async def foo() -> int:
+        return 123
+
+    command = PyCommand(foo, doc=doc)
+    assert command.meta().description == expect
+
+    expect = "world"
+    assert command.meta().description != expect
+    command.refresh_meta()
+    assert command.meta().description == expect
+
+    wrapped = CommandWrapper.wrap(command)
+    assert wrapped.meta().description == expect
+
+    expect = "hello"
+    assert wrapped.meta().description != expect
+    assert command.meta().description != expect
+    command.refresh_meta()
+    assert command.meta().description == expect
+    # wrapped 没有同步更新? 同步更新了.
+    assert wrapped.meta().description == expect

@@ -47,13 +47,14 @@ ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bo
 
 class ProviderTopicService(QueueBasedTopicService):
     """专门为 provider 准备的 topic."""
+
     def __init__(
-        self,
-        get_session_id: Callable[[], str],
-        connection: Connection,
-        sender: str = "",
-        *,
-        logger: LoggerItf | None = None,
+            self,
+            get_session_id: Callable[[], str],
+            connection: Connection,
+            sender: str = "",
+            *,
+            logger: LoggerItf | None = None,
     ):
         super().__init__(sender=sender, logger=logger)
         self._connection = connection
@@ -89,11 +90,11 @@ class DuplexChannelProvider(ChannelProvider):
     """
 
     def __init__(
-        self,
-        provider_connection: Connection,
-        proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
-        receive_interval_seconds: float = 0.5,
-        container: Container = None,
+            self,
+            provider_connection: Connection,
+            proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
+            receive_interval_seconds: float = 0.5,
+            container: Container = None,
     ):
         self._uid = uuid()
         self._container = Container(
@@ -166,72 +167,82 @@ class DuplexChannelProvider(ChannelProvider):
 
     @contextlib.asynccontextmanager
     async def _bootstrap_container_stack(self) -> AsyncIterator[None]:
-        await asyncio.to_thread(self._container.bootstrap)
-        yield
-        await asyncio.to_thread(self._container.shutdown)
+        try:
+            await asyncio.to_thread(self._container.bootstrap)
+            yield
+        finally:
+            await asyncio.to_thread(self._container.shutdown)
 
     @contextlib.asynccontextmanager
     async def _bootstrap_runtime_stack(self) -> AsyncIterator[None]:
-        await self._root_runtime.start()
-        yield
-        await self._root_runtime.close()
+        try:
+            await self._root_runtime.start()
+            yield
+        finally:
+            await self._root_runtime.close()
 
     @contextlib.asynccontextmanager
     async def _bootstrap_connection_stack(self) -> AsyncIterator[None]:
-        await self._connection.start()
-        yield
         try:
-            await self._connection.close()
-        except Exception as exc:
-            self.logger.exception("%s close connection failed: %s", self._log_prefix, exc)
+            await self._connection.start()
+            yield
+        finally:
+            try:
+                await self._connection.close()
+            except Exception as exc:
+                self.logger.exception("%s close connection failed: %s", self._log_prefix, exc)
 
     @contextlib.asynccontextmanager
     async def _bootstrap_main_loop_stack(self) -> AsyncIterator[None]:
-        # 运行事件消费逻辑.
-        await self._clear_running_status()
-        self._main_loop_task = asyncio.create_task(self._main_loop())
-        yield
         try:
-            if not self._main_loop_task.done():
-                self._main_loop_task.cancel()
-            await self._main_loop_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
+            # 运行事件消费逻辑.
+            await self._clear_running_status()
+            self._main_loop_task = asyncio.create_task(self._main_loop())
+            yield
+        finally:
+            try:
+                if not self._main_loop_task.done():
+                    self._main_loop_task.cancel()
+                await self._main_loop_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
 
     @contextlib.asynccontextmanager
     async def arun(self, channel: Channel) -> AsyncIterator[Self]:
-        if self._starting:
-            self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
-            raise RuntimeError(f"Channel {channel.name()} already started.")
+        try:
+            if self._starting:
+                self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
+                raise RuntimeError(f"Channel {channel.name()} already started.")
 
-        self._starting = True
-        self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
-        self._loop = asyncio.get_running_loop()
-        self._channel = channel
+            self._starting = True
+            self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
+            self._loop = asyncio.get_running_loop()
+            self._channel = channel
 
-        # 注册 topic service.
-        if not self._container.bound(TopicService):
-            self._container.set(
-                TopicService,
-                ProviderTopicService(
-                    self._get_session_id,
-                    self._connection,
-                    sender=f"DuplexChannelProvider/{self._uid}",
-                    logger=self.logger,
-                ),
-            )
-        # 启动时, topic service 同样会注入到根节点的 importlib 中.
-        self._root_runtime = channel.bootstrap(self._container)
+            # 注册 topic service.
+            if not self._container.bound(TopicService):
+                self._container.set(
+                    TopicService,
+                    ProviderTopicService(
+                        self._get_session_id,
+                        self._connection,
+                        sender=f"DuplexChannelProvider/{self._uid}",
+                        logger=self.logger,
+                    ),
+                )
+            # 启动时, topic service 同样会注入到根节点的 importlib 中.
+            self._root_runtime = channel.bootstrap(self._container)
 
-        async with contextlib.AsyncExitStack() as stack:
-            await stack.enter_async_context(self._bootstrap_container_stack())
-            await stack.enter_async_context(self._bootstrap_runtime_stack())
-            await stack.enter_async_context(self._bootstrap_connection_stack())
-            await stack.enter_async_context(self._bootstrap_main_loop_stack())
-            yield self
-        self._closed_event.set()
+            async with contextlib.AsyncExitStack() as stack:
+                await stack.enter_async_context(self._bootstrap_container_stack())
+                await stack.enter_async_context(self._bootstrap_runtime_stack())
+                await stack.enter_async_context(self._bootstrap_connection_stack())
+                await stack.enter_async_context(self._bootstrap_main_loop_stack())
+                yield self
+        finally:
+            self._closed_event.set()
 
     def _check_running(self):
         if not self._starting:
@@ -507,11 +518,11 @@ class DuplexChannelProvider(ChannelProvider):
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
         try:
             try:
-                await self._root_runtime.refresh_metas()
+                await self._root_runtime.tree.refresh_all()
             except Exception as e:
                 self.logger.exception("%s run meta event %s failed: %s", self._log_prefix, event, e)
 
-            metas = self._root_runtime.metas()
+            metas = self._root_runtime.tree.metas()
             response = ChannelMetaUpdateEvent(
                 session_id=event.session_id,
                 metas=metas.copy(),

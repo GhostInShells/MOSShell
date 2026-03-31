@@ -5,8 +5,8 @@ import pytest
 
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
-from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
-from ghoshell_moss.core.py_channel import PyChannel
+from ghoshell_moss.core.concepts.errors import CommandError
+from ghoshell_moss.core.py_channel import PyChannel, PyChannelBuilder
 from ghoshell_moss.message import Message
 
 chan = PyChannel(name="test")
@@ -177,7 +177,7 @@ async def test_py_channel_desc_and_doc_with_ctx() -> None:
 
     main.build.command(doc=foo_doc)(foo)
     async with main.bootstrap() as runtime:
-        _foo = runtime.get_command("foo")
+        _foo = runtime.get_own_command("foo")
         r = await _foo()
         assert r == 123
         assert await _foo() == 123
@@ -311,7 +311,7 @@ async def test_py_channel_startup_and_close() -> None:
 
     done = []
 
-    @main.build.start_up
+    @main.build.startup
     @main.build.close
     async def count_running() -> None:
         _runtime = ChannelCtx.runtime()
@@ -663,3 +663,54 @@ async def test_py_channel_instruction_message():
     async with main.bootstrap() as runtime:
         meta = runtime.self_meta()
         assert 'world' == meta.instruction
+
+
+@pytest.mark.asyncio
+async def test_py_builder_dynamic():
+    builder = PyChannelBuilder(name="test")
+    assert not builder.is_dynamic()
+
+    async def foo():
+        return 123
+
+    def doc() -> str:
+        return ''
+
+    async def on_startup():
+        return
+
+    builder.command()(foo)
+    assert not builder.is_dynamic()
+    builder.startup(on_startup)
+    assert not builder.is_dynamic()
+
+    builder.command(doc=doc)(foo)
+    assert builder.is_dynamic()
+
+
+@pytest.mark.asyncio
+async def test_py_channel_refresh_own_metas():
+    main = PyChannel(name="channel")
+
+    expect = "hello"
+
+    def doc() -> str:
+        nonlocal expect
+        return expect
+
+    @main.build.command(doc=doc)
+    async def foo():
+        return 123
+
+    async with main.bootstrap() as runtime:
+        foo_cmd = runtime.get_own_command('foo')
+        assert foo_cmd is not None
+        assert foo_cmd.meta().description == expect
+
+        expect = "world"
+        await runtime.refresh_own_metas()
+        foo_cmd = runtime.get_own_command('foo')
+        assert foo_cmd.meta().description == expect
+        command_meta = runtime.self_meta().commands[0]
+        assert command_meta.name == "foo"
+        assert command_meta.description == expect

@@ -9,7 +9,7 @@ async def test_wait_idle_basic():
     测试 wait_idle 基本功能：等待子轨道任务完成
     """
     # 创建子 Channel
-    child_chan = PyChannel(name="child", dynamic=True)
+    child_chan = PyChannel(name="child")
 
     # 记录执行状态
     execution_log = []
@@ -47,7 +47,7 @@ async def test_wait_idle_with_timeout():
     """
     测试 wait_idle 超时功能
     """
-    child_chan = PyChannel(name="child", dynamic=True)
+    child_chan = PyChannel(name="child")
 
     execution_log = []
     task_cancelled = False
@@ -91,8 +91,8 @@ async def test_wait_idle_specific_channel():
     测试等待特定轨道
     """
     # 创建多个 Channel
-    audio_chan = PyChannel(name="audio", dynamic=True)
-    video_chan = PyChannel(name="video", dynamic=True)
+    audio_chan = PyChannel(name="audio")
+    video_chan = PyChannel(name="video")
 
     # 记录各 Channel 任务状态
     audio_done = False
@@ -139,8 +139,8 @@ async def test_wait_idle_recursive():
     测试 wait_idle 的递归等待：等待子轨道及其子轨道
     """
     # 创建多层 Channel 结构
-    level1_chan = PyChannel(name="level1", dynamic=True)
-    level2_chan = PyChannel(name="level2", dynamic=True)
+    level1_chan = PyChannel(name="level1")
+    level2_chan = PyChannel(name="level2")
 
     execution_order = []
 
@@ -226,7 +226,7 @@ async def test_wait_idle_with_other_primitives():
     shell = new_ctml_shell()
 
     # 创建动态 Channel
-    bg_chan = PyChannel(name="bg", dynamic=True)
+    bg_chan = PyChannel(name="bg")
 
     execution_log = []
 
@@ -267,7 +267,7 @@ async def test_wait_idle_zero_timeout():
     """
     测试零超时：应该立即清空
     """
-    child_chan = PyChannel(name="child", dynamic=True)
+    child_chan = PyChannel(name="child")
 
     task_cancelled = False
 

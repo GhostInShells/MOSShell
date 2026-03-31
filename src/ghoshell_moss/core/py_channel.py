@@ -1,14 +1,15 @@
 import asyncio
+import contextvars
 import inspect
 import logging
 from typing import Optional, Callable
 
-from ghoshell_container import BINDING, INSTANCE, IoCContainer
+from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, provide
 from typing_extensions import Self
 
+from ghoshell_moss.core.runtime._base_channel_runtime import CHANNEL
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import (
-    Builder,
     Channel,
     MutableChannel,
     ChannelRuntime,
@@ -20,16 +21,20 @@ from ghoshell_moss.core.concepts.channel import (
     StringType,
 )
 from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
-from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
+from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
+from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel
 
-__all__ = ["PyChannel", "PyChannelRuntime", "PyChannelBuilder"]
+__all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder"]
+
+_ChannelName = str
 
 
-class PyChannelBuilder(Builder):
-    def __init__(self, name: str, blocking: bool):
+class PyChannelBuilder(ChannelStateBuilder, ChannelState):
+    def __init__(self, name: str, blocking: bool = True, description: str = "") -> None:
         self._name = name
+        self._description = description
         self._blocking = blocking
         self._description_fn: Optional[StringType] = None
         self._available_fn: Optional[Callable[[], bool]] = None
@@ -37,33 +42,32 @@ class PyChannelBuilder(Builder):
         self._on_start_up_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
-        self._on_pause_funcs: list[tuple[LifecycleFunction, bool]] = []
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
+        self._sustain_children: dict[str, Channel] = {}
+        self._virtual_children: dict[str, Channel] = {}
+        self._providers: list[tuple[Provider, bool]] = []
 
         self._commands: dict[str, Command] = {}
         self._container_instances = {}
         self._dynamic = False
         self._logger = logging.getLogger("moss")
 
-    def description(self) -> Callable[[StringType], StringType]:
-        """
-        todo: 移除这个函数.
-        """
+    def name(self) -> str:
+        return self._name
 
-        def wrapper(func: StringType) -> StringType:
-            self._dynamic = True
-            self._description_fn = func
-            return func
-
-        return wrapper
+    def description(self) -> str:
+        """
+        返回 state 的 description.
+        """
+        return self._description
 
     def with_logger(self, logger: LoggerItf) -> None:
         self._logger = logger
 
     def is_dynamic(self) -> bool:
-        return self._dynamic
+        return self._dynamic or len(self._virtual_children) > 0
 
     def available(self, func: Callable[[], bool]) -> Callable[[], bool]:
         self._dynamic = True
@@ -82,7 +86,7 @@ class PyChannelBuilder(Builder):
         self._dynamic = True
         return func
 
-    async def get_context_message(self) -> list[Message]:
+    async def get_context_messages(self) -> list[Message]:
         """
         使用所有的 context messages 函数生成
         """
@@ -114,7 +118,7 @@ class PyChannelBuilder(Builder):
         self._dynamic = True
         return func
 
-    async def get_instruction_messages(self) -> str:
+    async def get_instruction(self) -> str:
         if self._instruction_functions is None:
             return ''
         if inspect.iscoroutinefunction(self._instruction_functions):
@@ -124,6 +128,8 @@ class PyChannelBuilder(Builder):
     def add_command(self, command: Command) -> None:
         if not isinstance(command, Command):
             raise ValueError("Command must be of type Command, not {}".format(type(command)))
+        if command.is_dynamic():
+            self._dynamic = True
         self._commands[command.name()] = command
 
     def command(
@@ -162,10 +168,46 @@ class PyChannelBuilder(Builder):
 
         return wrapper
 
-    def commands(self) -> dict[str, Command]:
+    def add_virtual_channel(self, channel: Channel, alias: _ChannelName | None = None) -> None:
+        name = alias or channel.name()
+        self._virtual_children[name] = channel
+
+    def remove_virtual_channel(self, name: str) -> None:
+        if name in self._virtual_children:
+            self._virtual_children.pop(name)
+
+    def with_factory(
+            self,
+            contract: type[INSTANCE],
+            factory: Callable[[...], INSTANCE],
+            *,
+            singleton: bool = True,
+            override: bool = False,
+    ) -> Self:
+        provider = provide(contract, singleton)(factory)
+        self._providers.append((provider, override))
+        return self
+
+    def import_channels(self, *children: Channel | tuple[Channel, _ChannelName]) -> Self:
+        for value in children:
+            if isinstance(value, tuple):
+                channel, name = value
+            else:
+                channel = value
+                name = channel.name()
+            self._sustain_children[name] = channel
+        return self
+
+    def get_children(self) -> dict[_ChannelName, Channel]:
+        return self._sustain_children
+
+    def get_virtual_children(self) -> dict[_ChannelName, Channel]:
+        return self._virtual_children
+
+    def own_commands(self) -> dict[str, Command]:
         return self._commands
 
-    def get_command(self, name: str) -> Command | None:
+    def get_own_command(self, name: str) -> Command | None:
         return self._commands.get(name)
 
     def idle(self, func: LifecycleFunction) -> LifecycleFunction:
@@ -176,12 +218,12 @@ class PyChannelBuilder(Builder):
     async def on_idle(self):
         await self._run_funcs(self._on_idle_funcs)
 
-    def start_up(self, func: LifecycleFunction) -> LifecycleFunction:
+    def startup(self, func: LifecycleFunction) -> LifecycleFunction:
         is_coroutine = inspect.iscoroutinefunction(func)
         self._on_start_up_funcs.append((func, is_coroutine))
         return func
 
-    async def on_start_up(self) -> None:
+    async def on_startup(self) -> None:
         await self._run_funcs(self._on_start_up_funcs)
 
     def close(self, func: LifecycleFunction) -> LifecycleFunction:
@@ -211,14 +253,6 @@ class PyChannelBuilder(Builder):
         self._on_running_funcs.append((running_func, inspect.iscoroutinefunction(running_func)))
         return running_func
 
-    def pause(self, func: LifecycleFunction) -> LifecycleFunction:
-        is_coroutine = inspect.iscoroutinefunction(func)
-        self._on_pause_funcs.append((func, is_coroutine))
-        return func
-
-    async def on_pause(self) -> None:
-        await self._run_funcs(self._on_pause_funcs)
-
     async def on_running(self) -> None:
         await self._run_funcs(self._on_running_funcs)
 
@@ -227,56 +261,81 @@ class PyChannelBuilder(Builder):
         return self
 
     def update_container(self, container: IoCContainer) -> None:
-        for contract, instance in self._container_instances.items():
-            container.set(contract, instance)
+        if len(self._container_instances) > 0:
+            for contract, instance in self._container_instances.items():
+                container.set(contract, instance)
+        if len(self._providers) > 0:
+            for provider, override in self._providers:
+                if override or not container.bound(provider.contract(), recursively=True):
+                    container.register(provider)
 
 
-class PyChannel(MutableChannel):
+class PyStateChannel(StatefulChannel):
+
+    def __init__(self, main: ChannelStateBuilder, uid: str | None = None) -> None:
+        self._uid = uid or uuid()
+        self._main: ChannelStateBuilder = main
+        self._states: dict[str, ChannelState] = {}
+
+    @property
+    def build(self) -> ChannelStateBuilder:
+        return self._main
+
+    def main_state(self) -> ChannelStateBuilder:
+        return self._main
+
+    def new_state(self, name: str, description: str) -> ChannelStateBuilder:
+        new_state = PyChannelBuilder(name=name, description=description)
+        self._states[name] = new_state
+        return new_state
+
+    def states(self) -> dict[str, ChannelState]:
+        return self._states
+
+    def with_state(self, state: ChannelState, alias: str | None = None) -> Self:
+        name = alias or state.name()
+        self._states[name] = state
+        return self
+
+    def children(self) -> dict[_ChannelName, Channel]:
+        return self._main.get_children()
+
+    def virtual_children(self) -> dict[_ChannelName, Channel]:
+        return self._main.get_virtual_children()
+
+    def name(self) -> str:
+        return self._main.name()
+
+    def id(self) -> str:
+        return self._uid
+
+    def description(self) -> str:
+        return self._main.description()
+
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
+        return StateChannelRuntime(self, container=container)
+
+
+class PyChannel(PyStateChannel):
+    """
+    向前兼容.
+    """
+
     def __init__(
             self,
             *,
             name: str,
             description: str = "",
             blocking: bool = True,
-            dynamic: bool | None = None,
             uid: str | None = None,
     ):
         """
         :param name: channel 的名称.
         :param description: channel 的静态描述, 给模型看的.
         :param blocking: channel 里默认的 command 类型, 是阻塞的还是非阻塞的.
-        :param dynamic: 这个 channel 对大模型而言是否是动态的.
-                        如果是动态的, 大模型每一帧思考时, 都会从 channel 获取最新的状态.
         """
-        self._name = name
-        self._id = uid or uuid()
-        self._description = description
-        self._children: dict[str, Channel] = {}
-        self._block = blocking
-        self._dynamic = dynamic
-        # decorators
-        self._builder = PyChannelBuilder(
-            name=name,
-            blocking=blocking,
-        )
-
-    def name(self) -> str:
-        return self._name
-
-    def id(self) -> str:
-        return self._id
-
-    def description(self) -> str:
-        return self._description
-
-    @property
-    def build(self) -> PyChannelBuilder:
-        return self._builder
-
-    def import_channels(self, *children: "Channel") -> Self:
-        for child in children:
-            self._children[child.name()] = child
-        return self
+        state = PyChannelBuilder(name=name, description=description, blocking=blocking)
+        super().__init__(state, uid=uid)
 
     def new_child(
             self,
@@ -288,36 +347,30 @@ class PyChannel(MutableChannel):
         语法糖, 用来做单元测试.
         """
         child = PyChannel(name=name, description=description, blocking=blocking)
-        self._children[name] = child
+        self.build.import_channels(child)
         return child
 
-    def children(self) -> dict[str, "Channel"]:
-        return self._children
 
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
-        runtime = PyChannelRuntime(
-            channel=self,
-            container=container,
-            dynamic=self._dynamic,
-        )
-        return runtime
+class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
+    """
+    实现标准的, 支持各种 State 的 ChannelRuntime.
+    """
 
-
-class PyChannelRuntime(AbsChannelTreeRuntime):
     def __init__(
             self,
-            channel: PyChannel,
+            channel: StatefulChannel,
             container: Optional[IoCContainer] = None,
             *,
             dynamic: bool | None = None,
     ):
-        self._builder: PyChannelBuilder = channel.build
         super().__init__(
             channel=channel,
             container=container,
         )
         self._dynamic = dynamic
         self._static_meta_cache: Optional[ChannelMeta] = None
+        self._current_state: ChannelState | None = None
+        self._current_state_running_task: asyncio.Task | None = None
 
     def is_connected(self) -> bool:
         # always true
@@ -331,38 +384,48 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         if not self.is_running():
             raise RuntimeError(f"Channel {self} not running")
 
+    async def switch_state(self, name: str) -> None:
+        """
+        switch current state
+        """
+        pass
+
     def sub_channels(self) -> dict[str, Channel]:
         result = self._channel.children()
         return result
 
-    async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
+    def virtual_sub_channels(self) -> dict[str, Channel]:
+        return self._channel.virtual_children()
+
+    async def _generate_own_metas(self) -> dict[str, ChannelMeta]:
         if self.is_available() and self._static_meta_cache:
             # 返回缓存.
             return {'': self._static_meta_cache}
-        dynamic = self._dynamic or False
+        main_state = self.channel.main_state()
+        dynamic = main_state.is_dynamic()
         name = self._name
         description = self.channel.description()
         try:
             command_metas = []
-            commands = self._builder.commands()
-
+            commands = self.own_commands()
             for command in commands.values():
                 # 只添加需要动态更新的 command.
-                if command.meta().dynamic:
+                if command.is_dynamic():
                     command.refresh_meta()
+                cmd_meta = command.meta()
+                if cmd_meta.dynamic:
                     dynamic = True
-            for command in commands.values():
-                command_metas.append(command.meta())
+                command_metas.append(cmd_meta.model_copy())
 
-            context_message_task = asyncio.create_task(self._builder.get_context_message())
+            context_message_task = asyncio.create_task(main_state.get_context_messages())
             new_context_messages = await context_message_task
-            instruction_message_task = asyncio.create_task(self._builder.get_instruction_messages())
+            instruction_message_task = asyncio.create_task(main_state.get_instruction())
             new_instruction_messages = await instruction_message_task
 
             meta = ChannelMeta(
                 name=name,
                 channel_id=self.channel.id(),
-                available=self._builder.is_available(),
+                available=main_state.is_available(),
                 description=description,
                 context=new_context_messages,
                 instruction=new_instruction_messages,
@@ -386,19 +449,20 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
     # ---- commands ---- #
 
     def _is_available(self) -> bool:
-        return self._builder.is_available()
+        return self.channel.main_state().is_available()
 
     def has_own_command(self, name: CommandUniqueName) -> bool:
         path, name = Command.split_unique_name(name)
         if path:
             return False
-        return name in self._builder.commands()
+        return name in self.channel.main_state().own_commands()
 
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
-        for name, command in self._builder.commands().items():
+        commands = self.channel.main_state().own_commands()
+        for name, command in commands.items():
             if not available_only or command.is_available():
                 result[name] = self._wrap_origin_command(command)
         return result
@@ -410,12 +474,8 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         if command is None:
             return None
 
-        async def _run_with_runtime(*args, **kwargs):
-            ctx = ChannelCtx(self)
-            async with ctx.in_ctx():
-                return await command(*args, **kwargs)
-
-        return CommandWrapper.wrap(command, func=_run_with_runtime)
+        ctx = ChannelCtx(self, None)
+        return CommandWrapper.wrap(command, ctx_fn=ctx.in_ctx)
 
     def get_own_command(
             self,
@@ -424,16 +484,16 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         path, name = Command.split_unique_name(name)
         if path:
             return None
-        return self._wrap_origin_command(self._builder.get_command(name))
+        return self._wrap_origin_command(self.channel.main_state().get_own_command(name))
 
     async def on_running(self) -> None:
-        await self._builder.on_running()
+        await self.channel.main_state().on_running()
 
     async def on_idle(self) -> None:
         try:
             if not self.is_running():
                 return
-            await self._builder.on_idle()
+            await self.channel.main_state().on_idle()
 
         except asyncio.CancelledError:
             self.logger.info(f"{self.log_prefix} on_idle done")
@@ -442,15 +502,14 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
             self.logger.exception(e)
             raise
 
-    async def on_start_up(self) -> None:
+    async def on_startup(self) -> None:
         # 准备 start up 的运行.
-        self._builder.with_logger(self.logger)
-        await self._builder.on_start_up()
+        await self.channel.main_state().on_startup()
 
     async def on_close(self) -> None:
-        await self._builder.on_close()
+        await self.channel.main_state().on_close()
 
     def prepare_container(self, container: IoCContainer) -> IoCContainer:
-        self._builder.update_container(container)
+        self.channel.main_state().update_container(container)
         container = super().prepare_container(container)
         return container

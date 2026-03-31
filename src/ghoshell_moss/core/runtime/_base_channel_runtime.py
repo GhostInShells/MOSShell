@@ -120,7 +120,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     # --- abstract -- #
 
     @abstractmethod
-    async def on_start_up(self) -> None:
+    async def on_startup(self) -> None:
+        """
+        启动时函数.
+        """
         pass
 
     # --- interface --- #
@@ -128,12 +131,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         return self._own_metas_cache
 
-    async def refresh_own_metas(self, force: bool = False) -> None:
+    async def refresh_own_metas(self) -> None:
         ctx = ChannelCtx(self)
-        self._own_metas_cache = await ctx.run(self._generate_own_metas, force)
+        self._own_metas_cache = await ctx.run(self._generate_own_metas)
 
     @abstractmethod
-    async def _generate_own_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
+    async def _generate_own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         """
         重新生成 meta 数据对象.
         """
@@ -259,20 +262,22 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @contextlib.asynccontextmanager
     async def _start_and_close_ctx(self):
-        ctx = ChannelCtx(self)
-        cor = ctx.run(self.on_start_up)
-        self.logger.info(
-            "%s started",
-            self.log_prefix,
-        )
-        await cor
-        yield
         try:
             ctx = ChannelCtx(self)
-            on_close_cor = ctx.run(self.on_close)
-            await on_close_cor
-        except Exception as e:
-            self.logger.exception("%s close failed: %s", self.log_prefix, e)
+            cor = ctx.run(self.on_startup)
+            self.logger.info(
+                "%s started",
+                self.log_prefix,
+            )
+            await cor
+            yield
+        finally:
+            try:
+                ctx = ChannelCtx(self)
+                on_close_cor = ctx.run(self.on_close)
+                await on_close_cor
+            except Exception as e:
+                self.logger.exception("%s close failed: %s", self.log_prefix, e)
 
     @abstractmethod
     async def on_close(self) -> None:
@@ -280,17 +285,19 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @contextlib.asynccontextmanager
     async def _running_task_ctx(self):
-        ctx = ChannelCtx(self)
-        self._channel_running_lifecycle_task = asyncio.create_task(ctx.run(self._execute_running_task))
-        yield
-        if self._channel_running_lifecycle_task and not self._channel_running_lifecycle_task.done():
-            self._channel_running_lifecycle_task.cancel()
-            try:
-                await self._channel_running_lifecycle_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                self.logger.exception("%s close running task failed %s", self.log_prefix, e)
+        try:
+            ctx = ChannelCtx(self)
+            self._channel_running_lifecycle_task = asyncio.create_task(ctx.run(self._execute_running_task))
+            yield
+        finally:
+            if self._channel_running_lifecycle_task and not self._channel_running_lifecycle_task.done():
+                self._channel_running_lifecycle_task.cancel()
+                try:
+                    await self._channel_running_lifecycle_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.exception("%s close running task failed %s", self.log_prefix, e)
 
     @abstractmethod
     async def on_running(self) -> None:
@@ -308,37 +315,41 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @contextlib.asynccontextmanager
     async def _main_loop_ctx(self):
-        self._main_loop_task = asyncio.create_task(self._main_loop())
-        yield
         try:
-            await self.clear()
-            if self._main_loop_task and not self._main_loop_task.done():
-                self._main_loop_task.cancel()
-                try:
-                    await self._main_loop_task
-                except asyncio.CancelledError:
-                    pass
-            self._main_loop_task = None
-        except Exception as e:
-            self.logger.exception(e)
-            raise
+            self._main_loop_task = asyncio.create_task(self._main_loop())
+            yield
+        finally:
+            try:
+                await self.clear()
+                if self._main_loop_task and not self._main_loop_task.done():
+                    self._main_loop_task.cancel()
+                    try:
+                        await self._main_loop_task
+                    except asyncio.CancelledError:
+                        pass
+                self._main_loop_task = None
+            except Exception as e:
+                self.logger.exception(e)
+                raise
 
     @contextlib.asynccontextmanager
     async def _clear_runtime_asyncio_tasks(self):
-        yield
-        tasks = self._runtime_asyncio_task_group.copy()
-        self._runtime_asyncio_task_group.clear()
-        await_tasks = []
-        for t in tasks:
-            if t.done():
-                continue
-            t.cancel()
-            await_tasks.append(t)
-        for t in await_tasks:
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
+        try:
+            yield
+        finally:
+            tasks = self._runtime_asyncio_task_group.copy()
+            self._runtime_asyncio_task_group.clear()
+            await_tasks = []
+            for t in tasks:
+                if t.done():
+                    continue
+                t.cancel()
+                await_tasks.append(t)
+            for t in await_tasks:
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
     @abstractmethod
     async def _main_loop(self) -> None:

@@ -1,20 +1,17 @@
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Optional, Any, TypeVar
+from typing import Any, TypeVar, Generic
 
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandStackResult,
-    CommandUniqueName,
-    Command,
     CommandTaskState,
 )
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     Channel,
-    ChannelFullPath,
     ChannelPaths,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
@@ -29,7 +26,7 @@ _TaskId = str
 _TaskIdWithPaths = tuple[ChannelPaths, _TaskId]
 
 
-class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
+class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
     # --- main loop --- #
 
     def __init__(self, *, channel: CHANNEL, container: IoCContainer | None = None, logger: LoggerItf | None = None):
@@ -265,7 +262,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         self.logger.info("%s start task %s", self.log_prefix, task.cid)
         # 初始化函数运行上下文.
         # 使用 dry run 来管理生命周期.
-        async with ChannelCtx(self, task).in_ctx():
+        with ChannelCtx(self, task).in_ctx():
             # dry run 不会清空 task 状态.
             return await task.dry_run()
 

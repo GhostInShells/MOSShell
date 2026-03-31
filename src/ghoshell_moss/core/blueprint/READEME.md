@@ -1,0 +1,1 @@
+blueprint of how to build channel into moss

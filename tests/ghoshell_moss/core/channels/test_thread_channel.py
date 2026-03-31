@@ -201,6 +201,7 @@ async def test_thread_channel_refresh_meta():
     async def foo() -> int:
         return 123
 
+    assert chan.main_state().is_dynamic()
     provider, proxy = create_thread_channel("proxy")
 
     async with provider.arun(chan):
@@ -223,7 +224,19 @@ async def test_thread_channel_refresh_meta():
 
             # 刷新了 meta 才会变更.
             await runtime.refresh_metas()
+
+            # 这时, provider 侧的runtime 也应该刷新了.
+            # assert by state
+            foo = chan.main_state().get_own_command("foo")
+            assert foo is not None
+            assert "world" in foo.meta().interface
+            # assert by runtime
             # 这时判断, provider 侧已经更新了.
+            provider_metas = provider.runtime.tree.metas()
+            assert len(provider_metas) == 1
+            assert len(provider_metas[''].commands) == 1
+            assert 'world' in provider_metas[''].commands[0].interface
+
             provider_foo = provider.runtime.get_command("foo")
             assert provider_foo is not None
             assert "world" in provider_foo.meta().interface

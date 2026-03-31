@@ -12,7 +12,7 @@ async def test_clear_basic_functionality():
     """
     # 创建父 Channel 和子 Channel
     parent_chan = PyChannel(name="parent")
-    child_chan = PyChannel(name="child", dynamic=True)
+    child_chan = PyChannel(name="child")
 
     # 记录执行状态
     execution_log = []
@@ -58,8 +58,8 @@ async def test_clear_specific_channel():
     """
     # 创建多个 Channel
     main_chan = PyChannel(name="main")
-    audio_chan = PyChannel(name="audio", dynamic=True)
-    video_chan = PyChannel(name="video", dynamic=True)
+    audio_chan = PyChannel(name="audio")
+    video_chan = PyChannel(name="video")
 
     # 记录各 Channel 任务状态
     audio_cancelled = False
@@ -108,8 +108,8 @@ async def test_clear_recursive():
     """
     # 创建多层 Channel 结构
     root_chan = PyChannel(name="root")
-    level1_chan = PyChannel(name="level1", dynamic=True)
-    level2_chan = PyChannel(name="level2", dynamic=True)
+    level1_chan = PyChannel(name="level1")
+    level2_chan = PyChannel(name="level2")
 
     # 记录各层任务状态
     level1_cancelled = False
@@ -168,7 +168,7 @@ async def test_clear_with_wait_and_sleep():
     shell.main_channel.build.command()(sleep)
 
     # 创建一个动态 Channel 用于测试
-    bg_chan = PyChannel(name="bg", dynamic=True)
+    bg_chan = PyChannel(name="bg")
 
     execution_log = []
 
@@ -239,8 +239,8 @@ async def test_clear_in_ctml_complex_scenario():
     shell.main_channel.build.command()(sleep)
 
     # 创建多个动态 Channel
-    music_chan = PyChannel(name="music", dynamic=True)
-    effects_chan = PyChannel(name="effects", dynamic=True)
+    music_chan = PyChannel(name="music")
+    effects_chan = PyChannel(name="effects")
 
     execution_log = []
 

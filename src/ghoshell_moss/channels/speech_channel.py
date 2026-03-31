@@ -58,7 +58,7 @@ class SpeechChannel(Channel):
         channel.build.command()(self.say)
 
         # 注册生命周期.
-        channel.build.start_up(self._speech.start)
+        channel.build.startup(self._speech.start)
         channel.build.close(self._speech.close)
 
         if isinstance(self._speech, TTSSpeech):

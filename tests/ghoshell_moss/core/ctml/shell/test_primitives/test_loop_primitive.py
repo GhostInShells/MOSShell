@@ -1,7 +1,5 @@
 import pytest
 import asyncio
-
-from ghoshell_moss.core.ctml.shell.primitives.clear import clear
 from ghoshell_moss.core import PyChannel, new_ctml_shell
 
 
@@ -211,8 +209,8 @@ async def test_loop_with_concurrent_channels():
     shell = new_ctml_shell()
 
     # 创建多个通道
-    audio_chan = PyChannel(name="audio", dynamic=True)
-    visual_chan = PyChannel(name="visual", dynamic=True)
+    audio_chan = PyChannel(name="audio")
+    visual_chan = PyChannel(name="visual")
 
     audio_log = []
     visual_log = []

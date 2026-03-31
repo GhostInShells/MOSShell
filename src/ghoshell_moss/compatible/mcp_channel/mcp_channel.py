@@ -68,7 +68,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     def sub_channels(self) -> dict[str, "Channel"]:
         return {}
 
-    async def on_start_up(self) -> None:
+    async def on_startup(self) -> None:
         if self._mcp_client is None:
             raise RuntimeError("MCP client is not set")
 
@@ -118,11 +118,8 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     async def clear_own(self) -> None:
         return
 
-    def default_states(self) -> list:
-        return []
-
-    async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
-        if self._meta is None or force:
+    async def _generate_own_metas(self) -> dict[str, ChannelMeta]:
+        if self._meta is None:
             if self._mcp_client is None:
                 return {"": ChannelMeta.new_empty(self.id, self.channel)}
             tools = await self._mcp_client.list_tools()

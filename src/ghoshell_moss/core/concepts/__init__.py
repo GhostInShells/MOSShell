@@ -1,5 +1,4 @@
 from .channel import (
-    Builder,
     Channel,
     ChannelRuntime,
     ChannelFullPath,

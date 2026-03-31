@@ -13,7 +13,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
     ChannelPaths,
 )
-from ghoshell_moss.core.runtime import AbsChannelRuntime, AbsChannelTreeRuntime
+from ghoshell_moss.core.runtime import AbsChannelRuntime
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,
@@ -490,6 +490,7 @@ class DuplexChannelContext:
 
         # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
         self.provider_meta_map = new_provider_meta_map
+        self.logger.debug("%s receive new metas from provider %s", self._log_prefix, new_provider_meta_map)
         # 更新 sync 的标记.
         if not self._sync_meta_done_event.is_set():
             self._sync_meta_done_event.set()
@@ -661,14 +662,15 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         return self._ctx.provider_meta_map
 
-    async def _generate_own_metas(self, force: bool) -> dict[ChannelFullPath, ChannelMeta]:
-        if force:
-            await self._ctx.refresh_meta()
+    async def _generate_own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        # always refresh self.
+        await self._ctx.refresh_meta()
         metas = self._ctx.provider_meta_map
         self_meta = metas.get("")
-        if self_meta:
-            self_meta = self_meta.model_copy(update={"name": self._name})
-            metas[""] = self_meta
+        if not self_meta:
+            return {}
+        self_meta = self_meta.model_copy(update={"name": self._name})
+        metas[""] = self_meta
         return metas
 
     def _is_available(self) -> bool:
@@ -792,7 +794,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         except Exception as e:
             self.logger.exception(e)
 
-    async def on_start_up(self) -> None:
+    async def on_startup(self) -> None:
         # 启动 ctx.
         await self._ctx.start()
 
