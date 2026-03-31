@@ -22,7 +22,7 @@ from ghoshell_moss.core.concepts.channel import (
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
-from ._import_lib import BaseChannelTree
+from .tree import BaseChannelTree
 import logging
 
 __all__ = ["AbsChannelRuntime"]
@@ -73,7 +73,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._task_done_callbacks: list[TaskDoneCallback] = []
         self._exit_stack = contextlib.AsyncExitStack()
         # log_prefix
-        self.log_prefix = "[Channel `%s`][%s][%s] " % (self._name, self.__class__.__name__, self._uid)
+        self.log_prefix = "<Channel `%s` cls=%s id=%s name=%s>" % (
+            self._name, self.__class__.__name__, self._uid, self.name
+        )
 
     @property
     def channel(self) -> CHANNEL:

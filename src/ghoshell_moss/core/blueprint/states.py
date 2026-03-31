@@ -4,11 +4,11 @@ from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.core.blueprint.builder import Builder, MutableChannel
+from ghoshell_moss.core.blueprint.builder import Builder
 
 __all__ = [
     'ChannelState', 'ChannelStateBuilder', 'StatefulChannel',
-    'new_state_builder', 'new_channel_of_state', 'new_stateful_channel',
+    'new_state_builder', 'new_channel_from_state', 'new_stateful_channel',
 ]
 
 _ChannelName = str
@@ -155,22 +155,7 @@ def new_state_builder(name: str, description: str = "") -> ChannelStateBuilder:
     return PyChannelBuilder(name=name, description=description)
 
 
-def new_channel_of_state(state: ChannelState) -> Channel:
-    """
-    create new channel by state object
-    """
-    pass
-
-
-class StatefulChannel(MutableChannel, ABC):
-
-    @property
-    @abstractmethod
-    def build(self) -> ChannelStateBuilder:
-        """
-        return the builder that mutate the main state of the channel
-        """
-        pass
+class StatefulChannel(Channel, ABC):
 
     @abstractmethod
     def main_state(self) -> ChannelState:
@@ -189,7 +174,7 @@ class StatefulChannel(MutableChannel, ABC):
     @abstractmethod
     def states(self) -> dict[str, ChannelState]:
         """
-        return the switchable states
+        return the switchable states, without main states.
         """
         pass
 
@@ -199,6 +184,14 @@ class StatefulChannel(MutableChannel, ABC):
         register a named substate to the channel.
         """
         pass
+
+
+def new_channel_from_state(state: ChannelState) -> StatefulChannel:
+    """
+    create new channel by state object
+    """
+    from ghoshell_moss.core.py_channel import BaseStateChannel
+    return BaseStateChannel(state)
 
 
 def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:

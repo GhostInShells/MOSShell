@@ -19,12 +19,14 @@ from ghoshell_moss.core.concepts.channel import (
     StringType,
 )
 from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
+from ghoshell_moss.core.concepts.errors import CommandError
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
 from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel
+from ghoshell_moss.core.blueprint.builder import MutableChannel, Builder
 
-__all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder"]
+__all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder", "BaseStateChannel"]
 
 _ChannelName = str
 
@@ -268,18 +270,14 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
                     container.register(provider)
 
 
-class PyStateChannel(StatefulChannel):
+class BaseStateChannel(StatefulChannel):
 
-    def __init__(self, main: ChannelStateBuilder, uid: str | None = None) -> None:
+    def __init__(self, main: ChannelState, uid: str | None = None) -> None:
         self._uid = uid or uuid()
-        self._main: ChannelStateBuilder = main
+        self._main: ChannelState = main
         self._states: dict[str, ChannelState] = {}
 
-    @property
-    def build(self) -> ChannelStateBuilder:
-        return self._main
-
-    def main_state(self) -> ChannelStateBuilder:
+    def main_state(self) -> ChannelState:
         return self._main
 
     def new_state(self, name: str, description: str) -> ChannelStateBuilder:
@@ -314,9 +312,9 @@ class PyStateChannel(StatefulChannel):
         return StateChannelRuntime(self, container=container)
 
 
-class PyChannel(PyStateChannel):
+class PyChannel(BaseStateChannel, MutableChannel):
     """
-    向前兼容.
+    一个 Prime Channel.
     """
 
     def __init__(
@@ -334,6 +332,11 @@ class PyChannel(PyStateChannel):
         """
         state = PyChannelBuilder(name=name, description=description, blocking=blocking)
         super().__init__(state, uid=uid)
+        self._builder = state
+
+    @property
+    def build(self) -> Builder:
+        return self._builder
 
     def new_child(
             self,
@@ -358,17 +361,21 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             self,
             channel: StatefulChannel,
             container: Optional[IoCContainer] = None,
-            *,
-            dynamic: bool | None = None,
     ):
+
+        self._main_state = channel.main_state()
+        self._dynamic_states = channel.states()
+        self._static_meta_cache: Optional[ChannelMeta] = None
+        self._current_state: ChannelState | None = None
+        self._current_state_name: str | None = None
+        self._current_state_running_task: asyncio.Task | None = None
+        self._switch_state_command = PyCommand(self.switch_state)
+        self._stop_current_command = PyCommand(self.stop_current_state)
+        self._on_startup_instruction: str = ''
         super().__init__(
             channel=channel,
             container=container,
         )
-        self._dynamic = dynamic
-        self._static_meta_cache: Optional[ChannelMeta] = None
-        self._current_state: ChannelState | None = None
-        self._current_state_running_task: asyncio.Task | None = None
 
     def is_connected(self) -> bool:
         # always true
@@ -382,27 +389,87 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         if not self.is_running():
             raise RuntimeError(f"Channel {self} not running")
 
-    async def switch_state(self, name: str) -> None:
+    async def switch_state(self, name: str) -> str:
         """
-        switch current state
+        switch current state into existing state by name.
         """
-        pass
+        if not name:
+            return f'main state `{name}` is already running'
+        if name == self._current_state_name:
+            return f'{self._current_state_name} is already running'
+        states = self._dynamic_states
+        if name not in states:
+            return f'state `{name}` not found.'
+        stop_any = await self.stop_current_state()
+        new_state = states[name]
+        await new_state.on_startup()
+        self._current_state = new_state
+        self._current_state_name = name
+        self._current_state_running_task = asyncio.create_task(new_state.on_running())
+        return f"{stop_any}started current state `{name}`"
+
+    async def stop_current_state(self) -> str:
+        """
+        stop current running state.
+        """
+        if self._current_state_running_task is not None and not self._current_state_running_task.done():
+            self._current_state_running_task.cancel()
+            try:
+                await self._current_state_running_task
+            except asyncio.CancelledError:
+                pass
+        self._current_state_running_task = None
+        current_state_name = self._current_state_name
+        self._current_state_name = None
+        if not self._current_state:
+            return "no current state is running. "
+        try:
+            await self._current_state.on_close()
+            return f'{current_state_name} is stopped. '
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            raise
+        except CommandError:
+            raise
+        except Exception as e:
+            return f"stop current state error: {e}. "
+        finally:
+            self._current_state = None
 
     def sub_channels(self) -> dict[str, Channel]:
-        result = self._channel.children()
+        result = self._main_state.get_children()
         return result
 
     def virtual_sub_channels(self) -> dict[str, Channel]:
-        return self._channel.virtual_children()
+        virtual_channels = self._main_state.get_virtual_children().copy()
+        if self._current_state is not None:
+            for name, child in self._current_state.get_children().items():
+                # new virtual children.
+                virtual_channels[name] = child
+            for name, child in self._current_state.get_virtual_children().items():
+                virtual_channels[name] = child
+        return virtual_channels
+
+    def is_dynamic(self) -> bool:
+        states = self._dynamic_states
+        if len(states) > 0:
+            return True
+        return self._main_state.is_dynamic()
 
     async def _generate_own_metas(self) -> dict[str, ChannelMeta]:
         if self.is_available() and self._static_meta_cache:
             # 返回缓存.
             return {'': self._static_meta_cache}
-        main_state = self.channel.main_state()
-        dynamic = main_state.is_dynamic()
+        dynamic = self.is_dynamic()
         name = self._name
         description = self.channel.description()
+        main_state = self._main_state
+        states_data = {}
+        states = self._dynamic_states
+        if len(states) > 0:
+            states_data = {name: state.description() for name, state in states.items()}
+            dynamic = True
         try:
             command_metas = []
             commands = self.own_commands()
@@ -415,18 +482,17 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
                     dynamic = True
                 command_metas.append(cmd_meta.model_copy())
 
-            context_message_task = asyncio.create_task(main_state.get_context_messages())
+            context_message_task = asyncio.create_task(self._get_context_messages())
             new_context_messages = await context_message_task
-            instruction_message_task = asyncio.create_task(main_state.get_instruction())
-            new_instruction_messages = await instruction_message_task
 
             meta = ChannelMeta(
                 name=name,
                 channel_id=self.channel.id(),
                 available=main_state.is_available(),
                 description=description,
+                states=states_data,
                 context=new_context_messages,
-                instruction=new_instruction_messages,
+                instruction=self._on_startup_instruction,
             )
             meta.dynamic = dynamic
             meta.commands = command_metas
@@ -444,26 +510,65 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             self._static_meta_cache = meta
         return {"": meta}
 
+    async def _get_context_messages(self) -> list[Message]:
+        funcs = []
+        funcs.append(self._main_state.get_context_messages())
+        if current_state := self._get_current_state():
+            funcs.append(current_state.get_context_messages())
+        result = []
+        done = await asyncio.gather(*funcs, return_exceptions=True)
+        for t in done:
+            if isinstance(t, list):
+                result.extend(t)
+            else:
+                self.logger.error("%r get context messages receive invalid result %r", self, t)
+        return result
+
+    def _get_current_state(self) -> ChannelState | None:
+        if self._current_state is None:
+            return None
+        if not self._current_state.is_available():
+            self._current_state = None
+            self._current_state_name = None
+            if self._current_state_running_task is not None:
+                self._current_state_running_task.cancel()
+            self._current_state_running_task = None
+            return None
+        return self._current_state
+
     # ---- commands ---- #
 
     def _is_available(self) -> bool:
-        return self.channel.main_state().is_available()
+        return self._main_state.is_available()
 
     def has_own_command(self, name: CommandUniqueName) -> bool:
         path, name = Command.split_unique_name(name)
         if path:
             return False
-        return name in self.channel.main_state().own_commands()
+        command = self._get_own_command(name)
+        return command is not None
 
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
-        commands = self.channel.main_state().own_commands()
-        for name, command in commands.items():
+        for name, command in self._own_commands().items():
             if not available_only or command.is_available():
                 result[name] = self._wrap_origin_command(command)
         return result
+
+    def _own_commands(self) -> dict[str, Command]:
+        commands = self._main_state.own_commands().copy()
+        if self._current_state is not None:
+            commands[self._stop_current_command.name()] = self._stop_current_command
+        if len(self._dynamic_states) > 0:
+            commands[self._switch_state_command.name()] = self._stop_current_command
+
+        if self._current_state is not None:
+            for name, command in self._current_state.own_commands().items():
+                if name not in commands:
+                    commands[name] = command
+        return commands
 
     def _wrap_origin_command(self, command: Command | None) -> Command | None:
         """
@@ -479,35 +584,62 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             self,
             name: CommandUniqueName,
     ) -> Optional[Command]:
+        if self._current_state is not None and name == self._stop_current_command.name():
+            return self._stop_current_command
+        if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
+            return self._switch_state_command
+
         path, name = Command.split_unique_name(name)
         if path:
             return None
-        return self._wrap_origin_command(self.channel.main_state().get_own_command(name))
+        return self._wrap_origin_command(self._get_own_command(name))
+
+    def _get_own_command(
+            self,
+            name: CommandUniqueName,
+    ) -> Optional[Command]:
+        command = self._main_state.get_own_command(name)
+        if command is not None:
+            return command
+        if self._current_state is None:
+            return None
+        return self._current_state.get_own_command(name)
 
     async def on_running(self) -> None:
-        await self.channel.main_state().on_running()
+        await self._main_state.on_running()
 
     async def on_idle(self) -> None:
         try:
             if not self.is_running():
                 return
-            await self.channel.main_state().on_idle()
+            idle_func = [self._main_state.on_idle()]
+            if self._current_state is not None:
+                idle_func.append(self._current_state.on_idle())
+            done = await asyncio.gather(*idle_func, return_exceptions=True)
+            for r in done:
+                if isinstance(r, Exception):
+                    self.logger.error("%r run on_idle func failed: %s", self, r)
 
         except asyncio.CancelledError:
-            self.logger.info(f"{self.log_prefix} on_idle done")
+            self.logger.info(f"%r on_idle done", self)
             return
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.exception("%r on idle failed: %s", self, e)
             raise
+
+    def __repr__(self):
+        return self.log_prefix
 
     async def on_startup(self) -> None:
         # 准备 start up 的运行.
-        await self.channel.main_state().on_startup()
+        main_state = self._main_state
+        await main_state.on_startup()
+        self._on_startup_instruction = await main_state.get_instruction()
 
     async def on_close(self) -> None:
-        await self.channel.main_state().on_close()
+        await self._main_state.on_close()
 
     def prepare_container(self, container: IoCContainer) -> IoCContainer:
-        self.channel.main_state().update_container(container)
+        self._main_state.update_container(container)
         container = super().prepare_container(container)
         return container

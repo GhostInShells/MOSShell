@@ -93,6 +93,7 @@ class ChannelMeta(BaseModel):
     channel_id: str = Field(default="", description="The ID of the channel.")
     available: bool = Field(default=True, description="Whether the channel is available.")
     commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
+    states: dict[str, str] = Field(default_factory=dict, description="The states of the channel.")
     children: list[str] = Field(default_factory=list, description="the children channel names")
 
     # about instructions / context messages
