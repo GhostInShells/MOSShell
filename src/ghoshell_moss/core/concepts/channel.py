@@ -805,12 +805,11 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    @abstractmethod
     async def clear(self) -> None:
         """
         清空当前 Runtime 所有的运行状态.
         """
-        pass
+        await self.tree.clear(self)
 
     async def clear_children(self) -> None:
         """
@@ -1018,12 +1017,21 @@ class ChannelTree(ABC):
         """
         pass
 
+    async def clear(self, runtime: ChannelRuntime) -> None:
+        if not runtime.is_running():
+            return
+        # 清空 runtime 自身.
+        await runtime.clear_own()
+        # 递归清空.
+        await self.clear_children_runtimes(runtime.channel)
+        self.logger.info("%r clear channel runtime %s, %s", self, runtime.name, runtime.id)
+
     async def clear_children_runtimes(self, channel: Channel) -> None:
         children = self.get_children_runtimes(channel)
         clearing = []
         for child_name, runtime in children.items():
             if runtime.is_running():
-                clearing.append(runtime.clear())
+                clearing.append(self.clear(runtime))
         if len(clearing) > 0:
             done = await asyncio.gather(*clearing)
             for r in done:

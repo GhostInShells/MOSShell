@@ -329,16 +329,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 # 同步运行.
                 self._loop.run_in_executor(None, callback, task)
 
-    async def clear(self) -> None:
-        if not self.is_running():
-            return
-        await self.clear_own()
-        await self.clear_children()
-
     @abstractmethod
     async def clear_own(self) -> None:
         pass
-
 
     # --- 开始与结束 --- #
 
