@@ -16,8 +16,8 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelFullPath,
     ChannelMeta,
     ChannelRuntime,
-    MutableChannel,
 )
+from ghoshell_moss.core.blueprint import StatefulChannel
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,
@@ -41,14 +41,14 @@ import janus
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
 
-class CTMLShell(MOSShell):
+class CTMLShell(MOSShell[StatefulChannel]):
     def __init__(
             self,
             *,
             name: str = "MOSShell",
             description: Optional[str] = None,
             container: IoCContainer | None = None,
-            main_channel: MutableChannel | None = None,
+            main_channel: StatefulChannel | None = None,
             speech: Optional[Speech] = None,
             logger: LoggerItf | None = None,
             experimental: bool = True,
@@ -65,7 +65,6 @@ class CTMLShell(MOSShell):
         self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental, *primitives)
 
         self._speech: Speech = speech
-        self._expressions: Optional[Expressions] = None
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
 
         # state
@@ -325,9 +324,6 @@ class CTMLShell(MOSShell):
                 interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
             self._interpreter = None
 
-        if token_replacements is None and self._expressions is not None:
-            token_replacements = self._expressions.special_tokens()
-
         # 阻塞等待刷新结果.
         if kind != "dry_run":
             await self.refresh_metas(timeout=prepare_timeout)
@@ -355,7 +351,7 @@ class CTMLShell(MOSShell):
         return interpreter
 
     @property
-    def main_channel(self) -> MutableChannel:
+    def main_channel(self) -> StatefulChannel:
         return self._main_channel
 
     async def pub_topic(self, topic: Topic | TopicModel, *, name: str = "") -> None:
@@ -553,7 +549,7 @@ def new_ctml_shell(
         logger: Optional[LoggerItf] = None,
         experimental: bool = True,
         primitives: list[str] | None = None,
-) -> MOSShell:
+) -> MOSShell[StatefulChannel]:
     """语法糖, 好像不甜"""
     return CTMLShell(
         name=name,

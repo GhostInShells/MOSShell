@@ -1,10 +1,9 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, AsyncIterable, AsyncIterator
+from typing import Literal, Optional, AsyncIterable, AsyncIterator, Generic, TypeVar
 from ghoshell_container import IoCContainer
-
-from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, MutableChannel, ChannelRuntime
+from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel, Subscriber, TOPIC_MODEL, SubscribeKeep, TopicService
@@ -17,8 +16,9 @@ __all__ = [
 
 InterpreterKind = Literal["clear", "append", "dry_run"]
 
+MAIN_CHANNEL = TypeVar("MAIN_CHANNEL", bound=Channel)
 
-class MOSShell(ABC):
+class MOSShell(Generic[MAIN_CHANNEL], ABC):
     """
     Model-Operated Operating System Shell
     面向模型提供的 Shell, 让 AI 可以操作自身所处的系统.
@@ -57,41 +57,6 @@ class MOSShell(ABC):
     + Bodies: 可以控制的各种物理躯体.
 
     然后 Shell 运行可以通过 Topic 来进行通讯, 用 CSP 范式来创建持久运行 Agent 逻辑:
-
-    >>> async def main_shell_loop(shell: MOSShell) -> None:
-    >>>
-    >>>     async def model_create_response() -> AsyncIterable[str]:
-    >>>         "模型创建回复的逻辑"
-    >>>         ...
-    >>>
-    >>>     async def receive_input_topic_loop():
-    >>>         "持续获取输入消息, 并且消费输入"
-    >>>         async with shell.subscribe_topic('input/messages') as subscriber:
-    >>>             message = await subscriber.poll()
-    >>>             ...  # 解析执行 topic, 发送后续的执行 topic
-    >>>
-    >>>     async def run_agent_loop():
-    >>>         "持续响应 agent 的事件"
-    >>>         async with shell.subscribe_topic('agent/event') as subscriber:
-    >>>             event = await subscriber.poll()
-    >>>             ...  # 解析 event, 确认响应逻辑
-    >>>             i: Interpreter = await shell.interpreter('clear')
-    >>>             # 获得运行结果.
-    >>>             interpretation = i.interpretation()
-    >>>             # 使用关键帧生成的解释器, 完成上下文响应.
-    >>>             async with interpreter:
-    >>>                 # 来执行模型生成.
-    >>>                 async for token in model_create_response():
-    >>>                     i.feed(token)
-    >>>                 i.commit()
-    >>>                 ... # 等待 interpreter 结果并执行.
-    >>>                 interpretation = await i.wait_stopped()
-    >>>
-    >>>     # 启动 Shell
-    >>>     async with shell:
-    >>>           # 执行这些 loop, 直到关键点结束.
-    >>>           await asyncio.gather(receive_input_topic_loop(), run_agent_loop())
-
     在 Shell 能够持续, 稳定运行的情况下, AI (Ghost) 运行在 Shell 中, 持续地与现实世界交互.
     """
 
@@ -149,7 +114,7 @@ class MOSShell(ABC):
 
     @property
     @abstractmethod
-    def main_channel(self) -> MutableChannel:
+    def main_channel(self) -> MAIN_CHANNEL:
         """
         Shell 自身的主轨. 主轨同时可以用来注册所有的子轨.
         主轨的名称必须是空字符串.

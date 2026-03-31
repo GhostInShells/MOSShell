@@ -1,5 +1,6 @@
 from typing import Literal
 
+from ghoshell_moss.core.blueprint import StatefulChannel
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.command import PyCommand
 from ghoshell_moss.core.py_channel import PyChannel
@@ -42,7 +43,7 @@ default_primitive_map['interrupt'] = interrupt_command
 def create_ctml_main_chan(
         experimental: bool = True,
         *primitives: str | Literal['*'],
-) -> Channel:
+) -> StatefulChannel:
     chan = CTMLMainChannel(
         name="__main__",
         description="CTML Main Channel with primitives",

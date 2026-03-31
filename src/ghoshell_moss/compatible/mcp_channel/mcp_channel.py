@@ -1,6 +1,6 @@
 import json
 from collections.abc import Callable, Coroutine
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 from jsonschema import Draft202012Validator, Draft201909Validator, Draft7Validator, Draft6Validator
 
@@ -16,7 +16,7 @@ except ImportError:
 from ghoshell_common.helpers import uuid
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.core.concepts.channel import Builder, Channel, ChannelMeta, ChannelRuntime
+from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import (
     Command,
     CommandDeltaType,
@@ -29,7 +29,48 @@ from ghoshell_moss.core.runtime import AbsChannelRuntime
 R = TypeVar("R")  # 泛型结果类型
 
 
-class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
+class MCPChannel(Channel):
+    """对接MCP服务的Channel"""
+
+    def __init__(self, *, name: str, description: str, mcp_client: mcp.ClientSession, blocking: bool = False):
+        self._name = name
+        self._desc = description
+        self._id = uuid()
+        self._mcp_client = mcp_client
+        self._runtime: Optional[MCPChannelRuntime] = None
+        self._blocking = blocking
+
+    # --- Channel 核心方法实现 --- #
+    def name(self) -> str:
+        return self._name
+
+    def id(self) -> str:
+        return self._id
+
+    def description(self) -> str:
+        return self._desc
+
+    @property
+    def runtime(self) -> ChannelRuntime:
+        if not self._runtime or not self._runtime.is_running():
+            raise RuntimeError("MCPChannel not bootstrapped")
+        return self._runtime
+
+    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelRuntime:
+        if self._runtime is not None and self._runtime.is_running():
+            raise RuntimeError(f"Channel {self} has already been started.")
+
+        self._runtime = MCPChannelRuntime(
+            channel=self,
+            container=container,
+            mcp_client=self._mcp_client,
+            blocking=self._blocking,
+        )
+
+        return self._runtime
+
+
+class MCPChannelRuntime(AbsChannelRuntime[MCPChannel]):
     """MCPChannel的运行时客户端，负责对接MCP服务"""
 
     MCP_CONTAINER_TYPES: list[str] = ["array", "object"]
@@ -221,7 +262,7 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
             except json.JSONDecodeError as e:
                 raise CommandError(
                     code=CommandErrorCode.VALUE_ERROR.value,
-                    message=(f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}"),
+                    message=f"MCP tool: invalid `text__` parameter format, INVALID JSON schema, {e}",
                 )
             return final_kwargs
 
@@ -419,56 +460,3 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
 
     def is_available(self) -> bool:
         return True
-
-
-class MCPChannel(Channel):
-    """对接MCP服务的Channel"""
-
-    def __init__(self, *, name: str, description: str, mcp_client: mcp.ClientSession, blocking: bool = False):
-        self._name = name
-        self._desc = description
-        self._id = uuid()
-        self._mcp_client = mcp_client
-        self._runtime: Optional[MCPChannelRuntime] = None
-        self._blocking = blocking
-
-    # --- Channel 核心方法实现 --- #
-    def name(self) -> str:
-        return self._name
-
-    def id(self) -> str:
-        return self._id
-
-    def description(self) -> str:
-        return self._desc
-
-    @property
-    def runtime(self) -> ChannelRuntime:
-        if not self._runtime or not self._runtime.is_running():
-            raise RuntimeError("MCPChannel not bootstrapped")
-        return self._runtime
-
-    @property
-    def build(self) -> Builder:
-        raise NotImplementedError("MCPChannel does not implement `build`")
-
-    def bootstrap(self, container: Optional[IoCContainer] = None) -> ChannelRuntime:
-        if self._runtime is not None and self._runtime.is_running():
-            raise RuntimeError(f"Channel {self} has already been started.")
-
-        self._runtime = MCPChannelRuntime(
-            channel=self,
-            container=container,
-            mcp_client=self._mcp_client,
-            blocking=self._blocking,
-        )
-
-        return self._runtime
-
-    # --- 未使用的Channel方法（默认空实现） --- #
-
-    def children(self) -> dict[str, Channel]:
-        return {}
-
-    def is_running(self) -> bool:
-        return self._runtime is not None and self._runtime.is_running()

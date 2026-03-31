@@ -7,11 +7,9 @@ from typing import Optional, Callable
 from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, provide
 from typing_extensions import Self
 
-from ghoshell_moss.core.runtime._base_channel_runtime import CHANNEL
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import (
     Channel,
-    MutableChannel,
     ChannelRuntime,
     ChannelMeta,
     CommandFunction,

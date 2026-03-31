@@ -54,6 +54,7 @@ __all__ = [
     "CommandTaskContextVar",
     "ObserveError",
     "Observe",
+    "CommandCtx",
 ]
 
 RESULT = TypeVar("RESULT")

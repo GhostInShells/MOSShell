@@ -12,7 +12,6 @@ from typing import (
     Callable,
     Coroutine,
     AsyncIterator,
-    Iterator,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
@@ -26,7 +25,6 @@ from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandTaskContextVar,
     CommandUniqueName,
-    CommandCtx,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.concepts.topic import (
@@ -43,8 +41,6 @@ from ghoshell_common.contracts import LoggerItf
 
 __all__ = [
     "Channel",
-    "Builder",
-    "MutableChannel",
     "TaskDoneCallback",
     "RefreshMetaCallback",
     "ChannelRuntime",
@@ -184,204 +180,6 @@ LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[.
 - __aenter__
 - __aexit__
 """
-
-
-class Builder(ABC):
-    """
-    Decorators manager.
-    用来动态构建一个 Channel 的通用接口.
-    """
-
-    # ---- decorators ---- #
-
-    @abstractmethod
-    def available(self, func: Callable[[], bool]) -> Callable[[], bool]:
-        """
-        decorator
-        注册一个函数, 用来动态生成整个 Channel 的 available 状态.
-        Channel 每次刷新状态时, 都会从这个函数取值. 否则默认为 True.
-        >>> async def building(chan: MutableChannel) -> None:
-        >>>     chan.build.available(lambda: True)
-        """
-        pass
-
-    @abstractmethod
-    def context_messages(self, func: MessageFunction, reset: bool = False) -> MessageFunction:
-        """
-        decorator
-        注册一个上下文生成函数. 用来生成 channel 运行时动态的上下文.
-        这部分上下文会出现在模型上下文的 inputs 之前或之后.
-
-        当 channel 每次刷新后, 都会通过它生成动态的上下文消息体.
-        >>> async def building(chan: MutableChannel) -> None:
-        >>>     async def context() -> list[Message]:
-        >>>         return [
-        >>>             Message.new(role="system").with_content("dynamic information")
-        >>>         ]
-        >>>     chan.build.context_messages(context)
-        """
-        pass
-
-    @abstractmethod
-    def instruction(self, func: StringType) -> StringType:
-        """
-        decorator
-        注册一个上下文生成函数. 用来生成 channel 运行时的使用说明.
-        这部分上下文会出现在模型交互历史之前, 靠近 system prompt.
-
-        当 channel 每次刷新后, 都会通过它生成动态的 instructions.
-        >>> def building(chan: MutableChannel) -> None:
-        >>>     def instructions() -> str:
-        >>>         return 'instructions'
-        >>>     chan.build.instruction(instructions)
-        """
-        pass
-
-    @abstractmethod
-    def add_command(
-            self,
-            command: Command,
-    ) -> None:
-        """
-        添加一个 Command 对象.
-        """
-        pass
-
-    @abstractmethod
-    def command(
-            self,
-            *,
-            name: str = "",
-            doc: Optional[StringType] = None,
-            comments: Optional[StringType] = None,
-            tags: Optional[list[str]] = None,
-            interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
-            available: Optional[Callable[[], bool]] = None,
-            # --- 高级参数 --- #
-            blocking: Optional[bool] = None,
-            call_soon: bool = False,
-            priority: int = 0,
-            return_command: bool = False,
-    ) -> Callable[[CommandFunction], CommandFunction | Command]:
-        """
-        decorator
-        将一个 Python 函数或类的 method 注册到 Channel 上, 成为 Channel 的一个 Command.
-        函数会自动反射出 signature, 作为给大模型查看的讯息.
-        大模型只会看到函数的签名和注释, 不会看到原始代码.
-
-        :param name: 不为空, 则改写这个函数的名称.
-        :param doc: 重定义函数的docstring, 如果传入的是一个函数, 则会在每次刷新时, 动态调用这个函数, 生成它的 docstring.
-        :param comments: 改写函数的 body 部分, 用注释形式提供的字符串. 每行前会自动添加 '#'. 不用手动添加.
-        :param interface: 大模型看到的函数代码形式. 一旦定义了这个, doc, name, comments 就都会失效.
-                支持三种传参方式:
-                - str: 直接用字符串来定义模型看到的函数签名.
-                    注意, 必须写成 Python Async 的形式.
-                    async def foo(...) -> ...:
-                      '''docstring'''
-                      # comments
-                - callalble[[], str]: 生成模型签名的函数
-                - async function: 会反射这个 function 来生成一个模型签名的字符串.
-
-        :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
-        :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
-                这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.
-        :param blocking: 这个函数是否会阻塞 channel. 为 None 的话跟随 channel 的默认定义.
-                blocking = True 类型的 Command 执行完毕前, 会阻塞后续 Command 执行, 通常是在机器人等需要时序规划的场景中.
-                blocking = False 类型则会并发执行. 对于没有先后顺序的工具, 可以设置并行.
-        :param call_soon: 决定这个函数进入轨道后, 会第一时间执行 (不等待调度), 还是等待排队执行到自身时.
-                如果是 (blocking and call_soon) == True, 会在入队时立刻清空队列.
-
-        :param priority: 命令优先级, <0 时, 有新的命令加入, 就会被自动取消. >0 时, 之前所有优先级比自己低的都会立刻取消.
-                高级功能, 不理解的情况下请不要改动它.
-
-        :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
-        CommandFunction 最佳实践是:
-
-        >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
-        >>> # 有明确的类型约束, 类型约束也是 prompt 的一部分.
-        >>> async def func(arg: type) -> Any:
-        >>>     '''有清晰的说明'''
-        >>>     from ghoshell_moss import ChannelCtx
-        >>>     # 可以获取执行这个 command 的真实 runtime
-        >>>     runtime = ChannelCtx.runtime()
-        >>>     # 如果是被 CommandTask 触发的, 则上下文可以拿到 Task
-        >>>     task = ChannelCtx.task()
-        >>>     # 通过全局的 IoC 容器获取依赖, 可以拿到运行时的依赖注入.
-        >>>     depend = ChannelCtx.get_contract(...)
-        >>>     try
-        >>>         # 执行逻辑, 不能有线程阻塞, 否则会阻塞全局.
-        >>>         ...
-        >>>     except asyncio.CancelledError:
-        >>>         # 命令可以被调度层正常取消, 有取消的行为. 通常 AI 可以随时取消一个运行的 Command.
-        >>>         ...
-        >>>     except Exception as e:
-        >>>         # 正确处理异常
-        >>>         ...
-        >>>     finally:
-        >>>         # 有运行结束逻辑.
-        >>>         ...
-        """
-        pass
-
-    @abstractmethod
-    def idle(self, func: LifecycleFunction) -> LifecycleFunction:
-        """
-        decorator
-        注册一个生命周期函数, 当 Channel 运行 policy 时, 会执行这个函数.
-
-        生命周期的最佳实践是:
-
-        >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
-        >>> async def func() -> None:
-        >>>     from ghoshell_moss import ChannelCtx
-        >>>     # 可以获取执行这个 command 的真实 runtime
-        >>>     runtime = ChannelCtx.runtime()
-        >>>     # 通过全局的 IoC 容器获取依赖, 可以拿到运行时的依赖注入.
-        >>>     depend = ChannelCtx.get_contract(...)
-        >>>     try
-        >>>         # 执行逻辑, 不能有线程阻塞, 否则会阻塞全局.
-        >>>         ...
-        >>>     except asyncio.CancelledError:
-        >>>         # 生命周期函数随时会被 Channel Runtime 调度取消
-        >>>         ...
-        >>>     except Exception as e:
-        >>>         # 正确处理异常
-        >>>         ...
-        >>>     finally:
-        >>>         # 有运行结束逻辑.
-        >>>         ...
-        """
-        pass
-
-    @abstractmethod
-    def startup(self, func: LifecycleFunction) -> LifecycleFunction:
-        """
-        启动时执行的生命周期函数
-        """
-        pass
-
-    @abstractmethod
-    def close(self, func: LifecycleFunction) -> LifecycleFunction:
-        """
-        关闭时执行的生命周期函数
-        """
-        pass
-
-    @abstractmethod
-    def running(self, func: LifecycleFunction) -> LifecycleFunction:
-        """
-        在整个 Channel Runtime is_running 时间里运行的逻辑. 只会被调用一次.
-        注意, 这个函数和 idle / executing 是并行的.
-        """
-        pass
-
-    @abstractmethod
-    def with_binding(self, contract: type[INSTANCE], binding: INSTANCE) -> Self:
-        """
-        在运行之前, 注册 contract / instance 到全局的 IoC 容器中. 方便任何时候获取.
-        """
-        pass
-
 
 ChannelRuntimeContextVar = contextvars.ContextVar("moss.ctx.Runtime")
 
@@ -534,33 +332,6 @@ class Channel(ABC):
         pass
 
 
-class MutableChannel(Channel, ABC):
-    """
-    一个约定, 用来描述拥有动态构建能力的 Channel.
-    """
-
-    @abstractmethod
-    def import_channels(self, *children: "Channel") -> Self:
-        """
-        添加子 Channel 到当前 Channel. 形成树状关系.
-        效果可以比较 python 的 import module_name
-        """
-        pass
-
-    # todo: 支持别名.
-    # @abstractmethod
-    # def from_channel_import(self, channel: "Channel", *imports: str | tuple[str, str]) -> Self:
-    #     pass
-
-    @property
-    @abstractmethod
-    def build(self) -> Builder:
-        """
-        支持通过 Builder 动态构建一个 Channel.
-        """
-        pass
-
-
 ChannelInterface = dict[ChannelFullPath, ChannelMeta]
 """ 用于描述一个 Channel 能够提供给 AI 的所有能力. """
 
@@ -577,8 +348,6 @@ class ChannelRuntime(ABC):
 
     使用 Runtime 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
 
-    >>> chan: Channel
-    >>> con: IoCContainer
     >>> async def example(chan: Channel, con: IoCContainer):
     >>>     runtime = chan.bootstrap(con)
     >>>     async with runtime:
