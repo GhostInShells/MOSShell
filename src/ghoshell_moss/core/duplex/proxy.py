@@ -51,7 +51,6 @@ __all__ = [
     "DuplexChannelProxy",
 ]
 
-
 """
 DuplexChannel Proxy 一侧的实现, 
 todo: 全部改名为 Proxy 
@@ -64,11 +63,11 @@ class DuplexChannelContext:
     """
 
     def __init__(
-        self,
-        *,
-        name: str,
-        connection: Connection,
-        container: Optional[IoCContainer] = None,
+            self,
+            *,
+            name: str,
+            connection: Connection,
+            container: Optional[IoCContainer] = None,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -630,11 +629,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     """
 
     def __init__(
-        self,
-        *,
-        channel: Channel,
-        provider_chan_path: str,
-        ctx: DuplexChannelContext,
+            self,
+            *,
+            channel: Channel,
+            provider_chan_path: str,
+            ctx: DuplexChannelContext,
     ) -> None:
         self._ctx = ctx
         self._provider_chan_path = provider_chan_path
@@ -700,54 +699,48 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             return
         await self._ctx.wait_connected()
 
-    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def has_own_command(self, name: CommandUniqueName) -> bool:
+        path, name = Command.split_unique_name(name)
+        meta = self._ctx.get_meta(path)
+        if not meta:
+            return False
+        for command_meta in meta.commands:
+            if command_meta.name == name:
+                return True
+        return False
+
+    def own_commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
         # 先获取本地的命令.
         result = {}
         if not self.is_running():
             return {}
         # 拿出原始的 meta.
-        meta = self._ctx.get_meta(self._provider_chan_path)
-        if meta is None:
-            return result
-        # 再封装远端的命令.
-        for command_meta in meta.commands:
-            if command_meta.name not in result and not available_only or command_meta.available:
-                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
-                command = CommandWrapper(meta=command_meta, func=func)
-                result[command_meta.name] = command
-        return result
-
-    def commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
-        result = {}
-        if not self.is_running():
-            return {}
-        for channel_path, meta in self.metas().items():
+        for provider_path, meta in self._ctx.provider_meta_map.items():
+            # 再封装远端的命令.
             for command_meta in meta.commands:
-                unique_name = Command.make_unique_name(channel_path, command_meta.name)
-                func = self._get_provider_command_func(channel_path, command_meta)
-                command = CommandWrapper(meta=command_meta, func=func)
-                result[unique_name] = command
+                if command_meta.name not in result and not available_only or command_meta.available:
+                    func = self._get_provider_command_func(self._provider_chan_path, command_meta)
+                    command = CommandWrapper(meta=command_meta, func=func)
+                    unique_name = Command.make_unique_name(provider_path, command_meta.name)
+                    result[unique_name] = command
         return result
 
-    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
-        # 不需要递归获取了.
-        if not self.is_running():
+    def get_own_command(self, name: CommandUniqueName) -> Optional[Command]:
+        path, name = Command.split_unique_name(name)
+        meta = self._ctx.get_meta(path)
+        if meta is None:
             return None
-        channel_path, command_name = Command.split_unique_name(name)
-        channel_meta = self._ctx.get_meta(channel_path)
-        if channel_meta is None:
-            return None
-        for command_meta in channel_meta.commands:
-            if command_meta.name == command_name:
-                func = self._get_provider_command_func(channel_path, command_meta)
+        for command_meta in meta.commands:
+            if command_meta.name == name:
+                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
                 command = CommandWrapper(meta=command_meta, func=func)
                 return command
         return None
 
     def _get_provider_command_func(
-        self,
-        chan: ChannelFullPath,
-        meta: CommandMeta,
+            self,
+            chan: ChannelFullPath,
+            meta: CommandMeta,
     ) -> Callable[[...], Coroutine[None, None, Any]]:
 
         # 回调服务端的函数.
@@ -787,7 +780,6 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
-
     async def clear_own(self) -> None:
         if not self._ctx.is_running() or not self._ctx.is_connected():
             return
@@ -810,11 +802,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
 class DuplexChannelProxy(Channel):
     def __init__(
-        self,
-        *,
-        name: str,
-        description: str = "",
-        to_provider_connection: Connection,
+            self,
+            *,
+            name: str,
+            description: str = "",
+            to_provider_connection: Connection,
     ):
         self._name = name
         self._description = description

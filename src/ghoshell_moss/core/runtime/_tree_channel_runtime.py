@@ -60,31 +60,6 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         """
         pass
 
-    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
-        commands = self.own_commands(available_only).copy()
-        result = {"": commands}
-        for name, child in self.sub_channels().items():
-            child_runtime = self.tree.get_channel_runtime(child)
-            if child_runtime and child_runtime.is_running():
-                child_commands = child_runtime.commands(available_only)
-                for further_path, command_map in child_commands.items():
-                    new_full_path = Channel.join_channel_path(name, further_path)
-                    result[new_full_path] = command_map
-        return result
-
-    @abstractmethod
-    def get_own_command(self, name: str) -> Optional[Command]:
-        pass
-
-    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
-        chan, command_name = Command.split_unique_name(name)
-        if chan == "":
-            return self.get_own_command(command_name)
-        runtime = self.tree.get_runtime_by_path(chan, self.channel)
-        if runtime is None:
-            return None
-        return runtime.get_command(command_name)
-
     async def wait_idle(self) -> None:
         """
         阻塞等待到闲时.

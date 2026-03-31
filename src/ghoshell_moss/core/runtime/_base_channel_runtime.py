@@ -191,28 +191,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             f.set_result(None)
             return f
         return self.tree.refresh(self.channel.id(), wait=True)
-        # await self._refresh_meta_lock.acquire()
-        # try:
-        #     if not self._starting or self._closing_event.is_set():
-        #         return
-        #     if not self.is_connected():
-        #         return
-        #
-        #     # 生成时添加 ctx.
-        #     await self.refresh_own_metas(force=True)
-        #     # 创建异步的回调.
-        #     await self._refresh_children_metas()
-        # except asyncio.CancelledError:
-        #     return
-        # except Exception as exc:
-        #     self.logger.exception("%s refresh self meta failed %s", self.log_prefix, exc)
-        #     # 出现异常后, 刷新一个异常的 meta.
-        # finally:
-        #     self._refresh_meta_lock.release()
-        #     self.logger.info(
-        #         "%s refreshed meta",
-        #         self.log_prefix,
-        #     )
 
     async def _refresh_children_metas(self) -> None:
         children = self.sub_channels()

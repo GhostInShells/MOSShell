@@ -81,19 +81,19 @@ async def test_thread_channel_baseline():
     async def bar() -> int:
         return 456
 
-    chan = PyChannel(name="provider")
+    provider_main_chan = PyChannel(name="provider")
     a_chan = PyChannel(name="a")
     # provider channel 注册 foo.
-    foo_cmd: Command = chan.build.command(return_command=True)(foo)
+    foo_cmd: Command = provider_main_chan.build.command(return_command=True)(foo)
     assert isinstance(foo_cmd, Command)
-    chan.import_channels(a_chan)
+    provider_main_chan.import_channels(a_chan)
     # a_chan 增加 command bar.
     a_chan.build.command()(bar)
 
     provider, proxy_chan = create_thread_channel("proxy")
 
     # 在另一个线程中运行.
-    async with provider.arun(chan):
+    async with provider.arun(provider_main_chan):
         # 判断 channel 已经启动.
         main_runtime = provider.runtime
         metas = main_runtime.metas()
@@ -111,6 +111,14 @@ async def test_thread_channel_baseline():
         async with proxy_chan.bootstrap() as proxy_runtime:
             await proxy_runtime.wait_connected()
             await proxy_runtime.refresh_metas()
+
+            assert proxy_runtime.has_own_command("foo")
+            assert proxy_runtime.has_own_command("a:bar")
+            commands = proxy_runtime.commands()
+            assert 'a' in commands
+            assert '' in commands
+            assert len(commands['a']) == 1
+
             metas = proxy_runtime.metas()
             assert len(metas) == 2
             # 阻塞等待连接成功.
@@ -127,7 +135,7 @@ async def test_thread_channel_baseline():
             assert foo_cmd_meta.name == foo_cmd.meta().name
 
             # 判断仍然有一个子 channel.
-            assert "a" in chan.children()
+            assert "a" in provider_main_chan.children()
             # 判断 proxy 也有 children
             metas = proxy_runtime.metas()
             assert "a" in metas
@@ -423,6 +431,10 @@ async def test_thread_proxy_pub_topic():
     received = []
     receive_done = asyncio.Event()
 
+    @a_chan.build.command()
+    async def foo() -> int:
+        return 123
+
     @a_chan.build.running
     async def receive_topic() -> None:
         """
@@ -444,6 +456,8 @@ async def test_thread_proxy_pub_topic():
         async with provider.arun(chan):
             await proxy_runtime.wait_connected()
             # 保证连接后才有消息体广播.
+            command = proxy_runtime.get_own_command('a_channel:foo')
+            assert command is not None
 
             # 从 proxy 侧的 main channel 发送消息给 provider 侧.
             async with runtime.topic_publisher() as publisher:

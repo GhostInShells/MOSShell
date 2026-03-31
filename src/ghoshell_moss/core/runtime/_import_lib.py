@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelFullPath,
     ChannelMeta,
 )
+from ghoshell_moss.core.concepts.command import Command, CommandUniqueName
 from ghoshell_common.contracts import LoggerItf
 import logging
 import time
@@ -619,6 +620,19 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         node = self._runtime_status_nodes[search_path]
         return self.get_running_runtime(node.id)
 
+    def get_channel_node(self, channel: Channel) -> ChannelRuntimeNode | None:
+        channel_id = channel.id()
+        if channel_id not in self._runtimes:
+            return None
+        runtime = self._runtimes[channel_id]
+        if not runtime.is_running():
+            return None
+        path = self._runtime_id_to_paths.get(channel_id)
+        if not path:
+            self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
+        node = self._runtime_status_nodes.get(path)
+        return node
+
     def get_children_runtimes(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
         channel_id = channel.id()
         if channel_id not in self._runtimes:
@@ -643,6 +657,86 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             if runtime:
                 children[name] = runtime
         return children
+
+    def get_child_runtime(self, channel: Channel, child_name: str) -> ChannelRuntime | None:
+        node = self.get_channel_node(channel)
+        if node is None:
+            return None
+        full_path = Channel.join_channel_path(node.path, child_name)
+        child_node = self._runtime_status_nodes.get(full_path)
+        if not child_node:
+            return None
+        return self._runtimes.get(child_node.id)
+
+    def get_command(self, channel: Channel, name: CommandUniqueName) -> Command | None:
+        """
+        递归查找一个 command 是否存在.
+        """
+        runtime = self.get_channel_runtime(channel, running=True)
+        if runtime is None:
+            return None
+        return self._get_command(runtime, name)
+
+    def _get_command(self, runtime: ChannelRuntime, unique_name: CommandUniqueName) -> Command | None:
+        if runtime is None or not runtime.is_running() or not runtime.is_available():
+            # 不用调用了, 直接判断.
+            return None
+        # 判断是不是被当前 runtime 所 own 的.
+        if runtime.has_own_command(unique_name):
+            # 直接返回 runtime 所持有的.
+            return runtime.get_own_command(unique_name)
+        relative_path, name = Command.split_unique_name(unique_name)
+        if not relative_path:
+            # 如果没有 relative path, 则不用继续找下去了.
+            return None
+        # has relative path.
+        paths = Channel.split_channel_path_to_names(relative_path, 1)
+        child_name = paths[0]
+        # 先找到当前的节点路径.
+        current_node = self.get_channel_node(runtime.channel)
+        if current_node is None:
+            return None
+        # 找到预期中小孩的路径.
+        child_path = Channel.join_channel_path(current_node.path, child_name)
+        # 小孩必须存在, 可能并没有资格挂载.
+        child_node = self._runtime_status_nodes.get(child_path)
+        if not child_node:
+            return None
+        # 验证小孩的 runtime 存在.
+        child_runtime = self._runtimes.get(child_node.id)
+        if not child_runtime:
+            return None
+        further_path = "".join(paths[1:])
+        return self._get_command(child_runtime, Command.make_unique_name(further_path, name))
+
+    def commands(self, channel: Channel, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
+        """
+        递归获取一个 channel 所有的子命令, 按路径完成分组.
+        """
+        runtime = self.get_channel_runtime(channel, running=True)
+        if runtime is None:
+            return {}
+        result = {}
+        commands = runtime.own_commands(available_only)
+        for unique_name, command in commands.items():
+            path, name = Command.split_unique_name(unique_name)
+            if path not in result:
+                result[path] = {}
+            if name not in result[path]:
+                result[path][name] = command
+
+        children = self.get_children_runtimes(channel)
+        if len(children) > 0:
+            for child_name, runtime in children.items():
+                sub_commands = runtime.commands(available_only=True)
+                for sub_path, command_group in sub_commands.items():
+                    full_path = Channel.join_channel_path(child_name, sub_path)
+                    if full_path not in result:
+                        result[full_path] = {}
+                    for command_name, command in command_group.items():
+                        if command_name not in result[full_path]:
+                            result[full_path][command_name] = command
+        return result
 
     async def start(self) -> None:
         if self._start:

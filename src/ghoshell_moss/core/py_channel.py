@@ -20,7 +20,7 @@ from ghoshell_moss.core.concepts.channel import (
     StringType,
 )
 from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
-from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper
+from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 
@@ -162,8 +162,8 @@ class PyChannelBuilder(Builder):
 
         return wrapper
 
-    def commands(self) -> list[Command]:
-        return list(self._commands.values())
+    def commands(self) -> dict[str, Command]:
+        return self._commands
 
     def get_command(self, name: str) -> Command | None:
         return self._commands.get(name)
@@ -342,12 +342,12 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
             command_metas = []
             commands = self._builder.commands()
 
-            for command in commands:
+            for command in commands.values():
                 # 只添加需要动态更新的 command.
                 if command.meta().dynamic:
                     command.refresh_meta()
                     dynamic = True
-            for command in commands:
+            for command in commands.values():
                 command_metas.append(command.meta())
 
             context_message_task = asyncio.create_task(self._builder.get_context_message())
@@ -382,13 +382,19 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
     def _is_available(self) -> bool:
         return self._builder.is_available()
 
+    def has_own_command(self, name: CommandUniqueName) -> bool:
+        path, name = Command.split_unique_name(name)
+        if path:
+            return False
+        return name in self._builder.commands()
+
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         if not self.is_available():
             return {}
         result = {}
-        for command in self._builder.commands():
+        for name, command in self._builder.commands().items():
             if not available_only or command.is_available():
-                result[command.name()] = self._wrap_origin_command(command)
+                result[name] = self._wrap_origin_command(command)
         return result
 
     def _wrap_origin_command(self, command: Command | None) -> Command | None:
@@ -407,8 +413,11 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
 
     def get_own_command(
             self,
-            name: str,
+            name: CommandUniqueName,
     ) -> Optional[Command]:
+        path, name = Command.split_unique_name(name)
+        if path:
+            return None
         return self._wrap_origin_command(self._builder.get_command(name))
 
     async def on_running(self) -> None:

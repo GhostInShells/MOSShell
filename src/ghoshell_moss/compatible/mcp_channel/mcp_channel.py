@@ -13,7 +13,6 @@ try:
 except ImportError:
     raise ImportError("Could not import mcp. Please install ghoshell-moss[mcp].")
 
-
 from ghoshell_common.helpers import uuid
 from ghoshell_container import IoCContainer
 
@@ -23,9 +22,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandDeltaType,
     CommandMeta,
     CommandTask,
-    CommandTaskResult,
-    CommandTaskState,
-    CommandWrapper,
+    CommandWrapper, CommandUniqueName,
 )
 from ghoshell_moss.core.runtime import AbsChannelRuntime
 
@@ -56,12 +53,12 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
 
     def __init__(
-        self,
-        *,
-        channel: "MCPChannel",
-        mcp_client: mcp.ClientSession,
-        container: Optional[IoCContainer] = None,
-        blocking: bool = False,
+            self,
+            *,
+            channel: "MCPChannel",
+            mcp_client: mcp.ClientSession,
+            container: Optional[IoCContainer] = None,
+            blocking: bool = False,
     ):
         super().__init__(channel=channel, container=container)
         self._mcp_client: Optional[mcp.ClientSession] = mcp_client  # MCP客户端实例
@@ -101,7 +98,6 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
             return
         self.create_asyncio_task(self.execute_task(task))
 
-
     async def wait_connected(self) -> None:
         return
 
@@ -125,15 +121,6 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
     def default_states(self) -> list:
         return []
 
-    def commands(self, available_only: bool = True) -> dict[str, dict[str, Command]]:
-        return {"": self.own_commands(available_only)}
-
-    def get_command(self, name: str) -> Optional[Command]:
-        chan, cmd_name = Command.split_unique_name(name)
-        if chan:
-            return None
-        return self.get_self_command(cmd_name)
-
     async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
         if self._meta is None or force:
             if self._mcp_client is None:
@@ -141,6 +128,27 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
             tools = await self._mcp_client.list_tools()
             self._meta = self._build_channel_meta(tool_result=tools)
         return {"": self._meta.model_copy()}
+
+    def get_own_command(self, name: CommandUniqueName) -> Optional[Command]:
+        path, name = Command.split_unique_name(name)
+        if path:
+            return None
+        meta = self._meta
+        for command_meta in meta.commands:
+            if command_meta.name == name:
+                func = self._get_command_func(command_meta)
+                command = CommandWrapper(meta=command_meta, func=func)
+                return command
+        return None
+
+    def has_own_command(self, name: CommandUniqueName) -> bool:
+        path, name = Command.split_unique_name(name)
+        if path:
+            return False
+        for command_meta in self._meta.commands:
+            if command_meta.name == name:
+                return True
+        return False
 
     def own_commands(self, available_only: bool = True) -> dict[str, Command]:
         meta = self._meta
@@ -153,14 +161,6 @@ class MCPChannelRuntime(AbsChannelRuntime["MCPChannel"], Generic[R]):
                 command = CommandWrapper(meta=command_meta, func=func)
                 result[command_meta.name] = command
         return result
-
-    def get_self_command(self, name: str) -> Optional[Command]:
-        meta = self.own_meta()
-        for command_meta in meta.commands:
-            if command_meta.name == name:
-                func = self._get_command_func(command_meta)
-                return CommandWrapper(meta=command_meta, func=func)
-        return None
 
     def _get_validator(self, args_schema: dict):
         dialect = args_schema.get("$schema", "")

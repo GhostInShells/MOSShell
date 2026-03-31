@@ -777,24 +777,21 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    def own_commands(self, available_only: bool = True) -> dict[str, Command]:
+    def own_commands(self, available_only: bool = True) -> dict[CommandUniqueName, Command]:
         """
         返回当前 ChannelRuntime 自身的 commands.
-        key 是 command 在当前 Runtime 内部的唯一名字.
+        key 是 command 在当前 Runtime 内部的唯一名字. 可以在 own_metas 中找到对应的存在.
         """
         pass
 
     @abstractmethod
-    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
-        """
-        列出所有的 commands.
-        """
+    def has_own_command(self, name: CommandUniqueName) -> bool:
         pass
 
     @abstractmethod
-    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+    def get_own_command(self, name: CommandUniqueName) -> Optional[Command]:
         """
-        使用 unique name 获取一个 command.
+        获取自身持有的命令.
         """
         pass
 
@@ -804,18 +801,6 @@ class ChannelRuntime(ABC):
         清空自身的运行状态.
         """
         pass
-
-    async def clear(self) -> None:
-        """
-        清空当前 Runtime 所有的运行状态.
-        """
-        await self.tree.clear(self)
-
-    async def clear_children(self) -> None:
-        """
-        清空当前 Runtime 所有子 channel 的 runtime
-        """
-        await self.tree.clear_children_runtimes(self.channel)
 
     async def push_task(self, *tasks: CommandTask) -> None:
         """
@@ -947,6 +932,34 @@ class ChannelRuntime(ABC):
             self.logger.exception(exc_val)
         await self.close()
 
+    # --- Channel tree recursive methods --- #
+
+    async def clear(self) -> None:
+        """
+        清空当前 Runtime 所有的运行状态.
+        """
+        await self.tree.clear(self)
+
+    async def clear_children(self) -> None:
+        """
+        清空当前 Runtime 所有子 channel 的 runtime
+        """
+        await self.tree.clear_children_runtimes(self.channel)
+
+    def commands(self, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
+        """
+        列出所有的 commands.
+        """
+        # 递归逻辑统一通过 ChannelTree 实现. 保留 Runtime 接口
+        return self.tree.commands(self.channel, available_only=available_only)
+
+    def get_command(self, name: CommandUniqueName) -> Optional[Command]:
+        """
+        使用 unique name 获取一个 command.
+        """
+        # 递归逻辑统一通过 ChannelTree 实现. 保留 Runtime 接口
+        return self.tree.get_command(self.channel, name)
+
 
 class ChannelTree(ABC):
     """
@@ -1070,22 +1083,19 @@ class ChannelTree(ABC):
     async def close(self) -> None:
         pass
 
+    @abstractmethod
     def commands(self, channel: Channel, available_only: bool = True) -> dict[ChannelFullPath, dict[str, Command]]:
         """
         递归获取一个 channel 所有的子命令, 按路径完成分组.
         """
-        runtime = self.get_channel_runtime(channel, running=True)
-        if runtime is None:
-            return {}
-        commands = {"": runtime.own_commands(available_only)}
-        children = self.get_children_runtimes(channel)
-        if len(children) > 0:
-            for child_name, runtime in children.items():
-                sub_commands = runtime.commands(available_only=True)
-                for sub_path, command_group in sub_commands.items():
-                    full_path = Channel.join_channel_path(child_name, sub_path)
-                    commands[full_path] = command_group
-        return commands
+        pass
+
+    @abstractmethod
+    def get_command(self, channel: Channel, name: CommandUniqueName) -> Command | None:
+        """
+        递归查找单个命令.
+        """
+        pass
 
 
 ChannelProxy = Channel
