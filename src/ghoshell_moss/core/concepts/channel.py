@@ -993,6 +993,13 @@ class ChannelTree(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_children_runtime(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
+        """
+        获取一个节点所有已经激活的子节点.
+        """
+        pass
+
     def descendants(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
         root_runtime = self.recursively_find_runtime(self.main, root)
         if root_runtime is None:

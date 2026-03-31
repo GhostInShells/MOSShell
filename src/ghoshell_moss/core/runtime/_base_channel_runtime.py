@@ -104,6 +104,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 重写这个函数完成自定义.
         return container
 
+
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> ChannelRuntime | None:
         paths = Channel.split_channel_path_to_names(path)
         return await self.tree.recursively_fetch_runtime(self, paths)

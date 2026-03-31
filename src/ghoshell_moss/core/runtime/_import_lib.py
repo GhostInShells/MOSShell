@@ -19,6 +19,7 @@ import asyncio
 __all__ = ["BaseChannelTree"]
 
 _ChannelId = str
+_ChannelName = str
 
 _AddRuntime = Callable[[ChannelRuntime], asyncio.Task]
 _RemoveRuntime = Callable[[ChannelRuntime], asyncio.Task]
@@ -71,10 +72,10 @@ class ChannelRuntimeNode:
         self.refresh_interval: float = refresh_interval
         self.failure: str = ''
 
-        self.children: set[_ChannelId] = set()
+        self.sustain_children: set[_ChannelId] = set()
         self.virtual_children: set[_ChannelId] = set()
+        self.children_names: dict[_ChannelId, _ChannelName] = dict()
         self.refresh_time: int = 0
-        self.children_names: set[str] = set()
         self.logger_prefix = "<ChannelRuntimeNode path=%s id=%s>" % (path, id)
 
     def __repr__(self):
@@ -185,11 +186,14 @@ class ChannelRuntimeNode:
         creating_children_channels: dict[ChannelFullPath, Channel] = {}
         sub_channels = runtime.sub_channels()
         existing_sub_channels: set[_ChannelId] = set()
+        new_children_names: dict[_ChannelId, _ChannelName] = dict()
         # 首先刷新树形结构. 发现失联节点删除, 发现新节点添加.
         for name, child in sub_channels.items():
             _channel_id = child.id()
-            if self.refresh_time == 1 or _channel_id in self.children:
+            if self.refresh_time == 1 or _channel_id in self.sustain_children:
                 existing_sub_channels.add(_channel_id)
+                # 管理 names.
+                new_children_names[_channel_id] = name
             # 已经完成过初始化.
             if self.refresh_time == 1:
                 # 没有第一次创建过. 才允许创建父节点.
@@ -197,7 +201,7 @@ class ChannelRuntimeNode:
                     # 被别人先抢为儿子孙子了.
                     continue
                 # 添加到自己的孩子中.
-                self.children.add(_channel_id)
+                self.sustain_children.add(_channel_id)
                 # 添加新节点. 不过应该只会在第一次运行.
                 fullpath = Channel.join_channel_path(self.path, name)
                 # 先注册要创建的节点.
@@ -206,11 +210,15 @@ class ChannelRuntimeNode:
         # 开始准备动态节点.
         new_virtual_children = set()
         for name, child in runtime.virtual_sub_channels().items():
+            # 不允许同名子节点.
+            if name in new_children_names:
+                continue
             _channel_id = child.id()
             if _channel_id in self.virtual_children:
                 # 是已经注册过的.
                 new_virtual_children.add(_channel_id)
                 existing_sub_channels.add(_channel_id)
+                new_children_names[_channel_id] = name
                 continue
             # 尝试创建这个节点.
             if ctx.exists(_channel_id):
@@ -219,6 +227,7 @@ class ChannelRuntimeNode:
             new_virtual_children.add(_channel_id)
             fullpath = Channel.join_channel_path(self.path, name)
             creating_children_channels[fullpath] = child
+            new_children_names[_channel_id] = name
 
         removing_children: list[_ChannelId] = []
         for _channel_id in self.virtual_children:
@@ -253,6 +262,7 @@ class ChannelRuntimeNode:
 
         # 赋值, 更新新的动态节点.
         self.virtual_children = new_virtual_children
+        self.children_names = new_children_names
         return existing_sub_channels
 
     async def clear(self):
@@ -374,7 +384,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                     sub_task = self.remove(_id)
                     if sub_task:
                         removing_chain.append(sub_task)
-                for _id in node.children:
+                for _id in node.sustain_children:
                     sub_task = self.remove(_id)
                     if sub_task:
                         removing_chain.append(sub_task)
@@ -554,6 +564,39 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             if isinstance(r, Exception):
                 self.logger.error("%s clear all runtimes error: %s", self.log_prefix, r)
         self._main = None
+
+    def get_running_runtime(self, channel_id: str) -> ChannelRuntime | None:
+        if channel_id not in self._runtimes:
+            return None
+        runtime = self._runtimes[channel_id]
+        if not runtime.is_running():
+            return None
+        return runtime
+
+    def get_children_runtime(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
+        channel_id = channel.id()
+        if channel_id not in self._runtimes:
+            return {}
+        runtime = self._runtimes[channel_id]
+        if not runtime.is_running():
+            return {}
+        if not runtime.is_available():
+            return {}
+        path = self._runtime_id_to_paths.get(channel_id)
+        if not path:
+            self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
+        node = self._runtime_status_nodes.get(path)
+        if not node:
+            self.logger.error(
+                "%s get runtime node by path=%s, id=%s error: not found",
+                self.log_prefix, path, channel_id,
+            )
+        children = {}
+        for _channel_id, name in node.children_names.items():
+            runtime = self.get_running_runtime(_channel_id)
+            if runtime:
+                children[name] = runtime
+        return children
 
     async def start(self) -> None:
         if self._start:
