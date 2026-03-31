@@ -21,7 +21,7 @@ async def _wait_children_idle(runtime: ChannelRuntime, timeout: float | None):
     group_wait = []
 
     async def wait_child(_name: str):
-        sub_runtime = await runtime.fetch_sub_runtime(_name)
+        sub_runtime = runtime.fetch_sub_runtime(_name)
         if sub_runtime and sub_runtime.is_running():
             if timeout is None:
                 await sub_runtime.wait_idle()
@@ -68,7 +68,7 @@ async def wait_idle(chan: str = "", timeout: float | None = None):
 
     wait_all = []
     for sub_chan in chans:
-        children_runtime = await runtime.fetch_sub_runtime(sub_chan)
+        children_runtime = runtime.fetch_sub_runtime(sub_chan)
         if children_runtime:
             wait_all.append(_wait_for_runtime(children_runtime, timeout))
     await asyncio.gather(*wait_all, return_exceptions=False)

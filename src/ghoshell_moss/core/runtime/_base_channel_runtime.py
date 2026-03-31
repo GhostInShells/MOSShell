@@ -103,9 +103,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 重写这个函数完成自定义.
         return container
 
-    async def fetch_sub_runtime(self, path: ChannelFullPath) -> ChannelRuntime | None:
-        return self.tree.get_runtime_by_path(path, self.channel)
-
     @property
     def id(self) -> str:
         """
@@ -175,38 +172,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         重新生成 meta 数据对象.
         """
         pass
-
-    def refresh_metas(
-            self,
-    ) -> asyncio.Future[None]:
-        """
-        更新当前的 Channel Meta 信息. 递归创建所有子节点的 metas.
-        """
-        if not self._starting or self._closing_event.is_set():
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-        if not self.is_connected():
-            f = asyncio.Future()
-            f.set_result(None)
-            return f
-        return self.tree.refresh(self.channel.id(), wait=True)
-
-    async def _refresh_children_metas(self) -> None:
-        children = self.sub_channels()
-        if len(children) == 0:
-            return
-        refreshing = []
-        for child in children.values():
-            runtime = self._importlib.get_channel_runtime(child)
-            if not runtime or not runtime.is_running():
-                continue
-            refreshing.append(runtime.refresh_metas())
-        if len(refreshing) > 0:
-            done = await asyncio.gather(*refreshing, return_exceptions=True)
-            for t in done:
-                if isinstance(t, Exception):
-                    self.logger.error(f"%s refresh children meta failed %s", self.log_prefix, t)
 
     # --- status --- #
 

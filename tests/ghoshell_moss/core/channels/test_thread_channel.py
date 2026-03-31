@@ -402,7 +402,7 @@ async def test_thread_provider_pub_topic():
     async with provider.arun(chan):
         assert provider.container.get(TopicService) is provider.runtime.tree.topics
         async with main.bootstrap() as runtime:
-            proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+            proxy_runtime = runtime.fetch_sub_runtime("proxy")
             await proxy_runtime.wait_connected()
             # 保证连接后才有消息体广播.
             wait_connected.set()
@@ -452,7 +452,7 @@ async def test_thread_proxy_pub_topic():
         receive_done.set()
 
     async with main.bootstrap() as runtime:
-        proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+        proxy_runtime = runtime.fetch_sub_runtime("proxy")
         async with provider.arun(chan):
             await proxy_runtime.wait_connected()
             # 保证连接后才有消息体广播.
@@ -501,7 +501,7 @@ async def test_thread_provider_lazy_subscribe():
     async with provider.arun(chan):
         async with main.bootstrap() as runtime:
             # proxy 侧后运行, 这时 provider 已经开始监听了. 要在建连后重新开始监听.
-            proxy_runtime = await runtime.fetch_sub_runtime("proxy")
+            proxy_runtime = runtime.fetch_sub_runtime("proxy")
             await proxy_runtime.wait_connected()
             # 从 proxy 侧的 main channel 发送消息给 provider 侧.
             async with runtime.topic_publisher() as publisher:

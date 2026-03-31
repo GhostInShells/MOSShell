@@ -427,8 +427,8 @@ async def test_channel_fetch_level2():
     a_chan.import_channels(b_chan)
     main.import_channels(a_chan, b_chan)
     async with main.bootstrap() as runtime:
-        b1 = await runtime.fetch_sub_runtime("b_chan")
-        b2 = await runtime.fetch_sub_runtime("a_chan.b_chan")
+        b1 = runtime.fetch_sub_runtime("b_chan")
+        b2 = runtime.fetch_sub_runtime("a_chan.b_chan")
         assert not (b1 and b2)
         assert b1 or b2
 

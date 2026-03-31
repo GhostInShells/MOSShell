@@ -11,15 +11,11 @@ from typing import (
     Callable,
     Coroutine,
     AsyncIterator,
-    Awaitable,
-    Generic,
-    TypeVar,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
 from pydantic import BaseModel, Field
 from typing_extensions import Self
-from ghoshell_moss.core.concepts.errors import CommandError
 
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
@@ -136,6 +132,9 @@ ChannelFullPath = str
 
 同时它也描述了一个神经信号 (command call) 经过的路径, 比如从 a -> b -> c 执行.
 """
+
+ChannelId = str
+"""channel 实例需要有唯一 id"""
 
 ChannelPaths = list[str]
 """字符串路径的数组表现形式. a.b.c -> ['a', 'b', 'c'] """
@@ -640,13 +639,6 @@ class ChannelRuntime(ABC):
             keep=keep,
         )
 
-    @abstractmethod
-    async def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
-        """
-        在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
-        """
-        pass
-
     @property
     @abstractmethod
     def logger(self) -> LoggerItf:
@@ -679,20 +671,6 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    @abstractmethod
-    async def refresh_own_metas(self, force: bool = False) -> None:
-        pass
-
-    @abstractmethod
-    def refresh_metas(
-            self,
-    ) -> asyncio.Future[None]:
-        """
-        更新元信息. 是否递归需要每种 ChannelRuntime 自行决定.
-        更新后从 metas 取到的值是给模型可以查阅的.
-        """
-        pass
-
     def own_meta(self) -> ChannelMeta:
         """
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
@@ -700,6 +678,10 @@ class ChannelRuntime(ABC):
         return self.metas().get("")
 
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        """
+        返回当前 ChannelRuntime 持有的元信息. 通常只有自身的信息.
+        但对于 Proxy 类型的 Channel 而言, 它同时代理了一个 Channel 树结构.
+        """
         pass
 
     @abstractmethod
@@ -749,12 +731,6 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    async def wait_children_idled(self) -> None:
-        """
-        wait sub channels idle
-        """
-        await self.tree.wait_channel_children_idle(self.channel)
-
     @abstractmethod
     async def wait_connected(self) -> None:
         """
@@ -786,6 +762,9 @@ class ChannelRuntime(ABC):
 
     @abstractmethod
     def has_own_command(self, name: CommandUniqueName) -> bool:
+        """
+        判断一个命令是否在当前 ChannelRuntime 内部持有.
+        """
         pass
 
     @abstractmethod
@@ -934,6 +913,20 @@ class ChannelRuntime(ABC):
 
     # --- Channel tree recursive methods --- #
 
+    def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
+        """
+        在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
+        """
+        return self.tree.get_runtime_by_path(path, self.channel)
+
+    def refresh_metas(
+            self,
+    ) -> asyncio.Future[None]:
+        """
+        刷新 ChannelRuntime 树结构, 然后刷新包含自身在内的树节点元信息.
+        """
+        return self.tree.refresh(self.channel.id(), wait=True)
+
     async def clear(self) -> None:
         """
         清空当前 Runtime 所有的运行状态.
@@ -959,6 +952,12 @@ class ChannelRuntime(ABC):
         """
         # 递归逻辑统一通过 ChannelTree 实现. 保留 Runtime 接口
         return self.tree.get_command(self.channel, name)
+
+    async def wait_children_idled(self) -> None:
+        """
+        wait sub channels idle
+        """
+        await self.tree.wait_channel_children_idle(self.channel)
 
 
 class ChannelTree(ABC):
@@ -1007,6 +1006,9 @@ class ChannelTree(ABC):
     @property
     @abstractmethod
     def topics(self) -> TopicService:
+        """
+        持有所有 channel 共享的 topic service.
+        """
         pass
 
     @abstractmethod
@@ -1024,6 +1026,14 @@ class ChannelTree(ABC):
         pass
 
     @abstractmethod
+    def refresh(self, id: ChannelId, wait: bool = False) -> asyncio.Future[None]:
+        """
+        更新一个 channel id 对应的整颗子树.
+        同一时间每个 channel runtime 只会更新一次.
+        """
+        pass
+
+    @abstractmethod
     def get_children_runtimes(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
         """
         获取一个节点所有已经激活的子节点.
@@ -1032,6 +1042,9 @@ class ChannelTree(ABC):
 
     @abstractmethod
     def get_runtime_by_path(self, path: ChannelFullPath, root: Channel | None = None) -> ChannelRuntime | None:
+        """
+        基于路径查找一个 runtime.
+        """
         pass
 
     async def clear(self, runtime: ChannelRuntime) -> None:
@@ -1067,17 +1080,6 @@ class ChannelTree(ABC):
         以 root 路径为根节点, 返回所有的运行中节点.
         """
         pass
-
-    async def recursively_fetch_runtime(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
-        if len(paths) == 0:
-            return root
-        child_name = paths[0]
-        further_path = paths[1:]
-        child = root.sub_channels().get(child_name)
-        if child is None:
-            return None
-        child_runtime = self.get_channel_runtime(child)
-        return await self.recursively_fetch_runtime(child_runtime, further_path)
 
     @abstractmethod
     async def close(self) -> None:

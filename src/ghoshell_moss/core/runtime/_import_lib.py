@@ -404,7 +404,9 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         runtime = self._runtimes.get(id, None)
         if node is None or runtime is None:
             return asyncio.create_task(_noop())
-
+        if not runtime.is_connected():
+            # 只有连接后才会刷新.
+            return asyncio.create_task(_noop())
         # 通过 Node 运行一个刷新任务.
         return node.refresh(runtime, self, wait=wait)
 

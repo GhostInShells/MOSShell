@@ -260,7 +260,7 @@ class CTMLShell(MOSShell):
 
         waiting = []
         for path in paths:
-            runtime = await self._main_runtime.fetch_sub_runtime(path)
+            runtime = self._main_runtime.fetch_sub_runtime(path)
             if runtime is None or not runtime.is_running():
                 continue
             waiting.append(runtime.wait_connected())
@@ -401,16 +401,15 @@ class CTMLShell(MOSShell):
     async def refresh_metas(self, timeout: float | None = None) -> None:
         if not self.is_running():
             return
-        # 保证这个任务最终被执行完毕吧.
-        refresh_meta_task = self._main_runtime.refresh_metas()
+        refresh_meta_future = self._main_runtime.refresh_metas()
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
-            done, pending = await asyncio.wait([refresh_meta_task, sleep_task], return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            # 有任何一个结束了就退出.
+            done, pending = await asyncio.wait([refresh_meta_future, sleep_task], return_when=asyncio.FIRST_COMPLETED)
+            for sleep_task in pending:
+                sleep_task.cancel()
+            # 不会 cancel refresh_meta_future
         else:
-            await refresh_meta_task
+            await refresh_meta_future
 
     def channel_metas(
             self,
@@ -491,7 +490,7 @@ class CTMLShell(MOSShell):
 
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         self._check_running()
-        runtime = await self._main_runtime.fetch_sub_runtime(chan)
+        runtime = self._main_runtime.fetch_sub_runtime(chan)
         if runtime is None or not runtime.is_available():
             return None
 

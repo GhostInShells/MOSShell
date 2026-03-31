@@ -21,7 +21,7 @@ async def _clear_children(runtime: ChannelRuntime) -> None:
     group_clear = []
 
     async def clear_child(_name: str):
-        sub_runtime = await runtime.fetch_sub_runtime(_name)
+        sub_runtime = runtime.fetch_sub_runtime(_name)
         if sub_runtime and sub_runtime.is_running():
             await sub_runtime.clear()
 
@@ -46,6 +46,6 @@ async def clear(chan: str = ""):
         return
     clear_all = []
     for chan in chans:
-        children_runtime = await runtime.fetch_sub_runtime(chan)
+        children_runtime = runtime.fetch_sub_runtime(chan)
         clear_all.append(children_runtime.clear())
     await asyncio.gather(*clear_all, return_exceptions=False)
