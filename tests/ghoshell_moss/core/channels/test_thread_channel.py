@@ -103,7 +103,7 @@ async def test_thread_channel_baseline():
         assert main_runtime.is_running()
         assert main_runtime.is_connected()
         assert main_runtime.is_running()
-        proxy_side_foo_meta = main_runtime.own_meta()
+        proxy_side_foo_meta = main_runtime.self_meta()
         assert proxy_side_foo_meta.available
         assert len(proxy_side_foo_meta.commands) > 0
         assert proxy_side_foo_meta.name == "provider"
@@ -122,7 +122,7 @@ async def test_thread_channel_baseline():
             metas = proxy_runtime.metas()
             assert len(metas) == 2
             # 阻塞等待连接成功.
-            proxy_meta = proxy_runtime.own_meta()
+            proxy_meta = proxy_runtime.self_meta()
             assert proxy_meta.name == "proxy"
             assert proxy_meta is not None
             # 名字被替换了.
@@ -139,7 +139,7 @@ async def test_thread_channel_baseline():
             # 判断 proxy 也有 children
             metas = proxy_runtime.metas()
             assert "a" in metas
-            assert main_runtime.own_meta().name == "provider"
+            assert main_runtime.self_meta().name == "provider"
             assert proxy_meta.name == "proxy"
 
             # 客户端仍然可以调用命令.

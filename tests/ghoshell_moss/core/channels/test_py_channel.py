@@ -106,7 +106,7 @@ async def test_py_channel_children() -> None:
 
     assert len(chan.children()) == 1
     async with a_chan.bootstrap() as runtime:
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert meta.name == "a"
         assert len(meta.commands) == 1
         command = runtime.get_command("zoo")
@@ -118,7 +118,7 @@ async def test_py_channel_children() -> None:
         assert len(runtime.sub_channels()) == 1
         metas = runtime.metas()
         assert len(metas) == 2
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert meta.children == ["a"]
 
 
@@ -219,13 +219,13 @@ async def test_py_channel_context() -> None:
 
     async with main.bootstrap() as runtime:
         # 启动时 meta 中包含了生成的 messages.
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert len(meta.context) == 1
         messages.append(Message.new().with_content("world"))
 
         # 更新后, messages 也变更了.
         await runtime.refresh_metas()
-        assert len(runtime.own_meta().context) > 0
+        assert len(runtime.self_meta().context) > 0
 
 
 @pytest.mark.asyncio
@@ -627,7 +627,7 @@ async def test_py_channel_context_message():
         return [Message.new().with_content('hello')]
 
     async with main.bootstrap() as runtime:
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert len(meta.context) == 1
 
 
@@ -644,7 +644,7 @@ async def test_py_channel_multiple_context_message():
         return [Message.new().with_content('world')]
 
     async with main.bootstrap() as runtime:
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert len(meta.context) == 2
 
 
@@ -661,5 +661,5 @@ async def test_py_channel_instruction_message():
         return 'world'
 
     async with main.bootstrap() as runtime:
-        meta = runtime.own_meta()
+        meta = runtime.self_meta()
         assert 'world' == meta.instruction

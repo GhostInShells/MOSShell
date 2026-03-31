@@ -46,7 +46,7 @@ async def test_zmq_channel_baseline():
             assert proxy_runtime.is_running()
 
             # 获取 channel meta
-            meta = proxy_runtime.own_meta()
+            meta = proxy_runtime.self_meta()
             assert meta is not None
             assert meta.name == "proxy"
             assert len(meta.commands) == 1
@@ -227,7 +227,7 @@ async def test_zmq_channel_multiple_commands():
         async with proxy.bootstrap() as runtime:
             await runtime.wait_connected()
             # 验证所有命令都存在
-            meta = runtime.own_meta()
+            meta = runtime.self_meta()
             assert len(meta.commands) == 3
             command_names = {cmd.name for cmd in meta.commands}
             assert command_names == {"add", "multiply", "greet"}

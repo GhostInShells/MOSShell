@@ -112,6 +112,7 @@ class ChannelMeta(BaseModel):
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
+    virtual: bool = Field(default=False, description="Whether the channel is virtual")
 
     @classmethod
     def new_empty(cls, id: str, channel: "Channel", failure: str = "") -> Self:
@@ -671,7 +672,7 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    def own_meta(self) -> ChannelMeta:
+    def self_meta(self) -> ChannelMeta:
         """
         获取当前 Channel 的元信息, 用来在远端同构出相同的 Channel.
         """
@@ -681,14 +682,6 @@ class ChannelRuntime(ABC):
         """
         返回当前 ChannelRuntime 持有的元信息. 通常只有自身的信息.
         但对于 Proxy 类型的 Channel 而言, 它同时代理了一个 Channel 树结构.
-        """
-        pass
-
-    @abstractmethod
-    def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
-        """
-        返回当前模块自身的所有 meta 信息.
-        dict 本身是有序的, 深度优先遍历.
         """
         pass
 
@@ -913,6 +906,13 @@ class ChannelRuntime(ABC):
 
     # --- Channel tree recursive methods --- #
 
+    def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        """
+        返回当前模块自身的所有 meta 信息.
+        dict 本身是有序的, 深度优先遍历.
+        """
+        return self.tree.metas(self.channel)
+
     def fetch_sub_runtime(self, path: ChannelFullPath) -> Self | None:
         """
         在当前 Runtime 的上下文空间里, 寻找一个可能存在的子孙节点.
@@ -1096,6 +1096,13 @@ class ChannelTree(ABC):
     def get_command(self, channel: Channel, name: CommandUniqueName) -> Command | None:
         """
         递归查找单个命令.
+        """
+        pass
+
+    @abstractmethod
+    def metas(self, root: Channel | None = None) -> dict[ChannelFullPath, ChannelMeta]:
+        """
+        返回一个节点的所有在树中注册的子节点的 metas.
         """
         pass
 

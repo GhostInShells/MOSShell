@@ -441,31 +441,6 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return None
         return result
 
-    async def compile_channel(self, channel: Channel) -> ChannelRuntime | None:
-        # 只有创建这一段需要上锁.
-        if not self.is_running():
-            return None
-        channel_id = channel.id()
-        runtime = self._runtimes.get(channel_id)
-        # 只要 runtime 存在就立刻返回.
-        if runtime is not None:
-            return runtime
-        await self._runtimes_lock.acquire()
-        try:
-            # 用自身的容器启动 ChannelImportLib.
-            runtime = channel.bootstrap(self._container)
-            # 避免抢锁嵌套成环.
-            self._runtimes[channel_id] = runtime
-            _ = asyncio.create_task(runtime.start())
-            return runtime
-        except Exception as e:
-            self.logger.exception(
-                "%s failed to build channel %s, id=%s: %s", self._name, channel.name(), channel.id(), e
-            )
-            return None
-        finally:
-            self._runtimes_lock.release()
-
     @property
     def main(self) -> ChannelRuntime:
         return self._main
@@ -608,6 +583,47 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         result = {}
         _recursive_find_runtime(_result=result, _node=root_node, _relative_path='')
         return result
+
+    def metas(self, channel: Channel | None = None) -> dict[ChannelFullPath, ChannelMeta]:
+        channel = channel or self._main.channel
+        channel_id = channel.id()
+        root_path = self._runtime_id_to_paths.get(channel_id, None)
+        if root_path is None:
+            return {}
+        return self._metas(root_path)
+
+    def _metas(self, path: ChannelFullPath = '') -> dict[ChannelFullPath, ChannelMeta]:
+        node = self._runtime_status_nodes.get(path)
+        if node is None:
+            return {}
+        runtime = self._runtimes.get(node.id)
+        if runtime is None:
+            return {}
+        if not runtime.is_running():
+            return {}
+        if not runtime.is_connected():
+            return {'': ChannelMeta.new_empty(runtime.channel.id(), runtime.channel, "not connected")}
+        if not runtime.is_available():
+            return {'': ChannelMeta.new_empty(runtime.channel.id(), runtime.channel, "not available")}
+        metas = runtime.own_metas().copy()
+        if '' not in metas:
+            return {}
+        # 递归获取子节点所有的 meta.
+        self_meta = metas['']
+        # 赋值子节点名字. 这个参数是实质动态创建的.
+        child_names = list(node.children_names.values())
+        self_meta.children = child_names
+        for child_id, child_name in node.children_names.items():
+            virtual = child_id in node.virtual_children
+            sub_full_path = Channel.join_channel_path(path, child_name)
+            # 递归获取 metas.
+            sub_metas = self._metas(sub_full_path)
+            for sub_relative_path, meta in sub_metas.items():
+                relative_sub_path = Channel.join_channel_path(child_name, sub_relative_path)
+                if virtual:
+                    meta = meta.model_copy(update={'virtual': True})
+                metas[relative_sub_path] = meta
+        return metas
 
     def get_runtime_by_path(self, path: ChannelFullPath | str, root: Channel | None = None) -> ChannelRuntime | None:
         root_path = ''

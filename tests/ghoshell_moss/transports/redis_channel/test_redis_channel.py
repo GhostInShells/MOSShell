@@ -50,7 +50,7 @@ async def test_redis_channel_baseline():
             assert runtime.is_running()
 
             # 获取 channel meta
-            meta = runtime.own_meta()
+            meta = runtime.self_meta()
             assert meta is not None
             assert meta.name == "test_redis_channel"
             assert len(meta.commands) == 1

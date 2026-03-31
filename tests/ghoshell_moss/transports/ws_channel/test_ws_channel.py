@@ -33,7 +33,7 @@ async def run_fastapi(result_queue: asyncio.Queue):
                 # 验证 proxy 已连接
                 assert runtime.is_running()
                 # 验证 runtime meta
-                meta = runtime.own_meta()
+                meta = runtime.self_meta()
                 assert meta is not None
                 assert meta.name == "test_channel"
                 assert len(meta.commands) == 1

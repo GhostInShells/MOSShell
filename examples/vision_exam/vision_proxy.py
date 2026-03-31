@@ -21,7 +21,7 @@ if __name__ == "__main__":
                     if not broker.is_running():
                         continue
                     await broker.refresh_metas()
-                    meta = broker.own_meta()
+                    meta = broker.self_meta()
                     for msg in meta.context:
                         for ct in msg.contents:
                             if i := Base64Image.from_content(ct):

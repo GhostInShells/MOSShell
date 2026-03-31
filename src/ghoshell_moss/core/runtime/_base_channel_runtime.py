@@ -128,40 +128,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         return self._own_metas_cache
 
-    def metas(self) -> dict[ChannelFullPath, ChannelMeta]:
-        """
-        返回 Channel 自身的 Meta.
-        """
-        if not self.is_running() or not self.is_connected():
-            return {"": ChannelMeta.new_empty(self._uid, self.channel)}
-        own_metas = self.own_metas()
-        # 还是复制一份.
-        if "" not in own_metas:
-            return {"": ChannelMeta.new_empty(self._uid, self.channel)}
-        metas = own_metas.copy()
-        self_meta = metas[""]
-
-        # 递归获取.
-        children_names = self_meta.children
-        children = self.sub_channels()
-        if len(children) == 0:
-            return metas
-        for child_name, child in children.items():
-            child_runtime = self._importlib.get_channel_runtime(child)
-            if not child_runtime or not child_runtime.is_running():
-                continue
-            if child_name not in children_names:
-                children_names.append(child_name)
-            descendant_metas = child_runtime.metas()
-            for full_path, meta in descendant_metas.items():
-                new_full_path = Channel.join_channel_path(child_name, full_path)
-                if new_full_path in metas:
-                    continue
-                metas[new_full_path] = meta
-
-        self_meta.children = children_names
-        return metas
-
     async def refresh_own_metas(self, force: bool = False) -> None:
         ctx = ChannelCtx(self)
         self._own_metas_cache = await ctx.run(self._generate_own_metas, force)
@@ -431,25 +397,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             await self._importlib.start()
         self.logger.info("%s started", self.log_prefix)
         return self
-
-    async def _start_sub_channels(self) -> None:
-        children = self.sub_channels()
-        if len(children) == 0:
-            return
-
-        async def _start_child(_channel: Channel):
-            runtime = await self._importlib.compile_channel(_channel)
-            if runtime is not None:
-                await runtime.wait_started()
-
-        start_all = []
-        for child in children.values():
-            start_all.append(_start_child(child))
-        # 递归启动.
-        done = await asyncio.gather(*start_all, return_exceptions=True)
-        for t in done:
-            if isinstance(t, Exception):
-                self.logger.exception("%s failed to start sub channel %s", self.log_prefix, t)
 
     async def wait_started(self) -> None:
         if self._closing_event.is_set():

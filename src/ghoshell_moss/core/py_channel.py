@@ -317,6 +317,7 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
             container=container,
         )
         self._dynamic = dynamic
+        self._static_meta_cache: Optional[ChannelMeta] = None
 
     def is_connected(self) -> bool:
         # always true
@@ -335,6 +336,9 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
         return result
 
     async def _generate_own_metas(self, force: bool) -> dict[str, ChannelMeta]:
+        if self.is_available() and self._static_meta_cache:
+            # 返回缓存.
+            return {'': self._static_meta_cache}
         dynamic = self._dynamic or False
         name = self._name
         description = self.channel.description()
@@ -375,6 +379,8 @@ class PyChannelRuntime(AbsChannelTreeRuntime):
                 failure="channel not available with system failure: %s" % e,
                 dynamic=True,
             )
+        if not meta.dynamic:
+            self._static_meta_cache = meta
         return {"": meta}
 
     # ---- commands ---- #
