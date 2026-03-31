@@ -964,7 +964,7 @@ class ChannelTree(ABC):
         pass
 
     @abstractmethod
-    def get_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+    def get_channel_runtime(self, channel: Channel, running: bool = False) -> ChannelRuntime | None:
         """
         获取一个已经启动过的 Channel Runtime.
         """
@@ -1017,7 +1017,14 @@ class ChannelTree(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_runtime_by_path(self, path: ChannelFullPath, root: Channel | None = None) -> ChannelRuntime | None:
+        pass
+
     async def clear(self, runtime: ChannelRuntime) -> None:
+        """
+        清空一个 runtime 和它所有的子节点.
+        """
         if not runtime.is_running():
             return
         # 清空 runtime 自身.
@@ -1027,6 +1034,9 @@ class ChannelTree(ABC):
         self.logger.info("%r clear channel runtime %s, %s", self, runtime.name, runtime.id)
 
     async def clear_children_runtimes(self, channel: Channel) -> None:
+        """
+        根据 channel 清空其所有的子节点.
+        """
         children = self.get_children_runtimes(channel)
         clearing = []
         for child_name, runtime in children.items():
@@ -1038,66 +1048,12 @@ class ChannelTree(ABC):
                 if isinstance(r, Exception):
                     self.logger.exception("%s clear child failed: %s", self, r)
 
-    def descendants(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
-        root_runtime = self.recursively_find_runtime(self.main, root)
-        if root_runtime is None:
-            return {}
-        return self.find_descendants(root_runtime.channel)
-
+    @abstractmethod
     def all(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
-        root_runtime = self.recursively_find_runtime(self.main, root)
-        if root_runtime is None:
-            return {}
-        all_runtimes = {"": root_runtime}
-        for path, runtime in self.descendants(root).items():
-            all_runtimes[path] = runtime
-        return all_runtimes
-
-    def find_descendants(
-            self,
-            channel: Channel,
-            bloodline: set | None = None,
-            depth: int = 0,
-    ) -> dict[ChannelFullPath, ChannelRuntime]:
         """
-        语法糖, 用来获取一个 Channel 所有的子孙 Channel. 如果成环就会抛出异常.
+        以 root 路径为根节点, 返回所有的运行中节点.
         """
-        runtime = self.get_channel_runtime(channel)
-        if runtime is None or not runtime.is_running():
-            return {}
-        result = {}
-        bloodline = bloodline or set()
-        if channel in bloodline:
-            parent = [c.name for c in bloodline]
-            raise RuntimeError(f"import loop of {channel.name()} id={channel.id()}, parent={parent}")
-        bloodline.add(channel)
-        for name, child in runtime.sub_channels().items():
-            child_runtime = self.get_channel_runtime(child)
-            result[name] = child_runtime
-            if child_runtime is not None and child_runtime.is_running():
-                descendants = self.find_descendants(child, bloodline, depth + 1)
-                for path, descendant in descendants.items():
-                    real_path = Channel.join_channel_path(name, path)
-                    result[real_path] = descendant
-        # 退栈.
-        bloodline.remove(channel)
-        return result
-
-    def recursively_find_runtime(self, runtime: ChannelRuntime, path: ChannelFullPath) -> ChannelRuntime | None:
-        if path == "":
-            return runtime
-        paths = Channel.split_channel_path_to_names(path, 1)
-        child_name = paths[0]
-        further_path = paths[1] if len(paths) > 1 else ""
-        if child_name == "":
-            return runtime
-        child_channel = runtime.sub_channels().get(child_name)
-        if child_channel is None:
-            return None
-        child_runtime = self.get_channel_runtime(child_channel)
-        if child_runtime is None:
-            return None
-        return self.recursively_find_runtime(child_runtime, further_path)
+        pass
 
     async def recursively_fetch_runtime(self, root: ChannelRuntime, paths: ChannelPaths) -> ChannelRuntime | None:
         if len(paths) == 0:
@@ -1118,7 +1074,7 @@ class ChannelTree(ABC):
         """
         递归获取一个 channel 所有的子命令, 按路径完成分组.
         """
-        runtime = self.get_running_runtime(channel)
+        runtime = self.get_channel_runtime(channel, running=True)
         if runtime is None:
             return {}
         commands = {"": runtime.own_commands(available_only)}

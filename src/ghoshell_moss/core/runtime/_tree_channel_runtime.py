@@ -80,7 +80,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         chan, command_name = Command.split_unique_name(name)
         if chan == "":
             return self.get_own_command(command_name)
-        runtime = self.tree.recursively_find_runtime(self, chan)
+        runtime = self.tree.get_runtime_by_path(chan, self.channel)
         if runtime is None:
             return None
         return runtime.get_command(command_name)

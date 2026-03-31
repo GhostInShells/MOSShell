@@ -423,18 +423,20 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         if task in self._task_group:
             self._task_group.remove(task)
 
-    def get_channel_runtime(self, channel: Channel) -> ChannelRuntime | None:
+    def get_channel_runtime(self, channel: Channel, running: bool = False) -> ChannelRuntime | None:
         if self._closed:
             return None
-        if channel is self._main.channel:
-            # 根节点不启动.
-            return self._main
-
         if not self.is_running():
             return None
-
+        if channel is self._main.channel:
+            return self._main
         channel_id = channel.id()
-        return self._runtimes.get(channel_id)
+        result = self._runtimes.get(channel_id)
+        if result is None:
+            return None
+        if running and not result.is_running():
+            return None
+        return result
 
     async def compile_channel(self, channel: Channel) -> ChannelRuntime | None:
         # 只有创建这一段需要上锁.
@@ -572,6 +574,50 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         if not runtime.is_running():
             return None
         return runtime
+
+    def all(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
+        root_node = self._runtime_status_nodes.get(root)
+        if root_node is None:
+            return {}
+
+        def _recursive_find_runtime(
+                _result: dict[ChannelFullPath, ChannelRuntime],
+                _node: ChannelRuntimeNode,
+                _relative_path: str,
+        ):
+            _runtime = self._runtimes.get(_node.id)
+            if _runtime is None:
+                return
+            _result[_relative_path] = _runtime
+            for _child_id, _child_name in _node.children_names.items():
+                runtime = self.get_running_runtime(_child_id)
+                child_relative_path = Channel.join_channel_path(_relative_path, _child_name)
+                if runtime is None:
+                    continue
+                _child_full_path = self._runtime_id_to_paths.get(_child_id)
+                if _child_full_path:
+                    _child_node = self._runtime_status_nodes.get(_child_full_path)
+                    if _child_node is None:
+                        continue
+                    # 深度优先递归.
+                    _recursive_find_runtime(_result, _child_node, child_relative_path)
+
+        result = {}
+        _recursive_find_runtime(_result=result, _node=root_node, _relative_path='')
+        return result
+
+    def get_runtime_by_path(self, path: ChannelFullPath | str, root: Channel | None = None) -> ChannelRuntime | None:
+        root_path = ''
+        if root is not None:
+            root_id = root.id()
+            root_path = self._runtime_id_to_paths.get(root_id)
+            if root_path is None:
+                return None
+        search_path = Channel.join_channel_path(root_path, path)
+        if search_path not in self._runtime_status_nodes:
+            return None
+        node = self._runtime_status_nodes[search_path]
+        return self.get_running_runtime(node.id)
 
     def get_children_runtimes(self, channel: Channel) -> dict[str, "ChannelRuntime"]:
         channel_id = channel.id()

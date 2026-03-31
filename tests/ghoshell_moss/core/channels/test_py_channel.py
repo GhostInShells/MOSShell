@@ -423,13 +423,14 @@ async def test_channel_fetch_level2():
     main = PyChannel(name="main")
     a_chan = PyChannel(name="a_chan")
     b_chan = PyChannel(name="b_chan")
+    # b_chan 被引用了两次, 但是只会有一个生效.
     a_chan.import_channels(b_chan)
     main.import_channels(a_chan, b_chan)
     async with main.bootstrap() as runtime:
         b1 = await runtime.fetch_sub_runtime("b_chan")
         b2 = await runtime.fetch_sub_runtime("a_chan.b_chan")
-        assert b1 is not None
-        assert b1 is b2
+        assert not (b1 and b2)
+        assert b1 or b2
 
 
 def test_channel_split_path():
