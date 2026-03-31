@@ -113,7 +113,7 @@ class CTMLShell(MOSShell):
 
     def topics(self) -> TopicService:
         self._check_running()
-        return self._main_runtime.importlib.topics
+        return self._main_runtime.tree.topics
 
     async def __aenter__(self):
         if self._start:
@@ -366,7 +366,7 @@ class CTMLShell(MOSShell):
         if not isinstance(topic, Topic):
             raise ValueError(f"Topic {topic} is not Topic or TopicModel type")
 
-        return await self._main_runtime.importlib.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
+        return await self._main_runtime.tree.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
     def subscribe_topic_model(
             self,
@@ -377,7 +377,7 @@ class CTMLShell(MOSShell):
             keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         self._check_running()
-        return self._main_runtime.importlib.topics.subscribe_model(
+        return self._main_runtime.tree.topics.subscribe_model(
             model,
             topic_name=name,
             maxsize=maxsize,
@@ -392,7 +392,7 @@ class CTMLShell(MOSShell):
             keep: SubscribeKeep = "latest",
     ) -> Subscriber:
         self._check_running()
-        return self._main_runtime.importlib.topics.subscribe(
+        return self._main_runtime.tree.topics.subscribe(
             topic_name=name,
             maxsize=maxsize,
             keep=keep,

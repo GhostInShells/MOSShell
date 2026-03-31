@@ -314,7 +314,7 @@ class DuplexChannelProvider(ChannelProvider):
             event = CreateSessionEvent(
                 session_id=self._session_id,
                 # 提供当前正在监听的事件.
-                listening_topics=self._root_runtime.importlib.topics.listening(),
+                listening_topics=self._root_runtime.tree.topics.listening(),
             ).to_channel_event()
             await self._send_event_to_proxy(event)
             self._session_creating_event.set()

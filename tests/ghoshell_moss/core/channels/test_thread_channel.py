@@ -392,7 +392,7 @@ async def test_thread_provider_pub_topic():
     received = []
 
     async with provider.arun(chan):
-        assert provider.container.get(TopicService) is provider.runtime.importlib.topics
+        assert provider.container.get(TopicService) is provider.runtime.tree.topics
         async with main.bootstrap() as runtime:
             proxy_runtime = await runtime.fetch_sub_runtime("proxy")
             await proxy_runtime.wait_connected()

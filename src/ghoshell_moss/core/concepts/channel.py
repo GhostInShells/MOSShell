@@ -49,7 +49,7 @@ __all__ = [
     "TaskDoneCallback",
     "RefreshMetaCallback",
     "ChannelRuntime",
-    "ChannelImportLib",
+    "ChannelTree",
     "ChannelFullPath",
     "ChannelMeta",
     "ChannelPaths",
@@ -595,13 +595,16 @@ class ChannelRuntime(ABC):
         pass
 
     def virtual_sub_channels(self) -> dict[str, Channel]:
+        """
+        管理当前 Channel runtime 能拿到的动态子节点.
+        """
         return {}
 
     @property
     @abstractmethod
-    def importlib(self) -> "ChannelImportLib":
+    def tree(self) -> "ChannelTree":
         """
-        import lib shared by all channel runtime in the same scope (from main channel)
+        channel tree shared by all channel runtime in the same scope (from main channel)
         """
         pass
 
@@ -609,7 +612,7 @@ class ChannelRuntime(ABC):
         """
         创建一个独立的 publisher 可以在链路中广播 topic.
         """
-        return self.importlib.topics.publisher(
+        return self.tree.topics.publisher(
             creator=f"channel/{self.id}",
         )
 
@@ -617,7 +620,7 @@ class ChannelRuntime(ABC):
         """
         发送一个 topic 到链路中, 其它监听的 channel 或者 shell 都能拿到这个事件.
         """
-        await self.importlib.topics.pub(topic, name=topic_name, creator=f"channel/{self.id}")
+        await self.tree.topics.pub(topic, name=topic_name, creator=f"channel/{self.id}")
 
     def topic_subscriber(
             self,
@@ -630,7 +633,7 @@ class ChannelRuntime(ABC):
         """
         创建一个 Subscriber 来获取链路中的 Topic 广播.
         """
-        return self.importlib.topics.subscribe_model(
+        return self.tree.topics.subscribe_model(
             model=model,
             topic_name=topic_name,
             maxsize=maxsize,
@@ -941,11 +944,11 @@ class ChannelRuntime(ABC):
         await self.close()
 
 
-class ChannelImportLib(ABC):
+class ChannelTree(ABC):
     """
-    在一个上下文中, 所有 ChannelRuntime 应该共享的 Importlib.
+    在一个上下文中, 所有 ChannelRuntime 应该共享的 tree.
     用来避免一个 Channel 被多个 Channel 引用, 从而实例化出多个 Runtime.
-    类似 python 的 __import__
+    保证 channel runtime 的唯一性同时, 管理父子关系.
     """
 
     @property
@@ -979,7 +982,7 @@ class ChannelImportLib(ABC):
     @abstractmethod
     def is_running(self) -> bool:
         """
-        importlib 是否已经启动了.
+        是否已经启动了.
         """
         pass
 

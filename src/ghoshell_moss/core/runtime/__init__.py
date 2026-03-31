@@ -1,3 +1,3 @@
-from ._import_lib import BaseImportLib
+from ._import_lib import BaseChannelTree
 from ._base_channel_runtime import AbsChannelRuntime
 from ._tree_channel_runtime import AbsChannelTreeRuntime

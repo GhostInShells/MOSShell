@@ -64,7 +64,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         commands = self.own_commands(available_only).copy()
         result = {"": commands}
         for name, child in self.sub_channels().items():
-            child_runtime = self.importlib.get_channel_runtime(child)
+            child_runtime = self.tree.get_channel_runtime(child)
             if child_runtime and child_runtime.is_running():
                 child_commands = child_runtime.commands(available_only)
                 for further_path, command_map in child_commands.items():
@@ -80,7 +80,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         chan, command_name = Command.split_unique_name(name)
         if chan == "":
             return self.get_own_command(command_name)
-        runtime = self.importlib.recursively_find_runtime(self, chan)
+        runtime = self.tree.recursively_find_runtime(self, chan)
         if runtime is None:
             return None
         return runtime.get_command(command_name)
@@ -169,7 +169,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
         children = self.sub_channels()
         if len(children) > 0:
             for child in children.values():
-                runtime = self.importlib.get_channel_runtime(child)
+                runtime = self.tree.get_channel_runtime(child)
                 if not runtime or not runtime.is_running():
                     continue
                 elif not runtime.is_idle():
@@ -231,7 +231,7 @@ class AbsChannelTreeRuntime(AbsChannelRuntime, ABC):
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
 
-        runtime = self.importlib.get_channel_runtime(child)
+        runtime = self.tree.get_channel_runtime(child)
         if runtime is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return

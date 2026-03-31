@@ -369,7 +369,7 @@ async def test_py_channel_child_orders() -> None:
 
     async with main.bootstrap() as runtime:
         # 深度优先排序.
-        all_runtimes = runtime.importlib.all()
+        all_runtimes = runtime.tree.all()
         order = [b.channel for b in all_runtimes.values()]
         assert order == [main, a_chan, c_chan, d_chan, b_chan, e_chan]
         # 运行第二次.

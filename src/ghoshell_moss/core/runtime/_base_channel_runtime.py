@@ -22,7 +22,7 @@ from ghoshell_moss.core.concepts.channel import (
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
-from ._import_lib import BaseImportLib
+from ._import_lib import BaseChannelTree
 import logging
 
 __all__ = ["AbsChannelRuntime"]
@@ -50,7 +50,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._container = self.prepare_container(container)
         self._logger: LoggerItf | None = logger
         # import lib 是最重要的.
-        self._importlib: BaseImportLib | None = None
+        self._importlib: BaseChannelTree | None = None
 
         self._logger: LoggerItf | None = logger
 
@@ -88,7 +88,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         return self._logger
 
     @property
-    def importlib(self) -> BaseImportLib:
+    def tree(self) -> BaseChannelTree:
         if not self._importlib:
             raise RuntimeError(f"channel is not running")
         return self._importlib
@@ -106,7 +106,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     async def fetch_sub_runtime(self, path: ChannelFullPath) -> ChannelRuntime | None:
         paths = Channel.split_channel_path_to_names(path)
-        return await self.importlib.recursively_fetch_runtime(self, paths)
+        return await self.tree.recursively_fetch_runtime(self, paths)
 
     @property
     def id(self) -> str:
@@ -192,7 +192,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             f = asyncio.Future()
             f.set_result(None)
             return f
-        return self.importlib.refresh(self.channel.id(), wait=True)
+        return self.tree.refresh(self.channel.id(), wait=True)
         # await self._refresh_meta_lock.acquire()
         # try:
         #     if not self._starting or self._closing_event.is_set():
@@ -373,10 +373,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def _importlib_ctx(self):
         try:
             if self._importlib is None:
-                _importlib = self._container.get(BaseImportLib)
+                _importlib = self._container.get(BaseChannelTree)
                 if _importlib is None:
-                    _importlib = BaseImportLib(self, self._container)
-                    self.container.set(BaseImportLib, _importlib)
+                    _importlib = BaseChannelTree(self, self._container)
+                    self.container.set(BaseChannelTree, _importlib)
                 self._importlib = _importlib
             yield
         finally:

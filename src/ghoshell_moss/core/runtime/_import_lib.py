@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelRuntime,
-    ChannelImportLib,
+    ChannelTree,
     ChannelFullPath,
     ChannelMeta,
 )
@@ -16,7 +16,7 @@ import time
 import contextlib
 import asyncio
 
-__all__ = ["BaseImportLib"]
+__all__ = ["BaseChannelTree"]
 
 _ChannelId = str
 
@@ -268,7 +268,7 @@ class ChannelRuntimeNode:
         del self.logger
 
 
-class BaseImportLib(ChannelImportLib, ChannelTreeContext):
+class BaseChannelTree(ChannelTree, ChannelTreeContext):
     """
     唯一的 lib 用来管理所有可以被 import 的 channel runtime
     """
@@ -474,16 +474,16 @@ class BaseImportLib(ChannelImportLib, ChannelTreeContext):
     @contextlib.asynccontextmanager
     async def _container_ctx_manager(self):
         try:
-            self._container.set(BaseImportLib, self)
-            self._container.set(ChannelImportLib, self)
+            self._container.set(BaseChannelTree, self)
+            self._container.set(ChannelTree, self)
             self._logger = self._container.get(LoggerItf)
             if self._logger is None:
                 self._logger = logging.getLogger("moss")
                 self._container.set(LoggerItf, self._logger)
             yield
         finally:
-            self._container.unbound(BaseImportLib)
-            self._container.unbound(ChannelImportLib)
+            self._container.unbound(BaseChannelTree)
+            self._container.unbound(ChannelTree)
             self._container = None
 
     @contextlib.asynccontextmanager
