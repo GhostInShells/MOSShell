@@ -65,7 +65,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 可以注册监听, 监听 refresh meta 动作.
         self._refresh_meta_lock = asyncio.Lock()
 
-        self._defer_clear_mark = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._main_loop_task: Optional[asyncio.Task] = None
         # maintain a task group for cancel them during runtime.
@@ -295,9 +294,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 设置 task id 到 pending map 里.
         self._add_task_done_callback(task)
         try:
-            if self._defer_clear_mark:
-                self._defer_clear_mark = False
-                await self.clear_own()
             # 准备入参.
             await self._push_task_with_paths(paths, task)
         except Exception as exc:
@@ -336,7 +332,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def clear(self) -> None:
         if not self.is_running():
             return
-        self._defer_clear_mark = False
         await self.clear_own()
         await self.clear_children()
 
@@ -344,8 +339,6 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     async def clear_own(self) -> None:
         pass
 
-    def defer_clear(self) -> None:
-        self._defer_clear_mark = True
 
     # --- 开始与结束 --- #
 
