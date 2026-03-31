@@ -799,18 +799,24 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
+    async def clear_own(self) -> None:
+        """
+        清空自身的运行状态.
+        """
+        pass
+
+    @abstractmethod
     async def clear(self) -> None:
         """
         清空当前 Runtime 所有的运行状态.
         """
         pass
 
-    @abstractmethod
-    async def clear_sub_channels(self) -> None:
+    async def clear_children(self) -> None:
         """
         清空当前 Runtime 所有子 channel 的 runtime
         """
-        pass
+        await self.tree.clear_children_runtimes(self.channel)
 
     async def push_task(self, *tasks: CommandTask) -> None:
         """
@@ -1011,6 +1017,18 @@ class ChannelTree(ABC):
         获取一个节点所有已经激活的子节点.
         """
         pass
+
+    async def clear_children_runtimes(self, channel: Channel) -> None:
+        children = self.get_children_runtimes(channel)
+        clearing = []
+        for child_name, runtime in children.items():
+            if runtime.is_running():
+                clearing.append(runtime.clear())
+        if len(clearing) > 0:
+            done = await asyncio.gather(*clearing)
+            for r in done:
+                if isinstance(r, Exception):
+                    self.logger.exception("%s clear child failed: %s", self, r)
 
     def descendants(self, root: ChannelFullPath = "") -> dict[ChannelFullPath, ChannelRuntime]:
         root_runtime = self.recursively_find_runtime(self.main, root)

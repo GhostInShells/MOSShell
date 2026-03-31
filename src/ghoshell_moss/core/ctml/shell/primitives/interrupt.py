@@ -11,7 +11,7 @@ async def interrupt():
     runtime = ChannelCtx.runtime()
     if not runtime:
         return
-    await runtime.clear_sub_channels()
+    await runtime.clear_children()
 
 
 interrupt_command = PyCommand(interrupt, blocking=True, call_soon=True)

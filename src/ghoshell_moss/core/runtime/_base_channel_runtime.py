@@ -338,27 +338,11 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             return
         self._defer_clear_mark = False
         await self.clear_own()
-        await self.clear_sub_channels()
+        await self.clear_children()
 
     @abstractmethod
     async def clear_own(self) -> None:
         pass
-
-    async def clear_sub_channels(self):
-        async def clear_child(_child: Channel):
-            child_runtime = self._importlib.get_channel_runtime(_child)
-            if child_runtime and child_runtime.is_running():
-                await child_runtime.clear()
-
-        clear_tasks = []
-        children = self.sub_channels()
-        for child in children.values():
-            clear_tasks.append(clear_child(child))
-        if len(clear_tasks) > 0:
-            done = await asyncio.gather(*clear_tasks)
-            for r in done:
-                if isinstance(r, Exception):
-                    self._logger.exception("%s clear child failed: %s", self.log_prefix, r)
 
     def defer_clear(self) -> None:
         self._defer_clear_mark = True
