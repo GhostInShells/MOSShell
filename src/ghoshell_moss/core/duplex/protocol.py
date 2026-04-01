@@ -56,7 +56,12 @@ class ChannelEventModel(BaseModel, ABC):
     timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_channel_event(self) -> ChannelEvent:
-        data = self.model_dump(exclude_none=True, exclude={"event_type", "channel_id", "channel_name", "event_id"})
+        data = self.model_dump(
+            exclude_none=True,
+            # 注意!! 会排除掉默认值, 所以不要轻易修改任何默认值.
+            exclude_defaults=True,
+            exclude={"event_type", "channel_id", "channel_name", "event_id"},
+        )
         return ChannelEvent(
             event_id=self.event_id,
             event_type=self.event_type,

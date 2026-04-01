@@ -94,6 +94,7 @@ class ChannelMeta(BaseModel):
     available: bool = Field(default=True, description="Whether the channel is available.")
     commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
     states: dict[str, str] = Field(default_factory=dict, description="The states of the channel.")
+    current_state: str = Field(default="", description="The current state of the channel.")
     children: list[str] = Field(default_factory=list, description="the children channel names")
 
     # about instructions / context messages
@@ -124,6 +125,9 @@ class ChannelMeta(BaseModel):
             available=False,
             failure=failure,
         )
+
+    def marshal(self) -> str:
+        return self.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True)
 
 
 ChannelFullPath = str

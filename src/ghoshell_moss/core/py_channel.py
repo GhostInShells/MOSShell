@@ -401,29 +401,33 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         if name not in states:
             return f'state `{name}` not found.'
         stop_any = await self.stop_current_state()
-        new_state = states[name]
-        await new_state.on_startup()
-        self._current_state = new_state
-        self._current_state_name = name
-        self._current_state_running_task = asyncio.create_task(new_state.on_running())
-        return f"{stop_any}started current state `{name}`"
+        try:
+            new_state = states[name]
+            await new_state.on_startup()
+            self._current_state_name = name
+            self._current_state_running_task = asyncio.create_task(new_state.on_running())
+            self._current_state = new_state
+            return f"{stop_any}started current state `{name}`"
+        finally:
+            if self._current_state is None:
+                await self.stop_current_state()
 
     async def stop_current_state(self) -> str:
         """
         stop current running state.
         """
-        if self._current_state_running_task is not None and not self._current_state_running_task.done():
-            self._current_state_running_task.cancel()
-            try:
-                await self._current_state_running_task
-            except asyncio.CancelledError:
-                pass
-        self._current_state_running_task = None
-        current_state_name = self._current_state_name
-        self._current_state_name = None
-        if not self._current_state:
-            return "no current state is running. "
         try:
+            if self._current_state_running_task is not None and not self._current_state_running_task.done():
+                self._current_state_running_task.cancel()
+                try:
+                    await self._current_state_running_task
+                except asyncio.CancelledError:
+                    pass
+            self._current_state_running_task = None
+            current_state_name = self._current_state_name
+            self._current_state_name = None
+            if not self._current_state:
+                return "no current state is running. "
             await self._current_state.on_close()
             return f'{current_state_name} is stopped. '
         except asyncio.CancelledError:
@@ -436,6 +440,8 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             return f"stop current state error: {e}. "
         finally:
             self._current_state = None
+            self._current_state_name = None
+            self._current_state_running_task = None
 
     def sub_channels(self) -> dict[str, Channel]:
         result = self._main_state.get_children()
@@ -491,6 +497,7 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
                 available=main_state.is_available(),
                 description=description,
                 states=states_data,
+                current_state=self._current_state_name or '',
                 context=new_context_messages,
                 instruction=self._on_startup_instruction,
             )
