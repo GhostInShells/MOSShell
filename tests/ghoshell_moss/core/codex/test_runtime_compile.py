@@ -1,4 +1,4 @@
-from ghoshell_codex import runtime_compile
+from ghoshell_moss.core.codex import runtime_compile
 import pytest
 
 

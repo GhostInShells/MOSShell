@@ -30,7 +30,7 @@ def get_interface(import_path: str):
     reflect a Python module and read its interface with detail body of class or functions.
     :param import_path: Python import path e.g.: [module.path][:attribute]
     """
-    from ghoshell_codex import reflect_any_by_import_path
+    from ghoshell_moss.core.codex import reflect_any_by_import_path
     result = reflect_any_by_import_path(import_path)
     click.echo(result)
 

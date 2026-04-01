@@ -91,7 +91,7 @@ def concepts(module_name: str = None):
             print_info(f"  • {mod}")
         sys.exit(1)
 
-    from ghoshell_codex import reflect_any_by_import_path
+    from ghoshell_moss.core.codex import reflect_any_by_import_path
     import_path = f"ghoshell_moss.core.concepts.{module_name}"
     try:
         result = reflect_any_by_import_path(import_path)

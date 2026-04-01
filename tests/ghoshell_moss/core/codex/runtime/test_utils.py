@@ -1,6 +1,6 @@
 from typing import NamedTuple, List
 from typing_extensions import is_protocol, is_typeddict
-from ghoshell_codex.runtime._utils import (
+from ghoshell_moss.core.codex.runtime._utils import (
     get_class_def_from_source, replace_class_def_name, strip_source_indent, count_source_indent,
     parse_doc_string,
     escape_string_quotes,

@@ -28,7 +28,7 @@ def reflect_any_by_import_path(import_path: str) -> str:
     :param import_path: [module.path][:attribute]
     :return: value
     """
-    from ghoshell_codex.runtime._reflect import reflect_prompt_from_value
+    from ghoshell_moss.core.codex.runtime._reflect import reflect_prompt_from_value
     value = import_from_path(import_path)
     if isinstance(value, ModuleType):
         return reflect_module(value)

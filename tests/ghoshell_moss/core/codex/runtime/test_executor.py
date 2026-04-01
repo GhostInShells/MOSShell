@@ -1,5 +1,5 @@
-from ghoshell_codex.runtime.executor import RuntimeModuleExecutor
-from ghoshell_codex.runtime import compiler
+from ghoshell_moss.core.codex.runtime.executor import RuntimeModuleExecutor
+from ghoshell_moss.core.codex.runtime import compiler
 import asyncio
 
 

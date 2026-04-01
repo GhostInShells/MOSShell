@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Literal, Callable, Coroutine, Iterable
 from typing_extensions import Self
 
-from ghoshell_moss import MutableChannel
+from ghoshell_moss.core.blueprint import MutableChannel
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.concepts.topic import TopicModel, TopicService
 from ghoshell_container import IoCContainer
@@ -14,7 +14,8 @@ import asyncio
 
 __all__ = [
     'Priority', 'PriorityLevel', 'IgnorePolicy',
-    'InputTopic', 'Snapshot',
+    'InputTopic', 'InterruptTopic',
+    'Snapshot',
     'IdleHook', 'RespondHook', 'Respond',
     'MOSS', 'MOSSRuntime', 'MOSSToolSet',
 ]
@@ -87,6 +88,41 @@ class InputTopic(TopicModel):
     @classmethod
     def default_topic_name(cls) -> str:
         return 'moss/inputs'
+
+
+class MessagesTopic(TopicModel):
+    """
+    inputs/outputs messages from moss runtime, listen to it for rendering messages
+    """
+    message: list[Message] = Field(
+        description="moss output messages"
+    )
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return 'moss/OutputTopic'
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return 'moss/output'
+
+
+class InterruptTopic(TopicModel):
+    """
+    interrupt the moss loop by allmeans
+    """
+    message: Message | None = Field(
+        default=None,
+        description="moss interrupt message"
+    )
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return 'moss/InterruptTopic'
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return 'moss/interrupt'
 
 
 State = Literal['created', 'idle', 'responding', 'executing', 'closed']

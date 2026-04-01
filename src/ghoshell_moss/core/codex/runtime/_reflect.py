@@ -1,7 +1,7 @@
 import abc
 from typing import Any, Optional, Dict, Tuple, Iterable, Protocol
 from typing_extensions import is_typeddict
-from ghoshell_codex.runtime._utils import (
+from ghoshell_moss.core.codex.runtime._utils import (
     get_modulename_of_value,
     get_callable_definition,
     is_pydantic_type,

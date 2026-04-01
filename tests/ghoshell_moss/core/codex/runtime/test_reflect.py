@@ -1,7 +1,7 @@
 from typing import TypedDict
 import inspect
-from ghoshell_codex.runtime import _reflect
-from ghoshell_codex.runtime._reflect import reflect_imported_locals_by_modulename, reflect_prompt_from_value
+from ghoshell_moss.core.codex.runtime import _reflect
+from ghoshell_moss.core.codex.runtime._reflect import reflect_imported_locals_by_modulename, reflect_prompt_from_value
 
 
 class Foo(TypedDict):

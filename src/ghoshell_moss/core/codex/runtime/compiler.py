@@ -49,7 +49,7 @@ class RuntimeModuleCompiler:
             source: str,
             origin: ModuleType | None = None,
             modulename: str | None = None,
-            filename: str = '<ghoshell_codex_temp_module>',
+            filename: str = '<moss_codex_temp_module>',
             local_injections: dict[str, Any] | None = None,
             compile_soon: bool = True,
     ):
@@ -62,7 +62,7 @@ class RuntimeModuleCompiler:
             if origin is not None:
                 modulename = origin.__name__
             else:
-                modulename = 'ghoshell_codex_temp_module'
+                modulename = 'moss_codex_temp_module'
         self._modulename = modulename
         self._compiled: ModuleType | None = None
         if compile_soon:
