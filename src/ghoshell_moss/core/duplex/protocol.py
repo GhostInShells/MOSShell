@@ -1,3 +1,4 @@
+import json
 import time
 from abc import ABC
 from typing import Any, ClassVar, Optional
@@ -45,7 +46,7 @@ class ChannelEvent(TypedDict):
     event_type: str
     session_id: Optional[str]
     timestamp: float
-    data: Optional[dict[str, Any]]
+    data: str
 
 
 class ChannelEventModel(BaseModel, ABC):
@@ -56,11 +57,10 @@ class ChannelEventModel(BaseModel, ABC):
     timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_channel_event(self) -> ChannelEvent:
-        data = self.model_dump(
+        data = self.model_dump_json(
             exclude_none=True,
-            # 注意!! 会排除掉默认值, 所以不要轻易修改任何默认值.
-            exclude_defaults=True,
             exclude={"event_type", "channel_id", "channel_name", "event_id"},
+            ensure_ascii=False,
         )
         return ChannelEvent(
             event_id=self.event_id,
@@ -74,7 +74,11 @@ class ChannelEventModel(BaseModel, ABC):
     def from_channel_event(cls, channel_event: ChannelEvent) -> Optional[Self]:
         if cls.event_type != channel_event["event_type"]:
             return None
-        data = channel_event.get("data", {})
+        data_str = channel_event.get("data", None)
+        if not data_str:
+            data = {}
+        else:
+            data = json.loads(data_str)
         data["event_id"] = channel_event["event_id"]
         data["session_id"] = channel_event["session_id"]
         data["timestamp"] = channel_event["timestamp"]
@@ -245,3 +249,6 @@ class ProviderErrorEvent(ChannelEventModel):
     event_type: ClassVar[str] = "moss.channel.provider.error"
     errcode: int = Field(description="error code")
     errmsg: str = Field(description="error message")
+
+    def __repr__(self):
+        return f"<error code=`{self.errcode}` message=`{self.errmsg}`>"

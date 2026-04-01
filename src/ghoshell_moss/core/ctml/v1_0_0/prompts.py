@@ -92,7 +92,7 @@ class _Node:
         self.children: list[_Node] = []
 
 
-def make_interfaces(channel_meta: ChannelMeta) -> str:
+def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain: bool = True) -> str:
     """
     实现 CTML v1.0.0 的 interface 描述.
     """
@@ -100,12 +100,18 @@ def make_interfaces(channel_meta: ChannelMeta) -> str:
     commands = channel_meta.commands
     if len(commands) == 0:
         return ''
-    blocks = ['<interface>']
     available_commands = 0
+    blocks = []
     blocks.append("```python")
     for cmd_meta in commands:
         if not cmd_meta.available:
             continue
+        if cmd_meta.dynamic and not dynamic:
+            # 排除掉非动态的 command meta.
+            continue
+        if not cmd_meta.dynamic and not sustain:
+            continue
+
         available_commands += 1
         if not cmd_meta.blocking:
             blocks.append("# not blocking")
@@ -118,8 +124,142 @@ def make_interfaces(channel_meta: ChannelMeta) -> str:
         return ''
 
     blocks.append('```')
-    blocks.append('</interface>')
     return '\n'.join(blocks)
+
+
+class ChannelMetaPrompter:
+
+    def __init__(self, path: ChannelFullPath, meta: ChannelMeta):
+        self.path = path or MAIN_CHANNEL_NAME
+        self.meta = meta
+        # 是否是虚拟节点.
+        self.virtual = meta.virtual
+
+    def make_full_block(self) -> Message | None:
+        channel_container = Message.new(tag="channel", name=self.path, timestamp=False)
+        if description := self.description_message():
+            channel_container.with_messages(description, timestamp=False)
+        if instruction := self.instruction_message():
+            channel_container.with_messages(instruction, timestamp=False)
+        if failure := self.failure_message():
+            channel_container.with_messages(failure, timestamp=False)
+            return channel_container
+        if states := self.states_message():
+            channel_container.with_messages(states, timestamp=False)
+        if context := self.context_messages():
+            channel_container.with_messages(*context, timestamp=True, with_meta=True)
+        if interface := self.interface_message(dynamic=True, sustain=True):
+            channel_container.with_messages(interface, timestamp=False)
+        if channel_container.is_empty():
+            return None
+        return channel_container
+
+    def make_instruction_block(self) -> Message | None:
+        """
+        virtual 类型的节点没有资格生成 instruction.
+        """
+        if self.virtual:
+            return None
+        channel_instruction_container = Message.new(tag="channel", name=self.path, timestamp=False)
+        # 先添加 description.
+        if description := self.description_message():
+            channel_instruction_container.with_messages(description, timestamp=False)
+        if instruction := self.instruction_message():
+            channel_instruction_container.with_messages(instruction, timestamp=False)
+        dynamic = False
+        # 只展示可持续消息.
+        sustain = True
+        if interface_msg := self.interface_message(dynamic=dynamic, sustain=sustain):
+            channel_instruction_container.with_messages(interface_msg, timestamp=False)
+        if channel_instruction_container.is_empty():
+            return None
+        return channel_instruction_container
+
+    def make_context_block(self) -> Message | None:
+        """
+        生成 Channel Context 的标准逻辑.
+        """
+        channel_context_message_container = Message.new(
+            tag="channel",
+            name=self.path,
+            timestamp=False,
+            # 只添加 refreshed 的最后时间戳.
+            attributes={'refreshed': self.meta.created.isoformat()},
+        )
+        if failure := self.failure_message():
+            channel_context_message_container.with_messages(failure)
+            return channel_context_message_container
+        # virtual 时添加的信息.
+        if self.virtual:
+            if description := self.description_message():
+                channel_context_message_container.with_messages(description, timestamp=False)
+            if instruction := self.instruction_message():
+                channel_context_message_container.with_messages(instruction, timestamp=False)
+
+        # 正常添加 interface.
+        sustain = self.virtual
+        dynamic = True
+        # 正常添加 context.
+        if states := self.states_message():
+            channel_context_message_container.with_messages(states, timestamp=False)
+        context_messages = self.context_messages()
+        if len(context_messages) > 0:
+            channel_context_message_container.with_messages(*context_messages)
+        if channel_context_message_container.is_empty():
+            # 如果容器为空, 什么消息体都没有.
+            return None
+        interface_msg = self.interface_message(dynamic=dynamic, sustain=sustain)
+        if interface_msg is not None:
+            channel_context_message_container.with_messages(interface_msg, timestamp=False)
+        if channel_context_message_container.is_empty():
+            return None
+        return channel_context_message_container
+
+    def failure_message(self) -> Message | None:
+        if not self.meta.failure:
+            return None
+        failure_message = Message.new(tag="failure", timestamp=False)
+        failure_message.with_content(self.meta.failure)
+        return failure_message
+
+    def context_messages(self) -> list[Message]:
+        return self.meta.context
+
+    def instruction_message(self) -> Message | None:
+        """
+        生成的系统指令.
+        """
+        if not self.meta.instruction:
+            return None
+        return Message.new(tag="instruction", timestamp=False).with_content(self.meta.instruction)
+
+    def states_message(self) -> Message | None:
+        """
+        状态相关的消息.
+        """
+        if not self.meta.states:
+            return None
+        message_container = Message.new(tag="states", timestamp=False)
+        message_container.with_content("States of the channel:\n")
+        # 生成 states 的描述.
+        for name, desc in self.meta.states.items():
+            desc = desc.replace('\n', ';')
+            message_container.with_content(f"- {name}: {desc}\n")
+
+        if self.meta.current_state:
+            message_container.with_content(f"Current state: {self.meta.current_state}")
+        return message_container
+
+    def description_message(self) -> Message | None:
+        if not self.meta.description:
+            return None
+        return Message.new(tag="description", timestamp=False).with_content(self.meta.description)
+
+    def interface_message(self, dynamic: bool, sustain: bool) -> Message | None:
+        interface = make_interfaces(self.meta, dynamic=dynamic, sustain=sustain)
+        if not interface:
+            return None
+        return Message.new(tag="interface", timestamp=False).with_content(interface)
 
 
 def make_context_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name: str | None = None) -> list[Message]:
@@ -128,27 +268,14 @@ def make_context_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name: st
     """
     if len(metas) == 0:
         return []
-    message = Message.new(tag=MOSS_CONTEXT, name=name, timestamp=False)
+    # 用单一容器包裹所有的消息. 并且标记自身时间戳.
+    context_message_container = Message.new(tag=MOSS_CONTEXT, name=name, timestamp=True)
     for channel_path, channel_meta in metas.items():
-        path_name = channel_path or MAIN_CHANNEL_NAME
-        message.with_content(xml_start_tag('channel', {'name': path_name}, self_close=False))
-        # add with instruction or failure
-        if channel_meta.failure:
-            message.with_content(xml_start_tag('failure'))
-            message.with_content(channel_meta.failure)
-            message.with_content(xml_end_tag('failure'))
-        if len(channel_meta.context) > 0:
-            message.with_content(xml_start_tag('context'))
-            for content_message in channel_meta.context:
-                # 追加到上下文里.
-                message.with_content(*content_message.as_contents())
-            message.with_content(xml_end_tag('context'))
-        # make channel interface
-        interface = make_interfaces(channel_meta)
-        if interface:
-            message.with_content(interface)
-        message.with_content('\n' + xml_end_tag('channel'))
-    return [message]
+        # 如果是 virtual, 则需要展示所有讯息.
+        prompter = ChannelMetaPrompter(channel_path, channel_meta)
+        if block := prompter.make_context_block():
+            context_message_container.with_messages(block, with_meta=True, timestamp=True)
+    return [context_message_container]
 
 
 def make_instruction_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name: str | None = None) -> str:
@@ -159,20 +286,8 @@ def make_instruction_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name
         return ''
     message = Message.new(tag=MOSS_INSTRUCTIONS, name=name, timestamp=False)
     for channel_path, channel_meta in metas.items():
-        path_name = channel_path or MAIN_CHANNEL_NAME
-        if len(channel_meta.instruction) == 0 and not channel_meta.description:
-            # 忽略没有 instructions 的.
-            continue
-        message.with_content(xml_start_tag('channel', {'name': path_name}, self_close=False))
-        if channel_meta.description:
-            # description.
-            message.with_content(xml_start_tag('description'))
-            message.with_content(channel_meta.description)
-        message.with_content(xml_end_tag('description'))
-        # add with instruction
-        if channel_meta.instruction:
-            message.with_content(xml_start_tag('instruction'))
-            message.with_content(channel_meta.instruction)
-            message.with_content(xml_end_tag('instruction'))
-        message.with_content(xml_end_tag('channel'))
+        # 如果是 virtual, 则需要展示所有讯息.
+        prompter = ChannelMetaPrompter(channel_path, channel_meta)
+        if block := prompter.make_instruction_block():
+            message.with_content(block)
     return message.to_xml()

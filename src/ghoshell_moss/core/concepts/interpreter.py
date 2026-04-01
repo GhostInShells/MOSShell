@@ -27,13 +27,6 @@ CommandTaskCallback = Callable[[CommandTask | None], None]
 class TextTokenParser(ABC):
     """
     parse from string stream into command tokens
-
-    目标是实现:
-    >>> def run_parser(parser: TextTokenParser, tokens: Iterable[str], callback: CommandTokenCallback) -> None:
-    >>>     with parser.with_callback(callback):
-    >>>          for token in tokens:
-    >>>             parser.feed(token)
-    >>>          parser.commit()
     """
 
     @abstractmethod
@@ -353,7 +346,7 @@ class Interpreter(ABC):
             - observation: 需要观察的讯息.
         """
         instructions = self.instruction()
-        messages = [Message.new(tag=None).with_content(instructions)]
+        messages = [Message.new(tag="").with_content(instructions)]
         messages.extend(history)
         messages.extend(self.channel_context())
         messages.extend(inputs)

@@ -103,8 +103,10 @@ class Addition(BaseModel, ABC):
         data = target.additional.get(keyword, None)
         if data is None:
             return None
+        if not isinstance(data, dict):
+            return None
         try:
-            wrapped = cls.model_construct(**data)
+            wrapped = cls.model_validate(data)
             return wrapped
         except ValidationError as e:
             # 如果协议未对齐, 解析失败, 通常不抛出异常.
@@ -172,31 +174,43 @@ class MessageMeta(BaseModel):
         default=None,
         description="消息结束的时间戳",
     )
-    attributes: dict[str, Any] = Field(
+    timestamp: bool = Field(
+        default=True,
+        description="是否在容器展示时显示时间戳",
+    )
+    attributes: dict[str, str] = Field(
         default_factory=dict,
         description="额外的 attributes 属性. "
     )
 
-    def gen_attributes(self) -> dict[str, Any]:
+    def gen_attributes(self, timestamp: bool = True) -> dict[str, Any]:
         attributes = self.attributes.copy()
         # 排除掉 ghost in shells 架构自身的关键维度信息.
+        exclude = {'attributes', 'id', 'tag', 'timestamp'}
+        if not self.timestamp or not timestamp:
+            exclude.add('created')
+            exclude.add('completed')
+
         update = self.model_dump(
             exclude_none=True,
             exclude_defaults=True,
-            exclude={'attributes', 'id', 'tag'},
+            exclude=exclude,
         )
         if len(update) > 0:
-            attributes.update(update)
+            for key, value in update.items():
+                if key not in attributes:
+                    # 不覆盖 attributes. attributes 最高优.
+                    attributes[key] = value
         return attributes
 
     def gen_attributes_str(self, timestamp: bool = True) -> str:
-        attributes = self.gen_attributes()
+        attributes = self.gen_attributes(timestamp=timestamp)
         if len(attributes) == 0:
             return ''
         parts = []
         for attr, value in attributes.items():
             # in case value has invalid mark
-            if isinstance(value, datetime) and timestamp:
+            if isinstance(value, datetime):
                 value = datetime.fromtimestamp(value.timestamp(), tz.gettz()).isoformat(timespec='seconds')
             value = str(value)
             value = html.escape(value, quote=True)
@@ -244,6 +258,7 @@ class Message(BaseModel, WithAdditional):
             name: Optional[str] = None,
             id: Optional[str] = None,
             attributes: dict[str, Any] | None = None,
+            # 是否需要在生成的 xml 包裹容器中展示 timestamp.
             timestamp: bool = True,
     ) -> Self:
         """
@@ -251,7 +266,7 @@ class Message(BaseModel, WithAdditional):
 
         >>> msg = Message.new()
         """
-        data: dict[str, Any] = {'tag': tag}
+        data: dict[str, Any] = {'tag': tag or ''}
         if role is not None:
             data['role'] = role
         if name is not None:
@@ -261,7 +276,7 @@ class Message(BaseModel, WithAdditional):
         if attributes is not None:
             data['attributes'] = attributes
         data['timestamp'] = timestamp
-        meta = MessageMeta.model_construct(**data)
+        meta = MessageMeta.model_validate(data)
         return cls(meta=meta)
 
     def is_completed(self) -> bool:
@@ -331,6 +346,8 @@ class Message(BaseModel, WithAdditional):
         for item in contents:
             if item is None:
                 continue
+            if isinstance(item, str) and item == '':
+                continue
             _content = self.to_content(item)
             self.contents.append(_content)
         return self
@@ -379,10 +396,10 @@ class Message(BaseModel, WithAdditional):
         attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
-        yield Text.new(f'<{tag}{attr_str}>').to_content()
+        yield Text.new(f'\n<{tag}{attr_str}>\n').to_content()
         for content in self.contents:
             yield content
-        yield Text.new(f'</{tag}>').to_content()
+        yield Text.new(f'\n</{tag}>\n').to_content()
 
     def with_messages(
             self,
@@ -407,8 +424,10 @@ class Message(BaseModel, WithAdditional):
         """
         result = []
         for content in self.as_contents(with_meta=True):
-            if isinstance(content, str):
-                result.append(content)
+            if text := Text.from_content(content):
+                result.append(text.text)
             else:
-                result.append(repr(content))
-        return '\n'.join(result)
+                content_type = content['type']
+                result.append(f'<content type="{content_type}"/>')
+        result = ''.join(result)
+        return result.strip()

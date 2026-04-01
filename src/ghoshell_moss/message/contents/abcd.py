@@ -42,6 +42,10 @@ class ContentModel(BaseModel, ABC):
         content = Content(type=self.content_type())
         raw = self.model_dump(exclude_none=True, exclude={'type', 'source'})
         if raw:
+            if 'text' in raw:
+                text = raw['text']
+                del raw['text']
+                content['text'] = text
             content['raw'] = raw
         if self.source is not None:
             content['source'] = self.source
@@ -54,7 +58,9 @@ class ContentModel(BaseModel, ABC):
         source = content.get('source')
         raw = content.get('raw') or {}
         raw['source'] = source
-        return cls.model_construct(**raw)
+        if text := content.get('text'):
+            raw['text'] = text
+        return cls(**raw)
 
     def to_anthropic(self) -> dict[str, Any]:
         """

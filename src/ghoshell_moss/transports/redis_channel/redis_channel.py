@@ -25,12 +25,12 @@ class RedisStreamConnection(Connection):
     """基于Redis Stream的双工通信连接"""
 
     def __init__(
-        self,
-        redis: Redis,
-        write_stream: str,
-        read_stream: str,
-        consumer_group: Optional[str] = None,
-        consumer_id: Optional[str] = None,
+            self,
+            redis: Redis,
+            write_stream: str,
+            read_stream: str,
+            consumer_group: Optional[str] = None,
+            consumer_id: Optional[str] = None,
     ):
         """
         初始化Redis流连接
@@ -189,11 +189,11 @@ class RedisChannelProxy(DuplexChannelProxy):
     """基于Redis的Channel代理（客户端）"""
 
     def __init__(
-        self,
-        config: RedisConnectionConfig,
-        *,
-        name: str,
-        description: str = "",
+            self,
+            config: RedisConnectionConfig,
+            *,
+            name: str,
+            description: str = "",
     ):
         connection = RedisStreamConnection(
             redis=config.redis,
@@ -213,10 +213,10 @@ class RedisChannelProvider(DuplexChannelProvider):
     """基于Redis的Channel提供者（服务端）"""
 
     def __init__(
-        self,
-        config: RedisConnectionConfig,
-        *,
-        container: Optional[IoCContainer] = None,
+            self,
+            config: RedisConnectionConfig,
+            *,
+            container: Optional[IoCContainer] = None,
     ):
         connection = RedisStreamConnection(
             redis=config.redis,

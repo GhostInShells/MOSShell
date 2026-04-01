@@ -15,7 +15,7 @@ from typing import (
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AwareDatetime
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.command import (
@@ -38,6 +38,8 @@ from ghoshell_moss.core.concepts.topic import (
 )
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
+from datetime import datetime
+from dateutil import tz
 
 __all__ = [
     "Channel",
@@ -87,7 +89,7 @@ class ChannelMeta(BaseModel):
     可以用来 mock 一个 channel.
     """
 
-    name: str = Field(description="The origin name of the channel, kind like python module name.")
+    name: str = Field(default='', description="The origin name of the channel, kind like python module name.")
     description: str = Field(default="", description="The description of the channel.")
     failure: str = Field(default="", description="The failure status of the channel.")
     channel_id: str = Field(default="", description="The ID of the channel.")
@@ -114,6 +116,11 @@ class ChannelMeta(BaseModel):
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
     virtual: bool = Field(default=False, description="Whether the channel is virtual")
+
+    created: AwareDatetime = Field(
+        default_factory= lambda: datetime.now(tz.gettz()),
+        description="The channel meta creation time. "
+    )
 
     @classmethod
     def new_empty(cls, id: str, channel: "Channel", failure: str = "") -> Self:

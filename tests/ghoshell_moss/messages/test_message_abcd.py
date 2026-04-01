@@ -12,6 +12,7 @@ from ghoshell_moss.message import (
     WithAdditional,
     Text,
 )
+import json
 
 
 def test_message_meta_basic():
@@ -79,10 +80,10 @@ def test_message_serialization():
     # 测试 to_contents() 方法
     contents = list(msg.as_contents())
     assert len(contents) == 4  # 开始标签 + meta + 2个内容 + 结束标签
-    assert Text.from_content(contents[0]).text.startswith("<message ")
+    assert Text.from_content(contents[0]).text.strip().startswith("<message")
     assert Text.from_content(contents[1]).text == "Hello"
     assert Text.from_content(contents[2]).text == "World"
-    assert Text.from_content(contents[3]).text == "</message>"
+    assert Text.from_content(contents[3]).text.strip() == "</message>"
 
 
 def test_addition_system():
@@ -119,3 +120,11 @@ def test_addition_system():
     # 测试 get_or_create
     existing = addition.get_or_create(target)
     assert existing.field1 == addition.field1 and existing.field2 == addition.field2  # 值相等
+
+
+def test_message_serializable():
+    message = Message.new(role="assistant", name="ai", timestamp=True)
+    js = message.model_dump_json()
+    data = json.loads(js)
+    new_message = Message(**data)
+    assert new_message == message

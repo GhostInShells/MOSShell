@@ -208,41 +208,43 @@ class DuplexChannelProvider(ChannelProvider):
                 pass
             except Exception as exc:
                 self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
+            finally:
+                self._closed_event.set()
 
     @contextlib.asynccontextmanager
     async def arun(self, channel: Channel) -> AsyncIterator[Self]:
+        if self._starting:
+            self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
+            raise RuntimeError(f"Channel {channel.name()} already started.")
+
+        self._starting = True
+        self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
+        self._loop = asyncio.get_running_loop()
+        self._channel = channel
+
+        # 注册 topic service.
+        if not self._container.bound(TopicService):
+            self._container.set(
+                TopicService,
+                ProviderTopicService(
+                    self._get_session_id,
+                    self._connection,
+                    sender=f"DuplexChannelProvider/{self._uid}",
+                    logger=self.logger,
+                ),
+            )
+        # 启动时, topic service 同样会注入到根节点的 importlib 中.
+        self._root_runtime = channel.bootstrap(self._container)
+
         try:
-            if self._starting:
-                self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
-                raise RuntimeError(f"Channel {channel.name()} already started.")
-
-            self._starting = True
-            self.logger.info(f"%s start to run, channel=%s", self._log_prefix, channel.name())
-            self._loop = asyncio.get_running_loop()
-            self._channel = channel
-
-            # 注册 topic service.
-            if not self._container.bound(TopicService):
-                self._container.set(
-                    TopicService,
-                    ProviderTopicService(
-                        self._get_session_id,
-                        self._connection,
-                        sender=f"DuplexChannelProvider/{self._uid}",
-                        logger=self.logger,
-                    ),
-                )
-            # 启动时, topic service 同样会注入到根节点的 importlib 中.
-            self._root_runtime = channel.bootstrap(self._container)
-
             async with contextlib.AsyncExitStack() as stack:
                 await stack.enter_async_context(self._bootstrap_container_stack())
                 await stack.enter_async_context(self._bootstrap_runtime_stack())
                 await stack.enter_async_context(self._bootstrap_connection_stack())
                 await stack.enter_async_context(self._bootstrap_main_loop_stack())
                 yield self
-        finally:
-            self._closed_event.set()
+        except Exception as exc:
+            self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
 
     def _check_running(self):
         if not self._starting:
@@ -335,8 +337,8 @@ class DuplexChannelProvider(ChannelProvider):
             pass
 
     async def _consume_proxy_event_loop(self) -> None:
-        try:
-            while not self._stopping_event.is_set():
+        while not self._stopping_event.is_set():
+            try:
                 await asyncio.sleep(0.0)
                 if not self._connection.is_connected():
                     # 连接未成功, 则清空等待状态. 需要重新创建 session.
@@ -397,13 +399,25 @@ class DuplexChannelProvider(ChannelProvider):
                 # 3. 本地的 shell 走独立的调度逻辑.
                 # 有的是阻塞的, 有的不是阻塞的.
                 await self._consume_single_event(event)
-        except asyncio.CancelledError:
-            self.logger.warning("%s consume runtime event loop is cancelled", self._log_prefix)
-        except ConnectionClosedError:
-            self.logger.warning("%s consume runtime event loop is closed", self._log_prefix)
-        except Exception as e:
-            self.logger.exception("%s consume runtime event loop failed: %s", self._log_prefix, e)
-            raise
+            except asyncio.CancelledError:
+                self.logger.warning("%s consume runtime event loop is cancelled", self._log_prefix)
+                # 中断循环.
+                break
+            except ConnectionNotAvailable:
+                # 继续运行.
+                continue
+            except ConnectionClosedError:
+                self.logger.warning("%s consume runtime event loop is closed", self._log_prefix)
+                # 中断循环.
+                break
+            except Exception as e:
+                self.logger.exception("%s consume runtime event loop failed: %s", self._log_prefix, e)
+                provider_error = ProviderErrorEvent(
+                    session_id=self._session_id,
+                    errcode=-1,
+                    errmsg=f"provider error: {e}",
+                )
+                await self._send_event_to_proxy(provider_error.to_channel_event())
 
     async def _consume_single_event(self, event: ChannelEvent) -> None:
         """消费单一事件. 这一层解决 task 生命周期管理."""
@@ -417,6 +431,7 @@ class DuplexChannelProvider(ChannelProvider):
             await handle_task
         except Exception as e:
             self.logger.exception("%s Handle event %s task failed: %s", self._log_prefix, event, e)
+            raise e
 
     async def _handle_single_event(self, event: ChannelEvent) -> None:
         """做单个事件的异常管理, 理论上不要抛出任何异常."""
@@ -465,7 +480,7 @@ class DuplexChannelProvider(ChannelProvider):
             self.logger.exception("%s received invalid event: %s", self._log_prefix, event)
         except Exception as e:
             self.logger.exception("%s handle default event failed: %s", self._log_prefix, e)
-            raise
+            raise e
         finally:
             self.logger.info("%s handled event: %s", self._log_prefix, event)
 
@@ -476,6 +491,7 @@ class DuplexChannelProvider(ChannelProvider):
             pass
         except Exception as e:
             self.logger.exception("%s receive proxy topic failed: %s", self._log_prefix, e)
+            raise e
 
     async def _handel_clear(self, event: ClearEvent):
         """执行 clear 逻辑."""
@@ -490,17 +506,13 @@ class DuplexChannelProvider(ChannelProvider):
             pass
         except Exception as e:
             self.logger.exception("%s Clear channel failed: %s", self._log_prefix, e)
-            provider_error = ProviderErrorEvent(
-                session_id=event.session_id,
-                # todo
-                errcode=-1,
-                errmsg=f"failed to cancel channel {channel_name}",
-            )
-            await self._send_event_to_proxy(provider_error.to_channel_event())
+            raise e
 
     async def _send_event_to_proxy(self, event: ChannelEvent, session_id: str = "") -> None:
         """做好事件发送的异常管理."""
         try:
+            if not self._connection.is_connected():
+                return
             event["session_id"] = session_id or self._session_id or ""
             await self._connection.send(event)
         except asyncio.CancelledError:
@@ -514,6 +526,7 @@ class DuplexChannelProvider(ChannelProvider):
             self._stopping_event.set()
         except Exception as e:
             self.logger.exception("%s Send event %s failed %s", self._log_prefix, event, e)
+            # 不抛出异常.
 
     async def _handle_sync_channel_meta(self, event: SyncChannelMetasEvent) -> None:
         try:
@@ -584,6 +597,7 @@ class DuplexChannelProvider(ChannelProvider):
         try:
             # 多余的, 没什么用.
             task.set_state(CommandTaskState.executing.value)
+            task.add_done_callback(self._remove_running_task)
             await self._add_running_task(task)
             await self._root_runtime.push_task(task)
             await task
@@ -594,7 +608,6 @@ class DuplexChannelProvider(ChannelProvider):
             self.logger.exception("Execute command failed")
             task.fail(e)
         finally:
-            await self._remove_running_task(task)
             if not task.done():
                 task.cancel()
             result = task.task_result().serializable() if task.success() else None
@@ -612,14 +625,10 @@ class DuplexChannelProvider(ChannelProvider):
         finally:
             self._running_command_tasks_lock.release()
 
-    async def _remove_running_task(self, task: CommandTask) -> None:
-        await self._running_command_tasks_lock.acquire()
-        try:
-            cid = task.cid
-            if cid in self._running_command_tasks:
-                del self._running_command_tasks[cid]
-        finally:
-            self._running_command_tasks_lock.release()
+    def _remove_running_task(self, task: CommandTask) -> None:
+        cid = task.cid
+        if cid in self._running_command_tasks:
+            del self._running_command_tasks[cid]
 
     def close(self) -> None:
         self._stopping_event.set()

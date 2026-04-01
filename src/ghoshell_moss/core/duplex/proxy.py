@@ -43,6 +43,7 @@ from .protocol import (
     ProxyPubTopicEvent,
     ProviderSubTopicEvent,
     ProviderPubTopicEvent,
+    ProviderErrorEvent,
 )
 from ghoshell_moss.core.topic import TopicService
 
@@ -105,9 +106,23 @@ class DuplexChannelContext:
 
         self._logger: logging.Logger = self.container.get(LoggerItf) or logging.getLogger(__name__)
         """logger 的缓存."""
-
-        self._states = None
         self._log_prefix = "[DuplexChannelContext][%s] " % self.root_name
+        self._runtime_asyncio_task_group: set[asyncio.Task] = set()
+        self.provider_err: str = ""
+
+    def _add_task(self, task: asyncio.Task) -> None:
+        if not self.is_running():
+            return
+        if task.done():
+            return
+        task.add_done_callback(self._remove_task)
+        self._runtime_asyncio_task_group.add(task)
+
+    def _remove_task(self, task: asyncio.Task) -> None:
+        if not self.is_running():
+            return
+        if task in self._runtime_asyncio_task_group:
+            self._runtime_asyncio_task_group.remove(task)
 
     def get_meta(self, provider_chan_path: str) -> Optional[ChannelMeta]:
         """
@@ -294,6 +309,13 @@ class DuplexChannelContext:
             self._sync_meta_started_event.clear()
             self.session_id = ""
             self.provider_meta_map.clear()
+            self.provider_err = ""
+            if len(self._runtime_asyncio_task_group) > 0:
+                tasks = self._runtime_asyncio_task_group.copy()
+                self._runtime_asyncio_task_group.clear()
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
             await self._clear_pending_provider_command_tasks()
             await self._clear_subscribe_topic_tasks()
 
@@ -357,6 +379,7 @@ class DuplexChannelContext:
                     break
 
                 # sync metas 事件的标准处理.
+
                 if create_session := CreateSessionEvent.from_channel_event(event):
                     # 如果是 provider 发送了握手的要求, 则立刻要求更新状态.
                     if create_session.session_id == self.session_id:
@@ -387,14 +410,20 @@ class DuplexChannelContext:
                     # 拿到了其它正常的指令. 继续往下走.
                     pass
 
-                if pub_topic := ProviderPubTopicEvent.from_channel_event(event):
-                    _ = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                if provider_err := ProviderErrorEvent.from_channel_event(event):
+                    self._handle_provider_error(error=provider_err)
+
+                elif pub_topic := ProviderPubTopicEvent.from_channel_event(event):
+                    t = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                    self._add_task(t)
                 elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
                     _ = await self._sub_topic_for_provider(sub_topic.topic_name)
+                    continue
 
                 elif command_done := CommandDoneEvent.from_channel_event(event):
                     # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
-                    _ = asyncio.create_task(self._handle_command_done_event(command_done))
+                    t = asyncio.create_task(self._handle_command_done_event(command_done))
+                    self._add_task(t)
                     continue
 
                 else:
@@ -406,6 +435,14 @@ class DuplexChannelContext:
 
         except asyncio.CancelledError:
             pass
+
+    def _handle_provider_error(self, error: ProviderErrorEvent | None) -> None:
+        if error is not None:
+            self.provider_err = repr(error)
+            # 不阻塞 meta 更新.
+            self._sync_meta_done_event.set()
+        else:
+            self.provider_err = ''
 
     async def _handle_provider_pub_topic(self, pub_topic: ProviderPubTopicEvent) -> None:
         # todo: exception handler
@@ -660,6 +697,13 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return
 
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
+        if self._ctx.provider_err:
+            return {'': ChannelMeta.new_empty(
+                self.channel.id(),
+                self.channel,
+                failure=self._ctx.provider_err,
+            )}
+
         return self._ctx.provider_meta_map
 
     async def _generate_own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
