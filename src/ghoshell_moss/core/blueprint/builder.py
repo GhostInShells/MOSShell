@@ -368,6 +368,28 @@ class MutableChannel(Channel, ABC):
         pass
 
 
+class ChannelInterfaceExample(ABC):
+    """
+    一个 Channel 开发的范式的例子.
+    通过独立的抽象类, 定义了若干个函数, 而这些函数通过 build 注册了依赖关系.
+    这样, 可以把设计一个 Channel, 与实现它分成两个明确的步骤. 设计本身是独立的.
+    """
+
+    @abstractmethod
+    async def example_command(self) -> str:
+        """
+        docstring
+        """
+        pass
+
+    @abstractmethod
+    def as_channel(self, name: str, description: str) -> Channel:
+        channel = new_channel(name=name, description=description)
+        # 注册自身的 command.
+        channel.build.command(interface=ChannelInterfaceExample.example_command)(self.example_command)
+        return channel
+
+
 def new_channel(name: str, description: str = "") -> MutableChannel:
     """
     Create a new Mutable/Stateful Channel object with builder.

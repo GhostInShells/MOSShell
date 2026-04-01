@@ -6,9 +6,6 @@ from .channel import (
     ChannelPaths,
     ChannelProvider,
     ChannelCtx,
-    CommandFunction,
-    MessageFunction,
-    LifecycleFunction,
     ChannelInterface,
 )
 from .command import (

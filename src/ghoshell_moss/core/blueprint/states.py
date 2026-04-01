@@ -11,8 +11,13 @@ __all__ = [
     'new_state_builder', 'new_channel_from_state', 'new_stateful_channel',
 ]
 
+"""
+
+"""
+
 _ChannelName = str
 
+__description__ = "How to build stateful channel"
 
 class ChannelState(ABC):
     """
@@ -104,9 +109,9 @@ class ChannelState(ABC):
         pass
 
     @abstractmethod
-    def update_container(self, container: IoCContainer) -> None:
+    def bootstrap(self, container: IoCContainer) -> None:
         """
-        update the container if necessary
+        register something to the container. or get some contracts from it.
         """
         pass
 

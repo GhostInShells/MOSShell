@@ -52,35 +52,34 @@ __all__ = [
     "ChannelPaths",
     "ChannelProvider",
     "ChannelCtx",
-    "CommandFunction",
-    "MessageFunction",
-    "LifecycleFunction",
-    "StringType",
     "ChannelInterface",
 ]
 
-
+"""
 # 关于 Channel (中文名: 经络) :
-#
-# MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
-#
-# 所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
-#
-# 同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
-# 神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
-#
-#
-# Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
-# 1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变.
-# 2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人.
-# 3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
-# 4. 与 Shell 进行全双工实时通讯
-#
-# 可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
-#
-# 举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
-#
-# 所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
+
+MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
+
+所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
+
+同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
+神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
+
+
+Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
+1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变.
+2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人.
+3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
+4. 与 Shell 进行全双工实时通讯
+
+可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
+
+举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
+
+所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
+"""
+
+__description__ = "Use Tree-like structure to manage all the Commands of MOSS for AI."
 
 
 class ChannelMeta(BaseModel):
@@ -118,7 +117,7 @@ class ChannelMeta(BaseModel):
     virtual: bool = Field(default=False, description="Whether the channel is virtual")
 
     created: AwareDatetime = Field(
-        default_factory= lambda: datetime.now(tz.gettz()),
+        default_factory=lambda: datetime.now(tz.gettz()),
         description="The channel meta creation time. "
     )
 
@@ -150,48 +149,6 @@ ChannelId = str
 
 ChannelPaths = list[str]
 """字符串路径的数组表现形式. a.b.c -> ['a', 'b', 'c'] """
-
-CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
-"""
-用于描述一个本地的 python 函数 (或者类的 method) 可以被注册到 Channel 中变成一个 command. 
-"""
-
-MessageFunction = Union[
-    Callable[[], Coroutine[None, None, list[Message]]],
-    Callable[[], list[Message]],
-]
-"""
-可以生成消息体的函数. 这种函数注册到 Channel 中, 可以用来动态地生成 Context Messages 与 Instruction Messages.
-
-AI 通过双工通讯, 在每个关键帧思考的瞬间, 提取对应的消息体替换到上下文中. 
-"""
-
-StringType = Union[
-    str,
-    Callable[[], str],
-    Callable[[], Coroutine[None, None, str]],
-]
-
-LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[..., None]]
-"""
-用于描述一个本地的 python 函数 (或者类的 method), 可以用来定义 channel 自身生命周期行为. 
-
-一个 Channel 运行的生命周期设计是: 
-
-- [on startup] : channel 启动时
-- [on idle] : 闲时, 没有任何命令输入
-- [executing]: 忙时, 执行某个 command call
-- [on clear] : 强制要求清空所有命令
-- [on close] : channel 关闭时 
-
-举一个典型的例子: 数字人在执行动画 command 时, 运行轨迹动画; 执行完毕后, 没有命令输入时, 需要返回呼吸效果 (on_idle) 
-
-这类运行时函数, 可以通过注册的方式定义到一个 channel 中. 
-如果用编程语言的思想来理解, 这些函数类似于 python 的生命周期魔术方法:
-- __init__
-- __aenter__
-- __aexit__
-"""
 
 ChannelRuntimeContextVar = contextvars.ContextVar("moss.ctx.Runtime")
 

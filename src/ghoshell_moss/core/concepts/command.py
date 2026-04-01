@@ -59,6 +59,8 @@ __all__ = [
 
 RESULT = TypeVar("RESULT")
 
+__description__ = "Define the Command from python function or method which is callable during streaming for AI."
+
 
 class CommandTaskState(str, Enum):
     """

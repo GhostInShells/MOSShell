@@ -1,5 +1,4 @@
 import asyncio
-import contextvars
 import inspect
 import logging
 from typing import Optional, Callable
@@ -12,11 +11,9 @@ from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelRuntime,
     ChannelMeta,
-    CommandFunction,
-    MessageFunction,
-    LifecycleFunction,
+
     ChannelCtx,
-    StringType,
+
 )
 from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.errors import CommandError
@@ -24,7 +21,13 @@ from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
 from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel
-from ghoshell_moss.core.blueprint.builder import MutableChannel, Builder
+from ghoshell_moss.core.blueprint.builder import (
+    MutableChannel, Builder,
+    CommandFunction,
+    MessageFunction,
+    LifecycleFunction,
+    StringType,
+)
 
 __all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder", "BaseStateChannel"]
 
@@ -260,7 +263,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
         self._container_instances[contract] = binding
         return self
 
-    def update_container(self, container: IoCContainer) -> None:
+    def bootstrap(self, container: IoCContainer) -> None:
         if len(self._container_instances) > 0:
             for contract, instance in self._container_instances.items():
                 container.set(contract, instance)
@@ -647,6 +650,6 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         await self._main_state.on_close()
 
     def prepare_container(self, container: IoCContainer) -> IoCContainer:
-        self._main_state.update_container(container)
+        self._main_state.bootstrap(container)
         container = super().prepare_container(container)
         return container
