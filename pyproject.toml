@@ -15,18 +15,20 @@ dependencies = [
     "openai>=2.8.1",
     "pillow>=12.1.0",
     "pydantic-ai-slim[anthropic]>=1.66.0",
+    "python-dateutil>=2.9.0.post0",
     "python-frontmatter>=1.1.0",
 ]
 
 [project.optional-dependencies]
 zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0", "psutil>=7.2.1"]
-mcp = ["mcp[cli]>=1.17.0"]
+mcp = [
+    "fastmcp>=3.1.1",
+]
 wss = ["websockets>=15.0.1"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
 cli = [
-    "ghoshell-common[codex]",
     "rich>=14.3.2",
 ]
 
@@ -46,14 +48,13 @@ contrib = [
     "loadenv>=0.1.1",
     "pymupdf>=1.27.1",
 ]
-agent = [
-    "httpx[socks]>=0.28.1",
-    "pydantic-ai>=1.66.0",
+zenoh = [
+    "eclipse-zenoh>=1.8.0",
 ]
 
 
 [project.scripts]
-ghoshell = "ghoshell_cli:main"
+moss = "ghoshell_moss.cli:main_entry"
 
 [tool.setuptools.packages.find]
 where = ["src"]

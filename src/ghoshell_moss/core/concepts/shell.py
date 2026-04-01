@@ -18,6 +18,7 @@ InterpreterKind = Literal["clear", "append", "dry_run"]
 
 MAIN_CHANNEL = TypeVar("MAIN_CHANNEL", bound=Channel)
 
+
 class MOSShell(Generic[MAIN_CHANNEL], ABC):
     """
     Model-Operated Operating System Shell
@@ -366,6 +367,16 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         finally:
             if not sender_task.done():
                 sender_task.cancel()
+                try:
+                    await sender_task
+                except asyncio.CancelledError:
+                    pass
+            if not consumer_task.done():
+                consumer_task.cancel()
+                try:
+                    await consumer_task
+                except asyncio.CancelledError:
+                    pass
 
     async def parse_text_to_tasks(
             self,
