@@ -3,109 +3,78 @@ ghoshell_cli utility functions
 """
 
 import click
-from typing import Optional, Any
-
-try:
-    from rich import print as rprint
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.text import Text
-    from rich.syntax import Syntax
-
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
+from typing import Optional
 
 
-def get_console() -> Optional[Any]:
-    """Get rich console instance, returns None if rich is not available"""
-    if RICH_AVAILABLE:
-        return Console()
-    return None
+def echo(message: str):
+    """方便未来统一替换."""
+    click.echo(message)
 
 
 def print_success(message: str):
-    """Print success message"""
-    if RICH_AVAILABLE:
-        console = Console()
-        console.print(f"[green]✓[/green] {message}")
-    else:
-        click.echo(f"✓ {message}")
+    """打印成功消息 - 绿色"""
+    # 使用 secho 打印绿色的勾号和消息
+    click.secho(f"✓ {message}", fg="green", bold=True)
 
 
 def print_error(message: str):
-    """Print error message"""
-    if RICH_AVAILABLE:
-        console = Console()
-        console.print(f"[red]✗[/red] {message}")
-    else:
-        click.echo(f"✗ {message}")
+    """打印错误消息 - 红色"""
+    click.secho(f"✗ {message}", fg="red", bold=True)
 
 
 def print_warning(message: str):
-    """Print warning message"""
-    if RICH_AVAILABLE:
-        console = Console()
-        console.print(f"[yellow]⚠[/yellow] {message}")
-    else:
-        click.echo(f"⚠ {message}")
+    """打印警告消息 - 黄色"""
+    click.secho(f"⚠ {message}", fg="yellow", bold=True)
 
 
 def print_info(message: str):
-    """Print info message"""
-    if RICH_AVAILABLE:
-        console = Console()
-        console.print(f"[blue]ℹ[/blue] {message}")
-    else:
-        click.echo(f"ℹ {message}")
+    """打印提示消息 - 蓝色"""
+    click.secho(f"ℹ {message}", fg="blue")
 
 
 def print_code(code: str, language: str = "python"):
-    """Print code block with syntax highlighting"""
-    if RICH_AVAILABLE:
-        console = Console()
-        syntax = Syntax(code, language, theme="monokai", line_numbers=True)
-        console.print(syntax)
-    else:
-        click.echo(code)
+    """
+    打印代码块。
+    由于去掉了 rich，无法实现复杂的语法高亮，
+    这里通过加深背景颜色或改变前景色来区分代码区域。
+    """
+    click.secho(f"# --- {language} code ---", fg="cyan", dim=True)
+    click.echo(code)
+    click.secho("# -----------------------", fg="cyan", dim=True)
 
 
 def print_table(headers: list, rows: list):
-    """Print table"""
-    if RICH_AVAILABLE:
-        console = Console()
-        table = Table(*headers)
-        for row in rows:
-            table.add_row(*[str(cell) for cell in row])
-        console.print(table)
-    else:
-        # Simple table output
-        col_widths = [len(str(h)) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                col_widths[i] = max(col_widths[i], len(str(cell)))
+    """打印简易表格"""
+    # 计算列宽
+    col_widths = [len(str(h)) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(cell)))
 
-        # Print header
-        header_line = " | ".join(str(h).ljust(col_widths[i]) for i, h in enumerate(headers))
-        click.echo(header_line)
-        click.echo("-" * len(header_line))
+    # 打印表头（黄色加粗）
+    header_line = " | ".join(str(h).ljust(col_widths[i]) for i, h in enumerate(headers))
+    click.secho(header_line, fg="yellow", bold=True)
 
-        # Print rows
-        for row in rows:
-            row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
-            click.echo(row_line)
+    # 打印分割线
+    click.echo("-" * (sum(col_widths) + (len(headers) - 1) * 3))
+
+    # 打印行
+    for row in rows:
+        row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+        click.echo(row_line)
 
 
 def print_panel(content: str, title: Optional[str] = None):
-    """Print content in a panel"""
-    if RICH_AVAILABLE:
-        console = Console()
-        panel = Panel(content, title=title, border_style="blue")
-        console.print(panel)
+    """打印面板效果"""
+    if title:
+        # 标题用青色加粗
+        click.secho(f"┏━ {title} ━┓", fg="cyan", bold=True)
+
+    # 内容稍稍缩进
+    for line in content.splitlines():
+        click.echo(f"  {line}")
+
+    if title:
+        click.secho(f"┗━" + "━" * (len(title) + 2) + "━┛", fg="cyan", bold=True)
     else:
-        if title:
-            click.echo(f"=== {title} ===")
-        click.echo(content)
-        if title:
-            click.echo("=" * (len(title) + 8))
+        click.secho("━" * 20, fg="cyan")

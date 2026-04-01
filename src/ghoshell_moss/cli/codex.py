@@ -9,7 +9,7 @@ import sys
 
 from ghoshell_moss.cli.main import main
 from ghoshell_moss.cli.utils import (
-    print_success, print_error, print_info, print_code, print_panel
+    print_success, print_error, print_info, print_code, print_panel, echo
 )
 
 
@@ -32,7 +32,7 @@ def get_interface(import_path: str):
     """
     from ghoshell_moss.core.codex import reflect_any_by_import_path
     result = reflect_any_by_import_path(import_path)
-    click.echo(result)
+    echo(result)
 
 
 @codex.command("get-source")

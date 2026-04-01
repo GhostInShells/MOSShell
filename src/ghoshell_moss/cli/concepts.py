@@ -9,7 +9,7 @@ import sys
 
 from ghoshell_moss.cli.main import main
 from ghoshell_moss.cli.utils import (
-    print_error, print_info, print_panel
+    print_error, print_info, print_panel, echo
 )
 
 
@@ -85,7 +85,7 @@ def concepts(module_name: str = None):
     import_path = f"ghoshell_moss.core.concepts.{module_name}"
     try:
         result = reflect_any_by_import_path(import_path)
-        click.echo(result)
+        echo(result)
     except Exception as e:
         print_error(f"Failed to reflect module '{import_path}': {str(e)}")
         sys.exit(1)

@@ -5,11 +5,10 @@ Command line tool for Ghost In Shells
 
 import click
 import sys
-from typing import Optional
 
 from ghoshell_moss.cli.utils import (
-    print_success, print_error, print_warning, print_info,
-    print_panel, get_console
+    print_error, print_info,
+    print_panel, echo
 )
 
 __version__ = "0.1.0-alpha"
@@ -45,25 +44,18 @@ def main(ctx: click.Context, version: bool):
 
     # Show help if no subcommand provided
     if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
+        echo(ctx.get_help())
         print_info("Use moss <command> --help for command-specific help.")
 
 
 @main.command("help")
 @click.pass_context
-def moss_help(ctx):
+def cli_help(ctx: click.Context):
     """
     Show complete help information
     """
     # Show detailed help information
-    click.echo(ctx.parent.get_help())
-
-    # Show additional tips if console is available
-    console = get_console()
-    if console:
-        console.print("\n[yellow]Tips:[/yellow]")
-        console.print("  • Use [bold]moss --version[/bold] to show version")
-        console.print("  • Use [bold]moss <command> --help[/bold] for command help")
+    echo(ctx.parent.get_help())
 
 
 def main_entry():
@@ -73,5 +65,3 @@ def main_entry():
     except Exception as e:
         print_error(f"Command execution failed: {str(e)}")
         sys.exit(1)
-
-
