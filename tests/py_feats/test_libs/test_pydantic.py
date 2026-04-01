@@ -73,3 +73,14 @@ def test_pydantic_multi_sub_type():
     # dataclass cannot be wrapped from new data
     assert isinstance(new_baz.items[0], dict)
     assert isinstance(new_baz.items[1], dict)
+
+
+def test_pydantic_from_():
+    class Foo(BaseModel):
+        foo: str = "foo"
+
+    foo = Foo()
+    assert foo.foo == "foo"
+    data = foo.model_dump()
+    foo1 = Foo.model_validate(data)
+    assert foo1 == foo
