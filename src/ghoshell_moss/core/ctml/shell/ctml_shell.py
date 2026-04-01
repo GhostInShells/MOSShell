@@ -28,7 +28,7 @@ from ghoshell_moss.core.concepts.command import (
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
-from ghoshell_moss.core.contracts.speech import Speech, TTSSpeech
+from ghoshell_moss.contracts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION

@@ -24,7 +24,7 @@ from ghoshell_moss.core.concepts.interpreter import (
     CommandTokenParser,
 )
 from ghoshell_moss.core.concepts.channel import ChannelCtx
-from ghoshell_moss.core.contracts.speech import Speech, SpeechStream
+from ghoshell_moss.contracts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT
 from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME
 from .token_parser import CMTLSaxElement
