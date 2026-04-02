@@ -486,7 +486,7 @@ class DuplexChannelProvider(ChannelProvider):
 
     async def _handle_proxy_topic(self, event: ProxyPubTopicEvent) -> None:
         try:
-            await self._root_runtime.pub_topic(event.topic)
+            self._root_runtime.pub_topic(event.topic)
         except asyncio.CancelledError:
             pass
         except Exception as e:

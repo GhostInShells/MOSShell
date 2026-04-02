@@ -176,7 +176,7 @@ class QueueBasedPublisher(Publisher):
                 self._logger.exception("%s stopped cause error: %s", self._log_prefix, exc_val)
         return None
 
-    async def pub(self, topic: Topic | TopicModel, *, name: str = "") -> None:
+    def pub(self, topic: Topic | TopicModel, *, name: str = "") -> None:
         if not self.is_running():
             self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
@@ -192,7 +192,6 @@ class QueueBasedPublisher(Publisher):
         self._publish_queue.sync_q.put_nowait(topic)
         # 使用 async 做 api 唯一的目的就是为了这次调度.
         # 否则撑死是小, 并行调度阻塞事大.
-        await asyncio.sleep(0.0)
 
 
 class QueueBasedTopicService(TopicService):
@@ -436,7 +435,7 @@ class QueueBasedTopicService(TopicService):
         )
         return publisher
 
-    async def pub(self, topic: Topic | TopicModel, *, name: str = "", creator: str = "") -> None:
+    def pub(self, topic: Topic | TopicModel, *, name: str = "", creator: str = "") -> None:
         if not self.is_running():
             self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return

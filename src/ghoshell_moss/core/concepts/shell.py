@@ -76,7 +76,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    async def pub_topic(
+    def pub_topic(
             self,
             topic: Topic | TopicModel,
             *,

@@ -15,10 +15,14 @@ async def test_topic_baseline():
     async def produce():
         publisher = service.publisher("publisher")
         assert publisher.is_running()
-        await publisher.pub(ErrorTopic(errmsg="hello world"))
-        await publisher.pub(ErrorTopic(errmsg="hello world"))
-        await publisher.pub(ErrorTopic(errmsg="hello world"))
-        await publisher.pub(ErrorTopic(errmsg="hello world"))
+        publisher.pub(ErrorTopic(errmsg="hello world"))
+        await asyncio.sleep(0.0)
+        publisher.pub(ErrorTopic(errmsg="hello world"))
+        await asyncio.sleep(0.0)
+        publisher.pub(ErrorTopic(errmsg="hello world"))
+        await asyncio.sleep(0.0)
+        publisher.pub(ErrorTopic(errmsg="hello world"))
+        await asyncio.sleep(0.0)
 
     received = []
 
@@ -54,7 +58,8 @@ async def test_topic_publishers_and_consumers():
         publisher = service.publisher("publisher")
         assert publisher.is_running()
         for idx in range(5):
-            await publisher.pub(ErrorTopic(errmsg="hello world %d:%d" % (o, idx)))
+            publisher.pub(ErrorTopic(errmsg="hello world %d:%d" % (o, idx)))
+            await asyncio.sleep(0.0)
 
     received = []
 
@@ -103,7 +108,8 @@ async def test_topic_keep_latest():
         publisher = service.publisher("publisher")
         async with publisher:
             for idx in range(5):
-                await publisher.pub(ErrorTopic(errmsg=str(idx)))
+                publisher.pub(ErrorTopic(errmsg=str(idx)))
+                await asyncio.sleep(0.0)
         producer_done.set()
 
     received = []
@@ -142,7 +148,9 @@ async def test_topic_keep_oldest():
         publisher = service.publisher("publisher")
         async with publisher:
             for idx in range(5):
-                await publisher.pub(ErrorTopic(errmsg=str(idx)))
+                publisher.pub(ErrorTopic(errmsg=str(idx)))
+                # 必须要让出, 否则 maxsize = 1 就无法测试了.
+                await asyncio.sleep(0.0)
         producer_done.set()
 
     received = []
@@ -173,7 +181,6 @@ def test_topic_is_overdue_logic(monkeypatch):
             overdue=10.0,
         ),
         data={},
-        additional=None,
     )
 
     monkeypatch.setattr(topic_concepts.time, "time", lambda: 105.0)

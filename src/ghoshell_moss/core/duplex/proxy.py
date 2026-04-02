@@ -456,7 +456,7 @@ class DuplexChannelContext:
         topic_service = self.container.get(TopicService)
         if topic_service is None:
             return
-        await topic_service.pub(pub_topic.topic)
+        topic_service.pub(pub_topic.topic)
 
     async def _sub_topic_for_provider(self, topic_name: str) -> None:
         """

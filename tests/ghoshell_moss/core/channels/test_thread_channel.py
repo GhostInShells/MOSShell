@@ -403,7 +403,7 @@ async def test_thread_provider_pub_topic():
         async with _runtime.topic_publisher() as publisher:
             for i in range(10):
                 await asyncio.sleep(0.0)
-                await publisher.pub(LogTopic(level="info", message=str(i)))
+                publisher.pub(LogTopic(level="info", message=str(i)))
 
     provider, proxy = create_thread_channel("proxy")
 
@@ -476,8 +476,8 @@ async def test_thread_proxy_pub_topic():
             async with runtime.topic_publisher() as publisher:
                 for i in range(10):
                     await asyncio.sleep(0.0)
-                    await publisher.pub(LogTopic(level="info", message=str(i)))
-                await publisher.pub(LogTopic(level="info", message='end'))
+                    publisher.pub(LogTopic(level="info", message=str(i)))
+                publisher.pub(LogTopic(level="info", message='end'))
             await receive_done.wait()
     assert len(received) == 10
 
@@ -520,7 +520,7 @@ async def test_thread_provider_lazy_subscribe():
             async with runtime.topic_publisher() as publisher:
                 for i in range(10):
                     await asyncio.sleep(0.0)
-                    await publisher.pub(LogTopic(level="info", message=str(i)))
+                    publisher.pub(LogTopic(level="info", message=str(i)))
             await receive_done.wait()
     assert len(received) == 10
 
@@ -547,7 +547,7 @@ async def test_thread_channel_do_not_share_local_topic():
                         topic = LogTopic(level="info", message=str(i))
                         # 关键在这里, topic 改成 local 类型.
                         topic.meta.local = True
-                        await publisher.pub(topic)
+                        publisher.pub(topic)
                 await asyncio.sleep(0.1)
 
                 # 仍然没有收到.
@@ -569,7 +569,7 @@ async def test_thread_channel_do_not_share_local_topic():
                         topic = LogTopic(level="info", message=str(i))
                         # 关键在这里, topic 改成 local 类型.
                         topic.meta.local = True
-                        await publisher.pub(topic)
+                        publisher.pub(topic)
                 await asyncio.sleep(0.1)
 
                 # 仍然没有收到.

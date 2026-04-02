@@ -362,11 +362,11 @@ class ChannelRuntime(ABC):
             creator=f"channel/{self.id}",
         )
 
-    async def pub_topic(self, topic: TopicModel | Topic, topic_name: str = "") -> None:
+    def pub_topic(self, topic: TopicModel | Topic, topic_name: str = "") -> None:
         """
         发送一个 topic 到链路中, 其它监听的 channel 或者 shell 都能拿到这个事件.
         """
-        await self.tree.topics.pub(topic, name=topic_name, creator=f"channel/{self.id}")
+        self.tree.topics.pub(topic, name=topic_name, creator=f"channel/{self.id}")
 
     def topic_subscriber(
             self,
@@ -542,7 +542,6 @@ class ChannelRuntime(ABC):
         将一个 Task 推入到执行栈中. 阻塞到完成入栈为止.
         """
         pass
-
 
     @abstractmethod
     def on_task_done(self, callback: TaskDoneCallback) -> None:

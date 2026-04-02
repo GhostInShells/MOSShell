@@ -302,7 +302,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def main_channel(self) -> PrimeChannel:
         return self._main_channel
 
-    async def pub_topic(self, topic: Topic | TopicModel, *, name: str = "") -> None:
+    def pub_topic(self, topic: Topic | TopicModel, *, name: str = "") -> None:
         if not self.is_running():
             raise RuntimeError(f"Shell {self._name} not running")
         if isinstance(topic, TopicModel):
@@ -310,7 +310,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if not isinstance(topic, Topic):
             raise ValueError(f"Topic {topic} is not Topic or TopicModel type")
 
-        return await self._main_runtime.tree.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
+        self._main_runtime.tree.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
     def subscribe_topic_model(
             self,

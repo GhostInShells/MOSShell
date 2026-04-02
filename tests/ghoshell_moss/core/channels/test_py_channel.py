@@ -455,7 +455,7 @@ async def test_py_channel_topics():
     async def producer():
         _runtime = ChannelCtx.runtime()
         for i in range(10):
-            await _runtime.pub_topic(ErrorTopic(errmsg="hello"))
+            _runtime.pub_topic(ErrorTopic(errmsg="hello"))
         produce_done.set()
 
     @main.build.running

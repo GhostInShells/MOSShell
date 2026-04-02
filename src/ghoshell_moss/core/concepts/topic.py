@@ -258,7 +258,7 @@ class Publisher(ABC):
         pass
 
     @abstractmethod
-    async def pub(
+    def pub(
             self,
             topic: Topic | TopicModel,
             *,
@@ -364,7 +364,7 @@ class TopicService(ABC):
         pass
 
     @abstractmethod
-    async def pub(
+    def pub(
             self,
             topic: Topic | TopicModel,
             *,
@@ -388,6 +388,6 @@ class TopicService(ABC):
         >>> async def publish(service: TopicService):
         >>>     publisher = service.publisher(...)
         >>>     async with publisher:
-        >>>         await publisher.pub(...)
+        >>>         publisher.pub(...)
         """
         pass
