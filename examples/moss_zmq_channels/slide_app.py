@@ -19,7 +19,7 @@ if __name__ == "__main__":
         studio_storage = ws.assets().sub_storage("slide_studio")
         studio = SlideStudio(SlideAssets(studio_storage), _container)
         provider = ZMQChannelProvider(
-            address=f"ipc://{__file__}.sock",
+            address="tcp://localhost:5558",
             container=_container,
         )
         # Pyqt6 will block main process, so provider must run in thread.

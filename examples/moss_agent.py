@@ -74,6 +74,7 @@ def run_moss_agent(container: Container):
                 ),
                 "slide": ZMQProxyConfig(
                     script="slide_app.py",
+                    address="tcp://localhost:5558",
                     description="可以打开你的slide studio gui，通过这个通道你可以呈现并讲述一个slide主题",
                 ),
             },
