@@ -11,6 +11,7 @@ __all__ = [
     "Topic",
     "TOPIC_MODEL",
     "TopicModel",
+    "TopicMeta",
     "TopicService",
     "Subscriber",
     "Publisher",
@@ -113,12 +114,12 @@ class TopicModel(BaseModel, ABC):
         return cls.model_json_schema()
 
     def to_topic(
-        self,
-        *,
-        name: str = "",
-        overdue: float = 0.0,
-        creator: str = "",
-        sender: str = "",
+            self,
+            *,
+            name: str = "",
+            overdue: float = 0.0,
+            creator: str = "",
+            sender: str = "",
     ) -> Topic:
         data = self.model_dump(exclude={"meta"})
         meta = self.meta
@@ -258,10 +259,10 @@ class Publisher(ABC):
 
     @abstractmethod
     async def pub(
-        self,
-        topic: Topic | TopicModel,
-        *,
-        name: str = "",
+            self,
+            topic: Topic | TopicModel,
+            *,
+            name: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
@@ -273,7 +274,12 @@ class Publisher(ABC):
 class TopicService(ABC):
     """
     实现一个基本的 TopicService, 能够实现 pub / sub
-    现阶段没有人力和精力实现 QoS, 先基于基础链路来做.
+    注意!! TopicService 是业务层的实现, 并不是物理层的实现. 物理层的实现要充分考虑 MOSS 架构的多链路双工通讯问题.
+    目前物理层通讯的底座是 Duplex Channel Connection.
+    可以在 Channel 跨进程通讯之间提供统一的 Connection 层.
+
+    这么做的核心原因是, 一个 MOSS 运行时可以通过 ChannelProxy => ChannelProvider 搭建多种异构的通讯通道.
+    而单一的 Topic 依赖一个共同发现的总线, 会导致通讯链路的物理实现锁定.
     """
 
     @abstractmethod
@@ -305,6 +311,7 @@ class TopicService(ABC):
         if exc_val and isinstance(exc_val, ClosedError):
             return True
         await self.close()
+        return None
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -322,24 +329,24 @@ class TopicService(ABC):
 
     @abstractmethod
     def subscribe(
-        self,
-        topic_name: str,
-        *,
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            topic_name: str,
+            *,
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[None]:
         pass
 
     @abstractmethod
     def subscribe_model(
-        self,
-        model: type[TOPIC_MODEL],
-        *,
-        topic_name: str = "",
-        uid: str | None = None,
-        maxsize: int = 0,
-        keep: SubscribeKeep = "latest",
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: str = "",
+            uid: str | None = None,
+            maxsize: int = 0,
+            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 subscriber.
@@ -358,11 +365,11 @@ class TopicService(ABC):
 
     @abstractmethod
     async def pub(
-        self,
-        topic: Topic | TopicModel,
-        *,
-        name: str = "",
-        creator: str = "",
+            self,
+            topic: Topic | TopicModel,
+            *,
+            name: str = "",
+            creator: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
