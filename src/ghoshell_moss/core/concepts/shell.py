@@ -422,7 +422,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    async def clear(self) -> None:
+    def clear(self) -> asyncio.Future[None]:
         """
         清空所有的命令.
         注意 clear 是树形广播的, clear 一个 父 channel 也会 clear 所有的子 channel.

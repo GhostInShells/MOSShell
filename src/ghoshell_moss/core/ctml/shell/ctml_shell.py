@@ -66,6 +66,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
         self._speech: Speech = speech
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
+        self._clearing_task: asyncio.Future[None] | None = None
 
         # state
 
@@ -475,10 +476,26 @@ class CTMLShell(MOSShell[PrimeChannel]):
         command = CommandWrapper(meta or command.meta(), _exec_in_chan_func, available_fn=command.is_available)
         return command
 
-    async def clear(self) -> None:
+    async def _noop(self) -> None:
+        return
+
+    def clear(self) -> asyncio.Future[None]:
         if not self.is_running():
-            return
-        _ = await asyncio.gather(self._speech.clear(), self._main_runtime.clear())
+            return asyncio.create_task(self._noop())
+        if self._clearing_task is not None and not self._clearing_task.done():
+            return self._clearing_task
+        self._clearing_task = self._event_loop.create_task(self._clear())
+        return self._clearing_task
+
+    async def _clear(self):
+        done = await asyncio.gather(
+            self._speech.clear(),
+            self._main_runtime.tree.clear(self._main_runtime),
+            return_exceptions=True,
+        )
+        for t in done:
+            if isinstance(t, Exception):
+                self._logger.error("%s clear shell failed: %s", self._log_prefix, str(t))
 
 
 def new_ctml_shell(

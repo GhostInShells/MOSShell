@@ -353,8 +353,8 @@ class DuplexChannelContext:
                         self.logger.info("Channel proxy %s connection status cleared", self.root_name)
                         continue
                     else:
-                        await asyncio.sleep(self._wait_reconnect_interval)
-                        continue
+                        # 已经设置过连接失败, 则直接跳到拉取消息即可.
+                        pass
                 else:
                     if not is_reconnected:
                         # 发送初始化连接.  proxy 一定要发送至少第一次, 因为 provider
