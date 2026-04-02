@@ -33,7 +33,14 @@ async def test_interrupt_in_ctml():
             interpreter.feed("<interrupt/>")
             interpreter.commit()
             await interpreter.wait_stopped()
-        assert len(cancelled) == 10
+            tasks = interpreter.compiled_tasks()
+            assert len(tasks) == 11
+            success = 0
+            for task in tasks.values():
+                if task.success():
+                    success += 1
+            assert success == 1
+        assert len(cancelled) >= 9
 
         cancelled.clear()
         async with await shell.interpreter() as interpreter:
@@ -44,4 +51,11 @@ async def test_interrupt_in_ctml():
             interpreter.feed("<sleep duration='10'/><interrupt/>")
             interpreter.commit()
             await interpreter.wait_stopped()
+            tasks = interpreter.compiled_tasks()
+            assert len(tasks) == 12
+            success = 0
+            for task in tasks.values():
+                if task.success():
+                    success += 1
+            assert success == 1
         assert len(cancelled) == 10

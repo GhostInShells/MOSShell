@@ -225,35 +225,45 @@ async def test_zmq_channel_multiple_commands():
 
     try:
         async with proxy.bootstrap() as runtime:
+            assert runtime.is_running()
             await runtime.wait_connected()
+            assert runtime.is_running()
+            assert runtime.is_connected()
             # 验证所有命令都存在
             meta = runtime.self_meta()
             assert len(meta.commands) == 3
             command_names = {cmd.name for cmd in meta.commands}
             assert command_names == {"add", "multiply", "greet"}
 
-            # 测试所有命令
+            # # 测试所有命令
             add_cmd = runtime.get_command("add")
+            assert add_cmd is not None
             multiply_cmd = runtime.get_command("multiply")
+            assert multiply_cmd is not None
             greet_cmd = runtime.get_command("greet")
+            assert greet_cmd is not None
 
-            # 执行加法
+            # # 执行加法
             result = await add_cmd(2, 3)
             assert result == 5
 
-            # 执行乘法
+            # # 执行乘法
             result = await multiply_cmd(4, 5)
             assert result == 20
-
-            # 执行问候
+            #
+            # # 执行问候
             result = await greet_cmd("World")
             assert result == "Hello, World!"
-
-            # 测试并发命令执行
-            tasks = [add_cmd(1, 2), multiply_cmd(3, 4), greet_cmd("Test")]
+            # # 测试并发命令执行
+            tasks = [
+                add_cmd(1, 2),
+                multiply_cmd(3, 4),
+                greet_cmd("Test"),
+            ]
 
             results = await asyncio.gather(*tasks)
             assert results == [3, 12, "Hello, Test!"]
 
     finally:
         provider.close()
+        provider.wait_closed_sync()

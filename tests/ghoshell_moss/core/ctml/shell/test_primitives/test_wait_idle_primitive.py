@@ -180,7 +180,7 @@ async def test_wait_idle_with_empty_channels():
     """
     测试空轨道的 wait_idle
     """
-    shell = new_ctml_shell()
+    shell = new_ctml_shell(experimental=True)
 
     async with shell:
         async with await shell.interpreter() as interpreter:
@@ -193,6 +193,7 @@ async def test_wait_idle_with_empty_channels():
             # 应该正常完成，不抛出异常
             assert len(tasks) == 1
             wait_idle_task = list(tasks.values())[0]
+            wait_idle_task.raise_exception()
             assert wait_idle_task.success()
 
 
@@ -201,7 +202,7 @@ async def test_wait_idle_negative_timeout():
     """
     测试负超时值的错误处理
     """
-    shell = new_ctml_shell()
+    shell = new_ctml_shell(experimental=True)
 
     async with shell:
         async with await shell.interpreter() as interpreter:
@@ -289,8 +290,6 @@ async def test_wait_idle_zero_timeout():
             interpreter.feed("<child:task/>")
             interpreter.feed('<wait_idle timeout:float="0.0"/>')
             interpreter.commit()
-
             tasks = await interpreter.wait_tasks()
-
             # 任务应该被取消
             assert task_cancelled

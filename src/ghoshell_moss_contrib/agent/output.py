@@ -1,7 +1,6 @@
 import asyncio
 from collections.abc import Callable
 from typing import Optional
-from typing_extensions import Self
 
 from ghoshell_moss_contrib.agent.depends import check_agent
 
@@ -14,12 +13,12 @@ from ghoshell_moss.contracts.speech import Speech, SpeechStream
 
 class ChatRenderSpeechStream(SpeechStream):
     def __init__(
-        self,
-        batch_id: str,
-        output: Callable[[str], None],
-        *,
-        on_start: asyncio.Event,
-        close: asyncio.Event,
+            self,
+            batch_id: str,
+            output: Callable[[str], None],
+            *,
+            on_start: asyncio.Event,
+            close: asyncio.Event,
     ):
         super().__init__(id=batch_id)
         self._output = output
@@ -89,7 +88,7 @@ class ChatRenderSpeech(Speech):
     def __init__(self, render: ConsoleChat):
         self.render = render
         self.last_stream_close_event = asyncio.Event()
-        self._outputted = {}
+        self._outputted: dict[str, str] = {}
         self._closed_event = asyncio.Event()
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
@@ -97,10 +96,12 @@ class ChatRenderSpeech(Speech):
         last_stream_close_event = self.last_stream_close_event
         new_close_event = asyncio.Event()
         self.last_stream_close_event = new_close_event
-        self._outputted[batch_id] = []
+        self._outputted[batch_id] = ''
 
         def _output(item: str):
-            self._outputted[batch_id].push_task_with_paths(item)
+            value = self._outputted.get(batch_id, '')
+            value += item
+            self._outputted[batch_id] = value
             self.render.update_ai_response(item)
 
         return ChatRenderSpeechStream(batch_id, _output, on_start=last_stream_close_event, close=new_close_event)

@@ -527,29 +527,22 @@ class ChannelRuntime(ABC):
         """
         pass
 
+    @abstractmethod
     async def push_task(self, *tasks: CommandTask) -> None:
         """
-        将一个 Task 推入到执行栈中. 阻塞到完成入栈为止. 仍然要在外侧 await.
-
-        ChannelRuntime 运行的基本逻辑是:
-        1. 一次只能运行一个阻塞 task
-        2. none-blocking 的 task 不会阻塞, 但是可以被 clear.
-        3. clear 会清空掉所有的运行状态.
-        举例:
-        >>> async def run_task(runtime: ChannelRuntime, t:CommandTask):
-        >>>     await runtime.push_task(t)
-        >>>     return await t
+        将 task 推入 channel runtime 的执行栈.
         """
         for task in tasks:
             paths = Channel.split_channel_path_to_names(task.chan)
-            await self.push_task_with_paths(paths, task)
+            self.push_task_with_paths(paths, task)
 
     @abstractmethod
-    async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+    def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         """
-        按路径的方式分配 task. 在 runtime 中排列执行.
+        将一个 Task 推入到执行栈中. 阻塞到完成入栈为止.
         """
         pass
+
 
     @abstractmethod
     def on_task_done(self, callback: TaskDoneCallback) -> None:

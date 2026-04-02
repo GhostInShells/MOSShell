@@ -2,34 +2,9 @@ import asyncio
 
 from ghoshell_moss.core.concepts.channel import (
     ChannelCtx,
-    ChannelRuntime,
 )
 
 __all__ = ["clear"]
-
-
-async def _clear_children(runtime: ChannelRuntime) -> None:
-    """
-    由于执行的命令本身不需要清空, 所以 clear 本质上是清空子轨道.
-    """
-    runtime = ChannelCtx.runtime()
-    if runtime is None:
-        return
-    children = runtime.sub_channels()
-    if len(children) == 0:
-        return
-    group_clear = []
-
-    async def clear_child(_name: str):
-        sub_runtime = runtime.fetch_sub_runtime(_name)
-        if sub_runtime and sub_runtime.is_running():
-            await sub_runtime.clear()
-
-    for name in children:
-        sub_name = name
-        group_clear.append(clear_child(sub_name))
-    await asyncio.gather(*group_clear, return_exceptions=False)
-    return
 
 
 async def clear(chan: str = ""):
@@ -42,7 +17,7 @@ async def clear(chan: str = ""):
         return
     chans = chan.split(",")
     if not chans or "" in chans or "__main__" in chans:
-        await _clear_children(runtime)
+        await runtime.clear_children()
         return
     clear_all = []
     for chan in chans:

@@ -1,14 +1,17 @@
 from abc import ABC, abstractmethod
 from typing_extensions import Self
-from ghoshell_moss.message import Message
+
 from ghoshell_container import IoCContainer
+from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.core.blueprint.builder import Builder
+from ghoshell_moss.core.blueprint.builder import Builder, MutableChannel
+from PIL.Image import Image
 
 __all__ = [
     'ChannelState', 'ChannelStateBuilder', 'StatefulChannel',
     'new_state_builder', 'new_channel_from_state', 'new_stateful_channel',
+    'PrimeChannel', 'new_prime_channel',
 ]
 
 """
@@ -18,6 +21,7 @@ __all__ = [
 _ChannelName = str
 
 __description__ = "How to build stateful channel"
+
 
 class ChannelState(ABC):
     """
@@ -52,47 +56,41 @@ class ChannelState(ABC):
         """
         pass
 
-    @abstractmethod
     async def get_instruction(self) -> str:
         """
         return instruction provided by the state
         """
-        pass
+        return ''
 
-    @abstractmethod
-    async def get_context_messages(self) -> list[Message]:
+    async def get_context_messages(self) -> list[Message | str | Image]:
         """
         return the context messages from the state.
         """
-        pass
+        return []
 
-    @abstractmethod
     async def on_startup(self) -> None:
         """
         when channel startup.
         """
-        pass
+        return None
 
-    @abstractmethod
     async def on_close(self) -> None:
         """
         when channel close.
         """
-        pass
+        return None
 
-    @abstractmethod
     async def on_running(self) -> None:
         """
         when channel is running.
         """
-        pass
+        return None
 
-    @abstractmethod
     async def on_idle(self) -> None:
         """
         when channel is idle, all the commands are done and the children are idle as well
         """
-        pass
+        return None
 
     @abstractmethod
     def own_commands(self) -> dict[str, Command]:
@@ -108,26 +106,23 @@ class ChannelState(ABC):
         """
         pass
 
-    @abstractmethod
     def bootstrap(self, container: IoCContainer) -> None:
         """
         register something to the container. or get some contracts from it.
         """
-        pass
+        return
 
-    @abstractmethod
     def get_children(self) -> dict[_ChannelName, Channel]:
         """
         return the sustain children channel
         """
-        pass
+        return {}
 
-    @abstractmethod
     def get_virtual_children(self) -> dict[_ChannelName, Channel]:
         """
         return the virtual children that may be changed during runtime
         """
-        pass
+        return {}
 
 
 class ChannelStateBuilder(Builder, ChannelState, ABC):
@@ -191,6 +186,13 @@ class StatefulChannel(Channel, ABC):
         pass
 
 
+class PrimeChannel(StatefulChannel, MutableChannel, ABC):
+    """
+    a stateful and mutable channel
+    """
+    pass
+
+
 def new_channel_from_state(state: ChannelState) -> StatefulChannel:
     """
     create new channel by state object
@@ -203,5 +205,10 @@ def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:
     """
     create new stateful channel with builders.
     """
+    from ghoshell_moss.core.py_channel import PyChannel
+    return PyChannel(name=name, description=description)
+
+
+def new_prime_channel(name: str, description: str = "") -> PrimeChannel:
     from ghoshell_moss.core.py_channel import PyChannel
     return PyChannel(name=name, description=description)

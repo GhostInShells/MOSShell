@@ -1,3 +1,5 @@
+import asyncio
+
 from ghoshell_moss.core.concepts.command import PyCommand
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 
@@ -8,6 +10,7 @@ async def interrupt():
     """
     stop all ongoing actions immediately
     """
+    # 先让出一次调度.
     runtime = ChannelCtx.runtime()
     if not runtime:
         return

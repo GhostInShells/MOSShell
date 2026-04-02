@@ -42,10 +42,13 @@ async def test_clear_basic_functionality():
     async with shell:
         # 启动子 Channel 上的长时间任务
         async with await shell.interpreter() as interpreter:
-            interpreter.feed("<child:long_running_task/><clear/>")
+            # 不加 sleep duration=0.01 的话, 前面的任务还没开始调度就被 cancel 了.
+            interpreter.feed("<child:long_running_task/><sleep duration='0.01'/><clear/>")
             interpreter.commit()
+            # await interpreter.wait_compiled()
+            # tasks = interpreter.compiled_tasks()
             # 验证任务被取消
-            await cmd_done.wait()
+            await asyncio.wait_for(cmd_done.wait(), timeout=0.3)
             assert task_cancelled
             assert "task_cancelled" in execution_log
             assert "task_completed" not in execution_log
@@ -92,7 +95,7 @@ async def test_clear_specific_channel():
     async with shell:
         # 在 audio 和 video Channel 上启动任务
         async with await shell.interpreter() as interpreter:
-            interpreter.feed("<audio:audio_task/><video:video_task/>")
+            interpreter.feed("<audio:audio_task/><video:video_task/><sleep duration='0.01'/>")
             interpreter.feed("<clear chan='audio'/>")
             interpreter.commit()
             # 验证只有 audio 任务被取消
@@ -126,7 +129,6 @@ async def test_clear_recursive():
             level1_cancelled = True
             raise
 
-    @level2_chan.build.command()
     async def level2_task():
         nonlocal level2_cancelled
         try:
@@ -142,7 +144,7 @@ async def test_clear_recursive():
     async with shell:
         # 启动多层任务
         async with await shell.interpreter() as interpreter:
-            interpreter.feed("<level1:level1_task/>")
+            interpreter.feed("<level1:level1_task/><sleep duration='0.01'/>")
             # 在根 Channel 调用 clear，应该递归清空所有子 Channel
             interpreter.feed("<clear/>")
             interpreter.commit()

@@ -40,7 +40,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         self._pending_task_queue: asyncio.Queue[_TaskIdWithPaths | None] = asyncio.Queue()
         # 运行状态池.
         # 生命周期任务.
-        self._lifecycle_task: asyncio.Task | None = None
+        self._idling_task: asyncio.Task | None = None
         # 在队列中阻塞的任务.
         self._pending_tasks: dict[_TaskId, CommandTask] = {}
         # 在执行中的异步任务.
@@ -78,7 +78,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         """
         if not self.is_running():
             return
-        await self._clear_lifecycle_task()
+        await self._clear_idle_task()
         await self._blocking_action_lock.acquire()
         try:
             await asyncio.sleep(0.0)
@@ -86,7 +86,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             on_idle_cor = ctx.run(self.on_idle)
             # idle 是一个在生命周期中单独执行的函数.
             task = asyncio.create_task(on_idle_cor)
-            self._lifecycle_task = task
+            self._idling_task = task
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -104,7 +104,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         """
         pass
 
-    async def _clear_lifecycle_task(self) -> None:
+    async def _clear_idle_task(self) -> None:
         """
         终止进行中的生命周期函数.
         """
@@ -112,15 +112,15 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         self._idled_event.clear()
         await self._blocking_action_lock.acquire()
         try:
-            if self._lifecycle_task and not self._lifecycle_task.done():
-                self._lifecycle_task.cancel()
-                await self._lifecycle_task
+            if self._idling_task and not self._idling_task.done():
+                self._idling_task.cancel()
+                await self._idling_task
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self.logger.exception("%s clear lifecycle task failed: %s", self.log_prefix, e)
         finally:
-            self._lifecycle_task = None
+            self._idling_task = None
             self._blocking_action_lock.release()
 
     def _is_children_idled(self) -> bool:
@@ -196,7 +196,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
         task.send_through.append(child_name)
         # 直接发送给子树.
         further_paths = paths[1:]
-        await runtime.push_task_with_paths(further_paths, task)
+        runtime.push_task_with_paths(further_paths, task)
 
     async def _consume_task(self, paths: ChannelPaths, task_id: str) -> None:
         """
@@ -237,7 +237,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
                 # 只有 consume 层可以设置 blocking task. 协程安全操作.
                 self._executing_blocking_task = consuming
             # 执行自己的任务. 但并不阻塞.
-            await self._clear_lifecycle_task()
+            await self._clear_idle_task()
             await self._execute_self_task_none_block(consuming)
             consuming = None
 
@@ -466,7 +466,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             if result is None and not owner.done():
                 owner.cancel()
 
-    async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+    async def _consume_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         """
         基于路径将任务入栈.
         入栈是高优的同步任务.
@@ -487,7 +487,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             # 进入 pending 列表.
             if is_self_task:
                 # 清理运行中的 lifecycle task
-                await self._clear_lifecycle_task()
+                await self._clear_idle_task()
                 # call soon
                 if task.meta.call_soon:
                     if is_blocking_task:
@@ -506,7 +506,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             # 普通的任务, 则会被丢入阻塞队列中排队执行.
             _queue = self._pending_task_queue
             # 入栈.
-            _queue.put_nowait((paths, task_id))
+            await _queue.put((paths, task_id))
         except asyncio.QueueFull:
             task.fail(CommandErrorCode.FAILED.error(f"channel queue is full, clear first"))
 
@@ -539,7 +539,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
                 if not task.done():
                     task.cancel(reason)
 
-    async def clear_own(self) -> None:
+    async def _clear_own(self) -> None:
         """
         当轨道命令被触发清空时候执行.
         仅仅清空自身的运行中状态.

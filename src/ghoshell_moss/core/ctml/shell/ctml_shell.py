@@ -17,7 +17,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelMeta,
     ChannelRuntime,
 )
-from ghoshell_moss.core.blueprint import StatefulChannel
+from ghoshell_moss.core.blueprint import PrimeChannel
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,
@@ -41,14 +41,14 @@ import janus
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
 
-class CTMLShell(MOSShell[StatefulChannel]):
+class CTMLShell(MOSShell[PrimeChannel]):
     def __init__(
             self,
             *,
             name: str = "MOSShell",
             description: Optional[str] = None,
             container: IoCContainer | None = None,
-            main_channel: StatefulChannel | None = None,
+            main_channel: PrimeChannel | None = None,
             speech: Optional[Speech] = None,
             logger: LoggerItf | None = None,
             experimental: bool = True,
@@ -351,7 +351,7 @@ class CTMLShell(MOSShell[StatefulChannel]):
         return interpreter
 
     @property
-    def main_channel(self) -> StatefulChannel:
+    def main_channel(self) -> PrimeChannel:
         return self._main_channel
 
     async def pub_topic(self, topic: Topic | TopicModel, *, name: str = "") -> None:
@@ -549,7 +549,7 @@ def new_ctml_shell(
         logger: Optional[LoggerItf] = None,
         experimental: bool = True,
         primitives: list[str] | None = None,
-) -> MOSShell[StatefulChannel]:
+) -> MOSShell[PrimeChannel]:
     """语法糖, 好像不甜"""
     return CTMLShell(
         name=name,

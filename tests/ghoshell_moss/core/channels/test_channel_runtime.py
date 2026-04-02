@@ -44,6 +44,8 @@ async def test_channel_runtime_clear():
         task = runtime.create_command_task("foo")
         assert task is not None
         await runtime.push_task(task)
+        assert runtime.is_idle()
+        await asyncio.sleep(0.01)
         assert not runtime.is_idle()
         await runtime.clear()
         assert task.done()
@@ -54,6 +56,7 @@ async def test_channel_runtime_clear():
         task = runtime.create_command_task("foo")
         assert task is not None
         await runtime.push_task(task)
+        await asyncio.sleep(0.001)
         assert not runtime.is_idle()
         await task
         assert task.done()

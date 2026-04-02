@@ -20,9 +20,9 @@ from ghoshell_moss.core.concepts.errors import CommandError
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
-from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel
+from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel, PrimeChannel
 from ghoshell_moss.core.blueprint.builder import (
-    MutableChannel, Builder,
+    Builder,
     CommandFunction,
     MessageFunction,
     LifecycleFunction,
@@ -315,7 +315,7 @@ class BaseStateChannel(StatefulChannel):
         return StateChannelRuntime(self, container=container)
 
 
-class PyChannel(BaseStateChannel, MutableChannel):
+class PyChannel(BaseStateChannel, PrimeChannel):
     """
     一个 Prime Channel.
     """
@@ -396,8 +396,6 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         """
         switch current state into existing state by name.
         """
-        if not name:
-            return f'main state `{name}` is already running'
         if name == self._current_state_name:
             return f'{self._current_state_name} is already running'
         states = self._dynamic_states
@@ -645,6 +643,8 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         main_state = self._main_state
         await main_state.on_startup()
         self._on_startup_instruction = await main_state.get_instruction()
+        if '' in self._dynamic_states:
+            await self.switch_state('')
 
     async def on_close(self) -> None:
         await self._main_state.on_close()

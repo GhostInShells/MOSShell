@@ -886,7 +886,7 @@ class CommandTask(Generic[RESULT], ABC):
     def compiled(self) -> bool:
         return self.partial is None or self.on_compiled_task is not None
 
-    async def on_compiled(self) -> None:
+    def on_compiled(self) -> None:
         """
         约定的 command task 预先加工参数的周期.
         一个 command 只会执行一次.
@@ -1022,7 +1022,7 @@ class CommandTask(Generic[RESULT], ABC):
     async def dry_run(self) -> RESULT:
         """无状态的运行逻辑"""
         # if not prepared
-        await self.on_compiled()
+        self.on_compiled()
         if self.func is None:
             return None
         if self.on_compiled_task is not None:

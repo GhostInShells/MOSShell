@@ -108,7 +108,7 @@ class DuplexChannelContext:
         """logger 的缓存."""
         self._log_prefix = "[DuplexChannelContext][%s] " % self.root_name
         self._runtime_asyncio_task_group: set[asyncio.Task] = set()
-        self.provider_err: str = ""
+        self.connection_err: str = ""
 
     def _add_task(self, task: asyncio.Task) -> None:
         if not self.is_running():
@@ -226,7 +226,8 @@ class DuplexChannelContext:
 
     def is_connected(self) -> bool:
         # 判断连接的关键, 是通信存在并且完成了同步.
-        return self._connected_event.is_set()
+        is_connected = self.connection.is_connected() and self._connected_event.is_set()
+        return is_connected
 
     def is_channel_available(self, provider_chan_path: str) -> bool:
         connection_is_available = self.is_running() and self.connection.is_connected()
@@ -309,7 +310,7 @@ class DuplexChannelContext:
             self._sync_meta_started_event.clear()
             self.session_id = ""
             self.provider_meta_map.clear()
-            self.provider_err = ""
+            self.connection_err = ""
             if len(self._runtime_asyncio_task_group) > 0:
                 tasks = self._runtime_asyncio_task_group.copy()
                 self._runtime_asyncio_task_group.clear()
@@ -409,40 +410,41 @@ class DuplexChannelContext:
                 else:
                     # 拿到了其它正常的指令. 继续往下走.
                     pass
-
-                if provider_err := ProviderErrorEvent.from_channel_event(event):
-                    self._handle_provider_error(error=provider_err)
-
-                elif pub_topic := ProviderPubTopicEvent.from_channel_event(event):
-                    t = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
-                    self._add_task(t)
-                elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
-                    _ = await self._sub_topic_for_provider(sub_topic.topic_name)
-                    continue
-
-                elif command_done := CommandDoneEvent.from_channel_event(event):
-                    # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
-                    t = asyncio.create_task(self._handle_command_done_event(command_done))
-                    self._add_task(t)
-                    continue
-
-                else:
-                    self.logger.warning(
-                        "Channel %s receive event error: unknown event %s",
-                        self.root_name,
-                        event,
-                    )
-
+                await self._handle_provider_common_event(event)
         except asyncio.CancelledError:
             pass
 
+    async def _handle_provider_common_event(self, event: ChannelEvent) -> None:
+        try:
+            if provider_err := ProviderErrorEvent.from_channel_event(event):
+                self._handle_provider_error(error=provider_err)
+            elif pub_topic := ProviderPubTopicEvent.from_channel_event(event):
+                t = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                self._add_task(t)
+            elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
+                _ = await self._sub_topic_for_provider(sub_topic.topic_name)
+            elif command_done := CommandDoneEvent.from_channel_event(event):
+                # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
+                t = asyncio.create_task(self._handle_command_done_event(command_done))
+                self._add_task(t)
+            else:
+                self.logger.warning(
+                    "Channel %s receive event error: unknown event %s",
+                    self.root_name,
+                    event,
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error("Channel %s handle event failed: %s", self.root_name, e)
+
     def _handle_provider_error(self, error: ProviderErrorEvent | None) -> None:
         if error is not None:
-            self.provider_err = repr(error)
+            self.connection_err = repr(error)
             # 不阻塞 meta 更新.
             self._sync_meta_done_event.set()
         else:
-            self.provider_err = ''
+            self.connection_err = ''
 
     async def _handle_provider_pub_topic(self, pub_topic: ProviderPubTopicEvent) -> None:
         # todo: exception handler
@@ -510,31 +512,38 @@ class DuplexChannelContext:
 
     async def _handle_update_channel_meta(self, event: ChannelMetaUpdateEvent) -> None:
         """更新 metas 信息."""
-        self.remote_root_name = event.root_chan
-        # 更新 meta map.
-        new_provider_meta_map = {}
-        for provider_channel_path, meta in event.metas.items():
-            meta = meta.model_copy()
-            if provider_channel_path == "":
-                meta.name = self.root_name
-            new_provider_meta_map[provider_channel_path] = meta
+        try:
+            self.remote_root_name = event.root_chan
+            # 更新 meta map.
+            new_provider_meta_map = {}
+            for provider_channel_path, meta in event.metas.items():
+                meta = meta.model_copy()
+                if provider_channel_path == "":
+                    meta.name = self.root_name
+                new_provider_meta_map[provider_channel_path] = meta
 
-        if not event.all:
-            # 不是全量更新时, 也把旧的 meta 加回来.
-            for channel_path, meta in self.provider_meta_map.items():
-                if channel_path not in new_provider_meta_map:
-                    new_provider_meta_map[channel_path] = meta
+            if not event.all:
+                # 不是全量更新时, 也把旧的 meta 加回来.
+                for channel_path, meta in self.provider_meta_map.items():
+                    if channel_path not in new_provider_meta_map:
+                        new_provider_meta_map[channel_path] = meta
 
-        # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
-        self.provider_meta_map = new_provider_meta_map
-        self.logger.debug("%s receive new metas from provider %s", self._log_prefix, new_provider_meta_map)
-        # 更新 sync 的标记.
-        if not self._sync_meta_done_event.is_set():
-            self._sync_meta_done_event.set()
-        if self._sync_meta_started_event.is_set():
-            self._sync_meta_started_event.clear()
-        # 更新失联状态.
-        self._connected_event.set()
+            # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
+            self.provider_meta_map = new_provider_meta_map
+            self.logger.debug("%s receive new metas from provider %s", self._log_prefix, new_provider_meta_map)
+            # 更新 sync 的标记.
+            if not self._sync_meta_done_event.is_set():
+                self._sync_meta_done_event.set()
+            if self._sync_meta_started_event.is_set():
+                self._sync_meta_started_event.clear()
+            # 更新失联状态.
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger.exception("%s receive update channel meta failed", self._log_prefix)
+            self.connection_err = str(e)
+        finally:
+            self._connected_event.set()
 
     async def _send_delta_args(self, task: CommandTask, deltas: AsyncIterable[CommandToken | str]) -> None:
         cid = task.cid
@@ -697,11 +706,11 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return
 
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
-        if self._ctx.provider_err:
+        if self._ctx.connection_err:
             return {'': ChannelMeta.new_empty(
                 self.channel.id(),
                 self.channel,
-                failure=self._ctx.provider_err,
+                failure=self._ctx.connection_err,
             )}
 
         return self._ctx.provider_meta_map
@@ -720,7 +729,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     def _is_available(self) -> bool:
         return self._ctx.is_channel_available(self._provider_chan_path)
 
-    async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+    async def _consume_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
         event = await self._ctx.send_command_task(task)
         _ = asyncio.create_task(self._ctx.expect_task_done(event, task))
 
@@ -738,7 +747,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             raise RuntimeError(f"Channel proxy {self._name} is not running")
 
     def is_connected(self) -> bool:
-        return self.is_running() and self._ctx.is_channel_connected(self._provider_chan_path)
+        return self.is_running() and self._ctx.is_connected()
 
     async def wait_connected(self) -> None:
         if not self.is_running():
@@ -746,6 +755,8 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         await self._ctx.wait_connected()
 
     def has_own_command(self, name: CommandUniqueName) -> bool:
+        if not self.is_running():
+            return False
         path, name = Command.split_unique_name(name)
         meta = self._ctx.get_meta(path)
         if not meta:
@@ -772,6 +783,8 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         return result
 
     def get_own_command(self, name: CommandUniqueName) -> Optional[Command]:
+        if not self.is_running():
+            return None
         path, name = Command.split_unique_name(name)
         meta = self._ctx.get_meta(path)
         if meta is None:
@@ -826,7 +839,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
 
         return _call_provider_as_func
 
-    async def clear_own(self) -> None:
+    async def _clear_own(self) -> None:
         if not self._ctx.is_running() or not self._ctx.is_connected():
             return
         try:

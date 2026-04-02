@@ -1,5 +1,4 @@
 import asyncio
-import time
 
 import pytest
 
@@ -402,6 +401,7 @@ async def test_py_channel_parent_idle() -> None:
         task4 = runtime.create_command_task("foo", args=(0.2,))
         # 先执行完.
         await runtime.push_task(task1, task2, task3, task4)
+        await asyncio.sleep(0.001)
         assert not runtime.is_idle()
         # 等待运行完. 子命令都运行完, 父轨才会 idle.
         await task1

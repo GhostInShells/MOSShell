@@ -3,6 +3,8 @@ import contextlib
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional, Iterable, TypeVar, Generic, Callable, Coroutine
+
+import janus
 from typing_extensions import Self
 
 from ghoshell_container import IoCContainer, Container
@@ -72,6 +74,12 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._runtime_asyncio_task_group: set[asyncio.Task] = set()
         # register task done callback
         self._task_done_callbacks: list[TaskDoneCallback] = []
+
+        # compiling loop
+        self._compiling_loop_task: asyncio.Task | None = None
+        self._on_compile_task_queue: janus.Queue[tuple[ChannelPaths, CommandTask]] = janus.Queue()
+        self._compiling_task: CommandTask | None = None
+
         self._exit_stack = contextlib.AsyncExitStack()
         # log_prefix
         self.log_prefix = "<Channel `%s` cls=%s id=%s name=%s>" % (
@@ -154,6 +162,14 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         """
         pass
 
+    async def push_task(self, *tasks: CommandTask) -> None:
+        for task in tasks:
+            paths = Channel.split_channel_path_to_names(task.chan)
+            self.push_task_with_paths(paths, task)
+
+    def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+        self._on_compile_task_queue.sync_q.put_nowait((paths, task))
+
     # --- status --- #
 
     def is_running(self) -> bool:
@@ -206,27 +222,38 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             return None
         return task
 
-    async def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
-        """
-        基于路径将任务入栈.
-        """
-        task = self._parse_task(task)
-        if task is None:
-            return
-        # 设置运行通道记录.
-        # 设置 task id 到 pending map 里.
-        self._add_task_done_callback(task)
-        try:
-            # 准备入参.
-            await self._push_task_with_paths(paths, task)
-        except Exception as exc:
-            self.logger.exception(exc)
-            if not task.done():
-                task.fail(exc)
-            raise exc
+    async def _on_task_compile_loop(self) -> None:
+        while not self._closing_event.is_set():
+            try:
+                queue = self._on_compile_task_queue.async_q
+                paths, task = await queue.get()
+                task = self._parse_task(task)
+                if task is None or task.done():
+                    continue
+                self._compiling_task = task
+                self._add_task_done_callback(task)
+                task.on_compiled()
+                # prepare to send
+                await self._consume_task_with_paths(paths, task)
+                await asyncio.sleep(0.0)
+
+            except janus.AsyncQueueShutDown:
+                # shutdown the old queue.
+                continue
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self.logger.exception("%s prepare to compile task failed: %s", self.log_prefix, exc)
+            finally:
+                self._compiling_task = None
+
+        self.logger.info("%s compile task finished", self.log_prefix)
 
     @abstractmethod
-    async def _push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+    async def _consume_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+        """
+        push the task to the real handling loop with paths
+        """
         pass
 
     def on_task_done(self, callback: TaskDoneCallback) -> None:
@@ -252,8 +279,27 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                 # 同步运行.
                 self._loop.run_in_executor(None, callback, task)
 
-    @abstractmethod
     async def clear_own(self) -> None:
+        # shutdown the compiling loop.
+        old_queue = self._on_compile_task_queue
+        self._on_compile_task_queue = janus.Queue()
+        cleared_err = CommandErrorCode.CLEARED.error("cleared")
+        while not old_queue.sync_q.empty():
+            paths, item = old_queue.sync_q.get_nowait()
+            if item and not item.done():
+                item.fail(cleared_err)
+        while not old_queue.async_q.empty():
+            paths, item = old_queue.async_q.get_nowait()
+            if item and not item.done():
+                item.fail(cleared_err)
+        old_queue.shutdown()
+        if self._compiling_task is not None:
+            if not self._compiling_task.done():
+                self._compiling_task.fail(cleared_err)
+        await self._clear_own()
+
+    @abstractmethod
+    async def _clear_own(self) -> None:
         pass
 
     # --- 开始与结束 --- #
@@ -328,7 +374,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     @contextlib.asynccontextmanager
     async def _main_loop_ctx(self):
         try:
-            self._main_loop_task = asyncio.create_task(self._main_loop())
+            self._compiling_loop_task = self._loop.create_task(self._on_task_compile_loop())
+            self._main_loop_task = self._loop.create_task(self._main_loop())
             yield
         finally:
             try:
@@ -339,7 +386,17 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                         await self._main_loop_task
                     except asyncio.CancelledError:
                         pass
+                    except Exception as e:
+                        self.logger.exception("%s cancel main_loop_task failed: %s", self.log_prefix, e)
                 self._main_loop_task = None
+                if self._compiling_loop_task and not self._compiling_loop_task.done():
+                    self._compiling_loop_task.cancel()
+                    try:
+                        await self._compiling_loop_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        self.logger.exception("%s cancel compiling_loop_task failed: %s", self.log_prefix, e)
             except Exception as e:
                 self.logger.exception(e)
                 raise

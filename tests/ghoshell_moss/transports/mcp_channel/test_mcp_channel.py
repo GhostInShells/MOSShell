@@ -10,7 +10,7 @@ from mcp.client.stdio import stdio_client
 from ghoshell_moss import CommandError
 from ghoshell_moss.compatible.mcp_channel.mcp_channel import MCPChannel
 from ghoshell_moss.compatible.mcp_channel.types import MCPCallToolResultAddition
-from ghoshell_moss.core.concepts.command import CommandErrorCode, BaseCommandTask, CommandTaskResult
+from ghoshell_moss.core.concepts.command import CommandErrorCode
 from ghoshell_moss.message import Message
 
 

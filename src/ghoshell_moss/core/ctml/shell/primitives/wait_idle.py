@@ -8,33 +8,17 @@ from ghoshell_moss.core.concepts.channel import (
 __all__ = ["wait_idle"]
 
 
-async def _wait_children_idle(runtime: ChannelRuntime, timeout: float | None):
+async def _wait_children_idle_or_clear(runtime: ChannelRuntime, timeout: float | None):
     """
     由于执行的命令本身不需要清空, 所以 clear 本质上是清空子轨道.
     """
-    runtime = ChannelCtx.runtime()
-    if runtime is None:
-        return
-    children = runtime.sub_channels()
-    if len(children) == 0:
-        return None
-    group_wait = []
-
-    async def wait_child(_name: str):
-        sub_runtime = runtime.fetch_sub_runtime(_name)
-        if sub_runtime and sub_runtime.is_running():
-            if timeout is None:
-                await sub_runtime.wait_idle()
-            else:
-                try:
-                    await asyncio.wait_for(sub_runtime.wait_idle(), timeout)
-                except asyncio.TimeoutError:
-                    await sub_runtime.clear()
-
-    for name in children:
-        sub_name = name
-        group_wait.append(wait_child(sub_name))
-    await asyncio.gather(*group_wait, return_exceptions=False)
+    if timeout is not None and timeout >= 0.0:
+        try:
+            await asyncio.wait_for(runtime.wait_children_idled(), timeout)
+        except asyncio.TimeoutError:
+            await runtime.clear_children()
+    else:
+        await runtime.wait_children_idled()
 
 
 async def _wait_for_runtime(_runtime: ChannelRuntime, _timeout: float | None):
@@ -63,7 +47,7 @@ async def wait_idle(chan: str = "", timeout: float | None = None):
     chans = chan.split(",")
     if chan == "" or "" in chans or "__main__" in chans:
         # 之所以 wait children, 是因为当前 wait idle 就在主轨执行, 如果它等待自己 idle 会死锁.
-        await _wait_children_idle(runtime, timeout)
+        await _wait_children_idle_or_clear(runtime, timeout)
         return
 
     wait_all = []

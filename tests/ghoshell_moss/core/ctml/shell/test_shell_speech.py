@@ -1,16 +1,13 @@
 from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.core import new_ctml_shell, new_channel, CommandErrorCode
-from ghoshell_moss.core.helpers.logger import get_console_logger
 import pytest
 import asyncio
-
-logger = get_console_logger()
 
 
 @pytest.mark.asyncio
 async def test_shell_with_output_channel_in_wait():
     speech = MockSpeech()
-    shell = new_ctml_shell(speech=speech, logger=logger)
+    shell = new_ctml_shell(speech=speech)
 
     async with shell:
         async with await shell.interpreter() as interpreter:
@@ -24,7 +21,6 @@ async def test_shell_with_output_channel_in_wait():
 
             assert len(interpretation.execution_messages()) == 1
             for msg in interpretation.execution_messages():
-                print(msg)
                 # 暴露了异常. 深层异常是 a:foo 不存在.
                 assert CommandErrorCode.INTERPRET_ERROR.name in str(msg)
 

@@ -693,7 +693,7 @@ class Interpreter(ABC):
                         for task in tasks:
                             # print("++++++++++++++++++++ wait compiled task", task)
                             # run partial on compiled
-                            await task.on_compiled()
+                            task.on_compiled()
                             task_callback(task)
                     await asyncio.sleep(0.0)
         except asyncio.CancelledError:
