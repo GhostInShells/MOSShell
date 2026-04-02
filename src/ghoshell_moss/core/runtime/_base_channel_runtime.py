@@ -60,6 +60,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 用线程安全的事件. 考虑到 runtime 未来可能会跨线程被使用.
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
+        self._refreshing_task: Optional[asyncio.Task] = None
 
         self._own_metas_cache: dict[ChannelFullPath, ChannelMeta] = {}
         # 可以注册监听, 监听 refresh meta 动作.
@@ -133,7 +134,16 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         return self._own_metas_cache
 
-    async def refresh_own_metas(self) -> None:
+    def refresh_own_metas(self) -> asyncio.Future[None]:
+        """
+        make sure refresh run once at a time
+        """
+        if self._refreshing_task is not None and not self._refreshing_task.done():
+            return self._refreshing_task
+        self._refreshing_task = self._loop.create_task(self._refresh_own_metas())
+        return self._refreshing_task
+
+    async def _refresh_own_metas(self) -> None:
         ctx = ChannelCtx(self)
         self._own_metas_cache = await ctx.run(self._generate_own_metas)
 

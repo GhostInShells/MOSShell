@@ -151,7 +151,7 @@ class ChannelRuntimeNode:
                     task = ctx.refresh(channel_id, wait=recursive_wait)
                     if task and recursive_wait:
                         waiting_tasks.append(task)
-                wait_self = asyncio.create_task(runtime.refresh_own_metas())
+                wait_self = runtime.refresh_own_metas()
                 # 先阻塞等待自己.
 
                 await wait_self

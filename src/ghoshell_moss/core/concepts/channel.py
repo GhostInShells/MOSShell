@@ -492,7 +492,7 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    async def refresh_own_metas(self) -> None:
+    def refresh_own_metas(self) -> asyncio.Future[None]:
         """
         刷新自身的 meta
         """
