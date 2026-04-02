@@ -528,7 +528,7 @@ class ChannelRuntime(ABC):
         pass
 
     @abstractmethod
-    async def push_task(self, *tasks: CommandTask) -> None:
+    def push_task(self, *tasks: CommandTask) -> None:
         """
         将 task 推入 channel runtime 的执行栈.
         """
@@ -605,19 +605,19 @@ class ChannelRuntime(ABC):
         )
         return task
 
-    async def execute_command(
+    def execute_command(
             self,
             name: CommandUniqueName,
             *,
             args: tuple | None = None,
             kwargs: dict | None = None,
-    ) -> Any:
+    ) -> Awaitable:
         """
         执行命令并且阻塞等待拿到结果.
         """
         task = self.create_command_task(name, args=args, kwargs=kwargs)
-        await self.push_task(task)
-        return await task
+        self.push_task(task)
+        return task
 
     @abstractmethod
     async def start(self) -> Self:

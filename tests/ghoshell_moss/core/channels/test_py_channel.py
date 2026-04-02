@@ -154,7 +154,7 @@ async def test_py_channel_execute_task() -> None:
     main.build.command()(foo)
     async with main.bootstrap() as runtime:
         task = runtime.create_command_task("foo")
-        await runtime.push_task(task)
+        runtime.push_task(task)
         result = await task
         assert result == 123
 
@@ -241,21 +241,21 @@ async def test_py_channel_exec_tasks() -> None:
         t = ChannelCtx.task()
         return t is not None
 
-    # async with main.bootstrap() as runtime:
-    #     task = runtime.create_command_task("foo")
-    #     await runtime.execute_task(task)
-    #     assert await task
-    #     task = runtime.create_command_task("foo")
-    #     await runtime.execute_task(task)
-    #     assert await task
-    #     task = runtime.create_command_task("foo")
-    #     await runtime.execute_task(task)
-    #     assert await task
+    async with main.bootstrap() as runtime:
+        task = runtime.create_command_task("foo")
+        await runtime.execute_task(task)
+        assert await task
+        task = runtime.create_command_task("foo")
+        await runtime.execute_task(task)
+        assert await task
+        task = runtime.create_command_task("foo")
+        await runtime.execute_task(task)
+        assert await task
 
     async with main.bootstrap() as runtime:
         _sleep = 2.0
         task1 = runtime.create_command_task("foo")
-        await runtime.push_task(task1)
+        runtime.push_task(task1)
         assert not task1.done()
         await runtime.clear()
         # cleared
@@ -288,11 +288,11 @@ async def test_py_channel_idle() -> None:
     async with main.bootstrap() as runtime:
         assert len(idled) == 1
         task = runtime.create_command_task("foo")
-        await runtime.push_task(task)
+        runtime.push_task(task)
         await task
         await asyncio.sleep(0.1)
         task = runtime.create_command_task("foo")
-        await runtime.push_task(task)
+        runtime.push_task(task)
         assert len(idled) == 2
         await task
         await asyncio.sleep(0.1)
@@ -400,7 +400,7 @@ async def test_py_channel_parent_idle() -> None:
         task3 = runtime.create_command_task("b_chan:foo", args=(0.1,))
         task4 = runtime.create_command_task("foo", args=(0.2,))
         # 先执行完.
-        await runtime.push_task(task1, task2, task3, task4)
+        runtime.push_task(task1, task2, task3, task4)
         await asyncio.sleep(0.001)
         assert not runtime.is_idle()
         # 等待运行完. 子命令都运行完, 父轨才会 idle.
@@ -503,7 +503,7 @@ async def test_py_channel_observe_command():
     async with main.bootstrap() as runtime:
         assert runtime.is_running()
         bar_task = runtime.create_command_task("bar")
-        await runtime.push_task(bar_task)
+        runtime.push_task(bar_task)
         result = await bar_task
         assert result is None
         task_result = bar_task.task_result()
@@ -533,10 +533,10 @@ async def test_py_channel_call_soon_command():
     async with main.bootstrap() as runtime:
         _foo = runtime.create_command_task("foo")
         _bar = runtime.create_command_task("bar")
-        await runtime.push_task(_foo)
+        runtime.push_task(_foo)
         # makesure foo has bee called
         await asyncio.sleep(0.1)
-        await runtime.push_task(_bar)
+        runtime.push_task(_bar)
         await _bar
         assert exec_log == ["cancelled"]
 
@@ -583,9 +583,9 @@ async def test_py_channel_priority_command():
     async with main.bootstrap() as runtime:
         _foo = runtime.create_command_task("foo")
         _bar = runtime.create_command_task("bar")
-        await runtime.push_task(_foo)
+        runtime.push_task(_foo)
         await asyncio.sleep(0.01)
-        await runtime.push_task(_bar)
+        runtime.push_task(_bar)
         await _bar
         assert cancelled == ["foo"]
 
@@ -595,9 +595,9 @@ async def test_py_channel_priority_command():
         _bar = runtime.create_command_task("bar")
         _baz = runtime.create_command_task("baz")
         _nonblock = runtime.create_command_task("nonblock")
-        await runtime.push_task(_bar)
+        runtime.push_task(_bar)
         await asyncio.sleep(0.1)
-        await runtime.push_task(_baz, _nonblock)
+        runtime.push_task(_baz, _nonblock)
         await _baz
         assert not _nonblock.done()
         assert cancelled == ["bar"]
@@ -609,11 +609,11 @@ async def test_py_channel_priority_command():
         _foo = runtime.create_command_task("foo")
         _bar = runtime.create_command_task("bar")
         _baz = runtime.create_command_task("baz")
-        await runtime.push_task(_foo)
+        runtime.push_task(_foo)
         await asyncio.sleep(0.05)
-        await runtime.push_task(_bar)
+        runtime.push_task(_bar)
         await asyncio.sleep(0.05)
-        await runtime.push_task(_baz)
+        runtime.push_task(_baz)
         await _baz
         assert cancelled == ["foo", "bar"]
 

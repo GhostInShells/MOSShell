@@ -162,7 +162,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         """
         pass
 
-    async def push_task(self, *tasks: CommandTask) -> None:
+    def push_task(self, *tasks: CommandTask) -> None:
         for task in tasks:
             paths = Channel.split_channel_path_to_names(task.chan)
             self.push_task_with_paths(paths, task)

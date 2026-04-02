@@ -76,9 +76,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._exit_stack = contextlib.AsyncExitStack()
 
-        self._main_loop_task: Optional[asyncio.Task] = None
-        self._push_task_queue: janus.Queue[CommandTask | None] | None = None
-
         self._start: bool = False
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
@@ -119,7 +116,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
             return
         self._start = True
         self._event_loop = asyncio.get_running_loop()
-        self._push_task_queue = janus.Queue()
         # 进入开机过程.
         await self._exit_stack.__aenter__()
         for ctx_manager in self._bootstrap_stacks():
@@ -135,7 +131,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         yield self._ioc_context_manager
         yield self._speech_context_manager
         yield self._runtime_context_manager
-        yield self._main_loop_context_manager
+        # yield self._main_loop_context_manager
 
     @contextlib.asynccontextmanager
     async def _ioc_context_manager(self):
@@ -182,55 +178,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
         yield
         # 关闭 Runtime. k
         await self._main_runtime.close()
-
-    @contextlib.asynccontextmanager
-    async def _main_loop_context_manager(self):
-        self._main_loop_task = asyncio.create_task(self._push_task_loop())
-        yield
-        if not self._main_loop_task.done():
-            self._main_loop_task.cancel()
-            try:
-                await self._main_loop_task
-            except asyncio.CancelledError:
-                pass
-
-    async def _push_task_loop(self):
-        try:
-            failed_count = 0
-            while not self._closing_event.is_set():
-                try:
-                    _queue = self._push_task_queue
-                    item = await asyncio.wait_for(_queue.async_q.get(), timeout=1)
-                    if item is None:
-                        # 接受毒丸防止死锁.
-                        continue
-                except asyncio.TimeoutError:
-                    continue
-                except janus.AsyncQueueShutDown:
-                    continue
-
-                try:
-                    if not self.is_running():
-                        item.fail(CommandErrorCode.NOT_RUNNING.error("shell is not running"))
-                        continue
-                    await self._main_runtime.push_task(item)
-                    # 清零.
-                    failed_count = 0
-                except asyncio.CancelledError:
-                    raise
-                except FatalError as e:
-                    self.logger.exception("%s fatal error: %s", self._log_prefix, e)
-                    raise
-                except Exception as e:
-                    # 不处理特殊异常.
-                    self.logger.exception("%s push task exception: %s", self._log_prefix, e)
-                    failed_count += 1
-                    # 连续 5 个特殊异常. 本来一个都应该没有
-                    if failed_count > 5:
-                        # 中断主循环.
-                        raise
-        finally:
-            self.logger.info("%s push task loop done", self._log_prefix)
 
     # --- lifetime functions --- #
 
@@ -432,9 +379,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
     def push_task(self, *tasks: CommandTask) -> None:
         self._check_running()
-        # 线程安全加入 tasks.
-        for t in tasks:
-            self._push_task_queue.sync_q.put_nowait(t)
+        self._main_runtime.push_task(*tasks)
 
     async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
@@ -533,10 +478,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
     async def clear(self) -> None:
         if not self.is_running():
             return
-        _queue = self._push_task_queue
-        # 直接换新的 _queue.
-        self._push_task_queue = janus.Queue()
-        _queue.close()
         _ = await asyncio.gather(self._speech.clear(), self._main_runtime.clear())
 
 

@@ -599,7 +599,7 @@ class DuplexChannelProvider(ChannelProvider):
             task.set_state(CommandTaskState.executing.value)
             task.add_done_callback(self._remove_running_task)
             await self._add_running_task(task)
-            await self._root_runtime.push_task(task)
+            self._root_runtime.push_task(task)
             await task
         except asyncio.CancelledError:
             task.cancel("cancelled")

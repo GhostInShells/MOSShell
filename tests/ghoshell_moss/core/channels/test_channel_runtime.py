@@ -25,7 +25,7 @@ async def test_channel_runtime_execution():
         assert foo_cmd is not None
         assert foo_cmd.meta().chan == ""
         task = BaseCommandTask.from_command(foo_cmd)
-        await runtime.push_task(task)
+        runtime.push_task(task)
         await task.wait()
     assert task.done()
     assert task.result() == 123
@@ -43,7 +43,7 @@ async def test_channel_runtime_clear():
     async with chan.bootstrap() as runtime:
         task = runtime.create_command_task("foo")
         assert task is not None
-        await runtime.push_task(task)
+        runtime.push_task(task)
         assert runtime.is_idle()
         await asyncio.sleep(0.01)
         assert not runtime.is_idle()
@@ -55,7 +55,7 @@ async def test_channel_runtime_clear():
     async with chan.bootstrap() as runtime:
         task = runtime.create_command_task("foo")
         assert task is not None
-        await runtime.push_task(task)
+        runtime.push_task(task)
         await asyncio.sleep(0.001)
         assert not runtime.is_idle()
         await task
@@ -108,7 +108,7 @@ async def test_channel_runtime_non_blocking():
     async with chan.bootstrap() as runtime:
         task1 = runtime.create_command_task("foo")
         task2 = runtime.create_command_task("bar")
-        await runtime.push_task(task1, task2)
+        runtime.push_task(task1, task2)
         assert await task2 == 123
         # 估计 task1 还没执行完.
         assert not task1.done()
@@ -117,7 +117,7 @@ async def test_channel_runtime_non_blocking():
 
         task3 = runtime.create_command_task("foo")
         task4 = runtime.create_command_task("bar")
-        await runtime.push_task(task3, task4)
+        runtime.push_task(task3, task4)
         # 直接清空.
         await runtime.clear()
         # 都被清空了.

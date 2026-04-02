@@ -216,7 +216,7 @@ async def test_mcp_channel_execute():
 
             async with mcp_channel.bootstrap() as runtime:
                 # task = runtime.create_command_task("add", args=(1, 2))
-                # await runtime.push_task(task)
+                # runtime.push_task(task)
                 message = await runtime.execute_command("add", args=(1, 2))
                 assert message is not None
 
@@ -228,7 +228,7 @@ async def test_mcp_channel_execute():
                 assert bar_cmd is not None
                 task = runtime.create_command_task("bar", kwargs={"s": "hello"})
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task
                 task_result = task.task_result()
                 assert task_result is not None
@@ -245,7 +245,7 @@ async def test_mcp_channel_execute():
                     kwargs={"text__": json.dumps({"a": 10, "b": {"i": 20}})},
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task
                 task_result = task.task_result()
                 assert task_result is not None
@@ -294,7 +294,7 @@ async def test_mcp_channel_execute_exception():
                     args=("aaa",),  # invalid JSON
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
@@ -311,7 +311,7 @@ async def test_mcp_channel_execute_exception():
                     kwargs={"a": 2, "c": 3},  # missing "d"
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
@@ -327,7 +327,7 @@ async def test_mcp_channel_execute_exception():
                     args=("invalid_json",),
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
@@ -343,7 +343,7 @@ async def test_mcp_channel_execute_exception():
                     args=(12345,),  # should be string for JSON parsing
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
@@ -358,7 +358,7 @@ async def test_mcp_channel_execute_exception():
                     kwargs={"s": "aaa", "extra_param": "extra"},
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task
                 e = task.exception()
                 assert e is None
@@ -374,7 +374,7 @@ async def test_mcp_channel_execute_exception():
                     kwargs={"a": 1, "b": 2},  # missing required params
                 )
 
-                await runtime.push_task(task)
+                runtime.push_task(task)
                 await task.wait(throw=False)
                 e = task.exception()
                 assert isinstance(e, CommandError)
