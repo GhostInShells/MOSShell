@@ -98,6 +98,8 @@ class DuplexChannelContext:
         self._sync_meta_started_event = asyncio.Event()
         self._sync_meta_done_event = ThreadSafeEvent()
         """记录一次更新 meta 的任务已经完成, 用于做更新的阻塞. """
+        # self._sending_event_queue = janus.Queue()
+        # self._sending_event_loop_task: asyncio.Task | None = None
 
         self._pending_provider_command_tasks: dict[str, CommandTask] = {}
         self._command_call_deltas_sender_tasks: dict[str, asyncio.Task] = {}
@@ -135,7 +137,7 @@ class DuplexChannelContext:
     async def refresh_meta(self) -> None:
         if not self.connection.is_connected():
             # 如果通讯不成立, 则无法更新.
-            await self._clear_connection_status()
+            self._clear_connection_status()
             return
         # 尝试发送更新 meta 的命令, 但是同一时间只发送一次.
         await self._send_sync_meta_event()
@@ -182,7 +184,7 @@ class DuplexChannelContext:
             self.logger.debug("channel %s sent event to channel %s", self.root_name, event)
         except (ConnectionClosedError, ConnectionNotAvailable):
             # 发送时连接异常, 标记 disconnected.
-            await self._clear_connection_status()
+            self._clear_connection_status()
             if throw:
                 raise
         except asyncio.CancelledError:
@@ -298,9 +300,9 @@ class DuplexChannelContext:
             raise
         finally:
             self.stop_event.set()
-            await self._clear_connection_status()
+            self._clear_connection_status()
 
-    async def _clear_connection_status(self):
+    def _clear_connection_status(self):
         """
         清空连接状态.
         """
@@ -317,10 +319,10 @@ class DuplexChannelContext:
                 for t in tasks:
                     if not t.done():
                         t.cancel()
-            await self._clear_pending_provider_command_tasks()
-            await self._clear_subscribe_topic_tasks()
+            self._clear_pending_provider_command_tasks()
+            self._clear_subscribe_topic_tasks()
 
-    async def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
+    def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
         """
         清空所有未完成的任务.
         """
@@ -342,12 +344,13 @@ class DuplexChannelContext:
             is_reconnected = False
             # 进入到主循环.
             while not self.stop_event.is_set():
+                await asyncio.sleep(0.0)
                 # 如果通讯失效了, 就清空连接状态, 等待重连.
                 if not self.connection.is_connected():
                     # 如果在连接状态, 则要清空.
                     if self._connected_event.is_set():
                         # 取消连接状态.
-                        await self._clear_connection_status()
+                        self._clear_connection_status()
                         # 稍微等待下一轮.
                         await asyncio.sleep(0.1)
                         self.logger.info("Channel proxy %s connection status cleared", self.root_name)
@@ -385,7 +388,7 @@ class DuplexChannelContext:
                     # 如果是 provider 发送了握手的要求, 则立刻要求更新状态.
                     if create_session.session_id == self.session_id:
                         continue
-                    await self._clear_connection_status()
+                    self._clear_connection_status()
                     self.session_id = create_session.session_id
                     await self._create_topic_subscribers_for_provider(create_session)
                     # 标记创建连接成功.
@@ -420,12 +423,14 @@ class DuplexChannelContext:
                 self._handle_provider_error(error=provider_err)
             elif pub_topic := ProviderPubTopicEvent.from_channel_event(event):
                 t = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                await asyncio.shield(t)
                 self._add_task(t)
             elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
                 _ = await self._sub_topic_for_provider(sub_topic.topic_name)
             elif command_done := CommandDoneEvent.from_channel_event(event):
                 # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
                 t = asyncio.create_task(self._handle_command_done_event(command_done))
+                await asyncio.shield(t)
                 self._add_task(t)
             else:
                 self.logger.warning(
@@ -477,12 +482,13 @@ class DuplexChannelContext:
 
         self._subscribe_topic_tasks[topic_name] = asyncio.create_task(_subscribe_topic(topic_name))
 
-    async def _clear_subscribe_topic_tasks(self) -> None:
+    def _clear_subscribe_topic_tasks(self) -> None:
         if len(self._subscribe_topic_tasks) > 0:
             tasks = self._subscribe_topic_tasks.copy()
             self._subscribe_topic_tasks.clear()
             for t in tasks.values():
-                t.cancel()
+                if not t.done():
+                    t.cancel()
 
     async def _create_topic_subscribers_for_provider(self, create_session: CreateSessionEvent) -> None:
         """
@@ -496,7 +502,7 @@ class DuplexChannelContext:
         if topic_service is None:
             return
 
-        await self._clear_subscribe_topic_tasks()
+        self._clear_subscribe_topic_tasks()
         for topic_name in create_session.listening_topics:
             await self._sub_topic_for_provider(topic_name)
 
