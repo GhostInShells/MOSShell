@@ -31,7 +31,7 @@ default_primitives = [
     loop,
 ]
 
-experimental_primitives = ['wait', 'sample', 'observe']
+experimental_primitives = ['wait', 'sample', 'observe', 'interrupt', 'wait_idle']
 
 default_primitive_map: dict[str, PyCommand] = {
     func.__name__: PyCommand(func) for func in default_primitives

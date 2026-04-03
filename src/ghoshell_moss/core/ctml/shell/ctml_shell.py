@@ -32,7 +32,7 @@ from ghoshell_moss.contracts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
-from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_context_messages
+from ghoshell_moss.core.ctml.v1_0_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.speech.mock import MockSpeech
@@ -95,11 +95,11 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def meta_instruction(self) -> str:
         return self._ctml_meta_instruction
 
-    def channel_instructions(self) -> str:
-        return make_instruction_messages(self.channel_metas(available_only=False), name=self._name)
+    def static_messages(self) -> str:
+        return make_static_messages(self.channel_metas(available_only=False))
 
-    def channel_context_messages(self) -> list[Message]:
-        return make_context_messages(self.channel_metas(available_only=False), name=self._name)
+    def dynamic_messages(self) -> list[Message]:
+        return make_dynamic_messages(self.channel_metas(available_only=False))
 
     def interpreting(self) -> Optional[Interpreter]:
         return self._interpreter

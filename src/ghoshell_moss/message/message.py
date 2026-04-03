@@ -396,10 +396,10 @@ class Message(BaseModel, WithAdditional):
         attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
-        yield Text.new(f'\n<{tag}{attr_str}>\n').to_content()
+        yield Text.new(f'<{tag}{attr_str}>\n').to_content()
         for content in self.contents:
             yield content
-        yield Text.new(f'\n</{tag}>\n').to_content()
+        yield Text.new(f'\n</{tag}>').to_content()
 
     def with_messages(
             self,
@@ -429,5 +429,5 @@ class Message(BaseModel, WithAdditional):
             else:
                 content_type = content['type']
                 result.append(f'<content type="{content_type}"/>')
-        result = ''.join(result)
+        result = '\n'.join(result)
         return result.strip()

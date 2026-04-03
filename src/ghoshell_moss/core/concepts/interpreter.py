@@ -301,7 +301,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def channel_instructions(self) -> str:
+    def static_messages(self) -> str:
         """
         当前 interpreter 状态下, channels 的完整提示词. 用于呈现给大模型.
         """
@@ -312,17 +312,16 @@ class Interpreter(ABC):
         MOSS 架构默认的 system prompt.
         """
         instructions = [self.meta_instruction()]
-        channel_instructions = self.channel_instructions()
+        channel_instructions = self.static_messages()
         instructions.append(channel_instructions)
         if prompts:
             instructions.extend(prompts)
         return '\n'.join(instructions)
 
     @abstractmethod
-    def channel_context(self) -> list[Message]:
+    def dynamic_messages(self) -> list[Message]:
         """
-        返回 interpreter 的关联上下文.
-        对应 Model Context 中的 conversation 部分.
+        返回 interpreter 作为快照拿到的动态上下文.
         """
         pass
 
@@ -348,7 +347,7 @@ class Interpreter(ABC):
         instructions = self.instruction()
         messages = [Message.new(tag="").with_content(instructions)]
         messages.extend(history)
-        messages.extend(self.channel_context())
+        messages.extend(self.dynamic_messages())
         messages.extend(inputs)
         return messages
 

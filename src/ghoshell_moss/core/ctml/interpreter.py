@@ -20,7 +20,7 @@ from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, AttrWithTypeSuffixParser, ctml_default_parsers
-from ghoshell_moss.core.ctml.v1_0_0.prompts import make_instruction_messages, make_context_messages, make_interfaces
+from ghoshell_moss.core.ctml.v1_0_0.prompts import make_static_messages, make_dynamic_messages, make_interfaces
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import Message
 import queue
@@ -128,8 +128,8 @@ class CTMLInterpreter(Interpreter):
         self._interpretation = Interpretation(
             id=self._id,
             meta_instruction=moss_meta_instruction or get_moss_ctml_meta_instruction(),
-            channel_instructions=make_instruction_messages(self._channel_metas),
-            channel_context=make_context_messages(self._channel_metas),
+            channel_instructions=make_static_messages(self._channel_metas),
+            channel_context=make_dynamic_messages(self._channel_metas),
         )
         if undone_tasks is not None and len(undone_tasks) > 0:
             for task in undone_tasks:
@@ -275,10 +275,10 @@ class CTMLInterpreter(Interpreter):
     def channels(self) -> dict[str, ChannelMeta]:
         return self._channel_metas
 
-    def channel_instructions(self) -> str:
+    def static_messages(self) -> str:
         return self._interpretation.channel_instructions
 
-    def channel_context(self) -> list[Message]:
+    def dynamic_messages(self) -> list[Message]:
         return self._interpretation.channel_context
 
     def feed(self, delta: str, throw: bool = False) -> bool:

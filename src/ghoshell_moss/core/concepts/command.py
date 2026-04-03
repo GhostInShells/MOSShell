@@ -1,3 +1,16 @@
+"""
+MOSS 架构核心用 Command 来做驱动. 它包含:
+1. 代码即提示词: 反射代码提供以代码形式描述的提示词.
+2. 完整动态性: 提示词本身可以动态变更
+3. Command Token: 让模型输出的 token 被标记上对应的命令作用域.
+4. 通道参数: 定义 chunks__, ctml__ 等通道参数, 能分层做流式传输.
+5. Command As Function: AI 看到的 Command 同时是一个 callable, 因此 AI 基于所见写的 python 代码也是可执行的.
+6. Command Task: 基于时间是第一公民观点, 将 command 的调用进行传输, 在一个 Shell 调度体系里按时调用. 同时考虑线程安全.
+7. 兼容性: Command 可以降级为 JSON Schema Function Call...
+8. 运行结果管理: Command 的运行结果能转化为 Message, 从而被模型理解. 效果类似 Tool. 但 CTML 是流式的.
+9.
+"""
+
 import asyncio
 import contextvars
 import inspect
@@ -20,14 +33,16 @@ from typing import (
 
 from ghoshell_common.helpers import uuid, Timeleft
 from ghoshell_container import get_caller_info
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, AwareDatetime
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
-from ghoshell_moss.message import Message, Content, Text
+from ghoshell_moss.message import Message, Text
 import json
 import contextlib
+import datetime
+import dateutil
 
 __all__ = [
     "RESULT",
@@ -55,6 +70,7 @@ __all__ = [
     "ObserveError",
     "Observe",
     "CommandCtx",
+    "WaitTaskGroup",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -193,6 +209,7 @@ class CommandToken(BaseModel):
 
 class CommandDeltaType(str, Enum):
     """
+    Command 体系里的特殊通道参数.
     Command 可以定义特殊的入参名, 这种特殊的入参名支持接受模型流式传输的 tokens 来生成参数.
     以 CTML 语法举例:
         当一个函数定义为
@@ -201,7 +218,6 @@ class CommandDeltaType(str, Enum):
         模型用 CTML 对它的调用可能是 <foo>streaming delta tokens</foo>
         这其中的 `streaming delta tokens` 不是等组装完才解析, 而是会流式地解析, 最终合成为函数的真实入参.
 
-    todo: 耦合比较深, 要考虑变更使用场景.
     """
 
     # 解析结果, 传递给参数类型应该是 str.
@@ -716,6 +732,10 @@ class CommandTaskResult(BaseModel):
         description="默认的 interpreter 交互协议. 当 Interpreter 生成的 Task 返回一个 observe==True 的结果时,"
                     "Interpreter 应该停止运行逻辑, 取消后续所有的命令. ",
     )
+    created: AwareDatetime = Field(
+        default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
+        description="记录创建时间",
+    )
 
     @classmethod
     def from_observe(cls, observe: "Observe") -> Self:
@@ -743,9 +763,13 @@ class CommandTaskResult(BaseModel):
         return value.model_copy(update={"result": result})
 
     def serialize_result(self) -> Any:
+        if self.result is None:
+            return ''
+        if isinstance(self.result, str):
+            return self.result
         try:
             serialized_content = json.dumps(self.result, ensure_ascii=False)
-        except (json.JSONDecodeError, ValueError, TypeError):
+        except (ValueError, TypeError):
             serialized_content = repr(self.result)
         return serialized_content
 
@@ -753,7 +777,6 @@ class CommandTaskResult(BaseModel):
             self,
             *,
             name: str | None = None,
-            role: str = "user",
             with_serialized_result: bool = True,
     ) -> list[Message]:
         """
@@ -769,24 +792,26 @@ class CommandTaskResult(BaseModel):
         if self.result is None and len(self.messages) == 0:
             return []
         result_message = None
+        # 先把结果序列化.
         if with_serialized_result and self.result is not None:
-            name = name or self.caller or "__command_result__"
-            result_message = Message.new(role=role, name=name)
+            # 保留 name.
             serialized_content = self.serialize_result()
-            result_message.with_content(Text(text=serialized_content))
+            if serialized_content:
+                name = name or self.caller or None
+                result_message = Message.new(tag='result', name=name)
+                # 将 result 的时间戳对齐.
+                result_message.meta.created = self.created
+                result_message.with_content(Text(text=serialized_content))
 
         messages = []
-        if result_message is not None:
+        if result_message is not None and not result_message.is_empty():
             messages.append(result_message)
-        merging = True
+        # only merge messages. not output messages which is not for ai.
         for message in self.messages:
-            if merging and message.name is None and message.contents and result_message:
-                # 合并消息体, 和 result 合并到一起.
-                result_message.with_content(*message.contents)
-            else:
-                # 不再合并.
-                messages.append(message)
-                merging = False
+            if message.is_empty():
+                continue
+            # 不再合并.
+            messages.append(message)
         return messages
 
     def join_result(self, *results: Self | Observe) -> None:
@@ -798,10 +823,14 @@ class CommandTaskResult(BaseModel):
             if isinstance(_result, Observe):
                 _result = CommandTaskResult.from_observe(_result)
 
-            if _result.observe is True:
+            if _result.observe:
+                # observe 关键字传染.
                 self.observe = True
+
+            # output 合并.
             if len(_result.output) > 0:
                 self.output.extend(_result.output)
+            # message 合并.
             messages = _result.as_messages()
             if len(messages) > 0:
                 self.messages.extend(messages)
@@ -1410,6 +1439,85 @@ class WaitDoneTask(BaseCommandTask):
         )
 
 
+class WaitTaskGroup:
+    """
+    为 task 准备的几种标准的 wait 机制.
+    """
+
+    def __init__(
+            self,
+            *,
+            channel: str = '',
+            until: Literal['self', 'all', 'any'],
+            timeout: float | None = None,
+    ) -> None:
+        self.tasks: set[CommandTask] = set()
+        self.timeout = timeout
+        self.until = until
+        self.channel = channel
+        self._done_event = ThreadSafeEvent()
+        self._timeout_task: asyncio.Task | None = None
+
+    def add(self, task: CommandTask) -> None:
+        if self._done_event.is_set():
+            task.cancel("group already done")
+            return
+        self.tasks.add(task)
+        task.add_done_callback(self.callback)
+
+    def callback(self, task: CommandTask) -> None:
+        if task not in self.tasks:
+            return
+        self.tasks.remove(task)
+        if task.done():
+            if self.until == 'any':
+                self.cancel("other task done")
+                return
+
+    def cancel(self, reason: str = "") -> None:
+        if len(self.tasks) == 0:
+            return
+        tasks = self.tasks.copy()
+        self.tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel(reason)
+
+    def timeout(self) -> asyncio.Future[None]:
+        """
+        开始异步的 timeout 计数.
+        """
+        if self.timeout is None:
+            return asyncio.create_task(self._noop())
+        if self._timeout_task is not None:
+            return self._timeout_task
+        self._timeout_task = asyncio.create_task(self._cancel_after_timeout(self.timeout))
+        return self._timeout_task
+
+    async def _noop(self) -> None:
+        pass
+
+    async def _cancel_after_timeout(self, timeout: float) -> None:
+        """
+        cancel after timeout.
+        """
+        if timeout <= 0.0:
+            return
+        await asyncio.sleep(timeout)
+        self.cancel("timeout")
+
+    async def wait(self):
+        wait_tasks: list[CommandTask] = []
+        for task in self.tasks:
+            if self.until == 'self' and self.channel == task.chan:
+                wait_tasks.append(task)
+            else:
+                wait_tasks.append(task)
+        if len(wait_tasks) > 0:
+            await asyncio.gather(*[t.wait(throw=False) for t in wait_tasks])
+        self.cancel("group done")
+
+
 class CancelAfterOthersTask(BaseCommandTask[None]):
     """
     等待其它任务完成后, cancel 当前任务.
@@ -1555,6 +1663,9 @@ class CommandStackResult:
 
 
 def make_command_group(*commands: Command) -> dict[str, dict[str, Command]]:
+    """
+    方便测试用的语法糖.
+    """
     result = {}
     for command in commands:
         meta = command.meta()

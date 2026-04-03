@@ -1,37 +1,32 @@
-from typing import Any, Dict
-from ghoshell_moss.message import Message, Content
+from typing import Dict
+from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import ChannelMeta, ChannelFullPath, Channel
-from ghoshell_moss.core.helpers.xml import xml_start_tag, xml_end_tag
+from .constants import MOSS_DYNAMIC, MOSS_STATIC, MAIN_CHANNEL_NAME
+import datetime
+import dateutil
 
 __all__ = [
     'make_interfaces',
-    'make_context_messages',
-    'make_instruction_messages',
-    'MAIN_CHANNEL_NAME',
-    'MOSS_CONTEXT',
-    'MOSS_INSTRUCTIONS',
+    'make_dynamic_messages',
+    'make_static_messages',
     'generate_channel_tree',
 ]
-
-MAIN_CHANNEL_NAME = '__main__'
-MOSS_CONTEXT = 'moss_context'
-MOSS_INSTRUCTIONS = 'moss_instructions'
 
 
 def generate_channel_tree(channels: Dict[ChannelFullPath, ChannelMeta], with_desc: bool = False) -> str:
     """
     根据 channel 路径字典生成树形字符串。
     """
-    # 1. 标准化路径：空字符串 -> '__main__'
+    # 1. 标准化路径：空字符串 -> MAIN_CHANNEL_NAME
     nodes = {}
     for path, meta in channels.items():
-        key = '__main__' if path == '' else path
+        key = MAIN_CHANNEL_NAME if path == '' else path
         nodes[key] = _Node(key, meta.description)
 
     # 2. 构建父子关系
     root_paths = set()  # 记录父节点不存在的节点（根级节点）
     for full in nodes:
-        if full == '__main__':
+        if full == MAIN_CHANNEL_NAME:
             root_paths.add(full)
         else:
             parts = full.split('.')
@@ -43,15 +38,15 @@ def generate_channel_tree(channels: Dict[ChannelFullPath, ChannelMeta], with_des
                 root_paths.add(full)
 
     # 3. 确保 __main__ 节点存在
-    if '__main__' not in nodes:
-        nodes['__main__'] = _Node('__main__', '')
-        root_paths.add('__main__')
+    if MAIN_CHANNEL_NAME not in nodes:
+        nodes[MAIN_CHANNEL_NAME] = _Node(MAIN_CHANNEL_NAME, '')
+        root_paths.add(MAIN_CHANNEL_NAME)
 
-    main_node = nodes['__main__']
+    main_node = nodes[MAIN_CHANNEL_NAME]
 
     # 将除 __main__ 本身以外的根级节点作为 __main__ 的子节点
     for path in root_paths:
-        if path != '__main__':
+        if path != MAIN_CHANNEL_NAME:
             main_node.children.append(nodes[path])
 
     # 4. 递归生成树形字符串
@@ -135,85 +130,85 @@ class ChannelMetaPrompter:
         # 是否是虚拟节点.
         self.virtual = meta.virtual
 
-    def make_full_block(self) -> Message | None:
-        channel_container = Message.new(tag="channel", name=self.path, timestamp=False)
-        if description := self.description_message():
-            channel_container.with_messages(description, timestamp=False)
-        if instruction := self.instruction_message():
-            channel_container.with_messages(instruction, timestamp=False)
-        if failure := self.failure_message():
-            channel_container.with_messages(failure, timestamp=False)
-            return channel_container
-        if states := self.states_message():
-            channel_container.with_messages(states, timestamp=False)
-        if context := self.context_messages():
-            channel_container.with_messages(*context, timestamp=True, with_meta=True)
-        if interface := self.interface_message(dynamic=True, sustain=True):
-            channel_container.with_messages(interface, timestamp=False)
-        if channel_container.is_empty():
-            return None
-        return channel_container
+    def _wrap_block(self, messages: list[Message]) -> list[Message]:
+        if len(messages) == 0:
+            return []
+        result = [
+            Message.new(tag="", timestamp=False).with_content(
+                f'<channel name="{self.path}">'
+            )
+        ]
+        result.extend(messages)
+        result.append(Message.new(tag="", timestamp=False).with_content(f'</channel>'))
+        return result
 
-    def make_instruction_block(self) -> Message | None:
+    def make_full_block(self) -> list[Message]:
+        """
+        生成完整的消息 block.
+        """
+        result = []
+        if description := self.description_message():
+            result.append(description)
+        if instruction := self.instruction_message():
+            result.append(instruction)
+        if failure := self.failure_message():
+            result.append(failure)
+            return self._wrap_block(result)
+        if states := self.states_message():
+            result.append(states)
+        if context := self.context_messages():
+            result.extend(context)
+        if interface := self.interface_message(dynamic=True, sustain=True):
+            result.append(interface)
+        return self._wrap_block(result)
+
+    def make_static_block(self) -> list[Message]:
         """
         virtual 类型的节点没有资格生成 instruction.
         """
         if self.virtual:
-            return None
-        channel_instruction_container = Message.new(tag="channel", name=self.path, timestamp=False)
+            # 虚拟节点不配返回静态信息.
+            return []
+        result = []
         # 先添加 description.
         if description := self.description_message():
-            channel_instruction_container.with_messages(description, timestamp=False)
+            result.append(description)
         if instruction := self.instruction_message():
-            channel_instruction_container.with_messages(instruction, timestamp=False)
+            result.append(instruction)
         dynamic = False
         # 只展示可持续消息.
         sustain = True
-        if interface_msg := self.interface_message(dynamic=dynamic, sustain=sustain):
-            channel_instruction_container.with_messages(interface_msg, timestamp=False)
-        if channel_instruction_container.is_empty():
-            return None
-        return channel_instruction_container
+        if interface := self.interface_message(dynamic=dynamic, sustain=sustain):
+            result.append(interface)
+        return self._wrap_block(result)
 
-    def make_context_block(self) -> Message | None:
+    def make_dynamic_block(self) -> list[Message]:
         """
         生成 Channel Context 的标准逻辑.
         """
-        channel_context_message_container = Message.new(
-            tag="channel",
-            name=self.path,
-            timestamp=False,
-            # 只添加 refreshed 的最后时间戳.
-            attributes={'refreshed': self.meta.created.isoformat()},
-        )
+        result = []
         if failure := self.failure_message():
-            channel_context_message_container.with_messages(failure)
-            return channel_context_message_container
+            result.append(failure)
+            return self._wrap_block(result)
         # virtual 时添加的信息.
         if self.virtual:
             if description := self.description_message():
-                channel_context_message_container.with_messages(description, timestamp=False)
+                result.append(description)
             if instruction := self.instruction_message():
-                channel_context_message_container.with_messages(instruction, timestamp=False)
+                result.append(instruction)
 
         # 正常添加 interface.
         sustain = self.virtual
         dynamic = True
         # 正常添加 context.
         if states := self.states_message():
-            channel_context_message_container.with_messages(states, timestamp=False)
-        context_messages = self.context_messages()
-        if len(context_messages) > 0:
-            channel_context_message_container.with_messages(*context_messages)
-        if channel_context_message_container.is_empty():
-            # 如果容器为空, 什么消息体都没有.
-            return None
+            result.append(states)
+        if context_messages := self.context_messages():
+            result.extend(context_messages)
         interface_msg = self.interface_message(dynamic=dynamic, sustain=sustain)
         if interface_msg is not None:
-            channel_context_message_container.with_messages(interface_msg, timestamp=False)
-        if channel_context_message_container.is_empty():
-            return None
-        return channel_context_message_container
+            result.append(interface_msg)
+        return self._wrap_block(result)
 
     def failure_message(self) -> Message | None:
         if not self.meta.failure:
@@ -223,7 +218,12 @@ class ChannelMetaPrompter:
         return failure_message
 
     def context_messages(self) -> list[Message]:
-        return self.meta.context
+        result = []
+        if len(self.meta.context) > 0:
+            result.append(Message.new(tag="").with_content("<context>"))
+            result.extend(self.meta.context)
+            result.append(Message.new(tag="").with_content("</context>"))
+        return result
 
     def instruction_message(self) -> Message | None:
         """
@@ -262,32 +262,42 @@ class ChannelMetaPrompter:
         return Message.new(tag="interface", timestamp=False).with_content(interface)
 
 
-def make_context_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name: str | None = None) -> list[Message]:
+def make_dynamic_messages(metas: dict[ChannelFullPath, ChannelMeta]) -> list[Message]:
     """
     按照 ctml 1.0.0 规则, 生成 context messages.
     """
     if len(metas) == 0:
         return []
     # 用单一容器包裹所有的消息. 并且标记自身时间戳.
-    context_message_container = Message.new(tag=MOSS_CONTEXT, name=name, timestamp=True)
+    result = []
     for channel_path, channel_meta in metas.items():
         # 如果是 virtual, 则需要展示所有讯息.
         prompter = ChannelMetaPrompter(channel_path, channel_meta)
-        if block := prompter.make_context_block():
-            context_message_container.with_messages(block, with_meta=True, timestamp=True)
-    return [context_message_container]
+        if block := prompter.make_dynamic_block():
+            result.extend(block)
+    if len(result) == 0:
+        return result
+    refresh_at = datetime.datetime.now(dateutil.tz.gettz()).isoformat(timespec="seconds")
+    result.insert(
+        0,
+        Message.new(tag="", timestamp=False).with_content(f'<{MOSS_DYNAMIC} refreshed="{refresh_at}">')
+    )
+    result.append(Message.new(tag='').with_content(f"</{MOSS_DYNAMIC}>"))
+    return result
 
 
-def make_instruction_messages(metas: dict[ChannelFullPath, ChannelMeta], *, name: str | None = None) -> str:
+def make_static_messages(metas: dict[ChannelFullPath, ChannelMeta]) -> str:
     """
     按照 ctml 1.0.0 规则, 生成 instruction messages.
     """
     if len(metas) == 0:
         return ''
-    message = Message.new(tag=MOSS_INSTRUCTIONS, name=name, timestamp=False)
+    lines = [f'<{MOSS_STATIC}>']
     for channel_path, channel_meta in metas.items():
         # 如果是 virtual, 则需要展示所有讯息.
         prompter = ChannelMetaPrompter(channel_path, channel_meta)
-        if block := prompter.make_instruction_block():
-            message.with_content(block)
-    return message.to_xml()
+        if block := prompter.make_static_block():
+            for msg in block:
+                lines.append(msg.to_xml())
+    lines.append(f'</{MOSS_STATIC}>')
+    return '\n'.join(lines)

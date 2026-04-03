@@ -483,7 +483,7 @@ class MOSSToolSet(ABC):
         """
         understand how to use MOSS Runtime.
         """
-        instruction_messages = self.runtime.shell.channel_instructions()
+        instruction_messages = self.runtime.shell.static_messages()
         messages = []
         for channel_name, channel_instruction_messages in instruction_messages.items():
             messages.extend(channel_instruction_messages)
@@ -499,7 +499,7 @@ class MOSSToolSet(ABC):
         """
         :returns: the context messages of all the channels from MOSS Runtime.
         """
-        context_messages = self.runtime.shell.channel_context_messages()
+        context_messages = self.runtime.shell.dynamic_messages()
         messages = []
         for channel_name, channel_context_messages in context_messages.items():
             messages.extend(channel_context_messages)

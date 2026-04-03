@@ -205,14 +205,14 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    def channel_instructions(self) -> str:
+    def static_messages(self) -> str:
         """
         instructions of all channels
         """
         pass
 
     @abstractmethod
-    def channel_context_messages(self) -> list[Message]:
+    def dynamic_messages(self) -> list[Message]:
         """
         context messages of all the channels.
         """

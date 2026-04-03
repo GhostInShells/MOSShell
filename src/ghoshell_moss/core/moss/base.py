@@ -12,8 +12,8 @@ from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.ctml.v1_0_0.prompts import (
     make_interfaces,
-    make_context_messages,
-    make_instruction_messages,
+    make_dynamic_messages,
+    make_static_messages,
 )
 from ghoshell_container import IoCContainer, Container
 from ghoshell_common.contracts import LoggerItf

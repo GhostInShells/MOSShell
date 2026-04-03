@@ -11,6 +11,9 @@ from ghoshell_moss.core import ChannelCtx, MOSShell, CommandError
 
 __all__ = ["wait"]
 
+"""
+wait 原语, 已经合并到通道语法, 计划弃用. 
+"""
 
 async def wait(
     ctml__,
@@ -114,7 +117,7 @@ async def wait(
 
     async def _generate_result(_tasks: list[CommandTask]):
         if len(_tasks) == 0:
-            return
+            return None
         await asyncio.gather(*[t.wait(throw=False) for t in _tasks])
         result = CommandTaskResult()
         try:
