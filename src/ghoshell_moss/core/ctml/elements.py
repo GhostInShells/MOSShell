@@ -17,6 +17,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTokenSeq,
     PyCommand,
     CommandMeta,
+    TaskScope,
 )
 from ghoshell_moss.core.concepts.errors import InterpretError, CommandErrorCode
 from ghoshell_moss.core.concepts.interpreter import (
@@ -54,21 +55,26 @@ class ScopeOpenTask(BaseCommandTask[None]):
     start a channel scope
     """
 
-    def __init__(self, channel: str, tokens: str = ''):
+    def __init__(self, group: TaskScope, tokens: str = ''):
+        self._group = group
         meta = CommandMeta(
             name=SCOPE_COMMAND_NAME,
-            chan=channel,
+            chan=group.channel,
             blocking=True,
         )
         super().__init__(
-            chan=channel,
+            chan=group.channel,
             meta=meta,
-            func=None,
+            func=self.start_group,
             partial=None,
             tokens=tokens,
             args=[],
             kwargs={},
         )
+
+    async def start_scope(self):
+        # 开始记账.
+        _ = self._group.tick()
 
 
 class ScopeCloseTask(BaseCommandTask[str]):
@@ -76,67 +82,25 @@ class ScopeCloseTask(BaseCommandTask[str]):
     close a channel scope
     """
 
-    def __init__(
-            self,
-            channel: str,
-            *tasks: CommandTask,
-            tokens: str = '',
-            until: Literal['self', 'all', 'any'] = 'self',
-            timeout: float | None = None,
-    ) -> None:
+    def __init__(self, group: TaskScope, tokens: str = ''):
+        self._group = group
         meta = CommandMeta(
             name=SCOPE_COMMAND_NAME,
-            chan=channel,
+            chan=group.channel,
             blocking=True,
         )
-        self._channel = channel
-        self._tasks = list(tasks)
-        self._timeout = timeout
-        self._until = until
-        self._scope_result = ''
         super().__init__(
-            chan=channel,
+            chan=group.channel,
             meta=meta,
-            func=self._wait_all_task_done,
-            partial=self._start_to_wait_on_compiled,
+            func=self.end_scope,
+            partial=None,
             tokens=tokens,
             args=[],
             kwargs={},
         )
 
-    async def _start_to_wait_on_compiled(self, *args, **kwargs) -> tuple[list, dict]:
-        canceled = 0
-        err = ''
-        try:
-            _waiting_list = []
-            for task in self._tasks:
-                if task.chan == self._channel or self._until != 'self':
-                    _wait_task = asyncio.create_task(task.wait(throw=True))
-                    _waiting_list.append(_wait_task)
-            if self._until == 'any':
-                return_when = asyncio.FIRST_COMPLETED
-            else:
-                return_when = asyncio.ALL_COMPLETED
-            done, pending = await asyncio.wait(_waiting_list, return_when=return_when, timeout=self._timeout)
-            for t in pending:
-                t.cancel()
-        except asyncio.CancelledError:
-            pass
-        except asyncio.TimeoutError:
-            err = f'timeout after {self._timeout} seconds'
-        except Exception as e:
-            err = f'err: {e}'
-        finally:
-            for _t in self._tasks:
-                if not _t.done():
-                    _t.cancel()
-                    canceled += 1
-        if err:
-            self._scope_result = f'scope cancel %d tasks after err %s' % (canceled, err)
-        return [], {}
-
-    async def _wait_all_task_done(self) -> str:
-        return self._scope_result
+    async def end_scope(self) -> None:
+        await self._group.wait()
 
 
 class EmptyContentTask(BaseCommandTask[None]):
@@ -404,13 +368,13 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
             if token.command_id() == self.cid:
                 self.ctx.logger.error("%s received duplicated start command %s", self._log_prefix, token)
                 self.raise_interrupt()
-                return
+                return None
             # 否则当成一个正常的 token.
             return self.on_sub_start_token(token)
         else:
             self.ctx.logger.error("%s received invalid command token %s", self._log_prefix, token)
             self.raise_interrupt()
-            return
+            return None
 
     def _find_command(self, chan: str, name: str) -> Optional[Command]:
         """
@@ -441,7 +405,6 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
                 token,
             )
             raise InterpretError(f"invalid tokens {token.content}")
-        task = None
         # 判断这个 token 是不是 root token.
         command = self._find_command(token.chan, token.name)
         if command is None:

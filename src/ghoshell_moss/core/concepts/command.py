@@ -70,7 +70,7 @@ __all__ = [
     "ObserveError",
     "Observe",
     "CommandCtx",
-    "WaitTaskGroup",
+    "TaskScope",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -798,7 +798,7 @@ class CommandTaskResult(BaseModel):
             serialized_content = self.serialize_result()
             if serialized_content:
                 name = name or self.caller or None
-                result_message = Message.new(tag='result', name=name)
+                result_message = Message.new(tag='result', attributes=dict(command=name))
                 # 将 result 的时间戳对齐.
                 result_message.meta.created = self.created
                 result_message.with_content(Text(text=serialized_content))
@@ -1406,40 +1406,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         return self.__result
 
 
-class WaitDoneTask(BaseCommandTask):
-    """
-    等待其它任务完成.
-    """
-
-    def __init__(
-            self,
-            tasks: Iterable[CommandTask],
-            after: Optional[Callable[[], Coroutine[None, None, RESULT]]] = None,
-            chan: str = "",
-    ) -> None:
-        meta = CommandMeta(
-            name="_wait_done",
-            chan="",
-            type=CommandType.PRIMITIVE.value,
-        )
-
-        async def wait_done() -> Optional[RESULT]:
-            await asyncio.gather(*[t.wait() for t in tasks])
-            if after is not None:
-                return await after()
-            return None
-
-        super().__init__(
-            meta=meta,
-            chan=chan,
-            func=wait_done,
-            tokens="",
-            args=[],
-            kwargs={},
-        )
-
-
-class WaitTaskGroup:
+class TaskScope:
     """
     为 task 准备的几种标准的 wait 机制.
     """
@@ -1448,7 +1415,7 @@ class WaitTaskGroup:
             self,
             *,
             channel: str = '',
-            until: Literal['self', 'all', 'any'],
+            until: Literal['flow', 'all', 'any'] = 'flow',
             timeout: float | None = None,
     ) -> None:
         self.tasks: set[CommandTask] = set()
@@ -1483,7 +1450,7 @@ class WaitTaskGroup:
             if not task.done():
                 task.cancel(reason)
 
-    def timeout(self) -> asyncio.Future[None]:
+    def tick(self) -> asyncio.Future[None]:
         """
         开始异步的 timeout 计数.
         """
@@ -1509,7 +1476,7 @@ class WaitTaskGroup:
     async def wait(self):
         wait_tasks: list[CommandTask] = []
         for task in self.tasks:
-            if self.until == 'self' and self.channel == task.chan:
+            if self.until == 'flow' and self.channel == task.chan:
                 wait_tasks.append(task)
             else:
                 wait_tasks.append(task)
