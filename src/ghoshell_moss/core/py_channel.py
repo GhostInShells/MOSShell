@@ -128,12 +128,20 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
             return await self._instruction_functions()
         return self._instruction_functions()
 
-    def add_command(self, command: Command) -> None:
+    def add_command(
+            self,
+            command: Command,
+            *,
+            override: bool = True,
+            name: Optional[str] = None,
+    ) -> None:
         if not isinstance(command, Command):
             raise ValueError("Command must be of type Command, not {}".format(type(command)))
         if command.is_dynamic():
             self._dynamic = True
-        self._commands[command.name()] = command
+        name = name or command.name()
+        if override or name not in self._commands:
+            self._commands[command.name()] = command
 
     def command(
             self,

@@ -25,18 +25,16 @@ from ghoshell_moss.core.concepts.command import (
     CommandTask,
     CommandWrapper,
 )
-from ghoshell_moss.core.concepts.errors import CommandErrorCode, FatalError
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
-from ghoshell_moss.contracts.speech import Speech, TTSSpeech
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
 from ghoshell_moss.core.ctml.v1_0_0.prompts import make_static_messages, make_dynamic_messages
-from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
+from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.speech.mock import MockSpeech
-import janus
+from ghoshell_moss.contracts.speech import Speech, TTSSpeech, make_content_command_from_speech
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
@@ -163,7 +161,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
         # 注册 tts 的 command.
         if isinstance(self._speech, TTSSpeech):
             for command in self._speech.commands():
-                self.main_channel.build.add_command(command)
+                self.main_channel.build.add_command(command, override=False)
+        default_content_command = make_content_command_from_speech(self._speech)
+        self.main_channel.build.add_command(default_content_command, override=False)
         await self._speech.start()
         yield
         await self._speech.close()

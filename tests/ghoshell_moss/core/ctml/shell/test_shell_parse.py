@@ -32,8 +32,9 @@ async def test_shell_parse_tasks_baseline():
         tasks = []
         async for token in shell.parse_text_to_tasks("<foo>hello</foo><bar/>", ignore_wrong_command=True):
             tasks.append(token)
-        # 只生成了 1 个, 因为 foo 和 bar 函数都不存在.
-        assert len(tasks) == 1
+        # 只生成了 3 个, 因为 foo 和 bar 函数都不存在.
+        # 实际生成是 <scope enter> <hello> <scope exit>
+        assert len(tasks) == 3
 
 
 @pytest.mark.asyncio

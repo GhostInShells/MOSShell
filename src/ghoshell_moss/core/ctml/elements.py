@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from logging import getLogger
-from typing import Optional, Generic, Any, ClassVar, Literal, AsyncIterator
+from typing import Optional, Generic, Any, ClassVar, AsyncIterator, Callable
 
 from ghoshell_common.contracts import LoggerItf
 
@@ -9,9 +9,9 @@ from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     CancelAfterOthersTask,
     Command,
-    CommandDeltaType,
-    CommandDeltaValue,
-    ValueOfCommandDeltaTypeMap,
+    CommandDeltaArgName,
+    CommandDeltaArgType,
+    CommandDeltaArgName2TypeMap,
     CommandTask,
     CommandToken,
     CommandTokenSeq,
@@ -26,10 +26,12 @@ from ghoshell_moss.core.concepts.interpreter import (
 )
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.contracts.speech import Speech, SpeechStream
-from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT
-from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME
+from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT, ThreadSafeStreamSender
+from ghoshell_moss.core.ctml.v1_0_0.constants import (
+    CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME,
+    SCOPE_SHORTCUT, SCOPE_ENTER_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME,
+)
 from .token_parser import CMTLSaxElement
-import asyncio
 
 __all__ = [
     "BaseCommandTokenParserElement",
@@ -41,6 +43,11 @@ __all__ = [
     "RootCommandTaskElement",
 ]
 
+
+# !!! 这是项目里最大的屎山 (之一?)
+# 在晕头转向的熬夜中开发完, 有价值的是 feature 和单元测试.
+# 只有保持单元测试向前兼容时, 才可以改动....
+# 除非重写.
 
 async def invalid_command():
     task = ChannelCtx.task()
@@ -55,17 +62,29 @@ class ScopeOpenTask(BaseCommandTask[None]):
     start a channel scope
     """
 
-    def __init__(self, group: TaskScope, tokens: str = ''):
+    def __init__(self, group: TaskScope, tag: str = ''):
         self._group = group
         meta = CommandMeta(
-            name=SCOPE_COMMAND_NAME,
+            name=SCOPE_ENTER_COMMAND_NAME,
             chan=group.channel,
             blocking=True,
         )
+        if tag:
+            attrs_lines = []
+            if group.channel:
+                attrs_lines.append(f'channel="{group.channel}"')
+            if group.until and group.until != group.default_until:
+                attrs_lines.append(f'until="{group.until}"')
+            if group.timeout is not None and group.timeout > 0.0:
+                attrs_lines.append(f'timeout="{group.timeout}"')
+            attrs_str = ' '.join(attrs_lines)
+            tokens = f"<{tag}{attrs_str}>"
+        else:
+            tokens = ""
         super().__init__(
             chan=group.channel,
             meta=meta,
-            func=self.start_group,
+            func=self.start_scope,
             partial=None,
             tokens=tokens,
             args=[],
@@ -82,13 +101,14 @@ class ScopeCloseTask(BaseCommandTask[str]):
     close a channel scope
     """
 
-    def __init__(self, group: TaskScope, tokens: str = ''):
+    def __init__(self, group: TaskScope, tag: str = ''):
         self._group = group
         meta = CommandMeta(
-            name=SCOPE_COMMAND_NAME,
+            name=SCOPE_EXIT_COMMAND_NAME,
             chan=group.channel,
             blocking=True,
         )
+        tokens = f"</{tag}>" if tag else ""
         super().__init__(
             chan=group.channel,
             meta=meta,
@@ -105,7 +125,13 @@ class ScopeCloseTask(BaseCommandTask[str]):
 
 class EmptyContentTask(BaseCommandTask[None]):
 
-    def __init__(self, channel: str, chunks__: AsyncIterator[str]):
+    def __init__(
+            self,
+            cid: str,
+            channel: str,
+            chunks__: AsyncIterator[str],
+            call_id: str | int | None = None,
+    ):
         meta = CommandMeta(
             name=CONTENT_COMMAND_NAME,
             chan=channel,
@@ -114,16 +140,19 @@ class EmptyContentTask(BaseCommandTask[None]):
         super().__init__(
             chan=channel,
             meta=meta,
-            partial=self.__content__,
-            func=None,
+            partial=None,
+            func=self.__content__,
             tokens='',
             args=[],
+            cid=cid,
+            call_id=call_id,
             kwargs={'chunks__': chunks__},
         )
 
-    async def __content__(self, chunks__: AsyncIterator[str]) -> tuple[list, dict]:
+    @staticmethod
+    async def __content__(chunks__: AsyncIterator[str]) -> tuple[list, dict]:
         async for chunk in chunks__:
-            self.tokens += chunk
+            pass
         return [], {}
 
 
@@ -150,7 +179,7 @@ class CommandTaskElementContext:
         # self.stop_event = stop_event or ThreadSafeEvent()
         self.root_tag = root_tag
         self.ignore_wrong_command = ignore_wrong_command
-        self.delta_type_map = delta_type_map or ValueOfCommandDeltaTypeMap.copy()
+        self.delta_type_map = delta_type_map or CommandDeltaArgName2TypeMap.copy()
         self._callback = callback
         self._delivered_last_callback = False
         CommandTaskElementContext.instances_count += 1
@@ -169,14 +198,18 @@ class CommandTaskElementContext:
             CommandTaskElementContext.instances_count,
             BaseCommandTokenParserElement.instances_count,
         )
-        return RootCommandTaskElement(
+        root = RootCommandTaskElement(
             self.root_tag,
+            parent_add_inner_task=None,
+            chan="",
             stream_id=stream_id,
             cid=stream_id,
             current_task=None,
-            callback=callback,
             ctx=self,
         )
+        if callback is not None:
+            root.with_callback(callback)
+        return root
 
     def send_callback(self, task: CommandTask | None) -> None:
         if task is None:
@@ -196,7 +229,7 @@ class CommandTaskElementContext:
             self._callback(task)
 
     @contextmanager
-    def new_parser(self, callback: CommandTaskCallback, stream_id: str = ""):
+    def new_parser(self, callback: CommandTaskCallback | None, stream_id: str = ""):
         """语法糖, 用来做上下文管理."""
         root = self.new_root(callback, stream_id)
         yield root
@@ -214,20 +247,25 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
     def __init__(
             self,
             name: str,
+            parent_add_inner_task: Callable[[CommandTask], None] | None,
+            *,
             stream_id: str,
             cid: str,
+            chan: str,
             current_task: Optional[CommandTask],
-            *,
             depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
             ctx: CommandTaskElementContext,
+            scope: TaskScope = None,
     ) -> None:
         self._name = name
+        self.chan = chan
+        self._parent_add_inner_task = parent_add_inner_task
         self.stream_id = stream_id
         self.cid = cid
         self.ctx = ctx
         self.depth = depth
-        self._current_task: Optional[CommandTask] = current_task
+        self.scope = scope or None
+        self.current_task: Optional[CommandTask] = current_task
         """当前的 task. 每个节点默认都由一个 Task 创建. """
 
         self.inner_tasks: list[CommandTask] = []
@@ -239,9 +277,6 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         self._unclose_child: Optional[CommandTokenParser] = None
         """没有结束的子节点"""
 
-        self._callback = callback
-        """the command task callback method"""
-
         self._end = False
         """这个 element 是否已经结束了"""
 
@@ -249,6 +284,7 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         """当前正在发送的 output stream"""
 
         # 正式启动.
+        self._has_inner_tokens = False
         self._destroyed = False
         self._done_is_delivered = False
         self._log_prefix = "[CommandTokenParser][cls=%s] sid=%s cid=%s depth=%d name=%s, " % (
@@ -262,60 +298,58 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         BaseCommandTokenParserElement.instances_count += 1
 
     def __del__(self):
-        if not self._destroyed:
-            self.destroy()
+        self.destroy()
         BaseCommandTokenParserElement.instances_count -= 1
 
-    def with_callback(self, callback: CommandTaskCallback) -> None:
-        """设置变更 callback"""
-        self._callback = callback
-
-    def _send_callback(self, task: CommandTask | None) -> None:
+    def _add_to_parent(self, task: CommandTask) -> None:
         if task is None:
-            if not self._done_is_delivered:
-                self._done_is_delivered = True
-            else:
-                return
-        elif not isinstance(task, CommandTask):
-            raise TypeError(f"task must be CommandTask, got {type(task)}")
+            return None
+        if self._parent_add_inner_task is not None:
+            self._parent_add_inner_task(task)
+        return None
 
-        if task is not None and task is not self._current_task:
+    def _add_inner_task(self, task: CommandTask) -> None:
+        if task is not None:
             # 添加 children tasks
             self.inner_tasks.append(task)
-
-        if self._callback:
-            try:
-                self._callback(task)
-            except Exception as e:
-                self.ctx.logger.exception("%s send callback failed: %s", self._log_prefix, e)
-                raise e
+            if self.scope:
+                self.scope.add(task)
 
     def is_end(self) -> bool:
         return self._end
 
-    def raise_interrupt(self):
-        raise InterpretError(f"Shell Interpreter failed due to system error")
+    def raise_interrupt(self, err: Exception | str = ''):
+        raise InterpretError(f"Command Task parse failed: {err}")
 
     def on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
         try:
-            return self._on_token(token)
+            if token is None:
+                return None
+            result = self._on_token(token)
+            if len(result) == 0:
+                return []
+            return result
         except InterpretError as e:
+            self.ctx.logger.exception("%s on_token %s failed: %s", self._log_prefix, token, e)
             self.fail(e)
             raise e
         except Exception as e:
-            self.ctx.logger.exception("%s on token failed: %s", self._log_prefix, e)
+            self.ctx.logger.exception("%s on token %s failed: %s", self._log_prefix, token, e)
             self.fail(e)
-            self.raise_interrupt()
+            self.raise_interrupt("system error")
+            return []
 
     def fail(self, error: Exception) -> None:
         """
         递归处理异常.
         """
         if not self.is_end():
-            self.on_own_end()
+            self._end = True
             self.ctx.logger.exception("%s failed: %s", self._log_prefix, error)
-        if self._current_task is not None:
-            self._current_task.fail(error)
+        if self.current_task is not None:
+            self.current_task.fail(error)
+        if self.scope is not None:
+            self.scope.cancel("failed")
         if isinstance(error, InterpretError):
             if len(self.inner_tasks) == 0:
                 return
@@ -323,17 +357,16 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
                 if not t.done():
                     t.fail(error)
 
-    def _on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
+    def _on_token(self, token: CommandToken | None) -> list[CommandTask]:
         """
         当前节点得到了一个新的 command token.
         """
         if token is None:
             # 结束自己的生命.
-            self._send_callback(None)
             return self.on_own_end()
         if self.is_end():
             self.ctx.logger.warning("%s receive token %s after element is end", self._log_prefix, token)
-            return None
+            return []
 
         # 如果有子节点状态已经变更, 但没有被更新, 临时更新一下. 容错.
         if self._unclose_child is not None:
@@ -355,6 +388,7 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         # 如果不是子节点去处理 token, 就轮到了自己来处理 token.
         # 接受一个 start token.
         if token.seq == CommandTokenSeq.DELTA:
+            self._has_inner_tokens = True
             return self.on_delta_token(token)
         # 接受一个 end token
         elif token.seq == CommandTokenSeq.END:
@@ -364,17 +398,18 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
             return self.on_sub_end_token(token)
         # 接受一个 start token.
         elif token.seq == CommandTokenSeq.START:
+            self._has_inner_tokens = True
             # 是自己就不太对了.
             if token.command_id() == self.cid:
                 self.ctx.logger.error("%s received duplicated start command %s", self._log_prefix, token)
                 self.raise_interrupt()
-                return None
+                return []
             # 否则当成一个正常的 token.
             return self.on_sub_start_token(token)
         else:
             self.ctx.logger.error("%s received invalid command token %s", self._log_prefix, token)
             self.raise_interrupt()
-            return None
+            return []
 
     def _find_command(self, chan: str, name: str) -> Optional[Command]:
         """
@@ -394,7 +429,7 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         is_root_tag = token.chan == "" and token.name == self.ctx.root_tag
         return is_root_tag
 
-    def _new_child_element(self, token: CommandToken) -> list[CommandTask] | None:
+    def _new_child_element(self, token: CommandToken) -> list[CommandTask]:
         """
         基于 start token 创建一个子节点. 策略树模式.
         """
@@ -405,22 +440,43 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
                 token,
             )
             raise InterpretError(f"invalid tokens {token.content}")
-        # 判断这个 token 是不是 root token.
+        # 判断这个 token 是不是 scope .
         command = self._find_command(token.chan, token.name)
-        if command is None:
+        if token.name == SCOPE_COMMAND_NAME or token.name == SCOPE_SHORTCUT:
+            timeout = token.kwargs.get("timeout", None)
+            if timeout is not None:
+                timeout = float(timeout)
+            scope = TaskScope(
+                channel=token.chan,
+                until=token.kwargs.get("until", "flow"),
+                timeout=timeout,
+            )
+            child = CommandWithoutDeltaArgElement(
+                name=Command.make_unique_name(token.chan, SCOPE_COMMAND_NAME),
+                parent_add_inner_task=self._add_inner_task,
+                chan=token.chan,
+                stream_id=self.stream_id,
+                cid=token.command_id(),
+                current_task=None,
+                scope=scope,
+                ctx=self.ctx,
+                depth=self.depth + 1,
+            )
+        elif command is None:
             if self.ctx.ignore_wrong_command:
                 self.ctx.logger.warning(
                     "%s ignore wrong command %s, create empty one",
                     self._log_prefix,
                     token,
                 )
-                child = EmptyCommandTaskElement(
+                child = CommandWithoutDeltaArgElement(
                     name=Command.make_unique_name(token.chan, token.name),
+                    parent_add_inner_task=self._add_inner_task,
+                    chan=token.chan,
                     stream_id=self.stream_id,
                     cid=token.command_id(),
                     current_task=None,
                     # 提供递归的 task 传递路径.
-                    callback=self._send_callback,
                     ctx=self.ctx,
                     depth=self.depth + 1,
                 )
@@ -449,57 +505,62 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
             if meta.delta_arg is not None:
                 delta_value_type = self.ctx.delta_type_map.get(meta.delta_arg)
                 # 接受 Tokens 作为流的类型.
-                if delta_value_type is CommandDeltaValue.COMMAND_TOKEN_STREAM:
+                if delta_value_type is CommandDeltaArgType.COMMAND_TOKEN_STREAM:
                     child = DeltaIsCommandTokensElement(
                         name=task.caller_name(),
+                        parent_add_inner_task=self._add_inner_task,
+                        chan=token.chan,
                         stream_id=self.stream_id,
                         cid=token.command_id(),
                         current_task=task,
-                        callback=self._send_callback,
                         ctx=self.ctx,
                         depth=self.depth + 1,
                     )
                 # 接受 AsyncIterable[Chunk] 的类型.
-                elif delta_value_type is CommandDeltaValue.TEXT_CHUNKS_STREAM:
+                elif delta_value_type is CommandDeltaArgType.TEXT_CHUNKS_STREAM:
                     child = DeltaIsTextChunkElement(
                         name=task.caller_name(),
+                        parent_add_inner_task=self._add_inner_task,
+                        chan=token.chan,
                         stream_id=self.stream_id,
                         cid=token.command_id(),
                         current_task=task,
-                        callback=self._send_callback,
                         ctx=self.ctx,
                         depth=self.depth + 1,
                     )
                 # 接受 text__ 的类型.
-                elif delta_value_type is CommandDeltaValue.TEXT:
+                elif delta_value_type is CommandDeltaArgType.TEXT:
                     child = DeltaIsTextElement(
                         name=task.caller_name(),
+                        parent_add_inner_task=self._add_inner_task,
+                        chan=token.chan,
                         stream_id=token.command_id(),
                         cid=token.command_id(),
                         current_task=task,
-                        callback=self._send_callback,
                         ctx=self.ctx,
                         depth=self.depth + 1,
                     )
                 else:
                     self.ctx.logger.error("%s command delta type %s is not implemented", meta.delta_arg)
-                    child = NoDeltaCommandTaskElement(
+                    child = CommandWithoutDeltaArgElement(
                         name=task.caller_name(),
+                        parent_add_inner_task=self._add_inner_task,
+                        chan=token.chan,
                         stream_id=self.stream_id,
                         cid=token.command_id(),
                         current_task=task,
-                        callback=self._send_callback,
                         ctx=self.ctx,
                         depth=self.depth + 1,
                     )
 
             else:
-                child = NoDeltaCommandTaskElement(
+                child = CommandWithoutDeltaArgElement(
                     name=task.caller_name(),
+                    parent_add_inner_task=self._add_inner_task,
+                    chan=token.chan,
                     stream_id=self.stream_id,
                     cid=token.command_id(),
                     current_task=task,
-                    callback=self._send_callback,
                     ctx=self.ctx,
                     depth=self.depth + 1,
                 )
@@ -510,18 +571,22 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
             if not child.is_end():
                 # 记录 unclose.
                 self._unclose_child = child
+            # 如果
+            if self.scope and child.current_task is not None:
+                # 添加到 scope 里.
+                self.scope.add(child.current_task)
             return child.on_init()
-        return None
+        return []
 
     @abstractmethod
-    def on_delta_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_delta_token(self, token: CommandToken) -> list[CommandTask]:
         """
         每个节点都要考虑, 拿到了属于自己的 delta token 怎么办.
         """
         pass
 
     @abstractmethod
-    def on_init(self) -> list[CommandTask] | None:
+    def on_init(self) -> list[CommandTask]:
         """
         每个节点初始化的逻辑.
         通常是在初始化时, 就发送 command task.
@@ -529,26 +594,27 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         pass
 
     @abstractmethod
-    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask]:
         """
         处理拿到了一个开始标记的 token. 这个不是来自自己的 Token.
         """
         pass
 
     @abstractmethod
-    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask]:
         """
         拿到了一个结束标记的 Token. 不是自己的 Token.
         """
         pass
 
-    def on_own_end(self) -> list[CommandTask] | None:
+    def on_own_end(self) -> list[CommandTask]:
         """
         拿到了自身的结束 Token
         """
         self._end = True
+        result = []
         self.ctx.logger.debug("%s end self", self._log_prefix)
-        return None
+        return result
 
     def destroy(self) -> None:
         """
@@ -568,14 +634,14 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         del self.children
         del self._current_stream
         del self.inner_tasks
-        del self._current_task
+        del self.current_task
 
 
+# 已经废弃的实现, 用 ChannelScopeElement 替代.
 class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
     """
     没有 delta 参数的节点类型.
     也就是说这种类型的 Command 不支持 delta 数据, 也不支持子节点.
-    基于 CTML 1.0 的规则, 我们把这种
     """
 
     _speech_stream: Optional[SpeechStream] = None
@@ -589,7 +655,7 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
                 batch_id=token.command_part_id(),
             )
             output_stream_task = _speech_stream.as_command_task()
-            self._send_callback(output_stream_task)
+            self._add_inner_task(output_stream_task)
         elif self._speech_stream.id != token.command_part_id():
             # 创建过 output_stream, 则需要比较是否是相同的 command part id.
             # 不是相同的 command part id, 则需要创建一个新的流, 这样可以分段感知到每一段 output 是否已经执行完了.
@@ -600,7 +666,7 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
                 batch_id=token.command_part_id(),
             )
             output_stream_task = _speech_stream.as_command_task()
-            self._send_callback(output_stream_task)
+            self._add_inner_task(output_stream_task)
         else:
             _speech_stream = self._speech_stream
         # 增加新的 stream delta
@@ -612,10 +678,9 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
 
     def on_init(self) -> list[CommandTask] | None:
         # 直接发送命令自身.
-        if self._current_task is not None:
+        if self.current_task is not None:
             # 发送自己的 Task.
-            self._send_callback(self._current_task)
-            return [self._current_task]
+            return [self.current_task]
         return None
 
     def on_sub_start_token(self, token: CommandToken) -> list[CommandTask] | None:
@@ -628,7 +693,7 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
                 self._unclose_child,
             )
             self.raise_interrupt()
-            return
+            return None
         self._clear_speech_stream()
         return self._new_child_element(token)
 
@@ -643,15 +708,15 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
             return result
         elif token.command_id() != self.cid:
             self.ctx.logger.error(
-                "%s element end current task %s with invalid token %r", self._log_prefix, self._current_task, token
+                "%s element end current task %s with invalid token %r", self._log_prefix, self.current_task, token
             )
             # 自己来处理这个 token, 但 command id 不一致的情况.
             self.raise_interrupt()
-            return
+            return None
         else:
             # 结束自身.
             # 理论上外部可以调用.
-            return
+            return None
 
     def _clear_speech_stream(self) -> None:
         if self._speech_stream is not None:
@@ -659,45 +724,226 @@ class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
             self._speech_stream.commit()
             self._speech_stream = None
 
-    def on_own_end(self) -> list[CommandTask] | None:
+    def on_own_end(self) -> list[CommandTask]:
         # 设置关闭.
-        super().on_own_end()
+        result = super().on_own_end()
         self._clear_speech_stream()
-        if self._current_task is None:
-            return None
+        if self.current_task is None:
+            return result
         elif len(self.inner_tasks) > 0:
             cancel_after_children_task = CancelAfterOthersTask(
-                self._current_task,
+                self.current_task,
                 *self.inner_tasks,
             )
             cancel_after_children_task.tokens = CMTLSaxElement.make_end_mark(
-                self._current_task.chan,
-                self._current_task.meta.name,
+                self.current_task.chan,
+                self.current_task.meta.name,
             )
             # 等待所有 children tasks 完成, 如果自身还未完成, 则取消.
-            self._send_callback(cancel_after_children_task)
-            return [cancel_after_children_task]
+            result.append(cancel_after_children_task)
+            return result
         else:
             # 按照 ctml 的规则, 修改 task 的开启标记. 用来做开标记逻辑.
-            meta = self._current_task.meta
-            self._current_task.tokens = CMTLSaxElement.make_start_mark(
+            meta = self.current_task.meta
+            self.current_task.tokens = CMTLSaxElement.make_start_mark(
                 chan=meta.chan,
                 name=meta.name,
-                attrs=self._current_task.kwargs,
+                attrs=self.current_task.kwargs,
                 self_close=True,
             )
-            return None
+            return result
 
     def destroy(self) -> None:
         self._clear_speech_stream()
         super().destroy()
 
 
-class EmptyCommandTaskElement(NoDeltaCommandTaskElement):
+class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
+    """
+    没有 delta 参数的节点类型.
+    也就是说这种类型的 Command 不支持 delta 数据, 也不支持子节点.
+    基于 CTML 1.0 的规则, 我们把这种
+    """
+
+    _current_content_stream_sender: ThreadSafeStreamSender | None = None
+    _current_content_task: CommandTask | None = None
+    _current_content_task_delivered: bool = False
+    _buffer_stream_content: str = ""
+    _self_task_delivered: bool = False
+
+    def _create_new_content_task(self, token: CommandToken) -> tuple[ThreadSafeStreamSender, CommandTask]:
+        sender, receiver = create_sender_and_receiver()
+        command = self._find_command(token.chan, CONTENT_COMMAND_NAME)
+        if command is not None:
+            task = BaseCommandTask.from_command(
+                command,
+                kwargs={CommandDeltaArgName.CHUNKS.value: receiver},
+                cid=token.command_part_id(),
+                call_id=token.call_id,
+            )
+        else:
+            task = EmptyContentTask(
+                channel=token.chan,
+                chunks__=receiver,
+                cid=token.command_part_id(),
+                call_id=token.call_id,
+            )
+        return sender, task
+
+    def on_delta_token(self, token: CommandToken) -> list[CommandTask]:
+        """
+        接受到中间的 token 比如当前是 foo
+        <foo> hello <bar/> world </foo>
+        会接收到的 delta token 有 hello 和 world.
+        """
+        result = self._deliver_self(with_scope=True)
+        new_task = None
+        # 没有创建过 content stream.
+        if self._current_content_task is None:
+            # 没有创建过 content stream, 则创建一个.
+            # 用来处理需要发送的 delta content.
+            self._buffer_stream_content += token.content
+            sender, new_task = self._create_new_content_task(token)
+            sender.append(token.content)
+            self._current_content_stream_sender = sender
+            self._current_content_task = new_task
+
+        # 如果不是同一个流了.
+        elif self._current_content_task.cid != token.command_part_id():
+            # 创建过 output_stream, 则需要比较是否是相同的 command part id.
+            # 不是相同的 command part id, 则需要创建一个新的流, 这样可以分段感知到每一段 output 是否已经执行完了.
+            # 核心目标是, 当一个较长的 output 流被 command 分割成多段的话, 每一段都可以阻塞, 同时却可以提前生成 tts.
+            # 这样生成 tts 的过程 add(token.content) 并不会被阻塞.
+            result.extend(self._clear_content_stream())
+            self._buffer_stream_content += token.content
+            sender, new_task = self._create_new_content_task(token)
+            sender.append(token.content)
+            self._current_content_stream_sender = sender
+            self._current_content_task = new_task
+        else:
+            # task 存在, 而且正好 buffer.
+            self._current_content_stream_sender.append(token.content)
+            self._buffer_stream_content += token.content
+            if self._current_content_task:
+                self._current_content_task.tokens = self._buffer_stream_content
+            if not self._current_content_task_delivered:
+                new_task = self._current_content_task
+
+        # 消息终于不为空了, 才会第一次发送.
+        if new_task is not None and self._buffer_stream_content.strip() != "":
+            self._add_inner_task(new_task)
+            self._current_content_task_delivered = True
+            result.append(new_task)
+        return result
+
+    def on_init(self) -> list[CommandTask]:
+        # 不着急发送命令.
+        return []
+
+    def _deliver_self(self, with_scope: bool) -> list[CommandTask]:
+        if self._self_task_delivered:
+            return []
+        self._self_task_delivered = True
+        tasks = []
+        if self.scope is None:
+            if with_scope and self._has_inner_tokens:
+                # 由于一个没有delta 的 command 包含了 inner tokens, 隐性创建 scope.
+                # 没有也会创建出来.
+                self.scope = TaskScope(
+                    channel=self.chan,
+                    until='flow',
+                    timeout=None,
+                )
+        # 有 scope 的情况下, 先发送 scope.
+        if self.scope is not None:
+            # 如果是隐藏节点, tag 是 None
+            tag = SCOPE_SHORTCUT if self.current_task is None else ''
+            scope_task = ScopeOpenTask(self.scope, tag=tag)
+            # 隐藏节点, 所以不对外暴露 token.
+            self._add_inner_task(scope_task)
+            tasks.append(scope_task)
+        if self.current_task is not None:
+            if not self._has_inner_tokens:
+                self.current_task.tokens = f"<{self.current_task.caller_name()}/>"
+            self._add_to_parent(self.current_task)
+            tasks.append(self.current_task)
+        return tasks
+
+    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask]:
+        result = self._deliver_self(with_scope=True)
+        # 如果子节点还是开标签, 不应该走到这一环.
+        if self._unclose_child is not None:
+            self.ctx.logger.error(
+                "%s Start new child command %s within unclosed command %s",
+                self._log_prefix,
+                token,
+                self._unclose_child,
+            )
+            self.raise_interrupt()
+            return result
+        result.extend(self._clear_content_stream())
+        result.extend(self._new_child_element(token))
+        return result
+
+    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask]:
+        self._clear_content_stream()
+        if self._unclose_child is not None:
+            # 让子节点去处理.
+            result = self._unclose_child.on_token(token)
+            # 如果子节点处理完了, 自己也没了, 就清空.
+            if self._unclose_child.is_end():
+                self._unclose_child = None
+            return result
+        elif token.command_id() != self.cid:
+            self.ctx.logger.error(
+                "%s element end current task %s with invalid token %r", self._log_prefix, self.current_task, token
+            )
+            # 自己来处理这个 token, 但 command id 不一致的情况.
+            self.raise_interrupt()
+            return []
+        else:
+            # 结束自身.
+            # 理论上外部可以调用.
+            return []
+
+    def _clear_content_stream(self) -> list[CommandTask]:
+        result = []
+        if self._current_content_task is not None:
+            if not self._current_content_task_delivered and self._buffer_stream_content.strip() != "":
+                result = [self._current_content_task]
+            self._current_content_task.tokens = self._buffer_stream_content
+        self._current_content_task = None
+        self._current_content_task_delivered = False
+        self._buffer_stream_content = ""
+        if self._current_content_stream_sender is not None:
+            # 发送未发送的 output stream.
+            self._current_content_stream_sender.commit()
+            self._current_content_stream_sender = None
+        return result
+
+    def on_own_end(self) -> list[CommandTask]:
+        result = self._deliver_self(with_scope=False)
+        result.extend(self._clear_content_stream())
+        # 确认一下处理逻辑. 如果 scope 存在的话, 需要发送 scope 的闭包.
+        if self.scope and len(self.inner_tasks) > 0:
+            # 如果有任务存在, 则 scope exit 的 tokens 用 caller 来做.
+            tag = SCOPE_SHORTCUT if self.current_task is None else self.current_task.caller_name()
+            scope_close_task = ScopeCloseTask(self.scope, tag=tag)
+            result.append(scope_close_task)
+            self._add_to_parent(scope_close_task)
+        # 设置关闭.
+        result.extend(super().on_own_end())
+        return result
+
+    def destroy(self) -> None:
+        self._clear_content_stream()
+        super().destroy()
+
+
+class EmptyCommandTaskElement(CommandWithoutDeltaArgElement):
     """
     一个空节点.
     """
-
     pass
 
 
@@ -718,12 +964,13 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
     def __init__(
             self,
             name: str,
+            parent_add_inner_task: Callable[[CommandTask], None] | None,
+            *,
+            chan: str,
             stream_id: str,
             cid: str,
             current_task: Optional[CommandTask],
-            *,
             depth: int = 0,
-            callback: Optional[CommandTaskCallback] = None,
             ctx: CommandTaskElementContext,
     ) -> None:
         sender, receiver = create_sender_and_receiver()
@@ -732,47 +979,48 @@ class DeltaStreamElement(BaseCommandTokenParserElement, Generic[ItemT], ABC):
         self._deltas: str = ""
         self._exists_delta_value = None
         super().__init__(
-            name,
-            stream_id,
-            cid,
-            current_task,
+            name=name,
+            parent_add_inner_task=parent_add_inner_task,
+            stream_id=stream_id,
+            cid=cid,
+            current_task=current_task,
+            chan=chan,
             depth=depth,
-            callback=callback,
             ctx=ctx,
         )
 
-    def on_init(self) -> list[CommandTask] | None:
-        delta_arg_name = self._current_task.meta.delta_arg
-        self._exists_delta_value = self._current_task.kwargs.get(delta_arg_name, None)
-        self._current_task.kwargs[delta_arg_name] = self._receiver
+    def on_init(self) -> list[CommandTask]:
+        delta_arg_name = self.current_task.meta.delta_arg
+        self._exists_delta_value = self.current_task.kwargs.get(delta_arg_name, None)
+        self.current_task.kwargs[delta_arg_name] = self._receiver
         # 直接发送当前任务.
-        self._send_callback(self._current_task)
-        return [self._current_task]
+        self._add_to_parent(self.current_task)
+        return [self.current_task]
 
-    def on_delta_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_delta_token(self, token: CommandToken) -> list[CommandTask]:
         self._deltas += token.content
         parsed = self._parse_delta(token)
         self._sender.append(parsed)
-        return None
+        return []
 
     @abstractmethod
     def _parse_delta(self, token: CommandToken) -> ItemT:
         pass
 
-    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask]:
         parsed = self._parse_delta(token)
         self._sender.append(parsed)
         self._deltas += token.content
-        return None
+        return []
 
-    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask] | None:
+    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask]:
         parsed = self._parse_delta(token)
         self._deltas += token.content
         self._deltas += token.content
         self._sender.append(parsed)
-        return None
+        return []
 
-    def on_own_end(self) -> list[CommandTask] | None:
+    def on_own_end(self) -> list[CommandTask]:
         result = super().on_own_end()
         if len(self._deltas) == 0 and self._exists_delta_value:
             self._sender.append(self._exists_delta_value)
@@ -815,59 +1063,75 @@ class DeltaIsTextElement(BaseCommandTokenParserElement):
 
     _inner_content = ""
 
-    def on_delta_token(self, token: CommandToken) -> None:
+    def on_delta_token(self, token: CommandToken) -> list[CommandTask]:
         self._inner_content += token.content
+        return []
 
-    def on_init(self) -> list[CommandTask] | None:
+    def on_init(self) -> list[CommandTask]:
         # 开始时不要执行什么.
-        return None
+        return []
 
-    def on_sub_start_token(self, token: CommandToken) -> None:
+    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask]:
         self.ctx.logger.error("%s text text__ receive ctml token %s", self._log_prefix, token)
         raise InterpretError(f"`text__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
 
-    def on_sub_end_token(self, token: CommandToken) -> None:
+    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask]:
         self.ctx.logger.error("%s text text__ receive ctml token %s", self._log_prefix, token)
         raise InterpretError(f"`text__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
 
-    def on_own_end(self) -> list[CommandTask] | None:
+    def on_own_end(self) -> list[CommandTask]:
         result = super().on_own_end()
-        if self._current_task is not None:
-            current_task_meta = self._current_task.meta
+        if self.current_task is not None:
+            current_task_meta = self.current_task.meta
             delta_arg_name = current_task_meta.delta_arg
-            deltas_exists_value = self._current_task.kwargs.get(delta_arg_name, "")
+            deltas_exists_value = self.current_task.kwargs.get(delta_arg_name, "")
             # 做全文赋值.
             deltas_value = deltas_exists_value
             if len(self._inner_content) > 0:
                 deltas_value = self._inner_content
-            self._current_task.kwargs[CommandDeltaType.TEXT.value] = deltas_value
+            self.current_task.kwargs[CommandDeltaArgName.TEXT.value] = deltas_value
             if not self._inner_content:
-                attrs = self._current_task.kwargs.copy()
+                attrs = self.current_task.kwargs.copy()
                 if delta_arg_name in attrs:
                     del attrs[delta_arg_name]
-                self._current_task.tokens = CMTLSaxElement.make_start_mark(
-                    self._current_task.chan,
+                self.current_task.tokens = CMTLSaxElement.make_start_mark(
+                    self.current_task.chan,
                     current_task_meta.name,
                     attrs=attrs,
                     self_close=True,
                 )
             else:
-                start_tokens = self._current_task.tokens
-                self._current_task.tokens = start_tokens + self._inner_content + f"</{self._current_task.meta.name}>"
-            self._send_callback(self._current_task)
+                start_tokens = self.current_task.tokens
+                self.current_task.tokens = start_tokens + self._inner_content + f"</{self.current_task.meta.name}>"
         self._end = True
         result = result or []
-        result.append(self._current_task)
+        result.append(self.current_task)
+        for t in result:
+            self._add_to_parent(t)
         return result
 
 
-class RootCommandTaskElement(NoDeltaCommandTaskElement):
-    def on_token(self, token: CommandToken | None) -> None:
+class RootCommandTaskElement(CommandWithoutDeltaArgElement):
+    _callback: Callable[[CommandTask | None], None] | None = None
+
+    def with_callback(self, callback: Callable[[CommandTask | None], None]):
+        self._callback = callback
+
+    def on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
         if self._is_root_token(token):
             if token.seq == "start":
-                return
+                return []
             elif token.seq == "end":
-                self._send_callback(None)
                 self.on_own_end()
-                return
-        return super().on_token(token)
+                return []
+        result = super().on_token(token)
+        if self._callback is not None:
+            if result is None:
+                self._callback(None)
+            else:
+                for t in result:
+                    self._callback(t)
+        return result
+
+    def _deliver_self(self, with_scope: bool) -> list[CommandTask]:
+        return []

@@ -19,7 +19,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.channel import Channel, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import (
     Command,
-    CommandDeltaType,
+    CommandDeltaArgName,
     CommandMeta,
     CommandTask,
     CommandWrapper, CommandUniqueName,
@@ -91,7 +91,7 @@ class MCPChannelRuntime(AbsChannelRuntime[MCPChannel]):
         "draft/2019-09": Draft201909Validator,
     }
 
-    COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaType.TEXT.value}:str"
+    COMMAND_DELTA_PARAMETER: str = f"{CommandDeltaArgName.TEXT.value}:str"
 
     def __init__(
             self,
@@ -327,7 +327,7 @@ class MCPChannelRuntime(AbsChannelRuntime[MCPChannel]):
                     interface=interface,
                     available=True,
                     json_schema=tool.inputSchema,
-                    delta_arg=CommandDeltaType.TEXT,
+                    delta_arg=CommandDeltaArgName.TEXT,
                     # mcp channel 默认不是阻塞的?
                     blocking=self._blocking,
                 )

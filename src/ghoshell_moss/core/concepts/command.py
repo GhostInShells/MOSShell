@@ -50,9 +50,9 @@ __all__ = [
     "CancelAfterOthersTask",
     "Command",
     "CommandUniqueName",
-    "CommandDeltaType",
-    "CommandDeltaValue",
-    "ValueOfCommandDeltaTypeMap",
+    "CommandDeltaArgName",
+    "CommandDeltaArgType",
+    "CommandDeltaArgName2TypeMap",
     "CommandError",
     "CommandErrorCode",
     "CommandMeta",
@@ -170,7 +170,7 @@ class CommandToken(BaseModel):
 
     name: str = Field(description="command name")
     chan: str = Field(default="", description="channel name")
-    call_id: Optional[int] = Field(None, description="生成 command 时对应的 call_id")
+    call_id: str | None = Field(None, description="生成 command 时对应的 call_id")
 
     order: int = Field(default=0, description="the output order of the command")
     cmd_idx: int = Field(default=0, description="command index of the stream")
@@ -207,7 +207,7 @@ class CommandToken(BaseModel):
         return self.content
 
 
-class CommandDeltaType(str, Enum):
+class CommandDeltaArgName(str, Enum):
     """
     Command 体系里的特殊通道参数.
     Command 可以定义特殊的入参名, 这种特殊的入参名支持接受模型流式传输的 tokens 来生成参数.
@@ -238,7 +238,7 @@ class CommandDeltaType(str, Enum):
         return {cls.TEXT.value, cls.CTML.value, cls.TOKENS.value, cls.CHUNKS.value}
 
 
-class CommandDeltaValue:
+class CommandDeltaArgType:
     """
     支持的类型.
     """
@@ -248,12 +248,12 @@ class CommandDeltaValue:
     TEXT = str
 
 
-ValueOfCommandDeltaTypeMap = {
-    CommandDeltaType.TEXT.value: CommandDeltaValue.TEXT,
-    CommandDeltaType.TOKENS.value: CommandDeltaValue.COMMAND_TOKEN_STREAM,
-    CommandDeltaType.CTML.value: CommandDeltaValue.COMMAND_TOKEN_STREAM,
-    CommandDeltaType.CHUNKS.value: CommandDeltaValue.TEXT_CHUNKS_STREAM,
-    CommandDeltaType.JSON.value: CommandDeltaValue.TEXT,
+CommandDeltaArgName2TypeMap = {
+    CommandDeltaArgName.TEXT.value: CommandDeltaArgType.TEXT,
+    CommandDeltaArgName.TOKENS.value: CommandDeltaArgType.COMMAND_TOKEN_STREAM,
+    CommandDeltaArgName.CTML.value: CommandDeltaArgType.COMMAND_TOKEN_STREAM,
+    CommandDeltaArgName.CHUNKS.value: CommandDeltaArgType.TEXT_CHUNKS_STREAM,
+    CommandDeltaArgName.JSON.value: CommandDeltaArgType.TEXT,
 }
 """
 拥有不同的语义的 Delta 类型. 
@@ -284,7 +284,7 @@ class CommandMeta(BaseModel):
     delta_arg: Optional[str] = Field(
         default=None,
         description="the delta arg type",
-        json_schema_extra={"enum": CommandDeltaType.all()},
+        json_schema_extra={"enum": CommandDeltaArgName.all()},
     )
 
     interface: str = Field(
@@ -576,7 +576,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._tags = tags
         self._meta = meta
         self._priority = priority
-        self._delta_types = delta_types if delta_types is not None else list(ValueOfCommandDeltaTypeMap.keys())
+        self._delta_types = delta_types if delta_types is not None else list(CommandDeltaArgName2TypeMap.keys())
         delta_arg = None
         for arg_name in self._func_itf.signature.parameters:
             if arg_name.endswith("__") or arg_name in self._delta_types:
@@ -1410,6 +1410,7 @@ class TaskScope:
     """
     为 task 准备的几种标准的 wait 机制.
     """
+    default_until = "flow"
 
     def __init__(
             self,

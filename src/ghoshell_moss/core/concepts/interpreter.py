@@ -96,11 +96,6 @@ class CommandTokenParser(ABC):
     """
 
     @abstractmethod
-    def with_callback(self, callback: CommandTaskCallback) -> None:
-        """设置一个 callback, 替换默认的 callback. 通常不需要使用."""
-        pass
-
-    @abstractmethod
     def on_token(self, token: CommandToken | None) -> list[CommandTask] | None:
         """
         接受一个 command token
@@ -690,8 +685,6 @@ class Interpreter(ABC):
                     tasks = parser.on_token(item)
                     if tasks is not None:
                         for task in tasks:
-                            # print("++++++++++++++++++++ wait compiled task", task)
-                            # run partial on compiled
                             task.on_compiled()
                             task_callback(task)
                     await asyncio.sleep(0.0)

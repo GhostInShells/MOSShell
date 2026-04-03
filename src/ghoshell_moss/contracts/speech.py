@@ -20,23 +20,22 @@ __all__ = [
     "TTSBatch",
     "TTSInfo",
     "TTSSpeech",
+    "make_content_command_from_speech",
 ]
 
 
 class SpeechStream(ABC):
     """
     Speech 创建的单个 Stream.
-    Shell 发送文本的专用模块. 是对语音或文字输出的高阶抽象.
+    Shell 发送文本的专用模块. 是对语音或文字输出的高阶流式抽象, 用来解决模型输出的文本流式转换成语音的需求.
     一个 speech 可以同时创建多个 stream, 但执行 tts 的顺序按先后排列.
-
-    实现这个 SpeechStream 可以创建多种音频 Channel.
     """
 
     def __init__(
-        self,
-        id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
-        cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
-        committed: bool = False,  # 是否完成了这个 stream 的提交
+            self,
+            id: str,  # 所有文本片段都有独立的全局唯一id, 通常是 command_token.part_id
+            cmd_task: Optional[CommandTask] = None,  # stream 生成的 command task
+            committed: bool = False,  # 是否完成了这个 stream 的提交
     ):
         self.id = id
         self.cmd_task = cmd_task
@@ -280,6 +279,58 @@ class Speech(ABC):
             await self.wait_closed()
 
 
+def make_content_command_from_speech(speech: Speech, name="__content__", doc: str | None = None) -> Command:
+    """
+    不需要理解这里在干什么.
+    """
+
+    async def _feed_stream(stream: SpeechStream, deltas: AsyncIterable[str]) -> None:
+        """
+        实现一个异步消费的 task.
+        """
+        try:
+            nonlocal speech
+            if not speech.is_running():
+                return
+            has_first_chunk = False
+            async for chunk in deltas:
+                if not has_first_chunk and chunk.strip():
+                    has_first_chunk = True
+                    await stream.start_synthesis()
+                stream.feed(chunk)
+            stream.commit()
+        except asyncio.CancelledError:
+            await stream.close()
+
+    async def _content_partial(chunks__: AsyncIterable[str]) -> tuple[list, dict]:
+        """
+        在 command task 生成时, 就会对 chunks__ 进行流式加工.
+        """
+        nonlocal speech
+        if not speech.is_running():
+            return [], {}
+        stream = speech.new_stream()
+        await stream.start_synthesis()
+        _ = asyncio.create_task(_feed_stream(stream, chunks__))
+        return [], {"chunks__": stream}
+
+    # 发送给大模型的真实命令.
+    async def __content__(chunks__) -> None:
+        """speak chunks with your voice"""
+        if not speech.is_running():
+            return None
+        if not isinstance(chunks__, SpeechStream):
+            return None
+        try:
+            await chunks__.start_synthesis()
+            await chunks__.start_play()
+            await chunks__.wait_played()
+        finally:
+            await chunks__.close()
+
+    return PyCommand(func=__content__, partial=_content_partial, name=name, doc=doc)
+
+
 class AudioFormat(Enum):
     PCM_S16LE = "s16le"
     PCM_F32LE = "float32le"
@@ -324,12 +375,12 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def add(
-        self,
-        chunk: np.ndarray,
-        *,
-        audio_type: AudioFormat,
-        rate: int,
-        channels: int = 1,
+            self,
+            chunk: np.ndarray,
+            *,
+            audio_type: AudioFormat,
+            rate: int,
+            channels: int = 1,
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
@@ -520,12 +571,12 @@ class TTS(ABC):
 
     @abstractmethod
     def new_batch(
-        self,
-        batch_id: str = "",
-        *,
-        callback: TTSAudioCallback | None = None,
-        tone: str | None = None,
-        voice: dict | None = None,
+            self,
+            batch_id: str = "",
+            *,
+            callback: TTSAudioCallback | None = None,
+            tone: str | None = None,
+            voice: dict | None = None,
     ) -> TTSBatch:
         """
         创建一个 batch.
@@ -644,10 +695,10 @@ class TTSSpeech(Speech, ABC):
             )
 
         async def say_partial(
-            chunks__,
-            voice: dict | None = None,
-            as_default: bool = False,
-            tone: str = "",
+                chunks__,
+                voice: dict | None = None,
+                as_default: bool = False,
+                tone: str = "",
         ) -> tuple[list, dict]:
             """
             预先准备 say 的逻辑.

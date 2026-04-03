@@ -42,8 +42,10 @@ async def test_interpreter_baseline():
             if token.name == "foo":
                 assert token.chan == ""
 
-        assert len(queue) == 4
-        assert len(interpreter.compiled_tasks()) == 3
+        # 实际生成的是 <scope enter> <foo /> <__content__> <scope exit>
+        assert len(queue) == 5
+        assert queue.pop() is None
+        assert len(interpreter.compiled_tasks()) == 4
 
 
 @pytest.mark.asyncio

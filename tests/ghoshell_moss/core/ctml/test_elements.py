@@ -10,13 +10,21 @@ from ghoshell_moss.core.ctml.elements import CommandTaskElementContext, RootComm
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.speech.mock import MockSpeech
+from ghoshell_moss.contracts.speech import make_content_command_from_speech
+from ghoshell_moss.core.ctml.v1_0_0.constants import (
+    CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME,
+    SCOPE_ENTER_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME,
+)
 
 
 @dataclass
 class ElementTestSuite:
     ctx: CommandTaskElementContext
+    # parser
     parser: CTML2CommandTokenParser
+    # root element of the tree parser
     root: RootCommandTaskElement
+    # task queue
     queue: deque[BaseCommandTask | None]
     stop_event: ThreadSafeEvent
 
@@ -42,24 +50,27 @@ class ElementTestSuite:
                     raise r
 
 
-def new_test_suite(*commands: Command) -> ElementTestSuite:
+def new_test_suite(*commands: Command, ignore_wrong_command: bool = True) -> ElementTestSuite:
     tasks_queue = deque()
     output = MockSpeech()
-    command_map = {}
+    command_map = {'': {}}
     for command in commands:
         chan = command.meta().chan
         if chan not in command_map:
             command_map[chan] = {}
         # 假的 command map.
         command_map[chan][command.name()] = command
+    content_command = make_content_command_from_speech(output)
+    command_map[''][content_command.name()] = content_command
     stop_event = ThreadSafeEvent()
     ctx = CommandTaskElementContext(
         command_map,
         output,
-        ignore_wrong_command=True,
+        ignore_wrong_command=ignore_wrong_command,
         # logger=get_console_logger(logging.DEBUG),
     )
     root = ctx.new_root(tasks_queue.append, stream_id="test")
+
     # logger = get_console_logger()
     token_parser = CTML2CommandTokenParser(
         callback=root.on_token,
@@ -117,12 +128,31 @@ async def test_element_baseline():
         return a
 
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
+    # 这里 bar 没有 delta 参数, 但包含了 content
+    # 会触发隐藏规则, 开启一个同名 channel 的 scope.
+    # 用来给 AI 做容错.
     await suite.parse(['<foo /><bar a="123">', "hello", "</bar>"], run=True)
+    # <foo />
+    # scope start - 由于 bar 是开标记, 所以隐藏开启了一个 scope.
+    # <bar ...>
+    # hello
+    # </bar> - 隐藏关闭scope end
+    # None
 
+    task_caller_name = ['foo', SCOPE_ENTER_COMMAND_NAME, 'bar', CONTENT_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME]
+    idx = 0
+
+    for task in suite.queue:
+        # 要考虑 None 作为毒丸.
+        if task:
+            assert task.caller_name() == task_caller_name[idx]
+        idx += 1
+    # 数 token
     assert len(list(suite.parser.parsed())) == (1 + 2 + 1 + 1 + 1 + 1)
-    assert len(suite.queue) == 4 + 1  # 最后一个是 None
+    assert len(suite.queue) == 5 + 1  # 最后一个是 None
+
     assert suite.queue.pop() is None
-    assert [c.result() for c in suite.queue] == [123, 123, None, None]
+    assert [c.result() for c in suite.queue] == [123, None, 123, None, None]
     # the <foo /> is changed to <foo/> for fewer tokens usage
     assert "".join(c.tokens for c in suite.queue) == '<foo/><bar a="123">hello</bar>'
     suite.root.destroy()
@@ -139,55 +169,9 @@ async def test_element_in_chaos_order():
     suite = new_test_suite(PyCommand(foo), PyCommand(bar))
     await suite.parse(["<fo", "o /><b", 'ar a="12', '3">he', "llo<", "/bar>"], run=True)
     assert suite.queue.pop() is None
-    assert [c.result() for c in suite.queue] == [123, 123, None, None]
+    # <foo> <__enter__> <bar> __content__ <__exit__>
+    assert [c.result() for c in suite.queue] == [123, None, 123, None, None]
     suite.root.destroy()
-
-
-@pytest.mark.asyncio
-async def test_parse_and_execute_in_parallel():
-    async def foo() -> int:
-        return 123
-
-    async def bar(a: int) -> int:
-        return a
-
-    suite = new_test_suite(PyCommand(foo), PyCommand(bar))
-    _queue: asyncio.Queue[BaseCommandTask | None] = asyncio.Queue()
-    # 所有的 command task 都会发送给这个 queue
-    suite.root.with_callback(_queue.put_nowait)
-
-    def producer():
-        # feed the inputs
-        with suite.parser:
-            for char in ["<fo", "o /><b", 'ar a="12', '3">he', "llo<", "/bar>"]:
-                suite.parser.feed(delta=char)
-
-    tasks = []
-    results = []
-
-    async def consumer():
-        while True:
-            task = await _queue.get()
-            if task is None:
-                # 最后一个是 None, 用来打破循环.
-                # 也是测试循环是否被打破了.
-                break
-            else:
-                tasks.append(task.run())
-
-        # 让 results 来承接所有 task 的返回值.
-        results.extend(await asyncio.gather(*tasks))
-
-    main_tasks = [
-        asyncio.to_thread(producer),
-        asyncio.create_task(consumer()),
-    ]
-    await asyncio.gather(*main_tasks)
-
-    # suite.queue 被 _queue 夺舍了.
-    assert len(suite.queue) == 0
-
-    assert results == [123, 123, None, None]
 
 
 @pytest.mark.asyncio

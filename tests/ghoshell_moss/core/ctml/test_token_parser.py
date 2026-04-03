@@ -269,13 +269,14 @@ def test_token_parser_with_json():
 
 
 def test_token_parser_with_attr_suffix():
+    # CTML 1.0.0 隐藏使用三元命名法, chan:command:call_id.
     content = "<a:foo:3 a:list='[1, 2]' b:lambda='2*3' c:dict='{\"foo\": 123}' />"
     q: list[CommandToken] = []
     CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
     q = q[1:-1]
     for token in q:
         if token.seq == "start":
-            assert token.call_id == 3
+            assert token.call_id == '3'
             assert token.kwargs == {"a": [1, 2], "b": 6, "c": {"foo": 123}}
 
 
@@ -288,7 +289,7 @@ def test_ctml_with_suffix_idx():
     q = q[1:-1]
     token = q.pop(0)
     assert token.seq == "start"
-    assert token.call_id == 3
+    assert token.call_id == '3'
     assert token.order == 1
     assert token.kwargs["a"] == [1, 2]
     next_token = None
@@ -429,10 +430,186 @@ def test_token_with_call_id():
 
     def iter_content():
         # args shall be an array
-        for c in "<_ name='foo'><bar _id='123' /></_>":
+        for c in "<_ channel='foo'><bar _cid='123' /></_>":
             yield c
 
     CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    has_baz = False
     for token in q:
-        if token and token.name == "baz" and token.seq == 'start':
+        if token and token.name == "bar" and token.seq == 'start':
+            assert token.chan == "foo"
             assert token.call_id == '123'
+            has_baz = True
+    assert has_baz
+
+
+def test_token_content_within_scope():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_>hello<bar _cid='123' /> world</_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    content = ""
+    for token in q:
+        if token and token.seq == 'delta':
+            assert token.chan == ""
+            content += token.content
+    assert content == "hello world"
+
+
+def test_token_delta_inherit_channel_within_scope():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ name='foo'>hello<bar _cid='123' /> world</_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    content = ""
+    for token in q:
+        if token and token.seq == 'delta':
+            assert token.chan == ""
+            content += token.content
+    assert content == "hello world"
+
+
+def test_sub_token_has_it_own_scope():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ channel='foo'>hello<foo.bar:bar _cid='123' /> world</_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    has_bar = False
+    for token in q:
+        if token and token.seq == 'start' and token.name == 'bar':
+            assert token.chan == "foo.bar"
+            assert token.call_id == '123'
+            has_bar = True
+    assert has_bar
+
+
+def test_sub_scope_inherit_channel():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ channel='foo'><_>hello<bar _cid='123' /></_> world</_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    has_bar = False
+    content = ""
+    for token in q:
+        if token and token.seq == 'start' and token.name == 'bar':
+            assert token.chan == "foo"
+            has_bar = True
+        if token and token.seq == "delta":
+            if token.chan == "foo":
+                content += token.content
+    assert has_bar
+    assert content == "hello world"
+
+
+def test_sub_scope_not_allow_defer_parent():
+    q: list[CommandToken] = []
+
+    def iter_content():
+        # args shall be an array
+        for c in "<_ channel='foo'><_ channel='bar'>hello<bar _cid='123' /></_> world</_>":
+            yield c
+
+    # bar scope 越界了 foo.
+    with pytest.raises(InterpretError):
+        CTML2CommandTokenParser.parse(
+            q.append,
+            iter_content(),
+            root_tag="speak",
+            attr_parsers=ctml_default_parsers,
+        )
+
+
+def test_sub_scope_with_inherit_scope():
+    q: list[CommandToken] = []
+
+    # 隐藏继承逻辑, 不轻易开放. 当子节点 channel 用 . 开头时, 实际上会继承 scope.
+    def iter_content():
+        # args shall be an array
+        for c in "<_ channel='foo'><_ channel='.bar'>hello<bar _cid='123' /></_> world</_>":
+            yield c
+
+    CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+    has_bar = False
+    for token in q:
+        if token and token.seq == 'start' and token.name == 'bar':
+            assert token.chan == "foo.bar"
+            has_bar = True
+    assert has_bar
+
+
+def test_scope_with_until_flow_and_timeout():
+    """测试 CTML 1.0.0 新增的 until="flow" 和 timeout 属性解析"""
+    content = '<_ channel="robot.arm" until="flow" timeout="5.0"><bar /></_>'
+    q: list[CommandToken] = []
+
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    assert q.pop() is None
+    q = q[1:-1]
+
+    scope_start_token = q[0]
+    assert scope_start_token.seq == "start"
+    assert scope_start_token.name == "_"
+    # 验证 kwargs 是否正确承载了这些属性，且 timeout 被正确转为 float (如果 default parser 支持的话)
+    # 注意：如果你们的 literal_eval 默认不处理纯字符串属性，这里的值可能是 string，视你的 parser 基础逻辑而定
+    assert scope_start_token.kwargs.get("until") == "flow"
+    assert str(scope_start_token.kwargs.get("timeout")) == "5.0"
+
+
+def test_token_parser_comprehensive_type_suffixes():
+    """测试完整的类型消歧义 (bool, float, none)"""
+    content = '<foo:bar a:bool="True" b:bool="False" c:float="3.14" d:none="None" e:str="123"/>'
+    q: list[CommandToken] = []
+
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    assert q.pop() is None
+    q = q[1:-1]
+
+    token = q[0]
+    assert token.seq == "start"
+    assert token.kwargs["a"] is True
+    assert token.kwargs["b"] is False
+    assert token.kwargs["c"] == 3.14
+    assert token.kwargs["d"] is None
+    assert token.kwargs["e"] == "123"
+
+
+def test_token_parser_raise_on_missing_quotes():
+    """强制红线测试：严禁省略属性引号"""
+    q: list[CommandToken] = []
+
+    def iter_content():
+        for c in "<foo:bar arg=123 />":
+            yield c
+
+    # 缺乏引号应该在 XML 解析阶段直接引发 InterpretError (快速失败)
+    with pytest.raises(InterpretError):
+        CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+
+
+def test_token_parser_raise_on_mismatched_tags():
+    """健壮性测试：标签开闭不匹配时的快速失败"""
+    q: list[CommandToken] = []
+
+    def iter_content():
+        for c in "<foo><bar></foo></bar>":
+            yield c
+
+    with pytest.raises(InterpretError):
+        CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
+

@@ -12,7 +12,7 @@ from ghoshell_moss.core.concepts.interpreter import TextTokenParser
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ghoshell_moss.core.ctml.v1_0_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
-    CALL_ID_RESERVE_KEY, MAIN_CHANNEL_NAME,
+    CALL_ID_RESERVE_KEY, MAIN_CHANNEL_NAME, MAIN_CHANNEL_SHORTCUT,
 )
 from ast import literal_eval
 
@@ -189,7 +189,7 @@ class AttrWithTypeSuffixParser(AttrParser):
             "str": str,
             "int": int,
             "float": float,
-            "bool": bool,
+            "bool": lambda x: x == "True",
             "list": lambda v: list(literal_eval(v)),
             "dict": lambda v: dict(literal_eval(v)),
             "None": lambda v: None,
@@ -360,13 +360,11 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             call_id = str(call_id)
 
         # 判断是否是 scope.
-        if command_name == self._scope_shortcut:
-            command_name = self._scope_command_name
-        if command_name == self._scope_command_name:
+        if command_name == self._scope_shortcut or command_name == self._scope_command_name:
             # CTML v1.0.0 规则, 使用指定的 key 返回 channel name.
             if not chan:
                 if self._scope_channel_name_key in parsed_kwargs:
-                    chan = parsed_kwargs.pop(self._scope_channel_name_key)
+                    chan = parsed_kwargs.pop(self._scope_channel_name_key) or MAIN_CHANNEL_SHORTCUT
 
         # 创建 command token
         self._start_command_token_element(
@@ -396,6 +394,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             # 生成
             scope = last_unclose_element.chan
             chan = chan or scope
+            if chan.startswith("."):
+                chan = scope + chan
+            elif not chan.startswith(scope):
+                raise InterpretError(f'received unexpected channel name "{chan}" in scope "{scope}"')
 
         element = CMTLSaxElement(
             cmd_idx=self._cmd_idx,
@@ -507,6 +509,8 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self.done_event.is_set():
             return
         self.done_event.set()
+        if self._exception is not None:
+            return
         self._logger.error(exception)
         if isinstance(exception, xml.sax.SAXParseException):
             exp_str = get_error_context(self._parsing_text, exception)
@@ -518,6 +522,11 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         if self.done_event.is_set():
             return
         self.done_event.set()
+        if self._exception is not None:
+            return
+        if isinstance(exception, InterpretError):
+            self._exception = exception
+            return
         self._logger.exception(exception)
         if isinstance(exception, xml.sax.SAXParseException):
             exp_str = get_error_context(self._parsing_text, exception)
@@ -625,6 +634,8 @@ class CTML2CommandTokenParser(TextTokenParser):
             for callback in self._callbacks:
                 try:
                     callback(token)
+                except InterpretError as e:
+                    self._handler.fatalError(e)
                 except Exception as e:
                     self.logger.exception("%s deliver token failed %s", self._log_prefix, e)
 

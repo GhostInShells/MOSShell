@@ -174,6 +174,9 @@ class Builder(ABC):
     def add_command(
             self,
             command: Command,
+            *,
+            override: bool = True,
+            name: Optional[str] = None,
     ) -> None:
         """
         添加一个 Command 对象.
