@@ -1424,7 +1424,8 @@ class TaskScope:
         self.until = until
         self.channel = channel
         self._done_event = ThreadSafeEvent()
-        self._timeout_task: asyncio.Task | None = None
+        self._compiled_event = ThreadSafeEvent()
+        self._timeout_task: asyncio.Future | None = None
 
     def add(self, task: CommandTask) -> None:
         if self._done_event.is_set():
@@ -1432,6 +1433,9 @@ class TaskScope:
             return
         self.tasks.add(task)
         task.add_done_callback(self.callback)
+
+    def compiled(self):
+        self._compiled_event.set()
 
     def callback(self, task: CommandTask) -> None:
         if task not in self.tasks:
@@ -1459,7 +1463,7 @@ class TaskScope:
             return asyncio.create_task(self._noop())
         if self._timeout_task is not None:
             return self._timeout_task
-        self._timeout_task = asyncio.create_task(self._cancel_after_timeout(self.timeout))
+        self._timeout_task = asyncio.shield(self._cancel_after_timeout(self.timeout))
         return self._timeout_task
 
     async def _noop(self) -> None:
@@ -1471,10 +1475,12 @@ class TaskScope:
         """
         if timeout <= 0.0:
             return
+        await self._compiled_event.wait()
         await asyncio.sleep(timeout)
         self.cancel("timeout")
 
     async def wait(self):
+        self.compiled()
         wait_tasks: list[CommandTask] = []
         for task in self.tasks:
             if self.until == 'flow' and self.channel == task.chan:
@@ -1483,9 +1489,9 @@ class TaskScope:
                 wait_tasks.append(task)
         if len(wait_tasks) > 0:
             await asyncio.gather(*[t.wait(throw=False) for t in wait_tasks])
-        self.cancel("group done")
 
 
+# 废弃的技术实现, 准备删除.
 class CancelAfterOthersTask(BaseCommandTask[None]):
     """
     等待其它任务完成后, cancel 当前任务.

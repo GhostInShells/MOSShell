@@ -660,15 +660,17 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return {}
         if not runtime.is_available():
             return {}
-        path = self._runtime_id_to_paths.get(channel_id)
-        if not path:
+        path = self._runtime_id_to_paths.get(channel_id, None)
+        if path is None:
             self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
+            return {}
         node = self._runtime_status_nodes.get(path)
         if not node:
             self.logger.error(
                 "%s get runtime node by path=%s, id=%s error: not found",
                 self.log_prefix, path, channel_id,
             )
+            return {}
         children = {}
         for _channel_id, name in node.children_names.items():
             runtime = self.get_running_runtime(_channel_id)

@@ -103,6 +103,7 @@ class ScopeCloseTask(BaseCommandTask[str]):
 
     def __init__(self, group: TaskScope, tag: str = ''):
         self._group = group
+        group.compiled()
         meta = CommandMeta(
             name=SCOPE_EXIT_COMMAND_NAME,
             chan=group.channel,
@@ -119,8 +120,17 @@ class ScopeCloseTask(BaseCommandTask[str]):
             kwargs={},
         )
 
+        def _cancel_group(task: CommandTask) -> None:
+            nonlocal group
+            group.cancel()
+
+        self.add_done_callback(_cancel_group)
+
     async def end_scope(self) -> None:
-        await self._group.wait()
+        try:
+            await self._group.wait()
+        finally:
+            self._group.cancel()
 
 
 class EmptyContentTask(BaseCommandTask[None]):
@@ -838,6 +848,12 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
 
     def on_init(self) -> list[CommandTask]:
         # 不着急发送命令.
+        if self.scope is None:
+            self.scope = TaskScope(
+                channel=self.chan,
+                until='flow',
+                timeout=None,
+            )
         return []
 
     def _deliver_self(self, with_scope: bool) -> list[CommandTask]:
@@ -845,17 +861,8 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
             return []
         self._self_task_delivered = True
         tasks = []
-        if self.scope is None:
-            if with_scope and self._has_inner_tokens:
-                # 由于一个没有delta 的 command 包含了 inner tokens, 隐性创建 scope.
-                # 没有也会创建出来.
-                self.scope = TaskScope(
-                    channel=self.chan,
-                    until='flow',
-                    timeout=None,
-                )
         # 有 scope 的情况下, 先发送 scope.
-        if self.scope is not None:
+        if self.scope is not None and self._has_inner_tokens:
             # 如果是隐藏节点, tag 是 None
             tag = SCOPE_SHORTCUT if self.current_task is None else ''
             scope_task = ScopeOpenTask(self.scope, tag=tag)
@@ -925,7 +932,7 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
         result = self._deliver_self(with_scope=False)
         result.extend(self._clear_content_stream())
         # 确认一下处理逻辑. 如果 scope 存在的话, 需要发送 scope 的闭包.
-        if self.scope and len(self.inner_tasks) > 0:
+        if self.scope and self._has_inner_tokens:
             # 如果有任务存在, 则 scope exit 的 tokens 用 caller 来做.
             tag = SCOPE_SHORTCUT if self.current_task is None else self.current_task.caller_name()
             scope_close_task = ScopeCloseTask(self.scope, tag=tag)

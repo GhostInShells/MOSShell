@@ -137,11 +137,11 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
     ) -> None:
         if not isinstance(command, Command):
             raise ValueError("Command must be of type Command, not {}".format(type(command)))
-        if command.is_dynamic():
-            self._dynamic = True
         name = name or command.name()
         if override or name not in self._commands:
             self._commands[command.name()] = command
+            if command.is_dynamic():
+                self._dynamic = True
 
     def command(
             self,

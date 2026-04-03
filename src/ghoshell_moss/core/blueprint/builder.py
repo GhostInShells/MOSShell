@@ -180,20 +180,20 @@ class Builder(ABC):
             func: Callable[[AsyncIterable[str]], Coroutine[None, None, None]],
             doc: Optional[str] = None,
             override: bool = True,
-    ) -> Callable:
+    ) -> Command[None]:
         """
         register a special function for channel's content method.
         """
         from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME
         name = CONTENT_COMMAND_NAME or '__content__'
-        self.command(
+        return self.command(
             name=name,
             doc=doc,
             # use __content__ as interface, override the docstring if need.
             interface=__content__,
             override=override,
-        )
-        return func
+            return_command=True,
+        )(func)
 
     @abstractmethod
     def add_command(
@@ -245,7 +245,7 @@ class Builder(ABC):
                       # comments
                 - callalble[[], str]: 生成模型签名的函数
                 - async function: 直接反射这个 function, 来生成一个模型签名的字符串. 可以定义虚拟函数作为 interface.
-
+        :param override: override existing one
         :param tags: 标记函数的分类. 可以让使用者用来过滤和筛选.
         :param available: 通过一个 Available 函数, 定义这个命令的状态. 当这个函数返回 False 时, Command 会动态地变成不可用.
                 这种方式, 可以结合状态机逻辑, 动态定义一个 Channel 上的可用函数.

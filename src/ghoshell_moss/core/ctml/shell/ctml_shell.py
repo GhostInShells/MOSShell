@@ -507,7 +507,7 @@ def new_ctml_shell(
         logger: Optional[LoggerItf] = None,
         experimental: bool = True,
         primitives: list[str] | None = None,
-) -> MOSShell[PrimeChannel]:
+) -> CTMLShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
         name=name,
@@ -519,3 +519,26 @@ def new_ctml_shell(
         experimental=experimental,
         primitives=primitives,
     )
+
+
+async def ctml_shell_test(
+        *channels: Channel,
+        ctml: str,
+        builder: Callable[[CTMLShell], None] | None = None,
+) -> list[CommandTask]:
+    """
+    simple method to test ctmlk
+    """
+    shell = new_ctml_shell()
+    for channel in channels:
+        shell.main_channel.import_channels(channel)
+    if builder is not None:
+        builder(shell)
+    async with shell:
+        interpreter = await shell.interpreter()
+        async with interpreter:
+            interpreter.feed(ctml)
+            interpreter.commit()
+            tasks = await interpreter.wait_tasks()
+            interpreter.raise_exception()
+            return list(tasks.values())
