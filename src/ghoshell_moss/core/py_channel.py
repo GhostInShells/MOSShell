@@ -152,6 +152,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
             tags: Optional[list[str]] = None,
             interface: Optional[StringType] = None,
             available: Optional[Callable[[], bool]] = None,
+            override: bool = True,
             blocking: Optional[bool] = None,
             priority: int = 0,
             call_soon: bool = False,
@@ -172,7 +173,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
                 priority=priority,
                 call_soon=call_soon,
             )
-            self.add_command(command)
+            self.add_command(command, override=override)
             if return_command:
                 return command
             return func

@@ -4,7 +4,7 @@
 
 from abc import ABC, abstractmethod
 from PIL import Image
-from typing import Union, Callable, Coroutine, Any, Optional, TypeVar
+from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable
 from typing_extensions import Self
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command
@@ -109,6 +109,11 @@ def new_command(
     )
 
 
+# special kind of content function
+async def __content__(chunks__) -> None:
+    pass
+
+
 class Builder(ABC):
     """
     用来动态构建一个 Channel 的通用接口.
@@ -170,6 +175,26 @@ class Builder(ABC):
         """
         pass
 
+    def content_command(
+            self,
+            func: Callable[[AsyncIterable[str]], Coroutine[None, None, None]],
+            doc: Optional[str] = None,
+            override: bool = True,
+    ) -> Callable:
+        """
+        register a special function for channel's content method.
+        """
+        from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME
+        name = CONTENT_COMMAND_NAME or '__content__'
+        self.command(
+            name=name,
+            doc=doc,
+            # use __content__ as interface, override the docstring if need.
+            interface=__content__,
+            override=override,
+        )
+        return func
+
     @abstractmethod
     def add_command(
             self,
@@ -193,6 +218,7 @@ class Builder(ABC):
             tags: Optional[list[str]] = None,
             interface: Optional[StringType | Callable[[...], Coroutine[None, None, Any]]] = None,
             available: Optional[Callable[[], bool]] = None,
+            override: bool = True,
             # --- 高级参数 --- #
             blocking: bool = True,
             call_soon: bool = False,
