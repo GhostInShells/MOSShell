@@ -11,7 +11,7 @@ from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import make_content_command_from_speech
-from ghoshell_moss.core.ctml.v1_0_0.constants import (
+from ghoshell_moss.core.ctml.v1_0.constants import (
     CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME,
     SCOPE_ENTER_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME,
 )

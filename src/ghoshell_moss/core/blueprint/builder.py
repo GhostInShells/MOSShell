@@ -184,7 +184,7 @@ class Builder(ABC):
         """
         register a special function for channel's content method.
         """
-        from ghoshell_moss.core.ctml.v1_0_0.constants import CONTENT_COMMAND_NAME
+        from ghoshell_moss.core.ctml.v1_0.constants import CONTENT_COMMAND_NAME
         name = CONTENT_COMMAND_NAME or '__content__'
         return self.command(
             name=name,

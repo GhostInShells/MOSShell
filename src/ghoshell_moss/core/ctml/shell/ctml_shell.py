@@ -30,7 +30,7 @@ from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
 from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
-from ghoshell_moss.core.ctml.v1_0_0.prompts import make_static_messages, make_dynamic_messages
+from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.speech.mock import MockSpeech

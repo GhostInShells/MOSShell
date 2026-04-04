@@ -1,4 +1,4 @@
-from ghoshell_moss.core.ctml.v1_0_0.prompts import generate_channel_tree
+from ghoshell_moss.core.ctml.v1_0.prompts import generate_channel_tree
 from ghoshell_moss.core.concepts.channel import ChannelMeta
 
 

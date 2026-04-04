@@ -10,7 +10,7 @@ from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import TextTokenParser
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
-from ghoshell_moss.core.ctml.v1_0_0.constants import (
+from ghoshell_moss.core.ctml.v1_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
     CALL_ID_RESERVE_KEY, MAIN_CHANNEL_NAME, MAIN_CHANNEL_SHORTCUT,
 )

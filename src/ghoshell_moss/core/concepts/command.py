@@ -1418,6 +1418,7 @@ class TaskScope:
             channel: str = '',
             until: Literal['flow', 'all', 'any'] = 'flow',
             timeout: float | None = None,
+            strict: bool = False,
     ) -> None:
         self.tasks: set[CommandTask] = set()
         self.timeout = timeout
@@ -1425,30 +1426,39 @@ class TaskScope:
         self.channel = channel
         self._done_event = ThreadSafeEvent()
         self._compiled_event = ThreadSafeEvent()
-        self._timeout_task: asyncio.Future | None = None
+        self._tick_task: asyncio.Future | None = None
+        self._strict = strict
 
     def add(self, task: CommandTask) -> None:
         if self._done_event.is_set():
             task.cancel("group already done")
-            return
         self.tasks.add(task)
-        task.add_done_callback(self.callback)
+        if not task.done():
+            task.add_done_callback(self.callback)
 
     def compiled(self):
         self._compiled_event.set()
+        # 完成 compiled 的时候已经过期了.
+        if self._done_event.is_set():
+            for task in self.tasks:
+                task.cancel()
 
     def callback(self, task: CommandTask) -> None:
         if task not in self.tasks:
             return
-        self.tasks.remove(task)
         if task.done():
             if self.until == 'any':
-                self.cancel("other task done")
+                if self._compiled_event.is_set():
+                    self.cancel("other task finished")
+                else:
+                    self._done_event.set()
                 return
 
     def cancel(self, reason: str = "") -> None:
         if len(self.tasks) == 0:
             return
+        if self._tick_task is not None:
+            self._tick_task.cancel(reason)
         tasks = self.tasks.copy()
         self.tasks.clear()
         for task in tasks:
@@ -1461,10 +1471,10 @@ class TaskScope:
         """
         if self.timeout is None:
             return asyncio.create_task(self._noop())
-        if self._timeout_task is not None:
-            return self._timeout_task
-        self._timeout_task = asyncio.shield(self._cancel_after_timeout(self.timeout))
-        return self._timeout_task
+        if self._tick_task is not None:
+            return self._tick_task
+        self._tick_task = asyncio.shield(self._cancel_after_timeout(self.timeout))
+        return self._tick_task
 
     async def _noop(self) -> None:
         pass
@@ -1488,6 +1498,10 @@ class TaskScope:
                     wait_tasks.append(task)
             else:
                 wait_tasks.append(task)
+        if len(wait_tasks) == 0:
+            if self.until == 'flow' and not self._strict:
+                # 容错逻辑.
+                wait_tasks = list(self.tasks)
         if len(wait_tasks) > 0:
             await asyncio.gather(*[t.wait(throw=False) for t in wait_tasks])
 

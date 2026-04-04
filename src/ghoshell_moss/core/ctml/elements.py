@@ -27,7 +27,7 @@ from ghoshell_moss.core.concepts.interpreter import (
 from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.contracts.speech import Speech, SpeechStream
 from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT, ThreadSafeStreamSender
-from ghoshell_moss.core.ctml.v1_0_0.constants import (
+from ghoshell_moss.core.ctml.v1_0.constants import (
     CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME,
     SCOPE_SHORTCUT, SCOPE_ENTER_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME,
 )
@@ -90,8 +90,6 @@ class ScopeOpenTask(BaseCommandTask[None]):
             args=[],
             kwargs={},
         )
-        # 被持有的对象也包括自身.
-        group.add(self)
 
     async def start_scope(self):
         # 首次被执行时, 正式开始记账.
@@ -870,7 +868,7 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
             tag = SCOPE_SHORTCUT if self.current_task is None else ''
             scope_task = ScopeOpenTask(self.scope, tag=tag)
             # 隐藏节点, 所以不对外暴露 token.
-            self._add_inner_task(scope_task)
+            self._add_to_parent(scope_task)
             tasks.append(scope_task)
         if self.current_task is not None:
             if not self._has_inner_tokens:

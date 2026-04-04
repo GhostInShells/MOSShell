@@ -20,7 +20,7 @@ from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
 from ghoshell_moss.core.ctml.token_parser import CTML2CommandTokenParser, AttrWithTypeSuffixParser, ctml_default_parsers
-from ghoshell_moss.core.ctml.v1_0_0.prompts import make_static_messages, make_dynamic_messages, make_interfaces
+from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages, make_interfaces
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_moss.message import Message
 import queue

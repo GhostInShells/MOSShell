@@ -239,3 +239,180 @@ async def test_ctml_flow_cancels_long_running_child():
     # 结果应该是 b 被 cancel 了，因为 a 的直接序列 (fast_cmd) 跑完了
     assert "b_finished" not in status
     assert status["b_cancelled"] is True
+
+
+@pytest.mark.asyncio
+async def test_ctml_sequential_channels_stability():
+    """验证 A 通道完成后，B 通道才能开始，中间没有重叠"""
+    a = new_channel(name="a")
+    b = new_channel(name="b")
+    history = []
+
+    @a.build.command()
+    async def task_a():
+        history.append("a_start")
+        await asyncio.sleep(0.02)
+        history.append("a_end")
+
+    @b.build.command()
+    async def task_b():
+        history.append("b_start")
+        await asyncio.sleep(0.01)
+        history.append("b_end")
+
+    # 顺序执行两个不同通道的作用域
+    ctml = """
+    <_ channel='a'><task_a/></_>
+    <_ channel='b'><task_b/></_>
+    """
+    await ctml_shell_test(a, b, ctml=ctml)
+
+    # 必须保证 a 彻底结束后 b 才开始
+    assert history == ["a_start", "b_start", "b_end", "a_end"]
+
+    history.clear()
+    ctml = """
+        <_ until='all'><a:task_a/></_>
+        <_ until='all'><b:task_b/></_>
+        """
+    await ctml_shell_test(a, b, ctml=ctml)
+    assert history == ["a_start", "a_end", "b_start", "b_end", ]
+
+
+@pytest.mark.asyncio
+async def test_ctml_until_any_logic():
+    """验证 any 模式：一个完成，全部带走"""
+    a = new_channel(name="a")
+    b = new_channel(name="b")
+    results = {"fast_done": False, "slow_cancelled": False}
+
+    @a.build.command()
+    async def fast():
+        await asyncio.sleep(0.01)
+        results["fast_done"] = True
+
+    @b.build.command()
+    async def slow():
+        try:
+            await asyncio.sleep(0.1)
+            results["slow_done"] = True
+        except asyncio.CancelledError:
+            results["slow_cancelled"] = True
+
+    # 在 any 作用域下并行
+    ctml = """
+    <_ until='any'>
+        <a:fast/>
+        <b:slow/>
+    </_>
+    """
+    tasks = await ctml_shell_test(a, b, ctml=ctml)
+    count_success = 0
+    assert len(tasks) == 4
+    for task in tasks:
+        if task.success():
+            count_success += 1
+    assert count_success == 3
+
+    assert len(results) == 2
+    assert results["fast_done"] is True
+    assert results["slow_cancelled"] is True
+
+
+@pytest.mark.asyncio
+async def test_ctml_nested_any_all_recursion():
+    """验证 any 触发时，嵌套的 all 及其子命令被递归取消"""
+    a = new_channel(name="a")
+    done_count = 0
+
+    @a.build.command()
+    async def waiter():
+        nonlocal done_count
+        try:
+            await asyncio.sleep(1.0)
+            done_count += 1
+        except asyncio.CancelledError:
+            raise
+
+    @a.build.command()
+    async def trigger():
+        await asyncio.sleep(0.01)  # 快速触发
+
+    ctml = """
+    <_ channel='a' until='any'>
+        <trigger />
+        <_ until='all'>
+            <waiter _cid='1'/>
+            <waiter _cid='2'/>
+        </_>
+    </_>
+    """
+    await ctml_shell_test(a, ctml=ctml)
+    # trigger 完成导致外部 any 结束，内部 all 应该被整体撤销，包含它的 2 个 waiter
+    assert done_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ctml_scope_with_channel_prefix():
+    a = new_channel(name="a")
+    done_count = 0
+
+    @a.build.command()
+    async def waiter():
+        nonlocal done_count
+        try:
+            await asyncio.sleep(0.05)
+            done_count += 1
+        except asyncio.CancelledError:
+            raise
+
+    @a.build.command()
+    async def trigger():
+        await asyncio.sleep(0.01)  # 快速触发
+
+    ctml = """
+        <a:_ >
+            <trigger />
+            <waiter _cid='1'/>
+            <waiter _cid='2'/>
+        </a:_>
+        """
+    await ctml_shell_test(a, ctml=ctml)
+    # trigger 完成导致外部 any 结束，内部 all 应该被整体撤销，包含它的 2 个 waiter
+    assert done_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ctml_none_strict_features_of_until_flow_with_none_self_command():
+    """验证容错逻辑, channel 通道内没有加 until=all, 但是所有命令都非自己通道的. """
+    a = new_channel(name="a")
+
+    done = []
+
+    @a.build.command()
+    async def foo():
+        # 让 foo 不会比 __content__ 更快执行完.
+        await asyncio.sleep(0.01)
+        done.append('foo')
+
+    ctml = """
+    <_>
+    <a:foo/>
+    <a:foo/>
+    </_>
+    """
+    # 虽然是 until 默认为 flow, 但由于没有任何子命令, 容错触发了.
+    await ctml_shell_test(a, ctml=ctml)
+    assert done == ['foo', 'foo']
+
+    done.clear()
+    ctml = """
+    <_>
+    <a:foo/>
+    hello
+    <a:foo/>
+    </_>
+    """
+    # 但是一旦加了 任何该轨道的命令, 比如 __content__, 就不会容错.
+    await ctml_shell_test(a, ctml=ctml)
+    assert done == []
