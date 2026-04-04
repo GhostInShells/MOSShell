@@ -57,7 +57,7 @@ class CTMLInterpreter(Interpreter):
             moss_meta_instruction: Optional[str] = None,
             channel_metas: Optional[dict[ChannelFullPath, ChannelMeta]] = None,
             ignore_wrong_command: bool = False,
-            clear_after_exit: bool = False,
+            clear_after_exit: bool | None = None,
             ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
     ):
         """
@@ -80,6 +80,8 @@ class CTMLInterpreter(Interpreter):
         self._interrupted_interpretation = interrupted
         self._meta_instruction = moss_meta_instruction
         self._channel_metas = channel_metas or {}
+        if clear_after_exit is None:
+            clear_after_exit = False
         self._clear_after_exit = clear_after_exit
         # 准备日志.
         self._logger = logger or logging.getLogger("CTMLInterpreter")
@@ -201,10 +203,8 @@ class CTMLInterpreter(Interpreter):
 
     def _send_command_task(self, task: CommandTask | None) -> None:
         try:
-            if self._task_sent_done:
-                return
-            if self._stopped_event.is_set():
-                if task is not None:
+            if self._task_sent_done or self._stopped_event.is_set():
+                if task is not None and not task.done():
                     task.cancel("interpreter stopped")
                 return
             # 只发送一次 None 作为毒丸.

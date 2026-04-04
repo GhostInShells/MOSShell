@@ -245,8 +245,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             meta_instruction: str | None = None,
             stream_id: Optional[str] = None,
             config: Optional[list[ChannelFullPath]] = None,
-            clear_after_exit: bool = False,
             ignore_wrong_command: bool = False,
+            clear_after_exit: bool | None = None,
     ) -> AsyncIterator[Interpreter]:
         """
         简单的语法糖.
@@ -256,8 +256,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             meta_instruction=meta_instruction,
             stream_id=stream_id,
             config=config,
-            clear_after_exit=clear_after_exit,
             ignore_wrong_command=ignore_wrong_command,
+            clear_after_exit=clear_after_exit,
         )
         async with interpreter:
             yield interpreter
@@ -272,8 +272,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             prepare_timeout: float = 2.0,
             ignore_wrong_command: bool = False,
             token_replacements: dict[str, str] | None = None,
-            clear_after_exit: bool = False,
             meta_instruction: str | None = None,
+            clear_after_exit: bool | None = None,
     ) -> Interpreter:
         """
         实例化一个 interpreter 用来做解释.

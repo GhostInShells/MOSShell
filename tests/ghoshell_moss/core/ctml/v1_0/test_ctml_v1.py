@@ -5,6 +5,13 @@ from ghoshell_moss.core.ctml import ctml_shell_test
 from ghoshell_moss.core.blueprint.builder import new_channel
 import pytest
 
+"""
+配合 CTML 1.0 语法写的单元测试. 
+在测试 CTML 解释器/执行器 的同时, 也在测试 AI 对 CTML 的理解, 同时修改细节. 
+"""
+
+
+# --- 以下是作者写的基线测试. --- #
 
 @pytest.mark.asyncio
 async def test_ctml_noop_run():
@@ -156,6 +163,8 @@ async def test_ctml_nested_scope_override():
     with pytest.raises(InterpretError):
         await ctml_shell_test(a_chan, b_chan, ctml=ctml)
 
+
+# --- 以下是 Gemini 3 写的单测, 发现 channel=name 语法有歧义, 仍改为命名空间定义作用域 --- #
 
 @pytest.mark.asyncio
 async def test_ctml_flow_with_mixed_content():
@@ -352,6 +361,8 @@ async def test_ctml_nested_any_all_recursion():
     assert done_count == 0
 
 
+# --- 以下是 开发者写的单测, 检查隐藏的容错逻辑 --- #
+
 @pytest.mark.asyncio
 async def test_ctml_scope_with_channel_prefix():
     a = new_channel(name="a")
@@ -416,3 +427,319 @@ async def test_ctml_none_strict_features_of_until_flow_with_none_self_command():
     # 但是一旦加了 任何该轨道的命令, 比如 __content__, 就不会容错.
     await ctml_shell_test(a, ctml=ctml)
     assert done == []
+
+
+# --- 以下是 deepseek v3.2 写的单测, 细节略有调整 --- #
+
+@pytest.mark.asyncio
+async def test_ctml_open_close_tags_with_chunks():
+    """测试开放-闭合标签配合 chunks__ 流式参数"""
+    chan = new_channel(name="speech")
+
+    @chan.build.command()
+    async def say(chunks__: AsyncIterable[str]) -> str:
+        # 收集所有 chunk 并拼接
+        full = []
+        async for chunk in chunks__:
+            full.append(chunk)
+        return "".join(full)
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="<speech:say>Hello, <b>world</b>!</speech:say>"
+    )
+    assert len(tasks) == 1
+    result = await tasks[0]
+    assert result == "Hello, <b>world</b>!"
+
+
+@pytest.mark.asyncio
+async def test_ctml_cdata_in_text():
+    """测试 CDATA 包裹的 text__ 内容"""
+    chan = new_channel(name="logger")
+
+    @chan.build.command()
+    async def log(text__: str) -> str:
+        return text__
+
+    ctml_with_cdata = """
+    <logger:log><![CDATA[
+        <tag> & 特殊字符 无需转义 </tag>
+    ]]></logger:log>
+    """
+    tasks = await ctml_shell_test(chan, ctml=ctml_with_cdata)
+    result = await tasks[0]
+    assert "<tag>" in result and "&" in result
+
+
+@pytest.mark.asyncio
+async def test_ctml_scope_flow_sequential():
+    """测试作用域 until='flow' (默认) 顺序执行"""
+    chan = new_channel(name="proc")
+
+    order = []
+
+    @chan.build.command()
+    async def step1() -> str:
+        order.append(1)
+        return "one"
+
+    @chan.build.command()
+    async def step2() -> str:
+        order.append(2)
+        return "two"
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <_>
+            <proc:step1/>
+            <proc:step2/>
+        </_>
+        """
+    )
+    assert len(tasks) == 4
+    assert order == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_ctml_scope_any_parallel_first_complete():
+    """测试作用域 until='any'：任意子任务完成即中断其他"""
+    chan = new_channel(name="race")
+
+    @chan.build.command()
+    async def fast(delay: float = 0.1) -> str:
+        await asyncio.sleep(delay)
+        return "fast"
+
+    @chan.build.command()
+    async def slow(delay: float = 0.3) -> str:
+        await asyncio.sleep(delay)
+        return "slow"
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <_ until="any">
+            <race:fast delay="0.05"/>
+            <race:slow delay="0.2"/>
+        </_>
+        """
+    )
+    # 由于 any 模式，一旦 fast 完成，slow 会被取消
+    # 这里检查返回结果的数量应为 1（只有 fast 成功完成）
+    # 注意：被取消的任务会抛出 CancelledError，在 gather 中需要处理
+    results = []
+    for t in tasks:
+        if t.success():
+            results.append(t.result())
+    assert len(results) == 3
+    assert results[1] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_ctml_scope_timeout():
+    """测试作用域超时 timeout"""
+    chan = new_channel(name="timer")
+
+    @chan.build.command()
+    async def long_task() -> str:
+        await asyncio.sleep(0.5)
+        return "done"
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <_ timeout="0.1">
+            <timer:long_task/>
+        </_>
+        """
+    )
+    # 超时会导致作用域内的任务被取消，所以 long_task 会抛出 CancelledError
+    has_long = False
+    for task in tasks:
+        if task.meta.name == "long_task":
+            assert task.exception() is not None
+            assert task.cancelled()
+            has_long = True
+    assert has_long
+
+
+@pytest.mark.asyncio
+async def test_ctml_nested_scopes():
+    """测试嵌套作用域"""
+    chan = new_channel(name="nest")
+    log = []
+
+    @chan.build.command()
+    async def a(msg: str) -> None:
+        log.append(msg)
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <_>
+            <nest:a msg="outer start"/>
+            <_>
+                <nest:a msg="inner"/>
+            </_>
+            <nest:a msg="outer end"/>
+        </_>
+        """
+    )
+    assert log == ["outer start", "inner", "outer end"]
+
+
+@pytest.mark.asyncio
+async def test_ctml_parallel_commands_in_parent_scope():
+    """测试父作用域内不同子通道的并行执行"""
+    chan_a = new_channel(name="a")
+    chan_b = new_channel(name="b")
+    order = []
+
+    @chan_a.build.command()
+    async def task_a() -> None:
+        await asyncio.sleep(0.1)
+        order.append("A")
+
+    @chan_b.build.command()
+    async def task_b() -> None:
+        await asyncio.sleep(0.05)
+        order.append("B")
+
+    tasks = await ctml_shell_test(
+        chan_a, chan_b,
+        ctml="""
+        <_>
+            <a:task_a/>
+            <b:task_b/>
+        </_>
+        """
+    )
+    # 由于并行，B 应该先完成（延迟短），但顺序由调度决定
+    # 这里我们只验证两个都执行了
+    assert set(order) == {"A", "B"}
+
+
+@pytest.mark.asyncio
+async def test_ctml_command_cid_and_result():
+    """测试命令实例化 _cid 和结果返回格式"""
+    chan = new_channel(name="calc")
+
+    @chan.build.command()
+    async def double(x: int) -> int:
+        return x * 2
+
+    # 由于 ctml_shell_test 返回的是任务列表，不直接检查 <result> 标签，
+    # 但我们可以在命令中收集返回值来验证 _cid 不影响逻辑
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <calc:double _cid="1" x="3"/>
+        <calc:double _cid="2" x="7"/>
+        """
+    )
+    results = {t.caller_name(): t.result() for t in tasks}
+    assert results == {"calc:double:1": 6, "calc:double:2": 14}
+
+
+@pytest.mark.asyncio
+async def test_ctml_observe_interrupt():
+    """测试 Observe 返回值中断所有运行中命令"""
+    from ghoshell_moss import Observe
+    loop_chan = new_channel(name='loop')
+    inter_chan = new_channel(name="interrupt")
+
+    @inter_chan.build.command()
+    async def trigger_observe() -> Observe:
+        return Observe()
+
+    @loop_chan.build.command()
+    async def infinite_loop() -> None:
+        try:
+            while True:
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass  # 预期被取消
+
+    tasks = await ctml_shell_test(
+        inter_chan, loop_chan,
+        ctml="""
+        <_>
+            <loop:infinite_loop/>
+            <interrupt:trigger_observe/>
+        </_>
+        """
+    )
+    # 由于 Observe 触发，整个作用域应被中断，所有任务取消
+    # 每个任务都会抛出 CancelledError
+    has_loop = False
+    for t in tasks:
+        if t.meta.name == "infinite_loop":
+            assert t.cancelled()
+            has_loop = True
+    assert has_loop
+
+
+@pytest.mark.asyncio
+async def test_ctml_parse_error():
+    """测试 CTML 解析错误导致快速失败"""
+    chan = new_channel(name="dummy")
+    invalid_ctml = "<dummy:cmd arg=123/>"  # 参数值未用双引号
+
+    with pytest.raises(InterpretError):
+        await ctml_shell_test(chan, ctml=invalid_ctml)
+
+
+@pytest.mark.asyncio
+async def test_ctml_root_channel_no_prefix():
+    """测试根通道 __main__ 命令不加前缀"""
+    # 创建根通道（实际测试中 ctml_shell_test 可能隐式包含 __main__）
+    # 我们手动添加一个主通道命令
+    main_chan = new_channel(name="__main__")
+
+    @main_chan.build.command()
+    async def wait(seconds: float) -> str:
+        await asyncio.sleep(seconds)
+        return "waited"
+
+    # 正确用法：不带 __main__: 前缀
+    tasks = await ctml_shell_test(ctml='<wait seconds="0.01"/>', main=main_chan)
+    assert len(tasks) == 1
+    result = await tasks[0]
+    assert result == "waited"
+
+    # 错误用法：带前缀应解析失败
+    # 实际上... 做了容错.
+    await ctml_shell_test(main_chan, ctml='<__main__:wait seconds="0.01"/>')
+
+
+@pytest.mark.asyncio
+async def test_ctml_content_command_for_unmarked_text():
+    """测试通道内非标记文本通过 __content__ 命令处理"""
+    chan = new_channel(name="echo")
+
+    @chan.build.content_command
+    async def content(chunks__: AsyncIterable[str]) -> str:
+        full = []
+        async for chunk in chunks__:
+            full.append(chunk)
+        return "".join(full)
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="<_>Hello, world!</_>"  # 无标签文本进入 __content__
+    )
+    # 注意：ctml_shell_test 会将作用域内的文本解析为对当前通道的 __content__ 调用
+    # 这里假设作用域默认通道是 __main__？可能需要调整。为了测试，让 chan 成为默认通道。
+    # 简化：直接调用 chan 的 __content__
+    # 实际测试中，需要确保 chan 是当前作用域的默认通道。这里我们显式指定作用域通道：
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="<echo:_>Hello!</echo:_>"  # 作用域通道为 echo，内部文本调用 echo.__content__
+    )
+    result = ""
+    for t in tasks:
+        if t.meta.name == "__content__":
+            result = t.result()
+    assert result == "Hello!"

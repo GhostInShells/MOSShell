@@ -309,7 +309,7 @@ def test_ctml_with_suffix_idx():
         q.append, iter(content), root_tag="speak", attr_parsers=[literal_parser], with_call_id=True
     )
     got_content = "".join([t.content for t in q[1:-2]])
-    assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar:2></bar:2>'
+    assert got_content == '<a:foo:1 literal-a="[1, 2]"></a:foo:1><bar></bar>'
 
 
 def test_ctml_attr_with_args():

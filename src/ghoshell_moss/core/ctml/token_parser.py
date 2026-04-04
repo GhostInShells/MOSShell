@@ -52,6 +52,7 @@ class CMTLSaxElement:
             parsed_args: list[str] | None = None,
             parsed_kwargs: dict[str, Any] | None = None,
             call_id: str | None = None,
+            fullname: str | None = None,
     ):
         self.cmd_idx = cmd_idx
         self.call_id = call_id
@@ -65,6 +66,7 @@ class CMTLSaxElement:
         self.parsed_args = parsed_args
         self.parsed_kwargs = parsed_kwargs
         self.stream_id = stream_id
+        self.fullname = fullname
 
     @classmethod
     def make_fullname(cls, chan: Optional[str], name: str, call_id: Optional[str] = None) -> str:
@@ -77,14 +79,22 @@ class CMTLSaxElement:
         return ":".join(parts)
 
     @classmethod
-    def make_start_mark(cls, chan: str, name: str, attrs: dict, self_close: bool, call_id: Optional[str] = None) -> str:
+    def make_start_mark(
+            cls,
+            chan: str,
+            name: str,
+            attrs: dict,
+            self_close: bool,
+            call_id: Optional[str] = None,
+            fullname: str | None = None,
+    ) -> str:
         attr_expression = []
         for k, v in attrs.items():
             quoted_value = saxutils.quoteattr(str(v))
             attr_expression.append(f"{k}={quoted_value}")
         exp = " " if len(attr_expression) > 0 else ""
         self_close_mark = "/" if self_close else ""
-        fullname = cls.make_fullname(chan, name, call_id)
+        fullname = fullname or cls.make_fullname(chan, name, call_id)
         content = f"<{fullname}{exp}" + " ".join(attr_expression) + self_close_mark + ">"
         return content
 
@@ -96,7 +106,14 @@ class CMTLSaxElement:
         """
         generate start token by the sax element
         """
-        content = self.make_start_mark(self.chan, self.name, self.attrs, self_close=False, call_id=self.call_id)
+        content = self.make_start_mark(
+            self.chan,
+            self.name,
+            self.attrs,
+            self_close=False,
+            call_id=self.call_id,
+            fullname=self.fullname,
+        )
         part_idx = self.part_idx
         self.part_idx += 1
         return CommandToken(
@@ -148,6 +165,10 @@ class CMTLSaxElement:
         """
         if self._has_delta:
             self.part_idx += 1
+        if self.fullname:
+            end_mark = f"</{self.fullname}>"
+        else:
+            end_mark = CMTLSaxElement.make_end_mark(self.chan, self.name, call_id=self.call_id)
         return CommandToken(
             name=self.name,
             chan=self.chan,
@@ -157,7 +178,7 @@ class CMTLSaxElement:
             stream_id=self.stream_id,
             seq="end",
             kwargs=None,
-            content=CMTLSaxElement.make_end_mark(self.chan, self.name, call_id=self.call_id),
+            content=end_mark,
         )
 
 
@@ -374,6 +395,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             parsed_args=args,
             parsed_kwargs=parsed_kwargs,
             call_id=call_id,
+            fullname=name,
         )
 
     def _start_command_token_element(
@@ -385,6 +407,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             parsed_args: list | None = None,
             parsed_kwargs: dict | None = None,
             call_id: Optional[str] = None,
+            fullname: Optional[str] = None,
     ) -> None:
         if call_id is None and self._ensure_call_id:
             call_id = str(self._cmd_idx)
@@ -408,6 +431,7 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             parsed_args=parsed_args,
             parsed_kwargs=parsed_kwargs,
             call_id=call_id,
+            fullname=fullname,
         )
 
         # using stack to handle elements

@@ -27,6 +27,8 @@ from .command import (
     CommandWrapper,
     PyCommand,
     make_command_group,
+    Observe,
+    ObserveError,
 )
 from .errors import CommandError, CommandErrorCode, FatalError, InterpretError
 from .interpreter import (

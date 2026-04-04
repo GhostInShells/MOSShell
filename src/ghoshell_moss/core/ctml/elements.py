@@ -1058,8 +1058,10 @@ class DeltaIsTextChunkElement(DeltaStreamElement[CommandToken]):
         if token is None:
             raise RuntimeError("why token is None")
         if token.seq == "start":
-            self.ctx.logger.error("%s text chunks__ receive ctml token %s", self._log_prefix, token)
-            raise InterpretError(f"`chunks__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
+            # if command exists
+            if command := self._find_command(token.chan, token.name):
+                self.ctx.logger.error("%s text chunks__ receive ctml token %s", self._log_prefix, token)
+                raise InterpretError(f"`chunks__` do not allow ctml inside, and remember use CDATA to escape xml mark!")
         return token.content
 
 

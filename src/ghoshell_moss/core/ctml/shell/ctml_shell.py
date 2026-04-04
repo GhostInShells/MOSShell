@@ -246,7 +246,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             prepare_timeout: float = 2.0,
             ignore_wrong_command: bool = False,
             token_replacements: dict[str, str] | None = None,
-            clear_after_exit: bool = False,
+            clear_after_exit: bool | None = None,
     ) -> Interpreter:
         self._check_running()
 
@@ -525,17 +525,18 @@ async def ctml_shell_test(
         *channels: Channel,
         ctml: str,
         builder: Callable[[CTMLShell], None] | None = None,
+        main: PrimeChannel | None = None,
 ) -> list[CommandTask]:
     """
     simple method to test ctmlk
     """
-    shell = new_ctml_shell()
+    shell = new_ctml_shell(main_channel=main)
     for channel in channels:
         shell.main_channel.import_channels(channel)
     if builder is not None:
         builder(shell)
     async with shell:
-        interpreter = await shell.interpreter()
+        interpreter = await shell.interpreter(clear_after_exit=True)
         async with interpreter:
             interpreter.feed(ctml)
             interpreter.commit()
