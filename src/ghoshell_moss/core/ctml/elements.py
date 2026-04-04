@@ -90,9 +90,11 @@ class ScopeOpenTask(BaseCommandTask[None]):
             args=[],
             kwargs={},
         )
+        # 被持有的对象也包括自身.
+        group.add(self)
 
     async def start_scope(self):
-        # 开始记账.
+        # 首次被执行时, 正式开始记账.
         _ = self._group.tick()
 
 
@@ -103,7 +105,6 @@ class ScopeCloseTask(BaseCommandTask[str]):
 
     def __init__(self, group: TaskScope, tag: str = ''):
         self._group = group
-        group.compiled()
         meta = CommandMeta(
             name=SCOPE_EXIT_COMMAND_NAME,
             chan=group.channel,
@@ -119,11 +120,13 @@ class ScopeCloseTask(BaseCommandTask[str]):
             args=[],
             kwargs={},
         )
+        group.compiled()
 
         def _cancel_group(task: CommandTask) -> None:
             nonlocal group
             group.cancel()
 
+        # 自己结束时, 也会 cancel 整个 group
         self.add_done_callback(_cancel_group)
 
     async def end_scope(self) -> None:

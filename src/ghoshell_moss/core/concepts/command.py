@@ -879,7 +879,7 @@ class CommandTask(Generic[RESULT], ABC):
         self.context = context or {}
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
-        self.last_trace: tuple[str, float] = ("", 0.0)
+        self.trace: tuple[str, float] = ("", 0.0)
         """ command task 在 shell 执行的 task 中的排序. 传入这个参数本身没有意义. 最终都以 Shell 的定义为准. """
 
         # --- debug --- #
@@ -1483,8 +1483,9 @@ class TaskScope:
         self.compiled()
         wait_tasks: list[CommandTask] = []
         for task in self.tasks:
-            if self.until == 'flow' and self.channel == task.chan:
-                wait_tasks.append(task)
+            if self.until == 'flow':
+                if self.channel == task.chan:
+                    wait_tasks.append(task)
             else:
                 wait_tasks.append(task)
         if len(wait_tasks) > 0:
