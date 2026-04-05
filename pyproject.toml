@@ -14,7 +14,6 @@ dependencies = [
     "janus>=2.0.0",
     "openai>=2.8.1",
     "pillow>=12.1.0",
-    "pydantic-ai-slim[anthropic]>=1.66.0",
     "python-dateutil>=2.9.0.post0",
     "python-frontmatter>=1.1.0",
 ]
@@ -29,26 +28,27 @@ redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
 cli = [
-    "rich>=14.3.2",
+    "typer>=0.24.1",
 ]
 
 # 所有测试性的依赖放一起. 注意, 由于 live2d-py 0.5.0 以上版本依赖 python 3.12, 所以需要设置本地 python
-contrib = [
-    "litellm>=1.78.5",
-    "live2d-py>=0.5.4,<0.6.0",
-    "mermaid-py>=0.8.1",
-    "mss>=10.1.0",
-    "prompt-toolkit>=3.0.52",
-    "pygame>=2.6.1",
-    "pyqt6>=6.10.2",
-    "python-mpv-jsonipc>=1.2.1",
-    "rich>=14.2.0",
-    "javascript>=1!1.2.6",
-    "opencv-python>=4.13.0.92",
-    "loadenv>=0.1.1",
-    "pymupdf>=1.27.1",
-]
-zenoh = [
+#contrib = [
+#    "litellm>=1.78.5",
+#    "live2d-py>=0.5.4,<0.6.0",
+#    "mermaid-py>=0.8.1",
+#    "mss>=10.1.0",
+#    "prompt-toolkit>=3.0.52",
+#    "pygame>=2.6.1",
+#    "pyqt6>=6.10.2",
+#    "python-mpv-jsonipc>=1.2.1",
+#    "rich>=14.2.0",
+#    "javascript>=1!1.2.6",
+#    "opencv-python>=4.13.0.92",
+#    "loadenv>=0.1.1",
+#    "pymupdf>=1.27.1",
+#]
+matrix = [
+    "circus>=0.19.0",
     "eclipse-zenoh>=1.8.0",
 ]
 
@@ -58,7 +58,21 @@ moss = "ghoshell_moss.cli:main_entry"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["*test*", ".discuss*"]
+exclude = ["test_*", ".discuss*", ".design", ".memory"]
+
+[tool.setuptools.package-data]
+"ghoshell_moss.moss.workspace_stub" = [
+    "*.py",
+    "**/*.py",
+    "*.md",
+    "**/*.md",
+    ".env_example",
+    "**/.env_example",
+    ".gitignore",
+    "**/.gitignore",
+    "*.ini",
+    "**/*.yaml",
+]
 
 [tool.pdm.build]
 includes = []

@@ -2,90 +2,85 @@
 MOSS command group - MOSShell related commands
 """
 
-import click
+import typer
 import pkgutil
 import importlib
-import sys
-
-from ghoshell_moss.cli.main import main
+from typing import Optional, List
 from ghoshell_moss.cli.utils import (
     print_error, print_info, print_panel, echo
 )
 
+__all__ = ['show_concepts']
+# 假设这是挂载在主 app 下的子 typer
 
-def _get_concept_modules():
-    """
-    Get list of concept modules from ghoshell_moss.core.concepts
-    Returns list of module names without .py extension
-    """
-    concept_package = "ghoshell_moss.core.concepts"
-    try:
-        package = importlib.import_module(concept_package)
-    except ImportError as e:
-        print_error(f"Failed to import concept package '{concept_package}': {str(e)}")
-        return []
+CONCEPT_PACKAGE = "ghoshell_moss.core.concepts"
 
-    modules = []
+
+def _get_concept_modules() -> List[str]:
+    """
+    获取 ghoshell_moss.core.concepts 下的模块列表
+    """
     try:
-        # Some packages may not have __path__ attribute (e.g., namespace packages)
+        package = importlib.import_module(CONCEPT_PACKAGE)
         if not hasattr(package, '__path__'):
             return []
 
-        for _, name, is_pkg in pkgutil.iter_modules(package.__path__):
-            if not is_pkg and name != "__init__":
-                modules.append(name)
-    except Exception as e:
-        print_error(f"Failed to list modules in '{concept_package}': {str(e)}")
+        modules = [
+            name for _, name, is_pkg in pkgutil.iter_modules(package.__path__)
+            if not is_pkg and name != "__init__"
+        ]
+        return sorted(modules)
+    except (ImportError, Exception) as e:
+        # 在 CLI 工具中，这种内部错误建议用 print_error
+        print_error(f"Failed to access concept package: {e}")
         return []
 
-    return sorted(modules)
 
-
-@main.command("concepts")
-@click.argument("module_name", required=False)
-def concepts(module_name: str = None):
+def show_concepts(
+        module_name: Optional[str] = typer.Argument(
+            None,
+            help="Specific concept module to reflect. If omitted, lists all available modules."
+        )
+):
     """
-    Reflect concept modules from ghoshell_moss.core.concepts
+    Reflect concept modules from ghoshell_moss.core.concepts.
 
-    \b
-    Usage:
-      ghoshell moss concepts              # List all available concept modules
-      ghoshell moss concepts <module>     # Reflect a specific concept module
-
-    \b
-    Examples:
-      ghoshell moss concepts
-      ghoshell moss concepts command
-      ghoshell moss concepts channel
+    If MODULE_NAME is provided, reflects that specific module.
+    Otherwise, lists all available concept modules.
     """
     modules = _get_concept_modules()
 
+    # 情况 A: 用户没有输入模块名，展示列表
     if module_name is None:
-        # No module specified, show list
         if not modules:
             print_info("No concept modules found.")
             return
 
+        formatted_list = "\n".join([f"• [bold cyan]{mod}[/bold cyan]" for mod in modules])
         print_panel(
-            "\n".join([f"• {module}" for module in modules]),
+            formatted_list,
             title="Available Concept Modules"
         )
         print_info(f"Total: {len(modules)} modules")
-        print_info("Use 'ghoshell moss concepts <module_name>' to reflect a specific module.")
+        print_info(f"\nTip: Run [bold]moss concepts <name>[/bold] to see details.")
         return
 
-    # Module specified, reflect it
+    # 情况 B: 用户输入了模块名，进行校验
     if module_name not in modules:
-        print_error(f"Concept module '{module_name}' not found. Available modules:")
+        print_error(f"Concept module '{module_name}' not found.")
+        print_info("Available modules:")
         for mod in modules:
             print_info(f"  • {mod}")
-        sys.exit(1)
+        raise typer.Exit(code=1)
 
+    # 情况 C: 校验通过，执行反射逻辑
     from ghoshell_moss.core.codex import reflect_any_by_import_path
-    import_path = f"ghoshell_moss.core.concepts.{module_name}"
+    import_path = f"{CONCEPT_PACKAGE}.{module_name}"
+
     try:
+        print_info(f"Reflecting concept: {import_path}...")
         result = reflect_any_by_import_path(import_path)
         echo(result)
     except Exception as e:
-        print_error(f"Failed to reflect module '{import_path}': {str(e)}")
-        sys.exit(1)
+        print_error(f"Failed to reflect module '{import_path}': {e}")
+        raise typer.Exit(code=1)
