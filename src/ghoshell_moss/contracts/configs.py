@@ -12,7 +12,7 @@ __all__ = [
     'ConfigType', 'ConfigStore',
     'YamlConfigStore',
     'LocalConfigStore',
-    'WorkspaceConfigProvider',
+    'WorkspaceYamlConfigStoreProvider',
 ]
 
 
@@ -184,7 +184,7 @@ class YamlConfigStore(LocalConfigStore):
         return content.encode('utf-8')
 
 
-class WorkspaceConfigProvider(Provider[ConfigStore]):
+class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
 
     def singleton(self) -> bool:
         return True
