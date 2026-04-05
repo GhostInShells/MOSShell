@@ -26,7 +26,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
             self,
             *,
             name: str = 'moss',
-            handler_name: str = 'runtime_logger',
+            default_handler_name: str = 'runtime_log',
             log_config_file='logging.yaml',
             runtime_log_dir: str = 'logs',
             log_file_name: str = 'moss.log',
@@ -35,7 +35,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
             backup_count: int = 5,
     ):
         self.name = name
-        self.handler_name = handler_name
+        self.default_handler_name = default_handler_name
         self.runtime_log_dir = runtime_log_dir
         self.log_config_file = log_config_file
         self.log_file_name = log_file_name
@@ -63,8 +63,8 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
 
         # 3. 防止重复添加 Handler (关键修复)
         # 检查是否已经有名为 'moss_file_handler' 的处理器，避免多次初始化容器导致日志翻倍
-        handler_name = self.handler_name
-        if not any(getattr(h, 'name', None) == handler_name for h in logger.handlers):
+        default_handler_name = self.default_handler_name
+        if not any(getattr(h, 'name', None) == default_handler_name for h in logger.handlers):
             # 4. 确定日志文件路径并确保目录存在
             log_dir_storage = workspace.runtime().sub_storage(self.runtime_log_dir)
             log_dir_path = log_dir_storage.abspath()
@@ -80,7 +80,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
                 backupCount=self.backup_count,
                 encoding='utf-8',  # 建议显式指定编码，防止 Windows 下乱码
             )
-            file_handler.name = handler_name  # 给 handler 命名以便检查
+            file_handler.name = default_handler_name  # 给 handler 命名以便检查
 
             formatter = logging.Formatter(
                 "%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]"

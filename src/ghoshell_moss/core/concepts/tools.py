@@ -1,12 +1,18 @@
+import typing
 from typing import Generic, TypeVar, Callable
-from abc import ABC
 from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_moss.core.concepts.command import CommandMeta, Command, CommandTask, BaseCommandTask
 from ghoshell_moss.message import Message
 from openai.types.shared_params import FunctionDefinition
 from anthropic.types import ToolParam
-from pydantic_ai import Tool as PydanticTool, ToolReturn
+
+if typing.TYPE_CHECKING:
+    try:
+        from pydantic_ai import Tool as PydanticTool, ToolReturn
+    except ImportError:
+        ToolReturn = None
+        PydanticTool = None
 
 CommandTaskCallback = Callable[[CommandTask], None]
 
@@ -124,10 +130,11 @@ class CommandAsTool(Generic[R]):
         else:
             return await self.command(*args, **kwargs)
 
-    async def call_with_tool_return(self, *args, **kwargs) -> ToolReturn:
+    async def call_with_tool_return(self, *args, **kwargs) -> "ToolReturn":
         """
         return pydantic tool return.
         """
+        from pydantic_ai import ToolReturn
         r, messages = await self.task_call(*args, **kwargs)
         content = None
         if len(messages) > 0:
@@ -149,10 +156,11 @@ class CommandAsTool(Generic[R]):
         )
         return task
 
-    def as_pydantic_tool(self) -> PydanticTool:
+    def as_pydantic_tool(self) -> "PydanticTool":
         """
         adapt into pydantic tool
         """
+        from pydantic_ai import Tool as PydanticTool
         meta = self.command.meta()
         return PydanticTool.from_schema(
             self.call,
