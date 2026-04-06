@@ -75,42 +75,6 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     def topics(self) -> TopicService:
         pass
 
-    @abstractmethod
-    def pub_topic(
-            self,
-            topic: Topic | TopicModel,
-            *,
-            name: str = "",
-    ) -> None:
-        """
-        shell 广播 topic
-        """
-        pass
-
-    @abstractmethod
-    def subscribe_topic_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            name: str = "",
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
-    ) -> Subscriber[TOPIC_MODEL]:
-        """
-        shell 层监听 topic.
-        """
-        pass
-
-    @abstractmethod
-    def subscribe_topic(
-            self,
-            name: str,
-            *,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
-    ) -> Subscriber:
-        pass
-
     # --- channels --- #
 
     @property

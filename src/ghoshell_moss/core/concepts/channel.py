@@ -354,12 +354,20 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    def topic_publisher(self) -> Publisher:
+    def topic_publisher(self, topic: str | type[TopicModel]) -> Publisher:
         """
         创建一个独立的 publisher 可以在链路中广播 topic.
         """
+        topic_name = topic
+        if isinstance(topic, type):
+            if issubclass(topic, TopicModel):
+                topic_name = topic.default_topic_name()
+            else:
+                raise TypeError(f'topic {topic_name!r} is not a topic model')
+        path = self.channel_path()
         return self.tree.topics.publisher(
-            creator=f"channel/{self.id}",
+            topic_name=topic_name,
+            creator=f"channel/{path}",
         )
 
     def pub_topic(self, topic: TopicModel | Topic, topic_name: str = "") -> None:
@@ -704,6 +712,12 @@ class ChannelRuntime(ABC):
         """
         await self.tree.wait_channel_children_idle(self.channel)
 
+    def channel_path(self) -> ChannelFullPath:
+        """
+        return the channel path in the tree
+        """
+        return self.tree.get_channel_path(self.channel.id()) or self.channel.name()
+
 
 class ChannelTree(ABC):
     """
@@ -793,6 +807,10 @@ class ChannelTree(ABC):
         """
         基于路径查找一个 runtime.
         """
+        pass
+
+    @abstractmethod
+    def get_channel_path(self, channel_id: str) -> ChannelFullPath | None:
         pass
 
     async def clear(self, runtime: ChannelRuntime) -> None:

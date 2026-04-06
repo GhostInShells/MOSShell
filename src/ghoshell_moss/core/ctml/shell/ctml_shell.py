@@ -312,36 +312,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
         self._main_runtime.tree.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
-    def subscribe_topic_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            name: str = "",
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
-    ) -> Subscriber[TOPIC_MODEL]:
-        self._check_running()
-        return self._main_runtime.tree.topics.subscribe_model(
-            model,
-            topic_name=name,
-            maxsize=maxsize,
-            keep=keep,
-        )
-
-    def subscribe_topic(
-            self,
-            name: str,
-            *,
-            maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
-    ) -> Subscriber:
-        self._check_running()
-        return self._main_runtime.tree.topics.subscribe(
-            topic_name=name,
-            maxsize=maxsize,
-            keep=keep,
-        )
-
     async def refresh_metas(self, timeout: float | None = None) -> None:
         if not self.is_running():
             return

@@ -400,7 +400,7 @@ async def test_thread_provider_pub_topic():
     async def send_topic() -> None:
         await wait_connected.wait()
         _runtime = ChannelCtx.runtime()
-        async with _runtime.topic_publisher() as publisher:
+        async with _runtime.topic_publisher(LogTopic) as publisher:
             for i in range(10):
                 await asyncio.sleep(0.0)
                 publisher.pub(LogTopic(level="info", message=str(i)))
@@ -473,7 +473,7 @@ async def test_thread_proxy_pub_topic():
             assert command is not None
 
             # 从 proxy 侧的 main channel 发送消息给 provider 侧.
-            async with runtime.topic_publisher() as publisher:
+            async with runtime.topic_publisher(LogTopic) as publisher:
                 for i in range(10):
                     await asyncio.sleep(0.0)
                     publisher.pub(LogTopic(level="info", message=str(i)))
@@ -517,7 +517,7 @@ async def test_thread_provider_lazy_subscribe():
             proxy_runtime = runtime.fetch_sub_runtime("proxy")
             await proxy_runtime.wait_connected()
             # 从 proxy 侧的 main channel 发送消息给 provider 侧.
-            async with runtime.topic_publisher() as publisher:
+            async with runtime.topic_publisher(LogTopic) as publisher:
                 for i in range(10):
                     await asyncio.sleep(0.0)
                     publisher.pub(LogTopic(level="info", message=str(i)))
@@ -563,7 +563,7 @@ async def test_thread_channel_do_not_share_local_topic():
             async with provider.runtime.topic_subscriber(LogTopic) as subscriber:
                 poll_task = asyncio.create_task(subscriber.poll_model())
                 # proxy 侧发送.
-                async with proxy_runtime.topic_publisher() as publisher:
+                async with proxy_runtime.topic_publisher(LogTopic) as publisher:
                     for i in range(10):
                         await asyncio.sleep(0.0)
                         topic = LogTopic(level="info", message=str(i))

@@ -6,6 +6,7 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.message import Addition
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.topic import *
+from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_container import Provider, IoCContainer
 import asyncio
 import logging
@@ -21,7 +22,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 
     def __init__(
             self,
-            service_stopped: asyncio.Event,
+            service_stopped: ThreadSafeEvent,
             *,
             model: type[TOPIC_MODEL] | None,
             topic_name: str = "",
@@ -31,7 +32,9 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
             logger: LoggerItf | None = None,
     ):
         self._model = model
-        self._listening = topic_name or model.default_topic_name()
+        if model is not None:
+            topic_name = topic_name or model.default_topic_name()
+        self._listening = topic_name
         self._uid = uid or uuid()
         self._queue: janus.Queue[Topic | None] = janus.Queue(maxsize=maxsize)
         self._receive_lock = asyncio.Lock()
@@ -50,7 +53,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
         if topic.meta.name != self._listening:
             return
         if self._service_stopped.is_set():
-            raise ClosedError()
+            raise TopicClosedError()
         keep_policy = keep_policy or self._keep_policy
         try:
             _queue = self._queue.sync_q
@@ -68,7 +71,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
             else:
                 _queue.put_nowait(topic)
         except janus.QueueShutDown:
-            raise ClosedError()
+            raise TopicClosedError()
         except asyncio.QueueFull:
             self._logger.error("%s drop topic %s cause full", self._log_prefix, topic.meta.id)
 
@@ -97,7 +100,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._close()
         if exc_val:
-            if isinstance(exc_val, ClosedError):
+            if isinstance(exc_val, TopicClosedError):
                 self._logger.info("%s stopped cause service closed", self._log_prefix)
                 return True
             else:
@@ -112,23 +115,23 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 
     async def poll(self, timeout: float | None = None) -> Topic:
         if self._closed:
-            raise ClosedError()
+            raise TopicClosedError()
         _queue = self._queue.async_q
         try:
             item = await asyncio.wait_for(_queue.get(), timeout=timeout)
             if item is None:
                 await self.close()
-                raise ClosedError()
+                raise TopicClosedError()
             # 业务侧才复制.
             return item.model_copy()
         except janus.QueueShutDown:
-            raise ClosedError()
+            raise TopicClosedError()
 
     async def poll_model(self, timeout: float | None = None) -> TOPIC_MODEL | None:
         if self._model is None:
             return None
         topic = await self.poll(timeout)
-        return self._model(**topic.data)
+        return self._model.from_topic(topic)
 
     def is_closed(self) -> bool:
         return self._closed or self._service_stopped.is_set()
@@ -140,14 +143,19 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
 class QueueBasedPublisher(Publisher):
     def __init__(
             self,
+            topic_name: str,
             *,
             creator: str,
             publish_queue: janus.Queue[Topic],
-            service_stopped_event: asyncio.Event,
+            service_stopped_event: ThreadSafeEvent,
             uid: str | None = None,
             logger: LoggerItf | None = None,
             frequent: float = 0.0,
+            model: type[TopicModel] | None = None,
     ):
+        if model is not None:
+            topic_name = topic_name or model.topic_name
+        self._topic_name = topic_name
         self._publish_queue = publish_queue
         self._service_stopped_event = service_stopped_event
         self._creator = creator
@@ -157,6 +165,7 @@ class QueueBasedPublisher(Publisher):
         self._log_prefix = f"[QueueBasedPublisher %s id=%s]" % (self._creator, self._uid)
         self._frequent = frequent
         self._last_sent: float = 0.0
+        self._model_type = model
 
     def with_additions(self, *additions: Addition) -> Self:
         self._additions.extend(additions)
@@ -170,13 +179,13 @@ class QueueBasedPublisher(Publisher):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if exc_val is not None:
-            if isinstance(exc_val, ClosedError):
+            if isinstance(exc_val, TopicClosedError):
                 return True
             else:
                 self._logger.exception("%s stopped cause error: %s", self._log_prefix, exc_val)
         return None
 
-    def pub(self, topic: Topic | TopicModel, *, name: str = "") -> None:
+    def pub(self, topic: Topic | TOPIC_MODEL, *, name: str = "") -> None:
         if not self.is_running():
             self._logger.info("%s drop topic %s cause not running", self._log_prefix, topic.meta.id)
             return
@@ -185,9 +194,18 @@ class QueueBasedPublisher(Publisher):
             return
 
         if isinstance(topic, TopicModel):
+            if self._model_type is not None:
+                if not isinstance(topic, self._model_type):
+                    raise ValueError(f"topic type {type(topic)} != allow topic type {self._model_type}")
             topic = topic.to_topic()
         if name:
             topic.meta.name = name
+
+        if topic.meta.name != self._topic_name:
+            raise ValueError(f"topic name {topic.topic_name} != allow topic name {self._topic_name}")
+
+        if len(self._additions) > 0:
+            topic.with_additions(*self._additions)
         topic.meta.creator = self._creator
         self._publish_queue.sync_q.put_nowait(topic)
         # 使用 async 做 api 唯一的目的就是为了这次调度.
@@ -203,8 +221,8 @@ class QueueBasedTopicService(TopicService):
         self._sender = sender or uuid()
         self._creator = f"TopicService/{self._sender}"
         self._started = False
-        self._closing_event = asyncio.Event()
-        self._main_loop_stopped_event = asyncio.Event()
+        self._closing_event = ThreadSafeEvent()
+        self._main_loop_stopped_event = ThreadSafeEvent()
         self._subscribers: dict[TopicName, dict[str, QueueBasedSubscriber]] = {}
         self._subscriber_lock = asyncio.Lock()
 
@@ -347,7 +365,7 @@ class QueueBasedTopicService(TopicService):
                 return True
             subscriber.receive(topic)
             return True
-        except ClosedError:
+        except TopicClosedError:
             return False
         except Exception as e:
             self._logger.exception(
@@ -372,24 +390,8 @@ class QueueBasedTopicService(TopicService):
             uid: str | None = None,
             maxsize: int = 0,
             keep: Literal["latest", "oldest"] = "latest",
-    ) -> Subscriber[None]:
-        return self._create_subscriber(
-            topic_name=topic_name,
-            uid=uid,
-            maxsize=maxsize,
-            keep=keep,
-            model=None,
-        )
-
-    def subscribe_model(
-            self,
-            model: type[TOPIC_MODEL],
-            *,
-            topic_name: str = "",
-            uid: str | None = None,
-            maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
-    ) -> Subscriber[TOPIC_MODEL]:
+            model: type[TopicModel] = None,
+    ) -> Subscriber:
         return self._create_subscriber(
             topic_name=topic_name,
             uid=uid,
@@ -425,13 +427,22 @@ class QueueBasedTopicService(TopicService):
         self._subscribers[topic_name][sub_id] = subscriber
         return subscriber
 
-    def publisher(self, creator: str, uid: str | None = None) -> Publisher:
+    def publisher(
+            self,
+            creator: str,
+            topic_name: str,
+            *,
+            uid: str | None = None,
+            model: type[TopicModel] | None = None,
+    ) -> Publisher:
         publisher = QueueBasedPublisher(
+            topic_name=topic_name,
             creator=creator,
             publish_queue=self._publish_queue,
             service_stopped_event=self._main_loop_stopped_event,
             uid=uid,
             logger=self._logger,
+            model=model,
         )
         return publisher
 

@@ -66,7 +66,6 @@ class ProviderTopicService(QueueBasedTopicService):
                 # 不会跨网络传输.
                 if topic.meta.local:
                     return
-
                 event = ProviderPubTopicEvent(topic=topic, session_id=self._get_session_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
@@ -136,6 +135,7 @@ class DuplexChannelProvider(ChannelProvider):
 
         self._running_command_tasks_lock = asyncio.Lock()
         """加个 lock 避免竞态, 不确定是否是必要的."""
+        self._provider_topic_service: Optional[TopicService] = None
 
         self._main_loop_task: asyncio.Task | None = None
 
@@ -224,14 +224,19 @@ class DuplexChannelProvider(ChannelProvider):
 
         # 注册 topic service.
         if not self._container.bound(TopicService):
+            # 只有在 container 没有提供 topic service 时, 才会自行创建一个基于双工通讯的 topic service.
+            # 这时, 所有的 topics 会通过 channel 的通道去传递.
+            # 这个实现准备移除. 预计所有的通讯组件不提供的话, 都保持本地化.
+            # todo: 向前兼容只保留 Topic, 预计正式版本删除.
+            self._provider_topic_service = ProviderTopicService(
+                self._get_session_id,
+                self._connection,
+                sender=f"DuplexChannelProvider/{self._uid}",
+                logger=self.logger,
+            )
             self._container.set(
                 TopicService,
-                ProviderTopicService(
-                    self._get_session_id,
-                    self._connection,
-                    sender=f"DuplexChannelProvider/{self._uid}",
-                    logger=self.logger,
-                ),
+                self._provider_topic_service,
             )
         # 启动时, topic service 同样会注入到根节点的 importlib 中.
         self._root_runtime = channel.bootstrap(self._container)
@@ -324,10 +329,13 @@ class DuplexChannelProvider(ChannelProvider):
             self._session_id = uuid()
             self._session_creating_event.clear()
         try:
+            listening_topics = []
+            if self._provider_topic_service is not None:
+                listening_topics = self._provider_topic_service.listening()
             event = CreateSessionEvent(
                 session_id=self._session_id,
                 # 提供当前正在监听的事件.
-                listening_topics=self._root_runtime.tree.topics.listening(),
+                listening_topics=listening_topics,
             ).to_channel_event()
             await self._send_event_to_proxy(event)
             self._session_creating_event.set()

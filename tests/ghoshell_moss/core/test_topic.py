@@ -13,7 +13,7 @@ async def test_topic_baseline():
     )
 
     async def produce():
-        publisher = service.publisher("publisher")
+        publisher = service.model_publisher("publisher", ErrorTopic)
         assert publisher.is_running()
         publisher.pub(ErrorTopic(errmsg="hello world"))
         await asyncio.sleep(0.0)
@@ -55,7 +55,7 @@ async def test_topic_publishers_and_consumers():
     )
 
     async def produce(o: int):
-        publisher = service.publisher("publisher")
+        publisher = service.model_publisher("publisher", ErrorTopic)
         assert publisher.is_running()
         for idx in range(5):
             publisher.pub(ErrorTopic(errmsg="hello world %d:%d" % (o, idx)))
@@ -105,7 +105,7 @@ async def test_topic_keep_latest():
 
     async def produce():
         await consumer_started.wait()
-        publisher = service.publisher("publisher")
+        publisher = service.model_publisher("publisher", ErrorTopic)
         async with publisher:
             for idx in range(5):
                 publisher.pub(ErrorTopic(errmsg=str(idx)))
@@ -133,6 +133,13 @@ async def test_topic_keep_latest():
     assert received[0].errmsg == "4"
 
 
+def test_topic_model():
+    error = ErrorTopic(errmsg="hello world")
+    topic = error.to_topic()
+    new_error = ErrorTopic.from_topic(topic)
+    assert new_error == error
+
+
 @pytest.mark.asyncio
 async def test_topic_keep_oldest():
     service = QueueBasedTopicService(
@@ -145,7 +152,7 @@ async def test_topic_keep_oldest():
 
     async def produce():
         await consumer_started.wait()
-        publisher = service.publisher("publisher")
+        publisher = service.model_publisher("publisher", ErrorTopic)
         async with publisher:
             for idx in range(5):
                 publisher.pub(ErrorTopic(errmsg=str(idx)))

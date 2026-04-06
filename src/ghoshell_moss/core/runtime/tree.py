@@ -295,7 +295,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         self._runtimes: dict[_ChannelId, ChannelRuntime] = {}
         # runtime 的刷新状态.
         self._runtime_status_nodes: dict[ChannelFullPath, ChannelRuntimeNode] = {}
-        self._runtime_id_to_paths: dict[_ChannelId, ChannelFullPath] = {}
+        self._channel_id_to_paths: dict[_ChannelId, ChannelFullPath] = {}
 
         self._runtimes_lock: asyncio.Lock = asyncio.Lock()
 
@@ -335,7 +335,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         # 注册 node 节点.
         self._runtime_status_nodes[path] = node
         # 建立查找关系.
-        self._runtime_id_to_paths[channel_id] = path
+        self._channel_id_to_paths[channel_id] = path
 
         async def _start_runtime():
             nonlocal node, runtime, channel_id
@@ -369,8 +369,8 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return None
         runtime = self._runtimes.pop(id)
         node = None
-        if id in self._runtime_id_to_paths:
-            path = self._runtime_id_to_paths.pop(id)
+        if id in self._channel_id_to_paths:
+            path = self._channel_id_to_paths.pop(id)
             if path in self._runtime_status_nodes:
                 node = self._runtime_status_nodes.pop(path)
 
@@ -399,7 +399,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
     def refresh(self, id: _ChannelId, wait: bool = False) -> asyncio.Future:
         if not self.is_running():
             return asyncio.create_task(_noop())
-        path = self._runtime_id_to_paths.get(id, None)
+        path = self._channel_id_to_paths.get(id, None)
         node = self._runtime_status_nodes.get(path, None)
         runtime = self._runtimes.get(id, None)
         if node is None or runtime is None:
@@ -507,7 +507,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                 # 添加爱根节点.
                 self._runtimes[node.id] = self._main
                 self._runtime_status_nodes[node.path] = node
-                self._runtime_id_to_paths[node.id] = node.path
+                self._channel_id_to_paths[node.id] = node.path
 
                 await self.refresh(self._main.channel.id(), wait=True)
                 self._started.set()
@@ -572,7 +572,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                 child_relative_path = Channel.join_channel_path(_relative_path, _child_name)
                 if runtime is None:
                     continue
-                _child_full_path = self._runtime_id_to_paths.get(_child_id)
+                _child_full_path = self._channel_id_to_paths.get(_child_id)
                 if _child_full_path:
                     _child_node = self._runtime_status_nodes.get(_child_full_path)
                     if _child_node is None:
@@ -587,7 +587,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
     def metas(self, channel: Channel | None = None) -> dict[ChannelFullPath, ChannelMeta]:
         channel = channel or self._main.channel
         channel_id = channel.id()
-        root_path = self._runtime_id_to_paths.get(channel_id, None)
+        root_path = self._channel_id_to_paths.get(channel_id, None)
         if root_path is None:
             return {}
         return self._metas(root_path)
@@ -625,11 +625,16 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                 metas[relative_sub_path] = meta
         return metas
 
+    def get_channel_path(self, channel_id: str) -> ChannelFullPath | None:
+        if channel_id in self._channel_id_to_paths:
+            return self._channel_id_to_paths[channel_id]
+        return None
+
     def get_runtime_by_path(self, path: ChannelFullPath | str, root: Channel | None = None) -> ChannelRuntime | None:
         root_path = ''
         if root is not None:
             root_id = root.id()
-            root_path = self._runtime_id_to_paths.get(root_id)
+            root_path = self._channel_id_to_paths.get(root_id)
             if root_path is None:
                 return None
         search_path = Channel.join_channel_path(root_path, path)
@@ -645,7 +650,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         runtime = self._runtimes[channel_id]
         if not runtime.is_running():
             return None
-        path = self._runtime_id_to_paths.get(channel_id)
+        path = self._channel_id_to_paths.get(channel_id)
         if not path:
             self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
         node = self._runtime_status_nodes.get(path)
@@ -660,7 +665,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return {}
         if not runtime.is_available():
             return {}
-        path = self._runtime_id_to_paths.get(channel_id, None)
+        path = self._channel_id_to_paths.get(channel_id, None)
         if path is None:
             self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
             return {}

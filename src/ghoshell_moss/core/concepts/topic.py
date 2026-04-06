@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Literal
+from typing import Generic, TypeVar, Literal, TypedDict, Required, Any, Protocol, ClassVar
 
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import uuid
@@ -15,7 +15,7 @@ __all__ = [
     "TopicService",
     "Subscriber",
     "Publisher",
-    "ClosedError",
+    "TopicClosedError",
     "TopicName",
     "SubscribeKeep",
     "LogTopic",
@@ -25,6 +25,15 @@ __all__ = [
 TopicName = str
 SubscribeKeep = Literal["latest", "oldest"]
 _TopicType = str
+
+
+class TopicSchema(TypedDict):
+    """
+    self describing Topic Schema
+    """
+    topic_name: Required[TopicName]
+    topic_type: Required[_TopicType]
+    json_schema: Required[dict[str, Any]]
 
 
 class TopicMeta(BaseModel):
@@ -82,6 +91,10 @@ class Topic(BaseModel, WithAdditional):
 
 
 class TopicModel(BaseModel, ABC):
+    """
+    自解释的 Topic 协议约定.
+    """
+
     meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
 
     @classmethod
@@ -91,6 +104,29 @@ class TopicModel(BaseModel, ABC):
         定义 topic 的类型. 对于使用 Topic 而非 TopicModel 的场景, 需要依赖 topic type 还原指定的 TopicModel.
         """
         pass
+
+    @classmethod
+    def topic_schema(cls, topic_name: str | None = None) -> TopicSchema:
+        """
+        get topic schema from model.
+        """
+        if topic_name is None:
+            topic_name = cls.default_topic_name()
+        # todo: 考虑 json_schema 里大量冗余都是 meta 的部分.
+        return TopicSchema(
+            topic_name=topic_name,
+            topic_type=cls.topic_type(),
+            json_schema=cls.model_json_schema(),
+        )
+
+    @classmethod
+    def from_topic(cls, topic: Topic) -> Self | None:
+        if topic.meta.type != cls.topic_type():
+            return None
+        meta = topic.meta
+        data = topic.data.copy()
+        data['meta'] = meta
+        return cls(**data)
 
     @property
     def topic_name(self) -> str:
@@ -106,13 +142,6 @@ class TopicModel(BaseModel, ABC):
         """
         pass
 
-    @classmethod
-    def topic_schema(cls) -> dict:
-        """
-        通过这种方式, 一个服务可以展示它所有发送的 topic 和监听的 topic, 得到一个自解释的 schema 列表.
-        """
-        return cls.model_json_schema()
-
     def to_topic(
             self,
             *,
@@ -121,12 +150,13 @@ class TopicModel(BaseModel, ABC):
             creator: str = "",
             sender: str = "",
     ) -> Topic:
-        data = self.model_dump(exclude={"meta"})
+        data = self.model_dump(exclude={"meta"}, exclude_none=True, exclude_defaults=True)
         meta = self.meta
         meta.name = name or self.default_topic_name()
         meta.overdue = overdue
         meta.creator = creator
         meta.sender = sender
+        meta.type = self.topic_type()
         return Topic(
             meta=meta,
             data=data,
@@ -169,10 +199,10 @@ class ErrorTopic(TopicModel):
         return "system/error"
 
 
-TOPIC_MODEL = TypeVar("TOPIC_MODEL", bound=TopicModel | None)
+TOPIC_MODEL = TypeVar("TOPIC_MODEL", bound=TopicModel)
 
 
-class ClosedError(Exception):
+class TopicClosedError(Exception):
     pass
 
 
@@ -234,7 +264,7 @@ class Subscriber(Generic[TOPIC_MODEL], ABC):
         pass
 
 
-class Publisher(ABC):
+class Publisher(Generic[TOPIC_MODEL], ABC):
     @abstractmethod
     def with_additions(self, *additions: Addition) -> Self:
         """
@@ -260,13 +290,13 @@ class Publisher(ABC):
     @abstractmethod
     def pub(
             self,
-            topic: Topic | TopicModel,
+            topic: Topic | TOPIC_MODEL,
             *,
             name: str = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
-        :raise TopicServiceClosed: topic 已经停止运行.
+        :raise ClosedError: topic 已经停止运行.
         """
         pass
 
@@ -308,7 +338,7 @@ class TopicService(ABC):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_val and isinstance(exc_val, ClosedError):
+        if exc_val and isinstance(exc_val, TopicClosedError):
             return True
         await self.close()
         return None
@@ -335,10 +365,26 @@ class TopicService(ABC):
             uid: str | None = None,
             maxsize: int = 0,
             keep: SubscribeKeep = "latest",
-    ) -> Subscriber[None]:
+            model: type[TopicModel] | None = None,
+    ) -> Subscriber:
+        """
+        声明一个 Subscribe, 只有启动后声明才生效.
+        :param model: 监听的 Topic 模型.
+        :param topic_name: 如果不为空, 会去迭代 topic_model.default_topic_name()
+        :param uid: 每个 subscriber 都需要有指定的 uid. 可以自动生成.
+        :param maxsize: 队列的最大数量. 为 0 表示无限, 为 1 表示只接受一个.
+        :param keep: 当队列满了后, 新的 topic 发送过来的处理逻辑. oldest 会丢弃最新的 topic, latest 会丢弃最老的 topic.
+
+        >>> async def consumer(service: TopicService):
+        >>>     subscriber = service.subscribe_model(...)
+        >>>     async with subscriber:
+        >>>          try:
+        >>>              topic = await subscriber.poll_model()
+        >>>          except TopicClosedError:
+        >>>              pass
+        """
         pass
 
-    @abstractmethod
     def subscribe_model(
             self,
             model: type[TOPIC_MODEL],
@@ -349,19 +395,16 @@ class TopicService(ABC):
             keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
-        创建一个 subscriber.
-        :param model: 监听的 Topic 模型.
-        :param topic_name: 如果不为空, 会去迭代 topic_model.default_topic_name()
-        :param uid: 每个 subscriber 都需要有指定的 uid. 可以自动生成.
-        :param maxsize: 队列的最大数量. 为 0 表示无限, 为 1 表示只接受一个.
-        :param keep: 当队列满了后, 新的 topic 发送过来的处理逻辑. oldest 会丢弃最新的 topic, latest 会丢弃最老的 topic.
-        >>> async def consumer(service: TopicService):
-        >>>     subscriber = service.subscribe_model(...)
-        >>>     async with subscriber:
-        >>>         while subscriber.is_running():
-        >>>              topic = await subscriber.poll_model()
+        提供一个强类型校验.
         """
-        pass
+        topic_name = topic_name or model.default_topic_name()
+        return self.subscribe(
+            topic_name,
+            uid=uid,
+            maxsize=maxsize,
+            keep=keep,
+            model=model,
+        )
 
     @abstractmethod
     def pub(
@@ -373,17 +416,26 @@ class TopicService(ABC):
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
+        这种方式没有声明 topic publisher, 不利于被发现.
         :raise TopicServiceClosed: topic 已经停止运行.
         """
         pass
 
     @abstractmethod
-    def publisher(self, creator: str, uid: str | None = None) -> Publisher:
+    def publisher(
+            self,
+            creator: str,
+            topic_name: str,
+            *,
+            uid: str | None = None,
+            model: type[TopicModel] | None = None,
+    ) -> Publisher:
         """
-        创建一个 publisher.
-
-        :param creator: 确认发送者的身份.
+        创建一个 publisher. 声明自己的存在啊.
+        :param creator: 确认发送者的身份. 基于约定.
+        :param topic_name: the topic name to publish.
         :param uid: 为发送者建立唯一 id.
+        :param model: 可以加一个强类型校验机制.
 
         >>> async def publish(service: TopicService):
         >>>     publisher = service.publisher(...)
@@ -391,3 +443,62 @@ class TopicService(ABC):
         >>>         publisher.pub(...)
         """
         pass
+
+    def model_publisher(
+            self,
+            creator: str,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: str = "",
+            uid: str | None = None,
+    ) -> Publisher[TOPIC_MODEL]:
+        """
+        提供一个强类型提示.
+        """
+        topic_name = topic_name or model.default_topic_name()
+        return self.publisher(
+            creator=creator,
+            topic_name=topic_name,
+            uid=uid,
+            model=model,
+        )
+
+
+# --- todo: creator 的声明约定
+
+class TopicCreator(Protocol):
+    """
+    方便未来做显示约定.
+    暂时不使用.
+    """
+
+    @classmethod
+    @abstractmethod
+    def from_creator(cls, creator: str) -> Self | None:
+        pass
+
+    def to_creator(self) -> str:
+        pass
+
+    def __str__(self):
+        return self.to_creator()
+
+
+class ChannelCreator(TopicCreator):
+
+    def __init__(self, channel_path: str):
+        self.channel_path = channel_path
+        self.creator = f"channel/{channel_path}"
+
+    @classmethod
+    def from_creator(cls, creator: str) -> Self | None:
+        if creator.startswith("channel/"):
+            parts = creator.split("/", maxsplit=1)
+            channel_path = ''
+            if len(parts) == 2:
+                channel_path = parts[1]
+            return cls(channel_path)
+        return None
+
+    def to_creator(self) -> str:
+        return self.creator

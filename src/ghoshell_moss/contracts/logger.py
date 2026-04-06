@@ -4,7 +4,14 @@ from .workspace import Workspace
 from logging import handlers
 import logging
 
-__all__ = ["LoggerItf", 'config_logger_from_yaml', 'get_console_logger', 'WorkspaceLoggerProvider']
+__all__ = [
+    "LoggerItf", 'config_logger_from_yaml', 'get_console_logger', 'WorkspaceLoggerProvider',
+    "get_moss_logger",
+]
+
+
+def get_moss_logger() -> LoggerItf:
+    return logging.getLogger('moss')
 
 
 def get_console_logger(level=logging.ERROR, name: str = "ghost"):
