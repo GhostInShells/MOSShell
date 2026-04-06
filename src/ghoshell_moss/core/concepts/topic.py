@@ -89,6 +89,9 @@ class Topic(BaseModel, WithAdditional):
             return False
         return self.meta.created_at + self.meta.overdue <= time.time()
 
+    def to_json(self) -> str:
+        return self.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True, exclude_none=True)
+
 
 class TopicModel(BaseModel, ABC):
     """
@@ -326,12 +329,6 @@ class TopicService(ABC):
         """
         pass
 
-    @abstractmethod
-    async def wait_sent(self):
-        """
-        wait all the topic are sent
-        """
-        pass
 
     async def __aenter__(self):
         await self.start()

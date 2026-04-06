@@ -12,7 +12,7 @@ from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, Co
 from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.core.topic import QueueBasedTopicService, TopicService, Topic
+from ghoshell_moss.topic import QueueBasedTopicService, TopicService, Topic
 from ghoshell_moss.core.helpers.stream import (
     create_sender_and_receiver,
     ThreadSafeStreamReceiver,

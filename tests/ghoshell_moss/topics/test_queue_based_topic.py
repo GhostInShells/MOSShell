@@ -2,7 +2,7 @@ import asyncio
 
 import ghoshell_moss.core.concepts.topic as topic_concepts
 from ghoshell_moss.core.concepts.topic import Topic, TopicMeta
-from ghoshell_moss.core.topic import QueueBasedTopicService, ErrorTopic, Subscriber
+from ghoshell_moss.topic import QueueBasedTopicService, ErrorTopic, Subscriber
 import pytest
 
 
@@ -147,8 +147,6 @@ async def test_topic_keep_oldest():
     )
 
     consumer_started = asyncio.Event()
-    producer_done = asyncio.Event()
-    consumer_done = asyncio.Event()
 
     async def produce():
         await consumer_started.wait()
@@ -158,18 +156,15 @@ async def test_topic_keep_oldest():
                 publisher.pub(ErrorTopic(errmsg=str(idx)))
                 # 必须要让出, 否则 maxsize = 1 就无法测试了.
                 await asyncio.sleep(0.0)
-        producer_done.set()
 
     received = []
 
     async def consumer(_subscriber: Subscriber):
         async with _subscriber:
             consumer_started.set()
-            await producer_done.wait()
             while _subscriber.is_running():
                 item = await _subscriber.poll_model()
                 received.append(item)
-        consumer_done.set()
 
     async with service:
         producer_task = asyncio.create_task(produce())

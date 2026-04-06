@@ -785,5 +785,5 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             raise self._error
 
     def _create_default_topics(self) -> TopicService:
-        from ghoshell_moss.core.topic import QueueBasedTopicService
+        from ghoshell_moss.topic import QueueBasedTopicService
         return QueueBasedTopicService(sender=self.main.id)
