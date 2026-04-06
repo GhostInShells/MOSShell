@@ -23,10 +23,10 @@ from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 class Provider2ProxyConnection(Connection):
     def __init__(
-        self,
-        *,
-        provider_2_proxy_queue: Queue[ChannelEvent | None],
-        proxy_2_provider_queue: Queue[ChannelEvent],
+            self,
+            *,
+            provider_2_proxy_queue: Queue[ChannelEvent | None],
+            proxy_2_provider_queue: Queue[ChannelEvent],
     ):
         self._closed = ThreadSafeEvent()
         self._send_queue = provider_2_proxy_queue
@@ -77,10 +77,10 @@ class Provider2ProxyConnection(Connection):
 
 class Proxy2ProviderConnection(Connection):
     def __init__(
-        self,
-        *,
-        provider_2_proxy_queue: Queue[ChannelEvent | None],
-        proxy_2_provider_queue: Queue[ChannelEvent],
+            self,
+            *,
+            provider_2_proxy_queue: Queue[ChannelEvent | None],
+            proxy_2_provider_queue: Queue[ChannelEvent],
     ):
         self._closed = ThreadSafeEvent()
         self._send_queue = proxy_2_provider_queue
@@ -132,10 +132,10 @@ class Proxy2ProviderConnection(Connection):
 
 class ThreadChannelProvider(DuplexChannelProvider):
     def __init__(
-        self,
-        *,
-        provider_connection: Provider2ProxyConnection,
-        container: IoCContainer | None = None,
+            self,
+            *,
+            provider_connection: Provider2ProxyConnection,
+            container: IoCContainer | None = None,
     ):
         self._origin_connection = provider_connection
         self._origin_container = container
@@ -152,11 +152,11 @@ class ThreadChannelProvider(DuplexChannelProvider):
 
 class ThreadChannelProxy(DuplexChannelProxy):
     def __init__(
-        self,
-        *,
-        name: str,
-        to_provider_connection: Proxy2ProviderConnection,
-        description: str = "",
+            self,
+            *,
+            name: str,
+            to_provider_connection: Proxy2ProviderConnection,
+            description: str = "",
     ):
         super().__init__(
             name=name,
@@ -166,8 +166,8 @@ class ThreadChannelProxy(DuplexChannelProxy):
 
 
 def create_thread_channel(
-    name: str,
-    container: IoCContainer | None = None,
+        name: str,
+        container: IoCContainer | None = None,
 ) -> tuple[ThreadChannelProvider, ThreadChannelProxy]:
     proxy_2_provider_queue = Queue()
     provider_2_proxy_queue = Queue()

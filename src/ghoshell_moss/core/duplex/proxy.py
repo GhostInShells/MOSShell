@@ -81,7 +81,7 @@ class DuplexChannelContext:
         self.connection = connection
         """双工连接本身."""
 
-        self.session_id: str = ""
+        self.connection_id: str = ""
         self.provider_meta_map: dict[ChannelFullPath, ChannelMeta] = {}
         """所有远端上传的 metas. """
 
@@ -178,8 +178,8 @@ class DuplexChannelContext:
             return
 
         try:
-            if not event["session_id"]:
-                event["session_id"] = self.session_id
+            if not event["connection_id"]:
+                event["connection_id"] = self.connection_id
             await self.connection.send(event)
             self.logger.debug("channel %s sent event to channel %s", self.root_name, event)
         except (ConnectionClosedError, ConnectionNotAvailable):
@@ -310,7 +310,7 @@ class DuplexChannelContext:
             self._connected_event.clear()
             self._sync_meta_done_event.clear()
             self._sync_meta_started_event.clear()
-            self.session_id = ""
+            self.connection_id = ""
             self.provider_meta_map.clear()
             self.connection_err = ""
             if len(self._runtime_asyncio_task_group) > 0:
@@ -384,29 +384,29 @@ class DuplexChannelContext:
 
                 # sync metas 事件的标准处理.
 
-                if create_session := CreateSessionEvent.from_channel_event(event):
+                if create_connection := CreateSessionEvent.from_channel_event(event):
                     # 如果是 provider 发送了握手的要求, 则立刻要求更新状态.
-                    if create_session.session_id == self.session_id:
+                    if create_connection.connection_id == self.connection_id:
                         continue
                     self._clear_connection_status()
-                    self.session_id = create_session.session_id
-                    await self._create_topic_subscribers_for_provider(create_session)
+                    self.connection_id = create_connection.connection_id
+                    await self._create_topic_subscribers_for_provider(create_connection)
                     # 标记创建连接成功.
-                    event = SessionCreatedEvent(session_id=self.session_id)
+                    event = SessionCreatedEvent(connection_id=self.connection_id)
                     await self.send_event_to_provider(event.to_channel_event())
                     continue
                 elif update_meta := ChannelMetaUpdateEvent.from_channel_event(event):
                     # 如果是 provider 发送了更新状态的结果, 则更新连接状态.
                     await self._handle_update_channel_meta(update_meta)
                     continue
-                elif not self._connected_event.is_set() or event["session_id"] != self.session_id:
+                elif not self._connected_event.is_set() or event["connection_id"] != self.connection_id:
                     # 如果没有完成 update meta, 所有的事件都会被拒绝, 要求重新开始运行.
                     self.logger.info(
                         "DuplexChannelContext[name=%s] drop event %s and ask reconnect",
                         self.root_name,
                         event,
                     )
-                    invalid = ReconnectSessionEvent(session_id=self.session_id).to_channel_event()
+                    invalid = ReconnectSessionEvent(connection_id=self.connection_id).to_channel_event()
                     # 要求 provider 必须完成重连.
                     await self.connection.send(invalid)
                     continue
@@ -477,7 +477,7 @@ class DuplexChannelContext:
                     # 不支持 local 类型的 topic 跨进程通讯.
                     if topic.meta.local:
                         continue
-                    event = ProxyPubTopicEvent(topic=topic, session_id=self.session_id)
+                    event = ProxyPubTopicEvent(topic=topic, connection_id=self.connection_id)
                     await self.send_event_to_provider(event.to_channel_event())
 
         self._subscribe_topic_tasks[topic_name] = asyncio.create_task(_subscribe_topic(topic_name))
@@ -490,12 +490,12 @@ class DuplexChannelContext:
                 if not t.done():
                     t.cancel()
 
-    async def _create_topic_subscribers_for_provider(self, create_session: CreateSessionEvent) -> None:
+    async def _create_topic_subscribers_for_provider(self, create_connection: CreateSessionEvent) -> None:
         """
-        在 create session 的同时, 创建监听通道.
+        在 create connection 的同时, 创建监听通道.
         """
         # todo: exception handler
-        if len(create_session.listening_topics) == 0:
+        if len(create_connection.listening_topics) == 0:
             return
 
         topic_service = self.container.get(TopicService)
@@ -503,7 +503,7 @@ class DuplexChannelContext:
             return
 
         self._clear_subscribe_topic_tasks()
-        for topic_name in create_session.listening_topics:
+        for topic_name in create_connection.listening_topics:
             await self._sub_topic_for_provider(topic_name)
 
     async def _send_sync_meta_event(self) -> None:
@@ -513,7 +513,7 @@ class DuplexChannelContext:
         if not self._sync_meta_started_event.is_set():
             self._sync_meta_started_event.set()
             self._sync_meta_done_event.clear()
-            sync_event = SyncChannelMetasEvent(session_id=self.session_id).to_channel_event()
+            sync_event = SyncChannelMetasEvent(connection_id=self.connection_id).to_channel_event()
             await self.send_event_to_provider(sync_event, throw=False)
 
     async def _handle_update_channel_meta(self, event: ChannelMetaUpdateEvent) -> None:
@@ -561,23 +561,23 @@ class DuplexChannelContext:
                 if isinstance(delta, CommandToken):
                     event = CommandDeltaEvent(
                         command_id=cid,
-                        session_id=self.session_id,
+                        connection_id=self.connection_id,
                         command_token=delta.model_dump(),
                     )
                     await self.send_event_to_provider(event.to_channel_event())
                 elif isinstance(delta, str):
                     event = CommandDeltaEvent(
                         command_id=cid,
-                        session_id=self.session_id,
+                        connection_id=self.connection_id,
                         chunk=delta,
                     )
                     await self.send_event_to_provider(event.to_channel_event())
-            final = CommandDeltaEvent(command_id=cid, session_id=self.session_id)
+            final = CommandDeltaEvent(command_id=cid, connection_id=self.connection_id)
             await self.send_event_to_provider(final.to_channel_event())
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            event = CommandCancelEvent(chan=task.chan, session_id=self.session_id, command_id=cid)
+            event = CommandCancelEvent(chan=task.chan, connection_id=self.connection_id, command_id=cid)
             await self.send_event_to_provider(event.to_channel_event())
             self.logger.exception("%s failed to send delta args %s", self._log_prefix, exc)
             raise
@@ -602,7 +602,7 @@ class DuplexChannelContext:
                     deltas = task.kwargs.pop(task.meta.delta_arg)
 
             event = CommandCallEvent(
-                session_id=self.session_id,
+                connection_id=self.connection_id,
                 name=task.meta.name,
                 # channel 名称使用 provider 侧的名称, 用来对 channel 寻址.
                 chan=task.chan,
@@ -850,7 +850,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             return
         try:
             event = ClearEvent(
-                session_id=self._ctx.session_id,
+                connection_id=self._ctx.connection_id,
                 chan=self._provider_chan_path,
             )
             await self._ctx.send_event_to_provider(event.to_channel_event(), throw=True)

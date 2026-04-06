@@ -44,7 +44,7 @@ Proxy 消费并且重构 Channel 能力.
 class ChannelEvent(TypedDict):
     event_id: str
     event_type: str
-    session_id: Optional[str]
+    connection_id: Optional[str]
     timestamp: float
     data: str
 
@@ -53,7 +53,7 @@ class ChannelEventModel(BaseModel, ABC):
     event_type: ClassVar[str] = ""
 
     event_id: str = Field(default_factory=uuid, description="event id for transport")
-    session_id: str = Field(default="", description="channel proxy id")
+    connection_id: str = Field(default="", description="channel proxy id")
     timestamp: float = Field(default_factory=lambda: round(time.time(), 4), description="timestamp")
 
     def to_channel_event(self) -> ChannelEvent:
@@ -65,7 +65,7 @@ class ChannelEventModel(BaseModel, ABC):
         return ChannelEvent(
             event_id=self.event_id,
             event_type=self.event_type,
-            session_id=self.session_id,
+            connection_id=self.connection_id,
             data=data,
             timestamp=self.timestamp,
         )
@@ -80,7 +80,7 @@ class ChannelEventModel(BaseModel, ABC):
         else:
             data = json.loads(data_str)
         data["event_id"] = channel_event["event_id"]
-        data["session_id"] = channel_event["session_id"]
+        data["connection_id"] = channel_event["connection_id"]
         data["timestamp"] = channel_event["timestamp"]
         return cls(**data)
 
@@ -137,7 +137,7 @@ class CommandCallEvent(ChannelEventModel):
 
     def not_available(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
-            session_id=self.session_id,
+            connection_id=self.connection_id,
             command_id=self.command_id,
             errcode=CommandErrorCode.NOT_AVAILABLE.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not available",
@@ -147,14 +147,14 @@ class CommandCallEvent(ChannelEventModel):
 
     def cancel(self) -> "CommandCancelEvent":
         return CommandCancelEvent(
-            session_id=self.session_id,
+            connection_id=self.connection_id,
             command_id=self.command_id,
             chan=self.chan,
         )
 
     def done(self, result: CommandTaskResult | None, errcode: int, errmsg: str) -> "CommandDoneEvent":
         return CommandDoneEvent(
-            session_id=self.session_id,
+            connection_id=self.connection_id,
             command_id=self.command_id,
             errcode=errcode,
             errmsg=errmsg,
@@ -164,7 +164,7 @@ class CommandCallEvent(ChannelEventModel):
 
     def not_found(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
-            session_id=self.session_id,
+            connection_id=self.connection_id,
             command_id=self.command_id,
             errcode=CommandErrorCode.NOT_FOUND.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not found",
@@ -189,19 +189,19 @@ class SyncChannelMetasEvent(ChannelEventModel):
 
 class ReconnectSessionEvent(ChannelEventModel):
     """
-    Proxy 告知 Provider 传送的事件 Session Id 未对齐, 需要重新建立 session, 双方清空状态.
+    Proxy 告知 Provider 传送的事件 Session Id 未对齐, 需要重新建立 connection, 双方清空状态.
     """
 
-    event_type: ClassVar[str] = "moss.channel.proxy.session.reconnect"
+    event_type: ClassVar[str] = "moss.channel.proxy.connection.reconnect"
 
 
 class SessionCreatedEvent(ChannelEventModel):
     """
-    proxy 告知 provider session 已经确认并创建了.
+    proxy 告知 provider connection 已经确认并创建了.
     握手后期待服务端发送 UpdateChannelMeta 事件进行同步.
     """
 
-    event_type: ClassVar[str] = "moss.channel.proxy.session.created"
+    event_type: ClassVar[str] = "moss.channel.proxy.connection.created"
 
 
 # --- provider event --- #
@@ -212,7 +212,7 @@ class CreateSessionEvent(ChannelEventModel):
     握手事件, provider 侧尝试与 proxy 进行握手, 确定 Session.
     """
 
-    event_type: ClassVar[str] = "moss.channel.provider.session.create"
+    event_type: ClassVar[str] = "moss.channel.provider.connection.create"
     listening_topics: list[str] = Field(
         default_factory=list,
         description="listening topics",

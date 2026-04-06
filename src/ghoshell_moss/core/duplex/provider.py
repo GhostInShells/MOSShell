@@ -50,7 +50,7 @@ class ProviderTopicService(QueueBasedTopicService):
 
     def __init__(
             self,
-            get_session_id: Callable[[], str],
+            get_connection_id: Callable[[], str],
             connection: Connection,
             sender: str = "",
             *,
@@ -58,7 +58,7 @@ class ProviderTopicService(QueueBasedTopicService):
     ):
         super().__init__(sender=sender, logger=logger)
         self._connection = connection
-        self._get_session_id_fn = get_session_id
+        self._get_connection_id_fn = get_connection_id
 
     async def _on_topic_published(self, topic: Topic) -> None:
         try:
@@ -66,7 +66,7 @@ class ProviderTopicService(QueueBasedTopicService):
                 # 不会跨网络传输.
                 if topic.meta.local:
                     return
-                event = ProviderPubTopicEvent(topic=topic, session_id=self._get_session_id_fn())
+                event = ProviderPubTopicEvent(topic=topic, connection_id=self._get_connection_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
             pass
@@ -74,7 +74,7 @@ class ProviderTopicService(QueueBasedTopicService):
     async def _on_topic_subscribed(self, topic_name: str) -> None:
         try:
             if self._connection.is_connected() and not self._connection.is_closed():
-                event = ProviderSubTopicEvent(topic_name=topic_name, session_id=self._get_session_id_fn())
+                event = ProviderSubTopicEvent(topic_name=topic_name, connection_id=self._get_connection_id_fn())
                 await self._connection.send(event.to_channel_event())
         except (ConnectionClosedError, ConnectionNotAvailable):
             pass
@@ -82,10 +82,7 @@ class ProviderTopicService(QueueBasedTopicService):
 
 class DuplexChannelProvider(ChannelProvider):
     """
-    实现一个基础的 Duplex Channel provider, 是为了展示 Channel proxy/provider 通讯的基本方式.
-    注意:
-    1. 有的 channel provider, 可以同时有多个 runtime session 连接它. 有的 provider 只能有一个 runtime session 连接.
-    2. 有的 channel 是有状态的, 比如每个 session 的状态都相互隔离. 但有的 channel, 所有的函数应该是可以随便调用的.
+    实现一个基础的 Duplex Channel provider, 实现 Channel proxy/provider 通讯的基本方式.
     """
 
     def __init__(
@@ -113,11 +110,11 @@ class DuplexChannelProvider(ChannelProvider):
         self._stopping_event: ThreadSafeEvent = ThreadSafeEvent()
         self._closed_event: ThreadSafeEvent = ThreadSafeEvent()
 
-        # --- connect session --- #
+        # --- connect connection --- #
 
-        self._session_id: str | None = None
-        """当前连接的 session id"""
-        self._session_creating_event: asyncio.Event = asyncio.Event()
+        self._connection_id: str | None = None
+        """当前连接的 connection id"""
+        self._connection_creating_event: asyncio.Event = asyncio.Event()
 
         self._starting: bool = False
 
@@ -139,8 +136,8 @@ class DuplexChannelProvider(ChannelProvider):
 
         self._main_loop_task: asyncio.Task | None = None
 
-    def _get_session_id(self) -> str:
-        return self._session_id or ""
+    def _get_connection_id(self) -> str:
+        return self._connection_id or ""
 
     @property
     def logger(self) -> LoggerItf:
@@ -229,7 +226,7 @@ class DuplexChannelProvider(ChannelProvider):
             # 这个实现准备移除. 预计所有的通讯组件不提供的话, 都保持本地化.
             # todo: 向前兼容只保留 Topic, 预计正式版本删除.
             self._provider_topic_service = ProviderTopicService(
-                self._get_session_id,
+                self._get_connection_id,
                 self._connection,
                 sender=f"DuplexChannelProvider/{self._uid}",
                 logger=self.logger,
@@ -319,26 +316,26 @@ class DuplexChannelProvider(ChannelProvider):
 
     # --- consume runtime event --- #
 
-    async def _clear_session_status(self) -> None:
-        if self._session_id:
-            self._session_id = None
+    async def _clear_connection_status(self) -> None:
+        if self._connection_id:
+            self._connection_id = None
             await self._clear_running_status()
 
-    async def _sync_session(self, new: bool) -> None:
-        if new or not self._session_id:
-            self._session_id = uuid()
-            self._session_creating_event.clear()
+    async def _sync_connection(self, new: bool) -> None:
+        if new or not self._connection_id:
+            self._connection_id = uuid()
+            self._connection_creating_event.clear()
         try:
             listening_topics = []
             if self._provider_topic_service is not None:
                 listening_topics = self._provider_topic_service.listening()
             event = CreateSessionEvent(
-                session_id=self._session_id,
+                connection_id=self._connection_id,
                 # 提供当前正在监听的事件.
                 listening_topics=listening_topics,
             ).to_channel_event()
             await self._send_event_to_proxy(event)
-            self._session_creating_event.set()
+            self._connection_creating_event.set()
         except asyncio.CancelledError:
             pass
         except (ConnectionNotAvailable, ConnectionClosedError):
@@ -349,15 +346,15 @@ class DuplexChannelProvider(ChannelProvider):
             try:
                 await asyncio.sleep(0.0)
                 if not self._connection.is_connected():
-                    # 连接未成功, 则清空等待状态. 需要重新创建 session.
-                    await self._clear_session_status()
+                    # 连接未成功, 则清空等待状态. 需要重新创建 connection.
+                    await self._clear_connection_status()
                     # 进行下一轮检查.
                     await asyncio.sleep(self._receive_interval_seconds)
                     continue
 
-                if not self._session_id:
-                    # 没有创建过 session, 则尝试创建 session.
-                    await self._sync_session(new=True)
+                if not self._connection_id:
+                    # 没有创建过 connection, 则尝试创建 connection.
+                    await self._sync_connection(new=True)
                     continue
 
                 try:
@@ -373,31 +370,31 @@ class DuplexChannelProvider(ChannelProvider):
 
                 if created := SessionCreatedEvent.from_channel_event(event):
                     # proxy 声明创建 Session 成功.
-                    if created.session_id == self._session_id:
-                        self._session_creating_event.set()
+                    if created.connection_id == self._connection_id:
+                        self._connection_creating_event.set()
                         # 开始同步 channel metas.
                         sync_meta = SyncChannelMetasEvent(
-                            session_id=self._session_id,
+                            connection_id=self._connection_id,
                         )
                         await self._handle_sync_channel_meta(sync_meta)
                     else:
-                        # 继续提醒云端重建 session.
-                        await self._sync_session(new=False)
+                        # 继续提醒云端重建 connection.
+                        await self._sync_connection(new=False)
                     continue
                 elif reconnected := ReconnectSessionEvent.from_channel_event(event):
-                    # session id 不对齐, 重新建立 session.
-                    if reconnected.session_id != self._session_id:
-                        await self._clear_session_status()
-                        await self._sync_session(new=len(reconnected.session_id) > 0)
+                    # connection id 不对齐, 重新建立 connection.
+                    if reconnected.connection_id != self._connection_id:
+                        await self._clear_connection_status()
+                        await self._sync_connection(new=len(reconnected.connection_id) > 0)
                     continue
 
-                if event["session_id"] != self._session_id:
-                    # 丢弃不同 session 的事件.
+                if event["connection_id"] != self._connection_id:
+                    # 丢弃不同 connection 的事件.
                     self.logger.info(
-                        "%s channel session %s mismatch, drop event %s", self._log_prefix, self._session_id, event
+                        "%s channel connection %s mismatch, drop event %s", self._log_prefix, self._connection_id, event
                     )
-                    # 频繁要求服务端同步 session.
-                    await self._sync_session(new=False)
+                    # 频繁要求服务端同步 connection.
+                    await self._sync_connection(new=False)
                     continue
 
                 # 所有的事件都异步运行.
@@ -421,7 +418,7 @@ class DuplexChannelProvider(ChannelProvider):
             except Exception as e:
                 self.logger.exception("%s consume runtime event loop failed: %s", self._log_prefix, e)
                 provider_error = ProviderErrorEvent(
-                    session_id=self._session_id,
+                    connection_id=self._connection_id,
                     errcode=-1,
                     errmsg=f"provider error: {e}",
                 )
@@ -516,17 +513,17 @@ class DuplexChannelProvider(ChannelProvider):
             self.logger.exception("%s Clear channel failed: %s", self._log_prefix, e)
             raise e
 
-    async def _send_event_to_proxy(self, event: ChannelEvent, session_id: str = "") -> None:
+    async def _send_event_to_proxy(self, event: ChannelEvent, connection_id: str = "") -> None:
         """做好事件发送的异常管理."""
         try:
             if not self._connection.is_connected():
                 return
-            event["session_id"] = session_id or self._session_id or ""
+            event["connection_id"] = connection_id or self._connection_id or ""
             await self._connection.send(event)
         except asyncio.CancelledError:
             raise
         except ConnectionNotAvailable:
-            await self._clear_session_status()
+            await self._clear_connection_status()
 
         except ConnectionClosedError:
             self.logger.exception("%s Connection closed while sending event %s", self._log_prefix, event)
@@ -545,7 +542,7 @@ class DuplexChannelProvider(ChannelProvider):
 
             metas = self._root_runtime.tree.metas()
             response = ChannelMetaUpdateEvent(
-                session_id=event.session_id,
+                connection_id=event.connection_id,
                 metas=metas.copy(),
                 root_chan=self._channel.name(),
             )
