@@ -28,6 +28,7 @@ redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
 cli = [
+    "prompt-toolkit>=3.0.52",
     "typer>=0.24.1",
 ]
 
@@ -55,6 +56,7 @@ matrix = [
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
+moss-console = "ghoshell_moss.console:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

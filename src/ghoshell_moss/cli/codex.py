@@ -10,7 +10,11 @@ from typing import Optional
 
 # 假设你的 app 定义在 main.py 中
 # 注意：在 Typer 中，我们通常使用 app.add_typer 来组合模块
-app = typer.Typer(help="Code reflection, viewing and analysis tools.", no_args_is_help=True)
+app = typer.Typer(
+    short_help="Code reflection, viewing and analysis tools.",
+    help="Code reflection, viewing and analysis tools.",
+    no_args_is_help=True,
+)
 
 from ghoshell_moss.cli.utils import (
     print_success, print_error, print_info, print_code, print_panel, echo

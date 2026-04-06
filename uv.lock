@@ -570,6 +570,7 @@ audio = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 cli = [
+    { name = "prompt-toolkit" },
     { name = "typer" },
 ]
 matrix = [
@@ -619,6 +620,7 @@ requires-dist = [
     { name = "janus", specifier = ">=2.0.0" },
     { name = "openai", specifier = ">=2.8.1" },
     { name = "pillow", specifier = ">=12.1.0" },
+    { name = "prompt-toolkit", marker = "extra == 'cli'", specifier = ">=3.0.52" },
     { name = "psutil", marker = "extra == 'zmq'", specifier = ">=7.2.1" },
     { name = "pulsectl", marker = "extra == 'audio'", specifier = ">=24.12.0" },
     { name = "pyaudio", marker = "extra == 'audio'", specifier = ">=0.2.14" },
@@ -1350,6 +1352,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538 },
+]
+
+[[package]]
+name = "prompt-toolkit"
+version = "3.0.52"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a1/96/06e01a7b38dce6fe1db213e061a4602dd6032a8a97ef6c1a862537732421/prompt_toolkit-3.0.52.tar.gz", hash = "sha256:28cde192929c8e7321de85de1ddbe736f1375148b02f2e17edd840042b1be855", size = 434198 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl", hash = "sha256:9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955", size = 391431 },
 ]
 
 [[package]]
