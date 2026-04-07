@@ -10,6 +10,8 @@ from ghoshell_moss.contracts import get_moss_logger, LoggerItf
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from pydantic import ValidationError
+from .suite_for_test import TopicServiceSuite
+from .key_expr import MOSSTopicExpr
 import janus
 import asyncio
 import threading
@@ -19,26 +21,26 @@ import time
 depend_zenoh()
 import zenoh
 
-__all__ = ['ZenohTopicSubscriber', 'ZenohTopicPublisher', 'ZenohTopicService']
+__all__ = ['ZenohTopicSubscriber', 'ZenohTopicPublisher', 'ZenohTopicService', 'ZenohTopicServiceSuite']
 
 
 class ZenohTopicService(TopicService):
-    TOPIC_KEY_EXPR_TEMPLATE: ClassVar[str] = "MOSS/{session_id}/topics/{topic_name}"
 
     def __init__(
             self,
             session_id: str,
             session: zenoh.Session,
-            sender: str,
+            node_name: str,
             *,
             logger: LoggerItf | None = None,
     ):
         self._session_id = session_id
         self._session = session
-        # 一定要有一个 sender.
-        self._sender = sender or uuid()
+        # 一定要有一个 sender. 通常是 node name
+        self._sender = node_name or uuid()
         self._logger = logger or get_moss_logger()
         self._subscriber_lock = asyncio.Lock()
+        self._topic_key_expr = MOSSTopicExpr(session_id=session_id, node_name=node_name)
 
         self._publish_queue: janus.Queue[Topic] = janus.Queue()
         self._publish_queue_empty = asyncio.Event()
@@ -51,7 +53,7 @@ class ZenohTopicService(TopicService):
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
     def _make_topic_key_expr(self, topic_name: str) -> str:
-        return self.TOPIC_KEY_EXPR_TEMPLATE.format(session_id=self._session_id, topic_name=topic_name)
+        return self._topic_key_expr.topic_key_expr(topic_name)
 
     def __repr__(self):
         return self._log_prefix
@@ -163,6 +165,7 @@ class ZenohTopicPublisher(Publisher):
         )
         self._frequent = frequent
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._undeclared_event = threading.Event()
         self._last_sent: float = 0.0
         self._started = False
         self._stopped = False
@@ -189,12 +192,14 @@ class ZenohTopicPublisher(Publisher):
         if self._stopped:
             return None
         self._stopped = True
-        if self._zenoh_publisher is not None:
+        if self._zenoh_publisher is not None and not self._service_stopped.is_set():
             # undeclare for sure
             try:
                 self._zenoh_publisher.undeclare()
             except RuntimeError:
                 pass
+            finally:
+                self._undeclared_event.set()
         self._zenoh_publisher = None
         self._event_loop = None
         if exc_val is not None:
@@ -233,6 +238,8 @@ class ZenohTopicPublisher(Publisher):
                 self._logger.info("%s drop topic %s cause publisher closed.", self._log_prefix, topic.meta)
                 return None
             marshaled = topic.to_json()
+            if self._undeclared_event.is_set():
+                return None
             self._zenoh_publisher.put(marshaled)
 
         except zenoh.ZError as e:
@@ -291,15 +298,21 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._declared_subscriber is not None:
-            try:
-                self._declared_subscriber.undeclare()
-            except RuntimeError:
-                pass
-        self._declared_subscriber = None
-        self._zenoh_subscribing_thread = None
-        # shutdown.
-        self._queue.shutdown(immediate=False)
+        if not self._closed:
+            self._closed = True
+            if self._declared_subscriber is not None and not self._service_stopped.is_set():
+                try:
+                    self._declared_subscriber.undeclare()
+                except RuntimeError:
+                    pass
+            self._declared_subscriber = None
+            self._zenoh_subscribing_thread = None
+            # shutdown.
+            self._queue.shutdown(immediate=False)
+        if exc_val is not None:
+            if isinstance(exc_val, TopicClosedError):
+                return True
+        return None
 
     def is_closed(self) -> bool:
         return (self._closed or self._main_listening_loop_done_event.is_set() or self._service_stopped.is_set()
@@ -429,6 +442,28 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
 
     async def poll_model(self, timeout: float | None = None) -> TOPIC_MODEL | None:
         topic = await self.poll(timeout)
+        await asyncio.sleep(0)
         if self._model is not None:
             return self._model.from_topic(topic)
         return None
+
+
+class ZenohTopicServiceSuite(TopicServiceSuite):
+
+    def __init__(self):
+        self._session: Optional[zenoh.Session] = None
+
+    def name(self) -> str:
+        return "zenoh"
+
+    def create_service(self, sender: str) -> TopicService:
+        self._session = zenoh.open(zenoh.Config())
+        self._session.__enter__()
+        return ZenohTopicService(
+            session_id="session_id",
+            session=self._session,
+            node_name=sender,
+        )
+
+    def close(self) -> None:
+        self._session.close()

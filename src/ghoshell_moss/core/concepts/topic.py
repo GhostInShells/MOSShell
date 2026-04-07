@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Literal, TypedDict, Required, Any, Protocol, ClassVar
+from typing import Generic, TypeVar, Literal, TypedDict, Required, Any, Protocol, Annotated
 
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import uuid
@@ -20,9 +20,11 @@ __all__ = [
     "SubscribeKeep",
     "LogTopic",
     "ErrorTopic",
+    "TopicNamePattern",
 ]
 
-TopicName = str
+TopicNamePattern = r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
+TopicName = Annotated[str, Field(pattern=TopicNamePattern)]
 SubscribeKeep = Literal["latest", "oldest"]
 _TopicType = str
 
@@ -46,7 +48,7 @@ class TopicMeta(BaseModel):
     name: str = Field(
         default="",
         description="Name of the topic.",
-        pattern=r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
+        pattern=TopicNamePattern,
     )
     type: str = Field(default="", description="Type of the topic.")
     # local 实现的两种方式: 1. 不跨网络传输. 2. 监听者发现 sender 不相同, 直接丢弃.
@@ -136,12 +138,12 @@ class TopicModel(BaseModel, ABC):
         return cls(**data)
 
     @property
-    def topic_name(self) -> str:
+    def topic_name(self) -> TopicName:
         return self.meta.name
 
     @classmethod
     @abstractmethod
-    def default_topic_name(cls) -> str:
+    def default_topic_name(cls) -> TopicName:
         """
         定义 topic name, 理论上一种 topic type 可以对应不同的 topic name 实现定向的分流.
         参考了 ros2 的模式.
@@ -299,7 +301,7 @@ class Publisher(Generic[TOPIC_MODEL], ABC):
             self,
             topic: Topic | TOPIC_MODEL,
             *,
-            name: str = "",
+            name: TopicName = "",
     ) -> None:
         """
         发布一个事件. 会在全链路里广播.
@@ -332,7 +334,6 @@ class TopicService(ABC):
         关闭 Topic Service.
         """
         pass
-
 
     async def __aenter__(self):
         await self.start()
@@ -390,7 +391,7 @@ class TopicService(ABC):
             self,
             model: type[TOPIC_MODEL],
             *,
-            topic_name: str = "",
+            topic_name: TopicName = "",
             uid: str | None = None,
             maxsize: int = 0,
             keep: SubscribeKeep = "latest",
@@ -412,7 +413,7 @@ class TopicService(ABC):
             self,
             topic: Topic | TopicModel,
             *,
-            name: str = "",
+            name: TopicName = "",
             creator: str = "",
     ) -> None:
         """
@@ -426,7 +427,7 @@ class TopicService(ABC):
     def publisher(
             self,
             creator: str,
-            topic_name: str,
+            topic_name: TopicName,
             *,
             uid: str | None = None,
             model: type[TopicModel] | None = None,
@@ -450,7 +451,7 @@ class TopicService(ABC):
             creator: str,
             model: type[TOPIC_MODEL],
             *,
-            topic_name: str = "",
+            topic_name: TopicName = "",
             uid: str | None = None,
     ) -> Publisher[TOPIC_MODEL]:
         """
@@ -465,7 +466,7 @@ class TopicService(ABC):
         )
 
 
-# --- todo: creator 的声明约定
+# --- todo: creator 的声明约定. 未来再实现.
 
 class TopicCreator(Protocol):
     """

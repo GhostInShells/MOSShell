@@ -1,4 +1,5 @@
 from ghoshell_moss.depends import depend_zenoh
+
 depend_zenoh()
 
 import zenoh
@@ -100,3 +101,76 @@ def test_sub_after_session_quit():
     for res in sub:
         responses.append(res)
     assert len(responses) == 0
+
+
+def test_liveness_tokens_baseline():
+    with zenoh.open(zenoh.Config()) as session:
+        received_liveness_done = threading.Event()
+        key_expr = "demo/example/foo.bar"
+        heartbeats = []
+        heartbeat_failed = []
+
+        def declare_liveness():
+            """生成 liveness"""
+            token = session.liveliness().declare_token(key_expr)
+            received_liveness_done.wait()
+            token.undeclare()
+
+        def check_liveness():
+            try:
+                while True:
+                    alive = session.liveliness().get(key_expr)
+                    for r in alive:
+                        if r.ok:
+                            heartbeats.append(r)
+                        else:
+                            heartbeat_failed.append(r)
+                    if len(heartbeats) == 10:
+                        break
+                    time.sleep(0.01)
+            except Exception as e:
+                err = e
+            finally:
+                received_liveness_done.set()
+
+        node_announce = threading.Thread(target=declare_liveness)
+        node_checker = threading.Thread(target=check_liveness)
+        node_announce.start()
+        node_checker.start()
+        node_announce.join()
+        node_checker.join()
+        assert received_liveness_done.is_set()
+        assert len(heartbeats) == 10
+
+
+def test_liveness_tokens_failed():
+    with zenoh.open(zenoh.Config()) as session:
+        key_expr = "demo/example/foo.bar"
+        heartbeats = []
+        heartbeat_failed = []
+        err = None
+
+        def check_liveness():
+            nonlocal err
+            try:
+                count = 0
+                while count < 10:
+                    alive = session.liveliness().get(key_expr, timeout=0.03)
+                    success = False
+                    for r in alive:
+                        if r.ok:
+                            success = True
+                    if success:
+                        heartbeats.append(success)
+                    else:
+                        heartbeat_failed.append(success)
+                    count += 1
+                    time.sleep(0.01)
+            except Exception as e:
+                err = e
+
+        node_checker = threading.Thread(target=check_liveness)
+        node_checker.start()
+        node_checker.join()
+        assert err is None
+        assert len(heartbeat_failed) == 10
