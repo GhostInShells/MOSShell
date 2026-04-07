@@ -36,6 +36,13 @@ class Connection(ABC):
         """发送一个事件给远端, proxy 发送的是 proxy event, provider 发送的是 provider event."""
         pass
 
+    def clear(self) -> None:
+        """
+        清空 connection 中包含的状态.
+        当 connection 拥有自身独立的 loop 时, 这个函数就有意义.
+        """
+        pass
+
     @abstractmethod
     def is_closed(self) -> bool:
         """判断 connection 是否已经彻底关闭了."""

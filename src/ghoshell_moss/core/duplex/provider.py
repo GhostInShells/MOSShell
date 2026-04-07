@@ -284,6 +284,7 @@ class DuplexChannelProvider(ChannelProvider):
         """
         清空运行状态.
         """
+        self._connection.clear()
         if len(self._running_command_tasks) > 0:
             for task in self._running_command_tasks.values():
                 if not task.done():

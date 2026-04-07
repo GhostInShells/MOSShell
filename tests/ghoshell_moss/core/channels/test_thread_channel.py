@@ -62,7 +62,7 @@ async def test_thread_channel_run_in_tasks():
 
 
 @pytest.mark.asyncio
-async def test_thread_channel_run_in_thread():
+async def test_thread_channel_run_in_thread_and_aclose():
     provider, proxy = create_thread_channel("proxy")
     chan = PyChannel(name="provider")
     # 重新创建 provider.

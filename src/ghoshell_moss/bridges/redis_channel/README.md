@@ -1,0 +1,1 @@
+redis channel 缺乏测试, 暂时放弃兼容. 

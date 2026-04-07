@@ -51,6 +51,7 @@ __all__ = [
     "ChannelMeta",
     "ChannelPaths",
     "ChannelProvider",
+    "ChannelProxy",
     "ChannelCtx",
     "ChannelInterface",
     "ChannelName",

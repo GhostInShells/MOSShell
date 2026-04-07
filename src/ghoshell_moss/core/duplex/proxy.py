@@ -321,6 +321,8 @@ class DuplexChannelContext:
                         t.cancel()
             self._clear_pending_provider_command_tasks()
             self._clear_subscribe_topic_tasks()
+            # 清空 connection 的状态.
+            self.connection.clear()
 
     def _clear_pending_provider_command_tasks(self, reason: str = "") -> None:
         """
