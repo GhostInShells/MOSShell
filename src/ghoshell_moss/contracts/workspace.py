@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Protocol, Union
-from pathlib import Path
+from typing import Protocol, Union
+import re
+
+import fcntl
 import os
 import time
-import re
+from pathlib import Path
+from typing import Optional
 
 __all__ = ["Workspace", "Storage", "LocalStorage", "Lock", "LocalWorkspace", "FileLocker"]
 
@@ -207,101 +210,113 @@ class LocalStorage:
 
 class FileLocker(Lock):
     """
-    基于文件系统的进程锁实现。
-    by gemini 3
+    基于 fcntl.flock 的增强型进程锁。
+    由 Gemini 3 重写：内核级原子性，支持非阻塞/阻塞/超时。
     """
 
     def __init__(self, lock_path: Path):
         self.path = lock_path
-        self._has_lock = False
+        self._fd: Optional[int] = None
 
-    @staticmethod
-    def _is_pid_running(pid: int) -> bool:
-        """检查进程是否仍在运行"""
-        if pid <= 0:
-            return False
+    def _is_pid_running(self, pid: int) -> bool:
+        if pid <= 0: return False
         try:
-            # 信号 0 不会发送信号，但会执行错误检查
             os.kill(pid, 0)
+            return True
         except OSError:
             return False
-        return True
-
-    def _read_pid(self) -> Optional[int]:
-        try:
-            # 使用二进制读取并 strip，避免编码或换行符问题
-            if not self.path.exists():
-                return None
-            content = self.path.read_text().strip()
-            return int(content) if content else None
-        except (FileNotFoundError, ValueError, OSError, PermissionError):
-            # 批量跑单测时，PermissionError 很常见
-            return None
 
     def is_locked(self, /, by_self: bool = False) -> bool:
-        """检查锁是否被存活的进程持有"""
-        pid = self._read_pid()
-        if pid is None:
+        """
+        检查锁是否被占用。
+        """
+        # 如果我自己持有着文件描述符，那肯定锁着
+        if self._fd is not None:
+            return True if by_self else True
+
+        if not self.path.exists():
             return False
-        if not self._is_pid_running(pid):
+
+        try:
+            # 尝试以只读方式打开并尝试加锁（非阻塞）
+            with open(self.path, 'r') as f:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # 能加锁成功，说明之前没被别人锁住
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    return False
+                except BlockingIOError:
+                    # 加锁失败，说明被别人占着
+                    return True
+        except (FileNotFoundError, PermissionError):
             return False
-        return not by_self or pid == os.getpid()
 
     def acquire(self, timeout: Optional[float] = 0) -> bool:
-        # --- 新增：防止重入死锁 ---
-        if self._has_lock and self.is_locked(by_self=True):
+        """
+        核心逻辑：
+        1. 即使 flock 会随进程消失，我们依然写入 PID，方便人工排查。
+        2. 使用 O_RDWR 保持文件句柄常驻以持有内核锁。
+        """
+        # 防止重入
+        if self._fd is not None:
             return True
-        # -----------------------
 
         start_time = time.time()
+
+        # 确保目录存在
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
         while True:
             try:
-                # O_SYNC 确保同步写入
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                # 以读写模式打开（不使用 O_TRUNC 以免破坏读取逻辑）
+                fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+
+                # 尝试内核加锁 (LOCK_EX: 排他锁, LOCK_NB: 非阻塞)
                 try:
-                    with os.fdopen(fd, 'w') as f:
-                        f.write(str(os.getpid()))
-                        f.flush()
-                        os.fsync(f.fileno())  # 强制刷到硬盘
-                    self._has_lock = True
-                    return True
-                except Exception:
-                    if os.path.exists(self.path):
-                        os.unlink(self.path)
-                    raise
-            except FileExistsError:
-                # 检查是否是僵尸锁
-                pid = self._read_pid()
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # 锁被占用
+                    os.close(fd)
 
-                # 如果读取不到 PID（可能正在写入中），我们视其为被占用
-                if pid is not None and not self._is_pid_running(pid):
-                    try:
-                        os.unlink(self.path)
-                        continue  # 清理成功，立即重试创建
-                    except FileNotFoundError:
-                        continue
+                    if timeout == 0: return False
+                    if timeout is not None and (time.time() - start_time) >= timeout:
+                        return False
 
-                        # 检查超时
-                if timeout == 0:
-                    return False
-                if timeout is not None and (time.time() - start_time) >= timeout:
-                    return False
+                    time.sleep(0.05)
+                    continue
 
-                time.sleep(0.05)  # 稍微缩短重试间隔
-        return False
+                # 成功拿到了内核锁！
+                # 写入当前 PID 以供调试（覆盖原有内容）
+                os.ftruncate(fd, 0)
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, str(os.getpid()).encode())
+
+                self._fd = fd
+                return True
+
+            except Exception:
+                # 发生意外（如权限问题），确保关闭 FD
+                if 'fd' in locals(): os.close(fd)
+                raise
 
     def release(self) -> None:
-        try:
-            # 只有确实是自己拿的锁才去删
-            if self.path.exists():
-                if self._read_pid() == os.getpid():
-                    self.path.unlink(missing_ok=True)
-        finally:
-            self._has_lock = False
+        """
+        释放内核锁并关闭文件描述符。
+        注意：不主动 unlink 文件，保留文件作为“占位符”是 Unix 锁的常见做法，
+        可以减少创建文件时的竞态条件。
+        """
+        if self._fd is not None:
+            try:
+                # 释放内核锁
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                os.close(self._fd)
+            finally:
+                self._fd = None
 
     def __enter__(self):
-        if not self.acquire(timeout=None):  # 默认阻塞
-            raise RuntimeError(f"Failed to acquire lock on {self.path}")
+        # 按照你的接口：None 是阻塞，0 是快败
+        if not self.acquire(timeout=None):
+            raise RuntimeError(f"Could not acquire lock on {self.path}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
