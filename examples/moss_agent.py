@@ -7,7 +7,7 @@ from ghoshell_container import Container
 from ghoshell_moss.core.ctml.shell import new_ctml_shell
 
 # 不着急删除, 方便自测时开启.
-from ghoshell_moss.transports.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
+from ghoshell_moss.bridges.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
 from ghoshell_moss_contrib.agent import ConsoleChat, ModelConf, SimpleAgent
 from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
 from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan

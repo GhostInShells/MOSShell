@@ -23,7 +23,7 @@ from miku_channels.leg import left_leg_chan, right_leg_chan
 from miku_channels.necktie import necktie_chan
 
 from ghoshell_moss import Channel
-from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
+from ghoshell_moss.bridges.zmq_channel import ZMQChannelProvider
 
 # 全局状态
 model: live2d.LAppModel | None = None

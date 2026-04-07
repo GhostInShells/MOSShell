@@ -1,8 +1,10 @@
+import asyncio
+
 import pytest
 from fakeredis.aioredis import FakeRedis, FakeServer
 
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.transports.redis_channel.redis_channel import (
+from ghoshell_moss.bridges.redis_channel.redis_channel import (
     RedisChannelProvider,
     RedisChannelProxy,
     RedisConnectionConfig,
@@ -46,6 +48,7 @@ async def test_redis_channel_baseline():
 
         async with proxy.bootstrap() as runtime:
             # 验证 proxy 已连接
+            await asyncio.sleep(0.0)
             await runtime.wait_connected()
             assert runtime.is_running()
 

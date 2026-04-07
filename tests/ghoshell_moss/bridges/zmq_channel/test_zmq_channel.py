@@ -5,7 +5,7 @@ import pytest
 
 from ghoshell_moss.core.concepts.command import CommandError
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQSocketType, create_zmq_channel
+from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQSocketType, create_zmq_channel
 
 
 def get_random_port():

@@ -5,7 +5,7 @@ import pytest
 import uvicorn
 
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.transports.ws_channel import (
+from ghoshell_moss.bridges.ws_channel import (
     FastAPIWebSocketChannelProxy,
     WebSocketChannelProvider,
     WebSocketConnectionConfig,

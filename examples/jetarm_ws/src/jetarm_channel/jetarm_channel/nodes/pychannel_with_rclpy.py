@@ -9,7 +9,7 @@ from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 from ghoshell_moss import PyChannel
-from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProvider
+from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQChannelProvider
 
 
 class JetArmChannelTestClient(Node):

@@ -4,7 +4,7 @@ from os.path import join, dirname
 from PyQt6.QtWidgets import QApplication
 from ghoshell_common.contracts import Workspace
 
-from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
+from ghoshell_moss.bridges.zmq_channel import ZMQChannelProvider
 from ghoshell_moss_contrib.channels.slide_studio import SlideStudio, SlideAssets
 from ghoshell_moss_contrib.example_ws import workspace_container
 

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from ghoshell_moss import CommandErrorCode
 from ghoshell_moss.core import PyChannel, ChannelCtx
-from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProxy
+from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQChannelProxy
 
 __all__ = [
     "ZMQChannelHub",

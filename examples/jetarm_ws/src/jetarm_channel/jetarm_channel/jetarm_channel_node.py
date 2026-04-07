@@ -3,7 +3,7 @@ from os.path import abspath, dirname, join
 import rclpy
 
 from ghoshell_moss import Channel, MutableChannel
-from ghoshell_moss.transports.zmq_channel.zmq_channel import ZMQChannelProvider
+from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQChannelProvider
 from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
 from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import default_parsers
 
