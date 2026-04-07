@@ -11,9 +11,9 @@ from ghoshell_moss.core.concepts.channel import (
     Channel,
     ChannelRuntime,
     ChannelMeta,
-
+    ChannelNamePattern,
+    ChannelName,
     ChannelCtx,
-
 )
 from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.errors import CommandError
@@ -28,14 +28,18 @@ from ghoshell_moss.core.blueprint.builder import (
     LifecycleFunction,
     StringType,
 )
+import re
 
 __all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder", "BaseStateChannel"]
 
-_ChannelName = str
+_ChannelNameRe = re.compile(ChannelNamePattern)
 
 
 class PyChannelBuilder(ChannelStateBuilder, ChannelState):
     def __init__(self, name: str, blocking: bool = True, description: str = "") -> None:
+        matched = _ChannelNameRe.fullmatch(name)
+        if matched is None:
+            raise ValueError("Channel name '%s' is not valid" % name)
         self._name = name
         self._description = description
         self._blocking = blocking
@@ -180,7 +184,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
 
         return wrapper
 
-    def add_virtual_channel(self, channel: Channel, alias: _ChannelName | None = None) -> None:
+    def add_virtual_channel(self, channel: Channel, alias: ChannelName | None = None) -> None:
         name = alias or channel.name()
         self._virtual_children[name] = channel
 
@@ -200,7 +204,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
         self._providers.append((provider, override))
         return self
 
-    def import_channels(self, *children: Channel | tuple[Channel, _ChannelName]) -> Self:
+    def import_channels(self, *children: Channel | tuple[Channel, _ChannelNameRe]) -> Self:
         for value in children:
             if isinstance(value, tuple):
                 channel, name = value
@@ -210,10 +214,10 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
             self._sustain_children[name] = channel
         return self
 
-    def get_children(self) -> dict[_ChannelName, Channel]:
+    def get_children(self) -> dict[_ChannelNameRe, Channel]:
         return self._sustain_children
 
-    def get_virtual_children(self) -> dict[_ChannelName, Channel]:
+    def get_virtual_children(self) -> dict[_ChannelNameRe, Channel]:
         return self._virtual_children
 
     def own_commands(self) -> dict[str, Command]:
@@ -305,10 +309,10 @@ class BaseStateChannel(StatefulChannel):
         self._states[name] = state
         return self
 
-    def children(self) -> dict[_ChannelName, Channel]:
+    def children(self) -> dict[_ChannelNameRe, Channel]:
         return self._main.get_children()
 
-    def virtual_children(self) -> dict[_ChannelName, Channel]:
+    def virtual_children(self) -> dict[_ChannelNameRe, Channel]:
         return self._main.get_virtual_children()
 
     def name(self) -> str:

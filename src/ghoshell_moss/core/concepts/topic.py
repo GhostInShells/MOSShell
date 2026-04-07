@@ -43,7 +43,11 @@ class TopicMeta(BaseModel):
     """
 
     id: str = Field(default_factory=uuid, description="Unique identifier for the topic.")
-    name: str = Field(default="", description="Name of the topic.")
+    name: str = Field(
+        default="",
+        description="Name of the topic.",
+        pattern=r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
+    )
     type: str = Field(default="", description="Type of the topic.")
     # local 实现的两种方式: 1. 不跨网络传输. 2. 监听者发现 sender 不相同, 直接丢弃.
     local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")

@@ -4,7 +4,7 @@ from typing_extensions import Self
 from ghoshell_container import IoCContainer
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.blueprint.builder import Builder, MutableChannel
 from PIL.Image import Image
 
@@ -13,14 +13,6 @@ __all__ = [
     'new_state_builder', 'new_channel_from_state', 'new_stateful_channel',
     'PrimeChannel', 'new_prime_channel',
 ]
-
-"""
-
-"""
-
-_ChannelName = str
-
-__description__ = "How to build stateful channel"
 
 
 class ChannelState(ABC):
@@ -112,13 +104,13 @@ class ChannelState(ABC):
         """
         return
 
-    def get_children(self) -> dict[_ChannelName, Channel]:
+    def get_children(self) -> dict[ChannelName, Channel]:
         """
         return the sustain children channel
         """
         return {}
 
-    def get_virtual_children(self) -> dict[_ChannelName, Channel]:
+    def get_virtual_children(self) -> dict[ChannelName, Channel]:
         """
         return the virtual children that may be changed during runtime
         """
@@ -131,7 +123,7 @@ class ChannelStateBuilder(Builder, ChannelState, ABC):
     """
 
     @abstractmethod
-    def add_virtual_channel(self, channel: Channel, alias: _ChannelName | None = None) -> None:
+    def add_virtual_channel(self, channel: Channel, alias: ChannelName | None = None) -> None:
         """
         add virtual channel during runtime.
         wrap this method into a command

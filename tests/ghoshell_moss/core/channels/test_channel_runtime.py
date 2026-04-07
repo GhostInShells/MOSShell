@@ -1,21 +1,20 @@
 import pytest
-from ghoshell_container import Container
 
-from ghoshell_moss import BaseCommandTask, Channel, CommandTask, PyChannel, new_channel
+from ghoshell_moss import BaseCommandTask, PyChannel, new_channel
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 import asyncio
 
 
 @pytest.mark.asyncio
 async def test_channel_runtime_execution():
-    chan = PyChannel(name="")
+    chan = PyChannel(name="test")
 
     @chan.build.command()
     async def foo() -> int:
         return 123
 
     async with chan.bootstrap() as runtime:
-        assert runtime.name == ""
+        assert runtime.name == "test"
         assert runtime.is_running()
         assert runtime.is_available()
         await runtime.wait_idle()
@@ -23,7 +22,7 @@ async def test_channel_runtime_execution():
 
         foo_cmd = runtime.get_command("foo")
         assert foo_cmd is not None
-        assert foo_cmd.meta().chan == ""
+        assert foo_cmd.meta().chan == "test"
         task = BaseCommandTask.from_command(foo_cmd)
         runtime.push_task(task)
         await task.wait()
@@ -33,7 +32,7 @@ async def test_channel_runtime_execution():
 
 @pytest.mark.asyncio
 async def test_channel_runtime_clear():
-    chan = PyChannel(name="")
+    chan = PyChannel(name="test")
 
     @chan.build.command()
     async def foo() -> int:
@@ -67,7 +66,7 @@ async def test_child_channel_runtime_running():
     """
     由于现在 Channel Runtime 不再递归启动了, 所以不应该有任何子 channel 被启动.
     """
-    main = PyChannel(name="")
+    main = PyChannel(name="test")
 
     @main.build.command()
     async def bar() -> int:
@@ -93,7 +92,7 @@ async def test_child_channel_runtime_running():
 
 @pytest.mark.asyncio
 async def test_channel_runtime_non_blocking():
-    chan = PyChannel(name="")
+    chan = PyChannel(name="test")
 
     @chan.build.command(blocking=False)
     async def foo() -> int:

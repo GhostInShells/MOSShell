@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import (
     Any,
     Optional,
-    Union,
+    Annotated,
     Callable,
     Coroutine,
     AsyncIterator,
@@ -53,6 +53,8 @@ __all__ = [
     "ChannelProvider",
     "ChannelCtx",
     "ChannelInterface",
+    "ChannelName",
+    "ChannelNamePattern",
 ]
 
 """
@@ -151,6 +153,9 @@ ChannelPaths = list[str]
 """字符串路径的数组表现形式. a.b.c -> ['a', 'b', 'c'] """
 
 ChannelRuntimeContextVar = contextvars.ContextVar("moss.ctx.Runtime")
+
+ChannelNamePattern = r'^[a-zA-Z_][a-zA-Z0-9_]*$'
+ChannelName = Annotated[str, Field(pattern=ChannelNamePattern)]
 
 
 class ChannelCtx:
@@ -253,7 +258,7 @@ class Channel(ABC):
     """
 
     @abstractmethod
-    def name(self) -> str:
+    def name(self) -> ChannelName:
         """
         channel 的名字. 和 Python 的 Module.__name__ 类似.
         全局应该只有一个主 Channel, 它可以是 __main__ .
