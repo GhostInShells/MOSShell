@@ -943,19 +943,20 @@ class ChannelProvider(ABC):
         """
         asyncio.run(self.arun_until_closed(channel))
 
+    @abstractmethod
     async def arun_until_closed(self, channel: Channel) -> None:
         """
         展示如何在 async 中持续运行到结束.
         """
-        async with self.arun(channel):
-            await self.wait_stop()
+        pass
 
-    def run_in_thread(self, channel: Channel) -> None:
+    def run_in_thread(self, channel: Channel) -> threading.Thread:
         """
         展示如何在多线程中异步运行, 非阻塞.
         """
         thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
         thread.start()
+        return thread
 
     @abstractmethod
     def close(self) -> None:

@@ -1,4 +1,4 @@
-import json
+import orjson as json
 import time
 from abc import ABC
 from typing import Any, ClassVar, Optional
@@ -89,8 +89,9 @@ class ChannelEventModel(BaseModel, ABC):
         return value[:200]
 
 
+# todo: 想要拿掉业务逻辑的 heart beat. 应该完全交给 connection 自己的逻辑去实现. 比如 ping pong 也好.
 class HeartbeatEvent(ChannelEventModel):
-    """心跳事件，由客户端发送，服务器响应"""
+    """心跳事件，由 Proxy 发送，Provider 响应"""
 
     event_type: ClassVar[str] = "moss.heartbeat"
     direction: str = Field(default="request", description="请求或响应: request/response")

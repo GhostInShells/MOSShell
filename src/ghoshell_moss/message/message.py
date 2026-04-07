@@ -1,4 +1,4 @@
-import json
+import orjson
 import html
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -328,7 +328,7 @@ class Message(BaseModel, WithAdditional):
             serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
             _content = Text.new(serialized).to_content()
         elif isinstance(item, dict) or isinstance(item, list):
-            serialized = json.dumps(item)
+            serialized = orjson.dumps(item).decode('utf8')
             _content = Text.new(serialized).to_content()
         else:
             value = str(item)

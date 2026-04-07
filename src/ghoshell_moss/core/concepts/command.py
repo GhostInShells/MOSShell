@@ -39,7 +39,7 @@ from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
 from ghoshell_moss.message import Message, Text
-import json
+import orjson as json
 import contextlib
 import datetime
 import dateutil
@@ -170,7 +170,7 @@ class CommandToken(BaseModel):
 
     name: str = Field(description="command name")
     chan: str = Field(default="", description="channel name")
-    call_id: str | None = Field(None, description="生成 command 时对应的 call_id")
+    call_id: str | None = Field(default=None, description="生成 command 时对应的 call_id")
 
     order: int = Field(default=0, description="the output order of the command")
     cmd_idx: int = Field(default=0, description="command index of the stream")
@@ -768,7 +768,7 @@ class CommandTaskResult(BaseModel):
         if isinstance(self.result, str):
             return self.result
         try:
-            serialized_content = json.dumps(self.result, ensure_ascii=False)
+            serialized_content = json.dumps(self.result).decode("utf-8")
         except (ValueError, TypeError):
             serialized_content = repr(self.result)
         return serialized_content

@@ -16,3 +16,4 @@ from ghoshell_moss.core.duplex.protocol import (
 )
 from ghoshell_moss.core.duplex.provider import ChannelEventHandler, DuplexChannelProvider
 from ghoshell_moss.core.duplex.proxy import DuplexChannelRuntime, DuplexChannelProxy
+from ghoshell_moss.core.duplex.suite_for_test import BridgeTestSuite

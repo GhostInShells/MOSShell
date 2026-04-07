@@ -15,7 +15,7 @@ from .key_expr import MOSSTopicExpr
 import janus
 import asyncio
 import threading
-import json
+import orjson as json
 import time
 
 depend_zenoh()
@@ -355,7 +355,7 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
         try:
             # unserialize as json
             data = json.loads(sample.payload.to_bytes())
-        except (json.decoder.JSONDecodeError, TypeError, ValueError) as e:
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             self._logger.exception("%r receive sample from zenoh failed: %s", self, e)
             return None
 

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import threading
 from typing import Callable, Coroutine, Optional, AsyncIterator
 from typing_extensions import Self
 from ghoshell_common.helpers import uuid
@@ -89,7 +90,7 @@ class DuplexChannelProvider(ChannelProvider):
             self,
             provider_connection: Connection,
             proxy_event_handlers: dict[str, ChannelEventHandler] | None = None,
-            receive_interval_seconds: float = 0.5,
+            reconnect_interval_seconds: float = 0.5,
             container: Container = None,
     ):
         self._uid = uuid()
@@ -106,7 +107,7 @@ class DuplexChannelProvider(ChannelProvider):
         """注册的事件管理."""
 
         # --- runtime status ---#
-        self._receive_interval_seconds = receive_interval_seconds
+        self._reconnect_interval_seconds = reconnect_interval_seconds
         self._stopping_event: ThreadSafeEvent = ThreadSafeEvent()
         self._closed_event: ThreadSafeEvent = ThreadSafeEvent()
 
@@ -133,8 +134,9 @@ class DuplexChannelProvider(ChannelProvider):
         self._running_command_tasks_lock = asyncio.Lock()
         """加个 lock 避免竞态, 不确定是否是必要的."""
         self._provider_topic_service: Optional[TopicService] = None
-
         self._main_loop_task: asyncio.Task | None = None
+        self._running_thread: threading.Thread | None = None
+        self._running_task: asyncio.Task | None = None
 
     def _get_connection_id(self) -> str:
         return self._connection_id or ""
@@ -205,8 +207,6 @@ class DuplexChannelProvider(ChannelProvider):
                 pass
             except Exception as exc:
                 self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
-            finally:
-                self._closed_event.set()
 
     @contextlib.asynccontextmanager
     async def arun(self, channel: Channel) -> AsyncIterator[Self]:
@@ -238,15 +238,17 @@ class DuplexChannelProvider(ChannelProvider):
         # 启动时, topic service 同样会注入到根节点的 importlib 中.
         self._root_runtime = channel.bootstrap(self._container)
 
-        try:
-            async with contextlib.AsyncExitStack() as stack:
-                await stack.enter_async_context(self._bootstrap_container_stack())
-                await stack.enter_async_context(self._bootstrap_runtime_stack())
-                await stack.enter_async_context(self._bootstrap_connection_stack())
-                await stack.enter_async_context(self._bootstrap_main_loop_stack())
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self._bootstrap_container_stack())
+            await stack.enter_async_context(self._bootstrap_runtime_stack())
+            await stack.enter_async_context(self._bootstrap_connection_stack())
+            await stack.enter_async_context(self._bootstrap_main_loop_stack())
+            try:
                 yield self
-        except Exception as exc:
-            self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
+            except Exception as exc:
+                self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
+            finally:
+                self._closed_event.set()
 
     def _check_running(self):
         if not self._starting:
@@ -308,6 +310,8 @@ class DuplexChannelProvider(ChannelProvider):
 
     def wait_closed_sync(self) -> None:
         self._closed_event.wait_sync()
+        if self._running_thread is not None:
+            self._running_thread.join()
 
     async def aclose(self) -> None:
         self._stopping_event.set()
@@ -350,7 +354,7 @@ class DuplexChannelProvider(ChannelProvider):
                     # 连接未成功, 则清空等待状态. 需要重新创建 connection.
                     await self._clear_connection_status()
                     # 进行下一轮检查.
-                    await asyncio.sleep(self._receive_interval_seconds)
+                    await asyncio.sleep(self._reconnect_interval_seconds)
                     continue
 
                 if not self._connection_id:
@@ -359,7 +363,7 @@ class DuplexChannelProvider(ChannelProvider):
                     continue
 
                 try:
-                    event = await self._connection.recv(timeout=self._receive_interval_seconds)
+                    event = await self._connection.recv(timeout=self._reconnect_interval_seconds)
                 except asyncio.TimeoutError:
                     continue
                 except ConnectionNotAvailable:
@@ -635,6 +639,23 @@ class DuplexChannelProvider(ChannelProvider):
         cid = task.cid
         if cid in self._running_command_tasks:
             del self._running_command_tasks[cid]
+
+    def run_in_thread(self, channel: Channel) -> threading.Thread:
+        if self._running_thread is not None:
+            return self._running_thread
+        self._running_thread = super().run_in_thread(channel)
+        return self._running_thread
+
+    async def arun_until_closed(self, channel: Channel) -> None:
+        if self._running_task is not None:
+            await self._running_task
+            return
+        self._running_task = asyncio.create_task(self._arun_until_closed(channel))
+        await self._running_task
+
+    async def _arun_until_closed(self, channel: Channel) -> None:
+        async with self.arun(channel):
+            await self.wait_stop()
 
     def close(self) -> None:
         self._stopping_event.set()

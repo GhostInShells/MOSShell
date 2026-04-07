@@ -1,6 +1,5 @@
 import asyncio
-import base64
-import json
+import orjson as json
 import logging
 import os
 from collections import deque
@@ -194,8 +193,8 @@ class Session(BaseModel):
         data = self.model_dump(exclude_none=True)
         data["req_params"]["text"] = text
         data["event"] = EventType.TaskRequest.value
-        j = json.dumps(data, ensure_ascii=False)
-        return j.encode()
+        j = json.dumps(data)
+        return j
 
 
 class VoiceConf(BaseModel):

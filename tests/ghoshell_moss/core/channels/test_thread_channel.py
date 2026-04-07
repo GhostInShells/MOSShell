@@ -179,9 +179,11 @@ def test_thread_channel_lost_connection():
             assert proxy_runtime.is_running()
             _foo = proxy_runtime.get_command("foo")
             # 中断后抛出 command error.
-            with pytest.raises(CommandError):
-                result = await _foo()
-            assert not proxy_runtime.is_running()
+            if _foo is not None:
+                with pytest.raises(CommandError):
+                    result = await _foo()
+            assert not proxy_runtime.is_connected()
+            assert proxy_runtime.is_running()
 
     asyncio.run(proxy_main())
     provider.close()

@@ -68,7 +68,7 @@ class DuplexChannelContext:
             *,
             name: str,
             connection: Connection,
-            container: Optional[IoCContainer] = None,
+            container: IoCContainer,
     ):
         self.root_name = name
         """根节点的名字. 这个名字可能和远端的 channel 根节点不一样. """
@@ -77,7 +77,7 @@ class DuplexChannelContext:
 
         self._wait_reconnect_interval = 0.2
 
-        self.container = Container(parent=container, name="duplex channel context:" + self.root_name)
+        self.container = container
         self.connection = connection
         """双工连接本身."""
 
@@ -204,7 +204,7 @@ class DuplexChannelContext:
         self.logger.info("DuplexChannelContext[name=%s] starting", self.root_name)
         self._starting = True
         # 完成初始化.
-        await self._bootstrap()
+        await self.connection.start()
         # 创建主循环.
         self._main_task = asyncio.create_task(self._main())
         self._started.set()
@@ -218,13 +218,13 @@ class DuplexChannelContext:
             return
         # 通知关闭.
         self.stop_event.set()
+        await self.connection.close()
         # 等待主任务结束.
         try:
             if self._main_task:
                 await self._main_task
         except asyncio.CancelledError:
             pass
-        await asyncio.to_thread(self.container.shutdown)
 
     def is_connected(self) -> bool:
         # 判断连接的关键, 是通信存在并且完成了同步.
@@ -244,6 +244,8 @@ class DuplexChannelContext:
 
     def is_channel_connected(self, provider_chan_path: str) -> bool:
         """判断一个 channel 是否可以运行."""
+        if self.connection.is_closed():
+            return False
         connection_is_available = self.is_running() and self.connection.is_connected()
         if not connection_is_available:
             return False
@@ -256,14 +258,7 @@ class DuplexChannelContext:
 
     def is_running(self) -> bool:
         """判断 ctx 是否在运行."""
-        return self._started.is_set() and not self.stop_event.is_set() and not self.connection.is_closed()
-
-    async def _bootstrap(self):
-        # 只启动一次 container, 也只有 context 启动它.
-        await asyncio.to_thread(self.container.bootstrap)
-        # context 的更新从主动改成被动, 依赖端侧进行握手协议.
-        # connection 自身应该有重连机制.
-        await self.connection.start()
+        return self._started.is_set() and not self.stop_event.is_set()
 
     async def _main(self):
         try:
@@ -296,10 +291,9 @@ class DuplexChannelContext:
                 reason,
             )
         except Exception as e:
-            self.logger.exception("proxy proxy error: %s", e)
+            self.logger.exception("%s proxy error: %s", self._log_prefix, e)
             raise
         finally:
-            self.stop_event.set()
             self._clear_connection_status()
 
     def _clear_connection_status(self):
@@ -873,18 +867,26 @@ class DuplexChannelProxy(Channel):
             *,
             name: str,
             description: str = "",
-            to_provider_connection: Connection,
+            to_provider_connection: Connection | None = None,
     ):
         self._name = name
         self._description = description
         self._uid = uuid()
-        self._provider_connection = to_provider_connection
+        self._proxy_connection = to_provider_connection
         self._provider_channel_path = ""
         self._runtime: Optional[DuplexChannelRuntime] = None
         self._ctx: DuplexChannelContext | None = None
 
     def name(self) -> str:
         return self._name
+
+    def _create_connection(self, container: IoCContainer) -> Connection:
+        """
+        重写这个函数可以定义 connection 的创建机制.
+        """
+        if self._proxy_connection is None:
+            raise RuntimeError(f"Channel {self} has no connection.")
+        return self._proxy_connection
 
     def description(self) -> str:
         return self._description
@@ -896,10 +898,12 @@ class DuplexChannelProxy(Channel):
         if self._runtime is not None and self._runtime.is_running():
             raise RuntimeError(f"Channel {self} has already been started.")
 
+        if container is None:
+            container = Container(name="DuplexChannelProxyContainer/" + self._name)
         self._ctx = DuplexChannelContext(
             name=self._name,
             container=container,
-            connection=self._provider_connection,
+            connection=self._create_connection(container),
         )
 
         runtime = DuplexChannelRuntime(

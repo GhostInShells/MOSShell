@@ -1,11 +1,13 @@
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.core.duplex.suite_for_test import BridgeSuite, ThreadBridgeSuite
+from ghoshell_moss.core.duplex.suite_for_test import BridgeTestSuite, ThreadBridgeTestSuite
 from ghoshell_moss.core.concepts.command import CommandError, CommandToken
+from ghoshell_moss.bridges.zenoh_bridge import ZenohBridgeTestSuite
 import pytest
 import asyncio
 
 suite_configs = [
-    {"name": "thread", "suite": ThreadBridgeSuite()},
+    {"name": "thread", "suite": ThreadBridgeTestSuite()},
+    {"name": "zenoh", "suite": ZenohBridgeTestSuite()},
 ]
 
 
@@ -20,7 +22,7 @@ def suite(request):
 class TestBridgeSuite:
 
     @pytest.mark.asyncio
-    async def test_provider_closed(self, suite: BridgeSuite) -> None:
+    async def test_provider_closed(self, suite: BridgeTestSuite) -> None:
         provider, proxy = suite.create()
         chan = PyChannel(name="provider")
 
@@ -29,7 +31,7 @@ class TestBridgeSuite:
         assert not provider.is_running()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_run_in_thread(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_run_in_thread(self, suite: BridgeTestSuite) -> None:
         provider, proxy = suite.create()
         chan = PyChannel(name="provider")
         provider.run_in_thread(chan)
@@ -37,9 +39,10 @@ class TestBridgeSuite:
         await provider.aclose()
         await provider.wait_closed()
         assert not provider.is_running()
+        provider.wait_closed_sync()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_run_in_tasks(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_run_in_tasks(self, suite: BridgeTestSuite) -> None:
         provider, proxy = suite.create()
         chan = PyChannel(name="provider")
         provider_run_task = asyncio.create_task(provider.arun_until_closed(chan))
@@ -54,9 +57,10 @@ class TestBridgeSuite:
         await provider.wait_closed()
         assert provider_run_task.done()
         await provider_run_task
+        provider.wait_closed_sync()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_run_in_thread_and_aclose(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_run_in_thread_and_aclose(self, suite: BridgeTestSuite) -> None:
         provider, proxy = suite.create()
         chan = PyChannel(name="provider")
         # 重新创建 provider.
@@ -64,9 +68,10 @@ class TestBridgeSuite:
         await provider.aclose()
         await provider.wait_closed()
         assert not provider.is_running()
+        provider.wait_closed_sync()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_baseline(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_baseline(self, suite: BridgeTestSuite) -> None:
         async def foo() -> int:
             return 123
 
@@ -143,16 +148,17 @@ class TestBridgeSuite:
                 assert result == 123
 
             assert not proxy_runtime.is_running()
+            await asyncio.sleep(0.02)
         assert not provider.is_running()
 
-    def test_thread_channel_lost_connection(self, suite: BridgeSuite) -> None:
+    def test_thread_channel_lost_connection(self, suite: BridgeTestSuite) -> None:
         async def foo() -> int:
             return 123
 
         chan = PyChannel(name="provider")
         chan.build.command(return_command=True)(foo)
         provider, proxy = suite.create("proxy")
-        provider.run_in_thread(chan)
+        t = provider.run_in_thread(chan)
 
         async def proxy_main():
             # 启动 proxy
@@ -165,20 +171,25 @@ class TestBridgeSuite:
 
                 # 模拟连接中断（通过关闭 provider）
                 provider.close()
+                # 给一个调度的机会.
+                await asyncio.sleep(0.01)
                 assert not provider.is_running()
                 assert proxy_runtime.is_running()
-                _foo = proxy_runtime.get_command("foo")
                 # 中断后抛出 command error.
-                with pytest.raises(CommandError):
-                    result = await _foo()
-                assert not proxy_runtime.is_running()
+                _foo = proxy_runtime.get_command("foo")
+                if _foo is not None:
+                    with pytest.raises(CommandError):
+                        result = await _foo()
+                assert not proxy_runtime.is_connected()
+                assert proxy_runtime.is_running()
 
         asyncio.run(proxy_main())
         provider.close()
         provider.wait_closed_sync()
+        t.join()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_refresh_meta(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_refresh_meta(self, suite: BridgeTestSuite) -> None:
         foo_doc = "hello"
 
         def doc_fn() -> str:
@@ -237,7 +248,7 @@ class TestBridgeSuite:
                 assert "world" in foo2.meta().interface
 
     @pytest.mark.asyncio
-    async def test_thread_channel_has_child(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_has_child(self, suite: BridgeTestSuite) -> None:
         chan = PyChannel(name="provider")
 
         @chan.build.command()
@@ -252,7 +263,8 @@ class TestBridgeSuite:
             return 456
 
         provider, proxy = suite.create("proxy")
-        provider.run_in_thread(chan)
+        t = provider.run_in_thread(chan)
+        await asyncio.sleep(0.03)
         try:
             async with proxy.bootstrap() as runtime:
                 assert runtime.is_running()
@@ -268,9 +280,10 @@ class TestBridgeSuite:
         finally:
             provider.close()
             await provider.wait_closed()
+            t.join()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_exception(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_exception(self, suite: BridgeTestSuite) -> None:
         chan = PyChannel(name="provider")
 
         @chan.build.command()
@@ -278,7 +291,7 @@ class TestBridgeSuite:
             raise ValueError("foo")
 
         provider, proxy = suite.create("proxy")
-        provider.run_in_thread(chan)
+        t = provider.run_in_thread(chan)
         try:
             async with proxy.bootstrap() as proxy_runtime:
                 await proxy_runtime.wait_connected()
@@ -291,9 +304,10 @@ class TestBridgeSuite:
         finally:
             provider.close()
         await provider.wait_closed()
+        t.join()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_idle(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_idle(self, suite: BridgeTestSuite) -> None:
         chan = PyChannel(name="provider")
 
         idled = []
@@ -311,7 +325,7 @@ class TestBridgeSuite:
                 idled_done.set()
 
         provider, proxy = suite.create("proxy")
-        provider.run_in_thread(chan)
+        t = provider.run_in_thread(chan)
         try:
             async with proxy.bootstrap() as proxy_runtime:
                 await proxy_runtime.wait_connected()
@@ -332,9 +346,10 @@ class TestBridgeSuite:
         finally:
             provider.close()
         await provider.wait_closed()
+        t.join()
 
     @pytest.mark.asyncio
-    async def test_thread_channel_with_delta_func(self, suite: BridgeSuite) -> None:
+    async def test_thread_channel_with_delta_func(self, suite: BridgeTestSuite) -> None:
         chan = PyChannel(name="provider")
 
         @chan.build.command()

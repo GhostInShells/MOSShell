@@ -21,6 +21,7 @@ from ghoshell_moss.core.duplex.proxy import DuplexChannelProxy
 logger = logging.getLogger(__name__)
 
 
+# 存在较大的问题, 准备重做.
 class RedisStreamConnection(Connection):
     """基于Redis Stream的双工通信连接"""
 
@@ -121,7 +122,8 @@ class RedisStreamConnection(Connection):
                         logger.warning("Received empty payload message: %s", message)
                         continue
 
-                    event = json.loads(payload)
+                    data = json.loads(payload)
+                    event = ChannelEvent(**data)
                     logger.info("RedisStreamConnection Received event: %s", event)
                     return event
                 except ConnectionError as e:
