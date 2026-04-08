@@ -25,6 +25,7 @@ from ghoshell_moss.core.blueprint.builder import (
     Builder,
     CommandFunction,
     MessageFunction,
+    MessageType,
     LifecycleFunction,
     StringType,
 )
@@ -118,7 +119,25 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
                     continue
                 context_messages = result
                 messages.extend(context_messages)
-        return messages
+        return self._wrap_messages(messages)
+
+    @staticmethod
+    def _wrap_messages(messages: list[MessageType]):
+        last = None
+        result = []
+        for msg in messages:
+            if isinstance(msg, Message):
+                if last is not None:
+                    result.append(msg)
+                last = msg
+            else:
+                if last is not None:
+                    last.with_content(msg)
+                else:
+                    last = Message.new().with_content(msg)
+        if last is not None:
+            result.append(last)
+        return result
 
     def instruction(self, func: StringType) -> StringType:
         self._instruction_functions = func

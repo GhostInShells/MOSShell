@@ -14,6 +14,7 @@ import asyncio
 
 __all__ = [
     "CommandFunction", "MessageFunction", "StringType", "LifecycleFunction",
+    "MessageType",
     "Builder",
     "MutableChannel",
     "new_channel"
@@ -24,9 +25,10 @@ CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 用于描述一个本地的 python 函数 (或者类的 method) 可以被注册到 Channel 中变成一个 command. 
 """
 
+MessageType = Message | str | Image.Image
 MessageFunction = Union[
-    Callable[[], Coroutine[None, None, list[Message | str | Image.Image]]],
-    Callable[[], list[Message]],
+    Callable[[], Coroutine[None, None, list[MessageType]]],
+    Callable[[], list[MessageType]],
 ]
 """
 可以生成消息体的函数. 这种函数注册到 Channel 中, 可以用来动态地生成 Context Messages 与 Memory Messages.

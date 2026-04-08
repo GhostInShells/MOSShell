@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.channel import ChannelCtx
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand
 from ghoshell_moss.core.concepts.errors import CommandError
 from ghoshell_moss.core.py_channel import PyChannel, PyChannelBuilder
-from ghoshell_moss.message import Message
+from ghoshell_moss.message import Message, Text
 
 chan = PyChannel(name="test")
 
@@ -714,3 +714,18 @@ async def test_py_channel_refresh_own_metas():
         command_meta = runtime.self_meta().commands[0]
         assert command_meta.name == "foo"
         assert command_meta.description == expect
+
+
+@pytest.mark.asyncio
+async def test_py_channel_with_context_message_but_string():
+    main = PyChannel(name="channel")
+
+    @main.build.context_messages
+    async def messages() -> list[str]:
+        return ["hello"]
+
+    async with main.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        meta = runtime.self_meta()
+        assert len(meta.context) == 1
+        assert Text.from_content(meta.context[0].contents[0]).text == "hello"
