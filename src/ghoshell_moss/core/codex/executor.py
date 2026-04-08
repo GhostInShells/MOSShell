@@ -1,6 +1,6 @@
 from typing import Any, Optional, NamedTuple, Iterator
 from types import ModuleType
-from .compiler import RuntimeModuleCompiler
+from .compiler import Compiler
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 import io
@@ -8,7 +8,7 @@ import io
 _LocalAttrName = str
 _KwArgName = str
 
-__all__ = ['ExecutionResult', 'RuntimeModuleExecutor']
+__all__ = ['ExecutionResult', 'Executor']
 
 @dataclass
 class ExecutionResult:
@@ -19,7 +19,7 @@ class ExecutionResult:
     std_output: str
 
 
-class RuntimeModuleExecutor:
+class Executor:
     """
     运行时里为一个 Module 创建一个运行时容器,
     可以为它增加代码, 基于类似的上下文运行.
@@ -67,7 +67,7 @@ class RuntimeModuleExecutor:
         result = ExecutionResult(returns=None, std_output='')
         with self._redirect_stdout(result):
             if code:
-                compiler = RuntimeModuleCompiler(
+                compiler = Compiler(
                     source=code,
                     origin=self._origin,
                     modulename=self.EXECUTE_MODULE_NAME,

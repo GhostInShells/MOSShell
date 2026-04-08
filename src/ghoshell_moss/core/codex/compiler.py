@@ -4,7 +4,7 @@ from types import ModuleType
 from ._utils import is_typing
 import inspect
 
-__all__ = ['RuntimeModuleCompiler']
+__all__ = ['Compiler']
 
 
 def _escape_python_indent(source: str) -> str:
@@ -36,7 +36,7 @@ def _escape_python_indent(source: str) -> str:
     return '\n'.join([line[min_indent:] if line.strip() else "" for line in lines])
 
 
-class RuntimeModuleCompiler:
+class Compiler:
     """
     在运行时, 为一个存在的 Module 编译一段新代码, 不直接污染原来的 module.
     提供 Module 级别的运行时容器, 复制原始 module 的类型, 但不复制属性和实例.

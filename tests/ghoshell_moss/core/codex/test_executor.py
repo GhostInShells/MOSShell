@@ -1,10 +1,10 @@
-from ghoshell_moss.core.codex.runtime.executor import RuntimeModuleExecutor
-from ghoshell_moss.core.codex.runtime import compiler
+from ghoshell_moss.core.codex.executor import Executor
+from ghoshell_moss.core.codex import compiler
 import asyncio
 
 
 def test_execute_baseline():
-    executor = RuntimeModuleExecutor(
+    executor = Executor(
         compiler,
 
     )

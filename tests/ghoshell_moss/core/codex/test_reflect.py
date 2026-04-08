@@ -1,7 +1,7 @@
 from typing import TypedDict
 import inspect
-from ghoshell_moss.core.codex.runtime import _reflect
-from ghoshell_moss.core.codex.runtime._reflect import reflect_imported_locals_by_modulename, reflect_prompt_from_value
+from ghoshell_moss.core.codex import _reflect
+from ghoshell_moss.core.codex._reflect import reflect_imported_locals_by_modulename, reflect_prompt_from_value
 
 
 class Foo(TypedDict):
@@ -12,7 +12,7 @@ def test_reflect_locals_imported_baseline():
     assert inspect.ismodule(_reflect)
     # inspect 也被 prompts 库引用了.
     assert not inspect.isbuiltin(inspect)
-    attr_prompts = reflect_imported_locals_by_modulename("ghoshell_codex.runtime.reflect", _reflect.__dict__)
+    attr_prompts = reflect_imported_locals_by_modulename("ghoshell_codex.reflect", _reflect.__dict__)
     data = {}
     array = []
     for name, prompt in attr_prompts:

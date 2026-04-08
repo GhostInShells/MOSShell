@@ -6,7 +6,7 @@ import inspect
 from ghoshell_common.helpers import import_from_path
 
 __all__ = [
-    'RuntimeModuleReflector',
+    'Reflector',
     'reflect_module',
     'reflect_module_by_import_path',
     'reflect_any_by_import_path',
@@ -20,7 +20,7 @@ def reflect_module(module: ModuleType) -> str:
     """
     generate llm-oriented prompt from runtime module
     """
-    return RuntimeModuleReflector.from_module(module).reflect()
+    return Reflector.from_module(module).reflect()
 
 
 def reflect_any_by_import_path(import_path: str) -> str:
@@ -28,7 +28,7 @@ def reflect_any_by_import_path(import_path: str) -> str:
     :param import_path: [module.path][:attribute]
     :return: value
     """
-    from ghoshell_moss.core.codex.runtime._reflect import reflect_prompt_from_value
+    from ghoshell_moss.core.codex._reflect import reflect_prompt_from_value
     value = import_from_path(import_path)
     if isinstance(value, ModuleType):
         return reflect_module(value)
@@ -48,7 +48,7 @@ def reflect_module_by_import_path(import_path: str) -> str:
     return reflect_module(module)
 
 
-class RuntimeModuleReflector:
+class Reflector:
     """
     reflect module source code in runtime.
     """
@@ -68,7 +68,7 @@ class RuntimeModuleReflector:
     @classmethod
     @lru_cache(maxsize=100)
     def from_module(cls, module: ModuleType) -> Self:
-        return RuntimeModuleReflector(module)
+        return Reflector(module)
 
     @property
     def source(self) -> str:
