@@ -36,6 +36,11 @@ from ghoshell_moss.moss.manifests.topics import (
     match_topic_infos,
     TopicInfo
 )
+# 假设你已经定义了 search_config_infos_from_package
+from ghoshell_moss.moss.manifests.configs import (
+    search_config_infos_from_package,
+    ConfigInfo
+)
 
 app = typer.Typer(
     help="MOSS Workspace Management Utilities. Handles environment discovery and initialization.",
@@ -382,3 +387,83 @@ def _display_topic_detail(info: TopicInfo):
     if info.model_source:
         console.print("\n[bold cyan]Python Model Definition:[/bold cyan]")
         console.print(Syntax(info.model_source, "python", theme="monokai", line_numbers=True))
+
+
+@app.command(name="configs")
+def list_configs(
+        search: str = typer.Argument(
+            "",
+            help="Search pattern for config name."
+        ),
+        detail: bool = typer.Option(
+            False, "--detail", "-d",
+            help="Show detailed schema and default values."
+        )
+):
+    """
+    Explore and manage environment configurations in MOSS.
+    """
+    env = Environment.discover()
+    env.bootstrap()
+    # 1. 发现声明路径下的所有 Config 实例
+    all_configs = search_config_infos_from_package()
+
+    # 2. 匹配逻辑 (支持简单模糊匹配)
+    results = [
+        info for name, info in all_configs.items()
+        if search.lower() in name.lower()
+    ]
+
+    if not results:
+        console.print(f"[yellow]No configurations found matching: '{search}'[/yellow]")
+        return
+
+    # 3. 展示逻辑：唯一匹配或强制 detail 时显示详情
+    if (len(results) == 1 and search) or detail:
+        for info in results:
+            _display_config_detail(info)
+    else:
+        _display_config_table(results)
+
+
+def _display_config_table(configs: list[ConfigInfo]):
+    """展示配置项全景图"""
+    table = Table(title="[bold blue]MOSS Environment Configurations[/bold blue]", box=None)
+    table.add_column("Config Name", style="green", no_wrap=True)
+    table.add_column("Module Path", style="dim")
+    table.add_column("Description", ratio=1)
+
+    for info in sorted(configs, key=lambda x: x.name):
+        table.add_row(
+            info.name,
+            info.found,
+            info.description.split('\n')[0]
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Found {len(configs)} configuration definitions.[/dim]")
+
+
+def _display_config_detail(info: ConfigInfo):
+    """展示具体的配置契约与默认值"""
+    console.print(f"\n[bold blue]Config Detail:[/bold blue] [green]{info.name}[/green]")
+    console.print(f"[dim]Defined in: {info.file}[/dim]\n")
+    console.print(f"[dim]ConfigType is: {info.model_path}[/dim]\n")
+
+    # 1. 描述
+    if info.description:
+        console.print(Panel(info.description, title="Description", title_align="left", border_style="blue"))
+
+    # 2. 默认值展示 (YAML 格式对模型非常友好)
+    console.print("\n[bold cyan]Default Values (Seed):[/bold cyan]")
+    console.print(Syntax(info.dump_yaml(), "yaml", theme="monokai", background_color="default"))
+
+    # 3. JSON Schema (用于验证模型生成的配置是否合法)
+    console.print("\n[bold cyan]Structure JSON Schema:[/bold cyan]")
+    schema_json = json.dumps(info.schema.json_schema, indent=2, ensure_ascii=False)
+    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
+
+    # 4. 源码展示
+    console.print("\n[bold cyan]Config Logic Source:[/bold cyan]")
+    console.print(Syntax(info.source, "python", theme="monokai", line_numbers=True))
+    console.print("-" * 40)

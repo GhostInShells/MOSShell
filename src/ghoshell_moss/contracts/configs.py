@@ -1,19 +1,32 @@
 import yaml
 from abc import ABC, abstractmethod
-from typing import TypeVar, Type, Optional, Union
+from typing import TypeVar, Type, Optional, Union, Any
 from typing_extensions import Self
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ghoshell_common.helpers import generate_import_path
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_container import IoCContainer, Provider
 from .workspace import Storage, Workspace
 
 __all__ = [
-    'ConfigType', 'ConfigStore',
+    'ConfigType', 'ConfigStore', 'ConfigSchema',
     'YamlConfigStore',
     'LocalConfigStore',
     'WorkspaceYamlConfigStoreProvider',
 ]
+
+
+class ConfigSchema(BaseModel):
+    name: str = Field(
+        description="config name, determine config key in ConfigStore.",
+    )
+    description: str = Field(
+        default='',
+        description="config description.",
+    )
+    json_schema: dict[str, Any] = Field(
+        description="config json schema.",
+    )
 
 
 class ConfigType(BaseModel, ABC):
@@ -39,6 +52,15 @@ class ConfigType(BaseModel, ABC):
     def from_yaml(cls, data: str) -> Self:
         dict_data = yaml.safe_load(data)
         return cls.model_validate(dict_data)
+
+    @classmethod
+    def to_config_schema(cls) -> ConfigSchema:
+        return ConfigSchema(
+            name=cls.conf_name(),
+            description=cls.__doc__ or '',
+            json_schema=cls.model_json_schema(),
+        )
+
 
 
 CONF_TYPE = TypeVar('CONF_TYPE', bound=ConfigType)
