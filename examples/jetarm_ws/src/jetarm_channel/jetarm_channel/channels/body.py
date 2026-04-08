@@ -1,21 +1,19 @@
+from ghoshell_moss.channels.py_channel import PyChannel
+from ghoshell_moss.prototypes.robot_v1.main_channel import run_trajectory, reset_pose
+from ghoshell_moss.concepts.states import StateBaseModel
+from pydantic import Field
 import asyncio
 
-from pydantic import Field
-
-from ghoshell_moss.core.concepts.states import StateBaseModel
-from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import reset_pose, run_trajectory
 
 body_chan = PyChannel(name="body")
 
 policy_pause_event = asyncio.Event()
 
-
-@body_chan.build.idle
+@body_chan.build.on_policy_run
 async def on_policy_run():
     policy_pause_event.clear()
     while not policy_pause_event.is_set():
-        state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
+        state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
         if state_model.policy == "breathing":
             await _breathing()
         elif state_model.policy == "waving":
@@ -30,14 +28,16 @@ async def on_policy_run():
             break
 
 
+@body_chan.build.on_policy_pause
+async def on_policy_pause():
+    policy_pause_event.set()
+
+@body_chan.build.state_model()
 class BodyPolicyStateModel(StateBaseModel):
     state_name = "body"
     state_desc = "body state model"
 
     policy: str = Field(default="breathing", description="body policy")
-
-
-body_chan.build.state_model(BodyPolicyStateModel)
 
 mock_policy = "breathing"
 
@@ -49,14 +49,13 @@ async def set_default_policy(policy: str = "breathing"):
 
     :param policy:  body policy, default is breathing, choices are breathing, waving, thinking and reset_pose
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
     state_model.policy = policy
     global mock_policy
     mock_policy = policy
     await body_chan.broker.states.save(state_model)
 
-
-@body_chan.build.description()
+@body_chan.build.with_description()
 def description() -> str:
     """获取当前body policy"""
     return f"当前body policy是{mock_policy}"
@@ -84,17 +83,15 @@ async def _waving():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def waving():
     """
     波浪wave
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "waving":
         return
     await _waving()
-
 
 @body_chan.build.command()
 async def curious_looking():
@@ -115,7 +112,6 @@ async def curious_looking():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def greeting():
@@ -140,7 +136,6 @@ async def greeting():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def nodding_confirmation():
@@ -170,7 +165,6 @@ async def nodding_confirmation():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def shaking_refusal():
     """
@@ -199,7 +193,6 @@ async def shaking_refusal():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def surprised():
     """
@@ -224,7 +217,6 @@ async def surprised():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def happy_swing():
@@ -251,7 +243,6 @@ async def happy_swing():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def sad_bowing():
     """
@@ -271,7 +262,6 @@ async def sad_bowing():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def proud_show():
@@ -301,7 +291,6 @@ async def proud_show():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def confused_tilting():
     """
@@ -328,7 +317,6 @@ async def confused_tilting():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def alert_defending():
@@ -368,7 +356,6 @@ async def alert_defending():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def friendly_inviting():
     """
@@ -395,7 +382,6 @@ async def friendly_inviting():
     """
     await run_trajectory(text)
 
-
 async def _thinking():
     text = """
     {
@@ -414,17 +400,15 @@ async def _thinking():
         """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def thinking():
     """
     思考
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "thinking":
         return
     await _thinking()
-
 
 @body_chan.build.command()
 async def sleepy_yawning():
@@ -446,7 +430,6 @@ async def sleepy_yawning():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def draw_circle():
@@ -471,7 +454,6 @@ async def draw_circle():
     }
     """
     await run_trajectory(text)
-
 
 @body_chan.build.command()
 async def snake_slithering():
@@ -524,17 +506,15 @@ async def _breathing():
     """
     await run_trajectory(text)
 
-
 @body_chan.build.command()
 async def breathing():
     """
     呼吸（一次）
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
+    state_model = await body_chan.broker.states.get_model(BodyPolicyStateModel)
     if state_model.policy == "breathing":
         return
     await _breathing()
-
 
 @body_chan.build.command()
 async def stretch():

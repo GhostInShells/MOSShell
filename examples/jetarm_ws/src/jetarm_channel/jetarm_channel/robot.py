@@ -1,5 +1,5 @@
-from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import DegreeToRadiansParser
-from ghoshell_moss_contrib.prototypes.ros2_robot.models import Controller, Joint, RobotInfo
+from ghoshell_moss.prototypes.robot_v1.models import RobotInfo, Controller, Joint
+from ghoshell_moss.prototypes.robot_v1.joint_parsers import DegreeToRadiansParser
 
 jetarm_robot = RobotInfo(
     name="JetArm",
@@ -22,6 +22,7 @@ jetarm_robot = RobotInfo(
             max_value=60.0,
             value_parser=DegreeToRadiansParser.name(),
         ),
+
     ),
     Controller(
         name="neck",
@@ -67,7 +68,7 @@ jetarm_robot = RobotInfo(
             min_value=-60.0,
             max_value=60.0,
             value_parser=DegreeToRadiansParser.name(),
-        ),
+        )
     ),
     Controller(
         name="waist",
@@ -82,5 +83,5 @@ jetarm_robot = RobotInfo(
             max_value=60.0,
             value_parser=DegreeToRadiansParser.name(),
         )
-    ),
+    )
 )

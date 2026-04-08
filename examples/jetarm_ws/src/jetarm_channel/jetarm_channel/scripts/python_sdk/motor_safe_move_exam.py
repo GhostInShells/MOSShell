@@ -66,8 +66,8 @@ def main():
         try:
             board.bus_servo_set_position(1.0, [[TARGET_SERVO_ID, center_position]])
             time.sleep(1.0)
-        except Exception:
-            traceback.print_exc()
+        except:
+            pass
         print("测试已终止")
     except Exception as e:
         print(f"测试过程中发生错误: {e}")

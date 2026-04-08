@@ -1,0 +1,62 @@
+# JetArm 6-DOF 机械臂关节映射配置
+# 命名规则: [位置]_[运动轴]。运动轴: roll(绕X), pitch(绕Y), yaw(绕Z)
+
+# base_roll:
+joint1:
+  id: 1
+  min_pulse: 0      # 最右边
+  max_pulse: 1000   # 最左边
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
+
+#shoulder_pitch:
+joint2:
+  id: 2
+  min_pulse: 0      # 最低点
+  max_pulse: 1000   # 最高点
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
+
+#elbow_pitch:
+joint3:
+  id: 3
+  min_pulse: 0      # 手臂最伸直（向下）?
+  max_pulse: 1000   # 手臂最弯曲（向上）?
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
+
+#wrist_pitch:
+joint4:
+  id: 4
+  min_pulse: 0      # 手腕下压
+  max_pulse: 1000   # 手腕上翘
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
+
+#wrist_roll:
+joint5:
+  id: 5
+  min_pulse: 0      # 最右
+  max_pulse: 1000   # 最左
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
+
+#gripper:
+r_joint:
+  id: 10          # 注意ID是10
+  min_pulse: 300    # 紧闭
+  max_pulse: 600    # 全开
+  min_rad: -0.52
+  home_rad: 0.0
+  max_rad: 0.52
+  direction: 1    # 方向系数，用于调整物理运动与数学正负号的关系
