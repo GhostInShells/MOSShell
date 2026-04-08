@@ -64,17 +64,14 @@ where = ["src"]
 exclude = ["test_*", ".discuss*", ".design", ".memory"]
 
 [tool.setuptools.package-data]
+# 简化匹配逻辑，专注于非代码资源. by gemini 3
 "ghoshell_moss.moss.workspace_stub" = [
-    "*.py",
-    "**/*.py",
-    "*.md",
     "**/*.md",
-    ".env_example",
-    "**/.env_example",
-    ".gitignore",
+    "**/.env.example",
     "**/.gitignore",
-    "*.ini",
+    "**/*.ini",
     "**/*.yaml",
+    "**/*.toml",  # 建议加上，万一以后有子配置
 ]
 
 [tool.pdm.build]

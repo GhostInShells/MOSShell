@@ -1,0 +1,15 @@
+{
+  // 模式：peer (对等), client (客户端), router (路由)
+  // MOSS 节点通常建议用 peer 或 client
+  mode: "peer",
+
+  connect: {
+    // 如果你知道路由器的 IP，取消注释
+    // endpoints: ["tcp/192.168.1.100:20770"]
+  },
+
+  listen: {
+    // 允许别人通过以下方式连接我
+    endpoints: ["tcp/0.0.0.0:20770"]
+  }
+}

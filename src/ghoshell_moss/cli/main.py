@@ -7,6 +7,7 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import codex
 from ghoshell_moss.cli import concepts
+from ghoshell_moss.cli import workspace
 
 __version__ = "0.1.0-beta"
 
@@ -20,6 +21,7 @@ app = typer.Typer(
 )
 
 app.add_typer(codex.app, name="codex", short_help="Python runtime inspect tools")
+app.add_typer(workspace.app, name="ws", short_help="MOSS Workspace tools")
 app.command(name='concepts', short_help="show concepts of MOSS")(concepts.show_concepts)
 
 

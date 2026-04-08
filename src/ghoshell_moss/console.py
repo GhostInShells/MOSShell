@@ -9,13 +9,12 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion, CompleteEvent
 from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import AnyFormattedText, StyleAndTextTuples
+from prompt_toolkit.formatted_text import StyleAndTextTuples
+from ghoshell_moss.moss.environment import Environment
 from rich.console import Console
 from rich.text import Text
 from rich.rule import Rule
 from typer import Typer
-import typer
-import click
 
 __all__ = ["TyperAppConsole", "TyperAppCompleter", "main"]
 
@@ -113,10 +112,12 @@ class TyperAppConsole:
             typer_module_name: str,
             typer_app_name: str = 'app',
             exit_command: Optional[str] = None,
+            env: Environment | None = None,
     ) -> None:
         self.app_module: str = typer_module_name
         self.console: Console = Console()
         self.kb: KeyBindings = KeyBindings()
+        self.env: Environment | None = env
         self._setup_bindings()
         self.exit_command: str = exit_command or self.EXIT_COMMAND
 
@@ -171,7 +172,7 @@ class TyperAppConsole:
         self.console.print(Rule(title=Text.from_markup(title), style="cyan"))
 
         try:
-            subprocess.run(cmd_list, check=False)
+            subprocess.run(cmd_list, check=False, env=self.env.dump_moss_env(for_child_process=True))
         except KeyboardInterrupt:
             self.console.print(Text("\n[Aborted by User]", style="bold red"))
         finally:
@@ -239,7 +240,11 @@ class TyperAppConsole:
 
 def main() -> None:
     # 这里的模块路径请根据实际情况修改
-    console = TyperAppConsole(typer_module_name="ghoshell_moss.cli.main", typer_app_name="app")
+    console = TyperAppConsole(
+        typer_module_name="ghoshell_moss.cli.main",
+        typer_app_name="app",
+        env=Environment.discover(),
+    )
     console.run()
 
 
