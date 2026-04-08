@@ -2,7 +2,7 @@ import sys
 import subprocess
 import asyncio
 import importlib
-from typing import Iterable, Optional, List, Tuple, Type, Any, cast
+from typing import Iterable, Optional, List, Any
 
 from click import Group, Command
 from prompt_toolkit import PromptSession
@@ -16,7 +16,7 @@ from rich.text import Text
 from rich.rule import Rule
 from typer import Typer
 
-__all__ = ["TyperAppConsole", "TyperAppCompleter", "main"]
+__all__ = ["TyperAppController", "TyperAppCompleter", "main"]
 
 
 class TyperAppCompleter(Completer):
@@ -101,7 +101,7 @@ class TyperAppCompleter(Completer):
             pass
 
 
-class TyperAppConsole:
+class TyperAppController:
     COMMAND_MARK: str = "/"
     HELP_MARK: str = "?"
     EXIT_COMMAND: str = "/exit"
@@ -161,6 +161,28 @@ class TyperAppConsole:
         """
         同步执行子进程。
         """
+        parts = command_str.split()
+        if not is_help and parts:
+            try:
+                import typer.main
+                current_click_obj: Any = typer.main.get_group(self.app)
+
+                # 尝试沿着命令路径走到底，看看最后停在 Command 还是 Group
+                for part in parts:
+                    if isinstance(current_click_obj, Group):
+                        next_obj = current_click_obj.commands.get(part)
+                        if next_obj:
+                            current_click_obj = next_obj
+                        else:
+                            break
+
+                # 如果最后停在了一个 Group 且用户没有继续输入子命令
+                # 或者用户输入的就是一个空 Group，强制触发 --help
+                if isinstance(current_click_obj, Group):
+                    is_help = True
+            except Exception:
+                pass
+
         actual_cmd_body: str = f"{command_str} --help" if is_help else command_str
 
         prefix_list: List[str] = [sys.executable, "-m", "typer", self.app_module, "run"]
@@ -240,12 +262,12 @@ class TyperAppConsole:
 
 def main() -> None:
     # 这里的模块路径请根据实际情况修改
-    console = TyperAppConsole(
+    controller = TyperAppController(
         typer_module_name="ghoshell_moss.cli.main",
         typer_app_name="app",
         env=Environment.discover(),
     )
-    console.run()
+    controller.run()
 
 
 if __name__ == "__main__":

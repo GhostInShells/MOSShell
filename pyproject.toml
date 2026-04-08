@@ -57,7 +57,7 @@ matrix = [
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
-moss-console = "ghoshell_moss.console:main"
+moss-ctl = "ghoshell_moss.cli.control:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
