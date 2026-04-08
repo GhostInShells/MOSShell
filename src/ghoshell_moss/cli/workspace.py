@@ -16,9 +16,11 @@ import os
 import stat
 import shutil
 import typer
+import json
 from rich.console import Console
 from rich.table import Table
 from rich.syntax import Syntax
+from rich.panel import Panel
 from ghoshell_moss.moss.manifests.contracts import (
     search_contract_infos_from_package,
     match_contract_infos,
@@ -28,6 +30,11 @@ from ghoshell_moss.moss.manifests.contracts import (
 from ghoshell_moss.moss.environment import (
     Environment,
     META_INSTRUCTION_FILENAME,
+)
+from ghoshell_moss.moss.manifests.topics import (
+    search_topic_infos_from_package,
+    match_topic_infos,
+    TopicInfo
 )
 
 app = typer.Typer(
@@ -301,3 +308,77 @@ def _display_contract_detail(info: ContractInfo):
     console.print("\n[bold]Contract Source Definition:[/bold]")
     syntax = Syntax(info.source, "python", theme="monokai", line_numbers=True)
     console.print(syntax)
+
+
+@app.command(name="topics")
+def list_topics(
+        search: str = typer.Argument(
+            "",
+            help="Search pattern for topic name or topic type."
+        )
+):
+    """
+    Introspect and discover event topics available in the MOSS ecosystem.
+    """
+    env = Environment.discover()
+    env.bootstrap()
+    # 1. 发现
+    all_topics = search_topic_infos_from_package()
+
+    # 2. 过滤
+    results = list(match_topic_infos(all_topics, search)) if search else list(all_topics.values())
+
+    if not results:
+        console.print(f"[yellow]No topics found matching: '{search}'[/yellow]")
+        return
+
+    # 3. 分发：唯一匹配显示 Schema 详情，否则显示列表
+    if len(results) == 1 and search:
+        _display_topic_detail(results[0])
+    else:
+        _display_topic_table(results, is_filtered=bool(search))
+
+
+def _display_topic_table(topics: list[TopicInfo], is_filtered: bool):
+    """展示 Topic 概览表"""
+    title = "[bold magenta]MOSS Event Topics[/bold magenta]"
+    if is_filtered:
+        title += " (Filtered)"
+
+    table = Table(title=title, box=None, header_style="bold cyan")
+    table.add_column("Topic Name", style="green", no_wrap=True)
+    table.add_column("Type", style="yellow")
+    table.add_column("Description", style="dim", ratio=1)
+
+    # 按照名称排序，方便模型阅读
+    for info in sorted(topics, key=lambda x: x.name):
+        table.add_row(
+            info.name,
+            info.type,
+            info.description.split('\n')[0]  # 只取第一行描述
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Total: {len(topics)} topics discovered.[/dim]")
+
+
+def _display_topic_detail(info: TopicInfo):
+    """展示 Topic 的深度定义和 JSON Schema，这是 AI 的“操作指南”"""
+    console.print(f"\n[bold magenta]Topic Detail:[/bold magenta]")
+    console.print(f"[dim]Name: {info.name}[/dim]")
+    console.print(f"[dim]Type: {info.type}[/dim]")
+    console.print(f"[dim]Found in: {info.found}[/dim]\n")
+
+    # 1. 描述部分
+    if info.description:
+        console.print(Panel(info.description, title="Description", title_align="left", border_style="dim"))
+
+    # 2. JSON Schema 部分 (模型最看重这个)
+    console.print("\n[bold cyan]Payload JSON Schema:[/bold cyan]")
+    schema_json = json.dumps(info.json_schema, indent=2, ensure_ascii=False)
+    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
+
+    # 3. 源码参考 (可选，如果模型想看具体的 Pydantic 逻辑)
+    if info.model_source:
+        console.print("\n[bold cyan]Python Model Definition:[/bold cyan]")
+        console.print(Syntax(info.model_source, "python", theme="monokai", line_numbers=True))

@@ -1,5 +1,4 @@
 from typing import Iterable, Any
-from pydantic import Field, dataclasses
 from ghoshell_container import Provider
 from ghoshell_common.helpers import generate_import_path
 from ghoshell_moss.core.codex.discover import scan_package, is_native_to
@@ -17,7 +16,7 @@ __all__ = [
     'ContractInfo',
     'read_contract_info',
     'match_contract_infos',
-    'search_contract_in_package',
+    'find_contract_infos_from_package',
     'search_contract_infos_from_package',
 ]
 
@@ -28,7 +27,6 @@ class ContractInfo:
     """
     contract info of the provider.
     """
-    #
     found: str
     'the python module import path where found the contract provider, pattern foo.bar:attr'
 
@@ -78,7 +76,7 @@ def search_contract_infos_from_package(
     search contract infos from a python package.
     """
     providers = set()
-    for found_file, found_path, provider in search_contract_in_package(package_import_path):
+    for found_file, found_path, provider in find_contract_infos_from_package(package_import_path):
         if provider in providers:
             continue
         providers.add(provider)
@@ -87,7 +85,7 @@ def search_contract_infos_from_package(
             yield contract_info
 
 
-def search_contract_in_package(package_import_path: str) -> Iterable[tuple[ModuleFile, ModulePath, Provider]]:
+def find_contract_infos_from_package(package_import_path: str) -> Iterable[tuple[ModuleFile, ModulePath, Provider]]:
     """
     实现方案：
     1. 递归扫描 package (depth=2 或更多，视你 manifests 目录层级而定)

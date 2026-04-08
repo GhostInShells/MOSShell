@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Literal, TypedDict, Required, Any, Protocol, Annotated
-
+from typing import Generic, TypeVar, Literal, Any, Protocol, Annotated
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.message import WithAdditional, Addition
@@ -21,21 +20,34 @@ __all__ = [
     "LogTopic",
     "ErrorTopic",
     "TopicNamePattern",
+    "TopicSchema",
 ]
 
 TopicNamePattern = r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
 TopicName = Annotated[str, Field(pattern=TopicNamePattern)]
 SubscribeKeep = Literal["latest", "oldest"]
-_TopicType = str
+TopicType = str
 
 
-class TopicSchema(TypedDict):
+class TopicSchema(BaseModel):
     """
     self describing Topic Schema
     """
-    topic_name: Required[TopicName]
-    topic_type: Required[_TopicType]
-    json_schema: Required[dict[str, Any]]
+    topic_name: TopicName = Field(
+        description="topic name",
+        pattern=TopicNamePattern,
+    )
+    topic_type: TopicType = Field(
+        description="topic type",
+    )
+    description: str = Field(
+        default="",
+        description="topic description",
+    )
+    json_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="topic json schema",
+    )
 
 
 class TopicMeta(BaseModel):
@@ -82,11 +94,18 @@ class Topic(BaseModel, WithAdditional):
     可以慢慢迭代.
     """
 
-    meta: TopicMeta = Field(description="meta information")
+    meta: TopicMeta = Field(
+        default_factory=TopicMeta,
+        description="meta information",
+    )
 
     data: dict = Field(
         description="the data of the topic",
     )
+
+    @classmethod
+    def from_data(cls, data: dict) -> Self:
+        return cls(data=data)
 
     def is_overdue(self) -> bool:
         """topic 是否过期. 过期的 Service 应该直接丢弃. """
@@ -121,11 +140,16 @@ class TopicModel(BaseModel, ABC):
         """
         if topic_name is None:
             topic_name = cls.default_topic_name()
-        # todo: 考虑 json_schema 里大量冗余都是 meta 的部分.
+        json_schema = cls.model_json_schema()
+        # topic service generate meta
+        del json_schema['properties']['meta']
+        if '$defs' in json_schema:
+            del json_schema['$defs']
         return TopicSchema(
             topic_name=topic_name,
             topic_type=cls.topic_type(),
-            json_schema=cls.model_json_schema(),
+            json_schema=json_schema,
+            description=cls.__doc__ or '',
         )
 
     @classmethod
@@ -312,7 +336,7 @@ class Publisher(Generic[TOPIC_MODEL], ABC):
 
 class TopicService(ABC):
     """
-    实现一个基本的 TopicService, 能够实现 pub / sub
+    实现一个基本的 TopicService, 能够在 asyncio 环境中实现 pub / sub
     注意!! TopicService 是业务层的实现, 并不是物理层的实现. 物理层的实现要充分考虑 MOSS 架构的多链路双工通讯问题.
     目前物理层通讯的底座是 Duplex Channel Connection.
     可以在 Channel 跨进程通讯之间提供统一的 Connection 层.
