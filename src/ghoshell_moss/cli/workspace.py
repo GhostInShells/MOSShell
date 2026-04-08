@@ -12,12 +12,18 @@
 # Signed by Gemini 3
 # Thanks~ (by the project author)
 
-import typer
 import os
 import stat
+import shutil
+import typer
 from rich.console import Console
 from rich.table import Table
-import shutil
+from rich.syntax import Syntax
+from ghoshell_moss.moss.manifests.contracts import (
+    search_contract_infos_from_package,
+    match_contract_infos,
+    ContractInfo
+)
 
 from ghoshell_moss.moss.environment import (
     Environment,
@@ -219,3 +225,79 @@ def copy_env() -> None:
     except Exception as e:
         rprint(f"[red]Failed to copy env:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+@app.command(name="contracts")
+def list_contracts(
+        search: str = typer.Argument(
+            "",
+            help="Search pattern for contract identity or provider path."
+        )
+):
+    """
+    Explore and inspect contracts discovered in the MOSS workspace.
+    """
+    env = Environment.discover()
+    env.bootstrap()
+    # 1. 执行发现逻辑
+    # 默认从 MOSS.manifests.contracts 扫描，这是我们在 Environment 中约定的路径
+    all_contracts = list(search_contract_infos_from_package())
+
+    # 2. 执行过滤逻辑
+    results = list(match_contract_infos(all_contracts, search)) if search else all_contracts
+
+    if not results:
+        console.print(f"[yellow]No contracts found matching: '{search}'[/yellow]")
+        return
+
+    # 3. 结果分发：唯一匹配显示详情，否则显示列表
+    if search:
+        if len(results) == 1:
+            _display_contract_detail(results[0])
+        else:
+            _display_contract_table(results, is_filtered=bool(search))
+    else:
+        _display_contract_table(results, is_filtered=bool(search))
+
+
+def _display_contract_table(contracts: list[ContractInfo], is_filtered: bool):
+    """打印简洁的 Contract 列表"""
+    title = "[bold cyan]Discovered MOSS Contracts[/bold cyan]"
+    if is_filtered:
+        title += " (Filtered)"
+
+    table = Table(title=title, box=None, header_style="bold magenta")
+    table.add_column("Identity", style="green", no_wrap=True)
+    table.add_column("Type", style="dim")
+    table.add_column("Manifest Source", style="blue")
+
+    for info in contracts:
+        # 这里的 info.name 对应我们定义的 contract 类型导入路径
+        # info.found 对应具体的 provider 实例化位置
+        table.add_row(
+            info.name,
+            "Singleton" if info.singleton else "Factory",
+            info.found
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Total: {len(contracts)} contracts found.[/dim]")
+
+
+def _display_contract_detail(info: ContractInfo):
+    """展示单个 Contract 的深度反射信息"""
+    console.print(f"\n[bold cyan]Contract Detail:[/bold cyan] [green]{info.name}[/green]")
+    console.print(f"[dim]Defined at: {info.file}[/dim]\n")
+
+    # 打印 Docstring
+    if info.docstring:
+        console.print(f"[italic]{info.docstring}[/italic]\n")
+
+    # 展示 Provider 及其配置（如果存在）
+    console.print(f"[bold]Provider Instance:[/bold] {info.found}")
+    console.print(f"[bold]Provider Type:[/bold] {info.provider_type}")
+
+    # 核心：展示 Contract 的定义源码，让 AI 或开发者一目了然
+    console.print("\n[bold]Contract Source Definition:[/bold]")
+    syntax = Syntax(info.source, "python", theme="monokai", line_numbers=True)
+    console.print(syntax)

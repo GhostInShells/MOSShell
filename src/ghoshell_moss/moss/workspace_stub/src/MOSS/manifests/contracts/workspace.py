@@ -2,7 +2,7 @@ from ghoshell_moss.contracts.logger import WorkspaceLoggerProvider
 from ghoshell_moss.contracts.configs import WorkspaceYamlConfigStoreProvider
 
 """
-本文件存放 MOSS 指定模式的进程级别
+本文件存放 workspace 相关的 contracts
 """
 
 # default logger
@@ -15,7 +15,6 @@ logger_provider = WorkspaceLoggerProvider(
     log_interval=1,
     backup_count=5,
 )
-
 
 # 配置文件的读取模块.
 # 默认从 [workspace]/configs  下读取 yaml 类型的配置文件.
