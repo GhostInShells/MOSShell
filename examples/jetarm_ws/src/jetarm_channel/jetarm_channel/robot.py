@@ -1,5 +1,5 @@
-from ghoshell_moss.prototypes.robot_v1.models import RobotInfo, Controller, Joint
-from ghoshell_moss.prototypes.robot_v1.joint_parsers import DegreeToRadiansParser
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import RobotInfo, Controller, Joint
+from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import DegreeToRadiansParser
 
 jetarm_robot = RobotInfo(
     name="JetArm",

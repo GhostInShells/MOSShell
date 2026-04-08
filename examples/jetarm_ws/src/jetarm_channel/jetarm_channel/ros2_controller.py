@@ -1,9 +1,9 @@
 from typing import Dict, List, Optional
 
-from ghoshell_moss.prototypes.robot_v1.abcd import (
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import (
     RobotController, TrajectoryAction, MOSSRobotManager,
 )
-from ghoshell_moss.prototypes.robot_v1.models import (
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import (
     Trajectory
 )
 from ghoshell_common.contracts import LoggerItf

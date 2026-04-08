@@ -1,7 +1,7 @@
 import asyncio
 
 from ghoshell_moss import PyChannel
-from ghoshell_moss.channels.zmq_channel import ZMQChannelProvider
+from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
 from ghoshell_common.contracts import LoggerItf
 
 # action_client_node.py

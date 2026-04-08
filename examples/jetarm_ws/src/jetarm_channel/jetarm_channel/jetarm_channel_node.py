@@ -1,18 +1,19 @@
 from .robot import jetarm_robot
-from ghoshell_moss import Channel
+from ghoshell_moss import MutableChannel
 from .ros2_node import Ros2RobotControllerNode, run_node
-from ghoshell_moss.prototypes.robot_v1.abcd import MOSSRobotManager, RobotController
-from ghoshell_moss.prototypes.robot_v1.joint_parsers import default_parsers
-from ghoshell_moss.channels.zmq_channel import ZMQChannelProvider
-from .channels.body import body_chan
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
+from ghoshell_moss_contrib.prototypes.ros2_robot.joint_parsers import default_parsers
+from ghoshell_moss.transports.zmq_channel import ZMQChannelProvider
+from .channels.body import JetArmChannel
 from os.path import join, dirname, abspath
 import rclpy
 
 
-def main_channel_builder(main_channel: Channel, controller: RobotController) -> Channel:
-    body_chan.build.with_binding(RobotController, controller)
-    body_chan.build.with_binding(MOSSRobotManager, controller.manager())
-    main_channel.import_channels(body_chan)
+def main_channel_builder(main_channel: MutableChannel, controller: RobotController) -> MutableChannel:
+    jetarm = JetArmChannel(name="jetarm", description="JetArm Channel")
+    jetarm.with_binding(RobotController, controller)
+    jetarm.with_binding(MOSSRobotManager, controller.manager())
+    main_channel.import_channels(jetarm)
     return main_channel
 
 

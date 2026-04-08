@@ -11,15 +11,15 @@ except ImportError:
 from typing import Dict, Optional, Callable
 from .ros2_controller import Ros2Controller
 from ghoshell_common.contracts import LoggerItf, DefaultFileStorage
-from ghoshell_moss.concepts.channel import ChannelProvider, Channel
-from ghoshell_moss.prototypes.robot_v1.manager import YamlStorageRobotManager, JointValueParser
-from ghoshell_moss.prototypes.robot_v1.models import RobotInfo
-from ghoshell_moss.prototypes.robot_v1.main_channel import build_robot_main_channel
-from ghoshell_moss.prototypes.robot_v1.abcd import MOSSRobotManager, RobotController
+from ghoshell_moss import ChannelProvider, Channel, MutableChannel
+from ghoshell_moss_contrib.prototypes.ros2_robot.manager import YamlStorageRobotManager, JointValueParser
+from ghoshell_moss_contrib.prototypes.ros2_robot.models import RobotInfo
+from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
+from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import MOSSRobotManager, RobotController
 
 __all__ = ['MAIN_CHANNEL_BUILDER', 'Ros2RobotControllerNode', 'run_node']
 
-MAIN_CHANNEL_BUILDER = Callable[[Channel, RobotController], Channel]
+MAIN_CHANNEL_BUILDER = Callable[[MutableChannel, RobotController], MutableChannel]
 
 
 class Ros2LoggerAdapter(LoggerItf):
