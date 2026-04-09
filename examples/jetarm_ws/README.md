@@ -147,7 +147,7 @@ ros2 action list  #  查看存在的轨迹 action.
 
 机器人所有的能力预计用 `jetarm_channel` 对外提供, 需要在运行 `jetarm_control` 的基础上, 运行:
 
-`ros2 run jetarm_channel jetarm_control.node.py` 暂时还没有专门实现 launch, 用脚本测试.
+`ros2 run jetarm_channel jetarm_channel_node` 暂时还没有专门实现 launch, 用脚本测试.
 
 启动后, channel 可以直接用 python 调试. 调试前最好使用 ghoshell 库本身. 步骤如下:
 
