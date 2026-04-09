@@ -254,7 +254,6 @@ class Message(BaseModel, WithAdditional):
             cls,
             tag: str = 'message',
             *,
-            role: str | None = None,
             name: Optional[str] = None,
             id: Optional[str] = None,
             attributes: dict[str, Any] | None = None,
@@ -267,8 +266,6 @@ class Message(BaseModel, WithAdditional):
         >>> msg = Message.new()
         """
         data: dict[str, Any] = {'tag': tag or ''}
-        if role is not None:
-            data['role'] = role
         if name is not None:
             data['name'] = name
         if id is not None:

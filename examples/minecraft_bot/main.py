@@ -68,7 +68,7 @@ def handle_spawn(*args):
 @On(bot, "chat")
 def handle_msg(this, sender, message, *args):
     if sender and (sender != BOT_USERNAME):
-        moss_message = Message.new(role="user", name=sender).with_content(Text(text=f"{sender}: {message}"))
+        moss_message = Message.new(name=sender).with_content(Text(text=f"{sender}: {message}"))
         chat.input_queue.put_nowait(moss_message)
 
 
@@ -113,7 +113,7 @@ async def stop_follow_player():
 @bot_chan.build.context_messages
 async def context_messages():
     pos = bot.entity.position
-    message = Message.new(role="user", name="__minecraft_bot__").with_content(
+    message = Message.new(name="__minecraft_bot__").with_content(
         Text(text=f"你当前的位置是：{pos.toString()}，周围的方块信息如下："),
     )
     for x_offset in range(-3, 3):  # 东西

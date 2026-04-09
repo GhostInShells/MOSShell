@@ -171,7 +171,7 @@ class Builder(ABC):
         >>> async def building(chan: MutableChannel) -> None:
         >>>     async def context() -> list[Message]:
         >>>         return [
-        >>>             Message.new(role="system").with_content("dynamic information")
+        >>>             Message.new().with_content("dynamic information")
         >>>         ]
         >>>     chan.build.context_messages(context)
         """

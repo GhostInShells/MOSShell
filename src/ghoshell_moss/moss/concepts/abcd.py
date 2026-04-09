@@ -8,7 +8,6 @@ from ghoshell_moss.core.concepts.topic import TopicModel, TopicService
 from ghoshell_container import IoCContainer
 from ghoshell_moss.message import Message
 from pydantic import BaseModel, Field
-from pydantic_ai import ToolReturn, UserContent
 from enum import Enum
 import asyncio
 

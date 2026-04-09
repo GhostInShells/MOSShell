@@ -37,8 +37,7 @@ def test_message_meta_basic():
 def test_message_creation():
     """测试 Message 创建和基本属性"""
     # 使用 new() 方法创建
-    msg = Message.new(role="user", name="test")
-    assert msg.role == "user"
+    msg = Message.new(name="test")
     assert msg.name == "test"
     assert msg.id == msg.meta.id
 
@@ -57,7 +56,7 @@ def test_message_creation():
 def test_message_serialization():
     """测试 Message 序列化/反序列化"""
     # 创建带内容的 Message
-    msg = Message.new(role="assistant", name="ai")
+    msg = Message.new(name="ai")
     msg.with_content("Hello", "World")
 
     # 测试 dump
@@ -72,7 +71,6 @@ def test_message_serialization():
 
     # 测试从 JSON 反序列化
     parsed = Message.model_validate_json(json_str)
-    assert parsed.role == "assistant"
     assert parsed.name == "ai"
     assert parsed.contents is not None
     assert len(parsed.contents) == 2
@@ -123,7 +121,7 @@ def test_addition_system():
 
 
 def test_message_serializable():
-    message = Message.new(role="assistant", name="ai", timestamp=True)
+    message = Message.new(name="ai", timestamp=True)
     js = message.model_dump_json()
     data = json.loads(js)
     new_message = Message(**data)

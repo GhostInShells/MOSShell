@@ -44,7 +44,7 @@ class QueueChat(BaseChat):
     def _send_output(self, role, text: str = "", is_final: bool = False):
         """发送消息到输出队列"""
         # 放入输出队列（非阻塞方式）
-        message = Message.new(role=role, name="__queue__").with_content(Text(text=text))
+        message = Message.new(name="__queue__").with_content(Text(text=text))
         if not is_final:
             message.seq = "incomplete"
         try:

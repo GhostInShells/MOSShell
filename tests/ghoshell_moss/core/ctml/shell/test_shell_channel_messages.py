@@ -16,7 +16,7 @@ async def test_shell_execution_baseline():
     b_chan = PyChannel(name="b")
 
     async def a_message() -> list[Message]:
-        msg = Message.new(role="system").with_content("hello")
+        msg = Message.new().with_content("hello")
         return [msg]
 
     def b_message() -> list[Message]:
@@ -41,14 +41,10 @@ async def test_shell_execution_baseline():
         assert shell.is_running()
         await shell.wait_connected()
         shell_metas = shell.channel_metas()
-        for path, meta in shell_metas.items():
-            print(path, meta)
-
         assert len(shell_metas) == 3
         interpreter = await shell.interpreter()
         metas = interpreter.channels()
         assert len(metas) == 3
 
         messages = interpreter.merge_messages([], [])
-        for msg in messages:
-            print("\n\n", msg.to_xml())
+        assert len(messages) > 0

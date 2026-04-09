@@ -222,7 +222,7 @@ You must complete the presentation on the current page firstly, then call the co
 """
 
     async def context_messages(self):
-        message = Message.new(role="user", name="__slide_frame__")
+        message = Message.new(name="__slide_frame__")
 
         if not self.is_playing:
             message.with_content(Text(text="Not play any slides yet"))
@@ -277,7 +277,7 @@ class SlideStudio:
         self.player.viewer.hide()
 
     async def context_messages(self):
-        message = Message.new(role="user", name="__studio__")
+        message = Message.new(name="__studio__")
         slide_texts = [f"name:{s.name} description:{s.description}" for s in self._assets.refresh()]
         if not slide_texts:
             message.with_content("There has no slides in Slide Studio")

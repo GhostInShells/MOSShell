@@ -210,7 +210,7 @@ class OpenCVVision:
         if image is None:
             # 如果有错误信息，可以返回错误提示（可选）
             if self._last_error:
-                error_msg = Message.new(role="system", name="__vision_error__").with_content(
+                error_msg = Message.new(name="__vision_error__").with_content(
                     Text(text=f"视觉模块错误: {self._last_error}")
                 )
                 return [error_msg]
@@ -219,7 +219,7 @@ class OpenCVVision:
         # 创建视觉消息
         timestamp_str = datetime.fromtimestamp(timestamp).strftime("%d.%m.%Y %H:%M:%S")
 
-        message = Message.new(role="user", name="__vision_system__").with_content(
+        message = Message.new(name="__vision_system__").with_content(
             Text(text=f"这是你最新看到的视觉信息，来自你的视野。时间: {timestamp_str}"),
             Base64Image.from_pil_image(image),
         )

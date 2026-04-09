@@ -29,6 +29,15 @@ class Base64Image(ContentModel):
         return 'image'
 
     @classmethod
+    def from_base64(cls, media_type: str, data: str) -> Self:
+        source = {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data
+        }
+        return cls(source=source)
+
+    @classmethod
     def from_binary(cls, media_type: str, data: bytes) -> Self:
         """从二进制数据直接创建"""
         b64_data = base64.b64encode(data).decode("utf-8")

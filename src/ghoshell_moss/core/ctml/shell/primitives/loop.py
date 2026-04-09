@@ -57,12 +57,12 @@ async def loop(times: int, ctml__):
             return CommandTaskResult(
                 observe=True,
                 messages=[
-                    Message.new(role="system").with_content("loop done at {}".format(times)),
+                    Message.new().with_content("loop done at {}".format(times)),
                 ],
             )
         if loop_times >= 100:
             return CommandTaskResult(
-                observe=True, messages=[Message.new(role="system").with_content("loop stopped after 100 times!")]
+                observe=True, messages=[Message.new().with_content("loop stopped after 100 times!")]
             )
 
         new_tasks = shell.parse_tokens_to_command_tasks(_generator())

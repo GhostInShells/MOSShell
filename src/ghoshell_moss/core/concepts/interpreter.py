@@ -213,7 +213,7 @@ class Interpretation(BaseModel):
     def execution_messages(self) -> list[Message]:
         messages = self.messages.copy()
         if self.interrupted or self.exception:
-            status_message = Message.new(role="system")
+            status_message = Message.new()
             lines = []
             if self.interrupted:
                 lines.append("Interrupted!")

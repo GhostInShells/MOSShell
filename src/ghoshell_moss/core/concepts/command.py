@@ -1349,7 +1349,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
             if exp is not None and CommandErrorCode.is_failed(exp):
-                item = Message.new(role="user", name=self.caller_name()).with_content("Failed: %r" % exp)
+                item = Message.new(name=self.caller_name()).with_content("Failed: %r" % exp)
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[

@@ -168,7 +168,6 @@ class ScreenCapture:
         # 创建基础消息
         desc = self.status_description()
         message = Message.new(
-            role="user",
             name="__screen_cutting__",
         ).with_content(Text(text=desc))
 
