@@ -228,6 +228,7 @@ class QueueBasedTopicService(TopicService):
 
         self._publish_queue: janus.Queue[Topic] = janus.Queue()
         self._publish_queue_empty = asyncio.Event()
+        self._publishing: set[TopicName] = set()
         self._main_loop_task: Optional[asyncio.Task] = None
         self._logger = logger or logging.getLogger("moss")
         self._dispatch_tasks: set[asyncio.Task] = set()
@@ -380,8 +381,11 @@ class QueueBasedTopicService(TopicService):
     def is_running(self) -> bool:
         return self._started and not self._main_loop_stopped_event.is_set()
 
-    def listening(self) -> list[TopicName]:
+    def subscribing(self) -> list[TopicName]:
         return list(self._subscribers.keys())
+
+    def publishing(self) -> list[TopicName]:
+        return list(self._publishing)
 
     def subscribe(
             self,
@@ -435,6 +439,7 @@ class QueueBasedTopicService(TopicService):
             uid: str | None = None,
             model: type[TopicModel] | None = None,
     ) -> Publisher:
+        self._publishing.add(topic_name)
         publisher = QueueBasedPublisher(
             topic_name=topic_name,
             creator=creator,

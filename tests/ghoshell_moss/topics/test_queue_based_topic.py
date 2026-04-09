@@ -28,7 +28,7 @@ async def test_topic_baseline():
 
     async def consumer():
         async with service.subscribe_model(ErrorTopic) as subscriber:
-            assert len(service.listening()) == 1
+            assert len(service.subscribing()) == 1
             assert subscriber.listening() == ErrorTopic.default_topic_name()
             assert subscriber.is_running()
             while subscriber.is_running():
@@ -65,7 +65,7 @@ async def test_topic_publishers_and_consumers():
 
     async def consumer(_subscriber: Subscriber):
         async with _subscriber:
-            assert len(service.listening()) == 1
+            assert len(service.subscribing()) == 1
             assert _subscriber.listening() == ErrorTopic.default_topic_name()
             assert _subscriber.is_running()
             while _subscriber.is_running():

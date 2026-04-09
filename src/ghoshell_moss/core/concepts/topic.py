@@ -377,10 +377,14 @@ class TopicService(ABC):
         pass
 
     @abstractmethod
-    def listening(self) -> list[TopicName]:
+    def subscribing(self) -> list[TopicName]:
         """
         所有 subscribe 监听的 topic 名称.
         """
+        pass
+
+    @abstractmethod
+    def publishing(self) -> list[TopicName]:
         pass
 
     @abstractmethod

@@ -46,7 +46,8 @@ class ZenohTopicService(TopicService):
         self._publish_queue_empty = asyncio.Event()
         self._main_loop_task: Optional[asyncio.Task] = None
         self._dispatch_tasks: set[asyncio.Task] = set()
-        self._listening: set[TopicName] = set()
+        self._subscribing: set[TopicName] = set()
+        self._publishing: set[TopicName] = set()
         self._log_prefix = "<ZenohBasedTopicService session_id=%s sender=%s>"
         self._started = False
         self._closing_event = ThreadSafeEvent()
@@ -54,6 +55,9 @@ class ZenohTopicService(TopicService):
 
     def _make_topic_key_expr(self, topic_name: str) -> str:
         return self._topic_key_expr.topic_key_expr(topic_name)
+
+    def publishing(self) -> list[TopicName]:
+        return list(self._publishing)
 
     def __repr__(self):
         return self._log_prefix
@@ -70,8 +74,8 @@ class ZenohTopicService(TopicService):
     def is_running(self) -> bool:
         return self._started and not self._closing_event.is_set() and not self._session.is_closed()
 
-    def listening(self) -> list[TopicName]:
-        return list(self._listening)
+    def subscribing(self) -> list[TopicName]:
+        return list(self._subscribing)
 
     def subscribe(self, topic_name: str, *, uid: str | None = None, maxsize: int = 0, keep: SubscribeKeep = "latest",
                   model: type[TopicModel] | None = None) -> Subscriber:
@@ -80,7 +84,7 @@ class ZenohTopicService(TopicService):
             topic_name = topic_name or model.default_topic_name()
 
         key_expr = self._make_topic_key_expr(topic_name)
-        self._listening.add(topic_name)
+        self._subscribing.add(topic_name)
         return ZenohTopicSubscriber(
             session=self._session,
             service_stopped=self._closing_event,
@@ -125,6 +129,7 @@ class ZenohTopicService(TopicService):
         if not topic_name:
             raise ValueError("No topic name provided")
         key_expr = self._make_topic_key_expr(topic_name)
+        self._publishing.add(topic_name)
         return ZenohTopicPublisher(
             session=self._session,
             service_stopped=self._closing_event,

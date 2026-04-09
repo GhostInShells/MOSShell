@@ -36,7 +36,7 @@ async def test_topic_baseline():
         async def consumer():
             async with service.subscribe_model(ErrorTopic) as subscriber:
                 listening_started.set()
-                assert len(service.listening()) == 1
+                assert len(service.subscribing()) == 1
                 assert subscriber is not None
                 assert subscriber.listening() == ErrorTopic.default_topic_name()
                 assert subscriber.is_running()
