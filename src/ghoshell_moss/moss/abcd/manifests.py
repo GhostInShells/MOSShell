@@ -1,24 +1,21 @@
 from abc import ABC, abstractmethod
 
-from typing import Any, TYPE_CHECKING, Iterable, Union
+from typing import Any
 from typing_extensions import Self
 from dataclasses import dataclass
 
 from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema
 from ghoshell_moss.core.concepts.topic import TopicSchema, TopicModel, TopicName
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
-from ghoshell_moss.core.concepts.command import Command, CommandFunc
+from ghoshell_moss.core.concepts.command import Command
 from ghoshell_common.helpers import generate_import_path, import_from_path
 from ghoshell_container import Provider
-from .app import AppInfo
 import inspect
 
 __all__ = [
-    'AppInfo',
     'TopicInfo',
     'ConfigInfo',
     'ContractInfo',
-    'ConfigInfo',
     'Manifests',
 ]
 
@@ -165,73 +162,47 @@ class ContractInfo:
         return inspect.getsource(self.provider.contract())
 
 
-@dataclass
-class ConfigInfo:
-    """
-    Configuration model information
-    """
-    found: str  # 发现 config 的 module name, 如 MOSS.manifests.topics
-    file: str  # 发现 config 的 module filename
-    config: ConfigType  # config 是一个实例, 一定要有默认值. 真实的值会被 config store 以 yaml 保存到目录里. 不过那是运行时配置.
-
-    @property
-    def schema(self) -> ConfigSchema:
-        return self.config.to_config_schema()
-
-    @property
-    def name(self) -> str:
-        return self.config.conf_name()
-
-    @property
-    def source(self) -> str:
-        return inspect.getsource(type(self.config))
-
-    @property
-    def model_path(self) -> str:
-        return generate_import_path(type(self.config))
-
-    @property
-    def description(self) -> str:
-        return self.config.to_config_schema().description
-
-    def default_value(self) -> dict[str, Any]:
-        return self.config.model_dump()
-
-    def dump_yaml(self) -> str:
-        return self.config.to_yaml()
-
-
 class Manifests(ABC):
     """
     MOSS 在环境中发现的各种资源的声明.
     """
 
     @abstractmethod
-    def apps(self) -> list[AppInfo]:
-        pass
-
-    @abstractmethod
     def channels(self) -> dict[ChannelName, Channel]:
         """
-        声明运行时的一级 Channel.
+        从环境中发现的运行时的一级 Channel. 会自动注册到 Shell main channel
+        通过 ghoshell_moss.core.concepts.channel.Channel 实例发现.
         """
         pass
 
     @abstractmethod
-    def primitives(self) -> list[Union[Command, CommandFunc]]:
+    def primitives(self) -> dict[str, Command]:
         """
-        运行时的原语.
+        从环境中发现的运行时原语. 会自动注册到 shell main channel
+        通过 ghoshell_moss.core.concepts.command.Command 实例发现.
         """
         pass
 
     @abstractmethod
     def configs(self) -> dict[str, ConfigInfo]:
+        """
+        环境中发现的配置实例. Runtime 启动时, 如果发现配置不存在, 会初始化它.
+        通过 ghoshell_moss.contracts.ConfigType 实例发现.
+        """
         pass
 
     @abstractmethod
     def topics(self) -> dict[TopicName, TopicInfo]:
+        """
+        环境中发现的 topic 协议. 未来会用来约束可通讯的节点.
+        通过 ghoshell_moss.core.concepts.topic.TopicModel | TopicSchema 发现.
+        """
         pass
 
     @abstractmethod
     def contracts(self) -> list[ContractInfo]:
+        """
+        环境中发现的 IoC 容器依赖, 会自动注册到 IoC 容器中.
+        通过 ghoshell_container.Provider  实例发现.
+        """
         pass

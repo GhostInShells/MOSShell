@@ -1,4 +1,4 @@
-from typing import Literal, Callable, Iterable
+from typing import Literal, Callable, Iterable, Protocol
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -11,6 +11,7 @@ from ghoshell_moss.core.blueprint.states import PrimeChannel
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field, AwareDatetime
+from dataclasses import dataclass
 
 RuntimeState = Literal['created', 'closed', 'idle', 'paused', 'looping', 'closing', 'startup']
 '''
@@ -24,7 +25,7 @@ closed: 已经关闭.
 '''
 
 
-class MOSSToolSet(ABC):
+class IToolSet(ABC):
     """
     将 MOSS runtime 包装成 tools, 希望可以被作为工具提供给别的框架.
     不过需要目标框架自行兼容输出协议.
@@ -173,7 +174,7 @@ class Snapshot(BaseModel):
         )
 
 
-class IMossRuntime(ABC):
+class IRuntime(ABC):
     """
     MOSS 架构的主运行时, 环境中的单例.
     """
@@ -187,7 +188,7 @@ class IMossRuntime(ABC):
         pass
 
     @abstractmethod
-    def as_toolset(self) -> MOSSToolSet:
+    def as_toolset(self) -> IToolSet:
         """
         提供作为工具的交互界面.
         本质上是对 MOSS Runtime 的封装.
@@ -343,42 +344,46 @@ class IMossRuntime(ABC):
         pass
 
 
-class IMossMode(ABC):
+@dataclass(frozen=True)
+class IMode:
     """
     指定的运行模式.
     用来管理 MOSS Runtime 的运行时可发现资源.
     不使用 Mode 仍然可以启动 MOSS.
     """
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """
-        模式的名称.
-        """
-        pass
+    name: str
+    """
+    模式的名称.
+    """
 
-    @property
-    def description(self) -> str:
-        """
-        模式的描述.
-        """
-        return self.docstring.split('\n')[0]
+    docstring: str
+    """
+    模式的详细描述.
+    """
 
-    @property
-    @abstractmethod
-    def docstring(self) -> str:
-        """
-        模式的详细描述.
-        """
-        pass
+    description: str
+    """
+    模式的一句话摘要. 
+    """
 
-    @abstractmethod
-    def manifests(self) -> Manifests:
-        """
-        模式所管理的各种资源.
-        """
-        pass
+    apps: list[str]
+    """
+    允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载.  
+    """
+
+    app_bring_up: list[str]
+    """
+    启动时允许自动启动的 apps. 
+    """
+
+    manifests: Manifests | None
+    """
+    模式所管理的各种资源.
+    """
+
+    import_path: str
+    """找到模式实例的 python module path"""
 
 
 class IMoss(ABC):
@@ -399,7 +404,7 @@ class IMoss(ABC):
         pass
 
     @abstractmethod
-    def list_modes(self) -> dict[str, IMossMode]:
+    def list_modes(self) -> dict[str, IMode]:
         """
         当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
         比如 mac 模式, 机器人模式, 就可以完全隔离开.
@@ -421,9 +426,9 @@ class IMoss(ABC):
     def run(
             self,
             *,
-            mode: IMossMode | str = 'default',
+            mode: IMode | str = 'default',
             session_id: str = 'default',
-    ) -> IMossRuntime:
+    ) -> IRuntime:
         """
         获得 moss 的运行时单例 (会校验唯一的锁, 确保 runtime 全局唯一).
 
