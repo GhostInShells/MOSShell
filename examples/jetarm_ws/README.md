@@ -27,7 +27,7 @@
 1. 在 jetson 上创建一个专门的开发目录，`cd ~ && mkdir MOSShell`
 2. `cd MOSShell && git init` 初始化目标仓库.
 3. 在本地项目中运行 `git remote add jetson ubuntu@ip地址:~/MOSShell`
-4. 在目标目录中通过 `git config receive.denyNonFastForwards false` 设置它允许 push 分支覆盖本地分支
+4. 在目标目录中通过 `git config receive.denyCurrentBranch ignore` 设置它允许 push 分支覆盖本地分支
 5. 以后通过 git 来同步.
 
 ## 确认 ros2 环境

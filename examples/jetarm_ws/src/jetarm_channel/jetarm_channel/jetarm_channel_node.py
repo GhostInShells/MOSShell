@@ -10,10 +10,16 @@ import rclpy
 
 
 def main_channel_builder(main_channel: MutableChannel, controller: RobotController) -> MutableChannel:
-    jetarm = JetArmChannel(name="jetarm", description="JetArm Channel")
-    jetarm.with_binding(RobotController, controller)
-    jetarm.with_binding(MOSSRobotManager, controller.manager())
-    main_channel.import_channels(jetarm)
+    jetarm = JetArmChannel(name="body", description="JetArm Body")
+    # jetarm.with_binding(RobotController, controller)
+    # jetarm.with_binding(MOSSRobotManager, controller.manager())
+    # main_channel.import_channels(jetarm)
+    main_channel.build.command()(jetarm.move)
+    main_channel.build.command()(jetarm.set_idle_move)
+    main_channel.build.context_messages(jetarm.context_messages)
+    main_channel.build.idle(jetarm.on_idle)
+    main_channel.build.with_binding(RobotController, controller)
+    main_channel.build.with_binding(MOSSRobotManager, controller.manager())
     return main_channel
 
 

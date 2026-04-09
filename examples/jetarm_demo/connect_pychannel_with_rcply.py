@@ -19,7 +19,7 @@ trajectory = """
 }
 """
 
-JETARM_ADDRESS = "tcp://192.168.1.15:9527"
+JETARM_ADDRESS = "tcp://192.168.0.103:9527"
 """这个 ip 地址需要根据 jetarm 在局域网内的实际地址进行修改. """
 
 
@@ -47,16 +47,20 @@ async def main():
         address=args.address,
     )
 
-    async with chan.bootstrap() as broker:
-        await broker.refresh_all_metas()
-        meta = broker.meta()
+    async with chan.bootstrap() as runtime:
+        await runtime.wait_connected()
+        meta = runtime.own_meta()
         print(meta.model_dump_json(indent=2))
-        cmd = broker.get_command("run_trajectory")
+        # cmd = runtime.get_command("run_trajectory")
+        #
+        # print("+++++++", cmd.meta())
+        #
+        # r = await cmd(text__=trajectory)
+        # print(r)
 
-        print("+++++++", cmd.meta())
-
-        r = await cmd(trajectory)
-        print(r)
+        move_cmd = runtime.get_command("jetarm:move")
+        move_r = await move_cmd(name="waving")
+        print(move_r)
 
 
 if __name__ == "__main__":
