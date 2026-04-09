@@ -1,4 +1,5 @@
-from typing import Optional, Literal, Self
+from typing import Optional, Literal
+from typing_extensions import Self
 
 from ghoshell_common.helpers import uuid
 from ghoshell_container import IoCContainer, INSTANCE

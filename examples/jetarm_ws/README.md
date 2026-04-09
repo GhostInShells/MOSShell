@@ -24,10 +24,10 @@
 
 使用 ssh 协议可以做文件的双向同步, 很多 ide 都支持. 不过我个人的习惯是:
 
-1. 在 jetson 上创建一个专门的开发目录
-2. 在改目录运行 `git init` 初始化一个目标仓库.
-3. 在本地项目中运行 `git remote add jetson ubuntu@ip地址:/home/ubuntu/...目标地址`
-4. 在目标目录中通过 `git config ....` 设置它允许 push 分支覆盖本地分支
+1. 在 jetson 上创建一个专门的开发目录，`cd ~ && mkdir MOSShell`
+2. `cd MOSShell && git init` 初始化目标仓库.
+3. 在本地项目中运行 `git remote add jetson ubuntu@ip地址:~/MOSShell`
+4. 在目标目录中通过 `git config receive.denyNonFastForwards false` 设置它允许 push 分支覆盖本地分支
 5. 以后通过 git 来同步.
 
 ## 确认 ros2 环境
@@ -40,25 +40,16 @@
 ## 编译 jetarm_ws
 
 连接到目标机器, 创建好本项目的仓库, 确保代码已经传入设备.
-然后进入 `ros2/jetarm_ws` 目录:
 
 ```bash
-cd jetarm_ws
-```
-
-由于需要依赖 ghoshell 下的 ghoshell-moss 等库 (jetarm ws 依赖 ghoshell-moss),
-一个基本做法是进入目标目录, 用 pip 安装到全局 (因为 ros2 的 python 解释器是指定的) 比如:
-
-```bash
-cd libs/ghoshell-moss
-# 运行目录安装当前目录下的 python 包. 
+cd ~/MOSShell
 pip install . 
 ```
 
 然后在 `jetarm_ws` 目录下, 开始编译:
 
 ```bash
-# 先引入 ros2 的环境. 
+cd ~/MOSShell/examples/jetarm_ws
 source /opt/ros/humble/setup.zsh
 colcon build --symbal-link 
 ```
