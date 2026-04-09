@@ -1,5 +1,7 @@
 """
-MOSS 架构核心用 Command 来做驱动. 它包含:
+MOSS 架构核心用 Command 来做驱动.
+
+它包含:
 1. 代码即提示词: 反射代码提供以代码形式描述的提示词.
 2. 完整动态性: 提示词本身可以动态变更
 3. Command Token: 让模型输出的 token 被标记上对应的命令作用域.
@@ -18,7 +20,6 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, AsyncIterable
 from enum import Enum
 from typing import (
     Any,
@@ -29,6 +30,7 @@ from typing import (
     Union,
     ClassVar,
     Protocol,
+    AsyncIterator, Callable, Coroutine, AsyncIterable, TypeAlias,
 )
 
 from ghoshell_common.helpers import uuid, Timeleft
@@ -71,6 +73,7 @@ __all__ = [
     "Observe",
     "CommandCtx",
     "TaskScope",
+    "CommandFunc",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -332,6 +335,7 @@ _CommandName = str
 CommandArgs = list | tuple
 CommandKwargs = dict
 CommandPartial = Callable[[...], Coroutine[None, None, tuple[CommandArgs, CommandKwargs]]]
+CommandFunc: TypeAlias = Union[Callable[[...], Coroutine[None, None, Any]], Callable[[...], Any]]
 
 
 class Command(Generic[RESULT], ABC):

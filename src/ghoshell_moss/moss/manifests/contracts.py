@@ -1,7 +1,8 @@
 from typing import Iterable, Any
 from ghoshell_container import Provider
 from ghoshell_common.helpers import generate_import_path
-from ghoshell_moss.core.codex.discover import scan_package, is_native_to
+from ghoshell_moss.moss.concepts.manifests import ContractInfo
+from ghoshell_moss.core.codex.discover import scan_package
 from dataclasses import dataclass
 import inspect
 

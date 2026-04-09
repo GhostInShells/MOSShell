@@ -232,12 +232,13 @@ ContextType = ContentModel | str | Image.Image | BaseModel | Content
 
 class Message(BaseModel, WithAdditional):
     """
-    MOSS 体系上行给模型的消息体.
+    MOSS 体系上行给模型的消息体. 本质上是 content block 的分组.
     核心目标:
-    1. 持有 pydantic ai 的 contents.
-    2. 基于 meta 提供 moss 架构所必要的关键元信息.
-    3. 默认将 meta 信息用 xml 格式序列化到上下文中.
-    4. 支持消息协议的多层嵌套. 用 xml 包裹.
+    1. 基于 meta 提供 moss 架构所必要的关键元信息.
+    2. 默认将 meta 信息用 xml 格式包裹包含的 contents.
+    3. 支持消息协议的多层嵌套. 用 xml 包裹.
+    4. 可以通过 id 来去重.
+    5. 用自定义的 addition 对象来做扩展.
     """
 
     meta: MessageMeta = Field(

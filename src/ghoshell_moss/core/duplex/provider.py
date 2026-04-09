@@ -333,7 +333,7 @@ class DuplexChannelProvider(ChannelProvider):
         try:
             listening_topics = []
             if self._provider_topic_service is not None:
-                listening_topics = self._provider_topic_service.listening()
+                listening_topics = self._provider_topic_service.subscribing()
             event = CreateSessionEvent(
                 connection_id=self._connection_id,
                 # 提供当前正在监听的事件.

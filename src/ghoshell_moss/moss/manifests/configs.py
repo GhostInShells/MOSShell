@@ -1,51 +1,11 @@
-from typing import Iterable, Dict, Any
-from dataclasses import dataclass
-from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema
+from typing import Dict
+from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.core.codex.discover import scan_package
-from ghoshell_common.helpers import generate_import_path
-import inspect
+from ghoshell_moss.moss.concepts.manifests import ConfigInfo
+
+__all__ = ['search_config_infos_from_package', 'ConfigInfo', 'MANIFEST_CONFIG_PATH']
 
 MANIFEST_CONFIG_PATH = 'MOSS.manifests.configs'
-
-
-@dataclass
-class ConfigInfo:
-    """
-    Configuration model information
-    """
-    found: str  # 发现 config 的 module name, 如 MOSS.manifests.topics
-    file: str  # 发现 config 的 module filename
-    config: ConfigType  # config 是一个实例, 一定要有默认值. 真实的值会被 config store 以 yaml 保存到目录里. 不过那是运行时配置.
-
-    @property
-    def schema(self) -> ConfigSchema:
-        return self.config.to_config_schema()
-
-    @property
-    def name(self) -> str:
-        return self.config.conf_name()
-
-    @property
-    def source(self) -> str:
-        return inspect.getsource(type(self.config))
-
-    @property
-    def model_path(self) -> str:
-        return generate_import_path(type(self.config))
-
-    @property
-    def description(self) -> str:
-        return self.config.to_config_schema().description
-
-    def default_value(self) -> dict[str, Any]:
-        return self.config.model_dump()
-
-    def dump_yaml(self) -> str:
-        return self.config.to_yaml()
-
-
-def is_config(name: str, value: Any) -> bool:
-    return isinstance(value, ConfigType)
 
 
 def search_config_infos_from_package(

@@ -1,74 +1,15 @@
 from typing import Any, Iterable
-from typing_extensions import Self
-from dataclasses import dataclass
-from ghoshell_common.helpers import generate_import_path, import_from_path
-from ghoshell_moss.core.codex.discover import scan_package, is_class
+from ghoshell_moss.core.codex.discover import scan_package
 from ghoshell_moss.core.concepts.topic import TopicModel, TopicSchema
-import inspect
+from ghoshell_moss.moss.concepts.manifests import TopicInfo
+
+__all__ = ['find_topic_infos_from_package', 'MANIFEST_TOPICS_PATH', 'TopicInfo', 'search_topic_infos_from_package']
 
 MANIFEST_TOPICS_PATH = 'MOSS.manifests.topics'
 
 TopicName = str
 ModuleFile = str
 ModulePath = str
-
-
-@dataclass
-class TopicInfo:
-    """
-    Topic info.
-    """
-    found: str  # 发现 topic 的 module name, 如 MOSS.manifests.topics
-    file: str  # 发现 topic 的 module filename
-    model: str  # topic 如果是通过 TopicModel 定义的, 此处是它的 import path.
-    schema: TopicSchema  # topic schema.
-
-    @classmethod
-    def from_topic_type(
-            cls,
-            found: str,
-            file: str,
-            model: type[TopicModel] | TopicSchema,
-            topic_name: str | None = None,
-    ) -> Self:
-        if isinstance(model, type) and issubclass(model, TopicModel):
-            model_path = generate_import_path(model)
-            schema = model.topic_schema(topic_name or None)
-        elif isinstance(model, TopicSchema):
-            model_path = ''
-            schema = model
-        else:
-            raise TypeError(f"'{type(model)}' is not a topic model")
-
-        return TopicInfo(found=found, file=file, schema=schema, model=model_path)
-
-    @property
-    def model_source(self) -> str:
-        """source of topic model"""
-        if self.model:
-            model_type = import_from_path(self.model)
-            return inspect.getsource(model_type)
-        return ''
-
-    @property
-    def description(self) -> str:
-        """topic description"""
-        return self.schema.description
-
-    @property
-    def name(self) -> str:
-        """topic name"""
-        return self.schema.topic_name
-
-    @property
-    def type(self) -> str:
-        """topic type"""
-        return self.schema.topic_type
-
-    @property
-    def json_schema(self) -> dict[str, Any]:
-        """topic JSON Schema"""
-        return self.schema.json_schema
 
 
 def find_topic_infos_from_package(

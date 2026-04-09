@@ -45,7 +45,7 @@ from ghoshell_moss.contracts.configs import ConfigType
 # moss 默认的 workspace 文件夹名.
 # workspace 的绝对路径优先从环境变量寻找, 找不到时按目录发现机制寻找.
 # 路径发现的逻辑是: os getcwd 下, 递归搜索父级目录下, home 目录下.
-DEFAULT_WORKSPACE_DIR_NAME = '.moss'
+DEFAULT_WORKSPACE_DIR_NAME = '.moss_ws'
 META_INSTRUCTION_FILENAME = 'MOSS.md'
 
 # env 文件名. workspace 启动时会从其目录下读取环境变量文件 (by loadenv)
