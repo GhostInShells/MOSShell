@@ -43,18 +43,18 @@ class JetArmChannel(Channel):
         chan.build.context_messages(self.context_messages)
 
         chan.build.command()(self.set_idle_move)
-        chan.build.command(doc=self.move_doc)(self.move)
+        chan.build.command(doc=self.motion_doc)(self.motion)
 
         self._runtime = chan.bootstrap(container=container)
         return self._runtime
 
-    def move_doc(self):
+    def motion_doc(self):
         return f"""
-        机械臂运动控制，可用name有{', '.join(MOVES.keys())}
+        机械臂运动控制，可用name有{', '.join(MOTIONS.keys())}
         """
 
-    async def move(self, name: str):
-        move = MOVES.get(name)
+    async def motion(self, name: str):
+        move = MOTIONS.get(name)
         if not move:
             return CommandTaskResult(
                 observe=False,
@@ -68,7 +68,7 @@ class JetArmChannel(Channel):
     async def on_idle(self):
         try:
             while True:
-                await self.move(self._idle_move)
+                await self.motion(self._idle_move)
         except asyncio.CancelledError:
             pass
 
@@ -99,7 +99,7 @@ class JetArmChannel(Channel):
 
 
 # 统一管理所有动作的配置字典（所有轨迹、描述全部在这里）
-MOVES = {
+MOTIONS = {
     "waving": {
         "text": """
         {

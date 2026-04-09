@@ -58,7 +58,7 @@ async def main():
         # r = await cmd(text__=trajectory)
         # print(r)
 
-        move_cmd = runtime.get_command("jetarm:move")
+        move_cmd = runtime.get_command("move")
         move_r = await move_cmd(name="waving")
         print(move_r)
 

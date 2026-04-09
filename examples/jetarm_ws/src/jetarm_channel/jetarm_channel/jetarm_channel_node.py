@@ -14,7 +14,7 @@ def main_channel_builder(main_channel: MutableChannel, controller: RobotControll
     # jetarm.with_binding(RobotController, controller)
     # jetarm.with_binding(MOSSRobotManager, controller.manager())
     # main_channel.import_channels(jetarm)
-    main_channel.build.command()(jetarm.move)
+    main_channel.build.command(doc=jetarm.motion_doc)(jetarm.motion)
     main_channel.build.command()(jetarm.set_idle_move)
     main_channel.build.context_messages(jetarm.context_messages)
     main_channel.build.idle(jetarm.on_idle)
