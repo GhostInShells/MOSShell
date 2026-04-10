@@ -77,8 +77,7 @@ bot_chan = PyChannel(name=BOT_USERNAME.lower())
 to_follow_player = ""
 
 
-@bot_chan.build.idle
-async def on_policy_run():
+async def on_idle():
     global to_follow_player
     while to_follow_player != "":
         await asyncio.sleep(0.5)
@@ -87,6 +86,8 @@ async def on_policy_run():
         except Exception as ex:
             logging.warning("follow to %s failed: %s", to_follow_player, ex)
             continue
+
+bot_chan.build.idle(on_idle)
 
 
 @bot_chan.build.command()
