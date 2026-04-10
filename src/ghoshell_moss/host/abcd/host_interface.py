@@ -1,4 +1,7 @@
+from socket import fromfd
 from typing import Literal, Callable, Iterable, Protocol
+
+from fastmcp.utilities.inspect import format_mcp_info
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -12,6 +15,8 @@ from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field, AwareDatetime
 from dataclasses import dataclass
+import frontmatter
+from pathlib import Path
 
 RuntimeState = Literal['created', 'closed', 'idle', 'paused', 'looping', 'closing', 'startup']
 '''
@@ -25,7 +30,7 @@ closed: 已经关闭.
 '''
 
 
-class IToolSet(ABC):
+class ToolSet(ABC):
     """
     将 MOSS runtime 包装成 tools, 希望可以被作为工具提供给别的框架.
     不过需要目标框架自行兼容输出协议.
@@ -174,7 +179,7 @@ class Snapshot(BaseModel):
         )
 
 
-class IRuntime(ABC):
+class MossRuntime(ABC):
     """
     MOSS 架构的主运行时, 环境中的单例.
     """
@@ -188,7 +193,7 @@ class IRuntime(ABC):
         pass
 
     @abstractmethod
-    def as_toolset(self) -> IToolSet:
+    def as_toolset(self) -> ToolSet:
         """
         提供作为工具的交互界面.
         本质上是对 MOSS Runtime 的封装.
@@ -344,51 +349,96 @@ class IRuntime(ABC):
         pass
 
 
-@dataclass(frozen=True)
-class Mode:
+class MossMode(BaseModel):
     """
     指定的运行模式.
     用来管理 MOSS Runtime 的运行时可发现资源.
     不使用 Mode 仍然可以启动 MOSS.
     """
 
-    name: str
-    """
-    模式的名称.
-    """
+    name: str = Field(
+        description="模式的名称."
+    )
 
-    docstring: str
-    """
-    模式的详细描述.
-    """
+    instruction: str = Field(
+        description="模式的详细介绍. 也会作为模式的专属 instruction"
+    )
 
-    description: str
-    """
-    模式的一句话摘要. 
-    """
+    description: str = Field(
+        description="模式的一句话简介, 通常是 docstring 的第一句. 也支持独立定义",
+    )
 
-    apps: list[str]
-    """
-    允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载.  
-    """
+    apps: list[str] = Field(
+        default_factory=lambda: ['*'],
+        description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
+    )
 
-    app_bring_up: list[str]
-    """
-    启动时允许自动启动的 apps. 
-    """
+    bring_up_apps: list[str] = Field(
+        default_factory=list,
+        description="启动时允许自动启动的 apps, 规则和 apps 相同. 默认为空. "
+    )
 
-    manifests: Manifest | None
-    """
-    模式所管理的各种资源.
-    """
+    import_path: str = Field(
+        default="",
+        description="找到模式实例的 python module path, 如果是从 markdown 文件找到的, 则为空."
+    )
 
-    import_path: str
-    """找到模式实例的 python module path"""
+    file: str = Field(
+        default="",
+        description="找到模式实例的文件绝对路径. 比如 xxxx/src/MOSS/modes/default/MODE.md "
+    )
+
+    __manifest__: Manifest | None = None
+
+    @classmethod
+    def from_markdown(cls, file: Path) -> Self:
+        """
+        from a markdown file discover Mode.
+        """
+        if not file.exists():
+            raise FileNotFoundError(f"{file} not found")
+        post = frontmatter.loads(file.read_text())
+        data = post.metadata
+        docstring = post.content
+        if "description" not in data:
+            description = docstring.split("\n", 1)[0]
+            data['description'] = description
+        data['docstring'] = docstring
+        result = cls(**data)
+        result.file = str(file)
+        return result
+
+    def to_markdown(self) -> str:
+        """
+        to markdown format content.
+        """
+        meta_data = self.model_dump(
+            exclude_none=True,
+            exclude_defaults=False,
+            exclude={'import_path', 'file', 'instruction'},
+        )
+        post = frontmatter.Post(content=self.instruction, **meta_data)
+        return frontmatter.dumps(post)
+
+    def with_manifest(self, manifest: Manifest, override: bool = False) -> Self:
+        """
+        define manifest
+        """
+        if override or self.__manifest__ is None:
+            self.__manifest__ = manifest
+        return self
+
+    @property
+    def manifest(self) -> Manifest:
+        if self.__manifest__ is None:
+            self.__manifest__ = Manifest()
+        return self.__manifest__
 
 
-class IHost(ABC):
+class MossHost(ABC):
     """
     MOSS (model-oriented operating system shell) 的高阶抽象.
+    Host 用来管理和发现环境, 从环境中创建 Moss 的一切.
 
     1. 它屏蔽了 shell/interpreter 等内核模块.
     2. 它管理 Shell 的环境发现与运行.
@@ -408,8 +458,16 @@ class IHost(ABC):
         """
         pass
 
+    @property
     @abstractmethod
-    def list_modes(self) -> dict[str, Mode]:
+    def mode(self) -> MossMode:
+        """
+        current mode.
+        """
+        pass
+
+    @abstractmethod
+    def all_modes(self) -> dict[str, MossMode]:
         """
         当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
         比如 mac 模式, 机器人模式, 就可以完全隔离开.
@@ -417,11 +475,21 @@ class IHost(ABC):
         pass
 
     @abstractmethod
+    def new_mode(
+            self,
+            name: str,
+            apps: list[str],
+            bring_up_apps: list[str],
+            description: str = "",
+    ) -> None:
+        pass
+
+    @abstractmethod
     def matrix(self) -> Matrix:
         """
         返回当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.
-        >>> async def main(moss: IHost):
+        >>> async def main(moss: MossHost):
         >>>     async with moss.matrix():
         >>>         ...
         """
@@ -431,9 +499,9 @@ class IHost(ABC):
     def run(
             self,
             *,
-            mode: Mode | str = 'default',
+            mode: MossMode | str = 'default',
             session_id: str = 'default',
-    ) -> IRuntime:
+    ) -> MossRuntime:
         """
         获得 moss 的运行时单例 (会校验唯一的锁, 确保 runtime 全局唯一).
 

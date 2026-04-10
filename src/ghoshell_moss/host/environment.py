@@ -26,9 +26,14 @@ __all__ = [
     'ENV_SESSION_ID_KEY',
     'ENV_PARENT_PID_KEY',
     'ENV_GHOST_NAME_KEY',
-    'ENV_MOSS_IMPORT_PATH_KEY',
-    'DEFAULT_MOSS_MODE_IMPORT_PATH',
+    'ENV_CELL_NAME_KEY',
+    'ENV_MOSS_MODE_KEY',
     'MOSSEnvKey',
+
+    # stubs
+    'MODE_STUB_PACKAGE',
+    'APP_STUB_PACKAGE',
+    'WORKSPACE_STUB_PACKAGE',
 
     # dir path
     'WORKSPACE_SOURCE_DIR',
@@ -55,8 +60,11 @@ WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 # 源码预期所在的目录.
 WORKSPACE_SOURCE_DIR = 'src'
 
+# --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
-WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.host.workspace_stub'
+WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.workspace'
+APP_STUB_PACKAGE = 'ghoshell_moss.host.stubs.app'
+MODE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.mode'
 
 # --- 主要的环境变量名 --- #
 # 这些环境变量不在 .env 中定义, 而是启动时 发现/生成, 或者通过父子进程传递的.
@@ -68,22 +76,19 @@ ENV_WORKSPACE_DIR_KEY = 'MOSS_WORKSPACE'
 # 所有通过 MOSS 架构共享本地通讯的 channel 或 topic, 都需要归属到相同的 session id 上.
 ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
 
-# 当前 Session 下, moss 实例的引用 python 路径.
-ENV_MOSS_IMPORT_PATH_KEY = 'MOSS_IMPORT_PATH'
-# 默认的 moss 实例引用路径.
-# 如果是用脚本启动的话, 应该手动实例化, 而不是走服务发现.
-DEFAULT_MOSS_MODE_IMPORT_PATH = 'MOSS.default:moss'
+ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
+DEFAULT_MOSS_MODE = "default"
 
 # 如果当前 MOSS 实例启动时, 启用了 Ghost, 则 GHOST_NAME 不应该为空.
 ENV_GHOST_NAME_KEY = 'MOSS_GHOST_NAME'
 
 ENV_PARENT_PID_KEY = 'MOSS_PARENT_PID'
 
-ENV_NODE_NAME_KEY = 'MOSS_NODE_NAME'
+ENV_CELL_NAME_KEY = 'MOSS_CELL_NAME'
 
 MOSSEnvKey = Literal[
-    "MOSS_WORKSPACE", "MOSS_SESSION_ID", "MOSS_IMPORT_PATH",
-    "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_NODE_NAME"
+    "MOSS_WORKSPACE", "MOSS_SESSION_ID", "MOSS_MODE_NAME",
+    "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_NAME"
 ]
 
 
@@ -133,6 +138,7 @@ class Environment:
             ghost_name: str | None = None,
             moss_import_path: str | None = None,
             session_id: str | None = None,
+            mode: str | None = None,
     ):
         """
         初始化 MOSS 的进程级别环境发现.
@@ -146,23 +152,21 @@ class Environment:
         else:
             self._meta_instruction = MetaInstruction()
 
+        if mode is None:
+            mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
+        self._moss_mode = mode
+
         # 永远要有正确的 session id.
         session_id = session_id or os.environ.get(ENV_SESSION_ID_KEY, None)
         if session_id is None:
             session_id = uuid()
         self._session_id = session_id
 
-        self._node_name: str = os.environ.get(ENV_NODE_NAME_KEY, "")
+        self._node_name: str = os.environ.get(ENV_CELL_NAME_KEY, "")
 
         # 为空表示运行时不启用 ghost.
         self._ghost_name: str = ghost_name or os.environ.get(ENV_GHOST_NAME_KEY, '')
 
-        # 从指定路径获取 MOSS 实例.
-        # 这个实例通常不存在的约定配置项, 比如 workspace, 会倒过来来这里找.
-        self._moss_import_path: str = moss_import_path or os.environ.get(
-            ENV_MOSS_IMPORT_PATH_KEY,
-            DEFAULT_MOSS_MODE_IMPORT_PATH,
-        )
         self._self_pid: int = os.getpid()
         self._parent_pid: int = int(os.environ.get(ENV_PARENT_PID_KEY, 0))
         self._bootstrapped = False
@@ -180,17 +184,18 @@ class Environment:
             _environment = cls(workspace_path)
         return _environment
 
-    def dump_moss_env(self, for_child_process: bool = False) -> dict[MOSSEnvKey, str]:
+    def dump_moss_env(self, *, cell_name: str = "", for_child_process: bool = False) -> dict[MOSSEnvKey, str]:
         """
         生成 MOSS 自身环境相关的 env 字典, 通常用于子进程做发现.
         """
         data: dict[MOSSEnvKey, str] = {
             "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
             "MOSS_SESSION_ID": self._session_id,
-            "MOSS_IMPORT_PATH": self._moss_import_path,
             "MOSS_GHOST_NAME": self._ghost_name,
-            "MOSS_NODE_NAME": self._node_name,
+            "MOSS_MODE_NAME": self._moss_mode,
         }
+        if cell_name:
+            data["MOSS_CELL_NAME"] = cell_name
         if for_child_process:
             data["MOSS_PARENT_PID"] = str(self._self_pid)
         return data
@@ -333,6 +338,10 @@ class Environment:
     @property
     def parent_pid(self) -> int:
         return self._parent_pid
+
+    @property
+    def moss_mode(self) -> str:
+        return self._moss_mode
 
     @property
     def meta_instruction_file(self) -> Path:

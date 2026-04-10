@@ -162,47 +162,42 @@ class ContractInfo:
         return inspect.getsource(self.provider.contract())
 
 
-class Manifest(ABC):
+class Manifest:
     """
     MOSS 在环境中发现的各种资源的声明.
     """
 
-    @abstractmethod
     def channels(self) -> dict[ChannelName, Channel]:
         """
         从环境中发现的运行时的一级 Channel. 会自动注册到 Shell main channel
         通过 ghoshell_moss.core.concepts.channel.Channel 实例发现.
         """
-        pass
+        return {}
 
-    @abstractmethod
     def primitives(self) -> dict[str, Command]:
         """
         从环境中发现的运行时原语. 会自动注册到 shell main channel
         通过 ghoshell_moss.core.concepts.command.Command 实例发现.
         """
-        pass
+        return {}
 
-    @abstractmethod
     def configs(self) -> dict[str, ConfigInfo]:
         """
         环境中发现的配置实例. Runtime 启动时, 如果发现配置不存在, 会初始化它.
         通过 ghoshell_moss.contracts.ConfigType 实例发现.
         """
-        pass
+        return {}
 
-    @abstractmethod
     def topics(self) -> dict[TopicName, TopicInfo]:
         """
         环境中发现的 topic 协议. 未来会用来约束可通讯的节点.
         通过 ghoshell_moss.core.concepts.topic.TopicModel | TopicSchema 发现.
         """
-        pass
+        return {}
 
-    @abstractmethod
     def contracts(self) -> list[ContractInfo]:
         """
         环境中发现的 IoC 容器依赖, 会自动注册到 IoC 容器中.
         通过 ghoshell_container.Provider  实例发现.
         """
-        pass
+        return []
