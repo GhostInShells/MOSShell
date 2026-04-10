@@ -56,7 +56,7 @@ WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 WORKSPACE_SOURCE_DIR = 'src'
 
 # workspace 的原始文件所处的 package 路径.
-WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.moss.workspace_stub'
+WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.host.workspace_stub'
 
 # --- 主要的环境变量名 --- #
 # 这些环境变量不在 .env 中定义, 而是启动时 发现/生成, 或者通过父子进程传递的.

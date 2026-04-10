@@ -386,12 +386,17 @@ class IMode:
     """找到模式实例的 python module path"""
 
 
-class IMoss(ABC):
+class IHost(ABC):
     """
     MOSS (model-oriented operating system shell) 的高阶抽象.
 
     1. 它屏蔽了 shell/interpreter 等内核模块.
-    2. 它
+    2. 它管理 Shell 的环境发现与运行.
+    3. 它解决并行思考网络内的通讯体系.
+    4. 它缝合 Ghost 和 Shell. 作为一个独立的认知实体架构.
+
+    架构拓扑的设计, 延续自 2019~2020 年的实现.
+    https://github.com/thirdgerb/chatbot/blob/dba62e1337559c327d27ec4300366cd890a18ebc/src/Host/IHost.php#L4
     """
 
     @property
@@ -416,7 +421,7 @@ class IMoss(ABC):
         """
         返回当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.
-        >>> async def main(moss: IMoss):
+        >>> async def main(moss: IHost):
         >>>     async with moss.matrix():
         >>>         ...
         """

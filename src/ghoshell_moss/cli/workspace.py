@@ -21,23 +21,23 @@ from rich.console import Console
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.panel import Panel
-from ghoshell_moss.moss.manifests.contracts import (
+from ghoshell_moss.host.manifests.contracts import (
     search_contract_infos_from_package,
     match_contract_infos,
     ContractInfo
 )
 
-from ghoshell_moss.moss.environment import (
+from ghoshell_moss.host.environment import (
     Environment,
     META_INSTRUCTION_FILENAME,
 )
-from ghoshell_moss.moss.manifests.topics import (
+from ghoshell_moss.host.manifests.topics import (
     search_topic_infos_from_package,
     match_topic_infos,
     TopicInfo
 )
 # 假设你已经定义了 search_config_infos_from_package
-from ghoshell_moss.moss.manifests.configs import (
+from ghoshell_moss.host.manifests.configs import (
     search_config_infos_from_package,
     ConfigInfo
 )
@@ -123,7 +123,7 @@ from typing import Optional
 
 
 # 假设这些常量和类已正确导入
-# from ghoshell_moss.moss.environment import ...
+# from ghoshell_moss.host.environment import ...
 
 @app.command(
     name="init",

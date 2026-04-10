@@ -4,8 +4,8 @@ from typing_extensions import Self
 from rich.console import RenderableType
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer
-from ghoshell_moss.moss.abcd import IMoss, IRuntime, ConversationItem
-from ghoshell_moss.moss.abcd.topics import OutputTopic
+from ghoshell_moss.host.abcd import IHost, IRuntime, ConversationItem
+from ghoshell_moss.host.abcd.topics import OutputTopic
 import typer
 import janus
 

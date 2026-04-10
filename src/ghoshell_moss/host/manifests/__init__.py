@@ -1,11 +1,11 @@
 from typing_extensions import Self
-from ghoshell_moss.moss.abcd.manifests import Manifests, ConfigInfo, TopicInfo, ContractInfo
+from ghoshell_moss.host.abcd.manifests import Manifests, ConfigInfo, TopicInfo, ContractInfo
 from .configs import search_config_infos_from_package
 from .contracts import search_contract_infos_from_package
 from .topics import search_topic_infos_from_package
 from .channels import search_channels_from_package
 from .primitives import search_primitives_from_package
-from ghoshell_moss.moss.environment import Environment
+from ghoshell_moss.host.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 

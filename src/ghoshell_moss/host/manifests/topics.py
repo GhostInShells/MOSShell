@@ -1,7 +1,7 @@
 from typing import Any, Iterable
 from ghoshell_moss.core.codex.discover import scan_package
 from ghoshell_moss.core.concepts.topic import TopicModel, TopicSchema
-from ghoshell_moss.moss.abcd.manifests import TopicInfo
+from ghoshell_moss.host.abcd.manifests import TopicInfo
 
 __all__ = ['find_topic_infos_from_package', 'MANIFEST_TOPICS_PATH', 'TopicInfo', 'search_topic_infos_from_package']
 

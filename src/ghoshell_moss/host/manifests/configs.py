@@ -1,7 +1,7 @@
 from typing import Dict
 from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.core.codex.discover import scan_package
-from ghoshell_moss.moss.abcd.manifests import ConfigInfo
+from ghoshell_moss.host.abcd.manifests import ConfigInfo
 
 __all__ = ['search_config_infos_from_package', 'ConfigInfo', 'MANIFEST_CONFIG_PATH']
 
