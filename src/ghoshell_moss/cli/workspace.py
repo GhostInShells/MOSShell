@@ -15,31 +15,17 @@
 import os
 import stat
 import shutil
-import typer
-import json
 from rich.console import Console
 from rich.table import Table
-from rich.syntax import Syntax
-from rich.panel import Panel
-from ghoshell_moss.host.manifests.contracts import (
-    search_contract_infos_from_package,
-    match_contract_infos,
-    ContractInfo
-)
+
+import typer
+from rich import print as rprint
+from pathlib import Path
+from typing import Optional
 
 from ghoshell_moss.host.environment import (
     Environment,
     META_INSTRUCTION_FILENAME,
-)
-from ghoshell_moss.host.manifests.topics import (
-    search_topic_infos_from_package,
-    match_topic_infos,
-    TopicInfo
-)
-# 假设你已经定义了 search_config_infos_from_package
-from ghoshell_moss.host.manifests.configs import (
-    search_config_infos_from_package,
-    ConfigInfo
 )
 
 app = typer.Typer(
@@ -115,15 +101,6 @@ def where() -> None:
     table.add_row("CTML Version", f"[bold magenta]{ctml_version}[/bold magenta]")
     console.print(table)
 
-
-import typer
-from rich import print as rprint
-from pathlib import Path
-from typing import Optional
-
-
-# 假设这些常量和类已正确导入
-# from ghoshell_moss.host.environment import ...
 
 @app.command(
     name="init",
@@ -237,233 +214,3 @@ def copy_env() -> None:
     except Exception as e:
         rprint(f"[red]Failed to copy env:[/red] {e}")
         raise typer.Exit(code=1)
-
-
-@app.command(name="contracts")
-def list_contracts(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for contract identity or provider path."
-        )
-):
-    """
-    Explore and inspect contracts discovered in the MOSS workspace.
-    """
-    env = Environment.discover()
-    env.bootstrap()
-    # 1. 执行发现逻辑
-    # 默认从 MOSS.manifests.contracts 扫描，这是我们在 Environment 中约定的路径
-    all_contracts = list(search_contract_infos_from_package())
-
-    # 2. 执行过滤逻辑
-    results = list(match_contract_infos(all_contracts, search)) if search else all_contracts
-
-    if not results:
-        console.print(f"[yellow]No contracts found matching: '{search}'[/yellow]")
-        return
-
-    # 3. 结果分发：唯一匹配显示详情，否则显示列表
-    if search:
-        if len(results) == 1:
-            _display_contract_detail(results[0])
-        else:
-            _display_contract_table(results, is_filtered=bool(search))
-    else:
-        _display_contract_table(results, is_filtered=bool(search))
-
-
-def _display_contract_table(contracts: list[ContractInfo], is_filtered: bool):
-    """打印简洁的 Contract 列表"""
-    title = "[bold cyan]Discovered MOSS Contracts[/bold cyan]"
-    if is_filtered:
-        title += " (Filtered)"
-
-    table = Table(title=title, box=None, header_style="bold magenta")
-    table.add_column("Identity", style="green", no_wrap=True)
-    table.add_column("Type", style="dim")
-    table.add_column("Manifest Source", style="blue")
-
-    for info in contracts:
-        # 这里的 info.name 对应我们定义的 contract 类型导入路径
-        # info.found 对应具体的 provider 实例化位置
-        table.add_row(
-            info.name,
-            "Singleton" if info.singleton else "Factory",
-            info.found
-        )
-
-    console.print(table)
-    console.print(f"\n[dim]Total: {len(contracts)} contracts found.[/dim]")
-
-
-def _display_contract_detail(info: ContractInfo):
-    """展示单个 Contract 的深度反射信息"""
-    console.print(f"\n[bold cyan]Contract Detail:[/bold cyan] [green]{info.name}[/green]")
-    console.print(f"[dim]Defined at: {info.file}[/dim]\n")
-
-    # 打印 Docstring
-    if info.docstring:
-        console.print(f"[italic]{info.docstring}[/italic]\n")
-
-    # 展示 Provider 及其配置（如果存在）
-    console.print(f"[bold]Provider Instance:[/bold] {info.found}")
-    console.print(f"[bold]Provider Type:[/bold] {info.provider_type}")
-
-    # 核心：展示 Contract 的定义源码，让 AI 或开发者一目了然
-    console.print("\n[bold]Contract Source Definition:[/bold]")
-    syntax = Syntax(info.source, "python", theme="monokai", line_numbers=True)
-    console.print(syntax)
-
-
-@app.command(name="topics")
-def list_topics(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for topic name or topic type."
-        )
-):
-    """
-    Introspect and discover event topics available in the MOSS ecosystem.
-    """
-    env = Environment.discover()
-    env.bootstrap()
-    # 1. 发现
-    all_topics = search_topic_infos_from_package()
-
-    # 2. 过滤
-    results = list(match_topic_infos(all_topics, search)) if search else list(all_topics.values())
-
-    if not results:
-        console.print(f"[yellow]No topics found matching: '{search}'[/yellow]")
-        return
-
-    # 3. 分发：唯一匹配显示 Schema 详情，否则显示列表
-    if len(results) == 1 and search:
-        _display_topic_detail(results[0])
-    else:
-        _display_topic_table(results, is_filtered=bool(search))
-
-
-def _display_topic_table(topics: list[TopicInfo], is_filtered: bool):
-    """展示 Topic 概览表"""
-    title = "[bold magenta]MOSS Event Topics[/bold magenta]"
-    if is_filtered:
-        title += " (Filtered)"
-
-    table = Table(title=title, box=None, header_style="bold cyan")
-    table.add_column("Topic Name", style="green", no_wrap=True)
-    table.add_column("Type", style="yellow")
-    table.add_column("Description", style="dim", ratio=1)
-
-    # 按照名称排序，方便模型阅读
-    for info in sorted(topics, key=lambda x: x.name):
-        table.add_row(
-            info.name,
-            info.type,
-            info.description.split('\n')[0]  # 只取第一行描述
-        )
-
-    console.print(table)
-    console.print(f"\n[dim]Total: {len(topics)} topics discovered.[/dim]")
-
-
-def _display_topic_detail(info: TopicInfo):
-    """展示 Topic 的深度定义和 JSON Schema，这是 AI 的“操作指南”"""
-    console.print(f"\n[bold magenta]Topic Detail:[/bold magenta]")
-    console.print(f"[dim]Name: {info.name}[/dim]")
-    console.print(f"[dim]Type: {info.type}[/dim]")
-    console.print(f"[dim]Found in: {info.found}[/dim]\n")
-
-    # 1. 描述部分
-    if info.description:
-        console.print(Panel(info.description, title="Description", title_align="left", border_style="dim"))
-
-    # 2. JSON Schema 部分 (模型最看重这个)
-    console.print("\n[bold cyan]Payload JSON Schema:[/bold cyan]")
-    schema_json = json.dumps(info.json_schema, indent=2, ensure_ascii=False)
-    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
-
-    # 3. 源码参考 (可选，如果模型想看具体的 Pydantic 逻辑)
-    if info.model_source:
-        console.print("\n[bold cyan]Python Model Definition:[/bold cyan]")
-        console.print(Syntax(info.model_source, "python", theme="monokai", line_numbers=True))
-
-
-@app.command(name="configs")
-def list_configs(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for config name."
-        ),
-        detail: bool = typer.Option(
-            False, "--detail", "-d",
-            help="Show detailed schema and default values."
-        )
-):
-    """
-    Explore and manage environment configurations in MOSS.
-    """
-    env = Environment.discover()
-    env.bootstrap()
-    # 1. 发现声明路径下的所有 Config 实例
-    all_configs = search_config_infos_from_package()
-
-    # 2. 匹配逻辑 (支持简单模糊匹配)
-    results = [
-        info for name, info in all_configs.items()
-        if search.lower() in name.lower()
-    ]
-
-    if not results:
-        console.print(f"[yellow]No configurations found matching: '{search}'[/yellow]")
-        return
-
-    # 3. 展示逻辑：唯一匹配或强制 detail 时显示详情
-    if (len(results) == 1 and search) or detail:
-        for info in results:
-            _display_config_detail(info)
-    else:
-        _display_config_table(results)
-
-
-def _display_config_table(configs: list[ConfigInfo]):
-    """展示配置项全景图"""
-    table = Table(title="[bold blue]MOSS Environment Configurations[/bold blue]", box=None)
-    table.add_column("Config Name", style="green", no_wrap=True)
-    table.add_column("Module Path", style="dim")
-    table.add_column("Description", ratio=1)
-
-    for info in sorted(configs, key=lambda x: x.name):
-        table.add_row(
-            info.name,
-            info.found,
-            info.description.split('\n')[0]
-        )
-
-    console.print(table)
-    console.print(f"\n[dim]Found {len(configs)} configuration definitions.[/dim]")
-
-
-def _display_config_detail(info: ConfigInfo):
-    """展示具体的配置契约与默认值"""
-    console.print(f"\n[bold blue]Config Detail:[/bold blue] [green]{info.name}[/green]")
-    console.print(f"[dim]Defined in: {info.file}[/dim]\n")
-    console.print(f"[dim]ConfigType is: {info.model_path}[/dim]\n")
-
-    # 1. 描述
-    if info.description:
-        console.print(Panel(info.description, title="Description", title_align="left", border_style="blue"))
-
-    # 2. 默认值展示 (YAML 格式对模型非常友好)
-    console.print("\n[bold cyan]Default Values (Seed):[/bold cyan]")
-    console.print(Syntax(info.dump_yaml(), "yaml", theme="monokai", background_color="default"))
-
-    # 3. JSON Schema (用于验证模型生成的配置是否合法)
-    console.print("\n[bold cyan]Structure JSON Schema:[/bold cyan]")
-    schema_json = json.dumps(info.schema.json_schema, indent=2, ensure_ascii=False)
-    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
-
-    # 4. 源码展示
-    console.print("\n[bold cyan]Config Logic Source:[/bold cyan]")
-    console.print(Syntax(info.source, "python", theme="monokai", line_numbers=True))
-    console.print("-" * 40)

@@ -1,17 +1,24 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Iterable
-from typing_extensions import Self
-
+from typing import Iterable
+from typing_extensions import Self, Literal
 from pathlib import Path
 import frontmatter
-
-if TYPE_CHECKING:
-    from circus.watcher import Watcher
-
 from pydantic import BaseModel, Field
+from ghoshell_moss.core.blueprint.builder import Channel, new_channel, Message
+
+__all__ = [
+    'AppInfo',
+    'AppWatcher',
+    'AppState',
+    'AppStore',
+]
 
 
 class AppWatcher(BaseModel):
+    """
+    启动和管理 app 运行状态的对象.
+    """
+
     cmd: str = Field(
         default='uv run main.py',
         description='The command to execute',
@@ -34,6 +41,9 @@ class AppWatcher(BaseModel):
     )
 
 
+AppState = Literal['stopped', 'starting', 'running', 'error']
+
+
 class AppInfo(BaseModel):
     """
     环境中可发现的 app 应用.
@@ -54,6 +64,18 @@ class AppInfo(BaseModel):
         default='',
         description='The docstring of the current app',
     )
+    is_running: bool = Field(
+        default=False,
+        description='判断 app 是否在运行中. ',
+    )
+    state: AppState | str = Field(
+        default='',
+        description='The state of the app',
+    )
+    error: str = Field(
+        default='',
+        description='The error message of the app if in error state',
+    )
     work_directory: str = Field(
         description="The work directory of the app",
     )
@@ -70,15 +92,20 @@ class AppInfo(BaseModel):
     def log_name(self) -> str:
         return f"moss.{self.group}.{self.name}"
 
-    def to_circus_watcher(self, env: dict[str, str], arguments: str = '') -> "Watcher":
-        from circus.watcher import Watcher
-        return Watcher(
-            name=self.address,
-            cmd=' '.join([self.watcher.cmd, arguments]),
-            numprocesses=self.watcher.workers,
-            env=env,
-            working_dir=self.work_directory,
-        )
+    def to_circus_params(self, env: dict[str, str], arguments: str = '') -> dict:
+        """
+        将 AppInfo 转换为 Circus add 指令所需的参数属性
+        """
+        return {
+            "name": self.address,
+            "cmd": ' '.join([self.watcher.cmd, arguments]).strip(),
+            "working_dir": self.work_directory,
+            "numprocesses": self.watcher.workers,
+            "respawn": self.watcher.respawn,
+            "max_age": self.watcher.max_age,
+            "env": env,
+            "singleton": True,
+        }
 
     @classmethod
     def from_markdown(cls, group: str, name: str, file: Path) -> Self:
@@ -115,7 +142,7 @@ class AppInfo(BaseModel):
         从指定的路径寻找.
         """
         for app_group in apps_directory.iterdir():
-            for app_dir in apps_directory.iterdir():
+            for app_dir in app_group.iterdir():
                 expect_app_manifest = app_dir.joinpath(filename)
                 if expect_app_manifest.exists() and expect_app_manifest.is_file():
                     group = app_group.name
@@ -128,39 +155,144 @@ class AppStore(ABC):
     local appstore
     """
 
+    # 非运行时函数
+
     @abstractmethod
     def name(self) -> str:
-        pass
-
-    @property
-    @abstractmethod
-    def directory(self) -> Path:
-        pass
-
-    @abstractmethod
-    def list_apps(self) -> Iterable[AppInfo]:
+        """
+        App store 的名字, 通常就是 apps.
+        """
         pass
 
     @abstractmethod
-    def running_apps(self) -> Iterable[AppInfo]:
+    def list_groups(self) -> list[str]:
+        """
+        对 App 的分组, 通常是 apps 目录下的一级目录.
+        """
+        pass
+
+    @abstractmethod
+    def list_apps(self, refresh: bool = False) -> Iterable[AppInfo]:
+        """
+        猎取环境中发现的每个 App, 通常拥有自己的独立目录.
+        :param refresh: 是否刷新检查环境里的 apps.
+        """
+        pass
+
+    @abstractmethod
+    def init_app(self, address: str, description: str = '') -> str:
+        """
+        创建一个 app, 返回创建后的讯息.
+        创建 app 的极简内容包含:
+        1. 创建目录.
+        2. 定义 APP.md (如果基于 markdown 范式)
+        3. 定义 helloworld 的 main.py 脚本.
+        """
+        pass
+
+    # 运行时函数
+
+    @abstractmethod
+    def get_app_info(self, address: str) -> AppInfo | None:
+        """
+        获取一个环境中可发现的 app.
+        如果 running 为 True, 则需要发现 is alive 的 app.
+        """
+        pass
+
+    @abstractmethod
+    async def get_apps_context(self) -> str:
+        """
+        通过文本描述目前 apps 的状态. 包含:
+        1. 发现的所有 apps, 他们的名称/ address 和描述. 不包含路径信息.
+        2. 如果是运行时, 添加上运行状态的信息.
+        """
         pass
 
     @abstractmethod
     async def start_app(self, app_address: str, argument: str = '') -> str:
+        """
+        尝试启动一个 App.
+        其中 argument 是可以在启动脚本后附加的参数.
+        返回描述信息.
+        """
         pass
 
     @abstractmethod
-    def is_closed(self) -> bool:
+    async def stop_app(self, app_address: str) -> str:
+        """
+        关闭一个指定的 app.
+        """
         pass
 
     @abstractmethod
-    async def stop_app(self, app_address: str) -> None:
+    def is_running(self) -> bool:
+        """
+        判断 app store 是否在运行状态中.
+        """
         pass
 
-    @abstractmethod
-    async def __aenter__(self) -> Self:
-        pass
 
-    @abstractmethod
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+def build_apps_channel(store: AppStore, description: str = '') -> Channel:
+    """
+    构建 App 管理中心通道。
+    该通道允许 AI 发现、启动、停止和初始化物理/逻辑应用 (Apps)。
+    """
+    # 默认描述强调“中心化管理”
+    default_description = (
+        "App Store 核心通道，用于管理当前环境下的所有可用应用。"
+        "你可以通过此通道拉起具有特定功能的子进程（如机器人控制、数据分析等）。"
+    )
+
+    name = store.name()
+    chan = new_channel(name=name, description=description or default_description)
+
+    @chan.build.command(name="list")
+    async def list_apps() -> str:
+        """
+        获取当前环境所有可发现 App 的详细清单及运行状态。
+        AI 在尝试启动任何 App 前，应先通过此命令确认其 address 和当前状态。
+        """
+        return await store.get_apps_context()
+
+    @chan.build.command(name="start")
+    async def start(address: str, argument: str = "") -> str:
+        """
+        启动指定的 App。
+        :param address: App 的完整地址，如 'app/group/name'。
+        :param argument: 启动参数，将作为命令行参数传递给 App。
+        注意：启动是异步的，可以通过 list 确认是否成功进入 running 状态。
+        """
+        return await store.start_app(address, argument)
+
+    @chan.build.command(name="stop")
+    async def stop(address: str) -> str:
+        """
+        强制停止并卸载一个运行中的 App。
+        :param address: 目标 App 地址。
+        """
+        return await store.stop_app(address)
+
+    @chan.build.command(name="init")
+    async def init(address: str, description: str = "") -> str:
+        """
+        在工作空间中初始化一个新的 App 模板。
+        会自动创建目录、APP.md 和 main.py 骨架。
+        :param address: 期望的地址格式 'group/name'。
+        :param description: App 的功能描述。
+        """
+        # 这里调用我们之前实现的 init_app
+        return store.init_app(address, description)
+
+    @chan.build.context_messages
+    async def apps_status() -> str:
+        """
+        动态注入当前已发现 App 的状态简报到 AI 的上下文。
+        确保 AI 始终知晓哪些 App 正在运行 (RUNNING) 及其潜在的错误 (ERROR)。
+        """
+        context_str = await store.get_apps_context()
+        header = "### [App Runtime Status]\n"
+        footer = "\n---\n注：若 App 处于 ERROR 状态，请检查日志或尝试重启。"
+        return header + context_str + footer
+
+    return chan

@@ -16,7 +16,7 @@ __all__ = [
     'TopicInfo',
     'ConfigInfo',
     'ContractInfo',
-    'Manifests',
+    'Manifest',
 ]
 
 
@@ -162,7 +162,7 @@ class ContractInfo:
         return inspect.getsource(self.provider.contract())
 
 
-class Manifests(ABC):
+class Manifest(ABC):
     """
     MOSS 在环境中发现的各种资源的声明.
     """

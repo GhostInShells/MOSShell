@@ -13,7 +13,9 @@ from ghoshell_common.contracts import LoggerItf
 import asyncio
 
 __all__ = [
+    "Channel",
     "CommandFunction", "MessageFunction", "StringType", "LifecycleFunction",
+    "Message",
     "MessageType",
     "Builder",
     "MutableChannel",

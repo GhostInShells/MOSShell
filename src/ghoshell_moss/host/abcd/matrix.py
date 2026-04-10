@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.channel import ChannelProvider
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
 from .session import Session
-from .manifests import Manifests
+from .manifests import Manifest
 
 
 class Cell(Protocol):
@@ -60,7 +60,7 @@ class Matrix(ABC):
 
     @property
     @abstractmethod
-    def manifests(self) -> Manifests:
+    def manifests(self) -> Manifest:
         """
         返回持有的环境发现资源.
         """
