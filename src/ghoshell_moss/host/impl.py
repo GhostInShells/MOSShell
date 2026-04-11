@@ -19,23 +19,17 @@ class Host(MossHost):
             env: Environment | None = None,
             mode: MossMode | str | None = None,
     ):
-        self._env = env or Environment.discover()
-        self._env.bootstrap()
-        self._workspace = LocalWorkspace(self._env.workspace_path)
+        self.env = env or Environment.discover()
+        self.env.bootstrap()
+        self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()
-        self._env_manifest = PackageManifest.from_environment(self._env)
-        # 获取一个用来做环境发现的 apps.
-        # 创建 container, 但是先不启动它.
-        self._app_store = HostAppStore(
-            env=self._env,
-            workspace=self._workspace,
-            namespace=f"MOSS/host/apps",
-        )
+        self._env_manifest = PackageManifest.from_environment(self.env)
+
         self._env_modes = {mode.name: mode for mode in list_modes_from_root_package()}
         moss_mode = mode
         if moss_mode is None:
-            moss_mode = self._env.moss_mode
+            moss_mode = self.env.moss_mode
         if isinstance(moss_mode, str):
             moss_mode_name = moss_mode
             moss_mode = self._env_modes.get(moss_mode_name)
@@ -43,14 +37,20 @@ class Host(MossHost):
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
         self._moss_mode: MossMode = moss_mode
         self._manifest = MergedManifest([self._env_manifest, self._moss_mode.manifest])
-
         self._container = self._prepare_container()
+        # 获取一个用来做环境发现的 apps.
+        # 创建 container, 但是先不启动它.
+        self._app_store = HostAppStore(
+            env=self.env,
+            workspace=self._workspace,
+            namespace="MOSS/apps",
+        )
 
     def _prepare_container(self) -> Container:
         container = Container(name="MOSS/host")
         container.set(MossHost, self)
         container.set(Host, self)
-        container.set(Environment, self._env)
+        container.set(Environment, self.env)
         container.set(LocalWorkspace, self._workspace)
         container.set(Workspace, self._workspace)
 
@@ -80,6 +80,10 @@ class Host(MossHost):
         if name in self._env_modes:
             raise NameError(f"Mode {name} already exists")
         new_mode(name=name, apps=apps, bring_up_apps=bring_up_apps, description=description)
+
+    @property
+    def apps(self) -> HostAppStore:
+        return self._app_store
 
     def matrix(self) -> Matrix:
         pass

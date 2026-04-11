@@ -4,6 +4,38 @@ ghoshell_cli utility functions
 
 import click
 from typing import Optional
+from rich.console import Console, Group
+from rich.text import Text
+
+from ghoshell_moss.host import Host
+
+__all__ = [
+    'console',
+    'print_host_mode_info',
+    'echo',
+    'print_success',
+    'print_error',
+    'print_warning',
+]
+
+console = Console()
+
+
+# 在你现有的代码逻辑里，可以考虑这样写样式
+def print_host_mode_info(host: Host) -> None:
+    # 使用 Rich 的渲染
+    console.print(f"[bold cyan]MODE:[/bold cyan] [green]{host.mode.name}[/green]")
+
+    # 路径类信息，由于很长，用 dim 弱化
+    style = "dim italic"
+    console.print(f"[{style}]workspace: {host.env.workspace_path}[/{style}]")
+    if host.mode.import_path:
+        console.print(f"[{style}]mode package: {host.mode.import_path}[/{style}]")
+    if host.mode.file:
+        console.print(f"[{style}]mode file: {host.mode.file}[/{style}]")
+
+    # 分隔线也可以用 dim
+    console.print("[dim]" + "—" * 40 + "[/dim]")
 
 
 def echo(message: str):
@@ -41,27 +73,6 @@ def print_code(code: str, language: str = "python"):
     click.secho(f"# --- {language} code ---", fg="cyan", dim=True)
     click.echo(code)
     click.secho("# -----------------------", fg="cyan", dim=True)
-
-
-def print_table(headers: list, rows: list):
-    """打印简易表格"""
-    # 计算列宽
-    col_widths = [len(str(h)) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(str(cell)))
-
-    # 打印表头（黄色加粗）
-    header_line = " | ".join(str(h).ljust(col_widths[i]) for i, h in enumerate(headers))
-    click.secho(header_line, fg="yellow", bold=True)
-
-    # 打印分割线
-    click.echo("-" * (sum(col_widths) + (len(headers) - 1) * 3))
-
-    # 打印行
-    for row in rows:
-        row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
-        click.echo(row_line)
 
 
 def print_panel(content: str, title: Optional[str] = None):

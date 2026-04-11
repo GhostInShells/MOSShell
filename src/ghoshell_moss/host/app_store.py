@@ -34,10 +34,10 @@ class HostAppStore(AppStore):
             workspace: Workspace,
             namespace: str,
             config_file: str = 'configs/circus.ini',
+            app_store_name: str = "apps",
+            runnable: bool = False,
             include: list[str] | None = None,
             exclude: list[str] | None = None,
-            bring_up: list[str] | None = None,
-            app_store_name: str = "apps",
             logger: LoggerItf | None = None,
     ) -> None:
         self._env_obj = env
@@ -47,16 +47,14 @@ class HostAppStore(AppStore):
         self._config_file_rel = config_file  # 相对路径，如 'configs/circus.ini'
         self._logger = logger or get_moss_logger()
 
-        self._app_store_directory = self._workspace_obj.root_path().joinpath(app_store_name).resolve()
+        self.app_store_directory = self._workspace_obj.root_path().joinpath(app_store_name).resolve()
         self._sub_process_env = env.dump_moss_env()
-
-        self._include = include
-        self._exclude = exclude
-        self._bring_up = bring_up or []
-
+        self._runnable = runnable
         # 状态维护
-        self._found_apps: Dict[_AppAddress, AppInfo] = {}
+        self._found_apps: Dict[_AppAddress, AppInfo] | None = None
         self._managed_addresses: Set[_AppAddress] = set()
+        self._include = include
+        self._exclude = exclude or []
 
         # 锁与 Circus 组件
         self._lock = self._workspace_obj.lock(f"appstore-{self._namespace.replace('/', '-')}")
@@ -112,7 +110,7 @@ class HostAppStore(AppStore):
             group, name = parts[0], parts[1]
 
         # 2. 确定目标路径
-        target_dir = self._app_store_directory.joinpath(group, name)
+        target_dir = self.app_store_directory.joinpath(group, name)
         if target_dir.exists():
             return f"Error: App directory already exists at {target_dir}"
 
@@ -158,23 +156,21 @@ class HostAppStore(AppStore):
             self._logger.error(f"Failed to init app {address}: {e}")
             return f"Error: {e}"
 
-    def list_apps(self, refresh: bool = False) -> Iterable[AppInfo]:
-        if not self._found_apps or refresh:
-            discovered = AppInfo.from_apps_directory(self._app_store_directory)
+    def found_apps(self, refresh: bool = False) -> dict[str, AppInfo]:
+        if self._found_apps is None or refresh:
+            discovered = AppInfo.from_apps_directory(self.app_store_directory)
+            founds = self.match_apps(discovered, self._include, self._exclude)
             valid_apps = {}
-            for app in discovered:
-                if self._include and not _is_match(app.address, self._include):
-                    continue
-                if self._exclude and _is_match(app.address, self._exclude):
-                    continue
+            for app in founds:
                 valid_apps[app.address] = app
             self._found_apps = valid_apps
-        return self._found_apps.values()
+        return self._found_apps
+
+    def list_apps(self, refresh: bool = False) -> Iterable[AppInfo]:
+        return self.found_apps().values()
 
     def get_app_info(self, address: str, running: bool = False) -> AppInfo | None:
-        if not address.startswith("app/"):
-            address = f"app/{address}"
-        app = self._found_apps.get(address)
+        app = self.found_apps().get(address)
         if not app: return None
         if running and app.state != 'running': return None
         return app
@@ -243,7 +239,7 @@ class HostAppStore(AppStore):
                 statuses = res.get("statuses", {})
 
                 for addr in self._managed_addresses:
-                    app = self._found_apps.get(addr)
+                    app = self.found_apps().get(addr)
                     if not app: continue
 
                     c_status = statuses.get(addr, "stopped")
@@ -257,6 +253,10 @@ class HostAppStore(AppStore):
                 self._logger.debug(f"Polling status failed: {e}")
 
     async def __aenter__(self) -> Self:
+        if not self._runnable:
+            raise RuntimeError(
+                f'App Store setting is not not runnable'
+            )
         if not self._lock.acquire(timeout=5):
             raise RuntimeError(f"Workspace {self._namespace} is locked by another Arbiter.")
 

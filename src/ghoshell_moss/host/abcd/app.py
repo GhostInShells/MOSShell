@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Iterable
+from typing import Iterable, Optional
 from typing_extensions import Self, Literal
 from pathlib import Path
-import frontmatter
 from pydantic import BaseModel, Field
 from ghoshell_moss.core.blueprint.builder import Channel, new_channel, Message
+import frontmatter
+import fnmatch
 
 __all__ = [
     'AppInfo',
@@ -86,7 +87,7 @@ class AppInfo(BaseModel):
 
     @property
     def address(self) -> str:
-        return f"app/{self.group}/{self.name}"
+        return f"{self.group}/{self.name}"
 
     @property
     def log_name(self) -> str:
@@ -129,10 +130,12 @@ class AppInfo(BaseModel):
             work_directory=workspace_dir,
         )
 
-    def as_markdown(self) -> str:
+    def as_markdown(
+            self,
+    ) -> str:
         post = frontmatter.Post(
             content=self.docstring,
-            **self.watcher.model_dump(exclude_none=True, exclude_defaults=True),
+            **self.watcher.model_dump(exclude_none=True, exclude_defaults=False),
         )
         return frontmatter.dumps(post)
 
@@ -142,6 +145,8 @@ class AppInfo(BaseModel):
         从指定的路径寻找.
         """
         for app_group in apps_directory.iterdir():
+            if not app_group.is_dir():
+                continue
             for app_dir in app_group.iterdir():
                 expect_app_manifest = app_dir.joinpath(filename)
                 if expect_app_manifest.exists() and expect_app_manifest.is_file():
@@ -178,6 +183,47 @@ class AppStore(ABC):
         :param refresh: 是否刷新检查环境里的 apps.
         """
         pass
+
+    @classmethod
+    def match_apps(
+            cls,
+            apps: Iterable[AppInfo],
+            include: list[str] | None = None,
+            exclude: Optional[list[str]] = None
+    ) -> Iterable[AppInfo]:
+        """
+        基于地址模式筛选 App。
+        支持通配符:
+        - 'group/app_name' (精确匹配)
+        - 'group/*' (组内全选)
+        - '*/app_name' (跨组选同名)
+        """
+        include_patterns = set(include) if include is not None else {"*/*"}
+        if len(include_patterns) == 0:
+            return
+
+        exclude_patterns = set(exclude or [])
+        for app in apps:
+            address = app.address  # "app/group/name"
+
+            # 1. 检查是否在包含范围内
+            # 使用 fnmatch 实现标准的 Unix 通配符逻辑，比 startswith 更强大
+            is_included = any(
+                fnmatch.fnmatch(address, pat) or fnmatch.fnmatch(address, f"app/{pat}")
+                for pat in include_patterns
+            )
+
+            if not is_included:
+                continue
+
+            # 2. 检查是否被排除
+            is_excluded = any(
+                fnmatch.fnmatch(address, pat) or fnmatch.fnmatch(address, f"app/{pat}")
+                for pat in exclude_patterns
+            )
+
+            if not is_excluded:
+                yield app
 
     @abstractmethod
     def init_app(self, address: str, description: str = '') -> str:

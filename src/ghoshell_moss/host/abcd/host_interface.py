@@ -475,16 +475,6 @@ class MossHost(ABC):
         pass
 
     @abstractmethod
-    def new_mode(
-            self,
-            name: str,
-            apps: list[str],
-            bring_up_apps: list[str],
-            description: str = "",
-    ) -> None:
-        pass
-
-    @abstractmethod
     def matrix(self) -> Matrix:
         """
         返回当前环境下发现的 Matrix 实例.
