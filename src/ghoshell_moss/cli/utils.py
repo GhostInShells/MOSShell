@@ -16,6 +16,9 @@ __all__ = [
     'print_success',
     'print_error',
     'print_warning',
+    'print_info',
+    'print_code',
+    'print_panel',
 ]
 
 console = Console()

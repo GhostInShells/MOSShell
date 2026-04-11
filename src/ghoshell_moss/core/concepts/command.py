@@ -1187,8 +1187,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.__done_callbacks.add(fn)
 
     def remove_done_callback(self, fn: Callable[[CommandTask], None]):
-        if fn in self.__done_callbacks:
-            self.__done_callbacks.remove(fn)
+        self.__done_callbacks.discard(fn)
 
     def copy(self, cid: str = "") -> Self:
         cid = cid or uuid()

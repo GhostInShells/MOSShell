@@ -1,14 +1,20 @@
+from typing_extensions import Self
 from ghoshell_moss.host.abcd.host_interface import (
     MossHost, MossMode, MossRuntime,
 )
 from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
+from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_container import Container
 from .environment import Environment
 from .manifests import PackageManifest, MergedManifest
 from .app_store import HostAppStore
 from .modes import list_modes_from_root_package, new_mode
+from .matrix import HostMatrix
+import logging
+
+_host_instance = None
 
 
 class Host(MossHost):
@@ -18,6 +24,7 @@ class Host(MossHost):
             *,
             env: Environment | None = None,
             mode: MossMode | str | None = None,
+            logger: logging.Logger | None = None,
     ):
         self.env = env or Environment.discover()
         self.env.bootstrap()
@@ -25,6 +32,7 @@ class Host(MossHost):
         if not self._workspace.root_path().exists():
             raise RuntimeError()
         self._env_manifest = PackageManifest.from_environment(self.env)
+        self._logger: LoggerItf | None = logger
 
         self._env_modes = {mode.name: mode for mode in list_modes_from_root_package()}
         moss_mode = mode
@@ -37,7 +45,6 @@ class Host(MossHost):
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
         self._moss_mode: MossMode = moss_mode
         self._manifest = MergedManifest([self._env_manifest, self._moss_mode.manifest])
-        self._container = self._prepare_container()
         # 获取一个用来做环境发现的 apps.
         # 创建 container, 但是先不启动它.
         self._app_store = HostAppStore(
@@ -45,19 +52,21 @@ class Host(MossHost):
             workspace=self._workspace,
             namespace="MOSS/apps",
         )
+        self._matrix = HostMatrix(
+            mode=self._moss_mode,
+            env=self.env,
+            manifest=self._manifest,
+            app_store=self._app_store,
+            workspace=self._workspace,
+            logger=self._logger,
+        )
 
-    def _prepare_container(self) -> Container:
-        container = Container(name="MOSS/host")
-        container.set(MossHost, self)
-        container.set(Host, self)
-        container.set(Environment, self.env)
-        container.set(LocalWorkspace, self._workspace)
-        container.set(Workspace, self._workspace)
-
-        for contract in self._env_manifest.contracts():
-            # register provider from manifest.contracts.
-            container.register(contract.provider)
-        return container
+    @classmethod
+    def discover(cls) -> Self:
+        global _host_instance
+        if _host_instance is None:
+            _host_instance = Host()
+        return _host_instance
 
     @property
     def manifest(self) -> Manifest:
@@ -86,7 +95,7 @@ class Host(MossHost):
         return self._app_store
 
     def matrix(self) -> Matrix:
-        pass
+        return self._matrix
 
     def run(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> MossRuntime:
         pass

@@ -87,7 +87,7 @@ class AppInfo(BaseModel):
 
     @property
     def address(self) -> str:
-        return f"{self.group}/{self.name}"
+        return f"apps/{self.group}/{self.name}"
 
     @property
     def log_name(self) -> str:

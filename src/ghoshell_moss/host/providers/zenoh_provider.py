@@ -5,7 +5,7 @@ depend_zenoh()
 import zenoh
 
 from ghoshell_moss.contracts.workspace import Workspace
-from ghoshell_container import Provider, IoCContainer, INSTANCE
+from ghoshell_container import IoCContainer, Provider
 from pathlib import Path
 
 __all__ = ['WorkspaceZenohProvider']
@@ -44,13 +44,4 @@ class WorkspaceZenohProvider(Provider[zenoh.Session]):
 
         zenoh_config = zenoh.Config.from_file(config_path)
         session = zenoh.open(zenoh_config)
-        session.__enter__()
-
-        def _session_shutdown():
-            nonlocal session
-            if not session.is_closed():
-                session.__exit__(None, None, None)
-
-        # 注册 shutdown.
-        con.add_shutdown(_session_shutdown)
         return session

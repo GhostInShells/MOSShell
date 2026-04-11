@@ -436,8 +436,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         return task
 
     def _remove_done_asyncio_task(self, task: asyncio.Task) -> None:
-        if task in self._runtime_asyncio_task_group:
-            self._runtime_asyncio_task_group.remove(task)
+        self._runtime_asyncio_task_group.discard(task)
 
     def _async_exit_ctx_funcs(self) -> Iterable[Callable]:
         yield self._importlib_ctx

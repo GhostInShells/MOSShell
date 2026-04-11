@@ -449,6 +449,14 @@ class MossHost(ABC):
     https://github.com/thirdgerb/chatbot/blob/dba62e1337559c327d27ec4300366cd890a18ebc/src/Host/IHost.php#L4
     """
 
+    @classmethod
+    def discover(cls) -> Self:
+        """
+        环境发现的标准实现.
+        """
+        from ghoshell_moss.host import Host
+        return Host.discover()
+
     @property
     @abstractmethod
     def manifest(self) -> Manifest:

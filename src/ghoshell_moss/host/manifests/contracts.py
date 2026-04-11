@@ -1,9 +1,7 @@
 from typing import Iterable, Any
 from ghoshell_container import Provider
-from ghoshell_common.helpers import generate_import_path
 from ghoshell_moss.host.abcd.manifests import ContractInfo
 from ghoshell_moss.core.codex.discover import scan_package
-from dataclasses import dataclass
 import inspect
 
 ModuleFile = str
@@ -20,54 +18,6 @@ __all__ = [
     'find_contract_infos_from_package',
     'search_contract_infos_from_package',
 ]
-
-
-# 管理从环境中发现能力的逻辑.
-@dataclass(frozen=True)
-class ContractInfo:
-    """
-    contract info of the provider.
-    """
-    found: str
-    'the python module import path where found the contract provider, pattern foo.bar:attr'
-
-    file: str
-    'the python file absolute path where found the contract provider'
-
-    provider: Provider
-
-    @property
-    def name(self) -> str:
-        """python import path of the contract"""
-        return generate_import_path(self.provider.contract())
-
-    @property
-    def aliases(self) -> list[str]:
-        result = []
-        for alias in self.provider.aliases():
-            result.append(generate_import_path(alias))
-        return result
-
-    @property
-    def docstring(self) -> str:
-        """docstring  of the contract"""
-        return inspect.getdoc(self.provider.contract())
-
-    @property
-    def provider_type(self) -> str:
-        return generate_import_path(type(self.provider))
-
-    @property
-    def description(self) -> str:
-        return self.docstring.split('\n')[0]
-
-    @property
-    def singleton(self) -> bool:
-        return self.provider.singleton()
-
-    @property
-    def source(self) -> str:
-        return inspect.getsource(self.provider.contract())
 
 
 def search_contract_infos_from_package(

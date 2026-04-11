@@ -10,7 +10,7 @@ from typing import Optional
 
 # 假设你的 app 定义在 main.py 中
 # 注意：在 Typer 中，我们通常使用 app.add_typer 来组合模块
-codex_cli = typer.Typer(
+codex_app = typer.Typer(
     short_help="Code reflection, viewing and analysis tools.",
     help="Code reflection, viewing and analysis tools.",
     no_args_is_help=True,
@@ -21,7 +21,7 @@ from ghoshell_moss.cli.utils import (
 )
 
 
-@codex_cli.command("get-interface")
+@codex_app.command("get-interface")
 def get_interface(
         import_path: str = typer.Argument(..., help="Python import path e.g.: [module.path][:attribute]")
 ):
@@ -33,7 +33,7 @@ def get_interface(
     echo(result)
 
 
-@codex_cli.command("get-source")
+@codex_app.command("get-source")
 def get_source(
         module_path: str = typer.Argument(..., help="Python module import path, e.g.: foo.bar"),
         language: str = typer.Option("python", "--language", "-l", help="Code language for syntax highlighting"),
@@ -74,7 +74,7 @@ def get_source(
         raise typer.Exit(code=1)
 
 
-@codex_cli.command("info")
+@codex_app.command("info")
 def module_info(
         module_path: str = typer.Argument(..., help="Module path to analyze")
 ):

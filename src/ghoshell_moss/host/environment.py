@@ -26,8 +26,12 @@ __all__ = [
     'ENV_SESSION_ID_KEY',
     'ENV_PARENT_PID_KEY',
     'ENV_GHOST_NAME_KEY',
-    'ENV_CELL_NAME_KEY',
+    'ENV_CELL_ADDRESS_KEY',
     'ENV_MOSS_MODE_KEY',
+
+    'DEFAULT_SESSION_ID',
+    'DEFAULT_CELL_ADDRESS',
+
     'MOSSEnvKey',
 
     # stubs
@@ -75,6 +79,7 @@ ENV_WORKSPACE_DIR_KEY = 'MOSS_WORKSPACE'
 # 环境变量中获取 MOSS 运行时的 SESSION ID.
 # 所有通过 MOSS 架构共享本地通讯的 channel 或 topic, 都需要归属到相同的 session id 上.
 ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
+DEFAULT_SESSION_ID = 'default'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 DEFAULT_MOSS_MODE = "default"
@@ -84,7 +89,8 @@ ENV_GHOST_NAME_KEY = 'MOSS_GHOST_NAME'
 
 ENV_PARENT_PID_KEY = 'MOSS_PARENT_PID'
 
-ENV_CELL_NAME_KEY = 'MOSS_CELL_NAME'
+ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
+DEFAULT_CELL_ADDRESS = 'main'
 
 MOSSEnvKey = Literal[
     "MOSS_WORKSPACE", "MOSS_SESSION_ID", "MOSS_MODE_NAME",
@@ -136,7 +142,6 @@ class Environment:
             self,
             workspace_path: Path,
             ghost_name: str | None = None,
-            moss_import_path: str | None = None,
             session_id: str | None = None,
             mode: str | None = None,
     ):
@@ -157,12 +162,8 @@ class Environment:
         self._moss_mode = mode
 
         # 永远要有正确的 session id.
-        session_id = session_id or os.environ.get(ENV_SESSION_ID_KEY, None)
-        if session_id is None:
-            session_id = uuid()
-        self._session_id = session_id
-
-        self._node_name: str = os.environ.get(ENV_CELL_NAME_KEY, "")
+        self._session_id = session_id or os.environ.get(ENV_SESSION_ID_KEY, DEFAULT_SESSION_ID)
+        self._cell_address: str = os.environ.get(ENV_CELL_ADDRESS_KEY, DEFAULT_CELL_ADDRESS)
 
         # 为空表示运行时不启用 ghost.
         self._ghost_name: str = ghost_name or os.environ.get(ENV_GHOST_NAME_KEY, '')
@@ -184,10 +185,16 @@ class Environment:
             _environment = cls(workspace_path)
         return _environment
 
-    def dump_moss_env(self, *, cell_name: str = "", for_child_process: bool = False) -> dict[MOSSEnvKey, str]:
+    def dump_moss_env(
+            self,
+            *,
+            cell_name: str = "",
+            for_child_process: bool = False,
+    ) -> dict[str, str]:
         """
         生成 MOSS 自身环境相关的 env 字典, 通常用于子进程做发现.
         """
+        env_data = os.environ.copy()
         data: dict[MOSSEnvKey, str] = {
             "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
             "MOSS_SESSION_ID": self._session_id,
@@ -198,7 +205,8 @@ class Environment:
             data["MOSS_CELL_NAME"] = cell_name
         if for_child_process:
             data["MOSS_PARENT_PID"] = str(self._self_pid)
-        return data
+        env_data.update(data)
+        return env_data
 
     @classmethod
     def set_singleton(cls, instance: Self) -> None:
@@ -350,6 +358,10 @@ class Environment:
     @property
     def meta_instruction(self) -> MetaInstruction:
         return self._meta_instruction
+
+    @property
+    def cell_address(self) -> str:
+        return self._cell_address
 
     @staticmethod
     def expect_home_workspace_path() -> Path:

@@ -11,13 +11,13 @@ import subprocess
 import shlex
 import typer
 
-app_store_cli = typer.Typer(
+app_store_app = typer.Typer(
     help="MOSS App Store: Manage and introspect environment applications.",
     no_args_is_help=True
 )
 
 
-@app_store_cli.command(name="list")
+@app_store_app.command(name="list")
 def list_apps(
         include: List[str] = typer.Argument(None, help="Include patterns (e.g. 'core/*', '*/web')"),
         exclude: List[str] = typer.Option(None, "--exclude", "-e", help="Exclude patterns"),
@@ -56,7 +56,7 @@ def list_apps(
         console.print(f"[dim]App store: {host.apps.app_store_directory}[/dim]")
 
 
-@app_store_cli.command(name="show")
+@app_store_app.command(name="show")
 def show_app(
         address: str = typer.Argument(..., help="The full address of the app (e.g., group/name)"),
         json_out: bool = typer.Option(False, "--json", help="Output raw JSON."),
@@ -136,10 +136,11 @@ def _display_app_detail(app: AppInfo):
 # 假设这个函数已经在你的 utils 或本文件中定义
 # def print_host_mode_info(host): ...
 
-@app_store_cli.command(name="test")
+@app_store_app.command(name="test")
 def test_app(
         address: str = typer.Argument(..., help="The app address (group/name) to test."),
         args: str = typer.Argument("", help="Additional arguments passed to the app command."),
+        verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
 ):
     """
     Start an app as a foreground subprocess for debugging/testing.
@@ -173,7 +174,7 @@ def test_app(
         cmd_args = shlex.split(full_cmd)
 
         # 继承当前环境并注入 Host 特有的 env (如果有)
-        env = os.environ.copy()
+        env = host.env.dump_moss_env(cell_name=app.address)
         # 这里可以根据需要注入 host.env_vars() 等信息
 
         console.print("[dim]—— Process Started (Ctrl+C to stop) ——[/dim]\n")
@@ -188,7 +189,10 @@ def test_app(
     except KeyboardInterrupt:
         console.print("\n[yellow]Test interrupted by user.[/yellow]")
     except Exception as e:
-        console.print(f"\n[red]Failed to start test process: {e}[/red]")
+        if verbose:
+            console.print_exception()
+        else:
+            console.print(f"\n[red]Failed to start test process: {e}[/red]")
         raise typer.Exit(1)
     finally:
         console.print("\n[dim]—— Test Session Ended ——[/dim]")

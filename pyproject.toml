@@ -72,6 +72,8 @@ exclude = ["test_*", ".discuss*", ".design", ".memory"]
     "**/*.ini",
     "**/*.yaml",
     "**/*.toml",  # 建议加上，万一以后有子配置
+    "**/*.json",
+    "**/*.jsonl",
 ]
 
 [tool.pdm.build]

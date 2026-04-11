@@ -228,7 +228,6 @@ class ZenohChannelProvider(DuplexChannelProvider):
         if container is None:
             container = Container()
             container.set(zenoh.Session, session)
-        self._session = session
         self._liveness_check_interval = liveness_check_interval
         connection = ZenohProviderConnection(
             session=session,

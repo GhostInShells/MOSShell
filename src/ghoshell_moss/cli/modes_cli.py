@@ -9,10 +9,10 @@ import typer
 from ghoshell_moss.host import Host
 
 # by gemini 3
-mode_app_cli = typer.Typer(help="Manage MOSS Host Modes (Environment Isolation).", no_args_is_help=True)
+mode_app = typer.Typer(help="Manage MOSS Host Modes (Environment Isolation).", no_args_is_help=True)
 
 
-@mode_app_cli.command(name="list")
+@mode_app.command(name="list")
 def list_modes():
     """
     List all discovered modes in the current MOSS workspace.
@@ -43,7 +43,7 @@ def list_modes():
     console.print("[dim]Use 'moss-cli modes show <name>' to see instructions.[/dim]")
 
 
-@mode_app_cli.command(name="show")
+@mode_app.command(name="show")
 def show_mode(name: str):
     """
     Show detailed information and instructions for a specific mode.
@@ -73,7 +73,7 @@ def show_mode(name: str):
         console.print("\n[yellow]No custom instruction defined for this mode.[/yellow]")
 
 
-@mode_app_cli.command(name="create")
+@mode_app.command(name="create")
 def create_mode(
         name: str = typer.Argument(..., help="Unique name for the new mode."),
         description: str = typer.Option("", "--desc", "-d", help="One-line description."),

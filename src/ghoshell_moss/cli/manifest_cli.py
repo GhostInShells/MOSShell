@@ -18,7 +18,7 @@ from ghoshell_moss.host.manifests.configs import (
 from ghoshell_moss.host import Host
 from .utils import console
 
-manifest_cli = typer.Typer(
+manifest_app = typer.Typer(
     help="MOSS Workspace Manifest Utilities. Handles environment discovery.",
     no_args_is_help=True
 )
@@ -33,7 +33,7 @@ manifest_cli = typer.Typer(
 #    确保 AI 能够根据输出直接构造合法的原语调用。
 # 5. [Refactor] 抽象一个统一的 BaseDiscovery 类来处理 "匹配则显示详情，否则显示列表" 的分发逻辑。
 
-@manifest_cli.command(name="contracts")
+@manifest_app.command(name="contracts")
 def list_contracts(
         search: str = typer.Argument(
             "",
@@ -108,7 +108,7 @@ def _display_contract_detail(info: ContractInfo):
     console.print(syntax)
 
 
-@manifest_cli.command(name="topics")
+@manifest_app.command(name="topics")
 def list_topics(
         search: str = typer.Argument(
             "",
@@ -181,7 +181,7 @@ def _display_topic_detail(info: TopicInfo):
         console.print(Syntax(info.model_source, "python", theme="monokai", line_numbers=True))
 
 
-@manifest_cli.command(name="configs")
+@manifest_app.command(name="configs")
 def list_configs(
         search: str = typer.Argument(
             "",
@@ -259,7 +259,7 @@ def _display_config_detail(info: ConfigInfo):
     console.print("-" * 40)
 
 
-@manifest_cli.command(name="channels")
+@manifest_app.command(name="channels")
 def list_channels(
         search: str = typer.Argument("", help="Search pattern for channel name."),
         json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
@@ -296,7 +296,7 @@ def _display_channel_table(channels: dict, is_filtered: bool):
         console.print("\n[dim]Hint: Use 'moss-cli channels <name>' to see full detail.[/dim]")
 
 
-@manifest_cli.command(name="primitives")
+@manifest_app.command(name="primitives")
 def list_primitives(
         search: str = typer.Argument("", help="Search pattern for command name."),
         json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")

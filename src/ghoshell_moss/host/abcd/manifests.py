@@ -159,7 +159,25 @@ class ContractInfo:
 
     @property
     def source(self) -> str:
-        return inspect.getsource(self.provider.contract())
+        contract = self.provider.contract()
+
+        # 1. 基础判断：如果是内置 C 函数/方法
+        if inspect.isbuiltin(contract):
+            return "# [MOSS] Native Builtin (C-level)"
+
+        try:
+            # 2. 尝试获取模块和源码路径
+            module = inspect.getmodule(contract)
+            # 如果模块没有 __file__ 属性，说明是 C 扩展或内置模块（如 sys, zenoh 核心等）
+            if not getattr(module, "__file__", None):
+                return f"# [MOSS] Non-Python Source (Module: {module.__name__ if module else 'Unknown'})"
+
+            # 3. 尝试获取源码
+            return inspect.getsource(contract)
+        except (TypeError, OSError, ImportError):
+            # TypeError: 对象不是类、函数等
+            # OSError: 找不到源码文件（比如 zenoh.Session 这种编译后的 .so/.pyd 文件）
+            return f"# [MOSS] Source unavailable (Compiled or Dynamic: {type(contract).__name__})"
 
 
 class Manifest:

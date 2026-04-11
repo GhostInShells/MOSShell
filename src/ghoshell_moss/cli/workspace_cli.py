@@ -28,7 +28,7 @@ from ghoshell_moss.host.environment import (
     META_INSTRUCTION_FILENAME,
 )
 
-workspace_cli = typer.Typer(
+workspace_app = typer.Typer(
     help="MOSS Workspace Management Utilities. Handles environment discovery and initialization.",
     no_args_is_help=True
 )
@@ -36,7 +36,7 @@ workspace_cli = typer.Typer(
 from .utils import console
 
 
-@workspace_cli.command(
+@workspace_app.command(
     name="where",
     short_help="Locate the active MOSS workspace.",
 )
@@ -102,7 +102,7 @@ def where() -> None:
     console.print(table)
 
 
-@workspace_cli.command(
+@workspace_app.command(
     name="init",
     short_help="Initialize a MOSS workspace",
 )
@@ -170,7 +170,7 @@ def init_workspace(
         raise typer.Exit(code=1)
 
 
-@workspace_cli.command(name="copy-env")
+@workspace_app.command(name="copy-env")
 def copy_env() -> None:
     """
     Copy the .env_example to .env in the current active workspace.

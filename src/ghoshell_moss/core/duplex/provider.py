@@ -136,7 +136,6 @@ class DuplexChannelProvider(ChannelProvider):
         self._provider_topic_service: Optional[TopicService] = None
         self._main_loop_task: asyncio.Task | None = None
         self._running_thread: threading.Thread | None = None
-        self._running_task: asyncio.Task | None = None
 
     def _get_connection_id(self) -> str:
         return self._connection_id or ""
@@ -238,17 +237,19 @@ class DuplexChannelProvider(ChannelProvider):
         # 启动时, topic service 同样会注入到根节点的 importlib 中.
         self._root_runtime = channel.bootstrap(self._container)
 
-        async with contextlib.AsyncExitStack() as stack:
-            await stack.enter_async_context(self._bootstrap_container_stack())
-            await stack.enter_async_context(self._bootstrap_runtime_stack())
-            await stack.enter_async_context(self._bootstrap_connection_stack())
-            await stack.enter_async_context(self._bootstrap_main_loop_stack())
-            try:
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                await stack.enter_async_context(self._bootstrap_container_stack())
+                await stack.enter_async_context(self._bootstrap_runtime_stack())
+                await stack.enter_async_context(self._bootstrap_connection_stack())
+                await stack.enter_async_context(self._bootstrap_main_loop_stack())
                 yield self
-            except Exception as exc:
-                self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
-            finally:
-                self._closed_event.set()
+        except Exception as exc:
+            self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
+        except KeyboardInterrupt:
+            self.logger.info("%s stop channel task on keyboardInterrupt", self._log_prefix)
+        finally:
+            self._closed_event.set()
 
     def _check_running(self):
         if not self._starting:
@@ -647,13 +648,6 @@ class DuplexChannelProvider(ChannelProvider):
         return self._running_thread
 
     async def arun_until_closed(self, channel: Channel) -> None:
-        if self._running_task is not None:
-            await self._running_task
-            return
-        self._running_task = asyncio.create_task(self._arun_until_closed(channel))
-        await self._running_task
-
-    async def _arun_until_closed(self, channel: Channel) -> None:
         async with self.arun(channel):
             await self.wait_stop()
 

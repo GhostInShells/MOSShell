@@ -1,2 +1,4 @@
-session_*
-!session_uuid
+*
+session-default/
+!.gitignore
+README.md

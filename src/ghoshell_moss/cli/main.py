@@ -5,12 +5,12 @@ from ghoshell_moss.cli.utils import (
     print_error, print_info,
     print_panel, echo
 )
-from ghoshell_moss.cli import codex
-from ghoshell_moss.cli import concepts
-from ghoshell_moss.cli import workspace
-from ghoshell_moss.cli import manifest
-from ghoshell_moss.cli import modes
-from ghoshell_moss.cli import apps
+from ghoshell_moss.cli import codex_cli
+from ghoshell_moss.cli import concepts_cli
+from ghoshell_moss.cli import workspace_cli
+from ghoshell_moss.cli import manifest_cli
+from ghoshell_moss.cli import modes_cli
+from ghoshell_moss.cli import apps_cli
 
 __version__ = "0.1.0-beta"
 
@@ -23,12 +23,12 @@ app = typer.Typer(
     no_args_is_help=True  # 没传子命令时自动显示帮助
 )
 
-app.add_typer(codex.codex_cli, name="codex", short_help="Python runtime inspect tools")
-app.add_typer(workspace.workspace_cli, name="ws", short_help="MOSS Workspace tools")
-app.add_typer(manifest.manifest_cli, name="manifest", short_help="MOSS workspace manifest tools")
-app.add_typer(modes.mode_app_cli, name="modes", short_help="MOSS runtime modes manager")
-app.add_typer(apps.app_store_cli, name="apps", short_help="MOSS apps manager")
-app.command(name='concepts', short_help="show concepts of MOSS")(concepts.show_concepts)
+app.add_typer(codex_cli.codex_app, name="codex", short_help="Python runtime inspect tools")
+app.add_typer(workspace_cli.workspace_app, name="ws", short_help="MOSS Workspace tools")
+app.add_typer(manifest_cli.manifest_app, name="manifest", short_help="MOSS workspace manifest tools")
+app.add_typer(modes_cli.mode_app, name="modes", short_help="MOSS runtime modes manager")
+app.add_typer(apps_cli.app_store_app, name="apps", short_help="MOSS apps manager")
+app.command(name='concepts', short_help="show concepts of MOSS")(concepts_cli.show_concepts)
 
 
 @app.callback(invoke_without_command=True)
