@@ -2,6 +2,7 @@ import asyncio
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.core.concepts.topic import LogTopic, TopicClosedError
 from ghoshell_moss.host.abcd.session import ConversationItem
+from ghoshell_common.helpers import yaml_pretty_dump
 
 
 async def matrix_smoke_test(matrix: Matrix):
@@ -14,10 +15,13 @@ async def matrix_smoke_test(matrix: Matrix):
 
     # 1. 验证 Cell 自我识别 (this)
     this = matrix.this
+    env_str = yaml_pretty_dump(matrix.cell_env())
     print(f"[{this.type.upper()}] 节点名称: {this.name}")
     print(f"[{this.type.upper()}] 节点地址: {this.address}")
     print(f"[{this.type.upper()}] 工作目录: {this.where}")
-    print(f"[{this.type.upper()}] 存活状态: {this.is_alive()}")
+    print(f"[{this.type.upper()}] 存活状态: {env_str}")
+
+    print(f"[{this.type.upper()}] ENV 信息: {this.is_alive()}")
 
     # 2. 验证 Session 基础输出
     print("\n--- 验证 Session 输出 ---")

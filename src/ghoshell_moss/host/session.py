@@ -5,8 +5,9 @@ from ghoshell_moss.host.abcd import ConversationItem
 from ghoshell_moss.host.abcd.session import Session
 from ghoshell_container import IoCContainer, Provider
 from threading import Event
+from ghoshell_moss.depends import depend_zenoh
+depend_zenoh()
 import zenoh
-import orjson
 
 __all__ = [
     'HostSession',
@@ -27,14 +28,14 @@ class HostSession(Session):
             zenoh_session: zenoh.Session,
     ):
         self._session_id = session_id
-        self._output_key_expr = f"moss/{session_id}/outputs"
+        self._output_key_expr = f"MOSS/{session_id}/outputs"
         self._session_storage = session_storage
         self._closing_event = Event()
         self._output_listeners: list[Callable[[ConversationItem], None]] = []
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
             raise RuntimeError(f'HostSession receive Zenoh session but closed')
-        _ = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
+        self._sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
         self._logger = logger
         self._log_prefix = f'<Session cls={self.__class__} id={session_id}>'
 
@@ -57,8 +58,7 @@ class HostSession(Session):
         if len(self._output_listeners) == 0:
             return
         try:
-            data = orjson.loads(sample.payload.to_bytes())
-            item = ConversationItem(**data)
+            item = ConversationItem.model_validate_json(sample.payload.to_bytes())
             for listener in self._output_listeners:
                 try:
                     listener(item)
@@ -75,6 +75,10 @@ class HostSession(Session):
 
     def on_output(self, callback: Callable[[ConversationItem], None]) -> None:
         self._output_listeners.append(callback)
+
+    def clear(self) -> None:
+        if self._sub and not self._zenoh_session.is_closed():
+            self._sub.undeclare()
 
 
 class WorkspaceSessionProvider(Provider[Session]):
@@ -108,9 +112,11 @@ class WorkspaceSessionProvider(Provider[Session]):
         logger = con.get(LoggerItf)
         session_storage_path = self._session_id_prefix + self._session_id
         storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
-        return HostSession(
+        session = HostSession(
             session_id=self._session_id,
             session_storage=storage,
             logger=logger,
             zenoh_session=zenoh_session,
         )
+        con.add_shutdown(session.clear)
+        return session

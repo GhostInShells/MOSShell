@@ -94,7 +94,7 @@ DEFAULT_CELL_ADDRESS = 'main'
 
 MOSSEnvKey = Literal[
     "MOSS_WORKSPACE", "MOSS_SESSION_ID", "MOSS_MODE_NAME",
-    "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_NAME"
+    "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_ADDRESS",
 ]
 
 
@@ -188,23 +188,29 @@ class Environment:
     def dump_moss_env(
             self,
             *,
-            cell_name: str = "",
+            cell_address: str = "",
             for_child_process: bool = False,
+            with_os_env: bool = True,
     ) -> dict[str, str]:
         """
         生成 MOSS 自身环境相关的 env 字典, 通常用于子进程做发现.
         """
-        env_data = os.environ.copy()
         data: dict[MOSSEnvKey, str] = {
             "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
             "MOSS_SESSION_ID": self._session_id,
             "MOSS_GHOST_NAME": self._ghost_name,
             "MOSS_MODE_NAME": self._moss_mode,
         }
-        if cell_name:
-            data["MOSS_CELL_NAME"] = cell_name
+        cell_address = cell_address or self._cell_address
+        if cell_address:
+            data[ENV_CELL_ADDRESS_KEY] = cell_address
         if for_child_process:
-            data["MOSS_PARENT_PID"] = str(self._self_pid)
+            data[ENV_PARENT_PID_KEY] = str(self._self_pid)
+        else:
+            data[ENV_PARENT_PID_KEY] = str(self._parent_pid)
+        if not with_os_env:
+            return data
+        env_data = os.environ.copy()
         env_data.update(data)
         return env_data
 

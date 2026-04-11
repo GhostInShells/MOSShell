@@ -174,7 +174,7 @@ def test_app(
         cmd_args = shlex.split(full_cmd)
 
         # 继承当前环境并注入 Host 特有的 env (如果有)
-        env = host.env.dump_moss_env(cell_name=app.address)
+        env = host.env.dump_moss_env(cell_address=app.address, for_child_process=True)
         # 这里可以根据需要注入 host.env_vars() 等信息
 
         console.print("[dim]—— Process Started (Ctrl+C to stop) ——[/dim]\n")

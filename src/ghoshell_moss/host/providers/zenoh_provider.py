@@ -19,7 +19,7 @@ class WorkspaceZenohProvider(Provider[zenoh.Session]):
 
     def __init__(
             self,
-            workspace_conf_file: str | Path = "zenoh_config.json5"
+            workspace_conf_file: str | Path
     ):
         self.config_path = Path(workspace_conf_file)
 

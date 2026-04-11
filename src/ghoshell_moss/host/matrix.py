@@ -1,5 +1,5 @@
 import asyncio
-from typing import Coroutine, ClassVar
+from typing import Coroutine
 
 from typing_extensions import Self
 
@@ -23,6 +23,9 @@ from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider
 from ghoshell_moss.host.session import WorkspaceSessionProvider
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
+from ghoshell_moss.depends import depend_zenoh
+
+depend_zenoh()
 import zenoh
 import contextlib
 import logging
@@ -109,6 +112,7 @@ class HostMatrix(Matrix):
         self._manifest = manifest
         self._workspace = workspace
         self._current_mode = mode
+        self._session_id = env.session_id
 
         # prepare cell and events
         cells: dict[str, Cell] = {}
@@ -144,11 +148,11 @@ class HostMatrix(Matrix):
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._log_prefix = f"<HostMatrix address={self._cell_address} session_id={self.env.session_id}>"
         self._task_group: set[asyncio.Task] = set()
-
         locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
         locker_name = locker_name.replace('.', '_')
         locker_name = locker_name.replace('/', '_')
         self._process_locker = self._workspace.lock(locker_name)
+        self._process_locker_name = locker_name
 
     def _prepare_container(self) -> Container:
         container = Container(name=self._cell_address)
@@ -158,7 +162,12 @@ class HostMatrix(Matrix):
         container.set(Workspace, self._workspace)
         # 注册 workspace zenoh provider.
         # 可以被环境覆盖.
-        container.register(WorkspaceZenohProvider())
+        if self._is_main:
+            container.register(WorkspaceZenohProvider("zenoh_config_main.json5"))
+        elif self._this_cell.type == 'app':
+            container.register(WorkspaceZenohProvider("zenoh_config_app.json5"))
+        else:
+            raise RuntimeError(f"Unknown cell type: {self._this_cell.type}")
 
         # 注册 configs
         container.register(WorkspaceYamlConfigStoreProvider())
@@ -189,6 +198,9 @@ class HostMatrix(Matrix):
     @property
     def this(self) -> Cell:
         return self._this_cell
+
+    def cell_env(self) -> dict[str, str]:
+        return self.env.dump_moss_env(with_os_env=False, for_child_process=False)
 
     @property
     def mode(self) -> str:
@@ -305,7 +317,7 @@ class HostMatrix(Matrix):
     @contextlib.contextmanager
     def _ensure_process_locker_ctx_manager(self):
         if not self._process_locker.acquire(3.0):
-            raise RuntimeError(f"{self._process_locker} failed to lock")
+            raise RuntimeError(f"Matrix failed to lock {self._process_locker_name}")
         try:
             yield
         finally:
@@ -321,9 +333,8 @@ class HostMatrix(Matrix):
         finally:
             self_liveness.undeclare()
 
-    @staticmethod
-    def _moss_node_liveness_key_expr(address: str) -> str:
-        return f"MOSS/cell/{address}"
+    def _moss_node_liveness_key_expr(self, address: str) -> str:
+        return f"MOSS/{self._session_id}/cell/{address}"
 
     @contextlib.contextmanager
     def _all_cell_liveness_check_ctx_manager(self, session: zenoh.Session):

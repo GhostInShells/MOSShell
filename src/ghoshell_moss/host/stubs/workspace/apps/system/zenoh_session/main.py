@@ -1,80 +1,63 @@
 import asyncio
+import orjson
 import zenoh
-import time
-from rich.console import Console
-from ghoshell_moss.host import Host
-
-# 实例化 console 用于测试中的可视化反馈
-console = Console()
-host = Host()
+from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.concepts.topic import TopicModel
 
 
-async def test_zenoh_connectivity(matrix):
-    """测试 Zenoh 基础连通性"""
-    session = matrix.container.force_fetch(zenoh.Session)
+async def global_watcher_app(matrix: Matrix):
+    """
+    全量观察者：监听 MOSS/** 下的所有 Zenoh 消息
+    """
+    print("\n" + "=" * 60)
+    print("🔍 MOSS 全量观察者启动 (Global Watcher)")
+    print(f"当前节点地址: {matrix.this.address}")
+    print(f"监听范围: MOSS/**")
+    print("=" * 60 + "\n")
 
-    # 1. 基础状态检查
-    console.print(f"[cyan]Zenoh Session ID:[/cyan] {session.info().zid()}")
-    assert not session.is_closed(), "Zenoh Session 应该是开启状态"
+    # 1. 直接从容器获取已经 bootstrap 的 zenoh session
+    # 这样我们不需要处理它的生命周期，Matrix 退出时会自动关闭它
+    z_session = matrix.container.force_fetch(zenoh.Session)
 
-    # 2. 简单的 Pub/Sub 回路测试 (自发自收)
-    topic = f"moss/test/connectivity/{int(time.time())}"
-    received_event = asyncio.Event()
+    def on_sample(sample: zenoh.Sample):
+        """
+        处理所有抓取到的样本
+        """
+        key = str(sample.key_expr)
+        payload_raw = sample.payload.to_bytes()
 
-    def on_put(sample):
-        console.print(f"[green]✔ Received test pulse on:[/green] {sample.key_expr}")
-        received_event.set()
+        # 尝试解析 JSON 提高可读性，解析失败则打印原文字符串
+        try:
+            data = orjson.loads(payload_raw)
+            # 格式化打印
+            print(f"📩 [{key}]")
+            print(f"   Payload: {orjson.dumps(data, option=orjson.OPT_INDENT_2).decode()}")
+        except Exception:
+            print(f"📩 [{key}]")
+            print(f"   Raw: {sample.payload.to_string()}")
+        print("-" * 30)
 
-    # 订阅
-    sub = session.declare_subscriber(topic, on_put)
-
-    # 发布
-    console.print(f"[yellow]Sending pulse to {topic}...[/yellow]")
-    session.put(topic, "pulse")
+    # 2. 声明全量订阅者
+    # 使用 ** 匹配 MOSS/ 下的所有层级
+    print("正在建立 Zenoh 订阅...")
+    sub = z_session.declare_subscriber("MOSS/**", on_sample)
 
     try:
-        # 等待反馈，超时则认为链路有问题
-        await asyncio.wait_for(received_event.wait(), timeout=2.0)
-        console.print("[bold green]Matrix Zenoh Communication: OK[/bold green]")
-    except asyncio.TimeoutError:
-        console.print("[red]❌ Matrix Zenoh Communication: Timeout![/red]")
-        raise
+        # 3. 保持运行，直到 Matrix 关闭
+        print("✅ 观察者已就绪，正在实时截获总线数据...")
+        await matrix.wait_closed()
+    except asyncio.CancelledError:
+        print("\n[Watcher] 收到取消信号，正在停止监听...")
     finally:
         sub.undeclare()
-
-
-async def test_container_singleton(matrix):
-    """验证 IoC 容器提供的 Session 是否为单例"""
-    s1 = matrix.container.force_fetch(zenoh.Session)
-    s2 = matrix.container.force_fetch(zenoh.Session)
-
-    assert s1 is s2, "Container 必须返回同一个 Zenoh Session 实例"
-    console.print("[bold green]IoC Singleton Integrity: OK[/bold green]")
-
-
-async def main():
-    console.print(f"[bold magenta]Starting Matrix Integration Test[/bold magenta]")
-
-    # 使用你设计的 async context manager
-    async with host.matrix() as matrix:
-        # 1. 验证基础 Matrix 属性
-        console.print(f"[cyan]Current Cell:[/cyan] {matrix.this}")
-        assert matrix.is_running(), "Matrix 应处于运行状态"
-
-        # 2. 运行子项测试
-        await test_container_singleton(matrix)
-        await test_zenoh_connectivity(matrix)
-
-        # 3. 测试 Workspace 集成
-        ws = matrix.workspace
-        console.print(f"[cyan]Workspace Root:[/cyan] {ws.root()}")
-
-    console.print(f"\n[bold green]All tests passed! Matrix is healthy.[/bold green]")
+        print("[Watcher] 订阅已释放。")
 
 
 if __name__ == "__main__":
+    # 使用 Matrix 启动，会自动处理 Host 环境发现
     try:
-        asyncio.run(main())
+        Matrix.discover().run(global_watcher_app)
+    except KeyboardInterrupt:
+        print("\n[Watcher] 用户手动终止测试。")
     except Exception as e:
-        console.print(f"\n[bold red]Test Failed:[/bold red] {e}")
-        exit(1)
+        print(f"\n[Watcher] 异常退出: {e}")

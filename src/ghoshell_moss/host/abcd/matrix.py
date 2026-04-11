@@ -2,7 +2,7 @@ from typing import Protocol, Literal, Callable, Awaitable, Any, Coroutine
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.core.concepts.channel import ChannelProvider, Channel
+from ghoshell_moss.core.concepts.channel import  Channel
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
 from .session import Session
@@ -58,6 +58,13 @@ class Matrix(ABC):
         # moss 架构的默认实现.
         from ghoshell_moss.host import Host
         return Host.discover().matrix()
+
+    @abstractmethod
+    def cell_env(self) -> dict[str, str]:
+        """
+        Cell 自身相关的环境变量.
+        """
+        pass
 
     @property
     @abstractmethod
