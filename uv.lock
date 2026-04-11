@@ -561,6 +561,7 @@ dependencies = [
     { name = "pillow" },
     { name = "python-dateutil" },
     { name = "python-frontmatter" },
+    { name = "python-ulid" },
 ]
 
 [package.optional-dependencies]
@@ -628,6 +629,7 @@ requires-dist = [
     { name = "pyaudio", marker = "extra == 'audio'", specifier = ">=0.2.14" },
     { name = "python-dateutil", specifier = ">=2.9.0.post0" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
+    { name = "python-ulid", specifier = ">=3.1.0" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=7.0.1" },
     { name = "scipy", marker = "extra == 'audio'", specifier = ">=1.15.3" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.24.1" },
@@ -1787,6 +1789,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/01/979e98d542a70714b0cb2b6728ed0b7c46792b695e3eaec3e20711271ca3/python_multipart-0.0.22.tar.gz", hash = "sha256:7340bef99a7e0032613f56dc36027b959fd3b30a787ed62d310e951f7c3a3a58", size = 37612 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1b/d0/397f9626e711ff749a95d96b7af99b9c566a9bb5129b8e4c10fc4d100304/python_multipart-0.0.22-py3-none-any.whl", hash = "sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155", size = 24579 },
+]
+
+[[package]]
+name = "python-ulid"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/7e/0d6c82b5ccc71e7c833aed43d9e8468e1f2ff0be1b3f657a6fcafbb8433d/python_ulid-3.1.0.tar.gz", hash = "sha256:ff0410a598bc5f6b01b602851a3296ede6f91389f913a5d5f8c496003836f636", size = 93175 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/a0/4ed6632b70a52de845df056654162acdebaf97c20e3212c559ac43e7216e/python_ulid-3.1.0-py3-none-any.whl", hash = "sha256:e2cdc979c8c877029b4b7a38a6fba3bc4578e4f109a308419ff4d3ccf0a46619", size = 11577 },
 ]
 
 [[package]]

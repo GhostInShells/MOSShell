@@ -1,3 +1,4 @@
+import ghoshell_common.helpers
 from typing_extensions import Self
 from ghoshell_moss.host.abcd.host_interface import (
     MossHost, MossMode, MossRuntime,
@@ -6,13 +7,21 @@ from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_container import Container
 from .environment import Environment
 from .manifests import PackageManifest, MergedManifest
 from .app_store import HostAppStore
 from .modes import list_modes_from_root_package, new_mode
 from .matrix import HostMatrix
 import logging
+from ulid import ULID
+
+
+def _ulid_gen() -> str:
+    return str(ULID())
+
+# patch uuid to ulid
+ghoshell_common.helpers.uuid = _ulid_gen
+
 
 _host_instance = None
 
