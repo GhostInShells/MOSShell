@@ -1,0 +1,200 @@
+from typing import Literal, Self
+
+from ghoshell_moss import Message, MOSShell
+from ghoshell_moss.host.abcd.host_interface import (
+    MossRuntime, ToolSet, Perception, MossMode
+)
+from ghoshell_moss.host.abcd.app import AppStore
+from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.host.abcd.mindflow import Mindflow, Signal, InputSignal
+from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.ctml import new_ctml_shell
+from ghoshell_moss.contracts import Workspace
+from .abcd import ConversationItem
+from .app_store import HostAppStore
+from .matrix import HostMatrix
+from .environment import Environment
+from .base_mindflow import default_mindflow
+import contextlib
+import janus
+import asyncio
+
+
+class HostMossRuntime(MossRuntime, ToolSet):
+
+    def __init__(
+            self,
+            env: Environment,
+            workspace: Workspace,
+            mode: MossMode,
+            matrix: HostMatrix,
+            mindflow: Mindflow | None = None,
+            as_toolset: bool = False,
+    ):
+        env.bootstrap()
+        self._env = env
+        self._workspace = workspace
+        self._matrix = matrix
+        self._mode = mode
+        self._as_toolset = as_toolset
+        self._ctml_shell = new_ctml_shell(
+            name="MOSS." + self._mode.name,
+            description=self._mode.description,
+            container=self.matrix.container,
+            experimental=False,
+        )
+        self._app_store = HostAppStore(
+            env=self._env,
+            workspace=self._workspace,
+            namespace="MOSS/app_store/main",
+            runnable=True,
+            include=self._mode.apps,
+            bringup=self._mode.bringup,
+        )
+        self._async_exit_stack = contextlib.AsyncExitStack()
+        self._started = False
+        self._paused = False
+        self._close_event = ThreadSafeEvent()
+        self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.session_id}>"
+
+        self._mindflow: Mindflow | None = mindflow
+
+        self._interpreting_future: asyncio.Future | None = None
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+
+        # 全局输入的 input topic listener
+        self._input_topic_subscribing_task: asyncio.Task | None = None
+        # 处理全局输入的 handler.
+        self._input_topic_handler_task: asyncio.Task | None = None
+
+    @property
+    def mode(self) -> str:
+        return self._mode.name
+
+    def _check_running(self):
+        if not self.is_running():
+            raise RuntimeError('Moss is not running.')
+
+    def as_toolset(self) -> ToolSet:
+        self._check_running()
+        return self
+
+    def moss_instruction(self) -> str:
+        self._check_running()
+        instructions = []
+        if meta_instruction := self._env.meta_instruction.get_meta_instruction().strip():
+            instructions.append(meta_instruction)
+        if mode_instruction := self._mode.instruction.strip():
+            instructions.append(mode_instruction)
+        if static_messages := self._ctml_shell.static_messages().strip():
+            instructions.append(static_messages)
+        return "\n".join(instructions)
+
+    def moss_dynamic_messages(self) -> list[Message]:
+        return self._ctml_shell.dynamic_messages()
+
+    async def moss_observe(
+            self,
+            timeout: float | None = None,
+            priority: int = 0,
+            with_dynamic: bool = True,
+    ) -> list[Message]:
+        self._check_running()
+
+        pass
+
+    async def moss_exec(
+            self,
+            commands: str,
+            call_soon: bool = True,
+            observe: bool = True,
+            with_dynamic: bool = True,
+            priority: int = 0,
+    ) -> list[Message]:
+        pass
+
+    async def moss_interrupt(self) -> str:
+        pass
+
+    def is_running(self) -> bool:
+        pass
+
+    def snapshot(self, new: bool = False, ack: bool = False) -> Perception:
+        self._check_running()
+        pass
+
+    def ack_snapshot(self, snapshot: Perception) -> bool:
+        pass
+
+    def wait_close_sync(self, timeout: float | None = None) -> bool:
+        return self._close_event.wait_sync(timeout)
+
+    async def wait_close(self) -> None:
+        await self._close_event.wait()
+
+    def close(self) -> None:
+        self._close_event.set()
+
+    def pause(self, toggle: bool = True) -> None:
+        self._check_running()
+        self._ctml_shell.pause(toggle)
+        self._paused = toggle
+
+    @property
+    def apps(self) -> AppStore:
+        return self._app_store
+
+    @property
+    def shell(self) -> MOSShell:
+        return self._ctml_shell
+
+    @property
+    def matrix(self) -> Matrix:
+        return self._matrix
+
+    def _output_error(self, error: str) -> None:
+        """
+        output error info to session output stream
+        """
+        self.output(ConversationItem.new(role='log').with_message(error))
+
+    def _output_logger(self, msg: str) -> None:
+        """
+        output logger info to session output stream
+        """
+        self.output(ConversationItem.new(role='log').with_message(msg))
+
+    def _init_mindflow(self) -> Mindflow:
+        if self._mindflow is None:
+            mindflow = self._matrix.container.get(Mindflow)
+            if mindflow is None:
+                mindflow = default_mindflow(self._matrix.container)
+            self._mindflow = mindflow
+        # 注册 mindflow 的回调.
+        self.matrix.session.on_input(self._mindflow.on_signal)
+        return self._mindflow
+
+    async def __aenter__(self) -> Self:
+        if self._started:
+            return self
+        self._started = True
+        await self._async_exit_stack.__aenter__()
+        # 启动 matrix.
+        await self._async_exit_stack.enter_async_context(self._matrix)
+        # 启动 app 并且 bringup
+        await self._async_exit_stack.enter_async_context(self._app_store)
+        # 启动 ctml shell
+        await self._async_exit_stack.enter_async_context(self._ctml_shell)
+        # 启动 mindflow.
+        mindflow = self._init_mindflow()
+        await self._async_exit_stack.enter_async_context(mindflow)
+
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception as e:
+            self.logger.exception("%s failed to aexit %s", self._log_prefix, e)
+        finally:
+            self._close_event.set()

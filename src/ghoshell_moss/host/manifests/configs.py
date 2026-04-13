@@ -29,8 +29,8 @@ def search_config_infos_from_package(
 
             # 这里的逻辑：我们认为在 manifest 包下定义的变量名即为“发现”
             info = ConfigInfo(
-                found=manifest.module_path,
-                file=manifest.file_path,
+                found_import_path=manifest.module_path,
+                found_at_file=manifest.file_path,
                 config=obj
             )
 

@@ -59,7 +59,7 @@ def new_mode(
         description=description,
         instruction='',
         apps=apps,
-        bring_up_apps=bring_up_apps,
+        bringup=bring_up_apps,
         file=str(mode_file),
     )
 

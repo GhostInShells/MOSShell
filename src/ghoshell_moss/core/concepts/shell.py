@@ -95,6 +95,20 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     # --- runtime methods --- #
 
     @abstractmethod
+    def pause(self, toggle: bool = True) -> None:
+        """
+        急停, 立刻生效. 禁止新的命令输入, 除非取消 pause 状态.
+        """
+        pass
+
+    @abstractmethod
+    def is_paused(self) -> bool:
+        """
+        是否在 pause 状态.
+        """
+        pass
+
+    @abstractmethod
     def is_running(self) -> bool:
         """
         shell 是否在运行中.

@@ -1,5 +1,7 @@
 import ghoshell_common.helpers
 from typing_extensions import Self
+
+from ghoshell_moss.host.abcd import Conceive, Mindflow, ToolSet
 from ghoshell_moss.host.abcd.host_interface import (
     MossHost, MossMode, MossRuntime,
 )
@@ -7,21 +9,14 @@ from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
-from .environment import Environment
-from .manifests import PackageManifest, MergedManifest
-from .app_store import HostAppStore
-from .modes import list_modes_from_root_package, new_mode
-from .matrix import HostMatrix
+from ghoshell_moss.host.environment import Environment
+from ghoshell_moss.host.manifests import PackageManifest, MergedManifest
+from ghoshell_moss.host.app_store import HostAppStore
+from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
+from ghoshell_moss.host.matrix import HostMatrix
 import logging
-from ulid import ULID
 
-
-def _ulid_gen() -> str:
-    return str(ULID())
-
-# patch uuid to ulid
-ghoshell_common.helpers.uuid = _ulid_gen
-
+__all__ = ['Host']
 
 _host_instance = None
 
@@ -59,7 +54,8 @@ class Host(MossHost):
         self._app_store = HostAppStore(
             env=self.env,
             workspace=self._workspace,
-            namespace="MOSS/apps",
+            namespace="MOSS/app_store/toolset",
+            runnable=False,
         )
         self._matrix = HostMatrix(
             mode=self._moss_mode,
@@ -106,5 +102,9 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def run(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> MossRuntime:
+    def toolset(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> ToolSet:
+        pass
+
+    def run(self, *, mode: MossMode | str = 'default', session_id: str = 'default', conceive: Conceive | None = None,
+            mindflow: Mindflow | None = None) -> MossRuntime:
         pass

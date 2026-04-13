@@ -18,6 +18,7 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "python-frontmatter>=1.1.0",
     "python-ulid>=3.1.0",
+    "uvloop>=0.22.1",
 ]
 
 [project.optional-dependencies]

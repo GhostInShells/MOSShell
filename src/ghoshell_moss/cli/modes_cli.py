@@ -29,7 +29,7 @@ def list_modes():
     for name, m in modes.items():
         # 处理显示逻辑，如果是 * 则显示 ALL
         apps_str = ", ".join(m.apps) if m.apps != ["*"] else "[dim]ALL[/dim]"
-        up_str = ", ".join(m.bring_up_apps) if m.bring_up_apps else "[dim]None[/dim]"
+        up_str = ", ".join(m.bringup) if m.bringup else "[dim]None[/dim]"
 
         table.add_row(
             name,

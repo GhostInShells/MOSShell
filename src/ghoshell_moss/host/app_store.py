@@ -32,12 +32,13 @@ class HostAppStore(AppStore):
             self,
             env: Environment,
             workspace: Workspace,
-            namespace: str,
+            namespace: str = 'MOSS/app_store',
             config_file: str = 'configs/circus.ini',
             app_store_name: str = "apps",
             runnable: bool = False,
             include: list[str] | None = None,
             exclude: list[str] | None = None,
+            bringup: list[str] | None = None,
             logger: LoggerItf | None = None,
     ) -> None:
         self._env_obj = env
@@ -50,6 +51,7 @@ class HostAppStore(AppStore):
         self.app_store_directory = self._workspace_obj.root_path().joinpath(app_store_name).resolve()
         self._sub_process_env = env.dump_moss_env()
         self._runnable = runnable
+        self._bringup = bringup or []
         # 状态维护
         self._found_apps: Dict[_AppAddress, AppInfo] | None = None
         self._managed_addresses: Set[_AppAddress] = set()
@@ -66,6 +68,7 @@ class HostAppStore(AppStore):
         self._endpoint: str = ""
         self._pubsub_endpoint: str = ""
         self._is_running = False
+        self._log_prefix = f"<HostAppStore {self._namespace}>"
 
     def _load_config(self) -> None:
         """从 Workspace 加载 Circus 配置"""
@@ -80,6 +83,7 @@ class HostAppStore(AppStore):
         cfg.read(config_path)
         self._endpoint = cfg.get("circus", "endpoint", fallback="tcp://127.0.0.1:5555")
         self._pubsub_endpoint = cfg.get("circus", "pubsub_endpoint", fallback="tcp://127.0.0.1:5556")
+        self._logger.info("")
 
     def name(self) -> str:
         return self._name
@@ -98,7 +102,7 @@ class HostAppStore(AppStore):
         import importlib.util
 
         # 1. 规范化 address 并获取 group/name
-        if address.startswith("app/"):
+        if address.startswith("apps/"):
             parts = address.split('/')
             if len(parts) != 3:
                 return f"Error: Invalid address format '{address}'. Expected 'app/group/name'."
@@ -189,8 +193,11 @@ class HostAppStore(AppStore):
     async def start_app(self, app_address: str, argument: str = '') -> str:
         app = self.get_app_info(app_address)
         if not app: return f"Error: {app_address} not found."
+        return await self._start_app(app, argument, app_address)
 
+    async def _start_app(self, app: AppInfo, argument: str = '', address: str = "") -> str:
         try:
+            address = address or app.address
             # 使用 to_circus_params 构造指令
             params = app.to_circus_params(self._sub_process_env, argument)
 
@@ -206,7 +213,7 @@ class HostAppStore(AppStore):
             return f"Successfully issued start command for {app.address}."
         except Exception as e:
             app.error = str(e)
-            return f"Failed to start {app_address}: {e}"
+            return f"Failed to start {address}: {e}"
 
     async def stop_app(self, app_address: str) -> str:
         app = self.get_app_info(app_address)
@@ -255,7 +262,7 @@ class HostAppStore(AppStore):
     async def __aenter__(self) -> Self:
         if not self._runnable:
             raise RuntimeError(
-                f'App Store setting is not not runnable'
+                f'Current App Store setting is not not runnable'
             )
         if not self._lock.acquire(timeout=5):
             raise RuntimeError(f"Workspace {self._namespace} is locked by another Arbiter.")
@@ -285,8 +292,11 @@ class HostAppStore(AppStore):
         self._polling_task = asyncio.create_task(self._polling_loop())
 
         # 4. 执行 Bring-up
-        for addr in self._bring_up:
-            asyncio.create_task(self.start_app(addr))
+        if len(self._bringup) > 0:
+            app_infos = self.list_apps()
+            bringup_apps = self.match_apps(app_infos, self._bringup)
+            for app_info in bringup_apps:
+                asyncio.create_task(self._start_app(app_info))
 
         return self
 

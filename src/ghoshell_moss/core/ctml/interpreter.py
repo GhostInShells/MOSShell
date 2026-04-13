@@ -59,6 +59,8 @@ class CTMLInterpreter(Interpreter):
             ignore_wrong_command: bool = False,
             clear_after_exit: bool | None = None,
             ctml_attr_parser: Optional[AttrWithTypeSuffixParser] = None,
+            moss_static: str | None = None,
+            moss_dynamic: list[Message] | None = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -73,6 +75,8 @@ class CTMLInterpreter(Interpreter):
         :param channel_metas: 用来定义当前所拥有的 channels 信息, 用来提供给大模型.
         :param ignore_wrong_command: 是否忽略不存在的 command.
         :param clear_after_exit: clear undone tasks after exit.
+        :param moss_static: 静态讯息.
+        :param moss_dynamic: 动态生成的讯息.
         """
         # 生成 stream id.
         self._id = stream_id or uuid()
@@ -130,8 +134,8 @@ class CTMLInterpreter(Interpreter):
         self._interpretation = Interpretation(
             id=self._id,
             meta_instruction=moss_meta_instruction or get_moss_ctml_meta_instruction(),
-            channel_instructions=make_static_messages(self._channel_metas),
-            channel_context=make_dynamic_messages(self._channel_metas),
+            moss_static=moss_static if moss_static is not None else make_static_messages(self._channel_metas),
+            moss_dynamic=moss_dynamic if moss_dynamic is not None else make_dynamic_messages(self._channel_metas),
         )
         if undone_tasks is not None and len(undone_tasks) > 0:
             for task in undone_tasks:
@@ -276,10 +280,10 @@ class CTMLInterpreter(Interpreter):
         return self._channel_metas
 
     def static_messages(self) -> str:
-        return self._interpretation.channel_instructions
+        return self._interpretation.moss_static
 
     def dynamic_messages(self) -> list[Message]:
-        return self._interpretation.channel_context
+        return self._interpretation.moss_dynamic
 
     def feed(self, delta: str, throw: bool = False) -> bool:
         if not isinstance(delta, str):

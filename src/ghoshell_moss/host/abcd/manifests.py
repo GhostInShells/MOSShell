@@ -4,7 +4,7 @@ from typing import Any
 from typing_extensions import Self
 from dataclasses import dataclass
 
-from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema
+from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema, ConfigStore
 from ghoshell_moss.core.concepts.topic import TopicSchema, TopicModel, TopicName
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
@@ -83,8 +83,8 @@ class ConfigInfo:
     """
     Configuration model information
     """
-    found: str  # 发现 config 的 module name, 如 MOSS.manifests.topics
-    file: str  # 发现 config 的 module filename
+    found_import_path: str  # 发现 config 的 module name, 如 MOSS.manifests.topics
+    found_at_file: str  # 发现 config 的 module filename
     config: ConfigType  # config 是一个实例, 一定要有默认值. 真实的值会被 config store 以 yaml 保存到目录里. 不过那是运行时配置.
 
     @property
@@ -102,6 +102,9 @@ class ConfigInfo:
     @property
     def model_path(self) -> str:
         return generate_import_path(type(self.config))
+
+    def file(self, store: ConfigStore) -> str:
+        return store.get_config_path(self.config.conf_name())
 
     @property
     def description(self) -> str:

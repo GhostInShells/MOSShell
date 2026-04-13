@@ -62,7 +62,6 @@ class ConfigType(BaseModel, ABC):
         )
 
 
-
 CONF_TYPE = TypeVar('CONF_TYPE', bound=ConfigType)
 
 
@@ -107,6 +106,13 @@ class ConfigStore(ABC):
         pass
 
     @abstractmethod
+    def get_config_path(self, config_name: str) -> str:
+        """
+        返回一个预期的配置地址.
+        """
+        pass
+
+    @abstractmethod
     def save(self, conf: ConfigType) -> None:
         """
         保存一个 Config 对象.
@@ -125,10 +131,18 @@ class LocalConfigStore(ConfigStore, ABC):
         # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
         self._cache: dict[Type[ConfigType], ConfigType] = {}
 
-    def _full_path(self, conf_type_or_obj: Union[Type[ConfigType], ConfigType]) -> str:
+    def get_config_path(self, config_name: str) -> str:
+        filename = self._make_config_filename(config_name)
+        return str(self._storage.abspath().joinpath(filename).absolute())
+
+    def _to_config_filename(self, conf_type_or_obj: Union[Type[ConfigType], ConfigType]) -> str:
         """统一路径处理：自动补全 .yml 后缀"""
         name = conf_type_or_obj.conf_name()
-        return f"{name}.yml"
+        return self._make_config_filename(name)
+
+    @classmethod
+    def _make_config_filename(cls, config_name: str) -> str:
+        return f"{config_name}.yml"
 
     def get(self, conf_type: Type[CONF_TYPE]) -> CONF_TYPE:
         # 1. 优先命中缓存
@@ -136,7 +150,7 @@ class LocalConfigStore(ConfigStore, ABC):
             return self._cache[conf_type]
 
         # 2. 缓存未命中，从 Storage 读取
-        path = self._full_path(conf_type)
+        path = self._to_config_filename(conf_type)
         content = self._storage.get(path)
         data = self._unmarshal(content)
 
@@ -147,7 +161,7 @@ class LocalConfigStore(ConfigStore, ABC):
 
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
-        path = self._full_path(conf_type)
+        path = self._to_config_filename(conf_type)
 
         if not self._storage.exists(path):
             # 不存在则保存当前传入的默认对象
@@ -163,7 +177,7 @@ class LocalConfigStore(ConfigStore, ABC):
         data = conf.model_dump(exclude_none=True)
         marshaled = self._marshal(data, conf_type)
 
-        path = self._full_path(conf_type)
+        path = self._to_config_filename(conf_type)
         self._storage.put(path, marshaled)
 
         # 同步更新内存，确保后续 get 拿到的是刚保存的这个实例
@@ -208,10 +222,20 @@ class YamlConfigStore(LocalConfigStore):
 
 class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
 
+    def __init__(
+            self,
+            *configs: ConfigType,
+    ):
+        self._configs = list(configs)
+
     def singleton(self) -> bool:
         return True
 
     def factory(self, con: IoCContainer) -> ConfigStore:
         ws = con.force_fetch(Workspace)
         storage = ws.configs()
-        return YamlConfigStore(storage)
+
+        config_store = YamlConfigStore(storage)
+        for config in self._configs:
+            config_store.get_or_create(config)
+        return config_store

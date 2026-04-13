@@ -1,13 +1,15 @@
 from typing import Callable, Iterable, Type
 
 from ghoshell_moss.contracts import Storage, LoggerItf, Workspace
-from ghoshell_moss.host.abcd import ConversationItem
+from ghoshell_moss.host.abcd import ConversationItem, Signal
 from ghoshell_moss.host.abcd.session import Session
 from ghoshell_container import IoCContainer, Provider
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
+
 depend_zenoh()
 import zenoh
+import orjson
 
 __all__ = [
     'HostSession',
@@ -29,15 +31,18 @@ class HostSession(Session):
     ):
         self._session_id = session_id
         self._output_key_expr = f"MOSS/{session_id}/outputs"
+        self._input_signal_expr = f"MOSS/{session_id}/signals"
         self._session_storage = session_storage
         self._closing_event = Event()
         self._output_listeners: list[Callable[[ConversationItem], None]] = []
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
             raise RuntimeError(f'HostSession receive Zenoh session but closed')
-        self._sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
+        self._output_sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
+        self._input_sub = zenoh_session.declare_subscriber(self._input_signal_expr, self._on_zenoh_signal_input)
         self._logger = logger
         self._log_prefix = f'<Session cls={self.__class__} id={session_id}>'
+        self._on_signal_callbacks: list[Callable[[Signal], None]] = []
 
     @property
     def session_id(self) -> str:
@@ -47,11 +52,43 @@ class HostSession(Session):
     def storage(self) -> Storage:
         return self._session_storage
 
-    def output(self, *items: ConversationItem) -> None:
+    def _check_running(self) -> None:
         if self._zenoh_session.is_closed():
-            return
+            raise RuntimeError(f'HostSession is closed')
+
+    def input(self, signal: Signal) -> None:
+        self._check_running()
+        js = signal.to_json()
+        self._zenoh_session.put(self._output_key_expr, js)
+
+    def on_input(self, callback: Callable[[Signal], None]) -> None:
+        self._on_signal_callbacks.append(callback)
+
+    def _on_zenoh_signal_input(self, sample: zenoh.Sample) -> None:
+        if len(self._on_signal_callbacks) == 0:
+            return None
+        try:
+            signal = Signal.model_validate_json(sample.payload.to_bytes())
+        except Exception as e:
+            self._logger.error(
+                f"%s failed to handle received signal sample %s: %s",
+                self._log_prefix, sample.payload.to_string(), e,
+            )
+            return None
+        for callback in self._on_signal_callbacks:
+            try:
+                callback(signal)
+            except Exception as e:
+                self._logger.exception(
+                    "%s failed to callback received signal on %s: %s",
+                    self._log_prefix, callback, e
+                )
+        return None
+
+    def output(self, *items: ConversationItem) -> None:
+        self._check_running()
         for item in items:
-            js = item.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True, exclude_none=True)
+            js = item.to_json()
             self._zenoh_session.put(self._output_key_expr, js)
 
     def _on_zenoh_output(self, sample: zenoh.Sample) -> None:
@@ -77,8 +114,10 @@ class HostSession(Session):
         self._output_listeners.append(callback)
 
     def clear(self) -> None:
-        if self._sub and not self._zenoh_session.is_closed():
-            self._sub.undeclare()
+        if self._output_sub and not self._zenoh_session.is_closed():
+            self._output_sub.undeclare()
+        if self._input_sub and not self._zenoh_session.is_closed():
+            self._input_sub.undeclare()
 
 
 class WorkspaceSessionProvider(Provider[Session]):
@@ -118,5 +157,6 @@ class WorkspaceSessionProvider(Provider[Session]):
             logger=logger,
             zenoh_session=zenoh_session,
         )
+        # always clear during the container shutdown.
         con.add_shutdown(session.clear)
         return session

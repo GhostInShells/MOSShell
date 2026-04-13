@@ -190,7 +190,8 @@ class TopicModel(BaseModel, ABC):
         meta.creator = creator
         meta.sender = sender
         meta.type = self.topic_type()
-        return Topic(
+        # 由于是确定性的类型转换, 所以直接赋值.
+        return Topic.model_construct(
             meta=meta,
             data=data,
         )

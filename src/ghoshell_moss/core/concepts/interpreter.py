@@ -130,11 +130,11 @@ class Interpretation(BaseModel):
 
     meta_instruction: str = Field(default="", description="这一轮快照中的元指令")
 
-    channel_instructions: str = Field(
+    moss_static: str = Field(
         default='',
-        description="提示词",
+        description="静态讯息",
     )
-    channel_context: list[Message] = Field(default_factory=list, description="上下文讯息")
+    moss_dynamic: list[Message] = Field(default_factory=list, description="动态上下文讯息")
 
     observe: bool = Field(
         default=False,

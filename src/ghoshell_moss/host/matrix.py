@@ -170,7 +170,9 @@ class HostMatrix(Matrix):
             raise RuntimeError(f"Unknown cell type: {self._this_cell.type}")
 
         # 注册 configs
-        container.register(WorkspaceYamlConfigStoreProvider())
+        container.register(WorkspaceYamlConfigStoreProvider(
+            *[info.config for info in self.manifests.configs().values()]
+        ))
         # 注册 session.
         container.register(WorkspaceSessionProvider(session_id=self.env.session_id))
 

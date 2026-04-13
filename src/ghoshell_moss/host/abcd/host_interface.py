@@ -1,7 +1,7 @@
-from socket import fromfd
-from typing import Literal, Callable, Iterable, Protocol
+import asyncio
+from typing import Literal, Callable, Iterable, AsyncIterable, AsyncIterator
 
-from fastmcp.utilities.inspect import format_mcp_info
+from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -9,25 +9,17 @@ from .manifests import Manifest
 from .matrix import Matrix
 from .session import Session, ConversationItem
 from .app import AppStore
+from .mindflow import Mindflow
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.states import PrimeChannel
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
+from ghoshell_common.helpers import uuid
 from pydantic import BaseModel, Field, AwareDatetime
-from dataclasses import dataclass
+from datetime import datetime
+from dateutil import tz
 import frontmatter
 from pathlib import Path
-
-RuntimeState = Literal['created', 'closed', 'idle', 'paused', 'looping', 'closing', 'startup']
-'''
-运行时的各种状态: 
-created: 刚刚创建实例, 没有启动. 
-startup: 启动过程中. 
-idle: 没有输入也没有输出的闲置状态. 
-looping: 在处理某个循环, 可能是对输入的响应, 或者执行某个命令. 
-closing: 关闭中. 
-closed: 已经关闭. 
-'''
 
 
 class ToolSet(ABC):
@@ -52,6 +44,7 @@ class ToolSet(ABC):
         """
         pass
 
+    @abstractmethod
     async def moss_exec(
             self,
             commands: str,
@@ -59,7 +52,6 @@ class ToolSet(ABC):
             observe: bool = True,
             with_dynamic: bool = True,
             priority: int = 0,
-            on_ignore: Literal['buffer', 'drop'] = 'buffer',
     ) -> list[Message]:
         """
         向 MOSS 的运行时添加新的指令. 通常是 CTML.
@@ -68,7 +60,6 @@ class ToolSet(ABC):
         :param observe: 为 True 的话, 阻塞到运行结束后, 拿到观察的结果. 包含命令的执行情况, 和新的输入. 为 False 的话会立刻返回.
         :param with_dynamic: 决定返回值里是否包含更新后的 moss dynamic 信息.
         :param priority: 注意力级别, 低于这个级别的输入事件不会中断行动.
-        :param on_ignore: 被忽视的信息是否缓冲到上下文中.
         """
         pass
 
@@ -77,7 +68,6 @@ class ToolSet(ABC):
             self,
             timeout: float | None = None,
             priority: int = 0,
-            on_ignore: Literal['buffer', 'drop'] = 'buffer',
             with_dynamic: bool = True,
     ) -> list[Message]:
         """
@@ -90,61 +80,54 @@ class ToolSet(ABC):
         :param timeout: 指定一个等待时间, 否则会持续等待到有任何事件为止.
         :param with_dynamic: 观察的结果里是否包含最新的 moss dynamic 信息.
         :param priority: 注意力级别, 低于这个级别的输入事件不会中断行动.
-        :param on_ignore: 被忽视的信息是否缓冲到上下文中.
-        """
-        pass
-
-    @abstractmethod
-    async def moss_focus(
-            self,
-            priority: int = 0,
-            on_ignore: Literal['buffer', 'drop'] = 'buffer',
-            as_default: bool = False,
-            timeout: float | None = None,
-    ) -> str:
-        """
-        设置当前的注意力级别.
-        :param priority: 设置优先级, 低于这个优先级的输入, 不会中断当前正在执行的任务.
-        :param on_ignore: 决定低于优先级的输入如何处理, buffer 表示仍然保存到上下文; ignore 则彻底忽略.
-        :param as_default: 是否作为默认的注意力状态.
-        :param timeout: 如果设置了 timeout, 会在一定时间后回归默认的注意力状态.
         """
         pass
 
     @abstractmethod
     async def moss_interrupt(
             self,
-    ) -> str:
+    ) -> list[Message]:
         """
-        立刻中断所有运行中的命令. 并且返回.
+        立刻中断所有运行中的命令. 并且返回中断的情况.
         """
         pass
 
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        pass
 
-class Snapshot(BaseModel):
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class Perception(BaseModel):
     """
-    当前运行状态的快照.
+    在 MOSS 全双工运行状态中的关键帧快照.
+    包含触发思考那一瞬间的变动运行时信息.
+    包含:
+    1. 这一帧时, 躯体已经完成的任务及其输出, 和正在执行的任务.
+    2. moss_dynamic: MOSS 架构的动态讯息.
+    3. 所有待处理的思维内容: Mindflow.
+    4. 最新的输入.
+
     """
-    cursor: int = Field(
-        description="当前快照的游标. 用于 ack. 每次获取 snapshot 都会得到一个新的快照, 没有 ack 的话不会清空其中的关键消息."
+    id: str = Field(
+        default_factory=uuid,
+        description="uid",
     )
     created_at: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(tz.gettz()),
         description="当前快照的创建时间点. ",
     )
-    runtime_state: RuntimeState = Field(
-        description="运行时当前的状态",
-    )
-    focus_priority: int = Field(
+    priority: int = Field(
         description="当前的注意力优先级",
-    )
-    ignore_method: Literal['buffer', 'drop'] = Field(
-        description="当前的低优输入处理策略",
     )
     executed: list[Message] = Field(
         default_factory=list,
         description="最新运行逻辑中完成的部分, 和运行结果. "
     )
-    status: list[Message] = Field(
+    executing: list[Message] = Field(
         default_factory=list,
         description="当前的运行状态描述, 包含 state, executing, pending, focus level 等讯息. ",
     )
@@ -152,13 +135,13 @@ class Snapshot(BaseModel):
         default_factory=list,
         description="运行时的动态信息, 包含组件的 interface 和 context messages 等. "
     )
-    incomplete_inputs: dict[str, Message] = Field(
-        default_factory=dict,
-        description="拿到的输入消息, 不过没有完成, 是中间状态. 比如 asr 的分句. "
+    mindflow: str = Field(
+        default='',
+        description="思维流的进行状态. "
     )
     inputs: list[Message] = Field(
         default_factory=list,
-        description="当前积累的输入"
+        description="触发当前思考的输入"
     )
 
     def as_messages(self) -> Iterable[Message]:
@@ -166,9 +149,10 @@ class Snapshot(BaseModel):
         生成一个消息集合, 通常是 Role == user 的一个消息总包.
         """
         yield from self.executed
-        yield from self.status
+        yield from self.executing
         yield from self.moss_dynamic
-        yield from self.incomplete_inputs.values()
+        if self.mindflow:
+            yield Message.new().with_content(self.mindflow)
         yield from self.inputs
 
     def as_conversation_item(self, **metadata) -> ConversationItem:
@@ -177,6 +161,25 @@ class Snapshot(BaseModel):
             metadata=metadata,
             messages=list(self.as_messages()),
         )
+
+
+Logos = AsyncIterator[str]
+"""
+AI 下发的驱动指令. 使用 Logos (对比中文的 '道') 包含几个语义: 
+1. 它是 AI 输出的理性决策
+2. 它要符合物理世界交互的需要. 
+3. 它是一种语言 (比如 ctml), 像魔法师的吟唱一样, 可以操控自己的物理实体和可交互事务.
+4. 它规划了 "道路", 让 Shell 执行这个逻辑轨迹. 
+"""
+
+CTMLStream = Logos
+'''在当前版本的 MOSS 架构实现中, CTML Stream 就是 logos 的承载形式'''
+
+Conceive = Callable[[Perception], Logos]
+"""
+与 Gemini 3 沟通后的命名, 在一个支持双工思考的 AI 架构中, 
+AI 拿到 Perception 后, 返回驱动 Shell 运行的 Logos. 
+"""
 
 
 class MossRuntime(ABC):
@@ -193,14 +196,6 @@ class MossRuntime(ABC):
         pass
 
     @abstractmethod
-    def as_toolset(self) -> ToolSet:
-        """
-        提供作为工具的交互界面.
-        本质上是对 MOSS Runtime 的封装.
-        """
-        pass
-
-    @abstractmethod
     def is_running(self) -> bool:
         """
         是否在运行中.
@@ -208,7 +203,7 @@ class MossRuntime(ABC):
         pass
 
     @abstractmethod
-    def snapshot(self, new: bool = False, ack: bool = False) -> Snapshot:
+    def snapshot(self, new: bool = False, ack: bool = False) -> Perception:
         """
         获取当前运行状态最新的关键帧.
         在没有 ack 的时候, 这个 snapshot 会停止更新.
@@ -218,31 +213,28 @@ class MossRuntime(ABC):
         pass
 
     @abstractmethod
-    def ack_snapshot(self, snapshot: Snapshot) -> bool:
+    def ack_snapshot(self, snapshot: Perception) -> bool:
         """
         snapshot 被实质地使用, 则通过 ack 通知它将被使用.
         产生的结果是其中的状态信息, 比如 inputs 等会被清除.
         """
         pass
 
+    @property
+    def logger(self) -> LoggerItf:
+        return self.matrix.logger
+
     @abstractmethod
-    def wait_closed_sync(self, timeout: float | None = None) -> bool:
+    def wait_close_sync(self, timeout: float | None = None) -> bool:
         """
         同步阻塞.
         """
         pass
 
     @abstractmethod
-    async def wait_closed(self) -> None:
+    async def wait_close(self) -> None:
         """
-        异步阻塞到运行结束.
-        """
-        pass
-
-    @abstractmethod
-    def state(self) -> RuntimeState:
-        """
-        当前的运行状态.
+        异步阻塞到接受到停止讯号或者系统已经退出.
         """
         pass
 
@@ -262,19 +254,18 @@ class MossRuntime(ABC):
         pass
 
     @property
-    @abstractmethod
     def container(self) -> IoCContainer:
         """
         运行时 ioc 容器.
         Runtime 相关所有单例都在里面.
         """
-        pass
+        return self.matrix.container
 
     def contracts(self) -> Iterable[type]:
         """
         返回 IoC 容器里绑定的所有对象.
         """
-        return self.container.contracts(recursively=True)
+        return self.matrix.container.contracts(recursively=True)
 
     @property
     @abstractmethod
@@ -373,7 +364,7 @@ class MossMode(BaseModel):
         description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
     )
 
-    bring_up_apps: list[str] = Field(
+    bringup: list[str] = Field(
         default_factory=list,
         description="启动时允许自动启动的 apps, 规则和 apps 相同. 默认为空. "
     )
@@ -494,16 +485,33 @@ class MossHost(ABC):
         pass
 
     @abstractmethod
+    def toolset(
+            self,
+            *,
+            mode: MossMode | str = 'default',
+            session_id: str = 'default',
+    ) -> ToolSet:
+        """
+        run as toolset.
+        """
+        pass
+
+    @abstractmethod
     def run(
             self,
             *,
             mode: MossMode | str = 'default',
             session_id: str = 'default',
+            conceive: Conceive | None = None,
+            mindflow: Mindflow | None = None,
     ) -> MossRuntime:
         """
         获得 moss 的运行时单例 (会校验唯一的锁, 确保 runtime 全局唯一).
 
         :param mode: 指定运行时的模式, 而模式控制资源. 也可以传入一个确定的 MossMode 对象.
         :param session_id: 指定一个 session id, 用来隔离上下文相关的一切资源.
+        :param conceive: 如果设定了 conceive, 则会在拿到输入后触发响应. 它可以是一个 agent / ghost 或别的执行器.
+                        只需要能响应 perception, 同时返回 CTMLStream 即可.
+        :param mindflow: 允许传入一个 Mindflow 用来理解感知外部世界的输入. 如果不显式传入, 则优先从 Mode 中发现, 或者最终生成一个.
         """
         pass

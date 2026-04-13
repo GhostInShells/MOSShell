@@ -56,7 +56,7 @@ def test_message_creation():
 def test_message_serialization():
     """测试 Message 序列化/反序列化"""
     # 创建带内容的 Message
-    msg = Message.new(name="ai")
+    msg = Message.new(name="ai", tag="message")
     msg.with_content("Hello", "World")
 
     # 测试 dump

@@ -16,7 +16,7 @@ class GhostRuntime(ABC):
 
     >>> def run_ghost(ghost: Ghost):
     >>>     with ghost.run() as runtime:
-    >>>         runtime.wait_closed()
+    >>>         runtime.wait_close()
 
     Runtime 核心要实现的功能:
     0. 完成锁检查, 主进程的资源初始化, 和优雅退出时的资源回收.

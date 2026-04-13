@@ -1,7 +1,7 @@
 from enum import Enum
 from typing_extensions import Self
 
-__all__ = ["CommandError", "CommandErrorCode", "FatalError", "InterpretError"]
+__all__ = ["CommandError", "CommandErrorCode", "FatalError", "InterpretError", 'PausedError',]
 
 
 class FatalError(Exception):
@@ -63,6 +63,12 @@ class InterpretError(CommandError):
     def __init__(self, message: str = ""):
         super().__init__(CommandErrorCode.INTERPRET_ERROR.value, message)
 
+
+class PausedError(Exception):
+    """
+    system is paused
+    """
+    pass
 
 class CommandErrorCode(int, Enum):
     """

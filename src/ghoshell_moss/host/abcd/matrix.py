@@ -1,8 +1,8 @@
-from typing import Protocol, Literal, Callable, Awaitable, Any, Coroutine
+from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.core.concepts.channel import  Channel
+from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
 from .session import Session
@@ -113,6 +113,21 @@ class Matrix(ABC):
         主要是 manifests 里提供的服务.
         """
         pass
+
+    def show_configs(self) -> Iterable[dict[str, str]]:
+        """
+        不返回配置值的情况下, 返回配置的介绍.
+        """
+        from ghoshell_moss.contracts import ConfigStore
+        store = self.container.force_fetch(ConfigStore)
+        for config_info in self.manifests.configs().values():
+            info = {
+                "name": config_info.name,
+                "description": config_info.description,
+                "file": config_info.file(store),
+                "type": config_info.model_path,
+            }
+            yield info
 
     @abstractmethod
     def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
@@ -237,6 +252,8 @@ class Matrix(ABC):
         兼容 Python 3.10 的顶层入口。
         """
         try:
+            import uvloop
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
             pass  # 底层 arun 已经处理了清理

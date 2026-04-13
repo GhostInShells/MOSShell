@@ -27,7 +27,8 @@ from ghoshell_moss.core.concepts.command import (
 )
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
 from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
-from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, SubscribeKeep, Subscriber, Topic, TopicModel
+from ghoshell_moss.core.concepts.topic import Topic, TopicModel
+from ghoshell_moss.core.concepts.errors import PausedError
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
@@ -35,6 +36,7 @@ from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, make_content_command_from_speech
+import time
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
 
@@ -52,6 +54,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             experimental: bool = True,
             primitives: list[str] | None = None,
             meta_instruction: str | None = None,
+            refresh_moss_static: bool = False,
     ):
         self._name = name
         self._desc = description
@@ -66,7 +69,11 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
         self._clearing_task: asyncio.Future[None] | None = None
 
-        # state
+        # cache
+        self._refresh_moss_static = refresh_moss_static
+        self._moss_static_cache: str | None = None
+        self._last_channel_metas: dict[ChannelFullPath, ChannelMeta] | None = None
+        self._last_channel_metas_refreshed_at: float = 0
 
         # logger
         self._logger = logger
@@ -74,6 +81,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         # --- lifecycle --- #
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._exit_stack = contextlib.AsyncExitStack()
+        self._paused = False
 
         self._start: bool = False
         self._closing_event = ThreadSafeEvent()
@@ -94,7 +102,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._ctml_meta_instruction
 
     def static_messages(self) -> str:
-        return make_static_messages(self.channel_metas(available_only=False))
+        if self._refresh_moss_static or self._moss_static_cache is None:
+            self._moss_static_cache = make_static_messages(self.channel_metas(available_only=False))
+        return self._moss_static_cache
 
     def dynamic_messages(self) -> list[Message]:
         return make_dynamic_messages(self.channel_metas(available_only=False))
@@ -187,6 +197,14 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._check_running()
         return self._main_runtime
 
+    def pause(self, toggle: bool = True) -> None:
+        self._paused = toggle
+        if self._paused:
+            self.clear()
+
+    def is_paused(self) -> bool:
+        return self._paused
+
     @property
     def logger(self) -> LoggerItf:
         if self._logger is None:
@@ -236,6 +254,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if task is not None:
             self.push_task(task)
 
+    def _check_paused(self) -> None:
+        if self._paused:
+            raise PausedError(f"Shell `{self._name}` is paused")
+
     async def interpreter(
             self,
             kind: InterpreterKind = "clear",
@@ -249,6 +271,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             clear_after_exit: bool | None = None,
     ) -> Interpreter:
         self._check_running()
+        self._check_paused()
 
         # 方便理解不同类型的处理逻辑. 看待 interpreter 的副作用问题.
         callback = None
@@ -291,6 +314,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             ignore_wrong_command=ignore_wrong_command,
             tokens_replacement=token_replacements,
             clear_after_exit=clear_after_exit,
+            moss_static=self._moss_static_cache,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
@@ -315,6 +339,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
     async def refresh_metas(self, timeout: float | None = None) -> None:
         if not self.is_running():
             return
+        self._last_channel_metas = None
         refresh_meta_future = self._main_runtime.refresh_metas()
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
@@ -332,6 +357,11 @@ class CTMLShell(MOSShell[PrimeChannel]):
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
+        if self._last_channel_metas is not None:
+            now = time.time()
+            if now - self._last_channel_metas_refreshed_at < 0.5:
+                return self._last_channel_metas
+
         metas = self._main_runtime.metas()
         result = {}
         if config:
@@ -346,10 +376,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
         for channel_path, channel_meta in metas.items():
             if channel_meta.available or not available_only:
                 result[channel_path] = channel_meta
+        self._last_channel_metas = result
         return result
 
     def push_task(self, *tasks: CommandTask) -> None:
         self._check_running()
+        self._check_paused()
         self._main_runtime.push_task(*tasks)
 
     async def stop_interpretation(self) -> Optional[Interpretation]:

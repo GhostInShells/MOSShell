@@ -226,7 +226,7 @@ def _display_config_table(configs: list[ConfigInfo]):
     for info in sorted(configs, key=lambda x: x.name):
         table.add_row(
             info.name,
-            info.found,
+            info.found_import_path,
             info.description.split('\n')[0]
         )
 
@@ -237,7 +237,7 @@ def _display_config_table(configs: list[ConfigInfo]):
 def _display_config_detail(info: ConfigInfo):
     """展示具体的配置契约与默认值"""
     console.print(f"\n[bold blue]Config Detail:[/bold blue] [green]{info.name}[/green]")
-    console.print(f"[dim]Defined in: {info.file}[/dim]\n")
+    console.print(f"[dim]Defined in: {info.found_at_file}[/dim]\n")
     console.print(f"[dim]ConfigType is: {info.model_path}[/dim]\n")
 
     # 1. 描述

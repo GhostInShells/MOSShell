@@ -3,13 +3,23 @@ import html
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias
-from ghoshell_common.helpers import uuid, generate_module_and_attr_name
 from PIL import Image
 from pydantic import BaseModel, Field, ValidationError, AwareDatetime, dataclasses
 from typing_extensions import Self
 from datetime import datetime
 from dateutil import tz
 from .contents import ContentModel, Content, Text, Base64Image
+from ulid import ULID
+import ghoshell_common
+
+
+def _ulid_gen() -> str:
+    return str(ULID())
+
+
+# patch uuid to ulid
+ghoshell_common.helpers.uuid = _ulid_gen
+from ghoshell_common.helpers import uuid
 
 __all__ = [
     "Addition",
@@ -253,10 +263,9 @@ class Message(BaseModel, WithAdditional):
     @classmethod
     def new(
             cls,
-            tag: str = 'message',
+            tag: str = '',
             *,
             name: Optional[str] = None,
-            id: Optional[str] = None,
             attributes: dict[str, Any] | None = None,
             # 是否需要在生成的 xml 包裹容器中展示 timestamp.
             timestamp: bool = True,
@@ -269,8 +278,6 @@ class Message(BaseModel, WithAdditional):
         data: dict[str, Any] = {'tag': tag or ''}
         if name is not None:
             data['name'] = name
-        if id is not None:
-            data['id'] = id
         if attributes is not None:
             data['attributes'] = attributes
         data['timestamp'] = timestamp

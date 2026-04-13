@@ -5,7 +5,6 @@ from rich.console import RenderableType
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer
 from ghoshell_moss.host.abcd import IHost, IRuntime, ConversationItem
-from ghoshell_moss.host.abcd.topics import OutputTopic
 import typer
 import janus
 

@@ -296,20 +296,19 @@ class VolcengineTTSConf(BaseModel):
         additions_data = {
             "disable_markdown_filter": self.disable_markdown_filter,
         }
-        additions = json.dumps(additions_data)
+        additions = json.dumps(additions_data).decode()
         return Session(
-            speaker=speaker.tone,
-            req_params={
-                "audio_params": AudioParams(
+            req_params=ReqParams(
+                audio_params=AudioParams(
                     format=self.audio_format,
                     sample_rate=self.sample_rate,
                     loudness_rate=speaker.voice.loudness_rate,
                     speech_rate=speaker.voice.speech_rate,
                     emotion=speaker.voice.emotion,
                 ),
-                "speaker": speaker.tone,
-                "additions": additions,
-            },
+                speaker=speaker.tone,
+                additions=additions,
+            ),
         )
 
     def to_tts_info(self, current_tone: str = "") -> TTSInfo:
@@ -471,6 +470,10 @@ class VolcengineTTSBatch(TTSBatch):
 
 
 class VolcengineTTS(TTS):
+    """
+    火山引擎实现的流式 tts
+    todo: 将它放到独立线程中运行.
+    """
     def __init__(
         self,
         *,
@@ -717,9 +720,10 @@ class VolcengineTTS(TTS):
             return True
         except asyncio.CancelledError:
             self.logger.info("%s Consume batch cancelled", self._log_prefix)
-            pass
+            return False
         except ValueError as e:
             self.logger.exception("%s Consume batch failed: %s", self._log_prefix, e)
+            return False
         finally:
             # 保证必须要关闭 batch.
             if not batch.is_closed():

@@ -2,7 +2,8 @@ import asyncio
 import orjson
 import zenoh
 from ghoshell_moss.host.abcd.matrix import Matrix
-from ghoshell_moss.core.concepts.topic import TopicModel
+from datetime import datetime
+from dateutil import tz
 
 
 async def global_watcher_app(matrix: Matrix):
@@ -31,6 +32,7 @@ async def global_watcher_app(matrix: Matrix):
             data = orjson.loads(payload_raw)
             # 格式化打印
             print(f"📩 [{key}]")
+            print(f"   Now: {datetime.now(tz=tz.tzlocal())}")
             print(f"   Payload: {orjson.dumps(data, option=orjson.OPT_INDENT_2).decode()}")
         except Exception:
             print(f"📩 [{key}]")
