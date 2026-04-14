@@ -17,4 +17,4 @@ class MOSSTopicExpr:
         matched = topic_name_matcher.fullmatch(topic_name)
         if matched is None:
             raise ValueError(f"Invalid topic name: {topic_name}")
-        return "/".join([self.topic_prefix, topic_name])
+        return "/".join([self.topic_prefix, topic_name.strip('/')])

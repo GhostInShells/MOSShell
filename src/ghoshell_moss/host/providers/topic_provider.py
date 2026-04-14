@@ -1,3 +1,5 @@
+from typing import Iterable, Type
+
 from ghoshell_moss.topic.zenoh_topics import ZenohTopicService
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.contracts import LoggerItf
@@ -23,6 +25,9 @@ class ZenohTopicServiceProvider(Provider[TopicService]):
 
     def singleton(self) -> bool:
         return True
+
+    def aliases(self) -> Iterable[Type]:
+        yield ZenohTopicService
 
     def factory(self, con: IoCContainer) -> INSTANCE:
         session = con.force_fetch(zenoh.Session)

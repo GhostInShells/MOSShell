@@ -1,8 +1,11 @@
 from typing import Literal, Self
 
+import janus
+
 from ghoshell_moss import Message, MOSShell
 from ghoshell_moss.host.abcd.host_interface import (
-    MossRuntime, ToolSet, Perception, MossMode
+    MossRuntime, ToolSet, Perception, MossMode,
+    Conceive,
 )
 from ghoshell_moss.host.abcd.app import AppStore
 from ghoshell_moss.host.abcd.matrix import Matrix
@@ -16,8 +19,16 @@ from .matrix import HostMatrix
 from .environment import Environment
 from .base_mindflow import default_mindflow
 import contextlib
-import janus
 import asyncio
+
+
+class Logos:
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        pass
 
 
 class HostMossRuntime(MossRuntime, ToolSet):
@@ -30,6 +41,7 @@ class HostMossRuntime(MossRuntime, ToolSet):
             matrix: HostMatrix,
             mindflow: Mindflow | None = None,
             as_toolset: bool = False,
+            conceive: Conceive | None = None,
     ):
         env.bootstrap()
         self._env = env
@@ -61,11 +73,12 @@ class HostMossRuntime(MossRuntime, ToolSet):
 
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._conceive_func: Conceive | None = None
 
-        # 全局输入的 input topic listener
-        self._input_topic_subscribing_task: asyncio.Task | None = None
-        # 处理全局输入的 handler.
-        self._input_topic_handler_task: asyncio.Task | None = None
+        self._action_task: asyncio.Task | None = None
+
+        # --- shell action loop --- #
+        self._shell_logos_queue: janus.Queue = janus.Queue()
 
     @property
     def mode(self) -> str:
@@ -74,10 +87,6 @@ class HostMossRuntime(MossRuntime, ToolSet):
     def _check_running(self):
         if not self.is_running():
             raise RuntimeError('Moss is not running.')
-
-    def as_toolset(self) -> ToolSet:
-        self._check_running()
-        return self
 
     def moss_instruction(self) -> str:
         self._check_running()
@@ -100,7 +109,33 @@ class HostMossRuntime(MossRuntime, ToolSet):
             with_dynamic: bool = True,
     ) -> list[Message]:
         self._check_running()
+        if timeout and timeout > 0:
+            await asyncio.wait_for(self._observe(timeout), timeout=timeout)
+        else:
+            await self._observe(timeout=timeout)
+        # 返回最新的 perception.
+        return list(self._pop_perception().as_messages())
 
+    async def _observe(self, timeout: float | None = None) -> None:
+        """
+        一次观察包含两个语义.
+        1. 躯体运行正常结束, 或者异常结束.
+        2. 预热了 refresh metas, 拿到最新的 meta.
+        在这个过程中, 也会新的数据积累.
+        """
+        refresh = self._ctml_shell.refresh_metas(timeout=timeout)
+        if self._action_task is not None and not self._action_task.done():
+            await self._action_task
+        await refresh
+
+    def _pop_perception(self) -> Perception:
+        """
+        perception 由三部分组成:
+        1. buffer 的外部世界输入, 通过 mindflow 进行加工和过滤.
+        2. 已经运行结束的命令.
+        3. 正在执行中的命令.
+        4. dynamic
+        """
         pass
 
     async def moss_exec(
@@ -185,7 +220,7 @@ class HostMossRuntime(MossRuntime, ToolSet):
         await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
-        # 启动 mindflow.
+        # 启动 mindflow. 开始监听 signal
         mindflow = self._init_mindflow()
         await self._async_exit_stack.enter_async_context(mindflow)
 

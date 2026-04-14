@@ -53,7 +53,7 @@ class ZenohTopicService(TopicService):
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
-    def _make_topic_key_expr(self, topic_name: str) -> str:
+    def make_topic_key_expr(self, topic_name: str) -> str:
         return self._topic_key_expr.topic_key_expr(topic_name)
 
     def publishing(self) -> list[TopicName]:
@@ -83,7 +83,7 @@ class ZenohTopicService(TopicService):
         if model is not None:
             topic_name = topic_name or model.default_topic_name()
 
-        key_expr = self._make_topic_key_expr(topic_name)
+        key_expr = self.make_topic_key_expr(topic_name)
         self._subscribing.add(topic_name)
         return ZenohTopicSubscriber(
             session=self._session,
@@ -113,7 +113,7 @@ class ZenohTopicService(TopicService):
             raise ValueError("topic must have a name")
         if creator:
             topic.meta.creator = creator
-        key_expr = self._make_topic_key_expr(topic_name=topic.meta.name)
+        key_expr = self.make_topic_key_expr(topic_name=topic.meta.name)
 
         def _publish():
             nonlocal key_expr, topic
@@ -128,7 +128,7 @@ class ZenohTopicService(TopicService):
             topic_name = topic_name or model.default_topic_name()
         if not topic_name:
             raise ValueError("No topic name provided")
-        key_expr = self._make_topic_key_expr(topic_name)
+        key_expr = self.make_topic_key_expr(topic_name)
         self._publishing.add(topic_name)
         return ZenohTopicPublisher(
             session=self._session,

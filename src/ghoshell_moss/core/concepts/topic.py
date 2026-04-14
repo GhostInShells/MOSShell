@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Generic, TypeVar, Literal, Any, Protocol, Annotated
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.message import WithAdditional, Addition
 from typing_extensions import Self
@@ -153,13 +153,21 @@ class TopicModel(BaseModel, ABC):
         )
 
     @classmethod
+    def from_json(cls, js: bytes) -> Self | None:
+        try:
+            topic = Topic.model_validate_json(js)
+            return cls.from_topic(topic)
+        except ValidationError:
+            return None
+
+    @classmethod
     def from_topic(cls, topic: Topic) -> Self | None:
         if topic.meta.type != cls.topic_type():
             return None
         meta = topic.meta
         data = topic.data.copy()
         data['meta'] = meta
-        return cls(**data)
+        return cls.model_validate(data)
 
     @property
     def topic_name(self) -> TopicName:
@@ -395,7 +403,6 @@ class TopicService(ABC):
             *,
             uid: str | None = None,
             maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
             model: type[TopicModel] | None = None,
     ) -> Subscriber:
         """
@@ -423,7 +430,6 @@ class TopicService(ABC):
             topic_name: TopicName = "",
             uid: str | None = None,
             maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         提供一个强类型校验.
@@ -433,7 +439,6 @@ class TopicService(ABC):
             topic_name,
             uid=uid,
             maxsize=maxsize,
-            keep=keep,
             model=model,
         )
 

@@ -39,8 +39,7 @@ class ToolSet(ABC):
     def moss_dynamic_messages(self) -> list[Message]:
         """
         返回 moss 运行时的动态信息,
-        包含组件的 interface, context messages 等等.
-        不会返回最新的输入消息.
+        仅包含组件的 interface, context messages 等等.
         """
         pass
 
@@ -152,12 +151,12 @@ class Perception(BaseModel):
         yield from self.executing
         yield from self.moss_dynamic
         if self.mindflow:
-            yield Message.new().with_content(self.mindflow)
+            yield Message.new(tag='mindflow').with_content(self.mindflow)
         yield from self.inputs
 
     def as_conversation_item(self, **metadata) -> ConversationItem:
         return ConversationItem(
-            role="user",
+            role="perception",
             metadata=metadata,
             messages=list(self.as_messages()),
         )
@@ -330,6 +329,19 @@ class MossRuntime(ABC):
         接受 output item 并考虑渲染.
         """
         pass
+
+    def run_until_closed(self) -> None:
+        import uvloop
+        asyncio.set_event_loop(uvloop.new_event_loop())
+
+        async def _main() -> None:
+            async with self:
+                await self.wait_close()
+
+        try:
+            asyncio.run(_main())
+        except KeyboardInterrupt:
+            pass
 
     @abstractmethod
     async def __aenter__(self) -> Self:
