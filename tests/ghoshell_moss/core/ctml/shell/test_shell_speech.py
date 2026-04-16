@@ -1,4 +1,4 @@
-from ghoshell_moss.speech.mock import MockSpeech
+from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.core import new_ctml_shell, new_channel, CommandErrorCode
 import pytest
 import asyncio

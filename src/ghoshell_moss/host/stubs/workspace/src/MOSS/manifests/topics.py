@@ -1,1 +1,1 @@
-from ghoshell_moss.host.abcd.mindflow import InputSignal
+from ghoshell_moss.core.concepts.mindflow import InputSignal

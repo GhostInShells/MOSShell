@@ -1,8 +1,9 @@
-from typing import Literal, Optional, Self, ClassVar
+from typing import Literal, Optional
+from typing_extensions import Self
 
 from ghoshell_moss import Addition
 from ghoshell_moss.core.concepts.topic import (
-    Publisher, Topic, SubscribeKeep, Subscriber, TopicService, TopicModel, TOPIC_MODEL, TopicName,
+    Publisher, Topic, Subscriber, TopicService, TopicModel, TOPIC_MODEL, TopicName,
     TopicClosedError,
 )
 from ghoshell_moss.depends import depend_zenoh
@@ -77,7 +78,7 @@ class ZenohTopicService(TopicService):
     def subscribing(self) -> list[TopicName]:
         return list(self._subscribing)
 
-    def subscribe(self, topic_name: str, *, uid: str | None = None, maxsize: int = 0, keep: SubscribeKeep = "latest",
+    def subscribe(self, topic_name: str, *, uid: str | None = None, maxsize: int = 0,
                   model: type[TopicModel] | None = None) -> Subscriber:
         self._check_running()
         if model is not None:
@@ -92,7 +93,6 @@ class ZenohTopicService(TopicService):
             zenoh_key_expr=key_expr,
             uid=uid,
             maxsize=maxsize,
-            keep=keep,
             model=model,
             logger=self._logger,
         )
@@ -265,7 +265,6 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
             topic_name: str = "",
             uid: str | None = None,
             maxsize: int = 0,
-            keep: Literal["latest", "oldest"] = "latest",
             logger: LoggerItf | None = None,
     ):
         self._session = session
@@ -279,7 +278,6 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
         self._queue: janus.Queue[Topic] = janus.Queue(maxsize=maxsize)
         self._receive_lock = asyncio.Lock()
         self._logger = logger or get_moss_logger()
-        self._keep_policy = keep
         self._started = False
         self._closed = False
         self._service_wait_task: Optional[asyncio.Task] = None
@@ -381,7 +379,7 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
                 self, sample.key_expr, e
             )
 
-    def _receive(self, topic: Topic, keep_policy: str = "") -> None:
+    def _receive(self, topic: Topic) -> None:
         """
         接受上游发送的消息.
         """
@@ -394,20 +392,14 @@ class ZenohTopicSubscriber(Subscriber[TOPIC_MODEL | None]):
             self._logger.info("%r service stopped, drop topic %s", self, topic.meta)
             return None
 
-        keep_policy = keep_policy or self._keep_policy
         try:
             _queue = self._queue.sync_q
             if _queue.full():
-                if keep_policy == "oldest":
-                    self._logger.info("%r drop topic %s cause full", self, topic.meta.id)
-                    return None
-                elif keep_policy == "latest":
-                    if not _queue.empty():
-                        oldest = _queue.get_nowait()
-                        self._logger.info("%r drop oldest topic %s cause full", self, oldest)
-                    _queue.put_nowait(topic)
-                else:
-                    return None
+
+                if not _queue.empty():
+                    oldest = _queue.get_nowait()
+                    self._logger.info("%r drop oldest topic %s cause full", self, oldest)
+                _queue.put_nowait(topic)
             else:
                 _queue.put_nowait(topic)
         except janus.SyncQueueShutDown:

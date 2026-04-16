@@ -1,8 +1,8 @@
 import asyncio
 import pytest
 from ghoshell_moss.core.concepts.topic import Subscriber, TopicService, ErrorTopic
-from ghoshell_moss.topic.suite_for_test import TopicServiceSuite, QueueTopicServiceSuite
-from ghoshell_moss.topic.zenoh_topics import ZenohTopicServiceSuite
+from ghoshell_moss.core.topic.suite_for_test import TopicServiceSuite, QueueTopicServiceSuite
+from ghoshell_moss.core.topic.zenoh_topics import ZenohTopicServiceSuite
 
 # 配置项：未来可以在这里增加 ZenohTopicSuite() 等
 topic_suite_configs = [

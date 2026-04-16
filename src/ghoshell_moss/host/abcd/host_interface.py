@@ -7,9 +7,9 @@ from abc import ABC, abstractmethod
 
 from .manifests import Manifest
 from .matrix import Matrix
-from .session import Session, ConversationItem
 from .app import AppStore
-from .mindflow import Mindflow
+from ghoshell_moss.core.concepts.session import Session, ConversationItem
+from ghoshell_moss.core.concepts.mindflow import Mindflow
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.states import PrimeChannel
 from ghoshell_moss.message import Message

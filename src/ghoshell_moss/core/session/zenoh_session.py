@@ -1,23 +1,21 @@
 from typing import Callable, Iterable, Type
 
 from ghoshell_moss.contracts import Storage, LoggerItf, Workspace
-from ghoshell_moss.host.abcd import ConversationItem, Signal
-from ghoshell_moss.host.abcd.session import Session
+from ghoshell_moss.core.concepts.session import Session, ConversationItem, Signal
 from ghoshell_container import IoCContainer, Provider
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
 
 depend_zenoh()
 import zenoh
-import orjson
 
 __all__ = [
-    'HostSession',
+    'MossSessionWithZenoh',
     'WorkspaceSessionProvider',
 ]
 
 
-class HostSession(Session):
+class MossSessionWithZenoh(Session):
     """
     Session implementation for host
     """
@@ -58,6 +56,8 @@ class HostSession(Session):
 
     def input(self, signal: Signal) -> None:
         self._check_running()
+        # todo: 未来加防蠢限频.
+        # 现在有一种深刻的感觉, 不存在过度设计, 只存在过度实现.
         js = signal.to_json()
         self._zenoh_session.put(self._output_key_expr, js)
 
@@ -143,15 +143,15 @@ class WorkspaceSessionProvider(Provider[Session]):
         return Session
 
     def aliases(self) -> Iterable[Type]:
-        yield HostSession
+        yield MossSessionWithZenoh
 
-    def factory(self, con: IoCContainer) -> HostSession:
+    def factory(self, con: IoCContainer) -> MossSessionWithZenoh:
         ws = con.force_fetch(Workspace)
         zenoh_session = con.force_fetch(zenoh.Session)
         logger = con.get(LoggerItf)
         session_storage_path = self._session_id_prefix + self._session_id
         storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
-        session = HostSession(
+        session = MossSessionWithZenoh(
             session_id=self._session_id,
             session_storage=storage,
             logger=logger,

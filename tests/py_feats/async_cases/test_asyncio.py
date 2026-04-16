@@ -586,3 +586,44 @@ async def test_task_wait_in_many():
     assert len(order) == 5
     for t in order:
         assert t == 123
+
+
+@pytest.mark.asyncio
+async def test_async_iterator_generator_exit():
+    class Sensor:
+        def __init__(self, m: int):
+            self.i = 0
+            self.max = m
+
+        async def aclose(self):
+            self.i += 1
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.i < self.max:
+                i = self.i
+                self.i += 1
+                return i
+            else:
+                raise StopAsyncIteration
+
+    s = Sensor(3)
+    async for val in s:
+        pass
+    assert s.i == 3
+
+    s = Sensor(3)
+    async for val in s:
+        if val == 1:
+            assert s.i == 2
+            break
+    assert s.i == 2
+
+    s = Sensor(3)
+    async with contextlib.aclosing(s):
+        async for val in s:
+            break
+        assert s.i == 1
+    assert s.i == 2

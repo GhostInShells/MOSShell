@@ -10,7 +10,6 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_container import Provider, IoCContainer
 import asyncio
 import logging
-import anyio
 import time
 import janus
 

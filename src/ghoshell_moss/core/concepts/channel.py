@@ -32,7 +32,6 @@ from ghoshell_moss.core.concepts.topic import (
     TopicModel,
     Subscriber,
     Publisher,
-    SubscribeKeep,
     Topic,
     TOPIC_MODEL,
 )
@@ -59,27 +58,7 @@ __all__ = [
 ]
 
 """
-# 关于 Channel (中文名: 经络) :
-
-MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
-
-所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
-
-同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
-神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
-
-
-Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
-1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变.
-2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人.
-3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
-4. 与 Shell 进行全双工实时通讯
-
-可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
-
-举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
-
-所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.
+Channel (中文名: 经络) : 流式解释器组织 树形/有状态/可流式控制 组件的抽象集合. 
 """
 
 __description__ = "Use Tree-like structure to manage all the Commands of MOSS for AI."
@@ -388,7 +367,6 @@ class ChannelRuntime(ABC):
             *,
             topic_name: str = "",
             maxsize: int = 0,
-            keep: SubscribeKeep = "latest",
     ) -> Subscriber[TOPIC_MODEL]:
         """
         创建一个 Subscriber 来获取链路中的 Topic 广播.
@@ -397,7 +375,6 @@ class ChannelRuntime(ABC):
             model=model,
             topic_name=topic_name,
             maxsize=maxsize,
-            keep=keep,
         )
 
     @property
@@ -972,3 +949,22 @@ class ChannelProvider(ABC):
         支持 async with statement 的运行方式启动一个 channel.
         """
         pass
+
+# MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.
+#
+# 所以 Channel 可以理解为 python 中的 'module', 可以树形嵌套, 每个 channel 可以管理一批函数 (command).
+#
+# 同时在 "时间是第一公民" 的思想下, Channel 需要同时定义 "并行" 和 "阻塞" 的分发机制.
+# 神经信号 (command call) 在运行时中的流向是从 父channel 流向 子channel.
+#
+# Channel 与 MCP/Skill 等类似思想最大的区别在于, 它需要:
+# 1. 完全是实时动态的, 它的一切函数, 一切描述都随时可变.
+# 2. 拥有独立的运行时, 可以单独运行一个图形界面或具身机器人.
+# 3. 自动上下文同步, 大模型在每个思考的关键帧中, 自动从 channel 获得上下文消息.
+# 4. 与 Shell 进行全双工实时通讯
+#
+# 可以把 Channel 理解为 AI 大模型上可以 - 任意插拔的, 顺序堆叠的, 自治的, 面向对象的 - 应用单元.
+#
+# 举个例子: 一个拥有人形控制能力的 AI, 向所有的人形肢体 (机器人/数字人) 发送 "挥手" 的指令, 实际上需要每个肢体都执行.
+#
+# 所以可以有 N 个人形肢体, 注册到同一个 channel interface 上.

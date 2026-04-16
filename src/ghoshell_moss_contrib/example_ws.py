@@ -57,10 +57,10 @@ def get_example_speech(
         还有许多工作量, 需要把默认的服务选项配到 workspace 里才对.
         而且通过 provider 的方式注册单例.
     """
-    from ghoshell_moss.speech import BaseTTSSpeech
-    from ghoshell_moss.speech.mock import MockSpeech
-    from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
-    from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
+    from ghoshell_moss.core.speech import BaseTTSSpeech
+    from ghoshell_moss.core.speech.mock import MockSpeech
+    from ghoshell_moss.core.speech.player.pyaudio_player import PyAudioStreamPlayer
+    from ghoshell_moss.core.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 
     container = container or get_container()
     use_voice = os.environ.get("USE_VOICE_SPEECH", "no") == "yes"

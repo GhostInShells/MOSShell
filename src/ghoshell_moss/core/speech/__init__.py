@@ -1,8 +1,8 @@
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts.speech import TTS, Speech, SpeechStream, StreamAudioPlayer
-from ghoshell_moss.speech.mock import MockSpeech
-from ghoshell_moss.speech.stream_tts_speech import BaseTTSSpeech, TTSSpeechStream
+from ghoshell_moss.core.speech.mock import MockSpeech
+from ghoshell_moss.core.speech.stream_tts_speech import BaseTTSSpeech, TTSSpeechStream
 
 
 def make_baseline_tts_speech(
@@ -13,8 +13,8 @@ def make_baseline_tts_speech(
     """
     基线示例.
     """
-    from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
-    from ghoshell_moss.speech.volcengine_tts import VolcengineTTS
+    from ghoshell_moss.core.speech.player.pyaudio_player import PyAudioStreamPlayer
+    from ghoshell_moss.core.speech.volcengine_tts import VolcengineTTS
 
     return BaseTTSSpeech(
         player=player or PyAudioStreamPlayer(),

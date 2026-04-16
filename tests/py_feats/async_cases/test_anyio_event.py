@@ -1,7 +1,24 @@
 import threading
 
 import anyio
+from anyio import create_memory_object_stream
 from anyio import to_thread
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_anyio_stream():
+    sender, receiver = create_memory_object_stream(max_buffer_size=11)
+    with sender:
+        for i in range(10):
+            await sender.send(1)
+
+    receiver.close()
+    got = []
+    with pytest.raises(anyio.ClosedResourceError):
+        async for v in receiver:
+            got.append(v)
+    assert len(got) == 0
 
 
 def test_thread_event():

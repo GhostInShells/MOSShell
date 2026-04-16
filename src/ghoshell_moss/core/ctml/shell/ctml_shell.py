@@ -34,7 +34,7 @@ from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VE
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.speech.mock import MockSpeech
+from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, make_content_command_from_speech
 import time
 

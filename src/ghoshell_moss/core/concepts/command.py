@@ -785,13 +785,10 @@ class CommandTaskResult(BaseModel):
     ) -> list[Message]:
         """
         生成可以被模型观察的消息体.
-
-        为什么 name 是 __command_result__, role 是 user 呢?
         首先目前主流模型的约定, 不支持 system/assistant 等角色持有图片等类型的 content. 而定义这种 content 可以让 Command 返回多模态.
         然后, 主流模型支持的函数调用返回是 FunctionCall 协议. 基本都不支持异步返回, 必须同步阻塞调用.
         Anthropic 消息协议更可怕, 不支持 role.
-
-        所以要在现有的协议基础上支持异步的, 多个 command 返回的 command result, 就考虑用最基础的类型.
+        所以要在现有的协议基础上支持异步的, 多个 command 返回的 command result, 就考虑用最基础的类型, 字符串 xml 包裹.
         """
         if self.result is None and len(self.messages) == 0:
             return []

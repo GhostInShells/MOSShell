@@ -5,9 +5,9 @@ from pathlib import Path
 from ghoshell_container import Container
 
 from ghoshell_moss.core import new_ctml_shell
-from ghoshell_moss.speech import make_baseline_tts_speech
-from ghoshell_moss.speech.player.pyaudio_player import PyAudioStreamPlayer
-from ghoshell_moss.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
+from ghoshell_moss.core.speech import make_baseline_tts_speech
+from ghoshell_moss.core.speech.player.pyaudio_player import PyAudioStreamPlayer
+from ghoshell_moss.core.speech.volcengine_tts import VolcengineTTS, VolcengineTTSConf
 from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQChannelProxy
 from ghoshell_moss_contrib.agent import ModelConf, SimpleAgent
 from ghoshell_moss_contrib.agent.chat import ConsoleChat

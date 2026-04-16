@@ -14,7 +14,7 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 
 from ghoshell_moss.contracts.speech import TTS, AudioFormat, TTSAudioCallback, TTSBatch, TTSInfo, TTSItem
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
-from ghoshell_moss.speech.volcengine_tts.protocol import (
+from ghoshell_moss.core.speech.volcengine_tts.protocol import (
     EventType,
     MsgType,
     cancel_session,

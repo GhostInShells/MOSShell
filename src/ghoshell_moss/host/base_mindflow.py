@@ -3,7 +3,7 @@ import datetime
 from typing import Callable, Dict, List, Optional
 
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ghoshell_moss.host.abcd.mindflow import Impulse, Signal, MindPulse, Mindflow, InputSignal
+from ghoshell_moss.core.concepts.mindflow import Impulse, Signal, MindPulse, Mindflow, InputSignal
 from ghoshell_container import BootstrapProvider, Provider, IoCContainer
 
 __all__ = [

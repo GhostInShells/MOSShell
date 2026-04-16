@@ -2,7 +2,7 @@ import asyncio
 
 import ghoshell_moss.core.concepts.topic as topic_concepts
 from ghoshell_moss.core.concepts.topic import Topic, TopicMeta
-from ghoshell_moss.topic import QueueBasedTopicService, ErrorTopic, Subscriber
+from ghoshell_moss.core.topic import QueueBasedTopicService, ErrorTopic, Subscriber
 import pytest
 
 
@@ -125,7 +125,7 @@ async def test_topic_keep_latest():
 
     async with service:
         producer_task = asyncio.create_task(produce())
-        subscriber = service.subscribe_model(ErrorTopic, maxsize=1, keep="latest")
+        subscriber = service.subscribe_model(ErrorTopic, maxsize=1)
         consumer_task = asyncio.create_task(consumer(subscriber))
         await producer_task
     await consumer_task
@@ -138,42 +138,6 @@ def test_topic_model():
     topic = error.to_topic()
     new_error = ErrorTopic.from_topic(topic)
     assert new_error == error
-
-
-@pytest.mark.asyncio
-async def test_topic_keep_oldest():
-    service = QueueBasedTopicService(
-        sender="test",
-    )
-
-    consumer_started = asyncio.Event()
-
-    async def produce():
-        await consumer_started.wait()
-        publisher = service.model_publisher("publisher", ErrorTopic)
-        async with publisher:
-            for idx in range(5):
-                publisher.pub(ErrorTopic(errmsg=str(idx)))
-                # 必须要让出, 否则 maxsize = 1 就无法测试了.
-                await asyncio.sleep(0.0)
-
-    received = []
-
-    async def consumer(_subscriber: Subscriber):
-        async with _subscriber:
-            consumer_started.set()
-            while _subscriber.is_running():
-                item = await _subscriber.poll_model()
-                received.append(item)
-
-    async with service:
-        producer_task = asyncio.create_task(produce())
-        subscriber = service.subscribe_model(ErrorTopic, maxsize=1, keep="oldest")
-        consumer_task = asyncio.create_task(consumer(subscriber))
-        await producer_task
-    await consumer_task
-    assert len(received) == 1
-    assert received[0].errmsg == "0"
 
 
 def test_topic_is_overdue_logic(monkeypatch):

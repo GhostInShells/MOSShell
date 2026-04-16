@@ -160,48 +160,6 @@ async def test_loop_times_negative_with_others():
 
 
 @pytest.mark.asyncio
-async def test_loop_with_dynamic_times():
-    """
-    测试循环次数动态计算（通过命令返回值）
-    """
-    shell = new_ctml_shell()
-    chan = PyChannel(name="calc")
-
-    execution_log = []
-
-    @chan.build.command()
-    async def calculate_iterations():
-        # 模拟动态计算循环次数
-        return 3
-
-    @chan.build.command()
-    async def perform_action():
-        nonlocal execution_log
-        execution_log.append("action")
-
-    shell.main_channel.import_channels(chan)
-
-    async with shell:
-        async with await shell.interpreter() as interpreter:
-            # 注意：这个测试假设loop原语支持动态次数
-            # 如果当前不支持，可以注释掉或修改
-            interpreter.feed("""
-                <calc:calculate_iterations/>
-                <!-- 这里假设我们可以将结果用于循环次数 -->
-                <!-- 实际实现可能需要不同的语法 -->
-                <loop times="3">  <!-- 硬编码为calculate_iterations的返回值 -->
-                    <calc:perform_action/>
-                </loop>
-            """)
-            interpreter.commit()
-            await interpreter.wait_stopped()
-            interpreter.raise_exception()
-
-            # 验证执行了3次
-            assert execution_log.count("action") == 3
-
-
-@pytest.mark.asyncio
 async def test_loop_with_concurrent_channels():
     """
     测试循环中多个通道的并发执行

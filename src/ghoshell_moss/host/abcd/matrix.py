@@ -5,7 +5,7 @@ from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
-from .session import Session
+from ghoshell_moss.core.concepts.session import Session
 from .manifests import Manifest
 import asyncio
 

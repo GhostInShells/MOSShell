@@ -10,7 +10,7 @@ from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
 from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix, Cell
-from ghoshell_moss.host.abcd.session import Session
+from ghoshell_moss.core.concepts.session import Session
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_interface import MossMode
 from ghoshell_moss.host.environment import Environment, DEFAULT_CELL_ADDRESS
@@ -20,7 +20,7 @@ from ghoshell_moss.host.providers import (
     WorkspaceZenohProvider, WorkspaceLoggerProvider, ZenohTopicServiceProvider,
 )
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider
-from ghoshell_moss.host.session import WorkspaceSessionProvider
+from ghoshell_moss.core.session.zenoh_session import WorkspaceSessionProvider
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.depends import depend_zenoh

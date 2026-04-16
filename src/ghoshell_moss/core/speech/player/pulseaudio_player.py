@@ -7,7 +7,7 @@ try:
 except Exception as e:
     raise ImportError(f"failed to import audio dependencies, please try to install ghoshell-shell[audio]: {e}")
 
-from ghoshell_moss.speech.player.base_player import BaseAudioStreamPlayer
+from ghoshell_moss.core.speech.player.base_player import BaseAudioStreamPlayer
 
 __all__ = ["PulseAudioStreamPlayer"]
 

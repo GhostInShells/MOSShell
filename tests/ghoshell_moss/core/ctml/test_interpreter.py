@@ -6,7 +6,7 @@ import pytest
 from ghoshell_moss.core.concepts.command import PyCommand, make_command_group
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 # from ghoshell_moss.core.helpers import get_console_logger
-from ghoshell_moss.speech.mock import MockSpeech
+from ghoshell_moss.core.speech.mock import MockSpeech
 
 # logger = get_console_logger(level="ERROR")
 

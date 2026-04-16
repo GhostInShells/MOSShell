@@ -164,6 +164,9 @@ class CTMLInterpreter(Interpreter):
         self._interpretation.observe = True
         self._interpretation.exception = str(error)
         self._stopped_event.set()
+        for task in self._managing_tasks.values():
+            if not task.done():
+                task.cancel("interpret error")
 
     @property
     def id(self) -> str:
@@ -203,7 +206,7 @@ class CTMLInterpreter(Interpreter):
             return
         if token is not None:
             self._interpretation.command_tokens.append(token)
-        self._loop.call_soon_threadsafe(self._text_to_parsed_tokens_queue.put_nowait, token)
+        self._text_to_parsed_tokens_queue.put_nowait(token)
 
     def _send_command_task(self, task: CommandTask | None) -> None:
         try:
@@ -250,6 +253,7 @@ class CTMLInterpreter(Interpreter):
             command_task.cancel("system error")
         self._interpretation.on_done_task(command_task)
         if self._stopped_event.is_set():
+            # 生命周期已经移交了.
             return
         # 发现任何任务出错超出预期.
         if self._interpretation.observe:
@@ -442,8 +446,9 @@ class CTMLInterpreter(Interpreter):
             if not isinstance(exc_val, InterpretError):
                 self._logger.exception("Interpreter quit on exception %s", exc_val)
                 await self.close(cancel_executing=True)
-                return
+                return None
         await self.close(cancel_executing=False)
+        return None
 
     def exception(self) -> Optional[Exception]:
         return self._parsing_exception
@@ -462,7 +467,7 @@ class CTMLInterpreter(Interpreter):
 
     async def close(self, cancel_executing: bool = True) -> Interpretation | None:
         if not self._started:
-            return
+            return None
         if self._closed:
             return None
         self._closed = True

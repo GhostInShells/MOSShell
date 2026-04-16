@@ -45,7 +45,7 @@ from .protocol import (
     ProviderPubTopicEvent,
     ProviderErrorEvent,
 )
-from ghoshell_moss.topic import TopicService
+from ghoshell_moss.core.topic import TopicService
 
 __all__ = [
     "DuplexChannelRuntime",

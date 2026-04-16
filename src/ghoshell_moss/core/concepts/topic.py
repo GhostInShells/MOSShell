@@ -16,7 +16,6 @@ __all__ = [
     "Publisher",
     "TopicClosedError",
     "TopicName",
-    "SubscribeKeep",
     "LogTopic",
     "ErrorTopic",
     "TopicNamePattern",
@@ -25,7 +24,6 @@ __all__ = [
 
 TopicNamePattern = r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
 TopicName = Annotated[str, Field(pattern=TopicNamePattern)]
-SubscribeKeep = Literal["latest", "oldest"]
 TopicType = str
 
 
@@ -411,7 +409,6 @@ class TopicService(ABC):
         :param topic_name: 如果不为空, 会去迭代 topic_model.default_topic_name()
         :param uid: 每个 subscriber 都需要有指定的 uid. 可以自动生成.
         :param maxsize: 队列的最大数量. 为 0 表示无限, 为 1 表示只接受一个.
-        :param keep: 当队列满了后, 新的 topic 发送过来的处理逻辑. oldest 会丢弃最新的 topic, latest 会丢弃最老的 topic.
 
         >>> async def consumer(service: TopicService):
         >>>     subscriber = service.subscribe_model(...)

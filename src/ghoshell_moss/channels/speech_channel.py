@@ -5,7 +5,7 @@ from ghoshell_container import IoCContainer
 
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, TTS, StreamAudioPlayer
 from ghoshell_moss.core import PyChannel, Channel, ChannelRuntime, ChannelCtx
-from ghoshell_moss.speech import BaseTTSSpeech
+from ghoshell_moss.core.speech import BaseTTSSpeech
 from ghoshell_common.helpers import uuid
 
 __all__ = ["SpeechChannel", "TTSSpeechChannel"]

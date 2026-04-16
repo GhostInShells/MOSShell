@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.topic import QueueBasedTopicService
+from ghoshell_moss.core.topic import QueueBasedTopicService
 
 __all__ = ["TopicServiceSuite", "QueueTopicServiceSuite"]
 
