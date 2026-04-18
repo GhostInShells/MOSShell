@@ -405,13 +405,13 @@ class BaseAttention(Attention):
     def __init__(
             self,
             *,
-            last: Outcome,
+            last_outcome: Outcome,
             impulse: Impulse,
             logger: LoggerItf | None = None,
-            system_floo_strength: float = 0.0,
-            source_escalation: float = 1.1,
-            max_protection_time: float = 3.0,
-            protection_duration_ratio: float = 0.2,
+            system_floor_strength: float = 0.0,  # 决定强度衰减到合适中断.
+            source_escalation: float = 1.1,  # 决定同源 impulse 提权比例.
+            max_protection_time: float = 3.0,  # 决定最大的保护时间.
+            protection_duration_ratio: float = 0.2,  # 决定保护时间在总时间的比例.
     ):
         self._init_impulse: Impulse = impulse
         self._init_impulse_is_complete_event = ThreadSafeEvent()
@@ -425,7 +425,7 @@ class BaseAttention(Attention):
         self._aborted_event = ThreadSafeEvent()
         self._flags: dict[str, ThreadSafeEvent] = {}
         # 继承的回合.
-        self._inherit_outcome: Outcome = last
+        self._inherit_outcome: Outcome = last_outcome
         # 发送 observation 时的回调.
         self._observation_callbacks: list[Callable[[Observation], None]] = []
         self._context_funcs: dict[str, Callable[[], list[Message]]] = {}
@@ -440,7 +440,7 @@ class BaseAttention(Attention):
         self._strength_decay_time: float = 0.0
 
         # 强度计算的相关参数.
-        self._system_floor_strength: float = system_floo_strength
+        self._system_floor_strength: float = system_floor_strength
         # 当前 impulse 默认的提权效果.
         self._source_escalation: float = source_escalation
         self._max_protection_time: float = max_protection_time

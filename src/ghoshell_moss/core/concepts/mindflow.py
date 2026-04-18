@@ -47,6 +47,7 @@ __all__ = [
     'Nucleus', 'Mindflow', 'Attention',
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
+    'PreemptedElseSuppress', 'BufferImpulse',
 ]
 
 SignalName = str
@@ -163,6 +164,9 @@ class Signal(BaseModel):
             stale_timeout=stale_timeout,
         )
 
+    def priority_strength(self) -> int:
+        return self.priority * 1000 + self.strength
+
     def is_stale(self) -> bool:
         if self.stale_timeout <= 0:
             return False
@@ -171,6 +175,9 @@ class Signal(BaseModel):
 
     def to_json(self) -> str:
         return self.model_dump_json(indent=0, exclude_none=True, exclude_defaults=True, ensure_ascii=False)
+
+    def __repr__(self):
+        return f"<Signal id={self.id} trace={self.trace_id} name={self.name}>"
 
 
 class SignalMeta(BaseModel, ABC):
@@ -268,7 +275,7 @@ class Impulse(BaseModel):
         default='',
         description="the nucleus source name",
     )
-    priority: Priority = Field(
+    priority: Priority | int = Field(
         default=Priority.NOTICE,
         description="the impulse priority",
     )
@@ -340,11 +347,17 @@ class Impulse(BaseModel):
             stale_timeout=stale_timeout,
         )
 
+    def priority_strength(self) -> int:
+        return self.priority * 1000 + self.strength
+
     def is_stale(self) -> bool:
         if self.stale_timeout <= 0:
             return False
         delta = time.time() - self.created_at.timestamp()
         return delta > self.stale_timeout
+
+    def __repr__(self):
+        return f"<Impulse id={self.id} trace={self.trace_id} source={self.source}>"
 
 
 class Nucleus(ABC):
@@ -373,6 +386,14 @@ class Nucleus(ABC):
     def description(self) -> str:
         """
         所有的 Nucleus 都应该是自解释的, 而且这个自解释要足够高效, 能一句话自我描述.
+        """
+        pass
+
+    @abstractmethod
+    def status(self) -> str:
+        """
+        当前 Nucleus 的状态提示, 参考 IM 的消息红点, 要简短而精准.
+        如果为空, 会被忽略.
         """
         pass
 
@@ -422,18 +443,22 @@ class Nucleus(ABC):
         pass
 
     @abstractmethod
-    def pop_impulse(self) -> Impulse | None:
+    def pop_impulse(self, impulse: Impulse) -> None:
         """
-        吐出最新的 Impulse, 被 Attention 接受.
+        通知 Nucleus 一个 Impulse 被 pop 了.
         """
         pass
 
     @abstractmethod
-    def peek(self) -> Impulse | None:
+    def peek(self, no_stale: bool = True) -> Impulse | None:
         """
         查看一下最新的 Impulse.
         方便做 ranking.
         """
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
         pass
 
     @abstractmethod
@@ -1019,14 +1044,6 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
-    def set_attention(self, attention: Attention, reason: str | None = None) -> None:
-        """
-        通过系统操作直接注入 attention, 中断已经执行的 attention.
-        绕过决策体系.
-        """
-        pass
-
-    @abstractmethod
     def set_impulse(self, impulse: Impulse) -> None:
         """
         通过系统操作, 直接将 impulse 定义成 attention, 中断已经执行的 attention.
@@ -1048,11 +1065,8 @@ class Mindflow(ABC):
         """
         pass
 
-    def __aiter__(self) -> Self:
-        return self
-
     @abstractmethod
-    async def __anext__(self) -> Attention:
+    def loop(self) -> AsyncIterator[Attention]:
         """
         在生命周期中返回最新的 Attention, 方便定义清晰的 loop.
         每一轮 aborted 的 attention 应该要把异常结果提交给下一轮作为开始.
@@ -1131,7 +1145,7 @@ if __name__ == "__example__":
 
     async def mindflow_main_loop(mindflow: Mindflow) -> None:
         async with mindflow:
-            async for attention in mindflow:
+            async for attention in mindflow.loop():
                 # 展开 attention 的异常拦截作用域. 不拦截 fatal
                 async with attention:
                     # 阻塞到 attention 运行结束或者中断.

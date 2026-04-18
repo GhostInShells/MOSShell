@@ -13,7 +13,7 @@ async def test_attention_lifecycle_and_loop():
     initial_impulse = Impulse(source="test", priority=Priority.INFO, messages=[Message.new().with_content("init")])
     outcome = Outcome()
 
-    attention = BaseAttention(last=outcome, impulse=initial_impulse)
+    attention = BaseAttention(last_outcome=outcome, impulse=initial_impulse)
 
     # 2. 启动 Attention
     async with attention:
@@ -42,7 +42,7 @@ async def test_attention_lifecycle_and_loop():
 async def test_attention_preemption_by_priority():
     """测试不同优先级的 impulse 挑战是否会引发 aborted"""
     current = Impulse(source="main", priority=Priority.INFO, strength=100)
-    attention = BaseAttention(last=Outcome(), impulse=current)
+    attention = BaseAttention(last_outcome=Outcome(), impulse=current)
 
     async with attention:
         # 模拟 CRITICAL 挑战
@@ -58,7 +58,7 @@ async def test_attention_preemption_by_priority():
 async def test_observe_error_propagation():
     """测试 ObserveError 如何正确导致下一轮循环"""
     initial = Impulse(source="test", priority=Priority.INFO)
-    attention = BaseAttention(last=Outcome(), impulse=initial)
+    attention = BaseAttention(last_outcome=Outcome(), impulse=initial)
 
     async with attention:
         loop_gen = attention.loop()
@@ -83,7 +83,7 @@ async def test_attention_strength_decay():
         strength=100,
         strength_decay_seconds=0.1  # 100ms
     )
-    attention = BaseAttention(last=Outcome(), impulse=impulse)
+    attention = BaseAttention(last_outcome=Outcome(), impulse=impulse)
     await asyncio.sleep(0.09)
     assert attention.current_strength() > 0
     await asyncio.sleep(0.01)
@@ -104,7 +104,7 @@ async def test_attention_rapid_timeout_aborted():
         strength_decay_seconds=0.1  # 100ms
     )
 
-    attention = BaseAttention(last=Outcome(), impulse=impulse)
+    attention = BaseAttention(last_outcome=Outcome(), impulse=impulse)
     start_time = time.perf_counter()
     async with attention:
         # 2. 等待直到生命周期被触发超时
@@ -137,7 +137,7 @@ async def test_attention_homologous_escalation():
     )
     # 保护区: min(2.0 * 0.2, 3.0) = 0.4s
     attention = BaseAttention(
-        last=Outcome(),
+        last_outcome=Outcome(),
         impulse=impulse,
         # 保护期时间 0.1
         protection_duration_ratio=0.1,
@@ -182,7 +182,7 @@ async def test_attention_max_protection_time():
     )
     # 保护区: min(2.0 * 0.2, 3.0) = 0.4s
     attention = BaseAttention(
-        last=Outcome(),
+        last_outcome=Outcome(),
         impulse=impulse,
         # 保护期比例 100%
         protection_duration_ratio=1.0,
@@ -203,6 +203,6 @@ async def test_attention_max_protection_time():
         await asyncio.sleep(0.01)
         assert attention.on_challenge(challenger) is True
         assert not attention.is_aborted()
-        await asyncio.sleep(0.09)
+        await asyncio.sleep(0.095)
         assert challenger.is_stale()
         assert attention.on_challenge(challenger) is False

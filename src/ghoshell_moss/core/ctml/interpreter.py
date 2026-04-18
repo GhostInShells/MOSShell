@@ -615,6 +615,7 @@ class CTMLInterpreter(Interpreter):
         return tasks
 
     def __del__(self):
+        # 丢弃这个计算代码.
         CTMLInterpreter.instances_count -= 1
         if not self._destroyed:
             self.destroy()
