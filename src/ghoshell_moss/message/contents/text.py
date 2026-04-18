@@ -2,7 +2,7 @@ from typing_extensions import Self
 
 from pydantic import Field
 
-from ghoshell_moss.message.contents.abcd import ContentModel
+from ghoshell_moss.message.contents.abcd import ContentModel, Content
 
 __all__ = ["Text"]
 
@@ -22,6 +22,10 @@ class Text(ContentModel):
     @classmethod
     def new(cls, text: str) -> Self:
         return cls(text=text)
+
+    @classmethod
+    def new_content(cls, text: str) -> Content:
+        return Content(text=text, type=cls.content_type())
 
     @classmethod
     def content_type(cls) -> str:

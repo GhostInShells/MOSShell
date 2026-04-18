@@ -701,9 +701,17 @@ class ObserveError(Exception):
     一种抛出中断的办法.
     """
 
-    def __init__(self, observe: Observe):
-        self.observe = observe
-        super().__init__()
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+    def as_messages(self) -> list[Message]:
+        if self.message:
+            return [Message.new().with_content(self.message)]
+        return []
+
+    def as_observe(self) -> Observe:
+        return Observe.model_construct(messages=self.as_messages())
 
 
 class CommandTaskResult(BaseModel):
@@ -1296,7 +1304,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
     def fail(self, error: Exception | str) -> None:
         if not self.__done_event.is_set():
             if isinstance(error, ObserveError):
-                self.resolve(error.observe)
+                self.resolve(error.as_observe())
                 return
 
             elif isinstance(error, str):

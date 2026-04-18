@@ -331,13 +331,13 @@ class Message(BaseModel, WithAdditional):
             _content = Base64Image.from_pil_image(item)
         elif isinstance(item, BaseModel):
             serialized = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=False)
-            _content = Text.new(serialized).to_content()
+            _content = Text.new_content(serialized)
         elif isinstance(item, dict) or isinstance(item, list):
             serialized = orjson.dumps(item).decode('utf8')
-            _content = Text.new(serialized).to_content()
+            _content = Text.new_content(serialized)
         else:
             value = str(item)
-            _content = Text.new(value).to_content()
+            _content = Text.new_content(value)
         return _content
 
     def with_content(self, *contents: ContextType | Content) -> Self:

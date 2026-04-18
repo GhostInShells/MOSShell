@@ -1,3 +1,4 @@
+from typing import AsyncIterable, AsyncIterator, AsyncGenerator
 import asyncio
 import threading
 import time
@@ -627,3 +628,23 @@ async def test_async_iterator_generator_exit():
             break
         assert s.i == 1
     assert s.i == 2
+
+
+@pytest.mark.asyncio
+async def test_async_iterator():
+    async def foo() -> AsyncGenerator[int, None]:
+        for i in range(10):
+            yield i
+
+    values = []
+    async for val in foo():
+        values.append(val)
+    assert len(values) == 10
+
+    def bar() -> AsyncIterator[int]:
+        return foo()
+
+    values.clear()
+    async for val in bar():
+        values.append(val)
+    assert len(values) == 10

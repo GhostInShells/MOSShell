@@ -1,3 +1,4 @@
+import asyncio
 import threading
 
 import anyio
@@ -43,3 +44,23 @@ def test_thread_event():
     t1.join()
     t2.join()
     assert order == ["setter", "waiter"]
+
+
+@pytest.mark.asyncio
+async def test_task_group_cancel():
+    async def _run():
+        await asyncio.sleep(1)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(_run)
+        group.start_soon(_run)
+        group.start_soon(_run)
+        group.cancel_scope.cancel()
+
+    async def _raise():
+        await asyncio.sleep(0.01)
+        raise RuntimeError("test error")
+
+    with pytest.raises(ExceptionGroup):
+        async with anyio.create_task_group() as group:
+            group.start_soon(_raise)

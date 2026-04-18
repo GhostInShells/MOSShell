@@ -1,7 +1,9 @@
 from enum import Enum
 from typing_extensions import Self
 
-__all__ = ["CommandError", "CommandErrorCode", "FatalError", "InterpretError", 'PausedError',]
+__all__ = [
+    "CommandError", "CommandErrorCode", "FatalError", "InterpretError", 'PausedError',
+]
 
 
 class FatalError(Exception):
