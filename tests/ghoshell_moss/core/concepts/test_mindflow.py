@@ -46,12 +46,12 @@ def test_observation_outcome_stitching():
     obs2 = outcome.new_observation()
 
     # 验证上下文连贯性
-    assert obs2.last is not None
-    assert obs2.last.logos == "MoveForward"
-    assert obs2.last.messages[0].contents[0]['text'] == "Action Done"
+    assert obs2.previews is not None
+    assert obs2.previews.logos == "MoveForward"
+    assert obs2.previews.messages[0].contents[0]['text'] == "Action Done"
 
     # 验证 as_request_messages 结构
-    msgs = list(obs2.as_request_messages())
+    msgs = list(obs2.as_messages())
     # 应该包含 <outcomes> 标签及内部消息
     content_tags = [m.meta.tag for m in msgs if m.meta.tag]
     assert 'stop_reason' not in content_tags  # 此时 stop_reason 应为空
@@ -82,3 +82,9 @@ def test_attention_preemption_logic():
     # 模拟同优先级，强弱对抗
     weak_challenge = Impulse(source="nucleus_b", priority=Priority.INFO, strength=50)
     assert weak_challenge.strength < current_impulse.strength
+
+
+def test_signal_impulse_direct_set():
+    signal = Signal.new("test", complete=False)
+    impulse = Impulse.from_signal(signal, source="test")
+    assert not impulse.complete

@@ -1,6 +1,6 @@
 from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any
 
-from typing_extensions import Self
+from typing_extensions import Self, Literal
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field, AwareDatetime, ValidationError
 
@@ -74,6 +74,9 @@ class Signal(BaseModel):
     3. 保鲜, 过期的信号会直接丢弃.
     4. 以 AI 可以理解的消息为优先.
     """
+
+    __state__: Literal['created', 'pending', 'dispatched', 'ignored'] = 'created'
+    """内部用于 debug 的参数"""
 
     name: SignalName = Field(
         description="the signal name, if not match any mind pulse, the signal will be ignore",
@@ -153,7 +156,9 @@ class Signal(BaseModel):
             priority: Priority = Priority.INFO,
             description: str = '',
             metadata: dict[str, Any] | None = None,
+            strength: int = 100,
             stale_timeout: float = 0,
+            complete: bool = True,
     ) -> Self:
         return cls(
             name=name,
@@ -161,7 +166,9 @@ class Signal(BaseModel):
             priority=priority,
             description=description,
             metadata=metadata or {},
+            strength=strength,
             stale_timeout=stale_timeout,
+            complete=complete,
         )
 
     def priority_strength(self) -> int:
@@ -322,7 +329,7 @@ class Impulse(BaseModel):
         description="the creation time of the impulse",
     )
     strength_decay_seconds: float = Field(
-        default=10,
+        default=20,
         description="Strength decay 约定时间. 如果不定义的话, 使用系统默认的约定. 作为最底层的约束存在. ",
     )
 
@@ -496,25 +503,26 @@ class Outcome(BaseModel, WithAdditional):
 
     def new_observation(self) -> "Observation":
         return Observation(
-            last=self,
+            previews=self,
         )
 
 
 class Observation(BaseModel, WithAdditional):
     """
-    智能体上下文感知的关键帧. 它包含以下核心概念的聚合.
-    - last: 上一轮 Observation 之后的讯息.
-        - logos: 上一轮的 logos.
-        - messages: 上一轮运行输出的讯息.
-        - stop_reason: 上一轮的结束信息.
-    - context: observation 生成瞬间的动态上下文, 每一轮都会重新刷新.
-    - inputs: 触发 observation 的外部世界输入.
-    - prompt: 本轮思考时的提示信息.
-
-    Observation 的定义用来将离散的关键帧交互, 缝合成一个连续的认知流.
-    理论上 logos/outcome/inputs 三者在时间上是交错的, 但由于现阶段没有全双工的模型能力,
-    为了防止认知撕裂, 考虑将它们按这种方式, 逻辑上重新排序.
+    智能体上下文感知的关键帧.
     """
+    # 它包含以下核心概念的聚合.
+    # - last: 上一轮 Observation 之后的讯息.
+    #     - logos: 上一轮的 logos.
+    #     - messages: 上一轮运行输出的讯息.
+    #     - stop_reason: 上一轮的结束信息.
+    # - context: observation 生成瞬间的动态上下文, 每一轮都会重新刷新.
+    # - inputs: 触发 observation 的外部世界输入.
+    # - prompt: 本轮思考时的提示信息.
+    #
+    # Observation 的定义用来将离散的关键帧交互, 缝合成一个连续的认知流.
+    # 理论上 logos/outcome/inputs 三者在时间上是交错的, 但由于现阶段没有全双工的模型能力,
+    # 为了防止认知撕裂, 考虑将它们按这种方式, 逻辑上重新排序.
 
     id: str = Field(
         default_factory=uuid,
@@ -522,7 +530,7 @@ class Observation(BaseModel, WithAdditional):
     )
 
     # --- 以下缝合上一轮交互的讯息 --- #
-    last: Outcome | None = Field(
+    previews: Outcome | None = Field(
         default=None,
     )
 
@@ -547,13 +555,13 @@ class Observation(BaseModel, WithAdditional):
             id=self.id,
         )
 
-    def as_request_messages(self) -> Iterable[Message]:
+    def as_messages(self, *, with_context: bool = True) -> Iterable[Message]:
         """
         所有这些消息, 理论上都会合并为一轮输入消息的 contents.
         本处是一个使用示范 (code as prompt), 不是硬性约束.
         """
-        if self.last is not None:
-            outcome = self.last
+        if self.previews is not None:
+            outcome = self.previews
             if len(outcome.messages) > 0:
                 yield Message.new().with_content('<outcomes>')
                 yield from outcome.messages
@@ -562,20 +570,26 @@ class Observation(BaseModel, WithAdditional):
                 yield Message.new(tag='stop_reason').with_content(outcome.stop_reason)
 
         if len(self.context) > 0:
-            yield Message.new().with_content("<context>\n")
-            for context_messages in list(self.context.values()):
-                yield from context_messages
-            yield Message.new().with_content("\n</context>")
+            if with_context:
+                yield Message.new().with_content("<context>\n")
+                for context_messages in list(self.context.values()):
+                    yield from context_messages
+                yield Message.new().with_content("\n</context>")
+            else:
+                count = 0
+                for compacted in self.context.values():
+                    count += len(compacted)
+                yield Message.new().with_content(f"<compacted>{count} history messages compacted </compacted>")
         yield from self.inputs
         if self.prompt:
             yield Message.new(tag='prompt').with_content(self.prompt)
 
-    def as_request_contents(self) -> Iterable[Content]:
+    def as_contents(self, *, with_context: bool = True) -> Iterable[Content]:
         """
         用这种方式, 可以拿到和 Anthropic 基本兼容的 Contents.
         可以包裹到 UserMessageParams 或 ToolMessageParams 里.
         """
-        for msg in self.as_request_messages():
+        for msg in self.as_messages(with_context=with_context):
             yield from msg.as_contents(with_meta=True)
 
 
@@ -823,14 +837,6 @@ class Attention(ABC):
         pass
 
     @abstractmethod
-    def wait_complete_impulse(self) -> asyncio.Future[Impulse]:
-        """
-        尝试等待一个 complete impulse.
-        返回 Future 对象, 是因为 Attention 退出时, 这些阻塞行为会直接 cancel.
-        """
-        pass
-
-    @abstractmethod
     def on_observation(self, callback: Callable[[Observation], None]) -> None:
         """
         注册 Observation 回调, 通常用来整理历史记录.
@@ -989,6 +995,19 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
+    def is_running(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def wait_started(self) -> None:
+        """等待启动完成."""
+        pass
+
+    @abstractmethod
+    def wait_started_sync(self, timeout: float | None = None) -> bool:
+        pass
+
+    @abstractmethod
     def is_quiet(self) -> bool:
         """
         has no attention and impulse
@@ -1046,8 +1065,7 @@ class Mindflow(ABC):
     @abstractmethod
     def set_impulse(self, impulse: Impulse) -> None:
         """
-        通过系统操作, 直接将 impulse 定义成 attention, 中断已经执行的 attention.
-        绕过了感知决策体系.
+        直接添加一个 Impulse 到池中.
         """
         pass
 

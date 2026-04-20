@@ -8,13 +8,10 @@ from ghoshell_moss.core.concepts.mindflow import (
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from collections import deque
-from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream, MemoryObjectReceiveStream
-from anyio import ClosedResourceError, BrokenResourceError, create_memory_object_stream, create_task_group
 import time
-import math
 import threading
 import asyncio
+import janus
 
 __all__ = [
     'BaseAttention',
@@ -32,7 +29,10 @@ class AttentionContext:
             aborted_event: ThreadSafeEvent,
             flags: dict[str, ThreadSafeEvent],
             logger: LoggerItf | None = None,
+            max_size: int = 8000,
     ):
+        self.logos_queue: janus.Queue[str | None] = janus.Queue(maxsize=max_size)
+        self._max_size = max_size
         self.attention_id = attention_id
         self.observation = observation
         self.logger = logger or get_moss_logger()
@@ -42,8 +42,7 @@ class AttentionContext:
         self._flag_lock = threading.Lock()
 
         self._aborted_event = aborted_event
-        self._aborted_lock = threading.Lock()
-        self._exception: Exception | None = None
+        self._exception: BaseException | None = None
         self._stop_reason: str | None = None
         self._logos: str = ''
         self._outcome_messages: list[Message] = []
@@ -54,35 +53,29 @@ class AttentionContext:
     def __repr__(self):
         return self.logger_prefix
 
-    def clear(self) -> None:
-        """
-        清理 ctx 里的阻塞状态.
-        clear 应该是 attention 调用的.
-        """
-        for flag in list(self._flags.values()):
-            flag.clear()
-
-    def add_logos(self, delta: str) -> None:
+    def buffer_logos(self, delta: str) -> None:
         self._logos += delta
 
     def is_aborted(self) -> bool:
         return self._aborted_event.is_set()
 
-    def abort(self, error: str | Exception | None) -> None:
+    def abort(self, error: str | BaseException | None) -> None:
         """线程共享的, 关闭 Attention 的信号. """
         if self._aborted_event.is_set():
             # 处理过了就 skip.
             return None
-        with self._aborted_lock:
-            if self._aborted_event.is_set():
-                return None
-            if isinstance(error, str):
-                self._stop_reason = error
-            elif isinstance(error, Exception):
-                self._stop_reason = f"aborted on: {error}"
-                self._exception = error
-            self._aborted_event.set()
+        if self._aborted_event.is_set():
             return None
+        if isinstance(error, str):
+            self._stop_reason = error
+        elif isinstance(error, BaseException):
+            self._stop_reason = f"aborted on: {error}"
+            self._exception = error
+        for flag in list(self._flags.values()):
+            flag.clear()
+        self.logos_queue.sync_q.put_nowait(None)
+        self._aborted_event.set()
+        return None
 
     async def wait_aborted(self) -> None:
         await self._aborted_event.wait()
@@ -119,6 +112,7 @@ class AttentionContext:
             aborted_event=self._aborted_event,
             flags=self._flags,
             logger=self.logger,
+            max_size=self._max_size,
         )
 
     def observe(self, message: str) -> None:
@@ -137,10 +131,10 @@ class AttentionContext:
         if observe:
             self.observe('')
 
-    def capture_error(self, error: Exception) -> bool | None:
+    def capture_error(self, error: BaseException) -> bool | None:
         """共享的异常处理逻辑. 主要协助 __aexit__ 处理拦截异常. """
         if isinstance(error, asyncio.CancelledError):
-            return True
+            return None
         elif isinstance(error, asyncio.TimeoutError):
             return True
         elif isinstance(error, ActionAbortedError):
@@ -177,15 +171,16 @@ class BaseArticulate(Articulate):
             self,
             *,
             ctx: AttentionContext,
-            sender: MemoryObjectSendStream[str],
             exited_event: ThreadSafeEvent,
+            on_start_logos: str,
     ):
         self._ctx = ctx
-        self._sender = sender
-        self._task_group: TaskGroup | None = None
+        self._on_start_logos = on_start_logos
+        self._task_group = BaseTaskGroup()
         self._exited_event = exited_event
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._started = False
+        self._closing = False
 
     @property
     def observation(self) -> Observation:
@@ -196,7 +191,7 @@ class BaseArticulate(Articulate):
         if not self._started:
             raise RuntimeError("Articulate is not entered")
         elif self._exited_event.is_set():
-            raise RuntimeError("Articulate is already exited")
+            raise ArticulateAbortedError("Articulate is already exited")
 
     async def _wait_aborted_and_cancel(self) -> None:
         await self._ctx.wait_aborted()
@@ -204,28 +199,23 @@ class BaseArticulate(Articulate):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            return
+            raise RuntimeError("Articulate is already entered")
         self._started = True
         self._event_loop = asyncio.get_running_loop()
-        self._task_group = create_task_group()
-        await self._task_group.__aenter__()
         # 启动一个检查, 确保 Attention 退出时可以影响到这里.
-        self._task_group.start_soon(self._wait_aborted_and_cancel)
+        self._task_group.add_task(self._event_loop.create_task(self._wait_aborted_and_cancel()))
         # 实际上底层是空的.
-        await self._sender.__aenter__()
+        if not self._ctx.is_aborted() and self._on_start_logos:
+            self._ctx.logos_queue.sync_q.put_nowait(self._on_start_logos)
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._exited_event.is_set():
+        if self._closing:
             return None
+        self._closing = True
         try:
-            await self._sender.__aexit__(exc_type, exc_val, exc_tb)
-            if self._task_group:
-                self._task_group.cancel_scope.cancel("exited")
-                # 别抛出异常了.
-                try:
-                    await self._task_group.__aexit__(None, None, None)
-                except Exception as e:
-                    self._ctx.logger.info("%r task group canceled on error: %s", self, e)
+            self._ctx.logos_queue.sync_q.put_nowait(None)
+            await self._task_group.aclose()
             if exc_val is not None:
                 return self._ctx.capture_error(exc_val)
             return None
@@ -235,59 +225,74 @@ class BaseArticulate(Articulate):
 
     def abort(self, error: str | AttentionAbortedError | Exception | None) -> None:
         self._ctx.abort(error)
-        if self._task_group:
-            self._task_group.cancel_scope.cancel("aborted")
+        self._task_group.close()
 
     async def send_logos(self, logos: Logos) -> None:
         self._check_running()
-        try:
-            async for delta in logos:
-                if self._ctx.is_aborted():
-                    self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, delta)
-                    # 中断循环极其外部逻辑.
-                    raise AttentionAbortedError("Attention is already aborted")
-                await self._sender.send(delta)
-        except ClosedResourceError:
-            self._ctx.logger.error("%r articulate receive delta after closed", self._ctx)
-            return None
-        except BrokenResourceError:
-            self._ctx.logger.debug("%r articulate drop delta after rejected", self._ctx)
-            return None
+        async for delta in logos:
+            await self.send(delta)
 
     def create_task(self, cor: Coroutine) -> asyncio.Future:
         self._check_running()
         task = self._event_loop.create_task(cor)
-
-        async def _wait_task():
-            try:
-                nonlocal task
-                await task
-            except Exception as e:
-                if not self._ctx.capture_error(e):
-                    raise e
-
-        self._task_group.start_soon(_wait_task)
+        self._task_group.add_task(task)
         return task
 
     def flag(self, name: str) -> Flag:
         return self._ctx.flag(name)
 
     async def send(self, delta: str) -> None:
-        if self._ctx.is_aborted():
+        if self._ctx.is_aborted() or self._exited_event.is_set():
             self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, delta)
             # 中断循环及其外部逻辑.
             raise AttentionAbortedError("Attention is already aborted")
         try:
-            await self._sender.send(delta)
-        except ClosedResourceError:
-            # 当资源被关闭时, 说明 articulate 需要被结束了.
-            # 需要一个关键讯号中断运行逻辑.
-            self._ctx.logger.error("%r articulate receive delta %s after closed", self._ctx, delta)
-            raise ArticulateAbortedError("Articulate shall close")
-        except BrokenResourceError:
-            # 接收者先退出.
-            self._ctx.logger.debug("%r articulate drop delta %s after rejected", self._ctx, delta)
-            raise ArticulateAbortedError("Articulate shall close")
+            self._ctx.logos_queue.sync_q.put_nowait(delta)
+        except janus.SyncQueueShutDown:
+            raise AttentionAbortedError("Attention is already aborted")
+
+
+class BaseTaskGroup:
+
+    def __init__(self):
+        self.tasks: set[asyncio.Task] = set()
+        self._closed = False
+
+    def add_task(self, task: asyncio.Task) -> None:
+        if self._closed:
+            task.cancel('closed')
+            return
+        self.tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        if self._closed:
+            return
+        self.tasks.discard(task)
+        if task.cancelled():
+            return
+        elif task.exception():
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        tasks = list(self.tasks)
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+    async def aclose(self) -> None:
+        self.close()
+        tasks = list(self.tasks)
+        wait_all = []
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+                wait_all.append(t)
+        if len(wait_all) > 0:
+            await asyncio.gather(*wait_all, return_exceptions=True)
 
 
 class BaseAction(Action):
@@ -296,29 +301,33 @@ class BaseAction(Action):
             self,
             *,
             ctx: AttentionContext,
-            receiver: MemoryObjectReceiveStream[str],
             exited_event: ThreadSafeEvent,
     ):
         self._ctx = ctx
-        self._receiver = receiver
-        self._task_group: TaskGroup | None = None
+        self._task_group = BaseTaskGroup()
         self._exited_event = exited_event
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._started = False
+        self._closing = False
 
     def logos(self) -> Logos:
         return self._logos()
 
     async def _logos(self) -> AsyncGenerator[str, None]:
         try:
-            async for delta in self._receiver:
-                # 实际上被消费的 logo delta 才会被记录.
-                self._ctx.add_logos(delta)
-                yield delta
-        except ClosedResourceError:
-            # 直接退出即可,
-            return
-        except BrokenResourceError:
+            while not self._ctx.is_aborted() and not self._exited_event.is_set():
+                try:
+                    item = await asyncio.wait_for(self._ctx.logos_queue.async_q.get(), 1)
+                except asyncio.TimeoutError:
+                    continue
+                except janus.AsyncQueueShutDown:
+                    return
+
+                if item is None:
+                    break
+                self._ctx.buffer_logos(item)
+                yield item
+        except janus.SyncQueueShutDown:
             return
 
     def outcome(self, *messages: Message | str, observe: bool = False) -> None:
@@ -334,9 +343,9 @@ class BaseAction(Action):
 
     def _check_running(self):
         if not self._started:
-            raise RuntimeError("Articulate is not entered")
+            raise RuntimeError("Action is not entered")
         elif self._exited_event.is_set():
-            raise RuntimeError("Articulate is already exited")
+            raise ActionAbortedError("Action is already exited")
 
     async def _wait_aborted_and_cancel(self) -> None:
         # 创建到 task group 里保证 aborted 的时候会自动退出.
@@ -345,25 +354,19 @@ class BaseAction(Action):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            return
+            raise RuntimeError("Action is already entered")
         self._started = True
         self._event_loop = asyncio.get_running_loop()
-        self._task_group = create_task_group()
-        await self._task_group.__aenter__()
-        self._task_group.start_soon(self._wait_aborted_and_cancel)
+        self._task_group.add_task(self._event_loop.create_task(self._wait_aborted_and_cancel()))
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._exited_event.is_set():
+        if self._closing:
             return None
+        self._closing = True
         try:
-            self._receiver.close()
-            if self._task_group:
-                self._task_group.cancel_scope.cancel("exited")
-                # 别抛出异常了.
-                try:
-                    await self._task_group.__aexit__(None, None, None)
-                except Exception as e:
-                    self._ctx.capture_error(e)
+            # 阻塞等待到运行结束.
+            await self._task_group.aclose()
             if exc_val is not None:
                 return self._ctx.capture_error(exc_val)
             return None
@@ -373,23 +376,12 @@ class BaseAction(Action):
 
     def abort(self, error: str | AttentionAbortedError | Exception | None) -> None:
         self._ctx.abort(error)
-        if self._task_group:
-            self._task_group.cancel_scope.cancel("aborted")
+        self._task_group.close()
 
     def create_task(self, cor: Coroutine) -> asyncio.Future:
         self._check_running()
         task = self._event_loop.create_task(cor)
-
-        async def _wait_task():
-            try:
-                nonlocal task
-                await task
-            except Exception as e:
-                # 加一个异常检查, 避免一个 task 抛出了低级的未处理异常, 系统仍然被 cancel 了.
-                if self._ctx.capture_error(e):
-                    raise e
-
-        self._task_group.start_soon(_wait_task)
+        self._task_group.add_task(task)
         return task
 
     def flag(self, name: str) -> Flag:
@@ -414,7 +406,7 @@ class BaseAttention(Attention):
             protection_duration_ratio: float = 0.2,  # 决定保护时间在总时间的比例.
     ):
         self._init_impulse: Impulse = impulse
-        self._init_impulse_is_complete_event = ThreadSafeEvent()
+        self._wait_impulse_is_complete_event = ThreadSafeEvent()
 
         # 一个可以接受新消息的 buffer.
         self._info_impulse_buffer: deque[Impulse] = deque()
@@ -447,6 +439,7 @@ class BaseAttention(Attention):
         self._protection_duration_ratio: float = min(max(protection_duration_ratio, 0.0), 1.0)
 
         self._started: bool = False
+        self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
         # update the impulse
         self._log_prefix = "?? 别忘记了."
@@ -454,6 +447,8 @@ class BaseAttention(Attention):
 
         self._articulate_stop_event = ThreadSafeEvent()
         self._action_stop_event = ThreadSafeEvent()
+        self._articulate_stop_event.set()
+        self._action_stop_event.set()
 
         # ctx 会持续存在.
         self._ctx = AttentionContext(
@@ -462,6 +457,7 @@ class BaseAttention(Attention):
             aborted_event=self._aborted_event,
             logger=self._logger,
             flags=self._flags,
+            max_size=8000,
         )
 
     def _update_current_impulse(self, impulse: Impulse) -> None:
@@ -475,9 +471,9 @@ class BaseAttention(Attention):
             self._strength_decay_time = 1
         if impulse.complete:
             # 最后才设置.
-            self._init_impulse_is_complete_event.set()
+            self._wait_impulse_is_complete_event.set()
         else:
-            self._init_impulse_is_complete_event.clear()
+            self._wait_impulse_is_complete_event.clear()
 
     @property
     def strength_refreshed_at(self) -> float:
@@ -489,27 +485,17 @@ class BaseAttention(Attention):
     def is_aborted(self) -> bool:
         return self._aborted_event.is_set()
 
-    async def wait_impulse(self) -> Impulse:
+    async def wait_first_impulse(self) -> Impulse | None:
         # 阻塞等待第一个 complete event.
-        await self._init_impulse_is_complete_event.wait()
+        await self._wait_impulse_is_complete_event.wait()
         # 等待到了可能是别的原因. aborted 了.
         if self._aborted_event.is_set():
-            raise AttentionAbortedError("Attention is aborted")
+            return None
         return self._init_impulse
 
     def flag(self, name: str) -> Flag:
         # 让 ctx 的状态对齐到一起.
         return self._ctx.flag(name)
-
-    def wait_complete_impulse(self) -> asyncio.Future[Impulse]:
-        self._check_running()
-        if self._init_impulse.complete:
-            future = self._event_loop.create_future()
-            future.set_result(self._init_impulse)
-            return future
-        # 直接创建 task 即可. 因为 attention 退出时, 会清理一遍锁.
-        task = self._event_loop.create_task(self.wait_impulse())
-        return task
 
     def on_observation(self, callback: Callable[[Observation], None]) -> None:
         """register observation callback"""
@@ -606,12 +592,14 @@ class BaseAttention(Attention):
     async def _loop(self) -> AsyncGenerator[tuple[Articulate, Action], None]:
         # 等待第一个完整的信号. 本质是一个抢占式注意力锁, 比如 ASR 首包打断时
         # 已经抢占了注意力, 但要等待一个完整的逻辑包才采取行动.
-        await self._init_impulse_is_complete_event.wait()
-        impulse = self._init_impulse
+        impulse = await self.wait_first_impulse()
+        if impulse is None:
+            return
         # 完成第一轮输入的赋值. 其中 mindflow context 应该是通过 context func 更新的.
         observation = self._ctx.observation
         observation.inputs = impulse.messages
         observation.prompt = impulse.prompt
+        on_start_logos = impulse.on_logos_start
         while not self.is_aborted():
             # 每次刷新时会更新权重.
             self._escalation_on_active()
@@ -621,20 +609,26 @@ class BaseAttention(Attention):
                 # buffer messages.
                 current_observation.inputs.extend(impulse_buffer.messages)
                 current_observation.prompt = impulse_buffer.prompt
+                on_start_logos = impulse_buffer.on_logos_start
 
             # 1. 准备本轮的 Observation
             # 这里的逻辑要把 context_funcs 执行一遍，塞进 self._ctx.observation
             self._prepare_observation(current_observation)
+            # 回调 observation.
+            self._callback_observation(current_observation)
 
             # 2. 创建双工流 (8000 是个缓冲区大小，可以自定)
-            tx, rx = create_memory_object_stream(8000)
-
             # 3. 准备退出同步信号
             self._action_stop_event.clear()
             self._articulate_stop_event.clear()
 
-            articulate = BaseArticulate(ctx=self._ctx, sender=tx, exited_event=self._articulate_stop_event)
-            action = BaseAction(ctx=self._ctx, receiver=rx, exited_event=self._action_stop_event)
+            articulate = BaseArticulate(
+                ctx=self._ctx,
+                exited_event=self._articulate_stop_event,
+                on_start_logos=on_start_logos,
+            )
+            on_start_logos = ''
+            action = BaseAction(ctx=self._ctx, exited_event=self._action_stop_event)
 
             # 4. 交给外部执行线程/任务
             yield articulate, action
@@ -676,8 +670,10 @@ class BaseAttention(Attention):
             self._update_current_impulse(challenger)
             return None
         elif challenger.source == self._init_impulse.source and challenger.priority == Priority.INFO:
-            self._info_impulse_buffer.append(challenger)
-            return None
+            if challenger.complete:
+                self._info_impulse_buffer.append(challenger)
+                return None
+            return False
         # priority is superior
         if challenger.priority == Priority.FATAL or challenger.priority > self._init_impulse.priority:
             return True
@@ -709,7 +705,14 @@ class BaseAttention(Attention):
         """
         try:
             ttl = self._strength_decay_time
-            await asyncio.sleep(ttl)
+            wait_task = asyncio.create_task(asyncio.sleep(ttl))
+            wait_done_task = asyncio.create_task(self._ctx.wait_aborted())
+            done, pending = await asyncio.wait(
+                [wait_task, wait_done_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
 
             # 如果 abort 先触发，直接退出
             if self._aborted_event.is_set():
@@ -727,15 +730,13 @@ class BaseAttention(Attention):
             return None
         finally:
             # 这个任务退出时, 一种情况是 aborted, 另一种情况是 aexit, 两种情况都去清理所有可能阻塞的锁.
-            self._init_impulse_is_complete_event.set()
-            # 清除 ctx 的锁状态. 释放所有的阻塞.
-            self._ctx.clear()
+            self._wait_impulse_is_complete_event.set()
             self._action_stop_event.set()
             self._articulate_stop_event.set()
 
     async def __aenter__(self):
         if self._started:
-            return self
+            raise RuntimeError("Attention is already entered")
         self._started = True
         self._event_loop = asyncio.get_running_loop()
         # 启动自身的超时检查.
@@ -746,10 +747,12 @@ class BaseAttention(Attention):
         """
         关键是哪些异常是需要对外抛出的.
         """
-        if self._closed_event.is_set():
+        if self._closing:
             return None
+        self._closing = True
         try:
             # 取消 inner task.
+            self._ctx.abort(exc_val)
             if self._inner_arbiter_task is not None and not self._inner_arbiter_task.done():
                 self._inner_arbiter_task.cancel()
                 try:
@@ -762,8 +765,9 @@ class BaseAttention(Attention):
             if exc_val is not None:
                 # 判断是否要拦截.
                 return self._ctx.capture_error(exc_val)
+            await self._articulate_stop_event.wait()
+            await self._action_stop_event.wait()
         finally:
-            self._ctx.clear()
             # 清除一些容易互相持有的逻辑.
             self._context_funcs.clear()
             self._observation_callbacks.clear()

@@ -187,7 +187,7 @@ class ZenohTopicPublisher(Publisher):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            return self
+            raise RuntimeError("Topic Service Already started")
         self._started = True
         self._zenoh_publisher = self._zenoh_session.declare_publisher(self._zenoh_key_expr)
         self._event_loop = asyncio.get_running_loop()

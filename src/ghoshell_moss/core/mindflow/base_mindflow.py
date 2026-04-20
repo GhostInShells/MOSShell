@@ -1,3 +1,5 @@
+import time
+from asyncio import current_task
 from typing import Self, Iterable, AsyncGenerator, AsyncIterator
 
 import janus
@@ -11,7 +13,6 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.message import Message
 from .base_attention import BaseAttention
 import asyncio
-import threading
 import contextlib
 
 
@@ -35,36 +36,47 @@ class BaseMindflow(Mindflow):
         self._current_attention: Attention | None = None
         # 这是内部循环使用的队列.
         self._pop_new_attention_queue: janus.Queue[Attention | None] = janus.Queue(maxsize=1)
-        self._last_popped_attention: Attention | None = None
         self._starting = False
-        self._started = False
+        self._started_event = ThreadSafeEvent()
         self._closed = False
         self._paused = False
         self._unpaused_event = ThreadSafeEvent()
         self._unpaused_event.set()
         self._looping_attention = False
-        self._set_attention_lock = threading.Lock()
         # 设置线程安全的优先级队列, 用来卸载信号量到本地循环, 避免线程安全上的震荡.
-        self._signal_low_queue: janus.PriorityQueue[tuple[int, Signal]] = janus.PriorityQueue(maxsize=100)
-        self._signal_high_queue: janus.PriorityQueue[tuple[int, Signal]] = janus.PriorityQueue(maxsize=100)
+        self._signal_low_queue: janus.PriorityQueue[tuple[int, int, Signal]] = self._new_signal_queue()
+        self._signal_high_queue: janus.PriorityQueue[tuple[int, int, Signal]] = self._new_signal_queue()
+        self._signal_count: int = 0
+        self._has_impulse_event = ThreadSafeEvent()
+        self._set_impulse_lock = asyncio.Lock()
 
         # 内部循环检测是否有新的 impulse.
-        self._has_impulse_event = ThreadSafeEvent()
         self._consuming_signal_task: asyncio.Task | None = None
         self._consuming_impulse_task: asyncio.Task | None = None
         self._strict = strict
         for nucleus in nuclei:
             self.with_nucleus(nucleus)
         self._async_exit_stack = contextlib.AsyncExitStack()
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+
+    @staticmethod
+    def _new_signal_queue() -> janus.PriorityQueue[tuple[int, int, Signal]]:
+        return janus.PriorityQueue(maxsize=100)
 
     def is_running(self) -> bool:
-        return self._started and not self._closed
+        return self._started_event.is_set() and not self._closed
 
     def faculties(self) -> Iterable[Nucleus]:
         return self._faculties.values()
 
+    async def wait_started(self) -> None:
+        await self._started_event.wait()
+
+    def wait_started_sync(self, timeout: float | None = None) -> bool:
+        return self._started_event.wait_sync(timeout)
+
     def with_nucleus(self, nucleus: Nucleus) -> None:
-        if self._started:
+        if self._started_event.is_set():
             raise RuntimeError(f"Mindflow only with nucleus before started, use add_nucleus instead")
         # 注册运行总线. 只能在启动前用.
         nucleus.with_bus(self.on_signal, self.on_impulse)
@@ -91,58 +103,75 @@ class BaseMindflow(Mindflow):
         # 所以它的核心目标是卸载 signal 到当前线程 (loop).
         if not self.is_running():
             self._logger.error("%s on signal but not running: %r", self._log_prefix, signal)
+            signal.__state__ = 'ignored'
             return None
         elif self._paused:
             self._logger.warning("%s ignore signal cause paused: %r", self._log_prefix, signal)
+            signal.__state__ = 'ignored'
             return None
         elif signal.is_stale():
             self._logger.debug("%s ignore stale signal: %s", self._log_prefix, signal.id)
+            signal.__state__ = 'ignored'
             return None
         signal.max_hop -= 1
         if signal.max_hop < 0:
             self._logger.error("%s ignore signal max_hop negative: %r", self._log_prefix, signal)
+            signal.__state__ = 'ignored'
             return None
 
+        self._signal_count += 1
         priority_count = signal.priority_strength()
         try:
             if self._signal_low_queue.sync_q.full() and signal.priority >= Priority.CRITICAL:
                 # 特殊的信号, 丢到高优队列. 不抛弃不放弃.
-                self._signal_high_queue.sync_q.put_nowait((priority_count, signal))
+                self._signal_high_queue.sync_q.put_nowait((-priority_count, self._signal_count, signal))
             else:
-                self._signal_low_queue.sync_q.put_nowait((priority_count, signal))
+                self._signal_low_queue.sync_q.put_nowait((-priority_count, self._signal_count, signal))
+            signal.__state__ = 'pending'
         except janus.SyncQueueFull:
             # 直接 ignore 掉. 反应不过来了.
             self._logger.debug("%s ignore signal queue full: %r", self._log_prefix, signal)
             return None
+        except janus.SyncQueueShutDown:
+            self._logger.debug("%s ignore signal queue shutdown: %r", self._log_prefix, signal)
 
     async def _on_signal_consuming_loop(self):
         """信号消费队列, 将 signal 卸载到当前循环中. """
         while self.is_running():
             # 队列是单一消费者, 所以可以检查 empty.
-            if not self._signal_high_queue.async_q.empty():
-                p, item = self._signal_high_queue.async_q.get_nowait()
-            else:
-                # 如果高优队列不为空, 一定是低优队列满了. 所以低优队列阻塞时永远不会阻塞高优队列.
-                p, item = await self._signal_low_queue.async_q.get()
-            # 丢弃过期对象.
-            if self._paused or item.is_stale():
-                # 丢弃过期的信号量. 这个日志要不要记录呢?
-                self._logger.debug("%s ignore stale signal: %s", self._log_prefix, item.id)
+            try:
+                if not self._signal_high_queue.async_q.empty():
+                    p, count, item = self._signal_high_queue.async_q.get_nowait()
+                else:
+                    # 如果高优队列不为空, 一定是低优队列满了. 所以低优队列阻塞时永远不会阻塞高优队列.
+                    p, count, item = await self._signal_low_queue.async_q.get()
+                # 丢弃过期对象.
+                if self._paused or item.is_stale():
+                    # 丢弃过期的信号量. 这个日志要不要记录呢?
+                    self._logger.debug("%s ignore stale signal: %s", self._log_prefix, item.id)
+                    item.__state__ = 'ignored'
+                    continue
+                await self._dispatch_signal(item)
+            except janus.AsyncQueueShutDown:
                 continue
-            await self._dispatch_signal(item)
 
     async def _dispatch_signal(self, signal: Signal) -> None:
         try:
             name = signal.name
             broadcasted = 0
             if len(self._faculties) == 0:
+                signal.__state__ = 'ignored'
                 return None
             if name not in self._signal_name_routes:
                 # 丢弃不监听的 signal.
+                signal.__state__ = 'ignored'
                 return None
+            dispatched = False
             for n in self._signal_name_routes[name]:
                 # 触发分配.
                 n.on_signal(signal)
+                dispatched = True
+            signal.__state__ = 'dispatched' if dispatched else 'ignored'
             self._logger.debug("%s receive signal and send to %d nuclei", self._log_prefix, broadcasted)
             return None
         except asyncio.CancelledError:
@@ -150,7 +179,7 @@ class BaseMindflow(Mindflow):
             raise
         except Exception as e:
             # 拦截所有的异常, 不要影响外部循环.
-            self._logger.error("%s dispatch signal error on %s: %s", self._log_prefix, signal, e)
+            self._logger.error("%s dispatch signal error on %r: %s", self._log_prefix, signal, e)
 
     def on_impulse(self, impulse: Impulse) -> None:
         """
@@ -160,10 +189,10 @@ class BaseMindflow(Mindflow):
         # 1. Nucleus 自身不是从 on_signal 进行决策的, 动作不是在同一个 loop 里触发.
         # 2. Mindflow 接受进程级别的 Impulse 通讯, 不是从持有的 Nucleus 回调的.
         if self._paused:
-            self._logger.info("%s drop impulse cause paused: %s", self._log_prefix, impulse)
+            self._logger.info("%s drop impulse cause paused: %r", self._log_prefix, impulse)
             return None
         elif not self.is_running():
-            self._logger.error("%s drop impulse cause not running: %s", self._log_prefix, impulse)
+            self._logger.error("%s drop impulse cause not running: %r", self._log_prefix, impulse)
             return None
         # 仅仅标记一个信号.
         self._has_impulse_event.set()
@@ -181,13 +210,18 @@ class BaseMindflow(Mindflow):
                 continue
             self._has_impulse_event.clear()
             # 进行一次排队.
-            impulse = self._rank_nuclei()
-            # 使用 await, 方便感知 cancel?
-            if impulse is None:
-                # 以 rank 的瞬间为准. 如果出现极端情况, rank完的瞬间又有新的 impulse, 那也只能等下一轮.
-                continue
-            else:
-                await self._challenge_attention(impulse)
+            try:
+                impulse = self._rank_nuclei()
+                # 使用 await, 方便感知 cancel?
+                if impulse is None:
+                    # 以 rank 的瞬间为准. 如果出现极端情况, rank完的瞬间又有新的 impulse, 那也只能等下一轮.
+                    continue
+                else:
+                    await self._challenge_attention(impulse)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._logger.error("%s impulse consuming loop error: %s", self._log_prefix, e)
 
     def _suppress_impulse(self, impulse: Impulse, by: Impulse) -> None:
         """supress 指定的 impulse"""
@@ -200,9 +234,11 @@ class BaseMindflow(Mindflow):
         nucleus = self._faculties.get(impulse.source, None)
         if nucleus is not None:
             # 应该要将 impulse 给踢掉.
-            nucleus.pop_impulse(impulse)
+            if impulse is nucleus.peek():
+                nucleus.pop_impulse(impulse)
 
     async def _challenge_attention(self, impulse: Impulse) -> None:
+        """原子操作."""
         try:
             if impulse.is_stale():
                 self._pop_impulse(impulse)
@@ -215,16 +251,14 @@ class BaseMindflow(Mindflow):
                     # 挑战通过, 已经被 buffer 了. 通知一下.
                     self._pop_impulse(impulse)
                 elif done:
-                    # 挑战成功. 先完成通知, 然后再替换 attention.
-                    self._pop_impulse(impulse)
                     # set impulse 时会终止原来的. 并继承对应参数.
-                    self.set_impulse(impulse)
+                    await self._create_attention_from_impulse(impulse)
                 else:
                     # 通知 suppress.
                     self._suppress_impulse(impulse, self._current_attention.peek())
                 return None
-            # 不需要排序, 因为消费过程中, 本身拿到的就是优先级队列里的 impulse.
-            self.set_impulse(impulse)
+            else:
+                await self._create_attention_from_impulse(impulse)
             return None
         except asyncio.CancelledError:
             raise
@@ -255,11 +289,20 @@ class BaseMindflow(Mindflow):
         return True
 
     def set_impulse(self, impulse: Impulse) -> None:
-        """直接用 impulse 创建 attention"""
         if impulse.is_stale():
-            # 仍然做一次校验.
             return None
-        with self._set_attention_lock:
+        if not self.is_running():
+            return None
+        self._event_loop.create_task(self._create_attention_from_impulse(impulse))
+        return None
+
+    async def _create_attention_from_impulse(self, impulse: Impulse) -> None:
+        """直接用 impulse 创建 attention"""
+        self._pop_impulse(impulse)
+        async with self._set_impulse_lock:
+            if impulse.is_stale():
+                # 仍然做一次校验.
+                return None
             if self._current_attention is not None:
                 if not self._current_attention.is_aborted():
                     # 在这里 abort.
@@ -281,18 +324,16 @@ class BaseMindflow(Mindflow):
             return None
 
     def _set_attention(self, attention: Attention) -> None:
+        now = time.monotonic()
         # 这个函数只在 set impulse 处可以被调用.
         # 考虑到未来 set attention 可能不止一个地方调用 (比如命令行的行为), 所以加一个 set.
         if not self.is_running():
             self._logger.error("%s set attention but not running: %r", self._log_prefix, attention)
             attention.abort("not running")
-            # 保持 attention 上下文的连续性.
-            self._current_attention = attention
             return None
         elif self._paused:
             # paused 仍然可以设置. 这是系统指令.
             pass
-
         # 系统指令, 立刻生效.
         if self._current_attention is not None and not self._current_attention.is_aborted():
             # 多做一次 abort 检查, 用来做容错.
@@ -301,11 +342,14 @@ class BaseMindflow(Mindflow):
         # 注册 mindflow 自身的 context message 函数.
         self._current_attention.with_context_func("mindflow", self.context_messages)
         # 这个队列里的其实都是上一个 current attention.
-        while not self._pop_new_attention_queue.sync_q.empty():
-            # maxsize 为 1 的队列.
-            attention = self._pop_new_attention_queue.sync_q.get_nowait()
-
-        self._pop_new_attention_queue.sync_q.put_nowait(self._current_attention)
+        try:
+            while not self._pop_new_attention_queue.sync_q.empty():
+                # maxsize 为 1 的队列.
+                attention = self._pop_new_attention_queue.sync_q.get_nowait()
+            self._pop_new_attention_queue.sync_q.put_nowait(self._current_attention)
+        except janus.AsyncQueueShutDown:
+            return None
+        # 新 attention 入队.
         self._logger.info("%s set attention %r", self._log_prefix, attention)
         return None
 
@@ -364,7 +408,8 @@ class BaseMindflow(Mindflow):
         self._unpaused_event.set()
         self._clear()
         # 用来通知退出.
-        self._pop_new_attention_queue.sync_q.put_nowait(None)
+        if not self._pop_new_attention_queue.sync_q.closed:
+            self._pop_new_attention_queue.shutdown(immediate=True)
 
     def clear(self) -> None:
         if not self.is_running():
@@ -375,11 +420,13 @@ class BaseMindflow(Mindflow):
         # 其实这两个通常是同一个. 不排除在队列中.
         if self._current_attention is not None and not self._current_attention.is_aborted():
             self._current_attention.abort('closed')
-        if self._last_popped_attention is not None and not self._last_popped_attention.is_aborted():
-            self._last_popped_attention.abort("interrupted")
 
-        while not self._signal_low_queue.sync_q.empty():
-            _ = self._signal_low_queue.sync_q.get_nowait()
+        _signal_low_queue = self._signal_low_queue
+        _signal_low_queue.shutdown(immediate=True)
+        self._signal_low_queue = self._new_signal_queue()
+        _signal_high_queue = self._signal_high_queue
+        _signal_high_queue.shutdown(immediate=True)
+        self._signal_high_queue = self._new_signal_queue()
         for nucleus in self._faculties.values():
             # 清空所有的状态.
             nucleus.clear()
@@ -428,36 +475,37 @@ class BaseMindflow(Mindflow):
             raise RuntimeError('looping attention already running')
         self._looping_attention = True
         try:
+            last_popped_attention = None
             while self.is_running():
                 self._looping_attention = True
                 try:
-                    # 获取 attention 不去关心 pause. 因为 pause 了 仍然可以 set impulse.
-
-                    # 理论上 last popped attention 永远是被处理完, 才可能吐出一个 attention.
-                    # 一个 mindflow 只能吐出一个 attention. 用来做单一状态管理.
-                    # 不过仍然做一层冗余, 好像没有什么代价, 但会更安心.
-                    if self._last_popped_attention is not None and not self._last_popped_attention.is_aborted():
-                        # 等待到上一帧 attention 执行完毕.
-                        # 这种情况只有一种, 就是 attention 被发送给别的队列了, 导致这个阻塞点立刻重入.
-                        await self._last_popped_attention.wait_closed()
-                        # 做一次 running 的检查.
-                        continue
-                    self._last_popped_attention = None
-
+                    if last_popped_attention is not None and not last_popped_attention.is_aborted():
+                        # 阻塞等到下一帧运行结束.
+                        await last_popped_attention.wait_closed()
+                        # 不要再次进入这里.
+                        last_popped_attention = None
                     # 如果进入等待的瞬间没有任何 attention, 最常见的就是一大堆的 Impulse 被压抑住了.
                     # 而被压抑住的 attention 结束时, 反而没有新的 impulse 进入.
-                    if self._current_attention is None:
+                    if self._current_attention is None or self._current_attention.is_aborted():
                         if impulse := self._rank_nuclei():
-                            # 强行设置 Impulse, 不再进行排序.
-                            self.set_impulse(impulse)
-                    _attention = await self._pop_new_attention_queue.async_q.get()
+                            # 提醒一下有事件.
+                            self._has_impulse_event.set()
+                    # 尝试尽快拿到最新的.
+                    try:
+                        _attention = await asyncio.wait_for(self._pop_new_attention_queue.async_q.get(), 1)
+                    except asyncio.TimeoutError:
+                        continue
+                    except janus.AsyncQueueShutDown:
+                        return
+
                     if _attention is None:
                         # 拿到毒丸, 退出循环.
                         # 当 mindflow 显式关闭时, 一定要发送毒丸.
                         return
                     if _attention.is_aborted():
+                        # 拿到的一瞬间已经关闭了.
                         continue
-                    self._last_popped_attention = _attention
+                    last_popped_attention = _attention
                     yield _attention
                 except asyncio.CancelledError:
                     raise
@@ -472,18 +520,15 @@ class BaseMindflow(Mindflow):
         try:
             yield
         finally:
+            current_attention = None
             if self._current_attention is not None and not self._current_attention.is_aborted():
                 self._current_attention.abort('mindflow closed')
                 # 稍稍等待一下退出.
-                await self._current_attention.wait_closed()
-                self._current_attention = None
-            if self._last_popped_attention is not None and not self._last_popped_attention.is_aborted():
-                self._last_popped_attention.abort("mindflow closed")
-                await self._current_attention.wait_closed()
-                self._last_popped_attention = None
-            while not self._pop_new_attention_queue.sync_q.empty():
-                self._pop_new_attention_queue.sync_q.get_nowait()
-            self._pop_new_attention_queue.sync_q.put_nowait(None)
+                current_attention = self._current_attention
+            if current_attention is not None:
+                await current_attention.wait_closed()
+            if not self._pop_new_attention_queue.sync_q.closed:
+                self._pop_new_attention_queue.shutdown(immediate=True)
 
     @contextlib.asynccontextmanager
     async def _signal_consuming_task_ctx_manager(self):
@@ -548,8 +593,9 @@ class BaseMindflow(Mindflow):
 
     async def __aenter__(self):
         if self._starting:
-            return
+            raise RuntimeError("Mindflow is already entered")
         self._starting = True
+        self._event_loop = asyncio.get_running_loop()
         await self._async_exit_stack.__aenter__()
         # 退出顺序很重要:
         # 开关 faculties
@@ -560,11 +606,12 @@ class BaseMindflow(Mindflow):
         await self._async_exit_stack.enter_async_context(self._impulse_consuming_task_ctx_manager())
         # 先停止 signal.
         await self._async_exit_stack.enter_async_context(self._signal_consuming_task_ctx_manager())
-        self._started = True
+        self._started_event.set()
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closed = True
-        self._started = False
+        self._started_event.clear()
         self._starting = False
         # 走到这一步时, 就不会有信号输入了.
         self._clear()

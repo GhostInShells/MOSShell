@@ -410,7 +410,7 @@ class HostMatrix(Matrix):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            return self
+            raise RuntimeError("Matrix already started")
         self._started = True
         # 显式启动 ioc 容器. 同步生命周期启动. 因为 matrix 本身是进程级实例, 所以可以阻塞.
         self._event_loop = asyncio.get_running_loop()

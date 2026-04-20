@@ -122,7 +122,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
     async def __aenter__(self):
         if self._start:
-            return
+            raise RuntimeError("Shell is already started")
         self._start = True
         self._event_loop = asyncio.get_running_loop()
         # 进入开机过程.
@@ -130,6 +130,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         for ctx_manager in self._bootstrap_stacks():
             # 进入每一个开启状态.
             await self._exit_stack.enter_async_context(ctx_manager())
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if exc_val is not None:

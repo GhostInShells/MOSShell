@@ -152,6 +152,7 @@ class BufferNucleus(Nucleus):
 
         return Impulse(
             source=self._name,
+            id=latest.id,
             priority=max_priority,
             strength=max_strength,
             messages=all_msgs,

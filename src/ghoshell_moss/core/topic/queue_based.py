@@ -235,7 +235,7 @@ class QueueBasedTopicService(TopicService):
 
     async def start(self):
         if self._started:
-            return
+            raise RuntimeError("TopicService is already started")
         self._started = True
         self._publish_queue_empty.set()
         self._main_loop_stopped_event.clear()

@@ -455,7 +455,7 @@ class CTMLInterpreter(Interpreter):
 
     async def start(self) -> None:
         if self._started:
-            return
+            raise RuntimeError("Interpreter is already started")
         self._started = True
         self._loop = asyncio.get_running_loop()
         if self._on_startup:
