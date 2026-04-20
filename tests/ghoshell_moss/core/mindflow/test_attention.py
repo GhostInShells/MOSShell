@@ -47,7 +47,7 @@ async def test_attention_preemption_by_priority():
     async with attention:
         # 模拟 CRITICAL 挑战
         challenger = Impulse(source="emergency", priority=Priority.CRITICAL, strength=100)
-        result = attention.on_challenge(challenger)
+        result = attention.challenge(challenger)
 
         assert result is True  # 应该返回抢占成功
         attention.abort("preempted")
@@ -154,13 +154,13 @@ async def test_attention_homologous_escalation():
 
         # 保护期内，on_challenge 返回 None (表示吸收，但不打断/不重置)
         # 注意：这里需要确保你 on_challenge 逻辑里检查了 protection_time
-        result = attention.on_challenge(challenger)
+        result = attention.challenge(challenger)
         assert result is False
 
         # 3. 模拟保护期外 (2.0 * 0.1) 信号进入
         await asyncio.sleep(0.01)
         # 此时已经超过了 0.4s 保护期，同源信号应该能刷新时间
-        assert attention.on_challenge(challenger) is True
+        assert attention.challenge(challenger) is True
         async for articulate, action in attention.loop():
             # 刷新了.
             assert attention.strength_refreshed_at > start_time
@@ -197,12 +197,12 @@ async def test_attention_max_protection_time():
 
         # 保护期内，on_challenge 返回 None (表示吸收，但不打断/不重置)
         # 注意：这里需要确保你 on_challenge 逻辑里检查了 protection_time
-        result = attention.on_challenge(challenger)
+        result = attention.challenge(challenger)
         assert result is False
         # 这时应该过了保护期.
         await asyncio.sleep(0.01)
-        assert attention.on_challenge(challenger) is True
+        assert attention.challenge(challenger) is True
         assert not attention.is_aborted()
         await asyncio.sleep(0.095)
         assert challenger.is_stale()
-        assert attention.on_challenge(challenger) is False
+        assert attention.challenge(challenger) is False

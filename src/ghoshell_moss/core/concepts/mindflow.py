@@ -420,7 +420,7 @@ class Nucleus(ABC):
         pass
 
     @abstractmethod
-    def on_signal(self, signal: Signal) -> None:
+    def add_signal(self, signal: Signal) -> None:
         """
         接受一个信号量, 在内部开始执行校验逻辑, 生成 impulse.
         没有背压, 应当尽可能快地入队或丢弃，不执行任何耗时或异步操作。内部应有独立的任务循环消费队列。
@@ -893,7 +893,7 @@ class Attention(ABC):
         pass
 
     @abstractmethod
-    def on_challenge(self, challenger: Impulse) -> PreemptedElseSuppress | BufferImpulse:
+    def challenge(self, challenger: Impulse) -> PreemptedElseSuppress | BufferImpulse:
         """
         仲裁新的 impulse. 决定自身是否被中断. 调度发起者是 mindflow.
         最基础的仲裁逻辑:
@@ -1038,7 +1038,7 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
-    def on_impulse(self, impulse: Impulse) -> None:
+    def add_impulse(self, impulse: Impulse) -> None:
         """
         接受一个 impulse, 并进入和当前 attention 的 challenge 仲裁.
         注意, 这里的 on_signal / on_impulse 作为总线提供给 Nucleus 时, 要防止信号成环无限传播.
@@ -1047,7 +1047,7 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
-    def on_signal(self, signal: Signal) -> None:
+    def add_signal(self, signal: Signal) -> None:
         """
         接受 signal 回调. 由于 Signal 的回调很可能和 Mindflow 不是在同一个线程或循环,
         所以内测需要卸载到当前循环, 并且考虑做好讯号闸门.

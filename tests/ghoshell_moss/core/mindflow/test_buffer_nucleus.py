@@ -36,7 +36,7 @@ async def test_buffer_nucleus_basic_flow():
 
     async with nucleus:
         sig = create_mock_signal("test_signal")
-        nucleus.on_signal(sig)
+        nucleus.add_signal(sig)
 
         # 等待异步任务执行
         await asyncio.sleep(0.1)
@@ -70,7 +70,7 @@ async def test_buffer_nucleus_suppress():
 
     async with nucleus:
         # 第一次信号正常触发
-        nucleus.on_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
         await asyncio.sleep(0.1)
         assert notified_count == 1
 
@@ -78,7 +78,7 @@ async def test_buffer_nucleus_suppress():
         nucleus.suppress(higher_impulse)
 
         # 第二次信号，被压制，count 不应该增加
-        nucleus.on_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
         await asyncio.sleep(0.1)
         assert notified_count == 1
 
@@ -94,9 +94,9 @@ async def test_buffer_nucleus_buffer_limit():
     )
 
     async with nucleus:
-        nucleus.on_signal(create_mock_signal("test_signal"))
-        nucleus.on_signal(create_mock_signal("test_signal"))
-        nucleus.on_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
 
         await asyncio.sleep(0.1)
         # 检查内部 buffer 长度
@@ -113,7 +113,7 @@ async def test_pop_clears_buffer():
     )
 
     async with nucleus:
-        nucleus.on_signal(create_mock_signal("test_signal"))
+        nucleus.add_signal(create_mock_signal("test_signal"))
         await asyncio.sleep(0.1)
         assert nucleus.peek() is not None
 
@@ -136,7 +136,7 @@ async def test_signal_and_impulse_stale():
     )
 
     async with nucleus:
-        nucleus.on_signal(create_mock_signal("test_signal", stale=0.05))
+        nucleus.add_signal(create_mock_signal("test_signal", stale=0.05))
         await asyncio.sleep(0.01)
         assert nucleus.peek() is not None
         await asyncio.sleep(0.1)

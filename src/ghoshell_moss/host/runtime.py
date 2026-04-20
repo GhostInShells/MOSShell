@@ -206,7 +206,7 @@ class HostMossRuntime(MossRuntime, ToolSet):
                 mindflow = default_mindflow(self._matrix.container)
             self._mindflow = mindflow
         # 注册 mindflow 的回调.
-        self.matrix.session.on_input(self._mindflow.on_signal)
+        self.matrix.session.on_input(self._mindflow.add_signal)
         return self._mindflow
 
     async def __aenter__(self) -> Self:

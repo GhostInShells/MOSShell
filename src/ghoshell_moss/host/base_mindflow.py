@@ -168,7 +168,7 @@ class MindflowBus(Mindflow):
         self._log_prefix = "<MindflowBus>"
 
     def with_pulse(self, pulse: MindPulse):
-        pulse.with_bus(self._on_inner_impulse, self.on_signal)
+        pulse.with_bus(self._on_inner_impulse, self.add_signal)
         self._pulses[pulse.name()] = pulse
         for signal_name in pulse.receiving():
             if signal_name not in self._listening_pulse_map:
@@ -199,7 +199,7 @@ class MindflowBus(Mindflow):
 
         return "<mindflow_context>\n" + "\n".join(lines) + "\n</mindflow_context>"
 
-    def on_signal(self, signal: Signal):
+    def add_signal(self, signal: Signal):
         """
         信号分发路由。
         """
@@ -207,7 +207,7 @@ class MindflowBus(Mindflow):
             self._logger.warning(f"发现未路由信号: {signal.name}")
             return
         for p in self._listening_pulse_map[signal.name]:
-            p.on_signal(signal)
+            p.add_signal(signal)
 
     def set_impulse(self, impulse: Impulse):
         """

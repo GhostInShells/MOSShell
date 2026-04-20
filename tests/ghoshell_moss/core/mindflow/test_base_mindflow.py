@@ -1,7 +1,7 @@
 from typing import Callable, Coroutine
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
-from ghoshell_moss.core.concepts.mindflow import Mindflow, Signal, Priority, Articulate, Action, Nucleus
+from ghoshell_moss.core.concepts.mindflow import Mindflow, Signal, Priority, Articulate, Action, Nucleus, Observation
 import janus
 import uvloop
 import threading
@@ -31,7 +31,7 @@ async def test_full_link_signal_to_impulse():
     async with mindflow:
         await mindflow.wait_started()
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
-        mindflow.on_signal(sig)
+        mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
                 impulse = attention.peek()
@@ -76,13 +76,13 @@ async def test_suppress_and_stale_race_condition():
         task = asyncio.create_task(_counter_task())
 
         # 1. 第一个信号，正常通过
-        mindflow.on_signal(Signal.new(name="vision_event", priority=Priority.NOTICE))
+        mindflow.add_signal(Signal.new(name="vision_event", priority=Priority.NOTICE))
         # 让出等待状态.
         await wait_started.wait()
         # 2. 紧接着发第二个信号，它在 suppress 期间，且 stale 为 0.09s
         # 这个信号会成功挑战一次, 然后因为 suppress 而过期.
         challenger = Signal.new(name="vision_event", priority=Priority.NOTICE, stale_timeout=0.08)
-        mindflow.on_signal(challenger)
+        mindflow.add_signal(challenger)
 
         # 3. 等待足够久，让冷静期过期，让第二个信号 Stale
         await asyncio.sleep(0.15)
@@ -109,7 +109,7 @@ async def test_mindflow_able_to_close():
     mindflow.with_nucleus(nucleus)
     async with mindflow:
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
-        mindflow.on_signal(sig)
+        mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
                 impulse = attention.peek()
@@ -137,7 +137,7 @@ async def test_mindflow_run_in_task():
         mindflow.with_nucleus(nucleus)
         async with mindflow:
             sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
-            mindflow.on_signal(sig)
+            mindflow.add_signal(sig)
             async for attention in mindflow.loop():
                 async with attention:
                     impulse = attention.peek()
@@ -189,7 +189,7 @@ async def test_mindflow_run_with_multi_signal():
         assert len(count) == 0
         # 接受一个讯号, 处理完时应该都没有下一个 attention 生成出来.
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
-        mindflow.on_signal(sig)
+        mindflow.add_signal(sig)
         await asyncio.sleep(0.0)
         await one_done.wait()
         # 拿到一个信号时, count 只会为1.
@@ -199,7 +199,7 @@ async def test_mindflow_run_with_multi_signal():
         one_done.clear()
         # 尝试发送第二个信号.
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
-        mindflow.on_signal(sig)
+        mindflow.add_signal(sig)
         await asyncio.sleep(0.1)
         await one_done.wait()
         # 然后就直接退出.
@@ -331,9 +331,9 @@ def _test_mindflow_in_differ_thread(i: int):
     # 第一个信号输出成功.
     signal_1 = Signal.new(name="vision_event", priority=Priority.NOTICE, strength=100)
     signal_2 = Signal.new(name="listen_event", priority=Priority.NOTICE, strength=90)
-    mindflow.on_signal(signal_1)
+    mindflow.add_signal(signal_1)
     # 第二个信号应该被抑制.
-    mindflow.on_signal(signal_2)
+    mindflow.add_signal(signal_2)
     assert signal_1.__state__ == 'pending'
     assert signal_2.__state__ == 'pending'
     # 等待到第二个运行结束. 预计还得快.
@@ -377,6 +377,7 @@ class MindflowSuite:
         self._main_t: threading.Thread | None = None
         self._articulate_t: threading.Thread | None = None
         self._action_t: threading.Thread | None = None
+        self.observations: list[Observation] = []
 
     def _run(
             self,
@@ -475,6 +476,7 @@ class MindflowSuite:
             self._is_started.set()
             async for attention in self.mindflow.loop():
                 async with attention:
+                    attention.on_observation(self.observations.append)
                     # 会阻塞在这里.
                     async for articulate, action in attention.loop():
                         self.articulate_queue.sync_q.put_nowait(articulate)
@@ -504,7 +506,7 @@ def test_suite_baseline():
 
     with suite:
         suite.run_in_thread(_articulate_func, _action_func)
-        suite.mindflow.on_signal(Signal.new('test'))
+        suite.mindflow.add_signal(Signal.new('test'))
         assert done_event.wait(2)
 
 
@@ -531,7 +533,7 @@ def test_suite_consuming_alot_of_signals():
         # 测试连续处理十个.
         suite.run_in_thread(_articulate_func, _action_func)
         for i in range(10):
-            suite.mindflow.on_signal(Signal.new('test'))
+            suite.mindflow.add_signal(Signal.new('test'))
             _done_event.wait()
             _done_event.clear()
             if len(got) == 10:
@@ -567,9 +569,12 @@ def test_suite_consuming_endless_observe():
         # 测试连续处理十个.
         suite.run_in_thread(_articulate_func, _action_func)
         # 只发送一个信号.
-        suite.mindflow.on_signal(Signal.new('test'))
+        suite.mindflow.add_signal(Signal.new('test'))
         done_event.wait()
         assert len(got) == 10
+        for line in got:
+            assert line == content
+        assert len(suite.observations) == 10
 
 
 def test_wait_first_impulse_complete():
@@ -594,7 +599,7 @@ def test_wait_first_impulse_complete():
 
     suite.run_in_thread(_articulate_func, _action_func)
     incomplete = Signal.new("test", complete=False, stale_timeout=0.1)
-    suite.mindflow.on_signal(incomplete)
+    suite.mindflow.add_signal(incomplete)
     assert incomplete.__state__ == "pending"
     # 0.1 秒后还在阻塞.
     time.sleep(0.05)
@@ -607,8 +612,7 @@ def test_wait_first_impulse_complete():
     complete = Signal.new("test", complete=True)
     complete.id = incomplete.id
     # 手动塞入 signal.
-    nucleus.on_signal(complete)
-    suite.mindflow.on_signal(complete)
+    suite.mindflow.add_signal(complete)
     assert done_event.wait(1)
     assert len(got) == 1
     suite.close()

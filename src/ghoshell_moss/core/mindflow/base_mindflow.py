@@ -79,7 +79,7 @@ class BaseMindflow(Mindflow):
         if self._started_event.is_set():
             raise RuntimeError(f"Mindflow only with nucleus before started, use add_nucleus instead")
         # 注册运行总线. 只能在启动前用.
-        nucleus.with_bus(self.on_signal, self.on_impulse)
+        nucleus.with_bus(self.add_signal, self.add_impulse)
         self._faculties[nucleus.name()] = nucleus
         for listening in nucleus.signals():
             if listening not in self._signal_name_routes:
@@ -97,7 +97,7 @@ class BaseMindflow(Mindflow):
         await nucleus.__aenter__()
         self.with_nucleus(nucleus)
 
-    def on_signal(self, signal: Signal) -> None:
+    def add_signal(self, signal: Signal) -> None:
         """接受signal"""
         # 这个函数很可能是接受跨线程的回调, 比如 zenoh session 的回调.
         # 所以它的核心目标是卸载 signal 到当前线程 (loop).
@@ -169,7 +169,7 @@ class BaseMindflow(Mindflow):
             dispatched = False
             for n in self._signal_name_routes[name]:
                 # 触发分配.
-                n.on_signal(signal)
+                n.add_signal(signal)
                 dispatched = True
             signal.__state__ = 'dispatched' if dispatched else 'ignored'
             self._logger.debug("%s receive signal and send to %d nuclei", self._log_prefix, broadcasted)
@@ -181,7 +181,7 @@ class BaseMindflow(Mindflow):
             # 拦截所有的异常, 不要影响外部循环.
             self._logger.error("%s dispatch signal error on %r: %s", self._log_prefix, signal, e)
 
-    def on_impulse(self, impulse: Impulse) -> None:
+    def add_impulse(self, impulse: Impulse) -> None:
         """
         接受新的 impulse 并且进行排队.
         """
@@ -246,7 +246,7 @@ class BaseMindflow(Mindflow):
             # attention 或者.
             if self._current_attention and not self._current_attention.is_aborted():
                 # 校验出现结果.
-                done = self._current_attention.on_challenge(impulse)
+                done = self._current_attention.challenge(impulse)
                 if done is BufferImpulse:
                     # 挑战通过, 已经被 buffer 了. 通知一下.
                     self._pop_impulse(impulse)
@@ -328,7 +328,7 @@ class BaseMindflow(Mindflow):
         # 这个函数只在 set impulse 处可以被调用.
         # 考虑到未来 set attention 可能不止一个地方调用 (比如命令行的行为), 所以加一个 set.
         if not self.is_running():
-            self._logger.error("%s set attention but not running: %r", self._log_prefix, attention)
+            self._logger.warning("%s set attention but not running: %r", self._log_prefix, attention)
             attention.abort("not running")
             return None
         elif self._paused:

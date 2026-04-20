@@ -442,7 +442,7 @@ class BaseAttention(Attention):
         self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
         # update the impulse
-        self._log_prefix = "?? 别忘记了."
+        self._log_prefix = f"<Attention id={self._init_impulse.id}>"
         self._update_current_impulse(impulse)
 
         self._articulate_stop_event = ThreadSafeEvent()
@@ -459,6 +459,9 @@ class BaseAttention(Attention):
             flags=self._flags,
             max_size=8000,
         )
+
+    def __repr__(self):
+        return self._log_prefix
 
     def _update_current_impulse(self, impulse: Impulse) -> None:
         """更新当前持有的 impulse. """
@@ -649,7 +652,7 @@ class BaseAttention(Attention):
             # 7. 如果要继续, 要更新 ctx 准备下一轮.
             self._ctx = self._ctx.next_frame()
 
-    def on_challenge(self, challenger: Impulse) -> bool | None:
+    def challenge(self, challenger: Impulse) -> bool | None:
         """
         计算逻辑本身考虑线程安全. 重写这个函数, 可以实现不同的机制.
         """
