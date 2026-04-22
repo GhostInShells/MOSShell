@@ -1,36 +1,73 @@
 from typing import Callable
+from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
 from .mindflow import Signal, SignalMeta, InputSignal
-import asyncio
-from typing import Any, Iterable, Literal
-from typing_extensions import Self
+from typing import Iterable, Literal
 from abc import ABC, abstractmethod
-from ghoshell_moss.message import Message, WithAdditional, Addition
-from pydantic import BaseModel, Field, AwareDatetime
-from ghoshell_common.helpers import uuid
-from datetime import datetime
-from dateutil import tz
+from ghoshell_moss.message import Message, Addition
+from pydantic import BaseModel, Field
 from PIL.Image import Image
 
-Role = Literal['perception', 'logos', 'log']
+Role = Literal['system', 'logos', 'log', 'error', 'task']
 
 
-class OutputItem(Addition):
+class OutputItem(BaseModel):
     """
-    可以用于输出的某种数据结构.
-    暂时不与 AI 模型强耦合. 仅仅用于做 MOSS 命令行交互界面的输出.
+    可以用于输出的数据结构.
+    以 Message 为基础.
     """
-    role: str = Field(
+    role: str | Role = Field(
         default='log',
         description="消息的类型.",
     )
-    session_id: str = Field(
-
+    messages: list[Message] = Field(
+        default_factory=list,
+        description='messages',
     )
 
     @classmethod
-    def keyword(cls) -> str:
-        return 'session/output'
+    def new(cls, role: Role | str, *messages: Message) -> Self:
+        if isinstance(role, str):
+            return cls.model_construct(role=role, messages=[]).with_messages(*messages)
+        else:
+            return cls(role=role).with_messages(*messages)
+
+    def with_messages(self, *messages: Message | str) -> Self:
+        for msg in messages:
+            # 接受字符串处理后的消息.
+            if isinstance(msg, str):
+                self.messages.append(Message.new().with_content(msg))
+            else:
+                self.messages.append(msg.compact())
+        return self
+
+
+class OutputBuffer(ABC):
+
+    @abstractmethod
+    def close(self) -> None:
+        """关闭 buffer"""
+        pass
+
+    @abstractmethod
+    def is_closed(self) -> bool:
+        """是否关闭"""
+        pass
+
+    @abstractmethod
+    def add_output(self, item: OutputItem) -> None:
+        """添加 item, 需要实现线程安全. """
+        pass
+
+    @abstractmethod
+    def values(self) -> Iterable[OutputItem]:
+        """返回所有的 items. 会生成一个线程安全的快照. """
+        pass
+
+    @abstractmethod
+    def updated_at(self) -> float:
+        """最后更新的 timestamp"""
+        pass
 
 
 class Session(ABC):
@@ -89,7 +126,7 @@ class Session(ABC):
         pass
 
     @abstractmethod
-    def output(self, *items: OutputItem) -> None:
+    def output(self, role: str | Role, *messages: Message | str) -> None:
         """
         输出消息给 moss 共享 session 的终端.
         """
@@ -101,4 +138,12 @@ class Session(ABC):
         输出回调监听 conversation item.
         可以用来做个什么渲染.
         """
+        pass
+
+    @abstractmethod
+    def output_buffer(
+            self,
+            maxsize: int = 100,
+    ) -> OutputBuffer:
+        """生产一个 OutputBuffer"""
         pass

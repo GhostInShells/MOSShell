@@ -2,11 +2,10 @@ import base64
 import io
 import mimetypes
 import pathlib
-from typing import Optional, Any
+from typing import Optional
 
 from PIL import Image
 from typing_extensions import Self
-
 from ghoshell_moss.message.contents.abcd import ContentModel
 
 __all__ = ["Base64Image"]

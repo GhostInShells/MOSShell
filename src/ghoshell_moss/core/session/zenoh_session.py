@@ -1,9 +1,15 @@
 from typing import Callable
 
+from ghoshell_moss import Message
 from ghoshell_moss.contracts import Storage, LoggerItf
-from ghoshell_moss.core.concepts.session import Session, OutputItem, Signal
+from ghoshell_moss.core.concepts.session import Session, Signal, Role, OutputBuffer, OutputItem
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
+
+from typing import Iterable
+
+import threading
+import time
 
 depend_zenoh()
 import zenoh
@@ -11,6 +17,46 @@ import zenoh
 __all__ = [
     'MossSessionWithZenoh',
 ]
+
+
+class SimpleOutputBuffer(OutputBuffer):
+
+    def __init__(self, maxsize: int, on_change_interval: float = 0.5) -> None:
+        self._max = maxsize
+        self._on_change_interval = on_change_interval
+        self._last_change_at: float = 0.0
+        self._closed = False
+        self._messages_lock = threading.Lock()
+        self._items: list[OutputItem] = []
+
+    def close(self) -> None:
+        self._closed = True
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    def add_output(self, item: OutputItem) -> None:
+        with self._messages_lock:
+            if len(self._items) > 0:
+                role = item.role
+                last = self._items[-1]
+                if last.role == role:
+                    last.messages.extend(item.messages)
+                else:
+                    self._items.append(item)
+            else:
+                self._items.append(item)
+            if len(self._items) > self._max:
+                self._items = self._items[len(self._items) - self._max:]
+            self._last_change_at = time.time()
+
+    def values(self) -> Iterable[OutputItem]:
+        with self._messages_lock:
+            items = self._items.copy()
+        return items
+
+    def updated_at(self) -> float:
+        return self._last_change_at
 
 
 class MossSessionWithZenoh(Session):
@@ -83,30 +129,42 @@ class MossSessionWithZenoh(Session):
                 )
         return None
 
-    def output(self, *items: OutputItem) -> None:
-        self._check_running()
-        for item in items:
-            js = item.to_json()
-            self._zenoh_session.put(self._output_key_expr, js)
+    def output(self, role: str | Role, *messages: Message | str) -> None:
+        item = OutputItem.new(role, *messages)
+        js = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=True, exclude_defaults=True)
+        self._zenoh_session.put(self._output_key_expr, js)
+
+    def output_buffer(self, maxsize: int = 100) -> OutputBuffer:
+        buffer = SimpleOutputBuffer(maxsize)
+
+        def _output_add_to_buffer(item: OutputItem) -> None:
+            nonlocal buffer
+            if buffer.is_closed():
+                return
+            buffer.add_output(item)
+
+        self.on_output(_output_add_to_buffer)
+        return buffer
 
     def _on_zenoh_output(self, sample: zenoh.Sample) -> None:
         if len(self._output_listeners) == 0:
             return
         try:
             item = OutputItem.model_validate_json(sample.payload.to_bytes())
-            for listener in self._output_listeners:
-                try:
-                    listener(item)
-                except Exception as e:
-                    self._logger.error(
-                        "%s failed to send output %s: %s",
-                        self._log_prefix, item.id, e,
-                    )
         except Exception as e:
             self._logger.error(
                 "%s failed to send output %s: %s",
                 self._log_prefix, sample.payload.to_string(), e,
             )
+            item = OutputItem.new('error', Message.new().with_content("receive invalid output: %s" % e))
+        for listener in self._output_listeners:
+            try:
+                listener(item)
+            except Exception as e:
+                self._logger.error(
+                    "%s failed to send output %s: %s",
+                    self._log_prefix, item.id, e,
+                )
 
     def on_output(self, callback: Callable[[OutputItem], None]) -> None:
         self._output_listeners.append(callback)

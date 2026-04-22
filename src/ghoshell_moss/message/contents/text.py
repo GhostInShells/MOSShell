@@ -21,7 +21,10 @@ class Text(ContentModel):
 
     @classmethod
     def new(cls, text: str) -> Self:
-        return cls(text=text)
+        if isinstance(text, str):
+            return cls.model_construct(text=text)
+        else:
+            return cls(text=text)
 
     @classmethod
     def new_content(cls, text: str) -> Content:

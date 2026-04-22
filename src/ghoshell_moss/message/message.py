@@ -2,9 +2,9 @@ import orjson
 import html
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any, Literal, Optional, Protocol, Iterable, TypeAlias
+from typing import Any, Optional, Protocol, Iterable
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError, AwareDatetime, dataclasses
+from pydantic import BaseModel, Field, ValidationError, AwareDatetime
 from typing_extensions import Self
 from datetime import datetime
 from dateutil import tz
@@ -22,6 +22,7 @@ ghoshell_common.helpers.uuid = _ulid_gen
 from ghoshell_common.helpers import uuid
 
 __all__ = [
+    "AdditionType",
     "Addition",
     "Additional",
     "HasAdditional",
@@ -63,7 +64,62 @@ class HasAdditional(Protocol):
     additional: Additional
 
 
-class Addition(BaseModel, ABC):
+class AdditionType(ABC):
+
+    @classmethod
+    @abstractmethod
+    def keyword(cls) -> str:
+        """
+        每个 Addition 数据对象都要求有一个唯一的关键字
+        建议用 a.b.c 风格来定义, 目前还没形成约束.
+        """
+        pass
+
+    @classmethod
+    def read(cls, target: HasAdditional, throw: bool = False) -> Self | None:
+        """
+        从一个目标对象中读取 Addition 数据结构, 并加工为强类型.
+        """
+        if not hasattr(target, "additional") or target.additional is None:
+            return None
+        if not isinstance(target.additional, dict):
+            return None
+        keyword = cls.keyword()
+        data = target.additional.get(keyword, None)
+        return cls.from_normalize(data, throw)
+
+    @classmethod
+    @abstractmethod
+    def from_normalize(cls, data: Any, throw: bool = False) -> Self | None:
+        pass
+
+    @abstractmethod
+    def normalize(self) -> Any:
+        pass
+
+    def set(self, target: HasAdditional) -> None:
+        """
+        将 Addition 数据结构加工到目标上.
+        """
+        if target.additional is None:
+            target.additional = {}
+
+        keyword = self.keyword()
+        data = self.normalize()
+        target.additional[keyword] = data
+
+    def get_or_create(self, target: HasAdditional) -> Self:
+        """
+        语法糖, 从一个 target 获取 addition, 或返回自己.
+        """
+        obj = self.read(target)
+        if obj is not None:
+            return obj
+        self.set(target)
+        return self
+
+
+class Addition(BaseModel, AdditionType, ABC):
     """
     用来定义一个强类型的数据结构, 但它可以转化为 Dict 放入弱类型的容器 (additional) 中.
     从而可以无限扩展一个消息协议.
@@ -80,38 +136,6 @@ class Addition(BaseModel, ABC):
 
     在这种机制下, 一个传输协议的 protocol 不是一次性定义的, 而是在项目的某个类库中攒出来的.
     """
-
-    @classmethod
-    @abstractmethod
-    def keyword(cls) -> str:
-        """
-        每个 Addition 数据对象都要求有一个唯一的关键字
-        建议用 a.b.c 风格来定义, 目前还没形成约束.
-        """
-        pass
-
-    def get_or_create(self, target: HasAdditional) -> Self:
-        """
-        语法糖, 从一个 target 获取 addition, 或返回自己.
-        """
-        obj = self.read(target)
-        if obj is not None:
-            return obj
-        self.set(target)
-        return self
-
-    @classmethod
-    def read(cls, target: HasAdditional, throw: bool = False) -> Self | None:
-        """
-        从一个目标对象中读取 Addition 数据结构, 并加工为强类型.
-        """
-        if not hasattr(target, "additional") or target.additional is None:
-            return None
-        if not isinstance(target.additional, dict):
-            return None
-        keyword = cls.keyword()
-        data = target.additional.get(keyword, None)
-        return cls.from_normalize(data, throw)
 
     @classmethod
     def from_normalize(cls, data: Any, throw: bool = False) -> Self | None:
@@ -131,17 +155,6 @@ class Addition(BaseModel, ABC):
     def normalize(self) -> Any:
         return self.model_dump(exclude_none=True, exclude_defaults=True)
 
-    def set(self, target: HasAdditional) -> None:
-        """
-        将 Addition 数据结构加工到目标上.
-        """
-        if target.additional is None:
-            target.additional = {}
-
-        keyword = self.keyword()
-        data = self.normalize()
-        target.additional[keyword] = data
-
 
 class WithAdditional:
     """
@@ -150,7 +163,7 @@ class WithAdditional:
 
     additional: Additional = None
 
-    def with_additions(self, *additions: Addition) -> Self:
+    def with_additions(self, *additions: AdditionType) -> Self:
         for add in additions:
             add.set(self)
         return self
@@ -321,7 +334,7 @@ class Message(BaseModel, WithAdditional):
         return self.meta.id
 
     @classmethod
-    def to_content(cls, item: ContextType | Content) -> Content:
+    def wrap_content(cls, item: ContextType | Content) -> Content:
         """
         以字符串优先的方式提供基础类型的数据转换.
         """
@@ -360,7 +373,7 @@ class Message(BaseModel, WithAdditional):
                 continue
             if isinstance(item, str) and item == '':
                 continue
-            _content = self.to_content(item)
+            _content = self.wrap_content(item)
             self.contents.append(_content)
         return self
 
@@ -436,10 +449,37 @@ class Message(BaseModel, WithAdditional):
         """
         result = []
         for content in self.as_contents(with_meta=True):
-            if text := Text.from_content(content):
-                result.append(text.text)
-            else:
-                content_type = content['type']
-                result.append(f'<content type="{content_type}"/>')
+            result.append(self.content_as_string(content))
         result = '\n'.join(result)
         return result.strip()
+
+    @classmethod
+    def content_as_string(cls, content: Content) -> str:
+        """以 string 为主的 content 显示. """
+        if 'text' in content:
+            return content['text'] or ''
+        else:
+            content_type = content['type']
+            return f'<content type="{content_type}"/>'
+
+    def to_content_string(self) -> str:
+        blocks = []
+        for content in self.contents:
+            blocks.append(self.content_as_string(content))
+        return '\n'.join(blocks)
+
+    def compact(self) -> Self:
+        """
+        返回一个字符串合并后的消息. 但不丢失 message 的元信息 (meta)
+        """
+        content_blocks = []
+        for content in self.contents:
+            content_blocks.append(self.content_as_string(content))
+        compacted_content = "".join(content_blocks)
+        return Message.model_construct(
+            meta=self.meta.model_copy(),
+            contents=[
+                Text.new(compacted_content).to_content(),
+            ],
+            addtional=self.additional,
+        )

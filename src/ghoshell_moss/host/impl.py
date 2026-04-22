@@ -1,7 +1,6 @@
-import ghoshell_common.helpers
 from typing_extensions import Self
 
-from ghoshell_moss.host.abcd import Conceive, Mindflow, ToolSet
+from ghoshell_moss.host.abcd import Mindflow, ToolSet
 from ghoshell_moss.host.abcd.host_interface import (
     MossHost, MossMode, MossRuntime,
 )
@@ -102,9 +101,5 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def toolset(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> ToolSet:
-        pass
-
-    def run(self, *, mode: MossMode | str = 'default', session_id: str = 'default', conceive: Conceive | None = None,
-            mindflow: Mindflow | None = None) -> MossRuntime:
+    def run_toolset(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> ToolSet:
         pass

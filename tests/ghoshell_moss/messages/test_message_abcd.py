@@ -126,3 +126,20 @@ def test_message_serializable():
     data = json.loads(js)
     new_message = Message(**data)
     assert new_message == message
+
+
+def test_message_with_addition():
+    message = Message.new(name="ai", timestamp=True)
+
+    class TestAddition(Addition):
+        foo: str = 'foo'
+
+        @classmethod
+        def keyword(cls) -> str:
+            return "test.addition"
+
+    message.with_additions(TestAddition())
+    assert TestAddition.read(message) is not None
+
+    copied = message.model_copy()
+    assert TestAddition.read(copied).foo == "foo"

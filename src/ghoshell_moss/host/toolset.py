@@ -123,7 +123,7 @@ class HostAsToolSet(ToolSet):
 
     async def moss_exec(
             self,
-            commands: str,
+            logos: str,
             call_soon: bool = True,
             wait_done: bool = True,
     ) -> list[Message]:
@@ -134,20 +134,24 @@ class HostAsToolSet(ToolSet):
         )
         interpretation = interpreter.interpretation()
         async with interpreter:
-            interpreter.feed(commands)
+            interpreter.feed(logos)
             await interpreter.wait_compiled()
             if wait_done:
                 await interpreter.wait_stopped()
         return interpretation.executed_messages()
 
-    async def moss_interrupt(self) -> str:
+    async def moss_interrupt(self) -> list[Message]:
         self._check_running()
         # 清空状态.
         await self._ctml_shell.clear()
+        interpreter = self._ctml_shell.interpreting()
+        if interpreter is None:
+            return [Message.new().with_content('no logos are executing')]
+        else:
+            return interpreter.interpretation().executed_messages()
 
     def is_running(self) -> bool:
         pass
-
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
         return self._close_event.wait_sync(timeout)
