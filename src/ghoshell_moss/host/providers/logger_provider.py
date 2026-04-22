@@ -5,6 +5,7 @@ from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.logger import LoggerItf, config_logger_from_yaml
 from ghoshell_container import Provider, IoCContainer
 from logging.handlers import TimedRotatingFileHandler
+from ghoshell_moss.host.abcd import Matrix
 
 __all__ = [
     'WorkspaceLoggerProvider',
@@ -15,7 +16,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
 
     def __init__(
             self,
-            logger_name: str,
+            logger_name: str = '',
             *,
             logger_config_file: str = 'logging.yaml',
             moss_file_handler_name: str = 'moss_file_logger_handler',
@@ -40,8 +41,13 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
         if expect_config_file.exists():
             config_logger_from_yaml(str(expect_config_file))
 
+        logger_name = self._logger_name
+        if not logger_name:
+            matrix = con.force_fetch(Matrix)
+            logger_name = matrix.this.log_name
+
         # 从 logger name 获取日志实例.
-        logger = logging.getLogger(self._logger_name)
+        logger = logging.getLogger(logger_name)
 
         has_handler = False
         for handler in logger.handlers:

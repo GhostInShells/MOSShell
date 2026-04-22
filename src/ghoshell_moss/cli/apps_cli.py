@@ -2,11 +2,11 @@ from typing import List
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.panel import Panel
+from rich.markdown import Markdown
 from ghoshell_moss.host.abcd.app import AppInfo
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_moss.host import Host
 from .utils import console, print_host_mode_info
-import os
 import subprocess
 import shlex
 import typer
@@ -92,14 +92,14 @@ def _display_app_table(apps: List[AppInfo], is_filtered: bool):
 
     table = Table(title=title, box=None, header_style="bold magenta")
     table.add_column("Group", style="cyan", no_wrap=True)
-    table.add_column("Address", style="cyan", no_wrap=True)
+    table.add_column("Fullname", style="cyan", no_wrap=True)
     table.add_column("Description", ratio=1)
 
     for app in sorted(apps, key=lambda x: x.address):
         # 状态颜色标识
         table.add_row(
             app.group,
-            app.address,
+            app.fullname,
             app.description.split('\n')[0]
         )
 
@@ -116,8 +116,9 @@ def _display_app_detail(app: AppInfo):
         f"Group: [dim]{app.group}[/dim]\n"
         f"Name: [dim]{app.name}[/dim]\n"
         f"Description: [dim]{app.description}[/dim]\n"
-        f"Directory: [dim]{app.work_directory}[/dim]\n",
-        title=app.address, title_align="left"
+        f"Directory: [dim]{app.work_directory}[/dim]\n"
+        f"Address: [dim]{app.address}[/dim]\n",
+        title=app.fullname, title_align="left"
     )
     console.print(state_panel)
 
@@ -131,28 +132,28 @@ def _display_app_detail(app: AppInfo):
     if app.error:
         console.print(f"\n[bold red]Last Error:[/bold red]")
         console.print(Panel(app.error, border_style="red"))
+    if app.docstring:
+        console.print(Panel(Markdown(app.docstring), title='docstring'))
 
-
-# 假设这个函数已经在你的 utils 或本文件中定义
-# def print_host_mode_info(host): ...
 
 @app_store_app.command(name="test")
 def test_app(
-        address: str = typer.Argument(..., help="The app address (group/name) to test."),
+        fullname: str = typer.Argument(..., help="The app fullname (group/name) to test."),
         args: str = typer.Argument("", help="Additional arguments passed to the app command."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
+        mode: str | None = typer.Option(None, "-m", "--mode", help="specific Mode"),
 ):
     """
     Start an app as a foreground subprocess for debugging/testing.
     This bypasses the AppStore runtime (Circus).
     """
-    host = Host()
+    host = Host(mode=mode)
     print_host_mode_info(host)
 
     # 1. 获取 AppInfo
-    app = host.apps.get_app_info(address)
+    app = host.apps.get_app_info(fullname)
     if not app:
-        console.print(f"[red]Error: App '{address}' not found.[/red]")
+        console.print(f"[red]Error: App '{fullname}' not found.[/red]")
         raise typer.Exit(1)
 
     # 2. 准备执行指令
@@ -160,8 +161,9 @@ def test_app(
     full_cmd = f"{app.watcher.cmd} {args}".strip()
 
     console.print(Panel(
-        f"[bold green]Testing App:[/bold green] {app.address}\n"
+        f"[bold green]Testing App:[/bold green] {app.fullname}\n"
         f"[bold blue]Directory:[/bold blue] {app.work_directory}\n"
+        f"[bold blue]Address:[/bold blue] {app.address}\n"
         f"[bold yellow]Command:[/bold yellow] {full_cmd}",
         title="Debug Mode",
         border_style="bright_black"
@@ -196,3 +198,11 @@ def test_app(
         raise typer.Exit(1)
     finally:
         console.print("\n[dim]—— Test Session Ended ——[/dim]")
+
+
+import inspect
+import typer
+from rich.table import Table
+from rich.syntax import Syntax
+from .utils import console
+

@@ -5,7 +5,7 @@ import threading
 from typing import Self, Iterable, Dict, Set, Optional
 
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo, AppState
-from ghoshell_moss.host.environment import Environment
+from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.contracts import Workspace, LoggerItf, get_moss_logger
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from circus.arbiter import Arbiter
 from circus.client import AsyncCircusClient
 
 _AppAddress = str
+_AppFullname = str
 
 
 def _is_match(address: str, patterns: list[str]) -> bool:
@@ -53,7 +54,7 @@ class HostAppStore(AppStore):
         self._runnable = runnable
         self._bringup = bringup or []
         # 状态维护
-        self._found_apps: Dict[_AppAddress, AppInfo] | None = None
+        self._found_apps: Dict[_AppFullname, AppInfo] | None = None
         self._managed_addresses: Set[_AppAddress] = set()
         self._include = include
         self._exclude = exclude or []
@@ -91,7 +92,7 @@ class HostAppStore(AppStore):
     def list_groups(self) -> list[str]:
         return list({app.group for app in self.list_apps()})
 
-    def init_app(self, address: str, description: str = '') -> str:
+    def init_app(self, fullname: str, description: str = '') -> str:
         """
         创建一个 app, 返回创建后的讯息.
         1. 确保目录结构 apps/{group}/{name} 存在.
@@ -102,15 +103,15 @@ class HostAppStore(AppStore):
         import importlib.util
 
         # 1. 规范化 address 并获取 group/name
-        if address.startswith("apps/"):
-            parts = address.split('/')
+        if fullname.startswith("apps/"):
+            parts = fullname.split('/')
             if len(parts) != 3:
-                return f"Error: Invalid address format '{address}'. Expected 'app/group/name'."
+                return f"Error: Invalid address format '{fullname}'. Expected 'app/group/name'."
             group, name = parts[1], parts[2]
         else:
-            parts = address.split('/')
+            parts = fullname.split('/')
             if len(parts) != 2:
-                return f"Error: Invalid address format '{address}'. Expected 'group/name'."
+                return f"Error: Invalid address format '{fullname}'. Expected 'group/name'."
             group, name = parts[0], parts[1]
 
         # 2. 确定目标路径
@@ -151,13 +152,13 @@ class HostAppStore(AppStore):
             # 7. 刷新内存中的 app 列表
             self.list_apps(refresh=True)
 
-            return f"Success: App '{address}' initialized at {target_dir}"
+            return f"Success: App '{fullname}' initialized at {target_dir}"
 
         except Exception as e:
             # 清理失败后的残留
             if target_dir.exists():
                 shutil.rmtree(target_dir)
-            self._logger.error(f"Failed to init app {address}: {e}")
+            self._logger.error(f"Failed to init app {fullname}: {e}")
             return f"Error: {e}"
 
     def found_apps(self, refresh: bool = False) -> dict[str, AppInfo]:
@@ -166,15 +167,15 @@ class HostAppStore(AppStore):
             founds = self.match_apps(discovered, self._include, self._exclude)
             valid_apps = {}
             for app in founds:
-                valid_apps[app.address] = app
+                valid_apps[app.fullname] = app
             self._found_apps = valid_apps
         return self._found_apps
 
     def list_apps(self, refresh: bool = False) -> Iterable[AppInfo]:
         return self.found_apps().values()
 
-    def get_app_info(self, address: str, running: bool = False) -> AppInfo | None:
-        app = self.found_apps().get(address)
+    def get_app_info(self, fullname: str, running: bool = False) -> AppInfo | None:
+        app = self.found_apps().get(fullname)
         if not app: return None
         if running and app.state != 'running': return None
         return app
@@ -190,10 +191,10 @@ class HostAppStore(AppStore):
             if app.error: lines.append(f"  > Error: {app.error}")
         return "\n".join(lines)
 
-    async def start_app(self, app_address: str, argument: str = '') -> str:
-        app = self.get_app_info(app_address)
-        if not app: return f"Error: {app_address} not found."
-        return await self._start_app(app, argument, app_address)
+    async def start_app(self, app_fullname: str, argument: str = '') -> str:
+        app = self.get_app_info(app_fullname)
+        if not app: return f"Error: {app_fullname} not found."
+        return await self._start_app(app, argument, app_fullname)
 
     async def _start_app(self, app: AppInfo, argument: str = '', address: str = "") -> str:
         try:
@@ -215,10 +216,10 @@ class HostAppStore(AppStore):
             app.error = str(e)
             return f"Failed to start {address}: {e}"
 
-    async def stop_app(self, app_address: str) -> str:
-        app = self.get_app_info(app_address)
+    async def stop_app(self, app_fullname: str) -> str:
+        app = self.get_app_info(app_fullname)
         if not app or app.address not in self._managed_addresses:
-            return f"App {app_address} is not under management."
+            return f"App {app_fullname} is not under management."
 
         try:
             # 停止并移除，确保环境干净
@@ -226,9 +227,9 @@ class HostAppStore(AppStore):
             self._managed_addresses.remove(app.address)
             app.is_running = False
             app.state = 'stopped'
-            return f"Stopped and removed {app_address}."
+            return f"Stopped and removed {app_fullname}."
         except Exception as e:
-            return f"Error stopping {app_address}: {e}"
+            return f"Error stopping {app_fullname}: {e}"
 
     def is_running(self) -> bool:
         return self._is_running

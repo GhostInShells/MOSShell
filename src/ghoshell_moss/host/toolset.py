@@ -9,7 +9,7 @@ from ghoshell_moss.host.abcd.host_interface import (
 )
 from ghoshell_moss.host.abcd.app import AppStore
 from ghoshell_moss.host.abcd.matrix import Matrix
-from ghoshell_moss.core.concepts.mindflow import Mindflow, Signal, InputSignal
+from ghoshell_moss.core.concepts.mindflow import Mindflow
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
@@ -21,16 +21,7 @@ import contextlib
 import asyncio
 
 
-class Logos:
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        pass
-
-
-class HostMossRuntime(MossRuntime, ToolSet):
+class HostAsToolSet(ToolSet):
 
     def __init__(
             self,
@@ -38,16 +29,12 @@ class HostMossRuntime(MossRuntime, ToolSet):
             workspace: Workspace,
             mode: MossMode,
             matrix: HostMatrix,
-            mindflow: Mindflow | None = None,
-            as_toolset: bool = False,
-            conceive: Conceive | None = None,
     ):
         env.bootstrap()
         self._env = env
         self._workspace = workspace
         self._matrix = matrix
         self._mode = mode
-        self._as_toolset = as_toolset
         self._ctml_shell = new_ctml_shell(
             name="MOSS." + self._mode.name,
             description=self._mode.description,
@@ -67,9 +54,6 @@ class HostMossRuntime(MossRuntime, ToolSet):
         self._paused = False
         self._close_event = ThreadSafeEvent()
         self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.session_scope}>"
-
-        self._mindflow: Mindflow | None = mindflow
-
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._conceive_func: Conceive | None = None
@@ -142,23 +126,28 @@ class HostMossRuntime(MossRuntime, ToolSet):
             commands: str,
             call_soon: bool = True,
             wait_done: bool = True,
-            with_dynamic: bool = True,
-            priority: int = 0,
     ) -> list[Message]:
-        pass
+        self._check_running()
+        interpreter = await self._ctml_shell.interpreter(
+            kind='clear' if call_soon else 'append',
+            clear_after_exit=False,
+        )
+        interpretation = interpreter.interpretation()
+        async with interpreter:
+            interpreter.feed(commands)
+            await interpreter.wait_compiled()
+            if wait_done:
+                await interpreter.wait_stopped()
+        return interpretation.executed_messages()
 
     async def moss_interrupt(self) -> str:
-        pass
+        self._check_running()
+        # 清空状态.
+        await self._ctml_shell.clear()
 
     def is_running(self) -> bool:
         pass
 
-    def snapshot(self, new: bool = False, ack: bool = False) -> Perception:
-        self._check_running()
-        pass
-
-    def ack_snapshot(self, snapshot: Perception) -> bool:
-        pass
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
         return self._close_event.wait_sync(timeout)
@@ -186,28 +175,6 @@ class HostMossRuntime(MossRuntime, ToolSet):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def _output_error(self, error: str) -> None:
-        """
-        output error info to session output stream
-        """
-        self.output(OutputItem.new(role='log').with_message(error))
-
-    def _output_logger(self, msg: str) -> None:
-        """
-        output logger info to session output stream
-        """
-        self.output(OutputItem.new(role='log').with_message(msg))
-
-    def _init_mindflow(self) -> Mindflow:
-        if self._mindflow is None:
-            mindflow = self._matrix.container.get(Mindflow)
-            if mindflow is None:
-                mindflow = default_mindflow(self._matrix.container)
-            self._mindflow = mindflow
-        # 注册 mindflow 的回调.
-        self.matrix.session.on_input(self._mindflow.add_signal)
-        return self._mindflow
-
     async def __aenter__(self) -> Self:
         if self._started:
             return self
@@ -219,16 +186,12 @@ class HostMossRuntime(MossRuntime, ToolSet):
         await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
-        # 启动 mindflow. 开始监听 signal
-        mindflow = self._init_mindflow()
-        await self._async_exit_stack.enter_async_context(mindflow)
-
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         except Exception as e:
-            self.logger.exception("%s failed to aexit %s", self._log_prefix, e)
+            self._matrix.logger.exception("%s failed to aexit %s", self._log_prefix, e)
         finally:
             self._close_event.set()

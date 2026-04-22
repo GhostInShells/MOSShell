@@ -23,13 +23,13 @@ __all__ = [
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
     # env keys
     'ENV_WORKSPACE_DIR_KEY',
-    'ENV_SESSION_ID_KEY',
+    'ENV_SESSION_SCOPE_KEY',
     'ENV_PARENT_PID_KEY',
     'ENV_GHOST_NAME_KEY',
     'ENV_CELL_ADDRESS_KEY',
     'ENV_MOSS_MODE_KEY',
 
-    'DEFAULT_SESSION_ID',
+    'DEFAULT_SESSION_SCOPE',
     'DEFAULT_CELL_ADDRESS',
 
     'MOSSEnvKey',
@@ -78,8 +78,8 @@ ENV_WORKSPACE_DIR_KEY = 'MOSS_WORKSPACE'
 
 # 环境变量中获取 MOSS 运行时的 SESSION ID.
 # 所有通过 MOSS 架构共享本地通讯的 channel 或 topic, 都需要归属到相同的 session id 上.
-ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
-DEFAULT_SESSION_ID = 'default'
+ENV_SESSION_SCOPE_KEY = 'MOSS_SESSION_SCOPE'
+DEFAULT_SESSION_SCOPE = 'default'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 DEFAULT_MOSS_MODE = "default"
@@ -93,7 +93,7 @@ ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
 DEFAULT_CELL_ADDRESS = 'main'
 
 MOSSEnvKey = Literal[
-    "MOSS_WORKSPACE", "MOSS_SESSION_ID", "MOSS_MODE_NAME",
+    "MOSS_WORKSPACE", "MOSS_SESSION_SCOPE", "MOSS_MODE_NAME",
     "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_ADDRESS",
 ]
 
@@ -142,7 +142,7 @@ class Environment:
             self,
             workspace_path: Path,
             ghost_name: str | None = None,
-            session_id: str | None = None,
+            session_scope: str | None = None,
             mode: str | None = None,
     ):
         """
@@ -161,8 +161,8 @@ class Environment:
             mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
         self._moss_mode = mode
 
-        # 永远要有正确的 session id.
-        self._session_id = session_id or os.environ.get(ENV_SESSION_ID_KEY, DEFAULT_SESSION_ID)
+        # 永远要有正确的 session scope.
+        self._session_scope = session_scope or os.environ.get(ENV_SESSION_SCOPE_KEY, DEFAULT_SESSION_SCOPE)
         self._cell_address: str = os.environ.get(ENV_CELL_ADDRESS_KEY, DEFAULT_CELL_ADDRESS)
 
         # 为空表示运行时不启用 ghost.
@@ -197,7 +197,7 @@ class Environment:
         """
         data: dict[MOSSEnvKey, str] = {
             "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
-            "MOSS_SESSION_ID": self._session_id,
+            "MOSS_SESSION_ID": self._session_scope,
             "MOSS_GHOST_NAME": self._ghost_name,
             "MOSS_MODE_NAME": self._moss_mode,
         }
@@ -378,11 +378,11 @@ class Environment:
         return Path.cwd().joinpath(DEFAULT_WORKSPACE_DIR_NAME)
 
     @property
-    def session_id(self) -> str:
+    def session_scope(self) -> str:
         """
         返回当前这次请求的 session id.
         """
-        return self._session_id
+        return self._session_scope
 
     @property
     def source_dir(self) -> Path | None:

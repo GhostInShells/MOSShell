@@ -18,8 +18,6 @@ def search_config_infos_from_package(
 
     # 递归扫描
     for manifest in scan_package(package_import_path, max_depth=2):
-        if manifest.is_package:
-            continue
 
         # 遍历模块内的所有成员
         for name, obj in manifest.module.__dict__.items():

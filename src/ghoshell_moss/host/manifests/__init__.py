@@ -1,11 +1,11 @@
 from typing_extensions import Self
-from ghoshell_moss.host.abcd.manifests import Manifest, ConfigInfo, TopicInfo, ContractInfo
+from ghoshell_moss.host.abcd.manifests import Manifest, ConfigInfo, TopicInfo, ProviderInfo
 from .configs import search_config_infos_from_package
-from .contracts import search_contract_infos_from_package
+from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package
 from .channels import search_channels_from_package
 from .primitives import search_primitives_from_package
-from ghoshell_moss.host.environment import Environment
+from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 
@@ -26,7 +26,7 @@ class PackageManifest(Manifest):
     ):
         self.root_package_name = root_package_name
         self._config_infos: dict[str, ConfigInfo] | None = None
-        self._contract_infos: list[ContractInfo] | None = None
+        self._provider_infos: list[ProviderInfo] | None = None
         self._topic_infos: dict[str, TopicInfo] | None = None
         self._channels: dict[str, Channel] | None = None
         self._primitives: dict[str, Command] | None = None
@@ -77,11 +77,11 @@ class PackageManifest(Manifest):
             self._topic_infos = search_topic_infos_from_package(topics_package)
         return self._topic_infos
 
-    def contracts(self) -> list[ContractInfo]:
-        if self._contract_infos is None:
-            contracts_package = '.'.join([self.root_package_name, 'contracts'])
-            self._contract_infos = list(search_contract_infos_from_package(contracts_package))
-        return self._contract_infos
+    def providers(self) -> list[ProviderInfo]:
+        if self._provider_infos is None:
+            providers_package = '.'.join([self.root_package_name, 'providers'])
+            self._provider_infos = list(search_provider_infos_from_package(providers_package))
+        return self._provider_infos
 
 
 class MergedManifest(Manifest):
@@ -91,14 +91,14 @@ class MergedManifest(Manifest):
 
     def __init__(self, manifests: list[Manifest]):
         self._config_infos: dict[str, ConfigInfo] = {}
-        self._contract_infos: list[ContractInfo] = []
+        self._contract_infos: list[ProviderInfo] = []
         self._topic_infos: dict[str, TopicInfo] = {}
         self._channels: dict[str, Channel] = {}
         self._primitives: dict[str, Command] = {}
         for manifest in manifests:
             # 右边优先级更高.
             self._config_infos.update(manifest.configs())
-            self._contract_infos.extend(manifest.contracts())
+            self._contract_infos.extend(manifest.providers())
             self._topic_infos.update(manifest.topics())
             self._channels.update(manifest.channels())
             self._primitives.update(manifest.primitives())
@@ -128,5 +128,5 @@ class MergedManifest(Manifest):
     def topics(self) -> dict[str, TopicInfo]:
         return self._topic_infos
 
-    def contracts(self) -> list[ContractInfo]:
+    def providers(self) -> list[ProviderInfo]:
         return self._contract_infos

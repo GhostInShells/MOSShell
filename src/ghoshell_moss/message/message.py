@@ -42,7 +42,7 @@ __all__ = [
 # 2. 彻底放弃 OpenAI 的强类型约定. 目前行业共同指向了消息体自解释, 也是殊途同归.
 # 3. 放弃下行 (模型生成), 专注于上行消息协议.
 
-Additional = Optional[dict[str, dict[str, Any]]]
+Additional = Optional[dict[str, Any]]
 """
 使用弱类型容器保存强类型数据结构的思想. 
 它实际对应一个强类型的数据结构, 用 pydantic.BaseModel 来定义.
@@ -111,6 +111,10 @@ class Addition(BaseModel, ABC):
             return None
         keyword = cls.keyword()
         data = target.additional.get(keyword, None)
+        return cls.from_normalize(data, throw)
+
+    @classmethod
+    def from_normalize(cls, data: Any, throw: bool = False) -> Self | None:
         if data is None:
             return None
         if not isinstance(data, dict):
@@ -124,6 +128,9 @@ class Addition(BaseModel, ABC):
                 raise e
             return None
 
+    def normalize(self) -> Any:
+        return self.model_dump(exclude_none=True, exclude_defaults=True)
+
     def set(self, target: HasAdditional) -> None:
         """
         将 Addition 数据结构加工到目标上.
@@ -132,7 +139,7 @@ class Addition(BaseModel, ABC):
             target.additional = {}
 
         keyword = self.keyword()
-        data = self.model_dump(exclude_none=True)
+        data = self.normalize()
         target.additional[keyword] = data
 
 

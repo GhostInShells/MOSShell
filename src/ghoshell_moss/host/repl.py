@@ -4,7 +4,7 @@ from typing_extensions import Self
 from rich.console import RenderableType
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer
-from ghoshell_moss.host.abcd import IHost, IRuntime, ConversationItem
+from ghoshell_moss.host.abcd import IHost, IRuntime, OutputItem
 import typer
 import janus
 
@@ -46,7 +46,7 @@ class MOSSRepl:
     def __init__(self, runtime: IRuntime) -> None:
         self.moss = runtime
         self._operator_queue: janus.Queue[MossClosure] = janus.Queue()
-        self._output_queue: janus.Queue[ConversationItem] = janus.Queue()
+        self._output_queue: janus.Queue[OutputItem] = janus.Queue()
         self._renderer_queue: janus.Queue[RenderableType] = janus.Queue()
 
     @classmethod
@@ -72,7 +72,7 @@ class MOSSRepl:
                 renderable = self._wrap_output_to_renderable(topic.item)
                 self.output(renderable)
 
-    def _wrap_output_to_renderable(self, item: ConversationItem) -> RenderableType:
+    def _wrap_output_to_renderable(self, item: OutputItem) -> RenderableType:
         pass
 
     async def _moss_runtime_main_loop(self) -> None:

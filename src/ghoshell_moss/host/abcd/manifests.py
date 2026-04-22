@@ -1,5 +1,3 @@
-from abc import ABC, abstractmethod
-
 from typing import Any
 from typing_extensions import Self
 from dataclasses import dataclass
@@ -15,7 +13,7 @@ import inspect
 __all__ = [
     'TopicInfo',
     'ConfigInfo',
-    'ContractInfo',
+    'ProviderInfo',
     'Manifest',
 ]
 
@@ -119,7 +117,7 @@ class ConfigInfo:
 
 # 管理从环境中发现能力的逻辑.
 @dataclass(frozen=True)
-class ContractInfo:
+class ProviderInfo:
     """
     contract info of the provider.
     """
@@ -216,7 +214,7 @@ class Manifest:
         """
         return {}
 
-    def contracts(self) -> list[ContractInfo]:
+    def providers(self) -> list[ProviderInfo]:
         """
         环境中发现的 IoC 容器依赖, 会自动注册到 IoC 容器中.
         通过 ghoshell_container.Provider  实例发现.

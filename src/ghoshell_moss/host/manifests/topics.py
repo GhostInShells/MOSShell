@@ -23,8 +23,6 @@ def find_topic_infos_from_package(
     """
     # 限制递归深度为 2
     for manifest in scan_package(package_import_path, max_depth=2):
-        if manifest.is_package:
-            continue
 
         # 我们寻找类，且必须是本模块定义的
         for name, obj in manifest.iter_members(predicate=is_topic_info_object):

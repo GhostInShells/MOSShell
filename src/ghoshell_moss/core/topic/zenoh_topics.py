@@ -29,19 +29,19 @@ class ZenohTopicService(TopicService):
 
     def __init__(
             self,
-            session_id: str,
+            session_scope: str,
             session: zenoh.Session,
-            node_name: str,
+            address: str,
             *,
             logger: LoggerItf | None = None,
     ):
-        self._session_id = session_id
+        self._session_scope = session_scope
         self._session = session
         # 一定要有一个 sender. 通常是 node name
-        self._sender = node_name or uuid()
+        self._sender = address or uuid()
         self._logger = logger or get_moss_logger()
         self._subscriber_lock = asyncio.Lock()
-        self._topic_key_expr = MOSSTopicExpr(session_id=session_id, node_name=node_name)
+        self._topic_key_expr = MOSSTopicExpr(session_scope=session_scope, address=address)
 
         self._publish_queue: janus.Queue[Topic] = janus.Queue()
         self._publish_queue_empty = asyncio.Event()
@@ -49,7 +49,7 @@ class ZenohTopicService(TopicService):
         self._dispatch_tasks: set[asyncio.Task] = set()
         self._subscribing: set[TopicName] = set()
         self._publishing: set[TopicName] = set()
-        self._log_prefix = "<ZenohBasedTopicService session_id=%s sender=%s>"
+        self._log_prefix = "<ZenohBasedTopicService session_scope=%s sender=%s>"
         self._started = False
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -457,9 +457,9 @@ class ZenohTopicServiceSuite(TopicServiceSuite):
         self._session = zenoh.open(zenoh.Config())
         self._session.__enter__()
         return ZenohTopicService(
-            session_id="session_id",
+            session_scope="session_id",
             session=self._session,
-            node_name=sender,
+            address=sender,
         )
 
     def close(self) -> None:

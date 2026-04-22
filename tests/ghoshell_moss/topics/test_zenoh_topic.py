@@ -11,8 +11,8 @@ async def test_topic_baseline():
     session = zenoh.open(zenoh.Config())
     with session:
         service = ZenohTopicService(
-            node_name="test",
-            session_id="test",
+            address="test",
+            session_scope="test",
             session=session,
         )
         listening_started = asyncio.Event()
@@ -62,7 +62,7 @@ async def test_topic_service_publish():
     received = []
     started = asyncio.Event()
     with session:
-        service = ZenohTopicService(node_name="test", session_id="test", session=session)
+        service = ZenohTopicService(address="test", session_scope="test", session=session)
         async with service:
             async def _consume():
                 async with service.subscribe_model(ErrorTopic) as subscriber:

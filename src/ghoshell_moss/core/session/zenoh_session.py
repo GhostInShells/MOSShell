@@ -1,8 +1,7 @@
-from typing import Callable, Iterable, Type
+from typing import Callable
 
-from ghoshell_moss.contracts import Storage, LoggerItf, Workspace
-from ghoshell_moss.core.concepts.session import Session, ConversationItem, Signal
-from ghoshell_container import IoCContainer, Provider
+from ghoshell_moss.contracts import Storage, LoggerItf
+from ghoshell_moss.core.concepts.session import Session, OutputItem, Signal
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
 
@@ -11,7 +10,6 @@ import zenoh
 
 __all__ = [
     'MossSessionWithZenoh',
-    'WorkspaceSessionProvider',
 ]
 
 
@@ -22,29 +20,29 @@ class MossSessionWithZenoh(Session):
 
     def __init__(
             self,
-            session_id: str,
+            session_scope: str,
             session_storage: Storage,
             logger: LoggerItf,
             zenoh_session: zenoh.Session,
     ):
-        self._session_id = session_id
-        self._output_key_expr = f"MOSS/{session_id}/outputs"
-        self._input_signal_expr = f"MOSS/{session_id}/signals"
+        self._session_scope = session_scope
+        self._output_key_expr = f"MOSS/{session_scope}/outputs"
+        self._input_signal_expr = f"MOSS/{session_scope}/signals"
         self._session_storage = session_storage
         self._closing_event = Event()
-        self._output_listeners: list[Callable[[ConversationItem], None]] = []
+        self._output_listeners: list[Callable[[OutputItem], None]] = []
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
             raise RuntimeError(f'HostSession receive Zenoh session but closed')
         self._output_sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
         self._input_sub = zenoh_session.declare_subscriber(self._input_signal_expr, self._on_zenoh_signal_input)
         self._logger = logger
-        self._log_prefix = f'<Session cls={self.__class__} id={session_id}>'
+        self._log_prefix = f'<Session cls={self.__class__} id={session_scope}>'
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
 
     @property
-    def session_id(self) -> str:
-        return self._session_id
+    def session_scope(self) -> str:
+        return self._session_scope
 
     @property
     def storage(self) -> Storage:
@@ -85,7 +83,7 @@ class MossSessionWithZenoh(Session):
                 )
         return None
 
-    def output(self, *items: ConversationItem) -> None:
+    def output(self, *items: OutputItem) -> None:
         self._check_running()
         for item in items:
             js = item.to_json()
@@ -95,7 +93,7 @@ class MossSessionWithZenoh(Session):
         if len(self._output_listeners) == 0:
             return
         try:
-            item = ConversationItem.model_validate_json(sample.payload.to_bytes())
+            item = OutputItem.model_validate_json(sample.payload.to_bytes())
             for listener in self._output_listeners:
                 try:
                     listener(item)
@@ -110,7 +108,7 @@ class MossSessionWithZenoh(Session):
                 self._log_prefix, sample.payload.to_string(), e,
             )
 
-    def on_output(self, callback: Callable[[ConversationItem], None]) -> None:
+    def on_output(self, callback: Callable[[OutputItem], None]) -> None:
         self._output_listeners.append(callback)
 
     def clear(self) -> None:
@@ -118,45 +116,3 @@ class MossSessionWithZenoh(Session):
             self._output_sub.undeclare()
         if self._input_sub and not self._zenoh_session.is_closed():
             self._input_sub.undeclare()
-
-
-class WorkspaceSessionProvider(Provider[Session]):
-    """
-    make session instance from workspace
-    """
-
-    def __init__(
-            self,
-            session_id: str,
-            *,
-            session_path: str = 'sessions',
-            session_id_prefix: str = 'session-',
-    ):
-        self._session_id = session_id
-        self._session_path = session_path
-        self._session_id_prefix = session_id_prefix
-
-    def singleton(self) -> bool:
-        return True
-
-    def contract(self) -> type:
-        return Session
-
-    def aliases(self) -> Iterable[Type]:
-        yield MossSessionWithZenoh
-
-    def factory(self, con: IoCContainer) -> MossSessionWithZenoh:
-        ws = con.force_fetch(Workspace)
-        zenoh_session = con.force_fetch(zenoh.Session)
-        logger = con.get(LoggerItf)
-        session_storage_path = self._session_id_prefix + self._session_id
-        storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
-        session = MossSessionWithZenoh(
-            session_id=self._session_id,
-            session_storage=storage,
-            logger=logger,
-            zenoh_session=zenoh_session,
-        )
-        # always clear during the container shutdown.
-        con.add_shutdown(session.clear)
-        return session

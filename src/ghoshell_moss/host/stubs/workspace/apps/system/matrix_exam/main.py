@@ -1,7 +1,7 @@
 import asyncio
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.core.concepts.topic import LogTopic, TopicClosedError
-from ghoshell_moss.core.concepts.session import ConversationItem
+from ghoshell_moss.core.concepts.session import OutputItem
 from ghoshell_common.helpers import yaml_pretty_dump
 
 
@@ -26,13 +26,13 @@ async def matrix_smoke_test(matrix: Matrix):
     # 2. 验证 Session 基础输出
     print("\n--- 验证 Session 输出 ---")
     session = matrix.session
-    print(f"当前 Session ID: {session.session_id}")
+    print(f"当前 Session ID: {session.session_scope}")
 
     # 定义输出回调，验证 Session 的响应能力
     session.on_output(lambda item: print(f"🔔 [Session Output] 角色: {item.role}, 消息数: {len(item.messages)}"))
 
     # 模拟发送一个 ConversationItem
-    test_item = ConversationItem().with_message("Matrix smoke test message.")
+    test_item = OutputItem().with_message("Matrix smoke test message.")
     session.output(test_item)
 
     # 3. 验证 Topic Service (生产者/消费者并发验证)

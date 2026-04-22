@@ -23,7 +23,7 @@ from rich import print as rprint
 from pathlib import Path
 from typing import Optional
 
-from ghoshell_moss.host.environment import (
+from ghoshell_moss.host.abcd.environment import (
     Environment,
     META_INSTRUCTION_FILENAME,
 )

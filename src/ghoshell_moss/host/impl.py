@@ -9,7 +9,7 @@ from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.host.environment import Environment
+from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.host.manifests import PackageManifest, MergedManifest
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode

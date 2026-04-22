@@ -1,9 +1,9 @@
 from ghoshell_moss.host.abcd.host_interface import MossMode
 from ghoshell_moss.core.codex.discover import scan_package
+from ghoshell_moss.host.abcd.environment import MODE_STUB_PACKAGE
 from importlib import import_module
 from pathlib import Path
 from .manifests import PackageManifest
-from .environment import MODE_STUB_PACKAGE
 import inspect
 import shutil
 

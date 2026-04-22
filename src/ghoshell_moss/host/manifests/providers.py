@@ -1,42 +1,42 @@
 from typing import Iterable, Any
 from ghoshell_container import Provider
-from ghoshell_moss.host.abcd.manifests import ContractInfo
+from ghoshell_moss.host.abcd.manifests import ProviderInfo
 from ghoshell_moss.core.codex.discover import scan_package
 import inspect
 
 ModuleFile = str
 ModulePath = str
 
-MANIFEST_CONTRACTS_PATH = 'MOSS.manifests.contracts'
+MANIFEST_CONTRACTS_PATH = 'MOSS.manifests.providers'
 
 __all__ = [
     'ModuleFile', 'ModulePath',
     'MANIFEST_CONTRACTS_PATH',
-    'ContractInfo',
-    'read_contract_info',
-    'match_contract_infos',
-    'find_contract_infos_from_package',
-    'search_contract_infos_from_package',
+    'ProviderInfo',
+    'read_provider_info',
+    'match_provider_infos',
+    'find_provider_infos_from_package',
+    'search_provider_infos_from_package',
 ]
 
 
-def search_contract_infos_from_package(
+def search_provider_infos_from_package(
         package_import_path: str = MANIFEST_CONTRACTS_PATH,
-) -> Iterable[ContractInfo]:
+) -> Iterable[ProviderInfo]:
     """
     search contract infos from a python package.
     """
     providers = set()
-    for found_file, found_path, provider in find_contract_infos_from_package(package_import_path):
+    for found_file, found_path, provider in find_provider_infos_from_package(package_import_path):
         if provider in providers:
             continue
         providers.add(provider)
-        contract_info = read_contract_info(module_file=found_file, provider_import_path=found_path, provider=provider)
+        contract_info = read_provider_info(module_file=found_file, provider_import_path=found_path, provider=provider)
         if contract_info:
             yield contract_info
 
 
-def find_contract_infos_from_package(package_import_path: str) -> Iterable[tuple[ModuleFile, ModulePath, Provider]]:
+def find_provider_infos_from_package(package_import_path: str) -> Iterable[tuple[ModuleFile, ModulePath, Provider]]:
     """
     实现方案：
     1. 递归扫描 package (depth=2 或更多，视你 manifests 目录层级而定)
@@ -45,8 +45,6 @@ def find_contract_infos_from_package(package_import_path: str) -> Iterable[tuple
     """
     # 扫描包下的所有模块
     for manifest in scan_package(package_import_path, max_depth=2):
-        if manifest.is_package:
-            continue
 
         # 谓词过滤：
         # a) 必须是该模块内定义的（is_native_to），避免重扫从 core 导入的 Provider
@@ -68,7 +66,7 @@ def is_provider(value: Any) -> bool:
     return isinstance(value, Provider)
 
 
-def match_contract_infos(contracts: list[ContractInfo], search: str) -> Iterable[ContractInfo]:
+def match_provider_infos(contracts: list[ProviderInfo], search: str) -> Iterable[ProviderInfo]:
     """
     支持模糊匹配。
     1. 先尝试完全匹配 Contract Name (Identity)
@@ -85,14 +83,14 @@ def match_contract_infos(contracts: list[ContractInfo], search: str) -> Iterable
             yield info
 
 
-def read_contract_info(module_file: str, provider_import_path: str, provider: Provider) -> ContractInfo | None:
+def read_provider_info(module_file: str, provider_import_path: str, provider: Provider) -> ProviderInfo | None:
     """
     read contract info from an IoC provider.
     """
     contract = provider.contract()
     if not inspect.isclass(contract):
         return None
-    return ContractInfo(
+    return ProviderInfo(
         found=provider_import_path,
         file=module_file,
         provider=provider,

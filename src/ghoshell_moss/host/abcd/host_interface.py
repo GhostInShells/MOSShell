@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from .manifests import Manifest
 from .matrix import Matrix
 from .app import AppStore
-from ghoshell_moss.core.concepts.session import Session, ConversationItem
+from ghoshell_moss.core.concepts.session import Session, OutputItem
 from ghoshell_moss.core.concepts.mindflow import Mindflow
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.states import PrimeChannel
@@ -48,17 +48,13 @@ class ToolSet(ABC):
             self,
             commands: str,
             call_soon: bool = True,
-            observe: bool = True,
-            with_dynamic: bool = True,
-            priority: int = 0,
+            wait_done: bool = True,
     ) -> list[Message]:
         """
         向 MOSS 的运行时添加新的指令. 通常是 CTML.
         :param commands: 基于 ctml 语法提供的 command 字符串.
         :param call_soon: 如果为 True, 会立刻中断任何运行中的命令, 否则只是追加新的指令.
-        :param observe: 为 True 的话, 阻塞到运行结束后, 拿到观察的结果. 包含命令的执行情况, 和新的输入. 为 False 的话会立刻返回.
-        :param with_dynamic: 决定返回值里是否包含更新后的 moss dynamic 信息.
-        :param priority: 注意力级别, 低于这个级别的输入事件不会中断行动.
+        :param wait_done: 为 True 的话, 阻塞到运行结束后, 拿到观察的结果.
         """
         pass
 
@@ -66,7 +62,6 @@ class ToolSet(ABC):
     async def moss_observe(
             self,
             timeout: float | None = None,
-            priority: int = 0,
             with_dynamic: bool = True,
     ) -> list[Message]:
         """
@@ -78,8 +73,13 @@ class ToolSet(ABC):
 
         :param timeout: 指定一个等待时间, 否则会持续等待到有任何事件为止.
         :param with_dynamic: 观察的结果里是否包含最新的 moss dynamic 信息.
-        :param priority: 注意力级别, 低于这个级别的输入事件不会中断行动.
         """
+        pass
+
+    @property
+    @abstractmethod
+    def matrix(self) -> Matrix:
+        """返回环境里的 matrix. """
         pass
 
     @abstractmethod
@@ -154,8 +154,8 @@ class Perception(BaseModel):
             yield Message.new(tag='mindflow').with_content(self.mindflow)
         yield from self.inputs
 
-    def as_conversation_item(self, **metadata) -> ConversationItem:
-        return ConversationItem(
+    def as_conversation_item(self, **metadata) -> OutputItem:
+        return OutputItem(
             role="perception",
             metadata=metadata,
             messages=list(self.as_messages()),
@@ -318,13 +318,13 @@ class MossRuntime(ABC):
         """
         pass
 
-    def output(self, *items: ConversationItem) -> None:
+    def output(self, *items: OutputItem) -> None:
         """
         输出 output item. 由于这是 moss 的 output, 所以里面其实包含 input.
         """
         return self.matrix.session.output(*items)
 
-    def on_output(self, callback: Callable[[ConversationItem], None]):
+    def on_output(self, callback: Callable[[OutputItem], None]):
         """
         接受 output item 并考虑渲染.
         """
@@ -364,6 +364,7 @@ class MossMode(BaseModel):
     )
 
     instruction: str = Field(
+        default='',
         description="模式的详细介绍. 也会作为模式的专属 instruction"
     )
 

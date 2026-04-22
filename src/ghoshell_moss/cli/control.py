@@ -11,7 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.completion import Completer, Completion, CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import StyleAndTextTuples
-from ghoshell_moss.host.environment import Environment
+from ghoshell_moss.host.abcd.environment import Environment
 from rich.console import Console
 from rich.text import Text
 from rich.rule import Rule

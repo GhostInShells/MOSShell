@@ -4,23 +4,23 @@ from typing import Coroutine
 from typing_extensions import Self
 
 from ghoshell_common.contracts import LoggerItf
-from ghoshell_container import IoCContainer, Container
+from ghoshell_container import IoCContainer, Container, Provider
 
 from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
+from ghoshell_moss.core.concepts.session import Session
 from ghoshell_moss.host.abcd.manifests import Manifest
 from ghoshell_moss.host.abcd.matrix import Matrix, Cell
-from ghoshell_moss.core.concepts.session import Session
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_interface import MossMode
-from ghoshell_moss.host.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
     WorkspaceZenohProvider, WorkspaceLoggerProvider, ZenohTopicServiceProvider,
+    WorkspaceSessionProvider,
 )
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider
-from ghoshell_moss.core.session.zenoh_session import WorkspaceSessionProvider
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.depends import depend_zenoh
@@ -37,7 +37,7 @@ __all__ = ['AppCell', 'MossModeCell', 'HostMatrix']
 class AppCell(Cell):
 
     def __init__(self, app: AppInfo, event: threading.Event):
-        self.name = app.name
+        self.name = app.fullname
         self.description = app.description
         self.docstring = app.docstring
         self.type = "app"
@@ -112,7 +112,7 @@ class HostMatrix(Matrix):
         self._manifest = manifest
         self._workspace = workspace
         self._current_mode = mode
-        self._session_id = env.session_id
+        self._session_id = env.session_scope
 
         # prepare cell and events
         cells: dict[str, Cell] = {}
@@ -146,7 +146,7 @@ class HostMatrix(Matrix):
         self._closed_event = ThreadSafeEvent()
         self._exit_stack = contextlib.ExitStack()
         self._async_exit_stack = contextlib.AsyncExitStack()
-        self._log_prefix = f"<HostMatrix address={self._cell_address} session_id={self.env.session_id}>"
+        self._log_prefix = f"<HostMatrix address={self._cell_address} session_id={self.env.session_scope}>"
         self._task_group: set[asyncio.Task] = set()
         locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
         locker_name = locker_name.replace('.', '_')
@@ -160,42 +160,52 @@ class HostMatrix(Matrix):
         container.set(HostMatrix, self)
         container.set(Environment, self.env)
         container.set(Workspace, self._workspace)
-        # 注册 workspace zenoh provider.
-        # 可以被环境覆盖.
-        if self._is_main:
-            container.register(WorkspaceZenohProvider("zenoh_config_main.json5"))
-        elif self._this_cell.type == 'app':
-            container.register(WorkspaceZenohProvider("zenoh_config_app.json5"))
-        else:
-            raise RuntimeError(f"Unknown cell type: {self._this_cell.type}")
-
-        # 注册 configs
-        container.register(WorkspaceYamlConfigStoreProvider(
-            *[info.config for info in self.manifests.configs().values()]
-        ))
-        # 注册 session.
-        container.register(WorkspaceSessionProvider(session_id=self.env.session_id))
-
-        # 如果日志存在, 覆盖日志模块, 不使用默认约定的日志. .
-        if self._logger is not None:
-            container.set(LoggerItf, self._logger)
-        else:
-            # 否则注册约定的日志模块, 但仍然可能被 contracts 覆盖.
-            container.register(WorkspaceLoggerProvider(self._this_cell.log_name))
-
-        # 注册 Topic Service.
-        container.register(ZenohTopicServiceProvider(
-            session_id=self.env.session_id,
-            node_name=self._this_cell.address,
-        ))
+        container.set(Manifest, self._manifest)
+        container.set(Cell, self._this_cell)
 
         # 注册 manifest providers. 包含环境与模式的双重配置.
-        for contract in self._manifest.contracts():
+        for contract in self._manifest.providers():
             # register provider from manifest.contracts.
             # 可能会覆盖系统自身约定的 contract.
             container.register(contract.provider)
 
+        # 按需注册 default provider. 由于这里没有显示声明, 所以肯定没有声明的方式好.
+        for provider in self._default_providers():
+            if container.bound(provider.contract()):
+                continue
+            container.register(provider)
+
+        if self._logger is not None:
+            # 替换掉注册的.
+            container.set(LoggerItf, self._logger)
         return container
+
+    def _default_providers(self) -> list[Provider]:
+        # 注册 workspace zenoh provider.
+        # 可以被环境覆盖.
+        default_providers = []
+        if self._is_main:
+            default_providers.append(WorkspaceZenohProvider("zenoh_config_main.json5"))
+        elif self._this_cell.type == 'app':
+            default_providers.append(WorkspaceZenohProvider("zenoh_config_app.json5"))
+        else:
+            raise RuntimeError(f"Unknown cell type: {self._this_cell.type}")
+
+        # 注册 configs
+        default_providers.append(WorkspaceYamlConfigStoreProvider(
+            *[info.config for info in self.manifests.configs().values()]
+        ))
+        # 注册 session.
+        default_providers.append(WorkspaceSessionProvider(session_scope=self.env.session_scope))
+        # 否则注册约定的日志模块, 但仍然可能被 contracts 覆盖.
+        default_providers.append(WorkspaceLoggerProvider(self._this_cell.log_name))
+
+        # 注册 Topic Service.
+        default_providers.append(ZenohTopicServiceProvider(
+            session_scope=self.env.session_scope,
+            cell_address=self._this_cell.address,
+        ))
+        return default_providers
 
     @property
     def this(self) -> Cell:
@@ -243,7 +253,7 @@ class HostMatrix(Matrix):
                     self.logger.error("%s close channel provider exception: %s", self._log_prefix, e)
             provider = ZenohChannelProvider(
                 node_name=self._this_cell.address,
-                session_id=self.env.session_id,
+                session_id=self.env.session_scope,
                 container=self._container,
             )
             await provider.arun_until_closed(channel)

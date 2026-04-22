@@ -3,7 +3,7 @@ from typing import Iterable, Optional
 from typing_extensions import Self, Literal
 from pathlib import Path
 from pydantic import BaseModel, Field
-from ghoshell_moss.core.blueprint.builder import Channel, new_channel, Message
+from ghoshell_moss.core.blueprint.builder import Channel, new_channel
 import frontmatter
 import fnmatch
 
@@ -90,6 +90,10 @@ class AppInfo(BaseModel):
         return f"apps/{self.group}/{self.name}"
 
     @property
+    def fullname(self) -> str:
+        return f"{self.group}/{self.name}"
+
+    @property
     def log_name(self) -> str:
         return f"moss.{self.group}.{self.name}"
 
@@ -155,6 +159,11 @@ class AppInfo(BaseModel):
                     yield cls.from_markdown(group, app_name, expect_app_manifest)
 
 
+AppFullname = str
+AppFullnamePattern = str
+""" group/name,  group/*, *, */*, */name"""
+
+
 class AppStore(ABC):
     """
     local appstore
@@ -188,8 +197,8 @@ class AppStore(ABC):
     def match_apps(
             cls,
             apps: Iterable[AppInfo],
-            include: list[str] | None = None,
-            exclude: Optional[list[str]] = None
+            include: list[AppFullnamePattern] | None = None,
+            exclude: Optional[list[AppFullnamePattern]] = None
     ) -> Iterable[AppInfo]:
         """
         基于地址模式筛选 App。
@@ -226,7 +235,7 @@ class AppStore(ABC):
                 yield app
 
     @abstractmethod
-    def init_app(self, address: str, description: str = '') -> str:
+    def init_app(self, fullname: str, description: str = '') -> str:
         """
         创建一个 app, 返回创建后的讯息.
         创建 app 的极简内容包含:
@@ -239,7 +248,7 @@ class AppStore(ABC):
     # 运行时函数
 
     @abstractmethod
-    def get_app_info(self, address: str) -> AppInfo | None:
+    def get_app_info(self, fullname: str) -> AppInfo | None:
         """
         获取一个环境中可发现的 app.
         如果 running 为 True, 则需要发现 is alive 的 app.
@@ -256,7 +265,7 @@ class AppStore(ABC):
         pass
 
     @abstractmethod
-    async def start_app(self, app_address: str, argument: str = '') -> str:
+    async def start_app(self, app_fullname: str, argument: str = '') -> str:
         """
         尝试启动一个 App.
         其中 argument 是可以在启动脚本后附加的参数.
@@ -265,7 +274,7 @@ class AppStore(ABC):
         pass
 
     @abstractmethod
-    async def stop_app(self, app_address: str) -> str:
+    async def stop_app(self, app_fullname: str) -> str:
         """
         关闭一个指定的 app.
         """
@@ -302,33 +311,33 @@ def build_apps_channel(store: AppStore, description: str = '') -> Channel:
         return await store.get_apps_context()
 
     @chan.build.command(name="start")
-    async def start(address: str, argument: str = "") -> str:
+    async def start(fullname: str, argument: str = "") -> str:
         """
         启动指定的 App。
-        :param address: App 的完整地址，如 'app/group/name'。
+        :param fullname: App 的完整名称，如 'group/name'。
         :param argument: 启动参数，将作为命令行参数传递给 App。
         注意：启动是异步的，可以通过 list 确认是否成功进入 running 状态。
         """
-        return await store.start_app(address, argument)
+        return await store.start_app(fullname, argument)
 
     @chan.build.command(name="stop")
-    async def stop(address: str) -> str:
+    async def stop(fullname: str) -> str:
         """
         强制停止并卸载一个运行中的 App。
-        :param address: 目标 App 地址。
+        :param fullname: 目标 App 全名。
         """
-        return await store.stop_app(address)
+        return await store.stop_app(fullname)
 
     @chan.build.command(name="init")
-    async def init(address: str, description: str = "") -> str:
+    async def init(fullname: str, description: str = "") -> str:
         """
         在工作空间中初始化一个新的 App 模板。
         会自动创建目录、APP.md 和 main.py 骨架。
-        :param address: 期望的地址格式 'group/name'。
+        :param fullname: 期望的地址格式 'group/name'。
         :param description: App 的功能描述。
         """
         # 这里调用我们之前实现的 init_app
-        return store.init_app(address, description)
+        return store.init_app(fullname, description)
 
     @chan.build.context_messages
     async def apps_status() -> str:
