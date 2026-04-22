@@ -4,10 +4,11 @@ from typing_extensions import Self, Literal
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field, AwareDatetime, ValidationError
 
-from ghoshell_moss.message import Message, Content, WithAdditional
+from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import ObserveError
 from ghoshell_common.helpers import uuid
 from PIL.Image import Image
+from .conversation import Outcome, Observation
 import datetime
 import dateutil
 import time
@@ -481,116 +482,6 @@ class Nucleus(ABC):
         退出生命周期.
         """
         pass
-
-
-class Outcome(BaseModel, WithAdditional):
-    id: str = Field(
-        default_factory=uuid,
-        description="为 observation 创建唯一 id",
-    )
-    logos: str = Field(
-        default='',
-        description="在这个 observation 触发前, 生成的 logos. 放入一个消息容器中. ",
-    )
-    messages: list[Message] = Field(
-        default_factory=list,
-        description="这个 observation 持有的未阅读 outcome",
-    )
-    stop_reason: str = Field(
-        default='',
-        description="如果这是一个未完成的 Observation, 它可以被记录状态",
-    )
-
-    def new_observation(self) -> "Observation":
-        return Observation(
-            previews=self,
-        )
-
-
-class Observation(BaseModel, WithAdditional):
-    """
-    智能体上下文感知的关键帧.
-    """
-    # 它包含以下核心概念的聚合.
-    # - last: 上一轮 Observation 之后的讯息.
-    #     - logos: 上一轮的 logos.
-    #     - messages: 上一轮运行输出的讯息.
-    #     - stop_reason: 上一轮的结束信息.
-    # - context: observation 生成瞬间的动态上下文, 每一轮都会重新刷新.
-    # - inputs: 触发 observation 的外部世界输入.
-    # - prompt: 本轮思考时的提示信息.
-    #
-    # Observation 的定义用来将离散的关键帧交互, 缝合成一个连续的认知流.
-    # 理论上 logos/outcome/inputs 三者在时间上是交错的, 但由于现阶段没有全双工的模型能力,
-    # 为了防止认知撕裂, 考虑将它们按这种方式, 逻辑上重新排序.
-
-    id: str = Field(
-        default_factory=uuid,
-        description="为 observation 创建唯一 id",
-    )
-
-    # --- 以下缝合上一轮交互的讯息 --- #
-    previews: Outcome | None = Field(
-        default=None,
-    )
-
-    # --- 以下是新一轮交互的输入 --- #
-
-    context: dict[str, list[Message]] = Field(
-        default_factory=dict,
-        description="当前 Observation 生成的瞬间, 将不同类型的 context 合并进来, 提供上下文快照",
-    )
-    inputs: list[Message] = Field(
-        default_factory=list,
-        description="与本轮输入相关的上下文. 在连续的 observation 中, 通常只有第一轮有输入. "
-    )
-    prompt: str = Field(
-        default='',
-        description="与本轮思考决策相关的提示讯息. 只在当前轮次生效",
-    )
-
-    def new_outcome(self) -> Outcome:
-        """生成下轮的接收池"""
-        return Outcome(
-            id=self.id,
-        )
-
-    def as_messages(self, *, with_context: bool = True) -> Iterable[Message]:
-        """
-        所有这些消息, 理论上都会合并为一轮输入消息的 contents.
-        本处是一个使用示范 (code as prompt), 不是硬性约束.
-        """
-        if self.previews is not None:
-            outcome = self.previews
-            if len(outcome.messages) > 0:
-                yield Message.new().with_content('<outcomes>')
-                yield from outcome.messages
-                yield Message.new().with_content('</outcomes>')
-            if outcome.stop_reason:
-                yield Message.new(tag='stop_reason').with_content(outcome.stop_reason)
-
-        if len(self.context) > 0:
-            if with_context:
-                yield Message.new().with_content("<context>\n")
-                for context_messages in list(self.context.values()):
-                    yield from context_messages
-                yield Message.new().with_content("\n</context>")
-            else:
-                count = 0
-                for compacted in self.context.values():
-                    count += len(compacted)
-                yield Message.new().with_content(f"<compacted>{count} history messages compacted </compacted>")
-        yield from self.inputs
-        if self.prompt:
-            yield Message.new(tag='prompt').with_content(self.prompt)
-
-    def as_contents(self, *, with_context: bool = True) -> Iterable[Content]:
-        """
-        用这种方式, 可以拿到和 Anthropic 基本兼容的 Contents.
-        可以包裹到 UserMessageParams 或 ToolMessageParams 里.
-        """
-        for msg in self.as_messages(with_context=with_context):
-            yield from msg.as_contents(with_meta=True)
 
 
 Logos = AsyncIterator[str]

@@ -51,7 +51,7 @@ def test_observation_outcome_stitching():
     assert obs2.previews.messages[0].contents[0]['text'] == "Action Done"
 
     # 验证 as_request_messages 结构
-    msgs = list(obs2.as_messages())
+    msgs = list(obs2.as_request_messages())
     # 应该包含 <outcomes> 标签及内部消息
     content_tags = [m.meta.tag for m in msgs if m.meta.tag]
     assert 'stop_reason' not in content_tags  # 此时 stop_reason 应为空
