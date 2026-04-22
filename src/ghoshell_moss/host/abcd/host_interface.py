@@ -1,5 +1,5 @@
 import asyncio
-from typing import Literal, Callable, Iterable, AsyncIterable, AsyncIterator
+from typing import Callable, Iterable
 
 from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
@@ -9,15 +9,11 @@ from .manifests import Manifest
 from .matrix import Matrix
 from .app import AppStore
 from ghoshell_moss.core.concepts.session import Session, OutputItem
-from ghoshell_moss.core.concepts.mindflow import Mindflow
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.states import PrimeChannel
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
-from ghoshell_common.helpers import uuid
-from pydantic import BaseModel, Field, AwareDatetime
-from datetime import datetime
-from dateutil import tz
+from pydantic import BaseModel, Field
 import frontmatter
 from pathlib import Path
 
@@ -420,7 +416,7 @@ class MossHost(ABC):
         pass
 
     @abstractmethod
-    def run_toolset(self) -> ToolSet:
+    def run_as_toolset(self) -> ToolSet:
         """
         run as toolset.
         """
