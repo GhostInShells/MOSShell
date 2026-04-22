@@ -330,6 +330,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             )
             for t in pending:
                 t.cancel()
+            _ = await asyncio.gather(*pending, return_exceptions=True)
             if origin_task_done in done:
                 # origin task 已经运行结束.
                 return

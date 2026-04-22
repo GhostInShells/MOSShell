@@ -80,9 +80,9 @@ class CTMLInterpreter(Interpreter):
         """
         # 生成 stream id.
         self._id = stream_id or uuid()
-        self._kind = kind
-        self._interrupted_interpretation = interrupted
-        self._meta_instruction = moss_meta_instruction
+        self._kind: str = kind
+        self._previews_interrupted_interpretation: Interpretation | None = interrupted
+        self._meta_instruction: str | None = moss_meta_instruction
         self._channel_metas = channel_metas or {}
         if clear_after_exit is None:
             clear_after_exit = False
@@ -133,10 +133,9 @@ class CTMLInterpreter(Interpreter):
         # input buffer
         self._interpretation = Interpretation(
             id=self._id,
-            meta_instruction=moss_meta_instruction or get_moss_ctml_meta_instruction(),
-            moss_static=moss_static if moss_static is not None else make_static_messages(self._channel_metas),
-            moss_dynamic=moss_dynamic if moss_dynamic is not None else make_dynamic_messages(self._channel_metas),
         )
+        self._moss_static: str | None = moss_static
+        self._moss_dynamic: list[Message] | None = moss_dynamic
         if undone_tasks is not None and len(undone_tasks) > 0:
             for task in undone_tasks:
                 # 分享 task 和 task done.
@@ -191,8 +190,8 @@ class CTMLInterpreter(Interpreter):
     def logger(self) -> LoggerItf:
         return self._logger
 
-    def last(self) -> Interpretation | None:
-        return self._interrupted_interpretation
+    def previews(self) -> Interpretation | None:
+        return self._previews_interrupted_interpretation
 
     def interpretation(self) -> Interpretation:
         return self._interpretation
@@ -278,16 +277,22 @@ class CTMLInterpreter(Interpreter):
                     )
 
     def meta_instruction(self) -> str:
-        return self._interpretation.meta_instruction
+        if self._meta_instruction is None:
+            self._meta_instruction = get_moss_ctml_meta_instruction()
+        return self._meta_instruction
 
     def channels(self) -> dict[str, ChannelMeta]:
         return self._channel_metas
 
     def static_messages(self) -> str:
-        return self._interpretation.moss_static
+        if self._moss_static is None:
+            self._moss_static = make_static_messages(self._channel_metas)
+        return self._moss_static
 
     def dynamic_messages(self) -> list[Message]:
-        return self._interpretation.moss_dynamic
+        if self._moss_dynamic is None:
+            self._moss_dynamic = make_dynamic_messages(self._channel_metas)
+        return self._moss_dynamic
 
     def feed(self, delta: str, throw: bool = False) -> bool:
         if not isinstance(delta, str):

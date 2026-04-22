@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import IntEnum
 from typing_extensions import Self
 
 __all__ = [
@@ -72,7 +72,7 @@ class PausedError(Exception):
     """
     pass
 
-class CommandErrorCode(int, Enum):
+class CommandErrorCode(IntEnum):
     """
     语法糖, 用来快速生成 command error. 采用了 golang 的语法糖习惯.
 

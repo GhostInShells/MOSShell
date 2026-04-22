@@ -414,11 +414,8 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                     continue
                 t.cancel()
                 await_tasks.append(t)
-            for t in await_tasks:
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    pass
+            if len(await_tasks) > 0:
+                await asyncio.gather(*await_tasks, return_exceptions=True)
 
     @abstractmethod
     async def _main_loop(self) -> None:

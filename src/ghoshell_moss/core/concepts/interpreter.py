@@ -127,15 +127,6 @@ class Interpretation(BaseModel):
 
     done: bool = Field(default=False, description="是否已经运行结束.")
     id: str = Field(description="interpretation id")
-
-    meta_instruction: str = Field(default="", description="这一轮快照中的元指令")
-
-    moss_static: str = Field(
-        default='',
-        description="静态讯息",
-    )
-    moss_dynamic: list[Message] = Field(default_factory=list, description="动态上下文讯息")
-
     observe: bool = Field(
         default=False,
         description="这个运行结果是否需要 AI 观察",
@@ -168,13 +159,18 @@ class Interpretation(BaseModel):
         description="运行的异常",
     )
 
+    def executed_logos(self) -> str:
+        return "".join(self.executed_inputs)
+
     def on_task_compiled(self, task: CommandTask | None) -> None:
+        """注册 task 编译状态. """
         if task is None or task.meta.name.startswith("_"):
             return
         self.compiled_tasks[task.cid] = task.caller_name()
         self.pending_tasks[task.cid] = task.caller_name()
 
     def on_done_task(self, task: CommandTask) -> None:
+        """注册 task 的回调. """
         if not task.done() or task.meta.name.startswith("_"):
             return
         if self.done:
@@ -210,26 +206,36 @@ class Interpretation(BaseModel):
         """
         return self.output.copy()
 
-    def execution_messages(self) -> list[Message]:
+    def status_messages(self) -> list[Message]:
+        """当前运行状态的描述. """
+        status_message = Message.new()
+        lines = []
+        if self.interrupted:
+            lines.append("Interrupted!")
+        if self.exception:
+            lines.append("Exception: %s" % self.exception)
+        if len(self.success_tasks) > 0:
+            lines.append("success: %d" % len(self.success_tasks))
+        if len(self.cancelled_tasks) > 0:
+            lines.append("canceled: %d" % len(self.cancelled_tasks))
+        if len(self.failed_tasks) > 0:
+            lines.append("failed: %d" % len(self.failed_tasks))
+        if len(self.pending_tasks) > 0:
+            lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
+        if len(lines) > 0:
+            status_message.with_content("\n".join(lines))
+            return [status_message]
+        else:
+            return []
+
+    def executed_messages(self) -> list[Message]:
+        """运行结果的描述"""
         messages = self.messages.copy()
-        if self.interrupted or self.exception:
-            status_message = Message.new()
-            lines = []
-            if self.interrupted:
-                lines.append("Interrupted!")
-            if self.exception:
-                lines.append("Exception: %s" % self.exception)
-            if len(self.success_tasks) > 0:
-                lines.append("success: %d" % len(self.success_tasks))
-            if len(self.cancelled_tasks) > 0:
-                lines.append("canceled: %d" % len(self.cancelled_tasks))
-            if len(self.failed_tasks) > 0:
-                lines.append("failed: %d" % len(self.failed_tasks))
-            if len(self.pending_tasks) > 0:
-                lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
-            if len(lines) > 0:
-                status_message.with_content("\n".join(lines))
-                messages.append(status_message)
+        return messages
+
+    def as_messages(self) -> list[Message]:
+        messages = self.status_messages()
+        messages.extend(self.executed_messages())
         return messages
 
 
@@ -265,7 +271,7 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
-    def last(self) -> Interpretation | None:
+    def previews(self) -> Interpretation | None:
         """
         上一轮被中断的解释结果.
         """

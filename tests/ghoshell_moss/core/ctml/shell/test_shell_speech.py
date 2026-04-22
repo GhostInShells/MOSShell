@@ -18,11 +18,11 @@ async def test_shell_with_output_channel_in_wait():
             interpreter.raise_exception()
             interpretation = interpreter.interpretation()
             assert interpretation.interrupted is False
-
-            assert len(interpretation.execution_messages()) == 1
-            for msg in interpretation.execution_messages():
+            for msg in interpretation.executed_messages():
                 # 暴露了异常. 深层异常是 a:foo 不存在.
                 assert CommandErrorCode.INTERPRET_ERROR.name in str(msg)
+            assert len(interpretation.executed_messages()) == 1
+            await asyncio.gather(*interpreter.incomplete_tasks(), return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_shell_speech_baseline_prepare():
             interpretation = interpreter.interpretation()
             assert interpretation.interrupted is False
             assert len(interpretation.exception) == 0
-            assert len(interpretation.execution_messages()) == 2
+            assert len(interpretation.executed_messages()) == 2
 
         async with await shell.interpreter() as interpreter:
             content = "你好，我是MOSS。"
