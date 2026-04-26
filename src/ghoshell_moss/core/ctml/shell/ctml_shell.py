@@ -141,7 +141,6 @@ class CTMLShell(MOSShell[PrimeChannel]):
         yield self._ioc_context_manager
         yield self._speech_context_manager
         yield self._runtime_context_manager
-        # yield self._main_loop_context_manager
 
     @contextlib.asynccontextmanager
     async def _ioc_context_manager(self):

@@ -1,5 +1,5 @@
 from typing_extensions import Self
-from ghoshell_moss.host.abcd.manifests import Manifest, ConfigInfo, TopicInfo, ProviderInfo
+from ghoshell_moss.host.abcd.manifests import Manifests, ConfigInfo, TopicInfo, ProviderInfo
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package
@@ -9,13 +9,13 @@ from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 
-__all__ = ['PackageManifest', 'MergedManifest']
+__all__ = ['PackageManifests', 'MergedManifests']
 
 ENVIRONMENT_MANIFESTS_ROOT_PACKAGE = 'MOSS.manifests'
 ENVIRONMENT_MODE_MANIFESTS_ROOT_PACKAGE = 'MOSS.modes.{mode_name}'
 
 
-class PackageManifest(Manifest):
+class PackageManifests(Manifests):
     """
     基于 workspace 发现的各种声明.
     """
@@ -84,12 +84,12 @@ class PackageManifest(Manifest):
         return self._provider_infos
 
 
-class MergedManifest(Manifest):
+class MergedManifests(Manifests):
     """
     合并多个 manifests. 通常是右边优先级高.
     """
 
-    def __init__(self, manifests: list[Manifest]):
+    def __init__(self, manifests: list[Manifests]):
         self._config_infos: dict[str, ConfigInfo] = {}
         self._contract_infos: list[ProviderInfo] = []
         self._topic_infos: dict[str, TopicInfo] = {}
@@ -104,15 +104,15 @@ class MergedManifest(Manifest):
             self._primitives.update(manifest.primitives())
 
     @classmethod
-    def from_environment_mode(cls, *, mode: str = '', env: Environment | None = None) -> Manifest:
+    def from_environment_mode(cls, *, mode: str = '', env: Environment | None = None) -> Manifests:
         """
         默认根据模式来生成.
         """
         env = env or Environment.discover()
         env.bootstrap()
-        env_manifests = PackageManifest.from_environment(env)
+        env_manifests = PackageManifests.from_environment(env)
         if mode:
-            mode_manifests = PackageManifest.from_environment_moss_mode(mode, env)
+            mode_manifests = PackageManifests.from_environment_moss_mode(mode, env)
             return cls([env_manifests, mode_manifests])
         return env_manifests
 

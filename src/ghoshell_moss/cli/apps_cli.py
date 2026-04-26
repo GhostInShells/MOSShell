@@ -48,7 +48,7 @@ def list_apps(
     # AI 模式输出
     if json_out:
         data = [app.model_dump() for app in results]
-        console.print_json(data=data)
+        console.json(data=data)
         return
 
     _display_app_table(results, is_filtered=bool(include))
@@ -76,7 +76,7 @@ def show_app(
         raise typer.Exit(code=1)
 
     if json_out:
-        console.print_json(data=app.model_dump())
+        console.json(data=app.model_dump())
         return
 
     _display_app_detail(app)

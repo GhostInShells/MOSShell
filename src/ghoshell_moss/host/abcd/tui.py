@@ -1,16 +1,20 @@
-import threading
 from abc import ABC, abstractmethod
-from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias
+from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any
 
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
 from rich.console import Console, RenderableType
 from rich.traceback import Traceback
+from rich.rule import Rule
+from rich.text import Text
+from rich.syntax import Syntax
+from rich.markdown import Markdown
+from rich.panel import Panel
 from prompt_toolkit.key_binding import (
     KeyBindings, KeyPressEvent, ConditionalKeyBindings, merge_key_bindings,
     KeyBindingsBase,
 )
-from prompt_toolkit.completion import Completer, DummyCompleter
+from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
 from ghoshell_moss.core.concepts.session import OutputItem
@@ -19,9 +23,51 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import uvloop
 import contextlib
+import sys
+import threading
+import json
 from queue import Queue, Empty
 
-__all__ = ["TUIState", "MossHostTUI", 'Runtime', "RUNTIME"]
+__all__ = ["TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "ConsoleOutput"]
+
+from prompt_toolkit.styles import Style
+
+DEFAULT_STYLE = Style.from_dict({
+    # 提示符区域
+    'prompt': 'fg:#61afef bold',  # 蓝色加粗
+    'prompt.state': 'fg:#e5c07b bold',  # 黄色，显示状态名
+    'prompt.arrow': 'fg:#98c379',  # 绿色箭头
+
+    # 输入行（默认文本）
+    '': 'fg:#abb2bf bg:#282c34',  # 主体背景深灰，文字浅灰
+
+    # 多行编辑：行号
+    'line-number': 'fg:#5c6370 bg:#1e222a',
+    'line-number.current': 'fg:#e5c07b bg:#2c313a bold',
+
+    # 选中文本
+    'selected': 'bg:#3e4452',
+
+    # 补全菜单
+    'completion-menu': 'bg:#2c323c',
+    'completion-menu.completion': 'bg:#2c323c fg:#abb2bf',
+    'completion-menu.completion.current': 'bg:#3e4452 fg:#e5c07b bold',
+    'completion-menu.meta': 'fg:#5c6370',
+    'completion-menu.meta.current': 'fg:#61afef',
+
+    # 滚动条
+    'scrollbar': 'bg:#4b5263',
+    'scrollbar.button': 'bg:#6c7a8a',
+
+    # 自动建议（灰色斜体）
+    'auto-suggestion': 'fg:#5c6370 italic',
+
+    # 搜索高亮
+    'search': 'bg:#3d4a5f',
+
+    # 底部工具栏
+    'bottom-toolbar': 'bg:#1e222a fg:#abb2bf',
+})
 
 
 class Runtime(Protocol):
@@ -47,16 +93,86 @@ class ConsoleOutput:
             self,
             name: str,
             alive: Callable[[], bool],
-            queue: Queue[Renderable],
+            queue: asyncio.Queue[list[Renderable]],
     ):
         self._name: str = name
         self._alive_fn = alive
-        self._queue: Queue[Renderable] = queue
+        self._queue = queue
 
-    def rprint(self, item: Renderable) -> None:
+    def rprint(self, *items: Renderable, spacing: bool = True) -> None:
         if not self._alive_fn():
             return
-        self._queue.put_nowait(item)
+        got_items = list(items)
+        if spacing:
+            got_items.append('')
+        self._queue.put_nowait(got_items)
+
+    def output(self, item: OutputItem) -> None:
+        r = self.format_output(item)
+        self.rprint('', r)
+
+    def format_output(self, item: OutputItem) -> RenderableType:
+        title = Text(f" {item.role.upper()} ", style="bold cyan")
+
+        # 2. 渲染消息体
+        content = Text()
+        for msg in item.messages:
+            # 使用你的 to_content_string()，并添加一点边距感
+            content.append(msg.to_content_string() + "\n", style="default")
+
+        # 3. 如果有 log，将其放在最下方 dim 显示
+        if item.log:
+            # 使用复合样式: 'dim' (亮度调暗) + 'italic' (斜体)
+            content.append(f"\nLog: {item.log}", style="dim italic green")
+
+        # 4. 返回带边框的 Panel
+        return Panel(
+            content,
+            title=title,
+            title_align="left",
+            border_style=f"dim cyan",
+            padding=(0, 1),
+        )
+
+    def syntax(self, code: str, lexer: str) -> None:
+        r = Syntax(
+            code,
+            lexer,
+            theme="ansi_dark",
+            background_color="default",  # 关键点：背景透明，不抢终端色
+        )
+        self.rprint("", r)
+
+    def json(self, value: Any) -> None:
+        """统一的 JSON 渲染工厂，使用 ansi_dark 以适配任意终端配色"""
+        r = Syntax(
+            json.dumps(value, indent=2, ensure_ascii=False),
+            "json",
+            theme="ansi_dark",
+            background_color="default",  # 关键点：背景透明，不抢终端色
+        )
+        self.rprint("", r)
+
+    def markdown(self, value: str) -> None:
+        r = Markdown(value, code_theme="ansi_dark")
+        self.rprint(r)
+
+    def hint(self, text: str) -> None:
+        """输出一行灰色斜体提示文本（适合辅助信息、帮助文本等）。"""
+        hint_text = Text(text, style="dim italic")
+        self.rprint(hint_text)
+
+    def info(self, text: str) -> None:
+        """输出信息（蓝色，可选信息图标 ℹ️）。"""
+        self.rprint(Text(f"ℹ️  {text}", style="bold cyan"))
+
+    def notice(self, text: str) -> None:
+        """输出通知/成功消息（绿色，带勾选图标 ✅）。"""
+        self.rprint(Text(f"✅  {text}", style="bold green"))
+
+    def error(self, text: str) -> None:
+        """输出错误消息（红色，带警告图标 ❌）。"""
+        self.rprint(Text(f"❌  {text}", style="bold red"))
 
 
 class TUIState(ABC):
@@ -80,6 +196,12 @@ class TUIState(ABC):
     def with_output(self, output: ConsoleOutput) -> None:
         """注册一个回调, 用来做渲染通知."""
         self._console_output = output
+
+    @property
+    def console(self) -> ConsoleOutput:
+        if self._console_output is None:
+            raise RuntimeError(f"console output not set")
+        return self._console_output
 
     def rprint(self, item: Renderable) -> None:
         if self._console_output:
@@ -114,8 +236,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     def __init__(
             self,
             host: MossHost | None = None,
+            style: Style = None,
     ):
         self.kb: KeyBindingsBase | None = None
+        self._style = style or DEFAULT_STYLE
         self.host: MossHost | None = host or MossHost.discover()
         self.runtime: RUNTIME = self._get_runtime(self.host)
         self._closing_event = ThreadSafeEvent()
@@ -123,16 +247,17 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._main_loop_task: asyncio.Task | None = None
         # 用子线程实现 print.
-        self._renderable_queue: Queue[Renderable] = Queue()
-        self._console_print_thread = threading.Thread(target=self._main_print_loop, daemon=True)
+        self._renderable_queue: Queue[list[Renderable] | None] = Queue()
+        self._console_print_thread = threading.Thread(target=self._main_render_loop, daemon=True)
         self._states: dict[str, TUIState] = {}
         self._main_console_output = ConsoleOutput("", lambda: True, self._renderable_queue)
         # 需要对应 states.
         self._current_state_name: str = ""
-        self._input_field = None
-        self._console = Console(
-        )
         self._prompt_session = PromptSession()
+        self._rich_console = Console(
+            force_terminal=True,
+            color_system='truecolor',
+        )
         self._dummy_completer = DummyCompleter()
 
     @classmethod
@@ -150,11 +275,11 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         return self.current_state().completer() or self._dummy_completer
 
     def welcome(self) -> None:
-        self._rprint("hello world")
+        self._direct_print("hello world")
 
     def farewell(self) -> None:
         """要在界面里输出告别信息. """
-        self._rprint("good bye")
+        self._direct_print("good bye")
 
     def default_key_bindings(self) -> KeyBindings:
         """定义一个可以修改的函数注册不同的快捷键. """
@@ -164,15 +289,20 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         def graceful_exit(event) -> None:
             self.close()
 
-        @kb.add('c-n')
+        # 添加 Shift+Enter 换行逻辑
+        @kb.add('c-j')
+        def multi_line_enter(event) -> None:
+            event.current_buffer.insert_text('\n')
+
+        @kb.add('c-p')
         def switch_next_state(event) -> None:
             if self._event_loop:
-                self._event_loop.call_soon_threadsafe(self.switch_to, True)
+                self._event_loop.call_soon_threadsafe(self._switch_to, True)
 
         @kb.add('c-b')
         def switch_previous_state(event) -> None:
             if self._event_loop:
-                self._event_loop.call_soon_threadsafe(self.switch_to, False)
+                self._event_loop.call_soon_threadsafe(self._switch_to, False)
 
         @kb.add('escape')
         def interrupt(event) -> None:
@@ -193,24 +323,30 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     def console(self) -> ConsoleOutput:
         return self._main_console_output
 
-    def _rprint(self, obj: Renderable) -> None:
+    def _direct_print(self, obj: Renderable) -> None:
         if isinstance(obj, OutputItem):
-            obj = f"> {obj.role}\n\n" + "\n".join([msg.to_content_string() for msg in obj.messages])
-        self._console.print(obj)
+            obj = self.console.format_output(obj)
+        self._rich_console.print(obj)
 
-    def _main_print_loop(self) -> None:
+    def _main_render_loop(self) -> None:
         """一个独立的输出线程"""
         while not self._closing_event.is_set():
             while not self._renderable_queue.empty():
-                item = self._renderable_queue.get_nowait()
-                self._rprint(item)
+                items = self._renderable_queue.get_nowait()
+                if items is None:
+                    return
+                for item in items:
+                    self._direct_print(item)
             try:
-                item = self._renderable_queue.get(block=True, timeout=0.5)
-                self._rprint(item)
+                items = self._renderable_queue.get(timeout=0.5)
             except Empty:
                 continue
+            if items is None:
+                return
+            for item in items:
+                self._direct_print(item)
 
-    def switch_state(self, state_name: str) -> None:
+    def _switch_state(self, state_name: str) -> None:
         """切换当前状态. """
         current_state = self.current_state()
         if current_state.name() == state_name:
@@ -220,30 +356,40 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         if state_name is not None:
             if state_name not in self._states:
                 raise RuntimeError(f"State {state_name} is not defined")
+            old_state_name = current_state.name()
             current_state.on_switch(False)
             self._current_state_name = state_name
             new_state = self._states[state_name]
+            new_state_name = state_name
             new_state.on_switch(True)
             # add switch notice.
-            notice = f"> from state {current_state.name()} to {state_name}"
+            notice = Rule(
+                f"From State `{old_state_name}` Switch to `{new_state_name}`",
+                style="cyan",
+                align="center",
+            )
             self.console.rprint(notice)
         return
 
-    def switch_to(self, next_or_previous: bool = True) -> None:
+    def _switch_to(self, next_or_previous: bool = True) -> None:
         """切换状态，True 为向后循环，False 为向前循环。"""
         names = list(self._states.keys())
         if not names:
+            return
+        if len(names) == 1:
+            self.console.hint("Only `{}` state exists".format(names[0]))
             return
 
         current_idx = names.index(self._current_state_name)
         # 计算新的索引 (支持循环)
         offset = 1 if next_or_previous else -1
         new_idx = (current_idx + offset) % len(names)
-        self.switch_state(names[new_idx])
+        self._switch_state(names[new_idx])
         return
 
     async def _main_loop(self) -> None:
         try:
+            self._event_loop = asyncio.get_running_loop()
             async with contextlib.AsyncExitStack() as stack:
                 # 启动 runtime.
                 await stack.enter_async_context(self.runtime)
@@ -253,47 +399,53 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     await stack.enter_async_context(state)
                 list(self._states.values())[0].on_switch(True)
                 # 发送一个初始讯号.
-                self.switch_state(self._current_state_name)
-                await  self._input_loop()
-        except asyncio.CancelledError:
-            pass
+                # render_loop_task = asyncio.create_task(self._main_render_loop())
+                input_loop_task = asyncio.create_task(self._input_loop())
+                self.current_state().on_switch(True)
+                await input_loop_task
         except Exception:
             tb = Traceback()
-            self._console.print(tb)
+            self._rich_console.print(tb)
         finally:
             self._closing_event.set()
 
     async def _input_loop(self) -> None:
-        with patch_stdout.patch_stdout():
-            while not self._closing_event.is_set():
-                item = await self._prompt_session.prompt_async(
-                    # 增加一个漂亮的底色分隔符或特殊的 prompt 符号
-                    message=lambda: f' {self._current_state_name}  ❯ ',
-                    multiline=False,
-                    completer=self._input_completer(),
-                    key_bindings=self.kb,
+        # 绑定快捷键.
+        kb_list: list[KeyBindingsBase] = [self.default_key_bindings()]
+        for state in self._states.values():
+            if kb := state.key_bindings():
+                state_kb = ConditionalKeyBindings(
+                    kb,
+                    Condition(self._is_alive_func(state.name())),
                 )
-                if item == self._exit_command:
-                    self._closing_event.set()
-                    return
-                self.current_state().handle_input(item)
-
-    async def _run_main(self) -> None:
-        self._event_loop = asyncio.get_running_loop()
-        # task 化, 方便 cancel.
-        self._main_loop_task = self._event_loop.create_task(self._main_loop())
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._main_loop_task
+                kb_list.append(state_kb)
+            # 合并所有的 key bindings.
+        self.kb = merge_key_bindings(kb_list)
+        while not self._closing_event.is_set():
+            with patch_stdout.patch_stdout(raw=True):
+                item = await self._prompt_session.prompt_async(
+                    message=lambda: f' {self._current_state_name}  ❯ ',
+                    style=self._style,
+                    key_bindings=self.kb,
+                    multiline=True,
+                    completer=DynamicCompleter(self._input_completer),
+                    complete_while_typing=True,
+                    complete_in_thread=True,
+                )
+            if not item:
+                continue
+            if item == self._exit_command:
+                self._closing_event.set()
+                return
+            self.current_state().handle_input(item)
 
     def close(self) -> None:
         """关闭系统. 可能在运行中被调用. """
         if self._closing_event.is_set():
             return
         self._closing_event.set()
-        if self._event_loop and self._main_loop_task:
-            if not self._main_loop_task.done():
-                # close soon
-                self._event_loop.call_soon_threadsafe(self._main_loop_task.cancel)
+        self._prompt_session.app.exit()
+        self._rich_console.print("graceful closing...", style="green")
 
     def _is_alive_func(self, state_name: str) -> Callable[[], bool]:
         def _is_alive() -> bool:
@@ -304,8 +456,6 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     def run(self) -> None:
         """运行到结束"""
-        # 绑定快捷键.
-        kb_list: list[KeyBindingsBase] = [self.default_key_bindings()]
         # 启动渲染循环.
         self._console_print_thread.start()
         # 准备 states.
@@ -321,35 +471,34 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 self._is_alive_func(state.name()),
                 self._renderable_queue,
             )
-            if kb := state.key_bindings():
-                state_kb = ConditionalKeyBindings(
-                    kb,
-                    Condition(self._is_alive_func(state.name())),
-                )
-                kb_list.append(state_kb)
+
             #  注册回调.
             state.with_output(output)
-        # 合并所有的 key bindings.
-        self.kb = merge_key_bindings(kb_list)
 
         if self._current_state_name not in self._states:
             raise RuntimeError(f"Default State {self._current_state_name} is not defined")
-        self.current_state().on_switch(True)
         # 创建 app.
-        loop = uvloop.new_event_loop()
+        if sys.platform == 'win32':
+            loop = asyncio.new_event_loop()
+        else:
+            loop = uvloop.new_event_loop()
         try:
             self.welcome()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._run_main())
+            loop.run_until_complete(self._main_loop())
+            # 等待运行结束
+            self._closing_event.set()
+            self._renderable_queue.put_nowait(None)
+            self._console_print_thread.join()
+            self._rich_console.print("closed", style="green")
             self.farewell()
         except KeyboardInterrupt:
             # 用来做退出?
             pass
         except Exception:
             tb = Traceback()
-            self._console.print(tb)
+            self._rich_console.print(tb)
         finally:
             loop.close()
             self._closing_event.set()
-            self._console_print_thread.join()
             raise SystemExit(0)

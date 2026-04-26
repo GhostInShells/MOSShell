@@ -1,0 +1,16 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+.idea
+.vscode
+.moss_ws
+dist
+build
+
+# 辅助文件
+.ai_partners
+.design
+.discuss
+.memory

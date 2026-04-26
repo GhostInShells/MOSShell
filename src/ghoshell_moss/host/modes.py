@@ -3,7 +3,7 @@ from ghoshell_moss.core.codex.discover import scan_package
 from ghoshell_moss.host.abcd.environment import MODE_STUB_PACKAGE
 from importlib import import_module
 from pathlib import Path
-from .manifests import PackageManifest
+from .manifests import PackageManifests
 import inspect
 import shutil
 
@@ -97,7 +97,7 @@ def _ensure_manifest_to_mode(package_path: str, mode: MossMode) -> MossMode:
         # 使用当前发现该 Mode 的包路径来初始化资源扫描
         if mode.import_path:
             package_path = mode.import_path
-        mode.with_manifest(PackageManifest(package_path))
+        mode.with_manifest(PackageManifests(package_path))
     return mode
 
 

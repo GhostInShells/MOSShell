@@ -4,16 +4,13 @@ import janus
 
 from ghoshell_moss import Message, MOSShell
 from ghoshell_moss.host.abcd.host_interface import (
-    MossRuntime, ToolSet, Perception, MossMode,
-    Conceive,
+    ToolSet, MossMode,
 )
 from ghoshell_moss.host.abcd.app import AppStore
 from ghoshell_moss.host.abcd.matrix import Matrix
-from ghoshell_moss.core.concepts.mindflow import Mindflow
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
-from .abcd import OutputItem
 from .app_store import HostAppStore
 from .matrix import HostMatrix
 from ghoshell_moss.host.abcd.environment import Environment
@@ -56,10 +53,8 @@ class HostAsToolSet(ToolSet):
         self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.session_scope}>"
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
-        self._conceive_func: Conceive | None = None
-
         self._action_task: asyncio.Task | None = None
-
+        self._started = False
         # --- shell action loop --- #
         self._shell_logos_queue: janus.Queue = janus.Queue()
 
@@ -80,7 +75,7 @@ class HostAsToolSet(ToolSet):
             instructions.append(mode_instruction)
         if static_messages := self._ctml_shell.static_messages().strip():
             instructions.append(static_messages)
-        return "\n".join(instructions)
+        return "\n\n".join(instructions)
 
     def moss_dynamic_messages(self) -> list[Message]:
         return self._ctml_shell.dynamic_messages()
@@ -92,34 +87,8 @@ class HostAsToolSet(ToolSet):
             with_dynamic: bool = True,
     ) -> list[Message]:
         self._check_running()
-        if timeout and timeout > 0:
-            await asyncio.wait_for(self._observe(timeout), timeout=timeout)
-        else:
-            await self._observe(timeout=timeout)
         # 返回最新的 perception.
-        return list(self._pop_perception().as_messages())
-
-    async def _observe(self, timeout: float | None = None) -> None:
-        """
-        一次观察包含两个语义.
-        1. 躯体运行正常结束, 或者异常结束.
-        2. 预热了 refresh metas, 拿到最新的 meta.
-        在这个过程中, 也会新的数据积累.
-        """
-        refresh = self._ctml_shell.refresh_metas(timeout=timeout)
-        if self._action_task is not None and not self._action_task.done():
-            await self._action_task
-        await refresh
-
-    def _pop_perception(self) -> Perception:
-        """
-        perception 由三部分组成:
-        1. buffer 的外部世界输入, 通过 mindflow 进行加工和过滤.
-        2. 已经运行结束的命令.
-        3. 正在执行中的命令.
-        4. dynamic
-        """
-        pass
+        return []
 
     async def moss_exec(
             self,
@@ -151,7 +120,7 @@ class HostAsToolSet(ToolSet):
             return interpreter.interpretation().executed_messages()
 
     def is_running(self) -> bool:
-        pass
+        return self._started and not self._close_event.is_set()
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
         return self._close_event.wait_sync(timeout)
@@ -181,15 +150,16 @@ class HostAsToolSet(ToolSet):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            return self
+            raise RuntimeError('Host Toolset is already started')
         self._started = True
         await self._async_exit_stack.__aenter__()
         # 启动 matrix.
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 启动 app 并且 bringup
-        await self._async_exit_stack.enter_async_context(self._app_store)
+        # await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
+        self._started = True
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

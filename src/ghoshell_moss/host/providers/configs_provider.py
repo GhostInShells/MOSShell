@@ -3,7 +3,7 @@ from typing import Type, Iterable
 from ghoshell_container import IoCContainer, BootstrapProvider, INSTANCE
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.configs import ConfigStore, YamlConfigStore
-from ghoshell_moss.host.abcd.manifests import Manifest
+from ghoshell_moss.host.abcd.manifests import Manifests
 
 __all__ = [
     'HostEnvConfigStoreProvider',
@@ -31,7 +31,7 @@ class HostEnvConfigStoreProvider(BootstrapProvider):
 
     def bootstrap(self, container: IoCContainer) -> None:
         this = container.force_fetch(ConfigStore)
-        manifest = container.get(Manifest)
+        manifest = container.get(Manifests)
         if manifest:
             for config_info in manifest.configs().values():
                 this.get_or_create(config_info.config)

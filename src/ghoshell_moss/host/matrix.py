@@ -9,7 +9,7 @@ from ghoshell_container import IoCContainer, Container, Provider
 from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
 from ghoshell_moss.core.concepts.session import Session
-from ghoshell_moss.host.abcd.manifests import Manifest
+from ghoshell_moss.host.abcd.manifests import Manifests
 from ghoshell_moss.host.abcd.matrix import Matrix, Cell
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_interface import MossMode
@@ -100,7 +100,7 @@ class HostMatrix(Matrix):
             mode: MossMode,
             env: Environment,
             app_store: AppStore,
-            manifest: Manifest,
+            manifest: Manifests,
             workspace: Workspace,
             logger: LoggerItf | logging.Logger | None = None,
     ):
@@ -160,7 +160,7 @@ class HostMatrix(Matrix):
         container.set(HostMatrix, self)
         container.set(Environment, self.env)
         container.set(Workspace, self._workspace)
-        container.set(Manifest, self._manifest)
+        container.set(Manifests, self._manifest)
         container.set(Cell, self._this_cell)
 
         # 注册 manifest providers. 包含环境与模式的双重配置.
@@ -226,7 +226,7 @@ class HostMatrix(Matrix):
         return self._container.force_fetch(Session)
 
     @property
-    def manifests(self) -> Manifest:
+    def manifests(self) -> Manifests:
         return self._manifest
 
     @property

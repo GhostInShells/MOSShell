@@ -168,7 +168,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             self.push_task_with_paths(paths, task)
 
     def push_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
+        if not self.is_running():
+            return None
         self._on_compile_task_queue.sync_q.put_nowait((paths, task))
+        return None
 
     # --- status --- #
 
@@ -389,14 +392,10 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                     except Exception as e:
                         self.logger.exception("%s cancel main_loop_task failed: %s", self.log_prefix, e)
                 self._main_loop_task = None
+                self._on_compile_task_queue.shutdown(immediate=True)
                 if self._compiling_loop_task and not self._compiling_loop_task.done():
-                    self._compiling_loop_task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError):
                         await self._compiling_loop_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:
-                        self.logger.exception("%s cancel compiling_loop_task failed: %s", self.log_prefix, e)
             except Exception as e:
                 self.logger.exception(e)
                 raise

@@ -14,7 +14,7 @@ __all__ = [
     'TopicInfo',
     'ConfigInfo',
     'ProviderInfo',
-    'Manifest',
+    'Manifests',
 ]
 
 
@@ -144,7 +144,7 @@ class ProviderInfo:
     @property
     def docstring(self) -> str:
         """docstring  of the contract"""
-        return inspect.getdoc(self.provider.contract())
+        return inspect.getdoc(self.provider.contract()) or ''
 
     @property
     def provider_type(self) -> str:
@@ -181,7 +181,7 @@ class ProviderInfo:
             return f"# [MOSS] Source unavailable (Compiled or Dynamic: {type(contract).__name__})"
 
 
-class Manifest:
+class Manifests:
     """
     MOSS 在环境中发现的各种资源的声明.
     """

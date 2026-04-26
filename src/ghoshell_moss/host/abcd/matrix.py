@@ -6,7 +6,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.session import Session
-from .manifests import Manifest
+from .manifests import Manifests
 import asyncio
 
 __all__ = ['Matrix', 'Cell']
@@ -38,6 +38,18 @@ class Cell(ABC):
         节点是否在运行中.
         """
         pass
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "address": self.address,
+            "name": self.name,
+            "description": self.description,
+            "docstring": self.docstring,
+            "type": self.type,
+            "where": self.where,
+            "log_name": self.log_name,
+            "is_alive": self.is_alive(),
+        }
 
 
 CELL_ADDRESS = str
@@ -99,7 +111,7 @@ class Matrix(ABC):
 
     @property
     @abstractmethod
-    def manifests(self) -> Manifest:
+    def manifests(self) -> Manifests:
         """
         返回持有的环境发现资源.
         """

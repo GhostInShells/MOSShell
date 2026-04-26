@@ -5,7 +5,7 @@ from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
-from .manifests import Manifest
+from .manifests import Manifests
 from .matrix import Matrix
 from .app import AppStore
 from ghoshell_moss.core.concepts.session import Session, OutputItem
@@ -310,7 +310,7 @@ class MossMode(BaseModel):
         description="找到模式实例的文件绝对路径. 比如 xxxx/src/MOSS/modes/default/MODE.md "
     )
 
-    __manifest__: Manifest | None = None
+    __manifest__: Manifests | None = None
 
     @classmethod
     def from_markdown(cls, file: Path) -> Self:
@@ -342,7 +342,7 @@ class MossMode(BaseModel):
         post = frontmatter.Post(content=self.instruction, **meta_data)
         return frontmatter.dumps(post)
 
-    def with_manifest(self, manifest: Manifest, override: bool = False) -> Self:
+    def with_manifest(self, manifest: Manifests, override: bool = False) -> Self:
         """
         define manifest
         """
@@ -351,9 +351,9 @@ class MossMode(BaseModel):
         return self
 
     @property
-    def manifest(self) -> Manifest:
+    def manifest(self) -> Manifests:
         if self.__manifest__ is None:
-            self.__manifest__ = Manifest()
+            self.__manifest__ = Manifests()
         return self.__manifest__
 
 
@@ -381,7 +381,7 @@ class MossHost(ABC):
 
     @property
     @abstractmethod
-    def manifest(self) -> Manifest:
+    def manifests(self) -> Manifests:
         """
         返回当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.

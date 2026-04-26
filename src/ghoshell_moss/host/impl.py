@@ -4,15 +4,16 @@ from ghoshell_moss.host.abcd import ToolSet
 from ghoshell_moss.host.abcd.host_interface import (
     MossHost, MossMode, MossRuntime,
 )
-from ghoshell_moss.host.abcd.manifests import Manifest
+from ghoshell_moss.host.abcd.manifests import Manifests
 from ghoshell_moss.host.abcd.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.host.abcd.environment import Environment
-from ghoshell_moss.host.manifests import PackageManifest, MergedManifest
+from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.matrix import HostMatrix
+from ghoshell_moss.host.toolset import HostAsToolSet
 import logging
 
 __all__ = ['Host']
@@ -34,7 +35,7 @@ class Host(MossHost):
         self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()
-        self._env_manifest = PackageManifest.from_environment(self.env)
+        self._env_manifest = PackageManifests.from_environment(self.env)
         self._logger: LoggerItf | None = logger
 
         self._env_modes = {mode.name: mode for mode in list_modes_from_root_package()}
@@ -47,7 +48,7 @@ class Host(MossHost):
             if moss_mode is None:
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
         self._moss_mode: MossMode = moss_mode
-        self._manifest = MergedManifest([self._env_manifest, self._moss_mode.manifest])
+        self._manifest = MergedManifests([self._env_manifest, self._moss_mode.manifest])
         # 获取一个用来做环境发现的 apps.
         # 创建 container, 但是先不启动它.
         self._app_store = HostAppStore(
@@ -73,7 +74,7 @@ class Host(MossHost):
         return _host_instance
 
     @property
-    def manifest(self) -> Manifest:
+    def manifests(self) -> Manifests:
         return self._manifest
 
     @property
@@ -101,5 +102,10 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def run_as_toolset(self, *, mode: MossMode | str = 'default', session_id: str = 'default') -> ToolSet:
-        pass
+    def run_as_toolset(self) -> ToolSet:
+        return HostAsToolSet(
+            env=self.env,
+            workspace=self._workspace,
+            mode=self._moss_mode,
+            matrix=self._matrix,
+        )

@@ -4,19 +4,19 @@ from ghoshell_moss.core.helpers.func import parse_function_interface
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 
-__all__ = ['ToolRegistrar']
+__all__ = ['REPLRegistrar']
 
 
 class Metadata(TypedDict):
     name: str
-    sig: inspect.Signature
+    sig: inspect.Signature | None
     doc: str
     help: str
     obj: Any
     interface: str | None
 
 
-class ToolRegistrar(Completer):
+class REPLRegistrar(Completer):
     def __init__(
             self,
             tool_objects: Dict[str, Any],
@@ -148,8 +148,8 @@ class ToolRegistrar(Completer):
                 # 获取已输入的参数，避免重复补全
                 args_part = text.split('(')[-1]
                 existing = {p.split('=')[0].strip() for p in args_part.split(',') if '=' in p}
-
-                for p_name, param in meta['sig'].parameters.items():
+                parameters = meta['sig'].parameters
+                for p_name, param in parameters.items():
                     if p_name not in existing:
                         yield Completion(
                             f"{p_name}=",
@@ -178,9 +178,16 @@ class ToolRegistrar(Completer):
         if parent_path in self._metadata_cache:
             for name, meta in self._metadata_cache[parent_path].items():
                 if name.startswith(prefix):
-                    display = f"{name}{meta['sig']}" if meta['sig'] else name
+                    is_method = meta['sig'] is not None
+                    display = f"{name}{meta['sig']}" if is_method else name
+                    if not is_method:
+                        suffix = ''
+                    elif len(meta['sig'].parameters) == 0:
+                        suffix = '()'
+                    else:
+                        suffix = '('
                     yield Completion(
-                        name,
+                        name + suffix,
                         start_position=-len(prefix),
                         display=display,
                         display_meta=meta['help'],
@@ -188,6 +195,9 @@ class ToolRegistrar(Completer):
 
     def is_command(self, line: str) -> bool:
         return line.startswith(self._command_mark)
+
+    def match(self, line: str) -> bool:
+        return self.is_command(line) or self.is_help(line)
 
     def is_help(self, line: str) -> bool:
         return line.startswith(self._help_mark)
@@ -236,77 +246,3 @@ class ToolRegistrar(Completer):
             raise ValueError(f"Attribute Error: {e}")
         except Exception as e:
             raise Exception(f"Eval failed: {str(e)}")
-
-
-if __name__ == "__main__":
-    import asyncio
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.patch_stdout import patch_stdout
-    import asyncio
-
-
-    class Arm:
-        """arm doc"""
-
-        def move(self, x: int, y: int):
-            """move doc"""
-            return f"Arm moved to ({x}, {y})"
-
-
-    class Robot:
-        """robot doc"""
-
-        def __init__(self):
-            self.arm = Arm()
-
-        async def say(self, message: str):
-            """ say doc"""
-            await asyncio.sleep(0.1)  # 模拟异步
-            return f"Robot says: {message}"
-
-
-    # 实例化对象
-    _robot = Robot()
-
-
-    async def run_interactive_debugger(registrar: ToolRegistrar):
-        # 初始化 PromptSession，直接注入 Registrar 作为 Completer
-        session = PromptSession(completer=registrar)
-        print("--- MOSS Debugger Loaded ---")
-        print("Usage example: /robot.arm.move(10, 20) or /robot.say('Hello')")
-        print("Type 'exit' to quit.\n")
-
-        while True:
-            try:
-                # 使用 patch_stdout 确保即使在异步任务中 print 也能正常对齐
-                with patch_stdout():
-                    line = await session.prompt_async("moss> ")
-
-                line = line.strip()
-                if line in ['exit', 'quit']:
-                    break
-                if not line:
-                    continue
-
-                # 执行输入
-                try:
-                    result = registrar.eval_input(line)
-
-                    # 统一处理同步值与异步协程
-                    if asyncio.iscoroutine(result):
-                        result = await result
-
-                    if result is not None:
-                        print(f"Result: {result}")
-                except Exception as e:
-                    print(f"Execution Error: {e}")
-
-            except (EOFError, KeyboardInterrupt):
-                break
-
-
-    # 运行测试
-    _arm = Arm()
-    registrar = ToolRegistrar(tool_objects={"robot": _robot, "arm": _arm}, command_mark="/")
-
-    asyncio.run(run_interactive_debugger(registrar))

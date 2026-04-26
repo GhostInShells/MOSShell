@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+WORKDIR /app
+# 安装必要的系统依赖（例如 gcc 等，如果你用了复杂的库）
+RUN apt-get update && apt-get install -y gcc
+COPY . .
+RUN pip install -r requirements.txt
+# 开启伪终端模式，这是 TUI 测试的关键
+CMD ["python", "main.py"]

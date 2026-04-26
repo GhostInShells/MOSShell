@@ -20,15 +20,19 @@ class OutputItem(BaseModel):
         default='log',
         description="消息的类型.",
     )
+    log: str = Field(
+        default="",
+        description="some log information.",
+    )
     messages: list[Message] = Field(
         default_factory=list,
         description='messages',
     )
 
     @classmethod
-    def new(cls, role: Role | str, *messages: Message) -> Self:
+    def new(cls, role: Role | str, *messages: Message, log: str = '') -> Self:
         if isinstance(role, str):
-            return cls.model_construct(role=role, messages=[]).with_messages(*messages)
+            return cls.model_construct(role=role, messages=[], log=log).with_messages(*messages)
         else:
             return cls(role=role).with_messages(*messages)
 

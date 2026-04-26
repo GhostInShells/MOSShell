@@ -52,7 +52,7 @@ def list_providers(
     host = Host(mode=mode)
     # 1. 执行发现逻辑
     # 默认从 MOSS.manifests.providers 扫描，这是我们在 Environment 中约定的路径
-    all_providers = host.manifest.providers()
+    all_providers = host.manifests.providers()
 
     # 2. 执行过滤逻辑
     results = list(match_provider_infos(all_providers, search)) if search else all_providers
@@ -130,7 +130,7 @@ def list_topics(
     """
     host = Host(mode=mode)
     # 1. 发现
-    all_topics = host.manifest.topics()
+    all_topics = host.manifests.topics()
 
     # 2. 过滤
     results = list(match_topic_infos(all_topics, search)) if search else list(all_topics.values())
@@ -210,7 +210,7 @@ def list_configs(
     Explore and manage environment configurations in MOSS.
     """
     host = Host(mode=mode)
-    all_configs = host.manifest.configs()
+    all_configs = host.manifests.configs()
 
     # 2. 匹配逻辑 (支持简单模糊匹配)
     results = [
@@ -282,7 +282,7 @@ def list_channels(
     List and inspect available communication channels.
     """
     host = Host()
-    channels = host.manifest.channels()
+    channels = host.manifests.channels()
 
     # 过滤
     results = {name: c for name, c in channels.items() if search.lower() in name.lower()}
@@ -291,7 +291,7 @@ def list_channels(
         # 给 AI 返回纯净数据
         data = {name: {"name": name, "desc": c.description(), "type": str(type(c))}
                 for name, c in results.items()}
-        console.print_json(data=data)
+        console.json(data=data)
         return
     _display_channel_table(results, is_filtered=bool(search))
 
@@ -319,7 +319,7 @@ def list_primitives(
     Explore MOSS Primitives (Commands).
     """
     host = Host()
-    primitives = host.manifest.primitives()
+    primitives = host.manifests.primitives()
 
     results = {name: cmd for name, cmd in primitives.items() if search.lower() in name.lower()}
 
@@ -330,7 +330,7 @@ def list_primitives(
             "description": cmd.meta().description,
             "params": cmd.meta().json_schema
         } for name, cmd in results.items()}
-        console.print_json(data=data)
+        console.json(data=data)
         return
 
     _display_command_detail(list(results.values())[0])
@@ -346,7 +346,7 @@ def _display_command_detail(cmd):
 
     # 展示 JSON Schema
     console.print("\n[bold]Arguments Schema:[/bold]")
-    console.print_json(data=meta.json_schema)
+    console.json(data=meta.json_schema)
 
 
 @manifest_app.command(name="contracts")
@@ -387,7 +387,7 @@ def list_contracts(
                 "doc": c['doc']
             } for c in results
         }
-        console.print_json(data=data)
+        console.json(data=data)
         return
 
     # 2. 唯一匹配显示详情，否则显示列表
