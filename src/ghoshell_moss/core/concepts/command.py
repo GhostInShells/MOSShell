@@ -32,11 +32,14 @@ from typing import (
     Protocol,
     AsyncIterator, Callable, Coroutine, AsyncIterable, TypeAlias,
 )
-
+from jsonargparse import ArgumentParser as JsonArgumentParser
+from argparse import ArgumentParser
+import argcomplete
 from ghoshell_common.helpers import uuid, Timeleft
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field, TypeAdapter, AwareDatetime
 from typing_extensions import Self
+
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
@@ -66,7 +69,7 @@ __all__ = [
     "CommandTokenSeq",
     "CommandType",
     "CommandWrapper",
-    "PyCommand",
+    "PyCommand", "CliCommand",
     "make_command_group",
     "CommandTaskContextVar",
     "ObserveError",
@@ -406,6 +409,25 @@ class Command(Generic[RESULT], ABC):
         pass
 
 
+class CliCommand(Command, ABC):
+
+    @abstractmethod
+    def cli_usage(self) -> str:
+        pass
+
+    @abstractmethod
+    def cli_help(self) -> str:
+        pass
+
+    @abstractmethod
+    def cli_argument_parser(self) -> ArgumentParser:
+        pass
+
+    @abstractmethod
+    async def cli(self, arguments: str | list[str]) -> RESULT | str:
+        pass
+
+
 class CommandCtx(Protocol):
 
     def __enter__(self):
@@ -513,7 +535,13 @@ class CommandWrapper(Command[RESULT]):
             return await self._func(*args, **kwargs)
 
 
-class PyCommand(Generic[RESULT], Command[RESULT]):
+class _MockSystemError(Exception):
+    def __init__(self, status, message: str | None = None) -> None:
+        self.message = message or ''
+        super().__init__(message)
+
+
+class PyCommand(CliCommand):
     """
     将 python 的 Coroutine 函数封装成 Command
     通过反射获取 interface.
@@ -579,6 +607,7 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
         self._blocking = blocking
         self._tags = tags
         self._meta = meta
+        self._json_arg_parser: JsonArgumentParser | None = None
         self._priority = priority
         self._delta_types = delta_types if delta_types is not None else list(CommandDeltaArgName2TypeMap.keys())
         delta_arg = None
@@ -610,17 +639,60 @@ class PyCommand(Generic[RESULT], Command[RESULT]):
             return self._partial
         return None
 
+    def cli_argument_parser(self) -> JsonArgumentParser:
+        if self._json_arg_parser is None:
+            self._json_arg_parser = JsonArgumentParser(prog=self._name)
+            self._json_arg_parser.description = self.meta().description
+            self._json_arg_parser.add_function_arguments(self._func, as_positional=True)
+            setattr(self._json_arg_parser, 'exit', self._cli_exit)
+        return self._json_arg_parser
+
+    @staticmethod
+    def _cli_exit(status: int = 0, message: str | None = None) -> None:
+        raise _MockSystemError(status, message)
+
+    def cli_help(self) -> str:
+        return self.cli_argument_parser().format_help()
+
+    def cli_usage(self) -> str:
+        return self.cli_argument_parser().format_usage()
+
+    async def cli(self, arguments: str | list[str]) -> RESULT:
+        import shlex
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        if isinstance(arguments, list):
+            parts = arguments
+        elif isinstance(arguments, str):
+            parts = shlex.split(arguments)
+        else:
+            raise ValueError(f"argument must be str or list, `{arguments}` given")
+        parser = self.cli_argument_parser()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            with redirect_stderr(buffer):
+                try:
+                    cfg = parser.parse_args(parts, env=False)
+                    r = await self.__call__(**cfg.as_dict())
+                except _MockSystemError as e:
+                    r = e.message or None
+                if r is None:
+                    if value := buffer.getvalue():
+                        return value
+                return r
+
     def _generate_meta(self) -> CommandMeta:
         meta = CommandMeta(name=self._name)
         meta.chan = self._chan or ""
         doc = self._unwrap_string_type(self._doc_or_fn, "")
-        meta.description = doc
         meta.interface = self._gen_interface(meta.name, doc)
         meta.available = self.is_available()
         meta.delta_arg = self._delta_arg
         meta.call_soon = self._call_soon
         meta.tags = self._tags or []
         meta.blocking = self._blocking
+        docstring = doc or self._func_itf.docstring
+        meta.description = docstring.splitlines()[0] if docstring else ''
         # 标记 meta 是否是动态变更的.
         meta.dynamic = self._is_dynamic_itf
         meta.priority = self._priority

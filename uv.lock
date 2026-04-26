@@ -82,6 +82,15 @@ wheels = [
 ]
 
 [[package]]
+name = "argcomplete"
+version = "3.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/61/0b9ae6399dd4a58d8c1b1dc5a27d6f2808023d0b5dd3104bb99f45a33ff6/argcomplete-3.6.3.tar.gz", hash = "sha256:62e8ed4fd6a45864acc8235409461b72c9a28ee785a2011cc5eb78318786c89c", size = 73754 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/f5/9373290775639cb67a2fce7f629a1c240dce9f12fe927bc32b2736e16dfc/argcomplete-3.6.3-py3-none-any.whl", hash = "sha256:f5007b3a600ccac5d25bbce33089211dfd49eab4a7718da3f10e3082525a92ce", size = 43846 },
+]
+
+[[package]]
 name = "async-timeout"
 version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -553,9 +562,11 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "anyio" },
+    { name = "argcomplete" },
     { name = "ghoshell-common" },
     { name = "ghoshell-container" },
     { name = "janus" },
+    { name = "jsonargparse" },
     { name = "openai" },
     { name = "orjson" },
     { name = "pillow" },
@@ -614,6 +625,7 @@ requires-dist = [
     { name = "aiozmq", marker = "extra == 'zmq'", specifier = ">=1.0.0" },
     { name = "anthropic", specifier = ">=0.84.0" },
     { name = "anyio", specifier = ">=4.12.1" },
+    { name = "argcomplete", specifier = ">=3.6.3" },
     { name = "circus", marker = "extra == 'matrix'", specifier = ">=0.19.0" },
     { name = "eclipse-zenoh", marker = "extra == 'matrix'", specifier = ">=1.8.0" },
     { name = "fakeredis", marker = "extra == 'redis'", specifier = ">=2.32.1" },
@@ -621,6 +633,7 @@ requires-dist = [
     { name = "ghoshell-common", specifier = ">=0.5.0" },
     { name = "ghoshell-container", specifier = ">=0.3.1" },
     { name = "janus", specifier = ">=2.0.0" },
+    { name = "jsonargparse", specifier = ">=4.48.0" },
     { name = "openai", specifier = ">=2.8.1" },
     { name = "orjson", specifier = ">=3.11.8" },
     { name = "pillow", specifier = ">=12.1.0" },
@@ -870,6 +883,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/47/66/eea81dfff765ed66c68fd2ed8c96245109e13c896c2a5015c7839c92367e/jiter-0.13.0-cp314-cp314t-win32.whl", hash = "sha256:24dc96eca9f84da4131cdf87a95e6ce36765c3b156fc9ae33280873b1c32d5f6", size = 201196 },
     { url = "https://files.pythonhosted.org/packages/ff/32/4ac9c7a76402f8f00d00842a7f6b83b284d0cf7c1e9d4227bc95aa6d17fa/jiter-0.13.0-cp314-cp314t-win_amd64.whl", hash = "sha256:0a8d76c7524087272c8ae913f5d9d608bd839154b62c4322ef65723d2e5bb0b8", size = 204215 },
     { url = "https://files.pythonhosted.org/packages/f9/8e/7def204fea9f9be8b3c21a6f2dd6c020cf56c7d5ff753e0e23ed7f9ea57e/jiter-0.13.0-cp314-cp314t-win_arm64.whl", hash = "sha256:2c26cf47e2cad140fa23b6d58d435a7c0161f5c514284802f25e87fddfe11024", size = 187152 },
+]
+
+[[package]]
+name = "jsonargparse"
+version = "4.48.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/03/fb33f57f4987eb5eef2f221dbeccb482b6b221ae97161498ff2e4ce41c55/jsonargparse-4.48.0.tar.gz", hash = "sha256:128f0897951190a08820c282b92408e2e9a508ef6d439f02bdb87244171e77d8", size = 122074 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/e9/c922101c1e80455d4b44b766b353dafc990da350228fc2515790e5949dd5/jsonargparse-4.48.0-py3-none-any.whl", hash = "sha256:c6a92fd71eb256437371750bb11f436b9c3294da2535f1b0406346816f04be16", size = 131277 },
 ]
 
 [[package]]

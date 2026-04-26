@@ -9,9 +9,11 @@ requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.84.0",
     "anyio>=4.12.1",
+    "argcomplete>=3.6.3",
     "ghoshell-common>=0.5.0",
     "ghoshell-container>=0.3.1",
     "janus>=2.0.0",
+    "jsonargparse>=4.48.0",
     "openai>=2.8.1",
     "orjson>=3.11.8",
     "pillow>=12.1.0",

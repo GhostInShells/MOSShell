@@ -211,3 +211,15 @@ async def test_command_refresh_meta():
     assert command.meta().description == expect
     # wrapped 没有同步更新? 同步更新了.
     assert wrapped.meta().description == expect
+
+
+@pytest.mark.asyncio
+async def test_pycommand_argument_parser():
+    async def foo(val: int) -> int:
+        """docstring as help"""
+        return val + 123
+
+    command = PyCommand(foo)
+    assert 'docstring as help' in command.cli_argument_parser().format_help()
+    assert await command.cli("123") == 246
+    assert "docstring as help" in await command.cli("--help")

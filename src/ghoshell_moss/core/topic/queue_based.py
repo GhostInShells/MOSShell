@@ -123,7 +123,7 @@ class QueueBasedSubscriber(Subscriber[TOPIC_MODEL | None]):
                 raise TopicClosedError()
             # 业务侧才复制.
             return item.model_copy()
-        except janus.QueueShutDown:
+        except janus.AsyncQueueShutDown:
             raise TopicClosedError()
 
     async def poll_model(self, timeout: float | None = None) -> TOPIC_MODEL | None:
