@@ -2,7 +2,7 @@ import logging
 from typing import Type
 
 from ghoshell_moss.contracts.workspace import Workspace
-from ghoshell_moss.contracts.logger import LoggerItf, config_logger_from_yaml
+from ghoshell_moss.contracts.logger import LoggerItf, config_logger_from_yaml, default_logger_formatter
 from ghoshell_container import Provider, IoCContainer
 from logging.handlers import TimedRotatingFileHandler
 from ghoshell_moss.host.abcd import Matrix
@@ -59,7 +59,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
             handler = self._log_handler
             # default handler
             if handler is None:
-                logger_file_name = self._logger_name.replace('.', '_')
+                logger_file_name = logger_name.replace('.', '_')
                 logger_file_name = logger_file_name + '.log'
                 # 约定的日志存储路径在 workspace/runtime/logs/moss-app-name.log 这样的路径下.
                 filename = ws.runtime().sub_storage('logs').abspath().joinpath(logger_file_name)
@@ -70,5 +70,7 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
                     backupCount=5,
                 )
                 handler.set_name(self._moss_file_handler_name)
+                handler.setLevel(logging.INFO)
+                handler.setFormatter(default_logger_formatter())
             logger.addHandler(handler)
         return logger

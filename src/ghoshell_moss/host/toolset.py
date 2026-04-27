@@ -1,10 +1,10 @@
-from typing import Literal, Self
+from typing import Self
 
 import janus
 
 from ghoshell_moss import Message, MOSShell
-from ghoshell_moss.host.abcd.host_interface import (
-    ToolSet, MossMode,
+from ghoshell_moss.host.abcd.host_design import (
+    IToolSet, Mode,
 )
 from ghoshell_moss.host.abcd.app import AppStore
 from ghoshell_moss.host.abcd.matrix import Matrix
@@ -17,14 +17,16 @@ from ghoshell_moss.host.abcd.environment import Environment
 import contextlib
 import asyncio
 
+__all__ = ['IToolSetImpl']
 
-class HostAsToolSet(ToolSet):
+
+class IToolSetImpl(IToolSet):
 
     def __init__(
             self,
             env: Environment,
             workspace: Workspace,
-            mode: MossMode,
+            mode: Mode,
             matrix: HostMatrix,
     ):
         env.bootstrap()
@@ -79,6 +81,9 @@ class HostAsToolSet(ToolSet):
 
     def moss_dynamic_messages(self) -> list[Message]:
         return self._ctml_shell.dynamic_messages()
+
+    def moss_static_messages(self) -> str:
+        return self._ctml_shell.static_messages()
 
     async def moss_observe(
             self,

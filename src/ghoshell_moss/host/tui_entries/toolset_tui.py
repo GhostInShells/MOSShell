@@ -1,6 +1,6 @@
-from typing import Callable, Iterable, Self, Coroutine
+from typing import Iterable
 
-from ghoshell_moss.host.abcd import MossHost, ToolSet
+from ghoshell_moss.host.abcd import IHost, IToolSet
 from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, ConsoleOutput
 from ghoshell_moss.host.tui.repl_state import REPLState
 from ghoshell_moss.host.tui.inspector_matrix import MatrixREPL
@@ -11,13 +11,23 @@ from ghoshell_moss.core.concepts.session import OutputItem
 class MOSSToolSetInspector:
     """封装对 ToolSet 的操作与观测接口。"""
 
-    def __init__(self, toolset: ToolSet, output: ConsoleOutput) -> None:
+    def __init__(self, toolset: IToolSet, output: ConsoleOutput) -> None:
         self._toolset = toolset
         self._output = output
 
     def instructions(self) -> None:
-        """获取当前 Runtime 的指令上下文 (Instruction)。"""
+        """获取当前 MOSS 的指令上下文 (Instruction)。"""
         self._output.syntax(self._toolset.moss_instruction(), 'xml')
+
+    def dynamic(self) -> None:
+        """获取当前 MOSS 的动态上下文讯息. """
+        messages = self._toolset.moss_dynamic_messages()
+        self._output.output(OutputItem.new("Shell", *messages, log="moss dynamic instructions"))
+
+    def static(self) -> None:
+        """获取当前 MOSS 的静态上下文讯息. """
+        static = self._toolset.moss_static_messages()
+        self._output.syntax(static, 'xml')
 
     async def exec(self, command: str, interrupt: bool = True) -> None:
         """
@@ -43,8 +53,8 @@ class ToolSetState(REPLState):
 
     def __init__(
             self,
-            host: MossHost,
-            toolset: ToolSet,
+            host: IHost,
+            toolset: IToolSet,
             name: str = 'Toolset',
     ) -> None:
         self._host = host
@@ -59,13 +69,14 @@ class ToolSetState(REPLState):
         }
 
     async def _on_text_input(self, console_input: str) -> None:
-        self.console.rprint("receive text input: ", console_input)
+        result = await self._toolset.moss_exec(console_input)
+        self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 
-class ToolsetTUI(MossHostTUI[ToolSet]):
+class ToolsetTUI(MossHostTUI[IToolSet]):
 
     @classmethod
-    def _get_runtime(cls, host: MossHost) -> ToolSet:
+    def _get_runtime(cls, host: IHost) -> IToolSet:
         return host.run_as_toolset()
 
     def create_states(self) -> Iterable[TUIState]:

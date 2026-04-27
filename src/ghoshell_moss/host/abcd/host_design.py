@@ -3,11 +3,12 @@ from typing import Callable, Iterable
 
 from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, abstractclassmethod
 
 from .manifests import Manifests
 from .matrix import Matrix
 from .app import AppStore
+from .environment import Environment
 from ghoshell_moss.core.concepts.session import Session, OutputItem
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.states import PrimeChannel
@@ -17,8 +18,12 @@ from pydantic import BaseModel, Field
 import frontmatter
 from pathlib import Path
 
+__all__ = [
+    'IToolSet', 'IHost', 'MossRuntime', 'Mode',
+]
 
-class ToolSet(ABC):
+
+class IToolSet(ABC):
     """
     将 MOSS runtime 包装成 tools, 希望可以被作为工具提供给别的框架.
     不过需要目标框架自行兼容输出协议.
@@ -36,6 +41,13 @@ class ToolSet(ABC):
         """
         返回 moss 运行时的动态信息,
         仅包含组件的 interface, context messages 等等.
+        """
+        pass
+
+    @abstractmethod
+    def moss_static_messages(self) -> str:
+        """
+        返回 moss 运行时的静态信息.
         """
         pass
 
@@ -270,7 +282,7 @@ class MossRuntime(ABC):
         pass
 
 
-class MossMode(BaseModel):
+class Mode(BaseModel):
     """
     指定的运行模式.
     用来管理 MOSS Runtime 的运行时可发现资源.
@@ -357,7 +369,7 @@ class MossMode(BaseModel):
         return self.__manifest__
 
 
-class MossHost(ABC):
+class IHost(ABC):
     """
     MOSS (model-oriented operating system shell) 的高阶抽象.
     Host 用来管理和发现环境, 从环境中创建 Moss 的一切.
@@ -381,6 +393,12 @@ class MossHost(ABC):
 
     @property
     @abstractmethod
+    def env(self) -> Environment:
+        """env discover object"""
+        pass
+
+    @property
+    @abstractmethod
     def manifests(self) -> Manifests:
         """
         返回当前环境下发现的 Matrix 实例.
@@ -390,14 +408,14 @@ class MossHost(ABC):
 
     @property
     @abstractmethod
-    def mode(self) -> MossMode:
+    def mode(self) -> Mode:
         """
         current mode.
         """
         pass
 
     @abstractmethod
-    def all_modes(self) -> dict[str, MossMode]:
+    def all_modes(self) -> dict[str, Mode]:
         """
         当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
         比如 mac 模式, 机器人模式, 就可以完全隔离开.
@@ -409,14 +427,14 @@ class MossHost(ABC):
         """
         返回当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.
-        >>> async def main(moss: MossHost):
+        >>> async def main(moss: IHost):
         >>>     async with moss.matrix():
         >>>         ...
         """
         pass
 
     @abstractmethod
-    def run_as_toolset(self) -> ToolSet:
+    def run_as_toolset(self) -> IToolSet:
         """
         run as toolset.
         """

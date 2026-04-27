@@ -9,16 +9,15 @@ from rich.rule import Rule
 from rich.text import Text
 from rich.syntax import Syntax
 from rich.markdown import Markdown
-from rich.panel import Panel
 from prompt_toolkit.key_binding import (
     KeyBindings, KeyPressEvent, ConditionalKeyBindings, merge_key_bindings,
     KeyBindingsBase,
 )
-from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter
+from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter, Completion, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
 from ghoshell_moss.core.concepts.session import OutputItem
-from ghoshell_moss.host.abcd import MossHost
+from ghoshell_moss.host.abcd import IHost
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import uvloop
@@ -27,6 +26,9 @@ import sys
 import threading
 import json
 from queue import Queue, Empty
+from rich.panel import Panel
+from rich.table import Table
+from rich.console import Group
 
 __all__ = ["TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "ConsoleOutput"]
 
@@ -231,19 +233,34 @@ class TUIState(ABC):
         pass
 
 
+class TUICompleter(Completer):
+    """处理全局系统级指令"""
+
+    def __init__(self, default_commands: dict[str, str], command_mark: str = '/') -> None:
+        self.default_commands = default_commands
+        self.command_mark = command_mark
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith(self.command_mark):
+            return
+        for cmd in self.default_commands:
+            if cmd.startswith(text):
+                yield Completion(cmd, start_position=-len(text), display_meta=self.default_commands[cmd])
+
+
 class MossHostTUI(Generic[RUNTIME], ABC):
 
     def __init__(
             self,
-            host: MossHost | None = None,
+            host: IHost | None = None,
             style: Style = None,
     ):
         self.kb: KeyBindingsBase | None = None
         self._style = style or DEFAULT_STYLE
-        self.host: MossHost | None = host or MossHost.discover()
+        self.host: IHost | None = host or IHost.discover()
         self.runtime: RUNTIME = self._get_runtime(self.host)
         self._closing_event = ThreadSafeEvent()
-        self._exit_command = f"/exit"
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._main_loop_task: asyncio.Task | None = None
         # 用子线程实现 print.
@@ -260,9 +277,14 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         )
         self._dummy_completer = DummyCompleter()
 
+    def default_commands(self) -> dict[str, tuple[str, Callable[[], None]]]:
+        return {
+            "/exit": ("exit the tui", lambda: self.close())
+        }
+
     @classmethod
     @abstractmethod
-    def _get_runtime(cls, host: MossHost) -> RUNTIME:
+    def _get_runtime(cls, host: IHost) -> RUNTIME:
         """从 host 上拿到 runtime 对象. """
         pass
 
@@ -275,7 +297,56 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         return self.current_state().completer() or self._dummy_completer
 
     def welcome(self) -> None:
-        self._direct_print("hello world")
+        # 1. MOSS Banner
+        banner = Panel(
+            "Welcome to MOSS (Model-Oriented Operating System Shell)\n"
+            "[dim]May AI Ghost wondering in the Shells[/dim]",
+            style="bold cyan",
+            border_style="cyan",
+            expand=False
+        )
+
+        # 2. Node & Cell Info (打印 Cell 的 to_dict)
+        cell_data = self.host.matrix().this.to_dict()
+        node_table = Table(title="Current Cell Info", expand=True, box=None)
+        node_table.add_column("Property", style="bold yellow")
+        node_table.add_column("Value")
+        for k, v in cell_data.items():
+            node_table.add_row(k, str(v))
+
+        # 3. Environment Context
+        env_info = self.host.env.dump_moss_env(with_os_env=False)
+        env_table = Table(title="Environment Configuration", expand=True, box=None)
+        env_table.add_column("Config", style="bold magenta")
+        env_table.add_column("Setting")
+        for k, v in env_info.items():
+            env_table.add_row(k, str(v))
+
+        # 3. 基础使用指南
+        guide = Table(title="Quick Start", expand=True, box=None)
+        guide.add_column("Action", style="green")
+        guide.add_column("Key / Command")
+        guide.add_row("Switch State (Next)", "Ctrl + P")
+        guide.add_row("Switch State (Prev)", "Ctrl + B")
+        guide.add_row("Interrupt Task", "Esc")
+        guide.add_row("Exit System", "/exit")
+
+        # 4. 运行时自定义介绍 (通过抽象方法留给子类实现)
+        custom_intro = self._get_custom_intro()
+
+        # 组合渲染
+        content = Group(
+            banner,
+            Panel(env_table, title="[bold]System Info[/bold]", border_style="dim"),
+            Panel(guide, title="[bold]Shortcuts[/bold]", border_style="dim"),
+            custom_intro if custom_intro else ""
+        )
+
+        self._direct_print(content)
+
+    def _get_custom_intro(self) -> RenderableType | None:
+        """由子类实现，提供特定 Runtime 的业务介绍。"""
+        return None
 
     def farewell(self) -> None:
         """要在界面里输出告别信息. """
@@ -421,6 +492,16 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 kb_list.append(state_kb)
             # 合并所有的 key bindings.
         self.kb = merge_key_bindings(kb_list)
+        dynamic_completer = DynamicCompleter(self._input_completer)
+        default_commands = self.default_commands()
+        tui_level_completer = TUICompleter(
+            {
+                name: value[0]
+                for name, value in default_commands.items()
+            }
+        )
+        completer = merge_completers([tui_level_completer, dynamic_completer])
+
         while not self._closing_event.is_set():
             with patch_stdout.patch_stdout(raw=True):
                 item = await self._prompt_session.prompt_async(
@@ -428,15 +509,16 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     style=self._style,
                     key_bindings=self.kb,
                     multiline=True,
-                    completer=DynamicCompleter(self._input_completer),
+                    completer=completer,
                     complete_while_typing=True,
                     complete_in_thread=True,
                 )
             if not item:
                 continue
-            if item == self._exit_command:
-                self._closing_event.set()
-                return
+            if item in default_commands:
+                desc, action = default_commands[item]
+                action()
+                continue
             self.current_state().handle_input(item)
 
     def close(self) -> None:
@@ -444,7 +526,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         if self._closing_event.is_set():
             return
         self._closing_event.set()
-        self._prompt_session.app.exit()
+        if self._prompt_session and self._prompt_session.app:
+            if self._prompt_session.app.is_running:
+                self._prompt_session.app.exit()
         self._rich_console.print("graceful closing...", style="green")
 
     def _is_alive_func(self, state_name: str) -> Callable[[], bool]:

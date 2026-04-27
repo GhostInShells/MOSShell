@@ -3,8 +3,8 @@ from typing import Literal, Self
 import janus
 
 from ghoshell_moss import Message, MOSShell
-from ghoshell_moss.host.abcd.host_interface import (
-    MossRuntime, ToolSet, Perception, MossMode,
+from ghoshell_moss.host.abcd.host_design import (
+    MossRuntime, IToolSet, Perception, Mode,
     Conceive,
 )
 from ghoshell_moss.host.abcd.app import AppStore
@@ -30,13 +30,13 @@ class Logos:
         pass
 
 
-class HostMossRuntime(MossRuntime, ToolSet):
+class HostMossRuntime(MossRuntime, IToolSet):
 
     def __init__(
             self,
             env: Environment,
             workspace: Workspace,
-            mode: MossMode,
+            mode: Mode,
             matrix: HostMatrix,
             mindflow: Mindflow | None = None,
             as_toolset: bool = False,

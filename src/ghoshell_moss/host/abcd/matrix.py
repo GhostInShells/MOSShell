@@ -265,12 +265,13 @@ class Matrix(ABC):
         """
         try:
             import uvloop
-            uvloop.install()
         except ImportError:
             # 如果不能支持.
             uvloop = None
 
         try:
+            if uvloop is not None:
+                asyncio.set_event_loop(uvloop.new_event_loop())
             return asyncio.run(self.arun(main_coro))
         except KeyboardInterrupt:
             pass  # 底层 arun 已经处理了清理

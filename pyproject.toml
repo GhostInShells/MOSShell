@@ -62,7 +62,8 @@ matrix = [
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
-moss-ctl = "ghoshell_moss.cli.control:main"
+moss-cli = "ghoshell_moss.cli.cli_controller:main"
+moss-debug = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -76,7 +77,7 @@ exclude = ["test_*", ".discuss*", ".design", ".memory"]
     "**/.gitignore",
     "**/*.ini",
     "**/*.yaml",
-    "**/*.toml",  # 建议加上，万一以后有子配置
+    "**/*.toml", # 建议加上，万一以后有子配置
     "**/*.json",
     "**/*.jsonl",
 ]

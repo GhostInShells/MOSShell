@@ -12,7 +12,7 @@ from ghoshell_moss.core.concepts.session import Session
 from ghoshell_moss.host.abcd.manifests import Manifests
 from ghoshell_moss.host.abcd.matrix import Matrix, Cell
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
-from ghoshell_moss.host.abcd.host_interface import MossMode
+from ghoshell_moss.host.abcd.host_design import Mode
 from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.errors import FatalError
@@ -55,7 +55,7 @@ class AppCell(Cell):
 
 class MossModeCell(Cell):
 
-    def __init__(self, mode: MossMode, event: threading.Event):
+    def __init__(self, mode: Mode, event: threading.Event):
         self.name = mode.name
         self.type = 'main'
         self.description = mode.description
@@ -97,7 +97,7 @@ class HostMatrix(Matrix):
     def __init__(
             self,
             *,
-            mode: MossMode,
+            mode: Mode,
             env: Environment,
             app_store: AppStore,
             manifest: Manifests,

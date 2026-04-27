@@ -6,12 +6,18 @@ import logging
 
 __all__ = [
     "LoggerItf", 'config_logger_from_yaml', 'get_console_logger', 'WorkspaceLoggerProvider',
-    "get_moss_logger",
+    "get_moss_logger", "default_logger_formatter",
 ]
 
 
 def get_moss_logger() -> LoggerItf:
     return logging.getLogger('moss')
+
+
+def default_logger_formatter() -> logging.Formatter:
+    return logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]"
+    )
 
 
 def get_console_logger(level=logging.ERROR, name: str = "ghost"):

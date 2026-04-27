@@ -466,16 +466,17 @@ async def receive_message(websocket: websockets.ClientConnection) -> Message:
 
 
 async def wait_for_event(
-    websocket: websockets.ClientConnection,
-    msg_type: MsgType,
-    event_type: EventType,
-) -> Message:
+        websocket: websockets.ClientConnection,
+        msg_type: MsgType,
+        event_type: EventType,
+) -> Message | None:
     """Wait for specific event"""
     msg = await receive_message(websocket)
     if msg.type != msg_type or msg.event != event_type:
         raise ValueError(f"Unexpected message: {msg}")
     if msg.type == msg_type and msg.event == event_type:
         return msg
+    return None
 
 
 async def full_client_request(websocket: websockets.ClientConnection, payload: bytes) -> None:

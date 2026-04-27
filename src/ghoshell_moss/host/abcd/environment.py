@@ -172,6 +172,18 @@ class Environment:
         self._parent_pid: int = int(os.environ.get(ENV_PARENT_PID_KEY, 0))
         self._bootstrapped = False
 
+    def set_mode(self, mode: str) -> None:
+        self._moss_mode = mode
+        os.environ[ENV_MOSS_MODE_KEY] = mode
+
+    def set_session_scope(self, session_scope: str) -> None:
+        self._session_scope = session_scope
+        os.environ[ENV_SESSION_SCOPE_KEY] = session_scope
+
+    def set_ghost_name(self, ghost_name: str) -> None:
+        self._ghost_name = ghost_name
+        os.environ[ENV_GHOST_NAME_KEY] = ghost_name
+
     @classmethod
     def discover(cls) -> Self:
         """
@@ -197,7 +209,7 @@ class Environment:
         """
         data: dict[MOSSEnvKey, str] = {
             "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
-            "MOSS_SESSION_ID": self._session_scope,
+            "MOSS_SESSION_SCOPE": self._session_scope,
             "MOSS_GHOST_NAME": self._ghost_name,
             "MOSS_MODE_NAME": self._moss_mode,
         }

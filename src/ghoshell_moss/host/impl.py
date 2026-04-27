@@ -1,8 +1,8 @@
 from typing_extensions import Self
 
-from ghoshell_moss.host.abcd import ToolSet
-from ghoshell_moss.host.abcd.host_interface import (
-    MossHost, MossMode, MossRuntime,
+from ghoshell_moss.host.abcd import IToolSet
+from ghoshell_moss.host.abcd.host_design import (
+    IHost, Mode, MossRuntime,
 )
 from ghoshell_moss.host.abcd.manifests import Manifests
 from ghoshell_moss.host.abcd.matrix import Matrix
@@ -13,7 +13,7 @@ from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.matrix import HostMatrix
-from ghoshell_moss.host.toolset import HostAsToolSet
+from ghoshell_moss.host.toolset import IToolSetImpl
 import logging
 
 __all__ = ['Host']
@@ -21,17 +21,17 @@ __all__ = ['Host']
 _host_instance = None
 
 
-class Host(MossHost):
+class Host(IHost):
 
     def __init__(
             self,
             *,
             env: Environment | None = None,
-            mode: MossMode | str | None = None,
+            mode: Mode | str | None = None,
             logger: logging.Logger | None = None,
     ):
-        self.env = env or Environment.discover()
-        self.env.bootstrap()
+        self._env = env or Environment.discover()
+        self._env.bootstrap()
         self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()
@@ -47,7 +47,7 @@ class Host(MossHost):
             moss_mode = self._env_modes.get(moss_mode_name)
             if moss_mode is None:
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
-        self._moss_mode: MossMode = moss_mode
+        self._moss_mode: Mode = moss_mode
         self._manifest = MergedManifests([self._env_manifest, self._moss_mode.manifest])
         # 获取一个用来做环境发现的 apps.
         # 创建 container, 但是先不启动它.
@@ -74,14 +74,18 @@ class Host(MossHost):
         return _host_instance
 
     @property
+    def env(self) -> Environment:
+        return self._env
+
+    @property
     def manifests(self) -> Manifests:
         return self._manifest
 
     @property
-    def mode(self) -> MossMode:
+    def mode(self) -> Mode:
         return self._moss_mode
 
-    def all_modes(self) -> dict[str, MossMode]:
+    def all_modes(self) -> dict[str, Mode]:
         """
         map all the modes in the environment.
         """
@@ -102,8 +106,8 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def run_as_toolset(self) -> ToolSet:
-        return HostAsToolSet(
+    def run_as_toolset(self) -> IToolSet:
+        return IToolSetImpl(
             env=self.env,
             workspace=self._workspace,
             mode=self._moss_mode,
