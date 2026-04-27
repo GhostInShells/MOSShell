@@ -115,12 +115,7 @@ def show_concepts(
             if desc:
                 # 如果描述有多行，合并为单行
                 desc_single_line = ' '.join(desc.split())
-                # 显示前100个字符，如果超过则添加提示
-                if len(desc_single_line) > 100:
-                    display_desc = desc_single_line[:97] + "..."
-                else:
-                    display_desc = desc_single_line
-                table_data.append([f"[bold cyan]{mod}[/bold cyan]", display_desc])
+                table_data.append([f"[bold cyan]{mod}[/bold cyan]", desc_single_line])
             else:
                 table_data.append([f"[bold cyan]{mod}[/bold cyan]", ""])
 
@@ -130,7 +125,8 @@ def show_concepts(
             headers=["Module", "Description"],
             title="Available Concept Modules",
             column_styles=["bold cyan", ""],
-            title_style="bold cyan underline",
+            title_style="bold bright_cyan",
+            column_ratios=[1, 3],  # 模块名列占1份，描述列占3份
         )
 
         console.print(f"\n[dim]Total: {len(modules)} modules[/dim]")

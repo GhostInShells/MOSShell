@@ -3,12 +3,13 @@ MOSS command group - Blueprint related commands
 By: Deepseek v3.2
 """
 
-import click
 import pkgutil
 import importlib
 import sys
+import typer
+from typing import Optional
 
-from ghoshell_moss.cli.main import main
+from ghoshell_moss.cli import app
 from ghoshell_moss.cli.utils import (
     print_error, print_info, print_panel, echo,
     print_simple_table, console
@@ -43,9 +44,13 @@ def _get_blueprint_modules():
     return sorted(modules)
 
 
-@main.command("blueprint")
-@click.argument("module_name", required=False)
-def blueprint(module_name: str = None):
+@app.command("blueprint")
+def blueprint(
+    module_name: Optional[str] = typer.Argument(
+        None,
+        help="Specific blueprint module to reflect. If omitted, lists all available modules."
+    )
+):
     """
     Reflect blueprint modules from ghoshell_moss.core.blueprint
 
@@ -79,7 +84,7 @@ def blueprint(module_name: str = None):
             headers=["Blueprint Module"],
             title="Available Blueprint Modules",
             column_styles=["cyan"],
-            title_style="bold cyan",
+            title_style="bold bright_cyan",
         )
 
         console.print(f"\n[dim]Total: {len(modules)} modules[/dim]")

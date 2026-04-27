@@ -129,6 +129,7 @@ def print_simple_table(
     header_style: str = "bold",
     column_styles: Optional[List[str]] = None,
     title_style: str = "bold underline",
+    column_ratios: Optional[List[int]] = None,
 ) -> None:
     """
     打印简洁风格表格，使用简单的白线边框
@@ -150,7 +151,8 @@ def print_simple_table(
     # 添加列
     for i, header in enumerate(headers):
         style = column_styles[i] if column_styles and i < len(column_styles) else None
-        table.add_column(header, style=style)
+        ratio = column_ratios[i] if column_ratios and i < len(column_ratios) else None
+        table.add_column(header, style=style, ratio=ratio)
 
     # 添加行
     for row in data:
