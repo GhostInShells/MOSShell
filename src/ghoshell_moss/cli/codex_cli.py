@@ -17,7 +17,8 @@ codex_app = typer.Typer(
 )
 
 from ghoshell_moss.cli.utils import (
-    print_success, print_error, print_info, print_code, print_panel, echo
+    print_success, print_error, print_info, print_code, print_panel, echo,
+    print_simple_panel, console
 )
 
 
@@ -54,10 +55,10 @@ def get_source(
             output.write_text(source_code, encoding="utf-8")
             print_success(f"Source code saved to: {output}")
         else:
-            print_panel(
-                f"Module: {module_path}\n"
-                f"File: {inspect.getfile(module)}\n"
-                f"Length: {len(source_code)} characters",
+            print_simple_panel(
+                f"Module: [dim]{module_path}[/dim]\n"
+                f"File: [dim]{inspect.getfile(module)}[/dim]\n"
+                f"Length: [dim]{len(source_code)} characters[/dim]",
                 title="Source Code Information"
             )
             print_code(source_code, language=language)
@@ -106,7 +107,7 @@ def module_info(
         info_lines.append(f"\nFunctions ({len(functions)}): {', '.join(functions) if functions else 'None'}")
         info_lines.append(f"\nVariables ({len(variables)}): {', '.join(variables) if variables else 'None'}")
 
-        print_panel("\n".join(info_lines), title="Module Information")
+        print_simple_panel("\n".join(info_lines), title="Module Information")
 
     except ImportError as e:
         print_error(f"Failed to import module '{module_path}': {e}")

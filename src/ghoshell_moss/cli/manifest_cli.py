@@ -17,7 +17,7 @@ from ghoshell_moss.host.manifests.configs import (
 )
 from ghoshell_moss.host import Host
 from ghoshell_common.helpers import generate_import_path
-from .utils import console
+from .utils import console, print_simple_table
 import inspect
 
 manifest_app = typer.Typer(
@@ -73,25 +73,28 @@ def list_providers(
 
 def _display_provider_table(providers: list[ProviderInfo], is_filtered: bool):
     """打印简洁的 Contract 列表"""
-    title = "[bold cyan]Discovered MOSS providers[/bold cyan]"
+    title = "Discovered MOSS providers"
     if is_filtered:
         title += " (Filtered)"
 
-    table = Table(title=title, box=None, header_style="bold magenta")
-    table.add_column("Identity", style="green", no_wrap=True)
-    table.add_column("Type", style="dim")
-    table.add_column("Found At", style="blue")
-
+    # 准备表格数据
+    table_data = []
     for info in providers:
-        # 这里的 info.name 对应我们定义的 contract 类型导入路径
-        # info.found 对应具体的 provider 实例化位置
-        table.add_row(
-            info.name,
+        table_data.append([
+            f"[green]{info.name}[/green]",
             "Singleton" if info.singleton else "Factory",
-            info.file
-        )
+            f"[blue]{info.file}[/blue]" if info.file else ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Identity", "Type", "Found At"],
+        title=title,
+        column_styles=["green", "dim", "blue"],
+        title_style="bold cyan",
+    )
+
     console.print(f"\n[dim]Total: {len(providers)} providers found.[/dim]")
 
 
@@ -148,24 +151,28 @@ def list_topics(
 
 def _display_topic_table(topics: list[TopicInfo], is_filtered: bool):
     """展示 Topic 概览表"""
-    title = "[bold magenta]MOSS Event Topics[/bold magenta]"
+    title = "MOSS Event Topics"
     if is_filtered:
         title += " (Filtered)"
 
-    table = Table(title=title, box=None, header_style="bold cyan")
-    table.add_column("Topic Name", style="green", no_wrap=True)
-    table.add_column("Type", style="yellow")
-    table.add_column("Description", style="dim", ratio=1)
-
-    # 按照名称排序，方便模型阅读
+    # 准备表格数据
+    table_data = []
     for info in sorted(topics, key=lambda x: x.name):
-        table.add_row(
-            info.name,
-            info.type,
-            info.description.split('\n')[0]  # 只取第一行描述
-        )
+        table_data.append([
+            f"[green]{info.name}[/green]",
+            f"[yellow]{info.type}[/yellow]",
+            info.description.split('\n')[0] if info.description else ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Topic Name", "Type", "Description"],
+        title=title,
+        column_styles=["green", "yellow", "dim"],
+        title_style="bold magenta",
+    )
+
     console.print(f"\n[dim]Total: {len(topics)} topics discovered.[/dim]")
 
 
@@ -232,19 +239,24 @@ def list_configs(
 
 def _display_config_table(configs: list[ConfigInfo]):
     """展示配置项全景图"""
-    table = Table(title="[bold blue]MOSS Environment Configurations[/bold blue]", box=None)
-    table.add_column("Config Name", style="green", no_wrap=True)
-    table.add_column("Module Path", style="dim")
-    table.add_column("Description", ratio=1)
-
+    # 准备表格数据
+    table_data = []
     for info in sorted(configs, key=lambda x: x.name):
-        table.add_row(
-            info.name,
-            info.found_import_path,
-            info.description.split('\n')[0]
-        )
+        table_data.append([
+            f"[green]{info.name}[/green]",
+            f"[dim]{info.found_import_path}[/dim]",
+            info.description.split('\n')[0] if info.description else ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Config Name", "Module Path", "Description"],
+        title="MOSS Environment Configurations",
+        column_styles=["green", "dim", ""],
+        title_style="bold blue",
+    )
+
     console.print(f"\n[dim]Found {len(configs)} configuration definitions.[/dim]")
 
 
@@ -297,17 +309,26 @@ def list_channels(
 
 
 def _display_channel_table(channels: dict, is_filtered: bool):
-    table = Table(title="MOSS Channels", box=None)
-    table.add_column("Channel Name", style="green")
-    table.add_column("Type", style="dim")
-    table.add_column("Description", ratio=1)
-
+    # 准备表格数据
+    table_data = []
     for name, c in channels.items():
-        table.add_row(name, type(c).__name__, c.description().split('\n')[0])
+        table_data.append([
+            f"[green]{name}[/green]",
+            f"[dim]{type(c).__name__}[/dim]",
+            c.description().split('\n')[0] if c.description() else ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Channel Name", "Type", "Description"],
+        title="MOSS Channels",
+        column_styles=["green", "dim", ""],
+        title_style="bold cyan",
+    )
+
     if not is_filtered:
-        console.print("\n[dim]Hint: Use 'moss-cli channels <name>' to see full detail.[/dim]")
+        console.print("\n[dim]Hint: Use [bold]moss manifest channels <name>[/bold] to see full detail.[/dim]")
 
 
 @manifest_app.command(name="primitives")
@@ -398,16 +419,25 @@ def list_contracts(
 
 
 def _display_contract_table(contracts: list, is_filtered: bool):
-    table = Table(title="[bold yellow]MOSS Bound Contracts[/bold yellow]", box=None)
-    table.add_column("Contract Name", style="green")
-    table.add_column("Short Doc", style="italic")
-
+    # 准备表格数据
+    table_data = []
     for c in sorted(contracts, key=lambda x: x['import_path']):
-        table.add_row(c['import_path'], c['short_doc'])
+        table_data.append([
+            f"[green]{c['import_path']}[/green]",
+            c['short_doc'] or ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Contract Name", "Short Doc"],
+        title="MOSS Bound Contracts",
+        column_styles=["green", "italic"],
+        title_style="bold yellow",
+    )
+
     console.print(
-        f"\n[dim]Total: {len(contracts)} contracts. Hint: Use 'moss-ctl contracts <name>' for source detail.[/dim]")
+        f"\n[dim]Total: {len(contracts)} contracts. Hint: Use [bold]moss manifest contracts <name>[/bold] for source detail.[/dim]")
 
 
 def _display_contract_detail(contract_info: dict):

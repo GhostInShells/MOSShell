@@ -10,7 +10,8 @@ import sys
 
 from ghoshell_moss.cli.main import main
 from ghoshell_moss.cli.utils import (
-    print_error, print_info, print_panel, echo
+    print_error, print_info, print_panel, echo,
+    print_simple_table, console
 )
 
 
@@ -67,12 +68,22 @@ def blueprint(module_name: str = None):
             print_info("No blueprint modules found.")
             return
 
-        print_panel(
-            "\n".join([f"• {module}" for module in modules]),
-            title="Available Blueprint Modules"
+        # 准备表格数据
+        table_data = []
+        for module in modules:
+            table_data.append([f"[cyan]{module}[/cyan]"])
+
+        # 使用简洁表格显示
+        print_simple_table(
+            data=table_data,
+            headers=["Blueprint Module"],
+            title="Available Blueprint Modules",
+            column_styles=["cyan"],
+            title_style="bold cyan",
         )
-        print_info(f"Total: {len(modules)} modules")
-        print_info("Use 'ghoshell moss blueprint <module_name>' to reflect a specific module.")
+
+        console.print(f"\n[dim]Total: {len(modules)} modules[/dim]")
+        console.print(f"[dim]Use [bold]moss blueprint <module_name>[/bold] to reflect a specific module.[/dim]")
         return
 
     # Module specified, reflect it

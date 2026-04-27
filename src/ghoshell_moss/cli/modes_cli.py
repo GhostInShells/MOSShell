@@ -3,7 +3,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.panel import Panel
-from .utils import console
+from .utils import console, print_simple_table, print_simple_panel
 import typer
 
 from ghoshell_moss.host import Host
@@ -20,27 +20,31 @@ def list_modes():
     host = Host()
     modes = host.all_modes()
 
-    table = Table(title="[bold yellow]MOSS Discovered Modes[/bold yellow]", box=None)
-    table.add_column("Name", style="green", no_wrap=True)
-    table.add_column("Apps (Allowed)", style="cyan")
-    table.add_column("Bring-up", style="magenta")
-    table.add_column("Description", ratio=1)
-
+    # 准备表格数据
+    table_data = []
     for name, m in modes.items():
         # 处理显示逻辑，如果是 * 则显示 ALL
         apps_str = ", ".join(m.apps) if m.apps != ["*"] else "[dim]ALL[/dim]"
         up_str = ", ".join(m.bringup) if m.bringup else "[dim]None[/dim]"
 
-        table.add_row(
-            name,
+        table_data.append([
+            f"[green]{name}[/green]",
             apps_str,
             up_str,
             m.description
-        )
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Name", "Apps (Allowed)", "Bring-up", "Description"],
+        title="MOSS Discovered Modes",
+        column_styles=["green", "cyan", "magenta", ""],
+        title_style="bold yellow",
+    )
+
     console.print(f"\n[dim]Total: {len(modes)} modes found.[/dim]")
-    console.print("[dim]Use 'moss-cli modes show <name>' to see instructions.[/dim]")
+    console.print(f"[dim]Use [bold]moss modes show <name>[/bold] to see instructions.[/dim]")
 
 
 @mode_app.command(name="show")
@@ -56,14 +60,14 @@ def show_mode(name: str):
         raise typer.Exit(1)
 
     m = modes[name]
-    console.print(Panel(f"[bold green]Mode: {m.name}[/bold green]", border_style="cyan"))
 
-    # 打印基础元数据
-    meta_table = Table.grid(padding=(0, 2))
-    meta_table.add_row("[bold]File Path:[/bold]", m.file)
-    meta_table.add_row("[bold]Import Path:[/bold]", m.import_path or "[dim]N/A (Markdown Only)[/dim]")
-    meta_table.add_row("[bold]Description:[/bold]", m.description)
-    console.print(meta_table)
+    # 使用简洁面板显示模式基本信息
+    content = (
+        f"File Path: [dim]{m.file}[/dim]\n"
+        f"Import Path: [dim]{m.import_path or 'N/A (Markdown Only)'}[/dim]\n"
+        f"Description: [dim]{m.description}[/dim]"
+    )
+    print_simple_panel(content, title=f"Mode: {m.name}")
 
     # 打印指令内容
     if m.instruction:
