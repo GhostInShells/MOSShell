@@ -6,7 +6,7 @@ from rich.markdown import Markdown
 from ghoshell_moss.host.abcd.app import AppInfo
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_moss.host import Host
-from .utils import console, print_host_mode_info
+from .utils import console, print_host_mode_info, print_simple_table, print_simple_panel
 import subprocess
 import shlex
 import typer
@@ -58,7 +58,7 @@ def list_apps(
 
 @app_store_app.command(name="show")
 def show_app(
-        address: str = typer.Argument(..., help="The full address of the app (e.g., group/name)"),
+        fullname: str = typer.Argument(..., help="The full address of the app (e.g., group/name)"),
         json_out: bool = typer.Option(False, "--json", help="Output raw JSON."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
 ):
@@ -69,10 +69,10 @@ def show_app(
     if verbose:
         print_host_mode_info(host)
 
-    app = host.apps.get_app_info(address)
+    app = host.apps.get_app_info(fullname)
 
     if not app:
-        console.print(f"[red]Error: App with address '{address}' not found.[/red]")
+        console.print(f"[red]Error: App with fullname '{fullname}' not found.[/red]")
         raise typer.Exit(code=1)
 
     if json_out:
@@ -86,41 +86,43 @@ def show_app(
 
 def _display_app_table(apps: List[AppInfo], is_filtered: bool):
     """展示 App 概览表格"""
-    title = "[bold green]MOSS App Store[/bold green]"
+    title = "MOSS App Store"
     if is_filtered:
         title += " (Filtered)"
 
-    table = Table(title=title, box=None, header_style="bold magenta")
-    table.add_column("Group", style="cyan", no_wrap=True)
-    table.add_column("Fullname", style="cyan", no_wrap=True)
-    table.add_column("Description", ratio=1)
-
+    # 准备表格数据
+    table_data = []
     for app in sorted(apps, key=lambda x: x.address):
-        # 状态颜色标识
-        table.add_row(
-            app.group,
-            app.fullname,
-            app.description.split('\n')[0]
-        )
+        table_data.append([
+            f"[cyan]{app.group}[/cyan]",
+            f"[cyan]{app.fullname}[/cyan]",
+            app.description.split('\n')[0] if app.description else ""
+        ])
 
-    console.print(table)
+    # 使用简洁表格显示
+    print_simple_table(
+        data=table_data,
+        headers=["Group", "Fullname", "Description"],
+        title=title,
+        column_styles=["cyan", "cyan", ""],
+        title_style="bold green",
+    )
+
     console.print(f"\n[dim]Total: {len(apps)} apps discovered.[/dim]")
-    console.print("[dim]Hint: Use 'moss-cli apps show <address>' for more detail.[/dim]")
+    console.print(f"[dim]Hint: Use [bold]moss apps show <fullname>[/bold] for more detail.[/dim]")
 
 
 def _display_app_detail(app: AppInfo):
     """展示 App 的深度细节"""
-    console.print(f"\n[bold green]App Detail:[/bold green]")
-
-    state_panel = Panel(
+    # 使用简洁面板显示基本信息
+    content = (
         f"Group: [dim]{app.group}[/dim]\n"
         f"Name: [dim]{app.name}[/dim]\n"
         f"Description: [dim]{app.description}[/dim]\n"
         f"Directory: [dim]{app.work_directory}[/dim]\n"
-        f"Address: [dim]{app.address}[/dim]\n",
-        title=app.fullname, title_align="left"
+        f"Address: [dim]{app.address}[/dim]"
     )
-    console.print(state_panel)
+    print_simple_panel(content, title=app.fullname)
 
     # 启动配置 (Circus Params)
     console.print("\n[bold]Execution Config (Watcher):[/bold]")

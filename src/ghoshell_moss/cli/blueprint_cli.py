@@ -3,14 +3,16 @@ MOSS command group - Blueprint related commands
 By: Deepseek v3.2
 """
 
-import click
 import pkgutil
 import importlib
 import sys
+import typer
+from typing import Optional
 
-from ghoshell_moss.cli.main import main
+from ghoshell_moss.cli import app
 from ghoshell_moss.cli.utils import (
-    print_error, print_info, print_panel, echo
+    print_error, print_info, print_panel, echo,
+    print_simple_table, console
 )
 
 
@@ -42,9 +44,13 @@ def _get_blueprint_modules():
     return sorted(modules)
 
 
-@main.command("blueprint")
-@click.argument("module_name", required=False)
-def blueprint(module_name: str = None):
+@app.command("blueprint")
+def blueprint(
+    module_name: Optional[str] = typer.Argument(
+        None,
+        help="Specific blueprint module to reflect. If omitted, lists all available modules."
+    )
+):
     """
     Reflect blueprint modules from ghoshell_moss.core.blueprint
 
@@ -67,12 +73,22 @@ def blueprint(module_name: str = None):
             print_info("No blueprint modules found.")
             return
 
-        print_panel(
-            "\n".join([f"• {module}" for module in modules]),
-            title="Available Blueprint Modules"
+        # 准备表格数据
+        table_data = []
+        for module in modules:
+            table_data.append([f"[cyan]{module}[/cyan]"])
+
+        # 使用简洁表格显示
+        print_simple_table(
+            data=table_data,
+            headers=["Blueprint Module"],
+            title="Available Blueprint Modules",
+            column_styles=["cyan"],
+            title_style="bold bright_cyan",
         )
-        print_info(f"Total: {len(modules)} modules")
-        print_info("Use 'ghoshell moss blueprint <module_name>' to reflect a specific module.")
+
+        console.print(f"\n[dim]Total: {len(modules)} modules[/dim]")
+        console.print(f"[dim]Use [bold]moss blueprint <module_name>[/bold] to reflect a specific module.[/dim]")
         return
 
     # Module specified, reflect it
