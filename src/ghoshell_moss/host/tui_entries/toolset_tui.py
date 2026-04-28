@@ -5,7 +5,7 @@ from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, ConsoleOutput
 from ghoshell_moss.host.tui.repl_state import REPLState
 from ghoshell_moss.host.tui.inspector_matrix import MatrixREPL
 from ghoshell_moss.host.tui.inspector_manifests import ManifestsREPL
-from ghoshell_moss.core.concepts.session import OutputItem
+from ghoshell_moss.core.blueprint.session import OutputItem
 
 
 class MOSSToolSetInspector:

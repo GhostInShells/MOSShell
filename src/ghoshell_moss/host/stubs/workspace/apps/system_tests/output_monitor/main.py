@@ -3,7 +3,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.layout import Layout, HSplit, Window
 from prompt_toolkit.widgets import Frame
 from prompt_toolkit.layout.controls import FormattedTextControl
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from prompt_toolkit.key_binding import KeyBindings
 
 kb = KeyBindings()

@@ -17,7 +17,7 @@ from prompt_toolkit.key_binding import (
 from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter, Completion, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
-from ghoshell_moss.core.concepts.session import OutputItem
+from ghoshell_moss.core.blueprint.session import OutputItem
 from ghoshell_moss.host.abcd import IHost
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio

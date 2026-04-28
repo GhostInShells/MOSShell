@@ -3,10 +3,9 @@ from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
-from ghoshell_moss.core.concepts.session import Session
-from .manifests import Manifests
 import asyncio
 
 __all__ = ['Matrix', 'Cell']
@@ -106,14 +105,6 @@ class Matrix(ABC):
     def session(self) -> Session:
         """
         共享的 Session Store.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def manifests(self) -> Manifests:
-        """
-        返回持有的环境发现资源.
         """
         pass
 

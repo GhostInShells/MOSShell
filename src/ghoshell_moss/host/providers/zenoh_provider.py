@@ -1,6 +1,6 @@
 from typing import Type
 from ghoshell_moss.depends import depend_zenoh
-from ghoshell_moss.host.abcd import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 
 depend_zenoh()
 import zenoh

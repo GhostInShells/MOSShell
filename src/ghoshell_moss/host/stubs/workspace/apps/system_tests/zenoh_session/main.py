@@ -1,7 +1,7 @@
 import asyncio
 import orjson
 import zenoh
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from datetime import datetime
 from dateutil import tz
 

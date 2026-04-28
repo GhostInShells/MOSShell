@@ -1,7 +1,7 @@
 from typing import Iterable, Type
 
 from ghoshell_moss.contracts import LoggerItf, Workspace
-from ghoshell_moss.core.concepts.session import Session
+from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.host.abcd.environment import Environment

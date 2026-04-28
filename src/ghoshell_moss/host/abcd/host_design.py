@@ -3,15 +3,15 @@ from typing import Callable, Iterable
 
 from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
-from abc import ABC, abstractmethod, abstractclassmethod
+from abc import ABC, abstractmethod
 
 from .manifests import Manifests
-from .matrix import Matrix
 from .app import AppStore
 from .environment import Environment
-from ghoshell_moss.core.concepts.session import Session, OutputItem
+from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.core.blueprint.session import Session, OutputItem
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.core.blueprint.states import PrimeChannel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field
@@ -151,7 +151,7 @@ class MossRuntime(ABC):
 
     @property
     def logger(self) -> LoggerItf:
-        return self.matrix.logger
+        return selfhost_design.logger
 
     @abstractmethod
     def wait_close_sync(self, timeout: float | None = None) -> bool:

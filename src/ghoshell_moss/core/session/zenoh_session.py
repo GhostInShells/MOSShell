@@ -2,7 +2,7 @@ from typing import Callable
 
 from ghoshell_moss import Message
 from ghoshell_moss.contracts import Storage, LoggerItf
-from ghoshell_moss.core.concepts.session import Session, Signal, Role, OutputBuffer, OutputItem
+from ghoshell_moss.core.blueprint.session import Session, Signal, Role, OutputBuffer, OutputItem
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
 

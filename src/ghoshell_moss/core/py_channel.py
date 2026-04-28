@@ -20,8 +20,8 @@ from ghoshell_moss.core.concepts.errors import CommandError
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
-from ghoshell_moss.core.blueprint.states import ChannelStateBuilder, ChannelState, StatefulChannel, PrimeChannel
-from ghoshell_moss.core.blueprint.builder import (
+from ghoshell_moss.core.blueprint.states_channel import ChannelStateBuilder, ChannelState, StatefulChannel, PrimeChannel
+from ghoshell_moss.core.blueprint.channel_builder import (
     Builder,
     CommandFunction,
     MessageFunction,

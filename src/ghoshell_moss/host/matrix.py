@@ -8,9 +8,9 @@ from ghoshell_container import IoCContainer, Container, Provider
 
 from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
-from ghoshell_moss.core.concepts.session import Session
+from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.host.abcd.manifests import Manifests
-from ghoshell_moss.host.abcd.matrix import Matrix, Cell
+from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_design import Mode
 from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
@@ -109,7 +109,7 @@ class MatrixImpl(Matrix):
         self.apps = app_store
         self._current_mode = mode
         self._cell_address = env.cell_address
-        self._manifest = manifest
+        self._manifests = manifest
         self._workspace = workspace
         self._current_mode = mode
         self._session_id = env.session_scope
@@ -160,11 +160,11 @@ class MatrixImpl(Matrix):
         container.set(MatrixImpl, self)
         container.set(Environment, self.env)
         container.set(Workspace, self._workspace)
-        container.set(Manifests, self._manifest)
+        container.set(Manifests, self._manifests)
         container.set(Cell, self._this_cell)
 
         # 注册 manifest providers. 包含环境与模式的双重配置.
-        for contract in self._manifest.providers():
+        for contract in self._manifests.providers():
             # register provider from manifest.contracts.
             # 可能会覆盖系统自身约定的 contract.
             container.register(contract.provider)
@@ -227,7 +227,7 @@ class MatrixImpl(Matrix):
 
     @property
     def manifests(self) -> Manifests:
-        return self._manifest
+        return self._manifests
 
     @property
     def container(self) -> IoCContainer:

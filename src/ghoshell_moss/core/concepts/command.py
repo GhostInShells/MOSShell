@@ -10,7 +10,6 @@ MOSS 架构核心用 Command 来做驱动.
 6. Command Task: 基于时间是第一公民观点, 将 command 的调用进行传输, 在一个 Shell 调度体系里按时调用. 同时考虑线程安全.
 7. 兼容性: Command 可以降级为 JSON Schema Function Call...
 8. 运行结果管理: Command 的运行结果能转化为 Message, 从而被模型理解. 效果类似 Tool. 但 CTML 是流式的.
-9.
 """
 
 import asyncio
@@ -34,15 +33,16 @@ from typing import (
 )
 from jsonargparse import ArgumentParser as JsonArgumentParser
 from argparse import ArgumentParser
-import argcomplete
 from ghoshell_common.helpers import uuid, Timeleft
 from ghoshell_container import get_caller_info
 from pydantic import BaseModel, Field, TypeAdapter, AwareDatetime
+from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
 from typing_extensions import Self
 
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.helpers.func import parse_function_interface
+from ghoshell_moss.contracts import get_moss_logger
 from ghoshell_moss.message import Message, Text
 import orjson as json
 import contextlib
@@ -702,8 +702,8 @@ class PyCommand(CliCommand):
                 adapter = TypeAdapter(self._func)
                 schema = adapter.json_schema()
                 meta.json_schema = schema or dict(type="object")
-            except TypeError:
-                pass
+            except (TypeError, PydanticInvalidForJsonSchema, PydanticSchemaGenerationError) as e:
+                get_moss_logger().info("failed to create json schema for %r: %s", self._func, e)
 
         return meta
 

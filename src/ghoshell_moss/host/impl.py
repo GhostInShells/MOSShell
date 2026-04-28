@@ -5,7 +5,7 @@ from ghoshell_moss.host.abcd.host_design import (
     IHost, Mode, MossRuntime,
 )
 from ghoshell_moss.host.abcd.manifests import Manifests
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.host.abcd.environment import Environment

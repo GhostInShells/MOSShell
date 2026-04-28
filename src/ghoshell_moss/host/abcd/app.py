@@ -3,7 +3,7 @@ from typing import Iterable, Optional
 from typing_extensions import Self, Literal
 from pathlib import Path
 from pydantic import BaseModel, Field
-from ghoshell_moss.core.blueprint.builder import Channel, new_channel
+from ghoshell_moss.core.blueprint.channel_builder import Channel, new_channel
 import frontmatter
 import fnmatch
 

@@ -1,4 +1,4 @@
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_common.helpers import generate_import_path
 import inspect
 

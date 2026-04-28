@@ -1,4 +1,4 @@
-from ghoshell_moss.core.blueprint.builder import new_channel, MutableChannel
+from ghoshell_moss.core.blueprint.channel_builder import new_channel, MutableChannel
 from ghoshell_moss.message import Message
 from typer import Typer
 

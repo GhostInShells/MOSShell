@@ -2,7 +2,7 @@ import asyncio
 from typing import AsyncIterable
 from ghoshell_moss.core import CTMLShell, InterpretError
 from ghoshell_moss.core.ctml import ctml_shell_test
-from ghoshell_moss.core.blueprint.builder import new_channel
+from ghoshell_moss.core.blueprint.channel_builder import new_channel
 import pytest
 
 """

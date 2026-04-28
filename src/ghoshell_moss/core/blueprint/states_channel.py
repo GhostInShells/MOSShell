@@ -5,7 +5,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
-from ghoshell_moss.core.blueprint.builder import Builder, MutableChannel
+from ghoshell_moss.core.blueprint.channel_builder import Builder, MutableChannel
 from PIL.Image import Image
 
 __all__ = [
@@ -13,6 +13,10 @@ __all__ = [
     'new_state_builder', 'new_channel_from_state', 'new_stateful_channel',
     'PrimeChannel', 'new_prime_channel',
 ]
+
+"""
+how to build a stateful channel
+"""
 
 
 class ChannelState(ABC):

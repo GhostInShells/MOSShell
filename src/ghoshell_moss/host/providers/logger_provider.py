@@ -5,7 +5,7 @@ from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.logger import LoggerItf, config_logger_from_yaml, default_logger_formatter
 from ghoshell_container import Provider, IoCContainer
 from logging.handlers import TimedRotatingFileHandler
-from ghoshell_moss.host.abcd import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 
 __all__ = [
     'WorkspaceLoggerProvider',

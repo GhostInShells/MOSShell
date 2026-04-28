@@ -1,5 +1,5 @@
 import asyncio
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.concepts.topic import LogTopic, TopicClosedError
 from ghoshell_common.helpers import yaml_pretty_dump
 

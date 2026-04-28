@@ -150,6 +150,8 @@ async def test_pydantic_understand_schema():
 
     adapter = TypeAdapter(bar)
     assert "properties" in adapter.json_schema()
+    command = PyCommand(bar)
+    assert command.meta().json_schema is not None
 
 
 @pytest.mark.asyncio

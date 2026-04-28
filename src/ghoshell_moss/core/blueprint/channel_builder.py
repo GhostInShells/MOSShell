@@ -1,6 +1,6 @@
 # # Blueprint
 # about how to build channel for MOSShell.
-# the path of this module is ghoshell_moss.core.blueprint.builder
+# the path of this module is ghoshell_moss.core.blueprint.channel_builder
 
 from abc import ABC, abstractmethod
 from PIL import Image
@@ -21,6 +21,10 @@ __all__ = [
     "MutableChannel",
     "new_channel"
 ]
+
+"""
+how to build a channel
+"""
 
 CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 """

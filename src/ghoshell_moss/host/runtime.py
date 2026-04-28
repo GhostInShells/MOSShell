@@ -8,7 +8,7 @@ from ghoshell_moss.host.abcd.host_design import (
     Conceive,
 )
 from ghoshell_moss.host.abcd.app import AppStore
-from ghoshell_moss.host.abcd.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.concepts.mindflow import Mindflow, Signal, InputSignal
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
