@@ -1,0 +1,27 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+handlers:
+  # 专门负责调试输出的 Handler
+  debug:
+    class: logging.FileHandler
+    level: DEBUG
+    formatter: standard
+    filename: "debug.log" # 默认在 CWD 下
+    mode: "a"
+    encoding: "utf-8"
+
+loggers:
+  # 允许不同模块有不同日志等级
+  root:
+    level: WARNING
+    handlers: [ ]
+
+  moss:
+    level: INFO
+    handlers: [ debug ]

@@ -12,7 +12,7 @@ from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
-from ghoshell_moss.host.matrix import HostMatrix
+from ghoshell_moss.host.matrix import MatrixImpl
 from ghoshell_moss.host.toolset import IToolSetImpl
 import logging
 
@@ -57,7 +57,7 @@ class Host(IHost):
             namespace="MOSS/app_store/toolset",
             runnable=False,
         )
-        self._matrix = HostMatrix(
+        self._matrix = MatrixImpl(
             mode=self._moss_mode,
             env=self.env,
             manifest=self._manifest,

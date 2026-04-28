@@ -52,8 +52,10 @@ class REPLState(TUIState, ABC):
 
     def on_interrupt(self, event: KeyPressEvent) -> None:
         if self._event_loop and self._operation_task and not self._operation_task.done():
-            self.console.hint("canceling operation")
+            self.console.hint("canceling operation {}".format(self._operation_task.get_name()))
             self._event_loop.call_soon_threadsafe(self._operation_task.cancel)
+        else:
+            self.console.hint("no ongoing operation to interrupt")
 
     def handle_input(self, console_input: str) -> None:
         if not self._is_alive_event.is_set():
@@ -84,37 +86,46 @@ class REPLState(TUIState, ABC):
                     except Exception:
                         tb = Traceback()
                         self.console.rprint(tb)
+                    self._operation_task = None
 
                 if self._repl and self._repl.match(operator):
                     result = self._repl.eval_input(operator)
                     if asyncio.iscoroutine(result):
-                        self._create_operation(result)
+                        self._create_operation(result, name="handle repl command")
                         continue
                     else:
                         self._handle_operation_result(result)
+                        continue
                 else:
-                    self._create_operation(self._on_text_input(operator))
+                    self._create_operation(self._on_text_input(operator), name="handle text input")
                     continue
             except Exception:
                 tb = Traceback()
                 self.console.rprint(tb)
                 continue
 
-    def _create_operation(self, cor: Coroutine) -> None:
-        self._operation_task = self._event_loop.create_task(self._ensure_operation_done(cor))
-
-    async def _ensure_operation_done(self, cor: Coroutine) -> None:
+    def _create_operation(self, cor: Coroutine, name: str = '') -> None:
         self._operation_index += 1
         index = self._operation_index
-        self.console.hint("operation {} started".format(index))
+        if not name:
+            name = "operation"
+        name_idx = f"{name}-(task:{index})"
+
+        self._operation_task = self._event_loop.create_task(self._ensure_operation_done(cor, name=name_idx))
+        self._operation_task.set_name(name)
+
+    async def _ensure_operation_done(self, cor: Coroutine, name: str) -> None:
+        self.console.hint("- {} started".format(name))
         try:
             r = await cor
             self._handle_operation_result(r)
-            self.console.hint("operation {} done".format(index))
+            self.console.hint("- {} done".format(name))
         except asyncio.CancelledError:
-            self.console.hint("operation {} cancelled".format(index))
-        except Exception:
-            self.console.hint("operation {} failed".format(index))
+            self.console.hint("- {} cancelled".format(name))
+            pass
+        except Exception as e:
+            self.console.hint("- {} failed".format(name))
+            self.console.rprint(str(e))
             tb = Traceback()
             self.console.rprint(tb)
 

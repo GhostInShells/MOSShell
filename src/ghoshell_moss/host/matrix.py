@@ -31,7 +31,7 @@ import contextlib
 import logging
 import threading
 
-__all__ = ['AppCell', 'MossModeCell', 'HostMatrix']
+__all__ = ['AppCell', 'MossModeCell', 'MatrixImpl']
 
 
 class AppCell(Cell):
@@ -92,7 +92,7 @@ class UnknownCell(Cell):
         return False
 
 
-class HostMatrix(Matrix):
+class MatrixImpl(Matrix):
 
     def __init__(
             self,
@@ -157,7 +157,7 @@ class HostMatrix(Matrix):
     def _prepare_container(self) -> Container:
         container = Container(name=self._cell_address)
         container.set(Matrix, self)
-        container.set(HostMatrix, self)
+        container.set(MatrixImpl, self)
         container.set(Environment, self.env)
         container.set(Workspace, self._workspace)
         container.set(Manifests, self._manifest)

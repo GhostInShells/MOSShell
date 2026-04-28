@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any
+from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
 
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
@@ -9,6 +9,7 @@ from rich.rule import Rule
 from rich.text import Text
 from rich.syntax import Syntax
 from rich.markdown import Markdown
+from rich.theme import Theme
 from prompt_toolkit.key_binding import (
     KeyBindings, KeyPressEvent, ConditionalKeyBindings, merge_key_bindings,
     KeyBindingsBase,
@@ -34,7 +35,7 @@ __all__ = ["TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "ConsoleOutput"]
 
 from prompt_toolkit.styles import Style
 
-DEFAULT_STYLE = Style.from_dict({
+DEFAULT_PROMPT_STYLE = Style.from_dict({
     # 提示符区域
     'prompt': 'fg:#61afef bold',  # 蓝色加粗
     'prompt.state': 'fg:#e5c07b bold',  # 黄色，显示状态名
@@ -176,6 +177,30 @@ class ConsoleOutput:
         """输出错误消息（红色，带警告图标 ❌）。"""
         self.rprint(Text(f"❌  {text}", style="bold red"))
 
+    def print_exception(
+            self,
+            *,
+            width: Optional[int] = 100,
+            extra_lines: int = 3,
+            max_frames: int = 10,
+    ) -> None:
+        """Prints a rich render of the last exception and traceback.
+
+        Args:
+            width (Optional[int], optional): Number of characters used to render code. Defaults to 100.
+            extra_lines (int, optional): Additional lines of code to render. Defaults to 3.
+            max_frames (int): Maximum number of frames to show in a traceback, 0 for no maximum. Defaults to 100.
+        """
+
+        traceback = Traceback(
+            width=width,
+            extra_lines=extra_lines,
+            word_wrap=True,
+            show_locals=True,
+            max_frames=max_frames,
+        )
+        self.rprint(traceback)
+
 
 class TUIState(ABC):
 
@@ -244,6 +269,7 @@ class TUICompleter(Completer):
         text = document.text_before_cursor
         if not text.startswith(self.command_mark):
             return
+        text = text[len(self.command_mark):]
         for cmd in self.default_commands:
             if cmd.startswith(text):
                 yield Completion(cmd, start_position=-len(text), display_meta=self.default_commands[cmd])
@@ -254,10 +280,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     def __init__(
             self,
             host: IHost | None = None,
-            style: Style = None,
+            prompt_style: Style = None,
     ):
         self.kb: KeyBindingsBase | None = None
-        self._style = style or DEFAULT_STYLE
+        self._style = prompt_style or DEFAULT_PROMPT_STYLE
         self.host: IHost | None = host or IHost.discover()
         self.runtime: RUNTIME = self._get_runtime(self.host)
         self._closing_event = ThreadSafeEvent()
@@ -274,12 +300,18 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._rich_console = Console(
             force_terminal=True,
             color_system='truecolor',
+            theme=Theme({
+                "traceback.border": "bright_black",
+                "traceback.text": "white",
+                "traceback.title": "bold red",
+                "traceback.item": "cyan",
+            })
         )
         self._dummy_completer = DummyCompleter()
 
     def default_commands(self) -> dict[str, tuple[str, Callable[[], None]]]:
         return {
-            "/exit": ("exit the tui", lambda: self.close())
+            "exit": ("exit the tui", lambda: self.close())
         }
 
     @classmethod
@@ -328,7 +360,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         guide.add_column("Key / Command")
         guide.add_row("Switch State (Next)", "Ctrl + P")
         guide.add_row("Switch State (Prev)", "Ctrl + B")
+        guide.add_row("Add New Line", "Ctrl + J")
         guide.add_row("Interrupt Task", "Esc")
+        guide.add_row("REPL command", "Start with /")
+        guide.add_row("REPL help", "Start with ?")
         guide.add_row("Exit System", "/exit")
 
         # 4. 运行时自定义介绍 (通过抽象方法留给子类实现)
@@ -470,13 +505,11 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     await stack.enter_async_context(state)
                 list(self._states.values())[0].on_switch(True)
                 # 发送一个初始讯号.
-                # render_loop_task = asyncio.create_task(self._main_render_loop())
                 input_loop_task = asyncio.create_task(self._input_loop())
                 self.current_state().on_switch(True)
                 await input_loop_task
         except Exception:
-            tb = Traceback()
-            self._rich_console.print(tb)
+            self.console.print_exception()
         finally:
             self._closing_event.set()
 
@@ -515,9 +548,14 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 )
             if not item:
                 continue
-            if item in default_commands:
-                desc, action = default_commands[item]
-                action()
+            # default command check
+            command_line = item.lstrip('/')
+            if command_line in default_commands:
+                desc, action = default_commands[command_line]
+                try:
+                    action()
+                except Exception:
+                    self.console.print_exception()
                 continue
             self.current_state().handle_input(item)
 
@@ -570,6 +608,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             self.welcome()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._main_loop())
+            loop.set_exception_handler(self.tui_exception_handler)
             # 等待运行结束
             self._closing_event.set()
             self._renderable_queue.put_nowait(None)
@@ -580,9 +619,16 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             # 用来做退出?
             pass
         except Exception:
-            tb = Traceback()
-            self._rich_console.print(tb)
+            self._rich_console.print_exception()
         finally:
             loop.close()
             self._closing_event.set()
             raise SystemExit(0)
+
+    def tui_exception_handler(self, loop: asyncio.AbstractEventLoop, context: dict):
+        # 1. 提取异常对象
+        exception = context.get("exception")
+        message = context.get("message", "Unhandled exception in event loop")
+        self.console.print_exception()
+        if self.host.matrix().is_running():
+            self.host.matrix().logger.exception("%s: %s", message, exception)

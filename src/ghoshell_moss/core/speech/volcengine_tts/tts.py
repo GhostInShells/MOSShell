@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+
 import orjson as json
 import logging
 import os
@@ -326,18 +328,18 @@ class VolcengineTTSBatch(TTSBatch):
     instance_count: ClassVar[int] = 0
 
     def __init__(
-        self,
-        *,
-        loop: asyncio.AbstractEventLoop,
-        speaker: SpeakerConf,
-        batch_id: str = "",
-        channels: int,
-        audio_format: str,
-        sample_rate: int,
-        voice: dict | None,
-        tone: str,
-        logger: LoggerItf,
-        callback: Optional[TTSAudioCallback] = None,
+            self,
+            *,
+            loop: asyncio.AbstractEventLoop,
+            speaker: SpeakerConf,
+            batch_id: str = "",
+            channels: int,
+            audio_format: str,
+            sample_rate: int,
+            voice: dict | None,
+            tone: str,
+            logger: LoggerItf,
+            callback: Optional[TTSAudioCallback] = None,
     ):
         self.default_speaker = speaker
         self.callback = callback
@@ -389,15 +391,12 @@ class VolcengineTTSBatch(TTSBatch):
             return
         elif self.done.is_set():
             return
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(self._started.wait()),
-                asyncio.create_task(self.done.wait()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        wait_started_task = asyncio.create_task(self._started.wait())
+        wait_done_task = asyncio.create_task(self.done.wait())
+        done, pending = await asyncio.wait([wait_started_task, wait_done_task], return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
+        _ = await asyncio.gather(wait_started_task, wait_done_task, return_exceptions=True)
 
     async def items(self) -> AsyncIterator[TTSItem]:
         if not self._started:
@@ -474,11 +473,12 @@ class VolcengineTTS(TTS):
     火山引擎实现的流式 tts
     todo: 将它放到独立线程中运行.
     """
+
     def __init__(
-        self,
-        *,
-        conf: VolcengineTTSConf | None = None,
-        logger: LoggerItf | None = None,
+            self,
+            *,
+            conf: VolcengineTTSConf | None = None,
+            logger: LoggerItf | None = None,
     ):
         self.logger = logger or logging.getLogger("moss")
         self._log_prefix = "[VolcengineTTS] "
@@ -534,12 +534,12 @@ class VolcengineTTS(TTS):
             raise RuntimeError("TTS is closed")
 
     def new_batch(
-        self,
-        batch_id: str = "",
-        *,
-        callback: TTSAudioCallback | None = None,
-        voice: dict[str, Any] | None = None,
-        tone: str | None = None,
+            self,
+            batch_id: str = "",
+            *,
+            callback: TTSAudioCallback | None = None,
+            voice: dict[str, Any] | None = None,
+            tone: str | None = None,
     ) -> TTSBatch:
         self._check_running()
         self.logger.info("%s create new tts batch %s", self._log_prefix, batch_id)
@@ -549,11 +549,11 @@ class VolcengineTTS(TTS):
         return batch
 
     def _create_batch(
-        self,
-        batch_id: str = "",
-        callback: TTSAudioCallback | None = None,
-        voice: dict[str, Any] | None = None,
-        tone: str | None = None,
+            self,
+            batch_id: str = "",
+            callback: TTSAudioCallback | None = None,
+            voice: dict[str, Any] | None = None,
+            tone: str | None = None,
     ) -> VolcengineTTSBatch:
         speaker_conf = self._current_speaker_conf
         if tone is not None and tone != self.current_tone():
@@ -601,7 +601,7 @@ class VolcengineTTS(TTS):
                 self.logger.info("%s TTS cancelled", self._log_prefix)
                 pass
             except Exception as e:
-                self.logger.warning("%s TTS main loop got exception: %s", self._log_prefix, e)
+                self.logger.error("%s TTS main loop got exception: %s", self._log_prefix, e)
             finally:
                 if task is not None and not task.done():
                     task.cancel()
@@ -663,10 +663,10 @@ class VolcengineTTS(TTS):
             self.logger.info("%s consuming batch loop done", self._log_prefix)
 
     async def _consume_batch_in_connection(
-        self,
-        batch: VolcengineTTSBatch,
-        connection: ClientConnection,
-        current_resource_id: str,
+            self,
+            batch: VolcengineTTSBatch,
+            connection: ClientConnection,
+            current_resource_id: str,
     ) -> bool:
         if batch.is_closed():
             return True
@@ -705,7 +705,7 @@ class VolcengineTTS(TTS):
 
             # batch 被提前关闭了.
             if batch_closed in done:
-                self.logger.warning("%s batch %s closed before send and receive", self._log_prefix, batch_id)
+                self.logger.info("%s batch %s closed before send and receive", self._log_prefix, batch_id)
                 send_and_receive.cancel()
                 send_task.cancel()
                 receive_task.cancel()
@@ -731,10 +731,10 @@ class VolcengineTTS(TTS):
             self._running_batch = None
 
     async def _send_batch_text_to_server(
-        self,
-        batch: VolcengineTTSBatch,
-        session: Session,
-        connection: ClientConnection,
+            self,
+            batch: VolcengineTTSBatch,
+            session: Session,
+            connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         try:
@@ -777,9 +777,9 @@ class VolcengineTTS(TTS):
             self.logger.info("%s batch %s send text done", self._log_prefix, batch_id)
 
     async def _receive_batch_audio_from_server(
-        self,
-        batch: VolcengineTTSBatch,
-        connection: ClientConnection,
+            self,
+            batch: VolcengineTTSBatch,
+            connection: ClientConnection,
     ) -> None:
         batch_id = batch.batch_id()
         callback = batch.callback

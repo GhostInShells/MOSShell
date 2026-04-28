@@ -12,7 +12,7 @@ from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
 from .app_store import HostAppStore
-from .matrix import HostMatrix
+from .matrix import MatrixImpl
 from ghoshell_moss.host.abcd.environment import Environment
 import contextlib
 import asyncio
@@ -27,7 +27,7 @@ class IToolSetImpl(IToolSet):
             env: Environment,
             workspace: Workspace,
             mode: Mode,
-            matrix: HostMatrix,
+            matrix: MatrixImpl,
     ):
         env.bootstrap()
         self._env = env

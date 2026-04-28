@@ -15,7 +15,7 @@ from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
 from .abcd import OutputItem
 from .app_store import HostAppStore
-from .matrix import HostMatrix
+from .matrix import MatrixImpl
 from ghoshell_moss.host.abcd.environment import Environment
 import contextlib
 import asyncio
@@ -37,7 +37,7 @@ class HostMossRuntime(MossRuntime, IToolSet):
             env: Environment,
             workspace: Workspace,
             mode: Mode,
-            matrix: HostMatrix,
+            matrix: MatrixImpl,
             mindflow: Mindflow | None = None,
             as_toolset: bool = False,
             conceive: Conceive | None = None,
