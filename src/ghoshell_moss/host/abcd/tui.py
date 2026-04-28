@@ -18,7 +18,7 @@ from prompt_toolkit.completion import Completer, DummyCompleter, DynamicComplete
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
 from ghoshell_moss.core.blueprint.session import OutputItem
-from ghoshell_moss.host.abcd import IHost
+from ghoshell_moss.host.abcd import MossHost
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import uvloop
@@ -279,12 +279,12 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     def __init__(
             self,
-            host: IHost | None = None,
+            host: MossHost | None = None,
             prompt_style: Style = None,
     ):
         self.kb: KeyBindingsBase | None = None
         self._style = prompt_style or DEFAULT_PROMPT_STYLE
-        self.host: IHost | None = host or IHost.discover()
+        self.host: MossHost | None = host or MossHost.discover()
         self.runtime: RUNTIME = self._get_runtime(self.host)
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -316,7 +316,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     @classmethod
     @abstractmethod
-    def _get_runtime(cls, host: IHost) -> RUNTIME:
+    def _get_runtime(cls, host: MossHost) -> RUNTIME:
         """从 host 上拿到 runtime 对象. """
         pass
 

@@ -1,4 +1,4 @@
-from ghoshell_moss.host.abcd.host_design import Mode
+from ghoshell_moss.host.abcd.host_design import MossMode
 from ghoshell_moss.core.codex.discover import scan_package
 from ghoshell_moss.host.abcd.environment import MODE_STUB_PACKAGE
 from importlib import import_module
@@ -54,7 +54,7 @@ def new_mode(
     mode_file = target_mode_dir / DEFAULT_MODE_FILENAME
 
     # 构造新的模式实例
-    mode = Mode(
+    mode = MossMode(
         name=name,
         description=description,
         instruction='',
@@ -70,7 +70,7 @@ def new_mode(
     (target_mode_dir / "__init__.py").touch()
 
 
-def list_modes_from_root_package(package_import_path: str = ROOT_MODES_PACKAGE) -> list[Mode]:
+def list_modes_from_root_package(package_import_path: str = ROOT_MODES_PACKAGE) -> list[MossMode]:
     """
     通过复用 scan_package 逻辑发现所有模式。
     """
@@ -89,7 +89,7 @@ def list_modes_from_root_package(package_import_path: str = ROOT_MODES_PACKAGE) 
     return modes
 
 
-def _ensure_manifest_to_mode(package_path: str, mode: Mode) -> Mode:
+def _ensure_manifest_to_mode(package_path: str, mode: MossMode) -> MossMode:
     """
     如果 Mode 还没有关联 Manifest，尝试为其绑定一个 PackageManifest。
     """
@@ -101,18 +101,18 @@ def _ensure_manifest_to_mode(package_path: str, mode: Mode) -> Mode:
     return mode
 
 
-def find_mode_from_package(package_import_path: str) -> Mode | None:
+def find_mode_from_package(package_import_path: str) -> MossMode | None:
     try:
         module = import_module(package_import_path)
     except ImportError:
         return None
 
-    mode: Mode | None = None
+    mode: MossMode | None = None
 
     # 1. 尝试从 module 属性中直接获取实例
     for attr in ("mode", "__mode__"):
         instance = getattr(module, attr, None)
-        if isinstance(instance, Mode):
+        if isinstance(instance, MossMode):
             mode = instance
             break
 
@@ -121,13 +121,13 @@ def find_mode_from_package(package_import_path: str) -> Mode | None:
         mode_dir = Path(module.__file__).parent.resolve()
         expect_file = mode_dir.joinpath(DEFAULT_MODE_FILENAME)
         if expect_file.exists() and expect_file.is_file():
-            mode = Mode.from_markdown(expect_file)
+            mode = MossMode.from_markdown(expect_file)
 
     # 3. 如果还是没有，根据约定自动生成（Convention over Configuration）
     if mode is None:
         description = inspect.getdoc(module) or f"Auto-generated mode for {package_import_path}"
         docstring = ''
-        mode = Mode(
+        mode = MossMode(
             name=package_import_path.split(".")[-1],
             instruction=docstring,
             description=description,

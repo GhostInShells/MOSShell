@@ -19,25 +19,26 @@ import frontmatter
 from pathlib import Path
 
 __all__ = [
-    'IToolSet', 'IHost', 'MossRuntime', 'Mode',
+    'MossAsToolSet', 'MossHost', 'MossRuntime', 'MossMode',
 ]
 
 
-class IToolSet(ABC):
+class MossAsToolSet(ABC):
     """
     将 MOSS runtime 包装成 tools, 希望可以被作为工具提供给别的框架.
     不过需要目标框架自行兼容输出协议.
     """
 
     @abstractmethod
-    def moss_instruction(self) -> str:
+    def moss_instruction(self, with_static: bool = True) -> str:
         """
         返回所有的 instruction, 信息, 可以加入到 agent 的 instruction.
+        包含 state messages.
         """
         pass
 
     @abstractmethod
-    def moss_dynamic_messages(self) -> list[Message]:
+    async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
         """
         返回 moss 运行时的动态信息,
         仅包含组件的 interface, context messages 等等.
@@ -151,7 +152,7 @@ class MossRuntime(ABC):
 
     @property
     def logger(self) -> LoggerItf:
-        return selfhost_design.logger
+        return self.matrix.logger
 
     @abstractmethod
     def wait_close_sync(self, timeout: float | None = None) -> bool:
@@ -282,7 +283,7 @@ class MossRuntime(ABC):
         pass
 
 
-class Mode(BaseModel):
+class MossMode(BaseModel):
     """
     指定的运行模式.
     用来管理 MOSS Runtime 的运行时可发现资源.
@@ -369,7 +370,7 @@ class Mode(BaseModel):
         return self.__manifest__
 
 
-class IHost(ABC):
+class MossHost(ABC):
     """
     MOSS (model-oriented operating system shell) 的高阶抽象.
     Host 用来管理和发现环境, 从环境中创建 Moss 的一切.
@@ -408,14 +409,14 @@ class IHost(ABC):
 
     @property
     @abstractmethod
-    def mode(self) -> Mode:
+    def mode(self) -> MossMode:
         """
         current mode.
         """
         pass
 
     @abstractmethod
-    def all_modes(self) -> dict[str, Mode]:
+    def all_modes(self) -> dict[str, MossMode]:
         """
         当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
         比如 mac 模式, 机器人模式, 就可以完全隔离开.
@@ -427,14 +428,14 @@ class IHost(ABC):
         """
         返回当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.
-        >>> async def main(moss: IHost):
+        >>> async def main(moss: MossHost):
         >>>     async with moss.matrix():
         >>>         ...
         """
         pass
 
     @abstractmethod
-    def run_as_toolset(self) -> IToolSet:
+    def run_as_toolset(self) -> MossAsToolSet:
         """
         run as toolset.
         """

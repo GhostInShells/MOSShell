@@ -499,7 +499,7 @@ class VolcengineTTS(TTS):
 
         self._tts_connection_conf = self._current_speaker_conf
 
-        self._pending_batches_queue: asyncio.Queue[VolcengineTTSBatch] = asyncio.Queue()
+        self._pending_batches_queue: asyncio.Queue[VolcengineTTSBatch | None] = asyncio.Queue()
         self._unfinished_batches: deque[VolcengineTTSBatch] = deque()
         self._running_batch: Optional[VolcengineTTSBatch] = None
         self._has_any_batch_event = asyncio.Event()
@@ -590,6 +590,9 @@ class VolcengineTTS(TTS):
                         continue
                     # 等待一个 connection loop 完成. 要求不会抛出任何异常. 除了 cancel.
                     batch = await self._pending_batches_queue.get()
+                    if batch is None:
+                        # 拿到毒丸.
+                        break
                 # 这个 loop 会持续消费 batch, 直到超过等待时间还没有新 batch 为止.
                 task = asyncio.create_task(self._start_consuming_batch_loop(batch))
                 # 创建一个可以 cancel 的 task. 它自己应该不要抛出 cancel 异常.
@@ -888,6 +891,7 @@ class VolcengineTTS(TTS):
             return
         self.logger.info("%s closing...", self._log_prefix)
         self._closing_event.set()
+        self._pending_batches_queue.put_nowait(None)
         if self._main_loop_task is not None:
             self._main_loop_task.cancel()
             try:

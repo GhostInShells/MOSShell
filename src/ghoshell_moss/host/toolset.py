@@ -4,7 +4,7 @@ import janus
 
 from ghoshell_moss import Message, MOSShell
 from ghoshell_moss.host.abcd.host_design import (
-    IToolSet, Mode,
+    MossAsToolSet, MossMode,
 )
 from ghoshell_moss.host.abcd.app import AppStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -17,16 +17,16 @@ from ghoshell_moss.host.abcd.environment import Environment
 import contextlib
 import asyncio
 
-__all__ = ['IToolSetImpl']
+__all__ = ['MossAsToolSetImpl']
 
 
-class IToolSetImpl(IToolSet):
+class MossAsToolSetImpl(MossAsToolSet):
 
     def __init__(
             self,
             env: Environment,
             workspace: Workspace,
-            mode: Mode,
+            mode: MossMode,
             matrix: MatrixImpl,
     ):
         env.bootstrap()
@@ -68,18 +68,20 @@ class IToolSetImpl(IToolSet):
         if not self.is_running():
             raise RuntimeError('Moss is not running.')
 
-    def moss_instruction(self) -> str:
+    def moss_instruction(self, with_static: bool = True) -> str:
         self._check_running()
         instructions = []
         if meta_instruction := self._env.meta_instruction.get_meta_instruction().strip():
             instructions.append(meta_instruction)
         if mode_instruction := self._mode.instruction.strip():
             instructions.append(mode_instruction)
-        if static_messages := self._ctml_shell.static_messages().strip():
-            instructions.append(static_messages)
+        if with_static:
+            if static_messages := self._ctml_shell.static_messages().strip():
+                instructions.append(static_messages)
         return "\n\n".join(instructions)
 
-    def moss_dynamic_messages(self) -> list[Message]:
+    async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
+        await self._ctml_shell.refresh_metas(max_wait)
         return self._ctml_shell.dynamic_messages()
 
     def moss_static_messages(self) -> str:
@@ -172,5 +174,6 @@ class IToolSetImpl(IToolSet):
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         except Exception as e:
             self._matrix.logger.exception("%s failed to aexit %s", self._log_prefix, e)
+            raise e
         finally:
             self._close_event.set()

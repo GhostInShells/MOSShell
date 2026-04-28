@@ -1,6 +1,6 @@
 from typing import Iterable
 
-from ghoshell_moss.host.abcd import IHost, IToolSet
+from ghoshell_moss.host.abcd import MossHost, MossAsToolSet
 from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, ConsoleOutput
 from ghoshell_moss.host.tui.repl_state import REPLState
 from ghoshell_moss.host.tui.inspector_matrix import MatrixREPL
@@ -11,7 +11,7 @@ from ghoshell_moss.core.blueprint.session import OutputItem
 class MOSSToolSetInspector:
     """封装对 ToolSet 的操作与观测接口。"""
 
-    def __init__(self, toolset: IToolSet, output: ConsoleOutput) -> None:
+    def __init__(self, toolset: MossAsToolSet, output: ConsoleOutput) -> None:
         self._toolset = toolset
         self._output = output
 
@@ -53,8 +53,8 @@ class ToolSetState(REPLState):
 
     def __init__(
             self,
-            host: IHost,
-            toolset: IToolSet,
+            host: MossHost,
+            toolset: MossAsToolSet,
             name: str = 'Toolset',
     ) -> None:
         self._host = host
@@ -73,10 +73,10 @@ class ToolSetState(REPLState):
         self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 
-class ToolsetTUI(MossHostTUI[IToolSet]):
+class ToolsetTUI(MossHostTUI[MossAsToolSet]):
 
     @classmethod
-    def _get_runtime(cls, host: IHost) -> IToolSet:
+    def _get_runtime(cls, host: MossHost) -> MossAsToolSet:
         return host.run_as_toolset()
 
     def create_states(self) -> Iterable[TUIState]:

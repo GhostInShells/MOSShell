@@ -52,6 +52,10 @@ class ContentModel(BaseModel, ABC):
         return content
 
     @classmethod
+    def match(cls, content: Content) -> bool:
+        return cls.content_type() == content['type']
+
+    @classmethod
     def from_content(cls, content: Content) -> Self | None:
         if cls.content_type() != content['type']:
             return None

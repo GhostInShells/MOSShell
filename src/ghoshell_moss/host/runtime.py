@@ -4,7 +4,7 @@ import janus
 
 from ghoshell_moss import Message, MOSShell
 from ghoshell_moss.host.abcd.host_design import (
-    MossRuntime, IToolSet, Perception, Mode,
+    MossRuntime, MossAsToolSet, Perception, MossMode,
     Conceive,
 )
 from ghoshell_moss.host.abcd.app import AppStore
@@ -30,13 +30,13 @@ class Logos:
         pass
 
 
-class HostMossRuntime(MossRuntime, IToolSet):
+class HostMossRuntime(MossRuntime, MossAsToolSet):
 
     def __init__(
             self,
             env: Environment,
             workspace: Workspace,
-            mode: Mode,
+            mode: MossMode,
             matrix: MatrixImpl,
             mindflow: Mindflow | None = None,
             as_toolset: bool = False,

@@ -63,7 +63,8 @@ matrix = [
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
 moss-cli = "ghoshell_moss.cli.cli_controller:main"
-moss-debug = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-repl = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-as-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -7,6 +7,7 @@ from typing import Optional
 from PIL import Image
 from typing_extensions import Self
 from ghoshell_moss.message.contents.abcd import ContentModel
+from anthropic.types import Base64ImageSourceParam
 
 __all__ = ["Base64Image"]
 
@@ -22,6 +23,7 @@ class Base64Image(ContentModel):
         "data": "..."
     }
     """
+    source: Base64ImageSourceParam
 
     @classmethod
     def content_type(cls) -> str:
@@ -29,22 +31,22 @@ class Base64Image(ContentModel):
 
     @classmethod
     def from_base64(cls, media_type: str, data: str) -> Self:
-        source = {
-            "type": "base64",
-            "media_type": media_type,
-            "data": data
-        }
+        source = Base64ImageSourceParam(
+            type="base64",
+            media_type=media_type,
+            data=data
+        )
         return cls(source=source)
 
     @classmethod
     def from_binary(cls, media_type: str, data: bytes) -> Self:
         """从二进制数据直接创建"""
         b64_data = base64.b64encode(data).decode("utf-8")
-        source = {
-            "type": "base64",
-            "media_type": media_type,
-            "data": b64_data
-        }
+        source = Base64ImageSourceParam(
+            type="base64",
+            media_type=media_type,
+            data=b64_data
+        )
         return cls(source=source)
 
     @classmethod

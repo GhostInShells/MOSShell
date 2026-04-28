@@ -3,7 +3,7 @@ from prompt_toolkit.completion import WordCompleter, Completer
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.key_binding import KeyPressEvent
 from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, RUNTIME, Runtime
-from ghoshell_moss.host.abcd import IHost
+from ghoshell_moss.host.abcd import MossHost
 import asyncio
 import contextlib
 
@@ -66,7 +66,7 @@ class FakeRuntime(Runtime):
 class EchoCase(MossHostTUI):
 
     @classmethod
-    def _get_runtime(cls, host: IHost) -> RUNTIME:
+    def _get_runtime(cls, host: MossHost) -> RUNTIME:
         return FakeRuntime()
 
     def create_states(self) -> Iterable[TUIState]:
