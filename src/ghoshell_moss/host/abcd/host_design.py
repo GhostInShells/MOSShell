@@ -298,6 +298,10 @@ class MossMode(BaseModel):
         default='',
         description="模式的详细介绍. 也会作为模式的专属 instruction"
     )
+    ctml: str = Field(
+        default='',
+        description='模式选择独立的 ctml version. '
+    )
 
     description: str = Field(
         description="模式的一句话简介, 通常是 docstring 的第一句. 也支持独立定义",
@@ -308,7 +312,7 @@ class MossMode(BaseModel):
         description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
     )
 
-    bringup: list[str] = Field(
+    bringup_apps: list[str] = Field(
         default_factory=list,
         description="启动时允许自动启动的 apps, 规则和 apps 相同. 默认为空. "
     )
@@ -326,7 +330,7 @@ class MossMode(BaseModel):
     __manifest__: Manifests | None = None
 
     @classmethod
-    def from_markdown(cls, file: Path) -> Self:
+    def from_markdown(cls, file: Path, *, mode_name: str = None) -> Self:
         """
         from a markdown file discover Mode.
         """
@@ -335,6 +339,13 @@ class MossMode(BaseModel):
         post = frontmatter.loads(file.read_text())
         data = post.metadata
         docstring = post.content
+        if mode_name is not None and mode_name:
+            data['name'] = mode_name
+        elif 'name' in data:
+            pass
+        else:
+            data['name'] = file.name.split('.', 1)[0]
+
         if "description" not in data:
             description = docstring.split("\n", 1)[0]
             data['description'] = description
@@ -421,6 +432,10 @@ class MossHost(ABC):
         当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
         比如 mac 模式, 机器人模式, 就可以完全隔离开.
         """
+        pass
+
+    @abstractmethod
+    def apps(self) -> AppStore:
         pass
 
     @abstractmethod

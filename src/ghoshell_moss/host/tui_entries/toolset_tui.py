@@ -5,6 +5,7 @@ from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, ConsoleOutput
 from ghoshell_moss.host.tui.repl_state import REPLState
 from ghoshell_moss.host.tui.inspector_matrix import MatrixREPL
 from ghoshell_moss.host.tui.inspector_manifests import ManifestsREPL
+from ghoshell_moss.host.tui.inspector_app_store import AppStoreREPL
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 
@@ -19,9 +20,9 @@ class MOSSToolSetInspector:
         """获取当前 MOSS 的指令上下文 (Instruction)。"""
         self._output.syntax(self._toolset.moss_instruction(), 'xml')
 
-    def dynamic(self) -> None:
+    async def dynamic(self) -> None:
         """获取当前 MOSS 的动态上下文讯息. """
-        messages = self._toolset.moss_dynamic_messages()
+        messages = await self._toolset.moss_dynamic_messages()
         self._output.output(OutputItem.new("Shell", *messages, log="moss dynamic instructions"))
 
     def static(self) -> None:
@@ -66,6 +67,7 @@ class ToolSetState(REPLState):
             "matrix": MatrixREPL(self._host.matrix()),
             "manifests": ManifestsREPL(self._host.manifests),
             "moss": MOSSToolSetInspector(self._toolset, self.console),
+            "apps": AppStoreREPL(self._toolset.apps)
         }
 
     async def _on_text_input(self, console_input: str) -> None:

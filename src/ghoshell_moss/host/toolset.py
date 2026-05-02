@@ -46,7 +46,7 @@ class MossAsToolSetImpl(MossAsToolSet):
             namespace="MOSS/app_store/main",
             runnable=True,
             include=self._mode.apps,
-            bringup=self._mode.bringup,
+            bringup=self._mode.bringup_apps,
         )
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
@@ -163,9 +163,11 @@ class MossAsToolSetImpl(MossAsToolSet):
         # 启动 matrix.
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 启动 app 并且 bringup
-        # await self._async_exit_stack.enter_async_context(self._app_store)
+        self._app_store.with_logger(self._matrix.logger)
+        await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
+        # 注册日志到当前 app store 里.
         self._started = True
         return self
 

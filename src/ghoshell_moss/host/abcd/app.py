@@ -4,6 +4,7 @@ from typing_extensions import Self, Literal
 from pathlib import Path
 from pydantic import BaseModel, Field
 from ghoshell_moss.core.blueprint.channel_builder import Channel, new_channel
+from enum import StrEnum
 import frontmatter
 import fnmatch
 
@@ -19,11 +20,19 @@ class AppWatcher(BaseModel):
     """
     启动和管理 app 运行状态的对象.
     """
-
-    cmd: str = Field(
-        default='uv run main.py',
+    executable: str = Field(
+        default='uv',
+        description='The executable of the app',
+    )
+    script: str = Field(
+        default='main.py',
         description='The command to execute',
     )
+    arguments: str = Field(
+        default='',
+        description='The arguments of the app execution',
+    )
+
     description: str = Field(
         default='',
         description='The description of the app',
@@ -42,7 +51,11 @@ class AppWatcher(BaseModel):
     )
 
 
-AppState = Literal['stopped', 'starting', 'running', 'error']
+class AppState(StrEnum):
+    STOPPED = 'stopped'
+    STARTING = 'starting'
+    RUNNING = 'running'
+    ERROR = 'error'
 
 
 class AppInfo(BaseModel):
@@ -87,30 +100,26 @@ class AppInfo(BaseModel):
 
     @property
     def address(self) -> str:
-        return f"apps/{self.group}/{self.name}"
+        return self.make_address(self.fullname)
+
+    @classmethod
+    def make_address(cls, fullname: str) -> str:
+        return f"apps/{fullname}"
+
+    @classmethod
+    def make_fullname(cls, group: str, name: str) -> str:
+        return '/'.join([group, name])
 
     @property
     def fullname(self) -> str:
-        return f"{self.group}/{self.name}"
+        return self.make_fullname(self.group, self.name)
+
+    def match_fullname(self, pattern: str) -> bool:
+        return fnmatch.fnmatchcase(self.fullname, pattern)
 
     @property
     def log_name(self) -> str:
         return f"moss.{self.group}.{self.name}"
-
-    def to_circus_params(self, env: dict[str, str], arguments: str = '') -> dict:
-        """
-        将 AppInfo 转换为 Circus add 指令所需的参数属性
-        """
-        return {
-            "name": self.address,
-            "cmd": ' '.join([self.watcher.cmd, arguments]).strip(),
-            "working_dir": self.work_directory,
-            "numprocesses": self.watcher.workers,
-            "respawn": self.watcher.respawn,
-            "max_age": self.watcher.max_age,
-            "env": env,
-            "singleton": True,
-        }
 
     @classmethod
     def from_markdown(cls, group: str, name: str, file: Path) -> Self:
@@ -213,12 +222,12 @@ class AppStore(ABC):
 
         exclude_patterns = set(exclude or [])
         for app in apps:
-            address = app.address  # "app/group/name"
+            address = app.address  # "apps/group/name"
 
             # 1. 检查是否在包含范围内
             # 使用 fnmatch 实现标准的 Unix 通配符逻辑，比 startswith 更强大
             is_included = any(
-                fnmatch.fnmatch(address, pat) or fnmatch.fnmatch(address, f"app/{pat}")
+                app.match_fullname(pat)
                 for pat in include_patterns
             )
 
@@ -227,7 +236,7 @@ class AppStore(ABC):
 
             # 2. 检查是否被排除
             is_excluded = any(
-                fnmatch.fnmatch(address, pat) or fnmatch.fnmatch(address, f"app/{pat}")
+                fnmatch.fnmatch(address, pat) or fnmatch.fnmatch(address, f"apps/{pat}")
                 for pat in exclude_patterns
             )
 
@@ -252,6 +261,13 @@ class AppStore(ABC):
         """
         获取一个环境中可发现的 app.
         如果 running 为 True, 则需要发现 is alive 的 app.
+        """
+        pass
+
+    @abstractmethod
+    def get_app_executable(self, fullname: str, args: Optional[str] = None) -> Optional[tuple[str, list[str]]]:
+        """
+        :return: executable, arguments list
         """
         pass
 

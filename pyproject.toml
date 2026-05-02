@@ -9,19 +9,17 @@ requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.84.0",
     "anyio>=4.12.1",
-    "argcomplete>=3.6.3",
     "ghoshell-common>=0.5.0",
     "ghoshell-container>=0.3.1",
     "janus>=2.0.0",
     "jsonargparse>=4.48.0",
-    "openai>=2.8.1",
     "orjson>=3.11.8",
     "pillow>=12.1.0",
-    "prompt-toolkit>=3.0.52",
     "python-dateutil>=2.9.0.post0",
     "python-frontmatter>=1.1.0",
     "python-ulid>=3.1.0",
-    "uvloop>=0.22.1",
+    "prompt-toolkit>=3.0.52",
+    "typer>=0.24.1",
 ]
 
 [project.optional-dependencies]
@@ -32,11 +30,6 @@ mcp = [
 wss = ["websockets>=15.0.1"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
-
-cli = [
-    "prompt-toolkit>=3.0.52",
-    "typer>=0.24.1",
-]
 
 # 所有测试性的依赖放一起. 注意, 由于 live2d-py 0.5.0 以上版本依赖 python 3.12, 所以需要设置本地 python
 #contrib = [
@@ -54,9 +47,11 @@ cli = [
 #    "loadenv>=0.1.1",
 #    "pymupdf>=1.27.1",
 #]
-matrix = [
+host = [
     "circus>=0.19.0",
     "eclipse-zenoh>=1.8.0",
+    "uv>=0.11.8",
+    "uvloop>=0.22.1",
 ]
 
 

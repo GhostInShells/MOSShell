@@ -1,15 +1,15 @@
 from typing import List
-from rich.table import Table
-from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.markdown import Markdown
 from ghoshell_moss.host.abcd.app import AppInfo
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_moss.host import Host
-from .utils import console, print_host_mode_info, print_simple_table, print_simple_panel
+from .utils import print_host_mode_info, print_simple_table, print_simple_panel
 import subprocess
 import shlex
 import typer
+from rich.syntax import Syntax
+from .utils import console
 
 app_store_app = typer.Typer(
     help="MOSS App Store: Manage and introspect environment applications.",
@@ -36,10 +36,10 @@ def list_apps(
     if verbose:
         print_host_mode_info(host)
     # 刷新并获取所有 apps
-    all_apps = list(host.apps.list_apps(refresh=True))
+    all_apps = list(host.apps().list_apps(refresh=True))
 
     # 调用新的过滤逻辑
-    results = list(host.apps.match_apps(all_apps, include, exclude))
+    results = list(host.apps().match_apps(all_apps, include, exclude))
 
     if not results:
         console.print(f"[yellow]No apps found matching: '{include}'[/yellow]")
@@ -53,7 +53,7 @@ def list_apps(
 
     _display_app_table(results, is_filtered=bool(include))
     if verbose:
-        console.print(f"[dim]App store: {host.apps.app_store_directory}[/dim]")
+        console.print(f"[dim]App store: {host.apps().app_store_directory}[/dim]")
 
 
 @app_store_app.command(name="show")
@@ -69,7 +69,7 @@ def show_app(
     if verbose:
         print_host_mode_info(host)
 
-    app = host.apps.get_app_info(fullname)
+    app = host.apps().get_app_info(fullname)
 
     if not app:
         console.print(f"[red]Error: App with fullname '{fullname}' not found.[/red]")
@@ -81,7 +81,7 @@ def show_app(
 
     _display_app_detail(app)
     if verbose:
-        console.print(f"[dim]App store: {host.apps.app_store_directory}[/dim]")
+        console.print(f"[dim]App store: {host.apps().app_store_directory}[/dim]")
 
 
 def _display_app_table(apps: List[AppInfo], is_filtered: bool):
@@ -144,29 +144,30 @@ def test_app(
         args: str = typer.Argument("", help="Additional arguments passed to the app command."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
         mode: str | None = typer.Option(None, "-m", "--mode", help="specific Mode"),
+        session_scope: str | None = typer.Option(None, "-s", "--session-scope", )
 ):
     """
     Start an app as a foreground subprocess for debugging/testing.
     This bypasses the AppStore runtime (Circus).
     """
-    host = Host(mode=mode)
+    host = Host(mode=mode, session_scope=session_scope)
     print_host_mode_info(host)
 
     # 1. 获取 AppInfo
-    app = host.apps.get_app_info(fullname)
+    app = host.apps().get_app_info(fullname)
     if not app:
         console.print(f"[red]Error: App '{fullname}' not found.[/red]")
         raise typer.Exit(1)
 
     # 2. 准备执行指令
     # 结合 AppWatcher 定义的 cmd 和 命令行传入的 args
-    full_cmd = f"{app.watcher.cmd} {args}".strip()
-
+    executable, args_list = host.apps().get_app_executable(fullname, args)
     console.print(Panel(
         f"[bold green]Testing App:[/bold green] {app.fullname}\n"
         f"[bold blue]Directory:[/bold blue] {app.work_directory}\n"
         f"[bold blue]Address:[/bold blue] {app.address}\n"
-        f"[bold yellow]Command:[/bold yellow] {full_cmd}",
+        f"[bold yellow]Command:[/bold yellow] {executable}\n"
+        f"[bold yellow]Arguments:[/bold yellow] {args_list}\n",
         title="Debug Mode",
         border_style="bright_black"
     ))
@@ -175,16 +176,16 @@ def test_app(
     # 我们需要切换到 App 的工作目录执行
     try:
         # 使用 shlex.split 确保命令解析安全（处理空格等）
-        cmd_args = shlex.split(full_cmd)
-
         # 继承当前环境并注入 Host 特有的 env (如果有)
-        env = host.env.dump_moss_env(cell_address=app.address, for_child_process=True)
+        env = host.env.dump_moss_env(cell_address=app.address, for_child_process=True, with_os_env=True)
         # 这里可以根据需要注入 host.env_vars() 等信息
 
         console.print("[dim]—— Process Started (Ctrl+C to stop) ——[/dim]\n")
 
+        args = [executable] + args_list
+
         subprocess.run(
-            cmd_args,
+            args=args,
             cwd=app.work_directory,
             env=env,
             check=False,  # 允许非零退出码，不抛出 Python 异常
@@ -200,11 +201,3 @@ def test_app(
         raise typer.Exit(1)
     finally:
         console.print("\n[dim]—— Test Session Ended ——[/dim]")
-
-
-import inspect
-import typer
-from rich.table import Table
-from rich.syntax import Syntax
-from .utils import console
-

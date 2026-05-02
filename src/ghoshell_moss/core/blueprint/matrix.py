@@ -29,7 +29,7 @@ class Cell(ABC):
 
     @property
     def log_name(self) -> str:
-        return '.'.join(['moss', self.type, self.name])
+        return '.'.join(['moss', self.type, self.name.replace('/', '.')])
 
     @abstractmethod
     def is_alive(self) -> bool:

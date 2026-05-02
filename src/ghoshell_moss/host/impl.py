@@ -62,6 +62,7 @@ class Host(MossHost):
             workspace=self._workspace,
             namespace="MOSS/app_store/toolset",
             runnable=False,
+            bringup=self._moss_mode.bringup_apps,
         )
         self._matrix = MatrixImpl(
             mode=self._moss_mode,
@@ -105,7 +106,6 @@ class Host(MossHost):
             raise NameError(f"Mode {name} already exists")
         new_mode(name=name, apps=apps, bring_up_apps=bring_up_apps, description=description)
 
-    @property
     def apps(self) -> HostAppStore:
         return self._app_store
 

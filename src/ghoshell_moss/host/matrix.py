@@ -116,21 +116,21 @@ class MatrixImpl(Matrix):
 
         # prepare cell and events
         cells: dict[str, Cell] = {}
-        cell_events: dict[str, threading.Event] = {}
+        cell_alive_events: dict[str, threading.Event] = {}
         for app in self.apps.list_apps():
             is_alive = threading.Event()
             cell = AppCell(app, is_alive)
-            cell_events[cell.address] = is_alive
+            cell_alive_events[cell.address] = is_alive
             cells[cell.address] = cell
 
         event = threading.Event()
         main_cell = MossModeCell(self._current_mode, event)
         self._main_cell = main_cell
-        cell_events[main_cell.address] = event
+        cell_alive_events[main_cell.address] = event
         cells[main_cell.address] = main_cell
 
         self._cells = cells
-        self._cell_events = cell_events
+        self._cell_alive_events = cell_alive_events
         # 其实不会有 unknown, 不过开发测试阶段, 做一个兜底.
         self._this_cell = cells.get(
             self._cell_address,
@@ -356,8 +356,9 @@ class MatrixImpl(Matrix):
         for address, cell in self._cells.items():
             if address == self._this_cell.address:
                 # 不监听自己.
+                self._cell_alive_events[self._cell_address].set()
                 continue
-            event = self._cell_events[address]
+            event = self._cell_alive_events[address]
             sub = self._register_cell_liveness_listener(session, address, event)
             subscribers.append(sub)
         try:
@@ -441,12 +442,17 @@ class MatrixImpl(Matrix):
             # ensure topic service lifecycle
             await self._async_exit_stack.enter_async_context(topic_service)
             await self._async_exit_stack.enter_async_context(self._ensure_task_group_canceled_ctx_manager())
-            if event := self._cell_events.get(self._cell_address):
+            if event := self._cell_alive_events.get(self._cell_address):
                 event.set()
+            self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_moss_env(
+                with_os_env=False,
+            ))
             return self
         except Exception as e:
             self.logger.exception("%s failed to start on exception: %s", self._log_prefix, e)
             raise e
+        finally:
+            self.logger.info("%s initialized", self._log_prefix)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
@@ -460,7 +466,7 @@ class MatrixImpl(Matrix):
                 else:
                     self.logger.exception("%s stop on unknown error: %s", self._log_prefix, exc_val)
 
-            if event := self._cell_events.get(self._cell_address):
+            if event := self._cell_alive_events.get(self._cell_address):
                 event.clear()
 
             # exit all the stack

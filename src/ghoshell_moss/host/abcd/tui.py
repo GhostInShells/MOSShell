@@ -26,6 +26,7 @@ import contextlib
 import sys
 import threading
 import json
+import os
 from queue import Queue, Empty
 from rich.panel import Panel
 from rich.table import Table
@@ -353,6 +354,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         env_table.add_column("Setting")
         for k, v in env_info.items():
             env_table.add_row(k, str(v))
+        env_table.add_row("SELF_PID", str(os.getpid()))
 
         # 3. 基础使用指南
         guide = Table(title="Quick Start", expand=True, box=None)
@@ -372,6 +374,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         # 组合渲染
         content = Group(
             banner,
+            Panel(node_table, title="[bold]Current Matrix Cell[/bold]", border_style="dim"),
             Panel(env_table, title="[bold]System Info[/bold]", border_style="dim"),
             Panel(guide, title="[bold]Shortcuts[/bold]", border_style="dim"),
             custom_intro if custom_intro else ""
@@ -499,6 +502,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             async with contextlib.AsyncExitStack() as stack:
                 # 启动 runtime.
                 await stack.enter_async_context(self.runtime)
+                # welcome after runtime initialized.
+                self.welcome()
                 # 启动所有的 state.
                 for state in self._states.values():
                     # 启动所有的状态面板.
@@ -605,8 +610,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         else:
             loop = uvloop.new_event_loop()
         try:
-            self.welcome()
-            asyncio.set_event_loop(loop)
+
             loop.run_until_complete(self._main_loop())
             loop.set_exception_handler(self.tui_exception_handler)
             # 等待运行结束

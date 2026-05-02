@@ -4,7 +4,11 @@ from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_moss.core.concepts.command import CommandMeta, Command, CommandTask, BaseCommandTask
 from ghoshell_moss.message import Message
-from openai.types.shared_params import FunctionDefinition
+
+try:
+    from openai.types.shared_params import FunctionDefinition
+except ImportError:
+    FunctionDefinition = dict
 from anthropic.types import ToolParam
 
 if typing.TYPE_CHECKING:

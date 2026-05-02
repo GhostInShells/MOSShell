@@ -11,7 +11,7 @@ from ghoshell_moss.host.tui_entries.toolset_tui import ToolsetTUI
 )
 @click.option(
     '--scope',
-    default='global',
+    default='default',
     help='设置当前的会话范围 (session scope).'
 )
 def moss_debug_repl_main(mode: str, scope: str):

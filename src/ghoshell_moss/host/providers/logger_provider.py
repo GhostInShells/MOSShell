@@ -77,4 +77,5 @@ class WorkspaceLoggerProvider(Provider[LoggerItf]):
                 handler.setLevel(logging.INFO)
                 handler.setFormatter(default_logger_formatter())
             moss_root_logger.addHandler(handler)
-        return logging.getLogger(logger_name)
+        logger = logging.getLogger(logger_name)
+        return logger

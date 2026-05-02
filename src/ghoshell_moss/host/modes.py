@@ -117,18 +117,19 @@ def find_mode_from_package(package_import_path: str) -> MossMode | None:
             break
 
     # 2. 如果没有实例，尝试从 MODE.md 发现
+    expect_mode_name = package_import_path.split(".")[-1]
     if mode is None and hasattr(module, "__file__") and module.__file__:
         mode_dir = Path(module.__file__).parent.resolve()
         expect_file = mode_dir.joinpath(DEFAULT_MODE_FILENAME)
         if expect_file.exists() and expect_file.is_file():
-            mode = MossMode.from_markdown(expect_file)
+            mode = MossMode.from_markdown(expect_file, mode_name=expect_mode_name)
 
     # 3. 如果还是没有，根据约定自动生成（Convention over Configuration）
     if mode is None:
         description = inspect.getdoc(module) or f"Auto-generated mode for {package_import_path}"
         docstring = ''
         mode = MossMode(
-            name=package_import_path.split(".")[-1],
+            name=expect_mode_name,
             instruction=docstring,
             description=description,
             import_path=package_import_path,
