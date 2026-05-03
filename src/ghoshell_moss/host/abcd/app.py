@@ -1,9 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Iterable, Optional
+
+from PIL.Image import Image
+from ghoshell_container import IoCContainer
 from typing_extensions import Self, Literal
 from pathlib import Path
 from pydantic import BaseModel, Field
+
+from ghoshell_moss import Command, Message
 from ghoshell_moss.core.blueprint.channel_builder import Channel, new_channel
+from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from enum import StrEnum
 import frontmatter
 import fnmatch
@@ -14,6 +20,8 @@ __all__ = [
     'AppState',
     'AppStore',
 ]
+
+from ghoshell_moss.core.concepts.channel import ChannelName
 
 
 class AppWatcher(BaseModel):
@@ -302,68 +310,3 @@ class AppStore(ABC):
         判断 app store 是否在运行状态中.
         """
         pass
-
-
-def build_apps_channel(store: AppStore, description: str = '') -> Channel:
-    """
-    构建 App 管理中心通道。
-    该通道允许 AI 发现、启动、停止和初始化物理/逻辑应用 (Apps)。
-    """
-    # 默认描述强调“中心化管理”
-    default_description = (
-        "App Store 核心通道，用于管理当前环境下的所有可用应用。"
-        "你可以通过此通道拉起具有特定功能的子进程（如机器人控制、数据分析等）。"
-    )
-
-    name = store.name()
-    chan = new_channel(name=name, description=description or default_description)
-
-    @chan.build.command(name="list")
-    async def list_apps() -> str:
-        """
-        获取当前环境所有可发现 App 的详细清单及运行状态。
-        AI 在尝试启动任何 App 前，应先通过此命令确认其 address 和当前状态。
-        """
-        return await store.get_apps_context()
-
-    @chan.build.command(name="start")
-    async def start(fullname: str, argument: str = "") -> str:
-        """
-        启动指定的 App。
-        :param fullname: App 的完整名称，如 'group/name'。
-        :param argument: 启动参数，将作为命令行参数传递给 App。
-        注意：启动是异步的，可以通过 list 确认是否成功进入 running 状态。
-        """
-        return await store.start_app(fullname, argument)
-
-    @chan.build.command(name="stop")
-    async def stop(fullname: str) -> str:
-        """
-        强制停止并卸载一个运行中的 App。
-        :param fullname: 目标 App 全名。
-        """
-        return await store.stop_app(fullname)
-
-    @chan.build.command(name="init")
-    async def init(fullname: str, description: str = "") -> str:
-        """
-        在工作空间中初始化一个新的 App 模板。
-        会自动创建目录、APP.md 和 main.py 骨架。
-        :param fullname: 期望的地址格式 'group/name'。
-        :param description: App 的功能描述。
-        """
-        # 这里调用我们之前实现的 init_app
-        return store.init_app(fullname, description)
-
-    @chan.build.context_messages
-    async def apps_status() -> str:
-        """
-        动态注入当前已发现 App 的状态简报到 AI 的上下文。
-        确保 AI 始终知晓哪些 App 正在运行 (RUNNING) 及其潜在的错误 (ERROR)。
-        """
-        context_str = await store.get_apps_context()
-        header = "### [App Runtime Status]\n"
-        footer = "\n---\n注：若 App 处于 ERROR 状态，请检查日志或尝试重启。"
-        return header + context_str + footer
-
-    return chan

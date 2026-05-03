@@ -19,11 +19,11 @@ class ZenohBridgeTestSuite(BridgeTestSuite):
         self._session = zenoh.open(zenoh.Config())
         node_name = "test/zenoh"
         session_id = uuid()
-        provider = ZenohChannelProvider(session=self._session, node_name=node_name, session_id=session_id)
+        provider = ZenohChannelProvider(zenoh_session=self._session, address=node_name, session_scope=session_id)
         proxy = ZenohProxyChannel(
             name=proxy_name,
             description="",
-            session=self._session, node_name=node_name, session_id=session_id,
+            zenoh_session=self._session, address=node_name, session_scope=session_id,
         )
         return provider, proxy
 

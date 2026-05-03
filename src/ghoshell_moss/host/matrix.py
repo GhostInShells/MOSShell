@@ -20,7 +20,7 @@ from ghoshell_moss.host.providers import (
     WorkspaceZenohProvider, WorkspaceLoggerProvider, ZenohTopicServiceProvider,
     WorkspaceSessionProvider,
 )
-from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider
+from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.depends import depend_zenoh
@@ -252,14 +252,35 @@ class MatrixImpl(Matrix):
                 except Exception as e:
                     self.logger.error("%s close channel provider exception: %s", self._log_prefix, e)
             provider = ZenohChannelProvider(
-                node_name=self._this_cell.address,
-                session_id=self.env.session_scope,
+                address=self._this_cell.address,
+                session_scope=self.session.session_scope,
                 container=self._container,
+                zenoh_session=self._container.force_fetch(zenoh.Session)
             )
             await provider.arun_until_closed(channel)
 
         self._channel_provider_task = self._event_loop.create_task(_providing())
         return self._channel_provider_task
+
+    def channel_proxy(
+            self,
+            address: str,
+            name: str,
+            description: str = '',
+            id: str | None = None,
+            only_allowed_in_main_cell: bool = True,
+    ) -> ZenohProxyChannel:
+        self._check_running()
+        if only_allowed_in_main_cell and self.this.type != 'main':
+            raise RuntimeError(f"Only allowed in main cell type: {self.this.type}")
+        return ZenohProxyChannel(
+            address=address,
+            session_scope=self.session.session_scope,
+            name=name,
+            description=description,
+            zenoh_session=self._container.force_fetch(zenoh.Session),
+            uid=id,
+        )
 
     @property
     def logger(self) -> LoggerItf:

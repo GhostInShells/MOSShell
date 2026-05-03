@@ -32,20 +32,20 @@ class ZenohProxyConnection(Connection):
             self,
             session: zenoh.Session,
             *,
-            node_name: str,
-            session_id: str,
+            address: str,
+            session_scope: str,
             logger: LoggerItf | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
-        self._session_id = session_id
-        self._session = session
-        self._node = node_name
-        self._bridge_expr = NodeChannelBridgeExpr(session_id=self._session_id, node_name=self._node)
+        self._session_scope = session_scope
+        self._zenoh_session = session
+        self._address = address
+        self._bridge_expr = NodeChannelBridgeExpr(session_scope=self._session_scope, address=self._address)
 
         # 状态控制
         self._disconnected_event = threading.Event()
         self._receive_from_provider_queue: janus.Queue[ChannelEvent] = janus.Queue()
-        self._logger_prefix = f"<ZenohProxyConnection node={node_name} session_id={self._session_id}>"
+        self._logger_prefix = f"<ZenohProxyConnection node={address} session_id={self._session_scope}>"
 
         # Zenoh 句柄
         self._subscriber: zenoh.Subscriber | None = None
@@ -121,7 +121,7 @@ class ZenohProxyConnection(Connection):
             self._logger.error("%s send event to provider failed: %s", self._logger_prefix, e)
 
     def is_closed(self) -> bool:
-        return self._closed or self._session.is_closed()
+        return self._closed or self._zenoh_session.is_closed()
 
     def is_connected(self) -> bool:
         return not self.is_closed() and not self._disconnected_event.is_set()
@@ -134,24 +134,24 @@ class ZenohProxyConnection(Connection):
             return
         self._started = True
 
-        if self._session.is_closed():
+        if self._zenoh_session.is_closed():
             raise RuntimeError(f"{self._logger_prefix} zenoh session closed")
 
         # 1. 创建 Publisher: Proxy 发送给 Provider 的 Receiver
         publisher_key = self._bridge_expr.provider_receiver_key
-        self._publisher = self._session.declare_publisher(publisher_key)
+        self._publisher = self._zenoh_session.declare_publisher(publisher_key)
 
         # 2. 宣告自身的 Liveness: Proxy 告诉 Provider 我在
         proxy_liveness_key = self._bridge_expr.proxy_liveness_key
-        self._liveness_token = self._session.liveliness().declare_token(proxy_liveness_key)
+        self._liveness_token = self._zenoh_session.liveliness().declare_token(proxy_liveness_key)
 
         # 3. 接收消息: 订阅 Provider 的 Publisher (即 Proxy 的 Receiver)
         subscriber_key = self._bridge_expr.proxy_receiver_key
-        self._subscriber = self._session.declare_subscriber(subscriber_key, self._receive_provider_event)
+        self._subscriber = self._zenoh_session.declare_subscriber(subscriber_key, self._receive_provider_event)
 
         # 4. 监听 Provider Liveness: Provider 掉线则 Proxy 断开
         provider_liveness_key = self._bridge_expr.provider_liveness_key
-        self._provider_liveness_subscriber = self._session.liveliness().declare_subscriber(
+        self._provider_liveness_subscriber = self._zenoh_session.liveliness().declare_subscriber(
             provider_liveness_key,
             self._on_provider_liveness_sample,
         )
@@ -168,7 +168,7 @@ class ZenohProxyConnection(Connection):
             return
         self._closed = True
 
-        if not self._session.is_closed():
+        if not self._zenoh_session.is_closed():
             # 这里的 undeclare 逻辑保持一致
             for resource in [self._publisher, self._subscriber,
                              self._provider_liveness_subscriber, self._liveness_token]:
@@ -190,19 +190,21 @@ class ZenohProxyChannel(DuplexChannelProxy):
     def __init__(
             self,
             *,
-            node_name: str,
-            session_id: str,
+            address: str,
+            session_scope: str,
             name: str,
             description: str = "",
-            session: zenoh.Session | None = None,
+            zenoh_session: zenoh.Session | None = None,
+            uid: str | None = None,
     ):
-        self._node_name = node_name
-        self._session_id = session_id
-        self._zenoh_session = session
+        self._address = address
+        self._session_scope = session_scope
+        self._zenoh_session = zenoh_session
         super().__init__(
             name=name,
             description=description,
             to_provider_connection=None,
+            uid=uid,
         )
 
     def _create_connection(self, container: IoCContainer) -> Connection:
@@ -212,7 +214,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
             session = container.force_fetch(zenoh.Session)
         return ZenohProxyConnection(
             session,
-            node_name=self._node_name,
-            session_id=self._session_id,
+            address=self._address,
+            session_scope=self._session_scope,
             logger=container.get(LoggerItf),
         )

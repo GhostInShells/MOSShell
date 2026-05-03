@@ -40,19 +40,19 @@ class ZenohProviderConnection(Connection):
             session: zenoh.Session,
             *,
             node_name: str,
-            session_id: str,
+            session_scope: str,
             logger: LoggerItf | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
-        self._session_id = session_id
+        self._session_scope = session_scope
         self._session = session
         self._node = node_name
-        self._bridge_expr = NodeChannelBridgeExpr(session_id=self._session_id, node_name=self._node)
+        self._bridge_expr = NodeChannelBridgeExpr(session_scope=self._session_scope, address=self._node)
         # 默认为 disconnected.
         self._disconnected_event = threading.Event()
         # 从 proxy 读取的队列.
         self._receive_from_proxy_queue: janus.Queue[ChannelEvent] = janus.Queue()
-        self._logger_prefix = f"<ZenohProviderConnection node={node_name} session_id={self._session_id}>"
+        self._logger_prefix = f"<ZenohProviderConnection node={node_name} session_id={self._session_scope}>"
         # 标记最后通信联通时间.
         self._last_liveness_heartbeat: float = 0.0
         self._subscriber: zenoh.Subscriber | None = None
@@ -209,30 +209,30 @@ class ZenohChannelProvider(DuplexChannelProvider):
     def __init__(
             self,
             *,
-            node_name: str,
-            session_id: str,
+            address: str,
+            session_scope: str,
             container: IoCContainer | None = None,
-            session: zenoh.Session | None = None,
+            zenoh_session: zenoh.Session | None = None,
             liveness_check_interval: float = 3.0,
     ):
-        self._node_name = node_name
-        self._session_id = session_id
-        if session is None:
+        self._node_name = address
+        self._session_scope = session_scope
+        if zenoh_session is None:
             if container is None:
                 raise ValueError("container or session must be provided")
             else:
-                session = container.get(zenoh.Session)
-        if session is None:
+                zenoh_session = container.get(zenoh.Session)
+        if zenoh_session is None:
             raise ValueError("session must be provided as argument or from container")
-        self._session = session
+        self._session = zenoh_session
         if container is None:
             container = Container()
-            container.set(zenoh.Session, session)
+            container.set(zenoh.Session, zenoh_session)
         self._liveness_check_interval = liveness_check_interval
         connection = ZenohProviderConnection(
-            session=session,
-            session_id=session_id,
-            node_name=node_name,
+            session=zenoh_session,
+            session_scope=session_scope,
+            node_name=address,
             logger=container.get(LoggerItf),
         )
         super().__init__(

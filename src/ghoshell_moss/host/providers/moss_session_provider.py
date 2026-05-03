@@ -45,17 +45,21 @@ class WorkspaceSessionProvider(Provider[Session]):
         zenoh_session = con.force_fetch(zenoh.Session)
         logger = con.get(LoggerItf)
         session_scope = self._session_scope
+        session_id = None
         if session_scope is None:
             env = con.force_fetch(Environment)
             session_scope = env.session_scope
+            session_id = env.session_id
         session_storage_path = self._session_id_prefix + session_scope
         storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
         session = MossSessionWithZenoh(
-            session_scope=self._session_scope,
+            session_scope=session_scope,
             session_storage=storage,
             logger=logger,
             zenoh_session=zenoh_session,
+            session_id=session_id,
         )
+
         # always clear during the container shutdown.
         con.add_shutdown(session.clear)
         return session

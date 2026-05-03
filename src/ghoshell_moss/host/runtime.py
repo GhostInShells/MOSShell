@@ -90,7 +90,7 @@ class HostMossRuntime(MossRuntime, MossAsToolSet):
     def moss_instruction(self) -> str:
         self._check_running()
         instructions = []
-        if meta_instruction := self._env.meta_instruction.get_meta_instruction().strip():
+        if meta_instruction := self._env.meta_config.get_default_meta_instruction().strip():
             instructions.append(meta_instruction)
         if mode_instruction := self._mode.instruction.strip():
             instructions.append(mode_instruction)

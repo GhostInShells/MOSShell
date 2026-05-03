@@ -189,12 +189,12 @@ class PrimeChannel(StatefulChannel, MutableChannel, ABC):
     pass
 
 
-def new_channel_from_state(state: ChannelState) -> StatefulChannel:
+def new_channel_from_state(state: ChannelState, id: str | None = None) -> StatefulChannel:
     """
     create new channel by state object
     """
     from ghoshell_moss.core.py_channel import BaseStateChannel
-    return BaseStateChannel(state)
+    return BaseStateChannel(state, uid=id)
 
 
 def new_stateful_channel(name: str, description: str = "") -> StatefulChannel:

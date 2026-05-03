@@ -868,10 +868,11 @@ class DuplexChannelProxy(Channel):
             name: str,
             description: str = "",
             to_provider_connection: Connection | None = None,
+            uid: str | None = None,
     ):
         self._name = name
         self._description = description
-        self._uid = uuid()
+        self._uid = uid or uuid()
         self._proxy_connection = to_provider_connection
         self._provider_channel_path = ""
         self._runtime: Optional[DuplexChannelRuntime] = None

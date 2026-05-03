@@ -6,6 +6,7 @@ from ghoshell_moss.host.abcd.host_design import (
 )
 from ghoshell_moss.host.abcd.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.host.abcd.environment import Environment
@@ -118,4 +119,5 @@ class Host(MossHost):
             workspace=self._workspace,
             mode=self._moss_mode,
             matrix=self._matrix,
+            moss_meta_instruction=self.moss_meta_instruction(),
         )

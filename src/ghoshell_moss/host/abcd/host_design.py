@@ -33,7 +33,7 @@ class MossAsToolSet(ABC):
     def moss_instruction(self, with_static: bool = True) -> str:
         """
         返回所有的 instruction, 信息, 可以加入到 agent 的 instruction.
-        包含 state messages.
+        :param with_static: 包含 moss static messages.
         """
         pass
 
@@ -298,7 +298,7 @@ class MossMode(BaseModel):
         default='',
         description="模式的详细介绍. 也会作为模式的专属 instruction"
     )
-    ctml: str = Field(
+    ctml_version: str = Field(
         default='',
         description='模式选择独立的 ctml version. '
     )
@@ -366,6 +366,19 @@ class MossMode(BaseModel):
         post = frontmatter.Post(content=self.instruction, **meta_data)
         return frontmatter.dumps(post)
 
+    def make_meta_instruction(self, env: Environment) -> str:
+        from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
+        ctml_version = self.ctml_version or env.meta_config.ctml_version
+        ctml_prompt = env.get_ctml_prompt(ctml_version)
+        if ctml_prompt is None:
+            ctml_prompt = get_moss_ctml_meta_instruction(ctml_version)
+        instructions = [ctml_prompt]
+        if meta_config_instruction := env.meta_config.content.strip():
+            instructions.append(meta_config_instruction)
+        if mode_instruction := self.instruction.strip():
+            instructions.append(mode_instruction)
+        return "\n\n".join(instructions)
+
     def with_manifest(self, manifest: Manifests, override: bool = False) -> Self:
         """
         define manifest
@@ -425,6 +438,25 @@ class MossHost(ABC):
         current mode.
         """
         pass
+
+    def ctml_version(self) -> str:
+        """返回当前环境中定义的 ctml version """
+        return self.mode.ctml_version or self.env.meta_config.ctml_version
+
+    def get_ctml_prompt(self, ctml_version: str) -> str | None:
+        """在当前环境约定的 workspace 下寻找 ctml 指定版本. """
+        return self.env.get_ctml_prompt(ctml_version)
+
+    def moss_meta_instruction(self) -> str:
+        """
+        根据当前环境配置, 获取的 MOSS 架构的元指令. 应该出现在 prompt 的最上方.
+        影响它的配置项包括:
+        1. workspace 里的 MOSS.md 里定义的 ctml version 和 instruction.
+        2. 当前所使用的模式 MossMode 如果 ctml version 不为空, 会覆盖
+        2. ctml version 会优先到 workspace 的 ctml_prompts 目录里寻找 (追加 .md 后缀)
+        3. 将 ctml prompt + moss root instruction + moss mode instruction 返回.
+        """
+        return self.mode.make_meta_instruction(self.env)
 
     @abstractmethod
     def all_modes(self) -> dict[str, MossMode]:

@@ -2,7 +2,7 @@ from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
@@ -137,6 +137,31 @@ class Matrix(ABC):
         """
         将 Channel 通过当前节点提供到整个 Matrix 网络中,
         可以作为 Cell 的可操控单元, 被主进程的 Shell 调用.
+        一个进程只能调用一个 provide channel, 可以提供树形的 channel.
+        """
+        pass
+
+    @abstractmethod
+    def channel_proxy(
+            self,
+            address: str,
+            name: str,
+            description: str = '',
+            id: str | None = None,
+            only_allowed_in_main_cell: bool = True,
+    ) -> ChannelProxy:
+        """
+        搭建一个 proxy 获取另一个节点里通过 provider channel 提供的 channel. 进行跨网络同构.
+        通常只允许 Matrix 里的 main cell 使用 proxy 连接 channel. 因为 channel 是 matrix 内唯一的.
+        多个 proxy 连接会导致 channel 频繁地重启.
+        仍然允许用这个方式进行测试.
+
+        :param address: cell address which providing a channel tree
+        :param name: channel name which rewrite the providing channel.
+        :param description: channel description which rewrite the providing channel.
+        :param id: channel uid if given, otherwise will generate a uuid for the proxy.
+        :param only_allowed_in_main_cell: only allow main cell to use channel proxy.
+        :raise RuntimeError: if the current cell is not the main cell of the matrix runtime.
         """
         pass
 

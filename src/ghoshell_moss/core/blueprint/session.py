@@ -87,6 +87,14 @@ class Session(ABC):
         """
         pass
 
+    @property
+    @abstractmethod
+    def session_id(self) -> str:
+        """
+        session id
+        """
+        pass
+
     @abstractmethod
     def input(self, signal: Signal) -> None:
         """

@@ -28,10 +28,12 @@ class MossAsToolSetImpl(MossAsToolSet):
             workspace: Workspace,
             mode: MossMode,
             matrix: MatrixImpl,
+            moss_meta_instruction: str | None = None,
     ):
         env.bootstrap()
         self._env = env
         self._workspace = workspace
+        self._meta_instruction = moss_meta_instruction
         self._matrix = matrix
         self._mode = mode
         self._ctml_shell = new_ctml_shell(
@@ -68,13 +70,15 @@ class MossAsToolSetImpl(MossAsToolSet):
         if not self.is_running():
             raise RuntimeError('Moss is not running.')
 
+    def moss_meta_instruction(self) -> str:
+        if self._meta_instruction is None:
+            self._meta_instruction = self._mode.make_meta_instruction(self._env)
+        return self._meta_instruction
+
     def moss_instruction(self, with_static: bool = True) -> str:
         self._check_running()
-        instructions = []
-        if meta_instruction := self._env.meta_instruction.get_meta_instruction().strip():
-            instructions.append(meta_instruction)
-        if mode_instruction := self._mode.instruction.strip():
-            instructions.append(mode_instruction)
+        instructions = [self.moss_meta_instruction()]
+
         if with_static:
             if static_messages := self._ctml_shell.static_messages().strip():
                 instructions.append(static_messages)

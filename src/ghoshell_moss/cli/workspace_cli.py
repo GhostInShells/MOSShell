@@ -69,7 +69,7 @@ def where() -> None:
     moss_md = env.meta_instruction_file
 
     # 获取 CTML Version
-    ctml_version = env.meta_instruction.ctml_version
+    ctml_version = env.meta_config.ctml_version
 
     # 权限检查
     perm_status = "N/A"

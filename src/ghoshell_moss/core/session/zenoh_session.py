@@ -5,6 +5,7 @@ from ghoshell_moss.contracts import Storage, LoggerItf
 from ghoshell_moss.core.blueprint.session import Session, Signal, Role, OutputBuffer, OutputItem
 from threading import Event
 from ghoshell_moss.depends import depend_zenoh
+from ghoshell_common.helpers import uuid
 
 from typing import Iterable
 
@@ -70,11 +71,13 @@ class MossSessionWithZenoh(Session):
             session_storage: Storage,
             logger: LoggerItf,
             zenoh_session: zenoh.Session,
+            session_id: str | None = None,
     ):
         self._session_scope = session_scope
         self._output_key_expr = f"MOSS/{session_scope}/outputs"
         self._input_signal_expr = f"MOSS/{session_scope}/signals"
         self._session_storage = session_storage
+        self._session_id = session_id or uuid()
         self._closing_event = Event()
         self._output_listeners: list[Callable[[OutputItem], None]] = []
         self._zenoh_session = zenoh_session
@@ -83,12 +86,16 @@ class MossSessionWithZenoh(Session):
         self._output_sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
         self._input_sub = zenoh_session.declare_subscriber(self._input_signal_expr, self._on_zenoh_signal_input)
         self._logger = logger
-        self._log_prefix = f'<Session cls={self.__class__} id={session_scope}>'
+        self._log_prefix = f'<Session cls={self.__class__} scope={session_scope} id={self.session_id}>'
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
 
     @property
     def session_scope(self) -> str:
         return self._session_scope
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
 
     @property
     def storage(self) -> Storage:

@@ -24,6 +24,7 @@ __all__ = [
     # env keys
     'ENV_WORKSPACE_DIR_KEY',
     'ENV_SESSION_SCOPE_KEY',
+    'ENV_SESSION_ID_KEY',
     'ENV_PARENT_PID_KEY',
     'ENV_GHOST_NAME_KEY',
     'ENV_CELL_ADDRESS_KEY',
@@ -81,6 +82,8 @@ ENV_WORKSPACE_DIR_KEY = 'MOSS_WORKSPACE'
 ENV_SESSION_SCOPE_KEY = 'MOSS_SESSION_SCOPE'
 DEFAULT_SESSION_SCOPE = 'default'
 
+ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
+
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 DEFAULT_MOSS_MODE = "default"
 
@@ -95,13 +98,17 @@ DEFAULT_CELL_ADDRESS = 'main'
 MOSSEnvKey = Literal[
     "MOSS_WORKSPACE", "MOSS_SESSION_SCOPE", "MOSS_MODE_NAME",
     "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_ADDRESS",
+    "MOSS_SESSION_ID",
 ]
 
 
-class MetaInstruction(BaseModel):
+class MetaConfig(BaseModel):
+    """
+    meta instruction from the environment
+    """
     ctml_version: str = Field(
         default=CTML_VERSION,
-        description="当前 MOSS 使用的提示词版本. 如果为空的话, 会忽略提示词."
+        description="当前 MOSS 默认使用的提示词版本."
     )
     content: str = Field(
         default="",
@@ -119,18 +126,22 @@ class MetaInstruction(BaseModel):
         data['content'] = post.content
         return cls(**data)
 
-    def get_meta_instruction(self) -> str:
+    def get_default_meta_instruction(self) -> str:
         """
-        获取 moss 的元提示词.
+        获取默认的 moss 的元提示词.
         """
         from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
-        meta_instruction = ""
         if self.ctml_version:
             meta_instruction = get_moss_ctml_meta_instruction(self.ctml_version)
-        return "\n\n".join([meta_instruction, self.content])
+        else:
+            meta_instruction = get_moss_ctml_meta_instruction()
+        if self.content:
+            return "\n\n".join([meta_instruction, self.content])
+        else:
+            return meta_instruction
 
     def __str__(self):
-        return self.get_meta_instruction()
+        return self.get_default_meta_instruction()
 
 
 class Environment:
@@ -143,6 +154,7 @@ class Environment:
             workspace_path: Path,
             ghost_name: str | None = None,
             session_scope: str | None = None,
+            session_id: str | None = None,
             mode: str | None = None,
     ):
         """
@@ -153,16 +165,20 @@ class Environment:
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
         self._meta_instruction_path = self._workspace_path.joinpath(META_INSTRUCTION_FILENAME)
         if self._meta_instruction_path.is_file() and self._meta_instruction_path.exists():
-            self._meta_instruction = MetaInstruction.from_file(self._meta_instruction_path)
+            self._meta_instruction = MetaConfig.from_file(self._meta_instruction_path)
         else:
-            self._meta_instruction = MetaInstruction()
+            self._meta_instruction = MetaConfig()
 
         if mode is None:
             mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
         self._moss_mode = mode
 
-        # 永远要有正确的 session scope.
+        # 永远要有正确的 session scope 和 session id.
         self._session_scope = session_scope or os.environ.get(ENV_SESSION_SCOPE_KEY, DEFAULT_SESSION_SCOPE)
+        self._session_id: str = session_id or os.environ.get(ENV_SESSION_ID_KEY, '')
+        if not self._session_id:
+            self._session_id = uuid()
+
         self._cell_address: str = os.environ.get(ENV_CELL_ADDRESS_KEY, DEFAULT_CELL_ADDRESS)
 
         # 为空表示运行时不启用 ghost.
@@ -180,9 +196,21 @@ class Environment:
         self._session_scope = session_scope
         os.environ[ENV_SESSION_SCOPE_KEY] = session_scope
 
+    def set_session_id(self, session_id: str) -> None:
+        self._session_id = session_id
+        os.environ[ENV_SESSION_ID_KEY] = session_id
+
     def set_ghost_name(self, ghost_name: str) -> None:
         self._ghost_name = ghost_name
         os.environ[ENV_GHOST_NAME_KEY] = ghost_name
+
+    def get_ctml_prompt(self, ctml_version: str) -> str | None:
+        """在当前环境约定的 workspace 下寻找 ctml 指定版本. """
+        filename = ctml_version if ctml_version.endswith('.md') else ctml_version + '.md'
+        expect_file = self.workspace_path.joinpath("ctml_prompts").joinpath(filename).resolve()
+        if not expect_file.exists():
+            return None
+        return expect_file.read_text()
 
     @classmethod
     def discover(cls) -> Self:
@@ -212,14 +240,17 @@ class Environment:
             "MOSS_SESSION_SCOPE": self._session_scope,
             "MOSS_GHOST_NAME": self._ghost_name,
             "MOSS_MODE_NAME": self._moss_mode,
+            "MOSS_SESSION_ID": self._session_id or '',
         }
         cell_address = cell_address or self._cell_address
         if cell_address:
-            data[ENV_CELL_ADDRESS_KEY] = cell_address
+            data["MOSS_CELL_ADDRESS"] = cell_address
+
         if for_child_process:
-            data[ENV_PARENT_PID_KEY] = str(self._self_pid)
+            data["MOSS_PARENT_PID"] = str(self._self_pid)
         else:
-            data[ENV_PARENT_PID_KEY] = str(self._parent_pid)
+            data["MOSS_PARENT_PID"] = str(self._parent_pid)
+
         if not with_os_env:
             return data
         env_data = os.environ.copy()
@@ -374,7 +405,7 @@ class Environment:
         return self._meta_instruction_path.absolute()
 
     @property
-    def meta_instruction(self) -> MetaInstruction:
+    def meta_config(self) -> MetaConfig:
         return self._meta_instruction
 
     @property
@@ -395,6 +426,10 @@ class Environment:
         返回当前这次请求的 session id.
         """
         return self._session_scope
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
 
     @property
     def source_dir(self) -> Path | None:
