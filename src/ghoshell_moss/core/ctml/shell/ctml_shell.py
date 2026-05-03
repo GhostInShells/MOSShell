@@ -106,8 +106,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._moss_static_cache = make_static_messages(self.channel_metas(available_only=False))
         return self._moss_static_cache
 
-    def dynamic_messages(self) -> list[Message]:
-        return make_dynamic_messages(self.channel_metas(available_only=False))
+    def dynamic_messages(self, available_only: bool = True) -> list[Message]:
+        return make_dynamic_messages(self.channel_metas(available_only=available_only))
 
     def interpreting(self) -> Optional[Interpreter]:
         return self._interpreter

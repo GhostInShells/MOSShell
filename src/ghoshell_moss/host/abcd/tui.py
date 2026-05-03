@@ -112,31 +112,35 @@ class ConsoleOutput:
         self._queue.put_nowait(got_items)
 
     def output(self, item: OutputItem) -> None:
-        r = self.format_output(item)
-        self.rprint('', r)
+        for i in self.format_output(item):
+            self.rprint('', i)
 
-    def format_output(self, item: OutputItem) -> RenderableType:
+    def format_output(self, item: OutputItem) -> Iterable[RenderableType]:
         title = Text(f" {item.role.upper()} ", style="bold cyan")
 
         # 2. 渲染消息体
-        content = Text()
+        contents = []
         for msg in item.messages:
-            # 使用你的 to_content_string()，并添加一点边距感
-            content.append(msg.to_content_string() + "\n", style="default")
+            contents.append(msg.to_content_string())
 
-        # 3. 如果有 log，将其放在最下方 dim 显示
-        if item.log:
-            # 使用复合样式: 'dim' (亮度调暗) + 'italic' (斜体)
-            content.append(f"\nLog: {item.log}", style="dim italic green")
-
-        # 4. 返回带边框的 Panel
-        return Panel(
-            content,
+        message_content = Syntax(
+            "\n".join(contents),
+            'xml',
+            theme="ansi_dark",
+            background_color="default",  # 关键点：背景透明，不抢终端色
+        )
+        yield Panel(
+            message_content,
             title=title,
             title_align="left",
             border_style=f"dim cyan",
             padding=(0, 1),
         )
+
+        # 3. 如果有 log，将其放在最下方 dim 显示
+        if item.log:
+            # 使用复合样式: 'dim' (亮度调暗) + 'italic' (斜体)
+            yield Text(f"Log: {item.log}", style="dim italic green")
 
     def syntax(self, code: str, lexer: str) -> None:
         r = Syntax(
@@ -434,8 +438,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
     def _direct_print(self, obj: Renderable) -> None:
         if isinstance(obj, OutputItem):
-            obj = self.console.format_output(obj)
-        self._rich_console.print(obj)
+            for item in self.console.format_output(obj):
+                self._rich_console.print(item)
+        else:
+            self._rich_console.print(obj)
 
     def _main_render_loop(self) -> None:
         """一个独立的输出线程"""

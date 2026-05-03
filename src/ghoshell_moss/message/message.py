@@ -464,9 +464,9 @@ class Message(BaseModel, WithAdditional):
 
     def to_content_string(self) -> str:
         blocks = []
-        for content in self.contents:
+        for content in self.as_contents(with_meta=True):
             blocks.append(self.content_as_string(content))
-        return '\n'.join(blocks)
+        return ''.join(blocks)
 
     def compact(self) -> Self:
         """

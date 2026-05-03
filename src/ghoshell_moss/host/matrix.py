@@ -114,7 +114,7 @@ class MatrixImpl(Matrix):
         self._manifests = manifest
         self._workspace = workspace
         self._current_mode = mode
-        self._session_id = env.session_scope
+        self._session_scope = env.session_scope
 
         # prepare cell and events
         cells: dict[str, Cell] = {}
@@ -361,15 +361,33 @@ class MatrixImpl(Matrix):
     @contextlib.contextmanager
     def _this_liveness_ctx_managers(self, session: zenoh.Session):
         # 实际上是同步调用逻辑.
-        key_expr = self._moss_node_liveness_key_expr(self._this_cell.address)
+        key_expr = self._matrix_cell_liveness_key_expr(self._this_cell.address)
         self_liveness = session.liveliness().declare_token(key_expr)
         try:
             yield
         finally:
             self_liveness.undeclare()
 
-    def _moss_node_liveness_key_expr(self, address: str) -> str:
-        return f"MOSS/{self._session_id}/cell/{address}"
+    def _check_initial_liveness(self, session: zenoh.Session):
+        # 查询所有符合 Liveliness 格式的 key
+        # 注意：这里使用的是 session.get，针对 liveliness 的 key_expr
+        prefix = self._matrix_cell_liveness_key_prefix()
+        key_expr = '/'.join([prefix, '**'])
+        for sample in session.liveliness().get(key_expr):
+            key_expr = str(sample.result.key_expr)
+            if not key_expr.startswith(prefix):
+                continue
+            address = key_expr[len(prefix) + 1:]
+            if address in self._cell_alive_events:
+                self._cell_alive_events[address].set()
+
+    def _matrix_cell_liveness_key_prefix(self) -> str:
+        prefix = f"MOSS/{self._session_scope}/cell/liveness"
+        return prefix
+
+    def _matrix_cell_liveness_key_expr(self, address: str) -> str:
+        prefix = self._matrix_cell_liveness_key_prefix()
+        return '/'.join([prefix, address])
 
     @contextlib.contextmanager
     def _all_cell_liveness_check_ctx_manager(self, session: zenoh.Session):
@@ -384,6 +402,8 @@ class MatrixImpl(Matrix):
             event = self._cell_alive_events[address]
             sub = self._register_cell_liveness_listener(session, address, event)
             subscribers.append(sub)
+
+        self._check_initial_liveness(session)
         try:
             yield
         finally:
@@ -397,7 +417,7 @@ class MatrixImpl(Matrix):
             address: str,
             event: threading.Event,
     ) -> zenoh.Subscriber:
-        key_expr = self._moss_node_liveness_key_expr(address)
+        key_expr = self._matrix_cell_liveness_key_expr(address)
 
         def _on_liveness_sample(sample: zenoh.Sample) -> None:
             nonlocal key_expr, event

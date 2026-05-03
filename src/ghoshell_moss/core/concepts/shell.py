@@ -190,7 +190,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    def dynamic_messages(self) -> list[Message]:
+    def dynamic_messages(self, available_only: bool = True) -> list[Message]:
         """
         context messages of all the channels.
         """

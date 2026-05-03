@@ -14,6 +14,7 @@ from ghoshell_moss.contracts import Workspace
 from .app_store import HostAppStore
 from .matrix import MatrixImpl
 from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.host.channels.app_store_channel import AppStoreChannel
 import contextlib
 import asyncio
 
@@ -159,6 +160,11 @@ class MossAsToolSetImpl(MossAsToolSet):
     def matrix(self) -> Matrix:
         return self._matrix
 
+    def _bootstrap_ctml_shell(self) -> None:
+        self._ctml_shell.main_channel.import_channels(
+            AppStoreChannel(name='apps')
+        )
+
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError('Host Toolset is already started')
@@ -169,8 +175,12 @@ class MossAsToolSetImpl(MossAsToolSet):
         # 启动 app 并且 bringup
         self._app_store.with_logger(self._matrix.logger)
         await self._async_exit_stack.enter_async_context(self._app_store)
+        # 设置 app store 为全局变量.
+        self._matrix.container.set(AppStore, self._app_store)
         # 启动 ctml shell
+        self._bootstrap_ctml_shell()
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
+        await self._ctml_shell.refresh_metas()
         # 注册日志到当前 app store 里.
         self._started = True
         return self

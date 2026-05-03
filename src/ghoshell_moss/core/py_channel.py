@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import logging
-from typing import Optional, Callable
+from typing import Optional, Callable, Iterable
 
 from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, provide
 from typing_extensions import Self
@@ -19,6 +19,7 @@ from ghoshell_moss.core.runtime import AbsChannelTreeRuntime
 from ghoshell_moss.core.concepts.errors import CommandError
 from ghoshell_common.helpers import uuid
 from ghoshell_common.contracts import LoggerItf
+from PIL.Image import Image
 from ghoshell_moss.core.concepts.command import Command, PyCommand, CommandWrapper, CommandUniqueName
 from ghoshell_moss.core.blueprint.states_channel import ChannelStateBuilder, ChannelState, StatefulChannel, PrimeChannel
 from ghoshell_moss.core.blueprint.channel_builder import (
@@ -33,12 +34,13 @@ import re
 
 __all__ = ["PyChannel", "StateChannelRuntime", "PyChannelBuilder", "BaseStateChannel"]
 
-_ChannelNameRe = re.compile(ChannelNamePattern)
+_ChannelNamePattern = re.compile(ChannelNamePattern)
+_ChannelName = str
 
 
 class PyChannelBuilder(ChannelStateBuilder, ChannelState):
     def __init__(self, name: str, blocking: bool = True, description: str = "") -> None:
-        matched = _ChannelNameRe.fullmatch(name)
+        matched = _ChannelNamePattern.fullmatch(name)
         if matched is None:
             raise ValueError("Channel name '%s' is not valid" % name)
         self._name = name
@@ -223,7 +225,7 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
         self._providers.append((provider, override))
         return self
 
-    def import_channels(self, *children: Channel | tuple[Channel, _ChannelNameRe]) -> Self:
+    def import_channels(self, *children: Channel | tuple[Channel, _ChannelName]) -> Self:
         for value in children:
             if isinstance(value, tuple):
                 channel, name = value
@@ -233,10 +235,10 @@ class PyChannelBuilder(ChannelStateBuilder, ChannelState):
             self._sustain_children[name] = channel
         return self
 
-    def get_children(self) -> dict[_ChannelNameRe, Channel]:
+    def get_children(self) -> dict[_ChannelName, Channel]:
         return self._sustain_children
 
-    def get_virtual_children(self) -> dict[_ChannelNameRe, Channel]:
+    def get_virtual_children(self) -> dict[_ChannelName, Channel]:
         return self._virtual_children
 
     def own_commands(self) -> dict[str, Command]:
@@ -328,10 +330,10 @@ class BaseStateChannel(StatefulChannel):
         self._states[name] = state
         return self
 
-    def children(self) -> dict[_ChannelNameRe, Channel]:
+    def children(self) -> dict[_ChannelName, Channel]:
         return self._main.get_children()
 
-    def virtual_children(self) -> dict[_ChannelNameRe, Channel]:
+    def virtual_children(self) -> dict[_ChannelName, Channel]:
         return self._main.get_virtual_children()
 
     def name(self) -> str:
@@ -483,10 +485,10 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
     def virtual_sub_channels(self) -> dict[str, Channel]:
         virtual_channels = self._main_state.get_virtual_children().copy()
         if self._current_state is not None:
-            for name, child in self._current_state.get_children().items():
+            for name, child in self._current_state.get_children().copy().items():
                 # new virtual children.
                 virtual_channels[name] = child
-            for name, child in self._current_state.get_virtual_children().items():
+            for name, child in self._current_state.get_virtual_children().copy().items():
                 virtual_channels[name] = child
         return virtual_channels
 
@@ -551,8 +553,7 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         return {"": meta}
 
     async def _get_context_messages(self) -> list[Message]:
-        funcs = []
-        funcs.append(self._main_state.get_context_messages())
+        funcs = [self._main_state.get_context_messages()]
         if current_state := self._get_current_state():
             funcs.append(current_state.get_context_messages())
         result = []
@@ -562,7 +563,14 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
                 result.extend(t)
             else:
                 self.logger.error("%r get context messages receive invalid result %r", self, t)
-        return result
+        return list(self._wrap_messages(result))
+
+    def _wrap_messages(self, messages: Iterable[Message | str | Image]) -> Iterable[Message]:
+        for msg in messages:
+            if isinstance(msg, Message):
+                yield msg
+            else:
+                yield Message.new(tag='').with_content(msg)
 
     def _get_current_state(self) -> ChannelState | None:
         if self._current_state is None:

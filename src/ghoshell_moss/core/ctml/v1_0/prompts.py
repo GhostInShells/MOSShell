@@ -299,5 +299,5 @@ def make_static_messages(metas: dict[ChannelFullPath, ChannelMeta]) -> str:
         if block := prompter.make_static_block():
             for msg in block:
                 lines.append(msg.to_content_string())
-    lines.append(f'\n</{MOSS_STATIC}>')
+    lines.append(f'</{MOSS_STATIC}>')
     return '\n'.join(lines)

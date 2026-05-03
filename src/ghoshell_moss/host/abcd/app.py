@@ -205,7 +205,7 @@ class AppStore(ABC):
     @abstractmethod
     def list_apps(self, refresh: bool = False) -> Iterable[AppInfo]:
         """
-        猎取环境中发现的每个 App, 通常拥有自己的独立目录.
+        列举环境中发现的每个 App, 通常拥有自己的独立目录.
         :param refresh: 是否刷新检查环境里的 apps.
         """
         pass

@@ -75,7 +75,7 @@ class AppStoreChannelState(ChannelState):
         async def start(fullname: str, argument: str = "") -> str:
             """
             启动指定的 App。
-            :param fullname: App 的完整名称，如 'group.name'。
+            :param fullname: App 的完整名称，如 'group/name'。
             :param argument: 启动参数，将作为命令行参数传递给 App。
             注意：启动是异步的，可以通过 list 确认是否成功进入 running 状态。
             """
@@ -101,7 +101,7 @@ class AppStoreChannelState(ChannelState):
         return self._description
 
     def is_available(self) -> bool:
-        return self._app_store.is_running()
+        return self._matrix.is_running()
 
     def is_dynamic(self) -> bool:
         return True
@@ -119,15 +119,16 @@ class AppStoreChannelState(ChannelState):
             if address in self._app_channels:
                 channels[address] = self._app_channels[address]
                 continue
+            name = app.fullname.replace('/', '_')
             channel_proxy = self._matrix.channel_proxy(
                 address=address,
-                name=app.fullname.replace('/', '_'),
+                name=name,
                 description=app.description,
             )
             channels[address] = channel_proxy
         with self._app_channels_lock:
             self._app_channels = channels
-        return self._app_channels.copy()
+        return {chan.name(): chan for chan in self._app_channels.copy().values()}
 
     def own_commands(self) -> dict[str, Command]:
         return self._own_commands.copy()

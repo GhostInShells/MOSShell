@@ -415,7 +415,7 @@ class HostAppStore(AppStore):
         lines = ["## Managed Apps Context"]
         for app in apps:
             state_str = f"[{app.state.upper()}]" if app.state else "[STOPPED]"
-            lines.append(f"- **{app.address}**: {state_str} {app.description}")
+            lines.append(f"- `{app.fullname}`: {state_str} {app.description}")
         return "\n".join(lines)
 
 
