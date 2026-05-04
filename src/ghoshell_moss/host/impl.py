@@ -4,9 +4,8 @@ from ghoshell_moss.host.abcd import MossAsToolSet
 from ghoshell_moss.host.abcd.host_design import (
     MossHost, MossMode, MossRuntime,
 )
-from ghoshell_moss.host.abcd.manifests import Manifests
+from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.host.abcd.environment import Environment

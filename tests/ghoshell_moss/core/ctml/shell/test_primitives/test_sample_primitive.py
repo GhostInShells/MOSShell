@@ -162,7 +162,7 @@ async def test_sample_invalid_pick_zero():
                     if "pick must be >= 1" in text.text:
                         error_msg_found = True
                         break
-            assert error_msg_found, f"Expected error message not found in {interpretation.messages}"
+            assert error_msg_found, f"Expected error message not found in {interpretation.outcomes}"
 
 
 @pytest.mark.asyncio
@@ -207,7 +207,7 @@ async def test_sample_invalid_pick_exceed():
                     if "requires at least" in text.text:
                         error_msg_found = True
                         break
-            assert error_msg_found, f"Expected error message not found in {interpretation.messages}"
+            assert error_msg_found, f"Expected error message not found in {interpretation.outcomes}"
 
 
 @pytest.mark.asyncio

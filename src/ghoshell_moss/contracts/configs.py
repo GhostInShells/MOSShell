@@ -106,6 +106,13 @@ class ConfigStore(ABC):
         pass
 
     @abstractmethod
+    def set_config(self, conf: ConfigType, override: bool = False) -> None:
+        """
+        设置一个 config 实例, 可以选择是否覆盖原始文件.
+        """
+        pass
+
+    @abstractmethod
     def get_config_path(self, config_name: str) -> str:
         """
         返回一个预期的配置地址.
@@ -121,6 +128,9 @@ class ConfigStore(ABC):
         pass
 
 
+_ConfName = str
+
+
 class LocalConfigStore(ConfigStore, ABC):
     """
     基于 Storage 的配置仓库实现，增加了简单的内存缓存。
@@ -129,7 +139,7 @@ class LocalConfigStore(ConfigStore, ABC):
     def __init__(self, storage: Storage):
         self._storage = storage
         # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
-        self._cache: dict[Type[ConfigType], ConfigType] = {}
+        self._cache: dict[_ConfName, ConfigType] = {}
 
     def get_config_path(self, config_name: str) -> str:
         filename = self._make_config_filename(config_name)
@@ -146,8 +156,9 @@ class LocalConfigStore(ConfigStore, ABC):
 
     def get(self, conf_type: Type[CONF_TYPE]) -> CONF_TYPE:
         # 1. 优先命中缓存
-        if conf_type in self._cache:
-            return self._cache[conf_type]
+        conf_name = conf_type.conf_name()
+        if conf_name in self._cache:
+            return self._cache[conf_name]
 
         # 2. 缓存未命中，从 Storage 读取
         path = self._to_config_filename(conf_type)
@@ -156,8 +167,14 @@ class LocalConfigStore(ConfigStore, ABC):
 
         # 3. 实例化并存入缓存
         instance = conf_type.model_validate(data)
-        self._cache[conf_type] = instance
+        self._cache[conf_name] = instance
         return instance
+
+    def set_config(self, conf: ConfigType, override: bool = False) -> None:
+        conf_name = conf.conf_name()
+        self._cache[conf_name] = conf
+        if override:
+            self.save(conf)
 
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
@@ -181,7 +198,8 @@ class LocalConfigStore(ConfigStore, ABC):
         self._storage.put(path, marshaled)
 
         # 同步更新内存，确保后续 get 拿到的是刚保存的这个实例
-        self._cache[conf_type] = conf
+        conf_name = conf_type.conf_name()
+        self._cache[conf_name] = conf
 
     def invalidate(self, conf_type: Optional[Type[ConfigType]] = None) -> None:
         """
@@ -189,7 +207,8 @@ class LocalConfigStore(ConfigStore, ABC):
         如果传入具体类型则清理该类型，不传则清空全部。
         """
         if conf_type:
-            self._cache.pop(conf_type, None)
+            conf_name = conf_type.conf_name()
+            self._cache.pop(conf_name, None)
         else:
             self._cache.clear()
 

@@ -1,7 +1,7 @@
 from typing import Callable
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
-from ghoshell_moss.core.concepts.mindflow import Signal, SignalMeta, InputSignal
+from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
 from ghoshell_moss.message import Message

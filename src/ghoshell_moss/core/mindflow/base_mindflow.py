@@ -1,12 +1,11 @@
 import time
-from asyncio import current_task
 from typing import Self, Iterable, AsyncGenerator, AsyncIterator
 
 import janus
 
-from ghoshell_moss.core.concepts.mindflow import (
+from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Attention, Impulse, Nucleus, Signal, Priority, BufferImpulse,
-    Outcome,
+    Reaction,
 )
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -310,10 +309,10 @@ class BaseMindflow(Mindflow):
                 # 在 last outcome 里做了判断, 如果没有 started 过, 则会返回原始的对象.
                 inherit_outcome = self._current_attention.last_outcome()
             else:
-                inherit_outcome = Outcome()
+                inherit_outcome = Reaction()
             attention = BaseAttention(
                 impulse=impulse,
-                last_outcome=inherit_outcome,
+                previous=inherit_outcome,
                 logger=self._logger,
                 system_floor_strength=0.0,  # 决定强度衰减到合适中断.
                 source_escalation=1.1,  # 决定同源 impulse 提权比例.

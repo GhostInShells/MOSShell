@@ -1,1 +1,3 @@
-blueprint of how to build channel into moss
+# Blueprint
+
+blueprint of how to build MOSS application

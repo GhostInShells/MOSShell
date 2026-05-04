@@ -10,10 +10,13 @@ import asyncio
 
 __all__ = ['Matrix', 'Cell']
 
+from ghoshell_moss.core.blueprint.manifests import Manifests
+
 
 class Cell(ABC):
     """
     在 matrix 中可以并行独立运行的单元, 比如并行思考模块, channel provider 等等.
+    不需要实现它, Matrix 的实现会包含 Cell 的定义.
     """
     name: str  # 节点的名称.
     description: str  # 节点的描述.
@@ -59,12 +62,16 @@ class Matrix(ABC):
     MOSS 架构下多节点组网后形成的通讯矩阵的客户端.
     持有矩阵的抽象可以通过矩阵通讯.
     本身应该是进程级别单例.
+
+    Matrix 是用于构建可跨进程通讯的基本抽象.
     """
 
     @classmethod
     def discover(cls) -> Self:
         """
         约定的环境发现逻辑.
+        这里使用了反范式, discover 包含了默认实现.
+        所以基于 Matrix 默认实现创建应用, 只需要调用 Matrix.discover() 根据抽象提供的能力即可.
         """
         # moss 架构的默认实现.
         from ghoshell_moss.host import Host
@@ -117,12 +124,27 @@ class Matrix(ABC):
         """
         pass
 
+    @property
+    @abstractmethod
+    def manifests(self) -> Manifests:
+        """
+        运行环境中各种能力的声明.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def configs(self) -> ConfigStore:
+        """
+        基于环境发现的配置文件.
+        """
+        pass
+
     def show_configs(self) -> Iterable[dict[str, str]]:
         """
         不返回配置值的情况下, 返回配置的介绍.
         """
-        from ghoshell_moss.contracts import ConfigStore
-        store = self.container.force_fetch(ConfigStore)
+        store = self.configs
         for config_info in self.manifests.configs().values():
             info = {
                 "name": config_info.name,
@@ -242,6 +264,11 @@ class Matrix(ABC):
         pass
 
     async def arun(self, main_coro: Callable[[Self], Awaitable[Any]]) -> Any:
+        """
+        Matrix 运行的基本逻辑.
+        可参考或直接基于这个函数运行基于 Matrix 的应用.
+        如果将它包裹成 Asyncio.Task, 也可以和主协程并行运行.
+        """
         if self.is_running():
             raise RuntimeError(f'Matrix already running.')
 

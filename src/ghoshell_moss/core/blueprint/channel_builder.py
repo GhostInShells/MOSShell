@@ -179,7 +179,7 @@ class Builder(ABC):
         >>>         return [
         >>>             Message.new().with_content("dynamic information")
         >>>         ]
-        >>>     chan.build.context_messages(context)
+        >>>     chan.build.perspective_messages(context)
         """
         pass
 

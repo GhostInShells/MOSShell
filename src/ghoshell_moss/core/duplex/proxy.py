@@ -710,7 +710,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
     def own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         if self._ctx.connection_err:
             return {'': ChannelMeta.new_empty(
-                self.channel.id(),
+                self.channel.moment_id(),
                 self.channel,
                 failure=self._ctx.connection_err,
             )}

@@ -1,4 +1,4 @@
-from ghoshell_moss.host.abcd.manifests import Manifests
+from ghoshell_moss.core.blueprint.manifests import Manifests
 
 __all__ = ['ManifestsREPL']
 

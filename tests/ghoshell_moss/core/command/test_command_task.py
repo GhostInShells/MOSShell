@@ -1,12 +1,10 @@
 import asyncio
-import contextvars
 import threading
 
 import pytest
 
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
-    CommandTask,
     CommandStackResult,
     CommandTaskState,
     PyCommand,

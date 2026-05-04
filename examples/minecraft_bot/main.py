@@ -197,7 +197,7 @@ async def find_blocks(block_name: str, max_distance: int = 128, count=10):
     if bot.registry.blocksByName[block_name] is None:
         return f"{block_name} is not a block name"
 
-    ids = [bot.registry.blocksByName[block_name].id]
+    ids = [bot.registry.blocksByName[block_name].moment_id]
     blocks = bot.findBlocks({"matching": ids, "maxDistance": max_distance, "count": count})
 
     return f"找到 {blocks.length} 个 {block_name} 方块：{blocks}"

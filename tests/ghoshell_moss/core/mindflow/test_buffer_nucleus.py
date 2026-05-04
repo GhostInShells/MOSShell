@@ -2,7 +2,7 @@ import pytest
 import asyncio
 import time
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
-from ghoshell_moss.core.concepts.mindflow import Signal, Priority, Impulse
+from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, Impulse
 
 
 # 简单的 Mock 信号对象

@@ -1,6 +1,6 @@
 from typing import Iterable, Any
 from ghoshell_container import Provider
-from ghoshell_moss.host.abcd.manifests import ProviderInfo
+from ghoshell_moss.core.blueprint.manifests import ProviderInfo
 from ghoshell_moss.core.codex.discover import scan_package
 import inspect
 

@@ -8,7 +8,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.cli import codex_cli
 from ghoshell_moss.cli import concepts_cli
 from ghoshell_moss.cli import workspace_cli
-from ghoshell_moss.cli import manifest_cli
+from ghoshell_moss.cli import manifests_cli
 from ghoshell_moss.cli import modes_cli
 from ghoshell_moss.cli import apps_cli
 
@@ -25,7 +25,7 @@ app = typer.Typer(
 
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Python runtime inspect tools")
 app.add_typer(workspace_cli.workspace_app, name="ws", short_help="MOSS Workspace tools")
-app.add_typer(manifest_cli.manifest_app, name="manifest", short_help="MOSS workspace manifest tools")
+app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 app.add_typer(modes_cli.mode_app, name="modes", short_help="MOSS runtime modes manager")
 app.add_typer(apps_cli.app_store_app, name="apps", short_help="MOSS apps manager")
 app.command(name='concepts', short_help="show concepts of MOSS")(concepts_cli.show_concepts)

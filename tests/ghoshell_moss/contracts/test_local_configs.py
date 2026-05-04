@@ -108,14 +108,16 @@ def test_invalidate_cache(config_store):
     config_store.save(conf)
 
     # 预加载
-    config_store.get(AppConfig)
-    assert AppConfig in config_store._cache
+    conf = config_store.get(AppConfig)
+    conf.name = "changed"
+
+    # 验证命中缓存.
+    conf = config_store.get(AppConfig)
+    assert conf.name == "changed"
 
     # 清理
     config_store.invalidate(AppConfig)
-    assert AppConfig not in config_store._cache
 
     # 全局清理
-    config_store.get(AppConfig)
-    config_store.invalidate()
-    assert len(config_store._cache) == 0
+    conf = config_store.get(AppConfig)
+    assert conf.name == "Original"

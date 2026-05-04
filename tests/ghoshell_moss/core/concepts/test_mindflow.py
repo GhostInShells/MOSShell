@@ -2,8 +2,8 @@ import pytest
 import time
 from datetime import datetime, timezone
 from ghoshell_moss.message import Message
-from ghoshell_moss.core.concepts.mindflow import (
-    Signal, Impulse, Observation, Outcome, Priority
+from ghoshell_moss.core.blueprint.mindflow import (
+    Signal, Impulse, Moment, Reaction, Priority
 )
 
 
@@ -34,21 +34,21 @@ def test_signal_to_impulse_conversion():
 # 2. 测试 Observation 与 Outcome 的缝合 (核心认知流)
 def test_observation_outcome_stitching():
     # 模拟第一轮 Observation
-    obs = Observation()
-    obs.inputs = [Message.new().with_content("Input 1")]
+    obs = Moment()
+    obs.percepts = [Message.new().with_content("Input 1")]
 
     # 生成 Outcome
-    outcome = obs.new_outcome()
+    outcome = obs.new_reaction()
     outcome.logos = "MoveForward"
-    outcome.messages = [Message.new().with_content("Action Done")]
+    outcome.outcomes = [Message.new().with_content("Action Done")]
 
     # 缝合到下一轮 Observation
-    obs2 = outcome.new_observation()
+    obs2 = outcome.new_moment()
 
     # 验证上下文连贯性
-    assert obs2.previews is not None
-    assert obs2.previews.logos == "MoveForward"
-    assert obs2.previews.messages[0].contents[0]['text'] == "Action Done"
+    assert obs2.previous is not None
+    assert obs2.previous.logos == "MoveForward"
+    assert obs2.previous.outcomes[0].contents[0]['text'] == "Action Done"
 
     # 验证 as_request_messages 结构
     msgs = list(obs2.as_request_messages())

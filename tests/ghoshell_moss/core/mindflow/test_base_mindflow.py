@@ -1,7 +1,7 @@
 from typing import Callable, Coroutine
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
-from ghoshell_moss.core.concepts.mindflow import Mindflow, Signal, Priority, Articulate, Action, Nucleus, Observation
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Signal, Priority, Articulator, Action, Nucleus, Moment
 import janus
 import uvloop
 import threading
@@ -282,7 +282,7 @@ def _test_mindflow_in_differ_thread(i: int):
             timestamps.append(('articulate_start', time.time()))
             async with articulate:
                 for c in content:
-                    await articulate.send(c)
+                    articulate.send_nowait(c)
             timestamps.append(('articulate_done', time.time()))
 
     got = []
@@ -299,7 +299,7 @@ def _test_mindflow_in_differ_thread(i: int):
             timestamps.append(('action_start', time.time()))
             async with action:
                 received = ''
-                async for delta in action.logos():
+                async for delta in action.received_logos():
                     received += delta
                 # 取保执行完的会放入.
                 got.append(received)
@@ -368,7 +368,7 @@ class MindflowSuite:
             *nuclei: Nucleus,
     ) -> None:
         self.mindflow = mindflow or make_base_mindflow()
-        self.articulate_queue: janus.Queue[Articulate | None] = janus.Queue()
+        self.articulate_queue: janus.Queue[Articulator | None] = janus.Queue()
         self.action_queue: janus.Queue[Action | None] = janus.Queue()
         self._all_started = threading.Barrier(3)
         self._is_started = threading.Event()
@@ -377,11 +377,11 @@ class MindflowSuite:
         self._main_t: threading.Thread | None = None
         self._articulate_t: threading.Thread | None = None
         self._action_t: threading.Thread | None = None
-        self.observations: list[Observation] = []
+        self.observations: list[Moment] = []
 
     def _run(
             self,
-            articulate_func: Callable[[Articulate], Coroutine[None, None, None]],
+            articulate_func: Callable[[Articulator], Coroutine[None, None, None]],
             action_func: Callable[[Action], Coroutine[None, None, None]]
     ) -> None:
 
@@ -423,7 +423,7 @@ class MindflowSuite:
 
     def run_in_thread(
             self,
-            articulate_func: Callable[[Articulate], Coroutine[None, None, None]],
+            articulate_func: Callable[[Articulator], Coroutine[None, None, None]],
             action_func: Callable[[Action], Coroutine[None, None, None]]
     ):
         self._run(articulate_func, action_func)
@@ -444,7 +444,7 @@ class MindflowSuite:
         self.mindflow.close()
         self._join()
 
-    async def _articulate_loop(self, articulate_func: Callable[[Articulate], Coroutine[None, None, None]]) -> None:
+    async def _articulate_loop(self, articulate_func: Callable[[Articulator], Coroutine[None, None, None]]) -> None:
         self._all_started.wait()
         try:
             await self.mindflow.wait_started()
@@ -476,7 +476,7 @@ class MindflowSuite:
             self._is_started.set()
             async for attention in self.mindflow.loop():
                 async with attention:
-                    attention.on_observation(self.observations.append)
+                    attention.on_moment(self.observations.append)
                     # 会阻塞在这里.
                     async for articulate, action in attention.loop():
                         self.articulate_queue.sync_q.put_nowait(articulate)
@@ -493,13 +493,13 @@ def test_suite_baseline():
     got = []
     done_event = threading.Event()
 
-    async def _articulate_func(articulate: Articulate) -> None:
+    async def _articulate_func(articulator: Articulator) -> None:
         for char in content:
-            await articulate.send(char)
+            articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.logos():
+        async for delta in action.received_logos():
             received += delta
         got.append(received)
         done_event.set()
@@ -518,13 +518,13 @@ def test_suite_consuming_alot_of_signals():
     got = []
     _done_event = threading.Event()
 
-    async def _articulate_func(articulate: Articulate) -> None:
+    async def _articulate_func(articulator: Articulator) -> None:
         for char in content:
-            await articulate.send(char)
+            articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.logos():
+        async for delta in action.received_logos():
             received += delta
         _done_event.set()
         got.append(received)
@@ -551,13 +551,13 @@ def test_suite_consuming_endless_observe():
     got = []
     done_event = threading.Event()
 
-    async def _articulate_func(articulate: Articulate) -> None:
+    async def _articulate_func(articulator: Articulator) -> None:
         for char in content:
-            await articulate.send(char)
+            articulator.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.logos():
+        async for delta in action.received_logos():
             received += delta
         got.append(received)
         if len(got) < 10:
@@ -586,13 +586,13 @@ def test_wait_first_impulse_complete():
     got = []
     done_event = threading.Event()
 
-    async def _articulate_func(articulate: Articulate) -> None:
+    async def _articulate_func(articulate: Articulator) -> None:
         for char in content:
-            await articulate.send(char)
+            articulate.send_nowait(char)
 
     async def _action_func(action: Action) -> None:
         received = ''
-        async for delta in action.logos():
+        async for delta in action.received_logos():
             received += delta
         got.append(received)
         done_event.set()

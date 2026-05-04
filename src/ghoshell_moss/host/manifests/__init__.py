@@ -1,5 +1,5 @@
 from typing_extensions import Self
-from ghoshell_moss.host.abcd.manifests import Manifests, ConfigInfo, TopicInfo, ProviderInfo
+from ghoshell_moss.core.blueprint.manifests import Manifests, ConfigInfo, TopicInfo, ProviderInfo
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package

@@ -10,7 +10,7 @@ from ghoshell_container import IoCContainer, Container, Provider
 from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.host.abcd.manifests import Manifests
+from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_design import MossMode
@@ -343,8 +343,12 @@ class MatrixImpl(Matrix):
 
     @contextlib.contextmanager
     def _ensure_container_lifecycle_ctx_manager(self):
+        # 启动 container.
         self._container.bootstrap()
         try:
+            for config_info in self.manifests.configs().values():
+                self.configs.set_config(config_info.config)
+                self.configs.get_or_create(config_info.config)
             yield
         finally:
             self._container.shutdown()

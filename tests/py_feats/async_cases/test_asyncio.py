@@ -648,3 +648,15 @@ async def test_async_iterator():
     async for val in bar():
         values.append(val)
     assert len(values) == 10
+
+
+@pytest.mark.asyncio
+async def test_async_iterable_and_generator():
+    async def foo():
+        for i in range(10):
+            yield i
+
+    contents = []
+    async for val in foo():
+        contents.append(val)
+    assert len(contents) == 10

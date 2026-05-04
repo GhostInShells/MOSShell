@@ -1,8 +1,8 @@
 from typing import Coroutine, Callable, Self, AsyncIterator, AsyncGenerator
 from ghoshell_moss import Message
-from ghoshell_moss.core.concepts.mindflow import (
-    Attention, Impulse, Flag, Priority, Observation,
-    AttentionAbortedError, Action, Articulate, Logos, Outcome, ObserveError,
+from ghoshell_moss.core.blueprint.mindflow import (
+    Attention, Impulse, Flag, Priority, Moment,
+    AttentionAbortedError, Action, Articulator, Logos, Reaction, ObserveError,
     ArticulateAbortedError, ActionAbortedError,
 )
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -15,7 +15,7 @@ import janus
 
 __all__ = [
     'BaseAttention',
-    'AttentionContext', 'BaseAction', 'BaseArticulate',
+    'AttentionContext', 'BaseAction', 'BaseArticulator',
 ]
 
 
@@ -25,7 +25,7 @@ class AttentionContext:
             self,
             *,
             attention_id: str,
-            observation: Observation,
+            moment: Moment,
             aborted_event: ThreadSafeEvent,
             flags: dict[str, ThreadSafeEvent],
             logger: LoggerItf | None = None,
@@ -34,9 +34,9 @@ class AttentionContext:
         self.logos_queue: janus.Queue[str | None] = janus.Queue(maxsize=max_size)
         self._max_size = max_size
         self.attention_id = attention_id
-        self.observation = observation
+        self.moment = moment
         self.logger = logger or get_moss_logger()
-        self.logger_prefix = f"<AttentionContext id={attention_id} observation={observation.id}>"
+        self.logger_prefix = f"<AttentionContext id={attention_id} observation={moment.id}>"
 
         self._flags: dict[str, ThreadSafeEvent] = flags
         self._flag_lock = threading.Lock()
@@ -87,28 +87,28 @@ class AttentionContext:
     def exception(self) -> Exception | None:
         return self._exception
 
-    def stop_at_outcome(self) -> Outcome:
+    def stop_at_outcome(self) -> Reaction:
         """生成新对象, 只有 Attention 调用, 应该是线程安全的. """
-        last = self.observation.new_outcome()
+        last = self.moment.new_reaction()
         last.logos = self._logos
         if self._outcome_messages:
-            last.messages.extend(self._outcome_messages)
+            last.outcomes.extend(self._outcome_messages)
         if self._observe_messages:
-            last.messages.extend(self._observe_messages)
+            last.outcomes.extend(self._observe_messages)
         if self._stop_reason:
             last.stop_reason = self._stop_reason
         return last
 
-    def to_new_observation(self) -> Observation:
+    def to_new_observation(self) -> Moment:
         last = self.stop_at_outcome()
-        return last.new_observation()
+        return last.new_moment()
 
     def next_frame(self) -> Self:
         """继承创建下一个 Ctx. """
         observation = self.to_new_observation()
         return AttentionContext(
             attention_id=self.attention_id,
-            observation=observation,
+            moment=observation,
             aborted_event=self._aborted_event,
             flags=self._flags,
             logger=self.logger,
@@ -165,7 +165,7 @@ class AttentionContext:
             return self._flags[name]
 
 
-class BaseArticulate(Articulate):
+class BaseArticulator(Articulator):
 
     def __init__(
             self,
@@ -183,9 +183,9 @@ class BaseArticulate(Articulate):
         self._closing = False
 
     @property
-    def observation(self) -> Observation:
+    def moment(self) -> Moment:
         self._check_running()
-        return self._ctx.observation
+        return self._ctx.moment
 
     def _check_running(self):
         if not self._started:
@@ -230,7 +230,7 @@ class BaseArticulate(Articulate):
     async def send_logos(self, logos: Logos) -> None:
         self._check_running()
         async for delta in logos:
-            await self.send(delta)
+            self.send_nowait(delta)
 
     def create_task(self, cor: Coroutine) -> asyncio.Future:
         self._check_running()
@@ -241,13 +241,13 @@ class BaseArticulate(Articulate):
     def flag(self, name: str) -> Flag:
         return self._ctx.flag(name)
 
-    async def send(self, delta: str) -> None:
+    def send_nowait(self, logos_delta: str) -> None:
         if self._ctx.is_aborted() or self._exited_event.is_set():
-            self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, delta)
+            self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, logos_delta)
             # 中断循环及其外部逻辑.
             raise AttentionAbortedError("Attention is already aborted")
         try:
-            self._ctx.logos_queue.sync_q.put_nowait(delta)
+            self._ctx.logos_queue.sync_q.put_nowait(logos_delta)
         except janus.SyncQueueShutDown:
             raise AttentionAbortedError("Attention is already aborted")
 
@@ -310,7 +310,7 @@ class BaseAction(Action):
         self._started = False
         self._closing = False
 
-    def logos(self) -> Logos:
+    def received_logos(self) -> Logos:
         return self._logos()
 
     async def _logos(self) -> AsyncGenerator[str, None]:
@@ -397,7 +397,7 @@ class BaseAttention(Attention):
     def __init__(
             self,
             *,
-            last_outcome: Outcome,
+            previous: Reaction,
             impulse: Impulse,
             logger: LoggerItf | None = None,
             system_floor_strength: float = 0.0,  # 决定强度衰减到合适中断.
@@ -417,9 +417,9 @@ class BaseAttention(Attention):
         self._aborted_event = ThreadSafeEvent()
         self._flags: dict[str, ThreadSafeEvent] = {}
         # 继承的回合.
-        self._inherit_outcome: Outcome = last_outcome
+        self._previous_reaction: Reaction = previous
         # 发送 observation 时的回调.
-        self._observation_callbacks: list[Callable[[Observation], None]] = []
+        self._on_moment_callbacks: list[Callable[[Moment], None]] = []
         self._context_funcs: dict[str, Callable[[], list[Message]]] = {}
 
         # 运行时.
@@ -453,7 +453,7 @@ class BaseAttention(Attention):
         # ctx 会持续存在.
         self._ctx = AttentionContext(
             attention_id=self._init_impulse.id,
-            observation=self._inherit_outcome.new_observation(),
+            moment=self._previous_reaction.new_moment(),
             aborted_event=self._aborted_event,
             logger=self._logger,
             flags=self._flags,
@@ -500,9 +500,9 @@ class BaseAttention(Attention):
         # 让 ctx 的状态对齐到一起.
         return self._ctx.flag(name)
 
-    def on_observation(self, callback: Callable[[Observation], None]) -> None:
+    def on_moment(self, callback: Callable[[Moment], None]) -> None:
         """register observation callback"""
-        self._observation_callbacks.append(callback)
+        self._on_moment_callbacks.append(callback)
 
     def with_context_func(self, context_name: str, context_func: Callable[[], list[Message]]) -> Self:
         """注册获取动态上下文的方式. """
@@ -516,11 +516,11 @@ class BaseAttention(Attention):
     def is_started(self) -> bool:
         return self._started
 
-    def last_outcome(self) -> Outcome:
+    def last_outcome(self) -> Reaction:
         # 返回最后一个 ctx 帧的 outcome 记录.
         if self.is_started():
             return self._ctx.stop_at_outcome()
-        return self._inherit_outcome
+        return self._previous_reaction
 
     async def wait_closed(self) -> None:
         await self._aborted_event.wait()
@@ -565,67 +565,67 @@ class BaseAttention(Attention):
 
         return int(max(current, 0))
 
-    def loop(self) -> AsyncIterator[tuple[Articulate, Action]]:
+    def loop(self) -> AsyncIterator[tuple[Articulator, Action]]:
         return self._loop()
 
-    def _prepare_observation(self, observation: Observation) -> None:
+    def _prepare_moment(self, moment: Moment) -> None:
         if len(self._context_funcs) > 0:
             # 从缓存中获取数据. 速度应该是很快的.
             for key, func in self._context_funcs.items():
                 try:
                     messages = func()
-                    observation.context[key] = messages
+                    moment.perspectives[key] = messages
                 except Exception as e:
                     self._logger.error(
                         "%s failed to prepare context messages of %s: %s",
                         self._log_prefix, key, e,
                     )
 
-    def _callback_observation(self, observation: Observation) -> None:
-        if len(self._observation_callbacks) > 0:
-            for func in self._observation_callbacks:
+    def _callback_moment(self, moment: Moment) -> None:
+        if len(self._on_moment_callbacks) > 0:
+            for func in self._on_moment_callbacks:
                 try:
-                    func(observation)
+                    func(moment)
                 except Exception as e:
                     self._logger.error(
                         "%s failed to callback observation to %s: %s",
                         self._log_prefix, func, e,
                     )
 
-    async def _loop(self) -> AsyncGenerator[tuple[Articulate, Action], None]:
+    async def _loop(self) -> AsyncGenerator[tuple[Articulator, Action], None]:
         # 等待第一个完整的信号. 本质是一个抢占式注意力锁, 比如 ASR 首包打断时
         # 已经抢占了注意力, 但要等待一个完整的逻辑包才采取行动.
         impulse = await self.wait_first_impulse()
         if impulse is None:
             return
         # 完成第一轮输入的赋值. 其中 mindflow context 应该是通过 context func 更新的.
-        observation = self._ctx.observation
-        observation.inputs = impulse.messages
+        observation = self._ctx.moment
+        observation.percepts = impulse.messages
         observation.prompt = impulse.prompt
         on_start_logos = impulse.on_logos_start
         while not self.is_aborted():
             # 每次刷新时会更新权重.
             self._escalation_on_active()
-            current_observation = self._ctx.observation
+            current_observation = self._ctx.moment
             while len(self._info_impulse_buffer) > 0:
                 impulse_buffer = self._info_impulse_buffer.popleft()
                 # buffer messages.
-                current_observation.inputs.extend(impulse_buffer.messages)
+                current_observation.percepts.extend(impulse_buffer.messages)
                 current_observation.prompt = impulse_buffer.prompt
                 on_start_logos = impulse_buffer.on_logos_start
 
             # 1. 准备本轮的 Observation
             # 这里的逻辑要把 context_funcs 执行一遍，塞进 self._ctx.observation
-            self._prepare_observation(current_observation)
+            self._prepare_moment(current_observation)
             # 回调 observation.
-            self._callback_observation(current_observation)
+            self._callback_moment(current_observation)
 
             # 2. 创建双工流 (8000 是个缓冲区大小，可以自定)
             # 3. 准备退出同步信号
             self._action_stop_event.clear()
             self._articulate_stop_event.clear()
 
-            articulate = BaseArticulate(
+            articulate = BaseArticulator(
                 ctx=self._ctx,
                 exited_event=self._articulate_stop_event,
                 on_start_logos=on_start_logos,
@@ -773,7 +773,7 @@ class BaseAttention(Attention):
         finally:
             # 清除一些容易互相持有的逻辑.
             self._context_funcs.clear()
-            self._observation_callbacks.clear()
+            self._on_moment_callbacks.clear()
             # 两个确保能够退出的标记.
             self._aborted_event.set()
             self._closed_event.set()

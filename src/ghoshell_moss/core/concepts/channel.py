@@ -303,7 +303,7 @@ class ChannelRuntime(ABC):
     使用 Runtime 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
 
     >>> async def example(chan: Channel, con: IoCContainer):
-    >>>     runtime = chan.bootstrap(con)
+    >>>     runtime = chan.factory(con)
     >>>     async with runtime:
     >>>         ...
 

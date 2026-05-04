@@ -773,7 +773,7 @@ class ObserveError(Exception):
     一种抛出中断的办法.
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str = '') -> None:
         self.message = message
         super().__init__(message)
 

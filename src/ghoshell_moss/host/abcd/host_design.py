@@ -5,7 +5,7 @@ from ghoshell_common.contracts import LoggerItf
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
-from .manifests import Manifests
+from ghoshell_moss.core.blueprint.manifests import Manifests
 from .app import AppStore
 from .environment import Environment
 from ghoshell_moss.core.blueprint.matrix import Matrix

@@ -1,5 +1,5 @@
 import pytest
-from ghoshell_moss.core.concepts.mindflow import Impulse, Priority, Outcome, ObserveError
+from ghoshell_moss.core.blueprint.mindflow import Impulse, Priority, Reaction, ObserveError
 from ghoshell_moss.core.mindflow.base_attention import BaseAttention
 from ghoshell_moss.message import Message
 import time
@@ -11,9 +11,9 @@ async def test_attention_lifecycle_and_loop():
     """测试 Attention 的完整运行循环是否能正常产出 Articulate 和 Action"""
     # 1. 准备初始状态
     initial_impulse = Impulse(source="test", priority=Priority.INFO, messages=[Message.new().with_content("init")])
-    outcome = Outcome()
+    outcome = Reaction()
 
-    attention = BaseAttention(last_outcome=outcome, impulse=initial_impulse)
+    attention = BaseAttention(previous=outcome, impulse=initial_impulse)
 
     # 2. 启动 Attention
     async with attention:
@@ -29,9 +29,9 @@ async def test_attention_lifecycle_and_loop():
 
         # 4. 模拟 Articulate 和 Action 的生命周期
         async with articulate, action:
-            await articulate.send("Hello")
+            articulate.send_nowait("Hello")
             # 消费 Action 的 logos
-            async for delta in action.logos():
+            async for delta in action.received_logos():
                 assert delta == "Hello"
                 break  # 简单测试
 
@@ -42,7 +42,7 @@ async def test_attention_lifecycle_and_loop():
 async def test_attention_preemption_by_priority():
     """测试不同优先级的 impulse 挑战是否会引发 aborted"""
     current = Impulse(source="main", priority=Priority.INFO, strength=100)
-    attention = BaseAttention(last_outcome=Outcome(), impulse=current)
+    attention = BaseAttention(previous=Reaction(), impulse=current)
 
     async with attention:
         # 模拟 CRITICAL 挑战
@@ -58,7 +58,7 @@ async def test_attention_preemption_by_priority():
 async def test_observe_error_propagation():
     """测试 ObserveError 如何正确导致下一轮循环"""
     initial = Impulse(source="test", priority=Priority.INFO)
-    attention = BaseAttention(last_outcome=Outcome(), impulse=initial)
+    attention = BaseAttention(previous=Reaction(), impulse=initial)
 
     async with attention:
         loop_gen = attention.loop()
@@ -83,7 +83,7 @@ async def test_attention_strength_decay():
         strength=100,
         strength_decay_seconds=0.1  # 100ms
     )
-    attention = BaseAttention(last_outcome=Outcome(), impulse=impulse)
+    attention = BaseAttention(previous=Reaction(), impulse=impulse)
     await asyncio.sleep(0.09)
     assert attention.current_strength() > 0
     await asyncio.sleep(0.01)
@@ -104,7 +104,7 @@ async def test_attention_rapid_timeout_aborted():
         strength_decay_seconds=0.1  # 100ms
     )
 
-    attention = BaseAttention(last_outcome=Outcome(), impulse=impulse)
+    attention = BaseAttention(previous=Reaction(), impulse=impulse)
     start_time = time.perf_counter()
     async with attention:
         # 2. 等待直到生命周期被触发超时
@@ -137,7 +137,7 @@ async def test_attention_homologous_escalation():
     )
     # 保护区: min(2.0 * 0.2, 3.0) = 0.4s
     attention = BaseAttention(
-        last_outcome=Outcome(),
+        previous=Reaction(),
         impulse=impulse,
         # 保护期时间 0.1
         protection_duration_ratio=0.1,
@@ -182,7 +182,7 @@ async def test_attention_max_protection_time():
     )
     # 保护区: min(2.0 * 0.2, 3.0) = 0.4s
     attention = BaseAttention(
-        last_outcome=Outcome(),
+        previous=Reaction(),
         impulse=impulse,
         # 保护期比例 100%
         protection_duration_ratio=1.0,
