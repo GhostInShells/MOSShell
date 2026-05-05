@@ -11,7 +11,7 @@ from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
-from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
+from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, SystemPrompter, BaseSystemPrompter
 from ghoshell_moss.host.abcd.app import AppStore, AppInfo
 from ghoshell_moss.host.abcd.host_design import MossMode
 from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
@@ -41,7 +41,6 @@ class AppCell(Cell):
     def __init__(self, app: AppInfo, event: threading.Event):
         self.name = app.fullname
         self.description = app.description
-        self.docstring = app.docstring
         self.type = "app"
         self.where = app.work_directory
         self._alive_event = event
@@ -61,7 +60,6 @@ class MossModeCell(Cell):
         self.name = mode.name
         self.type = 'main'
         self.description = mode.description
-        self.docstring = mode.description
         self.where = mode.file
         self._alive_event = event
 
@@ -82,7 +80,6 @@ class UnknownCell(Cell):
         self.name = 'unknown'
         self.type = 'unknown'
         self.description = ''
-        self.docstring = ''
         self.where = ''
         self._address = 'unknown/' + uuid()
 
@@ -109,11 +106,10 @@ class MatrixImpl(Matrix):
         env.bootstrap()
         self.env = env
         self.apps = app_store
-        self._current_mode = mode
+        self._current_mode: MossMode = mode
         self._cell_address = env.cell_address
         self._manifests = manifest
         self._workspace = workspace
-        self._current_mode = mode
         self._session_scope = env.session_scope
 
         # prepare cell and events
@@ -156,14 +152,37 @@ class MatrixImpl(Matrix):
         self._process_locker = self._workspace.lock(locker_name)
         self._process_locker_name = locker_name
 
+    def _prepare_system_prompter(self) -> SystemPrompter:
+        prompter = BaseSystemPrompter()
+        # ctml 优先.
+        prompter.with_prompter("ctml", self.ctml_instruction())
+        prompter.with_prompter("moss_meta_config_content", self.env.meta_config.content)
+        prompter.with_prompter("moss_mode_instruction", self._current_mode.instruction)
+        return prompter
+
+    def ctml_version(self) -> str:
+        """返回当前环境中定义的 ctml version """
+        return self._current_mode.ctml_version or self.env.meta_config.ctml_version
+
+    def get_ctml_prompt(self, ctml_version: str) -> str | None:
+        """在当前环境约定的 workspace 下寻找 ctml 指定版本. """
+        return self.env.get_ctml_prompt(ctml_version)
+
+    def ctml_instruction(self) -> str:
+        ctml_version = self.ctml_version()
+        return self.get_ctml_prompt(ctml_version)
+
     def _prepare_container(self) -> Container:
         container = Container(name=self._cell_address)
         container.set(Matrix, self)
         container.set(MatrixImpl, self)
         container.set(Environment, self.env)
+        container.set(MossMode, self._current_mode)
         container.set(Workspace, self._workspace)
         container.set(Manifests, self._manifests)
-        container.set(Cell, self._this_cell)
+        system_prompter = self._prepare_system_prompter()
+        # system prompter
+        container.set(SystemPrompter, system_prompter)
 
         # 注册 manifest providers. 包含环境与模式的双重配置.
         for contract in self._manifests.providers():
@@ -217,7 +236,7 @@ class MatrixImpl(Matrix):
         return self.env.dump_moss_env(with_os_env=False, for_child_process=False)
 
     @property
-    def mode(self) -> str:
+    def moss_mode(self) -> str:
         return self._current_mode.name
 
     def list_cells(self) -> dict[str, Cell]:

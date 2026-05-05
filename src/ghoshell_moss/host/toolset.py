@@ -1,8 +1,8 @@
-from typing import Self
+from typing_extensions import Self
 
 import janus
 
-from ghoshell_moss import Message, MOSShell
+from ghoshell_moss import Message, MOSShell, CTMLShell
 from ghoshell_moss.host.abcd.host_design import (
     MossAsToolSet, MossMode,
 )
@@ -29,28 +29,14 @@ class MossAsToolSetImpl(MossAsToolSet):
             workspace: Workspace,
             mode: MossMode,
             matrix: MatrixImpl,
-            moss_meta_instruction: str | None = None,
     ):
         env.bootstrap()
         self._env = env
         self._workspace = workspace
-        self._meta_instruction = moss_meta_instruction
         self._matrix = matrix
         self._mode = mode
-        self._ctml_shell = new_ctml_shell(
-            name="MOSS." + self._mode.name,
-            description=self._mode.description,
-            container=self.matrix.container,
-            experimental=False,
-        )
-        self._app_store = HostAppStore(
-            env=self._env,
-            workspace=self._workspace,
-            namespace="MOSS/app_store/main",
-            runnable=True,
-            include=self._mode.apps,
-            bringup=self._mode.bringup_apps,
-        )
+        self._ctml_shell: CTMLShell | None = None
+        self._app_store: HostAppStore | None = None
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._paused = False
@@ -71,21 +57,17 @@ class MossAsToolSetImpl(MossAsToolSet):
         if not self.is_running():
             raise RuntimeError('Moss is not running.')
 
-    def moss_meta_instruction(self) -> str:
-        if self._meta_instruction is None:
-            self._meta_instruction = self._mode.make_meta_instruction(self._env)
-        return self._meta_instruction
-
     def moss_instruction(self, with_static: bool = True) -> str:
         self._check_running()
-        instructions = [self.moss_meta_instruction()]
+        instructions = [self._ctml_shell.meta_instruction()]
 
         if with_static:
             if static_messages := self._ctml_shell.static_messages().strip():
-                instructions.append(static_messages)
+                instructions.append("# MOSS static\n\n" + static_messages)
         return "\n\n".join(instructions)
 
     async def moss_dynamic_messages(self, refresh: bool = True, max_wait: float = 2.0) -> list[Message]:
+        self._check_running()
         await self._ctml_shell.refresh_metas(max_wait)
         return self._ctml_shell.dynamic_messages()
 
@@ -150,20 +132,45 @@ class MossAsToolSetImpl(MossAsToolSet):
 
     @property
     def apps(self) -> AppStore:
+        self._check_running()
         return self._app_store
 
     @property
     def shell(self) -> MOSShell:
+        self._check_running()
         return self._ctml_shell
 
     @property
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def _bootstrap_ctml_shell(self) -> None:
+    def _bootstrap_after_matrix(self) -> None:
+        system_prompt = self._matrix.moss_system_prompter()
+        self._ctml_shell = new_ctml_shell(
+            name="MOSS." + self._mode.name,
+            description=self._mode.description,
+            parent_container=self.matrix.container,
+            experimental=False,
+            meta_instruction=system_prompt.instruction(),
+            # 只用环境发现的原语. 不做任何隐式原语.
+            primitives=list(self._matrix.manifests.primitives().values()),
+        )
+        self._app_store = HostAppStore(
+            env=self._env,
+            workspace=self._workspace,
+            namespace="MOSS/app_store/main",
+            runnable=True,
+            include=self._mode.apps,
+            bringup=self._mode.bringup_apps,
+            logger=self.matrix.logger,
+        )
+        # 注册 Apps
         self._ctml_shell.main_channel.import_channels(
             AppStoreChannel(name='apps')
         )
+        self._matrix.container.set(AppStore, self._app_store)
+        self._matrix.container.set(MOSShell, self._ctml_shell)
+        self._matrix.container.set(CTMLShell, self._ctml_shell)
 
     async def __aenter__(self) -> Self:
         if self._started:
@@ -173,12 +180,9 @@ class MossAsToolSetImpl(MossAsToolSet):
         # 启动 matrix.
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 启动 app 并且 bringup
-        self._app_store.with_logger(self._matrix.logger)
+        self._bootstrap_after_matrix()
         await self._async_exit_stack.enter_async_context(self._app_store)
-        # 设置 app store 为全局变量.
-        self._matrix.container.set(AppStore, self._app_store)
         # 启动 ctml shell
-        self._bootstrap_ctml_shell()
         await self._async_exit_stack.enter_async_context(self._ctml_shell)
         await self._ctml_shell.refresh_metas()
         # 注册日志到当前 app store 里.

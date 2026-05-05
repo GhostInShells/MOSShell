@@ -47,7 +47,7 @@ class Host(MossHost):
         self._env_modes = {mode.name: mode for mode in list_modes_from_root_package()}
         moss_mode = mode
         if moss_mode is None:
-            moss_mode = self.env.moss_mode
+            moss_mode = self.env.moss_mode_name
         if isinstance(moss_mode, str):
             moss_mode_name = moss_mode
             moss_mode = self._env_modes.get(moss_mode_name)
@@ -118,5 +118,4 @@ class Host(MossHost):
             workspace=self._workspace,
             mode=self._moss_mode,
             matrix=self._matrix,
-            moss_meta_instruction=self.moss_meta_instruction(),
         )

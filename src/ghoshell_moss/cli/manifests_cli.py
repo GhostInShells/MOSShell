@@ -334,7 +334,8 @@ def _display_channel_table(channels: dict, is_filtered: bool):
 @manifest_app.command(name="primitives")
 def list_primitives(
         search: str = typer.Argument("", help="Search pattern for command name."),
-        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
+        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI."),
+        json_schema: bool = typer.Option(False, "--json-schema", help="Output with json schema")
 ):
     """
     Explore MOSS Primitives (Commands).
@@ -351,23 +352,29 @@ def list_primitives(
             "description": cmd.meta().description,
             "params": cmd.meta().json_schema
         } for name, cmd in results.items()}
-        console.json(data=data)
+        console.print_json(data=data)
         return
+    if len(primitives) == 0:
+        console.print("no primitive found")
+        return
+    for key, cmd in results.items():
+        _display_command_detail(cmd, json_schema)
 
-    _display_command_detail(list(results.values())[0])
 
-
-def _display_command_detail(cmd):
+def _display_command_detail(cmd, with_json_schema: bool):
     meta = cmd.meta()
-    console.print(f"\n[bold green]Command:[/bold green] {meta.name}")
+    console.print(f"\n[bold green]==== Command:[/bold green] {meta.name} ====")
     console.print(f"[dim]Dynamic: {cmd.is_dynamic()}[/dim]\n")
 
     # 重点展示接口定义
-    console.print(Panel(cmd.meta().interface, title="Interface Prompt", border_style="yellow"))
+    console.print(f"[dim]Interface:[/dim]\n")
+    console.print(Syntax(cmd.meta().interface, 'python'))
 
     # 展示 JSON Schema
-    console.print("\n[bold]Arguments Schema:[/bold]")
-    console.json(data=meta.json_schema)
+    if with_json_schema and meta.json_schema is not None:
+        console.print("\n[bold]Arguments Schema:[/bold]")
+        console.print_json(data=meta.json_schema)
+    console.print("")
 
 
 @manifest_app.command(name="contracts")

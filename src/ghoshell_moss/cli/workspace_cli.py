@@ -123,16 +123,16 @@ def init_workspace(
     # 1. 路径选择逻辑 (极简命令行模式)
     if path is None:
         rprint("\n[bold cyan]MOSS Workspace Setup[/bold cyan]")
-        rprint(f" 1) Home directory: [dim]{home_path}[/dim]")
-        rprint(f" 2) Current directory: [dim]{cwd_path}[/dim]")
+        rprint(f" 1) Current directory: [dim]{cwd_path}[/dim]")
+        rprint(f" 2) Home directory: [dim]{home_path}[/dim]")
         rprint(f" 3) Custom path")
 
         choice = typer.prompt("\nSelect an option", default="1", type=str)
 
         if choice == "1":
-            target_path = home_path
-        elif choice == "2":
             target_path = cwd_path
+        elif choice == "2":
+            target_path = home_path
         elif choice == "3":
             custom_path = typer.prompt("Enter custom path", type=Path)
             target_path = custom_path.resolve()

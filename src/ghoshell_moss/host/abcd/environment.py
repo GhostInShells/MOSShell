@@ -9,7 +9,7 @@ from pathlib import Path
 from ghoshell_common.helpers import uuid
 from importlib import resources
 from pydantic import BaseModel, Field
-from ghoshell_moss.core.ctml.meta import CTML_VERSION
+from ghoshell_moss.core.ctml.meta import CTML_VERSION, get_moss_ctml_meta_instruction
 import os
 import dotenv
 import sys
@@ -126,23 +126,6 @@ class MetaConfig(BaseModel):
         data['content'] = post.content
         return cls(**data)
 
-    def get_default_meta_instruction(self) -> str:
-        """
-        获取默认的 moss 的元提示词.
-        """
-        from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction
-        if self.ctml_version:
-            meta_instruction = get_moss_ctml_meta_instruction(self.ctml_version)
-        else:
-            meta_instruction = get_moss_ctml_meta_instruction()
-        if self.content:
-            return "\n\n".join([meta_instruction, self.content])
-        else:
-            return meta_instruction
-
-    def __str__(self):
-        return self.get_default_meta_instruction()
-
 
 class Environment:
     """
@@ -165,9 +148,9 @@ class Environment:
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
         self._meta_instruction_path = self._workspace_path.joinpath(META_INSTRUCTION_FILENAME)
         if self._meta_instruction_path.is_file() and self._meta_instruction_path.exists():
-            self._meta_instruction = MetaConfig.from_file(self._meta_instruction_path)
+            self._meta_config = MetaConfig.from_file(self._meta_instruction_path)
         else:
-            self._meta_instruction = MetaConfig()
+            self._meta_config = MetaConfig()
 
         if mode is None:
             mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
@@ -209,7 +192,10 @@ class Environment:
         filename = ctml_version if ctml_version.endswith('.md') else ctml_version + '.md'
         expect_file = self.workspace_path.joinpath("ctml_prompts").joinpath(filename).resolve()
         if not expect_file.exists():
-            return None
+            try:
+                return get_moss_ctml_meta_instruction(ctml_version)
+            except FileNotFoundError:
+                return None
         return expect_file.read_text()
 
     @classmethod
@@ -397,7 +383,7 @@ class Environment:
         return self._parent_pid
 
     @property
-    def moss_mode(self) -> str:
+    def moss_mode_name(self) -> str:
         return self._moss_mode
 
     @property
@@ -406,7 +392,7 @@ class Environment:
 
     @property
     def meta_config(self) -> MetaConfig:
-        return self._meta_instruction
+        return self._meta_config
 
     @property
     def cell_address(self) -> str:

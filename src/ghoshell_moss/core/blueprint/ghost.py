@@ -1,8 +1,8 @@
 from ghoshell_container import IoCContainer, Contracts
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus
-from ghoshell_moss.core.blueprint.conversation import ArticulateContext
+from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus, NucleusMeta, Articulator
+from ghoshell_moss.core.blueprint.conversation import ConversationStore, Conversation
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
@@ -23,6 +23,10 @@ class GhostMeta(ABC):
         """
         pass
 
+    @abstractmethod
+    def nuclei_metas(self) -> list[NucleusMeta]:
+        pass
+
     @classmethod
     def version(cls) -> str:
         """
@@ -35,7 +39,10 @@ class GhostMeta(ABC):
         """
         返回 Ghost 型号.
         """
-        return cls.__name__
+        prototype_name = cls.__name__
+        if prototype_name.endswith('Meta'):
+            prototype_name = prototype_name[:-4]
+        return prototype_name
 
     @property
     def identifier(self) -> str:
@@ -76,6 +83,8 @@ class Ghost(ABC):
     Ghost 的运行时.
     它基于环境提供的依赖启动, 启动后要提供
     能够被 moss 架构所使用的关键 API.
+
+    系统启动的时候, Ghost 和 GhostMeta 都应该设置到全局 IoC 容器里.
     """
 
     @property
@@ -123,6 +132,20 @@ class Ghost(ABC):
         """
         return []
 
+    @abstractmethod
+    def conversation(self) -> Conversation:
+        """
+        当前进行中的会话.
+        """
+        pass
+
+    @abstractmethod
+    def convos(self) -> ConversationStore:
+        """
+        当前 Ghost 实例下存储的会话历史.
+        """
+        pass
+
     def mindflow(self) -> Mindflow | None:
         """
         Ghost 定义自身的 Mindflow. 如果返回 None 的话, 会使用 MOSS 架构提供的默认 mindflow 实现.
@@ -131,7 +154,7 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def articulate(self, context: ArticulateContext) -> Logos:
+    def articulate(self, articulator: Articulator) -> Logos:
         """
         articulate the logos from context
         """

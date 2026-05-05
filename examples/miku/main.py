@@ -86,7 +86,7 @@ async def run_agent(container: Container, speech: Speech | None = None):
     loop = asyncio.get_running_loop()
 
     # 创建 Shell
-    shell = new_ctml_shell(container=container)
+    shell = new_ctml_shell(parent_container=container)
 
     async def speaking():
         try:

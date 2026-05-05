@@ -51,7 +51,7 @@ class HostMossRuntime(MossRuntime, MossAsToolSet):
         self._ctml_shell = new_ctml_shell(
             name="MOSS." + self._mode.name,
             description=self._mode.description,
-            container=self.matrix.container,
+            parent_container=self.matrix.container,
             experimental=False,
         )
         self._app_store = HostAppStore(

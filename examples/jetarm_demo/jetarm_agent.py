@@ -20,7 +20,7 @@ ADDRESS = "tcp://192.168.1.15:9527"
 async def run_agent(address: str = ADDRESS, container: Container | None = None):
     container = container or get_container()
     # 创建 Shell
-    shell = new_ctml_shell(container=container)
+    shell = new_ctml_shell(parent_container=container)
 
     jetarm_chan = ZMQChannelProxy(
         name="jetarm",

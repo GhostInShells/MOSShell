@@ -2,7 +2,7 @@ import typer
 import sys
 from typing import Optional
 from ghoshell_moss.cli.utils import (
-    print_error, print_info,
+    print_error,
     print_panel, echo
 )
 from ghoshell_moss.cli import codex_cli

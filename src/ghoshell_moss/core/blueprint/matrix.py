@@ -1,4 +1,5 @@
 from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable
+
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.topic import TopicService
@@ -8,7 +9,7 @@ from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace
 from ghoshell_container import IoCContainer
 import asyncio
 
-__all__ = ['Matrix', 'Cell']
+__all__ = ['Matrix', 'Cell', 'SystemPrompter', 'BaseSystemPrompter']
 
 from ghoshell_moss.core.blueprint.manifests import Manifests
 
@@ -20,7 +21,6 @@ class Cell(ABC):
     """
     name: str  # 节点的名称.
     description: str  # 节点的描述.
-    docstring: str  # 节点的详细描述.
     type: Literal['app', 'main'] | str  # 节点的类型. main 表示 moss 的 runtime, 而 app 表示是一个环境中可加载的应用.
     where: str  # 这个节点自身的工作目录.
 
@@ -46,7 +46,6 @@ class Cell(ABC):
             "address": self.address,
             "name": self.name,
             "description": self.description,
-            "docstring": self.docstring,
             "type": self.type,
             "where": self.where,
             "log_name": self.log_name,
@@ -55,6 +54,110 @@ class Cell(ABC):
 
 
 CELL_ADDRESS = str
+
+
+class SystemPrompter(ABC):
+    """
+    系统提示词组件.
+
+    Moss 架构中运行的智能体, 其 Instruction 部分由若干组件构成.
+    这些组件可分形, 或线性地组织出系统提示词. 它不做分级标题, 只做线性排序. 所以每个 prompter 应该都有一级标题.
+
+    在 MOSS 架构中典型的例子是:
+    - Moss Meta Instruction: 基于环境发现构建出来的 prompt. 分为
+        - ctml version: 基于 ctml version 从环境中拼合的 prompt.
+        - moss root instruction: 在 workspace 根目录定义的 MOSS.md 提供的 instruction. 整个环境复用.
+        - moss mode instruction: 在某个特定模式下定义的 instruction. 只对模式生效.
+    - Ghost instruction: 基于 Ghost 定义的 instruction.
+        - soul
+        - existence
+        - purpose
+        - alignment
+    - Moss Static: 所有可运行组件的静态讯息.
+    将这个模块拆分出来, 可以方便整个系统在运行时的不同位置组装 system prompt.
+    环境中的 System Prompter 应该以 IoC 容器中注册的为基准. 通常就是 Matrix 所持有的.
+    """
+
+    @abstractmethod
+    def instruction(self) -> str:
+        pass
+
+    @abstractmethod
+    def with_prompter(self, key: str, prompter: Callable[[], str] | str) -> None:
+        pass
+
+
+class BaseSystemPrompter(SystemPrompter):
+    """System Prompter 基础实现."""
+
+    def __init__(
+            self,
+            *,
+            own_instruction: str = '',
+            slots: Iterable[str] | None = None,
+            prompters: dict[str, Callable[[], str] | str] | None = None,
+    ):
+        self._own_instruction: str = own_instruction
+        self._prompters: dict[str, str | Callable[[], str]] = prompters or {}
+        self._slots: set[str] = set(slots) if slots is not None else set()
+        self._dynamic: bool = False
+        self._cached_instruction: str | None = None
+
+    def instruction(self) -> str:
+        if self._dynamic:
+            return self._instruction()
+        if self._cached_instruction is None:
+            self._cached_instruction = self._instruction()
+        return self._cached_instruction
+
+    def _instruction(self) -> str:
+        if self._own_instruction:
+            values = [self._own_instruction]
+        else:
+            values = []
+        if self._slots:
+            prompters = []
+            for key in self._slots:
+                prompter = self._prompters.get(key, None)
+                if prompter:
+                    prompters.append(prompter)
+        else:
+            prompters = list(self._prompters.values())
+        # 可能需要动态.
+        for prompter in prompters:
+            if isinstance(prompter, str):
+                values.append(prompter)
+            elif callable(prompter):
+                values.append(str(prompter()))
+        return "\n\n".join([v for v in values if v])
+
+    def with_prompter(self, key: str, prompter: Callable[[], str] | str) -> None:
+        if not isinstance(prompter, str):
+            if not callable(prompter):
+                raise TypeError(f"prompter must be string or func()->str, `{prompter}` given.")
+            value = prompter()
+            if not isinstance(value, str):
+                raise TypeError(f"prompter must be string or func()->str, `{prompter}` returns invalid.")
+            self._dynamic = True
+        elif not prompter:
+            # 为空直接忽略.
+            return None
+
+        if self._slots and key not in self._slots:
+            raise KeyError(f"key {key} not in slots.")
+        self._prompters[key] = prompter
+        return None
+
+    def __copy__(self):
+        return BaseSystemPrompter(own_instruction=self._own_instruction, slots=self._slots, prompters=self._prompters)
+
+
+ScopesKey = Literal[
+    'moss_mode',  # 对环境中所有资源的隔离形式, 通过不同的 mode 隔离不同的资源组合. 使得资源如 provider, config 等可以复用.
+    'session_scope',  # 运行时隔离的基本维度, 使用不同的 scope 启动, 可以用来隔离通讯/存储等. 前提是对应组件使用了这个隔离级别.
+    'session_id',  # 运行时的唯一 Id. 如果一些资源或状态希望在系统关闭时就丢弃, 可以基于 session_id 构建隔离级别来通讯或存储.
+    'cell_address',  # Matrix 实例作为通讯架构, 运行在每个不同的 Cell 内. 同时可以有很多个 cell 并行运行组网.
+]
 
 
 class Matrix(ABC):
@@ -92,13 +195,30 @@ class Matrix(ABC):
         """
         pass
 
+    def moss_system_prompter(self) -> SystemPrompter:
+        """
+        moss 全局的 system prompter.
+        matrix 必须完成全局 prompter 的定义, 并注册到 IoC 容器中.
+        """
+        return self.container.force_fetch(SystemPrompter)
+
     @property
     @abstractmethod
-    def mode(self) -> str:
+    def moss_mode(self) -> str:
         """
-        返回当前运行的模式.
+        返回当前 MOSS 运行的模式.
+        Matrix 运行时会
         """
         pass
+
+    def scopes(self) -> dict[ScopesKey, str]:
+        """返回 Matrix 运行时的维度座标. 用来构建不同的隔离级别. """
+        return {
+            'session_id': self.session.session_id,
+            'session_scope': self.session.session_scope,
+            'moss_mode': self.moss_mode,
+            'cell_address': self.this.address,
+        }
 
     @abstractmethod
     def list_cells(self) -> dict[CELL_ADDRESS, Cell]:
@@ -136,7 +256,7 @@ class Matrix(ABC):
     @abstractmethod
     def configs(self) -> ConfigStore:
         """
-        基于环境发现的配置文件.
+        基于环境发现的配置中心.
         """
         pass
 
@@ -192,14 +312,6 @@ class Matrix(ABC):
     def logger(self) -> LoggerItf:
         """
         日志模块. 从属于当前节点.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def configs(self) -> ConfigStore:
-        """
-        本地配置中心读取.
         """
         pass
 

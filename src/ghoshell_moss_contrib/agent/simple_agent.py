@@ -95,7 +95,7 @@ class SimpleAgent:
 
         self.chat: BaseChat = chat or ConsoleChat()
         self.talker = talker
-        shell = shell or new_ctml_shell(container=self.container, speech=speech, experimental=False)
+        shell = shell or new_ctml_shell(parent_container=self.container, speech=speech, experimental=False)
         model = model or ModelConf()
         self.instruction = instruction
         self.shell = shell

@@ -13,7 +13,7 @@ import asyncio
 __all__ = [
     'Conversation', 'ConversationStore',
     'Reaction', 'Moment', 'ConversationMeta',
-    'ArticulateContext',
+    'ModelContext',
 ]
 
 
@@ -79,6 +79,20 @@ class Moment(BaseModel, WithAdditional):
         default='',
         description="与本轮思考决策相关的提示讯息. 只在当前轮次生效",
     )
+
+    def to_json(self, *, exclude_perspectives: bool = True) -> str:
+        """
+        标准的序列化方式, 也方便存储.
+        """
+        exclude = None
+        if exclude_perspectives:
+            exclude = {'perspectives'}
+        return self.model_dump_json(
+            exclude=exclude,
+            ensure_ascii=False,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
 
     def new_reaction(self) -> Reaction:
         """生成下轮的接收池"""
@@ -194,7 +208,7 @@ class ConversationMeta(BaseModel, WithAdditional):
 _Logos = str
 
 
-class ArticulateContext(BaseModel, WithAdditional):
+class ModelContext(BaseModel, WithAdditional):
     """
     为给大模型使用设计的数据结构.
     这个数据结构考虑可以存储, 方便调试还原每一个 AI 思考的关键帧.
@@ -317,11 +331,13 @@ class Conversation(ABC):
         pass
 
     @abstractmethod
-    def save(self) -> asyncio.Future[ConversationMeta]:
+    def save(self, compact: bool | None = None) -> asyncio.Future[ConversationMeta]:
         """
-        保存当前 conversation, 可以不阻塞当前流程. 返回更新后的 meta 信息. 可能实际上变更了 id.
+        保存当前 conversation.
+        可以不阻塞当前流程. 返回更新后的 meta 信息. 可能实际上变更了 id.
         更新逻辑实际上会排队. 此外, Conversation 之所以是一个抽象类, 就是考虑内部实际上实现了 conversation policy.
-        更新完毕后, Conversation 抽象内容物可能会变化.
+        更新完毕后, Conversation 抽象内容物可能会变化. 具体的 Policy 由 Conversation 实现决定.
+        :param compact: 为 None 表示 auto compact. 为 True 表示必须 Compact.
         """
         pass
 

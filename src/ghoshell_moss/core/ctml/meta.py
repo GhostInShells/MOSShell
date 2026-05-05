@@ -17,6 +17,8 @@ def get_moss_ctml_meta_instruction(version: str = CTML_VERSION) -> str:
         return __instructions[version]
 
     path = Path(__file__).parent.joinpath(version_file)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
     text = path.read_text(encoding="utf-8")
     # 总共也不会有多少个版本, 直接放字典了. 有可能变多时, 再用 cache 吧.
     __instructions[version] = text

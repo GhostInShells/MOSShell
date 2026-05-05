@@ -18,9 +18,6 @@ def search_primitives_from_package(
 
     # 递归扫描
     for manifest in scan_package(package_import_path, max_depth=2):
-        if manifest.is_package:
-            continue
-
         # 遍历模块内的所有成员
         for name, obj in manifest.module.__dict__.items():
             # 过滤掉私有成员和不符合 ConfigType 的对象
@@ -29,6 +26,6 @@ def search_primitives_from_package(
 
             # 这里的逻辑：我们认为在 manifest 包下定义的变量名即为“发现”
             # 以 attr name 作为唯一键
-            found[name] = obj
+            found[obj.name()] = obj
 
     return found

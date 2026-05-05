@@ -19,7 +19,7 @@ __all__ = [
     "MessageType",
     "Builder",
     "MutableChannel",
-    "new_channel"
+    "new_channel", "new_command",
 ]
 
 """

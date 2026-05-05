@@ -1,7 +1,7 @@
 [project]
 name = "ghoshell-moss"
-version = "0.1.0-alpha"
-description = "LLM-oriented operating system shell, providing interpreter for llm to control everything"
+version = "0.1.0-beta"
+description = "LLM-oriented operating system with streaming interpreting shell, and Intelligent Ghost inside it"
 authors = [{ name = "thirdgerb" }, { name = "17wang" }]
 license = { text = "Apache License 2.0" }
 readme = "README.md"
@@ -50,6 +50,7 @@ audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 host = [
     "circus>=0.19.0",
     "eclipse-zenoh>=1.8.0",
+    "pydantic-ai>=1.90.0",
     "uv>=0.11.8",
     "uvloop>=0.22.1",
 ]

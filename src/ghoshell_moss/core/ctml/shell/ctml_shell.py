@@ -32,7 +32,7 @@ from ghoshell_moss.core.concepts.errors import PausedError
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.meta import get_moss_ctml_meta_instruction, CTML_VERSION
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
-from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan
+from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, default_primitive_map
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, make_content_command_from_speech
@@ -47,23 +47,34 @@ class CTMLShell(MOSShell[PrimeChannel]):
             *,
             name: str = "MOSShell",
             description: Optional[str] = None,
-            container: IoCContainer | None = None,
+            parent_container: IoCContainer | None = None,
             main_channel: PrimeChannel | None = None,
             speech: Optional[Speech] = None,
             logger: LoggerItf | None = None,
             experimental: bool = True,
-            primitives: list[str] | None = None,
+            primitives: list[str | Command] | None = None,
             meta_instruction: str | None = None,
             refresh_moss_static: bool = False,
     ):
         self._name = name
         self._desc = description
 
-        self._container = Container(name=name, parent=container)
+        self._container = Container(name=name, parent=parent_container)
         self._container.set(MOSShell, self)
         # register primitives
-        primitives = primitives or []
-        self._main_channel = main_channel or create_ctml_main_chan(experimental=experimental, *primitives)
+        self._main_channel = main_channel or create_ctml_main_chan(
+            experimental=experimental,
+            with_default_primitives=primitives is None,
+        )
+        if primitives:
+            for primitive_item in primitives:
+                if isinstance(primitive_item, Command):
+                    self._main_channel.build.add_command(primitive_item)
+                elif isinstance(primitive_item, str):
+                    primitive = default_primitive_map.get(primitive_item)
+                    if primitive is None:
+                        raise ValueError(f"Unknown primitive {primitive_item}")
+                    self._main_channel.build.add_command(primitive)
 
         self._speech: Speech = speech
         self._ctml_meta_instruction = meta_instruction or get_moss_ctml_meta_instruction(CTML_VERSION)
@@ -503,23 +514,25 @@ class CTMLShell(MOSShell[PrimeChannel]):
 def new_ctml_shell(
         name: str = "shell",
         description: Optional[str] = None,
-        container: IoCContainer | None = None,
+        parent_container: IoCContainer | None = None,
         main_channel: Channel | None = None,
         speech: Optional[Speech] = None,
         logger: Optional[LoggerItf] = None,
         experimental: bool = True,
-        primitives: list[str] | None = None,
+        meta_instruction: str | None = None,
+        primitives: list[str | Command] | None = None,
 ) -> CTMLShell:
     """语法糖, 好像不甜"""
     return CTMLShell(
         name=name,
         description=description,
-        container=container,
+        parent_container=parent_container,
         main_channel=main_channel,
         speech=speech,
         logger=logger,
         experimental=experimental,
         primitives=primitives,
+        meta_instruction=meta_instruction
     )
 
 

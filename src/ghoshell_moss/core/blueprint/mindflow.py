@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, AwareDatetime, ValidationError
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import ObserveError
 from ghoshell_common.helpers import uuid
+from ghoshell_container import IoCContainer
 from PIL.Image import Image
 from .conversation import Reaction, Moment
 import datetime
@@ -45,7 +46,7 @@ __all__ = [
     'Flag',
     'Logos', 'Moment', 'Reaction',
     'Action', 'Articulator',
-    'Nucleus', 'Mindflow', 'Attention',
+    'Nucleus', 'NucleusMeta', 'Mindflow', 'Attention',
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
     'PreemptedElseSuppress', 'BufferImpulse',
@@ -481,6 +482,39 @@ class Nucleus(ABC):
         """
         退出生命周期.
         """
+        pass
+
+
+class NucleusMeta(ABC):
+    """
+    Nucleus 的元配置
+    可以实例化后, 在运行时构建出 Nucleus 实例.
+    用这种方法可以在运行环境未启动之前, 就反应出协议.
+    """
+
+    @abstractmethod
+    def name(self) -> str:
+        """
+        用于区分不同的 Nucleus 单元.
+        """
+        pass
+
+    @abstractmethod
+    def description(self) -> str:
+        """
+        所有的 Nucleus 都应该是自解释的, 而且这个自解释要足够高效, 能一句话自我描述.
+        """
+        pass
+
+    @abstractmethod
+    def signals(self) -> Iterable[SignalMeta]:
+        """
+        声明监听的信号类型.
+        """
+        pass
+
+    @abstractmethod
+    def factory(self, container: IoCContainer) -> Nucleus:
         pass
 
 

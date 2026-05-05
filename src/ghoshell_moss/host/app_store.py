@@ -4,7 +4,8 @@ import os
 import subprocess
 import shutil
 import importlib.util
-from typing import Self, Iterable, Dict, Set, Optional
+from typing import Iterable, Dict, Set, Optional
+from typing_extensions import Self
 from pathlib import Path
 
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, CommandError

@@ -42,12 +42,15 @@ default_primitive_map['interrupt'] = interrupt_command
 def create_ctml_main_chan(
         experimental: bool = True,
         *primitives: str | Literal['*'],
+        with_default_primitives: bool = True,
 ) -> PrimeChannel:
     chan = CTMLMainChannel(
         name="__main__",
         description="CTML Main Channel with primitives",
         blocking=True,
     )
+    if not with_default_primitives:
+        return chan
     primitives = list(primitives)
     allow_all = len(primitives) == 0 or '*' in primitives
     if allow_all:

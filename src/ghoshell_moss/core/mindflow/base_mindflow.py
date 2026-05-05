@@ -1,5 +1,6 @@
 import time
-from typing import Self, Iterable, AsyncGenerator, AsyncIterator
+from typing import Iterable, AsyncGenerator, AsyncIterator
+from typing_extensions import Self
 
 import janus
 
