@@ -69,11 +69,13 @@ class AppInfo(BaseModel):
     环境中可发现的 app 应用.
     """
     name: str = Field(
-        description='The name of the current app',
+        description='The name of the current app'
+                    '如果用 _ 开头, 无法用通配符匹配',
         pattern=r'^[a-zA-Z0-9_]+$',
     )
     group: str = Field(
-        description='The group of the current app',
+        description="The group of the current app."
+                    "如果以 _ 开头, 无法用通配符匹配.",
         pattern=r'^[a-zA-Z0-9_]+$',
     )
     description: str = Field(
@@ -121,6 +123,10 @@ class AppInfo(BaseModel):
         return self.make_fullname(self.group, self.name)
 
     def match_fullname(self, pattern: str) -> bool:
+        if pattern.startswith('*') and self.fullname.startswith('_'):
+            return False
+        elif pattern.endswith('/*') and self.name.startswith('_'):
+            return False
         return fnmatch.fnmatchcase(self.fullname, pattern)
 
     @property

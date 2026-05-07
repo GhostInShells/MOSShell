@@ -44,7 +44,7 @@ __all__ = [
 
     # dir path
     'WORKSPACE_SOURCE_DIR',
-    'META_INSTRUCTION_FILENAME',
+    'META_CONFIG_FILENAME',
     'WORKSPACE_ENV_FILENAME',
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
 ]
@@ -58,7 +58,7 @@ from ghoshell_moss.contracts.configs import ConfigType
 # workspace 的绝对路径优先从环境变量寻找, 找不到时按目录发现机制寻找.
 # 路径发现的逻辑是: os getcwd 下, 递归搜索父级目录下, home 目录下.
 DEFAULT_WORKSPACE_DIR_NAME = '.moss_ws'
-META_INSTRUCTION_FILENAME = 'MOSS.md'
+META_CONFIG_FILENAME = 'MOSS.md'
 
 # env 文件名. workspace 启动时会从其目录下读取环境变量文件 (by loadenv)
 WORKSPACE_ENV_FILENAME = '.env'
@@ -66,6 +66,7 @@ WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 
 # 源码预期所在的目录.
 WORKSPACE_SOURCE_DIR = 'src'
+SOURCE_MODES_PACKAGE = 'MOSS.modes'
 
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
@@ -112,6 +113,13 @@ class MOSSMeta(BaseModel):
         default=CTML_VERSION,
         description="当前 MOSS 默认使用的提示词版本."
     )
+    default_mode: str = Field(
+        default=DEFAULT_MOSS_MODE,
+        description="启动时默认的模式",
+    )
+    default_session_scope: str = Field(
+        default=DEFAULT_SESSION_SCOPE,
+    )
     system_prompt: str = Field(
         default="",
         description="补充到 CTML meta instruction 后面的内容. version 为空, 这里应该包含完整的 meta instruction"
@@ -148,18 +156,24 @@ class Environment:
         self._workspace_path = workspace_path
         self._env_file = self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
-        self._meta_instruction_path = self._workspace_path.joinpath(META_INSTRUCTION_FILENAME)
-        if self._meta_instruction_path.is_file() and self._meta_instruction_path.exists():
-            self._meta_config = MOSSMeta.from_file(self._meta_instruction_path)
+        self._meta_config_path = self._workspace_path.joinpath(META_CONFIG_FILENAME)
+        if self._meta_config_path.is_file() and self._meta_config_path.exists():
+            self._meta_config = MOSSMeta.from_file(self._meta_config_path)
         else:
             self._meta_config = MOSSMeta()
 
         if mode is None:
-            mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
+            mode = os.environ.get(
+                ENV_MOSS_MODE_KEY,
+                self._meta_config.default_mode or DEFAULT_MOSS_MODE,
+            )
         self._moss_mode = mode
 
         # 永远要有正确的 session scope 和 session id.
-        self._session_scope = session_scope or os.environ.get(ENV_SESSION_SCOPE_KEY, DEFAULT_SESSION_SCOPE)
+        self._session_scope = session_scope or os.environ.get(
+            ENV_SESSION_SCOPE_KEY,
+            self._meta_config.default_session_scope or DEFAULT_SESSION_SCOPE
+        )
         self._session_id: str = session_id or os.environ.get(ENV_SESSION_ID_KEY, '')
         if not self._session_id:
             self._session_id = uuid()
@@ -295,7 +309,7 @@ class Environment:
         # 从父级目录中查找.
         search_dir = cwd
         while search_dir != user_home:
-            if search_dir.joinpath(META_INSTRUCTION_FILENAME).exists():
+            if search_dir.joinpath(META_CONFIG_FILENAME).exists():
                 # 返回找得到 MOSS.md 文件的目录作为 workspace 根目录.
                 # 对于将 workspace 作为 project 使用的场景, 这样比较方便.
                 return search_dir.absolute()
@@ -354,6 +368,12 @@ class Environment:
         """
         return self._workspace_path
 
+    def modes_dir(self) -> Path:
+        path = self.source_dir
+        for module_name in DEFAULT_MOSS_MODE.split('.'):
+            path = path.joinpath(module_name)
+        return path.absolute()
+
     @property
     def env_file(self) -> Path:
         """
@@ -382,7 +402,7 @@ class Environment:
 
     @property
     def meta_instruction_file(self) -> Path:
-        return self._meta_instruction_path.absolute()
+        return self._meta_config_path.absolute()
 
     @property
     def meta_config(self) -> MOSSMeta:

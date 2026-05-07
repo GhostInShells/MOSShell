@@ -23,6 +23,12 @@ def list_apps(
         exclude: List[str] = typer.Option(None, "--exclude", "-e", help="Exclude patterns"),
         json_out: bool = typer.Option(False, "--json", help="Output raw JSON for AI consumption."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
+        mode: str = typer.Option(
+            None,
+            "-m",
+            "--mode",
+            help="moss mode name",
+        )
 ):
     """
     List all discovered apps in the MOSS environment.
@@ -32,7 +38,7 @@ def list_apps(
         console.print(
             "[yellow]Warning: Some patterns match local files. Did you forget to use quotes? (e.g., '*/' )[/yellow]")
 
-    host = Host()
+    host = Host(mode=mode)
     if verbose:
         print_host_mode_info(host)
     # 刷新并获取所有 apps
@@ -61,11 +67,17 @@ def show_app(
         fullname: str = typer.Argument(..., help="The full address of the app (e.g., group/name)"),
         json_out: bool = typer.Option(False, "--json", help="Output raw JSON."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
+        mode: str = typer.Option(
+            None,
+            "-m",
+            "--mode",
+            help="moss mode name",
+        )
 ):
     """
     Show detailed information of a specific app by its address.
     """
-    host = Host()
+    host = Host(mode=mode)
     if verbose:
         print_host_mode_info(host)
 

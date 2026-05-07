@@ -25,7 +25,7 @@ from typing import Optional
 
 from ghoshell_moss.host.abcd.environment import (
     Environment,
-    META_INSTRUCTION_FILENAME,
+    META_CONFIG_FILENAME,
 )
 
 workspace_app = typer.Typer(
@@ -144,7 +144,7 @@ def init_workspace(
 
     # 2. 存在性检查与二次确认
     if target_path.exists():
-        is_reinit = (target_path / META_INSTRUCTION_FILENAME).exists()
+        is_reinit = (target_path / META_CONFIG_FILENAME).exists()
         msg = (
             f"Directory '{target_path.name}' already exists. [bold red]Force re-initialize?[/bold red]"
             if is_reinit else

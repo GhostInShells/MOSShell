@@ -79,6 +79,13 @@ class Host(MossHost):
             _host_instance = Host()
         return _host_instance
 
+    def reboot(self) -> Self:
+        global _host_instance
+        _host_instance = None
+        new_host = Host(env=self._env)
+        _host_instance = new_host
+        return new_host
+
     @property
     def env(self) -> Environment:
         return self._env
@@ -97,13 +104,13 @@ class Host(MossHost):
         """
         return self._env_modes
 
-    def new_mode(self, name: str, apps: list[str], bring_up_apps: list[str], description: str = "") -> None:
+    def new_mode(self, name: str, apps: list[str], bringup_apps: list[str], description: str = "") -> None:
         """
         create new mode follow convertion
         """
         if name in self._env_modes:
             raise NameError(f"Mode {name} already exists")
-        new_mode(name=name, apps=apps, bring_up_apps=bring_up_apps, description=description)
+        new_mode(name=name, apps=apps, bring_up_apps=bringup_apps, description=description)
 
     def apps(self) -> HostAppStore:
         return self._app_store

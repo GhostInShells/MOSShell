@@ -24,8 +24,8 @@ def list_modes():
     table_data = []
     for name, m in modes.items():
         # 处理显示逻辑，如果是 * 则显示 ALL
-        apps_str = ", ".join(m.apps) if m.apps != ["*"] else "[dim]ALL[/dim]"
-        up_str = ", ".join(m.bringup) if m.bringup else "[dim]None[/dim]"
+        apps_str = "\n".join(m.apps) if m.apps != ["*"] else "[dim]ALL PUBLIC[/dim]"
+        up_str = "\n".join(m.bringup_apps) if m.bringup_apps else "[dim]None[/dim]"
 
         table_data.append([
             f"[green]{name}[/green]",
@@ -92,7 +92,7 @@ def create_mode(
         host.new_mode(
             name=name,
             apps=apps,
-            bring_up_apps=up,
+            bringup_apps=up,
             description=description
         )
         console.print(f"[green]Successfully created mode '{name}'.[/green]")
