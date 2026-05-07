@@ -1,5 +1,5 @@
 ---
 apps:
-  - '_system_test/*'
+  - '_system_tests/*'
   - '*/*'
 ---

@@ -156,7 +156,7 @@ class MossMode(BaseModel):
     )
 
     apps: list[str] = Field(
-        default_factory=lambda: ['*'],
+        default_factory=lambda: ['*/*'],
         description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
     )
 

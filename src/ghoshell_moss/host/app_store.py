@@ -56,7 +56,7 @@ class HostAppStore(AppStore):
         # 状态维护
         self._found_apps: Dict[_AppFullname, AppInfo] | None = None
         self._managed_apps_with_fullname: Set[_AppFullname] = set()
-        self._include = include
+        self._include = include or ['*/*']
         self._exclude = exclude or []
 
         # 锁与 Circus 外部进程
@@ -142,8 +142,8 @@ class HostAppStore(AppStore):
 
     def found_apps(self, refresh: bool = False) -> dict[_AppFullname, AppInfo]:
         if self._found_apps is None or refresh:
-            discovered = AppInfo.from_apps_directory(self.app_store_directory)
-            founds = self.match_apps(discovered, self._include, self._exclude)
+            discovered = list(AppInfo.from_apps_directory(self.app_store_directory))
+            founds = self.match_apps(discovered, self._include, exclude=self._exclude)
             valid_apps = {app.fullname: app for app in founds}
             self._found_apps = valid_apps
         return self._found_apps

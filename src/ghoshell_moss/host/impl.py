@@ -62,6 +62,7 @@ class Host(MossHost):
             namespace="MOSS/app_store/toolset",
             runnable=False,
             bringup=self._moss_mode.bringup_apps,
+            include=self._moss_mode.apps,
         )
         self._matrix = MatrixImpl(
             mode=self._moss_mode,

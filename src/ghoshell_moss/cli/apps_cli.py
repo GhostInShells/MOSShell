@@ -42,10 +42,15 @@ def list_apps(
     if verbose:
         print_host_mode_info(host)
     # 刷新并获取所有 apps
+    apps = host.apps()
     all_apps = list(host.apps().list_apps(refresh=True))
 
     # 调用新的过滤逻辑
-    results = list(host.apps().match_apps(all_apps, include, exclude))
+    if include:
+        all_apps = list(apps.match_apps(all_apps, include=include))
+    if exclude:
+        all_apps = list(apps.match_apps(all_apps, exclude=exclude))
+    results = all_apps
 
     if not results:
         console.print(f"[yellow]No apps found matching: '{include}'[/yellow]")

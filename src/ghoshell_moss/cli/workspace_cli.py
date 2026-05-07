@@ -15,7 +15,6 @@
 import os
 import stat
 import shutil
-from rich.console import Console
 from rich.table import Table
 
 import typer
