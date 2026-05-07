@@ -1,6 +1,6 @@
 from typing import Callable
 
-from ghoshell_moss import Message
+from ghoshell_moss import Message, TopicService
 from ghoshell_moss.contracts import Storage, LoggerItf
 from ghoshell_moss.core.blueprint.session import Session, Signal, Role, OutputBuffer, OutputItem
 from threading import Event
@@ -71,6 +71,7 @@ class MossSessionWithZenoh(Session):
             session_storage: Storage,
             logger: LoggerItf,
             zenoh_session: zenoh.Session,
+            topic_service: TopicService,
             session_id: str | None = None,
     ):
         self._session_scope = session_scope
@@ -88,6 +89,7 @@ class MossSessionWithZenoh(Session):
         self._logger = logger
         self._log_prefix = f'<Session cls={self.__class__} scope={session_scope} id={self.session_id}>'
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
+        self._topic_service = topic_service
 
     @property
     def session_scope(self) -> str:
@@ -101,18 +103,22 @@ class MossSessionWithZenoh(Session):
     def storage(self) -> Storage:
         return self._session_storage
 
+    @property
+    def topics(self) -> TopicService:
+        return self._topic_service
+
     def _check_running(self) -> None:
         if self._zenoh_session.is_closed():
             raise RuntimeError(f'HostSession is closed')
 
-    def input(self, signal: Signal) -> None:
+    def add_signal(self, signal: Signal) -> None:
         self._check_running()
         # todo: 未来加防蠢限频.
         # 现在有一种深刻的感觉, 不存在过度设计, 只存在过度实现.
         js = signal.to_json()
         self._zenoh_session.put(self._output_key_expr, js)
 
-    def on_input(self, callback: Callable[[Signal], None]) -> None:
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
         self._on_signal_callbacks.append(callback)
 
     def _on_zenoh_signal_input(self, sample: zenoh.Sample) -> None:

@@ -2,6 +2,7 @@ from typing import Iterable, Type
 
 from ghoshell_moss.contracts import LoggerItf, Workspace
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.host.abcd.environment import Environment
@@ -52,11 +53,13 @@ class WorkspaceSessionProvider(Provider[Session]):
             session_id = env.session_id
         session_storage_path = self._session_id_prefix + session_scope
         storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
+        topics = con.force_fetch(TopicService)
         session = MossSessionWithZenoh(
             session_scope=session_scope,
             session_storage=storage,
             logger=logger,
             zenoh_session=zenoh_session,
+            topic_service=topics,
             session_id=session_id,
         )
 

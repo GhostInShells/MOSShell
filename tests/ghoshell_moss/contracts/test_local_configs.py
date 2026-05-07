@@ -53,7 +53,7 @@ def test_config_memory_cache_consistency(config_store):
 
     third_get = config_store.get(AppConfig)
     assert third_get.name == "UpdatedName"
-    assert third_get is conf  # save 会更新缓存为当前对象
+    assert third_get == conf  # save 会更新缓存为当前对象
 
 
 def test_get_or_create(config_store):
@@ -121,3 +121,12 @@ def test_invalidate_cache(config_store):
     # 全局清理
     conf = config_store.get(AppConfig)
     assert conf.name == "Original"
+
+
+def test_config_with_env_var(config_store):
+    import os
+    os.environ["TEST_CONFIG_TYPE_WITH_ENV_KEY"] = "hello"
+    conf = AppConfig(name="$TEST_CONFIG_TYPE_WITH_ENV_KEY")
+    config_store.save(conf)
+    conf = config_store.get(AppConfig)
+    assert conf.name == 'hello'

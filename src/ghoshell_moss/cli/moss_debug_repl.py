@@ -1,6 +1,6 @@
 import click
 from ghoshell_moss.host import Host, Environment
-from ghoshell_moss.host.tui_entries.toolset_tui import ToolsetTUI
+from ghoshell_moss.host.tui_entries.moss_runtime_ui import MossRuntimeTUI
 
 
 @click.command()
@@ -27,7 +27,7 @@ def moss_debug_repl_main(mode: str, scope: str):
 
     # 启动 Host 与 TUI
     host = Host(env=env)
-    tui = ToolsetTUI(host=host)
+    tui = MossRuntimeTUI(host=host)
     tui.run()
 
 

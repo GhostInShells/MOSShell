@@ -1,12 +1,13 @@
 import yaml
 from abc import ABC, abstractmethod
-from typing import TypeVar, Type, Optional, Union, Any
+from typing import TypeVar, Type, Optional, Union, Any, ClassVar
 from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import generate_import_path
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_container import IoCContainer, Provider
 from .workspace import Storage, Workspace
+import os
 
 __all__ = [
     'ConfigType', 'ConfigStore', 'ConfigSchema',
@@ -34,6 +35,7 @@ class ConfigType(BaseModel, ABC):
     从 workspace 中获取配置文件, 基于 Pydantic Model 建模.
     实际存储则考虑由 ConfigStore 决定.
     """
+    RESOLVE_ENV_KEY: ClassVar[bool] = True
 
     @classmethod
     @abstractmethod
@@ -47,6 +49,13 @@ class ConfigType(BaseModel, ABC):
         from ghoshell_common.helpers import yaml_pretty_dump
         data = self.model_dump(exclude_none=True)
         return yaml_pretty_dump(data)
+
+    def resolve(self) -> Self:
+        if not self.RESOLVE_ENV_KEY:
+            return self
+        data = self.model_dump()
+        data = _resolve_config_data_from_env(data)
+        return self.model_validate(data, strict=False)
 
     @classmethod
     def from_yaml(cls, data: str) -> Self:
@@ -127,6 +136,14 @@ class ConfigStore(ABC):
         """
         pass
 
+    @abstractmethod
+    def invalidate(self, conf_type_or_name: Optional[Type[ConfigType] | str] = None) -> None:
+        """
+        手动清理缓存的入口。
+        如果传入具体类型则清理该类型，不传则清空全部。
+        """
+        pass
+
 
 _ConfName = str
 
@@ -136,10 +153,11 @@ class LocalConfigStore(ConfigStore, ABC):
     基于 Storage 的配置仓库实现，增加了简单的内存缓存。
     """
 
-    def __init__(self, storage: Storage):
+    def __init__(self, storage: Storage, environ: dict[str, str] | None = None) -> None:
         self._storage = storage
         # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
         self._cache: dict[_ConfName, ConfigType] = {}
+        self._environ = environ or os.environ.copy()
 
     def get_config_path(self, config_name: str) -> str:
         filename = self._make_config_filename(config_name)
@@ -164,31 +182,36 @@ class LocalConfigStore(ConfigStore, ABC):
         path = self._to_config_filename(conf_type)
         content = self._storage.get(path)
         data = self._unmarshal(content)
-
         # 3. 实例化并存入缓存
-        instance = conf_type.model_validate(data)
-        self._cache[conf_name] = instance
-        return instance
+        instance = conf_type(**data)
+        # resolve all environment key
+        resolved = instance.resolve()
+        self._cache[conf_name] = resolved
+        return resolved
 
     def set_config(self, conf: ConfigType, override: bool = False) -> None:
         conf_name = conf.conf_name()
-        self._cache[conf_name] = conf
         if override:
             self.save(conf)
+        else:
+            self._cache[conf_name] = conf.resolve()
 
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
+        conf_name = conf_type.conf_name()
         path = self._to_config_filename(conf_type)
 
-        if not self._storage.exists(path):
+        if conf_name in self._cache:
+            return self._cache[conf_name]
+
+        elif not self._storage.exists(path):
             # 不存在则保存当前传入的默认对象
-            self.save(conf)
-            return conf
+            return self._save(conf)
 
         # 存在则执行标准 get (会处理缓存逻辑)
         return self.get(conf_type)
 
-    def save(self, conf: ConfigType) -> None:
+    def _save(self, conf: ConfigType) -> ConfigType:
         """保存配置并同步更新缓存"""
         conf_type = type(conf)
         data = conf.model_dump(exclude_none=True)
@@ -199,18 +222,32 @@ class LocalConfigStore(ConfigStore, ABC):
 
         # 同步更新内存，确保后续 get 拿到的是刚保存的这个实例
         conf_name = conf_type.conf_name()
-        self._cache[conf_name] = conf
+        # 缓存的进行 resolve, 但保存的不做 resolve.
+        resolved = conf.resolve()
+        self._cache[conf_name] = resolved
+        return resolved
 
-    def invalidate(self, conf_type: Optional[Type[ConfigType]] = None) -> None:
+    def save(self, conf: ConfigType) -> None:
+        self._save(conf)
+
+    def invalidate(self, conf_type_or_name: Optional[Type[ConfigType] | str] = None) -> None:
         """
         手动清理缓存的入口。
         如果传入具体类型则清理该类型，不传则清空全部。
         """
-        if conf_type:
-            conf_name = conf_type.conf_name()
-            self._cache.pop(conf_name, None)
-        else:
+        if conf_type_or_name is None:
             self._cache.clear()
+            return
+        elif isinstance(conf_type_or_name, str):
+            conf_name = conf_type_or_name
+        elif isinstance(conf_type_or_name, type) and issubclass(conf_type_or_name, ConfigType):
+            conf_name = conf_type_or_name.conf_name()
+        else:
+            raise TypeError(f"{conf_type_or_name} is not a ConfigType")
+        try:
+            self._cache.pop(conf_name, None)
+        except KeyError:
+            pass
 
     @abstractmethod
     def _unmarshal(self, data: bytes) -> dict:
@@ -219,6 +256,21 @@ class LocalConfigStore(ConfigStore, ABC):
     @abstractmethod
     def _marshal(self, data: dict, conf_type: type[ConfigType]) -> bytes:
         pass
+
+
+def _resolve_config_data_from_env(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    recursively replace environment variables with their respective values.
+    """
+    resolved_data = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            resolved_data[key] = _resolve_config_data_from_env(value)
+        elif isinstance(value, str) and value.startswith('$'):
+            resolved_data[key] = os.environ.get(value[1:], value)
+        else:
+            resolved_data[key] = value
+    return resolved_data
 
 
 class YamlConfigStore(LocalConfigStore):

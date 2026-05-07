@@ -17,11 +17,18 @@ class AppStoreREPL:
         result = []
         for app_info in app_infos:
             result.append(dict(
-                name=app_info.name,
-                group=app_info.group,
+                fullname=app_info.fullname,
                 description=app_info.description,
                 state=app_info.state,
                 error=app_info.error,
                 workspace_dir=app_info.work_directory,
+                watcher=app_info.watcher.model_dump(),
             ))
         return result
+
+    async def start_app(self, fullname: str, argument: str = '') -> str:
+        """
+        start app by fullname.
+        if argument is empty, use default argument.
+        """
+        return await self._apps.start_app(fullname, argument)

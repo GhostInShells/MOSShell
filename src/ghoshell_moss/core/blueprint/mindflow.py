@@ -487,7 +487,9 @@ class Nucleus(ABC):
 
 class NucleusMeta(ABC):
     """
-    Nucleus 的元配置
+    Nucleus 的元配置. 是可选的实现.
+
+    如果使用它来生成 Nucleus 实例, 则可提前得到自解释协议.
     可以实例化后, 在运行时构建出 Nucleus 实例.
     用这种方法可以在运行环境未启动之前, 就反应出协议.
     """

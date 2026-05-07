@@ -1,3 +1,4 @@
+from typing import AsyncIterable
 from ghoshell_container import IoCContainer, Contracts
 from typing_extensions import Self
 from abc import ABC, abstractmethod
@@ -154,7 +155,7 @@ class Ghost(ABC):
         return None
 
     @abstractmethod
-    def articulate(self, articulator: Articulator) -> Logos:
+    def articulate(self, articulator: Articulator) -> AsyncIterable[str]:
         """
         articulate the logos from context
         """

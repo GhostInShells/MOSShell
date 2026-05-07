@@ -5,7 +5,7 @@ from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
-from ghoshell_moss.host.abcd import MossHost, MossAsToolSet
+from ghoshell_moss.host.abcd import MossHost, MossRuntime
 import click
 
 
@@ -32,7 +32,7 @@ class FastMCPMessageAdapter:
 class ServerState:
     def __init__(self):
         self.host: MossHost | None = None
-        self.toolset: MossAsToolSet | None = None
+        self.toolset: MossRuntime | None = None
 
 
 def bootstrap(state: ServerState, mcp: FastMCP):
@@ -103,7 +103,7 @@ def main_entry(
 
     async def run_server():
         # 启动 MOSS 运行时环境
-        async with moss_host.run_as_toolset() as toolset:
+        async with moss_host.run() as toolset:
             state.host = moss_host
             state.toolset = toolset
             moss_host.matrix().logger.info(

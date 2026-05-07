@@ -7,7 +7,7 @@ from typing_extensions import Self
 from prompt_toolkit.key_binding import KeyPressEvent, KeyBindings
 
 from ghoshell_moss.host.abcd.tui import TUIState
-from ghoshell_moss.host.tui.repl_registrar import REPLRegistrar
+from ghoshell_moss.host.repl.repl_registrar import REPLRegistrar
 from rich.traceback import Traceback
 import asyncio
 import contextlib
@@ -46,9 +46,16 @@ class REPLState(TUIState, ABC):
 
     def on_switch(self, alive: bool) -> None:
         if alive:
-            self._is_alive_event.set()
-        else:
+            if not self._is_alive_event.is_set():
+                self.output_on_switch(True)
+                self._is_alive_event.set()
+        elif self._is_alive_event.is_set():
             self._is_alive_event.clear()
+            self.output_on_switch(False)
+
+    def output_on_switch(self, enter_or_leave: bool) -> None:
+        """重写这个函数实现状态进出的提示."""
+        pass
 
     def on_interrupt(self, event: KeyPressEvent) -> None:
         if self._event_loop and self._operation_task and not self._operation_task.done():

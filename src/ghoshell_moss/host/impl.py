@@ -1,6 +1,5 @@
 from typing_extensions import Self
 
-from ghoshell_moss.host.abcd import MossAsToolSet
 from ghoshell_moss.host.abcd.host_design import (
     MossHost, MossMode, MossRuntime,
 )
@@ -13,7 +12,7 @@ from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.matrix import MatrixImpl
-from ghoshell_moss.host.toolset import MossAsToolSetImpl
+from ghoshell_moss.host.runtime import MossRuntimeImpl
 import logging
 
 __all__ = ['Host']
@@ -112,8 +111,8 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def run_as_toolset(self) -> MossAsToolSet:
-        return MossAsToolSetImpl(
+    def run(self) -> MossRuntime:
+        return MossRuntimeImpl(
             env=self.env,
             workspace=self._workspace,
             mode=self._moss_mode,

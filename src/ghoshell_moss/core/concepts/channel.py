@@ -83,6 +83,7 @@ class ChannelMeta(BaseModel):
     # about instructions / context messages
     # ModelContext is built by many messages blocks, we believe the blocks should be :
     #  - instructions before conversation
+    #  - memories
     #  - conversation messages
     #  - dynamic context message before the inputs
     #  - inputs messages
@@ -94,6 +95,7 @@ class ChannelMeta(BaseModel):
 
     instruction: str = Field(default='', description="the channel instruction messages")
     context: list[Message] = Field(default_factory=list, description="The channel context messages")
+    memory: list[Message] = Field(default_factory=list, description="The channel memory messages")
 
     dynamic: bool = Field(default=True, description="Whether the channel is dynamic, need refresh each time")
     virtual: bool = Field(default=False, description="Whether the channel is virtual")
@@ -303,7 +305,7 @@ class ChannelRuntime(ABC):
     使用 Runtime 抽象可以屏蔽 Channel 的具体实现, 同样可以用来兼容支持远程调用.
 
     >>> async def example(chan: Channel, con: IoCContainer):
-    >>>     runtime = chan.factory(con)
+    >>>     runtime = chan.bootstrap(con)
     >>>     async with runtime:
     >>>         ...
 

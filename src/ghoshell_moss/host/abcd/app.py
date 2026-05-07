@@ -21,8 +21,6 @@ __all__ = [
     'AppStore',
 ]
 
-from ghoshell_moss.core.concepts.channel import ChannelName
-
 
 class AppWatcher(BaseModel):
     """

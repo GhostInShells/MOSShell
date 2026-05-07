@@ -19,13 +19,14 @@ import frontmatter
 from pathlib import Path
 
 __all__ = [
-    'MossAsToolSet', 'MossHost', 'MossRuntime', 'MossMode',
+    'MossRuntime', 'MossHost', 'MossMode',
 ]
 
 
-class MossAsToolSet(ABC):
+class MossRuntime(ABC):
     """
-    将 MOSS runtime 包装成 tools, 希望可以被作为工具提供给别的框架.
+    通过 Host 环境发现构建的 MOSS Runtime.
+    仍然提供 Shell 的整体使用, 同时基于环境注册运行.
     不过需要目标框架自行兼容输出协议.
     """
 
@@ -127,159 +128,6 @@ class MossAsToolSet(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """运行结束"""
-        pass
-
-
-class MossRuntime(ABC):
-    """
-    MOSS 架构的主运行时, 环境中的单例.
-    """
-
-    @property
-    @abstractmethod
-    def mode(self) -> str:
-        """
-        当前所处的模式.
-        """
-        pass
-
-    @abstractmethod
-    def is_running(self) -> bool:
-        """
-        是否在运行中.
-        """
-        pass
-
-    @property
-    def logger(self) -> LoggerItf:
-        return self.matrix.logger
-
-    @abstractmethod
-    def wait_close_sync(self, timeout: float | None = None) -> bool:
-        """
-        同步阻塞.
-        """
-        pass
-
-    @abstractmethod
-    async def wait_close(self) -> None:
-        """
-        异步阻塞到接受到停止讯号或者系统已经退出.
-        """
-        pass
-
-    @abstractmethod
-    def close(self) -> None:
-        """
-        发送关闭信号, 中断 Runtime.
-        """
-        pass
-
-    @abstractmethod
-    def pause(self, toggle: bool = True) -> None:
-        """
-        pause the runtime immediately
-        产生的效果: 停止所有运行中逻辑, 中断循环, clear & pause shell, 除非 unpause 否则不接受新命令.
-        """
-        pass
-
-    @property
-    def container(self) -> IoCContainer:
-        """
-        运行时 ioc 容器.
-        Runtime 相关所有单例都在里面.
-        """
-        return self.matrix.container
-
-    def contracts(self) -> Iterable[type]:
-        """
-        返回 IoC 容器里绑定的所有对象.
-        """
-        return self.matrix.container.contracts(recursively=True)
-
-    @property
-    @abstractmethod
-    def apps(self) -> AppStore:
-        """
-        管理 moss 架构下的 app 体系.
-        可以启动/关闭 app.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def shell(self) -> MOSShell:
-        """
-        全双工运行时.
-        可以在它没启动时做一些操作.
-        运行时可以直接通过它的 API 去控制 clear / pause 等操作.
-        """
-        pass
-
-    @property
-    def main_channel(self) -> PrimeChannel:
-        """
-        shell 的 main channel, 可以
-        """
-        return self.shell.main_channel
-
-    @property
-    @abstractmethod
-    def matrix(self) -> Matrix:
-        """
-        MOSS 架构下, 多节点并行运行时的交互总线.
-        """
-        pass
-
-    @property
-    def session(self) -> Session:
-        """
-        runtime 当前所处的 Session.
-        可以管理 input 和 output.
-
-        这个函数缩短路径并声明它的存在.
-        """
-        return self.matrix.session
-
-    def add_input(self, *messages: Message, priority: int = 0) -> None:
-        """
-        立刻添加新的输入到 Runtime 中.
-        这些输入会发送给 on_output, 同时判断是否中断正在运行的 loop, 并且新起一个消费 inputs 的 loop.
-        如果不能中断的话, 则会被 buffer 或丢弃.
-        """
-        pass
-
-    def output(self, *items: OutputItem) -> None:
-        """
-        输出 output item. 由于这是 moss 的 output, 所以里面其实包含 input.
-        """
-        return self.matrix.session.output(*items)
-
-    def on_output(self, callback: Callable[[OutputItem], None]):
-        """
-        接受 output item 并考虑渲染.
-        """
-        pass
-
-    def run_until_closed(self) -> None:
-        import uvloop
-        asyncio.set_event_loop(uvloop.new_event_loop())
-
-        async def _main() -> None:
-            async with self:
-                await self.wait_close()
-
-        try:
-            asyncio.run(_main())
-        except KeyboardInterrupt:
-            pass
-
-    @abstractmethod
-    async def __aenter__(self) -> Self:
-        pass
-
-    @abstractmethod
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
 
 
@@ -450,7 +298,7 @@ class MossHost(ABC):
         pass
 
     @abstractmethod
-    def run_as_toolset(self) -> MossAsToolSet:
+    def run(self) -> MossRuntime:
         """
         run as toolset.
         """

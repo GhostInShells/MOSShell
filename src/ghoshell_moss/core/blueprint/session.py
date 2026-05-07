@@ -1,6 +1,7 @@
 from typing import Callable
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
+from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
@@ -13,7 +14,9 @@ Role = Literal['system', 'logos', 'log', 'error', 'task']
 
 class OutputItem(BaseModel):
     """
-    可以用于输出的数据结构.
+    可以用于输出的原子化数据结构.
+
+    是整个系统的对外输出.
     以 Message 为基础.
     """
     role: str | Role = Field(
@@ -76,7 +79,13 @@ class OutputBuffer(ABC):
 
 class Session(ABC):
     """
-    MOSS 运行时当前的连接状态.
+    MOSS 运行时当前的通讯总线.
+
+    todo:
+        1. 实现一个 stream[bytes] 发送不同 key 的首包/间包/尾包
+        2. 实现系统级的 logos 流监听?
+        3. 实现共享的 parameters
+        4. 实现可注册的基于 key 的函数.
     """
 
     @property
@@ -96,13 +105,13 @@ class Session(ABC):
         pass
 
     @abstractmethod
-    def input(self, signal: Signal) -> None:
+    def add_signal(self, signal: Signal) -> None:
         """
-        input a signal to the MOSS session.
+        input a mindflow signal to the Session
         """
         pass
 
-    def add_input(
+    def add_input_signal(
             self,
             *values: str | Image | Message,
             description: str = '',
@@ -111,7 +120,7 @@ class Session(ABC):
             stale_timeout: float = 0,
     ) -> None:
         """
-        easy way to add a signal to the MOSS session.
+        easy way to add a default input signal to the Mindflow
         """
         meta = meta or InputSignal()
         signal = meta.to_signal(
@@ -120,10 +129,10 @@ class Session(ABC):
             priority=priority,
             stale_timeout=stale_timeout,
         )
-        self.input(signal)
+        self.add_signal(signal)
 
     @abstractmethod
-    def on_input(self, callback: Callable[[Signal], None]) -> None:
+    def on_signal(self, callback: Callable[[Signal], None]) -> None:
         """
         listen to the MOSS input signal
         """
@@ -131,9 +140,19 @@ class Session(ABC):
 
     @property
     @abstractmethod
+    def topics(self) -> TopicService:
+        """
+        基于 Topic 概念的服务.
+        """
+        pass
+
+
+    @property
+    @abstractmethod
     def storage(self) -> Storage:
         """
         session 专属的 storage.
+        需要的话可以将文件作为通讯方式.
         """
         pass
 

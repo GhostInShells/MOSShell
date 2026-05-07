@@ -35,7 +35,7 @@ async def matrix_smoke_test(matrix: Matrix):
 
     # 3. 验证 Topic Service (生产者/消费者并发验证)
     print("\n--- 验证 Topic Service (Zenoh) ---")
-    topics = matrix.topics
+    topics = matrix.session.topics
 
     # A. 定义异步消费者任务
     async def log_consumer():
