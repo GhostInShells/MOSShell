@@ -288,12 +288,16 @@ def _display_config_detail(info: ConfigInfo):
 @manifest_app.command(name="channels")
 def list_channels(
         search: str = typer.Argument("", help="Search pattern for channel name."),
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
         json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
 ):
     """
     List and inspect available communication channels.
     """
-    host = Host()
+    host = Host(mode=mode)
     channels = host.manifests.channels()
 
     # 过滤
@@ -380,12 +384,16 @@ def _display_command_detail(cmd, with_json_schema: bool):
 @manifest_app.command(name="contracts")
 def list_contracts(
         search: str = typer.Argument("", help="Search pattern for contract name or module path."),
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
         json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
 ):
     """
     Introspect bound contracts in the MOSS IOC container.
     """
-    host = Host()  # 根据需要传入 mode
+    host = Host(mode=mode)  # 根据需要传入 mode
     # 获取所有注册的 contracts
     all_contracts = list(host.matrix().container.contracts(recursively=True))
     all_contracts_info = []
@@ -458,3 +466,18 @@ def _display_contract_detail(contract_info: dict):
         console.print(Syntax(source, "python", theme="monokai", line_numbers=True))
     except Exception as e:
         console.print(f"[red]Could not retrieve source: {e}[/red]")
+
+
+@manifest_app.command(name="ctml-versions")
+def list_ctml_versions(
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
+):
+    """
+    list the environment provided ctml versions.
+    """
+    host = Host(mode=mode)
+    for version, version_info in host.manifests.ctml_versions().items():
+        console.print("%s: %s" % (version, version_info.file))

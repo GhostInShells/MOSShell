@@ -108,6 +108,7 @@ class MatrixImpl(Matrix):
         env.bootstrap()
         self.env = env
         self.apps = app_store
+        self._ctml_version_cache: dict[str, str] = {}
         self._current_mode: MossMode = mode
         self._cell_address = env.cell_address
         self._manifests = manifest
@@ -159,7 +160,7 @@ class MatrixImpl(Matrix):
         prompter = BaseSystemPrompter()
         # ctml 优先.
         prompter.with_prompter("ctml", self.ctml_instruction())
-        prompter.with_prompter("moss_meta_config_content", self.env.meta_config.content)
+        prompter.with_prompter("moss_meta_config_content", self.env.meta_config.system_prompt)
         prompter.with_prompter("moss_mode_instruction", self._current_mode.instruction)
         return prompter
 
@@ -167,9 +168,16 @@ class MatrixImpl(Matrix):
         """返回当前环境中定义的 ctml version """
         return self._current_mode.ctml_version or self.env.meta_config.ctml_version
 
-    def get_ctml_prompt(self, ctml_version: str) -> str | None:
+    def get_ctml_prompt(self, ctml_version: str | None = None) -> str | None:
         """在当前环境约定的 workspace 下寻找 ctml 指定版本. """
-        return self.env.get_ctml_prompt(ctml_version)
+        ctml_version = ctml_version or self.ctml_version()
+        if ctml_version not in self._ctml_version_cache:
+            versions = self.manifests.ctml_versions()
+            version_info = versions.get(ctml_version)
+            if version_info is None:
+                raise KeyError(f"ctml version {ctml_version} not found in manifests")
+            self._ctml_version_cache[ctml_version] = version_info.file.read_text()
+        return self._ctml_version_cache[ctml_version]
 
     def ctml_instruction(self) -> str:
         ctml_version = self.ctml_version()

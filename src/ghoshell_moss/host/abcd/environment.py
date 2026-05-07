@@ -9,7 +9,9 @@ from pathlib import Path
 from ghoshell_common.helpers import uuid
 from importlib import resources
 from pydantic import BaseModel, Field
-from ghoshell_moss.core.ctml.meta import CTML_VERSION, get_moss_ctml_meta_instruction
+from ghoshell_moss.core.ctml.versions import (
+    CTML_VERSION
+)
 import os
 import dotenv
 import sys
@@ -102,7 +104,7 @@ MOSSEnvKey = Literal[
 ]
 
 
-class MetaConfig(BaseModel):
+class MOSSMeta(BaseModel):
     """
     meta instruction from the environment
     """
@@ -110,7 +112,7 @@ class MetaConfig(BaseModel):
         default=CTML_VERSION,
         description="当前 MOSS 默认使用的提示词版本."
     )
-    content: str = Field(
+    system_prompt: str = Field(
         default="",
         description="补充到 CTML meta instruction 后面的内容. version 为空, 这里应该包含完整的 meta instruction"
     )
@@ -123,7 +125,7 @@ class MetaConfig(BaseModel):
         import frontmatter
         post = frontmatter.load(str(file.absolute()))
         data = post.metadata
-        data['content'] = post.content
+        data['system_prompt'] = post.content
         return cls(**data)
 
 
@@ -148,9 +150,9 @@ class Environment:
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
         self._meta_instruction_path = self._workspace_path.joinpath(META_INSTRUCTION_FILENAME)
         if self._meta_instruction_path.is_file() and self._meta_instruction_path.exists():
-            self._meta_config = MetaConfig.from_file(self._meta_instruction_path)
+            self._meta_config = MOSSMeta.from_file(self._meta_instruction_path)
         else:
-            self._meta_config = MetaConfig()
+            self._meta_config = MOSSMeta()
 
         if mode is None:
             mode = os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
@@ -187,16 +189,8 @@ class Environment:
         self._ghost_name = ghost_name
         os.environ[ENV_GHOST_NAME_KEY] = ghost_name
 
-    def get_ctml_prompt(self, ctml_version: str) -> str | None:
-        """在当前环境约定的 workspace 下寻找 ctml 指定版本. """
-        filename = ctml_version if ctml_version.endswith('.md') else ctml_version + '.md'
-        expect_file = self.workspace_path.joinpath("ctml_prompts").joinpath(filename).resolve()
-        if not expect_file.exists():
-            try:
-                return get_moss_ctml_meta_instruction(ctml_version)
-            except FileNotFoundError:
-                return None
-        return expect_file.read_text()
+    def ctml_prompts_dir(self) -> Path:
+        return self.workspace_path.joinpath("ctml_versions")
 
     @classmethod
     def discover(cls) -> Self:
@@ -391,7 +385,7 @@ class Environment:
         return self._meta_instruction_path.absolute()
 
     @property
-    def meta_config(self) -> MetaConfig:
+    def meta_config(self) -> MOSSMeta:
         return self._meta_config
 
     @property

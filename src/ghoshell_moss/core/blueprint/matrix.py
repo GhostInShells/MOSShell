@@ -2,7 +2,6 @@ from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable
 
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace, SystemPrompter
@@ -123,6 +122,20 @@ class Matrix(ABC):
             'moss_mode': self.moss_mode,
             'cell_address': self.this.address,
         }
+
+    @abstractmethod
+    def ctml_version(self) -> str:
+        """
+        当前环境定义的 ctml version.
+        """
+        pass
+
+    @abstractmethod
+    def get_ctml_prompt(self, version: str | None = None) -> str:
+        """
+        返回环境中定义的系统提示词.
+        """
+        pass
 
     @abstractmethod
     def list_cells(self) -> dict[CELL_ADDRESS, Cell]:

@@ -1,5 +1,7 @@
 from typing_extensions import Self
-from ghoshell_moss.core.blueprint.manifests import Manifests, ConfigInfo, TopicInfo, ProviderInfo
+from ghoshell_moss.core.blueprint.manifests import (
+    Manifests, ConfigInfo, TopicInfo, ProviderInfo, CtmlVersionInfo,
+)
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package
@@ -8,6 +10,10 @@ from .primitives import search_primitives_from_package
 from ghoshell_moss.host.abcd.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
+from ghoshell_moss.core.ctml.versions import (
+    default_moss_ctml_meta_instruction_directory,
+    search_version_file_in_dir,
+)
 
 __all__ = ['PackageManifests', 'MergedManifests']
 
@@ -23,6 +29,7 @@ class PackageManifests(Manifests):
     def __init__(
             self,
             root_package_name: str,
+            ctml_versions: dict[str, CtmlVersionInfo] | None = None,
     ):
         self.root_package_name = root_package_name
         self._config_infos: dict[str, ConfigInfo] | None = None
@@ -30,6 +37,7 @@ class PackageManifests(Manifests):
         self._topic_infos: dict[str, TopicInfo] | None = None
         self._channels: dict[str, Channel] | None = None
         self._primitives: dict[str, Command] | None = None
+        self._ctml_versions: dict[str, CtmlVersionInfo] = ctml_versions or {}
 
     @classmethod
     def from_environment(cls, env: Environment | None = None) -> Self:
@@ -38,7 +46,21 @@ class PackageManifests(Manifests):
         """
         env = env or Environment.discover()
         env.bootstrap()
-        return cls(ENVIRONMENT_MANIFESTS_ROOT_PACKAGE)
+        ctml_versions = cls.find_ctml_versions_from_env(env=env)
+        return cls(ENVIRONMENT_MANIFESTS_ROOT_PACKAGE, ctml_versions=ctml_versions)
+
+    @classmethod
+    def find_ctml_versions_from_env(cls, env: Environment) -> dict[str, CtmlVersionInfo]:
+        ctml_versions: dict[str, CtmlVersionInfo] = {}
+        for file in search_version_file_in_dir(default_moss_ctml_meta_instruction_directory()):
+            ctml_version = CtmlVersionInfo(file=file)
+            ctml_versions[ctml_version.version] = ctml_version
+        root_dir = env.ctml_prompts_dir()
+        if root_dir.exists():
+            for file in search_version_file_in_dir(root_dir):
+                ctml_version_info = CtmlVersionInfo(file=file)
+                ctml_versions[ctml_version_info.version] = ctml_version_info
+        return ctml_versions
 
     @classmethod
     def from_environment_moss_mode(cls, mode: str, env: Environment | None = None) -> Self:
@@ -48,13 +70,17 @@ class PackageManifests(Manifests):
         env = env or Environment.discover()
         env.bootstrap()
         root_package_name = ENVIRONMENT_MODE_MANIFESTS_ROOT_PACKAGE.format(mode=mode)
-        return cls(root_package_name)
+        ctml_versions = cls.find_ctml_versions_from_env(env=env)
+        return cls(root_package_name, ctml_versions=ctml_versions)
 
     def channels(self) -> dict[str, Channel]:
         if self._channels is None:
             channels_package = '.'.join([self.root_package_name, 'channels'])
             self._channels = search_channels_from_package(channels_package)
         return self._channels
+
+    def ctml_versions(self) -> dict[str, CtmlVersionInfo]:
+        return self._ctml_versions
 
     def primitives(self) -> dict[str, Command]:
         """
@@ -95,6 +121,7 @@ class MergedManifests(Manifests):
         self._topic_infos: dict[str, TopicInfo] = {}
         self._channels: dict[str, Channel] = {}
         self._primitives: dict[str, Command] = {}
+        self._ctml_versions: dict[str, CtmlVersionInfo] = {}
         for manifest in manifests:
             # 右边优先级更高.
             self._config_infos.update(manifest.configs())
@@ -102,6 +129,7 @@ class MergedManifests(Manifests):
             self._topic_infos.update(manifest.topics())
             self._channels.update(manifest.channels())
             self._primitives.update(manifest.primitives())
+            self._ctml_versions.update(manifest.ctml_versions())
 
     @classmethod
     def from_environment_mode(cls, *, mode: str = '', env: Environment | None = None) -> Manifests:
@@ -118,6 +146,9 @@ class MergedManifests(Manifests):
 
     def channels(self) -> dict[ChannelName, Channel]:
         return self._channels
+
+    def ctml_versions(self) -> dict[str, CtmlVersionInfo]:
+        return self._ctml_versions
 
     def primitives(self) -> dict[str, Command]:
         return self._primitives

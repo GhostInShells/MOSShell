@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Protocol
 from typing_extensions import Self
 from dataclasses import dataclass
 
@@ -8,17 +8,19 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_common.helpers import generate_import_path, import_from_path
 from ghoshell_container import Provider
+from pathlib import Path
 import inspect
 
 __all__ = [
     'TopicInfo',
     'ConfigInfo',
     'ProviderInfo',
+    'CtmlVersionInfo',
     'Manifests',
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class TopicInfo:
     """
     Topic info.
@@ -181,9 +183,24 @@ class ProviderInfo:
             return f"# [MOSS] Source unavailable (Compiled or Dynamic: {type(contract).__name__})"
 
 
+@dataclass(frozen=True)
+class CtmlVersionInfo:
+    file: Path
+
+    @property
+    def version(self) -> str:
+        if self.file.name.endswith('.md'):
+            return self.file.name[:-3]
+        return self.file.name
+
+
+_CtmlVersion = str
+
+
 class Manifests:
     """
     MOSS 在环境中发现的各种资源的声明.
+    需要根据具体的场景去实现.
     """
 
     def channels(self) -> dict[ChannelName, Channel]:
@@ -205,6 +222,9 @@ class Manifests:
         环境中发现的配置实例. Runtime 启动时, 如果发现配置不存在, 会初始化它.
         通过 ghoshell_moss.contracts.ConfigType 实例发现.
         """
+        return {}
+
+    def ctml_versions(self) -> dict[_CtmlVersion, CtmlVersionInfo]:
         return {}
 
     def topics(self) -> dict[TopicName, TopicInfo]:
