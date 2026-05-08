@@ -5,7 +5,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.depends import depend_zenoh
-from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.core.blueprint.environment import Environment
 
 depend_zenoh()
 import zenoh

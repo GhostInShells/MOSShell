@@ -12,15 +12,24 @@ __all__ = ['Matrix', 'Cell', 'SystemPrompter', 'ScopesKey']
 
 from ghoshell_moss.core.blueprint.manifests import Manifests
 
+DefaultMossCellType = Literal[
+    'main',  # main 表示 moss 当前运行时启动的进程.
+    'app',  # 表示在相同的 workspace 下的 App 节点. 由 main 节点管理生命周期.
+    'host',  # 表示另一个 moss host 在独立进程中启动, 通过组网通讯, 联通到当前的 matrix 进程中.
+]
+
 
 class Cell(ABC):
     """
-    在 matrix 中可以并行独立运行的单元, 比如并行思考模块, channel provider 等等.
+    在 matrix 中可以并行独立运行的单元, 拥有独立的进程.
+
+    比如并行思考模块, channel provider 等等.
     不需要实现它, Matrix 的实现会包含 Cell 的定义.
+    合法的 Cell 在 Matrix 体系中自动被感知和发现.
     """
     name: str  # 节点的名称.
     description: str  # 节点的描述.
-    type: Literal['app', 'main'] | str  # 节点的类型. main 表示 moss 的 runtime, 而 app 表示是一个环境中可加载的应用.
+    type: DefaultMossCellType | str
     where: str  # 这个节点自身的工作目录.
 
     @property

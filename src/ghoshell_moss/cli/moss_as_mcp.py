@@ -5,7 +5,7 @@ from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
-from ghoshell_moss.host.abcd import MossHost, MossRuntime
+from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 import click
 
 

@@ -5,7 +5,7 @@ from ghoshell_moss.contracts import LoggerItf
 from ghoshell_container import Provider, IoCContainer, INSTANCE
 
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.depends import depend_zenoh
 
 depend_zenoh()

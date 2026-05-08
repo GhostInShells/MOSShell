@@ -7,7 +7,7 @@ from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package
 from .channels import search_channels_from_package
 from .primitives import search_primitives_from_package
-from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.ctml.versions import (

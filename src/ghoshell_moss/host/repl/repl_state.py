@@ -6,7 +6,7 @@ from typing_extensions import Self
 
 from prompt_toolkit.key_binding import KeyPressEvent, KeyBindings
 
-from ghoshell_moss.host.abcd.tui import TUIState
+from ghoshell_moss.host.tui import TUIState
 from ghoshell_moss.host.repl.repl_registrar import REPLRegistrar
 from rich.traceback import Traceback
 import asyncio

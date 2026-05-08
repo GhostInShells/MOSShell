@@ -1,6 +1,5 @@
 import typer
 import json
-from rich.table import Table
 from rich.syntax import Syntax
 from rich.panel import Panel
 from ghoshell_moss.host.manifests.providers import (

@@ -150,12 +150,13 @@ class Environment:
             session_scope: str | None = None,
             session_id: str | None = None,
             mode: str | None = None,
+            env_file: Path | None = None,
     ):
         """
         初始化 MOSS 的进程级别环境发现.
         """
         self._workspace_path = workspace_path
-        self._env_file = self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
+        self._env_file = env_file or self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
         self._meta_config_path = self._workspace_path.joinpath(META_CONFIG_FILENAME)
         if self._meta_config_path.is_file() and self._meta_config_path.exists():

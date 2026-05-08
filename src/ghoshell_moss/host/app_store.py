@@ -9,8 +9,8 @@ from typing_extensions import Self
 from pathlib import Path
 
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, CommandError
-from ghoshell_moss.host.abcd.app import AppStore, AppInfo, AppState
-from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.core.blueprint.app import AppStore, AppInfo, AppState
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts import Workspace, LoggerItf, get_moss_logger
 from circus.client import CircusClient
 import sys

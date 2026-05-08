@@ -1,4 +1,4 @@
-from ghoshell_moss.host.abcd.app import AppStore
+from ghoshell_moss.core.blueprint.app import AppStore
 
 __all__ = ['AppStoreREPL']
 

@@ -1,13 +1,13 @@
 from typing_extensions import Self
 
-from ghoshell_moss.host.abcd.host_design import (
+from ghoshell_moss.core.blueprint.host import (
     MossHost, MossMode, MossRuntime,
 )
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.contracts.logger import LoggerItf
-from ghoshell_moss.host.abcd.environment import Environment
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode

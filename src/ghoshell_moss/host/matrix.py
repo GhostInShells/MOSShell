@@ -14,9 +14,9 @@ from ghoshell_moss.contracts import (
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
-from ghoshell_moss.host.abcd.app import AppStore, AppInfo
-from ghoshell_moss.host.abcd.host_design import MossMode
-from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
+from ghoshell_moss.core.blueprint.host import MossMode
+from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
