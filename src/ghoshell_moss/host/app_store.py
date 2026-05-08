@@ -306,7 +306,7 @@ class HostAppStore(AppStore):
                 for fullname in self._managed_apps_with_fullname:
                     app = self.found_apps().get(fullname)
                     if not app: continue
-                    c_status = statuses.get(fullname, "stopped")
+                    c_status = statuses.get(app.address, "stopped")
                     self._set_app_state(fullname, AppState.RUNNING if c_status == "active" else AppState.STOPPED)
             except Exception as e:
                 self._logger.debug(f"Polling failed: {e}")
