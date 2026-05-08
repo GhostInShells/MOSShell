@@ -3,7 +3,6 @@ import contextlib
 import logging
 import threading
 from typing import Callable, Coroutine, Optional, AsyncIterator
-from typing_extensions import Self
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 from pydantic import ValidationError
@@ -44,6 +43,8 @@ __all__ = ["ChannelEventHandler", "DuplexChannelProvider"]
 
 ChannelEventHandler = Callable[[Channel, ChannelEvent], Coroutine[None, None, bool]]
 """ 自定义的 Event Handler, 用于 override 或者扩展 Channel proxy/provider 原有的事件处理逻辑."""
+
+ProxyEventCallback = Callable[[ChannelEvent], None]
 
 
 class ProviderTopicService(QueueBasedTopicService):
@@ -105,6 +106,9 @@ class DuplexChannelProvider(ChannelProvider):
 
         self._proxy_event_handlers: dict[str, ChannelEventHandler] = proxy_event_handlers or {}
         """注册的事件管理."""
+
+        self._proxy_event_callbacks: list[ProxyEventCallback] = []
+        """事件回调通知, 不影响运行逻辑"""
 
         # --- runtime status ---#
         self._reconnect_interval_seconds = reconnect_interval_seconds
@@ -173,11 +177,15 @@ class DuplexChannelProvider(ChannelProvider):
 
     @contextlib.asynccontextmanager
     async def _bootstrap_runtime_stack(self) -> AsyncIterator[None]:
+        self_started_runtime = False
         try:
-            await self._root_runtime.start()
+            if not self._root_runtime.is_running():
+                await self._root_runtime.start()
+                self_started_runtime = True
             yield
         finally:
-            await self._root_runtime.close()
+            if self_started_runtime:
+                await self._root_runtime.close()
 
     @contextlib.asynccontextmanager
     async def _bootstrap_connection_stack(self) -> AsyncIterator[None]:
@@ -208,7 +216,18 @@ class DuplexChannelProvider(ChannelProvider):
                 self.logger.exception("%s close main loop task failed: %s", self._log_prefix, exc)
 
     @contextlib.asynccontextmanager
-    async def arun(self, channel: Channel) -> AsyncIterator[Self]:
+    async def arun_channel_runtime(self, runtime: ChannelRuntime):
+        if self.is_running():
+            raise RuntimeError("Channel provider has already been initialized.")
+        if not runtime.is_running():
+            raise RuntimeError("arun channel runtime shall pass a running channel runtime.")
+        self._root_runtime = runtime
+        channel = runtime.channel
+        async with self.arun(channel):
+            yield
+
+    @contextlib.asynccontextmanager
+    async def arun(self, channel: Channel):
         if self._starting:
             self.logger.info(f"%s already started, channel=%s", self._log_prefix, channel.name())
             raise RuntimeError(f"Channel {channel.name()} already started.")
@@ -235,7 +254,8 @@ class DuplexChannelProvider(ChannelProvider):
                 self._provider_topic_service,
             )
         # 启动时, topic service 同样会注入到根节点的 importlib 中.
-        self._root_runtime = channel.bootstrap(self._container)
+        if self._root_runtime is None:
+            self._root_runtime = channel.bootstrap(self._container)
 
         try:
             async with contextlib.AsyncExitStack() as stack:
@@ -347,6 +367,20 @@ class DuplexChannelProvider(ChannelProvider):
         except (ConnectionNotAvailable, ConnectionClosedError):
             pass
 
+    def on_proxy_event(self, callback: Callable[[ChannelEvent], None]):
+        self._proxy_event_callbacks.append(callback)
+
+    def _callback_proxy_event(self, event: ChannelEvent) -> None:
+        if len(self._proxy_event_callbacks) > 0:
+            for callback in self._proxy_event_callbacks:
+                try:
+                    callback(event)
+                except Exception as exc:
+                    self.logger.exception(
+                        "%s on_proxy_event callback %s failed: %s",
+                        self._log_prefix, callback, exc,
+                    )
+
     async def _consume_proxy_event_loop(self) -> None:
         while not self._stopping_event.is_set():
             try:
@@ -374,6 +408,8 @@ class DuplexChannelProvider(ChannelProvider):
                 if event is None:
                     break
 
+                # 回调 event, 方便实现监控.
+                self._callback_proxy_event(event)
                 if created := SessionCreatedEvent.from_channel_event(event):
                     # proxy 声明创建 Session 成功.
                     if created.connection_id == self._connection_id:

@@ -1,21 +1,22 @@
-from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable
+from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable, TypeVar, Type
 
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy, ChannelRuntime
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace, SystemPrompter
 from ghoshell_container import IoCContainer
 import asyncio
 
-__all__ = ['Matrix', 'Cell', 'SystemPrompter', 'ScopesKey']
+__all__ = ['Matrix', 'Cell', 'SystemPrompter', 'ScopesKey', 'Fractal']
 
 from ghoshell_moss.core.blueprint.manifests import Manifests
 
-DefaultMossCellType = Literal[
-    'main',  # main 表示 moss 当前运行时启动的进程.
+CellTypes = Literal[
+    'host',  # 表示为启动网络的主进程节点.
     'app',  # 表示在相同的 workspace 下的 App 节点. 由 main 节点管理生命周期.
-    'host',  # 表示另一个 moss host 在独立进程中启动, 通过组网通讯, 联通到当前的 matrix 进程中.
+    'fractal',  # Matrix 的分形通讯机制下, 其它 Matrix 连接到当前 Matrix, 所形成的 cell 节点.
 ]
 
 
@@ -29,14 +30,18 @@ class Cell(ABC):
     """
     name: str  # 节点的名称.
     description: str  # 节点的描述.
-    type: DefaultMossCellType | str
+    type: CellTypes | str
     where: str  # 这个节点自身的工作目录.
 
     @property
-    @abstractmethod
     def address(self) -> str:
         """节点的地址. 通常作为节点的各种通讯机制的前缀或关键环节."""
-        pass
+        # 遵循路径模式, 方便 fn match 做匹配.
+        return self.make_address(self.type, self.name)
+
+    @classmethod
+    def make_address(cls, type: str, fullname: str) -> str:
+        return '/'.join([type, fullname])
 
     @property
     def log_name(self) -> str:
@@ -61,7 +66,10 @@ class Cell(ABC):
         }
 
 
-CELL_ADDRESS = str
+CellAddress = str
+_ThisCellName = None
+_ThisCellType = None
+_MatrixMainCellAddress = None
 
 ScopesKey = Literal[
     'moss_mode',  # 对环境中所有资源的隔离形式, 通过不同的 mode 隔离不同的资源组合. 使得资源如 provider, config 等可以复用.
@@ -71,13 +79,60 @@ ScopesKey = Literal[
 ]
 
 
+class Fractal(ABC):
+    """
+    Matrix 的分形通讯体系.
+
+    可以将自身的资源提供给父节点 (另一个 Matrix)
+    同时又能接受其它节点 (其它 Matrix) 提供的资源.
+    Fractal 通过 Matrix 的实现约定通讯协议, 对父节点做反向注册, 对子节点做被动发现.
+    未来分形组网的通讯协议, 都通过 Fractal 定义.
+    """
+
+    @abstractmethod
+    def connected(self) -> list[Cell]:
+        """
+        返回 fractal cells, 其它 matrix 连接到当前节点后的 cell.
+        """
+        pass
+
+    @abstractmethod
+    def explain(self) -> str:
+        """
+        描述 Transport 协议.
+        """
+        pass
+
+    @abstractmethod
+    def provide_channel(
+            self,
+            channel: Channel | ChannelRuntime,
+            transport: str | None = None,
+    ) -> asyncio.Future[None]:
+        """
+        将一个本地的 channel提供给父 Matrix 节点.
+        :param channel: 提供 channel 或运行时的 channel runtime. 通常可以直接将运行时的 shell.main_channel 提供给父节点.
+        :param transport: 根据 fractal 约定的协议, 提供父节点的连接地址, 或者有默认的通讯地址.
+        默认的 transport 通过 zenoh 框架实现.
+        """
+        pass
+
+    @abstractmethod
+    def channel_hub(self, name: str, description: str = '') -> Channel:
+        """
+        将
+        """
+
+
+INSTANCE = TypeVar('INSTANCE')
+
+
 class Matrix(ABC):
     """
     MOSS 架构下多节点组网后形成的通讯矩阵的客户端.
-    持有矩阵的抽象可以通过矩阵通讯.
-    本身应该是进程级别单例.
 
-    Matrix 是用于构建可跨进程通讯的基本抽象.
+    持有矩阵的抽象可以通过矩阵通讯, 本身应该是进程级别单例.
+    Matrix 是用于构建可跨进程通讯的基本抽象, 并且从环境中自我发现.
     """
 
     @classmethod
@@ -91,6 +146,12 @@ class Matrix(ABC):
         from ghoshell_moss.host import Host
         return Host.discover().matrix()
 
+    def fractal(self) -> Fractal:
+        """
+        获取 Fractal 协议的实现.
+        """
+        raise NotImplementedError('fractal not implemented.')
+
     @abstractmethod
     def cell_env(self) -> dict[str, str]:
         """
@@ -103,8 +164,27 @@ class Matrix(ABC):
     def this(self) -> Cell:
         """
         返回当前节点自身的讯息. 节点之间通讯仅仅通过 topics / parameter / action 等.
+        自身的 cell 类型是不需要定义的, Matrix 在环境中发现, 启动时, 自动会生成描述.
         """
         pass
+
+    def register(
+            self,
+            abstract: Type[INSTANCE],
+            binding: INSTANCE | Callable[[IoCContainer], INSTANCE],
+    ) -> None:
+        """
+        ioc 容器注册方式.
+        """
+        # 为方便立刻理解 ioc 容器注册, 提供这个语法糖, 作为自解释方式.
+        # 如果要全功能的 provider, 需要查看 ghoshell_container:Provider
+        # 并不推荐用这种方式做注册, 因为没有环境发现声明. 更好的方式是
+        #   1. 基于 Manifests 在 (workspace.src) MOSS.manifests.providers package里定义 provider 实例.
+        #   2. 在指定 Mode, 如 (workspace.src) MOSS.modes.default.providers 里定义 provider 实例.
+        #   注册方式具体查看 ghoshell_moss.host.manifests 和 ghoshell_moss.core.blueprint.environment
+        from ghoshell_container import provide
+        provider = provide(abstract, singleton=True)(binding)
+        self.container.register(provider)
 
     @abstractmethod
     def moss_system_prompter(self) -> SystemPrompter:
@@ -147,7 +227,7 @@ class Matrix(ABC):
         pass
 
     @abstractmethod
-    def list_cells(self) -> dict[CELL_ADDRESS, Cell]:
+    def list_cells(self) -> dict[CellAddress, Cell]:
         """
         返回环境里的所有节点, 以及这些节点是否在运行.
         """
@@ -201,12 +281,21 @@ class Matrix(ABC):
             yield info
 
     @abstractmethod
-    def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
+    def provide_channel(
+            self,
+            channel: Channel,
+            *,
+            cell_type: Literal['app', 'main'] | _ThisCellType = _ThisCellType,
+            cell_name: str | _ThisCellName = _ThisCellName,
+    ) -> asyncio.Future[None]:
         """
         将 Channel 通过当前节点提供到整个 Matrix 网络中,
-        可以作为 Cell 的可操控单元, 被主进程的 Shell 调用.
-        一个进程只能调用一个 provide channel, 可以提供树形的 channel.
+        :param channel: 需要提供到 matrix 体系里的根节点.
+        :param cell_type: 需要定义 channel 提供出去时的 cell 类型. 通常不需要传参, 按约定定义.
+        :param cell_name: 提供出去时使用的 cell 名称. 不传参时就使用自己的名字.
         """
+        # 在 AppCell 内通过 Matrix 调用 provide channel,
+        # 一个进程只能调用一个 provide channel, 可以提供树形的 channel.
         pass
 
     @abstractmethod
@@ -219,18 +308,23 @@ class Matrix(ABC):
             only_allowed_in_main_cell: bool = True,
     ) -> ChannelProxy:
         """
-        搭建一个 proxy 获取另一个节点里通过 provider channel 提供的 channel. 进行跨网络同构.
-        通常只允许 Matrix 里的 main cell 使用 proxy 连接 channel. 因为 channel 是 matrix 内唯一的.
-        多个 proxy 连接会导致 channel 频繁地重启.
-        仍然允许用这个方式进行测试.
+        搭建一个 proxy 获取另一个节点里通过 address (通常是 cell address) 提供的 channel. 进行跨网络同构.
 
-        :param address: cell address which providing a channel tree
+        这个函数除特殊情况外, 不需要手动使用. Host 节点启动时会提供 apps 的自动发现.
+
+        :param address: cell address where providing a channel tree
         :param name: channel name which rewrite the providing channel.
         :param description: channel description which rewrite the providing channel.
         :param id: channel uid if given, otherwise will generate a uuid for the proxy.
-        :param only_allowed_in_main_cell: only allow main cell to use channel proxy.
+        :param only_allowed_in_main_cell: if true, check this cell is host main cell or raise error.
         :raise RuntimeError: if the current cell is not the main cell of the matrix runtime.
         """
+        # 通常只允许 Matrix 里的 main cell 使用 proxy 连接 channel. 因为 channel 是 matrix 内唯一的.
+        # 多个 proxy 连接会导致 channel 频繁地重启.
+        # 仍然允许用这个方式进行测试.
+        #
+        # Matrix 底层有跨环境的通讯总线, 比如 redis / ws / mqtt 等等. 默认的 Host 使用的 zenoh 来组网.
+        # 进入这个网络后, 可以通过 address 的方式来组建 proxy => provider 的通讯.
         pass
 
     @property
