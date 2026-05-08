@@ -234,7 +234,7 @@ Channel 使用的高阶知识:
 5. 环境中被自动发现, 根据模式配置做过滤.
     - `ghoshell_moss.core.blueprint.host:MossMode` 配置该模式可以使用哪些 app
 6. 启动 MossRuntime 时, 可以被 MossMode 配置, 自动 bringup
-7. 通过 `ghoshell_moss.host.channels.app_store_channel` 提供给 AI 一个高阶父 channel, 可以按需 打开/关闭 channel.
+7. 通过 `ghoshell_moss.host.app_store_channel` 提供给 AI 一个高阶父 channel, 可以按需 打开/关闭 channel.
     - 默认注册到 MossMode 的 Shell 里.
 
 当你充分理解 1~7 后, 你可以在 workspace 内开发 app channel, 做到开发时自迭代.

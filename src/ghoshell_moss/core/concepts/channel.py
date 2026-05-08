@@ -16,12 +16,12 @@ from typing import (
     Callable,
     Coroutine,
     AsyncIterator,
+    AsyncGenerator,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
 from pydantic import BaseModel, Field, AwareDatetime
 from typing_extensions import Self
-
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,
@@ -944,12 +944,18 @@ class ChannelProvider(ABC):
         """
         pass
 
-    @asynccontextmanager
     @abstractmethod
-    async def arun(self, channel: Channel) -> AsyncIterator[Self]:
+    def arun(self, channel: Channel) -> contextlib.AbstractAsyncContextManager[Self]:
         """
         支持 async with statement 的运行方式启动一个 channel.
         """
+        pass
+
+    @abstractmethod
+    def arun_channel_runtime(
+            self,
+            runtime: ChannelRuntime,
+    ) -> contextlib.AbstractAsyncContextManager[Self]:
         pass
 
 # MOSS 架构的核心思想是 "面向模型的高级编程语言", 目的是定义一个类似 python 语法的编程语言给模型.

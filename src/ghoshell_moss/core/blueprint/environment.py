@@ -110,6 +110,14 @@ class MOSSMeta(BaseModel):
     """
     meta instruction from the environment
     """
+    name: str = Field(
+        default='moss',
+        description="为当前 moss 环境命名. 建议给环境特殊的名字, 因为可以通过分形组网, 让多个 host 互相联通.",
+    )
+    description: str = Field(
+        default="",
+        description="描述当前 moss 环境, 这样当这个 moss 环境提供给远程 moss 环境时, 对方可以通过命名识别自己. ",
+    )
     ctml_version: str = Field(
         default=CTML_VERSION,
         description="当前 MOSS 默认使用的提示词版本."

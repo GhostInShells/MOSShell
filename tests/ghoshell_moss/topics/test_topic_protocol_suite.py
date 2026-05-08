@@ -87,7 +87,7 @@ class TestTopicProtocol:
                 # 等待 producer 生成完, 然后再拉.
                 await producer_done.wait()
                 # 稍微等一下调度, 否则轮不到 session 运行.
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
                 item = await _subscriber.poll_model()
                 received.append(item)
 

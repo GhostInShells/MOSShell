@@ -485,6 +485,27 @@ async def test_thread_proxy_pub_topic():
 
 
 @pytest.mark.asyncio
+async def test_providing_channel_runtime():
+    chan = PyChannel(name="provider")
+
+    @chan.build.command()
+    async def foo():
+        return "hello"
+
+    provider, proxy = create_thread_channel("proxy")
+    # bootstrap runtime first.
+    async with chan.bootstrap() as runtime:
+        # bootstrap provider with the runtime.
+        async with provider.arun_channel_runtime(runtime) as provider:
+            # bootstrap proxy
+            async with proxy.bootstrap() as proxy_runtime:
+                await proxy_runtime.wait_connected()
+                _foo = proxy_runtime.get_own_command("foo")
+                assert _foo is not None
+                assert await _foo() == "hello"
+
+
+@pytest.mark.asyncio
 async def test_thread_provider_lazy_subscribe():
     chan = PyChannel(name="provider")
     a_chan = PyChannel(name="a_channel")
@@ -576,3 +597,20 @@ async def test_thread_channel_do_not_share_local_topic():
 
                 # 仍然没有收到.
                 assert not poll_task.done()
+
+
+@pytest.mark.asyncio
+async def test_thread_channel_proxy_event_callback():
+    events = []
+    chan = PyChannel(name="provider")
+
+    def _on_event(event) -> None:
+        events.append(event)
+
+    provider, proxy = create_thread_channel("proxy")
+    provider.on_proxy_event(_on_event)
+    async with provider.arun(chan):
+        async with proxy.bootstrap() as proxy_runtime:
+            await proxy_runtime.wait_connected()
+
+    assert len(events) > 0
