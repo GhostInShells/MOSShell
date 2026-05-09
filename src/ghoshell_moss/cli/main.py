@@ -7,7 +7,7 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import (
     codex_cli, concepts_cli, workspace_cli, manifests_cli, apps_cli,
-    modes_cli, ctml_cli,
+    modes_cli, ctml_cli, howto_cli,
 )
 
 __version__ = "0.1.0-beta"
@@ -32,6 +32,7 @@ app.add_typer(
 )
 app.add_typer(modes_cli.mode_app, name="modes", short_help="moss runtime modes manager")
 app.add_typer(apps_cli.app_store_app, name="apps", short_help="default apps manager")
+app.add_typer(howto_cli.howto_app, name="how-tos", short_help="MOSS How-To knowledge base")
 
 
 @app.callback(invoke_without_command=True)

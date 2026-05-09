@@ -1,13 +1,15 @@
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.manifests import (
     Manifests, ConfigInfo, TopicInfo, ProviderInfo, CtmlVersionInfo,
+    ResourceStorageManifest,
 )
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
 from .topics import search_topic_infos_from_package
 from .channels import search_channels_from_package
 from .primitives import search_primitives_from_package
-from ghoshell_moss.host.abcd.environment import Environment
+from .resource_storages import PackageResourceStorages
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.ctml.versions import (
@@ -38,6 +40,7 @@ class PackageManifests(Manifests):
         self._channels: dict[str, Channel] | None = None
         self._primitives: dict[str, Command] | None = None
         self._ctml_versions: dict[str, CtmlVersionInfo] = ctml_versions or {}
+        self._resource_storages: PackageResourceStorages | None = None
 
     @classmethod
     def from_environment(cls, env: Environment | None = None) -> Self:
@@ -109,6 +112,19 @@ class PackageManifests(Manifests):
             self._provider_infos = list(search_provider_infos_from_package(providers_package))
         return self._provider_infos
 
+    def resource_storages(self) -> PackageResourceStorages:
+        if self._resource_storages is None:
+            resources_package = '.'.join([self.root_package_name, 'resources'])
+            self._resource_storages = PackageResourceStorages(resources_package)
+        return self._resource_storages
+
+    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
+        items = []
+        for meta_info in self.resource_storages().list_metas_sync(limit=-1):
+            item = self.resource_storages().get_sync(meta_info.path)
+            items.append(item)
+        return items
+
 
 class MergedManifests(Manifests):
     """
@@ -122,6 +138,7 @@ class MergedManifests(Manifests):
         self._channels: dict[str, Channel] = {}
         self._primitives: dict[str, Command] = {}
         self._ctml_versions: dict[str, CtmlVersionInfo] = {}
+        self._resource_storages: PackageResourceStorages = PackageResourceStorages("")
         for manifest in manifests:
             # 右边优先级更高.
             self._config_infos.update(manifest.configs())
@@ -130,6 +147,10 @@ class MergedManifests(Manifests):
             self._channels.update(manifest.channels())
             self._primitives.update(manifest.primitives())
             self._ctml_versions.update(manifest.ctml_versions())
+            # merge resource storages (右边优先)
+            # 屏蔽 storage 实现.
+            for item in manifest.resource_storage_manifests():
+                self._resource_storages.add_item(item)
 
     @classmethod
     def from_environment_mode(cls, *, mode: str = '', env: Environment | None = None) -> Manifests:
@@ -161,3 +182,12 @@ class MergedManifests(Manifests):
 
     def providers(self) -> list[ProviderInfo]:
         return self._contract_infos
+
+    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
+        items = []
+        for _, item in self._resource_storages.items():
+            items.append(item)
+        return items
+
+    def resource_storages(self) -> PackageResourceStorages:
+        return self._resource_storages

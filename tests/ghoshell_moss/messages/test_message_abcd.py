@@ -76,7 +76,7 @@ def test_message_serialization():
     assert len(parsed.contents) == 2
 
     # 测试 to_contents() 方法
-    contents = list(msg.as_contents())
+    contents = list(msg.as_contents(join_text=False))
     assert len(contents) == 4  # 开始标签 + meta + 2个内容 + 结束标签
     assert Text.from_content(contents[0]).text.strip().startswith("<message")
     assert Text.from_content(contents[1]).text == "Hello"
@@ -143,3 +143,11 @@ def test_message_with_addition():
 
     copied = message.model_copy()
     assert TestAddition.read(copied).foo == "foo"
+
+
+def test_message_join_text():
+    message = Message.new(name="ai", timestamp=True)
+    message.with_content("hello", " world")
+    contents = list(message.iter_contents(join_text=True))
+    assert len(contents) == 1
+    assert contents[0]['text'] == "hello world"

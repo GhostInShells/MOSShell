@@ -26,6 +26,9 @@ class GhostMeta(ABC):
 
     @abstractmethod
     def nuclei_metas(self) -> list[NucleusMeta]:
+        """
+        返回可以自解释, 但依赖运行时的 Nucleus Meta
+        """
         pass
 
     @classmethod
@@ -132,20 +135,6 @@ class Ghost(ABC):
         这些 Nuclei 会注册到系统的 mindflow 中.
         """
         return []
-
-    @abstractmethod
-    def conversation(self) -> Conversation:
-        """
-        当前进行中的会话.
-        """
-        pass
-
-    @abstractmethod
-    def convos(self) -> ConversationStore:
-        """
-        当前 Ghost 实例下存储的会话历史.
-        """
-        pass
 
     def mindflow(self) -> Mindflow | None:
         """

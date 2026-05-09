@@ -1,14 +1,17 @@
-from typing import Any, Protocol
+from typing import Any
+from abc import ABC, abstractmethod
 from typing_extensions import Self
 from dataclasses import dataclass
 
 from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema, ConfigStore
+from ghoshell_moss.contracts.resource import ResourceMeta, ResourceItem, ResourceStorageFactory, RESOURCE_META
 from ghoshell_moss.core.concepts.topic import TopicSchema, TopicModel, TopicName
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_common.helpers import generate_import_path, import_from_path
 from ghoshell_container import Provider
 from pathlib import Path
+from pydantic import Field
 import inspect
 
 __all__ = [
@@ -16,6 +19,8 @@ __all__ = [
     'ConfigInfo',
     'ProviderInfo',
     'CtmlVersionInfo',
+    'ResourceStorageMetaInfo',
+    'ResourceStorageManifest',
     'Manifests',
 ]
 
@@ -197,6 +202,39 @@ class CtmlVersionInfo:
 _CtmlVersion = str
 
 
+class ResourceStorageMetaInfo(ResourceMeta):
+    """Meta describing a discovered ResourceStorageMeta."""
+
+    host: str = Field(description="Package where this storage was discovered")
+    path: str = Field(description="Storage identity: {storage_scheme}:{storage_host}")
+    description: str = Field(default="", description="Description from ResourceStorageMeta")
+    found_module: str = Field(default="", description="Python module where discovered")
+    found_file: str = Field(default="", description="File path where discovered")
+    storage_scheme: str = Field(default="", description="The scheme this storage provides")
+    storage_host: str = Field(default="", description="The host this storage serves")
+
+    @classmethod
+    def scheme(cls) -> str:
+        return "resource-storage"
+
+    @classmethod
+    def scheme_description(cls) -> str:
+        return "ResourceStorageMeta discovered in MOSS manifests packages"
+
+
+class ResourceStorageManifest(ResourceItem[ResourceStorageMetaInfo, ResourceStorageFactory], ABC):
+    """Wraps a ResourceStorageMeta. get() instantiates via factory()."""
+
+    @abstractmethod
+    def get_sync(self) -> ResourceStorageFactory:
+        pass
+
+    @property
+    @abstractmethod
+    def meta(self) -> ResourceStorageMetaInfo:
+        pass
+
+
 class Manifests:
     """
     MOSS 在环境中发现的各种资源的声明.
@@ -239,4 +277,7 @@ class Manifests:
         环境中发现的 IoC 容器依赖, 会自动注册到 IoC 容器中.
         通过 ghoshell_container.Provider  实例发现.
         """
+        return []
+
+    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
         return []

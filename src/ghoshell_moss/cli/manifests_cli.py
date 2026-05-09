@@ -1,6 +1,5 @@
 import typer
 import json
-from rich.table import Table
 from rich.syntax import Syntax
 from rich.panel import Panel
 from ghoshell_moss.host.manifests.providers import (
@@ -14,6 +13,10 @@ from ghoshell_moss.host.manifests.topics import (
 )
 from ghoshell_moss.host.manifests.configs import (
     ConfigInfo
+)
+from ghoshell_moss.host.manifests.resource_storages import (
+    match_resource_storage_metas,
+    ResourceStorageMetaInfo,
 )
 from ghoshell_moss.host import Host
 from ghoshell_common.helpers import generate_import_path
@@ -481,3 +484,80 @@ def list_ctml_versions(
     host = Host(mode=mode)
     for version, version_info in host.manifests.ctml_versions().items():
         console.print("%s: %s" % (version, version_info.file))
+
+
+@manifest_app.command(name="resources")
+def list_resources(
+        search: str = typer.Argument(
+            "",
+            help="Search pattern for storage scheme, host, or description."
+        ),
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
+        json_out: bool = typer.Option(
+            False, "--json",
+            help="Output as raw JSON for AI."
+        ),
+):
+    """
+    List discovered ResourceStorageMeta instances in the environment.
+
+    Each entry describes a ResourceStorage available for registration:
+    scheme, host, description, and where it was found.
+    """
+    host = Host(mode=mode)
+    resource_storage_items = host.manifests.resource_storage_manifests()
+
+    # collect metas
+    all_metas = [item.meta for item in resource_storage_items]
+
+    if search:
+        metas_dict = {m.path: m for m in all_metas}
+        results = match_resource_storage_metas(metas_dict, search)
+    else:
+        results = all_metas
+
+    if json_out:
+        data = [
+            {
+                "locator": m.locator,
+                "storage_scheme": m.storage_scheme,
+                "storage_host": m.storage_host,
+                "description": m.description,
+                "found_module": m.found_module,
+            }
+            for m in results
+        ]
+        import json as _json
+        console.print(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if not results:
+        console.print(f"[yellow]No resource storages found matching: '{search}'[/yellow]")
+        return
+
+    _display_resource_storage_table(results)
+
+
+def _display_resource_storage_table(metas: list[ResourceStorageMetaInfo]):
+    """展示发现的 ResourceStorage Meta"""
+    table_data = []
+    for info in sorted(metas, key=lambda x: x.path):
+        table_data.append([
+            f"[green]{info.storage_scheme}[/green]",
+            f"[yellow]{info.storage_host}[/yellow]",
+            info.description.split('\n')[0] if info.description else "",
+            f"[dim]{info.found_module}[/dim]",
+        ])
+
+    print_simple_table(
+        data=table_data,
+        headers=["Scheme", "Host", "Description", "Found At"],
+        title="Discovered Resource Storages",
+        column_styles=["green", "yellow", "", "dim"],
+        title_style="bold cyan",
+    )
+
+    console.print(f"\n[dim]Total: {len(metas)} resource storages discovered.[/dim]")

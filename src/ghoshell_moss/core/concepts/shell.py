@@ -5,7 +5,7 @@
 import asyncio
 import contextlib
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, AsyncIterable, AsyncIterator, Generic, TypeVar
+from typing import Literal, Optional, AsyncIterable, AsyncIterator, Generic, TypeVar, AsyncGenerator
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
@@ -229,7 +229,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             config: Optional[list[ChannelFullPath]] = None,
             ignore_wrong_command: bool = False,
             clear_after_exit: bool | None = None,
-    ) -> AsyncIterator[Interpreter]:
+    ):
         """
         简单的语法糖.
         """

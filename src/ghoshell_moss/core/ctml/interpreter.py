@@ -476,7 +476,8 @@ class CTMLInterpreter(Interpreter):
         if self._closed:
             return None
         self._closed = True
-        self._interpretation.interrupted = not self._stopped_event.is_set()
+        if cancel_executing or self._clear_after_exit:
+            self._interpretation.interrupted = not self._stopped_event.is_set()
         self._stopped_event.set()
         self._logger.info("%s interpreter stopping", self._log_prefix)
         try:

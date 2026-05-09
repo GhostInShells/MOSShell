@@ -3,18 +3,17 @@ from typing_extensions import Self
 import janus
 
 from ghoshell_moss import Message, MOSShell, CTMLShell
-from ghoshell_moss.host.abcd.host_design import (
+from ghoshell_moss.core.blueprint.host import (
     MossRuntime, MossMode,
 )
-from ghoshell_moss.host.abcd.app import AppStore
+from ghoshell_moss.core.blueprint.app import AppStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
 from .app_store import HostAppStore
 from .matrix import MatrixImpl
-from ghoshell_moss.host.abcd.environment import Environment
-from ghoshell_moss.host.channels.app_store_channel import AppStoreChannel
+from ghoshell_moss.core.blueprint.environment import Environment
 import contextlib
 import asyncio
 
@@ -108,7 +107,7 @@ class MossRuntimeImpl(MossRuntime):
             await interpreter.wait_compiled()
             if wait_done:
                 await interpreter.wait_stopped()
-        return interpretation.executed_messages()
+        return interpretation.as_messages()
 
     async def moss_interrupt(self) -> list[Message]:
         self._check_running()
@@ -162,9 +161,10 @@ class MossRuntimeImpl(MossRuntime):
             logger=self.matrix.logger,
         )
         # 注册 Apps
-        self._ctml_shell.main_channel.import_channels(
-            AppStoreChannel(name='apps')
-        )
+        for channel in self._matrix.manifests.channels().values():
+            # 注册环境发现的 channels.
+            self._ctml_shell.main_channel.import_channels(channel)
+
         self._matrix.container.set(AppStore, self._app_store)
         self._matrix.container.set(MOSShell, self._ctml_shell)
         self._matrix.container.set(CTMLShell, self._ctml_shell)

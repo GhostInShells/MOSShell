@@ -37,6 +37,7 @@ __all__ = [
     'DEFAULT_CELL_ADDRESS',
 
     'MOSSEnvKey',
+    "MossMeta",
 
     # stubs
     'MODE_STUB_PACKAGE',
@@ -106,10 +107,18 @@ MOSSEnvKey = Literal[
 ]
 
 
-class MOSSMeta(BaseModel):
+class MossMeta(BaseModel):
     """
     meta instruction from the environment
     """
+    name: str = Field(
+        default='moss',
+        description="为当前 moss 环境命名. 建议给环境特殊的名字, 因为可以通过分形组网, 让多个 host 互相联通.",
+    )
+    description: str = Field(
+        default="",
+        description="描述当前 moss 环境, 这样当这个 moss 环境提供给远程 moss 环境时, 对方可以通过命名识别自己. ",
+    )
     ctml_version: str = Field(
         default=CTML_VERSION,
         description="当前 MOSS 默认使用的提示词版本."
@@ -150,18 +159,19 @@ class Environment:
             session_scope: str | None = None,
             session_id: str | None = None,
             mode: str | None = None,
+            env_file: Path | None = None,
     ):
         """
         初始化 MOSS 的进程级别环境发现.
         """
         self._workspace_path = workspace_path
-        self._env_file = self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
+        self._env_file = env_file or self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
         self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
         self._meta_config_path = self._workspace_path.joinpath(META_CONFIG_FILENAME)
         if self._meta_config_path.is_file() and self._meta_config_path.exists():
-            self._meta_config = MOSSMeta.from_file(self._meta_config_path)
+            self._meta_config = MossMeta.from_file(self._meta_config_path)
         else:
-            self._meta_config = MOSSMeta()
+            self._meta_config = MossMeta()
 
         if mode is None:
             mode = os.environ.get(
@@ -417,7 +427,7 @@ class Environment:
         return self._meta_config_path.absolute()
 
     @property
-    def meta_config(self) -> MOSSMeta:
+    def meta_config(self) -> MossMeta:
         return self._meta_config
 
     @property

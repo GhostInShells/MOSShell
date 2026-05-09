@@ -1,7 +1,7 @@
 from typing import Iterable
 
-from ghoshell_moss.host.abcd import MossHost, MossRuntime
-from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI
+from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
+from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixREPL
 from ghoshell_moss.host.repl.inspector_manifests import ManifestsREPL

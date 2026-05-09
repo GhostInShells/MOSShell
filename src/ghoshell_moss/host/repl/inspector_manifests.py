@@ -36,3 +36,16 @@ class ManifestsREPL:
             {"name": name, "description": channel.description}
             for name, channel in self._manifests.channels()
         ]
+
+    def resource_storages(self) -> list[dict]:
+        """列出环境中发现的 ResourceStorageMeta 声明。"""
+        items = self._manifests.resource_storage_manifests()
+        return [
+            {
+                "scheme": item.meta.storage_scheme,
+                "host": item.meta.storage_host,
+                "description": item.meta.description,
+                "found_at": item.meta.found_module,
+            }
+            for item in items
+        ]

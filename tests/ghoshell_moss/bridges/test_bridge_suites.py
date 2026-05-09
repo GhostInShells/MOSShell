@@ -89,7 +89,7 @@ class TestBridgeSuite:
         provider, proxy_chan = suite.create("proxy")
 
         # 在另一个线程中运行.
-        async with provider.arun(provider_main_chan):
+        async with provider.arun(provider_main_chan) as provider:
             # 判断 channel 已经启动.
             main_runtime = provider.runtime
             metas = main_runtime.metas()

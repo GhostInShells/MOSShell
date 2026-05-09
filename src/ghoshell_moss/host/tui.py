@@ -18,7 +18,7 @@ from prompt_toolkit.completion import Completer, DummyCompleter, DynamicComplete
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
 from ghoshell_moss.core.blueprint.session import OutputItem
-from ghoshell_moss.host.abcd import MossHost
+from ghoshell_moss.core.blueprint.host import MossHost
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import uvloop

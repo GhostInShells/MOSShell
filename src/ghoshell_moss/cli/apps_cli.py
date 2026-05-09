@@ -1,7 +1,7 @@
 from typing import List
 from rich.panel import Panel
 from rich.markdown import Markdown
-from ghoshell_moss.host.abcd.app import AppInfo
+from ghoshell_moss.core.blueprint.app import AppInfo
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_moss.host import Host
 from .utils import print_host_mode_info, print_simple_table, print_simple_panel

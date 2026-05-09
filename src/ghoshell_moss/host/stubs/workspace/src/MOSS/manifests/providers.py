@@ -8,6 +8,7 @@ from ghoshell_moss.host.providers import (
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
 from ghoshell_moss.host.providers.audio_player_provider import PyAudioPlayerProvider
+from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
 
 moss_session_provider = WorkspaceSessionProvider()
 
@@ -26,3 +27,5 @@ player_service_provider = PyAudioPlayerProvider()
 tts_service_provider = TTSServiceProvider()
 
 speech_service_provider = TTSSpeechServiceProvider()
+
+resources_provider = InMemoryResourceRegistryProvider()

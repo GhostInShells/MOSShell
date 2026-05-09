@@ -22,7 +22,7 @@ from rich import print as rprint
 from pathlib import Path
 from typing import Optional
 
-from ghoshell_moss.host.abcd.environment import (
+from ghoshell_moss.core.blueprint.environment import (
     Environment,
     META_CONFIG_FILENAME,
 )

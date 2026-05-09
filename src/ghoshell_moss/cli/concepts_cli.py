@@ -21,7 +21,6 @@ __all__ = ['show_core_concepts']
 CONCEPT_PACKAGE = "ghoshell_moss.core.concepts"
 BLUEPRINT_PACKAGE = "ghoshell_moss.core.blueprint"
 CONTRACTS_PACKAGE = "ghoshell_moss.contracts"
-HOST_ABCD_PACKAGE = "ghoshell_moss.host.abcd"
 
 codex_app = typer.Typer(
     short_help="Show moss concepts",
@@ -67,19 +66,6 @@ def show_contracts(
         )
 ):
     _show_package_module(CONTRACTS_PACKAGE, module_name)
-
-
-@codex_app.command(
-    name='host',
-    help="list or show detail of the designs of MOSS tui and host implements",
-)
-def show_host(
-        module_name: Optional[str] = typer.Argument(
-            None,
-            help="Specific contracts module to reflect. If omitted, lists all available modules."
-        )
-):
-    _show_package_module(HOST_ABCD_PACKAGE, module_name)
 
 
 def _show_package_module(package: str, module_name: Optional[str] = None) -> None:

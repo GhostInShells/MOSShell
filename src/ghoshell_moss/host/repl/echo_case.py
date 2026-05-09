@@ -2,8 +2,8 @@ from typing import Callable, Iterable, Self
 from prompt_toolkit.completion import WordCompleter, Completer
 from prompt_toolkit.widgets import TextArea, Frame
 from prompt_toolkit.key_binding import KeyPressEvent
-from ghoshell_moss.host.abcd.tui import TUIState, MossHostTUI, RUNTIME, Runtime
-from ghoshell_moss.host.abcd import MossHost
+from ghoshell_moss.host.tui import TUIState, MossHostTUI, RUNTIME, Runtime
+from ghoshell_moss.core.blueprint.host import MossHost
 import asyncio
 import contextlib
 

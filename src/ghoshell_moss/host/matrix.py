@@ -1,5 +1,5 @@
 import asyncio
-from typing import Coroutine
+from typing import Coroutine, Literal
 
 from typing_extensions import Self
 
@@ -9,14 +9,14 @@ from ghoshell_container import IoCContainer, Container, Provider
 from ghoshell_moss import TopicService
 from ghoshell_moss.contracts import (
     Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider, BaseSystemPrompter,
-    SystemPrompter,
+    SystemPrompter, ResourceStorageFactoryBootstrapper,
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
-from ghoshell_moss.host.abcd.app import AppStore, AppInfo
-from ghoshell_moss.host.abcd.host_design import MossMode
-from ghoshell_moss.host.abcd.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
+from ghoshell_moss.core.blueprint.host import MossMode
+from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
@@ -35,7 +35,7 @@ import logging
 import threading
 import psutil
 
-__all__ = ['AppCell', 'MossModeCell', 'MatrixImpl']
+__all__ = ['AppCell', 'HostMainCell', 'MatrixImpl']
 
 
 class AppCell(Cell):
@@ -56,18 +56,14 @@ class AppCell(Cell):
         return self._alive_event.is_set()
 
 
-class MossModeCell(Cell):
+class HostMainCell(Cell):
 
     def __init__(self, mode: MossMode, event: threading.Event):
-        self.name = mode.name
-        self.type = 'main'
+        self.name = DEFAULT_CELL_ADDRESS
+        self.type = 'host'
         self.description = mode.description
         self.where = mode.file
         self._alive_event = event
-
-    @property
-    def address(self) -> str:
-        return DEFAULT_CELL_ADDRESS
 
     def is_alive(self) -> bool:
         return self._alive_event.is_set()
@@ -110,12 +106,13 @@ class MatrixImpl(Matrix):
         self.apps = app_store
         self._ctml_version_cache: dict[str, str] = {}
         self._current_mode: MossMode = mode
-        self._cell_address = env.cell_address
+        self._this_cell_address = env.cell_address
         self._manifests = manifest
         self._workspace = workspace
         self._session_scope = env.session_scope
 
         # prepare cell and events
+        # app cells 都是根据约定发现的, 由 host 进程管理的. 不会自动注册.
         cells: dict[str, Cell] = {}
         cell_alive_events: dict[str, threading.Event] = {}
         for app in self.apps.list_apps():
@@ -124,20 +121,26 @@ class MatrixImpl(Matrix):
             cell_alive_events[cell.address] = is_alive
             cells[cell.address] = cell
 
+        # prepare main cell
         event = threading.Event()
-        main_cell = MossModeCell(self._current_mode, event)
-        self._main_cell = main_cell
+        main_cell = HostMainCell(self._current_mode, event)
         cell_alive_events[main_cell.address] = event
         cells[main_cell.address] = main_cell
+        self._main_cell = main_cell
+        if self._this_cell_address == DEFAULT_CELL_ADDRESS:
+            self._this_cell_address = main_cell.address
+            self._is_main = True
+            self._this_cell = main_cell
+        else:
+            # 其实不会有 unknown, 不过开发测试阶段, 做一个兜底.
+            self._this_cell = cells.get(
+                self._this_cell_address,
+                UnknownCell(),
+            )
 
         self._cells = cells
         self._cell_alive_events = cell_alive_events
-        # 其实不会有 unknown, 不过开发测试阶段, 做一个兜底.
-        self._this_cell = cells.get(
-            self._cell_address,
-            UnknownCell(),
-        )
-        self._is_main = self._this_cell.type == 'main'
+        self._is_main = isinstance(self._this_cell, HostMainCell)
         self._logger: LoggerItf | logging.Logger | None = logger
         self._started = False
         self._channel_provider_task: asyncio.Task | None = None
@@ -146,7 +149,7 @@ class MatrixImpl(Matrix):
         self._closed_event = ThreadSafeEvent()
         self._exit_stack = contextlib.ExitStack()
         self._async_exit_stack = contextlib.AsyncExitStack()
-        self._log_prefix = f"<HostMatrix address={self._cell_address} session_id={self.env.session_scope}>"
+        self._log_prefix = f"<HostMatrix address={self._this_cell_address} session_id={self.env.session_scope}>"
         self._task_group: set[asyncio.Task] = set()
         locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
         locker_name = locker_name.replace('.', '_')
@@ -184,7 +187,7 @@ class MatrixImpl(Matrix):
         return self.get_ctml_prompt(ctml_version)
 
     def _prepare_container(self) -> Container:
-        container = Container(name=self._cell_address)
+        container = Container(name=self._this_cell_address)
         container.set(Matrix, self)
         container.set(MatrixImpl, self)
         container.set(Environment, self.env)
@@ -205,6 +208,13 @@ class MatrixImpl(Matrix):
             if container.bound(provider.contract()):
                 continue
             container.register(provider)
+
+        # 注册环境发现的所有资源.
+        # todo, 未来可以简单实现一个 host manifests resource storage registry, 自己在 bootstrap 时从 manifests 拿东西.
+        for resource_storage_manifest in self.manifests.resource_storage_manifests():
+            storage_factory = resource_storage_manifest.get_sync()
+            bootstrapper = ResourceStorageFactoryBootstrapper(storage_factory)
+            container.add_bootstrapper(bootstrapper)
 
         if self._logger is not None:
             # 替换掉注册的.
@@ -267,7 +277,13 @@ class MatrixImpl(Matrix):
     def container(self) -> IoCContainer:
         return self._container
 
-    def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
+    def provide_channel(
+            self,
+            channel: Channel,
+            *,
+            cell_type: str | None = None,
+            cell_name: str | None = None,
+    ) -> asyncio.Future[None]:
         self._check_running()
         # cancel providing channel
         cancelling = None
@@ -275,6 +291,10 @@ class MatrixImpl(Matrix):
             self._channel_provider_task.cancel()
             cancelling = self._channel_provider_task
             self._channel_provider_task = None
+
+        cell_name = cell_name or self._this_cell.name
+        cell_type = cell_type or self._this_cell.type
+        provider_address = Cell.make_address(cell_type, cell_name)
 
         async def _providing():
             nonlocal cancelling, channel
@@ -286,7 +306,7 @@ class MatrixImpl(Matrix):
                 except Exception as e:
                     self.logger.error("%s close channel provider exception: %s", self._log_prefix, e)
             provider = ZenohChannelProvider(
-                address=self._this_cell.address,
+                address=provider_address,
                 session_scope=self.session.session_scope,
                 container=self._container,
                 zenoh_session=self._container.force_fetch(zenoh.Session)
@@ -427,7 +447,7 @@ class MatrixImpl(Matrix):
         for address, cell in self._cells.items():
             if address == self._this_cell.address:
                 # 不监听自己.
-                self._cell_alive_events[self._cell_address].set()
+                self._cell_alive_events[self._this_cell_address].set()
                 continue
             event = self._cell_alive_events[address]
             sub = self._register_cell_liveness_listener(session, address, event)
@@ -541,7 +561,7 @@ class MatrixImpl(Matrix):
             await self._async_exit_stack.enter_async_context(topic_service)
             await self._async_exit_stack.enter_async_context(self._ensure_task_group_canceled_ctx_manager())
             await self._async_exit_stack.enter_async_context(self._ensure_parent_process_exists_ctx_manager())
-            if event := self._cell_alive_events.get(self._cell_address):
+            if event := self._cell_alive_events.get(self._this_cell_address):
                 event.set()
             self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_moss_env(
                 with_os_env=False,
@@ -565,7 +585,7 @@ class MatrixImpl(Matrix):
                 else:
                     self.logger.exception("%s stop on unknown error: %s", self._log_prefix, exc_val)
 
-            if event := self._cell_alive_events.get(self._cell_address):
+            if event := self._cell_alive_events.get(self._this_cell_address):
                 event.clear()
 
             # exit all the stack

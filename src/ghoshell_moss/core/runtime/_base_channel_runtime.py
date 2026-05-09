@@ -439,17 +439,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         yield self._start_and_close_ctx
         yield self._running_task_ctx
         yield self._main_loop_ctx
-
-    async def _main_runtime_loop(self) -> None:
-        async with contextlib.AsyncExitStack() as ctx:
-            for ctx_func in self._async_exit_ctx_funcs():
-                await self._exit_stack.enter_async_context(ctx_func())
-                self.logger.debug("%s context stack %s entered", self.log_prefix, ctx_func)
-            if self.is_connected():
-                pass
-            self._started.set()
-            self.logger.info("%s started", self.log_prefix)
-            await self._closing_event.wait()
+        yield self._clear_runtime_asyncio_tasks
 
     async def start(self) -> Self:
         """

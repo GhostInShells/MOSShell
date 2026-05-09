@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable, Iterable
-from typing import Any, Optional
+from typing import Any, Optional, AsyncGenerator
 
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
@@ -148,13 +148,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self.logger.exception(exc_val)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
-    def _bootstrap_stacks(self) -> Iterable[Callable]:
+    def _bootstrap_stacks(self) -> Iterable[Callable[[], contextlib.AbstractAsyncContextManager[None]]]:
         yield self._ioc_context_manager
         yield self._speech_context_manager
         yield self._runtime_context_manager
 
     @contextlib.asynccontextmanager
-    async def _ioc_context_manager(self):
+    async def _ioc_context_manager(self) -> AsyncGenerator[None, None]:
         await asyncio.to_thread(self._container.bootstrap)
 
         # 日志准备.

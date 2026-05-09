@@ -1,5 +1,5 @@
-from ghoshell_moss.host.abcd import MossRuntime
-from ghoshell_moss.host.abcd.tui import ConsoleOutput
+from ghoshell_moss.core.blueprint.host import MossRuntime
+from ghoshell_moss.host.tui import ConsoleOutput
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 __all__ = ['MOSSRuntimeInspector']

@@ -214,18 +214,22 @@ class Interpretation(BaseModel):
         """当前运行状态的描述. """
         status_message = Message.new()
         lines = []
-        if self.interrupted:
-            lines.append("Interrupted!")
-        if self.exception:
-            lines.append("Exception: %s" % self.exception)
-        if len(self.success_tasks) > 0:
-            lines.append("success: %d" % len(self.success_tasks))
-        if len(self.cancelled_tasks) > 0:
-            lines.append("canceled: %d" % len(self.cancelled_tasks))
-        if len(self.failed_tasks) > 0:
-            lines.append("failed: %d" % len(self.failed_tasks))
         if len(self.pending_tasks) > 0:
-            lines.append("pending: %s" % ",".join(self.pending_tasks.values()))
+            lines.append("compiled")
+        else:
+            lines.append("completed")
+        if self.interrupted:
+            lines.append("interrupted")
+        if self.exception:
+            lines.append("exception: %s" % self.exception)
+        if len(self.success_tasks) > 0:
+            lines.append("success: %s" % ",".join(self.success_tasks.values()))
+        if len(self.cancelled_tasks) > 0:
+            lines.append("canceled: %s" % ",".join(self.cancelled_tasks.values()))
+        if len(self.failed_tasks) > 0:
+            lines.append("failed: %s" % ",".join(self.failed_tasks.values()))
+        if len(self.pending_tasks) > 0:
+            lines.append("executing: %s" % ",".join(self.pending_tasks.values()))
         if len(lines) > 0:
             status_message.with_content("\n".join(lines))
             return [status_message]

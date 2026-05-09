@@ -5,7 +5,7 @@ from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
-from ghoshell_moss.host.abcd import MossHost, MossRuntime
+from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 import click
 
 
@@ -55,13 +55,18 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         return list(FastMCPMessageAdapter.parse_message_to_blocks(msgs))
 
     @mcp.tool()
-    async def execute_ctml(logos: str, with_dynamic: bool = False) -> list[ContentBlock]:
+    async def execute_ctml(
+        logos: str,
+        with_dynamic: bool = False,
+        call_soon: bool = False,
+        wait_done: bool = False,
+    ) -> list[ContentBlock]:
         """向 MOSS 执行 CTML 指令。支持多行指令，用于控制系统状态和逻辑流。"""
         if not state.toolset:
             return [TextContent(type='text', text="MOSS Runtime not initialized.")]
 
         # 执行命令并等待观察结果
-        executed = await state.toolset.moss_exec(logos, wait_done=True)
+        executed = await state.toolset.moss_exec(logos, call_soon=call_soon, wait_done=wait_done)
         results = list(FastMCPMessageAdapter.parse_message_to_blocks(executed))
         # 将 list[Message] 序列化为可读字符串
         if with_dynamic:

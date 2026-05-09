@@ -403,6 +403,7 @@ class Message(BaseModel, WithAdditional):
             *,
             with_meta: bool = True,
             timestamp: bool = True,
+            join_text: bool = True,
     ) -> Iterable[Content]:
         """
         将整个消息体返回成 Pydantic AI 的 User Content.
@@ -414,7 +415,7 @@ class Message(BaseModel, WithAdditional):
         tag = self.meta.tag
         # 没有 tag 的情况下, 认为不包裹消息.
         if not with_meta or not tag:
-            yield from self.contents
+            yield from self.iter_contents(join_text=join_text)
             return
 
         attrs = self.meta.gen_attributes_str(timestamp=timestamp)
@@ -422,9 +423,21 @@ class Message(BaseModel, WithAdditional):
         if attrs:
             attr_str = ' ' + attrs
         yield Text.new(f'<{tag}{attr_str}>\n').to_content()
-        for content in self.contents:
-            yield content
+        yield from self.iter_contents(join_text=join_text)
         yield Text.new(f'\n</{tag}>').to_content()
+
+    def iter_contents(self, join_text: bool = True) -> Iterable[Content]:
+        last_text: Content | None = None
+        for content in self.contents:
+            if join_text and Text.match(content):
+                if last_text is None:
+                    last_text = content.copy()
+                else:
+                    last_text['text'] += content['text']
+            else:
+                yield content
+        if last_text is not None:
+            yield last_text
 
     def with_messages(
             self,

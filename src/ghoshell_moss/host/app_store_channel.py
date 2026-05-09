@@ -3,7 +3,7 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRun
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.abcd.app import AppStore
+from ghoshell_moss.core.blueprint.app import AppStore
 from ghoshell_container import IoCContainer
 from threading import Lock
 
@@ -18,7 +18,10 @@ class AppStoreChannel(Channel):
     def __init__(self, name: str, description: str = ""):
         from ghoshell_common.helpers import uuid
         self._name = name
-        self._description = description
+        self._description = description or (
+            "App Store 核心通道，用于管理当前环境下的所有可用应用。"
+            "你可以通过此通道拉起具有特定功能的子进程"
+        )
         self._id = uuid()
 
     def name(self) -> ChannelName:
@@ -148,16 +151,10 @@ def build_apps_channel(
     构建 App 管理中心通道。
     该通道允许 AI 发现、启动、停止和初始化物理/逻辑应用 (Apps)。
     """
-    # 默认描述强调“中心化管理”
-    default_description = (
-        "App Store 核心通道，用于管理当前环境下的所有可用应用。"
-        "你可以通过此通道拉起具有特定功能的子进程"
-    )
-
     state = AppStoreChannelState(
         app_store=store,
         matrix=matrix,
         name=name,
-        description=description or default_description,
+        description=description,
     )
     return new_channel_from_state(state, id=id)
