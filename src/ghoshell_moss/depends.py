@@ -29,3 +29,10 @@ def depend_pyaudio():
         import pyaudio
     except ImportError:
         raise ImportError(f"Depend pyaudio, please install by 'pip install ghoshell_moss[audio]'")
+
+
+def depend_pydantic_ai():
+    try:
+        import pydantic_ai
+    except ImportError:
+        raise ImportError(f"Depend pydantic ai, please install by 'pip install ghoshell_moss[host]'")
