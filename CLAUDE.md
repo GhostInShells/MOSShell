@@ -257,6 +257,23 @@ Channel 使用的高阶知识:
 
 还在开发中.
 
+# Git 提交规范
+
+自 2026-05-06 起，AI 模型正式加入项目协作，提交规范遵循以下约定：
+
+1. 提交标题遵循行业惯例（如 Conventional Commits），不再参考此前的随意风格。
+
+2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <模型名>`，例如：
+   - `feat: add resource storage discovery by deepseek-v4`
+   - `docs: rewrite CLI guide by gemini-3`
+
+3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <模型名>`，例如：
+   - `fix: resolve channel teardown race coding by deepseek-v4`
+
+4. 平台信息写在提交正文末尾：`via claude code` 或 `via gemini cli`。
+
+5. 不添加 `Co-Authored-By`、虚构邮件地址等信息。模仿人类协作的自然方式。
+
 # 你的角色与任务
 
 当你通过 claude code 或其它 Coding 能力进入这个项目时, 不同的身份可以做不同的事情.
