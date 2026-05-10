@@ -42,6 +42,10 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
   - `modes` → `modes_cli.py`: MossMode 管理 (list, show, create)
   - `apps` → `apps_cli.py`: App 管理 (list, show, test)
   - `how-tos` → `howto_cli.py`: 知识库 (list, read, recall)
+  - `features` → `features_cli.py`: AI 原生 feature tracking (specification, list, status, create, archive, init)
+- **自省命令** (在 `main.py` 中直接定义, 不通过子 app):
+  - `help [commands...]`: 批量获取命令帮助。无参数显示根帮助, 带参数按路径解析 (如 `moss --ai help codex get-interface concepts core`)
+  - `all-commands`: 一次性列出所有命令树。`--depth 1/2/3` 控制深度, `--group <name>` 限定子树。设计目标: 将 AI 的 CLI 发现从 40+ 轮压缩到 2 轮
 
 ### 2. `moss-cli` — 面向人类使用的交互式 Shell
 

@@ -14,6 +14,7 @@ from ghoshell_moss.core.codex._features import (
     create_feature,
     archive_feature,
     init_features,
+    update_feature_status,
     VALID_STATUSES,
 )
 from ghoshell_moss.cli.utils import (
@@ -227,6 +228,48 @@ def create_cmd(
     except FileExistsError:
         print_error(f"Feature '{name}' already exists.")
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# set-status
+# ---------------------------------------------------------------------------
+
+@features_app.command("set-status")
+def set_status_cmd(
+    feature_id: str = typer.Argument(..., help="Feature ID to update."),
+    status: str = typer.Argument(..., help=f"New status: {', '.join(sorted(VALID_STATUSES))}"),
+    features_dir: Optional[Path] = typer.Option(
+        None, "--dir", "-d",
+        help="Path to .ai_partners/features/ directory. Defaults to current project.",
+    ),
+):
+    """
+    Quick-set the status of a feature without opening the file.
+
+    Updates the 'status' and 'updated' fields in the YAML frontmatter.
+    Faster than manually editing FEATURE.md — one shell call vs Read+Edit.
+    """
+    fd = _resolve_dir(features_dir)
+
+    if status not in VALID_STATUSES:
+        print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
+        raise typer.Exit(code=1)
+
+    meta = get_feature(str(fd), feature_id)
+    if meta is None:
+        print_error(f"Feature '{feature_id}' not found.")
+        raise typer.Exit(code=1)
+
+    old_status = meta.get("status", "?")
+    if old_status == status:
+        print_info(f"Feature '{feature_id}' status is already '{status}'.")
+        return
+
+    ok = update_feature_status(str(fd), feature_id, status)
+    if ok:
+        print_success(f"Feature '{feature_id}': {old_status} -> {status}")
+    else:
+        print_error(f"Failed to update status for '{feature_id}'.")
 
 
 # ---------------------------------------------------------------------------

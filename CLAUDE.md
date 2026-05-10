@@ -134,6 +134,22 @@ MOSS 目前实现的环境开发和调试工具是 `.venv/bin/moss-repl`, 可以
     - `contracts`: 项目的最小基础依赖, 这里的抽象通过 IoC 容器提供服务.
     - `host`: 当前版本整合环境发现, 提供开箱依赖, 生成 moss 运行时并给出 TUI 的设计.
 
+## CLI 命令发现
+
+AI 在发现可用命令时，用以下流程替代多轮 `--help` 探索：
+
+```bash
+# 第一轮: 一次性了解所有可用命令
+.venv/bin/moss --ai all-commands            # depth=2 (默认): 所有组 + 子命令
+.venv/bin/moss --ai all-commands --depth 3  # 包含每个命令的参数信息
+.venv/bin/moss --ai all-commands --group codex  # 只看某个子树
+
+# 第二轮: 批量获取具体命令的完整 help
+.venv/bin/moss --ai help codex get-interface concepts core
+```
+
+这将 CLI 命令发现从 40+ 轮压缩到 2 轮。
+
 ## 其它工具概要
 
 - `moss ws`: 创建和管理本地 workspace.

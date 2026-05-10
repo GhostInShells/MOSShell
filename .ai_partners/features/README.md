@@ -71,6 +71,7 @@ draft → in-progress → completed → archived
 | `moss features specification` | Render this README.md | None |
 | `moss features list [--status] [--archived]` | Parse all active (or archived) FEATURE.md frontmatter | None |
 | `moss features create <name>` | Copy TEMPLATE.md → active/\<name\>/FEATURE.md | Creates directory |
+| `moss features set-status <id> <status>` | Update status and updated fields in YAML frontmatter | Writes to FEATURE.md |
 | `moss features status [id]` | Parse and display specified or all frontmatter | None |
 | `moss features archive <id>` | Move directory to archived/\<year\>/\<month\>/ | Moves directory |
 | `moss features init` | Create `.ai_partners/features/` skeleton in project root | Creates directory structure |
