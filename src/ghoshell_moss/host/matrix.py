@@ -179,7 +179,7 @@ class MatrixImpl(Matrix):
             version_info = versions.get(ctml_version)
             if version_info is None:
                 raise KeyError(f"ctml version {ctml_version} not found in manifests")
-            self._ctml_version_cache[ctml_version] = version_info.file.read_text()
+            self._ctml_version_cache[ctml_version] = version_info.file.read_text(encoding="utf-8")
         return self._ctml_version_cache[ctml_version]
 
     def ctml_instruction(self) -> str:

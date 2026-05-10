@@ -52,7 +52,7 @@ host = [
     "eclipse-zenoh>=1.8.0",
     "pydantic-ai>=1.90.0",
     "uv>=0.11.8",
-    "uvloop>=0.22.1",
+    "uvloop>=0.22.1; sys_platform != 'win32'",
 ]
 
 

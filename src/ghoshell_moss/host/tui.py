@@ -21,7 +21,9 @@ from ghoshell_moss.core.blueprint.session import OutputItem
 from ghoshell_moss.core.blueprint.host import MossHost
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
-import uvloop
+import sys
+if sys.platform != "win32":
+    import uvloop
 import contextlib
 import sys
 import threading

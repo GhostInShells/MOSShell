@@ -2,12 +2,56 @@ from abc import ABC, abstractmethod
 from typing import Protocol, Union
 import re
 
-import fcntl
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+# ── 跨平台文件锁 ──────────────────────────────────────────────
+if sys.platform != "win32":
+    import fcntl
+
+    def _flock_ex(fd: int):
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def _flock_ex_nb(fd: int) -> bool:
+        """尝试排他锁（非阻塞），成功返回 True，已被占用返回 False"""
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+    def _flock_un(fd: int):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+else:
+    import msvcrt
+
+    def _flock_ex(fd: int):
+        """排他锁（阻塞）—— msvcrt 没有原生阻塞锁，手动重试"""
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
+
+    def _flock_ex_nb(fd: int) -> bool:
+        """尝试排他锁（非阻塞）"""
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+
+    def _flock_un(fd: int):
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+# ── 公开接口 ──────────────────────────────────────────────────
 __all__ = ["Workspace", "Storage", "LocalStorage", "Lock", "LocalWorkspace", "FileLocker"]
 
 
@@ -210,8 +254,11 @@ class LocalStorage:
 
 class FileLocker(Lock):
     """
-    基于 fcntl.flock 的增强型进程锁。
-    由 Gemini 3 重写：内核级原子性，支持非阻塞/阻塞/超时。
+    跨平台文件锁。
+    Linux/macOS: 基于 fcntl.flock，内核级原子性
+    Windows:     基于 msvcrt.locking，字节级范围锁
+
+    两种方式都支持非阻塞/阻塞/超时。
     """
 
     def __init__(self, lock_path: Path):
@@ -219,7 +266,8 @@ class FileLocker(Lock):
         self._fd: Optional[int] = None
 
     def _is_pid_running(self, pid: int) -> bool:
-        if pid <= 0: return False
+        if pid <= 0:
+            return False
         try:
             os.kill(pid, 0)
             return True
@@ -230,7 +278,6 @@ class FileLocker(Lock):
         """
         检查锁是否被占用。
         """
-        # 如果我自己持有着文件描述符，那肯定锁着
         if self._fd is not None:
             return True if by_self else True
 
@@ -238,55 +285,54 @@ class FileLocker(Lock):
             return False
 
         try:
-            # 尝试以只读方式打开并尝试加锁（非阻塞）
-            with open(self.path, 'r') as f:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    # 能加锁成功，说明之前没被别人锁住
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                locked = _flock_ex_nb(fd)
+                if locked:
+                    _flock_un(fd)
+                    os.close(fd)
                     return False
-                except BlockingIOError:
-                    # 加锁失败，说明被别人占着
+                else:
+                    os.close(fd)
                     return True
+            except Exception:
+                os.close(fd)
+                return True
         except (FileNotFoundError, PermissionError):
             return False
 
     def acquire(self, timeout: Optional[float] = 0) -> bool:
         """
-        核心逻辑：
-        1. 即使 flock 会随进程消失，我们依然写入 PID，方便人工排查。
-        2. 使用 O_RDWR 保持文件句柄常驻以持有内核锁。
+        获取锁。
         """
-        # 防止重入
         if self._fd is not None:
             return True
 
         start_time = time.time()
-
-        # 确保目录存在
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         while True:
+            fd = None
             try:
-                # 以读写模式打开（不使用 O_TRUNC 以免破坏读取逻辑）
                 fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
 
-                # 尝试内核加锁 (LOCK_EX: 排他锁, LOCK_NB: 非阻塞)
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
+                # Windows msvcrt 要求先 seek 到 0 才能 locking
+                os.lseek(fd, 0, os.SEEK_SET)
+
+                if not _flock_ex_nb(fd):
                     # 锁被占用
                     os.close(fd)
+                    fd = None
 
-                    if timeout == 0: return False
+                    if timeout == 0:
+                        return False
                     if timeout is not None and (time.time() - start_time) >= timeout:
                         return False
 
                     time.sleep(0.05)
                     continue
 
-                # 成功拿到了内核锁！
-                # 写入当前 PID 以供调试（覆盖原有内容）
+                # 拿到锁，写入 PID
                 os.ftruncate(fd, 0)
                 os.lseek(fd, 0, os.SEEK_SET)
                 os.write(fd, str(os.getpid()).encode())
@@ -295,26 +341,26 @@ class FileLocker(Lock):
                 return True
 
             except Exception:
-                # 发生意外（如权限问题），确保关闭 FD
-                if 'fd' in locals(): os.close(fd)
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
                 raise
 
     def release(self) -> None:
         """
-        释放内核锁并关闭文件描述符。
-        注意：不主动 unlink 文件，保留文件作为“占位符”是 Unix 锁的常见做法，
-        可以减少创建文件时的竞态条件。
+        释放锁并关闭文件描述符。
         """
         if self._fd is not None:
             try:
-                # 释放内核锁
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                os.lseek(self._fd, 0, os.SEEK_SET)
+                _flock_un(self._fd)
                 os.close(self._fd)
             finally:
                 self._fd = None
 
     def __enter__(self):
-        # 按照你的接口：None 是阻塞，0 是快败
         if not self.acquire(timeout=None):
             raise RuntimeError(f"Could not acquire lock on {self.path}")
         return self
@@ -343,16 +389,9 @@ class LocalWorkspace(Workspace):
         锁文件存放在 runtime/locks 目录下。
         by gemini 3
         """
-        # 1. 校验 Key 的合法性，防止路径穿越或非法字符
         if not re.match(r'^[a-zA-Z0-9_-]+$', key):
             raise ValueError(f"Invalid lock key: '{key}'. Must match pattern ^[a-zA-Z0-9_-]+$")
 
-        # 2. 获取锁文件存放的 storage 实例 (runtime/locks)
-        # sub_storage 会自动创建目录
         lock_storage = self.runtime().sub_storage("locks")
-
-        # 3. 构造完整的锁文件路径
         lock_file_path = lock_storage.abspath() / f"{key}.lock"
-
-        # 4. 返回 FileLocker 实例
         return FileLocker(lock_file_path)
