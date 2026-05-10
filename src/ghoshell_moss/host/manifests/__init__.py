@@ -1,7 +1,7 @@
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.manifests import (
     Manifests, ConfigInfo, TopicInfo, ProviderInfo, CtmlVersionInfo,
-    ResourceStorageManifest,
+    ResourceStorageManifest, NucleusMetaInfo,
 )
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
@@ -9,6 +9,7 @@ from .topics import search_topic_infos_from_package
 from .channels import search_channels_from_package
 from .primitives import search_primitives_from_package
 from .resource_storages import PackageResourceStorages
+from .nuclei import search_nucleus_infos
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
@@ -41,6 +42,7 @@ class PackageManifests(Manifests):
         self._primitives: dict[str, Command] | None = None
         self._ctml_versions: dict[str, CtmlVersionInfo] = ctml_versions or {}
         self._resource_storages: PackageResourceStorages | None = None
+        self._nuclei: dict[str, NucleusMetaInfo] | None = None
 
     @classmethod
     def from_environment(cls, env: Environment | None = None) -> Self:
@@ -118,6 +120,14 @@ class PackageManifests(Manifests):
             self._resource_storages = PackageResourceStorages(resources_package)
         return self._resource_storages
 
+    NUCLEI_SUB_PACKAGE = 'nuclei'
+
+    def nuclei(self) -> dict[str, NucleusMetaInfo]:
+        if self._nuclei is None:
+            nuclei_package = '.'.join([self.root_package_name, self.NUCLEI_SUB_PACKAGE])
+            self._nuclei = search_nucleus_infos(nuclei_package)
+        return self._nuclei
+
     def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
         items = []
         for meta_info in self.resource_storages().list_metas_sync(limit=-1):
@@ -139,6 +149,7 @@ class MergedManifests(Manifests):
         self._primitives: dict[str, Command] = {}
         self._ctml_versions: dict[str, CtmlVersionInfo] = {}
         self._resource_storages: PackageResourceStorages = PackageResourceStorages("")
+        self._nuclei: dict[str, NucleusMetaInfo] = {}
         for manifest in manifests:
             # 右边优先级更高.
             self._config_infos.update(manifest.configs())
@@ -151,6 +162,8 @@ class MergedManifests(Manifests):
             # 屏蔽 storage 实现.
             for item in manifest.resource_storage_manifests():
                 self._resource_storages.add_item(item)
+            # merge nuclei (右边优先)
+            self._nuclei.update(manifest.nuclei())
 
     @classmethod
     def from_environment_mode(cls, *, mode: str = '', env: Environment | None = None) -> Manifests:
@@ -191,3 +204,6 @@ class MergedManifests(Manifests):
 
     def resource_storages(self) -> PackageResourceStorages:
         return self._resource_storages
+
+    def nuclei(self) -> dict[str, NucleusMetaInfo]:
+        return self._nuclei

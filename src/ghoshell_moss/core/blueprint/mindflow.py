@@ -46,7 +46,7 @@ __all__ = [
     'Flag',
     'Logos', 'Moment', 'Reaction',
     'Action', 'Articulator',
-    'Nucleus', 'NucleusMeta', 'Mindflow', 'Attention',
+    'Nucleus', 'NucleusFactory', 'Mindflow', 'Attention',
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
     'PreemptedElseSuppress', 'BufferImpulse',
@@ -485,7 +485,7 @@ class Nucleus(ABC):
         pass
 
 
-class NucleusMeta(ABC):
+class NucleusFactory(ABC):
     """
     Nucleus 的元配置. 是可选的实现.
 

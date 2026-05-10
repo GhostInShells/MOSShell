@@ -2,17 +2,16 @@ from typing import AsyncIterable
 from ghoshell_container import IoCContainer, Contracts
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus, NucleusMeta, Articulator
-from ghoshell_moss.core.blueprint.conversation import ConversationStore, Conversation
+from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus, NucleusFactory, Articulator
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
-__all__ = ['Ghost', 'GhostMeta']
+__all__ = ['Ghost', 'GhostFactory']
 
 
-class GhostMeta(ABC):
+class GhostFactory(ABC):
     """
-    MOSS 架构中对 AI 的高阶封装抽象.
+    MOSS 架构中对智能模型的高阶封装抽象.
     底层可以是简单的模型调用, 或者复杂的 Agent 框架.
     只需要对齐几个基础的 API, 就可以被 MOSS 架构启动运行.
     """
@@ -25,7 +24,7 @@ class GhostMeta(ABC):
         pass
 
     @abstractmethod
-    def nuclei_metas(self) -> list[NucleusMeta]:
+    def nuclei_metas(self) -> list[NucleusFactory]:
         """
         返回可以自解释, 但依赖运行时的 Nucleus Meta
         """
@@ -93,7 +92,7 @@ class Ghost(ABC):
 
     @property
     @abstractmethod
-    def meta(self) -> GhostMeta:
+    def meta(self) -> GhostFactory:
         """
         仍然持有自身的 Meta 信息.
         """
