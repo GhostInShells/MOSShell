@@ -228,7 +228,11 @@ def archive_feature(features_dir: str | Path, feature_id: str) -> bool:
     if status not in ("completed", "abandoned"):
         return False
 
-    updated = meta.get("updated", date.today().isoformat())
+    updated = meta.get("updated", date.today())
+    if isinstance(updated, date):
+        updated = updated.isoformat()
+    else:
+        updated = str(updated)
     try:
         year, month, _ = updated.split("-")
     except ValueError:
