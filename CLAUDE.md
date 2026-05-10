@@ -140,6 +140,10 @@ MOSS 目前实现的环境开发和调试工具是 `.venv/bin/moss-repl`, 可以
 - `moss manifests`: 查看本地 workspace 提供的各种能力与协议的自解释声明.
 - `moss modes`: 管理环境中的各种模式.
 - `moss apps`: 管理环境中的应用.
+- `moss features`: AI 原生 feature tracking (FEATURE.md + YAML frontmatter 替代 GitHub Issues)。
+  - 当前为可选方案，建议人类工程师在 AI 协助下理解其设计意图后再决定是否采用。
+  - 约定文档: `moss features specification`；设计文档: `.design/2026-05-10-ai_native_feature_tracking_file_system_convention.md`。
+  - 当前 features 列表: `moss features list`。
 
 # MOSS 应用架构拓扑
 

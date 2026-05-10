@@ -4,6 +4,16 @@ from importlib import import_module
 from .reflector import reflect_module, reflect_module_by_import_path, reflect_any_by_import_path, Reflector
 from .compiler import Compiler
 from .executor import Executor
+from ._features import (
+    parse_frontmatter,
+    list_features,
+    get_feature,
+    create_feature,
+    update_feature_status,
+    archive_feature,
+    init_features,
+    VALID_STATUSES,
+)
 
 __all__ = [
     'Reflector',
@@ -11,6 +21,15 @@ __all__ = [
     'Compiler',
     'compile',
     'Executor',
+    # Features
+    'parse_frontmatter',
+    'list_features',
+    'get_feature',
+    'create_feature',
+    'update_feature_status',
+    'archive_feature',
+    'init_features',
+    'VALID_STATUSES',
 ]
 
 
