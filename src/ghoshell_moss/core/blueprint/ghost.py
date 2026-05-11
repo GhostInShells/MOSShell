@@ -24,7 +24,7 @@ class GhostFactory(ABC):
         pass
 
     @abstractmethod
-    def nuclei_metas(self) -> list[NucleusFactory]:
+    def nuclei_manifests(self) -> list[NucleusFactory]:
         """
         返回可以自解释, 但依赖运行时的 Nucleus Meta
         """

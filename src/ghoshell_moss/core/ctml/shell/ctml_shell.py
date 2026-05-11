@@ -145,7 +145,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if exc_val is not None:
-            self.logger.exception(exc_val)
+            if isinstance(exc_val, asyncio.CancelledError):
+                pass
+            else:
+                self.logger.exception(exc_val)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
 
     def _bootstrap_stacks(self) -> Iterable[Callable[[], contextlib.AbstractAsyncContextManager[None]]]:

@@ -505,5 +505,5 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def destroy(self) -> None:
         # 防止互相持有.
         self._task_done_callbacks.clear()
-        del self._channel
-        del self._importlib
+        self._channel = None
+        self._importlib = None

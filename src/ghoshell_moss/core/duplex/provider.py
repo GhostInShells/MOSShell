@@ -264,6 +264,8 @@ class DuplexChannelProvider(ChannelProvider):
                 await stack.enter_async_context(self._bootstrap_connection_stack())
                 await stack.enter_async_context(self._bootstrap_main_loop_stack())
                 yield self
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
         except KeyboardInterrupt:
@@ -460,7 +462,7 @@ class DuplexChannelProvider(ChannelProvider):
             except Exception as e:
                 self.logger.exception("%s consume runtime event loop failed: %s", self._log_prefix, e)
                 provider_error = ProviderErrorEvent(
-                    connection_id=self._connection_id,
+                    connection_id=self._connection_id or '',
                     errcode=-1,
                     errmsg=f"provider error: {e}",
                 )
@@ -683,9 +685,23 @@ class DuplexChannelProvider(ChannelProvider):
         self._running_thread = super().run_in_thread(channel)
         return self._running_thread
 
-    async def arun_until_closed(self, channel: Channel) -> None:
-        async with self.arun(channel):
-            await self.wait_stop()
+    async def arun_until_closed(self, channel: Channel | ChannelRuntime) -> None:
+        if isinstance(channel, ChannelRuntime):
+            async  with self.arun_channel_runtime(channel):
+                try:
+                    await self.wait_stop()
+                except asyncio.CancelledError:
+                    self.close()
+                    await self.wait_stop()
+                    raise
+        else:
+            async with self.arun(channel):
+                try:
+                    await self.wait_stop()
+                except asyncio.CancelledError:
+                    self.close()
+                    await self.wait_stop()
+                    raise
 
     def close(self) -> None:
         self._stopping_event.set()
