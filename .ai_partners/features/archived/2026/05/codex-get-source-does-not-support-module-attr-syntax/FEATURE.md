@@ -1,14 +1,16 @@
 ---
-id: codex-get-source-does-not-support-module-attr-syntax
-title: codex get-source/get-interface 不支持 module:attr 语法
-status: draft
-priority: P2
 created: 2026-05-11
-updated: 2026-05-11
 depends: []
-milestone:
-description: >-
-  moss codex get-source 和 get-interface 对 module:attr 格式传参时，将冒号误当作模块路径的一部分，导致 import 失败。
+description: moss codex get-source 和 get-interface 对 module:attr 格式传参时，将冒号误当作模块路径的一部分，导致
+  import 失败。
+id: codex-get-source-does-not-support-module-attr-syntax
+milestone: null
+priority: P2
+status: completed
+status_note: 'Fixed in 05cf633: get-source now uses import_from_path() to parse module:attr
+  syntax.'
+title: codex get-source/get-interface 不支持 module:attr 语法
+updated: '2026-05-11'
 ---
 
 # Codex Get Source Does Not Support Module Attr Syntax

@@ -182,6 +182,7 @@ def status_cmd(
                  f"Depends:     {', '.join(meta.get('depends', [])) or 'none'}",
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
+                 f"Status Note: {meta.get('status_note', '') or 'none'}",
                  f"Path:        {fd / 'active' / feature_id / 'FEATURE.md'}"]
         print_simple_panel("\n".join(lines), title=f"Feature: {feature_id}")
     else:
@@ -199,8 +200,11 @@ def status_cmd(
                 f"Priority:    {fm.get('priority', '?')}",
                 f"Updated:     {fm.get('updated', '?')}",
                 f"Description: {fm.get('description', '')}",
-                f"Path:        {fm_path}",
             ]
+            note = fm.get("status_note", "")
+            if note:
+                lines.append(f"Status Note: {note}")
+            lines.append(f"Path:        {fm_path}")
             print_simple_panel("\n".join(lines), title=f"{sid}: {fm.get('title', '')}")
 
 
@@ -242,11 +246,17 @@ def set_status_cmd(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
     ),
+    message: Optional[str] = typer.Option(
+        None, "--message", "-m",
+        help="One-line context note explaining the current status (e.g. why blocked, what's next).",
+    ),
 ):
     """
     Quick-set the status of a feature without opening the file.
 
     Updates the 'status' and 'updated' fields in the YAML frontmatter.
+    Use -m to attach a one-line status_note for context (e.g. why blocked, what's next).
+
     Faster than manually editing FEATURE.md — one shell call vs Read+Edit.
     """
     fd = _resolve_dir(features_dir)
@@ -261,13 +271,17 @@ def set_status_cmd(
         raise typer.Exit(code=1)
 
     old_status = meta.get("status", "?")
-    if old_status == status:
+    old_note = meta.get("status_note", "")
+    if old_status == status and (message is None or message == old_note):
         print_info(f"Feature '{feature_id}' status is already '{status}'.")
         return
 
-    ok = update_feature_status(str(fd), feature_id, status)
+    ok = update_feature_status(str(fd), feature_id, status, status_note=message)
     if ok:
-        print_success(f"Feature '{feature_id}': {old_status} -> {status}")
+        msg = f"Feature '{feature_id}': {old_status} -> {status}"
+        if message:
+            msg += f"  ({message})"
+        print_success(msg)
     else:
         print_error(f"Failed to update status for '{feature_id}'.")
 
@@ -283,9 +297,20 @@ def archive_cmd(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
     ),
+    abandoned: bool = typer.Option(
+        False, "--abandoned", "-a",
+        help="Archive as abandoned (default: completed).",
+    ),
+    message: Optional[str] = typer.Option(
+        None, "--message", "-m",
+        help="One-line status note for the archived feature.",
+    ),
 ):
     """
-    Archive a completed or abandoned feature.
+    Set status and archive a feature in one step.
+
+    Defaults to 'completed'. Use --abandoned to archive as abandoned.
+    Optionally attach a status note with -m.
 
     Moves the feature directory to archived/<year>/<month>/<name>/.
     The archived directory tree itself is the index — use 'moss features list --archived' to query.
@@ -297,17 +322,15 @@ def archive_cmd(
         print_error(f"Feature '{feature_id}' not found.")
         raise typer.Exit(code=1)
 
-    status = meta.get("status", "")
-    if status not in ("completed", "abandoned"):
-        print_error(
-            f"Feature '{feature_id}' has status '{status}'. "
-            "Must be 'completed' or 'abandoned' to archive."
-        )
-        raise typer.Exit(code=1)
+    old_status = meta.get("status", "?")
+    new_status = "abandoned" if abandoned else "completed"
 
-    ok = archive_feature(str(fd), feature_id)
+    ok = archive_feature(str(fd), feature_id, abandoned=abandoned, status_note=message)
     if ok:
-        print_success(f"Feature '{feature_id}' archived.")
+        msg = f"Feature '{feature_id}' archived ({old_status} -> {new_status})"
+        if message:
+            msg += f"  ({message})"
+        print_success(msg)
     else:
         print_error(f"Failed to archive feature '{feature_id}'.")
 

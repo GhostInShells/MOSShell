@@ -205,9 +205,15 @@ def update_feature_status(
     features_dir: str | Path,
     feature_id: str,
     status: str,
+    status_note: Optional[str] = None,
 ) -> bool:
     """
     Update the status (and updated date) of a feature's frontmatter.
+
+    If status_note is provided, it is written to the frontmatter as a
+    one-line context pointer explaining the current status
+    (e.g. why blocked, what's next).  The note is overwritten on each
+    call that provides one — it does NOT accumulate history.
 
     Returns True on success, False if feature not found.
     """
@@ -218,6 +224,8 @@ def update_feature_status(
     post = frontmatter.load(str(fm_path))
     post["status"] = status
     post["updated"] = date.today().isoformat()
+    if status_note is not None:
+        post["status_note"] = status_note
     fm_path.write_text(frontmatter.dumps(post), encoding="utf-8")
     return True
 
@@ -226,17 +234,23 @@ def update_feature_status(
 # Archive
 # ---------------------------------------------------------------------------
 
-def archive_feature(features_dir: str | Path, feature_id: str) -> bool:
+def archive_feature(
+    features_dir: str | Path,
+    feature_id: str,
+    abandoned: bool = False,
+    status_note: Optional[str] = None,
+) -> bool:
     """
-    Archive a completed or abandoned feature:
+    Set status and archive a feature in one step.
 
-    1. Confirm status is completed/abandoned
-    2. Move directory to archived/<year>/<month>/<name>/
+    1. Auto-set status to 'completed' (or 'abandoned' if abandoned=True)
+    2. Optionally write a status_note
+    3. Move directory to archived/<year>/<month>/<name>/
 
     The archived directory tree itself is the index — no CSV file needed.
     Use list_archived_features() to query archived features.
 
-    Returns True on success, False if feature not found or not archivable.
+    Returns True on success, False if feature not found.
     """
     features_dir = Path(features_dir)
     active_dir = features_dir / "active"
@@ -249,8 +263,13 @@ def archive_feature(features_dir: str | Path, feature_id: str) -> bool:
     if meta is None:
         return False
 
-    status = meta.get("status", "")
-    if status not in ("completed", "abandoned"):
+    # Auto-set status before archiving
+    new_status = "abandoned" if abandoned else "completed"
+    update_feature_status(str(features_dir), feature_id, new_status, status_note=status_note)
+
+    # Re-read after status update to get the updated date
+    meta = get_feature(str(features_dir), feature_id)
+    if meta is None:
         return False
 
     updated = meta.get("updated", date.today())
