@@ -1,16 +1,15 @@
 ---
-id: ai-native-feature-tracking
-title: AI-Native Feature Tracking via File System Convention
-status: in-progress
-priority: P0
 created: 2026-05-10
-updated: 2026-05-10
 depends: []
+description: Replace GitHub Issues with file-system-based feature tracking (FEATURE.md
+  + YAML frontmatter) designed exclusively for AI incarnation collaboration. CLI as
+  thin convention enforcer, core logic in ghoshell_moss.core.codex.
+id: ai-native-feature-tracking
 milestone: moss-self-bootstrap
-description: >-
-  Replace GitHub Issues with file-system-based feature tracking (FEATURE.md + YAML frontmatter)
-  designed exclusively for AI incarnation collaboration. CLI as thin convention enforcer,
-  core logic in ghoshell_moss.core.codex.
+priority: P0
+status: completed
+title: AI-Native Feature Tracking via File System Convention
+updated: '2026-05-11'
 ---
 
 # AI-Native Feature Tracking via File System Convention

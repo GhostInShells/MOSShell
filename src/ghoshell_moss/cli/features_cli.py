@@ -331,6 +331,7 @@ def archive_cmd(
         if message:
             msg += f"  ({message})"
         print_success(msg)
+        print_info(f"Remember to add or remove archived feature files.")
     else:
         print_error(f"Failed to archive feature '{feature_id}'.")
 
