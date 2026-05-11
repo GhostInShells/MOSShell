@@ -13,10 +13,11 @@ from ghoshell_moss.contracts import (
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
-from ghoshell_moss.core.blueprint.matrix import Matrix, Cell
+from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, Fractal
 from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
 from ghoshell_moss.core.blueprint.host import MossMode
 from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.environment import MossMeta
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
@@ -24,6 +25,7 @@ from ghoshell_moss.host.providers import (
     WorkspaceSessionProvider,
 )
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
+from ghoshell_moss.host.zenoh_fractal import ZenohSessionFractal
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.helpers import uuid
 from ghoshell_moss.depends import depend_zenoh
@@ -35,7 +37,7 @@ import logging
 import threading
 import psutil
 
-__all__ = ['AppCell', 'HostMainCell', 'MatrixImpl']
+__all__ = ['AppCell', 'HostMainCell', 'MatrixImpl', 'FractalZenohProvider']
 
 
 class AppCell(Cell):
@@ -87,6 +89,41 @@ class UnknownCell(Cell):
 
     def is_alive(self) -> bool:
         return False
+
+
+class FractalZenohProvider(Provider[Fractal]):
+    """
+    默认的 Fractal 实现 Provider。
+    读取 workspace 中的 zenoh_config_fractal.json5 创建 ZenohSessionFractal。
+    可被 manifest providers 覆盖（更高优先级）。
+    """
+
+    def __init__(self, conf_file: str = "zenoh_config_fractal.json5"):
+        self._conf_file = conf_file
+
+    def singleton(self) -> bool:
+        return True
+
+    def contract(self) -> type:
+        return Fractal
+
+    def factory(self, con: IoCContainer) -> Fractal:
+        workspace = con.force_fetch(Workspace)
+        env = con.force_fetch(Environment)
+        logger = con.get(LoggerItf)
+
+        config_path = workspace.configs().abspath() / self._conf_file
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Fractal zenoh config not found: {config_path}"
+            )
+
+        meta = env.meta_config
+        return ZenohSessionFractal(
+            meta=meta,
+            zenoh_conf_file=config_path,
+            logger=logger,
+        )
 
 
 class MatrixImpl(Matrix):
@@ -241,6 +278,10 @@ class MatrixImpl(Matrix):
         # 否则注册约定的日志模块, 但仍然可能被 contracts 覆盖.
         default_providers.append(WorkspaceLoggerProvider(self._this_cell.log_name))
 
+        # 注册 Fractal（仅 main cell，用于发现远程分形子节点）
+        if self._is_main:
+            default_providers.append(FractalZenohProvider())
+
         # 注册 Topic Service.
         default_providers.append(ZenohTopicServiceProvider(
             session_scope=self.env.session_scope,
@@ -264,6 +305,10 @@ class MatrixImpl(Matrix):
 
     def list_cells(self) -> dict[str, Cell]:
         return self._cells
+
+    def fractal(self) -> Fractal | None:
+        """获取 Fractal 分形通讯实例（仅 main cell 可用）。"""
+        return self._container.get(Fractal)
 
     @property
     def session(self) -> Session:

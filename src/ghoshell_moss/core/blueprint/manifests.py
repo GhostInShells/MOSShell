@@ -21,6 +21,7 @@ __all__ = [
     'CtmlVersionInfo',
     'ResourceStorageMetaInfo',
     'ResourceStorageManifest',
+    'NucleusMetaInfo',
     'Manifests',
 ]
 
@@ -235,6 +236,26 @@ class ResourceStorageManifest(ResourceItem[ResourceStorageMetaInfo, ResourceStor
         pass
 
 
+@dataclass(frozen=True)
+class NucleusMetaInfo:
+    """Meta info describing a discovered NucleusFactory."""
+
+    name: str
+    """NucleusFactory.name()"""
+
+    description: str
+    """NucleusFactory.description()"""
+
+    signal_names: list[str]
+    """Signal names declared by factory.signals()"""
+
+    found_module: str
+    """Python {module}:{attr} where discovered"""
+
+    found_file: str
+    """Absolute file path where discovered"""
+
+
 class Manifests:
     """
     MOSS 在环境中发现的各种资源的声明.
@@ -281,3 +302,10 @@ class Manifests:
 
     def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
         return []
+
+    def nuclei(self) -> dict[str, NucleusMetaInfo]:
+        """
+        环境中发现的 NucleusFactory 声明。用于开发/测试基础设施。
+        通过 ghoshell_moss.core.blueprint.mindflow.NucleusFactory 实例发现。
+        """
+        return {}

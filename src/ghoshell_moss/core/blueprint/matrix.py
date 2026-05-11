@@ -119,8 +119,9 @@ class Fractal(ABC):
     @abstractmethod
     def channel_hub(self, name: str, description: str = '') -> Channel:
         """
-        将
+        将自动发现的子节点生成为 channel, 可以集成使用.
         """
+        pass
 
 
 INSTANCE = TypeVar('INSTANCE')
@@ -144,12 +145,6 @@ class Matrix(ABC):
         # moss 架构的默认实现.
         from ghoshell_moss.host import Host
         return Host.discover().matrix()
-
-    def fractal(self) -> Fractal:
-        """
-        获取 Fractal 协议的实现.
-        """
-        raise NotImplementedError('fractal not implemented.')
 
     @abstractmethod
     def cell_env(self) -> dict[str, str]:

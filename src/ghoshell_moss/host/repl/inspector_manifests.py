@@ -49,3 +49,15 @@ class ManifestsREPL:
             }
             for item in items
         ]
+
+    def nuclei(self) -> list[dict]:
+        """列出环境中发现的 NucleusFactory 声明。"""
+        return [
+            {
+                "name": info.name,
+                "description": info.description,
+                "signal_names": info.signal_names,
+                "found_at": info.found_module,
+            }
+            for info in self._manifests.nuclei().values()
+        ]

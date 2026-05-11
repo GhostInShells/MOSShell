@@ -13,7 +13,7 @@ All reads go through MarkdownKnowledgeBase (the ResourceStorage).
 import asyncio
 import typer
 from pathlib import Path
-from .utils import console, print_error, print_info, print_simple_table
+from .utils import console, print_error, print_info, print_simple_table, show_status
 
 HOW_TO_ROOT = Path(__file__).resolve().parent / "how_tos"
 
@@ -83,9 +83,9 @@ def list_docs(
     )
 
 
-@howto_app.command(name="ask")
-def ask_question(
-        question: str = typer.Argument(help="Your question about MOSS operations"),
+@howto_app.command(name="recall")
+def recall(
+        query: str = typer.Argument(help="recall how-tos by agent with pydantic ai and anthropic api"),
 ):
     """Ask a question via the recall agent (requires ANTHROPIC_SMALL_FAST_MODEL)."""
     from ghoshell_moss.core.resources.markdown_kb import recall_available
@@ -95,9 +95,10 @@ def ask_question(
         print_info("Set ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, and ANTHROPIC_SMALL_FAST_MODEL to enable.")
         raise typer.Exit(code=1)
 
-    result = asyncio.run(kb.recall((question, None)))
+    with show_status("recalling how-to documents..."):
+        result = asyncio.run(kb.recall((query, None)))
 
-    console.print(f"[bold]Q:[/bold] {question}\n")
+    console.print(f"[bold]Q:[/bold] {query}\n")
 
     if result.done:
         if result.locators:

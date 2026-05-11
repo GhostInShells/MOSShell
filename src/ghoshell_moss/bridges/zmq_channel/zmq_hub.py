@@ -1,33 +1,77 @@
+"""
+ZMQ Hub — 基于 ROUTER/DEALER 的动态节点注册与发现。
+
+Hub 绑定 ROUTER socket 在知名地址，子节点通过 DEALER 连接注册。
+registered_nodes() 即时返回缓存，零阻塞。
+
+Registry 协议 (JSON over ZMQ multipart):
+  DEALER → ROUTER (multipart: [b"", json_bytes]):
+    {"action": "register",   "name": "...", "channel_address": "...", "description": "..."}
+    {"action": "unregister", "name": "..."}
+    {"action": "heartbeat",  "name": "..."}
+    {"action": "query"}
+
+  ROUTER → DEALER (multipart: [identity, b"", json_bytes]):
+    {"status": "ok"}
+    {"status": "ok", "nodes": [...]}
+"""
+
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import signal
 import sys
+import threading
 import time
-from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from typing import Optional
 
 import psutil
-from ghoshell_common.contracts import LoggerItf
-from pydantic import BaseModel, Field
 
-from ghoshell_moss import CommandErrorCode
-from ghoshell_moss.core import PyChannel, ChannelCtx
+try:
+    import zmq
+    import zmq.asyncio
+except ImportError:
+    raise ImportError("zmq module not found, please pip install ghoshell-moss[zmq]")
+
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName
+from ghoshell_moss.core.concepts.command import Command
+from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQChannelProxy
+from ghoshell_moss.contracts import LoggerItf
 
 __all__ = [
-    "ZMQChannelHub",
-    "ZMQChannelProxy",
-    "ZMQHubConfig",
-    "ZMQProxyConfig",
+    "ZMQHub",
+    "ZMQHubChannelState",
+    "NodeInfo",
+    "ManagedProcess",
+    "zmq_register",
+    "zmq_unregister",
+    "zmq_query",
 ]
 
 
+# ------------------------------------------------------------------
+# NodeInfo — 注册节点信息
+# ------------------------------------------------------------------
+
+@dataclass
+class NodeInfo:
+    """注册在 ZMQHub 上的节点信息。"""
+    name: str
+    channel_address: str
+    description: str = ""
+    registered_at: float = field(default_factory=time.time)
+
+
+# ------------------------------------------------------------------
+# ManagedProcess — 子进程管理器 (保留自 alpha)
+# ------------------------------------------------------------------
+
 class ManagedProcess:
-    """
-    异步进程资源管理器。
-    实现上下文管理器协议，确保退出时进程一定被关闭。
-    """
+    """异步子进程资源管理器。实现上下文管理器协议，确保退出时进程一定被关闭。"""
 
     def __init__(self, name: str, script_path: str, env: dict, logger: logging.Logger):
         self.name = name
@@ -43,13 +87,10 @@ class ManagedProcess:
         self.logger.info("--- 启动子进程: %s", self.name)
         self.start_time = time.time()
 
-        # 启动子进程
-        # Unix下使用 start_new_session=True 创建进程组，方便 killpg 一把全杀
         creationflags = 0
         start_new_session = False
 
         if sys.platform == "win32":
-            # Windows 特定设置
             creationflags = asyncio.subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             start_new_session = True
@@ -64,13 +105,10 @@ class ManagedProcess:
             creationflags=creationflags,
         )
 
-        # 启动后台日志监控任务
         self._monitor_task = asyncio.create_task(self._monitor_logs())
         return self
 
     async def _monitor_logs(self):
-        """后台任务：读取并打印子进程日志"""
-
         async def read_stream(stream, level):
             while True:
                 line = await stream.readline()
@@ -81,7 +119,8 @@ class ManagedProcess:
 
         try:
             await asyncio.gather(
-                read_stream(self.process.stdout, logging.INFO), read_stream(self.process.stderr, logging.ERROR)
+                read_stream(self.process.stdout, logging.INFO),
+                read_stream(self.process.stderr, logging.ERROR),
             )
         except asyncio.CancelledError:
             pass
@@ -89,7 +128,6 @@ class ManagedProcess:
             self.logger.exception("监控子进程 %s 日志时出错", self.name)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """退出上下文时，确保清理进程"""
         if self._monitor_task:
             self._monitor_task.cancel()
 
@@ -99,7 +137,6 @@ class ManagedProcess:
         self.logger.info("--- 正在关闭子进程: %s (PID: %s)", self.name, self.process.pid)
 
         try:
-            # 1. 尝试优雅关闭 (SIGTERM / CTRL_BREAK)
             if sys.platform == "win32":
                 self.process.terminate()
             else:
@@ -108,12 +145,10 @@ class ManagedProcess:
                 except ProcessLookupError:
                     pass
 
-            # 等待退出
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=3.0)
                 self.logger.info("子进程 %s 已优雅退出", self.name)
             except asyncio.TimeoutError:
-                # 2. 强制关闭 (SIGKILL)
                 self.logger.warning("子进程 %s 响应超时，正在强制关闭...", self.name)
                 if sys.platform == "win32":
                     self.process.kill()
@@ -138,203 +173,511 @@ class ManagedProcess:
             return False
         if self.process.returncode is not None:
             return False
-        # 二次检查
         try:
             return psutil.pid_exists(self.process.pid)
-        except:
+        except Exception:
             return False
 
 
-class ZMQProxyConfig(BaseModel):
-    script: str = Field(description="the script filename of the zmq channel provider")
-    description: str = Field(description="the description of the zmq channel provider")
-    address: str = Field(default="", description="the address of the zmq channel provider")
+# ------------------------------------------------------------------
+# ZMQHub — 动态节点注册/发现
+# ------------------------------------------------------------------
 
-
-class ZMQHubConfig(BaseModel):
-    name: str = Field(description="name of the hub")
-    description: str = Field(description="description of the hub")
-    root_dir: str = Field(description="所有子进程脚本所在的目录地址, 用来和 proxy config.script 获取运行路径.")
-    proxies: dict[str, ZMQProxyConfig] = Field(
-        default_factory=dict, description="the zmq channel provider configurations, from name to config"
-    )
-
-
-class ZMQChannelHub:
+class ZMQHub:
     """
-    基于 AsyncExitStack 重构的 ZMQ Channel Hub。
-    确保子进程生命周期安全，无僵尸进程。
+    ZMQ 动态 Hub — 节点自注册，自动发现。
+
+    使用方式:
+        hub = ZMQHub(name="my-hub", registry_address="ipc:///tmp/moss-zmq-hub.sock")
+        async with hub:
+            # 查看已注册节点
+            nodes = hub.registered_nodes()
+
+            # 为节点创建 proxy
+            proxy = hub.create_proxy("node-a")
+            async with proxy.bootstrap() as runtime:
+                await runtime.wait_connected()
+                # ...
+
+            # 或集成到 Shell
+            channel = hub.as_channel()
     """
 
-    def __init__(self, config: ZMQHubConfig, logger: LoggerItf | None = None):
-        self._config = config
-        self._logger = logger or logging.getLogger(__name__)
+    DEFAULT_REGISTRY_ADDRESS = "ipc:///tmp/moss-zmq-hub.sock"
 
-        # 核心：主资源栈，管理 Hub 的生命周期
-        self._main_exit_stack = AsyncExitStack()
+    def __init__(
+        self,
+        name: str,
+        registry_address: str | None = None,
+        *,
+        logger: LoggerItf | None = None,
+        heartbeat_timeout: float | None = None,
+    ):
+        """
+        :param name: Hub 名称
+        :param registry_address: ROUTER socket 绑定地址。
+                                 默认 ipc:///tmp/moss-zmq-hub-{name}.sock
+        :param logger: 日志接口
+        :param heartbeat_timeout: 心跳超时秒数。None 表示不启用超时清理。
+        """
+        self._name = name
+        self._registry_addr = registry_address or f"ipc:///tmp/moss-zmq-hub-{name}.sock"
+        self._logger = logger or logging.getLogger(f"zmq_hub.{name}")
+        self._heartbeat_timeout = heartbeat_timeout
 
-        # 状态管理：映射 channel_name -> (ChildStack, ManagedProcessInstance)
-        # 这样我们可以单独关闭某一个 channel
-        self._active_channels: dict[str, tuple[AsyncExitStack, ManagedProcess]] = {}
+        self._ctx = zmq.asyncio.Context.instance()
+        self._router: Optional[zmq.asyncio.Socket] = None
+        self._nodes: dict[str, NodeInfo] = {}
+        self._nodes_lock = threading.Lock()
+        self._registry_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._closed = threading.Event()
 
-    def channel_description(self) -> str:
-        """生成通道描述，包括所有已配置的子通道及其状态"""
-        description = self._config.description
-        config_lines = ["已配置的子通道："]
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
 
-        for name, config in self._config.proxies.items():
-            status = "❌ 未运行"
-
-            # 检查运行状态
-            if name in self._active_channels:
-                _, managed_proc = self._active_channels[name]
-                if managed_proc.is_running:
-                    runtime = time.time() - managed_proc.start_time
-                    runtime_str = self._format_runtime(runtime)
-                    status = f"✅ 运行中 (PID: {managed_proc.pid}, 运行时间: {runtime_str})"
-                else:
-                    # 进程对象存在但已退出（异常情况）
-                    status = "⚠️  已退出"
-
-            channel_line = f"- {name}: {status}"
-            desc_line = f"  描述: {config.description}"
-            config_lines.extend([channel_line, desc_line, ""])
-
-        config_section = "\n".join(config_lines)
-        return "\n\n".join([description, config_section])
-
-    def _format_runtime(self, seconds: float) -> str:
-        if seconds < 60:
-            return f"{seconds:.1f}秒"
-        elif seconds < 3600:
-            minutes = seconds / 60
-            return f"{minutes:.1f}分钟"
-        else:
-            hours = seconds / 3600
-            return f"{hours:.1f}小时"
-
-    async def connect_or_reconnect_sub_channel_process(self, name: str, config: ZMQProxyConfig) -> None:
-        """启动或重启子进程"""
-
-        # 1. 如果已存在，先关闭旧的
-        if name in self._active_channels:
-            await self.terminate_sub_channel_process(name)
-
-        # 2. 准备路径和环境
-        script_path = os.path.join(self._config.root_dir, config.script)
-        if not os.path.exists(script_path):
-            raise CommandErrorCode.NOT_FOUND.error(f"子 Channel {name} 脚本不存在: {script_path}")
-
-        env = os.environ.copy()
-        env["MOSHELL_PARENT_PID"] = str(os.getpid())
-
-        # 3. 创建一个新的上下文栈，用于单独管理这个子进程
-        # 将这个子栈压入主栈，确保 Hub 关闭时也能关闭它
-        child_stack = await self._main_exit_stack.enter_async_context(AsyncExitStack())
-
-        try:
-            # 4. 创建并启动进程资源
-            managed_proc = ManagedProcess(name, script_path, env, self._logger)
-            await child_stack.enter_async_context(managed_proc)
-
-            # 5. 记录状态
-            self._active_channels[name] = (child_stack, managed_proc)
-
-        except Exception:
-            self._logger.exception("启动子通道 %s 失败", name)
-            # 如果启动失败，立即清理子栈
-            await child_stack.aclose()
-            raise
-
-    async def terminate_sub_channel_process(self, name: str) -> None:
-        """关闭单个子 Channel"""
-        if name not in self._active_channels:
+    async def start(self) -> None:
+        """启动 hub registry。"""
+        if self._router is not None:
             return
 
-        self._logger.info("正在终止子通道: %s", name)
-        child_stack, _ = self._active_channels.pop(name)
+        self._router = self._ctx.socket(zmq.ROUTER)
+        self._router.setsockopt(zmq.LINGER, 0)
+        self._router.bind(self._registry_addr)
+        self._logger.debug("ZMQHub '%s' ROUTER bound to %s", self._name, self._registry_addr)
 
-        # 关闭子栈会触发 ManagedProcess.__aexit__
-        await child_stack.aclose()
+        loop = asyncio.get_running_loop()
+        self._registry_task = loop.create_task(self._registry_loop())
+        if self._heartbeat_timeout is not None:
+            self._cleanup_task = loop.create_task(self._cleanup_loop())
 
-    async def close(self):
-        """关闭整个 Hub，清理所有子进程"""
-        self._logger.info("正在关闭 Hub 并清理所有子进程...")
-        # 关闭主栈会自动以 LIFO 顺序关闭所有注册的子栈
-        await self._main_exit_stack.aclose()
-        self._active_channels.clear()
-        self._logger.info("所有子进程已清理完成")
+    async def stop(self) -> None:
+        """停止 hub，关闭所有连接。"""
+        if self._closed.is_set():
+            return
+        self._closed.set()
 
-    def is_sub_channel_running(self, name: str) -> bool:
-        if name not in self._active_channels:
-            return False
-        _, proc = self._active_channels[name]
-        return proc.is_running
+        for task in [self._registry_task, self._cleanup_task]:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
-    # --- 以下为 PyChannel 交互逻辑 ---
+        self._registry_task = None
+        self._cleanup_task = None
 
-    async def start_sub_channel(self, name: str, timeout: float = 15.0) -> str:
-        """PyChannel Command: 开启子节点"""
-        if not name:
-            raise CommandErrorCode.VALUE_ERROR.error("channel name cannot be empty")
-        proxy_conf = self._config.proxies.get(name)
-        if proxy_conf is None:
-            raise CommandErrorCode.VALUE_ERROR.error(f"sub channel {name} not registered")
+        if self._router is not None:
+            self._router.close(linger=0)
+            self._router = None
 
-        await self.connect_or_reconnect_sub_channel_process(name, proxy_conf)
+        self._logger.debug("ZMQHub '%s' stopped", self._name)
 
-        # 等待 ZMQ 连接就绪
-        current_chan = ChannelCtx.channel()
-        sub_channel = current_chan.get_channel(name)
+    async def __aenter__(self) -> "ZMQHub":
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.stop()
+
+    # ------------------------------------------------------------------
+    # Registry Loop
+    # ------------------------------------------------------------------
+
+    async def _registry_loop(self) -> None:
+        """后台: ROUTER socket 接收注册/注销/心跳/查询消息。"""
+        while not self._closed.is_set():
+            try:
+                frames = await self._router.recv_multipart()
+            except zmq.ZMQError:
+                if self._closed.is_set():
+                    return
+                continue
+
+            if len(frames) < 3:
+                continue
+
+            identity = frames[0]
+            # frames[1] is the empty delimiter frame from DEALER
+            data_bytes = frames[2]
+
+            try:
+                msg = json.loads(data_bytes)
+            except json.JSONDecodeError:
+                self._logger.warning("ZMQHub '%s' bad JSON", self._name)
+                continue
+
+            action = msg.get("action", "")
+            node_name = msg.get("name", "")
+
+            if action == "register":
+                if not node_name:
+                    continue
+                channel_addr = msg.get("channel_address", "")
+                description = msg.get("description", "")
+                with self._nodes_lock:
+                    self._nodes[node_name] = NodeInfo(
+                        name=node_name,
+                        channel_address=channel_addr,
+                        description=description,
+                    )
+                self._logger.info(
+                    "ZMQHub '%s': node '%s' registered (addr=%s)",
+                    self._name, node_name, channel_addr,
+                )
+                await self._send_response(identity, {"status": "ok"})
+
+            elif action == "unregister":
+                if not node_name:
+                    continue
+                with self._nodes_lock:
+                    self._nodes.pop(node_name, None)
+                self._logger.info("ZMQHub '%s': node '%s' unregistered", self._name, node_name)
+                await self._send_response(identity, {"status": "ok"})
+
+            elif action == "heartbeat":
+                if not node_name:
+                    continue
+                with self._nodes_lock:
+                    info = self._nodes.get(node_name)
+                    if info is not None:
+                        info.registered_at = time.time()
+
+            elif action == "query":
+                with self._nodes_lock:
+                    nodes_data = [
+                        {
+                            "name": info.name,
+                            "description": info.description,
+                            "channel_address": info.channel_address,
+                        }
+                        for info in self._nodes.values()
+                    ]
+                await self._send_response(identity, {"status": "ok", "nodes": nodes_data})
+
+    async def _send_response(self, identity: bytes, msg: dict) -> None:
+        """通过 ROUTER 向指定 identity 的 DEALER 发送响应。"""
+        if self._router is None:
+            return
         try:
-            await asyncio.wait_for(sub_channel.runtime.wait_connected(), timeout=timeout)
-        except asyncio.TimeoutError:
-            # 如果连接超时，应该把刚启动的进程杀掉，避免残留
-            await self.terminate_sub_channel_process(name)
-            raise CommandErrorCode.TIMEOUT.error(f"start channel {name} timeout")
+            await self._router.send_multipart([
+                identity,
+                b"",
+                json.dumps(msg).encode(),
+            ])
+        except zmq.ZMQError:
+            pass
 
-        return ""
+    async def _cleanup_loop(self) -> None:
+        """后台: 定期清理超时节点。"""
+        while not self._closed.is_set():
+            try:
+                await asyncio.sleep(max(self._heartbeat_timeout / 2, 1.0))
+            except asyncio.CancelledError:
+                return
 
-    async def close_channel(self, name: str, timeout: float = 5.0) -> str:
-        """PyChannel Command: 关闭子节点"""
-        if not name:
-            raise CommandErrorCode.VALUE_ERROR.error("channel name cannot be empty")
-        try:
-            await asyncio.wait_for(self.terminate_sub_channel_process(name), timeout=timeout)
-        except asyncio.TimeoutError:
-            raise CommandErrorCode.TIMEOUT.error(f"close channel {name} timeout")
-        except Exception as e:
-            raise CommandErrorCode.UNKNOWN_ERROR.error(f"close channel {name} error: {e}")
+            now = time.time()
+            with self._nodes_lock:
+                stale = [
+                    name for name, info in self._nodes.items()
+                    if now - info.registered_at > self._heartbeat_timeout
+                ]
+                for name in stale:
+                    del self._nodes[name]
+                    self._logger.info(
+                        "ZMQHub '%s': node '%s' timed out", self._name, name,
+                    )
 
-        return f"Channel {name} closed."
+    # ------------------------------------------------------------------
+    # 查询接口
+    # ------------------------------------------------------------------
 
-    def as_channel(self) -> PyChannel:
-        _channel = PyChannel(
-            name=self._config.name,
-            description=self._config.description,
-            blocking=True,
+    def registered_nodes(self) -> dict[str, NodeInfo]:
+        """即时返回所有已注册节点（非阻塞）。"""
+        with self._nodes_lock:
+            return dict(self._nodes)
+
+    def node_info(self, name: str) -> NodeInfo | None:
+        """查询单个节点信息。"""
+        with self._nodes_lock:
+            return self._nodes.get(name)
+
+    def create_proxy(
+        self,
+        node_name: str,
+        *,
+        proxy_name: str | None = None,
+        description: str = "",
+    ) -> ZMQChannelProxy:
+        """
+        为已注册节点创建 ZMQChannelProxy。
+
+        :param node_name: 已注册的节点名
+        :param proxy_name: proxy 的 channel 名称，默认同 node_name
+        :param description: proxy 描述
+        :raises KeyError: 节点未注册
+        """
+        info = self.node_info(node_name)
+        if info is None:
+            raise KeyError(f"Node '{node_name}' not registered in hub '{self._name}'")
+
+        return ZMQChannelProxy(
+            name=proxy_name or node_name,
+            description=description or f"ZMQ Hub proxy for '{node_name}'",
+            address=info.channel_address,
         )
 
-        for name, config in self._config.proxies.items():
-            # 如果config没有指定address，在路径下创建socket文件作为通信地址
-            if not config.address:
-                sock_path = os.path.join(self._config.root_dir, config.script + ".sock")
-                if os.path.exists(sock_path):
-                    os.remove(sock_path)
-                config.address = f"ipc://{sock_path}"
+    # ------------------------------------------------------------------
+    # as_channel — 集成到 Shell
+    # ------------------------------------------------------------------
 
-            sub_channel = ZMQChannelProxy(
-                name=name,
-                address=config.address,
-                logger=self._logger,
-            )
-            _channel.import_channels(sub_channel)
+    def as_channel(self) -> Channel:
+        """
+        将 hub 导出为 PyChannel，可集成到 Shell 中。
 
-        _channel.build.description()(self.channel_description)
-        _channel.build.command()(self.start_sub_channel)
-        _channel.build.command()(self.close_channel)
+        生成的 Channel 提供:
+        - list_nodes: 查看已注册节点
+        - open_node: 打开节点（创建 proxy 作为 virtual child）
+        - close_node: 关闭已打开节点
+        - context_messages: 展示节点状态
+        """
+        state = ZMQHubChannelState(hub=self)
+        return new_channel_from_state(state)
 
-        # 注册异步关闭钩子
-        _channel.build.close(self.close)
 
-        return _channel
+# ------------------------------------------------------------------
+# HubChannelState — as_channel() 的状态驱动实现
+# ------------------------------------------------------------------
+
+class ZMQHubChannelState(ChannelState):
+    """ZMQHub 的 ChannelState 实现。"""
+
+    def __init__(self, *, hub: ZMQHub):
+        self._hub = hub
+        self._proxy_channels: dict[str, ZMQChannelProxy] = {}
+        self._proxy_channels_lock = threading.Lock()
+        self._opened_nodes: set[str] = set()
+        self._opened_lock = threading.Lock()
+        self._own_commands = self._build_commands()
+
+    def _build_commands(self) -> dict[str, Command]:
+        from ghoshell_moss.core.concepts.command import PyCommand
+
+        async def list_nodes() -> str:
+            """
+            列出当前 hub 上所有已注册的节点及其状态。
+            """
+            nodes = self._hub.registered_nodes()
+            if not nodes:
+                return "No registered nodes."
+
+            lines = [f"Registered nodes ({len(nodes)}):"]
+            for name, info in nodes.items():
+                marker = " [OPEN]" if name in self._opened_nodes else ""
+                lines.append(f"  - {name}{marker}: {info.channel_address}")
+            return "\n".join(lines)
+
+        async def open_node(name: str) -> str:
+            """
+            打开指定的节点，使其 channel 可用。
+            :param name: 节点名称
+            """
+            info = self._hub.node_info(name)
+            if info is None:
+                available = list(self._hub.registered_nodes().keys())
+                return f"Node '{name}' not found. Available: {available}"
+
+            with self._opened_lock:
+                if name in self._opened_nodes:
+                    return f"Node '{name}' is already open."
+                self._opened_nodes.add(name)
+            return f"Node '{name}' opened."
+
+        async def close_node(name: str) -> str:
+            """
+            关闭已打开的节点连接。
+            :param name: 节点名称
+            """
+            with self._opened_lock:
+                if name not in self._opened_nodes:
+                    return f"Node '{name}' is not open."
+                self._opened_nodes.discard(name)
+            return f"Node '{name}' closed."
+
+        return {
+            "list_nodes": PyCommand(list_nodes),
+            "open_node": PyCommand(open_node),
+            "close_node": PyCommand(close_node),
+        }
+
+    def name(self) -> str:
+        return self._hub._name
+
+    def description(self) -> str:
+        return f"ZMQ Hub '{self._hub._name}' — 动态节点发现与管理"
+
+    def is_available(self) -> bool:
+        return not self._hub._closed.is_set()
+
+    def is_dynamic(self) -> bool:
+        return True
+
+    def own_commands(self) -> dict[str, Command]:
+        return self._own_commands.copy()
+
+    def get_own_command(self, name: str) -> Command | None:
+        return self._own_commands.get(name)
+
+    async def get_context_messages(self) -> list[str]:
+        nodes = self._hub.registered_nodes()
+        if not nodes:
+            return [f"### [ZMQ Hub: {self._hub._name}]\nNo registered nodes."]
+
+        lines = [f"### [ZMQ Hub: {self._hub._name}]\n"]
+        lines.append("**Registered nodes** (use `open_node <name>` to connect):\n")
+        for name, info in nodes.items():
+            marker = " [OPEN]" if name in self._opened_nodes else ""
+            lines.append(f"- `{name}`{marker} ({info.channel_address})")
+
+        if self._opened_nodes:
+            lines.append("\n**Opened nodes**:")
+            for name in self._opened_nodes:
+                lines.append(f"- {name}")
+        else:
+            lines.append("\nNo nodes opened. Use `open_node <name>` to connect.")
+
+        return ["\n".join(lines)]
+
+    def get_virtual_children(self) -> dict[ChannelName, Channel]:
+        with self._opened_lock:
+            opened = self._opened_nodes.copy()
+
+        channels: dict[ChannelName, Channel] = {}
+        stale: list[str] = []
+
+        for node_name in opened:
+            info = self._hub.node_info(node_name)
+            if info is None:
+                stale.append(node_name)
+                continue
+
+            safe_name = node_name.replace("/", "_")
+            with self._proxy_channels_lock:
+                existing = self._proxy_channels.get(safe_name)
+            if existing is not None:
+                channels[safe_name] = existing
+            else:
+                proxy = ZMQChannelProxy(
+                    name=safe_name,
+                    description=f"ZMQ Hub node: {node_name}",
+                    address=info.channel_address,
+                )
+                channels[proxy.name()] = proxy
+
+        for name in stale:
+            with self._opened_lock:
+                self._opened_nodes.discard(name)
+            safe_name = name.replace("/", "_")
+            with self._proxy_channels_lock:
+                self._proxy_channels.pop(safe_name, None)
+
+        with self._proxy_channels_lock:
+            for ch_name, ch in channels.items():
+                self._proxy_channels[ch_name] = ch
+
+        return channels.copy()
+
+
+# ------------------------------------------------------------------
+# 辅助工具 — 节点侧注册/注销/查询
+# ------------------------------------------------------------------
+
+async def zmq_register(
+    hub_address: str,
+    name: str,
+    channel_address: str,
+    description: str = "",
+    timeout: float = 5.0,
+) -> dict:
+    """
+    向 ZMQHub 注册一个节点。
+
+    :param hub_address: Hub 的 registry 地址
+    :param name: 节点名称
+    :param channel_address: 节点 channel 的 ZMQ 地址
+    :param description: 节点描述
+    :param timeout: 等待响应超时
+    :return: hub 的响应
+    """
+    ctx = zmq.asyncio.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.setsockopt(zmq.LINGER, 0)
+    try:
+        dealer.connect(hub_address)
+        await dealer.send_multipart([
+            b"",
+            json.dumps({
+                "action": "register",
+                "name": name,
+                "description": description,
+                "channel_address": channel_address,
+            }).encode(),
+        ])
+        frames = await asyncio.wait_for(dealer.recv_multipart(), timeout=timeout)
+        return json.loads(frames[-1])
+    finally:
+        dealer.close(linger=0)
+
+
+async def zmq_unregister(
+    hub_address: str,
+    name: str,
+    timeout: float = 3.0,
+) -> None:
+    """
+    从 ZMQHub 注销一个节点。
+
+    :param hub_address: Hub 的 registry 地址
+    :param name: 节点名称
+    :param timeout: 等待超时
+    """
+    ctx = zmq.asyncio.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.setsockopt(zmq.LINGER, 0)
+    try:
+        dealer.connect(hub_address)
+        await dealer.send_multipart([
+            b"",
+            json.dumps({"action": "unregister", "name": name}).encode(),
+        ])
+        # 等待 hub 确认收到
+        await asyncio.wait_for(dealer.recv_multipart(), timeout=timeout)
+    finally:
+        dealer.close(linger=0)
+
+
+async def zmq_query(
+    hub_address: str,
+    timeout: float = 5.0,
+) -> list[dict]:
+    """
+    查询 ZMQHub 上所有已注册节点。
+
+    :param hub_address: Hub 的 registry 地址
+    :param timeout: 等待响应超时
+    :return: 节点列表 [{"name": ..., "channel_address": ..., "description": ...}, ...]
+    """
+    ctx = zmq.asyncio.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.setsockopt(zmq.LINGER, 0)
+    try:
+        dealer.connect(hub_address)
+        await dealer.send_multipart([
+            b"",
+            json.dumps({"action": "query"}).encode(),
+        ])
+        frames = await asyncio.wait_for(dealer.recv_multipart(), timeout=timeout)
+        response = json.loads(frames[-1])
+        return response.get("nodes", [])
+    finally:
+        dealer.close(linger=0)

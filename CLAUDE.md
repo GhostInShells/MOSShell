@@ -134,12 +134,33 @@ MOSS 目前实现的环境开发和调试工具是 `.venv/bin/moss-repl`, 可以
     - `contracts`: 项目的最小基础依赖, 这里的抽象通过 IoC 容器提供服务.
     - `host`: 当前版本整合环境发现, 提供开箱依赖, 生成 moss 运行时并给出 TUI 的设计.
 
+## CLI 命令发现
+
+AI 在发现可用命令时，用以下流程替代多轮 `--help` 探索：
+
+```bash
+# 第一轮: 一次性了解所有可用命令
+.venv/bin/moss --ai all-commands            # depth=2 (默认): 所有组 + 子命令
+.venv/bin/moss --ai all-commands --depth 3  # 包含每个命令的参数信息
+.venv/bin/moss --ai all-commands --group codex  # 只看某个子树
+
+# 第二轮: 批量获取具体命令的完整 help
+.venv/bin/moss --ai help codex get-interface concepts core
+```
+
+这将 CLI 命令发现从 40+ 轮压缩到 2 轮。
+
 ## 其它工具概要
 
 - `moss ws`: 创建和管理本地 workspace.
 - `moss manifests`: 查看本地 workspace 提供的各种能力与协议的自解释声明.
 - `moss modes`: 管理环境中的各种模式.
 - `moss apps`: 管理环境中的应用.
+- `moss how-tos`: AI 反身性知识库 (how-to 文档的 list/read/recall)。**当需要管理或查阅 how-to 文档时，始终先用 `moss --ai how-tos list` 了解全局**，再决定读哪篇。格式约定见 `moss how-tos read how-to-make-how-to.md`。
+- `moss features`: AI 原生 feature tracking (FEATURE.md + YAML frontmatter 替代 GitHub Issues)。
+  - 当前为可选方案，建议人类工程师在 AI 协助下理解其设计意图后再决定是否采用。
+  - 约定文档: `moss features specification`；设计文档: `.design/2026-05-10-ai_native_feature_tracking_file_system_convention.md`。
+  - 当前 features 列表: `moss features list`。
 
 # MOSS 应用架构拓扑
 
@@ -256,6 +277,23 @@ Channel 使用的高阶知识:
 ## Ghost
 
 还在开发中.
+
+# Git 提交规范
+
+自 2026-05-06 起，AI 模型正式加入项目协作，提交规范遵循以下约定：
+
+1. 提交标题遵循行业惯例（如 Conventional Commits），不再参考此前的随意风格。
+
+2. 由 AI 独立设计并实现的提交，标题末尾标注 `by <模型名>`，例如：
+   - `feat: add resource storage discovery by deepseek-v4`
+   - `docs: rewrite CLI guide by gemini-3`
+
+3. 由人类引导、AI 编码的提交，标题末尾标注 `coding by <模型名>`，例如：
+   - `fix: resolve channel teardown race coding by deepseek-v4`
+
+4. 平台信息写在提交正文末尾：`via claude code` 或 `via gemini cli`。
+
+5. 不添加 `Co-Authored-By`、虚构邮件地址等信息。模仿人类协作的自然方式。
 
 # 你的角色与任务
 

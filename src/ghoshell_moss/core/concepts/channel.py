@@ -923,7 +923,7 @@ class ChannelProvider(ABC):
         asyncio.run(self.arun_until_closed(channel))
 
     @abstractmethod
-    async def arun_until_closed(self, channel: Channel) -> None:
+    async def arun_until_closed(self, channel: Channel | ChannelRuntime) -> None:
         """
         展示如何在 async 中持续运行到结束.
         """

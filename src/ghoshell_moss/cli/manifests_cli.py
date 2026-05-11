@@ -18,6 +18,10 @@ from ghoshell_moss.host.manifests.resource_storages import (
     match_resource_storage_metas,
     ResourceStorageMetaInfo,
 )
+from ghoshell_moss.host.manifests.nuclei import (
+    match_nucleus_infos,
+)
+from ghoshell_moss.core.blueprint.manifests import NucleusMetaInfo
 from ghoshell_moss.host import Host
 from ghoshell_common.helpers import generate_import_path
 from .utils import console, print_simple_table
@@ -561,3 +565,75 @@ def _display_resource_storage_table(metas: list[ResourceStorageMetaInfo]):
     )
 
     console.print(f"\n[dim]Total: {len(metas)} resource storages discovered.[/dim]")
+
+
+@manifest_app.command(name="nuclei")
+def list_nuclei(
+        search: str = typer.Argument(
+            "",
+            help="Search pattern for nucleus name, description, or signal."
+        ),
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
+        json_out: bool = typer.Option(
+            False, "--json",
+            help="Output as raw JSON for AI."
+        ),
+):
+    """
+    List discovered NucleusFactory instances in the environment.
+
+    Each entry describes a NucleusFactory available for Ghost mindflow:
+    name, description, signal_names, and where it was found.
+    """
+    host = Host(mode=mode)
+    all_nuclei = host.manifests.nuclei()
+
+    if search:
+        results = match_nucleus_infos(all_nuclei, search)
+    else:
+        results = list(all_nuclei.values())
+
+    if json_out:
+        data = [
+            {
+                "name": m.name,
+                "description": m.description,
+                "signal_names": m.signal_names,
+                "found_module": m.found_module,
+            }
+            for m in results
+        ]
+        import json as _json
+        console.print(_json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    if not results:
+        console.print(f"[yellow]No nucleus factories found matching: '{search}'[/yellow]")
+        return
+
+    _display_nuclei_table(results)
+
+
+def _display_nuclei_table(metas: list[NucleusMetaInfo]):
+    """展示发现的 NucleusFactory"""
+    table_data = []
+    for info in sorted(metas, key=lambda x: x.name):
+        table_data.append([
+            f"[green]{info.name}[/green]",
+            info.description.split('\n')[0] if info.description else "",
+            f"[yellow]{', '.join(info.signal_names)}[/yellow]",
+            f"[dim]{info.found_module}[/dim]",
+        ])
+
+    print_simple_table(
+        data=table_data,
+        headers=["Name", "Description", "Signals", "Found At"],
+        title="Discovered Nucleus Factories",
+        column_styles=["green", "", "yellow", "dim"],
+        title_style="bold cyan",
+    )
+
+    console.print(f"\n[dim]Total: {len(metas)} nucleus factories discovered.[/dim]")

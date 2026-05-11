@@ -7,7 +7,7 @@ from ghoshell_moss.core.blueprint.host import (
     MossRuntime, MossMode,
 )
 from ghoshell_moss.core.blueprint.app import AppStore
-from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.core.blueprint.matrix import Matrix, Fractal
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.contracts import Workspace
@@ -165,6 +165,15 @@ class MossRuntimeImpl(MossRuntime):
             # 注册环境发现的 channels.
             self._ctml_shell.main_channel.import_channels(channel)
 
+        # 注册 Fractal Hub（如果可用），将远程分形子节点暴露为虚拟 channel
+        fractal = self._matrix.fractal()
+        if fractal is not None:
+            hub = fractal.channel_hub(
+                name="fractal_hub",
+                description="分形通讯枢纽，展示通过分形协议连接的远程 Matrix 节点及其能力。",
+            )
+            self._ctml_shell.main_channel.import_channels(hub)
+
         self._matrix.container.set(AppStore, self._app_store)
         self._matrix.container.set(MOSShell, self._ctml_shell)
         self._matrix.container.set(CTMLShell, self._ctml_shell)
@@ -178,6 +187,10 @@ class MossRuntimeImpl(MossRuntime):
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 启动 app 并且 bringup
         self._bootstrap_after_matrix()
+        # 启动 fractal（如果可用）
+        fractal = self._matrix.fractal()
+        if fractal is not None:
+            await self._async_exit_stack.enter_async_context(fractal)
         await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._ctml_shell)

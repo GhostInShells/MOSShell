@@ -4,6 +4,7 @@ ghoshell_cli utility functions
 
 import click
 import json as _json
+from contextlib import contextmanager
 from typing import Optional, List, Any, Union
 from rich.console import Console as RichConsole, Group
 from rich.text import Text
@@ -29,6 +30,7 @@ __all__ = [
     'print_simple_panel',
     'set_ai_mode',
     'is_ai_mode',
+    'show_status',
 ]
 
 _ai_mode = False
@@ -133,6 +135,19 @@ def set_ai_mode(enabled: bool) -> None:
 def is_ai_mode() -> bool:
     """Check if AI output mode is active."""
     return _ai_mode
+
+
+@contextmanager
+def show_status(message: str):
+    """
+    Show a rich spinner status while a long-running operation is in progress.
+    In AI mode (--ai), this is a transparent no-op that yields immediately.
+    """
+    if _ai_mode:
+        yield
+    else:
+        with _real_console.status(f"[dim]{message}[/dim]") as status:
+            yield status
 
 
 def print_host_mode_info(host: Host) -> None:

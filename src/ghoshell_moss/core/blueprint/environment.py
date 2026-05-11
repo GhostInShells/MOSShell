@@ -345,9 +345,13 @@ class Environment:
         return expect.absolute()
 
     @staticmethod
-    def init_workspace(workspace_dir: Path) -> None:
+    def init_workspace(workspace_dir: Path, force: bool = False) -> None:
         """
         从 Stub Package 初始化工作空间，并设置组共享权限 (Group Writable & Setgid)。
+
+        Args:
+            workspace_dir: 目标目录。
+            force: 若为 True，覆盖已存在的文件（用于 stub 升级后更新已有 workspace）。
         """
         # 1. 定义权限位
         # 目录权限：rwxrws--- (0o2770) -> 允许组成员读写，且开启 setgid 保证新建文件继承组
@@ -376,9 +380,8 @@ class Environment:
                     os.chmod(target_item, DIR_MODE)
                     copy_recursive(item, target_item)
                 else:
-                    if not target_item.exists():
+                    if force or not target_item.exists():
                         target_item.write_bytes(item.read_bytes())
-                        # 为新写入的文件设置权限
                         os.chmod(target_item, FILE_MODE)
 
         copy_recursive(stub_resources, workspace_dir)

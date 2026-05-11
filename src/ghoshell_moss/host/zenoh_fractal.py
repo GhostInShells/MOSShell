@@ -3,10 +3,12 @@ import threading
 from pathlib import Path
 
 from ghoshell_moss.core.blueprint.matrix import Fractal, Cell
+from ghoshell_moss.core.blueprint.environment import MossMeta
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
+from ghoshell_moss.contracts import LoggerItf
 from ghoshell_moss.depends import depend_zenoh
 
 depend_zenoh()
@@ -20,21 +22,22 @@ class FractalCell(Cell):
     type='fractal' 的 Cell。表示通过 fractal 协议连接到当前 Matrix 的外部节点。
     """
 
-    def __init__(self, name: str, event: threading.Event):
-        # todo: 告知 ai 如何获得 name / description
+    def __init__(self, name: str, description: str = ""):
         self.name = name
         self.type = 'fractal'
-        self.description = ''
+        self.description = description or f"Fractal node: {name}"
         self.where = ''
-        self._alive_event = event
+        self._alive = True
 
     @property
     def address(self) -> str:
         return Cell.make_address('fractal', self.name)
 
     def is_alive(self) -> bool:
-        # todo: event 机制是为了懒刷新准备的.
-        return self._alive_event.is_set()
+        return self._alive
+
+    def mark_dead(self) -> None:
+        self._alive = False
 
 
 class ZenohSessionFractal(Fractal):
@@ -42,7 +45,7 @@ class ZenohSessionFractal(Fractal):
     基于 zenoh 实现 Fractal 分形通讯协议。
 
     1. 创建独立的 zenoh session，读取 workspace 中的配置文件。
-    2. 通过 zenoh liveness 机制发现子节点。
+    2. 通过后台异步任务定期发现子节点 (zenoh liveness)，connected() 即时返回缓存。
     3. 通过 ZenohChannelProvider 将本地 channel 暴露给父节点。
     4. 通过 channel_hub 提供一个被动 Channel 来展示已连接的子节点。
 
@@ -53,15 +56,30 @@ class ZenohSessionFractal(Fractal):
 
     FRACTAL_SESSION_SCOPE = "fractal"
     FRACTAL_LIVENESS_PREFIX = "MOSS/fractal"
+    DEFAULT_REFRESH_INTERVAL = 5.0
 
-    def __init__(self, zenoh_conf_file: Path, name: str):
+    def __init__(
+            self,
+            meta: MossMeta,
+            zenoh_conf_file: Path,
+            *,
+            logger: LoggerItf,
+            refresh_interval: float = DEFAULT_REFRESH_INTERVAL,
+    ):
         self._conf_file = zenoh_conf_file
-        self._name = name
+        self._name = meta.name
+        self._description = meta.description
+        self._logger = logger
         self._session: zenoh.Session | None = None
         self._session_lock = threading.Lock()
-        self._provided_channels: dict[str, Channel] = {}
-        self._provided_channels_lock = threading.Lock()
+        self._provided_future: asyncio.Task | None = None
+        self._transport_endpoint: str | None = None
         self._liveness_token: zenoh.LivelinessToken | None = None
+        # 子节点缓存与异步刷新
+        self._cells: dict[str, Cell] = {}
+        self._cells_lock = threading.Lock()
+        self._refresh_interval = refresh_interval
+        self._refresh_task: asyncio.Task | None = None
 
     @property
     def name(self) -> str:
@@ -69,52 +87,110 @@ class ZenohSessionFractal(Fractal):
 
     @property
     def session(self) -> zenoh.Session:
-        """懒加载打开独立的 zenoh session。"""
+        """懒加载打开独立的 zenoh session。有 transport 时注入 connect/endpoints 实现反向注册。"""
         if self._session is None:
             with self._session_lock:
                 if self._session is None:
                     conf = zenoh.Config.from_file(str(self._conf_file))
+                    if self._transport_endpoint:
+                        conf.insert_json5(
+                            "connect/endpoints",
+                            f'["{self._transport_endpoint}"]',
+                        )
                     self._session = zenoh.open(conf)
         return self._session
 
-    def connected(self) -> list[Cell]:
-        """
-        通过 zenoh liveness wildcard query 发现外部子节点。
-        参考 MatrixImpl._check_initial_liveness 模式。
-        """
-        # todo: 疑问, 这个同步逻辑是否有阻塞? 如果有阻塞, 它应该搬迁到一个异步任务里.
-        #   我们可以加生命周期治理, 我在集成时去添加治理链路.
+    # ------------------------------------------------------------------
+    # 生命周期 (async context manager)
+    # ------------------------------------------------------------------
+
+    async def __aenter__(self) -> "ZenohSessionFractal":
+        loop = asyncio.get_running_loop()
+        self._refresh_task = loop.create_task(self._refresh_loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            self._refresh_task = None
+        if self._liveness_token is not None:
+            try:
+                self._liveness_token.undeclare()
+            except RuntimeError:
+                pass
+            self._liveness_token = None
+        if self._session is not None:
+            if not self._session.is_closed():
+                try:
+                    self._session.close()
+                except RuntimeError:
+                    pass
+            self._session = None
+
+    # ------------------------------------------------------------------
+    # 异步子节点发现
+    # ------------------------------------------------------------------
+
+    async def _refresh_loop(self) -> None:
+        """后台循环：定期通过 zenoh liveness 查询子节点并更新缓存。"""
+        while True:
+            try:
+                await self._refresh_connected_cells()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                self._logger.warning(
+                    "Fractal node '%s' liveness refresh failed", self._name, exc_info=True
+                )
+            await asyncio.sleep(self._refresh_interval)
+
+    async def _refresh_connected_cells(self) -> None:
+        """在 executor 中执行同步 zenoh liveness 查询，无阻塞更新 cells 缓存。"""
+        loop = asyncio.get_running_loop()
+        new_cells = await loop.run_in_executor(None, self._query_liveness)
+        with self._cells_lock:
+            self._cells = {c.name: c for c in new_cells}
+
+    def _query_liveness(self) -> list[Cell]:
+        """同步 zenoh liveness wildcard 查询，在 executor 线程中调用。"""
         s = self.session
         if s.is_closed():
             return []
 
-        cells: list[Cell] = []
         prefix = self.FRACTAL_LIVENESS_PREFIX
         key_expr = f"{prefix}/**"
 
+        cells: list[Cell] = []
         for sample in s.liveliness().get(key_expr):
             key = str(sample.result.key_expr)
             if not key.startswith(prefix):
                 continue
             name = key[len(prefix) + 1:]  # "MOSS/fractal/" 之后的部分
             if not name or name == self._name:
-                continue  # 跳过自身
-            event = threading.Event()
-            event.set()  # 通过 liveness 发现即视为存活
-            cells.append(FractalCell(name, event))
+                continue
+            cells.append(FractalCell(name))
 
         return cells
 
-    def explain(self) -> str:
-        nodes = self.connected()
-        lines = [
-            f"Zenoh Fractal Protocol",
-            f"Node: {self._name}",
-            f"Connected nodes ({len(nodes)}):",
-        ]
-        for c in nodes:
-            lines.append(f"  - {c.name} (alive={c.is_alive()})")
-        return "\n".join(lines)
+    def connected(self) -> list[Cell]:
+        """即时返回缓存的子节点列表（非阻塞）。"""
+        with self._cells_lock:
+            return list(self._cells.values())
+
+    # ------------------------------------------------------------------
+    # Channel Provider
+    # ------------------------------------------------------------------
+
+    def create_channel_provider(self) -> ZenohChannelProvider:
+        """
+        创建绑定到此 fractal zenoh session 的 ChannelProvider。
+        供上层 Matrix 集成时直接使用。
+        """
+        return ZenohChannelProvider(
+            address=self._name,
+            session_scope=self.FRACTAL_SESSION_SCOPE,
+            zenoh_session=self.session,
+        )
 
     def provide_channel(
             self,
@@ -124,40 +200,24 @@ class ZenohSessionFractal(Fractal):
         """
         通过 fractal 自己的 zenoh session 用 ZenohChannelProvider 暴露 channel。
         声明 liveness token 使父节点可发现。
-        唯一性检查：同名或同 ID 的 channel 不能重复提供。
+
+        :param transport: 父节点的 zenoh 端点地址，如 "tcp/192.168.1.100:20770"。
+                         为 None 时使用 peer 多播自发现（默认）。
+                         设置后 zenoh session 会主动 connect 到该端点，实现反向注册。
         """
-        # todo: 考虑优化.
-        # 解析 channel 的 name 和 id
-        if isinstance(channel, ChannelRuntime):
-            channel_name = channel.name
-            channel_id = channel.id
-            channel_obj = channel.channel
-        else:
-            channel_name = channel.name()
-            channel_id = channel.id()
-            channel_obj = channel
+        if self._provided_future is not None:
+            raise RuntimeError(
+                f"Channel already provided for fractal node '{self._name}'"
+            )
 
-        # 唯一性检查
-        with self._provided_channels_lock:
-            if channel_name in self._provided_channels:
-                raise ValueError(
-                    f"Channel with name '{channel_name}' already provided"
-                )
-            for existing_name, existing_channel in self._provided_channels.items():
-                if existing_channel.id() == channel_id:
-                    raise ValueError(
-                        f"Channel with id '{channel_id}' already provided "
-                        f"as '{existing_name}'"
-                    )
-            self._provided_channels[channel_name] = channel_obj
+        if transport is not None:
+            self._transport_endpoint = transport
+            self._logger.info(
+                "Fractal node '%s' reverse-registering to parent: %s",
+                self._name, transport,
+            )
 
-        # 创建 provider
-        # todo: 太复杂了, 没有必要. 上层传入 matrix 即可.
-        provider = ZenohChannelProvider(
-            address=self._name,
-            session_scope=self.FRACTAL_SESSION_SCOPE,
-            zenoh_session=self.session,
-        )
+        provider = self.create_channel_provider()
 
         # 声明 liveness token 使父节点可发现
         liveness_key = f"{self.FRACTAL_LIVENESS_PREFIX}/{self._name}"
@@ -170,7 +230,32 @@ class ZenohSessionFractal(Fractal):
         else:
             task = loop.create_task(provider.arun_until_closed(channel))
 
+        self._provided_future = task
+        self._logger.debug(
+            "Fractal node '%s' provided channel, liveness_key=%s",
+            self._name, liveness_key,
+        )
+
         return task
+
+    # ------------------------------------------------------------------
+    # Hub
+    # ------------------------------------------------------------------
+
+    def explain(self) -> str:
+        nodes = self.connected()
+        lines = [
+            f"Zenoh Fractal Protocol",
+            f"Node: {self._name}",
+        ]
+        if self._transport_endpoint:
+            lines.append(f"Parent: {self._transport_endpoint}")
+        else:
+            lines.append("Mode: peer multicast (no parent)")
+        lines.append(f"Connected nodes ({len(nodes)}):")
+        for c in nodes:
+            lines.append(f"  - {c.name} (alive={c.is_alive()})")
+        return "\n".join(lines)
 
     def channel_hub(self, name: str, description: str = '') -> Channel:
         """
@@ -189,22 +274,6 @@ class ZenohSessionFractal(Fractal):
         )
         return new_channel_from_state(state)
 
-    def close(self) -> None:
-        """关闭 fractal session 和 liveness token。"""
-        if self._liveness_token is not None:
-            try:
-                self._liveness_token.undeclare()
-            except RuntimeError:
-                pass
-            self._liveness_token = None
-        if self._session is not None:
-            if not self._session.is_closed():
-                try:
-                    self._session.close()
-                except RuntimeError:
-                    pass
-            self._session = None
-
 
 class FractalHubChannelState(ChannelState):
     """
@@ -215,6 +284,7 @@ class FractalHubChannelState(ChannelState):
     - 对每个子节点创建 ZenohProxyChannel
     - 平铺返回，不嵌套
     - is_dynamic() -> True
+    - 没有子节点时 is_available() -> False
     """
 
     def __init__(
@@ -237,8 +307,7 @@ class FractalHubChannelState(ChannelState):
         return self._description
 
     def is_available(self) -> bool:
-        # todo: 考虑没有子节点时, 返回 false 隐藏.
-        return True
+        return bool(self._fractal.connected())
 
     def is_dynamic(self) -> bool:
         return True
@@ -264,14 +333,19 @@ class FractalHubChannelState(ChannelState):
 
         for cell in cells:
             safe_name = cell.name.replace('/', '_')
-            proxy = ZenohProxyChannel(
-                address=cell.name,
-                session_scope=ZenohSessionFractal.FRACTAL_SESSION_SCOPE,
-                name=safe_name,
-                description=f"Fractal child node: {cell.name}",
-                zenoh_session=self._fractal.session,
-            )
-            channels[proxy.name()] = proxy
+            with self._proxy_channels_lock:
+                existing = self._proxy_channels.get(safe_name)
+            if existing is not None:
+                channels[safe_name] = existing
+            else:
+                proxy = ZenohProxyChannel(
+                    address=cell.name,
+                    session_scope=ZenohSessionFractal.FRACTAL_SESSION_SCOPE,
+                    name=safe_name,
+                    description=f"Fractal child node: {cell.name}",
+                    zenoh_session=self._fractal.session,
+                )
+                channels[proxy.name()] = proxy
 
         with self._proxy_channels_lock:
             self._proxy_channels = channels

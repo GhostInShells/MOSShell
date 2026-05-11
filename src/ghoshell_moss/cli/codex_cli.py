@@ -43,38 +43,46 @@ def get_interface(
 
 @codex_app.command("get-source")
 def get_source(
-        module_path: str = typer.Argument(..., help="Python module import path, e.g.: foo.bar"),
+        module_path: str = typer.Argument(..., help="Python import path, e.g.: [module.path][:attribute]"),
         language: str = typer.Option("python", "--language", "-l", help="Code language for syntax highlighting"),
         output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output to file instead of console",
                                               writable=True)
 ):
     """
-    Reflect a Python module and read its source code.
+    Reflect a Python module or attribute and read its source code.
+    Supports module:attr syntax (e.g. ghoshell_moss.core.concepts.channel:ChannelCtx).
     """
+    from ghoshell_common.helpers import import_from_path
     try:
-        print_info(f"Importing module: {module_path}")
-        module = importlib.import_module(module_path)
+        print_info(f"Importing: {module_path}")
+        obj = import_from_path(module_path)
 
         print_info(f"Getting source code...")
-        source_code = inspect.getsource(module)
+        source_code = inspect.getsource(obj)
+
+        label = module_path
+        try:
+            source_file = inspect.getfile(obj)
+        except TypeError:
+            source_file = "<unknown>"
 
         if output:
             output.write_text(source_code, encoding="utf-8")
             print_success(f"Source code saved to: {output}")
         else:
             print_simple_panel(
-                f"Module: [dim]{module_path}[/dim]\n"
-                f"File: [dim]{inspect.getfile(module)}[/dim]\n"
+                f"Target: [dim]{label}[/dim]\n"
+                f"File: [dim]{source_file}[/dim]\n"
                 f"Length: [dim]{len(source_code)} characters[/dim]",
                 title="Source Code Information"
             )
             print_code(source_code, language=language)
 
     except ImportError as e:
-        print_error(f"Failed to import module '{module_path}': {e}")
+        print_error(f"Failed to import '{module_path}': {e}")
         raise typer.Exit(code=1)
     except OSError as e:
-        print_error(f"Failed to read module source: {e}")
+        print_error(f"Failed to read source: {e}")
         print_info("Note: Some built-in modules or C extension modules may not have Python source code")
         raise typer.Exit(code=1)
     except Exception as e:

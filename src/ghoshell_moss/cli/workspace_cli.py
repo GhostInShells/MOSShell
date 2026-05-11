@@ -15,10 +15,8 @@
 import os
 import stat
 import shutil
-from rich.table import Table
 
 import typer
-from rich import print as rprint
 from pathlib import Path
 from typing import Optional
 
@@ -32,7 +30,15 @@ workspace_app = typer.Typer(
     no_args_is_help=True
 )
 
-from .utils import console
+from .utils import (
+    console,
+    print_simple_table,
+    print_success,
+    print_error,
+    print_warning,
+    print_info,
+    is_ai_mode,
+)
 
 
 @workspace_app.command(
@@ -45,60 +51,51 @@ def where() -> None:
     Uses Environment.discover() to ensure consistency with the runtime.
     """
     try:
-        # 1. 核心变更：通过 discover() 获取单例，由 Environment 内部处理优先级
         env = Environment.discover()
-
-        # 2. 触发引导逻辑 (虽然 discover 内部已经调用过，但这里显式调用以确保状态)
-        # 这里的 bootstrap 会加载环境变量，确保后续 API 返回的是真实状态
-        # env.bootstrap() 可能会抛出 EnvironmentError，正好被 try 捕获
-
         ws_path = env.workspace_path
     except EnvironmentError as e:
-        rprint(f"[red]Environment Discovery Failed:[/red] {e}")
-        # 如果发现失败，尝试给出一个“预期”路径的提示
+        print_error(f"Environment Discovery Failed: {e}")
         fallback_path = Environment.find_workspace_path()
-        rprint(f"MOSS was looking for: [yellow]{fallback_path}[/yellow]")
+        print_info(f"MOSS was looking for: {fallback_path}")
         raise typer.Exit(code=1)
 
-    # 3. 通过 API 获取信息，而非手动拼接路径
     exists = ws_path.exists()
-    env_file = env.env_file  # 使用 API 提供的属性
-
-    # 查找 MOSS.md：这里保留一点路径逻辑，因为 Environment 类暂未提供 MOSS.md 的 Property
+    env_file = env.env_file
     moss_md = env.meta_instruction_file
-
-    # 获取 CTML Version
     ctml_version = env.meta_config.ctml_version
 
-    # 权限检查
+    # permissions check
     perm_status = "N/A"
     if exists:
         mode = ws_path.stat().st_mode
         is_group_writable = bool(mode & stat.S_IWGRP)
         is_setgid = bool(mode & stat.S_ISGID)
-
         status_parts = []
-        if is_group_writable: status_parts.append("Group-Writable")
-        if is_setgid: status_parts.append("Setgid")
-
+        if is_group_writable:
+            status_parts.append("Group-Writable")
+        if is_setgid:
+            status_parts.append("Setgid")
         if status_parts:
-            perm_status = f"[green]OK ({' & '.join(status_parts)})[/green]"
+            perm_status = f"OK ({' & '.join(status_parts)})"
         else:
-            perm_status = "[yellow]Restricted[/yellow]"
+            perm_status = "Restricted"
 
-    # 4. 呈现界面
-    table = Table(title="MOSS Environment Discovery", show_header=False, box=None)
-    table.add_column("Property", style="cyan")
-    table.add_column("Value")
+    status = "Active" if exists else "Not Found"
+    env_file_str = str(env_file) if env_file else "None"
+    moss_md_str = str(moss_md) if moss_md.exists() else "Missing"
 
-    table.add_row("Expect Root", f"{ws_path.absolute()}")
-    table.add_row("Status", "[green]Active[/green]" if exists else "[red]Not Found[/red]")
-    table.add_row("Permissions", perm_status)
-    table.add_row("Runtime .env", f"[green]{env_file}[/green]" if env_file else "[white]None[/white]")
-    table.add_row("Meta File",
-                  f"[green]{moss_md}[/green]" if moss_md.exists() else "[white]Missing[/white]")
-    table.add_row("CTML Version", f"[bold magenta]{ctml_version}[/bold magenta]")
-    console.print(table)
+    print_simple_table(
+        data=[
+            ["Expect Root", str(ws_path.absolute())],
+            ["Status", status],
+            ["Permissions", perm_status],
+            ["Runtime .env", env_file_str],
+            ["Meta File", moss_md_str],
+            ["CTML Version", ctml_version],
+        ],
+        headers=["Property", "Value"],
+        title="MOSS Environment Discovery",
+    )
 
 
 @workspace_app.command(
@@ -109,22 +106,55 @@ def init_workspace(
         path: Optional[Path] = typer.Argument(
             None,
             help="Target directory. If provided, skips interactive selection."
-        )
+        ),
+        cwd: bool = typer.Option(
+            False, "--cwd", "-c",
+            help="Use current directory as workspace target."
+        ),
+        home: bool = typer.Option(
+            False, "--home",
+            help="Use home directory as workspace target."
+        ),
+        yes: bool = typer.Option(
+            False, "--yes", "-y",
+            help="Skip all confirmation prompts (for non-interactive / AI use)."
+        ),
 ) -> None:
     """
-    Initialize a MOSS workspace with a minimalist interactive flow.
+    Initialize a MOSS workspace.
 
+    Interactive mode (default):
+        moss ws init          # prompts for path and confirmation
+
+    Non-interactive mode (for scripts and AI):
+        moss ws init /path    # explicit path, skips path prompt
+        moss ws init /path -y # skip all prompts including confirmation
+        moss ws init --cwd -y # current directory, no prompts
+        moss ws init --home -y # home directory, no prompts
     """
     env = Environment.discover()
     home_path = env.expect_home_workspace_path()
     cwd_path = env.expect_cwd_workspace_path()
 
-    # 1. 路径选择逻辑 (极简命令行模式)
-    if path is None:
-        rprint("\n[bold cyan]MOSS Workspace Setup[/bold cyan]")
-        rprint(f" 1) Current directory: [dim]{cwd_path}[/dim]")
-        rprint(f" 2) Home directory: [dim]{home_path}[/dim]")
-        rprint(f" 3) Custom path")
+    # 1. Resolve target path
+    if path is not None:
+        target_path = path.resolve()
+    elif cwd:
+        target_path = cwd_path
+    elif home:
+        target_path = home_path
+    else:
+        # Interactive path selection
+        console.print("\n[bold cyan]MOSS Workspace Setup[/bold cyan]")
+        console.print(f" 1) Current directory: [dim]{cwd_path}[/dim]")
+        console.print(f" 2) Home directory: [dim]{home_path}[/dim]")
+        console.print(f" 3) Custom path")
+
+        if is_ai_mode():
+            print_error("Interactive mode not available with --ai flag.")
+            print_info("Use one of: --cwd, --home, or provide a path argument.")
+            print_info("Add --yes to skip confirmation prompts.")
+            raise typer.Exit(code=1)
 
         choice = typer.prompt("\nSelect an option", default="1", type=str)
 
@@ -136,80 +166,140 @@ def init_workspace(
             custom_path = typer.prompt("Enter custom path", type=Path)
             target_path = custom_path.resolve()
         else:
-            rprint("[red]Invalid selection.[/red]")
+            print_error("Invalid selection.")
             raise typer.Exit(code=1)
-    else:
-        target_path = path.resolve()
 
-    # 2. 存在性检查与二次确认
+    # 2. Confirmation
     if target_path.exists():
         is_reinit = (target_path / META_CONFIG_FILENAME).exists()
-        msg = (
-            f"Directory '{target_path.name}' already exists. [bold red]Force re-initialize?[/bold red]"
-            if is_reinit else
-            f"Path exists and is not empty. [bold yellow]Proceed?[/bold yellow]"
-        )
-        if not typer.confirm(msg, default=False):
-            rprint("[yellow]Aborted.[/yellow]")
-            return
+        if is_reinit:
+            if not yes and not typer.confirm(
+                f"Directory '{target_path.name}' already exists. Force re-initialize?",
+                default=False
+            ):
+                print_warning("Aborted.")
+                return
+        else:
+            if not yes and not typer.confirm(
+                f"Path exists and is not empty. Proceed?",
+                default=False
+            ):
+                print_warning("Aborted.")
+                return
     else:
-        # 针对新创建目录的确认
-        if not typer.confirm(f"Create new workspace at '{target_path}'?", default=True):
-            rprint("[yellow]Aborted.[/yellow]")
+        if not yes and not typer.confirm(
+            f"Create new workspace at '{target_path}'?", default=True
+        ):
+            print_warning("Aborted.")
             return
 
-    # 3. 执行初始化
-    rprint(f"\n🚀 Initializing MOSS at: [cyan]{target_path}[/cyan]...")
+    # 3. Execute
+    print_info(f"Initializing MOSS at: {target_path}")
     try:
         Environment.init_workspace(target_path)
-        rprint("[green]✓ Initialization completed successfully.[/green]")
-        rprint(f"Next step: check [bold] copy-env [/bold] to create env file or just configure your credentials.")
+        print_success("Initialization completed successfully.")
+        print_info("Next step: use 'moss ws copy-env' to create env file, then configure credentials.")
     except Exception as e:
-        rprint(f"[red]✗ Failed to initialize:[/red] {e}")
+        print_error(f"Failed to initialize: {e}")
+        raise typer.Exit(code=1)
+
+
+@workspace_app.command(
+    name="override",
+    short_help="Override an existing workspace with the latest stub files.",
+)
+def override_workspace(
+        yes: bool = typer.Option(
+            False, "--yes", "-y",
+            help="Skip confirmation prompt (for non-interactive / AI use)."
+        ),
+) -> None:
+    """
+    Override the active workspace with the latest stub template files.
+
+    This is used when the MOSS source has been upgraded and you want to
+    sync stub changes into an existing workspace. Existing files that match
+    the stub will be overwritten; extra user files are left untouched.
+
+    Tip: if your workspace is a git repo, run 'git diff' after override to
+    review changes and selectively restore any files you want to keep.
+    """
+    try:
+        env = Environment.discover()
+        ws_path = env.workspace_path
+    except EnvironmentError as e:
+        print_error(f"Environment Discovery Failed: {e}")
+        raise typer.Exit(code=1)
+
+    if not ws_path.exists() or not (ws_path / META_CONFIG_FILENAME).exists():
+        print_error(f"No existing MOSS workspace found at '{ws_path}'.")
+        print_info("Use 'moss ws init' to create a new workspace.")
+        raise typer.Exit(code=1)
+
+    if not yes and not typer.confirm(
+        f"This will overwrite stub files in '{ws_path.name}' with the latest version.\n"
+        f"User-created files will be left untouched. Continue?",
+        default=False
+    ):
+        print_warning("Aborted.")
+        return
+
+    print_info(f"Overriding workspace at: {ws_path}")
+    try:
+        Environment.init_workspace(ws_path, force=True)
+        print_success("Override completed. Stub files updated to latest version.")
+        print_info("Tip: use 'git diff' to review changes if this workspace is a git repo.")
+    except Exception as e:
+        print_error(f"Failed to override: {e}")
         raise typer.Exit(code=1)
 
 
 @workspace_app.command(name="copy-env")
-def copy_env() -> None:
+def copy_env(
+        force: bool = typer.Option(
+            False, "--force", "-f",
+            help="Overwrite existing .env file if present."
+        ),
+) -> None:
     """
     Copy the .env_example to .env in the current active workspace.
-    Safe operation: will not overwrite an existing .env file.
+
+    By default, will not overwrite an existing .env file.
+    Use --force to overwrite.
     """
     try:
-        # 1. 发现环境
         env = Environment.discover()
-
-        # 2. 获取 API 路径
-        # 这里利用了你刚更新的 property
         workspace_dir = env.workspace_path
         example_path = env.env_example_file
         target_env = env.env_file
 
-        # 3. 执行前校验
         if not example_path.exists():
-            rprint(f"[red]Error:[/red] Template '{example_path.relative_to(workspace_dir)}' not found in workspace.")
+            print_error(
+                f"Template '{example_path.relative_to(workspace_dir)}' not found in workspace."
+            )
             raise typer.Exit(code=1)
 
-        if target_env.exists():
-            rprint(
-                f"[yellow]Skipped:[/yellow] '{target_env.relative_to(workspace_dir)}' already exists. MOSS will not overwrite it.")
+        existed = target_env.exists()
+        if existed and not force:
+            print_warning(
+                f"'{target_env.relative_to(workspace_dir)}' already exists. Use --force to overwrite."
+            )
             return
 
-        # 4. 执行拷贝
-        rprint(f"Creating [cyan]{target_env}[/cyan] from template...")
+        print_info(f"Creating {target_env} from template...")
         shutil.copy(example_path, target_env)
 
-        # 5. 设置权限 (延续你对权限的重视)
-        # 文件权限：rw-rw---- (0o660)
+        # file permissions: rw-rw---- (0o660)
         FILE_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
         os.chmod(target_env, FILE_MODE)
 
-        rprint(f"[green]✓ Successfully created {target_env.name}[/green]")
-        rprint(f"[dim]Note: Group-writable permission set.[/dim]")
+        action = "Overwritten" if existed else "Created"
+        print_success(f"{action} {target_env.name}")
+        print_info("Group-writable permission set.")
 
     except EnvironmentError as e:
-        rprint(f"[red]Environment Error:[/red] {e}")
+        print_error(f"Environment Error: {e}")
         raise typer.Exit(code=1)
     except Exception as e:
-        rprint(f"[red]Failed to copy env:[/red] {e}")
+        print_error(f"Failed to copy env: {e}")
         raise typer.Exit(code=1)

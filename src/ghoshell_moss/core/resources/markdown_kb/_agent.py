@@ -20,7 +20,7 @@ __all__ = ["recall_available", "recall"]
 
 def recall_available() -> bool:
     """Check whether ANTHROPIC_SMALL_FAST_MODEL is set (gate)."""
-    return bool(os.environ.get("ANTHROPIC_SMALL_FAST_MODEL"))
+    return bool(os.environ.get("ANTHROPIC_SMALL_FAST_MODEL") or os.environ.get("ANTHROPIC_MODEL"))
 
 
 async def recall(kb, question: str) -> Recollection:
@@ -56,7 +56,9 @@ async def recall(kb, question: str) -> Recollection:
         f"{context}"
     )
 
-    model_name = os.environ["ANTHROPIC_SMALL_FAST_MODEL"]
+    model_name = os.environ.get("ANTHROPIC_SMALL_FAST_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+    if not model_name:
+        raise RuntimeError(f"depending on env var ANTHROPIC_SMALL_FAST_MODEL or ANTHROPIC_MODEL")
     model = AnthropicModel(model_name=model_name)
     agent = Agent(
         model=model,
