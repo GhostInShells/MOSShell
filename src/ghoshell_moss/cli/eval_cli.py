@@ -36,7 +36,7 @@ def eval_code(
 
     Examples:
         moss eval "__result__ = type(42)"
-        moss eval --module ghoshell_moss.host.runtime "print(dir())"
+        moss eval --module ghoshell_moss.host.moss_runtime "print(dir())"
         moss eval --file debug_script.py
     """
     if file:

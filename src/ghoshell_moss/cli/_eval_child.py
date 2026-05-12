@@ -2,7 +2,7 @@
 Child process entry point for moss eval.
 
 Reads a JSON request from stdin:
-    {"code": "...", "module": "ghoshell_moss.host.runtime" or null}
+    {"code": "...", "module": "ghoshell_moss.host.moss_runtime" or null}
 
 Executes code in an isolated module (optionally inheriting a module's context),
 captures stdout, and writes a JSON result to stdout:

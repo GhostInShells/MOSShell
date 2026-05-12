@@ -142,6 +142,10 @@ def list_cmd(
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
     console.print(f"\n[dim]{len(features)} workstream(s)[/dim]")
+    console.print(
+        "[dim]New to this? Read the convention: [/dim]"
+        "[bold]moss features specification[/bold]"
+    )
 
 
 # ---------------------------------------------------------------------------

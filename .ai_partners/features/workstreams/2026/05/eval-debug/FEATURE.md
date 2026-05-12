@@ -1,16 +1,15 @@
 ---
-id: eval-debug
-title: Moss Eval — Live Runtime Code Evaluation for AI Debugging
-status: in-progress
-priority: P1
 created: 2026-05-12
-updated: 2026-05-12
 depends: []
-milestone:
-description: >-
-  CLI tool that executes arbitrary Python code in the live MOSS runtime,
-  returning captured stdout and return value as structured JSON.
-  Uses subprocess isolation to prevent exception-chain pollution with Typer/Click.
+description: CLI tool that executes arbitrary Python code in the live MOSS runtime,
+  returning captured stdout and return value as structured JSON. Uses subprocess isolation
+  to prevent exception-chain pollution with Typer/Click.
+id: eval-debug
+milestone: null
+priority: P1
+status: completed
+title: Moss Eval — Live Runtime Code Evaluation for AI Debugging
+updated: '2026-05-13'
 ---
 
 # Moss Eval — Live Runtime Code Evaluation
