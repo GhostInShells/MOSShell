@@ -54,7 +54,7 @@ This is the **binding constraint** that makes the system work:
 ### Rationale
 
 Feature tracking via files only has value if git history connects code and feature state.
-`git log -- .ai_partners/features/active/<id>/FEATURE.md` must produce a **reliable timeline**
+`git log -- .ai_partners/features/active/<year>/<month>/<id>/FEATURE.md` must produce a **reliable timeline**
 of every commit that changed the feature. `git log -- <source-file>` must be able to trace back
 to the FEATURE.md state at that point.
 
@@ -94,14 +94,18 @@ Discover all commands with `moss features` (no arguments) or `moss --ai all-comm
 .ai_partners/features/
   README.md              # This file — the convention specification
   TEMPLATE.md            # Template for new features (source of `moss features create`)
-  active/
-    <feature-name>/      # kebab-case naming
-      FEATURE.md         # REQUIRED: frontmatter + motivation + key decisions + design index
-      discuss/           # Feature-specific discussion trails (optional)
-      design/            # Design documents (optional)
-  archived/
-    <year>/<month>/<name>/  # Completed/abandoned features — the tree IS the index
+  active/                # Single source of truth — all features, all states
+    <year>/              # Created year (features never move)
+      <month>/           # Created month
+        <feature-name>/  # kebab-case naming, unique across the entire tree
+          FEATURE.md     # REQUIRED: frontmatter + motivation + key decisions + design index
+          discuss/       # Feature-specific discussion trails (optional)
+          design/        # Design documents (optional)
 ```
+
+Path encodes creation date at `create` time. Features stay in place for their entire
+lifecycle — `completed`/`abandoned` are just a `status` field update, no file move.
+This preserves clean git history without path-forking from rename detection.
 
 Each FEATURE.md owns its internal organization. The `design/` and `discuss/` subdirectories
 are suggestions, not requirements. A feature may define its own document structure directly
@@ -129,33 +133,26 @@ No separate `id` field — the filesystem is the namespace.
 ## State Machine
 
 ```
-draft → in-progress → completed → archived
+draft → in-progress → completed
   ↓         ↓
-  └─── abandoned → archived
+  └─── abandoned
 ```
 
 `blocked` can be used as a modifier on `in-progress`, indicating waiting for dependencies.
+All status transitions are in-place frontmatter updates — no file moves.
 
 ## CLI Reference
 
 | Command | Behavior | Side Effect |
 |---------|----------|-------------|
 | `moss features specification` | Render this README.md | None |
-| `moss features list [--status] [--archived]` | Parse all active (or archived) FEATURE.md frontmatter | None |
-| `moss features create <name>` | Copy TEMPLATE.md → active/\<name\>/FEATURE.md | Creates directory |
-| `moss features set-status <name> <status> [-m "note"]` | Update status and updated fields in YAML frontmatter | Writes to FEATURE.md |
+| `moss features list [--status] [--all]` | Parse FEATURE.md frontmatter, default last 2 months | None |
+| `moss features create <name>` | Create active/\<year\>/\<month\>/\<name\>/FEATURE.md from template | Creates directory |
+| `moss features set-status <name> <status> [-m "note"]` | Update status and updated fields in YAML frontmatter (in place) | Writes to FEATURE.md |
 | `moss features status [name]` | Parse and display specified or all frontmatter | None |
-| `moss features archive <name>` | Move directory to archived/\<year\>/\<month\>/ | Moves directory |
 | `moss features init` | Create `.ai_partners/features/` skeleton in project root | Creates directory structure |
 
 The CLI is a **thin convention enforcer**. Core logic lives in `ghoshell_moss.core.codex._features`.
-
-## Archive Convention
-
-1. Read FEATURE.md frontmatter to confirm status is `completed` or `abandoned`
-2. Recursively move the entire feature directory to `archived/<year>/<month>/<name>/`
-3. Year/month extracted from frontmatter `updated` field
-4. Query archived features via `moss features list --archived` — the directory tree IS the index
 
 ## Relationship to Existing Conventions
 
@@ -187,5 +184,6 @@ do for other features, read `git log -- .ai_partners/features/README.md`. Only n
 you need to study the meta-convention deeply.
 
 *This convention was designed through discussion between the human engineer and Deepseek V4
-on 2026-05-10, revised on 2026-05-13 after multi-session review. Design constraints are
+on 2026-05-10, revised on 2026-05-13 after multi-session review. Date-based directory
+paths and in-place status (no archive/move) adopted 2026-05-13. Design constraints are
 explicitly limited to the "single human engineer + AI incarnations" validation scenario.*

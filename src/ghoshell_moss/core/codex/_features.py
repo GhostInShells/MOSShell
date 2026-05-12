@@ -3,13 +3,13 @@ AI-Native Feature Tracking core functions.
 
 File-system-based feature tracking using FEATURE.md + YAML frontmatter.
 This is the logic layer — the CLI is a thin convention enforcer that wraps these functions.
+
+Directory topology: active/<year>/<month>/<name>/FEATURE.md
+Path encodes creation date. No archive/move — status changes are frontmatter-only.
 """
-import shutil
 from datetime import date
 from pathlib import Path
 from typing import Optional
-
-import frontmatter
 
 
 # ---------------------------------------------------------------------------
@@ -22,10 +22,40 @@ VALID_STATUSES = {"draft", "in-progress", "completed", "abandoned", "blocked"}
 def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
     """Parse YAML frontmatter from a FEATURE.md file.  Returns None if missing or unparseable."""
     try:
+        import frontmatter
         post = frontmatter.load(str(filepath))
         return dict(post.metadata) if post.metadata else None
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _find_feature_dir(features_dir: Path, feature_id: str) -> Optional[Path]:
+    """Find a feature directory by name via glob search across year/month trees."""
+    hits = sorted(features_dir.glob(f"**/{feature_id}"))
+    for hit in hits:
+        if hit.is_dir() and (hit / "FEATURE.md").is_file():
+            return hit
+    return None
+
+
+def _month_dirs(features_dir: Path, months_back: int = 2) -> list[Path]:
+    """Return sorted list of year/month dirs to scan, covering the last N months."""
+    today = date.today()
+    dirs = []
+    # current month and previous months
+    y, m = today.year, today.month
+    for _ in range(months_back):
+        dirs.append(features_dir / str(y) / f"{m:02d}")
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    # filter to existing dirs only
+    return sorted([d for d in dirs if d.is_dir()], reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +65,12 @@ def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
 def list_features(
     features_dir: str | Path,
     status_filter: Optional[str] = None,
+    all_months: bool = False,
 ) -> list[dict]:
     """
-    List all features in the active/ directory.
+    List features from active/ directory.
 
+    By default, scans only the last 2 months. Pass all_months=True to scan all time.
     Returns a list of frontmatter dicts sorted by priority then created date.
     Each dict includes a '_feature_dir' key with the directory name.
     """
@@ -46,22 +78,31 @@ def list_features(
     if not active_dir.is_dir():
         return []
 
+    if all_months:
+        # Walk all year/month dirs
+        feat_dirs = []
+        for fm_path in sorted(active_dir.glob("**/FEATURE.md")):
+            feat_dirs.append(fm_path.parent)
+    else:
+        # Only recent months
+        feat_dirs = []
+        for month_dir in _month_dirs(active_dir):
+            for entry in sorted(month_dir.iterdir()):
+                if entry.is_dir() and (entry / "FEATURE.md").is_file():
+                    feat_dirs.append(entry)
+
     results = []
-    for feat_dir in sorted(active_dir.iterdir()):
-        if not feat_dir.is_dir():
-            continue
+    for feat_dir in feat_dirs:
         fm_path = feat_dir / "FEATURE.md"
-        if not fm_path.is_file():
-            continue
         meta = parse_frontmatter(fm_path)
         if meta is None:
             continue
         meta["_feature_dir"] = feat_dir.name
+        meta["_feature_path"] = str(feat_dir.relative_to(active_dir))
         if status_filter and meta.get("status") != status_filter:
             continue
         results.append(meta)
 
-    # Sort by priority (P0 first), then created date
     def _sort_key(m: dict) -> tuple:
         p = m.get("priority", "P9")
         order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -72,44 +113,16 @@ def list_features(
 
 
 def get_feature(features_dir: str | Path, feature_id: str) -> Optional[dict]:
-    """Get a single feature's frontmatter by id from active/."""
-    active_dir = Path(features_dir) / "active" / feature_id
-    if not active_dir.is_dir():
+    """Get a single feature's frontmatter by id. Searches active/ tree via glob."""
+    active_dir = Path(features_dir) / "active"
+    feat_dir = _find_feature_dir(active_dir, feature_id)
+    if feat_dir is None:
         return None
-    fm_path = active_dir / "FEATURE.md"
-    if not fm_path.is_file():
-        return None
-    meta = parse_frontmatter(fm_path)
+    meta = parse_frontmatter(feat_dir / "FEATURE.md")
     if meta is not None:
         meta["_feature_dir"] = feature_id
+        meta["_feature_path"] = str(feat_dir.relative_to(active_dir))
     return meta
-
-
-def list_archived_features(
-    features_dir: str | Path,
-) -> list[dict]:
-    """
-    Glob archived/** /FEATURE.md and return parsed frontmatter.
-
-    The archived directory tree itself is the index — no CSV needed.
-    Sorted by archive date (descending), then feature id.
-    """
-    archived_dir = Path(features_dir) / "archived"
-    if not archived_dir.is_dir():
-        return []
-
-    results = []
-    for fm_path in sorted(archived_dir.glob("**/FEATURE.md"), reverse=True):
-        meta = parse_frontmatter(fm_path)
-        if meta is None:
-            continue
-        # Derive archive path info from the directory structure
-        rel = fm_path.parent.relative_to(archived_dir)
-        meta["_archived_path"] = str(rel)
-        meta["_fm_path"] = str(fm_path)
-        results.append(meta)
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +170,6 @@ Why does this feature need to exist? What gap does it fill?
 """
 
 
-
 def create_feature(
     features_dir: str | Path,
     name: str,
@@ -166,32 +178,38 @@ def create_feature(
     """
     Create a new feature directory from template.
 
+    Directory: active/<year>/<month>/<name>/ — path encodes creation date, never moves.
     Returns the path to the created FEATURE.md.
-    Raises FileExistsError if the feature already exists.
+    Raises FileExistsError if the feature already exists (anywhere under active/).
     """
     features_dir = Path(features_dir)
     active_dir = features_dir / "active"
     active_dir.mkdir(parents=True, exist_ok=True)
 
-    feat_dir = active_dir / name
-    if feat_dir.exists():
-        raise FileExistsError(f"Feature '{name}' already exists at {feat_dir}")
+    # Check for duplicate name anywhere in the tree
+    if _find_feature_dir(active_dir, name) is not None:
+        raise FileExistsError(f"Feature '{name}' already exists under active/")
 
+    today = date.today()
+    year = str(today.year)
+    month = f"{today.month:02d}"
+
+    feat_dir = active_dir / year / month / name
     feat_dir.mkdir(parents=True)
 
-    today = date.today().isoformat()
+    today_iso = today.isoformat()
     title = name.replace("-", " ").title()
 
     if template_path and Path(template_path).is_file():
         content = Path(template_path).read_text(encoding="utf-8")
         content = content.replace("$FEATURE_ID", name)
         content = content.replace("$FEATURE_TITLE", title)
-        content = content.replace("$CREATED_DATE", today)
+        content = content.replace("$CREATED_DATE", today_iso)
     else:
         content = DEFAULT_TEMPLATE.format(
             feature_id=name,
             feature_title=title,
-            created_date=today,
+            created_date=today_iso,
         )
 
     fm_path = feat_dir / "FEATURE.md"
@@ -206,19 +224,21 @@ def update_feature_status(
     status_note: Optional[str] = None,
 ) -> bool:
     """
-    Update the status (and updated date) of a feature's frontmatter.
+    Update the status (and updated date) of a feature's frontmatter — in place, no move.
 
-    If status_note is provided, it is written to the frontmatter as a
-    one-line context pointer explaining the current status
-    (e.g. why blocked, what's next).  The note is overwritten on each
-    call that provides one — it does NOT accumulate history.
+    Terminal statuses (completed/abandoned) are just frontmatter updates.
+    The file stays where it was created.
 
     Returns True on success, False if feature not found.
     """
-    fm_path = Path(features_dir) / "active" / feature_id / "FEATURE.md"
-    if not fm_path.is_file():
+    active_dir = Path(features_dir) / "active"
+    feat_dir = _find_feature_dir(active_dir, feature_id)
+    if feat_dir is None:
         return False
 
+    fm_path = feat_dir / "FEATURE.md"
+
+    import frontmatter
     post = frontmatter.load(str(fm_path))
     post["status"] = status
     post["updated"] = date.today().isoformat()
@@ -229,72 +249,8 @@ def update_feature_status(
 
 
 # ---------------------------------------------------------------------------
-# Archive
-# ---------------------------------------------------------------------------
-
-def archive_feature(
-    features_dir: str | Path,
-    feature_id: str,
-    abandoned: bool = False,
-    status_note: Optional[str] = None,
-) -> bool:
-    """
-    Set status and archive a feature in one step.
-
-    1. Auto-set status to 'completed' (or 'abandoned' if abandoned=True)
-    2. Optionally write a status_note
-    3. Move directory to archived/<year>/<month>/<name>/
-
-    The archived directory tree itself is the index — no CSV file needed.
-    Use list_archived_features() to query archived features.
-
-    Returns True on success, False if feature not found.
-    """
-    features_dir = Path(features_dir)
-    active_dir = features_dir / "active"
-    feat_dir = active_dir / feature_id
-
-    if not feat_dir.is_dir():
-        return False
-
-    meta = get_feature(str(features_dir), feature_id)
-    if meta is None:
-        return False
-
-    # Auto-set status before archiving
-    new_status = "abandoned" if abandoned else "completed"
-    update_feature_status(str(features_dir), feature_id, new_status, status_note=status_note)
-
-    # Re-read after status update to get the updated date
-    meta = get_feature(str(features_dir), feature_id)
-    if meta is None:
-        return False
-
-    updated = meta.get("updated", date.today())
-    if isinstance(updated, date):
-        updated = updated.isoformat()
-    else:
-        updated = str(updated)
-    try:
-        year, month, _ = updated.split("-")
-    except ValueError:
-        year = str(date.today().year)
-        month = str(date.today().month).zfill(2)
-
-    # Move to archived
-    archived_target = features_dir / "archived" / year / month / feature_id
-    archived_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(feat_dir), str(archived_target))
-
-    return True
-
-
-# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
-
-FEATURES_README_PATH = Path(__file__).resolve().parent.parent.parent.parent.parent.parent / ".ai_partners" / "features" / "README.md"
-
 
 def init_features(project_root: str | Path) -> Path:
     """
@@ -305,13 +261,13 @@ def init_features(project_root: str | Path) -> Path:
 
     Returns the path to the created features directory.
     """
+    import shutil
+
     project_root = Path(project_root)
     features_dir = project_root / ".ai_partners" / "features"
 
-    for sub in ("active", "archived"):
-        (features_dir / sub).mkdir(parents=True, exist_ok=True)
+    (features_dir / "active").mkdir(parents=True, exist_ok=True)
 
-    # Copy specification and template from MOSShell's own features
     moss_features = Path(__file__).resolve().parents[5] / ".ai_partners" / "features"
 
     readme_src = moss_features / "README.md"
@@ -337,3 +293,12 @@ def init_features(project_root: str | Path) -> Path:
         )
 
     return features_dir
+
+
+# ---------------------------------------------------------------------------
+# Future optimization anchor
+# ---------------------------------------------------------------------------
+# When feature count grows (>>100), list_features() frontmatter parsing becomes
+# linear in O(n).  A .state text file (one word per feature) can be introduced
+# alongside FEATURE.md for fast status scans without YAML overhead.
+# For now (~10 features) frontmatter parsing is more than sufficient.
