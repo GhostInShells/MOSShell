@@ -118,7 +118,6 @@ def list_archived_features(
 
 DEFAULT_TEMPLATE = """\
 ---
-id: {feature_id}
 title: {feature_title}
 status: draft
 priority: P2
@@ -132,13 +131,11 @@ description: >-
 
 # {feature_title}
 
+> Use `moss features set-status {feature_id} <status> -m "note"` to update state.
+
 ## Motivation
 
 Why does this feature need to exist? What gap does it fill?
-
-## Scope
-
-What is in scope for this feature? What is explicitly out of scope?
 
 ## Design Index
 
@@ -147,17 +144,18 @@ What is in scope for this feature? What is explicitly out of scope?
 
 ## Key Decisions
 
-<!-- Record important decisions made during development -->
+<!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
 
 ## Implementation Notes
 
-<!-- Implementation details, gotchas, and context for future AI incarnations -->
+<!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->
 
 ## Related
 
-- Depends on: (list feature IDs)
-- Related features: (list feature IDs)
+- Depends on: (list feature names)
+- Related features: (list feature names)
 """
+
 
 
 def create_feature(

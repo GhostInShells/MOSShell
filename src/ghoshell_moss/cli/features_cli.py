@@ -104,10 +104,10 @@ def list_cmd(
 
     table_data = []
     for fm in features:
-        sid = fm.get("id", "?")
+        name = fm.get("_feature_dir", "?")
         stat = fm.get("status", "?")
         pri = fm.get("priority", "?")
-        title_str = fm.get("title", sid)
+        title_str = fm.get("title", name)
         desc = fm.get("description", "")
         updated = fm.get("updated", "")
 
@@ -115,7 +115,7 @@ def list_cmd(
             fm_path = fm.get("_fm_path", str(fd / "archived" / fm.get("_archived_path", "") / "FEATURE.md"))
             archived_at = fm.get("_archived_path", "")
         else:
-            feat_dir = fm.get("_feature_dir", sid)
+            feat_dir = fm.get("_feature_dir", name)
             fm_path = str(fd / "active" / feat_dir / "FEATURE.md")
             archived_at = ""
 
@@ -131,12 +131,12 @@ def list_cmd(
         elif stat == "abandoned":
             status_display = f"[dim red]{stat}[/dim red]"
 
-        row = [sid, title_str, status_display, pri, updated, desc, fm_path]
+        row = [name, title_str, status_display, pri, updated, desc, fm_path]
         if archived:
             row.append(archived_at)
         table_data.append(row)
 
-    headers = ["ID", "Title", "Status", "Priority", "Updated", "Description", "Path"]
+    headers = ["Name", "Title", "Status", "Priority", "Updated", "Description", "Path"]
     ratios = [1, 1.2, 0.6, 0.3, 0.5, 2, 3]
     if archived:
         headers.append("Archived")
@@ -157,7 +157,7 @@ def list_cmd(
 
 @features_app.command("status")
 def status_cmd(
-    feature_id: Optional[str] = typer.Argument(None, help="Feature ID to show. Omit to show all."),
+    feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
@@ -168,13 +168,13 @@ def status_cmd(
     """
     fd = _resolve_dir(features_dir)
 
-    if feature_id:
-        meta = get_feature(str(fd), feature_id)
+    if feature_name:
+        meta = get_feature(str(fd), feature_name)
         if meta is None:
-            print_error(f"Feature '{feature_id}' not found.")
+            print_error(f"Feature '{feature_name}' not found.")
             raise typer.Exit(code=1)
 
-        lines = [f"ID:          {meta.get('id', feature_id)}",
+        lines = [f"Name:        {feature_name}",
                  f"Title:       {meta.get('title', '')}",
                  f"Status:      {meta.get('status', '')}",
                  f"Priority:    {meta.get('priority', '')}",
@@ -184,8 +184,8 @@ def status_cmd(
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
                  f"Status Note: {meta.get('status_note', '') or 'none'}",
-                 f"Path:        {fd / 'active' / feature_id / 'FEATURE.md'}"]
-        print_simple_panel("\n".join(lines), title=f"Feature: {feature_id}")
+                 f"Path:        {fd / 'active' / feature_name / 'FEATURE.md'}"]
+        print_simple_panel("\n".join(lines), title=f"Feature: {feature_name}")
     else:
         # Show all — delegate to list display
         features = list_features(str(fd))
@@ -194,8 +194,8 @@ def status_cmd(
             return
 
         for fm in features:
-            sid = fm.get("id", "?")
-            fm_path = fd / "active" / sid / "FEATURE.md"
+            name = fm.get("_feature_dir", "?")
+            fm_path = fd / "active" / name / "FEATURE.md"
             lines = [
                 f"Status:      {fm.get('status', '?')}",
                 f"Priority:    {fm.get('priority', '?')}",
@@ -206,7 +206,7 @@ def status_cmd(
             if note:
                 lines.append(f"Status Note: {note}")
             lines.append(f"Path:        {fm_path}")
-            print_simple_panel("\n".join(lines), title=f"{sid}: {fm.get('title', '')}")
+            print_simple_panel("\n".join(lines), title=f"{name}: {fm.get('title', '')}")
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ def create_cmd(
 
 @features_app.command("set-status")
 def set_status_cmd(
-    feature_id: str = typer.Argument(..., help="Feature ID to update."),
+    feature_name: str = typer.Argument(..., help="Feature name to update."),
     status: str = typer.Argument(..., help=f"New status: {', '.join(sorted(VALID_STATUSES))}"),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -266,25 +266,25 @@ def set_status_cmd(
         print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
         raise typer.Exit(code=1)
 
-    meta = get_feature(str(fd), feature_id)
+    meta = get_feature(str(fd), feature_name)
     if meta is None:
-        print_error(f"Feature '{feature_id}' not found.")
+        print_error(f"Feature '{feature_name}' not found.")
         raise typer.Exit(code=1)
 
     old_status = meta.get("status", "?")
     old_note = meta.get("status_note", "")
     if old_status == status and (message is None or message == old_note):
-        print_info(f"Feature '{feature_id}' status is already '{status}'.")
+        print_info(f"Feature '{feature_name}' status is already '{status}'.")
         return
 
-    ok = update_feature_status(str(fd), feature_id, status, status_note=message)
+    ok = update_feature_status(str(fd), feature_name, status, status_note=message)
     if ok:
-        msg = f"Feature '{feature_id}': {old_status} -> {status}"
+        msg = f"Feature '{feature_name}': {old_status} -> {status}"
         if message:
             msg += f"  ({message})"
         print_success(msg)
     else:
-        print_error(f"Failed to update status for '{feature_id}'.")
+        print_error(f"Failed to update status for '{feature_name}'.")
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ def set_status_cmd(
 
 @features_app.command("archive")
 def archive_cmd(
-    feature_id: str = typer.Argument(..., help="Feature ID to archive."),
+    feature_name: str = typer.Argument(..., help="Feature name to archive."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
@@ -317,24 +317,24 @@ def archive_cmd(
     The archived directory tree itself is the index — use 'moss features list --archived' to query.
     """
     fd = _resolve_dir(features_dir)
-    meta = get_feature(str(fd), feature_id)
+    meta = get_feature(str(fd), feature_name)
 
     if meta is None:
-        print_error(f"Feature '{feature_id}' not found.")
+        print_error(f"Feature '{feature_name}' not found.")
         raise typer.Exit(code=1)
 
     old_status = meta.get("status", "?")
     new_status = "abandoned" if abandoned else "completed"
 
-    ok = archive_feature(str(fd), feature_id, abandoned=abandoned, status_note=message)
+    ok = archive_feature(str(fd), feature_name, abandoned=abandoned, status_note=message)
     if ok:
-        msg = f"Feature '{feature_id}' archived ({old_status} -> {new_status})"
+        msg = f"Feature '{feature_name}' archived ({old_status} -> {new_status})"
         if message:
             msg += f"  ({message})"
         print_success(msg)
         print_info(f"Remember to add or remove archived feature files.")
     else:
-        print_error(f"Failed to archive feature '{feature_id}'.")
+        print_error(f"Failed to archive feature '{feature_name}'.")
 
 
 # ---------------------------------------------------------------------------
