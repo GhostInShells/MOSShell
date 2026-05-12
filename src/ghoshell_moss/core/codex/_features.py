@@ -4,7 +4,7 @@ AI-Native Feature Tracking core functions.
 File-system-based feature tracking using FEATURE.md + YAML frontmatter.
 This is the logic layer — the CLI is a thin convention enforcer that wraps these functions.
 
-Directory topology: active/<year>/<month>/<name>/FEATURE.md
+Directory topology: workstreams/<year>/<month>/<name>/FEATURE.md
 Path encodes creation date. No archive/move — status changes are frontmatter-only.
 """
 from datetime import date
@@ -68,25 +68,25 @@ def list_features(
     all_months: bool = False,
 ) -> list[dict]:
     """
-    List features from active/ directory.
+    List features from workstreams/ directory.
 
     By default, scans only the last 2 months. Pass all_months=True to scan all time.
     Returns a list of frontmatter dicts sorted by priority then created date.
     Each dict includes a '_feature_dir' key with the directory name.
     """
-    active_dir = Path(features_dir) / "active"
-    if not active_dir.is_dir():
+    workstreams_dir = Path(features_dir) / "workstreams"
+    if not workstreams_dir.is_dir():
         return []
 
     if all_months:
         # Walk all year/month dirs
         feat_dirs = []
-        for fm_path in sorted(active_dir.glob("**/FEATURE.md")):
+        for fm_path in sorted(workstreams_dir.glob("**/FEATURE.md")):
             feat_dirs.append(fm_path.parent)
     else:
         # Only recent months
         feat_dirs = []
-        for month_dir in _month_dirs(active_dir):
+        for month_dir in _month_dirs(workstreams_dir):
             for entry in sorted(month_dir.iterdir()):
                 if entry.is_dir() and (entry / "FEATURE.md").is_file():
                     feat_dirs.append(entry)
@@ -98,7 +98,7 @@ def list_features(
         if meta is None:
             continue
         meta["_feature_dir"] = feat_dir.name
-        meta["_feature_path"] = str(feat_dir.relative_to(active_dir))
+        meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
         if status_filter and meta.get("status") != status_filter:
             continue
         results.append(meta)
@@ -113,15 +113,15 @@ def list_features(
 
 
 def get_feature(features_dir: str | Path, feature_id: str) -> Optional[dict]:
-    """Get a single feature's frontmatter by id. Searches active/ tree via glob."""
-    active_dir = Path(features_dir) / "active"
-    feat_dir = _find_feature_dir(active_dir, feature_id)
+    """Get a single feature's frontmatter by id. Searches workstreams/ tree via glob."""
+    workstreams_dir = Path(features_dir) / "workstreams"
+    feat_dir = _find_feature_dir(workstreams_dir, feature_id)
     if feat_dir is None:
         return None
     meta = parse_frontmatter(feat_dir / "FEATURE.md")
     if meta is not None:
         meta["_feature_dir"] = feature_id
-        meta["_feature_path"] = str(feat_dir.relative_to(active_dir))
+        meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
     return meta
 
 
@@ -145,6 +145,7 @@ description: >-
 # {feature_title}
 
 > Use `moss features set-status {feature_id} <status> -m "note"` to update state.
+> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
 
 ## Motivation
 
@@ -178,23 +179,23 @@ def create_feature(
     """
     Create a new feature directory from template.
 
-    Directory: active/<year>/<month>/<name>/ — path encodes creation date, never moves.
+    Directory: workstreams/<year>/<month>/<name>/ — path encodes creation date, never moves.
     Returns the path to the created FEATURE.md.
-    Raises FileExistsError if the feature already exists (anywhere under active/).
+    Raises FileExistsError if the feature already exists (anywhere under workstreams/).
     """
     features_dir = Path(features_dir)
-    active_dir = features_dir / "active"
-    active_dir.mkdir(parents=True, exist_ok=True)
+    workstreams_dir = features_dir / "workstreams"
+    workstreams_dir.mkdir(parents=True, exist_ok=True)
 
     # Check for duplicate name anywhere in the tree
-    if _find_feature_dir(active_dir, name) is not None:
-        raise FileExistsError(f"Feature '{name}' already exists under active/")
+    if _find_feature_dir(workstreams_dir, name) is not None:
+        raise FileExistsError(f"Feature '{name}' already exists under workstreams/")
 
     today = date.today()
     year = str(today.year)
     month = f"{today.month:02d}"
 
-    feat_dir = active_dir / year / month / name
+    feat_dir = workstreams_dir / year / month / name
     feat_dir.mkdir(parents=True)
 
     today_iso = today.isoformat()
@@ -231,8 +232,8 @@ def update_feature_status(
 
     Returns True on success, False if feature not found.
     """
-    active_dir = Path(features_dir) / "active"
-    feat_dir = _find_feature_dir(active_dir, feature_id)
+    workstreams_dir = Path(features_dir) / "workstreams"
+    feat_dir = _find_feature_dir(workstreams_dir, feature_id)
     if feat_dir is None:
         return False
 
@@ -256,8 +257,8 @@ def init_features(project_root: str | Path) -> Path:
     """
     Create the `.ai_partners/features/` skeleton in the given project root.
 
-    Copies README.md and TEMPLATE.md from MOSShell's own features directory
-    if available, otherwise generates minimal versions.
+    Copies README.md, TOPOLOGY.md, and TEMPLATE.md from MOSShell's own features
+    directory if available, otherwise generates minimal versions.
 
     Returns the path to the created features directory.
     """
@@ -266,7 +267,7 @@ def init_features(project_root: str | Path) -> Path:
     project_root = Path(project_root)
     features_dir = project_root / ".ai_partners" / "features"
 
-    (features_dir / "active").mkdir(parents=True, exist_ok=True)
+    (features_dir / "workstreams").mkdir(parents=True, exist_ok=True)
 
     moss_features = Path(__file__).resolve().parents[5] / ".ai_partners" / "features"
 
@@ -291,6 +292,10 @@ def init_features(project_root: str | Path) -> Path:
             ),
             encoding="utf-8",
         )
+
+    topology_src = moss_features / "TOPOLOGY.md"
+    if topology_src.is_file():
+        shutil.copy2(str(topology_src), str(features_dir / "TOPOLOGY.md"))
 
     return features_dir
 

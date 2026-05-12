@@ -13,6 +13,7 @@ description: >-
 # $FEATURE_TITLE
 
 > Use `moss features set-status $FEATURE_ID <status> -m "note"` to update state.
+> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
 
 ## Motivation
 

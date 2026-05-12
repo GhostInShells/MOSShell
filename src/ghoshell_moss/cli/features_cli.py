@@ -52,7 +52,7 @@ def _resolve_dir(features_dir: Optional[Path]) -> Path:
 # specification
 # ---------------------------------------------------------------------------
 
-@features_app.command("specification")
+@features_app.command("specification", short_help="Display the convention specification (README.md).")
 def specification(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -76,7 +76,7 @@ def specification(
 # list
 # ---------------------------------------------------------------------------
 
-@features_app.command("list")
+@features_app.command("list", short_help="List workstreams with status and priority.")
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
@@ -148,7 +148,7 @@ def list_cmd(
 # status
 # ---------------------------------------------------------------------------
 
-@features_app.command("status")
+@features_app.command("status", short_help="Show detailed status of workstreams.")
 def status_cmd(
     feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
@@ -181,7 +181,7 @@ def status_cmd(
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
                  f"Status Note: {meta.get('status_note', '') or 'none'}",
-                 f"Path:        active/{feat_path}/FEATURE.md"]
+                 f"Path:        workstreams/{feat_path}/FEATURE.md"]
         print_simple_panel("\n".join(lines), title=f"Workstream: {feature_name}")
     else:
         # Compact all-workstreams view
@@ -206,7 +206,7 @@ def status_cmd(
                 echo(f"  Description: {desc}")
                 if note:
                     echo(f"  Status Note: {note}")
-                echo(f"  Path:        active/{feat_path}/")
+                echo(f"  Path:        workstreams/{feat_path}/")
                 echo("")
         else:
             console.print()
@@ -239,7 +239,7 @@ def status_cmd(
                 console.print(f"  Description: {desc}")
                 if note:
                     console.print(f"  Status Note: {note}")
-                console.print(f"  Path:        active/{feat_path}/")
+                console.print(f"  Path:        workstreams/{feat_path}/")
                 console.print()
 
         console.print(f"[dim]{len(features)} workstream(s)[/dim]")
@@ -249,7 +249,7 @@ def status_cmd(
 # create
 # ---------------------------------------------------------------------------
 
-@features_app.command("create")
+@features_app.command("create", short_help="Create a new workstream from the template.")
 def create_cmd(
     name: str = typer.Argument(..., help="Feature name in kebab-case."),
     features_dir: Optional[Path] = typer.Option(
@@ -272,7 +272,7 @@ def create_cmd(
 
         if is_ai_mode():
             echo(f"\n## Workstream: {name}")
-            echo(f"Path:      active/{feat_path}/FEATURE.md")
+            echo(f"Path:      workstreams/{feat_path}/FEATURE.md")
             echo(f"Title:     {meta.get('title', name) if meta else name}")
             echo(f"Status:    draft")
             echo(f"Priority:  P2")
@@ -284,7 +284,7 @@ def create_cmd(
             echo(f"  3. Run: moss features set-status {name} in-progress -m \"starting\"")
         else:
             lines = [
-                f"Path:      active/{feat_path}/FEATURE.md",
+                f"Path:      workstreams/{feat_path}/FEATURE.md",
                 f"Title:     {meta.get('title', name) if meta else name}",
                 f"Status:    draft",
                 f"Priority:  P2",
@@ -305,7 +305,7 @@ def create_cmd(
 # set-status
 # ---------------------------------------------------------------------------
 
-@features_app.command("set-status")
+@features_app.command("set-status", short_help="Set workstream status without opening the file.")
 def set_status_cmd(
     feature_name: str = typer.Argument(..., help="Feature name to update."),
     status: str = typer.Argument(..., help=f"New status: {', '.join(sorted(VALID_STATUSES))}"),
@@ -366,7 +366,7 @@ def set_status_cmd(
 # init
 # ---------------------------------------------------------------------------
 
-@features_app.command("init")
+@features_app.command("init", short_help="Initialize the features skeleton in a project.")
 def init_cmd(
     project_root: Optional[Path] = typer.Option(
         None, "--project", "-p",

@@ -92,26 +92,7 @@ Discover all commands with `moss features` (no arguments) or `moss --ai all-comm
 
 ## Directory Topology
 
-```
-.ai_partners/features/
-  README.md              # This file — the convention specification
-  TEMPLATE.md            # Template for new features (source of `moss features create`)
-  active/                # Single source of truth — all features, all states
-    <year>/              # Created year (features never move)
-      <month>/           # Created month
-        <feature-name>/  # kebab-case naming, unique across the entire tree
-          FEATURE.md     # REQUIRED: frontmatter + motivation + key decisions + design index
-          discuss/       # Feature-specific discussion trails (optional)
-          design/        # Design documents (optional)
-```
-
-Path encodes creation date at `create` time. Features stay in place for their entire
-lifecycle — `completed`/`abandoned` are just a `status` field update, no file move.
-This preserves clean git history without path-forking from rename detection.
-
-Each FEATURE.md owns its internal organization. The `design/` and `discuss/` subdirectories
-are suggestions, not requirements. A feature may define its own document structure directly
-in its FEATURE.md.
+See [TOPOLOGY.md](TOPOLOGY.md) for the directory layout and path semantics.
 
 ## FEATURE.md Minimal Frontmatter Schema
 
