@@ -93,6 +93,47 @@ The CLI adds default directory conventions (`.ai_partners/features/` for the MOS
 - **`.ai_partners/`**: `features/` is a sibling to `dialogs/` and `prompts/`.
 - **`CLAUDE.md`**: Should contain a pointer to `features/` so new AI instances discover current task state.
 
+## Git Commit Discipline
+
+This is the **binding constraint** that makes the file-system-as-database work:
+
+> **A commit containing code changes for a feature MUST also include the corresponding FEATURE.md.**
+
+### Rationale
+
+Feature tracking via files only has value if git history connects code and feature state.
+`git log -- .ai_partners/features/active/<id>/FEATURE.md` must produce a **reliable timeline**
+of every commit that changed the feature. Similarly, `git log -- <source-file>` should be
+able to trace back to the FEATURE.md state at that point.
+
+When FEATURE.md and code are committed separately:
+- The feature timeline has gaps — some commits touch code but don't update FEATURE.md
+- `git blame` on FEATURE.md loses fidelity as an event log
+- An AI incarnation reading FEATURE.md alone cannot trust that it reflects the code it's looking at
+
+### What qualifies as "feature code"
+
+Any file listed or implied by the FEATURE.md Design Index. If the commit modifies a file
+that implements or tests a feature, FEATURE.md goes in the same commit. When in doubt, include it.
+
+### What to update in FEATURE.md per commit
+
+- `updated` date — bumped even if `status` hasn't changed
+- Mark tasks as done in the Scope table
+- Add new Key Decisions if design choices were made in this commit
+- `status_note` — a one-line summary of what this commit achieved or left unfinished
+
+### CLI tool enforcement
+
+The `moss features` CLI does NOT enforce this rule (git hooks are out of scope).
+This convention relies on:
+1. AI incarnations reading this specification and following it
+2. Human engineer reviewing commits for FEATURE.md inclusion
+
+If a commit lands without its FEATURE.md update, the correct fix is **not** a follow-up
+FEATURE.md-only commit. The right fix is an interactive rebase to squash the missing
+FEATURE.md into the code commit, restoring a clean one-to-one timeline.
+
 ## Self-Iteration Perspective
 
 The feature system is itself the minimal viable unit of MOSS "let AI modify itself":
