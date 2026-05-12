@@ -34,7 +34,11 @@ def reflect_any_by_import_path(import_path: str) -> str:
         return reflect_module(value)
     data = reflect_prompt_from_value(value)
     if data is None:
-        data = repr(value)
+        try:
+            #  仍然尝试获取一遍源码.
+            data = inspect.getsource(value)
+        except Exception:
+            pass
     return data
 
 
