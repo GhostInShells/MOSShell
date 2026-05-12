@@ -51,7 +51,7 @@ pip install .
 ```bash
 cd ~/MOSShell/examples/jetarm_ws
 source /opt/ros/humble/setup.zsh
-colcon build --symbal-link 
+colcon build --symlink-install
 ```
 
 也有一些常用的命令
