@@ -91,13 +91,8 @@ class Compiler:
         if self._local_injections:
             module.__dict__.update(self._local_injections)
         module.__file__ = self._filename
-        try:
-            compiled = compile(self._source, self._modulename, "exec")
-            exec(compiled, module.__dict__)
-        except SyntaxError as e:
-            raise e
-        except Exception as e:
-            raise SyntaxError(f"Compile {self._modulename} failed: {e}")
+        compiled = compile(self._source, self._modulename, "exec")
+        exec(compiled, module.__dict__)
         if self._origin:
             inherit_attrs = self._filter_origin_must_inherit_attrs(self._origin)
             module.__dict__.update(inherit_attrs)
@@ -122,7 +117,12 @@ class Compiler:
             elif is_typing(attr_value):
                 result[attr_name] = attr_value
             elif isinstance(attr_value, object):
-                result[attr_name] = deepcopy(attr_value)
+                try:
+                    result[attr_name] = deepcopy(attr_value)
+                except Exception:
+                    # deepcopy may fail on objects with locks, C extensions, etc.
+                    # In that case, share the reference — the compiled module is temporary.
+                    result[attr_name] = attr_value
             else:
                 result[attr_name] = attr_value
         return result

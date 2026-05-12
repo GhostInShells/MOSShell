@@ -1,15 +1,15 @@
 ---
-id: zenoh-fractal
-title: Zenoh Fractal — 反向注册与远程联通
-status: in-progress
-priority: P0
 created: 2026-05-11
-updated: 2026-05-11
 depends: []
+description: 实现分形通讯的反向注册模式：子节点通过显式 transport 主动连接到父节点。 包含 transport 参数化、moss-as-fractal
+  CLI、debug 回调。
+id: zenoh-fractal
 milestone: beta
-description: >-
-  实现分形通讯的反向注册模式：子节点通过显式 transport 主动连接到父节点。
-  包含 transport 参数化、moss-as-fractal CLI、debug 回调。
+priority: P0
+status: in-progress
+status_note: FractalServeState 显式监听已完成，待端到端验证两个 workspace
+title: Zenoh Fractal — 反向注册与远程联通
+updated: '2026-05-11'
 ---
 
 # Zenoh Fractal — 反向注册与远程联通
@@ -36,9 +36,13 @@ Fractal 当前只支持模式 1，机器人场景需要模式 2/3。`transport` 
 | LoggerItf 注入 + 异常日志 | ✅ done |
 | 去掉 `_provided_lock` | ✅ done |
 | 联通性单测 (2 tests) | ✅ done |
-| **transport 参数化** (scheme+address, MCP 风格) | 🔲 todo |
-| **`moss-as-fractal` CLI** | 🔲 todo |
-| **debug 回调** (`on_channel_event` → 控制台日志) | 🔲 todo |
+| **transport 参数化** | ✅ done |
+| **`moss-as-fractal` CLI** | ✅ done |
+| **Hub 按需节点管理 (open_node/close_node)** | ✅ done |
+| **liveness key 过滤修复** | ✅ done |
+| **debug 回调** (`on_channel_event` → 控制台日志) | ✅ done |
+| **FractalServeState — 显式标签页管理** | ✅ done |
+| **端到端验证 (两个 workspace)** | 🔲 待人类工程师 debug |
 
 **Out of scope (另开 feature):**
 - Fractal 从 `blueprint.matrix` 搬迁到 `blueprint.host`，与 MossRuntime 平级（人类工程师用 PyCharm 迁移）
@@ -49,8 +53,12 @@ Fractal 当前只支持模式 1，机器人场景需要模式 2/3。`transport` 
 
 - 核心实现: `src/ghoshell_moss/host/zenoh_fractal.py`
 - 单元测试: `tests/ghoshell_moss/host/test_zenoh_fractal.py`
-- 接口定义: `src/ghoshell_moss/core/blueprint/matrix.py` (Fractal ABC)
-- CLI 入口: `src/ghoshell_moss/cli/fractal.py` (待创建)
+- 接口定义: `src/ghoshell_moss/core/blueprint/host.py` (Fractal ABC)
+- Matrix 集成: `src/ghoshell_moss/host/matrix.py` (fractal() 访问器 — 不自动启动)
+- REPL State: `src/ghoshell_moss/host/repl/fractal_serve_state.py` (显式标签页)
+- TUI 注册: `src/ghoshell_moss/host/tui_entries/moss_runtime_ui.py`
+- CLI 入口: `src/ghoshell_moss/cli/moss_as_fractal.py`
+- CLI 注册: `pyproject.toml` → `moss-as-fractal`
 
 ## Key Decisions
 
@@ -86,15 +94,26 @@ scheme 决定 transport 类型，address 是具体端点。先只支持 zenoh。
 
 **决策**: `get_virtual_children` 先查缓存，命中复用，避免 runtime 重连。
 
-### 6. LoggerItf 外部注入 (2026-05-11)
+### 7. FractalServeState — 显式标签页管理 (2026-05-11)
 
-**决策**: `__init__` 接收 `logger: LoggerItf` 必选参数，由上层 IoC 注入。
+**决策**: Fractal 从自动隐式启动改为显式 REPLState 管理。不再通过 Matrix provider 自动注册，不再在 MossRuntimeImpl 生命周期中自动启动。
+
+**理由**:
+- 网络监听端口是有副作用的资源占用，不应每次启动 moss-repl 都自动打开
+- Matrix 负责本地环境通讯总线，不应承担 fractal 组网职责
+- 用户应明确进入 Fractal Serve 标签页才开始监听
+
+**行为**:
+- 进入 FractalServeState → ZenohSessionFractal 启动 + hub channel import
+- 离开 FractalServeState → fractal 关闭 + hub channel 清理
+- `moss-as-fractal` CLI 独立管理自己的 fractal session，不受此影响
 
 ## Implementation Notes
 
 - transport 解析后注入 zenoh session 的 connect 配置，使子节点主动连父
 - `moss-as-fractal` 类似 `moss-as-mcp`：启动 runtime → 拿 shell main_channel → fractal.provide_channel
-- debug 回调通过 `DuplexChannelProvider.on_channel_event` 注册，打印连接/断开/心跳
+- debug 回调通过 `DuplexChannelProvider.on_channel_event` 注册，moss-as-fractal 用 ClickHandler 打印连接/断开/心跳
+- FractalServeState 通过 `__aenter__`/`__aexit__` 管理 fractal 完整生命周期，hub channel 在 enter 时 import 到 shell
 
 ## Related
 

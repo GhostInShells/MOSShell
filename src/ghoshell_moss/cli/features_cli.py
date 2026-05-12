@@ -1,5 +1,8 @@
 """
-Features command group — AI-native feature tracking via file system convention.
+Features command group — AI-native development tracking via file system convention.
+
+Tracks active development workstreams, their decision history, and completion state.
+This is NOT a project capability catalog — it tracks what's being built right now.
 """
 from pathlib import Path
 from datetime import date
@@ -9,24 +12,31 @@ import typer
 
 from ghoshell_moss.core.codex._features import (
     list_features,
-    list_archived_features,
     get_feature,
     create_feature,
-    archive_feature,
     init_features,
     update_feature_status,
     VALID_STATUSES,
 )
 from ghoshell_moss.cli.utils import (
     print_success, print_error, print_info, print_warning,
-    print_simple_table, print_simple_panel, console, echo,
+    print_simple_table, print_simple_panel, console, echo, is_ai_mode,
 )
 
 features_app = typer.Typer(
-    short_help="AI-native feature tracking via file system convention.",
-    help="AI-native feature tracking via file system convention.",
+    short_help="AI-native development tracking via file system convention.",
+    help="AI-native development tracking via file system convention. Tracks active workstreams, not a project capability catalog.",
     no_args_is_help=True,
 )
+
+# Next-step hints per status transition
+_STATUS_HINTS = {
+    ("draft", "in-progress"): "Record key decisions in FEATURE.md as you implement.",
+    ("in-progress", "completed"): "Verify all key decisions are recorded. The workstream stays at its creation path.",
+    ("in-progress", "blocked"): "Update depends: in frontmatter if a specific workstream is blocking this one.",
+    ("in-progress", "draft"): "Update the Motivation section if context has changed.",
+}
+_ABANDONED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
 
 # Default features directory for the MOSShell project itself
 _DEFAULT_FEATURES_DIR = Path.cwd() / ".ai_partners" / "features"
@@ -42,7 +52,7 @@ def _resolve_dir(features_dir: Optional[Path]) -> Path:
 # specification
 # ---------------------------------------------------------------------------
 
-@features_app.command("specification")
+@features_app.command("specification", short_help="Display the convention specification (README.md).")
 def specification(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -50,7 +60,7 @@ def specification(
     ),
 ):
     """
-    Display the AI-Native Feature Tracking convention specification (README.md).
+    Display the AI-Native Development Tracking convention specification (README.md).
     """
     fd = _resolve_dir(features_dir)
     readme = fd / "README.md"
@@ -59,21 +69,22 @@ def specification(
         print_info("Run 'moss features init' to create the features skeleton first.")
         raise typer.Exit(code=1)
     echo(readme.read_text(encoding="utf-8"))
+    echo(f"\nSpecification path: {readme.resolve()}")
 
 
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 
-@features_app.command("list")
+@features_app.command("list", short_help="List workstreams with status and priority.")
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
         help="Filter by status: draft, in-progress, completed, abandoned, blocked",
     ),
-    archived: bool = typer.Option(
-        False, "--archived", "-a",
-        help="List archived features instead of active ones.",
+    all_months: bool = typer.Option(
+        False, "--all",
+        help="List features from all time (default: last 2 months only).",
     ),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -81,42 +92,34 @@ def list_cmd(
     ),
 ):
     """
-    List all active (or archived) features with their status and priority.
+    List active development workstreams with status and priority.
+
+    Defaults to workstreams from the last 2 months. Use --all to see everything.
     """
     fd = _resolve_dir(features_dir)
     if status and status not in VALID_STATUSES:
         print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
         raise typer.Exit(code=1)
 
-    if archived:
-        features = list_archived_features(str(fd))
-        title = "Archived Features"
-    else:
-        features = list_features(str(fd), status_filter=status)
-        title = "Features"
-        if status:
-            title += f" [status={status}]"
+    features = list_features(str(fd), status_filter=status, all_months=all_months)
+    title = "Workstreams"
+    if status:
+        title += f" [status={status}]"
+    if not all_months:
+        title += " (last 2 months)"
 
     if not features:
-        print_info("No features found.")
+        print_info("No workstreams found.")
         return
 
     table_data = []
     for fm in features:
-        sid = fm.get("id", "?")
+        name = fm.get("_feature_dir", "?")
         stat = fm.get("status", "?")
         pri = fm.get("priority", "?")
-        title_str = fm.get("title", sid)
-        desc = fm.get("description", "")
+        title_str = fm.get("title", name)
         updated = fm.get("updated", "")
-
-        if archived:
-            fm_path = fm.get("_fm_path", str(fd / "archived" / fm.get("_archived_path", "") / "FEATURE.md"))
-            archived_at = fm.get("_archived_path", "")
-        else:
-            feat_dir = fm.get("_feature_dir", sid)
-            fm_path = str(fd / "active" / feat_dir / "FEATURE.md")
-            archived_at = ""
+        feat_path = fm.get("_feature_path", name)
 
         status_display = stat
         if stat == "in-progress":
@@ -130,50 +133,49 @@ def list_cmd(
         elif stat == "abandoned":
             status_display = f"[dim red]{stat}[/dim red]"
 
-        row = [sid, title_str, status_display, pri, updated, desc, fm_path]
-        if archived:
-            row.append(archived_at)
-        table_data.append(row)
-
-    headers = ["ID", "Title", "Status", "Priority", "Updated", "Description", "Path"]
-    ratios = [1, 1.2, 0.6, 0.3, 0.5, 2, 3]
-    if archived:
-        headers.append("Archived")
-        ratios.append(1)
+        table_data.append([name, status_display, pri, title_str, updated, feat_path])
 
     print_simple_table(
         data=table_data,
-        headers=headers,
+        headers=["Name", "Status", "Pri", "Title", "Updated", "Path"],
         title=title,
-        column_ratios=ratios,
+        column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
-    console.print(f"\n[dim]{len(features)} feature(s)[/dim]")
+    console.print(f"\n[dim]{len(features)} workstream(s)[/dim]")
+    console.print(
+        "[dim]New to this? Read the convention: [/dim]"
+        "[bold]moss features specification[/bold]"
+    )
 
 
 # ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
 
-@features_app.command("status")
+@features_app.command("status", short_help="Show detailed status of workstreams.")
 def status_cmd(
-    feature_id: Optional[str] = typer.Argument(None, help="Feature ID to show. Omit to show all."),
+    feature_name: Optional[str] = typer.Argument(None, help="Feature name to show. Omit to show all."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
     ),
 ):
     """
-    Show detailed status of one or all active features.
+    Show detailed status of one or all active workstreams.
+
+    With a name: shows full detail panel for that workstream.
+    Without a name: shows a compact summary of all workstreams.
     """
     fd = _resolve_dir(features_dir)
 
-    if feature_id:
-        meta = get_feature(str(fd), feature_id)
+    if feature_name:
+        meta = get_feature(str(fd), feature_name)
         if meta is None:
-            print_error(f"Feature '{feature_id}' not found.")
+            print_error(f"Workstream '{feature_name}' not found.")
             raise typer.Exit(code=1)
 
-        lines = [f"ID:          {meta.get('id', feature_id)}",
+        feat_path = meta.get("_feature_path", feature_name)
+        lines = [f"Name:        {feature_name}",
                  f"Title:       {meta.get('title', '')}",
                  f"Status:      {meta.get('status', '')}",
                  f"Priority:    {meta.get('priority', '')}",
@@ -183,36 +185,75 @@ def status_cmd(
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
                  f"Status Note: {meta.get('status_note', '') or 'none'}",
-                 f"Path:        {fd / 'active' / feature_id / 'FEATURE.md'}"]
-        print_simple_panel("\n".join(lines), title=f"Feature: {feature_id}")
+                 f"Path:        workstreams/{feat_path}/FEATURE.md"]
+        print_simple_panel("\n".join(lines), title=f"Workstream: {feature_name}")
     else:
-        # Show all — delegate to list display
+        # Compact all-workstreams view
         features = list_features(str(fd))
         if not features:
-            print_info("No features found.")
+            print_info("No workstreams found.")
             return
 
-        for fm in features:
-            sid = fm.get("id", "?")
-            fm_path = fd / "active" / sid / "FEATURE.md"
-            lines = [
-                f"Status:      {fm.get('status', '?')}",
-                f"Priority:    {fm.get('priority', '?')}",
-                f"Updated:     {fm.get('updated', '?')}",
-                f"Description: {fm.get('description', '')}",
-            ]
-            note = fm.get("status_note", "")
-            if note:
-                lines.append(f"Status Note: {note}")
-            lines.append(f"Path:        {fm_path}")
-            print_simple_panel("\n".join(lines), title=f"{sid}: {fm.get('title', '')}")
+        if is_ai_mode():
+            echo(f"## Workstreams\n")
+            for fm in features:
+                name = fm.get("_feature_dir", "?")
+                stat = fm.get("status", "?")
+                pri = fm.get("priority", "?")
+                title_str = fm.get("title", name)
+                desc = fm.get("description", "")
+                updated = fm.get("updated", "")
+                feat_path = fm.get("_feature_path", name)
+                note = fm.get("status_note", "")
+                echo(f"### {name} [{stat} {pri}] — {title_str}")
+                echo(f"  Updated:     {updated}")
+                echo(f"  Description: {desc}")
+                if note:
+                    echo(f"  Status Note: {note}")
+                echo(f"  Path:        workstreams/{feat_path}/")
+                echo("")
+        else:
+            console.print()
+            for fm in features:
+                name = fm.get("_feature_dir", "?")
+                stat = fm.get("status", "?")
+                pri = fm.get("priority", "?")
+                title_str = fm.get("title", name)
+                desc = fm.get("description", "")
+                updated = fm.get("updated", "")
+                feat_path = fm.get("_feature_path", name)
+                note = fm.get("status_note", "")
+
+                # Color the status
+                if stat == "in-progress":
+                    stat_disp = f"[bold green]{stat}[/bold green]"
+                elif stat == "blocked":
+                    stat_disp = f"[bold red]{stat}[/bold red]"
+                elif stat == "draft":
+                    stat_disp = f"[dim]{stat}[/dim]"
+                elif stat == "completed":
+                    stat_disp = f"[bold cyan]{stat}[/bold cyan]"
+                elif stat == "abandoned":
+                    stat_disp = f"[dim red]{stat}[/dim red]"
+                else:
+                    stat_disp = stat
+
+                console.print(f"[bold]{name}[/bold] [{stat_disp} {pri}] — {title_str}")
+                console.print(f"  Updated:     {updated}")
+                console.print(f"  Description: {desc}")
+                if note:
+                    console.print(f"  Status Note: {note}")
+                console.print(f"  Path:        workstreams/{feat_path}/")
+                console.print()
+
+        console.print(f"[dim]{len(features)} workstream(s)[/dim]")
 
 
 # ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
 
-@features_app.command("create")
+@features_app.command("create", short_help="Create a new workstream from the template.")
 def create_cmd(
     name: str = typer.Argument(..., help="Feature name in kebab-case."),
     features_dir: Optional[Path] = typer.Option(
@@ -221,16 +262,46 @@ def create_cmd(
     ),
 ):
     """
-    Create a new feature from the TEMPLATE.md.
+    Create a new development workstream from the TEMPLATE.md.
     """
     fd = _resolve_dir(features_dir)
     template = fd / "TEMPLATE.md"
 
     try:
         fm_path = create_feature(str(fd), name, template_path=template if template.is_file() else None)
-        print_success(f"Feature '{name}' created: {fm_path}")
+        meta = get_feature(str(fd), name)
+        feat_path = meta.get("_feature_path", name) if meta else name
+
+        print_success(f"Workstream '{name}' created")
+
+        if is_ai_mode():
+            echo(f"\n## Workstream: {name}")
+            echo(f"Path:      workstreams/{feat_path}/FEATURE.md")
+            echo(f"Title:     {meta.get('title', name) if meta else name}")
+            echo(f"Status:    draft")
+            echo(f"Priority:  P2")
+            echo(f"Created:   {date.today().isoformat()}")
+            echo("")
+            echo("Next steps:")
+            echo("  1. Fill in Motivation and Design Index in FEATURE.md")
+            echo("  2. Record key decisions as you implement")
+            echo(f"  3. Run: moss features set-status {name} in-progress -m \"starting\"")
+        else:
+            lines = [
+                f"Path:      workstreams/{feat_path}/FEATURE.md",
+                f"Title:     {meta.get('title', name) if meta else name}",
+                f"Status:    draft",
+                f"Priority:  P2",
+                f"Created:   {date.today().isoformat()}",
+                "",
+                "Next steps:",
+                "  1. Fill in Motivation and Design Index in FEATURE.md",
+                "  2. Record key decisions as you implement",
+                f"  3. Run: moss features set-status {name} in-progress -m \"starting\"",
+            ]
+            print_simple_panel("\n".join(lines), title=f"Workstream: {name}")
     except FileExistsError:
-        print_error(f"Feature '{name}' already exists.")
+        print_error(f"Workstream '{name}' already exists.")
         raise typer.Exit(code=1)
 
 
@@ -238,9 +309,9 @@ def create_cmd(
 # set-status
 # ---------------------------------------------------------------------------
 
-@features_app.command("set-status")
+@features_app.command("set-status", short_help="Set workstream status without opening the file.")
 def set_status_cmd(
-    feature_id: str = typer.Argument(..., help="Feature ID to update."),
+    feature_name: str = typer.Argument(..., help="Feature name to update."),
     status: str = typer.Argument(..., help=f"New status: {', '.join(sorted(VALID_STATUSES))}"),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -252,7 +323,7 @@ def set_status_cmd(
     ),
 ):
     """
-    Quick-set the status of a feature without opening the file.
+    Quick-set the status of a workstream without opening the file.
 
     Updates the 'status' and 'updated' fields in the YAML frontmatter.
     Use -m to attach a one-line status_note for context (e.g. why blocked, what's next).
@@ -265,82 +336,41 @@ def set_status_cmd(
         print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
         raise typer.Exit(code=1)
 
-    meta = get_feature(str(fd), feature_id)
+    meta = get_feature(str(fd), feature_name)
     if meta is None:
-        print_error(f"Feature '{feature_id}' not found.")
+        print_error(f"Workstream '{feature_name}' not found.")
         raise typer.Exit(code=1)
 
     old_status = meta.get("status", "?")
     old_note = meta.get("status_note", "")
     if old_status == status and (message is None or message == old_note):
-        print_info(f"Feature '{feature_id}' status is already '{status}'.")
+        print_info(f"Workstream '{feature_name}' status is already '{status}'.")
         return
 
-    ok = update_feature_status(str(fd), feature_id, status, status_note=message)
+    ok = update_feature_status(str(fd), feature_name, status, status_note=message)
     if ok:
-        msg = f"Feature '{feature_id}': {old_status} -> {status}"
+        msg = f"Workstream '{feature_name}': {old_status} -> {status}"
         if message:
             msg += f"  ({message})"
         print_success(msg)
+
+        # Print a next-step hint for the transition
+        hint = None
+        if status == "abandoned":
+            hint = _ABANDONED_HINT
+        else:
+            hint = _STATUS_HINTS.get((old_status, status))
+        if hint:
+            print_info(hint)
     else:
-        print_error(f"Failed to update status for '{feature_id}'.")
-
-
-# ---------------------------------------------------------------------------
-# archive
-# ---------------------------------------------------------------------------
-
-@features_app.command("archive")
-def archive_cmd(
-    feature_id: str = typer.Argument(..., help="Feature ID to archive."),
-    features_dir: Optional[Path] = typer.Option(
-        None, "--dir", "-d",
-        help="Path to .ai_partners/features/ directory. Defaults to current project.",
-    ),
-    abandoned: bool = typer.Option(
-        False, "--abandoned", "-a",
-        help="Archive as abandoned (default: completed).",
-    ),
-    message: Optional[str] = typer.Option(
-        None, "--message", "-m",
-        help="One-line status note for the archived feature.",
-    ),
-):
-    """
-    Set status and archive a feature in one step.
-
-    Defaults to 'completed'. Use --abandoned to archive as abandoned.
-    Optionally attach a status note with -m.
-
-    Moves the feature directory to archived/<year>/<month>/<name>/.
-    The archived directory tree itself is the index — use 'moss features list --archived' to query.
-    """
-    fd = _resolve_dir(features_dir)
-    meta = get_feature(str(fd), feature_id)
-
-    if meta is None:
-        print_error(f"Feature '{feature_id}' not found.")
-        raise typer.Exit(code=1)
-
-    old_status = meta.get("status", "?")
-    new_status = "abandoned" if abandoned else "completed"
-
-    ok = archive_feature(str(fd), feature_id, abandoned=abandoned, status_note=message)
-    if ok:
-        msg = f"Feature '{feature_id}' archived ({old_status} -> {new_status})"
-        if message:
-            msg += f"  ({message})"
-        print_success(msg)
-        print_info(f"Remember to add or remove archived feature files.")
-    else:
-        print_error(f"Failed to archive feature '{feature_id}'.")
+        print_error(f"Failed to update status for '{feature_name}'.")
 
 
 # ---------------------------------------------------------------------------
 # init
 # ---------------------------------------------------------------------------
 
-@features_app.command("init")
+@features_app.command("init", short_help="Initialize the features skeleton in a project.")
 def init_cmd(
     project_root: Optional[Path] = typer.Option(
         None, "--project", "-p",
@@ -357,4 +387,4 @@ def init_cmd(
     print_success(f"Features skeleton created: {fd}")
     print_info("Next steps:")
     print_info(f"  1. Edit {fd / 'README.md'} to customize the convention")
-    print_info(f"  2. Run 'moss features create <name>' to create your first feature")
+    print_info(f"  2. Run 'moss features create <name>' to create your first workstream")

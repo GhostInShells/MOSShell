@@ -120,12 +120,16 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
 4. **所有新命令必须支持 `--ai` flag**。这意味着表格必须用 `print_simple_table`, Syntax 必须由 `console.print()` 输出 (Proxy 会拦截)。如果你需要输出 JSON 给 AI, 加 `--json` option 而不是依赖 `--ai`
 5. **`--ai` 是全局 flag**: 在 `main.py` 的 callback 中设置, 所有子命令自动继承
 
-### 冗余全局参数问题 (未完善)
+### 全局环境参数
 
-当前各个子命令各自定义了 `mode`, `session_scope` 等参数 (如 `apps_cli.py`, `manifests_cli.py`, `modes_cli.py`)。理想做法是将这些提升到 `moss` 的全局 option, 但目前尚未做这个重构。如果要改:
-- 在 `main.py` 的 `@app.callback()` 中添加 `--mode` 和 `--session-scope` 作为全局 option
-- 各子命令通过 `ctx.parent.params` 获取
-- 注意 `moss-cli` 中的 mode/scope 交互流程不受影响 (它通过环境变量传递)
+`--mode` / `--session-scope` / `--workspace` 已在 `main.py` callback 中定义为全局 option。
+通过 `_set_global_environment()` 注入到 `Environment` 进程单例，不做验证，谁用谁管。
+
+- 无环境需求的命令 (codex, concepts, ctml, how-tos, features, ws) 不受影响，自动忽略
+- 有环境需求的命令 (manifests, apps, modes) 通过 `Host()` → `Environment.discover()` 自动获取已设置的值
+- **第二步（待做）**: 删除各子命令中冗余的 `--mode` / `--session_scope` 参数，统一走全局
+
+设计决策：采用 kubectl/docker 标准模式 —— 根级全局 option + 懒解析，而非按 group 重复定义或建三层子 group。
 
 ### 添加新子命令组的步骤
 

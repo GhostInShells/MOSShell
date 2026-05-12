@@ -1,5 +1,4 @@
 ---
-id: $FEATURE_ID
 title: $FEATURE_TITLE
 status: draft
 priority: P2
@@ -13,13 +12,12 @@ description: >-
 
 # $FEATURE_TITLE
 
+> Use `moss features set-status $FEATURE_ID <status> -m "note"` to update state.
+> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
+
 ## Motivation
 
-Why does this feature need to exist? What gap does it fill?
-
-## Scope
-
-What is in scope for this feature? What is explicitly out of scope?
+What problem does this workstream solve? Why now? (This is a development track, not a project capability catalog entry — describe what's being built and why.)
 
 ## Design Index
 
@@ -28,13 +26,8 @@ What is in scope for this feature? What is explicitly out of scope?
 
 ## Key Decisions
 
-<!-- Record important decisions made during development -->
+<!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
 
 ## Implementation Notes
 
-<!-- Implementation details, gotchas, and context for future AI incarnations -->
-
-## Related
-
-- Depends on: (list feature IDs)
-- Related features: (list feature IDs)
+<!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->

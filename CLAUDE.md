@@ -157,10 +157,7 @@ AI 在发现可用命令时，用以下流程替代多轮 `--help` 探索：
 - `moss modes`: 管理环境中的各种模式.
 - `moss apps`: 管理环境中的应用.
 - `moss how-tos`: AI 反身性知识库 (how-to 文档的 list/read/recall)。**当需要管理或查阅 how-to 文档时，始终先用 `moss --ai how-tos list` 了解全局**，再决定读哪篇。格式约定见 `moss how-tos read how-to-make-how-to.md`。
-- `moss features`: AI 原生 feature tracking (FEATURE.md + YAML frontmatter 替代 GitHub Issues)。
-  - 当前为可选方案，建议人类工程师在 AI 协助下理解其设计意图后再决定是否采用。
-  - 约定文档: `moss features specification`；设计文档: `.design/2026-05-10-ai_native_feature_tracking_file_system_convention.md`。
-  - 当前 features 列表: `moss features list`。
+- `moss features create <name>` — 创建新 feature。完整约定见 `moss features specification`。
 
 # MOSS 应用架构拓扑
 
