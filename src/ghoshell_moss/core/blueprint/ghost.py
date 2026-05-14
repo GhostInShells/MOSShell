@@ -6,14 +6,16 @@ from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus, Nucl
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
-__all__ = ['Ghost', 'GhostFactory']
+__all__ = ['Ghost', 'GhostMeta']
 
 
-class GhostFactory(ABC):
+class GhostMeta(ABC):
     """
-    MOSS 架构中对智能模型的高阶封装抽象.
-    底层可以是简单的模型调用, 或者复杂的 Agent 框架.
-    只需要对齐几个基础的 API, 就可以被 MOSS 架构启动运行.
+    Ghost 的 Bootstrapper — 文件即配置，自解释可注册单元.
+
+    放在约定目录下，通过 manifests 机制被系统自动发现。
+    携带元信息（name, nuclei, contracts）让系统在实例化前就能理解其协议。
+    通过 factory(container) 产出 Ghost 运行时实例。
     """
 
     @abstractmethod
@@ -83,16 +85,19 @@ class GhostFactory(ABC):
 
 class Ghost(ABC):
     """
-    Ghost 的运行时.
-    它基于环境提供的依赖启动, 启动后要提供
-    能够被 moss 架构所使用的关键 API.
+    Ghost 的运行时实例，由 GhostMeta.factory(container) 产出.
 
-    系统启动的时候, Ghost 和 GhostMeta 都应该设置到全局 IoC 容器里.
+    它是一个自解释的 Adapter — 大部分方法是 hook（有默认返回值），
+    不是 abstractmethod。hook 存在本身 = code as prompt：
+    让模型知道"这个能力在框架中可被扩展"。
+
+    必须实现的 abstractmethod 只有少数几个：
+    articulate(), system_prompt(), __aenter__, __aexit__.
     """
 
     @property
     @abstractmethod
-    def meta(self) -> GhostFactory:
+    def meta(self) -> GhostMeta:
         """
         仍然持有自身的 Meta 信息.
         """
@@ -161,3 +166,14 @@ class Ghost(ABC):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """结束自身生命周期."""
         pass
+
+
+# ── 三层抽象 ──────────────────────────────────────────────
+#
+#   GhostPrototype   = type[GhostMeta]    # class，一族 ghost 的"型号"
+#   GhostBootstrapper = GhostMeta(...)    # instance，文件即配置，自解释可注册单元
+#   GhostRuntime      = Ghost             # instance，由 bootstrapper.factory(container) 产出
+#
+# 一个文件 = 一个 GhostMeta 实例 = 一个 Ghost 注册。
+# 系统先发现 Bootstrapper（理解元信息/契约），运行时通过 factory() 生成 Runtime。
+
