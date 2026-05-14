@@ -5,7 +5,7 @@ Tracks active development workstreams, their decision history, and completion st
 This is NOT a project capability catalog — it tracks what's being built right now.
 """
 from pathlib import Path
-from datetime import date
+
 from typing import Optional
 
 import typer
@@ -269,37 +269,11 @@ def create_cmd(
 
     try:
         fm_path = create_feature(str(fd), name, template_path=template if template.is_file() else None)
-        meta = get_feature(str(fd), name)
-        feat_path = meta.get("_feature_path", name) if meta else name
-
-        print_success(f"Workstream '{name}' created")
-
-        if is_ai_mode():
-            echo(f"\n## Workstream: {name}")
-            echo(f"Path:      workstreams/{feat_path}/FEATURE.md")
-            echo(f"Title:     {meta.get('title', name) if meta else name}")
-            echo(f"Status:    draft")
-            echo(f"Priority:  P2")
-            echo(f"Created:   {date.today().isoformat()}")
-            echo("")
-            echo("Next steps:")
-            echo("  1. Fill in Motivation and Design Index in FEATURE.md")
-            echo("  2. Record key decisions as you implement")
-            echo(f"  3. Run: moss features set-status {name} in-progress -m \"starting\"")
-        else:
-            lines = [
-                f"Path:      workstreams/{feat_path}/FEATURE.md",
-                f"Title:     {meta.get('title', name) if meta else name}",
-                f"Status:    draft",
-                f"Priority:  P2",
-                f"Created:   {date.today().isoformat()}",
-                "",
-                "Next steps:",
-                "  1. Fill in Motivation and Design Index in FEATURE.md",
-                "  2. Record key decisions as you implement",
-                f"  3. Run: moss features set-status {name} in-progress -m \"starting\"",
-            ]
-            print_simple_panel("\n".join(lines), title=f"Workstream: {name}")
+        print_success(f"Workstream '{name}' created: {fm_path}")
+        # NOTE: 不在此输出模板内容。Claude Code 不允许编辑未读取的文件，
+        # 所以"省一次 Read"的设计意图在 Claude Code 约束下无效。
+        # 将来整体完善 create 流程时再重新设计。
+        # AI 消费者应随后 Read FEATURE.md 获取可编辑内容（含行号）。
     except FileExistsError:
         print_error(f"Workstream '{name}' already exists.")
         raise typer.Exit(code=1)
