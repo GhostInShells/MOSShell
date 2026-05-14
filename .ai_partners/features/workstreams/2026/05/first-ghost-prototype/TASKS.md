@@ -1,14 +1,12 @@
 # Tasks — First Ghost Prototype
 
-> 实施追踪。每个任务完成后记录 commit hash。
-
 ## 当前阶段：实现
 
-进度：设计讨论 7/7 完成。
+进度：Phase 1 设计讨论 7/7 完成。Phase 2 实现进行中。
 
 ## 任务分解
 
-### Phase 1: 设计对齐（当前）
+### Phase 1: 设计对齐
 
 - [x] 01 — Ghost ABC 定位讨论
 - [x] 02 — 最小原型技术目标
@@ -20,14 +18,6 @@
 
 ### Phase 2: 实现
 
-*待填充*
-
-### Phase 3: 测试（待设计完成后细化）
-
-*待填充*
-
-## Commit 记录
-
-| Commit | 内容 |
-|--------|------|
-| *暂无* | |
+- [x] 08 — Ghost ABC 微调 + 三层抽象落地
+- [x] 09 — _meta / _runtime / _adapter + 24 tests
+- [ ] 10 — GhostRuntime 包裹模式
