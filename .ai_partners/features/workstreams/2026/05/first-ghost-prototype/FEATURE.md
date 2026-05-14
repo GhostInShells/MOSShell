@@ -1,10 +1,10 @@
 ---
 title: First Ghost Prototype
-status: design_done
+status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-14T19:00
-step: 7
+updated: 2026-05-15
+step: 9
 depends: []
 milestone:
 description: >-
@@ -25,7 +25,7 @@ Ghost 是 MOSShell 最核心的模块——持久化智能体的运行时。ABC 
 first-ghost-prototype/
 ├── FEATURE.md              # 本文件：状态追踪 + 子文档索引
 ├── DESIGN.md               # 设计结论汇总（随讨论推进逐步填入）
-├── TASKS.md                # 任务分解 + 当前进度 + commit 记录
+├── TASKS.md                # 任务分解 + 当前进度
 └── discuss/                # 每步讨论的完整记录
     ├── 01-ghost-abc-positioning.md
     ├── 02-minimal-prototype-goals.md
@@ -42,7 +42,7 @@ first-ghost-prototype/
 |------|------|
 | `FEATURE.md`（本文件） | 入口 + 状态 + 索引。不存详细内容，只存指针。 |
 | `DESIGN.md` | 最终设计结论。每个讨论步骤结束后更新。精简、声明式。 |
-| `TASKS.md` | 实施追踪。任务分解、依赖、进度、已完成 commit。跨 session 追踪。 |
+| `TASKS.md` | 实施追踪。任务分解、依赖、进度。跨 session 追踪。 |
 | `discuss/` | 每步讨论的现场记录。保留决策理由和权衡过程。 |
 
 ## 推进方法论
@@ -67,6 +67,30 @@ first-ghost-prototype/
 | 5 | Matrix / TUI 集成 | `discuss/05-matrix-tui-integration.md` | done |
 | 6 | 全链路测试方案 | `discuss/06-full-link-testing.md` | done |
 | 7 | 文档准备 | `discuss/07-documentation.md` | done |
+| 8 | Ghost ABC 微调 + 三层抽象落地 | `ghost.py` 注释/文档 | done |
+| 9 | _meta / _runtime 实现 + 测试 | `ghosts/atom/` (4 files, 24 tests) | done |
+| 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
+
+## 实现阶段关键决策（2026-05-15）
+
+此轮实现了 Atom 原型的完整代码 + 24 个测试。关键设计决策：
+
+1. **Meta 即工厂**：`build_agent()` / `build_instruction()` 放在 `AtomMeta` 上而非 module 级函数。
+   `build_agent` 不依赖 IoC 可独立单测；`factory(container)` 组合两者产出 `Atom` runtime。
+
+2. **显式依赖 + env var 兜底**：`model: Model | None` 和 `provider: Provider | None` 作为 type hint，
+   None 时走 `AnthropicModel` + 环境变量。既声明了依赖，又保留了开箱即用的便利。
+
+3. **soul 双通道**：`soul_path` (str/Path/None→name) 文件加载 + `soul_content` (非 None 时跳过加载)。
+   兼顾生产环境和测试。
+
+4. **on_agent_build 回调**：外部注入 hook，不耦合 Agent 构建逻辑到 Meta 内部。
+
+5. **消息 Adapter 独立文件**：`_adapter.py` 专注 MOSS Message → pydantic AI 转换。当前处理 text + base64 image，
+   后续替换为正式 MessageAdapter 时路径清晰。
+
+6. **package 内测试**：对于有特殊依赖（pydantic AI）的模块，测试放在 package 内 (`test_atom.py`)。
+   只用真依赖路径，不堆 MagicMock。24 个测试覆盖 soul 加载、instruction 组装、消息协议、adapter 转换、生命周期。
 
 ## 认知准备（已完成 2026-05-14）
 
