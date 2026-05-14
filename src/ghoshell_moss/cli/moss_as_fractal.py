@@ -13,9 +13,7 @@ from datetime import datetime
 import click
 
 from ghoshell_moss.host import Host
-from ghoshell_moss.host.fractal.zenoh_fractal import ZenohSessionFractalNodeProvider
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.matrix import Matrix
 
 
 class ClickHandler(logging.Handler):
@@ -48,10 +46,10 @@ def main(mode: str, session_scope: str, transport: str | None):
     if session_scope:
         env.set_session_scope(session_scope)
 
-    moss_host = Host(env=env)
-    moss_runtime = moss_host.run()
+    host = Host(env=env)
 
-    _logger = moss_host.matrix().logger
+    # 配置日志输出
+    _logger = host.matrix().logger
     if isinstance(_logger, logging.Logger):
         _handler = ClickHandler()
         _handler.setFormatter(logging.Formatter(
@@ -60,50 +58,22 @@ def main(mode: str, session_scope: str, transport: str | None):
         _logger.addHandler(_handler)
         _logger.setLevel(logging.DEBUG)
 
-    async def run_fractal(_matrix: Matrix):
-        workspace = moss_host.matrix().workspace
-        config_path = workspace.configs().abspath() / "zenoh_config_fractal_hub.json5"
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"Fractal zenoh config not found: {config_path}\n"
-                f"请确保 workspace 中存在 zenoh_config_fractal_hub.json5"
-            )
-
-        provider = ZenohSessionFractalNodeProvider(
-            hub_name=env.meta_config.name,
-            zenoh_conf_file=config_path,
-            logger=moss_host.matrix().logger,
-            transport_endpoint=transport,
-        )
-
-        async with provider:
-            await provider.provide(moss_runtime)
-
-            click.echo("")
-            click.echo("=" * 52)
-            click.echo(f"  Fractal Node : {env.meta_config.name}")
-            click.echo(f"  Transport    : {transport or 'peer multicast'}")
-            click.echo(f"  Session Scope: {session_scope}")
-            click.echo(f"  Started at   : {datetime.now().strftime('%H:%M:%S')}")
-            click.echo("=" * 52)
-            click.echo("  Providing moss runtime to remote hub...")
-            click.echo("")
-
-            try:
-                await moss_runtime.wait_close()
-            except asyncio.CancelledError:
-                pass
-
-    async def _main():
-        async with moss_runtime:
-            _ = moss_runtime.matrix.create_task(run_fractal(moss_runtime.matrix))
-            try:
-                await moss_runtime.wait_close()
-            except asyncio.CancelledError:
-                moss_runtime.close()
+    click.echo("")
+    click.echo("=" * 52)
+    click.echo(f"  Fractal Node Provider")
+    click.echo(f"  Mode         : {mode}")
+    click.echo(f"  Transport    : {transport or 'peer multicast'}")
+    click.echo(f"  Session Scope: {session_scope}")
+    click.echo(f"  Started at   : {datetime.now().strftime('%H:%M:%S')}")
+    click.echo("=" * 52)
+    click.echo("")
 
     try:
-        asyncio.run(_main())
+        # 使用 MossHost 提供的 provide_moss_as_fractal 方法
+        # 它会自动从 IoC 容器获取 FractalNodeProvider
+        asyncio.run(host.provide_moss_as_fractal(provider=None))
     except KeyboardInterrupt:
         click.echo("\nStopped.")
-        moss_runtime.close()
+    except NotImplementedError as e:
+        click.echo(f"\nError: {e}")
+        click.echo("请确保 workspace 中已注册 ZenohSessionFractalNodeProvider。")

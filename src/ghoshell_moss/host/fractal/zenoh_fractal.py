@@ -24,7 +24,10 @@ import time
 depend_zenoh()
 import zenoh
 
-__all__ = ['ZenohSessionFractalHub', 'FractalHubChannelState', 'ZenohFractalHubProvider', 'ZenohSessionFractalNodeProvider']
+__all__ = [
+    'ZenohSessionFractalHub', 'FractalHubChannelState', 'ZenohFractalHubProvider',
+    'ZenohSessionFractalNodeProvider', 'ZenohFractalNodeProviderProvider',
+]
 
 
 class ZenohSessionFractalHub(FractalHub):
@@ -447,6 +450,7 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
             logger=logger,
         )
 
+
 class ZenohSessionFractalNodeProvider(FractalNodeProvider):
     """
     将本地 channel 通过 zenoh 暴露到远程 FractalHub。
@@ -598,3 +602,39 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
                 await channel_provider.arun_until_closed(moss.shell.main_channel)
 
             await moss.matrix.create_task(provide_moss_channels())
+
+
+class ZenohFractalNodeProviderProvider(Provider[FractalNodeProvider]):
+    """
+    IoC Provider for FractalNodeProvider。
+    读取 workspace 中的 zenoh_config_fractal.json5 创建 ZenohSessionFractalNodeProvider。
+    """
+
+    def __init__(self, conf_file: str = "zenoh_config_fractal.json5"):
+        self._conf_file = conf_file
+
+    def singleton(self) -> bool:
+        return True
+
+    def contract(self) -> type:
+        return FractalNodeProvider
+
+    def aliases(self) -> Iterable[Type]:
+        yield ZenohSessionFractalNodeProvider
+
+    def factory(self, con: IoCContainer) -> ZenohSessionFractalNodeProvider:
+        workspace = con.force_fetch(Workspace)
+        logger = con.get(LoggerItf)
+
+        config_path = workspace.configs().abspath() / self._conf_file
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"Fractal node zenoh config not found: {config_path}"
+            )
+        env = con.force_fetch(Environment)
+        meta = env.meta_config
+        return ZenohSessionFractalNodeProvider(
+            hub_name=meta.name,
+            zenoh_conf_file=config_path,
+            logger=logger,
+        )

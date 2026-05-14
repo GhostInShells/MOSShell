@@ -21,8 +21,9 @@ class MOSSRuntimeInspector:
         messages = await self._moss_runtime.moss_dynamic_messages(refresh=refresh)
         self._output.output(OutputItem.new("Shell", *messages, log="moss dynamic instructions"))
 
-    def static(self) -> None:
+    async def static(self) -> None:
         """获取当前 MOSS 的静态上下文讯息. """
+        await self._moss_runtime.moss_refresh_metas()
         static = self._moss_runtime.moss_static_messages()
         self._output.syntax(static, 'xml')
 

@@ -357,6 +357,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if not self.is_running():
             return
         self._last_channel_metas = None
+        self._moss_static_cache = None
         refresh_meta_future = self._main_runtime.refresh_metas()
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
@@ -394,6 +395,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             if channel_meta.available or not available_only:
                 result[channel_path] = channel_meta
         self._last_channel_metas = result
+        self._last_channel_metas_refreshed_at = time.time()
         return result
 
     def push_task(self, *tasks: CommandTask) -> None:

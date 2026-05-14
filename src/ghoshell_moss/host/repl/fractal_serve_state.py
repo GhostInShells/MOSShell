@@ -28,7 +28,7 @@ class _FractalOps:
         if hub is None:
             return "No FractalHub configured in this environment.\nUse `moss manifests contracts` to check if FractalHub is registered."
         if not hub.is_running():
-            return f"FractalHub '{hub.name()}' is not running.\nUse `/fractal.start()` to start listening."
+            return f"FractalHub '{hub.name}' is not running.\nUse `/fractal.start()` to start listening."
         return hub.status()
 
     async def start(self) -> str:
@@ -36,9 +36,9 @@ class _FractalOps:
         if hub is None:
             return "No FractalHub configured. Check workspace configs/zenoh_config_fractal_hub.json5."
         if hub.is_running():
-            return f"FractalHub '{hub.name()}' already running."
+            return f"FractalHub '{hub.name}' already running."
         await hub.__aenter__()
-        return f"FractalHub '{hub.name()}' started."
+        return f"FractalHub '{hub.name}' started."
 
     async def stop(self) -> str:
         hub = self._state.hub
@@ -96,7 +96,7 @@ class FractalServeState(REPLState):
             else:
                 self.console.info(
                     "Fractal Serve — 分形 Hub 调试\n"
-                    f"Hub: {self._hub.name()}\n"
+                    f"Hub: {self._hub.name}\n"
                     f"Running: {self._hub.is_running()}\n"
                     "\n"
                     "Use `/fractal.start()` to begin listening.\n"

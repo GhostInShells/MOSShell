@@ -1,0 +1,10 @@
+{
+  // Zenoh Fractal Node 配置
+  // 用于子节点（如机器人开发板）连接到父节点 Hub。
+  // 使用随机端口，避免与 Matrix session 冲突。
+  mode: "peer",
+
+  listen: {
+    endpoints: ["tcp/0.0.0.0:0"]
+  },
+}

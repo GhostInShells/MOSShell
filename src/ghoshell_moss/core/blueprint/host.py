@@ -202,6 +202,7 @@ class FractalHub(ABC):
     MossHost 实现基于环境发现构建 HostRuntime 的能力
     """
 
+    @property
     def name(self) -> str:
         """
         hub 自身的命名, 也是 as_channel 返回 channel 的默认前缀.

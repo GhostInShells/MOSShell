@@ -8,7 +8,7 @@ id: zenoh-fractal
 milestone: beta
 priority: P0
 status: in-progress
-status_note: Hub/Provider 分离完成，发现机制升级为 subscriber + re-put，单测 5/5 全绿。TUI 改为 IoC 发现。MossRuntime 新增 get_fractal_hub()。待端到端验证。
+status_note: Hub/Provider 分离完成，发现机制升级为 subscriber + re-put，单测 5/5 全绿。TUI 改为 IoC 发现。MossRuntime 新增 get_fractal_hub()。修复 /moss.static() 缓存导致 fractal channel 不可见的 bug。待端到端验证。
 title: Zenoh Fractal — Hub/Provider 分离与反向注册
 updated: '2026-05-14'
 ---
@@ -133,6 +133,7 @@ Providers (Channel):   {prefix}/{hub_name}/providers/{node_name}
 | **`MossRuntime.get_fractal_hub()` API 新增** | ✅ done |
 | **`FractalServeState` IoC 发现重构** | ✅ done |
 | **`ZenohFractalHubProvider` 注册到 workspace stubs** | ✅ done |
+| **`/moss.static()` 缓存 bug 修复** | ✅ done |
 
 ### 待完成
 
@@ -249,7 +250,53 @@ Providers (Channel):   {prefix}/{hub_name}/providers/{node_name}
 - 如果未来有不需要 IoC 的 MossRuntime 实现，它仍可 override 返回 None
 - 与 `.container`、`.session` 的默认实现模式一致
 
-### 9. FractalServeState 从创建者变为观测者 (2026-05-14)
+### 9. `moss-as-fractal` CLI 对齐抽象 API (2026-05-14)
+
+**问题**: `moss_as_fractal.py` 手动创建 `ZenohSessionFractalNodeProvider` 实例、
+配置 zenoh session、管理生命周期，与 `FractalNodeProvider` ABC 的设计重复。
+
+**改动**:
+
+1. **`moss_as_fractal.py` 简化** — 删除手动实现，改用 `host.provide_moss_as_fractal(provider=None)`。
+   Host 自动从 IoC 容器发现 `FractalNodeProvider`，CLI 只负责环境配置和启动。
+
+2. **新增 `ZenohFractalNodeProviderProvider`** — IoC Provider 类，
+   从 workspace config (`zenoh_config_fractal.json5`) 自动创建 `ZenohSessionFractalNodeProvider`。
+   与 `ZenohFractalHubProvider` 对称。
+
+3. **providers.py 注册** — stubs 和 `.moss_ws`、`.test_ws` 的 `providers.py` 均添加
+   `fractal_node_provider = ZenohFractalNodeProviderProvider()`。
+
+**理由**: CLI 不应绕过 IoC 体系手动创建实例。
+`provide_moss_as_fractal()` 是 MossHost 的标准 API，自动发现 + 生命周期管理。
+
+### 10. `/moss.static()` 缓存失效修复 (2026-05-14)
+
+**现象**: Hub 启动且节点连接后，`/moss.static()` 不显示 fractal channel 和 `open_node` 命令。
+但 `<moss:open_node name="moss_provider"/>` 实际可以执行。
+
+**根因**: 两层缓存导致 `/moss.static()` 返回启动时的陈旧快照：
+
+1. **`_moss_static_cache` 永不失效** — `static_messages()` 在 shell 启动时首次调用，
+   此时 Hub 未启动，fractal channel 的 `is_available()=False`。
+   结果缓存后永不刷新（`_refresh_moss_static` 默认 `False`）。
+
+2. **`_last_channel_metas_refreshed_at` 永为 0** — 初始化为 0 但从未更新，
+   导致 `channel_metas()` 的 0.5s 时间检查永远返回陈旧缓存。
+
+**修复** (3 个文件):
+
+| 文件 | 改动 |
+|------|------|
+| `core/ctml/shell/ctml_shell.py` `refresh_metas()` | 同时清除 `_moss_static_cache` |
+| `core/ctml/shell/ctml_shell.py` `channel_metas()` | 设置缓存后更新 `_last_channel_metas_refreshed_at` |
+| `host/repl/inspector_moss_runtime.py` `static()` | 改为 async，先调 `moss_refresh_metas()` 再取 static |
+| `host/moss_runtime.py` | 新增 `moss_refresh_metas()` 公共方法 |
+
+**效果**: `/moss.static()` 现在先刷新 metas（重新评估所有 channel 的 `is_available()`），
+再生成 static 输出。fractal channel 和已 open 的节点 channel 正确显示。
+
+### 11. FractalServeState 从创建者变为观测者 (2026-05-14)
 
 **决策**: `FractalServeState` 不再自己创建 Hub 和管理 channel，改为从 `runtime.get_fractal_hub()` 发现已有 Hub。
 
@@ -284,8 +331,10 @@ Providers (Channel):   {prefix}/{hub_name}/providers/{node_name}
 - Hub/Provider 实现: `src/ghoshell_moss/host/fractal/zenoh_fractal.py`
 - IoC Provider: `src/ghoshell_moss/host/fractal/zenoh_fractal.py` (ZenohFractalHubProvider)
 - Key space 与 Cell: `src/ghoshell_moss/host/fractal/_base.py`
-- Matrix 集成: `src/ghoshell_moss/host/moss_runtime.py` (__aenter__)
+- Matrix 集成: `src/ghoshell_moss/host/moss_runtime.py` (__aenter__, moss_refresh_metas)
 - REPL State: `src/ghoshell_moss/host/repl/fractal_serve_state.py`
+- REPL Inspector: `src/ghoshell_moss/host/repl/inspector_moss_runtime.py`
+- Shell 缓存逻辑: `src/ghoshell_moss/core/ctml/shell/ctml_shell.py`
 - CLI 入口: `src/ghoshell_moss/cli/moss_as_fractal.py`
 - 环境注册 (stubs): `src/ghoshell_moss/host/stubs/workspace/src/MOSS/manifests/providers.py`
 - Hub 配置: `src/ghoshell_moss/host/stubs/workspace/configs/zenoh_config_fractal_hub.json5`

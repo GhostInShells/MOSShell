@@ -101,6 +101,11 @@ class MossRuntimeImpl(MossRuntime):
     def moss_static_messages(self) -> str:
         return self._ctml_shell.static_messages()
 
+    async def moss_refresh_metas(self, timeout: float = 2.0) -> None:
+        """刷新 channel metas 缓存, 使 static/dynamic 消息反映最新状态."""
+        self._check_shell_running()
+        await self._ctml_shell.refresh_metas(timeout)
+
     async def moss_observe(
             self,
             timeout: float | None = None,
