@@ -1,7 +1,7 @@
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.host import (
-    MossHost, MossMode, MossRuntime,
+    MossHost, Mode, MossRuntime,
 )
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -12,7 +12,7 @@ from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.matrix import MatrixImpl
-from ghoshell_moss.host.runtime import MossRuntimeImpl
+from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
 import logging
 
 __all__ = ['Host']
@@ -26,7 +26,7 @@ class Host(MossHost):
             self,
             *,
             env: Environment | None = None,
-            mode: MossMode | str | None = None,
+            mode: Mode | str | None = None,
             session_scope: str | None = None,
             logger: logging.Logger | None = None,
     ):
@@ -52,7 +52,7 @@ class Host(MossHost):
             moss_mode = self._env_modes.get(moss_mode_name)
             if moss_mode is None:
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
-        self._moss_mode: MossMode = moss_mode
+        self._moss_mode: Mode = moss_mode
         self._manifest = MergedManifests([self._env_manifest, self._moss_mode.manifest])
         # 获取一个用来做环境发现的 apps.
         # 创建 container, 但是先不启动它.
@@ -72,6 +72,12 @@ class Host(MossHost):
             workspace=self._workspace,
             logger=self._logger,
         )
+
+    def name(self) -> str:
+        return self._env.meta_config.name
+
+    def description(self) -> str:
+        return self._env.meta_config.description
 
     @classmethod
     def discover(cls) -> Self:
@@ -96,10 +102,10 @@ class Host(MossHost):
         return self._manifest
 
     @property
-    def mode(self) -> MossMode:
+    def mode(self) -> Mode:
         return self._moss_mode
 
-    def all_modes(self) -> dict[str, MossMode]:
+    def all_modes(self) -> dict[str, Mode]:
         """
         map all the modes in the environment.
         """
@@ -119,10 +125,19 @@ class Host(MossHost):
     def matrix(self) -> Matrix:
         return self._matrix
 
-    def run(self) -> MossRuntime:
+    def run(
+            self,
+            *,
+            run_shell: bool = True,
+            with_primitives: bool = True,
+            name: str | None = None,
+            description: str | None = None,
+    ) -> MossRuntime:
         return MossRuntimeImpl(
             env=self.env,
             workspace=self._workspace,
             mode=self._moss_mode,
             matrix=self._matrix,
+            run_shell_on_start=run_shell,
+            with_primitives=with_primitives,
         )

@@ -8,15 +8,12 @@ import contextvars
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
-from contextlib import asynccontextmanager
 from typing import (
     Any,
     Optional,
     Annotated,
     Callable,
     Coroutine,
-    AsyncIterator,
-    AsyncGenerator,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
@@ -78,7 +75,7 @@ class ChannelMeta(BaseModel):
     commands: list[CommandMeta] = Field(default_factory=list, description="The list of commands.")
     states: dict[str, str] = Field(default_factory=dict, description="The states of the channel.")
     current_state: str = Field(default="", description="The current state of the channel.")
-    children: list[str] = Field(default_factory=list, description="the children channel names")
+    proxy: list[str] = Field(default_factory=list, description="the proxy children names")
 
     # about instructions / context messages
     # ModelContext is built by many messages blocks, we believe the blocks should be :
@@ -116,8 +113,11 @@ class ChannelMeta(BaseModel):
             failure=failure,
         )
 
+    def to_dict(self) -> dict:
+        return self.model_dump(exclude_none=True, exclude_defaults=True)
+
     def marshal(self) -> str:
-        return self.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True)
+        return self.model_dump_json(indent=0, ensure_ascii=False, exclude_defaults=True, exclude_none=True)
 
 
 ChannelFullPath = str
@@ -262,14 +262,16 @@ class Channel(ABC):
         pass
 
     @staticmethod
-    def join_channel_path(parent: ChannelFullPath, name: str) -> ChannelFullPath:
+    def join_channel_path(parent: ChannelFullPath, *names: str) -> ChannelFullPath:
         """连接父子 channel 名称的标准语法. 作为全局的约束方式."""
-        # todo: 校验 name 的类型, 不允许不合法的 name.
+        names = list(names)
+        names_str = '.'.join(names) if len(names) > 0 else ''
         if parent:
-            if not name:
+            if not names_str:
                 return parent
-            return f"{parent}.{name}"
-        return name
+
+            return f"{parent}.{names_str}"
+        return names_str
 
     @staticmethod
     def split_channel_path_to_names(channel_path: ChannelFullPath, limit: int = -1) -> ChannelPaths:
@@ -332,6 +334,12 @@ class ChannelRuntime(ABC):
         管理当前 Channel runtime 能拿到的动态子节点.
         """
         return {}
+
+    def get_child_channel(self, name: str) -> Optional[Channel]:
+        child = self.sub_channels().get(name)
+        if child is None:
+            return self.virtual_sub_channels().get(name)
+        return child
 
     @property
     @abstractmethod
@@ -936,6 +944,9 @@ class ChannelProvider(ABC):
         thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
         thread.start()
         return thread
+
+    def on_proxy_event(self, callback: Callable[[Any], None]):
+        pass
 
     @abstractmethod
     def close(self) -> None:

@@ -59,7 +59,7 @@ class ChannelEventModel(BaseModel, ABC):
     def to_channel_event(self) -> ChannelEvent:
         data = self.model_dump_json(
             exclude_none=True,
-            exclude={"event_type", "channel_id", "channel_name", "event_id"},
+            exclude={"event_type", "connection_id", "event_id"},
             ensure_ascii=False,
         )
         return ChannelEvent(
@@ -128,7 +128,7 @@ class CommandCallEvent(ChannelEventModel):
 
     event_type: ClassVar[str] = "moss.channel.proxy.command.call"
     name: str = Field(description="command name")
-    chan: str = Field(description="channel name")
+    chan: str = Field(description="channel path")
     command_id: str = Field(default_factory=uuid, description="command id")
     args: list[Any] = Field(default_factory=list, description="command args")
     kwargs: dict[str, Any] = Field(default_factory=dict, description="kwargs of the command")

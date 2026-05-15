@@ -250,6 +250,10 @@ class CTMLInterpreter(Interpreter):
                 command_task,
             )
             command_task.cancel("system error")
+        if err := command_task.exception():
+            self._logger.info(
+                "%s capture command err %r", self._log_prefix, err
+            )
         self._interpretation.on_done_task(command_task)
         if self._stopped_event.is_set():
             # 生命周期已经移交了.

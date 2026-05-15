@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Iterable, AsyncIterable
 from typing_extensions import Self
@@ -12,7 +13,9 @@ from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
 from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AwareDatetime
+from datetime import datetime
+from dateutil import tz
 import queue
 
 __all__ = [
@@ -124,6 +127,10 @@ class CommandTokenParser(ABC):
         pass
 
 
+_TaskId = str
+_TaskCaller = str
+
+
 class Interpretation(BaseModel):
     """
     Interpreter 一次运行的结果.
@@ -142,17 +149,22 @@ class Interpretation(BaseModel):
     )
     executed_inputs: list[str] = Field(default_factory=list, description="被执行过的输入文本.")
 
-    compiled_tasks: dict[str, str] = Field(default_factory=dict, description="解析生成的 task 的 cid => task caller")
-    pending_tasks: dict[str, str] = Field(default_factory=dict, description="未完成的 task 的 cid => task caller")
-    cancelled_tasks: dict[str, str] = Field(
+    compiled_tasks: dict[_TaskId, _TaskCaller] = Field(default_factory=dict,
+                                                       description="解析生成的 task 的 cid => task caller")
+    task_done_at: dict[_TaskId, float] = Field(
+        default_factory=dict,
+    )
+    pending_tasks: dict[_TaskId, _TaskCaller] = Field(default_factory=dict,
+                                                      description="未完成的 task 的 cid => task caller")
+    cancelled_tasks: dict[_TaskId, _TaskCaller] = Field(
         default_factory=dict,
         description="运行结束的 task cid => task caller",
     )
-    failed_tasks: dict[str, str] = Field(
+    failed_tasks: dict[_TaskId, _TaskCaller] = Field(
         default_factory=dict,
         description="运行结束, 失败的 task cid => task caller",
     )
-    success_tasks: dict[str, str] = Field(
+    success_tasks: dict[_TaskId, _TaskCaller] = Field(
         default_factory=dict, description="运行结束, 并且运行成功的 task cid => task caller"
     )
     output: list[Message] = Field(default_factory=list, description="运行结果中需要输出的消息体. ")
@@ -161,6 +173,13 @@ class Interpretation(BaseModel):
     exception: str = Field(
         default="",
         description="运行的异常",
+    )
+    created: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(tz.gettz()),
+        description="The channel meta creation time. "
+    )
+    started_at: float = Field(
+        default_factory=time.time,
     )
 
     def executed_logos(self) -> str:
@@ -175,11 +194,12 @@ class Interpretation(BaseModel):
 
     def on_done_task(self, task: CommandTask) -> None:
         """注册 task 的回调. """
-        if not task.done() or task.meta.name.startswith("_"):
-            return
-        if self.done:
+        if not task.done():
             return
         task_id = task.cid
+        self.task_done_at[task_id] = time.time()
+        if self.done:
+            return
         if task_id in self.pending_tasks:
             self.pending_tasks.pop(task_id)
         # 注册执行成功的 tokens.
@@ -212,29 +232,31 @@ class Interpretation(BaseModel):
 
     def status_messages(self) -> list[Message]:
         """当前运行状态的描述. """
-        status_message = Message.new()
+        status_message = Message.new(tag='shell', timestamp=False, attributes={'run_at': self.created})
         lines = []
-        if len(self.pending_tasks) > 0:
-            lines.append("compiled")
-        else:
-            lines.append("completed")
-        if self.interrupted:
-            lines.append("interrupted")
-        if self.exception:
-            lines.append("exception: %s" % self.exception)
+        if len(self.compiled_tasks) > 0:
+            lines.append("compiled commands: %d" % len(self.compiled_tasks))
         if len(self.success_tasks) > 0:
-            lines.append("success: %s" % ",".join(self.success_tasks.values()))
+            lines.append("done: %s" % len(self.success_tasks))
         if len(self.cancelled_tasks) > 0:
-            lines.append("canceled: %s" % ",".join(self.cancelled_tasks.values()))
+            lines.append("cancelled: %d" % len(self.cancelled_tasks))
         if len(self.failed_tasks) > 0:
-            lines.append("failed: %s" % ",".join(self.failed_tasks.values()))
+            lines.append("failed: %s" % self._status_task_expression(list(self.failed_tasks.values())))
+        if self.exception:
+            lines.append("Stop at Exception: %s" % self.exception)
+        elif self.interrupted:
+            lines.append("Stop Reason: interrupted")
         if len(self.pending_tasks) > 0:
-            lines.append("executing: %s" % ",".join(self.pending_tasks.values()))
-        if len(lines) > 0:
-            status_message.with_content("\n".join(lines))
-            return [status_message]
-        else:
-            return []
+            lines.append("ongoing: %s" % ",".join(self.pending_tasks.values()))
+        status_message.with_content("\n".join(lines))
+        return [status_message]
+
+    def _status_task_expression(self, tasks: list[str]) -> str:
+        count = len(tasks)
+        if count == 0:
+            return '0'
+        last = tasks[-1]
+        return "%d, last is %s" % (count, last)
 
     def executed_messages(self) -> list[Message]:
         """运行结果的描述"""

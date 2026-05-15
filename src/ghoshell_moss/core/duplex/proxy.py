@@ -519,7 +519,7 @@ class DuplexChannelContext:
             # 更新 meta map.
             new_provider_meta_map = {}
             for provider_channel_path, meta in event.metas.items():
-                meta = meta.model_copy()
+                meta = meta.model_copy(update={'virtual': True})
                 if provider_channel_path == "":
                     meta.name = self.root_name
                 new_provider_meta_map[provider_channel_path] = meta
@@ -527,11 +527,19 @@ class DuplexChannelContext:
             if not event.all:
                 # 不是全量更新时, 也把旧的 meta 加回来.
                 for channel_path, meta in self.provider_meta_map.items():
+                    # 远程节点都是 virtual 节点。
                     if channel_path not in new_provider_meta_map:
                         new_provider_meta_map[channel_path] = meta
 
             # 直接变更当前的 meta map. 则一些原本存在的 channel, 也可能临时不存在了.
             self.provider_meta_map = new_provider_meta_map
+            root_meta = self.provider_meta_map.get('')
+            if root_meta:
+                root_meta.proxy = []
+                for path in self.provider_meta_map.keys():
+                    if path != '':
+                        root_meta.proxy.append(path)
+
             self.logger.debug("%s receive new metas from provider %s", self._log_prefix, new_provider_meta_map)
             # 更新 sync 的标记.
             if not self._sync_meta_done_event.is_set():
@@ -578,7 +586,7 @@ class DuplexChannelContext:
             self.logger.exception("%s failed to send delta args %s", self._log_prefix, exc)
             raise
 
-    async def send_command_task(self, task: CommandTask) -> CommandCallEvent:
+    async def send_command_task(self, task: CommandTask, chan: str = '') -> CommandCallEvent:
         try:
             cid = task.cid
             # 清空已经存在的 cid 错误?
@@ -601,7 +609,7 @@ class DuplexChannelContext:
                 connection_id=self.connection_id,
                 name=task.meta.name,
                 # channel 名称使用 provider 侧的名称, 用来对 channel 寻址.
-                chan=task.chan,
+                chan=chan or task.chan,
                 command_id=task.cid,
                 args=list(task.args),
                 kwargs=dict(task.kwargs),
@@ -704,6 +712,9 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         # 不需要展开节点.
         return {}
 
+    def virtual_sub_channels(self) -> dict[str, Channel]:
+        return {}
+
     async def on_running(self) -> None:
         return
 
@@ -715,24 +726,22 @@ class DuplexChannelRuntime(AbsChannelRuntime):
                 failure=self._ctx.connection_err,
             )}
 
-        return self._ctx.provider_meta_map
+        return self._ctx.provider_meta_map.copy()
 
     async def _generate_own_metas(self) -> dict[ChannelFullPath, ChannelMeta]:
         # always refresh self.
         await self._ctx.refresh_meta()
-        metas = self._ctx.provider_meta_map
-        self_meta = metas.get("")
-        if not self_meta:
-            return {}
-        self_meta = self_meta.model_copy(update={"name": self._name})
-        metas[""] = self_meta
-        return metas
+        return self._ctx.provider_meta_map.copy()
 
     def _is_available(self) -> bool:
         return self._ctx.is_channel_available(self._provider_chan_path)
 
     async def _consume_task_with_paths(self, paths: ChannelPaths, task: CommandTask) -> None:
-        event = await self._ctx.send_command_task(task)
+        try:
+            event = await self._ctx.send_command_task(task, chan=Channel.join_channel_path('', *paths))
+        except Exception as e:
+            task.fail(e)
+            raise
         _ = asyncio.create_task(self._ctx.expect_task_done(event, task))
 
     async def _main_loop(self) -> None:
@@ -793,7 +802,7 @@ class DuplexChannelRuntime(AbsChannelRuntime):
             return None
         for command_meta in meta.commands:
             if command_meta.name == name:
-                func = self._get_provider_command_func(self._provider_chan_path, command_meta)
+                func = self._get_provider_command_func(path, command_meta)
                 command = CommandWrapper(meta=command_meta, func=func)
                 return command
         return None

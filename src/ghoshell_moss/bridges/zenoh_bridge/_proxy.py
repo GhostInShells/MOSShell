@@ -56,6 +56,14 @@ class ZenohProxyConnection(Connection):
         self._started = False
         self._closed = False
 
+    def all_key_expressions(self) -> dict[str, str]:
+        return {
+            'proxy_liveness': self._bridge_expr.proxy_liveness_key,
+            'proxy_receiver': self._bridge_expr.proxy_receiver_key,
+            'provider_receiver': self._bridge_expr.provider_receiver_key,
+            'provider_liveness': self._bridge_expr.provider_liveness_key,
+        }
+
     def __repr__(self):
         return self._logger_prefix
 
@@ -200,6 +208,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
         self._address = address
         self._session_scope = session_scope
         self._zenoh_session = zenoh_session
+        self._connection_keys = {}
         super().__init__(
             name=name,
             description=description,
@@ -212,9 +221,14 @@ class ZenohProxyChannel(DuplexChannelProxy):
         if session is None:
             # must find from container
             session = container.force_fetch(zenoh.Session)
-        return ZenohProxyConnection(
+        connection = ZenohProxyConnection(
             session,
             address=self._address,
             session_scope=self._session_scope,
             logger=container.get(LoggerItf),
         )
+        self._connection_keys = connection.all_key_expressions()
+        return connection
+
+    def connection_keys(self) -> dict[str, str]:
+        return self._connection_keys

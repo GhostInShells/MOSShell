@@ -1,16 +1,19 @@
-from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable, TypeVar, Type
+from typing import Literal, Callable, Awaitable, Any, Coroutine, Iterable, TypeVar, Type, Protocol
 
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy, ChannelRuntime
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.contracts import LoggerItf, ConfigStore, Workspace, SystemPrompter, ResourceRegistry
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.manifests import Manifests
+from pydantic import BaseModel, Field
+from pathlib import Path
 import asyncio
+import frontmatter
 
-__all__ = ['Matrix', 'Cell', 'SystemPrompter', 'ScopesKey', 'Fractal']
+__all__ = ['Matrix', 'Cell', 'SystemPrompter', 'ScopesKey', 'MatrixLifecycleObject', 'Mode']
 
 CellTypes = Literal[
     'host',  # 表示为启动网络的主进程节点.
@@ -71,60 +74,123 @@ _ThisCellType = None
 _MatrixMainCellAddress = None
 
 ScopesKey = Literal[
-    'moss_mode',  # 对环境中所有资源的隔离形式, 通过不同的 mode 隔离不同的资源组合. 使得资源如 provider, config 等可以复用.
+    'mode',  # 对环境中所有资源的隔离形式, 通过不同的 mode 隔离不同的资源组合. 使得资源如 provider, config 等可以复用.
     'session_scope',  # 运行时隔离的基本维度, 使用不同的 scope 启动, 可以用来隔离通讯/存储等. 前提是对应组件使用了这个隔离级别.
     'session_id',  # 运行时的唯一 Id. 如果一些资源或状态希望在系统关闭时就丢弃, 可以基于 session_id 构建隔离级别来通讯或存储.
     'cell_address',  # Matrix 实例作为通讯架构, 运行在每个不同的 Cell 内. 同时可以有很多个 cell 并行运行组网.
 ]
 
-
-class Fractal(ABC):
-    """
-    Matrix 的分形通讯体系.
-
-    可以将自身的资源提供给父节点 (另一个 Matrix)
-    同时又能接受其它节点 (其它 Matrix) 提供的资源.
-    Fractal 通过 Matrix 的实现约定通讯协议, 对父节点做反向注册, 对子节点做被动发现.
-    未来分形组网的通讯协议, 都通过 Fractal 定义.
-    """
-
-    @abstractmethod
-    def connected(self) -> list[Cell]:
-        """
-        返回 fractal cells, 其它 matrix 连接到当前节点后的 cell.
-        """
-        pass
-
-    @abstractmethod
-    def explain(self) -> str:
-        """
-        描述 Transport 协议.
-        """
-        pass
-
-    @abstractmethod
-    def provide_channel(
-            self,
-            channel: Channel | ChannelRuntime,
-            transport: str | None = None,
-    ) -> asyncio.Future[None]:
-        """
-        将一个本地的 channel提供给父 Matrix 节点.
-        :param channel: 提供 channel 或运行时的 channel runtime. 通常可以直接将运行时的 shell.main_channel 提供给父节点.
-        :param transport: 根据 fractal 约定的协议, 提供父节点的连接地址, 或者有默认的通讯地址.
-        默认的 transport 通过 zenoh 框架实现.
-        """
-        pass
-
-    @abstractmethod
-    def channel_hub(self, name: str, description: str = '') -> Channel:
-        """
-        将自动发现的子节点生成为 channel, 可以集成使用.
-        """
-        pass
-
-
 INSTANCE = TypeVar('INSTANCE')
+
+
+class MatrixLifecycleObject(Protocol):
+    """关键的运行时对象, 注册到生命周期中, 按次序启动. """
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class Mode(BaseModel):
+    """
+    指定的运行模式.
+    用来管理 MOSS Runtime 的运行时可发现资源.
+    不使用 Mode 仍然可以启动 MOSS.
+    """
+
+    name: str = Field(
+        description="模式的名称."
+    )
+
+    instruction: str = Field(
+        default='',
+        description="模式的详细介绍. 也会作为模式的专属 instruction"
+    )
+    ctml_version: str = Field(
+        default='',
+        description='模式选择独立的 ctml version. '
+    )
+
+    description: str = Field(
+        description="模式的一句话简介, 通常是 docstring 的第一句. 也支持独立定义",
+    )
+
+    apps: list[str] = Field(
+        default_factory=lambda: ['*/*'],
+        description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
+    )
+
+    bringup_apps: list[str] = Field(
+        default_factory=list,
+        description="启动时允许自动启动的 apps, 规则和 apps 相同. 默认为空. "
+    )
+
+    import_path: str = Field(
+        default="",
+        description="找到模式实例的 python module path, 如果是从 markdown 文件找到的, 则为空."
+    )
+
+    file: str = Field(
+        default="",
+        description="找到模式实例的文件绝对路径. 比如 xxxx/src/MOSS/modes/default/MODE.md "
+    )
+
+    __manifest__: Manifests | None = None
+
+    @classmethod
+    def from_markdown(cls, file: Path, *, mode_name: str = None) -> Self:
+        """
+        from a markdown file discover Mode.
+        """
+        if not file.exists():
+            raise FileNotFoundError(f"{file} not found")
+        post = frontmatter.loads(file.read_text())
+        data = post.metadata
+        docstring = post.content
+        if mode_name is not None and mode_name:
+            data['name'] = mode_name
+        elif 'name' in data:
+            pass
+        else:
+            data['name'] = file.name.split('.', 1)[0]
+
+        if "description" not in data:
+            description = docstring.split("\n", 1)[0]
+            data['description'] = description
+        data['docstring'] = docstring
+        result = cls(**data)
+        result.file = str(file)
+        return result
+
+    def to_markdown(self) -> str:
+        """
+        to markdown format content.
+        """
+        meta_data = self.model_dump(
+            exclude_none=True,
+            exclude_defaults=False,
+            exclude={'import_path', 'file', 'instruction'},
+        )
+        post = frontmatter.Post(content=self.instruction, **meta_data)
+        return frontmatter.dumps(post)
+
+    def with_manifest(self, manifest: Manifests, override: bool = False) -> Self:
+        """
+        define manifest
+        """
+        if override or self.__manifest__ is None:
+            self.__manifest__ = manifest
+        return self
+
+    @property
+    def manifest(self) -> Manifests:
+        if self.__manifest__ is None:
+            self.__manifest__ = Manifests()
+        return self.__manifest__
 
 
 class Matrix(ABC):
@@ -139,18 +205,31 @@ class Matrix(ABC):
     def discover(cls) -> Self:
         """
         约定的环境发现逻辑.
-        这里使用了反范式, discover 包含了默认实现.
-        所以基于 Matrix 默认实现创建应用, 只需要调用 Matrix.discover() 根据抽象提供的能力即可.
+        基于 Matrix 默认实现创建应用, 只需要调用 Matrix.discover() 根据抽象提供的能力即可.
         """
         # moss 架构的默认实现.
+        # 这里使用了反范式, discover 包含了默认实现.
         from ghoshell_moss.host import Host
         return Host.discover().matrix()
+
+    # --- 自解释信息 --- #
+
+    @property
+    @abstractmethod
+    def mode(self) -> Mode:
+        """
+        返回当前 MOSS 运行的模式.
+        """
+        pass
 
     @abstractmethod
     def cell_env(self) -> dict[str, str]:
         """
         Cell 自身相关的环境变量.
+
+        通常基于这些环境变量来还原 matrix 运行时, 自身所处的 cell.
         """
+        # matrix 不依赖 Environment 对象, 避免发现逻辑永远不可重写.
         pass
 
     @property
@@ -161,6 +240,8 @@ class Matrix(ABC):
         自身的 cell 类型是不需要定义的, Matrix 在环境中发现, 启动时, 自动会生成描述.
         """
         pass
+
+    # -- 运行前 注册函数 -- #
 
     def register(
             self,
@@ -180,6 +261,13 @@ class Matrix(ABC):
         provider = provide(abstract, singleton=True)(binding)
         self.container.register(provider)
 
+    @abstractmethod
+    def register_lifecycle_objects(self, obj: MatrixLifecycleObject | Type[MatrixLifecycleObject]) -> None:
+        """注册会和 matrix 同步启动的对象. 会依次序启动, 绑定生命周期, 不会做容错. """
+        pass
+
+    # -- 运行时 API -- #
+
     def resources(self) -> ResourceRegistry:
         """返回 matrix 共享的资源中心. """
         return self.container.force_fetch(ResourceRegistry)
@@ -194,11 +282,7 @@ class Matrix(ABC):
 
     @property
     @abstractmethod
-    def moss_mode(self) -> str:
-        """
-        返回当前 MOSS 运行的模式.
-        Matrix 运行时会
-        """
+    def moss_mode_name(self) -> str:
         pass
 
     def scopes(self) -> dict[ScopesKey, str]:
@@ -206,7 +290,7 @@ class Matrix(ABC):
         return {
             'session_id': self.session.session_id,
             'session_scope': self.session.session_scope,
-            'moss_mode': self.moss_mode,
+            'mode': self.mode.name,
             'cell_address': self.this.address,
         }
 
@@ -349,7 +433,7 @@ class Matrix(ABC):
         pass
 
     @abstractmethod
-    def is_moss_running(self) -> bool:
+    def is_host_running(self) -> bool:
         """
         判断 moss 是否在运行中.
         """
@@ -384,6 +468,8 @@ class Matrix(ABC):
         创建包含在 Matrix 生命周期内的 Task
         """
         pass
+
+    # --- 启动函数, 并非必要, 基于 code as prompt 原则提示如何使用 --- #
 
     async def arun(self, main_coro: Callable[[Self], Awaitable[Any]]) -> Any:
         """

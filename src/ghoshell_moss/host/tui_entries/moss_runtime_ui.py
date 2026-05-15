@@ -3,10 +3,11 @@ from typing import Iterable
 from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
-from ghoshell_moss.host.repl.inspector_matrix import MatrixREPL
-from ghoshell_moss.host.repl.inspector_manifests import ManifestsREPL
-from ghoshell_moss.host.repl.inspector_app_store import AppStoreREPL
+from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
+from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
+from ghoshell_moss.host.repl.inspector_app_store import AppStoreInspector
 from ghoshell_moss.host.repl.inspector_moss_runtime import MOSSRuntimeInspector
+from ghoshell_moss.host.repl.inspector_fractal import FractalInspector
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 __all__ = ['MOSSRuntimeREPLState', 'MossRuntimeTUI']
@@ -17,19 +18,21 @@ class MOSSRuntimeREPLState(REPLState):
     def __init__(
             self,
             host: MossHost,
-            toolset: MossRuntime,
+            moss: MossRuntime,
             name: str = 'MOSS',
     ) -> None:
         self._host = host
-        self._toolset = toolset
+        self._moss_runtime = moss
         super().__init__(name)
 
     def _create_repl_inspectors(self) -> dict[str, object]:
+        # 数量已经过多, 要开始用 states 分组.
         return {
-            "matrix": MatrixREPL(self._host.matrix()),
-            "manifests": ManifestsREPL(self._host.manifests),
-            "moss": MOSSRuntimeInspector(self._toolset, self.console),
-            "apps": AppStoreREPL(self._toolset.apps)
+            "matrix": MatrixInspector(self._host.matrix()),
+            "manifests": ManifestsInspector(self._host.manifests),
+            "moss": MOSSRuntimeInspector(self._moss_runtime, self.console),
+            "apps": AppStoreInspector(self._moss_runtime.apps),
+            "fractal_hub": FractalInspector(self._moss_runtime.get_fractal_hub())
         }
 
     def output_on_switch(self, enter_else_leave: bool) -> None:
@@ -46,7 +49,7 @@ class MOSSRuntimeREPLState(REPLState):
             self.console.info("Leave MOSS runtime")
 
     async def _on_text_input(self, console_input: str) -> None:
-        result = await self._toolset.moss_exec(console_input)
+        result = await self._moss_runtime.moss_exec(console_input)
         self.console.output(OutputItem.new("Shell", *result, log="execution done"))
 
 

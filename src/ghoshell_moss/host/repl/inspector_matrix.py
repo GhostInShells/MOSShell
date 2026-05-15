@@ -2,10 +2,10 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_common.helpers import generate_import_path
 import inspect
 
-__all__ = ['MatrixREPL']
+__all__ = ['MatrixInspector']
 
 
-class MatrixREPL:
+class MatrixInspector:
     """
     用于诊断 Matrix 内部节点状态的工具集。
     """
@@ -28,9 +28,9 @@ class MatrixREPL:
     def info(self) -> dict:
         """返回 Matrix 运行环境的基本配置快照。"""
         return {
-            "mode": self._matrix.moss_mode,
+            "mode": self._matrix.mode.name,
             "is_running": self._matrix.is_running(),
-            "moss_running": self._matrix.is_moss_running()
+            "moss_running": self._matrix.is_host_running()
         }
 
     def contracts(self) -> list[dict]:

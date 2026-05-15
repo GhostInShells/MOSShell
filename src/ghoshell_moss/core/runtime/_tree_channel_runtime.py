@@ -184,7 +184,7 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             return
         child_name = paths[0]
         # 子节点在路径上不存在.
-        child = self.sub_channels().get(child_name)
+        child = self.get_child_channel(child_name)
         if child is None:
             task.fail(CommandErrorCode.NOT_FOUND.error(f"channel `{task.chan}` not found"))
             return
@@ -228,10 +228,15 @@ class AbsChannelTreeRuntime(Generic[CHANNEL], AbsChannelRuntime[CHANNEL], ABC):
             is_blocking_task = consuming.meta.blocking
             # 检查是不是子节点的任务.
             if not is_self_task:
-                # 分配给子节点.
-                await self._dispatch_children_task(paths, consuming)
-                consuming = None
-                return None
+                self_meta = self.self_meta()
+                if len(self_meta.proxy) > 0 and Channel.join_channel_path('', *paths) in self_meta.proxy:
+                    # 仍然分配给自身.
+                    pass
+                else:
+                    # 分配给子节点.
+                    await self._dispatch_children_task(paths, consuming)
+                    consuming = None
+                    return None
 
             if is_blocking_task:
                 # 只有 consume 层可以设置 blocking task. 协程安全操作.

@@ -43,10 +43,11 @@ def create_ctml_main_chan(
         experimental: bool = True,
         *primitives: str | Literal['*'],
         with_default_primitives: bool = True,
+        description: str | None = None,
 ) -> PrimeChannel:
     chan = CTMLMainChannel(
         name="__main__",
-        description="CTML Main Channel with primitives",
+        description=description or "CTML Main Channel with primitives",
         blocking=True,
     )
     if not with_default_primitives:

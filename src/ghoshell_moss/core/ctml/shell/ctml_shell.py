@@ -61,10 +61,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
         self._container = Container(name=name, parent=parent_container)
         self._container.set(MOSShell, self)
+
+        self._primitives: list[str | Command] | None = primitives
         # register primitives
         self._main_channel = main_channel or create_ctml_main_chan(
             experimental=experimental,
             with_default_primitives=primitives is None,
+            description=description,
         )
         if primitives:
             for primitive_item in primitives:
@@ -354,6 +357,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if not self.is_running():
             return
         self._last_channel_metas = None
+        self._moss_static_cache = None
         refresh_meta_future = self._main_runtime.refresh_metas()
         if timeout is not None:
             sleep_task = asyncio.create_task(asyncio.sleep(timeout))
@@ -391,6 +395,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             if channel_meta.available or not available_only:
                 result[channel_path] = channel_meta
         self._last_channel_metas = result
+        self._last_channel_metas_refreshed_at = time.time()
         return result
 
     def push_task(self, *tasks: CommandTask) -> None:
@@ -448,11 +453,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         self._check_running()
-        runtime = self._main_runtime.fetch_sub_runtime(chan)
-        if runtime is None or not runtime.is_available():
-            return None
-
-        real_command = runtime.get_command(name)
+        command_unique_name = Command.make_unique_name(chan, name)
+        real_command = self.runtime.get_command(command_unique_name)
         if not exec_in_chan:
             return real_command
         return self._wrap_real_command(chan, real_command, None)

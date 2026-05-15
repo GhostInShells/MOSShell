@@ -1,0 +1,12 @@
+{
+  // Zenoh Fractal 配置
+  // 用于 Fractal 分形通讯协议下的独立 zenoh session。
+  // 模式：peer (对等), client (客户端), router (路由)
+  // Fractal 节点通常用 peer 模式，以便多节点对等组网。
+  mode: "peer",
+
+  listen: {
+    // 监听随机端口，便于本地多节点部署。
+    endpoints: ["tcp/0.0.0.0:20779"]
+  },
+}

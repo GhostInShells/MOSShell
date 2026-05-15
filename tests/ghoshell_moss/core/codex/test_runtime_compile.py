@@ -21,7 +21,7 @@ async def test_runtime_compile_with_async_func():
 
 def test_runtime_compile_invalid_code():
     code = """floor()"""
-    with pytest.raises(SyntaxError):
+    with pytest.raises(NameError):
         compile(None, code)
 
 

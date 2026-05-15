@@ -91,6 +91,10 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         """
         pass
 
+    @abstractmethod
+    async def refresh_metas(self, timeout: float | None = None) -> None:
+        pass
+
     @property
     @abstractmethod
     def runtime(self) -> ChannelRuntime:

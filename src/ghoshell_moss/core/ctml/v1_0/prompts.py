@@ -9,82 +9,7 @@ __all__ = [
     'make_interfaces',
     'make_dynamic_messages',
     'make_static_messages',
-    'generate_channel_tree',
 ]
-
-
-def generate_channel_tree(channels: Dict[ChannelFullPath, ChannelMeta], with_desc: bool = False) -> str:
-    """
-    根据 channel 路径字典生成树形字符串。
-    """
-    # 1. 标准化路径：空字符串 -> MAIN_CHANNEL_NAME
-    nodes = {}
-    for path, meta in channels.items():
-        key = MAIN_CHANNEL_NAME if path == '' else path
-        nodes[key] = _Node(key, meta.description)
-
-    # 2. 构建父子关系
-    root_paths = set()  # 记录父节点不存在的节点（根级节点）
-    for full in nodes:
-        if full == MAIN_CHANNEL_NAME:
-            root_paths.add(full)
-        else:
-            parts = full.split('.')
-            parent = '.'.join(parts[:-1])
-            if parent in nodes:
-                # 父节点存在，建立父子关系
-                nodes[parent].children.append(nodes[full])
-            else:
-                root_paths.add(full)
-
-    # 3. 确保 __main__ 节点存在
-    if MAIN_CHANNEL_NAME not in nodes:
-        nodes[MAIN_CHANNEL_NAME] = _Node(MAIN_CHANNEL_NAME, '')
-        root_paths.add(MAIN_CHANNEL_NAME)
-
-    main_node = nodes[MAIN_CHANNEL_NAME]
-
-    # 将除 __main__ 本身以外的根级节点作为 __main__ 的子节点
-    for path in root_paths:
-        if path != MAIN_CHANNEL_NAME:
-            main_node.children.append(nodes[path])
-
-    # 4. 递归生成树形字符串
-    lines = []
-
-    # 输出 __main__ 节点（根）
-    desc_part = f" `{main_node.desc}`" if main_node.desc and with_desc else ""
-    lines.append(main_node.full + desc_part)
-
-    # 输出子节点
-    def _print_children(children: list['_Node'], prefix: str, bloodline: str):
-        for i, child in enumerate(children):
-            is_last = (i == len(children) - 1)
-            connector = "└── " if is_last else "├── "
-            _desc_part = ''
-            if child.desc and with_desc:
-                desc = child.desc.replace('\n', ';')
-                _desc_part = f": `{desc}`"
-            name = child.full[len(bloodline):]
-            name = name.lstrip('.')
-            new_bloodline = Channel.join_channel_path(bloodline, name)
-            lines.append(prefix + connector + name + _desc_part)
-            # 递归子节点的子节点
-            child_prefix = prefix + ("    " if is_last else "│   ")
-            _print_children(child.children, child_prefix, bloodline=new_bloodline)
-
-    _print_children(main_node.children, "", bloodline='')
-
-    return "\n".join(lines)
-
-
-class _Node:
-    __slots__ = ('full', 'desc', 'children')
-
-    def __init__(self, full: str, desc: str = ""):
-        self.full = full
-        self.desc = desc
-        self.children: list[_Node] = []
 
 
 def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain: bool = True) -> str:
@@ -124,11 +49,17 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
 
 class ChannelMetaPrompter:
 
-    def __init__(self, path: ChannelFullPath, meta: ChannelMeta):
+    def __init__(
+            self,
+            path: ChannelFullPath,
+            meta: ChannelMeta,
+            *,
+            virtual: bool | None = None,
+    ):
         self.path = path or MAIN_CHANNEL_NAME
         self.meta = meta
         # 是否是虚拟节点.
-        self.virtual = meta.virtual
+        self.virtual = virtual if virtual is not None else meta.virtual
 
     def _wrap_block(self, messages: list[Message]) -> list[Message]:
         if len(messages) == 0:

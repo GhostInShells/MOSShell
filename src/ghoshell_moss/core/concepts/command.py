@@ -767,10 +767,14 @@ class Observe(BaseModel):
         default_factory=list, description="ghoshell_moss.core.concepts.command:CommandTask 的特殊返回值类型."
     )
 
+    @classmethod
+    def new(cls, value: str) -> Self:
+        return Message.new(tag="observe").with_content(value)
+
 
 class ObserveError(Exception):
     """
-    一种抛出中断的办法.
+    一种将观察数据作为中断抛出的语法糖, 方便中断复杂 command 逻辑.
     """
 
     def __init__(self, message: str = '') -> None:
@@ -779,11 +783,11 @@ class ObserveError(Exception):
 
     def as_messages(self) -> list[Message]:
         if self.message:
-            return [Message.new().with_content(self.message)]
+            return [Message.new(tag='observe').with_content(self.message)]
         return []
 
     def as_observe(self) -> Observe:
-        return Observe.model_construct(messages=self.as_messages())
+        return Observe.new(self.message)
 
 
 class CommandTaskResult(BaseModel):
@@ -873,16 +877,13 @@ class CommandTaskResult(BaseModel):
         if self.result is None and len(self.messages) == 0:
             return []
         result_message = None
+        name = name or self.caller or None
         # 先把结果序列化.
         if with_serialized_result and self.result is not None:
             # 保留 name.
             serialized_content = self.serialize_result()
             if serialized_content:
-                name = name or self.caller or None
-                result_message = Message.new(tag='result', attributes=dict(command=name))
-                # 将 result 的时间戳对齐.
-                result_message.meta.created = self.created
-                result_message.with_content(Text(text=serialized_content))
+                result_message = Message.new(tag='result').with_content(serialized_content)
 
         messages = []
         if result_message is not None and not result_message.is_empty():
@@ -893,7 +894,12 @@ class CommandTaskResult(BaseModel):
                 continue
             # 不再合并.
             messages.append(message)
-        return messages
+        return [
+            Message.new(
+                tag='command', name=name, timestamp=False, attributes={'at': str(self.created)}
+            ).with_messages(*messages),
+        ]
+        # return messages
 
     def join_result(self, *results: Self | Observe) -> None:
         """
@@ -960,10 +966,8 @@ class CommandTask(Generic[RESULT], ABC):
         self.context = context or {}
         self.errcode: int = 0
         self.errmsg: Optional[str] = None
-        self.trace: tuple[str, float] = ("", 0.0)
-        """ command task 在 shell 执行的 task 中的排序. 传入这个参数本身没有意义. 最终都以 Shell 的定义为准. """
-
         # --- debug --- #
+        self.last_trace: tuple[str, float] = ('', 0.0)
         self.trace: dict[str, float] = {
             "created": time.time(),
         }
@@ -1334,6 +1338,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             now = round(time.time(), 4)
             self.last_trace = (self.state, now)
             self.trace[self.state] = now
+            return None
 
     def _set_result(
             self,
@@ -1429,7 +1434,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
             # failed 以上级别的异常要记录.
             # cancel 不要. 因为 cancel 可能很多.
             if exp is not None and CommandErrorCode.is_failed(exp):
-                item = Message.new(name=self.caller_name()).with_content("Failed: %r" % exp)
+                item = Message.new().with_content("Error: %s" % exp)
                 task_result = CommandTaskResult(
                     caller=self.caller_name(),
                     messages=[
@@ -1446,7 +1451,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         if self.errcode is None or self.errcode == 0:
             return None
         else:
-            return CommandError(self.errcode, self.errmsg or "")
+            return CommandError(self.errcode, self.errmsg or "", at_line=self.done_at)
 
     async def wait(
             self,

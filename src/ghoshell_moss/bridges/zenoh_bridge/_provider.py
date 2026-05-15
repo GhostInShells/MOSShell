@@ -62,6 +62,14 @@ class ZenohProviderConnection(Connection):
         self._started = False
         self._closed = False
 
+    def all_key_expressions(self) -> dict[str, str]:
+        return {
+            'proxy_liveness': self._bridge_expr.proxy_liveness_key,
+            'proxy_receiver': self._bridge_expr.proxy_receiver_key,
+            'provider_receiver': self._bridge_expr.provider_receiver_key,
+            'provider_liveness': self._bridge_expr.provider_liveness_key,
+        }
+
     def __repr__(self):
         return self._logger_prefix
 
@@ -235,8 +243,12 @@ class ZenohChannelProvider(DuplexChannelProvider):
             node_name=address,
             logger=container.get(LoggerItf),
         )
+        self._connection_keys = connection.all_key_expressions()
         super().__init__(
             provider_connection=connection,
             container=container,
             reconnect_interval_seconds=self._liveness_check_interval
         )
+
+    def connection_keys(self) -> dict[str, str]:
+        return self._connection_keys

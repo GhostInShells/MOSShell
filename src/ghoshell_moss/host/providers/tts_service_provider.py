@@ -6,7 +6,7 @@ from ghoshell_moss.core.speech.volcengine_tts import VolcengineTTSConf, Volcengi
 from ghoshell_container import IoCContainer, Provider, INSTANCE
 from pydantic import Field
 
-__all__ = ['TTSServiceProvider']
+__all__ = ['TTSServiceProvider', 'TTSManagerConfig']
 
 
 class TTSManagerConfig(ConfigType):
