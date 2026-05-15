@@ -124,11 +124,17 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
 
 class ChannelMetaPrompter:
 
-    def __init__(self, path: ChannelFullPath, meta: ChannelMeta):
+    def __init__(
+            self,
+            path: ChannelFullPath,
+            meta: ChannelMeta,
+            *,
+            virtual: bool | None = None,
+    ):
         self.path = path or MAIN_CHANNEL_NAME
         self.meta = meta
         # 是否是虚拟节点.
-        self.virtual = meta.virtual
+        self.virtual = virtual if virtual is not None else meta.virtual
 
     def _wrap_block(self, messages: list[Message]) -> list[Message]:
         if len(messages) == 0:

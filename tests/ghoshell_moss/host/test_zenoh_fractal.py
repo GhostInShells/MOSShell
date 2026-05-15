@@ -79,6 +79,9 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
     async def ping() -> str:
         return "pong"
 
+    test_sub_chan = PyChannel(name="test_sub_chan")
+    chan.build.import_channels(test_sub_chan)
+
     async with provider:
         cp = provider.channel_provider(hub_name)
         assert cp is not None
@@ -104,6 +107,10 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
                 assert runtime.is_running()
                 result = await runtime.execute_command("ping")
                 assert result == "pong"
+                assert len(runtime.metas()) == 2
+                for key, meta in runtime.metas().items():
+                    assert meta.available
+                    assert meta.virtual
         finally:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

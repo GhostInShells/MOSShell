@@ -519,7 +519,7 @@ class DuplexChannelContext:
             # 更新 meta map.
             new_provider_meta_map = {}
             for provider_channel_path, meta in event.metas.items():
-                meta = meta.model_copy()
+                meta = meta.model_copy(update={'virtual': True})
                 if provider_channel_path == "":
                     meta.name = self.root_name
                 new_provider_meta_map[provider_channel_path] = meta
@@ -527,6 +527,7 @@ class DuplexChannelContext:
             if not event.all:
                 # 不是全量更新时, 也把旧的 meta 加回来.
                 for channel_path, meta in self.provider_meta_map.items():
+                    # 远程节点都是 virtual 节点。
                     if channel_path not in new_provider_meta_map:
                         new_provider_meta_map[channel_path] = meta
 
@@ -724,7 +725,8 @@ class DuplexChannelRuntime(AbsChannelRuntime):
         self_meta = metas.get("")
         if not self_meta:
             return {}
-        self_meta = self_meta.model_copy(update={"name": self._name})
+        # 所有的 proxy 节点都是 virtual 节点。
+        self_meta = self_meta.model_copy(update={"name": self._name, 'virtual': True})
         metas[""] = self_meta
         return metas
 
