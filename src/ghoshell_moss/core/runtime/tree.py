@@ -584,7 +584,10 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         _recursive_find_runtime(_result=result, _node=root_node, _relative_path='')
         return result
 
-    def metas(self, channel: Channel | None = None) -> dict[ChannelFullPath, ChannelMeta]:
+    def metas(
+            self,
+            channel: Channel | None = None,
+    ) -> dict[ChannelFullPath, ChannelMeta]:
         channel = channel or self._main.channel
         channel_id = channel.id()
         root_path = self._channel_id_to_paths.get(channel_id, None)
@@ -592,7 +595,12 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return {}
         return self._metas(root_path)
 
-    def _metas(self, path: ChannelFullPath = '') -> dict[ChannelFullPath, ChannelMeta]:
+    def _metas(
+            self,
+            path: ChannelFullPath = '',
+            virtual: bool = False,
+    ) -> dict[ChannelFullPath, ChannelMeta]:
+        """virtual 是一个递归属性，channel meta 自解释时，父节点是 virtual， 所有的子孙都是 virtual """
         node = self._runtime_status_nodes.get(path)
         if node is None:
             return {}
@@ -614,13 +622,15 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         child_names = list(node.children_names.values())
         self_meta.children = child_names
         for child_id, child_name in node.children_names.items():
-            virtual = child_id in node.virtual_children
+            child_is_virtual = virtual or child_id in node.virtual_children
             sub_full_path = Channel.join_channel_path(path, child_name)
             # 递归获取 metas.
-            sub_metas = self._metas(sub_full_path)
+            sub_metas = self._metas(sub_full_path, virtual=child_is_virtual)
             for sub_relative_path, meta in sub_metas.items():
                 relative_sub_path = Channel.join_channel_path(child_name, sub_relative_path)
-                if virtual:
+                if child_is_virtual and not meta.virtual:
+                    # 替换尽量不污染源数据。
+                    # channel tree 为 meta 不能自解释的部分 （要理解自己的祖先） 做兜底。
                     meta = meta.model_copy(update={'virtual': True})
                 metas[relative_sub_path] = meta
         return metas
