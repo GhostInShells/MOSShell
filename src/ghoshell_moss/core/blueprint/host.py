@@ -1,5 +1,5 @@
 import contextlib
-from typing import Protocol
+from typing import Protocol, Callable, Any, ClassVar
 
 from ghoshell_container import IoCContainer
 from typing_extensions import Self
@@ -14,7 +14,7 @@ from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.message import Message
 
 __all__ = [
-    'MossRuntime', 'MossHost', 'Mode', 'FractalHub', 'FractalNodeProvider',
+    'MossRuntime', 'MossHost', 'Mode', 'FractalHub', 'FractalCellProvider',
 ]
 
 
@@ -77,6 +77,11 @@ class MossRuntime(ABC):
         仅包含组件的 interface, context messages 等等.
         """
         pass
+
+    @abstractmethod
+    async def moss_refresh_metas(self) -> None:
+        """refresh metas of the channels registered in the shell"""
+        await self.shell.refresh_metas()
 
     @abstractmethod
     def moss_static_messages(self) -> str:
@@ -201,28 +206,20 @@ class FractalHub(ABC):
     FractalHub 解决什么问题呢?
     MossHost 实现基于环境发现构建 HostRuntime 的能力
     """
-
-    @property
-    def name(self) -> str:
-        """
-        hub 自身的命名, 也是 as_channel 返回 channel 的默认前缀.
-
-        需要符合 ChannelNamePattern
-        对于拥有 FractalHub 的 Ghost 而言, 能通过 Channel 体系看到:
-        `fractal_hub.{子节点名称}.[子节点 channels | 子节点 apps | 子节点的 fractal_hub]`
-        """
-        return "fractal_hub"
+    DEFAULT_HUB_NAME: ClassVar['str'] = 'fractal_hub'
 
     @abstractmethod
-    def usage(self) -> str:
+    def self_explain(self) -> str:
         """
         通讯协议和其它讯息的自解释.
 
         预计通过 repl 等手段做显式交互, 或提供给 moss 的 meta ghost 去解释.
-        为何用自然语言解释, 而不是用强类型呢?
-        1. 强类型, 可以通过具体实现扩展函数.
-        2. matrix.contracts 可以发现绑定.
         """
+        # 为何用自然语言解释, 而不是用强类型呢?
+        # 因为未来的开发希望直接面向模型。
+        # 仍然可以拥有强类型描述：
+        #    1. 想要拥有强类型, 可以通过具体实现扩展函数.
+        #    2. matrix.contracts 可以发现绑定
         pass
 
     @abstractmethod
@@ -234,6 +231,7 @@ class FractalHub(ABC):
 
     @abstractmethod
     def is_running(self) -> bool:
+        """是否已经运行中."""
         pass
 
     @abstractmethod
@@ -255,6 +253,20 @@ class FractalHub(ABC):
         """
         pass
 
+    def accept(self, cell_name: str):
+        """
+        允许 cell 进入 hub. cell 状态 alive 为 true.
+        raise KeyError: 如果 cell 不存在.
+        """
+        pass
+
+    def ignore(self, cell_name: str):
+        """
+        忽略某个连接的 cell. cell 状态 alive 为 false
+        raise KeyError: 如果 cell 不存在.
+        """
+        pass
+
     @abstractmethod
     async def __aenter__(self) -> Self:
         """需要提供生命周期治理"""
@@ -266,7 +278,7 @@ class FractalHub(ABC):
         pass
 
 
-class FractalNodeProvider(ABC):
+class FractalCellProvider(ABC):
     """
     可以将当前 MossRuntime 提供给其它 MossRuntime 的 provider.
 
@@ -277,9 +289,28 @@ class FractalNodeProvider(ABC):
     # 因为双工通讯的协议可能同时有 正向/反向/桥接 等各种. 单一方向不能涵盖语义.
 
     @abstractmethod
-    def channel_provider(self, name: str) -> ChannelProvider | None:
-        """最基础的 channel provider 实现. """
+    def channel_provider(
+            self,
+            as_cell_name: str = '',
+    ) -> ChannelProvider | None:
+        """
+        最基础的 channel provider 实现.
+        """
         pass
+
+    @abstractmethod
+    def self_explain(self) -> str:
+        """
+        解释自身的通讯协议. 通常包含:
+        1. 什么协议.
+        2. 当前连接了什么路径.
+        3. 从什么配置文件获得的讯息.
+        4. 默认将自己用什么名字提供.
+        """
+        pass
+
+    def __repr__(self):
+        return f"<FractalCellProvider>\n{self.self_explain()}\n</FractalCellProvider>"
 
     @abstractmethod
     async def __aenter__(self) -> Self:
@@ -296,28 +327,42 @@ class FractalNodeProvider(ABC):
     async def provide(
             self,
             moss: MossRuntime,
-            name: str = '',
+            *,
+            as_cell_name: str | None = None,
+            on_channel_event: Callable[[Any], None] | None = None,
     ) -> None:
-        """将当前的 moss provide 给另一个 moss. """
+        """
+        将当前的 moss provide 给另一个扮演 hub 角色的 moss.
+
+        :param moss: 持有 moss runtime.
+        :param as_cell_name: 可以改写自己提供给父节点时, 自身的名称. 否则使用默认名称.
+        :param on_channel_event: 可以注册 channel 双工协议的事件回调. 类型与协议有关.
+        """
         # 基于 code as prompt 原则将抽象使用的最小实现直接在代码里提示.
         # provide 的设计目标包含: resources / ghosts / agents / channels 等等.
         # 不过现阶段, 仅仅有条件实现 channels.
+        # 为何叫做 Provider?
+        # 1. 通信协议无关, 所以可能有 client -> server, server -> client, cell -> broker <- hub 等多种机制.
+        # 2. 不一定有连接顺序. 比如 hub  和  cell 可能互相先后启动, 通过服务发现机制探测到.
         stack = contextlib.AsyncExitStack()
         async with stack:
             # 防蠢.
             if not self.is_running():
                 await stack.enter_async_context(self)
-            channel_provider = self.channel_provider(name or moss.name)
+            channel_provider = self.channel_provider(
+                # 默认的名称.
+                as_cell_name or f'{moss.name}_{moss.mode.name}',
+            )
             if channel_provider:
-                if moss.shell.is_running():
-                    raise RuntimeError(f"Moss Shell is already running and occupied channels.")
+                if on_channel_event:
+                    channel_provider.on_proxy_event(on_channel_event)
 
                 # 定义闭包启动.
                 async def provide_moss_channels():
                     nonlocal moss, channel_provider
                     await channel_provider.arun_until_closed(
                         # main channel 的 description 由 mode 决定.
-                        moss.shell.main_channel
+                        moss.shell.runtime if moss.shell.is_running() else moss.shell.main_channel
                     )
 
                 # 通过 matrix 来托管 provider 的生命周期, 避免没有优雅退出.
@@ -430,9 +475,12 @@ class MossHost(ABC):
 
     async def provide_moss_as_fractal(
             self,
-            provider: FractalNodeProvider | None,
-            name: str | None = None,
+            provider: FractalCellProvider | None,
+            *,
+            as_cell_name: str | None = None,
             description: str | None = None,
+            on_proxy_event: Callable[[Any], None] | None = None,
+            on_provider_created: Callable[[FractalCellProvider], None] | None = None,
     ) -> None:
         """
         将当前的 moss runtime 作为一个分形节点提供给远程 moss.
@@ -446,7 +494,6 @@ class MossHost(ABC):
             run_shell=True,
             # 原语只有主轨执行有意义, 所以这个 flag 设置为 false.
             with_primitives=False,
-            name=name,
             description=description,
         )
         # 这里的实现作为 code as prompt 的一部分, 解释自身的使用逻辑.
@@ -455,10 +502,14 @@ class MossHost(ABC):
             # 启动 runtime, 但不注册原语.
             # 这样环境发现的能力都启动了, 但是屏蔽到原语级别功能.
             if provider is None:
-                provider = runtime.matrix.container.get(FractalNodeProvider)
+                provider = runtime.matrix.container.get(FractalCellProvider)
                 if provider is None:
                     raise NotImplementedError(f"Fractal Provider is not implemented in this mode")
+                if on_provider_created:
+                    on_provider_created(provider)
             async with provider:
                 await provider.provide(
                     runtime,
+                    as_cell_name=as_cell_name or '',
+                    on_channel_event=on_proxy_event,
                 )

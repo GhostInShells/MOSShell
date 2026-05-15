@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
-
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
 from rich.console import Console, RenderableType
-from rich.traceback import Traceback
+from rich.traceback import Traceback, Trace
 from rich.rule import Rule
 from rich.text import Text
 from rich.syntax import Syntax
@@ -153,8 +152,10 @@ class ConsoleOutput:
 
     def json(self, value: Any) -> None:
         """统一的 JSON 渲染工厂，使用 ansi_dark 以适配任意终端配色"""
+        if not isinstance(value, str):
+            value = json.dumps(value, indent=2, ensure_ascii=False)
         r = Syntax(
-            json.dumps(value, indent=2, ensure_ascii=False),
+            value,
             "json",
             theme="ansi_dark",
             background_color="default",  # 关键点：背景透明，不抢终端色
@@ -184,20 +185,17 @@ class ConsoleOutput:
 
     def print_exception(
             self,
+            trace: Trace | None = None,
             *,
             width: Optional[int] = 100,
             extra_lines: int = 3,
             max_frames: int = 10,
     ) -> None:
         """Prints a rich render of the last exception and traceback.
-
-        Args:
-            width (Optional[int], optional): Number of characters used to render code. Defaults to 100.
-            extra_lines (int, optional): Additional lines of code to render. Defaults to 3.
-            max_frames (int): Maximum number of frames to show in a traceback, 0 for no maximum. Defaults to 100.
         """
 
         traceback = Traceback(
+            trace,
             width=width,
             extra_lines=extra_lines,
             word_wrap=True,
@@ -407,12 +405,12 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         def multi_line_enter(event) -> None:
             event.current_buffer.insert_text('\n')
 
-        @kb.add('c-p')
+        @kb.add('c-n')
         def switch_next_state(event) -> None:
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._switch_to, True)
 
-        @kb.add('c-b')
+        @kb.add('c-p')
         def switch_previous_state(event) -> None:
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._switch_to, False)
@@ -597,6 +595,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             # 注册第一个为 current state
             if not self._current_state_name:
                 self._current_state_name = state.name()
+                self.console.info("current state is %s" % self._current_state_name)
             self._states[state.name()] = state
             # 注册管理回调.
             output = ConsoleOutput(
@@ -639,6 +638,6 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         # 1. 提取异常对象
         exception = context.get("exception")
         message = context.get("message", "Unhandled exception in event loop")
-        self.console.print_exception()
+        self.console.error(message)
         if self.host.matrix().is_running():
             self.host.matrix().logger.exception("%s: %s", message, exception)

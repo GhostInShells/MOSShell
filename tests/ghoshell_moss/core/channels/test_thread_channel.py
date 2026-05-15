@@ -2,7 +2,7 @@ import asyncio
 import pytest
 
 from ghoshell_moss.core import Command, CommandError, CommandToken
-from ghoshell_moss.core.duplex.thread_channel import create_thread_channel
+from ghoshell_moss.core.duplex.thread_channel import create_thread_bridge
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core import ChannelCtx
 from ghoshell_moss.core.concepts.topic import LogTopic, TopicService
@@ -10,7 +10,7 @@ from ghoshell_moss.core.concepts.topic import LogTopic, TopicService
 
 @pytest.mark.asyncio
 async def test_thread_channel_start_and_close():
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     chan = PyChannel(name="provider")
     async with provider.arun(chan):
         runtime = provider.runtime
@@ -22,7 +22,7 @@ async def test_thread_channel_start_and_close():
 
 @pytest.mark.asyncio
 async def test_thread_channel_raise_in_proxy():
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     chan = PyChannel(name="provider")
     # 测试 channel 能够正常被启动.
     async with provider.arun(chan):
@@ -33,7 +33,7 @@ async def test_thread_channel_raise_in_proxy():
 
 @pytest.mark.asyncio
 async def test_thread_channel_run_in_thread():
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     chan = PyChannel(name="provider")
     provider.run_in_thread(chan)
 
@@ -44,7 +44,7 @@ async def test_thread_channel_run_in_thread():
 
 @pytest.mark.asyncio
 async def test_thread_channel_run_in_tasks():
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     chan = PyChannel(name="provider")
     provider_run_task = asyncio.create_task(provider.arun_until_closed(chan))
 
@@ -63,7 +63,7 @@ async def test_thread_channel_run_in_tasks():
 
 @pytest.mark.asyncio
 async def test_thread_channel_run_in_thread_and_aclose():
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     chan = PyChannel(name="provider")
     # 重新创建 provider.
     provider = provider.copy()
@@ -90,7 +90,7 @@ async def test_thread_channel_baseline():
     # a_chan 增加 command bar.
     a_chan.build.command()(bar)
 
-    provider, proxy_chan = create_thread_channel("proxy")
+    provider, proxy_chan = create_thread_bridge("proxy")
 
     # 在另一个线程中运行.
     async with provider.arun(provider_main_chan):
@@ -161,7 +161,7 @@ def test_thread_channel_lost_connection():
 
     chan = PyChannel(name="provider")
     chan.build.command(return_command=True)(foo)
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     provider.run_in_thread(chan)
 
     async def proxy_main():
@@ -204,7 +204,7 @@ async def test_thread_channel_refresh_meta():
         return 123
 
     assert chan.main_state().is_dynamic()
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
 
     async with provider.arun(chan):
         async with proxy.bootstrap() as runtime:
@@ -265,7 +265,7 @@ async def test_thread_channel_has_child():
     async def bar() -> int:
         return 456
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     provider.run_in_thread(chan)
     try:
         async with proxy.bootstrap() as runtime:
@@ -292,7 +292,7 @@ async def test_thread_channel_exception():
     async def foo() -> int:
         raise ValueError("foo")
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     provider.run_in_thread(chan)
     try:
         async with proxy.bootstrap() as proxy_runtime:
@@ -326,7 +326,7 @@ async def test_thread_channel_idle():
         finally:
             idled_done.set()
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     provider.run_in_thread(chan)
     try:
         async with proxy.bootstrap() as proxy_runtime:
@@ -380,7 +380,7 @@ async def test_thread_channel_with_delta_func():
         for i in range(10):
             yield CommandToken(seq="delta", name="tokens", content="%d" % i)
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     async with provider.arun(chan):
         async with proxy.bootstrap() as runtime:
             await runtime.wait_connected()
@@ -407,7 +407,7 @@ async def test_thread_provider_pub_topic():
                 await asyncio.sleep(0.0)
                 publisher.pub(LogTopic(level="info", message=str(i)))
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
 
     main = PyChannel(name="main")
     main.import_channels(proxy)
@@ -438,7 +438,7 @@ async def test_thread_proxy_pub_topic():
     a_chan = PyChannel(name="a_channel")
     chan.import_channels(a_chan)
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
 
     main = PyChannel(name="main")
     main.import_channels(proxy)
@@ -492,7 +492,7 @@ async def test_providing_channel_runtime():
     async def foo():
         return "hello"
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     # bootstrap runtime first.
     async with chan.bootstrap() as runtime:
         # bootstrap provider with the runtime.
@@ -511,7 +511,7 @@ async def test_thread_provider_lazy_subscribe():
     a_chan = PyChannel(name="a_channel")
     chan.import_channels(a_chan)
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
 
     main = PyChannel(name="main")
     main.import_channels(proxy)
@@ -554,7 +554,7 @@ async def test_thread_channel_do_not_share_local_topic():
     a_chan = PyChannel(name="a_channel")
     chan.import_channels(a_chan)
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
 
     # provider 侧先运行, 已经开始监听.
     async with provider.arun(chan):
@@ -564,7 +564,7 @@ async def test_thread_channel_do_not_share_local_topic():
 
             async with proxy_runtime.topic_subscriber(LogTopic) as subscriber:
                 poll_task = asyncio.create_task(subscriber.poll_model())
-                async with provider.runtime.topic_publisher() as publisher:
+                async with provider.runtime.topic_publisher(LogTopic) as publisher:
                     for i in range(10):
                         await asyncio.sleep(0.0)
                         topic = LogTopic(level="info", message=str(i))
@@ -576,7 +576,7 @@ async def test_thread_channel_do_not_share_local_topic():
                 # 仍然没有收到.
                 assert not poll_task.done()
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     # 第二次, 交换发送者和接受者.
     async with provider.arun(chan):
         async with proxy.bootstrap() as proxy_runtime:
@@ -607,7 +607,7 @@ async def test_thread_channel_proxy_event_callback():
     def _on_event(event) -> None:
         events.append(event)
 
-    provider, proxy = create_thread_channel("proxy")
+    provider, proxy = create_thread_bridge("proxy")
     provider.on_proxy_event(_on_event)
     async with provider.arun(chan):
         async with proxy.bootstrap() as proxy_runtime:

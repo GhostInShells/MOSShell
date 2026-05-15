@@ -1,5 +1,7 @@
 import asyncio
 from typing import AsyncIterable
+
+from ghoshell_moss import CommandError
 from ghoshell_moss.core import CTMLShell, InterpretError
 from ghoshell_moss.core.ctml import ctml_shell_test
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
@@ -1347,16 +1349,16 @@ async def test_primitive_cannot_be_used_in_non_root_channel():
         return "ok"
 
     # 在非根通道作用域内使用 <clear> 应该报错
-    with pytest.raises(InterpretError):
-        await ctml_shell_test(
-            non_root,
-            ctml="""
-            <_ until="all" channel="non_root">
-                <some_cmd/>
-                <clear/>
-            </_>
-            """
-        )
+    tasks = await ctml_shell_test(
+        non_root,
+        ctml="""
+        <_ until="all" channel="non_root">
+            <some_cmd/>
+            <clear/>
+        </_>
+        """
+    )
+    assert tasks[0].exception() is not None
 
 
 # ============= 总结性测试：端到端人机交互场景 =============

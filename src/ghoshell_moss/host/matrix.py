@@ -562,8 +562,10 @@ class MatrixImpl(Matrix):
         """
         注册抽象里定义好的, 基于约定发现的特殊抽象类型.
         """
-        # 目前还没有具体设计. 保留生命周期位置.
-        yield from []
+        if self._is_main:
+            # 只有 main 节点允许启动 hub.
+            yield FractalHub
+        return
 
     async def __aenter__(self) -> Self:
         if self._started:

@@ -1,9 +1,9 @@
 from ghoshell_moss.core.blueprint.manifests import Manifests
 
-__all__ = ['ManifestsREPL']
+__all__ = ['ManifestsInspector']
 
 
-class ManifestsREPL:
+class ManifestsInspector:
     """用于在 REPL 中观测 Manifest 资源的工具集"""
 
     def __init__(self, manifests: Manifests):

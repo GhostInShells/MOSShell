@@ -445,7 +445,6 @@ class MCPChannelRuntime(AbsChannelRuntime[MCPChannel]):
             available=True,
             description=self.channel.description(),
             commands=self._convert_tools_to_command_metas(tools=tool_result.tools),
-            children=[],
         )
 
     # --- 未使用的生命周期方法（默认空实现） --- #

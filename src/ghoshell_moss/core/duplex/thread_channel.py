@@ -165,7 +165,7 @@ class ThreadChannelProxy(DuplexChannelProxy):
         )
 
 
-def create_thread_channel(
+def create_thread_bridge(
         name: str,
         container: IoCContainer | None = None,
 ) -> tuple[ThreadChannelProvider, ThreadChannelProxy]:

@@ -1,13 +1,6 @@
-from ghoshell_moss.contracts.configs import ConfigType
+from ghoshell_moss.host.providers.audio_player_provider import PyAudioPlayerConfig
+from ghoshell_moss.host.providers.tts_service_provider import TTSManagerConfig
 
+tts_config = TTSManagerConfig()
 
-class TestConfig(ConfigType):
-    foo: str = 'foo'
-    bar: str = 'bar'
-
-    @classmethod
-    def conf_name(cls) -> str:
-        return "test"
-
-
-test_config = TestConfig()
+pyaudio_player_config = PyAudioPlayerConfig()

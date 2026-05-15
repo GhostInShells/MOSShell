@@ -1,36 +1,37 @@
 import asyncio
-import contextlib
 import threading
 from pathlib import Path
 
 from typing import Iterable, Type
 from typing_extensions import Self
-from ghoshell_moss.core.blueprint.matrix import Cell
-from ghoshell_moss.core.blueprint.host import FractalHub, FractalNodeProvider
+from ghoshell_moss.core.blueprint.host import FractalHub, FractalCellProvider
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.states_channel import StatefulChannel
-from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime, ChannelNamePattern, ChannelProvider
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelNamePattern, \
+    ChannelProvider
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
 from ghoshell_moss.contracts.workspace import Workspace
-from ghoshell_moss.contracts import LoggerItf
-from ghoshell_container import IoCContainer, Provider, INSTANCE
+from ghoshell_moss.contracts import LoggerItf, get_moss_logger
+from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.depends import depend_zenoh
+from ghoshell_common.helpers import yaml_pretty_dump
 from ._base import FractalCell, FractalKeyExpressions, FRACTAL_SESSION_SCOPE
 import orjson
 import regex as re
 import time
+
 depend_zenoh()
 import zenoh
 
 __all__ = [
-    'ZenohSessionFractalHub', 'FractalHubChannelState', 'ZenohFractalHubProvider',
-    'ZenohSessionFractalNodeProvider', 'ZenohFractalNodeProviderProvider',
+    'ZenohFractalHub', 'FractalHubChannelState', 'ZenohFractalHubProvider',
+    'ZenohFractalCellProvider', 'ZenohFractalCellContractProvider',
 ]
 
 
-class ZenohSessionFractalHub(FractalHub):
+class ZenohFractalHub(FractalHub):
     """
     基于 zenoh 实现 Fractal 分形通讯协议。
 
@@ -46,10 +47,10 @@ class ZenohSessionFractalHub(FractalHub):
 
     def __init__(
             self,
-            hub_name: str,
             zenoh_conf_file: Path,
+            hub_name: str = FractalHub.DEFAULT_HUB_NAME,
             *,
-            logger: LoggerItf,
+            logger: LoggerItf | None = None,
             session_scope: str | None = None,
             address_prefix: str | None = None,
             transport_endpoint: str | None = None,
@@ -58,7 +59,7 @@ class ZenohSessionFractalHub(FractalHub):
     ):
         self._conf_file = zenoh_conf_file
         self._hub_name = hub_name
-        self._logger = logger
+        self._logger = logger or get_moss_logger()
         self._session: zenoh.Session | None = None
         self._session_lock = threading.Lock()
         self._transport_endpoint: str | None = transport_endpoint
@@ -72,7 +73,6 @@ class ZenohSessionFractalHub(FractalHub):
         self._connected_cells: dict[str, FractalCell] = {}
         self._cell_last_seen: dict[str, float] = {}
         self._connected_cells_lock = threading.Lock()
-        self._approved_cell_names: set[str] = set()
 
         self._refresh_interval = refresh_interval
         self._stale_timeout = refresh_interval * 3
@@ -86,6 +86,10 @@ class ZenohSessionFractalHub(FractalHub):
     @property
     def name(self) -> str:
         return self._hub_name
+
+    @property
+    def logger(self) -> LoggerItf:
+        return self._logger
 
     @property
     def session(self) -> zenoh.Session:
@@ -102,7 +106,7 @@ class ZenohSessionFractalHub(FractalHub):
                     self._session = zenoh.open(conf)
         return self._session
 
-    def get_connected(self) -> list[Cell]:
+    def get_connected(self) -> list[FractalCell]:
         """即时返回缓存的子节点列表（非阻塞）。"""
         with self._connected_cells_lock:
             return list(self._connected_cells.values())
@@ -124,30 +128,30 @@ class ZenohSessionFractalHub(FractalHub):
         return name in self._connected_cells
 
     def is_cell_approved(self, name: str) -> bool:
-        if self._auto_approve_connecting:
-            return name in self._connected_cells
-        return name in self._approved_cell_names
+        if cell := self._connected_cells.get(name):
+            return cell.accepted
+        return False
 
-    def approve_cell(self, name: str):
-        if name in self._connected_cells:
-            self._approved_cell_names.add(name)
+    def accept(self, cell_name: str):
+        if cell_name in self._connected_cells:
+            self._connected_cells[cell_name].accepted = True
         else:
-            raise KeyError(f"cell name '{name}' not found")
+            raise KeyError(f"cell name '{cell_name}' not found")
 
-    def disapprove_cell(self, name: str):
-        if name in self._connected_cells:
-            self._approved_cell_names.discard(name)
+    def ignore(self, cell_name: str):
+        if cell_name in self._connected_cells:
+            self._connected_cells[cell_name].accepted = False
         else:
-            raise KeyError(f"cell name '{name}' not found")
+            raise KeyError(f"cell name '{cell_name}' not found")
 
     def make_proxy_address(self, cell_name: str) -> str:
-        return self._key_expr.provider_node_address(cell_name)
+        return self._key_expr.provider_cell_address(cell_name)
 
     # ------------------------------------------------------------------
     # 生命周期 (async context manager)
     # ------------------------------------------------------------------
 
-    async def __aenter__(self) -> "ZenohSessionFractalHub":
+    async def __aenter__(self) -> "ZenohFractalHub":
         if self._started:
             raise RuntimeError("Fractal hub already started")
         self._started = True
@@ -218,7 +222,9 @@ class ZenohSessionFractalHub(FractalHub):
                         del self._connected_cells[name]
                         self._cell_last_seen.pop(name, None)
                         return
-                self._connected_cells[name] = cell
+                if name not in self._connected_cells:
+                    cell.accepted = self._auto_approve_connecting
+                    self._connected_cells[name] = cell
                 self._cell_last_seen[name] = now
         except Exception:
             pass
@@ -247,23 +253,18 @@ class ZenohSessionFractalHub(FractalHub):
             for name in stale:
                 del self._connected_cells[name]
                 del self._cell_last_seen[name]
-                self._approved_cell_names.discard(name)
                 self._logger.debug(
                     "%s pruned stale node: %s", self._log_prefix, name,
                 )
 
-    def usage(self) -> str:
+    def self_explain(self) -> str:
         lines = [
             f"Moss Zenoh Fractal Protocol",
             f"Hub Name: {self._hub_name}",
             f"Cell Manifest Prefix: {self._key_expr.manifests_prefix()}",
+            f"Config File Path: {self._conf_file}",
+            self._conf_file.read_text(),
         ]
-        if self._transport_endpoint:
-            lines.append(f"Parent: {self._transport_endpoint}")
-        else:
-            lines.append("Mode: peer multicast (no parent)")
-
-        lines.append(self._conf_file.read_text())
         return "\n".join(lines)
 
     def status(self) -> str:
@@ -272,15 +273,17 @@ class ZenohSessionFractalHub(FractalHub):
             f"Running: {self.is_running()}",
         ]
         nodes = self.get_connected()
+        node_data_list = []
         if len(nodes) > 0:
             lines.append(f"Connected nodes ({len(nodes)}):")
-            for c in nodes:
-                lines.append(f"  - {c.name} (alive={c.is_alive()})")
+            for node in nodes:
+                node_data_list.append(node.to_detail_info())
+            lines.append(yaml_pretty_dump(node_data_list))
         else:
             lines.append("No connected nodes")
         return "\n".join(lines)
 
-    def as_channel_hub(self, name: str, description: str = '') -> StatefulChannel:
+    def as_channel_hub(self, name: str = '', description: str = '') -> StatefulChannel:
         """
         返回一个被动 Channel（无 start/stop 命令），用于展示已连接的 fractal 子节点。
 
@@ -311,7 +314,7 @@ class FractalHubChannelState(ChannelState):
     def __init__(
             self,
             *,
-            hub: ZenohSessionFractalHub,
+            hub: ZenohFractalHub,
             name: str | None = None,
             description: str = "",
     ):
@@ -325,23 +328,23 @@ class FractalHubChannelState(ChannelState):
     def _build_commands(self) -> dict[str, Command]:
         from ghoshell_moss.core.blueprint.channel_builder import new_command
 
-        async def open_node(name: str) -> str:
+        async def accept(name: str) -> str:
             """
-            打开指定的分形子节点，使其 channel 可用。
-            应先通过 context 查看可用节点列表，再决定打开哪些。
-            :param name: 节点名称，来自 context 列表中的 node name。
+            允许分形子节点接入, 使其 channel 可用.
+            应先通过 context 查看可用节点列表，再决定允许哪些。
+            :param name: 节点名称
             """
             if not self._hub.is_cell_connected(name):
                 return f"Node '{name}' not found."
             elif self._hub.is_cell_approved(name):
                 return f"Node '{name}' already opened."
             try:
-                self._hub.approve_cell(name)
+                self._hub.accept(name)
             except KeyError:
                 return f"Node '{name}' not found."
             return f"Fractal node '{name}' opened."
 
-        async def close_node(name: str) -> str:
+        async def ignore(name: str) -> str:
             """
             关闭指定的分形子节点，从 virtual children 中移除。
             :param name: 节点名称。
@@ -351,14 +354,14 @@ class FractalHubChannelState(ChannelState):
             elif not self._hub.is_cell_approved(name):
                 return f"Node '{name}' is not opened"
             try:
-                self._hub.disapprove_cell(name)
+                self._hub.ignore(name)
             except KeyError:
                 return f"Node '{name}' not found."
             return f"Fractal node '{name}' closed."
 
         return {
-            'open_node': new_command(open_node),
-            'close_node': new_command(close_node),
+            'accept': new_command(accept),
+            'ignore': new_command(ignore),
         }
 
     def name(self) -> str:
@@ -381,22 +384,35 @@ class FractalHubChannelState(ChannelState):
         return self._own_commands.get(name)
 
     async def get_context_messages(self) -> list[str]:
-        return [self._hub.status()]
+        lines = [
+            "Fractal Hub",
+            f"Running: {self._hub.is_running()}",
+        ]
+        nodes = self._hub.get_connected()
+        if len(nodes) > 0:
+            lines.append(f"Connected nodes ({len(nodes)}):")
+            for c in nodes:
+                lines.append(f"  - {c.name} (accepted={c.accepted})")
+        else:
+            lines.append("No connected nodes")
+        return ["\n".join(lines)]
 
     def get_virtual_children(self) -> dict[ChannelName, Channel]:
         """只返回已打开（approved）的节点的 proxy。"""
         cells = self._hub.get_connected()
-
+        # 创建新的数组容器.
         channels: dict[ChannelName, Channel] = {}
         with self._proxy_channels_lock:
+            # 准备好校验.
             exists = self._proxy_channels.copy()
 
         for cell in cells:
             cell_name = cell.name
-            if not self._hub.is_cell_approved(cell_name):
+            if not cell.accepted:
                 continue
-            existing = exists.get(cell_name)
+            existing = exists.get(cell_name, None)
             if existing is not None:
+                # 创建过的不再重复创建.
                 channels[cell_name] = existing
             else:
                 address = self._hub.make_proxy_address(cell_name)
@@ -406,10 +422,13 @@ class FractalHubChannelState(ChannelState):
                     name=cell_name,
                     description=f"Fractal child node: {cell.name}",
                     zenoh_session=self._hub.session,
+                    uid=cell.uid,
                 )
+                cell.connection_keys = proxy.connection_keys()
                 channels[cell_name] = proxy
         # 更新 proxy 缓存，清理已断开或未批准的节点
         with self._proxy_channels_lock:
+            # 替换新的容器.
             self._proxy_channels = channels
         return channels.copy()
 
@@ -421,8 +440,13 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
     可被 manifest providers 覆盖（更高优先级）。
     """
 
-    def __init__(self, conf_file: str = "zenoh_config_fractal_hub.json5"):
+    def __init__(
+            self,
+            hub_name: str = FractalHub.DEFAULT_HUB_NAME,
+            conf_file: str = "zenoh_config_fractal_hub.json5",
+    ):
         self._conf_file = conf_file
+        self._hub_name = hub_name
 
     def singleton(self) -> bool:
         return True
@@ -431,9 +455,9 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
         return FractalHub
 
     def aliases(self) -> Iterable[Type]:
-        yield ZenohSessionFractalHub
+        yield ZenohFractalHub
 
-    def factory(self, con: IoCContainer) -> ZenohSessionFractalHub:
+    def factory(self, con: IoCContainer) -> ZenohFractalHub:
         workspace = con.force_fetch(Workspace)
         logger = con.get(LoggerItf)
 
@@ -442,16 +466,14 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
             raise FileNotFoundError(
                 f"Fractal zenoh config not found: {config_path}"
             )
-        env = con.force_fetch(Environment)
-        meta = env.meta_config
-        return ZenohSessionFractalHub(
-            hub_name=meta.name,
+        return ZenohFractalHub(
+            hub_name=self._hub_name,
             zenoh_conf_file=config_path,
             logger=logger,
         )
 
 
-class ZenohSessionFractalNodeProvider(FractalNodeProvider):
+class ZenohFractalCellProvider(FractalCellProvider):
     """
     将本地 channel 通过 zenoh 暴露到远程 FractalHub。
 
@@ -461,21 +483,23 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
     """
 
     def __init__(
-        self,
-        hub_name: str,
-        zenoh_conf_file: Path,
-        *,
-        logger: LoggerItf,
-        node_name: str | None = None,
-        transport_endpoint: str | None = None,
-        address_prefix: str | None = None,
-        reput_interval: float = 2.0,
+            self,
+            # 要求显式指定 cell name.
+            as_cell_name: str,
+            zenoh_conf_file: Path,
+            *,
+            # hub name 考虑可以手动指定. 
+            hub_name: str = FractalHub.DEFAULT_HUB_NAME,
+            logger: LoggerItf | None = None,
+            connect_to_endpoint: str | None = None,
+            address_prefix: str | None = None,
+            reput_interval: float = 2.0,
     ):
         self._hub_name = hub_name
+        self._as_cell_name = as_cell_name or "moss_provider"
         self._conf_file = zenoh_conf_file
-        self._logger = logger
-        self._node_name = node_name or f"{hub_name}_provider"
-        self._transport_endpoint = transport_endpoint
+        self._logger = logger or get_moss_logger()
+        self._connect_to_endpoint = connect_to_endpoint
         self._key_expr = FractalKeyExpressions(
             hub_name=hub_name,
             address_prefix=address_prefix,
@@ -496,20 +520,38 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
             with self._session_lock:
                 if self._session is None:
                     conf = zenoh.Config.from_file(str(self._conf_file))
-                    if self._transport_endpoint:
+                    if self._connect_to_endpoint:
                         conf.insert_json5(
                             "connect/endpoints",
-                            f'["{self._transport_endpoint}"]',
+                            f'["{self._connect_to_endpoint}"]',
                         )
                     self._session = zenoh.open(conf)
         return self._session
 
-    def channel_provider(self, name: str) -> ChannelProvider | None:
-        address = self._key_expr.provider_node_address(node_name=self._node_name)
-        return ZenohChannelProvider(
+    def channel_provider(self, as_cell_name: str = '') -> ChannelProvider | None:
+        address = self._key_expr.provider_cell_address(
+            cell_name=as_cell_name or self._as_cell_name,
+        )
+        provider = ZenohChannelProvider(
             address=address,
             session_scope=FRACTAL_SESSION_SCOPE,
             zenoh_session=self.session,
+        )
+        self._logger.info(
+            f"Create Zenoh channel provider on connection keys: %s", provider.connection_keys(),
+        )
+        return provider
+
+    def self_explain(self) -> str:
+        return (
+            f"Fractal protocol: Zenoh\n"
+            f"Config path: {self._conf_file}\n"
+            f"Default Cell Name: {self._as_cell_name}\n"
+            f"Default Cell Address: {self._key_expr.provider_cell_address(self._as_cell_name)}\n"
+            f"Expected Hub name: {self._hub_name}\n"
+            f"Cell Address Prefix: {self._key_expr.provider_cell_address_prefix()}\n"
+            f"Config:\n"
+            f"{self._conf_file.read_text()}"
         )
 
     def is_running(self) -> bool:
@@ -517,14 +559,14 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            raise RuntimeError(f"FractalNodeProvider '{self._node_name}' already started")
+            raise RuntimeError(f"FractalNodeProvider '{self._as_cell_name}' already started")
         self._started = True
         _ = self.session
 
-        self._manifest_key = self._key_expr.manifest_key(self._node_name)
+        self._manifest_key = self._key_expr.manifest_key(self._as_cell_name)
         cell = FractalCell(
-            name=self._node_name,
-            description=f"Fractal provider: {self._node_name}",
+            name=self._as_cell_name,
+            description=f"Fractal provider: {self._as_cell_name}",
             where="",
         )
         self._cell_data = orjson.dumps(cell.to_dict())
@@ -539,7 +581,7 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
 
         self._logger.debug(
             "FractalNodeProvider '%s' started, manifest_key=%s",
-            self._node_name, self._manifest_key,
+            self._as_cell_name, self._manifest_key,
         )
         return self
 
@@ -576,54 +618,37 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
             except Exception:
                 self._logger.warning(
                     "FractalNodeProvider '%s' reput failed",
-                    self._node_name, exc_info=True,
+                    self._as_cell_name, exc_info=True,
                 )
 
-    async def provide(
-        self,
-        moss: "MossRuntime",
-        name: str = '',
-    ) -> None:
-        """
-        将当前 moss runtime 的 main_channel 提供给远程 Hub。
 
-        与 ABC 默认实现不同：不检查 moss.shell.is_running()，
-        因为 fractal 场景下 shell 已启动是正常情况。
-        """
-        stack = contextlib.AsyncExitStack()
-        async with stack:
-            if not self.is_running():
-                await stack.enter_async_context(self)
-            channel_provider = self.channel_provider(name or moss.name)
-            if channel_provider is None:
-                raise RuntimeError(f"channel_provider not available for '{name or moss.name}'")
-
-            async def provide_moss_channels():
-                await channel_provider.arun_until_closed(moss.shell.main_channel)
-
-            await moss.matrix.create_task(provide_moss_channels())
-
-
-class ZenohFractalNodeProviderProvider(Provider[FractalNodeProvider]):
+class ZenohFractalCellContractProvider(Provider[FractalCellProvider]):
     """
     IoC Provider for FractalNodeProvider。
     读取 workspace 中的 zenoh_config_fractal.json5 创建 ZenohSessionFractalNodeProvider。
     """
 
-    def __init__(self, conf_file: str = "zenoh_config_fractal.json5"):
+    def __init__(
+            self,
+            hub_name: str = FractalHub.DEFAULT_HUB_NAME,
+            conf_file: str = "zenoh_config_fractal.json5",
+    ):
+        self._hub_name = hub_name
         self._conf_file = conf_file
 
     def singleton(self) -> bool:
         return True
 
     def contract(self) -> type:
-        return FractalNodeProvider
+        return FractalCellProvider
 
     def aliases(self) -> Iterable[Type]:
-        yield ZenohSessionFractalNodeProvider
+        yield ZenohFractalCellProvider
 
-    def factory(self, con: IoCContainer) -> ZenohSessionFractalNodeProvider:
+    def factory(self, con: IoCContainer) -> ZenohFractalCellProvider:
         workspace = con.force_fetch(Workspace)
+        env = con.force_fetch(Environment)
+        default_cell_name = f"{env.meta_config.name}_{env.moss_mode_name}"
         logger = con.get(LoggerItf)
 
         config_path = workspace.configs().abspath() / self._conf_file
@@ -631,10 +656,9 @@ class ZenohFractalNodeProviderProvider(Provider[FractalNodeProvider]):
             raise FileNotFoundError(
                 f"Fractal node zenoh config not found: {config_path}"
             )
-        env = con.force_fetch(Environment)
-        meta = env.meta_config
-        return ZenohSessionFractalNodeProvider(
-            hub_name=meta.name,
+        return ZenohFractalCellProvider(
+            as_cell_name=default_cell_name,
             zenoh_conf_file=config_path,
+            hub_name=self._hub_name,
             logger=logger,
         )

@@ -616,11 +616,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         metas = runtime.own_metas().copy()
         if '' not in metas:
             return {}
-        # 递归获取子节点所有的 meta.
-        self_meta = metas['']
         # 赋值子节点名字. 这个参数是实质动态创建的.
-        child_names = list(node.children_names.values())
-        self_meta.children = child_names
         for child_id, child_name in node.children_names.items():
             child_is_virtual = virtual or child_id in node.virtual_children
             sub_full_path = Channel.join_channel_path(path, child_name)

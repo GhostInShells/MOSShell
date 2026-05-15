@@ -14,14 +14,15 @@ IoC（控制反转）让 app 开发者在 command 里直接拿到已注册的服
 command 函数里用 `CommandCtx` 获取服务：
 
 ```python
-from ghoshell_moss.core.blueprint.channel_builder import CommandCtx
+from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
+
 
 async def my_command(self, text: str) -> str:
     # 获取日志
-    logger = CommandCtx.logger()
+    logger = CommandUtil.logger()
 
     # 获取任意已注册的服务
-    tts = CommandCtx.get_contract(TTS)
+    tts = CommandUtil.get_contract(TTS)
 
     logger.info(f"synthesizing: {text}")
     return await tts.synthesize(text)

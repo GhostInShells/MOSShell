@@ -208,15 +208,23 @@ class MessageMeta(BaseModel):
         default=True,
         description="是否在容器展示时显示时间戳",
     )
-    attributes: dict[str, str] = Field(
+    stale_time: float | None = Field(
+        default=None,
+        description="stale time",
+    )
+    attributes: dict[str, Any] = Field(
         default_factory=dict,
         description="额外的 attributes 属性. "
     )
 
+    def is_stale(self) -> bool:
+        # todo
+        return False
+
     def gen_attributes(self, timestamp: bool = True) -> dict[str, Any]:
         attributes = self.attributes.copy()
         # 排除掉 ghost in shells 架构自身的关键维度信息.
-        exclude = {'attributes', 'id', 'tag', 'timestamp'}
+        exclude = {'attributes', 'id', 'tag', 'timestamp', 'stale_time'}
         if not self.timestamp or not timestamp:
             exclude.add('created')
             exclude.add('completed')
@@ -288,7 +296,8 @@ class Message(BaseModel, WithAdditional):
             name: Optional[str] = None,
             attributes: dict[str, Any] | None = None,
             # 是否需要在生成的 xml 包裹容器中展示 timestamp.
-            timestamp: bool = True,
+            timestamp: bool = False,
+            stale_time: float | None = None,
     ) -> Self:
         """
         语法糖, 用来极简地一条消息.
@@ -301,7 +310,7 @@ class Message(BaseModel, WithAdditional):
         if attributes is not None:
             data['attributes'] = attributes
         data['timestamp'] = timestamp
-        meta = MessageMeta.model_validate(data)
+        meta = MessageMeta(**data)
         return cls(meta=meta)
 
     def is_completed(self) -> bool:

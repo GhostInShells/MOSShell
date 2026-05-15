@@ -3,6 +3,8 @@ MOSS 架构中可复用的异常类型, 主要是 CommandError
 """
 
 from enum import IntEnum
+
+from ghoshell_container import get_caller_info
 from typing_extensions import Self
 
 __all__ = [
@@ -26,11 +28,15 @@ class CommandError(Exception):
     方便 AI 运行时理解异常.
     """
 
-    def __init__(self, code: int = -1, message: str = ""):
+    def __init__(self, code: int = -1, message: str = "", at_line: str = "") -> None:
         self.code = code
         self.message = message
+        self.at_line = at_line or get_caller_info(2)
         error_msg = CommandErrorCode.description(code, message)
         super().__init__(error_msg)
+
+    def __repr__(self):
+        return f"{self} at {self.at_line}"
 
     @classmethod
     def from_error(cls, err: Exception) -> Self:
@@ -130,7 +136,8 @@ class CommandErrorCode(IntEnum):
     UNKNOWN_ERROR = 505
 
     def error(self, message: str) -> CommandError:
-        return CommandError(self.value, message)
+        at_line = get_caller_info(2)
+        return CommandError(self.value, message, at_line=at_line)
 
     @classmethod
     def is_cancelled(cls, err: Exception | int) -> bool:

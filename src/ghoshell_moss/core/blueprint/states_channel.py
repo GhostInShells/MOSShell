@@ -123,7 +123,7 @@ class ChannelState(ABC):
 
 class ChannelStateBuilder(Builder, ChannelState, ABC):
     """
-    Channel State which is mutable.
+    Channel State which itself is mutable.
     """
 
     @abstractmethod
@@ -152,6 +152,9 @@ def new_state_builder(name: str, description: str = "") -> ChannelStateBuilder:
 
 
 class StatefulChannel(Channel, ABC):
+    """
+    Stateful Channel which can switch to one of multiple states.
+    """
 
     @abstractmethod
     def main_state(self) -> ChannelState:
@@ -184,13 +187,29 @@ class StatefulChannel(Channel, ABC):
 
 class PrimeChannel(StatefulChannel, MutableChannel, ABC):
     """
-    a stateful and mutable channel
+    super channel with all abilities.
     """
 
     @property
     @abstractmethod
     def build(self) -> ChannelStateBuilder:
         pass
+
+    def add_virtual_channel(self, channel: Channel, alias: ChannelName | None = None) -> None:
+        """
+        add virtual channel during runtime.
+        wrap this method into a command
+        """
+        # 运行时可以执行.
+        self.build.add_virtual_channel(channel, alias)
+
+    def remove_virtual_channel(self, name: str) -> None:
+        """
+        remove virtual channel during runtime.
+        wrap this method into a command
+        """
+        # 运行时可以执行.
+        self.build.remove_virtual_channel(name)
 
 
 def new_channel_from_state(state: ChannelState, id: str | None = None) -> StatefulChannel:

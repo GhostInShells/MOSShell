@@ -372,7 +372,7 @@ class PyChannel(BaseStateChannel, PrimeChannel):
         self._builder = state
 
     @property
-    def build(self) -> Builder:
+    def build(self) -> PyChannelBuilder:
         return self._builder
 
     def new_child(

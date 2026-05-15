@@ -3,13 +3,15 @@
 # the path of this module is ghoshell_moss.core.blueprint.channel_builder
 
 from abc import ABC, abstractmethod
+
 from PIL import Image
 from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable
 from typing_extensions import Self
+
 from ghoshell_moss.message import Message
-from ghoshell_moss.core.concepts.command import Command
+from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_common.contracts import LoggerItf
+from ghoshell_moss.core.blueprint.mindflow import Signal
 import asyncio
 
 __all__ = [
@@ -66,7 +68,7 @@ _ChannelName = str
 INSTANCE = TypeVar("INSTANCE", bound=object)
 
 
-class CommandCtx:
+class CommandUtil:
     """
     use it in command to get runtime ctx
     """
@@ -81,10 +83,34 @@ class CommandCtx:
         return ChannelCtx.get_contract(contract)
 
     @classmethod
-    def logger(cls) -> LoggerItf:
-        """返回日志, 只保留基础的记录函数. """
+    def logger(cls):
+        """返回日志模块 logging.Logger, 只保留基础的记录函数. """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
+        from ghoshell_common.contracts import LoggerItf
         return ChannelCtx.get_contract(LoggerItf)
+
+    @classmethod
+    def observe(cls, value: str) -> Observe:
+        """返回一个需要立刻观察的信息"""
+        return Observe(messages=[Message.new().with_content(value)])
+
+    @classmethod
+    def raise_observe(cls, value: str):
+        """通过 raise 来在 command 中返回一个可中断其它逻辑的观察信息. """
+        from ghoshell_moss.core.concepts.command import ObserveError
+        raise ObserveError(value)
+
+    @classmethod
+    def send_signal(cls, signal: str | Signal) -> None:
+        """在 command 内发送信号给自己的大脑. 构成自驱循环."""
+        from ghoshell_moss.core.blueprint.session import Session
+        session = cls.get_contract(Session)
+        if isinstance(signal, str):
+            session.add_input_signal(signal)
+        elif isinstance(signal, Signal):
+            session.add_signal(signal)
+        else:
+            raise TypeError(f"only Signal or str is accepted")
 
 
 def new_command(
@@ -303,7 +329,7 @@ class Builder(ABC):
         >>>     # 可以获取执行这个 command 的真实 runtime
         >>>     try
         >>>         # 通过全局的 IoC 容器获取依赖, 可以拿到运行时的依赖注入.
-        >>>         contract = CommandCtx.get_contract(...)
+        >>>         contract = CommandUtil.get_contract(...)
         >>>         ...
         >>>     except asyncio.CancelledError:
         >>>         # 生命周期函数随时会被 Channel Runtime 调度取消

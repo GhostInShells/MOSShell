@@ -17,8 +17,8 @@ from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.bridges.zenoh_bridge import ZenohProxyChannel
 from ghoshell_moss.host.fractal import FRACTAL_SESSION_SCOPE, FractalKeyExpressions
 from ghoshell_moss.host.fractal.zenoh_fractal import (
-    ZenohSessionFractalHub,
-    ZenohSessionFractalNodeProvider,
+    ZenohFractalHub,
+    ZenohFractalCellProvider,
 )
 from ghoshell_moss.depends import depend_zenoh
 
@@ -66,11 +66,11 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
     hub_name = "test_hub"
     node_name = "test_provider"
 
-    provider = ZenohSessionFractalNodeProvider(
+    provider = ZenohFractalCellProvider(
         hub_name=hub_name,
         zenoh_conf_file=zenoh_config_file,
         logger=logger,
-        node_name=node_name,
+        as_cell_name=node_name,
     )
 
     chan = PyChannel(name="test_chan")
@@ -83,14 +83,14 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
     chan.build.import_channels(test_sub_chan)
 
     async with provider:
-        cp = provider.channel_provider(hub_name)
+        cp = provider.channel_provider()
         assert cp is not None
         task = asyncio.create_task(cp.arun_until_closed(chan))
 
         await asyncio.sleep(0.5)
 
         key_expr = FractalKeyExpressions(hub_name=hub_name)
-        proxy_address = key_expr.provider_node_address(node_name=node_name)
+        proxy_address = key_expr.provider_cell_address(cell_name=node_name)
 
         child_session = zenoh.open(zenoh.Config())
         try:
@@ -129,7 +129,7 @@ async def test_hub_discovers_provider(zenoh_config_file, logger):
     """Hub subscriber 接收 Provider re-put → Hub 发现节点"""
     hub_name = "test_hub"
 
-    hub = ZenohSessionFractalHub(
+    hub = ZenohFractalHub(
         hub_name=hub_name,
         zenoh_conf_file=zenoh_config_file,
         logger=logger,
@@ -137,11 +137,11 @@ async def test_hub_discovers_provider(zenoh_config_file, logger):
         auto_approve_connecting=True,
     )
 
-    provider = ZenohSessionFractalNodeProvider(
+    provider = ZenohFractalCellProvider(
         hub_name=hub_name,
         zenoh_conf_file=zenoh_config_file,
         logger=logger,
-        node_name="test_node",
+        as_cell_name="test_node",
         reput_interval=0.3,
     )
 
@@ -172,7 +172,7 @@ async def test_hub_and_provider_coexist(zenoh_config_file, logger):
     """Hub 和 NodeProvider 可以同时运行，生命周期独立，互不干扰。"""
     hub_name = "test_hub"
 
-    hub = ZenohSessionFractalHub(
+    hub = ZenohFractalHub(
         hub_name=hub_name,
         zenoh_conf_file=zenoh_config_file,
         logger=logger,
@@ -180,11 +180,11 @@ async def test_hub_and_provider_coexist(zenoh_config_file, logger):
         auto_approve_connecting=True,
     )
 
-    provider = ZenohSessionFractalNodeProvider(
+    provider = ZenohFractalCellProvider(
         hub_name=hub_name,
         zenoh_conf_file=zenoh_config_file,
         logger=logger,
-        node_name="test_provider",
+        as_cell_name="test_provider",
     )
 
     async with contextlib.AsyncExitStack() as stack:
@@ -211,9 +211,10 @@ async def test_hub_and_provider_coexist(zenoh_config_file, logger):
 @pytest.mark.asyncio
 async def test_node_provider_double_enter_rejected(zenoh_config_file, logger):
     """重复 __aenter__ 抛出 RuntimeError"""
-    provider = ZenohSessionFractalNodeProvider(
-        hub_name="test_hub",
+    provider = ZenohFractalCellProvider(
+        as_cell_name="test_cell",
         zenoh_conf_file=zenoh_config_file,
+        hub_name="test_hub",
         logger=logger,
     )
 
@@ -225,7 +226,7 @@ async def test_node_provider_double_enter_rejected(zenoh_config_file, logger):
 @pytest.mark.asyncio
 async def test_hub_double_enter_rejected(zenoh_config_file, logger):
     """重复 __aenter__ 抛出 RuntimeError"""
-    hub = ZenohSessionFractalHub(
+    hub = ZenohFractalHub(
         hub_name="test_hub",
         zenoh_conf_file=zenoh_config_file,
         logger=logger,

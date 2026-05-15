@@ -2,10 +2,10 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_common.helpers import generate_import_path
 import inspect
 
-__all__ = ['MatrixREPL']
+__all__ = ['MatrixInspector']
 
 
-class MatrixREPL:
+class MatrixInspector:
     """
     用于诊断 Matrix 内部节点状态的工具集。
     """

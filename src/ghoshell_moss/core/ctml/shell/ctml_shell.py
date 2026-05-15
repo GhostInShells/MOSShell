@@ -453,11 +453,8 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
     async def get_command(self, chan: str, name: str, /, exec_in_chan: bool = False) -> Optional[Command]:
         self._check_running()
-        runtime = self._main_runtime.fetch_sub_runtime(chan)
-        if runtime is None or not runtime.is_available():
-            return None
-
-        real_command = runtime.get_command(name)
+        command_unique_name = Command.make_unique_name(chan, name)
+        real_command = self.runtime.get_command(command_unique_name)
         if not exec_in_chan:
             return real_command
         return self._wrap_real_command(chan, real_command, None)

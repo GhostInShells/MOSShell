@@ -8,7 +8,7 @@ from ghoshell_container import Container, IoCContainer
 from pydantic import ValidationError
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelRuntime
-from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken, CommandTaskState
+from ghoshell_moss.core.concepts.command import BaseCommandTask, CommandTask, CommandToken, CommandTaskState, Command
 from ghoshell_moss.core.concepts.errors import FatalError, CommandErrorCode
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -268,8 +268,10 @@ class DuplexChannelProvider(ChannelProvider):
             raise
         except Exception as exc:
             self.logger.exception("%s close channel task failed: %s", self._log_prefix, exc)
+            raise exc
         except KeyboardInterrupt:
             self.logger.info("%s stop channel task on keyboardInterrupt", self._log_prefix)
+            raise
         finally:
             self._closed_event.set()
 
@@ -617,17 +619,16 @@ class DuplexChannelProvider(ChannelProvider):
 
     async def _handle_command_call(self, call_event: CommandCallEvent) -> None:
         """执行一个命令运行的逻辑."""
-        # 先取消 lifecycle 的命令.
-        node = self._root_runtime.fetch_sub_runtime(call_event.chan)
-        if node is None:
-            response = call_event.not_available()
+        # 获取真实的 command 对象.
+        unique_name = Command.make_unique_name(call_event.chan, call_event.name)
+        command = self._root_runtime.get_command(unique_name)
+        if command is None:
+            response = call_event.not_available(f"Command {unique_name} not found at provider")
             await self._send_event_to_proxy(response.to_channel_event())
             return
 
-        # 获取真实的 command 对象.
-        command = node.get_command(call_event.name)
-        if command is None or not command.is_available():
-            response = call_event.not_available()
+        elif not command.is_available():
+            response = call_event.not_available(f"Command {unique_name} not available in provider")
             await self._send_event_to_proxy(response.to_channel_event())
             return
 
