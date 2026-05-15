@@ -8,15 +8,12 @@ import contextvars
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
-from contextlib import asynccontextmanager
 from typing import (
     Any,
     Optional,
     Annotated,
     Callable,
     Coroutine,
-    AsyncIterator,
-    AsyncGenerator,
 )
 
 from ghoshell_container import INSTANCE, IoCContainer, get_container
@@ -936,6 +933,9 @@ class ChannelProvider(ABC):
         thread = threading.Thread(target=self.run_until_closed, args=(channel,), daemon=True)
         thread.start()
         return thread
+
+    def on_proxy_event(self, callback: Callable[[Any], None]):
+        pass
 
     @abstractmethod
     def close(self) -> None:

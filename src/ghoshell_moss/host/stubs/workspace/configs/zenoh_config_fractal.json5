@@ -4,7 +4,7 @@
   // 使用随机端口，避免与 Matrix session 冲突。
   mode: "peer",
 
-  listen: {
-    endpoints: ["tcp/0.0.0.0:0"]
+  connect: {
+    endpoints: ["tcp/127.0.0.1:20779"]
   },
 }

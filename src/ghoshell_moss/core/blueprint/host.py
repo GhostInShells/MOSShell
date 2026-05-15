@@ -1,5 +1,5 @@
 import contextlib
-from typing import Protocol
+from typing import Protocol, Callable, Any
 
 from ghoshell_container import IoCContainer
 from typing_extensions import Self
@@ -297,6 +297,8 @@ class FractalNodeProvider(ABC):
             self,
             moss: MossRuntime,
             name: str = '',
+            *,
+            on_proxy_event: Callable[[Any], None] | None = None,
     ) -> None:
         """将当前的 moss provide 给另一个 moss. """
         # 基于 code as prompt 原则将抽象使用的最小实现直接在代码里提示.
@@ -309,6 +311,9 @@ class FractalNodeProvider(ABC):
                 await stack.enter_async_context(self)
             channel_provider = self.channel_provider(name or moss.name)
             if channel_provider:
+                channel_provider.on_proxy_event(on_proxy_event)
+                if on_proxy_event:
+                    channel_provider.close()
                 if moss.shell.is_running():
                     raise RuntimeError(f"Moss Shell is already running and occupied channels.")
 
@@ -433,6 +438,8 @@ class MossHost(ABC):
             provider: FractalNodeProvider | None,
             name: str | None = None,
             description: str | None = None,
+            *,
+            on_proxy_event: Callable[[Any], None] | None = None,
     ) -> None:
         """
         将当前的 moss runtime 作为一个分形节点提供给远程 moss.
@@ -461,4 +468,5 @@ class MossHost(ABC):
             async with provider:
                 await provider.provide(
                     runtime,
+                    on_proxy_event=on_proxy_event,
                 )

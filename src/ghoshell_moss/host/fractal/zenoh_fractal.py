@@ -9,7 +9,8 @@ from ghoshell_moss.core.blueprint.matrix import Cell
 from ghoshell_moss.core.blueprint.host import FractalHub, FractalNodeProvider
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.states_channel import StatefulChannel
-from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime, ChannelNamePattern, ChannelProvider
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime, ChannelNamePattern, \
+    ChannelProvider
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
@@ -21,6 +22,7 @@ from ._base import FractalCell, FractalKeyExpressions, FRACTAL_SESSION_SCOPE
 import orjson
 import regex as re
 import time
+
 depend_zenoh()
 import zenoh
 
@@ -257,13 +259,9 @@ class ZenohSessionFractalHub(FractalHub):
             f"Moss Zenoh Fractal Protocol",
             f"Hub Name: {self._hub_name}",
             f"Cell Manifest Prefix: {self._key_expr.manifests_prefix()}",
+            f"Config File Path: {self._conf_file}",
+            self._conf_file.read_text(),
         ]
-        if self._transport_endpoint:
-            lines.append(f"Parent: {self._transport_endpoint}")
-        else:
-            lines.append("Mode: peer multicast (no parent)")
-
-        lines.append(self._conf_file.read_text())
         return "\n".join(lines)
 
     def status(self) -> str:
@@ -280,7 +278,7 @@ class ZenohSessionFractalHub(FractalHub):
             lines.append("No connected nodes")
         return "\n".join(lines)
 
-    def as_channel_hub(self, name: str, description: str = '') -> StatefulChannel:
+    def as_channel_hub(self, name: str = '', description: str = '') -> StatefulChannel:
         """
         返回一个被动 Channel（无 start/stop 命令），用于展示已连接的 fractal 子节点。
 
@@ -421,8 +419,13 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
     可被 manifest providers 覆盖（更高优先级）。
     """
 
-    def __init__(self, conf_file: str = "zenoh_config_fractal_hub.json5"):
+    def __init__(
+            self,
+            hub_name: str = 'fractal',
+            conf_file: str = "zenoh_config_fractal_hub.json5",
+    ):
         self._conf_file = conf_file
+        self._hub_name = hub_name
 
     def singleton(self) -> bool:
         return True
@@ -443,9 +446,8 @@ class ZenohFractalHubProvider(Provider[FractalHub]):
                 f"Fractal zenoh config not found: {config_path}"
             )
         env = con.force_fetch(Environment)
-        meta = env.meta_config
         return ZenohSessionFractalHub(
-            hub_name=meta.name,
+            hub_name=self._hub_name,
             zenoh_conf_file=config_path,
             logger=logger,
         )
@@ -461,15 +463,15 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
     """
 
     def __init__(
-        self,
-        hub_name: str,
-        zenoh_conf_file: Path,
-        *,
-        logger: LoggerItf,
-        node_name: str | None = None,
-        transport_endpoint: str | None = None,
-        address_prefix: str | None = None,
-        reput_interval: float = 2.0,
+            self,
+            hub_name: str,
+            zenoh_conf_file: Path,
+            *,
+            logger: LoggerItf,
+            node_name: str | None = None,
+            transport_endpoint: str | None = None,
+            address_prefix: str | None = None,
+            reput_interval: float = 2.0,
     ):
         self._hub_name = hub_name
         self._conf_file = zenoh_conf_file
@@ -580,9 +582,9 @@ class ZenohSessionFractalNodeProvider(FractalNodeProvider):
                 )
 
     async def provide(
-        self,
-        moss: "MossRuntime",
-        name: str = '',
+            self,
+            moss: "MossRuntime",
+            name: str = '',
     ) -> None:
         """
         将当前 moss runtime 的 main_channel 提供给远程 Hub。
@@ -610,7 +612,12 @@ class ZenohFractalNodeProviderProvider(Provider[FractalNodeProvider]):
     读取 workspace 中的 zenoh_config_fractal.json5 创建 ZenohSessionFractalNodeProvider。
     """
 
-    def __init__(self, conf_file: str = "zenoh_config_fractal.json5"):
+    def __init__(
+            self,
+            hub_name: str = 'fractal',
+            conf_file: str = "zenoh_config_fractal.json5",
+    ):
+        self._hub_name = hub_name
         self._conf_file = conf_file
 
     def singleton(self) -> bool:
@@ -631,10 +638,8 @@ class ZenohFractalNodeProviderProvider(Provider[FractalNodeProvider]):
             raise FileNotFoundError(
                 f"Fractal node zenoh config not found: {config_path}"
             )
-        env = con.force_fetch(Environment)
-        meta = env.meta_config
         return ZenohSessionFractalNodeProvider(
-            hub_name=meta.name,
+            hub_name=self._hub_name,
             zenoh_conf_file=config_path,
             logger=logger,
         )

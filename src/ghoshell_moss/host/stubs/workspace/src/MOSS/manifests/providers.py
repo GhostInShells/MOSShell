@@ -32,4 +32,5 @@ speech_service_provider = TTSSpeechServiceProvider()
 resources_provider = InMemoryResourceRegistryProvider()
 
 fractal_hub_provider = ZenohFractalHubProvider()
+
 fractal_node_provider = ZenohFractalNodeProviderProvider()

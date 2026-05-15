@@ -68,10 +68,13 @@ def main(mode: str, session_scope: str, transport: str | None):
     click.echo("=" * 52)
     click.echo("")
 
+    def on_proxy_event(e):
+        click.echo(e)
+
     try:
         # 使用 MossHost 提供的 provide_moss_as_fractal 方法
         # 它会自动从 IoC 容器获取 FractalNodeProvider
-        asyncio.run(host.provide_moss_as_fractal(provider=None))
+        asyncio.run(host.provide_moss_as_fractal(provider=None), on_proxy_event=on_proxy_event)
     except KeyboardInterrupt:
         click.echo("\nStopped.")
     except NotImplementedError as e:

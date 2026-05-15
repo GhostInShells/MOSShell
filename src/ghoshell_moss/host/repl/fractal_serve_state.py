@@ -31,24 +31,6 @@ class _FractalOps:
             return f"FractalHub '{hub.name}' is not running.\nUse `/fractal.start()` to start listening."
         return hub.status()
 
-    async def start(self) -> str:
-        hub = self._state.hub
-        if hub is None:
-            return "No FractalHub configured. Check workspace configs/zenoh_config_fractal_hub.json5."
-        if hub.is_running():
-            return f"FractalHub '{hub.name}' already running."
-        await hub.__aenter__()
-        return f"FractalHub '{hub.name}' started."
-
-    async def stop(self) -> str:
-        hub = self._state.hub
-        if hub is None:
-            return "No FractalHub configured."
-        if not hub.is_running():
-            return "FractalHub not running."
-        await hub.__aexit__(None, None, None)
-        return "FractalHub stopped."
-
     def connected(self) -> str:
         hub = self._state.hub
         if hub is None:
@@ -75,7 +57,6 @@ class FractalServeState(REPLState):
     def __init__(self, host: MossHost, runtime: MossRuntime):
         self._host = host
         self._runtime = runtime
-        self._hub = runtime.get_fractal_hub()
         super().__init__("Fractal Serve")
 
     # ---- REPLState interface ----
@@ -85,7 +66,7 @@ class FractalServeState(REPLState):
 
     def output_on_switch(self, enter_or_leave: bool) -> None:
         if enter_or_leave:
-            if self._hub is None:
+            if self.hub is None:
                 self.console.info(
                     "Fractal Serve — 分形 Hub 调试\n"
                     "\n"
@@ -96,11 +77,9 @@ class FractalServeState(REPLState):
             else:
                 self.console.info(
                     "Fractal Serve — 分形 Hub 调试\n"
-                    f"Hub: {self._hub.name}\n"
-                    f"Running: {self._hub.is_running()}\n"
+                    f"Hub: {self.hub.name}\n"
+                    f"Running: {self.hub.is_running()}\n"
                     "\n"
-                    "Use `/fractal.start()` to begin listening.\n"
-                    "Use `/fractal.stop()` to stop listening.\n"
                     "Use `/fractal.status()` to check running state.\n"
                     "Use `/fractal.connected()` to list discovered nodes.\n"
                     "Use `/fractal.explain()` for transport info."
@@ -111,6 +90,10 @@ class FractalServeState(REPLState):
     async def _on_text_input(self, console_input: str) -> None:
         pass  # all interaction via REPL commands
 
+    @property
+    def hub(self) -> FractalHub | None:
+        return self._runtime.get_fractal_hub()
+
     # ---- async lifecycle ----
 
     async def __aenter__(self):
@@ -118,9 +101,3 @@ class FractalServeState(REPLState):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await super().__aexit__(exc_type, exc_val, exc_tb)
-
-    # ----
-
-    @property
-    def hub(self) -> FractalHub | None:
-        return self._hub

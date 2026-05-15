@@ -407,12 +407,12 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         def multi_line_enter(event) -> None:
             event.current_buffer.insert_text('\n')
 
-        @kb.add('c-p')
+        @kb.add('c-n')
         def switch_next_state(event) -> None:
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._switch_to, True)
 
-        @kb.add('c-b')
+        @kb.add('c-p')
         def switch_previous_state(event) -> None:
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._switch_to, False)
@@ -597,6 +597,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             # 注册第一个为 current state
             if not self._current_state_name:
                 self._current_state_name = state.name()
+                self.console.info("current state is %s" % self._current_state_name)
             self._states[state.name()] = state
             # 注册管理回调.
             output = ConsoleOutput(
