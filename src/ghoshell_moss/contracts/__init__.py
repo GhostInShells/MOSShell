@@ -4,7 +4,7 @@ from .logger import (
 )
 from .workspace import Workspace, Storage, LocalWorkspace, FileLocker, Lock, LocalStorage
 from .configs import ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider
-from .system_prompter import SystemPrompter, BaseSystemPrompter
+from .system_prompter import SystemPrompter, BaseSystemPrompter, MossSystemPrompter
 from .resource import (
     ResourceStorageFactoryBootstrapper, ResourceItem, ResourceMeta, ResourceRegistry, ResourceStorage,
 )

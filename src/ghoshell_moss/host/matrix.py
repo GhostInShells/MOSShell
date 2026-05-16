@@ -7,8 +7,8 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer, Container, Provider
 
 from ghoshell_moss.contracts import (
-    Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider, BaseSystemPrompter,
-    SystemPrompter, ResourceStorageFactoryBootstrapper,
+    Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider,
+    SystemPrompter, BaseSystemPrompter, MossSystemPrompter, ResourceStorageFactoryBootstrapper,
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
@@ -161,11 +161,31 @@ class MatrixImpl(Matrix):
         self._lifecycle_bound_objects_or_types: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
 
     def _prepare_system_prompter(self) -> SystemPrompter:
-        prompter = BaseSystemPrompter()
-        # ctml 优先.
-        prompter.with_prompter("ctml", self.ctml_instruction())
-        prompter.with_prompter("moss_meta_config_content", self.env.meta_config.system_prompt)
-        prompter.with_prompter("moss_mode_instruction", self._current_mode.instruction)
+        from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl
+        prompter = MossSystemPrompterImpl(
+            description="MOSS system instruction — assembled from ctml, project, mode, static layers.",
+        )
+        prompter.with_prompter(
+            "ctml",
+            BaseSystemPrompter(
+                own_instruction=self.ctml_instruction(),
+                description="CTML grammar prompt for the current version.",
+            ),
+        )
+        prompter.with_prompter(
+            "project",
+            BaseSystemPrompter(
+                own_instruction=self.env.meta_config.system_prompt,
+                description="Workspace root MOSS.md project instruction.",
+            ),
+        )
+        prompter.with_prompter(
+            "mode",
+            BaseSystemPrompter(
+                own_instruction=self._current_mode.instruction,
+                description=f"Mode '{self._current_mode.name}' instruction.",
+            ),
+        )
         return prompter
 
     def ctml_version(self) -> str:
@@ -195,8 +215,9 @@ class MatrixImpl(Matrix):
         container.set(Mode, self._current_mode)
         container.set(Workspace, self._workspace)
         container.set(Manifests, self._manifests)
-        # system prompter
+        # system prompter — 同时注册两个 key, 指向同一实例
         container.set(SystemPrompter, self._system_prompter)
+        container.set(MossSystemPrompter, self._system_prompter)
 
         # 注册 manifest providers. 包含环境与模式的双重配置.
         for contract in self._manifests.providers():

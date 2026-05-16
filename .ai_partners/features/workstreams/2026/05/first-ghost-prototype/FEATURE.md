@@ -3,7 +3,7 @@ title: First Ghost Prototype
 status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-15
+updated: 2026-05-16
 step: 9
 depends: []
 milestone:
@@ -70,6 +70,31 @@ first-ghost-prototype/
 | 8 | Ghost ABC 微调 + 三层抽象落地 | `ghost.py` 注释/文档 | done |
 | 9 | _meta / _runtime 实现 + 测试 | `ghosts/atom/` (4 files, 24 tests) | done |
 | 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
+| 10a | SystemPrompter tree 模型 | 自解释分层 prompt 树 + MossSystemPrompter | done |
+
+## 实现阶段关键决策（2026-05-16）— SystemPrompter tree 模型
+
+在为 GhostRuntime 做准备时，发现 SystemPrompter 当前是压平字符串，Ghost 无法感知层次来插入 soul。
+在与人类工程师讨论后，将 SystemPrompter 从 flat model 重构为 tree model。
+
+核心决策：
+
+1. **SystemPrompter 作为 tree node** — `children() -> dict[str, SystemPrompter]` 暴露子节点树。每个子节点自身也是 SystemPrompter，递归可组合。不使用 `@property` — 函数签名自解释。
+
+2. **MossSystemPrompter 命名访问器** — `ctml_instruction() / project_instruction() / mode_instruction() / static_instruction()` 四个 concrete 方法，是对 children key 的便捷包装。不是 abstractmethod — 不排斥任意插槽。
+
+3. **flatten() + linear()** — `flatten()` 返回 `[(path, desc)]` 使树可自解释、可测试结构完整性。`linear(slots)` 按给定顺序拼装，Ghost 用来在层间插入 soul。
+
+4. **MossSystemPrompterImpl** — 钻石继承 `BaseSystemPrompter + MossSystemPrompter`，零额外代码。注册为 `SystemPrompter` 和 `MossSystemPrompter` 双 IoC key。
+
+5. **描述自解释** — `description()` 每节点可选声明。MatrixImpl 构建时填写，AI 遍历 `flatten()` 即理解全局。
+
+涉及文件：
+- `contracts/system_prompter.py` — tree model 实现
+- `host/system_prompter.py` — MossSystemPrompterImpl
+- `host/matrix.py` — _prepare_system_prompter 构建树
+
+---
 
 ## 实现阶段关键决策（2026-05-15）
 
