@@ -7,7 +7,6 @@ from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
-    CancelAfterOthersTask,
     Command,
     CommandDeltaArgName,
     CommandDeltaArgType,
@@ -39,7 +38,6 @@ __all__ = [
     "DeltaIsTextElement",
     "DeltaIsCommandTokensElement",
     "EmptyCommandTaskElement",
-    "NoDeltaCommandTaskElement",
     "RootCommandTaskElement",
 ]
 
@@ -647,126 +645,6 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
         del self.inner_tasks
         del self.current_task
 
-
-# 已经废弃的实现, 用 ChannelScopeElement 替代.
-class NoDeltaCommandTaskElement(BaseCommandTokenParserElement):
-    """
-    没有 delta 参数的节点类型.
-    也就是说这种类型的 Command 不支持 delta 数据, 也不支持子节点.
-    """
-
-    _speech_stream: Optional[SpeechStream] = None
-
-    def on_delta_token(self, token: CommandToken) -> list[CommandTask] | None:
-        output_stream_task = None
-        if self._speech_stream is None:
-            # 没有创建过 output stream, 则创建一个.
-            # 用来处理需要发送的 delta content.
-            _speech_stream = self.ctx.speech.new_stream(
-                batch_id=token.command_part_id(),
-            )
-            output_stream_task = _speech_stream.as_command_task()
-            self._add_inner_task(output_stream_task)
-        elif self._speech_stream.id != token.command_part_id():
-            # 创建过 output_stream, 则需要比较是否是相同的 command part id.
-            # 不是相同的 command part id, 则需要创建一个新的流, 这样可以分段感知到每一段 output 是否已经执行完了.
-            # 核心目标是, 当一个较长的 output 流被 command 分割成多段的话, 每一段都可以阻塞, 同时却可以提前生成 tts.
-            # 这样生成 tts 的过程 add(token.content) 并不会被阻塞.
-            self._clear_speech_stream()
-            _speech_stream = self.ctx.speech.new_stream(
-                batch_id=token.command_part_id(),
-            )
-            output_stream_task = _speech_stream.as_command_task()
-            self._add_inner_task(output_stream_task)
-        else:
-            _speech_stream = self._speech_stream
-        # 增加新的 stream delta
-        _speech_stream.feed(token.content)
-        self._speech_stream = _speech_stream
-        if output_stream_task is not None:
-            return [output_stream_task]
-        return None
-
-    def on_init(self) -> list[CommandTask] | None:
-        # 直接发送命令自身.
-        if self.current_task is not None:
-            # 发送自己的 Task.
-            return [self.current_task]
-        return None
-
-    def on_sub_start_token(self, token: CommandToken) -> list[CommandTask] | None:
-        # 如果子节点还是开标签, 不应该走到这一环.
-        if self._unclose_child is not None:
-            self.ctx.logger.error(
-                "%s Start new child command %s within unclosed command %s",
-                self._log_prefix,
-                token,
-                self._unclose_child,
-            )
-            self.raise_interrupt()
-            return None
-        self._clear_speech_stream()
-        return self._new_child_element(token)
-
-    def on_sub_end_token(self, token: CommandToken) -> list[CommandTask] | None:
-        self._clear_speech_stream()
-        if self._unclose_child is not None:
-            # 让子节点去处理.
-            result = self._unclose_child.on_token(token)
-            # 如果子节点处理完了, 自己也没了, 就清空.
-            if self._unclose_child.is_end():
-                self._unclose_child = None
-            return result
-        elif token.command_id() != self.cid:
-            self.ctx.logger.error(
-                "%s element end current task %s with invalid token %r", self._log_prefix, self.current_task, token
-            )
-            # 自己来处理这个 token, 但 command id 不一致的情况.
-            self.raise_interrupt()
-            return None
-        else:
-            # 结束自身.
-            # 理论上外部可以调用.
-            return None
-
-    def _clear_speech_stream(self) -> None:
-        if self._speech_stream is not None:
-            # 发送未发送的 output stream.
-            self._speech_stream.commit()
-            self._speech_stream = None
-
-    def on_own_end(self) -> list[CommandTask]:
-        # 设置关闭.
-        result = super().on_own_end()
-        self._clear_speech_stream()
-        if self.current_task is None:
-            return result
-        elif len(self.inner_tasks) > 0:
-            cancel_after_children_task = CancelAfterOthersTask(
-                self.current_task,
-                *self.inner_tasks,
-            )
-            cancel_after_children_task.tokens = CMTLSaxElement.make_end_mark(
-                self.current_task.chan,
-                self.current_task.meta.name,
-            )
-            # 等待所有 children tasks 完成, 如果自身还未完成, 则取消.
-            result.append(cancel_after_children_task)
-            return result
-        else:
-            # 按照 ctml 的规则, 修改 task 的开启标记. 用来做开标记逻辑.
-            meta = self.current_task.meta
-            self.current_task.tokens = CMTLSaxElement.make_start_mark(
-                chan=meta.chan,
-                name=meta.name,
-                attrs=self.current_task.kwargs,
-                self_close=True,
-            )
-            return result
-
-    def destroy(self) -> None:
-        self._clear_speech_stream()
-        super().destroy()
 
 
 class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):

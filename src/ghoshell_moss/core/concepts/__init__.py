@@ -11,7 +11,6 @@ from .channel import (
 from .command import (
     RESULT,
     BaseCommandTask,
-    CancelAfterOthersTask,
     Command,
     CommandDeltaArgName,
     CommandDeltaArgName2TypeMap,

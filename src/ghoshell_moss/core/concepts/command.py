@@ -52,7 +52,6 @@ import dateutil
 __all__ = [
     "RESULT",
     "BaseCommandTask",
-    "CancelAfterOthersTask",
     "Command",
     "CommandUniqueName",
     "CommandDeltaArgName",
@@ -1589,53 +1588,6 @@ class TaskScope:
                 wait_tasks = list(self.tasks)
         if len(wait_tasks) > 0:
             await asyncio.gather(*[t.wait(throw=False) for t in wait_tasks])
-
-
-# 废弃的技术实现, 准备删除.
-class CancelAfterOthersTask(BaseCommandTask[None]):
-    """
-    等待其它任务完成后, cancel 当前任务.
-    """
-
-    def __init__(
-            self,
-            current: CommandTask,
-            *tasks: CommandTask,
-            tokens: str = "",
-    ) -> None:
-        meta = CommandMeta(
-            name="_cancel_" + current.meta.name,
-            chan=current.chan,
-            type=CommandType.PRIMITIVE.value,
-            blocking=False,
-            call_soon=True,
-        )
-        _tasks = list(tasks)
-
-        async def _cancel_after_done() -> None:
-            nonlocal _tasks
-            if current.done():
-                return
-            if len(_tasks) == 0:
-                current.cancel()
-                return
-
-            group_wait = []
-            for task in _tasks:
-                group_wait.append(task.wait(throw=False))
-            await asyncio.gather(*group_wait)
-            if not current.done():
-                current.cancel()
-
-        super().__init__(
-            chan=current.chan,
-            meta=meta,
-            func=_cancel_after_done,
-            partial=None,
-            tokens=tokens,
-            args=[],
-            kwargs={},
-        )
 
 
 class CommandStackResult:
