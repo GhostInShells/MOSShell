@@ -47,7 +47,8 @@ class MossRuntimeImpl(MossRuntime):
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._paused = False
-        self._close_event = ThreadSafeEvent()
+        self._closing_event = ThreadSafeEvent()
+        self._closed_event = ThreadSafeEvent()
         self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.session_scope}>"
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -154,16 +155,24 @@ class MossRuntimeImpl(MossRuntime):
             return interpreter.interpretation().executed_messages()
 
     def is_running(self) -> bool:
-        return self._started and not self._close_event.is_set()
+        return self._started and not (
+                self._closing_event.is_set() or self._closed_event.is_set()
+        )
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
-        return self._close_event.wait_sync(timeout)
+        return self._closing_event.wait_sync(timeout)
 
     async def wait_close(self) -> None:
-        await self._close_event.wait()
+        await self._closing_event.wait()
+
+    def wait_closed_sync(self, timeout: float | None = None) -> bool:
+        return self._closed_event.wait_sync(timeout)
+
+    async def wait_closed(self) -> None:
+        await self._closed_event.wait()
 
     def close(self) -> None:
-        self._close_event.set()
+        self._closing_event.set()
 
     def pause(self, toggle: bool = True) -> None:
         self._check_running()
@@ -241,6 +250,9 @@ class MossRuntimeImpl(MossRuntime):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # 进入即标记 closing, 通知所有依赖方提前结束运行时逻辑.
+        self._closing_event.set()
+        self._matrix.close()
         try:
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         except asyncio.CancelledError:
@@ -249,4 +261,4 @@ class MossRuntimeImpl(MossRuntime):
             self._matrix.logger.exception("%s failed to aexit %s", self._log_prefix, e)
             raise e
         finally:
-            self._close_event.set()
+            self._closed_event.set()

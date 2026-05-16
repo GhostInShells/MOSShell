@@ -218,15 +218,23 @@ class MossRuntime(ABC):
         pass
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
-        """阻塞等待关闭讯号. """
+        """阻塞等待关闭触发信号 (closing). """
         pass
 
     async def wait_close(self) -> None:
-        """异步阻塞等带关闭讯号."""
+        """异步阻塞等待关闭触发信号 (closing)."""
         pass
 
     def close(self) -> None:
-        """发送关闭信号."""
+        """发送关闭触发信号 (closing)."""
+        pass
+
+    def wait_closed_sync(self, timeout: float | None = None) -> bool:
+        """阻塞等待关闭完成 (closed). """
+        pass
+
+    async def wait_closed(self) -> None:
+        """异步阻塞等待关闭完成 (closed)."""
         pass
 
     @abstractmethod
