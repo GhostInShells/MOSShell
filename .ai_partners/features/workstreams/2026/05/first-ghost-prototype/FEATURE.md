@@ -4,7 +4,7 @@ status: in_progress
 priority: P0
 created: 2026-05-14
 updated: 2026-05-16
-step: 9
+step: 10
 depends: []
 milestone:
 description: >-
@@ -71,6 +71,16 @@ first-ghost-prototype/
 | 9 | _meta / _runtime 实现 + 测试 | `ghosts/atom/` (4 files, 24 tests) | done |
 | 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
 | 10a | SystemPrompter tree 模型 | tree model + MossSystemPrompter 迁至 blueprint.host | done |
+
+## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
+
+GhostRuntime 的四种架构方案与最终决策，详见 [DESIGN.md](./DESIGN.md)。
+
+**最终选择方案 4**：GhostRuntime 持有 MossRuntime，组合优于继承。ABC 五个成员（`.moss`/`.ghost`/`.meta`/`.container`/`close()`），ghost + mindflow main loop 托管给 `matrix.create_task`。
+
+定义位置: `ghoshell_moss/core/blueprint/host.py` — 与 `MossRuntime` 同文件。
+
+---
 
 ## 实现阶段关键决策（2026-05-16）— SystemPrompter tree 模型
 

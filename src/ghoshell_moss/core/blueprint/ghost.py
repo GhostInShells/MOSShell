@@ -1,8 +1,8 @@
 from typing import AsyncIterable
-from ghoshell_container import IoCContainer, Contracts
+from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Logos, Mindflow, Nucleus, NucleusFactory, Articulator
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Nucleus, NucleusFactory, Articulator
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
@@ -73,6 +73,13 @@ class GhostMeta(ABC):
         return Contracts([
 
         ])
+
+    def providers(self) -> list[Provider]:
+        """
+        ghost 可以提供自身所需的依赖, 在启动前完成注册.
+        如果环境中有注册 container.bound(contract) is True, 则优先用 moss 环境里的注册.
+        """
+        return []
 
     @abstractmethod
     def factory(self, container: IoCContainer) -> "Ghost":

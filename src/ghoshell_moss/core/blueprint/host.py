@@ -12,11 +12,12 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, Mode
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter
+from .ghost import Ghost, GhostMeta
 from .app import AppStore
 
 __all__ = [
     'MossRuntime', 'MossHost', 'Mode', 'FractalHub', 'FractalCellProvider',
-    'MossSystemPrompter',
+    'MossSystemPrompter', 'GhostRuntime',
 ]
 
 
@@ -237,6 +238,64 @@ class MossRuntime(ABC):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """运行结束"""
         pass
+
+
+class GhostRuntime(ABC):
+    """编排 MossRuntime + Ghost 的生命周期.
+
+    GhostRuntime 持有 MossRuntime, 在其启动前后完成 Ghost 的注册和生命周期管理.
+    不实现 MossRuntime ABC — 组合优于伪装.
+    ghost + mindflow 的 main loop 作为内部 async 函数, 通过 matrix.create_task 托管,
+    Matrix 退出时自动 cancel.
+
+        ghost_runtime.moss          → MossRuntime (全部 moss 能力)
+        ghost_runtime.ghost         → Ghost (运行时实例)
+        ghost_runtime.meta          → GhostMeta (启动前即可访问)
+        ghost_runtime.container     → IoCContainer (快捷路径)
+    """
+
+    @property
+    @abstractmethod
+    def moss(self) -> MossRuntime:
+        """持有的 MossRuntime. 调用方通过 .moss 访问全部 Moss 能力."""
+        pass
+
+    @property
+    @abstractmethod
+    def ghost(self) -> Ghost:
+        """由 GhostMeta.factory(container) 产出的 Ghost 运行时实例."""
+        pass
+
+    @property
+    @abstractmethod
+    def meta(self) -> GhostMeta:
+        """Ghost 的元信息. MossHost.run_ghost 时即已发现, 启动前即可访问."""
+        pass
+
+    @property
+    def container(self) -> IoCContainer:
+        """快捷路径: moss.matrix.container"""
+        return self.moss.matrix.container
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        """编排生命周期:
+
+        1. 预注入 ghost providers / nuclei manifests → container
+        2. MossRuntime.__aenter__ (matrix → shell → mindflow)
+        3. GhostMeta.factory(container) → ghost
+        4. ghost.__aenter__ (注册 main loop 为 matrix.create_task)
+        """
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """逆序清理: ghost.__aexit__ → moss.__aexit__"""
+        pass
+
+    def close(self) -> None:
+        """发送关闭信号. 委托给 MossRuntime."""
+        self.moss.close()
 
 
 class FractalHub(ABC):

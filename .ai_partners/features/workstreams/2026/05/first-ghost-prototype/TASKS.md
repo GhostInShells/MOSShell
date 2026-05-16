@@ -20,4 +20,6 @@
 
 - [x] 08 — Ghost ABC 微调 + 三层抽象落地
 - [x] 09 — _meta / _runtime / _adapter + 24 tests
-- [ ] 10 — GhostRuntime 包裹模式
+- [x] 10a — SystemPrompter tree 模型重构 + 迁至 blueprint.host
+- [x] 10b — GhostRuntime ABC 定义 + 架构选型 (DESIGN.md)
+- [ ] 10c — GhostRuntimeImpl 实现 (wiring: providers → moss → ghost → main loop)
