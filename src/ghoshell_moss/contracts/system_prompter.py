@@ -1,7 +1,7 @@
 from typing import Callable, Iterable
 from abc import ABC, abstractmethod
 
-__all__ = ['SystemPrompter', 'BaseSystemPrompter', 'MossSystemPrompter']
+__all__ = ['SystemPrompter', 'BaseSystemPrompter', ]
 
 
 class SystemPrompter(ABC):
@@ -79,26 +79,6 @@ class SystemPrompter(ABC):
         或 str / callable (自动包装为叶子节点).
         """
         pass
-
-
-class MossSystemPrompter(SystemPrompter, ABC):
-    """MOSS 约定的 instruction 层次 — 命名访问器.
-
-    四个标准层通过 children() 暴露, 命名方法是对 children key 的便捷包装.
-    不排斥开发者通过 with_prompter 添加任意其他 key.
-    """
-
-    def ctml_instruction(self) -> str:
-        return self.child_instruction("ctml")
-
-    def project_instruction(self) -> str:
-        return self.child_instruction("project")
-
-    def mode_instruction(self) -> str:
-        return self.child_instruction("mode")
-
-    def static_instruction(self) -> str:
-        return self.child_instruction("static")
 
 
 class BaseSystemPrompter(SystemPrompter):

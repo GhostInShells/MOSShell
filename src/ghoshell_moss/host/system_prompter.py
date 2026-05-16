@@ -1,4 +1,5 @@
-from ghoshell_moss.contracts.system_prompter import BaseSystemPrompter, MossSystemPrompter
+from ghoshell_moss.contracts.system_prompter import BaseSystemPrompter
+from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 
 __all__ = ["MossSystemPrompterImpl"]
 

@@ -4,7 +4,7 @@ import janus
 
 from ghoshell_moss import Message, MOSShell, CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, Mode, FractalHub
+    MossRuntime, Mode, FractalHub, MossSystemPrompter
 )
 from ghoshell_moss.core.blueprint.app import AppStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -202,6 +202,11 @@ class MossRuntimeImpl(MossRuntime):
         self._matrix.container.set(AppStore, self._app_store)
         self._matrix.container.set(MOSShell, self._ctml_shell)
         self._matrix.container.set(CTMLShell, self._ctml_shell)
+        moss_system_prompter = self._matrix.container.force_fetch(MossSystemPrompter)
+        moss_system_prompter.with_prompter(
+            MossSystemPrompter.MOSS_STATIC_SLOT,
+            self._ctml_shell.static_messages,
+        )
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):

@@ -8,7 +8,8 @@ from ghoshell_container import IoCContainer, Container, Provider
 
 from ghoshell_moss.contracts import (
     Workspace, ConfigStore, WorkspaceYamlConfigStoreProvider,
-    SystemPrompter, BaseSystemPrompter, MossSystemPrompter, ResourceStorageFactoryBootstrapper,
+    SystemPrompter, BaseSystemPrompter,
+    ResourceStorageFactoryBootstrapper,
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
@@ -16,6 +17,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, MatrixLifecycleObj
 from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
 from ghoshell_moss.core.blueprint.host import Mode, FractalHub
 from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.errors import FatalError
@@ -166,21 +168,21 @@ class MatrixImpl(Matrix):
             description="MOSS system instruction — assembled from ctml, project, mode, static layers.",
         )
         prompter.with_prompter(
-            "ctml",
+            MossSystemPrompter.CTML_SLOT,
             BaseSystemPrompter(
                 own_instruction=self.ctml_instruction(),
                 description="CTML grammar prompt for the current version.",
             ),
         )
         prompter.with_prompter(
-            "project",
+            MossSystemPrompter.PROJECT_SLOT,
             BaseSystemPrompter(
                 own_instruction=self.env.meta_config.system_prompt,
                 description="Workspace root MOSS.md project instruction.",
             ),
         )
         prompter.with_prompter(
-            "mode",
+            MossSystemPrompter.MODE_SLOT,
             BaseSystemPrompter(
                 own_instruction=self._current_mode.instruction,
                 description=f"Mode '{self._current_mode.name}' instruction.",

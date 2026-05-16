@@ -5,16 +5,18 @@ from ghoshell_container import IoCContainer
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
-from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
-from .app import AppStore
+from ghoshell_moss.core.concepts.shell import MOSShell
+from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, Mode
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.message import Message
+from ghoshell_moss.contracts import SystemPrompter
+from .app import AppStore
 
 __all__ = [
     'MossRuntime', 'MossHost', 'Mode', 'FractalHub', 'FractalCellProvider',
+    'MossSystemPrompter',
 ]
 
 
@@ -30,6 +32,46 @@ class MossLifecycleContract(Protocol):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
+
+
+class MossSystemPrompter(SystemPrompter, ABC):
+    """MOSS 约定的 instruction 层次 — 命名访问器.
+
+    四个标准层通过 children() 暴露, 命名方法是对 children key 的便捷包装.
+    不排斥开发者通过 with_prompter 添加任意其他 key.
+    """
+
+    # 约定的 prompt slots.
+    CTML_SLOT = 'ctml'
+    PROJECT_SLOT = 'project'
+    MODE_SLOT = 'mode'
+    MOSS_STATIC_SLOT = 'static'
+
+    def ctml_instruction(self) -> str:
+        """当前系统所使用的默认 ctml 提示词. 是 moss 运行基础. """
+        return self.child_instruction(self.CTML_SLOT)
+
+    def project_instruction(self) -> str:
+        """项目级提示词, 定义在 workspace 的 MOSS.md, 所有模式共享"""
+        return self.child_instruction(self.PROJECT_SLOT)
+
+    def mode_instruction(self) -> str:
+        """模式级别的提示词. 定义在 workspace 的不同模式中 (MODE.md), 每个模式独有."""
+        return self.child_instruction(self.MODE_SLOT)
+
+    def moss_static_instruction(self) -> str:
+        """moss 运行时的静态提示词. 来自 shell 构建后的 moss static"""
+        return self.child_instruction(self.MOSS_STATIC_SLOT)
+
+    def default_instruction(self) -> str:
+        """建议使用的默认提示词组合方式.供参考."""
+        # code as prompt 提示如何使用.
+        return self.linear([
+            self.CTML_SLOT,
+            self.PROJECT_SLOT,
+            self.MODE_SLOT,
+            self.MOSS_STATIC_SLOT,
+        ])
 
 
 class MossRuntime(ABC):
@@ -135,9 +177,14 @@ class MossRuntime(ABC):
     def apps(self) -> AppStore:
         """
         管理 moss 架构下的 app 体系.
-        可以启动/关闭 app.
+        可以启动/关闭 app. 具体的 apps / bringup 体系与 Mode 的配置有关.
         """
         pass
+
+    @property
+    def system_prompter(self) -> MossSystemPrompter:
+        """获取运行时提供的各种提示词声明. 可用于组装. """
+        return self.matrix.container.force_fetch(MossSystemPrompter)
 
     @property
     @abstractmethod

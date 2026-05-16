@@ -70,7 +70,7 @@ first-ghost-prototype/
 | 8 | Ghost ABC 微调 + 三层抽象落地 | `ghost.py` 注释/文档 | done |
 | 9 | _meta / _runtime 实现 + 测试 | `ghosts/atom/` (4 files, 24 tests) | done |
 | 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
-| 10a | SystemPrompter tree 模型 | 自解释分层 prompt 树 + MossSystemPrompter | done |
+| 10a | SystemPrompter tree 模型 | tree model + MossSystemPrompter 迁至 blueprint.host | done |
 
 ## 实现阶段关键决策（2026-05-16）— SystemPrompter tree 模型
 
@@ -93,6 +93,41 @@ first-ghost-prototype/
 - `contracts/system_prompter.py` — tree model 实现
 - `host/system_prompter.py` — MossSystemPrompterImpl
 - `host/matrix.py` — _prepare_system_prompter 构建树
+
+### 2026-05-16（续）— 迁移 MossSystemPrompter 至 blueprint.host
+
+将 `MossSystemPrompter` 从 `contracts/system_prompter.py` 搬迁至 `blueprint/host.py`：
+
+6. **遵循 channel_builder 模式**：MOSS 特定约定与通用 contracts 分离。`SystemPrompter` + `BaseSystemPrompter` 留在 contracts（通用组件），`MossSystemPrompter` 放在 `blueprint/host.py` 与 `MossRuntime`/`MossHost` 同簇。
+
+7. **Slot 常量消除魔法值**：`CTML_SLOT = 'ctml'`, `PROJECT_SLOT = 'project'`, `MODE_SLOT = 'mode'`, `MOSS_STATIC_SLOT = 'static'`。upper fractal 重构因魔法值付出了巨大代价，此处从源头避免。
+
+8. **MossRuntime.system_prompter 便捷属性**：`self.matrix.container.force_fetch(MossSystemPrompter)`，消费者不感知 IoC key。
+
+9. **static slot 在 _bootstrap_after_matrix() lazily 注入**：`self._ctml_shell.static_messages` 作为 callable 传递，每次 instruction() 动态求值。Shell 启动后才可用。
+
+### 验证手法 — 基于抽象，零上下文集成测试
+
+关键发现：只用 blueprint + contracts 抽象，不引用任何 host 实现，可以独立运行全链路验证：
+
+```python
+# 单文件窗口：从抽象入口直达运行时验证
+from ghoshell_moss.core.blueprint.host import MossHost, MossSystemPrompter
+
+host = MossHost.discover()
+runtime = host.run(run_shell=False)
+async with runtime:
+    prompter = runtime.system_prompter
+    # children() / flatten() / named accessors 全链路验证
+```
+
+这个模式验证了：
+- `MossHost.discover()` 环境发现 → `MossRuntime` → `MossSystemPrompter` 全链路连通
+- CTML 真实加载（6146 chars）
+- tree 结构 `ctml → project → mode → static` 按序排列
+- `flatten()` 自解释输出正常
+
+基于抽象的单文件窗口是 MOSS 架构探索的核心模式 — 不依赖 IDE、不需要启动 REPL、不需要理解 host 实现。
 
 ---
 
