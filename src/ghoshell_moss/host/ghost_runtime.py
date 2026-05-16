@@ -1,0 +1,164 @@
+import contextlib
+import asyncio
+
+import janus
+from typing_extensions import Self
+
+from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action
+
+__all__ = ["GhostRuntimeImpl"]
+
+
+class GhostRuntimeImpl(GhostRuntime):
+    """GhostRuntime 默认实现 — 编排 MossRuntime + Ghost 生命周期.
+
+    wiring 顺序:
+        1. 预注入 ghost providers → container
+        2. MossRuntime.__aenter__ (matrix → shell → apps)
+        3. GhostMeta.factory(container) → ghost
+        4. ghost.__aenter__
+        5. Mindflow 解析 + nuclei 注册 + 三循环托管给 matrix.create_task
+    """
+
+    def __init__(self, *, moss_runtime: MossRuntime, ghost_meta: GhostMeta):
+        if moss_runtime.is_running():
+            raise RuntimeError(
+                "MossRuntime already started. "
+                "Pass a not-yet-entered instance — GhostRuntime owns the lifecycle."
+            )
+        self._moss_runtime = moss_runtime
+        self._ghost_meta = ghost_meta
+        self._ghost_instance: Ghost | None = None
+        self._mindflow: Mindflow | None = None
+        self._async_exit_stack = contextlib.AsyncExitStack()
+        self._started = False
+
+        # 三循环队列: main loop → (articulate, action)
+        self._articulate_queue: janus.Queue[Articulator] = janus.Queue()
+        self._action_queue: janus.Queue[Action] = janus.Queue()
+
+    # ── GhostRuntime ABC ──────────────────────────
+
+    @property
+    def moss(self) -> MossRuntime:
+        return self._moss_runtime
+
+    @property
+    def ghost(self) -> Ghost:
+        if self._ghost_instance is None:
+            raise RuntimeError("Ghost not started. Call __aenter__ first.")
+        return self._ghost_instance
+
+    @property
+    def meta(self) -> GhostMeta:
+        return self._ghost_meta
+
+    # ── 生命周期 ──────────────────────────────────
+
+    async def __aenter__(self) -> Self:
+        if self._started:
+            raise RuntimeError("GhostRuntime already started")
+
+        container = self._moss_runtime.container
+
+        # 1. 预注入 ghost providers → container
+        for provider in self._ghost_meta.providers():
+            container.register(provider)
+
+        # 2. MossRuntime.__aenter__
+        await self._async_exit_stack.enter_async_context(self._moss_runtime)
+
+        # 3. GhostMeta.factory(container) → ghost
+        self._ghost_instance = self._ghost_meta.factory(container)
+
+        # 4. ghost.__aenter__
+        await self._async_exit_stack.enter_async_context(self._ghost_instance)
+
+        # 5. Mindflow wiring
+        await self._wire_mindflow()
+
+        self._started = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._started = False
+        await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+
+    def close(self) -> None:
+        self._moss_runtime.close()
+
+    # ── Mindflow wiring ───────────────────────────
+
+    async def _wire_mindflow(self) -> None:
+        ghost = self._ghost_instance
+        matrix = self._moss_runtime.matrix
+        container = matrix.container
+
+        # 解析: ghost.mindflow() > IoC > BaseMindflow
+        mindflow = ghost.mindflow()
+        if mindflow is None:
+            mindflow = container.get(Mindflow)
+        if mindflow is None:
+            from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
+            mindflow = BaseMindflow(logger=matrix.logger)
+
+        container.set(Mindflow, mindflow)
+
+        # 注册 nuclei — 从 meta 工厂生成，add 到 mindflow
+        for factory in self._ghost_meta.nuclei_manifests():
+            nucleus = factory.factory(container)
+            await mindflow.add_nucleus(nucleus)
+
+        self._mindflow = mindflow
+        await self._async_exit_stack.enter_async_context(mindflow)
+
+        # 三循环托管给 matrix
+        matrix.create_task(self._main_loop())
+        matrix.create_task(self._articulate_loop())
+        matrix.create_task(self._action_loop())
+
+    # ── 三循环 ────────────────────────────────────
+
+    async def _main_loop(self) -> None:
+        """mindflow.loop() → Attention → (Articulator, Action) → queues."""
+        await self._mindflow.wait_started()
+        try:
+            async for attention in self._mindflow.loop():
+                async with attention:
+                    async for articulate, action in attention.loop():
+                        self._articulate_queue.sync_q.put_nowait(articulate)
+                        self._action_queue.sync_q.put_nowait(action)
+        finally:
+            self._articulate_queue.shutdown(immediate=True)
+            self._action_queue.shutdown(immediate=True)
+
+    async def _articulate_loop(self) -> None:
+        """queue → ghost.articulate(articulator) → send_nowait."""
+        ghost = self._ghost_instance
+        mindflow = self._mindflow
+        try:
+            while mindflow.is_running():
+                articulator = await self._articulate_queue.async_q.get()
+                async with articulator:
+                    async for delta in ghost.articulate(articulator):
+                        articulator.send_nowait(delta)
+        except janus.AsyncQueueShutDown:
+            pass
+
+    async def _action_loop(self) -> None:
+        """queue → action.received_logos() → moss_exec."""
+        moss = self._moss_runtime
+        mindflow = self._mindflow
+        try:
+            while mindflow.is_running():
+                action = await self._action_queue.async_q.get()
+                async with action:
+                    logos = ""
+                    async for delta in action.received_logos():
+                        logos += delta
+                    if logos.strip():
+                        await moss.moss_exec(logos)
+        except janus.AsyncQueueShutDown:
+            pass

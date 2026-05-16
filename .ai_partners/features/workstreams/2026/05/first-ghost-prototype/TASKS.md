@@ -22,4 +22,5 @@
 - [x] 09 — _meta / _runtime / _adapter + 24 tests
 - [x] 10a — SystemPrompter tree 模型重构 + 迁至 blueprint.host
 - [x] 10b — GhostRuntime ABC 定义 + 架构选型 (DESIGN.md)
-- [ ] 10c — GhostRuntimeImpl 实现 (wiring: providers → moss → ghost → main loop)
+- [x] 10c — GhostRuntimeImpl skeleton (wiring: providers → moss → ghost → mindflow)
+- [ ] 10d — action observe 回路 + session signal → mindflow 路由

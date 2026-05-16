@@ -3,8 +3,8 @@ title: First Ghost Prototype
 status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-16
-step: 10
+updated: 2026-05-17
+step: 10c_partial
 depends: []
 milestone:
 description: >-
@@ -71,6 +71,8 @@ first-ghost-prototype/
 | 9 | _meta / _runtime 实现 + 测试 | `ghosts/atom/` (4 files, 24 tests) | done |
 | 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
 | 10a | SystemPrompter tree 模型 | tree model + MossSystemPrompter 迁至 blueprint.host | done |
+| 10b | GhostRuntime ABC 定义 | ABC 5 成员 + 架构选型 (方案4) | done |
+| 10c | GhostRuntimeImpl 实现 | providers → moss → ghost → mindflow wiring | in_progress |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -162,6 +164,22 @@ async with runtime:
 6. **package 内测试**：对于有特殊依赖（pydantic AI）的模块，测试放在 package 内 (`test_atom.py`)。
    只用真依赖路径，不堆 MagicMock。24 个测试覆盖 soul 加载、instruction 组装、消息协议、adapter 转换、生命周期。
 
+## 实现阶段关键决策（2026-05-17）— GhostRuntimeImpl + Ghost ABC 清理
+
+此轮实现了 GhostRuntimeImpl 并清理了 Ghost ABC。关键决策：
+
+1. **删除 `Ghost.nuclei()`**：实例方法造成语义漂移——nuclei 的创建和注册应走 `GhostMeta.nuclei_manifests()` 工厂路径。nuclei 实例由 meta 工厂在容器 bootstrap 后产出，GhostRuntime 负责将它们注册到 Mindflow。
+
+2. **Ghost 自行组装 instruction**：GhostRuntime 不替 ghost 注入 soul 到 SystemPrompter tree。ghost 自己从 IoC 拿 prompter，自己决定如何组合。Atom 的 `build_instruction()` 已经是这个模式。
+
+3. **Mindflow 解析优先级**：`ghost.mindflow()` > `IoC.get(Mindflow)` > `BaseMindflow`。结果 `container.set(Mindflow, ...)` 回绑，让 Session 等组件可发现。
+
+4. **三循环用 janus.Queue + asyncio tasks**：v0 用协程而非多线程。janus 保留用于线程安全的未来兼容。
+
+5. **构造时检查 MossRuntime 未启动**：`is_running()` 为 True 则抛 `RuntimeError`。GhostRuntime 拥有完整生命周期。
+
+6. **`_action_loop` 暂不做流式拆解**：当前全量收集 logos 后 `moss_exec()`。observe 回路和 session signal 路由待后续完成。
+
 ## 认知准备（已完成 2026-05-14）
 
 首轮探索确定了以下认知基线：
@@ -169,7 +187,7 @@ async with runtime:
 1. **测试体系**：`tests/` 下 ~70 个测试文件。Ghost 零测试。Mindflow 有三个测试文件覆盖三循环调度。
 2. **CTML**：流式命令标记语言。Code as Prompt、时间第一公民、树形 Channel、结构化并发。
 3. **Mindflow ABC**：三循环（感知/思考/执行）全双工调度中枢。Signal → Nucleus → Impulse → Attention → Articulator/Action。
-4. **Ghost ABC**：`system_prompt()` + `memories()` + `nuclei()` + `articulate()` + `channel()`。核心是 `articulate()`。
+4. **Ghost ABC**：`system_prompt()` + `memories()` + `articulate()` + `channel()` + `mindflow()`。核心是 `articulate()`。
 5. **Mindflow 测试**：`BaseMindflow` / `BaseAttention` / `BufferNucleus` 已通过测试验证三循环链路可运行。
 
 ### 架构关系速览

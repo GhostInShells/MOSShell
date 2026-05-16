@@ -2,7 +2,7 @@ from typing import AsyncIterable
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, Nucleus, NucleusFactory, Articulator
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusFactory, Articulator
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
@@ -136,16 +136,6 @@ class Ghost(ABC):
         从而能够让这个 ghost 去控制它. Ghost 的启动时间在 Shell 之前.
         """
         return None
-
-    def nuclei(self) -> list[Nucleus]:
-        """
-        返回 ghost 的认知模块
-        可以基于不同的 signal 产生 impulse, 驱动 Mindflow 运转, 生成 Attention,
-        最后通过 articulator 调用 ghost 的 articulate 函数.
-
-        这些 Nuclei 会注册到系统的 mindflow 中.
-        """
-        return []
 
     def mindflow(self) -> Mindflow | None:
         """
