@@ -157,7 +157,13 @@ AI 在发现可用命令时，用以下流程替代多轮 `--help` 探索：
 - `moss modes`: 管理环境中的各种模式.
 - `moss apps`: 管理环境中的应用.
 - `moss how-tos`: AI 反身性知识库 (how-to 文档的 list/read/recall)。**当需要管理或查阅 how-to 文档时，始终先用 `moss --ai how-tos list` 了解全局**，再决定读哪篇。格式约定见 `moss how-tos read how-to-make-how-to.md`。
-- `moss features create <name>` — 创建新 feature。完整约定见 `moss features specification`。
+- `moss features` — 面向 AI 模型开发者的开发追踪体系，基于文件系统的 workstream 管理。约定见 `moss features specification`。
+  - 基于模板创建任务 (FEATURE.md)，追踪迭代进度和关键决策。
+  - **模板分发模型**: 权威模板在 `src/ghoshell_moss/core/codex/_features_templates/` (随包发布)。
+    `moss features init` 做单向同步到 `.ai_partners/features/`，覆盖模板文件但不动已有 workstream。
+    修改 features 体系本身时，编辑权威源，运行 `moss features init` 同步，两边一起提交。
+    外部项目安装后运行 `moss features init` 即可获得最新模板。
+  - 常用命令: `list`, `create <name>`, `status [name]`, `set-status <name> <status>`, `init`
 
 # MOSS 应用架构拓扑
 

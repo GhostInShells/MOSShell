@@ -17,6 +17,7 @@ from ghoshell_moss.core.codex._features import (
     init_features,
     update_feature_status,
     VALID_STATUSES,
+    _find_templates_dir,
 )
 from ghoshell_moss.cli.utils import (
     print_success, print_error, print_info, print_warning,
@@ -52,7 +53,7 @@ def _resolve_dir(features_dir: Optional[Path]) -> Path:
 # specification
 # ---------------------------------------------------------------------------
 
-@features_app.command("specification", short_help="Display the convention specification (README.md).")
+@features_app.command("specification", short_help="Display the features convention — read this first.")
 def specification(
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
@@ -60,14 +61,25 @@ def specification(
     ),
 ):
     """
-    Display the AI-Native Development Tracking convention specification (README.md).
+    Display the AI-Native Development Tracking convention specification.
+
+    Reads from the local .ai_partners/features/ copy first.
+    Falls back to the bundled canonical copy shipped with the package.
     """
     fd = _resolve_dir(features_dir)
     readme = fd / "README.md"
+
     if not readme.is_file():
+        templates = _find_templates_dir()
+        if templates and (bundled := templates / "README.md").is_file():
+            echo(bundled.read_text(encoding="utf-8"))
+            echo(f"\nSpecification path: {bundled.resolve()}")
+            print_info("Shown from bundled copy. Run 'moss features init' to create a local one.")
+            return
         print_error(f"Specification not found: {readme}")
         print_info("Run 'moss features init' to create the features skeleton first.")
         raise typer.Exit(code=1)
+
     echo(readme.read_text(encoding="utf-8"))
     echo(f"\nSpecification path: {readme.resolve()}")
 
@@ -76,7 +88,7 @@ def specification(
 # list
 # ---------------------------------------------------------------------------
 
-@features_app.command("list", short_help="List workstreams with status and priority.")
+@features_app.command("list", short_help="List active workstreams with status and priority.")
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
@@ -119,7 +131,7 @@ def list_cmd(
         pri = fm.get("priority", "?")
         title_str = fm.get("title", name)
         updated = fm.get("updated", "")
-        feat_path = fm.get("_feature_path", name)
+        feat_path = f"workstreams/{fm.get('_feature_path', name)}"
 
         status_display = stat
         if stat == "in-progress":
@@ -141,9 +153,9 @@ def list_cmd(
         title=title,
         column_ratios=[1, 0.7, 0.3, 1.5, 0.6, 1.5],
     )
-    console.print(f"\n[dim]{len(features)} workstream(s)[/dim]")
+    console.print(f"\n[dim]Features root: {fd.resolve()}/[/dim]")
     console.print(
-        "[dim]New to this? Read the convention: [/dim]"
+        "[dim]Read the convention: [/dim]"
         "[bold]moss features specification[/bold]"
     )
 
@@ -185,8 +197,12 @@ def status_cmd(
                  f"Milestone:   {meta.get('milestone', '') or 'none'}",
                  f"Description: {meta.get('description', '')}",
                  f"Status Note: {meta.get('status_note', '') or 'none'}",
-                 f"Path:        workstreams/{feat_path}/FEATURE.md"]
+                 f"Path:        .ai_partners/features/workstreams/{feat_path}/FEATURE.md"]
         print_simple_panel("\n".join(lines), title=f"Workstream: {feature_name}")
+        console.print(
+            "[dim]Read the convention: [/dim]"
+            "[bold]moss features specification[/bold]"
+        )
     else:
         # Compact all-workstreams view
         features = list_features(str(fd))
@@ -210,7 +226,7 @@ def status_cmd(
                 echo(f"  Description: {desc}")
                 if note:
                     echo(f"  Status Note: {note}")
-                echo(f"  Path:        workstreams/{feat_path}/")
+                echo(f"  Path:        .ai_partners/features/workstreams/{feat_path}/")
                 echo("")
         else:
             console.print()
@@ -243,10 +259,13 @@ def status_cmd(
                 console.print(f"  Description: {desc}")
                 if note:
                     console.print(f"  Status Note: {note}")
-                console.print(f"  Path:        workstreams/{feat_path}/")
+                console.print(f"  Path:        .ai_partners/features/workstreams/{feat_path}/")
                 console.print()
 
-        console.print(f"[dim]{len(features)} workstream(s)[/dim]")
+        console.print(
+            "[dim]Read the convention: [/dim]"
+            "[bold]moss features specification[/bold]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -270,10 +289,8 @@ def create_cmd(
     try:
         fm_path = create_feature(str(fd), name, template_path=template if template.is_file() else None)
         print_success(f"Workstream '{name}' created: {fm_path}")
-        # NOTE: 不在此输出模板内容。Claude Code 不允许编辑未读取的文件，
-        # 所以"省一次 Read"的设计意图在 Claude Code 约束下无效。
-        # 将来整体完善 create 流程时再重新设计。
-        # AI 消费者应随后 Read FEATURE.md 获取可编辑内容（含行号）。
+        print_info("Read the convention: moss features specification")
+        print_info("Next: Read and edit the FEATURE.md to record motivation and key decisions.")
     except FileExistsError:
         print_error(f"Workstream '{name}' already exists.")
         raise typer.Exit(code=1)
@@ -336,6 +353,7 @@ def set_status_cmd(
             hint = _STATUS_HINTS.get((old_status, status))
         if hint:
             print_info(hint)
+        print_info("This only updates status. For key decisions, design, or motivation, edit FEATURE.md directly.")
     else:
         print_error(f"Failed to update status for '{feature_name}'.")
 
@@ -358,7 +376,5 @@ def init_cmd(
     """
     root = project_root or Path.cwd()
     fd = init_features(str(root))
-    print_success(f"Features skeleton created: {fd}")
-    print_info("Next steps:")
-    print_info(f"  1. Edit {fd / 'README.md'} to customize the convention")
-    print_info(f"  2. Run 'moss features create <name>' to create your first workstream")
+    print_success(f"Features templates synced to: {fd}")
+    print_info("Template files overwritten; existing workstreams left untouched.")

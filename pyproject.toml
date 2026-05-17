@@ -70,6 +70,7 @@ exclude = ["test_*", ".discuss*", ".design", ".memory"]
 
 [tool.setuptools.package-data]
 # 简化匹配逻辑，专注于非代码资源. by gemini 3
+"ghoshell_moss.core.codex" = ["_features_templates/*.md"]
 "ghoshell_moss.host.stubs" = [
     "**/*.md",
     "**/.env.example",

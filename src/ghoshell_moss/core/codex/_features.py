@@ -103,12 +103,13 @@ def list_features(
             continue
         results.append(meta)
 
-    def _sort_key(m: dict) -> tuple:
-        p = m.get("priority", "P9")
-        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-        return (order.get(str(p), 9), str(m.get("created", "")))
+    def _sort_key(m: dict) -> str:
+        v = m.get("updated", "")
+        if isinstance(v, date):
+            v = v.isoformat()
+        return str(v) or ""
 
-    results.sort(key=_sort_key)
+    results.sort(key=_sort_key, reverse=True)
     return results
 
 
@@ -250,6 +251,33 @@ def update_feature_status(
 
 
 # ---------------------------------------------------------------------------
+# Template resolution
+# ---------------------------------------------------------------------------
+
+# _features.py lives at ghoshell_moss/core/codex/_features.py
+# Use package root as anchor — more robust than counting from a deep file.
+_PKG_ROOT = Path(__file__).resolve().parents[2]  # ghoshell_moss/
+
+
+def _find_templates_dir() -> Optional[Path]:
+    """Find the bundled features template files.
+
+    Priority:
+    1. Packaged sibling dir — always available (source or installed).
+    2. Source checkout .ai_partners/ — additional fallback for MOSShell dev.
+    """
+    # 1. Packaged alongside _features.py — most reliable
+    p = Path(__file__).resolve().parent / "_features_templates"
+    if (p / "README.md").is_file():
+        return p
+    # 2. Source checkout: repo/.ai_partners/features/
+    p = _PKG_ROOT.parents[2] / ".ai_partners" / "features"
+    if (p / "README.md").is_file():
+        return p
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
 
@@ -257,8 +285,8 @@ def init_features(project_root: str | Path) -> Path:
     """
     Create the `.ai_partners/features/` skeleton in the given project root.
 
-    Copies README.md, TOPOLOGY.md, and TEMPLATE.md from MOSShell's own features
-    directory if available, otherwise generates minimal versions.
+    Copies README.md, TOPOLOGY.md, and TEMPLATE.md from the bundled templates
+    if available, otherwise generates minimal versions.
 
     Returns the path to the created features directory.
     """
@@ -269,10 +297,10 @@ def init_features(project_root: str | Path) -> Path:
 
     (features_dir / "workstreams").mkdir(parents=True, exist_ok=True)
 
-    moss_features = Path(__file__).resolve().parents[5] / ".ai_partners" / "features"
+    templates_dir = _find_templates_dir()
 
-    readme_src = moss_features / "README.md"
-    if readme_src.is_file():
+    readme_src = templates_dir / "README.md" if templates_dir else None
+    if readme_src and readme_src.is_file():
         shutil.copy2(str(readme_src), str(features_dir / "README.md"))
     else:
         (features_dir / "README.md").write_text(
@@ -280,8 +308,8 @@ def init_features(project_root: str | Path) -> Path:
             encoding="utf-8",
         )
 
-    template_src = moss_features / "TEMPLATE.md"
-    if template_src.is_file():
+    template_src = templates_dir / "TEMPLATE.md" if templates_dir else None
+    if template_src and template_src.is_file():
         shutil.copy2(str(template_src), str(features_dir / "TEMPLATE.md"))
     else:
         (features_dir / "TEMPLATE.md").write_text(
@@ -293,8 +321,8 @@ def init_features(project_root: str | Path) -> Path:
             encoding="utf-8",
         )
 
-    topology_src = moss_features / "TOPOLOGY.md"
-    if topology_src.is_file():
+    topology_src = templates_dir / "TOPOLOGY.md" if templates_dir else None
+    if topology_src and topology_src.is_file():
         shutil.copy2(str(topology_src), str(features_dir / "TOPOLOGY.md"))
 
     return features_dir
