@@ -10,7 +10,7 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import (
     codex_cli, concepts_cli, workspace_cli, manifests_cli, apps_cli,
-    modes_cli, ctml_cli, howto_cli, features_cli, eval_cli,
+    modes_cli, ctml_cli, howto_cli, features_cli, eval_cli, docs_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -39,6 +39,11 @@ app.add_typer(modes_cli.mode_app, name="modes", short_help="moss runtime modes m
 app.add_typer(apps_cli.app_store_app, name="apps", short_help="default apps manager")
 app.add_typer(howto_cli.howto_app, name="how-tos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
+
+# Root-level docs command — single action, no subcommands needed
+app.command(name="docs", short_help="Browse MOSS reference documentation")(
+    docs_cli.docs_cmd
+)
 
 # Root-level eval command — thin wrapper, no sub-typer needed
 app.command(name="eval", short_help="Execute Python code in the live MOSS runtime")(
