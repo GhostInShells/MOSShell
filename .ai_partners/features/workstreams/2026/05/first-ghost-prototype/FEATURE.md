@@ -4,7 +4,7 @@ status: in_progress
 priority: P0
 created: 2026-05-14
 updated: 2026-05-17
-step: 10e_done
+step: 10f_done
 depends: []
 milestone:
 description: >-
@@ -75,6 +75,7 @@ first-ghost-prototype/
 | 10c | GhostRuntimeImpl skeleton | wiring: providers → moss → ghost → mindflow | done |
 | 10d | action observe 回路闭合 | 流式 feed → interpreter → action.outcome() + 异常分级 | done |
 | 10e | session signal 路由 | session → mindflow bridge + matrix logger 输出 | done |
+| 10f | task output 协议 | `on_task_done` → session.output, 结算只发 status | done |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -185,6 +186,29 @@ async with runtime:
 7. **异常四级分级**：(1) InterpretError — 可管理中断，observe=True；(2) Task 级失败 — 单个命令异常，不中断整体；(3) 静默失败 — log 不呈现；(4) 致命异常 — 向外传播。
 
 8. **matrix 信息输出预留**：logos 流式解析过程和 interpreter 结算两处标记 TODO，后续接入 matrix logger。
+
+## 实现阶段关键决策（2026-05-17）— task output 协议
+
+将 action loop 的产出接入 `session.output()` 总线，使端侧 consumer（TUI panel、测试断言）可通过统一协议消费 ghost 执行过程。
+
+核心决策：
+
+1. **task 级输出走 `on_task_done`**：每个 CommandTask 完成时通过 `interpreter.on_task_done()` 回调实时产出 `OutputItem(role='task', ...)`。有消息时带 `task_result().as_messages()`，无消息时只带 `log=f"{caller_name} done"`。consumer 可看到逐命令的执行进度。
+
+2. **结算只发 status_messages**：`wait_stopped()` 后只产出 `OutputItem(role='system', *status_messages())`。不再发全量 `executed_messages()`——因为每个 task 的结果已通过 `'task'` 逐条发送。`action.outcome()` 也只收 status，模型在下一轮 Moment 看到的是摘要（"5 done, 1 failed"），不是全量结果。
+
+3. **异常走 `'error'`**：InterpretError 捕获后 `session.output('error', str(exception))`，与 task 级别的 `'task'` 区分。
+
+4. **角色分配总结**：
+
+| role | 来源 | 时机 |
+|------|------|------|
+| `'logos'` | moment (待实现) | articulate loop 产出 |
+| `'task'` | `on_task_done` → `task_result()` | 每个 task 完成 |
+| `'error'` | InterpretError / critical failure | 异常捕获点 |
+| `'system'` | `status_messages()` only | interpreter 结算 |
+
+涉及文件：`host/ghost_runtime.py` — `_stream_execute` 注册 `on_task_done` 回调 + 结算改走 status。
 
 ## 实现阶段关键决策（2026-05-17）— observe 回路 + 流式执行
 

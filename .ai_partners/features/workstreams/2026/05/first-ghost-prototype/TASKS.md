@@ -25,3 +25,4 @@
 - [x] 10c — GhostRuntimeImpl skeleton (wiring: providers → moss → ghost → mindflow)
 - [x] 10d — action observe 回路 (流式 feed → interpreter → action.outcome) + 异常分级
 - [x] 10e — session signal → mindflow 路由 + matrix 信息输出
+- [x] 10f — task output 协议: `on_task_done` → session.output, 结算只发 status

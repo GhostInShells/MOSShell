@@ -116,7 +116,7 @@ class MossSessionWithZenoh(Session):
         # todo: 未来加防蠢限频.
         # 现在有一种深刻的感觉, 不存在过度设计, 只存在过度实现.
         js = signal.to_json()
-        self._zenoh_session.put(self._output_key_expr, js)
+        self._zenoh_session.put(self._input_signal_expr, js)
 
     def on_signal(self, callback: Callable[[Signal], None]) -> None:
         self._on_signal_callbacks.append(callback)
@@ -142,8 +142,8 @@ class MossSessionWithZenoh(Session):
                 )
         return None
 
-    def output(self, role: str | Role, *messages: Message | str) -> None:
-        item = OutputItem.new(role, *messages)
+    def output(self, role: str | Role, *messages: Message | str, log: str = '') -> None:
+        item = OutputItem.new(role, *messages, log=log)
         js = item.model_dump_json(indent=0, ensure_ascii=False, exclude_none=True, exclude_defaults=True)
         self._zenoh_session.put(self._output_key_expr, js)
 

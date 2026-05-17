@@ -37,7 +37,7 @@ class OutputItem(BaseModel):
         if isinstance(role, str):
             return cls.model_construct(role=role, messages=[], log=log).with_messages(*messages)
         else:
-            return cls(role=role).with_messages(*messages)
+            return cls(role=role, log=log).with_messages(*messages)
 
     def with_messages(self, *messages: Message | str) -> Self:
         for msg in messages:
@@ -157,9 +157,12 @@ class Session(ABC):
         pass
 
     @abstractmethod
-    def output(self, role: str | Role, *messages: Message | str) -> None:
+    def output(self, role: str | Role, *messages: Message | str, log: str = '') -> None:
         """
         输出消息给 moss 共享 session 的终端.
+        :param role: 输出角色分类
+        :param messages: 消息体，无消息时可通过 log 单独描述
+        :param log: 单行摘要，verbose 场景下供展示使用
         """
         pass
 

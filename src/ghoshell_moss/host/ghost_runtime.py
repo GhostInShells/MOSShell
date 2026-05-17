@@ -186,21 +186,34 @@ class GhostRuntimeImpl(GhostRuntime):
     async def _stream_execute(self, action) -> tuple[list, bool]:
         """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
 
-        返回 (messages, observe) 闭合 observe 回路.
+        返回 (status_messages, observe) 闭合 observe 回路.
+        单个 task 结果通过 on_task_done → session.output('task', ...) 实时产出.
         InterpretError 被捕获 — interpretation 已保留 partial results.
         """
         from ghoshell_moss.core.concepts.errors import InterpretError
+        from ghoshell_moss.core.concepts.command import CommandTask
 
         shell = self._moss_runtime.shell
         interpreter = await shell.interpreter(kind='clear', clear_after_exit=False)
         interpretation = interpreter.interpretation()
         logger = self._moss_runtime.matrix.logger
+        session = self._moss_runtime.session
+
+        # ── task 级实时输出 ──
+        def _on_task_done(task: CommandTask) -> None:
+            result = task.task_result()
+            msgs = result.as_messages()
+            caller = task.caller_name()
+            if msgs:
+                session.output('task', *msgs, log=f"{caller} done")
+            else:
+                session.output('task', log=f"{caller} done")
+
+        interpreter.on_task_done(_on_task_done)
 
         async with interpreter:
             try:
                 # ── 阶段 1: feed — 流式送入 ──
-                # throw=True (默认): 若 interpreter 已被停止 (异常 / clear)
-                # 则立刻抛出 InterpretError, 打断 logos 消费循环.
                 first_delta = True
                 async for delta in action.received_logos():
                     if first_delta:
@@ -217,16 +230,19 @@ class GhostRuntimeImpl(GhostRuntime):
                 await interpreter.wait_stopped()
 
             except InterpretError:
-                # 级别 1: 可管理中断. _set_interpreter_error 已:
-                #   interpretation.observe = True
-                #   interpretation.exception = str(error)
-                #   取消所有 pending tasks (已完成的保留结果)
+                # 级别 1: 可管理中断. interpretation 已保留 partial results +
+                # observe=True. 同步产出到 output 总线.
+                err = interpretation.exception or "interpret error"
+                session.output('error', log=str(err))
                 logger.warning(
                     "interpret error during stream execute: %s",
                     interpretation.exception,
                 )
 
         # __aexit__ 已调 close(), interpretation.done = True
+        # 结算只发 status — 单个 task 结果已通过 on_task_done 实时产出
+        status = interpretation.status_messages()
+        session.output('system', *status)
         logger.info(
             "interpreter settled: compiled=%d done=%d failed=%d cancelled=%d observe=%s",
             len(interpretation.compiled_tasks),
@@ -235,4 +251,4 @@ class GhostRuntimeImpl(GhostRuntime):
             len(interpretation.cancelled_tasks),
             interpretation.observe,
         )
-        return interpretation.as_messages(), interpretation.observe
+        return status, interpretation.observe
