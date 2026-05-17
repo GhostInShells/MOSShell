@@ -23,4 +23,5 @@
 - [x] 10a — SystemPrompter tree 模型重构 + 迁至 blueprint.host
 - [x] 10b — GhostRuntime ABC 定义 + 架构选型 (DESIGN.md)
 - [x] 10c — GhostRuntimeImpl skeleton (wiring: providers → moss → ghost → mindflow)
-- [ ] 10d — action observe 回路 + session signal → mindflow 路由
+- [x] 10d — action observe 回路 (流式 feed → interpreter → action.outcome) + 异常分级
+- [ ] 10e — session signal → mindflow 路由 + matrix 信息输出

@@ -148,17 +148,71 @@ class GhostRuntimeImpl(GhostRuntime):
             pass
 
     async def _action_loop(self) -> None:
-        """queue → action.received_logos() → moss_exec."""
-        moss = self._moss_runtime
+        """queue → action.received_logos() → interpreter → action.outcome().
+
+        Interpreter 三阶段:
+          1. feed    — 流式送入 delta, throw=True 确保异常立刻打断循环
+          2. compile — commit() + wait_compiled() 检查 CTML 语法/语义
+          3. execute — wait_stopped() 等待所有 CommandTask 执行完毕
+
+        异常分级 (决定 as_messages 内容和 observe 返回值):
+          1. InterpretError — 可管理中断 (模型 CTML 错误 / shell.clear).
+             interpreter 内部设 observe=True + 取消 pending tasks.
+             模型在下一轮 Moment 看到错误后可自我纠正.
+          2. Task 级失败 — 单个命令执行异常. 捕获在 failed_tasks,
+             task_result().observe 决定是否触发观察. 不中断整体解释.
+          3. 静默失败 — 非关键组件异常. 应 log 到 matrix 但不呈现给模型.
+          4. 致命异常 — shell/matrix 崩溃. 向外传播, 由 matrix task 管理器处理.
+
+        TODO matrix 信息输出点:
+          - logos 流式解析过程: 首 token / feed 异常 / commit 时输出状态
+          - interpreter 结算: close() 后输出 interpretation 摘要
+        """
         mindflow = self._mindflow
         try:
             while mindflow.is_running():
                 action = await self._action_queue.async_q.get()
                 async with action:
-                    logos = ""
-                    async for delta in action.received_logos():
-                        logos += delta
-                    if logos.strip():
-                        await moss.moss_exec(logos)
+                    messages, observe = await self._stream_execute(action)
+                    action.outcome(*messages, observe=observe)
         except janus.AsyncQueueShutDown:
             pass
+
+    async def _stream_execute(self, action) -> tuple[list, bool]:
+        """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
+
+        返回 (messages, observe) 闭合 observe 回路.
+        InterpretError 被捕获 — interpretation 已保留 partial results.
+        """
+        from ghoshell_moss.core.concepts.errors import InterpretError
+
+        shell = self._moss_runtime.shell
+        interpreter = await shell.interpreter(kind='clear', clear_after_exit=False)
+        interpretation = interpreter.interpretation()
+
+        async with interpreter:
+            try:
+                # ── 阶段 1: feed — 流式送入 ──
+                # throw=True (默认): 若 interpreter 已被停止 (异常 / clear)
+                # 则立刻抛出 InterpretError, 打断 logos 消费循环.
+                async for delta in action.received_logos():
+                    interpreter.feed(delta)
+
+                # ── 阶段 2: compile — 标记结束, 等待解析完成 ──
+                interpreter.commit()
+                await interpreter.wait_compiled()
+
+                # ── 阶段 3: execute — 等待全部 task 执行完毕 ──
+                await interpreter.wait_stopped()
+
+            except InterpretError:
+                # 级别 1: 可管理中断. _set_interpreter_error 已:
+                #   interpretation.observe = True
+                #   interpretation.exception = str(error)
+                #   取消所有 pending tasks (已完成的保留结果)
+                pass
+
+        # __aexit__ 已调 close(), interpretation.done = True
+        # as_messages() = status (compiled/done/failed) + executed (task outputs)
+        # TODO: matrix logger 输出 interpretation 结算摘要
+        return interpretation.as_messages(), interpretation.observe

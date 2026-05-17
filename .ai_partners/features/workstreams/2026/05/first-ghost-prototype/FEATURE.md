@@ -4,7 +4,7 @@ status: in_progress
 priority: P0
 created: 2026-05-14
 updated: 2026-05-17
-step: 10c_partial
+step: 10d_partial
 depends: []
 milestone:
 description: >-
@@ -72,7 +72,9 @@ first-ghost-prototype/
 | 10 | GhostRuntime 包裹模式 | 生命周期编排 | pending |
 | 10a | SystemPrompter tree 模型 | tree model + MossSystemPrompter 迁至 blueprint.host | done |
 | 10b | GhostRuntime ABC 定义 | ABC 5 成员 + 架构选型 (方案4) | done |
-| 10c | GhostRuntimeImpl 实现 | providers → moss → ghost → mindflow wiring | in_progress |
+| 10c | GhostRuntimeImpl skeleton | wiring: providers → moss → ghost → mindflow | done |
+| 10d | action observe 回路闭合 | 流式 feed → interpreter → action.outcome() + 异常分级 | done |
+| 10e | session signal 路由 | matrix 信息输出 + session signal → mindflow | pending |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -178,7 +180,13 @@ async with runtime:
 
 5. **构造时检查 MossRuntime 未启动**：`is_running()` 为 True 则抛 `RuntimeError`。GhostRuntime 拥有完整生命周期。
 
-6. **`_action_loop` 暂不做流式拆解**：当前全量收集 logos 后 `moss_exec()`。observe 回路和 session signal 路由待后续完成。
+6. **`_action_loop` 流式执行 + observe 回路闭合**：`action.received_logos()` (stream) → `interpreter.feed(delta)` (stream)，不粘合 string 做批量。三个明确阶段：feed → compile → execute。`InterpretError` 被捕获，`interpretation.observe` + `as_messages()` 通过 `action.outcome()` 回传 Mindflow，模型在下一轮 Moment 看到错误可自我纠正。
+
+7. **异常四级分级**：(1) InterpretError — 可管理中断，observe=True；(2) Task 级失败 — 单个命令异常，不中断整体；(3) 静默失败 — log 不呈现；(4) 致命异常 — 向外传播。
+
+8. **matrix 信息输出预留**：logos 流式解析过程和 interpreter 结算两处标记 TODO，后续接入 matrix logger。
+
+## 实现阶段关键决策（2026-05-17）— observe 回路 + 流式执行
 
 ## 认知准备（已完成 2026-05-14）
 
