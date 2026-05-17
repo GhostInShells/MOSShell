@@ -1,100 +1,80 @@
 # MOSS AI-Native Development Tracking Convention
 
-> This is NOT a catalog of the project's capabilities. It tracks **what is being built right now** — active development workstreams, their decision history, and their completion state. See [What This Is Not](#what-this-is-not).
+> FEATURE.md is a **reverse index** from code to the context that produced it.
+> The real trajectory lives in `git log`. FEATURE.md marks the turns, dead ends,
+> and decisions — road signs, not a travelogue.
 
-## Purpose
+## Why
 
-This directory implements **file-system-based development tracking** — a mechanism for AI incarnations
-to record and restore decision trajectories across sessions, branches, tools, and models.
+This is a **context handoff mechanism built by AI, for AI**. It solves one problem:
+the human engineer is the bandwidth bottleneck. Re-explaining context across sessions
+is expensive; reading one FEATURE.md is cheap.
 
-The reader and producer are both **AI first**. A human engineer drives the process:
-which workstream to start, when to change status. AI reads FEATURE.md to restore context,
-and writes to FEATURE.md to record decisions made during implementation.
+FEATURE.md is a **supplement to git, not a replacement**. `git log` is the authoritative
+timeline. FEATURE.md is the reverse index — it tells the next AI incarnation which commits
+matter, what decisions shaped them, and what dead ends to avoid.
 
-The "true" information lives in the git history: code changes and FEATURE.md changes travel
-in the same commit, bound by Git Commit Discipline (below). `git blame` on any line can recover
-the feature-level reasoning behind it.
+### What to record
 
-The core insight: **the file system is a database**. Structured markdown + YAML frontmatter.
-AI reads with `Read`, modifies with `Edit`. No API, no network, no rate limits.
-Markdown files are portable across any tool or model — no vendor lock-in.
+Not everything. The content that restores working context, ranked by value:
+
+1. **Motivation** — why this exists, what gap it fills
+2. **Key decisions** — what was chosen, **what was rejected and why**
+3. **Exploration paths** — dead ends hit, pivots made, lessons learned
+4. **Methods** — non-obvious implementation patterns
+
+Fine-grained status tracking, checklists, progress percentages — skip them.
+A messy FEATURE.md with the right decision beats a pristine one that says nothing.
+
+### Staleness is normal
+
+FEATURE.md is a snapshot. It may not reflect current code. **Trust the code first.**
+When they conflict, update the file — don't blindly follow it.
+
+### Model's role
+
+- **Guide humans** unfamiliar with the mechanism. The model is its native user.
+- **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
+- **Proactively synthesize** from the features directory when the human needs to know
+  what's happening. FEATURE.md is a knowledge distribution mechanism, not a passive record.
 
 ## AI Development Progression
 
-Features as a mechanism targets a specific stage in the AI-as-developer trajectory:
-
 | Level | Description | Features role |
 |-------|-------------|---------------|
-| **L0** | Task coding — AI does isolated coding tasks | Not needed |
-| **L1** | Feature coding — AI stably completes features end-to-end | **Current target**: FEATURE.md anchors each feature |
-| **L2** | Structure design — AI designs system architecture | Features carry design rationale across sessions |
-| **L3** | Feature → Structure — AI derives structure from feature patterns | Features become training data for meta-reasoning |
-| **L4** | Define features from real needs — AI identifies what to build | Features are self-generated |
+| **L0** | Task coding — isolated coding tasks | Not needed |
+| **L1** | Feature coding — AI completes features end-to-end | **Current target**: FEATURE.md anchors each feature |
+| **L2** | Structure design — AI designs architecture | Features carry design rationale across sessions |
+| **L3** | Feature → Structure — AI derives structure from patterns | Features become training data for meta-reasoning |
+| **L4** | Define features from real needs | Features are self-generated |
 
-We are at L1. The system is designed to be useful now and compound in value as we move up.
+The mechanism's core value: freeing human bandwidth so the engineer operates at L2
+(structural thinking) instead of L0 (re-explaining context).
 
 ## User Stories
 
-- **Parallel task management**: The human architect juggles multiple features across branches.
-  FEATURE.md compresses context so re-entry cost stays low.
-- **Tool/model portability**: Switch from Claude Code to Gemini CLI to OpenCode — the markdown
-  files stay. Decision history doesn't live in any tool's session memory.
-- **Onboarding without verbal alignment**: A new human collaborator (or a new AI incarnation)
-  reads FEATURE.md + git log and understands what happened and why, without the architect
-  explaining in person.
-- **Historical traceability**: N days later, `git blame` a source line → find the commit →
-  find the FEATURE.md at that commit → recover the reasoning. No manual documentation needed.
-- **Collision preservation**: The process of deduction, debate, and decision is often more
-  valuable than the final code. FEATURE.md anchors these collision traces.
+- **Context bootstrap**: AI reads one FEATURE.md, understands what's being built, why,
+  what was tried and abandoned. Ready to work in under a minute.
+- **Tool/model portability**: Switch Claude Code → Gemini CLI → OpenCode. Markdown stays.
+  Decision history doesn't live in any tool's session memory.
+- **Historical traceability**: `git blame` a source line → find the commit → find the
+  FEATURE.md at that commit → recover the reasoning.
 
 ## Git Commit Discipline
 
-This is the **binding constraint** that makes the system work:
-
 > **A commit containing code changes for a feature MUST also include the corresponding FEATURE.md.**
 
-### Rationale
+This is the binding constraint. `git log -- <source-file>` must trace back to the FEATURE.md
+state at that point. Without it, the reverse index breaks.
 
-Feature tracking via files only has value if git history connects code and feature state.
-`git log -- .ai_partners/features/workstreams/<year>/<month>/<id>/FEATURE.md` must produce a **reliable timeline**
-of every commit that changed the feature. `git log -- <source-file>` must be able to trace back
-to the FEATURE.md state at that point.
+Per commit, update: `updated` date, new Key Decisions if design choices were made,
+`status_note` if a one-line summary helps. Do not log micro-changes — the commit message
+carries details; FEATURE.md carries decisions worth indexing.
 
-When FEATURE.md and code are committed separately:
-- The feature timeline has gaps — some commits touch code but don't update FEATURE.md
-- `git blame` on FEATURE.md loses fidelity as an event log
-- An AI incarnation reading FEATURE.md alone cannot trust that it reflects the code it's looking at
+CLI does not enforce this. AI incarnations follow it; the human reviews for it.
+A commit landing without its FEATURE.md update should be rebased, not patched with a follow-up.
 
-### What to update in FEATURE.md per commit
-
-- `updated` date — bumped even if `status` hasn't changed
-- Add new Key Decisions if design choices were made in this commit
-- `status_note` — a one-line summary of what this commit achieved or left unfinished
-
-### Enforcement
-
-The `moss features` CLI does NOT enforce this rule (git hooks are out of scope).
-This convention relies on:
-1. AI incarnations reading this specification and following it
-2. Human engineer reviewing commits for FEATURE.md inclusion
-
-If a commit lands without its FEATURE.md update, the correct fix is **not** a follow-up
-FEATURE.md-only commit. Rebase to squash the missing FEATURE.md into the code commit,
-restoring a clean one-to-one timeline.
-
-## Getting Started
-
-The first domino: `moss features create <name>`. The generated TEMPLATE.md is self-explanatory —
-it guides the AI through filling in motivation, design index, and key decisions, and points
-to the next CLI commands.
-
-Discover all commands with `moss features` (no arguments) or `moss --ai all-commands --group features`.
-
-## Directory Topology
-
-See [TOPOLOGY.md](TOPOLOGY.md) for the directory layout and path semantics.
-
-## FEATURE.md Minimal Frontmatter Schema
+## FEATURE.md Frontmatter Schema
 
 ```yaml
 ---
@@ -103,15 +83,16 @@ status: draft              # draft | in-progress | completed | abandoned | block
 priority: P1               # P0 | P1 | P2 | P3
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
-depends: []                # List of feature names this depends on
-milestone:                 # Optional milestone name
+depends: []                # Feature names this depends on
+milestone:                 # Optional
 description: >-            # One-line summary for listing
   Brief description.
 ---
 ```
 
-The directory name under `workstreams/` (kebab-case) is the feature's unique identifier.
-No separate `id` field — the filesystem is the namespace.
+Directory name under `workstreams/` (kebab-case) is the unique identifier.
+Path encodes creation date: `workstreams/<year>/<month>/<name>/FEATURE.md`.
+Status changes are frontmatter-only — no file moves.
 
 ## State Machine
 
@@ -121,54 +102,48 @@ draft → in-progress → completed
   └─── abandoned
 ```
 
-`blocked` can be used as a modifier on `in-progress`, indicating waiting for dependencies.
-All status transitions are in-place frontmatter updates — no file moves.
+`blocked` modifies `in-progress`. Status is a coarse signal — don't over-invest.
 
 ## CLI Reference
 
-| Command | Behavior | Side Effect |
-|---------|----------|-------------|
-| `moss features specification` | Render this README.md | None |
-| `moss features list [--status] [--all]` | Parse FEATURE.md frontmatter, default last 2 months | None |
-| `moss features create <name>` | Create workstreams/\<year\>/\<month\>/\<name\>/FEATURE.md from template | Creates directory |
-| `moss features set-status <name> <status> [-m "note"]` | Update status and updated fields in YAML frontmatter (in place) | Writes to FEATURE.md |
-| `moss features status [name]` | Parse and display specified or all frontmatter | None |
-| `moss features init` | Create `.ai_partners/features/` skeleton in project root | Creates directory structure |
+| Command | Behavior |
+|---------|----------|
+| `moss features specification` | Render this README.md |
+| `moss features list [--status] [--all]` | List workstreams (default: last 2 months) |
+| `moss features create <name>` | Create workstream from template |
+| `moss features set-status <name> <status> [-m]` | Update status + updated date in-place |
+| `moss features status [name]` | Show detailed status |
+| `moss features init` | Sync templates to `.ai_partners/features/` |
 
-The CLI is a **thin convention enforcer**. Core logic lives in `ghoshell_moss.core.codex._features`.
+CLI is a thin convention enforcer. Core logic: `ghoshell_moss.core.codex._features`.
 
-## Relationship to Existing Conventions
+## Directory Topology
 
-- **`.design/`**: Cross-feature architecture design. Feature-specific design goes in `feature/design/`.
-- **`.discuss/`**: Cross-domain system discussions. Feature-specific discussions go in `feature/discuss/`.
-- **`.ai_partners/`**: `features/` is a sibling to `dialogs/` and `prompts/`.
-- **`CLAUDE.md`**: Should contain a pointer to `features/` so new AI instances discover current task state.
+See [TOPOLOGY.md](TOPOLOGY.md).
+
+## Related Conventions
+
+- **`.design/`**: Cross-feature architecture. Feature-specific → `feature/design/`.
+- **`.discuss/`**: Cross-domain discussions. Feature-specific → `feature/discuss/`.
+- **`CLAUDE.md`**: Should point to `features/` for AI context discovery.
 
 ## What This Is Not
 
-- **Not a feature catalog.** It does not list what the project *can do* — for that, read the code,
-  run `moss concepts`, or read the architecture docs.
-- **Not a project management tool.** It provides no checklist, no scope tracking,
-  no burn-down chart, no progress metrics. It is a **decision trajectory recording mechanism** —
-  the minimal viable unit of "let AI record what it did and why, so the next AI incarnation
-  (or the same one, days later) can pick up the thread."
+- **Not a feature catalog.** Read the code or run `moss concepts` for capabilities.
+- **Not a project management tool.** No checklists, burn-downs, or progress metrics.
+- **Not a log.** Git commits are the log. FEATURE.md is the index.
+- **Not authoritative over code.** Code wins. Stale FEATURE.md gets updated, not obeyed.
 
-Development tracking is itself optional. A workstream only exists when the human engineer decides
-that a task's complexity warrants it. Not every code change needs a FEATURE.md.
+A workstream only exists when the human decides the task's complexity warrants it.
 
 ---
 
 ## Further Reading
 
-For the full design discussion behind this convention — including the debate on AI-first development,
-CLI-flow, meta-mechanism self-explanation, and the collision between platform prompts and project goals —
-see `.ai_partners/features/.discuss/full-meta-discuss-about-features-itself.md`.
+- Full design discussion: `.ai_partners/features/.discuss/full-meta-discuss-about-features-itself.md`
+- Convention evolution: `git log -- .ai_partners/features/README.md`
 
-To understand how the features convention itself evolved, and thereby understand what it tries to
-do for other features, read `git log -- .ai_partners/features/README.md`. Only necessary when
-you need to study the meta-convention deeply.
-
-*This convention was designed through discussion between the human engineer and Deepseek V4
-on 2026-05-10, revised on 2026-05-13 after multi-session review. Date-based directory
-paths and in-place status (no archive/move) adopted 2026-05-13. Design constraints are
-explicitly limited to the "single human engineer + AI incarnations" validation scenario.*
+*Designed through discussion between human engineer and DeepSeek V4 on 2026-05-10.
+Revised 2026-05-13 (date-based paths, in-place status). Philosophy + model responsibility
+semantics added 2026-05-17 with DeepSeek V4 — reverse-index framing, efficiency-over-format,
+exploration path preservation, staleness awareness, the model's duty to guide humans.*
