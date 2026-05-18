@@ -225,6 +225,10 @@ class MossRuntime(ABC):
         """异步阻塞等待关闭触发信号 (closing)."""
         pass
 
+    @abstractmethod
+    def is_running(self) -> bool:
+        pass
+
     def close(self) -> None:
         """发送关闭触发信号 (closing)."""
         pass

@@ -118,7 +118,7 @@ class HostAppStore(AppStore):
         target_dir = self.app_store_directory.joinpath(group, name)
         if target_dir.exists(): return f"Error: Exists at {target_dir}"
 
-        spec = importlib.util.find_spec("ghoshell_moss.host.app_stub")
+        spec = importlib.util.find_spec("ghoshell_moss.host.stubs.app")
         if not spec or not spec.origin: return "Error: Stub not found"
         stub_dir = Path(spec.origin).parent
 
@@ -129,13 +129,16 @@ class HostAppStore(AppStore):
                     shutil.copy2(item, target_dir / item.name)
 
             app_md_path = target_dir / "APP.md"
-            if description and app_md_path.exists():
-                new_app_info = AppInfo(name=name, group=group, description=description,
-                                       docstring=description, work_directory=str(target_dir.absolute()))
-                app_md_path.write_text(new_app_info.as_markdown(), encoding='utf-8')
+            new_app_info = AppInfo(
+                name=name, group=group,
+                description=description,
+                docstring=description,
+                work_directory=str(target_dir.absolute()),
+            )
+            app_md_path.write_text(new_app_info.as_markdown(), encoding='utf-8')
 
             self.list_apps(refresh=True)
-            return f"Success: App '{fullname}' initialized."
+            return f"App '{fullname}' initialized at {target_dir}"
         except Exception as e:
             if target_dir.exists(): shutil.rmtree(target_dir)
             return f"Error: {e}"

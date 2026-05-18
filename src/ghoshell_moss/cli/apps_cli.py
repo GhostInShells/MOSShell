@@ -100,6 +100,48 @@ def show_app(
         console.print(f"[dim]App store: {host.apps().app_store_directory}[/dim]")
 
 
+@app_store_app.command(name="init")
+def create_app(
+        fullname: str = typer.Argument(..., help="App fullname as group/name (e.g., 'my_group/my_app')"),
+        description: str = typer.Option("", "-d", "--description", help="App description"),
+        json_out: bool = typer.Option(False, "--json", help="Output raw JSON."),
+        verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
+        mode: str = typer.Option(
+            None,
+            "-m",
+            "--mode",
+            help="moss mode name",
+        )
+):
+    """
+    Initialize a new app from the stub template.
+
+    Creates the app directory under apps/<group>/<name> with:
+    - APP.md (metadata declaration)
+    - main.py (entry point)
+    - CLAUDE.md (AI developer context)
+    """
+    host = Host(mode=mode)
+    if verbose:
+        print_host_mode_info(host)
+
+    result = host.apps().init_app(fullname, description)
+
+    if result.startswith("Error"):
+        console.print(f"[red]{result}[/red]")
+        raise typer.Exit(code=1)
+
+    if json_out:
+        console.json(data={"status": "ok", "fullname": fullname, "message": result})
+        return
+
+    console.print(f"[green]{result}[/green]")
+    # Extract path from result message for the hint
+    if " at " in result:
+        target_path = result.split(" at ")[-1]
+        console.print(f"\n[dim]Next: cd {target_path} && moss apps test {fullname}[/dim]")
+
+
 def _display_app_table(apps: List[AppInfo], is_filtered: bool):
     """展示 App 概览表格"""
     title = "MOSS App Store"

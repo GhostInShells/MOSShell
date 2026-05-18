@@ -1,4 +1,4 @@
-from typing import Callable, AsyncIterator
+from typing import Callable, AsyncIterator, AsyncGenerator, Protocol, NamedTuple
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.core.concepts.topic import TopicService
@@ -49,21 +49,58 @@ class OutputItem(BaseModel):
         return self
 
 
-class StreamHandle(ABC):
-    """stream 订阅的控制句柄. 最小生命周期: close() + is_running()."""
+class Sample(NamedTuple):
+    """stream 协议返回的结果. 未来可能要扩展"""
+    relative_key: str
+    payload: bytes
+
+
+class StreamSubscriber(Protocol):
+    """
+    session stream 订阅的控制句柄.
+
+    >>> async def consume(stream: StreamSubscriber):
+    >>>       async with stream:
+    >>>         async for msg in stream:
+    >>>             print(msg)
+    """
 
     @abstractmethod
-    def close(self) -> None:
-        """取消订阅, 释放资源"""
+    def full_key(self) -> str:
+        """底层协议完整的 key"""
         pass
 
     @abstractmethod
-    def is_running(self) -> bool:
-        """订阅是否仍然活跃"""
+    def relative_key(self) -> str:
+        """在 session 中创建 key 的相对路径"""
+        pass
+
+    @abstractmethod
+    async def __aenter__(self) -> 'StreamSubscriber':
+        """先进入生命周期管理才能使用. """
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """确保有明确的退出信号."""
+        pass
+
+    def __aiter__(self) -> AsyncIterator[Sample]:
+        """支持异步迭代器, 阻塞获取后续数据."""
+        return self
+
+    @abstractmethod
+    async def __anext__(self) -> Sample:
+        """
+        :raise StopAsyncIteration:
+        """
         pass
 
 
 class OutputBuffer(ABC):
+    """
+    用于实现一个 OutputItem 的 先消费, 后使用缓冲区.
+    """
 
     @abstractmethod
     def close(self) -> None:
@@ -93,20 +130,24 @@ class OutputBuffer(ABC):
 
 class Session(ABC):
     """
-    MOSS 运行时当前的通讯总线.
+    MOSS 运行时当前会话的通讯总线.
 
-    提供 output / signal / stream 三种通讯路径:
-      - output: 结构化消息 (OutputItem), 适合 event 和状态通知
-      - signal: Mindflow 感知信号, 驱动三循环
-      - stream: 字节流 pub/sub, 适合 logos 等实时流式数据
+    各种不同的组件通过总线进行通讯.
+
+    默认提供多种通讯路径:
+      - output: 结构化消息 (OutputItem), 适合 event 和状态通知. 属于全局的消息输出协议. 是系统对外单向输出协议.
+      - signal: Mindflow 感知信号, 驱动三循环, 用于驱动 MOSS 中运行的 Ghost. 详见 Mindflow. 是并行信号输入协议.
+      - file: 基于 Session 级别的文件夹, 可以做文件级别读写通讯.
+      - stream: 字节流 pub/sub, 适合 logos 等实时流式数据, 可以自定义协议. 原则上是单一有序发布, 多端接收.
+      - topic service: 基于可用的 Topic 强类型广播协议通讯. 是原子化的 n * m  广播总线.
 
     todo:
-        1. 实现共享的 parameters
-        2. 实现可注册的基于 key 的函数.
+        1. 实现共享的 parameters. 类似分布式中心协议.
+        2. 实现可注册的基于 key 的函数. actor 协议.
     """
 
     LOGOS_KEY = 'logos'
-    """logos stream 的 key 前缀. 完整 key 为 MOSS/{scope}/streams/logos/{session_id}"""
+    """logos stream 的 key 前缀. 完整 key 需要通过 stream key 获取."""
 
     @property
     @abstractmethod
@@ -162,10 +203,9 @@ class Session(ABC):
     @abstractmethod
     def topics(self) -> TopicService:
         """
-        基于 Topic 概念的服务.
+        基于 Topic 协议的服务.
         """
         pass
-
 
     @property
     @abstractmethod
@@ -199,5 +239,108 @@ class Session(ABC):
             self,
             maxsize: int = 100,
     ) -> OutputBuffer:
-        """生产一个 OutputBuffer"""
+        """
+        生产一个 OutputBuffer
+        """
+        pass
+
+    # ── stream 协议 ──────────────────────────────
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """session 是否在运行中. """
+        pass
+
+    @abstractmethod
+    def self_explain(self) -> str:
+        """
+        Session 协议自解释: 通讯协议, key 命名空间, stream 约定等等.
+        方便调试和运行时检查.
+        """
+        pass
+
+    @abstractmethod
+    def sub_stream(
+            self,
+            relative_key: str,
+            callback: Callable[[Sample], None],
+    ) -> Callable[[], None]:
+        """
+        订阅字节流. callback 接收解码后的 payload. 返回 StreamHandle 管理生命周期.
+        通过自己定义的 Key 来对齐协议约定.
+
+        :param relative_key: Session 层面的 key.
+        :param callback: 需要注意线程安全.
+        :return: 返回 Stop 句柄, 取消监听.
+        """
+        # Session 是跨进程共享的, 进程之间可以用自身约定的协议进行通讯. 用 bytes 作为传输包, 协议自行定义.
+        # Session 底层需要提供通讯的基础建设, 目前默认实现是 zenoh. 支持用通配符做 key.
+        pass
+
+    @abstractmethod
+    def pub_stream_delta(self, relative_key: str, delta: bytes) -> None:
+        """
+        向 Session Stream 总线中广播 payload.
+        Key 需要自行约定, 遵守一定规范. 系统不
+        """
+        pass
+
+    @abstractmethod
+    def get_stream(
+            self, relative_key: str, *, maxsize: int = 0,
+    ) -> AsyncIterator[Sample]:
+        """
+        阻塞的方式获取字节流. maxsize=0 无限缓冲. 调用方 async for 消费.
+        """
+        # 底层
+        pass
+
+    @abstractmethod
+    def stream_key_expr(self, relative_key: str) -> str:
+        """生成完整的 stream key 路径. 子类可覆盖."""
+        # session 需要定义并且暴露自身的 stream key 实现, 方便被调研和理解.
+        pass
+
+    # ── logos stream ──────────────────────────────
+
+    def pub_logos(
+            self,
+            *deltas: str,
+            session_id: str | None = None,
+    ) -> None:
+        """
+        发送模型生产的 logos 片段 (默认是 ctml 流, 详见 Mindflow) 到总线.
+
+        :param deltas: 流式数据的片段.
+        :param session_id: 默认使用当前会话的 Session id 传递 logos 流.
+
+        技术上需要实现有序.
+        """
+        # 提示 Session Stream 机制如何使用.
+        sid = session_id or self.session_id
+        _stream_key = self.stream_key_expr(f"{self.LOGOS_KEY}/{sid}")
+        for delta in deltas:
+            self.pub_stream_delta(
+                _stream_key,
+                delta.encode('utf-8'),
+            )
+
+    async def get_logos(
+            self, *, session_id: str | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        基于约定的协议, 获取广播的 Stream 流.
+        """
+        sid = session_id or self.session_id
+        key = self.stream_key_expr(f"{self.LOGOS_KEY}/{sid}")
+        async for delta in self.get_stream(key):
+            yield delta.payload.decode('utf-8')
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        """session 需要定义自身的生命周期, 方便 matrix 统一治理. """
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass

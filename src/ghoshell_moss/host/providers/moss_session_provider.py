@@ -65,7 +65,4 @@ class WorkspaceSessionProvider(Provider[Session]):
             topic_service=topics,
             session_id=session_id,
         )
-
-        # always clear during the container shutdown.
-        con.add_shutdown(session.clear)
         return session
