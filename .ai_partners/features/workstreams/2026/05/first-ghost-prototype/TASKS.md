@@ -26,3 +26,6 @@
 - [x] 10d — action observe 回路 (流式 feed → interpreter → action.outcome) + 异常分级
 - [x] 10e — session signal → mindflow 路由 + matrix 信息输出
 - [x] 10f — task output 协议: `on_task_done` → session.output, 结算只发 status
+- [x] 10g — output role 体系: 六 role 分离, command/error/system 已落地, logos 缓冲过渡
+- [ ] 10h — session stream logos: logos 走 session stream 流式输出, 替代缓冲检查点
+- [ ] 10i — ghost runtime 可感知 API + 运行前调试体系

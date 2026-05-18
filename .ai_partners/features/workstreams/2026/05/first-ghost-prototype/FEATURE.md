@@ -3,8 +3,8 @@ title: First Ghost Prototype
 status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-17
-step: 10f_done
+updated: 2026-05-18
+step: 10g_done
 depends: []
 milestone:
 description: >-
@@ -76,6 +76,9 @@ first-ghost-prototype/
 | 10d | action observe 回路闭合 | 流式 feed → interpreter → action.outcome() + 异常分级 | done |
 | 10e | session signal 路由 | session → mindflow bridge + matrix logger 输出 | done |
 | 10f | task output 协议 | `on_task_done` → session.output, 结算只发 status | done |
+| 10g | output role 体系 + logos 缓冲 | 六 role 分离，command/error/system 已落地，logos 暂用缓冲过渡 | done |
+| 10h | session stream logos | logos 走 session stream 流式输出，替代当前缓冲检查点 | pending |
+| 10i | ghost runtime 可感知 API + 调试体系 | 运行时自省和运行前调试 | pending |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -171,7 +174,7 @@ async with runtime:
 
 此轮实现了 GhostRuntimeImpl 并清理了 Ghost ABC。关键决策：
 
-1. **删除 `Ghost.nuclei()`**：实例方法造成语义漂移——nuclei 的创建和注册应走 `GhostMeta.nuclei_manifests()` 工厂路径。nuclei 实例由 meta 工厂在容器 bootstrap 后产出，GhostRuntime 负责将它们注册到 Mindflow。
+1. **删除 `Ghost.nuclei()`**：实例方法造成语义漂移——nuclei 的创建和注册应走 `GhostMeta.nuclei_metas()` 工厂路径。nuclei 实例由 meta 工厂在容器 bootstrap 后产出，GhostRuntime 负责将它们注册到 Mindflow。
 
 2. **Ghost 自行组装 instruction**：GhostRuntime 不替 ghost 注入 soul 到 SystemPrompter tree。ghost 自己从 IoC 拿 prompter，自己决定如何组合。Atom 的 `build_instruction()` 已经是这个模式。
 
@@ -199,7 +202,7 @@ async with runtime:
 
 3. **异常走 `'error'`**：InterpretError 捕获后 `session.output('error', str(exception))`，与 task 级别的 `'task'` 区分。
 
-4. **角色分配总结**：
+4. **角色分配总结**（已由 10g 修订，见下文 2026-05-18 决策）：
 
 | role | 来源 | 时机 |
 |------|------|------|
@@ -207,6 +210,8 @@ async with runtime:
 | `'task'` | `on_task_done` → `task_result()` | 每个 task 完成 |
 | `'error'` | InterpretError / critical failure | 异常捕获点 |
 | `'system'` | `status_messages()` only | interpreter 结算 |
+
+> 10g 将 `'task'` 拆为 `command-output` + `command-result`，新增 `moment` role，`'logos'` 不再待实现。
 
 涉及文件：`host/ghost_runtime.py` — `_stream_execute` 注册 `on_task_done` 回调 + 结算改走 status。
 
@@ -233,6 +238,51 @@ Mindflow (调度中枢) → Attention (单次运行态)
                                               ↑
                               Ghost.articulate() 提供 Logos
 ```
+
+## 实现阶段关键决策（2026-05-18）— output role 体系
+
+梳理 session.output 的 role 体系，解决两个 gap：
+1. articulate loop 产出（logos）未走 output 总线
+2. `_on_task_done` 只发了 `as_messages()`（给模型），没发 `result.output`（给人）
+
+### 统一 role 六类
+
+| role | 内容 | 消费者 | 状态 |
+|------|------|--------|------|
+| `moment` | ghost 本轮感知到的 percepts 概要 | 人/调试 | done |
+| `logos` | 模型 articulate 的文本产出 | 人 | **过渡：缓冲检查点，将替换为 session stream（10h）** |
+| `command-output` | `CommandTaskResult.output` | 人 | done |
+| `command-result` | `CommandTaskResult.as_messages()` | 模型 | done |
+| `error` | 异常信息（articulate/action 均覆盖） | 调试 | done |
+| `system` | interpreter 结算 status | 调试 | done |
+
+原 `'task'` role 拆为 `command-output` + `command-result`——两个消费方向不同，混在一起 consumer 无法区分。
+
+### logos 缓冲（过渡方案）
+
+logos 正确的实现路径是 session stream（10h），当前用缓冲 + task 检查点过渡：
+
+```
+_articulate_loop:
+  articulator 入队
+    → output('moment', log="...")
+    → output('logos', log='articulating')  # 信号
+    → buffer deltas, send_nowait 给 mindflow
+
+_action_loop → _stream_execute:
+  每个 task done:
+    → output('logos', *drain_buffer())              # 过渡：缓冲发射
+    → output('command-output', *result.output)       # 给人看
+    → output('command-result', *result.as_messages()) # 给模型看
+  InterpretError:
+    → output('error', log=str(err))
+  结算:
+    → final drain + output('system', *status)
+```
+
+两个 loop 均有异常覆盖：action loop 已有，articulate loop 补上。
+
+涉及文件：`host/ghost_runtime.py` — `_articulate_loop` + `_stream_execute._on_task_done`
 
 ---
 

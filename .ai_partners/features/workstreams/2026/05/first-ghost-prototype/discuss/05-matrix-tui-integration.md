@@ -15,7 +15,7 @@ Manifests 现有的发现模式：
 ```python
 PackageManifests.channels()    → scan_package("MOSS.manifests.channels")    → isinstance(obj, Channel)
 PackageManifests.providers()   → scan_package("MOSS.manifests.providers")   → isinstance(obj, Provider)
-PackageManifests.nuclei()      → scan_package("MOSS.manifests.nuclei")      → isinstance(obj, NucleusFactory)
+PackageManifests.nuclei()      → scan_package("MOSS.manifests.nuclei")      → isinstance(obj, NucleusMeta)
 ```
 
 Ghost 不放入 Manifests。理由：
