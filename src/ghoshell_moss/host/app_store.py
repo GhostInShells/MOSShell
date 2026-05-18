@@ -259,13 +259,16 @@ class HostAppStore(AppStore):
                 **rotation_config,
             }
             if app_fullname not in self._managed_apps_with_fullname:
-                r1 = await self._call_circus({"command": "add", "properties": params})
-                if r1['status'] == "error":
-                    self._logger.error(
-                        "%s failed to start app %s on error: %s",
-                        self._log_prefix, app_fullname, r1,
-                    )
-                    raise CommandErrorCode.VALUE_ERROR.error(f"failed to start {app_fullname}")
+                existing = await self._call_circus({"command": "list"})
+                existing_watchers = existing.get("watchers", [])
+                if app.address not in existing_watchers:
+                    r1 = await self._call_circus({"command": "add", "properties": params})
+                    if r1['status'] == "error":
+                        self._logger.error(
+                            "%s failed to add watcher %s: %s",
+                            self._log_prefix, app_fullname, r1,
+                        )
+                        raise CommandErrorCode.VALUE_ERROR.error(f"failed to start {app_fullname}")
 
             self._managed_apps_with_fullname.add(app_fullname)
             r2 = await self._call_circus({"command": "start", "name": app.address})
