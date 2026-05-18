@@ -40,8 +40,6 @@ class GhostRuntimeImpl(GhostRuntime):
         self._articulate_queue: janus.Queue[Articulator] = janus.Queue()
         self._action_queue: janus.Queue[Action] = janus.Queue()
 
-        # logos 缓冲: articulate loop 产出 → task done 检查点发射
-        self._logos_buffer: list[str] = []
 
     # ── GhostRuntime ABC ──────────────────────────
 
@@ -148,12 +146,11 @@ class GhostRuntimeImpl(GhostRuntime):
             self._action_queue.shutdown(immediate=True)
 
     async def _articulate_loop(self) -> None:
-        """queue → ghost.articulate(articulator) → send_nowait + session.output.
+        """queue → ghost.articulate(articulator) → send_nowait + pub_logos.
 
         output 时序:
-          - articulator 入队 → output('moment', log=...)   ghost 感知到了什么
-          - 开始 articulate   → output('logos', log='articulating')
-          - deltas 缓冲       → task done 检查点由 action loop 发射
+          - articulator 入队 → output('moment', log=...)  ghost 感知到了什么
+          - delta 产出       → pub_logos(delta)           实时流, 外部通过 get_logos() 消费
         """
         ghost = self._ghost_instance
         mindflow = self._mindflow
@@ -167,12 +164,10 @@ class GhostRuntimeImpl(GhostRuntime):
                         'moment',
                         log=f"moment {moment.id}: {len(moment.percepts)} percepts",
                     )
-                    session.output('logos', log='articulating')
-                    self._logos_buffer.clear()
                     try:
                         async for delta in ghost.articulate(articulator):
                             articulator.send_nowait(delta)
-                            self._logos_buffer.append(delta)
+                            session.pub_logos(delta)
                     except Exception as e:
                         session.output('error', log=f"articulate error: {e}")
         except janus.AsyncQueueShutDown:
@@ -209,7 +204,7 @@ class GhostRuntimeImpl(GhostRuntime):
         """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
 
         返回 (status_messages, observe) 闭合 observe 回路.
-        task done 检查点按序发射 logos / command-output / command-result.
+        logos 已走 session stream 实时广播, 此处只发射 command-output/result.
         InterpretError 被捕获 — interpretation 已保留 partial results.
         """
         from ghoshell_moss.core.concepts.errors import InterpretError
@@ -221,18 +216,9 @@ class GhostRuntimeImpl(GhostRuntime):
         logger = self._moss_runtime.matrix.logger
         session = self._moss_runtime.session
 
-        # ── task 级实时输出 ──
-        # output 不支持流式粘包, 利用 task done 检查点发射已缓冲 logos
         def _on_task_done(task: CommandTask) -> None:
             result = task.task_result()
             caller = task.caller_name()
-
-            # logos: 检查点发射 articulate buffer
-            buffered = list(self._logos_buffer)
-            self._logos_buffer.clear()
-            if buffered:
-                full_text = ''.join(buffered)
-                session.output('logos', Message.new(tag='logos').with_content(full_text))
 
             # command-output: 给人的消息
             if result.output:
@@ -264,15 +250,6 @@ class GhostRuntimeImpl(GhostRuntime):
 
                 # ── 阶段 3: execute — 等待全部 task 执行完毕 ──
                 await interpreter.wait_stopped()
-
-                # final drain: task 全部完成后剩余 logos
-                remaining = list(self._logos_buffer)
-                self._logos_buffer.clear()
-                if remaining:
-                    session.output(
-                        'logos',
-                        Message.new(tag='logos').with_content(''.join(remaining)),
-                    )
 
             except InterpretError:
                 # 级别 1: 可管理中断. interpretation 已保留 partial results +
