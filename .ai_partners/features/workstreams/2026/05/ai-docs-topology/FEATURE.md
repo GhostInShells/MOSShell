@@ -5,7 +5,7 @@ description: 为 docs/ai/ 写第一份架构拓扑文档，从动机到方法论
 milestone: null
 priority: P2
 status: in-progress
-status_note: architecture topology aligned, explore phase next
+status_note: v2 draft written, human editing v3
 title: Ai Docs Topology
 updated: '2026-05-18'
 ---
