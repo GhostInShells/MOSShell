@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, AsyncIterator
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.core.concepts.topic import TopicService
@@ -49,6 +49,20 @@ class OutputItem(BaseModel):
         return self
 
 
+class StreamHandle(ABC):
+    """stream 订阅的控制句柄. 最小生命周期: close() + is_running()."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """取消订阅, 释放资源"""
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """订阅是否仍然活跃"""
+        pass
+
+
 class OutputBuffer(ABC):
 
     @abstractmethod
@@ -81,12 +95,18 @@ class Session(ABC):
     """
     MOSS 运行时当前的通讯总线.
 
+    提供 output / signal / stream 三种通讯路径:
+      - output: 结构化消息 (OutputItem), 适合 event 和状态通知
+      - signal: Mindflow 感知信号, 驱动三循环
+      - stream: 字节流 pub/sub, 适合 logos 等实时流式数据
+
     todo:
-        1. 实现一个 stream[bytes] 发送不同 key 的首包/间包/尾包
-        2. 实现系统级的 logos 流监听?
-        3. 实现共享的 parameters
-        4. 实现可注册的基于 key 的函数.
+        1. 实现共享的 parameters
+        2. 实现可注册的基于 key 的函数.
     """
+
+    LOGOS_KEY = 'logos'
+    """logos stream 的 key 前缀. 完整 key 为 MOSS/{scope}/streams/logos/{session_id}"""
 
     @property
     @abstractmethod
