@@ -1,3 +1,3 @@
-from ghoshell_moss.core.resources.local_image import LocalImageResourceFactory
+from ghoshell_moss.core.resources.local_image import LocalImageResourceMeta
 
-local_image_storage_meta = LocalImageResourceFactory()
+local_image_storage_meta = LocalImageResourceMeta()

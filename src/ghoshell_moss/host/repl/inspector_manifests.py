@@ -42,10 +42,10 @@ class ManifestsInspector:
         items = self._manifests.resource_storage_manifests()
         return [
             {
-                "scheme": item.meta.storage_scheme,
-                "host": item.meta.storage_host,
-                "description": item.meta.description,
-                "found_at": item.meta.found_module,
+                "scheme": item.info.storage_scheme,
+                "host": item.info.storage_host,
+                "description": item.info.description,
+                "found_at": item.info.found_module,
             }
             for item in items
         ]

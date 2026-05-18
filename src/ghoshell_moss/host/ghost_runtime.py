@@ -107,7 +107,7 @@ class GhostRuntimeImpl(GhostRuntime):
         container.set(Mindflow, mindflow)
 
         # 注册 nuclei — 从 meta 工厂生成，add 到 mindflow
-        for factory in self._ghost_meta.nuclei_manifests():
+        for factory in self._ghost_meta.nuclei_metas():
             nucleus = factory.factory(container)
             await mindflow.add_nucleus(nucleus)
 

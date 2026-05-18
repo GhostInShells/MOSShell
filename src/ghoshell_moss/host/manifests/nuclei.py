@@ -11,7 +11,7 @@ without requiring a full Ghost runtime.
 from typing import Iterable
 
 from ghoshell_moss.core.blueprint.manifests import NucleusMetaInfo
-from ghoshell_moss.core.blueprint.mindflow import NucleusFactory
+from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.core.codex.discover import scan_package
 
 __all__ = [
@@ -30,7 +30,7 @@ MANIFEST_NUCLEI_PATH = "MOSS.manifests.nuclei"
 
 def find_nucleus_metas(
     package_import_path: str,
-) -> Iterable[tuple[str, str, str, NucleusFactory]]:
+) -> Iterable[tuple[str, str, str, NucleusMeta]]:
     """
     Scan a package for NucleusFactory instances.
 
@@ -39,7 +39,7 @@ def find_nucleus_metas(
     for manifest in scan_package(package_import_path, max_depth=2):
         try:
             for name, obj in manifest.iter_members(respect_all=True):
-                if isinstance(obj, NucleusFactory):
+                if isinstance(obj, NucleusMeta):
                     yield manifest.file_path, manifest.module_path, name, obj
         except Exception:
             continue

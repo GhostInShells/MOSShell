@@ -2,7 +2,7 @@ from typing import AsyncIterable
 from ghoshell_container import IoCContainer, Contracts, Provider
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusFactory, Articulator
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, NucleusMeta, Articulator
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 
@@ -26,7 +26,7 @@ class GhostMeta(ABC):
         pass
 
     @abstractmethod
-    def nuclei_manifests(self) -> list[NucleusFactory]:
+    def nuclei_metas(self) -> list[NucleusMeta]:
         """
         返回可以自解释, 但依赖运行时的 Nucleus Meta
         """

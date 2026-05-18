@@ -6,7 +6,7 @@ import pytest
 from PIL import Image as PILImage
 
 from ghoshell_moss.core.resources.local_image import (
-    LocalImageMeta,
+    LocalImageInfo,
     LocalImageItem,
     LocalImageStorage,
 )
@@ -14,7 +14,7 @@ from ghoshell_moss.core.resources.memory_registry import InMemoryResourcesRegist
 
 
 class _InMemoryImageItem(LocalImageItem):
-    def __init__(self, meta: LocalImageMeta, image: PILImage.Image):
+    def __init__(self, meta: LocalImageInfo, image: PILImage.Image):
         self._meta = meta
         self._image = image
 
@@ -68,16 +68,16 @@ async def test_hosts(registry, tmp_path):
 async def test_list_metas_via_registry(registry, tmp_path):
     reg, storage = await _populated(registry, tmp_path)
     await storage.put(_InMemoryImageItem(
-        LocalImageMeta(path="x", description="test"), _red_image()))
+        LocalImageInfo(path="x", description="test"), _red_image()))
 
-    metas = await reg.list_metas("pil-image")
+    metas = await reg.list_infos("pil-image")
     assert len(metas) == 1
     assert metas[0].locator == "pil-image://default/x"
 
 
 @pytest.mark.asyncio
 async def test_list_metas_unknown_scheme(registry):
-    metas = await registry.list_metas("no-such-scheme")
+    metas = await registry.list_infos("no-such-scheme")
     assert metas == []
 
 
@@ -87,11 +87,11 @@ async def test_list_metas_unknown_scheme(registry):
 async def test_get_via_registry(registry, tmp_path):
     reg, storage = await _populated(registry, tmp_path)
     await storage.put(_InMemoryImageItem(
-        LocalImageMeta(path="beach", description="海滩"), _red_image()))
+        LocalImageInfo(path="beach", description="海滩"), _red_image()))
 
     item = await reg.get("pil-image://default/beach")
     assert item is not None
-    assert item.meta.locator == "pil-image://default/beach"
+    assert item.info.locator == "pil-image://default/beach"
 
 
 @pytest.mark.asyncio
@@ -104,12 +104,12 @@ async def test_get_unknown_scheme(registry):
 async def test_get_by_item_type(registry, tmp_path):
     reg, storage = await _populated(registry, tmp_path)
     await storage.put(_InMemoryImageItem(
-        LocalImageMeta(path="beach", description="海滩"), _red_image()))
+        LocalImageInfo(path="beach", description="海滩"), _red_image()))
 
     item = await reg.get_by_item_type(LocalImageItem, "pil-image://default/beach")
     assert item is not None
     assert isinstance(item, LocalImageItem)
-    assert item.meta.locator == "pil-image://default/beach"
+    assert item.info.locator == "pil-image://default/beach"
 
 
 # -- help / usage via registry -----------------------------------------

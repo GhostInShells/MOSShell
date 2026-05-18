@@ -4,7 +4,7 @@ from typing_extensions import Self
 from dataclasses import dataclass
 
 from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema, ConfigStore
-from ghoshell_moss.contracts.resource import ResourceMeta, ResourceItem, ResourceStorageFactory, RESOURCE_META
+from ghoshell_moss.contracts.resource import ResourceInfo, ResourceItem, ResourceStorageMeta, RESOURCE_INFO
 from ghoshell_moss.core.concepts.topic import TopicSchema, TopicModel, TopicName
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
@@ -19,8 +19,8 @@ __all__ = [
     'ConfigInfo',
     'ProviderInfo',
     'CtmlVersionInfo',
-    'ResourceStorageMetaInfo',
-    'ResourceStorageManifest',
+    'ResourceStorageInfo',
+    'ResourceStorageItem',
     'NucleusMetaInfo',
     'Manifests',
 ]
@@ -203,7 +203,7 @@ class CtmlVersionInfo:
 _CtmlVersion = str
 
 
-class ResourceStorageMetaInfo(ResourceMeta):
+class ResourceStorageInfo(ResourceInfo):
     """Meta describing a discovered ResourceStorageMeta."""
 
     host: str = Field(description="Package where this storage was discovered")
@@ -223,16 +223,16 @@ class ResourceStorageMetaInfo(ResourceMeta):
         return "ResourceStorageMeta discovered in MOSS manifests packages"
 
 
-class ResourceStorageManifest(ResourceItem[ResourceStorageMetaInfo, ResourceStorageFactory], ABC):
+class ResourceStorageItem(ResourceItem[ResourceStorageInfo, ResourceStorageMeta], ABC):
     """Wraps a ResourceStorageMeta. get() instantiates via factory()."""
 
     @abstractmethod
-    def get_sync(self) -> ResourceStorageFactory:
+    def get_sync(self) -> ResourceStorageMeta:
         pass
 
     @property
     @abstractmethod
-    def meta(self) -> ResourceStorageMetaInfo:
+    def info(self) -> ResourceStorageInfo:
         pass
 
 
@@ -300,7 +300,7 @@ class Manifests:
         """
         return []
 
-    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
+    def resource_storage_manifests(self) -> list[ResourceStorageItem]:
         return []
 
     def nuclei(self) -> dict[str, NucleusMetaInfo]:

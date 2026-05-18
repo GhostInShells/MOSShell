@@ -1,7 +1,7 @@
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.manifests import (
     Manifests, ConfigInfo, TopicInfo, ProviderInfo, CtmlVersionInfo,
-    ResourceStorageManifest, NucleusMetaInfo,
+    ResourceStorageItem, NucleusMetaInfo,
 )
 from .configs import search_config_infos_from_package
 from .providers import search_provider_infos_from_package
@@ -128,7 +128,7 @@ class PackageManifests(Manifests):
             self._nuclei = search_nucleus_infos(nuclei_package)
         return self._nuclei
 
-    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
+    def resource_storage_manifests(self) -> list[ResourceStorageItem]:
         items = []
         for meta_info in self.resource_storages().list_metas_sync(limit=-1):
             item = self.resource_storages().get_sync(meta_info.path)
@@ -196,7 +196,7 @@ class MergedManifests(Manifests):
     def providers(self) -> list[ProviderInfo]:
         return self._contract_infos
 
-    def resource_storage_manifests(self) -> list[ResourceStorageManifest]:
+    def resource_storage_manifests(self) -> list[ResourceStorageItem]:
         items = []
         for _, item in self._resource_storages.items():
             items.append(item)

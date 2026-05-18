@@ -9,7 +9,7 @@ InMemoryRegistry — 基于内存 dict 的 ResourceRegistry 最小实现.
 from typing import Sequence
 
 from ghoshell_moss.contracts.resource import (
-    ResourceMeta,
+    ResourceInfo,
     ResourceItem,
     ResourceStorage,
     ResourceRegistry,
@@ -84,25 +84,25 @@ class InMemoryResourcesRegistry(ResourceRegistry):
             return None
         return await storage.get(path)
 
-    async def list_metas(
+    async def list_infos(
             self,
             scheme: str,
             host: str | None = None,
             query: str | None = None,
             limit: int = 50,
-    ) -> Sequence[ResourceMeta]:
+    ) -> Sequence[ResourceInfo]:
         if host is not None:
             storage = self._storages.get(self._key(scheme, host))
             if storage is None:
                 return []
-            return await storage.list_metas(query, limit)
+            return await storage.list_infos(query, limit)
 
         # host=None: aggregate across all hosts for this scheme
-        results: list[ResourceMeta] = []
+        results: list[ResourceInfo] = []
         for (s, h), storage in self._storages.items():
             if s != scheme:
                 continue
-            metas = await storage.list_metas(query, limit)
+            metas = await storage.list_infos(query, limit)
             results.extend(metas)
             if limit >= 0 and len(results) >= limit:
                 results = results[:limit]

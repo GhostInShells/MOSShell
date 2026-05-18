@@ -39,7 +39,7 @@ async def recall(kb, question: str) -> Recollection:
     from pydantic_ai import Agent
     from pydantic_ai.models.anthropic import AnthropicModel
 
-    metas = await kb.list_metas(limit=-1)
+    metas = await kb.list_infos(limit=-1)
 
     # Build context: flattened lines, each is a resource candidate
     context_lines = []

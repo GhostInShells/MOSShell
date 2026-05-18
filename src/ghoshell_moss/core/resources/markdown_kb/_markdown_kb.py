@@ -24,20 +24,20 @@ from pydantic import Field
 import frontmatter
 
 from ghoshell_moss.contracts.resource import (
-    ResourceMeta,
+    ResourceInfo,
     ResourceItem,
     ResourceStorage,
     Query, Recollection,
     unpack_query,
 )
 
-__all__ = ["MarkdownMeta", "MarkdownItem", "MarkdownKnowledgeBase"]
+__all__ = ["MarkdownInfo", "MarkdownItem", "MarkdownKnowledgeBase"]
 
 
 # -- Meta ---------------------------------------------------------------
 
 
-class MarkdownMeta(ResourceMeta):
+class MarkdownInfo(ResourceInfo):
     """Markdown 文档资源元信息."""
 
     host: str = Field(
@@ -75,18 +75,18 @@ class MarkdownMeta(ResourceMeta):
 # -- Item ---------------------------------------------------------------
 
 
-class MarkdownItem(ResourceItem[MarkdownMeta, str]):
+class MarkdownItem(ResourceItem[MarkdownInfo, str]):
     """Markdown 文档资源项. meta 立即可用, get() 读取文件内容."""
 
-    def __init__(self, meta: MarkdownMeta) -> None:
+    def __init__(self, meta: MarkdownInfo) -> None:
         self._meta = meta
 
     @classmethod
-    def meta_type(cls) -> type[MarkdownMeta]:
-        return MarkdownMeta
+    def meta_type(cls) -> type[MarkdownInfo]:
+        return MarkdownInfo
 
     @property
-    def meta(self) -> MarkdownMeta:
+    def info(self) -> MarkdownInfo:
         return self._meta
 
     async def get(self) -> str:
@@ -96,7 +96,7 @@ class MarkdownItem(ResourceItem[MarkdownMeta, str]):
 # -- Storage ------------------------------------------------------------
 
 
-class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
+class MarkdownKnowledgeBase(ResourceStorage[MarkdownInfo, str]):
     """
     Markdown 文件树知识库.
 
@@ -114,18 +114,18 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
     def __init__(self, host: str, root: str | Path) -> None:
         self._host = host
         self._root = Path(root)
-        self._metas: list[MarkdownMeta] = []
-        self._by_path: dict[str, MarkdownMeta] = {}
+        self._metas: list[MarkdownInfo] = []
+        self._by_path: dict[str, MarkdownInfo] = {}
 
     # -- class-level ----------------------------------------------------
 
     @classmethod
     def scheme(cls) -> str:
-        return MarkdownMeta.scheme()
+        return MarkdownInfo.scheme()
 
     @classmethod
     def scheme_description(cls) -> str:
-        return MarkdownMeta.scheme_description()
+        return MarkdownInfo.scheme_description()
 
     # -- instance-level --------------------------------------------------
 
@@ -163,16 +163,16 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
 
     # -- CRUD ------------------------------------------------------------
 
-    async def list_metas(
+    async def list_infos(
             self, query: str | None = None, limit: int = -1
-    ) -> Sequence[MarkdownMeta]:
+    ) -> Sequence[MarkdownInfo]:
         if query is None:
             if limit < 0 or limit >= len(self._metas):
                 return list(self._metas)
             return self._metas[:limit]
 
         # simple keyword match on description + title + path
-        result: list[MarkdownMeta] = []
+        result: list[MarkdownInfo] = []
         q = query.lower()
         for m in self._metas:
             if q in m.description.lower() or q in m.title.lower() or q in m.path.lower():
@@ -195,7 +195,7 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
         return MarkdownItem(meta)
 
     async def put(
-            self, item: ResourceItem[MarkdownMeta, str]
+            self, item: ResourceItem[MarkdownInfo, str]
     ) -> str:
         raise NotImplementedError("MarkdownKnowledgeBase is read-only")
 
@@ -215,7 +215,7 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
         self.scan()
 
     @property
-    def metas(self) -> list[MarkdownMeta]:
+    def metas(self) -> list[MarkdownInfo]:
         """先序遍历的全量 meta 列表 (只读视图)."""
         return list(self._metas)
 
@@ -244,7 +244,7 @@ class MarkdownKnowledgeBase(ResourceStorage[MarkdownMeta, str]):
         path = str(file_path.relative_to(self._root))
         title, description = _extract_meta(file_path)
 
-        meta = MarkdownMeta(
+        meta = MarkdownInfo(
             host=self._host,
             path=path,
             description=description,

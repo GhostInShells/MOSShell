@@ -16,7 +16,7 @@ from ghoshell_moss.host.manifests.configs import (
 )
 from ghoshell_moss.host.manifests.resource_storages import (
     match_resource_storage_metas,
-    ResourceStorageMetaInfo,
+    ResourceStorageInfo,
 )
 from ghoshell_moss.host.manifests.nuclei import (
     match_nucleus_infos,
@@ -373,13 +373,13 @@ def list_primitives(
 
 
 def _display_command_detail(cmd, with_json_schema: bool):
-    meta = cmd.meta()
+    meta = cmd.info()
     console.print(f"\n[bold green]==== Command:[/bold green] {meta.name} ====")
     console.print(f"[dim]Dynamic: {cmd.is_dynamic()}[/dim]\n")
 
     # 重点展示接口定义
     console.print(f"[dim]Interface:[/dim]\n")
-    console.print(Syntax(cmd.meta().interface, 'python'))
+    console.print(Syntax(cmd.info().interface, 'python'))
 
     # 展示 JSON Schema
     if with_json_schema and meta.json_schema is not None:
@@ -515,7 +515,7 @@ def list_resources(
     resource_storage_items = host.manifests.resource_storage_manifests()
 
     # collect metas
-    all_metas = [item.meta for item in resource_storage_items]
+    all_metas = [item.info for item in resource_storage_items]
 
     if search:
         metas_dict = {m.path: m for m in all_metas}
@@ -545,7 +545,7 @@ def list_resources(
     _display_resource_storage_table(results)
 
 
-def _display_resource_storage_table(metas: list[ResourceStorageMetaInfo]):
+def _display_resource_storage_table(metas: list[ResourceStorageInfo]):
     """展示发现的 ResourceStorage Meta"""
     table_data = []
     for info in sorted(metas, key=lambda x: x.path):

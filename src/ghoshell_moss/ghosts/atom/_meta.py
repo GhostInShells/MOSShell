@@ -4,7 +4,7 @@ from typing import Callable, TYPE_CHECKING
 
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
-from ghoshell_moss.core.blueprint.mindflow import NucleusFactory
+from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.system_prompter import SystemPrompter
 from pydantic_ai import Agent
@@ -40,7 +40,7 @@ class AtomMeta(GhostMeta):
             model: Model | None = None,
             provider: Provider | None = None,
             on_agent_build: Callable[[Agent[IoCContainer]], None] | None = None,
-            nuclei_metas: list[NucleusFactory] | None = None,
+            nuclei_metas: list[NucleusMeta] | None = None,
     ):
         self._name = name
         self._description = description
@@ -59,7 +59,7 @@ class AtomMeta(GhostMeta):
     def description(self) -> str:
         return self._description
 
-    def nuclei_manifests(self) -> list[NucleusFactory]:
+    def nuclei_metas(self) -> list[NucleusMeta]:
         return self._nuclei_metas
 
     # ── soul ────────────────────────────────────────

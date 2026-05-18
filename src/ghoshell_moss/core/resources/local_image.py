@@ -15,17 +15,17 @@ from PIL import Image
 from pydantic import Field
 
 from ghoshell_moss.contracts.resource import (
-    ResourceMeta,
+    ResourceInfo,
     ResourceItem,
     ResourceStorage,
-    ResourceStorageFactory,
+    ResourceStorageMeta,
 )
 from ghoshell_container import IoCContainer, INSTANCE
 
 
 # -- Meta & Item -------------------------------------------------------
 
-class LocalImageMeta(ResourceMeta):
+class LocalImageInfo(ResourceInfo):
     """图片资源元信息."""
 
     host: str = Field(default="default", description="Storage 实例标识")
@@ -51,19 +51,19 @@ class LocalImageMeta(ResourceMeta):
         return "本地图片资源, PIL/Pillow 可读写"
 
 
-class LocalImageItem(ResourceItem[LocalImageMeta, Image.Image]):
+class LocalImageItem(ResourceItem[LocalImageInfo, Image.Image]):
     """图片资源项. meta 立即可用, get() 从磁盘读取."""
 
-    def __init__(self, meta: LocalImageMeta, file_path: str) -> None:
+    def __init__(self, meta: LocalImageInfo, file_path: str) -> None:
         self._meta = meta
         self._file_path = file_path
 
     @classmethod
-    def meta_type(cls) -> type[LocalImageMeta]:
-        return LocalImageMeta
+    def meta_type(cls) -> type[LocalImageInfo]:
+        return LocalImageInfo
 
     @property
-    def meta(self) -> LocalImageMeta:
+    def info(self) -> LocalImageInfo:
         return self._meta
 
     async def get(self) -> Image.Image:
@@ -72,7 +72,7 @@ class LocalImageItem(ResourceItem[LocalImageMeta, Image.Image]):
 
 # -- Storage -----------------------------------------------------------
 
-class LocalImageStorage(ResourceStorage[LocalImageMeta, Image.Image]):
+class LocalImageStorage(ResourceStorage[LocalImageInfo, Image.Image]):
     """
     JSONL + 文件系统的本地图片存储.
 
@@ -99,11 +99,11 @@ class LocalImageStorage(ResourceStorage[LocalImageMeta, Image.Image]):
 
     @classmethod
     def scheme(cls) -> str:
-        return LocalImageMeta.scheme()
+        return LocalImageInfo.scheme()
 
     @classmethod
     def scheme_description(cls) -> str:
-        return LocalImageMeta.scheme_description()
+        return LocalImageInfo.scheme_description()
 
     # -- instance-level ------------------------------------------------
 
@@ -143,12 +143,12 @@ pil-image: 本地图片资源存储
 
     # -- CRUD ----------------------------------------------------------
 
-    async def list_metas(
+    async def list_infos(
             self, query: str | None = None, limit: int = 50
-    ) -> Sequence[LocalImageMeta]:
-        metas: list[LocalImageMeta] = []
+    ) -> Sequence[LocalImageInfo]:
+        metas: list[LocalImageInfo] = []
         for line in self._read_lines():
-            meta = LocalImageMeta.model_validate_json(line)
+            meta = LocalImageInfo.model_validate_json(line)
             if query and not self._match(meta, query):
                 continue
             metas.append(meta)
@@ -166,9 +166,9 @@ pil-image: 本地图片资源存储
         return LocalImageItem(meta, str(file_path))
 
     async def put(
-            self, item: ResourceItem[LocalImageMeta, Image.Image]
+            self, item: ResourceItem[LocalImageInfo, Image.Image]
     ) -> str:
-        meta = item.meta
+        meta = item.info
         image = await item.get()
 
         # path — 用调用者给的, 或生成
@@ -206,7 +206,7 @@ pil-image: 本地图片资源存储
         found = False
         kept: list[str] = []
         for line in lines:
-            meta = LocalImageMeta.model_validate_json(line)
+            meta = LocalImageInfo.model_validate_json(line)
             if meta.path == path:
                 found = True
                 file_path = self._files_dir / meta.file_name
@@ -220,7 +220,7 @@ pil-image: 本地图片资源存储
 
     # -- internal ------------------------------------------------------
 
-    def _match(self, meta: LocalImageMeta, query: str) -> bool:
+    def _match(self, meta: LocalImageInfo, query: str) -> bool:
         q = query.lower()
         if q in meta.description.lower():
             return True
@@ -229,19 +229,19 @@ pil-image: 本地图片资源存储
                 return True
         return False
 
-    def _find_meta(self, path: str) -> LocalImageMeta | None:
+    def _find_meta(self, path: str) -> LocalImageInfo | None:
         for line in self._read_lines():
-            meta = LocalImageMeta.model_validate_json(line)
+            meta = LocalImageInfo.model_validate_json(line)
             if meta.path == path:
                 return meta
         return None
 
-    def _upsert_meta(self, meta: LocalImageMeta) -> None:
+    def _upsert_meta(self, meta: LocalImageInfo) -> None:
         """追加或原地更新. put 场景: 删除旧条目 + append 新条目."""
         lines = self._read_lines()
         kept = [
             line for line in lines
-            if LocalImageMeta.model_validate_json(line).path != meta.path
+            if LocalImageInfo.model_validate_json(line).path != meta.path
         ]
         kept.append(meta.model_dump_json())
         self._write_lines(kept)
@@ -263,7 +263,7 @@ pil-image: 本地图片资源存储
 # -- Provider -------------------------------------------------------------
 
 
-class LocalImageResourceFactory(ResourceStorageFactory):
+class LocalImageResourceMeta(ResourceStorageMeta):
     """
     Register LocalImageStorage into the ResourceRegistry during bootstrap.
 

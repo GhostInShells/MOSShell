@@ -7,7 +7,7 @@ auto-discovered by `moss manifests nuclei`.
 """
 
 from ghoshell_moss.core.blueprint.mindflow import (
-    NucleusFactory,
+    NucleusMeta,
     Nucleus,
     SignalName,
     SignalMeta,
@@ -16,7 +16,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
 from ghoshell_container import IoCContainer
 
 
-class ExampleNucleusFactory(NucleusFactory):
+class ExampleNucleusMeta(NucleusMeta):
     """A minimal example NucleusFactory for testing discovery."""
 
     def name(self) -> str:
@@ -25,11 +25,11 @@ class ExampleNucleusFactory(NucleusFactory):
     def description(self) -> str:
         return "An example nucleus factory for manifest discovery testing"
 
-    def signals(self) -> list[SignalMeta]:
+    def signals(self) -> list[type[SignalMeta]]:
         return [InputSignal]
 
     def factory(self, container: IoCContainer) -> Nucleus:
         raise NotImplementedError("Example stub — not intended for runtime use")
 
 
-example_nucleus_factory = ExampleNucleusFactory()
+example_nucleus_factory = ExampleNucleusMeta()

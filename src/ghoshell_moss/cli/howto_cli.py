@@ -51,7 +51,7 @@ def list_docs(
         limit: int = typer.Option(50, "--limit", "-n", help="Max results"),
 ):
     """List how-to documents from the knowledge base."""
-    metas = asyncio.run(kb.list_metas(query=query, limit=limit if limit >= 0 else 9999))
+    metas = asyncio.run(kb.list_infos(query=query, limit=limit if limit >= 0 else 9999))
 
     if not metas:
         print_info("No how-to documents found.")

@@ -30,18 +30,18 @@ from pydantic import BaseModel, Field
 from ghoshell_container import IoCContainer, Bootstrapper
 
 __all__ = [
-    "ResourceMeta", "ResourceItem", "ResourceStorage", "ResourceRegistry",
+    "ResourceInfo", "ResourceItem", "ResourceStorage", "ResourceRegistry",
     "Query", "Recollection", 'unpack_query',
     "ClarifyError",
-    "RESOURCE_META", "RESOURCE_TYPE", "R",
-    "ResourceStorageFactory",
+    "RESOURCE_INFO", "RESOURCE_TYPE", "R",
+    "ResourceStorageMeta",
     "ResourceStorageFactoryBootstrapper",
 ]
 
 RESOURCE_TYPE = TypeVar("RESOURCE_TYPE")
 
 
-class ResourceMeta(BaseModel, ABC):
+class ResourceInfo(BaseModel, ABC):
     """
     可寻址的资源元信息.
     全局地址: scheme://host/path
@@ -92,10 +92,10 @@ class ResourceMeta(BaseModel, ABC):
         return json.dumps(data, ensure_ascii=False, default=str)
 
 
-RESOURCE_META = TypeVar("RESOURCE_META", bound=ResourceMeta)
+RESOURCE_INFO = TypeVar("RESOURCE_INFO", bound=ResourceInfo)
 
 
-class ResourceItem(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
+class ResourceItem(Generic[RESOURCE_INFO, RESOURCE_TYPE], ABC):
     """
     资源项. meta 总是立即可用, get() 懒加载实际数据.
 
@@ -105,7 +105,7 @@ class ResourceItem(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
 
     @classmethod
     @abstractmethod
-    def meta_type(cls) -> type[RESOURCE_META]:
+    def meta_type(cls) -> type[RESOURCE_INFO]:
         """
         返回此 Item 所携带的 ResourceMeta 子类.
         """
@@ -120,7 +120,7 @@ class ResourceItem(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
 
     @property
     @abstractmethod
-    def meta(self) -> RESOURCE_META:
+    def info(self) -> RESOURCE_INFO:
         """
         返回资源元信息. 始终立即可用, 不触发 I/O.
         """
@@ -198,7 +198,7 @@ class Recollection(BaseModel):
 # -- Storage & Registry ---------------------------------------------------
 
 
-class ResourceStorage(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
+class ResourceStorage(Generic[RESOURCE_INFO, RESOURCE_TYPE], ABC):
     """
     单一 (scheme, host) 的资源存储后端.
     注册到 ResourceRegistry 后, AI 通过 locator (scheme://host/path) 访问.
@@ -248,11 +248,11 @@ class ResourceStorage(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
         pass
 
     @abstractmethod
-    async def list_metas(
+    async def list_infos(
             self,
             query: str | None = None,
             limit: int = -1,
-    ) -> Sequence[RESOURCE_META]:
+    ) -> Sequence[RESOURCE_INFO]:
         """
         浏览或搜索资源.
         :param query: 查询条件. None 表示浏览全量.
@@ -271,7 +271,7 @@ class ResourceStorage(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
     @abstractmethod
     async def get(
             self, path: str
-    ) -> ResourceItem[RESOURCE_META, RESOURCE_TYPE] | None:
+    ) -> ResourceItem[RESOURCE_INFO, RESOURCE_TYPE] | None:
         """
         按 path 获取资源项. Storage 已知 scheme 和 host.
         :return: None 表示不存在.
@@ -280,7 +280,7 @@ class ResourceStorage(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
 
     @abstractmethod
     async def put(
-            self, item: ResourceItem[RESOURCE_META, RESOURCE_TYPE]
+            self, item: ResourceItem[RESOURCE_INFO, RESOURCE_TYPE]
     ) -> str:
         """
         保存或更新资源. 若是新资源, Storage 负责分配 path.
@@ -298,7 +298,7 @@ class ResourceStorage(Generic[RESOURCE_META, RESOURCE_TYPE], ABC):
         pass
 
 
-class ResourceStorageFactory(ABC):
+class ResourceStorageMeta(ABC):
     """
     registry 的无副作用自解释配置项.
 
@@ -402,13 +402,13 @@ class ResourceRegistry(ABC):
         pass
 
     @abstractmethod
-    async def list_metas(
+    async def list_infos(
             self,
             scheme: str,
             host: str | None = None,
             query: str | None = None,
             limit: int = 50,
-    ) -> Sequence[ResourceMeta]:
+    ) -> Sequence[ResourceInfo]:
         """
         浏览或搜索资源.
         :param scheme: 目标 scheme.
@@ -444,7 +444,7 @@ class ResourceStorageFactoryBootstrapper(Bootstrapper):
     resource bootstrapper to register resource to registry when container bootstrapping.
     """
 
-    def __init__(self, storage_factory: ResourceStorageFactory) -> None:
+    def __init__(self, storage_factory: ResourceStorageMeta) -> None:
         self._storage_factory = storage_factory
 
     def bootstrap(self, container: IoCContainer) -> None:

@@ -1,4 +1,4 @@
-from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any
+from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any, Type
 
 from typing_extensions import Self, Literal
 from abc import ABC, abstractmethod
@@ -46,7 +46,7 @@ __all__ = [
     'Flag',
     'Logos', 'Moment', 'Reaction',
     'Action', 'Articulator',
-    'Nucleus', 'NucleusFactory', 'Mindflow', 'Attention',
+    'Nucleus', 'NucleusMeta', 'Mindflow', 'Attention',
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
     'PreemptedElseSuppress', 'BufferImpulse',
@@ -485,7 +485,7 @@ class Nucleus(ABC):
         pass
 
 
-class NucleusFactory(ABC):
+class NucleusMeta(ABC):
     """
     Nucleus 的元配置. 是可选的实现.
 

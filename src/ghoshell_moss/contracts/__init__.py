@@ -6,5 +6,5 @@ from .workspace import Workspace, Storage, LocalWorkspace, FileLocker, Lock, Loc
 from .configs import ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider
 from .system_prompter import SystemPrompter, BaseSystemPrompter
 from .resource import (
-    ResourceStorageFactoryBootstrapper, ResourceItem, ResourceMeta, ResourceRegistry, ResourceStorage,
+    ResourceStorageFactoryBootstrapper, ResourceItem, ResourceInfo, ResourceRegistry, ResourceStorage,
 )
