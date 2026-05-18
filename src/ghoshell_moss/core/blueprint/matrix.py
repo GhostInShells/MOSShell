@@ -319,7 +319,8 @@ class Matrix(ABC):
     @abstractmethod
     def session(self) -> Session:
         """
-        共享的 Session Store.
+        所有 Matrix 共享的通讯总线
+        同时分享会话级别的存储空间.
         """
         pass
 

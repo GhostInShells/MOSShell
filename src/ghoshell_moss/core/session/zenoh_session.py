@@ -209,7 +209,7 @@ class MossSessionWithZenoh(Session):
             f"Session:"
             f"  scope: {self._session_scope}\n"
             f"  session_id: {self._session_id}\n"
-            f"  transport: zenoh"
+            f"  transport: zenoh\n"
             f"  output key: {self._output_key_expr}\n"
             f"  signal key: {self._input_signal_expr}\n"
             f"  stream key prefix: {self._stream_key_expr_prefix}\n"
@@ -256,7 +256,7 @@ class MossSessionWithZenoh(Session):
 
     def pub_stream_delta(self, relative_key: str, delta: bytes) -> None:
         self._check_running()
-        self._zenoh_session.put(relative_key, delta)
+        self._zenoh_session.put(self.stream_key_expr(relative_key), delta)
 
     def stream_key_expr(self, relative_key: str) -> str:
         return "/".join([
@@ -275,6 +275,7 @@ class MossSessionWithZenoh(Session):
 
     async def __aenter__(self) -> Self:
         self._logger.info("%s session started")
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closing_event.set()
@@ -309,8 +310,6 @@ class _SessionStreamSubscriber(StreamSubscriber):
     def relative_key(self) -> str:
         return self._relative_key
 
-    # def _add_delta(self, sample: zenoh.Sample) -> None:
-
     def _on_zenoh_sample(self, sample: zenoh.Sample) -> None:
         """做跨线程卸载."""
         if self._closed:
@@ -330,8 +329,10 @@ class _SessionStreamSubscriber(StreamSubscriber):
 
     async def _wait_session_closed(self) -> None:
         await self._session_stop_event.wait()
-        # 发送毒丸.
-        self._queue.sync_q.put_nowait(None)
+        try:
+            self._queue.sync_q.put_nowait(None)
+        except janus.SyncQueueShutDown:
+            pass
 
     async def __aenter__(self) -> 'StreamSubscriber':
         if self._zenoh_session.is_closed():
@@ -341,14 +342,14 @@ class _SessionStreamSubscriber(StreamSubscriber):
         self._queue = janus.Queue(maxsize=self._maxsize)
         self._sub = self._zenoh_session.declare_subscriber(
             self._full_key,
-            self._queue.sync_q.put_nowait,
+            self._on_zenoh_sample,
         )
         self._wait_session_stop_task = asyncio.create_task(self._wait_session_closed())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closed = True
-        if not self._zenoh_session.is_closed():
+        if self._sub is not None and not self._zenoh_session.is_closed():
             try:
                 self._sub.undeclare()
             except Exception:
@@ -361,7 +362,7 @@ class _SessionStreamSubscriber(StreamSubscriber):
             self._wait_session_stop_task = None
 
     async def __anext__(self) -> Sample:
-        if not self._sub and self._queue:
+        if not self._sub or not self._queue:
             raise RuntimeError('Session Stream must enter context manager by `async with` first')
         if self._zenoh_session.is_closed() or self._session_stop_event.is_set():
             raise StopAsyncIteration

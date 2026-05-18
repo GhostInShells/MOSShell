@@ -281,14 +281,14 @@ class Session(ABC):
     def pub_stream_delta(self, relative_key: str, delta: bytes) -> None:
         """
         向 Session Stream 总线中广播 payload.
-        Key 需要自行约定, 遵守一定规范. 系统不
+        relative_key 为 session 层面的 key, 实现层负责转换为完整路径.
         """
         pass
 
     @abstractmethod
     def get_stream(
             self, relative_key: str, *, maxsize: int = 0,
-    ) -> AsyncIterator[Sample]:
+    ) -> StreamSubscriber:
         """
         阻塞的方式获取字节流. maxsize=0 无限缓冲. 调用方 async for 消费.
         """
@@ -316,12 +316,10 @@ class Session(ABC):
 
         技术上需要实现有序.
         """
-        # 提示 Session Stream 机制如何使用.
         sid = session_id or self.session_id
-        _stream_key = self.stream_key_expr(f"{self.LOGOS_KEY}/{sid}")
         for delta in deltas:
             self.pub_stream_delta(
-                _stream_key,
+                f"{self.LOGOS_KEY}/{sid}",
                 delta.encode('utf-8'),
             )
 
@@ -332,9 +330,10 @@ class Session(ABC):
         基于约定的协议, 获取广播的 Stream 流.
         """
         sid = session_id or self.session_id
-        key = self.stream_key_expr(f"{self.LOGOS_KEY}/{sid}")
-        async for delta in self.get_stream(key):
-            yield delta.payload.decode('utf-8')
+        stream = self.get_stream(f"{self.LOGOS_KEY}/{sid}")
+        async with stream:
+            async for delta in stream:
+                yield delta.payload.decode('utf-8')
 
     @abstractmethod
     async def __aenter__(self) -> Self:

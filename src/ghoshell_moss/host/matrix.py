@@ -590,6 +590,14 @@ class MatrixImpl(Matrix):
             yield FractalHub
         return
 
+    def _session_communication_bus_ctx_manager(self):
+        """管理 session 事件总线的生命周期. """
+        # 未来考虑把 zenoh 完全屏蔽到 session 内侧. 暂时无法做到.
+        zenoh_session = self._container.force_fetch(zenoh.Session)
+        self._exit_stack.enter_context(zenoh_session)
+        self._exit_stack.enter_context(self._all_cell_liveness_check_ctx_manager(zenoh_session))
+        self._exit_stack.enter_context(self._this_liveness_ctx_managers(zenoh_session))
+
     async def __aenter__(self) -> Self:
         if self._started:
             raise RuntimeError("Matrix already started")
@@ -599,11 +607,9 @@ class MatrixImpl(Matrix):
         self._exit_stack.__enter__()
         self._exit_stack.enter_context(self._ensure_process_locker_ctx_manager())
         self._exit_stack.enter_context(self._ensure_container_lifecycle_ctx_manager())
-        # 显式声明 zenoh session 生命周期, 不在 container 里 bootstrap 了.
-        zenoh_session = self._container.force_fetch(zenoh.Session)
-        self._exit_stack.enter_context(zenoh_session)
-        self._exit_stack.enter_context(self._all_cell_liveness_check_ctx_manager(zenoh_session))
-        self._exit_stack.enter_context(self._this_liveness_ctx_managers(zenoh_session))
+        # 实现 Matrix.session 的通讯总线同步启动部分.
+        self._session_communication_bus_ctx_manager()
+
         # 启动 stack.
         try:
             await self._async_exit_stack.__aenter__()
@@ -612,6 +618,9 @@ class MatrixImpl(Matrix):
             topic_service = self._container.force_fetch(TopicService)
             # ensure topic service lifecycle
             await self._async_exit_stack.enter_async_context(topic_service)
+            # 完成 session 的异步启动逻辑.
+            session = self._container.force_fetch(Session)
+            await self._async_exit_stack.enter_async_context(session)
             # 完成启动后, 进入到关联依赖启动. 启动成功才进入到核心生命周期启动.
             if len(self._lifecycle_bound_objects_or_types) > 0:
                 for lifecycle in self._lifecycle_bound_objects_or_types:
