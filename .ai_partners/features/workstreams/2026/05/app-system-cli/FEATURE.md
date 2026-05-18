@@ -3,7 +3,7 @@ title: App System CLI
 status: in-progress
 priority: P1
 created: 2026-05-18
-updated: 2026-05-18
+updated: 2026-05-19
 depends: []
 milestone:
 description: >-
@@ -56,6 +56,30 @@ start/stop 不走 CLI — 运行时由 AI 通过 AppStoreChannel 的 `start`/`st
 **下个会话入口**：
 - 调试 ChannelProxy 在 Shell 树中的 bootstrap 链路
 - 怀疑点：app store 通讯地址、Shell channel tree 刷新触发、`wait_connected` 未调用
+
+## Proxy 连通性调试与 timeout 机制 (2026-05-19)
+
+**通过的修复**：
+
+1. **`get_virtual_children()` key 对齐**: `_app_channels` dict 内部 key 从 `address` 改为 `fullname`，与 `get_virtual_children()` 对外返回的 `name()` 推导路径一致。消除三套 key (address/fullname/proxy.name) 的不一致
+2. **`MatrixImpl.channel_proxy()` 权限检查修复**: `HostMainCell.type` 是 `'host'` 不是 `'main'`，原来 `self.this.type != 'main'` 永远为 True，阻止所有主 cell 创建 proxy。改为 `not self._is_main`
+3. **`start` 命令 timeout 参数**:
+   - `-1` (默认): 不等待，立即返回
+   - `0`: 无限等待直到 connected
+   - `>0`: 等待 N 秒后超时返回 WARN
+   - 采用 tree 路径: `ChannelCtx.runtime()` → `refresh_metas()` → `fetch_sub_runtime()` → `wait_connected()` → `refresh_metas()`，不走直接 bootstrap proxy
+4. **单元测试**: 8 个测试覆盖 proxy 连通性、bootstrap 时机、timeout 全分支
+
+**发现的 bug — Zenoh 通讯协议未通**：
+- App 进程启动成功 (`[RUNNING]`)，但 proxy 永远连不上
+- 怀疑：`zenoh_config_main.json5` 与 `zenoh_config_app.json5` 配置不一致，导致 App Cell 的 Zenoh 网络与 Main Cell 不互通
+- 已知但未验证：App Cell 启动时使用的 Zenoh config 路径不同
+- **解决方案方向**: 统一 Zenoh 配置来源，或在 App 启动时传递正确的 Zenoh 配置
+
+**ping_test app**:
+- `.moss_ws/apps/ai_tools/ping_test/` — 最简连通性测试 App (ping/echo 命令)
+- 单元测试中用 `ZenohChannelProvider` + `ZenohProxyChannel` 原语验证通过
+- MCP 实测时 App 进程正常启动但 channel 未连通（上述 config 问题）
 
 ## 文档 (2026-05-18)
 

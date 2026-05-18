@@ -1,5 +1,6 @@
+import asyncio
 from typing import Optional
-from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime, ChannelCtx
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.states_channel import new_channel_from_state, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -75,14 +76,43 @@ class AppStoreChannelState(ChannelState):
             """
             return await self._app_store.get_apps_context()
 
-        async def start(fullname: str, argument: str = "") -> str:
+        async def start(fullname: str, argument: str = "", timeout: float = -1) -> str:
             """
             启动指定的 App。
             :param fullname: App 的完整名称，如 'group/name'。
             :param argument: 启动参数，将作为命令行参数传递给 App。
+            :param timeout: 启动后等待 App Channel 就绪的超时秒数。
+                -1 (默认): 不等待，立即返回。Channel 由 ChannelTree 后续 refresh 时自动连接。
+                 0: 无限等待直到 App Channel 就绪。
+                >0: 等待指定秒数，超时返回未连接状态。
             注意：启动是异步的，可以通过 list 确认是否成功进入 running 状态。
             """
-            return await self._app_store.start_app(fullname, argument)
+            result = await self._app_store.start_app(fullname, argument)
+            if timeout < 0:
+                return result
+
+            self_runtime = ChannelCtx.runtime()
+            if self_runtime is None:
+                return f"{result}\n[WARN] Not in channel runtime, cannot wait for connection"
+
+            # 刷新 tree 结构，让 virtual children 被 tree 发现并 bootstrap
+            await self_runtime.refresh_metas()
+
+            # 从 tree 中查找已 bootstrap 的 child runtime
+            proxy_name = fullname.replace('/', '_')
+            child_runtime = self_runtime.fetch_sub_runtime(proxy_name)
+            if child_runtime is None:
+                return f"{result}\n[WARN] App proxy '{proxy_name}' not found in channel tree"
+
+            try:
+                if timeout == 0:
+                    await child_runtime.wait_connected()
+                else:
+                    await asyncio.wait_for(child_runtime.wait_connected(), timeout=timeout)
+                await child_runtime.refresh_metas()
+                return f"{result}\n[OK] App channel connected and ready"
+            except asyncio.TimeoutError:
+                return f"{result}\n[WARN] App started but channel not connected within {timeout}s"
 
         async def stop(fullname: str) -> str:
             """
@@ -118,17 +148,16 @@ class AppStoreChannelState(ChannelState):
     def get_virtual_children(self) -> dict[ChannelName, Channel]:
         channels = {}
         for app in self._app_store.list_apps():
-            address = app.address
-            if address in self._app_channels:
-                channels[address] = self._app_channels[address]
+            if app.fullname in self._app_channels:
+                channels[app.fullname] = self._app_channels[app.fullname]
                 continue
-            name = app.fullname.replace('/', '_')
+            proxy_name = app.fullname.replace('/', '_')
             channel_proxy = self._matrix.channel_proxy(
-                address=address,
-                name=name,
+                address=app.address,
+                name=proxy_name,
                 description=app.description,
             )
-            channels[address] = channel_proxy
+            channels[app.fullname] = channel_proxy
         with self._app_channels_lock:
             self._app_channels = channels
         return {chan.name(): chan for chan in self._app_channels.copy().values()}

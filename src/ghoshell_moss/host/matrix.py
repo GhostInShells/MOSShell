@@ -364,7 +364,7 @@ class MatrixImpl(Matrix):
             only_allowed_in_main_cell: bool = True,
     ) -> ZenohProxyChannel:
         self._check_running()
-        if only_allowed_in_main_cell and self.this.type != 'main':
+        if only_allowed_in_main_cell and not self._is_main:
             raise RuntimeError(f"Only allowed in main cell type: {self.this.type}")
         return ZenohProxyChannel(
             address=address,

@@ -22,6 +22,7 @@ __all__ = [
     "Builder",
     "MutableChannel",
     "new_channel", "new_command",
+    'CommandUtil',
 ]
 
 """
