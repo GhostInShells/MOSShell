@@ -4,10 +4,10 @@ depends: []
 description: Brief one-line summary of what this feature is about.
 milestone: null
 priority: P2
-status: in-progress
+status: completed
 status_note: improve CLI hints, fix packaging of spec templates
 title: Features Cli Hints And Packaging
-updated: '2026-05-17'
+updated: '2026-05-18'
 ---
 
 # Features Cli Hints And Packaging

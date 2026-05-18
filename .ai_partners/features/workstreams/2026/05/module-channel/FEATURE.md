@@ -1,13 +1,13 @@
 ---
-title: Module Channel
-status: in-progress
-priority: P2
 created: 2026-05-14
-updated: 2026-05-14
 depends: []
-milestone:
-description: >-
-  Zero-dependency module reflection channel — expose any Python module's public functions as Channel commands.
+description: Zero-dependency module reflection channel — expose any Python module's
+  public functions as Channel commands.
+milestone: null
+priority: P2
+status: completed
+title: Module Channel
+updated: '2026-05-18'
 ---
 
 # Module Channel

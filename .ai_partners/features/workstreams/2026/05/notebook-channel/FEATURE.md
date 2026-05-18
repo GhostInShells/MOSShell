@@ -1,13 +1,13 @@
 ---
-title: Notebook Channel
-status: in-progress
-priority: P2
 created: 2026-05-14
-updated: 2026-05-14
 depends: []
-milestone:
-description: >-
-  Disposable file-system notebook channel — scratch space for AI during development.
+description: Disposable file-system notebook channel — scratch space for AI during
+  development.
+milestone: null
+priority: P2
+status: completed
+title: Notebook Channel
+updated: '2026-05-18'
 ---
 
 # Notebook Channel

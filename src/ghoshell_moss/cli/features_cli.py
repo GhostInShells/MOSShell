@@ -33,7 +33,7 @@ features_app = typer.Typer(
 # Next-step hints per status transition
 _STATUS_HINTS = {
     ("draft", "in-progress"): "Record key decisions in FEATURE.md as you implement.",
-    ("in-progress", "completed"): "Verify all key decisions are recorded. The workstream stays at its creation path.",
+    ("in-progress", "completed"): "Commit this FEATURE.md alongside your final code — the reverse index depends on it.",
     ("in-progress", "blocked"): "Update depends: in frontmatter if a specific workstream is blocking this one.",
     ("in-progress", "draft"): "Update the Motivation section if context has changed.",
 }
