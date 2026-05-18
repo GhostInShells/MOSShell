@@ -30,6 +30,8 @@ def reflect_any_by_import_path(import_path: str) -> str:
     """
     from ghoshell_moss.core.codex._reflect import reflect_prompt_from_value
     value = import_from_path(import_path)
+    if value is None:
+        raise ImportError(f"Cannot import '{import_path}': attribute not found")
     if isinstance(value, ModuleType):
         return reflect_module(value)
     data = reflect_prompt_from_value(value)

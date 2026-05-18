@@ -65,7 +65,8 @@ def _ai_print(*args, **kwargs) -> None:
         if isinstance(arg, str):
             parts.append(_strip_markup(arg))
         elif isinstance(arg, RichSyntax):
-            parts.append(arg.code.rstrip())
+            if arg.code is not None:
+                parts.append(arg.code.rstrip())
         elif isinstance(arg, (Panel, Table)):
             parts.append(_renderable_to_plain(arg))
         else:
