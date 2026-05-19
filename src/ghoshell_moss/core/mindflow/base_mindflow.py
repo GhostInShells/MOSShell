@@ -1,3 +1,4 @@
+from abc import abstractmethod
 import time
 from typing import Iterable, AsyncGenerator, AsyncIterator
 from typing_extensions import Self
@@ -16,9 +17,11 @@ import asyncio
 import contextlib
 
 
-class BaseMindflow(Mindflow):
+class AbsMindflow(Mindflow):
     """
-    基础 Mindflow 的实现.
+    Mindflow 抽象基类: 信号路由, impulse 排队, attention 调度.
+
+    _build_attention() 留给子类实现仲裁策略.
     """
 
     def __init__(
@@ -311,17 +314,14 @@ class BaseMindflow(Mindflow):
                 inherit_outcome = self._current_attention.last_outcome()
             else:
                 inherit_outcome = Reaction()
-            attention = BaseAttention(
-                impulse=impulse,
-                previous=inherit_outcome,
-                logger=self._logger,
-                system_floor_strength=0.0,  # 决定强度衰减到合适中断.
-                source_escalation=1.1,  # 决定同源 impulse 提权比例.
-                max_protection_time=3.0,  # 决定最大的保护时间.
-                protection_duration_ratio=0.2,  # 决定保护时间在总时间的比例.
-            )
+            attention = self._build_attention(impulse, inherit_outcome)
             self._set_attention(attention)
             return None
+
+    @abstractmethod
+    def _build_attention(self, impulse: Impulse, inherit_outcome: Reaction) -> Attention:
+        """子类实现: 用指定的仲裁策略构建 Attention 实例."""
+        ...
 
     def _set_attention(self, attention: Attention) -> None:
         now = time.monotonic()
@@ -628,3 +628,22 @@ class BaseMindflow(Mindflow):
             )
         # do not block any exception
         return None
+
+
+class BaseMindflow(AbsMindflow):
+    """
+    基础 Mindflow 实现: 强度衰减仲裁 (BaseAttention).
+
+    保持原有构造签名和行为不变, 向后兼容.
+    """
+
+    def _build_attention(self, impulse: Impulse, inherit_outcome: Reaction) -> Attention:
+        return BaseAttention(
+            impulse=impulse,
+            previous=inherit_outcome,
+            logger=self._logger,
+            system_floor_strength=0.0,
+            source_escalation=1.1,
+            max_protection_time=3.0,
+            protection_duration_ratio=0.2,
+        )
