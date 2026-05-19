@@ -10,7 +10,7 @@ from ghoshell_moss.cli.utils import (
 )
 from ghoshell_moss.cli import (
     codex_cli, concepts_cli, workspace_cli, manifests_cli, apps_cli,
-    modes_cli, ctml_cli, howto_cli, features_cli, eval_cli, docs_cli,
+    modes_cli, ctml_cli, howto_cli, features_cli, docs_cli,
     ghosts_cli,
 )
 from typer.main import get_command
@@ -27,7 +27,7 @@ app = typer.Typer(
     no_args_is_help=True  # 没传子命令时自动显示帮助
 )
 
-app.add_typer(codex_cli.codex_app, name="codex", short_help="Python runtime inspect tools")
+app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(workspace_cli.workspace_app, name="ws", short_help="MOSS Workspace tools")
 app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
@@ -45,11 +45,6 @@ app.add_typer(ghosts_cli.ghost_app, name="ghosts", short_help="MOSS ghost discov
 # Root-level docs command — single action, no subcommands needed
 app.command(name="docs", short_help="Browse MOSS reference documentation")(
     docs_cli.docs_cmd
-)
-
-# Root-level eval command — thin wrapper, no sub-typer needed
-app.command(name="eval", short_help="Execute Python code in the live MOSS runtime")(
-    eval_cli.eval_code
 )
 
 

@@ -1,5 +1,5 @@
 """
-Codex command group - code reflection and viewing tools
+Codex command group - runtime introspection and code evaluation tools.
 """
 
 import typer
@@ -8,15 +8,16 @@ import importlib
 import pkgutil
 import os
 import ast
+import json
+import sys
+import subprocess
 from pathlib import Path
 from typing import Optional, List, Tuple
 from rich.syntax import Syntax
 
-# 假设你的 app 定义在 main.py 中
-# 注意：在 Typer 中，我们通常使用 app.add_typer 来组合模块
 codex_app = typer.Typer(
-    short_help="Code reflection, viewing and analysis tools.",
-    help="Code reflection, viewing and analysis tools.",
+    short_help="Runtime introspection, code evaluation and analysis tools.",
+    help="Runtime introspection, code evaluation and analysis tools.",
     no_args_is_help=True,
 )
 
@@ -394,3 +395,68 @@ def list_modules(
     for i, tip in enumerate(tips):
         prefix = "• " if i > 0 else "🛈 "
         console.print(f"[dim]{prefix}{tip}[/dim]")
+
+
+@codex_app.command("eval")
+def eval_code(
+    code: str = typer.Argument(default="", help="Python code to execute"),
+    module: Optional[str] = typer.Option(
+        None, "--module", "-m",
+        help="Import path of module to use as execution context (types and imports available)",
+    ),
+    file: Optional[Path] = typer.Option(
+        None, "--file", "-f",
+        help="Read code from file instead of argument",
+    ),
+):
+    """
+    Execute arbitrary Python code in the live MOSS runtime for introspection.
+
+    Use this when you need to inspect runtime state that static reflection
+    (get-interface, get-source, info, list) cannot reach — live object graphs,
+    async coroutine state, multi-process topology, or dynamic attributes.
+
+    Output is JSON with two fields:
+      {"returns": <value>, "std_output": "<captured print() output>"}
+
+    Assign to __result__ to return a structured value. Use print() for
+    free-form output. Both work simultaneously — print() goes to std_output,
+    __result__ goes to returns. Non-JSON-serializable returns are repr()'d.
+
+    --module runs code in the context of an already-imported module, so
+    its types and imports are directly available without re-importing.
+    This is the "second reflection" pattern: read a module with get-interface
+    or get-source, then poke its runtime state with eval --module.
+
+    Examples:
+      moss codex eval "__result__ = type(42)"
+      moss codex eval -m ghoshell_moss.host.moss_runtime "print(dir())"
+      moss codex eval -m ghoshell_moss "print(Channel.__mro__)"
+      moss codex eval -f debug_script.py
+    """
+    if file:
+        try:
+            code = file.read_text()
+        except FileNotFoundError:
+            print_error(f"File not found: {file}")
+            raise typer.Exit(code=1)
+
+    if not code.strip():
+        print_error("No code to execute. Provide code as argument or via --file.")
+        raise typer.Exit(code=1)
+
+    request = json.dumps({"code": code, "module": module})
+
+    child = subprocess.run(
+        [sys.executable, "-m", "ghoshell_moss.cli._eval_child"],
+        input=request,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if child.returncode != 0:
+        print_error(f"Code execution failed:\n{child.stderr.rstrip()}")
+        raise typer.Exit(code=1)
+
+    console.print(child.stdout.rstrip())

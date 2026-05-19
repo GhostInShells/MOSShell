@@ -34,7 +34,7 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
 - **用途**: 无交互的纯命令行操作。AI worker、脚本、以及人类工程师非交互式使用时的入口
 - **关键机制**: 全局 `--ai` flag 通过 callback 注入, 调用 `set_ai_mode(True)` 切换到纯文本输出模式, 剥离所有 rich 视觉排版 (表格转为 markdown, 代码直接输出, rich markup 全部 strip)。这对 AI 消费者节省大量 token
 - **子命令组** (每个都是独立的 Typer instance, 通过 `app.add_typer()` 挂载):
-  - `codex` → `codex_cli.py`: Python 运行时反射 (get-interface, get-source, list, info)
+  - `codex` → `codex_cli.py`: 运行时自省与代码执行 (get-interface, get-source, list, info, eval)
   - `concepts` → `concepts_cli.py`: MOSS 架构概念展示 (core/blueprint/contracts)
   - `ctml` → `ctml_cli.py`: CTML 版本管理 (list, read)
   - `ws` → `workspace_cli.py`: workspace 管理 (where, init, copy-env)
