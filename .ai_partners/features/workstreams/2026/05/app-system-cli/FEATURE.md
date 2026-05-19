@@ -1,13 +1,13 @@
 ---
-title: App System CLI
-status: in-progress
-priority: P1
 created: 2026-05-18
-updated: 2026-05-19T12:10
 depends: []
-milestone:
-description: >-
-  moss apps init 命令 + app_stub 脚手架 + 文档，完成 AI 自迭代闭环的基础设施。
+description: moss apps init 命令 + app_stub 脚手架 + 文档，完成 AI 自迭代闭环的基础设施。
+milestone: null
+priority: P1
+status: completed
+status_note: init/start/stop/list 全链路 MCP 验证通过，核心功能交付
+title: App System CLI
+updated: '2026-05-19'
 ---
 
 # App System CLI

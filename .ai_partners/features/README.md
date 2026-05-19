@@ -33,6 +33,9 @@ When they conflict, update the file — don't blindly follow it.
 
 ### Model's role
 
+- **Bootstrap at session start.** Before responding to the first human request, run
+  `moss --ai features list` to discover active workstreams. One command, sub-second,
+  prevents re-explaining.
 - **Guide humans** unfamiliar with the mechanism. The model is its native user.
 - **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
 - **Close out completed features.** When feature work is done, run `moss features set-status <name> completed`
@@ -70,9 +73,14 @@ The mechanism's core value: freeing human bandwidth so the engineer operates at 
 This is the binding constraint. `git log -- <source-file>` must trace back to the FEATURE.md
 state at that point. Without it, the reverse index breaks.
 
-Per commit, update: `updated` date, new Key Decisions if design choices were made,
-`status_note` if a one-line summary helps. Do not log micro-changes — the commit message
-carries details; FEATURE.md carries decisions worth indexing.
+**The rule binds at the merge boundary** — commits that land on `main`/`dev`.
+WIP commits on a feature branch are exempt. Squash or rebase your branch, and ensure
+the final squashed commit includes the FEATURE.md update. Don't let compliance overhead
+kill `commit early, commit often` during development.
+
+Per merge-boundary commit, update: `updated` date, new Key Decisions if design choices
+were made, `status_note` if a one-line summary helps. Do not log micro-changes —
+the commit message carries details; FEATURE.md carries decisions worth indexing.
 
 The final commit of a feature MUST include the status transition to `completed`.
 This is the most important FEATURE.md update — without it, `features list` shows stale
@@ -100,6 +108,23 @@ description: >-            # One-line summary for listing
 Directory name under `workstreams/` (kebab-case) is the unique identifier.
 Path encodes creation date: `workstreams/<year>/<month>/<name>/FEATURE.md`.
 Status changes are frontmatter-only — no file moves.
+
+## Scope: When to Create a Workstream
+
+A workstream is warranted when the work involves **decisions worth indexing**:
+new design choices, rejected alternatives, non-obvious implementation patterns,
+or exploration of dead ends.
+
+Skip it for:
+- Typo fixes, trivial renames, one-line bugfixes
+- Changes where the commit message alone carries sufficient context
+- Work completed in a single session with no cross-session handoff needed
+
+When follow-up work continues the same problem space, **update the existing FEATURE.md**
+rather than creating a new workstream. A single FEATURE.md can span many commits and
+sessions — it's a reverse index into a decision trail, not a task ticket. New iterations
+on the same feature add new sections; only create a new workstream when a genuinely
+new motivation and decision set emerges.
 
 ## State Machine
 

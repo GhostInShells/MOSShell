@@ -4,10 +4,10 @@ depends: []
 description: 为 docs/ai/ 写第一份架构拓扑文档，从动机到方法论到抽象，统领所有技术领域的综合理解。
 milestone: null
 priority: P2
-status: in-progress
-status_note: v5 finalized — 四轮 human+AI 迭代，文档结构稳定，后续按需演进
+status: completed
+status_note: v5 finalized, 结构稳定，后续按需演进
 title: Ai Docs Topology
-updated: '2026-05-18'
+updated: '2026-05-19'
 ---
 
 # Ai Docs Topology
