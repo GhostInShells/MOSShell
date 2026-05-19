@@ -127,6 +127,7 @@ class ConsoleOutput:
             'xml',
             theme="ansi_dark",
             background_color="default",  # 关键点：背景透明，不抢终端色
+            word_wrap=True,
         )
         yield Panel(
             message_content,
