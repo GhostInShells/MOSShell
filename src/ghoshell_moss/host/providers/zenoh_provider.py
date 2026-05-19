@@ -56,10 +56,10 @@ class HostEnvZenohProvider(Provider[zenoh.Session]):
 
     def __init__(
             self,
-            app_conf_file: str = 'zenoh_config_app.json5',
+            cell_conf_file: str = 'zenoh_config_cell.json5',
             main_conf_file: str = 'zenoh_config_main.json5'
     ):
-        self._app_conf_file = Path(app_conf_file)
+        self._cell_conf_file = Path(cell_conf_file)
         self._main_conf_file = Path(main_conf_file)
 
     def singleton(self) -> bool:
@@ -70,10 +70,10 @@ class HostEnvZenohProvider(Provider[zenoh.Session]):
 
     def factory(self, con: IoCContainer) -> zenoh.Session:
         matrix = con.force_fetch(Matrix)
-        if matrix.this.type == 'app':
-            config_path = self._app_conf_file
-        else:
+        if matrix.this.type == 'host':
             config_path = self._main_conf_file
+        else:
+            config_path = self._cell_conf_file
         workspace = con.force_fetch(Workspace)
         if workspace is not None:
             # 从 workspace 中获取, 不带其它规则了.

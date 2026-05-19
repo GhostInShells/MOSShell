@@ -11,7 +11,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.cli import (
     codex_cli, concepts_cli, workspace_cli, manifests_cli, apps_cli,
     modes_cli, ctml_cli, howto_cli, features_cli, docs_cli,
-    ghosts_cli,
+    ghosts_cli, scripts_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -41,6 +41,7 @@ app.add_typer(apps_cli.app_store_app, name="apps", short_help="default apps mana
 app.add_typer(howto_cli.howto_app, name="how-tos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(ghosts_cli.ghost_app, name="ghosts", short_help="MOSS ghost discovery and management")
+app.add_typer(scripts_cli.script_app, name="script", short_help="One-shot dev-time scripts for matrix debugging")
 
 # Root-level docs command — single action, no subcommands needed
 app.command(name="docs", short_help="Browse MOSS reference documentation")(

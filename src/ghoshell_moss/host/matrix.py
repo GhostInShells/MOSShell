@@ -251,10 +251,9 @@ class MatrixImpl(Matrix):
         default_providers = []
         if self._is_main:
             default_providers.append(WorkspaceZenohProvider("zenoh_config_main.json5"))
-        elif self._this_cell.type == 'app':
-            default_providers.append(WorkspaceZenohProvider("zenoh_config_app.json5"))
         else:
-            raise RuntimeError(f"Unknown cell type: {self._this_cell.type}")
+            # All non-host cells (app, script, future) share the connector config.
+            default_providers.append(WorkspaceZenohProvider("zenoh_config_cell.json5"))
 
         # 注册 configs
         default_providers.append(WorkspaceYamlConfigStoreProvider(
