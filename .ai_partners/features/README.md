@@ -38,9 +38,11 @@ When they conflict, update the file — don't blindly follow it.
   prevents re-explaining.
 - **Guide humans** unfamiliar with the mechanism. The model is its native user.
 - **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
-- **Close out completed features.** When feature work is done, run `moss features set-status <name> completed`
-  and commit the FEATURE.md alongside the final code. This is not optional — the reverse index breaks
-  if the next incarnation can't tell what's done vs. what's still in flight.
+- **Close out completed features.** When feature work is done, **first** run
+  `moss features set-status <name> completed`, **then** commit the FEATURE.md alongside the
+  final code in the same commit. Order matters: status change happens before commit,
+  not as a follow-up. This is not optional — the reverse index breaks if the next
+  incarnation can't tell what's done vs. what's still in flight.
 - **Proactively synthesize** from the features directory when the human needs to know
   what's happening. FEATURE.md is a knowledge distribution mechanism, not a passive record.
 
@@ -85,6 +87,10 @@ the commit message carries details; FEATURE.md carries decisions worth indexing.
 The final commit of a feature MUST include the status transition to `completed`.
 This is the most important FEATURE.md update — without it, `features list` shows stale
 in-progress workstreams and the next AI incarnation wastes time investigating dead trails.
+
+**Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit`
+(with FEATURE.md included). Not the reverse. status change is a file edit, and that edit
+must be inside the commit.
 
 CLI does not enforce this. AI incarnations follow it; the human reviews for it.
 A commit landing without its FEATURE.md update should be rebased, not patched with a follow-up.
