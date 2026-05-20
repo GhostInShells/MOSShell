@@ -4,7 +4,7 @@ status: in_progress
 priority: P0
 created: 2026-05-14
 updated: 2026-05-20
-step: 11a_done
+step: 11c_done
 depends: []
 milestone:
 description: >-
@@ -80,8 +80,8 @@ first-ghost-prototype/
 | 10h | session stream logos | logos 走 session stream 流式输出，替代当前缓冲检查点 | done |
 | 10i | ghost 可观测性体系 | Ghost on_articulate_exit + inspect_state, GhostRuntime inspect_loop_health + LoopHealth TypedDict | done |
 | 11a | Mindflow 默认 input signal | GhostRuntime fallback → new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention), 43 tests 全部通过 | done |
+| 11c | on_challenge 旁路观察 | ChallengeObserver(Callable[[challenger, defender, verdict], None]) + Mindflow.on_challenge(), AbsMindflow._challenge_attention 内 fire | done |
 | 11b | Mindflow inspect + 自解释 | mindflow 探知接口、自解释接口 | pending |
-| 11c | signal 记录 + on_impulse | signal 历史记录，on_impulse 回调注册做旁路观察（仅观察） | pending |
 | 12 | 测试与 TUI | mock ghost + input signal 脚本测试 → TUI 全链路验证 | pending |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型

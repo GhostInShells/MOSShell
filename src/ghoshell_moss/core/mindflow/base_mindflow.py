@@ -7,7 +7,7 @@ import janus
 
 from ghoshell_moss.core.blueprint.mindflow import (
     Mindflow, Attention, Impulse, Nucleus, Signal, Priority, BufferImpulse,
-    Reaction,
+    Reaction, ChallengeObserver, ChallengeVerdict,
 )
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -52,6 +52,7 @@ class AbsMindflow(Mindflow):
         self._signal_count: int = 0
         self._has_impulse_event = ThreadSafeEvent()
         self._set_impulse_lock = asyncio.Lock()
+        self._challenge_observer: ChallengeObserver | None = None
 
         # 内部循环检测是否有新的 impulse.
         self._consuming_signal_task: asyncio.Task | None = None
@@ -248,20 +249,24 @@ class AbsMindflow(Mindflow):
                 return None
             # attention 或者.
             if self._current_attention and not self._current_attention.is_aborted():
-                # 校验出现结果.
+                defender = self._current_attention.peek()
                 done = self._current_attention.challenge(impulse)
                 if done is BufferImpulse:
-                    # 挑战通过, 已经被 buffer 了. 通知一下.
+                    # 同 ID 更新 complete, 不抢占.
                     self._pop_impulse(impulse)
+                    self._fire_challenge(impulse, defender, 'absorbed')
                 elif done:
-                    # set impulse 时会终止原来的. 并继承对应参数.
+                    # 抢占成功, 创建新 Attention.
                     await self._create_attention_from_impulse(impulse)
+                    self._fire_challenge(impulse, defender, 'preempted')
                 else:
-                    # 通知 suppress.
-                    self._suppress_impulse(impulse, self._current_attention.peek())
+                    # 被压制.
+                    self._suppress_impulse(impulse, defender)
+                    self._fire_challenge(impulse, defender, 'suppressed')
                 return None
             else:
                 await self._create_attention_from_impulse(impulse)
+                self._fire_challenge(impulse, None, 'initial')
             return None
         except asyncio.CancelledError:
             raise
@@ -271,6 +276,21 @@ class AbsMindflow(Mindflow):
                 "%s failed to challenge attention with impulse %r: %s",
                 self._log_prefix, impulse, e,
             )
+
+    def _fire_challenge(
+            self,
+            challenger: Impulse,
+            defender: Impulse | None,
+            verdict: ChallengeVerdict,
+    ) -> None:
+        if self._challenge_observer is not None:
+            try:
+                self._challenge_observer(challenger, defender, verdict)
+            except Exception:
+                self._logger.exception(
+                    "%s challenge observer raised: %r",
+                    self._log_prefix, challenger,
+                )
 
     def attention(self) -> Attention | None:
         if self._current_attention is None:
@@ -387,6 +407,9 @@ class AbsMindflow(Mindflow):
                 # 在这里通知完 suppress.
                 nucleus.suppress(best_impulse)
         return best_impulse
+
+    def on_challenge(self, observer: ChallengeObserver | None) -> None:
+        self._challenge_observer = observer
 
     def pause(self, toggle: bool) -> None:
         if not self.is_running():

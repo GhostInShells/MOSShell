@@ -33,7 +33,7 @@
 ### Phase 3: 感知侧补齐 + 全链路测试
 
 - [x] 11a — Mindflow 默认 input signal: GhostRuntime fallback 改用 new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention)
+- [x] 11c — on_challenge 旁路观察: ChallengeObserver 类型 + Mindflow.on_challenge() + _challenge_attention 触发 (test_on_challenge.py 验证)
 - [ ] 11b — Mindflow inspect + 自解释接口
-- [ ] 11c — signal 记录 + on_impulse 旁路观察回调（仅观察）
 - [ ] 12a — mock ghost + input signal 脚本测试
 - [ ] 12b — TUI 全链路验证

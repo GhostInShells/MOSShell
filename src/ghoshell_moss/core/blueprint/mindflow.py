@@ -50,9 +50,18 @@ __all__ = [
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
     'PreemptedElseSuppress', 'BufferImpulse',
+    'ChallengeVerdict', 'ChallengeObserver',
 ]
 
 SignalName = str
+
+ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial']
+"""Impulse challenge 的仲裁结果。
+- preempted: 抢占成功，创建新 Attention
+- suppressed: 被压制，原 nucleus 收到 suppress()
+- absorbed: 同 ID 更新 complete，不抢占
+- initial: 当前无 attention（首个 impulse）
+"""
 
 
 class Priority(enum.IntEnum):
@@ -367,6 +376,15 @@ class Impulse(BaseModel):
 
     def __repr__(self):
         return f"<Impulse id={self.id} trace={self.trace_id} source={self.source}>"
+
+
+ChallengeObserver = Callable[
+    [Impulse,           # challenger — 发起挑战的 Impulse
+     Impulse | None,    # defender   — 当前占据注意力的 Impulse，None 表示无当前 attention
+     ChallengeVerdict], # verdict    — 仲裁结果
+    None,
+]
+"""Impulse challenge 的旁路观察回调。仅观察，无副作用。"""
 
 
 class Nucleus(ABC):
@@ -992,6 +1010,21 @@ class Mindflow(ABC):
     def set_impulse(self, impulse: Impulse) -> None:
         """
         直接添加一个 Impulse 到池中.
+        """
+        pass
+
+    @abstractmethod
+    def on_challenge(self, observer: ChallengeObserver | None) -> None:
+        """注册 challenge 旁路观察回调。
+
+        每次 impulse challenge attention 后触发:
+          observer(challenger, defender, verdict)
+
+        challenger — 发起挑战的 Impulse
+        defender   — 当前占据注意力的 Impulse，None 表示无当前 attention
+        verdict    — 仲裁结果: 'preempted' | 'suppressed' | 'absorbed' | 'initial'
+
+        传 None 清除回调。同时只保留一个。仅观察，无副作用。
         """
         pass
 
