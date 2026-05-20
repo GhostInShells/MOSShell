@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, Mode
 from ghoshell_moss.core.blueprint.session import Session
+from ghoshell_moss.core.blueprint.mindflow import Mindflow
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter
 from .ghost import Ghost, GhostMeta
@@ -275,6 +276,7 @@ class GhostRuntime(ABC):
         ghost_runtime.moss          → MossRuntime (全部 moss 能力)
         ghost_runtime.ghost         → Ghost (运行时实例)
         ghost_runtime.meta          → GhostMeta (启动前即可访问)
+        ghost_runtime.mindflow      → Mindflow (运行时三循环中枢)
         ghost_runtime.container     → IoCContainer (快捷路径)
     """
 
@@ -294,6 +296,12 @@ class GhostRuntime(ABC):
     @abstractmethod
     def meta(self) -> GhostMeta:
         """Ghost 的元信息. MossHost.run_ghost 时即已发现, 启动前即可访问."""
+        pass
+
+    @property
+    @abstractmethod
+    def mindflow(self) -> Mindflow:
+        """GhostRuntime 持有的 Mindflow. 启动后可用，未启动时抛出 RuntimeError."""
         pass
 
     @property

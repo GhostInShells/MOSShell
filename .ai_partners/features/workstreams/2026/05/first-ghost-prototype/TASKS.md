@@ -32,7 +32,7 @@
 
 ### Phase 3: 感知侧补齐 + 全链路测试
 
-- [ ] 11a — Mindflow 默认 input signal: 退化传统输入/打断模式, GhostRuntime 暴露 mindflow
+- [x] 11a — Mindflow 默认 input signal: GhostRuntime fallback 改用 new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention)
 - [ ] 11b — Mindflow inspect + 自解释接口
 - [ ] 11c — signal 记录 + on_impulse 旁路观察回调（仅观察）
 - [ ] 12a — mock ghost + input signal 脚本测试

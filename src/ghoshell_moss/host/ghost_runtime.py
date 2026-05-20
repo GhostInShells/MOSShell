@@ -62,6 +62,12 @@ class GhostRuntimeImpl(GhostRuntime):
     def meta(self) -> GhostMeta:
         return self._ghost_meta
 
+    @property
+    def mindflow(self) -> Mindflow:
+        if self._mindflow is None:
+            raise RuntimeError("GhostRuntime not started. Call __aenter__ first.")
+        return self._mindflow
+
     # ── 生命周期 ──────────────────────────────────
 
     async def __aenter__(self) -> Self:
@@ -110,13 +116,13 @@ class GhostRuntimeImpl(GhostRuntime):
         matrix = self._moss_runtime.matrix
         container = matrix.container
 
-        # 解析: ghost.mindflow() > IoC > BaseMindflow
+        # 解析: ghost.mindflow() > IoC > new_default_mindflow()
         mindflow = ghost.mindflow()
         if mindflow is None:
             mindflow = container.get(Mindflow)
         if mindflow is None:
-            from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
-            mindflow = BaseMindflow(logger=matrix.logger)
+            from ghoshell_moss.core.mindflow.priority_mindflow import new_default_mindflow
+            mindflow = new_default_mindflow(logger=matrix.logger)
 
         container.set(Mindflow, mindflow)
 
