@@ -185,6 +185,25 @@ class TestSessionWithZenoh:
         assert len(sig.messages) == 1
         assert sig.messages[0].to_content_string() == "percept"
 
+    def test_signal_no_duplicate_delivery(self):
+        """add_signal() 只触发 on_signal 恰好一次 — 排除 zenoh 自回环重复投递."""
+        received = []
+        first = threading.Event()
+
+        with zenoh.open(zenoh.Config()) as z:
+            sess = self._new_session(z)
+            sess.on_signal(lambda sig: (received.append(sig), first.set()))
+            sess.add_input_signal("once", description="dup check")
+
+            assert first.wait(timeout=2.0), "signal not received at all"
+            # 等一个足够长的窗口, 让潜在的第二次投递有机会到达
+            time.sleep(0.3)
+
+        assert len(received) == 1, (
+            f"expected exactly 1 signal delivery, got {len(received)} — "
+            f"zenoh may be delivering put() back to same-session subscriber twice"
+        )
+
     def test_output_buffer_bridge(self):
         """output_buffer() 自动桥接 on_output, values() 返回快照."""
         with zenoh.open(zenoh.Config()) as z:

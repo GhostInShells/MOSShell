@@ -8,7 +8,6 @@ from ghoshell_moss.core.blueprint.mindflow import (
 )
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from collections import deque
 import time
 import threading
 import asyncio
@@ -409,9 +408,6 @@ class AbsAttention(Attention):
         self._init_impulse: Impulse = impulse
         self._wait_impulse_is_complete_event = ThreadSafeEvent()
 
-        # 一个可以接受新消息的 buffer.
-        self._info_impulse_buffer: deque[Impulse] = deque()
-
         self._logger = logger or get_moss_logger()
 
         # 关键的 flags.
@@ -573,12 +569,6 @@ class AbsAttention(Attention):
             # 每次刷新时会更新权重.
             self._escalation_on_active()
             current_observation = self._ctx.moment
-            while len(self._info_impulse_buffer) > 0:
-                impulse_buffer = self._info_impulse_buffer.popleft()
-                # buffer messages.
-                current_observation.percepts.extend(impulse_buffer.messages)
-                current_observation.prompt = impulse_buffer.prompt
-                on_start_logos = impulse_buffer.on_logos_start
 
             # 1. 准备本轮的 Observation
             # 这里的逻辑要把 context_funcs 执行一遍，塞进 self._ctx.observation
@@ -755,11 +745,6 @@ class BaseAttention(AbsAttention):
         if challenger.id == self._init_impulse.id:
             self._update_current_impulse(challenger)
             return None
-        elif challenger.source == self._init_impulse.source and challenger.priority == Priority.INFO:
-            if challenger.complete:
-                self._info_impulse_buffer.append(challenger)
-                return None
-            return False
         if challenger.priority == Priority.FATAL or challenger.priority > self._init_impulse.priority:
             return True
         elif challenger.priority < self._init_impulse.priority:
