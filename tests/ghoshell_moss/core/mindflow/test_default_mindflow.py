@@ -1,7 +1,8 @@
 import pytest
-from ghoshell_moss.core.blueprint.mindflow import Signal
+from ghoshell_moss.core.blueprint.mindflow import Signal, InputSignal
 from ghoshell_moss.core.mindflow.priority_mindflow import new_default_mindflow, PriorityMindflow
 from ghoshell_moss.core.mindflow.priority_attention import PriorityProtectionAttention
+from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
 from ghoshell_moss.message import Message
 import asyncio
 
@@ -11,7 +12,8 @@ async def test_new_default_mindflow_factory():
     """工厂函数返回 PriorityMindflow, 注册了 InputSignalNucleus."""
     mindflow = new_default_mindflow(protection_seconds=0.1)
     assert isinstance(mindflow, PriorityMindflow)
-    assert "input" in mindflow._faculties
+    # 判断使用了默认值.
+    assert InputSignalNucleus().name() in mindflow.faculties()
     async with mindflow:
         assert mindflow.is_running()
 

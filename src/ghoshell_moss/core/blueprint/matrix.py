@@ -467,7 +467,13 @@ class Matrix(ABC):
         pass
 
     @abstractmethod
-    def create_task(self, cor: Coroutine) -> asyncio.Task:
+    def create_task(
+            self,
+            cor: Coroutine,
+            *,
+            stop_matrix_on_error: bool = False,
+            name: str | None = None,
+    ) -> asyncio.Task:
         """
         创建包含在 Matrix 生命周期内的 Task
         """

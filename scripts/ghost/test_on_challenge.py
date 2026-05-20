@@ -46,7 +46,7 @@ async def main():
         print(f"mindflow: {type(mf).__name__}, is_running={mf.is_running()}")
 
         # ── 2. faculties include InputSignalNucleus ──
-        names = [f.name() for f in mf.faculties()]
+        names = list(mf.faculties().keys())
         assert "input" in names, f"expected input nucleus, got {names}"
         print(f"faculties: {names}")
 

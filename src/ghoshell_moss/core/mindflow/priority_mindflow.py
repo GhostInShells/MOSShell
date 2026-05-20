@@ -12,7 +12,11 @@ class PriorityMindflow(AbsMindflow):
     Mindflow with priority-based arbitration (PriorityProtectionAttention).
     """
 
-    def __init__(self, *, protection_seconds: float = 2.5, logger: LoggerItf | None = None, **kwargs):
+    def __init__(
+            self,
+            *,
+            protection_seconds: float = 2.5,
+            logger: LoggerItf | None = None, **kwargs):
         super().__init__(logger=logger, **kwargs)
         self._protection_seconds = protection_seconds
 

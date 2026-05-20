@@ -36,5 +36,5 @@
 - [x] 11c — on_challenge 旁路观察: ChallengeObserver 类型 + Mindflow.on_challenge() + _challenge_attention 触发 (test_on_challenge.py 验证)
 - [ ] 11b — Mindflow inspect + 自解释接口
 - [x] 12a — mock ghost + input signal 脚本测试: test_input_signal_full_link.py 全链路走通 (challenge → moment → logos → action), 已知 bug: moment percepts 重复
-- [ ] 12b — 修复 moment percepts 重复 bug
+- [x] 12b — 修复 moment percepts 重复 bug: 根因是 _faculties_lifecycle_ctx_manager 启动后重调 with_nucleus 导致 signal routes 双注册; 同时删除 _info_impulse_buffer 死代码, nucleus 改同步锁+同步 pop
 - [ ] 12c — TUI 全链路验证

@@ -191,8 +191,13 @@ class Signal(BaseModel):
         delta = time.time() - self.created_at.timestamp()
         return delta > self.stale_timeout
 
-    def to_json(self) -> str:
-        return self.model_dump_json(indent=0, exclude_none=True, exclude_defaults=True, ensure_ascii=False)
+    def to_json(self, indent: int = 0) -> str:
+        # 传输数据类型取最小信息.
+        return self.model_dump_json(indent=indent, exclude_none=True, exclude_defaults=True, ensure_ascii=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        # 传输数据类型取最小信息.
+        return self.model_dump(exclude_none=True, exclude_defaults=True)
 
     def __repr__(self):
         return f"<Signal id={self.id} trace={self.trace_id} name={self.name}>"
@@ -293,6 +298,10 @@ class Impulse(BaseModel):
         default='',
         description="the nucleus source name",
     )
+    source_idx: int = Field(
+        default=0,
+        description="the impulse generated order in the source",
+    )
     priority: Priority | int = Field(
         default=Priority.NOTICE,
         description="the impulse priority",
@@ -374,14 +383,20 @@ class Impulse(BaseModel):
         delta = time.time() - self.created_at.timestamp()
         return delta > self.stale_timeout
 
+    def to_dict(self) -> dict:
+        return self.model_dump(exclude_defaults=True, exclude_none=True)
+
+    def to_json(self, indent: int = 2) -> str:
+        return self.model_dump_json(exclude_defaults=True, exclude_none=True, ensure_ascii=False, indent=indent)
+
     def __repr__(self):
         return f"<Impulse id={self.id} trace={self.trace_id} source={self.source}>"
 
 
 ChallengeObserver = Callable[
-    [Impulse,           # challenger — 发起挑战的 Impulse
-     Impulse | None,    # defender   — 当前占据注意力的 Impulse，None 表示无当前 attention
-     ChallengeVerdict], # verdict    — 仲裁结果
+    [Impulse,  # challenger — 发起挑战的 Impulse
+     Impulse | None,  # defender   — 当前占据注意力的 Impulse，None 表示无当前 attention
+     ChallengeVerdict],  # verdict    — 仲裁结果
     None,
 ]
 """Impulse challenge 的旁路观察回调。仅观察，无副作用。"""
@@ -913,6 +928,7 @@ class Attention(ABC):
         """整个生命周期结束"""
         pass
 
+_NucleusName = str
 
 class Mindflow(ABC):
     """
@@ -931,7 +947,7 @@ class Mindflow(ABC):
     """
 
     @abstractmethod
-    def faculties(self) -> Iterable[Nucleus]:
+    def faculties(self) -> dict[_NucleusName, Nucleus]:
         """
         持有的并行感知, 思考, 裁决单元.
         这里的 nucleus 并不一定是个执行单元, 也可以仅仅是一个通讯单元或 Adapter.
@@ -975,9 +991,18 @@ class Mindflow(ABC):
         pass
 
     @abstractmethod
-    async def add_nucleus(self, nucleus: Nucleus) -> Self:
+    async def add_nucleus(self, nucleus: Nucleus, override: bool = False) -> Self:
         """
-        动态注册新的感知单元. 理论上可以在运行时添加启动.
+        动态注册新的感知单元. 在运行时添加, 添加时启动.
+        :raise DuplicatedError
+        """
+        pass
+
+    @abstractmethod
+    def with_nucleus(self, nucleus: Nucleus, override: bool = False) -> Self:
+        """
+        静态注册新的感知单元. 必须在 mindflow 启动前注册.
+        :raise DuplicatedError
         """
         pass
 

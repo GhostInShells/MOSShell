@@ -10,6 +10,7 @@ from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputBuffer, OutputItem, StreamSubscriber,
     Sample
 )
+from ghoshell_moss.core.blueprint.environment import DEFAULT_SESSION_SCOPE
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_common.helpers import uuid
 
@@ -76,21 +77,32 @@ class MossSessionWithZenoh(Session):
     def __init__(
             self,
             session_scope: str,
-            session_storage: Storage,
+            session_root_storage: Storage,
             logger: LoggerItf,
             zenoh_session: zenoh.Session,
             topic_service: TopicService,
             session_id: str | None = None,
     ):
-        self._session_scope = session_scope
+        """
+        :param session_scope: Moss Matrix 运行时, 所有通讯都围绕同一个 session scope.
+        :param session_root_storage: 在当前隔离级别下, Session 拿到的 Root Storage.
+        :param logger: 日志模块.
+        :param zenoh_session: 依赖 zenoh 通讯.
+        :param topic_service: session 持有 topic service. 未来应该是 session 构建它.
+        :param session_id: 会话 id, 它实际上在同源 Matrix 所有实例中应该要共享, 从 env 中获取.
+        """
+        self._session_scope = session_scope or DEFAULT_SESSION_SCOPE  # or 逻辑简单做一个防蠢, 怕 storage 逻辑崩了.
 
         # 子类继承可重写.
         self._output_key_expr = f"MOSS/{session_scope}/outputs"
         self._input_signal_expr = f"MOSS/{session_scope}/signals"
         self._stream_key_expr_prefix = f"MOSS/{session_scope}/streams"
+        self._received_signal_index: int = 0
 
-        self._session_storage = session_storage
         self._session_id = session_id or uuid()
+
+        # session 实例级别的 id.
+        self._session_unique_id = uuid()
 
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
@@ -107,6 +119,18 @@ class MossSessionWithZenoh(Session):
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
         self._topic_service = topic_service
         self._closing_event = ThreadSafeEvent()
+        self._session_root_storage = session_root_storage
+        self._session_storage: Storage | None = None
+
+    def make_session_level_storage(self, storage: Storage) -> Storage:
+        """提供 session 级别的一个独立 storage 空间. """
+        scope_level_storage = storage.sub_storage(self._session_scope)
+        if self._session_id:
+            # 返回
+            return scope_level_storage.sub_storage(f"session-{self._session_id}")
+        return scope_level_storage
+
+    # 定义独立的逻辑, 方便未来重构.
 
     @property
     def session_scope(self) -> str:
@@ -118,6 +142,9 @@ class MossSessionWithZenoh(Session):
 
     @property
     def storage(self) -> Storage:
+        if self._session_storage is None:
+            # todo: 思考这里是否会有竞态问题.
+            self._session_storage = self.make_session_level_storage(self._session_root_storage)
         return self._session_storage
 
     @property
@@ -143,12 +170,16 @@ class MossSessionWithZenoh(Session):
             return None
         try:
             signal = Signal.model_validate_json(sample.payload.to_bytes())
+            self._received_signal_index += 1
+            # 在 session 内流转的都分配一个隐藏的 参数方便 debug. 没有额外性能开销.
+            signal.metadata['_session_signal_index'] = self._received_signal_index
         except Exception as e:
             self._logger.error(
                 f"%s failed to handle received signal sample %s: %s",
                 self._log_prefix, sample.payload.to_string(), e,
             )
             return None
+        # 回调感知接口.
         for callback in self._on_signal_callbacks:
             try:
                 callback(signal)

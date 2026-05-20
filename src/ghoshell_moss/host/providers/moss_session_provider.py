@@ -51,15 +51,11 @@ class WorkspaceSessionProvider(Provider[Session]):
             env = con.force_fetch(Environment)
             session_scope = env.session_scope
             session_id = env.session_id
-        session_storage_path = self._session_id_prefix + session_scope
-        storage = ws.runtime().sub_storage('session').sub_storage(session_storage_path)
-        if session_id:
-            # use session id to separate session playground
-            storage = storage.sub_storage(f"session-{session_id}")
+        session_root_storage = ws.runtime().sub_storage('sessions')
         topics = con.force_fetch(TopicService)
         session = MossSessionWithZenoh(
             session_scope=session_scope,
-            session_storage=storage,
+            session_root_storage=session_root_storage,
             logger=logger,
             zenoh_session=zenoh_session,
             topic_service=topics,

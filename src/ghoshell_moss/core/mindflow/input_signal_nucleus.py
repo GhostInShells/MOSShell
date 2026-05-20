@@ -3,6 +3,7 @@ import time
 from typing import Callable, Self
 from ghoshell_moss.core.blueprint.mindflow import Nucleus, Signal, Impulse, Priority
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
+import threading
 
 
 class InputSignalNucleus(Nucleus):
@@ -18,7 +19,7 @@ class InputSignalNucleus(Nucleus):
     def __init__(
             self,
             *,
-            name: str = "input",
+            name: str = "input_signal_nucleus",
             description: str = "user input signal nucleus",
             target_signal: str = "input",
             default_prompt: str = '',
@@ -39,11 +40,14 @@ class InputSignalNucleus(Nucleus):
         self._signals: list[Signal] = []
         self._impulse_cache: Impulse | None = None
 
-        self._lock = asyncio.Lock()
+        # 未来看到这里的模型协作者需要记得, 关键代码必须加注释.
+        # 比如这里如果用了 thread lock, 要考虑所有用锁的程序都要避免搞非计算逻辑的线程阻塞.
+        self._data_state_lock = threading.Lock()
         self._suppress_until: float = 0.0
         self._broadcast_cb: Callable[[Signal], None] | None = None
         self._notify_cb: Callable[[Impulse], None] | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._created_impulse_index: int = 0
         self._running = False
 
     # -- Nucleus ABC --
@@ -87,7 +91,7 @@ class InputSignalNucleus(Nucleus):
             return
         if signal.priority < self._min_priority:
             return
-        self._event_loop.create_task(self._process_signal(signal))
+        self._process_signal(signal)
 
     def suppress(self, suppress_by: Impulse) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
@@ -95,7 +99,7 @@ class InputSignalNucleus(Nucleus):
     def pop_impulse(self, impulse: Impulse) -> None:
         if not self.is_running():
             return
-        self._event_loop.create_task(self._atomic_clear_buffer())
+        self._atomic_clear_buffer()
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
         if self._impulse_cache is None:
@@ -116,8 +120,8 @@ class InputSignalNucleus(Nucleus):
 
     # -- internal --
 
-    async def _process_signal(self, signal: Signal) -> None:
-        async with self._lock:
+    def _process_signal(self, signal: Signal) -> None:
+        with self._data_state_lock:
             self._signals = [s for s in self._signals if not s.is_stale()]
             if signal.is_stale():
                 return
@@ -149,8 +153,10 @@ class InputSignalNucleus(Nucleus):
 
         latest = valid[-1]
 
+        self._created_impulse_index += 1
         return Impulse(
             source=self._name,
+            source_idx=self._created_impulse_index,
             id=latest.id,
             priority=max_priority,
             strength=max_strength,
@@ -161,6 +167,6 @@ class InputSignalNucleus(Nucleus):
             stale_timeout=latest.stale_timeout,
         )
 
-    async def _atomic_clear_buffer(self) -> None:
-        async with self._lock:
+    def _atomic_clear_buffer(self) -> None:
+        with self._data_state_lock:
             self.clear()

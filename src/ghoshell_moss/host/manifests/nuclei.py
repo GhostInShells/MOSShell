@@ -57,11 +57,8 @@ def search_nucleus_infos(
     for file_path, module_path, attr_name, obj in find_nucleus_metas(
         package_import_path
     ):
-        signal_names = [s.signal_name() for s in obj.signals()]
         info = NucleusMetaInfo(
-            name=obj.name(),
-            description=obj.description(),
-            signal_names=signal_names,
+            nucleus_meta=obj,
             found_module=f"{module_path}:{attr_name}",
             found_file=file_path,
         )

@@ -126,10 +126,17 @@ class GhostRuntimeImpl(GhostRuntime):
 
         container.set(Mindflow, mindflow)
 
+        nuclei_factories = {}
+        for env_nucleus_info in self.moss.matrix.manifests.nuclei().values():
+            nuclei_factories[env_nucleus_info.name] = env_nucleus_info.nucleus_meta
+
         # 注册 nuclei — 从 meta 工厂生成，add 到 mindflow
-        for factory in self._ghost_meta.nuclei_metas():
-            nucleus = factory.factory(container)
-            await mindflow.add_nucleus(nucleus)
+        for ghost_nucleus_factory in self._ghost_meta.nuclei_metas():
+            nuclei_factories[ghost_nucleus_factory.name] = ghost_nucleus_factory
+
+        for nucleus_meta in nuclei_factories.values():
+            nucleus = nucleus_meta.factory(container)
+            mindflow.with_nucleus(nucleus, override=True)
 
         self._mindflow = mindflow
         await self._async_exit_stack.enter_async_context(mindflow)
@@ -137,18 +144,18 @@ class GhostRuntimeImpl(GhostRuntime):
         # session signal → mindflow 路由.
         # zenoh 存活周期比 ghost/mindflow 长, 关闭期间 session 仍可能收到信号,
         # 所以闭包内检查 mindflow.is_running() 做兜底丢弃.
-        def _route_signal(signal: Signal):
+        def _route_signal_to_mindflow(signal: Signal):
             if mindflow.is_running():
                 mindflow.add_signal(signal)
 
         # 三循环托管给 matrix
-        matrix.create_task(self._main_loop())
-        matrix.create_task(self._articulate_loop())
-        matrix.create_task(self._action_loop())
+        matrix.create_task(self._main_loop(), stop_matrix_on_error=True)
+        matrix.create_task(self._articulate_loop(), stop_matrix_on_error=True)
+        matrix.create_task(self._action_loop(), stop_matrix_on_error=True)
         # 等待应该发生在循环外侧.
         await self._mindflow.wait_started()
         # ignore any signals before started
-        matrix.session.on_signal(_route_signal)
+        matrix.session.on_signal(_route_signal_to_mindflow)
 
     # ── 三循环 ────────────────────────────────────
 

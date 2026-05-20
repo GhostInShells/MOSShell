@@ -6,6 +6,7 @@ collects all challenge verdicts, output items, and logos stream deltas.
 import asyncio
 from ghoshell_moss.host import Host
 from ghoshell_moss.ghosts.mock import MockGhostMeta, MockGhost
+from ghoshell_moss.core.blueprint.mindflow import Impulse
 from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import Speech
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -28,10 +29,10 @@ def on_output(item):
     output_items.append(item)
 
 
-def on_challenge(challenger, defender, verdict):
+def on_challenge(challenger: Impulse, defender: Impulse | None, verdict: str):
     challenge_calls.append({
-        "challenger_source": challenger.source,
-        "defender_id": defender.id if defender else None,
+        "challenger_source": challenger.to_json(),
+        "defender_id": defender.to_json() if defender else None,
         "verdict": verdict,
     })
 
@@ -66,7 +67,7 @@ async def main():
         shell.runtime.on_task_done(_on_any_task_done)
         assert mindflow.is_running()
         print(f"shell: running={shell.is_running()}, name={shell.name}")
-        print(f"mindflow: {type(mindflow).__name__}, faculties={[f.name() for f in mindflow.faculties()]}")
+        print(f"mindflow: {type(mindflow).__name__}, faculties={[name for name in mindflow.faculties().keys()]}")
         print(f"ghost: {ghost.meta.name()}")
 
         # ── wire observers ──

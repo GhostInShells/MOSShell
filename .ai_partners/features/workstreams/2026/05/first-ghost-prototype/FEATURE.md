@@ -3,8 +3,8 @@ title: First Ghost Prototype
 status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-20
-step: 11c_done
+updated: 2026-05-21
+step: 12b_done
 depends: []
 milestone:
 description: >-
@@ -82,7 +82,7 @@ first-ghost-prototype/
 | 11a | Mindflow 默认 input signal | GhostRuntime fallback → new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention), 43 tests 全部通过 | done |
 | 11c | on_challenge 旁路观察 | ChallengeObserver(Callable[[challenger, defender, verdict], None]) + Mindflow.on_challenge(), AbsMindflow._challenge_attention 内 fire | done |
 | 11b | Mindflow inspect + 自解释 | mindflow 探知接口、自解释接口 | pending |
-| 12 | 测试与 TUI | mock ghost + input signal 脚本测试 → TUI 全链路验证 | pending |
+| 12 | 测试与 TUI | mock ghost + input signal 脚本测试 → TUI 全链路验证 | 12b done, 12c pending |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 

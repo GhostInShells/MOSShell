@@ -117,7 +117,7 @@ class TestSessionWithZenoh:
         )
         return MossSessionWithZenoh(
             session_scope=scope,
-            session_storage=storage,
+            session_root_storage=storage,
             logger=get_moss_logger(),
             zenoh_session=zenoh_sess,
             topic_service=topics,
@@ -377,7 +377,7 @@ class TestSessionStreamAsync:
         )
         return MossSessionWithZenoh(
             session_scope=scope,
-            session_storage=storage,
+            session_root_storage=storage,
             logger=get_moss_logger(),
             zenoh_session=zenoh_sess,
             topic_service=topics,

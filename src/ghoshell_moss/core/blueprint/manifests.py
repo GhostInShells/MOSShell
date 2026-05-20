@@ -3,8 +3,9 @@ from abc import ABC, abstractmethod
 from typing_extensions import Self
 from dataclasses import dataclass
 
+from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema, ConfigStore
-from ghoshell_moss.contracts.resource import ResourceInfo, ResourceItem, ResourceStorageMeta, RESOURCE_INFO
+from ghoshell_moss.contracts.resource import ResourceInfo, ResourceItem, ResourceStorageMeta
 from ghoshell_moss.core.concepts.topic import TopicSchema, TopicModel, TopicName
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName
 from ghoshell_moss.core.concepts.command import Command
@@ -240,20 +241,28 @@ class ResourceStorageItem(ResourceItem[ResourceStorageInfo, ResourceStorageMeta]
 class NucleusMetaInfo:
     """Meta info describing a discovered NucleusFactory."""
 
-    name: str
-    """NucleusFactory.name()"""
-
-    description: str
-    """NucleusFactory.description()"""
-
-    signal_names: list[str]
-    """Signal names declared by factory.signals()"""
+    nucleus_meta: NucleusMeta
 
     found_module: str
     """Python {module}:{attr} where discovered"""
 
     found_file: str
     """Absolute file path where discovered"""
+
+    @property
+    def name(self) -> str:
+        """NucleusFactory.name()"""
+        return self.nucleus_meta.name()
+
+    @property
+    def description(self) -> str:
+        """NucleusFactory.description()"""
+        return self.nucleus_meta.description()
+
+    @property
+    def signal_names(self) -> list[str]:
+        """Signal names declared by factory.signals()"""
+        return [signal_meta.signal_name() for signal_meta in self.nucleus_meta.signals()]
 
 
 class Manifests:

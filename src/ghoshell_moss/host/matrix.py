@@ -412,9 +412,29 @@ class MatrixImpl(Matrix):
     def wait_closed_sync(self, timeout: float | None = None) -> bool:
         return self._closed_event.wait_sync(timeout)
 
-    def create_task(self, cor: Coroutine) -> asyncio.Task:
+    def create_task(
+            self,
+            cor: Coroutine,
+            *,
+            stop_matrix_on_error: bool = False,
+            name: str | None = None,
+    ) -> asyncio.Task:
         self._check_running()
-        task = self._event_loop.create_task(cor)
+
+        async def _wait_done():
+            nonlocal stop_matrix_on_error, cor
+            try:
+                await cor
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.logger.error("%s receive exception on inner task %s: %r", self._log_prefix, name, e)
+                if stop_matrix_on_error:
+                    self.close()
+            finally:
+                self.logger.info("%s inner task %s done", self._log_prefix, name)
+
+        task = self._event_loop.create_task(_wait_done())
         self._add_task(task)
         return task
 

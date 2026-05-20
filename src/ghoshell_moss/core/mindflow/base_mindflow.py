@@ -16,6 +16,9 @@ from .base_attention import BaseAttention
 import asyncio
 import contextlib
 
+_SignalName = str
+_NucleusName = str
+
 
 class AbsMindflow(Mindflow):
     """
@@ -31,9 +34,8 @@ class AbsMindflow(Mindflow):
             strict: bool = True,
     ):
         # Nucleus 可能只是一个接口. 内部有别的技术实现.
-        self._faculties: dict[str, Nucleus] = {}
-        self._faculties_count: int = 0
-        self._signal_name_routes: dict[str, list[Nucleus]] = {}
+        self._faculties: dict[_NucleusName, Nucleus] = {}
+        self._input_signal_name_routes: dict[_SignalName, dict[_NucleusName, Nucleus]] = {}
         self._logger = logger or get_moss_logger()
         self._log_prefix = "<MindflowBus>"
         self._current_attention: Attention | None = None
@@ -57,6 +59,7 @@ class AbsMindflow(Mindflow):
         # 内部循环检测是否有新的 impulse.
         self._consuming_signal_task: asyncio.Task | None = None
         self._consuming_impulse_task: asyncio.Task | None = None
+        # 是否对启动异常容错.
         self._strict = strict
         for nucleus in nuclei:
             self.with_nucleus(nucleus)
@@ -70,8 +73,8 @@ class AbsMindflow(Mindflow):
     def is_running(self) -> bool:
         return self._started_event.is_set() and not self._closed
 
-    def faculties(self) -> Iterable[Nucleus]:
-        return self._faculties.values()
+    def faculties(self) -> dict[str, Nucleus]:
+        return self._faculties
 
     async def wait_started(self) -> None:
         await self._started_event.wait()
@@ -79,27 +82,41 @@ class AbsMindflow(Mindflow):
     def wait_started_sync(self, timeout: float | None = None) -> bool:
         return self._started_event.wait_sync(timeout)
 
-    def with_nucleus(self, nucleus: Nucleus) -> None:
+    def with_nucleus(self, nucleus: Nucleus, override: bool = False) -> None:
         if self._started_event.is_set():
             raise RuntimeError(f"Mindflow only with nucleus before started, use add_nucleus instead")
         # 注册运行总线. 只能在启动前用.
+        _name = nucleus.name()
+        if not override and _name in self._faculties:
+            raise NameError(f"nucleus {_name} already exists")
+
         nucleus.with_bus(self.add_signal, self.add_impulse)
-        self._faculties[nucleus.name()] = nucleus
+        self._faculties[_name] = nucleus
+
+    def _register_nucleus_to_listener(self, nucleus: Nucleus) -> None:
         for listening in nucleus.signals():
-            if listening not in self._signal_name_routes:
-                self._signal_name_routes[listening] = []
-            self._signal_name_routes[listening].append(nucleus)
-        self._faculties_count = len(self._faculties)
+            if listening not in self._input_signal_name_routes:
+                self._input_signal_name_routes[listening] = {}
+            # 使用 dict 注册防止重复.
+            # always override
+            self._input_signal_name_routes[listening][nucleus.name()] = nucleus
 
     def _check_running(self) -> None:
         if not self.is_running():
             raise RuntimeError(f"Mindflow is not running.")
 
-    async def add_nucleus(self, nucleus: Nucleus) -> Self:
+    async def add_nucleus(self, nucleus: Nucleus, override: bool = False) -> Self:
         self._check_running()
+        if not override and self._has_nucleus(nucleus.name()):
+            raise NameError(f"nucleus {nucleus.name()} already exists")
         # 启动 nucleus 并且加入.
-        await nucleus.__aenter__()
-        self.with_nucleus(nucleus)
+        if not nucleus.is_running():
+            await nucleus.__aenter__()
+        self.with_nucleus(nucleus, override=override)
+        self._register_nucleus_to_listener(nucleus)
+
+    def _has_nucleus(self, name: str) -> bool:
+        return name in self._faculties
 
     def add_signal(self, signal: Signal) -> None:
         """接受signal"""
@@ -166,12 +183,12 @@ class AbsMindflow(Mindflow):
             if len(self._faculties) == 0:
                 signal.__state__ = 'ignored'
                 return None
-            if name not in self._signal_name_routes:
+            if name not in self._input_signal_name_routes:
                 # 丢弃不监听的 signal.
                 signal.__state__ = 'ignored'
                 return None
             dispatched = False
-            for n in self._signal_name_routes[name]:
+            for n in self._input_signal_name_routes[name].values():
                 # 触发分配.
                 n.add_signal(signal)
                 dispatched = True
@@ -584,9 +601,7 @@ class AbsMindflow(Mindflow):
     @contextlib.asynccontextmanager
     async def _faculties_lifecycle_ctx_manager(self):
         nuclei = list(self._faculties.values())
-        # 从头开始启动.
-        self._faculties.clear()
-        result = await asyncio.gather(*[n.__aenter__() for n in nuclei], return_exceptions=True)
+        result = await asyncio.gather(*[n.__aenter__() for n in nuclei if not n.is_running()], return_exceptions=True)
         idx = 0
         for r in result:
             nucleus = nuclei[idx]
@@ -596,7 +611,9 @@ class AbsMindflow(Mindflow):
                     # 严格模式下启动不做任何容错. 仅仅作为一个保留开发点. 默认是抛出异常.
                     raise r
             else:
-                self.with_nucleus(nucleus)
+                # 正式注册监听.
+                self._register_nucleus_to_listener(nucleus)
+
             idx += 1
         try:
             yield

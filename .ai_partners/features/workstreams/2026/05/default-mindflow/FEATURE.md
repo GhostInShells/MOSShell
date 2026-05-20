@@ -57,15 +57,6 @@ Mindflow (调度中枢) → Attention (单次运行态) → Articulator (推理)
 | 调度 | Mindflow | BaseMindflow | 优先级队列, _rank_nuclei max(), challenge 仲裁 |
 | 运行态 | Attention | BaseAttention | 保护期+强度衰减+同源提权, observe 循环 |
 
-### GhostRuntime 集成
-
-```python
-mindflow = ghost.mindflow() or IoC.get(Mindflow) or BaseMindflow()
-for factory in ghost_meta.nuclei_metas():
-    await mindflow.add_nucleus(factory.factory(container))
-matrix.session.on_signal(lambda s: mindflow.add_signal(s))
-```
-
 ## Design Index
 
 - Mindflow ABC: `ghoshell_moss.core.blueprint.mindflow`
