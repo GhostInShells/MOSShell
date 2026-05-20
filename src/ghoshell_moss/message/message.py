@@ -424,21 +424,29 @@ class Message(BaseModel, WithAdditional):
         tag = self.meta.tag
         # 没有 tag 的情况下, 认为不包裹消息.
         if not with_meta or not tag:
-            yield from self.iter_contents(join_text=join_text)
+            if join_text:
+                yield from self.join_contents(self.contents)
+            else:
+                yield from self.contents
             return
 
         attrs = self.meta.gen_attributes_str(timestamp=timestamp)
         attr_str = ''
         if attrs:
             attr_str = ' ' + attrs
-        yield Text.new(f'<{tag}{attr_str}>\n').to_content()
-        yield from self.iter_contents(join_text=join_text)
-        yield Text.new(f'\n</{tag}>').to_content()
+        contents = [Text.new_content(f'<{tag}{attr_str}>\n')]
+        contents.extend(self.contents)
+        contents.append(Text.new_content(f'</{tag}>\n'))
+        if join_text:
+            yield from self.join_contents(self.contents)
+        else:
+            yield from contents
 
-    def iter_contents(self, join_text: bool = True) -> Iterable[Content]:
+    @classmethod
+    def join_contents(cls, contents: Iterable[Content]) -> Iterable[Content]:
         last_text: Content | None = None
-        for content in self.contents:
-            if join_text and Text.match(content):
+        for content in contents:
+            if Text.match(content):
                 if last_text is None:
                     last_text = content.copy()
                 else:

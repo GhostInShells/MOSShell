@@ -279,7 +279,7 @@ class MossSessionWithZenoh(Session):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closing_event.set()
-        self._logger.info("%s session closed")
+        self._logger.info("%s session closed", self._log_prefix)
 
 
 class _SessionStreamSubscriber(StreamSubscriber):

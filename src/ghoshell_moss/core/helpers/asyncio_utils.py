@@ -1,9 +1,8 @@
 import asyncio
 import threading
 from asyncio import Future
-from collections import deque
 from collections.abc import Callable, Coroutine
-from typing import Any, Optional
+from typing import Any, Optional, Generic, TypeVar
 import weakref
 
 from typing_extensions import Self
@@ -15,8 +14,9 @@ __all__ = [
     "ensure_tasks_done_or_cancel",
 ]
 
+V = TypeVar("V")
 
-class ThreadSafeFuture:
+class ThreadSafeFuture(Generic[V]):
     def __init__(
         self,
         future: Optional[Future] = None,
@@ -39,10 +39,10 @@ class ThreadSafeFuture:
         if not self.future.done():
             self.loop.call_soon_threadsafe(self.future.set_exception, exception)
 
-    def result(self) -> Any:
+    def result(self) -> V:
         return self.future.result()
 
-    def set_result(self, result: Any) -> None:
+    def set_result(self, result: V) -> None:
         if not self.future.done():
             self.loop.call_soon_threadsafe(self.future.set_result, result)
 

@@ -39,6 +39,15 @@ class OutputItem(BaseModel):
         else:
             return cls(role=role, log=log).with_messages(*messages)
 
+    def messages_string(self) -> str:
+        """how to convert all messages into string without none-string type"""
+        if len(self.messages) > 0:
+            contents = []
+            for msg in self.messages:
+                contents.append(msg.to_content_string())
+            return "\n".join(contents)
+        return ""
+
     def with_messages(self, *messages: Message | str) -> Self:
         for msg in messages:
             # 接受字符串处理后的消息.
@@ -220,6 +229,7 @@ class Session(ABC):
     def output(self, role: str | Role, *messages: Message | str, log: str = '') -> None:
         """
         输出消息给 moss 共享 session 的终端.
+        不应有线程阻塞
         :param role: 输出角色分类
         :param messages: 消息体，无消息时可通过 log 单独描述
         :param log: 单行摘要，verbose 场景下供展示使用

@@ -14,7 +14,7 @@ class FastMCPMessageAdapter:
     @classmethod
     def parse_message_to_blocks(cls, messages: Iterable[Message]) -> Iterable[ContentBlock]:
         for msg in messages:
-            for content in msg.as_contents(with_meta=True):
+            for content in msg.as_contents(with_meta=True, join_text=True):
                 if text := Text.from_content(content):
                     yield TextContent(
                         type='text',

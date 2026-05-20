@@ -148,6 +148,6 @@ def test_message_with_addition():
 def test_message_join_text():
     message = Message.new(name="ai", timestamp=True)
     message.with_content("hello", " world")
-    contents = list(message.iter_contents(join_text=True))
+    contents = list(message.as_contents(join_text=True))
     assert len(contents) == 1
     assert contents[0]['text'] == "hello world"

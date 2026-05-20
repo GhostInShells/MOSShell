@@ -35,5 +35,6 @@
 - [x] 11a — Mindflow 默认 input signal: GhostRuntime fallback 改用 new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention)
 - [x] 11c — on_challenge 旁路观察: ChallengeObserver 类型 + Mindflow.on_challenge() + _challenge_attention 触发 (test_on_challenge.py 验证)
 - [ ] 11b — Mindflow inspect + 自解释接口
-- [ ] 12a — mock ghost + input signal 脚本测试
-- [ ] 12b — TUI 全链路验证
+- [x] 12a — mock ghost + input signal 脚本测试: test_input_signal_full_link.py 全链路走通 (challenge → moment → logos → action), 已知 bug: moment percepts 重复
+- [ ] 12b — 修复 moment percepts 重复 bug
+- [ ] 12c — TUI 全链路验证

@@ -4,10 +4,10 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any, Optional, AsyncGenerator
 
-from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 from ghoshell_container import Container, IoCContainer
 
+from ghoshell_moss.contracts.logger import get_moss_logger, LoggerItf
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.channel import (
@@ -33,9 +33,10 @@ from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction, CTML_VERSION
 from ghoshell_moss.core.ctml.v1_0.prompts import make_static_messages, make_dynamic_messages
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, default_primitive_map
-from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.helpers import ThreadSafeEvent, ThreadSafeFuture
 from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.contracts.speech import Speech, TTSSpeech, make_content_command_from_speech
+from collections import deque
 import time
 
 __all__ = ["CTMLShell", "new_ctml_shell"]
@@ -108,6 +109,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._main_runtime: Optional[ChannelRuntime] = None
         self._log_prefix = "[MOSSShell name=%s] " % self._name
 
+        # --- hook? --- #
+        self._wait_any_task: deque[ThreadSafeFuture[CommandTask]] = deque()
+
     @property
     def container(self) -> IoCContainer:
         return self._container
@@ -144,6 +148,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
         for ctx_manager in self._bootstrap_stacks():
             # 进入每一个开启状态.
             await self._exit_stack.enter_async_context(ctx_manager())
+        self.logger.info("%s shell started", self._log_prefix)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -152,7 +157,9 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 pass
             else:
                 self.logger.exception(exc_val)
+        self.logger.info("%s shell is exiting", self._log_prefix)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+        self.logger.info("%s exited", self._log_prefix)
 
     def _bootstrap_stacks(self) -> Iterable[Callable[[], contextlib.AbstractAsyncContextManager[None]]]:
         yield self._ioc_context_manager
@@ -225,7 +232,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
     @property
     def logger(self) -> LoggerItf:
         if self._logger is None:
-            logger = self._container.get(LoggerItf) or logging.getLogger("moss")
+            logger = self._container.get(LoggerItf) or get_moss_logger()
             self._logger = logger
         return self._logger
 
@@ -401,6 +408,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
     def push_task(self, *tasks: CommandTask) -> None:
         self._check_running()
         self._check_paused()
+        for task in tasks:
+            # wait any task
+            while len(self._wait_any_task) > 0:
+                ft = self._wait_any_task.popleft()
+                if not ft.done():
+                    ft.set_result(task)
+
         self._main_runtime.push_task(*tasks)
 
     async def stop_interpretation(self) -> Optional[Interpretation]:
@@ -417,6 +431,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if not self.is_running():
             return
         await self._closed_event.wait()
+
+    async def wait_any_task(self) -> CommandTask:
+        ft = ThreadSafeFuture[CommandTask]()
+        try:
+            self._wait_any_task.append(ft)
+            return await ft
+        finally:
+            if not ft.done():
+                ft.cancel()
 
     def commands(
             self,

@@ -1,15 +1,18 @@
 import contextlib
-import asyncio
-
 import janus
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
-from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action
+from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action, Signal
+from ghoshell_moss.core.concepts.errors import FatalError
+from ghoshell_moss.core.concepts.errors import InterpretError
+from ghoshell_moss.core.concepts.command import CommandTask
 from ghoshell_moss.message import Message
 
 __all__ = ["GhostRuntimeImpl"]
+
+_Observe = bool
 
 
 class GhostRuntimeImpl(GhostRuntime):
@@ -35,16 +38,16 @@ class GhostRuntimeImpl(GhostRuntime):
         self._mindflow: Mindflow | None = None
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
-        self._loop_status: dict[str, str] = {
-            "main": "not_started",
-            "articulate": "not_started",
-            "action": "not_started",
-        }
+        self._loop_status: LoopHealth = LoopHealth(
+            main="not_started",
+            articulate="not_started",
+            action="not_started",
+        )
 
         # 三循环队列: main loop → (articulate, action)
         self._articulate_queue: janus.Queue[Articulator] = janus.Queue()
         self._action_queue: janus.Queue[Action] = janus.Queue()
-
+        self._log_prefix: str = f"<GhostRuntime cls={self.__class__} ghost={ghost_meta.name()} mode={self._moss_runtime.mode}>"
 
     # ── GhostRuntime ABC ──────────────────────────
 
@@ -81,6 +84,7 @@ class GhostRuntimeImpl(GhostRuntime):
             container.register(provider)
 
         # 2. MossRuntime.__aenter__
+        await self._async_exit_stack.__aenter__()
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
 
         # 3. GhostMeta.factory(container) → ghost
@@ -103,11 +107,7 @@ class GhostRuntimeImpl(GhostRuntime):
         self._moss_runtime.close()
 
     def inspect_loop_health(self) -> LoopHealth:
-        return {
-            "main": self._loop_status["main"],
-            "articulate": self._loop_status["articulate"],
-            "action": self._loop_status["action"],
-        }
+        return self._loop_status.copy()
 
     # ── Mindflow wiring ───────────────────────────
 
@@ -137,22 +137,23 @@ class GhostRuntimeImpl(GhostRuntime):
         # session signal → mindflow 路由.
         # zenoh 存活周期比 ghost/mindflow 长, 关闭期间 session 仍可能收到信号,
         # 所以闭包内检查 mindflow.is_running() 做兜底丢弃.
-        def _route_signal(signal):
+        def _route_signal(signal: Signal):
             if mindflow.is_running():
                 mindflow.add_signal(signal)
-
-        matrix.session.on_signal(_route_signal)
 
         # 三循环托管给 matrix
         matrix.create_task(self._main_loop())
         matrix.create_task(self._articulate_loop())
         matrix.create_task(self._action_loop())
+        # 等待应该发生在循环外侧.
+        await self._mindflow.wait_started()
+        # ignore any signals before started
+        matrix.session.on_signal(_route_signal)
 
     # ── 三循环 ────────────────────────────────────
 
     async def _main_loop(self) -> None:
         """mindflow.loop() → Attention → (Articulator, Action) → queues."""
-        await self._mindflow.wait_started()
         self._loop_status["main"] = "running"
         try:
             async for attention in self._mindflow.loop():
@@ -160,6 +161,14 @@ class GhostRuntimeImpl(GhostRuntime):
                     async for articulate, action in attention.loop():
                         self._articulate_queue.sync_q.put_nowait(articulate)
                         self._action_queue.sync_q.put_nowait(action)
+        except FatalError as e:
+            self.moss.logger.exception("%s main loop fatal exception: %s", self._log_prefix, e)
+            raise e
+        except Exception as e:
+            self.moss.logger.exception("%s main loop exception: %s", self._log_prefix, e)
+            #  长时间运行要做异常感知, 而不能轻易破坏生命周期.
+            # todo: 要拿掉 raise. 现阶段先 raise debug.
+            raise e
         finally:
             self._loop_status["main"] = "stopped"
             self._articulate_queue.shutdown(immediate=True)
@@ -177,15 +186,18 @@ class GhostRuntimeImpl(GhostRuntime):
         mindflow = self._mindflow
         session = self._moss_runtime.session
         self._loop_status["articulate"] = "running"
-        try:
-            while mindflow.is_running():
+        while mindflow.is_running():
+            try:
                 articulator = await self._articulate_queue.async_q.get()
                 async with articulator:
                     moment = articulator.moment
                     session.output(
                         'moment',
+                        *moment.as_request_messages(with_prompt=False),
                         log=f"moment {moment.id}: {len(moment.percepts)} percepts",
                     )
+                    if moment.prompt is not None:
+                        session.output('prompt', moment.prompt, log=f"moment {moment.id}")
                     logos_parts: list[str] = []
                     error: Exception | None = None
                     try:
@@ -195,6 +207,7 @@ class GhostRuntimeImpl(GhostRuntime):
                             logos_parts.append(delta)
                     except Exception as e:
                         error = e
+                        self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
                         session.output('error', log=f"articulate error: {e}")
                     finally:
                         ghost.on_articulate_exit(
@@ -203,10 +216,17 @@ class GhostRuntimeImpl(GhostRuntime):
                             error,
                         )
                         session.pub_logos("\n\n")
-        except janus.AsyncQueueShutDown:
-            pass
-        finally:
-            self._loop_status["articulate"] = "stopped"
+            except janus.AsyncQueueShutDown:
+                break
+            except FatalError as e:
+                self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
+                session.output('error', log=f"fatal error: {e}")
+            except Exception as e:
+                self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
+                session.output('error', log=f"articulate error: {e}")
+                # do not raise keep loop running.
+            finally:
+                self._loop_status["articulate"] = "stopped"
 
     async def _action_loop(self) -> None:
         """queue → action.received_logos() → interpreter → action.outcome().
@@ -227,30 +247,40 @@ class GhostRuntimeImpl(GhostRuntime):
         """
         mindflow = self._mindflow
         self._loop_status["action"] = "running"
-        try:
-            while mindflow.is_running():
+        while mindflow.is_running():
+            try:
                 action = await self._action_queue.async_q.get()
                 async with action:
                     messages, observe = await self._stream_execute(action)
                     action.outcome(*messages, observe=observe)
-        except janus.AsyncQueueShutDown:
-            pass
-        finally:
-            self._loop_status["action"] = "stopped"
+            except janus.AsyncQueueShutDown:
+                break
+            except Exception as e:
+                # todo: 考虑用 session 直接将异常用特殊类型 output.
+                self.moss.logger.exception("%s action loop exception: %r", self._log_prefix, e)
+                raise e
+            finally:
+                self._loop_status["action"] = "stopped"
 
-    async def _stream_execute(self, action) -> tuple[list, bool]:
+    async def _stream_execute(self, action: Action) -> tuple[list[Message], _Observe]:
         """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.
 
         返回 (status_messages, observe) 闭合 observe 回路.
         logos 已走 session stream 实时广播, 此处只发射 command-output/result.
         InterpretError 被捕获 — interpretation 已保留 partial results.
         """
-        from ghoshell_moss.core.concepts.errors import InterpretError
-        from ghoshell_moss.core.concepts.command import CommandTask
-
         shell = self._moss_runtime.shell
+        if not shell.is_running():
+            self.moss.logger.error(
+                "%s ghost runtime received action but shell is not running",
+                self._log_prefix,
+            )
+            self.moss.session.output('error', 'received action but shell is not running')
+            return [], False
+
         interpreter = await shell.interpreter(kind='clear', clear_after_exit=False)
         interpretation = interpreter.interpretation()
+
         logger = self._moss_runtime.matrix.logger
         session = self._moss_runtime.session
 

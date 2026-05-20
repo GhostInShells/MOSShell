@@ -12,7 +12,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, Mode
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
 from ghoshell_moss.message import Message
-from ghoshell_moss.contracts import SystemPrompter
+from ghoshell_moss.contracts import SystemPrompter, LoggerItf
 from .ghost import Ghost, GhostMeta
 from .app import AppStore
 
@@ -217,6 +217,10 @@ class MossRuntime(ABC):
         环境通讯的总线.
         """
         pass
+
+    @property
+    def logger(self) -> LoggerItf:
+        return self.matrix.logger
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
         """阻塞等待关闭触发信号 (closing). """

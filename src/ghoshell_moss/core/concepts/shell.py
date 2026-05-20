@@ -132,6 +132,11 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
+    async def wait_any_task(self) -> CommandTask:
+        """wait any task is pushed into the shell and notify with it"""
+        pass
+
+    @abstractmethod
     def is_closed(self) -> bool:
         """
         是否已经关闭运行.

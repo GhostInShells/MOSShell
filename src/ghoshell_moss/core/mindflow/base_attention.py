@@ -55,7 +55,7 @@ class AttentionContext:
     def __repr__(self):
         return self.logger_prefix
 
-    def buffer_logos(self, delta: str) -> None:
+    def buffer_executed_logos(self, delta: str) -> None:
         self._logos += delta
 
     def is_aborted(self) -> bool:
@@ -327,7 +327,7 @@ class BaseAction(Action):
 
                 if item is None:
                     break
-                self._ctx.buffer_logos(item)
+                self._ctx.buffer_executed_logos(item)
                 yield item
         except janus.SyncQueueShutDown:
             return
