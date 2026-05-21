@@ -2,15 +2,16 @@ import os
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
+from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.system_prompter import SystemPrompter
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.providers import Provider
-from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 if TYPE_CHECKING:
@@ -86,7 +87,7 @@ class AtomMeta(GhostMeta):
 
     # ── agent ───────────────────────────────────────
 
-    def build_instruction(self, container: IoCContainer) -> str:
+    def _build_instruction(self, container: IoCContainer) -> str:
         system_prompter = container.get(SystemPrompter)
         if system_prompter is None:
             instructions = []
@@ -94,6 +95,9 @@ class AtomMeta(GhostMeta):
             instructions = [system_prompter.instruction()]
         instructions.append(self.soul_content)
         return "\n".join(instructions)
+
+    def build_instruction(self, run_context: RunContext[IoCContainer]) -> str:
+        return self._build_instruction(run_context.deps)
 
     def build_agent(self, container: IoCContainer) -> Agent[IoCContainer]:
         """创建 pydantic AI Agent. 不依赖 IoC 容器，可独立单测.
@@ -113,6 +117,10 @@ class AtomMeta(GhostMeta):
             model = AnthropicModel(
                 model_name=model_name,
                 provider=self._provider or AnthropicProvider(),
+                # disable extended thinking by default; enable via model= param if needed
+                settings=AnthropicModelSettings(
+                    anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
+                ),
             )
 
         agent = Agent[IoCContainer](

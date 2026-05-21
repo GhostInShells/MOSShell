@@ -135,7 +135,20 @@ class GhostRuntimeImpl(GhostRuntime):
             nuclei_factories[ghost_nucleus_factory.name] = ghost_nucleus_factory
 
         for nucleus_meta in nuclei_factories.values():
-            nucleus = nucleus_meta.factory(container)
+            try:
+                nucleus = nucleus_meta.factory(container)
+            except NotImplementedError:
+                matrix.logger.warning(
+                    "%s nucleus %s is a stub (NotImplementedError), skipping",
+                    self._log_prefix, nucleus_meta.name(),
+                )
+                continue
+            except Exception:
+                matrix.logger.exception(
+                    "%s failed to create nucleus %s, skipping",
+                    self._log_prefix, nucleus_meta.name(),
+                )
+                continue
             mindflow.with_nucleus(nucleus, override=True)
 
         self._mindflow = mindflow
