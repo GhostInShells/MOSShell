@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
+from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
@@ -118,7 +119,7 @@ class AtomMeta(GhostMeta):
                 provider=self._provider or AnthropicProvider(),
                 # disable extended thinking by default; enable via model= param if needed
                 settings=AnthropicModelSettings(
-                    anthropic_thinking={"type": "disabled"},
+                    anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
                 ),
             )
 

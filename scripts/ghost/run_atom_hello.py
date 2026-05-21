@@ -41,6 +41,10 @@ async def main():
 
         await asyncio.wait_for(logos_finished.wait(), timeout=30.0)
         await asyncio.sleep(0.1)
+        task = await gr.moss.shell.wait_any_task()
+        print("++++++++ task", task)
+
+        await gr.moss.shell.wait_until_idle()
 
         logos_task.cancel()
         try:
