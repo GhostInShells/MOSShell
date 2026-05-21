@@ -33,6 +33,7 @@ class Atom(Ghost):
         self._container = container
         self._logger = container.get(LoggerItf) or get_moss_logger()
         self._history: list[ModelMessage] = []
+        self._last_context: dict = {}
 
     @property
     def meta(self) -> GhostMeta:
@@ -40,7 +41,7 @@ class Atom(Ghost):
 
     def system_prompt(self) -> str:
         """调试用: 返回 Agent 实际使用的 instruction."""
-        return self._meta.build_instruction(self._container)
+        return self._meta._build_instruction(self._container)
 
     # ── 消息协议 ──────────────────────────────────
 
@@ -65,13 +66,23 @@ class Atom(Ghost):
 
     # ── 核心循环 ──────────────────────────────────
 
+    def on_articulate_exit(self, articulator, logos, error) -> None:
+        self._last_context = {
+            "system": self.system_prompt(),
+            "history_turns": len(self._history) // 2,
+        }
+
+    def inspect_context(self) -> dict:
+        return self._last_context
+
     async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
         moment = articulator.moment
         request = self.to_model_request(moment)
         history = self.model_history()
+        model_context = history + [request]
 
         async with self._agent.run_stream(
-            message_history=history + [request],
+            message_history=model_context,
             deps=self._container,
         ) as stream:
             async for text in stream.stream_text(delta=True):

@@ -86,13 +86,13 @@ class TestBuildInstruction:
     def test_no_system_prompter(self):
         meta = _atom_meta(soul_content="my soul")
         c = Container()
-        assert meta.build_instruction(c) == "my soul"
+        assert meta._build_instruction(c) == "my soul"
 
     def test_with_system_prompter(self):
         meta = _atom_meta(soul_content="my soul")
         prompter = BaseSystemPrompter(own_instruction="moss instruction")
         c = _container((SystemPrompter, prompter))
-        instruction = meta.build_instruction(c)
+        instruction = meta._build_instruction(c)
         assert "moss instruction" in instruction
         assert "my soul" in instruction
 
@@ -100,7 +100,7 @@ class TestBuildInstruction:
         meta = _atom_meta(soul_content="soul")
         prompter = BaseSystemPrompter(own_instruction="moss")
         c = _container((SystemPrompter, prompter))
-        lines = meta.build_instruction(c).split("\n")
+        lines = meta._build_instruction(c).split("\n")
         assert lines[0] == "moss"
         assert lines[1] == "soul"
 
