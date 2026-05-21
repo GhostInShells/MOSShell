@@ -369,9 +369,19 @@ session.add_input_signal("hello")
    - `{"type": "disabled"}` 字典值与 pydantic AI 期望的 `BetaThinkingConfigDisabledParam` 类型不兼容
    - 修复：使用 `BetaThinkingConfigDisabledParam(type="disabled")`
 
+4. **`wait_any_task()` 导致脚本卡死**（`run_atom_hello.py:40`）
+   - 云端的 `task = await gr.moss.shell.wait_any_task()` 在脚本中卡死，因为 `wait_any_task()` 是 future-based API，等待的是"下一个" task，而非"是否曾经有 task"。interpreter 可能在脚本走到这行之前就已经 `push_task()` 完了，注册的 future 永远不会 resolve
+   - 而且 `<say>` 标签是显示/语音指令，大概率不走 `push_task()` 路径，无论时序如何都会永远卡住
+   - 该 API 设计上服务于交互式 REPL 场景，不适合一次性验证脚本
+   - 修复：直接删除 `wait_any_task()` 调用
+
+5. **`await asyncio.sleep(5)` 替换为 `wait_until_idle()`**（`run_atom_hello.py:55`）
+   - 原脚本用固定 sleep 等待 action loop 处理 CTML，可能等不够或白等
+   - `wait_until_idle()` 语义精确：等待 shell 运行时无可调度任务，处理完即继续
+
 ### 已知遗留问题
 
-- **Cleanup 死锁**：`gr.close()` 后进程 hang，Matrix/zenoh teardown 阶段卡住。当前脚本用 `await asyncio.sleep(5)` 过渡，需后续修复
+- **Cleanup 死锁**：`gr.close()` 后进程 hang，Matrix/zenoh teardown 阶段卡住。与脚本等待逻辑无关，是独立问题
 
 ### 涉及文件
 
