@@ -669,6 +669,7 @@ class TTSSpeech(Speech, ABC):
     def commands(self) -> list[Command]:
         """
         返回 TTS Speech 默认支持的命令.
+        这里是一个借鉴, 不是必要的实现. 可以参考这种方式让声音可以替换.
         """
         tts = self.tts()
         tts_info = tts.get_info()

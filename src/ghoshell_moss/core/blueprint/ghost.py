@@ -171,7 +171,7 @@ class Ghost(ABC):
     #   on_*      — event callback. Pushed by GhostRuntime when something happens.
     #               Default no-op. Ghost authors override to record internal state.
     #   inspect_* — state query. Pulled by REPL / scripts / GhostRuntime itself.
-    #               Returns a snapshot dict. Ghost authors override to expose internals.
+    #               Ghost authors override to expose internals.
     #
     # These are NOT lifecycle hooks. Lifecycle hooks (born / wake / sleep / die)
     # will carry semantic weight for ghost state transitions. Observability hooks
@@ -195,12 +195,51 @@ class Ghost(ABC):
         """
 
     def inspect_state(self) -> dict:
-        """Return a snapshot of ghost internal state.
+        """Ghost internal runtime state snapshot.
 
         No fixed schema — each ghost prototype decides what to expose.
-        Called by GhostRuntime.inspect_loop_health() and directly by debuggers.
+        Suitable for counters, mode flags, cache sizes, anything that lives
+        inside the ghost instance and helps diagnose misbehavior.
         """
         return {}
+
+    def inspect_context(self) -> dict:
+        """Last articulate context window snapshot.
+
+        Returns the messages actually sent to the model in the most recent
+        articulate() call, as a serializable dict. Lets the debugger see
+        exactly what the model saw in a given cycle.
+
+        Recommended structure (but not enforced):
+            {
+                "system": str,          # system prompt assembled for that cycle
+                "messages": [...]       # conversation history / percepts as dicts
+            }
+
+        Default returns {}. Ghost authors override in on_articulate_exit()
+        by capturing and storing the context before the model call.
+        """
+        return {}
+
+    def inspect_controller(self) -> object | None:
+        """Return a controller object to expose in the TUI REPL, or None.
+
+        When non-None, GhostRuntime will register this object under the key
+        "ghost" in the REPLRegistrar tool_objects dict. Every public method
+        becomes a /ghost.<method>() command in the TUI.
+
+        Ghost authors should narrow the return type in their subclass:
+
+            def inspect_controller(self) -> "MyGhostController | None":
+                return self._controller
+
+        This makes the subclass fully introspectable without inheriting any
+        fixed controller interface from the ABC.
+
+        Not called in non-TUI contexts (scripts, tests). Returning a controller
+        has no side effects outside the TUI session.
+        """
+        return None
 
     # ── end observability hooks ────────────────────────────
 

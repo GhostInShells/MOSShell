@@ -58,6 +58,7 @@ class MockGhost(Ghost):
     def on_articulate_exit(self, articulator, logos, error):
         self._last_logos = logos
         self._last_error = error
+        self._last_context = articulator.moment.to_dict()
 
     def inspect_state(self) -> dict:
         return {
@@ -65,6 +66,9 @@ class MockGhost(Ghost):
             "last_logos": getattr(self, "_last_logos", None),
             "last_error": str(getattr(self, "_last_error", None)),
         }
+
+    def inspect_context(self) -> dict:
+        return getattr(self, "_last_context", {})
 
     # ── helpers ─────────────────────────────────────
 

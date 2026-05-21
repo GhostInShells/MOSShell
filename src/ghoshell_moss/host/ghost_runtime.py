@@ -162,8 +162,19 @@ class GhostRuntimeImpl(GhostRuntime):
     async def _main_loop(self) -> None:
         """mindflow.loop() → Attention → (Articulator, Action) → queues."""
         self._loop_status["main"] = "running"
+        shell = self._moss_runtime.shell
+
+        def _moss_dynamic_messages() -> list[Message]:
+            # 闭包在 shell running 时才取，shell 未启动时返回空列表.
+            if shell.is_running():
+                return shell.dynamic_messages()
+            return []
+
         try:
             async for attention in self._mindflow.loop():
+                # per-attention 注册: ghost runtime 决定绑什么上下文.
+                # mindflow 级注册留作将来更高层治理 (如多 ghost 共享 mindflow) 时设计.
+                attention.with_context_func('moss_dynamic', _moss_dynamic_messages)
                 async with attention:
                     async for articulate, action in attention.loop():
                         self._articulate_queue.sync_q.put_nowait(articulate)

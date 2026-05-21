@@ -1,4 +1,4 @@
-from typing import Iterable, Generic, TypeVar
+from typing import Iterable, Generic, TypeVar, Any
 from typing_extensions import Self
 
 from abc import ABC, abstractmethod
@@ -79,6 +79,14 @@ class Moment(BaseModel, WithAdditional):
         default='',
         description="与本轮思考决策相关的提示讯息. 只在当前轮次生效",
     )
+
+    def to_dict(self) -> dict[str, Any]:
+        """提示如何用字典查看 moment 数据, 更多实现参考 BaseModel"""
+        return self.model_dump(
+            exclude_none=True,
+            exclude_defaults=True,
+            mode='json',
+        )
 
     def to_json(self, *, exclude_perspectives: bool = True) -> str:
         """
