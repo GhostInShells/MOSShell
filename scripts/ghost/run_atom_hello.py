@@ -6,8 +6,6 @@ import asyncio
 import json
 from ghoshell_moss.host import Host
 from ghoshell_moss.ghosts.atom._meta import AtomMeta
-from ghoshell_moss.contracts.speech import Speech
-from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 
 host = Host()
@@ -16,7 +14,6 @@ meta = AtomMeta(
     soul_content="You are a friendly assistant.",
 )
 gr = host.run_ghost(meta)
-# gr.container.set(Speech, MockSpeech())
 
 logos_finished = ThreadSafeEvent()
 
@@ -24,7 +21,6 @@ logos_finished = ThreadSafeEvent()
 async def collect_logos(session):
     buf = ""
     async for delta in session.get_logos():
-        print("++++++++++++", delta, end="", flush=True)
         buf += delta
         if buf.endswith("\n\n"):
             logos_finished.set()
@@ -60,6 +56,7 @@ async def main():
         else:
             print("(empty — Atom may not override inspect_context yet)")
 
+        await asyncio.sleep(5)
         gr.close()
 
 

@@ -3,8 +3,8 @@ title: First Ghost Prototype
 status: in_progress
 priority: P0
 created: 2026-05-14
-updated: 2026-05-21
-step: 12b_done
+updated: 2026-05-22
+step: 12b_verified
 depends: []
 milestone:
 description: >-
@@ -338,6 +338,49 @@ class LoopHealth(TypedDict):
 - `host/ghost_runtime.py` — GhostRuntimeImpl 实现 + wire hooks + loop status 追踪
 - `ghosts/mock/_runtime.py` — MockGhost 覆盖 hook 作为 ghost 开发者参考范式
 - `scripts/ghost/test_debug_hooks.py` — 验证脚本
+
+## 实现阶段关键决策（2026-05-22）— Atom Ghost 端到端验证通过
+
+使用 `scripts/ghost/run_atom_hello.py` 脚本，首次跑通了从信号输入到模型响应的完整链路：
+
+```
+session.add_input_signal("hello")
+  → zenoh pub/sub → mindflow.add_signal()
+  → InputSignalNucleus → Impulse → Attention
+  → Articulator → _articulate_loop → Atom.articulate()
+  → pydantic AI run_stream() → Anthropic API (deepseek-v4-pro)
+  → CTML logos 流式返回 → _action_loop → interpreter
+```
+
+模型成功返回了 CTML 格式响应：`<_><say tone="爽朗少年" voice='{"emotion":"happy"}' as_default="true">哈哈，来了！有什么能帮你的？</say></_>`
+
+### 修复的关键 Bug
+
+1. **NucleusMeta 工厂 NotImplementedError 导致启动崩溃**（`ghost_runtime.py:138`）
+   - workspace 中的 `ExampleNucleusMeta.factory()` 抛出 `NotImplementedError`，`_wire_mindflow()` 无条件创建所有发现到的 nuclei，异常导致 `__aenter__` 失败，随后 cleanup 死锁（zenoh/Matrix 关闭 hang），进程看起来"卡住"而非报错
+   - 修复：`_wire_mindflow()` 中加 try/except，NotImplementedError 打 warning 跳过，其他异常打 exception 跳过。同时注释掉 `.moss_ws/` 和 stub 模板中的 example nucleus factory
+
+2. **pydantic AI API 400 `messages: at least one message is required`**（`atom/_runtime.py:83`）
+   - `Atom.articulate()` 将所有消息作为 `message_history` 传入，未分离当前消息
+   - pydantic AI 1.90.0 的 `run_stream()` 要求 `user_prompt`（当前消息）与 `message_history`（历史）分离
+   - 修复：`run_stream(user_prompt=request.parts, message_history=history)`
+
+3. **`anthropic_thinking` 类型不匹配**（`atom/_meta.py`）
+   - `{"type": "disabled"}` 字典值与 pydantic AI 期望的 `BetaThinkingConfigDisabledParam` 类型不兼容
+   - 修复：使用 `BetaThinkingConfigDisabledParam(type="disabled")`
+
+### 已知遗留问题
+
+- **Cleanup 死锁**：`gr.close()` 后进程 hang，Matrix/zenoh teardown 阶段卡住。当前脚本用 `await asyncio.sleep(5)` 过渡，需后续修复
+
+### 涉及文件
+
+- `src/ghoshell_moss/host/ghost_runtime.py` — _wire_mindflow try/except
+- `src/ghoshell_moss/ghosts/atom/_runtime.py` — user_prompt/message_history 分离
+- `src/ghoshell_moss/ghosts/atom/_meta.py` — BetaThinkingConfigDisabledParam
+- `scripts/ghost/run_atom_hello.py` — 端到端验证脚本
+- `.moss_ws/src/MOSS/manifests/nuclei.py` — 注释 example factory
+- `src/ghoshell_moss/host/stubs/workspace/src/MOSS/manifests/nuclei.py` — 同上
 
 ### 下一阶段
 

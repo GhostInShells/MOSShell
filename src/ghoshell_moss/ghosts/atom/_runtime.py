@@ -79,10 +79,10 @@ class Atom(Ghost):
         moment = articulator.moment
         request = self.to_model_request(moment)
         history = self.model_history()
-        model_context = history + [request]
 
         async with self._agent.run_stream(
-            message_history=model_context,
+            user_prompt=request.parts,
+            message_history=history,
             deps=self._container,
         ) as stream:
             async for text in stream.stream_text(delta=True):

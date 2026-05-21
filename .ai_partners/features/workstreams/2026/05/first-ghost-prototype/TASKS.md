@@ -37,4 +37,5 @@
 - [ ] 11b — Mindflow inspect + 自解释接口
 - [x] 12a — mock ghost + input signal 脚本测试: test_input_signal_full_link.py 全链路走通 (challenge → moment → logos → action), 已知 bug: moment percepts 重复
 - [x] 12b — 修复 moment percepts 重复 bug: 根因是 _faculties_lifecycle_ctx_manager 启动后重调 with_nucleus 导致 signal routes 双注册; 同时删除 _info_impulse_buffer 死代码, nucleus 改同步锁+同步 pop
+- [x] 12b-verify — Atom Ghost 端到端验证: run_atom_hello.py 全链路走通 (signal → articulate → model API → CTML logos), 修复 3 个关键 bug (NucleusMeta NotImplementedError 启动崩溃 / pydantic AI user_prompt 分离 / anthropic_thinking 类型), 已知遗留 cleanup 死锁
 - [ ] 12c — TUI 全链路验证
