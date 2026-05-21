@@ -1,13 +1,14 @@
 ---
-title: Ai Docs Workspace & Mode
-status: in-progress
-priority: P0
 created: 2026-05-21
-updated: 2026-05-21
 depends: []
-milestone:
-description: >-
-  为 docs/ai/ 撰写 workspace 与 moss mode 的系统论述文档，并在过程中修复实现不一致。是架构拓扑文档后最重要的一篇 docs。
+description: 为 docs/ai/ 撰写 workspace 与 moss mode 的系统论述文档，并在过程中修复实现不一致。是架构拓扑文档后最重要的一篇
+  docs。
+milestone: null
+priority: P0
+status: in-progress
+status_note: 文档初稿完成 + explain CLI 已实现，待人类统一改版 + stub 注释 + what-is-workspace 拆分
+title: Ai Docs Workspace & Mode
+updated: '2026-05-21'
 ---
 
 # Ai Docs Workspace & Mode
@@ -78,8 +79,32 @@ CLI 命令归类重组与文档写作并行进行，各自独立。文档引用 
   - `ghoshell_moss.host.stubs.workspace` — workspace stub 模板
   - `ghoshell_moss.host.moss_runtime:MossRuntimeImpl` — Runtime 执行层
 
+## Discovered Issues
+
+### 1. `search_channels_from_package` key 不一致
+
+`src/ghoshell_moss/host/manifests/channels.py:28` — channels 以 Python 变量名为键（`found[name] = obj`），而 primitives 以 `Command.name()` 为键。channels 应该也使用 `Channel.name()` 作为键，与 primitives 保持一致。人类工程师确认这是 bug，以为已修复。
+
+### 2. Manifests 自解释体系（已实现）
+
+- `Manifests.explain()` — 基类通用模板 + PackageManifests/MergedManifests 各自组装
+- `moss manifests explain` — CLI 唯一真相入口，接受 `--mode`
+- 文档 4.2 节引用 CLI 而非硬编码表格
+
+### 3. providers vs contracts 关系（已写入文档 4.2 节）
+
+- providers 服务于 contracts — 添加 Provider 声明 contract 的绑定方式
+- `moss manifests contracts` 看"可以拿到什么"（IoC 已绑定列表）
+- `moss manifests providers` 看"由谁生产"（工厂声明）
+
+## TODO (不随 commit 带入)
+
+- 人类工程师将统一改一版文档（措辞、节奏、详略）
+- stub 文件头部注释（channels.py, primitives.py, configs.py, resources.py, topics.py, providers.py 需要自解释注释）
+- `what-is-workspace.md` 需删除并重写为真正的 how-to
+
 ## Implementation Notes
 
 - 新文档路径：`src/ghoshell_moss/cli/docs/ai/workspace-and-mode.md`
-- 初稿写完后再讨论具体标题
+- 初稿已完成，人类审阅对齐中
 - 文档内容直接面向 AI 读者，写中文

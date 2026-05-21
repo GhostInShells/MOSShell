@@ -135,6 +135,9 @@ class PackageManifests(Manifests):
             items.append(item)
         return items
 
+    def explain(self) -> str:
+        return f"发现自 Python 包 `{self.root_package_name}`。所有声明类型从此包及其子模块中扫描获得。"
+
 
 class MergedManifests(Manifests):
     """
@@ -142,6 +145,7 @@ class MergedManifests(Manifests):
     """
 
     def __init__(self, manifests: list[Manifests]):
+        self._manifests_list = manifests
         self._config_infos: dict[str, ConfigInfo] = {}
         self._contract_infos: list[ProviderInfo] = []
         self._topic_infos: dict[str, TopicInfo] = {}
@@ -207,3 +211,14 @@ class MergedManifests(Manifests):
 
     def nuclei(self) -> dict[str, NucleusMetaInfo]:
         return self._nuclei
+
+    def explain(self) -> str:
+        parts = [super().explain()]  # 先放通用模板
+        for i, m in enumerate(self._manifests_list):
+            parts.append(f"### 源 {i + 1}: {type(m).__name__}\n{m.explain()}")
+        parts.append(
+            "### 合并规则\n"
+            f"以上 {len(self._manifests_list)} 个源按序合并。"
+            "同类别内右边覆盖左边（dict.update / list.extend）。不同类别不互相影响。"
+        )
+        return "\n\n".join(parts)

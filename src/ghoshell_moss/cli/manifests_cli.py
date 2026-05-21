@@ -637,3 +637,19 @@ def _display_nuclei_table(metas: list[NucleusMetaInfo]):
     )
 
     console.print(f"\n[dim]Total: {len(metas)} nucleus factories discovered.[/dim]")
+
+
+@manifest_app.command(name="explain")
+def explain_manifests(
+        mode: str | None = typer.Option(
+            default=None,
+            help="set specific mode"
+        ),
+):
+    """
+    用自然语言自描述当前环境 manifest 的结构与含义。
+    这是 manifest 体系的唯一真相入口。
+    """
+    host = Host(mode=mode)
+    explanation = host.manifests.explain()
+    console.print(explanation)

@@ -318,3 +318,37 @@ class Manifests:
         通过 ghoshell_moss.core.blueprint.mindflow.NucleusFactory 实例发现。
         """
         return {}
+
+    def explain(self) -> str:
+        """
+        用自然语言自描述 manifest 的结构与含义。
+        面向智能模型——CLI 调用它作为唯一真相入口。
+        """
+        return """
+# MOSS Manifests — 环境能力声明体系
+
+manifests 是 MOSS 环境中所有能力的自解释声明。Matrix 启动时自动扫描、
+发现并注入 IoC 容器。声明不是配置文件，是 Python 实例。
+
+## 声明类型
+
+| 类型 | 职责 | 工作空间路径 | 发现方式 |
+|------|------|-------------|---------|
+| **providers** | IoC 依赖注入：声明"这个接口由这个工厂生产" | `MOSS.manifests.providers` | `isinstance(obj, Provider)`，以 `contract()` 的 import path 为键 |
+| **channels** | 一级 Channel：Shell 主通道下直接可调用的能力单元 | `MOSS.manifests.channels` | `isinstance(obj, Channel)`，以 `Channel.name()` 为键 |
+| **primitives** | Shell 原语：sleep、noop、observe、interrupt 等基础命令 | `MOSS.manifests.primitives` | `isinstance(obj, Command)`，以 `Command.name()` 为键 |
+| **configs** | 配置模型：声明配置的 schema 和默认值 | `MOSS.manifests.configs` | `isinstance(obj, ConfigType)`，以 `ConfigType.conf_name()` 为键 |
+| **topics** | 事件协议：约束可通讯的 topic 类型 | `MOSS.manifests.topics` | `isinstance(obj, TopicModel)` 或 `isinstance(obj, TopicSchema)`，以 topic_name 为键 |
+| **resources** | 资源存储：声明可寻址的资源数据集 | `MOSS.manifests.resources` | `isinstance(obj, ResourceStorageMeta)`，以 `scheme://host/path` 为键 |
+| **nuclei** | 感知核：Mindflow 输入信号源的声明 | `MOSS.manifests.nuclei` | `isinstance(obj, NucleusMeta)`，以 `NucleusMeta.name()` 为键 |
+| **CTML versions** | CTML 提示词版本：环境可覆盖默认版本 | `ctml_versions/` 目录 | 扫描 `.md` 文件，以文件名为版本号 |
+
+所有类型共享同一发现模式：`scan_package(约定路径)` → `isinstance` 过滤 → 按类型特定键聚合。
+
+## 深入路径
+
+- IoC 容器：`moss how-tos read get-moss-design/how-ioc-container-work-in-moss.md`
+- Matrix 能力发现：`moss how-tos read get-moss-design/how-matrix-discovers-capabilities.md`
+- 术语表：`moss how-tos read get-moss-design/glossary.md`
+- 架构拓扑：`moss docs read architecture-topology.md`
+""".strip()
