@@ -170,6 +170,10 @@ class GhostRuntimeImpl(GhostRuntime):
         # ignore any signals before started
         matrix.session.on_signal(_route_signal_to_mindflow)
 
+        # 6. Ghost 反身性 channel → Shell (virtual: 树已在 step2 完成首次静态扫描)
+        if ghost_channel := ghost.channel():
+            self._moss_runtime.shell.main_channel.add_virtual_channel(ghost_channel, "ghost")
+
     # ── 三循环 ────────────────────────────────────
 
     async def _main_loop(self) -> None:

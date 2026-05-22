@@ -4,7 +4,7 @@ status: in_progress
 priority: P0
 created: 2026-05-14
 updated: 2026-05-22
-step: 12b_verified
+step: 13_verified
 depends: []
 milestone:
 description: >-
@@ -83,6 +83,7 @@ first-ghost-prototype/
 | 11c | on_challenge 旁路观察 | ChallengeObserver(Callable[[challenger, defender, verdict], None]) + Mindflow.on_challenge(), AbsMindflow._challenge_attention 内 fire | done |
 | 11b | Mindflow inspect + 自解释 | mindflow 探知接口、自解释接口 | pending |
 | 12 | 测试与 TUI | mock ghost + input signal 脚本测试 → TUI 全链路验证 | 12b done, 12c pending |
+| 13 | 反身性 channel 集成 | ghost.channel() 注册到 shell channel tree, stateful channel 状态切换命令可解析, 树裁剪验证 | done |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -395,6 +396,60 @@ session.add_input_signal("hello")
 ### 下一阶段
 
 Mindflow 默认 input signal 体系：感知侧的可观测性（signal 记录、on_impulse 旁路观察），补齐三循环全链路。之后 mock ghost + input signal → 脚本测试 → TUI 全链路验证。
+
+---
+
+## 实现阶段关键决策（2026-05-22）— Ghost 反身性 Channel 集成 + 两处 Bug 修复
+
+完成 Ghost.channel() 向 Shell channel tree 的注册，以及 StatefulChannel 状态切换命令的完整可解析链路。共修复两个 bug，新增三个验证脚本。
+
+### ghost.channel() wiring（4 行）
+
+在 `GhostRuntimeImpl._wire_mindflow()` 末尾，将 ghost.channel() 注册为 shell main_channel 的 virtual child：
+
+```python
+if ghost_channel := ghost.channel():
+    self._moss_runtime.shell.main_channel.add_virtual_channel(ghost_channel, "ghost")
+```
+
+之所以用 virtual child 而非 static child：tree 的静态子节点只在首次 refresh 时扫描（`refresh_time == 1`），而 ghost channel 在 mindflow wiring 阶段才就绪，晚于首次树扫描。virtual children 每次 refresh 都扫描。
+
+### Bug 1: _own_commands 存储了错误的 Command 对象
+
+```python
+# BEFORE (bug): switch_state 命令实际执行的是 stop_current_state
+commands[self._switch_state_command.name()] = self._stop_current_command
+# AFTER:
+commands[self._switch_state_command.name()] = self._switch_state_command
+```
+
+位置：`py_channel.py:613`。复制粘贴错误，key 名称和 value 对象不匹配。
+
+### Bug 2: _get_own_command 遗漏 runtime 级命令
+
+`get_own_command`（public）在 split 后检查了 `switch_state`/`stop_current_state`，但 `_get_own_command`（private）没有。`has_own_command` 调用的是 `_get_own_command`，导致 tree 递归查找 `ghost:switch_state` 时：
+
+1. 递归到 ghost runtime，`unique_name = "switch_state"`
+2. `has_own_command("switch_state")` → `_get_own_command("switch_state")` → 只查 `_main_state` 和 `_current_state` → 都找不到 → 返回 None
+3. `split_unique_name("switch_state")` → `relative_path = ""`（无前缀）→ 递归终止 → 返回 None
+
+**修复**：将 runtime 级命令检查从 `get_own_command` 移至 `_get_own_command`，使 `has_own_command` 和 `get_own_command` 共享同一查找逻辑。
+
+### 三个验证脚本
+
+| 脚本 | 验证内容 | 结果 |
+|------|---------|------|
+| `test_ghost_channel.py` | 基本 channel wiring: ghost channel 出现在 metas，命令可解析 | PASS |
+| `test_stateful_ghost_channel.py` | StatefulChannel 集成: 状态切换后命令列表正确变化，通过 `execute_command("ghost:switch_state", ...)` 切换（与模型通过 CTML 调用同一路径） | PASS |
+| `test_tree_pruning.py` | Channel 树裁剪: 不同状态可见不同子 channel（awake: voice+head+body / sleeping: voice only / bored: voice+head） | PASS |
+
+### 涉及文件
+
+- `src/ghoshell_moss/host/ghost_runtime.py` — ghost channel wiring（4 行新增）
+- `src/ghoshell_moss/core/py_channel.py` — Bug 1 修复（1 行）+ Bug 2 修复（get_own_command/_get_own_command 重构）
+- `scripts/ghost/test_ghost_channel.py` — 基本 channel wiring 验证
+- `scripts/ghost/test_stateful_ghost_channel.py` — StatefulChannel 状态切换验证
+- `scripts/ghost/test_tree_pruning.py` — Channel 树裁剪验证
 
 ---
 

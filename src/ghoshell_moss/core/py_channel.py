@@ -610,7 +610,7 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
         if self._current_state is not None:
             commands[self._stop_current_command.name()] = self._stop_current_command
         if len(self._dynamic_states) > 0:
-            commands[self._switch_state_command.name()] = self._stop_current_command
+            commands[self._switch_state_command.name()] = self._switch_state_command
 
         if self._current_state is not None:
             for name, command in self._current_state.own_commands().items():
@@ -632,11 +632,6 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             self,
             name: CommandUniqueName,
     ) -> Optional[Command]:
-        if self._current_state is not None and name == self._stop_current_command.name():
-            return self._stop_current_command
-        if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
-            return self._switch_state_command
-
         path, name = Command.split_unique_name(name)
         if path:
             return None
@@ -646,6 +641,10 @@ class StateChannelRuntime(AbsChannelTreeRuntime[StatefulChannel]):
             self,
             name: CommandUniqueName,
     ) -> Optional[Command]:
+        if self._current_state is not None and name == self._stop_current_command.name():
+            return self._stop_current_command
+        if len(self._dynamic_states) > 0 and name == self._switch_state_command.name():
+            return self._switch_state_command
         command = self._main_state.get_own_command(name)
         if command is not None:
             return command
