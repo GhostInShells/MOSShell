@@ -1,3 +1,5 @@
+import os
+import signal
 from typing import List
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -141,7 +143,7 @@ def create_app(
         target_path = result.split(" at ")[-1]
         console.print(f"\n[dim]Next: cd {target_path}  # edit main.py[/dim]")
         console.print(f"[dim]  MCP (runtime): <apps:start fullname=\"{fullname}\"/>[/dim]")
-        console.print(f"[dim]  Debug (standalone): moss apps test {fullname}[/dim]")
+        console.print(f"[dim]  Debug (standalone): moss apps run {fullname}[/dim]")
 
 
 def _display_app_table(apps: List[AppInfo], is_filtered: bool):
@@ -198,16 +200,16 @@ def _display_app_detail(app: AppInfo):
         console.print(Panel(Markdown(app.docstring), title='docstring'))
 
 
-@app_store_app.command(name="test")
-def test_app(
-        fullname: str = typer.Argument(..., help="The app fullname (group/name) to test."),
+@app_store_app.command(name="run")
+def run_app(
+        fullname: str = typer.Argument(..., help="The app fullname (group/name) to run."),
         args: str = typer.Argument("", help="Additional arguments passed to the app command."),
         verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose mode."),
         mode: str | None = typer.Option(None, "-m", "--mode", help="specific Mode"),
         session_scope: str | None = typer.Option(None, "-s", "--session-scope", )
 ):
     """
-    Start an app as a foreground subprocess for debugging/testing.
+    Start an app as a foreground subprocess.
     This bypasses the AppStore runtime (Circus).
     """
     host = Host(mode=mode, session_scope=session_scope)
@@ -223,7 +225,7 @@ def test_app(
     # 结合 AppWatcher 定义的 cmd 和 命令行传入的 args
     executable, args_list = host.apps().get_app_executable(fullname, args)
     console.print(Panel(
-        f"[bold green]Testing App:[/bold green] {app.fullname}\n"
+        f"[bold green]Running App:[/bold green] {app.fullname}\n"
         f"[bold blue]Directory:[/bold blue] {app.work_directory}\n"
         f"[bold blue]Address:[/bold blue] {app.address}\n"
         f"[bold yellow]Command:[/bold yellow] {executable}\n"
@@ -252,12 +254,74 @@ def test_app(
         )
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Test interrupted by user.[/yellow]")
+        console.print("\n[yellow]Run interrupted by user.[/yellow]")
     except Exception as e:
         if verbose:
             console.print_exception()
         else:
-            console.print(f"\n[red]Failed to start test process: {e}[/red]")
+            console.print(f"\n[red]Failed to start process: {e}[/red]")
         raise typer.Exit(1)
     finally:
-        console.print("\n[dim]—— Test Session Ended ——[/dim]")
+        console.print("\n[dim]—— Session Ended ——[/dim]")
+
+
+@app_store_app.command(name="kill")
+def kill_app(
+        fullname: str = typer.Argument(..., help="The app fullname (group/name) to kill."),
+        force: bool = typer.Option(False, "-9", "--force", help="Send SIGKILL instead of SIGTERM."),
+        mode: str | None = typer.Option(None, "-m", "--mode", help="specific Mode"),
+):
+    """
+    Force-stop a running app process by its lock file.
+
+    Reads the PID from the app's process lock file and sends SIGTERM (or SIGKILL with --force).
+    The kernel automatically releases the flock when the process exits.
+    """
+    host = Host(mode=mode)
+    print_host_mode_info(host)
+
+    app = host.apps().get_app_info(fullname)
+    if not app:
+        console.print(f"[red]Error: App '{fullname}' not found.[/red]")
+        raise typer.Exit(1)
+
+    # 根据 matrix 的命名规则构造锁文件路径
+    locker_name = f"moss-cell-app-{fullname}".replace("/", "_").replace(".", "_")
+    lock_path = host.env.workspace_path / "runtime" / "locks" / f"{locker_name}.lock"
+
+    if not lock_path.exists():
+        console.print(f"[yellow]App '{fullname}' does not appear to be running (no lock file found).[/yellow]")
+        raise typer.Exit(0)
+
+    # 从锁文件中读取 PID
+    try:
+        pid_str = lock_path.read_text().strip()
+        pid = int(pid_str)
+    except (ValueError, OSError) as e:
+        console.print(f"[red]Failed to read PID from lock file: {e}[/red]")
+        raise typer.Exit(1)
+
+    if pid <= 0:
+        console.print(f"[red]Invalid PID in lock file: {pid}[/red]")
+        raise typer.Exit(1)
+
+    # 检查进程是否存在
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        console.print(f"[yellow]Process {pid} is no longer running. Removing stale lock file.[/yellow]")
+        lock_path.unlink(missing_ok=True)
+        raise typer.Exit(0)
+
+    # 发送信号
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    sig_name = "SIGKILL" if force else "SIGTERM"
+
+    try:
+        os.kill(pid, sig)
+        console.print(f"[green]Sent {sig_name} to app '{fullname}' (PID {pid}).[/green]")
+        # 锁文件会在内核释放 flock 后残留，清理它
+        lock_path.unlink(missing_ok=True)
+    except OSError as e:
+        console.print(f"[red]Failed to kill process {pid}: {e}[/red]")
+        raise typer.Exit(1)
