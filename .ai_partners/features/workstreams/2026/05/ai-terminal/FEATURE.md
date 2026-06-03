@@ -1,15 +1,17 @@
 ---
-title: AI Terminal — 带审批链和 GUI 的智能模型命令行工具
+title: AI Terminal — 带审批链的智能模型命令行工具（GUI / TUI 可选）
 status: draft
 priority: P2
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-06-03
 depends:
   - session-communication-bus
+  - tui-render-governance  # 如果第 3 层选择 TUI 审批而非 PyQt6 GUI
 milestone:
 description: >-
-  为 Ghost 提供一套可插拔的 Terminal Channel，通过审批链 + GUI 让人类安心授权 AI 操作命令行。
-  三层解耦：contracts 下的 Terminal 模块（纯逻辑）、Channel 体系（MOSS 命令反射）、GUI App Cell（审批面板和执行状态）。
+  为 Ghost 提供一套可插拔的 Terminal Channel，通过审批链让人类安心授权 AI 操作命令行。
+  三层解耦：contracts 下的 Terminal 模块（纯逻辑）、Channel 体系（MOSS 命令反射）、
+  审批交互层（可选 PyQt6 GUI App Cell 或 TUI ApprovalState，依赖 tui-render-governance）。
 ---
 
 # AI Terminal
@@ -28,14 +30,21 @@ MOSS 的 Ghost 需要一个可以直接操作命令行的能力集合（对标 C
 
 ## Architecture
 
+第 3 层审批交互有两种可选实现，见 Key Decision 9。
+
 ```
-GUI App Cell (独立进程, PyQt6 主线程)
-  │ 审批面板 / 执行历史 / 输出查看
-  │ 通过 Terminal 模块的线程安全 API 驱动
+审批交互层 (二选一):
+  ┌─ TUI ApprovalState (MOSS TUI 内)        ← Phase 1 推荐, 依赖 tui-render-governance
+  │   审批队列 + completion 交互 + bottom_toolbar 通知
+  │
+  └─ GUI App Cell (独立进程, PyQt6 主线程)   ← Phase 2, 跨进程审批控制台
+      审批面板 / 执行历史 / 输出查看
+      通过 Terminal 模块的线程安全 API 驱动
   ▼
-Terminal 模块 (contracts, 纯逻辑, 无 MOSS/GUI 耦合)
+Terminal 模块 (contracts, 纯逻辑, 无 MOSS/GUI/TUI 耦合)
   │ 命令执行引擎 (subprocess)
   │ 审批策略 (Phase 1: 硬编码 whitelist / ask-human)
+  │ ApprovalModule — 审批队列管理 (submit / pending / decide / on_change)
   │ ThreadSafeFuture 桥接同步审批和异步 Channel
   │ 输出 buffer (Phase 2)
   ▼
@@ -111,6 +120,22 @@ Phase 2 迁移到 FutureManager 实现跨进程。
 
 GhostOS 项目中的 `terminal/abcd.py` (Terminal 抽象 + CommandResult) 和 `project/abcd.py` (Directory/File 抽象: read with line numbers, insert with range, continuous_write)。
 设计思路直接继承，用 MOSS 当前架构重写实现。
+
+### 9. 第 3 层（审批交互）优先 TUI，GUI 延后
+
+审批交互有两种可选实现：
+
+| 方案 | 适用阶段 | 特点 |
+|------|---------|------|
+| **TUI ApprovalState** | Phase 1 | 依赖 tui-render-governance。ApprovalModule 维护审批队列，TUI 内 completion 交互，bottom_toolbar 全局通知。不引入新进程、新依赖 |
+| **PyQt6 GUI App Cell** | Phase 2+ | 独立进程，跨进程审批控制台。依赖 Session Comm Bus 的 FutureManager |
+
+Phase 1 选 TUI 的原因：
+- 全双工场景下 TUI 审批不抢占人类输入焦点，比独立 GUI 弹窗更符合 Ghost 控制哲学
+- 不需要等 PyQt6 GUI 体系治理（项目当前 alpha），也不需要 Session Comm Bus 跨进程 Future
+- ApprovalModule 纯逻辑 + TUI 审批交互可以独立跑通，再倒灌回 Terminal Channel
+
+实现顺序：tui-render-governance（TUI 基础设施） → ApprovalState（TUI 审批界面） → Terminal 审批模块 + Channel。
 
 ## Implementation Notes
 
