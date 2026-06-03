@@ -155,19 +155,19 @@ function, it returns the structured interface contract (signatures, fields,
 type annotations). `get-source` is for when you need a minimal, un-reflected
 view of the code. For the full strategy, see the Quick Start section above.
 
-Reference indexes — MOSS's four architectural introspection commands:
+Reference indexes — MOSS's five architectural introspection commands:
 
 ```
+moss codex architecture    # curated module map — quick nav, replaces grep/search for locating abstractions
 moss codex concepts        # core abstractions (Channel, Command, Interpreter, Shell...)
 moss codex blueprint       # building blocks (channel_builder, matrix, mindflow, host...)
 moss codex contracts       # minimal base dependencies (IoC contracts)
 moss codex channeltypes    # bundled channel catalog (app-level reference)
 ```
 
-Run any of these without arguments first — the output lists available
-modules with short descriptions. Then use a name from that list to
-reflect a specific module. Parameters and options are visible via
-`moss --ai all-commands` or the command's own `--help`.
+`architecture` is the map: which module holds what. When you need to find
+where a concept lives, start there instead of grepping. Then use
+`get-interface` or `get-source` with a name from the map to dive in.
 
 ### ctml — the streaming control language
 

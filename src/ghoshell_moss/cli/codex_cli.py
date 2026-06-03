@@ -616,3 +616,63 @@ def codex_channeltypes(
         ),
 ):
     _show_package_module(CHANNELS_PACKAGE, module_name, cmd_name="channeltypes", deps=deps)
+
+
+@codex_app.command(
+    name='architecture',
+    help="Show the core architecture map — all key modules and their roles",
+)
+def codex_architecture():
+    """Display the curated architecture map of MOSS core abstractions.
+
+    Imports ghoshell_moss.architecture and reflects every module in its
+    __dict__ — each one is a manually curated entry in the architecture map.
+    Output includes type (module/package), name, and first-line docstring.
+    """
+    import ghoshell_moss.architecture as arch
+
+    table_data = []
+    packages = 0
+    modules = 0
+
+    for name, value in sorted(arch.__dict__.items(), key=lambda x: x[0]):
+        if name.startswith('_'):
+            continue
+        if not inspect.ismodule(value):
+            continue
+
+        short_doc = (value.__doc__ or '').strip().split('\n')[0]
+        is_pkg = hasattr(value, '__path__')
+
+        if is_pkg:
+            kind = "[dim]package[/dim]"
+            display = f"[bold magenta]{name}[/bold magenta]"
+            packages += 1
+        else:
+            kind = "[dim]module[/dim]"
+            display = f"[bold cyan]{name}[/bold cyan]"
+            modules += 1
+
+        table_data.append([kind, display, short_doc])
+
+    print_simple_table(
+        data=table_data,
+        headers=["Type", "Name", "Description"],
+        title="MOSS Architecture Map",
+        column_styles=["", "", ""],
+        title_style="bold bright_cyan",
+        column_ratios=[1, 2, 5],
+    )
+
+    console.print(
+        f"\n[dim]Total: {len(table_data)} entries "
+        f"({modules} modules, {packages} packages)[/dim]"
+    )
+    console.print(
+        f"[dim]Tip: [bold]moss codex get-source <name>[/bold] "
+        f"for full source of a module[/dim]"
+    )
+    console.print(
+        f"[dim]Tip: [bold]moss codex list <name>[/bold] "
+        f"for members of a module or package[/dim]"
+    )
