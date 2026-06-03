@@ -1,12 +1,11 @@
 ---
 created: 2026-06-03
 depends: []
-description: 基于 miniaudio 的系统音频捕获源，原始 PCM 经 Zenoh 广播，消费者按需加工（波形可视化、ASR、剪辑）。 ConfigType
-  格式共识 + tmp_storage 运行时发现 + Provider 注入。
+description: 基于 miniaudio 的系统音频捕获源，原始 PCM 经 Zenoh 广播，消费者按需加工（波形可视化、ASR、剪辑）。 ConfigType 格式共识 + tmp_storage 运行时发现 + Provider 注入。
 milestone: null
 priority: P1
 status: draft
-status_note: 讨论完成，交由其他 AI 实例实现
+status_note: 补充 SequentialAudioConsumer 设计与 listener 依赖关系，交由 AI 实例实现
 title: Audio Capture — 系统音频感知通道
 updated: '2026-06-04'
 ---
@@ -37,7 +36,7 @@ updated: '2026-06-04'
 - 播放端对称参考: `ghoshell_moss.host.speech.player.miniaudio_player:MiniAudioStreamPlayer`
 - 播放 Provider 参考: `ghoshell_moss.host.providers.audio_player_provider:AudioPlayerProvider`
 - 进程锁: `ghoshell_moss.contracts.workspace:FileLocker`
-- 下游消费 feature: 波形 Channel（本 feature 不包含，但为此提供原始 PCM 基础）
+- 下游消费 feature: listener（ASR 消费者）、波形 Channel（可视化消费者）
 
 ## Key Decisions
 
@@ -48,7 +47,7 @@ updated: '2026-06-04'
 | 消费者 | 读什么 |
 |---|---|
 | 波形 Channel (未来) | meta（RMS + bands），不重算 PCM |
-| ASR (未来) | samples |
+| ASR / listener (未来) | samples |
 | AI 感知 | meta 快速判断，需要时再读 samples |
 | 音频剪辑 (未来) | samples |
 
@@ -56,7 +55,14 @@ updated: '2026-06-04'
 **拒绝**: 捕获源内建 N 种加工管线——加工逻辑属于消费者，不属于采集节点。捕获节点应为极简管道。
 **拒绝**: 只广播特征帧不广播 PCM——ASR 和剪辑需要原始采样。86 KB/s（44.1kHz mono 16bit）对 Zenoh TCP localhost 是零头。
 
-### KD2: ConfigType 格式共识 + tmp_storage 运行时发现
+### KD2: PCM 流走 Zenoh 原生 pub/sub，不走 TopicService
+
+TopicService 设计意图是"秒级大脑事件"（见 `Topic` docstring）。PCM 流是 50ms/帧、86 KB/s 的连续传感器数据——语义完全不匹配。Zenoh 原生 `pub`/`sub` 设计场景就是 MB/s 级传感器流，有序、有可靠性 QoS、有 backpressure。
+
+**接受**: audio-capture 用 Zenoh 原生 API（`pub_stream_delta` / `sub_stream`），TopicService 只用于状态变更通知（AudioRuntimeInfo 的 running/heartbeat 等）。
+**拒绝**: PCM 走 TopicService——语义错位，且 TopicService 的 Subscriber 模型（`maxsize=0` 无限堆积或 `maxsize=1` 只保留最新）不适合流式消费。
+
+### KD3: ConfigType 格式共识 + tmp_storage 运行时发现
 
 两层发现机制，各司其职：
 
@@ -73,22 +79,58 @@ ConfigType 回答"格式是什么"——消费者编译期就知道怎么解析�
 **接受**: ConfigType 由消费者定义和使用，不是 App 私有的。格式是共识，不属于任何一方。
 **拒绝**: Session Output 做运行时通知——Output 是 mindflow 交互通道，做基础设施元信息推送是语义错位。tmp_storage 天然适合"只查一次"的知识 + 进程锁场景。
 
-### KD3: AudioPullLatest 消费者模型，pull_next 推迟
+### KD4: 两类消费者模型 — pull_latest 与 sequential
 
-消费者侧只定义 `AudioPullLatest`——非阻塞拿最新帧。波形可视化、AI 按需感知适用。
+音频消费者分两种语义，各提供独立模型：
 
 ```python
 class AudioPullLatest(ABC):
+    """非阻塞拿最新帧。波形可视化、AI 按需感知适用。"""
     def pull_latest(self) -> AudioChunk | None: ...
-    """非阻塞，总是立刻返回。可能返回与上次相同帧（期间无新数据）。"""
     def close(self) -> None: ...
+
+class AudioSequentialConsumer(ABC):
+    """顺序消费，不丢帧，支持背压。ASR / 录音适用。"""
+    def __aiter__(self): ...
+    async def __anext__(self) -> AudioChunk: ...
+    async def close(self) -> None: ...
 ```
 
-`pull_next`（顺序消费 + gap 通知）推迟到 ASR/录音等真实需求出现时再加。"用不到尽量不加抽象"。
+`pull_latest` 内部: ring buffer + 非阻塞读，写满时丢最老帧。
+`sequential` 内部: `asyncio.Queue(maxsize=N)` + Zenoh sub callback relay。队列满时 `put()` 阻塞 → 自然背压 → Zenoh 侧自动丢弃。cancel 后 finally 发 sentinel → 消费者优雅退出。
 
-### KD4: ring_buffer_frames 是 consumer 实例参数，不是全局 ConfigType
+**实现草稿**:
 
-`AudioCaptureSource.new_consumer(ring_buffer_frames=64)` 创建消费者实例。每个 consumer 内部独立 ring buffer + Zenoh subscription，互不干扰。慢 consumer 被写满时丢最老帧（`drop_policy: oldest`）。
+```python
+class MiniAudioSequentialConsumer(AudioSequentialConsumer):
+    def __init__(self, zenoh_sub, maxsize=128):
+        self._queue = asyncio.Queue(maxsize=maxsize)  # 128帧 * 50ms = 6.4s
+        self._sub = zenoh_sub
+        self._task: asyncio.Task | None = None
+
+    async def start(self):
+        self._task = asyncio.create_task(self._relay())
+
+    async def _relay(self):
+        try:
+            async for sample in self._sub:
+                chunk = AudioChunk.from_sample(sample)
+                await self._queue.put(chunk)  # 队列满阻塞, 自然背压
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._queue.put_nowait(None)  # sentinel
+
+    async def __anext__(self) -> AudioChunk:
+        chunk = await self._queue.get()
+        if chunk is None:
+            raise StopAsyncIteration
+        return chunk
+
+    async def close(self):
+        if self._task:
+            self._task.cancel()
+```
 
 **接受**: consumer 级参数——不同消费者有不同容忍度（波形显示 32 帧够了，ASR 可能需要 128）。
 **拒绝**: 放在全局 ConfigType——那是对所有消费者的强制约束。
@@ -121,7 +163,31 @@ class AudioCaptureProvider(Provider[AudioCaptureSource]):
 
 MVP 用主 Session 的 `pub_stream_delta` / `sub_stream`。代码结构把 session 做成可注入的，未来换实例即可。
 
-### KD8: Contract 定义
+### KD8: 运行时稳定性优先 — 允许丢帧，禁止泄漏
+
+流式 ASR 的场景：180-210ms chunk 直接上报火山引擎。偶尔丢帧只影响那一小段识别质量，不影响系统运行。真正危险的是：
+
+1. **内存泄漏** — 消费者跟不上，队列无限堆积
+2. **崩溃传播** — WebSocket 断开导致整个 task 树崩溃
+3. **资源泄漏** — cancel 后 WebSocket/audio stream 没收干净
+
+`sequential` consumer 用有界 `asyncio.Queue` 解决 (1)——满了就阻塞 pub 侧，Zenoh 自动丢老帧。用 asyncio task + try/except/finally + sentinel 解决 (2)(3)。
+
+### KD9: 与 listener feature 的依赖关系
+
+audio-capture 是 PCM 源，listener 是 ASR 消费者。依赖链：
+
+```
+AudioCaptureSource (本 feature)
+  └─ .new_sequential_consumer(ring_buffer_frames=128)
+       └─ AudioSequentialConsumer (async iterable)
+            └─ listener 内层循环: async for chunk in consumer
+                 └─ feed ASR engine → callback(SpeechRecognition)
+```
+
+listener 不拥有麦克风——它通过 audio-capture 的 consumer 获取 PCM。两个 feature 并行开发，只要 `AudioCaptureSource` + `AudioSequentialConsumer` 的 contract 先稳定。
+
+## Contract
 
 ```python
 # contracts/audio.py
@@ -157,21 +223,29 @@ class AudioCaptureSource(ABC):
     async def start(self) -> None: ...
     def device_explain(self) -> str: ...
     def new_consumer(self, ring_buffer_frames: int = 64) -> AudioPullLatest: ...
+    def new_sequential_consumer(self, max_queue_frames: int = 128) -> AudioSequentialConsumer: ...
     async def close(self) -> None: ...
 
 class AudioPullLatest(ABC):
     def pull_latest(self) -> AudioChunk | None: ...
     def close(self) -> None: ...
+
+class AudioSequentialConsumer(ABC):
+    def __aiter__(self): ...
+    async def __anext__(self) -> AudioChunk: ...
+    async def start(self) -> None: ...
+    async def close(self) -> None: ...
 ```
 
 ## Implementation Notes
 
 ### 实现顺序
 
-1. `contracts/audio.py` — 所有抽象定义
-2. `host/speech/capture/miniaudio_capture.py` — MiniAudioCaptureSource 实现
+1. `contracts/audio.py` — 所有抽象定义（含 `AudioSequentialConsumer`）
+2. `host/speech/capture/miniaudio_capture.py` — MiniAudioCaptureSource 实现（含 `MiniAudioSequentialConsumer`）
 3. `host/providers/audio_capture_provider.py` — Provider 注册
 4. 波形 Channel（后续 feature）
+5. listener（后续 feature，依赖 `AudioSequentialConsumer`）
 
 ### miniaudio CaptureDevice 回调模式
 
@@ -188,3 +262,4 @@ class AudioPullLatest(ABC):
 ---
 
 *架构设计: DeepSeek V4 与人类工程师, 2026-06-03*
+*补充: SequentialAudioConsumer 设计、listener 依赖关系、运行时稳定性约束 — Claude Opus 4.7 与人类工程师, 2026-06-04*
