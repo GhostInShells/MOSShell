@@ -16,7 +16,7 @@ from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, MatrixLifecycleObject
 from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
 from ghoshell_moss.core.blueprint.host import Mode
-from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
@@ -131,12 +131,9 @@ class MatrixImpl(Matrix):
         cell_alive_events[main_cell.address] = event
         cells[main_cell.address] = main_cell
         self._main_cell = main_cell
-        if self._this_cell_address == DEFAULT_CELL_ADDRESS:
-            self._this_cell_address = main_cell.address
-            self._is_main = True
+        if self._this_cell_address == main_cell.address:
             self._this_cell = main_cell
         else:
-            # 其实不会有 unknown, 不过开发测试阶段, 做一个兜底.
             self._this_cell = cells.get(
                 self._this_cell_address,
                 UnknownCell(),
@@ -163,6 +160,13 @@ class MatrixImpl(Matrix):
         self._system_prompter = self._prepare_system_prompter()
         self._container = self._prepare_container()
         self._lifecycle_bound_objects_or_types: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
+
+        if isinstance(self._this_cell, UnknownCell):
+            log = self._logger or self.env.logger
+            log.warning(
+                "%s cell address %r not found in known cells: %s, fallback to UnknownCell",
+                self._log_prefix, self._this_cell_address, list(cells.keys()),
+            )
 
     def _prepare_system_prompter(self) -> SystemPrompter:
         from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl
