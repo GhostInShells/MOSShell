@@ -160,6 +160,10 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             # 假设已经是 int16
             audio_data = chunk.astype(np.int16)
 
+        # 格式校验
+        if rate <= 0:
+            raise ValueError("rate must be greater than 0")
+
         # 计算持续时间
         duration = len(audio_data) / rate
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
@@ -176,7 +180,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                 self._estimated_end_time = current_time + duration
             else:
                 self._estimated_end_time += duration
-            return self._estimated_end_time
+        return self._estimated_end_time
 
     def _time_to_wait(self) -> float:
         time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()
