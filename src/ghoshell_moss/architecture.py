@@ -10,10 +10,17 @@ MOSS Architecture Map — 核心抽象地图
 添加新模块 = 添加一行 import。无需额外维护。
 
 使用方式：
-    moss codex architecture          # AI 纯文本输出
+    moss codex architecture          # 模型纯文本输出
     moss codex architecture          # 人类 Rich 表格输出
 
 See: FEATURE.md codex-architecture
+
+.. attention for model developers::
+
+   本文件由模型实例手动维护。当你阅读 MOSS 源码、发现值得索引的
+   模块或包路径时，评估是否添加一条 import。不是每个文件都值得加 —
+   关键是那些"下次模型实例可能需要定位"的目录和核心抽象。
+   加一条 import = 花 10 秒，为未来的模型实例省 2 分钟。
 """
 
 # ============================================================================
@@ -46,6 +53,8 @@ import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
 import ghoshell_moss.core.blueprint.conversation as conversation
 import ghoshell_moss.core.blueprint.fractal as fractal
+import ghoshell_moss.host.tui as tui
+import ghoshell_moss.host.tui_entries as tui_entries
 
 # ============================================================================
 # Contracts — IoC 最小基础依赖

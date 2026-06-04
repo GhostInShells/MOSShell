@@ -14,7 +14,7 @@
 
 `moss start` 是每次会话的认知入口。它加载 MOSS 的认知地图：MOSS 是什么、能做什么、下一步往哪走。其中的命令是常用关键信息，完整命令树始终通过 `moss --ai all-commands` 获取。
 
-**核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图。需要快速定位某个抽象属于哪个模块、或了解项目整体拓扑时使用，可替代 search/grep 做开发域导航。
+**核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图，可替代 search/grep 做开发域导航。地图在 `src/ghoshell_moss/architecture.py` 手动维护，发现值得索引的路径时加一条 import。
 
 ## 环境准备
 

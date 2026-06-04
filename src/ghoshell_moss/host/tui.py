@@ -1,3 +1,4 @@
+"""TUI 框架基类 — MossHostTUI, TUIState, ConsoleOutput, LiveStreamSink."""
 from abc import ABC, abstractmethod
 from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
 from prompt_toolkit import PromptSession

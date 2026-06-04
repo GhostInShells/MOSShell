@@ -623,56 +623,142 @@ def codex_channeltypes(
     help="Show the core architecture map — all key modules and their roles",
 )
 def codex_architecture():
-    """Display the curated architecture map of MOSS core abstractions.
+    """Display the curated architecture map, grouped by conceptual section.
 
-    Imports ghoshell_moss.architecture and reflects every module in its
-    __dict__ — each one is a manually curated entry in the architecture map.
-    Output includes type (module/package), name, and first-line docstring.
+    Reads ghoshell_moss.architecture — a hand-maintained import list. Each
+    entry is wrapped with from_module() to show full import path, source
+    file location, and module docstring. Sections are preserved from the
+    source file's comment blocks.
+
+    To contribute: add an ``import ... as ...`` line to architecture.py.
     """
     import ghoshell_moss.architecture as arch
+    from ghoshell_moss.core.codex import from_module
 
-    table_data = []
-    packages = 0
-    modules = 0
+    source = inspect.getsource(arch)
+    sections = _parse_architecture_sections(source, arch)
 
-    for name, value in sorted(arch.__dict__.items(), key=lambda x: x[0]):
-        if name.startswith('_'):
+    # Header: source location + how to contribute
+    arch_file = inspect.getfile(arch)
+    try:
+        arch_rel = os.path.relpath(arch_file, os.getcwd())
+    except ValueError:
+        arch_rel = arch_file
+    # Source root for inferring file paths from import paths
+    try:
+        src_root = os.path.relpath(
+            os.path.join(os.path.dirname(arch_file), '..'), os.getcwd()
+        )
+    except ValueError:
+        src_root = os.path.dirname(arch_file)
+    console.print(
+        f"[dim]Map: [bold]{arch_rel}[/bold]"
+        f"  ([bold]ghoshell_moss.architecture[/bold])"
+        f"  — add an import to contribute a path[/dim]"
+    )
+    console.print(f"[dim]Source root: [bold]{src_root}[/bold][/dim]\n")
+
+    total = 0
+    for title, pkg_path, entries in sections:
+        if not entries:
             continue
-        if not inspect.ismodule(value):
+        total += len(entries)
+
+        console.print(f"[bold bright_cyan]{title}[/bold bright_cyan]")
+        console.print(f"[dim]  {pkg_path}[/dim]")
+
+        table_data = []
+        for alias, m in entries:
+            if m.is_package:
+                kind = "[dim]pkg[/dim]"
+                display = f"[bold magenta]{alias}[/bold magenta]"
+            else:
+                kind = "[dim]mod[/dim]"
+                display = f"[bold cyan]{alias}[/bold cyan]"
+
+            table_data.append([
+                f"{kind} {display}",
+                f"[dim]{m.module_path}[/dim]",
+                m.short_doc,
+            ])
+
+        print_simple_table(
+            data=table_data,
+            headers=["Name", "Import", "Description"],
+            column_styles=["", "dim", ""],
+            column_ratios=[1, 3, 5],
+        )
+        console.print("")
+
+    n_sections = len([s for s in sections if s[2]])
+    console.print(
+        f"[dim]{total} entries in {n_sections} sections. "
+        f"Tip: [bold]moss codex list <Name>[/bold]"
+        f" for members; [bold]moss codex get-source <Name>[/bold]"
+        f" for full source[/dim]"
+    )
+
+
+def _parse_architecture_sections(
+    source: str,
+    arch: object,
+) -> list[tuple[str, str, list[tuple[str, 'ModuleManifest']]]]:
+    """Parse architecture.py source into [(title, pkg_path, [(alias, manifest)])].
+
+    Splits on ``# ====`` section delimiters, extracts the two comment lines
+    after each delimiter as (title, package_path), then collects the import
+    lines that follow as entries.  Each entry is wrapped with from_module().
+    """
+    import re
+    from ghoshell_moss.core.codex import ModuleManifest, from_module
+
+    chunks = re.split(r'^# =+\n', source, flags=re.MULTILINE)
+    sections: list = []
+    pending_title = ""
+    pending_path = ""
+
+    for chunk in chunks:
+        lines = [l for l in chunk.strip().split('\n') if l.strip()]
+        if not lines:
             continue
 
-        short_doc = (value.__doc__ or '').strip().split('\n')[0]
-        is_pkg = hasattr(value, '__path__')
+        # Architecture.py uses THREE ``# ====`` lines per section:
+        #   opening delimiter → title → path → closing delimiter → imports
+        # Splitting on ``# ====`` puts title+path and imports in separate
+        # chunks.  Carry title/path forward from header-only chunks.
+        has_imports = any(
+            l.startswith('import ') and ' as ' in l for l in lines
+        )
 
-        if is_pkg:
-            kind = "[dim]package[/dim]"
-            display = f"[bold magenta]{name}[/bold magenta]"
-            packages += 1
-        else:
-            kind = "[dim]module[/dim]"
-            display = f"[bold cyan]{name}[/bold cyan]"
-            modules += 1
+        if not has_imports:
+            # May be a header-only chunk — extract title + path for next chunk
+            for line in lines:
+                if line.startswith('# ') and not pending_title:
+                    pending_title = line[2:].strip()
+                elif line.startswith('# ') and pending_title and not pending_path:
+                    pending_path = line[2:].strip()
+            continue
 
-        table_data.append([kind, display, short_doc])
+        # Chunk with imports — use carried-forward title/path
+        title = pending_title
+        pkg_path = pending_path
+        pending_title = ""
+        pending_path = ""
 
-    print_simple_table(
-        data=table_data,
-        headers=["Type", "Name", "Description"],
-        title="MOSS Architecture Map",
-        column_styles=["", "", ""],
-        title_style="bold bright_cyan",
-        column_ratios=[1, 2, 5],
-    )
+        import_aliases: list[str] = []
+        for line in lines:
+            if line.startswith('import ') and ' as ' in line:
+                parts = line[len('import '):].split(' as ')
+                if len(parts) == 2:
+                    import_aliases.append(parts[1].strip())
 
-    console.print(
-        f"\n[dim]Total: {len(table_data)} entries "
-        f"({modules} modules, {packages} packages)[/dim]"
-    )
-    console.print(
-        f"[dim]Tip: [bold]moss codex get-source <name>[/bold] "
-        f"for full source of a module[/dim]"
-    )
-    console.print(
-        f"[dim]Tip: [bold]moss codex list <name>[/bold] "
-        f"for members of a module or package[/dim]"
-    )
+        entries = []
+        for alias in import_aliases:
+            value = getattr(arch, alias, None)
+            if value is not None and inspect.ismodule(value):
+                entries.append((alias, from_module(value)))
+
+        if entries:
+            sections.append((title, pkg_path, entries))
+
+    return sections
