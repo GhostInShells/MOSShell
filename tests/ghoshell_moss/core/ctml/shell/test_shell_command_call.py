@@ -263,6 +263,112 @@ async def test_shell_clear():
 
 
 @pytest.mark.asyncio
+async def test_shell_clear_during_feed():
+    """clear() 在 feed 阶段调用 — 解释器安全中断，shell 可复用."""
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+    a_chan = new_channel("a")
+    shell.main_channel.import_channels(a_chan)
+
+    @a_chan.build.command()
+    async def foo() -> str:
+        await asyncio.sleep(0.2)
+        return "foo"
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpretation = interpreter.interpretation()
+            # feed 部分 CTML
+            interpreter.feed("<a:foo />")
+            # 在 feed 之后、commit 之前 clear
+            await shell.clear()
+            # 解释器已关闭，后续操作应安全
+            assert interpreter.is_closed()
+            # interpretation 应标记完成
+            assert interpretation.done
+
+        # clear 后可创建新 interpreter
+        async with await shell.interpreter() as interpreter2:
+            interpreter2.feed("<a:foo />")
+            tasks = await interpreter2.wait_tasks()
+            assert len(tasks) == 1
+            assert list(tasks.values())[0].result() == "foo"
+
+
+@pytest.mark.asyncio
+async def test_shell_clear_during_execution():
+    """clear() 在执行阶段调用 — 正在运行的命令被取消."""
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+    a_chan = new_channel("a")
+    shell.main_channel.import_channels(a_chan)
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @a_chan.build.command()
+    async def long_task() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+            return "never"
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<a:long_task />")
+            interpreter.commit()
+            await interpreter.wait_compiled()
+            # 等命令开始执行
+            await asyncio.wait_for(started.wait(), 1.0)
+            # 在执行过程中 clear
+            await shell.clear()
+            # 命令应被取消
+            await asyncio.wait_for(cancelled.wait(), 1.0)
+            assert interpreter.is_closed()
+
+        # clear 后复用
+        async with await shell.interpreter() as interpreter2:
+            interpreter2.feed("<a:long_task />")
+            interpreter2.commit()
+            await interpreter2.wait_compiled()
+            assert len(interpreter2.compiled_tasks()) == 1
+
+
+@pytest.mark.asyncio
+async def test_shell_clear_idempotent():
+    """clear() 多次调用安全 — 幂等."""
+    from ghoshell_moss.core.ctml.shell import new_ctml_shell
+
+    shell = new_ctml_shell()
+    a_chan = new_channel("a")
+    shell.main_channel.import_channels(a_chan)
+
+    @a_chan.build.command()
+    async def foo() -> str:
+        return "ok"
+
+    async with shell:
+        async with await shell.interpreter() as interpreter:
+            interpreter.feed("<a:foo />")
+            tasks = await interpreter.wait_tasks()
+            assert list(tasks.values())[0].result() == "ok"
+
+        # 多次 clear 不应抛异常
+        await shell.clear()
+        await shell.clear()
+        await shell.clear()
+
+        # 仍然可用
+        async with await shell.interpreter() as interpreter2:
+            assert interpreter2.is_running()
+
+
+@pytest.mark.asyncio
 async def test_shell_delta_prepare():
     from ghoshell_moss.core.ctml.shell import new_ctml_shell
 

@@ -371,6 +371,9 @@ class BaseAction(Action):
             # 通知运行结束.
             self._exited_event.set()
 
+    def is_aborted(self) -> bool:
+        return self._ctx.is_aborted()
+
     def abort(self, error: str | AttentionAbortedError | Exception | None) -> None:
         self._ctx.abort(error)
         self._task_group.close()

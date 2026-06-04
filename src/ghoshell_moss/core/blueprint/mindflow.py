@@ -714,6 +714,14 @@ class Action(ABC):
         """
         pass
 
+    @abstractmethod
+    def is_aborted(self) -> bool:
+        """
+        Action 所在 Attention 是否已被 abort.
+        用于执行循环中检查是否应该提前终止 (如 shell.clear).
+        """
+        pass
+
     def raise_observe(self, message: str) -> None:
         """
         抛出一个 ObserveError 方便快速退出调用栈.
