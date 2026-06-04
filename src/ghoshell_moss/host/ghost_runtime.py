@@ -353,6 +353,10 @@ class GhostRuntimeImpl(GhostRuntime):
         返回 (as_messages, observe) 闭合 observe 回路.
         logos 已走 session stream 实时广播, 此处只发射 command-output/result.
         InterpretError 被捕获 — interpretation 已保留 partial results.
+
+        Attention abort 传播: 在 feed/compile/execute 各阶段结束后检查
+        action.is_aborted(), 发现后调用 shell.clear() 取消 pending command,
+        返回部分结果.
         """
         shell = self._moss_runtime.shell
         if not shell.is_running():
@@ -386,6 +390,17 @@ class GhostRuntimeImpl(GhostRuntime):
 
         interpreter.on_task_done(_on_task_done)
 
+        async def _check_abort_and_clear(phase: str) -> bool:
+            """检查 attention abort 并清理 shell. 返回 True 表示已 abort."""
+            if not action.is_aborted():
+                return False
+            logger.info(
+                "%s attention aborted during %s, clearing shell",
+                self._log_prefix, phase,
+            )
+            await shell.clear()
+            return True
+
         async with interpreter:
             try:
                 # ── 阶段 1: feed — 流式送入 ──
@@ -396,13 +411,28 @@ class GhostRuntimeImpl(GhostRuntime):
                         first_delta = False
                     interpreter.feed(delta)
 
+                # feed 阶段结束即检查: 此时 abort 表示 logos 流被中途截断,
+                # 已 fed 的 CTML 可能产生了 pending command, 需要 clear.
+                if await _check_abort_and_clear("feed"):
+                    return interpretation.as_messages(), interpretation.observe
+
                 # ── 阶段 2: compile — 标记结束, 等待解析完成 ──
                 interpreter.commit()
                 logger.debug("logos stream committed, waiting compile")
                 await interpreter.wait_compiled()
 
+                # compile 后检查: abort 可能发生在解析期间, 已编译的 task
+                # 未开始执行但已入队, clear 将它们标记为 INTERRUPTED.
+                if await _check_abort_and_clear("compile"):
+                    return interpretation.as_messages(), interpretation.observe
+
                 # ── 阶段 3: execute — 等待全部 task 执行完毕 ──
                 await interpreter.wait_stopped()
+
+                # execute 后检查: abort 发生在命令执行期间, 未完成的 task
+                # 被 clear 取消, 已完成的保留结果.
+                if await _check_abort_and_clear("execute"):
+                    return interpretation.as_messages(), interpretation.observe
 
             except InterpretError:
                 # 级别 1: 可管理中断. interpretation 已保留 partial results +
