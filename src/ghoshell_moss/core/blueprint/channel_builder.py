@@ -652,3 +652,39 @@ if __name__ == "__build_channel_by_channel_interface_example__":
 
     # 直接将工厂方法注入到通道中.
     main.import_channels(FooImpl.factory)
+
+
+async def test_channel(
+    *channels: Channel,
+    ctml: str,
+    timeout: float | None = None,
+):
+    """Convenience wrapper around ctml_shell_test for app channel testing.
+
+    This is a baseline helper — it covers the common case of sending CTML to a
+    single channel and checking results.  Before using it you should understand
+    CTML syntax::
+
+        moss ctml read
+
+    For more complex scenarios (scopes, until=any/all, observe, cancel, nested
+    channels) this wrapper is not enough.  Read the source of ``ctml_shell_test``,
+    search for how it is used in existing tests, and consult the CTML syntax
+    (``moss ctml read``).
+
+    Usage in app tests::
+
+        from ghoshell_moss.core.blueprint.channel_builder import new_channel, test_channel
+
+        chan = new_channel(name="my_app")
+
+        @chan.build.command()
+        async def greet(name: str) -> str:
+            return f"Hello, {name}"
+
+        tasks = await test_channel(chan, ctml='<apps.my_app:greet name="world" />')
+        assert len(tasks) == 1
+        assert await tasks[0] == "Hello, world"
+    """
+    from ghoshell_moss.core.ctml import ctml_shell_test
+    return await ctml_shell_test(*channels, ctml=ctml, timeout=timeout)

@@ -11,6 +11,7 @@ description: MOSS 项目的操作指南和知识积累, 由 AI 和人类协作�
 
 - `how-to-make-how-to.md` — 如何创建和维护 how-to 文档
 - `host-dev/` — Host 环境内开发：注册能力、接入 IoC、创建 mode、集成外部系统
+- `app-dev/` — App 开发：决策框架、依赖治理、测试验证。面向构建独立 app 的开发者
 
 ## 如何使用
 

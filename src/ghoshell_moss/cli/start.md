@@ -134,6 +134,13 @@ function, it returns the structured interface contract (signatures, fields,
 type annotations) in ~5 seconds. Fall back to `moss codex get-source` only
 when you need a minimal, un-reflected view of the code.
 
+### Common friction
+
+- Using a moss command without knowing its arguments — `--help` and `all-commands` exist.
+- Proceeding without key knowledge — docs, howtos, codex, and architecture are the exploration toolkit.
+- Skipping the CLI `create` commands for features, apps, or modes — hand-made files miss conventions.
+- Forgetting `features set-status` before commit, or not reading `features specification`.
+
 ---
 
 ## Core Commands

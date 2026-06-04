@@ -230,6 +230,25 @@ async def read_with_query(url: str, query: str) -> str
 8. **依赖隔离**：每个 app 的 `pyproject.toml` 独立，trafilatura 的依赖不包含 firecrawl 的，反之亦然
 9. **CLAUDE.md 完成**：每个 app 的 `CLAUDE.md` 包含足够的上下文让下个 AI 实例理解和修改
 
+## Phase 1 验证记录 (2026-06-04)
+
+**MCP 闭环验证通过**。测试路径：`moss-as-mcp` → Claude Code 连接 MCP → CTML 调用。
+
+| 验收项 | 结果 | 备注 |
+|--------|------|------|
+| app 发现 | PASS | `moss apps list` 显示 `web/trafilatura` |
+| App 启动 | PASS | `apps:start` → RUNNING，~5s 后 channel 注册完成 |
+| Channel 注册 | PASS | `apps.web_trafilatura` 出现在 moss_dynamic，interface 签名正确 |
+| `extract` MCP 调用 | PASS | `wait_done=true` 返回 example.com 正文 Markdown |
+| `extract_batch` MCP 调用 | PASS | 并发双 URL 抓取，可访问 URL 返回内容，不可达 URL 返回 error 信息 |
+| `always_observe` | PASS | 结果通过 MCP 工具响应直接返回给模型 |
+| Error handling | PASS | httpbin.org fetch 失败返回 "Error: could not fetch URL"，不崩溃 |
+
+**未验证**（Phase 2/3 依赖）：
+- firecrawl MCP 路径 — 等待 MCP bridge 讨论
+- jina-reader MCP 路径 — 等待 MCP bridge 讨论
+- extract 在没有 `wait_done` 时的 observe 流行为 — passing 但未详细测试流式语义
+
 ## 开发过程摩擦点
 
 > 这些摩擦点暴露了 app 体系和主项目之间的认知间隙。将在后续 commit 中入体系：app 模板、docs、start.md。
