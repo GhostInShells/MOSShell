@@ -5,9 +5,9 @@ depends:
 description: TUI 快捷键触发全局急停，级联中断所有有状态双工节点（mindflow → shell → interpreter → speech），
   暂停 ghost 三循环但保持 TUI 存活可恢复。
 priority: P0
-status: in-progress
+status: completed
 title: Emergency Stop — TUI 快捷键全局急停
-updated: '2026-06-02'
+updated: '2026-06-04'
 ---
 
 # Emergency Stop — TUI 快捷键全局急停
