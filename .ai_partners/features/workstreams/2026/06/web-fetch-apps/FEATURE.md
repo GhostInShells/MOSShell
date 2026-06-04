@@ -1,6 +1,6 @@
 ---
 title: Web Fetch Apps — 隔离式 Web 内容抓取工具集
-status: draft
+status: in-progress
 priority: P2
 created: 2026-06-04
 updated: 2026-06-04
@@ -229,6 +229,50 @@ async def read_with_query(url: str, query: str) -> str
 7. **jina-reader MCP 路径**：同上，通过 MCP 调用 `web/jina-reader:read`
 8. **依赖隔离**：每个 app 的 `pyproject.toml` 独立，trafilatura 的依赖不包含 firecrawl 的，反之亦然
 9. **CLAUDE.md 完成**：每个 app 的 `CLAUDE.md` 包含足够的上下文让下个 AI 实例理解和修改
+
+## 开发过程摩擦点
+
+> 这些摩擦点暴露了 app 体系和主项目之间的认知间隙。将在后续 commit 中入体系：app 模板、docs、start.md。
+
+### F1: `moss apps create` 模板过于 minimal
+
+生成的 `main.py` 是 helloworld stub。模板不提示 AI 按"独立 project"思路治理——没有 pyproject.toml 示例、没有测试目录引导、没有 CLAUDE.md 模板。AI 实例需要额外的上下文才能理解 app 的正确开发模式。
+
+**待修**: `stubs/app/` 下增强模板，加 CLAUDE.md / README 提示 project 思维。
+
+### F2: `uv sync --active` 在 app 目录污染主 venv
+
+在 app 目录执行 `uv sync --active` 会用 app 的依赖替换主项目 venv 的依赖（因为 editable path 共享 workspace）。主项目的 venv 被清掉 100 个包，IDE 卡死。
+
+**正确做法**: app 有自己的 `.venv`（由 `uv run` 自动创建），依赖通过 `uv run` 或 `moss apps test` 管理，不要手动 `uv sync --active`。
+
+**待修**: `start.md` 增加 "常见误用命令" 区块，明确警告。
+
+### F3: App 测试应该放在 app 自身目录
+
+app 是独立项目，未来可能从 hub 云端下载。测试放在 `tests/ghoshell_moss/apps/` 下违反独立性原则。本次将测试放在了 `apps/web/trafilatura/tests/`。
+
+**待修**: app 模板提示 test 目录约定。
+
+### F4: 缺少内建 channel 测试套件
+
+当前测试 channel 需要了解 `ctml_shell_test()` 的 API 和 import 路径。channel_builder 没有提供简单的一行测试工具。每个 app 开发者都要重学一遍。
+
+**待修**: `channel_builder` 增加 `test_channel()` 辅助函数，howtos 增加 app 测试专题。
+
+### F5: `core/speech/__init__.py` eager import 链污染
+
+`__init__.py` 无条件导入 `BaseAudioStreamPlayer` 和 `VirtualStreamPlayer`，导致 `scipy`（120MB）成为所有 import 路径的硬依赖。即使只需要 `NullSpeech`，也必须安装 scipy。
+
+**已修**: 移除 `__init__.py` 中的 eager export，`BaseAudioStreamPlayer` 和 `VirtualStreamPlayer` 通过直接路径导入。
+
+### F6: `base_player.py` scipy 顶层 import
+
+`from scipy import signal` 在模块顶层，`resample()` 是静态方法但 scipy 在 import 时就加载。
+
+**已修（人类工程师）**: scipy import 移入 `resample()` 函数内部，仅在真正需要重采样时才加载。
+
+
 
 ---
 

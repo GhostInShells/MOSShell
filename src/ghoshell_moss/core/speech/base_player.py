@@ -9,7 +9,6 @@ from typing import Optional
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
-from scipy import signal
 
 from ghoshell_moss.contracts.speech import AudioFormat, StreamAudioPlayer
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
@@ -126,6 +125,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         Returns:
             np.ndarray: 重采样后的音频数据
         """
+        from scipy import signal
         if origin_rate == target_rate:
             return audio_data
 
