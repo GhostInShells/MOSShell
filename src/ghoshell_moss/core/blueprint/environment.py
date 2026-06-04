@@ -203,6 +203,11 @@ class Environment:
     def set_mode(self, mode: str) -> None:
         self._moss_mode = mode
         os.environ[ENV_MOSS_MODE_KEY] = mode
+        # 如果 cell_address 是从默认模板派生的（而非通过 MOSS_CELL_ADDRESS 显式指定），
+        # 则在 mode 变更时同步更新。否则 host 进程的 cell_address 与 main_cell.address
+        # 不匹配，导致 _is_main 判定为 False，channel_proxy() 被阻止。
+        if ENV_CELL_ADDRESS_KEY not in os.environ:
+            self._cell_address = DEFAULT_CELL_ADDRESS.format(mode=mode)
 
     def set_session_scope(self, session_scope: str) -> None:
         self._session_scope = session_scope
