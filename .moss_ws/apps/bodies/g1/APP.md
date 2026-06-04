@@ -27,6 +27,6 @@ Unitree G1 人形机器人身体控制通道。
 
 ## 依赖
 
-- Unitree SDK2 Python (本地捆绑于 src/)
-- CycloneDDS (系统级依赖，需编译)
-- 与 G1 机器人的网络连接
+- Unitree SDK2 Python (需手动 clone 到 src/，见 README.md)
+- CycloneDDS (系统级依赖，当前仅 Linux 支持)
+- 与 G1 机器人的网络连接 (DDS over Ethernet)

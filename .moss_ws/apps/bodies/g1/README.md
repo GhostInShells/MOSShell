@@ -82,7 +82,6 @@ SDK 不在版本控制中。`pyproject.toml` 通过 `{ path = "./src/unitree_sdk
 ├── CLAUDE.md           # AI 开发上下文 (后续创建)
 ├── pyproject.toml      # 独立 venv 依赖声明
 ├── main.py             # 入口: Matrix.discover().run(provide_channel)
-├── .gitignore
 ├── .gitignore          # 排除 src/, runtime/, uv.lock, .venv/
 ├── src/                # gitignored — 手动 clone SDK
 │   └── unitree_sdk2_python/   # git clone https://github.com/unitreerobotics/unitree_sdk2_python
