@@ -198,6 +198,11 @@ class Host(MossHost):
         else:
             raise ValueError(f'invalid ghost argument type {type(ghost)}')
 
+        # env.ghost_name 必须在 self.run() 之前设置: Matrix.ghost_home
+        # 在 MossRuntime.__aenter__ 期间从 env.ghost_name 解析,
+        # GhostWorkspace.home → matrix.ghost_home → ghosts/{name}/.
+        # 不设则解析为 ghosts/None/, soul 加载失败.
+        self.env.set_ghost_name(ghost_meta.name())
         moss_runtime = self.run(run_shell=run_shell)
         return GhostRuntimeImpl(
             moss_runtime=moss_runtime,

@@ -70,7 +70,11 @@ class AtomMeta(GhostMeta):
         return self._soul_content or ""
 
     def _load_soul(self, ghost_workspace: GhostWorkspace) -> None:
-        """从 workspace/souls/ 加载 soul 文件. soul_content 非 None 时跳过."""
+        """从 ghost_workspace.home 加载 soul 文件. soul_content 非 None 时跳过.
+
+        ghost_workspace.home = matrix.ghost_home = workspace/ghosts/{ghost_name}/
+        由 Host.run_ghost() 在 self.run() 之前通过 env.set_ghost_name() 确保 ghost_name 已设置.
+        """
         if self._soul_content is not None:
             return
 
@@ -96,6 +100,8 @@ class AtomMeta(GhostMeta):
         if moss_system_prompter is None:
             instructions = []
         else:
+            # SystemPrompter.instruction() = CTML + project + mode + static 四层.
+            # soul 不在这四层中——它由 Ghost 自行在末尾追加, 是 Ghost 的人格层.
             instructions = [moss_system_prompter.instruction()]
         instructions.append(self.soul_content)
         return "\n".join(instructions)
