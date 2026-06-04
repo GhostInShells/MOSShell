@@ -477,7 +477,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         # 1. MOSS Banner
         banner = Panel(
             "Welcome to MOSS (Model-Oriented Operating System Shell)\n"
-            "[dim]May AI Ghost wondering in the Shells[/dim]",
+            "[dim]May model Ghost wandering in the Shells[/dim]",
             style="bold cyan",
             border_style="cyan",
             expand=False
@@ -516,13 +516,17 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         # 4. 运行时自定义介绍 (通过抽象方法留给子类实现)
         custom_intro = self._get_custom_intro()
 
+        # 5. 系统告警 — 启动时非致命错误一览
+        alerts = self._get_system_alerts()
+
         # 组合渲染
         content = Group(
             banner,
             Panel(node_table, title="[bold]Current Matrix Cell[/bold]", border_style="dim"),
             Panel(env_table, title="[bold]System Info[/bold]", border_style="dim"),
             Panel(guide, title="[bold]Shortcuts[/bold]", border_style="dim"),
-            custom_intro if custom_intro else ""
+            custom_intro if custom_intro else "",
+            alerts if alerts else "",
         )
 
         self._direct_print(content)
@@ -530,6 +534,32 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     def _get_custom_intro(self) -> RenderableType | None:
         """由子类实现，提供特定 Runtime 的业务介绍。"""
         return None
+
+    def _get_system_alerts(self) -> RenderableType | None:
+        """启动时系统告警 — 默认展示 manifests scan errors。子类可追加。
+
+        TODO: 未来 system alerts 应在 matrix 或 TopicService ringbuffer
+        中作为原生模块实现，TUI 订阅而非直接读 host.scan_errors。
+        """
+        errors = self.host.scan_errors
+        if not errors:
+            return None
+
+        err_table = Table(box=None, expand=True)
+        err_table.add_column("Module", style="bold red")
+        err_table.add_column("Stage")
+        err_table.add_column("Error", style="yellow")
+        for err in errors:
+            err_table.add_row(
+                err.module_path,
+                err.stage,
+                f"{type(err.exception).__name__}: {err.exception}",
+            )
+        return Panel(
+            err_table,
+            title=f"[bold yellow]! Scan Warnings ({len(errors)})[/bold yellow]",
+            border_style="yellow",
+        )
 
     def _on_emergency_pause(self) -> None:
         """急停 hook — 子类 override 实现具体 pause/resume 逻辑."""
