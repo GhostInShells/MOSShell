@@ -175,15 +175,6 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._started = False
         self._logger.info("Audio capture closed")
 
-    # ── MatrixLifecycleObject ──────────────────────────────────
-
-    async def __aenter__(self) -> "MiniAudioCaptureSource":
-        await self.start()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.close()
-
     # ── consumer factories ─────────────────────────────────────
 
     def new_consumer(self, ring_buffer_frames: int = 64) -> AudioPullLatest:

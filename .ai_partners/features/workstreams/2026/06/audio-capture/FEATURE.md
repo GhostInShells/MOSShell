@@ -33,7 +33,7 @@ updated: '2026-06-05'
 - Contract: `ghoshell_moss.contracts.audio` — 7 个符号
 - 实现: `ghoshell_moss.host.speech.capture.miniaudio_capture` — MiniAudioCaptureSource + 消费者
 - Provider: `ghoshell_moss.host.providers.audio_capture_provider` — singleton + IoC
-- 生命周期: `Host.__init__` 注册 `AudioCaptureSource` 为 `MatrixLifecycleObject`，随 Matrix 自动启停
+- 生命周期: 独立 App（`.moss_ws/apps/sensors/audio_capture/`）— Ghost 通过 `apps:start`/`apps:stop` 控制启停，不再随 Matrix 自动拉起
 - 播放端对称参考: `ghoshell_moss.host.speech.player.miniaudio_player:MiniAudioStreamPlayer`
 - 播放 Provider 参考: `ghoshell_moss.host.providers.audio_player_provider:AudioPlayerProvider`
 - 进程锁: `ghoshell_moss.contracts.workspace:FileLocker`（跨进程防重复打开设备）
@@ -248,7 +248,7 @@ class AudioSequentialConsumer(ABC):
 | 2 | `host/speech/capture/miniaudio_capture.py` — 核心实现 | **done** | 2026-06-05 |
 | 3 | `host/providers/audio_capture_provider.py` — Provider + manifests | **done** | 2026-06-05 |
 | 4 | Waveform App（`.moss_ws/apps/sensors/waveform/`）— 跨进程可视化消费者 | **done** | 2026-06-05 |
-| 5 | MatrixLifecycleObject 集成 — 随 Matrix 自动启停 | **done** | 2026-06-05 |
+| 5 | Audio Capture App（`.moss_ws/apps/sensors/audio_capture/`）— 独立生命周期，Ghost 可控启停 | **done** | 2026-06-05 |
 | 6 | listener（ASR 消费者，后续 feature，依赖 `AudioSequentialConsumer`） | pending | |
 
 ### Step 1-2 实现细节
@@ -303,40 +303,37 @@ class AudioSequentialConsumer(ABC):
 
 **Bug 2: 波形渲染只有 1 字符宽**。每个频段只用单个 Unicode bar 字符（`▃`），视觉上几乎无波动。修复：改为 40 字符宽 bar，末位用部分块字符（`▏▎▍▌▋▊▉█`）做 1/8 精度平滑过渡，四行（bass/mid/high/rms）各自独立 bar。`main.py`。
 
-### Step 5: MatrixLifecycleObject 集成
+### Step 5: Audio Capture App（独立生命周期）
 
-**问题**：capture 需要随 Ghost 启动自动开启，而非手动控制。
+**设计决策**：capture 不随 Matrix 自动启停，而是独立 App，由 Ghost 通过 `apps:start sensors/audio_capture` / `apps:stop sensors/audio_capture` 控制。原因：capture 是可选能力，不是每次 Matrix 启动都需要打开麦克风，应像波形可视化一样按需拉起。
 
-**方案**：`MiniAudioCaptureSource` 实现 `MatrixLifecycleObject` 协议（`__aenter__`/`__aexit__` 委派给 `start()`/`close()`）。在 `Host.__init__` 中注册 `AudioCaptureSource` 类型为生命周期对象。Matrix 启动时从 IoC 获取 singleton，自动进入 async context → `start()`；Matrix 关闭时自动 `close()`。
+**方案**：创建 `.moss_ws/apps/sensors/audio_capture/`，入口 `main.py` 获取 Matrix → 创建 `MiniAudioCaptureSource` → `start()` → `stop_event.wait()` 阻塞 → 收到信号后 `close()`。从 `host/impl.py` 移除 `register_lifecycle_objects(AudioCaptureSource)`，从 `MiniAudioCaptureSource` 移除 `__aenter__`/`__aexit__`。
 
-**进程锁容错**：App 进程也会创建 Matrix 并触发生命周期。`start()` 在锁已被主进程持有时优雅跳过（log warning，不抛异常），App 仅订阅 Zenoh 流，不重复开设备。
+**早期方案（已废弃）**: MatrixLifecycleObject 集成。`MiniAudioCaptureSource` 实现 `MatrixLifecycleObject` 协议，`Host.__init__` 注册 `AudioCaptureSource` 类型，Matrix 启动时自动进入 async context。废弃原因：capture 与 Matrix 生命周期过度耦合，Ghost 无法控制捕获启停。
 
 **Bug 修复**：`host/matrix.py:681` 将 `lifecycle`（类型）改为 `lifecycle_obj`（实例），修复类型注册时对 ABC 类调 `enter_async_context` 的 TypeError。
 
 ### 当前架构总览
 
 ```
-Host.__init__
-  └─ matrix.register_lifecycle_objects(AudioCaptureSource)
-
-Matrix.__aenter__
-  └─ container.get(AudioCaptureSource)
-       └─ AudioCaptureProvider.factory()
+Ghost: apps:start sensors/audio_capture
+  └─ Audio Capture App (独立进程)
+       └─ Matrix.discover().run(main)
             └─ MiniAudioCaptureSource(matrix, config)
-                 └─ __aenter__() → start()
+                 └─ start()
                       ├─ FileLocker.acquire()  # 进程锁
                       ├─ miniaudio.CaptureDevice.start(gen)
                       │    └─ callback: FFT → pack_chunk → session.pub_stream_delta("audio/pcm")
                       └─ _write_runtime_info() → tmp_storage
+                 └─ stop_event.wait()  # 阻塞，等待停止信号
+                 └─ close()  # finally
 
 Waveform App (独立进程)
   └─ session.get_stream("audio/pcm")
        └─ async for sample → unpack metadata → 终端波形渲染
 
-Matrix.__aexit__
-  └─ MiniAudioCaptureSource.__aexit__() → close()
-       ├─ CaptureDevice.stop/close
-       └─ FileLocker.release()
+Ghost: apps:stop sensors/audio_capture
+  └─ 发送 SIGTERM → capture.close()
 ```
 
 ### 与 speech-governance feature 的关系
