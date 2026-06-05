@@ -1,15 +1,16 @@
 ---
-title: Manifests Flatten — 消除 MergedManifests，统一为显式继承模式
-status: in-progress
-priority: P0
 created: 2026-06-05
-updated: 2026-06-05
 depends: []
-milestone:
-description: >-
-  Delete MergedManifests, make every mode's manifests self-contained via explicit
-  `from MOSS.manifests.xxx import *` + extend, and remove redundant --mode params
-  from CLI subcommands. One manifest per mode, no hidden merge.
+description: Delete MergedManifests, make every mode's manifests self-contained via
+  explicit `from MOSS.manifests.xxx import *` + extend, and remove redundant --mode
+  params from CLI subcommands. One manifest per mode, no hidden merge.
+milestone: null
+priority: P0
+status: completed
+status_note: 'docs: all merge/叠加 language replaced with 显式继承. Feature complete — code
+  refactor in 3f41111, docs sweep in 0d7e5b4.'
+title: Manifests Flatten — 消除 MergedManifests，统一为显式继承模式
+updated: '2026-06-06'
 ---
 
 # Manifests Flatten
