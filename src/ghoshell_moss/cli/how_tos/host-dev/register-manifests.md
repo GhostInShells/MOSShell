@@ -53,7 +53,7 @@ my_service_provider = MyServiceProvider()
 
 **约定**：变量名自解释，一个文件里放多个 Provider 实例。
 
-**Mode 合并**：`list.extend` 追加，mode 的 providers 不会覆盖全局的，只会增加。
+**Mode 继承**：默认 `from MOSS.manifests.providers import *`，然后追加 mode 专属的。
 
 深入：`moss howtos read get-moss-design/how-ioc-container-work-in-moss.md`
 
@@ -77,7 +77,7 @@ main.with_module(SpeechChannelModule())
 
 > **原语不再有独立的 primitives.py。** Shell 原语（sleep/noop/observe/interrupt）通过 `inject_system_primitives()` 在 channels.py 中直接注册到 main channel。
 
-**Mode 合并**：mode 的 `__main__` 完全替换全局 main channel。这意味着 mode 可以做完全不同的能力树，也可以 `from MOSS.manifests.channels import main` 复用全局的再增量改造。
+**Mode 继承**：mode 的 `__main__` channel 是运行时唯一生效的。可以从零构建（`new_default_shell_main_channel()`），也可以 `from MOSS.manifests.channels import main` 复用全局的再增量改造。
 
 深入：`moss codex blueprint channel_builder`
 
@@ -124,7 +124,7 @@ class MyNucleusMeta(NucleusMeta):
 my_nucleus_factory = MyNucleusMeta()
 ```
 
-**Mode 合并**：`dict.update` 覆盖，同 `name()` 的 nuclei mode 会替换全局。
+**Mode 继承**：默认 `from MOSS.manifests.nuclei import *`，同 `name()` 的可以覆盖。
 
 深入：`moss codex get-interface ghoshell_moss.core.blueprint.mindflow`
 
@@ -173,7 +173,7 @@ moss manifests channels
 moss manifests configs
 moss manifests nuclei
 
-# 完整视图（包含 mode 合并后的结果）
+# 完整视图（mode 的能力声明）
 moss manifests explain
 ```
 
@@ -182,5 +182,5 @@ moss manifests explain
 读者按照本文档操作，应该能够：
 1. 在正确的 manifest 文件中添加声明，知道用什么类型和键语义
 2. 区分 Provider（工厂）、NucleusMeta（工厂）、ConfigType（文件持久化）、TopicModel（协议声明）的不同注册方式
-3. 理解 mode 对每种类型的合并行为（覆盖 vs 追加 vs 替换）
+3. 理解 mode 的显式继承模式（from MOSS.manifests.xxx import * + 扩展）
 4. 通过 `moss manifests explain` 验证声明是否被正确发现

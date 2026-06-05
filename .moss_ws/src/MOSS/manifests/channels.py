@@ -9,7 +9,7 @@
 # Mode 复用全局 main 的最简方式：
 #     from MOSS.manifests.channels import main
 #     然后继续 inject_system_primitives(main, extended=True) 或 import_channels 等。
-#     MergedManifests 合并时 mode 的 __main__ 完全覆盖全局 (K5)。
+#     mode 的 __main__ channel 是运行时唯一生效的 main channel。
 
 from ghoshell_moss import new_shell_main_channel
 from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives

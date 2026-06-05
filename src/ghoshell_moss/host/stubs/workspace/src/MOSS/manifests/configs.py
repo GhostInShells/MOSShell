@@ -10,7 +10,7 @@
 # 2. Config 实例 → 内存覆盖（不写文件）
 #    ConfigStore.set_config(conf, override=False) 只更新内存缓存，不写磁盘。
 #    mode 可以用此机制创建 mode 专属的覆盖值，而不修改全局配置文件。
-#    MergedManifests 合并时 mode 的 config 实例以 dict.update 覆盖全局同键。
+#    mode 可通过显式继承 + 覆盖同键实现配置定制。
 #
 # 模式约定：
 #   - 全局 manifests/configs.py：实例化 ConfigType，作为默认 schema + 默认值

@@ -350,6 +350,20 @@ manifests 是 MOSS 环境中所有能力的自解释声明。Matrix 启动时自
 
 所有类型共享同一发现模式：`scan_package(约定路径)` → `isinstance` 过滤 → 按类型特定键聚合。
 
+## Mode 的能力继承
+
+Manifests 不再做运行时隐式合并。每个 mode 的 manifest 文件通过显式 import 继承全局能力：
+
+```python
+# MOSS.modes.<name>/providers.py
+from MOSS.manifests.providers import *  # 继承全局 providers
+# mode 专属追加:
+my_provider = MyProvider()
+```
+
+所有类型（channels/providers/configs/topics/resources/nuclei）遵循同一模式。
+Mode 的 manifest 文件内容 = Mode 的运行时能力。读文件即理解，无隐式合并。
+
 ## 深入路径
 
 - IoC 容器：`moss manifests providers` / `moss manifests contracts`

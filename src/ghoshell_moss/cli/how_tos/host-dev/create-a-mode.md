@@ -7,10 +7,10 @@ description: 如何创建一个 MOSS mode 来隔离 app 权限、定制能力视
 
 ## 背景
 
-Mode 是叠加在全局 manifests 之上的能力视图。它解决两个问题：
+Mode 通过显式继承定义自己的能力视图。它解决两个问题：
 
 1. **权限隔离** — 通过 apps 白名单控制该 mode 下可访问哪些 app
-2. **能力定制** — mode 可以覆盖全局 main channel 或追加自己的 providers、configs 等
+2. **能力定制** — mode 可以构建独立的 main channel 或继承全局能力后扩展
 
 什么时候需要创建 mode：
 - 为一个特定任务或场景限定可用 app 范围
@@ -62,15 +62,22 @@ Mode 目录下可选的 manifest 文件：
 
 | 文件 | 何时添加 |
 |------|---------|
-| `channels.py` | 需要定制 main channel（覆盖全局或追加 command） |
-| `providers.py` | 需要 mode 专属的 IoC 绑定 |
-| `configs.py` | 需要 mode 专属的配置模型 |
-| `topics.py` | 需要 mode 专属的事件协议 |
-| `resources.py` | 需要 mode 专属的资源存储 |
-| `nuclei.py` | 需要 mode 专属的感知核 |
+| `channels.py` | 需要定制 main channel（继承全局或从零构建） |
+| `providers.py` | 默认继承全局（`from MOSS.manifests.providers import *`），追加 mode 专属的 |
+| `configs.py` | 默认继承全局，追加 mode 专属配置 |
+| `topics.py` | 默认继承全局，追加 mode 专属事件协议 |
+| `resources.py` | 默认继承全局，追加 mode 专属资源存储 |
+| `nuclei.py` | 默认继承全局，追加 mode 专属感知核 |
 | `contracts.py` | 需要声明 mode 专属的 contract 绑定 |
 
 大多数场景只改 `channels.py` 就够了。模板文件里已有注释说明怎么改写。
+
+manifest 文件的显式继承模式：
+```python
+from MOSS.manifests.providers import *
+# mode 专属追加
+my_provider = MyProvider()
+```
 
 channels.py 的两种构建模式：
 
@@ -80,7 +87,7 @@ from ghoshell_moss import new_default_shell_main_channel
 main = new_default_shell_main_channel(description="...")
 # 在 main 上追加自己的 command 或 compose sub-channel...
 
-# 复用模式：在全局 main 上增量改造
+# 复用模式：继承全局 main 后增量改造
 from MOSS.manifests.channels import main
 # 在 main 上追加改造...
 ```
@@ -108,7 +115,7 @@ moss --mode <name> manifests providers
 moss --mode <name> manifests contracts
 ```
 
-`moss manifests explain` 是验证 mode 叠加效果的最快方式 — 它会列出所有源的合并规则。
+`moss manifests explain` 是验证 mode 能力的最快方式 — 它会列出 mode manifest 文件的内容。对比 default mode 和自己的 mode 的 explain 输出，差异来自 mode 目录下的 manifest 文件 + MODE.md 的 apps 白名单。
 
 ### 5. 使用 mode
 
@@ -153,16 +160,16 @@ moss --mode <name> manifests explain
 
 确认 mode 目录下有 `__init__.py`（`moss modes create` 会自动创建）。如果手动创建目录，需要自己加。
 
-### 问题：mode 的 channels.py import 报错
+### 问题：mode 的 manifest import 报错
 
 检查 import 路径。在 mode 的 Python package 上下文中：
 - `from ghoshell_moss import ...` — 正确，从已安装的包导入
 - `from MOSS.manifests.channels import main` — 正确，从 workspace 的全局 manifests 导入
 - `from .channels import ...` — 相对导入在 mode 包内也可能工作，但推荐用绝对路径
 
-### 问题：`moss --mode <name> manifests explain` 没有叠加效果
+### 问题：`moss --mode <name> manifests explain` 没有期望的效果
 
-确认 mode 目录下的 manifest 文件名和位置符合约定。用 `moss modes show <name>` 看文件是否被识别为 `present`。
+确认 mode 目录下的 manifest 文件有正确的 `from MOSS.manifests.xxx import *`。用 `moss modes show <name>` 看文件是否被识别为 `present`。
 
 ### 问题：apps 白名单不生效
 
