@@ -53,6 +53,7 @@ import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
 import ghoshell_moss.core.blueprint.conversation as conversation
 import ghoshell_moss.core.blueprint.fractal as fractal
+import ghoshell_moss.core.py_channel as py_channel
 import ghoshell_moss.host.tui as tui
 import ghoshell_moss.host.tui_entries as tui_entries
 

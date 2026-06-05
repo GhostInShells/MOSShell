@@ -477,6 +477,22 @@ class Builder(ABC):
         pass
 
     @abstractmethod
+    def refresh_meta(self, func: LifecycleFunction) -> LifecycleFunction:
+        """
+        decorator
+        注册一个 async 回调, 在每个 refresh 周期重新生成 metas 前调用.
+
+        用于需要在 refresh 时做 I/O 的场景 —— alive_cells 查询, proxy 缓存更新,
+        外部状态同步等. 与 get_virtual_children() 配合: 这里更新缓存 (async),
+        get_virtual_children() 返回缓存 (sync, 快速).
+
+        >>> async def func() -> None:
+        >>>     alive = await matrix.alive_cells()
+        >>>     ...  # 更新 proxy 缓存, 供下轮 get_virtual_children() 使用
+        """
+        pass
+
+    @abstractmethod
     def with_binding(self, contract: type[INSTANCE], instance: INSTANCE) -> Self:
         """
         注册一个依赖, 在 Channel 实例化时注入 IoC 容器.

@@ -48,6 +48,10 @@ class ChannelModule(Protocol):
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         pass
 
+    async def on_refresh_meta(self) -> None:
+        # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
+        pass
+
     async def get_instruction(self) -> str:
         return ""
 
