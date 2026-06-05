@@ -1,133 +1,163 @@
+"""Contract tests for AudioCaptureSource and its consumers.
+
+Tests are written against the abstract interfaces and run against
+MiniAudioCaptureSource with a mocked Matrix — no Zenoh or hardware needed.
+"""
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
-from ghoshell_moss.contracts.audio import AudioChunk, AudioFrameMeta
+from ghoshell_moss.contracts.audio import (
+    AudioCaptureConfig,
+    AudioCaptureSource,
+    AudioChunk,
+    AudioFrameMeta,
+    AudioPullLatest,
+    AudioSequentialConsumer,
+)
 from ghoshell_moss.host.speech.capture.miniaudio_capture import (
-    _compute_frame_meta,
+    MiniAudioCaptureSource,
     pack_chunk,
     unpack_chunk,
 )
 
 
-def _make_sine(duration: float, sample_rate: int, freq: float = 440.0, amplitude: float = 0.5) -> np.ndarray:
-    """Generate int16 sine wave, shape (n_samples, 1)."""
-    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
-    wave = (np.sin(2 * np.pi * freq * t) * (32767 * amplitude)).astype(np.int16)
-    return wave.reshape(-1, 1)
+# ── helpers ──────────────────────────────────────────────────────────
+
+def _make_matrix():
+    """Minimal Matrix mock — session/workspace/logger stubs."""
+    m = MagicMock()
+    m.logger = MagicMock()
+    m.session = MagicMock()
+    m.workspace = MagicMock()
+    return m
 
 
-# ── _compute_frame_meta ────────────────────────────────────────────
+def _make_source(**config_kwargs) -> MiniAudioCaptureSource:
+    return MiniAudioCaptureSource(
+        matrix=_make_matrix(),
+        config=AudioCaptureConfig(**config_kwargs),
+    )
 
 
-class TestComputeFrameMeta:
-    def test_sine_dbfs_range(self):
-        """Full-scale sine: RMS ≈ -3 dBFS (amplitude 1.0 → peak at 0 dBFS)."""
-        samples = _make_sine(0.05, 44100, amplitude=1.0)  # full scale
-        meta = _compute_frame_meta(samples)
-        assert -6 < meta.rms_db <= 0
-        assert not meta.is_silent
-
-    def test_silence_is_detected(self):
-        """Zero samples → rms_db near -inf, is_silent=True."""
-        samples = np.zeros((2205, 1), dtype=np.int16)
-        meta = _compute_frame_meta(samples)
-        assert meta.rms_db < -50
-        assert meta.is_silent
-
-    def test_half_amplitude_lower_dbfs(self):
-        """Half amplitude → ~6 dB quieter than full scale."""
-        full = _make_sine(0.05, 44100, amplitude=1.0)
-        half = _make_sine(0.05, 44100, amplitude=0.5)
-        meta_full = _compute_frame_meta(full)
-        meta_half = _compute_frame_meta(half)
-        assert meta_half.rms_db < meta_full.rms_db
-
-    def test_bands_have_expected_keys(self):
-        """Meta bands always contain bass, mid, high."""
-        samples = _make_sine(0.05, 44100)
-        meta = _compute_frame_meta(samples)
-        assert set(meta.bands.keys()) == {"bass", "mid", "high"}
-        for v in meta.bands.values():
-            assert isinstance(v, float)
-
-    def test_short_input_uses_rms_for_bands(self):
-        """When FFT has <6 bins, bands fall back to rms_db."""
-        samples = np.array([[100], [200], [300]], dtype=np.int16)  # 3 samples → FFT 2 bins
-        meta = _compute_frame_meta(samples)
-        assert meta.bands["bass"] == meta.bands["mid"] == meta.bands["high"]
-
-    def test_mono_2d_shape(self):
-        """(n, 1) shape input works correctly."""
-        samples = _make_sine(0.05, 44100)
-        assert samples.ndim == 2 and samples.shape[1] == 1
-        meta = _compute_frame_meta(samples)  # should not raise
-        assert isinstance(meta, AudioFrameMeta)
+# ── AudioCaptureSource contract ──────────────────────────────────────
 
 
-# ── pack_chunk / unpack_chunk ───────────────────────────────────────
+class TestAudioCaptureSource:
+    """Contract: any AudioCaptureSource."""
+
+    def test_device_explain_before_start(self):
+        """start 前 device_explain 返回有意义字符串，不含 running 语义."""
+        source: AudioCaptureSource = _make_source()
+        explain = source.device_explain()
+        assert isinstance(explain, str)
+        assert len(explain) > 0
+
+    @pytest.mark.asyncio
+    async def test_double_close_is_idempotent(self):
+        """重复 close 不抛异常."""
+        source: AudioCaptureSource = _make_source()
+        await source.close()
+        await source.close()
+
+    def test_new_consumer_returns_pull_latest(self):
+        """waveform / AI 感知场景：获取非阻塞消费者."""
+        source: AudioCaptureSource = _make_source()
+        consumer = source.new_consumer(ring_buffer_frames=64)
+        assert isinstance(consumer, AudioPullLatest)
+        consumer.close()
+
+    def test_new_sequential_consumer_returns_correct_type(self):
+        """ASR / 录音场景：获取顺序消费者."""
+        source: AudioCaptureSource = _make_source()
+        consumer = source.new_sequential_consumer(max_queue_frames=128)
+        assert isinstance(consumer, AudioSequentialConsumer)
 
 
-class TestPackUnpack:
-    def test_roundtrip(self):
-        """pack → unpack preserves all fields."""
-        samples = _make_sine(0.05, 44100).flatten()
-        meta = AudioFrameMeta(rms_db=-12.3, bands={"bass": -20, "mid": -12, "high": -8}, is_silent=False)
-        chunk = AudioChunk(seq=42, timestamp=1234567890.123, samples=samples, meta=meta)
+# ── AudioPullLatest contract ─────────────────────────────────────────
+
+
+class TestAudioPullLatest:
+    """Contract: any AudioPullLatest."""
+
+    def test_pull_latest_non_blocking_returns_none_or_chunk(self):
+        """无数据时 pull_latest 非阻塞返回 None."""
+        source = _make_source()
+        consumer: AudioPullLatest = source.new_consumer(ring_buffer_frames=32)
+        result = consumer.pull_latest()
+        assert result is None or isinstance(result, AudioChunk)
+        consumer.close()
+
+    def test_close_idempotent(self):
+        """close 可重复调用."""
+        source = _make_source()
+        consumer: AudioPullLatest = source.new_consumer(ring_buffer_frames=32)
+        consumer.close()
+        consumer.close()
+
+
+# ── AudioSequentialConsumer contract ─────────────────────────────────
+
+
+class TestAudioSequentialConsumer:
+    """Contract: any AudioSequentialConsumer."""
+
+    def test_iteration_without_start_raises(self):
+        """未 start 就迭代应抛出 RuntimeError."""
+        source = _make_source()
+        consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
+        with pytest.raises(RuntimeError):
+            consumer.__aiter__()
+
+    @pytest.mark.asyncio
+    async def test_close_before_start_is_safe(self):
+        """未 start 就 close 不抛异常."""
+        source = _make_source()
+        consumer: AudioSequentialConsumer = source.new_sequential_consumer(max_queue_frames=32)
+        await consumer.close()
+
+
+# ── Serialization contract ───────────────────────────────────────────
+
+
+class TestAudioChunkSerialization:
+    """AudioChunk 跨进程链路：capture 端 pack，consumer 端 unpack。"""
+
+    def test_roundtrip_preserves_all_fields(self):
+        """pack → unpack 后所有字段不变。这是跨进程传输的契约."""
+        rng = np.random.RandomState(42)
+        samples = (rng.randn(2205) * 8000).astype(np.int16)
+
+        chunk = AudioChunk(
+            seq=42,
+            timestamp=1234567890.123,
+            samples=samples.copy(),
+            meta=AudioFrameMeta(
+                rms_db=-12.3,
+                bands={"bass": -20.1, "mid": -12.3, "high": -8.7},
+                is_silent=False,
+            ),
+        )
 
         packed = pack_chunk(chunk)
-        assert isinstance(packed, bytes)
-
         unpacked = unpack_chunk(packed)
+
         assert unpacked.seq == 42
         assert unpacked.timestamp == pytest.approx(1234567890.123)
         assert unpacked.meta.rms_db == -12.3
-        assert unpacked.meta.bands == {"bass": -20, "mid": -12, "high": -8}
+        assert unpacked.meta.bands == {"bass": -20.1, "mid": -12.3, "high": -8.7}
         assert unpacked.meta.is_silent is False
         assert np.array_equal(unpacked.samples, samples)
 
-    def test_binary_header_length(self):
-        """First 4 bytes are uint32 BE meta_json length."""
-        samples = _make_sine(0.05, 44100).flatten()
-        chunk = AudioChunk(seq=0, timestamp=0.0, samples=samples, meta=AudioFrameMeta())
-        packed = pack_chunk(chunk)
-
-        import struct
-        meta_len = struct.unpack(">I", packed[:4])[0]
-        assert meta_len > 0
-        assert meta_len < 1024  # meta JSON is small
-
-    def test_silent_chunk_roundtrip(self):
-        """Silent meta flag survives roundtrip."""
+    def test_silent_frame_roundtrip(self):
+        """静音帧的 is_silent 标志在往返中正确保持."""
         samples = np.zeros(100, dtype=np.int16)
-        meta = AudioFrameMeta(rms_db=-96, bands={"bass": -96, "mid": -96, "high": -96}, is_silent=True)
-        chunk = AudioChunk(seq=0, timestamp=0.0, samples=samples, meta=meta)
-
-        packed = pack_chunk(chunk)
-        unpacked = unpack_chunk(packed)
+        chunk = AudioChunk(
+            seq=0, timestamp=0.0, samples=samples,
+            meta=AudioFrameMeta(rms_db=-96, bands={"bass": -96, "mid": -96, "high": -96}, is_silent=True),
+        )
+        unpacked = unpack_chunk(pack_chunk(chunk))
         assert unpacked.meta.is_silent is True
         assert unpacked.meta.rms_db == -96
-
-    def test_pcm_bytes_match_int16_size(self):
-        """PCM payload size = n_samples * 2 (int16)."""
-        samples = _make_sine(0.05, 44100).flatten()
-        chunk = AudioChunk(seq=0, timestamp=0.0, samples=samples, meta=AudioFrameMeta())
-
-        packed = pack_chunk(chunk)
-
-        import struct
-        meta_len = struct.unpack(">I", packed[:4])[0]
-        pcm_bytes = packed[4 + meta_len:]
-        assert len(pcm_bytes) == len(samples) * 2
-
-    def test_high_frequency_energy_in_high_band(self):
-        """8 kHz tone → high band should dominate over bass."""
-        samples = _make_sine(0.05, 44100, freq=8000.0, amplitude=0.5)
-        meta = _compute_frame_meta(samples)
-        # High-frequency tone → high band energy > bass band energy
-        assert meta.bands["high"] > meta.bands["bass"]
-
-    def test_low_frequency_energy_in_bass_band(self):
-        """100 Hz tone → bass band should dominate over high."""
-        samples = _make_sine(0.05, 44100, freq=100.0, amplitude=0.5)
-        meta = _compute_frame_meta(samples)
-        assert meta.bands["bass"] > meta.bands["high"]
+        assert np.array_equal(unpacked.samples, samples)

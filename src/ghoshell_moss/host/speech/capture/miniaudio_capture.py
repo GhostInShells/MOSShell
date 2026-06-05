@@ -102,12 +102,15 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._matrix = matrix
         self._config = config
         self._logger = matrix.logger or logging.getLogger("moss.audio_capture")
-        self._session = matrix.session
         self._capture: miniaudio.CaptureDevice | None = None
         self._locker: Lock | None = None
         self._seq = 0
         self._started = False
         self._closing = False
+
+    @property
+    def _session(self):
+        return self._matrix.session
 
     # ── lifecycle ──────────────────────────────────────────────
 
