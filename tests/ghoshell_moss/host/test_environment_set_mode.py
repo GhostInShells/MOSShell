@@ -12,11 +12,15 @@ from ghoshell_moss.core.blueprint.environment import (
 @pytest.fixture(autouse=True)
 def clean_env():
     """清理可能影响测试的环境变量."""
-    old = {k: os.environ.pop(k, None) for k in [ENV_MOSS_MODE_KEY, ENV_CELL_ADDRESS_KEY]}
+    old = {k: os.environ.get(k) for k in [ENV_MOSS_MODE_KEY, ENV_CELL_ADDRESS_KEY]}
+    for k in old:
+        os.environ.pop(k, None)
     yield
     for k, v in old.items():
         if v is not None:
             os.environ[k] = v
+        else:
+            os.environ.pop(k, None)
 
 
 def test_set_mode_updates_cell_address_from_template(tmp_path):
