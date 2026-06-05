@@ -81,6 +81,10 @@ class Host(MossHost):
             workspace=self._workspace,
         )
 
+        # Register AudioCaptureSource as lifecycle — auto start/stop with Matrix.
+        from ghoshell_moss.contracts.audio import AudioCaptureSource
+        self._matrix.register_lifecycle_objects(AudioCaptureSource)
+
     def name(self) -> str:
         return self._env.meta_config.name
 
