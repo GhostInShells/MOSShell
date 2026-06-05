@@ -14,6 +14,8 @@ from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.workspace import Storage, LocalStorage
 from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.cache import SqliteCache
+from ghoshell_moss.core.blueprint.parameter import ParameterStore
+from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputItem, OutputBuffer, Sample, StreamSubscriber,
@@ -122,6 +124,12 @@ class MockSession(Session):
             db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
             self._cache = SqliteCache(db_path)
         return self._cache
+
+    @property
+    def parameters(self) -> ParameterStore:
+        if not hasattr(self, '_parameters'):
+            self._parameters = SessionParameterStore(self)
+        return self._parameters
 
     # ── storages ──────────────────────────────
 

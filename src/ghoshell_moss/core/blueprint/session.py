@@ -2,6 +2,7 @@ from typing import Callable, AsyncIterator, AsyncGenerator, Protocol, NamedTuple
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.contracts.cache import Cache
+from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
 from typing import Iterable, Literal
@@ -152,8 +153,7 @@ class Session(ABC):
       - topic service: 基于可用的 Topic 强类型广播协议通讯. 是原子化的 n * m  广播总线.
 
     todo:
-        1. 实现共享的 parameters. 类似分布式中心协议.
-        2. 实现可注册的基于 key 的函数. actor 协议.
+        1. 实现可注册的基于 key 的函数. actor 协议.
     """
 
     LOGOS_KEY = 'logos'
@@ -391,6 +391,19 @@ class Session(ABC):
 
         所有 cell 指向 tmp_storage 下同一个 sqlite db 文件，
         Session 启动时自动创建，Session 退出时随 tmp 目录清理。
+        """
+        pass
+
+    # ── parameters ──
+
+    @property
+    @abstractmethod
+    def parameters(self) -> "ParameterStore":
+        """
+        Session 级别强类型共享参数存储，对齐 ROS2 parameter 语义。
+
+        declare 声明 → get/set 读写 + version CAS → on-change 跨进程感知。
+        低频写 (<1Hz)、高频读、有零值 (miss 返回 default)。
         """
         pass
 

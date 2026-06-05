@@ -1,8 +1,22 @@
-"""MockSession 冒烟验证 — signal / output / stream 三条路径."""
+"""MockSession 冒烟验证 — signal / output / stream / parameters."""
 import asyncio
 import pytest
 from ghoshell_moss.core.session.mock_session import MockSession
+from ghoshell_moss.core.blueprint.parameter import ParameterModel, VersionConflict
 from ghoshell_moss.message import Message
+
+
+class _TestCfg(ParameterModel):
+    timeout: float = 1.0
+    retries: int = 3
+
+    @classmethod
+    def param_name(cls) -> str:
+        return "test_config"
+
+    @classmethod
+    def param_default(cls) -> "_TestCfg":
+        return cls()
 
 
 # ── signal ──────────────────────────────────────
@@ -192,3 +206,42 @@ def test_storage_uses_tmpdir():
     assert storage is not None
     # 第二次访问返回同一个实例
     assert sess.storage.abspath() == storage.abspath()
+
+
+# ── parameters ──────────────────────────────────
+
+def test_parameters_declare_get_set():
+    """session.parameters → declare → get/set → version flow."""
+    sess = MockSession()
+    params = sess.parameters
+
+    param = params.declare(_TestCfg)
+    assert param.key == "test_config"
+
+    # default on miss
+    v = param.get()
+    assert v.timeout == 1.0
+    assert v.retries == 3
+    assert param.version() == 0
+
+    # set + get
+    param.set(_TestCfg(timeout=5.0, retries=10))
+    assert param.get().timeout == 5.0
+    assert param.version() > 0
+
+
+def test_parameters_cas_flow():
+    """CAS write: correct version succeeds, wrong version fails."""
+    sess = MockSession()
+    param = sess.parameters.declare(_TestCfg)
+
+    param.set(_TestCfg(timeout=2.0))
+    v = param.version()
+
+    # good CAS
+    param.set(_TestCfg(timeout=3.0), version=v)
+    assert param.get().timeout == 3.0
+
+    # bad CAS
+    with pytest.raises(VersionConflict):
+        param.set(_TestCfg(timeout=4.0), version=v)
