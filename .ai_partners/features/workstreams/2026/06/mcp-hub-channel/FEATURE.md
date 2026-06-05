@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-depends: []
+depends: [storage-typed-protocols]
 description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调度，模型以原生 CTML 思路操作外部工具。
 milestone: null
 priority: P0
