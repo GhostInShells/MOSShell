@@ -35,6 +35,7 @@ import ghoshell_moss.core.concepts.interpreter as interpreter
 import ghoshell_moss.core.concepts.topic as topic
 import ghoshell_moss.core.concepts.errors as errors
 import ghoshell_moss.core.concepts.tools as tools
+import ghoshell_moss.core.topic as topic_impl
 
 # ============================================================================
 # Blueprints — 怎么用 MOSS 构建
@@ -56,6 +57,7 @@ import ghoshell_moss.core.blueprint.fractal as fractal
 import ghoshell_moss.core.py_channel as py_channel
 import ghoshell_moss.host.tui as tui
 import ghoshell_moss.host.tui_entries as tui_entries
+import ghoshell_moss.host.topics as host_topics
 
 # ============================================================================
 # Contracts — IoC 最小基础依赖

@@ -1,13 +1,15 @@
 ---
-title: Topic Ringbuffer
-status: draft
-priority: P1
 created: 2026-06-05
-updated: 2026-06-05
 depends: []
-milestone:
-description: >-
-  Topic 协议的 ringbuffer 消费抽象 — deque 有界窗口 + poll 流式消费 + values 非破坏性快照，面向监控面板、对话上下文窗口等 "看最新 N 条" 的消费模式。
+description: Topic 协议的 ringbuffer 消费抽象 — deque 有界窗口 + poll 流式消费 + values 非破坏性快照，面向监控面板、对话上下文窗口等
+  "看最新 N 条" 的消费模式。
+milestone: null
+priority: P1
+status: completed
+status_note: DequeTopicWindow implementation shared by QueueBased and Zenoh, 11 protocol
+  tests passing.
+title: Topic Ringbuffer
+updated: '2026-06-06'
 ---
 
 # Topic Ringbuffer
