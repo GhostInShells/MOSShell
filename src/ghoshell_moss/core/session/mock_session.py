@@ -12,6 +12,8 @@ from typing import Callable
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.workspace import Storage, LocalStorage
+from ghoshell_moss.contracts.cache import Cache
+from ghoshell_moss.core.cache import SqliteCache
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputItem, OutputBuffer, Sample, StreamSubscriber,
@@ -113,6 +115,13 @@ class MockSession(Session):
     @property
     def sessions_tmp_root_storage(self) -> Storage:
         return self._session_root_storage.sub_storage('tmp')
+
+    @property
+    def cache(self) -> Cache:
+        if not hasattr(self, '_cache'):
+            db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
+            self._cache = SqliteCache(db_path)
+        return self._cache
 
     # ── storages ──────────────────────────────
 

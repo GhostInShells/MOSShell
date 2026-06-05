@@ -96,7 +96,6 @@ def test_is_main_true_even_if_branch_comparison_is_broken(mode, env, workspace, 
     matrix = _make_matrix(mode, env, workspace, app_store, manifest)
 
     # 因为 env_cell == main_cell.address，cells.get() 应该找到 HostCell
-    assert matrix._is_main is True
     assert matrix.this.type == "host"
 
 

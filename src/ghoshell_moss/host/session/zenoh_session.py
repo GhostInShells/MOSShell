@@ -6,7 +6,11 @@ from typing_extensions import Self
 
 import janus
 from ghoshell_moss.message import Message
+from pathlib import Path
+
 from ghoshell_moss.contracts import Storage, LoggerItf
+from ghoshell_moss.contracts.cache import Cache
+from ghoshell_moss.core.cache import SqliteCache
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.blueprint.session import (
@@ -102,6 +106,13 @@ class MossSessionWithZenoh(Session):
     @property
     def sessions_tmp_root_storage(self) -> Storage:
         return self._session_tmp_root_storage
+
+    @property
+    def cache(self) -> Cache:
+        if not hasattr(self, '_cache'):
+            db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
+            self._cache = SqliteCache(db_path)
+        return self._cache
 
     def _check_running(self) -> None:
         if self._zenoh_session.is_closed():

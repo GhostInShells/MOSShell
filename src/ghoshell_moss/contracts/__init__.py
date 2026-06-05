@@ -8,6 +8,7 @@ from .workspace import (
 )
 from .configs import ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider
 from .system_prompter import SystemPrompter, BaseSystemPrompter
+from .cache import Cache
 from .resource import (
     ResourceStorageFactoryBootstrapper, ResourceItem, ResourceInfo, ResourceRegistry, ResourceStorage,
 )

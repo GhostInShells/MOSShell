@@ -1,6 +1,7 @@
 from typing import Callable, AsyncIterator, AsyncGenerator, Protocol, NamedTuple
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
+from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
 from typing import Iterable, Literal
@@ -376,6 +377,22 @@ class Session(ABC):
         应该在启动和关闭时检查清理.
         """
         return self.sessions_tmp_root_storage.sub_storage(f"{self.session_scope}-{self.session_id}")
+
+    # ── cache ──
+
+    @property
+    @abstractmethod
+    def cache(self) -> Cache:
+        """
+        Session 级别的跨进程共享缓存与仲裁组件.
+
+        Cell 之间通过 Session 总线通讯时，Cache 提供基于文件的共享读写：
+        KV 存储 (set/get)、Hash map (set_member/get_member)、分布式锁 (lock/unlock)。
+
+        所有 cell 指向 tmp_storage 下同一个 sqlite db 文件，
+        Session 启动时自动创建，Session 退出时随 tmp 目录清理。
+        """
+        pass
 
     @abstractmethod
     async def __aenter__(self) -> Self:
