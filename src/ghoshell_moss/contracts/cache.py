@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
+import contextlib
+from typing import Optional, Generator
 from abc import ABC, abstractmethod
 
 
@@ -29,6 +30,22 @@ class Cache(ABC):
         :param key: 锁标识
         :return: True 成功释放, False 锁不存在或已过期
         """
+
+    @contextlib.contextmanager
+    def locked(self, key: str, overdue: int = 0) -> Generator[None, None, None]:
+        """
+        获取锁的 context manager，退出时自动释放.
+
+        :param key: 锁标识
+        :param overdue: 锁的超时时间 (秒), 0 表示永不过期
+        :raises RuntimeError: 获取锁失败
+        """
+        if not self.lock(key, overdue):
+            raise RuntimeError(f"Failed to acquire lock: {key}")
+        try:
+            yield
+        finally:
+            self.unlock(key)
 
     @abstractmethod
     def set(self, key: str, val: str, exp: int = 0) -> bool:

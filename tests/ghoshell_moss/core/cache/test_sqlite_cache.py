@@ -122,6 +122,27 @@ class TestSqliteCache:
         cache.remove("lk")
         assert cache.lock("lk") is True
 
+    # ---- locked context manager ----
+
+    def test_locked_acquires_and_releases(self, cache: SqliteCache):
+        with cache.locked("ctx_lock"):
+            assert cache.lock("ctx_lock") is False
+        assert cache.lock("ctx_lock") is True
+
+    def test_locked_raises_when_already_held(self, cache: SqliteCache):
+        cache.lock("ctx_lock")
+        with pytest.raises(RuntimeError, match="Failed to acquire lock"):
+            with cache.locked("ctx_lock"):
+                pass
+
+    def test_locked_releases_on_exception(self, cache: SqliteCache):
+        try:
+            with cache.locked("ctx_lock"):
+                raise ValueError("inner error")
+        except ValueError:
+            pass
+        assert cache.lock("ctx_lock") is True
+
 
 class TestSqliteCacheCrossProcess:
     """跨进程仲裁测试: 两个进程共享同一个 .db 文件."""

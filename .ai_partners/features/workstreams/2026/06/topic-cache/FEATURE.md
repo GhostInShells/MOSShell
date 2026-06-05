@@ -29,6 +29,12 @@ Matrix 是多进程通讯总线，Cell 之间需要共享的缓存与仲裁机�
 - **放在 session tmp_storage 而非 workspace runtime**: 缓存是 session 生命周期的通讯基础设施, 非持久数据
 - **Hash map 和 KV 同时纳入**: 一个 key 可同时有 string value 和 hash 子字段
 
+## Round 2 Enhancement (2026-06-06)
+
+补强: Lock context manager — `Cache` ABC 上添加 `locked(key, overdue)` context manager，自动 unlock。纯语法糖，不涉及实现层。
+
+讨论过但拒绝: Cache 独立 IoC Provider。参考 `session-communication-bus` FEATURE.md Parameter 实现记录——ParameterStore 和 Cache 都是 Session 通讯协议的一部分，没有独立于 Session 的消费场景，不需要走 manifests 注册。Cache 是此模式的先例而非遗漏。
+
 ## Implementation Notes
 
 - sqlite3 的 `busy_timeout=3000` + WAL 模式处理多进程并发写
