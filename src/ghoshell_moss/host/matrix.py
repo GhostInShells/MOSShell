@@ -454,8 +454,10 @@ class MatrixImpl(Matrix):
         self._container.bootstrap()
         try:
             for config_info in self.manifests.configs().values():
-                self.configs.set_config(config_info.config)
                 self.configs.get_or_create(config_info.config)
+            # 仅对 mode 声明的 config 做内存覆盖（不写文件），全局默认实例不覆盖 YAML 值
+            for config_info in self._current_mode.manifest.configs().values():
+                self.configs.set_config(config_info.config)
             yield
         finally:
             self._container.shutdown()

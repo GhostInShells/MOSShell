@@ -54,4 +54,4 @@ volcengine_stream_tts_model_config:
       tone: saturn_zh_female_cancan_tob
       description: 'language: (中文), support english: False, use case: 角色扮演'
       voice: {}
-  default_speaker: 知性灿灿
+  default_speaker: 可爱女生
