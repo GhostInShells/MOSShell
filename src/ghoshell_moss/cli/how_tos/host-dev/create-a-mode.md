@@ -104,7 +104,7 @@ moss codex get-source ghoshell_moss.core.blueprint.states_channel:new_default_sh
 # 查看 mode 详情和 manifest 文件清单
 moss modes show <name>
 
-# 查看完整的合并后能力视图（全局 + mode 叠加）
+# 查看显式继承后的能力视图
 moss --mode <name> manifests explain
 
 # 查看 main channel 的命令树
@@ -144,7 +144,7 @@ ls $(python -c "import ghoshell_moss.host.stubs.workspace; print(ghoshell_moss.h
 moss modes show system_test
 ```
 
-### 查看 Mode 叠加效果
+### 查看 Mode 能力视图
 
 ```bash
 # 对比 default mode 和自定义 mode 的能力差异
@@ -181,5 +181,5 @@ moss --mode <name> manifests explain
 1. 用 `moss modes create` 创建一个新 mode
 2. 编辑 MODE.md 配置 apps 白名单和 bringup 策略
 3. 在 mode 目录下按需添加 manifest 文件（至少 channels.py）
-4. 用 `moss modes show` 和 `moss --mode <name> manifests explain` 验证 mode 叠加效果
+4. 用 `moss modes show` 和 `moss --mode <name> manifests explain` 验证 mode 显式继承效果
 5. 用 `moss --mode <name>` 在指定 mode 下运行命令

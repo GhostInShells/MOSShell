@@ -298,7 +298,9 @@ pytest tests/ghoshell_moss/host/test_environment_set_mode.py -v
 
 ### 待办 (下一个会话)
 
-- [ ] E5: workspace-and-mode.md — manifests 合并语言改为显式继承
-- [ ] E6: matrix-system.md — L127-135
-- [ ] E7: glossary.md — manifest/Mode 条目
-- [ ] 其余 docs/*.md 中 MergedManifests 引用清理
+- [x] E5: workspace-and-mode.md — manifests 合并语言改为显式继承
+- [x] E6: matrix-system.md — L127-135
+- [x] E7: glossary.md — manifest/Mode 条目（已确认无残留，glossary 无 Mode manifest 条目）
+- [x] 额外: development-workflow.md — 叠加→显式继承
+- [x] 额外: discover-environment.md — 合并规则/合并后→显式继承
+- [x] 额外: create-a-mode.md — 叠加→显式继承
