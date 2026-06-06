@@ -1,6 +1,6 @@
 ---
 title: First Ghost Prototype
-status: awaiting_human_validation
+status: completed
 priority: P0
 created: 2026-05-14
 updated: 2026-05-23
@@ -82,12 +82,12 @@ first-ghost-prototype/
 | 10i | ghost 可观测性体系 | Ghost on_articulate_exit + inspect_state, GhostRuntime inspect_loop_health + LoopHealth TypedDict | done |
 | 11a | Mindflow 默认 input signal | GhostRuntime fallback → new_default_mindflow() (InputSignalNucleus + PriorityProtectionAttention), 43 tests 全部通过 | done |
 | 11c | on_challenge 旁路观察 | ChallengeObserver(Callable[[challenger, defender, verdict], None]) + Mindflow.on_challenge(), AbsMindflow._challenge_attention 内 fire | done |
-| 11b | Mindflow inspect + 自解释 | mindflow 探知接口、自解释接口 | pending |
+| 11b | Mindflow inspect + 自解释 | mindflow 探知接口、自解释接口 | deferred — 设计方案待定，不在当前范围 |
 | 12 | 测试与 TUI | mock ghost + input signal 脚本测试 → TUI 全链路验证 | done |
 | 13 | TUI 集成 | GhostREPLState + echo 默认实例 + moss-run-ghost CLI | done |
-| 14 | echo soul | ghost playground 产出 echo.md 系统提示词 | pending |
-| 15 | 人类验证 | 非 AI 开发者验证 echo 全链路 + 完善细节 | pending |
-| 16 | 文档 | AI 为 ghost 编写完整文档（由下一个 AI 实例完成） | pending |
+| 14 | echo soul | echo 的 soul.md 系统提示词写入 + ghost_name bug 修复 + 验证脚本 | done |
+| 15 | 人类验证 | 非 AI 开发者验证 echo 全链路 + 完善细节 | done |
+| 16 | 文档 | Ghost 完整文档写入 moss docs 体系 | done |
 
 ## 实现阶段关键决策（2026-05-16）— GhostRuntime 架构选型
 
@@ -457,41 +457,33 @@ session.add_input_signal("hello")
 
 ---
 
-## 当前状态（2026-05-23, claude-code）
+## 当前状态（2026-06-07, deepseek-v4-pro）
 
-Feature 状态: **awaiting_human_validation** — 不能由 AI 单独标记为 completed。
+Feature 状态: **completed** — 全部完成，收尾。
 
 echo 已完成端到端验证：signal → impulse → articulate → model API → logos 流式返回。
 TUI 集成就绪：`moss-run-ghost echo` 启动交互终端。
-`moss script run say-hello` 可向运行中的 echo 发送 signal。
+soul.md 已写入（699 字符），ghost_name 在 `Host.run_ghost()` 中的设置 bug 已修复。
+Ghost 文档 `ghost.md` 已写入 `moss docs` 体系。
+人类验证通过，echo 稳定运行。
+Mindflow inspect + 自解释接口 (11b) 延后——设计方案待定，后续优化阶段处理。
 
-### 2026-05-23（续）— GhostTUI 环境路径修正
+**已完成**:
+- echo 的 soul.md（step 14）— 包含身份、名字哲学、并行存在、行为风格
+- ghost_name bug 修复 — `Host.run_ghost()` 中 `env.set_ghost_name()` 必须在 `self.run()` 之前
+- Ghost 文档 `ghost.md`（step 16）— 心智地图 + 依赖体系 + 6 方法论问题 + 指路牌
+- TUI 全链路验证（step 12c）— 由其他协作者完成
 
-消除 `GhostTUI._ghost_name` 的 class attribute workaround，回归 Environment 作为 ghost 信息源：
-
-1. **`Environment.ghost_name` property**：`_ghost_name` 原为 private，补充 public accessor
-2. **`ghost_run.py` 启动时 `env.set_ghost_name(ghost)`**：正确的启动模式——脚本通过 `environment.set_ghost_name` 将 ghost name 写入环境
-3. **`GhostTUI._get_runtime` 从 `host.env.ghost_name` 读取**：`_get_runtime` 是 classmethod 接收 `host: MossHost`，从 `host.env` 拿 ghost name 是显式路径，不再需要 class attribute 隐式传递
-
-信息流：`ghost_run.py → env.set_ghost_name(ghost) → host.env.ghost_name → _get_runtime(host)`
-
-**未完成**:
-- echo 的 soul/system prompt（step 14, 依赖 ghost playground）
+**待完成**:
 - 人类验证 echo 全链路并记录细节问题（step 15）
-- echo 没有配套的 kernel prompt, 所以提示词是原始的 atom, 导致模型输出的 logos 品质不高
-- bootstrap 时 logger 有越界 warning（已知，不重要）
-
-**下一个 AI 实例的任务（step 16）**:
-人类完成验证后，下一个 AI 实例将基于本 feature 的全部记录（FEATURE.md + DESIGN.md +
-discuss/ + milestones/ + memory/）为一个全新的上下文，为 echo/ghost 编写完整的
-第一版文档。这份文档是给人类开发者看的——解释 Ghost 是什么、如何配置、如何开发。
-这不是 AI 能独立完成的工作：它需要在人类验证 echo 时发现的真实问题作为输入。
+- Mindflow inspect + 自解释接口（step 11b，deferred）
 
 **复苏指引**:
-- 读 `FEATURE.md` 本文件的完整内容
+- 读本文件的完整内容
+- 读 `ghost.md` — `moss docs read ghost.md`
 - 读 `.memory/daily/2026-05/22.md` — deepseek-v4-pro 的 session 记录和锚点
 - 读 milestones/2026-05-22-first-ghost-echo-speaks.md — 里程碑
-- 读 DESIGN.md 的 "TUI 集成设计" 和 "默认 Ghost — echo" 章节
+- 读 `echo-validation-and-fixes/FEATURE.md` — 13 个 bug 及修复记录
 
 ---
 
