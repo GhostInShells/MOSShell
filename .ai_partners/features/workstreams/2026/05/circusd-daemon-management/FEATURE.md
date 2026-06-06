@@ -1,22 +1,38 @@
 ---
 title: Circusd Daemon Management
-status: draft
+status: dropped
 priority: P1
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-06-07
 depends:
   - app-system-cli
   - matrix-channel-hub
 description: >-
-  讨论 circusd daemon 化管理的方案、取舍与分步计划。讨论未完全确认，若否决则关闭此 feature。
+  [DROPPED] 讨论 circusd daemon 化管理的方案。方向否决——MOSS 不应做进程生命周期治理，应退回到 cell session bootstrap 协议。讨论保留为历史参考。
 ---
 
 # Circusd Daemon Management
 
-> **状态：讨论未确认。若最终否决，此 feature 将被关闭，讨论内容保留为历史参考。**
+> **状态：dropped (2026-06-07)。方向否决，讨论保留为历史参考。**
+
+## 关闭决议
+
+2026-06-07 与人类工程师同步后做出架构校正 (DeepSeek V4)：
+
+**否决原因**：circusd daemon 管理这个方向本身违背了 MOSS 的架构定位。MOSS 是 Shell/Bus 层，不应该变成进程管理器（kernel/init）。进程生命周期治理——包括 bringup、crash 恢复、daemon 化——是 OS 的事。每个 OS 都有自己的 init 系统（systemd/launchd/circusd），MOSS 不应该再去封装一层。
+
+**真问题**：不是"如何管理进程生命周期"，而是"独立进程启动时如何正确并网"——session scope 恢复、cell 地址分配、workspace 治理体系下的冲突避免。
+
+**替代方向**：`cell-session-bootstrap` feature — 聚焦 cell 入网协议，而非进程管理。进程编排回归为普通 Channel（和视觉感知一样的能力），不升格为框架基建。
+
+**对现有实现的影响**：App 体系现有实现不动，能工作就继续工作。AppStoreChannel 已是可选，在注释中标记正确方向即可。长期会被 cell 入网协议 + 进程编排 Channel 替代。
+
+**关联设计文档**：`.design/2026-06-07-cell-bootstrap-not-process-management.md`
+
+---
 
 > 此 feature 本身是**讨论容器**——产出物是讨论结论，而非代码交付。
-> 当讨论收敛到可执行的方案时，另开实现 feature。
+> 以下为原始讨论，保留为历史参考。
 
 ## Motivation
 
