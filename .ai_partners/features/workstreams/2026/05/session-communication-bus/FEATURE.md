@@ -8,7 +8,7 @@ description: Session 通讯总线从纯 ephemeral 向 stateful 演进——补 K
 milestone: null
 priority: P0
 status: in-progress
-status_note: "Parameter implemented — SessionParameterStore on Session.parameters, lazy init via thread pool. Actor + Future pending."
+status_note: "Parameter + Journal 完成 (Journal 即 Storage typed JSONL 方法，不配 pub 通知)。KVCache/ObservableStorage 移除（非 Session 通讯原语）。Actor + Future pending。"
 title: Session Communication Bus — 跨进程通讯基线演进
 updated: '2026-06-05'
 ---
@@ -54,12 +54,14 @@ Session (通讯总线)
     └── {created, closed, crashed, reclaimed} 事件
 
 新增通讯原语:
-├── ObservableStorage                    ← Storage + zenoh 变更通知
-├── Journal (JSONL)                     ← 追加/tail/offset
-├── KVCache                              ← diskcache + TTL + remember
-├── ParameterStore                       ← 版本化 KV + 乐观锁 + watch
+├── Journal (JSONL)                     ← 追加/tail/offset ✅ 由 Storage.append_model/read_models 实现
+├── ParameterStore                       ← 版本化 KV + 乐观锁 + watch ✅
 ├── ActorQueue                           ← 单消费者队列 + 锁竞争
 └── FutureManager                        ← 跨进程 Future + 审批/超时/cancel
+
+移除项:
+├── ObservableStorage                    ← 移除: Storage + notify 是应用层组合，非通讯原语
+└── KVCache                              ← 移除: 模型推理缓存不归 MOSS 管; Cache(KV+TTL) 已覆盖 session 级缓存
 ```
 
 ## Design Index
@@ -175,6 +177,29 @@ TTL 语义已有 Cache 承担。Parameter 是持久化状态——为 null 时�
 - **Actor**：Zenoh queryable 实现请求-响应，单消费者处理
 - **Future**：跨进程异步结果追踪，支持审批/超时/cancel。底层 sqlite3 存状态 + Zenoh 状态变更通知
 
+### 15. Journal 由 Storage typed methods 实现，不配 pub 通知
+
+`Storage.append_model` / `read_models` 已提供 JSONL 追加/读取。
+OS 级 `ab` append 跨进程安全。不需要 Zenoh pub 通知——JSONL
+原生协议实现者寡，pub 不是默认期待。
+
+**接受**：Journal = Storage typed JSONL 方法即完成。
+**拒绝**：额外包装一层 Journal 对象 + Zenoh 通知。
+
+### 16. KVCache 不为 Session 通讯原语
+
+模型推理 memoization 不是跨进程通讯基线能管的事。
+`Cache` (KV + TTL + Hash + Lock) 已覆盖 session 级共享缓存需求。
+
+**移除** KVCache。
+
+### 17. ObservableStorage 不为 Session 通讯原语
+
+Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
+需要此模式的调用方自行组合。
+
+**移除** ObservableStorage。未来可作为功能性高阶封装，不作为 Session 原语。
+
 ## Primitives Summary
 
 已有（ephemeral，不变）：
@@ -186,16 +211,21 @@ TTL 语义已有 Cache 承担。Parameter 是持久化状态——为 null 时�
 | topics | zenoh | 强类型广播 |
 | signal | zenoh | Mindflow 感知信号 |
 
-新增（stateful，待实现）：
+新增（stateful）：
 
-| 原语 | 持久化? | 底层 | 关键 API |
-|------|---------|------|----------|
-| ObservableStorage | 是 | Storage + zenoh | `put` 自动发变更通知 |
-| Journal | 是 | JSONL + zenoh | `append` / `tail(offset)` / `on_append` |
-| KVCache | 否 | sqlite3 | `get` / `set` / `remember(key, ttl, cb)` |
-| ParameterStore | 混合 | sqlite3 + zenoh | `store.declare(Model)` → `Parameter.get/set/version` ✅ |
-| ActorQueue | 是 | journal + lock | `enqueue` / `dequeue` / `ack` |
-| FutureManager | 否 | sqlite3 + zenoh | `create` / `next` / `resolve` / `cancel` |
+| 原语 | 持久化? | 底层 | 关键 API | 状态 |
+|------|---------|------|----------|------|
+| Journal | 是 | JSONL (Storage) | `append_model` / `read_models` | ✅ Storage typed methods 已覆盖 |
+| ParameterStore | 混合 | sqlite3 + zenoh | `store.declare(Model)` → `Parameter.get/set/version` | ✅ |
+| ActorQueue | 是 | journal + lock | `enqueue` / `dequeue` / `ack` | pending |
+| FutureManager | 否 | sqlite3 + zenoh | `create` / `next` / `resolve` / `cancel` | pending |
+
+移除项：
+
+| 原语 | 移除原因 |
+|------|---------|
+| ObservableStorage | Storage + zenoh 通知是应用层组合，非通讯协议原语。需要时做功能性高阶封装即可。 |
+| KVCache | 模型推理 memoization 不属于 Session 通讯总线范围。`Cache` (KV + TTL + Hash + Lock) 已覆盖 session 级共享缓存，不需要第二个缓存概念。 |
 
 ## Exploration Paths
 
@@ -211,18 +241,10 @@ TTL 语义已有 Cache 承担。Parameter 是持久化状态——为 null 时�
 
 | 原语 | Fewshot 1 | Fewshot 2 |
 |------|-----------|-----------|
-| ObservableStorage | SystemInfo 模块（写 KV，UI 实时渲染） | 配置热更新监听 |
 | Journal | Ghost 关键行为日志 | 跨进程事件溯源 |
-| KVCache | 模型推理结果 memoization | 环境发现快照 |
 | ParameterStore | Ghost 人格参数 | 运行时配置共享 |
 | ActorQueue | 模型调用队列（token 预算） | 文件处理任务分发 |
 | FutureManager | 审批模块（跨进程等审批） | 模型发起的异步任务追踪 |
-
-## Open Questions
-
-1. **SessionCabinet 最终命名？** 待定。候选：`SessionFS`、`FileCabinet`、直接用结构化 Storage 方法。
-2. **Resources session 级范围？** 是资源文件存在 session storage + registry 做索引，还是更轻量？
-3. **Parameter 持久/非持久：同一 key 空间还是 flag？** 倾向 `parameter.set(key, val, persistent=True/False)`。
 
 ## Implementation Progress
 
@@ -250,7 +272,6 @@ TTL 语义已有 Cache 承担。Parameter 是持久化状态——为 null 时�
 ### 待实现
 
 - ActorQueue / FutureManager
-- ObservableStorage / Journal / KVCache
 
 参见 [discuss/parameter-design-collision.md](discuss/parameter-design-collision.md) — 设计碰撞记录。
 
