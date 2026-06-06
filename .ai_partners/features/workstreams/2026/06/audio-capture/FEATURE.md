@@ -4,10 +4,10 @@ depends: []
 description: 基于 miniaudio 的系统音频捕获源，原始 PCM 经 Zenoh 广播，消费者按需加工（波形可视化、ASR、剪辑）。 ConfigType 格式共识 + tmp_storage 运行时发现 + Provider 注入。
 milestone: null
 priority: P1
-status: draft
-status_note: 补充 SequentialAudioConsumer 设计与 listener 依赖关系，交由 AI 实例实现
+status: in-progress
+status_note: 全部 5 步完成，MatrixLifecycleObject 自动启停，waveform App 跨进程消费已验证
 title: Audio Capture — 系统音频感知通道
-updated: '2026-06-04'
+updated: '2026-06-05'
 ---
 
 # Audio Capture
@@ -30,13 +30,14 @@ updated: '2026-06-04'
 
 ## Design Index
 
-- Contract: `ghoshell_moss.contracts.audio`（待创建）
-- 实现: `ghoshell_moss.host.speech.capture.miniaudio_capture`（待创建）
-- Provider: `ghoshell_moss.host.providers.audio_capture_provider`（待创建）
+- Contract: `ghoshell_moss.contracts.audio` — 7 个符号
+- 实现: `ghoshell_moss.host.speech.capture.miniaudio_capture` — MiniAudioCaptureSource + 消费者
+- Provider: `ghoshell_moss.host.providers.audio_capture_provider` — singleton + IoC
+- 生命周期: 独立 App（`.moss_ws/apps/sensors/audio_capture/`）— Ghost 通过 `apps:start`/`apps:stop` 控制启停，不再随 Matrix 自动拉起
 - 播放端对称参考: `ghoshell_moss.host.speech.player.miniaudio_player:MiniAudioStreamPlayer`
 - 播放 Provider 参考: `ghoshell_moss.host.providers.audio_player_provider:AudioPlayerProvider`
-- 进程锁: `ghoshell_moss.contracts.workspace:FileLocker`
-- 下游消费 feature: listener（ASR 消费者）、波形 Channel（可视化消费者）
+- 进程锁: `ghoshell_moss.contracts.workspace:FileLocker`（跨进程防重复打开设备）
+- 下游消费: waveform App（`.moss_ws/apps/sensors/waveform/`）、listener（ASR 消费者，待实现）
 
 ## Key Decisions
 
@@ -239,21 +240,101 @@ class AudioSequentialConsumer(ABC):
 
 ## Implementation Notes
 
-### 实现顺序
+### 实施进度
 
-1. `contracts/audio.py` — 所有抽象定义（含 `AudioSequentialConsumer`）
-2. `host/speech/capture/miniaudio_capture.py` — MiniAudioCaptureSource 实现（含 `MiniAudioSequentialConsumer`）
-3. `host/providers/audio_capture_provider.py` — Provider 注册
-4. 波形 Channel（后续 feature）
-5. listener（后续 feature，依赖 `AudioSequentialConsumer`）
+| Step | 内容 | 状态 | 日期 |
+|------|------|------|------|
+| 1 | `contracts/audio.py` — 抽象定义 | **done** | 2026-06-05 |
+| 2 | `host/speech/capture/miniaudio_capture.py` — 核心实现 | **done** | 2026-06-05 |
+| 3 | `host/providers/audio_capture_provider.py` — Provider + manifests | **done** | 2026-06-05 |
+| 4 | Waveform App（`.moss_ws/apps/sensors/waveform/`）— 跨进程可视化消费者 | **done** | 2026-06-05 |
+| 5 | Audio Capture App（`.moss_ws/apps/sensors/audio_capture/`）— 独立生命周期，Ghost 可控启停 | **done** | 2026-06-05 |
+| 6 | listener（ASR 消费者，后续 feature，依赖 `AudioSequentialConsumer`） | pending | |
+
+### Step 1-2 实现细节
+
+**contracts/audio.py** — 7 个符号，已在 `contracts/__init__.py` 中导出：
+
+- `AudioFrameMeta(BaseModel)` — rms_db, bands(bass/mid/high), is_silent
+- `AudioChunk(BaseModel)` — seq, timestamp, samples(ndarray), meta
+- `AudioCaptureConfig(ConfigType)` — conf_name="audio_capture"，默认 44100Hz/mono/pcm_s16le/50ms/blackhole
+- `AudioRuntimeInfo(BaseModel)` — running, stream_key, device_name, device_explain, started_at, last_heartbeat
+- `AudioCaptureSource(ABC)` — start(), device_explain(), new_consumer(), new_sequential_consumer(), close()
+- `AudioPullLatest(ABC)` — pull_latest(), close()
+- `AudioSequentialConsumer(ABC)` — start(), close(), \_\_aiter\_\_()/\_\_anext\_\_()
+
+**host/speech/capture/miniaudio_capture.py** — 核心实现：
+
+- `MiniAudioCaptureSource` — miniaudio CaptureDevice callback generator 模式（与 PlaybackDevice 对称），FFT 在回调线程中计算，AudioChunk 序列化后通过 `session.pub_stream_delta()` 发布到 Zenoh
+- `_MiniAudioPullLatest` — ring buffer（collections.deque maxlen），`session.sub_stream()` 回调写入，`pull_latest()` 非阻塞读
+- `MiniAudioSequentialConsumer` — 封装 `session.get_stream()` + `StreamSubscriber`，janus.Queue 桥接线程，`async for` 消费
+- `_compute_frame_meta()` — RMS + 3-band FFT (bass/mid/high) + 静音判定（阈值 -50dB）
+- `_pack_chunk()` / `_unpack_chunk()` — 二进制序列化：`[4B meta_len(uint32 BE)][JSON meta UTF-8][PCM int16 LE]`
+- `start()` 通过 `ws.lock("audio_capture")` 拿进程锁
+- `_write_runtime_info()` 将 `AudioRuntimeInfo` 写入 `session.tmp_storage`
 
 ### miniaudio CaptureDevice 回调模式
 
-和 `MiniAudioStreamPlayer._make_generator()` 对称，使用 miniaudio 的 callback/ring buffer 模式。miniaudio 回调在独立线程中触发，需线程安全地将 PCM 写入 ring buffer，Zenoh pub 在 asyncio 侧读取。
+和 `MiniAudioStreamPlayer._make_generator()` 对称，使用 miniaudio 的 callback generator 模式。miniaudio 在内部线程中通过 `gen.send(raw_bytes)` 传递捕获的 PCM 数据。回调中直接计算 FFT、序列化、Zenoh pub——Zenoh session 本身线程安全，无需额外桥接。
 
 ### 设备发现
 
 `device_pattern` 用于匹配设备名。枚举所有 `miniaudio.devices()` 中 `is_default=False` 且名称匹配的 capture 设备。若无匹配，fallback 到默认输入设备。
+
+### Step 3: Provider + manifests
+
+**`host/providers/audio_capture_provider.py`** — `AudioCaptureProvider(Provider[AudioCaptureSource])`，singleton=True。factory 从 IoC 获取 Matrix + ConfigStore，创建 `MiniAudioCaptureSource`。
+
+**manifests 注册**：
+- `.moss_ws/src/MOSS/manifests/providers.py` — `capture_source_provider = AudioCaptureProvider()`
+- `.moss_ws/src/MOSS/manifests/configs.py` — `audio_capture_config = AudioCaptureConfig()`
+
+### Step 4: Waveform App（跨进程消费者）
+
+**`.moss_ws/apps/sensors/waveform/`** — 独立 MOSS App，通过 `session.get_stream("audio/pcm")` 跨进程订阅 Zenoh PCM 流。只解析 metadata（RMS + 3-band），终端渲染 unicode 波形条。验证了 capture → Zenoh → 跨进程消费者的完整链路。
+
+启动：`moss apps test sensors/waveform`
+
+渲染：40 字符宽 bar（`█` + 末位 1/8 精度部分块 `▏▎▍▌▋▊▉`），bass/mid/high + RMS 四行各自独立 bar。dB 范围 -60~0 dBFS，-50 dBFS 以下标 silent。
+
+### 实测 Bug 修复 (2026-06-05)
+
+**Bug 1: int16 样本未归一化导致 dB 值错误**。`_compute_frame_meta()` 直接将 int16 样本（值域 -32768~32767）cast 为 float64 后算 RMS，未除以 32768.0 归一化到 [-1, 1]，导致 dB 值为正数十 dB 的无意义值。修复：`samples.astype(np.float64) / 32768.0`，dB 变为标准 dBFS（0 = 满幅，负数 = 低于满幅）。`miniaudio_capture.py:41`。
+
+**Bug 2: 波形渲染只有 1 字符宽**。每个频段只用单个 Unicode bar 字符（`▃`），视觉上几乎无波动。修复：改为 40 字符宽 bar，末位用部分块字符（`▏▎▍▌▋▊▉█`）做 1/8 精度平滑过渡，四行（bass/mid/high/rms）各自独立 bar。`main.py`。
+
+### Step 5: Audio Capture App（独立生命周期）
+
+**设计决策**：capture 不随 Matrix 自动启停，而是独立 App，由 Ghost 通过 `apps:start sensors/audio_capture` / `apps:stop sensors/audio_capture` 控制。原因：capture 是可选能力，不是每次 Matrix 启动都需要打开麦克风，应像波形可视化一样按需拉起。
+
+**方案**：创建 `.moss_ws/apps/sensors/audio_capture/`，入口 `main.py` 获取 Matrix → 创建 `MiniAudioCaptureSource` → `start()` → `stop_event.wait()` 阻塞 → 收到信号后 `close()`。从 `host/impl.py` 移除 `register_lifecycle_objects(AudioCaptureSource)`，从 `MiniAudioCaptureSource` 移除 `__aenter__`/`__aexit__`。
+
+**早期方案（已废弃）**: MatrixLifecycleObject 集成。`MiniAudioCaptureSource` 实现 `MatrixLifecycleObject` 协议，`Host.__init__` 注册 `AudioCaptureSource` 类型，Matrix 启动时自动进入 async context。废弃原因：capture 与 Matrix 生命周期过度耦合，Ghost 无法控制捕获启停。
+
+**Bug 修复**：`host/matrix.py:681` 将 `lifecycle`（类型）改为 `lifecycle_obj`（实例），修复类型注册时对 ABC 类调 `enter_async_context` 的 TypeError。
+
+### 当前架构总览
+
+```
+Ghost: apps:start sensors/audio_capture
+  └─ Audio Capture App (独立进程)
+       └─ Matrix.discover().run(main)
+            └─ MiniAudioCaptureSource(matrix, config)
+                 └─ start()
+                      ├─ FileLocker.acquire()  # 进程锁
+                      ├─ miniaudio.CaptureDevice.start(gen)
+                      │    └─ callback: FFT → pack_chunk → session.pub_stream_delta("audio/pcm")
+                      └─ _write_runtime_info() → tmp_storage
+                 └─ stop_event.wait()  # 阻塞，等待停止信号
+                 └─ close()  # finally
+
+Waveform App (独立进程)
+  └─ session.get_stream("audio/pcm")
+       └─ async for sample → unpack metadata → 终端波形渲染
+
+Ghost: apps:stop sensors/audio_capture
+  └─ 发送 SIGTERM → capture.close()
+```
 
 ### 与 speech-governance feature 的关系
 
@@ -263,3 +344,5 @@ class AudioSequentialConsumer(ABC):
 
 *架构设计: DeepSeek V4 与人类工程师, 2026-06-03*
 *补充: SequentialAudioConsumer 设计、listener 依赖关系、运行时稳定性约束 — Claude Opus 4.7 与人类工程师, 2026-06-04*
+*实现: Step 1-2 contracts + miniaudio capture core — Claude Opus 4.7 与人类工程师, 2026-06-05*
+*Bug 修复: int16 归一化 + 波形渲染宽 bar — Claude Opus 4.7 与人类工程师, 2026-06-05*
