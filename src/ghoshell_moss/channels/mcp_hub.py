@@ -332,9 +332,9 @@ class MCPHubState(ChannelState):
             'exec': PyCommand(exec_cmd, blocking=False, always_observe=True),
             'exec_blocking': PyCommand(exec_blocking_cmd, blocking=True, always_observe=True),
             'list_servers': PyCommand(list_servers, always_observe=True),
-            'add_server': PyCommand(add_server),
-            'remove_server': PyCommand(remove_server),
-            'restart_server': PyCommand(restart_server),
+            'add_server': PyCommand(add_server, always_observe=True),
+            'remove_server': PyCommand(remove_server, always_observe=True),
+            'restart_server': PyCommand(restart_server, always_observe=True),
         }
 
     # --- ChannelState interface ---
