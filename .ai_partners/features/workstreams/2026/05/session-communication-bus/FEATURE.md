@@ -8,9 +8,9 @@ description: Session 通讯总线从纯 ephemeral 向 stateful 演进——补 K
 milestone: null
 priority: P0
 status: in-progress
-status_note: "Parameter + Journal 完成 (Journal 即 Storage typed JSONL 方法，不配 pub 通知)。KVCache/ObservableStorage 移除（非 Session 通讯原语）。Actor + Future pending。"
+status_note: "Parameter + Journal 完成。KVCache/ObservableStorage 移除。2026-06-07 决策：Zenoh queryable 暂不引入，ActorQueue 简化为 cell 级 declare (学 ROS2)，FutureManager 设计收敛 (单 Zenoh 路径 + sqlite3 真相源 + issuer/receiver 双视图)。待实现。" 
 title: Session Communication Bus — 跨进程通讯基线演进
-updated: '2026-06-05'
+updated: '2026-06-07'
 ---
 
 # Session Communication Bus
@@ -56,8 +56,8 @@ Session (通讯总线)
 新增通讯原语:
 ├── Journal (JSONL)                     ← 追加/tail/offset ✅ 由 Storage.append_model/read_models 实现
 ├── ParameterStore                       ← 版本化 KV + 乐观锁 + watch ✅
-├── ActorQueue                           ← 单消费者队列 + 锁竞争
-└── FutureManager                        ← 跨进程 Future + 审批/超时/cancel
+├── ActorQueue                           ← 单消费者队列 + 锁竞争 → 简化为 cell 级 declare (学 ROS2)
+└── FutureManager                        ← 跨进程 Future: sqlite3 单一真相源 + 单 Zenoh 通知路径, issuer/receiver 双视图
 
 移除项:
 ├── ObservableStorage                    ← 移除: Storage + notify 是应用层组合，非通讯原语
@@ -200,6 +200,69 @@ Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
 
 **移除** ObservableStorage。未来可作为功能性高阶封装，不作为 Session 原语。
 
+### 18. Zenoh Queryable 暂不引入为传输原语 (2026-06-07)
+
+Zenoh 的 queryable/get 与 pub/sub 构成传输层 push/pull 对偶：
+- pub/sub = push, 生产者 → 消费者
+- queryable/get = pull, 消费者 → 生产者 → 消费者
+
+三种 key 路由模式均合法：精确 key (1:1)、wildcard (1:n)、UUID 参数化 (逻辑 1:1)。
+理论上是传输层缺失的拉取原语，但 **没有具体需求场景**。
+
+仅有的设想场景是 cell 可控 API (UI 观测/调用 cell)，需求未明确。RPC 可以基于 queryable
+实现，但 RPC 本身也非当前优先事项。
+
+**暂不引入** queryable。Session 传输层保持 push-only（stream），等 cell API 需求明确后再评估。
+
+### 19. FutureManager：单一真相源 + 单 Zenoh 通知路径 (2026-06-07)
+
+FutureManager 是跨进程异步结果追踪。核心设计：
+
+**SQLite 是唯一真相源**（对齐 ParameterStore 模式）。Zenoh 只传状态变更通知
+（`{future_id, status, version}`），不传 value。观察者收到通知后从 SQLite 读完整结果。
+
+**单 Zenoh 路径 `futures/notifications`**。不按 future_id 分路径——session 级并发量
+是几十量级，单路径开销可忽略。和 ParameterStore 的 `parameters/invalidations` 一致。
+
+**Issuer/Receiver 双视图**：
+- Issuer: `as_issuer(id)` → 声明身份 → 拿到 create 能力 + 只读自己 future 的查询。
+  声明时不做数据加载——issuer 的起点是空的。
+- Receiver: `as_receiver()` → 实例化后从 SQLite 加载全量快照 + 订阅 Zenoh 通知 +
+  暴露 `refresh()` 手动重载（通知丢失兜底）。不声明不存在。
+
+**FutureHandle** 同时暴露读写。resolve/reject/cancel 对所有人开放，
+Future 一旦创建就是公共协调点。`result()` 等 Zenoh 通知唤醒 + SQLite 读。
+
+**持久化在 tmp_storage** (`tmp_storage/futures.db`)。tmp 生命周期 = session 生命周期，
+保留 future 历史无问题。
+
+一张 `futures` 表：
+
+```sql
+future_id   TEXT PRIMARY KEY,
+created_by  TEXT NOT NULL,
+status      TEXT NOT NULL,    -- pending|resolved|rejected|cancelled|timed_out
+task_json   TEXT,
+result_json TEXT,
+reason      TEXT,
+timeout_at  REAL,             -- 0 = 不过期
+created_at  REAL NOT NULL,
+updated_at  REAL NOT NULL
+```
+
+Issuer 和 Receiver 共享同一张表，查询范围不同（Issuer `WHERE created_by = ?`，
+Receiver 全表）。
+
+### 20. ActorQueue 简化为 cell 级 declare (2026-06-07)
+
+ActorQueue 的互斥任务队列语义收敛为：**cell 级声明式能力发现，完全学习 ROS2**。
+
+不再作为独立的 Session 通讯原语设计。运行时发现逻辑、key-based 注册、单消费者路由
+都在 cell 层面定义。Session ABC 的 actor protocol todo 对齐到 cell 声明体系。
+
+**接受**：ActorQueue 退出 session-communication-bus 范围，归入 cell 体系。
+**拒绝**：在 Session 上再做一个独立的 ActorQueue 原语。
+
 ## Primitives Summary
 
 已有（ephemeral，不变）：
@@ -217,8 +280,8 @@ Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
 |------|---------|------|----------|------|
 | Journal | 是 | JSONL (Storage) | `append_model` / `read_models` | ✅ Storage typed methods 已覆盖 |
 | ParameterStore | 混合 | sqlite3 + zenoh | `store.declare(Model)` → `Parameter.get/set/version` | ✅ |
-| ActorQueue | 是 | journal + lock | `enqueue` / `dequeue` / `ack` | pending |
-| FutureManager | 否 | sqlite3 + zenoh | `create` / `next` / `resolve` / `cancel` | pending |
+| ActorQueue | 是 | journal + lock | `enqueue` / `dequeue` / `ack` | 移出范围 — 归入 cell 声明体系 |
+| FutureManager | 否 | sqlite3 + zenoh | `as_issuer(id).create()` / `as_receiver().list()` / `handle.result()` | pending — 设计收敛 (单路径 + issuer/receiver) |
 
 移除项：
 
@@ -243,8 +306,8 @@ Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
 |------|-----------|-----------|
 | Journal | Ghost 关键行为日志 | 跨进程事件溯源 |
 | ParameterStore | Ghost 人格参数 | 运行时配置共享 |
-| ActorQueue | 模型调用队列（token 预算） | 文件处理任务分发 |
-| FutureManager | 审批模块（跨进程等审批） | 模型发起的异步任务追踪 |
+| ActorQueue | 模型调用队列（token 预算） | 已移出 scope → cell 声明体系 |
+| FutureManager | 审批模块（跨进程等审批） | 模型发起的异步任务追踪 (G1 机器人动作结果等) |
 
 ## Implementation Progress
 
@@ -271,9 +334,13 @@ Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
 
 ### 待实现
 
-- ActorQueue / FutureManager
+- FutureManager — 设计已收敛 (Decision #19), 暂停等待优先级调整 (2026-06-07)
+- ActorQueue — 移出 session-communication-bus 范围, 归入 cell 声明体系 (Decision #20)
 
-参见 [discuss/parameter-design-collision.md](discuss/parameter-design-collision.md) — 设计碰撞记录。
+### 讨论记录
+
+- [discuss/parameter-design-collision.md](discuss/parameter-design-collision.md) — Parameter 设计碰撞记录
+- [discuss/2026-06-07-actor-future-design.md](discuss/2026-06-07-actor-future-design.md) — Actor/Future/Queryable 阶段性设计收敛 (待写)
 
 ## Original Implementation Notes
 
