@@ -5,7 +5,7 @@ try:
     import pulsectl
 
 except Exception as e:
-    raise ImportError(f"failed to import audio dependencies, please try to install ghoshell-shell[audio]: {e}")
+    raise ImportError(f"failed to import audio dependencies, please try to install ghoshell-shell[host]: {e}")
 
 from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
 

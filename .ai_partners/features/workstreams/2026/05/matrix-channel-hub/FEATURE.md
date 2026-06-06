@@ -1,14 +1,15 @@
 ---
-title: Matrix Channel Hub — Zenoh 原生 Channel 发现与管理
-status: in-progress
-priority: P0
 created: 2026-05-24
-updated: 2026-05-26
 depends: []
-milestone:
-description: >-
-  通过 ZenohChannelHub + Matrix Channel 统一 Channel 发现与管理，
-  吸收 cell-discovery-refactor，最终替换 manifests 中的 AppStoreChannel 注册。
+description: 提取 CellDiscovery 独立类，增加 on_refresh_meta async hook。Hub 缝合留待未来 判断：统一被动发现
+  channel vs 多个手动配置 channel。
+milestone: null
+priority: P0
+status: completed
+status_note: 'CellDiscovery extracted, on_refresh_meta added. Hub缝合留待未来判断: 统一被动发现
+  vs 多个手动配置 channel.'
+title: Matrix Channel Hub — Zenoh 原生 Channel 发现与管理
+updated: '2026-06-05'
 ---
 
 # Matrix Channel Hub
@@ -154,10 +155,30 @@ AI 在交付模式下写的代码质量显著低于 review 模式下应有的标
 - 在"review 模式"下同一 AI 能识别这些问题的严重性。两种模式差距几个档次。
 - 对抽象质量要求高的内核代码，应以人类主程 + AI 结对（AI 协助实现单体函数、写测试、做 review）的方式推进，而非 AI 独立写整个模块。
 
+### 2026-06-05: CellDiscovery 提取 (DeepSeek V4 Pro)
+
+MatrixImpl 中 6 个内嵌的 cell liveness 方法（~70 行）提取为独立类 `CellDiscovery`，
+放在 `host/cell_discovery.py`。遵循 `FractalKeyExpressions` 的 key 权威类模式：
+
+- `liveness_prefix()` / `liveness_key(addr)` / `liveness_wildcard()` — key 空间唯一真理源
+- `declare_this_cell(session, address)` — context manager, liveness token 声明
+- `discover_cells(session, cells, events, this_address)` — context manager, 订阅 + 初始 wildcard query
+- 9 个单测覆盖 key 表达式、declare、discover、disconnect、initial query、多 cell
+
+MatrixImpl 集成：`_session_communication_bus_ctx_manager` 改为调用 CellDiscovery，
+内部逻辑保持不变。旧 6 方法删除。
+
+同时修复 `test_environment_set_mode.py` 的 `MOSS_CELL_ADDRESS` 跨测试泄漏。
+
+配套基础设施：`on_refresh_meta` async hook (commit 0b6d01d)，为 hub 在 refresh 周期
+做 I/O（alive_cells 查询、proxy 缓存更新）提供 async 入口，与 sync 的
+get_virtual_children() 分离。
+
 ### 下一步
 
-1. **人类主程重写 hub + MatrixChannel** — 参考 `FractalKeyExpressions` 模式，先定义 `MatrixKeyExpressions` 作为 key 空间权威类
-2. **AI 回归 L0 协助** — 结对实现单体函数、写测试、验证
+1. **Hub + MatrixChannel** — 在 CellDiscovery 基础上构建 wildcard 动态发现,
+   MatrixChannel 缝合 AppStore(进程管理) + Hub(网络发现)
+2. **AI 协助单体函数、写测试、验证**
 3. **AI 最终 review 架构**
 
 ### 验收点 (AI review checklist)

@@ -20,7 +20,6 @@ from ghoshell_moss.core.ctml.versions import (
 __all__ = ['PackageManifests', 'MergedManifests']
 
 ENVIRONMENT_MANIFESTS_ROOT_PACKAGE = 'MOSS.manifests'
-ENVIRONMENT_MODE_MANIFESTS_ROOT_PACKAGE = 'MOSS.modes.{mode_name}'
 
 
 class PackageManifests(Manifests):
@@ -79,21 +78,6 @@ class PackageManifests(Manifests):
                 ctml_version_info = CtmlVersionInfo(file=file)
                 ctml_versions[ctml_version_info.version] = ctml_version_info
         return ctml_versions
-
-    @classmethod
-    def from_environment_moss_mode(
-        cls, mode: str, env: Environment | None = None,
-        *, strict: bool = False, errors: list[ScanError] | None = None,
-    ) -> Self:
-        """
-        找到模式下的声明资源.
-        """
-        env = env or Environment.discover()
-        env.bootstrap()
-        root_package_name = ENVIRONMENT_MODE_MANIFESTS_ROOT_PACKAGE.format(mode=mode)
-        ctml_versions = cls.find_ctml_versions_from_env(env=env)
-        return cls(root_package_name, ctml_versions=ctml_versions,
-                   strict=strict, errors=errors)
 
     def channels(self) -> dict[str, Channel]:
         if self._channels is None:
@@ -189,7 +173,10 @@ class PackageManifests(Manifests):
 
 class MergedManifests(Manifests):
     """
-    合并多个 manifests. 通常是右边优先级高.
+    Deprecated: manifests 统一采用显式继承模式（每个 mode 的 manifest 文件
+    通过 ``from MOSS.manifests.xxx import *`` + 扩展实现，不再需要隐式合并）。
+
+    保留此类仅为代码引用和未来参考，当前 Host 不再使用。
     """
 
     def __init__(self, manifests: list[Manifests]):
@@ -221,23 +208,7 @@ class MergedManifests(Manifests):
             # merge nuclei (右边优先)
             self._nuclei.update(manifest.nuclei())
 
-    @classmethod
-    def from_environment_mode(
-        cls, *, mode: str = '', env: Environment | None = None,
-        strict: bool = False, errors: list[ScanError] | None = None,
-    ) -> Manifests:
-        """
-        默认根据模式来生成.
-        """
-        env = env or Environment.discover()
-        env.bootstrap()
-        env_manifests = PackageManifests.from_environment(env, strict=strict, errors=errors)
-        if mode:
-            mode_manifests = PackageManifests.from_environment_moss_mode(
-                mode, env, strict=strict, errors=errors,
-            )
-            return cls([env_manifests, mode_manifests])
-        return env_manifests
+    # from_environment_mode() removed — deprecated class, no longer used by Host.
 
     def channels(self) -> dict[ChannelName, Channel]:
         return self._channels
@@ -271,7 +242,7 @@ class MergedManifests(Manifests):
         return self._nuclei
 
     def explain(self) -> str:
-        parts = [super().explain()]  # 先放通用模板
+        parts = [super().explain()]
         for i, m in enumerate(self._manifests_list):
             parts.append(f"### 源 {i + 1}: {type(m).__name__}\n{m.explain()}")
         parts.append(

@@ -7,6 +7,7 @@ from ghoshell_moss.message import Addition
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.topic import *
 from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.topic.window import DequeTopicWindow
 from ghoshell_container import Provider, IoCContainer
 import asyncio
 import logging
@@ -232,14 +233,17 @@ class QueueBasedTopicService(TopicService):
         self._logger = logger or logging.getLogger("moss")
         self._dispatch_tasks: set[asyncio.Task] = set()
         self._log_prefix = "[QueueBasedTopicService] "
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._windows_tasks: set[asyncio.Task] = set()
 
     async def start(self):
         if self._started:
             raise RuntimeError("TopicService is already started")
         self._started = True
         self._publish_queue_empty.set()
+        self._event_loop = asyncio.get_running_loop()
         self._main_loop_stopped_event.clear()
-        self._main_loop_task = asyncio.create_task(self._main_publish_loop())
+        self._main_loop_task = self._event_loop.create_task(self._main_publish_loop())
 
     async def close(self):
         if self._closing_event.is_set():
@@ -252,6 +256,18 @@ class QueueBasedTopicService(TopicService):
             except asyncio.CancelledError:
                 pass
         self._main_loop_task = None
+        if len(self._windows_tasks) > 0:
+            tasks = self._windows_tasks.copy()
+            self._windows_tasks.clear()
+            for task in tasks:
+                task.cancel()
+            done = await asyncio.gather(*tasks, return_exceptions=True)
+            for t in done:
+                if isinstance(t, asyncio.CancelledError):
+                    continue
+                elif isinstance(t, Exception):
+                    # todo 记录日志.
+                    pass
 
     async def wait_sent(self):
         wait_done = asyncio.create_task(self._main_loop_stopped_event.wait())
@@ -460,6 +476,45 @@ class QueueBasedTopicService(TopicService):
             topic.meta.name = name
         topic.meta.creator = creator or self._creator
         self._publish_queue.sync_q.put_nowait(topic)
+
+    def create_window(
+            self,
+            topic_name: str,
+            *,
+            max_size: int,
+            model: type[TopicModel] | None = None,
+    ) -> 'DequeTopicWindow':
+        if not self.is_running():
+            raise RuntimeError(f'topic {topic_name} not running')
+        subscriber = self.subscribe(topic_name, model=model)
+        subscribing_started = ThreadSafeEvent()
+        window = DequeTopicWindow(
+            topic_name=topic_name,
+            max_size=max_size,
+            model=model,
+            subscribing_started=subscribing_started,
+            subscriber=subscriber,
+            loop=self._event_loop,
+            logger=self._logger,
+        )
+
+        async def _consume_subscriber():
+            nonlocal window, subscriber
+            async with subscriber:
+                subscribing_started.set()
+                while subscriber.is_running():
+                    _model = await subscriber.poll_model()
+                    await window.add_item(_model)
+
+        consumer = self._event_loop.create_task(_consume_subscriber())
+        self._windows_tasks.add(consumer)
+
+        def _done_callback(t: asyncio.Task):
+            self._windows_tasks.discard(t)
+
+        consumer.add_done_callback(_done_callback)
+
+        return window
 
 
 class QueueBasedTopicProvider(Provider[TopicService]):

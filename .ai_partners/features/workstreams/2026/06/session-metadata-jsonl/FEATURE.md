@@ -4,7 +4,7 @@ status: draft
 priority: P0
 created: 2026-06-02
 updated: 2026-06-02
-depends: []
+depends: [storage-typed-protocols]
 milestone:
 description: >-
   Storage 层增加 JSONL 追加读写机制；Session 增加可运行时修改的元信息（标题、描述）；启动时

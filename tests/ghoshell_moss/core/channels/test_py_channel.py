@@ -803,3 +803,133 @@ async def test_py_channel_import_factory_return_none():
     main.build.import_channels(foo)
     async with main.bootstrap() as runtime:
         assert runtime.is_idle()
+
+
+# --- on_refresh_meta ---
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_basic():
+    """build.refresh_meta 注册的回调在 bootstrap 和每次 refresh_metas 时被调用。"""
+    main = PyChannel(name="main")
+    refreshed: list[int] = []
+
+    # 强制 dynamic，确保 static cache 不跳过 on_refresh_meta
+    main.build._dynamic = True
+
+    @main.build.refresh_meta
+    async def on_refresh() -> None:
+        refreshed.append(1)
+
+    async with main.bootstrap() as runtime:
+        # bootstrap 时已经触发了一次 refresh
+        before = len(refreshed)
+        assert before >= 1
+        await runtime.refresh_metas()
+        assert len(refreshed) == before + 1
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_multiple():
+    """多个 refresh_meta 回调并行执行。"""
+    main = PyChannel(name="main")
+    order: list[str] = []
+
+    @main.build.refresh_meta
+    async def first() -> None:
+        order.append("a")
+
+    @main.build.refresh_meta
+    async def second() -> None:
+        order.append("b")
+
+    async with main.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert sorted(order) == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_sync_callback():
+    """同步回调也能被正确包装。"""
+    main = PyChannel(name="main")
+    called: list[int] = []
+
+    @main.build.refresh_meta
+    def sync_refresh() -> None:
+        called.append(1)
+
+    async with main.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert called == [1]
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_exception_isolated():
+    """一个回调抛异常不影响其他回调，也不影响 refresh 流程。"""
+    main = PyChannel(name="main")
+    second_called: list[int] = []
+
+    @main.build.refresh_meta
+    async def broken() -> None:
+        raise RuntimeError("boom")
+
+    @main.build.refresh_meta
+    async def survivor() -> None:
+        second_called.append(1)
+
+    async with main.bootstrap() as runtime:
+        await runtime.refresh_metas()
+        assert second_called == [1]
+        assert runtime.is_running()
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_with_virtual_children():
+    """Hub 模式：on_refresh_meta 更新内部状态，get_virtual_children 返回最新。
+
+    需要 channel 是 dynamic 的，否则 static cache 会跳过 on_refresh_meta。
+    """
+    main = PyChannel(name="main")
+    child_a = PyChannel(name="a")
+    child_b = PyChannel(name="b")
+    children_list: list[PyChannel] = []
+
+    # 强制 dynamic，确保每轮 refresh 都走 on_refresh_meta
+    main.build._dynamic = True
+
+    @main.build.refresh_meta
+    async def prepare() -> None:
+        main.build._virtual_children.clear()
+        for ch in children_list:
+            main.build.add_virtual_channel(ch)
+
+    async with main.bootstrap() as runtime:
+        # bootstrap 已经刷新过一次，列表为空
+        assert len(runtime.virtual_sub_channels()) == 0
+
+        children_list.append(child_a)
+        await runtime.refresh_metas()
+        assert len(runtime.virtual_sub_channels()) == 1
+        assert "a" in runtime.virtual_sub_channels()
+
+        children_list.append(child_b)
+        await runtime.refresh_metas()
+        assert len(runtime.virtual_sub_channels()) == 2
+
+        children_list.clear()
+        await runtime.refresh_metas()
+        assert len(runtime.virtual_sub_channels()) == 0
+
+
+@pytest.mark.asyncio
+async def test_on_refresh_meta_py_builder_direct():
+    """PyChannelBuilder.refresh_meta 注册 + on_refresh_meta 调用。"""
+    builder = PyChannelBuilder(name="test")
+    called: list[int] = []
+
+    @builder.refresh_meta
+    async def on_refresh() -> None:
+        called.append(1)
+
+    await builder.on_refresh_meta()
+    assert called == [1]

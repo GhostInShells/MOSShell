@@ -4,8 +4,9 @@ from typing_extensions import Self
 from ghoshell_moss.message.message import Addition
 from ghoshell_moss.core.concepts.topic import (
     Publisher, Topic, Subscriber, TopicService, TopicModel, TOPIC_MODEL, TopicName,
-    TopicClosedError,
+    TopicClosedError, TopicWindow,
 )
+from ghoshell_moss.core.topic.window import DequeTopicWindow
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.contracts import get_moss_logger, LoggerItf
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -53,6 +54,7 @@ class ZenohTopicService(TopicService):
         self._started = False
         self._closing_event = ThreadSafeEvent()
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._windows_tasks: set[asyncio.Task] = set()
 
     def make_topic_key_expr(self, topic_name: str) -> str:
         return self._topic_key_expr.topic_key_expr(topic_name)
@@ -71,6 +73,17 @@ class ZenohTopicService(TopicService):
 
     async def close(self):
         self._closing_event.set()
+        if self._windows_tasks:
+            tasks = self._windows_tasks.copy()
+            self._windows_tasks.clear()
+            for task in tasks:
+                task.cancel()
+            done = await asyncio.gather(*tasks, return_exceptions=True)
+            for t in done:
+                if isinstance(t, asyncio.CancelledError):
+                    continue
+                elif isinstance(t, Exception):
+                    self._logger.exception("%s window task error", self._log_prefix)
 
     def is_running(self) -> bool:
         return self._started and not self._closing_event.is_set() and not self._session.is_closed()
@@ -96,6 +109,45 @@ class ZenohTopicService(TopicService):
             model=model,
             logger=self._logger,
         )
+
+    def create_window(
+            self,
+            topic_name: str,
+            *,
+            max_size: int,
+            model: type[TopicModel] | None = None,
+    ) -> TopicWindow:
+        if not self.is_running():
+            raise RuntimeError(f'topic {topic_name} not running')
+        subscriber = self.subscribe(topic_name, model=model)
+        subscribing_started = ThreadSafeEvent()
+        window = DequeTopicWindow(
+            topic_name=topic_name,
+            max_size=max_size,
+            model=model,
+            subscribing_started=subscribing_started,
+            subscriber=subscriber,
+            loop=self._event_loop,
+            logger=self._logger,
+        )
+
+        async def _consume_subscriber():
+            nonlocal window, subscriber
+            async with subscriber:
+                subscribing_started.set()
+                while subscriber.is_running():
+                    _model = await subscriber.poll_model()
+                    await window.add_item(_model)
+
+        consumer = self._event_loop.create_task(_consume_subscriber())
+        self._windows_tasks.add(consumer)
+
+        def _done_callback(t: asyncio.Task):
+            self._windows_tasks.discard(t)
+
+        consumer.add_done_callback(_done_callback)
+
+        return window
 
     def _check_running(self):
         if not self.is_running():

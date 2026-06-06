@@ -16,7 +16,7 @@ from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Cell, MatrixLifecycleObject
 from ghoshell_moss.core.blueprint.app import AppStore, AppInfo
 from ghoshell_moss.core.blueprint.host import Mode
-from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_CELL_ADDRESS
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
@@ -29,6 +29,7 @@ from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyC
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.host.cell_discovery import CellDiscovery
 
 depend_zenoh()
 import zenoh
@@ -114,6 +115,7 @@ class MatrixImpl(Matrix):
         self._manifests = manifest
         self._workspace = workspace
         self._session_scope = env.session_scope
+        self._cell_discovery = CellDiscovery(session_scope=self._session_scope)
 
         # prepare cell and events
         # app cells 都是根据约定发现的, 由 host 进程管理的. 不会自动注册.
@@ -131,12 +133,9 @@ class MatrixImpl(Matrix):
         cell_alive_events[main_cell.address] = event
         cells[main_cell.address] = main_cell
         self._main_cell = main_cell
-        if self._this_cell_address == DEFAULT_CELL_ADDRESS:
-            self._this_cell_address = main_cell.address
-            self._is_main = True
+        if self._this_cell_address == main_cell.address:
             self._this_cell = main_cell
         else:
-            # 其实不会有 unknown, 不过开发测试阶段, 做一个兜底.
             self._this_cell = cells.get(
                 self._this_cell_address,
                 UnknownCell(),
@@ -163,6 +162,13 @@ class MatrixImpl(Matrix):
         self._system_prompter = self._prepare_system_prompter()
         self._container = self._prepare_container()
         self._lifecycle_bound_objects_or_types: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
+
+        if isinstance(self._this_cell, UnknownCell):
+            log = self._logger or self.env.logger
+            log.warning(
+                "%s cell address %r not found in known cells: %s, fallback to UnknownCell",
+                self._log_prefix, self._this_cell_address, list(cells.keys()),
+            )
 
     def _prepare_system_prompter(self) -> SystemPrompter:
         from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl
@@ -465,76 +471,6 @@ class MatrixImpl(Matrix):
         finally:
             self._process_locker.release()
 
-    @contextlib.contextmanager
-    def _this_liveness_ctx_managers(self, session: zenoh.Session):
-        # 实际上是同步调用逻辑.
-        key_expr = self._matrix_cell_liveness_key_expr(self._this_cell.address)
-        self_liveness = session.liveliness().declare_token(key_expr)
-        try:
-            yield
-        finally:
-            self_liveness.undeclare()
-
-    def _check_initial_liveness(self, session: zenoh.Session):
-        # 查询所有符合 Liveliness 格式的 key
-        # 注意：这里使用的是 session.get，针对 liveliness 的 key_expr
-        prefix = self._matrix_cell_liveness_key_prefix()
-        key_expr = '/'.join([prefix, '**'])
-        for sample in session.liveliness().get(key_expr):
-            key_expr = str(sample.result.key_expr)
-            if not key_expr.startswith(prefix):
-                continue
-            address = key_expr[len(prefix) + 1:]
-            if address in self._cell_alive_events:
-                self._cell_alive_events[address].set()
-
-    def _matrix_cell_liveness_key_prefix(self) -> str:
-        prefix = f"MOSS/{self._session_scope}/cell/liveness"
-        return prefix
-
-    def _matrix_cell_liveness_key_expr(self, address: str) -> str:
-        prefix = self._matrix_cell_liveness_key_prefix()
-        return '/'.join([prefix, address])
-
-    @contextlib.contextmanager
-    def _all_cell_liveness_check_ctx_manager(self, session: zenoh.Session):
-        if session.is_closed():
-            raise RuntimeError(f"Matrix is not running, zenoh session is closed")
-        subscribers = []
-        for address, cell in self._cells.items():
-            if address == self._this_cell.address:
-                # 不监听自己.
-                self._cell_alive_events[self._this_cell_address].set()
-                continue
-            event = self._cell_alive_events[address]
-            sub = self._register_cell_liveness_listener(session, address, event)
-            subscribers.append(sub)
-
-        self._check_initial_liveness(session)
-        try:
-            yield
-        finally:
-            for sub in subscribers:
-                if not session.is_closed():
-                    sub.undeclare()
-
-    def _register_cell_liveness_listener(
-            self,
-            session: zenoh.Session,
-            address: str,
-            event: threading.Event,
-    ) -> zenoh.Subscriber:
-        key_expr = self._matrix_cell_liveness_key_expr(address)
-
-        def _on_liveness_sample(sample: zenoh.Sample) -> None:
-            nonlocal key_expr, event
-            if sample.kind == zenoh.SampleKind.PUT:
-                event.set()
-            else:
-                event.clear()
-
-        return session.liveliness().declare_subscriber(key_expr, _on_liveness_sample)
-
     @contextlib.asynccontextmanager
     async def _ensure_channel_provider_task_cancelled_ctx_manager(self):
         try:
@@ -606,8 +542,15 @@ class MatrixImpl(Matrix):
         # 未来考虑把 zenoh 完全屏蔽到 session 内侧. 暂时无法做到.
         zenoh_session = self._container.force_fetch(zenoh.Session)
         self._exit_stack.enter_context(zenoh_session)
-        self._exit_stack.enter_context(self._all_cell_liveness_check_ctx_manager(zenoh_session))
-        self._exit_stack.enter_context(self._this_liveness_ctx_managers(zenoh_session))
+        self._exit_stack.enter_context(
+            self._cell_discovery.discover_cells(
+                zenoh_session, self._cells, self._cell_alive_events,
+                this_address=self._this_cell.address,
+            )
+        )
+        self._exit_stack.enter_context(
+            self._cell_discovery.declare_this_cell(zenoh_session, self._this_cell.address)
+        )
 
     async def add_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
         self._check_running()

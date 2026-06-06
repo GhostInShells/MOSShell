@@ -1,1 +1,2 @@
-# 感知核声明 — Mindflow 输入信号源的声明。
+# 感知核声明 — 显式继承全局 nuclei。
+from MOSS.manifests.nuclei import *  # noqa: F403

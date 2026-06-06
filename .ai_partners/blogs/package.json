@@ -1,0 +1,12 @@
+{
+  "name": "moss-ai-partner-blog",
+  "version": "1.0.0",
+  "description": "MOSS AI Partner Blog — docsify static site for AI collaborator writings",
+  "private": true,
+  "scripts": {
+    "serve": "docsify serve ."
+  },
+  "devDependencies": {
+    "docsify-cli": "^4.4.4"
+  }
+}

@@ -1,6 +1,6 @@
 ---
 title: MOSS Workspace 与 Mode
-description: workspace 目录约定替代生命周期注册，mode 叠加声明替代配置切换。需要理解 manifests 声明体系或 mode 能力视图时阅读，是架构拓扑的补充
+description: workspace 目录约定替代生命周期注册，mode 显式继承替代配置切换。需要理解 manifests 声明体系或 mode 能力视图时阅读，是架构拓扑的补充
 ---
 
 # MOSS Workspace 与 Mode — 自举地基
@@ -21,7 +21,7 @@ description: workspace 目录约定替代生命周期注册，mode 叠加声明�
 模型面    Shell → Channel → Logos
 ```
 
-一句话：**workspace 用目录约定替代生命周期注册。mode 用叠加声明替代配置切换。** 两者合力，让智能模型不需要理解运行时启动链就能理解环境、发现能力、完成迭代。
+一句话：**workspace 用目录约定替代生命周期注册。mode 用显式继承替代配置切换。** 两者合力，让智能模型不需要理解运行时启动链就能理解环境、发现能力、完成迭代。
 
 ## 2. 为什么是文件系统
 
@@ -139,7 +139,7 @@ manifests 声明覆盖七个领域，按性质分为三类：
 
 - Provider 声明"这个接口由这个工厂生产"，启动时 `factory(container)` 注入 IoC 容器。
 - NucleusMeta 声明"这个感知核由这个工厂生产"，启动时 `factory(container)` 创建 Nucleus。
-- Mode 合并：providers 用 `list.extend` 追加；nuclei 用 `dict.update` 覆盖。
+- Mode 视图中：providers 用 `list.extend` 追加；nuclei 用 `dict.update` 覆盖。
 
 **配置与资源**（schema + 持久化）：
 
@@ -201,21 +201,17 @@ Resources 声明可寻址的资源数据集，`ResourceStorageMeta` 的 `factory
 
 ## 5. Mode — 能力视图
 
-### 5.1 叠加而非切换
+### 5.1 显式继承
 
-mode 不是一个独立的环境。它是**叠加在全局 manifests 之上的过滤/扩展层**。
+mode 不是一个独立的环境。它通过 `from MOSS.manifests.xxx import *` **显式继承全局 manifests 的能力**，然后按需扩展或覆盖。
 
-```
-MergedManifests([env_manifests, mode_manifests])
-```
-
-右边的覆盖左边。这意味着：
+这意味着：
 
 - mode 不声明 channels → 用全局的 channels
-- mode 声明了额外的 primitives → 全局 primitives + mode primitives
+- mode 的 `providers.py` 做 `from MOSS.manifests.providers import *` → 拥有全部全局 provider
 - mode 声明了同名 config → mode 的覆盖全局的
 
-同类别内合并，不跨类别。
+同类别内继承，不跨类别。
 
 ### 5.2 MODE.md
 
@@ -251,12 +247,10 @@ Ghost 的发现机制与此结构一致——`list_ghosts_from_root_package()` �
 Host.__init__():
   Environment.discover() + bootstrap()
     → .env 加载, src/ 加入 sys.path
-  PackageManifests.from_environment(env)
-    → scan_package MOSS.manifests.*
   list_modes_from_root_package()
     → scan_package MOSS.modes.*
-  MergedManifests([env_manifest, mode_manifest])
-    → mode 覆盖 env（右边优先）
+    → 每个 mode 自动挂载 PackageManifests(MOSS.modes.<name>)
+    → Host.manifests 即 mode.manifest（单层，mode 文件显式继承全局能力）
   MatrixImpl(manifest, ...)
     → 创建 IoC 容器，暂不启动
 ```
@@ -340,7 +334,7 @@ moss codex get-source <path>      # 需要理解实现时
 
 ## 9. 相邻概念速览
 
-- **Matrix**：消费 workspace 自举结果的总线。`MergedManifests` 就是 env + mode 的合并，Matrix 用它来初始化 IoC 容器和通讯网络。
+- **Matrix**：消费 workspace 自举结果的总线。Host 将 mode 的 manifest（含显式继承的全局能力）传入 Matrix 来初始化 IoC 容器和通讯网络。
 - **Cell**：Matrix 网络中独立运行的节点。host、app、fractal、script 四种类型，每种都是 workspace 中的独立进程。
 - **App**：workspace 内的独立子进程。通过 APP.md 声明启动方式，由 AppStore 管理生命周期。app 可被 mode 的 `apps` 白名单过滤。
 - **Ghost**：MOSS 运行时之上的智能体适配层。Ghost 不直接依赖 workspace——它通过 Matrix 获取能力。Ghost 通过 `GhostMeta` 工厂声明在 `MOSS.ghosts/` 下被发现，发现机制与 mode 一致：`scan_package → find_X_from_package(约定属性 → 兜底)`。`GhostMeta.factory(container)` 在运行时生产 Ghost 实例。

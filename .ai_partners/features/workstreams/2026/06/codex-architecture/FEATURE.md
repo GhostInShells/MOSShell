@@ -6,7 +6,7 @@ description: 创建 ghoshell_moss.architecture 模块作为核心抽象地图，
 milestone: null
 priority: P1
 status: in-progress
-status_note: architecture.py + CLI command done, docstrings pending
+status_note: architecture.py + CLI command done, docstrings pending. 2026-06-04: 5 friction points identified via TUI probe.
 title: Codex Architecture — 核心抽象地图
 updated: '2026-06-04'
 ---
@@ -131,3 +131,32 @@ AI 获得核心抽象地图 → 用 get-interface/get-source 深入
 2. blueprint 下多个模块无 docstring — 是否需要在本次 feature 中补齐？
 3. contracts/channels/message 是 package，是否需要展开到子模块级别？
 4. 模块的排序/分组方式有没有偏好？
+
+---
+
+## 2026-06-04: 自迭代链路验证 — 摩擦点发现
+
+在 TUI 架构探索任务中验证了 architecture 工具的实际使用路径。模型实例遇到未知领域（TUI 体系），未能使用 architecture 导航——因为它太粗糙帮不上。正确的行为应该是发现 architecture 里没有 TUI 条目 → 添加 → 未来实例受益。但这个循环每一步都走不通：
+
+### 摩擦点
+
+1. **命令输出不解释数据来源。** `moss codex architecture` 的输出里没有任何位置提到数据来自 `ghoshell_moss.architecture` 模块的手动策展 import 列表。模型看到输出后不知道如何贡献。
+
+2. **不提供自身路径。** 底部的 tips 说"用 get-source 看模块源码"，但不提 architecture 本身就是一个可探索的模块。没有 `ghoshell_moss.architecture` 这个入口，无法发现策展机制。
+
+3. **不提供文件相对路径。** 输出只显示短名如 `channel`、`host`，没有包路径或文件路径。无法从输出反向 grep 到源码位置。
+
+4. **输出无结构聚合。** architecture.py 中的 section 分组（Core Concepts / Blueprints / Contracts / Messages / Channels）在 CLI 输出中被 `sorted(arch.__dict__)` 完全打平为字母序，结构化信息全部丢失。也没有包路径来区分 `core.concepts.channel` 和 `channels`（顶层 package）的不同层次。
+
+5. **prompt 体系不引导贡献。** CLAUDE.md 说"用 architecture 替代 grep 做开发域导航"，但没说"发现缺口就加进去"。map 应该是活的。
+
+### 根因
+
+`codex_cli.py:codex_architecture()` (line 625-678) 的实现过于极简：遍历 `arch.__dict__` → 过滤 module → 按字母排序 → 输出。architecture.py 中的注释分组、包路径、文件路径全部丢弃。设计决策中"地图定位 → 工具深入"的两层模型是对的，但 CLI 输出没有给模型足够的信息来反向定位到策展源并参与维护。
+
+### 方向
+
+- CLI 输出增加分组展示（保留 architecture.py 的 section 结构）、完整包路径、文件相对路径
+- 输出中加注数据来源（`ghoshell_moss.architecture`）
+- CLAUDE.md 加一句"发现缺口时添加到 architecture.py"
+- 补齐 blueprint 模块的 docstring

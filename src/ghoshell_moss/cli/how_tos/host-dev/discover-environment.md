@@ -20,7 +20,7 @@ moss workspace where               # 当前在哪种 workspace？在哪？
 moss manifests explain             # 环境能力声明的自解释全景图
 ```
 
-`workspace where` 告诉你当前是项目 workspace 还是用户 workspace。`manifests explain` 是唯一的真相入口——输出所有声明类型、发现路径、检测方式、键语义、合并规则。它的输出随代码自动保持准确。
+`workspace where` 告诉你当前是项目 workspace 还是用户 workspace。`manifests explain` 是唯一的真相入口——输出所有声明类型、发现路径、检测方式、键语义。它的输出随代码自动保持准确。
 
 ### 第二步：扫描能力
 
@@ -46,7 +46,7 @@ moss apps list                     # 有哪些 app？运行状态？
 moss apps show <fullname>          # 某个 app 的详细信息
 ```
 
-Mode 决定了"当前环境看到什么能力"。不同 mode 的 app 白名单和 bringup 策略不同。`moss --mode <name> manifests explain` 可以看某个 mode 下的完整能力视图（全局 + mode 合并后）。
+Mode 决定了"当前环境看到什么能力"。不同 mode 的 app 白名单和 bringup 策略不同。`moss --mode <name> manifests explain` 可以看某个 mode 下的完整能力视图（mode 文件通过 `from MOSS.manifests.xxx import *` 显式继承全局能力）。
 
 ## 需要深入时
 

@@ -166,10 +166,50 @@ CLI is a thin convention enforcer. Core logic: `ghoshell_moss.core.codex._featur
 
 See [TOPOLOGY.md](TOPOLOGY.md).
 
+## Feature Discuss
+
+`discuss/` is an optional subdirectory within a feature. It captures the **collision**
+that produced the decisions — not the decisions themselves (those are in FEATURE.md).
+
+### What
+
+Raw material from design collisions: opposing positions, factual evidence,
+exploration trajectories, and the anchor points that resolved disputes.
+
+### Why
+
+FEATURE.md carries conclusions. Discuss carries the arguments that produced them.
+Without discuss, a future model incarnation reading Key Decisions cannot reconstruct
+*why* A beat B, or whether the conditions that favored B have since changed.
+
+For L2 (architecture design) and L3 (requirement-driven architecture), discuss
+preserves the reasoning chain. For L4 (problem definition), it preserves the
+original questions, assumptions, and refutations that shaped the problem framing.
+
+### How
+
+No strict structure. Two hard requirements:
+
+1. **Include original dialogue fragments verbatim.** Do not paraphrase. The exact
+   wording of a position or refutation carries nuance that summaries lose.
+   Attribute each fragment to its speaker.
+2. **The recording model appends a first-person perspective at the end.**
+   Reflection on the collision — what was learned, what surprised, what remains
+   uncertain. Clearly separated from the factual record.
+
+All discuss entries can be verified and appended later with follow-up conclusions.
+
+### When
+
+Not mandatory. Triggered when a discussion contains significant viewpoint
+collisions, back-and-forth that reshaped the design, or argument trajectories
+with L2–L4 value. The model proposes recording; the human decides.
+
 ## Related Conventions
 
 - **`.design/`**: Cross-feature architecture. Feature-specific → `feature/design/`.
 - **`.discuss/`**: Cross-domain discussions. Feature-specific → `feature/discuss/`.
+- **`.discuss/`**: Cross-domain discussions (see `.ai_partners/CLAUDE.md` for format). Feature-specific collision records → `feature/discuss/` (see Feature Discuss above).
 - **`CLAUDE.md`**: Should point to `features/` for model context discovery.
 
 ## What This Is Not

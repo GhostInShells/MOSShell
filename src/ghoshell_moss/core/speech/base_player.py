@@ -35,8 +35,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         safety_delay: float = 0.2,
     ):
         """
-        基于 PyAudio 的异步音频播放器实现
-        使用单独的线程处理阻塞的音频输出操作
+        使用单独的线程处理阻塞的音频输出操作。
         """
         self.logger = logger or logging.getLogger("moss")
         self._log_prefix = "[StreamAudioPlayer][%s] " % self.__class__.__name__
@@ -108,36 +107,26 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             self._estimated_end_time,
         )
 
-    @staticmethod
+    @classmethod
     def resample(
+        cls,
         audio_data: np.ndarray,
         *,
         origin_rate: int,
         target_rate: int,
     ) -> np.ndarray:
-        """使用 scipy.signal.resample 进行采样率转换
-
-        Args:
-            audio_data: 原始音频数据
-            origin_rate: 原始采样率
-            target_rate: 目标采样率
-
-        Returns:
-            np.ndarray: 重采样后的音频数据
-        """
-        from scipy import signal
+        """使用线性插值进行采样率转换。需要更好的重采样算法时覆写此方法。"""
         if origin_rate == target_rate:
             return audio_data
-
         if not isinstance(audio_data, np.ndarray):
             raise TypeError("audio_data must be numpy ndarray")
-
         if origin_rate <= 0 or target_rate <= 0:
             raise ValueError("sample rate must greater than 0")
 
-        number_of_samples = int(len(audio_data) * float(target_rate) / origin_rate)
-        resampled_audio_data: np.ndarray = signal.resample(audio_data, number_of_samples)
-        return resampled_audio_data.astype(np.int16)
+        target_len = int(len(audio_data) * target_rate / origin_rate)
+        x_orig = np.arange(len(audio_data))
+        x_target = np.linspace(0, len(audio_data) - 1, target_len)
+        return np.interp(x_target, x_orig, audio_data).astype(np.int16)
 
     def add(
         self,
@@ -160,6 +149,10 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             # 假设已经是 int16
             audio_data = chunk.astype(np.int16)
 
+        # 格式校验
+        if rate <= 0:
+            raise ValueError("rate must be greater than 0")
+
         # 计算持续时间
         duration = len(audio_data) / rate
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
@@ -176,7 +169,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                 self._estimated_end_time = current_time + duration
             else:
                 self._estimated_end_time += duration
-            return self._estimated_end_time
+        return self._estimated_end_time
 
     def _time_to_wait(self) -> float:
         time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()

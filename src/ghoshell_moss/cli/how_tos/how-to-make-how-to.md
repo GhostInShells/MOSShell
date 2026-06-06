@@ -83,18 +83,18 @@ moss codex blueprint channel_builder
 
 ### 3. 示例
 
-**约束**：优先引用项目中已有的实现或单元测试，而不是在文档里写完整示例：
+**约束**：不需要给出具体文件路径——路径随时会变，变了 howto 就过期。
+只需描述"哪里能找到参考代码"，模型会用 `codex` 工具自己定位。
 
-```bash
-# 查看已有的 channel 实现作为参考
-moss codex get-source ghoshell_moss.channels.speech_channel
-
-# 查看相关测试
-moss codex get-source tests.ghoshell_moss.core.channels.test_py_channel
+```markdown
+参考代码见 session parameter 的单元测试和集成测试。
 ```
 
+**原则**：howto 只描述接口和用法，实现细节让模型自己去源码里看。
+不要在 howto 里介绍底层是怎么实现的——那是源码和设计文档的职责。
+
 如果现有代码没有合适的示例，可以在文档里写几行关键代码片段。
-但如果示例需要详细展开（超过 20 行），应该把完整示例写到目标模块的测试文件或 `__init__.py` 的 docstring 里，然后文档引用它。
+但如果示例需要详细展开（超过 20 行），应该把完整示例写到测试文件里。
 
 ### 4. 常见问题
 
@@ -128,6 +128,14 @@ moss codex get-source tests.ghoshell_moss.core.channels.test_py_channel
 目标必须是可验证的、具体的操作结果，不能是"理解了 xxx"这样的模糊表述。
 
 ---
+
+## 原则
+
+写 howto 时，三条硬规则：
+
+1. **最小知识能干活**。读者看完文档就能上手。不要为了"全面"塞背景知识——多出来的内容去别的文档。
+2. **系统只有 interface 有资格作为唯一事实**。howto 引用源码时只引 interface（`get-interface`），不引实现（`get-source`）。实现会变，interface 是契约。
+3. **避免文档交叉引用命令**。提醒读者"可以看某文档"时，只提文档名，不要给完整的 `moss howtos read <path>` 命令。模型大概率已经读过这些文档，冗余命令浪费 token。
 
 ## 检查清单
 

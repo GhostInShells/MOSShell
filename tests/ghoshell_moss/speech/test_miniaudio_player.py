@@ -179,3 +179,20 @@ async def test_clear_interrupts_playback():
     assert done
 
     await player.close()
+
+
+def test_add_zero_rate_raises():
+    """rate <= 0 应抛出 ValueError."""
+    player = VirtualStreamPlayer(sample_rate=16000, channels=1)
+    audio = np.zeros(0, dtype=np.int16)
+    with pytest.raises(ValueError, match="rate must be greater than 0"):
+        player.add(audio, audio_type=AudioFormat.PCM_S16LE, rate=0)
+
+
+def test_add_zero_duration_returns_float():
+    """空音频片段 (duration==0) 应有返回值，不返回 None."""
+    player = VirtualStreamPlayer(sample_rate=16000, channels=1)
+    audio = np.zeros(0, dtype=np.int16)
+    result = player.add(audio, audio_type=AudioFormat.PCM_S16LE, rate=16000)
+    assert isinstance(result, float)
+    assert result >= 0.0

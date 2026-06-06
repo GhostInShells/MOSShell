@@ -1,1 +1,2 @@
-# 配置模型声明 — 声明配置的 schema 和默认值。
+# 配置模型声明 — 显式继承全局 configs。
+from MOSS.manifests.configs import *  # noqa: F403

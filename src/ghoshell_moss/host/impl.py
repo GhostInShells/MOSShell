@@ -10,7 +10,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.codex.discover import ScanError, ModuleManifest
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.host.manifests import PackageManifests, MergedManifests
+from ghoshell_moss.host.manifests import PackageManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.ghosts import list_ghosts_from_root_package
@@ -47,9 +47,6 @@ class Host(MossHost):
         self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()
-        self._env_manifest = PackageManifests.from_environment(
-            self.env, strict=False, errors=self._scan_manifest_errors,
-        )
 
         self._env_modes: dict[str, Mode] | None = None
         self._ghosts: dict[str, tuple[GhostMeta, ModuleManifest]] | None = None
@@ -62,7 +59,9 @@ class Host(MossHost):
             if moss_mode is None:
                 raise RuntimeError(f"Unknown mode: {moss_mode}")
         self._moss_mode: Mode = moss_mode
-        self._manifest = MergedManifests([self._env_manifest, self._moss_mode.manifest])
+        # manifest 直接取 mode 的——mode 的每个 manifest 文件显式继承全局
+        # (from MOSS.manifests.xxx import * + 扩展)，无需运行时合并。
+        self._manifest = self._moss_mode.manifest
         # 获取一个用来做环境发现的 apps.
         # 创建 container, 但是先不启动它.
         self._app_store = HostAppStore(

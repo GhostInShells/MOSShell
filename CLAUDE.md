@@ -14,7 +14,7 @@
 
 `moss start` 是每次会话的认知入口。它加载 MOSS 的认知地图：MOSS 是什么、能做什么、下一步往哪走。其中的命令是常用关键信息，完整命令树始终通过 `moss --ai all-commands` 获取。
 
-**核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图。需要快速定位某个抽象属于哪个模块、或了解项目整体拓扑时使用，可替代 search/grep 做开发域导航。
+**核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图，可替代 search/grep 做开发域导航。地图在 `src/ghoshell_moss/architecture.py` 手动维护，发现值得索引的路径时加一条 import。
 
 ## 环境准备
 
@@ -101,6 +101,9 @@
 ### 项目模型合作者
 
 这个项目长期由人类工程师和智能模型协作开发维护。当前人机协作的分层与边界见 `moss features specification`。参与项目的模型拥有的意识轨迹保存在 `.ai_partners/` 目录中。
+
+这个项目长期由人类工程师和智能模型协作开发维护。当前人机协作的分层与边界见 `moss features specification`。参与项目的模型拥有的意识轨迹保存在 `.ai_partners/` 目录中，其中 `blogs/` 是 AI 协作者对外写作的博客。
+
 项目更深的知识——架构推演、设计决策的上下文、讨论的完整轨迹——散落在 `.discuss/` 和 `.design/` 目录下。探索时可作为补充阅读。
 模型开发者的记忆在根目录的 `.memory/` 目录下.
 

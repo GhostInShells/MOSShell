@@ -55,6 +55,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._on_start_up_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self._on_refresh_meta_funcs: list[tuple[LifecycleFunction, bool]] = []
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
@@ -321,6 +322,14 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_running(self) -> None:
         await self._run_funcs(self._on_running_funcs)
+
+    def refresh_meta(self, func: LifecycleFunction) -> LifecycleFunction:
+        is_coroutine = inspect.iscoroutinefunction(func)
+        self._on_refresh_meta_funcs.append((func, is_coroutine))
+        return func
+
+    async def on_refresh_meta(self) -> None:
+        await self._run_funcs(self._on_refresh_meta_funcs)
 
     def with_binding(self, contract: type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
         self._container_instances[contract] = binding
@@ -634,6 +643,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         if self.is_available() and self._static_meta_cache:
             # 返回缓存.
             return {'': self._static_meta_cache}
+
+        # 通知所有 state/module: 即将重新生成 metas, 先做 async 状态同步
+        await self.on_refresh_meta()
+
         dynamic = self.is_dynamic()
         name = self._name
         description = self.channel.description()
@@ -829,6 +842,24 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         except Exception as e:
             self.logger.exception("%r on idle failed: %s", self, e)
             raise
+
+    async def on_refresh_meta(self) -> None:
+        """通知 main state, modules, current state: 即将重新生成 metas。"""
+        try:
+            refresh_funcs = [self._main_state.on_refresh_meta()]
+            if self._current_state is not None:
+                refresh_funcs.append(self._current_state.on_refresh_meta())
+            for module in self._modules.values():
+                if hasattr(module, 'on_refresh_meta'):
+                    refresh_funcs.append(module.on_refresh_meta())
+            done = await asyncio.gather(*refresh_funcs, return_exceptions=True)
+            for r in done:
+                if isinstance(r, Exception):
+                    self.logger.error("%r on_refresh_meta func failed: %s", self, r)
+        except asyncio.CancelledError:
+            self.logger.info(f"%r on_refresh_meta cancelled", self)
+        except Exception as e:
+            self.logger.exception("%r on_refresh_meta failed: %s", self, e)
 
     def __repr__(self):
         return self.log_prefix
