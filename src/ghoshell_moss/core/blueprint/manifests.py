@@ -89,10 +89,22 @@ class TopicInfo:
 class ConfigInfo:
     """
     Configuration model information
+
+    Two registration semantics:
+
+    - is_override=False (default): Type[ConfigType] — system default.
+      Bootstrap reads YAML file via get_or_create(); writes default only if
+      the file does not exist.  File-first persistence.
+
+    - is_override=True: ConfigType instance — runtime override.
+      Bootstrap only calls set_config(override=False) — memory cache only,
+      never touches the YAML file.  Mode-level overrides use this so they
+      cannot accidentally pollute workspace/configs/.
     """
-    found_import_path: str  # 发现 config 的 module name, 如 MOSS.manifests.topics
-    found_at_file: str  # 发现 config 的 module filename
-    config: ConfigType  # config 是一个实例, 一定要有默认值. 真实的值会被 config store 以 yaml 保存到目录里. 不过那是运行时配置.
+    found_import_path: str  # module where this config/class was discovered
+    found_at_file: str      # file where it was discovered
+    config: ConfigType      # instance (always instantiated before entering ConfigInfo)
+    is_override: bool = False  # True = memory-only override, False = file persistence
 
     @property
     def schema(self) -> ConfigSchema:
@@ -290,8 +302,12 @@ class Manifests:
 
     def configs(self) -> dict[str, ConfigInfo]:
         """
-        环境中发现的配置实例. Runtime 启动时, 如果发现配置不存在, 会初始化它.
-        通过 ghoshell_moss.contracts.ConfigType 实例发现.
+        环境中发现的配置声明. 两种注册语义：
+
+        - Type[ConfigType]（类引用）→ 文件持久化，get_or_create() 读 YAML/写默认
+        - ConfigType 实例（带值的实例变量）→ 内存覆盖，set_config() 不写磁盘
+
+        通过 issubclass(obj, ConfigType) 和 isinstance(obj, ConfigType) 区分。
         """
         return {}
 
@@ -339,7 +355,7 @@ manifests 是 MOSS 环境中所有能力的自解释声明。Matrix 启动时自
 |------|------|-------------|---------|
 | **providers** | IoC 依赖注入：声明"这个接口由这个工厂生产" | `MOSS.manifests.providers` | `isinstance(obj, Provider)`，以 `contract()` 的 import path 为键 |
 | **channels** | 主 Channel：扫描 `__main__` channel 作为 CTML shell 的根。所有 import_channels / with_state / with_module 组合在 manifest 定义时完成 | `MOSS.manifests.channels` | `isinstance(obj, Channel)`，取 `name == "__main__"` 的实例 |
-| **configs** | 配置模型：声明配置的 schema 和默认值 | `MOSS.manifests.configs` | `isinstance(obj, ConfigType)`，以 `ConfigType.conf_name()` 为键 |
+| **configs** | 配置模型：声明配置的 schema 和默认值。类引用 = 文件持久化，实例变量 = 内存覆盖 | `MOSS.manifests.configs` | `issubclass(obj, ConfigType)`（类型注册）或 `isinstance(obj, ConfigType)`（实例覆盖），以 `conf_name()` 为键 |
 | **topics** | 事件协议：约束可通讯的 topic 类型 | `MOSS.manifests.topics` | `isinstance(obj, TopicModel)` 或 `isinstance(obj, TopicSchema)`，以 topic_name 为键 |
 | **resources** | 资源存储：声明可寻址的资源数据集 | `MOSS.manifests.resources` | `isinstance(obj, ResourceStorageMeta)`，以 `scheme://host/path` 为键 |
 | **nuclei** | 感知核：Mindflow 输入信号源的声明 | `MOSS.manifests.nuclei` | `isinstance(obj, NucleusMeta)`，以 `NucleusMeta.name()` 为键 |

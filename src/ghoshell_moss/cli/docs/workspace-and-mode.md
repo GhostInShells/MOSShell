@@ -145,12 +145,13 @@ manifests 声明覆盖七个领域，按性质分为三类：
 
 | 类型 | 检测方式 | 键 |
 |------|---------|---|
-| **configs** | `isinstance(obj, ConfigType)` | `ConfigType.conf_name()` |
+| **configs** | `issubclass(obj, ConfigType)` 或 `isinstance(obj, ConfigType)` | `ConfigType.conf_name()` |
 | **resources** | `isinstance(obj, ResourceStorageMeta)` | `{scheme}:{host}` |
 
-Configs 有两种独立机制：
-1. `ConfigType` 类 → 文件持久化。`ConfigStore.get_or_create()` 优先从 `workspace/configs/{conf_name}.yml` 读取，文件不存在才用传入实例做默认值。
-2. `ConfigStore.set_config(conf, override=False)` → 纯内存覆盖，不写磁盘。mode 用此机制创建 mode 专属配置。
+Configs 有两种注册语义，由 scan 逻辑自动区分：
+
+1. `Type[ConfigType]`（类引用）→ 文件持久化。`ConfigStore.get_or_create()` 优先从 `workspace/configs/{conf_name}.yml` 读取，文件不存在才用类的默认构造写入。这是系统默认配置。
+2. `ConfigType` 实例（带值的实例变量）→ 内存覆盖。`ConfigStore.set_config(override=False)` 只写内存缓存，绝不触碰 YAML 文件。mode 用此语义覆盖全局默认值（如切换音色），不会污染 workspace/configs/。
 
 Resources 声明可寻址的资源数据集，`ResourceStorageMeta` 的 `factory()` 生产 `ResourceStorage`。
 

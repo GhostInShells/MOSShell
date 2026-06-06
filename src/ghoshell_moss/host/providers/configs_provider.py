@@ -34,4 +34,7 @@ class HostEnvConfigStoreProvider(BootstrapProvider):
         manifests = container.get(Manifests)
         if manifests:
             for config_info in manifests.configs().values():
-                this.get_or_create(config_info.config)
+                if config_info.is_override:
+                    this.set_config(config_info.config)
+                else:
+                    this.get_or_create(config_info.config)

@@ -260,9 +260,10 @@ class MatrixImpl(Matrix):
             # All non-host cells (app, script, future) share the connector config.
             default_providers.append(WorkspaceZenohProvider("zenoh_config_cell.json5"))
 
-        # 注册 configs
+        # 注册 configs — 仅类型注册（is_override=False），文件持久化
+        # 实例覆盖（is_override=True）在 lifecycle 中通过 set_config 内存写入
         default_providers.append(WorkspaceYamlConfigStoreProvider(
-            *[info.config for info in self.manifests.configs().values()]
+            *[info.config for info in self.manifests.configs().values() if not info.is_override]
         ))
         # 注册 session.
         default_providers.append(HostSessionProvider())
@@ -456,8 +457,10 @@ class MatrixImpl(Matrix):
         self._container.bootstrap()
         try:
             for config_info in self.manifests.configs().values():
-                self.configs.set_config(config_info.config)
-                self.configs.get_or_create(config_info.config)
+                if config_info.is_override:
+                    self.configs.set_config(config_info.config)
+                else:
+                    self.configs.get_or_create(config_info.config)
             yield
         finally:
             self._container.shutdown()

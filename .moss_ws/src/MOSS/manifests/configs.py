@@ -1,25 +1,20 @@
-# MOSS Config manifest.
+# MOSS Config manifest — 全局默认配置注册。
 #
-# 配置声明有两种独立机制：
+# 两种注册语义（由 scan 逻辑自动区分）：
 #
-# 1. ConfigType 类 → 文件持久化（schema + 文件路径绑定）
-#    ConfigType 子类定义了配置的 schema。实例化后通过 ConfigStore.get_or_create()
-#    读取 workspace/configs/{conf_name}.yml。文件存在则从文件读，不存在则用传入
-#    实例做默认值写入文件。这是"文件优先"的持久化配置。
+# 1. Type[ConfigType] — 模块级类引用 → 系统默认，文件持久化。
+#    Bootstrap 时 get_or_create()：读取 workspace/configs/{conf_name}.yml，
+#    文件存在则读，不存在则以类的默认构造写入文件。
 #
-# 2. Config 实例 → 内存覆盖（不写文件）
-#    ConfigStore.set_config(conf, override=False) 只更新内存缓存，不写磁盘。
-#    mode 可以用此机制创建 mode 专属的覆盖值，而不修改全局配置文件。
-#    mode 可通过显式继承 + 覆盖同键实现配置定制。
+# 2. ConfigType 实例 — 模块级实例变量 → 运行时覆盖，仅内存。
+#    Bootstrap 时 set_config(override=False)：写入内存缓存，绝不触碰 YAML 文件。
+#    mode 用此语义覆盖全局默认值（如切换默认音色），不会污染 workspace/configs/。
 #
-# 模式约定：
-#   - 全局 manifests/configs.py：实例化 ConfigType，作为默认 schema + 默认值
-#   - mode configs.py：只实例化需要覆盖的配置，运行时 set_config 内存覆盖
+# 约定：
+#   - 全局 manifests/configs.py：放类（类型注册），不在此处实例化带值的覆盖
+#   - mode configs.py：通过 from MOSS.manifests.configs import * 继承类，
+#     然后实例化需要覆盖的配置（相同 conf_name() → is_override=True）
 #   - 每个 ConfigType 子类必须实现 conf_name() 返回唯一标识（即文件名）
 
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerConfig
 from ghoshell_moss.host.providers.tts_service_provider import TTSManagerConfig
-
-tts_config = TTSManagerConfig()
-
-audio_player_config = AudioPlayerConfig()

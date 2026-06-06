@@ -26,7 +26,7 @@ moss manifests contracts          # IoC 中已绑定的接口
 |------|------|---------|------|---|
 | Provider | `providers.py` | `my_provider = MyProvider()` | `isinstance(obj, Provider)` | `contract()` import path |
 | Channel | `channels.py` | `main = new_shell_main_channel()` | `isinstance + name == "__main__"` | `"__main__"` |
-| Config | `configs.py` | `tts_config = TTSManagerConfig()` | `isinstance(obj, ConfigType)` | `conf_name()` |
+| Config | `configs.py` | 类引用: `TTSManagerConfig` 或实例覆盖: `tts = TTSManagerConfig(...)` | `issubclass(obj, ConfigType)` 或 `isinstance(obj, ConfigType)` | `conf_name()` |
 | Nucleus | `nuclei.py` | `factory = ExampleNucleusMeta()` | `isinstance(obj, NucleusMeta)` | `name()` |
 | Resource | `resources.py` | `meta = LocalImageResourceMeta()` | `isinstance(obj, ResourceStorageMeta)` | `{scheme}:{host}` |
 | Topic | `topics.py` | 定义或 import `TopicModel` 子类 | `issubclass(obj, TopicModel)` | `topic_name` |
@@ -81,20 +81,28 @@ main.with_module(SpeechChannelModule())
 
 深入：`moss codex blueprint channel_builder`
 
-## 注册 Config（两种独立机制）
+## 注册 Config（两种注册语义）
 
-放在 `MOSS/manifests/configs.py`：
+扫描逻辑自动区分类的类型和实例变量：
 
 ```python
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerConfig
 
-audio_player_config = AudioPlayerConfig()   # 实例化即声明
+# 1. Type[ConfigType] 类引用 → 文件持久化（系统默认）
+#    放类本身，不实例化。Bootstrap 时 get_or_create() 读 YAML/写默认。
+AudioPlayerConfig = AudioPlayerConfig  # re-export
+
+# 2. ConfigType 实例 → 内存覆盖（运行时覆盖）
+#    实例化并带值。Bootstrap 时仅 set_config(override=False)，不写磁盘。
+tts_override = TTSManagerConfig(default_speaker="大壹")
 ```
 
-Config 有两种独立的使用方式：
+两种语义：
 
-1. **文件持久化**：`ConfigStore.get_or_create(config)` — 优先从 `workspace/configs/{conf_name}.yml` 读文件，不存在才用实例的默认值写文件。文件是 truth source。
-2. **内存覆盖**：`ConfigStore.set_config(config, override=False)` — 只更新内存缓存，不写磁盘。mode 用此机制做 mode 专属配置。
+1. **类引用（Type[ConfigType]）**：`ConfigStore.get_or_create(config)` — 优先从 `workspace/configs/{conf_name}.yml` 读文件，不存在才用类的默认构造写文件。文件是 truth source。
+2. **实例变量（ConfigType 实例）**：`ConfigStore.set_config(config, override=False)` — 只更新内存缓存，不写磁盘。mode 用此语义覆盖全局默认值，不会污染 workspace/configs/。
+
+全局 manifest 放类，mode manifest 通过 `from MOSS.manifests.configs import *` 继承类，然后实例化需要覆盖的配置。
 
 每个 ConfigType 子类必须实现 `conf_name()` 返回唯一标识（即 YAML 文件名）。
 
