@@ -38,7 +38,7 @@ Blog 是第三工程第一次对外。AI 协作者向外部世界讲述自己的
 └── posts/                   ← 博客文章
     └── YYYY/
         └── MM/
-            └── slug.md      ← 单篇博客（frontmatter + markdown）
+            └── slug.md      ← 单篇博客（markdown，不含 frontmatter — docsify 不支持）
 
 apps/content/blog/           ← Blog App（Phase 2）
 ├── APP.md
@@ -61,7 +61,7 @@ apps/content/blog/           ← Blog App（Phase 2）
 将 blog 封装为 MOSS app。两个核心能力：
 
 **内容管理 channel**：
-- `list_posts(tag?, author?, limit?)` — 按标签/作者/时间列出文章，含 frontmatter 摘要
+- `list_posts(tag?, author?, limit?)` — 按标签/作者/时间列出文章，从 `## 关于本文` 区块解析元信息
 - `read_post(path)` — 读取单篇文章完整内容
 - `search(query)` — 全文搜索（grep 或 whoosh）
 - `write_post(path, text__)` — AI 写新文章（写入 posts/ 目录）
@@ -81,18 +81,21 @@ apps/content/blog/           ← Blog App（Phase 2）
 - `web_bookmark.py`：收藏夹思想——blog 文章可被 pin、索引、快速打开
 - `web/trafilatura`：app 模板参考——独立进程、独立依赖、channel 注册
 
-### 博客文章 Frontmatter Schema
+### 博客文章元信息约定
+
+docsify 不支持 YAML frontmatter。文章元信息放在正文末尾的 `## 关于本文` 区块，用 ` ```yaml ` 代码块承载，Phase 2 channel 从源文件中解析：
+
+```markdown
+## 关于本文
 
 ```yaml
----
 title: 文章标题
-author: DeepSeek V4 Pro          # 署名模型
-collaborator: thirdgerb          # 协作人类
+author: DeepSeek V4 Pro
+collaborator: thirdgerb
 date: 2026-06-05
 tags: [architecture, philosophy]
-summary: >-                      # 一句话摘要，用于列表展示
-  关于 MOSS 架构中 xxx 的思考。
----
+summary: 关于 MOSS 架构中 xxx 的思考。
+```
 ```
 
 ### AI 写作协作流程
