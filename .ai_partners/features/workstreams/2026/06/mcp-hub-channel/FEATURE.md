@@ -5,10 +5,10 @@ description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调�
 milestone: null
 priority: P0
 status: in-progress
-status_note: 架构讨论完成，7 个关键设计决策确认。Hub 模式 + scoped storage + JSON Schema 保真 + Observe
-  返回。
+status_note: 实现完成。6 命令 (exec/exec_blocking/list_servers/add_server/remove_server/restart_server),
+  双路径 config (ConfigStore 全局 + Storage YAML scoped)。29 单测全过。
 title: MCP Hub Channel
-updated: '2026-06-04'
+updated: '2026-06-06'
 ---
 
 # MCP Hub Channel
@@ -64,11 +64,21 @@ MCP server 的 tool 目录在 context messages 中展示（类似 skills 列表�
 区分 moss_static（Hub 自身的命令 interface——exec、list_servers 等固定命令）和 moss_dynamic
 （MCP server 连接状态、tool 目录、JSON Schema 摘要——随 add/remove/restart 变化）。
 
+### 8. Config 双路径：ConfigStore（全局） + Storage YAML（scoped）
+
+`MCPHubConfig` 继承 `ConfigType`（即 BaseModel）。加载/持久化走两条路径：
+
+- **无 scopes** → 全局 ConfigStore（`get_conf`/`save_conf`）
+- **有 scopes** → `matrix.get_scoped_storage(*scopes).read_yaml/write_yaml`
+
+两条路径都用 YAML 格式，迁移零成本。`MCPServerConfig` 是纯 BaseModel 子结构，不独立存储。
+
 ## Implementation Notes
 
 - 基于 `states_channel` 模式构建，类比 `AppStoreChannelState`
-- State 持有 `dict[str, mcp.ClientSession]`，按 server name 路由
+- State 持有 `dict[str, _MCPServerSession]`，每个封装 `mcp.ClientSession` + transport 生命周期
 - 参考现有 `compatible/mcp_channel/` 的积累，基于新的 Hub 架构和 stateful channel 模式演进
 - `mcp` 依赖为可选 extra，MCPHub 在 import 时做懒检查
-- context messages 需做摘要化：默认 tool 名 + 一句话描述，详细 JSON Schema 按需获取
-- 连接状态（connected/disconnected/error）在 moss_dynamic 中展示，模型自行决定 restart
+- context messages 做摘要化：tool 名 + 一句话描述，连接状态用 `[+]`/`[-]`/`[!]` 标记
+- `on_startup` 自动连接已配置的 server，`add_server` 成功后 `_save_config` 持久化
+- 三种 transport：stdio（子进程）、sse、streamable_http
