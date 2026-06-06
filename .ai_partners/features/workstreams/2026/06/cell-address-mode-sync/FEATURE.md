@@ -6,10 +6,10 @@ description: 'Fix: Environment.set_mode() must sync _cell_address so MatrixImpl 
   up by a mode.'
 milestone: null
 priority: P1
-status: in-progress
+status: completed
 status_note: root cause identified, fix applied to Environment.set_mode()
 title: Cell Address Mode Sync
-updated: '2026-06-04'
+updated: '2026-06-07'
 ---
 
 # Cell Address Mode Sync

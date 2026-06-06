@@ -1,14 +1,14 @@
 ---
-title: App Dev Ergonomics — app 模板增强、误用警告、测试与依赖治理
-status: in-progress
-priority: P0
 created: 2026-06-04
-updated: 2026-06-04
-depends: [web-fetch-apps]
-milestone:
-description: >-
-  修复 web-fetch-apps 开发中暴露的 4 个摩擦点：app 模板过于 minimal、uv sync 污染主 venv、
-  测试目录约定缺失、channel 测试套件缺失。入体系：stubs/app、start.md、howtos。
+depends:
+- web-fetch-apps
+description: 修复 web-fetch-apps 开发中暴露的 4 个摩擦点：app 模板过于 minimal、uv sync 污染主 venv、 测试目录约定缺失、channel
+  测试套件缺失。入体系：stubs/app、start.md、howtos。
+milestone: null
+priority: P0
+status: completed
+title: App Dev Ergonomics — app 模板增强、误用警告、测试与依赖治理
+updated: '2026-06-07'
 ---
 
 # App Dev Ergonomics
