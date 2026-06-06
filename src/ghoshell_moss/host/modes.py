@@ -1,6 +1,6 @@
 from ghoshell_moss.core.blueprint.host import Mode
+from ghoshell_moss.core.blueprint.environment import Environment, MODE_STUB_PACKAGE
 from ghoshell_moss.core.codex.discover import scan_package, ScanError
-from ghoshell_moss.core.blueprint.environment import MODE_STUB_PACKAGE
 from importlib import import_module
 from pathlib import Path
 from .manifests import PackageManifests
@@ -101,12 +101,15 @@ def list_modes_from_root_package(
 def _ensure_manifest_to_mode(package_path: str, mode: Mode) -> Mode:
     """
     如果 Mode 还没有关联 Manifest，尝试为其绑定一个 PackageManifest。
+    CTML versions 从 Environment 扫描，mode 不会独立覆盖 ctml_versions。
     """
     if mode.__manifest__ is None:
-        # 使用当前发现该 Mode 的包路径来初始化资源扫描
         if mode.import_path:
             package_path = mode.import_path
-        mode.with_manifest(PackageManifests(package_path))
+        env = Environment.discover()
+        env.bootstrap()
+        ctml_versions = PackageManifests.find_ctml_versions_from_env(env=env)
+        mode.with_manifest(PackageManifests(package_path, ctml_versions=ctml_versions))
     return mode
 
 

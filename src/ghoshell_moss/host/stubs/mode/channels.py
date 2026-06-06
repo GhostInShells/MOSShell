@@ -1,5 +1,5 @@
 # Mode 的 main channel。
-# MergedManifests 合并时 mode 的 __main__ 完全覆盖全局 main channel。
+# Mode 的 __main__ channel 是唯一的生效 main channel。
 #
 # 两种构建模式：
 #

@@ -134,6 +134,14 @@ function, it returns the structured interface contract (signatures, fields,
 type annotations) in ~5 seconds. Fall back to `moss codex get-source` only
 when you need a minimal, un-reflected view of the code.
 
+### Common friction
+
+- Using a moss command without knowing its arguments — `--help` and `all-commands` exist.
+- Proceeding without key knowledge — docs, howtos, codex, and architecture are the exploration toolkit.
+- Grepping or searching for a class/module location for more than a minute — run `moss codex architecture` first. If the path you need isn't there, add it.
+- Skipping the CLI `create` commands for features, apps, or modes — hand-made files miss conventions.
+- Forgetting `features set-status` before commit, or not reading `features specification`.
+
 ---
 
 ## Core Commands
@@ -168,6 +176,10 @@ moss codex channeltypes    # bundled channel catalog (app-level reference)
 `architecture` is the map: which module holds what. When you need to find
 where a concept lives, start there instead of grepping. Then use
 `get-interface` or `get-source` with a name from the map to dive in.
+
+The map is hand-curated in `ghoshell_moss.architecture`. If you find a
+useful path not listed, add an ``import ... as ...`` line — it costs
+10 seconds and saves the next model instance 2 minutes of grep.
 
 ### ctml — the streaming control language
 

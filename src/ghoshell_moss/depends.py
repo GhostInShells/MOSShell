@@ -24,13 +24,6 @@ def depend_cli():
         raise ImportError(f"Depend typer, please install by 'pip install ghoshell_moss[host]'")
 
 
-def depend_pyaudio():
-    try:
-        import pyaudio
-    except ImportError:
-        raise ImportError(f"Depend pyaudio, please install by 'pip install ghoshell_moss[audio]'")
-
-
 def depend_pydantic_ai():
     try:
         import pydantic_ai

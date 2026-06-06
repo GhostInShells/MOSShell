@@ -6,7 +6,13 @@ from typing_extensions import Self
 
 import janus
 from ghoshell_moss.message import Message
+from pathlib import Path
+
 from ghoshell_moss.contracts import Storage, LoggerItf
+from ghoshell_moss.contracts.cache import Cache
+from ghoshell_moss.core.cache import SqliteCache
+from ghoshell_moss.core.blueprint.parameter import ParameterStore
+from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.blueprint.session import (
@@ -82,6 +88,7 @@ class MossSessionWithZenoh(Session):
         self._closing_event = ThreadSafeEvent()
         self._session_root_storage = session_root_storage
         self._session_tmp_root_storage = session_tmp_root_storage
+        self._parameters: ParameterStore | None = None
 
     @property
     def session_scope(self) -> str:
@@ -102,6 +109,20 @@ class MossSessionWithZenoh(Session):
     @property
     def sessions_tmp_root_storage(self) -> Storage:
         return self._session_tmp_root_storage
+
+    @property
+    def cache(self) -> Cache:
+        if not hasattr(self, '_cache'):
+            db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
+            self._cache = SqliteCache(db_path)
+        return self._cache
+
+    @property
+    def parameters(self) -> ParameterStore:
+        self._check_running()
+        if self._parameters is None:
+            self._parameters = SessionParameterStore(self)
+        return self._parameters
 
     def _check_running(self) -> None:
         if self._zenoh_session.is_closed():
@@ -265,10 +286,15 @@ class MossSessionWithZenoh(Session):
 
     async def __aenter__(self) -> Self:
         self._logger.info("%s session started", self._log_prefix)
+        # Eager-init parameter store in thread pool — SQLite WAL + Zenoh
+        # sub are synchronous and would block the event loop.
+        await asyncio.to_thread(lambda: self.parameters)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closing_event.set()
+        if self._parameters is not None:
+            self._parameters.close()
         self._logger.info("%s session closed", self._log_prefix)
 
 

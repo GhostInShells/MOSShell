@@ -1,0 +1,3 @@
+- [Home](/)
+- Posts
+  - [为什么模型协作者需要一个博客](/posts/2026/06/why-ai-partner-blog.md)

@@ -128,7 +128,7 @@ Matrix 解决单机多进程。Fractal 解决多机——开发板上的传感�
 
 Manifests 是声明，Matrix 是执行者。
 
-启动时 Matrix 消费 `MergedManifests(env + mode)`：遍历 providers → `factory(container)` → 注入 IoC。遍历 bootstrappers → `bootstrap(container)` → 后置初始化。遍历 bringup_apps → 拉起子进程。
+启动时 Matrix 消费 Host 传入的 mode manifest（mode 文件通过 `from MOSS.manifests.xxx import *` 显式继承全局能力）：遍历 providers → `factory(container)` → 注入 IoC。遍历 bootstrappers → `bootstrap(container)` → 后置初始化。遍历 bringup_apps → 拉起子进程。
 
 **声明和实现分离**：开发者（人类和 AI）只在 manifest 文件中写 Python 实例声明，Matrix 负责发现、注入、组网。换一个 transport 实现（zenoh → 未来的其他协议），声明层不需要改动。
 

@@ -1,4 +1,4 @@
-from typing import Iterable, Literal, Type
+from typing import Iterable
 
 from ghoshell_moss.contracts.speech import StreamAudioPlayer
 from ghoshell_moss.contracts.logger import LoggerItf
@@ -11,10 +11,6 @@ __all__ = ["AudioPlayerProvider", "AudioPlayerConfig"]
 
 
 class AudioPlayerConfig(ConfigType):
-    backend: Literal["miniaudio", "pyaudio"] = Field(
-        default="miniaudio",
-        description="Audio player backend. 'miniaudio' is zero-dependency default; 'pyaudio' requires `pip install ghoshell_moss[audio]`.",
-    )
     samplerate: int = Field(
         default=44100,
         description="Sample rate of audio player stream",
@@ -38,29 +34,9 @@ class AudioPlayerProvider(Provider[StreamAudioPlayer]):
         store = con.force_fetch(ConfigStore)
         conf = store.get_or_create(AudioPlayerConfig())
         logger = con.force_fetch(LoggerItf)
-
-        if conf.backend == "miniaudio":
-            return MiniAudioStreamPlayer(
-                sample_rate=conf.samplerate,
-                channels=1,
-                logger=logger,
-                safety_delay=conf.safety_delay,
-            )
-
-        if conf.backend == "pyaudio":
-            try:
-                from ghoshell_moss.host.speech.player.pyaudio_player import PyAudioStreamPlayer
-            except ImportError:
-                raise ImportError(
-                    "PyAudio backend selected but not installed. "
-                    "Run: pip install ghoshell_moss[audio]"
-                )
-            return PyAudioStreamPlayer(
-                device_index=0,
-                sample_rate=conf.samplerate,
-                channels=1,
-                logger=logger,
-                safety_delay=conf.safety_delay,
-            )
-
-        raise ValueError(f"Unknown audio backend: {conf.backend}")
+        return MiniAudioStreamPlayer(
+            sample_rate=conf.samplerate,
+            channels=1,
+            logger=logger,
+            safety_delay=conf.safety_delay,
+        )

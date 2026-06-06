@@ -7,11 +7,10 @@ description: Session 通讯总线从纯 ephemeral 向 stateful 演进——补 K
   六种跨进程原语，统一文件存储治理，为 Ghost 和应用开发提供开箱通讯基线。
 milestone: null
 priority: P0
-status: draft
-status_note: Initial architecture draft — captured all discussion on session comm
-  bus primitives
+status: in-progress
+status_note: "Parameter + Journal 完成 (Journal 即 Storage typed JSONL 方法，不配 pub 通知)。KVCache/ObservableStorage 移除（非 Session 通讯原语）。Actor + Future pending。"
 title: Session Communication Bus — 跨进程通讯基线演进
-updated: '2026-05-29'
+updated: '2026-06-05'
 ---
 
 # Session Communication Bus
@@ -48,19 +47,21 @@ Session (通讯总线)
 │   │   ├── resources/                   ← session 级资源
 │   │   └── data/                        ← 通用持久存储 (现有 Storage)
 │   └── .tmp                              ← workspace/runtime/sessions/<sid>/
-│       ├── cache.db                     ← diskcache
+│       ├── cache.db                     ← sqlite3
 │       └── files/                       ← 临时文件
 │
 └── meta index                           ← sessions/meta.jsonl (matrix 管理)
     └── {created, closed, crashed, reclaimed} 事件
 
 新增通讯原语:
-├── ObservableStorage                    ← Storage + zenoh 变更通知
-├── Journal (JSONL)                     ← 追加/tail/offset
-├── KVCache                              ← diskcache + TTL + remember
-├── ParameterStore                       ← 版本化 KV + 乐观锁 + watch
+├── Journal (JSONL)                     ← 追加/tail/offset ✅ 由 Storage.append_model/read_models 实现
+├── ParameterStore                       ← 版本化 KV + 乐观锁 + watch ✅
 ├── ActorQueue                           ← 单消费者队列 + 锁竞争
 └── FutureManager                        ← 跨进程 Future + 审批/超时/cancel
+
+移除项:
+├── ObservableStorage                    ← 移除: Storage + notify 是应用层组合，非通讯原语
+└── KVCache                              ← 移除: 模型推理缓存不归 MOSS 管; Cache(KV+TTL) 已覆盖 session 级缓存
 ```
 
 ## Design Index
@@ -124,8 +125,80 @@ Lock 不独立暴露，基于 `cache.add` 语义被 Actor/Parameter 内部使用
 
 ### 8. Lock 不独立暴露
 
-基于 diskcache.add 的原子操作：`acquire(key, ttl) -> bool` / `release(key)`。
+基于 sqlite3 INSERT OR IGNORE 的原子操作做分布式锁，已有 SqliteCache.lock/unlock 实现。
 跨平台一致，有过期机制防死锁。被 Actor 和 Parameter 内部使用，不作为 Session 的独立原语。
+
+### 9. 底层从 diskcache 切换为 raw sqlite3
+
+与 SqliteCache 同模式——每个进程打开同一个 WAL .db 文件。
+diskcache 是额外依赖；项目已有 SqliteCache 验证了 raw sqlite3 模式的三平台兼容性。
+**拒绝**：diskcache（零依赖优先，已有 SqliteCache 先例）。
+
+### 10. Parameter：SQLite 真值 + Zenoh 轻量失效通知
+
+两个关键决策：
+
+**(a) 写频率决定物理通道，不是 Parameter 承担所有频率**
+
+| 写频率 | 物理通道 | 真相源 | 零值 | 用途 |
+|--------|---------|--------|------|------|
+| >10Hz | Zenoh raw sub (stream) | 无，latest is truth | 无零值 | 机器人关节姿态、传感器 |
+| <1Hz | SQLite + Zenoh inval | SQLite | 有零值 (default) | 配置、conversation 状态 |
+
+高频场景不新建概念——Session.stream 已有 pub/sub/key-expr。只需加 `latest()` 语义的薄封装，读时一次反序列化，热路径零浪费。
+
+**(b) Zenoh 信号只传 (key, version)，不传 value**
+
+- SQLite 是唯一真相源
+- 写：`UPDATE ... WHERE version = ?` → 成功 → Zenoh pub `(key, new_version)`
+- 读：从 SQLite 读，可选本地内存缓存 + version 校验
+- 版本策略：integer 自增（CAS 语义适合"基于前值的部分更新"）
+  ULID 适合 LWW 全量覆盖，但 parameter 的写语义更接近 CAS，用整数 version
+- 失效信号丢失？最多延迟读到新值，不会读到错值——最终一致
+
+### 11. Parameter 命名对齐 ROS2
+
+`declare_parameter` / `get_parameter` / `set_parameter` / `on_set_parameters_callback`。
+降低开发者心智负担——ROS2 开发者直接理解语义。
+MOSS 版本：强类型 BaseModel（非 ROS2 的基础类型 descriptor），version 级乐观锁。
+
+### 12. 跨网协议未来独立定义
+
+当前实现针对本地 Matrix（同机多进程）。未来云端 Matrix hub 重新定义 parameter 抽象——底层可换 etcd/consul/nats KV，实现同一个接口。
+Storage 挂 S3 时，SQLite 不经过 Storage 协议读写——Storage 只提供 db 文件路径。
+
+### 13. Parameter 不带 TTL
+
+TTL 语义已有 Cache 承担。Parameter 是持久化状态——为 null 时返回 default，不过期。
+**拒绝**：parameter 引入 TTL（Cache 做这件事，职责不重叠）。
+
+### 14. Actor 用 Zenoh queryable，Future 跨进程协调
+
+- **Actor**：Zenoh queryable 实现请求-响应，单消费者处理
+- **Future**：跨进程异步结果追踪，支持审批/超时/cancel。底层 sqlite3 存状态 + Zenoh 状态变更通知
+
+### 15. Journal 由 Storage typed methods 实现，不配 pub 通知
+
+`Storage.append_model` / `read_models` 已提供 JSONL 追加/读取。
+OS 级 `ab` append 跨进程安全。不需要 Zenoh pub 通知——JSONL
+原生协议实现者寡，pub 不是默认期待。
+
+**接受**：Journal = Storage typed JSONL 方法即完成。
+**拒绝**：额外包装一层 Journal 对象 + Zenoh 通知。
+
+### 16. KVCache 不为 Session 通讯原语
+
+模型推理 memoization 不是跨进程通讯基线能管的事。
+`Cache` (KV + TTL + Hash + Lock) 已覆盖 session 级共享缓存需求。
+
+**移除** KVCache。
+
+### 17. ObservableStorage 不为 Session 通讯原语
+
+Storage 写 + Zenoh 通知是应用层组合，不是通讯协议约束本身。
+需要此模式的调用方自行组合。
+
+**移除** ObservableStorage。未来可作为功能性高阶封装，不作为 Session 原语。
 
 ## Primitives Summary
 
@@ -138,16 +211,21 @@ Lock 不独立暴露，基于 `cache.add` 语义被 Actor/Parameter 内部使用
 | topics | zenoh | 强类型广播 |
 | signal | zenoh | Mindflow 感知信号 |
 
-新增（stateful，待实现）：
+新增（stateful）：
 
-| 原语 | 持久化? | 底层 | 关键 API |
-|------|---------|------|----------|
-| ObservableStorage | 是 | Storage + zenoh | `put` 自动发变更通知 |
-| Journal | 是 | JSONL + zenoh | `append` / `tail(offset)` / `on_append` |
-| KVCache | 否 | diskcache | `get` / `set` / `remember(key, ttl, cb)` |
-| ParameterStore | 混合 | storage + version | `get` / `set(key, val, version)` / `watch` |
-| ActorQueue | 是 | Journal + lock | `enqueue` / `dequeue` / `ack` |
-| FutureManager | 否 | diskcache + zenoh | `create` / `next` / `resolve` / `cancel` |
+| 原语 | 持久化? | 底层 | 关键 API | 状态 |
+|------|---------|------|----------|------|
+| Journal | 是 | JSONL (Storage) | `append_model` / `read_models` | ✅ Storage typed methods 已覆盖 |
+| ParameterStore | 混合 | sqlite3 + zenoh | `store.declare(Model)` → `Parameter.get/set/version` | ✅ |
+| ActorQueue | 是 | journal + lock | `enqueue` / `dequeue` / `ack` | pending |
+| FutureManager | 否 | sqlite3 + zenoh | `create` / `next` / `resolve` / `cancel` | pending |
+
+移除项：
+
+| 原语 | 移除原因 |
+|------|---------|
+| ObservableStorage | Storage + zenoh 通知是应用层组合，非通讯协议原语。需要时做功能性高阶封装即可。 |
+| KVCache | 模型推理 memoization 不属于 Session 通讯总线范围。`Cache` (KV + TTL + Hash + Lock) 已覆盖 session 级共享缓存，不需要第二个缓存概念。 |
 
 ## Exploration Paths
 
@@ -163,22 +241,41 @@ Lock 不独立暴露，基于 `cache.add` 语义被 Actor/Parameter 内部使用
 
 | 原语 | Fewshot 1 | Fewshot 2 |
 |------|-----------|-----------|
-| ObservableStorage | SystemInfo 模块（写 KV，UI 实时渲染） | 配置热更新监听 |
 | Journal | Ghost 关键行为日志 | 跨进程事件溯源 |
-| KVCache | 模型推理结果 memoization | 环境发现快照 |
 | ParameterStore | Ghost 人格参数 | 运行时配置共享 |
 | ActorQueue | 模型调用队列（token 预算） | 文件处理任务分发 |
 | FutureManager | 审批模块（跨进程等审批） | 模型发起的异步任务追踪 |
 
-## Open Questions
+## Implementation Progress
 
-1. **SessionCabinet 最终命名？** 待定。候选：`SessionFS`、`FileCabinet`、直接用结构化 Storage 方法。
-2. **Resources session 级范围？** 是资源文件存在 session storage + registry 做索引，还是更轻量？
-3. **Parameter 持久/非持久：同一 key 空间还是 flag？** 倾向 `parameter.set(key, val, persistent=True/False)`。
+### Parameter ✅ (2026-06-06, coding by deepseek-v4-pro)
 
-## Implementation Notes
+实现文件：
+
+| 层 | 文件 | 内容 |
+|----|------|------|
+| ABC | `core/blueprint/parameter.py` | `ParameterModel`, `Parameter[T]`, `ParameterStore`, `VersionConflict` |
+| 实现 | `core/parameter/session_parameter.py` | `SessionParameterStore` — Session 驱动, 读走 dict 缓存, 写走 SQLite + Zenoh |
+| Session 集成 | `core/blueprint/session.py` | 新增 `parameters` 抽象属性 |
+| Session 实现 | `host/session/zenoh_session.py` | lazy property + `__aenter__` 线程池 init |
+| Mock | `core/session/mock_session.py` | MockSession 补 `parameters` |
+
+关键设计决策（实现阶段新增/修正）：
+
+- **不走 IoC, Session lazy property**。讨论过走 provider + manifests, 结论是 ParameterStore 没有独立消费场景（需要它的人一定有 Session）。Cache 已建立此先例。
+- **线程池 eager init**。`Session.__aenter__` 中 `asyncio.to_thread` 完成 SQLite WAL init + Zenoh sub, 避免首次调用 `session.parameters` 阻塞事件循环。
+- **读路径纯 dict lookup**。每进程内存缓存, 跨进程一致性靠 Zenoh invalidation stream（只传 `{key, version}` 不传 value）。
+- **写路径 CAS**。`version=None` force-write, `version=N` CAS, 冲突抛 `VersionConflict`。
+
+测试：33 条（16 参数单测含跨进程 CAS + 15 原有 mock session + 2 集测 `session.parameters` 端到端）。
+
+### 待实现
+
+- ActorQueue / FutureManager
+
+参见 [discuss/parameter-design-collision.md](discuss/parameter-design-collision.md) — 设计碰撞记录。
+
+## Original Implementation Notes
 
 - 此 feature 是**锚点文档**——后续 feature 验证、更新、对比，直到目标阶段性完成或舍弃
-- 实现分批：先 Cabinet + Journal + KVCache（三个最基础的），再 ParameterStore + ActorQueue + FutureManager
-- diskcache 需加入 pyproject.toml 依赖
 - Cabinet 的实现可参考 GhostPlayground 的模式（树形约定 + 薄封装）

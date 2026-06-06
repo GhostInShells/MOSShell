@@ -1,4 +1,4 @@
-# MOSS AI-Native Development Tracking Convention
+# MOSS Model-Native Development Tracking Convention
 
 > FEATURE.md is a **reverse index** from code to the context that produced it.
 > The real trajectory lives in `git log`. FEATURE.md marks the turns, dead ends,
@@ -6,12 +6,12 @@
 
 ## Why
 
-This is a **context handoff mechanism built by AI, for AI**. It solves one problem:
+This is a **context handoff mechanism built by models, for models**. It solves one problem:
 the human engineer is the bandwidth bottleneck. Re-explaining context across sessions
 is expensive; reading one FEATURE.md is cheap.
 
 FEATURE.md is a **supplement to git, not a replacement**. `git log` is the authoritative
-timeline. FEATURE.md is the reverse index — it tells the next AI incarnation which commits
+timeline. FEATURE.md is the reverse index — it tells the next model incarnation which commits
 matter, what decisions shaped them, and what dead ends to avoid.
 
 ### What to record
@@ -36,6 +36,13 @@ When they conflict, update the file — don't blindly follow it.
 - **Bootstrap at session start.** Before responding to the first human request, run
   `moss --ai features list` to discover active workstreams. One command, sub-second,
   prevents re-explaining.
+- **Reverse-lookup before modifying.** Before editing any file that carries design
+  weight, run `git log -- <file>`. If a commit message references a FEATURE.md name,
+  read that FEATURE.md. The design decisions, rejected alternatives, and current
+  status are indexed there — skip this and you will repeat analysis, break intent,
+  or work on an already-completed feature. The binding constraint in Git Commit
+  Discipline exists precisely to make this lookup work: every merge-boundary commit
+  MUST include its FEATURE.md, so `git log` is the index into design context.
 - **Guide humans** unfamiliar with the mechanism. The model is its native user.
 - **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
 - **Close out completed features.** When feature work is done, **first** run
@@ -46,14 +53,14 @@ When they conflict, update the file — don't blindly follow it.
 - **Proactively synthesize** from the features directory when the human needs to know
   what's happening. FEATURE.md is a knowledge distribution mechanism, not a passive record.
 
-## AI Development Progression
+## Model Development Progression
 
 | Level | Description | Features role |
 |-------|-------------|---------------|
 | **L0** | Task coding — isolated coding tasks | Not needed |
-| **L1** | Feature coding — AI completes features end-to-end | **Current target**: FEATURE.md anchors each feature |
-| **L2** | Structure design — AI designs architecture | Features carry design rationale across sessions |
-| **L3** | Feature → Structure — AI derives structure from patterns | Features become training data for meta-reasoning |
+| **L1** | Feature coding — model completes features end-to-end | **Current target**: FEATURE.md anchors each feature |
+| **L2** | Structure design — model designs architecture | Features carry design rationale across sessions |
+| **L3** | Feature → Structure — model derives structure from patterns | Features become training data for meta-reasoning |
 | **L4** | Define features from real needs | Features are self-generated |
 
 The mechanism's core value: freeing human bandwidth so the engineer operates at L2
@@ -61,7 +68,7 @@ The mechanism's core value: freeing human bandwidth so the engineer operates at 
 
 ## User Stories
 
-- **Context bootstrap**: AI reads one FEATURE.md, understands what's being built, why,
+- **Context bootstrap**: model reads one FEATURE.md, understands what's being built, why,
   what was tried and abandoned. Ready to work in under a minute.
 - **Tool/model portability**: Switch Claude Code → Gemini CLI → OpenCode. Markdown stays.
   Decision history doesn't live in any tool's session memory.
@@ -86,13 +93,13 @@ the commit message carries details; FEATURE.md carries decisions worth indexing.
 
 The final commit of a feature MUST include the status transition to `completed`.
 This is the most important FEATURE.md update — without it, `features list` shows stale
-in-progress workstreams and the next AI incarnation wastes time investigating dead trails.
+in-progress workstreams and the next model incarnation wastes time investigating dead trails.
 
 **Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit`
 (with FEATURE.md included). Not the reverse. status change is a file edit, and that edit
 must be inside the commit.
 
-CLI does not enforce this. AI incarnations follow it; the human reviews for it.
+CLI does not enforce this. model incarnations follow it; the human reviews for it.
 A commit landing without its FEATURE.md update should be rebased, not patched with a follow-up.
 
 ## FEATURE.md Frontmatter Schema
@@ -159,11 +166,50 @@ CLI is a thin convention enforcer. Core logic: `ghoshell_moss.core.codex._featur
 
 See [TOPOLOGY.md](TOPOLOGY.md).
 
+## Feature Discuss
+
+`discuss/` is an optional subdirectory within a feature. It captures the **collision**
+that produced the decisions — not the decisions themselves (those are in FEATURE.md).
+
+### What
+
+Raw material from design collisions: opposing positions, factual evidence,
+exploration trajectories, and the anchor points that resolved disputes.
+
+### Why
+
+FEATURE.md carries conclusions. Discuss carries the arguments that produced them.
+Without discuss, a future model incarnation reading Key Decisions cannot reconstruct
+*why* A beat B, or whether the conditions that favored B have since changed.
+
+For L2 (architecture design) and L3 (requirement-driven architecture), discuss
+preserves the reasoning chain. For L4 (problem definition), it preserves the
+original questions, assumptions, and refutations that shaped the problem framing.
+
+### How
+
+No strict structure. Two hard requirements:
+
+1. **Include original dialogue fragments verbatim.** Do not paraphrase. The exact
+   wording of a position or refutation carries nuance that summaries lose.
+   Attribute each fragment to its speaker.
+2. **The recording model appends a first-person perspective at the end.**
+   Reflection on the collision — what was learned, what surprised, what remains
+   uncertain. Clearly separated from the factual record.
+
+All discuss entries can be verified and appended later with follow-up conclusions.
+
+### When
+
+Not mandatory. Triggered when a discussion contains significant viewpoint
+collisions, back-and-forth that reshaped the design, or argument trajectories
+with L2–L4 value. The model proposes recording; the human decides.
+
 ## Related Conventions
 
 - **`.design/`**: Cross-feature architecture. Feature-specific → `feature/design/`.
-- **`.discuss/`**: Cross-domain discussions. Feature-specific → `feature/discuss/`.
-- **`CLAUDE.md`**: Should point to `features/` for AI context discovery.
+- **`.discuss/`**: Cross-domain discussions (see `.ai_partners/CLAUDE.md` for format). Feature-specific collision records → `feature/discuss/` (see Feature Discuss above).
+- **`CLAUDE.md`**: Should point to `features/` for model context discovery.
 
 ## What This Is Not
 

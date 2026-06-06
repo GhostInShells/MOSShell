@@ -68,6 +68,9 @@ def list_docs(
         } for m in metas], ensure_ascii=False, indent=2))
         return
 
+    if not query:
+        console.print("Tip: 添加或修改 howto 前, 先读 how-to-make-how-to.md 了解编写规范.\n")
+
     rows = [
         [
             m.path,

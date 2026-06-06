@@ -1,0 +1,18 @@
+[project]
+name = "web-trafilatura"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[host]",
+    "trafilatura>=1.12,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "scipy>=1.17",  # transitive dep of ghoshell_moss.core.speech — needed for ctml_shell_test import
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }

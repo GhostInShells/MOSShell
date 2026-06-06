@@ -48,16 +48,11 @@ def list_providers(
         search: str = typer.Argument(
             "",
             help="Search pattern for ioc providers identity or provider path."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
-):
+        ),):
     """
     Explore and inspect providers discovered in the MOSS workspace.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     # 1. 执行发现逻辑
     # 默认从 MOSS.manifests.providers 扫描，这是我们在 Environment 中约定的路径
@@ -131,16 +126,11 @@ def list_topics(
         search: str = typer.Argument(
             "",
             help="Search pattern for topic name or topic type."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
-):
+        ),):
     """
     Introspect and discover event topics available in the MOSS ecosystem.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     # 1. 发现
     all_topics = host.manifests.topics()
@@ -217,16 +207,11 @@ def list_configs(
         detail: bool = typer.Option(
             False, "--detail", "-d",
             help="Show detailed schema and default values."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
-):
+        ),):
     """
     Explore and manage environment configurations in MOSS.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     all_configs = host.manifests.configs()
 
@@ -298,17 +283,12 @@ def _display_config_detail(info: ConfigInfo):
 
 @manifest_app.command(name="channels")
 def list_channels(
-        search: str = typer.Argument("", help="Search pattern for channel name."),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
+        search: str = typer.Argument("", help="Search pattern for channel name."),json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
 ):
     """
     Inspect the __main__ channel discovered from MOSS manifests.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     channels = host.manifests.channels()
     main_channel = channels.get(Channel.MAIN_CHANNEL_NAME)
@@ -347,17 +327,12 @@ def _display_main_channel_detail(channel, found_module: str):
 
 @manifest_app.command(name="contracts")
 def list_contracts(
-        search: str = typer.Argument("", help="Search pattern for contract name or module path."),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
+        search: str = typer.Argument("", help="Search pattern for contract name or module path."),json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
 ):
     """
     Introspect bound contracts in the MOSS IOC container.
     """
-    host = Host(mode=mode)  # 根据需要传入 mode
+    host = Host()
     display_scan_errors(host.scan_errors)
     # 获取所有注册的 contracts
     all_contracts = list(host.matrix().container.contracts(recursively=True))
@@ -434,16 +409,11 @@ def _display_contract_detail(contract_info: dict):
 
 
 @manifest_app.command(name="ctml-versions")
-def list_ctml_versions(
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-):
+def list_ctml_versions():
     """
     list the environment provided ctml versions.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     for version, version_info in host.manifests.ctml_versions().items():
         console.print("%s: %s" % (version, version_info.file))
@@ -454,12 +424,7 @@ def list_resources(
         search: str = typer.Argument(
             "",
             help="Search pattern for storage scheme, host, or description."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(
+        ),json_out: bool = typer.Option(
             False, "--json",
             help="Output as raw JSON for AI."
         ),
@@ -470,7 +435,7 @@ def list_resources(
     Each entry describes a ResourceStorage available for registration:
     scheme, host, description, and where it was found.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     resource_storage_items = host.manifests.resource_storage_manifests()
 
@@ -532,12 +497,7 @@ def list_nuclei(
         search: str = typer.Argument(
             "",
             help="Search pattern for nucleus name, description, or signal."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(
+        ),json_out: bool = typer.Option(
             False, "--json",
             help="Output as raw JSON for AI."
         ),
@@ -548,7 +508,7 @@ def list_nuclei(
     Each entry describes a NucleusFactory available for Ghost mindflow:
     name, description, signal_names, and where it was found.
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     all_nuclei = host.manifests.nuclei()
 
@@ -601,17 +561,12 @@ def _display_nuclei_table(metas: list[NucleusMetaInfo]):
 
 
 @manifest_app.command(name="explain")
-def explain_manifests(
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-):
+def explain_manifests():
     """
     用自然语言自描述当前环境 manifest 的结构与含义。
     这是 manifest 体系的唯一真相入口。
     """
-    host = Host(mode=mode)
+    host = Host()
     display_scan_errors(host.scan_errors)
     explanation = host.manifests.explain()
     console.print(explanation)
