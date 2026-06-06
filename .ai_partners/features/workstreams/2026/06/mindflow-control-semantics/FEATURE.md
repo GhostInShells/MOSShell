@@ -7,7 +7,7 @@ milestone: null
 priority: P0
 status: in-progress
 title: Mindflow Control Semantics — Impulse 能力分类与非中断式抢占
-updated: '2026-06-02'
+updated: '2026-06-07'
 ---
 
 # Mindflow Control Semantics
@@ -224,7 +224,27 @@ Impulse(priority=NOTICE, mode=command, command_logos="...")
 1. **Buffer 与 observe 的交互**: buffered 数据和 observe outcomes 在同一帧 moment 中出现时的顺序
 2. **shell.clear() 幂等性**: abort + 自然结束双重调用的安全
 3. **PriorityProtectionAttention 需同步升级**: 新 challenge 返回值需子类实现
-4. **F3 需要集成测试**: 涉及 attention/action/interpreter/shell 四组件交互
+4. **F3 需要集成测试**: 涉及 attention/action/interpreter/shell 四组件交互. 单元级安全测试已补 (3 个)，验证 clear 在 feed/execute 中途和多次调用的安全性。端到端仍需 REPL 验证。
+
+## 实施记录
+
+### F3: abort 传播 + shell.clear (2026-06-04 ~ 2026-06-06)
+
+由 DeepSeek V4 实现，人类工程师 review。
+
+**改动**:
+1. `Action` ABC 新增 `is_aborted()` 抽象方法 (blueprint/mindflow.py)
+2. `BaseAction` 实现 `is_aborted()` → `self._ctx.is_aborted()`
+3. `GhostRuntimeImpl._stream_execute()` 在 feed/compile/execute 三阶段结束后检查 `action.is_aborted()`，触发 `shell.clear()` 并返回部分结果
+4. 内联 helper `_check_abort_and_clear(phase)` 封装三阶段统一逻辑
+5. 3 个 shell.clear 安全测试: feed 中途 / execute 中途 / 多次幂等
+
+**关键决策偏离**: 无。按 KD5 执行。
+
+**已验证**:
+- shell.clear() 在活跃解释期间安全 (幂等，partial results 可捕获)
+- mindflow 43 tests + shell 107 tests 全绿
+- `_stream_execute` 改动需 GhostRuntime 端到端验证 (REPL)
 
 ---
 
