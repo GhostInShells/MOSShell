@@ -213,6 +213,14 @@ async def main(matrix: Matrix) -> None:
     import time as _time
 
     _dedup = {"text": "", "ts": 0.0}  # 防重复 send
+    _last_voice_state: str = ""  # 防重复 pub stream
+
+    def _pub_voice_state(state: str) -> None:
+        """Publish voice state to stream for other apps (e.g. ai_eye) to react."""
+        nonlocal _last_voice_state
+        if state != _last_voice_state:
+            _last_voice_state = state
+            matrix.session.pub_stream_delta("voice/state", state.encode())
 
     class VoiceCallback(AsyncListenerCallback):
         async def on_recognition(self, result: Recognition):
@@ -233,12 +241,14 @@ async def main(matrix: Matrix) -> None:
                 display.show_sent()
                 display.show_state("idle")
                 display.show_footer()
+                _pub_voice_state("recording_stopped")
             else:
                 display.show_partial(result.text)
 
         async def on_state_change(self, state: str):
             if "listening" in state.lower():
                 display.show_state("recording")
+                _pub_voice_state("recording_started")
             # 不处理 waiting → idle，让 on_recognition(is_last=True) 统一收尾
 
         async def on_error(self, error: str):
