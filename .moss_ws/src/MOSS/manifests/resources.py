@@ -9,7 +9,7 @@
 # mode 的 resources 叠加在全局之上（dict.update），同键覆盖。
 #
 # 发现路径：MOSS.manifests.resources
-# 深入：moss howtos read for-moss-app-developer/how-to-add-a-resource-storage.md
+# 深入：moss howtos read host-dev/add-a-resource-storage.md
 
 from ghoshell_moss.core.resources.local_image import LocalImageResourceMeta
 

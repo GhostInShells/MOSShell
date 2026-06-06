@@ -208,6 +208,7 @@ with L2–L4 value. The model proposes recording; the human decides.
 ## Related Conventions
 
 - **`.design/`**: Cross-feature architecture. Feature-specific → `feature/design/`.
+- **`.discuss/`**: Cross-domain discussions. Feature-specific → `feature/discuss/`.
 - **`.discuss/`**: Cross-domain discussions (see `.ai_partners/CLAUDE.md` for format). Feature-specific collision records → `feature/discuss/` (see Feature Discuss above).
 - **`CLAUDE.md`**: Should point to `features/` for model context discovery.
 

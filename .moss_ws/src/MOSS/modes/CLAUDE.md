@@ -1,11 +1,12 @@
 # MOSS Mode 开发
 
-Mode 通过显式继承定义自己的能力视图，是 MOSS 最核心的隔离和复用机制。
+Mode 是叠加在全局 manifests 之上的能力视图，是 MOSS 最核心的隔离和复用机制。
 
 ## 核心概念
 
-- **显式继承**：每个 mode 的 manifest 文件通过 `from MOSS.manifests.xxx import *` 显式继承全局能力，
-  然后追加自己的声明。Mode 的 manifest 文件内容 = Mode 运行时能力。读文件即理解。
+- **叠加语义**：mode 的 manifests 叠加在全局 manifests 之上
+  - channels: mode 的 `__main__` 完全覆盖全局 main channel
+  - 其余类型 (providers/configs/topics/nuclei/resources): 合并叠加
 - **权限边界**：通过 MODE.md 的 `apps` 白名单控制哪些 app 可被访问
 - **启动策略**：`bringup_apps` 声明启动时自动拉起哪些 app
 
@@ -38,7 +39,7 @@ moss modes create <name> -a "group/*" -u "group/app" -d "description"
 
 ```bash
 moss modes show <name>                    # 查看 mode 详情和 manifest 文件清单
-moss --mode <name> manifests explain       # 查看 mode 的能力视图
+moss --mode <name> manifests explain       # 查看完整能力视图（全局 + mode 合并后）
 moss --mode <name> manifests providers    # 查看可用的 IoC 绑定
 moss --mode <name> manifests channels     # 查看 main channel 的命令树
 ```

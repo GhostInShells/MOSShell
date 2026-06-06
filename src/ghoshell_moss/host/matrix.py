@@ -618,7 +618,7 @@ class MatrixImpl(Matrix):
                             "%s bootstrap bound lifecycle object: %s",
                             self._log_prefix, lifecycle,
                         )
-                        await self._async_exit_stack.enter_async_context(lifecycle)
+                        await self._async_exit_stack.enter_async_context(lifecycle_obj)
             self._lifecycle_bound_objects_or_types = lifecycle_objects
             # 进入到根据约定可以做绑定的生命周期对象.
             for lifecycle_contract in self._lifecycle_level_contracts():

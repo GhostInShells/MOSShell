@@ -1,2 +1,1 @@
-# 事件协议声明 — 显式继承全局 topics。
-from MOSS.manifests.topics import *  # noqa: F403
+# 事件协议声明 — 约束可通讯的 topic 类型。
