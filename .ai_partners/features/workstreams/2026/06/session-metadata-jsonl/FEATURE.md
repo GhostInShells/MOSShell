@@ -1,19 +1,17 @@
 ---
-title: Session Metadata & JSONL Storage — session 元信息持久化
-status: in-progress
-priority: P0
 created: 2026-06-02
-updated: 2026-06-07
 depends:
-  - storage-typed-protocols
-  - storage-scope-governance
-  - session-communication-bus
-milestone:
-description: >-
-  Session 获得人类可读身份与持久化元信息。三层结构：
-  ScopeMeta（scope 级发现文件，host 写，PID 验活）、SessionRecord（scope 级 JSONL
-  索引，不可变追加）、SessionMetadata（session 级 YAML，matrix 写，含完整运行时现场）。
-  发现流：scope meta + PID check 替代 meta.yaml 存在性检查。
+- storage-typed-protocols
+- storage-scope-governance
+- session-communication-bus
+description: Session 获得人类可读身份与持久化元信息。三层结构： ScopeMeta（scope 级发现文件，host 写，PID 验活）、SessionRecord（scope
+  级 JSONL 索引，不可变追加）、SessionMetadata（session 级 YAML，matrix 写，含完整运行时现场）。 发现流：scope meta
+  + PID check 替代 meta.yaml 存在性检查。
+milestone: null
+priority: P0
+status: completed
+title: Session Metadata & JSONL Storage — session 元信息持久化
+updated: '2026-06-07'
 ---
 
 # Session Metadata & JSONL Storage
