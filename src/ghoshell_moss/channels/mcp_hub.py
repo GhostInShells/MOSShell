@@ -194,23 +194,29 @@ def _mcp_result_to_observe(
     return Observe(messages=messages)
 
 
+def _render_input_schema(schema: dict) -> str:
+    """将 MCP tool inputSchema 渲染为简洁的参数列表。"""
+    if not schema or schema.get('type') != 'object':
+        return ''
+    properties = schema.get('properties', {})
+    if not properties:
+        return ''
+    required = set(schema.get('required', []))
+    parts = []
+    for param_name, param_schema in properties.items():
+        ptype = param_schema.get('type', 'any')
+        pdesc = (param_schema.get('description', '') or '').split('\n')[0][:80]
+        req = ', required' if param_name in required else ''
+        if pdesc:
+            parts.append(f"`{param_name}` ({ptype}{req}): {pdesc}")
+        else:
+            parts.append(f"`{param_name}` ({ptype}{req})")
+    return ', '.join(parts)
+
+
 # ---------------------------------------------------------------------------
 # MCP Hub State
 # ---------------------------------------------------------------------------
-
-_DEFAULT_INSTRUCTION = """\
-MCP Hub — 通过 MCP 协议接入的外部工具集。
-
-使用方式:
-- 非阻塞调用 (推荐): <mcp:exec server="<name>" tool="<tool>" timeout="30.0">json args</mcp:exec>
-  结果在下一关键帧以 Observe 形式观察。
-- 阻塞调用 (仅当后续命令依赖返回值时): <mcp:exec_blocking server="<name>" tool="<tool>">json args</mcp:exec_blocking>
-  等待完成后才执行同通道后续命令。
-
-管理命令:
-- list_servers: 查看所有 server 连接状态
-- restart_server(name): 重启指定 server"""
-
 
 class MCPHubState(ChannelState):
     """管理 N 个 MCP client session 的 ChannelState。"""
@@ -226,7 +232,7 @@ class MCPHubState(ChannelState):
         self._matrix = matrix
         self._name = name
         self._description = description or 'MCP Hub — 管理外部 MCP 工具调用'
-        self._scopes = scopes or ['ghost', 'mode']
+        self._scopes = scopes or []
         self._uid = unique_id()
         self._sessions: dict[str, _MCPServerSession] = {}
         self._own_commands: dict[str, Command] = {}
@@ -281,22 +287,56 @@ class MCPHubState(ChannelState):
                 lines.append("No servers configured. Use add_server to add one.")
             return '\n'.join(lines)
 
-        async def add_server(name: str) -> str:
-            """从配置文件加载并连接 MCP server。
+        async def add_server(
+            name: str,
+            transport: str = '',
+            command: str = '',
+            args: str = '',
+            url: str = '',
+            env: str = '',
+            description: str = '',
+        ) -> str:
+            """添加并连接 MCP server。可运行时传参或从配置加载。
 
-            :param name: server 名称，对应 mcp_hub 配置中 servers 的 key
+            :param name: server 名称
+            :param transport: 传输协议 (stdio / sse / streamable_http)。传参时必填
+            :param command: stdio: 可执行文件路径
+            :param args: stdio: 命令行参数，逗号分隔
+            :param url: sse/streamable_http: 服务 URL
+            :param env: 环境变量，逗号分隔的 KEY=VALUE 对
+            :param description: server 描述
             """
-            config = self._load_config()
-            if config is None:
-                return f"[MCP] Config 'mcp_hub.yml' not found in scoped storage ({' / '.join(self._scopes)})"
-
-            server_cfg = config.servers.get(name)
-            if server_cfg is None:
-                available = list(config.servers.keys())
-                return f"[MCP] Server '{name}' not in config. Available: {', '.join(available)}"
-
             if name in self._sessions and self._sessions[name].state == 'connected':
                 return f"[MCP:{name}] already connected"
+
+            config = self._load_config()
+
+            if transport:
+                parsed_env = {}
+                if env:
+                    for pair in env.split(','):
+                        pair = pair.strip()
+                        if '=' in pair:
+                            k, v = pair.split('=', 1)
+                            parsed_env[k.strip()] = v.strip()
+                parsed_args = [a.strip() for a in args.split(',') if a.strip()] if args else []
+                server_cfg = MCPServerConfig(
+                    name=name,
+                    transport=transport,  # type: ignore[arg-type]
+                    command=command,
+                    args=parsed_args,
+                    url=url,
+                    env=parsed_env,
+                    description=description,
+                )
+                config.servers[name] = server_cfg
+                self._save_config(config)
+            else:
+                server_cfg = config.servers.get(name)
+                if server_cfg is None:
+                    available = list(config.servers.keys())
+                    return f"[MCP] Server '{name}' not in config. Available: {', '.join(available)}"
+
             session = _MCPServerSession(config=server_cfg)
             await session.connect()
             self._sessions[name] = session
@@ -324,9 +364,6 @@ class MCPHubState(ChannelState):
             await session.disconnect()
             await session.connect()
             return f"[MCP:{name}] {session.state}" + (f": {session.error}" if session.error else '')
-
-        async def get_instruction() -> str:
-            return _DEFAULT_INSTRUCTION
 
         self._own_commands = {
             'exec': PyCommand(exec_cmd, blocking=False, always_observe=True),
@@ -360,17 +397,26 @@ class MCPHubState(ChannelState):
     def get_own_command(self, name: str) -> Command | None:
         return self._own_commands.get(name)
 
-    def _load_config(self) -> MCPHubConfig | None:
-        """加载 MCP Hub 配置。有 scopes 走 scoped storage YAML，无 scopes 走全局 ConfigStore。"""
+    def _load_config(self) -> MCPHubConfig:
+        """加载 MCP Hub 配置。有 scopes 走 scoped storage YAML，无 scopes 走全局 ConfigStore。
+        首次调用自动初始化空配置并持久化。
+        """
         if self._scopes:
             storage = self._matrix.get_scoped_storage(*self._scopes)
-            return storage.read_yaml("mcp_hub", MCPHubConfig)
+            config = storage.read_yaml("mcp_hub", MCPHubConfig)
+            if config is None:
+                config = MCPHubConfig(servers={})
+                storage.write_yaml("mcp_hub", config)
+            return config
         else:
             try:
                 from ghoshell_moss.contracts.configs import get_conf
                 return get_conf(ChannelCtx.container(), MCPHubConfig)
             except Exception:
-                return None
+                config = MCPHubConfig(servers={})
+                from ghoshell_moss.contracts.configs import save_conf
+                save_conf(ChannelCtx.container(), config)
+                return config
 
     def _save_config(self, config: MCPHubConfig) -> None:
         """持久化 MCP Hub 配置。"""
@@ -384,8 +430,6 @@ class MCPHubState(ChannelState):
     async def on_startup(self) -> None:
         """启动时加载配置并连接所有 server。"""
         config = self._load_config()
-        if config is None:
-            return
 
         for name, server_cfg in config.servers.items():
             session = _MCPServerSession(config=server_cfg)
@@ -399,7 +443,7 @@ class MCPHubState(ChannelState):
         self._sessions.clear()
 
     async def get_context_messages(self) -> list[str]:
-        """动态生成 server 状态和工具目录。"""
+        """动态生成 server 状态、工具目录和参数定义。"""
         lines = ["### MCP Tools"]
         for name, session in self._sessions.items():
             state_mark = {'connected': '+', 'connecting': '~', 'disconnected': '-', 'error': '!'}.get(
@@ -410,6 +454,9 @@ class MCPHubState(ChannelState):
                 for tool in session.tools:
                     desc = (tool.description or '').split('\n')[0][:120]
                     lines.append(f"  - `{tool.name}`: {desc}")
+                    params = _render_input_schema(tool.inputSchema)
+                    if params:
+                        lines.append(f"    params: {params}")
             elif session.error:
                 lines.append(f"  error: {session.error[:200]}")
             lines.append("")
@@ -433,7 +480,7 @@ class MCPHubChannel(Channel):
     ):
         self._name = name
         self._description = description or 'MCP Hub — 管理外部 MCP 工具调用'
-        self._scopes = scopes or ['ghost', 'mode']
+        self._scopes = scopes or []
         self._id = unique_id()
 
     def name(self) -> ChannelName:
