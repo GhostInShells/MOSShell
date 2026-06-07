@@ -493,7 +493,7 @@ class Environment:
         """约定路径: {workspace}/runtime/scopes/scope-{scope}.yml"""
         return self._workspace_path / "runtime" / "scopes" / f"scope-{self._session_scope}.yml"
 
-    def read_scope_meta(self) -> "ScopeMeta | None":
+    def read_scope_meta(self, alive_only: bool = True) -> "ScopeMeta | None":
         """读取 scope meta 并 PID 验活。不可用时返回 None。
 
         先检查 path.exists() 快速路径，不存在直接返回 None，不读文件。
@@ -506,7 +506,7 @@ class Environment:
         except yaml.YAMLError:
             return None
         meta = ScopeMeta(**data)
-        if not psutil.pid_exists(meta.host_pid):
+        if alive_only and not psutil.pid_exists(meta.host_pid):
             return None
         return meta
 

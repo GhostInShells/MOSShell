@@ -1,11 +1,17 @@
-"""Matrix cell liveness discovery over Zenoh.
+"""Matrix cell discovery over Zenoh — queryable-based.
 
-Key space: ``MOSS/{session_scope}/cell/liveness/{address}``
+Key space: ``MOSS/{session_scope}/cells/{address}`` — per-cell queryable
+           ``MOSS/{session_scope}/cells/query``   — host query portal
+
+Each cell declares a queryable at its address key.  The host cell
+additionally declares the query portal, whose handler returns cached
+cell data (live ``get`` inside a queryable handler is disallowed by Zenoh).
+Live queries happen through :meth:`query_cells`, called by MatrixImpl
+via ``asyncio.to_thread`` outside any handler context.
 
 Plugs into MatrixImpl as a composable module.  Matrix owns the cell
-registry (dict[str, Cell] + dict[str, threading.Event]); CellDiscovery
-owns the Zenoh liveness machinery: key expressions, token declare,
-subscriber management, initial wildcard query.
+registry (dict[str, Cell]); CellDiscovery owns the Zenoh machinery:
+key expressions, queryable declare/undeclare, wildcard aggregation.
 
 Pattern reference: ``FractalKeyExpressions`` in ``host/fractal/_base.py``.
 """
@@ -16,13 +22,14 @@ depend_zenoh()
 
 import zenoh
 import contextlib
-import threading
+import json
+from typing import Callable
 
 __all__ = ["CellDiscovery"]
 
 
 class CellDiscovery:
-    """Zenoh liveness discovery for Matrix cells.
+    """Zenoh queryable-based cell discovery.
 
     Usage in MatrixImpl::
 
@@ -32,16 +39,14 @@ class CellDiscovery:
         zenoh_session = self._container.force_fetch(zenoh.Session)
         self._exit_stack.enter_context(zenoh_session)
         self._exit_stack.enter_context(
-            self._cell_discovery.discover_cells(
-                zenoh_session, self._cells, self._cell_alive_events,
-                this_address=self._this_cell.address,
+            self._cell_discovery.announce_cell(
+                zenoh_session, self._this_cell.address, cell_info,
             )
         )
-        self._exit_stack.enter_context(
-            self._cell_discovery.declare_this_cell(
-                zenoh_session, self._this_cell.address,
+        if self._is_main:
+            self._exit_stack.enter_context(
+                self._cell_discovery.serve_query_portal(zenoh_session)
             )
-        )
     """
 
     def __init__(self, session_scope: str):
@@ -49,91 +54,88 @@ class CellDiscovery:
 
     # -- key expressions ------------------------------------------------ #
 
-    def liveness_prefix(self) -> str:
-        """``MOSS/{scope}/cell/liveness`` — all cell liveness keys share this."""
-        return f"MOSS/{self._session_scope}/cell/liveness"
+    def cell_prefix(self) -> str:
+        """``MOSS/{scope}/cells`` — all cell keys share this prefix."""
+        return f"MOSS/{self._session_scope}/cells"
 
-    def liveness_key(self, address: str) -> str:
-        """``MOSS/{scope}/cell/liveness/{address}`` — single cell liveness key."""
-        return "/".join([self.liveness_prefix(), address])
+    def cell_key(self, address: str) -> str:
+        """``MOSS/{scope}/cells/{address}`` — single cell queryable key."""
+        return "/".join([self.cell_prefix(), address])
 
-    def liveness_wildcard(self) -> str:
-        """``MOSS/{scope}/cell/liveness/**`` — wildcard for initial query."""
-        return "/".join([self.liveness_prefix(), "**"])
+    def query_portal_key(self) -> str:
+        """``MOSS/{scope}/cells/query`` — host query portal."""
+        return "/".join([self.cell_prefix(), "query"])
 
-    # -- declare this cell ---------------------------------------------- #
-
-    @contextlib.contextmanager
-    def declare_this_cell(self, session: "zenoh.Session", address: str):
-        """Declare this cell's liveness token.  Undeclares on exit."""
-        key = self.liveness_key(address)
-        token = session.liveliness().declare_token(key)
-        try:
-            yield
-        finally:
-            token.undeclare()
-
-    # -- discover known cells ------------------------------------------- #
+    # -- announce this cell --------------------------------------------- #
 
     @contextlib.contextmanager
-    def discover_cells(
-            self,
-            session: "zenoh.Session",
-            cells: dict[str, "Cell"],
-            alive_events: dict[str, threading.Event],
-            *,
-            this_address: str,
-    ):
-        """Subscribe to liveness of every known cell + run initial wildcard query.
+    def announce_cell(self, session: "zenoh.Session", address: str, cell_info: dict):
+        """Declare this cell's queryable.  Undeclares on exit.
 
-        Skips *this_address* (self).  On exit, undeclares all subscribers.
+        *cell_info* must contain at least ``"address"`` so the portal
+        can index replies.
         """
-        if session.is_closed():
-            raise RuntimeError("zenoh session closed")
+        key = self.cell_key(address)
 
-        subscribers: list[zenoh.Subscriber] = []
-        for address in cells:
-            if address == this_address:
-                alive_events[this_address].set()
-                continue
-            sub = self._register_listener(session, address, alive_events[address])
-            subscribers.append(sub)
+        def _handler(query: zenoh.Query):
+            query.reply(query.key_expr, json.dumps(cell_info))
 
-        self._query_initial(session, alive_events)
+        q = session.declare_queryable(key, _handler)
         try:
             yield
         finally:
-            for sub in subscribers:
-                if not session.is_closed():
-                    sub.undeclare()
+            q.undeclare()
 
-    def _register_listener(
+    # -- serve query portal (host only) --------------------------------- #
+
+    @contextlib.contextmanager
+    def serve_query_portal(
             self,
             session: "zenoh.Session",
-            address: str,
-            event: threading.Event,
-    ) -> zenoh.Subscriber:
-        key = self.liveness_key(address)
+            cells_provider: "Callable[[], dict[str, dict]]",
+    ):
+        """Declare the host query portal.  Undeclares on exit.
 
-        def _on_sample(sample: zenoh.Sample) -> None:
-            if sample.kind == zenoh.SampleKind.PUT:
-                event.set()
-            else:
-                event.clear()
+        The portal handler returns cached cell data from *cells_provider*
+        instead of doing a live ``session.get`` — Zenoh disallows nested
+        ``get`` inside a queryable handler on the same session.
 
-        return session.liveliness().declare_subscriber(key, _on_sample)
+        Live queries go through :meth:`query_cells`, called by MatrixImpl
+        via ``asyncio.to_thread`` outside any handler context.
+        """
 
-    def _query_initial(
-            self,
-            session: "zenoh.Session",
-            alive_events: dict[str, threading.Event],
-    ) -> None:
-        """Wildcard query all existing liveness tokens; set matching events."""
-        prefix = self.liveness_prefix()
-        for sample in session.liveliness().get(self.liveness_wildcard()):
-            key = str(sample.result.key_expr)
-            if not key.startswith(prefix):
-                continue
-            address = key[len(prefix) + 1:]
-            if address in alive_events:
-                alive_events[address].set()
+        def _handler(query: zenoh.Query):
+            cells = cells_provider()
+            query.reply(query.key_expr, json.dumps(cells))
+
+        q = session.declare_queryable(self.query_portal_key(), _handler)
+        try:
+            yield
+        finally:
+            q.undeclare()
+
+    # -- query (blocking — call via asyncio.to_thread) ------------------ #
+
+    def _query_all_cells(self, session: "zenoh.Session") -> dict[str, dict]:
+        """Wildcard get all per-cell queryables.  Returns {address: info}."""
+        replies = session.get(
+            f"{self.cell_prefix()}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        )
+        result: dict[str, dict] = {}
+        for r in replies:
+            if r.ok is not None:
+                info = json.loads(r.ok.payload.to_string())
+                addr = info.get("address")
+                if addr:
+                    result[addr] = info
+        return result
+
+    def query_cells(self, session: "zenoh.Session") -> dict[str, dict]:
+        """Public entry point for network cell query (blocking).
+
+        Caller is responsible for running this via ``asyncio.to_thread``
+        to avoid blocking the event loop.
+        """
+        return self._query_all_cells(session)

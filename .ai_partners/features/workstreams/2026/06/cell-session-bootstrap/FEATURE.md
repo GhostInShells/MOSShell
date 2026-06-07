@@ -4,10 +4,14 @@ status: draft
 priority: P0
 created: 2026-06-07
 updated: 2026-06-07
-depends: []
+depends:
+  - session-metadata-jsonl
 milestone:
 description: >-
-  Cell 入网协议——独立进程启动时从 workspace 恢复 session scope、分配唯一 cell 地址、注册到 Matrix 总线。替代 circusd-daemon-management 方向，MOSS 回归轻量总线定位。
+  Cell 入网协议——独立进程启动时从 workspace 恢复 session scope、分配唯一 cell 地址、注册到 Matrix 总线。
+  复用 session-metadata-jsonl 的 ScopeMeta 模式：文件系统注册 + PID 验活，不维护 status 字段。
+  父子进程退出三层保障：killpg + _ensure_parent_process_exists + cells/ 注册表 watchdog。
+  替代 circusd-daemon-management 方向，MOSS 回归轻量总线定位。
 ---
 
 # Cell Session Bootstrap
@@ -111,3 +115,117 @@ python my_script.py
 3. **与现有 `MOSS_CELL_ADDRESS` 的关系**：当前 `Environment` 通过环境变量传递 cell address。本 feature 的注册表机制是对此的规范化——从"手动设置 env"变为"workspace 自动分配"。
 
 4. **App 体系何时替换**：本 feature 先定义协议和注册表格式。App 体系继续工作。替换时机：当 matrix-channel-hub 足够稳定、cell 注册表格式验证通过后，逐步迁移 App 的启动路径到本协议。
+
+## 2026-06-07 讨论结论
+
+> 以下为讨论对齐后的设计方向，非最终结论。实际开发中随最佳实践发现调整。
+
+与人类工程师讨论后，以下设计决策进入本 feature 范围。
+
+### Cell 注册表：复用 ScopeMeta 模式
+
+session-metadata-jsonl 的 ScopeMeta 模式——文件系统注册 + PID 验活 + 无 status 字段——完全适用于 cell 注册：
+
+```
+workspace/runtime/
+  scopes/
+    scope-{scope}.yml        ← host 写，session 级发现
+  cells/
+    cell-{address}.json       ← cell 自身写，cell 级注册
+```
+
+```python
+class CellRecord(BaseModel):
+    """cell 注册文件——cell 自身写，PID 验活."""
+    cell_address: str
+    pid: int
+    session_scope: str
+    created_at: str           # ISO 8601
+    lease_until: str | None   # None = 永久（手启动 cell），非空 = 到期自动回收
+```
+
+**与 ScopeMeta 相同的设计原则**：
+- 写者唯一：每个 cell 写自己的文件，无多写者冲突
+- PID 验活：状态由 PID 推导，"活着" = PID 存活，"死了" = 文件残留 + PID 不存活
+- 优雅退出清理 + 崩溃残留容忍：正常退出删除文件，崩溃残留由 watchdog 回收
+- 固定路径：知道 `workspace + address` 就能定位
+
+**发现流**：
+1. 新 cell 加入 → 读 `scopes/scope-{scope}.yml` → PID 存活 → 拿到 session_id → 入网 → 写 `cells/cell-{address}.json`
+2. Host 扫描 → 读 `cells/` 目录 → PID 验活 → 活的加入 liveness 订阅，死的回收文件
+3. CLI 强杀兜底 → `moss cell kill <address>` 读 cells 文件 → 验 PID → kill → 清理注册文件
+
+### Cell 身份三层模型
+
+```
+第一层（入网必需）: address + scope + workspace    →  env var 契约，Matrix.discover() 自举
+第二层（语义标注）: singleton? + type(host/app/script)  →  决定权限和冲突策略
+第三层（人类可读）: APP.md (name, description, group)   →  可选，方便 list 和文档
+```
+
+- **有 APP.md**：`cell_address = app/{group}/{name}`，人类语义
+- **无 APP.md**：`cell_address = script/{uuid}`，自生成唯一 ID
+- **入网不依赖 APP.md**：`Matrix.discover()` 只读 env var，不读 APP.md
+
+### Singleton 概念
+
+`CellType` (host/app/script/fractal) 决定权限，`singleton` 决定冲突策略：
+
+| Type | 权限 | Singleton 约束 |
+|---|---|---|
+| host | channel_proxy, 写 scope meta/session metadata | 强制：一个 scope 一个 host |
+| app | provide_channel, 被 host 发现 | APP.md 声明 singleton: true/false |
+| script | provide_channel, 不被 host 主动管理 | 默认 false，每次 UUID |
+| fractal | 跨 Matrix 桥接 | 特殊，暂不论 |
+
+Singleton 检测：启动时读 `cells/cell-{address}.json`，PID 存活 → 拒绝或替换。
+
+### 父子进程退出三层保障
+
+**不做进程管理器**（不监控、不重启、不 health check），只保证"退出时把子进程带走"。
+
+| 层 | 机制 | 覆盖场景 | 平台 |
+|---|---|---|---|
+| 父侧 | `start_new_session` + `killpg` (POSIX) / `psutil.children(recursive=True)` (通用) | 优雅退出 | 全平台 |
+| 子侧 | `_ensure_parent_process_exists` (已有) | 父进程崩溃 | 全平台（psutil） |
+| 外部 | `cells/` 注册表 + PID 验活 + CLI 强杀 | 崩溃残留、手动清理 | 全平台 |
+
+**父侧最小实现**：
+
+```python
+import psutil
+
+def kill_proc_tree(pid: int, timeout: float = 5.0):
+    """跨平台杀进程树。"""
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = parent.children(recursive=True)
+    for child in children:
+        child.terminate()
+    _, alive = psutil.wait_procs(children, timeout=timeout)
+    for child in alive:
+        child.kill()
+    parent.terminate()
+    parent.wait(timeout=timeout)
+```
+
+`psutil` 已是项目依赖（`_ensure_parent_process_exists` 在用），无新依赖。
+
+### 平台策略：两层治理
+
+1. **第一层（全平台）**：psutil `children(recursive=True)` + `terminate`/`kill` — 覆盖 macOS/Linux/Windows
+2. **第二层（按平台加深）**：POSIX 上可用 `start_new_session` + `killpg` 做进程组级强杀
+
+不硬编码平台判断。进程管理封装为可替换协议，默认 POSIX 实现，Windows 适配留到有需求时。
+
+### 与 session-metadata-jsonl 的关系
+
+session-metadata-jsonl 的 `Session ABC` 为 session metadata 提供只读接口。本 feature 依赖它：
+
+- `ScopeMeta` 是 scope 级发现文件 → cell 入网时通过它发现 session
+- `SessionRecord` JSONL 追加 → cell 注册不写 session 索引
+- `SessionMetadata` YAML → cell 的运行时现场由 matrix 写
+
+两者通过 PID 验活共享同一推理："活着"由 PID 推导，不维护可推导的状态字段。

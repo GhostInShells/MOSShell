@@ -34,11 +34,33 @@ from ghoshell_moss.host.cell_discovery import CellDiscovery
 
 depend_zenoh()
 import zenoh
+import concurrent.futures
 import contextlib
 import logging
+import threading
+import time
 import psutil
 
-__all__ = ['AppCell', 'HostCell', 'MatrixImpl']
+__all__ = ['AppCell', 'HostCell', 'NetworkCell', 'MatrixImpl']
+
+
+class NetworkCell(Cell):
+    """从 Zenoh 网络查询发现的 cell——get_alive_cells() 的返回值元素。
+
+    不持有任何本地状态或 event，仅承载 queryable 响应的信息。
+    """
+
+    def __init__(self, info: dict):
+        self.name = info["name"]
+        self.type = info["type"]
+        self.description = info.get("description", "")
+        self.where = info.get("where", "")
+        self.workspace = info.get("workspace")
+        self._address = info["address"]
+
+    @property
+    def address(self) -> str:
+        return self._address
 
 
 class AppCell(Cell):
@@ -127,6 +149,11 @@ class MatrixImpl(Matrix):
 
         self._cells = cells
         self._is_main = isinstance(self._this_cell, HostCell)
+        # alive cells 缓存 — get_alive_cells() 的数据源，始终包含 this_cell
+        self._live_cells_cache: dict[str, Cell] = {}
+        self._live_cells_ts: float = 0
+        self._refresh_future: concurrent.futures.Future | None = None
+        self._live_cells_lock = threading.Lock()
         self._logger: LoggerItf | logging.Logger | None = logger
         self._started = False
         self._channel_provider_task: asyncio.Task | None = None
@@ -154,6 +181,70 @@ class MatrixImpl(Matrix):
                 "%s cell address %r not found in known cells: %s, fallback to UnknownCell",
                 self._log_prefix, self._this_cell_address, list(cells.keys()),
             )
+
+    # -- alive cells (queryable-based dynamic discovery) ------------------ #
+
+    async def get_alive_cells(self, staleness: float = 5.0) -> dict[str, Cell]:
+        """获取当前在线 cell 列表 — 始终从缓存返回。
+
+        缓存新鲜时零阻塞。过期时触发后台网络刷新——
+        concurrent.futures.Future 仅作刷新完成的信号量，
+        不承载数据，数据永远读缓存。
+
+        main cell 直接返回 discovered cells (自身即为事实来源)。
+        """
+        if not self.is_running():
+            return {}
+
+        # main cell: discovered cells 全集即为 alive
+        if self._is_main:
+            return self._cells.copy()
+
+        # 快路径: 缓存新鲜，不碰锁
+        if time.monotonic() - self._live_cells_ts < staleness:
+            return dict(self._live_cells_cache)
+
+        # 去重: 锁只保护 Future 的创建/复用判断
+        with self._live_cells_lock:
+            if self._refresh_future is None or self._refresh_future.done():
+                self._refresh_future = concurrent.futures.Future()
+                # 锁内调度 coroutine——保证只有一个刷新在飞行
+                asyncio.run_coroutine_threadsafe(
+                    self._do_refresh_live_cells(), self._event_loop,
+                )
+
+        # 锁外 await，避免死锁。wrap_future 桥接 concurrent → asyncio
+        await asyncio.wrap_future(self._refresh_future)
+        return dict(self._live_cells_cache)
+
+    async def _do_refresh_live_cells(self):
+        """执行网络查询并更新缓存。
+
+        query_cells 是阻塞 Zenoh 调用，通过 to_thread 卸载到线程池。
+        网络返回的 raw dict 在此处转换为 NetworkCell，保证整条链路强类型。
+        this_cell 始终包含在结果中——host 自身也在 Zenoh 上宣告了 queryable，
+        若网络查询未返回它则补入（防御性）。
+        """
+        try:
+            session = self._container.force_fetch(zenoh.Session)
+            raw = await asyncio.to_thread(
+                self._cell_discovery.query_cells, session,
+            )
+            cells: dict[str, Cell] = {
+                addr: NetworkCell(info) for addr, info in raw.items()
+            }
+            # 防御: host 自身若不在网络响应中，补入
+            if self._this_cell.address not in cells:
+                cells[self._this_cell.address] = self._this_cell
+            self._live_cells_cache = cells
+            self._live_cells_ts = time.monotonic()
+            self._refresh_future.set_result(None)
+        except Exception as e:
+            self._refresh_future.set_exception(e)
+
+
+
+
 
     def _prepare_system_prompter(self) -> SystemPrompter:
         from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl

@@ -174,3 +174,170 @@ def test_liveness_tokens_failed():
         node_checker.join()
         assert err is None
         assert len(heartbeat_failed) == 10
+
+
+# === queryable-based cell discovery canary tests ===
+# 验证 Zenoh queryable-per-cell + wildcard get 组合是否能支撑 cell 动态发现。
+# 核心模式: 每个 cell 声明 queryable (handler 闭包带 address)，
+# main cell 用 wildcard get (target=ALL, consolidation=NONE) 聚合全部。
+# 这些是第三方 API 金丝雀 — Zenoh 升级时早于业务代码暴露 breakage。
+
+import json
+
+
+def test_queryable_baseline():
+    """queryable 基本模式: declare → query → reply."""
+    with zenoh.open(zenoh.Config()) as session:
+        def handler(query: zenoh.Query):
+            query.reply(query.key_expr, "pong")
+
+        q = session.declare_queryable("test/ping", handler)
+        try:
+            replies = list(session.get("test/ping"))
+            assert len(replies) == 1
+            assert replies[0].ok is not None
+            assert replies[0].ok.payload.to_string() == "pong"
+        finally:
+            q.undeclare()
+
+
+def test_cell_queryable_wildcard_get():
+    """cell 声明 queryable，wildcard get 查到该 cell 的 info。"""
+    prefix = "test/cells"
+    with zenoh.open(zenoh.Config()) as session:
+        def cell_handler(query: zenoh.Query):
+            query.reply(query.key_expr, json.dumps({
+                "address": "host/default",
+                "type": "host",
+            }))
+
+        q = session.declare_queryable(f"{prefix}/host/default", cell_handler)
+        try:
+            import time
+            time.sleep(0.03)
+            replies = list(session.get(
+                f"{prefix}/**",
+                target=zenoh.QueryTarget.ALL,
+                consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+            ))
+            payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+            assert len(payloads) >= 1
+            cells = {p["address"]: p for p in payloads}
+            assert "host/default" in cells
+            assert cells["host/default"]["type"] == "host"
+        finally:
+            q.undeclare()
+
+
+def test_cell_leave_undeclare_queryable():
+    """cell undeclare queryable 后 wildcard get 不再返回该 cell。"""
+    prefix = "test/cells"
+    with zenoh.open(zenoh.Config()) as session:
+        def cell_handler(query: zenoh.Query):
+            query.reply(query.key_expr, json.dumps({"address": "app/to_leave"}))
+
+        q = session.declare_queryable(f"{prefix}/app/to_leave", cell_handler)
+        import time
+        time.sleep(0.03)
+
+        # 确认存在
+        replies = list(session.get(
+            f"{prefix}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert any(p["address"] == "app/to_leave" for p in payloads)
+
+        # 离开
+        q.undeclare()
+        time.sleep(0.05)
+
+        # 确认消失
+        replies = list(session.get(
+            f"{prefix}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert not any(p["address"] == "app/to_leave" for p in payloads)
+
+
+def test_multiple_cells_wildcard_get():
+    """多个 cell 声明 queryable，wildcard get 全部发现。"""
+    prefix = "test/cells"
+    with zenoh.open(zenoh.Config()) as session:
+        def make_handler(addr: str, typ: str):
+            def h(query: zenoh.Query):
+                query.reply(query.key_expr, json.dumps({"address": addr, "type": typ}))
+            return h
+
+        qs = []
+        cells_in = [
+            ("host/default", "host"),
+            ("app/echo", "app"),
+            ("app/vision", "app"),
+            ("script/abc123", "script"),
+        ]
+        for addr, typ in cells_in:
+            qs.append(session.declare_queryable(f"{prefix}/{addr}", make_handler(addr, typ)))
+
+        try:
+            import time
+            time.sleep(0.05)
+            replies = list(session.get(
+                f"{prefix}/**",
+                target=zenoh.QueryTarget.ALL,
+                consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+            ))
+            payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+            cells = {p["address"]: p for p in payloads}
+            for addr, typ in cells_in:
+                assert addr in cells, f"{addr} not discovered"
+                assert cells[addr]["type"] == typ
+        finally:
+            for q in qs:
+                q.undeclare()
+
+
+def test_dynamic_join_and_leave():
+    """cell 动态加入/离开 (declare/undeclare queryable)，wildcard get 实时反映。"""
+    prefix = "test/cells_dyn"
+    with zenoh.open(zenoh.Config()) as session:
+        def make_handler(addr: str):
+            def h(query: zenoh.Query):
+                query.reply(query.key_expr, json.dumps({"address": addr}))
+            return h
+
+        import time
+
+        # 初始无 cell
+        replies = list(session.get(
+            f"{prefix}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert len(payloads) == 0
+
+        # 动态加入
+        q = session.declare_queryable(f"{prefix}/app/newcomer", make_handler("app/newcomer"))
+        time.sleep(0.05)
+        replies = list(session.get(
+            f"{prefix}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert any(p["address"] == "app/newcomer" for p in payloads)
+
+        # 动态离开
+        q.undeclare()
+        time.sleep(0.05)
+        replies = list(session.get(
+            f"{prefix}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert not any(p["address"] == "app/newcomer" for p in payloads)
