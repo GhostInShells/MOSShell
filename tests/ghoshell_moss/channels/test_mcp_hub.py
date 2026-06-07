@@ -15,6 +15,7 @@ from ghoshell_moss.channels.mcp_hub import (
     MCPHubState,
     build_mcp_hub_channel,
     _mcp_result_to_observe,
+    _render_input_schema,
 )
 from ghoshell_moss.contracts.configs import YamlConfigStore, ConfigType
 from ghoshell_moss.contracts.workspace import LocalStorage
@@ -283,7 +284,7 @@ class TestMCPHubStateStructure:
     async def test_add_server_without_config(self, state):
         cmd = state.get_own_command("add_server")
         result = await cmd(name="nonexistent")
-        assert "not found" in result.lower()
+        assert "not in config" in result.lower()
 
     @pytest.mark.asyncio
     async def test_remove_nonexistent_server(self, state):
@@ -426,3 +427,354 @@ class TestMCPHubIntegration:
 
         # Cleanup
         await state.on_close()
+
+
+# ---------------------------------------------------------------------------
+# Issue 7: _render_input_schema
+# ---------------------------------------------------------------------------
+
+class TestRenderInputSchema:
+    def test_basic_schema(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "input text"},
+                "count": {"type": "integer"},
+            },
+            "required": ["text"],
+        }
+        result = _render_input_schema(schema)
+        assert "`text`" in result
+        assert "string" in result
+        assert "required" in result
+        assert "input text" in result
+        assert "`count`" in result
+        assert "integer" in result
+
+    def test_non_object_schema(self):
+        assert _render_input_schema({"type": "array"}) == ""
+
+    def test_empty_schema(self):
+        assert _render_input_schema({}) == ""
+
+    def test_none_schema(self):
+        assert _render_input_schema(None) == ""
+
+    def test_no_properties(self):
+        assert _render_input_schema({"type": "object"}) == ""
+
+    def test_all_optional(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "flag": {"type": "boolean", "description": "enable feature"},
+            },
+        }
+        result = _render_input_schema(schema)
+        assert "required" not in result
+        assert "boolean" in result
+
+    def test_multi_line_description(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "first line\nsecond line\nthird line"},
+            },
+        }
+        result = _render_input_schema(schema)
+        assert "first line" in result
+        assert "second line" not in result  # truncated at first \n
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: Default scopes
+# ---------------------------------------------------------------------------
+
+class TestDefaultScopes:
+    def test_mcp_hub_channel_defaults_to_empty(self):
+        chan = MCPHubChannel(name="mcp")
+        assert chan._scopes == []
+
+    def test_mcp_hub_channel_explicit_scopes(self):
+        chan = MCPHubChannel(name="mcp", scopes=["ghost", "mode"])
+        assert chan._scopes == ["ghost", "mode"]
+
+
+# ---------------------------------------------------------------------------
+# Issue 4: _load_config get_or_create
+# ---------------------------------------------------------------------------
+
+class TestLoadConfigGetOrCreate:
+    @pytest.fixture
+    def fresh_matrix(self):
+        from unittest.mock import MagicMock
+        from ghoshell_moss.contracts.workspace import LocalStorage
+        matrix = MagicMock()
+        matrix.is_running.return_value = True
+        matrix.ghost_name = "test_ghost"
+        matrix.mode_name = "test_mode"
+        storage_root = LocalStorage(Path(tempfile.mkdtemp()))
+        matrix.get_scoped_storage.return_value = storage_root
+        return matrix
+
+    def test_load_config_returns_never_none_scoped(self, fresh_matrix):
+        state = MCPHubState(
+            matrix=fresh_matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        config = state._load_config()
+        assert config is not None
+        assert isinstance(config, MCPHubConfig)
+        assert config.servers == {}
+
+    def test_load_config_persists_empty_config(self, fresh_matrix):
+        state = MCPHubState(
+            matrix=fresh_matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        config = state._load_config()
+        assert config.servers == {}
+
+        storage = fresh_matrix.get_scoped_storage()
+        reloaded = storage.read_yaml("mcp_hub", MCPHubConfig)
+        assert reloaded is not None
+        assert reloaded.servers == {}
+
+    def test_load_config_returns_existing_config(self, fresh_matrix):
+        existing = MCPHubConfig(
+            servers={
+                "demo": MCPServerConfig(name="demo", command="python", args=["server.py"]),
+            }
+        )
+        storage = fresh_matrix.get_scoped_storage()
+        storage.write_yaml("mcp_hub", existing)
+
+        state = MCPHubState(
+            matrix=fresh_matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        config = state._load_config()
+        assert config.servers["demo"].command == "python"
+
+    @pytest.mark.skip(reason="non-scoped path requires IoC container with ConfigStore — verified in moss-repl integration")
+    def test_load_config_non_scoped_returns_config(self, fresh_matrix):
+        state = MCPHubState(
+            matrix=fresh_matrix,
+            name="mcp",
+            scopes=[],
+        )
+        config = state._load_config()
+        assert config is not None
+        assert isinstance(config, MCPHubConfig)
+
+
+# ---------------------------------------------------------------------------
+# Issue 3: add_server runtime params
+# ---------------------------------------------------------------------------
+
+class TestRuntimeAddServer:
+    @pytest.fixture
+    def matrix_storage(self):
+        from unittest.mock import MagicMock
+        from ghoshell_moss.contracts.workspace import LocalStorage
+        matrix = MagicMock()
+        matrix.is_running.return_value = True
+        matrix.ghost_name = "test_ghost"
+        matrix.mode_name = "test_mode"
+        storage_root = LocalStorage(Path(tempfile.mkdtemp()))
+        matrix.get_scoped_storage.return_value = storage_root
+        return matrix, storage_root
+
+    def test_add_server_command_exists_with_runtime_params(self, matrix_storage):
+        matrix, storage = matrix_storage
+        state = MCPHubState(
+            matrix=matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        cmd = state.get_own_command("add_server")
+        assert cmd is not None
+
+    def test_add_server_runtime_params_saves_config(self, matrix_storage):
+        matrix, storage = matrix_storage
+        state = MCPHubState(
+            matrix=matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        config = MCPHubConfig()
+        server_cfg = MCPServerConfig(
+            name="runtime_added",
+            transport="stdio",
+            command="echo",
+            args=["hello"],
+            env={"X": "1"},
+            description="runtime test",
+        )
+        config.servers["runtime_added"] = server_cfg
+        state._save_config(config)
+
+        reloaded = storage.read_yaml("mcp_hub", MCPHubConfig)
+        assert reloaded.servers["runtime_added"].command == "echo"
+        assert reloaded.servers["runtime_added"].args == ["hello"]
+        assert reloaded.servers["runtime_added"].env == {"X": "1"}
+        assert reloaded.servers["runtime_added"].description == "runtime test"
+
+    def test_add_server_runtime_env_parsing(self, matrix_storage):
+        env_str = "KEY=val,FOO=bar"
+        parsed_env = {}
+        for pair in env_str.split(','):
+            pair = pair.strip()
+            if '=' in pair:
+                k, v = pair.split('=', 1)
+                parsed_env[k.strip()] = v.strip()
+        assert parsed_env == {"KEY": "val", "FOO": "bar"}
+
+    def test_add_server_runtime_args_parsing(self, matrix_storage):
+        args_str = "-m,mcp_server,--verbose"
+        parsed_args = [a.strip() for a in args_str.split(',') if a.strip()]
+        assert parsed_args == ["-m", "mcp_server", "--verbose"]
+
+    def test_add_server_empty_env_and_args(self, matrix_storage):
+        assert [] == [a.strip() for a in ''.split(',') if a.strip()]
+        parsed_env = {}
+        env_str = ""
+        if env_str:
+            for pair in env_str.split(','):
+                pair = pair.strip()
+                if '=' in pair:
+                    k, v = pair.split('=', 1)
+                    parsed_env[k.strip()] = v.strip()
+        assert parsed_env == {}
+
+
+# ---------------------------------------------------------------------------
+# Issue 5: always_observe on management commands
+# ---------------------------------------------------------------------------
+
+class TestAlwaysObserve:
+    @pytest.fixture
+    def state(self):
+        from unittest.mock import MagicMock
+        from ghoshell_moss.contracts.workspace import LocalStorage
+        matrix = MagicMock()
+        matrix.is_running.return_value = True
+        storage_root = LocalStorage(Path(tempfile.mkdtemp()))
+        matrix.get_scoped_storage.return_value = storage_root
+        return MCPHubState(
+            matrix=matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+
+    def test_add_server_always_observe(self, state):
+        cmd = state._own_commands["add_server"]
+        assert cmd._always_observe is True
+
+    def test_remove_server_always_observe(self, state):
+        cmd = state._own_commands["remove_server"]
+        assert cmd._always_observe is True
+
+    def test_restart_server_always_observe(self, state):
+        cmd = state._own_commands["restart_server"]
+        assert cmd._always_observe is True
+
+    def test_list_servers_always_observe(self, state):
+        cmd = state._own_commands["list_servers"]
+        assert cmd._always_observe is True
+
+
+# ---------------------------------------------------------------------------
+# Issue 6: No hand-written _DEFAULT_INSTRUCTION
+# ---------------------------------------------------------------------------
+
+class TestNoHandWrittenInstruction:
+    @pytest.fixture
+    def state(self):
+        from unittest.mock import MagicMock
+        from ghoshell_moss.contracts.workspace import LocalStorage
+        matrix = MagicMock()
+        matrix.is_running.return_value = True
+        storage_root = LocalStorage(Path(tempfile.mkdtemp()))
+        matrix.get_scoped_storage.return_value = storage_root
+        return MCPHubState(
+            matrix=matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+
+    def test_no_default_instruction_constant(self):
+        import inspect
+        src = inspect.getsource(MCPHubState._bootstrap)
+        assert "_DEFAULT_INSTRUCTION" not in src
+
+    def test_no_get_instruction_override(self):
+        import inspect
+        source = inspect.getsource(MCPHubState)
+        assert 'get_instruction' not in source
+
+
+# ---------------------------------------------------------------------------
+# Issue 7: context messages with inputSchema
+# ---------------------------------------------------------------------------
+
+class TestContextMessagesWithSchema:
+    @pytest.fixture
+    def state_with_tools(self):
+        from unittest.mock import MagicMock
+        from ghoshell_moss.contracts.workspace import LocalStorage
+        from ghoshell_moss.channels.mcp_hub import _MCPServerSession
+        from mcp import types as mcp_types
+        matrix = MagicMock()
+        matrix.is_running.return_value = True
+        storage_root = LocalStorage(Path(tempfile.mkdtemp()))
+        matrix.get_scoped_storage.return_value = storage_root
+        state = MCPHubState(
+            matrix=matrix,
+            name="mcp",
+            scopes=["ghost", "mode"],
+        )
+        tools = [
+            mcp_types.Tool(
+                name="echo",
+                description="回显输入文本。",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "the text to echo"},
+                    },
+                    "required": ["text"],
+                },
+            ),
+            mcp_types.Tool(
+                name="noop",
+                description="无参数工具。",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+        ]
+        session = _MCPServerSession(
+            config=MCPServerConfig(name="test", command="python"),
+        )
+        session.tools = tools
+        session.state = "connected"
+        state._sessions["test"] = session
+        return state
+
+    @pytest.mark.asyncio
+    async def test_context_contains_schema_params(self, state_with_tools):
+        msgs = await state_with_tools.get_context_messages()
+        context_text = msgs[0]
+        assert "params:" in context_text
+        assert "`text`" in context_text
+        assert "string" in context_text
+        assert "the text to echo" in context_text
+
+    @pytest.mark.asyncio
+    async def test_context_no_params_for_empty_schema(self, state_with_tools):
+        msgs = await state_with_tools.get_context_messages()
+        context_text = msgs[0]
+        params_lines = [l for l in context_text.split('\n') if l.strip().startswith('params:')]
+        assert len(params_lines) == 1

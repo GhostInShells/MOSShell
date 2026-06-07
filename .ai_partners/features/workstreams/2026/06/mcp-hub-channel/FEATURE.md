@@ -4,8 +4,8 @@ depends: [storage-typed-protocols]
 description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调度，模型以原生 CTML 思路操作外部工具。
 milestone: null
 priority: P0
-status: in-progress
-status_note: 2026-06-07 全链路验证通过。6 issues 待修，见 Issues 节。
+status: completed
+status_note: 2026-06-07 全链路验证通过 + 6 issues 修复 + moss-repl 验收 + 24 单测 + stubs 同步。人类工程师 review 合并。
 title: MCP Hub Channel
 updated: '2026-06-07'
 ---
@@ -107,7 +107,7 @@ MCP server 的 tool 目录在 context messages 中展示（类似 skills 列表�
 
 以下 4 个问题在 2026-06-07 验证过程中发现，实现已完成但存在摩擦点。
 
-### Issue 1: 默认 scope 反了 — 应默认走 ConfigStore
+### Issue 1: 默认 scope 反了 — 应默认走 ConfigStore ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:436`
 
@@ -123,7 +123,7 @@ self._scopes = scopes or []
 
 **修复**: 改默认值为 `[]`（空列表 → falsy → 不进入 scoped 分支 → `_load_config` 走 ConfigStore）。
 
-### Issue 2: MCPHubConfig 没有注册到 manifests/configs.py
+### Issue 2: MCPHubConfig 没有注册到 manifests/configs.py ✅ 已修
 
 **位置**: `.moss_ws/src/MOSS/manifests/configs.py`
 
@@ -134,7 +134,7 @@ self._scopes = scopes or []
 from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 ```
 
-### Issue 3: add_server 不支持运行时传参
+### Issue 3: add_server 不支持运行时传参 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py` — `MCPHubState._bootstrap()` 闭包中的 `add_server`
 
@@ -144,7 +144,7 @@ from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 
 **前置依赖**: Issue 4（get_or_create）必须先修——否则首次添加时没有 config 对象可 append。
 
-### Issue 4: _load_config 缺少 get_or_create 语义
+### Issue 4: _load_config 缺少 get_or_create 语义 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:363-373`
 
@@ -185,7 +185,7 @@ def _load_config(self) -> MCPHubConfig | None:
 5. Issue 6 (删掉手写 instruction) — 框架已自动反射
 6. Issue 7 (补 JSON Schema) — context messages 缺失 tool 参数定义
 
-### Issue 6: _DEFAULT_INSTRUCTION 手写且冗余
+### Issue 6: _DEFAULT_INSTRUCTION 手写且冗余 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:201-212`
 
@@ -208,7 +208,7 @@ MCP Hub — 通过 MCP 协议接入的外部工具集。
 
 **修复**: 删除 `_DEFAULT_INSTRUCTION` 和 `get_instruction()` 覆写，让框架默认行为接管。
 
-### Issue 7: context messages 缺少 tool inputSchema
+### Issue 7: context messages 缺少 tool inputSchema ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:401-418` — `get_context_messages`
 

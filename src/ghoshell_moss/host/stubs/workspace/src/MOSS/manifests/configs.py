@@ -18,6 +18,7 @@
 
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerConfig
 from ghoshell_moss.host.providers.tts_service_provider import TTSManagerConfig
+from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 from ghoshell_moss.contracts.audio import AudioCaptureConfig
 
 tts_config = TTSManagerConfig()
@@ -25,3 +26,5 @@ tts_config = TTSManagerConfig()
 audio_player_config = AudioPlayerConfig()
 
 audio_capture_config = AudioCaptureConfig()
+
+mcp_hub_config = MCPHubConfig()
