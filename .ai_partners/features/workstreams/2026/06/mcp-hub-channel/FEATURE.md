@@ -4,8 +4,8 @@ depends: [storage-typed-protocols]
 description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调度，模型以原生 CTML 思路操作外部工具。
 milestone: null
 priority: P0
-status: in-progress
-status_note: 2026-06-07 全链路验证通过。6 issues 待修，见 Issues 节。
+status: completed
+status_note: 2026-06-07 全链路验证通过 + 6 issues 修复 + moss-repl 验收 + 24 单测 + stubs 同步。人类工程师 review 合并。
 title: MCP Hub Channel
 updated: '2026-06-07'
 ---
@@ -107,7 +107,7 @@ MCP server 的 tool 目录在 context messages 中展示（类似 skills 列表�
 
 以下 4 个问题在 2026-06-07 验证过程中发现，实现已完成但存在摩擦点。
 
-### Issue 1: 默认 scope 反了 — 应默认走 ConfigStore
+### Issue 1: 默认 scope 反了 — 应默认走 ConfigStore ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:436`
 
@@ -123,7 +123,7 @@ self._scopes = scopes or []
 
 **修复**: 改默认值为 `[]`（空列表 → falsy → 不进入 scoped 分支 → `_load_config` 走 ConfigStore）。
 
-### Issue 2: MCPHubConfig 没有注册到 manifests/configs.py
+### Issue 2: MCPHubConfig 没有注册到 manifests/configs.py ✅ 已修
 
 **位置**: `.moss_ws/src/MOSS/manifests/configs.py`
 
@@ -134,7 +134,7 @@ self._scopes = scopes or []
 from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 ```
 
-### Issue 3: add_server 不支持运行时传参
+### Issue 3: add_server 不支持运行时传参 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py` — `MCPHubState._bootstrap()` 闭包中的 `add_server`
 
@@ -144,7 +144,7 @@ from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 
 **前置依赖**: Issue 4（get_or_create）必须先修——否则首次添加时没有 config 对象可 append。
 
-### Issue 4: _load_config 缺少 get_or_create 语义
+### Issue 4: _load_config 缺少 get_or_create 语义 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:363-373`
 
@@ -185,7 +185,7 @@ def _load_config(self) -> MCPHubConfig | None:
 5. Issue 6 (删掉手写 instruction) — 框架已自动反射
 6. Issue 7 (补 JSON Schema) — context messages 缺失 tool 参数定义
 
-### Issue 6: _DEFAULT_INSTRUCTION 手写且冗余
+### Issue 6: _DEFAULT_INSTRUCTION 手写且冗余 ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:201-212`
 
@@ -208,7 +208,7 @@ MCP Hub — 通过 MCP 协议接入的外部工具集。
 
 **修复**: 删除 `_DEFAULT_INSTRUCTION` 和 `get_instruction()` 覆写，让框架默认行为接管。
 
-### Issue 7: context messages 缺少 tool inputSchema
+### Issue 7: context messages 缺少 tool inputSchema ✅ 已修
 
 **位置**: `src/ghoshell_moss/channels/mcp_hub.py:401-418` — `get_context_messages`
 
@@ -248,3 +248,36 @@ Issue 6 和 7 暴露了一个模式：**模型写实现时已知全部细节（�
 4. `add_server` 支持运行时传参（无预配置 YAML）
 5. `exec` 返回的 Observe 正确进入感知流
 6. 管理命令触发 observe 后上下文正确刷新
+
+## 第三方 MCP 集成验证 (2026-06-07)
+
+### Baidu Maps — App 模式验证 (已废弃)
+
+Baidu Maps (`mcp-server-baidu-maps==0.2.4`) 封装为 `mcp/baidu_map` app，端到端验证通过：
+`moss-run-ghost echo` → Ghost 自动生成 CTML → MCP tool call → 结果感知 → 自然语言回复。
+
+### Baidu Maps — 运行时 add_server 验证 (最终方案)
+
+通过 MCP Hub 的运行时 `add_server` 直接添加百度地图 server：
+
+```xml
+<mcp:add_server name="baidu" transport="stdio" command="mcp-server-baidu-maps"
+  env="BAIDU_MAPS_API_KEY=<your_key>" />
+<mcp:exec server="baidu" tool="map_weather">
+{"district_id": "110108"}
+</mcp:exec>
+```
+
+**全链路验证通过**。`add_server` 运行时传参 → MCP server 连接 → `exec` 调用 → API 返回结果。
+
+### 结论：不需要 MCP app wrapper
+
+MCP Hub 的运行时 `add_server` 使得封装 MCP server 为独立 app 完全不必要。`add_server` + `exec` 已覆盖 app 的全部功能，且无需额外进程、无需预配置 YAML、无需 `matrix.wait_closed()` 保活。
+
+**不用 app 的优势**：
+- 零额外进程开销 — 所有 session 在 MCP Hub Channel 进程内管理
+- 动态 server 生命周期 — Ghost 可根据对话 context 按需 add/remove/restart
+- 配置零散落 — server config 可通过 MCP Hub 的全球化或 scoped storage 统一管理
+- 模型视角不变 — 始终通过 `mcp:exec` 调用，无论 server 来自预配置还是运行时添加
+
+`mcp/baidu_map` app 目录已移除。保留此节作为设计演进的记录。
