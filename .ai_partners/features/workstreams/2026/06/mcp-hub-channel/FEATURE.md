@@ -248,3 +248,31 @@ Issue 6 和 7 暴露了一个模式：**模型写实现时已知全部细节（�
 4. `add_server` 支持运行时传参（无预配置 YAML）
 5. `exec` 返回的 Observe 正确进入感知流
 6. 管理命令触发 observe 后上下文正确刷新
+
+## MCP App 集成验证 (2026-06-07)
+
+Baidu Maps (`mcp-server-baidu-maps==0.2.4`) 作为第三方 MCP server，封装为 MOSS app 并端到端验证通过。
+
+### App 设计
+
+`mcp/baidu_map` app — 自包含 MCP wrapper，复用 MCP Hub 的 `MCPServerSession`、`mcp_result_to_observe`、`render_input_schema` 公共 API。不重复实现连接逻辑。
+
+- Channel: `apps.mcp_baidu_map`
+- Commands: `call(tool, timeout, text__)` + `list_tools()`
+- Context: 动态反射 10 个 tool 的 inputSchema
+- AK: 通过 app 本级 `.env` 文件配置（`BAIDU_MAPS_API_KEY`）
+
+### 验证结果
+
+| 操作 | 结果 |
+|------|------|
+| `moss apps list` | `mcp/baidu_map` 发现 |
+| `<apps:start fullname="mcp/baidu_map" />` | app 启动，channel 注册 |
+| `<apps.mcp_baidu_map:list_tools />` | 10 个工具完整暴露，带参数 schema |
+| `<apps.mcp_baidu_map:call tool="map_geocode">` | 地理编码返回正确坐标 |
+| `<apps.mcp_baidu_map:call tool="map_weather">` | 天气查询返回海淀区实时数据 |
+| `moss-run-ghost echo` | Ghost 自然语言交互 → CTML 编排 → 结果呈现 |
+
+### 意义
+
+证明了 MOSS app 模式可以包装任意 MCP server，Ghost 通过 CTML 原生调用外部工具，完全屏蔽 MCP 协议。`moss-run-ghost` 端到端链路：自然语言 → Ghost 理解 → CTML 生成 → app channel 路由 → MCP tool call → 结果感知 → 自然语言回复。

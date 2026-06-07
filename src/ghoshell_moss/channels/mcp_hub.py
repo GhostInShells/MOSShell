@@ -33,7 +33,8 @@ except ImportError:
     raise ImportError("mcp hub requires ghoshell-moss[mcp]. run: uv sync --all-extras")
 
 __all__ = ['MCPHubChannel', 'build_mcp_hub_channel', 'MCPHubState',
-           'MCPServerConfig', 'MCPHubConfig']
+           'MCPServerConfig', 'MCPHubConfig', 'MCPServerSession',
+           'mcp_result_to_observe', 'render_input_schema']
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ class MCPHubConfig(ConfigType):
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _MCPServerSession:
+class MCPServerSession:
     """管理单个 MCP server 的连接生命周期。"""
 
     config: MCPServerConfig
@@ -154,7 +155,7 @@ class _MCPServerSession:
                 self.client.call_tool(name=name, arguments=arguments),
                 timeout=timeout,
             )
-            return _mcp_result_to_observe(result, server=self.config.name, tool=name)
+            return mcp_result_to_observe(result, server=self.config.name, tool=name)
         except asyncio.TimeoutError:
             return Observe.new(f"[MCP:{self.config.name}/{name}] timeout after {timeout}s")
         except mcp.McpError as e:
@@ -167,7 +168,7 @@ class _MCPServerSession:
 # MCP result → Observe
 # ---------------------------------------------------------------------------
 
-def _mcp_result_to_observe(
+def mcp_result_to_observe(
     result: mcp_types.CallToolResult,
     *,
     server: str,
@@ -194,7 +195,7 @@ def _mcp_result_to_observe(
     return Observe(messages=messages)
 
 
-def _render_input_schema(schema: dict) -> str:
+def render_input_schema(schema: dict) -> str:
     """将 MCP tool inputSchema 渲染为简洁的参数列表。"""
     if not schema or schema.get('type') != 'object':
         return ''
@@ -234,7 +235,7 @@ class MCPHubState(ChannelState):
         self._description = description or 'MCP Hub — 管理外部 MCP 工具调用'
         self._scopes = scopes or []
         self._uid = unique_id()
-        self._sessions: dict[str, _MCPServerSession] = {}
+        self._sessions: dict[str, MCPServerSession] = {}
         self._own_commands: dict[str, Command] = {}
         self._bootstrap()
 
@@ -337,7 +338,7 @@ class MCPHubState(ChannelState):
                     available = list(config.servers.keys())
                     return f"[MCP] Server '{name}' not in config. Available: {', '.join(available)}"
 
-            session = _MCPServerSession(config=server_cfg)
+            session = MCPServerSession(config=server_cfg)
             await session.connect()
             self._sessions[name] = session
             return f"[MCP:{name}] {session.state}" + (f": {session.error}" if session.error else '')
@@ -432,7 +433,7 @@ class MCPHubState(ChannelState):
         config = self._load_config()
 
         for name, server_cfg in config.servers.items():
-            session = _MCPServerSession(config=server_cfg)
+            session = MCPServerSession(config=server_cfg)
             await session.connect()
             self._sessions[name] = session
 
@@ -454,7 +455,7 @@ class MCPHubState(ChannelState):
                 for tool in session.tools:
                     desc = (tool.description or '').split('\n')[0][:120]
                     lines.append(f"  - `{tool.name}`: {desc}")
-                    params = _render_input_schema(tool.inputSchema)
+                    params = render_input_schema(tool.inputSchema)
                     if params:
                         lines.append(f"    params: {params}")
             elif session.error:
