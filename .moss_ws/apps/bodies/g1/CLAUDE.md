@@ -84,7 +84,7 @@ macOS 上不需要编译 cyclonedds。`docs/` 和 `scripts/` 在 macOS 编写，
 - 基线实验 (E) 是所有代码工作的前提
 - 阶段 H 的模式渐进：debug → sit → 遥控交互 → 模型控制急停 → 多模式切换
 
-当前：**阶段 A — 云端文档摸底**。
+当前：**阶段 B — SDK 源码验证** (待 clone `src/unitree_sdk2_python`)。阶段 A 已完成。
 
 ## 已知问题
 

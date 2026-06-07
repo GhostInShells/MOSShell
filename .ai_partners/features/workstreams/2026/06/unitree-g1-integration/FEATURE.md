@@ -3,7 +3,7 @@ title: Unitree G1 Integration
 status: in-progress
 priority: P0
 created: 2026-06-04
-updated: 2026-06-07
+updated: 2026-06-08
 depends: []
 milestone:
 description: >-
@@ -142,3 +142,33 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 3. 阶段 B: clone SDK 源码，验证 API 存在性和签名
 4. 阶段 C+D: 硬件环境记录 + MOSS 装机
 5. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
+
+---
+
+## 2026-06-07/08 Session — 实机连接与 MOSS 装机
+
+### 完成项
+
+- 硬件拓扑确认：PC1（闭源运控）→ 交换机 ← PC2（Jetson Orin NX, 二开入口）← 外部 Mac
+- 以太网进入交换机 → 配静态 IP → SSH 到 PC2 (unitree/123)
+- PC2 WiFi 射频开启 → 连接本地 WiFi → 路由器 MAC 绑定固定 IP
+- 安全加固：创建 moss 用户、UFW 放行 22
+- Git 直推通道：Mac `git remote add g1` → `git push g1 dev`
+- Python 工具链：pipx → uv → Python 3.12
+- `uv sync --active --all-extras` — MOSS 在 G1 PC2 上安装运行
+- 文档产出：`docs/hardware.md`, `docs/moss-on-pc2.md`
+- CLAUDE.md / README.md 阶段状态更新为阶段 B
+
+### 关键发现
+
+**G1 架构是交换机组网，不是点对点。** 外部以太网口连接的是交换机，Mac 配静态 IP 后可与 PC1、PC2、LiDAR 三者通信。PC1 通过访问控制闭源，PC2 是唯一二开入口。
+
+**PC2 WiFi 默认关闭是安全设计，不是 bug。** PC2 被隔离在交换机后，无法自行出站。这防止了二开代码意外联网，但也意味着每次装机都要先用以太网路径打开 WiFi。
+
+**uv 工具链在 Jetson 上的摩擦：** Python 3.8 系统版本 → pipx → uv → Python 3.12，每一步都涉及源配置（pip/pipx/uv 三级互不继承）。镜像源的路径兼容性问题导致预编译 Python 下载反复失败。最终 Mac 中转解决了带宽瓶颈。
+
+### 下一步
+
+1. `uv sync` 构建完成后验证：`moss --ai start`、`moss --ai all-commands`
+2. 阶段 B: clone SDK 源码到 PC2，验证 API
+3. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
