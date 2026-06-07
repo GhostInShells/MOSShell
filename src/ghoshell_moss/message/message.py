@@ -433,9 +433,9 @@ class Message(BaseModel, WithAdditional):
             attr_str = ' ' + attrs
         contents = [Text.new_content(f'<{tag}{attr_str}>\n')]
         contents.extend(self.contents)
-        contents.append(Text.new_content(f'</{tag}>\n'))
+        contents.append(Text.new_content(f'\n</{tag}>'))
         if join_text:
-            yield from self.join_contents(self.contents)
+            yield from self.join_contents(contents)
         else:
             yield from contents
 
