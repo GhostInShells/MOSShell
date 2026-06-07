@@ -4,10 +4,10 @@ depends: []
 description: 最小通用 Module 沙盒 — builtins 可控、有状态生命周期、父子沙盒副作用传导。 app + sqlite 验收。
 milestone: null
 priority: P1
-status: draft
-status_note: design completed, awaiting implementation
+status: in-progress
+status_note: core implementation + 31 tests passing, exported via codex __init__.py
 title: Codex Module Sandbox
-updated: '2026-06-04'
+updated: 2026-06-07
 ---
 
 # Codex Module Sandbox

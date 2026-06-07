@@ -4,6 +4,7 @@ from importlib import import_module
 from .reflector import reflect_module, reflect_module_by_import_path, reflect_any_by_import_path, Reflector
 from .compiler import Compiler
 from .executor import Executor
+from .sandbox import Sandbox, SANDBOX_BUILTINS
 from .discover import (
     ModuleManifest, ScanError, CodexReflectionError,
     scan_module, from_module, scan_package,
@@ -23,8 +24,8 @@ __all__ = [
     # Reflector
     'Reflector',
     'reflect_module', 'reflect_module_by_import_path', 'reflect_any_by_import_path',
-    # Compiler / Executor
-    'Compiler', 'compile', 'Executor',
+    # Compiler / Executor / Sandbox
+    'Compiler', 'compile', 'Executor', 'Sandbox', 'SANDBOX_BUILTINS',
     # Discovery
     'ModuleManifest', 'ScanError', 'CodexReflectionError',
     'scan_module', 'from_module', 'scan_package',

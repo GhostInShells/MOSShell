@@ -1,9 +1,9 @@
 ---
 title: Module Eval Channel
-status: draft
+status: in-progress
 priority: P2
 created: 2026-06-03
-updated: 2026-06-03
+updated: 2026-06-07
 depends: [codex-module-sandbox]
 milestone:
 description: >-
