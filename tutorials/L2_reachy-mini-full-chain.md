@@ -4,6 +4,16 @@
 
 **2 小时，理解 Reachy Mini 的完整集成链路：源码结构 → App 隔离 → MCP 调试 → Mode bringup → Ghost 专属控制。**
 
+## 你需要知道什么
+
+- `moss ctml read` — CTML 语法与并行调度模型
+- `moss codex blueprint channel_builder` — Channel 构建（含有状态 Channel）
+- `moss codex blueprint matrix` — Matrix 进程通讯
+- `moss codex blueprint ghost` — Ghost 运行时与 soul prompt
+- `moss docs read app-system` — App 体系与依赖隔离
+- 如需了解集成过程的完整决策记录：`moss features status reachymini-integration`
+- 开发时如需 MCP 调试：`moss howtos list` 中找 MCP 相关文档
+
 ## 你要做什么
 
 从零开始，把一台 Reachy Mini 机器人接入 MOSS，最终拥有一个**专属 Ghost**，能用自然语言控制机器人的头部、天线、舞蹈和表情。
@@ -24,48 +34,15 @@ Reachy Mini 的 MOSS 集成分为两层：通用 contrib 包 + workspace App 实
 
 ### 1.1 核心 contrib 包
 
-```
-src/ghoshell_moss_contrib/moss_in_reachy_mini/
-├── main.py              # MossInReachyMini 装配器 + provide_channel() 入口
-├── components/
-│   ├── body.py          # 舞蹈 + 表情（102 emoji 映射，HuggingFace 自加载）
-│   ├── head.py          # 6-DOF 头部控制 + 呼吸/保持空闲模式
-│   ├── antennas.py      # 天线角度插值控制
-│   └── vision.py        # 相机帧捕捉（子 Channel）
-├── state/
-│   ├── abcd.py          # BaseReachyState 基类
-│   ├── waken.py         # 唤醒态：全命令可用，300s 无交互 → boring
-│   ├── boring.py        # 无聊态：电机使能但无命令，30s → asleep
-│   └── asleep.py        # 休眠态：电机断电，低头闭眼
-├── moves/
-│   └── head_move.py     # HeadMove + BreathingMove 插值算法
-└── audio/
-    └── player.py        # 音频流推送（PCM → Float32 → Reachy 扬声器）
+用以下命令查看 contrib 包的完整接口：
+
+```bash
+moss codex get-interface ghoshell_moss_contrib.moss_in_reachy_mini.main
 ```
 
-这 13 个 Python 文件组成了通用的 Reachy Mini 集成逻辑。它不依赖任何具体的 workspace，可以被任何 MOSS 项目复用。
+这会反射出 `MossInReachyMini` 装配器类和 `provide_channel()` 入口。13 个 Python 文件组成了通用的 Reachy Mini 集成逻辑——它不依赖任何具体的 workspace，可以被任何 MOSS 项目复用。
 
-核心装配在 `MossInReachyMini` 类中：
-
-```python
-# src/ghoshell_moss_contrib/moss_in_reachy_mini/main.py
-class MossInReachyMini:
-    def __init__(self, mini: ReachyMini, ws, logger):
-        self.head = Head(mini)
-        self.body = Body(mini, ws, logger)
-        self.antennas = Antennas(mini)
-        # 三个状态构成状态机
-        self.waken = WakenState(head, body, antennas, mini)
-        self.boring = BoringState(head, mini)
-        self.asleep = AsleepState(head, mini)
-
-    def as_channel(self) -> Channel:
-        channel = new_prime_channel(name="reachy_mini_body", ...)
-        channel.with_state(self.waken)
-        channel.with_state(self.boring)
-        channel.with_state(self.asleep)
-        return channel
-```
+核心装配在 `MossInReachyMini` 类中：它组合 `Head` + `Body` + `Antennas` 三个硬件组件，用三个状态（`WakenState` / `BoringState` / `AsleepState`）构成状态机，通过 `as_channel()` 暴露为有状态 Channel。
 
 状态流转：
 
@@ -83,16 +60,10 @@ Asleep (电机断电, 无命令)
 
 ### 1.2 App 实例
 
-```
-.moss_ws/apps/bodies/reachymini/
-├── APP.md              # App 元信息：uv 启动，不自动重启
-├── main.py             # 3 行入口：load .env → Matrix.discover() → provide_channel()
-├── pyproject.toml      # 独立依赖：reachy-mini + dances-library + ghoshell-moss
-├── uv.lock             # 锁定 195 个包
-├── .env.example        # REACHY_MEDIA_BACKEND 等配置
-├── configs/
-│   └── reachy_mini_emotions/  # 74+ 表情动画（从 HuggingFace 自动下载）
-└── runtime/            # 运行时数据（GStreamer 缓存、日志）
+用以下命令查看 App 元信息：
+
+```bash
+moss apps show bodies/reachymini
 ```
 
 `main.py` 极薄——真正的逻辑在 contrib 包里：
@@ -107,6 +78,8 @@ from ghoshell_moss_contrib.moss_in_reachy_mini.main import provide_channel
 if __name__ == "__main__":
     Matrix.discover().run(provide_channel)
 ```
+
+App 目录下有 `pyproject.toml`（独立依赖包括 `reachy-mini` + `dances-library`）、`.env.example`（`REACHY_MEDIA_BACKEND` 等配置）、`configs/`（表情动画）和 `runtime/`（运行时数据）。
 
 ## 第二步：为什么放在 apps 里
 
@@ -131,14 +104,11 @@ MOSS Host ── AppStoreChannel proxy ── apps.bodies_reachymini channel
 
 这就是 MOSS App 体系的核心价值：**重型依赖隔离在独立进程中，通过 Matrix 总线通讯，不污染核心环境。**
 
-项目 `pyproject.toml` 中 reachy-mini 的依赖已被注释掉，附注说明了迁移原因：
-
-```python
-# reachy_mini SDK 依赖已移除。重量级依赖（pygobject/pycairo 等系统编译依赖）
-# 不应污染核心开发环境。reachy_mini 将以独立 app 方式提供，拥有独立 venv。
-```
+项目 `pyproject.toml` 中 reachy-mini 的依赖已被注释掉，附注说明了迁移原因。
 
 ## 第三步：安装依赖，通过 MCP 调试
+
+MCP 是可选的开发时自主调试方案。如果你有 Claude Code 等支持 MCP 的 coding agent，可以用它来实时调试 CTML 指令。
 
 ### 3.1 安装 App 依赖
 
@@ -173,7 +143,7 @@ cp .env.example .env
 
 macOS 上 pip 安装的 `gstreamer_python` 有 GObject 类型系统兼容问题（`g_type_get_qdata` 断言失败），`no_media` 跳过本地相机初始化。机器人上的 daemon 自己处理 WebRTC 视频流。
 
-### 3.3 启动 MCP，在 Claude Code 中调试
+### 3.3 启动 MCP 调试
 
 先确保 Reachy Mini 机器人在线（daemon 在 `ws://reachy-mini.local:8000/ws/sdk` 监听）。
 
@@ -182,7 +152,9 @@ macOS 上 pip 安装的 `gstreamer_python` 有 GObject 类型系统兼容问题�
 .venv/bin/moss-as-mcp --mode default
 ```
 
-在 Claude Code 中，MCP 注册后可以直接通过 CTML 操作机器人。先确认 App 可见：
+在你的 coding agent 中注册 MCP 后，可以直接通过 CTML 操作机器人。
+
+先确认 App 可见：
 
 ```ctml
 <apps:list_apps />
@@ -196,7 +168,7 @@ macOS 上 pip 安装的 `gstreamer_python` 有 GObject 类型系统兼容问题�
 <apps:start fullname="bodies/reachymini" timeout="30" />
 ```
 
-timeout=30 给你 30 秒等 App venv 启动 + Channel 注册。成功后显示 `[OK] App channel connected and ready`。
+timeout=30 给 App venv 启动 + Channel 注册留时间。成功后显示 `[OK] App channel connected and ready`。
 
 现在检查 Channel 是否在 Shell 中可见：
 
@@ -238,7 +210,7 @@ async def switch_state(name)
 
 ### 3.4 CTML 语法速查——验证中踩过的坑
 
-以下规则不是来自文档，是在实操中报错后纠正的：
+以下规则来自实操中报错后纠正：
 
 | 规则 | 错误写法 | 正确写法 |
 |------|---------|---------|
@@ -246,6 +218,8 @@ async def switch_state(name)
 | `chunks__` 是标签体 | `<say chunks__="文本" />` | `<say>文本</say>` |
 | `voice:dict` 用单引号 | `voice:dict="{"speed": 1.0}"` | `voice:dict="{'speed': 1.0}"` |
 | 状态 Channel 不加状态前缀 | `<apps...:waken:head_reset />` | `<apps...:head_reset />` |
+
+这些规则的权威来源是 `moss ctml read`——实操前必读。
 
 ### 3.5 并行调度——语音与动作交替
 
@@ -275,7 +249,7 @@ CTML 的流式解释器支持并行调度。没有数据依赖的命令可以同
 
 ### 3.6 可选：音频播放能力
 
-Reachy Mini 自带扬声器，MOSS 可以通过 `ReachyMiniStreamPlayer`（`audio/player.py`）将音频流推送到机器人。音频能力的配置涉及语音合成后端、流式传输协议等，详见：
+Reachy Mini 自带扬声器，MOSS 可以通过 `ReachyMiniStreamPlayer` 将音频流推送到机器人。音频能力的配置涉及语音合成后端、流式传输协议等：
 
 - `moss features status speech-governance` — 语音治理 feature，多后端适配与容错降级
 - `moss codex list ghoshell_moss_contrib.moss_in_reachy_mini.audio` — 音频模块接口
@@ -284,7 +258,7 @@ Reachy Mini 自带扬声器，MOSS 可以通过 `ReachyMiniStreamPlayer`（`audi
 
 ### 3.7 前台调试（不用 MCP）
 
-如果 MCP 环节不适用，也可以前台跑：
+如果不用 MCP 调试，也可以前台跑：
 
 ```bash
 .venv/bin/moss apps test bodies/reachymini
@@ -310,24 +284,11 @@ Reachy Mini 自带扬声器，MOSS 可以通过 `ReachyMiniStreamPlayer`（`audi
 - `-u "bodies/reachymini"` — Host 启动时自动 bringup
 - `-d "..."` — 一行描述
 
-产物在 `.moss_ws/src/MOSS/modes/reachymini/`：
-
-```
-modes/reachymini/
-├── MODE.md          # frontmatter: apps + bringup_apps 配置
-├── __init__.py
-├── channels.py      # mode 专属 Channel（按需编辑）
-├── providers.py     # mode 专属 IoC 提供者
-├── configs.py
-├── topics.py
-├── resources.py
-├── nuclei.py        # 感知核（Mindflow 输入源，按需添加）
-└── contracts.py
-```
+用 `moss modes show reachymini` 查看产物和完整配置。
 
 ### 4.2 编辑 MODE.md 的 instruction
 
-打开 `.moss_ws/src/MOSS/modes/reachymini/MODE.md`，在 frontmatter 下方的正文区域写 mode 说明：
+打开 Mode 目录下的 `MODE.md`（用 `moss modes show reachymini` 可找到路径），在 frontmatter 下方的正文区域写 mode 说明：
 
 ```markdown
 ---
@@ -387,17 +348,10 @@ Mode 配好了，现在让 Ghost 来控制机器人。
 ### 5.1 确认 echo ghost 存在
 
 ```bash
-.venv/bin/moss-run-ghost
+.venv/bin/moss ghosts list
 ```
 
-应该看到：
-
-```
-Available ghosts:
-
-  echo — Atom
-    ...
-```
+应该看到 `echo — Atom`。
 
 ### 5.2 用 reachymini mode 启动 echo ghost
 
@@ -423,7 +377,7 @@ Ghost: <apps.bodies_reachymini:head_reset idle_mode="breathing" duration="1.2" /
        <apps.bodies_reachymini:emotion emoji="👋" />
 ```
 
-echo ghost 用的是通用 prompt（`You are echo, first Ghost Instance in MOSS...`），它只知道自己是 "echo"，没有针对 Reachy Mini 优化。
+echo ghost 用的是通用 prompt，它只知道自己是 "echo"，没有针对 Reachy Mini 优化。
 
 ## 第六步：创建专属 Reachy Mini Ghost
 
@@ -431,7 +385,7 @@ echo 是通用 Ghost。要让 AI 更理解 Reachy Mini 的能力边界和交互�
 
 ### 6.1 创建 Ghost Meta
 
-新建 `.moss_ws/src/MOSS/ghosts/reachy.py`：
+新建 ghost 定义文件（参考 `moss ghosts show echo` 了解格式）：
 
 ```python
 from ghoshell_moss.ghosts.atom import AtomMeta
@@ -444,7 +398,7 @@ ghost = AtomMeta(
 
 ### 6.2 写 Soul Prompt
 
-新建 `.moss_ws/ghosts/reachy/soul.md`：
+新建 ghost 目录下的 `soul.md`（位置参考 `moss ghosts show echo` 输出）：
 
 ```markdown
 You are Reachy, a Reachy Mini robot's animating spirit. You inhabit a physical robot body
@@ -540,9 +494,9 @@ reachy  — Atom
 
 ## 你刚做了什么
 
-1. 阅读了 13 个文件的 contrib 包 — 理解了有状态 Channel + 硬件组件的装配模式
+1. 阅读了 contrib 包接口 — 用 `moss codex get-interface` 理解了有状态 Channel + 硬件组件的装配模式
 2. 理解了 App 独立 venv 的动机 — 重型系统依赖不污染核心环境
-3. 通过 MCP 在 Claude Code 中调试 — CTML 命令直接控制实物机器人
+3. 通过 MCP 在 coding agent 中调试 — CTML 命令直接控制实物机器人
 4. 创建了专属 Mode — `bringup_apps` 自动拉起 Reachy Mini App
 5. 用 echo ghost 跑了全链路 — Ghost TUI → Mindflow → Shell → Matrix → Reachy Mini
 6. 创建了专属 Ghost — soul prompt 让 AI 理解自己的身体和人格
@@ -557,11 +511,11 @@ reachy  — Atom
 
 ## 相关文档
 
-- `moss codex get-interface ghoshell_moss_contrib.moss_in_reachy_mini.main` — MossInReachyMini 接口
-- `.ai_partners/features/workstreams/2026/05/reachymini-integration/FEATURE.md` — 集成过程的完整决策记录
-- `.ai_partners/features/workstreams/2026/05/reachy-mini-contrib/FEATURE.md` — contrib 包开发记录
-- `.moss_ws/apps/CLAUDE.md` — App 开发指南
-- `moss docs read model-oriented-application-system.md` — App 体系论述
+- `moss codex get-interface ghoshell_moss_contrib.moss_in_reachy_mini.main` — MossInReachyMini 完整接口
+- `moss codex blueprint ghost` — Ghost 原型开发方法论
+- `moss docs read app-system` — App 体系论述
+- `moss howtos read host-dev/create-a-mode` — Mode 创建全流程
+- `moss features status reachymini-integration` — 集成过程的完整决策记录
 
 ---
 
@@ -569,4 +523,4 @@ reachy  — Atom
 
 | 时间 | 模型 | 备注 |
 |------|------|------|
-| 2026-06-02 22:03 CST | deepseek-v4-pro | 全链路走通：App start → Channel 注册 → head_reset(breathing) → emotion(😊,🥰,👋) → dance(groovy_sway_and_roll, yeah_nod, side_to_side_sway) → head_move(6-DOF) → antennas_move(左右独立) → switch_state(waken↔asleep) → 10 条复合 CTML → 22 条细粒度语音动作交替。人类确认全部动作流畅，多音色 TTS + 动作无延时
+| 2026-06-02 22:03 CST | deepseek-v4-pro | 全链路走通：App start → Channel 注册 → head_reset(breathing) → emotion(😊,🥰,👋) → dance(groovy_sway_and_roll, yeah_nod, side_to_side_sway) → head_move(6-DOF) → antennas_move(左右独立) → switch_state(waken↔asleep) → 10 条复合 CTML → 22 条细粒度语音动作交替。人类确认全部动作流畅，多音色 TTS + 动作无延时 |

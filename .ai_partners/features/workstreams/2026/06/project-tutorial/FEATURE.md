@@ -4,11 +4,11 @@ depends: []
 description: 面向人类长期记忆的项目认知入口。以叙事性案例而非任务导向的方式，帮助理解 MOSS 的设计哲学、核心概念与实操模式。
 milestone: null
 priority: P1
-status: in-progress
-status_note: 'L2 tutorial validated: full chain walkthrough, CTML parallel scheduling
-  confirmed, K8-K12 interaction design insights recorded'
+status: completed
+status_note: '2026-06-07 review: 统一三篇 tutorial 结构（知识索引/标题/验证记录/CTML风格），确立 K13-K19
+  规范，创建 develop-moss-via-mcp howto'
 title: Project Tutorial — 项目认知入口与案例沉淀
-updated: '2026-06-02'
+updated: '2026-06-07'
 ---
 
 # Project Tutorial — 项目认知入口与案例沉淀
@@ -151,6 +151,65 @@ CTML 有容易踩的语法坑，目前靠模型试错发现：
 - 动作体系需要从 prompt 层面与角色绑定，而非每次由模型即兴组合
 
 这不是技术问题，是交互设计问题。未来每个 Ghost 应该有自己的人格-声音-动作 profile。
+
+### K13: "你需要知道什么" — 必要最小化知识索引
+
+每篇 tutorial 在标题署名和"你要做什么"之间，必须有一个"你需要知道什么"section。它是必要最小化知识索引——每条知识都有对应的 CLI 命令可以直接获取。不在此索引内的知识不应出现在正文中作为"你需要知道"级别的依赖。
+
+涉及 CTML → 必索引 `moss ctml read`。涉及 MCP → 必索引 `moss howtos read host-dev/develop-moss-via-mcp`。
+
+目的：模型读者不需要人类 wiki 式的交叉引用，需要的是"我可以运行这个命令拿到我缺的那块知识"。
+
+### K14: 不写绝对路径，不交叉引用文档
+
+Tutorial 正文不写 repo 内的绝对文件路径（如 `src/ghoshell_moss/foo.py`、`.moss_ws/apps/bar/`），不直接链接到其他 markdown 文档。
+
+所有指路用 CLI 探索命令：`moss codex get-interface` / `moss howtos read` / `moss docs read` / `moss features status` / `moss apps show` 等。让模型自己通过命令去发现，而不是给一个静态路径。
+
+唯一的例外：告诉读者"创建文件"时的目录路径（如 `mkdir -p .moss_ws/apps/games/ai_eye`）——这是可执行的动作，不是知识引用。
+
+### K15: 标题格式规范
+
+```markdown
+# LN. English Title — 中文副标题
+```
+
+`LN.` 后跟英文短标题，em-dash（` — `）后跟中文副标题。文件名用下划线（`LN_description.md`），标题用点号和空格（`LN. Title`）。
+
+### K16: CTML 示例风格 — 简洁优先
+
+Tutorial 中的 CTML 示例不使用类型后缀，除非需要消歧义。历史不一致已修正。读者通过 `moss ctml read` 了解类型后缀的存在和使用场景。
+
+### K17: 配套 .py 文件必须标注来源
+
+同名 `.py` 文件必须在文件头注释说明它是 tutorial 的参考源码，不应在当前位置直接执行，需复制到对应 App 目录。
+
+```python
+# Reference source for LX tutorial. NOT meant to be run from this directory.
+# Copy to .moss_ws/apps/<group>/<name>/main.py — the App directory created in Step 1.
+```
+
+### K18: MCP 在 tutorial 中的定位
+
+MCP 是可选的开发时自主调试方案，用于 App/Channel 开发阶段的快速验证。它不是运行时方案，不用于 Ghost 开发调试。
+
+Tutorial 中提到 MCP 时：
+- 不将其作为必须依赖——始终提供 CLI 前台调试替代方案（`moss apps test`）
+- 不将其与 Ghost 开发关联
+- 指路用模糊探索命令：`moss howtos list` 中找 MCP 相关文档（不硬编码 howto 路径）
+
+此项同步创建了 howto: `develop-moss-via-mcp.md`。
+
+### K19: 验证记录格式统一
+
+统一用表格：
+
+```markdown
+| 时间 | 模型 | 备注 |
+|------|------|------|
+```
+
+不覆盖历史记录，新验证追加新行。
 
 ## Implementation Notes
 
