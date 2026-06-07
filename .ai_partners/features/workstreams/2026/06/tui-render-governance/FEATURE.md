@@ -1,9 +1,9 @@
 ---
 title: TUI Render Governance — 有状态渲染、全局通知通道与底部状态栏
-status: draft
+status: completed
 priority: P1
 created: 2026-06-03
-updated: 2026-06-03
+updated: 2026-06-07
 depends: []
 milestone:
 description: >-
@@ -87,3 +87,25 @@ prompt_toolkit 每帧自动调用，无需 push。
 `ai-terminal` feature 的第三层（GUI App Cell）可以选择由本 feature 支持的
 TUI ApprovalState 替代。两个 feature 独立迭代，在 bottom_toolbar 回调点汇合。
 顺序：TuiRender 重构 → ApprovalState → Terminal 审批模块。
+
+## Implementation (2026-06-07, deepseek-v4-pro via claude code)
+
+### Changed files
+
+| File | Change |
+|------|--------|
+| `src/ghoshell_moss/host/tui.py` | ConsoleOutput → TuiRender (backward compat alias), deque ring buffer, urgent= param, replay_buffer(), bottom_toolbar on prompt_async |
+| `src/ghoshell_moss/host/repl/inspector_moss_runtime.py` | ConsoleOutput → TuiRender type annotation |
+| `src/ghoshell_moss/host/tui_entries/ghost_ui.py` | _prompt_status: ANSI escapes → FormattedText tuples |
+
+### Decisions made during implementation
+
+- **replay_buffer drain**: per-state TuiRender gets `_drain_render_queue` as clear_func (not full console clear) — drains shared queue without clearing rich console, then replays buffer.
+- **on_urgent callback**: per-state TuiRender instances wired to `MossHostTUI.set_bottom_toolbar` — urgent rprint from any state updates the global bottom toolbar.
+- **_prompt_status contract**: changed from `str` with ANSI escapes → `list[tuple[str, str]]` (FormattedText). ANSI codes in prompt_toolkit message cause render conflicts.
+- **backward compat**: `ConsoleOutput = TuiRender` alias at module level. All existing rprint() calls unchanged (urgent defaults to False).
+
+### Remaining for downstream
+
+- ApprovalState (ai-terminal Phase 2): uses `urgent=True` + `set_bottom_toolbar()` for approval queue display.
+- Bottom toolbar styling: currently plain text; FormattedText support can be added when needed.

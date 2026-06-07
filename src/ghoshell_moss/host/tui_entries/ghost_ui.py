@@ -132,10 +132,10 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         self._paused = not self._paused
         self.runtime.pause(self._paused)
 
-    def _prompt_status(self) -> str:
+    def _prompt_status(self) -> list[tuple[str, str]]:
         if self._paused:
-            return '\033[1;31m[PAUSED]\033[0m '
-        return ""
+            return [("fg:red bold", "[PAUSED] ")]
+        return []
 
     def _get_custom_intro(self) -> str | None:
         from rich.text import Text

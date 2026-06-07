@@ -1,5 +1,6 @@
-"""TUI 框架基类 — MossHostTUI, TUIState, ConsoleOutput, LiveStreamSink."""
+"""TUI 框架基类 — MossHostTUI, TUIState, TuiRender, LiveStreamSink."""
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
@@ -36,8 +37,9 @@ from rich.table import Table
 from rich.console import Group
 
 __all__ = [
-    "TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "ConsoleOutput",
+    "TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "TuiRender",
     "Renderable", "OutputItem", "LiveStreamSink",
+    "ConsoleOutput",  # backward compatibility
 ]
 
 from prompt_toolkit.styles import Style
@@ -215,8 +217,14 @@ class LiveStreamSink:
 Renderable: TypeAlias = RenderableType | OutputItem
 
 
-class ConsoleOutput:
-    """可以共享 output 能力的模块. """
+class TuiRender:
+    """Per-state render output manager with ring buffer and global notification channel.
+
+    Replaces ConsoleOutput. Adds:
+    - Ring buffer (deque) so non-current-state output is not discarded
+    - urgent parameter for approval-level global notifications
+    - replay_buffer() for state-switch history replay
+    """
 
     def __init__(
             self,
@@ -224,22 +232,76 @@ class ConsoleOutput:
             alive: Callable[[], bool],
             queue: asyncio.Queue[list[Renderable]],
             clear_func: Callable[[], None],
+            buffer_size: int = 200,
+            buffer_enabled: bool = True,
+            buffer_rprint: bool = True,
+            on_urgent: Callable[[str], None] | None = None,
     ):
         self._name: str = name
         self._alive_fn = alive
         self._queue = queue
         self._clear_fn = clear_func
+        self._buffer: deque[list[Renderable]] = deque(maxlen=buffer_size)
+        self._buffer_enabled = buffer_enabled
+        self._buffer_rprint = buffer_rprint
+        self._on_urgent = on_urgent
+        self._bottom_text: str = ""
 
     def clear(self) -> None:
         self._clear_fn()
 
-    def rprint(self, *items: Renderable, spacing: bool = True) -> None:
-        if not self._alive_fn():
-            return
+    def rprint(self, *items: Renderable, spacing: bool = True, urgent: bool = False) -> None:
         got_items = list(items)
         if spacing:
             got_items.append('')
+
+        if self._buffer_enabled and (urgent or self._buffer_rprint):
+            self._buffer.append(got_items)
+
+        if urgent and self._on_urgent:
+            self._on_urgent(self._urgent_text(got_items))
+
+        if not self._alive_fn():
+            return
+
         self._queue.put_nowait(got_items)
+
+    def _urgent_text(self, items: list[Renderable]) -> str:
+        """Convert urgent items to a compact single-line text for bottom toolbar."""
+        parts: list[str] = []
+        for item in items:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, Text):
+                parts.append(item.plain)
+            elif hasattr(item, '__rich__'):
+                parts.append(str(item))
+        return " | ".join(p for p in parts if p)
+
+    def replay_buffer(self) -> None:
+        """Replay all buffered items through the render queue."""
+        if not self._buffer_enabled:
+            return
+        # Drain pending items before replay
+        self._clear_fn()
+        for items in self._buffer:
+            self._queue.put_nowait(list(items))
+
+    def buffer_clear(self) -> None:
+        """Clear the ring buffer without replaying."""
+        self._buffer.clear()
+
+    @property
+    def buffer_size(self) -> int:
+        return self._buffer.maxlen  # type: ignore[return-value]
+
+    def set_bottom(self, text: str) -> None:
+        """Set the bottom toolbar text (for approval counts, alerts, etc.)."""
+        self._bottom_text = text
+
+    def get_bottom_toolbar(self) -> Callable[[], str]:
+        """Return a callable for prompt_toolkit's bottom_toolbar parameter."""
+        return lambda: self._bottom_text
 
     def output(self, item: OutputItem) -> None:
         for i in self.format_output(item):
@@ -352,14 +414,14 @@ class TUIState(ABC):
     def key_bindings(self) -> KeyBindings | None:
         return None
 
-    _console_output = None
+    _console_output: "TuiRender | None" = None
 
-    def with_output(self, output: ConsoleOutput) -> None:
+    def with_output(self, output: "TuiRender") -> None:
         """注册一个回调, 用来做渲染通知."""
         self._console_output = output
 
     @property
-    def console(self) -> ConsoleOutput:
+    def console(self) -> "TuiRender":
         if self._console_output is None:
             raise RuntimeError(f"console output not set")
         return self._console_output
@@ -441,7 +503,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             })
         )
         self._paused = False
-        self._main_console_output = ConsoleOutput("", lambda: True, self._renderable_queue, self.clear_console)
+        self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
+        self._bottom_toolbar_text: str = ""
         self._dummy_completer = DummyCompleter()
 
     def clear_console(self) -> None:
@@ -454,6 +517,15 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 break
         self._rich_console.clear()
         _queue.put_nowait(None)
+
+    def _drain_render_queue(self) -> None:
+        """Drain all pending items from the render queue without clearing console."""
+        _queue = self._renderable_queue
+        while not _queue.empty():
+            try:
+                _queue.get_nowait()
+            except Empty:
+                break
 
     def default_commands(self) -> dict[str, tuple[str, Callable[[], None]]]:
         return {
@@ -565,9 +637,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         """急停 hook — 子类 override 实现具体 pause/resume 逻辑."""
         pass
 
-    def _prompt_status(self) -> str:
-        """返回 prompt 前的状态标记。子类 override 如返回 '[PAUSED] '."""
-        return ""
+    def _prompt_status(self) -> list[tuple[str, str]]:
+        """返回 prompt 前的状态标记 (FormattedText 元组列表)。子类 override 如返回 [('fg:red bold', '[PAUSED] ')]."""
+        return []
 
     def farewell(self) -> None:
         """要在界面里输出告别信息. """
@@ -617,8 +689,16 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         return self._states[self._current_state_name]
 
     @property
-    def console(self) -> ConsoleOutput:
+    def console(self) -> TuiRender:
         return self._main_console_output
+
+    def set_bottom_toolbar(self, text: str) -> None:
+        """Set the bottom toolbar text (e.g. approval count, system alerts)."""
+        self._bottom_toolbar_text = text
+
+    def get_bottom_toolbar(self) -> Callable[[], str]:
+        """Return a callable for prompt_toolkit's bottom_toolbar parameter."""
+        return lambda: self._bottom_toolbar_text
 
     def _direct_print(self, obj: Renderable) -> None:
         try:
@@ -673,7 +753,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             new_state = self._states[state_name]
             new_state_name = state_name
             new_state.on_switch(True)
-            # add switch notice.
+            # replay buffered history from the new state
+            if new_state.console is not None:
+                new_state.console.replay_buffer()
+            # add switch notice after replay so it sits at the bottom
             notice = Rule(
                 f"From State `{old_state_name}` Switch to `{new_state_name}`",
                 style="cyan",
@@ -745,13 +828,18 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         while not self._closing_event.is_set():
             with patch_stdout.patch_stdout(raw=True):
                 item = await self._prompt_session.prompt_async(
-                    message=lambda: f'{self._prompt_status()}{self._current_state_name}  ❯ ',
+                    message=lambda: self._prompt_status() + [
+                        ("class:prompt.state", self._current_state_name),
+                        ("", "  "),
+                        ("class:prompt.arrow", "❯ "),
+                    ],
                     style=self._style,
                     key_bindings=self.kb,
                     multiline=True,
                     completer=completer,
                     complete_while_typing=True,
                     complete_in_thread=True,
+                    bottom_toolbar=self.get_bottom_toolbar(),
                 )
             if not item:
                 continue
@@ -796,11 +884,12 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 self.console.info("current state is %s" % self._current_state_name)
             self._states[state.name()] = state
             # 注册管理回调.
-            output = ConsoleOutput(
+            output = TuiRender(
                 state.name(),
                 self._is_alive_func(state.name()),
                 self._renderable_queue,
-                lambda: None,  # per-state clear not yet implemented
+                self._drain_render_queue,
+                on_urgent=self.set_bottom_toolbar,
             )
 
             #  注册回调.
@@ -839,3 +928,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self.console.error(message)
         if self.host.matrix().is_running():
             self.host.matrix().logger.exception("%s: %s", message, exception)
+
+
+# backward compatibility
+ConsoleOutput = TuiRender
