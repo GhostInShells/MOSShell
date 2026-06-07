@@ -249,30 +249,35 @@ Issue 6 和 7 暴露了一个模式：**模型写实现时已知全部细节（�
 5. `exec` 返回的 Observe 正确进入感知流
 6. 管理命令触发 observe 后上下文正确刷新
 
-## MCP App 集成验证 (2026-06-07)
+## 第三方 MCP 集成验证 (2026-06-07)
 
-Baidu Maps (`mcp-server-baidu-maps==0.2.4`) 作为第三方 MCP server，封装为 MOSS app 并端到端验证通过。
+### Baidu Maps — App 模式验证 (已废弃)
 
-### App 设计
+Baidu Maps (`mcp-server-baidu-maps==0.2.4`) 封装为 `mcp/baidu_map` app，端到端验证通过：
+`moss-run-ghost echo` → Ghost 自动生成 CTML → MCP tool call → 结果感知 → 自然语言回复。
 
-`mcp/baidu_map` app — 自包含 MCP wrapper，复用 MCP Hub 的 `MCPServerSession`、`mcp_result_to_observe`、`render_input_schema` 公共 API。不重复实现连接逻辑。
+### Baidu Maps — 运行时 add_server 验证 (最终方案)
 
-- Channel: `apps.mcp_baidu_map`
-- Commands: `call(tool, timeout, text__)` + `list_tools()`
-- Context: 动态反射 10 个 tool 的 inputSchema
-- AK: 通过 app 本级 `.env` 文件配置（`BAIDU_MAPS_API_KEY`）
+通过 MCP Hub 的运行时 `add_server` 直接添加百度地图 server：
 
-### 验证结果
+```xml
+<mcp:add_server name="baidu" transport="stdio" command="mcp-server-baidu-maps"
+  env="BAIDU_MAPS_API_KEY=<your_key>" />
+<mcp:exec server="baidu" tool="map_weather">
+{"district_id": "110108"}
+</mcp:exec>
+```
 
-| 操作 | 结果 |
-|------|------|
-| `moss apps list` | `mcp/baidu_map` 发现 |
-| `<apps:start fullname="mcp/baidu_map" />` | app 启动，channel 注册 |
-| `<apps.mcp_baidu_map:list_tools />` | 10 个工具完整暴露，带参数 schema |
-| `<apps.mcp_baidu_map:call tool="map_geocode">` | 地理编码返回正确坐标 |
-| `<apps.mcp_baidu_map:call tool="map_weather">` | 天气查询返回海淀区实时数据 |
-| `moss-run-ghost echo` | Ghost 自然语言交互 → CTML 编排 → 结果呈现 |
+**全链路验证通过**。`add_server` 运行时传参 → MCP server 连接 → `exec` 调用 → API 返回结果。
 
-### 意义
+### 结论：不需要 MCP app wrapper
 
-证明了 MOSS app 模式可以包装任意 MCP server，Ghost 通过 CTML 原生调用外部工具，完全屏蔽 MCP 协议。`moss-run-ghost` 端到端链路：自然语言 → Ghost 理解 → CTML 生成 → app channel 路由 → MCP tool call → 结果感知 → 自然语言回复。
+MCP Hub 的运行时 `add_server` 使得封装 MCP server 为独立 app 完全不必要。`add_server` + `exec` 已覆盖 app 的全部功能，且无需额外进程、无需预配置 YAML、无需 `matrix.wait_closed()` 保活。
+
+**不用 app 的优势**：
+- 零额外进程开销 — 所有 session 在 MCP Hub Channel 进程内管理
+- 动态 server 生命周期 — Ghost 可根据对话 context 按需 add/remove/restart
+- 配置零散落 — server config 可通过 MCP Hub 的全球化或 scoped storage 统一管理
+- 模型视角不变 — 始终通过 `mcp:exec` 调用，无论 server 来自预配置还是运行时添加
+
+`mcp/baidu_map` app 目录已移除。保留此节作为设计演进的记录。
