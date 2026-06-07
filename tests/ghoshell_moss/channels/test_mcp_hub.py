@@ -14,8 +14,8 @@ from ghoshell_moss.channels.mcp_hub import (
     MCPHubChannel,
     MCPHubState,
     build_mcp_hub_channel,
-    _mcp_result_to_observe,
-    _render_input_schema,
+    mcp_result_to_observe,
+    render_input_schema,
 )
 from ghoshell_moss.contracts.configs import YamlConfigStore, ConfigType
 from ghoshell_moss.contracts.workspace import LocalStorage
@@ -131,7 +131,7 @@ class TestMCPHubConfig:
 
 
 # ---------------------------------------------------------------------------
-# _mcp_result_to_observe tests
+# mcp_result_to_observe tests
 # ---------------------------------------------------------------------------
 
 class TestMCPResultToObserve:
@@ -140,7 +140,7 @@ class TestMCPResultToObserve:
             content=[mcp_types.TextContent(type="text", text="hello world")],
             isError=False,
         )
-        obs = _mcp_result_to_observe(result, server="test", tool="echo")
+        obs = mcp_result_to_observe(result, server="test", tool="echo")
         assert isinstance(obs, Observe)
         assert len(obs.messages) == 1
         contents = list(obs.messages[0].as_contents())
@@ -157,7 +157,7 @@ class TestMCPResultToObserve:
             ],
             isError=False,
         )
-        obs = _mcp_result_to_observe(result, server="test", tool="screenshot")
+        obs = mcp_result_to_observe(result, server="test", tool="screenshot")
         assert len(obs.messages) == 1
         contents = list(obs.messages[0].as_contents())
         assert len(contents) == 1
@@ -174,7 +174,7 @@ class TestMCPResultToObserve:
             ],
             isError=False,
         )
-        obs = _mcp_result_to_observe(result, server="test", tool="analyze")
+        obs = mcp_result_to_observe(result, server="test", tool="analyze")
         assert len(obs.messages) == 2
 
     def test_error_result(self):
@@ -182,14 +182,14 @@ class TestMCPResultToObserve:
             content=[mcp_types.TextContent(type="text", text="file not found")],
             isError=True,
         )
-        obs = _mcp_result_to_observe(result, server="test", tool="read")
+        obs = mcp_result_to_observe(result, server="test", tool="read")
         msg = obs.messages[0].to_content_string()
         assert "error" in msg.lower()
         assert "file not found" in msg
 
     def test_empty_content(self):
         result = mcp_types.CallToolResult(content=[], isError=False)
-        obs = _mcp_result_to_observe(result, server="test", tool="noop")
+        obs = mcp_result_to_observe(result, server="test", tool="noop")
         assert isinstance(obs, Observe)
         assert obs.messages == []
 
@@ -430,7 +430,7 @@ class TestMCPHubIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Issue 7: _render_input_schema
+# Issue 7: render_input_schema
 # ---------------------------------------------------------------------------
 
 class TestRenderInputSchema:
@@ -443,7 +443,7 @@ class TestRenderInputSchema:
             },
             "required": ["text"],
         }
-        result = _render_input_schema(schema)
+        result = render_input_schema(schema)
         assert "`text`" in result
         assert "string" in result
         assert "required" in result
@@ -452,16 +452,16 @@ class TestRenderInputSchema:
         assert "integer" in result
 
     def test_non_object_schema(self):
-        assert _render_input_schema({"type": "array"}) == ""
+        assert render_input_schema({"type": "array"}) == ""
 
     def test_empty_schema(self):
-        assert _render_input_schema({}) == ""
+        assert render_input_schema({}) == ""
 
     def test_none_schema(self):
-        assert _render_input_schema(None) == ""
+        assert render_input_schema(None) == ""
 
     def test_no_properties(self):
-        assert _render_input_schema({"type": "object"}) == ""
+        assert render_input_schema({"type": "object"}) == ""
 
     def test_all_optional(self):
         schema = {
@@ -470,7 +470,7 @@ class TestRenderInputSchema:
                 "flag": {"type": "boolean", "description": "enable feature"},
             },
         }
-        result = _render_input_schema(schema)
+        result = render_input_schema(schema)
         assert "required" not in result
         assert "boolean" in result
 
@@ -481,7 +481,7 @@ class TestRenderInputSchema:
                 "text": {"type": "string", "description": "first line\nsecond line\nthird line"},
             },
         }
-        result = _render_input_schema(schema)
+        result = render_input_schema(schema)
         assert "first line" in result
         assert "second line" not in result  # truncated at first \n
 
@@ -726,7 +726,7 @@ class TestContextMessagesWithSchema:
     def state_with_tools(self):
         from unittest.mock import MagicMock
         from ghoshell_moss.contracts.workspace import LocalStorage
-        from ghoshell_moss.channels.mcp_hub import _MCPServerSession
+        from ghoshell_moss.channels.mcp_hub import MCPServerSession
         from mcp import types as mcp_types
         matrix = MagicMock()
         matrix.is_running.return_value = True
@@ -755,7 +755,7 @@ class TestContextMessagesWithSchema:
                 inputSchema={"type": "object", "properties": {}},
             ),
         ]
-        session = _MCPServerSession(
+        session = MCPServerSession(
             config=MCPServerConfig(name="test", command="python"),
         )
         session.tools = tools

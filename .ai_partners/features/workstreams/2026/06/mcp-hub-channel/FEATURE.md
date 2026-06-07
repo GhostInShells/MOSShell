@@ -255,12 +255,12 @@ Baidu Maps (`mcp-server-baidu-maps==0.2.4`) 作为第三方 MCP server，封装�
 
 ### App 设计
 
-`mcp/baidu_map` app — 自包含 MCP wrapper，内部用 MCP Python SDK 直连 Baidu Maps MCP server (stdio transport)。不依赖 MCP Hub，独立进程管理连接生命周期。
+`mcp/baidu_map` app — 自包含 MCP wrapper，复用 MCP Hub 的 `MCPServerSession`、`mcp_result_to_observe`、`render_input_schema` 公共 API。不重复实现连接逻辑。
 
 - Channel: `apps.mcp_baidu_map`
 - Commands: `call(tool, timeout, text__)` + `list_tools()`
 - Context: 动态反射 10 个 tool 的 inputSchema
-- AK: 通过 `BAIDU_MAPS_API_KEY` 环境变量传入
+- AK: 通过 app 本级 `.env` 文件配置（`BAIDU_MAPS_API_KEY`）
 
 ### 验证结果
 

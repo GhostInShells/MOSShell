@@ -4,9 +4,9 @@ Baidu Maps MCP wrapper — self-contained MOSS app that exposes Baidu Maps API t
 
 ## Architecture
 
-The app manages its own MCP client session (stdio transport to `mcp-server-baidu-maps`). It does NOT depend on MCP Hub — it's a standalone process.
+The app uses MCP Hub's public API (`MCPServerSession`, `mcp_result_to_observe`, `render_input_schema`) for MCP connection management — no duplicated logic.
 
-On startup, it connects to the MCP server, discovers all tools, and dynamically generates context messages with tool schemas. Tools are called via a generic `call` command.
+On startup, it loads `BAIDU_MAPS_API_KEY` from the local `.env` file, connects to the MCP server via stdio transport, discovers all tools, and dynamically generates context messages with tool schemas. Tools are called via a generic `call` command.
 
 ## Channel
 
@@ -31,7 +31,7 @@ On startup, it connects to the MCP server, discovers all tools, and dynamically 
 
 ## Configuration
 
-Requires `BAIDU_MAPS_API_KEY` environment variable set in the workspace `.env` file.
+Requires `BAIDU_MAPS_API_KEY` set in the app's local `.env` file (`mcp/baidu_map/.env`).
 
 ## Available Tools
 
