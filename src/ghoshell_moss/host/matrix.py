@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Coroutine, Iterable, Type, Literal
 
 from typing_extensions import Self
@@ -154,9 +155,11 @@ class MatrixImpl(Matrix):
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._log_prefix = f"<HostMatrix address={self._this_cell_address} session_scope={self.env.session_scope}>"
         self._task_group: set[asyncio.Task] = set()
-        locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
-        locker_name = locker_name.replace('.', '_')
-        locker_name = locker_name.replace('/', '_')
+        if self._is_main:
+            locker_name = f"moss_host_{self._session_scope}"
+        else:
+            locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
+            locker_name = locker_name.replace('.', '_').replace('/', '_')
         self._process_locker = self._workspace.lock(locker_name)
         self._process_locker_name = locker_name
         self._system_prompter = self._prepare_system_prompter()
@@ -599,9 +602,25 @@ class MatrixImpl(Matrix):
             topic_service = self._container.force_fetch(TopicService)
             # ensure topic service lifecycle
             await self._async_exit_stack.enter_async_context(topic_service)
+
+            # ── scope meta 发现 — 进程锁后，session 创建前 ──
+            if self._is_main:
+                # 持有 host lock → 我们是 host，写 scope meta
+                self._env.write_scope_meta()
+            else:
+                # 非 main cell → 尝试从 scope meta 恢复 session_id
+                scope_meta = self._env.read_scope_meta()
+                if scope_meta is not None:
+                    self._env.set_session_id(scope_meta.session_id)
+                # 读不到不拒绝启动——允许无主进程测试场景
+
             # 完成 session 的异步启动逻辑.
             session = self._container.force_fetch(Session)
             await self._async_exit_stack.enter_async_context(session)
+
+            # ── session metadata 写 — 仅 main ──
+            if self._is_main:
+                self._write_session_metadata(session)
             # 完成启动后, 进入到关联依赖启动. 启动成功才进入到核心生命周期启动.
             lifecycle_objects = []
             if len(self._lifecycle_bound_objects_or_types) > 0:
@@ -658,6 +677,10 @@ class MatrixImpl(Matrix):
             if event := self._cell_alive_events.get(self._this_cell_address):
                 event.clear()
 
+            # host 退出：删除 scope meta
+            if self._is_main:
+                self._env.delete_scope_meta()
+
             # exit all the stack
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         except Exception as e:
@@ -667,3 +690,25 @@ class MatrixImpl(Matrix):
             self._closed_event.set()
             # 结束同步运行逻辑.
             self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
+
+    def _write_session_metadata(self, session: Session) -> None:
+        """写入 session metadata + 追加 SessionRecord — 仅 _is_main 调用。"""
+        from datetime import datetime, timezone
+        from ghoshell_moss.core.blueprint.session import SessionMetadata, SessionRecord
+
+        now = datetime.now(timezone.utc).isoformat()
+        meta = SessionMetadata(
+            session_id=self.session_id,
+            session_scope=self.session_scope,
+            mode_name=self.mode_name,
+            ghost_name=self.ghost_name,
+            host_cell_address=self._this_cell_address,
+            host_pid=os.getpid(),
+            created_at=now,
+        )
+        session.storage.write_yaml("meta", meta)
+        record = SessionRecord(
+            session_id=self.session_id,
+            created_at=now,
+        )
+        session.scope_storage.append_model("sessions", record)

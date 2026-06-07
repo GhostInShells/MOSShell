@@ -19,6 +19,8 @@ import os
 import dotenv
 import sys
 import stat
+import psutil
+import yaml
 
 __all__ = [
     'Environment',
@@ -40,6 +42,7 @@ __all__ = [
 
     'MOSSEnvKey',
     "MossMeta",
+    "ScopeMeta",
 
     # stubs
     'MODE_STUB_PACKAGE',
@@ -144,6 +147,19 @@ class MossMeta(BaseModel):
         data = post.metadata
         data['system_prompt'] = post.content
         return cls(**data)
+
+
+class ScopeMeta(BaseModel):
+    """scope 级发现文件 — host 进程锁后创建，正常退出删除，PID 验尸。
+
+    放在 Environment 而非 session.py 是因为：ScopeMeta 是环境发现的一等公民，
+    被 Environment 读写，被非 host cell 用于恢复 session context。
+    session.py 可以反向依赖此模型。
+    """
+    session_scope: str = Field(description="认知隔离 scope")
+    session_id: str = Field(description="当前 scope 的 active session id")
+    mode: str = Field(description="当前 mode 名称")
+    host_pid: int = Field(description="host 进程 PID，用于存活验证与运维诊断")
 
 
 class Environment:
@@ -469,6 +485,51 @@ class Environment:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    # ── scope meta — scope 级发现文件 ─────────────────
+
+    @property
+    def scope_meta_path(self) -> Path:
+        """约定路径: {workspace}/runtime/scopes/scope-{scope}.yml"""
+        return self._workspace_path / "runtime" / "scopes" / f"scope-{self._session_scope}.yml"
+
+    def read_scope_meta(self) -> "ScopeMeta | None":
+        """读取 scope meta 并 PID 验活。不可用时返回 None。
+
+        先检查 path.exists() 快速路径，不存在直接返回 None，不读文件。
+        """
+        file = self.scope_meta_path
+        if not file.exists():
+            return None
+        try:
+            data = yaml.safe_load(file.read_text()) or {}
+        except yaml.YAMLError:
+            return None
+        meta = ScopeMeta(**data)
+        if not psutil.pid_exists(meta.host_pid):
+            return None
+        return meta
+
+    def write_scope_meta(self) -> None:
+        """写入 scope meta — host 进程锁后调用。"""
+        from datetime import datetime, timezone
+
+        meta = ScopeMeta(
+            session_scope=self._session_scope,
+            session_id=self._session_id,
+            mode=self._moss_mode,
+            host_pid=self._self_pid,
+        )
+        file = self.scope_meta_path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(
+            "# scope discovery — host creates, PID validates, host deletes on clean exit\n"
+            + yaml.safe_dump(meta.model_dump(), allow_unicode=True)
+        )
+
+    def delete_scope_meta(self) -> None:
+        """删除 scope meta — host 正常退出时调用。"""
+        self.scope_meta_path.unlink(missing_ok=True)
 
     @property
     def source_dir(self) -> Path | None:
