@@ -4,4 +4,4 @@ venv/
 uv.lock
 .idea
 .env
-src/
+src/unitree_sdk2_python/
