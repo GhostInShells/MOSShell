@@ -1,9 +1,9 @@
 ---
 title: Cell Session Bootstrap
-status: draft
+status: completed
 priority: P0
 created: 2026-06-07
-updated: 2026-06-07
+updated: 2026-06-09
 depends:
   - session-metadata-jsonl
 milestone:
@@ -12,9 +12,20 @@ description: >-
   复用 session-metadata-jsonl 的 ScopeMeta 模式：文件系统注册 + PID 验活，不维护 status 字段。
   父子进程退出三层保障：killpg + _ensure_parent_process_exists + cells/ 注册表 watchdog。
   替代 circusd-daemon-management 方向，MOSS 回归轻量总线定位。
+status_note: >-
+  2026-06-09 CellMeta 注册 + moss runtime CLI 完成并 commit (a85be97)。
+  入网协议步骤 1-4 已分散实现在 Environment/MatrixImpl 中。
+  剩余范围（启动脚本生成、进程三件套泛化、租约）被 matrix-cell-governance 吸收。
+  本 feature 的设计讨论保留为历史参考。
 ---
 
 # Cell Session Bootstrap
+
+> **Absorbed into [matrix-cell-governance](../matrix-cell-governance/FEATURE.md) on 2026-06-09.**
+> Cell 注册表（CellMeta + moss runtime CLI）已实现并 commit (a85be97)。
+> 剩余范围——启动脚本生成、进程三件套泛化、租约、node 体系——
+> 全部收归 matrix-cell-governance 统一治理。
+> 本 feature 的设计讨论、共识结论和架构决策保留为历史参考。
 
 > 此 feature 是 `circusd-daemon-management` 的替代方向，来自 2026-06-07 与人类工程师的架构校正。
 
