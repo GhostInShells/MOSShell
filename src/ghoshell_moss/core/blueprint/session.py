@@ -14,6 +14,26 @@ from PIL.Image import Image
 Role = Literal['system', 'logos', 'log', 'error', 'task']
 
 
+class SessionRecord(BaseModel):
+    """scope 级 JSONL 索引行 — append-only, 不可变."""
+    session_id: str = Field(description="session uuid")
+    created_at: str = Field(description="ISO 8601 creation timestamp")
+
+
+class SessionMetadata(BaseModel):
+    """session 运行时现场记录 — matrix (_is_main) 写，所有 cell 读."""
+    session_id: str = Field(description="session uuid")
+    session_scope: str = Field(description="认知隔离 scope")
+    mode_name: str = Field(description="当前 mode 名称")
+    ghost_name: str = Field(description="ghost 名称，'None' 表示无 ghost")
+    host_cell_address: str = Field(description="主节点 cell address")
+    host_pid: int = Field(description="host 进程 PID")
+    created_at: str = Field(description="ISO 8601 creation timestamp")
+    title: str = Field(default="", description="human-readable title")
+    description: str = Field(default="", description="human-readable description")
+    updated_at: str = Field(default="", description="ISO 8601 last modification time")
+
+
 class OutputItem(BaseModel):
     """
     可以用于输出的原子化数据结构.
@@ -369,6 +389,14 @@ class Session(ABC):
         需要的话可以将文件作为通讯方式.
         """
         return self.scope_storage.sub_storage(f"session-{self.session_id}")
+
+    @property
+    def meta(self) -> "SessionMetadata | None":
+        """
+        session 运行时现场元信息，从 meta.yaml 加载。
+        只读——写入由 matrix (_is_main) 在 session 创建时完成。
+        """
+        return self.storage.read_yaml("meta", SessionMetadata)
 
     @property
     def tmp_storage(self) -> Storage:

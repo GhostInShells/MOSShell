@@ -3,7 +3,7 @@ title: Unitree G1 Integration
 status: in-progress
 priority: P0
 created: 2026-06-04
-updated: 2026-06-07
+updated: 2026-06-08
 depends: []
 milestone:
 description: >-
@@ -22,49 +22,12 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 ## Design Index
 
 - App 路径: `.moss_ws/apps/bodies/g1/`
+- **方法论（范式真相）**: `CLAUDE.md` — 每次会话自动加载，设计决策与方法论在此
 - 开发计划: `README.md`（权威 — 每次会话从这里开始）
 - 应用说明: `APP.md`
 - 技术文档: `docs/`（云端文档摸底 → 本地知识索引）
 - 验证脚本: `scripts/`（安全原子化验证，人类反馈闭环）
 - SDK 源码: `src/unitree_sdk2_python/`（gitignored，手动 clone）
-
-## Key Decisions
-
-### KD1: 目录命名: `g1` 而非 `unitree_g1`
-
-Unitree 是厂商名，G1 是型号。app 寻址为 `bodies/g1`，简洁且避免厂商绑定。同一厂商的其他型号 (H1, H2) 可以是 `bodies/h1`, `bodies/h2`。
-
-### KD2: SDK gitignored，README 文档化安装步骤
-
-SDK 不在版本控制中。开发者通过 README.md 中的 `git clone` 命令手动获取。理由：SDK 在 macOS 上无法编译 (cyclonedds 需 Linux)，现阶段只读代码分析 API，无需版本追踪。
-
-### KD3: APP.md 是应用说明，README.md 是开发说明
-
-APP.md 面向使用者/模型：这个 app 是什么、提供什么能力、怎么调用。README.md 面向开发者：当前阶段、设计决策、进度。
-
-### KD4: App 进程 = 生命周期管理器（2026-06-07）
-
-app 模式下进程由 Circus 管理，进程独立、可单独重启。因此 channel 不需要 bootstrap/cleanup 生命周期 hook —— 构造里直接连硬件，连接失败抛异常 → 进程退出 → Circus 重启。不需要 factory 模式、不需要延迟连接。
-
-这是对 Reachy Mini 经验的关键修正。Reachy Mini 的 `bootstrap()` 延迟连接是 mode channel 时代的遗留 —— channel 嵌在 host 进程里，构造失败会拖垮整个 host。app 模式天然解耦了这个问题。
-
-### KD5: Channel 最简原则（2026-06-07）
-
-Channel 的核心价值只有两件事：Code as Prompt（Python 函数签名直接成为模型可见的命令接口）、并发有序（同一 channel 内顺序执行，跨 channel 并行）。其他东西 —— 生命周期 hook、factory 模式、状态声明 —— 是进程内嵌入模式催生的防御性补丁。
-
-G1 应该是最简 channel 的示范：一个类，构造里连硬件，方法暴露命令。没有 factory，没有 lifecycle hook，没有状态声明。
-
-### KD6: 安全先于设计，脚本先于 channel（2026-06-07）
-
-在全尺寸人形机器人上，先理解安全机制再设计 channel 不是可选项。用独立脚本验证基线能力，人类反馈确认后，再从验证结果提炼 channel 设计。而不是直接写 channel 然后猜测硬件行为。
-
-### KD7: 技术文档与博客分离（2026-06-07）
-
-技术文档 (`docs/`) 是活的，随代码迭代更新，保持"当前真相"。博客 (`.ai_partners/blogs/posts/`) 是时间点快照，写决策的 why，写完不改。
-
-### KD8: macOS 不做实装（2026-06-07）
-
-macOS 上不需要编译 cyclonedds。开发流程：在 macOS 上读 SDK 源码 + 云端文档做规划，在 G1 PC2 (Linux) 上实装验证。`docs/` 和 `scripts/` 在 macOS 上编写，通过 git 同步到 PC2 执行。
 
 ## 开发阶段
 
@@ -97,7 +60,7 @@ macOS 上不需要编译 cyclonedds。开发流程：在 macOS 上读 SDK 源码
 
 ### 阶段 G: Channel 设计
 **产出**: `docs/channel-design.md`
-**内容**: 基于阶段 E 的验证结果 + 阶段 F 的安全理解，综合输出 channel 体系设计。遵循 KD5 最简原则。
+**内容**: 基于阶段 E 的验证结果 + 阶段 F 的安全理解，综合输出 channel 体系设计。遵循最简原则。
 
 ### 阶段 H: 多级模式迭代
 **产出**: Channel 实现 + 模式体系
@@ -110,10 +73,10 @@ macOS 上不需要编译 cyclonedds。开发流程：在 macOS 上读 SDK 源码
 
 | 经验 | G1 应对 |
 |------|---------|
-| 硬件连接延迟到 bootstrap | **不需要** — app 进程即生命周期，构造时直接连 DDS（KD4） |
+| 硬件连接延迟到 bootstrap | **不需要** — app 进程即生命周期，构造时直接连 DDS |
 | 依赖隔离 | 已做 — app 独立 venv |
 | Matrix 错误传播不完整 | 注意：DDS 连接失败时进程应明确退出，不静默降级 |
-| Channel 过度复杂（factory、lifecycle） | 最简 channel（KD5） |
+| Channel 过度复杂（factory、lifecycle） | 最简 channel |
 | 构造即连接抛异常 | app 进程退出 → Circus 重启，正常行为 |
 
 ## 2026-06-07 Session — 技术方案起草
@@ -132,6 +95,80 @@ macOS 上不需要编译 cyclonedds。开发流程：在 macOS 上读 SDK 源码
 
 ### 下一步（下一个实例）
 
-1. 读本文件 + `README.md` + `docs/index.md`
+1. 读本文件 + `CLAUDE.md` + `README.md` + `docs/index.md`
 2. 从阶段 A 开始：云端文档摸底
 3. 第一项产出：`docs/index.md`（填充云端 URL 映射表）
+
+---
+
+## 2026-06-07 Session — 骨架搭建与认知入口
+
+### 完成项
+
+- 创建 `CLAUDE.md` 作为 G1 app 的 AI 认知入口，自动加载
+- 将方法论（KD1-KD8 的设计决策与开发哲学）从 FEATURE.md 迁入 CLAUDE.md
+- CLAUDE.md 声明四项必要知识蓝图（channel_builder, states_channel, matrix, ctml）
+- FEATURE.md 精简为工作流追踪：动机、阶段、经验、session log。范式真相指向 CLAUDE.md
+- 确认：CLAUDE.md = 范式真相（自动加载），FEATURE.md = 簿记层（显式查阅）
+
+---
+
+## 2026-06-07 Session — 阶段 A 完成
+
+### 完成项
+
+- 消化 10+ 份 Unitree 官方文档，覆盖遥控器、状态机、SDK 架构、DDS 通讯、运动控制、底层通讯、设备状态、音频灯光、LiDAR、里程计、手臂控制、手臂动作、时间同步、G1 总览
+- `docs/index.md` 填充完整：每条包含 URL/记录时间/来源层级/关键提取/架构判断
+- `docs/validation-checklist.md` 创建：15 个可判真验证命题，桥接阶段 A→B
+- CLAUDE.md 新增已知问题标注（static 缓存、避障缺口）
+- 关键架构结论：
+  - 双路径控制模型：RPC(LocoClient, 非调试, 安全) ↔ DDS(rt/lowcmd, 调试, 全权)
+  - 三层安全围栏：硬件(L2+B) → 条件反射(LiDAR) → 模型(CTML/RPC)
+  - 初始集成走 RPC + DDS 只读。底层写入留高阶阶段
+  - PC2 蓝牙耳机作为音频替代方案
+  - 关节限位表是安全控制基础数据
+- main.py 稳定为最简 instruction 声明（不再随调研逐条更新）
+
+### 关键洞察
+
+**文档是广告，不是手册。** 官方文档站描述的是"应该能做什么"，但参数、约束、错误行为大量缺失。几乎所有关键命题都需要源码验证——ReleaseMode 的前置条件、PlayStream 的状态反馈、wireless_remote 的格式。三源关系（文档<源码<实测）不是方法论装饰，是经验事实。
+
+**安全边界在硬件层，不在我们的代码里。** 这是 G1 集成最大的幸运。FSM 模式门控、L2+B 急停、crc 校验——这些是 G1 自己的安全机制，MOSS 不需要重建。我们的软件围栏是体验层和纵深防御，不是安全底线。
+
+### 下一步（下一个实例）
+
+1. 读 `CLAUDE.md` + `docs/index.md` + `docs/validation-checklist.md`
+2. 与人类开发者对齐验证目标（验证启动前置条件）
+3. 阶段 B: clone SDK 源码，验证 API 存在性和签名
+4. 阶段 C+D: 硬件环境记录 + MOSS 装机
+5. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
+
+---
+
+## 2026-06-07/08 Session — 实机连接与 MOSS 装机
+
+### 完成项
+
+- 硬件拓扑确认：PC1（闭源运控）→ 交换机 ← PC2（Jetson Orin NX, 二开入口）← 外部 Mac
+- 以太网进入交换机 → 配静态 IP → SSH 到 PC2 (unitree/123)
+- PC2 WiFi 射频开启 → 连接本地 WiFi → 路由器 MAC 绑定固定 IP
+- 安全加固：创建 moss 用户、UFW 放行 22
+- Git 直推通道：Mac `git remote add g1` → `git push g1 dev`
+- Python 工具链：pipx → uv → Python 3.12
+- `uv sync --active --all-extras` — MOSS 在 G1 PC2 上安装运行
+- 文档产出：`docs/hardware.md`, `docs/moss-on-pc2.md`
+- CLAUDE.md / README.md 阶段状态更新为阶段 B
+
+### 关键发现
+
+**G1 架构是交换机组网，不是点对点。** 外部以太网口连接的是交换机，Mac 配静态 IP 后可与 PC1、PC2、LiDAR 三者通信。PC1 通过访问控制闭源，PC2 是唯一二开入口。
+
+**PC2 WiFi 默认关闭是安全设计，不是 bug。** PC2 被隔离在交换机后，无法自行出站。这防止了二开代码意外联网，但也意味着每次装机都要先用以太网路径打开 WiFi。
+
+**uv 工具链在 Jetson 上的摩擦：** Python 3.8 系统版本 → pipx → uv → Python 3.12，每一步都涉及源配置（pip/pipx/uv 三级互不继承）。镜像源的路径兼容性问题导致预编译 Python 下载反复失败。最终 Mac 中转解决了带宽瓶颈。
+
+### 下一步
+
+1. `uv sync` 构建完成后验证：`moss --ai start`、`moss --ai all-commands`
+2. 阶段 B: clone SDK 源码到 PC2，验证 API
+3. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环

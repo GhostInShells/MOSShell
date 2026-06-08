@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Coroutine, Iterable, Type, Literal
 
 from typing_extensions import Self
@@ -33,45 +34,58 @@ from ghoshell_moss.host.cell_discovery import CellDiscovery
 
 depend_zenoh()
 import zenoh
+import concurrent.futures
 import contextlib
 import logging
 import threading
+import time
 import psutil
 
-__all__ = ['AppCell', 'HostCell', 'MatrixImpl']
+__all__ = ['AppCell', 'HostCell', 'NetworkCell', 'MatrixImpl']
+
+
+class NetworkCell(Cell):
+    """从 Zenoh 网络查询发现的 cell——get_alive_cells() 的返回值元素。
+
+    不持有任何本地状态或 event，仅承载 queryable 响应的信息。
+    """
+
+    def __init__(self, info: dict):
+        self.name = info["name"]
+        self.type = info["type"]
+        self.description = info.get("description", "")
+        self.where = info.get("where", "")
+        self.workspace = info.get("workspace")
+        self._address = info["address"]
+
+    @property
+    def address(self) -> str:
+        return self._address
 
 
 class AppCell(Cell):
 
-    def __init__(self, app: AppInfo, event: threading.Event):
+    def __init__(self, app: AppInfo):
         self.name = app.fullname
         self.description = app.description
         self.type = "app"
         self.where = app.work_directory
         self.workspace = self.where
-        self._alive_event = event
         self._address = app.address
 
     @property
     def address(self) -> str:
         return self._address
 
-    def is_alive(self) -> bool:
-        return self._alive_event.is_set()
-
 
 class HostCell(Cell):
 
-    def __init__(self, mode: Mode, event: threading.Event, workspace: str):
+    def __init__(self, mode: Mode, workspace: str):
         self.name = mode.name
         self.type = 'host'
         self.description = mode.description
         self.where = mode.file
         self.workspace = workspace
-        self._alive_event = event
-
-    def is_alive(self) -> bool:
-        return self._alive_event.is_set()
 
 
 class UnknownCell(Cell):
@@ -89,9 +103,6 @@ class UnknownCell(Cell):
     @property
     def address(self) -> str:
         return self._address
-
-    def is_alive(self) -> bool:
-        return False
 
 
 class MatrixImpl(Matrix):
@@ -117,20 +128,15 @@ class MatrixImpl(Matrix):
         self._session_scope = env.session_scope
         self._cell_discovery = CellDiscovery(session_scope=self._session_scope)
 
-        # prepare cell and events
+        # prepare cell registry
         # app cells 都是根据约定发现的, 由 host 进程管理的. 不会自动注册.
         cells: dict[str, Cell] = {}
-        cell_alive_events: dict[str, threading.Event] = {}
         for app in self.apps.list_apps():
-            is_alive = threading.Event()
-            cell = AppCell(app, is_alive)
-            cell_alive_events[cell.address] = is_alive
+            cell = AppCell(app)
             cells[cell.address] = cell
 
         # prepare main cell
-        event = threading.Event()
-        main_cell = HostCell(self._current_mode, event, str(self.workspace.root().abspath()))
-        cell_alive_events[main_cell.address] = event
+        main_cell = HostCell(self._current_mode, str(self.workspace.root().abspath()))
         cells[main_cell.address] = main_cell
         self._main_cell = main_cell
         if self._this_cell_address == main_cell.address:
@@ -142,8 +148,12 @@ class MatrixImpl(Matrix):
             )
 
         self._cells = cells
-        self._cell_alive_events = cell_alive_events
         self._is_main = isinstance(self._this_cell, HostCell)
+        # alive cells 缓存 — get_alive_cells() 的数据源，始终包含 this_cell
+        self._live_cells_cache: dict[str, Cell] = {}
+        self._live_cells_ts: float = 0
+        self._refresh_future: concurrent.futures.Future | None = None
+        self._live_cells_lock = threading.Lock()
         self._logger: LoggerItf | logging.Logger | None = logger
         self._started = False
         self._channel_provider_task: asyncio.Task | None = None
@@ -154,9 +164,11 @@ class MatrixImpl(Matrix):
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._log_prefix = f"<HostMatrix address={self._this_cell_address} session_scope={self.env.session_scope}>"
         self._task_group: set[asyncio.Task] = set()
-        locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
-        locker_name = locker_name.replace('.', '_')
-        locker_name = locker_name.replace('/', '_')
+        if self._is_main:
+            locker_name = f"moss_host_{self._session_scope}"
+        else:
+            locker_name = '-'.join(['moss', 'cell', self._this_cell.type, self._this_cell.name])
+            locker_name = locker_name.replace('.', '_').replace('/', '_')
         self._process_locker = self._workspace.lock(locker_name)
         self._process_locker_name = locker_name
         self._system_prompter = self._prepare_system_prompter()
@@ -169,6 +181,70 @@ class MatrixImpl(Matrix):
                 "%s cell address %r not found in known cells: %s, fallback to UnknownCell",
                 self._log_prefix, self._this_cell_address, list(cells.keys()),
             )
+
+    # -- alive cells (queryable-based dynamic discovery) ------------------ #
+
+    async def get_alive_cells(self, staleness: float = 5.0) -> dict[str, Cell]:
+        """获取当前在线 cell 列表 — 始终从缓存返回。
+
+        缓存新鲜时零阻塞。过期时触发后台网络刷新——
+        concurrent.futures.Future 仅作刷新完成的信号量，
+        不承载数据，数据永远读缓存。
+
+        main cell 直接返回 discovered cells (自身即为事实来源)。
+        """
+        if not self.is_running():
+            return {}
+
+        # main cell: discovered cells 全集即为 alive
+        if self._is_main:
+            return self._cells.copy()
+
+        # 快路径: 缓存新鲜，不碰锁
+        if time.monotonic() - self._live_cells_ts < staleness:
+            return dict(self._live_cells_cache)
+
+        # 去重: 锁只保护 Future 的创建/复用判断
+        with self._live_cells_lock:
+            if self._refresh_future is None or self._refresh_future.done():
+                self._refresh_future = concurrent.futures.Future()
+                # 锁内调度 coroutine——保证只有一个刷新在飞行
+                asyncio.run_coroutine_threadsafe(
+                    self._do_refresh_live_cells(), self._event_loop,
+                )
+
+        # 锁外 await，避免死锁。wrap_future 桥接 concurrent → asyncio
+        await asyncio.wrap_future(self._refresh_future)
+        return dict(self._live_cells_cache)
+
+    async def _do_refresh_live_cells(self):
+        """执行网络查询并更新缓存。
+
+        query_cells 是阻塞 Zenoh 调用，通过 to_thread 卸载到线程池。
+        网络返回的 raw dict 在此处转换为 NetworkCell，保证整条链路强类型。
+        this_cell 始终包含在结果中——host 自身也在 Zenoh 上宣告了 queryable，
+        若网络查询未返回它则补入（防御性）。
+        """
+        try:
+            session = self._container.force_fetch(zenoh.Session)
+            raw = await asyncio.to_thread(
+                self._cell_discovery.query_cells, session,
+            )
+            cells: dict[str, Cell] = {
+                addr: NetworkCell(info) for addr, info in raw.items()
+            }
+            # 防御: host 自身若不在网络响应中，补入
+            if self._this_cell.address not in cells:
+                cells[self._this_cell.address] = self._this_cell
+            self._live_cells_cache = cells
+            self._live_cells_ts = time.monotonic()
+            self._refresh_future.set_result(None)
+        except Exception as e:
+            self._refresh_future.set_exception(e)
+
+
+
+
 
     def _prepare_system_prompter(self) -> SystemPrompter:
         from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl
@@ -309,6 +385,17 @@ class MatrixImpl(Matrix):
     def list_cells(self) -> dict[str, Cell]:
         return self._cells
 
+    async def alist_cells(self) -> dict[str, Cell]:
+        """异步从网络查询全量 cell 状态。
+
+        通过 Zenoh wildcard get 查询所有 per-cell queryable，
+        能响应者即为在线。当前仅触发查询、返回本地缓存——
+        Cell 不再携带运行时状态字段，存活判定由响应本身表达。
+        """
+        session = self._container.force_fetch(zenoh.Session)
+        await asyncio.to_thread(self._cell_discovery.query_cells, session)
+        return self._cells
+
     @property
     def session(self) -> Session:
         return self._container.force_fetch(Session)
@@ -399,10 +486,14 @@ class MatrixImpl(Matrix):
             raise RuntimeError(f"Matrix is not running")
 
     def is_host_running(self) -> bool:
+        """判断 host (主 cell) 是否在运行中。
+
+        read_scope_meta() 默认 alive_only=True，内部完成 PID 验活。
+        文件不存在或 PID 已死均视为 host 不在运行。
+        """
         if self._is_main:
             return self.is_running()
-        else:
-            return self._main_cell.is_alive()
+        return self._env.read_scope_meta() is not None
 
     def close(self) -> None:
         self._closing_event.set()
@@ -540,20 +631,43 @@ class MatrixImpl(Matrix):
         # 暂时不做隐式绑定.
         yield from []
 
+    def _cell_info(self) -> dict:
+        """构建当前 cell 的 info dict，用于 queryable announce。"""
+        return {
+            "address": self._this_cell.address,
+            "name": self._this_cell.name,
+            "type": self._this_cell.type,
+            "where": self._this_cell.where,
+            "workspace": self._this_cell.workspace,
+            "description": self._this_cell.description,
+        }
+
     def _session_communication_bus_ctx_manager(self):
         """管理 session 事件总线的生命周期. """
-        # 未来考虑把 zenoh 完全屏蔽到 session 内侧. 暂时无法做到.
         zenoh_session = self._container.force_fetch(zenoh.Session)
         self._exit_stack.enter_context(zenoh_session)
+        # 每个 cell 宣告自己
         self._exit_stack.enter_context(
-            self._cell_discovery.discover_cells(
-                zenoh_session, self._cells, self._cell_alive_events,
-                this_address=self._this_cell.address,
+            self._cell_discovery.announce_cell(
+                zenoh_session, self._this_cell.address, self._cell_info(),
             )
         )
-        self._exit_stack.enter_context(
-            self._cell_discovery.declare_this_cell(zenoh_session, self._this_cell.address)
-        )
+        # host 额外提供查询门户（返回缓存而非 live query）
+        if self._is_main:
+            def _cells_cache() -> dict[str, dict]:
+                return {
+                    addr: {
+                        "address": c.address,
+                        "name": c.name,
+                        "type": c.type,
+                        "description": c.description,
+                    }
+                    for addr, c in self._cells.items()
+                }
+
+            self._exit_stack.enter_context(
+                self._cell_discovery.serve_query_portal(zenoh_session, _cells_cache)
+            )
 
     async def add_lifecycle_object(self, obj: MatrixLifecycleObject) -> None:
         self._check_running()
@@ -599,9 +713,25 @@ class MatrixImpl(Matrix):
             topic_service = self._container.force_fetch(TopicService)
             # ensure topic service lifecycle
             await self._async_exit_stack.enter_async_context(topic_service)
+
+            # ── scope meta 发现 — 进程锁后，session 创建前 ──
+            if self._is_main:
+                # 持有 host lock → 我们是 host，写 scope meta
+                self._env.write_scope_meta()
+            else:
+                # 非 main cell → 尝试从 scope meta 恢复 session_id
+                scope_meta = self._env.read_scope_meta()
+                if scope_meta is not None:
+                    self._env.set_session_id(scope_meta.session_id)
+                # 读不到不拒绝启动——允许无主进程测试场景
+
             # 完成 session 的异步启动逻辑.
             session = self._container.force_fetch(Session)
             await self._async_exit_stack.enter_async_context(session)
+
+            # ── session metadata 写 — 仅 main ──
+            if self._is_main:
+                self._write_session_metadata(session)
             # 完成启动后, 进入到关联依赖启动. 启动成功才进入到核心生命周期启动.
             lifecycle_objects = []
             if len(self._lifecycle_bound_objects_or_types) > 0:
@@ -631,8 +761,6 @@ class MatrixImpl(Matrix):
 
             await self._async_exit_stack.enter_async_context(self._ensure_task_group_canceled_ctx_manager())
             await self._async_exit_stack.enter_async_context(self._ensure_parent_process_exists_ctx_manager())
-            if event := self._cell_alive_events.get(self._this_cell_address):
-                event.set()
             self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_moss_env(
                 with_os_env=False,
             ))
@@ -655,8 +783,9 @@ class MatrixImpl(Matrix):
                 else:
                     self.logger.exception("%s stop on unknown error: %s", self._log_prefix, exc_val)
 
-            if event := self._cell_alive_events.get(self._this_cell_address):
-                event.clear()
+            # host 退出：删除 scope meta
+            if self._is_main:
+                self._env.delete_scope_meta()
 
             # exit all the stack
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
@@ -667,3 +796,25 @@ class MatrixImpl(Matrix):
             self._closed_event.set()
             # 结束同步运行逻辑.
             self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
+
+    def _write_session_metadata(self, session: Session) -> None:
+        """写入 session metadata + 追加 SessionRecord — 仅 _is_main 调用。"""
+        from datetime import datetime, timezone
+        from ghoshell_moss.core.blueprint.session import SessionMetadata, SessionRecord
+
+        now = datetime.now(timezone.utc).isoformat()
+        meta = SessionMetadata(
+            session_id=self.session_id,
+            session_scope=self.session_scope,
+            mode_name=self.mode_name,
+            ghost_name=self.ghost_name,
+            host_cell_address=self._this_cell_address,
+            host_pid=os.getpid(),
+            created_at=now,
+        )
+        session.storage.write_yaml("meta", meta)
+        record = SessionRecord(
+            session_id=self.session_id,
+            created_at=now,
+        )
+        session.scope_storage.append_model("sessions", record)

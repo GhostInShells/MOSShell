@@ -1,8 +1,16 @@
-# L1. Hello World App
+# L1. Hello World App — 从零创建你的第一个 MOSS App
 
 > Written by deepseek-v4-pro, 2026-06-02
 
 **15 分钟，从头创建你的第一个 MOSS App，完成 create → start → call → stop 全闭环。**
+
+## 你需要知道什么
+
+这些是必要最小化知识。每条都能通过命令拿到：
+
+- `moss apps create --help` — 了解 App 创建脚手架
+- `moss ctml read` — 理解 CTML 调用语法
+- `moss codex blueprint channel_builder` — 理解 Channel 构建 API
 
 ## 你要做什么
 
@@ -11,7 +19,8 @@
 ## 你需要什么
 
 - MOSS 已安装 (`.venv/bin/moss` 可用)
-- MOSS 运行时在跑 (MCP 或 REPL)
+- MOSS 运行时在跑 (REPL，或 MCP——可选的开发时调试方案)
+  - MCP 用法：`moss howtos list` 中找 MCP 相关文档
 - 当前 workspace 是 `.moss_ws`
 
 ## 第一步：创建 App
@@ -20,10 +29,12 @@
 .venv/bin/moss apps create examples/hello -d "A hello-world app"
 ```
 
-这会在 `.moss_ws/apps/examples/hello/` 下生成三个文件：
+这会在 App 目录下生成三个文件：
 - `APP.md` — 启动配置 (executable, script, workers...)
 - `main.py` — 入口脚本 (现在还是 helloworld 模板)
 - `.gitignore` — 忽略本 App 的运行时数据
+
+用 `moss apps show examples/hello` 可以看到完整信息。
 
 ## 第二步：写 Channel 代码
 
@@ -137,10 +148,13 @@ async def add(a: float, b: float) -> float
 
 ## 相关文档
 
-- `moss docs read app-system.md` — App 体系完整论述
+用 CLI 命令自行探索：
+
 - `moss codex blueprint channel_builder` — Channel 构建 API
-- `.moss_ws/apps/CLAUDE.md` — App 开发指南
-- `.moss_ws/apps/bodies/reachymini/` — 完整的复杂 App 示例
+- `moss docs read app-system` — App 体系论述
+- `moss howtos read app-dev/build-an-app` — App 开发决策路径
+- `moss howtos read app-dev/test-an-app` — 三层递进测试
+- `moss apps list` — 发现已有 App 作为参考
 
 ---
 

@@ -26,13 +26,6 @@ class FractalCell(Cell):
         self.connection_keys: dict[str, str] = {}
         self.uid = unique_id()
 
-    @property
-    def address(self) -> str:
-        return Cell.make_address('fractal', self.name)
-
-    def is_alive(self) -> bool:
-        return True
-
     @classmethod
     def from_dict(cls, data: dict) -> None | Self:
         name = data.get('name')

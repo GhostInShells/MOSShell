@@ -1,5 +1,6 @@
-"""CellDiscovery 单测 — key 表达式 + Zenoh liveness 集成。"""
-import threading
+"""CellDiscovery 单测 — queryable-based cell discovery。"""
+import json
+import time
 
 from ghoshell_moss.depends import depend_zenoh
 
@@ -14,181 +15,130 @@ SCOPE = "test_scope"
 # --- key expressions (pure unit, no zenoh) ---
 
 
-def test_key_prefix():
+def test_cell_prefix():
     cd = CellDiscovery(session_scope=SCOPE)
-    assert cd.liveness_prefix() == f"MOSS/{SCOPE}/cell/liveness"
+    assert cd.cell_prefix() == f"MOSS/{SCOPE}/cells"
 
 
-def test_key_single_cell():
+def test_cell_key():
     cd = CellDiscovery(session_scope=SCOPE)
     addr = "app/group/name"
-    assert cd.liveness_key(addr) == f"MOSS/{SCOPE}/cell/liveness/{addr}"
+    assert cd.cell_key(addr) == f"MOSS/{SCOPE}/cells/{addr}"
 
 
-def test_key_wildcard():
+def test_query_portal_key():
     cd = CellDiscovery(session_scope=SCOPE)
-    assert cd.liveness_wildcard() == f"MOSS/{SCOPE}/cell/liveness/**"
+    assert cd.query_portal_key() == f"MOSS/{SCOPE}/cells/query"
 
 
-# --- declare_this_cell (needs zenoh) ---
+# --- announce_cell (needs zenoh) ---
 
 
-def test_declare_this_cell():
-    """declare_this_cell 声明 liveness token，wildcard 可查询到。"""
+def test_announce_cell():
+    """announce_cell 声明 queryable，wildcard get 可查询到。"""
     cd = CellDiscovery(session_scope=SCOPE)
     address = "host/default"
+    info = {"address": address, "type": "host", "name": "default"}
 
     with zenoh.open(zenoh.Config()) as session:
-        with cd.declare_this_cell(session, address):
-            # wildcard 查询应看到此 token
-            samples = list(session.liveliness().get(cd.liveness_wildcard()))
-            ok_keys = {str(s.ok.key_expr) for s in samples if s.ok is not None}
-            assert cd.liveness_key(address) in ok_keys
+        with cd.announce_cell(session, address, info):
+            time.sleep(0.03)
+            replies = list(session.get(
+                f"{cd.cell_prefix()}/**",
+                target=zenoh.QueryTarget.ALL,
+                consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+            ))
+            payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+            assert any(p["address"] == address for p in payloads)
 
-        # 退出 context manager 后 token 被 undeclare
-        samples = list(session.liveliness().get(cd.liveness_wildcard()))
-        ok_keys = {str(s.ok.key_expr) for s in samples if s.ok is not None}
-        assert cd.liveness_key(address) not in ok_keys
+        # 退出 context manager 后 queryable 被 undeclare
+        time.sleep(0.03)
+        replies = list(session.get(
+            f"{cd.cell_prefix()}/**",
+            target=zenoh.QueryTarget.ALL,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        ))
+        payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
+        assert not any(p["address"] == address for p in payloads)
 
 
-# --- discover_cells (needs zenoh) ---
+# --- serve_query_portal + query_cells (needs zenoh) ---
 
 
-def test_discover_cells_detects_live_cells():
-    """discover_cells 监听已知 cell，另一 session 声明 token 后 event 被 set。"""
+def test_query_cells_discovers_announced_cells():
+    """query_cells 返回所有已宣告 cell 的 info。"""
     cd = CellDiscovery(session_scope=SCOPE)
-    address = "app/test/cell"
-    this = "host/default"
-
-    cells = {
-        this: None,  # value unused by discover_cells
-        address: None,
-    }
-    events = {
-        this: threading.Event(),
-        address: threading.Event(),
-    }
 
     with zenoh.open(zenoh.Config()) as session:
-        # 初始: 只有 this 被 set
-        with cd.discover_cells(session, cells, events, this_address=this):
-            assert events[this].is_set()
-            # remote cell 还没上线
-            assert not events[address].is_set()
-
-            # 另一个 session 声明 liveness token
-            with zenoh.open(zenoh.Config()) as remote:
-                token = remote.liveliness().declare_token(cd.liveness_key(address))
-                # 给 zenoh 一点时间传播 liveness
-                import time
-                for _ in range(50):
-                    if events[address].is_set():
-                        break
-                    time.sleep(0.01)
-                assert events[address].is_set(), "remote cell liveness not detected"
-                token.undeclare()
+        with cd.announce_cell(session, "host/default", {"address": "host/default", "type": "host"}):
+            with cd.announce_cell(session, "app/echo", {"address": "app/echo", "type": "app"}):
+                time.sleep(0.05)
+                result = cd.query_cells(session)
+                assert "host/default" in result
+                assert "app/echo" in result
+                assert result["host/default"]["type"] == "host"
 
 
-def test_discover_cells_detects_disconnect():
-    """cell 下线 (DELETE) 后 event 被 clear。"""
+def test_query_cells_empty_when_no_cells():
+    """没有任何 cell 宣告时 query_cells 返回空 dict。"""
     cd = CellDiscovery(session_scope=SCOPE)
-    address = "app/test/disconnect"
-    this = "host/default"
-
-    cells = {this: None, address: None}
-    events = {this: threading.Event(), address: threading.Event()}
 
     with zenoh.open(zenoh.Config()) as session:
-        with cd.discover_cells(session, cells, events, this_address=this):
-            # 让 cell 上线
-            with zenoh.open(zenoh.Config()) as remote:
-                token = remote.liveliness().declare_token(cd.liveness_key(address))
-                import time
-                for _ in range(50):
-                    if events[address].is_set():
-                        break
-                    time.sleep(0.01)
-                assert events[address].is_set()
-
-                token.undeclare()
-                # 等 DELETE 传播
-                for _ in range(50):
-                    if not events[address].is_set():
-                        break
-                    time.sleep(0.01)
-                assert not events[address].is_set(), "disconnected cell still marked alive"
+        result = cd.query_cells(session)
+        assert result == {}
 
 
-def test_discover_cells_initial_query():
-    """discover_cells 启动时做 wildcard 查询，发现已存在的 cell。"""
+def test_query_cells_dynamic_leave():
+    """cell undeclare 后 query_cells 不再返回该 cell。"""
     cd = CellDiscovery(session_scope=SCOPE)
-    address = "app/already/running"
-    this = "host/default"
+    address = "app/to_leave"
 
-    cells = {this: None, address: None}
-    events = {this: threading.Event(), address: threading.Event()}
+    with zenoh.open(zenoh.Config()) as session:
+        with cd.announce_cell(session, address, {"address": address}):
+            time.sleep(0.03)
+            result = cd.query_cells(session)
+            assert address in result
 
-    # 先在一个 session 里声明 token（模拟已运行的 cell）
-    with zenoh.open(zenoh.Config()) as remote:
-        token = remote.liveliness().declare_token(cd.liveness_key(address))
-
-        # 另一个 session 做 discover — initial query 应发现已存在的 token
-        with zenoh.open(zenoh.Config()) as session:
-            with cd.discover_cells(session, cells, events, this_address=this):
-                import time
-                for _ in range(50):
-                    if events[address].is_set():
-                        break
-                    time.sleep(0.01)
-                assert events[address].is_set(), "initial query missed already-running cell"
-
-        token.undeclare()
+        # undeclare 后消失
+        time.sleep(0.05)
+        result = cd.query_cells(session)
+        assert address not in result
 
 
-def test_discover_cells_skips_unknown_address():
-    """initial query 发现的 key 如果不在 alive_events 里，不报错。"""
+def test_multiple_cells_discovered():
+    """多个 cell 同时宣告，全部被发现。"""
     cd = CellDiscovery(session_scope=SCOPE)
-    this = "host/default"
-    cells = {this: None}
-    events = {this: threading.Event()}
-
-    with zenoh.open(zenoh.Config()) as remote:
-        # 声明一个不在 cells 里的 token
-        unknown = "app/unknown/cell"
-        token = remote.liveliness().declare_token(cd.liveness_key(unknown))
-
-        with zenoh.open(zenoh.Config()) as session:
-            # 不应报错 — unknown address 被静默跳过
-            with cd.discover_cells(session, cells, events, this_address=this):
-                pass
-
-        token.undeclare()
-
-
-def test_multiple_cells():
-    """多个 cell 同时上线，全部被检测到。"""
-    cd = CellDiscovery(session_scope=SCOPE)
-    this = "host/default"
     addresses = [f"app/test/cell_{i}" for i in range(5)]
 
-    cells = {this: None, **{a: None for a in addresses}}
-    events = {this: threading.Event(), **{a: threading.Event() for a in addresses}}
+    with zenoh.open(zenoh.Config()) as session:
+        # 用 exit_stack 管理多个 context manager
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for addr in addresses:
+                stack.enter_context(
+                    cd.announce_cell(session, addr, {"address": addr, "type": "app"})
+                )
+            time.sleep(0.06)
+            result = cd.query_cells(session)
+            for addr in addresses:
+                assert addr in result, f"{addr} not discovered"
+
+
+def test_serve_query_portal():
+    """serve_query_portal 返回 cells_provider 提供的缓存数据。"""
+    cd = CellDiscovery(session_scope=SCOPE)
+
+    cache = {
+        "host/default": {"address": "host/default", "type": "host"},
+        "app/echo": {"address": "app/echo", "type": "app"},
+    }
 
     with zenoh.open(zenoh.Config()) as session:
-        with cd.discover_cells(session, cells, events, this_address=this):
-            with zenoh.open(zenoh.Config()) as remote:
-                tokens = [
-                    remote.liveliness().declare_token(cd.liveness_key(a))
-                    for a in addresses
-                ]
-                import time
-                for _ in range(100):
-                    if all(events[a].is_set() for a in addresses):
-                        break
-                    time.sleep(0.01)
-
-                for a in addresses:
-                    assert events[a].is_set(), f"{a} not detected"
-
-                for t in tokens:
-                    t.undeclare()
+        with cd.serve_query_portal(session, lambda: cache):
+            time.sleep(0.03)
+            replies = list(session.get(cd.query_portal_key()))
+            assert len(replies) == 1
+            result = json.loads(replies[0].ok.payload.to_string())
+            assert "host/default" in result
+            assert "app/echo" in result
+            assert result["host/default"]["type"] == "host"

@@ -32,6 +32,13 @@ class Cell(ABC):
     比如并行思考模块, channel provider 等等.
     不需要实现它, Matrix 的实现会包含 Cell 的定义.
     合法的 Cell 在 Matrix 体系中自动被感知和发现.
+
+    Cell 是纯描述模型，不包含运行时状态。
+    "存活"判定不由 Cell 自己表达：
+    - host cell: 通过 ScopeMeta.host_pid 验活 (Matrix.is_host_running)
+    - 其他 cell: 通过 Zenoh queryable 是否响应判定 (Matrix.alist_cells)
+    移除 is_alive() 和 reported_at —— 它们是旧广播 + 缓存 TTL 模式的残留，
+    在 queryable 按需发现模式下没有消费者。
     """
     name: str  # 节点的名称.
     description: str  # 节点的描述.
@@ -54,13 +61,6 @@ class Cell(ABC):
     def log_name(self) -> str:
         return '.'.join(['moss', self.type, self.name.replace('/', '.')])
 
-    @abstractmethod
-    def is_alive(self) -> bool:
-        """
-        节点是否在运行中.
-        """
-        pass
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "address": self.address,
@@ -69,7 +69,6 @@ class Cell(ABC):
             "type": self.type,
             "where": self.where,
             "log_name": self.log_name,
-            "is_alive": self.is_alive(),
             "workspace": self.workspace,
         }
 
@@ -262,9 +261,26 @@ class Matrix(ABC):
     @abstractmethod
     def list_cells(self) -> dict[CellAddress, Cell]:
         """
-        返回环境里的所有节点, 以及这些节点是否在运行.
+        返回环境里静态发现的所有节点 (AppStore, 文件系统注册表).
+        包含从未启动过的 cell —— 这个是 "知道的 cell" 集合，
+        不表达运行状态。
+
+        TODO: 将重命名为 discovered_cells()，与 live_cells()
+        形成清晰的数据源对比 (静态发现 vs 网络查询)。
         """
         pass
+
+    async def alist_cells(self) -> dict[CellAddress, Cell]:
+        """
+        异步从 Zenoh 网络查询当前在线的 cell。
+        只有能响应 queryable 的 cell 才会出现在结果中。
+
+        TODO: 将重命名为 live_cells()，表达 "网络查询所得在线集合"。
+        与 discovered_cells() 的区别：一个走文件系统，一个走网络。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement alist_cells()"
+        )
 
     @abstractmethod
     def cell_env(self) -> dict[str, str]:

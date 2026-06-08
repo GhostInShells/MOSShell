@@ -20,6 +20,14 @@ class MatrixInspector:
             return result
         return result[:limit]
 
+    def alive_cells(self, limit: int = 0) -> list[dict]:
+        """列出当前存活的 Cell 节点 (is_alive() == True)。"""
+        cells = self._matrix.list_cells()
+        result = [cell.to_dict() for cell in cells.values() if cell.is_alive()]
+        if limit <= 0:
+            return result
+        return result[:limit]
+
     def this_cell(self) -> dict:
         """获取当前运行节点 (This Cell) 的详细元数据。"""
         cell = self._matrix.this

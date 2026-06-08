@@ -20,6 +20,12 @@
 
 环境安装与配置见 `moss start`。所有 `moss` 命令支持全局 `--ai` 参数，调用时必须始终带上——该参数剥离 rich 视觉排版，输出纯文本，节省 token。
 
+### Worktree 环境隔离
+
+Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径不同
+不等价于隔离——`uv sync --active` 仍操作 `VIRTUAL_ENV` 指向的主仓库 venv。
+进入 worktree 后先用 `uv sync`（不带 `--active`）确认绑定到本地 `.venv`。
+
 ## CLI 命令发现
 
 用以下流程替代多轮 `--help` 探索，将发现从 40+ 轮压缩到 2 轮：

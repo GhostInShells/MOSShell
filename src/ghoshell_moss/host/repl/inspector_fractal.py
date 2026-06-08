@@ -76,5 +76,5 @@ class FractalInspector:
             return "No connected fractal nodes."
         lines = [f"Connected ({len(nodes)}):"]
         for c in nodes:
-            lines.append(f"  - {c.name} alive={c.is_alive()}")
+            lines.append(f"  - {c.name} accepted={c.accepted}")
         return "\n".join(lines)
