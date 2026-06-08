@@ -199,3 +199,45 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 1. 人类在 PC2 上按 `RESEARCH_SEQUENCE.md` 逐项执行系统线实验，反馈结果
 2. 基于系统线结论确定 SDK 线调研范围（例如：如果音频走 PC2 本地，则 SDK 线跳过 AudioClient RPC 分析）
 3. 系统线第一轮验证通过后，将脚本改造为 MOSS channel 命令（AI 可运行时调用）
+
+---
+
+## 2026-06-08 Session — SDK 源码摸底 + 验证脚本体系 + 能力拓扑讨论
+
+### 完成项
+
+- SDK 源码 clone 到 `src/unitree_sdk2_python/`（gitignored）
+- 修复 `.gitignore`: `src/` → `src/unitree_sdk2_python/`
+- **SDK 源码通读**: G1 三组 API(loco/arm/audio) + MotionSwitcher + RobotState + RPC 基类 + DDS Channel
+- **Topic 清单**: `docs/sdk-topics.md` — 18 个 topic 的类型组/方向/MOSS 能力归属/类型验证清单
+- **文档<源码差异**: LocoClient 缺失方法(Squat/ContinuousGait/GetFsmMode/StandUp)、action_map 实际 17 种(vs 文档 15)、TtsMaker index bug 等
+- **能力拓扑**: 横向 5 能力(系统感知/G1感知/音频灯光/手臂控制/高阶运动) × 纵向 6 模式(0.Pure→1.Observer→2.Passenger→3.Mover→4.Gesturer→5+.Beyond)
+- **讨论提纲**: `.ai_partners/features/.../discuss/2026-06-08_phase_b_sdk_discussion_outline.md`
+- **SDK 验证脚本**: `scripts/sdk/` — 12 个脚本(00-11) + SKILL.md:
+  - 00-03: 环境/反射/类型/发现(00-02 无 G1 可跑)
+  - 04-06: A 层纯读(LowState+遥控器, SportMode, 电池/主板/IMU)
+  - 07: B 层 RPC 只读合集(4 个接口)
+  - 08: C 层音频灯光(TTS 中断探路+LED+PlayStream)
+  - 09: D 层上肢(基础动作+中断复位+动作序列)
+  - 10-11: E 层模式切换+移动(极慢速 0.5s)
+- **急停验证脚本**: `12_estop_verify.py` — 踏步中 L2+B→Damp() + 双路标记(内存+文件 `/tmp/g1_moss_estop`)
+- **Task 设计方向**: 协程管理生命周期 + 线程跑运动轮询(20ms)。Cancel = 线程 stop 信号 + 温柔复位(weight→0)
+
+### 关键洞察
+
+**SDK 是 Topic 的封装，不是能力的全集。** 大部分横向能力 SDK 已封装(RPC client)，缺口在被动感知 topic(电池/主板/IMU)和 ASR/麦克风。都是"有数据通路无 convenience class"，不需要 SDK 新增能力。
+
+**急停模型**: 硬件 L2+B 不可绕过(FSM 直接阻尼) — 真正的安全底线。MOSS 层 Damp() 是体验层响应。不碰 ZeroTorque(危险)。`/tmp/g1_moss_estop` 文件作为跨脚本可见的急停标记。
+
+**坐标管理任务设计**: async Task 管生命周期 → 子线程 20ms 轮询 → cancel = stop_event + 安全指令(Damp/StopMove/release arm)。与 MOSS channel 体系自然融合。
+
+### 下一步 (给下一个实例)
+
+1. **提交本 session 所有产出** (`scripts/sdk/` 12 个脚本 未提交)
+2. 人类优先在 PC2 上执行系统线 `RESEARCH_SEQUENCE.md` (阻塞项 — 决定音频路径等关键决策)
+3. 系统线通过后，SDK 脚本 00-03(无 G1 可跑) + 04-07(纯读) 第一轮验证
+4. 基于系统线音频结果，决策 08(音频灯光) 是否进一步做二阶实验
+5. 基于人类反馈逐步解锁 09(上肢)→10(模式切换)→11(移动)→12(急停验证)
+6. 讨论提纲中未决议题: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
+
+**不在此 session**: terminal channel 建设、VLA/VLM policy 协调、DDS 调试模式解锁
