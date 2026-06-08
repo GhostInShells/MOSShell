@@ -1,0 +1,8 @@
+# Feishu IM Integration Config
+# Loaded via matrix.cell_workspace.configs().read_yaml("feishu", FeishuConfig).
+# $VAR placeholders resolved by FeishuConfig.resolve() against os.environ
+# (populated by load_dotenv() from .env file).
+
+app_id: $FEISHU_APP_ID
+app_secret: $FEISHU_APP_SECRET
+# domain not set — uses FeishuConfig default (https://open.feishu.cn)
