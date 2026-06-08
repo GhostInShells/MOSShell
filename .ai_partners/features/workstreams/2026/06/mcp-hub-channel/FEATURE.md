@@ -5,7 +5,7 @@ description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调�
 milestone: null
 priority: P0
 status: completed
-status_note: 2026-06-08 预设配置重构完成 — 删除 MCPServerPreset 类，改 YAML 配置。add_server name-only + $ENV_VAR connect-time 解析 + 紧凑 context 连接状态 + 54 单测通过。人类工程师 review 合并。
+status_note: 2026-06-08 预设配置重构完成 — 删除 MCPServerPreset 类，改 YAML 配置。add_server name-only + $ENV_VAR connect-time 解析 + context 含 description + _load_global_config 修复 + env 写盘自动 redact。54 单测通过。人类工程师 review 合并。
 title: MCP Hub Channel
 updated: '2026-06-08'
 ---

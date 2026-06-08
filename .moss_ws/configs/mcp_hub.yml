@@ -2,6 +2,17 @@
 # 此处定义的 server 对所有 Ghost 可见，通过 <mcp:add_server name="..." /> 连接。
 # env 中以 $ 开头的值在连接时从系统环境变量解析为真值，此处存储 $VAR 占位符。
 servers:
+  test:
+    name: test
+    transport: stdio
+    command: .venv/bin/python
+    description: Local MCP test server — echo, add, get_time, slow_echo
+    args:
+    - scripts/mcp_test_server.py
+    - --stdio
+    env: {}
+    url: ''
+    headers: {}
   baidu_map:
     name: baidu_map
     transport: stdio

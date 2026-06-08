@@ -19,7 +19,7 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRun
 from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix, ScopesKey
-from ghoshell_moss.contracts.configs import ConfigType, YamlConfigStore
+from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field
@@ -57,6 +57,25 @@ def resolve_env_dict(env: dict[str, str]) -> dict[str, str]:
         else:
             resolved[k] = v
     return resolved
+
+
+def _redact_env_for_save(env: dict[str, str]) -> dict[str, str]:
+    """resolve_env_dict 的逆向：将 env 真值还原为 $VAR 占位符。
+
+    扫描 os.environ，若 env value 与某个环境变量值匹配，替换为 $VAR_NAME。
+    不匹配的值原样保留。
+    """
+    if not env:
+        return env
+    redacted = {}
+    for k, v in env.items():
+        for env_key, env_val in os.environ.items():
+            if v == env_val:
+                redacted[k] = f"${env_key}"
+                break
+        else:
+            redacted[k] = v
+    return redacted
 
 
 class MCPServerConfig(BaseModel):
@@ -414,7 +433,10 @@ class MCPHubState(ChannelState):
                 return config
 
     def _save_config(self, config: MCPHubConfig) -> None:
-        """持久化 MCP Hub 配置。"""
+        """持久化 MCP Hub 配置。保存前将 env 真值还原为 $VAR 占位符。"""
+        for server_cfg in config.servers.values():
+            if server_cfg.env:
+                server_cfg.env = _redact_env_for_save(server_cfg.env)
         if self._scopes:
             storage = self._matrix.get_scoped_storage(*self._scopes)
             storage.write_yaml("mcp_hub", config)
@@ -425,9 +447,8 @@ class MCPHubState(ChannelState):
     def _load_global_config(self) -> MCPHubConfig:
         """加载全局 MCP Hub 预设配置（只读，直接读 workspace configs/ 目录）。"""
         try:
-            workspace = self._matrix.cell_workspace()
-            store = YamlConfigStore(workspace.configs())
-            config = store.read_yaml("mcp_hub", MCPHubConfig)
+            workspace = self._matrix.workspace
+            config = workspace.configs().read_yaml("mcp_hub", MCPHubConfig)
             if config is not None:
                 return config
         except Exception:
@@ -467,17 +488,21 @@ class MCPHubState(ChannelState):
             elif session.error:
                 lines.append(f"  error: {session.error[:200]}")
             lines.append("")
-        # 未连接的 YAML 预配置（活跃 config + 全局预设）
+        # 未连接的 YAML 预配置（活跃 config + 全局预设），含描述
         config = self._load_config()
-        available: set[str] = set(config.servers.keys())
-        if self._scopes:
-            available.update(self._load_global_config().servers.keys())
-        available.difference_update(self._sessions.keys())
+        available: dict[str, str] = {}
+        for src in [config] + ([self._load_global_config()] if self._scopes else []):
+            for name, cfg in src.servers.items():
+                if name not in self._sessions and name not in available:
+                    available[name] = cfg.description or ''
         if available:
             if self._sessions:
-                lines.append(f"Available: {', '.join(sorted(available))}")
+                lines.append("Available:")
             else:
-                lines.append(f"No MCP servers connected. Available: {', '.join(sorted(available))}")
+                lines.append("No MCP servers connected. Available:")
+            for name in sorted(available):
+                desc = f" — {available[name]}" if available[name] else ''
+                lines.append(f"- `{name}`{desc}")
         elif not self._sessions:
             lines.append("No MCP servers available.")
         return ['\n'.join(lines)]
