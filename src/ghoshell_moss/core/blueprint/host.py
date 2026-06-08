@@ -13,7 +13,7 @@ from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter, LoggerItf
 from .ghost import Ghost, GhostMeta
 from .app import AppStore
-from .environment import Environment
+from .environment import Environment, CellMeta
 from .fractal import FractalHub, FractalCellProvider
 
 __all__ = [
@@ -434,6 +434,21 @@ class MossHost(ABC):
         >>>     async with moss.matrix():
         >>>         ...
         """
+        pass
+
+    @abstractmethod
+    def list_scope_cells(self, alive_only: bool = True) -> list[CellMeta]:
+        """列出当前 scope 下所有注册的 cell（文件系统静态发现 + PID 验活）。"""
+        pass
+
+    @abstractmethod
+    def kill_cell(self, address: str) -> bool:
+        """杀死当前 scope 下指定 address 的 cell 进程。成功返回 True。"""
+        pass
+
+    @abstractmethod
+    def kill_all_cells(self) -> list[str]:
+        """杀死当前 scope 下所有活 cell 进程。返回被杀死的 address 列表。"""
         pass
 
     @abstractmethod

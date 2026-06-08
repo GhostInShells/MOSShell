@@ -9,7 +9,7 @@ from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.codex.discover import ScanError, ModuleManifest
 from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
-from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.environment import Environment, CellMeta
 from ghoshell_moss.host.manifests import PackageManifests
 from ghoshell_moss.host.app_store import HostAppStore
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
@@ -149,6 +149,15 @@ class Host(MossHost):
 
     def matrix(self) -> Matrix:
         return self._matrix
+
+    def list_scope_cells(self, alive_only: bool = True) -> list[CellMeta]:
+        return self._env.list_scope_cells(alive_only)
+
+    def kill_cell(self, address: str) -> bool:
+        return self._env.kill_cell(address)
+
+    def kill_all_cells(self) -> list[str]:
+        return self._env.kill_all_cells()
 
     def scan_manifest_errors(self) -> list[ScanError]:
         return self._scan_manifest_errors

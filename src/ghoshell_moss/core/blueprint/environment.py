@@ -43,6 +43,7 @@ __all__ = [
     'MOSSEnvKey',
     "MossMeta",
     "ScopeMeta",
+    "CellMeta",
 
     # stubs
     'MODE_STUB_PACKAGE',
@@ -160,6 +161,22 @@ class ScopeMeta(BaseModel):
     session_id: str = Field(description="当前 scope 的 active session id")
     mode: str = Field(description="当前 mode 名称")
     host_pid: int = Field(description="host 进程 PID，用于存活验证与运维诊断")
+
+
+class CellMeta(BaseModel):
+    """cell 级注册文件 — 每个 cell 进程写自己的 PID，正常退出删除，PID 验尸。
+
+    与 ScopeMeta 对称：都是文件系统注册 + PID 验活。
+    ScopeMeta 是 scope 级（一个 scope 一个），CellMeta 是 cell 级（每个进程一个）。
+    文件名格式: cell-{scope}-{md5(address)[:12]}.json — scope 前缀支持静态目录扫描。
+    """
+    address: str = Field(description="cell 地址，如 host/default, app/mcp/xxx")
+    pid: int = Field(description="cell 进程 PID")
+    parent_pid: int = Field(description="父进程 PID")
+    session_id: str = Field(description="session id")
+    session_scope: str = Field(description="session scope")
+    mode_name: str = Field(description="mode 名称")
+    ghost_name: str = Field(description="ghost 名称，空字符串表示无 ghost")
 
 
 class Environment:
@@ -530,6 +547,129 @@ class Environment:
     def delete_scope_meta(self) -> None:
         """删除 scope meta — host 正常退出时调用。"""
         self.scope_meta_path.unlink(missing_ok=True)
+
+    # ── cell meta — cell 级注册文件 ─────────────────
+
+    @staticmethod
+    def _cell_address_hash(address: str) -> str:
+        import hashlib
+        return hashlib.md5(address.encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _cells_dir(workspace_path: Path) -> Path:
+        return workspace_path / "runtime" / "cells"
+
+    @staticmethod
+    def _cell_meta_path_for(workspace_path: Path, scope: str, address: str) -> Path:
+        h = Environment._cell_address_hash(address)
+        return Environment._cells_dir(workspace_path) / f"cell-{scope}-{h}.json"
+
+    @property
+    def cell_meta_path(self) -> Path:
+        """当前进程的 cell 注册文件路径。"""
+        return self._cell_meta_path_for(
+            self._workspace_path, self._session_scope, self._cell_address,
+        )
+
+    def write_cell_meta(self) -> None:
+        """写入 cell meta — Matrix 启动完成后调用。"""
+        meta = CellMeta(
+            address=self._cell_address,
+            pid=self._self_pid,
+            parent_pid=self._parent_pid,
+            session_id=self._session_id,
+            session_scope=self._session_scope,
+            mode_name=self._moss_mode,
+            ghost_name=self._ghost_name,
+        )
+        file = self.cell_meta_path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(meta.model_dump_json(indent=2))
+
+    def delete_cell_meta(self) -> None:
+        """删除 cell meta — 正常退出时调用。"""
+        self.cell_meta_path.unlink(missing_ok=True)
+
+    # ── cell meta 查询 — 基于 self 的 workspace + scope 上下文 ──
+
+    def read_cell_meta(self, address: str, alive_only: bool = True) -> "CellMeta | None":
+        """读取当前 scope 下指定 address 的 cell 注册文件，PID 验活。"""
+        path = self._cell_meta_path_for(
+            self._workspace_path, self._session_scope, address,
+        )
+        return self._read_cell_meta_at(path, alive_only)
+
+    def read_own_cell_meta(self, alive_only: bool = True) -> "CellMeta | None":
+        """读取当前进程自己的 cell 注册文件。"""
+        return self._read_cell_meta_at(self.cell_meta_path, alive_only)
+
+    def list_scope_cells(self, alive_only: bool = True) -> list["CellMeta"]:
+        """列出当前 scope 下所有注册的 cell。
+
+        扫描 cells/ 目录，按文件名排序，逐个读取并 PID 验活。
+        """
+        cells_dir = self._cells_dir(self._workspace_path)
+        if not cells_dir.is_dir():
+            return []
+        prefix = f"cell-{self._session_scope}-"
+        metas = []
+        for p in sorted(p for p in cells_dir.iterdir()
+                        if p.is_file() and p.name.startswith(prefix) and p.suffix == ".json"):
+            meta = self._read_cell_meta_at(p, alive_only)
+            if meta is not None:
+                metas.append(meta)
+        return metas
+
+    # ── cell meta 动作 — kill / kill-all ──
+
+    def kill_cell(self, address: str) -> bool:
+        """杀死当前 scope 下指定 address 的 cell 进程。成功返回 True。
+
+        读 cell 注册文件 → PID 验活 → terminate → 等 3s → 仍活则 kill → 删注册文件。
+        """
+        meta = self.read_cell_meta(address, alive_only=True)
+        if meta is None:
+            return False
+        killed = False
+        try:
+            proc = psutil.Process(meta.pid)
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except psutil.TimeoutExpired:
+                proc.kill()
+            killed = True
+        except psutil.NoSuchProcess:
+            killed = False
+        # 无论进程是否还在，清理注册文件
+        path = self._cell_meta_path_for(
+            self._workspace_path, self._session_scope, address,
+        )
+        path.unlink(missing_ok=True)
+        return killed
+
+    def kill_all_cells(self) -> list[str]:
+        """杀死当前 scope 下所有活 cell 进程。返回被杀死的 address 列表。"""
+        killed = []
+        for meta in self.list_scope_cells(alive_only=True):
+            # 不杀自己
+            if meta.pid == self._self_pid:
+                continue
+            if self.kill_cell(meta.address):
+                killed.append(meta.address)
+        return killed
+
+    @staticmethod
+    def _read_cell_meta_at(path: Path, alive_only: bool = True) -> "CellMeta | None":
+        if not path.exists():
+            return None
+        try:
+            meta = CellMeta.model_validate_json(path.read_text())
+        except Exception:
+            return None
+        if alive_only and not psutil.pid_exists(meta.pid):
+            return None
+        return meta
 
     @property
     def source_dir(self) -> Path | None:

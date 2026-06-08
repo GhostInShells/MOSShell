@@ -11,7 +11,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.cli import (
     codex_cli, workspace_cli, manifests_cli, apps_cli,
     modes_cli, ctml_cli, howto_cli, features_cli, docs_cli,
-    ghosts_cli, scripts_cli, start_cli,
+    ghosts_cli, scripts_cli, start_cli, runtime_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -41,6 +41,8 @@ app.add_typer(ghosts_cli.ghost_app, name="ghosts", short_help="MOSS ghost discov
 app.add_typer(scripts_cli.script_app, name="script", short_help="One-shot dev-time scripts for matrix debugging")
 
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
+
+app.add_typer(runtime_cli.runtime_app, name="runtime", short_help="Runtime cell inspection and management")
 
 
 @app.callback(invoke_without_command=True)

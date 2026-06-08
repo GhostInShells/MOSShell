@@ -761,6 +761,10 @@ class MatrixImpl(Matrix):
 
             await self._async_exit_stack.enter_async_context(self._ensure_task_group_canceled_ctx_manager())
             await self._async_exit_stack.enter_async_context(self._ensure_parent_process_exists_ctx_manager())
+
+            # ── cell meta — 启动完成，注册到文件系统 ──
+            self._env.write_cell_meta()
+
             self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_moss_env(
                 with_os_env=False,
             ))
@@ -786,6 +790,8 @@ class MatrixImpl(Matrix):
             # host 退出：删除 scope meta
             if self._is_main:
                 self._env.delete_scope_meta()
+            # 所有 cell 退出：删除 cell meta
+            self._env.delete_cell_meta()
 
             # exit all the stack
             await self._async_exit_stack.__aexit__(exc_type, exc_val, exc_tb)
