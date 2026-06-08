@@ -172,3 +172,30 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 1. `uv sync` 构建完成后验证：`moss --ai start`、`moss --ai all-commands`
 2. 阶段 B: clone SDK 源码到 PC2，验证 API
 3. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
+
+---
+
+## 2026-06-08 Session — 系统线实验体系搭建 + 方法论博客
+
+### 完成项
+
+- 博客产出：`g1-layered-methodology.md` — G1 分层推进方法的整体拓扑（认知层→验证层→构建层）、三源真相关系、脚本先于 channel 的原则论证
+- 系统线实验体系：`scripts/sys/` — 按 Claude Code skill 范式组织，6 个技能 × 19 个原子脚本
+  - network（网络拓扑）、audio（音频硬件路径决策）、usb_camera（视觉方案）、system（系统身份+环境）、dds（通讯就绪）、performance（性能基线+运行时对比）
+  - 每个技能一个 `SKILL.md`（frontmatter + 调查命题 + 架构决策标注）
+- 调研时序文档：`scripts/sys/RESEARCH_SEQUENCE.md` — 11 步对话式执行脚本，每步标注命令/为什么/观察什么/影响什么决策。第一轮验证后改造为 MOSS channel 命令
+- `docs/index.md` 中的音频路径决策逻辑在系统线中得到实操化：audio 技能的四个脚本直接回答"PC2 能否独立发声/录音/连蓝牙"
+- `docs/index.md` 中的视觉方案缺口在系统线中得到调查入口：usb_camera 技能摸底 PC2 物理接口和 v4l2 驱动能力
+- 明确：系统线先于 SDK 线。系统线回答"PC2 有什么"，SDK 线回答"SDK 提供了什么 API"
+
+### 关键洞察
+
+**系统线是 SDK 线的前置，不是并行。** 音频硬件事实（PC2 有声卡/蓝牙 vs 无）直接决定 SDK 线应该研究 AudioClient RPC 还是 ALSA/蓝牙本地方案。在没有硬件事实的情况下读 SDK 源码，可能读错方向。
+
+**skill 范式天然适合原子化实验。** 每个 SKILL.md 标注"调查命题 + 架构决策"，每个 .sh 只做一件事——这种组织方式让未来的 AI 实例不需要读完整份文档就能找到自己需要的脚本。未来改成 MOSS channel 命令时，SKILL.md 直接转化为 channel instruction。
+
+### 下一步
+
+1. 人类在 PC2 上按 `RESEARCH_SEQUENCE.md` 逐项执行系统线实验，反馈结果
+2. 基于系统线结论确定 SDK 线调研范围（例如：如果音频走 PC2 本地，则 SDK 线跳过 AudioClient RPC 分析）
+3. 系统线第一轮验证通过后，将脚本改造为 MOSS channel 命令（AI 可运行时调用）
