@@ -35,12 +35,29 @@ except ImportError:
 
 __all__ = ['MCPHubChannel', 'build_mcp_hub_channel', 'MCPHubState',
            'MCPServerConfig', 'MCPHubConfig', 'MCPServerSession',
-           'mcp_result_to_observe', 'render_input_schema']
+           'mcp_result_to_observe', 'render_input_schema', 'resolve_env_dict']
 
 
 # ---------------------------------------------------------------------------
 # Config models
 # ---------------------------------------------------------------------------
+
+def resolve_env_dict(env: dict[str, str]) -> dict[str, str]:
+    """解析 env dict 中以 $ 开头的值，从 os.environ 读取实际值。
+
+    Config 文件中存储 $VAR_NAME 占位符，连接时由此函数解析为真值。
+    不以 $ 开头的值原样返回。
+    """
+    if not env:
+        return env
+    resolved = {}
+    for k, v in env.items():
+        if v.startswith('$'):
+            resolved[k] = os.environ.get(v[1:], v)
+        else:
+            resolved[k] = v
+    return resolved
+
 
 class MCPServerConfig(BaseModel):
     """单个 MCP server 的连接配置。"""
@@ -117,10 +134,11 @@ class MCPServerSession:
     async def _connect_transport(self):
         cfg = self.config
         if cfg.transport == 'stdio':
+            resolved_env = resolve_env_dict(cfg.env) if cfg.env else None
             params = StdioServerParameters(
                 command=cfg.command,
                 args=cfg.args or [],
-                env={**cfg.env} if cfg.env else None,
+                env=resolved_env,
             )
             transport = await self._exit_stack.enter_async_context(stdio_client(params))
             return transport
@@ -322,13 +340,12 @@ class MCPHubState(ChannelState):
                             k, v = pair.split('=', 1)
                             k, v = k.strip(), v.strip()
                             if v.startswith('$'):
-                                resolved = os.environ.get(v[1:], '')
-                                if not resolved:
+                                if v[1:] not in os.environ:
                                     return (
                                         f"[MCP:{name}] env var '{v[1:]}' not set. "
-                                        f"请在系统环境变量中配置 {v[1:]} 后重试。"
+                                        f"请在环境变量中配置 {v[1:]} 后重试。"
                                     )
-                                v = resolved
+                                # 存储 $VAR 占位符，解析为真值在 _connect_transport 中进行
                             parsed_env[k] = v
                 parsed_args = [a.strip() for a in args.split(',') if a.strip()] if args else []
                 server_cfg = MCPServerConfig(
