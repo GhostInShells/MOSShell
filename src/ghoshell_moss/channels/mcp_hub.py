@@ -11,6 +11,7 @@ Example:
 import asyncio
 import json
 import contextlib
+import os
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
@@ -304,7 +305,7 @@ class MCPHubState(ChannelState):
             :param command: stdio: 可执行文件路径
             :param args: stdio: 命令行参数，逗号分隔
             :param url: sse/streamable_http: 服务 URL
-            :param env: 环境变量，逗号分隔的 KEY=VALUE 对
+            :param env: 环境变量，逗号分隔的 KEY=VALUE 对。value 以 $ 开头时从系统环境变量读取（如 BAIDU_MAPS_API_KEY=$BAIDU_MAPS_API_KEY），避免在 CTML 中暴露敏感信息
             :param description: server 描述
             """
             if name in self._sessions and self._sessions[name].state == 'connected':
@@ -319,7 +320,16 @@ class MCPHubState(ChannelState):
                         pair = pair.strip()
                         if '=' in pair:
                             k, v = pair.split('=', 1)
-                            parsed_env[k.strip()] = v.strip()
+                            k, v = k.strip(), v.strip()
+                            if v.startswith('$'):
+                                resolved = os.environ.get(v[1:], '')
+                                if not resolved:
+                                    return (
+                                        f"[MCP:{name}] env var '{v[1:]}' not set. "
+                                        f"请在系统环境变量中配置 {v[1:]} 后重试。"
+                                    )
+                                v = resolved
+                            parsed_env[k] = v
                 parsed_args = [a.strip() for a in args.split(',') if a.strip()] if args else []
                 server_cfg = MCPServerConfig(
                     name=name,
