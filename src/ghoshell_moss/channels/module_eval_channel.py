@@ -3,7 +3,7 @@
 将 Python 模块源码包装为 CTML Channel——模型通过 exec 命令直接在模块命名空间中
 写代码执行，变量跨调用累积，像 Python REPL。模块源码即 instruction。
 
-依赖 Sandbox 提供安全 exec + stdout 捕获 + 命名空间管理。
+依赖 Sandbox 提供安全 exec + ExecutionResult + Reflector 反射。
 
 Example:
     from ghoshell_moss import new_shell_main_channel
@@ -27,15 +27,6 @@ from ghoshell_moss.core.blueprint.channel_builder import new_channel, MutableCha
 __all__ = ["new_module_eval_channel"]
 
 
-def _summarize_value(val: object) -> str:
-    """简短描述值：类型 + 截断的 repr。"""
-    type_name = type(val).__name__
-    raw = repr(val)
-    if len(raw) > 120:
-        raw = raw[:117] + "..."
-    return f"{type_name}: {raw}"
-
-
 def new_module_eval_channel(
     module_source: str,
     *,
@@ -45,19 +36,25 @@ def new_module_eval_channel(
 ) -> MutableChannel:
     """创建 ModuleEvalChannel。
 
-    module_source 在 Sandbox 中执行以初始化领域对象，同时作为 Channel 的 instruction
-    直接展示给模型——模型看到模块源码即知道有哪些对象和 API。
+    module_source 在 Sandbox 中执行以初始化领域对象，同时作为 instruction 和
+    Reflector source——本地对象在 source 中可见，import 对象通过 get_interface()
+    反射。
 
     :param module_source: 模块的 Python 源码，定义领域对象和初始化逻辑
     :param channel_name: Channel 名（CTML 标签名）
     :param description: Channel 描述
-    :param sandbox_builtins: Sandbox 的 builtins 白名单，默认屏蔽危险函数
+    :param sandbox_builtins: 模型执行时的 builtins 白名单，默认屏蔽危险函数
     """
     # 初始化沙盒用完整 builtins，让 module_source 可以 import
-    init_sandbox = Sandbox(name=channel_name, builtins=None)
+    init_sandbox = Sandbox(name=channel_name, builtins=None, source=module_source)
     init_sandbox.exec(module_source)
-    # 模型执行沙盒用受限 builtins，共享 init 的命名空间
-    sandbox = Sandbox(name=channel_name, parent=init_sandbox, builtins=sandbox_builtins)
+    # 模型执行沙盒用受限 builtins，共享 init 的命名空间和 source
+    sandbox = Sandbox(
+        name=channel_name,
+        parent=init_sandbox,
+        builtins=sandbox_builtins,
+        source=module_source,
+    )
 
     desc = description or f"Module eval container — exec code in persistent namespace"
     chan = new_channel(name=channel_name, description=desc)
@@ -68,7 +65,7 @@ def new_module_eval_channel(
 
     @chan.build.close
     async def cleanup():
-        sandbox.close()
+        init_sandbox.close()
 
     @chan.build.command(name="exec", always_observe=True)
     async def exec_code(text__: str) -> str:
@@ -80,54 +77,48 @@ def new_module_eval_channel(
             print(x)
             </module_eval:exec>
 
-        print() 输出被捕获返回。变量跨调用累积——像一个 Python REPL。
-        抛异常时返回完整 traceback，命名空间状态保留。
+        print() 输出被捕获返回。异常返回完整 traceback。
+        变量跨调用累积——像一个 Python REPL。
+        __result__ 赋值可作为返回值。
         """
-        output = sandbox.exec(text__)
-        return output.rstrip() if output else "(executed, no output)"
+        result = sandbox.exec(text__)
+        parts = []
+        if result.std_output:
+            parts.append(result.std_output.rstrip())
+        if result.exception:
+            parts.append(f"Error: {result.exception}")
+            if result.traceback:
+                parts.append(result.traceback.rstrip())
+        if result.returns is not None:
+            parts.append(f"__result__: {result.returns!r}")
+        return "\n".join(parts) if parts else "(executed, no output)"
 
     @chan.build.command(name="vars", always_observe=True)
-    async def list_vars(*names: str) -> str:
-        """查看命名空间中的变量。*names: 可选，指定变量名；无参数时列出所有公共变量名。
+    async def list_vars() -> str:
+        """查看命名空间。委托给 Reflector——返回 module source + import 对象反射。
 
-        无参数列出所有不以 '_' 开头的变量名。
-        有参数时逐个显示类型与截断的 repr 值。
+        输出与 moss codex get-interface 一致：source 在前，<attr> 块在后。
+        本地对象在 source 中可见，import 对象在 <attr> 块中展开。
         """
-        ns = sandbox._module.__dict__
-        if not names:
-            public = sorted(k for k in ns if not k.startswith("_"))
-            return "\n".join(public) if public else "(empty namespace)"
-
-        lines = []
-        for name in names:
-            if name in ns:
-                lines.append(f"{name}: {_summarize_value(ns[name])}")
-            else:
-                lines.append(f"{name}: not found")
-        return "\n".join(lines)
+        return sandbox.get_interface()
 
     @chan.build.command(name="api", always_observe=True)
     async def reflect_api(name: str, *methods: str) -> str:
         """反射命名空间中对象的方法签名。name: 对象变量名。*methods: 可选，指定方法名。
 
-        无 methods 时列出对象的所有公开可调用方法。
+        无 methods 时委托给 sandbox.get_interface(name)——import 对象返回完整源码，
+        本地对象返回 signature + docstring + 方法列表。
         有 methods 时逐个显示方法签名与 docstring。
         """
-        ns = sandbox._module.__dict__
+        if not methods:
+            return sandbox.get_interface(name)
+
+        ns = sandbox.module.__dict__
         if name not in ns:
             return f"'{name}' not found in namespace"
 
         obj = ns[name]
         obj_type = type(obj).__name__
-
-        if not methods:
-            public = sorted(
-                m for m in dir(obj)
-                if not m.startswith("_") and callable(getattr(obj, m, None))
-            )
-            header = f"Public methods of '{name}' ({obj_type}):"
-            return header + "\n" + "\n".join(f"  {m}" for m in public) if public else header + " (none)"
-
         lines = [f"'{name}' ({obj_type}):"]
         for method_name in methods:
             method = getattr(obj, method_name, None)
@@ -140,7 +131,6 @@ def new_module_eval_channel(
                     sig = str(inspect.signature(method))
                 except (ValueError, TypeError):
                     sig = "(...)"
-
                 doc = inspect.getdoc(method)
                 lines.append(f"  {method_name}{sig}")
                 if doc:

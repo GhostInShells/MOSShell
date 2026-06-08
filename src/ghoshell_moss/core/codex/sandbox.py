@@ -150,6 +150,7 @@ class Sandbox:
         builtins: dict[str, Any] | None = _UNSET,
         on_init: Callable[["Sandbox"], None] | None = None,
         on_destroy: Callable[["Sandbox"], None] | None = None,
+        source: str = '',
     ):
         """
         Parameters
@@ -175,6 +176,10 @@ class Sandbox:
         on_destroy:
             Called during close(), after children are closed but before the
             namespace is cleared. Use this to release external resources.
+        source:
+            Module source code.  Stored for reflection — get_interface()
+            delegates to Reflector which shows source + imported attrs.
+            Default ``''``: no source, Reflector output is attr-blocks only.
         """
         self._name = name
         self._parent = parent
@@ -215,6 +220,9 @@ class Sandbox:
 
         if on_init:
             on_init(self)
+
+        from .reflector import Reflector
+        self._reflector = Reflector(self._module, modulename=name, source=source)
 
     # -- public read-only properties -------------------------------------
 
@@ -298,57 +306,41 @@ class Sandbox:
 
     # -- introspection (for channel api() / vars() commands) -------------
     #
-    # Delegates to the existing codex reflection pipeline:
-    #   get_value_self_prompt  — __prompt__ protocol (objects describe themselves)
-    #   reflect_prompt_from_value — value-level reflection (classes, functions)
-    #   get_callable_definition    — clean function signature + docstring
+    # All reflection delegates to the codex Reflector, which follows the
+    # same pipeline as "moss codex get-interface":
+    #   - source (module_source) shown as-is
+    #   - imported objects → standard reflection via reflect_imported_attr
+    #   - local (exec-defined) objects → inspect-based fallback
     #
-    # The sandbox namespace is a hybrid: it contains both injected imports
-    # and variables defined via exec().  We can't use reflect_module() or
-    # reflect_imported_locals_by_modulename() directly because those assume
-    # a real module with source code and filter out same-module locals.
-    # Instead we call the value-level primitives directly.
+    # This keeps sandbox consistent with how every other module is reflected.
 
     def get_interface(self, name: str | None = None) -> str:
-        """Reflect on the sandbox namespace — the model's "what can I use?"
+        """Reflect on the sandbox namespace.
 
-        Delegates to the codex reflection pipeline (__prompt__ protocol →
-        reflect_prompt_from_value → get_callable_definition).
+        Without *name*, returns the full Reflector output: module source +
+        <attr> blocks for imported objects.  Local (exec-defined) objects
+        are already visible in the source and are not duplicated.
 
-        Without *name*, returns a compact listing: one line per public name
-        with type info — suitable as a quick orientation.  Functions show
-        their def signature (via get_callable_definition).  Classes and
-        modules show their qualified name.  Simple values show type + repr.
-
-        With *name*, returns detailed information about that object: source
-        code for classes, signature + docstring for functions, type + repr
-        for plain values.  Objects that implement the __prompt__ protocol
-        describe themselves.
+        With *name*, returns detail for a single object: full source for
+        imports, signature + docstring + public methods for locals.
 
         Designed to back the ``api()`` / ``vars()`` commands in
         ModuleEvalChannel.
         """
-        ns = self._module.__dict__
-
         if name is not None:
+            ns = self._module.__dict__
             if name not in ns:
                 return f"'{name}' is not defined in sandbox {self._name!r}"
-            return self._reflect_detail(name, ns[name])
+            return self._reflect_single(name, ns[name])
 
-        lines = [f"# sandbox: {self._name}"]
-        for key in sorted(ns):
-            if key.startswith('_'):
-                continue
-            lines.append(self._reflect_summary(key, ns[key]))
-        return '\n'.join(lines)
+        return self._reflector.reflect()
 
     def get_source(self, name: str) -> str:
         """Return the source code of *name* if available.
 
-        Uses inspect.getsource — the same mechanism the Reflector uses for
-        classes and functions.  Only works for objects defined in the sandbox
-        via exec() or injected objects that have accessible source files.
-        Raises ValueError when source is not retrievable.
+        Works for imported objects (real modules with source files).
+        For local (exec-defined) objects, raises ValueError with a pointer
+        to the module source / instruction.
         """
         if name not in self._module.__dict__:
             raise AttributeError(f"{self._name!r} has no attribute {name!r}")
@@ -356,6 +348,11 @@ class Sandbox:
         try:
             return _inspect.getsource(obj)
         except (TypeError, OSError):
+            if self._is_local(obj) and self._reflector.source:
+                raise ValueError(
+                    f"'{name}' is defined in the sandbox source — "
+                    f"see the module source / instruction for its definition"
+                ) from None
             raise ValueError(f"source not available for {name!r}") from None
 
     # -- traceback filtering (cognitive isolation) -----------------------
@@ -379,54 +376,84 @@ class Sandbox:
             return ''
         return ''.join(_traceback.format_list(relevant))
 
-    # -- internal reflection helpers (delegate to codex._reflect) --------
+    # -- internal reflection helpers ------------------------------------
 
-    @staticmethod
-    def _reflect_detail(name: str, value: Any) -> str:
-        """Detailed description for a single name, using the reflection pipeline."""
-        from ._reflect import get_value_self_prompt, reflect_prompt_from_value
+    def _is_local(self, value: Any) -> bool:
+        """Check if *value* is local to this sandbox (defined via exec)."""
+        from ._utils import get_modulename_of_value
+        modname = get_modulename_of_value(value)
+        if modname is None:
+            return True
+        if modname == self._module.__name__:
+            return True
+        return False
 
-        # 1. __prompt__ protocol: object self-describes
-        prompt = get_value_self_prompt(value)
+    def _reflect_single(self, name: str, value: Any) -> str:
+        """Detail for a single name.  Imported objects go through the standard
+        codex pipeline; local objects get inspect-based fallback."""
+        from ._reflect import reflect_imported_attr
+
+        prompt = reflect_imported_attr(name, value, self._module.__name__)
         if prompt:
             return prompt
 
-        # 2. Standard reflection: abstract classes, pydantic/dataclass, functions
-        prompt = reflect_prompt_from_value(value)
-        if prompt:
-            return prompt
-
-        # 3. Fallback: type + repr for plain values
-        return f"{name}: {type(value).__qualname__} = {value!r}"
+        return self._reflect_local_detail(name, value)
 
     @staticmethod
-    def _reflect_summary(key: str, value: Any) -> str:
-        """Compact one-line summary for namespace listing.
+    def _reflect_local_detail(name: str, value: Any) -> str:
+        """Inspect-based detail for a local (exec-defined) object.
 
-        Uses get_callable_definition for functions (just the def line),
-        basic type hints for everything else.
+        Does NOT attempt inspect.getsource — local objects have no source
+        file.  Uses inspect.signature, inspect.getdoc, and dir() which
+        always work.
         """
-        from ._utils import get_callable_definition
+        lines = []
 
         if _inspect.isfunction(value) or _inspect.ismethod(value):
             try:
-                definition = get_callable_definition(value)
-                if definition:
-                    # Take only the first line (def signature)
-                    return f"  {definition.split(chr(10))[0]}"
-            except (TypeError, OSError):
-                pass
+                sig = _inspect.signature(value)
+                lines.append(f"def {name}{sig}")
+            except (ValueError, TypeError):
+                lines.append(f"def {name}(...)")
+            doc = _inspect.getdoc(value)
+            if doc:
+                lines.append(f'    """{doc}"""')
+            return '\n'.join(lines)
 
         if _inspect.isclass(value):
-            return f"  {key:<20} class {value.__qualname__}"
-        if _inspect.ismodule(value):
-            return f"  {key:<20} module ({value.__name__})"
+            try:
+                sig = _inspect.signature(value)
+                lines.append(f"class {name}{sig}")
+            except (ValueError, TypeError):
+                lines.append(f"class {name}")
+            doc = _inspect.getdoc(value)
+            if doc:
+                lines.append(f'    """{doc}"""')
+            public = sorted(
+                m for m in dir(value)
+                if not m.startswith('_') and callable(getattr(value, m, None))
+            )
+            if public:
+                lines.append(f"    # public methods: {', '.join(public)}")
+            return '\n'.join(lines)
 
+        # Instance or plain value — show type + repr + public methods
         typ = type(value)
         try:
-            return f"  {key:<20} {typ.__qualname__} = {value!r}"
+            r = repr(value)
+            if len(r) > 120:
+                r = r[:117] + "..."
+            lines.append(f"{name}: {typ.__qualname__} = {r}")
         except Exception:
-            return f"  {key:<20} {typ.__qualname__}"
+            lines.append(f"{name}: {typ.__qualname__}")
+        public = sorted(
+            m for m in dir(value)
+            if not m.startswith('_') and callable(getattr(value, m, None))
+        )
+        interesting = [m for m in public if not m.startswith('__')]
+        if interesting:
+            lines.append(f"    # public methods: {', '.join(interesting)}")
+        return '\n'.join(lines)
 
     # -- lifecycle -------------------------------------------------------
 

@@ -69,7 +69,7 @@ class Reflector:
     ):
         self._module = module
         self._modulename = modulename or module.__name__
-        self._source = source or inspect.getsource(module)
+        self._source = source if source is not None else inspect.getsource(module)
         self._prompt: str | None = None
 
     @classmethod

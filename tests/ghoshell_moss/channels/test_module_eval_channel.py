@@ -5,6 +5,7 @@ SIMPLE_MODULE = """
 from collections import Counter
 data = Counter(['a', 'b', 'a', 'c', 'b', 'a'])
 def top(n=3):
+    '''Return the top n most common elements.'''
     return data.most_common(n)
 """
 
@@ -34,44 +35,36 @@ class TestModuleEvalChannelCommands:
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             await runtime.execute_command("exec", kwargs={"text__": "x = x + 10"})
-            result = await runtime.execute_command("vars", args=("x",))
+            result = await runtime.execute_command("api", args=("x",))
             assert "11" in result
 
     @pytest.mark.asyncio
-    async def test_vars_no_args_lists_public(self):
+    async def test_vars_shows_source_and_imports(self):
         chan = new_module_eval_channel(SIMPLE_MODULE, channel_name="test")
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             result = await runtime.execute_command("vars")
-            assert "data" in result
-            assert "top" in result
+            # module source should be present (Reflector output)
             assert "Counter" in result
+            assert "most_common" in result
+            assert "from collections import Counter" in result
 
     @pytest.mark.asyncio
-    async def test_vars_with_names_shows_values(self):
-        chan = new_module_eval_channel(SIMPLE_MODULE, channel_name="test")
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            result = await runtime.execute_command("vars", args=("data",))
-            assert "data:" in result
-            assert "Counter" in result
-
-    @pytest.mark.asyncio
-    async def test_vars_missing_name(self):
-        chan = new_module_eval_channel("x = 1", channel_name="test")
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            result = await runtime.execute_command("vars", args=("nonexistent",))
-            assert "not found" in result
-
-    @pytest.mark.asyncio
-    async def test_api_list_methods(self):
+    async def test_api_shows_name_detail(self):
         chan = new_module_eval_channel(SIMPLE_MODULE, channel_name="test")
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             result = await runtime.execute_command("api", args=("data",))
+            assert "Counter" in result
             assert "most_common" in result
-            assert "Public methods of 'data'" in result
+
+    @pytest.mark.asyncio
+    async def test_api_missing_name(self):
+        chan = new_module_eval_channel("x = 1", channel_name="test")
+        async with chan.bootstrap() as runtime:
+            await runtime.refresh_metas()
+            result = await runtime.execute_command("api", args=("nonexistent",))
+            assert "not defined" in result
 
     @pytest.mark.asyncio
     async def test_api_specific_method(self):
@@ -80,15 +73,7 @@ class TestModuleEvalChannelCommands:
             await runtime.refresh_metas()
             result = await runtime.execute_command("api", args=("data", "most_common"))
             assert "most_common" in result
-            assert "n most common" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_api_missing_object(self):
-        chan = new_module_eval_channel("x = 1", channel_name="test")
-        async with chan.bootstrap() as runtime:
-            await runtime.refresh_metas()
-            result = await runtime.execute_command("api", args=("nonexistent",))
-            assert "not found" in result
+            assert "most common" in result.lower()
 
     @pytest.mark.asyncio
     async def test_api_missing_method(self):
@@ -158,7 +143,6 @@ class TestModuleEvalChannelErrorHandling:
             await runtime.refresh_metas()
             result = await runtime.execute_command("exec", kwargs={"text__": "1/0"})
             assert "ZeroDivisionError" in result
-            assert "Traceback" in result
 
     @pytest.mark.asyncio
     async def test_namespace_preserved_after_error(self):
@@ -166,5 +150,5 @@ class TestModuleEvalChannelErrorHandling:
         async with chan.bootstrap() as runtime:
             await runtime.refresh_metas()
             await runtime.execute_command("exec", kwargs={"text__": "1/0"})
-            result = await runtime.execute_command("vars", args=("x",))
+            result = await runtime.execute_command("api", args=("x",))
             assert "42" in result

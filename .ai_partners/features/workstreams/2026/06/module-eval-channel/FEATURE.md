@@ -3,7 +3,7 @@ title: Module Eval Channel
 status: in-progress
 priority: P2
 created: 2026-06-03
-updated: 2026-06-07
+updated: 2026-06-09
 depends: [codex-module-sandbox]
 milestone:
 description: >-
@@ -113,9 +113,11 @@ Playwright sync API 需要在主线程/固定单线程运行。Matrix Channel Ru
 
 ### 6. 先做 channel type，后做 Playwright App
 
-第一阶段产出是 `ModuleEvalChannel` 本身 + 单测。它是一个可复用的 channel type，位于 `ghoshell_moss.channels`。第二阶段才用它在 `.moss_ws/apps/` 下创建具体的 Playwright App。
+第一阶段产出是 `ModuleEvalChannel` 本身 + 单测。第二阶段用它在 `.moss_ws/apps/` 下创建 Playwright App。
 
-**Why**: 单测先于 App——channel type 的正确性不依赖浏览器。Playwright 是验证泛用性的第一个用例，但不是 channel type 存在的理由。
+Playwright 是核心验收用例——跨调用浏览器进程存活、Janus 桥线程模型、storageState 恢复，验证的是 sandbox 作为持久化 REPL 的价值。Pandas/SQLite 等无状态场景不比 `python -c` 强太多，不做独立验收。
+
+**Why**: 单测验证 channel type 正确性，Playwright 验证泛用性。浏览器是有状态长时间运行对象的代表——这个 case 通了，其他领域对象（pygame、ROS node、OpenCV pipeline）同理。
 
 ## Design Index
 
@@ -127,11 +129,11 @@ Playwright sync API 需要在主线程/固定单线程运行。Matrix Channel Ru
 
 ## Implementation Notes
 
-- **依赖 Sandbox**：`exec` 命令内部委托给 `Sandbox.exec()`，不自己拼接 `exec()` / 管理 `ModuleType` / 重定向 stdout
-- Module 领域对象通过 `Sandbox(parent=...)` 或 `sandbox.set()` 注入——Sandbox 的父子共享机制天然适合 Module 预装对象
-- `exec` 命令签名：`async def exec_code(text__: str, observe: bool = False) -> str`。`always_observe=True` 确保模型在每个 `exec` 后看到 stdout 输出
-- Sandbox 已处理 `print()` 捕获（`ExecutionResult.std_output`）——Channel 层只需格式化结果
-- `text__` 是完整字符串——CTML 解析器在闭合 `</playwright:exec>` 时交付完整文本
-- namespace 清理时用 `type(v).__module__` 检测 Playwright 对象引用，而非 `isinstance` 检查（避免导入 Playwright 作为硬依赖）
-- `api()` 用 `inspect.signature` + `inspect.getdoc`，不需要导入目标模块以外的依赖
+- **依赖 Sandbox**：`exec` 内部委托给 `Sandbox.exec()`，处理 `ExecutionResult`（std_output, exception, traceback, returns）
+- **反射委托 Reflector**：Sandbox init 时持有 `Reflector(module, source=module_source)`，`get_interface()` 返回 source + import attr 块，与 `moss codex get-interface` 一致
+- `vars()` 委托给 `sandbox.get_interface()`——返回 Reflector 输出（module source + `<attr>` 块）
+- `api(name)` 委托给 `sandbox.get_interface(name)`——import 对象走 `reflect_imported_attr` 管线，本地对象走 inspect fallback
+- `api(name, *methods)` 保留 channel 层 logic——`inspect.signature` + `inspect.getdoc` 对 exec 对象始终可用
+- **生命周期修复**：cleanup 关闭 `init_sandbox`（root），级联关闭 child sandbox 后清理 namespace
+- `exec` 命令签名：`async def exec_code(text__: str) -> str`，`always_observe=True`
 - Sandbox 的 builtins 安全策略由 Sandbox 的 FEATURE.md 定义——Channel 层不重复决策
