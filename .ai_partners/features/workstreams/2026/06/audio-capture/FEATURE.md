@@ -5,9 +5,9 @@ description: 完整音频感知管线 — miniaudio PCM 捕获 → Zenoh 流 →
 milestone: null
 priority: P1
 status: in-progress
-status_note: Step 1-5 完成。本轮会话完成设计收敛与 Matrix 解耦方向锚定。移交后续伙伴完成 .design 文档与任务拆分。
+status_note: Step 1-16 全部完成。PTT Listener 已落地——按键录制/松手识别，空窗 800ms + 尾音 1.2s + 误触 500ms 守卫，无 TTS 门控复杂度。旧 voice app + contrib/asr 已删除。内核 ASR 模块、Listener App、PTT Listener App、Mindflow AudioNucleus 全部落地。已知问题：VolcengineASR 偶现服务端错误码 2065851762（待排查）。下一步：Step 13 Preemptable（TTS 打断）或 feature 收尾。
 title: Audio Capture — 音频感知全链路
-updated: '2026-06-07'
+updated: '2026-06-08'
 ---
 
 # Audio Capture — 音频感知全链路
@@ -16,9 +16,10 @@ updated: '2026-06-07'
 > 系统音频 → miniaudio → PCM → Zenoh → 消费者（波形/ASR）→ SpeechTopic 广播
 > → AudioSignal → mindflow 注意力抢占。
 >
-> 本轮会话（2026-06-07）完成设计收敛：Matrix 解耦方向、TopicWindow 替代 tmp_storage、
+> 2026-06-07 首轮：设计收敛 — Matrix 解耦方向、TopicWindow 替代 tmp_storage、
 > SpeechTopic 统一语音协议、AudioSignal 接入 mindflow、五种交互模式定义。
-> 移交后续伙伴完成 .design 文档与任务拆分。
+> 2026-06-07 次轮：KD10 Matrix 解耦落地 — AudioTransport ABC + MatrixAudioTransport
+> 适配器 + MiniAudioCaptureSource 改造，合约层零 Matrix import。
 
 ## Motivation
 
@@ -371,12 +372,10 @@ window.on_change(lambda w: ...)      # 变更回调
 
 ```python
 class SpeechTopic(TopicModel):
-    """一段话语事件 — 语音对话流中的单个节点。
+    """一段完成的话语事件 — 语音对话流中的单个节点。
 
-    Topic 语义: 每一条是一个完整语段或流式中间结果。
-    流式 ASR 的中间结果更新同一个 event (batch_id + seq 不变)，
-    最终结果 is_final=True。TTS 开始播放时产生 event，完成后
-    is_final=True。
+    每条 SpeechTopic 是一个完整的断句结果。ASR 内部流式识别中间结果
+    不发送 Topic，只在断句完成后 pub 最终文本。TTS 开始播放时产生 event。
 
     TopicWindow[SpeechTopic] 承载对话上下文 — 最近 N 条话语
     构成当前语音交互的完整上下文窗口。
@@ -384,8 +383,6 @@ class SpeechTopic(TopicModel):
 
     # ── 话语内容 ──
     text: str = ""
-    is_delta: bool = False              # 流式增量；False = 完整句
-    is_final: bool = False              # 这句话说完了
 
     # ── 说话人 ──
     speaker_id: str = ""                # 唯一标识
@@ -394,13 +391,11 @@ class SpeechTopic(TopicModel):
 
     # ── 时序与追踪 ──
     batch_id: str = ""                  # 同一次语音会话的批次ID
-    seq: int = 0                        # batch 内序列号
     timestamp: float = 0.0              # 事件时间
 
     # ── 可选关联 ──
     lang: str = "zh"
     audio_key: str | None = None        # 关联的 PCM 流 key
-    commit_reason: str = ""             # vad_timeout / manual / tts_done
 
     @classmethod
     def topic_type(cls) -> str:
@@ -413,20 +408,9 @@ class SpeechTopic(TopicModel):
 
 **与现有 Recognition 的关系**:
 
-| Recognition (ASR 内部) | SpeechTopic (统一协议) |
-|---|---|
-| batch_id | batch_id |
-| seq | seq |
-| text | text |
-| sentence | is_final |
-| is_last | is_final (语义合并) |
-| created | timestamp |
-| commit_reason | commit_reason |
-| — | speaker_id, speaker_name, role, is_delta, lang, audio_key |
+`Recognition` 是 ASR 内部的领域模型，承载流式中间结果（seq、is_last、commit_reason 等）。listener 的 `on_recognition` 回调在断句完成后，将最终文本映射为一条 `SpeechTopic` 再 pub。中间增量结果不产生 SpeechTopic。
 
-`Recognition` 是 ASR 内部的领域模型。listener 的 `on_recognition` 回调拿到 `Recognition` 后，映射成 `SpeechTopic` 再 pub。
-
-**TTS 侧**: Speech 播放一句话时 pub `SpeechTopic(role="ghost", is_delta=False)`，完成后更新 `is_final=True`。
+**TTS 侧**: Speech 播放一句话时 pub `SpeechTopic(role="ghost")`。
 
 **TopicWindow 承载对话上下文**: `window.values()` 返回最近 N 条话语，构成"谁说了什么"的完整上下文窗口。消费者可以按 role/speaker_id 过滤，按 timestamp 排序。
 
@@ -461,25 +445,19 @@ class AudioSignal(SignalMeta):
         return Priority.WARNING  # 高于默认 NOTICE，确保能抢占普通思考
 ```
 
-**流式 ASR 的注意力抢占**: 利用 mindflow 已有的 `complete` 机制:
+**ASR 断句 → 注意力抢占**: ASR 内部持续流式识别，断句完成后一次性发送最终结果：
 
 ```
-ASR 第一包识别结果
-  → AudioSignal(action=SPEECH_DELTA, speech_topic=SpeechTopic(text="你好", is_delta=True))
-  → Signal(complete=False, priority=WARNING)
-  → Nucleus → Impulse(complete=False)
+ASR 断句完成
+  → AudioSignal(action=SPEECH_FINAL, speech_topic=SpeechTopic(text="你好世界"))
+  → Nucleus → Impulse
   → challenge current Attention
-      ├─ 抢占成功 → 占据注意力槽位，等待 complete=True
+      ├─ 抢占成功 → Ghost 处理用户话语
       └─ TTS 实现 Preemptable → attenuate() 被打断
-
-ASR 最终结果
-  → AudioSignal(action=SPEECH_FINAL, speech_topic=SpeechTopic(text="你好世界", is_final=True))
-  → Signal(complete=True, same id)
-  → Impulse(complete=True) → 解锁 think-act loop
   → Ghost 开始思考用户说了什么
 ```
 
-**初期实现**: 不需要特殊的"首包打断"语义——直接用 mindflow 现有的 `complete=False → 抢占 → 等待 → complete=True → 解锁` 路径。Mindflow 已有 BufferNucleus 可配置监听 `"audio"` 信号。后续可优化为专属 AudioNucleus。
+**初期实现**: 直接走 mindflow 现有路径。Mindflow 已有 BufferNucleus 可配置监听 `"audio"` 信号。中间包不产生信号——只在断句确认后一次性推送。
 
 **与 Preemptable 的协作**: listener 发射 AudioSignal 后，mindflow 的 Attention challenge 如果返回 preempt，调用当前 Action 关联组件的 `Preemptable.attenuate()`。Signal/Impulse 自身不携带回调——能力发现走 Protocol。
 
@@ -677,19 +655,15 @@ class AudioRuntimeReporter(Protocol):
 # contracts/speech.py — 追加
 
 class SpeechTopic(TopicModel):
-    """统一话语事件。见 KD12。"""
+    """统一话语事件 — 只发尾包。见 KD12。"""
     text: str = ""
-    is_delta: bool = False
-    is_final: bool = False
     speaker_id: str = ""
     speaker_name: str = ""
     role: str = ""                    # human / ghost / assistant / system
     batch_id: str = ""
-    seq: int = 0
     timestamp: float = 0.0
     lang: str = "zh"
     audio_key: str | None = None
-    commit_reason: str = ""
 
     @classmethod
     def topic_type(cls) -> str: return "speech"
@@ -708,16 +682,19 @@ class SpeechTopic(TopicModel):
 | 3 | `audio_capture_provider.py` — Provider + manifests | **done** (需改为组装 Transport) | 2026-06-05 |
 | 4 | Waveform App — 跨进程可视化消费者 | **done** | 2026-06-05 |
 | 5 | Audio Capture App — 独立生命周期 | **done** | 2026-06-05 |
-| 6 | `AudioTransport` ABC + `MatrixAudioTransport` 适配器 | **pending** — 见 KD10 | |
-| 7 | `MiniAudioCaptureSource` Matrix → AudioTransport 改造 | **pending** | |
-| 8 | `AudioRuntimeTopic` + TopicWindow 替代 tmp_storage | **pending** — 见 KD11 | |
-| 9 | `SpeechTopic` 合约 + contracts/speech.py 补充 | **pending** — 见 KD12 | |
-| 10 | `AudioSignal` + 四个 Protocol 合约 | **pending** — 见 KD13/KD14 | |
-| 11 | Listener App (ASR 消费者) — SequentialConsumer + Recognizer + SpeechTopic pub + AudioSignal emit | **pending** — 见 KD9/KD12/KD13 | |
-| 12 | Mindflow AudioSignal Nucleus 注册 | **pending** — 见 KD13 | |
+| 6 | `AudioTransport` ABC + `MatrixAudioTransport` 适配器 | **done** | 2026-06-07 |
+| 7 | `MiniAudioCaptureSource` Matrix → AudioTransport 改造 | **done** | 2026-06-07 |
+| 8 | `AudioRuntimeTopic` + TopicWindow 替代 tmp_storage | **done** | 2026-06-07 |
+| 9 | `SpeechTopic` 合约 + contracts/speech.py 补充 | **done** | 2026-06-07 |
+| 10 | `AudioSignal` + 四个 Protocol 合约 | **done** | 2026-06-07 |
+| 11 | Listener App (ASR 消费者) — SequentialConsumer + VolcengineASR + SpeechTopic pub + AudioSignal emit | **done** — 2026-06-08 | |
+| 11a | Listener App 门控修复 — reversed 遍历 + asyncio.Queue buffer 隔离 aclose + 限制 drain | **done** — 2026-06-08 | |
+| 12 | Mindflow AudioSignal Nucleus 注册 | **done** — 2026-06-08 | |
 | 13 | Speech/TTS `Preemptable` 实现 | **pending** — 见 KD14 | |
-| 14 | 交互模式 MVP (push-to-talk or enter-to-talk) | **pending** — 见 KD15 | |
-| 15 | 旁路 flash 模型 + 本地术语表 + 外设通道 | **P2/deferred** — 见 KD16 | |
+| 14 | 交互模式 MVP (回合制对话) | **done** — 2026-06-08 | 未用 PTT，采用自然回合制：Ghost 说完后 listener 持续聆听，用户话语经 ASR → AudioSignal → Ghost 响应，完成一轮 |
+| 15 | PTT Listener App — 按键式 ASR，替代持续监听+门控 | **done** — 2026-06-08 | 基于 MiniAudioCaptureSource + VolcengineASR + pynput，按键录制/松手识别，比 listener 的持续监听+三重门控更简单 |
+| 16 | 删除旧 `sensors/voice` app + `ghoshell_moss_contrib/asr` | **done** — 2026-06-08 | 旧实现基于 PyAudio + 状态机，已被新体系完全替代 |
+| 17 | 旁路 flash 模型 + 本地术语表 + 外设通道 | **P2/deferred** — 见 KD16 | |
 
 ### Step 1-5 实现细节
 
@@ -741,13 +718,23 @@ Waveform App (独立进程)
   └─ session.get_stream("audio/pcm")
        └─ async for sample → unpack metadata → 终端波形渲染
 
-Listener App (独立进程, 待实现)
+Listener App (独立进程, 已落地)
   └─ source.new_sequential_consumer()
-       └─ async for chunk → Recognizer → Recognition
-            ├─ pub SpeechTopic(topic_service)
-            └─ AudioSignal → mindflow.add_signal()
-                 └─ challenge current Attention
-                      └─ preempt → Speech.attenuate() (if Preemptable)
+       └─ pump_task → asyncio.Queue buffer → _audio_generator
+            └─ asr.recognize() → ASRResult
+                 ├─ [gated by TTS abort] → drop
+                 ├─ pub SpeechTopic(topic_service)
+                 └─ AudioSignal → mindflow.add_signal()
+                      └─ challenge current Attention
+                           └─ preempt → Speech.attenuate() (if Preemptable)
+
+PTT Listener App (独立进程, 已落地)
+  └─ source.new_sequential_consumer()
+       └─ pynput on_press → async for chunk in consumer → resample → buffer
+            └─ pynput on_release → stop_event.set()
+                 └─ asr.recognize(buffer) → ASRResult
+                      ├─ pub SpeechTopic(topic_service)
+                      └─ AudioSignal → mindflow.add_signal()
 
 Ghost: apps:stop sensors/audio_capture
   └─ SIGTERM → capture.close() → transport.release_lock() + AudioRuntimeTopic(running=False)
@@ -759,19 +746,75 @@ Ghost: apps:stop sensors/audio_capture
 
 ### 优先级
 
-1. **P0 — Matrix 解耦** (Step 6+7): 定义 `AudioTransport` ABC，实现 `MatrixAudioTransport`，改造 `MiniAudioCaptureSource`。这是架构方向性改动，其他都在此基础上。
+1. ~~**P0 — Matrix 解耦** (Step 6+7)~~: **已完成**。
 
-2. **P0 — 新增合约** (Step 9+10): `SpeechTopic` + `AudioSignal` + 四个 Protocol 落地到 contracts 文件。纯声明式，不涉及实现。
+2. ~~**P0 — 新增合约** (Step 9+10)~~: **已完成**。
 
-3. **P1 — AudioRuntimeTopic 替代 tmp_storage** (Step 8): 独立的 TopicWindow 广播，不依赖 listener。
+3. ~~**P1 — AudioRuntimeTopic 替代 tmp_storage** (Step 8)~~: **已完成**。
 
-4. **P1 — Listener MVP** (Step 11): 基于 `AudioSequentialConsumer` 的 ASR 消费者。复用现有 `ghoshell_moss_contrib.asr` 的 Recognizer 实现。跑通 PCM → ASR → SpeechTopic → AudioSignal 全链路。
+4. ~~**P1 — Listener MVP** (Step 11)~~: **已完成**。包含 Step 11a 门控修复。
 
-5. **P1 — Mindflow 注册** (Step 12): 配置 Nucleus 监听 `"audio"` 信号，初期用 `BufferNucleus`。
+5. ~~**P1 — Mindflow 注册** (Step 12)~~: **已完成**。
 
-6. **P1 — 单一交互模式** (Step 14): push-to-talk，TUI 按钮或 CLI。跑通 input signal → callback ghost。
+6. ~~**P1 — 交互模式 MVP** (Step 14)~~: **已完成**。采用回合制对话（非 PTT）——Ghost 说完后 listener 持续聆听，用户话语经 ASR → AudioSignal → Ghost 响应，形成自然回合循环。
 
-7. **P2 — Preemptable 集成** (Step 13): Speech/TTS 实现 `Preemptable`，AudioSignal 抢占时打断播放。
+7. **P1 — PTT Listener App** (Step 15): **已完成**。基于按键的 ASR 输入。设计：按下收音 → 空窗 800ms → 松手后再收 1.2s 尾音 → 误触 <500ms 忽略 → ASR → is_final 后提交 signal。与 listener（持续监听+三重门控）并存，按需选择。
+
+8. **P2 — Preemptable 集成** (Step 13): Speech/TTS 实现 `Preemptable`，AudioSignal 抢占时打断播放。当前门控已能防止 TTS 回声被 ASR 识别，但 TTS 仍在播放期间用户说话不会主动打断。
+
+### PTT Listener 设计（Step 15）
+
+`apps/sensors/ptt_listener/main.py` — 按键式 ASR，比 listener 的持续监听+三重门控更简单。
+
+**为什么不需要门控**：PTT 的本质是用户主动控制收音时机。按下 = 我要说话，松开 = 我说完了。不需要检测 TTS 是否播放、不需要 drain 回声、不需要 abort 传播。
+
+**录音窗口**：
+
+```
+按下 ──→ 空窗 800ms ──→ 有效收音 ──→ 松开 ──→ 尾音 1.2s ──→ 提交 ASR
+```
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| lead-in skip | 800ms | 给用户准备时间（手从按键移到嘴边） |
+| tail collect | 1.2s | 松手后继续收音，捕获句尾 |
+| mis-click guard | 500ms | 按下松开总时长 < 500ms 忽略（误触） |
+
+**实现**：一个 `while True` 循环 + 两个 `asyncio.Event`。按键设置 `press_event`，松手设置 `release_event`，`async for chunk in consumer` 收集音频，松手后超时 1.2s break。无 pump_task、无 Queue buffer、无 aclose 陷阱。
+
+**与 listener 的对比**：
+
+| | listener（持续监听） | ptt_listener（按键触发） |
+|---|---|---|
+| 交互模式 | 回合制对话，Ghost 说完后自动聆听 | 用户主动控制何时收音 |
+| TTS 门控 | 三重防线（pre-call + feed abort + post-call） | 无 |
+| 回声消除 | reversed 遍历 + drain + asyncio.Queue 隔离 | 无 |
+| 状态机 | pump_task + _audio_generator + abort_event | press_event + release_event |
+| 代码行数 | ~120 | ~60 |
+| 适用场景 |  hands-free 自然对话 | 需要精确控制、嘈杂环境 |
+
+**并存策略**：两个 app 并存，按需选择。`listener` 适合 Echo Ghost 的默认 hands-free 体验；`ptt_listener` 适合需要精确控制的场景（嘈杂环境、多人对话、避免误触发）。
+
+### Listener 门控设计（Step 11a）
+
+`apps/sensors/listener/main.py` 经历了三轮迭代才收敛到稳定设计：
+
+| 轮次 | 问题 | 解法 |
+|------|------|------|
+| 初版 | `_is_tts_playing` 顺序遍历 `TopicWindow.values()`，旧的 `running=True` 永远先被命中，门控死循环 | `reversed()` 从最新往最旧查 |
+| 二版 | post-utterance drain + pre-call gate drain 双重清剿，把用户第二轮语音清光 | 去掉 post-utterance drain；pre-call gate 限制 `max_chunks=3, timeout=0.05s` |
+| 三版 | `_audio_generator` 是 async generator，`asr.recognize()` 结束后 `aclose()` 会在 yield 点注入 `GeneratorExit`，内部 `async for chunk in consumer:` 多执行一次 `__anext__()`，偷偷吃掉 queue 中的一个 chunk | `asyncio.Queue` buffer 隔离：`pump_task` 读 consumer → buffer；`_audio_generator` 只读 buffer；`aclose()` 只取消 buffer.get() |
+
+**门控策略总览**（三重防线）：
+
+1. **Pre-call gate**: TTS 播放期间不启动 ASR，同时限量 drain（max 3 chunks）清掉 TTS 回声。
+2. **Feed abort**: `_audio_generator` 实时检测 TTS，一旦开始播放立即停止 yield，ASR 收到 early EOF。
+3. **Post-call gate**: `abort_event.is_set()` 或 `_is_tts_playing()` 任一命中，丢弃 ASR 最终结果。
+
+### 已知问题
+
+- **VolcengineASR 服务端错误码 `2065851762`**: 偶现，具体含义未在公开文档中找到。从日志看是 `SERVER_ERROR_RESPONSE` 类型。可能与音频格式、鉴权或连接状态有关，待进一步排查。目前遇到时 ASR 会返回空结果并 break，listener 会进入下一轮循环，不影响整体稳定性。
+
 
 ### .design 文档
 
@@ -784,7 +827,7 @@ Ghost: apps:stop sensors/audio_capture
 ### 设计原则提醒
 
 - **依赖方向**: contracts → ABC，host → adapter。audio 核心零 Matrix import。
-- **TOPIC 不是 DELTA**: SpeechTopic 是完整语段。流式 ASR 用 `is_delta` + `batch_id` + `seq` 追踪增量更新，不是逐 token topic。
+- **TOPIC 只发尾包**: SpeechTopic 是完成语段。流式 ASR 中间结果由 Recognition 内部持有，只在断句完成后 pub 最终文本到 Topic。
 - **Protocol 不是强制**: 组件选择实现。能力发现走 `isinstance`。回调走 Signal。
 - **MVP 收敛**: 单一交互方式 + 一条全链路跑通。其余后续。
 
@@ -795,3 +838,5 @@ Ghost: apps:stop sensors/audio_capture
 *实现: Step 1-2 contracts + miniaudio capture core — Claude Opus 4.7 与人类工程师, 2026-06-05*
 *Bug 修复: int16 归一化 + 波形渲染宽 bar — Claude Opus 4.7 与人类工程师, 2026-06-05*
 *设计收敛: Matrix 解耦 AudioTransport、TopicWindow 替代 tmp_storage、SpeechTopic 统一协议、AudioSignal 接入 mindflow、五种交互模式、四项可选 Protocol、MVP 边界收敛 — deepseek-v4 与人类工程师, 2026-06-07*
+*实现: KD10 Matrix 解耦 — AudioTransport ABC (contracts)、MatrixAudioTransport 适配器 (host)、MiniAudioCaptureSource 改造、Provider 更新、App 更新、单测覆盖 — deepseek-v4-pro 与人类工程师, 2026-06-07*
+*实现: KD11/KD12/KD13/KD14 合约落地 — SpeechTopic 统一语音事件、AudioSignal 音频感知信号、AudioAction 枚举、Preemptable/SpeechEventEmitter/SpeechEventReceiver/AudioRuntimeReporter 四项 Protocol、AudioRuntimeTopic 替代 tmp_storage、MiniAudioCaptureSource 改用 AudioRuntimeTopic 广播 — deepseek-v4-pro 与人类工程师, 2026-06-07*

@@ -1,7 +1,7 @@
 """Contract tests for AudioCaptureSource and its consumers.
 
 Tests are written against the abstract interfaces and run against
-MiniAudioCaptureSource with a mocked Matrix — no Zenoh or hardware needed.
+MiniAudioCaptureSource with a mocked AudioTransport — no Zenoh or hardware needed.
 """
 from unittest.mock import MagicMock
 
@@ -15,6 +15,7 @@ from ghoshell_moss.contracts.audio import (
     AudioFrameMeta,
     AudioPullLatest,
     AudioSequentialConsumer,
+    AudioTransport,
 )
 from ghoshell_moss.host.speech.capture.miniaudio_capture import (
     MiniAudioCaptureSource,
@@ -23,20 +24,19 @@ from ghoshell_moss.host.speech.capture.miniaudio_capture import (
 )
 
 
-# ── helpers ──────────────────────────────────────────────────────────
+# -- helpers --
 
-def _make_matrix():
-    """Minimal Matrix mock — session/workspace/logger stubs."""
-    m = MagicMock()
-    m.logger = MagicMock()
-    m.session = MagicMock()
-    m.workspace = MagicMock()
-    return m
+def _make_transport() -> AudioTransport:
+    t = MagicMock(spec=AudioTransport)
+    t.logger = MagicMock()
+    t.acquire_lock.return_value = True
+    t.sub_pcm_callback.return_value = lambda: None
+    return t
 
 
 def _make_source(**config_kwargs) -> MiniAudioCaptureSource:
     return MiniAudioCaptureSource(
-        matrix=_make_matrix(),
+        transport=_make_transport(),
         config=AudioCaptureConfig(**config_kwargs),
     )
 
