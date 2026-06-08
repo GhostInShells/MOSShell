@@ -5,9 +5,9 @@ description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调�
 milestone: null
 priority: P0
 status: completed
-status_note: 2026-06-07 全链路验证通过 + 6 issues 修复 + moss-repl 验收 + 24 单测 + stubs 同步。人类工程师 review 合并。
+status_note: 2026-06-08 预设配置重构完成 — 删除 MCPServerPreset 类，改 YAML 配置。add_server name-only + $ENV_VAR connect-time 解析 + context 含 description + _load_global_config 修复 + env 写盘自动 redact。54 单测通过。人类工程师 review 合并。
 title: MCP Hub Channel
-updated: '2026-06-07'
+updated: '2026-06-08'
 ---
 
 # MCP Hub Channel
@@ -281,3 +281,65 @@ MCP Hub 的运行时 `add_server` 使得封装 MCP server 为独立 app 完全�
 - 模型视角不变 — 始终通过 `mcp:exec` 调用，无论 server 来自预配置还是运行时添加
 
 `mcp/baidu_map` app 目录已移除。保留此节作为设计演进的记录。
+
+## 预设配置重构 (2026-06-08)
+
+### 动机
+
+经过两轮迭代，最终删除了 `MCPServerPreset` 类。MCP server 预设直接写在
+`mcp_hub.yml` 的 `servers` 字段中——YAML 即配置，无需 Python 类层次结构、
+ConfigStore 注册和 `__init_subclass__` 魔法。
+
+### 设计
+
+**`mcp_hub.yml` 全局预设**（`.moss_ws/configs/mcp_hub.yml`）：
+
+```yaml
+servers:
+  baidu_map:
+    name: baidu_map
+    transport: stdio
+    command: mcp-server-baidu-maps
+    description: Baidu Maps — location search, geocoding, directions, weather, traffic, and POI extraction
+    env:
+      BAIDU_MAPS_API_KEY: $BAIDU_MAPS_API_KEY
+```
+
+**`add_server(name)` 查找**：
+
+1. 当前活跃 config（scoped 或全局）的 `servers[name]`
+2. 如果活跃 config 有 scopes → 全局 `mcp_hub.yml` 作为预设 fallback
+3. 未找到 → 列出两端合并后的可用名称
+
+全局 `mcp_hub.yml` 是所有 Ghost 共享的预设目录。Scoped `mcp_hub.yml`
+可额外配置 ghost 专属 server。
+
+**模型 CTML**：
+
+```xml
+<mcp:add_server name="baidu_map" />
+```
+
+### 安全模型
+
+- CTML 中：仅 name，零敏感信息
+- YAML 落盘：`$BAIDU_MAPS_API_KEY` 占位符，不存真值
+- 连接时：`resolve_env_dict()` 从 `os.environ` 解析 `$VAR` → 真值
+
+### Context messages — 紧凑暴露可用列表
+
+`get_context_messages` 始终展示当前 MCP 连接状态全景：已连接 server 的 tool
+目录 + 未连接 preset 的紧凑列表。
+
+```
+### MCP Tools
+[+] **baidu_map**
+  - `map_weather`: ...
+Available: other_preset
+
+### MCP Tools
+No MCP servers connected. Available: baidu_map
+```
+
+**设计决策**：模型需要始终知道当前有哪些 MCP 可用、哪些已连接。可用列表仅
+列名称，一行 `name, name, ...` 不浪费 token。

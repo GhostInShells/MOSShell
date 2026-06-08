@@ -284,7 +284,7 @@ class TestMCPHubStateStructure:
     async def test_add_server_without_config(self, state):
         cmd = state.get_own_command("add_server")
         result = await cmd(name="nonexistent")
-        assert "not in config" in result.lower()
+        assert "not found" in result.lower()
 
     @pytest.mark.asyncio
     async def test_remove_nonexistent_server(self, state):
@@ -572,10 +572,10 @@ class TestLoadConfigGetOrCreate:
 
 
 # ---------------------------------------------------------------------------
-# Issue 3: add_server runtime params
+# add_server: scoped config save/load
 # ---------------------------------------------------------------------------
 
-class TestRuntimeAddServer:
+class TestAddServerConfig:
     @pytest.fixture
     def matrix_storage(self):
         from unittest.mock import MagicMock

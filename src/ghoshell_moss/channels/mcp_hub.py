@@ -19,7 +19,7 @@ from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRun
 from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix, ScopesKey
-from ghoshell_moss.contracts.configs import ConfigType, YamlConfigStore
+from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field
@@ -59,8 +59,27 @@ def resolve_env_dict(env: dict[str, str]) -> dict[str, str]:
     return resolved
 
 
+def _redact_env_for_save(env: dict[str, str]) -> dict[str, str]:
+    """resolve_env_dict 的逆向：将 env 真值还原为 $VAR 占位符。
+
+    扫描 os.environ，若 env value 与某个环境变量值匹配，替换为 $VAR_NAME。
+    不匹配的值原样保留。
+    """
+    if not env:
+        return env
+    redacted = {}
+    for k, v in env.items():
+        for env_key, env_val in os.environ.items():
+            if v == env_val:
+                redacted[k] = f"${env_key}"
+                break
+        else:
+            redacted[k] = v
+    return redacted
+
+
 class MCPServerConfig(BaseModel):
-    """单个 MCP server 的连接配置。"""
+    """单个 MCP server 的连接配置（运行时使用，非模型可见）。"""
 
     name: str = Field(description="server 名称，作为 exec 的 server 参数")
     transport: Literal['stdio', 'sse', 'streamable_http'] = Field(
@@ -307,63 +326,30 @@ class MCPHubState(ChannelState):
                 lines.append("No servers configured. Use add_server to add one.")
             return '\n'.join(lines)
 
-        async def add_server(
-            name: str,
-            transport: str = '',
-            command: str = '',
-            args: str = '',
-            url: str = '',
-            env: str = '',
-            description: str = '',
-        ) -> str:
-            """添加并连接 MCP server。可运行时传参或从配置加载。
+        async def add_server(name: str) -> str:
+            """添加并连接 MCP server。
 
-            :param name: server 名称
-            :param transport: 传输协议 (stdio / sse / streamable_http)。传参时必填
-            :param command: stdio: 可执行文件路径
-            :param args: stdio: 命令行参数，逗号分隔
-            :param url: sse/streamable_http: 服务 URL
-            :param env: 环境变量，逗号分隔的 KEY=VALUE 对。value 以 $ 开头时从系统环境变量读取（如 BAIDU_MAPS_API_KEY=$BAIDU_MAPS_API_KEY），避免在 CTML 中暴露敏感信息
-            :param description: server 描述
+            :param name: server 名称，对应 mcp_hub.yml 中配置的 server 名
             """
             if name in self._sessions and self._sessions[name].state == 'connected':
                 return f"[MCP:{name}] already connected"
 
+            # 1. 当前活跃配置（scoped 或全局）
             config = self._load_config()
+            server_cfg = config.servers.get(name)
 
-            if transport:
-                parsed_env = {}
-                if env:
-                    for pair in env.split(','):
-                        pair = pair.strip()
-                        if '=' in pair:
-                            k, v = pair.split('=', 1)
-                            k, v = k.strip(), v.strip()
-                            if v.startswith('$'):
-                                if v[1:] not in os.environ:
-                                    return (
-                                        f"[MCP:{name}] env var '{v[1:]}' not set. "
-                                        f"请在环境变量中配置 {v[1:]} 后重试。"
-                                    )
-                                # 存储 $VAR 占位符，解析为真值在 _connect_transport 中进行
-                            parsed_env[k] = v
-                parsed_args = [a.strip() for a in args.split(',') if a.strip()] if args else []
-                server_cfg = MCPServerConfig(
-                    name=name,
-                    transport=transport,  # type: ignore[arg-type]
-                    command=command,
-                    args=parsed_args,
-                    url=url,
-                    env=parsed_env,
-                    description=description,
-                )
-                config.servers[name] = server_cfg
-                self._save_config(config)
-            else:
-                server_cfg = config.servers.get(name)
-                if server_cfg is None:
-                    available = list(config.servers.keys())
-                    return f"[MCP] Server '{name}' not in config. Available: {', '.join(available)}"
+            # 2. 全局预设 fallback（仅当活跃配置有 scopes 时额外查全局）
+            if server_cfg is None and self._scopes:
+                global_config = self._load_global_config()
+                server_cfg = global_config.servers.get(name)
+
+            # 3. 未找到 → 列出可用 server
+            if server_cfg is None:
+                available = set(config.servers.keys())
+                if self._scopes:
+                    available.update(self._load_global_config().servers.keys())
+                suffix = f". Available: {', '.join(sorted(available))}" if available else ''
+                return f"[MCP:{name}] not found{suffix}"
 
             session = MCPServerSession(config=server_cfg)
             await session.connect()
@@ -447,13 +433,27 @@ class MCPHubState(ChannelState):
                 return config
 
     def _save_config(self, config: MCPHubConfig) -> None:
-        """持久化 MCP Hub 配置。"""
+        """持久化 MCP Hub 配置。保存前将 env 真值还原为 $VAR 占位符。"""
+        for server_cfg in config.servers.values():
+            if server_cfg.env:
+                server_cfg.env = _redact_env_for_save(server_cfg.env)
         if self._scopes:
             storage = self._matrix.get_scoped_storage(*self._scopes)
             storage.write_yaml("mcp_hub", config)
         else:
             from ghoshell_moss.contracts.configs import save_conf
             save_conf(ChannelCtx.container(), config)
+
+    def _load_global_config(self) -> MCPHubConfig:
+        """加载全局 MCP Hub 预设配置（只读，直接读 workspace configs/ 目录）。"""
+        try:
+            workspace = self._matrix.workspace
+            config = workspace.configs().read_yaml("mcp_hub", MCPHubConfig)
+            if config is not None:
+                return config
+        except Exception:
+            pass
+        return MCPHubConfig(servers={})
 
     async def on_startup(self) -> None:
         """启动时加载配置并连接所有 server。"""
@@ -471,7 +471,7 @@ class MCPHubState(ChannelState):
         self._sessions.clear()
 
     async def get_context_messages(self) -> list[str]:
-        """动态生成 server 状态、工具目录和参数定义。"""
+        """动态生成 server 状态、工具目录、参数定义和可用 preset。"""
         lines = ["### MCP Tools"]
         for name, session in self._sessions.items():
             state_mark = {'connected': '+', 'connecting': '~', 'disconnected': '-', 'error': '!'}.get(
@@ -488,8 +488,23 @@ class MCPHubState(ChannelState):
             elif session.error:
                 lines.append(f"  error: {session.error[:200]}")
             lines.append("")
-        if not self._sessions:
-            lines.append("No MCP servers connected.")
+        # 未连接的 YAML 预配置（活跃 config + 全局预设），含描述
+        config = self._load_config()
+        available: dict[str, str] = {}
+        for src in [config] + ([self._load_global_config()] if self._scopes else []):
+            for name, cfg in src.servers.items():
+                if name not in self._sessions and name not in available:
+                    available[name] = cfg.description or ''
+        if available:
+            if self._sessions:
+                lines.append("Available:")
+            else:
+                lines.append("No MCP servers connected. Available:")
+            for name in sorted(available):
+                desc = f" — {available[name]}" if available[name] else ''
+                lines.append(f"- `{name}`{desc}")
+        elif not self._sessions:
+            lines.append("No MCP servers available.")
         return ['\n'.join(lines)]
 
 

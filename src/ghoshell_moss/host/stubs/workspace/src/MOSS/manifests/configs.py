@@ -28,3 +28,4 @@ audio_player_config = AudioPlayerConfig()
 audio_capture_config = AudioCaptureConfig()
 
 mcp_hub_config = MCPHubConfig()
+
