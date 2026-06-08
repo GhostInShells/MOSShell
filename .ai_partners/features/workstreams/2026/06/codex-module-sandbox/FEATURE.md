@@ -4,10 +4,10 @@ depends: []
 description: 最小通用 Module 沙盒 — builtins 可控、有状态生命周期、父子沙盒副作用传导。 app + sqlite 验收。
 milestone: null
 priority: P1
-status: in-progress
-status_note: core implementation + 31 tests passing, exported via codex __init__.py
+status: completed
+status_note: Sandbox (443L Code-as-Prompt) + 33 tests. sentinel default (no mutable arg), builtins control, lifecycle hooks, parent-child __dict__ sharing, exception→ExecutionResult w/ filtered traceback (cognitive isolation), get_interface/get_source via codex._reflect. Exported.
 title: Codex Module Sandbox
-updated: 2026-06-07
+updated: 2026-06-08
 ---
 
 # Codex Module Sandbox

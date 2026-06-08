@@ -1,251 +1,281 @@
+"""
+Unit tests for Sandbox — safe ModuleType-based execution environment.
+"""
+
+import sqlite3
+
 import pytest
-from ghoshell_moss.core.codex.sandbox import Sandbox, SANDBOX_BUILTINS
+
+from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
 
 
-class TestSandboxBasics:
-    """沙盒基础功能：exec、变量持久化、stdout 捕获。"""
+# -- basic exec ----------------------------------------------------------
 
-    def test_exec_and_stdout_capture(self):
-        s = Sandbox(name="test")
-        output = s.exec("print('hello')")
-        assert output == "hello\n"
-        s.close()
-
-    def test_variable_persistence(self):
-        s = Sandbox(name="test")
-        s.exec("x = 42")
-        assert s.get("x") == 42
-        s.exec("x = x + 1")
-        assert s.get("x") == 43
-        s.close()
-
-    def test_variable_from_previous_call_visible(self):
-        s = Sandbox(name="test")
-        s.exec("a = 10")
-        output = s.exec("print(a)")
-        assert "10" in output
-        s.close()
-
-    def test_get_raises_for_missing(self):
-        s = Sandbox(name="test")
-        with pytest.raises(AttributeError, match="has no attribute"):
-            s.get("nonexistent")
-        s.close()
-
-    def test_set_and_get(self):
-        s = Sandbox(name="test")
-        s.set("obj", {"key": "value"})
-        assert s.get("obj") == {"key": "value"}
-        s.close()
-
-    def test_exec_returns_empty_for_no_output(self):
-        s = Sandbox(name="test")
-        output = s.exec("x = 1")
-        assert output == ""
-        s.close()
-
-    def test_name_property(self):
-        s = Sandbox(name="my_sandbox")
-        assert s.name == "my_sandbox"
-        s.close()
+def test_exec_returns_result_variable():
+    s = Sandbox()
+    r = s.exec("__result__ = 42")
+    assert r.returns == 42
+    assert r.std_output == ''
 
 
-class TestSandboxBuiltins:
-    """builtins 控制。"""
-
-    def test_default_blocks_dangerous(self):
-        s = Sandbox(name="test")
-        output = s.exec("open('/etc/passwd')")
-        assert "NameError" in output
-        s.close()
-
-    def test_default_blocks_import(self):
-        s = Sandbox(name="test")
-        output = s.exec("import os")
-        assert "ImportError" in output
-        s.close()
-
-    def test_default_blocks_eval(self):
-        s = Sandbox(name="test")
-        output = s.exec("eval('1+1')")
-        assert "NameError" in output
-        s.close()
-
-    def test_default_blocks_exec(self):
-        s = Sandbox(name="test")
-        output = s.exec("exec('x=1')")
-        assert "NameError" in output
-        s.close()
-
-    def test_default_blocks_compile(self):
-        s = Sandbox(name="test")
-        output = s.exec("compile('1+1', '', 'eval')")
-        assert "NameError" in output
-        s.close()
-
-    def test_default_blocks_input(self):
-        s = Sandbox(name="test")
-        output = s.exec("input()")
-        assert "NameError" in output
-        s.close()
-
-    def test_default_blocks_breakpoint(self):
-        s = Sandbox(name="test")
-        output = s.exec("breakpoint()")
-        assert "NameError" in output
-        s.close()
-
-    def test_none_builtins_allows_all(self):
-        s = Sandbox(name="test", builtins=None)
-        output = s.exec("import sys; print(sys.version_info[0])")
-        assert "NameError" not in output
-        assert output.strip().isdigit()
-        s.close()
-
-    def test_safe_builtins_available(self):
-        s = Sandbox(name="test")
-        output = s.exec("print(len('hello'))")
-        assert "5" in output
-        assert "NameError" not in output
-        s.close()
-
-    def test_sandbox_builtins_constant(self):
-        assert "__import__" not in SANDBOX_BUILTINS
-        assert "open" not in SANDBOX_BUILTINS
-        assert "print" in SANDBOX_BUILTINS
-        assert "len" in SANDBOX_BUILTINS
-        assert "range" in SANDBOX_BUILTINS
-        assert "int" in SANDBOX_BUILTINS
-        assert "str" in SANDBOX_BUILTINS
-        assert "list" in SANDBOX_BUILTINS
-        assert "dict" in SANDBOX_BUILTINS
-        assert "isinstance" in SANDBOX_BUILTINS
-        assert "hasattr" in SANDBOX_BUILTINS
-        assert "Exception" in SANDBOX_BUILTINS
+def test_exec_captures_stdout():
+    s = Sandbox()
+    r = s.exec("print('hello'); print('world')")
+    assert r.std_output == 'hello\nworld\n'
 
 
-class TestSandboxParentChild:
-    """父子沙盒共享命名空间。"""
-
-    def test_child_shares_parent_namespace(self):
-        parent = Sandbox(name="parent", builtins=None)
-        parent.exec("x = 10")
-        child = Sandbox(name="child", parent=parent)
-        assert child.get("x") == 10
-        parent.close()
-        child.close()
-
-    def test_child_side_effect_visible_to_parent(self):
-        parent = Sandbox(name="parent", builtins=None)
-        child = Sandbox(name="child", parent=parent)
-        child.exec("y = 20")
-        assert parent.get("y") == 20
-        parent.close()
-        child.close()
-
-    def test_child_close_preserves_parent_namespace(self):
-        parent = Sandbox(name="parent", builtins=None)
-        child = Sandbox(name="child", parent=parent)
-        child.exec("z = 30")
-        child.close()
-        assert parent.get("z") == 30
-        parent.close()
-
-    def test_child_closed_blocks_exec(self):
-        parent = Sandbox(name="parent", builtins=None)
-        child = Sandbox(name="child", parent=parent)
-        child.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            child.exec("x = 1")
-        parent.close()
-
-    def test_child_with_restricted_builtins_parent_full(self):
-        parent = Sandbox(name="parent", builtins=None)
-        parent.exec("import sys")
-        child = Sandbox(name="child", parent=parent, builtins=SANDBOX_BUILTINS)
-        # child can't import (restricted) but can access parent's imports
-        assert "sys" in [k for k in child._module.__dict__ if not k.startswith("_")]
-        output = child.exec("import os")
-        assert "ImportError" in output
-        parent.close()
-        child.close()
-
-    def test_parent_property(self):
-        parent = Sandbox(name="parent", builtins=None)
-        child = Sandbox(name="child", parent=parent)
-        assert child.parent is parent
-        assert parent.parent is None
-        parent.close()
-        child.close()
+def test_exec_returns_and_prints():
+    s = Sandbox()
+    r = s.exec("print('side effect'); __result__ = 99")
+    assert r.returns == 99
+    assert r.std_output == 'side effect\n'
 
 
-class TestSandboxLifecycle:
-    """生命周期：context manager、on_init、on_destroy。"""
+# -- variable persistence (REPL-like) ------------------------------------
 
-    def test_context_manager(self):
-        with Sandbox(name="test") as s:
-            s.exec("x = 42")
-            assert s.get("x") == 42
-        assert s._closed
-
-    def test_on_init_called(self):
-        initialized = []
-
-        def init(sb):
-            initialized.append(sb.name)
-
-        s = Sandbox(name="test", on_init=init)
-        assert initialized == ["test"]
-        s.close()
-
-    def test_on_destroy_called_on_close(self):
-        destroyed = []
-
-        def destroy(sb):
-            destroyed.append(sb.name)
-
-        s = Sandbox(name="test", on_destroy=destroy)
-        s.close()
-        assert destroyed == ["test"]
-
-    def test_on_destroy_called_once(self):
-        destroyed = []
-
-        def destroy(sb):
-            destroyed.append(1)
-
-        s = Sandbox(name="test", on_destroy=destroy)
-        s.close()
-        s.close()  # second close is no-op
-        assert len(destroyed) == 1
-
-    def test_exec_after_close_raises(self):
-        s = Sandbox(name="test")
-        s.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            s.exec("x = 1")
+def test_variables_persist_across_exec_calls():
+    s = Sandbox()
+    s.exec("x = 10")
+    s.exec("y = x + 5")
+    r = s.exec("__result__ = y")
+    assert r.returns == 15
 
 
-class TestSandboxExceptionHandling:
-    """异常捕获。"""
+def test_functions_and_classes_persist():
+    s = Sandbox()
+    s.exec("class Dog:\n    def bark(self):\n        return 'woof'")
+    r = s.exec("__result__ = Dog().bark()")
+    assert r.returns == 'woof'
 
-    def test_exception_traceback_returned(self):
-        s = Sandbox(name="test")
-        output = s.exec("1/0")
-        assert "ZeroDivisionError" in output
-        assert "Traceback" in output
-        s.close()
 
-    def test_variables_preserved_after_exception(self):
-        s = Sandbox(name="test")
-        s.exec("x = 42")
-        s.exec("1/0")  # exception, but x is still there
-        assert s.get("x") == 42
-        s.close()
+# -- builtins safety -----------------------------------------------------
 
-    def test_stdout_before_exception_captured(self):
-        s = Sandbox(name="test")
-        output = s.exec("print('before')\n1/0")
-        assert "before" in output
-        assert "ZeroDivisionError" in output
-        s.close()
+@pytest.mark.parametrize("dangerous", [
+    "__import__('os')",
+    "open('/etc/passwd')",
+    "eval('1+1')",
+    "exec('x=1')",
+    "compile('x=1', '', 'exec')",
+    "input()",
+    "breakpoint()",
+])
+def test_dangerous_builtins_blocked(dangerous):
+    s = Sandbox()
+    r = s.exec(dangerous)
+    assert r.exception is not None, f"expected error for: {dangerous}"
+
+
+def test_safe_builtins_work():
+    s = Sandbox()
+    r = s.exec("""
+x = list(range(5))
+y = sum(x)
+z = [str(i) for i in x]
+__result__ = (y, isinstance(z, list), len(z))
+""")
+    assert r.returns == (10, True, 5)
+
+
+def test_custom_builtins():
+    custom = {"print": print, "len": len, "int": int}
+    s = Sandbox(builtins=custom)
+    s.exec("x = len([1, 2, 3])")
+    r = s.exec("__result__ = x")
+    assert r.returns == 3
+    r = s.exec("range(5)")
+    assert r.exception is not None
+
+
+def test_full_builtins_when_none():
+    s = Sandbox(builtins=None)
+    r = s.exec("import json; __result__ = json.dumps({'a': 1})")
+    assert r.returns == '{"a": 1}'
+
+
+# -- lifecycle hooks -----------------------------------------------------
+
+def test_on_init_hook():
+    def init(sb: Sandbox):
+        sb.set("answer", 42)
+
+    s = Sandbox(on_init=init)
+    r = s.exec("__result__ = answer")
+    assert r.returns == 42
+
+
+def test_on_destroy_hook():
+    destroyed = []
+
+    def destroy(sb: Sandbox):
+        destroyed.append(sb._name)
+
+    s = Sandbox(name="test_sb", on_destroy=destroy)
+    s.close()
+    assert destroyed == ["test_sb"]
+
+
+def test_context_manager():
+    s = Sandbox()
+    with s:
+        s.exec("x = 1")
+    with pytest.raises(RuntimeError, match="closed"):
+        s.exec("x = 2")
+
+
+# -- get / set -----------------------------------------------------------
+
+def test_get_set():
+    s = Sandbox()
+    s.set("pi", 3.14)
+    assert s.get("pi") == 3.14
+    with pytest.raises(AttributeError):
+        s.get("nonexistent")
+
+
+# -- parent-child namespace sharing --------------------------------------
+
+def test_child_shares_parent_namespace():
+    parent = Sandbox(name="parent")
+    parent.exec("shared = [1, 2, 3]")
+
+    child = Sandbox(name="child", parent=parent)
+    r = child.exec("__result__ = shared")
+    assert r.returns == [1, 2, 3]
+
+    child.exec("shared.append(4)")
+    r = parent.exec("__result__ = shared")
+    assert r.returns == [1, 2, 3, 4]
+
+
+def test_child_close_does_not_destroy_parent_namespace():
+    parent = Sandbox(name="parent")
+    parent.exec("x = 100")
+
+    child = Sandbox(name="child", parent=parent)
+    child.exec("x = 200")
+
+    child.close()
+    r = parent.exec("__result__ = x")
+    assert r.returns == 200
+
+
+def test_parent_close_destroys_children():
+    parent = Sandbox(name="parent")
+    child = Sandbox(name="child", parent=parent)
+
+    parent.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        child.exec("x = 1")
+
+
+def test_cannot_create_child_from_closed_parent():
+    parent = Sandbox(name="parent")
+    parent.close()
+    with pytest.raises(ValueError, match="closed"):
+        Sandbox(name="child", parent=parent)
+
+
+def test_close_is_idempotent():
+    s = Sandbox()
+    s.close()
+    s.close()
+
+
+# -- closed sandbox ------------------------------------------------------
+
+def test_exec_on_closed_raises():
+    s = Sandbox()
+    s.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        s.exec("x = 1")
+
+
+# -- sqlite3 acceptance (app + sqlite) -----------------------------------
+
+def test_sqlite_injection_acceptance():
+    parent = Sandbox(name="db_parent")
+
+    def init_db(sb: Sandbox):
+        conn = sqlite3.connect(":memory:")
+        sb.set("sqlite3", sqlite3)
+        sb.set("conn", conn)
+
+    child = Sandbox(name="db_child", parent=parent, on_init=init_db)
+
+    child.exec("""
+sql = sqlite3
+conn.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)')
+conn.execute("INSERT INTO users VALUES (1, 'Alice')")
+conn.execute("INSERT INTO users VALUES (2, 'Bob')")
+conn.commit()
+""")
+
+    r = parent.exec("""
+rows = conn.execute('SELECT * FROM users ORDER BY id').fetchall()
+__result__ = rows
+""")
+    assert r.returns == [(1, 'Alice'), (2, 'Bob')]
+
+    conn = parent.get("conn")
+    conn.close()
+    parent.close()
+
+
+# -- exception capture & traceback filtering ------------------------------
+
+def test_exception_returned_in_result_not_raised():
+    s = Sandbox()
+    r = s.exec("1/0")
+    assert r.exception is not None
+    assert 'ZeroDivisionError' in r.exception
+    assert r.traceback is not None
+    assert r.returns is None
+
+
+def test_stdout_preserved_on_error():
+    s = Sandbox()
+    r = s.exec("print('before'); 1/0; print('after')")
+    assert r.std_output == 'before\n'
+
+
+def test_traceback_excludes_sandbox_internals():
+    s = Sandbox(name="test_sb")
+    s.exec("def crash():\n    return 1/0")
+    r = s.exec("crash()")
+    assert r.exception is not None
+    assert 'sandbox.py' not in r.traceback
+    assert 'test_sb' in r.traceback
+
+
+def test_traceback_includes_model_code_frames():
+    s = Sandbox(name="my_sandbox")
+    s.exec("def inner():\n    return 1/0")
+    s.exec("def outer():\n    return inner()")
+    r = s.exec("outer()")
+    assert r.exception is not None
+    # Model's code frames should be present
+    assert 'my_sandbox' in r.traceback
+    assert 'outer' in r.traceback
+    assert 'inner' in r.traceback
+
+
+def test_syntax_error_captured():
+    s = Sandbox()
+    r = s.exec("x = ")
+    assert r.exception is not None
+    assert 'SyntaxError' in r.exception
+
+
+def test_successful_exec_has_no_exception():
+    s = Sandbox()
+    r = s.exec("x = 1; __result__ = x")
+    assert r.exception is None
+    assert r.traceback is None
+    assert r.returns == 1
+
+
+def test_sandbox_clears_module_dict_on_root_close():
+    s = Sandbox(name="root")
+    s.exec("secret = 'api-key-12345'")
+    s.close()
+    assert s.module.__dict__ == {}
