@@ -1,0 +1,1 @@
+exec uv run reflex run
