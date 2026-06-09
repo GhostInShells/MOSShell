@@ -23,7 +23,6 @@ class AudioRuntimeTopic(TopicModel):
     """
 
     running: bool = False
-    stream_key: str = Field(default="", description="Identifier for the audio stream location")
     device_name: str = ""
     device_explain: str = ""
     started_at: float = 0.0

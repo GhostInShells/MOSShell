@@ -29,7 +29,6 @@ __all__ = [
     "pack_chunk",
 ]
 
-_STREAM_KEY = "audio/pcm"
 _SILENCE_THRESHOLD_DB = -50.0
 
 
@@ -136,14 +135,13 @@ class MiniAudioCaptureSource(AudioCaptureSource):
         self._started = True
         self._transport.pub_topic(AudioRuntimeTopic(
             running=True,
-            stream_key=_STREAM_KEY,
             device_name=getattr(self._capture, "name", "") or "default",
             device_explain=self.device_explain(),
             started_at=time.time(),
             last_heartbeat=time.time(),
         ))
-        self._logger.info("Audio capture started (key=%s, device=%s)",
-                          _STREAM_KEY, self.device_explain())
+        self._logger.info("Audio capture started (device=%s)",
+                          self.device_explain())
 
     def device_explain(self) -> str:
         if self._capture is None:
@@ -163,7 +161,6 @@ class MiniAudioCaptureSource(AudioCaptureSource):
 
         self._transport.pub_topic(AudioRuntimeTopic(
             running=False,
-            stream_key=_STREAM_KEY,
             last_heartbeat=time.time(),
         ))
         self._transport.release_lock()
