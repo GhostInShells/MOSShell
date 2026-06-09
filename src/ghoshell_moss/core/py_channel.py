@@ -169,6 +169,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
     async def get_instruction(self) -> str:
         if self._instruction_functions is None:
             return ''
+        if isinstance(self._instruction_functions, str):
+            return self._instruction_functions
         if inspect.iscoroutinefunction(self._instruction_functions):
             return await self._instruction_functions()
         return self._instruction_functions()
