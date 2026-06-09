@@ -10,10 +10,14 @@ Usage:
 import asyncio
 import logging
 import math
+import os
 import time
 from collections.abc import AsyncIterable
 
+import dotenv
 import numpy as np
+
+dotenv.load_dotenv()
 from scipy import signal
 
 from ghoshell_moss.contracts.audio import (
@@ -119,7 +123,12 @@ def _is_tts_playing(runtime_window) -> bool:
 
     AudioRuntimeTopic 是状态快照。从最新往最旧查，找到 speaker
     的最新状态即可；旧的状态可能已被 running=False 覆盖。
+
+    环境变量 ``LISTENER_DISABLE_TTS_GATE=1`` 可关闭此门控，
+    用于需要 ASR 与 TTS 同时工作的调试或特殊场景。
     """
+    if os.environ.get("LISTENER_DISABLE_TTS_GATE") == "1":
+        return False
     for topic in reversed(runtime_window.values()):
         if topic.device_name == "speaker":
             return topic.running

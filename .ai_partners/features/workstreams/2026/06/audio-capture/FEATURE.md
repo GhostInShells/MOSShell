@@ -5,9 +5,9 @@ description: 完整音频感知管线 — miniaudio PCM 捕获 → Zenoh 流 →
 milestone: null
 priority: P1
 status: in-progress
-status_note: Step 1-16 全部完成。PTT Listener 已落地——按键录制/松手识别，空窗 800ms + 尾音 1.2s + 误触 500ms 守卫，无 TTS 门控复杂度。旧 voice app + contrib/asr 已删除。内核 ASR 模块、Listener App、PTT Listener App、Mindflow AudioNucleus 全部落地。已知问题：VolcengineASR 偶现服务端错误码 2065851762（待排查）。下一步：Step 13 Preemptable（TTS 打断）或 feature 收尾。
+status_note: Step 1-16 全部完成，Step 18-20 补充完成（Listener 环境变量门控、dotenv 配置、listener mode）。PTT Listener 已落地。内核 ASR 模块、Listener App、PTT Listener App、Mindflow AudioNucleus 全部落地。已知问题：VolcengineASR 偶现服务端错误码 2065851762（待排查）。下一步：Step 13 Preemptable（TTS 打断）或 feature 收尾。
 title: Audio Capture — 音频感知全链路
-updated: '2026-06-08'
+updated: '2026-06-09'
 ---
 
 # Audio Capture — 音频感知全链路
@@ -695,6 +695,9 @@ class SpeechTopic(TopicModel):
 | 15 | PTT Listener App — 按键式 ASR，替代持续监听+门控 | **done** — 2026-06-08 | 基于 MiniAudioCaptureSource + VolcengineASR + pynput，按键录制/松手识别，比 listener 的持续监听+三重门控更简单 |
 | 16 | 删除旧 `sensors/voice` app + `ghoshell_moss_contrib/asr` | **done** — 2026-06-08 | 旧实现基于 PyAudio + 状态机，已被新体系完全替代 |
 | 17 | 旁路 flash 模型 + 本地术语表 + 外设通道 | **P2/deferred** — 见 KD16 | |
+| 18 | Listener App 环境变量门控 — `LISTENER_DISABLE_TTS_GATE=1` 关闭 TTS 三重门控 | **done** — 2026-06-09 | 用于调试或 ASR/TTS 必须重叠的特殊场景 |
+| 19 | Listener App dotenv 支持 — `.env.example` + `dotenv.load_dotenv()` | **done** — 2026-06-09 | 配置管理标准化 |
+| 20 | `listener` Mode — bringups 自动拉起 `sensors/audio_capture` + `sensors/listener` | **done** — 2026-06-09 | 一键启动音频感知全链路 |
 
 ### Step 1-5 实现细节
 
@@ -840,3 +843,4 @@ Ghost: apps:stop sensors/audio_capture
 *设计收敛: Matrix 解耦 AudioTransport、TopicWindow 替代 tmp_storage、SpeechTopic 统一协议、AudioSignal 接入 mindflow、五种交互模式、四项可选 Protocol、MVP 边界收敛 — deepseek-v4 与人类工程师, 2026-06-07*
 *实现: KD10 Matrix 解耦 — AudioTransport ABC (contracts)、MatrixAudioTransport 适配器 (host)、MiniAudioCaptureSource 改造、Provider 更新、App 更新、单测覆盖 — deepseek-v4-pro 与人类工程师, 2026-06-07*
 *实现: KD11/KD12/KD13/KD14 合约落地 — SpeechTopic 统一语音事件、AudioSignal 音频感知信号、AudioAction 枚举、Preemptable/SpeechEventEmitter/SpeechEventReceiver/AudioRuntimeReporter 四项 Protocol、AudioRuntimeTopic 替代 tmp_storage、MiniAudioCaptureSource 改用 AudioRuntimeTopic 广播 — deepseek-v4-pro 与人类工程师, 2026-06-07*
+*增强: Listener App 环境变量门控开关 (`LISTENER_DISABLE_TTS_GATE`)、dotenv 配置支持、新建 `listener` Mode 一键启动音频感知全链路 — Kimi K2.6 与人类工程师, 2026-06-09*

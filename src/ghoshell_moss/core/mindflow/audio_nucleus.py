@@ -1,3 +1,4 @@
+from ghoshell_common.contracts import LoggerItf
 from ghoshell_container import IoCContainer
 
 from ghoshell_moss.core.blueprint.mindflow import (
@@ -13,7 +14,6 @@ from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
 __all__ = [
     "AudioNucleus",
     "AudioNucleusMeta",
-    "audio_nucleus_factory",
 ]
 
 
@@ -60,8 +60,5 @@ class AudioNucleusMeta(NucleusMeta):
             buffer_size=5,
             min_priority=Priority.WARNING,
             pulse_beat_interval=3.0,
-            logger=container.force_fetch_logger(),
+            logger=container.force_fetch(LoggerItf),
         )
-
-
-audio_nucleus_factory = AudioNucleusMeta()
