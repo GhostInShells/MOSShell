@@ -14,6 +14,7 @@ dependencies = [
     "janus>=2.0.0",
     "jsonargparse>=4.48.0",
     "orjson>=3.11.8",
+    "pexpect>=4.9.0",
     "pillow>=12.1.0",
     "python-dateutil>=2.9.0.post0",
     "python-frontmatter>=1.1.0",
