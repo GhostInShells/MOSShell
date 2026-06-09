@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ghoshell_moss.contracts.speech import ASR, ASRResult
+from ghoshell_moss.contracts.asr import ASR, ASRResult
 
 
 class MockASR(ASR):

@@ -1,23 +1,19 @@
 import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, NamedTuple, Optional, Callable, AsyncIterable
+from typing import Any, Optional, Callable, AsyncIterable
 from typing_extensions import TypedDict
 
 import numpy as np
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.command import CommandTask, PyCommand, Command
-from ghoshell_moss.core.concepts.topic import TopicModel
 import json
 
 __all__ = [
-    "ASR",
-    "ASRResult",
     "AudioFormat",
     "Speech",
     "SpeechStream",
-    "SpeechTopic",
     "StreamAudioPlayer",
     "TTS",
     "TTSItem",
@@ -617,74 +613,3 @@ class TTSSpeech(Speech, ABC):
     @abstractmethod
     def new_tts_stream(self, batch: TTSBatch) -> SpeechStream:
         pass
-
-
-class ASRResult(NamedTuple):
-    """ASR 识别结果片段。"""
-
-    text: str
-    is_final: bool = False
-
-
-class ASR(ABC):
-    """音频感知器官 — 耳。对称于 TTS（口）。
-
-    输入一段音频流，输出文本流。中间结果 is_final=False，
-    尾包 is_final=True。
-    """
-
-    @abstractmethod
-    async def recognize(
-        self,
-        audio_chunks: AsyncIterable[np.ndarray],
-    ) -> AsyncIterable[ASRResult]:
-        """流式识别。yield 中间结果，最后一个 is_final=True。"""
-
-    async def recognize_once(self, audio_chunks: AsyncIterable[np.ndarray]) -> str:
-        """识别一段完整音频，返回最终文本。默认实现，后端无需复写。"""
-        async for result in self.recognize(audio_chunks):
-            if result.is_final:
-                return result.text
-        return ""
-
-    @abstractmethod
-    async def close(self) -> None:
-        """释放 ASR 资源。"""
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-
-class SpeechTopic(TopicModel):
-    """A completed utterance in a voice conversation stream.
-
-    Each SpeechTopic is a finished sentence segment — spoken by human, ghost,
-    assistant, or system. ASR streams intermediate results internally but only
-    publishes to this topic once segmentation completes. No delta/incremental
-    updates; every event is self-contained.
-
-    A TopicWindow[SpeechTopic] over recent N utterances forms the conversation
-    context window for the current voice interaction.
-    """
-
-    text: str = ""
-    speaker_id: str = ""
-    speaker_name: str = ""
-    role: str = ""
-
-    batch_id: str = ""
-    timestamp: float = 0.0
-
-    lang: str = "zh"
-    audio_key: str | None = None
-
-    @classmethod
-    def topic_type(cls) -> str:
-        return "speech"
-
-    @classmethod
-    def default_topic_name(cls) -> str:
-        return "speech"

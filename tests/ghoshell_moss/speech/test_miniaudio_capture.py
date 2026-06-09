@@ -15,8 +15,8 @@ from ghoshell_moss.contracts.audio import (
     AudioFrameMeta,
     AudioPullLatest,
     AudioSequentialConsumer,
-    AudioTransport,
 )
+from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
 from ghoshell_moss.host.speech.capture.miniaudio_capture import (
     MiniAudioCaptureSource,
     pack_chunk,

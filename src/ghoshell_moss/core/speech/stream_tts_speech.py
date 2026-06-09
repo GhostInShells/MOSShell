@@ -1,46 +1,38 @@
 import asyncio
 import logging
-import time
 from typing import Optional, Callable, Coroutine
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.message import unique_id
 
-from ghoshell_moss.contracts.audio import AudioRuntimeTopic
 from ghoshell_moss.contracts.speech import (
     TTS,
     AudioFormat,
     TTSSpeech,
     SpeechStream,
-    SpeechTopic,
     StreamAudioPlayer,
     TTSBatch,
 )
-from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 
 
 class TTSSpeechStream(SpeechStream):
     def __init__(
-            self,
-            *,
-            loop: asyncio.AbstractEventLoop,
-            audio_format: AudioFormat | str,
-            channels: int,
-            sample_rate: int,
-            player: StreamAudioPlayer,
-            tts_batch: TTSBatch,
-            logger: LoggerItf,
-            topic_service: TopicService | None = None,
-            speaker_name: str = "Ghost",
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        audio_format: AudioFormat | str,
+        channels: int,
+        sample_rate: int,
+        player: StreamAudioPlayer,
+        tts_batch: TTSBatch,
+        logger: LoggerItf,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
 
         self.logger = logger
-        self._topic_service = topic_service
-        self._speaker_name = speaker_name
         self.cmd_task = None
         self.committed = False
         self._sample_rate = sample_rate
@@ -121,18 +113,6 @@ class TTSSpeechStream(SpeechStream):
             self._play_done_event.set()
             # 冗余的 clear.
             await self._player.clear()
-            # Broadcast playback end so the audio pipeline knows TTS is done.
-            if self._topic_service is not None:
-                self._topic_service.pub(
-                    AudioRuntimeTopic(
-                        running=False,
-                        stream_key=self.id,
-                        device_name="speaker",
-                        device_explain=f"TTS output ({self._speaker_name})",
-                    ),
-                    creator="tts",
-                )
-                self.logger.info("%s Broadcasted AudioRuntimeTopic(running=False)", self._log_prefix)
 
     async def start_play(self) -> None:
         if self._playing:
@@ -140,32 +120,6 @@ class TTSSpeechStream(SpeechStream):
         self.logger.info("%s Starting playing TTS stream", self._log_prefix)
         self._playing = True
         self._playing_loop_task = asyncio.create_task(self._play_loop())
-
-        # Broadcast SpeechTopic so the audio pipeline knows Ghost is speaking.
-        if self._topic_service is not None:
-            speech_topic = SpeechTopic(
-                text=self._text_buffer,
-                speaker_id="ghost",
-                speaker_name=self._speaker_name,
-                role="ghost",
-                batch_id=self.id,
-                timestamp=time.monotonic(),
-            )
-            self._topic_service.pub(speech_topic, creator="tts")
-            self.logger.info("%s Broadcasted SpeechTopic: %s", self._log_prefix, self._text_buffer[:50])
-
-            # Broadcast runtime start so listener knows TTS playback has begun.
-            self._topic_service.pub(
-                AudioRuntimeTopic(
-                    running=True,
-                    stream_key=self.id,
-                    device_name="speaker",
-                    device_explain=f"TTS output ({self._speaker_name})",
-                    started_at=time.monotonic(),
-                ),
-                creator="tts",
-            )
-            self.logger.info("%s Broadcasted AudioRuntimeTopic(running=True)", self._log_prefix)
 
     async def close(self):
         if self._closed_event.is_set():
@@ -190,17 +144,13 @@ class TTSSpeechStream(SpeechStream):
 
 class BaseTTSSpeech(TTSSpeech):
     def __init__(
-            self,
-            *,
-            player: StreamAudioPlayer,
-            tts: TTS,
-            topic_service: TopicService | None = None,
-            speaker_name: str = "Ghost",
-            logger: Optional[LoggerItf] = None,
+        self,
+        *,
+        player: StreamAudioPlayer,
+        tts: TTS,
+        logger: Optional[LoggerItf] = None,
     ):
         self.logger = logger or logging.getLogger("moss")
-        self._topic_service = topic_service
-        self._speaker_name = speaker_name
         self._player = player
         self._tts = tts
         self._tts_info = tts.get_info()
@@ -232,8 +182,6 @@ class BaseTTSSpeech(TTSSpeech):
             player=self._player,
             tts_batch=batch,
             logger=self.logger,
-            topic_service=self._topic_service,
-            speaker_name=self._speaker_name,
         )
         return stream
 

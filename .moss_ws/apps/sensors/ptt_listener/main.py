@@ -20,13 +20,10 @@ import numpy as np
 from pynput import keyboard
 from scipy import signal
 
-from ghoshell_moss.contracts.audio import (
-    AudioAction,
-    AudioCaptureConfig,
-    AudioSignal,
-    AudioTransport,
-)
-from ghoshell_moss.contracts.speech import SpeechTopic
+from ghoshell_moss.contracts.audio import AudioCaptureConfig
+from ghoshell_moss.core.mindflow.audio_signal import AudioAction, AudioSignal
+from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
+from ghoshell_moss.topics.audio import SpeechTopic
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.host.speech.capture.matrix_audio_transport import MatrixAudioTransport
 from ghoshell_moss.host.speech.capture.miniaudio_capture import MiniAudioCaptureSource

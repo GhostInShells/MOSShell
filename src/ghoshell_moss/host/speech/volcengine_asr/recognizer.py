@@ -8,7 +8,7 @@ import websockets
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 
-from ghoshell_moss.contracts.speech import ASR, ASRResult
+from ghoshell_moss.contracts.asr import ASR, ASRResult
 
 from .config import VolcengineASRConfig
 from .protocol import (
