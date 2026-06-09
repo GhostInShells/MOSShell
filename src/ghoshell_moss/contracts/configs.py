@@ -50,11 +50,11 @@ class ConfigType(BaseModel, ABC):
         data = self.model_dump(exclude_none=True)
         return yaml_pretty_dump(data)
 
-    def resolve(self) -> Self:
+    def resolve(self, environ: dict[str, str] | None = None) -> Self:
         if not self.RESOLVE_ENV_KEY:
             return self
         data = self.model_dump()
-        data = _resolve_config_data_from_env(data)
+        data = _resolve_config_data_from_env(data, environ=environ)
         return self.model_validate(data, strict=False)
 
     @classmethod
@@ -157,7 +157,7 @@ class LocalConfigStore(ConfigStore, ABC):
         self._storage = storage
         # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
         self._cache: dict[_ConfName, ConfigType] = {}
-        self._environ = environ or os.environ.copy()
+        self._environ = environ  # None means use os.environ at resolve time
 
     def get_config_path(self, config_name: str) -> str:
         filename = self._make_config_filename(config_name)
@@ -185,7 +185,7 @@ class LocalConfigStore(ConfigStore, ABC):
         # 3. 实例化并存入缓存
         instance = conf_type(**data)
         # resolve all environment key
-        resolved = instance.resolve()
+        resolved = instance.resolve(environ=self._environ)
         self._cache[conf_name] = resolved
         return resolved
 
@@ -194,7 +194,7 @@ class LocalConfigStore(ConfigStore, ABC):
         if override:
             self.save(conf)
         else:
-            self._cache[conf_name] = conf.resolve()
+            self._cache[conf_name] = conf.resolve(environ=self._environ)
 
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
@@ -223,7 +223,7 @@ class LocalConfigStore(ConfigStore, ABC):
         # 同步更新内存，确保后续 get 拿到的是刚保存的这个实例
         conf_name = conf_type.conf_name()
         # 缓存的进行 resolve, 但保存的不做 resolve.
-        resolved = conf.resolve()
+        resolved = conf.resolve(environ=self._environ)
         self._cache[conf_name] = resolved
         return resolved
 
@@ -258,16 +258,21 @@ class LocalConfigStore(ConfigStore, ABC):
         pass
 
 
-def _resolve_config_data_from_env(data: dict[str, Any]) -> dict[str, Any]:
+def _resolve_config_data_from_env(
+    data: dict[str, Any],
+    environ: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     recursively replace environment variables with their respective values.
     """
+    if environ is None:
+        environ = os.environ
     resolved_data = {}
     for key, value in data.items():
         if isinstance(value, dict):
-            resolved_data[key] = _resolve_config_data_from_env(value)
+            resolved_data[key] = _resolve_config_data_from_env(value, environ=environ)
         elif isinstance(value, str) and value.startswith('$'):
-            resolved_data[key] = os.environ.get(value[1:], value)
+            resolved_data[key] = environ.get(value[1:], value)
         else:
             resolved_data[key] = value
     return resolved_data
