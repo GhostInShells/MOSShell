@@ -1,6 +1,6 @@
 ---
 title: Matrix Cell Governance
-status: draft
+status: in-progress
 priority: P0
 created: 2026-06-09
 updated: 2026-06-09
@@ -14,6 +14,10 @@ description: >-
   fractal 回归 cell 身份，host 成为拓扑聚合者。环境变量三个变一个。
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
+status_note: >-
+  2026-06-09 ProcessNursery + Matrix.spawn() + pipe fencing 实现完毕。
+  20 单元测试 + 6 集成测试全过。人类架构师承担未 review 的验证责任。
+  剩余：CellType.node、NODE.md、moss nodes CLI、shell-init、apps 迁移。
 ---
 
 # Matrix Cell Governance
@@ -152,9 +156,42 @@ Node 的 dev/debug 脚本不需要反射为 virtual channel。方案极简：
 
 1. **不碰 apps**：现有 App 体系保留，circusd 不去。bug fix 照常。
 2. **建 node 并行线**：`CellType.node`、NODE.md、`moss nodes` CLI、注册表。
-3. **Matrix 接口补齐**：Process Nursery、`matrix.run_cell()`、pipe fencing。
+3. **Matrix 接口补齐**：Process Nursery、`matrix.spawn()`、pipe fencing。← 当前
 4. **环境变量契约文档化**：`moss shell-init`、最小启动示例。
 5. **验证完毕后才讨论 apps 迁移**：当 node 机制覆盖了 apps 的所有场景。
+
+## 实现记录
+
+### 2026-06-09: ProcessNursery + Matrix.spawn() + pipe fencing
+
+**scope**: 仅 ProcessNursery。不碰 CellType、不建 NODE.md、不改 apps。
+
+**设计收敛**:
+- 方法名 `spawn()` 而非 `run_cell()`——它是进程 spawn 原语，是不是 cell 由调用方通过 `cell_address` 参数决定
+- Nursery 不维护子进程列表——pipe fencing 让子进程在父进程 SIGKILL 时零延迟自检
+- 正常退出路径：父进程主动发 SIGTERM 给子进程 pgid，等 timeout，未退的 SIGKILL
+- pipe 由调用方创建，nursery 不持有 fd。`nursery_fd` 参数可选
+- start_new_session 隔离进程组，防止 Ctrl+C 误杀子进程
+- 不耦合注册表——注册表是运行时 debug/强杀工具，和 nursery 正交
+
+**方法签名**:
+```python
+async def spawn(
+    self,
+    *args: str,
+    cell_address: str | None = None,
+    cwd: str | Path | None = None,
+    extra_env: dict | None = None,
+    nursery_fd: int | None = None,
+) -> asyncio.subprocess.Process:
+```
+
+**文件**:
+- `src/ghoshell_moss/host/nursery.py` — ProcessNursery 独立模块
+- `src/ghoshell_moss/core/blueprint/matrix.py` — Matrix.spawn() 抽象方法
+- `src/ghoshell_moss/host/matrix.py` — MatrixImpl 集成
+- `tests/ghoshell_moss/host/test_nursery.py` — 单元 + 集成测试
+- `tests/fixtures/nursery_child.py` — 测试用子进程脚本
 
 ## Open Questions
 

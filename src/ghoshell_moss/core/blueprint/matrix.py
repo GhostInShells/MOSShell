@@ -643,6 +643,37 @@ class Matrix(ABC):
         """
         pass
 
+    # --- 子进程 spawn --- #
+
+    @abstractmethod
+    async def spawn(
+            self,
+            *args: str,
+            cell_address: str | None = None,
+            cwd: str | Path | None = None,
+            extra_env: dict | None = None,
+            nursery_fd: int | None = None,
+    ) -> asyncio.subprocess.Process:
+        """
+        Spawn a subprocess with MOSS environment context.
+
+        The child inherits Matrix session identity (workspace, scope,
+        session_id, parent_pid) via environment variables.  If *cell_address*
+        is given, MOSS_CELL_ADDRESS is set so the child can join the Matrix
+        as a cell.
+
+        Pipe fencing: pass a pipe read-fd as *nursery_fd* to enable
+        zero-latency parent-death detection.  The parent holds the write
+        end; when the parent dies (including SIGKILL), the kernel closes
+        all fds, the child's read returns EOF, and the child can exit
+        gracefully.  Create the pipe with ``os.pipe()``, pass the read-fd,
+        and close the read end in the parent after spawn.
+
+        The child runs in its own process group (``start_new_session=True``)
+        so terminal signals to the parent do not propagate.
+        """
+        pass
+
     # --- 启动函数, 并非必要, 基于 code as prompt 原则提示如何使用 --- #
 
     async def arun(self, main_coro: Callable[[Self], Awaitable[Any]]) -> Any:

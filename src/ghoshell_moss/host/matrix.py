@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 from typing import Coroutine, Iterable, Type, Literal
 
 from typing_extensions import Self
@@ -28,6 +29,7 @@ from ghoshell_moss.host.providers import (
 )
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
 from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.host.nursery import ProcessNursery, watch_nursery_pipe
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.host.cell_discovery import CellDiscovery
@@ -39,7 +41,7 @@ import contextlib
 import logging
 import threading
 import time
-import psutil
+
 
 __all__ = ['AppCell', 'HostCell', 'NetworkCell', 'MatrixImpl']
 
@@ -174,6 +176,9 @@ class MatrixImpl(Matrix):
         self._system_prompter = self._prepare_system_prompter()
         self._container = self._prepare_container()
         self._lifecycle_bound_objects_or_types: list[MatrixLifecycleObject | Type[MatrixLifecycleObject]] = []
+        self._nursery = ProcessNursery(
+            logger=getattr(self._logger, 'info', None) and self._logger,
+        )
 
         if isinstance(self._this_cell, UnknownCell):
             log = self._logger or self.env.logger
@@ -530,6 +535,27 @@ class MatrixImpl(Matrix):
         self._add_task(task)
         return task
 
+    async def spawn(
+            self,
+            *args: str,
+            cell_address: str | None = None,
+            cwd: str | Path | None = None,
+            extra_env: dict | None = None,
+            nursery_fd: int | None = None,
+    ) -> asyncio.subprocess.Process:
+        self._check_running()
+        env = self.env.dump_moss_env(for_child_process=True)
+        if cell_address is not None:
+            env["MOSS_CELL_ADDRESS"] = cell_address
+        elif "MOSS_CELL_ADDRESS" in env:
+            env.pop("MOSS_CELL_ADDRESS")
+        if extra_env is not None:
+            env.update(extra_env)
+        return await self._nursery.spawn(
+            *args, cwd=str(cwd) if cwd is not None else None,
+            env=env, nursery_fd=nursery_fd,
+        )
+
     def register_lifecycle_objects(self, obj: MatrixLifecycleObject) -> None:
         if self.is_running():
             raise RuntimeError(f"Matrix is already running")
@@ -599,23 +625,9 @@ class MatrixImpl(Matrix):
                 wait_done.append(t)
             await asyncio.gather(*wait_done, return_exceptions=True)
 
-    async def _ensure_parent_process_exists(self) -> None:
-        if self.env.parent_pid == 0:
-            return
-        try:
-            parent = psutil.Process(int(self.env.parent_pid))
-        except (ValueError, TypeError, psutil.NoSuchProcess):
-            return
-
-        while not self._closing_event.is_set():
-            if not parent.is_running():
-                self.close()
-                break
-            await asyncio.sleep(2)
-
     @contextlib.asynccontextmanager
-    async def _ensure_parent_process_exists_ctx_manager(self):
-        task = asyncio.create_task(self._ensure_parent_process_exists())
+    async def _nursery_pipe_watchdog_ctx_manager(self):
+        task = asyncio.create_task(watch_nursery_pipe(lambda: self.close()))
         try:
             yield
         finally:
@@ -760,7 +772,8 @@ class MatrixImpl(Matrix):
                     await self._async_exit_stack.enter_async_context(bound)
 
             await self._async_exit_stack.enter_async_context(self._ensure_task_group_canceled_ctx_manager())
-            await self._async_exit_stack.enter_async_context(self._ensure_parent_process_exists_ctx_manager())
+            await self._async_exit_stack.enter_async_context(self._nursery_pipe_watchdog_ctx_manager())
+            await self._async_exit_stack.enter_async_context(self._nursery)
 
             # ── cell meta — 启动完成，注册到文件系统 ──
             self._env.write_cell_meta()
