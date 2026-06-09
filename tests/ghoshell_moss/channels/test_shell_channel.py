@@ -47,7 +47,7 @@ async def test_context_messages_after_sendline():
     chan = new_shell_channel()
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("sendline", kwargs={"text": "echo hello"})
+        await runtime.execute_command("sendline", kwargs={"text__": "echo hello"})
 
         await runtime.refresh_metas()
         meta = runtime.self_meta()
@@ -68,7 +68,7 @@ async def test_sendline_returns_output():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         result = await runtime.execute_command(
-            "sendline", kwargs={"text": "echo hello world"}
+            "sendline", kwargs={"text__": "echo hello world"}
         )
         assert "hello world" in result
         assert "segment #1" in result
@@ -79,9 +79,9 @@ async def test_sendline_creates_segments():
     chan = new_shell_channel()
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("sendline", kwargs={"text": "echo first"})
+        await runtime.execute_command("sendline", kwargs={"text__": "echo first"})
         result = await runtime.execute_command(
-            "sendline", kwargs={"text": "echo second"}
+            "sendline", kwargs={"text__": "echo second"}
         )
         assert "segment #2" in result
 
@@ -98,7 +98,7 @@ async def test_sendline_command_not_found():
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
         result = await runtime.execute_command(
-            "sendline", kwargs={"text": "nonexistent_cmd_xyz"}
+            "sendline", kwargs={"text__": "nonexistent_cmd_xyz"}
         )
         # shell returns non-zero, output still captured
         assert "segment #1" in result
@@ -147,6 +147,6 @@ async def test_close_after_use():
     chan = new_shell_channel()
     async with chan.bootstrap() as runtime:
         await runtime.refresh_metas()
-        await runtime.execute_command("sendline", kwargs={"text": "echo x"})
+        await runtime.execute_command("sendline", kwargs={"text__": "echo x"})
         result = await runtime.execute_command("close", kwargs={})
         assert "closed" in result

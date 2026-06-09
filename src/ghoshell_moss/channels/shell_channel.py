@@ -36,6 +36,7 @@ def new_shell_channel(
     *,
     name: str = "shell",
     raw_mode: bool = False,
+    startup: list[str] | None = None,
     session: PexpectSession | None = None,
 ) -> MutableChannel:
     """Create an interactive shell channel backed by pexpect.
@@ -43,11 +44,13 @@ def new_shell_channel(
     :param cwd: working directory (empty = process cwd)
     :param name: channel name (CTML tag name)
     :param raw_mode: if True, keep ANSI escape sequences in output
+    :param startup: list of shell commands to run on spawn (e.g. venv activation).
+                    Executed sequentially after prompt is ready, before any sendline.
     :param session: pre-configured PexpectSession (or subclass instance).
                     If None, creates a default bash session.
     """
     if session is None:
-        session = PexpectSession(cwd=cwd, raw_mode=raw_mode)
+        session = PexpectSession(cwd=cwd, raw_mode=raw_mode, startup=startup)
 
     chan = new_channel(
         name=name,
@@ -61,9 +64,14 @@ def new_shell_channel(
 
     # -- commands (sync methods, executed via asyncio.to_thread) ----------
 
+    # CTML text__ → clean Python text: CTML open-close tag content wraps
+    # into text__, channel layer forwards to PexpectSession.sendline(text=...)
+    def _sendline(text__: str = "", *, wait: float = 5.0) -> str:
+        return session.sendline(text=text__, wait=wait)
+
     chan.build.command(
         name="sendline", always_observe=True, blocking=True
-    )(session.sendline)
+    )(_sendline)
 
     chan.build.command(
         name="read_output", always_observe=True, blocking=True

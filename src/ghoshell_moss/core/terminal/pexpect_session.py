@@ -71,9 +71,11 @@ class PexpectSession:
         cwd: str | Path = "",
         *,
         raw_mode: bool = False,
+        startup: list[str] | None = None,
     ):
         self._cwd = str(Path(cwd).resolve()) if cwd else os.getcwd()
         self._raw_mode = raw_mode
+        self._startup = startup or []
         self._child: pexpect.spawn | None = None
         self._lock = threading.Lock()
 
@@ -129,6 +131,13 @@ class PexpectSession:
                 self._child.expect(self._prompt_marker(), timeout=5)
             except pexpect.TIMEOUT:
                 pass
+
+            for cmd in self._startup:
+                self._child.sendline(cmd)
+                try:
+                    self._child.expect(self._prompt_marker(), timeout=10)
+                except pexpect.TIMEOUT:
+                    pass
 
     def close(self) -> str:
         if self._child is None:
