@@ -32,7 +32,9 @@ MOSS 的 Ghost 没有操作系统的"手"——不能执行命令，不能读写
 | 后端 | Phase 1: subprocess | pexpect |
 | 典型场景 | `npm test`, `cat file.py`, `git status` | REPL, SSH, DB CLI |
 
-Phase 2 统一：Terminal 定义抽象协议，subprocess 和 pexpect 是两个实现。
+Phase 2 不统一为一个协议。ai-terminal 和 interactive-shell-channel 是两个独立的
+交互范式——一次性命令执行 vs 持久交互会话。它们在 core/terminal/ 下各自持有
+自己的抽象协议（Terminal ABC 和 InteractiveSession ABC），不互相实现。
 
 ## Architecture
 

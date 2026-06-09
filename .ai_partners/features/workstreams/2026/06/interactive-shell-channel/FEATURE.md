@@ -1,210 +1,240 @@
 ---
 title: Interactive Shell Channel — pexpect 持久化终端会话
-status: draft
+status: in-progress
 priority: P1
 created: 2026-06-03
-updated: 2026-06-04
-depends: []
+updated: 2026-06-09
+depends: [ai-terminal]
 milestone:
 description: >-
-  基于 pexpect/PTY 的持久化交互式 shell channel。P1 因为是"质变"——从一次性 tool call 到持续操作系统感知。
-  Channel interface 仍在推演，方案收敛后进入实现。验证方式：moss-as-mcp 自体验迭代。
+  基于 pexpect/PTY 的持久化交互式 shell channel，让 Ghost 拥有持续存在的终端身体。
+  一期：单 session channel，As Channel 封装，内存 buffer + 游标模型。
+  二期：JSONL 审计轨迹 + Cell 共享终端。
 ---
 
 # Interactive Shell Channel
 
-> `moss features set-status interactive-shell-channel <status> -m "note"` to update state.
-> See [TOPOLOGY.md](TOPOLOGY.md) for directory layout and [README.md](README.md) for the full convention.
-
 ## Motivation
 
-Skills 体系和现有 subprocess-based channel（如 mac_channel）的共同局限：每次调用
-都是**一次性进程**，没有持久会话状态。Ghost 无法：
+bash:exec 和所有 subprocess-based channel 的共同局限：每次调用都是**一次性进程**，没有持久会话状态。
 
+Ghost 无法做到三件事：
 - 保持 shell 环境（venv 激活、工作目录、环境变量）跨命令存活
 - 让进程在后台持续运行（dev server、训练任务），异步感知其输出
 - 与交互式程序对话（REPL、数据库 CLI、SSH session）
-- 对操作系统做运行时级操控（信号、PTY 控制、gdb attach）
 
-pexpect 的 PTY + expect/send 模式填补了这个缺口。它让 Ghost 拥有一个"活的终端身体"
-——一个持续存在的、状态累积的、可异步感知的 shell 会话。
+pexpect 的 PTY + expect/send 模式填补了这个缺口。
 
-**P1 判断**：这不是"更好用的工具"，而是 MOSS 架构表里 Duplex（感知-思考-行动重叠）
-和 Active（身体作为主动传感器）两行的直接落地。持久交互式会话 + 异步感知的组合，
-是 Ghost 降临的基础器官。
+**与 ai-terminal 的关系**：
 
-## Design Index
+| | ai-terminal | interactive-shell-channel |
+|---|---|---|
+| 定位 | 工具型：一次性命令 + 文件操作 | 会话型：持久 PTY 终端 |
+| 后端 | subprocess.run() | pexpect |
+| 核心交互 | `exec(cmd)` 阻塞等结果 | `sendline(text)` + 流式输出感知 |
+| 状态 | 无状态 | 有状态，跨命令保持环境 |
+| Channel 类型 | L1 Builder | As Channel（L0 反射 + 薄适配） |
 
-- 通用交互协议设计: `design/`
-- 关键讨论: `discuss/`
+两个不同的交互范式，不是同一个协议的两个实现。interactive-shell-channel 是**独立协议**（Session/Exchange 抽象），不是 Terminal 协议的 pexpect backend。
 
-## 验证方法
+## Design: As Channel
 
-通过 `moss-as-mcp` 连接 Claude Code，AI 一边使用 shell channel 一边改它的 interface。
-以下所有选项都不是定案，需要在自体验中迭代确认。
+PexpectSession 是纯粹的 Python 类，零 MOSS 依赖。可独立测试。
 
----
-
-## 已定案
-
-### 抽象协议 + pexpect 实现
-
-不只做 pexpect channel，而是设计一层通用的 **交互式进程会话协议**。
-Channel interface 层定义 Session/Exchange 抽象，pexpect 是实现之一。
-以后可替换为 paramiko（SSH）、serial（嵌入式串口）等。
-
-### blocking=True，优先做阻塞 command
-
-pexpect session 天然串行。Channel 设 `blocking=True`，多个 Command 自动排队。
-这是 MOSS 已有原语，零额外成本。先做阻塞 command 跑通，再做异步 command（signal task 等）。
-
-### 实现参考
-
-- `app_store_channel`: StatefulChannel, `is_dynamic()`, `get_virtual_children()`, context_messages 模式
-- `fractal_hub`: ChannelFactory 注册模式
-- `speech_channel`: Channel interface 风格，生命周期管理
-
----
-
-## 设计选项：单 Session
-
-以下均为备选方案，通过实际使用迭代选择。
-
-### context_messages — 被动感知
-
-AI 在每个关键帧看到的终端状态。
-
-**呈现模式**：
-
-| 选项 | 行为 | 适用 |
-|------|------|------|
-| A) Tail | 展示输出 buffer 最后 N 行 | 快速恢复上下文 |
-| B) Delta | 只展示上次 interaction 后新产生的输出 | 省 token，默认候选 |
-| C) Full buffer | 展示全部 buffer | 短 session 可行，长 session 炸 |
-| D) 可切换 | Command 参数控制，或 Channel 配置 | 最灵活 |
-
-**Buffer 消费语义**：
-
-| 选项 | 行为 |
-|------|------|
-| pop | 读走移除，不重复消费 |
-| peek | 读不走，每次刷新都看到同样历史 |
-| indexed pop | 维护 cursor，记录上次消费位置 |
-
-在实际操作中迭代确认哪种组合最自然。
-
-### command result — 主动响应
-
-命令执行完毕后的返回。需要在实际使用中确认：
-- 只返回结构化结果（exit code, pattern match）
-- 附带本次交互产生的输出文本（全量 vs 仅匹配段）
-- pexpect 的 `before` / `after` / `match` 如何映射到 return
-
-一个备选方向：command result 吐 buffer 文本，context_messages 只标记 session 信息和状态。
-两个出口各走各的，不互相污染。
-
-### 异步通知 — Signal
-
-**触发事件候选**：
-- 进程意外退出
-- 输出匹配到配置的 pattern（"ERROR"、"CRASH" 等）
-- 命令执行完毕
-
-**触发方式**：
-- 默认行为 vs opt-in flag vs Channel 级配置
-- 需要考虑高频日志场景下的噪音问题
-
-Signal 不是必须的——先做阻塞 command，在实战中感受是否需要异步通知。
-
-### Command 集（初步）
-
-```
-spawn(cmd, *, cwd, env)          → session info
-sendline(text)                   → output / match info
-expect(pattern, *, timeout)      → before, after, match
-read_buffer(*, since)            → new output since cursor
-sendcontrol(char)                → None
-close()                          → exit code
-signal(sig)                      → None
+```python
+class PexpectSession:
+    def sendline(self, text: str, *, wait: float = 5.0) -> SegmentResult: ...
+    def read_output(self, id: int, *, offset: int = 0, limit: int = 0) -> str: ...
+    def sendcontrol(self, char: str) -> str: ...
+    def close(self) -> str: ...
 ```
 
-粒度选择待验证：底层 sendline/expect 组合 vs 高层 execute(cmd) 一键。
+Channel 适配层用 `new_channel()` + `chan.build.command()` 反射 PexpectSession 的方法为 channel 命令。参考 `module_channel` 的 L0 模式：外部已有的事物包装为 Channel，不要求被包装者感知 Channel 的存在。
 
----
+## Interaction Model
 
-## 设计选项：多 Session
+### 游标 + Segment 模型
 
-多 session 的核心价值是**跨 channel 并行控制**——多个终端 session 在 CTML 中同时执行。
-
-### 问题：interface 去重
-
-无论哪种方案，每个 session 的 interface 都是相同的（sendline/expect/close）。
-如果每个 session 是独立 channel，`moss_dynamic` 会重复展示 N 份相同的 Python interface。
-目前 Channel 体系没有 Class 语义（`channelname(Class)`），无法声明"这些 channel 共享同一个 interface 定义"。
-
-以下方案在不同层面解决此问题，可组合使用。
-
-### 方案 1：__content__ 做终端输入，instruction 替代 Python interface
-
-Session channel 不暴露显式 command 签名。非标记文本通过 `__content__(chunks__)` 流入终端。
-`__content__` 的 prompt/行为描述提到 instruction 中，不走 `moss_dynamic` 的 Python interface。
-控制命令（spawn/close 等）留在父 channel，显式传 session id。
-
-- 优点：interface 去重问题自然消失；模型从 instruction 理解"这是一个终端，打字就是输入"
-- 缺点：`__content__` 语义是输入而非输出，终端输出需要走其他出口（context_messages / command result）
-
-### 方案 2：命令全在父 channel，带 session id
+终端输出是连续的流。输入和输出交替穿插。每次 sendline 在流上打一个切片标记——以"交互"为边界。
 
 ```
-shell:sendline id="1">ls</shell:sendline>
-shell:expect id="1" pattern="$"/>
-shell:close id="1"/>
+时间轴上的输出流:
+...output... [游标N] ...output... [input:cmd] ...output... [exit] ...output(live)...
 ```
 
-父 channel 持有所有命令，session id 用数字索引（`1`, `2`, ...）。context_messages 排列所有 session
-的快照（序号、状态、一行摘要）。
+每次 sendline 执行完毕时，游标从 N 推进到 N+1。游标之前的输出已消费，游标之后的是"活的"。
 
-- 优点：无 interface 去重问题；实现最简单
-- 缺点：失去多 channel 并行——所有 session 命令排队在父 channel
+### 两段式呈现
 
-### 方案 3：virtual_sub_children + Class 语义（需新机制）
+同一个输出 segment，在不同位置以不同粒度出现：
 
-每个 session 是动态注册的 virtual child channel。长期方向是引入 Class 语义：
-`moss_dynamic` 对同 Class 的 channel 只展示一次 interface，实例引用它。
-
-- 优点：CTML 寻址天然（`shell/session:1:sendline`）；每个 session 的 context_messages 自治；生命周期独立
-- 缺点：依赖尚未实现的 Class 语义
-
-### 方案 4：CTML scope 做 session 分组
-
-```ctml
-<shell:session id="1"><shell:sendline>ls</shell:sendline></shell:session>
+**command result（sendline 返回值，进对话历史）**：
+```
+[segment #12, 547 lines total, tail -200 shown]
+... (200 lines of pytest output) ...
+3 passed, 1 failed
+... 347 lines folded. read_output(id=12) for full content.
 ```
 
-使用 CTML scope 语法管理 session 上下文。但 scope 内所有 session 都阻塞。
+直接放在 CTML 命令返回值中，**留在对话历史里**。模型三轮后回头找，仍然可见。
 
-### 组合方向
+**context_messages（滑动窗口，每轮刷新）**：
+```
+[shell] zsh | cwd:/project | cursor: 21
+  segments: 1..21
+  live (tail -20):
+    $ _
+```
 
-方案 3（多 channel 并行）是终极形态，但依赖 Class 语义。
-方案 1（__content__）在 Class 语义就绪前可以作为轻量替代。
-方案 2（父 channel 集中）可以作为最早的 MVP 验证 session 概念。
-方案 1 + 3 可以并存：__content__ 处理输入流，Class 语义解决 interface 去重。
+只展示瞬时状态——游标位置、历史 segment 列表、live 窗口（命令退出后当前终端画面的最新 20 行）。context_messages 是滑动窗口，下一轮替换。
 
-在实际使用中迭代选择。
+### sendline 执行语义
 
----
+- 写入 text + 换行到 PTY
+- 如果 `wait > 0`：阻塞等待 shell prompt 重新出现，然后 pop 输出（上次游标 → 命令退出），推进游标
+- 如果 `wait = 0` 或为空：写入即返回。输出积累在 buffer，后续 sendline 或 read_output 消费
+- Channel 设 `blocking=True`，同 channel 内 sendline 自动排队，保证顺序执行
+- 跨 channel：shell channel 的 sendline 阻塞期间，其他 channel 的命令照常并行
 
-## Implementation Notes
+### 三段式截断（防信息爆炸）
 
-- pexpect 是同步库。命令卸载到单独线程，通过 janus queue + ThreadSafeResult 桥接
-- PTY 的输出 buffer 需要在 thread 侧维护，context_messages 的生成需要线程安全
-- 取消语义：asyncio CancelledError → ThreadSafeResult.cancel() → 线程侧清理
-- 先做本地 shell，SSH/REPL/DB CLI 作为后续特化变体
-- 实现顺序：单 session 阻塞 command → context/result 选型迭代 → 多 session
+| 层 | 粒度 | 作用 | 生命周期 |
+|---|------|------|---------|
+| context_messages | tail -20 行 | "终端现在什么状态" | 当前 keyframe |
+| command result | tail -200 行 | "刚才发生了什么" | 对话历史 |
+| read_output(id, offset, limit) | 完整 | "我要看全部" | 按需拉取 |
 
-## 与现有模块的关系
+## Commands
 
-- `mac_channel`: 互补。mac_channel 是 macOS 专用（JXA），一次性调用。shell channel 跨平台、持久会话
-- `speech_channel`: 并行。语音 + shell 同时运行，context_messages 各自独立，构成 duplex 演示
-- `notebook_channel`: 不重叠。notebook 是文件系统 CRUD，shell 是进程交互
-- `app_store_channel`: 参考其 StatefulChannel + virtual_children + context_messages 模式
+```
+sendline(text, *, wait: float = 5.0)  → SegmentResult
+  主力交互。发送 text + 换行到终端。wait > 0 时阻塞等待命令退出并返回输出。
+  wait = 0 时 fire-and-forget。输出中 ANSI 转义序列默认 strip。
+
+read_output(id: int, *, offset: int = 0, limit: int = 0) → str
+  按需拉取指定 segment 的完整或部分输出。limit = 0 表示全量。
+
+sendcontrol(char: str) → str
+  发送控制字符 (C-c, C-d, C-z)。返回 ack。
+
+close() → str
+  关闭 PTY session，返回 exit code。
+```
+
+### 降噪模式
+
+read_output 默认 strip ANSI + 控制字符（对应 `moss --ai` 模式）。通过 channel 级配置可切换为 raw 模式（人类看图、彩色输出场景）。
+
+## context_messages
+
+每轮展示：
+
+```
+## shell — zsh session
+  cursor: 21  |  cwd: /project  |  idle 3s
+  segments: [1..21] (use read_output(id) for full content)
+  --- live (last 20 lines) ---
+  $ _
+  -----------------------------
+```
+
+- 游标 + 完整 segment 列表：模型知道前面有几轮交互，每轮可通过 read_output 回溯
+- live tail：当前终端画面，"人类盯着终端看到的东西"
+
+## Storage
+
+### 一期：零存储依赖
+
+输出 buffer：进程内 `dict[int, str]` + 自增游标。生命周期等于 channel 实例。
+
+### 二期（高优）：JSONL 审计轨迹
+
+**不做审计就不能授权。** 所有交互必须可追溯。
+
+```
+session.tmp_storage/shell-sessions/{session_name}/
+  audit.jsonl          ← 交互时间线（append-only, 人可读）
+  segment_1.txt        ← 完整输出正文
+  segment_2.txt
+  ...
+```
+
+audit.jsonl 格式：
+```jsonl
+{"type":"session_start","session_name":"dev","shell":"zsh","cwd":"/project","ts":"..."}
+{"type":"sendline","seg_id":1,"input":"source .venv/bin/activate","ts":"..."}
+{"type":"segment","seg_id":1,"lines":3,"size_bytes":120,"ts":"..."}
+{"type":"sendline","seg_id":2,"input":"pytest tests/ -x","ts":"..."}
+{"type":"segment","seg_id":2,"lines":547,"size_bytes":13200,"ts":"..."}
+{"type":"session_close","exit_code":0,"ts":"..."}
+```
+
+人类直接 `cat audit.jsonl` 就能看到完整交互时间线。审计、review、debug 全部可达。
+
+## Cell + 共享终端（二期）
+
+shell session 作为 Cell 运行，人类有自己的 TUI 渲染界面（prompt-toolkit 驱动）。模型和人类**共享同一个终端视野**：
+
+- 人类操作时模型是 passenger（context_messages 里有 live view）
+- 模型 sendline 时人类在 TUI 上看到命令执行
+- 人类 Ctrl+C 关掉 cell，关闭通知到 channel
+
+## Implementation Plan
+
+### Phase 1（当前）
+
+**文件结构**：
+```
+core/terminal/
+  subprocess_terminal.py   # 已有，不动
+  pexpect_session.py       # PexpectSession 类（零 MOSS 依赖）
+
+channels/
+  terminal_channel.py      # 已有，不动
+  shell_channel.py         # new_shell_channel() — As Channel 薄适配
+```
+
+**PexpectSession**：
+- pexpect.spawn + janus queue + 线程卸载
+- PTY 输出持续写入 buffer
+- 游标管理：sendline 时 pop 并推进
+- segment 存储：`dict[int, str]`
+- 降噪：默认 strip ANSI
+
+**shell_channel**：
+- `new_channel(name="shell")` + `chan.build.command()` 反射 PexpectSession 方法
+- `chan.context_messages()` 注册 live window 生成函数
+- `is_dynamic() = True`（预留 virtual children 插槽）
+- instruction 描述：auto-spawn、命令用法、游标模型
+
+**不做的**：
+- 多 session / virtual children
+- spawn() 显式命令（auto-spawn 在首次 sendline）
+- Signal 异步通知
+- 磁盘存储 / JSONL 审计
+- Cell 封装
+
+### Phase 2
+
+1. JSONL 审计轨迹 — 最高优，权限基石
+2. Cell + prompt-toolkit TUI — 人类共享终端
+3. 多 session — manager channel + virtual children
+4. SSH/REPL 特化变体
+
+## Implementation References
+
+- `module_channel.py` — As Channel (L0) 模式：反射外部对象为 channel 命令
+- `app_store_channel.py` — StatefulChannel + context_messages + virtual_children + is_dynamic
+- `terminal_channel.py` — L1 Builder 模式，instruction / context 写法
+- `speech_channel.py` — Channel interface 风格，生命周期管理
+
+## Design Record
+
+关键设计决策的决策轨迹：
+
+1. **As Channel 而非 Channel Interface** — PexpectSession 是干净的 Python 类，可独立测试。Channel 层只是薄反射。参考 module_channel。
+2. **sendline 阻塞 + 游标模型** — 模型通过 sendline 的 command result 拿到输出，结果留在对话历史。context_messages 只做轻量仪表盘。
+3. **游标以交互为边界切分** — 不是以时间或字节数。每个 sendline 是一次交互，产生一个 segment。
+4. **三段式截断** — 同一个 segment 在 context_messages（-20）、command result（-200）、read_output（完整）三层呈现。防止信息爆炸。
+5. **一期零存储** — 输出 buffer 纯内存。不做 JSONL 审计（但二期高优）。
+6. **与 ai-terminal 互补不重叠** — ai-terminal 是一次性 subprocess 工具，shell channel 是持久交互会话。两个独立协议，不是同一个协议的两个实现。
