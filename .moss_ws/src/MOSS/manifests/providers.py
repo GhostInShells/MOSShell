@@ -17,7 +17,6 @@ from ghoshell_moss.host.providers import (
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
-from ghoshell_moss.host.providers.audio_capture_provider import AudioCaptureProvider
 from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
 from ghoshell_moss.host.fractal.zenoh_fractal import ZenohFractalHubProvider, ZenohFractalCellContractProvider
 
@@ -34,8 +33,6 @@ topic_service_provider = ZenohTopicServiceProvider()
 # audio player and speech
 
 player_service_provider = AudioPlayerProvider()
-
-capture_source_provider = AudioCaptureProvider()
 
 tts_service_provider = TTSServiceProvider()
 
