@@ -1,0 +1,6 @@
+*.log
+venv/
+.venv/
+uv.lock
+.idea
+.env

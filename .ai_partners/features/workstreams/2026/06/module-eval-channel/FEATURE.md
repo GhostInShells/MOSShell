@@ -137,3 +137,61 @@ Playwright 是核心验收用例——跨调用浏览器进程存活、Janus 桥
 - **生命周期修复**：cleanup 关闭 `init_sandbox`（root），级联关闭 child sandbox 后清理 namespace
 - `exec` 命令签名：`async def exec_code(text__: str) -> str`，`always_observe=True`
 - Sandbox 的 builtins 安全策略由 Sandbox 的 FEATURE.md 定义——Channel 层不重复决策
+
+## 2026-06-09: Playwright App 验证与架构定型
+
+Playwright App (`browsers/playwright`) 作为第一个实际验收用例，完成了全链路验证。
+
+### 探索路径
+
+| 方案 | 问题 | 结论 |
+|------|------|------|
+| Sandbox.exec() 在 async handler 内 | Playwright Sync API 检测到 asyncio event loop，拒绝初始化 | 不可行 |
+| pexpect `python -i` REPL | 多行 echo 与 prompt 匹配歧义，输出不可靠 | 不可靠 |
+| Janus 桥（queue.Queue + threading.Event） | 仍未解决 asyncio 冲突，且增加复杂度 | 过度设计 |
+
+### 最终方案：子进程 Sandbox Eval Server
+
+```
+Parent (Channel, async)              Child (eval_server.py, sync)
+───────────────────────              ─────────────────────────────
+EvalServer.__init__()                import playwright
+  Popen -> wait "ready"                init Sandbox
+                                       inject page/browser/context
+exec: server.send(code)              eval loop:
+  stdin -> JSON request                stdin.readline -> JSON parse
+  stdout <- JSON result                sandbox.exec(code)
+                                       stdout.write -> JSON result
+```
+
+**协议**: JSON-line，一行请求一行响应。`{"code": "..."}` -> `{"returns": ..., "std_output": ..., "exception": ..., "traceback": ...}`
+
+**核心洞察**:
+- Playwright 等有状态领域对象的控制，不需要预定义 Command 封装
+- 模型凭预训练知识写原生 Python API 调用——比任何 wrapper 都精准
+- Sandbox 提供 builtins 安全 + 持久化 namespace
+- 子进程隔离自然解决了 asyncio 冲突
+- 此方案本质上是 2024 年 MOSS 论文 (arXiv:2409.16120) 核心洞察的再发现——持久化 REPL + Code as Prompt + IoC 抽象，增加了子进程安全边界
+
+### Playwright App 实现
+
+- `eval_server.py`: ~60 行，子进程入口。启动 Playwright → 建 Sandbox → JSON-line eval loop
+- `main.py`: ~90 行，父进程 Channel。EvalServer + exec/vars 命令
+- 模块级 EvalServer.__init__：在 Matrix event loop 启动前完成 spawn，规避 asyncio 问题
+- 预注入 `json`/`urllib` 到 sandbox namespace，供 AI 代码使用
+
+### 泛化路径
+
+同一 `eval_server.py` 模式可包裹任意 Python 模块：
+- pandas → DataFrame REPL
+- ROS2 → 机器人节点控制
+- OpenCV → 视觉 pipeline
+- SQLite → 数据库 REPL
+
+核心抽象：Module Source = instruction (Code as Prompt)，Sandbox exec = 持久化 REPL，JSON-line = 无歧义协议。
+
+### 关联 artifacts
+
+- App 目录: `.moss_ws/apps/browsers/playwright/`
+- 架构文档: `.design/2026-06-09_subprocess_sandbox_eval_protocol.md`
+- 原始论文: arXiv:2409.16120 (MOSS: Enabling Code-Driven Evolution and Context Management for AI Agents)
