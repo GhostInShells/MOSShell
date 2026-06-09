@@ -1,7 +1,7 @@
 """
 Audio capture contracts — shared abstractions for system audio input.
 
-Capture source → raw PCM → Zenoh stream → consumers (ASR, waveform, AI perception).
+Capture source → raw PCM → transport → consumers (ASR, waveform, AI perception).
 """
 from abc import ABC, abstractmethod
 
@@ -14,7 +14,6 @@ __all__ = [
     "AudioFrameMeta",
     "AudioChunk",
     "AudioCaptureConfig",
-    "AudioRuntimeInfo",
     "AudioCaptureSource",
     "AudioPullLatest",
     "AudioSequentialConsumer",
@@ -52,17 +51,6 @@ class AudioCaptureConfig(ConfigType):
     @classmethod
     def conf_name(cls) -> str:
         return "audio_capture"
-
-
-class AudioRuntimeInfo(BaseModel):
-    """Runtime discovery — where the stream lives and whether it's alive."""
-
-    running: bool = False
-    stream_key: str = ""
-    device_name: str = ""
-    device_explain: str = ""
-    started_at: float = 0.0
-    last_heartbeat: float = 0.0
 
 
 class AudioCaptureSource(ABC):

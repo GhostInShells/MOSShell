@@ -12,7 +12,6 @@
 from ghoshell_moss.core.blueprint.mindflow import (
     NucleusMeta,
     Nucleus,
-    SignalName,
     SignalMeta,
     InputSignal,
 )

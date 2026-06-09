@@ -346,10 +346,7 @@ class _SessionStreamSubscriber(StreamSubscriber):
             except janus.SyncQueueShutDown:
                 self._closed = True
             except queue.Full:
-                logging.getLogger(__name__).warning(
-                    "stream subscriber queue full (%s), dropping sample: %s",
-                    self._full_key, relative_key,
-                )
+                pass
 
     async def _wait_session_closed(self) -> None:
         await self._session_stop_event.wait()
