@@ -8,3 +8,4 @@ from .interrupt import interrupt_command
 from .condition import branch
 from .loop import loop
 from .sample import sample
+from .thinking import thinking

@@ -17,6 +17,7 @@ from ghoshell_moss.core import ChannelRuntime
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError
 from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.blueprint.mindflow import Signal
 import asyncio
 
@@ -79,7 +80,7 @@ INSTANCE = TypeVar("INSTANCE", bound=object)
 
 class CommandUtil:
     """
-    在 Command 内部使用的工具, 仅在 Command 被执行时可以使用.
+    在 Command 内部使用的工具, 仅在 Command | Channel Lifecycle Function 被执行时可以使用.
     通过 contextlib ctx 获取调用者能力.
     包含各种 Command 函数内需要的常用 API.
     """
@@ -105,11 +106,32 @@ class CommandUtil:
         return runtime.container.get(contract)
 
     @classmethod
+    def runtime(cls) -> ChannelRuntime:
+        from ghoshell_moss.core.concepts.channel import ChannelCtx
+        runtime = ChannelCtx.runtime()
+        if runtime is None:
+            raise LookupError(f'channel runtime not found, is CommandUtil used inside Command or Channel Lifecycle?')
+        return runtime
+
+    @classmethod
+    def topic_service(cls) -> TopicService:
+        runtime = cls.runtime()
+        return runtime.container.force_fetch(TopicService)
+
+    @classmethod
     def logger(cls):
         """返回日志模块 logging.Logger, 只保留基础的记录函数. """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         from ghoshell_common.contracts import LoggerItf
         return ChannelCtx.get_contract(LoggerItf)
+
+    @classmethod
+    def set_progress(cls, progress: str) -> None:
+        """set progress of the current command task (ONLY when needed to do so)"""
+        from ghoshell_moss.core.concepts.channel import ChannelCtx
+        task = ChannelCtx.task()
+        if task is not None:
+            task.set_progress(progress)
 
     @classmethod
     def observe(cls, value: str) -> Observe:
@@ -217,9 +239,12 @@ def new_command(
         priority: int = 0,
         always_observe: bool = False,
         timeout: Optional[float] = None,
+        visible: bool = True,
 ) -> Command:
     """
     定义一个 Command. 逻辑与 Builder.command 相同.
+
+    在 own_commands 之类的场景要反射 python 函数为 Command 时, 优先使用它 (等价 PyCommand 但实现可替换)
     """
     from ghoshell_moss.core.concepts.command import PyCommand
     return PyCommand(
@@ -234,6 +259,7 @@ def new_command(
         priority=priority,
         always_observe=always_observe,
         timeout=timeout,
+        visible=visible,
     )
 
 
@@ -359,6 +385,7 @@ class Builder(ABC):
             return_command: bool = False,
             always_observe: bool = False,
             timeout: float | None = None,
+            visible: bool = True,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         decorator
@@ -396,6 +423,7 @@ class Builder(ABC):
         :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
         :param always_observe: 为 True 的话, 不需要特别声明, command 的返回值总是会标记需要下一轮观察思考.
         :param timeout: if not None, set default timeout for the command.
+        :param visible: 命令是否对模型可见. 不可见, 通常因为这个命令是模型认知协议的一部分, 以至于可以省略它.
 
         CommandFunction 最佳实践是:
         >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.
@@ -671,9 +699,9 @@ if __name__ == "__build_channel_by_channel_interface_example__":
 
 
 async def test_channel(
-    *channels: Channel,
-    ctml: str,
-    timeout: float | None = None,
+        *channels: Channel,
+        ctml: str,
+        timeout: float | None = None,
 ):
     """Convenience wrapper around ctml_shell_test for app channel testing.
 

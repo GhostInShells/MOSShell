@@ -206,6 +206,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             return_command: bool = False,
             always_observe: bool = False,
             timeout: Optional[float] = None,
+            visible: bool = True,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
 
         def wrapper(func: CommandFunction) -> CommandFunction:
@@ -223,6 +224,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
                 call_soon=call_soon,
                 always_observe=always_observe,
                 timeout=timeout,
+                visible=visible,
             )
             self.add_command(command, override=override)
             if return_command:

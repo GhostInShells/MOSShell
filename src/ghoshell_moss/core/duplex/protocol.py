@@ -30,6 +30,7 @@ __all__ = [
     "ProviderPubTopicEvent",
     "ProviderSubTopicEvent",
     "ProxyPubTopicEvent",
+    "ProviderCommandProgressEvent",
     "ChannelEventSerializedError",
 ]
 
@@ -114,20 +115,20 @@ class HeartbeatEvent(ChannelEventModel):
 class ClearEvent(ChannelEventModel):
     """发出讯号给某个 channel, 执行状态清空的逻辑"""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.clear"
+    event_type: ClassVar[str] = "proxy.clear"
     chan: str = Field(description="channel name")
 
 
 class ProxyPubTopicEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.proxy.pub_topic"
+    event_type: ClassVar[str] = "proxy.pub_topic"
     topic: Topic = Field(description="published topic")
 
 
 class CommandDeltaEvent(ChannelEventModel):
     """delta 传输事件"""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.command.delta"
-    command_id: str = Field(description="command id")
+    event_type: ClassVar[str] = "proxy.command.delta"
+    cid: str = Field(description="command id")
     chunk: Optional[str] = Field(default=None, description="chunk")
     command_token: Optional[dict] = Field(default=None, description="command token")
 
@@ -135,12 +136,12 @@ class CommandDeltaEvent(ChannelEventModel):
 class CommandCallEvent(ChannelEventModel):
     """发起一个 command 的调用."""
 
-    # todo: 未来要加一个用 command_id 轮询 provider 状态的事件. 用来避免通讯丢失.
+    # todo: 未来要加一个用 cid 轮询 provider 状态的事件. 用来避免通讯丢失.
 
-    event_type: ClassVar[str] = "moss.channel.proxy.command.call"
+    event_type: ClassVar[str] = "proxy.command.call"
     name: str = Field(description="command name")
     chan: str = Field(description="channel path")
-    command_id: str = Field(default_factory=unique_id, description="command id")
+    cid: str = Field(default_factory=unique_id, description="command id")
     scope_id: str | None = Field(default=None, description="command scope id")
     delta_arg: str | None = Field(default=None, description="delta arg")
     args: list[Any] = Field(default_factory=list, description="command args")
@@ -152,7 +153,7 @@ class CommandCallEvent(ChannelEventModel):
     def not_available(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
             connection_id=self.connection_id,
-            command_id=self.command_id,
+            cid=self.cid,
             errcode=CommandErrorCode.NOT_AVAILABLE.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not available",
             result=None,
@@ -162,14 +163,14 @@ class CommandCallEvent(ChannelEventModel):
     def cancel(self) -> "CommandCancelEvent":
         return CommandCancelEvent(
             connection_id=self.connection_id,
-            command_id=self.command_id,
+            cid=self.cid,
             chan=self.chan,
         )
 
     def done(self, result: CommandTaskResult | None, errcode: int, errmsg: str) -> "CommandDoneEvent":
         return CommandDoneEvent(
             connection_id=self.connection_id,
-            command_id=self.command_id,
+            cid=self.cid,
             errcode=errcode,
             errmsg=errmsg,
             chan=self.chan,
@@ -179,7 +180,7 @@ class CommandCallEvent(ChannelEventModel):
     def not_found(self, msg: str = "") -> "CommandDoneEvent":
         return CommandDoneEvent(
             connection_id=self.connection_id,
-            command_id=self.command_id,
+            cid=self.cid,
             errcode=CommandErrorCode.NOT_FOUND.value,
             errmsg=msg or f"command `{self.chan}:{self.name}` not found",
             chan=self.chan,
@@ -190,15 +191,15 @@ class CommandCallEvent(ChannelEventModel):
 class CommandCancelEvent(ChannelEventModel):
     """通知 channel 指定的 command 被取消."""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.command.cancel"
+    event_type: ClassVar[str] = "proxy.command.cancel"
     chan: str = Field(description="channel name")
-    command_id: str = Field(description="command id")
+    cid: str = Field(description="command id")
 
 
 class SyncChannelMetasEvent(ChannelEventModel):
     """要求同步 channel 的 meta 信息."""
 
-    event_type: ClassVar[str] = "moss.channel.proxy.meta.sync"
+    event_type: ClassVar[str] = "proxy.meta.sync"
 
 
 class ReconnectSessionEvent(ChannelEventModel):
@@ -206,7 +207,7 @@ class ReconnectSessionEvent(ChannelEventModel):
     Proxy 告知 Provider 传送的事件 Session Id 未对齐, 需要重新建立 connection, 双方清空状态.
     """
 
-    event_type: ClassVar[str] = "moss.channel.proxy.connection.reconnect"
+    event_type: ClassVar[str] = "proxy.connection.reconnect"
 
 
 class SessionCreatedEvent(ChannelEventModel):
@@ -215,7 +216,7 @@ class SessionCreatedEvent(ChannelEventModel):
     握手后期待服务端发送 UpdateChannelMeta 事件进行同步.
     """
 
-    event_type: ClassVar[str] = "moss.channel.proxy.connection.created"
+    event_type: ClassVar[str] = "proxy.connection.created"
 
 
 # --- provider event --- #
@@ -226,7 +227,7 @@ class CreateSessionEvent(ChannelEventModel):
     握手事件, provider 侧尝试与 proxy 进行握手, 确定 Session.
     """
 
-    event_type: ClassVar[str] = "moss.channel.provider.connection.create"
+    event_type: ClassVar[str] = "provider.connection.create"
     listening_topics: list[str] = Field(
         default_factory=list,
         description="listening topics",
@@ -234,35 +235,41 @@ class CreateSessionEvent(ChannelEventModel):
 
 
 class ProviderPubTopicEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.pub_topic"
+    event_type: ClassVar[str] = "provider.pub_topic"
     topic: Topic = Field(description="published topic")
 
 
 class ProviderSubTopicEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.sub_topic"
+    event_type: ClassVar[str] = "provider.sub_topic"
     topic_name: str = Field(description="topic name")
 
 
 class CommandDoneEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.command.done"
+    event_type: ClassVar[str] = "provider.command.done"
     chan: str = Field(description="channel name")
-    command_id: str = Field(description="command id")
+    cid: str = Field(description="command id")
     errcode: int = Field(default=0, description="command errcode")
     errmsg: Optional[str] = Field(default=None, description="command errmsg")
     result: CommandTaskResult | None = Field(default=None, description="result of the command")
 
 
 class ChannelMetaUpdateEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.meta.update"
+    event_type: ClassVar[str] = "meta.update"
     metas: dict[str, ChannelMeta] = Field(default_factory=dict, description="channel meta")
     root_chan: str = Field(description="channel name")
     all: bool = Field(default=True, description="是否更新了所有 channel")
 
 
 class ProviderErrorEvent(ChannelEventModel):
-    event_type: ClassVar[str] = "moss.channel.provider.error"
+    event_type: ClassVar[str] = "provider.error"
     errcode: int = Field(description="error code")
     errmsg: str = Field(description="error message")
 
     def __repr__(self):
         return f"<error code=`{self.errcode}` message=`{self.errmsg}`>"
+
+
+class ProviderCommandProgressEvent(ChannelEventModel):
+    event_type: ClassVar[str] = "provider.command.progress"
+    cid: str = Field(description="command id")
+    progress: str = Field(description="progress")

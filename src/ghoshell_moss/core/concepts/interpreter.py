@@ -538,6 +538,10 @@ class Interpreter(ABC):
         pass
 
     @abstractmethod
+    def progresses(self) -> dict[_TaskId, str]:
+        pass
+
+    @abstractmethod
     def is_running(self) -> bool:
         """
         是否正在运行中: start -> stop 中间.

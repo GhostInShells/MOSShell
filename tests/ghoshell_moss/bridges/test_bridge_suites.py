@@ -537,3 +537,27 @@ class TestBridgeSuite:
                 await runtime.refresh_metas()
                 assert len(runtime.metas()) == 1
                 assert await runtime.execute_command('foo') == 'hello world'
+
+    @pytest.mark.asyncio
+    async def test_progress_update_from_provider(self, suite: BridgeTestSuite) -> None:
+        from ghoshell_moss.core.concepts.channel import ChannelCtx
+        provider, proxy = suite.create("proxy")
+
+        chan = PyChannel(name="provider")
+
+        @chan.build.command()
+        async def foo() -> None:
+            _task = ChannelCtx.task()
+            for i in range(10):
+                _task.set_progress(f'progress {i}')
+                await asyncio.sleep(0.01)
+
+        async with proxy.bootstrap() as runtime:
+            async with provider.arun(chan):
+                await runtime.wait_connected()
+                task = runtime.create_command_task('foo')
+                runtime.push_task(task)
+                await asyncio.sleep(0.03)
+                assert len(task.progress) > 0
+                await task
+                assert task.progress == 'progress 9'

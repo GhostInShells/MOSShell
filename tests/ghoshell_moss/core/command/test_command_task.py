@@ -9,6 +9,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandTaskState,
     PyCommand,
     CommandTaskResult,
+    CommandTask,
 )
 from ghoshell_moss.core.concepts.errors import CommandError, CommandErrorCode
 from ghoshell_moss.core.concepts.channel import ChannelCtx
@@ -297,3 +298,29 @@ async def test_command_task_cancel_is_not_success():
     task.cancel()
     assert task.cancelled()
     assert not task.success()
+
+
+@pytest.mark.asyncio
+async def test_command_task_with_progresses():
+    task = None
+
+    async def foo() -> int:
+        nonlocal task
+        for i in range(10):
+            if task is not None:
+                task.set_progress(f"progress {i}")
+            await asyncio.sleep(0.01)
+        return 123
+
+    foo_command = PyCommand(foo)
+    progresses = []
+
+    def count_progress(_t: CommandTask):
+        nonlocal progresses
+        progresses.append(_t.progress)
+
+    task = BaseCommandTask.from_command(foo_command)
+    task.on_progress_callback(count_progress)
+
+    await task.run()
+    assert len(progresses) == 10
