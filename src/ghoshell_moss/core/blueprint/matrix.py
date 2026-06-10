@@ -653,6 +653,9 @@ class Matrix(ABC):
             cwd: str | Path | None = None,
             extra_env: dict | None = None,
             nursery_fd: int | None = None,
+            stdin: int | None = None,
+            stdout: int | None = None,
+            stderr: int | None = None,
     ) -> asyncio.subprocess.Process:
         """
         Spawn a subprocess with MOSS environment context.
@@ -671,6 +674,10 @@ class Matrix(ABC):
 
         The child runs in its own process group (``start_new_session=True``)
         so terminal signals to the parent do not propagate.
+
+        *stdin*, *stdout*, *stderr* — pass ``asyncio.subprocess.PIPE``
+        for async stream I/O, ``asyncio.subprocess.DEVNULL`` to suppress,
+        or an fd for file redirection.  None inherits from parent.
         """
         pass
 

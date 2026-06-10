@@ -29,7 +29,7 @@ from ghoshell_moss.host.providers import (
 )
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
 from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.host.nursery import ProcessNursery, watch_nursery_pipe
+from ghoshell_moss.host.nursery import ProcessNursery, watch_nursery_pipe, StdioTarget
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.host.cell_discovery import CellDiscovery
@@ -542,6 +542,9 @@ class MatrixImpl(Matrix):
             cwd: str | Path | None = None,
             extra_env: dict | None = None,
             nursery_fd: int | None = None,
+            stdin: StdioTarget = None,
+            stdout: StdioTarget = None,
+            stderr: StdioTarget = None,
     ) -> asyncio.subprocess.Process:
         self._check_running()
         env = self.env.dump_moss_env(for_child_process=True)
@@ -554,6 +557,7 @@ class MatrixImpl(Matrix):
         return await self._nursery.spawn(
             *args, cwd=str(cwd) if cwd is not None else None,
             env=env, nursery_fd=nursery_fd,
+            stdin=stdin, stdout=stdout, stderr=stderr,
         )
 
     def register_lifecycle_objects(self, obj: MatrixLifecycleObject) -> None:
