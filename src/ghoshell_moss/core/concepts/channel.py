@@ -544,7 +544,7 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    def topic_publisher(self, topic: str | type[TopicModel]) -> Publisher:
+    def topic_publisher(self, topic: type[TopicModel]) -> Publisher[TopicModel]:
         """
         创建一个独立的 publisher 可以在链路中广播 topic.
         """

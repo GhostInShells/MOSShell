@@ -8,7 +8,7 @@ how to build a channel
 from abc import ABC, abstractmethod
 
 from PIL import Image
-from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable
+from typing import Union, Callable, Coroutine, Any, Optional, TypeVar, AsyncIterable, Type
 
 from ghoshell_container import IoCContainer
 from typing_extensions import Self
@@ -17,7 +17,7 @@ from ghoshell_moss.core import ChannelRuntime
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import Command, Observe, ObserveError
 from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.topic import TOPIC_MODEL, Publisher, Subscriber
 from ghoshell_moss.core.blueprint.mindflow import Signal
 import asyncio
 
@@ -110,13 +110,40 @@ class CommandUtil:
         from ghoshell_moss.core.concepts.channel import ChannelCtx
         runtime = ChannelCtx.runtime()
         if runtime is None:
-            raise LookupError(f'channel runtime not found, is CommandUtil used inside Command or Channel Lifecycle?')
+            cls.raise_observe('CommandUtil is not in the runtime context')
         return runtime
 
     @classmethod
-    def topic_service(cls) -> TopicService:
+    def enabled(cls) -> bool:
+        from ghoshell_moss.core.concepts.channel import ChannelCtx
+        runtime = ChannelCtx.runtime()
+        return runtime is not None
+
+    @classmethod
+    def topic_publisher(cls, model: Type[TOPIC_MODEL]) -> Publisher[TOPIC_MODEL]:
+        """
+        return a topic publisher, use it in with statement:
+
+        async with CommandUtil.topic_publisher(model) as publisher:
+            await publisher.publish(topic_model: TOPIC_MODEL)
+
+        or managed within startup -> close lifecycle of the channel
+        """
         runtime = cls.runtime()
-        return runtime.container.force_fetch(TopicService)
+        return runtime.topic_publisher(model)
+
+    @classmethod
+    def topic_subscriber(cls, model: Type[TOPIC_MODEL], *, maxsize: int = 1000) -> Subscriber[TOPIC_MODEL]:
+        """
+        return a topic subscriber, use it in with statement:
+
+        async with CommandUtil.topic_subscriber(model) as subscriber:
+            model = await subscriber.poll()
+
+        or managed within startup -> close lifecycle of the channel
+        """
+        runtime = cls.runtime()
+        return runtime.topic_subscriber(model, maxsize=maxsize)
 
     @classmethod
     def logger(cls):
@@ -139,10 +166,14 @@ class CommandUtil:
         return Observe(messages=[Message.new().with_content(value)])
 
     @classmethod
-    def raise_observe(cls, value: str):
+    def raise_observe(cls, value: str) -> None:
         """通过 raise 来在 command 中返回一个可中断其它逻辑的观察信息. """
+        raise cls.observe_error(value)
+
+    @classmethod
+    def observe_error(cls, value: str) -> 'ObserveError':
         from ghoshell_moss.core.concepts.command import ObserveError
-        raise ObserveError(value)
+        return ObserveError(value)
 
     @classmethod
     def send_signal(cls, signal: Signal) -> None:

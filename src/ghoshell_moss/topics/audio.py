@@ -4,8 +4,8 @@ Audio and speech topic models.
 These are implementation-layer topics (like channels/bridges), not contracts.
 They are published/consumed via TopicService at runtime.
 """
+from typing import Literal
 from pydantic import Field
-
 from ghoshell_moss.core.concepts.topic import TopicModel
 
 __all__ = [
@@ -49,15 +49,22 @@ class SpeechTopic(TopicModel):
     context window for the current voice interaction.
     """
 
+    # todo: all properties has no Filed with description
     text: str = ""
     speaker_id: str = ""
     speaker_name: str = ""
-    role: str = ""
+    role: str | Literal['ghost', 'user'] = Field(
+        default='',
+        description='role of the speaker one',
+    )
 
     batch_id: str = ""
+    # todo: remove the timestamp, it must be useless since assigned with time.monotonic
+    #    also topic already has timestamp in topic.meta.created_at
     timestamp: float = 0.0
 
-    lang: str = "zh"
+    lang: str = Field(default="", description='language of the utterance')
+    # todo: normalize with audio resource (which is not implemented yet)
     audio_key: str | None = Field(default=None, description="Reference key to the audio recording, if stored")
 
     @classmethod

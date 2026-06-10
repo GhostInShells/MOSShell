@@ -6,6 +6,7 @@ from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.contracts.speech import Speech, SpeechStream, TTSSpeech
 from ghoshell_moss.core.speech.null import NullSpeech
+from ghoshell_moss.topics import SpeechTopic, Publisher
 
 
 def build_content_command(speech: Speech) -> Command:
@@ -19,13 +20,24 @@ class _SpeechCommandFactory:
     将 command 构建逻辑从 contracts 层移到 core/speech 层。
     """
 
-    def __init__(self, speech: Speech|TTSSpeech):
+    def __init__(
+            self,
+            speech: Speech | TTSSpeech,
+            *,
+            role: str = '',
+            name: str = '',
+            publisher: Publisher[SpeechTopic] | None = None,
+    ):
         self._speech = speech
+        self._role = role
+        self._name = name
+        self._publisher = publisher
 
     def build_content_command(self) -> Command:
         speech = self._speech
 
         async def _feed_stream(stream: SpeechStream, deltas):
+            content = ''
             try:
                 if not speech.is_running():
                     return
@@ -35,9 +47,17 @@ class _SpeechCommandFactory:
                         has_first_chunk = True
                         await stream.start_synthesis()
                     stream.feed(chunk)
+                    content += chunk
                 stream.commit()
             except asyncio.CancelledError:
                 await stream.close()
+            finally:
+                if self._publisher:
+                    self._publisher.pub(SpeechTopic(
+                        speaker_name=self._name,
+                        role=self._role,
+                        text=content,
+                    ))
 
         async def _content_partial(chunks__):
             if not speech.is_running():
@@ -140,10 +160,21 @@ class SpeechChannelModule(ChannelModule):
     Speech 实例由外部注册到 IoC 容器。on_startup 时通过 CommandUtil 获取。
     """
 
-    def __init__(self, *, register_content: bool = False):
+    def __init__(
+            self,
+            *,
+            register_content: bool = False,
+            role: str = 'ghost',
+            name: str = '',
+            publishing: bool = False,
+    ):
         self._speech: Speech | None = None
         self._own_commands = {}
         self._register_content = register_content
+        self._role = role
+        self._name = name
+        self._publishing = publishing
+        self._publisher: Publisher[SpeechTopic] | None = None
 
     def name(self) -> str:
         return "speech"
@@ -152,8 +183,18 @@ class SpeechChannelModule(ChannelModule):
         return self._own_commands
 
     async def on_startup(self) -> None:
-        self._speech = CommandUtil.get_contract(Speech) or NullSpeech()
-        factory = _SpeechCommandFactory(self._speech)
+        if CommandUtil.enabled():
+            self._speech = CommandUtil.get_contract(Speech)
+            if self._publishing:
+                self._publisher = CommandUtil.topic_publisher(SpeechTopic)
+                await self._publisher.__aenter__()
+        self._speech = self._speech or NullSpeech()
+        factory = _SpeechCommandFactory(
+            self._speech,
+            role=self._role,
+            name=self._name,
+            publisher=self._publisher,
+        )
         commands = {}
         if self._register_content:
             cmd = factory.build_content_command()
@@ -165,3 +206,5 @@ class SpeechChannelModule(ChannelModule):
 
     async def on_close(self) -> None:
         self._speech = None
+        if self._publisher:
+            await self._publisher.__aexit__(None, None, None)
