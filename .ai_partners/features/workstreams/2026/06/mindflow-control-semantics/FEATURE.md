@@ -7,7 +7,7 @@ milestone: null
 priority: P0
 status: in-progress
 title: Mindflow Control Semantics — Impulse 能力分类与非中断式抢占
-updated: '2026-06-07'
+updated: '2026-06-10'
 ---
 
 # Mindflow Control Semantics
@@ -25,151 +25,200 @@ updated: '2026-06-07'
 目标：把控制权从 "mindflow 内部隐式约定" 显式化为 "Impulse 携带的显式 mode"，
 让开发者和其他 agent 模式的 feature 用声明式方式控制思维流。
 
-## Design Index
+## 设计增量 (2026-06-10 review，推翻与原保留)
 
-- Mindflow blueprint: `ghoshell_moss.core.blueprint.mindflow`
-- AbsAttention + BaseAttention: `ghoshell_moss.core.mindflow.base_attention`
-- PriorityProtectionAttention: `ghoshell_moss.core.mindflow.priority_attention`
-- BaseMindflow / PriorityMindflow: `ghoshell_moss.core.mindflow.base_mindflow`
-- GhostRuntime 集成: `ghoshell_moss.host.ghost_runtime.py`
-- 单测: `tests/ghoshell_moss/core/mindflow/`
+以下为 2026-06-10 人类工程师与 DeepSeek V4 设计 review 后的最终决策。
+原 F6 "Action 增加 reflex_logos() 显式入口" 被推翻，重设计为 Articulator 通道方案。
 
-## 六个 Feature 概述
+### 信息路径分层 (新 KD)
 
-### F1: Impulse mode 分类 (ImpulseMode enum)
+```
+Signal → Impulse → Moment → (Articulator, Action)
+        协议升级:    卸载给 Ghost:
+        mode         command_logos
+        priority     percepts
+        clear_first  reaction_instruction
+```
 
-Impulse 增加 `mode: ImpulseMode` 字段，定义五个原语: `think` / `reflex` / `command` / `notify` / `interrupt`。
+**Impulse 是 Mindflow 层的调度协议**: mode / priority / clear_first 控制"是否抢占、怎么调度"。
+**Moment 是 Ghost 层的感知协议**: command_logos / percepts / reaction_instruction 描述本轮环境。
+Articulator 拿到 Moment 即是完整的执行上下文，不需要知道 Impulse。
 
-不搞组合 flag。原语保证无非法状态，类型安全。
+这是 Mindflow→Ghost 的协议转换面。command_logos 从 Impulse 卸载到 Moment，
+Articulator 感知到就发送，Action 透明执行 —— 这就是 "Action 侧无感知执行" 的信息路径。
 
-`reflex_logos` 重命名为 `command_logos`（通用），配合 mode 决定行为：
-- mode=reflex: `command_logos` 作为条件反射并行执行
-- mode=command: `command_logos` 替代本轮思考
+### 核心 Feature 最终方案
 
-### F2: 空 attention 循环
+#### F1: Impulse mode 分类 + clear_first
 
-mode=interrupt 或无 messages 时，`_loop()` 不 yield (Articulator, Action)，
-attention 自然关闭。`_main_loop` 的 async for 空循环自动跳过。
-
-### F3: abort 传播到 action loop + shell.clear
-
-`_stream_execute()` 在 feed/compile/execute 各阶段检查 abort，
-发现后调 `shell.clear()` 取消 pending CommandTask。
-
-### F4: Mindflow 级 Buffer 机制
-
-**不在 attention 层，在 mindflow 层**。
-
-notify impulse 在 `_challenge_attention()` 入口直接写 `mindflow._buffered_impulses`，
-不进入 challenge 流程。Attention 通过 context_func 桥接 `pop_buffered_impulses()`，
-每帧 `_prepare_moment()` 时 drain → moment.percepts。
-
-### F5: 空转记录上下文
-
-空转路径 (F2) 也要调 `_callback_moment()`，确保 moment 不丢失。
-现有 `on_moment` 回调 + `last_outcome()` → `stop_at_outcome()` 链已覆盖，主要是验证。
-
-### F6: Action 增加 reflex_logos() 显式入口
-
-Action ABC 新增 `reflex_logos() -> str` 方法（不走 logos_queue，与 received_logos() 通道分离）。
-`_stream_execute()` 先消费 reflex，再消费模型 logos。模型 percepts 中预先知道 reflex 正在执行。
-
-## Key Decisions
-
-### KD1: 原语设计，不搞组合
-
-`ImpulseMode` enum 定义五个原语，不走 flag 组合路线。
-
-**为什么不是组合**: `skip_articulate` / `buffer_data` / `interrupt_current` 等 bool flag 之间存在隐含的排斥和依赖关系（例：`buffer_data=True` + `interrupt_current=True` 无意义），但类型系统不帮你检查。组合把 16 种状态中 5 种合法的验证交给使用者；原语直接保证不可能构造出 nonsense 状态。
-
-**五个原语**:
-
-| Mode | 行为 | 模型参与 | 场景 |
-|---|---|---|---|
-| `think` (默认) | 完整 articulate→action | 是 | 正常输入 |
-| `reflex` | 条件反射与思考并行，模型感知 reflex 正在执行 | 是（并行思考） | 条件反射 |
-| `command` | 执行 CTML 替代本轮思考，不调 ghost.articulate() | 否（感知结果） | 确定性指令 |
-| `notify` | 数据注入 mindflow buffer，不打断不思考 | 否（下一帧看到） | 补充上下文 |
-| `interrupt` | 纯打断，空 attention 关闭，无后续 | 否 | 急停 |
-
-**扩展性**: 新增原语不破坏已有语义。将来有真实用例驱动时再加，不提前设计。
-
-### KD2: Buffer 在 Mindflow 层，不在 Attention 层
-
-**否决了 Attention 级 buffer**。Buffer 数据本质是跨 attention 的——notify impulse 产生时可能属于 attention A，A 被 interrupt 打断后数据应迁移到 attention B。放在 attention 上需要额外的移交逻辑。
-
-**方案**: Mindflow 持有 `_buffered_impulses: list[Impulse]`。notify impulse 在 `_challenge_attention()` 入口处直接写入 buffer，不进入 challenge 流程。Attention 通过 `context_func` 桥接 `pop_buffered_impulses()`，每帧 `_prepare_moment()` 时 drain。
+Impulse 新增两个语义独立的字段:
 
 ```python
-# mindflow 层
-async def _challenge_attention(self, impulse: Impulse) -> None:
-    if impulse.mode == ImpulseMode.NOTIFY:
-        self._buffered_impulses.append(impulse)
-        return  # 不挑战，不打断
-    # 其他 mode 走正常 challenge 流程
+class ImpulseMode(str, Enum):
+    think = "think"          # 完整 articulate→action，默认
+    reflex = "reflex"        # 条件反射与思考并行
+    command = "command"      # 确定性 CTML 替代模型思考
+    notify = "notify"        # 静默注入 mindflow buffer
+    interrupt = "interrupt"  # 纯打断，空 attention 关闭
+
+class Impulse(BaseModel):
+    mode: ImpulseMode = ImpulseMode.think
+    clear_first: bool = True  # True=kind="clear", False=kind="append"
 ```
 
-**优势**: buffer 生命周期绑定 mindflow。context_func 已是现成的桥（`_main_loop` 已用 `with_context_func('moss_dynamic', ...)`）。challenge() 保持纯仲裁，mode 语义由 mindflow 层解释，不侵入 attention。
+`reflex_logos` 重命名为 `command_logos`（通用字段名，配合 mode 决定语义）。
 
-**与同 ID 吸收的区别**: `challenge() → None`（同 ID 吸收）仍是 attention 内部的事（complete 更新）。notify buffer 走 mindflow 路径。两条线互不干扰。
+原语不搞组合 flag。默认 mode=think + clear_first=True 保持完全向后兼容。
 
-### KD3: reflex = 并行，不阻塞
+#### F2: 空 attention 循环
 
-**reflex 不阻塞等待结果，而是与思考并行**。
+mode=interrupt 或 impulse.messages 为空时，`_loop()` 不 yield (Articulator, Action)，
+attention 自然关闭。在此前调 `_callback_moment()` (F5) 确保不丢记录。
 
+#### F3: abort 传播 + shell.clear ✅ 已完成
+
+#### F4: Mindflow 级 Buffer (notify 专用)
+
+notify impulse 在 `_challenge_attention()` 入口直接写入 `mindflow._buffered_impulses`，
+不进入 challenge 流程。**不创建 attention**。
+
+buffer 位置: `_prepare_moment` 每帧 drain → 追加到 moment.percepts，位于 perspectives 后、percepts 前。
+`as_request_messages` 时序: `previous.outcomes → perspectives → notify → percepts`。
+
+notify 在 quiet 系统 (无 attention) 的归宿: buffer 生命周期绑定 mindflow，
+等到下一个 attention 自然 drain。mindflow 关闭时带 warning 清理。
+
+#### F5: 空转记录上下文
+
+空转路径 (F2) 也要调 `_callback_moment()`。现有链已覆盖，主要是验证。
+
+#### F6: reflex 走 Articulator 通道 (推翻原方案)
+
+**推翻 F6 原方案** (Action.reflex_logos() 独立接口)。新方案:
+
+1. `Moment.command_logos` 只在第一帧非空 (next_frame 不继承)
+2. `ghost_runtime._articulate_loop`: 调 `ghost.articulate()` **之前**，若 `moment.command_logos` 非空，
+   通过 `articulator.send_nowait(command_logos)` 发送。后接入模型 CTML。
+3. Action 侧完全透明 — `received_logos()` 先收 command_logos 再收模型 CTML，两者走同一 logos_queue。
+4. 记忆: command_logos 经 `send_logos` → `buffer_executed_logos` → 进入 `_ctx._logos`。
+   模型在下一帧可见自己和系统的完整行为记录。outcomes 自然合并 (由 Reaction 链完成)。
+
+reflex = 模型边想边执行。模型可以在思考中下发 interrupt 打断反射。
+
+#### F7: 空片符修复 — 空流 skip interpreter
+
+当前 `_stream_execute` 无条件创建 interpreter。若 `received_logos()` 返回空 (既无 command_logos 也无模型产出)，
+直接 `return [], False`，不创建 interpreter。
+
+#### F8: Action 暴露 `interpreter_kind()`
+
+Action 暴露解释器模式，ghost_runtime 只读不决策:
+
+```python
+class Action(ABC):
+    def interpreter_kind(self) -> Literal["clear", "append"]:
+        return "clear"  # 默认
 ```
-                    ┌─ action loop: 先执行 reflex_cmds，不走 logos 通道
-Impulse ──→ moment │
-                    └─ articulate loop: 立即启动 ghost.articulate()
-                    　  模型在 percepts 看到 "reflex X, Y, Z 正在执行"
-                    　  模型照常生成 logos，可以下发 interrupt
-```
 
-**通道分离**:
+**control flow**: Impulse.clear_first → Attention._loop 构造 BaseAction 时传入 →
+`BaseAction.interpreter_kind()` 返回 `"clear"` 或 `"append"`。
+`ghost_runtime._stream_execute`: `shell.interpreter(kind=action.interpreter_kind())`。
 
-| | reflex | 模型 logos |
-|---|---|---|
-| 来源 | Impulse 显式字段 | ghost.articulate() 产出 |
-| 传输 | Action.reflex_logos() | Action.received_logos() |
-| 执行 | shell 先消费 | shell 后消费 |
+默认 clear_first=True → "clear"，向后兼容。False → "append": 模型上一帧命令继续跑，
+下一帧只追加新指令。不下 interrupt 原语就不清。
 
-**记忆分离**: 下一帧 `last_outcome().logos` 只包含模型生成的 CTML（纯的）。`last_outcome().outcomes` 包含 reflex 结果 + 模型 CTML 结果（合并，按时序）。模型不会被不属于自己的 CTML 污染。
+#### F9: command 模式
 
-**与 command 的本质区别**: command 停下来等结果再思考（替代一轮）。reflex 边想边执行，模型可以选择 "这个反射不对，我要打断"——agency 更大。
+mode=command 时不调 `ghost.articulate()`。
+`attention._loop()` 预填 command_logos 到 logos_queue + None 哨兵 → yield (None, action)。
+`ghost_runtime._main_loop` 对 None articulator 不入 articulate 队列。
 
-### KD4: Reaction 链是天然的聚合器
+## 综合决策 (Key Decisions)
 
-reflex outcomes 和模型 outcomes 在同一帧 Reaction 里。`AttentionContext.outcome()` 只管 append，不区分来源。`stop_at_outcome()` 自然合并。不需要额外的 "同一个 outcome" 机制。
+### KD1: 原语设计，不搞组合 (保留)
 
-ghost 记忆体系通过 `on_moment` + `on_articulate_exit` 两个回调串联——对 reflex 模式，`on_moment` 记录增强后的 moment，`on_articulate_exit` 记录模型 logos。对 command 模式，只有 `on_moment`（因为没调 ghost），语义正确。
+`ImpulseMode` enum 定义五个原语，不走 flag 组合路线。原语保证类型系统排除 nonsense 状态。
 
-### KD5: abort 检查点放在 _stream_execute 而非解释器内部
+### KD2: Buffer 在 Mindflow 层 (保留)
 
-shell.clear() 的调用时机在 GhostRuntime 层，不在 mindflow 层。
-解释器不应感知 mindflow 的 abort 语义。
+notify 不挑战、不创建 attention。buffer 生命周期绑定 mindflow。context_func 桥接 drain。
 
-### KD6: mode enum 统摄而非继续加字段
+### KD3: reflex 走 Articulator 通道 (推翻原 F6)
 
-Impulse 已有 15+ 字段。`reflex_logos` 重命名为 `command_logos`（通用），配合 mode 决定行为。`reaction_instruction` 保留用于 prompt 补丁场景。向后兼容：默认 mode=think 保持现有行为。
+reflex/command 的 command_logos 统一走 `articulator.send_logos` 通道。Action 透明。
+`Moment.command_logos` 管协议感知，Articulator 管执行。
 
-## 实施顺序
+### KD4: Reaction 天然聚合 (保留)
 
-| 优先级 | Feature | 理由 |
-|---|---|---|
-| P0 | F3 — abort 传播 + shell.clear | 当前 bug 级缺陷，abort 后残留 command |
-| P0 | F1/F6 — Impulse mode 分类 + 重命名 | 后续所有 feature 的基础抽象 |
-| P1 | F2 — 空循环 | 依赖 mode 分类，实现简单 |
-| P1 | F4 — Buffer 机制 | 依赖 mode 分类 + challenge 扩展 |
-| P2 | F5 — 空转记录上下文 | 大部分已有，主要验证 |
+outcomes 不分来源，`stop_at_outcome()` 自然合并。
+
+### KD5: abort 在 _stream_execute (保留)
+
+shell.clear() 在 GhostRuntime 层，解释器不感知 mindflow abort 语义。
+
+### KD6: mode enum 统摄 (保留，扩展)
+
+保留原 KD6 向后兼容逻辑，增加 `clear_first` 字段管理解释器生命周期模式。
+
+### KD7: 信号→协议分层 (新)
+
+Signal → Impulse → Moment 逐层卸载。Mindflow 协议不应泄漏到 Ghost 层。
+Articulator 知道 Moment 字段即可，不需要理解 Impulse。
+
+### KD8: 空流 skip interpreter (新)
+
+ghost_runtime._stream_execute 感知空流，避免为无内容帧创建解释器。
+
+### KD9: Action 暴露 interpreter_kind (新)
+
+clear/append/defer 的解释器模式由 Action 持有，ghost_runtime 只读不决策。
+
+### KD10: notify buffer 位置 (新)
+
+perspectives 后、percepts 前。时序自洽: 系统快照 → 异步补充 → 本轮焦点。
+
+### KD11: command 模式 yield (None, action) (新)
+
+main_loop 对 None articulator 不入队。只构造 action，action 内部预填 command_logos
+到 logos_queue，received_logos 不挂起。
+
+## Staged 交付计划
+
+### Stage 1: Foundation — 改名 + mode + clear_first
+- `reflex_logos → command_logos`
+- `ImpulseMode` enum
+- `Impulse.clear_first: bool = True`
+- 单测: 默认 think, 默认 clear_first, 向后兼容
+
+### Stage 2: Empty cycle — 空循环 + 空片符
+- attention._loop 不 yield 空转帧 (interrupt / 空 messages)
+- ghost_runtime 空流 skip interpreter
+
+### Stage 3: Reflex redesign — 走 articulator 通道
+- Moment.command_logos 由 articulator.send_logos 发送
+- ghost_runtime._articulate_loop: 先 command_logos 后 ghost.articulate()
+- Action 透明，无新接口
+
+### Stage 4: Notify buffer — mindflow 层拦截
+- AbsMindflow._buffered_impulses + pop_buffered()
+- notify 不进 challenge，一帧 drain 到 perspectives 后、percepts 前
+
+### Stage 5: Command mode + interpreter_kind
+- command → yield (None, action), ghost 不调
+- Action.interpreter_kind() 暴露 clear/append
+
+### Stage 6: Integration — 组合场景验证 + 收尾
+- 集成测试覆盖四个组合场景
+- 全量回归
+- FEATURE.md set-status completed
 
 ## 组合场景验证
 
 ### 确定性打断 (急停)
 ```
 Impulse(priority=FATAL, mode=interrupt)
-→ challenge() → True → abort 当前 attention
-→ action loop 感知 abort → shell.clear()
-→ 新 attention → mode=interrupt → 空转关闭
+→ challenge() → True → abort 当前 attention + shell.clear()
+→ 新 attention → mode=interrupt → _callback_moment → 空转关闭
 → 无 ghost.articulate() 调用
 ```
 
@@ -177,8 +226,8 @@ Impulse(priority=FATAL, mode=interrupt)
 ```
 Impulse(priority=INFO, mode=notify, messages=[...])
 → mindflow._challenge_attention(): mode=notify → _buffered_impulses.append()
-→ 不进入 challenge，当前 attention 不受影响
-→ 下一帧 _prepare_moment: context_func → pop_buffered_impulses() → moment.percepts
+→ 不进入 challenge，不创建 attention
+→ 下个 attention 每帧 _prepare_moment: pop_buffered() → moment.percepts (perspectives 后)
 → 模型自然看到新数据
 ```
 
@@ -186,66 +235,63 @@ Impulse(priority=INFO, mode=notify, messages=[...])
 ```
 Impulse(priority=NOTICE, mode=reflex, command_logos="...", messages=[...])
 → challenge() → True → 新 attention
-→ _prepare_moment: percepts += "reflex executing: ..."
 → yield (articulate, action)
-→ articulate loop: ghost.articulate() 立即启动，模型边想边执行
-→ action loop: reflex_logos() → shell 先执行，再 received_logos() → shell 后执行
-→ 模型可以在思考中下发 interrupt
-→ 下一帧: logos 只有模型产出，outcomes 包含 reflex + 模型结果
+→ articulate loop: send_nowait(command_logos) → ghost.articulate() 
+→ 模型生成 logos 时 reflex 已开始执行
+→ action loop: received_logos() 先收 command_logos 再收模型 CTML
+→ 下一帧: logos 包含 reflex + 模型 CTML，outcomes 合并
 ```
 
 ### 确定性 CTML 替代思考 (command)
 ```
 Impulse(priority=NOTICE, mode=command, command_logos="...")
 → challenge() → True → 新 attention
-→ _loop(): 不 yield articulate，只 yield action (reflex_logos 填充 command_logos)
-→ action 执行 → outcome → 模型下一帧感知结果
+→ _loop(): yield (None, action) — articulator 不创建
+→ main_loop: articulator=None 不入 articulate 队列
+→ action.logos_queue 预填 command_logos + None 哨兵
+→ received_logos() → interpreter → 执行
 → 无 ghost.articulate() 调用
 ```
+
+### append 模式 (clear_first=False)
+```
+Impulse(priority=NOTICE, mode=think, clear_first=False)
+→ challenge() → True → 新 attention
+→ action.interpreter_kind() → "append"
+→ ghost_runtime: shell.interpreter(kind="append")
+→ 上一帧的 running commands 继续，模型通过 moss_dynamic 看见
+→ 模型追加指令，不下 interrupt 就不清
+```
+
+## 风险
+
+1. **notify 在 quiet 系统的归宿**: buffer 滞留到 mindflow 关闭 (warning 清理)，或下一个 attention drain。需确认这是期望行为。
+2. **command 模式 received_logos 不挂起**: 预填哨兵的时序需测。
+3. **PriorityProtectionAttention 同步升级**: challenge() 语义不变，但需验证新 mode 下的行为。
+4. **CTML 拼接安全性**: reflex 段与模型 CTML 段的拼接依赖 CTML 闭合段语义 (已有大量 CTML 测试验证安全)。
+5. **logos 记忆变更**: KD3 原有 "logos 只有模型产出" 修正为 "logos 包含 reflex + 模型产出"，ghost.on_articulate_exit 回调需确认兼容。
 
 ## 文档交付物
 
 实现完成后交付三件套：
 
-1. **`moss docs`** — 提纲挈领的架构总览，Mindflow 控制语义在 MOSS 架构中的定位
-2. **`moss how-tos`** — 从四个角度拆分：
-   - 创建自定义 Impulse mode
-   - 集成 Mindflow 到 GhostRuntime（当前集成方式 + 新能力）
-   - 选取合适的控制模式（think/reflex/command/notify/interrupt 决策树）
-   - 二开 Attention 子类（challenge 策略 + Buffer 机制）
-3. **`tutorials/`** — 一个 tutorial，完整演示从创建 Impulse 到控制思维流的全链路
-
-## 开发模式
-
-结对编程：人类工程师调整抽象设计，DeepSeek V4 review + 实现。
-
-## 风险
-
-1. **Buffer 与 observe 的交互**: buffered 数据和 observe outcomes 在同一帧 moment 中出现时的顺序
-2. **shell.clear() 幂等性**: abort + 自然结束双重调用的安全
-3. **PriorityProtectionAttention 需同步升级**: 新 challenge 返回值需子类实现
-4. **F3 需要集成测试**: 涉及 attention/action/interpreter/shell 四组件交互. 单元级安全测试已补 (3 个)，验证 clear 在 feed/execute 中途和多次调用的安全性。端到端仍需 REPL 验证。
+1. **`moss docs`** — Mindflow 控制语义在 MOSS 架构中的定位
+2. **`moss how-tos`** — Impulse mode 决策树、自定义 Impulse mode、集成 GhostRuntime、二开 Attention 子类
+3. **`tutorials/`** — 一个 tutorial，从创建 Impulse 到控制思维流全链路
 
 ## 实施记录
 
 ### F3: abort 传播 + shell.clear (2026-06-04 ~ 2026-06-06)
 
-由 DeepSeek V4 实现，人类工程师 review。
+由 DeepSeek V4 实现。Action ABC 新增 is_aborted()，GhostRuntimeImpl._stream_execute 三阶段检查
+并调 shell.clear()。3 个安全测试全绿。已验证 mindflow 43 tests + shell 107 tests。
 
-**改动**:
-1. `Action` ABC 新增 `is_aborted()` 抽象方法 (blueprint/mindflow.py)
-2. `BaseAction` 实现 `is_aborted()` → `self._ctx.is_aborted()`
-3. `GhostRuntimeImpl._stream_execute()` 在 feed/compile/execute 三阶段结束后检查 `action.is_aborted()`，触发 `shell.clear()` 并返回部分结果
-4. 内联 helper `_check_abort_and_clear(phase)` 封装三阶段统一逻辑
-5. 3 个 shell.clear 安全测试: feed 中途 / execute 中途 / 多次幂等
+### 2026-06-10 设计 review
 
-**关键决策偏离**: 无。按 KD5 执行。
-
-**已验证**:
-- shell.clear() 在活跃解释期间安全 (幂等，partial results 可捕获)
-- mindflow 43 tests + shell 107 tests 全绿
-- `_stream_execute` 改动需 GhostRuntime 端到端验证 (REPL)
+人类工程师与 DeepSeek V4 完整 review，推翻 F6 (Action.reflex_logos) 为 Articulator 通道方案，
+确认信息路径分层 (Signal→Impulse→Moment)、Action 暴露 interpreter_kind()、clear_first、
+notify 不创建 attention 等最终决策。staged 交付从 Stage 1 (Foundation) 开始。
 
 ---
 
-*调研与评审: DeepSeek V4 与人类工程师, 2026-06-02*
+*调研与评审: DeepSeek V4 与人类工程师, 2026-06-02 ~ 2026-06-10*
