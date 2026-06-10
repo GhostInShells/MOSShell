@@ -34,8 +34,6 @@ import ghoshell_moss.core.concepts.shell as shell
 import ghoshell_moss.core.concepts.interpreter as interpreter
 import ghoshell_moss.core.concepts.topic as topic
 import ghoshell_moss.core.concepts.errors as errors
-import ghoshell_moss.core.concepts.tools as tools
-import ghoshell_moss.core.topic as topic_impl
 
 # ============================================================================
 # Blueprints — 怎么用 MOSS 构建
@@ -54,28 +52,42 @@ import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
 import ghoshell_moss.core.blueprint.conversation as conversation
 import ghoshell_moss.core.blueprint.fractal as fractal
-import ghoshell_moss.core.py_channel as py_channel
-import ghoshell_moss.host.tui as tui
-import ghoshell_moss.host.tui_entries as tui_entries
-import ghoshell_moss.host.topics as host_topics
+
 
 # ============================================================================
-# Contracts — IoC 最小基础依赖
-# ghoshell_moss.contracts
+# Contracts — 系统级依赖/抽象商场
 # ============================================================================
 
 import ghoshell_moss.contracts as contracts
 
+
 # ============================================================================
-# Messages — 统一消息类型
-# ghoshell_moss.message
+# Implementations — 核心实现路径
+# ============================================================================
+
+import ghoshell_moss.core.py_channel as channel_impl
+import ghoshell_moss.host as host_impl
+import ghoshell_moss.host.tui as tui_design
+import ghoshell_moss.host.tui_entries as tui_entries
+import ghoshell_moss.host.manifests as host_manifests
+import ghoshell_moss.host.session as session_impl
+import ghoshell_moss.bridges as bridges
+import ghoshell_moss.ghosts as ghosts
+import ghoshell_moss.core.topic as topic_service
+import ghoshell_moss.core.speech as speech_impl
+import ghoshell_moss.cli as cli
+
+# ============================================================================
+# Protocol — 系统协议
 # ============================================================================
 
 import ghoshell_moss.message as message
+import ghoshell_moss.topics as system_topics
 
 # ============================================================================
-# Channels — 预制 Channel 目录
-# ghoshell_moss.channels
+# Openbox — 预制能力清单
 # ============================================================================
 
-import ghoshell_moss.channels as channels
+import ghoshell_moss.channels as openbox_channels
+import ghoshell_moss.nuclei as openbox_nuclei
+import ghoshell_moss.core.concepts.tools as tools

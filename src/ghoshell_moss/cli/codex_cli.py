@@ -693,8 +693,9 @@ def codex_architecture():
     n_sections = len([s for s in sections if s[2]])
     console.print(
         f"[dim]{total} entries in {n_sections} sections. "
-        f"Tip: [bold]moss codex list <Name>[/bold]"
-        f" for members; [bold]moss codex get-source <Name>[/bold]"
+        f"Tip: [bold]moss codex get-interface <Name>[/bold]"
+        f" for modules; [bold]moss codex list <Name>[/bold]"
+        f" for packages; [bold]moss codex get-source <Name>[/bold]"
         f" for full source[/dim]"
     )
 
