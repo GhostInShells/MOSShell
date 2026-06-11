@@ -5,10 +5,10 @@ description: typer_channel 包装 moss 自身 CLI 为 Channel，注册为 App，
   Code 通过 MCP 连接 moss-as-mcp，调用 moss codex get-interface 成功。
 milestone: null
 priority: P1
-status: draft
-status_note: delegating to other collaborators for implementation
+status: completed
+status_note: App implemented at .moss_ws/apps/tools/moss_self and verified via MCP
 title: Moss Self Channel — Typer CLI 反射为 Channel，实现 moss 命令自举
-updated: '2026-06-04'
+updated: '2026-06-11'
 ---
 
 # Moss Self Channel
@@ -97,9 +97,26 @@ typer_channel 当前假设 `python -m typer module_path run`，需要适配为
 当前 `typer_channel.py` 是 alpha 原型。本 feature 不需要重构它——先在 moss CLI
 这个具体场景上跑通，验证两层架构和 text__ 模式。跑通后再考虑泛化回 typer_channel。
 
-### 验收标准
+## Implementation
+
+App 路径：`.moss_ws/apps/tools/moss_self/`
+
+| 文件 | 职责 |
+|------|------|
+| `main.py` | Channel 定义 + runtime subprocess 执行 |
+| `reflect_cli.py` | Build-time 反射 moss CLI 命令树为 markdown instruction |
+| `APP.md` | App 元数据 |
+
+关键实现点：
+- 入口适配：直接调用 `moss --ai`（console_script），不走 `python -m typer`
+- 反射深度：`reflect_cli.py` 递归遍历 `registered_groups` + `registered_commands`，参数解析到 `--depth 3` 级别
+- cwd 绑定：通过 `MOSS_WORKSPACE` 环境变量推导项目根目录，确保子进程在正确目录执行
+
+## 验收标准
 
 > 启动 moss-as-mcp → Claude Code 连接 → 调用 moss codex get-interface ghoshell_moss.channels.typer_channel → 返回 typer_channel 的接口信息。
 
 这个单次调用验证：ghost → MCP → moss App → typer_channel → moss CLI → 反射自身源码 → 返回。
 全链路闭环。
+
+**验收结果**：2026-06-11 通过 Claude Code MCP 连接验证，命令 `<apps.tools_moss_self:exec>codex get-interface ghoshell_moss.channels.typer_channel</apps.tools_moss_self:exec>` 正常返回源码与依赖接口。

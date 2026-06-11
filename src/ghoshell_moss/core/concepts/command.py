@@ -683,6 +683,7 @@ class PyCommand(CliCommand):
         meta.call_soon = self._call_soon
         meta.tags = self._tags or []
         meta.blocking = self._blocking
+        meta.always_observe = self._always_observe
         meta.timeout = self._timeout
         docstring = doc or self._func_itf.docstring
         meta.description = docstring.splitlines()[0] if docstring else ''
