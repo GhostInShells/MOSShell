@@ -39,6 +39,23 @@ _STATUS_HINTS = {
 }
 _ABANDONED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
 
+
+def _print_parse_errors(parse_errors: list[dict]) -> None:
+    """Print FEATURE.md frontmatter parse errors — called at end of list/status output."""
+    echo("")
+    print_warning(f"Parse errors — {len(parse_errors)} FEATURE.md file(s) have broken YAML frontmatter "
+                  f"and were excluded from the list:")
+    echo("")
+    for err in parse_errors:
+        echo(f"  [{err['feature_dir']}]")
+        echo(f"    path:  {err['path']}")
+        echo(f"    error: {err['error']}")
+        echo(f"    hint:  {err['hint']}")
+        echo("")
+    echo("  Fix: open the file and correct the YAML frontmatter between the --- markers.")
+    echo("")
+
+
 # Default features directory for the MOSShell project itself
 _DEFAULT_FEATURES_DIR = Path.cwd() / ".ai_partners" / "features"
 
@@ -113,14 +130,14 @@ def list_cmd(
         print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
         raise typer.Exit(code=1)
 
-    features = list_features(str(fd), status_filter=status, all_months=all_months)
+    features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
     title = "Workstreams"
     if status:
         title += f" [status={status}]"
     if not all_months:
         title += " (last 2 months)"
 
-    if not features:
+    if not features and not parse_errors:
         print_info("No workstreams found.")
         return
 
@@ -159,6 +176,9 @@ def list_cmd(
         "[bold]moss features specification[/bold]"
     )
 
+    if parse_errors:
+        _print_parse_errors(parse_errors)
+
 
 # ---------------------------------------------------------------------------
 # status
@@ -181,7 +201,11 @@ def status_cmd(
     fd = _resolve_dir(features_dir)
 
     if feature_name:
-        meta = get_feature(str(fd), feature_name)
+        meta, parse_err = get_feature(str(fd), feature_name)
+        if parse_err is not None:
+            print_error(f"Workstream '{feature_name}' exists but FEATURE.md has a YAML parse error:")
+            _print_parse_errors([parse_err])
+            raise typer.Exit(code=1)
         if meta is None:
             print_error(f"Workstream '{feature_name}' not found.")
             raise typer.Exit(code=1)
@@ -205,8 +229,8 @@ def status_cmd(
         )
     else:
         # Compact all-workstreams view
-        features = list_features(str(fd))
-        if not features:
+        features, parse_errors = list_features(str(fd))
+        if not features and not parse_errors:
             print_info("No workstreams found.")
             return
 
@@ -266,6 +290,9 @@ def status_cmd(
             "[dim]Read the convention: [/dim]"
             "[bold]moss features specification[/bold]"
         )
+
+        if parse_errors:
+            _print_parse_errors(parse_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +354,11 @@ def set_status_cmd(
         print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
         raise typer.Exit(code=1)
 
-    meta = get_feature(str(fd), feature_name)
+    meta, parse_err = get_feature(str(fd), feature_name)
+    if parse_err is not None:
+        print_error(f"Workstream '{feature_name}' exists but FEATURE.md has a YAML parse error:")
+        _print_parse_errors([parse_err])
+        raise typer.Exit(code=1)
     if meta is None:
         print_error(f"Workstream '{feature_name}' not found.")
         raise typer.Exit(code=1)
@@ -405,7 +436,10 @@ def check_cmd(
     before committing.
     """
     fd = _resolve_dir(features_dir)
-    features = list_features(str(fd))
+    features, parse_errors = list_features(str(fd))
+
+    if parse_errors:
+        _print_parse_errors(parse_errors)
 
     unfinished = [f for f in features if f.get("status") not in _TERMINAL_STATUSES]
     if not unfinished:

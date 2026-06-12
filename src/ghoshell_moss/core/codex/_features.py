@@ -20,13 +20,39 @@ VALID_STATUSES = {"draft", "in-progress", "completed", "abandoned", "blocked"}
 
 
 def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
-    """Parse YAML frontmatter from a FEATURE.md file.  Returns None if missing or unparseable."""
+    """Parse YAML frontmatter from a FEATURE.md file.  Returns None if missing or unparseable.
+
+    For error reporting, use :func:`parse_frontmatter_with_error` which returns
+    the parse error dict on failure instead of None.
+    """
     try:
         import frontmatter
         post = frontmatter.load(str(filepath))
         return dict(post.metadata) if post.metadata else None
     except Exception:
         return None
+
+
+def parse_frontmatter_with_error(filepath: str | Path) -> tuple[Optional[dict], Optional[dict]]:
+    """Parse YAML frontmatter, returning (meta, error) — error is a dict with
+    ``path``, ``error``, and ``hint`` keys on parse failure.
+    """
+    try:
+        import frontmatter
+        post = frontmatter.load(str(filepath))
+        meta = dict(post.metadata) if post.metadata else None
+        if meta is None:
+            return None, None
+        return meta, None
+    except Exception as exc:
+        fpath = Path(filepath)
+        return None, {
+            "feature_dir": fpath.parent.name,
+            "path": str(fpath),
+            "error": str(exc),
+            "hint": "YAML frontmatter parse error — check for unquoted colons, "
+                    "bad indentation, or invalid YAML syntax in the frontmatter block.",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -66,17 +92,20 @@ def list_features(
     features_dir: str | Path,
     status_filter: Optional[str] = None,
     all_months: bool = False,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """
     List features from workstreams/ directory.
 
     By default, scans only the last 2 months. Pass all_months=True to scan all time.
-    Returns a list of frontmatter dicts sorted by priority then created date.
-    Each dict includes a '_feature_dir' key with the directory name.
+    Returns (features, parse_errors) — features sorted by updated date descending,
+    parse_errors is a list of dicts with feature_dir, path, error, and hint keys.
+
+    Features whose FEATURE.md frontmatter fails to parse are NOT included in the
+    feature list — they appear in parse_errors instead.
     """
     workstreams_dir = Path(features_dir) / "workstreams"
     if not workstreams_dir.is_dir():
-        return []
+        return [], []
 
     if all_months:
         # Walk all year/month dirs
@@ -92,9 +121,13 @@ def list_features(
                     feat_dirs.append(entry)
 
     results = []
+    parse_errors = []
     for feat_dir in feat_dirs:
         fm_path = feat_dir / "FEATURE.md"
-        meta = parse_frontmatter(fm_path)
+        meta, err = parse_frontmatter_with_error(fm_path)
+        if err is not None:
+            parse_errors.append(err)
+            continue
         if meta is None:
             continue
         meta["_feature_dir"] = feat_dir.name
@@ -110,20 +143,27 @@ def list_features(
         return str(v) or ""
 
     results.sort(key=_sort_key, reverse=True)
-    return results
+    return results, parse_errors
 
 
-def get_feature(features_dir: str | Path, feature_id: str) -> Optional[dict]:
-    """Get a single feature's frontmatter by id. Searches workstreams/ tree via glob."""
+def get_feature(features_dir: str | Path, feature_id: str) -> tuple[Optional[dict], Optional[dict]]:
+    """Get a single feature's frontmatter by id. Searches workstreams/ tree via glob.
+
+    Returns (meta, parse_error). If the feature dir is not found, returns (None, None).
+    If the FEATURE.md exists but frontmatter is unparseable, returns (None, error_dict).
+    """
     workstreams_dir = Path(features_dir) / "workstreams"
     feat_dir = _find_feature_dir(workstreams_dir, feature_id)
     if feat_dir is None:
-        return None
-    meta = parse_frontmatter(feat_dir / "FEATURE.md")
+        return None, None
+    fm_path = feat_dir / "FEATURE.md"
+    meta, err = parse_frontmatter_with_error(fm_path)
+    if err is not None:
+        return None, err
     if meta is not None:
         meta["_feature_dir"] = feature_id
         meta["_feature_path"] = str(feat_dir.relative_to(workstreams_dir))
-    return meta
+    return meta, None
 
 
 # ---------------------------------------------------------------------------

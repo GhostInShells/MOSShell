@@ -6,7 +6,9 @@ description: 创建 ghoshell_moss.architecture 模块作为核心抽象地图，
 milestone: null
 priority: P1
 status: in-progress
-status_note: architecture.py + CLI command done, docstrings pending. 2026-06-04: 5 friction points identified via TUI probe.
+status_note: >-
+  architecture.py + CLI command done, docstrings pending. 2026-06-04: 5 friction points
+  identified via TUI probe.
 title: Codex Architecture — 核心抽象地图
 updated: '2026-06-04'
 ---

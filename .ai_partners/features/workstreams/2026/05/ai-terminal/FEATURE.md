@@ -1,9 +1,14 @@
 ---
 title: AI Terminal — Ghost 的操作系统双手（bash + 文件读写）
-status: in-progress
+status: completed
+status_note: >-
+  2026-06-12 Phase 1 prototype completed — SubprocessTerminal + terminal_channel + 11 tests + MCP verified.
+  Phase 2 (Terminal ABC extraction, multi-channel split, approval chain, context messages) triggers when
+  project-manager and matrix-cell-governance are ready. The abstraction is clean: three method signatures
+  are the implicit protocol boundary.
 priority: P0
 created: 2026-05-29
-updated: 2026-06-08
+updated: 2026-06-12
 depends: []
 milestone: prototype
 description: >-
