@@ -1,14 +1,16 @@
-from abc import abstractmethod
-import time
+from abc import abstractmethod, ABC
 from typing import AsyncGenerator, AsyncIterator
 from typing_extensions import Self
 
 import janus
 
 from ghoshell_moss.core.blueprint.mindflow import (
-    Mindflow, Attention, Impulse, Nucleus, Signal, Priority, BufferImpulse,
+    Mindflow, Attention, Impulse, Nucleus, Signal, Priority, ImpulseAbsorbed,
     Reaction, ChallengeVerdict, MindflowHook,
+    ChallengeMode,
 )
+from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, Channel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.message import Message
@@ -19,6 +21,12 @@ import threading
 
 _SignalName = str
 _NucleusName = str
+
+__all__ = [
+    'BaseMindflow',
+    'AbsMindflow',
+    'new_default_mindflow',
+]
 
 
 class MindflowHookGroup(MindflowHook):
@@ -76,7 +84,7 @@ class MindflowHookGroup(MindflowHook):
                 )
 
 
-class AbsMindflow(Mindflow):
+class AbsMindflow(Mindflow, ABC):
     """
     Mindflow 抽象基类: 信号路由, impulse 排队, attention 调度.
 
@@ -87,7 +95,7 @@ class AbsMindflow(Mindflow):
             self,
             *nuclei: Nucleus,
             logger: LoggerItf | None = None,
-            strict: bool = True,
+            raise_nucleus_start_error: bool = True,
     ):
         # Nucleus 可能只是一个接口. 内部有别的技术实现.
         self._faculties: dict[_NucleusName, Nucleus] = {}
@@ -110,17 +118,32 @@ class AbsMindflow(Mindflow):
         self._signal_count: int = 0
         self._has_impulse_event = ThreadSafeEvent()
         self._set_impulse_lock = asyncio.Lock()
+        self._buffered_messages = []
+        self._signal_priority_bar = Priority.BACKGROUND
+        self._impulse_priority_bar = Priority.BACKGROUND
 
         # 内部循环检测是否有新的 impulse.
         self._consuming_signal_task: asyncio.Task | None = None
         self._consuming_impulse_task: asyncio.Task | None = None
         # 是否对启动异常容错.
-        self._strict = strict
+        self._raise_nucleus_start_error = raise_nucleus_start_error
         for nucleus in nuclei:
             self.with_nucleus(nucleus)
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._hooks_group: MindflowHookGroup = MindflowHookGroup(self._logger)
+        self._buffered_messages_lock = threading.Lock()
+
+    def get_buffered(self, pop: bool = True) -> list[Message]:
+        if pop:
+            return self._pop_buffer()
+        with self._buffered_messages_lock:
+            messages = self._buffered_messages.copy()
+        return messages
+
+    def buffer(self, messages: list[Message]) -> None:
+        with self._buffered_messages_lock:
+            self._buffered_messages.extend(messages)
 
     @staticmethod
     def _new_signal_queue() -> janus.PriorityQueue[tuple[int, int, Signal]]:
@@ -148,8 +171,18 @@ class AbsMindflow(Mindflow):
         return self._started_event.wait_sync(timeout)
 
     def with_nucleus(self, nucleus: Nucleus, override: bool = False) -> None:
+        self._bind_nucleus_with_bus(nucleus, override)
+
+        channel = self.as_channel()
+        # 注册 nucleus 的 channel.
+        if channel and isinstance(channel, MutableChannel):
+            if sub_channel := nucleus.as_channel():
+                channel.import_channels(sub_channel)
+
+    def _bind_nucleus_with_bus(self, nucleus: Nucleus, override: bool = False) -> None:
         if self._started_event.is_set():
             raise RuntimeError(f"Mindflow only with nucleus before started, use add_nucleus instead")
+
         # 注册运行总线. 只能在启动前用.
         _name = nucleus.name()
         if not override and _name in self._faculties:
@@ -158,7 +191,7 @@ class AbsMindflow(Mindflow):
         nucleus.with_bus(self.add_signal, self.add_impulse)
         self._faculties[_name] = nucleus
 
-    def _register_nucleus_to_listener(self, nucleus: Nucleus) -> None:
+    def _register_nucleus_to_signal_routes(self, nucleus: Nucleus) -> None:
         for listening in nucleus.signals():
             if listening not in self._input_signal_name_routes:
                 self._input_signal_name_routes[listening] = {}
@@ -177,8 +210,14 @@ class AbsMindflow(Mindflow):
         # 启动 nucleus 并且加入.
         if not nucleus.is_running():
             await nucleus.__aenter__()
-        self.with_nucleus(nucleus, override=override)
-        self._register_nucleus_to_listener(nucleus)
+        if channel := self.as_channel():
+            if isinstance(channel, PrimeChannel):
+                if sub_channel := nucleus.as_channel():
+                    #  添加channel.
+                    channel.add_virtual_channel(sub_channel)
+
+        self._bind_nucleus_with_bus(nucleus, override=override)
+        self._register_nucleus_to_signal_routes(nucleus)
 
     def _has_nucleus(self, name: str) -> bool:
         return name in self._faculties
@@ -198,6 +237,12 @@ class AbsMindflow(Mindflow):
         elif signal.is_stale():
             self._logger.debug("%s ignore stale signal: %s", self._log_prefix, signal.id)
             signal.__state__ = 'ignored'
+            return None
+        elif signal.priority < self._signal_priority_bar:
+            self._logger.debug(
+                "%s ignore signal lower than priority %d: %s",
+                self._log_prefix, self._signal_priority_bar, signal.id,
+            )
             return None
         signal.max_hop -= 1
         if signal.max_hop < 0:
@@ -241,8 +286,19 @@ class AbsMindflow(Mindflow):
             except janus.AsyncQueueShutDown:
                 continue
 
+    def set_signal_priority_bar(self, priority: Priority) -> None:
+        self._signal_priority_bar = priority
+
+    def set_impulse_priority_bar(self, priority: Priority) -> None:
+        self._impulse_priority_bar = priority
+
     async def _dispatch_signal(self, signal: Signal) -> None:
         try:
+            if signal.priority < self._signal_priority_bar:
+                self._logger.debug(
+                    "%s ignore signal %s priority %d lower than bar %d",
+                    self._log_prefix, signal.id, signal.priority, self._signal_priority_bar,
+                )
             name = signal.name
             broadcasted = 0
             if len(self._faculties) == 0:
@@ -331,22 +387,51 @@ class AbsMindflow(Mindflow):
                 return None
             # attention 或者.
             if self._current_attention and not self._current_attention.is_aborted():
-                defender = self._current_attention.peek()
-                done = self._current_attention.challenge(impulse)
-                if done is BufferImpulse:
+                defender = self._current_attention.draw_from()
+                # Fatal always prevails
+                if impulse.priority == Priority.FATAL.value:
+                    done = True
+                elif impulse.priority == Priority.BACKGROUND.value:
+                    done = False
+                else:
+                    done = self._current_attention.challenge(impulse)
+
+                # 如果被吸收了.
+                if done is ImpulseAbsorbed:
                     # 同 ID 更新 complete, 不抢占.
                     self._pop_impulse(impulse)
                     self._fire_challenge(impulse, defender, 'absorbed')
+                    return None
                 elif done:
+                    if impulse.mode == ChallengeMode.silent.value:
+                        self._pop_impulse(impulse)
+                        self.buffer(impulse.messages)
+                        self._fire_challenge(impulse, defender, 'buffered')
+                        return None
+
                     # 抢占成功, 创建新 Attention.
                     await self._create_attention_from_impulse(impulse)
                     self._fire_challenge(impulse, defender, 'preempted')
                 else:
+                    # notify 挑战失败, 将 notify 的消息入队.
+                    if impulse.mode == ChallengeMode.notify.value:
+                        self._pop_impulse(impulse)
+                        self.buffer(impulse.messages)
+                        self._fire_challenge(impulse, defender, 'buffered')
+                        return None
                     # 被压制.
                     self._suppress_impulse(impulse, defender)
                     self._fire_challenge(impulse, defender, 'suppressed')
                 return None
             else:
+                if impulse.mode == ChallengeMode.silent.value:
+                    # silent 模式不创建注意力, 只做 buffer.
+                    self._pop_impulse(impulse)
+                    self.buffer(impulse.messages)
+                    self._fire_challenge(impulse, None, 'buffered')
+                    return None
+
+                # 创建一个新的 impulse.
                 await self._create_attention_from_impulse(impulse)
                 self._fire_challenge(impulse, None, 'initial')
             return None
@@ -413,13 +498,23 @@ class AbsMindflow(Mindflow):
             self._set_attention(attention)
             return None
 
+    def _pop_buffer(self) -> list[Message]:
+        with self._buffered_messages_lock:
+            messages = self._buffered_messages.copy()
+            self._buffered_messages.clear()
+        return messages
+
     @abstractmethod
     def _build_attention(self, impulse: Impulse, inherit_outcome: Reaction) -> Attention:
         """子类实现: 用指定的仲裁策略构建 Attention 实例."""
-        ...
+        pass
+
+    @abstractmethod
+    def as_channel(self) -> Channel | None:
+        """强调子类要重新实现 channel 逻辑. """
+        pass
 
     def _set_attention(self, attention: Attention) -> None:
-        now = time.monotonic()
         # 这个函数只在 set impulse 处可以被调用.
         # 考虑到未来 set attention 可能不止一个地方调用 (比如命令行的行为), 所以加一个 set.
         if not self.is_running():
@@ -435,7 +530,8 @@ class AbsMindflow(Mindflow):
             self._current_attention.abort("interrupted")
         self._current_attention = attention
         # 注册 mindflow 自身的 context message 函数.
-        self._current_attention.with_context_func("mindflow", self.context_messages)
+        self._current_attention.with_percepts_func("MindflowBuffer", self._pop_buffer)
+        self._current_attention.with_perspective_func("Mindflow", self.perspective)
         # 这个队列里的其实都是上一个 current attention.
         try:
             while not self._pop_new_attention_queue.sync_q.empty():
@@ -460,6 +556,12 @@ class AbsMindflow(Mindflow):
             if impulse is None:
                 continue
             elif impulse.is_stale():
+                # pop stale impulse for the nucleus
+                nucleus.pop_impulse(impulse)
+                self._logger.info("%s pop stale impulse %r", self._log_prefix, impulse)
+                continue
+            elif impulse.priority < self._impulse_priority_bar:
+                # 低于优先级的直接忽视.
                 continue
             # 加一行代码防蠢.
             impulse.source = nucleus.name()
@@ -530,7 +632,7 @@ class AbsMindflow(Mindflow):
         while not self._pop_new_attention_queue.sync_q.empty():
             self._pop_new_attention_queue.sync_q.get_nowait()
 
-    def context_messages(self) -> list[Message]:
+    def perspective(self) -> list[Message]:
         """
         返回 Mindflow 的瞬时状态图谱。
         通过简单的列表描述，让模型快速评估当前各 Nucleus 的优先级与待处理任务压力。
@@ -668,12 +770,12 @@ class AbsMindflow(Mindflow):
             nucleus = nuclei[idx]
             if isinstance(r, Exception):
                 self._logger.error("%s failed to start nucleus %r: %s", self._log_prefix, nucleus, r)
-                if self._strict:
+                if self._raise_nucleus_start_error:
                     # 严格模式下启动不做任何容错. 仅仅作为一个保留开发点. 默认是抛出异常.
                     raise r
             else:
                 # 正式注册监听.
-                self._register_nucleus_to_listener(nucleus)
+                self._register_nucleus_to_signal_routes(nucleus)
 
             idx += 1
         try:
@@ -732,19 +834,42 @@ class AbsMindflow(Mindflow):
 
 
 class BaseMindflow(AbsMindflow):
-    """
-    基础 Mindflow 实现: 强度衰减仲裁 (BaseAttention).
 
-    保持原有构造签名和行为不变, 向后兼容.
-    """
+    def __init__(
+            self,
+            *nuclei: Nucleus,
+            logger: LoggerItf | None = None,
+            raise_nucleus_start_error: bool = True,
+            system_floor_strength: float = 0.0,
+            source_escalation: float = 1.1,
+            max_protection_time: float = 3.0,
+    ):
+        super().__init__(*nuclei, logger=logger, raise_nucleus_start_error=raise_nucleus_start_error)
+        self._system_floor_strength = system_floor_strength
+        self._max_protection_time = max_protection_time
+        self._source_escalation = source_escalation
+
+    def as_channel(self) -> Channel | None:
+        return None
 
     def _build_attention(self, impulse: Impulse, inherit_outcome: Reaction) -> Attention:
         return BaseAttention(
             previous=inherit_outcome,
             impulse=impulse,
             logger=self._logger,
-            system_floor_strength=0.0,
-            source_escalation=1.1,
-            max_protection_time=3.0,
-            protection_duration_ratio=0.2,
+            system_floor_strength=self._system_floor_strength,
+            source_escalation=self._source_escalation,
+            max_protection_time=self._max_protection_time,
         )
+
+
+def new_default_mindflow(
+        *nuclei: Nucleus,
+        logger: LoggerItf | None = None,
+) -> BaseMindflow:
+    from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
+    return BaseMindflow(
+        InputSignalNucleus(),
+        *nuclei,
+        logger=logger,
+    )

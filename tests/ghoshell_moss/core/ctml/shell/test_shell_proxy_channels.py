@@ -1,12 +1,13 @@
 import pytest
 from ghoshell_moss.core.ctml.shell import new_ctml_shell
 from ghoshell_moss.core.duplex.thread_channel import create_thread_bridge
-from ghoshell_moss.core import PyChannel
+from ghoshell_moss.core.py_channel import PyChannel
 import asyncio
 
 
 @pytest.mark.asyncio
 async def test_shell_with_virtual_sub_depth_channel():
+    from ghoshell_moss.core.runtime import BaseChannelTree
     provider_main = PyChannel(name="provider")
     static_sub = PyChannel(name="static_sub")
     virtual_sub = PyChannel(name="virtual_sub")
@@ -25,6 +26,11 @@ async def test_shell_with_virtual_sub_depth_channel():
 
     async with provider.arun(provider_main):
         async with shell:
+            tree = shell.runtime.tree
+            assert isinstance(tree, BaseChannelTree)
+            tree.config.node_refresh_interval = 0.0
+            assert len(tree.metas()) == 2
+            # 方便快速验证.
             await shell.wait_connected("proxy")
             assert len(shell.channel_metas()) == 3
             # 添加动态
@@ -547,3 +553,47 @@ async def test_remote_two_proxy_channels_parallel():
                 await shell.clear()
 
     assert order == ['b', 'a']
+
+
+# -- stale_time / refresh interval ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_metas_stale_protection_skips_redundant_refresh():
+    """node_refresh_interval 保护期内 refresh_metas 不触发新的刷新周期。
+
+    即便 interval 为 0 时，shell 层的 stale_time 也能起到保护；
+    这里通过 tree config 的保护期验证等价的跳过逻辑。
+    """
+    shell = new_ctml_shell()
+    chan = PyChannel(name="chan")
+    shell.main_channel.import_channels(chan)
+    invoked: list[int] = []
+
+    @chan.build.refresh_meta
+    async def count_refresh() -> None:
+        invoked.append(1)
+
+    async with shell:
+        assert len(invoked) >= 1  # bootstrap 触发了一次
+
+        # 设保护期 10s，多次调用应全部跳过
+        invoked.clear()
+        refreshing_tasks = []
+        for _ in range(3):
+            refreshing_tasks.append(shell.refresh_metas())
+        # 并发等所有任务刷新完毕.
+        await asyncio.gather(*refreshing_tasks)
+        # 多次并发只会有一次刷新成功.
+        assert len(invoked) == 1, f"expected 0 refreshes, got {len(invoked)}"
+        invoked.clear()
+        # 连续等待两次刷新, 应该多刷新了两次.
+        await shell.refresh_metas()
+        await shell.refresh_metas()
+        assert len(invoked) == 2
+        # 然后加 stale
+        await shell.refresh_metas()
+        assert len(invoked) == 3
+        await shell.refresh_metas(stale_time=0.1)
+        # 不会有新的刷新结果.
+        assert len(invoked) == 3

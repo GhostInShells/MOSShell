@@ -35,7 +35,7 @@ async def test_full_link_signal_to_impulse():
         mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.source == "test_sensor"
                 assert impulse.priority == Priority.NOTICE
                 break
@@ -68,7 +68,7 @@ async def test_suppress_and_stale_race_condition():
             async with attention:
                 wait_started.set()
                 # 判断没有过期.
-                assert not attention.peek().is_stale()
+                assert not attention.draw_from().is_stale()
                 # 模拟 Attention 耗时处理
                 await asyncio.sleep(0.11)
                 count += 1
@@ -113,7 +113,7 @@ async def test_mindflow_able_to_close():
         mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.source == "test_sensor"
                 assert impulse.priority == Priority.NOTICE
                 # 调用之后应该不会阻塞, 都会退出.
@@ -141,7 +141,7 @@ async def test_mindflow_run_in_task():
             mindflow.add_signal(sig)
             async for attention in mindflow.loop():
                 async with attention:
-                    impulse = attention.peek()
+                    impulse = attention.draw_from()
                     assert impulse.source == "test_sensor"
                     assert impulse.priority == Priority.NOTICE
                     # 验证完 impulse 直接退出.
@@ -177,7 +177,7 @@ async def test_mindflow_run_with_multi_signal():
         await mindflow.wait_started()
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.priority == Priority.NOTICE
                 count.append(1)
             one_done.set()

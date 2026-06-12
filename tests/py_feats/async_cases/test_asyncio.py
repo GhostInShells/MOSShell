@@ -1,4 +1,4 @@
-from typing import AsyncIterable, AsyncIterator, AsyncGenerator
+from typing import AsyncIterator, AsyncGenerator
 import asyncio
 import threading
 import time
@@ -711,3 +711,88 @@ async def test_with_statement():
         # 没被拦截
         a.append(1)
     # assert len(a) == 2
+
+
+@pytest.mark.asyncio
+async def test_wait_timeout():
+    async def foo():
+        await asyncio.sleep(0.1)
+
+    task1 = asyncio.create_task(foo())
+    task2 = asyncio.create_task(foo())
+    task3 = asyncio.create_task(foo())
+    done, pending = await asyncio.wait([task1, task2, task3], timeout=0.01)
+    assert len(pending) == 3
+    assert len(done) == 0
+    for t in pending:
+        t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await t
+
+
+@pytest.mark.asyncio
+async def test_wait_for_none():
+    async def foo():
+        await asyncio.sleep(0.05)
+
+    r = await asyncio.wait_for(foo(), timeout=None)
+    assert r is None
+
+
+@pytest.mark.asyncio
+async def test_wait_for_cancel_task():
+    timeout = False
+
+    async def foo():
+        nonlocal timeout
+        try:
+            await asyncio.sleep(0.1)
+        except asyncio.TimeoutError:
+            timeout = True
+
+    t = asyncio.create_task(foo())
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(t, 0.01)
+    #  task 不会被注入 timeout
+    assert not timeout
+    # 但是 task 已经被取消了.
+    assert t.done()
+    assert t.cancelled()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(foo(), 0.01)
+    # timeout 不会被注入.
+    assert not timeout
+
+    loop = asyncio.get_running_loop()
+    t = loop.create_task(foo())
+
+    async def _run():
+        await t
+
+    assert not t.done()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(_run(), 0.01)
+    #  底层实际不会拿到 timeout, 而是会拿到 cancel.
+    assert not timeout
+    # 关联的底层, 在 await 链路都会被取消.
+    assert t.cancelled()
+    assert t.done()
+
+    # 防御被取消的机制, 用 event 对象.
+    t = asyncio.create_task(foo())
+
+    async def _wait_event():
+        event = asyncio.Event()
+        t.add_done_callback(lambda _t: event.set())
+        await event.wait()
+
+    with pytest.raises(asyncio.TimeoutError):
+        # 实际上可以防御住.
+        await asyncio.wait_for(_wait_event(), 0.01)
+    assert not timeout
+    assert not t.done()
+    # 消除副作用.
+    t.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await t

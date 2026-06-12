@@ -298,3 +298,27 @@ def test_set_result_future_in_other_thread():
     t_a.join()
     t_b.join()
     assert done[0] == 123
+
+
+def test_wait_never_memory_leak():
+    e = ThreadSafeEvent()
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        t1 = loop.create_task(e.wait())
+        t2 = loop.create_task(e.wait())
+        t3 = loop.create_task(e.wait())
+        t4 = loop.create_task(e.wait())
+        t5 = loop.create_task(e.wait())
+        assert not e.is_set()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(e.wait(), timeout=0.1)
+        assert len(e) == 2
+        assert not e.is_set()
+        e.set()
+        assert asyncio.gather(t1, t2, t3, t4, t5)
+        assert len(e) == 2
+        assert e.is_set()
+
+    asyncio.run(main())
+    assert len(e) == 2

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.message import WithAdditional, Addition
 from typing_extensions import Self
+import datetime
 import time
 
 __all__ = [
@@ -70,11 +71,13 @@ class TopicMeta(BaseModel):
     local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
     creator: str = Field(
         default="",
-        description="The unique identifier of the topic creator, in RESTFul format.",
+        description="The unique identifier of the topic creator, in RESTFul format."
+                    "与 sender 的区别, 在同一个通讯链路里, 可能有多个角色创建 topic. "
     )
     sender: str = Field(
         default="",
-        description="the address of whom (topic service) sent this topic.",
+        description="the address of whom (topic service) sent this topic."
+                    "与 creator 区别, sender 是通讯链路的身份. ",
     )
     created_at: float = Field(
         default_factory=lambda: round(time.time(), 4),
@@ -127,6 +130,10 @@ class TopicModel(BaseModel, ABC):
     """
 
     meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
+
+    @property
+    def created_at(self) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(self.meta.created_at)
 
     @classmethod
     @abstractmethod

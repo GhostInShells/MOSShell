@@ -9,6 +9,7 @@ from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Mode
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter, LoggerItf
 from .ghost import Ghost, GhostMeta
@@ -190,7 +191,7 @@ class MossRuntime(ABC):
 
     @property
     @abstractmethod
-    def shell(self) -> MOSShell:
+    def shell(self) -> MOSShell[PrimeChannel]:
         """
         全双工运行时.
         可以在它没启动时做一些操作.

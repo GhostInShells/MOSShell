@@ -2,7 +2,7 @@ import contextlib
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Optional, Iterable, TypeVar, Generic, Callable, Coroutine, Literal
+from typing import Optional, Iterable, TypeVar, Generic, Callable, Coroutine
 
 import janus
 from typing_extensions import Self
@@ -25,6 +25,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelScope,
     ChannelScopeType,
     ChannelScopeDefaultType,
+    ChannelTree,
 )
 from ghoshell_moss.core.concepts.errors import CommandErrorCode
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -258,7 +259,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._container = self.prepare_container(container)
         self._logger: LoggerItf | None = logger
         # import lib 是最重要的.
-        self._importlib: BaseChannelTree | None = None
+        self._tree: BaseChannelTree | None = None
 
         self._logger: LoggerItf | None = logger
 
@@ -383,9 +384,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
 
     @property
     def tree(self) -> BaseChannelTree:
-        if not self._importlib:
+        if not self._tree:
             raise RuntimeError(f"channel is not running")
-        return self._importlib
+        return self._tree
 
     @property
     def container(self) -> IoCContainer:
@@ -598,18 +599,19 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     # --- 开始与结束 --- #
 
     @contextlib.asynccontextmanager
-    async def _importlib_ctx(self):
+    async def _ensure_channel_tree_binding_ctx(self):
         try:
-            if self._importlib is None:
-                _importlib = self._container.get(BaseChannelTree)
-                if _importlib is None:
-                    _importlib = BaseChannelTree(self, self._container)
-                    self.container.set(BaseChannelTree, _importlib)
-                self._importlib = _importlib
+            if self._tree is None:
+                _tree = self._container.get(ChannelTree)
+                if _tree is None:
+                    _tree = BaseChannelTree(self, self._container)
+                    self.container.set(BaseChannelTree, _tree)
+                    self.container.set(ChannelTree, _tree)
+                self._tree = _tree
             yield
         finally:
-            if self._importlib.main is self:
-                await self._importlib.close()
+            if self._tree.main is self:
+                await self._tree.close()
 
     @contextlib.asynccontextmanager
     async def _start_and_close_ctx(self):
@@ -725,7 +727,7 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         self._runtime_asyncio_task_group.discard(task)
 
     def _async_exit_ctx_funcs(self) -> Iterable[Callable]:
-        yield self._importlib_ctx
+        yield self._ensure_channel_tree_binding_ctx
         yield self._start_and_close_ctx
         yield self._running_task_ctx
         yield self._main_loop_ctx
@@ -745,11 +747,11 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         for ctx_func in self._async_exit_ctx_funcs():
             await self._exit_stack.enter_async_context(ctx_func())
             self.logger.debug("%s start stack %s entered", self.log_prefix, ctx_func)
-        # 递归启动子节点.
         self._started.set()
-        # 拥有 importlib 的根节点的话, 需要启动.
-        if self._importlib.main is self:
-            await self._importlib.start()
+        # 拥有 tree 的根节点的话, 需要启动.
+        if self._tree.main is self:
+            # 启动 channel tree.  只有当自己是根节点的时候才有资格.
+            await self._tree.start()
         self.logger.info("%s started", self.log_prefix)
         return self
 
@@ -796,4 +798,4 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
         # 防止互相持有.
         self._on_task_done_callbacks.clear()
         self._channel = None
-        self._importlib = None
+        self._tree = None

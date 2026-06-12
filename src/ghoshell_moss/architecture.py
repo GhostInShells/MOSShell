@@ -50,7 +50,7 @@ import ghoshell_moss.core.blueprint.manifests as manifests
 import ghoshell_moss.core.blueprint.app as app
 import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
-import ghoshell_moss.core.blueprint.conversation as conversation
+import ghoshell_moss.core.blueprint.memento as memento
 import ghoshell_moss.core.blueprint.fractal as fractal
 
 

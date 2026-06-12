@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -811,20 +812,21 @@ async def test_py_channel_import_factory_return_none():
 @pytest.mark.asyncio
 async def test_on_refresh_meta_basic():
     """build.refresh_meta 注册的回调在 bootstrap 和每次 refresh_metas 时被调用。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
     main = PyChannel(name="main")
     refreshed: list[int] = []
-
-    # 强制 dynamic，确保 static cache 不跳过 on_refresh_meta
-    main.build._dynamic = True
 
     @main.build.refresh_meta
     async def on_refresh() -> None:
         refreshed.append(1)
 
     async with main.bootstrap() as runtime:
-        # bootstrap 时已经触发了一次 refresh
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
         before = len(refreshed)
         assert before >= 1
+        tree.config.node_refresh_interval = 0.0
         await runtime.refresh_metas()
         assert len(refreshed) == before + 1
 
@@ -832,6 +834,8 @@ async def test_on_refresh_meta_basic():
 @pytest.mark.asyncio
 async def test_on_refresh_meta_multiple():
     """多个 refresh_meta 回调并行执行。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
     main = PyChannel(name="main")
     order: list[str] = []
 
@@ -844,6 +848,10 @@ async def test_on_refresh_meta_multiple():
         order.append("b")
 
     async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        order.clear()
+        tree.config.node_refresh_interval = 0.0
         await runtime.refresh_metas()
         assert sorted(order) == ["a", "b"]
 
@@ -851,6 +859,8 @@ async def test_on_refresh_meta_multiple():
 @pytest.mark.asyncio
 async def test_on_refresh_meta_sync_callback():
     """同步回调也能被正确包装。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
     main = PyChannel(name="main")
     called: list[int] = []
 
@@ -859,6 +869,10 @@ async def test_on_refresh_meta_sync_callback():
         called.append(1)
 
     async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        called.clear()
+        tree.config.node_refresh_interval = 0.0
         await runtime.refresh_metas()
         assert called == [1]
 
@@ -866,6 +880,8 @@ async def test_on_refresh_meta_sync_callback():
 @pytest.mark.asyncio
 async def test_on_refresh_meta_exception_isolated():
     """一个回调抛异常不影响其他回调，也不影响 refresh 流程。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
     main = PyChannel(name="main")
     second_called: list[int] = []
 
@@ -878,6 +894,10 @@ async def test_on_refresh_meta_exception_isolated():
         second_called.append(1)
 
     async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        second_called.clear()
+        tree.config.node_refresh_interval = 0.0
         await runtime.refresh_metas()
         assert second_called == [1]
         assert runtime.is_running()
@@ -885,17 +905,13 @@ async def test_on_refresh_meta_exception_isolated():
 
 @pytest.mark.asyncio
 async def test_on_refresh_meta_with_virtual_children():
-    """Hub 模式：on_refresh_meta 更新内部状态，get_virtual_children 返回最新。
+    """Hub 模式：on_refresh_meta 更新内部状态，get_virtual_children 返回最新。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
 
-    需要 channel 是 dynamic 的，否则 static cache 会跳过 on_refresh_meta。
-    """
     main = PyChannel(name="main")
     child_a = PyChannel(name="a")
     child_b = PyChannel(name="b")
     children_list: list[PyChannel] = []
-
-    # 强制 dynamic，确保每轮 refresh 都走 on_refresh_meta
-    main.build._dynamic = True
 
     @main.build.refresh_meta
     async def prepare() -> None:
@@ -904,10 +920,12 @@ async def test_on_refresh_meta_with_virtual_children():
             main.build.add_virtual_channel(ch)
 
     async with main.bootstrap() as runtime:
-        # bootstrap 已经刷新过一次，列表为空
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
         assert len(runtime.virtual_sub_channels()) == 0
 
         children_list.append(child_a)
+        tree.config.node_refresh_interval = 0.0
         await runtime.refresh_metas()
         assert len(runtime.virtual_sub_channels()) == 1
         assert "a" in runtime.virtual_sub_channels()
@@ -922,14 +940,350 @@ async def test_on_refresh_meta_with_virtual_children():
 
 
 @pytest.mark.asyncio
-async def test_on_refresh_meta_py_builder_direct():
-    """PyChannelBuilder.refresh_meta 注册 + on_refresh_meta 调用。"""
-    builder = PyChannelBuilder(name="test")
-    called: list[int] = []
+async def test_refresh_meta_callback_is_invoked():
+    """verify that refresh_meta callbacks run during refresh_metas()."""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
 
-    @builder.refresh_meta
-    async def on_refresh() -> None:
-        called.append(1)
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
 
-    await builder.on_refresh_meta()
-    assert called == [1]
+    invoked: list[int] = []
+
+    @child.build.refresh_meta
+    async def record_invocation() -> None:
+        invoked.append(1)
+
+    async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        assert len(invoked) >= 1  # bootstrap triggers refresh
+
+        invoked.clear()
+        tree.config.node_refresh_interval = 0.0
+        await runtime.refresh_metas()
+        assert len(invoked) == 1
+
+
+@pytest.mark.asyncio
+async def test_child_refresh_own_metas_direct_call_triggers_callback():
+    """bypass tree: 直接调 child runtime 的 refresh_own_metas() → callback 应该触发。"""
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    invoked: list[int] = []
+
+    @child.build.refresh_meta
+    async def record_invocation() -> None:
+        invoked.append(1)
+
+    async with main.bootstrap() as runtime:
+        child_runtime = runtime.fetch_sub_runtime("child")
+        assert child_runtime is not None
+        assert child_runtime.is_running()
+
+        invoked.clear()
+        await child_runtime.refresh_own_metas()
+        assert len(invoked) == 1, f"expected 1 callback, got {len(invoked)}"
+
+
+@pytest.mark.asyncio
+async def test_child_refresh_own_metas_second_call_triggers_callback():
+    """连续两次直接调 refresh_own_metas → 第二次也应该触发。"""
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    invoked: list[int] = []
+
+    @child.build.refresh_meta
+    async def record_invocation() -> None:
+        invoked.append(1)
+
+    async with main.bootstrap() as runtime:
+        child_runtime = runtime.fetch_sub_runtime("child")
+        assert child_runtime is not None
+
+        invoked.clear()
+        await child_runtime.refresh_own_metas()
+        assert len(invoked) == 1
+
+        invoked.clear()
+        await child_runtime.refresh_own_metas()
+        assert len(invoked) == 1, f"second call: expected 1, got {len(invoked)}"
+
+
+@pytest.mark.asyncio
+async def test_tree_second_refresh_reaches_child():
+    """tree 根节点第二次 refresh 时 child node 的 refresh_count 递增，且 callback 触发。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    invoked: list[int] = []
+
+    @child.build.refresh_meta
+    async def record_invocation() -> None:
+        invoked.append(1)
+
+    async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        child_path = tree.get_channel_path(child.id())
+        child_node = tree.get_channel_node_by_path(child_path)
+        assert child_node is not None
+
+        count_after_bootstrap = child_node.refresh_count
+        assert count_after_bootstrap >= 1
+
+        invoked.clear()
+        tree.config.node_refresh_interval = 0.0
+        await runtime.refresh_metas()
+
+        assert child_node.refresh_count > count_after_bootstrap
+        assert len(invoked) >= 1
+
+
+@pytest.mark.asyncio
+async def test_child_node_state_after_bootstrap():
+    """bootstrap 后检查 child node 的关键状态值."""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    async with main.bootstrap() as runtime:
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        child_path = tree.get_channel_path(child.id())
+        child_node = tree.get_channel_node_by_path(child_path)
+        child_runtime = runtime.fetch_sub_runtime("child")
+        assert child_runtime is not None
+
+        assert child_node.refresh_count >= 1
+        assert child_node.failure == ""
+        assert child_runtime.is_connected()
+        assert child_runtime.is_available()
+        assert child_runtime.is_running()
+
+
+@pytest.mark.asyncio
+async def test_refresh_tick_detects_overdue():
+    """tick 监测整体 refresh 耗时超过 max_refresh_time 时标记 overdue。
+
+    tick 从 refresh() 入口即开始计时，不等 _refresh_structure 完成。
+    而 wait_for 从 _refresh 内部才开始。所以 tick 先于 wait_for 触发。
+    """
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    allow = asyncio.Event()
+    done = asyncio.Event()
+
+    actually_refresh_count = 0
+
+    @child.build.refresh_meta
+    async def slow_refresh() -> None:
+        nonlocal actually_refresh_count
+        actually_refresh_count += 1
+        # 加一个阻塞, 方便定义并行验证.
+        await asyncio.sleep(0.01)
+        await allow.wait()
+        done.set()
+
+    # 先让刷新进行.
+    allow.set()
+    # 启动完成刷新一次.
+    async with main.bootstrap() as runtime:
+        # 确保启动时只调用一次. 不能有两次.
+        tree = runtime.tree
+        assert isinstance(tree, BaseChannelTree)
+        assert actually_refresh_count == 1
+
+        # 手动设置一个放刷新间隔. 实际上不要有, 因为容易有问题.
+        tree.config.node_refresh_interval = 1
+        child_id = child.id()
+        child_path = tree.get_channel_path(child_id)
+        child_node = tree.get_channel_node_by_path(child_path)
+        # 同时确认函数调用了, 而且只调用一次.
+        assert child_node.refresh_own_meta_count == 1
+        assert child_node.refresh_count == 1
+
+        assert child_node.path == 'child'
+        # 只刷新一次, 所以实际上 refresh count 成功 (在 runtime start 的时候)
+        assert child_node.refresh_own_meta_count == 1
+        assert child_node.refresh_own_meta_success_count == 1
+        tree.config.node_refresh_interval = 0.5  # 设置保护期.
+        await runtime.refresh_metas()
+        await runtime.refresh_metas()
+        await runtime.refresh_metas()
+        # 在保护期里应该没有刷新, 3 个请求都没有刷新
+        assert child_node.refresh_own_meta_count == 1
+        assert child_node.refresh_own_meta_success_count == 1
+        assert actually_refresh_count == 1
+        # 取消保护期.
+        tree.config.node_refresh_interval = 0.0
+        await runtime.refresh_metas()
+        # 刷新成功.
+        assert child_node.refresh_own_meta_count == 2
+        assert child_node.refresh_own_meta_success_count == 2
+        assert done.is_set()
+        # 开始准备卡死刷新.
+        # 不允许刷新通过.
+        allow.clear()
+        done.clear()
+        # 设置 refresh 本身在 0.1 秒就直接退出.
+        tree.config.node_refresh_meta_timeout = 0.1
+        # 起步一个 ft, 但不 wait 它. 仍然应该开始刷新了.
+        ft = runtime.refresh_metas()
+        await asyncio.sleep(0.01)
+        # 准备一个 buffer 刷新触发, 但未完成.
+        assert child_node.refresh_own_meta_count == 3
+        assert actually_refresh_count == 3
+        assert child_node.refresh_own_meta_success_count == 2
+        # 允许执行.
+        allow.set()
+        # 延时阻塞.
+        await ft
+        # 判断刷新成立了.
+        assert child_node.refresh_own_meta_count == 3
+        # 这时刷新成功了.
+        assert child_node.refresh_own_meta_success_count == 3
+        assert done.is_set()
+
+
+        # 准备新一轮测试. 这一轮设置窗口
+        tree.config.node_refresh_interval = 0.0
+        allow.clear()
+        done.clear()
+        # 设置刷新等待的最大的时间. 如果窗口设置得非常小, 会立刻退出.
+        tree.config.node_refresh_meta_timeout = 0.01
+        # 设置每个节点自身最大的刷新时间. 超过这个时间, 内部刷新任务也会取消.
+        tree.config.node_refresh_own_meta_timeout = 0.05
+        # 开始确认现场.
+        assert child_node.refresh_own_meta_count == 3
+        assert child_node.refresh_own_meta_success_count == 3
+        assert not done.is_set()
+
+        # 阻塞到运行结束. 实际上 0.01 后就应该主动退出了
+        # 所以不会抛出异常.
+        start_to_refresh = time.monotonic()
+        await asyncio.wait_for(runtime.refresh_metas(), 0.03)
+
+        # 判断运行没有结束.
+        assert not done.is_set()
+        assert child_node.refresh_own_meta_count == 4  # 启动了刷新
+        assert child_node.refresh_own_meta_success_count == 3  # 实际上还没执行完.
+        # 确认实际上没阻塞到 0.03 秒.
+        assert time.monotonic() - start_to_refresh < 0.03
+        # 保留这一帧的 refreshed at.
+        refresh_at = child_node.refreshed_at
+
+        # 确认现场,没有允许过执行.
+        assert not allow.is_set()
+        assert not done.is_set()
+        # 设置一个更长的等待起, 内部的 refresh own meta 应该也超时了.
+        await asyncio.sleep(0.07)
+        # 仍然没走到过 done.
+        assert not allow.is_set()
+        assert not done.is_set()
+        # 由于实际等待时间, 超过了最大内部刷新时间, 所以 failure 会被设置.
+        assert child_node.failure != ''
+        assert child_node.refresh_own_meta_count == 4  # 启动了刷新
+        assert child_node.refresh_own_meta_success_count == 3  # 实际上这是没有执行成功.
+
+        # 由于刷新任务执行完毕, 所以实际上 refresh at 应该更新了.
+        new_refresh_at = child_node.refreshed_at
+        assert new_refresh_at > refresh_at
+        # 再试最后一次, 在结束期前完成.
+        await asyncio.wait_for(runtime.refresh_metas(), 0.03)
+        # 虽然没启动刷新, 但实际上偷偷刷新完了.
+        assert child_node.refresh_own_meta_count == 5
+        # 由于刷新不成功, 所以计数不增加.
+        assert child_node.refresh_own_meta_success_count == 3
+
+        # 通过.
+        allow.set()
+        # 让出一次, 让后续逻辑能走完.
+        await asyncio.sleep(0.01)
+        # 虽然没启动刷新, 但实际上偷偷刷新完了.
+        assert child_node.refresh_own_meta_count == 5
+        # 由于刷新不成功, 所以计数不增加.
+        assert child_node.refresh_own_meta_success_count == 4
+        # 实际上背后刷新执行完了. failure 被更新了.
+        assert child_node.failure == ''
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_exits_quickly_and_metas_show_failure():
+    """挂起的 refresh 在超时后即时退出，channel metas 反映 failure 状态。"""
+    from ghoshell_moss.core.runtime.tree import BaseChannelTree
+
+    main = PyChannel(name="main")
+    child = PyChannel(name="child")
+    main.import_channels(child)
+
+    hang = asyncio.Event()
+    hang.set()
+
+    @child.build.refresh_meta
+    async def blocker() -> None:
+        await hang.wait()
+
+    async with main.bootstrap() as runtime:
+        assert len(runtime.metas()) == 2
+        tree = runtime.tree
+        assert len(tree.metas()) == 2
+        assert isinstance(tree, BaseChannelTree)
+
+        # 第一轮 — bootstrap 成功
+        root_node = tree.get_channel_node_by_path('')
+        assert len(root_node.children_names) == 1
+        child_path = tree.get_channel_path(child.id())
+        child_node = tree.get_channel_node_by_path(child_path)
+        assert child_node.failure == ""
+
+        # 准备失败刷新
+        hang.clear()
+        tree.config.node_refresh_meta_timeout = 0.05
+        # 标记比全局退出还晚.
+        tree.config.node_refresh_own_meta_timeout = 0.04
+        tree.config.node_refresh_interval = 0.0
+
+        # 触发刷新 — shielded task 会 hang，用外部 wait_for 限时
+        t0 = time.monotonic()
+        await asyncio.wait_for(runtime.refresh_metas(), 0.10)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"refresh took {elapsed:.2f}s"
+
+        # node 级 — tick 已标记 failure, refresh 没成功完成
+        assert child_node.failure != ""
+        assert child_node.refresh_success_count == 1  # 只有 bootstrap 那一次
+        assert len(root_node.children_names) == 1
+        child_runtime = runtime.fetch_sub_runtime('child')
+        child_metas, ok = child_node.get_own_metas(child_runtime)
+        assert ok is False
+        assert child_metas[''].failure == child_node.failure
+
+        # tree.metas() — 现在走 node.get_own_metas()，failure 可见
+        main_metas = tree.metas(main)
+        # 主干 main 自己没有出错, 才能往后走
+        assert main_metas[''].failure == ""
+        # 子节点 要有错.
+        child_metas = tree.metas(child)
+        assert child_metas[''].failure != ''
+
+        tree_metas = tree.metas()
+        child_meta = tree_metas.get("child")
+        assert child_meta is not None, f"child not in metas, keys: {list(tree_metas.keys())}"
+        assert child_meta.available is False
+        assert child_meta.failure != ""
+
+    hang.set()

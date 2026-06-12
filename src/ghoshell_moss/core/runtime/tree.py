@@ -11,13 +11,36 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelMeta,
 )
 from ghoshell_moss.core.concepts.command import Command, CommandUniqueName
+from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_common.contracts import LoggerItf
 import logging
 import time
 import contextlib
 import asyncio
 
-__all__ = ["BaseChannelTree"]
+__all__ = ["BaseChannelTree", "ChannelTreeConfig"]
+
+
+class ChannelTreeConfig:
+    """BaseChannelTree 共享配置 — 引用传递给所有 ChannelRuntimeNode。
+
+    运行时可通过 BaseChannelTree.config 修改，所有节点即时生效。
+    """
+
+    def __init__(self):
+        # 节点最大刷新时间. 超过时间, 节点会取消阻塞, 让生成 meta 时节点及其子节点都消失. 但更新动作本身仍然会持续.
+        # 核心目标是退出刷新阻塞. 而不是禁止刷新.
+        self.node_refresh_meta_timeout: float = 2.0
+
+        # 刷新的内部防御机制. 默认关闭.
+        # 基础道理是, 一个节点很可能更新了自身的状态, 所以会立刻需要重刷. 保留技术实现
+        self.node_refresh_interval: float = 0.0
+
+        # 节点同一时间只会进行一次内部刷新. 由于内部刷新可能因为网络波动等原因, 要对内部刷新做最大超时.
+        # 如果内部刷新超时的话, 要终止刷新本身. 内部刷新和对外的时间承诺分开.
+        # 刷新失败的节点不影响下一次重新得到刷新的机会.
+        self.node_refresh_own_meta_timeout: float = 1.5
+
 
 _ChannelId = str
 _ChannelName = str
@@ -61,22 +84,27 @@ class ChannelRuntimeNode:
             path: str,
             loop: asyncio.AbstractEventLoop,
             logger: LoggerItf,
-            refresh_interval: float = 0.0,
+            *,
+            config: "ChannelTreeConfig | None" = None,
     ):
         self.id = id
         self.path = path
         self.logger = logger
+        # 第一次刷新肯定不禁止.
         self.refreshed_at: float = 0.0
         self.refreshing_lock = asyncio.Lock()
+        self.refresh_count: int = 0
+        self.refresh_success_count: int = 0
+        self.refresh_own_meta_count: int = 0
+        self.refresh_own_meta_success_count: int = 0
         self.loop = loop
         self.refreshing_task: Optional[asyncio.Task] = None
-        self.refresh_interval: float = refresh_interval
         self.failure: str = ''
-
+        self._config = config or ChannelTreeConfig()
+        self._refresh_done_event = ThreadSafeEvent()
         self.sustain_children: set[_ChannelId] = set()
         self.virtual_children: set[_ChannelId] = set()
         self.children_names: dict[_ChannelId, _ChannelName] = dict()
-        self.refresh_time: int = 0
         self.logger_prefix = "<ChannelRuntimeNode path=%s id=%s>" % (path, id)
 
     def __repr__(self):
@@ -99,17 +127,29 @@ class ChannelRuntimeNode:
         if not runtime.is_running():
             # 容错. 应该不会被调用到.
             self.logger.error("%r refresh after running done", self)
-            return asyncio.create_task(_noop())
-        if self.refreshing_task is not None and not self.refreshing_task.done():
-            # 返回未完成的 task.
-            return self.refreshing_task
-        # 创建新的 task.
-        self.refreshing_task = asyncio.create_task(self._refresh(runtime, ctx, wait))
-        return asyncio.shield(self.refreshing_task)
+            return self.loop.create_task(_noop())
+        # 作为一个关键的校验点, 判断是否要重新刷新.
+        if self.refreshing_task is None or self.refreshing_task.done():
+            # 需要刷新的时候, 才会创建新的刷新 task.
+            # 这样连续两次调用 refresh 时, 不会并行发出更新通讯.
+            # 由于只有一个 task 会运行, 所以可以复用同一个 thread safe event.
+            self._refresh_done_event.clear()
+            self.refreshing_task = self.loop.create_task(self._refresh(runtime, ctx, wait))
+            self.refreshing_task.add_done_callback(lambda _: self._refresh_done_event.set())
+
+        async def _wait_until_block_timeout():
+            try:
+                # 实际上等待的是 event 而不是那个 task.
+                await asyncio.wait_for(self._refresh_done_event.wait(), timeout=self._config.node_refresh_meta_timeout)
+            except asyncio.TimeoutError:
+                return
+
+        # 防御并行刷新, 和外部 cancel.
+        return asyncio.create_task(_wait_until_block_timeout())
 
     def get_own_metas(self, runtime: ChannelRuntime) -> tuple[dict[ChannelFullPath, ChannelMeta], bool]:
         """
-        获取一个节点的
+        获取一个节点自身的元信息. 无防御.
         """
         if not runtime.is_running():
             metas = {'': ChannelMeta.new_empty(self.id, runtime.channel, "not running")}
@@ -132,41 +172,65 @@ class ChannelRuntimeNode:
             ctx: ChannelTreeContext,
             recursive_wait: bool,
     ) -> None:
-        now = time.time()
+        # 命令执行的时间.
+        start_at = time.time()
         async with self.refreshing_lock:
-            # 检查不合法.
-            if now < self.refreshed_at + self.refresh_interval:
+            already_refreshed = start_at < self.refreshed_at
+            if already_refreshed:
+                # 刚刚已经刷新过了, 因为锁的缘故卡了一会. 不重复刷新, 以最后一次为准.
                 return
             if not runtime.is_running() or not runtime.is_connected() or not runtime.is_available():
                 return
             try:
-                self.refresh_time += 1
+                # 记录触发刷新的次数.
+                self.refresh_count += 1
                 # 先更新结构.
                 existing_sub_channels = await self._refresh_structure(runtime, ctx, recursive_wait)
                 self.logger.info("%r refreshed structure", self)
-                await asyncio.sleep(0.0)
                 # 再更新 meta.
                 waiting_tasks = []
                 for channel_id in existing_sub_channels:
+                    # 从 tree 重新进入开始刷新. 每个任务都有最大的超时时间.
                     task = ctx.refresh(channel_id, wait=recursive_wait)
                     if task and recursive_wait:
                         waiting_tasks.append(task)
-                wait_self = runtime.refresh_own_metas()
-                # 先阻塞等待自己.
+                now = time.time()
+                # 在保护期内, 计算方式是最后更新的间隔时间, 小于允许的刷新周期, 就在保护期内; 同时保护期本身要求是合法的.
+                in_duplicated_refresh_protection = now - self.refreshed_at < self._config.node_refresh_interval and \
+                                                   self._config.node_refresh_interval > 0
+                # 不在保护期, 或者已经过期.
+                if not in_duplicated_refresh_protection:
+                    try:
+                        self.refresh_own_meta_count += 1
+                        # 内部最大可以允许的时间. 同时注入了 cancel 到 refresh own metas 里.
+                        t = runtime.refresh_own_metas()
+                        await asyncio.wait_for(t, self._config.node_refresh_own_meta_timeout)
+                        if t.cancelled():
+                            self.failure = "refresh canceled"
+                        else:
+                            self.refresh_own_meta_success_count += 1
+                            self.failure = ''
+                    except asyncio.TimeoutError:
+                        # 超时了直接退出. 自己失败时, 子孙都不用等了.
+                        self.failure = 'refresh timeout'
+                        return
 
-                await wait_self
+                # 然后等待子孙 (best-effort)
                 if recursive_wait and len(waiting_tasks) > 0:
-                    # 然后等待子孙.
+                    # 子孙节点都会有最大超时时间.
                     _ = await asyncio.gather(*waiting_tasks, return_exceptions=True)
                 self.logger.info("%r refreshed self and sub channels", self)
-                # 更新最后刷新时间.
-                self.failure = ''
+
+                # 记录成功刷新的次数. 包含子节点都刷新成功, 才是真的成功.
+                self.refresh_success_count += 1
             except asyncio.CancelledError:
                 self.logger.info("%r refreshed cancelled", self)
                 raise
+            except asyncio.TimeoutError:
+                self.logger.info("%r refresh timeout", self)
+                self.failure = 'refresh timeout'
             except Exception as e:
                 self.logger.error("%r refreshed exception: %r", self, e, exc_info=True)
-
                 # 更新失败, 不允许使用.
                 self.failure = "refresh failed: %s" % e
             finally:
@@ -185,18 +249,15 @@ class ChannelRuntimeNode:
         """
         # 准备创建的节点.
         creating_children_channels: dict[ChannelFullPath, Channel] = {}
-        sub_channels = runtime.sub_channels()
+        # 已经存在的 channel id
         existing_sub_channels: set[_ChannelId] = set()
-        new_children_names: dict[_ChannelId, _ChannelName] = dict()
+        new_version_of_children_names: dict[_ChannelId, _ChannelName] = dict()
         # 首先刷新树形结构. 发现失联节点删除, 发现新节点添加.
-        for name, child in sub_channels.items():
-            _channel_id = child.id()
-            if self.refresh_time == 1 or _channel_id in self.sustain_children:
-                existing_sub_channels.add(_channel_id)
-                # 管理 names.
-                new_children_names[_channel_id] = name
-            # 已经完成过初始化.
-            if self.refresh_time == 1:
+        sub_channels = runtime.sub_channels()
+        if self.refresh_count == 1:
+            # 刷新静态节点.
+            for name, child in sub_channels.items():
+                _channel_id = child.id()
                 # 没有第一次创建过. 才允许创建父节点.
                 if ctx.exists(_channel_id):
                     # 被别人先抢为儿子孙子了.
@@ -207,19 +268,27 @@ class ChannelRuntimeNode:
                 fullpath = Channel.join_channel_path(self.path, name)
                 # 先注册要创建的节点.
                 creating_children_channels[fullpath] = child
+                new_version_of_children_names[_channel_id] = name
+        else:
+            for name, child in sub_channels.items():
+                _channel_id = child.id()
+                if _channel_id in self.sustain_children:
+                    existing_sub_channels.add(_channel_id)
+                    # 管理 names.
+                    new_version_of_children_names[_channel_id] = name
 
         # 开始准备动态节点.
         new_virtual_children = set()
         for name, child in runtime.virtual_sub_channels().items():
             # 不允许同名子节点.
-            if name in new_children_names:
+            if name in new_version_of_children_names:
                 continue
             _channel_id = child.id()
             if _channel_id in self.virtual_children:
                 # 是已经注册过的.
                 new_virtual_children.add(_channel_id)
                 existing_sub_channels.add(_channel_id)
-                new_children_names[_channel_id] = name
+                new_version_of_children_names[_channel_id] = name
                 continue
             # 尝试创建这个节点.
             if ctx.exists(_channel_id):
@@ -228,7 +297,7 @@ class ChannelRuntimeNode:
             new_virtual_children.add(_channel_id)
             fullpath = Channel.join_channel_path(self.path, name)
             creating_children_channels[fullpath] = child
-            new_children_names[_channel_id] = name
+            new_version_of_children_names[_channel_id] = name
 
         removing_children: list[_ChannelId] = []
         for _channel_id in self.virtual_children:
@@ -263,7 +332,7 @@ class ChannelRuntimeNode:
 
         # 赋值, 更新新的动态节点.
         self.virtual_children = new_virtual_children
-        self.children_names = new_children_names
+        self.children_names = new_version_of_children_names
         return existing_sub_channels
 
     async def clear(self):
@@ -289,6 +358,9 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         self._name = "MossChannelImportLib/{}/{}".format(main.name, main.id)
         self._id = main.channel.id()
         self._container = container or Container(name=self._name)
+        # 共享配置，所有 ChannelRuntimeNode 持有引用，可运行时调整
+        # 先从 IoC 容器取，未注册则用默认值 — 隐藏扩展点
+        self.config = self._container.get(ChannelTreeConfig) or ChannelTreeConfig()
         # 绑定自身到容器中. 凡是用这个容器启动的 runtime, 都可以拿到 ChannelImportLib 并获取子 channel runtime.
         self._logger: Optional[LoggerItf] = None
         # 所有的 runtime.
@@ -338,7 +410,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             # 如果 channel 无法生成 runtime.
             return asyncio.create_task(_noop())
         self._runtimes[channel_id] = runtime
-        node = ChannelRuntimeNode(channel_id, path, self._loop, logger=self._logger)
+        node = ChannelRuntimeNode(channel_id, path, self._loop, logger=self._logger, config=self.config)
         # 注册 node 节点.
         self._runtime_status_nodes[path] = node
         # 建立查找关系.
@@ -356,7 +428,8 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                 _task = self.remove(channel_id)
                 if _task:
                     await _task
-            #  首次启动时, 强制递归刷新.
+            # 首次启动时, 强制递归刷新.
+            # 如果不同层递归刷新, 后续的子节点就无法拿到.
             await self.refresh(channel_id, wait=True)
 
         # 创建异步任务.
@@ -510,18 +583,18 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
                     path='',
                     loop=self._loop,
                     logger=self.logger,
+                    config=self.config,
                 )
                 # 添加爱根节点.
                 self._runtimes[node.id] = self._main
                 self._runtime_status_nodes[node.path] = node
                 self._channel_id_to_paths[node.id] = node.path
-
+                # 从根节点开始启动刷新.
                 await self.refresh(self._main.channel.id(), wait=True)
                 self._started.set()
                 # 等待到关闭发生.
                 await self._closing_event.wait()
                 self._closed = True
-                await self._clear_all_runtimes()
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -530,6 +603,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         finally:
             self._closed = True
             self.logger.info("%r main loop stopped", self)
+            await self._clear_all_runtimes()
 
     async def _clear_all_runtimes(self) -> None:
         runtimes = self._runtimes.copy()
@@ -605,6 +679,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
     def _metas(
             self,
             path: ChannelFullPath = '',
+            *,
             virtual: bool = False,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """virtual 是一个递归属性，channel meta 自解释时，父节点是 virtual， 所有的子孙都是 virtual """
@@ -614,21 +689,15 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         runtime = self._runtimes.get(node.id)
         if runtime is None:
             return {}
-        if not runtime.is_running():
-            return {}
-        if not runtime.is_connected():
-            return {'': ChannelMeta.new_empty(runtime.channel.id(), runtime.channel, "not connected")}
-        if not runtime.is_available():
-            return {'': ChannelMeta.new_empty(runtime.channel.id(), runtime.channel, "not available")}
-        metas = runtime.own_metas().copy()
-        if '' not in metas:
-            return {}
+        metas, ok = node.get_own_metas(runtime)
+        if not ok or '' not in metas:
+            return metas
         # 赋值子节点名字. 这个参数是实质动态创建的.
         for child_id, child_name in node.children_names.items():
             child_is_virtual = virtual or child_id in node.virtual_children
             sub_full_path = Channel.join_channel_path(path, child_name)
             # 递归获取 metas.
-            sub_metas = self._metas(sub_full_path, virtual=child_is_virtual)
+            sub_metas = self._metas(sub_full_path, virtual=virtual or child_is_virtual)
             for sub_relative_path, meta in sub_metas.items():
                 relative_sub_path = Channel.join_channel_path(child_name, sub_relative_path)
                 if child_is_virtual and not meta.virtual:
@@ -666,6 +735,9 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
         path = self._channel_id_to_paths.get(channel_id)
         if not path:
             self.logger.error("%s get runtime path by %s error: not found", self.log_prefix, channel_id)
+        return self.get_channel_node_by_path(path)
+
+    def get_channel_node_by_path(self, path: ChannelFullPath) -> ChannelRuntimeNode | None:
         node = self._runtime_status_nodes.get(path)
         return node
 
@@ -782,6 +854,7 @@ class BaseChannelTree(ChannelTree, ChannelTreeContext):
             return
         self._start = True
         self._loop = asyncio.get_event_loop()
+        # 在主循环里第一次启动.
         self._main_loop_task = self._loop.create_task(self._main_loop())
         await self._started.wait()
         if self._error:

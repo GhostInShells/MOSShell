@@ -13,6 +13,7 @@ Mindflow 调度中枢实现.
   priority_mindflow    — PriorityMindflow + new_default_mindflow() 工厂函数
 """
 
-from ghoshell_moss.core.mindflow.priority_mindflow import new_default_mindflow, PriorityMindflow
-
-__all__ = ['new_default_mindflow', 'PriorityMindflow']
+from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, AbsMindflow, new_default_mindflow
+from ghoshell_moss.core.mindflow.base_attention import AbsAttention, BaseAttention
+from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
+from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus

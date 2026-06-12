@@ -2,6 +2,7 @@ import asyncio
 from typing import AsyncIterator, Coroutine
 from typing_extensions import Self
 
+from ghoshell_moss.core.blueprint import ThinkingEffort
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
 from ghoshell_moss.core.blueprint.mindflow import Articulator, Mindflow, Moment, Logos
 from ghoshell_moss.core.concepts.channel import Channel
@@ -108,6 +109,9 @@ class MockArticulator(Articulator):
     @property
     def moment(self) -> Moment:
         return self._moment
+
+    def thinking_effort(self) -> ThinkingEffort:
+        return ''
 
     def send_nowait(self, logos_delta: str) -> None:
         self._sent.append(logos_delta)

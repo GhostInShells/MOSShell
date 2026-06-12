@@ -1,15 +1,14 @@
-from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any, Type
+from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any
 
 from typing_extensions import Self, Literal
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field, AwareDatetime, ValidationError
-
-from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.command import ObserveError
+from ghoshell_moss.core.concepts.channel import Channel
+from ghoshell_moss.message import Message, ContextType
 from ghoshell_moss.message import unique_id
 from ghoshell_container import IoCContainer
-from PIL.Image import Image
-from .conversation import Reaction, Moment
+from .memento import Reaction, Moment
 import datetime
 import dateutil
 import time
@@ -51,8 +50,11 @@ __all__ = [
     'Attention',
     # 几个关键的通讯信号, 用来快速终止一些循环.
     'AttentionAbortedError', 'ObserveError', 'ActionAbortedError', 'ArticulateAbortedError',
-    'PreemptedElseSuppress', 'BufferImpulse',
+    'PreemptedElseSuppress', 'ImpulseAbsorbed',
     'ChallengeVerdict',
+    'ThinkingEffort',
+    'ChallengeMode',
+    'ImpulsePrimitive',
 ]
 
 SignalName = str
@@ -61,9 +63,10 @@ SignalName = str
 class Priority(enum.IntEnum):
     """
     为了避免优先级无限膨胀, 因此做策略约定.
+    todo: 检查 python 3.10 是否支持.
     """
-    DEBUG = -1  # 通常只是保留在 Mindflow 的 context 列表中, 不会产生 Attention.
-    INFO = 0  # 特殊的默认约定, 当相同 source 的 Impulse 在 Attention 生命周期中, 接受到了 INFO 级别的 Impulse, 就会唤起新的 observe.
+    BACKGROUND = -1  # 永远不能挑战成功任何当前注意力.
+    INFO = 0  # 基础值.
     NOTICE = 1
     WARNING = 2
     ERROR = 3
@@ -132,10 +135,10 @@ class Signal(BaseModel):
         default_factory=list,
         description="被处理过的消息体.",
     )
-    prompt: str = Field(
+    hint: str = Field(
         default='',
-        description="the prompt to handle the signal."
-                    "prompt 也是可选的实现. 默认为空即可. 它的作用是一种补丁. 当一个输入进来时, 模型很可能按预训练约定去理解."
+        description="the hint of how to handle the signal."
+                    "hint 也是可选的实现. 默认为空即可. 它的作用是一种补丁. 当一个输入进来时, 模型很可能按预训练约定去理解."
                     "典型案例如 图片, 模型会默认认为这是在 IM 里提交的一张照片. 而不知道这是自己的 vision. "
                     "这时就可以用补丁; 为什么拆到 prompt 字段呢? "
                     "因为 prompt 对多轮对话而言是一定要丢弃的; 放入 messages 里, 会导致上下文里被 prompt 补丁淹没. ",
@@ -238,21 +241,20 @@ class SignalMeta(BaseModel, ABC):
 
     def to_signal(
             self,
-            *messages: Message | str | Image,
+            *messages: ContextType,
             description: str = '',
             stale_timeout: float = 0,
             priority: int | None = None,
+            hint: str = '',
     ) -> Signal:
         """快速用 meta 定义一个 signal. 提示两者的使用机制. """
         name = self.signal_name()
         wrapped_messages = []
         for msg in messages:
-            if isinstance(msg, Image):
-                wrapped_messages.append(Message.new().with_content(msg))
-            elif isinstance(msg, str):
-                wrapped_messages.append(Message.new().with_content(msg))
-            elif isinstance(msg, Message):
+            if isinstance(msg, Message):
                 wrapped_messages.append(msg)
+            else:
+                wrapped_messages.append(Message.new().with_content(msg))
         priority = self.priority() if priority is None else priority
         return Signal(
             name=name,
@@ -261,6 +263,7 @@ class SignalMeta(BaseModel, ABC):
             description=description,
             stale_timeout=stale_timeout,
             priority=priority,
+            hint=hint,
         )
 
 
@@ -278,6 +281,28 @@ class InputSignal(SignalMeta):
         return Priority.NOTICE
 
 
+# Impulse 发送的控制原语, 结合系统约定实现 Impulse 决策的控制功能.
+# 高阶实现中 Primitive 本身是可以做扩展定义的.
+# mode 不经过大脑处理, 是系统级别的处理. 主要的原语都在决定 思考/行为的基本逻辑.
+
+class ChallengeMode(str, enum.Enum):
+    # 默认的响应模式. 通过大脑决策如何响应.
+    default = '',
+
+    # 当 impulse 抢占成功之后, 只负责 buffer 历史消息. 不会触发新的 attention.
+    # attention 在每一轮生成 moment 时, 都会从 buffer 中读取历史, 塞入 percepts
+    # 抢占不成功则无法干扰当前注意力.
+    silent = 'silent'
+
+    # silent 的相反版本, 如果抢占注意力成功, 会中断 attention, 正常响应;
+    # 抢占注意力失败, 会添加到缓冲里.
+    notify = 'notify'
+
+
+# Impulse 对应的决策倾向. Impulse 是预处理的思维状态, 相当于一种条件反射产生的思维倾向.
+ThinkingEffort = Literal['none', 'flash', '', 'low', 'medium', 'high', 'max']
+
+
 class Impulse(BaseModel):
     """
     the impulse that raise mindflow attention
@@ -292,47 +317,89 @@ class Impulse(BaseModel):
         default='',
         description="the nucleus source name",
     )
-    source_idx: int = Field(
-        default=0,
-        description="the impulse generated order in the source",
-    )
+
     priority: Priority | int = Field(
         default=Priority.NOTICE,
         description="the impulse priority",
     )
-    strength: int = Field(
-        default=100,
-        description="the impulse 初始强度, 在 attention 中设计强度计算曲线用来解决相同优先级打断机制.",
-        ge=0,
-        le=300,
-    )
-    reflex_logos: str = Field(
-        default='',
-        description="条件反射的 logos, 在思考启动前就会执行. ",
-    )
+
     complete: bool = Field(
         default=True,
-        description="if the impulse is complete, or just occupy the attention until complete impulse from the same id",
+        description="if the impulse is complete, or just occupy the attention until complete impulse from the same id."
+                    "可以用来使用首包抢占注意力, 尾包响应的场景.",
     )
     description: str = Field(
         default='',
         description="the impulse short description. 这个描述可以理解为 IM 消息列表上的摘要. ",
     )
+    perspective: list[Message] = Field(
+        default_factory=list,
+        description="the impulse perspective, 伴随决策携带. ",
+    )
     messages: list[Message] = Field(
         default_factory=list,
         description="the messages of the impulse. if empty, no need to think",
     )
-    reaction_instruction: str = Field(
-        default='',
-        description="the instruction to react this impulse",
-    )
 
+    # --- 高级特性 --- #
+
+    hint: str = Field(
+        default='',
+        description="the temporary instruction for model handling this impulse",
+    )
+    mode: str | ChallengeMode = Field(
+        default='',
+        description="Impulse 作为一种预处理思维模式, 通过原语和 Runtime 的规则通讯."
+                    "规则可以自行扩展, 系统提供基线. 规则优先级高于大脑思考, 属于条件反射. ",
+    )
+    logos: str = Field(
+        default='',
+        description="伴随 Impulse 发送的 Logos, 可以是条件反射, 强制指令, 首动作提速 (口头禅) 等等."
+                    "当 Impulse 获得了注意力时, 应该伴随发送到 Articulator, 由 Articulator 决定是否直接发送给 Action."
+                    "如果作为 '反射弧' 直接发送, 则它会先于 思考帧生成 logos, 就发送给 Action 侧."
+                    "这样先于思考就会有 logos 发送. 大脑也应该感受到它 (或像人一样意识不到小动作), 取决于具体实现.",
+    )
+    interrupt: bool = Field(
+        default=False,
+        description="高级系统特性, 会在思维决策前停止所有执行中的 logos."
+                    "如果整个躯体体系有平滑过度逻辑 (Idle), stop first 看起来像停止 (呆了一下). "
+                    "如果没有任何平滑过度逻辑, 会产生类似 Shock/Frozen 的 震惊效果."
+                    "如果为 False, 实际上 Ghost 仍然可以走快速决策 -> 详细回复, 通过快速决策做机制."
+    )
+    thinking_effort: ThinkingEffort = Field(
+        default='',
+        description="思考的强度, 作为不同输入逻辑的 '建议' 处理模式."
+                    "实际上执行 articulator 的智能体仍然有权决定自己的处理逻辑. ",
+    )
     stale_timeout: float = Field(
-        default=0,
-        description="当一个 Impulse 无法占据到 Attention 时的过期时间. "
+        default=0.0,
+        description="当一个 Impulse 无法占据到 Attention 时, 可以定义过期时间在它未被及时清理时也不会生效."
+    )
+    protection_time: float = Field(
+        default=0.0,
+        description="显性的相同优先级保护期, 当获得注意力后, impulse 在保护期内, 不可以被相同优先级打断, 与强度无关."
+                    "用于防抖.",
+    )
+    strength: int = Field(
+        default=100,
+        description="the impulse 初始强度, 在 attention 中设计强度计算曲线用来解决相同优先级打断机制."
+                    "用于相同级别任务的优先级仲裁. 其权重值要么就是系统整体严格约定, 要么就是有通用评级仲裁."
+                    "否则不需要特殊约定. 取值范围数字越大越强, 但为 0 表示绝不竞争. ",
+        ge=0,
+        le=1000,
+    )
+    strength_decay_seconds: float = Field(
+        default=20,
+        description="Strength decay 约定时间. 以秒为单位. "
+                    "语义是, 当一个 Impulse 开始运行后, 如果没有任何动静, 最迟在这个数字时强度必须归零."
+                    "无论 Attention 的仲裁曲线如何规划, 都要遵循这个约定.",
     )
 
     # -- 系统内部字段 -- #
+    source_idx: int = Field(
+        default=0,
+        description="the impulse generated order in the source",
+    )
 
     trace_id: str = Field(
         default='',
@@ -341,10 +408,6 @@ class Impulse(BaseModel):
     created_at: AwareDatetime = Field(
         default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
         description="the creation time of the impulse",
-    )
-    strength_decay_seconds: float = Field(
-        default=20,
-        description="Strength decay 约定时间. 如果不定义的话, 使用系统默认的约定. 作为最底层的约束存在. ",
     )
 
     @classmethod
@@ -356,6 +419,7 @@ class Impulse(BaseModel):
         stale_timeout = stale_timeout if stale_timeout is not None else signal.stale_timeout
         if stale_timeout > 0:
             stale_timeout = stale_timeout - (time.time() - signal.created_at.timestamp())
+        # 从 signal 直接反射 impulse 的做法, signal 相当于原始协议. 所以剥离了 impulse 所有高阶机制.
         return Impulse(
             source=source,
             trace_id=signal.trace_id or signal.id,
@@ -363,7 +427,7 @@ class Impulse(BaseModel):
             strength=signal.strength,
             messages=signal.messages.copy(),
             description=signal.description,
-            reaction_instruction=signal.prompt,
+            hint=signal.hint,
             complete=signal.complete,
             stale_timeout=stale_timeout,
         )
@@ -382,6 +446,18 @@ class Impulse(BaseModel):
 
     def to_json(self, indent: int = 2) -> str:
         return self.model_dump_json(exclude_defaults=True, exclude_none=True, ensure_ascii=False, indent=indent)
+
+    def update_moment(self, moment: Moment) -> None:
+        """
+        将 Impulse 的数据更新 Moment.
+        """
+        if self.perspective:
+            # 用 source 源, 占据一个 perspective.
+            moment.with_perspective(self.source, self.perspective)
+        moment.percepts.extend(self.messages)
+        moment.hint = self.hint
+        if self.logos:
+            moment.command_logos += self.logos
 
     def __repr__(self):
         return f"<Impulse id={self.id} trace={self.trace_id} source={self.source}>"
@@ -484,6 +560,13 @@ class Nucleus(ABC):
         """
         pass
 
+    def as_channel(self) -> Channel | None:
+        """
+        如果 Nucleus 有能力返回反身性的控制 channel,
+        则 mindflow 应该将它作为动态或者静态节点接入.
+        """
+        return None
+
     @abstractmethod
     def is_running(self) -> bool:
         pass
@@ -527,7 +610,7 @@ class NucleusMeta(ABC):
         pass
 
     @abstractmethod
-    def signals(self) -> Iterable[SignalMeta]:
+    def signals(self) -> Iterable[type[SignalMeta]]:
         """
         声明监听的信号类型.
         """
@@ -576,7 +659,7 @@ class Flag(Protocol):
 
 
 PreemptedElseSuppress = bool
-BufferImpulse = None
+ImpulseAbsorbed = None
 UnreadOutcome = list[Message]
 StopReason = str
 
@@ -610,6 +693,13 @@ class Articulator(ABC):
         推理时的关键帧片段.
         """
         pass
+
+    @abstractmethod
+    def thinking_effort(self) -> ThinkingEffort:
+        """
+        思维强度, 为 None 的话不应该执行 articulate.
+        """
+        return ''
 
     @abstractmethod
     async def __aenter__(self) -> Self:
@@ -677,6 +767,10 @@ class Action(ABC):
     """
     控制 Logos 的执行循环.
     """
+
+    async def wait_ready(self) -> None:
+        """等待 abort 或第一个有语义的帧. 适合在 received logos 前调用, 避免副作用. """
+        return
 
     @abstractmethod
     def received_logos(self) -> Logos:
@@ -763,15 +857,15 @@ class Attention(ABC):
     """
 
     @abstractmethod
-    def peek(self) -> Impulse:
+    def draw_from(self) -> Impulse:
         """
-        快速窥探已经持有的 impulse.
+        创建 Attention 的 impulse.
         """
         pass
 
     @property
     def id(self) -> str:
-        return self.peek().id
+        return self.draw_from().id
 
     @abstractmethod
     def is_aborted(self) -> bool:
@@ -807,18 +901,30 @@ class Attention(ABC):
         pass
 
     @abstractmethod
-    def with_context_func(
+    def with_perspective_func(
             self,
-            context_name: str,
-            context_func: Callable[[], list[Message]],
+            perspective_key: str,
+            perspective_func: Callable[[], list[Message]],
     ) -> Self:
         """
-        注册一个 context func, 在运行时 attention 可以随时用 context func 编织当前的 context, 更新上下文.
+        注册一个 perspective func, 在运行时 attention 可以随时用 perspective func 编织当前的 perspective, 更新上下文.
         这个函数是一个同步函数, 它的目标不是并行调度, 而是以最快速度拿到一个快照, 实际上应该从缓存里拿.
         计划中要拿到的快照包括:
         1. Mindflow 的快照, 可以看到所有 nucleus 的最新状态. 类似飞书/微信 这样 IM 的红点提示.
         2. Shell 的快照, 也就是 MOSS dynamic 动态上下文.
         3. Interpreter 的快照, 记录当前瞬间, 哪些命令正在执行, 有多少被取消, 多少执行完毕.
+        """
+        pass
+
+    @abstractmethod
+    def with_percepts_func(
+            self,
+            percepts_key: str,
+            percepts_func: Callable[[], list[Message]],
+    ) -> Self:
+        """
+        注册一个 percepts 函数, 运行时 attention 用这个函数来构建每一帧的 percepts.
+        其它逻辑和 perspective func 一样.
         """
         pass
 
@@ -845,7 +951,7 @@ class Attention(ABC):
         pass
 
     @abstractmethod
-    def challenge(self, challenger: Impulse) -> PreemptedElseSuppress | BufferImpulse:
+    def challenge(self, challenger: Impulse) -> PreemptedElseSuppress | ImpulseAbsorbed:
         """
         仲裁新的 impulse. 决定自身是否被中断. 调度发起者是 mindflow.
         最基础的仲裁逻辑:
@@ -924,7 +1030,7 @@ class Attention(ABC):
 
 _NucleusName = str
 
-ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial']
+ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered']
 """Impulse challenge 的仲裁结果。
 - preempted: 抢占成功，创建新 Attention
 - suppressed: 被压制，原 nucleus 收到 suppress()
@@ -1008,6 +1114,7 @@ class Mindflow(ABC):
 
     @abstractmethod
     def wait_started_sync(self, timeout: float | None = None) -> bool:
+        """同步等待到 mindflow 开始运行. """
         pass
 
     @abstractmethod
@@ -1025,12 +1132,52 @@ class Mindflow(ABC):
         """
         pass
 
+    def buffer(self, messages: list[Message]) -> None:
+        """
+        添加历史消息到 Mindflow 中.
+        mindflow 每一帧思考时, 都会 pop 最新的消息.
+        """
+        # not implemented
+        return
+
+    def get_buffered(self, pop: bool = True) -> list[Message]:
+        """
+        从已经缓存的历史消息中, 提取最新的 buffer.
+        通常会在每一帧 思考单元 (articulator) 中提取. 添加到 moment 的历史前序中.
+        如果 pop is True, 会清空已经存在的 buffer.
+        """
+        pass
+
     @abstractmethod
-    def context_messages(self) -> list[Message]:
+    def perspective(self) -> list[Message]:
         """
         通过一个 message func, mindflow 可以快速描述自身当前的状态.
         类似 IM 红点的机制, 描述所有有状态 Nuclei 最新的情况.
         """
+        pass
+
+    def as_channel(self) -> Channel | None:
+        """
+        如果一个 mindflow 能够提供一个 Channel,
+        这个 channel 应该要持有所有的 nuclei channel.
+        合并到 Shell 中提供对思维本身的反身性控制.
+        """
+        return None
+
+    def set_signal_priority_bar(self, priority: Priority) -> None:
+        """
+        设置 signal 的优先级门槛.
+        定于门槛时, signal 会被直接丢弃.
+        系统级别的注意力门槛.
+        """
+        # 函数为 控制台和反身性 channel 准备. 默认不实现.
+        pass
+
+    def set_impulse_priority_bar(self, priority: Priority) -> None:
+        """
+        设置 impulse 的门槛, 低于门槛的 impulse 没有挑战资格.
+        """
+        # 函数为 控制台和反身性 channel 准备. 默认不实现.
         pass
 
     @abstractmethod
@@ -1114,6 +1261,45 @@ class Mindflow(ABC):
         pass
 
 
+class ImpulsePrimitive:
+    """
+    演示如何通过能力组合, 控制 Impulse 的行为协议.
+    """
+
+    @staticmethod
+    def execute_command_only(impulse: Impulse, command_logos: str) -> Impulse:
+        # 设置 impulse 要执行的命令.
+        impulse.logos = command_logos
+        # 不允许思考.
+        impulse.thinking_effort = 'none'
+        return impulse
+
+    @staticmethod
+    def superior_execute_command(impulse: Impulse, command_logos: str) -> Impulse:
+        impulse = ImpulsePrimitive.execute_command_only(impulse, command_logos)
+        # 设置最高权限.
+        impulse.priority = Priority.FATAL.value
+        return impulse
+
+    @staticmethod
+    def interrupt_only(impulse: Impulse) -> Impulse:
+        # 禁止思考.
+        impulse.thinking_effort = 'none'
+        # 总是抢占成功.
+        impulse.priority = Priority.FATAL.value
+        #
+        impulse.mode = ChallengeMode.silent.value
+        return impulse
+
+    @staticmethod
+    def always_buffer(impulse: Impulse) -> Impulse:
+        # 总是抢占失败.
+        impulse.priority = Priority.BACKGROUND.value
+        # 由于是 notify, 所以每次失败都会把自己 buffer.
+        impulse.mode = ChallengeMode.notify.value
+        return impulse
+
+
 if __name__ == "__example__":
     """
     整套实现思路的应用构想. 只是一个举例, 细节未打磨. 
@@ -1170,6 +1356,7 @@ if __name__ == "__example__":
         while True:
             action = await action_queue.async_q.get()
             async with action:
+                await action.wait_ready()
                 await action.create_task(_run_action(action))
 
 

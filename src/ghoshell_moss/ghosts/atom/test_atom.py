@@ -277,7 +277,7 @@ class TestAdapter:
     def test_moment_to_request_includes_previous_outcomes(self):
         from ._adapter import moment_to_request
         prev = Reaction(moment_id="p1",
-                        outcomes=[Message.new().with_content("outcome")])
+                        messages=[Message.new().with_content("outcome")])
         request = moment_to_request(Moment(previous=prev))
         assert any("outcome" in str(p) for p in request.parts)
 

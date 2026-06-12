@@ -1,13 +1,14 @@
 ---
 created: 2026-06-02
 depends: []
-description: Impulse 增加 mode 分类 (think/reflex/command/notify/interrupt)， 扩展 challenge
-  仲裁支持 buffer 注入，abort 传播到 shell.clear， 支持空 attention 循环和确定性 CTML 指令。
+description: Impulse 增加 mode 分类, buffer/notify/silent 仲裁, interrupt=clear_first,
+  thinking_effort, 协议化强度/保护期. 删除 PriorityProtectionAttention/PriorityMindflow.
+  全 interpreter 用 append. memento 替换 conversation.
 milestone: null
 priority: P0
 status: in-progress
-title: Mindflow Control Semantics — Impulse 能力分类与非中断式抢占
-updated: '2026-06-10'
+title: Mindflow Control Semantics — 协议化仲裁与生命周期重构
+updated: '2026-06-11'
 ---
 
 # Mindflow Control Semantics
@@ -49,26 +50,30 @@ Articulator 感知到就发送，Action 透明执行 —— 这就是 "Action �
 
 ### 核心 Feature 最终方案
 
-#### F1: Impulse mode 分类 + clear_first
+#### F1: 正交参数替代 ImpulseMode enum (第二次 review 修订)
 
-Impulse 新增两个语义独立的字段:
+ImpulseMode enum 方案被正交参数组合取代。五个控制原语通过以下字段组合实现：
 
 ```python
-class ImpulseMode(str, Enum):
-    think = "think"          # 完整 articulate→action，默认
-    reflex = "reflex"        # 条件反射与思考并行
-    command = "command"      # 确定性 CTML 替代模型思考
-    notify = "notify"        # 静默注入 mindflow buffer
-    interrupt = "interrupt"  # 纯打断，空 attention 关闭
-
 class Impulse(BaseModel):
-    mode: ImpulseMode = ImpulseMode.think
-    clear_first: bool = True  # True=kind="clear", False=kind="append"
+    mode: str | ChallengeMode = ''      # silent/notify 控制 buffer 策略
+    thinking_effort: ThinkingEffort = '' # 'none' 跳过 ghost.articulate()
+    interrupt: bool = False             # 创建 attention 前 stop_interpretation()
+    logos: str = ''                     # 预注入的 command_logos，先于模型思考执行
 ```
 
-`reflex_logos` 重命名为 `command_logos`（通用字段名，配合 mode 决定语义）。
+`reflex_logos` 重命名为 `logos` → Moment 侧对应 `command_logos`。
 
-原语不搞组合 flag。默认 mode=think + clear_first=True 保持完全向后兼容。
+原语组合参考 `ImpulsePrimitive` 类：
+- `execute_command_only()`: logos + thinking_effort='none'
+- `interrupt_only()`: priority=FATAL + mode=silent + thinking_effort='none'
+- `always_buffer()`: priority=BACKGROUND + mode=notify
+
+`clear_first` 被 interrupt 协议取代：`interrupt=True` → `stop_interpretation()` +
+解释器默认 `kind='append'`。Clear 路径不通过 interpreter kind 实现，而是通过
+中断 → 新 attention → 新 interpreter 实现。
+
+默认 mode='' + thinking_effort='' + interrupt=False 保持完全向后兼容。
 
 #### F2: 空 attention 循环
 
@@ -112,32 +117,27 @@ reflex = 模型边想边执行。模型可以在思考中下发 interrupt 打断
 
 #### F8: Action 暴露 `interpreter_kind()`
 
-Action 暴露解释器模式，ghost_runtime 只读不决策:
+解释器模式由 interrupt 协议取代 (第二次 review 修订)。
 
-```python
-class Action(ABC):
-    def interpreter_kind(self) -> Literal["clear", "append"]:
-        return "clear"  # 默认
-```
+最终方案: 解释器默认 `kind='append'`。Clear 路径由 `interrupt=True` →
+`stop_interpretation()` 关闭旧解释器 → 新 attention 创建新解释器实现。
+不在 Action 上暴露解释器模式方法。
 
-**control flow**: Impulse.clear_first → Attention._loop 构造 BaseAction 时传入 →
-`BaseAction.interpreter_kind()` 返回 `"clear"` 或 `"append"`。
-`ghost_runtime._stream_execute`: `shell.interpreter(kind=action.interpreter_kind())`。
+#### F9: command 模式 (第二次 review 修订)
 
-默认 clear_first=True → "clear"，向后兼容。False → "append": 模型上一帧命令继续跑，
-下一帧只追加新指令。不下 interrupt 原语就不清。
+~~yield (None, action)~~ 改为 `thinking_effort='none'` 提前返回。
 
-#### F9: command 模式
-
-mode=command 时不调 `ghost.articulate()`。
-`attention._loop()` 预填 command_logos 到 logos_queue + None 哨兵 → yield (None, action)。
-`ghost_runtime._main_loop` 对 None articulator 不入 articulate 队列。
+`ghost_runtime._run_articulator`: 当 `articulator.thinking_effort() == 'none'` 时，
+发送 command_logos → 调 `ghost.on_articulate_exit(articulator, '', None)` →
+提前返回，不调 `ghost.articulate()`。Articulator 生命周期完整（logos_queue 正常收发）。
 
 ## 综合决策 (Key Decisions)
 
-### KD1: 原语设计，不搞组合 (保留)
+### KD1: 正交组合替代原语 enum (第二次 review 修订)
 
-`ImpulseMode` enum 定义五个原语，不走 flag 组合路线。原语保证类型系统排除 nonsense 状态。
+~~ImpulseMode enum 五原语~~ → 正交参数组合: `mode` (ChallengeMode) + `thinking_effort` + `interrupt` + `logos`。
+`ImpulsePrimitive` 提供组合参考。原语 enum 把 buffer/思考/中断塞进一个维度，
+正交分解后组合能力更强。代价是可发现性（翻 ImpulsePrimitive 才知道标准组合）。
 
 ### KD2: Buffer 在 Mindflow 层 (保留)
 
@@ -156,9 +156,10 @@ outcomes 不分来源，`stop_at_outcome()` 自然合并。
 
 shell.clear() 在 GhostRuntime 层，解释器不感知 mindflow abort 语义。
 
-### KD6: mode enum 统摄 (保留，扩展)
+### KD6: ChallengeMode + interrupt 统摄 (第二次 review 修订)
 
-保留原 KD6 向后兼容逻辑，增加 `clear_first` 字段管理解释器生命周期模式。
+~~mode enum + clear_first~~ → `ChallengeMode` (silent/notify) 管 buffer 策略，
+`interrupt` 管解释器生命周期，`thinking_effort` 管思考控制。默认值全空保持向后兼容。
 
 ### KD7: 信号→协议分层 (新)
 
@@ -169,9 +170,11 @@ Articulator 知道 Moment 字段即可，不需要理解 Impulse。
 
 ghost_runtime._stream_execute 感知空流，避免为无内容帧创建解释器。
 
-### KD9: Action 暴露 interpreter_kind (新)
+### KD9: interrupt 协议替代 interpreter_kind (第二次 review 修订)
 
-clear/append/defer 的解释器模式由 Action 持有，ghost_runtime 只读不决策。
+~~Action 暴露 interpreter_kind()~~ → 解释器默认 `kind='append'`。Clear 路径
+通过 interrupt 协议实现: stop_interpretation() → 新 attention → 新 interpreter。
+FATAL/BACKGROUND 绝对性约束在 Mindflow 层，不经过 challenge()，防止子类退化。
 
 ### KD10: notify buffer 位置 (新)
 
@@ -292,6 +295,71 @@ Impulse(priority=NOTICE, mode=think, clear_first=False)
 确认信息路径分层 (Signal→Impulse→Moment)、Action 暴露 interpreter_kind()、clear_first、
 notify 不创建 attention 等最终决策。staged 交付从 Stage 1 (Foundation) 开始。
 
+### 2026-06-11 大规模重构 review (Claude Opus 4.7 与人类工程师)
+
+**review 范围**: staged 17 files + unstaged 17 files，合计 ~1400 行改动。
+核心动作：删除 PriorityProtectionAttention / PriorityMindflow，将仲裁参数协议化到
+Impulse 字段；实现双层 buffer (Mindflow 级 + Attention 级)；memento 替换 conversation。
+
+**review 发现与修复**:
+
+| # | 级别 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | 🔴P0 | `Moment.logos` 从未赋值 → `to_history_turns()` 不产回合 | 人类工程师修复：`_run_articulator` finally 中 `articulator.moment.logos = logos` |
+| 2 | 🔴P0 | `kind='clear'` → 应为 `'append'` | Claude 修复：`_stream_execute:408` 改为 `kind='append'` |
+| 3 | 🔴P0 | `BaseAction.wait_ready()` 无默认实现 | Claude 实现：消费 logos_queue 首包,缓存到 `_prefetched_delta`,`_logos()` 先 drain 缓存 |
+| 4 | 🟡P1 | `Impulse.prepare_timeout` 定义后未消费 | 确认需从 `ghost_runtime._run_articulator` 读取 |
+| 5 | 🟡P1 | `to_history_turns()` 的回合切分 bug | 确认修复：`last_moment_has_logos` 赋值移至 yield 后 |
+| 6 | 🟢P2 | `notify`/`buffer` 命名与语义相反 | 已改为 `notify`/`silent` |
+| 7 | 🟢P2 | `momento.py` 拼写错误 | 已改为 `memento.py` |
+| 8 | 🟢P2 | `ChallengeMode` 从 Literal 升级为 `str, Enum` | 支持扩展 |
+
+**待补单测** (下一个会话完成):
+
+1. `Action.wait_ready()` — 首包到达、abort 打断、空队列超时退出
+2. `Moment.logos` 赋值 — articulate 正常完成/exception/command 模式下 logos 字段状态
+3. `to_history_turns()` — command 模式的 executed_logos 缝合、正常回合切分、空 logos 合并到最后
+4. `shell.interpreter(kind='append')` — 跨帧命令延续、interrupt 后的 append 行为
+5. `moss_dynamic` 缓存 — `stale_time` 防反复生成
+6. `ChallengeMode.silent/notify` — silent 无 attention 只 buffer、notify 抢占成功/降级
+7. `Impulse.protection_time` — 保护期内同优先级压制
+8. `_challenge_attention` 6 条路径 — FATAL/BACKGROUND/silent/notify/absorbed/normal
+9. `GhostRuntimeImpl` 生命周期 — interrupt 协议、thinking_effort='none' 不调 articulate
+
+**设计确认** (下一个会话交叉验证):
+
+- 双层 buffer 分工：Mindflow 级 `_buffered_messages`(跨 attention) vs Attention 级 `_buffered_impulses`(帧内 Drain)
+- `interrupt=True` = `stop_interpretation()` + `kind='append'`：解释器永远 append,打断由主循环管
+- reflex 走 Articulator 通道：`command_logos` 由 `_run_articulator.send_nowait()` 发送,先于模型 CTML
+- `thinking_effort='none'` 时 `_run_articulator` 提前返回：不调 `ghost.articulate()`，**调 `on_articulate_exit(articulator, '', None)`** (2026-06-12 修复)
+- memento 体系 (MomentBranch/MomentoIndex 等) 开发冻结,但 `Moment.to_history_turns()` 已就位
+
+### 2026-06-12 第二轮关键性 review (Claude Opus 4.7 与人类工程师)
+
+**整体状态**: 56 tests 全绿。核心架构改动落地：删除 PriorityProtectionAttention/PriorityMindflow，
+ChallengeMode 双层 buffer，memento 替换 conversation，Articulator 通道方案。
+
+**设计演进决策**:
+
+| # | 决策 | 理由 |
+|---|---|---|
+| 1 | `ImmersiveMode` enum → 正交参数组合 | 原语 enum 把 buffer/思考/中断塞进一个维度，正交分解组合能力更强。`ImpulsePrimitive` 提供组合参考 |
+| 2 | `F8 interpreter_kind()` 不实现 | interrupt 协议已承载 stop 决策。解释器默认 append，clear 路径走 stop_interpretation → 新解释器 |
+| 3 | `F9 yield (None, action)` → `thinking_effort='none'` early return | Articulator 生命周期完整，command_logos 正常走 logos_queue |
+| 4 | FATAL/BACKGROUND 不经过 challenge() | 防止子类重写退化协议。绝对性约束在 Mindflow 层 |
+| 5 | moss_dynamic 移到 refresh_metas 后注入 | moment 创建时 metas 还是旧的，注入的是过期数据 |
+| 6 | `interrupt` 替代 `clear_first` | stop_interpretation() + 新 attention 提供完整 clear 语义 |
+
+**本轮 bug 修复**:
+
+| # | 文件 | 修复 |
+|---|---|---|
+| 1 | `ctml_shell.py:488` | `stop_interpretation()` done_callback 加 `if not future.done()` 防 crash |
+| 2 | `ghost_runtime.py:310` | `thinking_effort='none'` 时调 `ghost.on_articulate_exit(articulator, '', None)` |
+| 3 | `command_nucleus.py:83` | `min(priority, _min_priority)` → `max(priority, _min_priority)` |
+
+**下一轮**: 补单测 → stage → 实现 notify/silent/interrupt nuclei → 收敛
+
 ---
 
-*调研与评审: DeepSeek V4 与人类工程师, 2026-06-02 ~ 2026-06-10*
+*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-12*

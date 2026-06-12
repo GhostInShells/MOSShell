@@ -158,7 +158,7 @@ class BufferNucleus(Nucleus):
             strength=max_strength,
             messages=all_msgs,
             description=latest.description,
-            reaction_instruction=latest.prompt or self._default_prompt,
+            hint=latest.hint or self._default_prompt,
             complete=all([s.complete for s in sorted_signals]),
             stale_timeout=latest.stale_timeout,
             strength_decay_seconds=self._strength_decay_seconds,
