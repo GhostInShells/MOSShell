@@ -19,18 +19,25 @@ moss codex channeltypes mcp_hub
 
 ## 心智模型
 
-模型看到的只有 `mcp` channel，有 6 个命令。模型不知道 MCP 协议存在。
+模型看到的只有 `mcp` channel，有 6 个命令（开启 `allow_model_config` 后 8 个）。模型不知道 MCP 协议存在。
 
-**模型视角**：
+**模型视角**（`allow_model_config=False`，默认）：
 
 ```
 channel mcp:
   exec(server, tool, timeout=30.0, text__) -> Observe    @nonblocking
   exec_blocking(server, tool, timeout=30.0, text__) -> Observe
-  list_servers() -> str                                    always_observe
-  add_server(name) -> str
-  remove_server(name) -> str
-  restart_server(name) -> str
+  list() -> str                                            always_observe
+  connect(name) -> str                                     always_observe
+  disconnect(name) -> str                                  always_observe
+  reconnect(name) -> str                                   always_observe
+```
+
+**模型视角**（`allow_model_config=True`，额外暴露）：
+
+```
+  register(text__) -> str                                  always_observe
+  unregister(name) -> str                                  always_observe
 ```
 
 context messages 里提供当前连接的 server 和 tool 目录，模型从中选择。
@@ -39,12 +46,11 @@ context messages 里提供当前连接的 server 和 tool 目录，模型从中�
 
 ### 定义 MCP server 列表
 
-`MCPHubConfig` 是一个 `ConfigType`，包含 `servers: dict[str, MCPServerConfig]`。
-
-**全局配置**（无 scopes，走 ConfigStore）：
+所有 server 配置存储在 workspace 根目录的 `configs/mcp_hub.yml` 中。`MCPHubConfig` 是一个 `ConfigType`，
+包含 `servers: dict[str, MCPServerConfig]`。
 
 ```yaml
-# workspace/configs/mcp_hub.yml
+# .moss_ws/configs/mcp_hub.yml
 servers:
   filesystem:
     name: filesystem
@@ -59,22 +65,25 @@ servers:
     description: "Web search API"
 ```
 
-**Scoped 配置**（有 scopes，走 scoped storage YAML）：
+env 值使用 `$VAR_NAME` 占位符，ConfigStore 在读取时自动从 os.environ 解析真值。
+写文件时原样保存 `$VAR_NAME`，不泄露密钥。
 
-同一个文件放在 scoped storage 下，路径由 `matrix.get_scoped_storage(*scopes)` 决定。
-格式相同，隔离级别不同。
+**Scoped 配置**：传入 `scopes=['ghost', 'mode']` 时，config store 组装在 scoped storage 上。
+首次创建时自动合并 workspace 预设，之后 scoped 配置可独立覆盖。
 
 ### 注册 channel
 
-在 manifests channels 中注册一个无副作用的 factory 闭包：
-
 ```python
-# 全局配置（无 scopes）
 from ghoshell_moss.channels.mcp_hub import MCPHubChannel
+
+# 全局配置（无 scopes，读 workspace configs/）
 main.import_channels(MCPHubChannel(name='mcp'))
 
 # Scoped 配置（Ghost + Mode 隔离）
 main.import_channels(MCPHubChannel(name='mcp', scopes=['ghost', 'mode']))
+
+# 允许模型动态注册 server
+main.import_channels(MCPHubChannel(name='mcp', allow_model_config=True))
 ```
 
 ## CTML 使用
@@ -90,25 +99,27 @@ main.import_channels(MCPHubChannel(name='mcp', scopes=['ghost', 'mode']))
 
 ### 阻塞调用（少数场景）
 
-当后续命令依赖当前 tool 的返回值时：
-
 ```ctml
 <mcp:exec_blocking server="filesystem" tool="read_file">{"path": "/tmp/config.json"}</mcp:exec_blocking>
-<_>
-Hello, the config says...
-</_>
 ```
-
-`exec_blocking` 会 occupy channel，等返回后再执行后续命令。
 
 ### 管理命令
 
 ```ctml
-<mcp:list_servers />
-<mcp:add_server name="database" />
-<mcp:restart_server name="filesystem" />
-<mcp:remove_server name="websearch" />
+<mcp:list />
+<mcp:connect name="database" />
+<mcp:reconnect name="filesystem" />
+<mcp:disconnect name="websearch" />
 ```
+
+### 动态注册 server（需 allow_model_config=True）
+
+```ctml
+<mcp:register>{"name": "myserver", "transport": "stdio", "command": "python", "args": ["-m", "mymod"], "env": {"KEY": "$SECRET"}}</mcp:register>
+<mcp:unregister name="myserver" />
+```
+
+`register` 的 text__ 传完整 `MCPServerConfig` JSON，与 `exec` 传 tool arguments 的模式一致。
 
 ## 结果格式
 
@@ -117,8 +128,9 @@ MCP tool 的返回进入 Observe 流。text → `Text` content，image → `Base
 
 ## 架构要点
 
-- **StatefulChannel**：类比 `AppStoreChannel`，`MCPHubState` 持有 `dict[str, _MCPServerSession]`
-- **_MCPServerSession**：封装 `mcp.ClientSession` + transport 生命周期（连接/断开/重连）
+- **StatefulChannel**：`MCPHubState` 持有 `dict[str, MCPServerSession]`
+- **MCPServerSession**：封装 `mcp.ClientSession` + transport 生命周期（连接/断开/重连）
 - **Transport**：stdio（子进程）、sse、streamable_http 三种
+- **ConfigStore 注入**：`MCPHubState` 依赖 `ConfigStore` 接口，不依赖 `Matrix`。factory 层决定 store 来源（scoped 或 workspace）
+- **$VAR 解析**：`ConfigType.resolve()` 在读时递归解析 `$VAR` 占位符，写时原样保存
 - **Context messages**：moss_dynamic 动态生成 server 连接状态和 tool 目录
-- **Config 双路径**：无 scopes → ConfigStore；有 scopes → Storage YAML

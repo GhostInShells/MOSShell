@@ -11,15 +11,14 @@ Example:
 import asyncio
 import json
 import contextlib
-import os
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime, ChannelCtx
+from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
 from ghoshell_moss.core.blueprint.matrix import Matrix, ScopesKey
-from ghoshell_moss.contracts.configs import ConfigType
+from ghoshell_moss.contracts.configs import ConfigType, ConfigStore, YamlConfigStore
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
 from ghoshell_container import IoCContainer
 from pydantic import BaseModel, Field
@@ -35,47 +34,7 @@ except ImportError:
 
 __all__ = ['MCPHubChannel', 'build_mcp_hub_channel', 'MCPHubState',
            'MCPServerConfig', 'MCPHubConfig', 'MCPServerSession',
-           'mcp_result_to_observe', 'render_input_schema', 'resolve_env_dict']
-
-
-# ---------------------------------------------------------------------------
-# Config models
-# ---------------------------------------------------------------------------
-
-def resolve_env_dict(env: dict[str, str]) -> dict[str, str]:
-    """解析 env dict 中以 $ 开头的值，从 os.environ 读取实际值。
-
-    Config 文件中存储 $VAR_NAME 占位符，连接时由此函数解析为真值。
-    不以 $ 开头的值原样返回。
-    """
-    if not env:
-        return env
-    resolved = {}
-    for k, v in env.items():
-        if v.startswith('$'):
-            resolved[k] = os.environ.get(v[1:], v)
-        else:
-            resolved[k] = v
-    return resolved
-
-
-def _redact_env_for_save(env: dict[str, str]) -> dict[str, str]:
-    """resolve_env_dict 的逆向：将 env 真值还原为 $VAR 占位符。
-
-    扫描 os.environ，若 env value 与某个环境变量值匹配，替换为 $VAR_NAME。
-    不匹配的值原样保留。
-    """
-    if not env:
-        return env
-    redacted = {}
-    for k, v in env.items():
-        for env_key, env_val in os.environ.items():
-            if v == env_val:
-                redacted[k] = f"${env_key}"
-                break
-        else:
-            redacted[k] = v
-    return redacted
+           'mcp_result_to_observe', 'render_input_schema']
 
 
 class MCPServerConfig(BaseModel):
@@ -153,11 +112,10 @@ class MCPServerSession:
     async def _connect_transport(self):
         cfg = self.config
         if cfg.transport == 'stdio':
-            resolved_env = resolve_env_dict(cfg.env) if cfg.env else None
             params = StdioServerParameters(
                 command=cfg.command,
                 args=cfg.args or [],
-                env=resolved_env,
+                env=cfg.env or None,
             )
             transport = await self._exit_stack.enter_async_context(stdio_client(params))
             return transport
@@ -263,15 +221,15 @@ class MCPHubState(ChannelState):
     def __init__(
         self,
         *,
-        matrix: Matrix,
+        config_store: ConfigStore,
+        allow_model_config: bool = False,
         name: str = 'mcp',
         description: str = '',
-        scopes: list[ScopesKey] | None = None,
     ):
-        self._matrix = matrix
+        self._config_store = config_store
+        self._allow_model_config = allow_model_config
         self._name = name
         self._description = description or 'MCP Hub — 管理外部 MCP 工具调用'
-        self._scopes = scopes or []
         self._uid = unique_id()
         self._sessions: dict[str, MCPServerSession] = {}
         self._own_commands: dict[str, Command] = {}
@@ -286,11 +244,11 @@ class MCPHubState(ChannelState):
             :param server: MCP server 名称
             :param tool: 工具名称
             :param timeout: 超时秒数
-            :param text__: JSON 格式的调用参数, 放在开放闭合标签内: <mcp:exec server="x" tool="y">{"key":"val"}</mcp:exec>
+            :param text__: JSON 格式的调用参数: {"key": "val"}
             """
             session = self._sessions.get(server)
             if session is None:
-                return Observe.new(f"[MCP:{server}] server not found. Use list_servers to see available servers.")
+                return Observe.new(f"[MCP:{server}] server not connected. Use list to see available servers.")
             try:
                 arguments = json.loads(text__) if text__ else {}
             except json.JSONDecodeError as e:
@@ -308,8 +266,8 @@ class MCPHubState(ChannelState):
             return await exec_cmd(server, tool, timeout=timeout, text__=text__)
 
         async def list_servers() -> str:
-            """列出所有 MCP server 的连接状态和工具摘要。"""
-            lines = ["### MCP Server Status\n"]
+            """列出所有 MCP server 的连接状态及配置中尚未连接的 server。"""
+            lines = ["### MCP Servers\n"]
             for name, session in self._sessions.items():
                 state_icon = {'connected': '+', 'connecting': '~', 'disconnected': '-', 'error': '!'}.get(
                     session.state, '?'
@@ -322,33 +280,32 @@ class MCPHubState(ChannelState):
                         desc = (tool.description or '').split('\n')[0]
                         lines.append(f"    - {tool.name}: {desc}")
                 lines.append("")
-            if not self._sessions:
-                lines.append("No servers configured. Use add_server to add one.")
+            # show config entries not yet connected
+            config = self._load_config()
+            available = {n: c.description or '' for n, c in config.servers.items()
+                         if n not in self._sessions}
+            if available:
+                lines.append("Available (not connected):")
+                for n in sorted(available):
+                    desc = f" — {available[n]}" if available[n] else ''
+                    lines.append(f"- `{n}`{desc}")
+            elif not self._sessions:
+                lines.append("No servers configured.")
             return '\n'.join(lines)
 
-        async def add_server(name: str) -> str:
-            """添加并连接 MCP server。
+        async def connect_server(name: str) -> str:
+            """连接指定的 MCP server。
 
-            :param name: server 名称，对应 mcp_hub.yml 中配置的 server 名
+            :param name: server 名称
             """
             if name in self._sessions and self._sessions[name].state == 'connected':
                 return f"[MCP:{name}] already connected"
 
-            # 1. 当前活跃配置（scoped 或全局）
             config = self._load_config()
             server_cfg = config.servers.get(name)
-
-            # 2. 全局预设 fallback（仅当活跃配置有 scopes 时额外查全局）
-            if server_cfg is None and self._scopes:
-                global_config = self._load_global_config()
-                server_cfg = global_config.servers.get(name)
-
-            # 3. 未找到 → 列出可用 server
             if server_cfg is None:
-                available = set(config.servers.keys())
-                if self._scopes:
-                    available.update(self._load_global_config().servers.keys())
-                suffix = f". Available: {', '.join(sorted(available))}" if available else ''
+                available = sorted(config.servers.keys())
+                suffix = f". Available: {', '.join(available)}" if available else ''
                 return f"[MCP:{name}] not found{suffix}"
 
             session = MCPServerSession(config=server_cfg)
@@ -356,25 +313,25 @@ class MCPHubState(ChannelState):
             self._sessions[name] = session
             return f"[MCP:{name}] {session.state}" + (f": {session.error}" if session.error else '')
 
-        async def remove_server(name: str) -> str:
-            """断开并移除 MCP server。
+        async def disconnect_server(name: str) -> str:
+            """断开并移除 MCP server 连接。
 
-            :param name: 要移除的 server 名称
+            :param name: server 名称
             """
             session = self._sessions.pop(name, None)
             if session is None:
-                return f"[MCP:{name}] server not found"
+                return f"[MCP:{name}] not connected"
             await session.disconnect()
-            return f"[MCP:{name}] removed"
+            return f"[MCP:{name}] disconnected"
 
-        async def restart_server(name: str) -> str:
-            """重启 MCP server 连接。
+        async def reconnect_server(name: str) -> str:
+            """重新连接 MCP server。
 
             :param name: server 名称
             """
             session = self._sessions.get(name)
             if session is None:
-                return f"[MCP:{name}] server not found. Use add_server to add it first."
+                return f"[MCP:{name}] not connected. Use connect first."
             await session.disconnect()
             await session.connect()
             return f"[MCP:{name}] {session.state}" + (f": {session.error}" if session.error else '')
@@ -382,11 +339,62 @@ class MCPHubState(ChannelState):
         self._own_commands = {
             'exec': PyCommand(exec_cmd, blocking=False, always_observe=True),
             'exec_blocking': PyCommand(exec_blocking_cmd, blocking=True, always_observe=True),
-            'list_servers': PyCommand(list_servers, always_observe=True),
-            'add_server': PyCommand(add_server, always_observe=True),
-            'remove_server': PyCommand(remove_server, always_observe=True),
-            'restart_server': PyCommand(restart_server, always_observe=True),
+            'list': PyCommand(list_servers, always_observe=True),
+            'connect': PyCommand(connect_server, always_observe=True),
+            'disconnect': PyCommand(disconnect_server, always_observe=True),
+            'reconnect': PyCommand(reconnect_server, always_observe=True),
         }
+
+        if self._allow_model_config:
+            async def register(text__: str = '') -> str:
+                """注册新的 MCP server 配置并持久化，可选自动连接。
+
+                :param text__: JSON 格式的 MCPServerConfig, 可包含 "connect": true 立即连接。
+                e.g. {"name": "myserver", "transport": "stdio", "command": "python", "args": ["-m", "mymod"], "env": {"KEY": "$SECRET"}, "connect": true}
+                """
+                try:
+                    data = json.loads(text__) if text__ else {}
+                except json.JSONDecodeError as e:
+                    return f"[MCP] invalid JSON: {e}"
+
+                connect = data.pop('connect', True)
+                try:
+                    server_cfg = MCPServerConfig.model_validate(data)
+                except Exception as e:
+                    return f"[MCP] invalid server config: {e}"
+
+                config = self._load_config()
+                config.servers[server_cfg.name] = server_cfg
+                self._config_store.save(config)
+
+                if connect:
+                    if server_cfg.name in self._sessions:
+                        await self._sessions[server_cfg.name].disconnect()
+                    session = MCPServerSession(config=server_cfg)
+                    await session.connect()
+                    self._sessions[server_cfg.name] = session
+                    return f"[MCP:{server_cfg.name}] registered and {session.state}" + (f": {session.error}" if session.error else '')
+                return f"[MCP:{server_cfg.name}] registered (not connected)"
+
+            async def unregister(name: str) -> str:
+                """移除 MCP server 配置并断开连接。
+
+                :param name: server 名称
+                """
+                config = self._load_config()
+                if name not in config.servers:
+                    return f"[MCP:{name}] not found in config"
+
+                session = self._sessions.pop(name, None)
+                if session:
+                    await session.disconnect()
+
+                del config.servers[name]
+                self._config_store.save(config)
+                return f"[MCP:{name}] unregistered"
+
+            self._own_commands['register'] = PyCommand(register, always_observe=True)
+            self._own_commands['unregister'] = PyCommand(unregister, always_observe=True)
 
     # --- ChannelState interface ---
 
@@ -400,7 +408,7 @@ class MCPHubState(ChannelState):
         return self._description
 
     def is_available(self) -> bool:
-        return self._matrix.is_running()
+        return True
 
     def is_dynamic(self) -> bool:
         return True
@@ -412,53 +420,11 @@ class MCPHubState(ChannelState):
         return self._own_commands.get(name)
 
     def _load_config(self) -> MCPHubConfig:
-        """加载 MCP Hub 配置。有 scopes 走 scoped storage YAML，无 scopes 走全局 ConfigStore。
-        首次调用自动初始化空配置并持久化。
-        """
-        if self._scopes:
-            storage = self._matrix.get_scoped_storage(*self._scopes)
-            config = storage.read_yaml("mcp_hub", MCPHubConfig)
-            if config is None:
-                config = MCPHubConfig(servers={})
-                storage.write_yaml("mcp_hub", config)
-            return config
-        else:
-            try:
-                from ghoshell_moss.contracts.configs import get_conf
-                return get_conf(ChannelCtx.container(), MCPHubConfig)
-            except Exception:
-                config = MCPHubConfig(servers={})
-                from ghoshell_moss.contracts.configs import save_conf
-                save_conf(ChannelCtx.container(), config)
-                return config
-
-    def _save_config(self, config: MCPHubConfig) -> None:
-        """持久化 MCP Hub 配置。保存前将 env 真值还原为 $VAR 占位符。"""
-        for server_cfg in config.servers.values():
-            if server_cfg.env:
-                server_cfg.env = _redact_env_for_save(server_cfg.env)
-        if self._scopes:
-            storage = self._matrix.get_scoped_storage(*self._scopes)
-            storage.write_yaml("mcp_hub", config)
-        else:
-            from ghoshell_moss.contracts.configs import save_conf
-            save_conf(ChannelCtx.container(), config)
-
-    def _load_global_config(self) -> MCPHubConfig:
-        """加载全局 MCP Hub 预设配置（只读，直接读 workspace configs/ 目录）。"""
-        try:
-            workspace = self._matrix.workspace
-            config = workspace.configs().read_yaml("mcp_hub", MCPHubConfig)
-            if config is not None:
-                return config
-        except Exception:
-            pass
-        return MCPHubConfig(servers={})
+        return self._config_store.get_or_create(MCPHubConfig(servers={}))
 
     async def on_startup(self) -> None:
-        """启动时加载配置并连接所有 server。"""
+        """启动时加载配置并连接所有 server。ConfigStore 自动解析 $VAR 占位符。"""
         config = self._load_config()
-
         for name, server_cfg in config.servers.items():
             session = MCPServerSession(config=server_cfg)
             await session.connect()
@@ -488,21 +454,17 @@ class MCPHubState(ChannelState):
             elif session.error:
                 lines.append(f"  error: {session.error[:200]}")
             lines.append("")
-        # 未连接的 YAML 预配置（活跃 config + 全局预设），含描述
         config = self._load_config()
-        available: dict[str, str] = {}
-        for src in [config] + ([self._load_global_config()] if self._scopes else []):
-            for name, cfg in src.servers.items():
-                if name not in self._sessions and name not in available:
-                    available[name] = cfg.description or ''
+        available = {n: c.description or '' for n, c in config.servers.items()
+                     if n not in self._sessions}
         if available:
             if self._sessions:
                 lines.append("Available:")
             else:
                 lines.append("No MCP servers connected. Available:")
-            for name in sorted(available):
-                desc = f" — {available[name]}" if available[name] else ''
-                lines.append(f"- `{name}`{desc}")
+            for n in sorted(available):
+                desc = f" — {available[n]}" if available[n] else ''
+                lines.append(f"- `{n}`{desc}")
         elif not self._sessions:
             lines.append("No MCP servers available.")
         return ['\n'.join(lines)]
@@ -520,10 +482,12 @@ class MCPHubChannel(Channel):
         name: str = 'mcp',
         description: str = '',
         scopes: list[ScopesKey] | None = None,
+        allow_model_config: bool = False,
     ):
         self._name = name
         self._description = description or 'MCP Hub — 管理外部 MCP 工具调用'
         self._scopes = scopes or []
+        self._allow_model_config = allow_model_config
         self._id = unique_id()
 
     def name(self) -> ChannelName:
@@ -537,11 +501,28 @@ class MCPHubChannel(Channel):
 
     def materialize(self, container: IoCContainer) -> ChannelRuntime:
         matrix = container.force_fetch(Matrix)
+
+        if self._scopes:
+            storage = matrix.get_scoped_storage(*self._scopes)
+            config_store = YamlConfigStore(storage)
+            # 首次创建时从 workspace 预设合并，确保 scoped 配置包含全局预设的 server
+            workspace_store = matrix.configs()
+            try:
+                workspace_config = workspace_store.get(MCPHubConfig)
+                scoped_config = config_store.get_or_create(
+                    MCPHubConfig(servers=dict(workspace_config.servers))
+                )
+                config_store.save(scoped_config)
+            except Exception:
+                config_store.get_or_create(MCPHubConfig(servers={}))
+        else:
+            config_store = matrix.configs()
+
         state = MCPHubState(
-            matrix=matrix,
+            config_store=config_store,
+            allow_model_config=self._allow_model_config,
             name=self._name,
             description=self._description,
-            scopes=self._scopes,
         )
         channel = new_stateful_channel_from_main(state, id=self._id)
         return channel.bootstrap(container)
@@ -552,6 +533,7 @@ def build_mcp_hub_channel(
     name: str = 'mcp',
     description: str = '',
     scopes: list[ScopesKey] | None = None,
+    allow_model_config: bool = False,
 ) -> Channel:
     """构建 MCP Hub Channel 的工厂函数。
 
@@ -559,11 +541,27 @@ def build_mcp_hub_channel(
     :param name: channel 名称
     :param description: channel 描述
     :param scopes: 配置存储的隔离级别, e.g. ['ghost', 'mode']
+    :param allow_model_config: 是否允许模型动态注册/移除 server
     """
+    if scopes:
+        storage = matrix.get_scoped_storage(*scopes)
+        config_store = YamlConfigStore(storage)
+        workspace_store = matrix.configs()
+        try:
+            workspace_config = workspace_store.get(MCPHubConfig)
+            scoped_config = config_store.get_or_create(
+                MCPHubConfig(servers=dict(workspace_config.servers))
+            )
+            config_store.save(scoped_config)
+        except Exception:
+            config_store.get_or_create(MCPHubConfig(servers={}))
+    else:
+        config_store = matrix.configs()
+
     state = MCPHubState(
-        matrix=matrix,
+        config_store=config_store,
+        allow_model_config=allow_model_config,
         name=name,
         description=description,
-        scopes=scopes,
     )
     return new_stateful_channel_from_main(state)

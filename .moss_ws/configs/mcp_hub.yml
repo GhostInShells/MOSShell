@@ -1,6 +1,6 @@
 # MCP Hub 全局预设配置。
-# 此处定义的 server 对所有 Ghost 可见，通过 <mcp:add_server name="..." /> 连接。
-# env 中以 $ 开头的值在连接时从系统环境变量解析为真值，此处存储 $VAR 占位符。
+# 此处定义的 server 对所有 Ghost 可见，通过 <mcp:connect name="..." /> 连接。
+# env 中以 $ 开头的值由 ConfigStore 在读时自动解析为真值，此处存储 $VAR 占位符。
 servers:
   test:
     name: test
