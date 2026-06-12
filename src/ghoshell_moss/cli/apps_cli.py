@@ -5,6 +5,8 @@ from ghoshell_moss.core.blueprint.app import AppInfo
 from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_moss.host import Host
 from .utils import print_host_mode_info, print_simple_table, print_simple_panel
+import os
+import signal
 import subprocess
 import typer
 from rich.syntax import Syntax
@@ -241,14 +243,29 @@ def test_app(
 
         console.print("[dim]—— Process Started (Ctrl+C to stop) ——[/dim]\n")
 
-        args = [executable] + args_list
+        run_args = [executable] + args_list
 
-        subprocess.run(
-            args=args,
+        proc = subprocess.Popen(
+            args=run_args,
             cwd=app.work_directory,
             env=env,
-            check=False,  # 允许非零退出码，不抛出 Python 异常
         )
+
+        # 转发 SIGTERM 给子进程，防止 kill 父进程时子进程孤儿化
+        _orig_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _forward_sigterm(signum: int, _frame) -> None:
+            try:
+                proc.send_signal(signum)
+            except ProcessLookupError:
+                pass
+
+        signal.signal(signal.SIGTERM, _forward_sigterm)
+
+        try:
+            proc.wait()
+        finally:
+            signal.signal(signal.SIGTERM, _orig_sigterm)
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Test interrupted by user.[/yellow]")
