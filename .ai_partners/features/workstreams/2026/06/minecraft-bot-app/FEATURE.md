@@ -3,7 +3,7 @@ title: Minecraft Bot App — 从 examples 到 apps 体系迁移
 status: completed
 priority: P2
 created: 2026-06-11
-updated: 2026-06-11
+updated: 2026-06-12
 depends: []
 milestone:
 description: >-
@@ -156,6 +156,43 @@ Mineflayer bot 连接 Minecraft 服务器是异步的，`createBot` 不会立即
 - **语音输出**：当前示例可选的 `VolcengineTTS` + `PyAudioStreamPlayer` 剥离。TTS 由 Host 统一提供，App 只负责上报 input 和提供 reply command。
 - **单 App 多 bot**：见 Key Decision 5， deferred。
 - **Ghost articulate 输出自动回流**：需要 Host 层增强，deferred。
+
+## Post-Completion Refinement: Signal Handling & Cleanup
+
+2026-06-12 对 `apps_cli.py` 和 `minecraft_bot/main.py` 的信号处理进行了重构，解决子进程孤儿化问题并简化 App 内部代码。
+
+### 问题背景
+
+`moss apps test` 原来的实现使用 `subprocess.run` + `proc.send_signal(signum)`，存在两个问题：
+1. **SIGKILL 截断**：`subprocess.run` 在 `KeyboardInterrupt` 时会强制 `proc.kill()`（SIGKILL），跳过 `main.py` 的 `finally` 清理逻辑
+2. **单点转发**：`proc.send_signal` 只发给直接子进程，Node.js bridge（孙进程）收不到信号，导致 orphaning
+
+### 修复：进程组广播
+
+**`src/ghoshell_moss/cli/apps_cli.py`**：
+- `subprocess.Popen(..., start_new_session=True)` — 子进程成为新进程组 leader（pgid == pid）
+- `os.killpg(proc.pid, signum)` — 收到什么信号就广播到什么进程组，行为与 terminal Ctrl+C 一致
+- `except KeyboardInterrupt` 中手动 `os.killpg(proc.pid, signal.SIGINT)` 并 `proc.wait(timeout=10)`，超时再 `SIGKILL`
+
+### App 内部简化
+
+**`.moss_ws/apps/games/minecraft_bot/main.py`**：
+- 删除 `atexit.register(_force_kill_node_bridge)` — 冗余，信号 handler + `finally` 已覆盖所有优雅退出路径
+- 删除 `finally` 块里的 `os.kill(SIGKILL)` 兜底 — `javascript.terminate()` 发送的 SIGTERM 已足够（测试验证通过）
+- 保留 signal handler — asyncio 程序优雅关闭的必要入口，把同步信号转成 `CancelledError`
+- 保留 `finally` 块里的 `_bot.end()` 和 `javascript.terminate()` — 核心清理逻辑
+
+### 验证
+
+- SIGTERM 路径：`kill <moss_apps_test_pid>` → 广播到进程组 → main.py `CancelledError` → `finally` → bridge 被清理，无残留
+- SIGINT 路径：前台 Ctrl+C → 广播到进程组 → 同上，无残留
+
+### 关键认知
+
+asyncio 程序优雅关闭的三要素缺一不可：
+1. **Signal handler** — 把 SIGTERM/SIGINT 转成 `CancelledError`
+2. **`finally` 块** — 执行实际清理（`_bot.end()`、`javascript.terminate()`）
+3. **父进程进程组广播** — 确保信号到达整个子进程树，而非只到一层
 
 ## Related Code
 

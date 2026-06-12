@@ -236,6 +236,8 @@ def test_app(
 
     # 3. 执行子进程
     # 我们需要切换到 App 的工作目录执行
+    _orig_sigterm = None
+    proc = None
     try:
         # 使用 shlex.split 确保命令解析安全（处理空格等）
         # 继承当前环境并注入 Host 特有的 env (如果有)
@@ -249,24 +251,36 @@ def test_app(
             args=run_args,
             cwd=app.work_directory,
             env=env,
+            start_new_session=True,
         )
 
-        # 转发 SIGTERM 给子进程，防止 kill 父进程时子进程孤儿化
+        # 统一信号转发：收到什么信号，就给子进程组广播什么信号
+        # start_new_session=True 让子进程成为新进程组的 leader（pgid == pid）
+        # 这样 os.killpg 能把信号发到整个子进程树，和 terminal Ctrl+C 行为一致
         _orig_sigterm = signal.getsignal(signal.SIGTERM)
 
-        def _forward_sigterm(signum: int, _frame) -> None:
+        def _forward_signal(signum: int, _frame) -> None:
             try:
-                proc.send_signal(signum)
-            except ProcessLookupError:
+                os.killpg(proc.pid, signum)
+            except (ProcessLookupError, OSError):
                 pass
 
-        signal.signal(signal.SIGTERM, _forward_sigterm)
+        signal.signal(signal.SIGTERM, _forward_signal)
 
         try:
             proc.wait()
-        finally:
-            signal.signal(signal.SIGTERM, _orig_sigterm)
-
+        except KeyboardInterrupt:
+            # 子进程在新进程组，kernel 的 SIGINT 不会自动发到它
+            # 手动广播 SIGINT 并等待优雅退出，行为与 terminal 一致
+            try:
+                os.killpg(proc.pid, signal.SIGINT)
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                proc.wait()
     except KeyboardInterrupt:
         console.print("\n[yellow]Test interrupted by user.[/yellow]")
     except Exception as e:
@@ -276,4 +290,6 @@ def test_app(
             console.print(f"\n[red]Failed to start test process: {e}[/red]")
         raise typer.Exit(1)
     finally:
+        if _orig_sigterm is not None:
+            signal.signal(signal.SIGTERM, _orig_sigterm)
         console.print("\n[dim]—— Test Session Ended ——[/dim]")

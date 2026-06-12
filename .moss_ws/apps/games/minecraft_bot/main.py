@@ -24,7 +24,6 @@ Key constraints:
 """
 
 import asyncio
-import atexit
 import logging
 import os
 import signal
@@ -457,20 +456,6 @@ async def _connection_monitor_task(matrix: Matrix) -> None:
 # ── App entry ────────────────────────────────────────────────────────────────
 
 
-def _force_kill_node_bridge() -> None:
-    """Backup cleanup: SIGKILL the javascript bridge if SIGTERM was ignored."""
-    try:
-        import javascript.connection as _js_conn
-
-        if _js_conn.proc is not None and _js_conn.proc.poll() is None:
-            os.kill(_js_conn.proc.pid, signal.SIGKILL)
-    except Exception:
-        pass
-
-
-atexit.register(_force_kill_node_bridge)
-
-
 async def main(matrix: Matrix) -> None:
     """Connect bot to server, start bridge tasks, register channel."""
     print(f"DEBUG: main() started pid={os.getpid()}", flush=True)
@@ -540,26 +525,13 @@ async def main(matrix: Matrix) -> None:
             pass
 
     finally:
-        logger.info("Minecraft bot shutting down...")
         if _bot is not None:
             try:
                 _bot.end()
-                logger.info("Mineflayer bot disconnected")
             except Exception:
-                logger.exception("Failed to disconnect mineflayer bot")
+                pass
         try:
             javascript.terminate()
-            logger.info("JavaScript bridge terminated")
-        except Exception:
-            logger.exception("Failed to terminate JavaScript bridge")
-        # javascript.terminate() only sends SIGTERM; node may ignore it.
-        # Ensure the bridge process is actually killed so it doesn't orphan.
-        try:
-            import javascript.connection as _js_conn
-
-            if _js_conn.proc is not None and _js_conn.proc.poll() is None:
-                os.kill(_js_conn.proc.pid, signal.SIGKILL)
-                logger.info("Force-killed node bridge process (pid=%s)", _js_conn.proc.pid)
         except Exception:
             pass
 
