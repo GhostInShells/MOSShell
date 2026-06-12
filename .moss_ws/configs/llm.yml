@@ -1,0 +1,37 @@
+services:
+- name: anthropic
+  base_url: https://api.anthropic.com
+  api_key: $ANTHROPIC_API_KEY
+  api_type: anthropic
+- name: openai_compat
+  base_url: https://api.openai.com
+  api_key: $OPENAI_API_KEY
+  api_type: openai
+
+models:
+- model: claude-sonnet-4-6
+  service: anthropic
+  model_type: default
+  context_window: 200000
+  max_output_tokens: 8192
+  protocols:
+  - text
+  - image
+- model: claude-opus-4-7
+  service: anthropic
+  model_type: pro
+  context_window: 200000
+  max_output_tokens: 16384
+  protocols:
+  - text
+  - image
+- model: claude-haiku-4-5-20251001
+  service: anthropic
+  model_type: flash
+  context_window: 200000
+  max_output_tokens: 4096
+  protocols:
+  - text
+  - image
+
+default_model: claude-sonnet-4-6
