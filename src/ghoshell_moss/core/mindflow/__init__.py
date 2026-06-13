@@ -11,6 +11,7 @@ Mindflow 调度中枢实现.
   input_signal_nucleus — InputSignalNucleus, IM 红点式信号聚合 (default mode)
   command_nucleus      — CommandNucleus, 反射弧入口 (command_only primitive)
   notify_nucleus       — NotifyNucleus, 不丢消息入口 (notify primitive)
+  silent_nucleus       — SilentNucleus, 静默聚合通道 (silent mode + 优先级提取 buffer)
 """
 
 from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, AbsMindflow, new_default_mindflow
@@ -22,4 +23,7 @@ from ghoshell_moss.core.mindflow.command_nucleus import (
 )
 from ghoshell_moss.core.mindflow.notify_nucleus import (
     NotifyNucleus, NotifySignalMeta, NotifyNucleusMeta,
+)
+from ghoshell_moss.core.mindflow.silent_nucleus import (
+    SilentNucleus, SilentSignalMeta, SilentNucleusMeta,
 )
