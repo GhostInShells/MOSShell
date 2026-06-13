@@ -1,11 +1,11 @@
 from abc import abstractmethod, ABC
-from typing import AsyncGenerator, AsyncIterator
+from typing import AsyncGenerator, AsyncIterator, Callable
 from typing_extensions import Self
 
 import janus
 
 from ghoshell_moss.core.blueprint.mindflow import (
-    Mindflow, Attention, Impulse, Nucleus, Signal, Priority, ImpulseAbsorbed,
+    Mindflow, Attention, Impulse, Nucleus, Signal, SignalName, Priority, ImpulseAbsorbed,
     Reaction, ChallengeVerdict, MindflowHook,
     ChallengeMode,
 )
@@ -27,6 +27,84 @@ __all__ = [
     'AbsMindflow',
     'new_default_mindflow',
 ]
+
+
+class _DirectImpulseNucleus(Nucleus):
+    """内置 cache nucleus, 服务 ``AbsMindflow.add_impulse`` 公开调试入口.
+
+    把"直接注入的 impulse"包装成标准 nucleus 的 peek/pop 行为, 让 rank/challenge 协议
+    在 nucleus-path 和 direct-path 上共用同一套流程, 不引入旁路.
+
+    职责保持极简:
+    - 不监听 signal
+    - 不维护队列, 只保留最后一次 ``set_impulse`` 的值 (last-impulse cache)
+    - suppress / pop 直接清空 (调用方语义已决定它的命运)
+    """
+
+    NAME = "_direct"
+
+    def __init__(self):
+        self._impulse: Impulse | None = None
+        self._running = False
+        self._notify: Callable[[Impulse], None] | None = None
+
+    def set_impulse(self, impulse: Impulse) -> None:
+        """缓存一个 impulse 并通知 mindflow. impulse.source 被锚定为 NAME."""
+        impulse.source = self.NAME
+        self._impulse = impulse
+        if self._notify is not None:
+            self._notify(impulse)
+
+    def name(self) -> str:
+        return self.NAME
+
+    def description(self) -> str:
+        return "direct add_impulse cache (internal)"
+
+    def status(self) -> str:
+        return ""
+
+    def signals(self) -> list[SignalName]:
+        return []
+
+    def clear(self) -> None:
+        self._impulse = None
+
+    def add_signal(self, signal: Signal) -> None:
+        return None
+
+    def with_bus(
+            self,
+            signal_broadcast: Callable[[Signal], None],
+            impulse_notify: Callable[[Impulse], None],
+    ) -> None:
+        self._notify = impulse_notify
+
+    def suppress(self, suppress_by: Impulse) -> None:
+        self._impulse = None
+
+    def pop_impulse(self, impulse: Impulse) -> None:
+        if self._impulse is impulse:
+            self._impulse = None
+
+    def peek(self, no_stale: bool = True) -> Impulse | None:
+        if self._impulse is None:
+            return None
+        if no_stale and self._impulse.is_stale():
+            self._impulse = None
+            return None
+        return self._impulse
+
+    def is_running(self) -> bool:
+        return self._running
+
+    async def __aenter__(self) -> "_DirectImpulseNucleus":
+        self._running = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._running = False
+        return None
 
 
 class MindflowHookGroup(MindflowHook):
@@ -127,6 +205,9 @@ class AbsMindflow(Mindflow, ABC):
         self._consuming_impulse_task: asyncio.Task | None = None
         # 是否对启动异常容错.
         self._raise_nucleus_start_error = raise_nucleus_start_error
+        # 内置 direct nucleus, 服务 public add_impulse 入口. 必须先于用户 nuclei 注册.
+        self._direct_nucleus = _DirectImpulseNucleus()
+        self.with_nucleus(self._direct_nucleus)
         for nucleus in nuclei:
             self.with_nucleus(nucleus)
         self._async_exit_stack = contextlib.AsyncExitStack()
@@ -188,7 +269,7 @@ class AbsMindflow(Mindflow, ABC):
         if not override and _name in self._faculties:
             raise NameError(f"nucleus {_name} already exists")
 
-        nucleus.with_bus(self.add_signal, self.add_impulse)
+        nucleus.with_bus(self.add_signal, self._nucleus_has_impulse)
         self._faculties[_name] = nucleus
 
     def _register_nucleus_to_signal_routes(self, nucleus: Nucleus) -> None:
@@ -324,12 +405,29 @@ class AbsMindflow(Mindflow, ABC):
             self._logger.error("%s dispatch signal error on %r: %s", self._log_prefix, signal, e)
 
     def add_impulse(self, impulse: Impulse) -> None:
+        """公开调试入口, 直接注入一个 impulse 走标准 rank/challenge 流程.
+
+        实现上路由到内置 ``_DirectImpulseNucleus`` 缓存, rank 时与 nuclei impulse
+        混合排序, 仲裁路径与 nucleus 产出完全一致. impulse.source 会被锚定为
+        ``_DirectImpulseNucleus.NAME``.
+
+        典型用法: 协议级集成测试, 绕开 nucleus 信号链直接验证 ImpulsePrimitive
+        组合的仲裁行为.
         """
-        接受新的 impulse 并且进行排队.
+        if not self.is_running() or self._paused:
+            return None
+        if impulse.is_stale():
+            return None
+        self._direct_nucleus.set_impulse(impulse)
+        return None
+
+    def _nucleus_has_impulse(self, impulse: Impulse) -> None:
+        """Bus 回调, nuclei 产出 impulse 后调用. 仅标记 ``_has_impulse_event``,
+        真正的 impulse 由 rank 循环通过 ``nucleus.peek()`` 拉取.
+
+        Note: 注意 ``on_signal / _nucleus_has_impulse`` 作为总线提供给 Nucleus 时,
+        要防止信号成环无限传播. 暂无系统机制百分之百预防.
         """
-        # impulse 本身可能也是跨线程的, 有几种情况:
-        # 1. Nucleus 自身不是从 on_signal 进行决策的, 动作不是在同一个 loop 里触发.
-        # 2. Mindflow 接受进程级别的 Impulse 通讯, 不是从持有的 Nucleus 回调的.
         if self._paused:
             self._logger.info("%s drop impulse cause paused: %r", self._log_prefix, impulse)
             return None
