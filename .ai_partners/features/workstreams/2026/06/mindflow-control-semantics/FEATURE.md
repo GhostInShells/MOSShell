@@ -8,7 +8,7 @@ milestone: null
 priority: P0
 status: in-progress
 title: Mindflow Control Semantics — 协议化仲裁与生命周期重构
-updated: '2026-06-11'
+updated: '2026-06-14'
 ---
 
 # Mindflow Control Semantics
@@ -441,6 +441,91 @@ ChallengeMode 双层 buffer，memento 替换 conversation，Articulator 通道�
 - `GhostRuntimeImpl` 生命周期 (interrupt 协议、thinking_effort='none' 不调 articulate)
 - 这组属于 ghost_runtime / shell / ctml 交叉, 需要独立上下文 + 完整测试规划. 不与 nucleus 抽象合并.
 
+### 2026-06-14 五元 Nucleus 落地 (Claude Opus 4.7 与人类工程师)
+
+**整体定位**: 在 2026-06-13 锚定的"四元 Nucleus 基建"上演进出最终五元拓扑. 演进路径不是顺序执行 06-13 任务清单, 而是协议事实对齐 → 命名重排 → 一个一个 nucleus 求真 review 落地. 命名锚点 (claude opus 4.7):
+
+| Nucleus | 内核 primitive | 通道语义 |
+|---|---|---|
+| `InputSignalNucleus` (existing) | default | FIFO 离散事件聚合 → 思考 |
+| `SilentNucleus` (new) | silent mode + 优先级提取 buffer | 数据流静默累积, 不打扰思考 |
+| `NotifyNucleus` (new) | notify primitive | 不丢消息, 抢占失败也 buffer |
+| `CommandNucleus` (rewrite) | command_only primitive | logos 反射弧, 不思考 |
+| `InterruptNucleus` (new) | interrupt primitive | 中断动作, 接管 attention 后立即放手 |
+
+`BroadcastNucleus` **未落地**, 只保留 `ImpulsePrimitive.broadcast` 单原语 — 详见决策记录.
+
+**ChallengeMode 协议事实对齐 (订正 2026-06-13 命名争议)**:
+
+silent 和 notify 是 default 上**对称**的两条偏离, 不是"广播 vs 静默":
+
+| mode | 抢占成功 | 抢占失败 |
+|---|---|---|
+| `default` | 创建新 attention | suppress (信丢) |
+| `silent` | **buffer messages** (偏离: 不接管) | suppress |
+| `notify` | 创建新 attention | **buffer messages** (偏离: 不丢) |
+
+`ChallengeMode.silent` enum 名保留, 原 06-13 笔记中"silent 听起来像静默中断"的误读源于命名争议而非实现矛盾 — silent 在本架构里就是"抢占成功也只 buffer 不接管" 的协议偏离, enum 名与之自洽. SilentNucleus 复用同一词根, 配 docstring 解释 "silent 数据流静默累积" 的通道语义, 名实一致.
+
+**关键决策**:
+
+| # | 决策 | 理由 |
+|---|---|---|
+| 1 | ImpulsePrimitive 重命名 | code-as-prompt: 读名字就懂意图. `execute_command_only → command_only`, `superior_execute_command → fatal_command`, `interrupt_only → broadcast`, `always_buffer → background_notice`. 新增 `notify` 单原语 + `interrupt` 原语 (broadcast 的对偶) |
+| 2 | CommandNucleus priority 完全继承 Signal.priority | 06-13 暗礁 (a) 方案: 调用方用 Priority.FATAL 表达"强制指令" (等价 fatal_command primitive), NOTICE 表达"普通命令". 一个 nucleus 覆盖两档. 不加 floor |
+| 3 | NotifyNucleus 用 NOTICE + notify (不是 BACKGROUND + notify) | 06-13 笔记把 NotifyNucleus 等同 always_buffer 是误读. 真实用例"用户消息不丢"应该保留 caller 的 priority, 否则用户输入被永久降级为后台数据. `background_notice` 是另一个独立用例 (低优补充数据), 不是 NotifyNucleus |
+| 4 | 不做 BroadcastNucleus, 只保留 broadcast primitive | silent 通道承诺需要累积 (多 signal 在一个 impulse 前到达时不能丢). fire-and-forget 的 BroadcastNucleus 无法满足这条 — 它要么是 SilentNucleus, 要么是离散 primitive. 中间状态退化为胶水 |
+| 5 | SilentNucleus 加入 (新) | 结构对称 InputSignalNucleus: 都是 buffer + 优先级提取, 差异是 mode + signal 语义 (FIFO 离散 vs 数据流). 心智锚点对称, 拓扑势能最低 |
+| 6 | InterruptNucleus 加入 (新) | broadcast (silent + FATAL + effort=none) 与 interrupt (notify + FATAL + effort=none + `interrupt=True`) 是 FATAL/effort=none 轴上的两条对偶. broadcast 不接管, interrupt 接管后立即放手. interrupt 同时具备"对 shell 的副作用" (`stop_interpretation`), 通道语义独立成立 |
+| 7 | InterruptNucleus 反向 suppress | 与 InputSignalNucleus 等"失败侧 suppress" 对偶: FATAL 失败只可能是 absorb/stale (不需冷静期), 真实 DOS 风险在反向 (反复成功 interrupt 导致 shell churn). 故 pop_impulse 触发冷静期, suppress() 不触发 |
+| 8 | strength=0 协议承诺兑现 | Impulse.strength Field 长期承诺"为 0 表示绝不竞争", 但 runtime 从未实现. 在 `_challenge_attention` 入口加短路: pop nucleus + fire 新 verdict `'yielded'`. 优先级高于 FATAL 短路 (调用方矛盾意图 FATAL+strength=0 解析为礼让) |
+| 9 | Zen 静默 attention 心智模型预留, 不落 nucleus | 首包 `complete=False + strength=0` 占住 attention 不竞争 + protection_time 后发尾包 = "ghost 冷静期". 心智模型成立, 但用例尚未在项目里出现, 抽象先于需求. 协议预留, nucleus 等用例出现再抽 |
+| 10 | 五元 fire-and-forget nucleus 改为 last-impulse cache | 集成测试暴露的协议-实现裂缝. mindflow 是 pull-based (`_nucleus_has_impulse` 只 set flag, `_rank_nuclei` 通过 `peek()` 拉取), 这是为避免仲裁竞态+线程锁卡死 loop 的有意设计. fire-and-forget 写法 (peek=None, pop_impulse=noop) 在单 nucleus 单测里看似工作, 集成路径上 impulse 凭空消失. 给 Command/Notify/Interrupt 加 `_impulse` cache (与 `_DirectImpulseNucleus` 同模式), nucleus 协议契约自洽 |
+
+**ImpulsePrimitive 重命名表**:
+
+| 旧名 | 新名 | 组合 |
+|---|---|---|
+| `execute_command_only` | `command_only` | logos + effort=none |
+| `superior_execute_command` | `fatal_command` | command_only + FATAL |
+| `interrupt_only` | `broadcast` | FATAL + silent + effort=none |
+| `always_buffer` | `background_notice` | BACKGROUND + notify |
+| (新增) | `notify` | mode=notify (priority 不动) |
+| (新增) | `interrupt` | FATAL + notify + effort=none + interrupt=True |
+
+**Impulse / 协议字段订正**:
+
+- `Impulse.logos` / `hint` / `perspective` 标注为"本帧实时字段": 走 ChallengeMode 的 buffer 路径 (silent/notify) 时被有意丢弃 (跨 attention 无意义)
+- `Impulse.strength=0` 注释明确"绝不竞争 (yielded)", 标注 Zen 心智模型预留
+- `ChallengeVerdict` 新增 `'yielded'` (主动礼让, 区别于"被挤掉" 的 suppressed)
+- `Impulse.prepare_timeout` 字段 (06-11 review 中提到的"定义后未消费") 经过 grep 确认根本不在 Impulse 上, 是 ctml_shell 的参数, 06-11 那条 review note 讹误
+
+**提交节奏 (7 commit)**:
+
+| # | commit | 内容 | 测试增量 |
+|---|---|---|---|
+| 1 | `f4f4fe5` | ChallengeMode 对称表 + ImpulsePrimitive 重命名 | +2 (89→91) |
+| 2 | `52fcb5d` | CommandNucleus 完善 + Meta + helper | +19 (110) |
+| 3 | `9961c44` | NotifyNucleus + Meta + helper | +21 (131) |
+| 4 | `0a69243` | SilentNucleus + Meta + helper | +24 (155) |
+| 5 | `d660610` | ImpulsePrimitive.interrupt + InterruptNucleus + Meta | +24 (179) |
+| 6 | `0ea5663` | strength=0 yielded 协议兑现 | +5 (184) |
+| 7 | `5b1067f` | last-impulse cache 修 + 五元集成测试 | +25 (209) |
+
+**集成测试在 commit 7 暴露的 P0 bug** (单元路径绕过 mindflow 调度, 看似正常):
+
+CommandNucleus / NotifyNucleus / InterruptNucleus 三个 nucleus 在 add_signal → impulse_notify → mindflow consume → `_rank_nuclei.peek()` 的全链路上, impulse 因 peek 永远返回 None 凭空消失 (mindflow 调度器找不到, 进 attention 失败超时). 历史 CommandNucleus 也有此 bug, 从未跑过完整 mindflow 集成测试. 修复 = 给三个 nucleus 加 `_impulse` last-impulse cache (与 `_DirectImpulseNucleus` 同模式).
+
+**未完成 (下一会话)**:
+
+- ghost_runtime / shell / ctml 交叉测试组 (06-13 笔记里就已经独立锚定): `shell.interpreter(kind='append')` / `moss_dynamic` 缓存 / `GhostRuntimeImpl` 生命周期
+- mindflow 整体重构: 移除 nucleus 持有 last-impulse 的协议负担, 在 mindflow 内部用更好的竞态防御替代. 当前 nucleus 协议永不过期, 重构只动 mindflow 内部
+- `moss features set-status mindflow-control-semantics`: 本会话不动, ghost_runtime 测试组未完成
+
+**会话总结**:
+
+五元 Nucleus 拓扑闭环, 协议事实与运行时实现完全对齐. 209 mindflow 测试全绿. 路径上经历 3 轮命名 review (broadcast vs silent 之争 → silent/notify 对偶 → 五元定型), 集成层暴露 1 个 P0 protocol-implementation gap 并修复. mindflow 的心智模型完整度 (能定义出 Zen state, 6 mode 不冲突, 两两单测覆盖) 在落地过程中被反复验证, 是这套抽象解决"如何让 ghost 在三循环全双工运行时下保持可仲裁可扩展的认知体系"问题的有力支撑.
+
 ---
 
-*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-13*
+*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-14*
