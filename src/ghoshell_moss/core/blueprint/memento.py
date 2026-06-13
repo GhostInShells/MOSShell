@@ -137,13 +137,13 @@ class Moment(BaseModel, WithAdditional):
         """
         标准的序列化方式, 也方便存储.
         """
-        exclude = None
+        exclude: set[str] = set()
         if exclude_perspectives:
-            exclude = {'perspectives'}
+            exclude.add('perspectives')
         if exclude_hint:
-            exclude = {'hint'}
+            exclude.add('hint')
         return self.model_dump_json(
-            exclude=exclude,
+            exclude=exclude or None,
             indent=indent,
             ensure_ascii=False,
             exclude_none=True,
@@ -242,7 +242,8 @@ class Moment(BaseModel, WithAdditional):
     def as_history_messages(self) -> Iterable[Message]:
         """当 Moment 作为历史消息时, perspectives 无论是否存储都应该遗忘. """
         yield from self.previous_reaction_messages()
-        yield from self.compacted_perspectives
+        if self.compacted_perspectives:
+            yield from self.compacted_perspectives
         yield from self.percepts
 
     @classmethod
@@ -268,6 +269,12 @@ class Moment(BaseModel, WithAdditional):
             buffered_messages.extend(moment.as_history_messages())
             # 判断这一轮里包含了 logos.
             this_moment_has_logos = len(moment.logos) > 0
+            if this_moment_has_logos and not buffered_messages:
+                # logos 存在却无可入史消息: 多半由 perspectives (历史中被遗忘) 触发, 或上游记录异常.
+                # 补一条占位, 让回合结构自洽, 避免 logos 被下面的 buffered_messages 守卫静默吞掉.
+                buffered_messages.append(
+                    Message.new(tag='perspective').with_content('本轮基于实时感知快照响应, 快照未在历史中保留.')
+                )
             if buffered_messages:
                 # 这一轮有 logos 才会拆分一个回合返回. 否则只是 buffer 历史.
                 if this_moment_has_logos:
