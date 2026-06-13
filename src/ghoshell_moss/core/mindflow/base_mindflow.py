@@ -492,10 +492,22 @@ class AbsMindflow(Mindflow, ABC):
 
         FATAL/BACKGROUND 在进入 challenge() 之前先短路 — 这是协议级承诺,
         防止子类重写 challenge() 把绝对性退化掉.
+
+        strength=0 在 stale 之前先短路 — Impulse "绝不竞争" 的协议承诺
+        (Zen 静默心智模型预留): 不进任何 mode 分支, 不 buffer 不 suppress,
+        从 nucleus pop 后 fire 'yielded' verdict.
         """
         try:
             if impulse.is_stale():
                 self._pop_impulse(impulse)
+                return None
+            # strength=0 协议承诺: 绝不竞争, 主动礼让.
+            if impulse.strength == 0:
+                self._pop_impulse(impulse)
+                defender = None
+                if self._current_attention and not self._current_attention.is_aborted():
+                    defender = self._current_attention.draw_from()
+                self._fire_challenge(impulse, defender, 'yielded')
                 return None
             # attention 或者.
             if self._current_attention and not self._current_attention.is_aborted():

@@ -406,7 +406,12 @@ class Impulse(BaseModel):
         default=100,
         description="the impulse 初始强度, 在 attention 中设计强度计算曲线用来解决相同优先级打断机制."
                     "用于相同级别任务的优先级仲裁. 其权重值要么就是系统整体严格约定, 要么就是有通用评级仲裁."
-                    "否则不需要特殊约定. 取值范围数字越大越强, 但为 0 表示绝不竞争. ",
+                    "否则不需要特殊约定. 取值范围数字越大越强."
+                    "为 0 表示**绝不竞争** (yielded): mindflow 在 challenge 入口直接短路,"
+                    "不参与任何 mode 的 buffer/suppress 分支, 由 nucleus 自然清理."
+                    "Zen 静默 attention 心智模型预留接口: 调用方可组合 complete=False + strength=0"
+                    "构造首包 (占住 attention 不竞争) + protection_time 后发尾包的'冷静期'语义."
+                    "本期未实现配套 nucleus, 等真有用例时再抽.",
         ge=0,
         le=1000,
     )
@@ -1052,12 +1057,14 @@ class Attention(ABC):
 
 _NucleusName = str
 
-ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered']
+ChallengeVerdict = Literal['preempted', 'suppressed', 'absorbed', 'initial', 'buffered', 'yielded']
 """Impulse challenge 的仲裁结果。
 - preempted: 抢占成功，创建新 Attention
 - suppressed: 被压制，原 nucleus 收到 suppress()
 - absorbed: 同 ID 更新 complete，不抢占
 - initial: 当前无 attention（首个 impulse）
+- buffered: silent 抢占成功侧 / notify 抢占失败侧 → messages 进 mindflow buffer
+- yielded: impulse.strength=0, 主动礼让, 不参与任何仲裁分支 (Zen 静默心智模型预留)
 """
 
 
