@@ -360,6 +360,87 @@ ChallengeMode 双层 buffer，memento 替换 conversation，Articulator 通道�
 
 **下一轮**: 补单测 → stage → 实现 notify/silent/interrupt nuclei → 收敛
 
+### 2026-06-13 测试加固阶段 (Claude Opus 4.7 与人类工程师)
+
+**会话整体定位**: mindflow 协议层完整测试覆盖, FEATURE.md 待补单测清单逐项落地. 同时通过单测的"被动暴露"机制发现历史 bug.
+
+**完成范围 (5 commits, 103 新测试全绿)**:
+
+| Commit | 范围 | 测试数 |
+|---|---|---|
+| `1012958` | memento 数据结构 (Reaction/Moment 全方法 + to_history_turns 矩阵) | 45 |
+| `b81100d` | moment+impulse 连动 + AbsAttention 观察访问器 + harness 加固 | 30 |
+| `2044d4c` | attention challenge 协议基线 (6 路径 + protection_time) | 16 |
+| `28ac38f` | Action.wait_ready + 帧间 (model logos / command_logos) 衔接 | 4 |
+| `321eca4` | 公开 add_impulse + ImpulsePrimitive 集成 | 8 |
+
+**单测暴露并修复的 bug (4 个)**:
+
+| # | 位置 | 性质 | 级别 |
+|---|---|---|---|
+| 1 | `memento.as_history_messages` | `yield from None` 崩溃 (默认 compacted_perspectives=None), 连带 to_history_turns 全挂 | P0 |
+| 2 | `memento.to_json` | exclude 集合用 `=` 覆盖而非累加, 默认配置下 perspectives 泄漏进序列化 | P0 隐蔽 |
+| 3 | `memento.to_history_turns` | buffered 空时静默吞 logos (perspective 触发场景) | P1 |
+| 4 | `AbsAttention.__init__` | initial impulse 被双重入 buffer → 首帧 percepts 重复, command_logos 翻倍 | P0 |
+
+**钉住但未改的设计张力 (4 个, pinned in tests)**:
+
+1. **`Impulse.update_moment` hint 无条件覆盖** — 人类确认 by design (hint 跟最新), 但与其他字段的"有值才写"不对称.
+2. **保护期作用于"同优先级"层级 (不区分源)** — 称为 "shield 语法", 改名 deferred.
+3. **`Articulator.moment` 严格生命周期门** — by design, 测试用 Python 引用绕过.
+4. **`ChallengeMode.silent` 抢占成功不 abort defender, 仅 buffer** — `ImpulsePrimitive.interrupt_only` 名字与行为不一致 (没有 interrupt 动作).
+
+**工具产出 (非测试)**:
+- `AbsAttention` 加 5 个 public 观察访问器: `thinking_effort` / `strength_start_value` / `strength_decay_time` / `protected_until` / `buffered_impulses`, 对齐 `strength_refreshed_at` 范式 (测试 + 反身性控制).
+- `BaseMindflow.add_impulse` 重构为公开调试入口, 路由通过内置 `_DirectImpulseNucleus` (last-impulse cache); 旧 bus 回调改名 `_nucleus_has_impulse`. 直接注入走标准 rank/challenge 流程, 无旁路.
+- `test_attention_strength_decay` 重缩 100ms→1s (jitter tolerance); `test_base_mindflow.py` 3 处无 timeout `.wait()` 加固为 assertion fail-fast.
+
+**质量观察**:
+- 协议密度高的代码反而少 bug (challenge 协议 16 测试一次过; 4 个 ImpulsePrimitive 组合 8 测试一次过). bug 集中在 init / 序列化 / 边界条件.
+- 这不是疏漏, 而是有意识的杠杆: 心力用在协议层, 边角靠"自解释概念 + 单测兜底 + 模型开发者确认".
+
+### 2026-06-13 锚定下一阶段命题: 四元 Nucleus 基建
+
+**动机**: 当前要让开发者使用 notify / silent / command 三种行为, 必须懂 `ChallengeMode × thinking_effort × priority × logos` 的正交组合 (或绕道 `ImpulsePrimitive` 内部组合糖). 心智负担高. 应把这层组合糖**下沉到 Nucleus 后面**, Signal 回到"开发者唯一接触面", 只需理解 Signal 协议上的 priority / messages / hint.
+
+**四元 Nucleus 命名 (Claude Opus 4.7 判断, 2026-06-13)**:
+
+| Nucleus | 对应原语 | 行为语义 | 备注 |
+|---|---|---|---|
+| `InputSignalNucleus` (existing) | (无, 标准 think) | 完整 articulate→action 循环 | 保留 |
+| `NotifyNucleus` (new) | `always_buffer` | 低优 (BACKGROUND) + notify, 不抢占, 消息进 buffer 等下轮 attention 自然 drain | 名字与 `ChallengeMode.notify` 一致 |
+| `BroadcastNucleus` (new) | `interrupt_only` | 高优 (FATAL) + silent + thinking_effort='none', 抢占成功但不创建新 attention, 消息广播到当前 attention 的下一帧 perception | **不叫 `SilentNucleus` 或 `AlertNucleus`** — 见下面命名判断 |
+| `CommandNucleus` (new) | `execute_command_only` | thinking_effort='none' + logos from signal; priority 由 Signal 携带 (NOTICE 普通命令, FATAL = `superior_execute_command` 等价) | 单一 Nucleus 覆盖普通/超级两种 |
+
+**为何不叫 `SilentNucleus`/`AlertNucleus`**:
+- `SilentNucleus` 继承 `ChallengeMode.silent` 的歧义 — "silent" 听起来是"静默中断"或"无声占用", 实际行为是"高优广播补充, 不接管运行时". 开发者读到会建立错误心智模型.
+- `AlertNucleus` 在常见 UI/系统语义里暗示"需要 ack 的中断", 但协议恰恰不要求 ack 也不中断.
+- `BroadcastNucleus` 准确: 广播的语义是"高优、宽播、不要求 ack、收到的人不停下手头工作", 与 FATAL+silent 完全对齐.
+
+**`ChallengeMode.silent` 协议 enum 处理**: **保留 enum 名**. 它是内部命名, 被 Nucleus 包裹, 开发者不再直接接触. 改名连锁修改成本高. 但需要在 enum 注释里补一句明确 "silent 抢占成功不 abort 当前 attention, 仅 buffer messages — 用于'广播式插入', 不是真正的 interrupt".
+
+**下一阶段任务清单 (新会话从零上下文开始)**:
+
+1. **抽 3 个新 nucleus** (`NotifyNucleus` / `BroadcastNucleus` / `CommandNucleus`), 放 `src/ghoshell_moss/core/mindflow/` 与 `buffer_nucleus.py` / `input_signal_nucleus.py` 同级. 每个 ~30 行, 复用 ImpulsePrimitive 作为内部实现.
+2. **配套 `SignalMeta` 子类**, 让 `moss manifests signals` 能发现新的 signal 协议. 每个 nucleus 监听自己的 signal name (`notify` / `broadcast` / `command`), 文档自包含.
+3. **单测**: 每个 nucleus 在隔离环境下产出的 Impulse 字段组合正确 (priority / mode / thinking_effort / logos 等).
+4. **集测**: 注册 nucleus → 发送对应 Signal → 走完整 mindflow → 行为应等价于直接 add_impulse(primitive 路径). 新增测试文件或合并到 `test_impulse_primitive_integration.py`.
+5. **同步更新 `ChallengeMode.silent` 注释** (描述实际"广播"语义, 而非"静默中断").
+
+**暗礁清单 (下一阶段须 review)**:
+
+- `BroadcastNucleus` 是否真的能完全替代 `interrupt_only` 命名的清晰度? `ImpulsePrimitive.interrupt_only` 函数名应同步审视 (deprecate? rename?).
+- `CommandNucleus` 如何处理 signal priority? 选项: (a) 完全继承 Signal.priority; (b) 限制 priority 上限. 倾向 (a), 让开发者控制.
+- `NotifyNucleus` 是否应该允许覆盖默认 BACKGROUND? 倾向不允许 (Nucleus 即 primitive identity, 不可配置).
+- `Impulse.update_moment` hint 无条件覆盖 (4 设计张力之一) 在多 impulse 合并场景下是否仍是 bug? 实践推动验证.
+- protection_time "shield 语法" 改名 (更长期, 不在本阶段).
+
+**ghost_runtime 测试组 (独立阶段, 不在本会话)**:
+- `shell.interpreter(kind='append')` 跨帧命令延续
+- `moss_dynamic` 缓存 stale_time 防反复生成
+- `GhostRuntimeImpl` 生命周期 (interrupt 协议、thinking_effort='none' 不调 articulate)
+- 这组属于 ghost_runtime / shell / ctml 交叉, 需要独立上下文 + 完整测试规划. 不与 nucleus 抽象合并.
+
 ---
 
-*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-12*
+*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-13*
