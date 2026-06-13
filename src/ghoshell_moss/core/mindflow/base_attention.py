@@ -480,7 +480,6 @@ class AbsAttention(Attention, ABC):
         self._action_stop_event.set()
         self._percepts_funcs: dict[str, Callable[[], list[Message]]] = {}
         self._buffered_impulses: deque[Impulse] = deque()
-        self._buffered_impulses.append(impulse)
         self._buffered_impulse_ids: set[str] = set()
         self._buffer_impulse(impulse)
 
@@ -533,6 +532,32 @@ class AbsAttention(Attention, ABC):
     def strength_refreshed_at(self) -> float:
         """测试专用参数, 避免取私有值. """
         return self._strength_refreshed_at
+
+    @property
+    def thinking_effort(self) -> ThinkingEffort:
+        """当前 attention 持有的 thinking_effort, 由最后一个 complete impulse 决定.
+        与 yielded Articulator.thinking_effort() 同源, 用于测试与反身性观察."""
+        return self._thinking_effort
+
+    @property
+    def strength_start_value(self) -> float:
+        """强度衰减曲线起点. 由最新进入 buffer 的 impulse 刷新."""
+        return self._strength_start_value
+
+    @property
+    def strength_decay_time(self) -> float:
+        """attention 衰减总时长, 钉在 init impulse 的 strength_decay_seconds (clamp 到 >=1)."""
+        return self._strength_decay_time
+
+    @property
+    def protected_until(self) -> float:
+        """同优先级保护期截止 monotonic 时间."""
+        return self._protected_until
+
+    @property
+    def buffered_impulses(self) -> list[Impulse]:
+        """快照尚未被 drain 的 buffered impulses (不消费). 用于测试与反身性观察."""
+        return list(self._buffered_impulses)
 
     def draw_from(self) -> Impulse:
         return self._init_impulse
