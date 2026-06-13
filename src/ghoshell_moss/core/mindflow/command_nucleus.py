@@ -1,23 +1,41 @@
-from typing import Self, Callable
+"""CommandNucleus — 把 ``command`` signal 直接转成 ``command_only`` impulse.
 
+四元 nucleus 之一: 配对 ``ImpulsePrimitive.command_only`` 的反射弧入口.
+监听 ``CommandSignalMeta`` (signal name = ``"command"``), 把 signal 携带的 logos
+直接卸载为 impulse, 走 mindflow 的 ``thinking_effort='none'`` 提前返回路径,
+在不调用 ``ghost.articulate()`` 的情况下让 shell 执行指令.
+
+priority 完全继承 ``Signal.priority`` — nucleus 不强制 floor, 调用方用
+``Priority.FATAL`` 表达 "强制指令" (等价于 ``ImpulsePrimitive.fatal_command``),
+用 ``Priority.NOTICE`` 表达 "普通命令". 单一 nucleus 覆盖两种.
+"""
+from typing import Self, Callable, Iterable
+
+from ghoshell_container import IoCContainer
+from pydantic import Field
+
+from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.message import ContextType
 from ghoshell_moss.core.blueprint import Impulse
 from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta, SignalName, Priority, Signal,
-    Nucleus, ImpulsePrimitive,
+    Nucleus, NucleusMeta, ImpulsePrimitive,
 )
-from pydantic import Field
 
-__all__ = ['CommandNucleus', 'CommandSignalMeta']
+__all__ = ['CommandNucleus', 'CommandSignalMeta', 'CommandNucleusMeta']
 
 
 class CommandSignalMeta(SignalMeta):
-    """
-    发送必须执行的 logos 到 Ghost. Ghost 只能默认执行它.
+    """Signal meta for ``command`` — carries the logos to be executed.
+
+    使用 ``signal.metadata`` 携带 ``logos`` 字段, 反序列化通过 SignalMeta
+    标准路径 (``from_signal`` -> ``model_validate(signal.metadata)``).
     """
 
     logos: str = Field(
-        description="the logos that "
+        description="待 shell 直接执行的 logos (通常是 CTML). "
+                    "由 CommandNucleus 把它从 signal.metadata 抽出, "
+                    "卸载到 Impulse.logos 字段, 经 attention.command_logos 送入 shell.",
     )
 
     @classmethod
@@ -28,38 +46,32 @@ class CommandSignalMeta(SignalMeta):
     def priority(cls) -> Priority:
         return Priority.NOTICE
 
-    def to_signal(
-            self,
-            *messages: ContextType,
-            description: str = '',
-            stale_timeout: float = 0,
-            priority: int | None = None,
-    ) -> Signal:
-        signal = super().to_signal(
-            *messages,
-            description=description,
-            stale_timeout=stale_timeout,
-            priority=priority,
-        )
-        signal.logos = self.logos
-        return signal
-
 
 class CommandNucleus(Nucleus):
-    """
-    单纯发送命令, 让 Ghost 执行的 Nucleus.
+    """Reflex-arc nucleus — turns each ``command`` signal into a ``command_only``
+    impulse and pushes it through the bus.
+
+    Fire-and-forget 路径: ``add_signal`` 立即构造 impulse 并调 ``impulse_notify``,
+    不进 peek/rank 队列. 与 ``InputSignalNucleus`` / ``BufferNucleus`` 的"聚合后
+    投递"模式不同 — command 的语义是"逐条立即执行", 聚合无意义.
+
+    priority 完全继承 ``Signal.priority`` (不设 floor), 由调用方决定是普通命令
+    (NOTICE) 还是强制指令 (FATAL).
     """
 
-    def __init__(self, min_priority: Priority = Priority.NOTICE):
+    NAME = 'command_nucleus'
+
+    def __init__(self, *, name: str = NAME, logger: LoggerItf | None = None):
+        self._name = name
         self._impulse_notify: Callable[[Impulse], None] | None = None
         self._is_running = False
-        self._min_priority = min_priority
+        self._logger = logger or get_moss_logger()
 
     def name(self) -> str:
-        return 'command_nucleus'
+        return self._name
 
     def description(self) -> str:
-        return 'send logos to the shell that bypass the ghost'
+        return 'send logos directly to the shell, bypassing ghost thinking'
 
     def status(self) -> str:
         return ''
@@ -71,20 +83,26 @@ class CommandNucleus(Nucleus):
         return
 
     def add_signal(self, signal: Signal) -> None:
+        if not self._is_running:
+            return
         impulse = self.build_impulse(signal)
         if impulse and self._impulse_notify:
             self._impulse_notify(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
-        if meta := CommandSignalMeta.from_signal(signal):
-            if meta.logos:
-                impulse = Impulse.from_signal(signal, source=self.name())
-                impulse = ImpulsePrimitive.command_only(impulse, meta.logos)
-                impulse.priority = max(impulse.priority, self._min_priority)
-                return impulse
-        return None
+        meta = CommandSignalMeta.from_signal(signal)
+        if meta is None or not meta.logos:
+            return None
+        impulse = Impulse.from_signal(signal, source=self.name())
+        # 继承 signal.priority 不再强制 floor — 调用方用 Priority.FATAL
+        # 等价于 ImpulsePrimitive.fatal_command.
+        return ImpulsePrimitive.command_only(impulse, meta.logos)
 
-    def with_bus(self, signal_broadcast: Callable[[Signal], None], impulse_notify: Callable[[Impulse], None]) -> None:
+    def with_bus(
+            self,
+            signal_broadcast: Callable[[Signal], None],
+            impulse_notify: Callable[[Impulse], None],
+    ) -> None:
         self._impulse_notify = impulse_notify
 
     def suppress(self, suppress_by: Impulse) -> None:
@@ -105,3 +123,40 @@ class CommandNucleus(Nucleus):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
+
+
+class CommandNucleusMeta(NucleusMeta):
+    """Factory meta — lets ``moss manifests nuclei`` discover CommandNucleus."""
+
+    def name(self) -> str:
+        return CommandNucleus.NAME
+
+    def description(self) -> str:
+        return 'reflex-arc nucleus that turns command signals into command_only impulses'
+
+    def signals(self) -> Iterable[type[SignalMeta]]:
+        yield CommandSignalMeta
+
+    def factory(self, container: IoCContainer) -> Nucleus:
+        logger = container.get(LoggerItf)
+        return CommandNucleus(logger=logger)
+
+
+def new_command_signal(
+        logos: str,
+        *messages: ContextType,
+        priority: Priority = Priority.NOTICE,
+        description: str = '',
+        stale_timeout: float = 0,
+) -> Signal:
+    """Helper — construct a ``command`` signal from raw logos.
+
+    Convenience over ``CommandSignalMeta(logos=...).to_signal(...)`` for
+    one-liner injection in tests / scripts.
+    """
+    return CommandSignalMeta(logos=logos).to_signal(
+        *messages,
+        description=description,
+        stale_timeout=stale_timeout,
+        priority=priority,
+    )
