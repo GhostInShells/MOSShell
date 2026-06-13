@@ -12,6 +12,7 @@ Mindflow 调度中枢实现.
   command_nucleus      — CommandNucleus, 反射弧入口 (command_only primitive)
   notify_nucleus       — NotifyNucleus, 不丢消息入口 (notify primitive)
   silent_nucleus       — SilentNucleus, 静默聚合通道 (silent mode + 优先级提取 buffer)
+  interrupt_nucleus    — InterruptNucleus, 中断动作通道 (interrupt primitive + 反向 suppress)
 """
 
 from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, AbsMindflow, new_default_mindflow
@@ -26,4 +27,7 @@ from ghoshell_moss.core.mindflow.notify_nucleus import (
 )
 from ghoshell_moss.core.mindflow.silent_nucleus import (
     SilentNucleus, SilentSignalMeta, SilentNucleusMeta,
+)
+from ghoshell_moss.core.mindflow.interrupt_nucleus import (
+    InterruptNucleus, InterruptSignalMeta, InterruptNucleusMeta,
 )

@@ -1326,10 +1326,41 @@ class ImpulsePrimitive:
         用例: 系统通告 / 紧急广播 — ghost 不需要立刻切换上下文, 只要下一帧看到.
         与 ``fatal_command`` 区别: broadcast 不带 logos, 只送消息;
         fatal_command 带 logos 走 attention 立即执行.
+
+        对偶: ``interrupt`` — 同样 FATAL + effort=none, 但用 notify 模式接管
+        attention 并通过 ``interrupt`` 字段触发 shell.stop_interpretation, 表达"中断"
+        而非"补充".
         """
         impulse.thinking_effort = 'none'
         impulse.priority = Priority.FATAL.value
         impulse.mode = ChallengeMode.silent.value
+        return impulse
+
+    @staticmethod
+    def interrupt(impulse: Impulse) -> Impulse:
+        """中断动作 — 必送达且必接管, 但不思考不执行新 logos.
+
+        组合: ``priority = FATAL`` + ``mode = notify`` + ``thinking_effort = 'none'`` +
+        ``interrupt = True``.
+
+        FATAL 保证抢占成功, notify 走 default 成功路径创建新 attention,
+        effort='none' 让 ghost.articulate 提前返回, ``interrupt=True`` 让
+        ``ghost_runtime._run_articulator`` 在新 attention 起步时调
+        ``shell.stop_interpretation()`` 清干净旧 logos.
+
+        本原语就是"打断" 的本质形态: 新 attention 起来, 旧 logos 停, ghost
+        不发表任何新意见 — 等下一个真正的 impulse 进来.
+
+        用例: 急停 / 模型自我打断 / 状态机切换 / 用户喊"停".
+        可携带 messages 解释中断原因, 由下一帧 percepts drain.
+
+        对偶: ``broadcast`` — 同 FATAL + effort=none 但用 silent 不接管;
+        interrupt 接管但立即放手.
+        """
+        impulse.thinking_effort = 'none'
+        impulse.priority = Priority.FATAL.value
+        impulse.mode = ChallengeMode.notify.value
+        impulse.interrupt = True
         return impulse
 
     @staticmethod
