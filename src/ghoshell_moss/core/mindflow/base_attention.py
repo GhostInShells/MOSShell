@@ -480,7 +480,6 @@ class AbsAttention(Attention, ABC):
         self._action_stop_event.set()
         self._percepts_funcs: dict[str, Callable[[], list[Message]]] = {}
         self._buffered_impulses: deque[Impulse] = deque()
-        self._buffered_impulses.append(impulse)
         self._buffered_impulse_ids: set[str] = set()
         self._buffer_impulse(impulse)
 

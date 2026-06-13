@@ -1,6 +1,7 @@
 ---
 apps:
 - sensors/*
+- tools/*
 bringup_apps:
 - sensors/audio_capture
 - sensors/listener
