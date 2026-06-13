@@ -111,14 +111,14 @@ async def test_add_impulse_last_wins_before_consume():
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_execute_command_only_propagates_thinking_effort_none():
-    """execute_command_only: thinking_effort='none' 应卸载到 attention/articulator;
+async def test_command_only_propagates_thinking_effort_none():
+    """command_only: thinking_effort='none' 应卸载到 attention/articulator;
     command_logos 应进入 moment.command_logos."""
     mindflow = _new_mindflow()
     async with mindflow:
         await mindflow.wait_started()
         base = _imp(messages=[Message.new().with_content('go')])
-        ImpulsePrimitive.execute_command_only(base, command_logos='do_it')
+        ImpulsePrimitive.command_only(base, command_logos='do_it')
         mindflow.add_impulse(base)
         attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
         async with attention:
@@ -134,8 +134,8 @@ async def test_execute_command_only_propagates_thinking_effort_none():
 
 
 @pytest.mark.asyncio
-async def test_superior_execute_command_uses_fatal_priority():
-    """superior_execute_command: 在 execute_command_only 基础上加 FATAL.
+async def test_fatal_command_uses_fatal_priority():
+    """fatal_command: 在 command_only 基础上加 FATAL.
     协议命题: FATAL 应能抢占任意普通 priority defender."""
     mindflow = _new_mindflow()
     async with mindflow:
@@ -147,9 +147,9 @@ async def test_superior_execute_command_uses_fatal_priority():
         # 进入 defender 但不消费, 等待被抢占.
         loop_gen = mindflow.loop()
         async with defender_att:
-            # 注入 superior_execute_command — 应抢占成功.
+            # 注入 fatal_command — 应抢占成功.
             challenger = _imp(messages=[Message.new().with_content('cmd')])
-            ImpulsePrimitive.superior_execute_command(challenger, command_logos='sup_cmd')
+            ImpulsePrimitive.fatal_command(challenger, command_logos='sup_cmd')
             assert challenger.priority == Priority.FATAL.value
             mindflow.add_impulse(challenger)
             # 等待 defender 被 abort.
@@ -163,9 +163,10 @@ async def test_superior_execute_command_uses_fatal_priority():
 
 
 @pytest.mark.asyncio
-async def test_interrupt_only_silent_buffers_without_new_attention():
-    """interrupt_only: FATAL + silent + thinking_effort='none'.
-    协议命题: silent 模式抢占成功后不创建新 attention, messages 进入 mindflow buffer."""
+async def test_broadcast_buffers_without_new_attention():
+    """broadcast: FATAL + silent + thinking_effort='none'.
+    协议命题: silent 偏离"抢占成功侧" — FATAL 抢占成功后不创建新 attention,
+    messages 进入 mindflow buffer."""
     mindflow = _new_mindflow()
     async with mindflow:
         await mindflow.wait_started()
@@ -174,9 +175,9 @@ async def test_interrupt_only_silent_buffers_without_new_attention():
                                   messages=[Message.new().with_content('defender')]))
         defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
         async with defender_att:
-            # 注入 interrupt_only.
+            # 注入 broadcast.
             silent_imp = _imp(messages=[Message.new().with_content('silent_msg')])
-            ImpulsePrimitive.interrupt_only(silent_imp)
+            ImpulsePrimitive.broadcast(silent_imp)
             assert silent_imp.mode == ChallengeMode.silent.value
             assert silent_imp.priority == Priority.FATAL.value
             mindflow.add_impulse(silent_imp)
@@ -192,9 +193,9 @@ async def test_interrupt_only_silent_buffers_without_new_attention():
 
 
 @pytest.mark.asyncio
-async def test_always_buffer_notify_buffers_without_new_attention():
-    """always_buffer: BACKGROUND + notify.
-    协议命题: BACKGROUND 不抢占; notify 模式失败时 messages 进 mindflow buffer."""
+async def test_background_notice_buffers_on_challenge_failure():
+    """background_notice: BACKGROUND + notify.
+    协议命题: BACKGROUND 永远抢占失败; notify 偏离"抢占失败侧" — 失败时 messages 进 buffer."""
     mindflow = _new_mindflow()
     async with mindflow:
         await mindflow.wait_started()
@@ -203,9 +204,9 @@ async def test_always_buffer_notify_buffers_without_new_attention():
                                   messages=[Message.new().with_content('defender')]))
         defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
         async with defender_att:
-            # 注入 always_buffer.
+            # 注入 background_notice.
             bg_imp = _imp(messages=[Message.new().with_content('bg_msg')])
-            ImpulsePrimitive.always_buffer(bg_imp)
+            ImpulsePrimitive.background_notice(bg_imp)
             assert bg_imp.priority == Priority.BACKGROUND.value
             assert bg_imp.mode == ChallengeMode.notify.value
             mindflow.add_impulse(bg_imp)
@@ -216,4 +217,52 @@ async def test_always_buffer_notify_buffers_without_new_attention():
             buffered = mindflow.get_buffered(pop=False)
             buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
             assert 'bg_msg' in buffered_texts
+            defender_att.abort('test done')
+
+
+@pytest.mark.asyncio
+async def test_notify_only_preserves_priority():
+    """notify (单 mode 原语): 只设置 mode, 不动 priority.
+    协议命题: NOTICE + notify 在 quiet 时正常创建 attention (走 default 抢占成功路径)."""
+    mindflow = _new_mindflow()
+    async with mindflow:
+        await mindflow.wait_started()
+        imp = _imp(priority=Priority.NOTICE, messages=[Message.new().with_content('user_msg')])
+        ImpulsePrimitive.notify(imp)
+        assert imp.mode == ChallengeMode.notify.value
+        assert imp.priority == Priority.NOTICE  # priority 不被原语改动
+        mindflow.add_impulse(imp)
+        attention = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        async with attention:
+            # quiet 系统 + notify → 正常创建 attention (走 default 成功路径).
+            assert attention.draw_from() is imp
+            attention.abort('test done')
+
+
+@pytest.mark.asyncio
+async def test_notify_buffers_when_challenge_fails():
+    """notify 抢占失败时 messages 进 buffer (notify 偏离"抢占失败侧"的核心承诺).
+    NOTICE defender vs NOTICE challenger + notify mode + 保护期内 → 抢占失败 → buffer."""
+    mindflow = _new_mindflow()
+    async with mindflow:
+        await mindflow.wait_started()
+        # NOTICE defender + 保护期, 让同优先级 challenger 一定失败.
+        defender = _imp(priority=Priority.NOTICE,
+                        messages=[Message.new().with_content('defender')])
+        defender.protection_time = 10.0
+        mindflow.add_impulse(defender)
+        defender_att = await asyncio.wait_for(_first_attention(mindflow), timeout=2.0)
+        async with defender_att:
+            # 注入 notify challenger — 同优先级, 保护期内必败.
+            challenger = _imp(priority=Priority.NOTICE,
+                              messages=[Message.new().with_content('user_msg')])
+            ImpulsePrimitive.notify(challenger)
+            mindflow.add_impulse(challenger)
+            await asyncio.sleep(0.2)
+            # defender 仍在 (notify 抢占失败).
+            assert not defender_att.is_aborted()
+            # messages 进 buffer (notify 偏离侧承诺).
+            buffered = mindflow.get_buffered(pop=False)
+            buffered_texts = [c['text'] for m in buffered for c in m.contents if 'text' in c]
+            assert 'user_msg' in buffered_texts
             defender_att.abort('test done')

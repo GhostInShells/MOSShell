@@ -79,7 +79,7 @@ class CommandNucleus(Nucleus):
         if meta := CommandSignalMeta.from_signal(signal):
             if meta.logos:
                 impulse = Impulse.from_signal(signal, source=self.name())
-                impulse = ImpulsePrimitive.execute_command_only(impulse, meta.logos)
+                impulse = ImpulsePrimitive.command_only(impulse, meta.logos)
                 impulse.priority = max(impulse.priority, self._min_priority)
                 return impulse
         return None

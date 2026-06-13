@@ -478,7 +478,21 @@ class AbsMindflow(Mindflow, ABC):
                 nucleus.pop_impulse(impulse)
 
     async def _challenge_attention(self, impulse: Impulse) -> None:
-        """原子操作."""
+        """impulse 与当前 attention 的仲裁入口. 原子操作.
+
+        三 mode (default/silent/notify) 沿"抢占成功 vs 失败" 双轴对称分布,
+        见 ``ChallengeMode`` 注释的对称表. 本函数把对称表展开成实际分支:
+        - 抢占成功 + silent → buffer messages (silent 偏离侧)
+        - 抢占成功 + 其他   → 创建新 attention (default)
+        - 抢占失败 + notify → buffer messages (notify 偏离侧)
+        - 抢占失败 + 其他   → suppress nucleus (default)
+
+        quiet 系统 (无 defender) 走单独分支: silent 同样 buffer 不创建 attention,
+        其他模式直接创建初始 attention.
+
+        FATAL/BACKGROUND 在进入 challenge() 之前先短路 — 这是协议级承诺,
+        防止子类重写 challenge() 把绝对性退化掉.
+        """
         try:
             if impulse.is_stale():
                 self._pop_impulse(impulse)

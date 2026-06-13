@@ -286,16 +286,33 @@ class InputSignal(SignalMeta):
 # mode 不经过大脑处理, 是系统级别的处理. 主要的原语都在决定 思考/行为的基本逻辑.
 
 class ChallengeMode(str, enum.Enum):
-    # 默认的响应模式. 通过大脑决策如何响应.
+    """Impulse 与当前 attention 仲裁后的处置模式.
+
+    silent 与 notify 在 default 基础上各自偏离一侧, 构成对称设计:
+
+    | mode    | 抢占成功            | 抢占失败          |
+    |---------|---------------------|-------------------|
+    | default | 创建新 attention    | suppress (信丢)   |
+    | silent  | **buffer**          | suppress          |
+    | notify  | 创建新 attention    | **buffer**        |
+
+    任何 buffer 路径只承载 ``impulse.messages``, ``logos`` / ``hint`` /
+    ``perspective`` 三个本帧实时字段被有意丢弃 (跨 attention 无意义).
+    """
+
+    # 默认: 抢占成功创建新 attention, 失败 suppress (信号丢失).
     default = '',
 
-    # 当 impulse 抢占成功之后, 只负责 buffer 历史消息. 不会触发新的 attention.
-    # attention 在每一轮生成 moment 时, 都会从 buffer 中读取历史, 塞入 percepts
-    # 抢占不成功则无法干扰当前注意力.
+    # 偏离"抢占成功侧": 抢占成功只 buffer messages, 不创建新 attention; 抢占失败仍 suppress.
+    # quiet 系统下 (无 attention) 直接 buffer, 不升级为 attention.
+    # 用例: 高优广播 (FATAL + silent) — 必送达但不接管 ghost 运行时.
+    # buffer 的 messages 通过 mindflow._buffered_messages 持有,
+    # 下一个 attention 自然从 buffer drain 到 moment.percepts.
     silent = 'silent'
 
-    # silent 的相反版本, 如果抢占注意力成功, 会中断 attention, 正常响应;
-    # 抢占注意力失败, 会添加到缓冲里.
+    # 偏离"抢占失败侧": 抢占失败时 buffer messages 而非 suppress; 抢占成功正常创建新 attention.
+    # quiet 系统下走默认路径创建新 attention.
+    # 用例: 用户消息绝不能丢 (NOTICE + notify) — 思考时说话, 不打断就留痕.
     notify = 'notify'
 
 
@@ -334,7 +351,8 @@ class Impulse(BaseModel):
     )
     perspective: list[Message] = Field(
         default_factory=list,
-        description="the impulse perspective, 伴随决策携带. ",
+        description="the impulse perspective, 伴随决策携带."
+                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃.",
     )
     messages: list[Message] = Field(
         default_factory=list,
@@ -345,19 +363,23 @@ class Impulse(BaseModel):
 
     hint: str = Field(
         default='',
-        description="the temporary instruction for model handling this impulse",
+        description="the temporary instruction for model handling this impulse."
+                    "本帧实时字段: 仅在 Impulse 获得 attention 时通过 update_moment 落到 moment.hint."
+                    "走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃.",
     )
     mode: str | ChallengeMode = Field(
         default='',
         description="Impulse 作为一种预处理思维模式, 通过原语和 Runtime 的规则通讯."
-                    "规则可以自行扩展, 系统提供基线. 规则优先级高于大脑思考, 属于条件反射. ",
+                    "规则可以自行扩展, 系统提供基线. 规则优先级高于大脑思考, 属于条件反射. "
+                    "见 ChallengeMode 的对称表理解 silent/notify 的偏离语义.",
     )
     logos: str = Field(
         default='',
         description="伴随 Impulse 发送的 Logos, 可以是条件反射, 强制指令, 首动作提速 (口头禅) 等等."
                     "当 Impulse 获得了注意力时, 应该伴随发送到 Articulator, 由 Articulator 决定是否直接发送给 Action."
                     "如果作为 '反射弧' 直接发送, 则它会先于 思考帧生成 logos, 就发送给 Action 侧."
-                    "这样先于思考就会有 logos 发送. 大脑也应该感受到它 (或像人一样意识不到小动作), 取决于具体实现.",
+                    "这样先于思考就会有 logos 发送. 大脑也应该感受到它 (或像人一样意识不到小动作), 取决于具体实现."
+                    "本帧实时字段: 走 ChallengeMode 的 buffer 路径 (silent/notify) 时该字段被丢弃 (跨 attention 没意义).",
     )
     interrupt: bool = Field(
         default=False,
@@ -1262,40 +1284,81 @@ class Mindflow(ABC):
 
 
 class ImpulsePrimitive:
-    """
-    演示如何通过能力组合, 控制 Impulse 的行为协议.
+    """Impulse 控制原语组合表.
+
+    每个原语把一组协议字段拼成一个具名行为, 让上层 nucleus / 测试 / 应用
+    用"读名字就懂行为"的方式构造 Impulse, 代替手抠 priority/mode/effort/logos 四件套.
+
+    原语本身是 code-as-prompt: 内部一两行字段赋值即可, 关键价值在名字传递的意图.
+    单测覆盖每个原语的组合语义.
     """
 
     @staticmethod
-    def execute_command_only(impulse: Impulse, command_logos: str) -> Impulse:
-        # 设置 impulse 要执行的命令.
+    def command_only(impulse: Impulse, command_logos: str) -> Impulse:
+        """直接执行指令, 不思考.
+
+        组合: ``logos = command_logos`` + ``thinking_effort = 'none'``.
+        priority 由调用方控制.
+        """
         impulse.logos = command_logos
-        # 不允许思考.
         impulse.thinking_effort = 'none'
         return impulse
 
     @staticmethod
-    def superior_execute_command(impulse: Impulse, command_logos: str) -> Impulse:
-        impulse = ImpulsePrimitive.execute_command_only(impulse, command_logos)
-        # 设置最高权限.
+    def fatal_command(impulse: Impulse, command_logos: str) -> Impulse:
+        """强制指令 — 必抢占 + 不思考.
+
+        组合: ``command_only`` + ``priority = FATAL``.
+        用例: 急停 / 强制状态切换 / 任何"无论 ghost 在做什么都必须执行"的反射弧.
+        """
+        impulse = ImpulsePrimitive.command_only(impulse, command_logos)
         impulse.priority = Priority.FATAL.value
         return impulse
 
     @staticmethod
-    def interrupt_only(impulse: Impulse) -> Impulse:
-        # 禁止思考.
+    def broadcast(impulse: Impulse) -> Impulse:
+        """高优广播 — 必送达但不接管 ghost 运行时.
+
+        组合: ``priority = FATAL`` + ``mode = silent`` + ``thinking_effort = 'none'``.
+        FATAL 保证抢占成功, silent 在抢占成功侧偏离 default — 不创建新 attention,
+        只把 messages 灌进 mindflow buffer, 由下一个 attention 自然 drain 到 percepts.
+
+        用例: 系统通告 / 紧急广播 — ghost 不需要立刻切换上下文, 只要下一帧看到.
+        与 ``fatal_command`` 区别: broadcast 不带 logos, 只送消息;
+        fatal_command 带 logos 走 attention 立即执行.
+        """
         impulse.thinking_effort = 'none'
-        # 总是抢占成功.
         impulse.priority = Priority.FATAL.value
-        #
         impulse.mode = ChallengeMode.silent.value
         return impulse
 
     @staticmethod
-    def always_buffer(impulse: Impulse) -> Impulse:
-        # 总是抢占失败.
+    def notify(impulse: Impulse) -> Impulse:
+        """不丢消息 — 保留 impulse 原 priority, 抢占失败也 buffer.
+
+        组合: ``mode = notify``.
+        priority 由调用方控制 (NOTICE 是典型用户消息).
+        notify 在抢占失败侧偏离 default — 抢占成功正常创建新 attention,
+        失败时 messages 进 buffer 而非 suppress.
+
+        用例: 用户消息绝不能丢 — ghost 思考时说话, 不打断就留痕.
+        """
+        impulse.mode = ChallengeMode.notify.value
+        return impulse
+
+    @staticmethod
+    def background_notice(impulse: Impulse) -> Impulse:
+        """低优补充 — 永不抢占, 失败时留痕.
+
+        组合: ``priority = BACKGROUND`` + ``mode = notify``.
+        BACKGROUND 保证抢占失败, notify 让失败侧走 buffer 而非 suppress.
+
+        用例: 日志 / 监控 / 环境信号 — 不重要到要打断 ghost, 但下一轮思考应该能看到.
+        注意边界: quiet 系统 (无 attention) 下 notify 走 default 路径会创建新 attention,
+        此时 BACKGROUND attention 会成为新焦点 (但低优, 任何信号都能抢占它).
+        若需要 quiet 时也不创建 attention, 应使用 ``broadcast`` (但 priority 必须是 FATAL).
+        """
         impulse.priority = Priority.BACKGROUND.value
-        # 由于是 notify, 所以每次失败都会把自己 buffer.
         impulse.mode = ChallengeMode.notify.value
         return impulse
 
