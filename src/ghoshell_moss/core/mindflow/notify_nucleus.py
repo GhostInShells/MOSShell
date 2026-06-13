@@ -42,14 +42,19 @@ class NotifySignalMeta(SignalMeta):
 
 class NotifyNucleus(Nucleus):
     """Reflex-arc nucleus — turns each ``notify`` signal into a notify-mode
-    impulse and pushes it through the bus.
+    impulse, caches it as last-impulse for mindflow rank/challenge pull.
 
-    Fire-and-forget 路径: ``add_signal`` 立即构造 impulse 并调 ``impulse_notify``.
-    与 ``InputSignalNucleus`` 的聚合模式不同 — notify 的语义是"每条都要被看到",
-    聚合反而会让 mindflow 误判为同 source 的连续 input. 每条 signal 独立成 impulse,
-    让 mindflow 的对称表 (notify 抢占失败 → buffer) 自然处理.
+    Last-impulse cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过
+    ``peek/pop_impulse`` 拉取/确认. 连续 signal 进入时 last-wins (最新覆盖旧),
+    notify 的语义是"最新消息为准" — 旧消息既然还没被消费, 说明 ghost 还没看到,
+    新消息合并掉它是合理的.
 
-    priority 完全继承 ``Signal.priority`` — 调用方决定优先级, nucleus 不强制 floor.
+    与 ``InputSignalNucleus`` 的 FIFO 聚合差异: notify 视为 "每条都该被看到"
+    的独立消息, 但若 mindflow 还没拉取就被覆盖, 这是 mindflow 调度压力下的
+    自然 backpressure — 而非协议 bug. 若需绝对不丢, 应该用 ``SilentNucleus``
+    + 高优先级 (聚合保留所有 messages).
+
+    priority 完全继承 ``Signal.priority``.
     """
 
     NAME = 'notify_nucleus'
@@ -59,6 +64,7 @@ class NotifyNucleus(Nucleus):
         self._impulse_notify: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
+        self._impulse: Impulse | None = None
 
     def name(self) -> str:
         return self._name
@@ -73,13 +79,16 @@ class NotifyNucleus(Nucleus):
         return [NotifySignalMeta.signal_name()]
 
     def clear(self) -> None:
-        return
+        self._impulse = None
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
             return
         impulse = self.build_impulse(signal)
-        if impulse and self._impulse_notify:
+        if impulse is None:
+            return
+        self._impulse = impulse
+        if self._impulse_notify:
             self._impulse_notify(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
@@ -96,13 +105,21 @@ class NotifyNucleus(Nucleus):
         self._impulse_notify = impulse_notify
 
     def suppress(self, suppress_by: Impulse) -> None:
-        return None
+        # notify 抢占失败时, mindflow 已走 buffer 偏离路径, messages 进 buffer.
+        # suppress 只是兜底通知; 此时 cache 清掉, 等下一条 signal.
+        self._impulse = None
 
     def pop_impulse(self, impulse: Impulse) -> None:
-        return None
+        if self._impulse is impulse:
+            self._impulse = None
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
-        return None
+        if self._impulse is None:
+            return None
+        if no_stale and self._impulse.is_stale():
+            self._impulse = None
+            return None
+        return self._impulse
 
     def is_running(self) -> bool:
         return self._is_running
@@ -113,6 +130,7 @@ class NotifyNucleus(Nucleus):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
+        self._impulse = None
 
 
 class NotifyNucleusMeta(NucleusMeta):

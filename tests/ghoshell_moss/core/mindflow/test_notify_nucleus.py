@@ -178,8 +178,40 @@ def test_signals_returns_notify_name():
     assert NotifyNucleus().signals() == ['notify']
 
 
-def test_peek_always_none():
+def test_peek_returns_none_before_any_signal():
     assert NotifyNucleus().peek() is None
+
+
+@pytest.mark.asyncio
+async def test_peek_returns_cached_impulse_after_signal():
+    async with NotifyNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('user_msg'))
+        peeked = nuc.peek()
+        assert peeked is not None
+        assert peeked.mode == ChallengeMode.notify.value
+
+
+@pytest.mark.asyncio
+async def test_pop_impulse_clears_cache():
+    async with NotifyNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal())
+        cached = nuc.peek()
+        nuc.pop_impulse(cached)
+        assert nuc.peek() is None
+
+
+@pytest.mark.asyncio
+async def test_add_signal_last_wins_overwrites_cache():
+    async with NotifyNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('first'))
+        nuc.add_signal(_signal('second'))
+        peeked = nuc.peek()
+        # 取最新一条的 messages.
+        texts = [c['text'] for m in peeked.messages for c in m.contents if 'text' in c]
+        assert 'second' in texts
 
 
 # ============================================================

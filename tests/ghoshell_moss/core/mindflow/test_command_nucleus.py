@@ -190,10 +190,43 @@ def test_signals_returns_command_name():
     assert nuc.signals() == ['command']
 
 
-def test_peek_always_none():
-    """fire-and-forget 模式: peek 永远返回 None (impulse 不在 nucleus 内排队)."""
+def test_peek_returns_none_before_any_signal():
+    """初始无 signal 时 peek 应为 None — last-impulse cache 起步为空."""
     nuc = CommandNucleus()
     assert nuc.peek() is None
+
+
+@pytest.mark.asyncio
+async def test_peek_returns_cached_impulse_after_signal():
+    """add_signal 后 peek 应返回 cached impulse (mindflow pull-based 协议要求)."""
+    async with CommandNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('cmd'))
+        peeked = nuc.peek()
+        assert peeked is not None
+        assert peeked.logos == 'cmd'
+
+
+@pytest.mark.asyncio
+async def test_pop_impulse_clears_cache():
+    """pop_impulse 后 peek 应回到 None — 模拟 mindflow 仲裁后通知清状态."""
+    async with CommandNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('cmd'))
+        cached = nuc.peek()
+        nuc.pop_impulse(cached)
+        assert nuc.peek() is None
+
+
+@pytest.mark.asyncio
+async def test_add_signal_last_wins_overwrites_cache():
+    """连续 add_signal, last-wins 覆盖未消费的旧 impulse."""
+    async with CommandNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('first'))
+        nuc.add_signal(_signal('second'))
+        peeked = nuc.peek()
+        assert peeked.logos == 'second'
 
 
 # ============================================================

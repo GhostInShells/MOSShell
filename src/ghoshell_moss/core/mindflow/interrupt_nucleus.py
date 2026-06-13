@@ -59,16 +59,22 @@ class InterruptSignalMeta(SignalMeta):
 
 
 class InterruptNucleus(Nucleus):
-    """Interrupt channel — fire-and-forget reflex with victory-side suppress.
+    """Interrupt channel — last-impulse cache with victory-side cooldown.
+
+    Cache 模式: ``add_signal`` 写入 ``_impulse``, mindflow 通过 ``peek/pop_impulse``
+    拉取. interrupt 是离散事件, last-wins (新的覆盖旧的); 即便多个 interrupt
+    在 mindflow 消费前抵达, 仲裁结果都等价 — 都是 FATAL 抢占成功, 都触发
+    shell.stop_interpretation.
 
     反向 suppress (与 InputSignalNucleus 等"失败侧 suppress" 对偶):
     - pop_impulse 触发时启动冷静期 (impulse 被仲裁取出且执行, 视为胜利)
-    - 冷静期内 add_signal 静默丢
-    - 冷静期到 → 自然恢复, 新的 interrupt 可再次胜利
+    - 冷静期内 add_signal 静默丢 (不进 cache, 不通知)
+    - 冷静期到 → 自然恢复
 
-    Why 不 buffer: interrupt 是离散事件, 多个 interrupt 在时间窗内合并无语义价值
-    (第一个就够了). 若需要 "带着上下文的累积中断", 应该用 NotifyNucleus + 主动调
-    shell.stop_interpretation, 而非通过 InterruptNucleus.
+    Why 反向: FATAL 仲裁只有 same-id absorb 或 stale 才会"失败", 这两种都不
+    需要冷静期; 真实 DOS 风险是反向 — 反复成功 interrupt 导致 shell churn.
+
+    Why 不聚合: 多个 interrupt 合并无语义价值, 第一个就够了.
     """
 
     NAME = 'interrupt_nucleus'
@@ -87,6 +93,7 @@ class InterruptNucleus(Nucleus):
         self._logger = logger or get_moss_logger()
         # 反向 suppress: 胜利后才设, 失败侧不动.
         self._suppress_until: float = 0.0
+        self._impulse: Impulse | None = None
 
     def name(self) -> str:
         return self._name
@@ -102,6 +109,7 @@ class InterruptNucleus(Nucleus):
 
     def clear(self) -> None:
         self._suppress_until = 0.0
+        self._impulse = None
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
@@ -110,7 +118,10 @@ class InterruptNucleus(Nucleus):
         if time.monotonic() < self._suppress_until:
             return
         impulse = self.build_impulse(signal)
-        if impulse and self._impulse_notify:
+        if impulse is None:
+            return
+        self._impulse = impulse
+        if self._impulse_notify:
             self._impulse_notify(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
@@ -129,18 +140,26 @@ class InterruptNucleus(Nucleus):
         self._impulse_notify = impulse_notify
 
     def suppress(self, suppress_by: Impulse) -> None:
-        # 失败侧不 suppress — FATAL 仲裁失败只可能是 same-id absorb 或 stale,
+        # 失败侧不进冷静期 — FATAL 仲裁失败只可能是 same-id absorb 或 stale,
         # 这两种都不需要冷静期 (absorb 已被内部处理, stale 在入口丢).
-        return None
+        # 但 cache 仍要清, 让 nucleus 状态正确反映 "没有 pending impulse".
+        self._impulse = None
 
     def pop_impulse(self, impulse: Impulse) -> None:
         # 反向 suppress: 仲裁胜利后启动冷静期, 防止 shell churn.
         if not self._is_running:
             return
+        if self._impulse is impulse:
+            self._impulse = None
         self._suppress_until = time.monotonic() + self._suppress_seconds
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
-        return None
+        if self._impulse is None:
+            return None
+        if no_stale and self._impulse.is_stale():
+            self._impulse = None
+            return None
+        return self._impulse
 
     def is_running(self) -> bool:
         return self._is_running
@@ -151,6 +170,7 @@ class InterruptNucleus(Nucleus):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
+        self._impulse = None
 
 
 class InterruptNucleusMeta(NucleusMeta):

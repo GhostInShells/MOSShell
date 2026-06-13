@@ -49,14 +49,20 @@ class CommandSignalMeta(SignalMeta):
 
 class CommandNucleus(Nucleus):
     """Reflex-arc nucleus — turns each ``command`` signal into a ``command_only``
-    impulse and pushes it through the bus.
+    impulse, caches it as last-impulse for mindflow rank/challenge pull.
 
-    Fire-and-forget 路径: ``add_signal`` 立即构造 impulse 并调 ``impulse_notify``,
-    不进 peek/rank 队列. 与 ``InputSignalNucleus`` / ``BufferNucleus`` 的"聚合后
-    投递"模式不同 — command 的语义是"逐条立即执行", 聚合无意义.
+    Last-impulse cache 模式 (与 ``_DirectImpulseNucleus`` 同构):
+    - ``add_signal`` 立即构造 impulse, 写入 ``_impulse`` cache 并通知 mindflow
+    - mindflow ``_rank_nuclei`` 通过 ``peek()`` 拉取, 仲裁后调 ``pop_impulse``
+      清 cache
+    - 连续两条 signal 进入但 mindflow 未消费时, 后者覆盖前者 (last-wins) —
+      command 的语义是"最新指令为准", 旧的过时
 
-    priority 完全继承 ``Signal.priority`` (不设 floor), 由调用方决定是普通命令
-    (NOTICE) 还是强制指令 (FATAL).
+    与 ``InputSignalNucleus`` / ``SilentNucleus`` 的区别: 不聚合, 不保留历史,
+    每次 add 都覆盖. command 视为离散事件, 多个未消费的 command 合并无意义.
+
+    priority 完全继承 ``Signal.priority`` (不设 floor) — 调用方用
+    Priority.FATAL 等价于 ``ImpulsePrimitive.fatal_command``.
     """
 
     NAME = 'command_nucleus'
@@ -66,6 +72,8 @@ class CommandNucleus(Nucleus):
         self._impulse_notify: Callable[[Impulse], None] | None = None
         self._is_running = False
         self._logger = logger or get_moss_logger()
+        # Last-impulse cache: 满足 mindflow pull-based 协议.
+        self._impulse: Impulse | None = None
 
     def name(self) -> str:
         return self._name
@@ -80,13 +88,17 @@ class CommandNucleus(Nucleus):
         return [CommandSignalMeta.signal_name()]
 
     def clear(self) -> None:
-        return
+        self._impulse = None
 
     def add_signal(self, signal: Signal) -> None:
         if not self._is_running:
             return
         impulse = self.build_impulse(signal)
-        if impulse and self._impulse_notify:
+        if impulse is None:
+            return
+        # Last-wins cache: 覆盖未消费的旧 impulse.
+        self._impulse = impulse
+        if self._impulse_notify:
             self._impulse_notify(impulse)
 
     def build_impulse(self, signal: Signal) -> Impulse | None:
@@ -106,13 +118,21 @@ class CommandNucleus(Nucleus):
         self._impulse_notify = impulse_notify
 
     def suppress(self, suppress_by: Impulse) -> None:
-        return None
+        # command 抢占失败 (priority 不够) → 清 cache, 让位.
+        # command 没有"重试" 语义 — 失败就丢, 等下一条新 command.
+        self._impulse = None
 
     def pop_impulse(self, impulse: Impulse) -> None:
-        return None
+        if self._impulse is impulse:
+            self._impulse = None
 
     def peek(self, no_stale: bool = True) -> Impulse | None:
-        return None
+        if self._impulse is None:
+            return None
+        if no_stale and self._impulse.is_stale():
+            self._impulse = None
+            return None
+        return self._impulse
 
     def is_running(self) -> bool:
         return self._is_running
@@ -123,6 +143,7 @@ class CommandNucleus(Nucleus):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._is_running = False
+        self._impulse = None
 
 
 class CommandNucleusMeta(NucleusMeta):

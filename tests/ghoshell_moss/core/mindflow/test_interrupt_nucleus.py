@@ -270,9 +270,34 @@ def test_signals_returns_interrupt_name():
     assert InterruptNucleus().signals() == ['interrupt']
 
 
-def test_peek_always_none():
-    """fire-and-forget 模式: peek 永远返回 None."""
+def test_peek_returns_none_before_any_signal():
+    """初始 cache 空."""
     assert InterruptNucleus().peek() is None
+
+
+@pytest.mark.asyncio
+async def test_peek_returns_cached_impulse_after_signal():
+    async with InterruptNucleus() as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal('halt'))
+        peeked = nuc.peek()
+        assert peeked is not None
+        assert peeked.interrupt is True
+
+
+@pytest.mark.asyncio
+async def test_pop_impulse_clears_cache_and_starts_cooldown():
+    """pop_impulse 既清 cache 也启动冷静期 (反向 suppress)."""
+    async with InterruptNucleus(suppress_seconds=10.0) as nuc:
+        nuc.with_bus(lambda s: None, lambda imp: None)
+        nuc.add_signal(_signal())
+        cached = nuc.peek()
+        nuc.pop_impulse(cached)
+        # cache 清空.
+        assert nuc.peek() is None
+        # 冷静期内新 signal 被静默丢, peek 仍空.
+        nuc.add_signal(_signal('another'))
+        assert nuc.peek() is None
 
 
 # ============================================================
