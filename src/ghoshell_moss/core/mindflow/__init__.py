@@ -15,6 +15,7 @@ Mindflow 调度中枢实现.
   interrupt_nucleus    — InterruptNucleus, 中断动作通道 (interrupt primitive + 反向 suppress)
 """
 
+from ghoshell_moss.core.blueprint.mindflow import *
 from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow, AbsMindflow, new_default_mindflow
 from ghoshell_moss.core.mindflow.base_attention import AbsAttention, BaseAttention
 from ghoshell_moss.core.mindflow.input_signal_nucleus import InputSignalNucleus
