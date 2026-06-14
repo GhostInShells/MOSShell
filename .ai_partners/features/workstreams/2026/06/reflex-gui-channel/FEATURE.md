@@ -1,13 +1,14 @@
 ---
-title: Reflex Gui Channel
-status: draft
-priority: P2
 created: 2026-06-09
-updated: 2026-06-09
 depends: []
-milestone:
-description: >-
-  Brief one-line summary of what this feature is about.
+description: Brief one-line summary of what this feature is about.
+milestone: null
+priority: P2
+status: completed
+status_note: 'reflex-gui-channel 核心集成验收: reflex app + genkits/image + webview mode
+  已对齐，Ghost 可端到端使用'
+title: Reflex Gui Channel
+updated: '2026-06-10'
 ---
 
 # Reflex Gui Channel

@@ -80,6 +80,7 @@ class TestTopicWindowProtocol:
             service.pub(ErrorTopic(errmsg="b"))
             service.pub(ErrorTopic(errmsg="c"))
             await _await_event(event)
+            await asyncio.sleep(0.03)
 
             remove()
             vs = win.values()

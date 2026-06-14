@@ -56,7 +56,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             experimental: bool = True,
             primitives: list[str | Command] | None = None,
             meta_instruction: str | None = None,
-            refresh_moss_static: bool = False,
+            refresh_moss_static: bool = True,
             capture_errors_on_exit: bool = False,
     ):
         self._name = name
@@ -88,10 +88,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._clearing_task: asyncio.Future[None] | None = None
 
         # cache
-        self._refresh_moss_static = refresh_moss_static
+        self._do_refresh_moss_static = refresh_moss_static
         self._moss_static_cache: str | None = None
+        self._moss_dynamic_cache: list[Message] | None = None
+        self._moss_dynamic_refreshed_at: float = 0.0
+
         self._last_channel_metas: dict[ChannelFullPath, ChannelMeta] | None = None
-        self._last_channel_metas_refreshed_at: float = 0
+        self._last_channel_metas_built_at: float = 0.0
+        self._last_channel_metas_refreshed_at: float = 0.0
+        self._refresh_meta_future: asyncio.Future | None = None
 
         # logger
         self._logger = logger
@@ -123,12 +128,23 @@ class CTMLShell(MOSShell[PrimeChannel]):
         return self._ctml_meta_instruction
 
     def static_messages(self) -> str:
-        if self._refresh_moss_static or self._moss_static_cache is None:
+        if self._moss_static_cache is None:
             self._moss_static_cache = make_static_messages(self.channel_metas(available_only=False))
         return self._moss_static_cache
 
-    def dynamic_messages(self, available_only: bool = True) -> list[Message]:
-        return make_dynamic_messages(self.channel_metas(available_only=available_only))
+    def dynamic_messages(
+            self,
+            available_only: bool = True,
+            *,
+            stale_time: float = 0.0,
+    ) -> list[Message]:
+        if not available_only:
+            return make_dynamic_messages(self.channel_metas(available_only=available_only))
+        now = time.monotonic()
+        if self._moss_dynamic_cache is None or (now - self._moss_dynamic_refreshed_at) > stale_time:
+            self._moss_dynamic_cache = make_dynamic_messages(self.channel_metas(available_only=available_only))
+            self._moss_dynamic_refreshed_at = now
+        return self._moss_dynamic_cache
 
     def interpreting(self) -> Optional[Interpreter]:
         return self._interpreter
@@ -297,6 +313,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self,
             kind: InterpreterKind = "clear",
             *,
+            refresh_metas: bool = True,
             meta_instruction: str | None = None,
             stream_id: Optional[int] = None,
             config: list[ChannelFullPath] | None = None,
@@ -332,7 +349,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._interpreter = None
 
         # 阻塞等待刷新结果.
-        if kind != "dry_run":
+        if refresh_metas:
             await self.refresh_metas(timeout=prepare_timeout)
         config = self.channel_metas(available_only=True, config=config)
         commands = self.commands(available_only=True, config=config)
@@ -372,49 +389,77 @@ class CTMLShell(MOSShell[PrimeChannel]):
 
         self._main_runtime.tree.topics.pub(topic=topic, name=name, creator=f"shell/{self._name}")
 
-    async def refresh_metas(self, timeout: float | None = None) -> None:
+    async def refresh_metas(
+            self,
+            timeout: float | None = None,
+            *,
+            stale_time: float | None = None,
+    ) -> bool:
         if not self.is_running():
-            return
+            return False
+        now = time.monotonic()
+        stale_time = stale_time or 0.0
+        # 最后刷新时间可靠, 则不刷新.
+        if stale_time > 0.0 and now < (self._last_channel_metas_refreshed_at + stale_time):
+            # 如果近期执行过刷新, 则在同样的时间内不反复触发.
+            return True
+        return await self._refresh_channel_metas(timeout=timeout)
+
+    async def _refresh_channel_metas(self, timeout: float | None) -> bool:
+        # 等待运行结束.
         self._last_channel_metas = None
-        self._moss_static_cache = None
-        refresh_meta_future = self._main_runtime.refresh_metas()
-        if timeout is not None:
-            sleep_task = asyncio.create_task(asyncio.sleep(timeout))
-            done, pending = await asyncio.wait([refresh_meta_future, sleep_task], return_when=asyncio.FIRST_COMPLETED)
-            for sleep_task in pending:
-                sleep_task.cancel()
-            # 不会 cancel refresh_meta_future
-        else:
-            await refresh_meta_future
+        if self._do_refresh_moss_static:
+            self._moss_static_cache = None
+
+        refresh_meta_future = self.runtime.refresh_metas()
+        # 等待到结束.
+        try:
+            done, pending = await asyncio.wait(
+                [refresh_meta_future],
+                timeout=timeout,
+            )
+            return refresh_meta_future in done
+        finally:
+            # 更新最后一次等待完刷新的时间.
+            now = time.monotonic()
+            if now > self._last_channel_metas_refreshed_at:
+                self._last_channel_metas_refreshed_at = now
+
+    def _update_channel_metas(self):
+        self._last_channel_metas = self._main_runtime.metas()
+        self._last_channel_metas_built_at = time.monotonic()
 
     def channel_metas(
             self,
             available_only: bool = False,
             config: Optional[list[ChannelFullPath]] = None,
+            *,
+            stale_time: float | None = None,
     ) -> dict[str, ChannelMeta]:
         if not self.is_running():
             return {}
-        if self._last_channel_metas is not None:
-            now = time.time()
-            if now - self._last_channel_metas_refreshed_at < 0.5:
-                return self._last_channel_metas
+        stale_time = stale_time or 0.0
+        now = time.monotonic()
+        if self._last_channel_metas is None or (now - self._last_channel_metas_built_at) > stale_time:
+            self._update_channel_metas()
 
-        metas = self._main_runtime.metas()
-        result = {}
+        metas = self._last_channel_metas
         if config:
-            # 对齐人工配置项.
-            new_metas = {}
+            result = {}
             for path in config:
                 if path in metas:
-                    new_metas[path] = metas[path]
-            metas = new_metas
+                    meta = metas[path]
+                    if meta.available or not available_only:
+                        result[path] = metas[path]
+            return result
 
-        # 检查 available only.
+        if not available_only:
+            return metas
+
+        result = {}
         for channel_path, channel_meta in metas.items():
             if channel_meta.available or not available_only:
                 result[channel_path] = channel_meta
-        self._last_channel_metas = result
-        self._last_channel_metas_refreshed_at = time.time()
         return result
 
     def push_task(self, *tasks: CommandTask) -> None:
@@ -436,7 +481,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
             old = self._interpreter
             self._interpreter = None
             stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
-            return await stop_task
+            # 防止交叉感染.
+            future = asyncio.get_running_loop().create_future()
+
+            def done_callback(_t: asyncio.Task) -> None:
+                if not future.done():
+                    future.set_result(None)
+
+            stop_task.add_done_callback(done_callback)
+            return await future
         return None
 
     async def wait_until_closed(self) -> None:

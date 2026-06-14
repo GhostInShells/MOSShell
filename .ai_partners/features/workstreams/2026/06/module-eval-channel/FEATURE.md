@@ -1,13 +1,19 @@
 ---
-title: Module Eval Channel
-status: in-progress
-priority: P2
 created: 2026-06-03
-updated: 2026-06-09
-depends: [codex-module-sandbox]
-milestone:
-description: >-
-  Generic channel type that wraps any Python module as an eval container — AI sees module source as instruction, writes code via named exec command with text__ parameter, persistent namespace across calls, module defines the domain (Playwright, pandas, ROS…), channel is a thin reusable shell.
+depends:
+- codex-module-sandbox
+description: Generic channel type that wraps any Python module as an eval container
+  — AI sees module source as instruction, writes code via named exec command with
+  text__ parameter, persistent namespace across calls, module defines the domain (Playwright,
+  pandas, ROS…), channel is a thin reusable shell.
+milestone: null
+priority: P1
+status: completed
+status_note: 2026-06-10 ModuleEval 正式化完成。通用 subprocess 协议 (tools/_eval_server.py)，
+  ModuleEval + JsonLineProcess (tools/module_eval.py)，Channel 完全重写。 14 tests pass。Playwright
+  迁移验证。interface 提取、storage+define command 后续迭代。
+title: Module Eval Channel
+updated: '2026-06-10'
 ---
 
 # Module Eval Channel
@@ -195,3 +201,68 @@ exec: server.send(code)              eval loop:
 - App 目录: `.moss_ws/apps/browsers/playwright/`
 - 架构文档: `.design/2026-06-09_subprocess_sandbox_eval_protocol.md`
 - 原始论文: arXiv:2409.16120 (MOSS: Enabling Code-Driven Evolution and Context Management for AI Agents)
+
+## 2026-06-10: ModuleEval 正式化 — 通用 subprocess 协议
+
+> 人类架构师 + deepseek-v4-pro。从 Playwright 特例提取通用抽象。
+
+### 三层架构
+
+```
+ModuleEvalChannel (channels)    ← CTML 接口: exec/vars/api
+  ModuleEval (tools)            ← bootstrap: 读源码、spawn、JSON-line
+    _eval_server.py (tools)     ← 通用子进程: Compile → Sandbox → loop
+```
+
+**`ModuleEval`** 是核心抽象 (`ghoshell_moss.tools.module_eval`):
+- `__init__(module_path, *, matrix=None)` — 读 .py 文件源码，不 import
+- `start()` — spawn 子进程，matrix 有则 `matrix.spawn()`，无则裸 asyncio
+- `exec(code)`, `vars()`, `api(name)` — 协议命令
+- `instruction` — 源码即 prompt
+
+**`_eval_server.py`** 是通用子进程入口:
+- 接受 `MODULE_FILE` 环境变量
+- Compiler 编译模块 (builtins unrestricted, 执行 import)
+- init_sandbox (builtins=None) 持有编译后命名空间
+- sandbox (parent=init, SANDBOX_BUILTINS) 为 AI exec 命名空间
+- 协议命令: `__SHUTDOWN__`, `__vars__`, `__api__`
+- 清理: 对命名空间对象调用 `close()`/`stop()`
+
+### 显式安全授权
+
+模块源码即授权边界。`import json` 写在文件里 → namespace 里有 json。
+没写 → AI 无法用。不需要运行时 `set()` 注入，不需要白名单配置。
+
+### 关键决策
+
+1. **`.py` 文件路径，不是 import path** — 父进程零运行时依赖
+2. **Source-only prompt** — interface 提取本阶段丢弃，未来通过 treeparser 实现
+3. **`__name__` 约束** — Compiler 的 `modulename` 决定 `__name__`，不是 `__main__`
+4. **相对 import 不做 AST scan** — 编译时自然报错，不做前置检测
+5. **`matrix: Matrix | None`** — 双 spawn 路径，测试和独立使用友好
+6. **`ghoshell_moss.tools`** — 新包，不走 IoC，纯功能件
+
+### Playwright 迁移
+
+- `eval_server.py` 删除，由通用 `_eval_server.py` 替代
+- 提取 `playwright_domain.py` — ~10 行纯领域代码
+- `main.py` 使用 `new_module_eval_channel(domain_path, matrix=matrix)`
+- EvalServer 类删除，JsonLineProcess 接管
+
+### 测试
+
+14 个单测全部通过。验证: exec 执行、变量持久化、vars/api 反射、
+builtins 安全（open/import 被封锁）、异常返回 traceback、命名空间在错误后保留。
+
+### 未展开的扩展点
+
+- interface 提取 (AST/treeparser)
+- storage + define command 动态技能体系
+- on_shutdown 显式清理协议 (当前用 close/stop 自动发现)
+
+### 关联 artifacts
+
+- `src/ghoshell_moss/tools/` — ModuleEval + JsonLineProcess + _eval_server
+- `src/ghoshell_moss/channels/module_eval_channel.py` — 完全重写
+- `.moss_ws/apps/browsers/playwright/` — 迁移验证
+- `tests/ghoshell_moss/channels/test_module_eval_channel.py` — 14 tests

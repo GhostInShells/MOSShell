@@ -1,53 +1,66 @@
-from mcp.server.fastmcp import FastMCP
+"""Minimal MCP stdio server for MCP Hub integration testing."""
+import json
+import sys
+import asyncio
+from mcp.server.stdio import stdio_server
+from mcp.server import Server
+from mcp import types as mcp_types
 
-mcp = FastMCP("weather")
-
-
-@mcp.tool()
-async def add(x: int, y: int = 2) -> int:
-    """将两个字符串相加。
-
-    Args:
-        x: 第一个整数
-        y: 第二个整数
-    """
-    return x + y
+server = Server("mcp-hub-test-demo")
 
 
-@mcp.tool()
-async def foo(a: int, b: dict[str, int]) -> int:
-    """测试函数。
+@server.list_tools()
+async def list_tools() -> list[mcp_types.Tool]:
+    return [
+        mcp_types.Tool(
+            name="add",
+            description="add two numbers",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "x": {"type": "number", "description": "first number"},
+                    "y": {"type": "number", "description": "second number"},
+                },
+                "required": ["x", "y"],
+            },
+        ),
+        mcp_types.Tool(
+            name="foo",
+            description="foo helper",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        mcp_types.Tool(
+            name="bar",
+            description="bar helper",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        mcp_types.Tool(
+            name="multi",
+            description="multi helper",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+    ]
 
-    Args:
-        a: 示例参数
-        b: 字典函数
-    """
-    return a + b.get("i", 0)
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[mcp_types.TextContent]:
+    if name == "add":
+        x = float(arguments.get("x", 0))
+        y = float(arguments.get("y", 0))
+        return [mcp_types.TextContent(type="text", text=f"{x} + {y} = {x + y}")]
+    elif name == "foo":
+        return [mcp_types.TextContent(type="text", text="foo ok")]
+    elif name == "bar":
+        return [mcp_types.TextContent(type="text", text="bar ok")]
+    elif name == "multi":
+        return [mcp_types.TextContent(type="text", text="multi ok")]
+    return [mcp_types.TextContent(type="text", text=f"unknown: {name}")]
 
 
-@mcp.tool()
-async def bar(s: str) -> int:
-    """测试函数。
-
-    Args:
-        a: 集合参数
-    """
-    return len(s)
-
-
-@mcp.tool()
-async def multi(a: int, b: int, c: int, d: int) -> int:
-    """测试函数。
-
-    Args:
-        a: 测试参数
-        b: 测试参数
-        c: 测试参数
-        d: 测试参数
-    """
-    return a + b + c + d
+async def main():
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
 if __name__ == "__main__":
-    # 初始化并运行 server
-    mcp.run(transport="stdio")
+    asyncio.run(main())

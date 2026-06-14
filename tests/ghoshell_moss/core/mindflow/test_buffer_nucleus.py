@@ -13,7 +13,7 @@ def create_mock_signal(name: str, priority: Priority = Priority.INFO, stale: flo
         name=name,
         priority=priority,
         messages=[],
-        prompt="test prompt",
+        hint="test prompt",
         stale_timeout=stale,
     )
 

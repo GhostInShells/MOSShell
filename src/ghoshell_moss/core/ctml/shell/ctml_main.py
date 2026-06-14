@@ -12,6 +12,8 @@ __all__ = [
     "inject_system_primitives",
 ]
 
+from .primitives.thinking import thinking_command
+
 
 class CTMLMainChannel(PyChannel):
     """
@@ -40,6 +42,7 @@ default_primitive_map: dict[str, PyCommand] = {
     func.__name__: PyCommand(func) for func in default_primitives
 }
 default_primitive_map['interrupt'] = interrupt_command
+default_primitive_map['thinking'] = thinking_command
 
 
 def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> None:
@@ -58,11 +61,13 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     # 标准原语
     main.build.add_command(new_command(sleep))
     main.build.add_command(new_command(noop))
-    main.build.add_command(new_command(observe))
     main.build.add_command(interrupt_command)  # interrupt 已经是 PyCommand
+    main.build.add_command(thinking_command) # 兼容 thinking 原语.
 
     if extended:
         main.build.add_command(new_command(wait))
+        # observe 治理完后, 这个原语已经不需要了.
+        main.build.add_command(new_command(observe))
         main.build.add_command(new_command(clear))
         main.build.add_command(new_command(wait_idle))
         main.build.add_command(new_command(loop))

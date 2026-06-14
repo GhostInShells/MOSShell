@@ -35,7 +35,7 @@ async def test_full_link_signal_to_impulse():
         mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.source == "test_sensor"
                 assert impulse.priority == Priority.NOTICE
                 break
@@ -68,7 +68,7 @@ async def test_suppress_and_stale_race_condition():
             async with attention:
                 wait_started.set()
                 # 判断没有过期.
-                assert not attention.peek().is_stale()
+                assert not attention.draw_from().is_stale()
                 # 模拟 Attention 耗时处理
                 await asyncio.sleep(0.11)
                 count += 1
@@ -113,7 +113,7 @@ async def test_mindflow_able_to_close():
         mindflow.add_signal(sig)
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.source == "test_sensor"
                 assert impulse.priority == Priority.NOTICE
                 # 调用之后应该不会阻塞, 都会退出.
@@ -141,7 +141,7 @@ async def test_mindflow_run_in_task():
             mindflow.add_signal(sig)
             async for attention in mindflow.loop():
                 async with attention:
-                    impulse = attention.peek()
+                    impulse = attention.draw_from()
                     assert impulse.source == "test_sensor"
                     assert impulse.priority == Priority.NOTICE
                     # 验证完 impulse 直接退出.
@@ -177,7 +177,7 @@ async def test_mindflow_run_with_multi_signal():
         await mindflow.wait_started()
         async for attention in mindflow.loop():
             async with attention:
-                impulse = attention.peek()
+                impulse = attention.draw_from()
                 assert impulse.priority == Priority.NOTICE
                 count.append(1)
             one_done.set()
@@ -192,7 +192,7 @@ async def test_mindflow_run_with_multi_signal():
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
         mindflow.add_signal(sig)
         await asyncio.sleep(0.0)
-        await one_done.wait()
+        await asyncio.wait_for(one_done.wait(), 5)
         # 拿到一个信号时, count 只会为1.
         assert len(count) == 1
         assert nucleus.peek() is None
@@ -202,7 +202,7 @@ async def test_mindflow_run_with_multi_signal():
         sig = Signal.new(name="vision_event", priority=Priority.NOTICE)
         mindflow.add_signal(sig)
         await asyncio.sleep(0.1)
-        await one_done.wait()
+        await asyncio.wait_for(one_done.wait(), 5)
         # 然后就直接退出.
         mindflow.close()
 
@@ -535,7 +535,8 @@ def test_suite_consuming_alot_of_signals():
         suite.run_in_thread(_articulate_func, _action_func)
         for i in range(10):
             suite.mindflow.add_signal(Signal.new('test'))
-            _done_event.wait()
+            # 加 timeout 防止丢信号时永久卡死 — 若信号丢失则 AssertionError, 暴露问题.
+            assert _done_event.wait(5), f"signal {i} not consumed within 5s (got {len(got)})"
             _done_event.clear()
             if len(got) == 10:
                 break
@@ -577,7 +578,8 @@ def test_suite_consuming_endless_observe():
         # 只发送一个信号.
         suite.mindflow.wait_started_sync()
         suite.mindflow.add_signal(Signal.new('test'))
-        done_event.wait()
+        # 10 轮 observe 接力, 留充裕余量; 若任何一轮断裂会 AssertionError 而非卡死.
+        assert done_event.wait(10), f"endless observe did not complete within 10s (got {len(got)})"
         assert len(got) == 10
         for line in got:
             assert line == content

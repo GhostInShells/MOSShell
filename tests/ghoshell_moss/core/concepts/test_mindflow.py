@@ -1,6 +1,4 @@
-import pytest
 import time
-from datetime import datetime, timezone
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import (
     Signal, Impulse, Moment, Reaction, Priority,
@@ -41,16 +39,16 @@ def test_moment_outcome_stitching():
 
     # 生成 Outcome
     outcome = obs.new_reaction()
-    outcome.logos = "MoveForward"
-    outcome.outcomes = [Message.new().with_content("Action Done")]
+    outcome.executed_logos = "MoveForward"
+    outcome.messages = [Message.new().with_content("Action Done")]
 
     # 缝合到下一轮 Observation
     obs2 = outcome.new_moment()
 
     # 验证上下文连贯性
     assert obs2.previous is not None
-    assert obs2.previous.logos == "MoveForward"
-    assert obs2.previous.outcomes[0].contents[0]['text'] == "Action Done"
+    assert obs2.previous.executed_logos == "MoveForward"
+    assert obs2.previous.messages[0].contents[0]['text'] == "Action Done"
 
     # 验证 as_request_messages 结构
     msgs = list(obs2.as_request_messages())
@@ -94,33 +92,33 @@ def test_signal_impulse_direct_set():
 
 # ============================================================
 # Moment / Reaction 参数传递链路单测
-# 验证 percepts, reaction_instruction, reflex_logos 在
+# 验证 percepts, reaction_instruction, command_logos 在
 # new_moment() → _loop() → next_frame() 全链路不会重复或遗漏
 # ============================================================
 
 def test_new_moment_passes_all_params():
     """Reaction.new_moment() 将三个关键参数完整传递到 Moment."""
-    reaction = Reaction(logos="test logos", stop_reason="done")
+    reaction = Reaction(executed_logos="test logos", stop_reason="done")
     percept_msg = Message.new().with_content("percept content")
     moment = reaction.new_moment(
         percepts=[percept_msg],
-        reaction_instruction="handle this",
-        reflex_logos="reflex!",
+        hint="handle this",
+        command_logos="reflex!",
     )
     assert moment.previous is reaction
     assert len(moment.percepts) == 1
     assert moment.percepts[0].contents[0]["text"] == "percept content"
-    assert moment.reaction_instruction == "handle this"
-    assert moment.reflex_logos == "reflex!"
+    assert moment.hint == "handle this"
+    assert moment.command_logos == "reflex!"
 
 
 def test_new_moment_without_params_creates_empty_moment():
     """不带参数的 new_moment() 创建空的 Moment — observe 轮次应走此路径."""
-    reaction = Reaction(logos="prev")
+    reaction = Reaction(executed_logos="prev")
     moment = reaction.new_moment()
     assert moment.percepts == []
-    assert moment.reaction_instruction == ""
-    assert moment.reflex_logos == ""
+    assert moment.hint == ""
+    assert moment.command_logos == ""
 
 
 def test_new_moment_percepts_none_treated_as_empty():
@@ -135,37 +133,37 @@ def test_moment_inputs_messages_yields_percepts_and_instruction():
     percept = Message.new().with_content("p1")
     moment = Moment(
         percepts=[percept],
-        reaction_instruction="do it",
+        hint="do it",
     )
-    msgs = list(moment.inputs_messages(with_reaction_instruction=True))
+    msgs = list(moment.inputs_messages(with_hint=True))
     assert len(msgs) == 2
     assert msgs[0].contents[0]["text"] == "p1"
-    assert msgs[1].meta.tag == "prompt"
+    assert msgs[1].meta.tag == "hint"
     assert msgs[1].contents[0]["text"] == "do it"
 
 
 def test_moment_inputs_messages_without_instruction():
-    """with_reaction_instruction=False 时不产出 instruction."""
+    """with_hint=False 时不产出 instruction."""
     moment = Moment(
         percepts=[Message.new().with_content("p1")],
-        reaction_instruction="skip me",
+        hint="skip me",
     )
-    msgs = list(moment.inputs_messages(with_reaction_instruction=False))
+    msgs = list(moment.inputs_messages(with_hint=False))
     assert len(msgs) == 1
 
 
 def test_moment_inputs_messages_skips_empty_instruction():
     """reaction_instruction 为空时不产出多余消息."""
     moment = Moment(percepts=[Message.new().with_content("p1")])
-    msgs = list(moment.inputs_messages(with_reaction_instruction=True))
+    msgs = list(moment.inputs_messages(with_hint=True))
     assert len(msgs) == 1
 
 
 def test_moment_previous_reaction_messages_includes_outcomes_and_stop_reason():
     """previous_reaction_messages() 产出 outcomes 包装 + stop_reason."""
     prev = Reaction(
-        logos="prev logos",
-        outcomes=[Message.new().with_content("action result")],
+        executed_logos="prev logos",
+        messages=[Message.new().with_content("action result")],
         stop_reason="fade out",
     )
     moment = Moment(previous=prev)
@@ -205,15 +203,15 @@ def test_moment_is_empty_and_is_empty_request():
 def test_moment_as_request_messages_full_structure():
     """as_request_messages() 按序组装: previous → perspectives → inputs."""
     prev = Reaction(
-        outcomes=[Message.new().with_content("outcome 1")],
+        messages=[Message.new().with_content("outcome 1")],
     )
     moment = Moment(
         previous=prev,
         percepts=[Message.new().with_content("percept 1")],
-        reaction_instruction="react!",
+        hint="react!",
     )
     moment.perspectives["moss_dynamic"] = [Message.new().with_content("dynamic ctx")]
-    msgs = list(moment.as_request_messages(with_perspectives=True, with_reaction_instruction=True))
+    msgs = list(moment.as_request_messages(with_perspectives=True, with_hint=True))
     # 应该有: outcomes 包装 + perspective + percept + instruction
     texts = []
     for m in msgs:
@@ -230,7 +228,7 @@ def test_moment_as_request_messages_without_perspectives():
     """with_perspectives=False 时完全不产出 perspectives."""
     moment = Moment(percepts=[Message.new().with_content("p1")])
     moment.perspectives["ctx"] = [Message.new().with_content("ctx1")]
-    msgs = list(moment.as_request_messages(with_perspectives=False, with_reaction_instruction=False))
+    msgs = list(moment.as_request_messages(with_perspectives=False, with_hint=False))
     texts = []
     for m in msgs:
         for c in m.contents:
@@ -246,35 +244,21 @@ def test_moment_perspective_messages_compact_mode():
     """compact=True 且有 compact_perspectives 时优先使用压缩结果."""
     moment = Moment()
     moment.perspectives["ctx"] = [Message.new().with_content("long context")]
-    moment.compact_perspectives = [Message.new().with_content("compressed version")]
-    msgs = list(moment.perspective_messages(compact=True))
+    moment.compacted_perspectives = [Message.new().with_content("compressed version")]
+    msgs = list(moment.perspective_messages(compact_first=True))
     assert len(msgs) == 1
     assert msgs[0].contents[0]["text"] == "compressed version"
 
 
-def test_moment_perspective_messages_compact_without_precompacted():
-    """compact=True 但无 compact_perspectives 时生成计数隐藏提示."""
-    moment = Moment()
-    moment.perspectives["ctx"] = [
-        Message.new().with_content("m1"),
-        Message.new().with_content("m2"),
-        Message.new().with_content("m3"),
-    ]
-    msgs = list(moment.perspective_messages(compact=True))
-    assert len(msgs) == 1
-    text = msgs[0].contents[0]["text"]
-    assert "3 messages hidden" in text
-
-
-def test_moment_reflex_logos_preserved_in_new_moment():
-    """reflex_logos 从 Reaction.new_moment() 正确传递，不被后续操作丢失."""
+def test_moment_command_logos_preserved_in_new_moment():
+    """command_logos 从 Reaction.new_moment() 正确传递，不被后续操作丢失."""
     reaction = Reaction()
-    moment = reaction.new_moment(reflex_logos="hello!")
-    assert moment.reflex_logos == "hello!"
-    # 验证 new_reaction 后再 new_moment, reflex_logos 不自动继承
+    moment = reaction.new_moment(command_logos="hello!")
+    assert moment.command_logos == "hello!"
+    # 验证 new_reaction 后再 new_moment, command_logos 不自动继承
     reaction2 = moment.new_reaction()
     moment2 = reaction2.new_moment()
-    assert moment2.reflex_logos == ""  # reflex_logos 不应跨轮次自动继承
+    assert moment2.command_logos == ""  # command_logos 不应跨轮次自动继承
 
 
 # ============================================================
@@ -283,17 +267,17 @@ def test_moment_reflex_logos_preserved_in_new_moment():
 # ============================================================
 
 def _make_attention_ctx(
-    attention_id: str = "test_attn",
-    percepts: list[Message] | None = None,
-    reaction_instruction: str = "",
-    reflex_logos: str = "",
+        attention_id: str = "test_attn",
+        percepts: list[Message] | None = None,
+        hint: str = "",
+        command_logos: str = "",
 ) -> AttentionContext:
     """构造 AttentionContext 的测试夹具."""
     reaction = Reaction()
     moment = reaction.new_moment(
         percepts=percepts,
-        reaction_instruction=reaction_instruction,
-        reflex_logos=reflex_logos,
+        hint=hint,
+        command_logos=command_logos,
     )
     return AttentionContext(
         attention_id=attention_id,
@@ -306,29 +290,29 @@ def _make_attention_ctx(
 def test_attention_ctx_moment_has_percepts_on_first_creation():
     """首次创建时 Moment 携带 percepts."""
     percept = Message.new().with_content("input signal")
-    ctx = _make_attention_ctx(percepts=[percept], reaction_instruction="go")
+    ctx = _make_attention_ctx(percepts=[percept], hint="go")
     assert len(ctx.moment.percepts) == 1
     assert ctx.moment.percepts[0].contents[0]["text"] == "input signal"
-    assert ctx.moment.reaction_instruction == "go"
+    assert ctx.moment.hint == "go"
 
 
 def test_attention_ctx_new_moment_creates_empty_percepts():
     """ctx.new_moment() 调用 Reaction.new_moment() 无参数 — percepts 应为空."""
     ctx = _make_attention_ctx(
         percepts=[Message.new().with_content("original")],
-        reaction_instruction="original instruction",
+        hint="original instruction",
     )
     new_moment = ctx.new_moment()
     # new_moment() → stop_at_outcome().new_moment() 不传参数
     assert new_moment.percepts == []
-    assert new_moment.reaction_instruction == ""
+    assert new_moment.hint == ""
 
 
 def test_attention_ctx_next_frame_does_not_carry_percepts():
     """next_frame() 创建新 ctx，其 Moment 的 percepts 应为空 — observe 不应带入新感知."""
     ctx = _make_attention_ctx(
         percepts=[Message.new().with_content("first round")],
-        reaction_instruction="first instruction",
+        hint="first instruction",
     )
     # 模拟第一轮执行后触发 observe
     ctx.observe("")  # 标记 observe
@@ -337,7 +321,7 @@ def test_attention_ctx_next_frame_does_not_carry_percepts():
     assert next_ctx.attention_id == ctx.attention_id
     # percepts 不应被带入 observe 轮
     assert next_ctx.moment.percepts == []
-    assert next_ctx.moment.reaction_instruction == ""
+    assert next_ctx.moment.hint == ""
     # previous 应指向前一轮的 Reaction
     assert next_ctx.moment.previous is not None
     assert next_ctx.moment.previous.moment_id == ctx.moment.id
@@ -366,8 +350,8 @@ def test_attention_ctx_stop_at_outcome_captures_logos_and_outcomes():
     ctx.outcome(Message.new().with_content("action done"), observe=False)
     ctx.abort("fade out")
     reaction = ctx.stop_at_outcome()
-    assert reaction.logos == "model said hello"
-    assert len(reaction.outcomes) == 1
+    assert reaction.executed_logos == "model said hello"
+    assert len(reaction.messages) == 1
     assert reaction.stop_reason == "fade out"
 
 
@@ -379,7 +363,7 @@ def test_attention_ctx_outcome_with_observe_triggers_next_frame():
     assert ctx.get_observe_messages() is not None
 
 
-def test_attention_ctx_reflex_logos_preserved_in_moment():
-    """reflex_logos 在首次 Moment 中保留."""
-    ctx = _make_attention_ctx(reflex_logos="conditional reflex")
-    assert ctx.moment.reflex_logos == "conditional reflex"
+def test_attention_ctx_command_logos_preserved_in_moment():
+    """command_logos 在首次 Moment 中保留."""
+    ctx = _make_attention_ctx(command_logos="conditional reflex")
+    assert ctx.moment.command_logos == "conditional reflex"

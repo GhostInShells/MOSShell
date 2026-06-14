@@ -77,16 +77,20 @@ async def test_observe_error_propagation():
 
 @pytest.mark.asyncio
 async def test_attention_strength_decay():
+    # 时间缩放到 1s 量级, 留出 100ms+ 的事件循环抖动余量.
+    # 原 100ms 量级在 0.09 边界对 asyncio.sleep 精度过于敏感, 偶发 strength 已归零.
     impulse = Impulse(
         source="test",
         priority=Priority.INFO,
         strength=100,
-        strength_decay_seconds=0.1  # 100ms
+        strength_decay_seconds=1.0,  # 1s
     )
     attention = BaseAttention(previous=Reaction(), impulse=impulse)
-    await asyncio.sleep(0.09)
+    await asyncio.sleep(0.5)
+    # 中段衰减: protection (0.2s) 已过, 进度 ~ 0.375, strength ~ 62. 抖动余量充足.
     assert attention.current_strength() > 0
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0.6)
+    # 累计 1.1s, 已过 TTL.
     assert attention.current_strength() == 0
 
 

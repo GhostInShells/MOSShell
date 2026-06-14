@@ -6,10 +6,10 @@ description: 为 MossRuntime 内置一个最简感知核：PerceptionMindflow(�
   路径可测试。
 milestone: null
 priority: P0
-status: draft
-status_note: deferred — will pick up later
+status: dropped
+status_note: 2026-06-12 dropped — MCP 路径本质是 request-response，硬嫁接 perception 语义只是换名的轮询。真正的感知能力应通过 GhostRuntime + 完整 mindflow 闭环实现。当前阶段聚焦 mindflow-control-semantics 基建，不在此处分散精力。
 title: Perception Nucleus — MossRuntime 感知核，让 MCP 场景下的模型能看见信号
-updated: '2026-06-04'
+updated: '2026-06-12'
 ---
 
 # Perception Nucleus — MossRuntime 感知核

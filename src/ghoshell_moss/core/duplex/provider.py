@@ -40,6 +40,7 @@ from .protocol import (
     ProviderPubTopicEvent,
     ProviderSubTopicEvent,
     ProxyPubTopicEvent,
+    ProviderCommandProgressEvent,
 )
 
 __all__ = ["ChannelEventHandler", "DuplexChannelProvider"]
@@ -634,7 +635,7 @@ class DuplexChannelProvider(ChannelProvider):
             pass
 
     def _handle_command_cancel(self, event: CommandCancelEvent) -> None:
-        cid = event.command_id
+        cid = event.cid
         task = self._running_command_tasks.get(cid, None)
         if task is not None:
             self.logger.info("cancel task %s by event %s", task, event)
@@ -642,7 +643,7 @@ class DuplexChannelProvider(ChannelProvider):
             task.cancel()
 
     async def _handle_command_delta_arg(self, event: CommandDeltaEvent) -> None:
-        cid = event.command_id
+        cid = event.cid
         if cid not in self._running_command_delta_stream:
             return
         sender, receiver = self._running_command_delta_stream[cid]
@@ -668,7 +669,7 @@ class DuplexChannelProvider(ChannelProvider):
                 tokens_=call_event.tokens,
                 args=call_event.args,
                 kwargs=call_event.kwargs,
-                cid=call_event.command_id,
+                cid=call_event.cid,
                 context=call_event.context,
                 call_id=call_event.call_id,
                 scope_id=call_event.scope_id,
@@ -682,7 +683,7 @@ class DuplexChannelProvider(ChannelProvider):
                 tokens=call_event.tokens,
                 args=call_event.args,
                 kwargs=call_event.kwargs,
-                cid=call_event.command_id,
+                cid=call_event.cid,
                 context=call_event.context,
                 call_id=call_event.call_id,
                 scope_id=call_event.scope_id,
@@ -700,12 +701,25 @@ class DuplexChannelProvider(ChannelProvider):
             task.add_done_callback(self._remove_running_task)
             self._add_running_task(task)
             self._loop.create_task(self._ensure_task_done(call_event, task))
+            # register task progress callback
+            task.on_progress_callback(self._on_command_progress)
             self._root_runtime.push_task(task)
             enqueued = True
         finally:
             if not enqueued:
                 response = call_event.not_available(f"Command {unique_name} not available in provider")
                 self._loop.create_task(self._send_event_model_to_proxy(response, throw=False))
+
+    def _on_command_progress(self, task: CommandTask) -> None:
+        if task.done() or not task.progress:
+            return
+        self._loop.create_task(self._send_command_progress(task.cid, task.progress))
+
+    async def _send_command_progress(self, cid: str, progress: str) -> None:
+        if not self.is_running() or not self._connection.is_connected():
+            return
+        event = ProviderCommandProgressEvent(cid=cid, progress=progress)
+        await self._send_event_model_to_proxy(event, throw=False)
 
     async def _ensure_task_done(self, call_event: CommandCallEvent, task: CommandTask) -> None:
         try:

@@ -16,11 +16,12 @@ __all__ = [
 
 V = TypeVar("V")
 
+
 class ThreadSafeFuture(Generic[V]):
     def __init__(
-        self,
-        future: Optional[Future] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
+            self,
+            future: Optional[Future] = None,
+            loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.future = future or asyncio.Future()
         self.loop = loop or asyncio.get_event_loop()
@@ -70,6 +71,11 @@ class ThreadSafeEvent:
         self.debug = debug
         self.set_at: Optional[str] = None
         self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        if self._loop_events is None:
+            return 1
+        return 1 + len(self._loop_events)
 
     def is_set(self) -> bool:
         return self._thread_event.is_set()
@@ -132,10 +138,10 @@ class ThreadSafeEvent:
 
 
 async def ensure_tasks_done_or_cancel(
-    *fts: asyncio.Task | Coroutine,
-    timeout: float | None = None,
-    cancel: Callable[[], Coroutine[None, None, Any]] | None = None,
-    loop: asyncio.AbstractEventLoop | None = None,
+        *fts: asyncio.Task | Coroutine,
+        timeout: float | None = None,
+        cancel: Callable[[], Coroutine[None, None, Any]] | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
 ) -> list:
     """实现一个通用函数, 确保所有的 tasks or coroutines 必然会被执行或者 cancel"""
     gathering = []

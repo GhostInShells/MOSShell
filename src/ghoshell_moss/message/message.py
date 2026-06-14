@@ -19,6 +19,7 @@ __all__ = [
     "Message",
     "MessageMeta",
     "WithAdditional",
+    "ContextType",
     "unique_id",
 ]
 

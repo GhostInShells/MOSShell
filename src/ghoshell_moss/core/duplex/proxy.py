@@ -45,6 +45,7 @@ from .protocol import (
     ProviderPubTopicEvent,
     ProviderErrorEvent, ChannelEventModel,
     ChannelEventSerializedError,
+    ProviderCommandProgressEvent,
 )
 from ghoshell_moss.core.topic import TopicService
 
@@ -111,6 +112,7 @@ class DuplexChannelContext:
         """logger 的缓存."""
         self._log_prefix = "[DuplexChannelContext][%s] " % self.root_name
         self._runtime_asyncio_task_group: set[asyncio.Task] = set()
+        self._event_loop: asyncio.AbstractEventLoop | None = None
         self.connection_err: str = ""
 
     def _add_task(self, task: asyncio.Task) -> None:
@@ -213,10 +215,11 @@ class DuplexChannelContext:
             return
         self.logger.info("DuplexChannelContext[name=%s] starting", self.root_name)
         self._starting = True
+        self._event_loop = asyncio.get_running_loop()
         # 完成初始化.
         await self.connection.start()
         # 创建主循环.
-        self._main_task = asyncio.create_task(self._main())
+        self._main_task = self._event_loop.create_task(self._main())
         self._started.set()
         self.logger.info("DuplexChannelContext[name=%s] started", self.root_name)
 
@@ -274,8 +277,8 @@ class DuplexChannelContext:
         try:
             # 异常管理放在外侧, 方便阅读代码.
             # 接受消息的 loop.
-            receiving_task = asyncio.create_task(self._main_receiving_loop())
-            is_stopped = asyncio.create_task(self.stop_event.wait())
+            receiving_task = self._event_loop.create_task(self._main_receiving_loop())
+            is_stopped = self._event_loop.create_task(self.stop_event.wait())
             done, pending = await asyncio.wait(
                 [receiving_task, is_stopped],
                 return_when=asyncio.FIRST_COMPLETED,
@@ -428,16 +431,18 @@ class DuplexChannelContext:
             if provider_err := ProviderErrorEvent.from_channel_event(event):
                 self._handle_provider_error(error=provider_err)
             elif pub_topic := ProviderPubTopicEvent.from_channel_event(event):
-                t = asyncio.create_task(self._handle_provider_pub_topic(pub_topic))
+                t = self._event_loop.create_task(self._handle_provider_pub_topic(pub_topic))
                 await asyncio.shield(t)
                 self._add_task(t)
             elif sub_topic := ProviderSubTopicEvent.from_channel_event(event):
                 _ = await self._sub_topic_for_provider(sub_topic.topic_name)
             elif command_done := CommandDoneEvent.from_channel_event(event):
                 # 顺序执行, 避免并行逻辑导致混乱. 虽然可以加锁吧.
-                t = asyncio.create_task(self._handle_command_done_event(command_done))
+                t = self._event_loop.create_task(self._handle_command_done_event(command_done))
                 await asyncio.shield(t)
                 self._add_task(t)
+            elif progress := ProviderCommandProgressEvent.from_channel_event(event):
+                await self._handle_command_task_progress(progress)
             else:
                 self.logger.warning(
                     "Channel %s receive event error: unknown event %s",
@@ -448,6 +453,15 @@ class DuplexChannelContext:
             pass
         except Exception as e:
             self.logger.error("Channel %s handle event failed: %s", self.root_name, e)
+
+    async def _handle_command_task_progress(self, event: ProviderCommandProgressEvent) -> None:
+        try:
+            if event.cid in self._pending_provider_command_tasks:
+                task = self._pending_provider_command_tasks.get(event.cid)
+                if task is not None:
+                    task.set_progress(event.progress)
+        except Exception as e:
+            self.logger.error("Channel %s handle task progress %s failed: %s", self.root_name, event, e)
 
     def _handle_provider_error(self, error: ProviderErrorEvent | None) -> None:
         if error is not None:
@@ -569,24 +583,24 @@ class DuplexChannelContext:
 
                 if isinstance(delta, CommandToken):
                     event = CommandDeltaEvent(
-                        command_id=cid,
+                        cid=cid,
                         connection_id=self.connection_id,
                         command_token=delta.model_dump(),
                     )
                     await self.send_event_model_to_provider(event, throw=True)
                 elif isinstance(delta, str):
                     event = CommandDeltaEvent(
-                        command_id=cid,
+                        cid=cid,
                         connection_id=self.connection_id,
                         chunk=delta,
                     )
                     await self.send_event_to_provider(event.to_channel_event())
-            final = CommandDeltaEvent(command_id=cid, connection_id=self.connection_id)
+            final = CommandDeltaEvent(cid=cid, connection_id=self.connection_id)
             await self.send_event_to_provider(final.to_channel_event())
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            event = CommandCancelEvent(chan=task.chan, connection_id=self.connection_id, command_id=cid)
+            event = CommandCancelEvent(chan=task.chan, connection_id=self.connection_id, cid=cid)
             await self.send_event_model_to_provider(event, throw=True)
             self.logger.exception("%s failed to send delta args %s", self._log_prefix, exc)
             raise
@@ -620,7 +634,7 @@ class DuplexChannelContext:
                 name=task.meta.name,
                 # channel 路径务必使用 provider 侧的路径, 用来对 channel 寻址.
                 chan=provider_side_chan_path,
-                command_id=task.cid,
+                cid=task.cid,
                 args=list(task.args),
                 kwargs=dict(task.kwargs),
                 tokens=task.tokens if task else "",
@@ -678,8 +692,8 @@ class DuplexChannelContext:
                     sender.cancel()
 
     async def _handle_command_done_event(self, event: CommandDoneEvent) -> None:
-        command_id = event.command_id
-        task = self._pending_provider_command_tasks.pop(command_id)
+        cid = event.cid
+        task = self._pending_provider_command_tasks.pop(cid)
         if task is None:
             self.logger.info("receive command done event %s match no command", event)
             return

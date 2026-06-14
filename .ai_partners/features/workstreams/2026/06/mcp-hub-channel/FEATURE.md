@@ -5,9 +5,9 @@ description: MCP Hub — 将 MCP 协议降级为纯 transport，CTML 接管调�
 milestone: null
 priority: P0
 status: completed
-status_note: 2026-06-08 预设配置重构完成 — 删除 MCPServerPreset 类，改 YAML 配置。add_server name-only + $ENV_VAR connect-time 解析 + context 含 description + _load_global_config 修复 + env 写盘自动 redact。54 单测通过。人类工程师 review 合并。
+status_note: 2026-06-12 ConfigStore DI 重构完成 — MCPHubState 移除 Matrix 依赖，改为 ConfigStore 接口注入。命令重命名：connect/disconnect/reconnect/list。新增 allow_model_config flag 控制 register/unregister 暴露。删除 resolve_env_dict/_redact_env_for_save（ConfigType.resolve 已提供 $VAR 解析）。53 单测通过，zero mock Matrix。
 title: MCP Hub Channel
-updated: '2026-06-08'
+updated: '2026-06-12'
 ---
 
 # MCP Hub Channel
@@ -343,3 +343,67 @@ No MCP servers connected. Available: baidu_map
 
 **设计决策**：模型需要始终知道当前有哪些 MCP 可用、哪些已连接。可用列表仅
 列名称，一行 `name, name, ...` 不浪费 token。
+
+## ConfigStore DI 重构 (2026-06-12)
+
+### 动机
+
+旧实现有三个耦合问题：
+
+1. `MCPHubState.__init__` 依赖 `Matrix`，只为从中取 storage/configs。Matrix 是进程级大对象，State
+   只需要一个配置读写接口。
+
+2. `_load_config` / `_save_config` / `_load_global_config` 三条路径做同一件事（从不同 storage
+   读写 `MCPHubConfig`），只是 storage 不同。用 `storage.read_yaml` / `get_conf` / `save_conf`
+   三套 API 实现同一语义。
+
+3. `$VAR` 解析和反向 redact 在 channel 层手动实现，但 `ConfigType.resolve()` 和
+   `LocalConfigStore.get()` 已在框架层提供递归 `$VAR` 解析（读时解析，写时原样保存）。
+
+### 设计
+
+**MCPHubState** 移除 Matrix 依赖，改为接口注入：
+
+```python
+class MCPHubState(ChannelState):
+    def __init__(
+        self,
+        *,
+        config_store: ConfigStore,       # 工厂决定底层是 scoped 还是 workspace
+        allow_model_config: bool = False, # 控制 register/unregister 是否暴露
+        name: str = 'mcp',
+        description: str = '',
+    ):
+```
+
+`_load_config` 一行：
+
+```python
+def _load_config(self) -> MCPHubConfig:
+    return self._config_store.get_or_create(MCPHubConfig(servers={}))
+```
+
+`_save_config` / `_load_global_config` / `_redact_env_for_save` 全部删除。
+`resolve_env_dict` 删除 — ConfigType.resolve() 已在读时解析 `$VAR`。
+
+**Config store 组装在 factory 层**（`MCPHubChannel.materialize` / `build_mcp_hub_channel`）：
+
+```python
+if scopes:
+    store = YamlConfigStore(matrix.get_scoped_storage(*scopes))
+    # merge workspace presets on first creation
+else:
+    store = matrix.configs()
+```
+
+**命令重设计**：
+
+始终可用 — `exec`, `exec_blocking`, `list`, `connect`, `disconnect`, `reconnect`。
+仅 `allow_model_config=True` 时 — `register`（text__ 中传 MCPServerConfig JSON）, `unregister`。
+
+`register` 走 text__ JSON，与 `exec` 一致，不发明新语法。
+
+### 单测
+
+53 个测试，zero mock Matrix。所有测试通过 `YamlConfigStore(LocalStorage(temp_dir))`
+构建 config store 直接注入 `MCPHubState`。

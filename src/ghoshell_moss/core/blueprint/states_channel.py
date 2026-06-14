@@ -15,6 +15,7 @@ __all__ = [
     'PrimeChannel', 'new_prime_channel', 'new_shell_main_channel',
     'ChannelModule',
     'new_default_shell_main_channel',
+    'StatefulChannelRuntime',
 ]
 
 """

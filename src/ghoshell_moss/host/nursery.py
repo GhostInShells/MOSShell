@@ -15,9 +15,12 @@ import asyncio
 import os
 import signal
 from logging import Logger
-from typing import Callable
+from typing import Callable, TypeAlias
 
-__all__ = ["ProcessNursery", "watch_nursery_pipe"]
+__all__ = ["ProcessNursery", "watch_nursery_pipe", "StdioTarget"]
+
+# asyncio.subprocess.PIPE | asyncio.subprocess.DEVNULL | fd | None
+StdioTarget: TypeAlias = int | None
 
 
 async def watch_nursery_pipe(close: Callable[[], None]) -> None:
@@ -80,6 +83,9 @@ class ProcessNursery:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         nursery_fd: int | None = None,
+        stdin: StdioTarget = None,
+        stdout: StdioTarget = None,
+        stderr: StdioTarget = None,
     ) -> asyncio.subprocess.Process:
         """Spawn a subprocess.
 
@@ -90,6 +96,11 @@ class ProcessNursery:
         the write end; when the parent dies (SIGKILL included), the kernel
         closes all fds, the child's read returns EOF.  Caller creates the pipe
         with ``os.pipe()`` and closes the read end after spawn.
+
+        *stdin*, *stdout*, *stderr* are passed through to
+        ``asyncio.create_subprocess_exec``.  Pass ``asyncio.subprocess.PIPE``
+        for async stream communication, ``asyncio.subprocess.DEVNULL`` to
+        suppress, or an fd for file redirection.  None inherits from parent.
         """
         env = dict(env) if env is not None else dict(os.environ)
 
@@ -104,6 +115,9 @@ class ProcessNursery:
             env=env,
             start_new_session=True,
             pass_fds=pass_fds,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
         )
         self._pgids.add(proc.pid)  # start_new_session → pgid == pid
         return proc
