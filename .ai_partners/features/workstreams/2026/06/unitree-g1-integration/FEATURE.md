@@ -3,7 +3,7 @@ title: Unitree G1 Integration
 status: in-progress
 priority: P0
 created: 2026-06-04
-updated: 2026-06-08
+updated: 2026-06-14
 depends: []
 milestone:
 description: >-
@@ -241,3 +241,106 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 6. 讨论提纲中未决议题: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
 
 **不在此 session**: terminal channel 建设、VLA/VLM policy 协调、DDS 调试模式解锁
+
+---
+
+## 2026-06-14 Session — 开发环境验证 + 双帐号范式发现
+
+### 完成项
+
+- 走完 RESEARCH_SEQUENCE.md 步骤 0-5 + 10 的开发环境验证。结果填入验证记录表
+- 系统线确认：L4T R35.3.1、Orin NX 16GB（订正前任 8GB 误传）、eth0/wlan0 双路、PC1/LiDAR/外网全通、cyclonedds 0.10.2 已 build
+- WiFi 自启从命令式 `nmcli connect` 改为 NM persistent profile（autoconnect=yes + priority），上次会话忘配 WiFi 的根因解决
+- ufw 加固完成：放行 22 + 内网段，避开 Jetson 内核缺 `xt_rt` 的 ip6tables 坑
+- g1 app `uv sync` 通过：通过 `/etc/profile.d/cyclonedds.sh` 系统级共享 unitree 帐号下的 cyclonedds，cyclonedds + unitree-sdk2py + ghoshell_moss 三个 import 全通
+- docs 更新：`hardware.md` 双帐号范式 + 规格订正 + 问题日志#4-6；`moss-on-pc2.md` 双帐号范式核心 + cyclonedds 跨帐号共享章节 + 问题日志#7-9
+
+### 关键洞察
+
+**双帐号范式（本 session 最大发现）**: PC2 出厂只有 `unitree` 帐号，所有开发栈（cyclonedds_ws、unitree_sdk2-main C++、ROS、CUDA）齐备且 `.bashrc` 已配。我们为加固创建 `moss` 帐号，但它的 shell **完全干净**——cyclonedds 不在 LD 里、CUDA 没继承。装机一开始把这误判为"PC2 没装开发栈"，实际是"换了帐号、看不见"。
+
+正解：跨帐号共享的栈用系统级 `/etc/profile.d/` 暴露，MOSS-specific 的（uv/venv/ghoshell-moss）在 moss 帐号下独立管理。每次 import 失败先去 unitree 帐号 `find` 一下，大概率已存在。
+
+**版本对齐的幸运**: unitree-sdk2py 钉死 cyclonedds==0.10.2，unitree 帐号下 `~/cyclonedds_ws/install/cyclonedds/` 正好就是 0.10.2。出厂栈和 Python 端完美匹配，不需要自建——这是 G1 集成的运气好处之一。
+
+**脚本设计的隐含假设**: `scripts/sys/dds/01_env_check.sh` 假设调用者已激活 venv。moss 帐号首次跑时没激活，看到系统 Python 3.8 报"无 cyclonedds"——这是脚本设计未明示的前置条件。如未来改造为 MOSS channel 命令，前置条件应该显式化。
+
+### 下一步（下一个实例）
+
+1. **SDK 验证脚本第一轮**: sdk/00-03（无 G1 可跑：import/反射/类型/topic 发现）→ 04-07（纯读：lowstate/sportmode/battery/RPC readonly）
+2. **决策项**: 04-07 跑通后再讨论是否启动 08 音频（依赖系统线音频步骤 6-8 的结果，本轮未跑）
+3. **未决议题继承**: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属（同上一 session log 末尾）
+
+
+---
+
+## 2026-06-14/15 Session — DDS 链路打通 + 端到端音频输出
+
+由 Claude Opus 4.7 与人类协作完成。这是 MOSS 第一次在 G1 上发出声音。
+
+### 完成项
+
+**开发环境验证（系统线步骤 0-5, 10 + 部分 6-11）**
+- 走完 RESEARCH_SEQUENCE.md 步骤 1/3/4/5/10 的开发环境验证，结果填入验证记录表
+- 跑完剩余系统线脚本（network/03、audio/01-04、usb_camera、performance/01-05）
+- WiFi 自启从命令式 `nmcli connect` 改为 NM persistent profile（autoconnect=yes + priority），上次会话忘配 WiFi 的根因解决
+- ufw 加固完成（防御 IPv6 缺失 xt_rt 内核模块的 enable 失败）
+
+**G1 SDK 装机**
+- `unitree_sdk2_python` clone 到 `src/`，g1 app 独立 venv 通过 `uv sync` 建立（Python 3.12.13）
+- 通过 `/etc/profile.d/cyclonedds.sh` 系统级共享 unitree 帐号下的 cyclonedds 0.10.2，避免重复编译
+
+**DDS 链路调通（本 session 最大技术突破）**
+- 发现并解决 ufw 默认丢 IP 分片导致 G1 LowState 包（2180B > 1500 MTU）静默丢失
+- 调优内核 socket 缓冲：`net.core.rmem_default=67108864`
+- 04/05/06 脚本订阅 LowState/SportMode/Battery/MainboardState/IMU 全部可读
+- 验证 07 RPC readonly 脚本因 SDK 升级后 b2/robot_state 模块路径变更而 import 失败（SDK 自身 bug，留给下一个 session 修）
+
+**PC1 AudioClient TTS 验证（结论：不可用）**
+- 跑 08_audio_led 完整通过：GetVolume/SetVolume/LedControl/TtsMaker/PlayStop/PlayStream 全部 OK
+- 但 TTS 质量极低：多音字读错（"一行"读成 yi-xing）、无韵律停顿、连贯性差、空格触发异常发声、符号产生噪声。表现像运行在 Jetson 边缘算力上的小 TTS 模型——具体技术形态未验证（可能是字符级合成、可能是词典覆盖问题、可能是 prosody 模型缺失），但结论一致：对 ghost 持续中文输出场景不可用
+- 音量最大 100，线性响应但物理上限偏小
+- LED 颜色切换之间有蓝色复位中间态
+
+**音频路径决策**
+- PC2 板载 platform-sound 被 PC1 audio service 独占（即使 ALSA 设备暴露，实际播放无声）
+- PC2 板载蓝牙正常但被 Unitree systemd drop-in 显式禁用 A2DP/AVRCP（`--noplugin=audio,a2dp,avrcp`）
+- 通过 `/etc/systemd/system/bluetooth.service.d/override.conf` 覆盖 drop-in，恢复 A2DP 支持
+- 装 `pulseaudio-module-bluetooth` + 配对 JBL GO + `pactl set-default-sink bluez_sink.78_44_05_7A_47_D1.a2dp_sink`
+- **moss-repl 通过 JBL GO 成功发声**——MOSS 在 G1 上的第一次音频输出
+
+### 关键洞察
+
+**ufw IP 分片是 G1 DDS 的隐形杀手**: G1 的 LowState 包 2180 字节，IP 层会分片成多片。ufw 的 `before.rules` 对非首片分片没匹配规则，默认 drop。SSH 通、ping 通、PC1 在发包（tcpdump 看得见），但 cyclonedds 收不到——所有线索都对得上"DDS 死了"，根因却在防火墙。下次别的机器人接入也要警惕这一条。
+
+**双帐号范式（深化）**: 上一个 session 已经发现 unitree 帐号有完整出厂栈而 moss 帐号干净，本次进一步发现：
+- cyclonedds 0.10.2 可通过 `/etc/profile.d/` 跨帐号共享（已实施）
+- Unitree 通过 systemd drop-in 主动禁用了 PC2 上 A2DP 蓝牙音频（推测是怕干扰 PC1 蓝牙）
+- PC2 板载 ALSA 输出被 PC1 audio service 独占——表面上有 sink，实际播放无声
+- 这些都属于"出厂限制是设计，不是 bug"。MOSS 要么 work around（用蓝牙绕过），要么不动它。
+
+**PC1 TTS 模型质量不可用，不依赖具体技术形态结论**: TTS 表现差（多音字错、无停顿、空格怪声），表现像 Jetson 边缘 TTS 模型，但具体是字符级合成、词典缺失、还是 prosody 缺失等未验证——重点是表现层结论一致：对 ghost 持续中文输出不可用。这从根本上否定了"用 G1 自带 TTS 做 ghost 输出"的方案——必须 MOSS 端自己合成（云端 / 本地 TTS 模型），通过 PC2 ALSA 直推到外接音频设备。
+
+**模型推断的尺度警示**: 本 session 一个典型失误是把"听感推断"草率写成"技术结论"——把"听起来像字符级"写成"是字符级"。人类工程师指出后修正。这是模型实例需要持续警惕的：在不完整证据上做具体技术断言会污染下游 session 的认知基线。未来记录用"现象 + 推断方向"，而不是"是 X"。
+
+**端到端音频链路确立**: `Ghost LLM → MOSS TTS → PC2 ALSA → PA → bluez_sink → 蓝牙音频设备`。bypass 了 PC1 AudioClient 整条 RPC 路径。这条链路确认意味着 G1 channel 的 audio 设计可以最简——不需要包装 AudioClient RPC，直接走 MOSS 的 audio_player provider 就够。
+
+**MOSS 第一次在 G1 上说话**: 不是 demo，是结构性突破。从这一刻起，G1 + MOSS 不再是两个独立系统，是 Ghost 拥有了一个能发声的身体。
+
+### 已知 TODO（不在本 session）
+
+- `ghoshell_moss.host.providers.audio_player_provider.AudioPlayerConfig` 缺 `device` 字段——目前依赖 `pactl set-default-sink` 配置系统默认，应该让 config 显式声明音频设备。属于 MOSS 改动，单开 feature
+- 07 RPC readonly 脚本 import 路径修复（`b2.robot_state` 在新 SDK 不可用，需改用 `g1.loco.LocoClient` 或上游修复）
+- 04/06 脚本 odom_modestate topic 阻塞——可能 topic 名变更或仅在特定 FSM 模式发布。需要用 `cyclonedds ls` CLI 抓真实 topic 名再决策
+- 05 SportModeState 订阅无数据——同上，需 topic 清单确认
+- 音频路径官方化：FEATURE 完成后写 `docs/channel-design.md` 时，audio 部分应明确"走 MOSS 自家 TTS + PA bluez_sink"，不依赖 PC1 AudioClient
+- 蓝牙连接稳定性未验证：JBL GO 配对成功但 `Connected: yes` 后会 drop（看到 `[CHG] Connected: no` 后再 connect），需要排查或接受重试机制
+
+### 下一步（下一个实例）
+
+1. **音频持久化**: JBL GO 配对状态在重启后是否保留？bluez_sink 在 PA 重启后是否自动出现？写一份 `docs/audio-path.md` 把这条链路固化
+2. **修 07 RPC readonly**: 改用 G1 SDK 自带的 client（`g1/loco/loco_client.py` 等），而非 b2 系列
+3. **DDS topic 真值清单**: 用 `cyclonedds ls`（unitree 帐号下的 CLI）扫一次 G1 当前发布的 topic 全集，对比 docs/sdk-topics.md，订正前任的清单
+4. **手臂控制脚本 09**: G1 处于站立姿态，是否允许跑 arm preset？需先评估安全（FEATURE 中前任标注的 D 层）
+5. **未决议题继承**（同前 session）: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
+

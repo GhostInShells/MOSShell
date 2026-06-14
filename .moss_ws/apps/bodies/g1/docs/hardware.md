@@ -44,11 +44,21 @@ Mac ──(WiFi 路由器)── PC2
 
 | 项目 | 内容 |
 |------|------|
-| 硬件 | Jetson Orin NX |
-| OS | Ubuntu 20.04.6 LTS (GNU/Linux 5.10.104-tegra aarch64) |
-| 默认用户 | `unitree / 123` |
-| WiFi 网卡 | `wlan0`（默认关闭） |
+| 硬件 | Jetson Orin NX Developer Kit |
+| L4T | R35.3.1 (2023-03-19) |
+| OS | Ubuntu 20.04.6 LTS (kernel 5.10.104-tegra aarch64) |
+| CPU | 8c ARMv8 @ 1.98GHz |
+| 内存 | 16GB（可用 12GB） |
+| 磁盘 | 1.8TB NVMe |
+| 默认用户 | `unitree / 123`（出厂帐号，所有 ROS/DDS/CUDA 栈在此） |
+| 加固用户 | `moss`（MOSS 应用运行帐号，环境需从 unitree 继承） |
+| WiFi 网卡 | `wlan0`（默认关闭，需手动开启） |
 | 以太网 | `eth0`，连接交换机，IP 192.168.123.164 |
+| 路由 | wlan0 走外网（DHCP），eth0 走 G1 内网（123.0/24），按 metric 分流 |
+
+### 双帐号范式（重要）
+
+PC2 出厂只有 `unitree` 帐号，所有开发栈（cyclonedds_ws、unitree_sdk2-main、ROS、CUDA）齐备。加固时我们创建 `moss` 帐号作为 MOSS 应用运行身份，但 moss 帐号 shell 是干净的——所有跨帐号共享的工具栈必须以系统级方式暴露（`/etc/profile.d/` 或 `/usr/local/`），不在 moss 帐号下重复安装。这是 PC2 装机的核心范式。
 
 ## 连接流程
 
@@ -80,6 +90,43 @@ Mac ──(WiFi 路由器)── PC2
 - 配 WiFi 自启 systemd service（见 2026-02 设计文档）
 - 创建独立用户帐号，修改默认密码
 
+### 2026-06-14 — WiFi 自启与防火墙加固
+
+**WiFi 自动重连**: 用 NetworkManager 持久 profile 替代命令式 `nmcli connect`。在路由器范围外不会"死"，NM 后台静默扫描，进了范围自动连上。
+
+```bash
+sudo nmcli connection add type wifi \
+    con-name "<别名>" ifname wlan0 ssid "<SSID>" \
+    -- wifi-sec.key-mgmt wpa-psk wifi-sec.psk "<密码>" \
+    connection.autoconnect yes \
+    connection.autoconnect-priority 100
+sudo nmcli connection up "<别名>"
+```
+
+**辅助 service**（可选兜底，确保射频开 + 关省电）：`/etc/systemd/system/wifi-enable.service`
+```ini
+[Unit]
+Description=Enable WiFi radio only
+After=network.target nvwifibt.service
+Wants=network.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nmcli radio wifi on
+ExecStartPost=/bin/sh -c 'sleep 2 && /usr/bin/iwconfig wlan0 power off || true'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+```
+
+**ufw 配置**:
+```bash
+# Jetson 内核缺 xt_rt 模块，必须先关 IPv6
+sudo sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
+sudo ufw allow 22/tcp
+sudo ufw allow from 192.168.123.0/24    # 内网整段，DDS/MOSS 通讯需要
+sudo ufw enable
+```
+
 ---
 
 ## 安全考量
@@ -93,11 +140,11 @@ PC2 通过 WiFi 直连外网**绕过了交换机隔离**。原本的架构中，
 
 ### 待加固项
 
-| 事项 | 优先级 |
-|------|--------|
-| 创建独立用户帐号，禁用或改密 unitree | 装机后立即 |
-| UFW 仅放行 SSH (22) | 装机后立即 |
-| 考虑 SSH key-only 认证 | 日常使用前 |
+| 事项 | 优先级 | 状态 |
+|------|--------|------|
+| 创建独立用户帐号，禁用或改密 unitree | 装机后立即 | 已完成（moss 用户） |
+| UFW 仅放行 SSH (22) + 内网段 | 装机后立即 | 已完成（2026-06-14） |
+| 考虑 SSH key-only 认证 | 日常使用前 | 待办 |
 
 ---
 
@@ -108,5 +155,8 @@ PC2 通过 WiFi 直连外网**绕过了交换机隔离**。原本的架构中，
 | 1 | Mac 连交换机后拿 self-assigned IP (169.254.x.x)，ping 不通 PC2 | G1 内网无 DHCP，手动配静态 IP 192.168.123.100/24 |
 | 2 | WiFi 连上后 PC2 无 SSH 入口 | PC2 WiFi 射频默认关闭，需以太网路径一进入后手动开启 |
 | 3 | 扩展坞 USB 口不稳定 | 换口后正常 |
+| 4 | `ufw enable` 报 `Couldn't load match 'rt': No such file or directory` | Jetson L4T 内核未编 `xt_rt` ip6tables 模块。改 `/etc/default/ufw` 把 `IPV6=yes` 设为 `IPV6=no` 即可，内网通讯本就是 IPv4 |
+| 5 | PC2 在路由器下的 IP 与交换机管理 IP 混淆（误用 192.168.3.11 vs 实际 192.168.3.13） | 路由器内 PC2 是 DHCP 分配的设备 IP（如 3.13），192.168.3.x 段中可能另有交换机管理界面 IP（如 3.11，App 注册时用）。用 `nmcli -t -f IP4.ADDRESS dev show wlan0` 在 PC2 本地确认，或路由器后台按 MAC 查 |
+| 6 | moss 帐号下 `uv sync` 失败 `Could not locate cyclonedds. Try to set CYCLONEDDS_HOME` | unitree-sdk2py 依赖的 cyclonedds==0.10.2 Python wheel 是 C 扩展薄绑定，需系统已有 cyclonedds C 库。unitree 帐号下已 build 在 `~/cyclonedds_ws/install/cyclonedds/`，对应版本 0.10.2 完美匹配。系统级共享方案见 `moss-on-pc2.md` 的 cyclonedds 跨帐号共享章节 |
 
 ---
