@@ -1,6 +1,6 @@
 import yaml
 from abc import ABC, abstractmethod
-from typing import TypeVar, Type, Optional, Union, Any, ClassVar
+from typing import TypeVar, Type, Optional, Union, Any, ClassVar, Callable
 from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import generate_import_path
@@ -153,11 +153,17 @@ class LocalConfigStore(ConfigStore, ABC):
     基于 Storage 的配置仓库实现，增加了简单的内存缓存。
     """
 
-    def __init__(self, storage: Storage, environ: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        storage: Storage,
+        environ: dict[str, str] | None = None,
+        on_save: Callable[[str], None] | None = None,
+    ) -> None:
         self._storage = storage
         # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
         self._cache: dict[_ConfName, ConfigType] = {}
         self._environ = environ  # None means use os.environ at resolve time
+        self._on_save = on_save  # 配置变更回调，传入 conf_name，供 Matrix 订阅等
 
     def get_config_path(self, config_name: str) -> str:
         filename = self._make_config_filename(config_name)
@@ -195,6 +201,8 @@ class LocalConfigStore(ConfigStore, ABC):
             self.save(conf)
         else:
             self._cache[conf_name] = conf.resolve(environ=self._environ)
+            if self._on_save is not None:
+                self._on_save(conf_name)
 
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
@@ -225,6 +233,8 @@ class LocalConfigStore(ConfigStore, ABC):
         # 缓存的进行 resolve, 但保存的不做 resolve.
         resolved = conf.resolve(environ=self._environ)
         self._cache[conf_name] = resolved
+        if self._on_save is not None:
+            self._on_save(conf_name)
         return resolved
 
     def save(self, conf: ConfigType) -> None:
@@ -271,6 +281,12 @@ def _resolve_config_data_from_env(
     for key, value in data.items():
         if isinstance(value, dict):
             resolved_data[key] = _resolve_config_data_from_env(value, environ=environ)
+        elif isinstance(value, list):
+            resolved_data[key] = [
+                _resolve_config_data_from_env(item, environ=environ)
+                if isinstance(item, dict) else item
+                for item in value
+            ]
         elif isinstance(value, str) and value.startswith('$'):
             resolved_data[key] = environ.get(value[1:], value)
         else:
@@ -301,8 +317,10 @@ class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
     def __init__(
             self,
             *configs: ConfigType,
+            on_save: Callable[[str], None] | None = None,
     ):
         self._configs = list(configs)
+        self._on_save = on_save
 
     def singleton(self) -> bool:
         return True
@@ -311,7 +329,7 @@ class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
         ws = con.force_fetch(Workspace)
         storage = ws.configs()
 
-        config_store = YamlConfigStore(storage)
+        config_store = YamlConfigStore(storage, on_save=self._on_save)
         for config in self._configs:
             config_store.get_or_create(config)
         return config_store

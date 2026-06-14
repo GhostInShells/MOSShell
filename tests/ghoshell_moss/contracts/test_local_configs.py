@@ -130,3 +130,44 @@ def test_config_with_env_var(config_store):
     config_store.save(conf)
     conf = config_store.get(AppConfig)
     assert conf.name == 'hello'
+
+
+def test_on_save_callback_fires_on_save(tmp_path):
+    """配置变更时 on_save 回调被触发。"""
+    from ghoshell_moss.contracts.workspace import LocalStorage
+    calls = []
+
+    def on_save(name: str):
+        calls.append(name)
+
+    storage = LocalStorage(tmp_path)
+    store = YamlConfigStore(storage, on_save=on_save)
+    conf = AppConfig(name="test")
+    store.save(conf)
+    assert calls == ["app_config"]
+
+
+def test_on_save_callback_fires_on_set_config_no_override(tmp_path):
+    """set_config(override=False) 时 on_save 也触发。"""
+    from ghoshell_moss.contracts.workspace import LocalStorage
+    calls = []
+
+    def on_save(name: str):
+        calls.append(name)
+
+    storage = LocalStorage(tmp_path)
+    store = YamlConfigStore(storage, on_save=on_save)
+    conf = AppConfig(name="memory_only")
+    store.set_config(conf, override=False)
+    assert calls == ["app_config"]
+
+
+def test_on_save_not_called_when_not_configured(tmp_path):
+    """未设置 on_save 时不抛异常。"""
+    from ghoshell_moss.contracts.workspace import LocalStorage
+    storage = LocalStorage(tmp_path)
+    store = YamlConfigStore(storage)  # no on_save
+    conf = AppConfig(name="test")
+    store.save(conf)  # should not raise
+    loaded = store.get(AppConfig)
+    assert loaded.name == "test"

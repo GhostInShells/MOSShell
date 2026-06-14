@@ -1,7 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Coroutine, Iterable, Type, Literal
+from typing import Coroutine, Iterable, Type, Literal, Callable
 
 from typing_extensions import Self
 
@@ -158,6 +158,7 @@ class MatrixImpl(Matrix):
         self._live_cells_lock = threading.Lock()
         self._logger: LoggerItf | logging.Logger | None = logger
         self._started = False
+        self._config_change_callbacks: dict[str, list[Callable[[], None]]] = {}
         self._channel_provider_task: asyncio.Task | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._closing_event = ThreadSafeEvent()
@@ -344,7 +345,8 @@ class MatrixImpl(Matrix):
         # 注册 configs — 仅类型注册（is_override=False），文件持久化
         # 实例覆盖（is_override=True）在 lifecycle 中通过 set_config 内存写入
         default_providers.append(WorkspaceYamlConfigStoreProvider(
-            *[info.config for info in self.manifests.configs().values() if not info.is_override]
+            *[info.config for info in self.manifests.configs().values() if not info.is_override],
+            on_save=self._on_config_saved,
         ))
         # 注册 session.
         default_providers.append(HostSessionProvider())
@@ -478,6 +480,32 @@ class MatrixImpl(Matrix):
     @property
     def configs(self) -> ConfigStore:
         return self.container.force_fetch(ConfigStore)
+
+    def on_config_change(self, config_name: str, callback: Callable[[], None]) -> Callable[[], None]:
+        if config_name not in self._config_change_callbacks:
+            self._config_change_callbacks[config_name] = []
+        self._config_change_callbacks[config_name].append(callback)
+
+        def unsubscribe():
+            cbs = self._config_change_callbacks.get(config_name, [])
+            try:
+                cbs.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
+    def _on_config_saved(self, config_name: str) -> None:
+        """ConfigStore 变更时触发本地回调。
+
+        跨进程一致性由共享 workspace/configs/ 文件系统保证——
+        其他进程重新 get 即读到最新值。
+        """
+        for cb in self._config_change_callbacks.get(config_name, []):
+            try:
+                cb()
+            except Exception:
+                pass
 
     @property
     def workspace(self) -> Workspace:

@@ -1,14 +1,14 @@
 ---
-title: LLM Config Contracts
-status: in-progress
-priority: P0
 created: 2026-06-10
-updated: 2026-06-10
 depends: []
-milestone:
-description: >-
-  Pure-config LLM service/model declaration (ConfigType), env var resolution for secrets,
-  content-based model capability filtering, with Matrix exposure for cross-process discovery.
+description: Pure-config LLM service/model declaration (ConfigType), env var resolution
+  for secrets, content-based model capability filtering, with Matrix exposure for
+  cross-process discovery.
+milestone: null
+priority: P0
+status: completed
+title: LLM Config Contracts
+updated: '2026-06-12'
 ---
 
 # LLM Config Contracts
@@ -59,6 +59,12 @@ Config 只存"谁在哪能干什么"。
 
 ## Implementation Notes
 
-- 本 session 完成: contracts 层抽象 (`ghoshell_moss.contracts.llms`) + `_environ` 修复
-- 待后续: manifests 注册（`MOSS.manifests.configs` 中暴露 LLMConfig）、默认 YAML 生成、
-  Matrix 上的查询/订阅接口、converter 扩展点的具体调用约定
+- [x] contracts 层抽象 (`ghoshell_moss.contracts.llms`)
+- [x] `_environ` 修复 — `LocalConfigStore` → `resolve()` 透传，增加 list 内 `$ENV_VAR` 递归解析
+- [x] API 打磨 — `get_model()` 零参返回 default；`list_models()` / `list_services()` 发现接口；
+  `LLMModelConfig.accepts(content_type)` 协议检查；`get_service()` 公开
+- [x] manifests 注册 — `.moss_ws/src/MOSS/manifests/configs.py` + stub
+- [x] 默认 YAML — `.moss_ws/configs/llm.yml` (anthropic + openai_compat 服务，3 个 Claude 模型)
+- [x] tests — `tests/ghoshell_moss/contracts/test_llms.py` (31 tests) + `test_local_configs.py` (3 on_save tests)
+- [x] converter 扩展点约定 — `LLMModelConfig.converter` field description + `load_converter()` 函数
+- [x] Matrix 查询/订阅接口 — `Matrix.query_config()` + `Matrix.on_config_change()` + `LocalConfigStore` 的 `on_save` 钩子，MatrixImpl 串联
