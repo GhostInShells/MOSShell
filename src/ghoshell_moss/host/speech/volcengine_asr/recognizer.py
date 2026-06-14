@@ -176,10 +176,9 @@ class VolcengineASR(ASR):
             data = json.loads(payload)
             text = data.get("result", {}).get("text", "")
             utterances = data.get("result", {}).get("utterances", [])
-            is_final = False
-            if utterances and len(utterances) > 0:
-                # definite 表示是一个确定的分句
-                is_final = bool(utterances[0].get("definite", False))
+            is_final = any(
+                bool(u.get("definite", False)) for u in utterances
+            )
             return ASRResult(text=text, is_final=is_final)
         except Exception as e:
             self._logger.warning(

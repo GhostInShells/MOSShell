@@ -1,4 +1,5 @@
 import queue
+import threading
 from typing import Optional
 
 import miniaudio
@@ -6,6 +7,8 @@ import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
+from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
+from ghoshell_moss.topics.audio import AudioRuntimeTopic
 
 __all__ = ["MiniAudioStreamPlayer"]
 
@@ -17,6 +20,11 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
 
     miniaudio 1.x 使用 generator 模式：PlaybackDevice.start() 接受一个
     callback generator，内部线程通过 gen.send(frame_count) 请求音频帧。
+
+    If *transport* is provided, the player publishes AudioRuntimeTopic
+    (device_name="speaker") on play state changes — symmetric to how
+    MiniAudioCaptureSource reports capture state.  The listener app
+    consumes this to suppress ASR while the ghost is speaking.
     """
 
     def __init__(
@@ -26,6 +34,7 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         channels: int = 1,
         logger: LoggerItf | None = None,
         safety_delay: float = 0.1,
+        transport: AudioTransport | None = None,
     ):
         super().__init__(
             sample_rate=sample_rate,
@@ -34,6 +43,55 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             safety_delay=safety_delay,
         )
         self._playback: Optional[miniaudio.PlaybackDevice] = None
+        if transport is not None:
+            self.logger.info("%s wiring speaker AudioRuntimeTopic via transport", self._log_prefix)
+            self._wire_speaker_topic(transport)
+        else:
+            self.logger.warning("%s no transport provided, TTS gate disabled", self._log_prefix)
+
+    def _wire_speaker_topic(self, transport: AudioTransport) -> None:
+        """Publish AudioRuntimeTopic(device_name="speaker") on play/done.
+
+        Uses a debounce timer for running=False because on_play_done fires
+        per-chunk when _audio_queue empties, but miniaudio buffers are still
+        playing.  Without debouncing, running=True→False flickers within 1ms
+        and the listener gate never sees a stable True.
+        """
+        _state = {"was_playing": False, "done_timer": None}
+
+        def _publish_done() -> None:
+            if _state["was_playing"]:
+                _state["was_playing"] = False
+                self.logger.info("%s TTS gate: publishing speaker running=False", self._log_prefix)
+                transport.pub_topic(AudioRuntimeTopic(
+                    running=False,
+                    device_name="speaker",
+                    device_explain="TTS speech output",
+                ))
+
+        def on_play(_data: np.ndarray) -> None:
+            if _state["done_timer"] is not None:
+                _state["done_timer"].cancel()
+                _state["done_timer"] = None
+            if not _state["was_playing"]:
+                _state["was_playing"] = True
+                self.logger.info("%s TTS gate: publishing speaker running=True", self._log_prefix)
+                transport.pub_topic(AudioRuntimeTopic(
+                    running=True,
+                    device_name="speaker",
+                    device_explain="TTS speech output",
+                ))
+
+        def on_play_done() -> None:
+            if _state["done_timer"] is not None:
+                _state["done_timer"].cancel()
+            delay = self._time_to_wait() + 0.1
+            _state["done_timer"] = threading.Timer(delay, _publish_done)
+            _state["done_timer"].daemon = True
+            _state["done_timer"].start()
+
+        self.on_play(on_play)
+        self.on_play_done(on_play_done)
 
     def _make_generator(self):
         """创建 audio generator，每次 yield 精确 frame_count 的字节。"""

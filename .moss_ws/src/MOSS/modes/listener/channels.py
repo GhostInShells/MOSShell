@@ -12,6 +12,4 @@
 #    from MOSS.manifests.channels import main
 #    # 在 main 上追加改造...
 
-from ghoshell_moss import new_default_shell_main_channel
-
-main = new_default_shell_main_channel()
+from MOSS.manifests.channels import *

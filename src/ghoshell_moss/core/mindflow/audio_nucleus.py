@@ -7,6 +7,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta,
     Priority,
     Signal,
+    Impulse,
 )
 from ghoshell_moss.core.mindflow.audio_signal import AudioAction, AudioSignal
 from ghoshell_moss.core.mindflow.buffer_nucleus import BufferNucleus
@@ -18,24 +19,32 @@ __all__ = [
 
 
 class AudioNucleus(BufferNucleus):
-    """Audio signal nucleus with SPEECH_STARTED filtering.
+    """Audio signal nucleus with SPEECH_STARTED preemption.
 
-    Current policy: only SPEECH_FINAL triggers impulse. SPEECH_STARTED is
-    dropped at the nucleus boundary.
+    SPEECH_STARTED (incomplete, ASR first packet) flows through the buffer
+    and produces an incomplete Impulse that preempts the current Attention.
+    The Impulse carries interrupt=True, causing GhostRuntime to stop the
+    shell's current interpretation before entering the new Attention.
 
-    Why keep the path: when we implement TTS preemption (Step 13), a
-    SPEECH_STARTED arriving while Ghost is speaking should immediately call
-    Preemptable.attenuate() — without waiting for the full sentence. At that
-    point this filter becomes a routing gate, not a drop.
+    SPEECH_FINAL (complete, ASR final result) shares the same signal ID as
+    the preceding SPEECH_STARTED.  Before buffering FINAL, all incomplete
+    signals are purged — the rebuilt Impulse becomes complete, the Attention
+    absorbs it (same ID), and the articulate→action loop begins.
     """
 
-    def add_signal(self, signal: Signal) -> None:
+    async def _process_signal(self, signal: Signal) -> None:
         audio_meta = AudioSignal.from_signal(signal)
-        if audio_meta and audio_meta.action == AudioAction.SPEECH_STARTED:
-            # Reserved for preemption hook — see class docstring.
-            self._logger.debug("Dropping SPEECH_STARTED — preemption hook reserved for future")
-            return
-        super().add_signal(signal)
+        if audio_meta and audio_meta.action == AudioAction.SPEECH_FINAL:
+            # Purge incomplete signals (SPEECH_STARTED) so FINAL produces
+            # a complete Impulse.  _process_signal runs under self._lock.
+            self._signals = [s for s in self._signals if s.complete]
+        await super()._process_signal(signal)
+
+    def _rebuild_impulse(self) -> Impulse | None:
+        impulse = super()._rebuild_impulse()
+        if impulse is not None:
+            impulse.interrupt = True
+        return impulse
 
 
 class AudioNucleusMeta(NucleusMeta):
