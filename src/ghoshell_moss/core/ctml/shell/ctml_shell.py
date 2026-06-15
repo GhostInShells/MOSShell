@@ -132,6 +132,41 @@ class CTMLShell(MOSShell[PrimeChannel]):
             self._moss_static_cache = make_static_messages(self.channel_metas(available_only=False))
         return self._moss_static_cache
 
+    # --- introspection (read-only, for debugging / test reflection) --- #
+
+    @property
+    def moss_dynamic_refreshed_at(self) -> float:
+        """monotonic time of last ``dynamic_messages(available_only=True)`` cache build.
+
+        0.0 if cache 从未建立. 调试 + 单测的反身性入口 — 与 ``stale_time`` 协议配合
+        可观察 "本次调用是否复用缓存".
+        """
+        return self._moss_dynamic_refreshed_at
+
+    @property
+    def has_moss_dynamic_cache(self) -> bool:
+        """``available_only=True`` 路径下的 dynamic messages 是否已缓存."""
+        return self._moss_dynamic_cache is not None
+
+    @property
+    def has_moss_static_cache(self) -> bool:
+        """``static_messages`` 是否已缓存. (``refresh_metas`` 时按需失效.)"""
+        return self._moss_static_cache is not None
+
+    @property
+    def channel_metas_built_at(self) -> float:
+        """monotonic time of last ``channel_metas`` 本地字典重建.
+
+        与 ``channel_metas_refreshed_at`` 区分: built_at 是本地视图重建,
+        refreshed_at 是下层 runtime 的远端刷新. 两层缓存的反身性时间戳.
+        """
+        return self._last_channel_metas_built_at
+
+    @property
+    def channel_metas_refreshed_at(self) -> float:
+        """monotonic time of last ``refresh_metas`` 完成时间."""
+        return self._last_channel_metas_refreshed_at
+
     def dynamic_messages(
             self,
             available_only: bool = True,
