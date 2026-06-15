@@ -1,47 +1,62 @@
 #!/usr/bin/env python3
 """
-订阅 G1 电池和主板状态。
-验证: BmsState_ 和 MainBoardState_ 类型路径正确，字段可读。
+订阅 G1 电池/主板/机身IMU/里程计 — 被动感知 topic 真值清单。
+
+修正记录 (2026-06-15):
+  - 前任版本将 odommodestate 类型标为 IMUState_ — 错。odom 的 payload 是
+    SportModeState_ (含 position/velocity/imu_state 聚合)。
+  - 多 topic 候选名探测: 同时尝试 rt/<name> 和 rt/lf/<name>，找出 G1 真发哪个。
+  - bms/mainboard/secondary_imu 已在前任 session (2026-06-15) 验证 rt/lf/<name>
+    可读，保留为首选；rt/<name> 作为备选探测。
 
 SDK 参考:
-  docs/sdk-topics.md   — topic→type 映射
-  src/unitree_sdk2_python/unitree_sdk2py/idl/
-  注: SDK 无对应 example，需用 ChannelSubscriber 裸订阅
+  unitree_sdk2py/idl/unitree_hg/msg/dds_/_BmsState_.py
+  unitree_sdk2py/idl/unitree_hg/msg/dds_/_MainBoardState_.py
+  unitree_sdk2py/idl/unitree_hg/msg/dds_/_IMUState_.py
+  unitree_sdk2py/idl/unitree_go/msg/dds_/_SportModeState_.py  (odom payload)
 
-前置: 同 04_lowstate_sub.py
 用法: python 06_battery_sub.py <networkInterface>
 """
 import sys
 import time
 
-def try_subscribe(topic, cls, label):
-    """尝试订阅一个 topic，打印接收到的数据"""
+
+def try_subscribe(topic, cls, label, timeout_ms=2000):
+    """尝试订阅一个 topic，2s 超时。返回 True/False。"""
     from unitree_sdk2py.core.channel import ChannelSubscriber
 
-    print(f"\n{'='*50}")
-    print(f"订阅 {topic} ({label})...")
+    print(f"  订阅 {topic} ({label}, {cls.__name__})...")
     try:
         sub = ChannelSubscriber(topic, cls)
         sub.Init()
-        msg = sub.Read(timeout=5000)
-        if msg is not None:
-            print(f"OK: {topic} 数据:")
-            for f in dir(msg):
-                if not f.startswith('_'):
-                    val = getattr(msg, f)
-                    if isinstance(val, (int, float, str)):
-                        print(f"  .{f} = {val}")
-                    elif hasattr(val, '__len__') and len(val) < 20:
-                        print(f"  .{f} = {list(val)[:10]}")
-            sub.Close()
-            return True
-        else:
-            print(f"WARN: {topic} 超时 — topic 可能不存在或类型不匹配")
+        msg = sub.Read(timeout=timeout_ms)
+        if msg is None:
+            print(f"    超时 — topic 不存在或类型不匹配")
             sub.Close()
             return False
+        print(f"    OK ← 收到数据")
+        # 摘要打印
+        for f in dir(msg):
+            if f.startswith('_'):
+                continue
+            val = getattr(msg, f)
+            if isinstance(val, (int, float, str, bool)):
+                print(f"      .{f} = {val}")
+            elif hasattr(val, '__len__'):
+                try:
+                    n = len(val)
+                    if n <= 12:
+                        print(f"      .{f} = {list(val)}")
+                    else:
+                        print(f"      .{f} = <len={n}> {list(val)[:6]}...")
+                except Exception:
+                    pass
+        sub.Close()
+        return True
     except Exception as e:
-        print(f"FAIL: {topic} — {e}")
+        print(f"    FAIL — {e}")
         return False
+
 
 def main():
     if len(sys.argv) < 2:
@@ -50,62 +65,49 @@ def main():
     nic = sys.argv[1]
 
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (
+        BmsState_, MainBoardState_, IMUState_,
+    )
+    from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 
     print(f"初始化 DDS (domain=0, interface={nic})...")
     ChannelFactoryInitialize(0, nic)
     print("OK\n")
 
-    results = {}
+    # (label, [(topic, cls), ...])
+    # 每项尝试多个候选 topic，首个命中即停。
+    targets = [
+        ("电池 BmsState",      [("rt/lf/bmsstate", BmsState_),
+                                ("rt/bmsstate", BmsState_)]),
+        ("主板 MainBoardState", [("rt/lf/mainboardstate", MainBoardState_),
+                                 ("rt/mainboardstate", MainBoardState_)]),
+        ("机身 IMU (hg)",      [("rt/lf/secondary_imu", IMUState_),
+                                ("rt/secondary_imu", IMUState_)]),
+        ("里程计 SportModeState", [("rt/odommodestate", SportModeState_),
+                                   ("rt/lf/odommodestate", SportModeState_),
+                                   ("rt/sportmodestate", SportModeState_)]),
+    ]
 
-    # rt/lf/bmsstate — 电池
-    try:
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import BmsState_
-        results['bms'] = try_subscribe("rt/lf/bmsstate", BmsState_, "电池")
-    except ImportError:
-        print("WARN: BmsState_ 不可 import — 尝试从 default 模块")
-        try:
-            from unitree_sdk2py.idl.default import unitree_hg_msg_dds__BmsState_ as BmsState_
-            results['bms'] = try_subscribe("rt/lf/bmsstate", BmsState_, "电池 (default)")
-        except ImportError:
-            print("FAIL: BmsState_ 无法导入")
-            results['bms'] = False
+    summary = {}
+    for label, candidates in targets:
+        print(f"\n{'='*55}")
+        print(f"目标: {label}")
+        hit = None
+        for topic, cls in candidates:
+            if try_subscribe(topic, cls, label):
+                hit = topic
+                break
+        summary[label] = hit
 
-    # rt/lf/mainboardstate — 主板
-    try:
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import MainBoardState_
-        results['mainboard'] = try_subscribe("rt/lf/mainboardstate", MainBoardState_, "主板")
-    except ImportError:
-        print("WARN: MainBoardState_ 不可 import — 尝试 default 模块")
-        try:
-            from unitree_sdk2py.idl.default import unitree_hg_msg_dds__MainBoardState_ as MainBoardState_
-            results['mainboard'] = try_subscribe("rt/lf/mainboardstate", MainBoardState_, "主板 (default)")
-        except ImportError:
-            print("FAIL: MainBoardState_ 无法导入")
-            results['mainboard'] = False
+    print(f"\n{'='*55}")
+    print("候选探测结果:")
+    for label, hit in summary.items():
+        if hit:
+            print(f"  [OK]   {label:<28s} → {hit}")
+        else:
+            print(f"  [FAIL] {label:<28s} → 所有候选均超时")
+    print("\n下一步: 把命中的 topic 名记入 docs/sdk-topics.md (订正前任清单)。")
 
-    # rt/lf/secondary_imu — 机身 IMU
-    try:
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import IMUState_
-        results['sec_imu'] = try_subscribe("rt/lf/secondary_imu", IMUState_, "机身IMU")
-    except ImportError:
-        print("WARN: IMUState_ (hg) 不可 import")
-        results['sec_imu'] = False
-
-    # rt/lf/odommodestate — 里程计 (go2 类型)
-    try:
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import IMUState_ as GoIMUState_
-        results['odom'] = try_subscribe("rt/lf/odommodestate", GoIMUState_, "里程计")
-    except ImportError:
-        print("WARN: IMUState_ (go2) 不可 import")
-        results['odom'] = False
-
-    print(f"\n{'='*50}")
-    print("验证结论:")
-    for name, ok in results.items():
-        status = "OK" if ok else "FAIL/未确认"
-        print(f"  [{status}] {name}")
-    print("\n对照 docs/sdk-topics.md 类型验证清单。")
-    print("FAIL 的类型可能需要从 default 模块导入或 topic 名不对。")
 
 if __name__ == "__main__":
     main()

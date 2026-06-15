@@ -16,11 +16,11 @@ description: G1 SDK 验证脚本 — import 检查、RPC 反射、DDS 类型内�
 | 00 | `import_verify.py` | 环境 | 否 | 零 | 所有 SDK 模块 import 检查 |
 | 01 | `rpc_client_reflect.py` | 反射 | 否 | 零 | inspect RPC client API surface |
 | 02 | `message_types.py` | 反射 | 否 | 零 | dir() DDS 消息类型字段 |
-| 03 | `topic_discover.py` | 发现 | 是 | 零 | DDS topic 活跃列表 |
-| 04 | `lowstate_sub.py` | A: 纯读 | 是 | 零 | LowState + 遥控器解析 |
-| 05 | `sportmode_sub.py` | A: 纯读 | 是 | 零 | SportModeState 状态 + FSM 对照 |
-| 06 | `battery_sub.py` | A: 纯读 | 是 | 零 | 电池 + 主板 + 机身 IMU + 里程计 |
-| 07 | `rpc_readonly.py` | B: RPC 只读 | 是 | 零 | ServiceList + CheckMode + GetActionList + GetVolume |
+| 03 | `topic_discover.py` | 发现 | 是 | 零 | cyclonedds CLI wrapper — 真扫描 |
+| 04 | `lowstate_sub.py` | A: 纯读 | 是 | 零 | LowState + 遥控器解析 (rt/lowstate 高频) |
+| 05 | `sportmode_sub.py` | A: 纯读 | 是 | 零 | SportModeState 发布探测 (短超时) |
+| 06 | `battery_sub.py` | A: 纯读 | 是 | 零 | bms/mainboard/imu/odom 多候选 topic 探测 |
+| 07 | `rpc_readonly.py` | B: RPC 只读 | 是 | 零 | MotionSwitcher/Arm/Audio/RobotState (RS 可能 G1 不可用) |
 | 08 | `audio_led.py` | C: 音频灯光 | 是 | 低 | 音量/LED/TTS + TTS 中断探路 |
 | 09 | `arm_preset.py` | D: 上肢 | 是 | 中 | 挥手 + 中断复位 + 动作序列 |
 | 10 | `loco_mode.py` | E: 模式切换 | 是 | 高 | Damp→Sit→Start + 安全确认 |
@@ -57,3 +57,5 @@ cd .moss_ws/apps/bodies/g1
 source .venv/bin/activate
 python 00_import_verify.py  # 必须先通过
 ```
+
+实机测试 2 小时窗口的逐步执行顺序见 `RUN_ORDER.md` (同目录)。

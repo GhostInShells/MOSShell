@@ -130,10 +130,11 @@ def main():
     print(f"\n初始化 DDS (domain=0, interface={nic})...")
     ChannelFactoryInitialize(0, nic)
 
-    # LowState 订阅 (低频 — 减少延迟累积)
-    sub = ChannelSubscriber("rt/lf/lowstate", LowState_)
+    # LowState 订阅 — 用高频 rt/lowstate (g1 example canonical)
+    # 急停延迟测量必须用高频版，低频版会拉高 L2+B 检测时间
+    sub = ChannelSubscriber("rt/lowstate", LowState_)
     sub.Init()
-    print("OK: LowState 订阅就绪")
+    print("OK: LowState 订阅就绪 (rt/lowstate 高频)")
 
     loco = LocoClient()
     loco.SetTimeout(10.0)
