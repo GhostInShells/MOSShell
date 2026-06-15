@@ -15,12 +15,11 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-15 协议层重新对齐：address 是 free-form string，唯一性由 Matrix instantiation 时的
-  flock 保证；type 是 first-class 协议字段，开放命名空间 + owner channel announce；spawn 二分为
-  spawn_cell（声明身份）/ spawn_worker（无语义 worker/{uuid} 兜底）；跨进程异步基底是
-  process + Matrix 异步回调机制；fractal 命名空间分形保留，扁平化是 alias。
-  剩余推动：NodeStoreChannel、announce_type 协议接口落地、Environment 的 "default to host"
-  fallback 消除。
+  2026-06-15 协议层重新对齐 + 实施纲领落地：address 自由度收敛、type 开放命名空间 + owner
+  channel announce、spawn 二分（spawn_cell / spawn_worker + worker/{uuid} 兜底）、跨进程
+  异步基底是 process + Matrix 异步回调机制。本轮新增决策：nodes 进 manifests（待拍板）、
+  命名分层（codex / manifests / runtime + 域运维）、script 体系整体删除。推进由人类主导，
+  拆 branch 治理。下一实例认知重建支点见 FEATURE.md §A-§G。
 ---
 
 # Matrix Cell Governance
@@ -792,4 +791,124 @@ NodeStoreChannel 承接 `nodes:run` / `nodes:list` / `nodes:install` / `nodes:en
   默认值，命令行覆盖是正常优先级，无歧义
 - 仍未决：`moss shell-init` 完整契约 / install.sh timeout 政策 / Nursery 默认
   stdout/stderr 处置 —— 三项与本次协议固熵正交，后续单独裁决
+
+## 2026-06-15 续：实施纲领与下一个实例的认知重建支点
+
+> 紧接 §1-§10 协议层重新对齐。本节面向下一个推进实例 —— 记录推进分工、待最终
+> 拍板的决策、上下文恢复时的高优探索线索与 audit 指标。
+
+### A. 推进分工
+
+- 整体推进由人类架构师主导
+- 拆 branch 治理 workstream，**branch 内不拆上下文**，只拆并行验收点
+- 单模型上下文无法推完整个 matrix 治理已经被反复验证为事实 —— 不要试图反证
+- 模型职责：协议固熵的 review、决策轨迹保真、branch 内具体片段的实现协作
+
+### B. 本节新增决策（§1-§10 之外）
+
+1. **Nodes 进 manifests** —— 推荐进，等最终拍板。理由：
+   - 概念一致性 —— nodes 与 channel / provider / config 同等地位的能力声明
+   - mode 隔离的真实场景（desktop vs outdoor 启用不同 nodes 集）
+   - 一次性付的破开成本：让 manifests 抽象容纳非包扫描类型，建立 skill / macro
+     / 其他未来声明类型进 manifests 的范式
+   - PackageManifests 当前不持 mode，nodes 进入意味着 manifests 抽象首次集成
+     env.current_mode
+
+2. **Mode 上 nodes 字段的覆盖语义** —— 候选三种，等最终拍板：
+   - 完全替代（K5 形态，类比 `__main__` channel）
+   - 叠加（providers 形态）
+   - 叠加 + name 冲突时 mode 覆盖（推荐，对应 providers 显式继承 + 追加的实际语义）
+
+3. **命名分层** —— 推荐三层 + 域运维正交：
+   - `moss codex` — 源码层 introspection，跟环境无关
+   - `moss manifests` — workspace 静态声明（nodes 进则归此）
+   - `moss runtime` — 进程/实例运行时状态：cells / topics / channels / events / sessions
+   - 域运维入口：`moss nodes` / `moss workspace` / `moss modes` / `moss ghosts`，
+     与三层正交
+   - `moss apps` 在迁移期保留，第 14 项删除时一起去
+
+4. **Script 体系整体删除** —— `CellType.script` 与 `moss script` CLI
+   入口（`src/ghoshell_moss/cli/main.py:41`）一并清理。worker 接管原 script
+   的兜底身份位置
+
+5. **ChannelName 是入参不是类名约束** —— `AppStoreChannel(name='apps')` 的
+   `name` 是 ChannelName 入参；改默认值即可改 ghost 视角的 channel 名，类名独立决策
+
+6. **Worker 是否写 cell meta 的决策位置** —— 在 Matrix 进/退创建/删除 cell meta
+   的时点决定，而非文件结构层。worker 的 `worker/{uuid}` 是否落 CellMeta 文件归
+   Matrix bootstrap 路径裁决
+
+### C. 推进的 14+ 项拓扑
+
+人类架构师方案 14 项 + 本轮反馈整合后真实拓扑（顺序按依赖，非严格线性）：
+
+1. cell 模板 `host.stubs.node`
+2. node 数据结构 + NodeManager 抽象
+3. env 发现/删除逻辑稳定化（含 Environment "default to host" fallback 消除）
+4. Matrix.spawn 改造（spawn_cell / spawn_worker 二分 + announce-time 校验）
+5. 高阶 node 运行接口（决策：是否提升到 host 抽象层）
+6. Matrix cell 逻辑归纳分组（cell 运行时是否上移到 host / nodes 声明 / nodes 运行时管理）
+7. provider / proxy 暂不动
+8. Node 环境治理（参考 app，但日志/运行时 debug 机制更完善一致）
+9. CLI: create / register / run / status 等
+10. `moss runtime` 命令集（含 cell manifest 等运行时调试机制）
+11. Mode 完成环境发现约束 + AppStoreChannel-like NodesChannel
+12. 试点迁移若干 `.moss_ws` 内 app，走运行时开发吃狗粮
+13. nodes 文档套件（dogfooding 反向产出）
+14. 全面迁移 apps，删除 apps + script + 配套 pyproject 更新
+
+跨步骤的协议级注入点（不单独成步、贯穿）：
+- type registry 协议接口（`announce_type` / `find_owner` / `list_types`）
+- RuntimeEvent topic 广播 —— 本 workstream 仅记录扩展点，不在本轮做
+- 测试体系作为贯穿任务，协议层测试随实现同时落
+- fractal alias 不做（迭代核心动机已完成，不是强 feature）
+
+### D. 高优探索线索（上下文恢复时必读）
+
+下一个实例进入时，按优先级读这些文件理解技术现实，不要重新 grep：
+
+| 文件 / 位置 | 用意 |
+|---|---|
+| `src/ghoshell_moss/channels/module_eval_channel.py` + `tools/module_eval.py` | "address 自由度" 反例标本。看 `cell_address=f"module_eval/{module_name}"` 暴露的 bus 干净 / 概念污染不对称 |
+| `src/ghoshell_moss/channels/app_store_channel.py` | operations channel pattern 范式，NodesChannel 同形参考 |
+| `src/ghoshell_moss/host/nursery.py` | ProcessNursery 实现，pipe fencing + start_new_session 是当下进程生命周期承诺 |
+| `src/ghoshell_moss/host/matrix.py:170-176` | `workspace.lock("moss_cell_{type}_{name}")` 是真实 address 唯一性保证；host 用 `moss_host_{scope}` 同形锁 |
+| `src/ghoshell_moss/host/matrix.py:566-585` | `Matrix.spawn` 当前签名，演化为 spawn_cell / spawn_worker 二分的起点 |
+| `src/ghoshell_moss/core/blueprint/environment.py:224-227` | `MOSS_CELL_ADDRESS` 默认 `host/{mode}` fallback —— worker 安全性陷阱来源 |
+| `src/ghoshell_moss/host/manifests/impl.py` | PackageManifests 纯包扫描，nodes 进入需破开 |
+| `src/ghoshell_moss/core/blueprint/manifests.py:280` | `Manifests` 基类，加 `nodes()` 方法的位置 |
+| `src/ghoshell_moss/host/cell_discovery.py` | zenoh announce / query portal，type registry 协议物理落点 |
+| `src/ghoshell_moss/host/stubs/mode/providers.py` 等 | mode 通过 `from MOSS.manifests.* import *` 继承全局的范式 |
+| `src/ghoshell_moss/core/blueprint/matrix.py:105` | `class Mode(BaseModel)` 加 nodes 字段的位置 |
+| `src/ghoshell_moss/core/blueprint/matrix.py:22` | `CellType` 枚举，host/app/fractal/script → host/node/fractal + worker 改造点 |
+
+### E. Audit 指标（下个实例如何自我校准）
+
+- 是否引入了 "policy 拒绝" 而非 "substrate 兜底"（例：worker 不应该 raise，应该
+  `worker/{uuid}` 注入；type 不在 registry 应该 announce-time 拒绝而不是 spawn-time 拒绝）
+- 是否在协议层预设了未必发生的政策（owner channel 退场的 finalize 流程 / 跨进程
+  回调媒介选择 / worker 对外通讯方式 —— 这些都被本轮明确推翻为不预设）
+- 是否预测了未发生的压力点（worker cell meta type 字段、type 重名碰撞策略、fractal 跨域校验等
+  —— 见 §10 迭代标记）
+- 命名上是否引入了第四套体系（B.3 三层 + 域运维之外不要再加）
+- 协议项 [P] 与实现项 [I] 是否混淆 —— §9 表格是真相
+
+### F. 推翻路径的 audit
+
+下一个实例如果想推翻本节或 §1-§10 的某个决策，先确认：
+
+1. 推翻目标是 [P] 协议项还是 [I] 实现项 —— 实现项可以自由换，协议项需完整论证
+2. 推翻理由是出现了真实压力点，还是设计偏好替换
+3. 推翻后 §10 的迭代标记中是否有项被迫立即决 —— 若是，说明推翻链触发了过早闭合
+
+### G. 不属于本 workstream 的事
+
+明确划走，避免下个实例越界：
+
+- RuntimeEvent topic 事件广播 —— 已设计（§5），独立 workstream 推进
+- Skills market channel —— 独立 feature，验收后反向集成
+- Fractal alias 扁平化 —— 不强需求，迭代核心动机已完成
+- `moss shell-init` 完整契约 / install.sh timeout / Nursery 默认 stdio 处置 ——
+  三项与本轮协议固熵正交
+
 
