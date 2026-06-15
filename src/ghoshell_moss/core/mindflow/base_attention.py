@@ -178,6 +178,7 @@ class BaseArticulator(Articulator):
             ctx: AttentionContext,
             exited_event: ThreadSafeEvent,
             thinking_effort: ThinkingEffort,
+            on_active: Callable[[], None] | None = None,
     ):
         self._ctx = ctx
         self._task_group = BaseTaskGroup()
@@ -186,6 +187,7 @@ class BaseArticulator(Articulator):
         self._thinking_effort = thinking_effort
         self._started = False
         self._closing = False
+        self._on_active = on_active
 
     @property
     def moment(self) -> Moment:
@@ -247,9 +249,10 @@ class BaseArticulator(Articulator):
         return self._ctx.flag(name)
 
     def send_nowait(self, logos_delta: str) -> None:
+        if self._on_active:
+            self._on_active()
         if self._ctx.is_aborted() or self._exited_event.is_set():
             self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, logos_delta)
-            # 中断循环及其外部逻辑.
             raise AttentionAbortedError("Attention is already aborted")
         try:
             self._ctx.logos_queue.sync_q.put_nowait(logos_delta)
@@ -307,6 +310,7 @@ class BaseAction(Action):
             *,
             ctx: AttentionContext,
             exited_event: ThreadSafeEvent,
+            on_active: Callable[[], None] | None = None,
     ):
         self._ctx = ctx
         self._task_group = BaseTaskGroup()
@@ -315,6 +319,7 @@ class BaseAction(Action):
         self._started = False
         self._closing = False
         self._prefetched_delta: str | None = None
+        self._on_active = on_active
 
     async def wait_ready(self) -> None:
         """Wait until first logos delta arrives or attention is aborted.
@@ -347,6 +352,8 @@ class BaseAction(Action):
             if item is None:
                 return
             self._ctx.buffer_executed_logos(item)
+            if self._on_active:
+                self._on_active()
             yield item
         try:
             while not self._ctx.is_aborted() and not self._exited_event.is_set():
@@ -360,6 +367,8 @@ class BaseAction(Action):
                 if item is None:
                     break
                 self._ctx.buffer_executed_logos(item)
+                if self._on_active:
+                    self._on_active()
                 yield item
         except janus.SyncQueueShutDown:
             return
@@ -471,6 +480,8 @@ class AbsAttention(Attention, ABC):
         self._started: bool = False
         self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
+        # 帧计数: loop 每产出一帧 +1, 用于 _inner_attention_lifecycle 判断是否真正卡死.
+        self._frame_count: int = 0
         # update the impulse
         self._log_prefix = f"<Attention id={self._init_impulse.id}>"
 
@@ -603,8 +614,10 @@ class AbsAttention(Attention, ABC):
         await self._aborted_event.wait()
 
     def _escalation_on_active(self) -> None:
-        # 先简单用时间刷新来做提权. 方便 AI 大神未来帮我改.
+        # 刷新活跃时间, 阻止强度衰减误触发自尽; 同时在 challenge 时维持当前强度.
         self._strength_refreshed_at = time.monotonic()
+        self._logger.debug("%s _escalation_on_active: strength_refreshed_at=%.3f",
+                           self._log_prefix, self._strength_refreshed_at)
 
     @abstractmethod
     def current_strength(self) -> int:
@@ -658,6 +671,8 @@ class AbsAttention(Attention, ABC):
         while not self.is_aborted():
             # 每次刷新时会更新权重.
             self._escalation_on_active()
+            self._frame_count += 1
+            self._logger.debug("%s _loop: producing frame #%d", self._log_prefix, self._frame_count)
             current_moment = self._ctx.moment
             # 1. 准备本轮的 moment. 要更新所有的运行时消息.
             self._prepare_moment(current_moment)
@@ -673,8 +688,13 @@ class AbsAttention(Attention, ABC):
                 ctx=self._ctx,
                 exited_event=self._articulate_stop_event,
                 thinking_effort=self._thinking_effort,
+                on_active=self._escalation_on_active,
             )
-            action = BaseAction(ctx=self._ctx, exited_event=self._action_stop_event)
+            action = BaseAction(
+                ctx=self._ctx,
+                exited_event=self._action_stop_event,
+                on_active=self._escalation_on_active,
+            )
 
             # 4. 交给外部执行线程/任务
             yield articulate, action
@@ -690,6 +710,8 @@ class AbsAttention(Attention, ABC):
             if self._ctx.get_observe_messages() is None:
                 # 没有任何一方要求继续看，注意力自然结束
                 # 当前的 ctx 就是最后一帧了.
+                self._logger.debug("%s _loop: no observe, ending after frame #%d",
+                                   self._log_prefix, self._frame_count)
                 break
 
             # 7. 如果要继续, 要更新 ctx 准备下一轮.
@@ -738,12 +760,16 @@ class AbsAttention(Attention, ABC):
 
     async def _inner_attention_lifecycle(self) -> None:
         """
-        在自己内部做自己是否应该结束的仲裁.
-        收到挑战, 第一时间返回属于条件反射.
-        实际上仍然可以有一个周期去内省.
+        自省任务: 检测 attention 是否真正卡死 (从未产出过任何帧).
+        与强度衰减无关 — 强度跌零只意味着可以被抢占, 不应自杀.
+        只有在 loop 从未产出过帧 (articulator/action 都未运行) 时才判定为卡死.
         """
         try:
             ttl = self._strength_decay_time
+            self._logger.debug(
+                "%s _inner_attention_lifecycle: waiting TTL %.1fs for first frame",
+                self._log_prefix, ttl,
+            )
             wait_task = asyncio.create_task(asyncio.sleep(ttl))
             wait_done_task = asyncio.create_task(self._ctx.wait_aborted())
             done, pending = await asyncio.wait(
@@ -753,25 +779,36 @@ class AbsAttention(Attention, ABC):
             for t in pending:
                 t.cancel()
 
-            # 如果 abort 先触发，直接退出
             if self._aborted_event.is_set():
+                self._logger.debug("%s _inner_attention_lifecycle: already aborted, exiting",
+                                   self._log_prefix)
                 return None
-            # 做一个低阶的自省, 防止另外两个循环卡死.
+
+            # TTL 已过, 检查是否真正卡死: loop 是否产出过至少一帧.
             while not self._aborted_event.is_set():
-                if self.current_strength() <= self._system_floor_strength:
-                    # 自主结束.
-                    self.abort(asyncio.TimeoutError("attention fade out"))
+                if self._frame_count == 0:
+                    self._logger.warning(
+                        "%s _inner_attention_lifecycle: no frame produced after TTL %.1fs, aborting",
+                        self._log_prefix, ttl,
+                    )
+                    self.abort(asyncio.TimeoutError("attention stalled: no frame produced"))
                     break
+                # 已经产出过帧, articulator/action 正在工作或已完成.
+                # 强度跌零不影响 — 只是让 challenge 更容易抢占, 不应自杀.
+                self._logger.debug(
+                    "%s _inner_attention_lifecycle: %d frames produced, strength=%.1f, alive",
+                    self._log_prefix, self._frame_count, self.current_strength(),
+                )
                 try:
                     await asyncio.wait_for(self._aborted_event.wait(), 0.5)
                 except asyncio.TimeoutError:
                     continue
             return None
         finally:
-            # 这个任务退出时, 一种情况是 aborted, 另一种情况是 aexit, 两种情况都去清理所有可能阻塞的锁.
             self._has_any_completed_impulse.set()
             self._action_stop_event.set()
             self._articulate_stop_event.set()
+            self._logger.debug("%s _inner_attention_lifecycle: cleanup done", self._log_prefix)
 
     async def __aenter__(self):
         if self._started:

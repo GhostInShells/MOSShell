@@ -210,3 +210,105 @@ async def test_attention_max_protection_time():
         await asyncio.sleep(0.095)
         assert challenger.is_stale()
         assert attention.challenge(challenger) is False
+
+
+@pytest.mark.asyncio
+async def test_attention_not_aborted_during_active_articulation():
+    """
+    协议: 强度衰减到零不应导致正在活跃工作的 attention 自杀.
+    只要 loop 已经产出过帧 (articulator/action 正在运行),
+    _inner_attention_lifecycle 不应因为强度跌零而 abort.
+    """
+    impulse = Impulse(
+        source="test",
+        priority=Priority.NOTICE,
+        strength=100,
+        strength_decay_seconds=0.15,
+    )
+    attention = BaseAttention(
+        previous=Reaction(),
+        impulse=impulse,
+        protection_duration_ratio=0.0,
+    )
+
+    async with attention:
+        loop_gen = attention.loop()
+        art, act = await anext(loop_gen)
+
+        async with art, act:
+            # 模拟长时工作: 跨越 TTL 的多次活动
+            for _ in range(6):
+                await asyncio.sleep(0.05)
+                art.send_nowait("working...")
+
+            # 强度可能已经衰减到零 (取决于被刷新的频率),
+            # 但 attention 不应被 abort.
+            assert not attention.is_aborted()
+
+
+@pytest.mark.asyncio
+async def test_strength_refreshed_during_active_articulation():
+    """
+    协议: articulator.send_nowait 和 action 消费 logos 时,
+    通过 on_active 回调刷新 _strength_refreshed_at,
+    强度不会在活跃期间衰减到零.
+    """
+    impulse = Impulse(
+        source="test",
+        priority=Priority.NOTICE,
+        strength=100,
+        strength_decay_seconds=0.3,
+    )
+    attention = BaseAttention(
+        previous=Reaction(),
+        impulse=impulse,
+        protection_duration_ratio=0.0,
+    )
+
+    async with attention:
+        loop_gen = attention.loop()
+        art, act = await anext(loop_gen)
+
+        async with art, act:
+            initial_strength = attention.current_strength()
+            assert initial_strength > 0
+
+            # 跨越 TTL 期间持续活动 — 每次 send_nowait 都刷新强度
+            for _ in range(10):
+                await asyncio.sleep(0.04)
+                art.send_nowait("keep alive")
+
+            # 强度应仍然 > 0 (被持续刷新, 不衰减)
+            assert attention.current_strength() > 0
+
+
+def test_strength_zero_yields_to_any_positive_challenger():
+    """
+    协议: 强度为零时任意正强度的同优先级 challenger 都能抢占成功.
+    强度跌零意味着 "可以被随意打断", 不是 "必须自杀".
+    challenge() 返回 True (Preempted).
+    """
+    impulse = Impulse(
+        source="defender",
+        priority=Priority.NOTICE,
+        strength=100,
+        strength_decay_seconds=0.1,
+    )
+    attention = BaseAttention(
+        previous=Reaction(),
+        impulse=impulse,
+        protection_duration_ratio=0.0,
+    )
+
+    # 等待强度衰减到零
+    time.sleep(0.2)
+    assert attention.current_strength() == 0
+
+    # 即使 strength=1 的 challenger 也能抢占
+    challenger = Impulse(
+        source="other",
+        priority=Priority.NOTICE,
+        strength=1,
+    )
+    result = attention.challenge(challenger)
+    assert result is True
