@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-10
+updated: 2026-06-15
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,10 +15,12 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-10 moss nodes run 解析规则 + CELL.md 命名锚定。
-  CELL.md 统一替代 NODE.md，向上查找同 MOSS.md。executable 默认 sys.executable，
-  不碰 uv run。至此 matrix cell 治理设计闭环——人类架构师实现，模型 review。
-  剩余：CellType.node、CELL.md、moss nodes CLI、shell-init、apps 迁移。
+  2026-06-15 协议层重新对齐：address 是 free-form string，唯一性由 Matrix instantiation 时的
+  flock 保证；type 是 first-class 协议字段，开放命名空间 + owner channel announce；spawn 二分为
+  spawn_cell（声明身份）/ spawn_worker（无语义 worker/{uuid} 兜底）；跨进程异步基底是
+  process + Matrix 异步回调机制；fractal 命名空间分形保留，扁平化是 alias。
+  剩余推动：NodeStoreChannel、announce_type 协议接口落地、Environment 的 "default to host"
+  fallback 消除。
 ---
 
 # Matrix Cell Governance
@@ -618,3 +620,176 @@ JSON line 是协议，不是 spawn 的职责。Nursery 提供 pipe，JsonLinePro
 - Node script 的超时策略：install.sh 跑多久算失败？框架层定义默认 timeout 还是交给 node 作者声明？
 - CELL.md 的 `executable` 字段在脚本模式下被命令行覆盖——还需要显式声明吗？保留的理由：它是 cell 作者的意图声明，目录模式和名称模式时作为默认值。
 - Nursery 默认 stdout/stderr 落文件 vs 继承终端：二阶封装问题，人类架构师后续抽象
+
+## 2026-06-15 协议层重新对齐：address 自由度、type 注册、worker 与 cell 分立
+
+> 2026-06-15 人类架构师 + claude-opus-4-7。沿 06-09/06-10 设计闭环往下推一层，
+> 解决 module_eval channel 暴露的 "address 自由度" 摩擦点，把协议层的承诺与
+> 实现层的选择分清。
+
+### 1. address 与 type 的协议位置
+
+**Address 是 cell 在 Matrix 上的唯一标识**。今天的实际形态：
+
+- `MOSS_CELL_ADDRESS` 是 free-form 字符串，Environment 不做结构校验
+- 副作用发生在 Matrix instantiation 时点：`workspace.lock("moss_cell_{type}_{name}")`
+  是真正的 address 唯一性保证；host 用 `moss_host_{scope}` 同形锁
+- zenoh CellDiscovery 的 `announce_cell` 紧随 flock 之后；同 address 的第二个
+  Matrix 实例在 flock 失败、永远到不了 zenoh 声明
+- ScopeMeta / CellMeta 文件层是 PID 验尸的事后清扫，不参与 lock
+
+**Type 是 first-class 协议字段，但不是封闭枚举**。设计闭环阶段提的 "host/node/fractal
+三类" 是 framework 保留集，不是 type 全集。type 命名空间开放，由 owner channel 在
+运行时声明所有权。
+
+### 2. Open type namespace with owner-channel registration
+
+Type 的合法性由 "有 owner channel 正在 announce 我管这个 type" 这件事证实。
+
+- **保留 type**：`host` / `node` / `fractal` —— framework 占用，由对应内置 owner 管理；
+  `worker` —— framework 占用，**无 owner**（见 §4 方案 C，用于无语义兜底）
+- **开放 type**：任何 channel 可以通过 `matrix.announce_type(type, owner_address)` 声明所有权
+- **announce-time 校验**：spawn_cell 时 type 不在 registered 集合则拒绝；address 必须
+  `{type}/{name}` 形式
+- **owner 退场**：type 注册随 owner channel 的 queryable 消失而失效
+
+形态约束：type 是 flat 字符串，不允许 `a/b` 形态嵌套（与 address 内的 `/` 分隔语义解耦）。
+
+### 3. spawn_worker / spawn_cell 二分 API
+
+`Matrix.spawn` 演化为两个 API，表达调用者的语义意图，不是机制差异：
+
+```python
+matrix.spawn_cell(*args, type: str, name: str, ...)
+    # 声明新身份。type 必须已注册。address = f"{type}/{name}"
+    # 经 announce 校验 + flock，落 CellMeta
+
+matrix.spawn_worker(*args, ...)
+    # 无身份诉求的 OS 子进程
+    # 自动注入 worker/{uuid} 作为 address —— 拒绝承诺语义，但不拒绝入网
+```
+
+API 形态上不允许调用者写字面字符串 `cell_address="module_eval/foo"`。type 与 name
+拆开传，type 走 registry 强校验。
+
+### 4. 方案 C：worker 入网不被拒，semantic 不被承诺
+
+worker 与 cell 的分立不靠 policy 禁止（拒绝构造、剥离 env、防蠢 sentinel），靠
+substrate 兜底：
+
+- worker 拿到 `worker/{uuid}` 这种 framework 保留的 "无语义 address" —— uuid 唯一，
+  flock 永不冲突；announce 走得通；bus 看得见；但 type registry 里没有 `worker` 的
+  owner，所以 ghost 视角下找不到 owner channel，无法被打开为 channel proxy
+- session_scope / workspace / mode / ghost_name 等元信息照常透传，worker 可以读
+  scope-shared resource、观察 topic
+- worker 不被承诺管理：framework 不重启、不健康检查、不暴露为 ghost 的可控制 surface
+- 父 cell 自己负责 worker 进程的回收（OS 层 `await proc.wait()`、pipe fencing 已覆盖
+  父死子死）
+
+历史轨迹：此前的 `script/` `task/` 都在尝试同一件事 —— 给 "不该被当作 cell 但确实
+存在的子进程" 一个安身之所。`worker/{uuid}` 是这条轨迹的形式化收口。
+
+### 5. cell meta 是否记录 type 字段 —— 留给迭代
+
+worker 每次 spawn 都会产生一个 CellMeta 文件。两个候选：
+
+- **type 不写**：worker 的 meta 文件结构与 cell 一致，少一字段。日后无法区分
+  worker 与 cell
+- **type 写**：清晰区分，但高频 spawn worker 的 channel（例如批量计算）会让
+  `runtime/cells/` 文件数量爆表
+
+判断推迟到真实压力点出现：当真有 channel 产生 worker 数量上的痛点时，结合那时
+workload 形态裁决。在此之前 meta 字段写法以最简实现为准。
+
+### 6. 跨进程异步基底
+
+MOSS 的跨进程异步通讯走 **process + Matrix 异步回调机制**。回调媒介（topic /
+mindflow signal / 其他）由 channel 实现层自行选择，协议层不预设。
+
+implication：channel 作者写长跑逻辑时，async 心智模型是 "起一个 OS 子进程 +
+在 Matrix 上等回调"，而非 "启动 Python coroutine + register callback"。后者
+是单进程实现细节。
+
+### 7. Fractal 维度的命名空间
+
+Fractal 的 channel 抽象本身是分形的（已有 unit test 验证）：本地
+`apps.bodies_g1.arm:wave`，远端通过 fractal provide 后变为
+`fractal.moss_xxx.apps.bodies_g1.arm:wave`，两层嵌套变为
+`fractal.moss_xxx.fractal.moss_yyy.apps.bodies_g1.arm:wave`。
+
+- **命名空间分形保留是协议正确性** —— type registry 在 fractal 下天然带前缀，
+  `node` 与 `fractal.B.node` 永远不冲突
+- **扁平化是 alias 命题** —— ghost UX 上希望短名字时，用 alias 表，不动 protocol 结构
+
+### 8. operations channel pattern 在实现层的体现
+
+每个 declared type 的发现 / 启动 / 生命周期归 owner channel。pattern 与现有
+AppStoreChannel 同形：
+
+| 角色 | 现有 | 新增 |
+|---|---|---|
+| 数据层 (Store) | AppStore | NodeStore |
+| ghost 面向 (Channel) | AppStoreChannel | NodeStoreChannel |
+
+NodeStoreChannel 承接 `nodes:run` / `nodes:list` / `nodes:install` / `nodes:enable` /
+`nodes:disable`，通过 `get_virtual_children()` 将活的 node 暴露为 channel proxy，
+通过 `get_context_messages()` 反映两轴状态。framework 不在 Matrix 层定义重启 /
+健康检查 —— 这是 channel 的政策空间。
+
+无需 framework 提供通用 `CellStore` protocol，因为不同 type 的发现机制本质异构
+（CELL.md 文件遍历 / app.yml / fractal peer announce），强抽象会逼出最小公分母。
+
+### 9. 协议层 vs 实现层
+
+| 标 | 项目 |
+|---|---|
+| 协议 | type 是开放命名空间，必须 owner channel announce 才合法 |
+| 协议 | framework 保留 `host` / `node` / `fractal` / `worker` 四个 type |
+| 协议 | spawn_cell 在 Matrix bootstrap 时做 type registered 校验 + address 一致性校验，flock 兜底 |
+| 协议 | spawn_worker 自动注入 `worker/{uuid}` address，session_scope / workspace 透传 |
+| 协议 | 跨进程异步基底是 process + Matrix 异步回调机制 |
+| 协议 | type registry 在 fractal 下天然带前缀，扁平化是 alias 而非协议 |
+| 实现 | Per-type Store (NodeStore / AppStore 等)，由 owner channel 内部使用 |
+| 实现 | ProcessNursery 的 pipe fencing + flock 是当下进程生命周期实现 |
+| 实现 | CellMeta md5 哈希文件名 |
+| 实现 | Environment 的 "default to host" fallback 形态 —— 后续独立步骤消除 |
+
+### 10. 遗留的迭代标记
+
+预决会过早闭合可能性的事，留给压力点出现后再裁：
+
+- **type unregister 时 type 下 cell 的回收政策**：owner channel 退场（含异常退出）时，
+  已经活着的同 type cell 如何处置 —— 自尽 / 转交 / 孤儿 / 框架强制 reap。等真实场景
+  出现再决
+- **worker cell meta type 字段是否记录**：见 §5
+- **worker 对外通讯方式**：worker 是 hack 空间，MOSS 不承诺接口。父 cell 自行决定
+  如何与 worker 通讯
+- **Environment "default to host" 消除的具体形态**：sentinel 注入 vs entry point
+  显式声明 vs 其他。独立步骤处理
+
+### 推翻的设计与原因
+
+这一轮推翻了几个 06-10 设计闭环阶段提的判断，记录原因供下一个实例参考：
+
+- **CellType 5 类过渡**：推翻。理由：污染概念层心智模型，不消除迁移破坏面。改为新三类
+  直接成立，旧 app/script 作为 deprecated alias 在实现层兼容
+- **spawn 强制 cell_address**：推翻。理由：把 "加入 Matrix 网络" 的合同强加给进程
+  原语层，破坏了 substrate 与 semantic 的层分。改为方案 C 的 `worker/{uuid}` 注入
+- **role=app / role=node 写 cell meta**：推翻。理由：与 mode 体系的权限 / 资源语义
+  重复。运行时角色由 origin_address 推导即可，不进 meta 字段
+- **owner channel 退场时的 finalize 政策预决**：推翻。理由：过早闭合可能性，留待
+  迭代逼出
+- **address mandatory 与 worker env 防蠢拒绝**：推翻。理由：与 "Matrix 是总线，不审
+  用意" 的设计方向不兼容；改为兜底注入 + 无语义承诺
+
+### 与 Open Questions 的合并
+
+原 06-10 Open Questions 中以下条目在本轮已经决：
+
+- ~~fractal 连接到 host 的 channel proxy 语义~~ —— 命名空间分形保留即正确性，扁平化
+  是 alias 命题
+- ~~CELL.md `executable` 字段在脚本模式下被命令行覆盖还需要显式声明吗~~ —— 保留作
+  默认值，命令行覆盖是正常优先级，无歧义
+- 仍未决：`moss shell-init` 完整契约 / install.sh timeout 政策 / Nursery 默认
+  stdout/stderr 处置 —— 三项与本次协议固熵正交，后续单独裁决
+
