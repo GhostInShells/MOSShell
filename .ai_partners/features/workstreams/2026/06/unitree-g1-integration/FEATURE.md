@@ -344,3 +344,55 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 REA
 4. **手臂控制脚本 09**: G1 处于站立姿态，是否允许跑 arm preset？需先评估安全（FEATURE 中前任标注的 D 层）
 5. **未决议题继承**（同前 session）: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
 
+
+---
+
+## 2026-06-15 Session — SDK 验证脚本路径订正 (实机前预备)
+
+由 Claude Opus 4.7 完成，未上 G1。本 session 是对前任 SDK 验证脚本的纯代码 review + 重写，
+目的: 避免今天 2 小时实机窗口被脚本本身的路径/类型 bug 污染。
+
+### 订正项
+
+| 脚本 | 前任问题 | 本版修法 |
+|------|---------|---------|
+| 04, 12 | 订阅 `rt/lf/lowstate` (低频) | 改 canonical `rt/lowstate` (g1 example 用此)；12 的急停延迟测量必须高频 |
+| 05 | `rt/sportmodestate` 长阻塞订阅 (50s × 无数据) | 改 3 × 2s 短超时探测，明确"G1 是否发布"结论 |
+| 06 | `rt/lf/odommodestate` 用错类型 `IMUState_` | 改 `SportModeState_` (odom 真实 payload) + 多候选 topic 探测 |
+| 07 | `RobotStateClient` 顺序首 + 5s 阻塞，前任误诊"import 失败" | 顺序后置 + 3s 超时 + 独立 try；明确标注"G1 examples 未引用，可能不可用" |
+| 08 | `GetVolume` 返回 `(code, dict)`，前任把 dict 直接当 int 传回 `SetVolume(vol)` | 加 `_vol_value()` 解包；收尾 LED 复位到 (0,0,0) |
+| 03 | 硬编码 topic 清单 print，无真发现能力 | 改 cyclonedds CLI wrapper，调用真扫描 |
+| MOTOR_NAMES | 04 中 "29=weight" 误传 | 注释订正：G1 23-DoF 占 0-28，29-34 为保留槽 |
+
+### 前任误诊的修正记录 (保真)
+
+前任 2026-06-14/15 session log 中写道:
+
+> 验证 07 RPC readonly 脚本因 SDK 升级后 b2/robot_state 模块路径变更而 import 失败（SDK 自身 bug，留给下一个 session 修）
+
+经本 session 复审 SDK 源码 (`src/unitree_sdk2_python/unitree_sdk2py/b2/robot_state/`)，
+`robot_state_client.py` 与 `__init__.py` 均存在且可 import。前任所谓"import 失败"
+更可能是 `RobotStateClient.Init()` 或 `ServiceList()` 调用阻塞 (5s timeout) 时表现像
+import 失败，被错误归因到模块路径。
+
+订正结论:
+- import 路径 `unitree_sdk2py.b2.robot_state.robot_state_client` 是有效的
+- 真问题是 G1 RPC bus 上**可能没有 "robot_state" 服务** (所有 G1 examples 均不引用)
+- 本版 07 把它放最后 + 3s 超时 + 标注"可能不可用"，等今天实机给出真答案
+
+### 配套产出
+
+- `scripts/sdk/RUN_ORDER.md` — 2 小时窗口逐步执行顺序 + 每脚本"该看什么"
+
+### 给下一个 (实机后) 实例的话
+
+跑完 03 拿到真实 topic 清单后:
+1. 订正 `docs/sdk-topics.md` 中前任硬编码部分 (特别是 lf/ 前缀的实际存在性)
+2. 07 RobotState 的真实结论 (OK / FAIL)
+3. 05 SportModeState 是否真无发布 (推翻或确认)
+4. 12 实测急停延迟数值
+5. 把以上写入本 FEATURE 的下一个 session log
+
+如果本 session 的脚本修正在实机上又翻车了，鞭策这个上下文：复审时本应该让人类 review，
+而不是单方面相信代码 review。代价是 2 小时的 1/N。
+

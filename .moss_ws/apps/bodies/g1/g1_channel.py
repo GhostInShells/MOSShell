@@ -50,7 +50,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
 
     chan = new_channel(name="loco", description="G1 locomotion — FSM/velocity/stand height")
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def damp() -> str:
         """急停: 设置 FSM 为 damp 模式。总是可用。"""
         if client is None:
@@ -58,7 +58,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Damp()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def start() -> str:
         """启动运动控制: 设置 FSM 为 start 模式 (500)。"""
         if client is None:
@@ -66,7 +66,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Start()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def sit() -> str:
         """坐下: 设置 FSM 为 sit 模式 (3)。"""
         if client is None:
@@ -74,7 +74,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Sit()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def squat_to_stand_up() -> str:
         """从蹲姿站起: FSM 706。"""
         if client is None:
@@ -82,7 +82,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Squat2StandUp()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def stand_up_to_squat() -> str:
         """从站姿蹲下: FSM 706。"""
         if client is None:
@@ -90,7 +90,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.StandUp2Squat()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def lie_to_stand_up() -> str:
         """从躺姿站起: FSM 702。"""
         if client is None:
@@ -98,7 +98,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Lie2StandUp()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def stop_move() -> str:
         """停止移动: 速度归零。"""
         if client is None:
@@ -106,7 +106,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.StopMove()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def high_stand() -> str:
         """高位站立: 设置最大站立高度。"""
         if client is None:
@@ -114,7 +114,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.HighStand()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def low_stand() -> str:
         """低位站立: 设置最小站立高度。"""
         if client is None:
@@ -122,7 +122,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.LowStand()
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def move(
         vx: float,
         vy: float,
@@ -141,7 +141,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.Move(vx, vy, vyaw, continous_move=continuous)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def balance_stand(balance_mode: int) -> str:
         """设置平衡模式。
 
@@ -152,7 +152,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.BalanceStand(balance_mode)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def wave_hand(turn: bool = False) -> str:
         """挥手动作。turn=True 时转身挥手。"""
         if client is None:
@@ -160,7 +160,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         code = client.WaveHand(turn_flag=turn)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def shake_hand() -> str:
         """握手动作 (自动切换阶段)。"""
         if client is None:
@@ -169,7 +169,7 @@ def _build_loco_channel(client=None) -> MutableChannel:
         return "ok" if code == 0 else f"error:{code}"
 
     # -- 底层 API: SetVelocity (用于自定义速度曲线) --
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def set_velocity(
         vx: float,
         vy: float,
@@ -195,7 +195,7 @@ def _build_arm_channel(client=None) -> MutableChannel:
 
     chan = new_channel(name="arm", description="G1 arm — preset action execution")
 
-    @chan.build.command()
+    @chan.build.command(always_observe=True)
     async def list_actions() -> str:
         """获取可用手臂动作列表。"""
         if client is None:
@@ -208,7 +208,7 @@ def _build_arm_channel(client=None) -> MutableChannel:
             return f"ok: {data}"
         return f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def execute_action(action_name: str) -> str:
         """执行手臂预设动作。
 
@@ -223,7 +223,7 @@ def _build_arm_channel(client=None) -> MutableChannel:
         code = client.ExecuteAction(action_id)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def release_arm() -> str:
         """释放手臂: 停止当前手臂动作，释放手臂控制。"""
         if client is None:
@@ -241,7 +241,7 @@ def _build_audio_channel(client=None) -> MutableChannel:
 
     chan = new_channel(name="audio", description="G1 audio — TTS/LED/volume control")
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def say(text: str, speaker_id: int = 0) -> str:
         """TTS 语音合成并播放。
 
@@ -253,17 +253,20 @@ def _build_audio_channel(client=None) -> MutableChannel:
         code = client.TtsMaker(text, speaker_id)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=True)
     async def get_volume() -> str:
-        """获取当前音量。"""
+        """获取当前音量 (0-100)。"""
         if client is None:
             return "no client"
         code, vol = client.GetVolume()
-        if code == 0:
-            return f"ok: {vol}"
-        return f"error:{code}"
+        if code != 0:
+            return f"error:{code}"
+        # GetVolume 返回 (code, dict) — dict 形如 {"volume": N}
+        if isinstance(vol, dict):
+            return f"ok: {vol.get('volume', vol)}"
+        return f"ok: {vol}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def set_volume(volume: int) -> str:
         """设置音量。volume: 0-100。"""
         if client is None:
@@ -271,7 +274,7 @@ def _build_audio_channel(client=None) -> MutableChannel:
         code = client.SetVolume(volume)
         return "ok" if code == 0 else f"error:{code}"
 
-    @chan.build.command()
+    @chan.build.command(always_observe=False)
     async def led_control(r: int, g: int, b: int) -> str:
         """控制 G1 机身 RGB LED。
 
