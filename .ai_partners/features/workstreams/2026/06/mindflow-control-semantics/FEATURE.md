@@ -1,14 +1,14 @@
 ---
 created: 2026-06-02
 depends: []
-description: Impulse 增加 mode 分类, buffer/notify/silent 仲裁, interrupt=clear_first,
-  thinking_effort, 协议化强度/保护期. 删除 PriorityProtectionAttention/PriorityMindflow.
-  全 interpreter 用 append. memento 替换 conversation.
+description: Impulse 增加 mode 分类, buffer/notify/silent 仲裁, interrupt=clear_first, thinking_effort,
+  协议化强度/保护期. 删除 PriorityProtectionAttention/PriorityMindflow. 全 interpreter 用 append.
+  memento 替换 conversation.
 milestone: null
 priority: P0
-status: in-progress
+status: completed
 title: Mindflow Control Semantics — 协议化仲裁与生命周期重构
-updated: '2026-06-14'
+updated: '2026-06-15'
 ---
 
 # Mindflow Control Semantics
@@ -526,6 +526,51 @@ CommandNucleus / NotifyNucleus / InterruptNucleus 三个 nucleus 在 add_signal 
 
 五元 Nucleus 拓扑闭环, 协议事实与运行时实现完全对齐. 209 mindflow 测试全绿. 路径上经历 3 轮命名 review (broadcast vs silent 之争 → silent/notify 对偶 → 五元定型), 集成层暴露 1 个 P0 protocol-implementation gap 并修复. mindflow 的心智模型完整度 (能定义出 Zen state, 6 mode 不冲突, 两两单测覆盖) 在落地过程中被反复验证, 是这套抽象解决"如何让 ghost 在三循环全双工运行时下保持可仲裁可扩展的认知体系"问题的有力支撑.
 
+### 2026-06-15 收口 (Claude Opus 4.7 (1M context) 与人类工程师)
+
+**整体定位**: 收口会话. 完成 06-14 锚定的剩余清单 (1/2 单测), 反哺 GhostRuntimeImpl 与 ThreeLoopSuite 双向对齐, 把 mindflow-control-semantics 推到 completed.
+
+**06-14 遗留命题校正**:
+
+1. **"mindflow 整体重构 (移除 nucleus last-impulse cache)" 是记录错误** — 跨线程仲裁结构下, nucleus 自持 last-impulse cache 是协议契约不是技术债. 仲裁来源不同线程, mindflow 主 loop 把 impulse 卸载到独立 loop 做 challenge, pop/raise 不在同一 event loop 内. Python 边界下无更好求解. 除非方案涌现, 不列为 feature.
+
+2. **"GhostRuntimeImpl 生命周期单独测试组" 转为反哺策略** — ThreeLoopSuite 是 GhostRuntimeImpl 的协议级参考实现; 模型有能力解耦 "feature 对齐" 与 "runtime 运行时逻辑" 两层验证. 关键 feature 在 suite 里编排, 然后反哺 review 实现.
+
+**两条单测落地** (本阶段闭环, 各自独立 commit):
+
+| Commit | 文件 | 测试数 | 风格 |
+|---|---|---|---|
+| `ece6251` | `test_shell_moss_dynamic_cache.py` + 5 个只读 property 暴露在 CTMLShell | 6 | 探针 (stale_time 非 CTML 协议) |
+| `8e84318` | `test_shell_append_cross_frame.py` | 5 | 协议 (CTML 输入 + side effects 输出) |
+
+**反哺修正** (同步改 GhostRuntimeImpl + ThreeLoopSuite):
+
+| # | 修正点 | 修法 |
+|---|---|---|
+| 1 | interrupt 协议响应错用 `stop_interpretation` (`ghost_runtime.py:239`) | 改 `shell.clear()` — 后者是 stop_interpretation 的超集, 包含 speech 缓冲清空 + runtime tree pending cancel. 单 stop_interpretation 留下半截状态. ThreeLoopSuite `stop_interpretation_calls` → `interrupt_clear_calls`, 与 `shell_clear_calls` (action abort 计数) 分开 |
+| 2 | refresh_metas freshness window 1.0s → 0.5s | 人类感知阈值内 + 大于典型 articulate 首句时长, 保证 action 出口的 fire-and-forget 预热在下一轮 articulator 入口命中 stale_time, 零阻塞代价 |
+| 3 | action 出口 refresh `await` → fire-and-forget | 不阻塞 action_loop 进下一轮. 包 `_post_action_refresh` wrapper 捕获异常 warning log. 未来时序敏感点会加统一关键字 trace, 此处先做兜底 |
+
+**关键设计原则** (反哺中确认):
+
+- **shell.clear ⊃ stop_interpretation**: `clear()` 是 `stop_interpretation + speech.clear + tree.clear` 的超集. interrupt 协议要求"停止所有执行中的 logos", 必须用 clear.
+- **append 模式跨帧延续依赖 `clear_after_exit=False`**: interpreter `__aexit__` 走 `close(cancel_executing=self._clear_after_exit)`, 默认 False 才能让运行态 task 跨帧存活. mindflow 体系永远用 `kind='append', clear_after_exit=False`.
+- **0.5s freshness window**: 人类感知边界 + LLM 首句最短时间, 是 refresh_metas 时序契约的合理上限. 慢通道理论上应自行改推模式, 不该让该阈值承担其延迟.
+- **Command Task 是编译态 AST 节点**: 不是 asyncio task. 跨帧延续测试必须用 `asyncio.Event` 钉死 "进入运行态" 前提.
+
+**下一会话锚定 (独立 workstream)**:
+
+CTML 1.0.0 英文版 — 借英文版作为协议级 review 锚点, 清理 "漏斗" / "父子分发" 等历史话术包袱, 用 backtick `channel` / `command` / `scope` 实现术语零跳转. 当前中文版踩坑 (本会话写 append 测试时也踩了父子阻塞) 已验证现有话术对模型的可学习性边界. 但最终解法不是优化话术, 而是预训练 + FT. CTML 自洽是唯一的 bar — 当前已自洽, 英文版只是改善"模型一次内化"的带宽.
+
+**收口判据**:
+
+- 1/2 单测全绿 (382 tests in shell + mindflow + ctml suites, 含本会话新增 11)
+- 反哺修正后 1321 tests 全绿
+- ThreeLoopSuite 与 GhostRuntimeImpl 在 interrupt 协议 + refresh_metas 时序契约上双向对齐
+- 06-14 遗留 3 项命题处理完毕: 1/2 落地, GhostRuntimeImpl 独立测试组转为反哺策略, mindflow 重构识别为记录错误
+
+mindflow-control-semantics: in-progress → completed.
+
 ---
 
-*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-14*
+*调研与评审: DeepSeek V4 / Claude Opus 4.7 与人类工程师, 2026-06-02 ~ 2026-06-15*

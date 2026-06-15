@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from typing import Type
 
@@ -44,8 +45,12 @@ class GhostRuntimeImpl(GhostRuntime):
             )
         self._moss_runtime = moss_runtime
         # todo: 未来迁移到 config type 中.
-        self._default_shell_prepare_timeout: float = 1.0
-        self._refresh_meta_stale_time: float = 1.0
+        # 0.5s 是 refresh_metas 的 freshness 窗口 — 人类感知阈值内,
+        # 同时大于典型 articulate 首句时长 (保证 action 出口预热在下一轮
+        # articulator 入口时命中 stale_time). 慢通道理论上应自行改推模式,
+        # 不该让 0.5s 阈值承担其延迟.
+        self._default_shell_prepare_timeout: float = 0.5
+        self._refresh_meta_stale_time: float = 0.5
         self._source_path = source_path
         self._ghost_meta = ghost_meta
         self._ghost_instance: Ghost | None = None
@@ -233,10 +238,13 @@ class GhostRuntimeImpl(GhostRuntime):
                 # mindflow 级注册留作将来更高层治理 (如多 ghost 共享 mindflow) 时设计.
                 try:
                     impulse = attention.draw_from()
-                    # 实现 interrupt 协议.
+                    # 实现 interrupt 协议: 停止所有执行中的 logos.
+                    # shell.clear() 是 stop_interpretation 的超集 —
+                    # 关闭当前 interpreter + 清空 speech 缓冲 + 取消 runtime tree
+                    # 上 pending 的 command tasks. 单调 stop_interpretation 只
+                    # 关 interpreter, 留下半截状态.
                     if impulse.interrupt:
-                        # 先终止运行.
-                        await self.moss.shell.stop_interpretation()
+                        await self.moss.shell.clear()
                     async with attention:
                         async for articulate, action in attention.loop():
                             self._articulate_queue.sync_q.put_nowait(articulate)
@@ -315,7 +323,7 @@ class GhostRuntimeImpl(GhostRuntime):
             # 等待刷新结束.
             moment.with_perspective(
                 'moss_dynamic',
-                self.moss.shell.dynamic_messages(available_only=True, stale_time=1.0),
+                self.moss.shell.dynamic_messages(available_only=True, stale_time=self._refresh_meta_stale_time),
             )
             try:
                 async for delta in ghost.articulate(articulator):
@@ -376,8 +384,10 @@ class GhostRuntimeImpl(GhostRuntime):
                     return
                 messages, observe = await self._stream_execute(action)
                 action.outcome(*messages, observe=observe)
-                # 正常运行结束, 立刻刷新.
-                await self.moss.shell.refresh_metas(self._default_shell_prepare_timeout)
+                # 时序契约: action 结束 fire-and-forget refresh_metas,
+                # 预热下一轮 articulator 入口的 stale_time 检查.
+                # 不 await — 让 action_loop 立即进下一轮.
+                asyncio.create_task(self._post_action_refresh())
         except FatalError:
             self.moss.logger.exception("%s action fatal error", self._log_prefix)
             # todo: hook — MindflowErrorHook.on_fatal(error)
@@ -385,6 +395,20 @@ class GhostRuntimeImpl(GhostRuntime):
         except Exception:
             self.moss.logger.exception("%s action loop error", self._log_prefix)
             # 非关键路径异常. 不中断循环 — action 是消耗品, 丢掉当前 action 继续.
+
+    async def _post_action_refresh(self) -> None:
+        """fire-and-forget refresh, 内部捕获异常防 task 静默崩溃.
+
+        未来时序敏感点会加统一关键字 trace, 这里只做 warning 兜底.
+        """
+        try:
+            await self.moss.shell.refresh_metas(self._default_shell_prepare_timeout)
+        except Exception:
+            self.moss.logger.warning(
+                "%s post-action refresh_metas failed",
+                self._log_prefix,
+                exc_info=True,
+            )
 
     async def _stream_execute(self, action: Action) -> tuple[list[Message], _Observe]:
         """流式执行: action.received_logos() → interpreter.feed(delta) → 结算.

@@ -10,7 +10,9 @@
 设计约束 (来自 ``core.blueprint.mindflow``):
     - ``main_loop``: ``async for attention in mindflow.loop()`` → ``async for
       (articulator, action) in attention.loop()`` → 两 queue put_nowait.
-      ``impulse.interrupt = True`` 时进 attention.loop 前先 ``shell.stop_interpretation()``.
+      ``impulse.interrupt = True`` 时进 attention.loop 前先 ``shell.clear()`` —
+      shell.clear 是 stop_interpretation 的超集 (清 speech + tree + interpreter),
+      与 GhostRuntimeImpl._main_loop 对齐.
     - ``articulate_loop``: 从 articulator queue 取 articulator, 在它的生命周期里
       调 ``send_logos(...)`` 把模型 logos 流送出. 测试里直接灌固定字串.
     - ``action_loop``: 从 action queue 取 action, ``await action.wait_ready()``,
@@ -110,8 +112,13 @@ class ThreeLoopSuite:
         self.articulate_func: Callable[[Articulator], Coroutine] | None = None
         self.action_callback: Callable | None = None
         self.interpretations: list[Interpretation] = []
-        # 记录 stop_interpretation 调用次数 — interrupt 协议的反推依据.
-        self.stop_interpretation_calls: int = 0
+        # 记录 interrupt 协议触发的 shell.clear 调用次数 —
+        # interrupt 协议 (main_loop 入口) 要求停止所有执行中的 logos.
+        # shell.clear 是 stop_interpretation 的超集 — 关闭 interpreter +
+        # 清 speech 缓冲 + 取消 runtime tree pending command tasks.
+        # 与 shell_clear_calls (action abort 三阶段触发的 clear) 分开计,
+        # 让 interrupt 协议和 abort 协议的断言彼此独立.
+        self.interrupt_clear_calls: int = 0
         # 记录 shell.clear 调用次数 — action abort → clear 协议的反推依据.
         self.shell_clear_calls: int = 0
         # 思维奔逸 (mind wandering) 预留 flag.
@@ -145,9 +152,11 @@ class ThreeLoopSuite:
                 impulse = attention.draw_from()
                 self.impulses.append(impulse)
                 if impulse.interrupt:
-                    # 验证中断.
-                    self.stop_interpretation_calls += 1
-                    await self.shell.stop_interpretation()
+                    # interrupt 协议: 停止所有执行中的 logos.
+                    # 与 GhostRuntimeImpl._main_loop 对齐 — shell.clear() 而非
+                    # stop_interpretation, 是后者的超集 (清 speech + tree + interpreter).
+                    self.interrupt_clear_calls += 1
+                    await self.shell.clear()
                 # 开启上下文.
                 async with attention:
                     self.last_attention = attention
@@ -173,12 +182,24 @@ class ThreeLoopSuite:
                 self.articulation_count += 1
                 async with art:
                     self.moments.append(art.moment)
-                    # 真实 _run_articulator 的预填: command_logos 先 send 给 action.
+                    # 时序契约 (与 GhostRuntimeImpl._run_articulator 对齐):
+                    # 1. refresh_metas 阻塞 — 拿实时 perspectives, timeout/stale_time 等值 0.5s
+                    #    (人类感知阈值内, 慢通道理论上应自行改推模式).
+                    await self.shell.refresh_metas(0.5, stale_time=0.5)
+                    # 2. command_logos 预发送给 action.
                     if art.moment.command_logos:
                         art.send_nowait(art.moment.command_logos)
                     if art.thinking_effort() == 'none':
                         # 模拟 _run_articulator early return: 不调 ghost.articulate.
+                        # 注意: early return 路径不拼 moss_dynamic — 不思考就不需要.
                         continue
+                    # 3. moss_dynamic 注入 perspective — 复用 articulator 入口刚刷的缓存
+                    #    (stale_time=0.5 保证命中, 零阻塞代价).
+                    art.moment.with_perspective(
+                        'moss_dynamic',
+                        self.shell.dynamic_messages(available_only=True, stale_time=0.5),
+                    )
+                    # 4. articulate.
                     if self.articulate_func:
                         await art.create_task(
                             self.articulate_func(art)
@@ -201,6 +222,11 @@ class ThreeLoopSuite:
                         await act.create_task(self._run_action(act))
                     else:
                         await self._run_action(act)
+                # 时序契约 (与 GhostRuntimeImpl._run_action 对齐):
+                # action 结束触发 fire-and-forget refresh_metas, 预热下一轮
+                # articulator 入口的 stale_time 检查. 不 await — 让 action_loop
+                # 立即进下一轮. 异常吞掉记 warning, 不影响主循环.
+                asyncio.create_task(self._post_action_refresh())
                 self.action_done_count += 1
 
         except janus.AsyncQueueShutDown:
@@ -208,6 +234,14 @@ class ThreeLoopSuite:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            self.exceptions.append(e)
+
+    async def _post_action_refresh(self) -> None:
+        """fire-and-forget refresh, 内部捕获异常防 task 静默崩溃."""
+        try:
+            await self.shell.refresh_metas()
+        except Exception as e:
+            # 与 GhostRuntimeImpl 异常分级一致: 非关键路径异常不中断主循环.
             self.exceptions.append(e)
 
     async def _run_action(self, act: Action) -> None:
@@ -383,9 +417,9 @@ async def test_command_signal_skips_articulate_runs_logos():
 
 @pytest.mark.asyncio
 async def test_interrupt_signal_stops_running_interpreter():
-    """interrupt 协议: action 跑 long task 中, interrupt signal 抢占 + stop_interpretation.
+    """interrupt 协议: action 跑 long task 中, interrupt signal 抢占 + shell.clear.
 
-    协议契约 (GhostRuntimeImpl._main_loop:237-239):
+    协议契约 (GhostRuntimeImpl._main_loop 与本套件对齐):
         - InterruptNucleus 产 impulse: priority=FATAL + mode=notify + thinking_effort='none' + interrupt=True
         - FATAL 必抢占, attention1 被 abort
         - main_loop 在进入 attention2.loop() 前调 shell.stop_interpretation()
@@ -445,8 +479,8 @@ async def test_interrupt_signal_stops_running_interpreter():
     assert impulse2.thinking_effort == 'none'
     assert impulse2.interrupt is True
 
-    # main_loop 触发了 stop_interpretation.
-    assert suite.stop_interpretation_calls == 1
+    # main_loop 触发了 shell.clear (interrupt 协议).
+    assert suite.interrupt_clear_calls == 1
 
     # 长任务收到 CancelledError.
     assert long_task_outcome == ['cancelled']
@@ -517,7 +551,7 @@ async def test_interrupt_during_articulate_aborts_logos_stream():
     # interrupt 协议字段.
     assert suite.attention_count == 2
     assert suite.impulses[1].interrupt is True
-    assert suite.stop_interpretation_calls == 1
+    assert suite.interrupt_clear_calls == 1
     assert not suite.exceptions
 
 
