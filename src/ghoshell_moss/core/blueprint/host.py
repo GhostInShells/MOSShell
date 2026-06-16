@@ -330,8 +330,15 @@ class GhostRuntime(ABC):
         """逆序清理: ghost.__aexit__ → moss.__aexit__"""
         pass
 
-    def pause(self, toggle: bool = True) -> None:
-        """急停: 级联暂停 mindflow，attention abort 自然中断 articulate/action 循环."""
+    def is_paused(self) -> bool:
+        """查询 pause 状态."""
+        return False
+
+    def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
+        """急停 — 幂等, 设值. callback 在级联完成后同步 fire (done 语义).
+
+        callback 必须自行保证线程安全 (可能跨 loop 或跨线程调用).
+        """
         pass
 
     def close(self) -> None:

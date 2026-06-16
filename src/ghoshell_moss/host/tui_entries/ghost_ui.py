@@ -118,11 +118,15 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         return self.host.run_ghost(self.host.env.ghost_name)
 
     def _on_emergency_pause(self) -> None:
-        self._paused = not self._paused
-        self.runtime.pause(self._paused)
+        target = not self.runtime.is_paused()
+        self.runtime.pause(target, callback=self._on_pause_done)
+
+    def _on_pause_done(self) -> None:
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
 
     def _prompt_status(self) -> list[tuple[str, str]]:
-        if self._paused:
+        if self.runtime.is_paused():
             return [("fg:red bold", "[PAUSED] ")]
         return []
 

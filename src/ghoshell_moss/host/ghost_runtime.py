@@ -1,11 +1,12 @@
 import asyncio
 import contextlib
-from typing import Type
+from typing import Callable, Type
 
 import janus
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth, LoopStatus
+from ghoshell_moss.host.pause_controller import PauseController
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action, Signal
 from ghoshell_moss.core.concepts.errors import FatalError
@@ -55,6 +56,7 @@ class GhostRuntimeImpl(GhostRuntime):
         self._ghost_meta = ghost_meta
         self._ghost_instance: Ghost | None = None
         self._mindflow: Mindflow | None = None
+        self._pause_ctrl = PauseController()
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._loop_status: LoopHealth = LoopHealth(
@@ -126,6 +128,9 @@ class GhostRuntimeImpl(GhostRuntime):
         logger.debug("%s step 5/5: wiring mindflow", self._log_prefix)
         await self._wire_mindflow()
 
+        # 急停级联控制器 — mindflow 和 shell 都已就绪
+        self._pause_ctrl.bind(self._mindflow, self.moss.shell)
+
         self._started = True
         # todo: hook — GhostRuntimeLifecycleHook.on_started(self)
         logger.info("%s started", self._log_prefix)
@@ -142,9 +147,18 @@ class GhostRuntimeImpl(GhostRuntime):
             )
         # todo: hook — GhostRuntimeLifecycleHook.on_stopped(self)
 
-    def pause(self, toggle: bool = True) -> None:
-        if self._mindflow is not None:
-            self._mindflow.pause(toggle)
+    def is_paused(self) -> bool:
+        return self._pause_ctrl.is_paused()
+
+    def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
+        """急停 — 幂等, 设值. callback 在级联完成后同步 fire (done 语义).
+
+        PauseController 负责状态机 + mindflow/shell 级联.
+        callback 必须自行保证线程安全 (可能跨 loop 或跨线程调用).
+        """
+        self._pause_ctrl.pause(toggle)
+        if callback:
+            callback()
 
     def close(self) -> None:
         logger = self.moss.logger

@@ -3,6 +3,7 @@
 """
 
 import asyncio
+from typing import Callable
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, AsyncIterable, Generic, TypeVar, Any
@@ -113,9 +114,11 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     # --- runtime methods --- #
 
     @abstractmethod
-    def pause(self, toggle: bool = True) -> None:
+    def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
         """
         急停, 立刻生效. 禁止新的命令输入, 除非取消 pause 状态.
+
+        callback 在 clear 完成时 fire (done 语义). 必须自行保证线程安全.
         """
         pass
 

@@ -502,7 +502,6 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 "traceback.item": "cyan",
             })
         )
-        self._paused = False
         self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
         self._bottom_toolbar_text: str = ""
         self._dummy_completer = DummyCompleter()
