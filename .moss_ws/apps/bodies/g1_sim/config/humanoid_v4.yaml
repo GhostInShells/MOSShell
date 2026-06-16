@@ -1,0 +1,19 @@
+backend: gym_humanoid_v4
+env_id: Humanoid-v4
+render: true
+seed: 7
+control_hz: 50.0
+sim_dt: 0.02
+decimation: 1
+num_obs: 64
+num_actions: 17
+action_scale: 1.0
+command_scale: [1.0, 1.0, 1.0]
+max_linear_speed: 0.6
+max_yaw_speed: 0.8
+default_angles: []
+joint_names: []
+note: "M0 profile. Uses Gymnasium Humanoid-v4 to validate CTML -> channel -> policy -> MuJoCo."
+policy:
+  kind: demo
+  path: ""

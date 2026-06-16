@@ -1,0 +1,15 @@
+[project]
+name = "moss-body-g1-sim"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[host]",
+    "numpy",
+    "pyyaml",
+    "mujoco>=3.0",
+    "gymnasium[mujoco]",
+    "torch",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }
