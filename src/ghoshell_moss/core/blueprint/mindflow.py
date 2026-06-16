@@ -481,7 +481,7 @@ class Impulse(BaseModel):
         if self.perspective:
             # 用 source 源, 占据一个 perspective.
             moment.with_perspective(self.source, self.perspective)
-        moment.percepts.extend(self.messages)
+        moment.with_percepts(self.source, self.messages)
         moment.hint = self.hint
         if self.logos:
             moment.command_logos += self.logos

@@ -163,6 +163,6 @@ async def test_frame_carryover_preserves_logos_and_command_logos():
             assert moment2.id != moment1.id
             assert moment2.command_logos == ''  # impulse 已 drain, 不重复应用
             assert moment2.logos == ''  # 新帧, 模型尚未输出
-            assert moment2.percepts == []
+            assert moment2.percepts == {}
 
             att.abort('test done')

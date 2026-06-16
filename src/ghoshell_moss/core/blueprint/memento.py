@@ -45,7 +45,7 @@ class Reaction(BaseModel, WithAdditional):
     def new_moment(
             self,
             *,
-            percepts: list[Message] | None = None,
+            percepts: dict[str, list[Message]] | None = None,
             hint: str = '',
             command_logos: _Logos = '',
     ) -> "Moment":
@@ -55,7 +55,7 @@ class Reaction(BaseModel, WithAdditional):
         """
         return Moment(
             previous=self,
-            percepts=percepts or [],
+            percepts=percepts or {},
             hint=hint,
             command_logos=command_logos,
         )
@@ -88,10 +88,13 @@ class Moment(BaseModel, WithAdditional):
         default=None,
         description='对 perspectives 的压缩结果. 如果有的话. '
     )
-    percepts: list[Message] = Field(
-        default_factory=list,
-        description="本轮的外部输入: 已经过解析/结构化/多模态对齐, 但尚未经过高层解读."
-                    "在多轮对话中保持, 在触发思考前可以继续添加内容.  "
+    percepts: dict[str, list[Message]] = Field(
+        default_factory=dict,
+        description="本轮的外部输入, source-keyed. 每个 source 覆盖写入, 天然去重."
+                    "与 perspectives 对齐: 同一帧内同 source 只保留最新. "
+                    "多轮对话中 Moment 实例独立, 不跨帧累积."
+                    "JSON 反序列化后 dict 无序 — 需由 memento 存储层按固定插入序"
+                    "重建 (当前无持久化数据, 预留).",
     )
     hint: str = Field(
         default='',
@@ -166,6 +169,20 @@ class Moment(BaseModel, WithAdditional):
         self.perspectives[key] = messages
         return self
 
+    def with_percepts(self, source: str, messages: list[Message]) -> Self:
+        """source-keyed percepts 写入. 同 source 覆盖, 天然去重. 对标 with_perspective."""
+        self.percepts[source] = list(messages)
+        return self
+
+    def percepts_messages(self) -> Iterable[Message]:
+        """展平所有 source 的 percepts, 保持插入序 (Python 3.7+ dict ordered)."""
+        for messages in self.percepts.values():
+            yield from messages
+
+    def percepts_texts(self) -> list[str]:
+        """展平所有 percepts 并提取纯文本, 用于测试断言与调试."""
+        return [msg.to_content_string() for msg in self.percepts_messages()]
+
     def last_moment_id(self) -> str | None:
         if self.previous is None:
             return None
@@ -201,10 +218,10 @@ class Moment(BaseModel, WithAdditional):
             yield Message.new(tag='stop_reason').with_content(reaction.stop_reason)
 
     def is_empty(self) -> bool:
-        return self.previous is None and len(self.percepts) == 0
+        return self.previous is None and all(len(v) == 0 for v in self.percepts.values())
 
     def is_empty_request(self) -> bool:
-        return len(self.percepts) == 0
+        return all(len(v) == 0 for v in self.percepts.values())
 
     def inputs_messages(
             self,
@@ -212,7 +229,7 @@ class Moment(BaseModel, WithAdditional):
             with_command_executing: bool = True,
     ) -> Iterable[Message]:
         """通过别名, 方便理解 percepts 相当于 agent 的 inputs messages. """
-        yield from self.percepts
+        yield from self.percepts_messages()
         if with_command_executing and self.command_logos:
             # 提示模型正在执行的命令:
             yield Message.new(tag='executing').with_content(self.command_logos)
@@ -244,7 +261,7 @@ class Moment(BaseModel, WithAdditional):
         yield from self.previous_reaction_messages()
         if self.compacted_perspectives:
             yield from self.compacted_perspectives
-        yield from self.percepts
+        yield from self.percepts_messages()
 
     @classmethod
     def to_history_turns(

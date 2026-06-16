@@ -40,12 +40,12 @@ def test_reaction_defaults():
 def test_reaction_new_moment_passes_all_params():
     r = Reaction(executed_logos="prev logos", stop_reason="done")
     moment = r.new_moment(
-        percepts=[Message.new().with_content("p")],
+        percepts={"test": [Message.new().with_content("p")]},
         hint="hint text",
         command_logos="reflex!",
     )
     assert moment.previous is r
-    assert _text(moment.percepts[0]) == "p"
+    assert _text(next(iter(moment.percepts_messages()))) == "p"
     assert moment.hint == "hint text"
     assert moment.command_logos == "reflex!"
 
@@ -53,15 +53,15 @@ def test_reaction_new_moment_passes_all_params():
 def test_reaction_new_moment_defaults_empty():
     r = Reaction(executed_logos="prev")
     moment = r.new_moment()
-    assert moment.percepts == []
+    assert moment.percepts == {}
     assert moment.hint == ""
     assert moment.command_logos == ""
     assert moment.previous is r
 
 
-def test_reaction_new_moment_percepts_none_is_empty_list():
+def test_reaction_new_moment_percepts_none_is_empty_dict():
     moment = Reaction().new_moment(percepts=None)
-    assert moment.percepts == []
+    assert moment.percepts == {}
 
 
 # ============================================================
@@ -74,7 +74,7 @@ def test_moment_defaults():
     assert m.previous is None
     assert m.perspectives == {}
     assert m.compacted_perspectives is None
-    assert m.percepts == []
+    assert m.percepts == {}
     assert m.hint == ""
     assert m.command_logos == ""
     assert m.logos == ""
@@ -120,7 +120,7 @@ def test_moment_is_empty_matrix():
     assert empty.is_empty()
     assert empty.is_empty_request()
 
-    with_percept = Moment(percepts=[Message.new().with_content("x")])
+    with_percept = Moment(percepts={"test": [Message.new().with_content("x")]})
     assert not with_percept.is_empty()
     assert not with_percept.is_empty_request()
 
@@ -206,7 +206,7 @@ def test_previous_reaction_messages_stop_reason_only():
 
 def test_inputs_messages_order_percepts_executing_hint():
     m = Moment(
-        percepts=[Message.new().with_content("p1")],
+        percepts={"test": [Message.new().with_content("p1")]},
         command_logos="cmd",
         hint="do it",
     )
@@ -219,19 +219,19 @@ def test_inputs_messages_order_percepts_executing_hint():
 
 
 def test_inputs_messages_without_command_executing():
-    m = Moment(percepts=[Message.new().with_content("p1")], command_logos="cmd")
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, command_logos="cmd")
     msgs = list(m.inputs_messages(with_command_executing=False))
     assert all(mm.meta.tag != "executing" for mm in msgs)
 
 
 def test_inputs_messages_without_hint():
-    m = Moment(percepts=[Message.new().with_content("p1")], hint="skip")
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="skip")
     msgs = list(m.inputs_messages(with_hint=False))
     assert all(mm.meta.tag != "hint" for mm in msgs)
 
 
 def test_inputs_messages_skips_empty_command_and_hint():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     msgs = list(m.inputs_messages(with_hint=True, with_command_executing=True))
     assert len(msgs) == 1
 
@@ -244,8 +244,7 @@ def test_as_request_messages_full_order():
     prev = Reaction(messages=[Message.new().with_content("outcome")])
     m = Moment(
         previous=prev,
-        percepts=[Message.new().with_content("percept")],
-        hint="react!",
+        percepts={"test": [Message.new().with_content("percept")]}, hint="react!",
     )
     m.with_perspective("moss_dynamic", [Message.new().with_content("dynamic")])
     texts = _texts(m.as_request_messages(with_perspectives=True, with_hint=True))
@@ -255,7 +254,7 @@ def test_as_request_messages_full_order():
 
 
 def test_as_request_messages_without_perspectives_uses_compacted():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     m.with_perspective("ctx", [Message.new().with_content("full")])
     m.compacted_perspectives = [Message.new().with_content("compact")]
     texts = _texts(m.as_request_messages(with_perspectives=False, with_hint=False))
@@ -266,7 +265,7 @@ def test_as_request_messages_without_perspectives_uses_compacted():
 
 
 def test_as_request_messages_without_perspectives_and_no_compacted():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     m.with_perspective("ctx", [Message.new().with_content("full")])
     texts = _texts(m.as_request_messages(with_perspectives=False, with_hint=False))
     assert "full" not in texts
@@ -280,7 +279,7 @@ def test_as_request_messages_without_perspectives_and_no_compacted():
 def test_as_history_messages_with_none_compacted_does_not_crash():
     """compacted_perspectives 默认 None 时, as_history_messages 不应崩溃."""
     prev = Reaction(messages=[Message.new().with_content("outcome")])
-    m = Moment(previous=prev, percepts=[Message.new().with_content("p1")])
+    m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
     assert m.compacted_perspectives is None
     texts = _texts(m.as_history_messages())
     # 历史视图遗忘 perspectives, 只保留 previous + percepts.
@@ -289,7 +288,7 @@ def test_as_history_messages_with_none_compacted_does_not_crash():
 
 def test_as_history_messages_with_compacted():
     prev = Reaction(messages=[Message.new().with_content("outcome")])
-    m = Moment(previous=prev, percepts=[Message.new().with_content("p1")])
+    m = Moment(previous=prev, percepts={"test": [Message.new().with_content("p1")]})
     m.with_perspective("ctx", [Message.new().with_content("live perspective")])
     m.compacted_perspectives = [Message.new().with_content("compacted")]
     texts = _texts(m.as_history_messages())
@@ -299,7 +298,7 @@ def test_as_history_messages_with_compacted():
 
 
 def test_as_history_messages_forgets_perspectives_even_when_present():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     m.with_perspective("ctx", [Message.new().with_content("never in history")])
     texts = _texts(m.as_history_messages())
     assert "never in history" not in texts
@@ -310,7 +309,7 @@ def test_as_history_messages_forgets_perspectives_even_when_present():
 # ============================================================
 
 def test_to_dict_excludes_defaults_and_none():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     d = m.to_dict()
     assert isinstance(d, dict)
     # 默认值字段不应出现.
@@ -323,7 +322,7 @@ def test_to_dict_excludes_defaults_and_none():
 
 def test_to_json_excludes_perspectives_and_hint_by_default():
     """默认 exclude_perspectives=True + exclude_hint=True: 两者都不应泄漏."""
-    m = Moment(percepts=[Message.new().with_content("p1")], hint="secret hint")
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="secret hint")
     m.with_perspective("ctx", [Message.new().with_content("secret perspective")])
     j = m.to_json()
     assert "secret perspective" not in j
@@ -338,7 +337,7 @@ def test_to_json_can_keep_perspectives():
 
 
 def test_to_json_can_keep_hint():
-    m = Moment(percepts=[Message.new().with_content("p1")], hint="keep hint")
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]}, hint="keep hint")
     j = m.to_json(exclude_perspectives=True, exclude_hint=False)
     assert "keep hint" in j
 
@@ -347,8 +346,7 @@ def test_for_saving_clears_perspectives_and_hint():
     prev = Reaction(executed_logos="ran")
     m = Moment(
         previous=prev,
-        percepts=[Message.new().with_content("p1")],
-        hint="ephemeral",
+        percepts={"test": [Message.new().with_content("p1")]}, hint="ephemeral",
         command_logos="cmd",
         logos="model output",
     )
@@ -361,7 +359,7 @@ def test_for_saving_clears_perspectives_and_hint():
     assert _texts(saved.compacted_perspectives) == ["compact"]
     # 其余字段保留.
     assert saved.previous is prev
-    assert _texts(saved.percepts) == ["p1"]
+    assert _texts(saved.percepts_messages()) == ["p1"]
     assert saved.command_logos == "cmd"
     assert saved.logos == "model output"
     # 原 moment 不被修改 (model_copy).
@@ -370,7 +368,7 @@ def test_for_saving_clears_perspectives_and_hint():
 
 
 def test_for_saving_compacted_none_becomes_empty_list():
-    m = Moment(percepts=[Message.new().with_content("p1")])
+    m = Moment(percepts={"test": [Message.new().with_content("p1")]})
     saved = m.for_saving()
     assert saved.compacted_perspectives == []
 
@@ -382,8 +380,7 @@ def test_for_saving_compacted_none_becomes_empty_list():
 def _moment_with_logos(logos: str, percept: str = "", previous: Reaction | None = None) -> Moment:
     return Moment(
         previous=previous,
-        percepts=[Message.new().with_content(percept)] if percept else [],
-        logos=logos,
+        percepts={"test": [Message.new().with_content(percept)]} if percept else {}, logos=logos,
     )
 
 
@@ -403,7 +400,7 @@ def test_to_history_turns_single_moment_with_logos():
 def test_to_history_turns_splits_on_logos():
     m1 = _moment_with_logos("logos 1", percept="input 1")
     r1 = m1.new_reaction()
-    m2 = m1.new_reaction().new_moment(percepts=[Message.new().with_content("input 2")])
+    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("input 2")]})
     m2.logos = "logos 2"
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
@@ -414,11 +411,11 @@ def test_to_history_turns_splits_on_logos():
 def test_to_history_turns_stitches_executed_logos_when_no_model_logos():
     """某轮模型未产 logos 但系统执行了 command, executed_logos 应缝合进下一回合."""
     # m1: 无 model logos, 但执行了 command.
-    m1 = Moment(percepts=[Message.new().with_content("input 1")], logos="")
+    m1 = Moment(percepts={"test": [Message.new().with_content("input 1")]}, logos="")
     r1 = m1.new_reaction()
     r1.executed_logos = "command ran"
     # m2: 承接 r1, 模型产出 logos.
-    m2 = r1.new_moment(percepts=[Message.new().with_content("input 2")])
+    m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
     m2.logos = "model logos"
     turns = list(Moment.to_history_turns([m1, m2]))
     # m1 无 logos → 不切回合, buffer 继续; m2 有 logos → 切一个回合.
@@ -436,7 +433,7 @@ def test_to_history_turns_trailing_buffer_yields_none_logos():
     """末尾若有未被 logos 切分的 buffer, 以 (messages, None) 收尾."""
     m1 = _moment_with_logos("logos 1", percept="input 1")
     # m2 无 logos, 末尾残留.
-    m2 = m1.new_reaction().new_moment(percepts=[Message.new().with_content("trailing")])
+    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("trailing")]})
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
     assert turns[0][1] == "logos 1"
@@ -449,7 +446,7 @@ def test_to_history_turns_executed_logos_not_duplicated_after_model_logos():
     m1 = _moment_with_logos("model logos 1", percept="input 1")
     r1 = m1.new_reaction()
     r1.executed_logos = "executed for m1"
-    m2 = r1.new_moment(percepts=[Message.new().with_content("input 2")])
+    m2 = r1.new_moment(percepts={"test": [Message.new().with_content("input 2")]})
     m2.logos = "model logos 2"
     turns = list(Moment.to_history_turns([m1, m2]))
     assert len(turns) == 2
@@ -460,7 +457,7 @@ def test_to_history_turns_executed_logos_not_duplicated_after_model_logos():
 
 def test_to_history_turns_single_moment_without_logos():
     """单条无 logos 但有消息 → 以 (messages, None) 收尾, 不丢消息."""
-    m = Moment(percepts=[Message.new().with_content("only input")])
+    m = Moment(percepts={"test": [Message.new().with_content("only input")]})
     turns = list(Moment.to_history_turns([m]))
     assert len(turns) == 1
     messages, logos = turns[0]
@@ -470,9 +467,9 @@ def test_to_history_turns_single_moment_without_logos():
 
 def test_to_history_turns_all_moments_without_logos_merge_into_one():
     """n 条全程无 logos → 合并为单个 (messages, None) 回合."""
-    m1 = Moment(percepts=[Message.new().with_content("a")])
-    m2 = m1.new_reaction().new_moment(percepts=[Message.new().with_content("b")])
-    m3 = m2.new_reaction().new_moment(percepts=[Message.new().with_content("c")])
+    m1 = Moment(percepts={"test": [Message.new().with_content("a")]})
+    m2 = m1.new_reaction().new_moment(percepts={"test": [Message.new().with_content("b")]})
+    m3 = m2.new_reaction().new_moment(percepts={"test": [Message.new().with_content("c")]})
     turns = list(Moment.to_history_turns([m1, m2, m3]))
     assert len(turns) == 1
     messages, logos = turns[0]

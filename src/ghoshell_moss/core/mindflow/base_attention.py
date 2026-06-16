@@ -643,7 +643,7 @@ class AbsAttention(Attention, ABC):
             for key, func in self._percepts_funcs.items():
                 try:
                     messages = func()
-                    moment.percepts.extend(messages)
+                    moment.percepts[key] = messages
                 except Exception as e:
                     self._logger.error(
                         "%s failed to prepare percepts messages of %s: %s",

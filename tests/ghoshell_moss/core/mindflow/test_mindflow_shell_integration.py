@@ -674,7 +674,7 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
             art.send_nowait("frame1_done")
         else:
             # 第二帧 — 此时 _prepare_moment 已经把 buffer drain 到 percepts.
-            captured_percepts.append(list(art.moment.percepts))
+            captured_percepts.append(list(art.moment.percepts_messages()))
             art.send_nowait("frame2_done")
             attention2_articulate_done.set()
 
@@ -832,4 +832,33 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
     assert suite.articulation_count == 2
     assert suite.articulation_done_count == 2
     assert frames_seen == ['frame1', 'frame2']
+    assert not suite.exceptions
+
+
+@pytest.mark.asyncio
+async def test_single_input_signal_yields_exactly_one_percept():
+    """一条 InputSignal 产生的第一帧 moment.percepts 不应有重复消息.
+
+    这是 percepts 改为 source-keyed dict 的前置基线 — 确保当前正常路径
+    下不产生重复, dict 迁移时零行为变化.
+    """
+    suite = ThreeLoopSuite()
+
+    captured_percepts: list[Message] = []
+
+    async def articulate(art: Articulator) -> None:
+        nonlocal captured_percepts
+        captured_percepts.extend(list(art.moment.percepts_messages()))
+        art.send_nowait("ok")
+
+    suite.articulate_func = articulate
+
+    async with suite:
+        suite.mindflow.add_signal(_input_signal("hello"))
+        await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
+        await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
+
+    # 一条信号只产生一组 percepts, 不应重复.
+    assert len(captured_percepts) == 1
+    assert captured_percepts[0].contents[0]["text"] == "hello"
     assert not suite.exceptions
