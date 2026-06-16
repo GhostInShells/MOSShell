@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import time
 import queue
-from typing import Optional
 
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
-from ghoshell_moss.contracts.speech import StreamAudioPlayer
+from ghoshell_moss_contrib.unitree.g1._bootstrap import bootstrap
 
-__all__ = ["G1StreamPlayer", "G1StreamPlayerProvider"]
+bootstrap()
+from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
+
+__all__ = ["G1StreamPlayer"]
 
 
 class G1StreamPlayer(BaseAudioStreamPlayer):
@@ -29,13 +30,12 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
     """
 
     def __init__(
-        self,
-        *,
-        network_interface: str = "eth0",
-        sample_rate: int = 16000,
-        channels: int = 1,
-        logger: LoggerItf | None = None,
-        safety_delay: float = 0.15,
+            self,
+            *,
+            sample_rate: int = 16000,
+            channels: int = 1,
+            logger: LoggerItf | None = None,
+            safety_delay: float = 0.15,
     ):
         super().__init__(
             sample_rate=sample_rate,
@@ -43,10 +43,12 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
             logger=logger,
             safety_delay=safety_delay,
         )
-        self._nic = network_interface
         self._app_name = "moss_tts"
         self._stream_id = ""
+        self._buf = b""
         self._stream_count = 0
+        self._data_queue = queue.Queue()
+        self._audio = None  # 由 _audio_stream_start() 赋值
 
     def _next_stream_id(self) -> str:
         self._stream_count += 1
@@ -56,9 +58,7 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
 
     def _audio_stream_start(self):
         """worker 线程: 初始化 DDS + AudioClient + 生成新 stream_id。"""
-        from ghoshell_moss_contrib.unitree.g1 import bootstrap, get_audio_client
-
-        bootstrap(self._nic)
+        from ghoshell_moss_contrib.unitree.g1._bootstrap import get_audio_client
         self._audio = get_audio_client()
         self._stream_id = self._next_stream_id()
 
@@ -91,26 +91,3 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
         self._estimated_end_time = time.time()
         self._play_done_event.set()
         self.logger.info("%s cleared, new stream_id=%s", self._log_prefix, self._stream_id)
-
-
-# -- IoC Provider --------------------------------------------------------------
-
-
-from ghoshell_container import IoCContainer, Provider
-
-
-class G1StreamPlayerProvider(Provider[StreamAudioPlayer]):
-    """在 IoC 容器中注册 G1StreamPlayer 为 StreamAudioPlayer 的实现。"""
-
-    def __init__(self, network_interface: str = "eth0"):
-        self._nic = network_interface
-
-    def singleton(self) -> bool:
-        return True
-
-    def factory(self, con: IoCContainer) -> StreamAudioPlayer:
-        logger = con.force_fetch(LoggerItf)
-        return G1StreamPlayer(
-            network_interface=self._nic,
-            logger=logger,
-        )

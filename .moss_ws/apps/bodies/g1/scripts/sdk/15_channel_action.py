@@ -48,7 +48,7 @@ async def run(nic: str) -> int:
     print("OK\n")
 
     # ── 构建 channel ──
-    from g1_channel import build_g1_channel
+    from ghoshell_moss_contrib.unitree.g1.channel import build_g1_channel
     chan = build_g1_channel(
         loco_client=loco,
         arm_client=arm,

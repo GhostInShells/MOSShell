@@ -22,6 +22,9 @@ from ghoshell_moss.core.blueprint.channel_builder import (
 )
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 
+from ghoshell_moss_contrib.unitree.g1._bootstrap import bootstrap
+bootstrap()
+
 # ── arm action name → id 映射 (来自 SDK g1_arm_action_client.py) ──────────
 
 _ARM_ACTION_MAP: dict[str, int] = {
