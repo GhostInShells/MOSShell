@@ -3,7 +3,7 @@ title: Unitree G1 Integration
 status: in-progress
 priority: P0
 created: 2026-06-04
-updated: 2026-06-14
+updated: 2026-06-16
 depends: []
 milestone:
 description: >-
@@ -395,4 +395,73 @@ import 失败，被错误归因到模块路径。
 
 如果本 session 的脚本修正在实机上又翻车了，鞭策这个上下文：复审时本应该让人类 review，
 而不是单方面相信代码 review。代价是 2 小时的 1/N。
+
+---
+
+## 2026-06-16 Session — 实机 SDK 验证 + PlayStream 流式通路确认
+
+由 Claude Opus 4.7 与人类协作完成。这是 G1 第三轮实机验证 session，
+执行了 RUN_ORDER.md 的阶段一和阶段二，推翻了前任多个关键假设，并确认了流式音频通路。
+
+### 协作方法论
+
+本轮建立了"导盲模式": 模型给指令(做什么/为什么/注意什么)，人类执行反馈，
+模型解读结论决定下一步。解决了人类在 PC2 上无法同时记住全部上下文的问题。
+
+### 完成项
+
+**SDK 验证 (阶段一)**
+
+- 03 topic 扫描 — 拿到 G1 真实 DDS topic 全集。关键发现:
+  - `rt/sportmodestate` + `rt/lf/sportmodestate` **存在** — **推翻前任"G1 不发布"结论**
+  - `rt/odommodestate` + `rt/lf/odommodestate` **存在** — 前任阻塞是类型用错，不是 topic 不存在
+  - `rt/api/robot_state/request+response` **存在** — RobotState 服务在 G1 bus 上
+  - 新发现 topic: `rt/loco_sdk`, `rt/arm/action/state`, `rt/lowstate_doubleimu`, `rt/wirelesscontroller`
+  - `rt/` 和 `rt/lf/` 两种前缀共存
+- 04 LowState — 数据正常。29-34 槽确认为保留(mode=0,q=0)，前任 "29=weight" 误传推翻。mode_machine=6 (Sport)。IMU 合理
+- 05 跳过 — 03 已证明 sportmodestate 发布
+- 06 被动感知 — BmsState(91% SOC)/MainBoardState(47°C)/SecondaryIMU/odom 四路全通。订正 odom 类型: **SportModeState_ 非 IMUState_**
+- 07 RPC 只读 — MotionSwitcher.CheckMode="ai" / Arm.GetActionList(23项) / Audio.GetVolume=80 全 OK。RobotState 因 b2 模块缺 `rpc.client_internal` 而 import 失败。不影响 G1 — MotionSwitcher+LocoClient 已覆盖其功能
+- 00 import — 15/16 OK。b2.robot_state 的失败根因是 `robot_state_client.py` import `rpc.client_internal` 但当前 SDK 的 rpc/ 只有 `internal.py`，SDK 自身命名不一致。不是安装步骤缺失
+
+**音频验证 (阶段二 + PlayStream 探路)**
+
+- 08 音频灯光 — GetVolume/SetVolume/LedControl/TtsMaker/PlayStop/PlayStream 全 OK。LED 红绿蓝白正常，切换间有蓝色复位中间态(与前任记录一致)
+- 14 PlayStream 流式探路 — 6 命题全部回答:
+  - Q1 单次推送完整播放 ✓ (16kHz mono s16le 契约成立)
+  - Q2 同 stream_id 分块无缝拼接 ✓ (流式 TTS 可行)
+  - Q3 PlayStop 即时打断 ✓ (模型说一半可以立刻闭嘴)
+  - Q4 新 stream_id 抢占旧流 ✓ (新句自动打断前句)
+  - Q5 TTS + PlayStream 不同 app_name 不冲突
+  - Q6 48kHz 确认无效，PCM 格式必须 16kHz mono s16le
+  - **流式 TTS 通路确认**: MOSS 合成 → 分块 PlayStream → G1 喇叭。可中断、可抢占、可拼接
+
+**手臂初步验证**
+
+- clap(拍手) 单次测试 — **必须在 Sport 模式执行**。Damp/Sit/Ready 模式均不可用。这对明天测试和 channel 设计有直接影响: 手臂操作没有坐姿安全路径，必须在运控站立态下执行
+
+**文档维护**
+
+- `docs/sdk-topics.md` — 全面重写。修正 odom 类型(IMUState_→SportModeState_)，增补 03 扫描出的 20+ topic，标注每条验证状态和日期，新增 RPC 服务 topic 表
+- `docs/validation-checklist.md` — 已验证项表填充 13 条结论，标注验证方法和日期
+
+### 关键洞察
+
+**文档债是认知债**: 前任 06-14/15 session 跑通了 04-08 但只留了一句"全部可读"，没有结构化记录。导致本轮一度准备全部重跑。`sdk-topics.md` 的 odom 类型从 IMUState_ 到 SportModeState_ 的修正，如果在上一轮就写入文档，本轮的 06 脚本路径订正就不需要了。文档不是测试记录，是让下一个实例不需要重跑。
+
+**前任结论推翻统计**: sportmodestate "不发布" → 推翻。odommodestate "阻塞" → 推翻(类型错误)。RobotState "可能服务不存在" → 部分推翻(服务存在但 client 不可用)。29 号槽 "weight" → 推翻(保留槽)。这些推翻说明纯 Python 代码 review(06-15 session) 不能替代实机验证，但也说明实机验证的每一轮都在显著提升认知精度。
+
+**Sport 模式是手臂动作的硬门槛**: 拍手测试中 Damp/Sit 模式均不可用，只有 Sport(mode_machine=6) 接受。这意味着手臂操作没有"坐姿安全路径" — G1 手臂控制时必须是站立运控态。这对安全设计和 channel 的 mode gating 有直接影响。
+
+**PlayStream 通路从"能通"到"能用"**: 上一个 session 确认了"MOSS 通过蓝牙发声"，本轮确认了"MOSS 可以通过 PlayStream 流式推送高质量 TTS 到 G1 本体喇叭"。音频路径从备选方案升级为主方案。
+
+### 下一步 (明天实机)
+
+测试顺序 (全部需 Sport 模式 + 空旷地面 + 遥控器在手):
+1. `09_arm_preset.py` — 手臂预设: face wave + hands up(中断) + 序列
+2. `15_channel_action.py` — 第一个 channel + SDK 完整链路 (audio LED + arm + say)
+3. `scripts/channel/01_sequential_transition.py` — 连续 Move 行为(blocking vs nonblocking)
+4. `scripts/channel/02_cancel_reset.py` — cancel 复位行为
+
+未决议题继承(同前): SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
 

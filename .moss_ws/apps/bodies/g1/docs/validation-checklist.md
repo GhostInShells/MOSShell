@@ -49,8 +49,18 @@
 
 ---
 
-**已验证项** (待更新):
+**已验证项**:
 
-| # | 结论 | 验证人 | 日期 |
-|---|------|--------|------|
-| — | — | — | — |
+| # | 结论 | 方法 | 日期 |
+|---|------|------|------|
+| S1 | wireless_remote 解析代码与 G1 LowState 数据对齐。槽 29-34 确认为保留(非 weight)。imu rpy 合理。 | 04 脚本订阅 rt/lowstate | 2026-06-16 |
+| S3 | rt/lowstate tick 递增正常，帧率稳定 | 04 脚本 | 2026-06-16 |
+| — | rt/sportmodestate 存在 (推翻前任"不发布"结论) | 03 topic 扫描 + 06 脚本 | 2026-06-16 |
+| — | rt/odommodestate 类型为 SportModeState_ (非 IMUState_, 订正前任) | 06 脚本 | 2026-06-16 |
+| — | BmsState/MainBoardState/SecondaryIMU 四路感知全部可达 | 06 脚本 | 2026-06-16 |
+| — | MotionSwitcher.CheckMode = "ai" 可用 | 07 脚本 | 2026-06-16 |
+| — | Arm.GetActionList 可用 (返回 23 项) | 07 脚本 | 2026-06-16 |
+| — | Audio.GetVolume/SetVolume 可用 | 07 脚本 | 2026-06-16 |
+| — | RobotStateClient 不可用 (b2 模块缺 rpc.client_internal)。对 G1 无影响 — MotionSwitcher + LocoClient 已覆盖其功能 | 07 脚本 | 2026-06-16 |
+| — | Audio: GetVolume/SetVolume/LED/TtsMaker/PlayStop/PlayStream 全部 OK | 08 脚本 | 2026-06-16 |
+| A4 | PC2 蓝牙可用 (JBL GO 配对成功)，音频走 MOSS TTS → ALSA → PA → bluez_sink 链路 | 系统线 audio 脚本 + moss-repl 实测 | 2026-06-15 |
