@@ -118,19 +118,24 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         return self.host.run_ghost(self.host.env.ghost_name)
 
     def _on_emergency_pause(self) -> None:
-        self._paused = not self._paused
-        self.runtime.pause(self._paused)
+        target = not self.runtime.is_paused()
+        self.runtime.pause(target, callback=self._on_pause_done)
+
+    def _on_pause_done(self) -> None:
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
 
     def _prompt_status(self) -> list[tuple[str, str]]:
-        if self._paused:
-            return [("fg:red bold", "[PAUSED] ")]
-        return []
+        parts = super()._prompt_status()
+        if self.runtime.is_paused():
+            parts.append(("fg:red bold", "[PAUSED] "))
+        return parts
 
     def _get_custom_intro(self) -> str | None:
         from rich.text import Text
         return Text(
             f"\nGhost: {self.host.env.ghost_name}\n"
-            f"Type anything to talk to the ghost. Ctrl+N/P to switch states.",
+            f"Type anything to talk to the ghost.",
             style="dim italic",
         )
 

@@ -502,7 +502,6 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 "traceback.item": "cyan",
             })
         )
-        self._paused = False
         self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
         self._bottom_toolbar_text: str = ""
         self._dummy_completer = DummyCompleter()
@@ -576,8 +575,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         guide = Table(title="Quick Start", expand=True, box=None)
         guide.add_column("Action", style="green")
         guide.add_column("Key / Command")
-        guide.add_row("Switch State (Next)", "Ctrl + P")
-        guide.add_row("Switch State (Prev)", "Ctrl + B")
+        guide.add_row("Switch State", "Ctrl + T")
         guide.add_row("Emergency Stop", "Ctrl + G")
         guide.add_row("Add New Line", "Ctrl + J")
         guide.add_row("Interrupt Task", "Esc")
@@ -638,7 +636,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         pass
 
     def _prompt_status(self) -> list[tuple[str, str]]:
-        """返回 prompt 前的状态标记 (FormattedText 元组列表)。子类 override 如返回 [('fg:red bold', '[PAUSED] ')]."""
+        """返回 prompt 前的状态标记 (FormattedText 元组列表)。子类 override 追加."""
         return []
 
     def farewell(self) -> None:
@@ -658,15 +656,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         def multi_line_enter(event) -> None:
             event.current_buffer.insert_text('\n')
 
-        @kb.add('c-n')
-        def switch_next_state(event) -> None:
+        @kb.add('c-t')
+        def toggle_state(event) -> None:
             if self._event_loop:
-                self._event_loop.call_soon_threadsafe(self._switch_to, True)
-
-        @kb.add('c-p')
-        def switch_previous_state(event) -> None:
-            if self._event_loop:
-                self._event_loop.call_soon_threadsafe(self._switch_to, False)
+                self._event_loop.call_soon_threadsafe(self._toggle_state)
 
         @kb.add('escape')
         def interrupt(event) -> None:
@@ -697,8 +690,24 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._bottom_toolbar_text = text
 
     def get_bottom_toolbar(self) -> Callable[[], str]:
-        """Return a callable for prompt_toolkit's bottom_toolbar parameter."""
-        return lambda: self._bottom_toolbar_text
+        """Return a callable for prompt_toolkit's bottom_toolbar parameter.
+
+        动态拼接: state 切换提示 + urgent 通知.
+        """
+        def _build() -> str:
+            parts: list[str] = []
+            names = list(self._states.keys())
+            if len(names) > 1:
+                current = self._current_state_name
+                state_parts = []
+                for name in names:
+                    marker = "●" if name == current else "○"
+                    state_parts.append(f"{marker} {name}")
+                parts.append("  C-t  ".join(state_parts))
+            if self._bottom_toolbar_text:
+                parts.append(self._bottom_toolbar_text)
+            return "  ▏ ".join(parts) if parts else ""
+        return _build
 
     def _direct_print(self, obj: Renderable) -> None:
         try:
@@ -765,21 +774,15 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             self.console.rprint(notice)
         return
 
-    def _switch_to(self, next_or_previous: bool = True) -> None:
-        """切换状态，True 为向后循环，False 为向前循环。"""
+    def _toggle_state(self) -> None:
+        """C-t: 循环切到下一个 state."""
         names = list(self._states.keys())
-        if not names:
+        if len(names) <= 1:
             return
-        if len(names) == 1:
-            self.console.hint("Only `{}` state exists".format(names[0]))
-            return
+        current_idx = names.index(self._current_state_name) if self._current_state_name in names else 0
+        next_idx = (current_idx + 1) % len(names)
+        self._switch_state(names[next_idx])
 
-        current_idx = names.index(self._current_state_name)
-        # 计算新的索引 (支持循环)
-        offset = 1 if next_or_previous else -1
-        new_idx = (current_idx + offset) % len(names)
-        self._switch_state(names[new_idx])
-        return
 
     async def _main_loop(self) -> None:
         try:
