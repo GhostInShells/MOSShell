@@ -3,10 +3,10 @@
 import asyncio
 from typing import Iterable
 
-from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime, MossRuntime
+from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.session import OutputItem
-from ghoshell_moss.host.tui import TUIState, MossHostTUI
+from ghoshell_moss.host.tui import TUIState, MossHostTUI, Renderable
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_ghost import GhostInspector
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
@@ -131,7 +131,7 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
             parts.append(("fg:red bold", "[PAUSED] "))
         return parts
 
-    def _get_custom_intro(self) -> str | None:
+    def _get_custom_intro(self) -> Renderable:
         from rich.text import Text
         return Text(
             f"\nGhost: {self.host.env.ghost_name}\n"
