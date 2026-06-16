@@ -32,22 +32,36 @@ class GhostInspector:
         return self._ghost.inspect_state()
 
     def faculties(self) -> dict:
-        """Mindflow 中注册的全部 Nucleus 及其名称。"""
-        return {
-            name: type(nucleus).__name__
-            for name, nucleus in self._mindflow.faculties().items()
-        }
+        """Mindflow 中注册的全部 Nucleus — 类型、监听信号、运行状态、是否有 pending impulse."""
+        result = {}
+        for name, nucleus in self._mindflow.faculties().items():
+            result[name] = {
+                "type": type(nucleus).__name__,
+                "signals": list(nucleus.signals()),
+                "status": nucleus.status() or "—",
+                "running": nucleus.is_running(),
+                "has_impulse": nucleus.peek() is not None,
+            }
+        return result
+
+    def signal_routes(self) -> dict:
+        """Signal → Nucleus 路由表. 从各 nucleus 的 signals() 反向聚合."""
+        routes: dict[str, list[str]] = {}
+        for nucleus_name, nucleus in self._mindflow.faculties().items():
+            for signal_name in nucleus.signals():
+                if signal_name not in routes:
+                    routes[signal_name] = []
+                routes[signal_name].append(nucleus_name)
+        return routes
 
     def pause(self) -> str:
-        """暂停 mindflow 和 shell（拒答）。"""
-        self._mindflow.pause(True)
-        self._shell.pause(True)
+        """暂停 mindflow 和 shell（拒答）— 走 GhostRuntime 统一入口."""
+        self._gr.pause(True)
         return "paused — mindflow + shell"
 
     def resume(self) -> str:
-        """恢复 mindflow 和 shell。"""
-        self._mindflow.pause(False)
-        self._shell.pause(False)
+        """恢复 mindflow 和 shell — 走 GhostRuntime 统一入口."""
+        self._gr.pause(False)
         return "resumed — mindflow + shell"
 
     def mindflow_info(self) -> dict:
@@ -56,5 +70,5 @@ class GhostInspector:
         return {
             "type": type(mf).__name__,
             "is_running": mf.is_running(),
-            "is_paused": mf.is_paused() if hasattr(mf, "is_paused") else "—",
+            "is_paused": self._gr.is_paused(),
         }

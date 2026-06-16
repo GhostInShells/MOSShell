@@ -283,10 +283,19 @@ class CTMLShell(MOSShell[PrimeChannel]):
         self._check_running()
         return self._main_runtime
 
-    def pause(self, toggle: bool = True) -> None:
+    def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
+        """急停 — 同步 fire-and-forget. callback 在清理完成时 fire.
+
+        pause(True) 触发 clear(), 通过 ``add_done_callback`` 链式通知.
+        pause(False) 恢复, callback 同步调用.
+        """
         self._paused = toggle
         if self._paused:
-            self.clear()
+            fut = self.clear()
+            if callback:
+                fut.add_done_callback(lambda _: callback())
+        elif callback:
+            callback()
 
     def is_paused(self) -> bool:
         return self._paused
