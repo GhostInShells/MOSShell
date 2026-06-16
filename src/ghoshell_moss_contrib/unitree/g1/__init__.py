@@ -7,13 +7,48 @@ bootstrap() 是唯一的显式初始化入口，幂等且线程安全。
 约定:
   - macOS 上无法 bootstrap (无 cyclonedds) — bootstrap() 会抛 ImportError
   - 模块级状态由后台 _monitor 线程 (20Hz) 维护, state.py 提供 O(1) 读取
-  - _check_sdk() 用于 import 时声明依赖，不初始化 DDS
+  - SDK 路径由 UNITREE_G1_SDK_PATH 环境变量指定，import 时校验，无默认值
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from typing import Optional
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 模块级: SDK 路径 — import 时即校验，不依赖 bootstrap
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_sdk_path = os.environ.get("UNITREE_G1_SDK_PATH", "")
+if not _sdk_path:
+    raise RuntimeError(
+        "UNITREE_G1_SDK_PATH 环境变量未设置。"
+        "请设置为 unitree_sdk2_python 的本地路径，"
+        "例如: export UNITREE_G1_SDK_PATH="
+        "/home/moss/MOSShell/.moss_ws/apps/bodies/g1/src/unitree_sdk2_python"
+    )
+if not os.path.isdir(_sdk_path):
+    raise RuntimeError(
+        f"UNITREE_G1_SDK_PATH 指向的路径不存在: {_sdk_path}"
+    )
+
+sys.path.insert(0, _sdk_path)
+
+
+def _check_sdk() -> None:
+    """验证 SDK 关键模块可 import。sys.path 已在模块级设置。"""
+    try:
+        import unitree_sdk2py.core.channel  # noqa: F401
+        import unitree_sdk2py.g1.audio.g1_audio_client  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            f"unitree_sdk2_python 无法导入 (路径: {_sdk_path})。"
+            "请确认已 clone SDK 并安装依赖。"
+            "详见 .moss_ws/apps/bodies/g1/README.md"
+        ) from e
+
 
 # -- 模块级状态 ----------------------------------------------------------------
 
@@ -26,18 +61,6 @@ _loco_client = None        # g1.loco.g1_loco_client.LocoClient
 _arm_client = None         # g1.arm.g1_arm_action_client.G1ArmActionClient
 
 _network_interface: str = ""
-
-
-def _check_sdk() -> None:
-    """验证 unitree SDK 可 import。不初始化 DDS。"""
-    try:
-        import unitree_sdk2py.core.channel  # noqa: F401
-        import unitree_sdk2py.g1.audio.g1_audio_client  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "unitree_sdk2_python 未安装。请 clone SDK 到 g1 app 并 uv sync。"
-            "详见 .moss_ws/apps/bodies/g1/README.md"
-        ) from e
 
 
 def bootstrap(nic: str) -> None:

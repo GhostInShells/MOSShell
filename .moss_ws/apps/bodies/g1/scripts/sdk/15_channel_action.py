@@ -28,11 +28,6 @@ G1 Channel + SDK 第一案例 — channel runtime 独立运行验证。
 """
 import asyncio
 import sys
-from pathlib import Path
-
-# 让 from g1_channel 可解析: 把 g1 app 根目录加入 sys.path
-_G1_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_G1_ROOT))
 
 
 async def run(nic: str) -> int:
