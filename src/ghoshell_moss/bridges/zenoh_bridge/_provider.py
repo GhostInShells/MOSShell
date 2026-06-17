@@ -13,7 +13,7 @@ from ghoshell_moss.core.duplex import (
 )
 from ghoshell_moss.core.duplex.protocol import HeartbeatEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ._utils import BridgeExpr, NodeChannelBridgeExpr
+from ._utils import BridgeExpr, ChannelBridgeHubExpr
 from pydantic import ValidationError
 import janus
 import asyncio
@@ -40,23 +40,23 @@ class ZenohProviderConnection(Connection):
             session: zenoh.Session,
             *,
             node_name: str,
-            session_scope: str,
+            scope: str,
             logger: LoggerItf | None = None,
             bridge_expr: BridgeExpr | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
-        self._session_scope = session_scope
+        self._scope = scope
         self._session = session
         self._node = node_name
         if bridge_expr is not None:
             self._bridge_expr = bridge_expr
         else:
-            self._bridge_expr = NodeChannelBridgeExpr(session_scope=self._session_scope, address=self._node)
+            self._bridge_expr = ChannelBridgeHubExpr(scope=self._scope).new_expr(address=self._node)
         # 默认为 disconnected.
         self._disconnected_event = threading.Event()
         # 从 proxy 读取的队列.
         self._receive_from_proxy_queue: janus.Queue[ChannelEvent] = janus.Queue()
-        self._logger_prefix = f"<ZenohProviderConnection node={node_name} session_id={self._session_scope}>"
+        self._logger_prefix = f"<ZenohProviderConnection node={node_name} session_id={self._scope}>"
         # 标记最后通信联通时间.
         self._last_liveness_heartbeat: float = 0.0
         self._subscriber: zenoh.Subscriber | None = None
@@ -222,14 +222,14 @@ class ZenohChannelProvider(DuplexChannelProvider):
             self,
             *,
             address: str,
-            session_scope: str,
+            scope: str,
             container: IoCContainer | None = None,
             zenoh_session: zenoh.Session | None = None,
             liveness_check_interval: float = 3.0,
             bridge_expr: BridgeExpr | None = None,
     ):
         self._node_name = address
-        self._session_scope = session_scope
+        self._scope = scope
         if zenoh_session is None:
             if container is None:
                 raise ValueError("container or session must be provided")
@@ -244,7 +244,7 @@ class ZenohChannelProvider(DuplexChannelProvider):
         self._liveness_check_interval = liveness_check_interval
         connection = ZenohProviderConnection(
             session=zenoh_session,
-            session_scope=session_scope,
+            scope=scope,
             node_name=address,
             logger=container.get(LoggerItf),
             bridge_expr=bridge_expr,

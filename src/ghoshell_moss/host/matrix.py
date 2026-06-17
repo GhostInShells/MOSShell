@@ -42,8 +42,17 @@ import logging
 import threading
 import time
 
-
 __all__ = ['AppCell', 'HostCell', 'NetworkCell', 'MatrixImpl']
+
+
+class MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
+    """MOSS 约定的 SystemPrompter 默认实现.
+
+    BaseSystemPrompter 提供 tree 存储 + instruction 组装.
+    MossSystemPrompter 提供四个命名访问器 (ctml/project/mode/static).
+    二者通过钻石继承组合, 注册为 SystemPrompter 和 MossSystemPrompter 两个 IoC key.
+    """
+    pass
 
 
 class NetworkCell(Cell):
@@ -248,12 +257,7 @@ class MatrixImpl(Matrix):
         except Exception as e:
             self._refresh_future.set_exception(e)
 
-
-
-
-
     def _prepare_system_prompter(self) -> SystemPrompter:
-        from ghoshell_moss.host.system_prompter import MossSystemPrompterImpl
         prompter = MossSystemPrompterImpl(
             description="MOSS system instruction — assembled from ctml, project, mode, static layers.",
         )
@@ -442,7 +446,7 @@ class MatrixImpl(Matrix):
                     self.logger.error("%s close channel provider exception: %s", self._log_prefix, e)
             provider = ZenohChannelProvider(
                 address=provider_address,
-                session_scope=self.session.session_scope,
+                scope=self.session.session_scope,
                 container=self._container,
                 zenoh_session=self._container.force_fetch(zenoh.Session)
             )
@@ -464,7 +468,7 @@ class MatrixImpl(Matrix):
             raise RuntimeError(f"Only allowed in main cell type: {self.this.type}")
         return ZenohProxyChannel(
             address=address,
-            session_scope=self.session.session_scope,
+            scope=self.session.session_scope,
             name=name,
             description=description,
             zenoh_session=self._container.force_fetch(zenoh.Session),

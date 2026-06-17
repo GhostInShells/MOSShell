@@ -431,7 +431,7 @@ class FractalHubChannelState(ChannelState):
                 address = self._hub.make_proxy_address(cell_name)
                 proxy = ZenohProxyChannel(
                     address=address,
-                    session_scope=self._hub.session_scope,
+                    scope=self._hub.session_scope,
                     name=cell_name,
                     description=f"Fractal child node: {cell.name}",
                     zenoh_session=self._hub.session,
@@ -547,7 +547,7 @@ class ZenohFractalCellProvider(FractalCellProvider):
         )
         provider = ZenohChannelProvider(
             address=address,
-            session_scope=FRACTAL_SESSION_SCOPE,
+            scope=FRACTAL_SESSION_SCOPE,
             zenoh_session=self.session,
         )
         self._logger.info(
