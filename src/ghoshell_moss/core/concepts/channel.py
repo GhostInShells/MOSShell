@@ -434,6 +434,11 @@ class Channel(ABC):
     def materialize(self, container: IoCContainer) -> 'ChannelState | ChannelRuntime':
         pass
 
+    @classmethod
+    def validate_name(cls, name: str) -> bool:
+        import regex as re
+        return re.fullmatch(ChannelNamePattern, name) is not None
+
 
 TaskDoneCallback = Callable[[CommandTask], None]
 

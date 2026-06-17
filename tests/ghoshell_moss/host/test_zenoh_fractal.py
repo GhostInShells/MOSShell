@@ -98,7 +98,7 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
                 name="proxy",
                 description="",
                 address=proxy_address,
-                session_scope=FRACTAL_SESSION_SCOPE,
+                scope=FRACTAL_SESSION_SCOPE,
                 zenoh_session=child_session,
             )
 

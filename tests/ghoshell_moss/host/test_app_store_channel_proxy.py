@@ -62,7 +62,7 @@ def _build_state(mock_app, zenoh_session, session_scope, **store_kw):
             name=name,
             description=description,
             address=address,
-            session_scope=session_scope,
+            scope=session_scope,
             zenoh_session=zenoh_session,
             uid=id,
         )
@@ -127,7 +127,7 @@ async def test_virtual_children_with_provider_running(
     provider = ZenohChannelProvider(
         zenoh_session=zenoh_session,
         address=mock_app.address,
-        session_scope=session_scope,
+        scope=session_scope,
     )
 
     state = _build_state(mock_app, zenoh_session, session_scope)
@@ -178,7 +178,7 @@ async def test_proxy_bootstrap_after_provider_started(
     provider = ZenohChannelProvider(
         zenoh_session=zenoh_session,
         address=mock_app.address,
-        session_scope=session_scope,
+        scope=session_scope,
     )
 
     async with provider.arun(app_chan):
@@ -257,7 +257,7 @@ async def test_start_timeout_zero_connects_via_tree(
     provider = ZenohChannelProvider(
         zenoh_session=zenoh_session,
         address=mock_app.address,
-        session_scope=session_scope,
+        scope=session_scope,
     )
 
     mock_store = MagicMock()
@@ -268,7 +268,7 @@ async def test_start_timeout_zero_connects_via_tree(
     mock_matrix.is_running.return_value = True
     mock_matrix.channel_proxy = lambda *, address, name, description='', id=None, **kw: ZenohProxyChannel(
         name=name, description=description,
-        address=address, session_scope=session_scope,
+        address=address, scope=session_scope,
         zenoh_session=zenoh_session, uid=id,
     )
 
@@ -304,7 +304,7 @@ async def test_start_timeout_positive_expires(
     mock_matrix.is_running.return_value = True
     mock_matrix.channel_proxy = lambda *, address, name, description='', id=None, **kw: ZenohProxyChannel(
         name=name, description=description,
-        address=address, session_scope=session_scope,
+        address=address, scope=session_scope,
         zenoh_session=zenoh_session, uid=id,
     )
 

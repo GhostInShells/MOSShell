@@ -12,7 +12,7 @@ from ghoshell_moss.core.duplex import (
 )
 from ghoshell_moss.core.duplex.protocol import HeartbeatEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ._utils import BridgeExpr, NodeChannelBridgeExpr
+from ._utils import BridgeExpr, ChannelBridgeHubExpr
 from pydantic import ValidationError
 import janus
 import asyncio
@@ -33,23 +33,23 @@ class ZenohProxyConnection(Connection):
             session: zenoh.Session,
             *,
             address: str,
-            session_scope: str,
+            scope: str,
             logger: LoggerItf | None = None,
             bridge_expr: BridgeExpr | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
-        self._session_scope = session_scope
+        self._scope = scope or 'default'
         self._zenoh_session = session
         self._address = address
         if bridge_expr is not None:
             self._bridge_expr = bridge_expr
         else:
-            self._bridge_expr = NodeChannelBridgeExpr(session_scope=self._session_scope, address=self._address)
+            self._bridge_expr = ChannelBridgeHubExpr(scope=scope).new_expr(address=address)
 
         # 状态控制
         self._disconnected_event = threading.Event()
         self._receive_from_provider_queue: janus.Queue[ChannelEvent] = janus.Queue()
-        self._logger_prefix = f"<ZenohProxyConnection node={address} session_id={self._session_scope}>"
+        self._logger_prefix = f"<ZenohProxyConnection node={address} session_id={self._scope}>"
 
         # Zenoh 句柄
         self._subscriber: zenoh.Subscriber | None = None
@@ -203,7 +203,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
             self,
             *,
             address: str,
-            session_scope: str,
+            scope: str,
             name: str,
             description: str = "",
             zenoh_session: zenoh.Session | None = None,
@@ -211,7 +211,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
             bridge_expr: BridgeExpr | None = None,
     ):
         self._address = address
-        self._session_scope = session_scope
+        self._scope = scope or 'default'
         self._zenoh_session = zenoh_session
         self._bridge_expr = bridge_expr
         self._connection_keys = {}
@@ -229,7 +229,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
         connection = ZenohProxyConnection(
             session,
             address=self._address,
-            session_scope=self._session_scope,
+            scope=self._scope,
             logger=container.get(LoggerItf),
             bridge_expr=self._bridge_expr,
         )
