@@ -3,13 +3,13 @@ from typing import Protocol, Callable, Any, Literal
 from ghoshell_container import IoCContainer
 from typing_extensions import Self, TypedDict
 from abc import ABC, abstractmethod
-
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, Mode
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter, LoggerItf
 from .ghost import Ghost, GhostMeta
@@ -389,6 +389,11 @@ class MossHost(ABC):
     @abstractmethod
     def description(self) -> str:
         """返回整个环境默认的自解释"""
+        pass
+
+    @property
+    @abstractmethod
+    def env(self) -> Environment:
         pass
 
     @classmethod

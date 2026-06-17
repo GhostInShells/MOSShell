@@ -1,11 +1,11 @@
 ---
 created: 2026-05-29
 depends:
-- first-ghost-prototype
+  - first-ghost-prototype
 description: TUI 快捷键触发全局急停，级联中断所有有状态双工节点（mindflow → shell → interpreter → speech），
   暂停 ghost 三循环但保持 TUI 存活可恢复。
 priority: P0
-status: completed
+status: in-progress
 title: Emergency Stop — TUI 快捷键全局急停
 updated: '2026-06-16'
 ---

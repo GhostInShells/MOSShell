@@ -40,6 +40,7 @@ __all__ = [
     "TUIState", "MossHostTUI", 'Runtime', "RUNTIME", "TuiRender",
     "Renderable", "OutputItem", "LiveStreamSink",
     "ConsoleOutput",  # backward compatibility
+    'RenderableType',
 ]
 
 from prompt_toolkit.styles import Style
