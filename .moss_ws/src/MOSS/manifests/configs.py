@@ -22,12 +22,7 @@ from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 from ghoshell_moss.contracts.audio import AudioCaptureConfig
 from ghoshell_moss.contracts.llms import LLMConfig
 
-tts_config = TTSManagerConfig()
-
-audio_player_config = AudioPlayerConfig()
-
-audio_capture_config = AudioCaptureConfig()
-
-mcp_hub_config = MCPHubConfig()
-
-llm_config = LLMConfig()
+# 全局只做类型注册（import 即注册类引用 → is_override=False → 文件持久化）。
+# 类实例覆盖（is_override=True，仅内存不写文件）在 mode configs.py 中声明。
+# 示例：tts_config = TTSManagerConfig(
+#     volcengine_stream_tts_model_config=VolcengineTTSConf(default_speaker="可爱女生"))
