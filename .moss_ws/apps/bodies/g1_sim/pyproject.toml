@@ -5,6 +5,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "ghoshell-moss[host]",
     "numpy",
+    "python-dotenv",
     "pyyaml",
     "mujoco>=3.0",
     "gymnasium[mujoco]",
