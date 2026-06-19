@@ -54,4 +54,107 @@ volcengine_stream_tts_model_config:
       tone: saturn_zh_female_cancan_tob
       description: 'language: (中文), support english: False, use case: 角色扮演'
       voice: {}
-  default_speaker: 知性灿灿
+    # 豆包 Seed-TTS 2.0 音色
+    vivi 2.0:
+      tone: zh_female_vv_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    小何:
+      tone: zh_female_xiaohe_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    云舟:
+      tone: zh_male_m191_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    小天:
+      tone: zh_male_taocheng_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    Tim:
+      tone: en_male_tim_uranus_bigtts
+      description: 'language: (English), support english: True, use case: 通用场景'
+      voice: {}
+    Dacey:
+      tone: en_female_dacey_uranus_bigtts
+      description: 'language: (English), support english: True, use case: 通用场景'
+      voice: {}
+    Stokie:
+      tone: en_female_stokie_uranus_bigtts
+      description: 'language: (English), support english: True, use case: 通用场景'
+      voice: {}
+    刘飞 2.0:
+      tone: zh_male_liufei_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    清新女声 2.0:
+      tone: zh_female_qingxinnvsheng_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    知性灿灿 2.0:
+      tone: zh_female_cancan_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 角色扮演'
+      voice: {}
+    撒娇学妹 2.0:
+      tone: zh_female_sajiaoxuemei_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 角色扮演'
+      voice: {}
+    甜美小源 2.0:
+      tone: zh_female_tianmeixiaoyuan_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    甜美桃子 2.0:
+      tone: zh_female_tianmeitaozi_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    爽快思思 2.0:
+      tone: zh_female_shuangkuaisisi_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 通用场景'
+      voice: {}
+    佩奇猪 2.0:
+      tone: zh_female_peiqi_uranus_bigtts
+      description: 'language: (中文), support english: False, use case: 视频配音'
+      voice: {}
+  default_speaker: 可爱女生
+mimo_tts_config:
+  api_key: $MIMO_API_KEY
+  base_url: https://api.xiaomimimo.com/v1
+  model: mimo-v2.5-tts
+  sample_rate: 24000
+  stream: true
+  request_timeout: 60.0
+  speakers:
+    冰糖:
+      voice: 冰糖
+      description: 'language: 中文, gender: 女'
+    茉莉:
+      voice: 茉莉
+      description: 'language: 中文, gender: 女'
+    苏打:
+      voice: 苏打
+      description: 'language: 中文, gender: 男'
+    白桦:
+      voice: 白桦
+      description: 'language: 中文, gender: 男'
+    Mia:
+      voice: Mia
+      description: 'language: English, gender: Female'
+    Chloe:
+      voice: Chloe
+      description: 'language: English, gender: Female'
+    Milo:
+      voice: Milo
+      description: 'language: English, gender: Male'
+    Dean:
+      voice: Dean
+      description: 'language: English, gender: Male'
+    MimoDefault:
+      voice: MimoDefault
+      description: 'language: Auto, gender: Auto'
+    DefaultZh:
+      voice: DefaultZh
+      description: 'language: 中文, gender: —'
+    DefaultEn:
+      voice: DefaultEn
+      description: 'language: English, gender: —'
+  default_speaker: 冰糖
