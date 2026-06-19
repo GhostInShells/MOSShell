@@ -168,7 +168,7 @@ class Mode(BaseModel):
         if "description" not in data:
             description = docstring.split("\n", 1)[0]
             data['description'] = description
-        data['docstring'] = docstring
+        data['instruction'] = docstring
         result = cls(**data)
         result.file = str(file)
         return result
