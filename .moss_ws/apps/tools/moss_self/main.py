@@ -6,8 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ghoshell_moss import Observe
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.blueprint.channel_builder import new_channel, CommandUtil
 
 
 # --- runtime: project root from MOSS_WORKSPACE env (injected by HostAppStore) ---
@@ -34,16 +35,30 @@ def _get_instruction() -> str:
     if _INSTRUCTION is not None:
         return _INSTRUCTION
 
+    kwargs = {}
+    if _PROJECT_ROOT is not None:
+        kwargs["cwd"] = str(_PROJECT_ROOT)
+
+    # moss start — cognitive entry point
+    start_proc = subprocess.run(
+        ["moss", "--ai", "start"],
+        capture_output=True,
+        text=True,
+        **kwargs,
+    )
+
+    # reflected command tree
     reflect_script = Path(__file__).parent / "reflect_cli.py"
-    proc = subprocess.run(
+    reflect_proc = subprocess.run(
         [sys.executable, str(reflect_script)],
         capture_output=True,
         text=True,
     )
-    if proc.returncode != 0:
-        _INSTRUCTION = f"Error reflecting moss CLI:\n{proc.stderr}"
+    if reflect_proc.returncode != 0:
+        _INSTRUCTION = f"Error reflecting moss CLI:\n{reflect_proc.stderr}"
     else:
-        _INSTRUCTION = proc.stdout
+        start_text = start_proc.stdout if start_proc.returncode == 0 else ""
+        _INSTRUCTION = start_text + "\n---\n\n" + reflect_proc.stdout
     return _INSTRUCTION
 
 
@@ -55,26 +70,37 @@ def instruction():
 # --- runtime: subprocess execution ---
 @chan.build.command(
     name="exec",
-    doc="Execute a moss CLI command. Pass the full command string after 'moss --ai'.",
-    always_observe=True,
+    # always_observe=True,
 )
-async def exec_command(text__: str) -> str:
+async def exec_command(text__: str) -> Observe:
     """
-    :param text__: The moss command string.
-                   e.g. 'codex get-interface ghoshell_moss.channels.typer_channel'
+    Execute a moss CLI command. 'moss --ai' is prepended automatically —
+    pass ONLY the subcommand and its arguments, nothing else.
+    Example: to run 'moss --ai codex concepts', pass 'codex concepts'.
+
+    :param text__: subcommand + arguments. NEVER include 'moss' or '--ai'.
+                   Correct: 'codex get-interface ghoshell_moss.channels.typer_channel'
+                   Wrong:   'moss --ai codex get-interface ...'
     """
+    args = text__.split()
+    # Strip accidental 'moss' / '--ai' prefix — model may include them despite prompt.
+    if args and args[0] == "moss":
+        args.pop(0)
+    if args and args[0] == "--ai":
+        args.pop(0)
+
     kwargs = {}
     if _PROJECT_ROOT is not None:
         kwargs["cwd"] = str(_PROJECT_ROOT)
 
     proc = await asyncio.create_subprocess_exec(
-        "moss", "--ai", *text__.split(),
+        "moss", "--ai", *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         **kwargs,
     )
     stdout, stderr = await proc.communicate()
-    return stdout.decode() + stderr.decode()
+    return CommandUtil.observe(stdout.decode() + stderr.decode())
 
 
 async def main(matrix: Matrix):

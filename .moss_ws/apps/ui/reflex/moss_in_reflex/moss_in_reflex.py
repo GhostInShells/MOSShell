@@ -30,11 +30,19 @@ class Config(YamlConfig):
 
     layouts: list[str] = Field(default_factory=list, description="List of layout names")
 
-CONFIG = WorkspaceConfigs(
-    DefaultFileStorage(dir_=str(Path(__file__).parent.absolute()))
-).get_or_create(
-    Config()
-)
+
+def _load_config() -> Config:
+    config_dir = Path(__file__).parent.absolute()
+    store = WorkspaceConfigs(DefaultFileStorage(dir_=str(config_dir)))
+
+    mode_name = os.environ.get("MOSS_MODE_NAME")
+    if mode_name and (config_dir / f"config.{mode_name}.yaml").exists():
+        Config.relative_path = f"config.{mode_name}.yaml"
+
+    return store.get_or_create(Config())
+
+
+CONFIG = _load_config()
 
 def load_layouts() -> list:
     """从 layouts.toml 动态加载 Layout 类。"""
@@ -66,7 +74,7 @@ for i, _l in enumerate(LAYOUTS):
 # moss_listener 同步写，context_messages() 只读
 @dataclass
 class _LayoutMirror:
-    name: str = "simple"
+    name: str = LAYOUTS[0].name()
 
     def get_component(self) -> rx.Component:
         for n, c in LAYOUT_COMPONENTS:
@@ -89,7 +97,7 @@ _SNAPSHOTS: dict[str, LayoutSnapshot] = {
 class State(rx.State):
     """The app state."""
 
-    layout: str = "simple"
+    layout: str = LAYOUTS[0].name()
 
     @rx.event(background=True)
     async def moss_listener(self):
@@ -199,6 +207,8 @@ def index() -> rx.Component:
             *LAYOUT_COMPONENTS,
             rx.text("default")
         ),
+        max_width="100%",
+        padding="0",
     )
 # =========================== Reflex ===========================
 
@@ -239,8 +249,20 @@ async def context_messages():
     return messages
 
 
+def _frontend_url():
+    host, port = "localhost", 3000
+    try:
+        from reflex.config import get_config
+        cfg = get_config()
+        port = cfg.frontend_port or port
+    except Exception:
+        pass
+    return f"当前前端页面地址为 http://{host}:{port}"
+
+
 async def moss():
     chan = PyChannel(name="reflex", description="提供基于Reflex框架的流式GUI页面，用于AI实时渲染")
+    chan.build.instruction(_frontend_url)
     chan.build.context_messages(context_messages)
 
     first = True

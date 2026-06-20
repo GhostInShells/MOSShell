@@ -9,7 +9,7 @@ from ghoshell_moss.core.ctml.shell import new_ctml_shell
 # 不着急删除, 方便自测时开启.
 from ghoshell_moss.bridges.zmq_channel.zmq_hub import ZMQChannelHub, ZMQHubConfig, ZMQProxyConfig
 from ghoshell_moss_contrib.agent import ConsoleChat, ModelConf, SimpleAgent
-from ghoshell_moss_contrib.channels.mermaid_draw import new_mermaid_chan
+from ghoshell_moss.channels.mermaid_draw import new_mermaid_channel
 from ghoshell_moss_contrib.channels.web_bookmark import build_web_bookmark_chan
 from ghoshell_moss_contrib.example_ws import get_example_speech, workspace_container
 
@@ -87,7 +87,7 @@ def run_moss_agent(container: Container):
         zmq_hub.as_channel(),
         # 浏览器
         build_web_bookmark_chan(container),
-        new_mermaid_chan(),
+        new_mermaid_channel(),
         # todo: 开启这个模块, 可以让 Agent 通过 JXA 操作 mac 电脑. 不过配套的 prompt 并不完善.
         # new_mac_control_channel(description="使用 jxa 语法来操作当前所在 mac, 有明确 mac 操作命令要求时才允许使用."),
         # todo: 开启这个模块, 可以让 Agent 选择屏幕截图.

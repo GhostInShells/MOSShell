@@ -24,7 +24,20 @@ async def main(matrix: Matrix):
             "vars() to list available objects, api(name) for detail."
         ),
     )
-    await matrix.provide_channel(chan)
+    try:
+        await matrix.provide_channel(chan)
+    except RuntimeError:
+        import sys
+        err = sys.exc_info()[1]
+        if "module compilation failed" in str(err):
+            B = "\033[1;33m"
+            R = "\033[0m"
+            raise RuntimeError(
+                "Module compilation failed — likely missing Playwright browser.\n"
+                f"\n"
+                f"  {B}Run: playwright install chromium{R}\n"
+            ) from err
+        raise
 
 
 if __name__ == "__main__":

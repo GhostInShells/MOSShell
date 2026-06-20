@@ -1,0 +1,4 @@
+# Mode: show
+# 展厅/演示场景下仅加载 StageLayout，不引入其他 layout
+layouts:
+  - "framework.layouts.stage.StageLayout"
