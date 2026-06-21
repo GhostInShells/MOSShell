@@ -356,17 +356,22 @@ class DuplexChannelContext:
                 await asyncio.sleep(0.0)
                 # 如果通讯失效了, 就清空连接状态, 等待重连.
                 if not self.connection.is_connected():
-                    # 如果在连接状态, 则要清空.
                     if self._connected_event.is_set():
-                        # 取消连接状态.
                         self._clear_connection_status()
-                        # 稍微等待下一轮.
-                        await asyncio.sleep(0.1)
                         self.logger.info("Channel proxy %s connection status cleared", self.root_name)
-                        continue
-                    else:
-                        # 已经设置过连接失败, 则直接跳到拉取消息即可.
+                    # 重置重连标记，确保 session 重建
+                    is_reconnected = False
+                    # 尝试 socket 级别重连
+                    try:
+                        await self.connection.close()
+                    except Exception:
                         pass
+                    try:
+                        await self.connection.start()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(self._wait_reconnect_interval)
+                    continue
                 else:
                     if not is_reconnected:
                         # 发送初始化连接.  proxy 一定要发送至少第一次, 因为 provider

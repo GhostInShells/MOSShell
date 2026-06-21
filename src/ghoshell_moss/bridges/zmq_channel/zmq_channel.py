@@ -88,8 +88,19 @@ class BaseZMQConnection(Connection, ABC):
             return
         self._closed_event.set()
         if self._heartbeat_task:
-            await self._heartbeat_task
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
             self._heartbeat_task = None
+
+        if self._socket is not None:
+            try:
+                self._socket.close(linger=self._config.linger)
+            except Exception:
+                pass
+            self._socket = None
 
         if self._config.is_ipc_address():
             # 对于 IPC 地址，需要手动删除 socket 文件
@@ -112,28 +123,46 @@ class BaseZMQConnection(Connection, ABC):
 
     async def start(self) -> None:
         """启动连接，创建并配置 socket"""
-        if self._socket is not None:
+        if self._socket is not None and not self._closed_event.is_set():
             return
+
+        # 清理旧 socket
+        if self._socket is not None:
+            try:
+                self._socket.close(linger=self._config.linger)
+            except Exception:
+                pass
+            self._socket = None
 
         # 创建 socket
         socket_type = getattr(zmq, self._config.socket_type.value)
-        self._socket = self._ctx.socket(socket_type)
+        sock = self._ctx.socket(socket_type)
 
         # 配置 socket
         if self._config.recv_timeout is not None:
-            self._socket.RCVTIMEO = int(self._config.recv_timeout * 1000)
-        if self._config.send_timeout is not None:
-            self._socket.SNDTIMEO = int(self._config.send_timeout * 1000)
-        if self._config.linger is not None:
-            self._socket.linger = self._config.linger
-        if self._config.identity is not None:
-            self._socket.identity = self._config.identity
-
-        # 绑定或连接
-        if self._config.bind:
-            self._socket.bind(self._config.address)
+            sock.RCVTIMEO = int(self._config.recv_timeout * 1000)
         else:
-            self._socket.connect(self._config.address)
+            sock.RCVTIMEO = 500  # 使用原生超时避免 task cancel 竞态
+        if self._config.send_timeout is not None:
+            sock.SNDTIMEO = int(self._config.send_timeout * 1000)
+        if self._config.linger is not None:
+            sock.linger = self._config.linger
+        if self._config.identity is not None:
+            sock.identity = self._config.identity
+
+        # 绑定或连接（失败时回滚，不污染状态）
+        try:
+            if self._config.bind:
+                sock.bind(self._config.address)
+            else:
+                sock.connect(self._config.address)
+        except Exception:
+            sock.close(linger=0)
+            raise
+
+        self._socket = sock
+        self._closed_event.clear()
+        self._last_activity = time.time()
 
         # 订阅主题（如果是 SUB socket）
         if self._config.socket_type == ZMQSocketType.SUB and self._config.subscribe is not None:
@@ -159,71 +188,31 @@ class BaseZMQConnection(Connection, ABC):
 
         async with self._recv_lock:
             while not self._closed_event.is_set():
+                # 检查调用方超时
+                if timeout is not None and time.time() - start_time >= timeout:
+                    raise asyncio.TimeoutError("Receive timeout")
+
                 try:
-                    # 计算剩余超时时间
-                    remaining_timeout = None
-                    if timeout is not None:
-                        elapsed = time.time() - start_time
-                        if elapsed >= timeout:
-                            raise asyncio.TimeoutError("Receive timeout")
-                        remaining_timeout = timeout - elapsed
-
-                    # 使用 asyncio.wait 同时等待接收操作和心跳检查
-                    receive_task = asyncio.ensure_future(self._socket.recv_json())
-                    tasks = [receive_task]
-                    check_remaining_task = None
-                    if remaining_timeout is not None:
-                        check_remaining_task = asyncio.create_task(asyncio.sleep(remaining_timeout))
-                        tasks.append(check_remaining_task)
-                    check_closed_task = asyncio.create_task(self._closed_event.wait())
-                    tasks.append(check_closed_task)
-
-                    # 等待第一个完成的任务
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
-                    # 取消未完成的任务
-                    for task in pending:
-                        task.cancel()
-
-                    # 处理心跳超时
-                    if check_remaining_task in done:
-                        raise asyncio.TimeoutError("Receive timeout")
-                    elif check_closed_task in done:
-                        self._closed_event.set()
-                        raise ConnectionClosedError("Connection closed")
-                    # 处理接收到的消息
-                    else:
-                        message = await receive_task
-                        # 更新最后活动时间
-                        self._last_activity = time.time()
-
-                        # 处理心跳消息
-                        if message.get("event_type") == HeartbeatEvent.event_type:
-                            await self._handle_heartbeat(message)
-                            continue  # 继续等待有效消息
-
-                        return message
-
+                    message = await self._socket.recv_json()
                 except zmq.ZMQError as e:
                     if e.errno == zmq.ETERM:
                         raise ConnectionClosedError("Connection closed")
                     elif e.errno == zmq.EAGAIN:
-                        # 超时，检查是否因活动超时
+                        # ZMQ 原生超时 — 检查心跳
                         if not self._config.bind and time.time() - self._last_activity > self._config.heartbeat_timeout:
                             raise asyncio.TimeoutError("Heartbeat timeout")
-                        raise asyncio.TimeoutError("Receive timeout")
+                        continue
                     else:
                         raise
-                except asyncio.TimeoutError:
-                    # 检查是否因活动超时
-                    if not self._config.bind and time.time() - self._last_activity > self._config.heartbeat_timeout:
-                        raise asyncio.TimeoutError("Heartbeat timeout")
-                    raise
-                except Exception as e:
-                    # 检查是否因活动超时
-                    if not self._config.bind and time.time() - self._last_activity > self._config.heartbeat_timeout:
-                        raise asyncio.TimeoutError("Heartbeat timeout") from e
-                    raise
+
+                # 成功收到消息
+                self._last_activity = time.time()
+
+                if message.get("event_type") == HeartbeatEvent.event_type:
+                    await self._handle_heartbeat(message)
+                    continue
+
+                return message
 
     async def send(self, event: ChannelEvent) -> None:
         """发送消息"""
