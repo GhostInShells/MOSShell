@@ -267,7 +267,7 @@ def generate_list_command(name: str, state_class: type[rx.State], field_type, qu
             PyCommand(
                 func=append_image_command,
                 name=f"append_{name}",
-                doc=f"追加渲染一张图片，使用locator格式的字符串"
+                doc=f"追加渲染一张图片到{name}列表，参数 locator 为资源定位符，必须作为 XML 属性传入。例如 <append_{name} locator=\"pil-image://path\" />"
             )
         ])
 
@@ -354,7 +354,7 @@ def generate_image_command(name: str, state_class: type[rx.State], queue: asynci
         PyCommand(
             func=set_command,
             name=f"set_{name}",
-            doc=f"渲染一张图片，使用locator格式的字符串",
+            doc=f"渲染一张图片到{name}字段，参数 locator 为资源定位符，必须作为 XML 属性传入。例如 <set_{name} locator=\"pil-image://path\" />",
         ),
         PyCommand(
             func=clear_command,

@@ -6,3 +6,4 @@ layouts:
   - "framework.layouts.simple.SimpleLayout"
   - "framework.layouts.media.MediaLayout"
   - "framework.layouts.lesson.LessonLayout"
+  - "framework.layouts.stage.StageLayout"
