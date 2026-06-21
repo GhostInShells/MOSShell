@@ -1,0 +1,76 @@
+import asyncio
+from dataclasses import dataclass, field as dc_field
+from typing import Any, ClassVar
+
+from ghoshell_common.helpers import uuid
+
+
+@dataclass(kw_only=True)
+class EventModel:
+    event_type: ClassVar[str] = ""
+
+    event_id: str = dc_field(default_factory=uuid)
+    future: asyncio.Future | None = dc_field(default=None, repr=False)
+
+
+@dataclass(kw_only=True)
+class LayoutEvent(EventModel):
+    event_type: ClassVar[str] = "set_layout"
+
+    layout: str = ""
+
+
+@dataclass(kw_only=True)
+class StreamEvent(EventModel):
+    event_type: ClassVar[str] = "stream"
+
+    field: str = ""
+    chunk: str = ""
+
+
+@dataclass(kw_only=True)
+class SetEvent(EventModel):
+    event_type: ClassVar[str] = "set"
+
+    field: str = ""
+    data: Any = None
+
+
+@dataclass(kw_only=True)
+class AppendEvent(EventModel):
+    event_type: ClassVar[str] = "append"
+
+    field: str = ""
+    data: Any = None
+
+
+@dataclass(kw_only=True)
+class UpdateEvent(EventModel):
+    event_type: ClassVar[str] = "update"
+
+    field: str = ""
+    index: int = 0
+    data: Any = None
+
+
+@dataclass(kw_only=True)
+class PopEvent(EventModel):
+    event_type: ClassVar[str] = "pop"
+
+    field: str = ""
+
+
+@dataclass(kw_only=True)
+class ClearEvent(EventModel):
+    event_type: ClassVar[str] = "clear"
+
+    field: str = ""
+
+
+@dataclass(kw_only=True)
+class LoadChapterEvent(EventModel):
+    """原子替换当前章节全部字段。chapter_data 包含 sub_title/main_text/annotations/appreciation/images。"""
+
+    event_type: ClassVar[str] = "load_chapter"
+
+    chapter_data: dict = dc_field(default_factory=dict)

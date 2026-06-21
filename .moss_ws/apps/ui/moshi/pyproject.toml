@@ -1,0 +1,30 @@
+[project]
+name = "moss-in-reflex"
+version = "0.1.0"
+description = "Add your description here"
+license = { text = "Apache License 2.0" }
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "ghoshell-moss",
+    "ghoshell-moss[audio,zmq,host,ghost]",
+    "reflex==0.9.1",
+]
+
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }
+
+[tool.pdm.build]
+includes = []
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.1.0",
+]

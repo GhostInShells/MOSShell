@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Moshi</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="toolbar">
+  <button id="btn-idle" data-mode="idle">空闲</button>
+  <button id="btn-prepare" data-mode="prepare">备课</button>
+  <button id="btn-practice" data-mode="practice">练习</button>
+  <button id="btn-lecture" data-mode="lecture">讲课</button>
+  <span class="spacer"></span>
+  <select id="course-select">
+    <option value="">选择课程...</option>
+  </select>
+  <span id="status">就绪</span>
+</div>
+
+<div id="main">
+  <div id="stage-wrapper">
+    <iframe id="stage" src="http://localhost:3000"></iframe>
+    <div id="progress">
+      <button data-cmd="prev">上一章</button>
+      <span class="info" id="chapter-info">-</span>
+      <button data-cmd="next">下一章</button>
+      <span class="spacer"></span>
+      <button class="primary" data-cmd="save">存档</button>
+      <button data-cmd="end">结束</button>
+    </div>
+  </div>
+
+  <div id="sidebar">
+    <div id="messages">
+      <div class="msg system">Moshi 已就绪。选择一个模式开始。</div>
+    </div>
+    <div id="input-area">
+      <input id="chat-input" placeholder="输入消息...">
+      <button id="send-btn">发送</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

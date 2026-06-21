@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>备课模式 - 课件制作 UI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .mode-tab { position: relative; }
+        .mode-tab.active { color: #fff; }
+        .mode-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 2px;
+            background: #3b82f6;
+            border-radius: 2px;
+        }
+        #chat-messages::-webkit-scrollbar { width: 4px; }
+        #chat-messages::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+    </style>
+</head>
+<body class="bg-[#0f0f1a] text-slate-200 font-sans overflow-hidden select-none w-screen h-screen m-0 p-0 flex items-center justify-center">
+
+    <div class="relative w-full h-full bg-[#131324] shadow-2xl overflow-hidden flex flex-col">
+        
+        <div class="h-12 w-full bg-[#16162a] border-b border-slate-800/60 px-6 flex items-center justify-between z-10 shrink-0">
+            <div class="flex items-center gap-6 h-full text-sm">
+                <div class="mode-tab relative flex items-center h-full text-white font-medium cursor-pointer active" data-mode="prepare">
+                    <span>备课</span>
+                    <div class="absolute bottom-0 left-0 right-0 h-[2px] bg-blue-500 rounded-full"></div>
+                </div>
+                <div class="mode-tab text-slate-400 hover:text-slate-200 transition-colors cursor-pointer" data-mode="practice">练习</div>
+                <div class="mode-tab text-slate-400 hover:text-slate-200 transition-colors cursor-pointer" data-mode="lecture">讲课</div>
+            </div>
+            
+            <div class="flex items-center gap-2">
+                <button id="btn-save" class="bg-[#242b47] hover:bg-[#2e375c] text-blue-300 text-xs px-3 py-1 rounded flex items-center gap-1.5 transition-colors border border-blue-900/30">
+                    <span>💾</span> 保存
+                </button>
+                <button id="btn-exit" class="bg-[#222233] hover:bg-[#2d2d42] text-slate-400 hover:text-slate-200 text-xs px-3 py-1 rounded flex items-center gap-1 transition-colors border border-slate-800">
+                    ✕ 退出
+                </button>
+            </div>
+        </div>
+
+        <!-- 主内容区：Reflex 白板 iframe -->
+        <div class="flex-1 w-full overflow-hidden bg-[#161629]">
+            <iframe id="stage" src="http://localhost:3000"
+                    class="w-full h-full border-0"
+                    allow="clipboard-write"
+                    loading="lazy">
+            </iframe>
+        </div>
+
+        <!-- AI Chat Panel -->
+        <div class="w-full bg-[#1a1a2e] border-t border-slate-800 px-8 py-4 flex flex-col gap-3 shrink-0 h-[200px] z-10">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center gap-2 text-xs font-medium text-slate-300">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]"></span>
+                    <span>AI 助手</span>
+                </div>
+                <button class="text-xs text-slate-500 hover:text-slate-400 flex items-center gap-1 transition-colors">
+                    <span>展开</span> <span>∨</span>
+                </button>
+            </div>
+
+            <div id="chat-messages" class="flex-1 flex flex-col gap-2.5 overflow-y-auto pr-1 min-h-0"></div>
+
+            <div class="w-full flex items-center gap-3">
+                <input id="chat-input" type="text" placeholder="输入你的问题..."
+                       class="flex-1 bg-[#121222] border border-slate-800 rounded-lg px-4 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/50 transition-colors">
+                <button id="btn-send" class="bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-5 py-2 rounded-lg shadow-lg shadow-blue-600/10 active:scale-95 transition-all">
+                    发送
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+    // ── State ────────────────────────────────────────────────────────────────
+    let currentMode = "prepare";
+
+    // ── Chat helpers ─────────────────────────────────────────────────────────
+
+    function escapeHtml(s) {
+        const d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function addChatBubble(role, text) {
+        const msgs = document.getElementById("chat-messages");
+        // 首次有消息时清空占位
+        if (msgs.querySelector(".placeholder")) {
+            msgs.innerHTML = "";
+        }
+        const div = document.createElement("div");
+        const isUser = role === "user";
+        div.className = isUser
+            ? "flex items-start gap-2.5 justify-end"
+            : "flex items-start gap-2.5";
+        div.innerHTML = isUser
+            ? '<div class="bg-blue-600 text-white text-xs px-3 py-2 rounded-l-xl rounded-br-xl border border-blue-500/20 max-w-[80%] font-medium">'
+                + escapeHtml(text) + '</div>'
+            : '<div class="w-6 h-6 rounded-md bg-[#242442] border border-slate-700/50 flex items-center justify-center text-xs shrink-0">🤖</div>'
+                + '<div class="bg-[#212742] text-slate-200 text-xs px-3 py-2 rounded-r-xl rounded-bl-xl border border-blue-900/20 max-w-[80%] font-medium">'
+                + escapeHtml(text) + '</div>';
+        msgs.appendChild(div);
+        msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    // ── API ──────────────────────────────────────────────────────────────────
+
+    async function api(path, body) {
+        if (body === undefined) body = {};
+        const r = await fetch("/api" + path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        return r.json();
+    }
+
+    // ── SSE ──────────────────────────────────────────────────────────────────
+
+    function connectSSE() {
+        const es = new EventSource("/api/chat/stream");
+        es.onmessage = function (e) {
+            try {
+                const msg = JSON.parse(e.data);
+                addChatBubble(msg.role, msg.text);
+            } catch (err) {
+                console.warn("SSE parse error:", err);
+            }
+        };
+        es.onerror = function () {
+            // EventSource 会自动重连
+        };
+        return es;
+    }
+
+    // ── Actions ──────────────────────────────────────────────────────────────
+
+    function setMode(mode) {
+        currentMode = mode;
+        api("/mode", { mode }).then(function (r) {
+            document.querySelectorAll(".mode-tab").forEach(function (el) {
+                el.classList.toggle("active", el.dataset.mode === mode);
+            });
+        });
+    }
+
+    function saveCourse() {
+        api("/cmd", { cmd: "save" });
+    }
+
+    function exitCourse() {
+        api("/cmd", { cmd: "end" }).then(function () {
+            setMode("idle");
+        });
+    }
+
+    function sendChat() {
+        const input = document.getElementById("chat-input");
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = "";
+
+        addChatBubble("user", text);
+        api("/chat", { text: text, mode: currentMode }).then(function (r) {
+            if (r.error) {
+                addChatBubble("system", "错误: " + r.error);
+            }
+        });
+    }
+
+    // ── Init ─────────────────────────────────────────────────────────────────
+
+    document.addEventListener("DOMContentLoaded", function () {
+        // SSE connect
+        connectSSE();
+
+        // Mode tabs
+        document.querySelectorAll(".mode-tab").forEach(function (el) {
+            el.addEventListener("click", function () {
+                setMode(el.dataset.mode);
+            });
+        });
+
+        // Save / Exit
+        var saveBtn = document.getElementById("btn-save");
+        var exitBtn = document.getElementById("btn-exit");
+        if (saveBtn) saveBtn.addEventListener("click", saveCourse);
+        if (exitBtn) exitBtn.addEventListener("click", exitCourse);
+
+        // Chat send
+        var sendBtn = document.getElementById("btn-send");
+        var chatInput = document.getElementById("chat-input");
+        if (sendBtn) sendBtn.addEventListener("click", sendChat);
+        if (chatInput) {
+            chatInput.addEventListener("keydown", function (e) {
+                if (e.key === "Enter") sendChat();
+            });
+        }
+
+        // Init state
+        api("/state").then(function (s) {
+            currentMode = s.mode || "prepare";
+            document.querySelectorAll(".mode-tab").forEach(function (el) {
+                el.classList.toggle("active", el.dataset.mode === currentMode);
+            });
+        });
+    });
+    </script>
+
+</body>
+</html>
