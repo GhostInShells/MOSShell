@@ -18,8 +18,10 @@ from pydantic import BaseModel
 if sys.platform != "win32":
     import fcntl
 
+
     def _flock_ex(fd: int):
         fcntl.flock(fd, fcntl.LOCK_EX)
+
 
     def _flock_ex_nb(fd: int) -> bool:
         """尝试排他锁（非阻塞），成功返回 True，已被占用返回 False"""
@@ -29,10 +31,12 @@ if sys.platform != "win32":
         except BlockingIOError:
             return False
 
+
     def _flock_un(fd: int):
         fcntl.flock(fd, fcntl.LOCK_UN)
 else:
     import msvcrt
+
 
     def _flock_ex(fd: int):
         """排他锁（阻塞）—— msvcrt 没有原生阻塞锁，手动重试"""
@@ -43,6 +47,7 @@ else:
             except OSError:
                 time.sleep(0.05)
 
+
     def _flock_ex_nb(fd: int) -> bool:
         """尝试排他锁（非阻塞）"""
         try:
@@ -50,6 +55,7 @@ else:
             return True
         except OSError:
             return False
+
 
     def _flock_un(fd: int):
         try:
@@ -314,13 +320,6 @@ class Workspace(ABC):
         return self.root().abspath()
 
     @abstractmethod
-    def cwd(self) -> Path:
-        """
-        system current working directory.
-        """
-        pass
-
-    @abstractmethod
     def lock(self, key: str) -> Lock:
         """
         创建一个进程锁.
@@ -337,6 +336,9 @@ class Workspace(ABC):
         配置文件存储路径.
         """
         return self.root().sub_storage("configs")
+
+    def source(self) -> Storage:
+        return self.root().sub_storage("src")
 
     def runtime(self) -> Storage:
         """
@@ -537,14 +539,9 @@ class LocalWorkspace(Workspace):
     def __init__(self, root_path: Union[str, Path], cwd: Optional[Path] = None):
         storage = LocalStorage(root_path)
         self._root = storage
-        cwd = cwd or Path(os.getcwd()).resolve()
-        self._cwd = cwd
 
     def root(self) -> Storage:
         return self._root
-
-    def cwd(self) -> Path:
-        return self._cwd
 
     def lock(self, key: str) -> Lock:
         """

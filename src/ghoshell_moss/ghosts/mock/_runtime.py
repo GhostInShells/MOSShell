@@ -2,9 +2,8 @@ import asyncio
 from typing import AsyncIterator, Coroutine
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint import ThinkingEffort
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
-from ghoshell_moss.core.blueprint.mindflow import Articulator, Mindflow, Moment, Logos
+from ghoshell_moss.core.blueprint.mindflow import Articulator, Mindflow, Moment, Logos, ThinkingEffort
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.message import Message
 

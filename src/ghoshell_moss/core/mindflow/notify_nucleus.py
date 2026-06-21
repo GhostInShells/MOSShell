@@ -14,10 +14,9 @@ from ghoshell_container import IoCContainer
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.message import ContextType
-from ghoshell_moss.core.blueprint import Impulse
 from ghoshell_moss.core.blueprint.mindflow import (
     SignalMeta, SignalName, Priority, Signal,
-    Nucleus, NucleusMeta, ImpulsePrimitive,
+    Nucleus, NucleusMeta, ImpulsePrimitive, Impulse
 )
 
 __all__ = ['NotifyNucleus', 'NotifySignalMeta', 'NotifyNucleusMeta', 'new_notify_signal']

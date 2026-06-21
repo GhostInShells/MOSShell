@@ -1,4 +1,4 @@
-from typing import Protocol, Callable, Any, Literal
+from typing import Callable, Any, Literal
 
 from ghoshell_container import IoCContainer
 from typing_extensions import Self, TypedDict
@@ -10,31 +10,17 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
+from ghoshell_moss.core.blueprint.fractal import FractalHub, FractalCellProvider
+from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellManifest, CellRegistry
 from ghoshell_moss.message import Message
-from ghoshell_moss.contracts import SystemPrompter, LoggerItf
-from .ghost import Ghost, GhostMeta
-from .app import AppStore
-from .environment import Environment, CellMeta
-from .fractal import FractalHub, FractalCellProvider
+from ghoshell_moss.contracts import SystemPrompter
+import logging
 
 __all__ = [
     'MossRuntime', 'MossHost', 'Mode',
     'MossSystemPrompter', 'GhostRuntime', 'LoopHealth', 'LoopStatus',
 ]
-
-
-class MossLifecycleContract(Protocol):
-    """
-    一种约定, 在抽象设计中继承了这个协议的类,
-    表示在 Moss 启动时会检查它是否存在, 如果存在会和 moss runtime 一起启动.
-    同时也可以通过 container.get 去检查它是否存在.
-    """
-
-    async def __aenter__(self) -> Self:
-        pass
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
 
 
 class MossSystemPrompter(SystemPrompter, ABC):
@@ -176,15 +162,6 @@ class MossRuntime(ABC):
         pass
 
     @property
-    @abstractmethod
-    def apps(self) -> AppStore:
-        """
-        管理 moss 架构下的 app 体系.
-        可以启动/关闭 app. 具体的 apps / bringup 体系与 Mode 的配置有关.
-        """
-        pass
-
-    @property
     def system_prompter(self) -> MossSystemPrompter:
         """获取运行时提供的各种提示词声明. 可用于组装. """
         return self.matrix.container.force_fetch(MossSystemPrompter)
@@ -201,6 +178,7 @@ class MossRuntime(ABC):
 
     @property
     def container(self) -> IoCContainer:
+        """提示 ioc container 的来源."""
         return self.matrix.container
 
     @property
@@ -220,7 +198,17 @@ class MossRuntime(ABC):
         pass
 
     @property
-    def logger(self) -> LoggerItf:
+    @abstractmethod
+    def env(self) -> Environment:
+        """
+        环境发现的 api.
+        """
+        pass
+
+    @property
+    def logger(self) -> logging.Logger:
+        if not self.is_running():
+            return self.env.logger
         return self.matrix.logger
 
     def wait_close_sync(self, timeout: float | None = None) -> bool:
@@ -394,23 +382,27 @@ class MossHost(ABC):
     @property
     @abstractmethod
     def env(self) -> Environment:
+        """环境变量."""
         pass
 
     @classmethod
     def discover(cls, env: Environment | None = None) -> Self:
         """
-        环境发现的标准实现.
+        通过环境发现, 使抽象本身基于约定足以使用.
+
+        # 举例
+        async with MossHost.discover().run() as moss:
+            ...
         """
-        from ghoshell_moss.host import Host
+        from ghoshell_moss.facade import discover_host
         # 使用反范式定义项目的默认约定.
-        return Host.discover(env)
+        return discover_host(env)
 
     @property
     @abstractmethod
     def manifests(self) -> Manifests:
         """
         返回当前环境下发现的 Matrix 实例.
-        可以直接用于开发一个节点.
         """
         pass
 
@@ -431,37 +423,22 @@ class MossHost(ABC):
         pass
 
     @abstractmethod
-    def apps(self) -> AppStore:
+    def cell_registry(self) -> CellRegistry:
         """
-        环境发现的 App 中心
-        用来管理环境中的 App (模式相关)
+        基于环境发现得到的所有 cells.
         """
         pass
 
     @abstractmethod
-    def matrix(self) -> Matrix:
+    def matrix(self, cell: MossCell | None = None) -> Matrix:
         """
-        返回当前环境下发现的 Matrix 实例.
+        创建当前环境下发现的 Matrix 实例.
         可以直接用于开发一个节点.
+        :param cell: 如果没有定义 Cell, 会基于环境发现的逻辑创建一个.
         >>> async def main(moss: MossHost):
         >>>     async with moss.matrix():
         >>>         ...
         """
-        pass
-
-    @abstractmethod
-    def list_scope_cells(self, alive_only: bool = True) -> list[CellMeta]:
-        """列出当前 scope 下所有注册的 cell（文件系统静态发现 + PID 验活）。"""
-        pass
-
-    @abstractmethod
-    def kill_cell(self, address: str) -> bool:
-        """杀死当前 scope 下指定 address 的 cell 进程。成功返回 True。"""
-        pass
-
-    @abstractmethod
-    def kill_all_cells(self) -> list[str]:
-        """杀死当前 scope 下所有活 cell 进程。返回被杀死的 address 列表。"""
         pass
 
     @abstractmethod

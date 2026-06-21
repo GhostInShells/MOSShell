@@ -3,24 +3,23 @@ MOSS 环境发现的关键常量.
 只保留几个最核心的常量.
 """
 
-from typing import Literal
+from typing import Literal, TypeAlias, Dict
 from typing_extensions import Self
 from pathlib import Path
-from ghoshell_moss.message import unique_id
 from ghoshell_common.contracts import config_logger_from_yaml
 from importlib import resources
 import logging
 from pydantic import BaseModel, Field
+from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace, Storage
 from ghoshell_moss.core.ctml.versions import (
     CTML_VERSION, search_version_file_in_dir, default_moss_ctml_meta_instruction_directory,
     get_version_from_filename,
 )
+from ghoshell_moss.message import unique_id
 import os
 import dotenv
 import sys
 import stat
-import psutil
-import yaml
 
 __all__ = [
     'Environment',
@@ -28,22 +27,23 @@ __all__ = [
     'DEFAULT_WORKSPACE_DIR_NAME',
     'WORKSPACE_ENV_FILENAME',
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
+    'DEFAULT_SESSION_SCOPE',
     # env keys
     'ENV_WORKSPACE_DIR_KEY',
     'ENV_SESSION_SCOPE_KEY',
     'ENV_SESSION_ID_KEY',
-    'ENV_PARENT_PID_KEY',
     'ENV_GHOST_NAME_KEY',
-    'ENV_CELL_ADDRESS_KEY',
     'ENV_MOSS_MODE_KEY',
+    'ENV_MOSS_HOST_PID_KEY',
+    'ENV_CELL_ADDRESS_KEY',
+    'ENV_PARENT_CELL_ADDRESS_KEY',
 
-    'DEFAULT_SESSION_SCOPE',
-    'DEFAULT_CELL_ADDRESS',
+    'MOSSEnvConfigKey',
+    'MOSSRuntimeScopeEnvKey',
+    'MOSSSpawnCellEnvKey',
 
-    'MOSSEnvKey',
     "MossMeta",
-    "ScopeMeta",
-    "CellMeta",
+    "RuntimeScope",
 
     # stubs
     'MODE_STUB_PACKAGE',
@@ -51,7 +51,6 @@ __all__ = [
     'WORKSPACE_STUB_PACKAGE',
 
     # dir path
-    'WORKSPACE_SOURCE_DIR',
     'META_CONFIG_FILENAME',
     'WORKSPACE_ENV_FILENAME',
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
@@ -69,10 +68,6 @@ META_CONFIG_FILENAME = 'MOSS.md'
 WORKSPACE_ENV_FILENAME = '.env'
 WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 
-# 源码预期所在的目录.
-WORKSPACE_SOURCE_DIR = 'src'
-SOURCE_MODES_PACKAGE = 'MOSS.modes'
-
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
 WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.workspace'
@@ -85,11 +80,15 @@ MODE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.mode'
 # 从环境变量中获取 moss workspace 路径的环境变量名.
 ENV_WORKSPACE_DIR_KEY = 'MOSS_WORKSPACE'
 
-# 环境变量中获取 MOSS 运行时的 SESSION ID.
-# 所有通过 MOSS 架构共享本地通讯的 channel 或 topic, 都需要归属到相同的 session id 上.
+# moss 环境配置文件所在的路径.
+# 影响 MOSS
+ENV_SOURCE_DIR_KEY = 'MOSS_SOURCE_DIR'
+
+# moss session scope 的环境变量 key. session scope 用于所有通讯协议的隔离.
 ENV_SESSION_SCOPE_KEY = 'MOSS_SESSION_SCOPE'
 DEFAULT_SESSION_SCOPE = 'default'
 
+# 环境变量中获取 MOSS 运行时的 SESSION ID.
 ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
@@ -97,23 +96,159 @@ DEFAULT_MOSS_MODE = "default"
 
 # 如果当前 MOSS 实例启动时, 启用了 Ghost, 则 GHOST_NAME 不应该为空.
 ENV_GHOST_NAME_KEY = 'MOSS_GHOST_NAME'
+# none 表示没有 Ghost 在运行.
+DEFAULT_GHOST_NAME = "none"
 
-ENV_PARENT_PID_KEY = 'MOSS_PARENT_PID'
+ENV_MOSS_HOST_PID_KEY = 'MOSS_HOST_PID'
 
 ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
-DEFAULT_CELL_ADDRESS = 'host/{mode}'
+ENV_PARENT_CELL_ADDRESS_KEY = 'MOSS_PARENT_ADDRESS'
 
-MOSSEnvKey = Literal[
-    "MOSS_WORKSPACE", "MOSS_SESSION_SCOPE", "MOSS_MODE_NAME",
-    "MOSS_GHOST_NAME", "MOSS_PARENT_PID", "MOSS_CELL_ADDRESS",
-    "MOSS_SESSION_ID",
+# 与运行配置项有关的 Env Key
+MOSSEnvConfigKey: TypeAlias = Literal[
+    "MOSS_WORKSPACE",
+    "MOSS_SOURCE_DIR",
 ]
+
+# 与运行时状态有关的 Env Key
+MOSSRuntimeScopeEnvKey: TypeAlias = Literal[
+    "MOSS_MODE_NAME",
+    "MOSS_GHOST_NAME",
+    "MOSS_SESSION_SCOPE",
+    "MOSS_SESSION_ID",
+    "MOSS_HOST_PID",
+]
+
+# Spawn 一个子进程 Cell 使用的 Key.
+MOSSSpawnCellEnvKey: TypeAlias = Literal[
+    "MOSS_MODE_NAME",
+    "MOSS_GHOST_NAME",
+    "MOSS_SESSION_SCOPE",
+    "MOSS_SESSION_ID",
+    "MOSS_HOST_PID",
+    'MOSS_PARENT_CELL_ADDRESS',
+    'MOSS_CELL_ADDRESS',
+]
+
+
+class RuntimeScope(BaseModel):
+    """
+    MOSS 的运行时状态.
+    在 MOSS 架构中, 所有的节点 (CELL) 都基于 RuntimeScope 构建自身, 包括:
+    1. 通讯网络 (session scope)
+    2. 数据的不同隔离级别.
+    3. 进程生命周期的治理 (host pid).
+    4. Workspace 内资源和依赖声明的隔离 (Mode)
+    5. Ghost 的运行状态.
+
+    Host 节点应该要创建 RuntimeScope, Worker 节点应该从文件中读取它作为唯一信源; 读取不到则从环境变量中获取.
+
+    """
+    source: Literal['workspace', 'env', ''] = Field(
+        default='',
+        description="标记 scope 如何被创建. env 是从环境变量读取, workspace 是从 workspace 读取. 默认是手动创建. ",
+    )
+    session_scope: str = Field(
+        default=DEFAULT_SESSION_SCOPE,
+        description="通讯隔离 scope. 所有 Session 通讯协议都会在同一个 Scope 下.",
+    )
+    session_id: str = Field(
+        default_factory=unique_id,
+        description="Session 为每一次重新运行独立准备的隔离级别.",
+    )
+    mode_name: str = Field(
+        default=DEFAULT_MOSS_MODE,
+        description="当前 mode 名称, 用于管理不同的 mode 资源. ",
+    )
+    ghost_name: str = Field(
+        default=DEFAULT_GHOST_NAME,
+        description="当前运行的 ghost 名称. ",
+    )
+    host_pid: int = Field(
+        default=0,
+        description="host 进程 PID，用于存活验证与运维诊断",
+    )
+
+    @classmethod
+    def new(
+            cls,
+            *,
+            mode_name: str = '',
+            ghost_name: str = '',
+            host_pid: int = 0,
+            session_scope: str = '',
+            session_id: str = '',
+    ) -> 'RuntimeScope':
+        """通过入参的方式构建 RuntimeScope. """
+        mode_name = mode_name or os.environ.get(ENV_MOSS_MODE_KEY, DEFAULT_MOSS_MODE)
+        ghost_name = ghost_name or os.environ.get(ENV_GHOST_NAME_KEY, DEFAULT_GHOST_NAME)
+        session_scope = session_scope or os.environ.get(ENV_SESSION_SCOPE_KEY, DEFAULT_SESSION_SCOPE)
+        session_id = session_id or os.environ.get(ENV_SESSION_ID_KEY) or unique_id()
+        host_pid = host_pid
+        if host_pid == 0:
+            if val := os.environ.get(ENV_MOSS_HOST_PID_KEY):
+                host_pid = int(val)
+        return RuntimeScope(
+            source='',
+            mode_name=mode_name,
+            ghost_name=ghost_name,
+            host_pid=host_pid,
+            session_scope=session_scope,
+            session_id=session_id,
+        )
+
+    def write_to_directory(self, directory: Path) -> None:
+        content = self.model_dump_json(indent=2, exclude_none=True, ensure_ascii=False)
+        file = directory / 'runtime_scope.json'
+        file.write_text(content)
+
+    @classmethod
+    def read_from_directory(cls, directory: Path) -> 'RuntimeScope | None':
+        file = directory / 'runtime_scope.json'
+        if not file.exists():
+            return None
+        try:
+            content = file.read_text()
+            return cls.model_validate_json(content)
+        except Exception:
+            return None
+
+    @classmethod
+    def create_from_env(
+            cls,
+            env_data: Dict[str, str] | None = None,
+    ) -> 'RuntimeScope':
+        env_data = env_data or os.environ.copy()
+        data = {}
+        if val := env_data.get(ENV_MOSS_MODE_KEY):
+            data['mode_name'] = val
+        if val := env_data.get(ENV_GHOST_NAME_KEY):
+            data['ghost_name'] = val
+        if val := env_data.get(ENV_MOSS_HOST_PID_KEY):
+            data['host_pid'] = int(val) if val else 0
+        if val := env_data.get(ENV_SESSION_SCOPE_KEY):
+            data['session_scope'] = val
+        if val := env_data.get(ENV_SESSION_ID_KEY):
+            data['session_id'] = val
+        data['source'] = 'env'
+        return cls(**data)
+
+    def dump_env_data(self) -> Dict[MOSSRuntimeScopeEnvKey, str]:
+        return {
+            "MOSS_MODE_NAME": self.mode_name,
+            "MOSS_GHOST_NAME": self.ghost_name,
+            "MOSS_SESSION_SCOPE": self.session_scope,
+            "MOSS_SESSION_ID": self.session_id,
+            "MOSS_HOST_PID": str(self.host_pid),
+        }
 
 
 class MossMeta(BaseModel):
     """
-    meta instruction from the environment
+    MOSS 的元信息配置.
+    通过 workspace 的 MOSS.md 读取.
     """
+
     name: str = Field(
         default='moss',
         description="为当前 moss 环境命名. 建议给环境特殊的名字, 因为可以通过分形组网, 让多个 host 互相联通.",
@@ -131,7 +266,7 @@ class MossMeta(BaseModel):
         description="启动时默认的模式",
     )
     default_session_scope: str = Field(
-        default=DEFAULT_SESSION_SCOPE,
+        default='',
     )
     system_prompt: str = Field(
         default="",
@@ -150,188 +285,67 @@ class MossMeta(BaseModel):
         return cls(**data)
 
 
-class ScopeMeta(BaseModel):
-    """scope 级发现文件 — host 进程锁后创建，正常退出删除，PID 验尸。
-
-    放在 Environment 而非 session.py 是因为：ScopeMeta 是环境发现的一等公民，
-    被 Environment 读写，被非 host cell 用于恢复 session context。
-    session.py 可以反向依赖此模型。
-    """
-    session_scope: str = Field(description="认知隔离 scope")
-    session_id: str = Field(description="当前 scope 的 active session id")
-    mode: str = Field(description="当前 mode 名称")
-    host_pid: int = Field(description="host 进程 PID，用于存活验证与运维诊断")
-
-
-class CellMeta(BaseModel):
-    """cell 级注册文件 — 每个 cell 进程写自己的 PID，正常退出删除，PID 验尸。
-
-    与 ScopeMeta 对称：都是文件系统注册 + PID 验活。
-    ScopeMeta 是 scope 级（一个 scope 一个），CellMeta 是 cell 级（每个进程一个）。
-    文件名格式: cell-{scope}-{md5(address)[:12]}.json — scope 前缀支持静态目录扫描。
-    """
-    address: str = Field(description="cell 地址，如 host/default, app/mcp/xxx")
-    pid: int = Field(description="cell 进程 PID")
-    parent_pid: int = Field(description="父进程 PID")
-    session_id: str = Field(description="session id")
-    session_scope: str = Field(description="session scope")
-    mode_name: str = Field(description="mode 名称")
-    ghost_name: str = Field(description="ghost 名称，空字符串表示无 ghost")
-
-
 class Environment:
     """
-    MOSS Process Level Environment discover
+    MOSS 的环境配置和发现体系.
+    根据文件目录约定和环境变量发现, 完成初始化讯息.
     """
 
     def __init__(
             self,
-            workspace_path: Path,
-            ghost_name: str | None = None,
-            session_scope: str | None = None,
-            session_id: str | None = None,
-            mode: str | None = None,
+            # workspace 是唯一必要的参数.
+            workspace: Workspace,
+            runtime_scope: RuntimeScope | None = None,
+            *,
+            # --- 可以显式传入的参数 --- #
             env_file: Path | None = None,
+            source_dir: Path | None = None,
     ):
         """
         初始化 MOSS 的进程级别环境发现.
         """
-        self._workspace_path = workspace_path
-        self._env_file = env_file or self._workspace_path.joinpath(WORKSPACE_ENV_FILENAME)
-        self._source_path = self._workspace_path.joinpath(WORKSPACE_SOURCE_DIR)
-        self._meta_config_path = self._workspace_path.joinpath(META_CONFIG_FILENAME)
-        if self._meta_config_path.is_file() and self._meta_config_path.exists():
-            self._meta_config = MossMeta.from_file(self._meta_config_path)
-        else:
-            self._meta_config = MossMeta()
-
-        if mode is None:
-            mode = os.environ.get(
-                ENV_MOSS_MODE_KEY,
-                self._meta_config.default_mode or DEFAULT_MOSS_MODE,
-            )
-        self._moss_mode = mode
-
-        # 永远要有正确的 session scope 和 session id.
-        self._session_scope = session_scope or os.environ.get(
-            ENV_SESSION_SCOPE_KEY,
-            self._meta_config.default_session_scope or DEFAULT_SESSION_SCOPE
-        )
-        self._session_id: str = session_id or os.environ.get(ENV_SESSION_ID_KEY, '')
-        if not self._session_id:
-            self._session_id = unique_id()
-
-        self._cell_address: str = os.environ.get(
-            ENV_CELL_ADDRESS_KEY,
-            DEFAULT_CELL_ADDRESS.format(mode=self._moss_mode)
-        )
-
-        # 为空表示运行时不启用 ghost.
-        self._ghost_name: str = ghost_name or os.environ.get(ENV_GHOST_NAME_KEY, '')
-
+        # 当前进程 id.
         self._self_pid: int = os.getpid()
-        self._parent_pid: int = int(os.environ.get(ENV_PARENT_PID_KEY, 0))
+        self._workspace_path = workspace.root_path()
+        self._workspace = workspace
+        self._runtime_registry_dir = self.get_runtime_registry_dir(workspace)
         self._bootstrapped = False
 
-    def set_mode(self, mode: str) -> None:
-        self._moss_mode = mode
-        os.environ[ENV_MOSS_MODE_KEY] = mode
-        # 如果 cell_address 是从默认模板派生的（而非通过 MOSS_CELL_ADDRESS 显式指定），
-        # 则在 mode 变更时同步更新。否则 host 进程的 cell_address 与 main_cell.address
-        # 不匹配，导致 _is_main 判定为 False，channel_proxy() 被阻止。
-        if ENV_CELL_ADDRESS_KEY not in os.environ:
-            self._cell_address = DEFAULT_CELL_ADDRESS.format(mode=mode)
+        self._configured_source_dir: Path | None = source_dir
 
-    def set_session_scope(self, session_scope: str) -> None:
-        self._session_scope = session_scope
-        os.environ[ENV_SESSION_SCOPE_KEY] = session_scope
-
-    def set_session_id(self, session_id: str) -> None:
-        self._session_id = session_id
-        os.environ[ENV_SESSION_ID_KEY] = session_id
-
-    @property
-    def ghost_name(self) -> str:
-        return self._ghost_name
-
-    def set_ghost_name(self, ghost_name: str) -> None:
-        self._ghost_name = ghost_name
-        os.environ[ENV_GHOST_NAME_KEY] = ghost_name
-
-    @property
-    def logger(self) -> logging.Logger:
-        return logging.getLogger('moss.' + self._cell_address.replace('/', '.'))
-
-    def ctml_prompts_dir(self) -> Path:
-        return self.workspace_path.joinpath("ctml_versions")
-
-    def ctml_versions(self) -> dict[str, Path]:
-        versions = search_version_file_in_dir(default_moss_ctml_meta_instruction_directory())
-        version_name_to_files = {}
-        for version_file in versions:
-            version_name = get_version_from_filename(version_file.name)
-            version_name_to_files[version_name] = version_file
-        for version_file in search_version_file_in_dir(self.ctml_prompts_dir()):
-            version_name = get_version_from_filename(version_file.name)
-            version_name_to_files[version_name] = version_file
-        return version_name_to_files
-
-    @classmethod
-    def discover(cls) -> Self:
-        """
-        从环境发现中获取进程级单例. 可以在各个模块中共享.
-        """
-        global _environment
-        # 返回进程级别单例.
-        # 或者根据路径发现创建单例.
-        if _environment is None:
-            workspace_path = cls.find_workspace_path()
-            _environment = cls(workspace_path)
-        return _environment
-
-    def dump_moss_env(
-            self,
-            *,
-            cell_address: str = "",
-            for_child_process: bool = False,
-            with_os_env: bool = True,
-    ) -> dict[str, str]:
-        """
-        生成 MOSS 自身环境相关的 env 字典, 通常用于子进程做发现.
-        """
-        data: dict[MOSSEnvKey, str] = {
-            "MOSS_WORKSPACE": str(self._workspace_path) if self._workspace_path.exists() else "",
-            "MOSS_SESSION_SCOPE": self._session_scope,
-            "MOSS_GHOST_NAME": self._ghost_name,
-            "MOSS_MODE_NAME": self._moss_mode,
-            "MOSS_SESSION_ID": self._session_id or '',
-        }
-        cell_address = cell_address or self._cell_address
-        if cell_address:
-            data["MOSS_CELL_ADDRESS"] = cell_address
-
-        if for_child_process:
-            data["MOSS_PARENT_PID"] = str(self._self_pid)
+        # 默认是 {workspace}/MOSS.md
+        self._meta_config_path = self._workspace_path.joinpath(META_CONFIG_FILENAME)
+        if self._meta_config_path.is_file() and self._meta_config_path.exists():
+            self._moss_meta_config = MossMeta.from_file(self._meta_config_path)
         else:
-            data["MOSS_PARENT_PID"] = str(self._parent_pid)
+            self._moss_meta_config = MossMeta()
 
-        if not with_os_env:
-            return data
-        env_data = os.environ.copy()
-        env_data.update(data)
-        return env_data
+        self._modes_storage = self._workspace.root().sub_storage('modes')
+        self._ghosts_storage = self._workspace.root().sub_storage('ghosts')
+        self._workspace_cell_registry = self._workspace.root().sub_storage('cells')
 
-    @classmethod
-    def set_singleton(cls, instance: Self) -> None:
-        """
-        重置进程级单例.
-        """
-        global _environment
-        _environment = instance
+        # 筹备 runtime scope — 必须在 env_file 选择之前,
+        # 因为 env_file 依赖 moss_mode_name.
+        if runtime_scope is None:
+            runtime_scope = RuntimeScope.read_from_directory(self._runtime_registry_dir)
+        if runtime_scope is None:
+            runtime_scope = RuntimeScope.create_from_env()
+        self._runtime_scope: RuntimeScope = runtime_scope
+
+        # 初始化环境变量文件 — 依赖 runtime_scope.mode_name.
+        if env_file is None:
+            env_mode_filename = f'.env.{self.moss_mode_name}'
+            env_mode_file = self.workspace_path.joinpath(env_mode_filename)
+            if env_mode_file.exists():
+                env_file = env_mode_file
+            else:
+                env_file = self.workspace_path.joinpath('.env')
+        self._env_file = env_file
+
 
     def bootstrap(self) -> None:
         """
-        初始化启动.
+        根据实例化的 Env, 完善进程的运行状态, 让当前进程和子进程可以分享.
         """
         if self._bootstrapped:
             return
@@ -339,20 +353,61 @@ class Environment:
         if not self.workspace_path.exists():
             raise EnvironmentError(f"Workspace `{self.workspace_path}` does not exist")
 
+        # 如果环境变量文件存在, 加载它.
+        # workspace 的环境变量
         env_file = self.env_file
-        if env_file is not None:
+        if env_file is not None and env_file.exists():
             dotenv.load_dotenv(env_file)
 
-        source_path = self.source_dir
-        if source_path is not None:
-            abs_source_path = str(source_path.absolute())
-            if abs_source_path not in sys.path:
-                sys.path.append(abs_source_path)
-
         # 按约定加载 logging 配置: workspace/configs/logging.yml
-        logging_config = self._workspace_path / 'configs' / 'logging.yml'
+        logging_config = self.log_config_file
         if logging_config.exists():
             config_logger_from_yaml(str(logging_config))
+
+        # 初始化 src 路径.
+        source_dir = self._configured_source_dir
+        if source_dir is None:
+            source_dir = os.environ.get(ENV_SOURCE_DIR_KEY) or self._workspace.source().abspath()
+        # 加载 source 里的数据.
+        if source_dir.exists() and source_dir.is_dir():
+            abs_source_path = str(source_dir.absolute())
+            if abs_source_path not in sys.path:
+                sys.path.append(abs_source_path)
+            self._configured_source_dir = source_dir
+
+        # 更新当前运行状态的环境变量.
+        env_data = self._runtime_scope.dump_env_data()
+        os.environ[ENV_WORKSPACE_DIR_KEY] = str(self._workspace.root_path())
+        os.environ[ENV_SOURCE_DIR_KEY] = str(source_dir)
+
+        for key, value in env_data.items():
+            if value:
+                os.environ[key] = str(value)
+
+    # --- 环境发现逻辑 --- #
+
+    @classmethod
+    def discover(cls) -> Self:
+        """
+        从环境发现中获取进程级单例. 可以在各个模块中共享.
+        """
+        # Env 对象本质上是进程级别单例.
+        global _environment
+        # 返回进程级别单例.
+        # 或者根据路径发现创建单例.
+        if _environment is None:
+            # 通过 workspace 实现初始化.
+            workspace_path = cls.find_workspace_path()
+            if not workspace_path.exists():
+                raise EnvironmentError(f"Expected workspace `{workspace_path}` not exists")
+            workspace = LocalWorkspace(workspace_path)
+            # 在 workspace 中发现 runtime scope.
+            _environment = cls(workspace)
+        return _environment
+
+    @classmethod
+    def get_runtime_registry_dir(cls, workspace: Workspace) -> Path:
+        return workspace.root().sub_storage('scopes').abspath()
 
     @staticmethod
     def find_workspace_path() -> Path:
@@ -390,6 +445,185 @@ class Environment:
         # 从 USER HOME 中按约定返回, 默认路径在 USER HOME.
         expect = user_home.joinpath(DEFAULT_WORKSPACE_DIR_NAME)
         return expect.absolute()
+
+    @staticmethod
+    def expect_home_workspace_path() -> Path:
+        """如果 workspace 在 Home 目录下的位置. """
+        return Path.home().joinpath(DEFAULT_WORKSPACE_DIR_NAME)
+
+    @staticmethod
+    def expect_cwd_workspace_path() -> Path:
+        """如果 workspace 在 cwd 下的预计位置"""
+        return Path.cwd().joinpath(DEFAULT_WORKSPACE_DIR_NAME)
+
+    # --- workspace path conventions -- #
+
+    @property
+    def workspace_path(self) -> Path:
+        """
+        返回 workspace path.
+        """
+        return self._workspace_path
+
+    @property
+    def workspace(self) -> Workspace:
+        return self._workspace
+
+    @property
+    def env_file(self) -> Path:
+        """
+        返回 workspace 中的 env 文件.
+        """
+        return self._env_file.absolute()
+
+    @property
+    def env_example_file(self) -> Path:
+        """
+        返回环境中的 env example file 预期地址.
+        """
+        return self._workspace_path.joinpath(WORKSPACE_ENV_EXAMPLE_FILENAME)
+
+    @property
+    def moss_meta_file(self) -> Path:
+        return self._meta_config_path.absolute()
+
+    @property
+    def log_config_file(self) -> Path:
+        return self._workspace_path / 'configs' / 'logging.yml'
+
+    @property
+    def modes_storage(self) -> Storage:
+        """所有模式的默认路径."""
+        return self._modes_storage
+
+    @property
+    def ghosts_storage(self) -> Storage:
+        """所有 ghosts 持久存储的默认路径. """
+        return self._ghosts_storage
+
+    @property
+    def workspace_cell_registry(self) -> Storage:
+        """所有对于模型可见的 Cell 存储路径. """
+        return self._workspace_cell_registry
+
+    @property
+    def runtime_registry_dir(self) -> Path:
+        """运行时用来管理所有运行时状态文件, 比如 cell 文件地址. """
+        return self._runtime_registry_dir
+
+    # --- env attributes -- #
+
+    @property
+    def pid(self) -> int:
+        """自身所处的进程 id. """
+        return self._self_pid
+
+    @property
+    def parent_cell_address(self) -> str:
+        return os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
+
+    @property
+    def this_cell_address(self) -> str:
+        return os.environ.get(ENV_CELL_ADDRESS_KEY, '')
+
+    @property
+    def host_pid(self) -> int:
+        return self._runtime_scope.host_pid
+
+    @property
+    def moss_mode_name(self) -> str:
+        return self._runtime_scope.mode_name
+
+    @property
+    def moss_meta(self) -> MossMeta:
+        return self._moss_meta_config
+
+    @property
+    def session_scope(self) -> str:
+        """
+        返回当前的通讯隔离状态.
+        """
+        return self._runtime_scope.session_scope
+
+    @property
+    def session_id(self) -> str:
+        return self._runtime_scope.session_id
+
+    @property
+    def ghost_name(self) -> str:
+        return self._runtime_scope.ghost_name
+
+    @property
+    def runtime_scope(self) -> RuntimeScope:
+        return self._runtime_scope
+
+    @classmethod
+    def set_mode(cls, mode: str) -> None:
+        os.environ[ENV_MOSS_MODE_KEY] = mode
+
+    @classmethod
+    def set_session_scope(cls, session_scope: str) -> None:
+        os.environ[ENV_SESSION_SCOPE_KEY] = session_scope
+
+    @classmethod
+    def set_session_id(cls, session_id: str) -> None:
+        os.environ[ENV_SESSION_ID_KEY] = session_id
+
+    @classmethod
+    def set_ghost_name(cls, ghost_name: str) -> None:
+        os.environ[ENV_GHOST_NAME_KEY] = ghost_name
+
+    @property
+    def logger(self) -> logging.Logger:
+        self.bootstrap()
+        return logging.getLogger('moss')
+
+    def ctml_prompts_dir(self) -> Path:
+        """
+        环境中约定的 ctml versions 配置.
+        """
+        return self.workspace_path.joinpath("ctml_versions")
+
+    def ctml_versions(self) -> dict[str, Path]:
+        """
+        当前环境中配置的 ctml versions.
+        """
+        versions = search_version_file_in_dir(default_moss_ctml_meta_instruction_directory())
+        version_name_to_files = {}
+        for version_file in versions:
+            version_name = get_version_from_filename(version_file.name)
+            version_name_to_files[version_name] = version_file
+        for version_file in search_version_file_in_dir(self.ctml_prompts_dir()):
+            version_name = get_version_from_filename(version_file.name)
+            version_name_to_files[version_name] = version_file
+        return version_name_to_files
+
+    def dump_moss_env(
+            self,
+            *,
+            cell_address: str = "",
+            parent_cell_address: str = "",
+            with_os_env: bool = True,
+    ) -> dict[str, str]:
+        """
+        生成 MOSS 自身环境相关的 env 字典, 用于展示或别的特殊需要.
+        """
+        data: dict[str, str] = self._runtime_scope.dump_env_data()
+        data[ENV_WORKSPACE_DIR_KEY] = str(self.workspace_path)
+
+        if self._configured_source_dir:
+            data[ENV_SOURCE_DIR_KEY] = str(self._configured_source_dir)
+
+        if cell_address:
+            data[ENV_CELL_ADDRESS_KEY] = cell_address
+        if parent_cell_address:
+            data[ENV_PARENT_CELL_ADDRESS_KEY] = parent_cell_address
+
+        if not with_os_env:
+            return data
+        env_data = os.environ.copy()
+        env_data.update(data)
+        return env_data
 
     @staticmethod
     def init_workspace(workspace_dir: Path, force: bool = False) -> None:
@@ -432,253 +666,6 @@ class Environment:
                         os.chmod(target_item, FILE_MODE)
 
         copy_recursive(stub_resources, workspace_dir)
-
-    @property
-    def workspace_path(self) -> Path:
-        """
-        返回 workspace path.
-        """
-        return self._workspace_path
-
-    def modes_dir(self) -> Path:
-        path = self.source_dir
-        for module_name in DEFAULT_MOSS_MODE.split('.'):
-            path = path.joinpath(module_name)
-        return path.absolute()
-
-    @property
-    def env_file(self) -> Path:
-        """
-        返回 workspace 中的 env 文件.
-        """
-        return self._env_file.absolute()
-
-    @property
-    def env_example_file(self) -> Path:
-        """
-        返回环境中的 env example file 预期地址.
-        """
-        return self._workspace_path.joinpath(WORKSPACE_ENV_EXAMPLE_FILENAME)
-
-    @property
-    def pid(self) -> int:
-        return self._self_pid
-
-    @property
-    def parent_pid(self) -> int:
-        return self._parent_pid
-
-    @property
-    def moss_mode_name(self) -> str:
-        return self._moss_mode
-
-    @property
-    def meta_instruction_file(self) -> Path:
-        return self._meta_config_path.absolute()
-
-    @property
-    def meta_config(self) -> MossMeta:
-        return self._meta_config
-
-    @property
-    def cell_address(self) -> str:
-        return self._cell_address
-
-    @staticmethod
-    def expect_home_workspace_path() -> Path:
-        return Path.home().joinpath(DEFAULT_WORKSPACE_DIR_NAME)
-
-    @staticmethod
-    def expect_cwd_workspace_path() -> Path:
-        return Path.cwd().joinpath(DEFAULT_WORKSPACE_DIR_NAME)
-
-    @property
-    def session_scope(self) -> str:
-        """
-        返回当前这次请求的 session id.
-        """
-        return self._session_scope
-
-    @property
-    def session_id(self) -> str:
-        return self._session_id
-
-    # ── scope meta — scope 级发现文件 ─────────────────
-
-    @property
-    def scope_meta_path(self) -> Path:
-        """约定路径: {workspace}/runtime/scopes/scope-{scope}.yml"""
-        return self._workspace_path / "runtime" / "scopes" / f"scope-{self._session_scope}.yml"
-
-    def read_scope_meta(self, alive_only: bool = True) -> "ScopeMeta | None":
-        """读取 scope meta 并 PID 验活。不可用时返回 None。
-
-        先检查 path.exists() 快速路径，不存在直接返回 None，不读文件。
-        """
-        file = self.scope_meta_path
-        if not file.exists():
-            return None
-        try:
-            data = yaml.safe_load(file.read_text()) or {}
-        except yaml.YAMLError:
-            return None
-        meta = ScopeMeta(**data)
-        if alive_only and not psutil.pid_exists(meta.host_pid):
-            return None
-        return meta
-
-    def write_scope_meta(self) -> None:
-        """写入 scope meta — host 进程锁后调用。"""
-        from datetime import datetime, timezone
-
-        meta = ScopeMeta(
-            session_scope=self._session_scope,
-            session_id=self._session_id,
-            mode=self._moss_mode,
-            host_pid=self._self_pid,
-        )
-        file = self.scope_meta_path
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(
-            "# scope discovery — host creates, PID validates, host deletes on clean exit\n"
-            + yaml.safe_dump(meta.model_dump(), allow_unicode=True)
-        )
-
-    def delete_scope_meta(self) -> None:
-        """删除 scope meta — host 正常退出时调用。"""
-        self.scope_meta_path.unlink(missing_ok=True)
-
-    # ── cell meta — cell 级注册文件 ─────────────────
-
-    @staticmethod
-    def _cell_address_hash(address: str) -> str:
-        import hashlib
-        return hashlib.md5(address.encode()).hexdigest()[:12]
-
-    @staticmethod
-    def _cells_dir(workspace_path: Path) -> Path:
-        return workspace_path / "runtime" / "cells"
-
-    @staticmethod
-    def _cell_meta_path_for(workspace_path: Path, scope: str, address: str) -> Path:
-        h = Environment._cell_address_hash(address)
-        return Environment._cells_dir(workspace_path) / f"cell-{scope}-{h}.json"
-
-    @property
-    def cell_meta_path(self) -> Path:
-        """当前进程的 cell 注册文件路径。"""
-        return self._cell_meta_path_for(
-            self._workspace_path, self._session_scope, self._cell_address,
-        )
-
-    def write_cell_meta(self) -> None:
-        """写入 cell meta — Matrix 启动完成后调用。"""
-        meta = CellMeta(
-            address=self._cell_address,
-            pid=self._self_pid,
-            parent_pid=self._parent_pid,
-            session_id=self._session_id,
-            session_scope=self._session_scope,
-            mode_name=self._moss_mode,
-            ghost_name=self._ghost_name,
-        )
-        file = self.cell_meta_path
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(meta.model_dump_json(indent=2))
-
-    def delete_cell_meta(self) -> None:
-        """删除 cell meta — 正常退出时调用。"""
-        self.cell_meta_path.unlink(missing_ok=True)
-
-    # ── cell meta 查询 — 基于 self 的 workspace + scope 上下文 ──
-
-    def read_cell_meta(self, address: str, alive_only: bool = True) -> "CellMeta | None":
-        """读取当前 scope 下指定 address 的 cell 注册文件，PID 验活。"""
-        path = self._cell_meta_path_for(
-            self._workspace_path, self._session_scope, address,
-        )
-        return self._read_cell_meta_at(path, alive_only)
-
-    def read_own_cell_meta(self, alive_only: bool = True) -> "CellMeta | None":
-        """读取当前进程自己的 cell 注册文件。"""
-        return self._read_cell_meta_at(self.cell_meta_path, alive_only)
-
-    def list_scope_cells(self, alive_only: bool = True) -> list["CellMeta"]:
-        """列出当前 scope 下所有注册的 cell。
-
-        扫描 cells/ 目录，按文件名排序，逐个读取并 PID 验活。
-        """
-        cells_dir = self._cells_dir(self._workspace_path)
-        if not cells_dir.is_dir():
-            return []
-        prefix = f"cell-{self._session_scope}-"
-        metas = []
-        for p in sorted(p for p in cells_dir.iterdir()
-                        if p.is_file() and p.name.startswith(prefix) and p.suffix == ".json"):
-            meta = self._read_cell_meta_at(p, alive_only)
-            if meta is not None:
-                metas.append(meta)
-        return metas
-
-    # ── cell meta 动作 — kill / kill-all ──
-
-    def kill_cell(self, address: str) -> bool:
-        """杀死当前 scope 下指定 address 的 cell 进程。成功返回 True。
-
-        读 cell 注册文件 → PID 验活 → terminate → 等 3s → 仍活则 kill → 删注册文件。
-        """
-        meta = self.read_cell_meta(address, alive_only=True)
-        if meta is None:
-            return False
-        killed = False
-        try:
-            proc = psutil.Process(meta.pid)
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except psutil.TimeoutExpired:
-                proc.kill()
-            killed = True
-        except psutil.NoSuchProcess:
-            killed = False
-        # 无论进程是否还在，清理注册文件
-        path = self._cell_meta_path_for(
-            self._workspace_path, self._session_scope, address,
-        )
-        path.unlink(missing_ok=True)
-        return killed
-
-    def kill_all_cells(self) -> list[str]:
-        """杀死当前 scope 下所有活 cell 进程。返回被杀死的 address 列表。"""
-        killed = []
-        for meta in self.list_scope_cells(alive_only=True):
-            # 不杀自己
-            if meta.pid == self._self_pid:
-                continue
-            if self.kill_cell(meta.address):
-                killed.append(meta.address)
-        return killed
-
-    @staticmethod
-    def _read_cell_meta_at(path: Path, alive_only: bool = True) -> "CellMeta | None":
-        if not path.exists():
-            return None
-        try:
-            meta = CellMeta.model_validate_json(path.read_text())
-        except Exception:
-            return None
-        if alive_only and not psutil.pid_exists(meta.pid):
-            return None
-        return meta
-
-    @property
-    def source_dir(self) -> Path | None:
-        """
-        返回 workspace 中的 source 所在目录. 方便添加到 sys.paths.
-        """
-        if self._source_path.exists():
-            return self._source_path.absolute()
-        return None
 
 
 _environment: Environment | None = None

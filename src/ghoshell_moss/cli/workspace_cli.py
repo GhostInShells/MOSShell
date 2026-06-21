@@ -61,8 +61,8 @@ def where() -> None:
 
     exists = ws_path.exists()
     env_file = env.env_file
-    moss_md = env.meta_instruction_file
-    ctml_version = env.meta_config.ctml_version
+    moss_md = env.moss_meta_file
+    ctml_version = env.moss_meta.ctml_version
 
     # permissions check
     perm_status = "N/A"

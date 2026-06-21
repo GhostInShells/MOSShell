@@ -4,7 +4,6 @@ from ghoshell_moss.core.mindflow.base_mindflow import BaseMindflow
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Signal, Priority, Articulator, Action, Nucleus, Moment, \
     MindflowHook
 import janus
-import uvloop
 import threading
 import time
 import pytest
@@ -308,15 +307,12 @@ def _test_mindflow_in_differ_thread(i: int):
             timestamps.append(("action_done", time.time()))
 
     def _run_main():
-        asyncio.set_event_loop(uvloop.new_event_loop())
         asyncio.run(_main())
 
     def _run_articulate():
-        asyncio.set_event_loop(uvloop.new_event_loop())
         asyncio.run(_articulate_loop())
 
     def _run_actions():
-        asyncio.set_event_loop(uvloop.new_event_loop())
         asyncio.run(_actions())
 
     t_main = threading.Thread(target=_run_main)
@@ -388,16 +384,13 @@ class MindflowSuite:
 
         def _run_articulate_loop():
             nonlocal articulate_func
-            asyncio.set_event_loop(uvloop.new_event_loop())
             asyncio.run(self._articulate_loop(articulate_func))
 
         def _run_action_loop():
             nonlocal action_func
-            asyncio.set_event_loop(uvloop.new_event_loop())
             asyncio.run(self._action_loop(action_func))
 
         def _main():
-            asyncio.set_event_loop(uvloop.new_event_loop())
             asyncio.run(self._main_loop())
 
         self._main_t = threading.Thread(target=_main)

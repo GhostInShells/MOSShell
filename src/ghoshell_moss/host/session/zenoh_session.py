@@ -1,5 +1,4 @@
 import contextlib
-import logging
 import queue
 from typing import Callable
 from typing_extensions import Self
@@ -20,6 +19,7 @@ from ghoshell_moss.core.blueprint.session import (
     Sample
 )
 from ghoshell_moss.core.blueprint.environment import DEFAULT_SESSION_SCOPE
+from ghoshell_moss.tools.zenoh_helper import MOSSNamespace, MOSSScopeNamespace
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
@@ -41,6 +41,7 @@ class MossSessionWithZenoh(Session):
 
     def __init__(
             self,
+            *,
             session_scope: str,
             session_root_storage: Storage,
             session_tmp_root_storage: Storage,
@@ -48,11 +49,12 @@ class MossSessionWithZenoh(Session):
             zenoh_session: zenoh.Session,
             topic_service: TopicService,
             session_id: str | None = None,
+            moss_namespace: MOSSNamespace = None,
     ):
         """
         :param session_scope: Moss Matrix 运行时, 所有通讯都围绕同一个 session scope.
         :param session_root_storage: 在当前隔离级别下, Session 拿到的 Root Storage.
-        :param session_tmp_storage:  session 的临时存储路径.
+        :param session_tmp_root_storage:  session 的临时存储路径.
         :param logger: 日志模块.
         :param zenoh_session: 依赖 zenoh 通讯.
         :param topic_service: session 持有 topic service. 未来应该是 session 构建它.
@@ -61,9 +63,10 @@ class MossSessionWithZenoh(Session):
         self._session_scope = session_scope or DEFAULT_SESSION_SCOPE  # or 逻辑简单做一个防蠢, 怕 storage 逻辑崩了.
 
         # 子类继承可重写.
-        self._output_key_expr = f"MOSS/{session_scope}/outputs"
-        self._input_signal_expr = f"MOSS/{session_scope}/signals"
-        self._stream_key_expr_prefix = f"MOSS/{session_scope}/streams"
+        moss_namespace = moss_namespace or MOSSScopeNamespace(scope=session_scope)
+        self._output_key_expr = moss_namespace.output_namespace
+        self._input_signal_expr = moss_namespace.signal_namespace
+        self._stream_key_expr_prefix = moss_namespace.stream_namespace
         self._received_signal_index: int = 0
 
         self._session_id = session_id or unique_id()
@@ -86,6 +89,7 @@ class MossSessionWithZenoh(Session):
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
         self._topic_service = topic_service
         self._closing_event = ThreadSafeEvent()
+        self._cache: Cache | None = None
         self._session_root_storage = session_root_storage
         self._session_tmp_root_storage = session_tmp_root_storage
         self._parameters: ParameterStore | None = None
@@ -112,7 +116,7 @@ class MossSessionWithZenoh(Session):
 
     @property
     def cache(self) -> Cache:
-        if not hasattr(self, '_cache'):
+        if self._cache is None:
             db_path = Path(self.tmp_storage.abspath()) / 'cache.db'
             self._cache = SqliteCache(db_path)
         return self._cache

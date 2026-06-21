@@ -248,7 +248,7 @@ if __name__ == "__main__":
 
 ```python
 await matrix.provide_channel(channel)
-await matrix.channel_proxy(address, name)  # 另一端连接
+await matrix.cell_channel_proxy(address, name)  # 另一端连接
 ```
 
 这是前两者的基础机制。测试和脚本中最常用。

@@ -8,12 +8,14 @@ from ghoshell_common.helpers import yaml_pretty_dump
 from ghoshell_container import IoCContainer, Provider
 from .workspace import Storage, Workspace
 import os
+import pathlib
 
 __all__ = [
     'ConfigType', 'ConfigStore', 'ConfigSchema',
     'YamlConfigStore',
     'LocalConfigStore',
     'WorkspaceYamlConfigStoreProvider',
+    'CONF_TYPE',
 ]
 
 
@@ -151,46 +153,73 @@ _ConfName = str
 class LocalConfigStore(ConfigStore, ABC):
     """
     基于 Storage 的配置仓库实现，增加了简单的内存缓存。
+
+    mode_name 非空时:
+      - 读取: 优先 {name}.{mode}.yml，不存在则 fallback 到 {name}.yml
+      - 写入: 始终写到 {name}.{mode}.yml
+      - 缓存 key 始终是 conf_name (不含 mode 后缀)
     """
 
     def __init__(
-        self,
-        storage: Storage,
-        environ: dict[str, str] | None = None,
-        on_save: Callable[[str], None] | None = None,
+            self,
+            storage: Storage,
+            environ: dict[str, str] | None = None,
+            on_save: Callable[[str], None] | None = None,
+            *,
+            mode_name: str = '',
     ) -> None:
         self._storage = storage
-        # 内存缓存：Key 是配置类本身，Value 是已实例化的配置对象
         self._cache: dict[_ConfName, ConfigType] = {}
         self._environ = environ  # None means use os.environ at resolve time
-        self._on_save = on_save  # 配置变更回调，传入 conf_name，供 Matrix 订阅等
+        self._on_save = on_save
+        self._mode_name = mode_name
 
-    def get_config_path(self, config_name: str) -> str:
-        filename = self._make_config_filename(config_name)
-        return str(self._storage.abspath().joinpath(filename).absolute())
+    # -- path helpers -------------------------------------------------
 
-    def _to_config_filename(self, conf_type_or_obj: Union[Type[ConfigType], ConfigType]) -> str:
-        """统一路径处理：自动补全 .yml 后缀"""
+    @classmethod
+    def _make_config_filename(cls, config_name: str, mode_name: str = '') -> str:
+        mode_suffix = f".{mode_name}" if mode_name else ''
+        return f"{config_name}{mode_suffix}.yml"
+
+    def _config_filename(self, conf_type_or_obj: Union[Type[ConfigType], ConfigType]) -> str:
         name = conf_type_or_obj.conf_name()
         return self._make_config_filename(name)
 
-    @classmethod
-    def _make_config_filename(cls, config_name: str) -> str:
-        return f"{config_name}.yml"
+    def _resolve_write_filename(self, config_name: str) -> str:
+        """写入目标文件名: mode 存在时写到 mode-specific 文件."""
+        return self._make_config_filename(config_name, self._mode_name)
+
+    def _resolve_read_path(self, config_name: str) -> pathlib.Path:
+        """读取时 mode-first 查找: {name}.{mode}.yml → {name}.yml."""
+        root = self._storage.abspath()
+        if self._mode_name:
+            mode_file = root / self._make_config_filename(config_name, self._mode_name)
+            if mode_file.exists():
+                return mode_file
+        return root / self._make_config_filename(config_name)
+
+    def get_config_path(self, config_name: str) -> str:
+        """公开方法: 当前 mode 下的预期文件路径."""
+        filename = self._resolve_write_filename(config_name)
+        return str(self._storage.abspath().joinpath(filename).absolute())
+
+    # -- core operations -----------------------------------------------
 
     def get(self, conf_type: Type[CONF_TYPE]) -> CONF_TYPE:
-        # 1. 优先命中缓存
         conf_name = conf_type.conf_name()
         if conf_name in self._cache:
             return self._cache[conf_name]
 
-        # 2. 缓存未命中，从 Storage 读取
-        path = self._to_config_filename(conf_type)
-        content = self._storage.get(path)
+        path = self._resolve_read_path(conf_name)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {conf_type} "
+                f"(expected {path})"
+            )
+
+        content = path.read_bytes()
         data = self._unmarshal(content)
-        # 3. 实例化并存入缓存
         instance = conf_type(**data)
-        # resolve all environment key
         resolved = instance.resolve(environ=self._environ)
         self._cache[conf_name] = resolved
         return resolved
@@ -207,30 +236,27 @@ class LocalConfigStore(ConfigStore, ABC):
     def get_or_create(self, conf: CONF_TYPE) -> CONF_TYPE:
         conf_type = type(conf)
         conf_name = conf_type.conf_name()
-        path = self._to_config_filename(conf_type)
 
         if conf_name in self._cache:
             return self._cache[conf_name]
 
-        elif not self._storage.exists(path):
-            # 不存在则保存当前传入的默认对象
-            return self._save(conf)
+        # mode-aware: 先检查 mode-specific 文件，再 fallback base
+        read_path = self._resolve_read_path(conf_name)
+        if read_path.exists():
+            return self.get(conf_type)
 
-        # 存在则执行标准 get (会处理缓存逻辑)
-        return self.get(conf_type)
+        return self._save(conf)
 
     def _save(self, conf: ConfigType) -> ConfigType:
-        """保存配置并同步更新缓存"""
+        """保存配置到磁盘并同步缓存."""
         conf_type = type(conf)
+        conf_name = conf_type.conf_name()
         data = conf.model_dump(exclude_none=True)
         marshaled = self._marshal(data, conf_type)
 
-        path = self._to_config_filename(conf_type)
-        self._storage.put(path, marshaled)
+        filename = self._resolve_write_filename(conf_name)
+        self._storage.put(filename, marshaled)
 
-        # 同步更新内存，确保后续 get 拿到的是刚保存的这个实例
-        conf_name = conf_type.conf_name()
-        # 缓存的进行 resolve, 但保存的不做 resolve.
         resolved = conf.resolve(environ=self._environ)
         self._cache[conf_name] = resolved
         if self._on_save is not None:
@@ -241,10 +267,7 @@ class LocalConfigStore(ConfigStore, ABC):
         self._save(conf)
 
     def invalidate(self, conf_type_or_name: Optional[Type[ConfigType] | str] = None) -> None:
-        """
-        手动清理缓存的入口。
-        如果传入具体类型则清理该类型，不传则清空全部。
-        """
+        """手动清理缓存。传类型/名称清理单项，不传清空全部。"""
         if conf_type_or_name is None:
             self._cache.clear()
             return
@@ -254,10 +277,7 @@ class LocalConfigStore(ConfigStore, ABC):
             conf_name = conf_type_or_name.conf_name()
         else:
             raise TypeError(f"{conf_type_or_name} is not a ConfigType")
-        try:
-            self._cache.pop(conf_name, None)
-        except KeyError:
-            pass
+        self._cache.pop(conf_name, None)
 
     @abstractmethod
     def _unmarshal(self, data: bytes) -> dict:
@@ -269,8 +289,8 @@ class LocalConfigStore(ConfigStore, ABC):
 
 
 def _resolve_config_data_from_env(
-    data: dict[str, Any],
-    environ: dict[str, str] | None = None,
+        data: dict[str, Any],
+        environ: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     recursively replace environment variables with their respective values.

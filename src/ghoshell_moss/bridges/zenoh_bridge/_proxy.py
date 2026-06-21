@@ -12,7 +12,8 @@ from ghoshell_moss.core.duplex import (
 )
 from ghoshell_moss.core.duplex.protocol import HeartbeatEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ._utils import BridgeExpr, ChannelBridgeHubExpr
+from ghoshell_moss.tools.zenoh_helper import MOSSScopeNamespace, MOSSNamespace
+from ._utils import HubKeyExpr
 from pydantic import ValidationError
 import janus
 import asyncio
@@ -35,16 +36,15 @@ class ZenohProxyConnection(Connection):
             address: str,
             scope: str,
             logger: LoggerItf | None = None,
-            bridge_expr: BridgeExpr | None = None,
+            namespace: MOSSNamespace | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
         self._scope = scope or 'default'
         self._zenoh_session = session
         self._address = address
-        if bridge_expr is not None:
-            self._bridge_expr = bridge_expr
-        else:
-            self._bridge_expr = ChannelBridgeHubExpr(scope=scope).new_expr(address=address)
+        if namespace is None:
+            namespace = MOSSScopeNamespace(scope=scope)
+        self._bridge_expr = HubKeyExpr(namespace=namespace.channels_namespace).new_expr(address=address)
 
         # 状态控制
         self._disconnected_event = threading.Event()
@@ -208,12 +208,12 @@ class ZenohProxyChannel(DuplexChannelProxy):
             description: str = "",
             zenoh_session: zenoh.Session | None = None,
             uid: str | None = None,
-            bridge_expr: BridgeExpr | None = None,
+            namespace: MOSSNamespace | None = None,
     ):
         self._address = address
         self._scope = scope or 'default'
         self._zenoh_session = zenoh_session
-        self._bridge_expr = bridge_expr
+        self._namespace = namespace
         self._connection_keys = {}
         super().__init__(
             name=name,
@@ -231,7 +231,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
             address=self._address,
             scope=self._scope,
             logger=container.get(LoggerItf),
-            bridge_expr=self._bridge_expr,
+            namespace=self._namespace,
         )
         self._connection_keys = connection.all_key_expressions()
         return connection

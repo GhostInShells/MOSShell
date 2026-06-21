@@ -5,7 +5,7 @@ from typing_extensions import Self
 from abc import ABC, abstractmethod
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
-from ghoshell_moss.core.blueprint.matrix import Cell
+from ghoshell_moss.core.blueprint.cell import Cell
 
 if TYPE_CHECKING:
     from .host import MossRuntime

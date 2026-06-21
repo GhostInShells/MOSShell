@@ -1,6 +1,6 @@
 from typing import ClassVar, Protocol, runtime_checkable
 
-__all__ = ["BridgeExpr", "ChannelBridgeNodeExpr", "BridgeHubExpr", "ChannelBridgeHubExpr"]
+__all__ = ["BridgeExpr", "ChannelBridgeNodeExpr", "HubKeyExpr"]
 
 
 @runtime_checkable
@@ -21,18 +21,10 @@ class BridgeExpr(Protocol):
     provider_liveness_prefix: str
 
 
-@runtime_checkable
-class BridgeHubExpr(Protocol):
+class HubKeyExpr:
 
-    def new_expr(self, address: str) -> BridgeExpr:
-        pass
-
-
-class ChannelBridgeHubExpr(BridgeHubExpr):
-
-    def __init__(self, scope: str):
-        scope = scope or 'default'
-        self.prefix = f"MOSS/{scope}/channel_bridge"
+    def __init__(self, namespace: str):
+        self.prefix = namespace
 
     def new_expr(self, address: str) -> BridgeExpr:
         return ChannelBridgeNodeExpr(prefix=self.prefix, address=address)
@@ -64,4 +56,3 @@ class ChannelBridgeNodeExpr(BridgeExpr):
         '''proxy send to provider'''
         self.proxy_receiver_key: str = "/".join([self.bridge_prefix, self.PROXY_RECEIVER, address])
         '''provider send to proxy'''
-

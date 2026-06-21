@@ -2,12 +2,17 @@
 管理 ghoshell moss 第三方依赖的检查.
 """
 
+def depend_cli():
+    try:
+        import typer
+    except ImportError:
+        raise ImportError("Depend MOSS cli, please install by 'pip install ghoshell_moss[host]'")
 
 def depend_zenoh():
     try:
         import zenoh
     except ImportError:
-        raise ImportError(f"Depend zenoh, please install by 'pip install ghoshell_moss[host]'")
+        raise ImportError(f"Depend zenoh, please install by 'pip install ghoshell_moss[matrix]' or 'ghoshell_moss[host]'")
 
 
 def depend_circus():

@@ -17,7 +17,7 @@ from typing import Literal, Optional
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
-from ghoshell_moss.core.blueprint.matrix import Matrix, ScopesKey
+from ghoshell_moss.core.blueprint.matrix import Matrix, ScopeKey
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore, YamlConfigStore
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
 from ghoshell_container import IoCContainer
@@ -481,7 +481,7 @@ class MCPHubChannel(Channel):
         self,
         name: str = 'mcp',
         description: str = '',
-        scopes: list[ScopesKey] | None = None,
+        scopes: list[ScopeKey] | None = None,
         allow_model_config: bool = False,
     ):
         self._name = name
@@ -506,7 +506,7 @@ class MCPHubChannel(Channel):
             storage = matrix.get_scoped_storage(*self._scopes)
             config_store = YamlConfigStore(storage)
             # 首次创建时从 workspace 预设合并，确保 scoped 配置包含全局预设的 server
-            workspace_store = matrix.configs()
+            workspace_store = matrix.configs
             try:
                 workspace_config = workspace_store.get(MCPHubConfig)
                 scoped_config = config_store.get_or_create(
@@ -516,7 +516,7 @@ class MCPHubChannel(Channel):
             except Exception:
                 config_store.get_or_create(MCPHubConfig(servers={}))
         else:
-            config_store = matrix.configs()
+            config_store = matrix.configs
 
         state = MCPHubState(
             config_store=config_store,
@@ -532,7 +532,7 @@ def build_mcp_hub_channel(
     matrix: Matrix,
     name: str = 'mcp',
     description: str = '',
-    scopes: list[ScopesKey] | None = None,
+    scopes: list[ScopeKey] | None = None,
     allow_model_config: bool = False,
 ) -> Channel:
     """构建 MCP Hub Channel 的工厂函数。
@@ -546,7 +546,7 @@ def build_mcp_hub_channel(
     if scopes:
         storage = matrix.get_scoped_storage(*scopes)
         config_store = YamlConfigStore(storage)
-        workspace_store = matrix.configs()
+        workspace_store = matrix.configs
         try:
             workspace_config = workspace_store.get(MCPHubConfig)
             scoped_config = config_store.get_or_create(
@@ -556,7 +556,7 @@ def build_mcp_hub_channel(
         except Exception:
             config_store.get_or_create(MCPHubConfig(servers={}))
     else:
-        config_store = matrix.configs()
+        config_store = matrix.configs
 
     state = MCPHubState(
         config_store=config_store,

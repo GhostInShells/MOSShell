@@ -17,7 +17,7 @@ from ghoshell_moss.core.concepts.channel import (
     ChannelMeta,
     ChannelRuntime,
 )
-from ghoshell_moss.core.blueprint import PrimeChannel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.concepts.command import (
     BaseCommandTask,
     Command,

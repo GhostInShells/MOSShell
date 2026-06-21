@@ -5,7 +5,6 @@ from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
 from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
-from ghoshell_moss.host.repl.inspector_app_store import AppStoreInspector
 from ghoshell_moss.host.repl.inspector_moss_runtime import MOSSRuntimeInspector
 from ghoshell_moss.host.repl.inspector_fractal import FractalInspector
 from ghoshell_moss.core.blueprint.session import OutputItem
@@ -31,7 +30,6 @@ class MOSSRuntimeREPLState(REPLState):
             "matrix": MatrixInspector(self._host.matrix()),
             "manifests": ManifestsInspector(self._host.manifests),
             "moss": MOSSRuntimeInspector(self._moss_runtime, self.console),
-            "apps": AppStoreInspector(self._moss_runtime.apps),
             "fractal": FractalInspector(self._moss_runtime.matrix, self._moss_runtime.get_fractal_hub())
         }
 

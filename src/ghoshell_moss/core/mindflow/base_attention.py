@@ -2,12 +2,11 @@ from abc import abstractmethod, ABC
 from typing import Coroutine, Callable, AsyncIterator, AsyncGenerator, Iterable
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint import ThinkingEffort
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Impulse, Flag, Priority, Moment,
     AttentionAbortedError, Action, Articulator, Logos, Reaction, ObserveError,
-    ArticulateAbortedError, ActionAbortedError, ImpulseAbsorbed
+    ArticulateAbortedError, ActionAbortedError, ImpulseAbsorbed, ThinkingEffort
 )
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger

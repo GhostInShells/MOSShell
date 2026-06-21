@@ -25,7 +25,7 @@ updated: '2026-06-06'
 
 ```python
 self._env_manifest = PackageManifests.from_environment(...)
-self._manifest = MergedManifests([self._env_manifest, self._moss_mode.manifest])
+self._manifest = MergedManifests([self._env_manifest, self._moss_mode_name.manifest])
 ```
 
 这行背后藏着不一致的合并语义：

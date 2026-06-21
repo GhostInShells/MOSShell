@@ -15,7 +15,7 @@ import pytest
 
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.bridges.zenoh_bridge import ZenohProxyChannel
-from ghoshell_moss.host.fractal import FRACTAL_SESSION_SCOPE, FractalKeyExpressions
+from ghoshell_moss.host.fractal import FRACTAL_SESSION_SCOPE, FractalKeyExpr
 from ghoshell_moss.host.fractal.zenoh_fractal import (
     ZenohFractalHub,
     ZenohFractalCellProvider,
@@ -89,8 +89,8 @@ async def test_node_provider_connectivity(zenoh_config_file, logger):
 
         await asyncio.sleep(0.5)
 
-        key_expr = FractalKeyExpressions(hub_name=hub_name)
-        proxy_address = key_expr.provider_cell_address(cell_name=node_name)
+        key_expr = FractalKeyExpr(hub_name=hub_name)
+        proxy_address = key_expr.provider_key(cell_name=node_name)
 
         child_session = zenoh.open(zenoh.Config())
         try:
@@ -151,14 +151,14 @@ async def test_hub_discovers_provider(zenoh_config_file, logger):
             await asyncio.sleep(1.0)
 
             connected = hub.get_connected()
-            names = [c.name for c in connected]
+            names = [c.normalized_name() for c in connected]
             assert "test_node" in names, f"Expected test_node in connected, got {names}"
 
         # 退出 Provider → re-put 停止 → Hub 应 stale prune
         # 等待 stale_timeout (refresh_interval * 3 = 0.9s) + 一次 refresh loop tick
         await asyncio.sleep(1.5)
         connected = hub.get_connected()
-        names = [c.name for c in connected]
+        names = [c.meta.name for c in connected]
         assert "test_node" not in names, f"Expected test_node pruned, got {names}"
 
 

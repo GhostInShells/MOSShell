@@ -6,15 +6,13 @@ from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, Mode, FractalHub, MossSystemPrompter
+    MossRuntime, Mode, MossSystemPrompter
 )
-from ghoshell_moss.core.blueprint.app import AppStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.contracts import Workspace
-from .app_store import HostAppStore
 from .matrix import MatrixImpl
 from ghoshell_moss.core.blueprint.environment import Environment
 import contextlib
@@ -38,13 +36,12 @@ class MossRuntimeImpl(MossRuntime):
     ):
         env.bootstrap()
         self._env = env
-        self._name = name or env.meta_config.name
+        self._name = name or env.moss_meta.name
         # 主节点自解释发现逻辑, 手动定义优先, 其次是模式定义, 其次是环境定义.
-        self._description = description or mode.description or env.meta_config.description
+        self._description = description or mode.description or env.moss_meta.description
         self._workspace = workspace
         self._matrix = matrix
         self._mode = mode
-        self._app_store: HostAppStore | None = None
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._paused = False
@@ -82,11 +79,11 @@ class MossRuntimeImpl(MossRuntime):
 
     @property
     def name(self) -> str:
-        return self._name or self._env.meta_config.name
+        return self._name or self._env.moss_meta.name
 
     @property
     def description(self) -> str:
-        return self._description or self._env.meta_config.description
+        return self._description or self._env.moss_meta.description
 
     def _check_running(self):
         if not self.is_running():
@@ -95,6 +92,10 @@ class MossRuntimeImpl(MossRuntime):
     def _check_shell_running(self):
         if not self.is_running() or not self._ctml_shell.is_running():
             raise RuntimeError('MossRuntime Shell is not running.')
+
+    @property
+    def env(self) -> Environment:
+        return self._env
 
     def moss_instruction(self, with_static: bool = True) -> str:
         self._check_shell_running()
@@ -191,11 +192,6 @@ class MossRuntimeImpl(MossRuntime):
         self._paused = toggle
 
     @property
-    def apps(self) -> AppStore:
-        self._check_running()
-        return self._app_store
-
-    @property
     def shell(self) -> MOSShell:
         self._check_running()
         return self._ctml_shell
@@ -205,19 +201,8 @@ class MossRuntimeImpl(MossRuntime):
         return self._matrix
 
     def _bootstrap_after_matrix(self) -> None:
-        self._app_store = HostAppStore(
-            env=self._env,
-            workspace=self._workspace,
-            namespace="MOSS/app_store/main",
-            runnable=True,
-            include=self._mode.apps,
-            bringup=self._mode.bringup_apps,
-            logger=self.matrix.logger,
-        )
         # __main__ channel 已在 __init__ 中从 manifests 发现并传入 shell。
         # 所有 import_channels / with_state / with_module 组合在 manifest 中已完成。
-
-        self._matrix.container.set(AppStore, self._app_store)
         self._matrix.container.set(MOSShell, self._ctml_shell)
         self._matrix.container.set(CTMLShell, self._ctml_shell)
         moss_system_prompter = self._matrix.container.force_fetch(MossSystemPrompter)

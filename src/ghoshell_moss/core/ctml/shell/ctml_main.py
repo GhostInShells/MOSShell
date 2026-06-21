@@ -1,6 +1,6 @@
 from typing import Literal
 
-from ghoshell_moss.core.blueprint import PrimeChannel
+from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.channel_builder import new_command
 from ghoshell_moss.core.concepts.command import PyCommand
 from ghoshell_moss.core.py_channel import PyChannel

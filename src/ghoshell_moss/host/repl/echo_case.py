@@ -1,10 +1,12 @@
-from typing import Callable, Iterable
+"""
+测试用例用来验证 repl inspector 实现.
+"""
+from typing import Iterable
 from typing_extensions import Self
 from prompt_toolkit.completion import WordCompleter, Completer
-from prompt_toolkit.widgets import TextArea, Frame
+from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyPressEvent
 from ghoshell_moss.host.tui import TUIState, MossHostTUI, RUNTIME, Runtime
-from ghoshell_moss.core.blueprint.host import MossHost
 import asyncio
 import contextlib
 

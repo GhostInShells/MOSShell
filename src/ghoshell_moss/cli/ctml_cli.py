@@ -19,7 +19,7 @@ def list_ctml_versions(
     """
     # 发现环境
     env = Environment.discover()
-    default_version = env.meta_config.ctml_version
+    default_version = env.moss_meta.ctml_version
     print_info(f"Current CTML versions: {default_version}")
     versions = env.ctml_versions()
 

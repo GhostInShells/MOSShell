@@ -636,22 +636,6 @@ def new_channel(name: str, description: str = "", uid: str | None = None) -> Mut
     return PyChannel(name=name, description=description, uid=uid)
 
 
-async def provide_channel_as_app(channel: Channel) -> None:
-    """
-    将一个 channel 提供到通讯环境 (Matrix) 中, 可以自动被发现.
-    """
-    # 作为例子 (反范式: 在函数内引用, 这样用 codex 阅读当前代码时不会反射 Matrix)
-    from ghoshell_moss.core.blueprint.matrix import Matrix
-    # 环境发现自身. 构建通讯网络.
-    _matrix = Matrix.discover()
-    # 启动 matrix (进程单例, 不能重复启动), 并且将 channel 提供到网络中.
-    # 这里是一个极简的实现, 用这个实现可以在单个脚本里完成 Channel As Application 的开发.
-    # 如果有复杂的生命周期治理和并行逻辑 (比如 channel 在子线程/协程中运行, 主线程留给了 GUI)
-    # 则应该阅读 Matrix 抽象.
-    async with _matrix as m:
-        await m.provide_channel(channel)
-
-
 class ChannelCreator(ABC):
     """
     示例, 如果不用 new_channel 等面向组合风格创建 Channel

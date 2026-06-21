@@ -6,15 +6,17 @@ from ghoshell_moss.core.blueprint.host import (
 )
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.manifests import Manifests
-from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.codex.discover import ScanError, ModuleManifest
-from ghoshell_moss.contracts.workspace import LocalWorkspace, Workspace
-from ghoshell_moss.core.blueprint.environment import Environment, CellMeta
-from ghoshell_moss.host.manifests import PackageManifests
-from ghoshell_moss.host.app_store import HostAppStore
+from ghoshell_moss.contracts.workspace import LocalWorkspace
+from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.cell import (
+    Cell as MossCell, CellManifest, CellRegistry, CellMetadata, CellType,
+    CellLauncher
+)
 from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.ghosts import list_ghosts_from_root_package
 from ghoshell_moss.host.matrix import MatrixImpl
+from ghoshell_moss.host.cell_registry import EnvCellRegistry
 from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
 from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 import importlib
@@ -38,6 +40,8 @@ class Host(MossHost):
         self._scan_manifest_errors: list[ScanError] = []
 
         self._env = env or Environment.discover()
+        self._registry = EnvCellRegistry(env=self._env)
+
         if mode is not None:
             self._env.set_mode(mode if isinstance(mode, str) else mode.name)
         if session_scope is not None:
@@ -62,29 +66,12 @@ class Host(MossHost):
         # manifest 直接取 mode 的——mode 的每个 manifest 文件显式继承全局
         # (from MOSS.manifests.xxx import * + 扩展)，无需运行时合并。
         self._manifest = self._moss_mode.manifest
-        # 获取一个用来做环境发现的 apps.
-        # 创建 container, 但是先不启动它.
-        self._app_store = HostAppStore(
-            env=self.env,
-            workspace=self._workspace,
-            namespace="MOSS/app_store",
-            runnable=False,
-            bringup=self._moss_mode.bringup_apps,
-            include=self._moss_mode.apps,
-        )
-        self._matrix = MatrixImpl(
-            mode=self._moss_mode,
-            env=self.env,
-            manifest=self._manifest,
-            app_store=self._app_store,
-            workspace=self._workspace,
-        )
 
     def name(self) -> str:
-        return self._env.meta_config.name
+        return self._env.moss_meta.name
 
     def description(self) -> str:
-        return self._env.meta_config.description
+        return self._env.moss_meta.description
 
     @classmethod
     def discover(cls, env: Environment | None = None) -> Self:
@@ -99,6 +86,9 @@ class Host(MossHost):
         new_host = Host(env=self._env)
         _host_instance = new_host
         return new_host
+
+    def cell_registry(self) -> CellRegistry:
+        return self._registry
 
     @property
     def env(self) -> Environment:
@@ -144,20 +134,21 @@ class Host(MossHost):
             raise NameError(f"Mode {name} already exists")
         return new_mode(name=name, apps=apps, bring_up_apps=bringup_apps, description=description)
 
-    def apps(self) -> HostAppStore:
-        return self._app_store
+    def matrix(self, cell: MossCell | None = None) -> MatrixImpl:
+        """
+        返回当前环境下发现的 Matrix 实例.
+        可以直接用于开发一个节点.
+        """
+        if cell is None:
+            # 通过反射获取 cell
+            cell = self._registry.discover_current_cell()
 
-    def matrix(self) -> Matrix:
-        return self._matrix
-
-    def list_scope_cells(self, alive_only: bool = True) -> list[CellMeta]:
-        return self._env.list_scope_cells(alive_only)
-
-    def kill_cell(self, address: str) -> bool:
-        return self._env.kill_cell(address)
-
-    def kill_all_cells(self) -> list[str]:
-        return self._env.kill_all_cells()
+        return MatrixImpl(
+            cell=cell,
+            mode=self._moss_mode,
+            env=self._env,
+            manifest=self._manifest,
+        )
 
     def scan_manifest_errors(self) -> list[ScanError]:
         return self._scan_manifest_errors
@@ -172,11 +163,26 @@ class Host(MossHost):
             name: str | None = None,
             description: str | None = None,
     ) -> MossRuntime:
+        meta = CellMetadata(
+            type=CellType.host.value,
+            name=self.mode.name,
+            description=self.mode.description,
+            singleton=True,
+        )
+        launcher = CellLauncher.from_proc()
+        cell_manifest = CellManifest.new(
+            meta=meta,
+            launcher=launcher,
+            instruction=self._moss_mode.instruction,
+            installed=True,
+        )
+        cell = MossCell.from_manifest(cell_manifest, status_from_proc=True)
+        matrix = self.matrix(cell=cell)
         return MossRuntimeImpl(
             env=self.env,
             workspace=self._workspace,
             mode=self._moss_mode,
-            matrix=self._matrix,
+            matrix=matrix,
             run_shell_on_start=run_shell,
         )
 

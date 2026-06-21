@@ -48,20 +48,3 @@ from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
 from ghoshell_moss.core.ctml.shell.ctml_main import create_ctml_main_chan, inject_system_primitives
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell, new_ctml_shell
-
-# -- Blueprint: Environment & Host -------------------------------------------
-from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
-
-# -- Blueprint: Matrix -------------------------------------------------------
-from ghoshell_moss.core.blueprint.matrix import Matrix
-
-# -- Blueprint: Session ------------------------------------------------------
-from ghoshell_moss.core.blueprint.session import Session
-
-# -- Blueprint: Mindflow -----------------------------------------------------
-from ghoshell_moss.core.blueprint.mindflow import Mindflow
-
-# -- Blueprint: Ghost --------------------------------------------------------
-from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
-

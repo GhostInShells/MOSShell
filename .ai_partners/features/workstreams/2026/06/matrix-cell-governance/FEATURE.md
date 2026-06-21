@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-15
+updated: 2026-06-22
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,11 +15,21 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-15 协议层重新对齐 + 实施纲领落地：address 自由度收敛、type 开放命名空间 + owner
-  channel announce、spawn 二分（spawn_cell / spawn_worker + worker/{uuid} 兜底）、跨进程
-  异步基底是 process + Matrix 异步回调机制。本轮新增决策：nodes 进 manifests（待拍板）、
-  命名分层（codex / manifests / runtime + 域运维）、script 体系整体删除。推进由人类主导，
-  拆 branch 治理。下一实例认知重建支点见 FEATURE.md §A-§G。
+  2026-06-22 claude-opus-4-7 review + 协作实现。完成:
+  (1) ZenohLivenessListener 独立封装 — 全量查询 + subscribe + reconcile 三件套,
+  替代 hub 手写 liveness 逻辑, 通用可复用。
+  (2) ZenohChannelHub 重构 — 用 listener 驱动, on_online 不再自动建 proxy,
+  职责收敛为 channel provider/proxy 工厂 + 上下线 record。
+  (3) bridge_address 简化为 type/{uid}, name 不出现在 bridge 中,
+  normalize() 统一 / . - \\ 转 _.
+  (4) cell announce 收敛为 PUT + queryable 两个 key, 不用 liveness token,
+  cell 变化低频, 牺牲秒级死检换简洁性。
+  (5) LocelConfigStore mode-aware 重写 — mode-first 读取, fallback base, 39 tests.
+  (6) fractal accept/ignore 从 Cell 剥离到 hub 内部 _approved_cells set.
+  设计收敛于: CellNetwork (普通) vs HostCellNetwork (host 专属, 含 proxy 管理和
+  detection loop) 二分; cell-driven 建代理 (providing_channel 字段) 替代
+  channel-driven (liveness 事件); Matrix 三层模型 (上/中/下) 确认。
+  下一实例认知重建支点: 读本文 §I-§K + 读 zenoh_helper.py 的 ZenohLivenessListener.
 ---
 
 # Matrix Cell Governance
@@ -911,4 +921,298 @@ NodeStoreChannel 承接 `nodes:run` / `nodes:list` / `nodes:install` / `nodes:en
 - `moss shell-init` 完整契约 / install.sh timeout / Nursery 默认 stdio 处置 ——
   三项与本轮协议固熵正交
 
+
+## 2026-06-21 认知交接：实现层设计收敛 (claude-opus-4-7)
+
+> 本轮经过多轮 review 循环，将 FEATURE.md 的协议设计落地为具体数据模型和 ABC。
+> 以下是与原 FEATURE.md 不同的决策点，以及下一个实例进入时的导航地图。
+
+### 数据模型 (src/ghoshell_moss/core/blueprint/cell.py)
+
+```
+CellType         — host / worker / fractal  (app/script 删除)
+CellMetadata     — type, name, singleton, description
+CellLauncher     — interpreter, cmd, args, cwd, extra_env  (日志路由字段删除, 名词 executable→interpreter, script→cmd)
+CellManifest     — 组合模型 (非继承 CellMetadata): type, name, singleton, description + launcher + instruction + installed
+                   CELL.md 平铺 frontmatter, launcher 为嵌套 YAML key.
+                   installed 默认 True. 有 INSTALL.md 时从 .installed 文件推导.
+CellStatus       — uid, state(starting/alive/stopped), pid(int|None), failure
+Cell             — meta + launcher + status. set_alive(pid) / set_failed(reason) 语法糖.
+                   address 依赖 meta.singleton: True→type/name, False→type/status.uid
+                   bridge_address = address/status.uid  (网络唯一)
+CellRegistry(ABC) — 静态发现 + 本地运行时注册. spawn_cell() 为 concrete code-as-prompt.
+CellNetwork(ABC)  — 网络发现 + provider/proxy + detection loop. provider/proxy 入参统一用 CellBridgeAddress.
+```
+
+### 寻址体系
+
+```
+address         — type/name (人可读, 本地唯一). 例: worker/camera
+bridge_address  — type/name/uid (线唯一, 网络反查). 例: worker/camera/01KVG93...
+normalize()     — / → __  (文件系统友好). 例: worker__camera
+runtime file    — cell-{normalized_address}.json  (注册目录下)
+```
+
+### RuntimeScope 与环境 (src/ghoshell_moss/core/blueprint/environment.py)
+
+```
+RuntimeScope     — session 身份唯一信源. mode/ghost/session_scope/session_id/host_pid.
+                   进程内不可变. write_to_directory / read_from_directory 独立于 Workspace.
+Environment      — 接受 (Workspace, RuntimeScope). 不再管理 cell address.
+                   不再推导 cell 身份. dump_moss_env 包含 workspace+scope+cell keys.
+```
+
+### 已删除的概念
+
+- `CellProvision` — 删除. installed 回到 CellManifest, enabled 由 manifest include/exclude 替代.
+- `CellType.app`, `CellType.script` — 删除. app 是 node 的 runtime role, script 被 worker 取代.
+- `Environment` 上的 cell_meta / cell_address / kill_cell — 全部移除, 由 CellRegistry 接管.
+
+### 实现层 (src/ghoshell_moss/host/cell_registry.py)
+
+```
+EnvCellRegistry(CellRegistry) — 基于 Environment + 文件系统的实现.
+  list_cell_manifests → cells/{group}/{name}/CELL.md 遍历.
+  local_runtime_cells  → runtime_registry_dir 下 cell-*.json 扫描.
+  discover_current_cell → MOSS_CELL_ADDRESS env → runtime file → fallback Cell.from_proc().
+```
+
+### 当前分支破坏性改动范围
+
+- `src/ghoshell_moss/core/blueprint/cell.py` ✅ 抽象完成
+- `src/ghoshell_moss/core/blueprint/environment.py` ✅ 重构完成
+- `src/ghoshell_moss/host/cell_registry.py` ✅ 实现完成
+- `tests/ghoshell_moss/blueprint/test_cell_design.py` ✅ 77 tests
+- `tests/ghoshell_moss/blueprint/test_environment_design.py` ✅ 12 tests
+
+**待推进 (按依赖顺序)**:
+1. 修复旧模块 import 链 (app.py 引用 matrix.Cell 等)
+2. 删除 AppStore / AppStoreChannel
+3. 创建 cell stub (替代 app stub)
+4. 重做 CLI (`moss cells` 替代 `moss apps` + `moss script`)
+5. 删除 TUI 中 app inspector
+6. Matrix impl 集成 CellRegistry + CellNetwork
+7. workspace stubs 大面积调整
+
+### 单测原则
+
+只测数据模型行为 + 纯函数, 不测 `Environment.discover()` 等有全局状态的路径.
+用 temp dir + monkeypatch env var, 不 mock Workspace.
+测试文件: `tests/ghoshell_moss/blueprint/test_cell_design.py` + `test_environment_design.py`.
+
+---
+
+## 2026-06-22 设计收敛 + 实现: liveness listener / hub 重构 / cell announce (claude-opus-4-7)
+
+> 人类架构师 + claude-opus-4-7。从 ZenohChannelHub 重构切入，提取通用 liveness 抽象，
+> 收敛 cell announce 机制，确立 host/non-host 二分 Network 模型。
+
+### I. ZenohLivenessListener — 通用 liveness 监听
+
+**定位**: zenoh liveness 的最佳实践封装 —— 全量查询 + subscribe 变更 + 慢周期 reconcile。
+替代此前每个组件手写的 subscribe/query/key 解析逻辑。
+
+```
+文件: src/ghoshell_moss/tools/zenoh_helper.py
+
+ZenohLivenessListener(liveness_prefix, session, logger,
+                      on_online=None, on_offline=None,
+                      reconcile_interval=10.0)
+
+__aenter__:
+  1. get_liveness_keys() 全量 seed 缓存
+  2. declare_subscriber 监听 liveness 变更
+  3. fire on_online 给所有初始 key (让调用方感知完整状态)
+  4. 启动 reconcile loop
+
+__aexit__:
+  unsubscribe + 清缓存 + 停 reconcile
+
+属性:
+  live_keys          → list[str]  零延时缓存快照
+  get_liveness_keys()             同步阻塞全量查询
+  get_liveness_keys_async()       线程池异步版
+```
+
+单元测试 13 条 (`tests/ghoshell_moss/tools/test_zenoh_liveness.py`):
+全量查询 / 初始 seed / PUT 感知 / DELETE 感知 / on_online/on_offline 回调 /
+reconcile 补漏 / reconcile 清过期 / exit 清缓存 / 重复 enter 幂等 / 多 token 独立 /
+key 中 `/` 完整保留。
+
+### J. ZenohChannelHub 重构 — 委托 listener
+
+**改动** (`src/ghoshell_moss/bridges/zenoh_bridge/_hub.py`):
+
+- 删掉 `_liveness_subscriber`、`_on_provider_liveness`、手写 `get_liveness_provider_address`
+- 替换为一个 `ZenohLivenessListener` 实例，`on_online` / `on_offline` 回调处理业务逻辑
+- `__aenter__` / `__aexit__` 一行委托，`get_liveness_provider_address` 一行委托
+- **on_online 不再自动建 proxy** —— 只记录 record。proxy 创建由 CellNetwork 驱动
+- `proxy()` 用 `normalize(address)` 自动推导 name
+- liveness prefix 从 `_hub_expr.new_expr('**').provider_liveness_prefix` 推导
+
+**关键分离**:
+- Listener: 纯粹的存活感知 (subscribe, query, reconcile)
+- Hub: 业务政策 (proxy 管理, record, name 规范化)
+
+原 4 tests 全部通过。
+
+### K. MOSSNamespace 中心化
+
+**文件**: `src/ghoshell_moss/tools/zenoh_helper.py`
+
+zenoh key 体系收敛到 `MOSSNamespace`:
+
+```
+MOSSNamespace(namespace)
+  ├── channels_namespace    # {ns}/channels
+  ├── cells_namespace       # {ns}/cells
+  ├── topics_namespace      # {ns}/topics
+  ├── signals_namespace     # {ns}/signals
+  ├── streams_namespace     # {ns}/streams
+  └── outputs_namespace     # {ns}/outputs
+
+MOSSEnvNamespace(env)         → MOSS/{moss_name}/scope/{session_scope}
+MOSSScopeNamespace(scope)     → MOSS/{scope}
+```
+
+`HubKeyExpr.__init__` 不再追加 `/channels` 后缀（namespace 已经包含）。
+
+### L. bridge_address 简化为 `type/{uid}`
+
+**推翻**: `type/name/uid` 三层 bridge address。
+**理由**: name 在 bridge 中不提供唯一性 (uid 已保证)，但使 `split_bridge_address` 语义模糊
+（name 可能含 `/`）。
+
+**新规范**:
+```
+address         = type/name          (人可读, 本地唯一)
+bridge_address  = type/{status.uid}  (线唯一, uid 生成)
+```
+
+`normalize()` 统一处理 `/`, `.`, `-`, `\\` → `_`。
+
+### M. cell announce 收敛: PUT + queryable (不用 liveness token)
+
+**动机**: cell 变化低频 (启动/停止/状态变更)，用 liveness token 持续宣告浪费资源。
+PUT + queryable 两个 key 完成所有需求。
+
+**Key 布局**:
+```
+{ns}/cells/{bridge}          ← PUT (change notify) + DELETE (revoke)
+{ns}/cells/{bridge}/info     ← queryable (被动返回 Cell JSON)
+```
+
+**变更通知流**:
+1. cell 上线/状态变更 → PUT `cells/{bridge}` (value = updated_at timestamp)
+2. host subscribe `cells/**` → 收到 PUT, key 中含 bridge
+3. host 拼 `/info` 后缀 queryable 查询 → 拿到完整 Cell 数据
+4. DELETE → 立刻清理缓存 + proxy
+
+**死检**: detection loop 慢周期逐个 query 已知 cell 的 `/info` queryable。
+无响应 → stale 计数 → 超时清理。比 liveness DELETE 慢 (stale_timeout 级别 vs 秒级),
+但 cell 数量小 (< 100)、变化低频，可接受。
+
+### N. CellNetwork 二分: CellNetwork vs HostCellNetwork
+
+| 能力 | CellNetwork (通用) | HostCellNetwork |
+|------|---------------------|-----------------|
+| announce_cell | ✅ | ✅ |
+| live_cells (query) | ✅ | ✅ |
+| list_providers | ✅ | ✅ |
+| provide / create_proxy | ✅ | ✅ |
+| subscribe `cells/**` | | ✅ |
+| 缓存 cells/providers | | ✅ |
+| 自动 proxy 管理 | | ✅ (按 providing_channel) |
+| 变更列表 (maxsize) | | ✅ (模型可见) |
+| 封装为 CellsChannel | | ✅ |
+
+`proxies()` 返回 `dict[name, ChannelProxy]` — key 是 proxy name 而非 bridge_address。
+
+**ABC 简化方向** (下一轮实施):
+- 从 CellNetwork ABC 移除 `cached_*`, `start/stop_detection_loop`, `start_cell`
+- 新增 HostCellNetwork ABC (继承 CellNetwork, 加 `proxies` + 变更列表 + `start_detection_loop`)
+- `start_cell` 留在 Matrix，不在 CellNetwork
+
+### O. providing_channel 字段 — cell 驱动的 proxy 管理
+
+`CellStatus` 加 `providing_channel: bool = False` 字段。运行时快照，非静态声明。
+
+**建 proxy 的唯一路径**: cell info 中 `providing_channel = True` → CellNetwork 建 proxy。
+取代此前 hub `_on_provider_online` 自动建 proxy 的逻辑。
+
+**与 channel liveness 的关系**: provider/proxy 通讯层有自己的保活机制。cell 层不要求
+"cell 宣告" 与 "channel provider 上线" 严格有序。proxy 创建可能短暂失败 (provider 尚未 ready)，
+retry 由 reconcile 或下一轮 detection loop 兜底。
+
+### P. start_cell 阻塞语义
+
+`Matrix.spawn_cell(cell, providing_channel=True)`:
+1. 强制立即建 proxy (不等 detection loop)
+2. `proxy.wait_connected()` 阻塞到联通
+3. 返回联通后模型立即可用
+
+解决 "启动 cell → 两轮 detection loop → 模型才看见" 的延迟问题。
+
+### Q. Matrix 三层模型
+
+未来 Matrix 网络拓扑三分:
+
+| 层 | 关系 | 发现策略 | 现有实现 |
+|---|---|---|---|
+| 上 | MOSS ↔ MOSS (peer) | 双向协商, 显式 accept | 尚未有独立抽象 |
+| 中 | host ↔ node/worker | 同 scope 内自动发现 | CellNetwork (正在做) |
+| 下 | host → 子 MOSS (fractal) | host subscribe manifest | FractalHub |
+
+中层是当前 workstream 目标。三层在 zenoh 上靠 scope 隔离，互不干扰。
+proxy 创建策略三层不同: 中层 cell 上线可 auto-proxy (host 信任自己的 cells)，
+上层 peer MOSS 的 channel 需显式 accept。
+
+### R. 本轮实现清单
+
+**已完成**:
+- `src/ghoshell_moss/tools/zenoh_helper.py` — MOSSNamespace + ZenohLivenessListener
+- `tests/ghoshell_moss/tools/test_zenoh_liveness.py` — 13 tests
+- `src/ghoshell_moss/bridges/zenoh_bridge/_hub.py` — 重构为 listener 驱动, on_online 不建 proxy
+- `src/ghoshell_moss/bridges/zenoh_bridge/_utils.py` — HubKeyExpr 简化 (去掉 double /channels)
+- `src/ghoshell_moss/contracts/configs.py` — LocalConfigStore mode-aware 重写
+- `tests/ghoshell_moss/contracts/test_local_configs.py` — 39 tests
+- `src/ghoshell_moss/host/cell_network.py` — ZenohCellNetwork 原型 (需按 host/non-host 二分重做)
+- `src/ghoshell_moss/host/fractal/zenoh_fractal.py` — accept/ignore 从 Cell 剥离
+- `tests/ghoshell_moss/host/test_zenoh_fractal.py` — 5 tests 全部通过
+
+**待推进 (下一会话)**:
+1. 完成 CellNetwork ABC 精简: 移 `cached_*`, `start/stop_detection_loop`, `start_cell`
+2. 新增 HostCellNetwork ABC: `proxies()`, changes (`maxsize` 环形列表), `start_detection_loop`
+3. CellStatus 加 `providing_channel: bool` 字段
+4. bridge_address 改为 `type/{uid}`, normalize 支持更多分隔符
+5. 重做 ZenohCellNetwork: PUT + queryable announce, subscribe `cells/**`, reconcile
+6. 实现 ZenohHostCellNetwork: extends ZenohCellNetwork, proxy 自动管理
+7. Hub 增加 `remove_proxy(address)`
+8. cell announce 两 key 实现: PUT on change + queryable
+9. 修改 `CellKeyExpr` 与 namespace 对齐
+10. `Matrix.cell_channel_proxy` 用 cell.normalized_name 做 name, cell.description 做 description
+11. CellsChannel 封装 HostCellNetwork 为 ghost-visible channel
+12. 修复 test_matrix_init.py 等旧 import 链 (DEFAULT_CELL_ADDRESS, ScopesKey 等)
+13. CellNetwork 集成测试套件
+
+### S. 上下文恢复线索 (下一会话必读)
+
+按优先级:
+
+1. **本文件 §I-§R** — 本次设计收敛
+2. `src/ghoshell_moss/tools/zenoh_helper.py` — ZenohLivenessListener + MOSSNamespace
+3. `src/ghoshell_moss/bridges/zenoh_bridge/_hub.py` — 重构后的 hub
+4. `src/ghoshell_moss/host/cell_network.py` — 当前 ZenohCellNetwork 原型
+5. `src/ghoshell_moss/core/blueprint/cell.py:693-801` — CellNetwork ABC (待精简)
+6. `tests/ghoshell_moss/tools/test_zenoh_liveness.py` — listener 测试 (参考模式)
+
+### T. audit 指标 (下个实例自我校准)
+
+- Cell announce 是否只用 PUT + queryable, 没有引入 liveness token?
+- on_online 是否只记 record, 不自动建 proxy?
+- proxy 创建是否由 `providing_channel` 字段驱动, 而非 channel liveness 事件?
+- HostCellNetwork 和 CellNetwork 的职责边界是否清晰?
+- bridge_address 是否只有 `type/{uid}`, name 不在其中?
+- `proxies()` 返回的 key 是否是 proxy name 而非 bridge address?
+- 三套命名体系是否收敛到 MOSSNamespace?
 

@@ -9,7 +9,7 @@ from ghoshell_moss.cli.utils import (
     print_panel, echo, set_ai_mode, is_ai_mode
 )
 from ghoshell_moss.cli import (
-    codex_cli, workspace_cli, manifests_cli, apps_cli,
+    codex_cli, workspace_cli, manifests_cli,
     modes_cli, ctml_cli, howto_cli, features_cli, docs_cli,
     ghosts_cli, scripts_cli, start_cli, runtime_cli,
 )
@@ -34,7 +34,6 @@ app.add_typer(workspace_cli.workspace_app, name="workspace", short_help="MOSS Wo
 app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
 app.add_typer(modes_cli.mode_app, name="modes", short_help="moss runtime modes manager")
-app.add_typer(apps_cli.app_store_app, name="apps", short_help="default apps manager")
 app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(ghosts_cli.ghost_app, name="ghosts", short_help="MOSS ghost discovery and management")
