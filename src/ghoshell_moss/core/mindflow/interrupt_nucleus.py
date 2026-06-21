@@ -21,7 +21,8 @@ effort='none' 让 ghost.articulate 提前返回, ``interrupt=True`` 让
 - 冷静期内 add_signal 静默丢 — interrupt 没有"累积" 语义, 多个等价于一个
 """
 import time
-from typing import Self, Callable, Iterable
+from typing import Callable, Iterable
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer
 
