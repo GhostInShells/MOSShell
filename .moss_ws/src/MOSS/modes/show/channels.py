@@ -18,8 +18,11 @@ from ghoshell_moss.channels.mac_channel import new_mac_control_channel
 from ghoshell_moss.channels.terminal_channel import new_terminal_channel
 from ghoshell_moss.channels.mermaid_draw import new_mermaid_channel
 from ghoshell_moss.channels.web_bookmark import new_web_bookmark_channel
+from ghoshell_moss.core import SpeechChannelModule
 
 main = new_default_shell_main_channel()
+
+main.with_module(SpeechChannelModule())
 
 main.import_channels(
     AppStoreChannel(name='apps'),

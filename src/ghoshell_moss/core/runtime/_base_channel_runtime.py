@@ -520,7 +520,9 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
                     continue
                 if not task.is_bare_task():
                     # 只有非 bare 才执行 on compiled.
-                    task.on_compiled()
+                    # 需要注入 runtime context，因为 partial 函数可能使用 CommandUtil。
+                    with ChannelCtx(self, task).in_ctx():
+                        task.on_compiled()
                 # prepare to send
                 await self._consume_compiled_task_with_paths(paths, task)
 

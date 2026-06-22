@@ -727,7 +727,6 @@ class Interpreter(ABC):
                     tasks = parser.on_token(item)
                     if tasks is not None:
                         for task in tasks:
-                            task.on_compiled()
                             task_callback(task)
                     await asyncio.sleep(0.0)
         except asyncio.CancelledError:

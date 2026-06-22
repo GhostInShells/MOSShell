@@ -6,7 +6,7 @@ from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.contracts.speech import Speech, SpeechStream, TTSSpeech
 from ghoshell_moss.core.speech.null import NullSpeech
-from ghoshell_moss.topics import SpeechTopic, Publisher
+from ghoshell_moss.topics import SpeechTopic
 
 
 def build_content_command(speech: Speech) -> Command:
@@ -26,38 +26,36 @@ class _SpeechCommandFactory:
             *,
             role: str = '',
             name: str = '',
-            publisher: Publisher[SpeechTopic] | None = None,
     ):
         self._speech = speech
         self._role = role
         self._name = name
-        self._publisher = publisher
 
     def build_content_command(self) -> Command:
         speech = self._speech
 
         async def _feed_stream(stream: SpeechStream, deltas):
-            content = ''
-            try:
-                if not speech.is_running():
-                    return
-                has_first_chunk = False
-                async for chunk in deltas:
-                    if not has_first_chunk and chunk.strip():
-                        has_first_chunk = True
-                        await stream.start_synthesis()
-                    stream.feed(chunk)
-                    content += chunk
-                stream.commit()
-            except asyncio.CancelledError:
-                await stream.close()
-            finally:
-                if self._publisher:
-                    self._publisher.pub(SpeechTopic(
-                        speaker_name=self._name,
-                        role=self._role,
-                        text=content,
-                    ))
+            publisher = CommandUtil.topic_publisher(SpeechTopic)
+            async with publisher:
+                content = ''
+                try:
+                    if not speech.is_running():
+                        return
+                    has_first_chunk = False
+                    async for chunk in deltas:
+                        if not has_first_chunk and chunk.strip():
+                            has_first_chunk = True
+                            await stream.start_synthesis()
+                        stream.feed(chunk)
+                        content += chunk
+                        publisher.pub(SpeechTopic(
+                            speaker_name=self._name,
+                            role=self._role,
+                            text=content,
+                        ))
+                    stream.commit()
+                except asyncio.CancelledError:
+                    await stream.close()
 
         async def _content_partial(chunks__):
             if not speech.is_running():
@@ -124,17 +122,26 @@ class _SpeechCommandFactory:
             stream = tts_speech.new_tts_stream(batch)
 
             async def run_tts_batch() -> None:
-                try:
-                    nonlocal chunks__
-                    await stream.start_synthesis()
-                    async for chunk in chunks__:
-                        if stream.is_closed():
-                            return
-                        stream.feed(chunk)
-                except Exception as e:
-                    await stream.fail(e)
-                finally:
-                    stream.commit()
+                publisher = CommandUtil.topic_publisher(SpeechTopic)
+                async with publisher:
+                    try:
+                        nonlocal chunks__
+                        await stream.start_synthesis()
+                        content = ""
+                        async for chunk in chunks__:
+                            if stream.is_closed():
+                                return
+                            stream.feed(chunk)
+                            content += chunk
+                            publisher.pub(SpeechTopic(
+                                speaker_name=self._name,
+                                role=self._role,
+                                text=content,
+                            ))
+                    except Exception as e:
+                        await stream.fail(e)
+                    finally:
+                        stream.commit()
 
             _ = asyncio.create_task(run_tts_batch())
             return [], dict(voice=voice, chunks__=stream, as_default=as_default)
@@ -166,15 +173,12 @@ class SpeechChannelModule(ChannelModule):
             register_content: bool = False,
             role: str = 'ghost',
             name: str = '',
-            publishing: bool = False,
     ):
         self._speech: Speech | None = None
         self._own_commands = {}
         self._register_content = register_content
         self._role = role
         self._name = name
-        self._publishing = publishing
-        self._publisher: Publisher[SpeechTopic] | None = None
 
     def name(self) -> str:
         return "speech"
@@ -185,15 +189,11 @@ class SpeechChannelModule(ChannelModule):
     async def on_startup(self) -> None:
         if CommandUtil.enabled():
             self._speech = CommandUtil.get_contract(Speech)
-            if self._publishing:
-                self._publisher = CommandUtil.topic_publisher(SpeechTopic)
-                await self._publisher.__aenter__()
         self._speech = self._speech or NullSpeech()
         factory = _SpeechCommandFactory(
             self._speech,
             role=self._role,
             name=self._name,
-            publisher=self._publisher,
         )
         commands = {}
         if self._register_content:
@@ -206,5 +206,3 @@ class SpeechChannelModule(ChannelModule):
 
     async def on_close(self) -> None:
         self._speech = None
-        if self._publisher:
-            await self._publisher.__aexit__(None, None, None)
