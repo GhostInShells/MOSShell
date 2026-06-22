@@ -51,17 +51,35 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._closed = False
 
         # 使用线程安全的队列进行线程间通信
-        self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue()
+        # 元素为 (ndarray, sentence_text) 元组或 None（停止信号）
+        self._audio_queue: queue.Queue[tuple[np.ndarray, str] | None] = queue.Queue()
         self._thread = None
         self._stop_event = threading.Event()
         self._on_play_callbacks = []
+        self._on_sentence_play_callbacks = []
         self._on_play_done_callbacks = []
 
     def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
         self._on_play_callbacks.append(callback)
 
+    def on_sentence_play(self, callback: Callable[[str], None]) -> None:
+        self._on_sentence_play_callbacks.append(callback)
+
     def on_play_done(self, callback: Callable[[], None]) -> None:
         self._on_play_done_callbacks.append(callback)
+
+    def _on_audio_chunk_queued(self, audio_chunk: np.ndarray, sentence_text: str) -> None:
+        """钩子：音频 chunk 写入输出流后调用。
+
+        默认实现直接触发 on_sentence_play 回调——这对 _audio_stream_write
+        为真阻塞（如 PulseAudio）或空操作（如 Virtual）的播放器是正确的。
+
+        MiniAudioStreamPlayer 覆写此方法以延迟回调到 miniaudio generator 中，
+        实现与扬声器同步的字幕触发。
+        """
+        if sentence_text:
+            for callback in self._on_sentence_play_callbacks:
+                callback(sentence_text)
 
     async def start(self) -> None:
         """启动音频播放器"""
@@ -135,6 +153,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         audio_type: AudioFormat,
         rate: int,
         channels: int = 1,
+        sentence_text: str = "",
     ) -> float:
         """添加音频片段到播放队列, 返回一个期望的终结时间."""
         if self._closed:
@@ -157,8 +176,8 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         duration = len(audio_data) / rate
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
-        # 添加到线程安全队列
-        self._audio_queue.put_nowait(resampled_audio_data)
+        # 添加到线程安全队列（音频数据 + 句子文本）
+        self._audio_queue.put_nowait((resampled_audio_data, sentence_text))
         if self._play_done_event.is_set():
             self.logger.debug("%s player start to playing audio", self._log_prefix)
             self._play_done_event.clear()
@@ -244,11 +263,15 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     # 收到停止信号
                     # 通过下一个循环判断应该怎么处理.
                     continue
+                # 解包 (ndarray, sentence_text) 元组
+                audio_chunk, sentence_text = audio_data
                 self._play_done_event.clear()
                 # 写入音频数据（期望是阻塞调用）
-                self._audio_stream_write(audio_data)
+                self._audio_stream_write(audio_chunk)
                 for callback in self._on_play_callbacks:
-                    callback(audio_data)
+                    callback(audio_chunk)
+                # 钩子：子类可覆写以实现播放同步回调（如 MiniAudioStreamPlayer 的字节偏移追踪）
+                self._on_audio_chunk_queued(audio_chunk, sentence_text)
 
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)

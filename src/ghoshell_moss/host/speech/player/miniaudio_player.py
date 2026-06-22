@@ -43,6 +43,8 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             safety_delay=safety_delay,
         )
         self._playback: Optional[miniaudio.PlaybackDevice] = None
+        # 字节偏移追踪：_audio_worker 写入句边界，miniaudio generator 读取后触发 on_sentence_play
+        self._boundary_lock = threading.Lock()
         if transport is not None:
             self.logger.info("%s wiring speaker AudioRuntimeTopic via transport", self._log_prefix)
             self._wire_speaker_topic(transport)
@@ -93,12 +95,37 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         self.on_play(on_play)
         self.on_play_done(on_play_done)
 
+    def _on_audio_chunk_queued(self, audio_chunk: np.ndarray, sentence_text: str) -> None:
+        """覆写基类钩子：记录字节偏移，延迟到 generator 中触发 on_sentence_play。
+
+        _audio_stream_write 只将 bytes 放入 _data_queue 后立刻返回（非阻塞），
+        若在此直接触发 on_sentence_play，所有回调会在 CPU 速度下瞬间完成——
+        字幕与音频播放不同步。
+
+        改为记录 (byte_offset, text) 到 _sentence_boundaries，始终累加
+        _bytes_queued（包括无声 chunk），由 miniaudio generator 在 yield chunk
+        后按实时速度触发。_bytes_queued 与 generator 的 bytes_yielded 必须对齐。
+        """
+        chunk_bytes = len(audio_chunk.tobytes())
+        with self._boundary_lock:
+            if sentence_text:
+                self._sentence_boundaries.append((self._bytes_queued, sentence_text))
+            self._bytes_queued += chunk_bytes  # 始终累加，包括无声 chunk，确保与 generator bytes_yielded 对齐
+
     def _make_generator(self):
-        """创建 audio generator，每次 yield 精确 frame_count 的字节。"""
+        """创建 audio generator，每次 yield 精确 frame_count 的字节。
+
+        miniaudio 内部线程以实时音频速度驱动此 generator。在 yield chunk
+        之后追踪 bytes_yielded 并检查 _sentence_boundaries——越过某句的起始
+        字节偏移时触发 on_sentence_play 回调，实现与扬声器同步的字幕。
+        """
         bytes_per_frame = self.channels * 2  # SIGNED16 = 2 bytes/sample
 
         def _audio_generator():
             frames_needed = yield b""  # prime
+            bytes_yielded = 0
+            boundary_idx = 0
+
             while not self._stop_event.is_set():
                 bytes_needed = (frames_needed or 0) * bytes_per_frame
 
@@ -109,13 +136,36 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
                         break
 
                 if len(self._buf) >= bytes_needed and bytes_needed > 0:
-                    frames_needed = yield self._buf[:bytes_needed]
+                    chunk = self._buf[:bytes_needed]
                     self._buf = self._buf[bytes_needed:]
+                    frames_needed = yield chunk
                 else:
                     missing = max(bytes_needed - len(self._buf), 0)
-                    result = self._buf + b"\x00" * missing
+                    chunk = self._buf + b"\x00" * missing
                     self._buf = b""
-                    frames_needed = yield result
+                    frames_needed = yield chunk
+
+                bytes_yielded += len(chunk)
+
+                # ── 触发越过的句子边界（播放同步字幕）──
+                # 此代码在 miniaudio 内部线程执行，任何异常都会导致 generator
+                # 崩溃 → 音频中断。字幕是非关键功能，静默丢弃异常。
+                try:
+                    with self._boundary_lock:
+                        boundaries = list(self._sentence_boundaries)
+                    pending: list[str] = []
+                    while boundary_idx < len(boundaries):
+                        offset, text = boundaries[boundary_idx]
+                        if bytes_yielded >= offset:
+                            pending.append(text)
+                            boundary_idx += 1
+                        else:
+                            break
+                    for text in pending:
+                        for cb in self._on_sentence_play_callbacks:
+                            cb(text)
+                except Exception:
+                    pass
 
         return _audio_generator()
 
@@ -133,6 +183,8 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
     def _audio_stream_start(self):
         self._data_queue: queue.Queue[bytes] = queue.Queue()
         self._buf = b""
+        self._bytes_queued = 0
+        self._sentence_boundaries: list[tuple[int, str]] = []
         self._start_playback()
 
     async def clear(self) -> None:
@@ -144,6 +196,9 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         # 清空内部缓冲区
         self._data_queue = queue.Queue()
         self._buf = b""
+        # 重置字节偏移追踪（新 generator 从 0 开始，共享状态必须同步清零）
+        self._bytes_queued = 0
+        self._sentence_boundaries: list[tuple[int, str]] = []
         # 重启设备，准备接收新音频
         self._start_playback()
         # 父类清空 _audio_queue 并重置时间估算

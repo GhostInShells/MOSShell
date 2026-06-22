@@ -329,12 +329,15 @@ class StreamAudioPlayer(ABC):
             audio_type: AudioFormat,
             rate: int,
             channels: int = 1,
+            sentence_text: str = "",
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
 
         注意: 这个接口是非阻塞的, 通常会立刻返回. 方便提前把流式的音频片段都 buffer 好.
 
+        :param sentence_text: 该音频片段对应的文本，播放时通过 on_sentence_play 回调传出。
+                              用于字幕等需要与音频同步展示的场景。
         :return: 返回一个 second 为单位的时间戳, 每一个音频片段插入后, 会根据音频播放的时间计算一个新的播放结束时间.
         """
         pass
@@ -364,6 +367,15 @@ class StreamAudioPlayer(ABC):
 
     @abstractmethod
     def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_sentence_play(self, callback: Callable[[str], None]) -> None:
+        """注册逐句播放回调——每个音频片段开始播放时触发，传入 add() 时的 sentence_text。
+
+        与 on_play 同步触发，但仅传文本。用于字幕等需要与音频同步的场景。
+        在播放线程中调用——回调实现必须处理线程安全。
+        """
         raise NotImplementedError
 
     @abstractmethod

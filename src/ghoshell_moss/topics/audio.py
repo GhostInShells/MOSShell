@@ -11,6 +11,10 @@ from ghoshell_moss.core.concepts.topic import TopicModel
 __all__ = [
     "AudioRuntimeTopic",
     "SpeechTopic",
+<<<<<<< Updated upstream
+=======
+    "SpeechStreamingTopic",
+>>>>>>> Stashed changes
 ]
 
 
@@ -74,3 +78,37 @@ class SpeechTopic(TopicModel):
     @classmethod
     def default_topic_name(cls) -> str:
         return "speech"
+<<<<<<< Updated upstream
+=======
+
+
+class SpeechStreamingTopic(TopicModel):
+    """TTS streaming output event — sentence-level text fragments as they are spoken.
+
+    Published by the Ghost process Speech pipeline (TTSSpeechStream) for every
+    sentence the TTS engine produces.  This is the *process* of speaking —
+    complementary to SpeechTopic which captures the *result* (completed user utterance).
+
+    Generic speech event: carries no app-specific UI semantics.
+    "Subtitle" is one consumer among many.
+
+    Typical consumers:
+    - Subtitle rendering (moshi, any frontend UI)
+    - Terminal real-time sentence printing (speech/streaming_monitor)
+    - Live translation overlay
+    - Conversation log timeline reconstruction
+    - Accessibility screen-reader sync
+    """
+
+    text: str = Field(default="", description="当前句子文本")
+    is_final: bool = Field(default=False, description="当前语音批次是否结束")
+    batch_id: str = Field(default="", description="语音流批次 ID，用于多轮对话下的流对齐")
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return "core/speech/streaming"
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return "speech/streaming"
+>>>>>>> Stashed changes

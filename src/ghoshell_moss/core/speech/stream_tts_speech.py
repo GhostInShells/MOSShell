@@ -1,8 +1,12 @@
 import asyncio
 import logging
+<<<<<<< Updated upstream
 from typing import Optional, Callable, Coroutine
+=======
+import re
+from typing import Optional, Callable
+>>>>>>> Stashed changes
 
-import numpy as np
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.message import unique_id
 
@@ -15,6 +19,7 @@ from ghoshell_moss.contracts.speech import (
     TTSBatch,
 )
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
+from ghoshell_moss.topics.audio import SpeechStreamingTopic
 
 
 class TTSSpeechStream(SpeechStream):
@@ -28,6 +33,10 @@ class TTSSpeechStream(SpeechStream):
         player: StreamAudioPlayer,
         tts_batch: TTSBatch,
         logger: LoggerItf,
+<<<<<<< Updated upstream
+=======
+        streaming_callback: Callable[[SpeechStreamingTopic], None] | None = None,
+>>>>>>> Stashed changes
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -50,10 +59,41 @@ class TTSSpeechStream(SpeechStream):
         self._has_audio_data = False
         self._log_prefix = "[TTSSpeechStream id=%s] " % batch_id
 
+<<<<<<< Updated upstream
+=======
+        # ── 句级流式回调 ──
+        self._batch_id = batch_id
+        self._streaming_callback = streaming_callback
+        self._sentence_buffer = ""            # 累积文本，按标点切句
+        self._sentence_queue: list[str] = []  # 待回调的句子
+
+>>>>>>> Stashed changes
     def _buffer(self, text: str) -> None:
         self._text_buffer += text
         self._tts_batch.feed(text)
 
+<<<<<<< Updated upstream
+=======
+        # 句级流式：累积文本，按标点切句入队
+        if self._streaming_callback is not None:
+            self._sentence_buffer += text
+            while True:
+                match = re.search(r'[。！？；\n]', self._sentence_buffer)
+                if not match:
+                    break
+                idx = match.end()
+                sentence = self._sentence_buffer[:idx].strip()
+                self._sentence_buffer = self._sentence_buffer[idx:]
+                if sentence:
+                    self._sentence_queue.append(sentence)
+
+    def _flush_sentence(self) -> None:
+        """将 sentence buffer 中剩余文本作为最后一句推入队列。"""
+        if self._sentence_buffer.strip():
+            self._sentence_queue.append(self._sentence_buffer.strip())
+            self._sentence_buffer = ""
+
+>>>>>>> Stashed changes
     def _commit(self) -> None:
         self._tts_batch.commit()
 
@@ -92,16 +132,37 @@ class TTSSpeechStream(SpeechStream):
             await self._player.clear()
             if not self._started:
                 await self.start_synthesis()
+
+            # 注册逐句播放回调 —— 在播放线程中触发，实现与音频同步的字幕
+            if self._streaming_callback is not None:
+                self._player.on_sentence_play(self._on_sentence_play)
+
             self.logger.debug("%s start new audio playing", self._log_prefix)
             async for item in self._tts_batch.items():
                 # 将 buffer 的内容
                 data = item["audio"]
+
+                # 确定本帧音频对应的句子文本（文字随音频入队）
+                sentence_text = ""
+                if self._streaming_callback is not None:
+                    if self._sentence_queue:
+                        sentence_text = self._sentence_queue.pop(0)
+                    elif self._sentence_buffer.strip():
+                        self._flush_sentence()
+                        if self._sentence_queue:
+                            sentence_text = self._sentence_queue.pop(0)
+
                 self._player.add(
                     data,
                     channels=self._channels,
                     audio_type=self._audio_type,
                     rate=self._sample_rate,
+                    sentence_text=sentence_text,
                 )
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
                 await asyncio.sleep(0)
                 self.logger.debug("%s add audio %d bytes", self._log_prefix, len(data))
             await self._player.wait_play_done()
@@ -110,9 +171,39 @@ class TTSSpeechStream(SpeechStream):
         except Exception as e:
             self.logger.exception("%s play failed: %s", self._log_prefix, e)
         finally:
+<<<<<<< Updated upstream
+=======
+            # flush 未触发切句的残余文本 + 发送 final
+            if self._streaming_callback is not None:
+                self._flush_sentence()
+                while self._sentence_queue:
+                    text = self._sentence_queue.pop(0)
+                    try:
+                        self._streaming_callback(SpeechStreamingTopic(
+                            text=text, is_final=False, batch_id=self._batch_id,
+                        ))
+                    except Exception:
+                        pass
+                try:
+                    self._streaming_callback(SpeechStreamingTopic(
+                        text="", is_final=True, batch_id=self._batch_id,
+                    ))
+                except Exception:
+                    pass
+>>>>>>> Stashed changes
             self._play_done_event.set()
             # 冗余的 clear.
             await self._player.clear()
+
+    def _on_sentence_play(self, text: str) -> None:
+        """逐句播放回调 —— 在播放线程中触发，实现与音频同步的字幕输出。"""
+        if self._streaming_callback is not None:
+            try:
+                self._streaming_callback(SpeechStreamingTopic(
+                    text=text, is_final=False, batch_id=self._batch_id,
+                ))
+            except Exception:
+                pass
 
     async def start_play(self) -> None:
         if self._playing:
@@ -149,6 +240,10 @@ class BaseTTSSpeech(TTSSpeech):
         player: StreamAudioPlayer,
         tts: TTS,
         logger: Optional[LoggerItf] = None,
+<<<<<<< Updated upstream
+=======
+        streaming_callback: Callable[[SpeechStreamingTopic], None] | None = None,
+>>>>>>> Stashed changes
     ):
         self.logger = logger or logging.getLogger("moss")
         self._player = player
@@ -161,6 +256,10 @@ class BaseTTSSpeech(TTSSpeech):
         self._started = False
         self._closing = False
         self._closed_event = ThreadSafeEvent()
+<<<<<<< Updated upstream
+=======
+        self._streaming_callback = streaming_callback
+>>>>>>> Stashed changes
 
     def tts(self) -> TTS:
         return self._tts
@@ -168,6 +267,16 @@ class BaseTTSSpeech(TTSSpeech):
     def player(self) -> StreamAudioPlayer:
         return self._player
 
+<<<<<<< Updated upstream
+=======
+    def set_streaming_callback(self, callback: Callable[[SpeechStreamingTopic], None] | None) -> None:
+        """注入句级流式回调，所有后续 new_stream 创建的流都会收到回调。
+
+        可在运行时动态设置。讲课/流式场景注入，非流式场景设为 None。
+        """
+        self._streaming_callback = callback
+
+>>>>>>> Stashed changes
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         batch_id = batch_id or unique_id()
         tts_batch = self._tts.new_batch(batch_id=batch_id)
@@ -182,6 +291,10 @@ class BaseTTSSpeech(TTSSpeech):
             player=self._player,
             tts_batch=batch,
             logger=self.logger,
+<<<<<<< Updated upstream
+=======
+            streaming_callback=self._streaming_callback,
+>>>>>>> Stashed changes
         )
         return stream
 
