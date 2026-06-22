@@ -21,6 +21,7 @@ from ghoshell_moss.host.providers.tts_service_provider import TTSManagerConfig
 from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 from ghoshell_moss.contracts.audio import AudioCaptureConfig
 from ghoshell_moss.contracts.llms import LLMConfig
+from ghoshell_moss.core.speech.subtitle_config import SubtitleTopicConfig
 
 # 全局只做类型注册（import 即注册类引用 → is_override=False → 文件持久化）。
 # 类实例覆盖（is_override=True，仅内存不写文件）在 mode configs.py 中声明。

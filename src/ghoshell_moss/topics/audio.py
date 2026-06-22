@@ -11,6 +11,7 @@ from ghoshell_moss.core.concepts.topic import TopicModel
 __all__ = [
     "AudioRuntimeTopic",
     "SpeechTopic",
+    "SubtitleTopic",
 ]
 
 
@@ -74,3 +75,26 @@ class SpeechTopic(TopicModel):
     @classmethod
     def default_topic_name(cls) -> str:
         return "speech"
+
+
+class SubtitleTopic(TopicModel):
+    """句级字幕 Topic — 跨进程投递实时字幕文本。
+
+    Published by the Ghost process Speech pipeline (TTSSpeechStream)
+    via TopicService.pub(), consumed by the Reflex process via
+    TopicWindow for SSE-based browser rendering.
+
+    Replaces the old HTTP bypass (new_subtitle_callback() → :9733/_internal/subtitle_in).
+    """
+
+    text: str = Field(default="", description="字幕文本内容")
+    is_final: bool = Field(default=False, description="当前句子或音频流是否结束")
+    batch_id: str = Field(default="", description="语音流批次 ID，用于多轮对话下的字幕流对齐")
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return "core/speech/subtitle"
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return "moshi/subtitle"

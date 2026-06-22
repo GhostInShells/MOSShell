@@ -123,6 +123,7 @@ class CourseManager:
         locator_list: list[str],
         snapshot: dict,
         storage: CourseStorage,
+        speaker_notes: dict | None = None,
     ) -> str:
         """存档当前章节到 JSON 文件，更新内存进度。
 
@@ -131,6 +132,9 @@ class CourseManager:
             locator_list: Ghost 传入的图片 locator 列表
             snapshot: LayoutSnapshot.get_full() 返回的页面状态全量数据
             storage: 课程持久化存储
+            speaker_notes: 演讲者笔记（备课阶段 AI 生成）。
+                {talking_points: [{id, text, status}], transitions: [...],
+                 key_data: [...], estimated_duration: int}
         """
         if not self._name:
             raise ValueError("no course set — call set_outline first")
@@ -146,6 +150,7 @@ class CourseManager:
             "annotations": snapshot.get("annotations", []),
             "appreciation": snapshot.get("appreciation", ""),
             "images": locator_list,
+            "speaker_notes": speaker_notes or {},
         }
 
         info = CourseInfo(host="workspace-assets", path=f"{self._name}/{chapter}")
@@ -196,6 +201,23 @@ class CourseManager:
             "annotations": ch.get("annotations", []),
             "appreciation": ch.get("appreciation", ""),
             "images": list(ch.get("images", [])),
+        }
+
+    def get_speaker_notes(self, n: int) -> dict:
+        """返回指定章节的演讲者笔记。
+
+        Returns:
+            {talking_points: [...], transitions: [...], key_data: [...],
+             estimated_duration: int}
+            若章节无 speaker_notes 则返回空结构。
+        """
+        ch = self._chapters.get(self._outline[n], {})
+        sn = ch.get("speaker_notes", {}) or {}
+        return {
+            "talking_points": sn.get("talking_points", []),
+            "transitions": sn.get("transitions", []),
+            "key_data": sn.get("key_data", []),
+            "estimated_duration": sn.get("estimated_duration", 0),
         }
 
     def set_chapter_index(self, n: int) -> None:

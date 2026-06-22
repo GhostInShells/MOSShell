@@ -3,113 +3,397 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>沉浸式教学直播 UI</title>
+    <title>讲课模式 — Moshi</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* 弹幕动画效果 */
+        :root {
+            --bg: #0a0a14;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg);
+            color: #e2e8f0;
+            font-family: system-ui, -apple-system, sans-serif;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* ── 弹幕动画 ── */
         @keyframes danmaku-move {
             from { transform: translateX(100vw); }
-            to { transform: translateX(-100%); }
+            to   { transform: translateX(-100%); }
         }
         .danmaku-item {
             position: absolute;
             white-space: nowrap;
-            animation: danmaku-move linear infinite;
+            animation: danmaku-move linear forwards;
+            pointer-events: none;
+            text-shadow: 0 1px 4px rgba(0,0,0,.7);
+            z-index: 30;
+        }
+
+        /* ── 字幕区 ── */
+        #subtitle-bar {
+            transition: opacity .3s;
+        }
+        #subtitle-text {
+            transition: all .2s;
+        }
+
+        /* ── 退出按钮 ── */
+        #exit-btn {
+            transition: opacity .5s;
+        }
+        #exit-btn.inactive { opacity: .15; }
+        #exit-btn:hover { opacity: 1 !important; }
+
+        /* ── 课程选择弹窗 ── */
+        #course-modal {
+            backdrop-filter: blur(8px);
+        }
+        .course-option {
+            cursor: pointer;
+            transition: all .15s;
+        }
+        .course-option:hover {
+            background: rgba(99, 102, 241, .15);
+            border-color: rgba(99, 102, 241, .5);
         }
     </style>
 </head>
-<body class="bg-[#10101c] text-slate-200 font-sans overflow-hidden select-none w-screen h-screen m-0 p-0 flex items-center justify-center">
+<body class="flex flex-col">
 
-    <div class="relative w-full aspect-video max-w-[1920px] max-h-[1080px] bg-[#1a1a2e] shadow-2xl overflow-hidden flex flex-col justify-between p-8">
-        
-        <div class="w-full flex justify-center z-10">
-            <div class="bg-[#1e1e38]/80 backdrop-blur-md border border-slate-700/50 px-4 py-1.5 rounded-full text-xs text-slate-400 flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
-                <span>练习模式 · 仅主讲人可见</span>
-            </div>
+    <!-- ====== 主区域：Reflex iframe + 弹幕层 ====== -->
+    <div id="stage" class="relative flex-1 w-full overflow-hidden">
+        <!-- Reflex 白板 -->
+        <iframe id="reflex-frame"
+                src="http://localhost:3000"
+                class="w-full h-full border-0"
+                allow="autoplay"
+                loading="eager">
+        </iframe>
+
+        <!-- 弹幕容器 -->
+        <div id="danmaku-layer" class="absolute inset-0 pointer-events-none overflow-hidden z-20">
         </div>
 
-        <div class="absolute inset-0 z-0 pointer-events-none overflow-hidden">
-            <div class="absolute top-[25%] left-[10%] w-[50%] h-[2px] bg-slate-800/40"></div>
-            <div class="absolute top-[28%] left-[10%] w-[35%] h-[2px] bg-slate-800/40"></div>
-            <div class="absolute top-[45%] left-[10%] w-[55%] h-[2px] bg-slate-800/40"></div>
-            <div class="absolute top-[48%] left-[10%] w-[50%] h-[2px] bg-slate-800/40"></div>
-            
-            <div class="absolute bottom-[25%] left-[10%] flex items-end gap-3 h-24 opacity-20">
-                <div class="w-8 h-12 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-16 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-10 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-20 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-14 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-24 bg-slate-600 rounded-sm"></div>
-                <div class="w-8 h-16 bg-slate-600 rounded-sm"></div>
-            </div>
-
-            <div class="danmaku-item text-green-400 font-medium text-lg top-[20%]" style="animation-duration: 14s; animation-delay: 0s;">这个讲得好！</div>
-            <div class="danmaku-item text-yellow-400 font-medium text-lg top-[35%]" style="animation-duration: 18s; animation-delay: 2s;">能解释下这个概念吗？</div>
-            <div class="danmaku-item text-white/80 text-base top-[15%]" style="animation-duration: 12s; animation-delay: 5s;">666</div>
-            <div class="danmaku-item text-white/90 text-lg top-[40%]" style="animation-duration: 16s; animation-delay: 1s;">通俗易懂，赞！</div>
-        </div>
-
-        <div class="absolute right-8 top-[35%] w-[320px] bg-[#0d0d1a]/90 backdrop-blur-xl border border-slate-800 rounded-xl p-4 shadow-xl z-10">
-            <div class="flex justify-between items-center border-b border-slate-800/60 pb-3 mb-4">
-                <div class="flex items-center gap-2 text-sm font-semibold tracking-wide">
-                    <span>📝</span> 演讲者手卡
-                </div>
-                <div class="flex gap-1.5">
-                    <button class="w-5 h-5 rounded bg-slate-800 flex items-center justify-center text-[10px] text-slate-400 hover:bg-slate-700">▼</button>
-                    <button class="w-5 h-5 rounded bg-slate-800 flex items-center justify-center text-xs text-slate-400 hover:bg-slate-700">✕</button>
-                </div>
-            </div>
-            <div class="space-y-4 text-xs">
-                <div>
-                    <div class="text-slate-500 flex items-center gap-1 mb-1">📌 要点</div>
-                    <div class="text-slate-200 pl-4 font-medium">回顾核心论点——杠杆率决定天花板</div>
-                </div>
-                <div class="border-t border-slate-800/40 pt-3">
-                    <div class="text-slate-500 flex items-center gap-1 mb-1">🔄 过渡</div>
-                    <div class="text-slate-200 pl-4 font-medium">接下来我们看第三个案例...</div>
-                </div>
-                <div class="border-t border-slate-800/40 pt-3">
-                    <div class="text-slate-500 flex items-center gap-1 mb-1">📊 关键数据</div>
-                    <div class="text-slate-200 pl-4 font-medium flex items-center gap-2">
-                        <span>同比增长</span>
-                        <span class="text-emerald-400 font-bold text-sm">37%</span>
-                    </div>
-                </div>
+        <!-- 加载遮罩 -->
+        <div id="loading-overlay"
+             class="absolute inset-0 bg-[#0a0a14]/90 flex items-center justify-center z-40 hidden">
+            <div class="text-center space-y-4">
+                <div class="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                <p id="loading-text" class="text-slate-400 text-sm">正在加载课程...</p>
             </div>
         </div>
-
-        <div class="w-full flex flex-col items-center gap-4 z-10 mt-auto">
-            
-            <div class="w-[80%] bg-gradient-to-r from-transparent via-[#0a0a14]/80 to-transparent backdrop-blur-sm py-3 px-8 text-center">
-                <p class="text-white text-xl md:text-2xl font-normal tracking-wide drop-shadow-md">
-                    " 今天我们讨论三个核心问题 "
-                </p>
-            </div>
-
-            <div class="bg-[#090911]/90 border border-slate-800/80 rounded-full px-6 py-2.5 flex items-center gap-6 shadow-2xl backdrop-blur-lg">
-                <div class="flex items-center gap-3">
-                    <span class="text-base opacity-70">⏱️</span>
-                    <span class="text-2xl font-mono tracking-widest text-white font-light">00:41</span>
-                </div>
-                <div class="h-6 w-[1px] bg-slate-800"></div>
-                <div class="flex items-center gap-3">
-                    <button class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center text-xs text-slate-300">
-                        ‖
-                    </button>
-                    <button class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center text-sm text-slate-300">
-                        ↻
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <button class="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-[#0d0d1a]/50 border border-slate-800 flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-all opacity-30 hover:opacity-100 duration-300 z-20" title="退出">
-            ✕
-        </button>
-
     </div>
 
+    <!-- ====== 字幕区 ====== -->
+    <div id="subtitle-bar"
+         class="w-full bg-gradient-to-r from-transparent via-[#0a0a14]/90 to-transparent backdrop-blur-sm py-4 px-8 text-center z-20">
+        <p id="subtitle-text" class="text-white text-xl md:text-2xl font-light tracking-wide drop-shadow-md min-h-[2rem]">
+<!-- 等待开讲... -->
+        </p>
+    </div>
+
+    <!-- ====== 退出按钮 ====== -->
+    <button id="exit-btn"
+            class="fixed bottom-6 right-6 w-12 h-12 rounded-full bg-white/5 border border-white/10
+                   flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10
+                   z-50 inactive"
+            title="退出讲课"
+            onclick="exitLecture()">
+        ✕
+    </button>
+
+    <!-- ====== 课程选择弹窗 ====== -->
+    <div id="course-modal"
+         class="fixed inset-0 bg-[#0a0a14]/80 flex items-center justify-center z-50 hidden">
+        <div class="bg-[#1a1a2e] border border-slate-700/50 rounded-2xl w-[420px] max-h-[70vh] flex flex-col shadow-2xl">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+                <h2 class="text-lg font-semibold text-white">选择课程</h2>
+                <button onclick="closeCourseModal()"
+                        class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700
+                               flex items-center justify-center text-sm text-slate-400">
+                    ✕
+                </button>
+            </div>
+            <div id="course-list" class="flex-1 overflow-y-auto p-4 space-y-2">
+                <p class="text-slate-500 text-sm text-center py-8">加载中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== JS ====== -->
+    <script>
+    // ── 常量 ──
+    const REFLEX_URL = 'http://localhost:3000';
+    const API_BASE = '';
+
+    // ── 状态 ──
+    let currentCourse = null;
+    let chatEventSource = null;
+    let subtitleEventSource = null;
+    let danmakuEventSource = null;
+    let inactivityTimer = null;
+    const INACTIVITY_MS = 3000;
+
+    // ── 初始化 ──
+    async function init() {
+        const params = new URLSearchParams(window.location.search);
+        const course = params.get('course');
+
+        if (course) {
+            currentCourse = course;
+            startLecture(course);
+        } else {
+            showCourseModal();
+        }
+
+        // 鼠标移动 → 显示退出按钮 → 重置计时器
+        document.addEventListener('mousemove', resetInactivityTimer);
+        document.addEventListener('touchstart', resetInactivityTimer);
+        resetInactivityTimer();
+
+        // 连接 SSE（聊天回复 / 字幕 / 弹幕）
+        connectChatSSE();
+        connectSubtitleSSE();
+        connectDanmakuSSE();
+    }
+
+    // ── 退出按钮淡出 ──
+    function resetInactivityTimer() {
+        const btn = document.getElementById('exit-btn');
+        btn.classList.remove('inactive');
+        clearTimeout(inactivityTimer);
+        inactivityTimer = setTimeout(() => {
+            btn.classList.add('inactive');
+        }, INACTIVITY_MS);
+    }
+
+    function exitLecture() {
+        if (confirm('确定退出讲课吗？')) {
+            window.location.href = '/';
+        }
+    }
+
+    // ── 课程选择弹窗 ──
+    async function showCourseModal() {
+        const modal = document.getElementById('course-modal');
+        modal.classList.remove('hidden');
+
+        const list = document.getElementById('course-list');
+        list.innerHTML = '<p class="text-slate-500 text-sm text-center py-8">加载中...</p>';
+
+        try {
+            const resp = await fetch('/api/courses', { method: 'POST' });
+            const courses = await resp.json();
+
+            if (!courses.length) {
+                list.innerHTML = '<p class="text-slate-500 text-sm text-center py-8">暂无课程，请先备课</p>';
+                return;
+            }
+
+            list.innerHTML = courses.map(c => `
+                <div class="course-option p-4 rounded-xl border border-slate-800/60 bg-[#0d0d1a]/60"
+                     onclick="selectCourse('${c.name}')">
+                    <div class="text-white font-medium">${c.title || c.name}</div>
+                    <div class="text-slate-500 text-xs mt-1">${c.chapters_count} 章</div>
+                </div>
+            `).join('');
+        } catch (e) {
+            list.innerHTML = '<p class="text-red-400 text-sm text-center py-8">加载失败，请确认服务已启动</p>';
+        }
+    }
+
+    function closeCourseModal() {
+        document.getElementById('course-modal').classList.add('hidden');
+    }
+
+    function selectCourse(name) {
+        closeCourseModal();
+        currentCourse = name;
+        // 更新 URL
+        const url = new URL(window.location);
+        url.searchParams.set('course', name);
+        window.history.replaceState({}, '', url);
+        startLecture(name);
+    }
+
+    // ── 开讲 ──
+    async function startLecture(course) {
+        showLoading(`正在加载《${course}》...`);
+        try {
+            const resp = await fetch('/api/lecture/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ course }),
+            });
+            const result = await resp.json();
+            if (result.ok) {
+                hideLoading();
+                setSubtitle(`《${result.title || course}》— ${result.chapter_name || ''}`);
+            } else {
+                setSubtitle('加载失败: ' + (result.error || '未知错误'));
+                hideLoading();
+            }
+        } catch (e) {
+            console.error('lecture_start failed:', e);
+            setSubtitle('连接失败，请确认服务已启动');
+            hideLoading();
+        }
+    }
+
+    async function sendChat(text) {
+        try {
+            await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, mode: 'teaching' }),
+            });
+        } catch (e) {
+            console.error('sendChat failed:', e);
+        }
+    }
+
+    // ── 加载遮罩 ──
+    function showLoading(msg) {
+        const overlay = document.getElementById('loading-overlay');
+        document.getElementById('loading-text').textContent = msg;
+        overlay.classList.remove('hidden');
+    }
+
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.add('hidden');
+    }
+
+    // ── SSE：聊天回复 ──
+    function connectChatSSE() {
+        if (chatEventSource) {
+            chatEventSource.close();
+        }
+
+        chatEventSource = new EventSource('/api/chat/stream');
+
+        chatEventSource.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.role === 'ai') {
+                    // AI 回复 → 显示为字幕
+                    setSubtitle(msg.text);
+                    hideLoading();
+                }
+            } catch (e) {
+                // 非 JSON 数据，跳过
+            }
+        };
+
+        chatEventSource.onerror = () => {
+            // SSE 断连，5 秒后重试
+            setTimeout(connectChatSSE, 5000);
+        };
+    }
+
+    // ── SSE：字幕流 ──
+    function connectSubtitleSSE() {
+        if (subtitleEventSource) {
+            subtitleEventSource.close();
+        }
+
+        subtitleEventSource = new EventSource('/api/subtitle/stream');
+
+        subtitleEventSource.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                const el = document.getElementById('subtitle-text');
+                if (msg.type === 'chunk') {
+                    // 流式追加字幕
+                    if (el._newSentence) {
+                        el.textContent = msg.text;
+                        el._newSentence = false;
+                    } else {
+                        el.textContent += msg.text;
+                    }
+                    el.style.opacity = '1';
+                    clearTimeout(el._fadeTimer);
+                } else if (msg.type === 'full') {
+                    // 完整句子标记（用于下一句开始新行）
+                    el.textContent = msg.text;
+                    el._newSentence = true;
+                    el.style.opacity = '1';
+                    clearTimeout(el._fadeTimer);
+                    el._fadeTimer = setTimeout(() => {
+                        el.style.opacity = '0.4';
+                    }, 8000);
+                }
+            } catch (e) {
+                // 非 JSON 数据，跳过
+            }
+        };
+
+        subtitleEventSource.onerror = () => {
+            setTimeout(connectSubtitleSSE, 5000);
+        };
+    }
+
+    // ── SSE：弹幕流 ──
+    function connectDanmakuSSE() {
+        if (danmakuEventSource) {
+            danmakuEventSource.close();
+        }
+
+        danmakuEventSource = new EventSource('/api/danmaku/stream');
+
+        danmakuEventSource.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                addDanmaku(msg.sender || '匿名', msg.text, msg.color || 'white');
+            } catch (e) {
+                // 非 JSON 数据，跳过
+            }
+        };
+
+        danmakuEventSource.onerror = () => {
+            setTimeout(connectDanmakuSSE, 5000);
+        };
+    }
+
+    // ── 字幕 ──
+    function setSubtitle(text) {
+        const el = document.getElementById('subtitle-text');
+        el.textContent = text;
+        el._newSentence = true;
+        el.style.opacity = '1';
+        // 8 秒后自动淡出（如果没更新的话）
+        clearTimeout(el._fadeTimer);
+        el._fadeTimer = setTimeout(() => {
+            el.style.opacity = '0.4';
+        }, 8000);
+    }
+
+    // ── 弹幕（供后续 SSE 调用）──
+    function addDanmaku(sender, text, color = 'white') {
+        const layer = document.getElementById('danmaku-layer');
+        const el = document.createElement('div');
+        el.className = 'danmaku-item';
+        el.style.color = color;
+        el.style.fontSize = '1rem';
+        el.style.top = (15 + Math.random() * 55) + '%';
+        el.style.animationDuration = (8 + Math.random() * 10) + 's';
+        el.textContent = `${sender}: ${text}`;
+        layer.appendChild(el);
+
+        // 动画结束后移除
+        el.addEventListener('animationend', () => el.remove());
+    }
+
+    // ── 暴露到全局 ──
+    window.addDanmaku = addDanmaku;
+    window.setSubtitle = setSubtitle;
+
+    // ── 启动 ──
+    init();
+    </script>
 </body>
 </html>

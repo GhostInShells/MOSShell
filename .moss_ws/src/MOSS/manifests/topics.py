@@ -10,3 +10,4 @@
 #
 # 发现路径：MOSS.manifests.topics
 # 深入：moss codex get-interface ghoshell_moss.core.concepts.topic:TopicModel
+from ghoshell_moss.topics.audio import SubtitleTopic

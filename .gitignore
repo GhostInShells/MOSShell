@@ -152,3 +152,4 @@ cython_debug/
 # g1_sim downloadable binary assets
 .moss_ws/apps/bodies/g1_sim/assets/g1/meshes/
 .moss_ws/apps/bodies/g1_sim/assets/policies/*.pt
+.moss_ws/assets/courses/

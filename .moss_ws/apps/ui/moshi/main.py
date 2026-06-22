@@ -78,12 +78,85 @@ async def handle_chat_stream(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def handle_subtitle_stream(request: web.Request) -> web.StreamResponse:
+    """转发 moss() 内部桥接的字幕 SSE 流到浏览器。"""
+    resp = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+    await resp.prepare(request)
+
+    logger.info("[proxy] 字幕 SSE pipe 已连接 → 内部桥接")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{INTERNAL_BRIDGE}/_internal/subtitle_stream",
+                timeout=aiohttp.ClientTimeout(total=None, sock_read=None),
+            ) as upstream:
+                async for line in upstream.content:
+                    await resp.write(line)
+    except aiohttp.ClientError as e:
+        logger.info("[proxy] 字幕 SSE pipe 断开: %s", e)
+    except (ConnectionResetError, ConnectionAbortedError):
+        pass
+
+    return resp
+
+
+async def handle_danmaku_stream(request: web.Request) -> web.StreamResponse:
+    """转发 moss() 内部桥接的弹幕 SSE 流到浏览器。"""
+    resp = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+    await resp.prepare(request)
+
+    logger.info("[proxy] 弹幕 SSE pipe 已连接 → 内部桥接")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{INTERNAL_BRIDGE}/_internal/danmaku_stream",
+                timeout=aiohttp.ClientTimeout(total=None, sock_read=None),
+            ) as upstream:
+                async for line in upstream.content:
+                    await resp.write(line)
+    except aiohttp.ClientError as e:
+        logger.info("[proxy] 弹幕 SSE pipe 断开: %s", e)
+    except (ConnectionResetError, ConnectionAbortedError):
+        pass
+
+    return resp
+
+
 async def handle_state(request: web.Request) -> web.Response:
     return web.json_response({"mode": "idle", "status": "就绪"})
 
 
 async def handle_courses(request: web.Request) -> web.Response:
-    return web.json_response([])
+    """从内部桥接获取课程列表（代理 moss() 的 /_internal/courses）。"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{INTERNAL_BRIDGE}/_internal/courses",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("[proxy] courses 失败: %s", body)
+                    return web.json_response([], status=502)
+                data = await resp.json()
+                return web.json_response(data)
+    except aiohttp.ClientError as e:
+        logger.error("[proxy] courses 连接失败: %s", e)
+        return web.json_response([], status=503)
 
 
 async def handle_mode(request: web.Request) -> web.Response:
@@ -106,6 +179,32 @@ async def handle_course_select(request: web.Request) -> web.Response:
     })
 
 
+async def handle_lecture_start(request: web.Request) -> web.Response:
+    """原子编排讲课启动：转发到 moss() 内部桥接。"""
+    data = await request.json()
+    course = (data.get("course") or "").strip()
+    if not course:
+        return web.json_response({"error": "course is required"}, status=400)
+
+    logger.info("[proxy] 转发 lecture_start → 内部桥接, course=%s", course)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{INTERNAL_BRIDGE}/_internal/lecture/start",
+                json={"course": course},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                result = await resp.json()
+                if resp.status != 200:
+                    logger.warning("[proxy] lecture_start 失败: %s", result)
+                    return web.json_response(result, status=502)
+                logger.info("[proxy] lecture_start 成功: %s", result)
+                return web.json_response(result)
+    except aiohttp.ClientError as e:
+        logger.error("[proxy] lecture_start 连接失败: %s", e)
+        return web.json_response({"error": "内部桥接不可用"}, status=503)
+
+
 async def handle_cmd(request: web.Request) -> web.Response:
     data = await request.json()
     cmd = data.get("cmd", "")
@@ -118,6 +217,7 @@ def create_app() -> web.Application:
     app = web.Application()
     app.router.add_static("/static/", path=str(STATIC_DIR), name="static")
     app.router.add_get("/", lambda r: web.FileResponse(STATIC_DIR / "prepareL0.html"))
+    app.router.add_get("/lecture", lambda r: web.FileResponse(STATIC_DIR / "teachingL0.html"))
     app.router.add_post("/api/state", handle_state)
     app.router.add_post("/api/courses", handle_courses)
     app.router.add_post("/api/mode", handle_mode)
@@ -125,6 +225,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/cmd", handle_cmd)
     app.router.add_post("/api/chat", handle_chat)
     app.router.add_get("/api/chat/stream", handle_chat_stream)
+    app.router.add_get("/api/subtitle/stream", handle_subtitle_stream)
+    app.router.add_get("/api/danmaku/stream", handle_danmaku_stream)
+    app.router.add_post("/api/lecture/start", handle_lecture_start)
     return app
 
 

@@ -1,0 +1,3 @@
+# dump from `ghoshell_moss.core.speech.subtitle_config:SubtitleTopicConfig` 
+enable_topic: false
+topic_path: moshi/subtitle

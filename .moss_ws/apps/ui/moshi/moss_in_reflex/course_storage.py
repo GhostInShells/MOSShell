@@ -119,7 +119,9 @@ course: 本地课程资源存储
         if "格式" in q or "format" in q or "字段" in q:
             return (
                 "章节 JSON 格式: {version, sub_title, main_text, annotations, "
-                "appreciation, images (locator 列表)}"
+                "appreciation, images (locator 列表), "
+                "speaker_notes: {talking_points: [{id, text, status}], "
+                "transitions: [...], key_data: [...], estimated_duration: int}}"
             )
         if "查询" in q or "query" in q:
             return "query 支持 keyword 匹配课程 title，大小写不敏感。不传 query 列出全部课程。"

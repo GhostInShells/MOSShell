@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Optional, Callable, Coroutine
 
 import numpy as np
@@ -28,6 +29,7 @@ class TTSSpeechStream(SpeechStream):
         player: StreamAudioPlayer,
         tts_batch: TTSBatch,
         logger: LoggerItf,
+        subtitle_callback: Callable[[str, bool], None] | None = None,
     ):
         batch_id = tts_batch.batch_id()
         super().__init__(id=batch_id)
@@ -50,9 +52,34 @@ class TTSSpeechStream(SpeechStream):
         self._has_audio_data = False
         self._log_prefix = "[TTSSpeechStream id=%s] " % batch_id
 
+        # ── 句级字幕 ──
+        self._batch_id = batch_id
+        self._subtitle_callback = subtitle_callback
+        self._subtitle_buffer = ""       # 累积文本，按标点切句
+        self._subtitle_queue: list[str] = []  # 待回调的句子
+
     def _buffer(self, text: str) -> None:
         self._text_buffer += text
         self._tts_batch.feed(text)
+
+        # 句级字幕：累积文本，按标点切句入队
+        if self._subtitle_callback is not None:
+            self._subtitle_buffer += text
+            while True:
+                match = re.search(r'[。！？；\n]', self._subtitle_buffer)
+                if not match:
+                    break
+                idx = match.end()
+                sentence = self._subtitle_buffer[:idx].strip()
+                self._subtitle_buffer = self._subtitle_buffer[idx:]
+                if sentence:
+                    self._subtitle_queue.append(sentence)
+
+    def _flush_subtitle(self) -> None:
+        """将 subtitle buffer 中剩余文本作为最后一句推入队列。"""
+        if self._subtitle_buffer.strip():
+            self._subtitle_queue.append(self._subtitle_buffer.strip())
+            self._subtitle_buffer = ""
 
     def _commit(self) -> None:
         self._tts_batch.commit()
@@ -94,7 +121,6 @@ class TTSSpeechStream(SpeechStream):
                 await self.start_synthesis()
             self.logger.debug("%s start new audio playing", self._log_prefix)
             async for item in self._tts_batch.items():
-                # 将 buffer 的内容
                 data = item["audio"]
                 self._player.add(
                     data,
@@ -102,6 +128,19 @@ class TTSSpeechStream(SpeechStream):
                     audio_type=self._audio_type,
                     rate=self._sample_rate,
                 )
+
+                # 句级字幕：每帧音频对应一句字幕
+                if self._subtitle_callback is not None:
+                    if self._subtitle_queue:
+                        text = self._subtitle_queue.pop(0)
+                        self._subtitle_callback(text, False, self._batch_id)
+                    elif self._subtitle_buffer.strip():
+                        # 队列空但 buffer 有余留（标点未触发切句）
+                        self._flush_subtitle()
+                        if self._subtitle_queue:
+                            text = self._subtitle_queue.pop(0)
+                            self._subtitle_callback(text, False, self._batch_id)
+
                 await asyncio.sleep(0)
                 self.logger.debug("%s add audio %d bytes", self._log_prefix, len(data))
             await self._player.wait_play_done()
@@ -110,6 +149,19 @@ class TTSSpeechStream(SpeechStream):
         except Exception as e:
             self.logger.exception("%s play failed: %s", self._log_prefix, e)
         finally:
+            # 句级字幕：flush 所有剩余 + 发送 final
+            if self._subtitle_callback is not None:
+                self._flush_subtitle()
+                while self._subtitle_queue:
+                    text = self._subtitle_queue.pop(0)
+                    try:
+                        self._subtitle_callback(text, False, self._batch_id)
+                    except Exception:
+                        pass
+                try:
+                    self._subtitle_callback("", True, self._batch_id)
+                except Exception:
+                    pass
             self._play_done_event.set()
             # 冗余的 clear.
             await self._player.clear()
@@ -149,6 +201,7 @@ class BaseTTSSpeech(TTSSpeech):
         player: StreamAudioPlayer,
         tts: TTS,
         logger: Optional[LoggerItf] = None,
+        subtitle_callback: Callable[[str, bool], None] | None = None,
     ):
         self.logger = logger or logging.getLogger("moss")
         self._player = player
@@ -161,12 +214,20 @@ class BaseTTSSpeech(TTSSpeech):
         self._started = False
         self._closing = False
         self._closed_event = ThreadSafeEvent()
+        self._subtitle_callback = subtitle_callback
 
     def tts(self) -> TTS:
         return self._tts
 
     def player(self) -> StreamAudioPlayer:
         return self._player
+
+    def set_subtitle_callback(self, callback: Callable[[str, bool], None] | None) -> None:
+        """注入句级字幕回调，所有后续 new_stream 创建的流都会收到回调。
+
+        可在运行时动态设置。讲课场景注入，非讲课场景设为 None。
+        """
+        self._subtitle_callback = callback
 
     def new_stream(self, *, batch_id: Optional[str] = None) -> SpeechStream:
         batch_id = batch_id or unique_id()
@@ -182,6 +243,7 @@ class BaseTTSSpeech(TTSSpeech):
             player=self._player,
             tts_batch=batch,
             logger=self.logger,
+            subtitle_callback=self._subtitle_callback,
         )
         return stream
 
