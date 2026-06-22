@@ -57,7 +57,7 @@ JetArm 是幻尔的6自由度机械臂实现.
 然后进入 `ros2/jetarm_ws` 目录:
 
 ```bash
-cd jetarm_ws
+cd MOSShell/src/ghoshell_moss_contrib/jetarm_ws
 ```
 
 由于需要依赖 ghoshell 下的 ghoshell-moss 等库 (jetarm ws 依赖 ghoshell-moss),
@@ -160,11 +160,3 @@ ros2 action list  #  查看存在的轨迹 action.
 机器人所有的能力预计用 `jetarm_channel` 对外提供, 需要在运行 `jetarm_control` 的基础上, 运行:
 
 `ros2 run jetarm_channel jetarm_control.node.py` 暂时还没有专门实现 launch, 用脚本测试.
-
-启动后, channel 可以直接用 python 调试. 调试前最好使用 ghoshell 库本身. 步骤如下:
-
-1. 用某个 ssh 进入 jetson 上 ghoshell 的目录, 运行 `uv venv` 和 `source .venv/bin/activate` 等进入环境.
-1. `which python` 查看 python 是否正确.
-1. 在 jetarm channel 启动的前提下, 运行 `python examples/jetarm_demo/connect_pychannel_with_rcply.py`, 检查 channel
-   通讯.
-1. 运行 `python examples/jetarm_demo/jetarm_agent.py` 可以启动连接到 jetarm 的 agent
