@@ -41,7 +41,9 @@ Mindflow 架构设计. 解决 感知/执行/思考 三循环的全双工状态�
 # 不过不建议用多线程做隔离, 最好在实现底层用多进程模型隔离.
 
 __all__ = [
-    'Priority', 'SignalName', 'Signal', 'SignalMeta', 'InputSignal', 'Impulse',
+    'Priority',
+    'SignalName', 'Signal', 'SignalMeta', 'InputSignal', 'SignalSchema',
+    'Impulse',
     'Flag',
     'Logos', 'Moment', 'Reaction',
     'Action', 'Articulator',
@@ -200,12 +202,36 @@ class Signal(BaseModel):
         return f"<Signal id={self.id} trace={self.trace_id} name={self.name}>"
 
 
+class SignalSchema(BaseModel):
+    name: str = Field(
+        description="signal name"
+    )
+    description: str = Field(
+        description="signal description"
+    )
+    default_priority: int = Field(
+        description="signal default priority"
+    )
+    metadata_schema: dict[str, Any] = Field(
+        description="json schema of the signal meta data"
+    )
+
+
 class SignalMeta(BaseModel, ABC):
     """
     定义一个 Signal 的补充协议 (围绕 metadata), 用于在环境中被发现, 从而可以做到自解释.
     所有字段应该都是支持序列化的, 否则会在传输时报错.
     同时 Pydantic BaseModel 定义的 Signal Meta 可以作为协议被发现, 提供 metadata 的 json schema 协议.
     """
+
+    @classmethod
+    def to_signal_schema(cls) -> SignalSchema:
+        return SignalSchema(
+            name=cls.signal_name(),
+            description=cls.__doc__ or '',
+            default_priority=cls.priority(),
+            metadata_schema=cls.model_json_schema(),
+        )
 
     @classmethod
     @abstractmethod

@@ -11,10 +11,11 @@ Follows the same default-name pattern as TopicModel / SignalMeta / ConfigType.
 from abc import ABC, abstractmethod
 from typing import TypeVar, Generic
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 __all__ = [
     "ParameterModel",
+    "ParameterSchema",
     "Parameter",
     "ParameterStore",
     "VersionConflict",
@@ -22,6 +23,21 @@ __all__ = [
 ]
 
 T_PARAM = TypeVar("T_PARAM", bound="ParameterModel")
+
+
+class ParameterSchema(BaseModel):
+    name: str = Field(
+        description="parameter name",
+    )
+    description: str = Field(
+        description="parameter description",
+    )
+    json_schema: dict = Field(
+        description="parameter json schema",
+    )
+    default: dict = Field(
+        description="parameter default value",
+    )
 
 
 class ParameterModel(BaseModel, ABC):
@@ -57,6 +73,15 @@ class ParameterModel(BaseModel, ABC):
     def param_default(cls) -> "ParameterModel":
         """Zero-value — returned by get() when key does not exist."""
         pass
+
+    @classmethod
+    def to_parameter_schema(cls) -> ParameterSchema:
+        return ParameterSchema(
+            name=cls.param_name(),
+            description=cls.__doc__ or '',
+            json_schema=cls.model_json_schema(),
+            default=cls.param_default().model_dump(exclude_none=True),
+        )
 
 
 class VersionConflict(Exception):
@@ -138,10 +163,10 @@ class ParameterStore(ABC):
 
     @abstractmethod
     def declare(
-        self,
-        model_type: type[T_PARAM],
-        *,
-        key: str | None = None,
+            self,
+            model_type: type[T_PARAM],
+            *,
+            key: str | None = None,
     ) -> Parameter[T_PARAM]:
         """
         Declare a parameter handle.  Key defaults to model_type.param_name().
