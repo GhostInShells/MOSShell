@@ -398,17 +398,7 @@ class HostMode(ABC):
         ...
 
     def cells_discover_paths(self) -> list[Path]:
-        result = []
-        for relative_path in self.meta.cell_paths:
-            cell_path = self.env.project_path / relative_path
-            if cell_path.exists():
-                result.append(cell_path.absolute())
-
-        for relative_path in self.meta.workspace_cell_paths:
-            cell_path = self.env.workspace_path / relative_path
-            if cell_path.exists():
-                result.append(cell_path.absolute())
-        return result
+        return self.meta.cell_dirs(self.env)
 
 
 _project: 'Project | None' = None
