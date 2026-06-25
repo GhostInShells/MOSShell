@@ -172,7 +172,7 @@ class AppStoreChannelState(ChannelState):
                 channels[app.fullname] = exists
                 result[proxy_name] = exists
                 continue
-            channel_proxy = self._matrix.cell_channel_proxy(
+            channel_proxy = self._matrix.channel_proxy(
                 address=app.address,
                 name=proxy_name,
                 description=app.description,

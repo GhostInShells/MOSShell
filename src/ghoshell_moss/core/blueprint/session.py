@@ -4,7 +4,7 @@ from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
+from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignalMeta
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
 from ghoshell_moss.message import Message
@@ -12,26 +12,6 @@ from pydantic import BaseModel, Field
 from PIL.Image import Image
 
 Role = Literal['system', 'logos', 'log', 'error', 'task']
-
-
-class SessionRecord(BaseModel):
-    """scope 级 JSONL 索引行 — append-only, 不可变."""
-    session_id: str = Field(description="session uuid")
-    created_at: str = Field(description="ISO 8601 creation timestamp")
-
-
-class SessionMetadata(BaseModel):
-    """session 运行时现场记录 — matrix (_is_main) 写，所有 cell 读."""
-    session_id: str = Field(description="session uuid")
-    session_scope: str = Field(description="认知隔离 scope")
-    mode_name: str = Field(description="当前 mode 名称")
-    ghost_name: str = Field(description="ghost 名称，'None' 表示无 ghost")
-    host_cell_address: str = Field(description="主节点 cell address")
-    host_pid: int = Field(description="host 进程 PID")
-    created_at: str = Field(description="ISO 8601 creation timestamp")
-    title: str = Field(default="", description="human-readable title")
-    description: str = Field(default="", description="human-readable description")
-    updated_at: str = Field(default="", description="ISO 8601 last modification time")
 
 
 class OutputItem(BaseModel):
@@ -171,9 +151,6 @@ class Session(ABC):
       - file: 基于 Session 级别的文件夹, 可以做文件级别读写通讯.
       - stream: 字节流 pub/sub, 适合 logos 等实时流式数据, 可以自定义协议. 原则上是单一有序发布, 多端接收.
       - topic service: 基于可用的 Topic 强类型广播协议通讯. 是原子化的 n * m  广播总线.
-
-    todo:
-        1. 实现可注册的基于 key 的函数. actor 协议.
     """
 
     LOGOS_KEY = 'logos'
@@ -183,7 +160,8 @@ class Session(ABC):
     @abstractmethod
     def session_scope(self) -> str:
         """
-        所属的会话 scope
+        所属的会话 scope, 是一个可重入的组合状态.
+        基本逻辑是 mode_{mode}-ghost_{ghost}-network_{network}-scope_{scope}
         """
         pass
 
@@ -213,7 +191,7 @@ class Session(ABC):
         """
         easy way to add a default input signal to the Mindflow
         """
-        meta = meta or InputSignal()
+        meta = meta or InputSignalMeta()
         signal = meta.to_signal(
             *values,
             description=description,
@@ -361,50 +339,23 @@ class Session(ABC):
 
     @property
     @abstractmethod
-    def sessions_root_storage(self) -> Storage:
+    def storage(self) -> Storage:
         """
-        所有历史 sessions 所在的持久化 storage.
+        session scope 专属的 storage.
+        需要的话可以将文件作为通讯方式. 只对 project 内部有效.
+        约定在 [ws]/runtime/sessions/[session-scope] 路径下
         """
         pass
 
     @property
     @abstractmethod
-    def sessions_tmp_root_storage(self) -> Storage:
-        """
-        所有 sessions 临时存储路径的鹅共用 Storage.
-        """
-        pass
-
-    @property
-    def scope_storage(self) -> Storage:
-        """
-        Session scope 级别的持久化 Storage.
-        """
-        return self.sessions_root_storage.sub_storage(f"scope-{self.session_scope}")
-
-    @property
-    def storage(self) -> Storage:
-        """
-        session id 专属的 storage.
-        需要的话可以将文件作为通讯方式.
-        """
-        return self.scope_storage.sub_storage(f"session-{self.session_id}")
-
-    @property
-    def meta(self) -> "SessionMetadata | None":
-        """
-        session 运行时现场元信息，从 meta.yaml 加载。
-        只读——写入由 matrix (_is_main) 在 session 创建时完成。
-        """
-        return self.storage.read_yaml("meta", SessionMetadata)
-
-    @property
     def tmp_storage(self) -> Storage:
         """
-        Session 级别的临时文件区.
+        Session scope 级别的临时文件区.
         应该在启动和关闭时检查清理.
+        约定在 [ws]/runtime/tmp/session-[session-scope] 路径下.
         """
-        return self.sessions_tmp_root_storage.sub_storage(f"{self.session_scope}-{self.session_id}")
+        pass
 
     # ── cache ──
 

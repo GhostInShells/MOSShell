@@ -17,7 +17,7 @@ from typing import Literal, Optional
 from ghoshell_moss.core.concepts.channel import Channel, ChannelName, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, Observe
 from ghoshell_moss.core.blueprint.states_channel import new_stateful_channel_from_main, ChannelState
-from ghoshell_moss.core.blueprint.matrix import Matrix, ScopeKey
+from ghoshell_moss.core.blueprint.matrix import Matrix, RuntimeScopeKey
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore, YamlConfigStore
 from ghoshell_moss.message import Message, Text, Base64Image, unique_id
 from ghoshell_container import IoCContainer
@@ -481,7 +481,7 @@ class MCPHubChannel(Channel):
         self,
         name: str = 'mcp',
         description: str = '',
-        scopes: list[ScopeKey] | None = None,
+        scopes: list[RuntimeScopeKey] | None = None,
         allow_model_config: bool = False,
     ):
         self._name = name
@@ -503,7 +503,7 @@ class MCPHubChannel(Channel):
         matrix = container.force_fetch(Matrix)
 
         if self._scopes:
-            storage = matrix.get_scoped_storage(*self._scopes)
+            storage = matrix.get_runtime_scope_storage(*self._scopes)
             config_store = YamlConfigStore(storage)
             # 首次创建时从 workspace 预设合并，确保 scoped 配置包含全局预设的 server
             workspace_store = matrix.configs
@@ -532,7 +532,7 @@ def build_mcp_hub_channel(
     matrix: Matrix,
     name: str = 'mcp',
     description: str = '',
-    scopes: list[ScopeKey] | None = None,
+    scopes: list[RuntimeScopeKey] | None = None,
     allow_model_config: bool = False,
 ) -> Channel:
     """构建 MCP Hub Channel 的工厂函数。
@@ -544,7 +544,7 @@ def build_mcp_hub_channel(
     :param allow_model_config: 是否允许模型动态注册/移除 server
     """
     if scopes:
-        storage = matrix.get_scoped_storage(*scopes)
+        storage = matrix.get_runtime_scope_storage(*scopes)
         config_store = YamlConfigStore(storage)
         workspace_store = matrix.configs
         try:

@@ -25,6 +25,7 @@ from typer import Typer
 __all__ = ["TyperAppController", "TyperAppCompleter", "main"]
 
 
+# todo: 要重做.
 class TyperAppCompleter(Completer):
     """
     基于 Typer/Click 树的自动补全器。
@@ -195,7 +196,7 @@ class TyperAppController:
 
         try:
             # 注入环境变量，确保子进程环境一致
-            child_env = self.env.dump_moss_env(for_child_process=True) if self.env else None
+            child_env = self.env.dump_cell_env(for_child_process=True) if self.env else None
             subprocess.run(cmd_list, check=False, env=child_env)
         except KeyboardInterrupt:
             self.console.print(Text("\n[Aborted by User]", style="bold red"))
@@ -248,7 +249,7 @@ class TyperAppController:
 
         # 新增环境状态看板
         if self.env:
-            status_table = f"[dim]Mode:[/] [cyan]{self.env.moss_mode_name}[/] | [dim]Scope:[/] [cyan]{self.env.session_scope}[/]"
+            status_table = f"[dim]Mode:[/] [cyan]{self.env.mode_name}[/] | [dim]Scope:[/] [cyan]{self.env.network_scope}[/]"
             self.console.print(status_table, justify="center")
 
         self.console.print(
@@ -293,7 +294,7 @@ def interactive_config(host: Host, console: Console, current_mode: str | None, c
         mode_completer = WordCompleter(list(all_modes.keys()), ignore_case=True)
 
         # 交互输入
-        default_mode = host.env.moss_mode_name
+        default_mode = host.env.mode_name
         current_mode = prompt([
             ('class:question', "❯ Select Mode "),
             ('', f"(default: {default_mode}): ")
@@ -304,7 +305,7 @@ def interactive_config(host: Host, console: Console, current_mode: str | None, c
         console.print(Rule(title="Step 2: Define Session Scope", style="yellow"))
         console.print(f"[dim]Scope determines the isolation boundary for your session data.[/]")
 
-        default_scope = host.env.session_scope
+        default_scope = host.env.network_scope
         current_scope = prompt([
             ('class:question', "❯ Enter Session Scope "),
             ('', f"(default: {default_scope}): ")

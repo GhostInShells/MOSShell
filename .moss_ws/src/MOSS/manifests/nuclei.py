@@ -13,7 +13,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     NucleusMeta,
     Nucleus,
     SignalMeta,
-    InputSignal,
+    InputSignalMeta,
 )
 from ghoshell_container import IoCContainer
 
@@ -28,7 +28,7 @@ class ExampleNucleusMeta(NucleusMeta):
         return "An example nucleus factory for manifest discovery testing"
 
     def signals(self) -> list[type[SignalMeta]]:
-        return [InputSignal]
+        return [InputSignalMeta]
 
     def factory(self, container: IoCContainer) -> Nucleus:
         raise NotImplementedError("Example stub — not intended for runtime use")

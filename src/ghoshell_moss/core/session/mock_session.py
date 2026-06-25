@@ -111,7 +111,7 @@ class MockSession(Session):
         self.stream_pubs: dict[str, list[bytes]] = {}
 
     @property
-    def sessions_root_storage(self) -> Storage:
+    def sessions_home(self) -> Storage:
         return self._session_root_storage
 
     @property

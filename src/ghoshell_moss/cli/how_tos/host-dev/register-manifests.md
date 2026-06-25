@@ -113,8 +113,9 @@ tts_override = TTSManagerConfig(default_speaker="大壹")
 NucleusMeta 是生产感知核（Nucleus）的工厂。放在 `MOSS/manifests/nuclei.py`：
 
 ```python
-from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, Nucleus, InputSignal
+from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, Nucleus, InputSignalMeta
 from ghoshell_container import IoCContainer
+
 
 class MyNucleusMeta(NucleusMeta):
     def name(self) -> str:
@@ -124,10 +125,11 @@ class MyNucleusMeta(NucleusMeta):
         return "描述这个感知核做什么"
 
     def signals(self) -> list[type[SignalMeta]]:
-        return [InputSignal]
+        return [InputSignalMeta]
 
     def factory(self, container: IoCContainer) -> Nucleus:
         return MyNucleus(...)
+
 
 my_nucleus_factory = MyNucleusMeta()
 ```

@@ -151,7 +151,7 @@ from ghoshell_moss.channels.mcp_hub import MCPHubConfig
 ```python
 def _load_config(self) -> MCPHubConfig | None:
     if self._scopes:
-        storage = self._matrix.get_scoped_storage(*self._scopes)
+        storage = self._matrix.get_runtime_scope_storage(*self._scopes)
         return storage.read_yaml("mcp_hub", MCPHubConfig)  # YAML 不存在 → None
     else:
         try:
@@ -390,7 +390,7 @@ def _load_config(self) -> MCPHubConfig:
 
 ```python
 if scopes:
-    store = YamlConfigStore(matrix.get_scoped_storage(*scopes))
+    store = YamlConfigStore(matrix.get_runtime_scope_storage(*scopes))
     # merge workspace presets on first creation
 else:
     store = matrix.configs()

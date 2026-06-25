@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 __all__ = ['FractalHub', 'FractalCellProvider']
 
+# todo: 在 Network 实现后, Fractal 打算完全放弃了. 暂时先不动.
 
 class FractalHub(ABC):
     """

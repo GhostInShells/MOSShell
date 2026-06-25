@@ -8,13 +8,13 @@ from ghoshell_container import IoCContainer
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.mindflow import (
-    Nucleus, Signal, Impulse, Priority, SignalMeta, NucleusMeta, InputSignal,
+    Nucleus, Signal, Impulse, Priority, SignalMeta, NucleusMeta, InputSignalMeta,
 )
 
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 import threading
 
-__all__ = ["InputSignalNucleus", 'InputSignal', 'InputSignalNucleusMeta']
+__all__ = ["InputSignalNucleus", 'InputSignalMeta', 'InputSignalNucleusMeta']
 
 
 class InputSignalNucleus(Nucleus):
@@ -40,7 +40,7 @@ class InputSignalNucleus(Nucleus):
     ):
         self._name = name
         self._description = description
-        self._target_signal = InputSignal.signal_name()
+        self._target_signal = InputSignalMeta.signal_name()
         self._suppress_seconds = suppress_seconds
         self._buffer_size = buffer_size
         self._default_prompt = default_prompt
@@ -196,7 +196,7 @@ class InputSignalNucleusMeta(NucleusMeta):
     ):
         self._name = name
         self._description = description
-        self._target_signal = InputSignal.signal_name()
+        self._target_signal = InputSignalMeta.signal_name()
         self._suppress_seconds = suppress_seconds
         self._buffer_size = buffer_size
         self._default_prompt = default_prompt
@@ -209,7 +209,7 @@ class InputSignalNucleusMeta(NucleusMeta):
         return self._description
 
     def signals(self) -> Iterable[type[SignalMeta]]:
-        yield InputSignal
+        yield InputSignalMeta
 
     def factory(self, container: IoCContainer) -> Nucleus:
         logger = container.get(LoggerItf)

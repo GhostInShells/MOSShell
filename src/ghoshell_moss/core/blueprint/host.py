@@ -4,21 +4,19 @@ from ghoshell_container import IoCContainer
 from typing_extensions import Self, TypedDict
 from abc import ABC, abstractmethod
 from ghoshell_moss.core.concepts.shell import MOSShell
-from ghoshell_moss.core.blueprint.manifests import Manifests
-from ghoshell_moss.core.blueprint.matrix import Matrix, Mode
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.mindflow import Mindflow
+from ghoshell_moss.core.blueprint.project import Project, HostMode
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
-from ghoshell_moss.core.blueprint.fractal import FractalHub, FractalCellProvider
-from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellManifest, CellRegistry
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts import SystemPrompter
 import logging
 
 __all__ = [
-    'MossRuntime', 'MossHost', 'Mode',
+    'MossRuntime', 'MossHost',
     'MossSystemPrompter', 'GhostRuntime', 'LoopHealth', 'LoopStatus',
 ]
 
@@ -89,9 +87,10 @@ class MossRuntime(ABC):
         pass
 
     @property
-    def mode(self) -> Mode:
+    @abstractmethod
+    def mode(self) -> HostMode:
         """当前 runtime 所处的模式. """
-        return self.matrix.mode
+        pass
 
     @abstractmethod
     def moss_instruction(self, with_static: bool = True) -> str:
@@ -185,9 +184,9 @@ class MossRuntime(ABC):
     def session(self) -> Session:
         return self.matrix.session
 
-    def get_fractal_hub(self) -> 'FractalHub | None':
-        # default convention to get fractal hub
-        return self.matrix.container.get(FractalHub)
+    @property
+    def project(self) -> Project:
+        return self.matrix.project
 
     @property
     @abstractmethod
@@ -369,16 +368,6 @@ class MossHost(ABC):
     https://github.com/thirdgerb/chatbot/blob/dba62e1337559c327d27ec4300366cd890a18ebc/src/Host/IHost.php#L4
     """
 
-    @abstractmethod
-    def name(self) -> str:
-        """返回整个环境自定义的名字"""
-        pass
-
-    @abstractmethod
-    def description(self) -> str:
-        """返回整个环境默认的自解释"""
-        pass
-
     @property
     @abstractmethod
     def env(self) -> Environment:
@@ -394,52 +383,13 @@ class MossHost(ABC):
         async with MossHost.discover().run() as moss:
             ...
         """
-        from ghoshell_moss.facade import discover_host
+        from ghoshell_moss.factory import create_host, create_project
+        env = env or Environment()
+        env.bootstrap()
+        project = create_project(env)
+        project.bootstrap()
         # 使用反范式定义项目的默认约定.
-        return discover_host(env)
-
-    @property
-    @abstractmethod
-    def manifests(self) -> Manifests:
-        """
-        返回当前环境下发现的 Matrix 实例.
-        """
-        pass
-
-    @property
-    @abstractmethod
-    def mode(self) -> Mode:
-        """
-        current mode.
-        """
-        pass
-
-    @abstractmethod
-    def all_modes(self) -> dict[str, Mode]:
-        """
-        当前环境中可用的运行时模式, 用于管理不同模式下的差异化资源.
-        比如 mac 模式, 机器人模式, 就可以完全隔离开.
-        """
-        pass
-
-    @abstractmethod
-    def cell_registry(self) -> CellRegistry:
-        """
-        基于环境发现得到的所有 cells.
-        """
-        pass
-
-    @abstractmethod
-    def matrix(self, cell: MossCell | None = None) -> Matrix:
-        """
-        创建当前环境下发现的 Matrix 实例.
-        可以直接用于开发一个节点.
-        :param cell: 如果没有定义 Cell, 会基于环境发现的逻辑创建一个.
-        >>> async def main(moss: MossHost):
-        >>>     async with moss.matrix():
-        >>>         ...
-        """
-        pass
+        return create_host(env, project)
 
     @abstractmethod
     def run(
@@ -458,41 +408,10 @@ class MossHost(ABC):
         """
         pass
 
-    async def provide_moss_as_fractal(
+    def run_ghost(
             self,
-            provider: FractalCellProvider | None,
+            ghost: str | GhostMeta,
             *,
-            as_cell_name: str | None = None,
-            description: str | None = None,
-            on_proxy_event: Callable[[Any], None] | None = None,
-            on_provider_created: Callable[[FractalCellProvider], None] | None = None,
-    ) -> None:
-        """
-        将当前的 moss runtime 作为一个分形节点提供给远程 moss.
-        """
-        # 协议需要业务逻辑自行判断.
-        # 如果分形逻辑开箱自带的话, 两个以上的节点互联必然造成身份混乱.
-        # 获取当前 runtime.
-        runtime = self.run(
-            # shell 本身就是主节点 channel runtime 的自解释封装.
-            # 所以仍然可以运行 shell, 它不提供 logos 控制根 channel 即可.
-            run_shell=True,
-            description=description,
-        )
-        # 这里的实现作为 code as prompt 的一部分, 解释自身的使用逻辑.
-        # 复杂的实现应该在理解运行逻辑基础上, 自行定义.
-        async with runtime:
-            # 启动 runtime, 但不注册原语.
-            # 这样环境发现的能力都启动了, 但是屏蔽到原语级别功能.
-            if provider is None:
-                provider = runtime.matrix.container.get(FractalCellProvider)
-                if provider is None:
-                    raise NotImplementedError(f"Fractal Provider is not implemented in this mode")
-                if on_provider_created:
-                    on_provider_created(provider)
-            async with provider:
-                await provider.provide(
-                    runtime,
-                    as_cell_name=as_cell_name or '',
-                    on_channel_event=on_proxy_event,
-                )
+            run_shell: bool = True,
+    ) -> GhostRuntime:
+        pass

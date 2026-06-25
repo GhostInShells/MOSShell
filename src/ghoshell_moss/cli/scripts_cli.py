@@ -8,6 +8,7 @@ import typer
 from ghoshell_moss.host import Host
 from .utils import console, print_simple_table, print_simple_panel, print_host_mode_info
 
+# todo: 彻底删除, 被吸收到 cells 里.
 script_app = typer.Typer(
     help="One-shot dev-time scripts for debugging and probing the running matrix.",
     no_args_is_help=True,
@@ -127,7 +128,7 @@ def run_script(
         f"[bold blue]Description:[/bold blue] {description}\n"
     )
 
-    env = host.env.dump_moss_env(
+    env = host.env.dump_cell_env(
         cell_address=address,
         for_child_process=True,
         with_os_env=False,

@@ -8,7 +8,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     new_channel,
     CommandUtil,
 )
-from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, InputSignal
+from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, InputSignalMeta
 from ghoshell_moss.message import Message
 
 from image_generator import (
@@ -46,7 +46,7 @@ async def emit_generation_signal(result: GenerationResult) -> None:
         )
 
     async def _closure() -> Signal:
-        return InputSignal().to_signal(
+        return InputSignalMeta().to_signal(
             priority=priority,
             description=description,
             hint=prompt_text,

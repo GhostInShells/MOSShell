@@ -31,7 +31,7 @@ from ghoshell_moss.core.mindflow.command_nucleus import new_command_signal
 from ghoshell_moss.core.mindflow.notify_nucleus import new_notify_signal
 from ghoshell_moss.core.mindflow.silent_nucleus import new_silent_signal
 from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
-from ghoshell_moss.core.blueprint.mindflow import InputSignal
+from ghoshell_moss.core.blueprint.mindflow import InputSignalMeta
 from ghoshell_moss.message import Message
 
 
@@ -62,7 +62,7 @@ def _texts(messages) -> list[str]:
 
 
 def _input_signal(text: str, *, priority: Priority = Priority.NOTICE):
-    return InputSignal().to_signal(
+    return InputSignalMeta().to_signal(
         Message.new().with_content(text),
         priority=priority,
     )

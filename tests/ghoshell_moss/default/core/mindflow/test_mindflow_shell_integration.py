@@ -44,7 +44,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
     Attention,
     ChallengeMode,
     Impulse,
-    InputSignal,
+    InputSignalMeta,
     Priority,
     Mindflow,
 )
@@ -77,7 +77,7 @@ def _build_mindflow() -> BaseMindflow:
 
 
 def _input_signal(text: str, *, priority: Priority = Priority.NOTICE):
-    return InputSignal().to_signal(
+    return InputSignalMeta().to_signal(
         Message.new().with_content(text),
         priority=priority,
     )
@@ -347,7 +347,7 @@ async def test_loop_baseline():
     suite.articulate_func = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignal().to_signal("hello"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("hello"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=1)
 
@@ -451,7 +451,7 @@ async def test_interrupt_signal_stops_running_interpreter():
 
     async with suite:
         # 第一帧: input signal 起 attention, 跑 long task.
-        suite.mindflow.add_signal(InputSignal().to_signal("user_msg"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(long_task_started.wait(), timeout=1)
         # 长任务确实没结束.
@@ -528,7 +528,7 @@ async def test_interrupt_during_articulate_aborts_logos_stream():
     suite.articulate_func = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignal().to_signal("user_msg"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(articulate_started.wait(), timeout=1)
         attention1 = suite.last_attention
@@ -611,7 +611,7 @@ async def test_action_aborted_triggers_shell_clear_cancels_pending():
     suite.articulate_func = articulate
 
     async with suite:
-        suite.mindflow.add_signal(InputSignal().to_signal("user_msg"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         await asyncio.wait_for(long_task_started.wait(), timeout=2)
         assert not long_task_outcome
@@ -719,7 +719,7 @@ async def test_notify_buffer_drains_to_next_attention_percepts():
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
 
         # attention2: 再发一个 input signal.
-        suite.mindflow.add_signal(InputSignal().to_signal("user_second"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_second"))
         await asyncio.wait_for(attention2_articulate_done.wait(), timeout=2)
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=2)
 
@@ -822,7 +822,7 @@ async def test_observe_loop_runs_two_frames_in_one_attention():
     suite._run_action = patched_run_action
 
     async with suite:
-        suite.mindflow.add_signal(InputSignal().to_signal("user_msg"))
+        suite.mindflow.add_signal(InputSignalMeta().to_signal("user_msg"))
         await asyncio.wait_for(suite.attention_started.wait(), timeout=1)
         # 等两帧都跑完 + attention 自然结束.
         await asyncio.wait_for(suite.attention_stopped.wait(), timeout=3)

@@ -4,18 +4,16 @@ from abc import ABC, abstractmethod
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellType, CellNetwork
+from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellType, CellNetwork, CellRegistry
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.manifests import Manifests
+from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.contracts import ConfigStore, Workspace, SystemPrompter, ResourceRegistry, Storage
 from ghoshell_container import IoCContainer
-from pydantic import BaseModel, Field
 from pathlib import Path
 import asyncio
-import frontmatter
 import logging
 
-__all__ = ['Matrix', 'SystemPrompter', 'MatrixLifecycleObject', 'Mode', 'ScopeKey']
+__all__ = ['Matrix', 'SystemPrompter', 'MatrixLifecycleObject', 'RuntimeScopeKey']
 
 INSTANCE = TypeVar('INSTANCE')
 
@@ -32,120 +30,7 @@ class MatrixLifecycleObject(Protocol):
         pass
 
 
-class Mode(BaseModel):
-    """
-    指定的运行模式.
-    用来管理 MOSS Runtime 的运行时可发现资源.
-    不使用 Mode 仍然可以启动 MOSS.
-    """
-
-    name: str = Field(
-        description="模式的名称."
-    )
-
-    instruction: str = Field(
-        default='',
-        description="模式的详细介绍. 也会作为模式的专属 instruction"
-    )
-    ctml_version: str = Field(
-        default='',
-        description='模式选择独立的 ctml version. '
-    )
-
-    description: str = Field(
-        description="模式的一句话简介, 通常是 docstring 的第一句. 也支持独立定义",
-    )
-
-    # --- todo app 体系都要移除 --- #
-    apps: list[str] = Field(
-        default_factory=lambda: ['*/*'],
-        description="允许加载的 apps, 用 `group/name` 或者 `group/*` 的方式定义. 如果为 ['*']  则表示所有 apps 下的都允许加载."
-    )
-    bringup_apps: list[str] = Field(
-        default_factory=list,
-        description="启动时允许自动启动的 apps, 规则和 apps 相同. 默认为空. "
-    )
-
-    include_cells: list[str] = Field(
-        default_factory=lambda: ['*/*'],
-        description="允许通过环境发现的 cells 所处的相对路径. ",
-    )
-    exclude_cells: list[str] = Field(
-        default_factory=list,
-        description="指定排除掉的 cells 相关对路径",
-    )
-    bringup_cells: list[str] = Field(
-        default_factory=list,
-        description="模式启动时, 会自动开启的 cells. "
-    )
-
-    # --- mode 发现路径 --- #
-
-    import_path: str = Field(
-        default="",
-        description="找到模式实例的 python module path, 如果是从 markdown 文件找到的, 则为空."
-    )
-
-    file: str = Field(
-        default="",
-        description="找到模式实例的文件绝对路径. 比如 xxxx/src/MOSS/modes/default/MODE.md "
-    )
-
-    __manifest__: Manifests | None = None
-
-    @classmethod
-    def from_markdown(cls, file: Path, *, mode_name: str = None) -> Self:
-        """
-        from a markdown file discover Mode.
-        """
-        if not file.exists():
-            raise FileNotFoundError(f"{file} not found")
-        post = frontmatter.loads(file.read_text())
-        data = post.metadata
-        docstring = post.content
-        if mode_name is not None and mode_name:
-            data['name'] = mode_name
-        elif 'name' in data:
-            pass
-        else:
-            data['name'] = file.name.split('.', 1)[0]
-
-        if "description" not in data:
-            description = docstring.split("\n", 1)[0]
-            data['description'] = description
-        data['docstring'] = docstring
-        result = cls(**data)
-        result.file = str(file)
-        return result
-
-    def to_markdown(self) -> str:
-        """
-        to markdown format content.
-        """
-        meta_data = self.model_dump(
-            exclude_none=True,
-            exclude_defaults=False,
-            exclude={'import_path', 'file', 'instruction'},
-        )
-        post = frontmatter.Post(content=self.instruction, **meta_data)
-        return frontmatter.dumps(post)
-
-    def with_manifest(self, manifest: Manifests, override: bool = False) -> Self:
-        """
-        define manifest
-        """
-        if override or self.__manifest__ is None:
-            self.__manifest__ = manifest
-        return self
-
-    @property
-    def manifest(self) -> Manifests:
-        if self.__manifest__ is None:
-            self.__manifest__ = Manifests()
-        return self.__manifest__
-
-
-ScopeKey: TypeAlias = Literal['ghost', 'mode', 'session_scope', 'session_id', 'cell']
+RuntimeScopeKey: TypeAlias = Literal['ghost', 'mode', 'network', 'cell']
 
 
 class Matrix(ABC):
@@ -157,30 +42,36 @@ class Matrix(ABC):
     """
 
     @classmethod
-    def discover(cls) -> Self:
+    def discover(
+            cls,
+            *,
+            env: Environment | None = None,
+    ) -> Self:
         """
         约定的环境发现逻辑.
         基于 Matrix 默认实现创建应用, 只需要调用 Matrix.discover() 根据抽象提供的能力即可.
         """
         # moss 架构的默认实现.
         # 这里使用了反范式, discover 包含了默认实现.
-        from ghoshell_moss.facade import discover_host
-        host = discover_host()
-        return host.matrix()
+        from ghoshell_moss.factory import create_matrix, create_project
+        env = env or Environment.discover()
+        # 初始化 env
+        env.bootstrap()
+        project = create_project(env)
+        # 初始化 project.
+        project.bootstrap()
+        return create_matrix(env, project)
 
     @property
     @abstractmethod
     def env(self) -> Environment:
+        """环境"""
         pass
-
-    # --- 自解释信息 --- #
 
     @property
     @abstractmethod
-    def mode(self) -> Mode:
-        """
-        返回当前 MOSS 运行的模式.
-        """
+    def project(self) -> Project:
+        """当前项目所在. """
         pass
 
     # --- cells - Matrix 可以管理多个节点的通讯, 每个节点称之为 Cell --- #
@@ -196,16 +87,24 @@ class Matrix(ABC):
 
     @property
     def parent_cell_address(self) -> str:
-        """启动当亲 Matrix 的父进程 Cell 对应的 Address """
+        """启动当前 Matrix 的父进程 Cell 对应的 Address """
         return self.env.parent_cell_address
 
     # --- 环境通讯总线 --- #
 
     @property
     @abstractmethod
-    def cells(self) -> CellNetwork:
+    def network(self) -> CellNetwork:
         """
         当前通讯网络下 Cells 的发现与管理.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def cells(self) -> CellRegistry:
+        """
+        当前状态的 cells.
         """
         pass
 
@@ -220,6 +119,7 @@ class Matrix(ABC):
 
     # --- channel --- #
 
+    @abstractmethod
     def provide_channel(
             self,
             channel: Channel,
@@ -231,12 +131,10 @@ class Matrix(ABC):
         :param channel: 需要提供到 matrix 体系里的根节点.
         :param bridge_address: 提供时声明通讯时的地址.
         """
-        if bridge_address is None:
-            bridge_address = self.this.bridge_address
-        provider = self.cells.provide(bridge_address, channel)
-        return self.create_task(provider.arun_until_closed(channel))
+        pass
 
-    def cell_channel_proxy(
+    @abstractmethod
+    def channel_proxy(
             self,
             address: str,
             *,
@@ -246,10 +144,6 @@ class Matrix(ABC):
     ) -> ChannelProxy:
         """
         搭建一个 proxy 获取另一个节点里通过 address (通常是 cell address) 提供的 channel. 进行跨网络同构.
-
-        一个节点 provider, 另一个节点 proxy, 就可以形成 channel 基于 matrix 的通讯体系.
-        通常情况下, proxy 只由 Matrix 的 Host 节点管理.
-
         :param address: cell address where providing a channel tree
         :param name: channel name which rewrite the providing channel.
         :param description: channel description which rewrite the providing channel.
@@ -257,21 +151,7 @@ class Matrix(ABC):
 
         :raise RuntimeError: if the current cell is not the main cell of the matrix runtime.
         """
-        # 通常只允许 Matrix 里的 host cell 使用 proxy 连接 channel. 因为 channel 是 matrix 内唯一的.
-        # 多个 proxy 连接会导致 channel 频繁地重启.
-        # 仍然允许用这个方式进行测试.
-        # Matrix 底层有跨环境的通讯总线, 比如 redis / ws / mqtt 等等. 默认的 Host 使用的 zenoh 来组网.
-        # 进入这个网络后, 可以通过 address 的方式来组建 proxy => provider 的通讯.
-        if only_allowed_in_host_cell and self.this.type != CellType.host.value:
-            raise RuntimeError(f"Current cell {self.this.address} is not host cell.")
-        # 必须是为已经
-        cell = self.cells.cached_cells().get(address)
-        if cell is None:
-            raise LookupError(f"Cell {address} is not found")
-        bridge_address = self.this.bridge_address
-        name = name or cell.normalized_name()
-        description = description or cell.meta.description
-        return self.cells.create_proxy(bridge_address, name, description)
+        pass
 
     # --- Matrix 提供的文件存储区汇总 --- #
 
@@ -280,7 +160,7 @@ class Matrix(ABC):
         """
         workspace 管理.
         """
-        return self.env.workspace
+        return self.project.workspace
 
     @property
     @abstractmethod
@@ -293,36 +173,48 @@ class Matrix(ABC):
         pass
 
     @property
-    def ghosts_storage(self) -> Storage:
+    @abstractmethod
+    def project_root(self) -> Storage:
+        """
+        项目的 storage.
+        """
+        pass
+
+    @property
+    def ghosts_home_root(self) -> Storage:
         """
         workspace 里所有 ghosts 持久化存储所在的空间.
         """
-        return self.workspace.root().sub_storage('ghosts')
+        return self.workspace.root().sub_storage(self.project.ghosts_home)
 
     @property
-    def modes_storage(self) -> Storage:
+    def modes_home_root(self) -> Storage:
         """
         workspace 里所有 moss 模式的持久化存储空间.
         """
-        return self.workspace.root().sub_storage('modes')
+        return self.workspace.root().sub_storage(self.project.modes_home)
 
-    def get_ghost_storage(self, ghost_name: str) -> Storage:
+    def get_ghost_home(self, ghost_name: str) -> Storage:
         """不同的 ghost 独享的存储空间. """
-        return self.ghosts_storage.sub_storage(ghost_name)
+        return self.ghosts_home_root.sub_storage(ghost_name)
 
-    def get_modes_storage(self, mode_name: str) -> Storage:
+    def get_mode_home(self, mode_name: str) -> Storage:
         """不同模式独享的存储空间"""
-        return self.modes_storage.sub_storage(mode_name)
+        return self.modes_home_root.sub_storage(mode_name)
 
     @property
     def ghost_home(self) -> Storage:
         """当前 ghost 持久化存储的根目录. """
-        return self.get_ghost_storage(self.ghost_name)
+        return self.get_ghost_home(self.ghost_name)
 
     @property
     def mode_home(self) -> Storage:
         """当前模式持久化存储的根目录. """
-        return self.get_modes_storage(self.mode_name)
+        return self.get_mode_home(self.mode_name)
+
+    @property
+    def network_home(self) -> Storage:
+        return self.workspace.runtime().sub_storage('networks').sub_storage(self.network_name)
 
     def storages(self) -> dict[str, Storage]:
         """
@@ -330,6 +222,8 @@ class Matrix(ABC):
         此处不建议直接使用, 而是提示项目的基础约定.
         """
         return {
+            # project
+            "project": self.project_root,
             # 项目的 workspace.
             'workspace': self.workspace.root(),
             # 运行时文件的目录.
@@ -341,35 +235,32 @@ class Matrix(ABC):
             # 全局资源文件的目录.
             'assets': self.workspace.assets(),
             # 所有的 ghosts 持久存储的目录.
-            'ghosts': self.ghosts_storage,
+            'ghosts': self.ghosts_home_root,
+            # 所有 moss 运行模式的目录.
+            'modes': self.modes_home_root,
             # 当前 ghost 的 home 目录.
             'ghost_home': self.ghost_home,
-            # 所有 moss 运行模式的目录.
-            'modes': self.modes_storage,
             # 当前 moss 运行模式的目录.
             'mode_home': self.mode_home,
-            # 当前 session 的持久化存储目录. 是 session id 级别的.
-            'session': self.session.storage,
+            'network_home': self.network_home,
+            # 当前 session 的持久化存储目录.
+            'session_scope': self.session.storage,
             # cell 独有的 workspace 位置.
             'cell': self.cell_workspace.root(),
-            'cell_runtime': self.cell_workspace.runtime(),
-            'cell_assets': self.cell_workspace.assets(),
-            'cell_logs': self.cell_workspace.logs(),
-            # 所有临时存储空间使用, 都应该基于 tmp
-            'tmp': self.session.tmp_storage
+            # session id (通常是 cell runtime id) 对应的 storage.
+            'tmp': self.session.tmp_storage,
         }
 
-    def scopes(self) -> dict[ScopeKey, str]:
+    def runtime_scopes(self) -> dict[RuntimeScopeKey, str]:
         """返回 Matrix 运行时的维度座标. 用来构建不同的隔离级别. """
         return {
-            'session_id': self.session_id,
-            'session_scope': self.session_scope,
             'mode': self.mode_name,
             'ghost': self.ghost_name,
             'cell': self.this.address,
+            'network': self.network_name,
         }
 
-    def get_scoped_url(self, *scopes: ScopeKey, **kwargs: str) -> str:
+    def get_runtime_url(self, *scopes: RuntimeScopeKey, **kwargs: str) -> str:
         """
         基于作用域生成一个 URL 形式的资源路径.
         可以用这种形式生成字符串唯一 id, 用来管理各种可复用的资源.
@@ -377,7 +268,7 @@ class Matrix(ABC):
         举个例子: get_scoped_url('ghost', 'mode', user=name) 会生成一个 指定Ghost在指定模式下对特定用户 的唯一id,
         配合后缀, 可以提供资源管理的不同隔离级别.
         """
-        scope_values = self.scopes()
+        scope_values = self.runtime_scopes()
         for scope in scopes:
             if scope in scope_values:
                 kwargs[scope] = scope_values[scope]
@@ -387,31 +278,29 @@ class Matrix(ABC):
             result.append(v.strip('/'))
         return '/'.join(result)
 
-    def get_scoped_storage(self, scope: ScopeKey, *scopes: ScopeKey) -> Storage:
+    def get_runtime_scope_storage(self, ns_key: RuntimeScopeKey, *ns_keys: RuntimeScopeKey) -> Storage:
         """
         基于指定的作用域获取一个持久化存储的 Storage 位置. 举例:
         - get_scoped_storage('ghost', 'mode') : 当前 Ghost X MOSS 不同模式独立的存储空间.
         - get_scoped_storage('ghost') : 当前 Ghost 的持久化存储空间..
         - get_scoped_storage('session_id', 'ghost'): 在当前 session id 下, 为当前 ghost 准备的存储空间.
         """
-        if scope == 'ghost':
-            root = self.get_ghost_storage(self.ghost_name)
-        elif scope == 'mode':
-            root = self.get_modes_storage(self.mode_name)
-        elif scope == 'session_id':
-            root = self.session.storage
-        elif scope == 'cell':
+        if ns_key == 'ghost':
+            root = self.ghost_home
+        elif ns_key == 'mode':
+            root = self.mode_home
+        elif ns_key == 'cell':
             root = self.cell_workspace.root()
-        elif scope == 'session_scope':
-            root = self.session.scope_storage
+        elif ns_key == 'network':
+            root = self.network_home
         else:
-            raise KeyError(f"scope {scope} is not supported")
+            raise KeyError(f"scope {ns_key} is not supported")
         storage = root
-        scope_values = self.scopes()
-        for scope in scopes:
-            if scope not in scope_values:
-                raise KeyError(f"scope {scope} not in scopes")
-            sub_storage_path = f"{scope}-{scope_values[scope]}"
+        scope_values = self.runtime_scopes()
+        for ns_key in ns_keys:
+            if ns_key not in scope_values:
+                raise KeyError(f"scope {ns_key} not in scopes")
+            sub_storage_path = f"{ns_key}-{scope_values[ns_key]}"
             storage = storage.sub_storage(sub_storage_path)
         return storage
 
@@ -442,30 +331,10 @@ class Matrix(ABC):
 
     # -- 运行时 API -- #
 
+    @property
+    @abstractmethod
     def resources(self) -> ResourceRegistry:
         """返回 matrix 共享的资源中心. """
-        return self.container.force_fetch(ResourceRegistry)
-
-    @abstractmethod
-    def moss_system_prompter(self) -> SystemPrompter:
-        """
-        moss 全局的 system prompter.
-        matrix 必须完成全局 prompter 的定义, 并注册到 IoC 容器中.
-        """
-        pass
-
-    @abstractmethod
-    def ctml_version(self) -> str:
-        """
-        当前环境定义的 ctml version.
-        """
-        pass
-
-    @abstractmethod
-    def get_ctml_prompt(self, version: str | None = None) -> str:
-        """
-        返回环境中定义的系统提示词.
-        """
         pass
 
     @property
@@ -487,15 +356,6 @@ class Matrix(ABC):
 
     @property
     @abstractmethod
-    def manifests(self) -> Manifests:
-        """
-        运行环境中各种能力的声明.
-        优先走 mode, 其次走全局发现.
-        """
-        pass
-
-    @property
-    @abstractmethod
     def configs(self) -> ConfigStore:
         """
         基于环境发现的配置中心.
@@ -507,7 +367,7 @@ class Matrix(ABC):
     @property
     def mode_name(self) -> str:
         """当前模式的名称. """
-        return self.mode.name
+        return self.env.mode_name
 
     @property
     def ghost_name(self) -> str | Literal['none']:
@@ -517,12 +377,21 @@ class Matrix(ABC):
         return self.env.ghost_name
 
     @property
-    def session_scope(self) -> str:
-        return self.env.session_scope
+    def network_scope(self) -> str:
+        return self.network.scope
+
+    @property
+    def network_name(self) -> str:
+        return self.network.name
 
     @property
     def session_id(self) -> str:
-        return self.env.session_id
+        return self.session.session_id
+
+    @property
+    def session_scope(self) -> str:
+        """session scope 是 mode-ghost-network-scope 的组合. """
+        return self.session.session_scope
 
     # ---- 状态描述 ---- #
 

@@ -1,3 +1,4 @@
+# todo: app 将完全被 cells 体系取代掉.
 # from abc import ABC, abstractmethod
 # from typing import Iterable, Optional
 # from typing_extensions import Self

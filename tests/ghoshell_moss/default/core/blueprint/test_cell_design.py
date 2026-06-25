@@ -3,6 +3,8 @@
 不依赖网络 / Zenoh / 子进程，只验证数据结构与纯函数行为。
 """
 
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -18,13 +20,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellRegistry,
     CellNetwork,
     make_address,
-    split_address,
-    make_default_logger_name,
-    make_bridge_address,
-    split_bridge_address,
     normalize,
-    CellAddress,
-    CellBridgeAddress,
 )
 
 
@@ -35,64 +31,29 @@ from ghoshell_moss.core.blueprint.cell import (
 class TestCellType:
     def test_values(self):
         assert CellType.host == 'host'
-        assert CellType.fractal == 'fractal'
         assert CellType.worker == 'worker'
 
-    def test_no_app_type(self):
-        """app 类型已删除，不再作为框架保留类型."""
-        assert 'app' not in [e.value for e in CellType]
-
-    def test_str_coercion(self):
-        assert CellType('host') == CellType.host
-        assert CellType('worker') == CellType.worker
+    def test_only_host_and_worker(self):
+        vals = {e.value for e in CellType}
+        assert vals == {'host', 'worker'}
 
 
 # ==================================================================
-# make_address / split_address
+# make_address
 # ==================================================================
 
 class TestMakeAddress:
-    def test_basic(self):
+    def test_two_parts(self):
         assert make_address('host', 'default') == 'host/default'
 
-    def test_strips_whitespace(self):
-        assert make_address(' worker ', ' name ') == 'worker/name'
+    def test_variadic(self):
+        assert make_address('a', 'b', 'c') == 'a/b/c'
 
-    def test_rejects_empty_type(self):
-        with pytest.raises(ValueError, match='Invalid address parts'):
-            make_address('', 'name')
+    def test_single_part(self):
+        assert make_address('only') == 'only'
 
-    def test_rejects_empty_name(self):
-        with pytest.raises(ValueError, match='Invalid address parts'):
-            make_address('type', '')
-
-    def test_rejects_slash_in_type(self):
-        with pytest.raises(ValueError, match="must not contain '/'"):
-            make_address('a/b', 'name')
-
-    def test_with_celltype_enum(self):
-        assert make_address(CellType.worker, 'cam') == 'worker/cam'
-
-
-class TestSplitAddress:
-    def test_basic(self):
-        assert split_address('host/default') == ('host', 'default')
-
-    def test_nested_name(self):
-        assert split_address('node/tools/web-fetch') == ('node', 'tools/web-fetch')
-
-    def test_rejects_flat_string(self):
-        with pytest.raises(ValueError, match='Invalid cell address'):
-            split_address('no_slash')
-
-
-# ==================================================================
-# make_bridge_address / split_bridge_address
-# ==================================================================
-
-class TestBridgeAddress:
-    def test_make(self):
-        assert make_bridge_address('worker/cam', 'uid001') == 'worker/cam/uid001'
+    def test_empty_parts(self):
+        assert make_address() == ''
 
 
 # ==================================================================
@@ -100,21 +61,14 @@ class TestBridgeAddress:
 # ==================================================================
 
 class TestNormalize:
-    def test_slashes(self):
+    def test_slashes_to_underscores(self):
         assert normalize('host/default') == 'host_default'
-        assert normalize('node/tools.web-fetch') == 'node_tools_web_fetch'
 
+    def test_backslashes(self):
+        assert normalize(r'host\name') == 'host_name'
 
-# ==================================================================
-# make_default_logger_name
-# ==================================================================
-
-class TestDefaultLoggerName:
-    def test_slashes_to_dots(self):
-        assert make_default_logger_name('host/default') == 'host.default'
-
-    def test_backslashes_to_dots(self):
-        assert make_default_logger_name(r'host\default') == 'host.default'
+    def test_dots_and_dashes(self):
+        assert normalize('node.tools-web') == 'node_tools_web'
 
 
 # ==================================================================
@@ -127,16 +81,24 @@ class TestCellMetadata:
         assert m.type == 'worker'
         assert m.singleton is True
         assert m.description == ''
+        assert m.channel is False
 
-    def test_from_proc_is_worker_non_singleton(self):
+    def test_channel_true(self):
+        m = CellMetadata(name='srv', channel=True)
+        assert m.channel is True
+
+    def test_host_type(self):
+        m = CellMetadata(type='host', name='main')
+        assert m.type == 'host'
+
+    def test_from_proc_returns_worker_non_singleton(self):
         m = CellMetadata.from_proc()
         assert m.type == CellType.worker
         assert m.singleton is False
 
     def test_from_proc_custom_name(self):
-        m = CellMetadata.from_proc(name='my-worker')
-        assert m.name == 'my-worker'
-        assert m.singleton is False
+        m = CellMetadata.from_proc(name='my-cam')
+        assert m.name == 'my-cam'
 
 
 # ==================================================================
@@ -144,20 +106,27 @@ class TestCellMetadata:
 # ==================================================================
 
 class TestCellLauncher:
-    def test_defaults(self):
+    def test_defaults_all_empty(self):
         launcher = CellLauncher()
-        assert launcher.interpreter == 'python'
-        assert launcher.cmd == 'main.py'
-        assert launcher.cwd == './'
+        assert launcher.interpreter == ''
+        assert launcher.cmd == ''
+        assert launcher.cwd == ''
+        assert launcher.arguments == ''
 
-    def test_cwd_path(self):
+    def test_cwd_path_explicit(self):
         launcher = CellLauncher(cwd='subdir')
         assert launcher.cwd_path.name == 'subdir'
 
     def test_cwd_path_empty_defaults_to_cwd(self):
         launcher = CellLauncher(cwd='')
-        import os
-        assert launcher.cwd_path == Path(os.getcwd())
+        assert launcher.cwd_path == Path.cwd()
+
+    def test_new_empty(self):
+        launcher = CellLauncher.new_empty()
+        assert launcher.interpreter == ''
+        assert launcher.cmd == ''
+        assert launcher.cwd == ''
+        assert launcher.arguments == ''
 
     def test_from_proc(self):
         launcher = CellLauncher.from_proc()
@@ -170,7 +139,7 @@ class TestCellLauncher:
 # CellManifest — 文件读写与 installed 推导
 # ==================================================================
 
-_LAUNCHER_NESTED = """
+_LAUNCHER_FLAT = """---
 type: worker
 name: web-fetch
 description: "抓取网页内容"
@@ -178,7 +147,9 @@ singleton: true
 launcher:
   interpreter: python
   cmd: main.py
-  cwd: nodes/tools/web-fetch
+  cwd: nodes/web-fetch
+---
+instruction body
 """
 
 
@@ -186,10 +157,10 @@ class TestCellManifestReadWrite:
 
     # -- read -----------------------------------------------------------
 
-    def test_read_nested_launcher(self):
+    def test_read_flat_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\ninstruction body\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             m = CellManifest.read_from_file(d / 'CELL.md')
 
         assert m.name == 'web-fetch'
@@ -197,46 +168,51 @@ class TestCellManifestReadWrite:
         assert m.singleton is True
         assert m.launcher.interpreter == 'python'
         assert m.launcher.cmd == 'main.py'
-        assert m.launcher.cwd is not None
         assert m.instruction == 'instruction body'
-        assert m.installed is True  # 无 INSTALL.md，默认已安装
+        assert m.installed is True
 
-    def test_cwd_is_absolute_after_read(self):
+    def test_cwd_absolute_after_read(self):
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp) / 'nodes' / 'tools' / 'web-fetch'
+            d = Path(tmp) / 'nodes' / 'web-fetch'
             d.mkdir(parents=True)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             m = CellManifest.read_from_file(d / 'CELL.md')
             assert Path(m.launcher.cwd).is_absolute()
 
-    def test_installed_true_when_no_install_md(self):
+    def test_installed_true_no_install_md(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             m = CellManifest.read_from_file(d / 'CELL.md')
         assert m.installed is True
 
-    def test_installed_false_when_install_md_exists_but_not_installed(self):
+    def test_installed_false_when_install_md_missing_dotfile(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             (d / 'INSTALL.md').touch()
             m = CellManifest.read_from_file(d / 'CELL.md')
         assert m.installed is False
 
-    def test_installed_true_when_installed_file_exists(self):
+    def test_installed_true_when_dotfile_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             (d / 'INSTALL.md').touch()
             (d / '.installed').touch()
             m = CellManifest.read_from_file(d / 'CELL.md')
         assert m.installed is True
 
     def test_empty_instruction(self):
+        manifest = CellManifest(
+            type='worker',
+            name='empty',
+            launcher=CellLauncher(),
+            instruction='',
+        )
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---')
+            manifest.write_file(d)
             m = CellManifest.read_from_file(d / 'CELL.md')
         assert m.instruction == ''
 
@@ -265,7 +241,7 @@ class TestCellManifestReadWrite:
     def test_write_excludes_installed_from_frontmatter(self):
         manifest = CellManifest(
             type='worker',
-            name='test-node',
+            name='test',
             launcher=CellLauncher(),
             instruction='x',
             installed=True,
@@ -300,7 +276,7 @@ class TestCellManifestReadWrite:
     def test_read_from_directory_returns_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            (d / 'CELL.md').write_text(f'---{_LAUNCHER_NESTED}---\n')
+            (d / 'CELL.md').write_text(_LAUNCHER_FLAT)
             m = CellManifest.read_from_directory(d)
             assert m is not None
             assert m.name == 'web-fetch'
@@ -310,9 +286,21 @@ class TestCellManifestReadWrite:
             d = Path(tmp)
             assert CellManifest.read_from_directory(d) is None
 
+    # -- CellManifest.new ----------------------------------------------
+
+    def test_new_from_meta_and_launcher(self):
+        meta = CellMetadata(name='cam', type='host', channel=True)
+        launcher = CellLauncher(interpreter='python', cmd='cam.py')
+        manifest = CellManifest.new(meta=meta, launcher=launcher, instruction='camera driver')
+        assert manifest.name == 'cam'
+        assert manifest.type == 'host'
+        assert manifest.launcher.interpreter == 'python'
+        assert manifest.instruction == 'camera driver'
+        assert manifest.installed is True
+
 
 # ==================================================================
-# CellStatus + Cell.set_alive / set_failed
+# CellStatus
 # ==================================================================
 
 class TestCellStatus:
@@ -320,10 +308,30 @@ class TestCellStatus:
         s = CellStatus()
         assert len(s.uid) > 0
 
+    def test_default_version_zero(self):
+        s = CellStatus()
+        assert s.version == 0
+
+    def test_default_updated_is_set(self):
+        s = CellStatus()
+        assert s.updated > 0
+
+    def test_default_state_stopped(self):
+        s = CellStatus()
+        assert s.state == 'stopped'
+
+    def test_default_pid_zero(self):
+        s = CellStatus()
+        assert s.pid == 0
+
+    def test_default_project_id_empty(self):
+        s = CellStatus()
+        assert s.project_id == ''
+
     def test_from_proc_is_starting(self):
         s = CellStatus.from_proc()
         assert s.state == 'starting'
-        assert isinstance(s.pid, int)
+        assert s.pid == os.getpid()
         assert s.failure == ''
 
     def test_uid_unique_per_instance(self):
@@ -332,22 +340,112 @@ class TestCellStatus:
         assert s1.uid != s2.uid
 
 
-class TestCellLifecycleMethods:
+# ==================================================================
+# Cell — 寻址、命名、构造
+# ==================================================================
+
+class TestCellNaming:
+    def test_singleton_name_is_normalized(self):
+        meta = CellMetadata(type='worker', name='MyCam', singleton=True)
+        cell = Cell.new(meta=meta)
+        assert cell.name == 'mycam'
+
+    def test_non_singleton_name_includes_uid(self):
+        meta = CellMetadata(type='worker', name='cam', singleton=False)
+        cell = Cell.new(meta=meta)
+        assert cell.name.startswith('cam_')
+        assert len(cell.name) > 4
+
+    def test_normalized_name(self):
+        meta = CellMetadata(name='My-Cell')
+        cell = Cell.new(meta=meta)
+        assert cell.normalized_name == 'my_cell'
+
+    def test_unique_name_format(self):
+        meta = CellMetadata(name='cam', singleton=False)
+        cell = Cell.new(meta=meta)
+        uid_prefix = cell.status.uid[:8]
+        assert cell.unique_name == f'cam_{uid_prefix}'
+
+    def test_type_property_from_enum(self):
+        meta = CellMetadata(type=CellType.host, name='main')
+        cell = Cell.new(meta=meta)
+        assert cell.type == 'host'
+
+    def test_type_property_from_str(self):
+        meta = CellMetadata(type='robot', name='r1')
+        cell = Cell.new(meta=meta)
+        assert cell.type == 'robot'
+
+    def test_address_always_includes_uid(self):
+        meta = CellMetadata(type='worker', name='cam', singleton=True)
+        cell = Cell.new(meta=meta)
+        # address = type/normalized_name/uid
+        parts = cell.address.split('/')
+        assert parts[0] == 'worker'
+        assert parts[1] == 'cam'
+        assert len(parts[2]) > 0
+
+
+class TestCellLockerName:
+    def test_singleton_same_meta_gives_same_locker(self):
+        """singleton: 相同 type+name 产生相同的锁名 (去重)."""
+        meta = CellMetadata(type='worker', name='robot-arm', singleton=True)
+        c1 = Cell.new(meta=meta)
+        c2 = Cell.new(meta=meta)
+        assert c1.cell_locker_name == c2.cell_locker_name
+
+    def test_non_singleton_same_meta_gives_different_locker(self):
+        """非 singleton: 每个实例有唯一锁名 (uid 去重)."""
+        meta = CellMetadata(type='worker', name='worker', singleton=False)
+        c1 = Cell.new(meta=meta)
+        c2 = Cell.new(meta=meta)
+        assert c1.cell_locker_name != c2.cell_locker_name
+
+
+class TestCellIsHost:
+    def test_host_type_is_host(self):
+        meta = CellMetadata(type='host', name='main')
+        cell = Cell.new(meta=meta)
+        assert cell.is_host is True
+
+    def test_worker_is_not_host(self):
+        meta = CellMetadata(type='worker', name='w1')
+        cell = Cell.new(meta=meta)
+        assert cell.is_host is False
+
+    def test_custom_type_not_host(self):
+        meta = CellMetadata(type='fractal', name='f1')
+        cell = Cell.new(meta=meta)
+        assert cell.is_host is False
+
+
+# ==================================================================
+# Cell — 生命周期
+# ==================================================================
+
+class TestCellLifecycle:
     def test_set_alive(self):
         cell = Cell.new(meta=CellMetadata(name='x'))
-        cell.set_alive(pid=12345)
+        cell.set_alive(pid=99999)
         assert cell.status.state == 'alive'
-        assert cell.status.pid == 12345
+        assert cell.status.pid == 99999
         assert cell.status.failure == ''
-        assert cell.is_alive() is False  # pid 12345 不存在
+        # pid 99999 不存在
+        assert cell.is_alive() is False
 
     def test_set_alive_default_pid(self):
-        import os
         cell = Cell.new(meta=CellMetadata(name='x'))
         cell.set_alive()
         assert cell.status.pid == os.getpid()
         assert cell.status.state == 'alive'
         assert cell.is_alive() is True
+
+    def test_set_alive_increments_version(self):
+        cell = Cell.new(meta=CellMetadata(name='x'))
+        v0 = cell.status.version
+        cell.set_alive()
+        assert cell.status.version == v0 + 1
 
     def test_set_failed(self):
         cell = Cell.new(meta=CellMetadata(name='x'))
@@ -356,84 +454,43 @@ class TestCellLifecycleMethods:
         assert cell.status.state == 'stopped'
         assert cell.status.failure == 'connection refused'
 
-    def test_is_alive_checks_psutil(self):
+    def test_set_failed_increments_version(self):
         cell = Cell.new(meta=CellMetadata(name='x'))
         cell.set_alive()
-        assert cell.is_alive() is True
+        v1 = cell.status.version
+        cell.set_failed('error')
+        assert cell.status.version == v1 + 1
 
-    def test_is_alive_returns_false_when_stopped(self):
+    def test_is_alive_false_when_stopped(self):
         cell = Cell.new(meta=CellMetadata(name='x'))
         assert cell.is_alive() is False
-        cell.set_alive()
-        cell.set_failed('done')
-        assert cell.is_alive() is False
+
+    def test_update(self):
+        cell = Cell.new(meta=CellMetadata(name='x'))
+        v0 = cell.status.version
+        t0 = cell.status.updated
+        cell.update()
+        assert cell.status.version == v0 + 1
+        assert cell.status.updated >= t0
 
 
 # ==================================================================
-# Cell — 寻址、构造、序列化
+# Cell — 构造
 # ==================================================================
-
-class TestCellAddress:
-    """address 与 bridge_address 行为."""
-
-    def test_singleton_address_is_type_name(self):
-        meta = CellMetadata(type='worker', name='camera', singleton=True)
-        cell = Cell.new(meta=meta)
-        assert cell.address == 'worker/camera'
-
-    def test_non_singleton_address_is_type_uid(self):
-        meta = CellMetadata(type='worker', name='cam', singleton=False)
-        cell = Cell.new(meta=meta)
-        assert cell.address.startswith('worker/')
-        assert cell.address != 'worker/cam'
-
-    def test_bridge_address_appends_uid(self):
-        meta = CellMetadata(type='worker', name='cam', singleton=True)
-        cell = Cell.new(meta=meta)
-        assert cell.bridge_address.endswith(cell.status.uid)
-
-    def test_non_singleton_bridge_has_double_uid(self):
-        """non-singleton 的 address 和 bridge_address 都含 uid，重复可接受."""
-        meta = CellMetadata(type='worker', name='cam', singleton=False)
-        cell = Cell.new(meta=meta)
-        parts = cell.bridge_address.split('/')
-        assert len(parts) == 2
-        assert parts[0] == 'worker'
-
-    def test_type_property(self):
-        meta = CellMetadata(type=CellType.host, name='main')
-        cell = Cell.new(meta=meta)
-        assert cell.type == 'host'
-
 
 class TestCellConstruction:
-    def test_new(self):
+    def test_new_minimal(self):
         meta = CellMetadata(name='test')
         cell = Cell.new(meta=meta)
         assert cell.meta.name == 'test'
+        assert cell.launcher.cmd == ''
         assert cell.status.state == 'stopped'
         assert cell.is_alive() is False
-
-    def test_new_with_launcher(self):
-        launcher = CellLauncher(interpreter='python', cmd='main.py')
-        cell = Cell.new(meta=CellMetadata(name='test'), launcher=launcher)
-        assert cell.launcher.interpreter == 'python'
 
     def test_from_proc(self):
         cell = Cell.from_proc()
         assert cell.meta.type == CellType.worker
         assert cell.meta.singleton is False
-        assert cell.status.state == 'starting'
-
-    def test_from_manifest_default_starting(self):
-        manifest = CellManifest(
-            type='worker',
-            name='test',
-            launcher=CellLauncher(interpreter='python'),
-        )
-        cell = Cell.from_manifest(manifest)
-        assert cell.meta.name == 'test'
-        assert cell.launcher.interpreter == 'python'
         assert cell.status.state == 'starting'
 
     def test_from_manifest_stopped(self):
@@ -443,8 +500,9 @@ class TestCellConstruction:
             launcher=CellLauncher(interpreter='python'),
         )
         cell = Cell.from_manifest(manifest, status_from_proc=False)
+        assert cell.meta.name == 'test'
+        assert cell.launcher.interpreter == 'python'
         assert cell.status.state == 'stopped'
-        assert cell.is_alive() is False
 
     def test_as_manifest_roundtrip(self):
         manifest = CellManifest(
@@ -461,58 +519,81 @@ class TestCellConstruction:
         assert m2.instruction == 'the host'
 
 
+# ==================================================================
+# Cell — 启动参数解析
+# ==================================================================
+
 class TestCellLaunch:
     def test_launch_program_python(self):
         launcher = CellLauncher(interpreter='python', cmd='main.py')
         cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
-        import sys
         assert cell.launch_program() == sys.executable
 
-    def test_launch_program_full_path(self):
+    def test_launch_program_custom_interpreter(self):
         launcher = CellLauncher(interpreter='/usr/bin/python3', cmd='main.py')
         cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
         assert cell.launch_program() == '/usr/bin/python3'
 
-    def test_launch_program_no_interpreter(self):
+    def test_launch_program_no_interpreter_falls_back_to_cmd(self):
         launcher = CellLauncher(interpreter='', cmd='./my_binary')
         cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
         assert cell.launch_program() == './my_binary'
 
-    def test_launch_args(self):
-        launcher = CellLauncher(interpreter='python', cmd='main.py', args='--port 8080')
+    def test_launch_args_interpreter_and_cmd(self):
+        launcher = CellLauncher(interpreter='python', cmd='main.py', arguments='--port 8080')
         cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
         assert cell.launch_args() == ['main.py', '--port', '8080']
 
     def test_launch_args_no_interpreter(self):
-        launcher = CellLauncher(interpreter='', cmd='./my_binary', args='--verbose')
+        launcher = CellLauncher(interpreter='', cmd='./my_binary', arguments='--verbose')
         cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
         assert cell.launch_args() == ['--verbose']
 
+    def test_launch_args_empty(self):
+        launcher = CellLauncher()
+        cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
+        assert cell.launch_args() == []
+
+    def test_launch_cwd_explicit(self):
+        launcher = CellLauncher(cwd='sub/dir')
+        cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
+        cwd = Path('/base')
+        result = cell.launch_cwd(cwd=cwd)
+        assert result == (cwd / 'sub/dir').resolve()
+
+    def test_launch_cwd_empty_defaults_to_arg(self):
+        launcher = CellLauncher(cwd='')
+        cell = Cell.new(meta=CellMetadata(name='x'), launcher=launcher)
+        cwd = Path('/base')
+        assert cell.launch_cwd(cwd=cwd) == cwd
+
+
+# ==================================================================
+# Cell — 运行时文件读写
+# ==================================================================
 
 class TestCellRuntimeFile:
-    def test_normalized_address(self):
-        cell = Cell.new(meta=CellMetadata(name='test', type='host'))
-        assert cell.normalized_address() == 'host_test'
-
-    def test_normalized_name(self):
-        cell = Cell.new(meta=CellMetadata(name='MyCell', type='worker'))
-        assert cell.normalized_name() == 'mycell'
-
     def test_runtime_filename(self):
         fname = Cell.make_runtime_filename('worker/cam')
-        assert fname.startswith('cell-')
-        assert fname.endswith('.json')
-        assert 'worker_cam' in fname
+        assert fname == 'cell-worker_cam.json'
+
+    def test_runtime_filepath(self):
+        cell = Cell.new(meta=CellMetadata(name='test', type='worker'))
+        d = Path('/tmp/fake')
+        fp = cell.runtime_filepath(d)
+        assert fp.parent == d
+        assert fp.name.startswith('cell-')
+        assert fp.name.endswith('.json')
 
     def test_write_and_read_runtime_file(self):
         cell = Cell.new(meta=CellMetadata(name='test', type='worker'))
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             cell.write_runtime_file(d)
-            fname = Cell.make_runtime_filename(cell.address)
-            assert (d / fname).exists()
+            expected = Cell.make_runtime_filename(cell.address)
+            assert (d / expected).exists()
 
-            loaded = Cell.read_from_runtime_file(d / fname)
+            loaded = Cell.read_from_runtime_file(d / expected)
             assert loaded.meta.name == 'test'
             assert loaded.address == cell.address
             assert loaded.status.uid == cell.status.uid
@@ -538,31 +619,41 @@ class TestCellRuntimeFile:
             with pytest.raises(Exception):
                 list(Cell.find_runtime_cells(d, throw=True))
 
-    def test_runtime_filepath(self):
-        cell = Cell.new(meta=CellMetadata(name='test', type='worker'))
-        d = Path('/tmp/fake')
-        fp = cell.runtime_filepath(d)
-        assert fp.parent == d
-        assert fp.name.startswith('cell-')
-        assert fp.name.endswith('.json')
+
+# ==================================================================
+# Cell — to_json
+# ==================================================================
+
+class TestCellToJson:
+    def test_to_json_with_cell_type_enum(self):
+        meta = CellMetadata(type=CellType.host, name='main')
+        cell = Cell.new(meta=meta)
+        raw = cell.to_json()
+        assert '"host"' in raw or 'host' in raw
+
+    def test_to_json_roundtrip(self):
+        cell = Cell.new(meta=CellMetadata(name='test'))
+        cell.set_alive(pid=os.getpid())
+        raw = cell.to_json()
+        loaded = Cell.model_validate_json(raw)
+        assert loaded.meta.name == 'test'
+        assert loaded.status.state == 'alive'
 
 
 # ==================================================================
-# CellRegistry — ABC 契约验证
+# CellRegistry — ABC 静态方法契约
 # ==================================================================
 
-class TestCellRegistryABC:
-    """验证 ABC 方法的参数签名与返回类型声明."""
-
-    def test_match_cells_include_all(self):
+class TestCellRegistryMatchCells:
+    def test_match_all(self):
         manifests = {
-            'group_a/app1': CellManifest(type='worker', name='app1', launcher=CellLauncher()),
-            'group_b/app2': CellManifest(type='worker', name='app2', launcher=CellLauncher()),
+            'tools/a': CellManifest(type='worker', name='a', launcher=CellLauncher()),
+            'tools/b': CellManifest(type='worker', name='b', launcher=CellLauncher()),
         }
         result = list(CellRegistry.match_cells(manifests))
         assert len(result) == 2
 
-    def test_match_cells_include_filter(self):
+    def test_match_include_filter(self):
         manifests = {
             'tools/a': CellManifest(type='worker', name='a', launcher=CellLauncher()),
             'tools/b': CellManifest(type='worker', name='b', launcher=CellLauncher()),
@@ -573,7 +664,7 @@ class TestCellRegistryABC:
         paths = {p for p, _ in result}
         assert paths == {'tools/a', 'tools/b'}
 
-    def test_match_cells_exclude_filter(self):
+    def test_match_exclude_filter(self):
         manifests = {
             'tools/a': CellManifest(type='worker', name='a', launcher=CellLauncher()),
             'tools/b': CellManifest(type='worker', name='b', launcher=CellLauncher()),
@@ -583,17 +674,48 @@ class TestCellRegistryABC:
         path, _ = result[0]
         assert path == 'tools/a'
 
-    def test_match_cells_empty_cells(self):
+    def test_match_empty(self):
         result = list(CellRegistry.match_cells({}))
         assert result == []
 
 
 # ==================================================================
-# Integration: 完整的从 CELL.md 到 Cell 网络注册的路径
+# CellNetwork — ABC 契约验证
 # ==================================================================
 
-class TestCellLifecycle:
-    """模拟 host 发现 → manifest → cell → runtime file → network 查询的完整链路."""
+class TestCellNetworkABC:
+    """验证 ABC abstractmethod 的存在。子类必须实现。"""
+
+    def test_required_properties(self):
+        import inspect
+        abstract = set()
+        for name, method in inspect.getmembers(CellNetwork, predicate=inspect.isfunction):
+            if getattr(method, '__isabstractmethod__', False):
+                abstract.add(name)
+        assert 'get_host' in abstract
+        assert 'all_hosts' in abstract
+        assert 'get_live_cells' in abstract
+        assert 'create_provider' in abstract
+        assert 'create_proxy' in abstract
+        assert 'update_cell' in abstract
+        assert 'revoke_cell' in abstract
+
+    def test_required_abstract_properties(self):
+        abstract = set()
+        for name, prop in CellNetwork.__dict__.items():
+            if isinstance(prop, property) and getattr(prop.fget, '__isabstractmethod__', False):
+                abstract.add(name)
+        assert 'name' in abstract
+        assert 'description' in abstract
+        assert 'scope' in abstract
+
+
+# ==================================================================
+# Integration: CELL.md → manifest → cell → runtime file
+# ==================================================================
+
+class TestCellIntegration:
+    """模拟 host 发现 → manifest → cell → runtime file 的完整链路."""
 
     def test_static_discovery_to_runtime_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -615,11 +737,11 @@ launcher:
 
             # 2. Host 构造 Cell (模拟 spawn 前)
             cell = Cell.from_manifest(manifest, status_from_proc=False)
-            assert cell.address == 'worker/camera'
+            assert cell.address.startswith('worker/camera/')
             assert cell.status.state == 'stopped'
 
             # 3. 模拟 spawn 后 — cell 进程标记 alive 并写 runtime 文件
-            cell.set_alive()
+            cell.set_alive(pid=os.getpid())
             runtime_dir = d / 'runtime' / 'cells'
             runtime_dir.mkdir(parents=True)
             cell.write_runtime_file(runtime_dir)
@@ -627,15 +749,8 @@ launcher:
             # 4. Registry 从 runtime 文件反查
             found = list(Cell.find_runtime_cells(runtime_dir))
             assert len(found) == 1
-            assert found[0].address == 'worker/camera'
-            assert found[0].bridge_address != "worker/camera"
+            assert found[0].address == cell.address
             assert found[0].is_alive()
-
-            # 5. Network announce 用的 bridge_address 可反查
-            bridge = found[0].bridge_address
-            typ, uid = split_bridge_address(bridge)
-            assert typ == 'worker'
-            assert uid == found[0].status.uid
 
     def test_set_alive_and_set_failed_cycle(self):
         cell = Cell.new(meta=CellMetadata(name='x', type='worker'))
@@ -643,11 +758,9 @@ launcher:
 
         cell.set_alive(pid=99999)
         assert cell.status.state == 'alive'
-        # pid 99999 不存在, is_alive 用 psutil 检查
         assert cell.is_alive() is False
 
-        import os
-        cell.set_alive()  # 用当前进程 pid
+        cell.set_alive()
         assert cell.is_alive() is True
         assert cell.status.failure == ''
 

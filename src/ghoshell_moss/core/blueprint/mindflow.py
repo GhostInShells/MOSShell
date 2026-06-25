@@ -42,7 +42,7 @@ Mindflow 架构设计. 解决 感知/执行/思考 三循环的全双工状态�
 
 __all__ = [
     'Priority',
-    'SignalName', 'Signal', 'SignalMeta', 'InputSignal', 'SignalSchema',
+    'SignalName', 'Signal', 'SignalMeta', 'InputSignalMeta', 'SignalSchema',
     'Impulse',
     'Flag',
     'Logos', 'Moment', 'Reaction',
@@ -254,7 +254,7 @@ class SignalMeta(BaseModel, ABC):
 
         典型用法:
         >>> def match_signal(s: Signal):
-        >>>     if input_signal := InputSignal.from_signal(s):
+        >>>     if input_signal := InputSignalMeta.from_signal(s):
         >>>        ...
         """
         if cls.signal_name() != signal.name:
@@ -293,7 +293,7 @@ class SignalMeta(BaseModel, ABC):
         )
 
 
-class InputSignal(SignalMeta):
+class InputSignalMeta(SignalMeta):
     """
     系统最基础的 Input 讯号. 代表一个明确的输入.
     """

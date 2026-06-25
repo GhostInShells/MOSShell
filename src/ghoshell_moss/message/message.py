@@ -371,10 +371,6 @@ class Message(BaseModel, WithAdditional):
         """
         用来添加 content. 简单做一个向前兼容的.
         """
-
-        if self.contents is None:
-            self.contents = []
-
         for item in contents:
             if item is None:
                 continue

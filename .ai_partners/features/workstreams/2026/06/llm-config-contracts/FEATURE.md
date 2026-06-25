@@ -2,13 +2,13 @@
 created: 2026-06-10
 depends: []
 description: Pure-config LLM service/model declaration (ConfigType), env var resolution
-  for secrets, content-based model capability filtering, with Matrix exposure for
-  cross-process discovery.
+  for secrets, content-based model capability filtering with text degradation fallback,
+  with Matrix exposure for cross-process discovery.
 milestone: null
 priority: P0
 status: completed
 title: LLM Config Contracts
-updated: '2026-06-12'
+updated: '2026-06-25'
 ---
 
 # LLM Config Contracts
@@ -25,26 +25,33 @@ Service（连接）+ Model（能力），通过现有的 ConfigStore + manifests
 
 ### 1. 纯 ConfigType，不做 adapter 层
 
-模型迭代太快。ServiceConf + ModelConf 的纯配置方案，加模型只需改 YAML。
+模型迭代太快。纯配置方案，加模型只需改 YAML。
 api_key 走现有 `$ENV_VAR` → `resolve()` 机制，敏感值不落盘。
 
-### 2. Service 和 Model 分离
+### 2. Provider = Service + Model 阵容
 
-Service 管连接（base_url, api_key, api_type），Model 管能力（model_name,
-context_window, protocols）。一个 Service 可挂多个 Model，Model 通过
-service name 引用 Service。
+`Provider` 封装一个服务 + 它的模型阵容：`service: ServiceConfig` 管连接
+（base_url, api_key, protocol），`default: ModelConfig` 管默认模型，
+`models: dict[str, ModelConfig]` 管其他模型。`LLMConfig` 持有一个
+`default: Provider` 和 `providers: dict[str, Provider]`，default 也是
+可被按名检索的 provider。
 
-### 3. protocols 是 content 能力声明，不是抽象协议
+### 3. content_types 声明 + 三层降级
 
-`protocols: ["text", "image"]` 直接对应 MOSS 的 `Content.type`。发 prompt
-前按此字段过滤 content。`converter` 字段（import path）是扩展点 — None 时
-不支持的 content 丢弃，非 None 时走转换。
+`ModelConfig.content_types: list[str]` 声明模型原生支持的 `Content.type`。
+`converters: dict[str, str]` 按 content type 映射 converter import path。
+发 prompt 前依次走：**原生支持 → converter 适配 → 文本退化**。
+最后一层用 `Message.content_as_string()` 确保模型至少能"读到"所有内容，
+不再静默丢弃。
 
-### 4. model_type 做降级键，default_model 做最终兜底
+### 4. tag 做模型标签，provider+model 做查找键
 
-`get_model(service="", model_type="", *, no_fallback=False)` — 精确匹配优先，
-无匹配降级到 `default_model`。`no_fallback=True` 抛 KeyError。
-预定义常量：`default / pro / flash`，字段类型 `ModelType | str` 支持扩展。
+`get_model(provider="", model="", tag=None, *, no_fallback=False)` —
+零参数返回默认 provider 的默认模型；provider 按名匹配（同时查 default
+和 providers）；model 按名在所有 provider 的 models 字典中精确搜索；
+tag 对解析后的 ModelConfig 做 unwrap（如 `small_fast_model` → 实际模型名）。
+`no_fallback=True` 无匹配抛 KeyError。
+预定义标签常量：`DefaultModelTag = Literal['small_fast_model', 'flash', 'pro']`。
 
 ### 5. model settings 不管
 
@@ -60,11 +67,17 @@ Config 只存"谁在哪能干什么"。
 ## Implementation Notes
 
 - [x] contracts 层抽象 (`ghoshell_moss.contracts.llms`)
+  - `ServiceConfig` — 连接配置 (name, base_url, api_key, protocol)
+  - `ModelConfig` — 模型配置 (model, tags, content_types, converters, context_window, max_output_tokens)
+  - `Provider` — 供应商 = Service + 模型阵容 (service, default, models dict)
+  - `ResolvedModel` — 查找结果 = model + service 对，带 `client_protocol` property
+  - `LLMConfig` — 配置中心 (default Provider + providers dict)，提供 `get_model` / `list_models` / `get_service` / `services`
+  - `MessageContentConverter` — converter 抽象基类
+  - `register_converter()` / `clear_converters()` — 公开的 converter 注入/清空 API
+- [x] 三层内容降级 — `ModelConfig.convert()` 原生 → converter → 文本退化 (`Message.content_as_string`)
 - [x] `_environ` 修复 — `LocalConfigStore` → `resolve()` 透传，增加 list 内 `$ENV_VAR` 递归解析
-- [x] API 打磨 — `get_model()` 零参返回 default；`list_models()` / `list_services()` 发现接口；
-  `LLMModelConfig.accepts(content_type)` 协议检查；`get_service()` 公开
 - [x] manifests 注册 — `.moss_ws/src/MOSS/manifests/configs.py` + stub
-- [x] 默认 YAML — `.moss_ws/configs/llm.yml` (anthropic + openai_compat 服务，3 个 Claude 模型)
-- [x] tests — `tests/ghoshell_moss/contracts/test_llms.py` (31 tests) + `test_local_configs.py` (3 on_save tests)
-- [x] converter 扩展点约定 — `LLMModelConfig.converter` field description + `load_converter()` 函数
+- [x] tests — `tests/ghoshell_moss/default/contracts/test_llms.py` (43 tests)
+  - 单元: ServiceConfig, ModelConfig (accepts / unwrap_tag / convert 三层降级 / converter 适配), Provider, ResolvedModel, LLMConfig
+  - 集成: YamlConfigStore + LocalStorage (save/load roundtrip, env var resolution, mode-specific config, cache invalidation)
 - [x] Matrix 查询/订阅接口 — `Matrix.query_config()` + `Matrix.on_config_change()` + `LocalConfigStore` 的 `on_save` 钩子，MatrixImpl 串联

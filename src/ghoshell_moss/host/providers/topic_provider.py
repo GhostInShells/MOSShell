@@ -39,7 +39,7 @@ class ZenohTopicServiceProvider(Provider[TopicService]):
         cell_address = self.cell_address
         if not session_scope:
             env = con.force_fetch(Environment)
-            session_scope = env.session_scope
+            session_scope = env.network_scope
         if not cell_address:
             matrix = con.force_fetch(Matrix)
             cell_address = matrix.this.address

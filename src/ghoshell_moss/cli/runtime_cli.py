@@ -4,6 +4,7 @@ import typer
 from ghoshell_moss.host import Host
 from .utils import console, print_simple_table
 
+# todo: 彻底删除
 runtime_app = typer.Typer(
     help="Runtime inspection and management — list cells, kill cells.",
     no_args_is_help=True,
@@ -40,7 +41,7 @@ def list_cells(
     print_simple_table(
         data=table_data,
         headers=["Status", "Address", "PID", "Ghost", "Mode"],
-        title=f"Cells in scope '{host.env.session_scope}'",
+        title=f"Cells in scope '{host.env.network_scope}'",
         column_styles=["", "cyan", "", "", ""],
         title_style="bold green",
     )
@@ -94,7 +95,7 @@ def kill_all(
         return
 
     console.print(f"About to kill [bold red]{len(targets)}[/bold red] cells in scope "
-                  f"'[cyan]{host.env.session_scope}[/cyan]':")
+                  f"'[cyan]{host.env.network_scope}[/cyan]':")
     for c in targets:
         ghost_tag = f" [{c.ghost_name}]" if c.ghost_name else ""
         console.print(f"  - [cyan]{c.address}[/cyan] (PID {c.pid}){ghost_tag}")
