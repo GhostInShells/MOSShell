@@ -27,6 +27,7 @@ class ProjectZenohSessionProvider(Provider[Session]):
         return Session
 
     def aliases(self) -> Iterable[Type]:
+        from ghoshell_moss.matrix.session.zenoh_session import ProjectZenohSession, MossSessionWithZenoh
         yield MossSessionWithZenoh
         yield ProjectZenohSession
 

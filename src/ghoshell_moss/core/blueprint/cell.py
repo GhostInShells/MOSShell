@@ -39,6 +39,7 @@ __all__ = [
     'MatchPattern',
     'RelativePath',
     'normalize',
+    'DuplicatedError',
 ]
 
 CellAddress = str

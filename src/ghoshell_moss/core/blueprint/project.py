@@ -237,14 +237,22 @@ class Manifest(Generic[T], ABC):
         ...
 
     @abstractmethod
-    def value(self) -> T | Exception:
-        """找到的值. 如果在发现中存在异常, 则应该返回异常. """
+    def value(self) -> T:
+        """找到的值. 仅在 is_error() 为 False 时有效. """
         ...
 
     @abstractmethod
     def detail(self) -> str:
         """对值的自然语言描述. """
         ...
+
+    def is_error(self) -> bool:
+        """扫描过程中是否发生异常. True 时 error() 返回异常详情."""
+        return False
+
+    def error(self) -> Exception | None:
+        """扫描异常详情. is_error() 为 False 时返回 None."""
+        return None
 
     def update_container(self, container: IoCContainer) -> None:
         """
