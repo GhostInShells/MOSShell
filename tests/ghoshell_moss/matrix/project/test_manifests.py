@@ -1,19 +1,33 @@
 """Manifests 体系单元测试 — 从 Provider 开始验证 ScannedManifest + 扫描链路."""
 
+import inspect
+import sys
 from pathlib import Path
 
 import pytest
 
 from ghoshell_container import Provider, IoCContainer
+from ghoshell_moss.contracts.configs import ConfigType, ConfigSchema
 from ghoshell_moss.core.blueprint.project import Manifest
+from ghoshell_moss.core.blueprint.mindflow import SignalMeta, SignalSchema
 from ghoshell_moss.project.manifests.base import ScannedManifest
 from ghoshell_moss.project.manifests.providers import (
     ProviderManifest,
     search_provider_manifests,
 )
+from ghoshell_moss.project.manifests.configs import (
+    ConfigManifest,
+    search_config_manifests,
+)
+from ghoshell_moss.project.manifests.signals import (
+    SignalManifest,
+    search_signal_manifests,
+)
 
 # -- 项目中 stub manifests 的约定扫描路径
 STUB_MANIFESTS_PROVIDERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
+STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.configs'
+STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
 
 
 # ==================================================================
@@ -177,3 +191,207 @@ class TestSearchProviderManifests:
         # value() 应该 raise
         with pytest.raises(Exception):
             m.value()
+
+
+# ==================================================================
+# ConfigManifest
+# ==================================================================
+
+class TestConfigManifest:
+    def test_basic(self, tmp_path):
+
+        class MyConfig(ConfigType):
+            key: str = 'default-val'
+
+            @classmethod
+            def conf_name(cls) -> str:
+                return 'my_config'
+
+        instance = MyConfig(key='custom')
+        m = ConfigManifest(
+            name=instance.conf_name(),
+            value=instance,
+            found_at=tmp_path,
+            import_path='test:my_instance',
+            description='test config',
+        )
+
+        assert m.name() == 'my_config'
+        assert m.value().key == 'custom'
+        s = m.schema()
+        assert isinstance(s, ConfigSchema)
+        assert s.name == 'my_config'
+        assert 'json_schema' in s.model_dump()
+
+    def test_error_manifest(self, tmp_path):
+        m = ConfigManifest(
+            name='broken',
+            error=ValueError('bad config'),
+            found_at=tmp_path,
+        )
+        assert m.is_error()
+        assert isinstance(m.error(), ValueError)
+        with pytest.raises(ValueError, match='bad config'):
+            m.value()
+
+
+# ==================================================================
+# search_config_manifests — 扫描
+# ==================================================================
+
+class TestSearchConfigManifests:
+    def test_finds_config_instances(self):
+        """stub configs.py 里是 LLMConfig() 实例."""
+        results = list(search_config_manifests(STUB_MANIFESTS_CONFIGS))
+        assert len(results) == 1
+        m = results[0]
+        assert isinstance(m, ConfigManifest)
+        assert m.name() == 'llms'
+        assert isinstance(m.value(), ConfigType)
+        assert m.schema().name == 'llms'
+
+    def test_yields_error_manifest(self):
+        results = list(search_config_manifests(
+            'ghoshell_moss.core.helpers.exception_pkg',
+        ))
+        assert len(results) == 1
+        m = results[0]
+        assert m.is_error()
+
+    def test_skips_non_config_objects(self):
+        """stub topics.py 不含 ConfigType 实例."""
+        results = list(search_config_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
+        ))
+        assert results == []
+
+    def test_empty_package(self):
+        results = list(search_config_manifests('ghoshell_moss.stubs.not_a_package'))
+        assert results == []
+
+
+# ==================================================================
+# SignalManifest
+# ==================================================================
+
+class TestSignalManifest:
+    def test_from_signal_meta_class(self, tmp_path):
+        """SignalMeta 子类 → to_signal_schema() → value 是 SignalSchema."""
+
+        class TestSignal(SignalMeta):
+            """A test signal."""
+
+            @classmethod
+            def signal_name(cls) -> str:
+                return 'test.signal'
+
+            @classmethod
+            def priority(cls) -> int:
+                return 10
+
+        m = SignalManifest(
+            name=TestSignal.signal_name(),
+            value=TestSignal.to_signal_schema(),
+            found_at=tmp_path,
+            import_path='test:TestSignal',
+            description=TestSignal.__doc__ or '',
+            source=inspect.getsource(TestSignal),
+        )
+
+        assert m.name() == 'test.signal'
+        assert isinstance(m.value(), SignalSchema)
+        assert m.value().name == 'test.signal'
+        assert m.value().default_priority == 10
+        assert 'class TestSignal' in m.source()
+
+    def test_from_signal_schema_instance(self, tmp_path):
+        schema = SignalSchema(
+            name='custom.signal',
+            description='Custom signal',
+            default_priority=5,
+            metadata_schema={},
+        )
+        m = SignalManifest(
+            name=schema.name,
+            value=schema,
+            found_at=tmp_path,
+            import_path='test:custom_schema',
+            description=schema.description,
+            source='',
+        )
+        assert m.name() == 'custom.signal'
+        assert m.source() == ''
+
+    def test_error_manifest(self, tmp_path):
+        m = SignalManifest(
+            name='broken',
+            error=ValueError('bad signal'),
+            found_at=tmp_path,
+        )
+        assert m.is_error()
+        with pytest.raises(ValueError, match='bad signal'):
+            m.value()
+
+
+# ==================================================================
+# search_signal_manifests — 扫描
+# ==================================================================
+
+class TestSearchSignalManifests:
+    def test_finds_all_signal_classes(self):
+        """stub signals.py 有 5 个 SignalMeta 子类."""
+        results = list(search_signal_manifests(STUB_MANIFESTS_SIGNALS))
+        assert len(results) == 5
+        for m in results:
+            assert isinstance(m, SignalManifest)
+            assert isinstance(m.value(), SignalSchema)
+            assert m.name()
+            assert m.source()  # class-based 有源码
+
+    def test_yields_error_manifest(self):
+        results = list(search_signal_manifests(
+            'ghoshell_moss.core.helpers.exception_pkg',
+        ))
+        assert len(results) == 1
+        m = results[0]
+        assert m.is_error()
+
+    def test_skips_non_signal_objects(self):
+        results = list(search_signal_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
+        ))
+        assert results == []
+
+    def test_finds_signal_schema_instance(self, tmp_path):
+        import sys
+        root = tmp_path / 'src'
+        root.mkdir()
+        pkg = root / 'sig_pkg'
+        pkg.mkdir()
+        (pkg / '__init__.py').write_text('\n'.join([
+            'from ghoshell_moss.core.blueprint.mindflow import SignalSchema',
+            'my_signal = SignalSchema(',
+            '    name="my.signal",',
+            '    description="test",',
+            '    default_priority=3,',
+            '    metadata_schema={},',
+            ')',
+        ]))
+        s = str(root)
+        if s not in sys.path:
+            sys.path.insert(0, s)
+        try:
+            results = list(search_signal_manifests('sig_pkg'))
+            assert len(results) == 1
+            m = results[0]
+            assert isinstance(m, SignalManifest)
+            assert m.name() == 'my.signal'
+            assert m.value().default_priority == 3
+            assert m.source() == ''  # instance 无源码
+        finally:
+            if s in sys.path:
+                sys.path.remove(s)
+
+    def test_empty_package(self):
+        results = list(search_signal_manifests('ghoshell_moss.stubs.not_a_package'))
+        assert results == []

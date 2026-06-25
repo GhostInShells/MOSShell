@@ -14,7 +14,7 @@ from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.concepts.topic import TopicSchema
-from ghoshell_moss.contracts import Workspace, ConfigSchema
+from ghoshell_moss.contracts import Workspace, ConfigType
 from ghoshell_moss.contracts.logger import config_logger_from_yaml
 from ghoshell_moss.message import unique_id
 from pydantic import BaseModel, Field
@@ -275,7 +275,7 @@ class MatrixManifest(ABC):
         ...
 
     @abstractmethod
-    def configs(self) -> Iterable[Manifest[ConfigSchema]]:
+    def configs(self) -> Iterable[Manifest[ConfigType]]:
         """找到的配置项. """
         ...
 
@@ -308,7 +308,7 @@ class ModeManifests(ABC):
         ...
 
     @abstractmethod
-    def configs(self) -> Iterable[Manifest[ConfigSchema]]:
+    def configs(self) -> Iterable[Manifest[ConfigType]]:
         """找到的配置项. """
         ...
 
