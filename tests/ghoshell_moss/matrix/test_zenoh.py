@@ -341,3 +341,134 @@ def test_dynamic_join_and_leave():
         ))
         payloads = [json.loads(r.ok.payload.to_string()) for r in replies if r.ok is not None]
         assert not any(p["address"] == "app/newcomer" for p in payloads)
+
+
+# === liveness token wildcard canary tests ===
+# 验证 liveness token 是否支持 * (单层) / ** (多层) wildcard.
+# 这决定 cell 发现能否用 liveness token 按 type 层级过滤.
+
+
+def test_liveness_wildcard_double_star():
+    """liveness token + ** wildcard: declare_token(cells/a/b/c), get(cells/**)."""
+    prefix = "test/liveness_wc"
+    with zenoh.open(zenoh.Config()) as session:
+        tok = session.liveliness().declare_token(f"{prefix}/a/b/c")
+        try:
+            import time
+            time.sleep(0.05)
+            replies = list(session.liveliness().get(f"{prefix}/**"))
+            keys = [str(r.result.key_expr) for r in replies if r.ok]
+            assert f"{prefix}/a/b/c" in keys
+        finally:
+            tok.undeclare()
+
+
+def test_liveness_wildcard_single_star():
+    """liveness token + * wildcard: declare_token(x/host/main), get(x/host/*)."""
+    prefix = "test/liveness_s"
+    with zenoh.open(zenoh.Config()) as session:
+        tok = session.liveliness().declare_token(f"{prefix}/host/main")
+        try:
+            import time
+            time.sleep(0.05)
+            replies = list(session.liveliness().get(f"{prefix}/host/*"))
+            keys = [str(r.result.key_expr) for r in replies if r.ok]
+            assert f"{prefix}/host/main" in keys
+        finally:
+            tok.undeclare()
+
+
+def test_liveness_wildcard_star_vs_double_star_scope():
+    """* 只匹配单层: declare_token(x/a/b), get(x/*) 应匹配 a, get(x/a/*) 应匹配 b."""
+    prefix = "test/liveness_x"
+    with zenoh.open(zenoh.Config()) as session:
+        tok_a = session.liveliness().declare_token(f"{prefix}/a/x")
+        tok_b = session.liveliness().declare_token(f"{prefix}/b/x")
+        try:
+            import time
+            time.sleep(0.05)
+
+            # get(x/*/x) 应该匹配 a/x 和 b/x 两层
+            replies = list(session.liveliness().get(f"{prefix}/*/x"))
+            keys = [str(r.result.key_expr) for r in replies if r.ok]
+            assert f"{prefix}/a/x" in keys
+            assert f"{prefix}/b/x" in keys
+
+            # get(x/*) 不应该匹配到 a/x (那是两层深度)
+            replies_single = list(session.liveliness().get(f"{prefix}/*"))
+            keys_single = [str(r.result.key_expr) for r in replies_single if r.ok]
+            assert f"{prefix}/a/x" not in keys_single, "* should match only 1 segment"
+        finally:
+            tok_a.undeclare()
+            tok_b.undeclare()
+
+
+def test_liveness_subscribe_wildcard():
+    """subscribe liveness with ** wildcard: 监听到 token 的 PUT 和 DELETE."""
+    prefix = "test/liveness_sub"
+    with zenoh.open(zenoh.Config()) as session:
+        received_put = []
+        received_delete = []
+        started = threading.Event()
+        done = threading.Event()
+
+        def _listen():
+            sub = session.liveliness().declare_subscriber(f"{prefix}/**")
+            started.set()
+            with sub:
+                for sample in sub:
+                    if sample.kind == zenoh.SampleKind.PUT:
+                        received_put.append(str(sample.key_expr))
+                    elif sample.kind == zenoh.SampleKind.DELETE:
+                        received_delete.append(str(sample.key_expr))
+                    if received_delete:
+                        break
+
+        t = threading.Thread(target=_listen)
+        t.start()
+        started.wait()
+        import time
+        time.sleep(0.05)
+
+        tok = session.liveliness().declare_token(f"{prefix}/type/name")
+        time.sleep(0.1)
+        tok.undeclare()
+        time.sleep(0.1)
+
+        done.set()
+        t.join(timeout=2)
+
+        assert f"{prefix}/type/name" in received_put
+        assert f"{prefix}/type/name" in received_delete
+
+
+def test_liveness_and_queryable_same_key():
+    """同一个 key expression 同时挂 liveness token + queryable，互不干扰."""
+    key = "test/duplex/cell"
+    with zenoh.open(zenoh.Config()) as session:
+        # 1. declare liveness token
+        tok = session.liveliness().declare_token(key)
+
+        # 2. declare queryable on same key
+        def handler(query: zenoh.Query):
+            query.reply(query.key_expr, json.dumps({"status": "alive"}))
+
+        q = session.declare_queryable(key, handler)
+
+        try:
+            import time
+            time.sleep(0.05)
+
+            # liveness get 能找到
+            live_replies = list(session.liveliness().get(key))
+            live_keys = [str(r.result.key_expr) for r in live_replies if r.ok]
+            assert key in live_keys
+
+            # queryable get 能找到
+            data_replies = list(session.get(key))
+            data = [json.loads(r.ok.payload.to_string()) for r in data_replies if r.ok is not None]
+            assert len(data) == 1
+            assert data[0]["status"] == "alive"
+        finally:
+            q.undeclare()
+            tok.undeclare()
