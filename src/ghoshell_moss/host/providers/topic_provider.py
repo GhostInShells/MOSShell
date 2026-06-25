@@ -1,5 +1,5 @@
 from typing import Iterable, Type
-from ghoshell_moss.host.topics.zenoh_topics import ZenohTopicService
+from ghoshell_moss.matrix.topics.zenoh_topics import ZenohTopicService
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.contracts import LoggerItf
 from ghoshell_container import Provider, IoCContainer, INSTANCE
@@ -14,6 +14,7 @@ import zenoh
 __all__ = ['ZenohTopicServiceProvider']
 
 
+# todo : 删除
 class ZenohTopicServiceProvider(Provider[TopicService]):
     """
     zenoh topic service provider
@@ -48,7 +49,7 @@ class ZenohTopicServiceProvider(Provider[TopicService]):
         logger = con.get(LoggerItf)
 
         return ZenohTopicService(
-            session_scope=session_scope,
+            network_scope=session_scope,
             session=session,
             address=cell_address,
             logger=logger,
