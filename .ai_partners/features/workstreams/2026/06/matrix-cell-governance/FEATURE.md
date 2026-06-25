@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-22
+updated: 2026-06-25
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,21 +15,17 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-22 claude-opus-4-7 review + 协作实现。完成:
-  (1) ZenohLivenessListener 独立封装 — 全量查询 + subscribe + reconcile 三件套,
-  替代 hub 手写 liveness 逻辑, 通用可复用。
-  (2) ZenohChannelHub 重构 — 用 listener 驱动, on_online 不再自动建 proxy,
-  职责收敛为 channel provider/proxy 工厂 + 上下线 record。
-  (3) bridge_address 简化为 type/{uid}, name 不出现在 bridge 中,
-  normalize() 统一 / . - \\ 转 _.
-  (4) cell announce 收敛为 PUT + queryable 两个 key, 不用 liveness token,
-  cell 变化低频, 牺牲秒级死检换简洁性。
-  (5) LocelConfigStore mode-aware 重写 — mode-first 读取, fallback base, 39 tests.
-  (6) fractal accept/ignore 从 Cell 剥离到 hub 内部 _approved_cells set.
-  设计收敛于: CellNetwork (普通) vs HostCellNetwork (host 专属, 含 proxy 管理和
-  detection loop) 二分; cell-driven 建代理 (providing_channel 字段) 替代
-  channel-driven (liveness 事件); Matrix 三层模型 (上/中/下) 确认。
-  下一实例认知重建支点: 读本文 §I-§K + 读 zenoh_helper.py 的 ZenohLivenessListener.
+  2026-06-25 claude-opus-4-7 大规模抽象重构。L4 OS 架构跃迁。
+  Environment: RuntimeScope 消除, bootstrap 后属性读 os.environ, fixture() 测试隔离。
+  CellType: host/worker 收敛, discover() 纯函数化。
+  命名定案: network/driver/scope 三件套, session_scope 不含 scope。
+  NetworkConfig ABC + ZenohNetworkConfig 按 cell type 分发。
+  Matrix ABC 移除 Mode 依赖, discover() 走 env→project→matrix。
+  zenoh key 空间: MOSS/matrix/scopes/{scope}/...
+  端口约定 2038-n 系列, 默认 20380。
+  stubs/networks: local.json + lan.json。
+  167 tests (37 env + 85 cell + 12 network + 33 session)。
+  下一实例认知重建支点: 读本文 §U-§Z。
 ---
 
 # Matrix Cell Governance
@@ -1215,4 +1211,123 @@ proxy 创建策略三层不同: 中层 cell 上线可 auto-proxy (host 信任自
 - bridge_address 是否只有 `type/{uid}`, name 不在其中?
 - `proxies()` 返回的 key 是否是 proxy name 而非 bridge address?
 - 三套命名体系是否收敛到 MOSSNamespace?
+
+## 2026-06-25 大规模抽象重构 — L4 OS 架构跃迁 (claude-opus-4-7)
+
+> 人类架构师 + claude-opus-4-7。从 L2 (单 project 内) 跃迁到 L4 (跨实例组网)。
+> Matrix 独立组网, Project 与 Mode 解耦, 四元语义确立, blueprint 层 6 文件重做。
+
+### U. 架构跃迁: 从 L2 到 L4
+
+三层跃迁路径:
+1. moss 仅在 `.moss_ws` 内运作
+2. moss 扩展到 workspace 所在 project
+3. moss 路径无关, 同 OS 内组网
+4. moss 跨越 network, 跨实例组网 ← **当前目标**
+
+Matrix 必须独立于 Mode 运行。`Matrix.discover()` 不再依赖 Host/Mode,
+只依赖 `env → project → matrix`。无 mode 时 matrix 仍可启动,
+cell registry 为 null。
+
+### V. 命名定案: 四元语义 + transport
+
+| 概念 | 名字 | 位置 | 职责 |
+|------|------|------|------|
+| 连接配置 | network | `networks/{name}.json` | driver + transport params + 默认 scope |
+| 传输驱动 | driver | NetworkMetadata.driver | zenoh / mqtt / ws |
+| 通讯子空间 | scope | NetworkMetadata.scope | zenoh key 隔离, 可 CLI --scope 覆盖 |
+| 本地依赖隔离 | mode | `modes/{name}/MOSS.md` | providers/channels/configs |
+| 运行时身份 | ghost | GHOST.md | ghost 空间 |
+| 会话作用域 | session_scope | `mode-{m}-ghost-{g}-network-{n}` | 可重入的组合标识, 不含 scope |
+
+zenoh key 空间:
+```
+MOSS/matrix/
+  hosts/                              ← all_hosts() 跨 scope
+  scopes/{scope}/
+    host-alive                        ← get_host() scope 内 host 唯一标记
+    cells/                            ← cell liveness + queryable
+    channels/                         ← channel provider/proxy
+    topics/ | signals/ | streams/ | outputs/
+```
+
+端口约定: 2038-n 系列 (来自 Detroit: Become Human 2038 时间点)。
+默认 `127.0.0.1:20380`。
+
+### W. 六文件重做摘要
+
+**environment.py** — RuntimeScope 消除。字段回归 Environment 平铺属性。
+bootstrap 后所有属性读 os.environ — 运行时 `os.environ['MOSS_MODE_NAME']=...` 立即生效。
+新增 `fixture()` 上下文管理器做测试隔离, `reset()`/`set_instance()` 控制单例。
+`DEFAULT_NETWORK_SCOPE = 'default'` (替代空串)。`MOSS_SESSION_ID` 不传给子进程。
+
+**cell.py** — CellType 收敛为 host/worker。discover() 简化为纯函数:
+读 runtime file 或 from_proc(), 不做 kill/takeover。
+Bug 修复: spawn_cell env 传错 (env 参数 vs env_data),
+is_alive pid is None 死判断 (pid 已是 int), uid 覆写移除,
+to_json 副作用移除。DuplicatedError 保留给 Matrix 层。
+
+**project.py** — MossMeta → ModeMeta。新增 `project_cell_paths` /
+`workspace_cell_paths` / `exclude_cell_paths` 做 cell 发现路径。
+NetworkMetadata (旧 SessionScopeMetadata): driver/scope/config 字段。
+NetworkConfig ABC: driver_name() + to_metadata() + from_metadata() 序列化桥。
+Project 不再持有 cells (cell 发现无 mode 时无意义);
+HostMode 上 cells() 返回 CellRegistry。
+
+**matrix.py** — Matrix ABC 加 project 属性。discover() 走 `env → project → matrix`。
+cells 属性返回 CellRegistry, network 属性返回 CellNetwork。
+移除 Mode 依赖。RuntimeScopeKey 更新: scope/network/mode/ghost/cell。
+移除 scope_home (scope 是纯通讯概念, 不需要 storage)。
+
+**session.py** — session_scope 不含 scope (`mode-{m}-ghost-{g}-network-{n}`)。
+session_id 是进程级身份。pub_logos/get_logos stream_id 参数替代 session_id,
+默认用 session_scope 共享 logos 流。
+
+**host.py** — MossHost.discover() 走 `env → project → host`。工厂模式 ghoshell_moss.factory。
+
+### X. 新增模块
+
+**NetworkNamespace** (`matrix/zenoh_impl/_helper.py`) — 替代旧 MOSSNamespace。
+从 Environment 构造, 产出 `MOSS/matrix/scopes/{scope}/...` key 空间。
+
+**ZenohNetworkConfig** (`matrix/networks/zenoh_network.py`) — NetworkConfig 的 zenoh 实现。
+按 cell type 组织: `host: ZenohNodeConfig(listen=..., multicast=...)`,
+`worker: ZenohNodeConfig(connect=...)`。for_cell(type) 分发方法。
+`create_zenoh_session_from_metadata()` 一站式: metadata → config → session。
+
+**Network stubs** (`stubs/workspace/networks/`):
+- `local.json` — Tier 1 默认: host listen 127.0.0.1:20380
+- `lan.json` — Tier 2: host listen 0.0.0.0:20380 + multicast
+
+**session 实现搬迁** (`matrix/session/zenoh_session.py`) — MossSessionWithZenoh
+用 MatrixNamespace 组装 zenoh key。storage/tmp_storage 在 session_scope 级别。
+
+### Y. 测试现状
+
+| 文件 | tests | 备注 |
+|------|-------|------|
+| test_environment_design.py | 37 | fixture() 隔离, 测行为不测字面值 |
+| test_cell_design.py | 85 | discover 简化后全部通过 |
+| test_zenoh_network.py | 12 | config 默认值/for_cell/往返/driver mismatch |
+| test_zenoh_session.py | 33 | MatrixNamespace 入参适配, key 断言用 endswith |
+
+### Z. 待推进 (按依赖)
+
+1. CellRegistry 新实现 (project_cell_registry) — glob/iterdir 替代两层目录
+2. HostCellNetwork / CellNetwork ABC 分离
+3. Matrix impl 重写 (对齐新 ABC)
+4. ProcessManager 集成 (替代 spawn_cell 底层)
+5. CLI 重建 (`moss cells` 替代 apps/script)
+6. 旧代码清理 (AppStore, circusd, script CLI)
+7. 文档体系 (howtos, docs, tutorials)
+
+### 上下文恢复支点 (下一实例)
+
+1. **本文件 §U-§Z** — 本次跃迁
+2. `src/ghoshell_moss/core/blueprint/environment.py` — Environment 新貌
+3. `src/ghoshell_moss/core/blueprint/cell.py` — Cell/CellRegistry/CellNetwork ABC
+4. `src/ghoshell_moss/core/blueprint/project.py` — NetworkConfig ABC + NetworkMetadata
+5. `src/ghoshell_moss/matrix/networks/zenoh_network.py` — ZenohNetworkConfig
+6. `src/ghoshell_moss/matrix/zenoh_impl/_helper.py` — NetworkNamespace
+7. `src/ghoshell_moss/matrix/session/zenoh_session.py` — Session 实现
 

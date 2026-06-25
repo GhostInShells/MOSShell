@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Iterable, Any, Generic, TypeVar
+from typing import Iterable, Any, Generic, TypeVar, ClassVar
 from typing_extensions import Self
 from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
@@ -30,6 +30,7 @@ __all__ = [
     'ModeMeta',
     'HostMode',
     'Manifest', 'ModeManifests', 'MatrixManifest',
+    'NetworkConfig', 'NetworkMetadata',
     'Project',
     'MATRIX_MANIFESTS_PACKAGE', 'MODE_MANIFESTS_PACKAGE',
 ]
@@ -179,6 +180,28 @@ class NetworkMetadata(BaseModel):
             data = cls.read_from_file(file, throw=False)
             if data:
                 yield data
+
+
+class NetworkConfig(BaseModel, ABC):
+
+    @classmethod
+    @abstractmethod
+    def driver_name(cls) -> str:
+        pass
+
+    def to_metadata(self, name: str, description: str = '') -> NetworkMetadata:
+        return NetworkMetadata(
+            name=name,
+            description=description,
+            driver=self.driver_name(),
+            config=self.model_dump(),
+        )
+
+    @classmethod
+    def from_metadata(cls, metadata: NetworkMetadata) -> 'NetworkConfig | None':
+        if metadata.driver != cls.driver_name():
+            return None
+        return cls.model_validate(metadata.config)
 
 
 _RelativePath = str

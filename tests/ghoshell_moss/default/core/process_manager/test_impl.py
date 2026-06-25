@@ -462,3 +462,59 @@ class TestEdgeCases:
             managed = await pm.execute("pwd")
             await managed.process.wait()
             assert managed.process.returncode == 0
+
+
+# ============================================================
+# 并发 & 压力
+# ============================================================
+
+
+class TestConcurrency:
+
+    @pytest.mark.asyncio
+    async def test_spawn_10_concurrent_sleep(self, pm_root, pm_output):
+        """10 个 sleep 并发 spawn — 全部入 executing, shutdown 全部清理."""
+        pm = ProcessManagerImpl(root=pm_root, output_path=pm_output)
+        async with pm:
+            # 并发启动 10 个长期进程
+            procs = await asyncio.gather(*(
+                pm.execute("sleep", str(30 + i)) for i in range(10)
+            ))
+            assert len(pm.executing()) == 10
+            # 每个都有有效 pid
+            for p in procs:
+                assert p.process.pid > 0
+                assert p.process.returncode is None
+
+        # shutdown 后全部被 kill
+        assert pm._stopped is True
+        for p in procs:
+            assert p.process.returncode is not None
+
+    @pytest.mark.asyncio
+    async def test_spawn_10_concurrent_tasks(self, pm_root, pm_output):
+        """10 个 task 并发 — buffer 互不污染."""
+        async with running_pm(pm_root, pm_output) as pm:
+            tasks = await asyncio.gather(*(
+                pm.execute_task("echo", f"task_{i}") for i in range(10)
+            ))
+            await asyncio.gather(*(t.wait() for t in tasks))
+            for i, t in enumerate(tasks):
+                assert f"task_{i}" in t.stdout_buffer()
+                # 互不污染
+                for j in range(10):
+                    if j != i:
+                        assert f"task_{j}" not in t.stdout_buffer()
+
+    @pytest.mark.asyncio
+    async def test_spawn_concurrent_then_reclaim(self, pm_root, pm_output):
+        """并发快速命令 — 全部 reclaim 到 executed."""
+        async with running_pm(pm_root, pm_output) as pm:
+            procs = await asyncio.gather(*(
+                pm.execute("echo", str(i)) for i in range(10)
+            ))
+            await asyncio.gather(*(p.process.wait() for p in procs))
+            await asyncio.sleep(0.2)
+            # 全部 reclaim
+            assert len(pm.executing()) == 0
+            assert len(pm.executed()) >= 10
