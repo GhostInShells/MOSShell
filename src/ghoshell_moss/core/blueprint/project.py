@@ -417,6 +417,7 @@ class Project(ABC):
 
     @property
     def logger(self) -> logging.Logger:
+        """project 级别的日志位置. """
         return logging.getLogger('moss')
 
     @classmethod
@@ -616,6 +617,12 @@ class Project(ABC):
     def log_config_file(self) -> Path:
         """约定的日志配置存在的路径. """
         return self.configs_dir.joinpath('logging.yml').absolute()
+
+    @property
+    def log_file(self) -> Path:
+        # 系统约定的日志文件名.
+        # 运行时所有的日志都会记录到这个文件中.
+        return self.log_dir.joinpath('moss.log').absolute()
 
     @property
     def network_configs_dir(self) -> Path:

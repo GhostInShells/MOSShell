@@ -71,7 +71,7 @@ import ghoshell_moss.host as host_impl
 import ghoshell_moss.host.tui as tui_design
 import ghoshell_moss.host.tui_entries as tui_entries
 import ghoshell_moss.host.manifests as host_manifests
-import ghoshell_moss.host.session as session_impl
+import ghoshell_moss.matrix.session as session_impl
 import ghoshell_moss.bridges as bridges
 import ghoshell_moss.ghosts as ghosts
 import ghoshell_moss.core.topic as topic_service

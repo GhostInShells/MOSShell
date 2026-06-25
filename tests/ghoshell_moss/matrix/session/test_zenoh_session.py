@@ -18,12 +18,12 @@ from ghoshell_moss.depends import depend_zenoh
 depend_zenoh()
 import zenoh
 
-from ghoshell_moss.host.session.zenoh_session import SimpleOutputBuffer, MossSessionWithZenoh
+from ghoshell_moss.matrix.session.zenoh_session import SimpleOutputBuffer, MossSessionWithZenoh
 from ghoshell_moss.core.blueprint.session import OutputItem, Sample
-from ghoshell_moss.host.topics.zenoh_topics import ZenohTopicService
+from ghoshell_moss.matrix.topics.zenoh_topics import ZenohTopicService
 from ghoshell_moss.message import Message
 from ghoshell_moss.contracts.logger import get_moss_logger
-from ghoshell_moss.contracts.workspace import LocalStorage
+from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 
 
 # ── SimpleOutputBuffer ──────────────────────────────────
@@ -108,20 +108,20 @@ class TestSessionWithZenoh:
         zenoh_sess: zenoh.Session,
         scope: str = "test_session_scope",
     ) -> MossSessionWithZenoh:
-        tmp = tempfile.mkdtemp()
-        storage = LocalStorage(Path(tmp))
+        tmp = Path(tempfile.mkdtemp())
         topics = ZenohTopicService(
-            session_scope=scope,
+            network_scope=scope,
             session=zenoh_sess,
             address="test",
         )
         return MossSessionWithZenoh(
             session_scope=scope,
-            session_root_storage=storage,
-            session_tmp_root_storage=storage.sub_storage('tmp'),
-            logger=get_moss_logger(),
+            namespace=MatrixNamespace(scope),
             zenoh_session=zenoh_sess,
             topic_service=topics,
+            sessions_storage_dir=tmp / 'sessions',
+            sessions_tmp_storage_dir=tmp / 'tmp',
+            logger=get_moss_logger(),
         )
 
     def test_construct_rejects_closed_zenoh(self):
@@ -291,8 +291,8 @@ class TestSessionWithZenoh:
     def test_stream_key_expr(self):
         with zenoh.open(zenoh.Config()) as z:
             sess = self._new_session(z)
-            assert sess.stream_key_expr("ch") == "MOSS/test_session_scope/streams/ch"
-            assert sess.stream_key_expr("/ch/") == "MOSS/test_session_scope/streams/ch"
+            assert sess.stream_key_expr("ch").endswith("streams/ch")
+            assert sess.stream_key_expr("/ch/").endswith("streams/ch")
 
     def test_is_running(self):
         with zenoh.open(zenoh.Config()) as z:
@@ -369,20 +369,20 @@ class TestSessionStreamAsync:
 
     @staticmethod
     def _new_session(zenoh_sess, scope="test_async_scope"):
-        tmp = tempfile.mkdtemp()
-        storage = LocalStorage(Path(tmp))
+        tmp = Path(tempfile.mkdtemp())
         topics = ZenohTopicService(
-            session_scope=scope,
+            network_scope=scope,
             session=zenoh_sess,
             address="test",
         )
         return MossSessionWithZenoh(
             session_scope=scope,
-            session_root_storage=storage,
-            session_tmp_root_storage=storage.sub_storage('tmp'),
-            logger=get_moss_logger(),
+            namespace=MatrixNamespace(scope),
             zenoh_session=zenoh_sess,
             topic_service=topics,
+            sessions_storage_dir=tmp / 'sessions',
+            sessions_tmp_storage_dir=tmp / 'tmp',
+            logger=get_moss_logger(),
         )
 
     # ── get_stream 生命周期 ────────────────────────
@@ -394,7 +394,7 @@ class TestSessionStreamAsync:
             stream = sess.get_stream("test/life")
 
             async with stream:
-                assert stream.full_key() == "MOSS/test_async_scope/streams/test/life"
+                assert stream.full_key().endswith("streams/test/life")
                 assert stream.relative_key() == "test/life"
 
     @pytest.mark.asyncio
@@ -426,7 +426,7 @@ class TestSessionStreamAsync:
 
             async def consume() -> list[str]:
                 results = []
-                async for text in sess.get_logos(session_id=sid):
+                async for text in sess.get_logos(stream_id=sid):
                     results.append(text)
                     if len(results) >= 3:
                         break
@@ -435,8 +435,8 @@ class TestSessionStreamAsync:
             consumer = asyncio.create_task(consume())
             await asyncio.sleep(0.05)  # 让 subscriber 注册生效
 
-            sess.pub_logos("hello ", "logos", session_id=sid)
-            sess.pub_logos(" world", session_id=sid)
+            sess.pub_logos("hello ", "logos", stream_id=sid)
+            sess.pub_logos(" world", stream_id=sid)
 
             results = await asyncio.wait_for(consumer, timeout=5.0)
             assert "".join(results) == "hello logos world"

@@ -9,7 +9,7 @@ from ghoshell_moss.core.blueprint.environment import Environment
 
 depend_zenoh()
 import zenoh
-from ghoshell_moss.host.session.zenoh_session import MossSessionWithZenoh
+from ghoshell_moss.matrix.session.zenoh_session import MossSessionWithZenoh
 
 __all__ = [
     'HostSessionProvider',
@@ -44,7 +44,7 @@ class HostSessionProvider(Provider[Session]):
         zenoh_session = con.force_fetch(zenoh.Session)
         logger = con.get(LoggerItf)
         env = con.force_fetch(Environment)
-        session_scope = env.session_scope
+        session_scope = env.network_scope
         session_id = env.session_id
         # session 的根目录.
         session_root_storage = ws.runtime().sub_storage(self._session_path)

@@ -13,8 +13,7 @@ from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.cell import normalize
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
 from ghoshell_moss.tools.zenoh_helper import (
-    MOSSScopeNamespace,
-    MOSSNamespace,
+    MatrixNamespace,
     ZenohLivenessListener,
 )
 from ._utils import HubKeyExpr
@@ -39,11 +38,11 @@ class ZenohChannelHub:
             liveness_check_interval: float = 3.0,
             max_records: int = 256,
             logger: LoggerItf | None = None,
-            namespace: MOSSNamespace | None = None,
+            namespace: MatrixNamespace | None = None,
     ):
-        namespace = namespace or MOSSScopeNamespace(scope=scope)
+        namespace = namespace or MatrixNamespace(network_scope=scope)
         self._namespace = namespace
-        self._hub_expr = HubKeyExpr(self._namespace.channels_namespace)
+        self._hub_expr = HubKeyExpr(self._namespace.channels_ns)
         self._scope = scope
         self._container = container
         self._zenoh_session = zenoh_session

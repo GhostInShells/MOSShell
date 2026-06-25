@@ -1,37 +1,46 @@
-import contextlib
-import queue
 from typing import Callable
 from typing_extensions import Self
 
-import janus
 from ghoshell_moss.message import Message
 from pathlib import Path
 
-from ghoshell_moss.contracts import Storage, LoggerItf
+from ghoshell_moss.contracts import Storage, LocalStorage, get_moss_logger
 from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.cache import SqliteCache
-from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.parameter import ParameterStore
+from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputBuffer, OutputItem, StreamSubscriber,
     Sample
 )
-from ghoshell_moss.core.blueprint.environment import DEFAULT_SESSION_SCOPE
-from ghoshell_moss.tools.zenoh_helper import MOSSNamespace, MOSSScopeNamespace
+from ghoshell_moss.tools.zenoh_helper import MatrixNamespace, MatrixEnvNamespace
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
 
 depend_zenoh()
+from .zenoh_stream_subscriber import ZenohStreamSubscriber
+from pydantic import BaseModel
 import zenoh
+import logging
 import asyncio
 
 __all__ = [
     'MossSessionWithZenoh',
     'SimpleOutputBuffer',
+    'ProjectZenohSession',
 ]
+
+
+class SessionMetadata(BaseModel):
+    session_scope: str
+    session_id: str
+    cell_address: str
+    parent_cell_address: str
 
 
 class MossSessionWithZenoh(Session):
@@ -43,36 +52,38 @@ class MossSessionWithZenoh(Session):
             self,
             *,
             session_scope: str,
-            session_root_storage: Storage,
-            session_tmp_root_storage: Storage,
-            logger: LoggerItf,
+            namespace: MatrixNamespace,
             zenoh_session: zenoh.Session,
             topic_service: TopicService,
+            sessions_storage_dir: Path,
+            sessions_tmp_storage_dir: Path,
+            logger: logging.Logger | None = None,
+            cell_address: str = '',
+            parent_cell_address: str = '',
             session_id: str | None = None,
-            moss_namespace: MOSSNamespace = None,
     ):
         """
         :param session_scope: Moss Matrix 运行时, 所有通讯都围绕同一个 session scope.
-        :param session_root_storage: 在当前隔离级别下, Session 拿到的 Root Storage.
-        :param session_tmp_root_storage:  session 的临时存储路径.
         :param logger: 日志模块.
         :param zenoh_session: 依赖 zenoh 通讯.
         :param topic_service: session 持有 topic service. 未来应该是 session 构建它.
-        :param session_id: 会话 id, 它实际上在同源 Matrix 所有实例中应该要共享, 从 env 中获取.
         """
-        self._session_scope = session_scope or DEFAULT_SESSION_SCOPE  # or 逻辑简单做一个防蠢, 怕 storage 逻辑崩了.
+        self._namespace = namespace
+        self._session_scope = session_scope
+        self._session_id = session_id or unique_id()
+        # 用于写入 session scope.
+        self._metadata = SessionMetadata(
+            session_scope=self._session_scope,
+            session_id=self._session_id,
+            cell_address=cell_address,
+            parent_cell_address=parent_cell_address,
+        )
 
         # 子类继承可重写.
-        moss_namespace = moss_namespace or MOSSScopeNamespace(scope=session_scope)
-        self._output_key_expr = moss_namespace.output_namespace
-        self._input_signal_expr = moss_namespace.signal_namespace
-        self._stream_key_expr_prefix = moss_namespace.stream_namespace
+        self._output_key_expr = self._namespace.output_ns
+        self._input_signal_expr = self._namespace.signal_ns
+        self._stream_key_expr_prefix = self._namespace.stream_ns
         self._received_signal_index: int = 0
-
-        self._session_id = session_id or unique_id()
-
-        # session 实例级别的 id.
-        self._session_unique_id = unique_id()
 
         self._zenoh_session = zenoh_session
         if zenoh_session.is_closed():
@@ -80,7 +91,7 @@ class MossSessionWithZenoh(Session):
 
         self._output_sub = zenoh_session.declare_subscriber(self._output_key_expr, self._on_zenoh_output)
         self._input_sub = zenoh_session.declare_subscriber(self._input_signal_expr, self._on_zenoh_signal_input)
-        self._logger = logger
+        self._logger = logger or get_moss_logger()
         self._log_prefix = f'<Session cls={self.__class__} scope={session_scope} id={self.session_id}>'
 
         # 注意内存泄漏.
@@ -89,14 +100,54 @@ class MossSessionWithZenoh(Session):
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
         self._topic_service = topic_service
         self._closing_event = ThreadSafeEvent()
+        # --- lazy 懒启动 --- #
         self._cache: Cache | None = None
-        self._session_root_storage = session_root_storage
-        self._session_tmp_root_storage = session_tmp_root_storage
         self._parameters: ParameterStore | None = None
+
+        self._sessions_storage_dir = sessions_storage_dir
+        self._sessions_tmp_storage_dir = sessions_tmp_storage_dir
+        self._session_tmp_storage: Storage | None = None
+        self._session_scope_storage: Storage | None = None
+
+    @classmethod
+    def make_session_scope(cls, env: Environment) -> str:
+        mode = cls._normalize(env.mode_name)
+        ghost = cls._normalize(env.ghost_name)
+        network = cls._normalize(env.network)
+        return f"mode-{mode}-ghost-{ghost}-network-{network}"
+
+    @classmethod
+    def _normalize(cls, name: str) -> str:
+        return (name.replace('.', '_').replace('\\', '_').
+                replace(' ', '_').replace('/', '_'))
 
     @property
     def session_scope(self) -> str:
         return self._session_scope
+
+    @property
+    def storage(self) -> Storage:
+        if self._session_scope_storage is None:
+            self._session_scope_storage = self._make_session_storage(self._sessions_storage_dir)
+
+        return self._session_scope_storage
+
+    @property
+    def tmp_storage(self) -> Storage:
+        # tmp storage 应该要在每次运行完后删除.
+        if self._session_tmp_storage is None:
+            self._session_tmp_storage = self._make_session_storage(self._sessions_tmp_storage_dir)
+        return self._session_tmp_storage
+
+    def _session_storage_dir_name(self) -> str:
+        return f"session-{self.session_scope}"
+
+    def _make_session_storage(self, root: Path) -> Storage:
+        storage_path = root / self._session_storage_dir_name()
+        if not storage_path.exists():
+            storage_path.mkdir(parents=True, exist_ok=True)
+        storage = LocalStorage(storage_path)
+        return storage
 
     @property
     def session_id(self) -> str:
@@ -105,14 +156,6 @@ class MossSessionWithZenoh(Session):
     @property
     def topics(self) -> TopicService:
         return self._topic_service
-
-    @property
-    def sessions_root_storage(self) -> Storage:
-        return self._session_root_storage
-
-    @property
-    def sessions_tmp_root_storage(self) -> Storage:
-        return self._session_tmp_root_storage
 
     @property
     def cache(self) -> Cache:
@@ -280,7 +323,7 @@ class MossSessionWithZenoh(Session):
         ])
 
     def get_stream(self, relative_key: str, *, maxsize: int = 0) -> StreamSubscriber:
-        return _SessionStreamSubscriber(
+        return ZenohStreamSubscriber(
             key_expr_prefix=self._stream_key_expr_prefix,
             relative_key=relative_key,
             maxsize=maxsize,
@@ -293,6 +336,8 @@ class MossSessionWithZenoh(Session):
         # Eager-init parameter store in thread pool — SQLite WAL + Zenoh
         # sub are synchronous and would block the event loop.
         await asyncio.to_thread(lambda: self.parameters)
+        # 记录 jsonl
+        await asyncio.to_thread(self.storage.append_model, "sessions", self._metadata)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -302,99 +347,29 @@ class MossSessionWithZenoh(Session):
         self._logger.info("%s session closed", self._log_prefix)
 
 
-class _SessionStreamSubscriber(StreamSubscriber):
-    """zenoh subscriber 的 StreamHandle 实现"""
+class ProjectZenohSession(MossSessionWithZenoh):
 
     def __init__(
             self,
-            key_expr_prefix: str,
-            relative_key: str,
+            *,
+            project: Project,
             zenoh_session: zenoh.Session,
-            session_stop_event: ThreadSafeEvent,
-            maxsize: int = 0,
-    ) -> None:
-        self._zenoh_session = zenoh_session
-        self._relative_key = relative_key
-        self._key_expr_prefix = key_expr_prefix
-        self._full_key = "/".join([self._key_expr_prefix, relative_key])
-        self._sub: zenoh.Subscriber | None = None
-        self._maxsize = maxsize
-        self._session_stop_event = session_stop_event
-        self._queue: janus.Queue[Sample | None] | None = None
-        self._wait_session_stop_task: asyncio.Task | None = None
-        self._closed = False
+            topic_service: TopicService,
+            logger: logging.Logger | None = None,
+    ):
+        session_scope = MossSessionWithZenoh.make_session_scope(project.env)
+        session_id = project.env.session_id
+        namespace = MatrixEnvNamespace(project.env)
 
-    def full_key(self) -> str:
-        return self._full_key
-
-    def relative_key(self) -> str:
-        return self._relative_key
-
-    def _on_zenoh_sample(self, sample: zenoh.Sample) -> None:
-        """跨线程卸载：zenoh 回调 → janus 同步队列。
-
-        使用 put_nowait 避免阻塞 zenoh 内部线程。队列满时丢弃并 log，
-        优于阻塞 zenoh 影响全局通讯总线。
-        """
-        if self._closed:
-            return
-        key_expr = str(sample.key_expr)
-        if key_expr.startswith(self._key_expr_prefix):
-            relative_key = key_expr[len(self._key_expr_prefix) + 1:]
-            moss_sample = Sample(
-                relative_key=relative_key,
-                payload=sample.payload.to_bytes(),
-            )
-            try:
-                self._queue.sync_q.put_nowait(moss_sample)
-            except janus.SyncQueueShutDown:
-                self._closed = True
-            except queue.Full:
-                pass
-
-    async def _wait_session_closed(self) -> None:
-        await self._session_stop_event.wait()
-        try:
-            self._queue.sync_q.put_nowait(None)
-        except janus.SyncQueueShutDown:
-            pass
-
-    async def __aenter__(self) -> 'StreamSubscriber':
-        if self._zenoh_session.is_closed():
-            raise RuntimeError('Session is closed')
-        elif self._sub is not None:
-            raise RuntimeError('Session Stream is already started')
-        self._queue = janus.Queue(maxsize=self._maxsize)
-        self._sub = self._zenoh_session.declare_subscriber(
-            self._full_key,
-            self._on_zenoh_sample,
+        super().__init__(
+            session_scope=session_scope,
+            session_id=session_id,
+            namespace=namespace,
+            zenoh_session=zenoh_session,
+            topic_service=topic_service,
+            logger=logger,
+            cell_address=project.env.this_cell_address,
+            parent_cell_address=project.env.parent_cell_address,
+            sessions_storage_dir=project.sessions_dir,
+            sessions_tmp_storage_dir=project.tmp
         )
-        self._wait_session_stop_task = asyncio.create_task(self._wait_session_closed())
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self._closed = True
-        if self._sub is not None and not self._zenoh_session.is_closed():
-            try:
-                self._sub.undeclare()
-            except Exception:
-                # zenoh 的 python 包可能有不同类型的异常, 暂时不用处理.
-                pass
-        if self._wait_session_stop_task is not None:
-            self._wait_session_stop_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._wait_session_stop_task
-            self._wait_session_stop_task = None
-
-    async def __anext__(self) -> Sample:
-        if not self._sub or not self._queue:
-            raise RuntimeError('Session Stream must enter context manager by `async with` first')
-        if self._zenoh_session.is_closed() or self._session_stop_event.is_set():
-            raise StopAsyncIteration
-        try:
-            sample = await self._queue.async_q.get()
-            if sample is None:
-                raise StopAsyncIteration
-            return sample
-        except janus.AsyncQueueShutDown:
-            raise StopAsyncIteration

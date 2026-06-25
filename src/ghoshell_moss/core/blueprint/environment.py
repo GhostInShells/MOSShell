@@ -194,18 +194,19 @@ class Environment:
         """
         if self._bootstrapped:
             return
-        self._bootstrapped = True
-        global _environment
-        _environment = self
         if not self.workspace_path.exists():
             raise EnvironmentError(f"Workspace `{self.workspace_path}` does not exist")
 
-        # 更新当前运行状态的环境变量.
+        # 先同步当前状态到 os.environ, 再标记 bootstrapped.
+        # 标记后属性走 os.environ, 确保外部运行时修改生效.
         env_data = self.dump_runtime_scope()
-        # 覆盖 os environ
         for key, value in env_data.items():
             if value:
                 os.environ[key] = str(value)
+
+        global _environment
+        _environment = self
+        self._bootstrapped = True
 
     # --- 环境发现逻辑 --- #
 
@@ -236,45 +237,62 @@ class Environment:
         _environment = env
 
     # --- 暴露属性. --- #
+    # bootstrap 前读存储属性, bootstrap 后读 os.environ — 运行时修改 env 立即生效.
 
     @property
     def mode_name(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_MOSS_MODE_KEY, NONE_MOSS_MODE)
         return self._mode_name
 
     @property
     def ghost_name(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_GHOST_NAME_KEY, NONE_GHOST_NAME)
         return self._ghost_name
 
     @property
     def no_ghost(self) -> bool:
-        return self._ghost_name == NONE_GHOST_NAME or not self._ghost_name
+        return self.ghost_name == NONE_GHOST_NAME or not self.ghost_name
 
     @property
     def no_mode(self) -> bool:
-        return self._mode_name == NONE_MOSS_MODE or not self._mode_name
+        return self.mode_name == NONE_MOSS_MODE or not self.mode_name
 
     @property
     def network_scope(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_NETWORK_SCOPE_KEY, DEFAULT_NETWORK_SCOPE)
         return self._network_scope
 
     @property
     def session_id(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_SESSION_ID_KEY, '') or self._session_id
         return self._session_id
 
     @property
     def project_id(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_PROJECT_ID_KEY, '') or self._project_id
         return self._project_id
 
     @property
     def network(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_NETWORK_KEY, DEFAULT_NETWORK_NAME)
         return self._network
 
     @property
     def this_cell_address(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         return self._cell_address
 
     @property
     def parent_cell_address(self) -> str:
+        if self._bootstrapped:
+            return os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
         return self._parent_cell_address
 
     @property

@@ -8,7 +8,7 @@ from ghoshell_moss.core.topic.suite_for_test import (
 from ghoshell_moss.core.concepts.topic import TopicService, ErrorTopic
 
 try:
-    from ghoshell_moss.host.topics.zenoh_topics import ZenohTopicServiceSuite
+    from ghoshell_moss.matrix.topics.zenoh_topics import ZenohTopicServiceSuite
     _zenoh_available = True
 except ImportError:
     ZenohTopicServiceSuite = None

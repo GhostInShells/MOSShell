@@ -5,7 +5,6 @@ from ghoshell_moss.message import unique_id
 import zenoh
 from ._provider import ZenohChannelProvider
 from ._proxy import ZenohProxyChannel
-import time
 
 __all__ = ["ZenohBridgeTestSuite"]
 

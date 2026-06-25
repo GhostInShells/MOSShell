@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from hmac import new
 from typing import Callable
 
 from ghoshell_moss.depends import depend_zenoh
@@ -11,39 +12,37 @@ import zenoh
 import logging
 
 __all__ = [
-    "MOSSNamespace",
-    "MOSSScopeNamespace",
-    "MOSSEnvNamespace",
+    "MatrixNamespace",
+    "MatrixEnvNamespace",
     "ZenohLivenessListener",
 ]
 
 
-class MOSSNamespace:
-    def __init__(self, namespace: str):
-        self.namespace = namespace.strip("/")
-        self.channels_namespace = '/'.join([namespace, 'channels'])
-        self.cells_namespace = '/'.join([namespace, 'cells'])
-        self.topic_namespace = '/'.join([namespace, 'topics'])
-        self.signal_namespace = '/'.join([namespace, 'signals'])
-        self.stream_namespace = '/'.join([namespace, 'streams'])
-        self.output_namespace = '/'.join([namespace, 'outputs'])
+class MatrixNamespace:
+    def __init__(self, network_scope: str):
+        self.hosts_ns = "MOSS/matrix/hosts"
+        self.network_ns = f"MOSS/matrix/scopes/{network_scope}"
+
+        namespace = self.network_ns.strip("/")
+        self.namespace = namespace
+
+        self.host_alive_key = f"{self.network_ns}/host-alive"
+        self.channels_ns = '/'.join([namespace, 'channels'])
+        self.cells_ns = '/'.join([namespace, 'cells'])
+        self.topic_ns = '/'.join([namespace, 'topics'])
+        self.signal_ns = '/'.join([namespace, 'signals'])
+        self.stream_ns = '/'.join([namespace, 'streams'])
+        self.output_ns = '/'.join([namespace, 'outputs'])
 
     def __str__(self):
         return self.namespace
 
 
-class MOSSEnvNamespace(MOSSNamespace):
+class MatrixEnvNamespace(MatrixNamespace):
 
     def __init__(self, env: Environment):
-        moss_name = env.moss_meta.name
-        session_scope = env.session_scope
-        super().__init__(f"MOSS/{moss_name}/scope/{session_scope}")
-
-
-class MOSSScopeNamespace(MOSSNamespace):
-
-    def __init__(self, scope: str):
-        super().__init__(f"MOSS/{scope}")
+        network_scope = env.network_scope
+        super().__init__(network_scope)
 
 
 # ── ZenohLivenessListener ───────────────────────────────────────────
@@ -57,14 +56,14 @@ class ZenohLivenessListener:
     """
 
     def __init__(
-        self,
-        *,
-        liveness_prefix: str,
-        session: zenoh.Session,
-        logger: logging.Logger | None = None,
-        on_online: Callable[[str], None] | None = None,
-        on_offline: Callable[[str], None] | None = None,
-        reconcile_interval: float = 10.0,
+            self,
+            *,
+            liveness_prefix: str,
+            session: zenoh.Session,
+            logger: logging.Logger | None = None,
+            on_online: Callable[[str], None] | None = None,
+            on_offline: Callable[[str], None] | None = None,
+            reconcile_interval: float = 10.0,
     ):
         self._liveness_prefix = liveness_prefix.rstrip("/")
         self._liveness_wildcard = f"{self._liveness_prefix}/**"
@@ -97,7 +96,7 @@ class ZenohLivenessListener:
         prefix = self._liveness_prefix + '/'
         result: list[str] = []
         for sample in self._zenoh_session.liveliness().get(
-            self._liveness_wildcard
+                self._liveness_wildcard
         ):
             if not sample.ok:
                 continue

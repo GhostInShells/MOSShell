@@ -402,6 +402,11 @@ class Cell(BaseModel):
         """在整个体系内, 通讯时的唯一地址 (包含了唯一 id). """
         return '/'.join([self.meta.type, self.normalized_name, self.status.uid])
 
+    @property
+    def logger_name(self) -> str:
+        """cell 自身的日志名. 通常决定 matrix 的日志. """
+        return '.'.join(['moss', self.type, self.normalized_name, self.status.uid])
+
     @classmethod
     def new(
             cls,

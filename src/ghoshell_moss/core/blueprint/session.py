@@ -160,8 +160,9 @@ class Session(ABC):
     @abstractmethod
     def session_scope(self) -> str:
         """
-        所属的会话 scope, 是一个可重入的组合状态.
-        基本逻辑是 mode_{mode}-ghost_{ghost}-network_{network}-scope_{scope}
+        会话作用域, 可重入的组合标识.
+        mode_{mode}-ghost_{ghost}-network_{network}
+        同一 session_scope 下共享 storage 和 logos 流.
         """
         pass
 
@@ -169,7 +170,8 @@ class Session(ABC):
     @abstractmethod
     def session_id(self) -> str:
         """
-        session id
+        当前进程专属的 session id.
+        每个进程中实例化的 Session 会有不同的 session id.
         """
         pass
 
@@ -306,17 +308,17 @@ class Session(ABC):
     def pub_logos(
             self,
             *deltas: str,
-            session_id: str | None = None,
+            stream_id: str | None = None,
     ) -> None:
         """
         发送模型生产的 logos 片段 (默认是 ctml 流, 详见 Mindflow) 到总线.
 
         :param deltas: 流式数据的片段.
-        :param session_id: 默认使用当前会话的 Session id 传递 logos 流.
+        :param stream_id: 指定 stream id 隔离不同的 logos 流.
 
         技术上需要实现有序.
         """
-        sid = session_id or self.session_id
+        sid = stream_id or self.session_scope
         for delta in deltas:
             self.pub_stream_delta(
                 f"{self.LOGOS_KEY}/{sid}",
@@ -324,12 +326,12 @@ class Session(ABC):
             )
 
     async def get_logos(
-            self, *, session_id: str | None = None,
+            self, *, stream_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         基于约定的协议, 获取广播的 Stream 流.
         """
-        sid = session_id or self.session_id
+        sid = stream_id or self.session_scope
         stream = self.get_stream(f"{self.LOGOS_KEY}/{sid}")
         async with stream:
             async for delta in stream:

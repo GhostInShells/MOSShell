@@ -1,6 +1,6 @@
 import asyncio
 from ghoshell_moss.core.concepts.topic import ErrorTopic
-from ghoshell_moss.host.topics.zenoh_topics import ZenohTopicService
+from ghoshell_moss.matrix.topics.zenoh_topics import ZenohTopicService
 import pytest
 import zenoh
 
@@ -11,7 +11,7 @@ async def test_topic_baseline():
     with session:
         service = ZenohTopicService(
             address="test",
-            session_scope="test",
+            network_scope="test",
             session=session,
         )
         listening_started = asyncio.Event()
@@ -61,7 +61,7 @@ async def test_topic_service_publish():
     received = []
     started = asyncio.Event()
     with session:
-        service = ZenohTopicService(address="test", session_scope="test", session=session)
+        service = ZenohTopicService(address="test", network_scope="test", session=session)
         async with service:
             async def _consume():
                 async with service.subscribe_model(ErrorTopic) as subscriber:

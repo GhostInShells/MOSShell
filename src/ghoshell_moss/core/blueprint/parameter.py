@@ -20,6 +20,7 @@ __all__ = [
     "ParameterStore",
     "VersionConflict",
     "T_PARAM",
+    "ExampleParameter",
 ]
 
 T_PARAM = TypeVar("T_PARAM", bound="ParameterModel")
@@ -82,6 +83,18 @@ class ParameterModel(BaseModel, ABC):
             json_schema=cls.model_json_schema(),
             default=cls.param_default().model_dump(exclude_none=True),
         )
+
+
+class ExampleParameter(ParameterModel):
+    example: str = 'hello world'
+
+    @classmethod
+    def param_name(cls) -> str:
+        return "example"
+
+    @classmethod
+    def param_default(cls) -> "ParameterModel":
+        return ParameterModel()
 
 
 class VersionConflict(Exception):
@@ -185,3 +198,7 @@ class ParameterStore(ABC):
         runtime-discoverable list of active parameter declarations.
         """
         ...
+
+    @abstractmethod
+    def close(self) -> None:
+        pass

@@ -4,16 +4,15 @@ from typing_extensions import Self
 from ghoshell_moss.message.message import Addition
 from ghoshell_moss.core.concepts.topic import (
     Publisher, Topic, Subscriber, TopicService, TopicModel, TOPIC_MODEL, TopicName,
-    TopicClosedError, TopicWindow,
+    TopicClosedError, TopicWindow, TopicNamePattern
 )
 from ghoshell_moss.core.topic.window import DequeTopicWindow
 from ghoshell_moss.depends import depend_zenoh
 from ghoshell_moss.contracts import get_moss_logger, LoggerItf
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.message import unique_id
-from pydantic import ValidationError
 from ghoshell_moss.core.topic.suite_for_test import TopicServiceSuite
-from ghoshell_moss.core.topic.key_expr import MOSSTopicExpr
+from pydantic import ValidationError
 import janus
 import asyncio
 import threading
@@ -22,27 +21,46 @@ import time
 
 depend_zenoh()
 import zenoh
+from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+import re
 
 __all__ = ['ZenohTopicSubscriber', 'ZenohTopicPublisher', 'ZenohTopicService', 'ZenohTopicServiceSuite']
+
+topic_name_matcher = re.compile(TopicNamePattern)
+
+
+class MOSSTopicExpr:
+
+    def __init__(self, *, namespace: MatrixNamespace, address: str):
+        self.address = address
+        self.topic_prefix = namespace.topic_ns
+
+    def topic_key_expr(self, topic_name: str) -> str:
+        matched = topic_name_matcher.fullmatch(topic_name)
+        if matched is None:
+            raise ValueError(f"Invalid topic name: {topic_name}")
+        return "/".join([self.topic_prefix, topic_name.strip('/')])
 
 
 class ZenohTopicService(TopicService):
 
     def __init__(
             self,
-            session_scope: str,
+            network_scope: str,
             session: zenoh.Session,
             address: str,
             *,
+            namespace: MatrixNamespace | None = None,
             logger: LoggerItf | None = None,
     ):
-        self._session_scope = session_scope
+        self._session_scope = network_scope
         self._session = session
         # 一定要有一个 sender. 通常是 node name
         self._sender = address or unique_id()
         self._logger = logger or get_moss_logger()
         self._subscriber_lock = asyncio.Lock()
-        self._topic_key_expr = MOSSTopicExpr(session_scope=session_scope, address=address)
+        namespace = namespace or MatrixNamespace(network_scope)
+        self._topic_key_expr = MOSSTopicExpr(namespace=namespace, address=address)
 
         self._publish_queue: janus.Queue[Topic] = janus.Queue()
         self._publish_queue_empty = asyncio.Event()
@@ -514,7 +532,7 @@ class ZenohTopicServiceSuite(TopicServiceSuite):
         self._session = zenoh.open(zenoh.Config())
         self._session.__enter__()
         return ZenohTopicService(
-            session_scope="session_id",
+            network_scope="session_id",
             session=self._session,
             address=sender,
         )

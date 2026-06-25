@@ -12,7 +12,7 @@ from ghoshell_moss.core.duplex import (
 )
 from ghoshell_moss.core.duplex.protocol import HeartbeatEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
-from ghoshell_moss.tools.zenoh_helper import MOSSScopeNamespace, MOSSNamespace
+from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 from ._utils import HubKeyExpr
 from pydantic import ValidationError
 import janus
@@ -36,15 +36,15 @@ class ZenohProxyConnection(Connection):
             address: str,
             scope: str,
             logger: LoggerItf | None = None,
-            namespace: MOSSNamespace | None = None,
+            namespace: MatrixNamespace | None = None,
     ) -> None:
         self._logger = logger or get_moss_logger()
         self._scope = scope or 'default'
         self._zenoh_session = session
         self._address = address
         if namespace is None:
-            namespace = MOSSScopeNamespace(scope=scope)
-        self._bridge_expr = HubKeyExpr(namespace=namespace.channels_namespace).new_expr(address=address)
+            namespace = MatrixNamespace(network_scope=scope)
+        self._bridge_expr = HubKeyExpr(namespace=namespace.channels_ns).new_expr(address=address)
 
         # 状态控制
         self._disconnected_event = threading.Event()
@@ -208,7 +208,7 @@ class ZenohProxyChannel(DuplexChannelProxy):
             description: str = "",
             zenoh_session: zenoh.Session | None = None,
             uid: str | None = None,
-            namespace: MOSSNamespace | None = None,
+            namespace: MatrixNamespace | None = None,
     ):
         self._address = address
         self._scope = scope or 'default'

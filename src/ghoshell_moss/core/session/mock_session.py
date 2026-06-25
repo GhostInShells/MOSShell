@@ -111,11 +111,11 @@ class MockSession(Session):
         self.stream_pubs: dict[str, list[bytes]] = {}
 
     @property
-    def sessions_home(self) -> Storage:
+    def storage(self) -> Storage:
         return self._session_root_storage
 
     @property
-    def sessions_tmp_root_storage(self) -> Storage:
+    def tmp_storage(self) -> Storage:
         return self._session_root_storage.sub_storage('tmp')
 
     @property
@@ -132,8 +132,6 @@ class MockSession(Session):
         return self._parameters
 
     # ── storages ──────────────────────────────
-
-
 
     # ── properties ──────────────────────────────
 

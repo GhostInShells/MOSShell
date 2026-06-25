@@ -14,7 +14,7 @@ from ghoshell_moss.core.blueprint.mindflow import (
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 import threading
 
-__all__ = ["InputSignalNucleus", 'InputSignalMeta', 'InputSignalNucleusMeta']
+__all__ = ["InputSignalNucleus", 'InputSignalMeta', 'InputNucleusMeta']
 
 
 class InputSignalNucleus(Nucleus):
@@ -182,7 +182,7 @@ class InputSignalNucleus(Nucleus):
             self.clear()
 
 
-class InputSignalNucleusMeta(NucleusMeta):
+class InputNucleusMeta(NucleusMeta):
 
     def __init__(
             self,

@@ -151,7 +151,7 @@ moss codex get-source ghoshell_moss.core.concepts.topic   # 看 ErrorTopic 和 L
 
 ```bash
 moss codex list ghoshell_moss.core.topic     # core 层实现
-moss codex list ghoshell_moss.host.topics    # host 层实现
+moss codex list ghoshell_moss.matrix.topics    # host 层实现
 ```
 
 搜索 topic 相关测试了解用法。查阅 howtos 了解 manifest 声明和环境发现。
