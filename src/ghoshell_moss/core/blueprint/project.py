@@ -472,6 +472,35 @@ class Project(ABC):
         """project 级别的日志位置. """
         return logging.getLogger('moss')
 
+    _LOG_HANDLER_NAME = 'moss_file_handler'
+
+    def _ensure_log_file_handler(self) -> None:
+        """为 'moss' logger 添加运行时文件 handler.
+
+        logging.yml 只配格式和等级, 文件路径是运行时确定的.
+        此方法在 bootstrap() 中调用, 幂等.
+        """
+        from logging.handlers import TimedRotatingFileHandler
+        from ghoshell_moss.contracts.logger import default_logger_formatter
+
+        moss_logger = logging.getLogger('moss')
+        for h in moss_logger.handlers:
+            if h.get_name() == self._LOG_HANDLER_NAME:
+                return
+
+        log_file = self.log_file
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = TimedRotatingFileHandler(
+            filename=str(log_file),
+            when='d',
+            interval=1,
+            backupCount=5,
+        )
+        handler.set_name(self._LOG_HANDLER_NAME)
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(default_logger_formatter())
+        moss_logger.addHandler(handler)
+
     @classmethod
     def discover(
             cls,
@@ -509,10 +538,11 @@ class Project(ABC):
         source_path = str(self.workspace_source_dir.absolute())
         if source_path not in sys.path:
             sys.path.append(source_path)
-        # 更新日志模块.
+        # 更新日志模块 — 先加载格式/等级, 再加运行时文件 handler
         log_config_file = self.log_config_file
         if log_config_file.exists():
             config_logger_from_yaml(str(log_config_file.absolute()))
+        self._ensure_log_file_handler()
 
     # --- manifests --- #
 

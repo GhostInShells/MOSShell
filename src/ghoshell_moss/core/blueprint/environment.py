@@ -46,7 +46,6 @@ __all__ = [
 
     # stubs
     'MODE_STUB_PACKAGE',
-    'APP_STUB_PACKAGE',
     'WORKSPACE_STUB_PACKAGE',
 
     # dir path
@@ -70,8 +69,7 @@ __all__ = [
 # moss 默认的 workspace 文件夹名.
 # workspace 的绝对路径优先从环境变量寻找, 找不到时按目录发现机制寻找.
 # 路径发现的逻辑是: os getcwd 下, 递归搜索父级目录下, home 目录下.
-# todo: 改成 .moss
-DEFAULT_WORKSPACE_DIR_NAME = '.moss_ws'
+DEFAULT_WORKSPACE_DIR_NAME = '.moss'
 META_CONFIG_FILENAME = 'MOSS.md'
 
 # env 文件名. workspace 启动时会从其目录下读取环境变量文件 (by loadenv)
@@ -82,9 +80,8 @@ DEFAULT_CELLS_DIR = 'cells'
 
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
-WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.workspace'
-APP_STUB_PACKAGE = 'ghoshell_moss.host.stubs.app'
-MODE_STUB_PACKAGE = 'ghoshell_moss.host.stubs.mode'
+WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.stubs.workspace'
+MODE_STUB_PACKAGE = 'ghoshell_moss.stubs.workspace.modes.default'
 
 # --- 主要的环境变量名 --- #
 # 这些环境变量不在 .env 中定义, 而是启动时 发现/生成, 或者通过父子进程传递的.

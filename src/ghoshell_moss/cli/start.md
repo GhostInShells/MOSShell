@@ -100,16 +100,18 @@ git clone https://github.com/GhostInShells/MOSShell && cd MOSShell
 uv sync --active --all-extras
 ```
 
-After install, configure your environment:
+After install, initialize your project and configure the environment:
 
 ```bash
-cp .moss_ws/.env.example .moss_ws/.env    # add API keys and local config
+moss init . --yes                         # create .moss workspace in current dir
+moss project env-init                     # review the .env.example template
+cp .moss/.env.example .moss/.env          # create your .env, add API keys
 ```
 
 Then launch MOSS as an MCP server and connect your coding agent:
 
 ```bash
-.venv/bin/moss-as-mcp                      # starts on default port 20773
+.venv/bin/moss-as-mcp                     # starts on default port 20773
 ```
 
 Configure Claude Code (or another agent) to connect to the MCP server.
@@ -119,13 +121,20 @@ the system autonomously — you describe what you want to build.
 ### For intelligent models
 
 ```
-1. moss --ai start                    # load the cognitive map
-2. moss --ai all-commands             # discover all available commands
-3. moss --ai features list            # see ongoing workstreams (if in MOSS repo)
+1. moss --ai start                   # load the cognitive map
+2. moss --ai all-commands            # discover all available commands
+3. moss --ai features list           # see ongoing workstreams (if in MOSS repo)
 ```
 
 Always use `--ai` on every moss command — it strips rich formatting for
 token efficiency.
+
+Run `moss shell-init` to see the current environment configuration.
+Override defaults with global flags:
+
+```bash
+moss --mode desktop --ghost echo --network local --scope default <command>
+```
 
 When exploring code, the default tool is `moss codex get-interface`. For a
 module, it reads the source and reflects its dependency interfaces in one
@@ -139,12 +148,40 @@ when you need a minimal, un-reflected view of the code.
 - Using a moss command without knowing its arguments — `--help` and `all-commands` exist.
 - Proceeding without key knowledge — docs, howtos, codex, and architecture are the exploration toolkit.
 - Grepping or searching for a class/module location for more than a minute — run `moss codex architecture` first. If the path you need isn't there, add it.
-- Skipping the CLI `create` commands for features, apps, or modes — hand-made files miss conventions.
+- Skipping the CLI `create` commands for features or modes — hand-made files miss conventions.
 - Forgetting `features set-status` before commit, or not reading `features specification`.
 
 ---
 
 ## Core Commands
+
+### Project management
+
+```
+moss init <path>             # create .moss workspace in target project dir
+moss init --cwd -y           # create in current directory, no prompts
+moss init <path> --force     # re-initialize existing workspace (was override)
+moss shell-init              # export MOSS env vars for eval $(moss shell-init)
+```
+
+```
+moss project where           # show project root, workspace, defaults
+moss project env-init        # show .env.example template + copy instructions
+moss project list-modes      # list all discovered modes
+moss project show-mode <n>   # detail for a specific mode (name, home, CTML ver...)
+moss project list-ghosts     # list all discovered ghosts
+moss project show-ghost <n>  # detail for a specific ghost (import path, source file...)
+```
+
+Global CLI flags override MOSS.md defaults:
+
+```
+--mode / -m       mode name
+--ghost / -g      ghost name
+--network         network driver
+--scope           network scope
+--workspace / -w  workspace path (overrides auto-discovery)
+```
 
 ### codex — runtime introspection
 
@@ -192,18 +229,16 @@ first-class constraint.
 the execution model, and how models should think about time and concurrency.
 `moss ctml list` shows available CTML versions in the current environment.
 
-
 ### Environment discovery
 
 When working within a MOSS workspace, these commands show what's available:
 
 ```
-moss manifests providers               # registered IoC services
-moss manifests channels                # registered channels
-moss manifests configs                 # configuration entries
-moss modes list                        # available runtime modes
-moss apps list                         # discovered apps
-moss ghosts list                       # defined ghosts
+moss manifests providers             # registered IoC services
+moss manifests configs               # configuration entries
+moss project list-modes              # available runtime modes
+moss project list-ghosts             # defined ghosts
+moss project where                   # project info + defaults
 ```
 
 These are examples — not the full surface. `moss --ai all-commands --group manifests`
@@ -239,8 +274,8 @@ The public API is documented in `ghoshell_moss.__init__`. Browse it with
 
 ```bash
 pip install ghoshell-moss[host]
-moss workspace init ./my-project -y
-moss workspace where
+moss init ./my-project -y
+moss project where
 ```
 
 Add MOSS to an existing project. Full Host + Matrix + Environment discovery.
@@ -263,10 +298,10 @@ moss codex blueprint matrix            # inter-process communication bus
 
 ```bash
 pip install ghoshell-moss[host]
-moss workspace init ./my-moss-project -y
+moss init ./my-moss-project -y
 ```
 
-Your project IS a MOSS workspace. Develop channels, apps, modes, and ghosts
+Your project IS a MOSS workspace. Develop channels, modes, and ghosts
 within it. The workspace is self-contained — it carries its own manifests,
 configuration, and capability declarations. Use this when building something
 that is fundamentally MOSS-native from the start.
@@ -349,35 +384,37 @@ rather than reading exhaustively upfront.
 Whether building a standalone MOSS project or integrating MOSS into an
 existing one, everything flows through the workspace. What you can do:
 
-**Workspace management:**
-- Create or override a workspace, manage environment variables — start at `moss workspace`
-- Understand mode-based isolation, create modes — start at `moss modes`
-- See registered ghosts — `moss ghosts list`
+**Project management:**
+- Create a workspace, manage environment — start at `moss init` and `moss project`
+- Understand mode-based isolation, discover modes — `moss project list-modes/show-mode`
+- See registered ghosts — `moss project list-ghosts/show-ghost`
+- Export environment for shell — `moss shell-init`
 
 **Develop integrable capabilities:**
 - CTML authoring — start at `moss ctml`
 - Channels — start at `moss codex blueprint channel_builder`
 - Perception modules — start at `moss codex blueprint mindflow`
-- Runtime-isolated, model-facing apps — `moss apps list`
+- Cell-based nodes — start at `moss codex blueprint matrix`
 - Cross-process communication — start at `moss codex blueprint matrix`
 - Custom ghosts — start at `moss codex blueprint ghost`
 - Complex stateful channels — start at `moss codex blueprint states_channel` and `moss codex channeltypes`
 
 **Understand the runtime environment:**
-- Environment isolation modes — `moss modes list`
+- Environment isolation modes — `moss project list-modes`
 - Configuration entries — start at `moss manifests configs`
 - IoC-available modules — start at `moss manifests contracts`
 - Register runtime dependencies — start at `moss manifests providers`
 - More protocol declarations and capability registration — `moss manifests --help`
 
-Most of these commands accept `--mode` to select an environment isolation
-mode. See `moss --ai all-commands` for the full surface.
+Most commands accept global flags to override MOSS.md defaults:
+`--mode`, `--ghost`, `--network`, `--scope`, `--workspace`.
+See `moss --ai all-commands` for the full surface.
 For every specific development task, use `moss howtos list` or
 `moss docs list` to find the minimum necessary knowledge entry point.
 
 **Typical development flow:** Launch MOSS via `moss-as-mcp` with a specific
 mode, connect a coding agent (Claude Code, etc.) to the MCP server, and let
-the model develop apps within the workspace — providing channels for its own
+the model develop cells within the workspace — providing channels for its own
 use and debugging through the MCP loop. The result can be experienced via
 `moss-run-ghost` or surfaced to other projects through the `moss codex
 blueprint host` API.
@@ -386,19 +423,6 @@ MOSS is built for model-native development. The fundamental pattern: a
 human proposes a task, the model uses minimum knowledge as an exploration
 starting point, and completes the work using the existing knowledge base
 and debugging infrastructure. See `moss features specification`.
-
-**Expected outcomes in a workspace:**
-
-1. Model-controllable capabilities via channels:
-   - Physical bodies: desktop robots, humanoid robots, smart home devices
-   - Perception: voice input, remote IM connections, camera vision, IoT sensors
-   - Interaction: streaming GUIs, speech output
-2. Capabilities packaged as independent runtime apps — built for models, via the apps system
-3. The same capabilities reused across different scenarios (e.g. "desktop" vs "outdoor" modes)
-4. Custom ghosts — though mature ghost prototypes are still under development
-
-The goal: an operating system that an intelligent agent can control and
-iterate, with real-time senses and a body. MOSS itself evolves toward this.
 
 ### Developing MOSS itself
 

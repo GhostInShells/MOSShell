@@ -9,11 +9,8 @@ formatters:
 handlers: {}
 
 loggers:
-  # 允许不同模块有不同日志等级
   root:
     level: WARNING
-    handlers: [ ]
 
   moss:
     level: INFO
-    handlers: [ debug ]

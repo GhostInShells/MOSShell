@@ -15,12 +15,17 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-27 deepseek-v4-pro manifests 体系全面重建。8 种 scanner 全部到位,
-  MatrixManifest + ModeManifests concrete impl 就位, 59 tests。
-  ABC 修正: resources() 补回, nuclei() 改为 Iterable。
-  Stub 文件迁移为 package/__init__.py 结构, 双语头规范。
-  旧 host/cell_network.py + host/cell_registry.py 删除。
-  下一实例认知重建支点: 读本文 §AA。
+  2026-06-27 claude-opus-4-7 大规模架构推进:
+  (1) MossMeta 回归 — MOSS.md 承载项目级默认值, workspace 内唯一配置入口.
+  (2) HostModeMeta + LocalHostMode 实现 — HOST.md 约定, bootstrap 守卫.
+  (3) LocalProject 原型 — modes/ghosts 文件系统发现 + ProjectCellRegistry.
+  (4) CLI 重建 — moss init (project dir 目标, .moss 永远在其下), workspace→project,
+  modes/ghosts 归入 project 组, runtime/script/apps 全部删除.
+  (5) shell-init 根命令 + --ghost/--network/--scope 全局参数.
+  (6) 常量改造: .moss_ws→.moss, stub package 更新.
+  (7) logging.yml 只配格式/等级, Project.bootstrap() 动态注入 file handler.
+  (8) start.md 全文重写对齐新 CLI.
+  下一实例认知重建支点: 读本文 §GG.
 ---
 
 # Matrix Cell Governance
@@ -1419,3 +1424,98 @@ MOSS/manifests/                    HOST/
 4. `src/ghoshell_moss/stubs/workspace/src/MOSS/manifests/` — 全局 stub 参考
 5. `src/ghoshell_moss/stubs/workspace/modes/default/src/HOST/` — mode stub 参考
 
+
+## 2026-06-27 会话 — MossMeta + LocalHostMode + LocalProject + CLI 重建 (claude-opus-4-7)
+
+> 人类架构师 + claude-opus-4-7。从 manifests 体系完成后的下一步出发，
+> 重新锚定项目认知体系：MossMeta 回归、Host 模式 concrete 化、Project 发现、
+> CLI 命令体系彻底重排。
+
+### GG. MossMeta 回归
+
+MOSS.md 作为 workspace 内唯一配置入口，承载项目级默认值：
+
+| 字段 | 说明 |
+|------|------|
+| name | 项目名 |
+| default_mode/ghost/network/scope | 四项默认值 |
+| project_id | 持久化 UUID |
+| system_project | 追加到 CTML 后的项目级提示词 |
+| cell_paths | cell 发现路径 |
+
+MOSS.md 只在 workspace 内查找，不递归。frontmatter 读写，
+`write_to_file` 排除 `file` 字段避免绝对路径进版本控制。
+
+`MOSS_NAME_PATTERN = r'^[a-zA-Z_][a-zA-Z0-9_]*$'` —
+与 `ChannelNamePattern` 软对齐。作用于 MossMeta 全部 name 字段 +
+`HostModeMeta.name`。
+
+### HH. HostModeMeta + LocalHostMode
+
+`ModeMeta` → `HostModeMeta`。`MODE.md` → `HOST.md`（`modes/{name}/HOST.md`）。
+
+`LocalHostMode` 构造：
+```
+LocalHostMode(env, meta, workspace_dir, *, logger=None)
+```
+- `workspace_dir` 显式传入，不依赖 `meta.file`
+- `logger` fallback `logging.getLogger('moss')`
+- `bootstrap()` 显式调用后才允许访问 `manifests()` / `cells()`
+- `_check_bootstrapped()` 守卫，防止静默失效
+- 懒加载 + 缓存（`_manifests`, `_cells`）
+
+### II. LocalProject 原型
+
+完整实现 `Project` ABC 的 7 个抽象方法：
+
+| 方法 | 实现 |
+|------|------|
+| `ghosts()` | 委托 `search_ghost_manifests()` → `MOSS.ghosts` package |
+| `get_ghost(name)` | 缓存查找 + `LookupError` |
+| `list_modes()` | 遍历 `modes/` 目录，`from_file(file, name=dir_name)` |
+| `get_mode(name)` | 缓存 → `LocalHostMode(env, meta, workspace_dir)` |
+| `cells` | mode 优先 → `env.cell_dirs()` fallback |
+
+### JJ. CLI 重建
+
+| 变化 | 内容 |
+|------|------|
+| 新增根命令 | `moss init` (project dir 目标, .moss 在其下), `moss shell-init` |
+| 重命名 | `workspace` → `project` |
+| 归入 project | modes, ghosts (list-modes/show-mode/list-ghosts/show-ghost) |
+| 删除 | workspace, runtime, script, apps, modes, ghosts 独立命令组 (6 个文件) |
+| 新全局参数 | `--ghost/-g`, `--network`, `--scope` |
+| 删除参数 | `--session-scope` |
+| 删除文件 | apps_cli.py, ghosts_cli.py, modes_cli.py, runtime_cli.py, scripts_cli.py, workspace_cli.py |
+
+`moss project` 子命令：`where`, `env-init`, `list-modes`, `show-mode`,
+`list-ghosts`, `show-ghost`。全部走 `Project.discover()`。
+
+### KK. 常量与 stub 改造
+
+- `DEFAULT_WORKSPACE_DIR_NAME`: `.moss_ws` → `.moss`
+- `WORKSPACE_STUB_PACKAGE`: `ghoshell_moss.host.stubs.workspace` → `ghoshell_moss.stubs.workspace`
+- `MODE_STUB_PACKAGE`: `ghoshell_moss.host.stubs.mode` → `ghoshell_moss.stubs.workspace.modes.default`
+- 删 `APP_STUB_PACKAGE`
+- stub 模板：`workspace/MOSS.md` + `modes/default/HOST.md`（全注释，零强值约定）
+- `logging.yml`：只配格式/等级，`Project.bootstrap()` 动态注入 `TimedRotatingFileHandler`
+- 所有路径收敛到 workspace 内部：`modes_home`/`network_configs_dir`/`configs_dir` 统一用 `workspace_dir`
+
+### LL. 测试
+
+| 文件 | 测试数 | 覆盖 |
+|------|------|------|
+| `test_environment_design.py` | 50 | MossMeta默认值/优先级/命名校验 |
+| `test_local_host_mode.py` | 12 | 构造/bootstsrap守卫/缓存/副作用 |
+| `test_local_project.py` | 10 | modes发现/ghosts/cells/属性 |
+
+### 上下文恢复支点
+
+1. **本文件 §GG-KK** — 本次会话
+2. `src/ghoshell_moss/core/blueprint/environment.py` — MossMeta + MOSS_NAME_PATTERN
+3. `src/ghoshell_moss/core/blueprint/project.py` — HostModeMeta + Project ABC
+4. `src/ghoshell_moss/project/local_host_mode.py` — LocalHostMode 实现
+5. `src/ghoshell_moss/project/local_project.py` — LocalProject 实现
+6. `src/ghoshell_moss/cli/main.py` — init, shell-init, 全局参数
+7. `src/ghoshell_moss/cli/project_cli.py` — project 命令组
+8. `src/ghoshell_moss/cli/start.md` — 认知入口（已重写）
