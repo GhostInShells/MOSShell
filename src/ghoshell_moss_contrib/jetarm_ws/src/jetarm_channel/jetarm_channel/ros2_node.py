@@ -1,3 +1,5 @@
+from ghoshell_moss.core import MutableChannel
+
 try:
     import rclpy
     from control_msgs.action import FollowJointTrajectory
@@ -13,7 +15,7 @@ from typing import Optional
 
 from ghoshell_common.contracts import DefaultFileStorage, LoggerItf
 
-from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, MutableChannel
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
 from ghoshell_moss_contrib.prototypes.ros2_robot.abcd import RobotController
 from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import build_robot_main_channel
 from ghoshell_moss_contrib.prototypes.ros2_robot.manager import JointValueParser, YamlStorageRobotManager

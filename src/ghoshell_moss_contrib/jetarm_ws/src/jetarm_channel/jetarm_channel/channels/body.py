@@ -1,65 +1,58 @@
 import asyncio
 
-from pydantic import Field
-
-from ghoshell_moss.core.concepts.states import StateBaseModel
 from ghoshell_moss.core.py_channel import PyChannel
 from ghoshell_moss_contrib.prototypes.ros2_robot.main_channel import reset_pose, run_trajectory
 
 body_chan = PyChannel(name="body")
 
-policy_pause_event = asyncio.Event()
+@body_chan.build.startup
+async def start_body():
+    await greeting()
 
 
 @body_chan.build.idle
-async def on_policy_run():
-    policy_pause_event.clear()
-    while not policy_pause_event.is_set():
-        state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
-        if state_model.policy == "breathing":
-            await _breathing()
-        elif state_model.policy == "waving":
-            await _waving()
-        elif state_model.policy == "thinking":
-            await _thinking()
+async def on_idle():
+    while True:
+        try:
+            if body_policy_state.policy == "breathing":
+                await _breathing()
+            elif body_policy_state.policy == "waving":
+                await _waving()
+            elif body_policy_state.policy == "thinking":
+                await _thinking()
+                await asyncio.sleep(0.5)
+            elif body_policy_state.policy == "reset_pose":
+                await reset_pose()
+                break
+            else:
+                break
+        except Exception:
             await asyncio.sleep(0.5)
-        elif state_model.policy == "reset_pose":
-            await reset_pose()
-            break
-        else:
-            break
 
 
-class BodyPolicyStateModel(StateBaseModel):
+class BodyPolicyStateModel:
     state_name = "body"
     state_desc = "body state model"
+    policy = "breathing"
 
-    policy: str = Field(default="breathing", description="body policy")
-
-
-body_chan.build.state_model(BodyPolicyStateModel)
-
-mock_policy = "breathing"
+body_policy_state = BodyPolicyStateModel()
 
 
 @body_chan.build.command()
-async def set_default_policy(policy: str = "breathing"):
+async def set_idle_policy(policy: str = "breathing"):
     """
     设置一个新的默认body policy
 
     :param policy:  body policy, default is breathing, choices are breathing, waving, thinking and reset_pose
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
-    state_model.policy = policy
-    global mock_policy
-    mock_policy = policy
-    await body_chan.broker.states.save(state_model)
+    global body_policy_state
+    body_policy_state.policy = policy
 
 
-@body_chan.build.description()
-def description() -> str:
+@body_chan.build.context_messages
+def context_messages():
     """获取当前body policy"""
-    return f"当前body policy是{mock_policy}"
+    return [f"当前body policy是{body_policy_state.policy}"]
 
 
 async def _waving():
@@ -90,8 +83,8 @@ async def waving():
     """
     波浪wave
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
-    if state_model.policy == "waving":
+    global body_policy_state
+    if body_policy_state.policy == "waving":
         return
     await _waving()
 
@@ -420,8 +413,8 @@ async def thinking():
     """
     思考
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
-    if state_model.policy == "thinking":
+    global body_policy_state
+    if body_policy_state.policy == "thinking":
         return
     await _thinking()
 
@@ -514,7 +507,7 @@ async def _breathing():
             {"positions": [20.0, -43.0, -85.0, 48.0, 0.0, 0.0], "time_from_start": 2.25},
             {"positions": [30.0, -45.0, -90.0, 45.0, 0.0, 0.0], "time_from_start": 3.0},
             {"positions": [32.0, -47.0, -95.0, 42.0, 0.0, 0.0], "time_from_start": 3.75},
-            {"positions": [35.0, -50.0, -100.0, 38.0, 0.0, 0.0], "time_from_start": 4.5}, 
+            {"positions": [35.0, -50.0, -100.0, 38.0, 0.0, 0.0], "time_from_start": 4.5},
             {"positions": [34.8, -49.8, -99.5, 38.2, 0.0, 0.0], "time_from_start": 4.6},
             {"positions": [32.0, -47.0, -95.0, 42.0, 0.0, 0.0], "time_from_start": 5.25},
             {"positions": [30.0, -45.0, -90.0, 45.0, 0.0, 0.0], "time_from_start": 6.0}
@@ -530,8 +523,8 @@ async def breathing():
     """
     呼吸（一次）
     """
-    state_model = body_chan.broker.states.get_model(BodyPolicyStateModel)
-    if state_model.policy == "breathing":
+    global body_policy_state
+    if body_policy_state.policy == "breathing":
         return
     await _breathing()
 
