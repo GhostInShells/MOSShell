@@ -15,6 +15,7 @@ from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.contracts import Workspace, ConfigType
+from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.contracts.logger import config_logger_from_yaml
 from ghoshell_moss.message import unique_id
 from pydantic import BaseModel, Field
@@ -32,14 +33,14 @@ __all__ = [
     'Manifest', 'ModeManifests', 'MatrixManifest',
     'NetworkConfig', 'NetworkMetadata',
     'Project',
-    'MATRIX_MANIFESTS_PACKAGE', 'MODE_MANIFESTS_PACKAGE',
+    'MATRIX_MANIFESTS_PACKAGE', 'HOST_MODE_MANIFESTS_PACKAGE',
 ]
 
 T = TypeVar('T')
 
 MATRIX_MANIFESTS_PACKAGE = 'MOSS.manifests'
 GHOST_MANIFESTS_PACKAGE = 'MOSS.ghosts'
-MODE_MANIFESTS_PACKAGE = 'Host.manifests'
+HOST_MODE_MANIFESTS_PACKAGE = 'HOST.manifests'
 
 
 class ModeMeta(BaseModel):
@@ -232,11 +233,6 @@ class Manifest(Generic[T], ABC):
         ...
 
     @abstractmethod
-    def source(self) -> str:
-        """发现的配置项源码, 如果有的话."""
-        ...
-
-    @abstractmethod
     def value(self) -> T:
         """找到的值. 仅在 is_error() 为 False 时有效. """
         ...
@@ -294,6 +290,11 @@ class MatrixManifest(ABC):
         """找到的 parameter 协议. """
         ...
 
+    @abstractmethod
+    def resources(self) -> Iterable[Manifest[ResourceStorageMeta]]:
+        """找到的资源存储. """
+        ...
+
 
 class ModeManifests(ABC):
 
@@ -328,7 +329,12 @@ class ModeManifests(ABC):
         ...
 
     @abstractmethod
-    def nuclei(self) -> Manifest[NucleusMeta]:
+    def resources(self) -> Iterable[Manifest[ResourceStorageMeta]]:
+        """找到的资源存储. """
+        ...
+
+    @abstractmethod
+    def nuclei(self) -> Iterable[Manifest[NucleusMeta]]:
         """找到的 nucleus meta, 应该在 ioc 启动后, 如果有 mindflow 在场时注册. """
         ...
 

@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-25
+updated: 2026-06-27
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,17 +15,12 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-25 claude-opus-4-7 大规模抽象重构。L4 OS 架构跃迁。
-  Environment: RuntimeScope 消除, bootstrap 后属性读 os.environ, fixture() 测试隔离。
-  CellType: host/worker 收敛, discover() 纯函数化。
-  命名定案: network/driver/scope 三件套, session_scope 不含 scope。
-  NetworkConfig ABC + ZenohNetworkConfig 按 cell type 分发。
-  Matrix ABC 移除 Mode 依赖, discover() 走 env→project→matrix。
-  zenoh key 空间: MOSS/matrix/scopes/{scope}/...
-  端口约定 2038-n 系列, 默认 20380。
-  stubs/networks: local.json + lan.json。
-  167 tests (37 env + 85 cell + 12 network + 33 session)。
-  下一实例认知重建支点: 读本文 §U-§Z。
+  2026-06-27 deepseek-v4-pro manifests 体系全面重建。8 种 scanner 全部到位,
+  MatrixManifest + ModeManifests concrete impl 就位, 59 tests。
+  ABC 修正: resources() 补回, nuclei() 改为 Iterable。
+  Stub 文件迁移为 package/__init__.py 结构, 双语头规范。
+  旧 host/cell_network.py + host/cell_registry.py 删除。
+  下一实例认知重建支点: 读本文 §AA。
 ---
 
 # Matrix Cell Governance
@@ -1321,13 +1316,106 @@ session_id 是进程级身份。pub_logos/get_logos stream_id 参数替代 sessi
 6. 旧代码清理 (AppStore, circusd, script CLI)
 7. 文档体系 (howtos, docs, tutorials)
 
+已删除:
+  - `src/ghoshell_moss/host/cell_network.py` — 旧 ZenohCellNetwork, 与新版 CellNetwork ABC 不兼容
+  - `src/ghoshell_moss/host/cell_registry.py` — 旧 EnvCellRegistry, 已被 ProjectCellRegistry 替代
+
 ### 上下文恢复支点 (下一实例)
 
-1. **本文件 §U-§Z** — 本次跃迁
-2. `src/ghoshell_moss/core/blueprint/environment.py` — Environment 新貌
-3. `src/ghoshell_moss/core/blueprint/cell.py` — Cell/CellRegistry/CellNetwork ABC
-4. `src/ghoshell_moss/core/blueprint/project.py` — NetworkConfig ABC + NetworkMetadata
-5. `src/ghoshell_moss/matrix/networks/zenoh_network.py` — ZenohNetworkConfig
-6. `src/ghoshell_moss/matrix/zenoh_impl/_helper.py` — NetworkNamespace
-7. `src/ghoshell_moss/matrix/session/zenoh_session.py` — Session 实现
+1. **本文件 §AA** — manifests 体系重建
+2. `src/ghoshell_moss/project/manifests/` — 8 种 scanner + 2 个 concrete impl
+3. `src/ghoshell_moss/core/blueprint/project.py` — Manifest[T] ABC + MatrixManifest + ModeManifests
+4. `src/ghoshell_moss/stubs/workspace/src/MOSS/manifests/` — 全局 stub (package 结构)
+5. `src/ghoshell_moss/stubs/workspace/modes/default/src/HOST/` — mode stub (package 结构)
+6. `tests/ghoshell_moss/matrix/project/test_manifests.py` — 49 matrix tests
+7. `tests/ghoshell_moss/matrix/project/test_mode_manifests.py` — 10 mode tests
+
+---
+
+## 2026-06-27 manifests 体系全面重建 (deepseek-v4-pro)
+
+> 人类架构师 + deepseek-v4-pro。从 3 个 scanner 扩展到 8 个, ABC 修正,
+> concrete impl 组装, stub 文件迁移为 package 结构, 双语头规范。
+
+### AA. Manifest[T] 通用抽象
+
+`Manifest[T]` 是扫描到的 Python 对象的自描述包装:
+
+- `name()` / `description()` / `found_at()` / `import_path()` — 自描述字段
+- `value() -> T` — 纯类型返回值 (非 `T | Exception`)
+- `is_error() -> bool` / `error() -> Exception | None` — 显式错误查询, 替代静默失败
+- `update_container()` — 可选, 仅 Provider 需要覆盖
+
+`ScannedManifest[T]` 是通用实现。`source` 字段从 ABC 移除 (不重要), 保留在实现层可选。
+
+### BB. 8 种 scanner 矩阵
+
+| Scanner | T | 检测方式 | 返回 | 测试 |
+|------|---|------|------|------|
+| `providers` | `Provider` | `isinstance` 实例 | `Iterable` | 8 |
+| `configs` | `ConfigType` | `isinstance` 实例 | `Iterable` | 5 |
+| `signals` | `SignalSchema` | `issubclass(SignalMeta)` + `isinstance` | `Iterable` | 8 |
+| `topics` | `TopicSchema` | `issubclass(TopicModel)` + `isinstance` | `Iterable` | 6 |
+| `parameters` | `ParameterSchema` | `issubclass(ParameterModel)` + `isinstance` | `Manifest` (单值) | 5 |
+| `nuclei` | `NucleusMeta` | `isinstance` 实例 | `Iterable` | 5 |
+| `resources` | `ResourceStorageMeta` | `isinstance` 实例 | `Iterable` | 3 |
+| `channel` | `PrimeChannel` | `isinstance(Channel)` + `name() == '__main__'` | `Manifest` (单值) | 5 |
+
+`parameters` 和 `channel` 保持单值返回 — 一个 mode 只有一个主 channel 和一组 parameters。
+
+所有 scanner 共享同一模式: `scan_package(max_depth=2)` → `iter_members` → `isinstance`/`issubclass` → wrap → yield。每条 ~50 行, 未到需要抽象 helper 的重复阈值。
+
+错误处理: `strict` flag (raise) + `errors` 收集器 + error manifest (不静默跳过)。package 不存在时不抛异常 (无匹配时 `Iterable` 返回空, 单值返回 error manifest)。
+
+### CC. ABC 修正
+
+`resources()` 补回 — 旧 `Manifests` 有但新 ABC 遗漏, 加入 `MatrixManifest` 和 `ModeManifests`。
+
+`nuclei()` 改为 `Iterable[Manifest[NucleusMeta]]` — 原为单值, 但一个 mode 可挂多个 NucleusMeta。与 `parameters` (单值) 不同 — parameters 是全局唯一声明。
+
+`configs()` 改为 `Manifest[ConfigType]` (原 `ConfigSchema`) — `ConfigStore.get_or_create()` 需要完整实例, 不是 schema 片段。
+
+### DD. Concrete impl
+
+`ScannedMatrixManifest(MatrixManifest)` — 接收 root package (默认 `MOSS.manifests`), 6 个方法各自委托 scanner。
+
+`ScannedModeManifests(ScannedMatrixManifest, ModeManifests)` — 继承前者所有 scanner, 追加 `channel()`, `nuclei()`, `resources()`。默认根包 `HOST.manifests`。
+
+### EE. Stub 文件重构
+
+所有 stub manifest 从 `{type}.py` 迁移为 `{type}/__init__.py` package 结构:
+
+```
+MOSS/manifests/                    HOST/
+  __init__.py                        __init__.py
+  providers/__init__.py              channels.py (单文件, 非 package)
+  configs/__init__.py               providers/__init__.py
+  signals/__init__.py               configs/__init__.py
+  topics/__init__.py                signals/__init__.py
+  parameters/__init__.py            topics/__init__.py
+  resources/__init__.py             nuclei/__init__.py
+                                    resources/__init__.py
+                                    parameters/__init__.py
+```
+
+理由: package 结构允许扩展 (`providers/database.py` 而不改 `__init__.py`), `from MOSS.manifests.providers import *` 语义不变。channel 保持单文件 — 它是入口点, 不需要子模块。
+
+所有文件头部统一为双语格式: English description block + `--` 分隔 + 中文说明。
+
+### FF. 测试
+
+| 文件 | tests | 覆盖 |
+|------|-------|------|
+| `test_manifests.py` | 49 | ScannedManifest + 7 种 scanner + ScannedMatrixManifest 集成 |
+| `test_mode_manifests.py` | 10 | ChannelManifest + ScannedModeManifests + package-not-exists 容错 |
+
+总计 59 tests, < 1s。
+
+### 上下文恢复支点
+
+1. `src/ghoshell_moss/project/manifests/` — 完整 tree
+2. `tests/ghoshell_moss/matrix/project/test_manifests.py` — scanner 测试范式
+3. `tests/ghoshell_moss/matrix/project/test_mode_manifests.py` — mode 测试范式
+4. `src/ghoshell_moss/stubs/workspace/src/MOSS/manifests/` — 全局 stub 参考
+5. `src/ghoshell_moss/stubs/workspace/modes/default/src/HOST/` — mode stub 参考
 

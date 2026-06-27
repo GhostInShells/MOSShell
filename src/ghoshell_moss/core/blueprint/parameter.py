@@ -94,7 +94,7 @@ class ExampleParameter(ParameterModel):
 
     @classmethod
     def param_default(cls) -> "ParameterModel":
-        return ParameterModel()
+        return ExampleParameter()
 
 
 class VersionConflict(Exception):

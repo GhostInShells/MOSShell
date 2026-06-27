@@ -30,6 +30,10 @@ class ConfigSchema(BaseModel):
     json_schema: dict[str, Any] = Field(
         description="config json schema.",
     )
+    default: dict[str, Any] | None = Field(
+        default=None,
+        description="config default value.",
+    )
 
 
 class ConfigType(BaseModel, ABC):

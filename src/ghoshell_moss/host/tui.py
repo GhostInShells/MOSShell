@@ -564,7 +564,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             node_table.add_row(k, str(v))
 
         # 3. Environment Context
-        env_info = self.host.env.dump_moss_env(with_os_env=False)
+        env_info = self.host.env.dump_cell_env(with_os_env=False)
         env_table = Table(title="Environment Configuration", expand=True, box=None)
         env_table.add_column("Config", style="bold magenta")
         env_table.add_column("Setting")

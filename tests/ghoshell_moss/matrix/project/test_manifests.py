@@ -31,8 +31,20 @@ from ghoshell_moss.project.manifests.parameters import (
     ParameterManifest,
     search_parameter_manifests,
 )
+from ghoshell_moss.project.manifests.nuclei import (
+    NucleusManifest,
+    search_nucleus_manifests,
+)
+from ghoshell_moss.project.manifests.resources import (
+    ResourceManifest,
+    search_resource_manifests,
+)
+from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
+from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, SignalSchema
+from ghoshell_moss.contracts.configs import ConfigType
+from ghoshell_container import Provider
 
 # -- 项目中 stub manifests 的约定扫描路径
 STUB_MANIFESTS_PROVIDERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
@@ -40,6 +52,8 @@ STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.confi
 STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
 STUB_MANIFESTS_TOPICS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
 STUB_MANIFESTS_PARAMETERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.parameters'
+STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.host.stubs.workspace.src.MOSS.manifests.nuclei'
+STUB_MANIFESTS_ROOT = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests'
 
 
 # ==================================================================
@@ -521,3 +535,132 @@ class TestSearchParameterManifests:
     def test_returns_error_for_empty_package(self):
         m = search_parameter_manifests('ghoshell_moss.stubs.not_a_package')
         assert m.is_error()
+
+
+# ==================================================================
+# NucleusManifest — NucleusMeta 实例
+# ==================================================================
+
+class TestNucleusManifest:
+    def test_from_nucleus_meta_instance(self, tmp_path):
+
+        class StubNucleus(NucleusMeta):
+            def name(self) -> str:
+                return 'stub.nucleus'
+
+            def description(self) -> str:
+                return 'A stub nucleus'
+
+            def signals(self):
+                return []
+
+            def factory(self, container):
+                raise NotImplementedError
+
+        instance = StubNucleus()
+        m = NucleusManifest(
+            name=instance.name(),
+            value=instance,
+            found_at=tmp_path,
+            import_path='test:stub',
+            description=instance.description(),
+        )
+        assert m.name() == 'stub.nucleus'
+        assert m.value() is instance
+
+    def test_error_manifest(self, tmp_path):
+        m = NucleusManifest(name='broken', error=ValueError('bad'), found_at=tmp_path)
+        assert m.is_error()
+
+
+# ==================================================================
+# search_nucleus_manifests — 扫描
+# ==================================================================
+
+class TestSearchNucleusManifests:
+    def test_finds_nucleus_instances(self):
+        """host stubs nuclei.py 有 ExampleNucleusMeta 实例."""
+        results = list(search_nucleus_manifests(STUB_MANIFESTS_NUCLEI))
+        assert len(results) >= 1
+        for m in results:
+            assert isinstance(m, NucleusManifest)
+            assert isinstance(m.value(), NucleusMeta)
+
+    def test_empty_for_package_without_nuclei(self):
+        results = list(search_nucleus_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
+        ))
+        assert results == []
+
+    def test_empty_for_missing_package(self):
+        results = list(search_nucleus_manifests('ghoshell_moss.stubs.not_a_package'))
+        assert results == []
+
+
+# ==================================================================
+# search_resource_manifests — 扫描
+# ==================================================================
+
+class TestSearchResourceManifests:
+    def test_finds_resource_instances(self):
+        """stub resources.py 有 LocalImageResourceMeta 实例."""
+        results = list(search_resource_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.resources'
+        ))
+        assert len(results) >= 1
+        for m in results:
+            assert isinstance(m, ResourceManifest)
+            assert not m.is_error()
+
+    def test_empty_for_package_without_resources(self):
+        results = list(search_resource_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
+        ))
+        assert results == []
+
+    def test_empty_for_missing_package(self):
+        results = list(search_resource_manifests('ghoshell_moss.stubs.not_a_package'))
+        assert results == []
+
+
+# ==================================================================
+# ScannedMatrixManifest — 集成
+# ==================================================================
+
+class TestScannedMatrixManifest:
+    def test_all_stub_manifests_have_values(self):
+        """stub manifests 根包扫描: 每个类别都有值，无异常."""
+        m = ScannedMatrixManifest(STUB_MANIFESTS_ROOT)
+
+        providers = list(m.providers())
+        assert len(providers) >= 1
+        for p in providers:
+            assert not p.is_error()
+            assert isinstance(p.value(), Provider)
+
+        configs = list(m.configs())
+        assert len(configs) >= 1
+        for c in configs:
+            assert not c.is_error()
+            assert isinstance(c.value(), ConfigType)
+
+        topics = list(m.topics())
+        assert len(topics) >= 1
+        for t in topics:
+            assert not t.is_error()
+            assert isinstance(t.value(), TopicSchema)
+
+        signals = list(m.signals())
+        assert len(signals) >= 1
+        for s in signals:
+            assert not s.is_error()
+            assert isinstance(s.value(), SignalSchema)
+
+        params = m.parameters()
+        assert not params.is_error()
+        assert isinstance(params.value(), ParameterSchema)
+
+        resources = list(m.resources())
+        assert len(resources) >= 1
+        for r in resources:
+            assert not r.is_error()
