@@ -5,6 +5,12 @@ from typing import Any, ClassVar
 from ghoshell_common.helpers import uuid
 
 
+class VideoLocator(str):
+    """视频资源定位符。继承 str，可被 Reflex/pydantic 透明序列化。
+    布局中用 list[VideoLocator] 标注，build() 据此生成 locator→URL 命令。"""
+    pass
+
+
 @dataclass(kw_only=True)
 class EventModel:
     event_type: ClassVar[str] = ""

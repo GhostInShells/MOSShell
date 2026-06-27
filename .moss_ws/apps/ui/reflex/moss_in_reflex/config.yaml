@@ -3,7 +3,8 @@
 # 添加新 Layout 后只需在此文件中添加一行即可启用
 
 layouts:
-  - "framework.layouts.simple.SimpleLayout"
   - "framework.layouts.media.MediaLayout"
+  - "framework.layouts.simple.SimpleLayout"
   - "framework.layouts.lesson.LessonLayout"
   - "framework.layouts.stage.StageLayout"
+  - "framework.layouts.hero.HeroLayout"

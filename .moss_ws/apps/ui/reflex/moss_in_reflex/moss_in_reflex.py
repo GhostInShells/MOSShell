@@ -1,18 +1,22 @@
 import asyncio
 import importlib
 import inspect
+import json
 import logging
 import os
 import signal
+import typing
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+import pydantic
 import reflex as rx
+from PIL import Image
 from ghoshell_common.contracts import YamlConfig, WorkspaceConfigs, DefaultFileStorage
-from ghoshell_moss import PyChannel, Message, Text, Matrix
+from ghoshell_moss import PyChannel, Message, Text, Matrix, Observe
 from ghoshell_moss.contracts import ResourceRegistry
-from ghoshell_moss.core import ChannelCtx
+from ghoshell_moss.core import ChannelCtx, PyCommand
 from ghoshell_moss.core.concepts.channel import ChannelRuntime
 from pydantic import Field
 
@@ -94,6 +98,93 @@ _SNAPSHOTS: dict[str, LayoutSnapshot] = {
 # =========================== System ===========================
 
 # =========================== Reflex ===========================
+def _apply_event_to_state(substate, event: EventModel, state_class: type[rx.State]) -> object:
+    """在 async with self 内直接操作 substate，返回变更后的新值用于增量 snapshot 更新。"""
+    field = event.field
+    type_hint = state_class.__annotations__.get(field)
+    if type_hint is None:
+        return None
+    origin = typing.get_origin(type_hint)
+    args = typing.get_args(type_hint)
+    elem_type = args[0] if args else None
+
+    if isinstance(event, ClearEvent):
+        if isinstance(type_hint, type) and issubclass(type_hint, str):
+            setattr(substate, field, "")
+            return ""
+        elif origin is list:
+            lst = getattr(substate, field)
+            lst.clear()
+            return list(lst)
+        elif type_hint is Image.Image:
+            setattr(substate, field, None)
+            return None
+        elif isinstance(type_hint, type) and issubclass(type_hint, pydantic.BaseModel):
+            empty = type_hint()
+            setattr(substate, field, empty)
+            return empty
+        else:
+            setattr(substate, field, "")
+            return ""
+
+    elif isinstance(event, StreamEvent):
+        if isinstance(type_hint, type) and issubclass(type_hint, str):
+            val = getattr(substate, field)
+            new_val = val + event.chunk
+            setattr(substate, field, new_val)
+            logger.info("StreamEvent str field=%r old=%r chunk=%r new=%r", field, val, event.chunk, new_val)
+            return new_val
+        elif origin is list and isinstance(elem_type, type) and issubclass(elem_type, str):
+            lst = getattr(substate, field)
+            if lst:
+                lst[-1] += event.chunk
+                return list(lst)
+
+    elif isinstance(event, SetEvent):
+        setattr(substate, field, event.data)
+        return event.data
+
+    elif isinstance(event, AppendEvent):
+        if origin is list:
+            lst = getattr(substate, field)
+            if isinstance(elem_type, type) and issubclass(elem_type, str):
+                lst.append(event.data)
+            elif isinstance(elem_type, type) and issubclass(elem_type, pydantic.BaseModel):
+                parsed = elem_type.model_validate_json(event.data) if isinstance(event.data, str) else event.data
+                lst.append(parsed)
+            elif elem_type is dict:
+                parsed = json.loads(event.data) if isinstance(event.data, str) else event.data
+                lst.append(parsed)
+            elif elem_type is Image.Image:
+                lst.append(event.data)
+            return list(lst)
+
+    elif isinstance(event, UpdateEvent):
+        if origin is list:
+            lst = getattr(substate, field)
+            if isinstance(elem_type, type) and issubclass(elem_type, pydantic.BaseModel):
+                parsed = elem_type.model_validate_json(event.data) if isinstance(event.data, str) else event.data
+            elif elem_type is dict:
+                parsed = json.loads(event.data) if isinstance(event.data, str) else event.data
+            else:
+                parsed = event.data
+
+            if event.index >= len(lst):
+                lst.append(parsed)
+            else:
+                lst[event.index] = parsed
+            return list(lst)
+
+    elif isinstance(event, PopEvent):
+        if origin is list:
+            lst = getattr(substate, field)
+            if lst:
+                lst.pop()
+            return list(lst)
+
+    return None
+
+
 class State(rx.State):
     """The app state."""
 
@@ -137,50 +228,19 @@ class State(rx.State):
                         fut.set_exception(RuntimeError("no active layout"))
                     continue
 
-                handler_missing = None
-                if isinstance(event, StreamEvent):
-                    handler = f"stream_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)(event.chunk)
+                if isinstance(event, (StreamEvent, SetEvent, AppendEvent, UpdateEvent, PopEvent, ClearEvent)):
+                    if hasattr(current.State, event.field):
+                        async with self:
+                            substate = await self.get_state(current.State)
+                            new_val = _apply_event_to_state(substate, event, current.State)
+                            if new_val is not None:
+                                _SNAPSHOTS[_LAYOUT.name].update_field(event.field, new_val)
                     else:
-                        handler_missing = handler
-                if isinstance(event, SetEvent):
-                    handler = f"set_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)(event.data)
-                    else:
-                        handler_missing = handler
-                if isinstance(event, AppendEvent):
-                    handler = f"append_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)(event.data)
-                    else:
-                        handler_missing = handler
-                if isinstance(event, UpdateEvent):
-                    handler = f"update_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)(event.index, event.data)
-                    else:
-                        handler_missing = handler
-                if isinstance(event, PopEvent):
-                    handler = f"pop_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)()
-                    else:
-                        handler_missing = handler
-                if isinstance(event, ClearEvent):
-                    handler = f"clear_{event.field}"
-                    if hasattr(current.State, handler):
-                        yield getattr(current.State, handler)()
-                    else:
-                        handler_missing = handler
-
-                if handler_missing:
-                    logger.warning("Layout %r has no handler %r", _LAYOUT.name, handler_missing)
-                    if fut and not fut.done():
-                        fut.set_exception(
-                            RuntimeError(f"handler {handler_missing} not found on layout {_LAYOUT.name}")
-                        )
+                        logger.warning("Layout %r has no field %r", _LAYOUT.name, event.field)
+                        if fut and not fut.done():
+                            fut.set_exception(
+                                RuntimeError(f"field {event.field} not found on layout {_LAYOUT.name}")
+                            )
 
             except asyncio.CancelledError:
                 if fut and not fut.done():
@@ -191,9 +251,6 @@ class State(rx.State):
                 if fut and not fut.done():
                     fut.set_exception(ex)
             else:
-                if handler_missing is None:
-                    async with self:
-                        await _SNAPSHOTS[_LAYOUT.name].refresh(self)
                 if fut and not fut.done():
                     fut.set_result(None)
             finally:
@@ -201,14 +258,12 @@ class State(rx.State):
 
 
 def index() -> rx.Component:
-    return rx.container(
+    return rx.box(
         rx.match(
             State.layout,
             *LAYOUT_COMPONENTS,
             rx.text("default")
         ),
-        max_width="100%",
-        padding="0",
     )
 # =========================== Reflex ===========================
 
@@ -239,12 +294,26 @@ async def context_messages():
             )
 
     registry = ChannelCtx.container().force_fetch(ResourceRegistry)
-    infos =  await registry.list_infos(scheme="pil-image")
     resource_msg = Message.new(tag="resources")
-    for info in infos:
+
+    image_infos = await registry.list_infos(scheme="pil-image")
+    for info in image_infos:
         resource_msg.with_content(
             f"locator: {info.locator} description: {info.description}\n"
         )
+
+    video_infos = await registry.list_infos(scheme="local-video")
+    for info in video_infos:
+        resource_msg.with_content(
+            f"locator: {info.locator} description: {info.description}\n"
+        )
+
+    webm_infos = await registry.list_infos(scheme="local-webm")
+    for info in webm_infos:
+        resource_msg.with_content(
+            f"locator: {info.locator} description: {info.description}\n"
+        )
+
     messages.append(resource_msg)
     return messages
 
@@ -260,6 +329,24 @@ def _frontend_url():
     return f"当前前端页面地址为 http://{host}:{port}"
 
 
+async def switch_layout(layout_name: str) -> Observe:
+    """切换当前布局和 ChannelState，并强制模型观察新上下文，调用当前command后，需要等待返回值才能继续渲染"""
+    valid = {l.name() for l in LAYOUTS}
+    if layout_name not in valid:
+        return Observe.new(
+            f"Unknown layout '{layout_name}'. Available: {', '.join(sorted(valid))}"
+        )
+
+    # 通过 kernel 的 switch_state 切换 ChannelState
+    # 内部 on_startup 会发送 LayoutEvent 触发 Reflex UI 切换
+    runtime = ChannelCtx.runtime()
+    if runtime is not None and hasattr(runtime, "switch_state"):
+        await runtime.switch_state(layout_name)
+
+    logger.info("switch_layout: %s", layout_name)
+    return Observe.new(f"Switched to layout: {layout_name}")
+
+
 async def moss():
     chan = PyChannel(name="reflex", description="提供基于Reflex框架的流式GUI页面，用于AI实时渲染")
     chan.build.instruction(_frontend_url)
@@ -273,6 +360,10 @@ async def moss():
             continue
 
         chan.with_state(state)
+
+    chan.build.add_command(PyCommand(
+        func = switch_layout,
+    ))
 
     matrix = Matrix.discover()
     async with matrix:

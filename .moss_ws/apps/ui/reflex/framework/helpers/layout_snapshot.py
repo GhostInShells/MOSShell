@@ -44,6 +44,11 @@ class LayoutSnapshot:
     def get(self) -> dict[str, object]:
         return self._data
 
+    def update_field(self, field: str, value: object) -> None:
+        type_hint = self._state_class.__annotations__.get(field)
+        if type_hint is not None:
+            self._data[field] = self._summarize(value, type_hint)
+
     def save(self) -> None:
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": SNAPSHOT_VERSION, "data": self._data}
