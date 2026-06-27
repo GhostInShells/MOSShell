@@ -23,11 +23,23 @@ from ghoshell_moss.project.manifests.signals import (
     SignalManifest,
     search_signal_manifests,
 )
+from ghoshell_moss.project.manifests.topics import (
+    TopicManifest,
+    search_topic_manifests,
+)
+from ghoshell_moss.project.manifests.parameters import (
+    ParameterManifest,
+    search_parameter_manifests,
+)
+from ghoshell_moss.core.concepts.topic import TopicSchema
+from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 
 # -- 项目中 stub manifests 的约定扫描路径
 STUB_MANIFESTS_PROVIDERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
 STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.configs'
 STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
+STUB_MANIFESTS_TOPICS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
+STUB_MANIFESTS_PARAMETERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.parameters'
 
 
 # ==================================================================
@@ -395,3 +407,117 @@ class TestSearchSignalManifests:
     def test_empty_package(self):
         results = list(search_signal_manifests('ghoshell_moss.stubs.not_a_package'))
         assert results == []
+
+
+# ==================================================================
+# TopicManifest — TopicModel 子类 或 TopicSchema 实例
+# ==================================================================
+
+class TestTopicManifest:
+    def test_from_topic_schema_instance(self, tmp_path):
+        schema = TopicSchema(
+            topic_name='test.topic',
+            topic_type='test',
+            description='Test topic',
+        )
+        m = TopicManifest(
+            name=schema.topic_name,
+            value=schema,
+            found_at=tmp_path,
+            import_path='test:my_topic',
+            description=schema.description,
+        )
+        assert m.name() == 'test.topic'
+        assert m.value() is schema
+
+    def test_error_manifest(self, tmp_path):
+        m = TopicManifest(name='broken', error=ValueError('bad'), found_at=tmp_path)
+        assert m.is_error()
+        with pytest.raises(ValueError, match='bad'):
+            m.value()
+
+
+# ==================================================================
+# search_topic_manifests — 扫描
+# ==================================================================
+
+class TestSearchTopicManifests:
+    def test_finds_all_topic_classes(self):
+        """stub topics.py 有 3 个 TopicModel 子类."""
+        results = list(search_topic_manifests(STUB_MANIFESTS_TOPICS))
+        assert len(results) == 3
+        for m in results:
+            assert isinstance(m, TopicManifest)
+            assert isinstance(m.value(), TopicSchema)
+            assert m.name()
+
+    def test_yields_error_manifest(self):
+        results = list(search_topic_manifests(
+            'ghoshell_moss.core.helpers.exception_pkg',
+        ))
+        assert len(results) == 1
+        assert results[0].is_error()
+
+    def test_skips_non_topic_objects(self):
+        results = list(search_topic_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
+        ))
+        assert results == []
+
+    def test_empty_package(self):
+        results = list(search_topic_manifests('ghoshell_moss.stubs.not_a_package'))
+        assert results == []
+
+
+# ==================================================================
+# ParameterManifest — ParameterModel 子类 或 ParameterSchema 实例
+# ==================================================================
+
+class TestParameterManifest:
+    def test_from_parameter_schema_instance(self, tmp_path):
+        schema = ParameterSchema(
+            name='test.param',
+            description='Test parameter',
+            json_schema={},
+            default={},
+        )
+        m = ParameterManifest(
+            name=schema.name,
+            value=schema,
+            found_at=tmp_path,
+            import_path='test:my_param',
+            description=schema.description,
+        )
+        assert m.name() == 'test.param'
+        assert m.value() is schema
+
+    def test_error_manifest(self, tmp_path):
+        m = ParameterManifest(name='broken', error=ValueError('bad'), found_at=tmp_path)
+        assert m.is_error()
+        with pytest.raises(ValueError, match='bad'):
+            m.value()
+
+
+# ==================================================================
+# search_parameter_manifests — 扫描 (单值返回)
+# ==================================================================
+
+class TestSearchParameterManifests:
+    def test_finds_parameter_class(self):
+        """stub parameters.py 有 ExampleParameter (ParameterModel 子类)."""
+        m = search_parameter_manifests(STUB_MANIFESTS_PARAMETERS)
+        assert isinstance(m, ParameterManifest)
+        assert not m.is_error()
+        assert m.name() == 'example'
+        assert isinstance(m.value(), ParameterSchema)
+
+    def test_returns_error_when_none_found(self):
+        m = search_parameter_manifests(
+            'ghoshell_moss.stubs.workspace.src.MOSS.manifests.providers'
+        )
+        assert isinstance(m, ParameterManifest)
+        assert m.is_error()
+
+    def test_returns_error_for_empty_package(self):
+        m = search_parameter_manifests('ghoshell_moss.stubs.not_a_package')
+        assert m.is_error()
