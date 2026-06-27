@@ -624,7 +624,7 @@ class Project(ABC):
 
     @property
     def modes_home(self) -> Path:
-        return self.root.joinpath('modes')
+        return self.workspace_dir.joinpath('modes')
 
     def get_mode_home(self, mode_name: str) -> Path:
         """返回每个模式自己独立的 path. """
@@ -678,11 +678,11 @@ class Project(ABC):
 
     @property
     def network_configs_dir(self) -> Path:
-        return self.root.joinpath('networks').absolute()
+        return self.workspace_dir.joinpath('networks').absolute()
 
     @property
     def configs_dir(self) -> Path:
-        return self.root.joinpath('configs').absolute()
+        return self.workspace_dir.joinpath('configs').absolute()
 
     @property
     def workspace_source_dir(self) -> Path:
