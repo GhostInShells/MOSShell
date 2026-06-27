@@ -39,7 +39,7 @@ __all__ = [
 
 T = TypeVar('T')
 
-HOST_MODE_MANIFESTS_PACKAGE = 'HOST.manifests'
+HOST_MODE_MANIFESTS_PACKAGE = 'HOST'
 HOST_MODE_FILE = 'HOST.md'
 
 
@@ -289,6 +289,25 @@ class Manifest(Generic[T], ABC):
 
 
 class MatrixManifest(ABC):
+    """全局基线声明 — 扫描一个 Python 包的子包，发现所有能力声明."""
+
+    @abstractmethod
+    def root_package(self) -> str:
+        """此 manifest 扫描的 Python 包路径. 如 MOSS.manifests."""
+        ...
+
+    def explain(self) -> str:
+        """自描述 — 此层声明的内容、来源与定位."""
+        pkg = self.root_package()
+        types = ["providers", "configs", "topics", "signals", "parameters", "resources"]
+        type_list = ", ".join(f"`{t}`" for t in types)
+        return (
+            f"# Matrix Manifest — 全局基线声明\n\n"
+            f"扫描包: `{pkg}`\n"
+            f"声明类型: {type_list}\n\n"
+            f"这是 workspace 级别的全局声明。所有 mode 可以通过 Python import "
+            f"继承这些声明，再追加或覆盖 mode 专属内容。\n"
+        )
 
     @abstractmethod
     def providers(self) -> Iterable[Manifest[Provider]]:
@@ -322,6 +341,26 @@ class MatrixManifest(ABC):
 
 
 class ModeManifests(ABC):
+    """Mode 专属声明 — 继承 Matrix 全局基线，追加 mode 特有内容."""
+
+    @abstractmethod
+    def root_package(self) -> str:
+        """此 manifest 扫描的 Python 包路径. 如 HOST."""
+        ...
+
+    def explain(self) -> str:
+        """自描述 — 此层声明的内容、来源与定位."""
+        pkg = self.root_package()
+        types = ["providers", "configs", "topics", "signals", "parameters", "resources",
+                 "channel", "nuclei"]
+        type_list = ", ".join(f"`{t}`" for t in types)
+        return (
+            f"# Mode Manifest — 当前模式的有效视图\n\n"
+            f"扫描包: `{pkg}`\n"
+            f"声明类型: {type_list}\n\n"
+            f"Mode 通过 Python import 继承 Matrix 全局声明，再追加或覆盖。\n"
+            f"`channel` 和 `nuclei` 是 mode 专属类型，不在 Matrix 层。\n"
+        )
 
     @abstractmethod
     def channel(self) -> Manifest[PrimeChannel]:

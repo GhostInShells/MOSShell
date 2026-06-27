@@ -18,6 +18,11 @@ class ScannedModeManifests(ScannedMatrixManifest, ModeManifests):
     继承 ScannedMatrixManifest 的所有 scanner，额外提供 channel, nuclei, resources.
     """
 
+    def explain(self) -> str:
+        """自描述 — Mode 层视角。显式调用 ModeManifests.explain()，避免 MRO 中
+        MatrixManifest.explain() 先匹配."""
+        return ModeManifests.explain(self)
+
     def __init__(self, root_package: str = HOST_MODE_MANIFESTS_PACKAGE):
         super().__init__(root_package)
 

@@ -11,7 +11,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
-    start_cli,
+    start_cli, modes_cli, ghosts_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -36,6 +36,8 @@ app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manag
 app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
+app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
+app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
 
 
 @app.callback(invoke_without_command=True)

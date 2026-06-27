@@ -27,6 +27,9 @@ class ScannedMatrixManifest(MatrixManifest):
     def __init__(self, root_package: str = MATRIX_MANIFESTS_PACKAGE):
         self._root = root_package
 
+    def root_package(self) -> str:
+        return self._root
+
     def providers(self) -> Iterable[Manifest[Provider]]:
         yield from search_provider_manifests(f'{self._root}.providers')
 
