@@ -11,7 +11,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
-    start_cli, modes_cli, ghosts_cli, cells_cli,
+    start_cli, modes_cli, ghosts_cli, cells_cli, networks_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -39,6 +39,7 @@ app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architectur
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
 app.add_typer(cells_cli.cells_app, name="cells", short_help="Discover, launch, and manage runtime cells")
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
+app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
 
 
 @app.callback(invoke_without_command=True)

@@ -202,7 +202,7 @@ class NetworkMetadata(BaseModel):
         if not scope_dir.exists() or not scope_dir.is_dir():
             yield from []
             return
-        for file in scope_dir.glob('scope-*.json'):
+        for file in scope_dir.glob('*.json'):
             data = cls.read_from_file(file, throw=False)
             if data:
                 yield data
