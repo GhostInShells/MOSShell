@@ -1,0 +1,19 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s [%(filename)s:%(lineno)d]"
+    datefmt: "%Y-%m-%d %H:%M:%S"
+
+handlers: {}
+
+loggers:
+  # 允许不同模块有不同日志等级
+  root:
+    level: WARNING
+    handlers: [ ]
+
+  moss:
+    level: INFO
+    handlers: [ debug ]

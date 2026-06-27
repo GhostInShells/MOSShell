@@ -5,7 +5,8 @@ from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
-from ghoshell_moss.core.blueprint.project import Manifest, MatrixManifest, MATRIX_MANIFESTS_PACKAGE
+from ghoshell_moss.core.blueprint.project import Manifest, MatrixManifest
+from ghoshell_moss.core.blueprint.environment import MATRIX_MANIFESTS_PACKAGE
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.project.manifests.providers import search_provider_manifests
 from ghoshell_moss.project.manifests.configs import search_config_manifests

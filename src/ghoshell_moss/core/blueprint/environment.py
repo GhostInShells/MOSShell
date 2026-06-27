@@ -7,8 +7,11 @@ from typing import Literal, TypeAlias, Dict
 from typing_extensions import Self
 from pathlib import Path
 from importlib import resources
+
 from ghoshell_moss.message import unique_id
+from pydantic import BaseModel, Field
 import contextlib
+import frontmatter
 import os
 import stat
 
@@ -53,6 +56,13 @@ __all__ = [
 
     'WORKSPACE_CELL_RUNTIME_DIR',
     'DEFAULT_CELLS_DIR',
+
+    'MATRIX_MANIFESTS_PACKAGE',
+    'GHOST_MANIFESTS_PACKAGE',
+
+    'MOSS_NAME_PATTERN',
+    'MossMeta',
+    'MOSS_META_FILE',
 ]
 
 # --- moss 的 workspace 发现机制 --- #
@@ -107,6 +117,9 @@ NONE_GHOST_NAME = "none"
 ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
 ENV_PARENT_CELL_ADDRESS_KEY = 'MOSS_PARENT_CELL_ADDRESS'
 
+MATRIX_MANIFESTS_PACKAGE = 'MOSS.manifests'
+GHOST_MANIFESTS_PACKAGE = 'MOSS.ghosts'
+
 # 与运行配置项有关的 Env Key
 MOSSEnvConfigKey: TypeAlias = Literal[
     "MOSS_WORKSPACE",
@@ -125,6 +138,111 @@ MOSSRuntimeScopeEnvKey: TypeAlias = Literal[
     "MOSS_PROJECT_ID",
 ]
 
+MOSS_NAME_PATTERN = r'^[a-zA-Z_][a-zA-Z0-9_]*$'
+
+MOSS_META_FILE = 'MOSS.md'
+
+
+class MossMeta(BaseModel):
+    """
+    项目级元信息配置.
+    通过 workspace/MOSS.md 读取. 所有字段均有默认值, 无文件时可自动创建.
+    """
+    name: str = Field(
+        default='moss',
+        description='name of the moss project',
+        pattern=MOSS_NAME_PATTERN,
+    )
+    description: str = Field(
+        default='',
+        description='description of the moss project',
+    )
+    default_network: str = Field(
+        default=DEFAULT_NETWORK_NAME,
+        description='default moss network',
+        pattern=MOSS_NAME_PATTERN,
+    )
+    default_network_scope: str = Field(
+        default=DEFAULT_NETWORK_SCOPE,
+        pattern=MOSS_NAME_PATTERN,
+    )
+    default_mode: str = Field(
+        default=NONE_MOSS_MODE,
+        description='default moss mode',
+        pattern=MOSS_NAME_PATTERN,
+    )
+    default_ghost: str = Field(
+        default=NONE_GHOST_NAME,
+        description='default moss ghost',
+        pattern=MOSS_NAME_PATTERN,
+    )
+    matrix_manifest_package: str = Field(
+        default=MATRIX_MANIFESTS_PACKAGE,
+    )
+    project_id: str = Field(
+        default='',
+        description='moss project id',
+    )
+    system_project: str = Field(
+        default='',
+        description='moss system prompt',
+    )
+    cell_paths: list[str] = Field(
+        default_factory=lambda: [
+            DEFAULT_CELLS_DIR,
+            f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_CELLS_DIR}",
+        ],
+        description="以 project 为出发点, 发现 cells 的路径.",
+    )
+
+    file: str = Field(
+        default='',
+        description='moss file path',
+    )
+
+    @classmethod
+    def read_from_directory(cls, directory: Path) -> 'MossMeta | None':
+        file = directory / MOSS_META_FILE
+        return cls.read_from_file(file)
+
+    @classmethod
+    def read_from_file(cls, file: Path) -> 'MossMeta | None':
+        if not file.is_file():
+            return None
+        post = frontmatter.load(str(file.absolute()))
+        data = post.metadata
+        data['file'] = str(file.absolute())
+        data['system_project'] = post.content
+        return cls(**data)
+
+    def cell_dirs(self, env: 'Environment') -> list[Path]:
+        """基于 cell_paths 解析为绝对路径."""
+        result = []
+        project_dir = env.project_path
+        for relative_path in self.cell_paths:
+            relative_path = relative_path.replace(
+                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
+            )
+            cell_dir = project_dir / relative_path
+            if cell_dir.exists():
+                result.append(cell_dir.absolute())
+        return result
+
+    def write_to_directory(self, directory: Path) -> None:
+        file = directory / MOSS_META_FILE
+        self.write_to_file(file)
+
+    def write_to_file(self, file: Path | None = None) -> None:
+        file = file or Path(self.file)
+        if not file.name:
+            raise ValueError('MossMeta.write_to_file: file path required')
+        if self.project_id == '':
+            self.project_id = unique_id()
+        metadata = self.model_dump(exclude={'system_project', 'file'})
+        post = frontmatter.Post(self.system_project, **metadata)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        frontmatter.dump(post, file)
+
 
 class Environment:
     """
@@ -134,6 +252,7 @@ class Environment:
 
     def __init__(
             self,
+            # moss meta 是发现的基础.
             workspace: Path | None = None,
             project: Path | None = None,
             *,
@@ -162,31 +281,42 @@ class Environment:
                 project_dir = Path(env_project_where)
             else:
                 project_dir = workspace.parent.absolute()
+
         if not project_dir.exists():
             raise EnvironmentError(f"Project `{project_dir}` not exists")
+
+        # MOSS.md 是 workspace 级配置, 只在 workspace 内查找
+        self._meta = self.find_moss_meta(workspace) or self.create_meta_file(workspace)
 
         self._project_dir = project_dir
         # 当前进程 id.
         self._self_pid: int = os.getpid()
         self._bootstrapped = False
 
-        self._mode_name = mode or os.environ.get(ENV_MOSS_MODE_KEY, NONE_MOSS_MODE)
-        self._network_scope = scope or os.environ.get(ENV_NETWORK_SCOPE_KEY, DEFAULT_NETWORK_SCOPE)
+        self._mode_name = mode or os.environ.get(ENV_MOSS_MODE_KEY, self._meta.default_mode)
         # 为当前启动的实例赋予一个 uid. 通常也可以设置在 cell 上.
         self._session_id = os.environ.get(ENV_SESSION_ID_KEY) or unique_id()
-        self._ghost_name = ghost or os.environ.get(ENV_GHOST_NAME_KEY, NONE_GHOST_NAME)
+        self._ghost_name = ghost or os.environ.get(ENV_GHOST_NAME_KEY, self._meta.default_ghost)
         self._cell_address = cell_address or os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         self._parent_cell_address = parent_cell_address or os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
-        self._network = network or os.environ.get(ENV_NETWORK_KEY, DEFAULT_NETWORK_NAME)
-        project_id = os.environ.get(ENV_PROJECT_ID_KEY) or ''
+        self._network = network or os.environ.get(ENV_NETWORK_KEY, self._meta.default_network)
+        self._network_scope = scope or os.environ.get(ENV_NETWORK_SCOPE_KEY, self._meta.default_network_scope)
+        project_id = os.environ.get(ENV_PROJECT_ID_KEY) or self._meta.project_id
         if not project_id:
-            project_id_file = workspace.joinpath(WORKSPACE_PROJECT_ID_FILE)
-            if project_id_file.exists():
-                project_id = project_id_file.read_text()
-            if not project_id:
-                project_id = unique_id()
-                project_id_file.write_text(project_id)
+            project_id = unique_id()
+            self._meta.project_id = project_id
+            self._meta.write_to_file()
         self._project_id = project_id
+
+    @classmethod
+    def find_moss_meta(cls, directory: Path) -> MossMeta | None:
+        return MossMeta.read_from_directory(directory)
+
+    @classmethod
+    def create_meta_file(cls, directory: Path) -> MossMeta:
+        moss_meta = MossMeta()
+        moss_meta.write_to_directory(directory)
+        return moss_meta
 
     def bootstrap(self) -> None:
         """
@@ -393,13 +523,19 @@ class Environment:
         return self._project_dir
 
     @property
+    def moss_meta(self) -> MossMeta:
+        return self._meta
+
+    def cell_dirs(self) -> list[Path]:
+        """返回 MossMeta 中配置的、实际存在的 cell 发现路径."""
+        return self._meta.cell_dirs(self)
+
+    @property
     def default_project_cells_dir(self) -> Path:
-        """默认 project 下存放 cells 的地址. """
         return self.project_path.joinpath(DEFAULT_CELLS_DIR)
 
     @property
     def default_workspace_cells_dir(self) -> Path:
-        """默认 workspace 下存放 cells 的地址. """
         return self.workspace_path.joinpath(DEFAULT_CELLS_DIR)
 
     @property

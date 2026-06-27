@@ -5,7 +5,7 @@ from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_NETWORK_SCOPE, DEFAULT_NETWORK_NAME, Environment,
-    DEFAULT_CELLS_DIR,
+    DEFAULT_CELLS_DIR, MOSS_NAME_PATTERN,
     ENV_WORKSPACE_DIR_KEY,
 )
 from ghoshell_moss.core.blueprint.cell import CellRegistry
@@ -28,30 +28,31 @@ import sys
 import logging
 
 __all__ = [
-    'ModeMeta',
+    'HostModeMeta',
     'HostMode',
     'Manifest', 'ModeManifests', 'MatrixManifest',
     'NetworkConfig', 'NetworkMetadata',
     'Project',
-    'MATRIX_MANIFESTS_PACKAGE', 'HOST_MODE_MANIFESTS_PACKAGE',
+    'HOST_MODE_MANIFESTS_PACKAGE',
+    'HOST_MODE_FILE',
 ]
 
 T = TypeVar('T')
 
-MATRIX_MANIFESTS_PACKAGE = 'MOSS.manifests'
-GHOST_MANIFESTS_PACKAGE = 'MOSS.ghosts'
 HOST_MODE_MANIFESTS_PACKAGE = 'HOST.manifests'
+HOST_MODE_FILE = 'HOST.md'
 
 
-class ModeMeta(BaseModel):
+class HostModeMeta(BaseModel):
     """
-    MOSS 的元信息配置.
-    通过 workspace 的 MOSS.md 读取.
+    Host 模式的元信息配置.
+    通过 modes/{name}/HOST.md 读取. name 始终由发现路径的目录名覆盖.
     """
     name: str = Field(
-        default='',
+        default='default',
         description="为启动后的 moss 实例 (躯体) 命名. 用于做本地不同模式的区分."
                     "比如 Desktop, Robot 等.",
+        pattern=MOSS_NAME_PATTERN,
     )
     description: str = Field(
         default="default moss mode discovered in moss workspace",
@@ -62,8 +63,9 @@ class ModeMeta(BaseModel):
         description="当前 MOSS 默认使用的提示词版本."
     )
 
-    default_network_scope: str = Field(
-        default=DEFAULT_NETWORK_SCOPE,
+    manifest_package: str = Field(
+        default=HOST_MODE_MANIFESTS_PACKAGE,
+        description="发现 manifest 执行的路径. ",
     )
 
     system_prompt: str = Field(
@@ -90,6 +92,26 @@ class ModeMeta(BaseModel):
     )
 
     @classmethod
+    def read_from_directory(cls, directory: Path) -> 'HostModeMeta | None':
+        file = directory / HOST_MODE_FILE
+        if file.exists():
+            return cls.from_file(file)
+        return None
+
+    def cell_dirs(self, env: Environment) -> list[Path]:
+        """基于 cell_paths 解析为绝对路径."""
+        result = []
+        project_dir = env.project_path
+        for relative_path in self.cell_paths:
+            relative_path = relative_path.replace(
+                f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
+            )
+            cell_dir = project_dir / relative_path
+            if cell_dir.exists():
+                result.append(cell_dir.absolute())
+        return result
+
+    @classmethod
     def from_file(cls, file: Path, name: str = '') -> Self:
         """
         从文件中读取 meta instruction.
@@ -104,16 +126,19 @@ class ModeMeta(BaseModel):
             data['name'] = name
         return cls(**data)
 
+    def write_to_directory(self, directory: Path) -> None:
+        file = directory / HOST_MODE_FILE
+        self.write_to_file(file)
+
     def write_to_file(self, file: Path) -> None:
         import frontmatter
         metadata = self.model_dump(
             exclude_none=True,
-            exclude={'system_prompt', 'project', 'file', 'where'},
+            exclude={'system_prompt', 'file'},
         )
-        content = self.system_prompt
-        post = frontmatter.Post(content, **metadata)
+        post = frontmatter.Post(self.system_prompt, **metadata)
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(post.content)
+        frontmatter.dump(post, file)
 
     def cell_dirs(self, env: Environment) -> list[Path]:
         """return absolute paths to find cells"""
@@ -377,7 +402,7 @@ class HostMode(ABC):
 
     @property
     @abstractmethod
-    def meta(self) -> ModeMeta:
+    def meta(self) -> HostModeMeta:
         """
         元信息, 复用 MOSS Meta 的结构.
         """
@@ -535,7 +560,7 @@ class Project(ABC):
         ...
 
     @abstractmethod
-    def list_modes(self) -> Iterable[tuple[Path, Manifest[ModeMeta]]]:
+    def list_modes(self) -> Iterable[tuple[Path, Manifest[HostModeMeta]]]:
         """
         返回 workspace 里定义的所有模式.
         每个模式对应的路径有自己的命名.

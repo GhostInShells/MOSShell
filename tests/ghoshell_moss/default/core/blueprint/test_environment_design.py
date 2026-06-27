@@ -22,7 +22,8 @@ from ghoshell_moss.core.blueprint.environment import (
     ENV_GHOST_NAME_KEY,
     ENV_CELL_ADDRESS_KEY,
     ENV_PARENT_CELL_ADDRESS_KEY,
-    WORKSPACE_PROJECT_ID_FILE,
+    MOSS_META_FILE,
+    MossMeta,
 )
 
 # -- env vars set by bootstrap(), must be cleaned between tests --
@@ -148,7 +149,8 @@ class TestEnvironmentProjectId:
     def test_from_file(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
-        (ws / WORKSPACE_PROJECT_ID_FILE).write_text('proj-file')
+        meta = MossMeta(project_id='proj-file')
+        meta.write_to_directory(ws)
         env = Environment(workspace=ws)
         assert env.project_id == 'proj-file'
 
@@ -158,14 +160,17 @@ class TestEnvironmentProjectId:
         env = Environment(workspace=ws)
         pid = env.project_id
         assert len(pid) > 0
-        # 写入文件
-        assert (ws / WORKSPACE_PROJECT_ID_FILE).exists()
-        assert (ws / WORKSPACE_PROJECT_ID_FILE).read_text() == pid
+        # 持久化到 MOSS.md
+        moss_md = ws / MOSS_META_FILE
+        assert moss_md.exists()
+        reloaded = MossMeta.read_from_file(moss_md)
+        assert reloaded.project_id == pid
 
     def test_env_var_priority_over_file(self, tmp_path, monkeypatch):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
-        (ws / WORKSPACE_PROJECT_ID_FILE).write_text('file-id')
+        meta = MossMeta(project_id='file-id')
+        meta.write_to_directory(ws)
         monkeypatch.setenv(ENV_PROJECT_ID_KEY, 'env-id')
         env = Environment(workspace=ws)
         assert env.project_id == 'env-id'
@@ -451,6 +456,118 @@ class TestEnvironmentDirPaths:
         env = Environment(workspace=ws)
         assert env.cell_runtimes_dir.relative_to(ws)
         assert env.log_config_file.relative_to(ws)
+
+
+# ==================================================================
+# MossMeta — 默认值来源
+# ==================================================================
+
+class TestMossMetaDefaults:
+    """MossMeta 在场时, Environment 的默认值来自 MOSS.md."""
+
+    def test_defaults_from_moss_meta(self, tmp_path):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = MossMeta(
+            name='testproj',
+            default_mode='desktop',
+            default_ghost='echo',
+            default_network='lab',
+            default_network_scope='swarm_a',
+        )
+        meta.write_to_directory(ws)
+        env = Environment(workspace=ws)
+        assert env.mode_name == 'desktop'
+        assert env.ghost_name == 'echo'
+        assert env.network == 'lab'
+        assert env.network_scope == 'swarm_a'
+
+    def test_no_moss_meta_falls_back_to_none(self, tmp_path):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        # 没有 MOSS.md, 自动创建, 默认值未被覆盖
+        env = Environment(workspace=ws)
+        assert env.mode_name == 'none'
+        assert env.ghost_name == 'none'
+        assert env.network == 'default'
+        assert env.network_scope == 'default'
+
+
+# ==================================================================
+# MossMeta — 环境变量优先级
+# ==================================================================
+
+class TestMossMetaEnvVarPriority:
+
+    def test_env_var_overrides_moss_meta(self, tmp_path, monkeypatch):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = MossMeta(default_mode='desktop', default_network='lab')
+        meta.write_to_directory(ws)
+        monkeypatch.setenv(ENV_MOSS_MODE_KEY, 'robot')
+        monkeypatch.setenv(ENV_NETWORK_KEY, 'prod')
+        env = Environment(workspace=ws)
+        assert env.mode_name == 'robot'
+        assert env.network == 'prod'
+
+    def test_explicit_kwarg_overrides_everything(self, tmp_path, monkeypatch):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        MossMeta(default_mode='from_meta').write_to_directory(ws)
+        monkeypatch.setenv(ENV_MOSS_MODE_KEY, 'from_env')
+        env = Environment(workspace=ws, mode='from_kwarg')
+        assert env.mode_name == 'from_kwarg'
+
+    def test_env_var_overrides_moss_meta_ghost(self, tmp_path, monkeypatch):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        MossMeta(default_ghost='echo').write_to_directory(ws)
+        monkeypatch.setenv(ENV_GHOST_NAME_KEY, 'pilot')
+        env = Environment(workspace=ws)
+        assert env.ghost_name == 'pilot'
+
+
+# ==================================================================
+# MossMeta / HostModeMeta — 命名语法校验
+# ==================================================================
+
+class TestMossNamePattern:
+    """MOSS_NAME_PATTERN 校验: ^[a-zA-Z_][a-zA-Z0-9_]*$"""
+
+    def test_valid_names(self):
+        meta = MossMeta(name='my_project', default_mode='desktop',
+                        default_ghost='echo_v2', default_network='lab_01')
+        assert meta.name == 'my_project'
+        assert meta.default_mode == 'desktop'
+
+    def test_slash_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(default_mode='desktop/evil')
+
+    def test_dot_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(default_ghost='echo.v2')
+
+    def test_hyphen_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(default_network='my-net')
+
+    def test_leading_digit_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(default_mode='2bad')
+
+    def test_space_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(name='my project')
+
+    def test_empty_string_rejected(self):
+        with pytest.raises(Exception):
+            MossMeta(name='')
+
+    def test_host_mode_meta_name_validation(self):
+        from ghoshell_moss.core.blueprint.project import HostModeMeta
+        with pytest.raises(Exception):
+            HostModeMeta(name='bad-name')
 
 
 # ==================================================================
