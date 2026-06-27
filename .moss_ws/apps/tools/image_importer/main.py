@@ -76,7 +76,8 @@ async def import_images(
 
         try:
             meta = LocalImageInfo(
-                path=stem,
+                path=name,
+                file_name=name,
                 description=stem.replace("_", " ").replace("-", " "),
                 tags=tags,
             )

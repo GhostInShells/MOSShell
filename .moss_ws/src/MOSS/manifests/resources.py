@@ -12,5 +12,7 @@
 # 深入：moss howtos read host-dev/add-a-resource-storage.md
 
 from ghoshell_moss.core.resources.local_image import LocalImageResourceMeta
+from ghoshell_moss.core.resources.local_video import LocalVideoResourceMeta
 
 local_image_storage_meta = LocalImageResourceMeta()
+local_video_storage_meta = LocalVideoResourceMeta()
