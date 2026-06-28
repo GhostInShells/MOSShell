@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-27
+updated: 2026-06-28
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,17 +15,15 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
-  2026-06-27 claude-opus-4-7 大规模架构推进:
-  (1) MossMeta 回归 — MOSS.md 承载项目级默认值, workspace 内唯一配置入口.
-  (2) HostModeMeta + LocalHostMode 实现 — HOST.md 约定, bootstrap 守卫.
-  (3) LocalProject 原型 — modes/ghosts 文件系统发现 + ProjectCellRegistry.
-  (4) CLI 重建 — moss init (project dir 目标, .moss 永远在其下), workspace→project,
-  modes/ghosts 归入 project 组, runtime/script/apps 全部删除.
-  (5) shell-init 根命令 + --ghost/--network/--scope 全局参数.
-  (6) 常量改造: .moss_ws→.moss, stub package 更新.
-  (7) logging.yml 只配格式/等级, Project.bootstrap() 动态注入 file handler.
-  (8) start.md 全文重写对齐新 CLI.
-  下一实例认知重建支点: 读本文 §GG.
+  2026-06-28 claude-opus-4-7 + 人类架构师讨论会话:
+  (1) 补完前任未显式记录的 L0→L3 跃迁认知 (§MM) — matrix 成为最小通讯依赖, cells 真相源上升到 network.
+  (2) 二元真相显式承认 (§NN) — status 变更不广播, live_cells 是延迟视图. 选 (c) 不加回 pub/sub.
+  (3) 三重身份问题 framing (§OO) — type 字段一人干三份活的概念漂移定位, 字段拆解候选方案. 核心待决, 本轮未敲定.
+  (4) cell type 升格 / 多 network 升格的 beta1 保守路径 (§PP).
+  (5) channel proxy 根 channel 数量两个候选 (§QQ).
+  (6) FEATURE.md 滞后修正 (§RR) — §L bridge_address 二分, §N HostCellNetwork ABC 分离, 均已合并/不做.
+  (7) §SS 开工契约 — 三重身份 + log 三处零漂移 + 自动 proxy + cells/network 两个 channel + Matrix 启动流程. 决策全部收敛, 可开工.
+  下一实例认知重建支点: 读本文 §SS (含 §MM-§RR 所有上文).
 ---
 
 # Matrix Cell Governance
@@ -1075,6 +1073,10 @@ MOSSScopeNamespace(scope)     → MOSS/{scope}
 
 ### L. bridge_address 简化为 `type/{uid}`
 
+> ⚠️ 2026-06-28 修正: 本节方案已被实现层推翻 — 当前 `Cell.address` 是
+> `type/normalized_name/uid` 三段, 合并了 address 与 bridge_address.
+> 见 §RR 与 §OO 三重身份问题. 本节保留作为决策轨迹.
+
 **推翻**: `type/name/uid` 三层 bridge address。
 **理由**: name 在 bridge 中不提供唯一性 (uid 已保证)，但使 `split_bridge_address` 语义模糊
 （name 可能含 `/`）。
@@ -1109,6 +1111,11 @@ PUT + queryable 两个 key 完成所有需求。
 但 cell 数量小 (< 100)、变化低频，可接受。
 
 ### N. CellNetwork 二分: CellNetwork vs HostCellNetwork
+
+> ⚠️ 2026-06-28 修正: 本节 ABC 分离方案不做 — 当前只有一个 `CellNetwork` ABC,
+> host/non-host 区分通过 `allow_create_proxy: bool` 构造参数实现.
+> matrix.py 的 `only_allowed_in_host_cell` 参数是同一约束的第三次表达, 待 §OO/§QQ
+> 决策后一并收敛. 本节保留作为决策轨迹.
 
 | 能力 | CellNetwork (通用) | HostCellNetwork |
 |------|---------------------|-----------------|
@@ -1519,3 +1526,755 @@ LocalHostMode(env, meta, workspace_dir, *, logger=None)
 6. `src/ghoshell_moss/cli/main.py` — init, shell-init, 全局参数
 7. `src/ghoshell_moss/cli/project_cli.py` — project 命令组
 8. `src/ghoshell_moss/cli/start.md` — 认知入口（已重写）
+
+---
+
+## 2026-06-28 三重身份问题与 L3 跃迁认知补完 (claude-opus-4-7)
+
+> 与人类架构师讨论会话. 本节做四件事:
+> (1) 补完前任未显式记录的 L0→L3 跃迁认知 — 后续所有设计的基线
+> (2) 二元真相问题的设计裁决 — 选 (c) 显式承认, 不加回 pub/sub
+> (3) 三重身份问题 framing — 核心待决, 本轮未敲定具体字段方案
+> (4) 修正 §I-§T 中已被推翻/合并的设计 (§L, §N)
+>
+> 代码本轮不动. 字段方案敲定后, 与 §RR 末尾的"确定性修复清单"一并落地.
+
+### MM. L0→L3 跃迁认知 (基线补完)
+
+前任 §U 提过 "L2 → L4 跃迁" 但未把层次完整展开, 也未记录跃迁的核心 implication.
+本节补完认知地图.
+
+| 层 | "我是谁"的边界 | 可见性边界 | cells 真相源 |
+|---|---|---|---|
+| L0 | apps in workspace | workspace 内 | workspace runtime file |
+| L1 | apps in project | project 内 | project runtime file |
+| **L2** | cells in OS | 同 network 的 cells (跨目录 / 底层依赖不一) | network liveness |
+| **L3** | cells in LAN | 同 network 的 cells (跨机器) | 同 L2 |
+
+当前重构目标: **直接跃迁到 L3** (不做 web 级 L4).
+
+关键 implications:
+
+- **matrix 是最小通讯依赖** — `pip install ghoshell-moss[matrix]` 仅需 zenoh,
+  任何 Python 进程可加入 cell network, 不需要 host mode / CLI / 文件系统约定.
+  印证: pyproject.toml 中 `matrix = ["eclipse-zenoh>=1.8.0"]`, `host = [...]`
+  在 matrix 之上追加 TUI / 音频 / MCP 等本地能力.
+- **底层依赖不一致是协议层问题, 不是实现层问题** — A cell Python 3.11 + numpy 2.x,
+  B cell Python 3.12 + numpy 1.x. L3 不要求一致, 只要求 network 上消息形态
+  (CTML, TopicModel 序列化, channel proxy interface) 一致.
+- **cell runtime file 的三层真相**:
+  - **network 级 (真相源)**: cells_ns liveness + queryable
+  - **project 级 (本地观察缓存)**: workspace/runtime/cells/
+  - **process 级 (自我认知)**: MOSS_CELL_ADDRESS + runtime file 恢复
+
+  原 workspace runtime file 是 single source of truth (进程清理基线),
+  现在降级为本地缓存, **network 才是真相**. 但 network 看不见本机其它
+  project 的进程清理 (L2 跨目录), project runtime 必须保留作为
+  **本机清扫边界**.
+- **L2 不是被跳过** — 一个 zenoh network 默认 `tcp/127.0.0.1:20380` 时就是 L2;
+  改 `0.0.0.0:20380 + multicast` 就是 L3 LAN. 同一抽象, 不同 NetworkConfig 切换.
+
+### NN. 二元真相显式承认 — status 变更不广播 (设计裁决)
+
+zenoh 通讯原本三件套 (liveness 推上下线 + queryable 拉 + pub/sub 推变更),
+在 §M 阶段拿掉 pub/sub, 理由 "cell 生命周期不变".
+
+**真问题**: `failure` / `degraded` 这种**进程还活着但状态变了**的中间态,
+liveness 不动, subscriber 看不见. cell 本地真相与 network 真相在中间态分叉.
+这是 L3 跨网络的物理现实.
+
+**裁决**: 选 (c) — 显式承认二元真相, **不加回 pub/sub**.
+
+理由:
+
+- liveness 本质就是 best-effort online presence, 不是 status truth source.
+  zenoh 也不保证 SIGKILL 后立即 DELETE (靠 keep-alive timeout).
+- 加回 pub/sub 的代价是全网广播 status delta. 真正需要 act on failure 的
+  只有 host 与 cell 自身. 全网代价对低频事件不值.
+- queryable handler 每次返回 ann.cell 最新 snapshot — 拉就是最新.
+
+**落地约束** (待 §OO 字段方案敲定后随确定性修复清单执行):
+
+- **CellNetwork docstring 必须显式承诺**: "live_cells() 返回的是延迟视图,
+  只承诺 online/offline 准确, status 字段可能滞后到下次 reconcile.
+  需要实时 status 的调用方必须 get_live_cells(refresh=True)."
+- **subscriber 路径只触发 online/offline**, 不感知 status 变更.
+- **失败传播的逃生口**: cell 自己想让 network 知道 degraded, 可主动
+  `revoke_cell + update_cell`. liveness 的 DELETE+PUT 就传出去. 这是 cell
+  有意识的传播, 不是框架默认行为.
+- **version 字段当前只有语义价值** — 缺 pub/get 配套机制 (没有 "广播带 version
+  后缀的 address" 这种实现), reconcile 也不用. **beta1 不强推 version 进
+  reconcile loop**. 留待 status 同步成为真实痛点时再补.
+
+### OO. 三重身份问题 framing (核心待决)
+
+cell 当前的字段在做三件互相牵连的事, 概念漂移已经发生.
+
+**漂移现象**:
+
+- `type` 字段一个人干三份活:
+  - `host/worker` (framework 角色, 枚举有限)
+  - `sensors/bodies/tools` (project 分类, 用户自由)
+  - `local/remote/fractal` (network 视角, **应由观察者推断**)
+- `name` 既是 project 内唯一性也是 network address 段
+- `address` 既是 process 唯一也是 network 唯一. `bridge_address` 概念在 §L
+  已被合并 (见 §RR 修正).
+
+**身份归属表** (重新对齐):
+
+| 身份 | 真相源 | 唯一性范围 | 用途 |
+|------|--------|----------|------|
+| process self | env + runtime file | 进程内 | 进程内 "我是谁", discover 还原 |
+| project | runtime file | project 内 | 本机清扫、本地单例锁 |
+| network | liveness + queryable | network scope 内 | 跨进程发现、proxy 目标 |
+
+**重要观察**: network origin (local/remote/fractal) **是相对的**.
+同一 cell, 我自己 announce 的是 local, subscriber 见到别人 announce 的是
+remote, FractalHub 注入的是 fractal. **不该是 cell 自己的字段**.
+
+**字段拆解候选方案 (未决, 仅作讨论基础)**:
+
+```python
+class CellMetadata:
+    role: Literal['host', 'worker']     # network 框架角色 (framework 保留)
+    group: str = 'default'              # project 分类 (用户自由, sensors/bodies/...)
+    name: str                           # project 内 + group 内唯一
+    singleton: bool                     # 保留
+    description: str                    # 保留
+    channel: bool                       # 保留
+
+class CellStatus:
+    uid: str                            # process / network 级唯一 id
+
+class Cell:
+    @property
+    def project_id(self) -> str:        # group/name
+        ...
+    @property
+    def network_address(self) -> str:   # role/group/name/uid
+        ...
+    @property
+    def self_uid(self) -> str:          # status.uid
+        ...
+```
+
+`network_origin` 不进字段, 由 CellNetwork 观察上下文标记.
+
+**未决问题 (留给人类架构师裁)**:
+
+1. 字段方案采纳粒度 — **完整拆解** vs **beta1 保守** (保留 type 二态 = host/worker,
+   但加 group, docstring 严格收敛只表达 "framework role")?
+2. `type` 字段是否消失? 若消失, 迁移面较大 (manifests / CLI / zenoh key 全要改).
+3. uid 在 address 中的位置 — singleton cell 是否也带 uid? singleton 的
+   project 唯一性 vs network 唯一性的边界 (这一条是 §4 worker dup 检查
+   问题的本源).
+
+### PP. cell type 升格 / 多 network 升格 — beta1 保守路径
+
+人类架构师指出: cell type 终极升格危险 — network 可能多实例创建,
+local network 可能根本不是 zenoh. 这条思路对 beta1 工期危险, 本轮明确不做.
+
+**beta1 保守路径** (留扩展点, 不锁死未来):
+
+1. **type 二态保留 + 加 group** (见 §OO 候选方案) — 不做 type registry, 不做
+   `announce_type`. group 用户自由, 不参与 framework 行为. 未来若真需 type 升格,
+   group 自然演化为 type namespace.
+
+2. **`Matrix.network` 接口为多准备** — 当前返回单 CellNetwork. 接口声明为
+   "primary network", 但留下 `Matrix.networks() -> dict[name, CellNetwork]`
+   的位置. beta1 只用 primary, 实际只接 zenoh. 未来加 local IPC backend
+   或 gRPC 不破协议.
+
+3. **CellNetwork 不预决准入** — network 层见到什么就是什么. 过滤策略在
+   channel 层 (cells channel 决定本地显示哪些, fractal channel 决定接受
+   哪些远程). 对应 §1-§10 反复强调的 "政策不进 substrate".
+
+### QQ. channel proxy 给模型的根 channel 数量 (待决)
+
+人类架构师指出: **cell 启动与 proxy 接入是两个命题**:
+
+- 本地 cell: 启动 + proxy 可原子化
+- 远程 cell: 关键是 "自动准入" vs "主动 accept"
+
+**老代码参考** (`src/ghoshell_moss/channels/` 下):
+
+- `app_store_channel.py` — 单根 channel + `own_commands` (start/stop/list) +
+  `virtual_children` (本地 alive app 反射为 proxy). AppStore 是数据源.
+- `fractal_hub.py` — 单根 channel + 准入策略 (`allow_all` / `auto_start`).
+  FractalHub 是数据源.
+
+两个老 channel 的命名空间与控制策略完全分离, 共存于 main channel 树下.
+
+**两个候选方案 (未决)**:
+
+**候选 A — 多根 (语义分离)**:
+
+```
+main/
+  cells/        ← own_commands: start/stop/list
+                 virtual_children: 本机 alive cell
+  fractal/      ← own_commands: accept/list_remote
+                 virtual_children: 准入的远端 host
+```
+
+论点: "本地启停" 与 "远程准入" 语义不同. 合一根可能模糊模型对操作目标的理解.
+对应老代码现有 pattern, 迁移最便宜.
+
+**候选 B — 单根 matrix channel + 子树分组**:
+
+```
+matrix/
+  local/        ← virtual subtree: 本机 cell
+  remote/       ← virtual subtree: 同 network 远端 host
+  fractal/      ← virtual subtree: FractalHub 注入
+  cells/        ← own_commands
+```
+
+论点: 统一 cell 命名空间, 管理入口集中, 与 "matrix 是最小通讯依赖" 命名对齐.
+
+两候选数据源都是 `Matrix.network.live_cells()`, 视角和操作不同.
+
+**未决问题**:
+
+1. A 还是 B?
+2. 准入策略 (远程 cell 何时变成本地可见 channel proxy) 的默认行为
+   — allow_all / explicit accept / 二者皆有配置项?
+3. 在 L3 视角下 fractal 还有独立必要吗? 还是 fractal 只是 "远端 host
+   接入" 的别名? (这条与 §OO 的 network origin 由观察者推断密切相关 —
+   如果 origin 不进字段, fractal vs remote 的差异只在准入策略, 不在身份.)
+
+### RR. FEATURE.md 滞后修正
+
+前任模型在大型重构中阶段性遗漏了关键变更记录. 已在文中内联标记 ⚠️ 修正
+(见 §L 与 §N), 此处汇总:
+
+- **§L (bridge_address = type/uid) — 已被合并**: 当前 `Cell.address` 实现为
+  `type/normalized_name/uid`, 合并了 address 与 bridge_address. 合并是否为最终
+  方案待 §OO 字段拆解决议后定型.
+- **§N (HostCellNetwork vs CellNetwork ABC 二分) — 不做**: 当前只有一个
+  CellNetwork ABC, host/non-host 区分通过 `allow_create_proxy: bool` 构造参数.
+  `matrix.py::channel_proxy` 上的 `only_allowed_in_host_cell` 参数是同一约束的
+  第三次表达. 三层重复待 §OO/§QQ 决策后一并收敛.
+- **§Z 待推进清单中的 "HostCellNetwork / CellNetwork ABC 分离" — 已废**: 见 §N 修正.
+
+### 待决策项 (Open Decisions, 按依赖顺序)
+
+以下决策待人类架构师裁决. 不裁决前不动代码.
+
+1. **三重身份字段拆解粒度** (§OO) — 完整拆解 vs beta1 保守 (type 二态 + group)
+2. **`type` 字段去留** (§OO) — 完全消失 vs 保留并严格收敛语义
+3. **channel proxy 根数量** (§QQ) — 候选 A (多根分离) vs 候选 B (单根分组)
+4. **远程 cell 准入默认策略** (§QQ) — allow_all / explicit accept / 配置项
+5. **`only_allowed_in_host_cell` + `allow_create_proxy` + 隐式 host 检查的三层重复
+   收敛位点** (§RR / §N)
+6. **L2 vs L3 NetworkConfig 出厂默认** — `127.0.0.1` (L2 启动友好) vs
+   `0.0.0.0 + multicast` (L3 ready)
+7. **singleton 在 network 视角的语义** — singleton cell 的 address 是否带 uid
+   (§OO 第 3 子问)
+
+### 确定性修复清单 (Pending Fixes)
+
+以下条目不强依赖待决问题, 但部分会被字段方案影响. 待 §OO 敲定后统一执行:
+
+1. **MossMeta.write_to_file bug**: `Environment.create_meta_file` 时设置
+   `moss_meta.file = str((directory / MOSS_META_FILE).absolute())`;
+   `project_id` 副作用从 `write_to_file` 移到 `Environment.__init__` 统一处理.
+   配单测覆盖 "首次 discover 无 MOSS.md 文件" 路径.
+2. **HostModeMeta.cell_dirs 重复定义** (`project.py` line 101 vs 143): 删一份.
+3. **CellNetwork ABC 补 @abstractmethod**: `live_cells` / `on_change` 补抽象标记,
+   或提供默认空实现. 当前 body 是 `pass` 但无 @abstractmethod, 子类不实现也不报错.
+4. **CellNetwork docstring 显式承诺二元真相** (§NN 落地约束):
+   `live_cells` 延迟视图声明; `update_cell` docstring 修正 worker dup 检查的实际
+   语义 (待 §OO 第 3 子问决策后定文).
+5. **CellLauncher cwd 默认补全**: `CellManifest.read_from_file` 中无论
+   launcher.cwd 原值为何, 空就填 `found_dir`. 统一在 Matrix 启动时
+   `Cell.discover` 阶段获取 cwd (人类架构师定的位点).
+6. **FEATURE.md §L / §N 内联推翻标记** ✅ 已完成 (本节附属).
+
+### 上下文恢复支点 (下一会话/实例必读)
+
+按优先级:
+
+1. **本文件 §MM-§RR** — 本次讨论, 三重身份 framing + 二元真相裁决 + L3 跃迁
+2. **本文件 §AA-§LL** — 前两轮 (manifests 体系 + MossMeta/LocalProject)
+3. **本文件 §1-§10** — 协议层最早奠基 (type 开放命名空间 / spawn 二分 / worker 兜底)
+4. `src/ghoshell_moss/core/blueprint/cell.py` — 当前 Cell 字段实现 (待 §OO 改造)
+5. `src/ghoshell_moss/matrix/networks/zenoh_cell_network.py` — §NN 二元真相落地点
+6. `src/ghoshell_moss/channels/app_store_channel.py` — §QQ channel proxy 根 pattern
+7. `src/ghoshell_moss/channels/fractal_hub.py` — §QQ 准入策略 pattern
+8. `pyproject.toml` — `matrix = ["eclipse-zenoh>=1.8.0"]` 印证 §MM matrix 最小依赖
+9. **本节 "待决策项" 清单** — 推进起点
+
+---
+
+## 2026-06-28 §SS 开工契约 (claude-opus-4-7 + 人类架构师)
+
+> 紧接 §MM-§RR. 本节是 beta1 收敛后的最终施工契约. 决策全部敲定, 不留待决项.
+> 推翻本节任何决议前, 必须先论证驱动场景已变.
+
+### SS-1. 三重身份字段定型
+
+```python
+class CellMetadata:
+    type: str = 'worker'      # 开放命名空间. 'host' / 'worker' 是框架保留字
+    name: str                  # type 内唯一. 与 type 组成 identity
+    singleton: bool = True
+    description: str = ''
+    # 删: group (并入 type 开放定义)
+    # 删: channel (provide channel 是 runtime 事实, manifest 不预声明)
+
+class Cell:
+    # 命名定型 — 三个 property, 不存储, 显式生成规则 (code as prompt)
+
+    @property
+    def identity(self) -> str:
+        """type/name. project-internal stable id, 跨 cell 重启不变."""
+        return f"{self.meta.type}/{self.meta.name}"
+
+    @property
+    def address(self) -> str:
+        """type/name/uid. network 唯一, 含 uid 防 stale."""
+        return f"{self.identity}/{self.status.uid}"
+
+    @property
+    def channel_name(self) -> str:
+        """proxy channel name.
+        - singleton: normalize(identity).lower()
+        - non-singleton: normalize(identity).lower() + '_' + uid[:8] 防碰撞
+        """
+        base = normalize(self.identity).lower()
+        if not self.meta.singleton:
+            return f"{base}_{self.status.uid[:8]}"
+        return base
+```
+
+**模型只需记一个心智锚: `identity = type/name`**. address 在 collision 时偶尔出现,
+channel_name 由 channel tree 自动派生, 模型读到就知道怎么调.
+
+### SS-2. CellLog 信号量约定
+
+```python
+class CellLog(BaseModel):
+    address: CellAddress       # 含 uid, 网络精确
+    content: str               # 自由文本, 不约定 enum (隐藏 type 留在心里, 第一期不暴露)
+    timestamp: float
+    terminal: bool = False     # True: cell 已没了, 接收方别 query, 删自己 cache
+```
+
+`terminal=True` 触发场景:
+- `revoke_cell` 内部 broadcast 时
+- liveness DELETE → CellNetwork 自动 broadcast (`"cell-gone"`, terminal=True)
+- ProcessManager on_exit 回调 → CellsManager broadcast (`"exited"`, terminal=True)
+
+接收方行为:
+- terminal=False → append log + 触发 follow-up query 刷 cache
+- terminal=True  → append log + pop cache entry, 不 query
+
+### SS-3. CellNetwork API 定型
+
+CellNetwork 是 cell 发现 + proxy/provider 单一真相源. 屏蔽 zenoh hub 差异性.
+
+```python
+class CellNetwork(ABC):
+    # -- 发现与广播 --
+    async def update_cell(self, cell: Cell, *, log: str = '') -> None: ...
+    async def revoke_cell(self, cell: Cell, *, log: str = '') -> None: ...
+    async def broadcast_log(self, address: str, content: str, *, terminal: bool = False) -> None: ...
+    async def check_unique(self, cell: Cell) -> None:
+        """singleton: 查 identity wildcard; non-singleton: 查 address exact.
+        raise DuplicatedError if collide."""
+
+    async def get_live_cells(self, *, type: str | None = None, local: bool | None = None,
+                              refresh: bool = False) -> dict[CellAddress, Cell]: ...
+    def recent_logs(self, *, limit: int = 20, local: bool | None = None) -> list[CellLog]: ...
+
+    # -- proxy / provider (代理 zenoh hub) --
+    def proxies(self) -> dict[CellAddress, ChannelProxy]: ...     # 自动构建的全部
+    def get_proxy(self, address: str) -> ChannelProxy | None: ...
+    async def wait_connected(self, address: str, *, timeout: float = 30) -> bool: ...
+    async def provide(self, channel: Channel, *, address: str | None = None) -> ChannelProvider: ...
+
+    # -- 回调 (zenoh 后台线程触发, 调用方负责线程安全) --
+    def on_provider_online(self, callback: Callable[[CellAddress], None]) -> Callable[[], None]: ...
+    def on_provider_offline(self, callback: Callable[[CellAddress], None]) -> Callable[[], None]: ...
+```
+
+CellNetwork 自动 build proxies 的触发链:
+```
+zenoh hub liveness PUT (channels_ns/{address})
+  → on_provider_online callback
+  → CellNetwork 查 cells_ns 拿 Cell snapshot
+  → CellNetwork 用 cell.channel_name 建 proxy
+  → proxies dict 加入
+  → broadcast_log(address, "channel-ready")
+
+zenoh hub liveness DELETE
+  → on_provider_offline callback
+  → CellNetwork remove proxy (释放, 防泄漏)
+  → broadcast_log(address, "channel-gone", terminal=True)
+```
+
+### SS-4. CellsManager API 定型
+
+CellsManager 是本地 cell 进程的二阶状态管理. 与 CellNetwork 解耦, 只关心
+"我自己启动过哪些, process 状态如何".
+
+```python
+class CellsManager(ABC):
+    def list_manifests(self) -> dict[RelativePath, CellManifest]: ...
+    async def start(self, path: RelativePath) -> Cell: ...    # fire-and-forget
+    async def stop(self, path: RelativePath, *, timeout: float = 5.0) -> None: ...
+    def opened_cells(self) -> dict[Identity, Cell]: ...        # 当前本地启动过的
+    def recent_logs(self, *, limit: int = 20) -> list[ProcessLog]: ...
+                # process 视角: started / exited / start-failed / bringup-failed
+```
+
+实现层:
+- 持有 `dict[RelativePath, ManagedProcess]` 关联进程
+- 通过 `process_manager.execute(..., on_exit=self._on_cell_exit)` 注册死亡回调
+- 订阅 `network.on_provider_offline`, 自己的 cell offline 时从 opened_cells 里 pop
+
+### SS-5. ZenohChannelHub 补强
+
+```python
+class ZenohChannelHub:
+    # provider / proxy 各两个状态 (declared / running). is_running 不允许重复创建.
+
+    def provider(self, address: str, channel: Channel) -> ZenohChannelProvider:
+        """创建并 declare. 已 running 则 raise. 查 channels_ns liveness 一次去重.
+        declare 后立即二次查 confirm, 撞到别人 declare 则自我撤销."""
+
+    def get_provider(self, address: str) -> ZenohChannelProvider | None: ...
+
+    def proxy(self, address: str, *, name: str, description: str) -> ZenohProxyChannel:
+        """proxy 的 channel uid = address (含 uid). 已 running 则 raise.
+        proxy 也 own liveness, 让对端可感知 watcher 死亡."""
+
+    def get_proxy(self, address: str) -> ZenohProxyChannel | None: ...
+
+    # 回调钩子 (zenoh 后台线程 fire)
+    def on_provider_online(self, cb: Callable[[str], None]) -> Callable[[], None]: ...
+    def on_provider_offline(self, cb: Callable[[str], None]) -> Callable[[], None]: ...
+    def on_proxy_online(self, cb: Callable[[str], None]) -> Callable[[], None]: ...
+    def on_proxy_offline(self, cb: Callable[[str], None]) -> Callable[[], None]: ...
+```
+
+约束:
+- hub 自己不主动建/拆 proxy / provider, 只持有句柄
+- 同名上线撞击 (provider 同名 / proxy 同名) 第一期不区分 id, 不处理
+- 第一期约束: **只有 host 可以 create_proxy** — CellNetwork 内部 enforce, worker 调用 raise
+- declare 前唯一性 check 一次. declare 后二次查 confirm 作为 TOCTOU 兜底
+
+### SS-6. Matrix 接口定型
+
+```python
+class Matrix(ABC):
+    @property
+    def sub_processes(self) -> ProcessManager: ...  # 暴露给开发者. 带下划线防 IDE
+    @property
+    def cells(self) -> CellsManager: ...            # 本地 cell 治理
+    @property
+    def network(self) -> CellNetwork: ...           # proxy/provider/cell 发现真相源
+    @property
+    def project(self) -> Project: ...
+
+    @property
+    def this(self) -> Cell: ...                     # 自己
+
+    async def provide(self, channel: Channel, *, address: str | None = None) -> ChannelProvider:
+        """三层调用: matrix.provide → network.provide → hub.provider."""
+
+    # 删: Matrix.spawn (移到 sub_processes.execute / spawn_task)
+    # 删: Matrix.cell_workspace 等不相关属性 (cell 自己有 workspace 推导)
+```
+
+模型/开发者不能从 Matrix 直接拿到 `CellRegistry` — 要走 `Matrix.project.cells`.
+
+### SS-7. Matrix 启动 / 关闭流程
+
+```python
+async def __aenter__(self):
+    # Step 0: project-level flock (防本机重启)
+    if self.this.meta.singleton:
+        self._cell_lock = self._project.workspace.lock(self.this.cell_locker_name)
+        if not self._cell_lock.acquire():
+            raise DuplicatedError(f"local lock held: {self.this.identity}")
+
+    # Step 1: network startup (要让 check_unique 能查)
+    await self.network.__aenter__()
+
+    # Step 2: network 唯一性校验
+    await self.network.check_unique(self.this)
+
+    # Step 3: 其它组件 lifecycle
+    await self._sub_processes.__aenter__()
+    await self._cells.__aenter__()
+
+    # Step 4: host announce
+    self.this.set_alive()
+    await self.network.update_cell(self.this, log="started")
+
+    # NOTE: bringup 不在 __aenter__ 内 — 见 Step 5
+
+    return self
+
+async def post_enter_bringup(self):
+    """matrix entered 后调用 (matrix.run / 上层 runtime 内). bringup 失败不阻断 matrix."""
+    mode = self.project.current_mode()
+    if not mode or not mode.meta.bringup:
+        return
+    manifests = self.cells.list_manifests()
+    for path, manifest in self._registry.match_cells(manifests, include=mode.meta.bringup):
+        try:
+            await self.cells.start(path)
+        except Exception as e:
+            self.logger.error("bringup %s failed: %s", path, e)
+            # CellsManager 自己 broadcast "bringup-failed" 到 process log
+
+async def __aexit__(self, *args):
+    # 反向 + 必清理 proxy 防泄漏
+    await self.network.update_cell(self.this, log="stopping")
+    await self.network.revoke_cell(self.this, log="stopped")   # 含 terminal=True
+    await self._cells.__aexit__(*args)
+    await self._sub_processes.__aexit__(*args)
+    await self.network.__aexit__(*args)
+    if self._cell_lock:
+        self._cell_lock.release()
+```
+
+**关键约束**: cells 操作不能让 matrix 爆炸. bringup 任何失败 catch 住, 写日志.
+
+### SS-8. 第一期 channels — cells + network 两个都做
+
+mac 控制 g1 依赖 network channel 本期可见, 不延期.
+
+```
+cells channel (本地进程治理):
+  own_commands: start / stop / list
+  virtual_children: opened cells 的 proxies (network.get_proxy(cell.address))
+  context_messages: CellsManager.recent_logs (process 视角)
+  log 焦点: started / exited / start-failed / bringup-failed
+
+network channel (cell 发现 + 自动 proxy):
+  own_commands: list / list_logs
+  virtual_children: network.proxies() 自动构建的全部 (第一期 accept all = ['*'])
+  context_messages: CellNetwork.recent_logs (network 视角)
+  log 焦点: cell-announced / channel-ready / channel-gone / cell-gone (terminal)
+```
+
+**关键: 两个 channel 的虚拟子节点会重叠** — 本地 cell 的 proxy 既在 cells.{channel}
+(因为 cells_manager opened) 又在 network.{channel} (因为 network 自动 build).
+channel tree 用 channel.id() = cell.address dedupe, **同 id 只有一个 runtime**.
+这是有意的 — 两个父 channel 是两个视角, runtime 实例只有一个.
+
+模型路径: 调用时按 channel tree 实际路径走 (`<cells.web_fetch:fetch ... />` 或
+`<network.web_fetch:fetch ... />` 都行, channel id 相同).
+
+### SS-9. 三处独立 log, 零混淆
+
+| 来源 | 内容 | 入 context 的 channel |
+|------|------|-------------------|
+| CellsManager.recent_logs | "started apps/web-fetch" / "exited apps/web-fetch code=0" / "bringup-failed sensors/camera: ..." | cells channel |
+| CellNetwork.recent_logs | "cell-announced worker/web-fetch/uid01" / "channel-ready worker/web-fetch/uid01" / "cell-gone worker/camera/uid02" (terminal=True) | network channel |
+| ProcessManager.executing / executed | OS 级 process meta | sub_processes 命令 (开发用, 不进模型 context) |
+
+cells channel 看 "我启动的事"; network channel 看 "网络上发生的事". 两 log 互不引用.
+
+### SS-10. ProcessManager 痛点修复
+
+在 §RR 确定性修复清单上追加:
+
+- **必须修**: Layer 1 `ManagedProcess` 加 on_exit callback. `execute()` 加
+  `on_exit: Callable[[ProcessMeta], None] | None = None` 参数, 或 ManagedProcess
+  暴露 `done_callback(cb)`. cell 进程死亡感知需要这个.
+
+### SS-11. 确定性修复清单 (终版)
+
+按 §RR 与本节合并:
+
+1. **MossMeta.write_to_file bug**: `create_meta_file` 时设置 `moss_meta.file`;
+   `project_id` 副作用从 write_to_file 移到 Environment 入口. 配单测.
+2. **HostModeMeta.cell_dirs 重复定义** (project.py line 101 vs 143): 删一份.
+3. **CellNetwork ABC 补 @abstractmethod**: 与本节 SS-3 落地一起做.
+4. **CellLauncher cwd 默认补全**: read_from_file 中无论 launcher.cwd 原值,
+   空就填 found_dir. 统一在 Matrix 启动时 Cell.discover 阶段获取 cwd.
+5. **ProcessManager Layer 1 on_exit callback** (SS-10): 必须加.
+6. **FEATURE.md §L / §N 推翻标记** ✅ 已完成.
+
+### SS-12. 工序拓扑 (按依赖, 非严格线性)
+
+```
+第 0 步: §RR / SS-11 确定性修复 (不依赖抽象, 可并行)
+        - MossMeta bug
+        - HostModeMeta dup
+        - CellLauncher cwd
+        - ProcessManager on_exit
+
+第 1 步: Cell 字段 + property 重构
+        - CellMetadata 删 group / channel, type 开放
+        - Cell.identity / channel_name property
+        - 单测覆盖 identity / channel_name 生成
+
+第 2 步: CellNetwork API 扩展 + ZenohChannelHub 补强
+        - check_unique / recent_logs / broadcast_log / wait_connected
+        - hub 唯一性检查 + 回调 + own liveness
+        - 单测覆盖 hub 唯一性 + 回调时序
+
+第 3 步: CellsManager 抽象 + 实现
+        - ABC 定型 (list_manifests / start / stop / opened_cells / recent_logs)
+        - LocalCellsManager 实现 (整合 ProcessManager + CellNetwork 订阅)
+        - 单测
+
+第 4 步: Matrix 重构
+        - sub_processes / cells / network 三 property
+        - __aenter__ 流程 (Step 0-4)
+        - post_enter_bringup
+        - 删 Matrix.spawn
+
+第 5 步: 旧代码清理
+        - 删 app_store_channel.py
+        - 删 fractal_hub.py
+        - 删相关 AppStore / FractalHub contracts
+
+第 6 步: cells channel + network channel 新实现
+        - cells channel: own_commands + virtual_children
+        - network channel: own_commands + virtual_children
+        - context_messages 渲染
+
+第 7 步: 集成测试
+        - end-to-end: matrix 启动 → bringup → cells:start → cell 提供 channel
+          → notify ready → 模型调用 → cells:stop → cleanup
+        - mac 控制 g1 场景验证 (network channel 远端可见)
+```
+
+### SS-13. 上下文恢复支点 (终版)
+
+按优先级:
+
+1. **本文件 §SS** — 开工契约, 决策最终态
+2. **本文件 §MM-§RR** — 跃迁认知 / 二元真相 / 三重身份漂移历史
+3. `src/ghoshell_moss/core/blueprint/cell.py` — Cell 字段定型起点
+4. `src/ghoshell_moss/contracts/process_manager.py` — ProcessManager 已有契约
+5. `src/ghoshell_moss/matrix/networks/zenoh_cell_network.py` — CellNetwork zenoh 实现起点
+6. `src/ghoshell_moss/bridges/zenoh_bridge/_hub.py` — hub 补强起点
+7. `src/ghoshell_moss/channels/app_store_channel.py` — 待删 (作为 pattern 参考)
+8. `src/ghoshell_moss/channels/fractal_hub.py` — 待删 (作为 pattern 参考)
+9. `tutorials/L1_hello-world-app.md` / `L2_*` — 开发体感校准
+
+### SS-14. Audit 指标 (下个实例自我校准)
+
+- 是否在 cell network 上做了准入策略? (应在 channel 层做)
+- 是否广播了 Cell snapshot? (应只广播 CellLog)
+- 是否引入了新的 enum 类型字段? (应保持 type 开放 string)
+- 是否引入了"魔法值"派生? (Cell property 必须显式声明规则)
+- 是否在 Matrix.\_\_aenter\_\_ 内做 bringup? (必须在 post_enter_bringup)
+- 是否 cell 下线时漏 remove proxy? (必须 cleanup, 防泄漏)
+- 是否 cells_manager 和 network log 混了? (零漂移约束)
+- 是否模型路径中暴露了 uid? (singleton 永不出现, non-singleton 才出现)
+
+### SS-15. Implementation Notes (不影响决策, 避免冷读踩坑)
+
+A. **local 判定的实现**: `cell.status.project_id == matrix.this.status.project_id`.
+   写在 CellNetwork.get_live_cells / recent_logs 的 local filter 中. project_id
+   在 cell announce 时已写入 CellStatus.
+
+B. **post_enter_bringup 调用点**: Matrix.arun 内, `async with self:` 之后第一行.
+   ```python
+   async def arun(self, main_coro):
+       async with self:
+           await self.post_enter_bringup()
+           ...
+   ```
+   不在 __aenter__ 内 — bringup 失败不能炸 matrix.
+
+C. **Matrix 不动的接口**: session / container / configs / resources / logger /
+   workspace / cell_workspace / mode_home / ghost_home / runtime_scopes / arun /
+   create_task / wait_closed / close / lifecycle objects. 与 cell governance 正交,
+   保留接口不动.
+
+D. **CellRegistry 位置**: 仍在 Project (访问路径 `Matrix.project.cells`).
+   CellsManager 构造时持有 CellRegistry 引用, 不重复实现发现逻辑.
+
+E. **fractal 清理范围**: 不仅 `channels/fractal_hub.py`, 还包括:
+   - `src/ghoshell_moss/host/fractal/` 整个目录
+   - `core/blueprint/fractal.py` (FractalHub ABC, 如有)
+   - 相关 manifests / providers 中的 FractalHub 引用
+   - 测试 `tests/ghoshell_moss/host/test_zenoh_fractal.py` 等
+
+F. **apps 清理范围**: 不仅 `channels/app_store_channel.py`, 还包括:
+   - `core/blueprint/app.py` (AppStore 等 contract)
+   - `host/apps/` 整个目录 (如有)
+   - CLI `apps_cli.py` (前轮已删, 确认)
+   - workspace stub 中的 apps/ 目录与 APP.md 模板
+
+G. **ProcessManager on_exit timing**: asyncio loop 线程 fire (process.wait 是 asyncio).
+   CellsManager 内 broadcast_log 直接 await. 不像 zenoh 回调那样需要 thread-safe.
+   实现可考虑 ManagedProcess 暴露 `add_done_callback(cb)` (asyncio Future 风格)
+   或 execute(..., on_exit=cb) 参数注入. 实现细节由推进实例决定.
+
+H. **CellLog ring buffer 默认大小**: 100. 通过 CellNetwork 构造参数 configurable.
+
+I. **Cell.from_proc 行为**: 已有, 不变. 无 CELL.md 的 script 调 `Matrix.discover()`
+   时, cell.meta.type='worker', name 从 `__main__.__file__` basename 推导. L3 下
+   bash:exec 启动的 script 自然进入 network 视图.
+
+J. **opened_cells 清理双路径**:
+   - ProcessManager on_exit → CellsManager._on_cell_exit → pop opened_cells
+   - CellNetwork.on_provider_offline → CellsManager._on_provider_offline → pop
+   两路径必须 idempotent (`pop(key, None)`). 任一先 fire 都不应崩.
+
+K. **Channel tree dedupe by id**: cells channel virtual_children 与 network channel
+   virtual_children 可能含同一 ChannelProxy. channel tree dedupe 用
+   `channel.id() = cell.address`. 同 id 单一 ChannelRuntime, 挂多父 channel 复用同一
+   runtime — 这是 §SS-8 "两 channel 视图重叠是有意的" 的技术兜底.
+
+L. **Worker cell 上 matrix.cells.start 行为**: 不禁止. CellsManager 是 per-process,
+   worker A 启动的 cell B 是 A 的子进程, 不是 host 的. 这是合法级联 (cell 树, 非 host
+   单中心).
+
+M. **CellNetwork is_host_view 标志**: 构造时由调用方 (Matrix impl) 传入,
+   `is_host_view = (matrix.this.meta.type == 'host')`. enforce `create_proxy` /
+   `proxies()` 只允许 host. worker 调用 raise.
+
+N. **singleton 含义边界**: project-scoped, 不是 network-scoped. 同 identity 在不同
+   project 各自 singleton 各启一次 — L3 物理现实, 不强求.
+
+### SS-16. 推翻轨迹 (供下一实例理解决策驱动场景)
+
+下面是本轮做的关键删除/简化, 记下驱动场景, 防下一实例重新提议:
+
+- **删 fractal**: 维护成本 > 实际收益. 中心化跨 peer bringup DAG 成本高, project
+  入网无可靠唯一身份. 远端 cell 可见走 network channel 即可 (auto-accept all, 第一期).
+
+- **删 apps**: 向前兼容意味着迁移不动. 干净的 cells 命名 + L3 跃迁路径上的 apps
+  概念位置不清晰.
+
+- **type 开放 + 删 group**: type / group 同维度, 双字段冗余. host/worker 是兜底保留字,
+  用户自由填 sensors/bodies/tools. 不做 type registry / owner channel announce —
+  manifest-only 即够.
+
+- **status 变更不广播 snapshot**: §NN. 加 pub/sub 全网代价对低频事件不值, queryable
+  按需拉就够. CellLog (轻量 event) 是另一回事.
+
+- **bringup 不在 __aenter__**: cells 操作不能让 matrix 启动失败. matrix alive 之后
+  才做 bringup, 失败 catch 不阻断.
+
+- **CellNetwork 不做 accept 规则**: 规则放 channel 层. substrate 只承载发现 + auto
+  build proxies. 准入是 channel policy, 不是 network protocol.
+
+- **CellChannelProxies 抽象不做**: 用户原想法是 CellNetwork.proxies(local=bool)
+  返回单例对象. 实际 CellNetwork 暴露 proxies() + recent_logs(local=...) + wait_connected
+  足够, 不必引入新中间抽象. channel 层自己 filter.
+
+- **HostCellNetwork ABC 分离不做**: §RR 已记. 一个 CellNetwork ABC + `is_host_view`
+  构造参数即足.
+
+- **bridge_address 与 address 二分不做**: §RR 已记. 合并为单一 `Cell.address =
+  type/name/uid`. uid 模型只在 collision 时见.
+
+- **network 多实例不做**: §PP. Matrix.network 单 primary CellNetwork. 接口位置
+  留下, 实现只一个.
+
+- **subscribe_changes 抽象不做**: cells_channel 直接读 recent_logs (pull) +
+  watch hub 回调 (on_provider_online), 不需要中间 pub/sub 层.
+
