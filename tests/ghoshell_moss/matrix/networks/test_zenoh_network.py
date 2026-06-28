@@ -24,7 +24,8 @@ from ghoshell_moss.core.blueprint.cell import (
     CellMetadata,
     CellLauncher,
     CellStatus,
-    CellType,
+    HOST_TYPE,
+    WORKER_TYPE,
     DuplicatedError,
 )
 from ghoshell_moss.core.py_channel import PyChannel
@@ -36,20 +37,21 @@ _logger = get_moss_logger()
 
 
 def _mk_cell(
-        cell_type: CellType | str = CellType.worker,
+        cell_type: str = WORKER_TYPE,
         name: str = "test-cell",
         *,
         channel: bool = False,
 ) -> Cell:
+    # NOTE: channel kwarg kept for test-callsite compat, ignored — CellMetadata.channel removed (§SS-1).
     return Cell(
-        meta=CellMetadata(type=cell_type, name=name, channel=channel),
+        meta=CellMetadata(type=cell_type, name=name),
         launcher=CellLauncher(),
         status=CellStatus(state='alive'),
     )
 
 
 def _mk_host(name: str = "test-host", *, channel: bool = False) -> Cell:
-    return _mk_cell(CellType.host, name, channel=channel)
+    return _mk_cell(HOST_TYPE, name, channel=channel)
 
 
 # ==================================================================
@@ -82,7 +84,7 @@ async def test_announce_and_discover_via_on_change():
         async with observer:
             observer.on_change(_on_change)
 
-            cell = _mk_cell(CellType.worker, "worker-a")
+            cell = _mk_cell(WORKER_TYPE, "worker-a")
             await announcer.update_cell(cell)
 
             assert event.wait(timeout=3.0), "on_change not fired within timeout"
@@ -122,8 +124,8 @@ async def test_announce_and_discover_multiple_cells():
         async with observer:
             observer.on_change(_on_change)
 
-            cell_a = _mk_cell(CellType.worker, "multi-a")
-            cell_b = _mk_cell(CellType.worker, "multi-b")
+            cell_a = _mk_cell(WORKER_TYPE, "multi-a")
+            cell_b = _mk_cell(WORKER_TYPE, "multi-b")
             await announcer.update_cell(cell_a)
             await announcer.update_cell(cell_b)
 
@@ -164,7 +166,7 @@ async def test_get_host_discovers_host():
             found = await client_net.get_host()
             assert found is not None, "get_host() returned None"
             assert found.address == host_cell.address
-            assert found.meta.type == CellType.host
+            assert found.meta.type == HOST_TYPE
 
             await host_net.revoke_cell(host_cell)
 
@@ -257,7 +259,7 @@ async def test_two_sessions_on_change():
         async with observer:
             observer.on_change(_on_change)
 
-            cell = _mk_cell(CellType.worker, "cross-worker")
+            cell = _mk_cell(WORKER_TYPE, "cross-worker")
             await announcer.update_cell(cell)
 
             assert event.wait(timeout=3.0), "cross-session on_change not fired"
@@ -342,8 +344,8 @@ async def test_worker_no_duplicated_error():
             session=session, logger=_logger, namespace=ns, scope=scope,
         )
 
-        worker_a = _mk_cell(CellType.worker, "worker-x")
-        worker_b = _mk_cell(CellType.worker, "worker-y")
+        worker_a = _mk_cell(WORKER_TYPE, "worker-x")
+        worker_b = _mk_cell(WORKER_TYPE, "worker-y")
 
         await net.update_cell(worker_a)
         try:

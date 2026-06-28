@@ -1,4 +1,4 @@
-"""Zenoh transport config — 按 CellType 分发的类型化配置.
+"""Zenoh transport config — 按 cell type 分发的类型化配置.
 
 host (peer):  监听 + multicast 发现, 网络入口点.
 worker (client):  直连 host, 不监听.
@@ -8,7 +8,7 @@ from typing import ClassVar, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core.blueprint.cell import CellType
+from ghoshell_moss.core.blueprint.cell import HOST_TYPE
 from ghoshell_moss.core.blueprint.project import NetworkConfig, NetworkMetadata
 
 if TYPE_CHECKING:
@@ -67,10 +67,10 @@ class ZenohNetworkConfig(NetworkConfig):
     def driver_name(cls) -> str:
         return cls.DRIVER
 
-    def for_cell(self, cell_type: CellType | str) -> ZenohNodeConfig:
+    def for_cell(self, cell_type: str) -> ZenohNodeConfig:
         """取对应 cell type 的节点配置."""
-        cell_type = cell_type.value if isinstance(cell_type, CellType) else str(cell_type)
-        if cell_type == CellType.host:
+        cell_type = str(cell_type)
+        if cell_type == HOST_TYPE:
             return self.host
         elif cell_type in self.cell_type_configs:
             return self.cell_type_configs[cell_type]
@@ -78,7 +78,7 @@ class ZenohNetworkConfig(NetworkConfig):
             return self.worker
 
 
-def create_zenoh_session_from_metadata(metadata: NetworkMetadata, cell_type: CellType | str) -> 'zenoh.Session | None':
+def create_zenoh_session_from_metadata(metadata: NetworkMetadata, cell_type: str) -> 'zenoh.Session | None':
     config = ZenohNetworkConfig.from_metadata(metadata)
     if config is None:
         return None

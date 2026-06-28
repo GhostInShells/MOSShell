@@ -3,7 +3,7 @@
 import pytest
 from typing import ClassVar
 
-from ghoshell_moss.core.blueprint.cell import CellType
+from ghoshell_moss.core.blueprint.cell import HOST_TYPE, WORKER_TYPE
 from ghoshell_moss.core.blueprint.project import NetworkConfig, NetworkMetadata
 from ghoshell_moss.matrix.networks.zenoh_network import (
     ZenohNodeConfig,
@@ -33,12 +33,12 @@ class TestZenohNetworkDefaults:
 class TestForCell:
     def test_host_type(self):
         cfg = ZenohNetworkConfig()
-        node = cfg.for_cell(CellType.host)
+        node = cfg.for_cell(HOST_TYPE)
         assert node == cfg.host
 
     def test_worker_type(self):
         cfg = ZenohNetworkConfig()
-        node = cfg.for_cell(CellType.worker)
+        node = cfg.for_cell(WORKER_TYPE)
         assert node == cfg.worker
 
     def test_unknown_type_falls_back_to_worker(self):
@@ -97,4 +97,4 @@ class TestNetworkConfigRoundtrip:
 class TestCreateSessionFromMetadata:
     def test_driver_mismatch_returns_none(self):
         meta = NetworkMetadata(name='x', driver='mqtt', scope='s', config={})
-        assert create_zenoh_session_from_metadata(meta, CellType.host) is None
+        assert create_zenoh_session_from_metadata(meta, HOST_TYPE) is None

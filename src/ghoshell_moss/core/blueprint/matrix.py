@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProxy
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellType, CellNetwork, CellRegistry
+from ghoshell_moss.core.blueprint.cell import Cell as MossCell, HOST_TYPE, CellNetwork, CellRegistry
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.contracts import ConfigStore, Workspace, SystemPrompter, ResourceRegistry, Storage
@@ -403,7 +403,7 @@ class Matrix(ABC):
         pass
 
     def is_host(self) -> bool:
-        return self.this.type == CellType.host.value
+        return self.this.type == HOST_TYPE
 
     @abstractmethod
     def is_host_running(self) -> bool:

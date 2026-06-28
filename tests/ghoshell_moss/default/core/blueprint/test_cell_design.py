@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from ghoshell_moss.core.blueprint.cell import (
-    CellType,
+    HOST_TYPE,
+    WORKER_TYPE,
     CellMetadata,
     CellLauncher,
     CellManifest,
@@ -25,17 +26,13 @@ from ghoshell_moss.core.blueprint.cell import (
 
 
 # ==================================================================
-# CellType
+# Cell type constants
 # ==================================================================
 
-class TestCellType:
+class TestCellTypeConstants:
     def test_values(self):
-        assert CellType.host == 'host'
-        assert CellType.worker == 'worker'
-
-    def test_only_host_and_worker(self):
-        vals = {e.value for e in CellType}
-        assert vals == {'host', 'worker'}
+        assert HOST_TYPE == 'host'
+        assert WORKER_TYPE == 'worker'
 
 
 # ==================================================================
@@ -78,22 +75,22 @@ class TestNormalize:
 class TestCellMetadata:
     def test_defaults(self):
         m = CellMetadata(name='test')
-        assert m.type == 'worker'
+        assert m.type == WORKER_TYPE
         assert m.singleton is True
         assert m.description == ''
-        assert m.channel is False
 
-    def test_channel_true(self):
-        m = CellMetadata(name='srv', channel=True)
-        assert m.channel is True
+    def test_open_type_namespace(self):
+        """type 是开放命名空间, 用户可自由扩展."""
+        m = CellMetadata(name='cam', type='sensors')
+        assert m.type == 'sensors'
 
     def test_host_type(self):
-        m = CellMetadata(type='host', name='main')
-        assert m.type == 'host'
+        m = CellMetadata(type=HOST_TYPE, name='main')
+        assert m.type == HOST_TYPE
 
     def test_from_proc_returns_worker_non_singleton(self):
         m = CellMetadata.from_proc()
-        assert m.type == CellType.worker
+        assert m.type == WORKER_TYPE
         assert m.singleton is False
 
     def test_from_proc_custom_name(self):
@@ -367,10 +364,10 @@ class TestCellNaming:
         uid_prefix = cell.status.uid[:8]
         assert cell.unique_name == f'cam_{uid_prefix}'
 
-    def test_type_property_from_enum(self):
-        meta = CellMetadata(type=CellType.host, name='main')
+    def test_type_property_from_host_const(self):
+        meta = CellMetadata(type=HOST_TYPE, name='main')
         cell = Cell.new(meta=meta)
-        assert cell.type == 'host'
+        assert cell.type == HOST_TYPE
 
     def test_type_property_from_str(self):
         meta = CellMetadata(type='robot', name='r1')
@@ -380,11 +377,42 @@ class TestCellNaming:
     def test_address_always_includes_uid(self):
         meta = CellMetadata(type='worker', name='cam', singleton=True)
         cell = Cell.new(meta=meta)
-        # address = type/normalized_name/uid
+        # address = type/name/uid (用原始 name, 非 normalized)
         parts = cell.address.split('/')
         assert parts[0] == 'worker'
         assert parts[1] == 'cam'
         assert len(parts[2]) > 0
+
+    def test_address_uses_raw_name_not_normalized(self):
+        """address 用原始 meta.name, 与 channel_name 区分."""
+        meta = CellMetadata(type='sensors', name='My-Cam', singleton=True)
+        cell = Cell.new(meta=meta)
+        parts = cell.address.split('/')
+        assert parts[1] == 'My-Cam'  # 原始, 含 dash
+
+    def test_identity_is_type_slash_name(self):
+        """identity = type/name. 跨 cell 重启不变的稳定 id."""
+        meta = CellMetadata(type='sensors', name='cam', singleton=True)
+        cell = Cell.new(meta=meta)
+        assert cell.identity == 'sensors/cam'
+
+    def test_identity_uses_raw_name(self):
+        meta = CellMetadata(type='bodies', name='G1-arm', singleton=True)
+        cell = Cell.new(meta=meta)
+        assert cell.identity == 'bodies/G1-arm'
+
+    def test_channel_name_singleton(self):
+        """singleton channel_name = normalize(identity).lower(), 无 uid 后缀."""
+        meta = CellMetadata(type='sensors', name='My-Cam', singleton=True)
+        cell = Cell.new(meta=meta)
+        assert cell.channel_name == 'sensors_my_cam'
+
+    def test_channel_name_non_singleton_has_uid_suffix(self):
+        """non-singleton channel_name 追加 _uid[:8] 防碰撞."""
+        meta = CellMetadata(type='worker', name='probe', singleton=False)
+        cell = Cell.new(meta=meta)
+        uid8 = cell.status.uid[:8]
+        assert cell.channel_name == f'worker_probe_{uid8}'
 
 
 class TestCellLockerName:
@@ -489,7 +517,7 @@ class TestCellConstruction:
 
     def test_from_proc(self):
         cell = Cell.from_proc()
-        assert cell.meta.type == CellType.worker
+        assert cell.meta.type == WORKER_TYPE
         assert cell.meta.singleton is False
         assert cell.status.state == 'starting'
 
@@ -625,11 +653,11 @@ class TestCellRuntimeFile:
 # ==================================================================
 
 class TestCellToJson:
-    def test_to_json_with_cell_type_enum(self):
-        meta = CellMetadata(type=CellType.host, name='main')
+    def test_to_json_with_host_type(self):
+        meta = CellMetadata(type=HOST_TYPE, name='main')
         cell = Cell.new(meta=meta)
         raw = cell.to_json()
-        assert '"host"' in raw or 'host' in raw
+        assert 'host' in raw
 
     def test_to_json_roundtrip(self):
         cell = Cell.new(meta=CellMetadata(name='test'))

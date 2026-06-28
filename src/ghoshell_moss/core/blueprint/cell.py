@@ -11,7 +11,6 @@ import time
 from typing import Literal, Iterable, ClassVar, Callable
 from typing_extensions import Self
 from abc import ABC, abstractmethod
-from enum import Enum
 from pydantic import Field, BaseModel
 from ghoshell_moss.core.concepts.channel import ChannelProxy, ChannelProvider, Channel
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -26,7 +25,8 @@ import psutil
 import shlex
 
 __all__ = [
-    'CellType',
+    'HOST_TYPE',
+    'WORKER_TYPE',
     'CellMetadata',
     'CellLauncher',
     'CellManifest',
@@ -45,15 +45,10 @@ __all__ = [
 CellAddress = str
 
 
-class CellType(str, Enum):
-    """
-    MOSS 系统对 Cell 的默认约定.
-    每种不同类型 (type) 的 cell 都可能对应不同的角色, 发现 & 声明 & 运行时机制.
-    host 是 Matrix 网络中的主节点, worker 是普通功能节点.
-    """
-    host = 'host'
-    # 普通的功能型节点.
-    worker = 'worker'
+# -- 框架保留的 cell type 字面量. 用户可自由扩展 type 字符串 (sensors / bodies / tools / ...).
+# 框架行为只对 host 与 worker 有特殊语义; 其它 type 一视同仁.
+HOST_TYPE = 'host'
+WORKER_TYPE = 'worker'
 
 
 # -- 类型别名 -- #
@@ -66,10 +61,12 @@ MatchPattern = str
 class CellMetadata(BaseModel):
     """
     一个 Cell 节点的元信息, 通常用于环境发现和运行时声明.
+    type 是开放命名空间: 'host' / 'worker' 是框架保留字, 其它字符串由用户自由命名
+    (sensors / bodies / tools / ...). 框架行为只对 host 区分对待, 其余 type 一视同仁.
     """
-    type: CellType | str = Field(
-        default=CellType.worker.value,
-        description="节点的类型. 保留可扩展空间."
+    type: str = Field(
+        default=WORKER_TYPE,
+        description="节点的类型. 开放命名空间, 'host' / 'worker' 是框架保留字."
     )
     name: str = Field(
         description="节点的名字, 在类型下应该是唯一的. "
@@ -81,10 +78,6 @@ class CellMetadata(BaseModel):
     description: str = Field(
         default='',
         description="节点的描述信息. "
-    )
-    channel: bool = Field(
-        default=False,
-        description="声明此 Cell 提供 Channel. 启动后可由 Host 自动创建 proxy. "
     )
 
     @classmethod
@@ -99,7 +92,7 @@ class CellMetadata(BaseModel):
             docstring = main.__doc__ or ''
             description = docstring.splitlines()[0] if docstring else ''
         return cls(
-            type=CellType.worker,
+            type=WORKER_TYPE,
             name=name,
             description=description,
             singleton=False,
@@ -180,9 +173,9 @@ class CellManifest(BaseModel):
     INSTALL_FILENAME: ClassVar[str] = 'INSTALL.md'
     INSTALLED_FILE: ClassVar[str] = '.installed'
 
-    type: CellType | str = Field(
-        default=CellType.worker.value,
-        description="节点的类型. 保留可扩展空间."
+    type: str = Field(
+        default=WORKER_TYPE,
+        description="节点的类型. 开放命名空间, 'host' / 'worker' 是框架保留字."
     )
     name: str = Field(
         description="节点的名字, 在类型下应该是唯一的. "
@@ -388,12 +381,17 @@ class Cell(BaseModel):
 
     @property
     def type(self) -> str:
-        return self.meta.type.value if isinstance(self.meta.type, CellType) else str(self.meta.type)
+        return self.meta.type
+
+    @property
+    def identity(self) -> str:
+        """type/name. project 内稳定 id, 跨 cell 重启不变. 模型心智锚."""
+        return '/'.join([self.meta.type, self.meta.name])
 
     @property
     def cell_locker_name(self) -> str:
         """
-        project 级别的 cell 单一锁, 用来放置 cell 重复启动.
+        project 级别的 cell 单一锁, 用来防止 cell 重复启动.
         """
         if self.meta.singleton:
             return '-'.join([self.meta.type, self.normalized_name])
@@ -402,8 +400,21 @@ class Cell(BaseModel):
 
     @property
     def address(self) -> CellAddress:
-        """在整个体系内, 通讯时的唯一地址 (包含了唯一 id). """
-        return '/'.join([self.meta.type, self.normalized_name, self.status.uid])
+        """type/name/uid. network 唯一地址, uid 防 stale 与碰撞.
+        注意: 使用原始 meta.name (非 normalized) — name 含 / 会破坏路径假设, 由上层保证字面合法.
+        """
+        return '/'.join([self.meta.type, self.meta.name, self.status.uid])
+
+    @property
+    def channel_name(self) -> str:
+        """proxy channel 名 — 由 identity 派生, 模型读到就知道怎么调.
+        - singleton: normalize(identity).lower()
+        - non-singleton: + '_' + uid[:8] 防碰撞
+        """
+        base = normalize(self.identity).lower()
+        if not self.meta.singleton:
+            return f"{base}_{self.status.uid[:8]}"
+        return base
 
     @property
     def logger_name(self) -> str:
@@ -428,7 +439,7 @@ class Cell(BaseModel):
     @property
     def is_host(self) -> bool:
         """是否是一个 host 节点. """
-        return CellType.host.value == self.meta.type
+        return self.meta.type == HOST_TYPE
 
     @classmethod
     def from_proc(cls) -> 'Cell':
