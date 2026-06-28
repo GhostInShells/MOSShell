@@ -8,22 +8,26 @@ renamed_from: Project Manager
 depends:
   - matrix-cell-governance
   - interactive-shell-channel
+  - momento-mori
 milestone: 0.1.0
 description: >-
-  Desktop 是 Ghost 在文件系统上的工作桌面 — 17 个原语 (发现/读写/执行) + 两条元规则。
-  _pin 通用化收缩 pin/unpin API。所有命令输出统一截断 + tmp 路径。
-  Desktop 是 Project 级公共 API，由 ProcessManager (入 Matrix) 支撑。
-  frontmatter 作为信息提取原语，约定不写在 Desktop 实现里 — 使用方 (Ghost/Mode) 自己定义。
+  Desktop 是 Ghost 在 4 剪影拓扑里的空间脏器/未来剪影 — 配合 Memento (过去)、
+  Matrix runtime (当下)、Git worktree (结构版本) 共同构成 Ghost 反身性基建。
+  12+1 原语三层 (发现/读写/执行) + 两条元规则 (read-before-write + 输出截断)。
+  Desktop 是 OS 层抽象, 不耦合特定 ghost; 通过 ReadHistory protocol 与 Memento
+  对接, 通过 ReflectionHint 在高影响路径写入时建议 commit 锚点。
 status_note: >-
-  2026-06-28 人类架构师 + deepseek-v4-pro 完整设计收敛:
-  (1) 命名从 ProjectManager → Desktop, 避开 ProcessManager 歧义.
-  (2) _pin 通用标记 — 所有信息型命令支持 _pin=True, 消除独立 pin/unpin API.
-  (3) 统一输出截断 — 所有命令超阈值写 tmp, read(tmp_path) 不截断.
-  (4) 两条元规则: read-before-write + 输出截断.
-  (5) frontmatter 原语 — 不硬编码 SKILL.md/__doc__ 约定.
-  (6) Desktop 放 Project 上 (project.desktop()), 不进 Matrix.
-  (7) DESKTOP.md 可选覆盖默认 instruction.
-  (8) CTML pin 洞察记录, 当前不做 — pin 本质是 schedule(ctml, refresh).
+  2026-06-28 Claude Opus 4.7 L2 收敛 (基于早前 deepseek-v4-pro 设计稿):
+  (1) 加入 4 剪影拓扑视角 — Desktop 是未来剪影, 与 Memento/Matrix/Git 完备性对齐.
+  (2) 17 原语 → 12+1 — head 删除 (bypass read-before-write), exec_bg 收成 exec(_bg=True),
+      read_task/cancel 收进 tasks() 返回结构, frontmatter 列为可选.
+  (3) _pin 语义校正 — pin 必须进 moss_dynamic, 落 cache breakpoint 之后, 加 LRU 预算.
+  (4) _read_set → ReadHistory protocol 注入 — Phase 4 由 Memento branch state 后置.
+  (5) tmp 目录改构造参数 — 为 Phase 4 接 Memento storage 留窗口.
+  (6) 反思机制升级 — 高影响路径写入返回 ReflectionHint(diff, recommend_commit).
+  (7) 对称 fork 概念 — Phase 6 反身性要求 memento branch + desktop worktree 同步 fork.
+  (8) Ghost/OS 分层纪律 — Desktop 完全在 OS 层, 不为特定 ghost 妥协.
+  (9) 6-Phase 切分 — Phase 1 (L0 独立闭环) 可在 matrix 重构同期穿插推进.
 ---
 
 # Desktop — Ghost 的文件系统工作桌面
@@ -45,11 +49,130 @@ Desktop 把它们统一为 Ghost 在文件系统上的**工作桌面** — 发�
 
 ## Design Index
 
-- 原设计: `src/ghoshell_moss/contracts/project_manager.py` — 旧 ProjectManager ABC
+- **L2 收敛 (2026-06-28)**: `.design/2026-06-28_desktop_in_4d_cross_section.md`
+  — 4 剪影拓扑、完备性判据、接口契约、Phase 切分、acceptance 边界
+- **L2 涌现轨迹**: `.discuss/2026-06-28_desktop_l2_emergence.md` — 物理 vs 化学
+  方法论、L2 协作的真实坐标、OS 命题的浮现过程
+- 配对基建: `momento-mori` FEATURE.md — Memento 是过去剪影, 与 Desktop 共构反身性基建
+- 原设计: `src/ghoshell_moss/contracts/project_manager.py` — 旧 ProjectManager ABC (待废弃)
 - ProcessManager: `src/ghoshell_moss/contracts/process_manager.py` + `core/process_manager/_impl.py`
 - Channel 构建: `moss codex blueprint channel_builder`
 - CTML 模型视角: `src/ghoshell_moss/core/ctml/prompts/v1_0_0.zh.md`
 - 相关讨论: `matrix-cell-governance` FEATURE.md — Matrix 重构中 ProcessManager 入 Matrix
+
+## 迭代方法论 — 模型自迭代的三阶递进
+
+Desktop 的开发本身遵循 MOSS 的 channel 构建梯度 (channels/CLAUDE.md §4):
+**L0 纯模块 → L1 module_eval (MCP 试用) → L2 正式 channel (moss-as-mcp 自迭代)**。
+每个阶段使用不同的自迭代机制, 模型在自己的迭代窗口里完成 interface 设计、实现、
+loop 调整、验证。
+
+### Stage 1 — L2 对齐后的模型重建 (当前阶段)
+
+**范围严格控制**: 只动两个路径, 不扩展任何外部体系。
+
+- `src/ghoshell_moss/core/blueprint/desktop.py` — Desktop ABC + ReadHistory protocol
+- `src/ghoshell_moss/core/desktop/` — 实现 (desktop.py, models.py, 内部 helpers)
+- `tests/ghoshell_moss/core/desktop/` — 单测
+
+**不动**: project.py / Matrix / channels/ / atom / contracts/project_manager.py
+(旧 ABC 暂留, 由人类工程师后续 IDE 整体回迁)。
+
+**自迭代闭环**:
+
+```
+1. 读 .design/2026-06-28_desktop_in_4d_cross_section.md 锚定 L2 契约
+2. 设计 ABC (interface) → 写 blueprint/desktop.py
+3. 实现 (concrete) → 写 core/desktop/desktop.py + models.py
+4. 写单测 → 跑 → 失败/通过
+5. 单测发现 interface 形状不顺手 → 回 step 2 修 ABC → 重走
+6. 走完 acceptance 边界 → Stage 1 结束
+```
+
+**Acceptance 边界** (来自 .design §10):
+- 12 原语 (+frontmatter 可选) 的契约用 ABC 表达
+- ReadHistory protocol + 进程内缺省实现
+- read-before-write 守卫在 write/edit 上正确触发
+- 统一输出截断 + tmp_path 路径不重复截断
+- 反思路径白名单触发 ReflectionHint
+- Pin 注册、查询、移除、LRU 淘汰
+- ProcessManager 注入 vs 裸 subprocess 两条路径行为等价 (cwd 一致)
+- 全部覆盖单测, read-before-write / 截断 / pin LRU / reflection 边界各有专门单测
+
+**模型纪律** (L2 漂移防御):
+- interface 改一次, 实现和单测同步改一次 — 不允许 interface 改了实现没跟
+- 任何"再加一层 abstraction / 再加一个参数 / 再加一个 hint"的提议都视为漂移信号,
+  停下来问"能不能反过来收紧而不是扩展"
+- 实现里不出现对 Matrix / Memento / Session 的任何 import
+- ReflectionHint / ReadHistory 这类对外接口不预设具体下游 (反推: 任何对它们的
+  实现应该可以在不动 desktop 源码的前提下提供)
+
+### Stage 2 — Eval Channel 试用 (Stage 1 acceptance 后)
+
+把 `core/desktop/desktop.py` 包装成 `module_eval` channel 形态, 让开发者模型
+通过 MCP 直接 exec 它, 在使用中暴露形状问题。
+
+**机制**: 类比 .moss_ws/apps/browsers/playwright/main.py 的形态——
+desktop 源码作为 instruction (Code as Prompt), 模型在持久化 namespace 里
+exec `desktop.tree(...)` / `desktop.read(...)` / `desktop.write(...)`, 立刻看到
+返回值, 别扭就改 desktop 源码再 exec。
+
+**产出**: 不是新功能, 是 Stage 1 接口的形状校验。Stage 2 结束时, desktop
+的 interface 应该没有任何"用起来别扭但能凑合"的点——所有这些点要么修了,
+要么明确记录到本 FEATURE.md 的"已知不便"段, 等 Stage 3 解决。
+
+**不进 channels/**: Stage 2 的 module_eval 包装是一次性试用工具, 不沉淀。
+
+### Stage 3 — 正式 Channel + moss-as-mcp 自迭代
+
+实现 `src/ghoshell_moss/channels/desktop_channel.py` 作为正式 channeltype,
+进入 channels/ CLAUDE.md 的 status=alpha → beta → active 流转。
+
+**机制**: 启动 moss-as-mcp, 模型一边定义 app/cell 使用 desktop channel,
+一边体验它, 一边修改 channel 实现。这是 MOSS 自身宣称的"模型 native 开发
+模式"在 desktop 本身上的应用。
+
+**自迭代闭环**:
+
+```
+1. 写 desktop_channel.py (基于 Stage 2 校准过的 core/desktop)
+2. 启动 moss-as-mcp, 模型连入
+3. 模型定义一个 small app/cell 使用 desktop channel (例如: 项目认知探针 / 
+   日记生成器 / 文件结构总结)
+4. 跑, 体验
+5. 发现 channel 层 (pin 注入位置、moss_dynamic 刷新时机、ReflectionHint
+   路由、ReadHistory 接 Memento) 不对劲 → 改 channel 实现 → 重跑
+6. 走完 channels/CLAUDE.md §7 的测试模式 → 进入 status=beta
+```
+
+**acceptance**:
+- pin 输出正确落在 moss_dynamic 的 staging 段 (cache breakpoint 后)
+- ReflectionHint 正确路由为 memento commit 建议
+- ReadHistory 切到 Memento branch state 后端 (需 Memento Phase 4)
+- 完成 Memento ↔ Desktop 的接口契约联调 (见 .design §6 对称 fork 不在此阶段)
+
+**与正式集成的关系**: Stage 3 完成后, `project.desktop(root=...)` 工厂 +
+default mode 的 desktop channel 注入可以由人类工程师拍板, 模型不主动推进
+这一步——OS / Ghost 分层纪律要求 Desktop 进入哪些 mode 是 Ghost 层决策。
+
+### 阶段间的产物归档纪律
+
+- Stage 1 结束: 更新本 FEATURE.md status_note 标记 "Stage 1 complete",
+  列出 acceptance 通过情况和发现的 L2 偏差 (若有)
+- Stage 2 结束: 在本 FEATURE.md 增加 "Stage 2 校准记录" 段, 列出修了什么、
+  保留了什么、为什么
+- Stage 3 结束: channel 进入 channels/CLAUDE.md 索引, status=alpha,
+  本 FEATURE.md set-status completed, .design 文件按需补充 channel-layer
+  契约更新
+
+### 模型协作的 ground rule
+
+- 任何阶段, 模型每完成一个 acceptance 子项, 立即更新 FEATURE.md
+  (不批量, 不延后) — 滚动可恢复
+- 阶段中若发现 L2 偏差 (.design 文件结论需要修正), **先停下来更新 .design,
+  再继续实现** — 不允许实现绕过设计
+- 模型自感漂移时 (开始加机制而非收紧), 主动停下来 ground 回 .design 文件,
+  不寻求人类工程师确认
 
 ## Key Decisions
 
