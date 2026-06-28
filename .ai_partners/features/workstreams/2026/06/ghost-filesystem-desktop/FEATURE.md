@@ -3,7 +3,7 @@ title: Ghost Filesystem Desktop — Ghost 的文件系统工作桌面
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-06-28
+updated: 2026-06-29
 renamed_from: Project Manager
 depends:
   - matrix-cell-governance
@@ -17,6 +17,13 @@ description: >-
   Desktop 是 OS 层抽象, 不耦合特定 ghost; 通过 ReadHistory protocol 与 Memento
   对接, 通过 ReflectionHint 在高影响路径写入时建议 commit 锚点。
 status_note: >-
+  2026-06-29 Claude Opus 4.7 Stage 1 完成: 12+1 原语 L0 独立闭环跑通.
+  contracts/desktop.py (ABC + ReadHistory protocol + ReflectionHint),
+  core/desktop/{desktop.py, models.py} (DefaultDesktop + InProcessReadHistory),
+  tests/ghoshell_moss/core/desktop/test_desktop.py 53 个单测全绿.
+  旧 contracts/project_manager.py 已删除 (无外部引用, 设计被 Desktop 完全覆盖).
+  Stage 2/3 待启动. 详见正文 Stage 1 完成记录.
+  --
   2026-06-28 Claude Opus 4.7 L2 收敛 (基于早前 deepseek-v4-pro 设计稿):
   (1) 加入 4 剪影拓扑视角 — Desktop 是未来剪影, 与 Memento/Matrix/Git 完备性对齐.
   (2) 17 原语 → 12+1 — head 删除 (bypass read-before-write), exec_bg 收成 exec(_bg=True),
@@ -401,3 +408,64 @@ desktop (MutableChannel, root)
 - `tools/file_editor.py` 先不写 — Desktop 的 `read`/`write`/`edit` 覆盖了核心读写需求
 - 第一版不集成 file_editor_channel 为子 channel — `read` + `write` + `edit` 已够
 - `exec` / `exec_bg` 底层适配 ProcessManager，等 ProcessManager 入 Matrix 后对接
+
+## Stage 1 完成记录 (2026-06-29, Claude Opus 4.7)
+
+### 落地清单
+
+| 文件 | 内容 |
+|------|------|
+| `src/ghoshell_moss/contracts/desktop.py` | Desktop ABC + ReadHistory Protocol + ReflectionHint dataclass + 全部公开数据模型 (FileContent / ExecResult / Match / Task / PinInfo / DirectoryTree) + 异常 (ReadBeforeWriteError / PathOutsideRootError / PinBudgetExceeded) |
+| `src/ghoshell_moss/core/desktop/desktop.py` | DefaultDesktop 实现 — 12+1 原语 + 两条元规则 + LRU pin 预算 + 反思路径白名单 + ProcessManager 可选注入 + 裸 asyncio 兜底 |
+| `src/ghoshell_moss/core/desktop/models.py` | PinRecord (实现内部) + InProcessReadHistory (缺省协议实现) |
+| `src/ghoshell_moss/core/desktop/__init__.py` | 重导出契约 + 实现 |
+| `tests/ghoshell_moss/core/desktop/test_desktop.py` | 53 个 acceptance 单测, 全绿 |
+
+旧 `src/ghoshell_moss/contracts/project_manager.py` 已删除 — 与人类工程师对齐后整体废弃, Desktop 完全覆盖, 无外部 import 引用 (grep 验证).
+
+### Acceptance 边界覆盖情况
+
+- ✅ 12 原语 (+frontmatter 可选) 的契约用 ABC 表达 — 见 `contracts/desktop.py`
+- ✅ ReadHistory protocol + 进程内缺省实现 — InProcessReadHistory, 单测注入第三方实现验证可替换
+- ✅ read-before-write 守卫在 write/edit 上正确触发 — `test_write_existing_requires_read`, `test_edit_requires_read` 等
+- ✅ 统一输出截断 + tmp_path 路径不重复截断 — `test_read_truncation_writes_tmp`, `test_tmp_path_read_does_not_truncate`
+- ✅ 反思路径白名单触发 ReflectionHint — 覆盖顶层文件 / 目录前缀 / 自定义白名单 / 命中 vs 不命中
+- ✅ Pin 注册 / 查询 / 移除 / LRU 淘汰 — `test_pin_lru_eviction`, `test_pin_lru_refresh_on_repin`, budget warning 标记
+- ✅ ProcessManager 注入 vs 裸 subprocess 两条路径行为等价 — `test_exec_via_process_manager_cwd` 对照两路 cwd/exit_code
+- ✅ 12 原语全部覆盖单测; read-before-write / 截断 / pin LRU / reflection 边界各有专门单测
+
+### L2 偏差记录 (实现过程中相对 .design 的微调)
+
+1. **`write` 返回类型从 `None` 改为 `ReflectionHint | None`** — .design §5 只描述了 hint 概念, 没有明确返回路径. 选择走返回值而非回调, 符合 §3.2 "Desktop 通过返回值发信号, 上层路由" 的纪律. `edit` 同理返回 `tuple[int, ReflectionHint | None]`.
+
+2. **`Task` 把 `read()` / `cancel()` 做成方法** — .design §7 说 "tasks 返回结构持 `read()` / `cancel()` 方法". 实现侧用 dataclass + bound async callable (`_read`, `_cancel`) 让顶层不再需要 `read_task` / `cancel` 原语, 收口符合 12+1 数. 顶层 ABC 上只剩 `tasks()`.
+
+3. **新建文件不触发 read-before-write** — .design 没明说. 选择: 路径不存在的 write 直接放行 (创建本身就是初始 epistemic 锚点), 路径存在的 write 强制 ReadHistory 命中. 这符合 Claude Code 的行为, 也避免 "为了写新文件先要 read 一个不存在的文件" 的死锁.
+
+4. **`tmp_path` 读取不登记 ReadHistory** — tmp 文件是 Desktop 自己的截断产物, 不是 Ghost 主动观察的代码/配置. 登记 read history 没有反身性语义, 反而污染 Memento branch state.
+
+5. **`reflection_paths` 改为 `dict[str, severity]` 构造参数** — .design §5 给了 5 个默认项 + 单 severity 概念, 实现把它统一成 `{pattern: severity}` 表, 默认值导出为 `DEFAULT_REFLECTION_PATHS`, 让上层可以覆盖. 支持目录前缀 (`.moss/`)、精确名 (`CLAUDE.md`)、glob (`*.toml`).
+
+6. **`Task` 异常用 `KeyError`, 不是 `LookupError`** — `unpin` 不存在的 id 抛 KeyError 符合 dict 语义; `Task.read` / `Task.cancel` 等回调未绑定时抛 `RuntimeError`. 异常分层尽量贴近 Python 内建.
+
+### 已知未决 / 待后续阶段
+
+- **`frontmatter` 去留**: 当前保留. L1 (Stage 2 module_eval 试用) 后定. 倾向于删 — `read(limit=20)` + 模型自解析 YAML 可替代, 没必要做内置依赖 `python-frontmatter` 库.
+- **shutdown 幂等性的强保证**: 当前实现已是幂等 (set 清空), 但没有专门单测. Stage 2 试用时如果发现 shutdown 重入有问题再加 race condition 单测.
+- **跨 worktree 的 Pin fork 行为**: Phase 6 处理.
+- **DESKTOP.md 写守卫两步确认**: Phase 2 决策, 当前 reflection 只给 hint 不阻止写入.
+
+### 模型纪律自评
+
+- ✅ interface 改一次, 实现和单测同步改一次 — 期间多次往返 (e.g. `Task` 从独立 `read_task`/`cancel` 收成方法, 三个文件一起改)
+- ✅ 实现里不出现对 Matrix / Memento / Session 的任何 import — `grep` 验证
+- ✅ ReflectionHint / ReadHistory 这类对外接口不预设具体下游 — `_RecordingHistory` 单测证明可外部实现 ReadHistory 而不动 Desktop 源码
+- ✅ 没漂移加机制 — 反而把 17 原语缩到 12+1, 把数据模型全部上推到 contracts 让 core 只承担实现
+
+### 下一步
+
+进入 **Stage 2 (eval channel 试用)** 之前等人类工程师评审 Stage 1 的接口形状.
+评审通过后:
+- 包一个 `module_eval` 形态让模型在 MCP 里 exec `desktop.tree(...)` / `desktop.read(...)` 等
+- 暴露 interface "用起来别扭" 的真实痛点
+- 痛点要么修, 要么记录到本文件 "已知不便" 段
