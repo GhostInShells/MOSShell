@@ -585,3 +585,52 @@ class TestInitWorkspace:
         Environment.init_workspace(ws)
         # second call should not raise
         Environment.init_workspace(ws, force=True)
+
+
+# ==================================================================
+# MossMeta.write_to_file — SS-11-1 修复
+# create_meta_file 必须设 self.file; write_to_file 不再做 project_id 副作用,
+# 副作用上移到 Environment.__init__.
+# ==================================================================
+
+class TestMossMetaWriteToFile:
+    def test_create_meta_file_sets_self_file(self, tmp_path):
+        """create_meta_file 创建后 self.file 必须指向 MOSS.md 绝对路径."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = Environment.create_meta_file(ws)
+        assert meta.file == str((ws / MOSS_META_FILE).absolute())
+
+    def test_create_meta_file_then_rewrite_works(self, tmp_path):
+        """create_meta_file 后, 后续 write_to_file() 无参也能 dump (self.file 已就位)."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = Environment.create_meta_file(ws)
+        meta.project_id = 'new-id'
+        meta.write_to_file()  # 不传 file 参数, 必须能成功
+        reloaded = MossMeta.read_from_file(ws / MOSS_META_FILE)
+        assert reloaded.project_id == 'new-id'
+
+    def test_write_to_file_no_project_id_side_effect(self, tmp_path):
+        """MossMeta.write_to_file 不再自动生成 project_id (副作用上移到 Environment)."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        meta = MossMeta()
+        meta.file = str((ws / MOSS_META_FILE).absolute())
+        assert meta.project_id == ''
+        meta.write_to_file()
+        assert meta.project_id == ''
+        reloaded = MossMeta.read_from_file(ws / MOSS_META_FILE)
+        assert reloaded.project_id == ''
+
+    def test_first_discover_without_moss_md_persists_project_id(self, tmp_path):
+        """SS-11-1 完整路径: 首次 discover 无 MOSS.md, project_id 由 Environment 生成并持久化."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        assert not (ws / MOSS_META_FILE).exists()
+        env = Environment(workspace=ws)
+        assert env.project_id  # 非空
+        moss_md = ws / MOSS_META_FILE
+        assert moss_md.exists()
+        reloaded = MossMeta.read_from_file(moss_md)
+        assert reloaded.project_id == env.project_id

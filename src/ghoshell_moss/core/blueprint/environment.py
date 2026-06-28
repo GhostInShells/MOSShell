@@ -233,8 +233,6 @@ class MossMeta(BaseModel):
         file = file or Path(self.file)
         if not file.name:
             raise ValueError('MossMeta.write_to_file: file path required')
-        if self.project_id == '':
-            self.project_id = unique_id()
         metadata = self.model_dump(exclude={'system_project', 'file'})
         post = frontmatter.Post(self.system_project, **metadata)
         file.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +310,7 @@ class Environment:
     @classmethod
     def create_meta_file(cls, directory: Path) -> MossMeta:
         moss_meta = MossMeta()
+        moss_meta.file = str((directory / MOSS_META_FILE).absolute())
         moss_meta.write_to_directory(directory)
         return moss_meta
 

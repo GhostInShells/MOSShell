@@ -140,18 +140,6 @@ class HostModeMeta(BaseModel):
         file.parent.mkdir(parents=True, exist_ok=True)
         frontmatter.dump(post, file)
 
-    def cell_dirs(self, env: Environment) -> list[Path]:
-        """return absolute paths to find cells"""
-        result = []
-        project_dir = env.project_path
-        for project_relative_path in self.cell_paths:
-            special_key = f"${ENV_WORKSPACE_DIR_KEY}"
-            project_relative_path = project_relative_path.replace(special_key, str(env.workspace_path))
-            cell_dir = project_dir / project_relative_path
-            if cell_dir.exists():
-                result.append(cell_dir.absolute())
-        return result
-
 
 class NetworkMetadata(BaseModel):
     """

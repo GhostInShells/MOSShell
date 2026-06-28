@@ -297,10 +297,12 @@ class CellManifest(BaseModel):
         else:
             flat['installed'] = True  # 无 INSTALL.md 表示无需安装, 直接视为已安装
         manifest = cls(**flat)
-        # cwd 必须更新成绝对地址.
-        cwd = found_dir / manifest.launcher.cwd
+        # cwd 必须更新成绝对地址. 空值默认取 CELL.md 所在目录, 与 launcher.cwd 字段 docstring 一致.
         if manifest.launcher.cwd:
+            cwd = found_dir / manifest.launcher.cwd
             manifest.launcher.cwd = str(cwd.absolute())
+        else:
+            manifest.launcher.cwd = str(found_dir)
         return manifest
 
 
@@ -793,17 +795,19 @@ class CellNetwork(ABC):
         """
         pass
 
+    @abstractmethod
     def live_cells(self) -> dict[CellAddress, Cell]:
         """
         直接通过缓存获取 cells.
         """
-        pass
+        ...
 
+    @abstractmethod
     def on_change(self, callback: Callable[[Cell, bool], None]) -> None:
         """
         注册 callback, 监听 tuple[Cell, alive] 的改动.
         """
-        pass
+        ...
 
     # --- channel -- #
 

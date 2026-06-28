@@ -518,3 +518,99 @@ class TestConcurrency:
             # 全部 reclaim
             assert len(pm.executing()) == 0
             assert len(pm.executed()) >= 10
+
+
+# ============================================================
+# SS-11-5: ManagedProcess.add_done_callback / execute(on_exit=...)
+# ============================================================
+
+
+class TestOnExitCallback:
+
+    @pytest.mark.asyncio
+    async def test_on_exit_param_fires(self, pm_root, pm_output):
+        """execute(on_exit=cb) 在进程退出后 fire, 传入 ProcessMeta."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+            managed = await pm.execute("true", on_exit=lambda meta: received.append(meta))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            assert len(received) == 1
+            assert received[0] is managed.meta
+            assert received[0].exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_add_done_callback_before_exit(self, pm_root, pm_output):
+        """启动后注册 add_done_callback, 进程退出时被触发."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+            managed = await pm.execute("true")
+            managed.add_done_callback(lambda meta: received.append(meta.exit_code))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            assert received == [0]
+            assert managed._exit_fired is True
+
+    @pytest.mark.asyncio
+    async def test_add_done_callback_after_exit_fires_immediately(self, pm_root, pm_output):
+        """进程已退出后注册 add_done_callback, 立即同步 fire."""
+        async with running_pm(pm_root, pm_output) as pm:
+            managed = await pm.execute("true")
+            await managed.process.wait()
+            await asyncio.sleep(0.1)  # let reclaim finish, _exit_fired=True
+            assert managed._exit_fired is True
+
+            received: list = []
+            managed.add_done_callback(lambda meta: received.append(meta.exit_code))
+            assert received == [0]
+
+    @pytest.mark.asyncio
+    async def test_multiple_callbacks_all_fire(self, pm_root, pm_output):
+        """多个 callback 全部触发, 注册顺序保留."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+            managed = await pm.execute("true")
+            managed.add_done_callback(lambda meta: received.append("a"))
+            managed.add_done_callback(lambda meta: received.append("b"))
+            managed.add_done_callback(lambda meta: received.append("c"))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            assert received == ["a", "b", "c"]
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_isolated(self, pm_root, pm_output):
+        """单 callback 异常不影响其它 callback / reclaim 流程."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+
+            def bad(meta):
+                raise ValueError("boom")
+
+            managed = await pm.execute("true")
+            managed.add_done_callback(bad)
+            managed.add_done_callback(lambda meta: received.append("ok"))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            # bad 抛了, 但 ok 仍然 fire, reclaim 流程完成
+            assert received == ["ok"]
+            assert managed.meta in pm.executed()
+
+    @pytest.mark.asyncio
+    async def test_shell_on_exit_param(self, pm_root, pm_output):
+        """shell() 同样支持 on_exit 参数."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+            managed = await pm.shell("exit 0", on_exit=lambda meta: received.append(meta.exit_code))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            assert received == [0]
+
+    @pytest.mark.asyncio
+    async def test_on_exit_after_nonzero_exit(self, pm_root, pm_output):
+        """非零退出码同样触发 on_exit, exit_code 反映真实退出值."""
+        async with running_pm(pm_root, pm_output) as pm:
+            received: list = []
+            managed = await pm.shell("exit 7", on_exit=lambda meta: received.append(meta.exit_code))
+            await managed.process.wait()
+            await asyncio.sleep(0.1)
+            assert received == [7]

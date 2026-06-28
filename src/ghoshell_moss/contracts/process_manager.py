@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -123,6 +123,8 @@ class ManagedProcess:
     - 调用记录入栈 (executed 历史)
     - 元信息可查询 (ProcessMeta)
     - 进程标识 (name / description)
+    - on-exit 回调 (add_done_callback) — 让上层在进程退出时被通知,
+      不必自己 await + 轮询. 适配 cell 进程死亡感知 (CellsManager 用).
 
     其余能力 (wait / send_signal / terminate / kill / pid / returncode)
     直接通过 ``process`` 字段使用, 和普通 asyncio 子进程一致.
@@ -133,6 +135,33 @@ class ManagedProcess:
 
     process: asyncio.subprocess.Process
     """底层 asyncio 子进程. 可直接操作."""
+
+    _on_exit_callbacks: list[Callable[[ProcessMeta], None]] = field(
+        default_factory=list, repr=False,
+    )
+    """退出回调列表 — 由 ProcessManager 在 reclaim finally 阶段触发. 内部使用."""
+
+    _exit_fired: bool = field(default=False, repr=False)
+    """是否已触发过 on-exit 回调. 内部使用 — 让晚到的 add_done_callback 也能立即 fire."""
+
+    def add_done_callback(self, callback: Callable[[ProcessMeta], None]) -> None:
+        """注册进程退出的一次性回调.
+
+        进程已退出 (_exit_fired=True) 则立刻同步 fire.
+        否则注册到列表, 由 ProcessManager 在 reclaim 阶段顺序 fire.
+
+        语义同 asyncio.Future.add_done_callback —
+        callback 在 asyncio loop 线程触发, 调用方不必 thread-safe.
+        callback 异常被吞 (写 logger), 不影响其它 callback / reclaim 流程.
+        """
+        if self._exit_fired:
+            try:
+                callback(self.meta)
+            except Exception:
+                # 与 reclaim 路径一致: 单 callback 异常隔离, 不抛
+                pass
+            return
+        self._on_exit_callbacks.append(callback)
 
 
 # Layer 2: ProcessTask
@@ -365,12 +394,15 @@ class ProcessManager(ABC):
             stderr: int | None = None,
             start_new_session: bool = True,
             with_os_env: bool = True,
+            on_exit: Callable[[ProcessMeta], None] | None = None,
             **kwargs,
     ) -> ManagedProcess:
         """exec 模式启动子进程.
 
         *args 直接传递给 asyncio.create_subprocess_exec.
         不经过 shell 解析. 推荐用于大多数场景.
+
+        on_exit: 进程退出时触发的回调. 等价于启动后立刻 managed.add_done_callback(cb).
         """
         ...
 
@@ -388,11 +420,14 @@ class ProcessManager(ABC):
             stderr: int | None = None,
             start_new_session: bool = True,
             with_os_env: bool = True,
+            on_exit: Callable[[ProcessMeta], None] | None = None,
             **kwargs,
     ) -> ManagedProcess:
         """shell 模式启动子进程.
 
         cmd 通过 shell 解析. 仅在需要管道 / 重定向 / glob 等 shell 特性时使用.
+
+        on_exit: 进程退出时触发的回调. 等价于启动后立刻 managed.add_done_callback(cb).
         """
         ...
 

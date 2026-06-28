@@ -312,6 +312,7 @@ class ProcessManagerImpl(ProcessManager):
             stderr: int | None = None,
             start_new_session: bool = True,
             with_os_env: bool = True,
+            on_exit: Callable[[ProcessMeta], None] | None = None,
             **kwargs,
     ) -> ManagedProcess:
         self._assert_running()
@@ -326,12 +327,15 @@ class ProcessManagerImpl(ProcessManager):
             stdin=stdin, stdout=stdout, stderr=stderr,
         )
         self.logger.info("spawned [%s] pid=%d", process_name, proc.pid)
-        return self._wrap_and_track(
+        managed = self._wrap_and_track(
             proc=proc, command=command, name=process_name,
             description=description or "", cwd=str(work_dir),
             with_os_env=with_os_env, extra_env=extra_env or {},
             start_new_session=start_new_session,
         )
+        if on_exit is not None:
+            managed.add_done_callback(on_exit)
+        return managed
 
     async def shell(
             self,
@@ -346,6 +350,7 @@ class ProcessManagerImpl(ProcessManager):
             stderr: int | None = None,
             start_new_session: bool = True,
             with_os_env: bool = True,
+            on_exit: Callable[[ProcessMeta], None] | None = None,
             **kwargs,
     ) -> ManagedProcess:
         self._assert_running()
@@ -359,12 +364,15 @@ class ProcessManagerImpl(ProcessManager):
             stdin=stdin, stdout=stdout, stderr=stderr,
         )
         self.logger.info("spawned shell [%s] pid=%d", process_name, proc.pid)
-        return self._wrap_and_track(
+        managed = self._wrap_and_track(
             proc=proc, command=cmd, name=process_name,
             description=description or "", cwd=str(work_dir),
             with_os_env=with_os_env, extra_env=extra_env or {},
             start_new_session=start_new_session,
         )
+        if on_exit is not None:
+            managed.add_done_callback(on_exit)
+        return managed
 
     # -- Layer 2: execute_task / shell_task --
 
@@ -716,6 +724,17 @@ class ProcessManagerImpl(ProcessManager):
                         done_callback()
                     except Exception:
                         self.logger.exception("done_callback failed")
+                # SS-10: fire ManagedProcess.add_done_callback registered callbacks.
+                # 先 snapshot 再清空, 防 callback 内 re-register 引发递归.
+                # _exit_fired=True 后, 后续 add_done_callback 走立即 fire 路径.
+                exit_callbacks = list(managed._on_exit_callbacks)
+                managed._on_exit_callbacks.clear()
+                managed._exit_fired = True
+                for cb in exit_callbacks:
+                    try:
+                        cb(managed.meta)
+                    except Exception:
+                        self.logger.exception("on_exit callback failed")
 
         task = asyncio.create_task(_reclaim())
         self._tasks.add(task)
