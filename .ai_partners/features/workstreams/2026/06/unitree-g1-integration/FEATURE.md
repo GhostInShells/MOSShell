@@ -36,11 +36,28 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录, 详见 READ
 - `docs/validation-checklist.md` — 验证命题与状态
 
 设计沉淀(本 feature 目录下):
-- `design/2026-06-28_channel_architecture.md` — **当前最新设计**: channel 体系全貌, warrant 机制, state DAG, 用户故事四幕
+- `design/2026-06-30_g1_arms_animation.md` — **当前最新设计**: 双工分层具身范式 + arms keyframe animation 体系. 本期实现的主要参考.
+- `design/2026-06-28_channel_architecture.md` — 历史档案: channel 体系全貌, warrant 机制, state DAG, 用户故事四幕. 部分已被 2026-06-29/30 实测修正 (warrant 砍掉, 调试模式不进, arm RPC 砍掉), 留作设计演进轨迹.
 
 讨论轨迹(本 feature 目录下):
 - `discuss/2026-06-08_phase_b_sdk_discussion_outline.md` — SDK 摸底阶段讨论提纲
 - `discuss/2026-06-28_remote_as_moss_input.md` — 单一控制源反转: 遥控器变 MOSS 输入设备
+
+## 必要前置阅读 (进入 g1 工作前必读)
+
+模型实例进入本 feature 工作前, 必须先建立以下认知, 否则容易把 channel 当 JSON Schema 工具、
+把动画当 Pose 派全身快照、把 mindflow 当事件总线 — 这些都是已被验证的偏航模式.
+
+```bash
+moss --ai codex blueprint channel_builder    # channel/command/available/idle/virtual_children 全在这.
+                                              # 特别注意 available 函数即状态机, idle 是生命周期一等公民.
+moss --ai ctml read                          # CTML 语法. 重点: text__/chunks__/ctml__ 流式参数,
+                                              # 父子 channel occupy, scope until=flow/any/all, Observe 语义.
+moss --ai codex blueprint mindflow           # Signal/Nucleus/Impulse/Articulator/Action 五段链路.
+                                              # VLA 函数挂入的接口是 Nucleus.as_channel().
+```
+
+读这三份, 加上本 feature design 目录下最新设计, 就能进入工作.
 
 ## 开发阶段
 
@@ -277,6 +294,21 @@ index.md 里明确写了 `mode_machine` 是 Dof 配置字节 (不是 FSM),
 ## 未决议题(跨 session 继承)
 
 - **待验证 (明天)**: rt/sportmodestate Read() 阻塞问题, 调试模式退出后遥控器失效路径, rt/arm/action/state 内容格式
-- **待实机 (script 20/22/24)**: Sit↔Stand 物理行为, FSM 完整可达图, arm action state prob
-- **本期不做**: LiDAR 条件反射层, 录制能力, SetFsmId
-- **已解决**: 授权键分配 (F1/F3/Start/L1+组合键, 见 story-2026-07.md); Warrant 机制 (砍掉, 走 InterruptNucleus); L2+B 响应模型 (硬件急停 + soft cleanup via signal)
+- **待实机 (script 20/22/24)**: Sit↔Stand 物理行为 (阻塞 posture/stand_up channel 命令拓扑定稿), FSM 完整可达图, arm action state probe
+- **待实机 (arms 实现期)**: kp/kd 调软目标值 (建议 kp~20/kd~0.5), arms cancel 后 G1 主板物理行为 (锁定 vs 自动回 sport), 关节镜像表 (左右肩 pitch/roll/yaw 符号关系)
+- **设计待定 (7-01 起讨论)**:
+  - 按键状态机 (F1/F3/Start/L1+组合键 语义切换规则). 由人类工程师牵头. story-2026-07.md 节 2/3 是草稿, 实现时会被重写
+  - L2+B 后 MOSS 软响应路径. 硬件急停外的软清理由按键状态机定义
+  - ASR 模式切换. 本期 channel 硬编码 buffer + 显式 pop + 可选 signal 触发, 未来改造为 nucleus
+  - arms idle 动画自定义机制 (chan.build.idle 暴露成 command 是未来方向, 本期硬编码或不做)
+  - arms 学习库 storage scope (倾向 local_persistent 跨 session 累积)
+  - arms 与 body 其他 channel 并行约束 (走路时挥手等组合的物理可行性, 待实测)
+- **warrant.py 处置**: 文件 (`src/ghoshell_moss_contrib/unitree/g1/warrant.py`) 仍在仓库. 6-29/30 砍掉机制后未删除, 保留为设计讨论锚点. 7-01 实现时决定是否彻底移除. **不在新代码里 import 或调用.**
+- **本期不做**: LiDAR 条件反射层, G1 内置录制能力, SetFsmId 白名单, arms smoothstep 插值, arms 镜像 API, arms 接入 VLA Nucleus, arms velocity cap planning 校验
+- **已解决**:
+  - Warrant 事务机制 → 砍掉, 走 InterruptNucleus + StopMove (6-29/30 实测推翻 6-28 设计)
+  - 调试模式 vs 运动模式 → 运动模式是 MOSS 主场, 不进调试模式 (Sport → L2+R2 会触发 PC1 保护故障)
+  - arm 控制路径 → 砍掉 ExecuteAction RPC, 只走 rt/arm_sdk DDS (RPC 不可中断, DDS publish 停 = 真中断)
+  - 视觉 channel 优先级 → 本期 P0/P1, 不推迟到后期 (是熟模式, 难点在硬件对齐, 人类工程师已带队做过三次)
+  - arms channel 拓扑 → 单 channel + sparse keyframe animation + 内部 state 机制. 详见 `design/2026-06-30_g1_arms_animation.md`
+
