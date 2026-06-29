@@ -1,0 +1,4 @@
+*
+# 本目录存放所有临时文件.
+!.gitignore
+!README.md

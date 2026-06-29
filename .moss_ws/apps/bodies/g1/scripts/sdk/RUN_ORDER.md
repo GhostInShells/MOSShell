@@ -1,7 +1,109 @@
 # RUN_ORDER — 实机测试 2 小时窗口执行顺序
 
 生成时间: 2026-06-15
-上一次实机 session: 2026-06-14/15 (DDS 链路打通 + 端到端音频输出)
+**最后更新: 2026-06-29** (追加 P2 全套脚本 23-27)
+上一次实机 session: 2026-06-16 (PlayStream 流式通路确认)
+
+---
+
+## 2026-06-29 追加: P2 — 设计补完用实验
+
+P2 不阻塞 channel 体系第一波实现, 但每条都对应一个未来 channel/能力的可行性.
+
+| # | 脚本 | 命题 | 决定 |
+|---|------|------|------|
+| 23 | `23_asr_api_probe.py` | _Call(1002,...) 调用约定盲探 + ASR DDS topic 扫描 | asr sensor channel 的实现路径 |
+| 24 | `24_mode_switch_topology.py` | FSM 模式完整可达图 + 各边时长 | state DAG 具体边的 SDK 调用选择 |
+| 25 | `25_recording_capability_probe.py` | G1 内置录制是否暴露(topic + 协作探测 + RPC 试探) | recording channel 是接 SDK 还是自造 |
+| 26 | `26_arm_sdk_dds_joints_write.py` | rt/arm_sdk 底层写关节角是否可用 + 与 Sport 共存 | 自造手臂轨迹动画的基础可行性 |
+| 27 | `27_lowstate_sample_rate.py` | LowState 真实频率 + monitor 处理上限 | state.py 监控参数 + sensors 采样配置 |
+
+---
+
+## 2026-06-29: P1 — 状态切换与 action 语义补完
+
+| # | 脚本 | 命题 | 决定 |
+|---|------|------|------|
+| 20 | `20_sit_stand_cycle.py` | Sit→Stand SDK 可达性, 706 是否双向, 时长, 是否需要 Start 才进 Sport | 用户故事幕三"自己站起来"是否可行, state DAG 形态 |
+| 21 | `21_arm_action_interruption.py` | Action A 播放中发 Action B(非 99) — 覆盖/排队/拒绝 | arm channel 是否需要 "in_progress" 跟踪, CTML 时序对齐 |
+| 22 | `22_arm_action_state_probe.py` | rt/arm/action/state topic 内容(in_progress / done?) | arm 命令的 await 实现 — topic 等待 vs 关节速度趋零 vs 预估 sleep |
+
+---
+
+## 2026-06-28: Channel 体系地基验证 (P0, 阻塞)
+
+本轮 channel 体系全套设计已落 `design/2026-06-28_channel_architecture.md`.
+该设计的地基由三个脚本验证 — **任何一条不通过, 设计要回炉**.
+
+| # | 脚本 | 命题 | 决定 |
+|---|------|------|------|
+| 17 | `17_remote_keys_passthrough.py` | 调试/AI 模式下非 L2+B 按键 + 摇杆是否仍透传 wireless_remote | "遥控器=MOSS 输入设备"方案能否成立 |
+| 18 | `18_arm_release_behavior.py` | ExecuteAction(99) 物理行为(缓慢复位/突变/脱控) | arm 类是否可进 warrant 事务 |
+| 19 | `19_loco_stopmove_under_motion.py` | move 中 SetVelocity(0,0,0) 是否站定不仆 | move 类 warrant fallback 是否可信 |
+
+---
+
+## 推荐执行顺序 (本次窗口)
+
+按风险递增 + 依赖关系排. P0 必跑, P1 补完用户故事, P2 解锁未来 channel.
+
+| 优先级 | 阶段 | 时长估 | 脚本 | 风险 | 备注 |
+|--------|------|--------|------|------|------|
+| | 0 | 5 min | 04 / 05 基线确认 | 无 | 跳过如果今天 G1 已确认状态正常 |
+| **P0** | 1 | 30 min | **17** remote_keys | 无 | 纯按键观察 |
+| **P0** | 2 | 20 min | **19** loco_stopmove | 中 | 慢速移动 |
+| **P0** | 3 | 20 min | **18** arm_release | 高 | 周围 1m 无物 |
+| **P1** | 4 | 15 min | **22** arm_state_probe | 中 | 探测 topic + face wave |
+| **P1** | 5 | 20 min | **20** sit_stand_cycle | 中 | 前后 2m 缓冲 |
+| **P1** | 6 | 20 min | **21** arm_interruption | 高 | Action 组合 |
+| **P2** | 7 | 30 min | **23** asr_api_probe | 无 | 盲探 _Call(1002), 你说几句话 |
+| **P2** | 8 | 25 min | **24** mode_switch_topology | 中 | 多次 FSM 切换 |
+| **P2** | 9 | 30 min | **25** recording_probe | 低 | 协作探测, 手机配合 |
+| **P2** | 10 | 25 min | **26** arm_sdk_dds_write | 高 | 底层 DDS 写关节, kp 偏硬 |
+| **P2** | 11 | 5 min | **27** lowstate_rate | 无 | 测频率, 后台跑 |
+
+P0 必跑 (1.5h). P1 强烈推荐 (1h). P2 选做 (~2h, 全跑超过单窗口).
+
+**建议分两次实机**:
+- 第一次窗口: 04/05 + P0(17,19,18) + P1(22,20,21) ≈ 2h
+- 第二次窗口: P2(23,24,25,26,27) ≈ 2h
+
+```bash
+cd .moss_ws/apps/bodies/g1
+source .venv/bin/activate
+
+# 第一次窗口 (P0 + P1)
+python scripts/sdk/17_remote_keys_passthrough.py eth0
+python scripts/sdk/19_loco_stopmove_under_motion.py eth0
+python scripts/sdk/18_arm_release_behavior.py eth0
+python scripts/sdk/22_arm_action_state_probe.py eth0
+python scripts/sdk/20_sit_stand_cycle.py eth0
+python scripts/sdk/21_arm_action_interruption.py eth0
+
+# 第二次窗口 (P2)
+python scripts/sdk/23_asr_api_probe.py eth0
+python scripts/sdk/24_mode_switch_topology.py eth0
+python scripts/sdk/25_recording_capability_probe.py eth0
+python scripts/sdk/26_arm_sdk_dds_joints_write.py eth0
+python scripts/sdk/27_lowstate_sample_rate.py eth0
+```
+
+**反馈给模型实例 (依次)**:
+- 17 → 按键 → warrant scope / state DAG 边的分配
+- 18 → arm 是否进 warrant
+- 19 → move warrant fallback 是否需要减速曲线
+- 20 → state DAG 完整边定义 + 用户故事时序
+- 21 → arm command 并发语义
+- 22 → arm 命令 await 的实现路径
+- 23 → asr sensor channel 实现
+- 24 → state DAG 全图
+- 25 → recording channel 路径
+- 26 → arm_trajectory channel 可行性
+- 27 → state.py monitor 参数
+
+---
+
+## 历史: 2026-06-15/16 windowed work (已完成, 仅供参考)
 
 ## 本轮窗口目标 (按价值排序)
 

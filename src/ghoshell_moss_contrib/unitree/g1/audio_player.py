@@ -4,6 +4,8 @@ G1 PlayStream 音频播放器 — 基于 BaseAudioStreamPlayer，用 G1 内置�
 PCM 格式: 16kHz mono s16le (与 G1 PlayStream 契约一致)。
 流式语义: 同 stream_id 分块推送 → G1 无缝拼接。新 stream_id → 抢占旧流。
 打断语义: PlayStop 即时中断，clear() 中调用。
+
+前置: 使用前必须 bootstrap. G1StreamPlayer 不再隐式 bootstrap.
 """
 
 from __future__ import annotations
@@ -14,9 +16,6 @@ import queue
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss_contrib.unitree.g1._bootstrap import bootstrap
-
-bootstrap()
 from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
 
 __all__ = ["G1StreamPlayer"]
@@ -59,7 +58,7 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
     def _audio_stream_start(self):
         """worker 线程: 初始化 DDS + AudioClient + 生成新 stream_id。"""
         from ghoshell_moss_contrib.unitree.g1._bootstrap import get_audio_client
-        self._audio = get_audio_client()
+        self._audio = get_audio_client()  # raise if not bootstrapped
         self._stream_id = self._next_stream_id()
 
     def _audio_stream_write(self, data: np.ndarray):
