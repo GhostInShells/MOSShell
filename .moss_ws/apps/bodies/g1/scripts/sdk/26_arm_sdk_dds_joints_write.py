@@ -37,6 +37,13 @@
   这是底层 DDS 写入, 直接控制电机. kp=60 kd=1.5 是 example 默认, 偏硬.
   线性插值 3s 完成 30° 转动 = 平均 10°/s, 不算快但也不能轻视.
   任何异常 L2+B 急停 → 进 Damp → 我们的脚本 publisher 仍在写但 G1 不响应.
+
+实测记录:
+  2026-06-29 deepseek-v4-pro + 人类:
+    weight 0→1: 分=2, 很快 (kp 偏硬). wrist +30°: 分=1, 平滑缓慢.
+    双肩 +15°: 分=1, 向后运动. weight 1→0: 分=1, 小动作好.
+    结论: rt/arm_sdk 底层关节控制可行. DDS publish 停 = 真中断.
+    arm_trajectory channel 可做. kp/kd 需调软.
 """
 import sys
 import time

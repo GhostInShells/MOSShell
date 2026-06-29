@@ -54,6 +54,16 @@ SDK 文档 + example 没说这种情况下 G1 怎么处理. 三种可能:
 风险:
   arm 动作有破坏性. 周围 1m 半径内绝对不能有任何物体.
   任何异常 L2+B.
+
+实测记录:
+  2026-06-29 deepseek-v4-pro + 人类:
+    Test 1: hands up 早期 → clap: B.code=7401 (arm 被占用), 拒绝. 看起来一个动作.
+    Test 2: face wave 中期 → high wave: B.code=3104 (超时), 判断不了是否中断.
+    Test 3: clap 早期 → hands up: B.code=0, 但 A 播完才执行 B (排队, 不是覆盖).
+    补充: ExecuteAction(99) 不中断正在播的动作. clap 中第 1s 发 99, code=0 但实际
+    在排队, G1 继续拍完才复位. 结论: arm RPC 无真中断能力. 99 在 arm 空闲时是复位,
+    在 arm 忙时是排队不是抢占.
+    要真中断需走 rt/arm_sdk DDS 底层.
 """
 import sys
 import time

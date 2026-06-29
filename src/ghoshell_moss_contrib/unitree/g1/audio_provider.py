@@ -13,8 +13,11 @@ class G1StreamPlayerProvider(Provider[StreamAudioPlayer]):
 
     def factory(self, con: IoCContainer) -> StreamAudioPlayer:
         from ._sdk import load_unitree_g1_sdk
-        # 如果没有环境路径, 启动时抛出异常.
         load_unitree_g1_sdk()
+
+        from ._bootstrap import bootstrap, is_bootstrapped
+        if not is_bootstrapped():
+            bootstrap(wait_first_frame=False)
 
         from .audio_player import G1StreamPlayer
         logger = con.force_fetch(LoggerItf)

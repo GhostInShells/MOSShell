@@ -35,7 +35,11 @@ sensors 之外的人机协作通道, 全部塌掉, 设计要回炉.
   阶段 5 — 切回 Damp 收尾
 
 终端输出说明:
-  每帧 LowState 到来时, 脚本会打印当前 fsm_mode + 16 按键的位 + 4 摇杆值.
+  LowState_ 中的 mode_machine 是 Dof 配置字节 (4=23Dof, 5=29Dof, 6=27Dof), 开机后不变.
+  mode_pr 是并联机构类型 (0:PR, 1:AB), 也不变.
+  这两个字段**不追踪** FSM 控制模式. 真正的 FSM 模式在 rt/sportmodestate topic.
+  本脚本显示 machine/pr 仅作硬件配置参考, 不作为模式切换依据.
+  控制模式以你的物理观察为准 (G1 姿态, LED 颜色, 是否响应摇杆).
   按键按下/松开时会高亮显示状态变化.
   你只需要照 prompt 操作, 然后口头(或截屏)反馈观察结果.
 
@@ -46,6 +50,14 @@ sensors 之外的人机协作通道, 全部塌掉, 设计要回炉.
 风险:
   本脚本不发任何运动指令. 唯一的"动作"是初始切到 Damp + 中间需要你按 L2+R2 进调试.
   L2+B 永远是硬件急停后备.
+
+实测记录:
+  2026-06-29 deepseek-v4-pro + 人类:
+    阶段 1 (Sport 基线): 16 按键全部 down/up 边沿正常. 4 摇杆轴全部响应, 值域 ±0.6~0.8.
+      G1 在 Sport 模式下推摇杆会动 — 对照组成立.
+      遥控器操作模式切换(阻尼/预备/走跑, 有语音播报)不影响 mode_machine, fsm 始终 = 6.
+      mode_machine 与遥控器操作模式是两套概念, 留待 script 24 (mode_switch_topology) 系统测绘.
+    安全发现: G1 吊架上从 Sport 切 Damp 时凌空蹬腿. 后续运动类脚本(18/19/20/21)需注意吊架风险.
 """
 import sys
 import time
@@ -140,42 +152,21 @@ class MonitorThread:
         self.log = log
         self.running = False
         self.mode_label: str = ''
-        self.fsm_mode: int = -1
+        self.mode_machine: int = -1
+        self.mode_pr: int = -1
         self.last_snapshot: RemoteSnapshot | None = None
         self._thread: threading.Thread | None = None
-        self._verbose = True
-        self._verbose_counter = 0
 
     def set_mode_label(self, label: str) -> None:
         self.mode_label = label
         print(f"\n>>> 当前记录模式标签: {label}\n")
-
-    def silence(self) -> None:
-        self._verbose = False
-
-    def verbose(self) -> None:
-        self._verbose = True
-        self._verbose_counter = 0
-
-    def _print_frame_periodic(self, snap: RemoteSnapshot) -> None:
-        # 每 60 帧(约 0.12s @ 500Hz) 打一次基线状态, 避免刷屏
-        self._verbose_counter += 1
-        if self._verbose_counter % 60 != 0:
-            return
-        if not self._verbose:
-            return
-        ak = snap.active_keys()
-        print(f"  [{snap.tick}] fsm={self.fsm_mode} "
-              f"lx={snap.lx:+.3f} ly={snap.ly:+.3f} "
-              f"rx={snap.rx:+.3f} ry={snap.ry:+.3f} "
-              f"keys=[{','.join(ak) if ak else '-'}]")
 
     def _on_change(self, prev: RemoteSnapshot, curr: RemoteSnapshot) -> None:
         # 按键边沿
         for name in curr.keys:
             if prev.keys[name] != curr.keys[name]:
                 edge = '↓ down' if curr.keys[name] else '↑ up'
-                print(f"    *** key {name:<6} {edge}  fsm={self.fsm_mode} ***")
+                print(f"    *** key {name:<6} {edge}  machine={self.mode_machine} pr={self.mode_pr} ***")
                 if curr.keys[name] and self.mode_label:
                     self.log.mark(self.mode_label, name)
 
@@ -188,7 +179,7 @@ class MonitorThread:
             ('Ry', prev.ry, curr.ry),
         ]:
             if abs(curr_v) > AXIS_DEAD and abs(prev_v) <= AXIS_DEAD:
-                print(f"    *** axis {axis:<3} active {curr_v:+.3f}  fsm={self.fsm_mode} ***")
+                print(f"    *** axis {axis:<3} active {curr_v:+.3f}  machine={self.mode_machine} pr={self.mode_pr} ***")
                 if self.mode_label:
                     self.log.mark(self.mode_label, axis)
 
@@ -200,12 +191,12 @@ class MonitorThread:
                 msg = self.sub.Read(timeout=500)
                 if msg is None:
                     continue
-                self.fsm_mode = getattr(msg, 'mode_machine', -1)
+                self.mode_machine = getattr(msg, 'mode_machine', -1)
+                self.mode_pr = getattr(msg, 'mode_pr', -1)
                 snap = RemoteSnapshot.parse(bytes(msg.wireless_remote), msg.tick)
                 if self.last_snapshot is not None:
                     self._on_change(self.last_snapshot, snap)
                 self.last_snapshot = snap
-                self._print_frame_periodic(snap)
 
         self._thread = threading.Thread(target=_poll, daemon=True)
         self._thread.start()
@@ -344,13 +335,9 @@ def main():
     print("阶段 1: Sport 模式基线")
     print("=" * 70)
     print()
-    print("先确认 G1 当前在 Sport 模式(站立运控). 看终端 fsm 应当 = 6.")
-    print("如果不在 Sport, 你需要手动按遥控器进 Sport(通常 L2+A 或类似组合).")
-    prompt("看终端报告 fsm_mode = 6 后, 回车继续(如果不是 6, 处理好再回车)")
-
-    if monitor.fsm_mode != 6:
-        print(f"!! 警告: 当前 fsm_mode = {monitor.fsm_mode}, 不是 Sport. 继续可能影响判断.")
-        prompt("确认继续? (Ctrl+C 退出)")
+    print("确认 G1 在走跑运控或常规运控模式(推摇杆时 G1 应移动).")
+    print("如果不在运控模式: 用遥控器 R2+A 进走跑运控, 或 R1+X/Y 进常规运控.")
+    prompt("确认 G1 在运控模式(推摇杆会动)后, 回车继续")
 
     run_keys_test(monitor, mode_label="Sport(基线)")
 
@@ -359,17 +346,16 @@ def main():
     print("阶段 2: 切到调试模式")
     print("=" * 70)
     print()
-    print("步骤(在遥控器上人手操作):")
-    print("  1. 长按 L2+A 切到 Damp(阻尼)")
-    print("     -> 看终端 fsm_mode 变为 0")
-    print("  2. 长按 L2+R2 切到调试模式")
-    print("     -> 此后遥控器对机体的控制语义会被 G1 主板挂起")
-    print("     -> 但 wireless_remote 字节理论上仍透传(本阶段要验证的)")
+    print("重要: 调试模式只能从阻尼或零力矩进入. 不要从运控模式直接进!")
+    print("步骤:")
+    print("  1. 长按 L2+A 切到阻尼模式 (G1 脱力下垂, 必须有悬挂!)")
+    print("  2. 确认 G1 完全脱力后, 长按 L2+R2 进诊断/调试模式")
+    print("     -> LED 变黄色 = 调试模式")
+    print("     -> 此后推摇杆 G1 不应再动")
     print()
-    print("调试模式下的 fsm_mode 值预期未知 — 可能仍是 0, 可能是别的. 记下来即可.")
 
-    prompt("操作完毕 + 看终端 fsm_mode 变化后, 回车继续")
-    print(f"  调试模式下 fsm_mode = {monitor.fsm_mode}")
+    prompt("操作完毕, 确认 G1 在调试模式后回车")
+    print(f"  machine={monitor.mode_machine} pr={monitor.mode_pr}")
 
     # ── 阶段 3: 调试模式逐键测试 ──
     print("\n" + "=" * 70)
@@ -380,18 +366,17 @@ def main():
     print("出现 = 透传成立. 不出现 = G1 主板把这个键消化了, 我们读不到.")
     print()
 
-    run_keys_test(monitor, mode_label=f"调试(fsm={monitor.fsm_mode})")
+    run_keys_test(monitor, mode_label=f"调试(machine={monitor.mode_machine})")
 
     # ── 阶段 4: 收尾 ──
     print("\n" + "=" * 70)
     print("阶段 4: 收尾")
     print("=" * 70)
     print()
-    print("按 L2+A 切回 Damp, 然后等待终端 fsm_mode = 0.")
+    print("按 L2+B 急停回阻尼模式 (L2+A 长按也可).")
+    print("确认 G1 脱力安全后回车.")
     prompt("操作完毕回车")
 
-    monitor.silence()
-    time.sleep(1)
     monitor.stop()
     sub.Close()
 

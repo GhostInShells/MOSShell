@@ -160,21 +160,10 @@ def main():
     print("OK: ArmClient 就绪")
 
     # ── 确认 Sport 模式 ──
-    print("\n确认 G1 处于 Sport 模式...")
-    msg = sub.Read(timeout=2000)
-    if msg is None:
-        print("FAIL: LowState 收不到. 检查 DDS / ufw / G1 状态.")
-        sys.exit(1)
-    fsm = msg.mode_machine
-    if fsm != 6:
-        print(f"!! 当前 fsm_mode = {fsm}, 不是 Sport(6).")
-        print("   请用遥控器切到 Sport 模式后再继续(通常 L2+A 或类似组合).")
-        prompt_continue("切到 Sport 后回车")
-        msg = sub.Read(timeout=2000)
-        if msg is None or msg.mode_machine != 6:
-            print(f"   仍不是 Sport(实际 = {msg.mode_machine if msg else 'None'}). 退出.")
-            sys.exit(1)
-    print("OK: G1 处于 Sport 模式")
+    # mode_machine = Dof 配置 (6=27Dof), 不是 FSM. 这里用 fsm_id 确认.
+    # 但 arm 动作只需要运控模式, 我们用人肉确认 — 推摇杆 G1 移动 = 在运控模式.
+    print("\n确认 G1 处于运控模式 (推摇杆 G1 应移动)...")
+    prompt_continue("确认 G1 在运控模式(走跑/常规均可), 推摇杆会动, 然后回车")
 
     prompt_continue("最后一次确认: G1 周围 1m 半径内无人无物")
 

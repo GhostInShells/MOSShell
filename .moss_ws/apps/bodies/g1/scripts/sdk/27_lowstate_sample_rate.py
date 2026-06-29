@@ -178,6 +178,11 @@ def main():
     print(f"  - 是否需要节流: 阶段 2 < 阶段 1 显著 → 需要")
     print(f"  - sensors 关节采样建议: 阶段 2 / N 作为采样上限")
     print(f"  - 急停 callback 响应延迟基线: median interval / 2")
+    print()
+    print("实测记录:")
+    print("  2026-06-29: LowState 真实 ~1052 Hz (非 500Hz).")
+    print("    frozen dataclass 构造开销可忽略 (差 0.2 Hz).")
+    print("    结论: _monitor.py 当前设计吃满 1kHz 没问题, 不需要节流.")
 
 
 if __name__ == "__main__":

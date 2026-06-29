@@ -1,49 +1,61 @@
 #!/usr/bin/env python3
 """
-24_mode_switch_topology — FSM 模式完整可达图实测
+24_mode_switch_topology — FSM 模式完整可达图实测 (遥控器路径)
 
 ═══════════════════════════════════════════════════════════════════════════════
 为什么必须跑这个脚本
 ═══════════════════════════════════════════════════════════════════════════════
 
 20 脚本测了 Sit / Stand / Sport 路径中的关键边. 24 是它的补完 —
-对所有已知 FSM mode 之间的 SetFsmId(X) 调用做系统性遍历,
-得到完整的"哪些边可达 / 哪些被拒 / 各边耗时"的可达图.
+通过遥控器组合键触发模式切换, 用 rt/sportmodestate 读取真实的 fsm_id,
+得到完整的 "遥控器按键 → FSM ID" 映射 和 各边可达性/耗时.
 
-state DAG 设计的"具体边定义"依赖这张图. 没这张图就只能保守地假设
-"任何边都要先 Damp 再切", 用户体验差.
-
-已知 mode (FSM ID, 来自 docs/index.md + SDK 源码):
-  0 = ZeroTorque  (危险, 永久封禁)
-  1 = Damp        (急停阻尼)
-  3 = Sit         (落座)
-  500 = Start     (基础站立)
-  706 = Squat2StandUp / StandUp2Squat (双向?)
-  Sport mode_machine=6 — 是否对应特定 FSM ID? Sport 是怎么进的?
+state DAG 设计的 "具体边定义" 依赖这张图.
 
 ═══════════════════════════════════════════════════════════════════════════════
 执行人指引
 ═══════════════════════════════════════════════════════════════════════════════
 
 前置:
-  1. G1 已开机, 当前 fsm_mode 自动检测(脚本会从 Damp 开始)
-  2. 前后 2m 缓冲, 周围 1m 无物 (G1 可能站起/坐下/摆姿态)
+  1. G1 已开机, 悬挂在吊架上
+  2. 周围有足够空间 (部分切换 G1 会站起/坐下/摆姿态)
   3. cd .moss_ws/apps/bodies/g1 && source .venv/bin/activate
 
-测试矩阵:
-  按"从安全态开始, 逐步往复杂态切"的顺序遍历, 每条边都记录:
-  - SetFsmId(target) 的 RPC code
-  - fsm_mode 实际变化值
-  - 时长
-  - 物理稳定性(你打分)
-
-测试顺序:
-  Damp(1) → Sit(3) → Sit→706 → 站起后 fsm_mode → Start(500) → Sport?
-  → 各种"非法"边: Sport→Sit直接 / Damp→500 直接 等
-  → 收尾 Damp
+方法:
+  本脚本 **不使用 SetFsmId API (高危)**. 全部通过遥控器组合键切换.
+  脚本引导你依次按各组合键, 然后订阅 rt/sportmodestate 读取真实的 fsm_id.
 
 风险:
   状态切换有体姿变化. 任何不稳 L2+B 急停.
+  **阻尼模式脱力, 必须有悬挂.** 不要在无悬挂状态下切阻尼.
+
+遥控器组合键清单 (2026-06-29 实机确认):
+  从零力矩:
+    L2 + Y = 零力矩
+    L2 + B = 阻尼
+    L2 + 上 = 锁定站立
+    L2 + X = 躺→站
+    L2 + 左 (长按) = 落座
+    L2 + A (长按) = 蹲↔站
+
+  从运控:
+    R2 + A = 走跑运控
+    R1 + X = 常规运控 (单腰)
+    R1 + Y = 常规运控 (三腰)
+    R2 + B = 越障运控
+    R1 + B = 舞蹈运控
+
+  调速:
+    R2 + 上/下 = 速度高低
+
+  调试:
+    L2 + R2 = 诊断/调试模式 (仅从阻尼或零力矩)
+
+已知 FSM ID 表 (来自文档 index.md):
+  0 = ZeroTorque      1 = Damp           2 = 位控下蹲
+  3 = Sit             4 = 锁定站立       500 = 常规运控 (单腰)
+  501 = 常规运控 (三腰)  702 = 躺起         706 = 蹲起
+  801/802 = 走跑运控
 """
 import sys
 import time
@@ -51,61 +63,33 @@ import threading
 from typing import Optional
 
 
-FSM_NAMES = {
-    0: "ZeroTorque",
-    1: "Damp",
-    3: "Sit",
-    5: "Start/Stand",
-    6: "Sport",
-}
+# ── 遥控器按键 → (目标模式描述, 预期 FSM ID 候选) ──
+# FSM ID 为 None 表示待实测确认.
 
+KEY_COMBOS = [
+    # (组合键描述, 目标描述, 预期 FSM ID, 风险)
+    # ─ 从零力矩出发 ─
+    ("L2 + Y",       "零力矩",          0,   "无"),
+    ("L2 + B",       "阻尼 (急停)",      1,   "脱力! 需悬挂"),
+    ("L2 + 上",      "锁定站立",         4,   "站起"),
+    ("L2 + X",       "躺→站",           702, "从躺到站"),
+    ("L2 + 左 (长按)", "落座",           3,   "坐下"),
+    ("L2 + A (长按)",  "蹲↔站",         706, "姿态切换"),
 
-# 测试边: (from_label, target_fsm_id, description, expected_safe)
-# 注意 — 没有"等待到达 from"的预设, 调用前要确保当前是 from
-TEST_EDGES = [
-    ("Damp(1) → Sit(3)",       3,   "从急停降到坐", True),
-    ("Sit(3) → 706 (双向?)",    706, "Sit 模式调 706 看是否站起", True),
-    ("Stand → Start(500)",     500, "站立后调 Start 是否进 Sport", True),
-    ("Sport → Sit(3) 直接",     3,   "Sport 直接降 Sit (可能被拒)", False),
-    ("Sit → Start(500) 跳跃",   500, "Sit 直接 Start, 不经过站立 (可能被拒)", False),
-    ("当前 → 706",              706, "在最后状态调 706, 看是否反向回坐", False),
-    ("收尾 → Damp(1)",          1,   "测试完毕回到 Damp", True),
+    # ─ 从运控出发 ─
+    ("R1 + X",       "常规运控 (单腰)",   500, "站起+平衡"),
+    ("R1 + Y",       "常规运控 (三腰)",   501, "站起+平衡+三腰"),
+    ("R2 + A",       "走跑运控",         None, "801 或 802? 待实测"),
+    ("R2 + B",       "越障运控",         None, "ID 未知"),
+    ("R1 + B",       "舞蹈运控",         None, "ID 未知"),
+
+    # ─ 调试入口 ─
+    ("L2 + R2",      "诊断/调试模式",     None, "仅从阻尼或零力矩"),
+
+    # ─ 调速 (不切换模式, 但在运控内生效) ─
+    ("R2 + 上",      "高速",             None, "走跑运控内调速"),
+    ("R2 + 下",      "低速",             None, "走跑运控内调速"),
 ]
-
-
-class FsmMonitor:
-    def __init__(self, subscriber):
-        self.sub = subscriber
-        self.running = False
-        self.current_mode = -1
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self):
-        self.running = True
-        def _poll():
-            while self.running:
-                msg = self.sub.Read(timeout=500)
-                if msg is None:
-                    continue
-                self.current_mode = msg.mode_machine
-        self._thread = threading.Thread(target=_poll, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self.running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-
-    def wait_for_change(self, from_mode: int, timeout: float = 15.0) -> Optional[tuple[int, float]]:
-        t_start = time.monotonic()
-        while time.monotonic() - t_start < timeout:
-            if self.current_mode != from_mode:
-                return (self.current_mode, time.monotonic() - t_start)
-            time.sleep(0.05)
-        return None
-
-    def name(self, mode: int) -> str:
-        return FSM_NAMES.get(mode, f"未知({mode})")
 
 
 def prompt_continue(msg: str) -> None:
@@ -120,11 +104,11 @@ def prompt(msg: str) -> str:
 
 def grade_transition() -> tuple[int, str]:
     print()
-    print("  状态切换打分:")
+    print("  打分:")
     print("    1 = 顺利完成, 终态稳定")
     print("    2 = 完成但有小不稳")
     print("    3 = 完成但抖动明显")
-    print("    4 = 被拒 / 不可完成 / 危险")
+    print("    4 = 被拒 / 危险 / 不可达")
     while True:
         ans = prompt("输入 1-4")
         if ans in {'1', '2', '3', '4'}:
@@ -140,91 +124,124 @@ def main():
     nic = sys.argv[1]
 
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
-    from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+    from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 
     print("=" * 70)
-    print("24_mode_switch_topology — FSM 完整可达图")
+    print("24_mode_switch_topology — FSM 可达图 (遥控器路径)")
     print("=" * 70)
     print()
-    input("准备好了按 Enter 开始 >>> ")
+    print("本脚本通过遥控器组合键触发模式切换, 用 rt/sportmodestate")
+    print("读取真实的 fsm_id. 不使用 SetFsmId API.")
+    print()
+    print("重要约束:")
+    print("  - 阻尼模式脱力, 必须在吊架下运行!")
+    print("  - 调试模式仅从阻尼或零力矩进入 (不从运控直接进)")
+    print("  - 运控模式之间切换可能需要先回阻尼")
+    print("=" * 70)
+    input("\n准备好了按 Enter 开始 >>> ")
 
     print(f"\n初始化 DDS (interface={nic}) ...")
     ChannelFactoryInitialize(0, nic)
 
-    sub = ChannelSubscriber("rt/lowstate", LowState_)
+    sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
     sub.Init()
+    print("OK: rt/sportmodestate 订阅就绪")
 
-    loco = LocoClient()
-    loco.SetTimeout(10.0)
-    loco.Init()
+    # ── 共享状态: 最新 SportModeState ──
+    _lock = threading.Lock()
+    _latest: dict = {'fsm_id': -1, 'fsm_mode': -1}
 
-    monitor = FsmMonitor(sub)
-    monitor.start()
+    running = True
+
+    def _read_sport_mode():
+        while running:
+            msg = sub.Read(timeout=500)
+            if msg is None:
+                continue
+            with _lock:
+                _latest['fsm_id'] = msg.fsm_id
+                _latest['fsm_mode'] = msg.fsm_mode  # 0=静态, 1=动态
+
+    _thread = threading.Thread(target=_read_sport_mode, daemon=True)
+    _thread.start()
     time.sleep(1)
 
-    print(f"\n当前 fsm_mode = {monitor.current_mode} ({monitor.name(monitor.current_mode)})")
+    def current_fsm() -> tuple[int, int]:
+        with _lock:
+            return _latest['fsm_id'], _latest['fsm_mode']
 
-    if monitor.current_mode != 1:
-        print(f"!! 当前不在 Damp(1). 请用遥控器先切到 Damp.")
-        prompt_continue("切到 Damp 后回车")
-        if monitor.current_mode != 1:
-            print(f"   仍不是 Damp (当前={monitor.current_mode}). 退出.")
-            monitor.stop()
-            sys.exit(1)
+    def current_fsm_str() -> str:
+        fsm_id, fsm_mode = current_fsm()
+        mode_str = "静态" if fsm_mode == 0 else ("动态" if fsm_mode == 1 else f"?{fsm_mode}")
+        return f"fsm_id={fsm_id}  fsm_mode={fsm_mode}({mode_str})"
 
-    print(f"\nOK: 起点 Damp(1)")
+    print(f"\n当前状态: {current_fsm_str()}")
 
+    # ── 逐按键测试 ──
     results = []
 
-    for (label, target, desc, safe) in TEST_EDGES:
+    for (combo, desc, expected_id, risk) in KEY_COMBOS:
         print("\n" + "=" * 70)
-        print(f"边: {label}")
-        print(f"说明: {desc}")
-        print(f"当前 fsm = {monitor.current_mode} ({monitor.name(monitor.current_mode)})")
-        if not safe:
-            print("⚠️  这是可能"被拒"的边 — 期望它被 G1 拒绝或行为异常")
-        print("=" * 70)
-        prompt_continue("准备好了回车")
-
-        mode_before = monitor.current_mode
-        t_before = time.monotonic()
-        code = loco.SetFsmId(target)
-        print(f"  -> SetFsmId({target}) RPC code = {code}")
-
-        if code == 0:
-            change = monitor.wait_for_change(from_mode=mode_before, timeout=15.0)
-            if change is not None:
-                new_mode, elapsed = change
-                print(f"  fsm 变化: {mode_before} → {new_mode} ({monitor.name(new_mode)})  用时 {elapsed:.2f}s")
-            else:
-                new_mode = monitor.current_mode
-                elapsed = -1
-                print(f"  fsm 未变化(仍 {new_mode})")
-            time.sleep(2)
+        print(f"组合键: {combo}")
+        print(f"目标: {desc}")
+        if expected_id is not None:
+            print(f"预期 FSM ID: {expected_id}")
         else:
-            new_mode = monitor.current_mode
-            elapsed = -1
-            print(f"  !! 被拒")
+            print(f"预期 FSM ID: 未知 (本实验要确认)")
+        if risk != "无":
+            print(f"⚠️  风险: {risk}")
+        print(f"当前状态: {current_fsm_str()}")
+        print("=" * 70)
 
-        grade, note = grade_transition()
+        ans = prompt("准备好了按 Enter, 输入 's' 跳过, Ctrl+C 退出 > ")
+        if ans.lower() == 's':
+            print(f"  跳过 {combo}")
+            continue
+
+        fsm_before, mode_before = current_fsm()
+        t_before = time.monotonic()
+
+        print(f"  请按 {combo} ...")
+        prompt_continue("操作完毕回车")
+
+        # 等 fsm_id 变化 或 超时
+        changed = False
+        t_start = time.monotonic()
+        while time.monotonic() - t_start < 10.0:
+            fsm_after, mode_after = current_fsm()
+            if fsm_after != fsm_before:
+                changed = True
+                break
+            time.sleep(0.1)
+
+        elapsed = time.monotonic() - t_before if changed else -1
+        fsm_after, mode_after = current_fsm()
+
+        if changed:
+            print(f"\n  fsm_id 变化: {fsm_before} → {fsm_after}  用时 {elapsed:.2f}s")
+            print(f"  当前: {current_fsm_str()}")
+        else:
+            print(f"\n  fsm_id 未变化 (仍 {fsm_after}) — 可能不可达 或 按键未触发")
+            print(f"  当前: {current_fsm_str()}")
+
+        grade, note_text = grade_transition()
 
         results.append({
-            'label': label,
-            'target': target,
-            'mode_before': mode_before,
-            'mode_after': new_mode,
-            'rpc_code': code,
+            'combo': combo,
+            'desc': desc,
+            'expected': expected_id,
+            'before': fsm_before,
+            'after': fsm_after,
+            'mode_after': mode_after,
+            'changed': changed,
             'elapsed': elapsed,
             'grade': grade,
-            'note': note,
+            'note': note_text,
         })
 
-        if grade == 4 and safe:
-            print("\n!!! 预期安全的边失败 — 终止后续测试.")
-            break
-
-    monitor.stop()
+    # ── 收尾 ──
+    running = False
+    _thread.join(timeout=2)
     sub.Close()
 
     # ── 汇总 ──
@@ -232,14 +249,16 @@ def main():
     print("FSM 可达图汇总")
     print("=" * 70)
     print()
-    print(f"{'边':<28} {'from':<5} {'target':<7} {'code':<5} {'after':<6} {'用时':<8} {'分':<4} 备注")
+    print(f"{'组合键':<16} {'目标':<16} {'预期':<6} {'before':<6} {'after':<6} {'变化':<5} {'用时':<8} {'分':<4} 备注")
     print("-" * 90)
     for r in results:
-        elapsed_str = f"{r['elapsed']:.2f}s" if r['elapsed'] >= 0 else "—"
-        print(f"{r['label']:<28} {r['mode_before']:<5} {r['target']:<7} {r['rpc_code']:<5} "
-              f"{r['mode_after']:<6} {elapsed_str:<8} {r['grade']:<4} {r['note']}")
+        chg = "✓" if r['changed'] else "✗"
+        elapsed_s = f"{r['elapsed']:.2f}s" if r['elapsed'] >= 0 else "—"
+        expected_s = str(r['expected']) if r['expected'] is not None else "?"
+        print(f"{r['combo']:<16} {r['desc']:<16} {expected_s:<6} {r['before']:<6} "
+              f"{r['after']:<6} {chg:<5} {elapsed_s:<8} {r['grade']:<4} {r['note']}")
     print()
-    print("反馈给模型: 模型据此画出完整 state DAG 边定义.")
+    print("反馈给模型: 模型据此构建遥控器按键 → FSM ID 映射 + 可达边表.")
 
 
 if __name__ == "__main__":
