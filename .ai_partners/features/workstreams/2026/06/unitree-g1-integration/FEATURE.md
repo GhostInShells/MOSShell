@@ -65,6 +65,7 @@ src/ghoshell_moss_contrib/unitree/g1/
 - `_archived/` 内的 channel/warrant/audio 等老文件保留只为追溯, 不读、不 import、不参考
 - `channels/ providers/` 当前为空, 由后续会话按 `design/2026-06-30_g1_arms_animation.md` 等设计填入
 - 老 channel 体系 (warrant 事务 / arm action RPC / channel.py 三 client) 已废弃, 设计真相以 `design/2026-06-30_g1_arms_animation.md` + `story-2026-07.md` 为准
+- **runtime 模块的通用纪律和实现范式见 `src/ghoshell_moss_contrib/unitree/g1/runtime/README.md`**, 首个样例: `runtime/asr.py`. 后续 arms / locomotion / 各类轨迹模块照此范式实现. 持久设计跟代码走, 不放本文件 (任务完成后 FEATURE.md 会沉没).
 
 外部已同步: `.moss_ws/src/MOSS/modes/unitree_g1/providers.py` → `g1.runtime.audio_provider`; `.moss_ws/apps/bodies/g1/scripts/sdk/16` → `g1.sdk` 子路径. 其余 `scripts/sdk/` 大多数为 SDK 直探脚本, 不经 contrib, 无需变更. design/ 与 discuss/ 内的旧路径引用故意不修, 保留设计演进的可追溯性.
 

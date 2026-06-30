@@ -1,6 +1,26 @@
 """
 G1 遥控器按键 callback 注册接口.
 
+═══════════════════════════════════════════════════════════════════════════════
+处理决议 (2026-06-30)
+═══════════════════════════════════════════════════════════════════════════════
+本模块仅做"单键 + pressed bool" 边沿物理底层 callback. 新代码不应直接 import
+这里的 register_button_callback —— 它没有组合键判定, 没有 debounce, 没有事件
+历史 ring buffer.
+
+新接入点是 `runtime/control_pad.py` (语义层):
+  - 注册 KeyBinding (物理键集合 + per-binding debounce)
+  - fallthrough listener (全局 debounce, 未匹配 binding 的按下兜底)
+  - 事件历史 ring buffer (drain/peek, 准 asr 范式, 可灌入 context_messages)
+
+control_pad **当前实现就站在本模块的 register_button_callback 之上** —— 这是
+"不浪费时间清理旧资产, 先把语义层做出来" 的过渡形态. 后续 control_pad 稳定
+后, 本模块的 register/unregister API 是删是改 (例如改为 control_pad 内部
+驱动器, 不再暴露顶层 API), 留到那时一次性处理.
+
+在那之前: 老代码继续工作, 新代码走 control_pad.
+═══════════════════════════════════════════════════════════════════════════════
+
 设计思路:
   - bootstrap 跑起来后, monitor 在 reader 线程里持续解析 wireless_remote[40].
   - 用户(channel.startup 钩子 / 应用代码) 通过 register_button_callback 注册"按键边沿"回调.
