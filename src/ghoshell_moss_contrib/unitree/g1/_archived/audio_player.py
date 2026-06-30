@@ -57,7 +57,7 @@ class G1StreamPlayer(BaseAudioStreamPlayer):
 
     def _audio_stream_start(self):
         """worker 线程: 初始化 DDS + AudioClient + 生成新 stream_id。"""
-        from ghoshell_moss_contrib.unitree.g1._bootstrap import get_audio_client
+        from ghoshell_moss_contrib.unitree.g1._archived._bootstrap import get_audio_client
         self._audio = get_audio_client()  # raise if not bootstrapped
         self._stream_id = self._next_stream_id()
 

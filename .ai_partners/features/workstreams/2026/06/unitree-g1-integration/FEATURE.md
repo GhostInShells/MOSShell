@@ -43,6 +43,31 @@ SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录, 详见 READ
 - `discuss/2026-06-08_phase_b_sdk_discussion_outline.md` — SDK 摸底阶段讨论提纲
 - `discuss/2026-06-28_remote_as_moss_input.md` — 单一控制源反转: 遥控器变 MOSS 输入设备
 
+## 代码结构 (2026-06-30 重构后)
+
+contrib 下的 g1 包按"双工分层具身"范式切成四层 + 归档区. 后续模型实例的任何新代码必须落到对应层, 不进 `_archived/`.
+
+```
+src/ghoshell_moss_contrib/unitree/g1/
+├── __init__.py          # 空伞 — 外部 import 必须走子路径, 顶层不再 re-export
+├── sdk/                 # L1: SDK 句柄 + 生命周期 + 上行信号源 (无业务语义)
+│                        #     _bootstrap / _monitor / _buttons / state / _sdk
+├── runtime/             # L3: 可独立单测的业务对象 (脱离 channel 仍可跑)
+│                        #     arms 引擎 / audio_player / locomotion / sensors 实装
+├── channels/            # L4: channel 薄壳 — 把 runtime 暴露给 LLM, 不写业务逻辑
+├── providers/           # IoC 注入点 — Provider 子类 (audio_provider 现暂放 runtime/)
+└── _archived/           # 6-29 之前的全部老代码. 仅供考古, 不再被任何模块 import.
+                         # 内容准确性不重要 — 今天的实现为准.
+```
+
+**纪律**:
+- 外部入口必须走 `g1.sdk.X` / `g1.runtime.X` 等子路径, 不要往顶层 `__init__.py` 加 re-export
+- `_archived/` 内的 channel/warrant/audio 等老文件保留只为追溯, 不读、不 import、不参考
+- `channels/ providers/` 当前为空, 由后续会话按 `design/2026-06-30_g1_arms_animation.md` 等设计填入
+- 老 channel 体系 (warrant 事务 / arm action RPC / channel.py 三 client) 已废弃, 设计真相以 `design/2026-06-30_g1_arms_animation.md` + `story-2026-07.md` 为准
+
+外部已同步: `.moss_ws/src/MOSS/modes/unitree_g1/providers.py` → `g1.runtime.audio_provider`; `.moss_ws/apps/bodies/g1/scripts/sdk/16` → `g1.sdk` 子路径. 其余 `scripts/sdk/` 大多数为 SDK 直探脚本, 不经 contrib, 无需变更. design/ 与 discuss/ 内的旧路径引用故意不修, 保留设计演进的可追溯性.
+
 ## 必要前置阅读 (进入 g1 工作前必读)
 
 模型实例进入本 feature 工作前, 必须先建立以下认知, 否则容易把 channel 当 JSON Schema 工具、
@@ -78,6 +103,22 @@ moss --ai codex blueprint mindflow           # Signal/Nucleus/Impulse/Articulato
 
 完整 session 历史按时间倒序索引. 详细内容已迁移到 design/ 与 discuss/, FEATURE.md
 只保留入口与关键节点结论.
+
+### 2026-06-30 — contrib 目录四层重构
+
+由 claude-opus-4-7 协助 + 人类工程师手动迁移. 把 g1 contrib 包按"双工分层具身"范式切成 `sdk/runtime/channels/providers` 四层 + `_archived/` 归档区. 详见上方 "代码结构" 节.
+
+**动了什么**:
+- 12 个老文件 → `_archived/` (git rename, 准确性不重要, 不再 import)
+- 4 个新 package 起骨架; `sdk/` `runtime/` 内部 import 已对齐
+- 顶层 `__init__.py` 清空 — 外部入口必须走子路径
+- 外部引用同步: `mode/providers.py` → `g1.runtime.audio_provider`; `scripts/sdk/16` → `g1.sdk`
+- 删 3 个老 scripts (`channel/01,02` + `sdk/15`) — 都基于已废弃的 channel.py
+- `apps/bodies/g1/main.py` 清空为占位 (channel 树未建, 后续 channels/ 填入后再补 main)
+
+**为什么现在动**: 6-29 14 文件平铺触发认知成本爆炸 — 反例标记、旧实现、砍掉机制、新机制混在同一目录, 后续模型实例难辨主次. arms 引擎即将进入, 它本身就需要 "runtime 引擎 + channels 薄壳" 的分层. 现在没有 "先跑通再重命名" 的资产保护需求 (6-29 代码一行没在 G1 跑过).
+
+**没动**: `design/2026-06-28_channel_architecture.md` 和 `design/2026-06-29_implementation_plan.md` 文档保留原貌作为历史档案, 内部路径引用 (`warrant.py` / `channel_sensors.py` 等) 不修 — 让后续模型实例感知到设计演进轨迹.
 
 ### 2026-06-29/30 — 实机验证 + 用户故事设计
 
@@ -303,10 +344,10 @@ index.md 里明确写了 `mode_machine` 是 Dof 配置字节 (不是 FSM),
   - arms idle 动画自定义机制 (chan.build.idle 暴露成 command 是未来方向, 本期硬编码或不做)
   - arms 学习库 storage scope (倾向 local_persistent 跨 session 累积)
   - arms 与 body 其他 channel 并行约束 (走路时挥手等组合的物理可行性, 待实测)
-- **warrant.py 处置**: 文件 (`src/ghoshell_moss_contrib/unitree/g1/warrant.py`) 仍在仓库. 6-29/30 砍掉机制后未删除, 保留为设计讨论锚点. 7-01 实现时决定是否彻底移除. **不在新代码里 import 或调用.**
 - **本期不做**: LiDAR 条件反射层, G1 内置录制能力, SetFsmId 白名单, arms smoothstep 插值, arms 镜像 API, arms 接入 VLA Nucleus, arms velocity cap planning 校验
 - **已解决**:
-  - Warrant 事务机制 → 砍掉, 走 InterruptNucleus + StopMove (6-29/30 实测推翻 6-28 设计)
+  - Warrant 事务机制 → 砍掉, 走 InterruptNucleus + StopMove (6-29/30 实测推翻 6-28 设计). `warrant.py` 已归档到 `_archived/` (2026-06-30), 不再被任何模块 import.
+  - contrib 目录结构 → 四层 (`sdk/runtime/channels/providers`) + `_archived/`, 2026-06-30 重构落地. 详见 "代码结构" 节.
   - 调试模式 vs 运动模式 → 运动模式是 MOSS 主场, 不进调试模式 (Sport → L2+R2 会触发 PC1 保护故障)
   - arm 控制路径 → 砍掉 ExecuteAction RPC, 只走 rt/arm_sdk DDS (RPC 不可中断, DDS publish 停 = 真中断)
   - 视觉 channel 优先级 → 本期 P0/P1, 不推迟到后期 (是熟模式, 难点在硬件对齐, 人类工程师已带队做过三次)

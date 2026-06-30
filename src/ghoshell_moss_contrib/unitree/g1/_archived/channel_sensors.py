@@ -48,7 +48,7 @@ from typing import Any
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
-from . import state
+from ghoshell_moss_contrib.unitree.g1._archived import state
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
