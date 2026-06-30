@@ -46,6 +46,19 @@ Usage:
   Ctrl+C → 干净退出 (stop + unregister + 摘要).
 
 读完 docstring 还看不懂请回去读 runtime/README.md 和 control_pad.py 顶部 docstring.
+
+实测样本 (2026-07-01, Sport 模式, f1/f3/start/l1/select/a 混合测试):
+  [drain] items=8 forgotten=0
+    [1] FALLTHROUGH    keys=l1      (未注册键 → fallthrough)
+    [2] FALLTHROUGH    keys=select
+    [3] ghost_trigger  keys=f1      (binding 命中)
+    [4] ghost_interrupt keys=f3
+    [5] channel_interrupt keys=start
+    [6] FALLTHROUGH    keys=a       (狂按 a, ~每秒一次, 全局1s debounce 后每发命中)
+    [7] FALLTHROUGH    keys=a
+    [8] FALLTHROUGH    keys=a
+  health: press_edge=20 fired=3 fallthrough=5 suppressed=12
+    → 20=3+5+12 计数对账一致; 12 次被 debounce 静默来自快速连按.
 """
 from __future__ import annotations
 

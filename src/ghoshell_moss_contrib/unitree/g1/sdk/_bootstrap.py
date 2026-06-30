@@ -196,6 +196,30 @@ def get_arm_client() -> Any:
     return _arm_client
 
 
+def get_fsm_id() -> int:
+    """当前运控模式 ID. RPC 7001.
+    返回值: 0=ZeroTorque 1=Damp 3=Sit 4=Stand 500=Regular 801=WalkRun.
+    """
+    import json
+    if not _bootstrapped or _loco_client is None:
+        raise RuntimeError("g1 not bootstrapped; call bootstrap() first")
+    code, data = _loco_client._Call(7001, "{}")
+    if code != 0:
+        raise RuntimeError(f"GetFsmId RPC failed: code={code}")
+    return json.loads(data)["data"]
+
+
+def get_fsm_mode() -> int:
+    """运动状态. RPC 7002. 0=站立态(可切换模式) 1=移动态(不可切)."""
+    import json
+    if not _bootstrapped or _loco_client is None:
+        raise RuntimeError("g1 not bootstrapped; call bootstrap() first")
+    code, data = _loco_client._Call(7002, "{}")
+    if code != 0:
+        raise RuntimeError(f"GetFsmMode RPC failed: code={code}")
+    return json.loads(data)["data"]
+
+
 def get_network_interface() -> str:
     """已使用的网卡名. 未 bootstrap 时返回空字符串."""
     return _network_interface

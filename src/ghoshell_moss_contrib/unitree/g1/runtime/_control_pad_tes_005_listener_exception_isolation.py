@@ -81,9 +81,9 @@ def main() -> int:
     control_pad.register_event_listener(ev_bad)
     control_pad.register_event_listener(ev_good)
 
-    # 触发一个新 binding (b 已触发, c 没用过)
-    control_pad.register_binding("c_binding", {"c"}, lambda e: None)
-    control_pad._dispatch_press_for_testing("c", {"c"})
+    # 触发一个新 binding (start 没用过)
+    control_pad.register_binding("start_binding", {"start"}, lambda e: None)
+    control_pad._dispatch_press_for_testing("start", {"start"})
     assert ev_bad_called[0] == 1, f"ev_bad expected 1, got {ev_bad_called[0]}"
     assert ev_good_called[0] == 1, \
         f"ev_good expected 1 (bad's exception should not block it), got {ev_good_called[0]}"
@@ -91,7 +91,7 @@ def main() -> int:
     # ── case 4: 即使一个 cb 持续抛异常, ring buffer 仍正确入队 ───────
     batch = control_pad.drain()
     # 入队事件: case1 a (bad fire), case1 b (good fire), case2 x (fallthrough),
-    #          case3 c (c_binding fire) = 4 条
+    #          case3 start (start_binding fire) = 4 条
     assert len(batch.items) == 4, \
         f"buffer expected 4 events (异常不影响入队), got {len(batch.items)}"
 

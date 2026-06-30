@@ -53,6 +53,8 @@ def main() -> int:
 
     # case 4: 顺序无关 — 先 b 单键 (no binding, fallthrough),
     # 再按 l2 加入 (l2 边沿时 pressed={l2,b}, 命中 combo_l2_b)
+    import time
+    time.sleep(0.25)  # 等 case 2 的 per-binding debounce 窗口过期
     fired.clear()
     control_pad._dispatch_press_for_testing("b", {"b"})  # fallthrough (no fired)
     control_pad._dispatch_press_for_testing("l2", {"l2", "b"})  # combo_l2_b
@@ -60,6 +62,7 @@ def main() -> int:
         f"case4 expected combo_l2_b in fired, got {fired}"
 
     # case 5: pressed_keys 字母序稳定 — 不论 set 内部顺序
+    time.sleep(0.25)  # 等 case 4 的 per-binding debounce 窗口过期
     fired.clear()
     control_pad._dispatch_press_for_testing("b", frozenset(["l2", "b"]))
     control_pad._dispatch_press_for_testing("b", frozenset(["b", "l2"]))  # 同样的 set

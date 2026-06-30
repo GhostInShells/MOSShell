@@ -32,6 +32,13 @@ Usage:
 
   Ctrl+C 退出 → 自动 asr.stop() + unregister_listener + 摘要.
 
+实测样本 (2026-07-01, 小声说话):
+  [asr#1] '你好啊。'  speaker=0  angle=0  final=False
+  [asr#2] '我现在在机器人的右侧。'  speaker=0  angle=0  final=False
+  drain 正常取走 items, forgotten=0. 空 drain 返回 items=0.
+  物理事实: angle 始终 0 (G1 默认不启用声源定位); is_final 始终 false (非流式);
+  speaker_id 始终 0 (不启用说话人识别). VAD 判停时 LED 变色但无 DDS 信号.
+
 读完 docstring 还看不懂请回去读 runtime/README.md.
 """
 from __future__ import annotations

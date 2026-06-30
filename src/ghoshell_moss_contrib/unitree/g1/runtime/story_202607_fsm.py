@@ -25,17 +25,17 @@ class FsmMode(int, enum.Enum):
     mode_machine (LowState 字段) 是 DoF 配置字节, 不是 FSM.
     """
 
-    UNKNOWN = -1 # 启动前的状态, 没有得到正确的信号同步.
-    DAMP = 0
-    ZERO_TORQUE = 0  # 遥控器语音"零力矩" — 与 DAMP 同 ID, 物理语义不同.
-    SIT = 3  # 落座 — 开机默认, 安全姿态.
-    STAND = 4  # 锁定站立.
-    START = 5  # 基础站立 (预备).
-    SPORT = 6  # 运控全开.
-
-    # 待实测:
-    #   DANCE — R1+B 舞蹈运控, FSM ID 未确认.
-    #   DEBUG — L2+R2 调试模式, FSM ID 未确认.
+    UNKNOWN = -1         # 未获取到信号
+    ZERO_TORQUE = 0     # 零力矩 — 电机无阻尼
+    DAMP = 1            # 阻尼 — 电机有阻尼, 可进预备
+    SQUAT_POS = 2       # 位控下蹲
+    SIT = 3             # 位控落座 — 开机默认
+    STAND = 4           # 锁定站立 (预备模式)
+    WALK_RUN = 801      # 走跑运控 29dof (8.6.x.x+ 更新为 802)
+    REGULAR = 500       # 常规运控
+    REGULAR_3DOF = 501  # 常规运控-3Dof-waist
+    BALANCE_SQUAT = 706 # 平衡下蹲/蹲起
+    LIE_STAND = 702     # 躺起
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

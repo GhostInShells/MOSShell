@@ -22,8 +22,14 @@ G1 状态快照 — frozen dataclass + 模块级原子读 + 启动检查.
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -162,6 +168,11 @@ _current_remote: RemoteState | None = None
 _current_battery: BatteryState | None = None
 _current_health: HealthState | None = None
 
+# FSM mode from rt/sportmodestate (the real source). -1 = not received yet.
+# mode_machine in LowState is DoF config (4=23Dof,5=29Dof,6=27Dof), NOT FSM.
+# FEATURE.md §数据字段 documents this as a known trap from 2026-06-29.
+_current_sport_mode: int = -1
+
 # 最后一次更新时刻 (monotonic seconds). 用于判断数据新鲜度.
 _last_update: float = 0.0
 
@@ -231,6 +242,16 @@ def health() -> HealthState:
     return _current_health
 
 
+def sport_mode() -> int:
+    """G1 真实 FSM 模式 ID. 来源 rt/sportmodestate, 不是 LowState 的 mode_machine.
+
+    -1 = sportmodestate 首帧未到 (或订阅失败).
+    已知值: 0=Damp/ZeroTorque, 3=Sit, 4=Stand, 5=Start, 6=Sport.
+    """
+    _check_started("sport_mode")
+    return _current_sport_mode
+
+
 def last_update() -> float:
     """最近一次状态刷新时刻 (time.monotonic). 0 = 尚未收到任何帧.
 
@@ -291,6 +312,61 @@ def _set_health(h: HealthState) -> None:
     _current_health = h
 
 
+def _set_sport_mode(mode: int) -> None:
+    """由 _monitor sportmodestate callback 调. 仅在值变化时通知回调."""
+    global _current_sport_mode
+    old = _current_sport_mode
+    if old == mode:
+        return
+    _current_sport_mode = mode
+    _notify_sport_mode_callbacks(old, mode)
+
+
+# ── sport_mode 回调注册 ────────────────────────────────────────────────────
+# 回调在 cyclonedds reader 线程内同步触发 — 不能阻塞, 异常隔离.
+# FSM 变化是秒级事件, 回调开销可忽略.
+
+_sport_mode_lock = threading.Lock()
+_sport_mode_callbacks: dict[str, Callable[[int, int], None]] = {}
+# cb(old_mode: int, new_mode: int) -> None
+
+
+def register_sport_mode_callback(cb: Callable[[int, int], None]) -> str:
+    """注册 FSM 模式变化回调. 回调在 reader 线程内同步触发, 不能阻塞.
+
+    返回 handle (str) 用于 unregister.
+    注册时若已有已知 mode (≠-1), 立即以 (-1, current) 触发一次 cb.
+    """
+    handle = uuid4().hex
+    with _sport_mode_lock:
+        _sport_mode_callbacks[handle] = cb
+    # 立即补发当前值 (lock 外, 避免 cb 内 register 死锁)
+    current = _current_sport_mode
+    if current >= 0:
+        try:
+            cb(-1, current)
+        except Exception:
+            logger.exception("sport_mode callback initial fire failed (isolated)")
+    return handle
+
+
+def unregister_sport_mode_callback(handle: str) -> None:
+    """反注册. 未知 handle 静默忽略."""
+    with _sport_mode_lock:
+        _sport_mode_callbacks.pop(handle, None)
+
+
+def _notify_sport_mode_callbacks(old: int, new: int) -> None:
+    """通知所有注册回调. 在 _set_sport_mode 内调 (reader 线程)."""
+    with _sport_mode_lock:
+        snapshot = list(_sport_mode_callbacks.values())
+    for cb in snapshot:
+        try:
+            cb(old, new)
+        except Exception:
+            logger.exception("sport_mode callback raised (isolated)")
+
+
 def _touch() -> None:
     """每收到一帧调一次. 用于 last_update."""
     global _last_update
@@ -311,4 +387,5 @@ def _reset_all_for_testing() -> None:
     _current_remote = None
     _current_battery = None
     _current_health = None
+    _current_sport_mode = -1
     _last_update = 0.0

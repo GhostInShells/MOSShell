@@ -22,13 +22,12 @@ Usage:
   - **如 G1 在 Sit/Damp/调试模式, LocoClient.Move 会被静默拒收或报错** — 切到 Sport 再跑.
 
 预期 (跑通时人看到):
+  > 输入: f 0.5
+  [walk_forward duration after 0.50s]
   > 输入: f 2
-  [walk_forward duration after 2.00s]
-  > 输入: f 5
-  > 输入: tl 1 medium       <- 第 2 秒立即输 (抢占测试)
-  [walk_forward preempted_by:turn_left_medium after 2.13s]
-  [turn_left_medium duration after 1.00s]
-  > 输入: f 10
+  > 输入: tl 0.5 medium     <- 立刻输 (抢占测试)
+  [walk_forward preempted_by:turn_left_medium after 0.63s]
+  [turn_left_medium duration after 0.50s]
   > 输入: s                 <- 中途强停
   [stopped walk_forward]
   > 输入: q

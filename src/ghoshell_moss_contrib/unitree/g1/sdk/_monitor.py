@@ -172,13 +172,20 @@ def _on_bmsstate(msg: Any) -> None:
     global _battery_count, _last_battery_time
     try:
         import time as _time
+        # bmsvoltage: array[3] uint32, 单位 mV. 取有效路 max / 1000 → V.
+        bmsv = [int(v) for v in getattr(msg, 'bmsvoltage', ()) if int(v) > 0]
+        voltage_v = max(bmsv) / 1000.0 if bmsv else 0.0
+        # current: int32, 单位 mA. / 1000 → A.
+        current_a = int(getattr(msg, 'current', 0)) / 1000.0
+        # temperature: array[12] int16, 单位 °C. 取最高温芯.
+        temps = [int(t) for t in getattr(msg, 'temperature', ())]
         battery_snap = state.BatteryState(
             soc=int(getattr(msg, 'soc', 0)),
             soh=int(getattr(msg, 'soh', 0)),
-            voltage=float(getattr(msg, 'vol', 0.0)),
-            current=float(getattr(msg, 'current', 0.0)),
+            voltage=round(voltage_v, 2),
+            current=round(current_a, 2),
             cycle=int(getattr(msg, 'cycle', 0)),
-            temperature=tuple(int(t) for t in getattr(msg, 'bms_temperature', ())),
+            temperature=tuple(temps),
             cells=tuple(int(c) for c in getattr(msg, 'cell_vol', ())),
         )
         state._set_battery(battery_snap)
@@ -194,10 +201,15 @@ def _on_mainboardstate(msg: Any) -> None:
     global _health_count, _last_health_time
     try:
         import time as _time
+        # temperature: array[6] int16, 取第一个为板温.
+        temps = [int(t) for t in getattr(msg, 'temperature', ())]
+        board_temp = temps[0] if temps else 0
+        # value: array[6] float32, 各路电压.
+        voltages = tuple(float(v) for v in getattr(msg, 'value', ()))
         health_snap = state.HealthState(
-            board_temp=int(getattr(msg, 'board_temperature', 0)),
+            board_temp=board_temp,
             fan_state=tuple(int(f) for f in getattr(msg, 'fan_state', ())),
-            voltages=tuple(float(v) for v in getattr(msg, 'voltage', ())),
+            voltages=voltages,
         )
         state._set_health(health_snap)
         state._touch()

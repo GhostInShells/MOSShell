@@ -8,8 +8,13 @@ ASR runtime — G1 内置语音识别服务的运行时模块.
   - 启动协议: AudioClient._Call(1002, json.dumps({"action":"start"}))
   - 停止协议: AudioClient._Call(1002, json.dumps({"action":"stop"}))
   - 数据流:   DDS topic `rt/audio_msg` (std_msgs/String_), 内容是 JSON 字符串
-  - 已知字段: text / transcript (二选一存在) / speaker_id / angle (°) / confidence / is_final
+  - 已知字段: text / index / speaker_id / angle (°) / confidence / emotion / language
+  - G1 默认非流式模式, 无 is_final; play_state 消息被过滤.
   - G1 报文本身无 id 字段, runtime 自生成 ulid
+  - 实机验证 (2026-07-01): angle 始终 0, speaker_id 始终 0 — G1 当前固件不启用声源定位与说话人识别.
+  - is_final 始终 false — 默认非流式模式. 但 G1 VAD 结束时 LED 变色, 需另寻判停路径.
+  - emotion 字段名实机为 emotion (官方文档写 sense), 值 e.g. '<|NEUTRAL|>'.
+  - play_state 消息 ({"play_state": 0/1}) 与 ASR 结果共用同一 topic, _parse 过滤.
 
 调用样例:
     from ghoshell_moss_contrib.unitree.g1.sdk import bootstrap
@@ -44,43 +49,51 @@ logger = logging.getLogger("moss.g1.runtime.asr")
 # 措辞按"对 LLM 解释精度"写, 不只是给开发者看.
 
 class AsrResult(BaseModel):
-    """G1 一次 ASR 识别结果, 一对一对应 rt/audio_msg 上的一个 JSON 包."""
+    """G1 一次 ASR 识别结果. 字段对齐官方文档 + 实机验证 (2026-07-01)."""
 
     id: str = Field(
         default_factory=unique_id,
-        description="本条记录的 ulid. 由 runtime 生成 — G1 报文本身不带 id 字段.",
+        description="本条记录的 ulid. 由 runtime 生成.",
     )
     text: str = Field(
         default="",
         description="识别到的文本内容.",
     )
+    index: Optional[int] = Field(
+        default=None,
+        description="消息唯一序号 (G1 原始字段).",
+    )
     speaker_id: Optional[int] = Field(
         default=None,
-        description="说话人编号. 同一人多次发言通常同号. G1 未提供时为 None.",
+        description="说话人编号. G1 默认不启用, 通常为 0.",
     )
-    angle: Optional[float] = Field(
+    angle: Optional[int] = Field(
         default=None,
-        description="声源方位角 (°), 0 = G1 正前方, 正值含义待实测 (右侧?).",
+        description="声源方位角 0-180°. G1 默认不启用, 通常为 0.",
     )
     confidence: Optional[float] = Field(
         default=None,
-        description="识别置信度 [0,1]. G1 未提供时为 None.",
+        description="识别置信度 [0,1].",
     )
-    is_final: bool = Field(
-        default=True,
-        description="是否最终结果. 流式 ASR 中同一句话可能多次更新, 最后一次 is_final=True.",
+    emotion: Optional[str] = Field(
+        default=None,
+        description="情绪识别结果 (e.g. '<|NEUTRAL|>'). 实机字段名 emotion, 官方文档写 sense.",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="语言种类 (e.g. '<|zh|>').",
     )
     received_at: float = Field(
         default_factory=time.time,
-        description="reader 线程拿到本条的本地时间 (time.time() 秒).",
+        description="reader 线程拿到本条的本地时间.",
     )
     source: str = Field(
         default="g1.asr",
-        description="数据来源固定常量. helper 加工成 Message/XML 时作为 tag.",
+        description="数据来源固定常量.",
     )
     raw_json: Optional[str] = Field(
         default=None,
-        description="DDS 报文原始 JSON 字符串. 仅供实机 debug, helper 加工时不导出给模型.",
+        description="DDS 原始 JSON. 仅供 debug, 不导出给模型.",
     )
 
 
@@ -328,25 +341,35 @@ def _reader_loop() -> None:
 
 
 def _parse(raw: str) -> Optional[AsrResult]:
-    """把 DDS String_ 报文 (JSON 字符串) 解析为 AsrResult. 失败 / 空文本返回 None."""
+    """把 DDS String_ 报文 (JSON 字符串) 解析为 AsrResult.
+
+    过滤: play_state 消息 (不含 text 字段)、空文本、keepalive 包.
+    """
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         logger.warning("ASR 报文非 JSON, 跳过: %r", raw[:200])
         return None
 
-    # G1 字段命名实测不统一: text 与 transcript 二选一存在.
+    # 过滤 ASR 播放状态消息 (不含 text 字段).
+    if "text" not in data:
+        return None
+
     text = data.get("text") or data.get("transcript") or ""
     if not text:
-        # 空文本通常是 ASR 服务的 keepalive / 状态包, 不入 buffer.
         return None
+
+    # emotion: 实机字段名 emotion, 官方文档写 sense — 两者都尝试.
+    emotion = data.get("emotion") or data.get("sense")
 
     return AsrResult(
         text=text,
+        index=data.get("index"),
         speaker_id=data.get("speaker_id"),
         angle=data.get("angle"),
         confidence=data.get("confidence"),
-        is_final=bool(data.get("is_final", True)),
+        emotion=emotion,
+        language=data.get("language"),
         raw_json=raw,
     )
 
@@ -380,14 +403,14 @@ def _enqueue(result: AsrResult) -> None:
 def to_xml_text(r: AsrResult) -> str:
     """单条结果 → 紧凑 XML. 多条拼接用 batch_to_xml."""
     attrs = [f'id="{r.id}"', f'ts="{r.received_at:.3f}"']
-    if r.speaker_id is not None:
+    if r.speaker_id is not None and r.speaker_id != 0:
         attrs.append(f'speaker="{r.speaker_id}"')
-    if r.angle is not None:
-        attrs.append(f'angle="{r.angle:.1f}"')
+    if r.angle is not None and r.angle != 0:
+        attrs.append(f'angle="{r.angle}"')
     if r.confidence is not None:
         attrs.append(f'conf="{r.confidence:.2f}"')
-    if not r.is_final:
-        attrs.append('partial="true"')
+    if r.emotion:
+        attrs.append(f'emotion="{r.emotion}"')
     return f'<{r.source} {" ".join(attrs)}>{r.text}</{r.source}>'
 
 
@@ -403,14 +426,14 @@ def batch_to_xml(batch: AsrBatch) -> str:
 def to_message(r: AsrResult) -> Message:
     """单条结果 → ghoshell_moss Message. channel 把它入 context_messages."""
     attrs: dict = {"id": r.id}
-    if r.speaker_id is not None:
+    if r.speaker_id is not None and r.speaker_id != 0:
         attrs["speaker"] = r.speaker_id
-    if r.angle is not None:
-        attrs["angle"] = round(r.angle, 1)
+    if r.angle is not None and r.angle != 0:
+        attrs["angle"] = r.angle
     if r.confidence is not None:
         attrs["conf"] = round(r.confidence, 2)
-    if not r.is_final:
-        attrs["partial"] = True
+    if r.emotion:
+        attrs["emotion"] = r.emotion
     return Message.new(
         tag=r.source,
         attributes=attrs,

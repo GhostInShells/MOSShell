@@ -67,7 +67,7 @@ logger = logging.getLogger("moss.g1.runtime.locomotion")
 # 但改变物理行为. 标定后写回这里.
 
 V_FORWARD: float = 0.25      # 前/后直行, m/s. script 19 稳定值.
-V_LATERAL: float = 0.15      # 左/右横移, m/s. story-2026-07 速度上限.
+V_LATERAL: float = 0.25      # 左/右横移, m/s. 0.15 不动（低于启动阈值）, 0.5 恐怖. 0.25 待明天实测.
 
 V_YAW: dict[str, float] = {  # 转身角速度, rad/s. 全是猜值, 实机标定.
     "low":    0.3,

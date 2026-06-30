@@ -31,6 +31,19 @@ Usage:
        -5.0s  +0.3°    -1.2°    9.79     0.012
        ...
   Ctrl+C 退出.
+
+实测样本 (2026-07-01, Damp 模式, G1 被推拉后静止):
+  [drain] samples=10 window=15.4s rate=2.0Hz
+    current: roll=-0.7° pitch=-6.6° yaw=-6.4° |accel|=9.84 |gyro|=0.006
+    recent samples:
+      t       roll     pitch    yaw      |accel|  |gyro|
+       -4.9s    -1.3°    -6.1°   -10.6°   9.94    0.091
+       -4.4s    -0.9°    -6.5°    -7.4°   9.91    0.126
+       -3.9s    -0.7°    -6.8°    -6.3°  10.00    0.027
+       -3.4s    -0.7°    -6.6°    -6.3°   9.96    0.014
+       ...
+  静止后 roll/pitch/yaw 收敛到稳定值, |gyro| < 0.01.
+  Damp 模式的初始姿态: roll≈-0.7°, pitch≈-6.6°, yaw 随置放位置变化.
 """
 from __future__ import annotations
 

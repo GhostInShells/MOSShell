@@ -39,6 +39,14 @@ Usage:
       -3.0s    -0.12                   -0.95
       ...
     note: rad zero & positive-direction NOT calibrated; use deltas, not absolutes.
+
+实测样本 (2026-07-01, Damp→WalkRun, 手动摆臂):
+  [drain] samples=6 window=3.8s rate=2.0Hz
+    current pose:
+      left  shoulder_pitch=+0.17 shoulder_roll=+0.10 shoulder_yaw=-0.11 elbow=+1.33 wrist_roll=+0.00
+      right shoulder_pitch=+0.21 shoulder_roll=-0.22 shoulder_yaw=+0.68 elbow=+1.24 wrist_roll=-0.00
+      motors: 10/10 engaged  (Sport 模式下全部 active)
+    recent: left_shoulder_roll 在 +0.21→+0.10 区间摆动, 其余关节 Δ<0.05 rad 折叠.
 """
 from __future__ import annotations
 
