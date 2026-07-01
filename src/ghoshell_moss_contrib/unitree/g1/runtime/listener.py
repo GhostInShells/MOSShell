@@ -22,9 +22,16 @@ listener 是蓝牙耳机近场 (流式 partial + 按键 force drain).
     from ghoshell_moss_contrib.unitree.g1.runtime import listener
     listener.start()           # 同步, 幂等, 永远不抛
     # ...
+    # 只读窥探 (给 context_messages 用, 不消费):
+    recent = listener.peek_recent_finalized(10)   # tail-N 历史句
+    partial = listener.peek_partial()             # 佩戴者正在说的 partial
+    # 消费型 (给 signal 触发时用):
     batch = listener.drain()                            # 拿 finalized
     batch = listener.drain(force_finalize_partial=True) # 按键打断, 拿当前 partial 当 final
     h = listener.health()                               # 状态快照, 不消费
+    # 显式开关 (用户按键 / TTS 回声抑制):
+    listener.pause()           # 停 ASR 消费, capture 保持连接
+    listener.resume()          # 恢复 ASR
     listener.stop()
 """
 from __future__ import annotations
@@ -155,6 +162,12 @@ class ListenerHealth(BaseModel):
         description="送给火山引擎 ASR 的采样率 (Hz). 不等于 capture 时由 listener 内部重采样.",
     )
     channels: Optional[int] = Field(default=None)
+    paused: bool = Field(
+        default=False,
+        description="用户是否显式暂停了 listener (pause() 调用). status 反映物理连接, "
+                    "paused 反映用户意图, 二者正交. paused=True 时 ASR supervisor 不开新 "
+                    "session, 内部 pcm 队列停止消费.",
+    )
     started_at: Optional[float] = Field(default=None)
     last_pcm_at: Optional[float] = Field(
         default=None,
@@ -208,12 +221,18 @@ _started: bool = False
 # 当前 recognize session. drain(force=True) 时设 abort, backend 立即结束本轮.
 _current_session: Optional["_Session"] = None
 
+# 用户显式暂停标志. 与 start/stop 生命周期正交, 与 status (物理连接) 正交.
+# True 时 ASR supervisor 不开新 session; capture 仍在运行, janus 队列自然 ring-drop.
+# resume 时 ASR supervisor 会在开新 session 前 flush 队列避免播老音频.
+_paused: bool = False
+
 # 配置 (start 时填入)
 _config: Optional["_ListenerConfig"] = None
 
 
 class _ListenerConfig(BaseModel):
     device_pattern: str
+    device_name: Optional[str] = None  # setup 写入的精确设备名, _find_device 优先匹配
     sample_rate: int = 16000
     channels: int = 1
     frame_ms: int = 50
@@ -292,7 +311,7 @@ def stop(timeout: float = 3.0) -> None:
 
     daemon 线程随进程退出而死, timeout 内未 join 完成只 warn 不 raise.
     """
-    global _backend_thread, _backend_loop, _stop_event, _started, _config, _current_session
+    global _backend_thread, _backend_loop, _stop_event, _started, _config, _current_session, _paused
 
     with _state_lock:
         if not _started:
@@ -324,7 +343,8 @@ def stop(timeout: float = 3.0) -> None:
         _stop_event = None
         _config = None
         _current_session = None
-        _set_status_locked("stopped")
+        _paused = False
+        _set_status_locked("stopped", paused=False)
 
     logger.info("listener stopped.")
 
@@ -394,6 +414,70 @@ def peek_latest_finalized() -> Optional[Utterance]:
         return _finalized_dq[-1]
 
 
+def peek_recent_finalized(n: int = 10) -> list[Utterance]:
+    """看 finalized buffer 末尾最近 n 条 (只读, 不消费, 不影响 forgotten).
+
+    channel 层的 context_messages 用这个拿"最近听到的几句"塞给 ghost, tail -n 语义.
+    与 drain() 是两条正交路径 — drain 是"消费型, 触发 signal 时把整批交出去",
+    peek 是"只读窥探, 每回合装配时拿快照". 二者不互斥, 但同一 channel 内一般只走一条.
+    """
+    if n <= 0:
+        return []
+    with _state_lock:
+        items = list(_finalized_dq)
+    return [u.model_copy() for u in items[-n:]]
+
+
+def pause() -> None:
+    """暂停 listener 采集消费 — ASR supervisor 不开新 session, 当前 session abort.
+
+    与 stop() 不同: capture 线程继续跑 (设备保持连接), 幂等. resume() 即刻恢复.
+    未 start / no_config 状态下调用也合法, 只标记 _paused, resume 时行为一致.
+
+    典型用途:
+    - TTS 播放前 pause, 播完 resume — 避免自己听自己 (回声抑制的最硬门槛)
+    - 用户按耳机 "关" 键 pause, 按 "开" 键 resume
+    """
+    global _paused
+    abort_session: Optional[_Session] = None
+
+    with _state_lock:
+        if _paused:
+            return
+        _paused = True
+        abort_session = _current_session
+        _set_status_locked(_health.status, paused=True)
+
+    if abort_session is not None and _backend_loop is not None:
+        try:
+            _backend_loop.call_soon_threadsafe(abort_session.abort.set)
+        except RuntimeError:
+            logger.debug("pause: backend loop already stopped, abort skipped")
+
+    logger.info("listener paused.")
+
+
+def resume() -> None:
+    """恢复 listener. 幂等. ASR supervisor 下一轮循环起新 session.
+
+    resume 前若 janus 队列里堆了 pause 期间的 PCM (最多 _JANUS_MAXSIZE 帧 ≈ 25s),
+    supervisor 会在开 session 前 flush 队列, 避免拿老音频当新一句起头.
+    """
+    global _paused
+    with _state_lock:
+        if not _paused:
+            return
+        _paused = False
+        _set_status_locked(_health.status, paused=False)
+    logger.info("listener resumed.")
+
+
+def is_paused() -> bool:
+    """用户是否已 pause. 与 status (物理连接) 正交."""
+    with _state_lock:
+        return _paused
+
+
 def health() -> ListenerHealth:
     """暴露当前状态快照. 不消费, channel/monitor 任何时候读."""
     with _state_lock:
@@ -447,7 +531,10 @@ def _load_config(path: Path) -> Optional[_ListenerConfig]:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        # 过滤掉 _note / device_name_resolved 等仅供人类阅读的字段
+        # 过滤掉 _note 等仅供人类阅读的字段.
+        # device_name_resolved → device_name: setup 写入的精确设备名, 用于 _find_device 优先匹配.
+        if "device_name_resolved" in data and "device_name" not in data:
+            data["device_name"] = data.pop("device_name_resolved")
         return _ListenerConfig.model_validate({
             k: v for k, v in data.items()
             if k in _ListenerConfig.model_fields
@@ -594,7 +681,7 @@ async def _capture_one_lifecycle(pcm_queue: janus.Queue, cfg: _ListenerConfig) -
 
     # 1. 设备探测
     device_id, device_name = await asyncio.get_running_loop().run_in_executor(
-        None, _find_device, cfg.device_pattern,
+        None, _find_device, cfg.device_pattern, cfg.device_name,
     )
     if device_id is None:
         _transition_status("no_device", device_name=None, sample_rate_capture=None)
@@ -680,8 +767,12 @@ async def _capture_one_lifecycle(pcm_queue: janus.Queue, cfg: _ListenerConfig) -
             logger.exception("capture.close failed (ignored)")
 
 
-def _find_device(pattern: str):
-    """返回 (device_id, device_name) 或 (None, None). pattern 小写 substring 匹配.
+def _find_device(pattern: str, device_name: Optional[str] = None):
+    """返回 (device_id, device_name) 或 (None, None).
+
+    匹配优先级:
+      1. device_name (精确设备名, 来自 setup 写入的 device_name_resolved)
+      2. pattern (配置里的模糊匹配 pattern, 小写 substring)
 
     miniaudio.Devices().get_captures() 返回 list[dict] (本仓库装的版本),
     dict 字段: name / type / id (cdata, 可直接传 CaptureDevice) / formats.
@@ -689,17 +780,37 @@ def _find_device(pattern: str):
     本仓库当前版本会 AttributeError, 那条路径事实上 fallback 到默认设备.
     """
     import miniaudio
-    pat = pattern.lower()
+    pat = pattern.lower() if pattern else ""
     try:
         devs = miniaudio.Devices().get_captures()
     except Exception as e:
         logger.warning("device enumeration failed: %s", e)
         return None, None
+
+    # pass 1: 精确设备名匹配
+    if device_name:
+        for d in devs:
+            name = d.get("name", "") if isinstance(d, dict) else getattr(d, "name", "")
+            if name == device_name:
+                dev_id = d.get("id") if isinstance(d, dict) else getattr(d, "id", None)
+                return dev_id, name
+
+    # pass 2: pattern 子串匹配 (不包含 "Monitor of" 的设备优先, 避免 Monitor of X
+    # 抢在 X 之前被命中 — PulseAudio monitor 设备总是排在实体设备前面)
+    best = None
+    best_is_monitor = False
     for d in devs:
         name = d.get("name", "") if isinstance(d, dict) else getattr(d, "name", "")
         if pat in name.lower():
-            dev_id = d.get("id") if isinstance(d, dict) else getattr(d, "id", None)
-            return dev_id, name
+            is_monitor = name.startswith("Monitor of")
+            if not is_monitor:
+                dev_id = d.get("id") if isinstance(d, dict) else getattr(d, "id", None)
+                return dev_id, name  # 非 monitor 匹配立即返回
+            if best is None:
+                best = (d.get("id") if isinstance(d, dict) else getattr(d, "id", None), name)
+                best_is_monitor = True
+    if best is not None:
+        return best
     return None, None
 
 
@@ -755,14 +866,23 @@ async def _asr_supervisor(pcm_queue: janus.Queue, cfg: _ListenerConfig) -> None:
     backoff = _WS_RETRY_MIN
 
     try:
+        was_paused = False
         while not _stop_event.is_set():
             # 等 capture 出 ok 才开 ws — 设备没就绪开 ws 也是白开
-            if not _is_capture_ready():
+            # 检查 _paused — 用户显式暂停时不开新 session, 但设备保持连接
+            if _paused or not _is_capture_ready():
+                if _paused:
+                    was_paused = True
                 try:
                     await asyncio.wait_for(_stop_event.wait(), timeout=0.5)
                 except asyncio.TimeoutError:
                     pass
                 continue
+
+            # 从 paused 转出 → flush 队列, 避免拿到 pause 期间堆积的老 PCM
+            if was_paused:
+                _flush_sync_queue(pcm_queue.sync_q)
+                was_paused = False
 
             session = _Session()
             with _state_lock:
@@ -812,6 +932,19 @@ async def _asr_supervisor(pcm_queue: janus.Queue, cfg: _ListenerConfig) -> None:
 def _is_capture_ready() -> bool:
     with _state_lock:
         return _health.status == "ok"
+
+
+def _flush_sync_queue(sync_q) -> None:
+    """Drain janus.sync_q non-blocking. resume 转 active 前调用, 避免拿老音频起头."""
+    dropped = 0
+    while True:
+        try:
+            sync_q.get_nowait()
+            dropped += 1
+        except Exception:
+            break
+    if dropped:
+        logger.debug("listener: flushed %d stale PCM frames on resume.", dropped)
 
 
 async def _pull_pcm(
@@ -967,6 +1100,8 @@ def health_to_message(h: ListenerHealth) -> Message:
     只导出对 LLM 有意义的字段, 不导出累计计数等技术指标 (那些在 health() / log 里).
     """
     attrs: dict = {"status": h.status}
+    if h.paused:
+        attrs["paused"] = True
     if h.device_name:
         attrs["device"] = h.device_name
     if h.sample_rate_capture:

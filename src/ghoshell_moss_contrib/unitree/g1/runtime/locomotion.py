@@ -410,8 +410,9 @@ async def _run_session(
 
     elapsed = 0.0
     try:
-        # 首发 Move (无需 version 校验 — 我们刚拿的 version 必是 current)
-        _loco_move_versioned(my_version, vx, vy, vyaw)
+        # 首发 Move (无需 version 校验 — 我们刚拿的 version 必是 current).
+        # RPC 卸载到线程池, 不阻塞 event loop.
+        await asyncio.to_thread(_loco_move_versioned, my_version, vx, vy, vyaw)
 
         # ── 阶段 2: publish loop ────────────────────────────────────
         while True:
@@ -426,7 +427,8 @@ async def _run_session(
                     session.reason = "duration"
                 break
             # keepalive Move — 实测确认 LocoClient.Move "一次保持" 后可改为仅首发.
-            if not _loco_move_versioned(my_version, vx, vy, vyaw):
+            # RPC 卸载到线程池, 不阻塞 event loop.
+            if not await asyncio.to_thread(_loco_move_versioned, my_version, vx, vy, vyaw):
                 # 被抢占了, 下次 while 头部 version 校验会再发现一次
                 if session.reason is None:
                     session.reason = "preempted"

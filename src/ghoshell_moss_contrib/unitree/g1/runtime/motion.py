@@ -87,6 +87,12 @@ def start(*, buffer_size: int = 64, poll_hz: float = 2.0) -> None:
             _last_fsm_id = get_fsm_id()
         except Exception:
             _last_fsm_id = FsmMode.UNKNOWN.value
+        # 回写 sdk.state, 让 fsm 和其它消费者拿到真实 mode
+        from ghoshell_moss_contrib.unitree.g1.sdk.state import _set_sport_mode
+        try:
+            _set_sport_mode(_last_fsm_id)
+        except Exception:
+            pass
         _dq = deque(maxlen=buffer_size)
         _first_drain_at = time.time()
         _error_count = 0
@@ -176,24 +182,44 @@ def health() -> dict:
 
 def _poll_loop(interval: float) -> None:
     global _last_fsm_id, _error_count, _transition_count
-    logger.info("motion poller (interval=%.2fs).", interval)
+    from ghoshell_moss_contrib.unitree.g1.sdk.state import _set_sport_mode
+
+    logger.info("motion poller started (interval=%.2fs, initial=%s).",
+                interval, _fsm_name(_last_fsm_id))
     stop_event = _stop_event
+    _loop_count = 0
+    _rpc_fail_streak = 0
     while not stop_event.is_set():
         try:
             mode = get_fsm_id()
+            _loop_count += 1
+            _rpc_fail_streak = 0
             if mode != _last_fsm_id:
+                from_name = _fsm_name(_last_fsm_id)
+                to_name = _fsm_name(mode)
+                logger.info("motion: %s → %s (id: %d→%d, loop=%d)",
+                            from_name, to_name, _last_fsm_id, mode, _loop_count)
                 t = MotionTransition(
-                    from_id=_last_fsm_id, from_name=_fsm_name(_last_fsm_id),
-                    to_id=mode, to_name=_fsm_name(mode), at=time.time(),
+                    from_id=_last_fsm_id, from_name=from_name,
+                    to_id=mode, to_name=to_name, at=time.time(),
                 )
                 _enqueue(t)
                 _last_fsm_id = mode
+                _set_sport_mode(mode)
+        except RuntimeError:
+            # get_fsm_id RPC 3104 — 非 Sport 模式下 LocoClient 不可用, 正常.
+            # 保持上次已知值, 仅首次连续失败时 info 一次.
+            _rpc_fail_streak += 1
+            if _rpc_fail_streak == 1:
+                logger.debug("motion: get_fsm_id RPC unavailable (expected in non-sport mode), "
+                           "keeping last known: %s", _fsm_name(_last_fsm_id))
         except Exception:
             _error_count += 1
-            logger.exception("motion poller error (%d).", _error_count)
+            logger.exception("motion poller error (%d, loop=%d).",
+                           _error_count, _loop_count)
             time.sleep(0.1)
         stop_event.wait(interval)
-    logger.info("motion poller exited.")
+    logger.info("motion poller exited (total loops=%d).", _loop_count)
 
 
 def _enqueue(t: MotionTransition) -> None:

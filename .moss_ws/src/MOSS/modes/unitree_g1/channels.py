@@ -2,32 +2,25 @@
 # Mode 的 __main__ channel 是唯一的生效 main channel。
 
 from ghoshell_moss import new_default_shell_main_channel
-from ghoshell_moss.core.blueprint.channel_builder import new_channel
+
+# ── G1 SDK bootstrap ────────────────────────────────────────────────────────
+from ghoshell_moss_contrib.unitree.g1 import sdk
+
+sdk.bootstrap()
 
 main = new_default_shell_main_channel()
 
-# ── g1_system ──────────────────────────────────────────────────────────────
-# Stateless query — 电池/主板状态. 不依赖 daemon, 每次命令调一次 RPC.
+# ── G1 body channels 拓扑组装 ─────────────────────────────────────────────
+from ghoshell_moss_contrib.unitree.g1.channels.g1_root import g1_root
+from ghoshell_moss_contrib.unitree.g1.channels.fsm import g1_fsm
+from ghoshell_moss_contrib.unitree.g1.channels.face_led import face_led
+from ghoshell_moss_contrib.unitree.g1.channels.listener import listener_channel
+from ghoshell_moss_contrib.unitree.g1.channels.asr import g1_asr
+from ghoshell_moss_contrib.unitree.g1.channels.locomotion import locomotion_channel
 
-g1_system = new_channel(
-    name="g1_system",
-    description="G1 battery & mainboard health. Stateless read-only.",
-)
-
-
-@g1_system.build.command(name="read")
-def _read() -> str:
-    """Read G1 battery SOC, voltage, current, temperature, and mainboard status.
-
-    Returns a compact XML summary. No side effects.
-    """
-    from ghoshell_moss_contrib.unitree.g1.runtime import system_info
-
-    try:
-        snap = system_info.read()
-    except Exception as e:
-        return f"<g1.system error='{e}' />"
-    return system_info.to_xml_text(snap)
-
-
-main.import_channels(g1_system)
+g1_root.import_channels(g1_fsm)
+g1_root.import_channels(face_led)
+g1_root.import_channels(listener_channel)
+g1_root.import_channels(g1_asr)
+g1_root.import_channels(locomotion_channel)
+main.import_channels(g1_root)

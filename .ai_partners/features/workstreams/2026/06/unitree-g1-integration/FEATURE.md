@@ -3,7 +3,7 @@ title: Unitree G1 Integration
 status: in-progress
 priority: P0
 created: 2026-06-04
-updated: 2026-06-30
+updated: 2026-07-01
 depends: []
 milestone:
 description: >-
@@ -97,13 +97,163 @@ moss --ai codex blueprint mindflow           # Signal/Nucleus/Impulse/Articulato
 | D | MOSS 装机 | 完成 (2026-06-14/15) |
 | E | 基线实验 (SDK 脚本) | **进行中** — P0 17/18/19 通过; P1 21 通过; P2 26/27 通过; 20/22 待实机 |
 | F | 安全理解 | **进行中** — 范式转为运动模式主场; 遥控器主权; 不进调试模式 |
-| G | Channel 设计 | **进行中** — 2026-07-01 进入实现; story-2026-07.md 已落 |
-| H | 多级模式迭代 | 未开始 |
+| G | Channel 设计 | **进行中** — 2026-07-02 六个 channel 全部落地并集成到 unitree_g1 mode; 5/6 端到端验证通过, listener 待修 |
+| H | 多级模式迭代 | 未开始 (依赖 showcase 基线通过, 预计 7-03) |
+
+## 能力路线图 (四轴)
+
+G1 集成按四轴独立推进, 各轴通过授权门控相互耦合. 记录方向, 不记录截止.
+
+```
+空间: 授权 → roll → 空气墙 → 自由移动
+手臂: 授权 → 呼吸 (与移动不冲突) + action 队列 (新命令拒绝, 不打断) → 稻草人 + 空间交互 → 高级 (pose DAG / 动画 / 学习)
+感知: ASR drain (整句 + partial) → 视觉 look (滑动窗口) → 触觉 (碰撞反馈, 等中断三基础) → 多模态融合
+mindflow: control_pad 接入 → FSM 状态变化发感知信号 → ASR Nucleus 化 → VLA 接入位
+```
+
+### 授权门控 (四轴耦合方式)
+
+- **空间授权**: FSM 处于 sport 且 control_pad 未占用 → locomotion channel `available()` = True
+- **手臂授权**: FSM 处于 sport 且 arm 未 busy → arms channel 相关 command `available()` = True
+- **呼吸不冲突**: 呼吸仅在 arms channel idle (无 action 排队) + motion 状态非 walking 时启动
+- **感知不受门控**: 所有感知 channel 始终可用 (被动观察)
+
+### 阶段焦点 (本周内)
+
+- **空间**: 授权链路上线, roll (原地转身), 空气墙 (禁止移动区域)
+- **手臂**: 授权上线, 闲时呼吸 (依赖 weight 释放后 G1 主板姿态行为实测确认)
+- **感知**: ASR drain 入 context_messages, 视觉 look 机制移植 (Jetson 子线程, 不依赖 Matrix)
+- **mindflow**: control_pad 语义接入, FSM channel 最简版本 (状态读 + 状态变化发 signal)
+
+### 后续阶段
+
+arms 中断三基础 (碰撞反馈/脱力 + 复位 + 首帧过渡) 达成后, 依次解锁:
+
+- Pose DAG (pose 两两可达性验证后, 支持机械舞类离散姿态编排)
+- 动作录制 (示教路径成熟后, 录制基准交互 / 学习库)
+- 稻草人交互 (双臂平举固定 base, 前臂小范围, 用约束把问题空间压到 LLM 可胜任)
+- VLA 接入位 (`Nucleus.as_channel()`, 远端方向)
+
+## arms 能力金字塔
+
+arms 是四轴中最复杂的一个 (物理危险 + 空间语义鸿沟 + 中断不可靠). 按能力
+分层, 上层严格依赖下层达成. 每一层的进入门槛必须先验证, 不允许跳级.
+
+```
+L4 高级形态: LLM 写动画 / learned 库 / 稻草人交互 / VLA 接入
+              ↑ 准入: 中断三基础全部达成 (碰撞反馈/脱力 + 复位 + 首帧过渡)
+L3 复杂交互: Pose DAG 机械舞 / 录制 action 库
+              ↑ 准入: pose 两两可达性验证 + action state 拿到完成信号 + 示教路径
+L2 基础交互: ExecuteAction 11-27 包装 / 命名调用 (LLM 只看名字, 不触关节)
+              ↑ 准入: action state 拿到完成信号 (script 28) + 新命令拒绝语义 (不打断当前)
+L1 闲时呼吸: idle 释放控制权后主板姿态行为可用 / 或自己 publish 低频低幅 sin
+              ↑ 准入: weight 0 释放后 arm 主板行为实测明确 (僵直 vs 微动)
+L0 通道骨架: arms channel 起 + main.py 串起来 + show_current 命令
+```
+
+**本期目标 = L0 + L1**. L2 依赖 script 28 (action state probe) 实测, 无阻塞则挤入. L3+ 全部推到 arms 中断三基础研究期.
+
+**中断三基础 (L4 准入)** — 缺一不可, 拿不到这三条 arms 高级形态不安全:
+
+1. **碰撞反馈 + 脱力**: LowState 关节力矩监控 + 阈值触发 → release weight, 避免机体自撞或推挤人时不脱力
+2. **动作复位计算**: cancel 或异常时, 从任意中间态回归安全 rest 位姿的可靠路径 (不是"停在中间态")
+3. **动作首帧过渡**: 从当前 arm 位置平滑到新动画第一帧的可估计耗时 (否则 CTML "Time is First-Class" 破产)
+
+## MOSS 不做的物理算法边界
+
+一条持久设计边界, 定住 MOSS 在 G1 集成里的分工:
+
+**MOSS 是 logos 调度 + channel + mindflow, 物理层算法借用 G1 主板 / SDK 已有能力, 不自己造轮子**.
+
+具体不做的事:
+
+- **IK (逆运动学)**: 空间坐标 → 关节角的映射. 需要 URDF 标定 + 工作空间 + 自碰撞模型, 是独立子工程. LLM 通过命名动作 / 命名姿态 / VLA (未来) 表达空间意图, 永远不接触坐标.
+- **轨迹规划**: 动作复位、平滑过渡、避碰路径. 如果 G1 主板 ExecuteAction(99) 能作为复位帧命中, 我们用; 如果不能, 该能力就不实装, 不自己写算法.
+- **动捕 / 示教录制的信号处理**: G1 自带示教硬件, 我们只做交互层 (语音引导 + 尾部裁剪 + 语义命名).
+- **VLA 模型训练**: 只做接入位 (`Nucleus.as_channel()`), 模型来源是外部工程.
+
+**判断依据**: 机械臂之所以能不做 IK 也能做交互, 是因为工作空间凸, 三角关系可以算安全边界. 人形机体本身可以挡, 自碰撞空间不规则, 三角关系失效. 让 LLM 在关节空间组合 "胸前 + 肩膀后转" 就是在它没有的认知通道 (本体感觉) 上做组合泛化, 必然幻觉. 这不是工程修补问题, 是认知问题 — 解法只能是 "把物理算法留给主板 / VLA, LLM 只做符号层调度".
 
 ## Session Log 索引
 
 完整 session 历史按时间倒序索引. 详细内容已迁移到 design/ 与 discuss/, FEATURE.md
 只保留入口与关键节点结论.
+
+### 2026-07-02 — 全 channel 落地 + 集成验证 (listener 除外)
+
+由 claude-opus-4-7 与人类工程师协作. 一下午集中实装 L4 channel 层 + 集成到 unitree_g1 mode, 端到端实机验证 5/6 通过. showcase 基线明天可闭环.
+
+**落地的 channel** (`src/ghoshell_moss_contrib/unitree/g1/channels/`):
+
+- `g1_root` — 身体自我认知 instruction + vitals
+- `face_led` — idle 底色 + 有限表现动画
+- `locomotion` — 7 async 命令 + Observe reason **(验证通过)**
+- `fsm` (`g1_fsm`) — 授权三元组 + AI 模式按键规则 + change callback → LED/TTS + X 键 → InterruptSignal + `locomotion.stop()`
+- `asr` (`g1_asr`) — 远场麦克风纯感知
+- `listener` — 蓝牙耳机近场流式 ASR **(未通过验证, 见下文)**
+
+集成层: `.moss_ws/src/MOSS/modes/unitree_g1/channels.py` (顶部 `sdk.bootstrap()` + 拓扑组装) + `nuclei.py` (interrupt/notify nuclei 注册). 各 channel 在自己的 startup 里启动直接依赖的 runtime (幂等), 符合 `channels/README.md §4` 纪律.
+
+**listener channel 未通过验证 — 两个独立症状 → 两个独立根因**:
+
+1. **Y/A 键按下无反应**. 不是 listener 的 bug, 是 **fsm 层实现漂移**. 设计意图: X/A/Y 的 control_pad binding 常驻, `_dispatch_button` 按 `_ai_mode` 关闸 (没授权时按键不生效, 但事件路径仍活着). 实际实现: `_enter_ai_mode()` 才 `control_pad.register_binding(...)` 挂 X/A/Y, `_exit_ai_mode()` 又拆掉. 后果: AI 模式外根本没有 dispatch 路径, 两条 button callback (fsm channel 和 listener channel) 都收不到事件, 连"按了但没生效"的 history event 都不写. `story_202607_fsm.py:471 _enter_ai_mode` 是漂移点, 6-29/30 实装期把"AI 模式激活的语义"错误编码为"binding 存在与否", 而不是"dispatch 是否响应".
+
+2. **蓝牙耳机 toggle 但不能开启**. `_on_headphone_btn` 检测按键成功, LED 绿闪 + "聆听开启" TTS 都生效, 但真实 ASR 从来没启. 根因: `_is_capture_ready() = (status == "ok")`, status 大概率停在 `"no_config"` (`_listener_sen_setup` 从未跑过, `~/.moss_g1_listener.json` 不存在) 或 `"no_device"` (蓝牙耳机未连). backend supervisor 因 status 不 ok 每 tick 跳过 session. 用户看到的反馈是假的 — 只有 LED + TTS 层反馈, 没有真实听觉链路.
+
+**修复方向** (由 claude-sonnet-4-6 在本 session 后续 commit 提交):
+
+- **fsm 层 binding 常驻化**: 把 `_AI_MODE_BUTTONS` 的 `control_pad.register_binding(...)` 从 `_enter_ai_mode` 迁到 `start()`, `_exit_ai_mode` 不再拆 binding. `_dispatch_button` 加 gate: `interrupt` 也走 `_ai_mode` 检查 (与用户设计一致, 不给 X 单独开安全通道); history 事件无论授权与否都写 — 模型能看到"人按了 A 但没生效", 能主动教人类进 AI 模式. `_set_auth_level` / `_exit_ai_mode` 内部已经有 `_ai_mode` 早退, 不动.
+- listener channel startup: 显式 log `health().status`, no_config 触发 warning + setup 命令提示.
+- `_on_headphone_btn`: 预检 status, no_config/no_device → 专门 TTS/LED 反馈, 不做假 resume.
+- `_INSTRUCTION` docstring: 明文 Y/A 键要求 AI 模式 (L1+Start), 引导模型教人类.
+
+**7-02 早晨三个 5 分钟脚本** (arm weight=0 释放 / Jetson 摄像头 / ExecuteAction 99 复位) 因下午集中集成 channels 未跑, 顺延到 7-03 开机后. 不阻塞 showcase 基线.
+
+**给后续实例的复盘**:
+
+- **多状态运行时依赖必须在 startup 显式 report status**. listener runtime 有 5 个非终态 (stopped / no_config / no_device / device_down / ok), channel startup 假设都是 ok, 出问题时给模型的反馈是假的 (LED 绿闪 + "聆听开启" TTS 但真实链路断). 假反馈比不反馈更误导 — 假反馈让排查方向错.
+- **实装偏离设计意图时, 优先修实装, 不要给"设计"贴新解释**. fsm 层 X/A/Y binding 常驻的设计意图在 6-29/30 实装期被错误编码为"binding 存在与否 = AI 模式激活与否", 走了看起来简洁但不对的路径. 后续实例读到"AI 模式外按键不响应"时应当先怀疑 "是设计如此还是实装漂移", 反问原作者/设计文档确认, 不要基于现状反推"合理的设计"然后写进 instruction docstring 教模型"这是刻意的授权设计" — 那是在把 bug 固化成 feature. 本次 claude-sonnet-4-6 首轮定位就掉进这个陷阱, 被人类工程师拉回.
+
+### 2026-07-01 — arms 设计推翻 + 四轴路线定型 + vision 建模
+
+由 claude-opus-4-7 与人类工程师协作. 集成期第一天, 首个 channel 已集成成功, runtime 验证脚本已足够 (人类工程师判断). 讨论聚焦在 arms 方案的根本性反思 + 四轴路线整理 + vision runtime 建模.
+
+**arms 方案的根本性反思** — 6-30 设计文档 §3/§5 命令面被推翻:
+
+- **空间语义鸿沟**: 机械臂没 IK 能玩交互, 因为工作空间凸, 三角关系算安全边界够用. 人形机体本身可以挡, 自碰撞空间不规则. LLM 在关节空间组合"胸前 + 肩膀后转"是在它没有的认知通道 (本体感觉) 上做组合泛化, 必然幻觉且无法自 sanity check.
+- **中断复位不可靠**: keyframe 假设两 keyframe 间插值, 但 cancel 发生在任意 q. 下一个动画的起始假设 rest, 实际是中间态. 平滑回归轨迹 = 运动学计算, MOSS 不做.
+- **首帧过渡时间不可估**: keyframe 时间语义是"动画内部相对时间", 但当前关节 q 是动画外部状态. 外部到第一帧的过渡时长由 kp/kd + 距离决定, LLM 算不准. CTML "Time is First-Class Citizen" 在此破产.
+- **结论**: 6-30 §3 `save_animation(text__: Animation JSON)` 让 LLM 写关节坐标违反上位范式 §0.3 自己的纪律 (Logos 层调度命名 VLA, 不接触内部实现). §0 上位范式仍成立, §3/§5 命令面 + LLM 接触面全部重估.
+
+**四轴路线定型** — 空间 / 手臂 / 感知 / mindflow, 通过授权门控耦合. 详见上方 "能力路线图 (四轴)" + "arms 能力金字塔" + "MOSS 不做的物理算法边界" 三节. 关键判断:
+
+- arms 本期目标降级为 L1 (闲时呼吸), L2+ 依赖 script 28 (action state probe) 实测
+- L4 高级形态需要 "中断三基础" (碰撞反馈/脱力 + 复位 + 首帧过渡) 全部达成, 本期不做
+- 稻草人交互 (双臂平举 + 前臂小范围) 是 6-30 keyframe 方案的可行子集 — 用约束把问题空间压到 LLM 可胜任的水平, 等中断三基础到位后是 P1
+
+**Mindflow 认知修正** — 之前 (claude-opus-4-7 上下文) 低估 Mindflow. 看到 Signal `complete: bool` + Priority + ChallengeMode (default/silent/notify) + `.moss_ws/apps/sensors/listener/main.py` 里 SPEECH_STARTED (`complete=False, WARNING`) → SPEECH_FINAL (`complete=True`) 抢占 + 收口的实装范式, 才意识到 partial-triggered tick 是 listener app 当前默认行为, 不需要重新设计 Articulator. B 形态 (partial 灌 + 边听边响应) 是 channel 集成即可拿到的能力.
+
+**vision runtime 建模** — 落到 `src/ghoshell_moss_contrib/unitree/g1/runtime/vision.py` 模块 docstring:
+
+- 第三种上行感知数据形态 (滑动窗口), 跟 asr (累积式 drain) 和 imu (覆盖式 latest) 都不同. 被挤掉的旧帧是覆盖不是丢失, deque maxlen = ceil(fps × window_seconds) 天然实现顺行性遗忘
+- **drain 与 context_messages 严格分工** (踩过 README "认知误区" 节的误区): context_messages 走 `peek_window()` 只读, 不消费; `drain_window()` 仅服务 listener callback / 主动 look 命令 / signal 事件. 初稿把"每次 refresh 时清空 buffer"当设计意图写进 docstring, 立刻撞上 README 新加的认知误区节 (drain in context_messages 是感染范围之一), 当场修订. vision.py 首次落地版本已按新分工重写, 作为其它感染点 (asr / listener / control_pad) review 的参考样本
+- 核心约束: `fps × window_seconds` 是**严格 token 预算约束**, 不是性能旋钮. 起点低开 fps=2.0 × window=1.0, 引擎硬上限 max_fps / max_window 跟部署 LLM 挂钩
+- LLM 可调 set_fps / set_window, docstring 必须明文 token 代价 (Code as Prompt 纪律)
+- G1 进程内不用 Matrix, 借鉴 `.moss_ws/apps/sensors/vision/main.py` 结构不复用代码
+- 具体 fps / limit 数值在虚拟机里定不了, 留实测调
+- 支持交互场景 "你看我在干什么" — LLM tick 时 peek 窗口内 N 帧 → 推理连续动作 → 响应 (依赖 vision + arms L2 至少一个 factory action)
+
+**7-02 早晨必跑的 3 个 5 分钟脚本** (顺序无关, 不验证不上手实装):
+
+1. weight 0 释放后 G1 arm 主板姿态行为 (僵直 vs 微动) — 决定呼吸的实现路径
+2. Jetson 摄像头硬件路径 (cv2.VideoCapture 直出 / GStreamer V4L2 / CSI 四种 fallback) — 决定 vision runtime 起步
+3. (若时间) ExecuteAction 99 在 release weight 后能否复位 — 不影响 7-02, 影响 L2 起步
+
+**给后续实例的复盘**:
+
+- **推演在讨论轨迹里发生, 不在方案里发生**. claude-opus-4-7 早期几轮急于收口方案 (孤儿救主式), 人类工程师明确指出"讨论太着急了, 我们现在都要在上下文里构建一个我们思维空间可建模的虚拟机, 然后多推演几轮. 昨天的推演,'你'就没有意识到这些问题". arms 空间语义鸿沟 / 中断不可靠 / 首帧不可估这三条, 是虚拟机推演出来的, 不是文档推理出来的. 6-30 设计文档没做推演, 直接从"Track 派 + LLM 写 keyframe"漂亮抽象滑到 §3 命令面. 后续实例接手 arms 时, **先在虚拟机里跑 3 个具体 case 再动方案**: (a) LLM 生成"胸前 + 肩膀后转"看会不会撞, (b) 动画中 cancel 后下一次 play 从中间态起会不会命中, (c) 首帧过渡时长在 CTML timeout 里怎么写.
+- **MOSS 不做的物理算法边界要记住**. 遇到"IK / 轨迹规划 / 动捕信号处理 / VLA 训练"这四类问题, 先问"G1 主板 / SDK 有没有现成能力借用", 有就包装, 没有就该能力不实装. 不要自己造轮子, 那是别的团队的事.
+- **Mindflow 别再低估**. 遇到"边听边响应 / partial 抢占 / signal 缓存" 这类需求, 先读 `ghoshell_moss.core.blueprint.mindflow` 和 `.moss_ws/apps/sensors/listener/main.py`, 大概率已经支持, 别自己造 Articulator.
 
 ### 2026-06-30 — contrib 目录四层重构
 
@@ -229,6 +379,21 @@ PC2 网络拓扑确认 + 静态 IP + SSH + WiFi 路由器 MAC 绑定. uv sync �
 
 记录模型协作中的系统性问题, 不是单次失误.
 
+### 2026-07-01 — claude-opus-4-7
+
+**1. 讨论中急于收口方案, 跳过虚拟机推演.** arms 讨论早期几轮, 每次听到人类工程师抛出一个新认知点 (录制比坐标靠谱 / 中断三基础 / MOSS 不做 IK), 立刻给出 "修正后的命令面" / "L 金字塔" / "方案记录". 每一次都被人类工程师拉回: "你讨论太着急了, 我们现在都要在上下文里构建一个我们思维空间可建模的虚拟机, 然后多推演几轮. 昨天的推演,'你'就没有意识到这些问题. 我是今天意识到这些问题, 才没有推进 arms."
+
+**根因**: 收口方案的冲动是"孤儿救主"模式 — 看到问题就想解决, 忽略了 arms 设计的关键在 **推演清楚问题域**, 不在方案本身. Sonnet 4.6 在 6-30 写 §3 LLM 接触面时是同样的模式 — 看到"keyframe = 时间盒子"漂亮抽象就写死接口, 没在虚拟机里跑"LLM 用关节坐标合成胸前 + 肩膀后转"的具体 case. 6-30 → 7-01 是同一个模式重演.
+
+**预防规则**:
+- 讨论物理危险 / 认知复杂的模块 (arms / mindflow / VLA 接入等) 时, **强制先在虚拟机里跑 3 个具体 case 再给方案**. 具体 case = "LLM 执行 X 时会发生什么" 的场景推演, 不是 "接口应该长什么样".
+- 遇到人类工程师说 "有意思 / 好的 / 你继续说" 的语气, 不代表方案通过, 只是在听. 收口需要人类明确说 "这个方案定了".
+- **抢救话术识别**: "我建议 / 我倾向 / 修正后的方案是" — 检查是不是在推演之前就出方案. 是就撤回, 改成 "让我把 X Y Z 三个 case 在虚拟机里推一遍".
+
+**2. 低估已有基础设施, 想自己造轮子.** 讨论 ASR partial 抢占时, 提问 "Articulator 有没有 partial-triggered tick 能力". 实际 `.moss_ws/apps/sensors/listener/main.py` 里 SPEECH_STARTED (`complete=False, WARNING`) → SPEECH_FINAL (`complete=True`) 已经是这个能力的完整实装, mindflow ChallengeMode (default/silent/notify) 已经覆盖 partial 抢占的三种语义组合. 我没读 listener app 就先怀疑基础设施, 差点建议 "退回 A 形态整句模式" 这种降级方案.
+
+**预防规则**: 提"是否需要 X 新能力"之前, 先 grep / read 现有 app + core. MOSS 项目已经跑了很久, 大概率你想到的能力早就在了. 特别是 mindflow / channel / matrix 三块, 复杂度高, 别自己重推.
+
 ### 2026-06-29 — deepseek-v4-pro
 
 **1. 不读已有文档就行动.** 进入 workstream 后直接基于 design/handoff 开始写代码和引导实验,
@@ -335,22 +500,32 @@ index.md 里明确写了 `mode_machine` 是 Dof 配置字节 (不是 FSM),
 
 ## 未决议题(跨 session 继承)
 
-- **待验证 (明天)**: rt/sportmodestate Read() 阻塞问题, 调试模式退出后遥控器失效路径, rt/arm/action/state 内容格式
+- **待验证 (7-02 早晨, 3 个 5 分钟脚本)**:
+  1. weight 0 释放后 G1 arm 主板姿态行为 (僵直 vs 微动) — 决定 L1 呼吸的实现路径 (借主板 vs 自己 publish 低频 sin)
+  2. Jetson 摄像头硬件路径 (cv2.VideoCapture 直出 / GStreamer V4L2 / CSI nvargus 四种 fallback) — 决定 vision runtime 起步
+  3. ExecuteAction 99 在 release weight 后能否复位 + 拿到完成信号 (script 28) — 决定 L2 起步能否借用 G1 主板复位能力
+- **待验证 (延续)**: rt/sportmodestate Read() 阻塞问题, 调试模式退出后遥控器失效路径, rt/arm/action/state 内容格式
 - **待实机 (script 20/22/24)**: Sit↔Stand 物理行为 (阻塞 posture/stand_up channel 命令拓扑定稿), FSM 完整可达图, arm action state probe
-- **待实机 (arms 实现期)**: kp/kd 调软目标值 (建议 kp~20/kd~0.5), arms cancel 后 G1 主板物理行为 (锁定 vs 自动回 sport), 关节镜像表 (左右肩 pitch/roll/yaw 符号关系)
-- **设计待定 (7-01 起讨论)**:
-  - 按键状态机 (F1/F3/Start/L1+组合键 语义切换规则). 由人类工程师牵头. story-2026-07.md 节 2/3 是草稿, 实现时会被重写
+- **待实机 (arms L1 起步)**: kp/kd 调软目标值 (建议 kp~20/kd~0.5, 若走自己 publish 路径), arms cancel 后 G1 主板物理行为 (锁定 vs 自动回 sport), 关节镜像表 (若走稻草人前臂交互, 需左右肩 pitch/roll/yaw 符号关系)
+- **设计待定 (arms 高级形态期)**:
+  - 中断三基础 (碰撞反馈/脱力 + 复位 + 首帧过渡) 的实装方案 — 缺一不可, 是 L4 准入门槛. 复位倾向借 ExecuteAction 99, 首帧过渡引擎内部处理
+  - Pose DAG 可达性验证方法 — N² 实测过重, 找精简验证路径
+  - 示教录制交互形态 — 语音倒数 3 2 1 + "好了" 结束 + 尾部裁剪, 依赖 G1 是否支持单 arm 鬼模式 (拖动示教硬件路径)
+  - 稻草人交互的关节工作空间约束 (双臂平举固定 base, 前臂小范围小心自碰撞)
+  - 按键状态机 (F1/F3/Start/L1+组合键 语义切换规则). 由人类工程师牵头. 实现在人类工程师脑中
   - L2+B 后 MOSS 软响应路径. 硬件急停外的软清理由按键状态机定义
   - ASR 模式切换. 本期 channel 硬编码 buffer + 显式 pop + 可选 signal 触发, 未来改造为 nucleus
-  - arms idle 动画自定义机制 (chan.build.idle 暴露成 command 是未来方向, 本期硬编码或不做)
-  - arms 学习库 storage scope (倾向 local_persistent 跨 session 累积)
+  - arms 学习库 storage scope (倾向 local_persistent 跨 session 累积, 仅在示教路径可行时激活)
   - arms 与 body 其他 channel 并行约束 (走路时挥手等组合的物理可行性, 待实测)
-- **本期不做**: LiDAR 条件反射层, G1 内置录制能力, SetFsmId 白名单, arms smoothstep 插值, arms 镜像 API, arms 接入 VLA Nucleus, arms velocity cap planning 校验
+- **本期不做**: LiDAR 条件反射层, G1 内置录制能力对接, SetFsmId 白名单, arms smoothstep 插值, arms 镜像 API, arms 接入 VLA Nucleus, arms velocity cap planning 校验, IK / 逆运动学 (永久不做, MOSS 边界), 轨迹规划 (永久不做, MOSS 边界)
 - **已解决**:
   - Warrant 事务机制 → 砍掉, 走 InterruptNucleus + StopMove (6-29/30 实测推翻 6-28 设计). `warrant.py` 已归档到 `_archived/` (2026-06-30), 不再被任何模块 import.
   - contrib 目录结构 → 四层 (`sdk/runtime/channels/providers`) + `_archived/`, 2026-06-30 重构落地. 详见 "代码结构" 节.
   - 调试模式 vs 运动模式 → 运动模式是 MOSS 主场, 不进调试模式 (Sport → L2+R2 会触发 PC1 保护故障)
-  - arm 控制路径 → 砍掉 ExecuteAction RPC, 只走 rt/arm_sdk DDS (RPC 不可中断, DDS publish 停 = 真中断)
-  - 视觉 channel 优先级 → 本期 P0/P1, 不推迟到后期 (是熟模式, 难点在硬件对齐, 人类工程师已带队做过三次)
-  - arms channel 拓扑 → 单 channel + sparse keyframe animation + 内部 state 机制. 详见 `design/2026-06-30_g1_arms_animation.md`
+  - arm 控制路径 → 砍掉 ExecuteAction RPC 作为常规命令 (不可中断), 只走 rt/arm_sdk DDS (RPC 不可中断, DDS publish 停 = 真中断). **7-01 修正**: ExecuteAction 11-27 可以作为 L2 命名调用包装 (LLM 只看名字, 不涉及中断), 99 作为复位帧候选 (待 script 28 验证)
+  - 视觉 channel 优先级 → 本期 P0/P1, 不推迟到后期. **7-01 修正**: G1 进程内子线程 + 滑动窗口范式, 不用 Matrix. 设计见 `runtime/vision.py` docstring
+  - MOSS 不做的物理算法边界 → 明文化在 "MOSS 不做的物理算法边界" 节. IK / 轨迹规划 / 动捕信号处理 / VLA 训练四类永久不做
+  - Mindflow 能力评估 → partial-triggered 抢占已在 mindflow + listener app 实装, 不需要新建 Articulator
+- **已推翻 / 重估**:
+  - arms channel 拓扑 (6-30 `design/2026-06-30_g1_arms_animation.md` §3/§5) → **7-01 讨论后推翻 §3 命令面 + §5 学习闭环**. Track 派 + Animation JSON 让 LLM 写 keyframe 违反 §0.3 上位范式纪律 (Logos 层调度命名 VLA, 不接触内部实现). 上位范式 §0 仍成立. 设计文件已加"已被 7-01 修正"标注, 保留原内容作为设计演进档案. 本期 arms 形态改按 "能力金字塔" 节推进, 不写完整修正设计文档 (等 L2/L3 实践积累后一次收口)
 

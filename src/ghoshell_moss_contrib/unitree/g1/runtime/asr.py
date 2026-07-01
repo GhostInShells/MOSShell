@@ -33,6 +33,7 @@ import logging
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
@@ -83,9 +84,9 @@ class AsrResult(BaseModel):
         default=None,
         description="语言种类 (e.g. '<|zh|>').",
     )
-    received_at: float = Field(
-        default_factory=time.time,
-        description="reader 线程拿到本条的本地时间.",
+    received_at: str = Field(
+        default_factory=lambda: datetime.now().strftime("%H:%M:%S"),
+        description="reader 线程收到本条的本地时间 (HH:MM:SS).",
     )
     source: str = Field(
         default="g1.asr",
@@ -126,6 +127,7 @@ _stop_event: Optional[threading.Event] = None
 _last_recv: float = 0.0
 _error_count: int = 0
 _forgotten_since_last_drain: int = 0
+_total_count: int = 0  # 累计入队条数, start 后递增, 不随 drain 归零
 
 
 # ── 公开接口 ─────────────────────────────────────────────────────────────
@@ -152,17 +154,17 @@ def start(*, buffer_size: int = 32) -> None:
             logger.debug("start() 重入 — 已在运行, 跳过.")
             return
 
-        # 1. 启动 ASR 服务. _Call 失败不阻塞 — DDS 流可能仍可订阅.
-        client = get_audio_client()
-        try:
-            code, data = client._Call(1002, json.dumps({"action": "start"}))
-            if code != 0:
-                logger.warning(
-                    "ASR _Call(1002, start) code=%s data=%s — 仍尝试订阅 DDS",
-                    code, data,
-                )
-        except Exception as e:
-            logger.warning("ASR _Call(1002, start) 抛异常 %s — 仍尝试订阅 DDS", e)
+        # 1. 启动 ASR 服务 (fire-and-forget, 不阻塞).
+        # 实测 _Call(1002, "start") 全部返回 3104, DDS 流不依赖此 RPC.
+        # 卸到 daemon 线程避免阻塞 startup 路径 (RPC 超时几秒).
+        def _fire_asr_rpc() -> None:
+            try:
+                code, data = get_audio_client()._Call(1002, json.dumps({"action": "start"}))
+                if code != 0:
+                    logger.debug("ASR _Call(1002, start) code=%s (expected 3104)", code)
+            except Exception as e:
+                logger.debug("ASR _Call(1002, start) 抛异常 (expected): %s", e)
+        threading.Thread(target=_fire_asr_rpc, name="g1-asr-rpc", daemon=True).start()
 
         # 2. 订阅 DDS topic. 必须成功.
         # TODO 实测: cyclonedds ChannelSubscriber Close 后能否重新 Init.
@@ -182,6 +184,7 @@ def start(*, buffer_size: int = 32) -> None:
         _last_recv = 0.0
         _error_count = 0
         _forgotten_since_last_drain = 0
+        _total_count = 0
         _stop_event = threading.Event()
         _running = True
 
@@ -302,6 +305,7 @@ def health() -> dict:
             "last_recv": _last_recv,
             "buffer_len": len(_dq),
             "buffer_max": _dq.maxlen,
+            "total_count": _total_count,
             "forgotten_since_last_drain": _forgotten_since_last_drain,
             "error_count": _error_count,
         }
@@ -325,6 +329,8 @@ def _reader_loop() -> None:
         try:
             msg = sub.Read(timeout=500)  # cyclonedds: ms
             if msg is None:
+                # 无匹配 publisher 时 Read 可能立即返回. 短暂 sleep 防 CPU 空转.
+                time.sleep(0.05)
                 continue
             raw = getattr(msg, "data", None)
             if not raw:
@@ -376,14 +382,15 @@ def _parse(raw: str) -> Optional[AsrResult]:
 
 def _enqueue(result: AsrResult) -> None:
     """放入 buffer + 触发 listeners. 在 reader 线程内调用."""
-    global _last_recv, _forgotten_since_last_drain
+    global _last_recv, _forgotten_since_last_drain, _total_count
 
     with _state_lock:
         was_full = len(_dq) == _dq.maxlen
         _dq.append(result)  # deque(maxlen=N): 满则自动挤掉最旧
         if was_full:
             _forgotten_since_last_drain += 1
-        _last_recv = result.received_at
+        _last_recv = time.time()
+        _total_count += 1
 
     # listener 触发在 lock 外 — 避免 callback 期间持锁阻塞 drain/peek.
     # snapshot 防 register/unregister 并发期间的 "dict changed during iteration".
@@ -396,13 +403,29 @@ def _enqueue(result: AsrResult) -> None:
             logger.exception("ASR listener 回调异常 (隔离, 不影响其他 listener).")
 
 
+def peek_window(max_count: int = 3) -> list[AsrResult]:
+    """不出栈地返回 buffer 内最新的 max_count 条. 供 context_messages 每帧读取.
+
+    不清空 buffer, 不影响 drain 的 forgotten 计数.
+    """
+    with _state_lock:
+        items = list(_dq)
+    return items[-max_count:] if len(items) > max_count else items
+
+
+def peek_total_count() -> int:
+    """返回累计入队条数 (start 后递增, 不随 drain 归零). 供 channel 层构建 context."""
+    with _state_lock:
+        return _total_count
+
+
 # ── 无状态 helper (channel 层用) ─────────────────────────────────────────
 # Runtime 不直接产 Message — Message 是 channel 层 "何时/怎么/要不要喂模型"
 # 的事. 这里只提供无状态转换器, channel 按需调.
 
 def to_xml_text(r: AsrResult) -> str:
-    """单条结果 → 紧凑 XML. 多条拼接用 batch_to_xml."""
-    attrs = [f'id="{r.id}"', f'ts="{r.received_at:.3f}"']
+    """单条结果 → 紧凑 XML. 多条拼接用 results_to_message."""
+    attrs = [f'id="{r.id}"', f'ts="{r.received_at}"']
     if r.speaker_id is not None and r.speaker_id != 0:
         attrs.append(f'speaker="{r.speaker_id}"')
     if r.angle is not None and r.angle != 0:
@@ -434,17 +457,43 @@ def to_message(r: AsrResult) -> Message:
         attrs["conf"] = round(r.confidence, 2)
     if r.emotion:
         attrs["emotion"] = r.emotion
-    return Message.new(
+    msg = Message.new(
         tag=r.source,
         attributes=attrs,
         timestamp=True,
     ).with_content(r.text)
+    # 用 ASR 结果自己的到达时间, 而非 Message 构造时间.
+    # received_at 是 "HH:MM:SS" 字符串, 补上今日日期 + 本地时区.
+    if r.received_at:
+        try:
+            h, m, s = map(int, r.received_at.split(":"))
+            msg.meta.created = datetime.now().astimezone().replace(
+                hour=h, minute=m, second=s, microsecond=0,
+            )
+        except (ValueError, TypeError):
+            pass
+    return msg
+
+
+def results_to_message(items: list[AsrResult], total: int = 0) -> Message:
+    """最近几条结果 + 累计总数 → 单条 Message, 供 context_messages 用.
+
+    total 是 peek_total_count() 的值, 让模型知道 "共收到 N 条, 现在看到的是最后 M 条".
+    """
+    msg = Message.new(
+        tag="g1.asr-batch",
+        attributes={"total": total, "showing": len(items)},
+        timestamp=True,
+    )
+    for r in items:
+        msg = msg.with_content(to_xml_text(r))
+    return msg
 
 
 def batch_to_message(batch: AsrBatch) -> Message:
     """整批 → 单条 Message, forgotten 进 attributes. channel pop 后入 context."""
     msg = Message.new(
-        tag="g1.asr",
+        tag="g1.asr-batch",
         attributes={"forgotten": batch.forgotten, "count": len(batch.items)},
         timestamp=True,
     )

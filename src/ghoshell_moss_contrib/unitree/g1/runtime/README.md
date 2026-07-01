@@ -43,7 +43,13 @@ arms.start()
 
 runtime 模块分两类, 接口形态不同:
 
-**A. 上行感知类** (asr / listener / control_pad / motion / imu / arm_joints): 持续收数据, 模型偶尔 drain 看累积.
+**A. 上行感知类** (asr / listener / control_pad / motion / imu / arm_joints / vision): 持续收数据, 模型偶尔 drain 看累积. 内部分三种数据形态子范式:
+
+- **累积式 drain** (asr / listener / control_pad): utterance / chunk 序列累积, drain 取走 + forgotten 告知
+- **覆盖式 latest snapshot** (motion / imu / arm_joints): 单帧当前态, 直接覆盖, 无累积, 无 forgotten
+- **滑动窗口** (vision): 连续帧固定时间窗, refresh 时取走 + 清空, 不告知 forgotten (被挤是覆盖不是丢失)
+
+三种子范式共享下表接口, 差异体现在数据形态和 drain 语义, 详见各模块 docstring.
 
 | 函数 | 语义 |
 |------|------|
@@ -146,6 +152,36 @@ from ...g1.sdk import get_audio_client
 理由: 相对路径在 IDE 重构 / 跨目录移动时静默失效, 是经验性的长期负债. 绝对路径在 IDE 全文替换、grep、跨仓库迁移时一致可见.
 
 例外: 同包内的私有同级 import (例如 `sdk/_bootstrap.py` 里 `from . import _monitor`) 不强制改 — 那是 Python 包内"私有协作"的惯例, 整个目录一起搬时不会断. 但**新写代码倾向绝对路径**, 不增量欠债.
+
+## 认知误区 (显式偏航)
+
+后续实例进入 runtime 工作前, 必须先建立对以下误区的抗性. 独立列出而不放在通用纪律里, 因为它们是**具体的错误认知**, 不是正面规则.
+
+### drain 直接喂 context_messages — 视场景对错, 别一刀切
+
+**症状表述** (老): "周期性 drain 拿历史轨迹喂进 context_messages, 让模型理解'刚才发生了什么'" (原句在 `_imu_sen_listen_and_drain.py:12`).
+
+**关键区分**: `context_messages` 有两种被调用节律, 分工不同:
+
+- **每帧刷新** (高频, 感知型 channel 默认): 每个 shell tick 都会重装配上下文, drain 一次下一帧 buffer 空, 顺行性遗忘退化成即时遗忘 — 老结论仍成立, **每帧型 context_messages 不能 drain, 只走 peek 只读 (peek_latest / peek_recent_n / snapshot / current_state)**.
+- **每回合触发 (signal-driven)**: ghost 回合装配时才读一次, 不是每帧. 这种情况下 drain 语义正确 — buffer 累积到 signal 触发, 一次性交给 ghost, 下回合从空开始. 类似"你按提交键之前, 我一直在累积你说的话". listener 这类"按键 / signal 触发交付"的通道适用此模型, 但**装配路径必须证实是每回合一次不是每帧一次**, 否则退化成即时遗忘.
+
+**判定流程** (新写 channel 时):
+
+1. 我这个 channel 的 context_messages, ghost 每一次感知 tick 都会 rebuild 吗? → 是: 只走 peek. 否: 走 drain 也 OK.
+2. 不确定? → 先 peek + tail-N, 稳妥. 未来确认是每回合装配后再改 drain, 成本很低.
+3. 想要"平时看历史, 触发时交付整批"的双路径: peek 走 context_messages, drain 走 signal payload — 两条不互斥, 各司其职. listener channel 就是这个组合的样板.
+
+**正确分工汇总**:
+
+- `drain()` 合法宿主 4 类 (第 4 类为本次补充):
+  - **listener callback / 定时 task**: 消费后转 `Signal` 推给 mindflow (事件驱动)
+  - **一次性事件 Memory 消息**: 消费后在会话历史里落一次, 不再刷新
+  - **主动查询 command**: LLM 用一条 command 显式消费, 一次返回
+  - **每回合装配一次的 context_messages** (确认非每帧): 累积交付语义, 与 peek 型互补
+- `peek_latest()` / `peek_recent_n()` / snapshot / `current_state` / `health`: 每帧型 context_messages 的合法数据源. 需要历史窗口就 runtime 内 ring buffer + 只读 accessor, channel 每帧读最近 N 条, 不消费.
+
+**感染范围** (老): 除病灶起点外, 相关论述搞错分工的位置至少包括 `vision.py` (顶部 docstring), `asr.py` (~L427), `listener.py` (~L133), `control_pad.py` (顶部 docstring + ~L141/L370/L605) 等. 后续接手 runtime 层修订工作的实例应逐个 review 这些位置, 把 drain 与 context_messages 的关系按上述 "每帧 vs 每回合" 二分改写, 不要延续原表述. 修订每一处时同步更新本节的感染范围清单.
 
 ## 测试纪律
 
@@ -268,6 +304,7 @@ from ...g1.sdk import get_audio_client
 | `imu.py` | 机身姿态当前快照 + 2Hz 定时采样 (rpy/gyro/accel, 不存 quat) | `_imu_sen_listen_and_drain` |
 | `arm_joints.py` | 双臂 10 关节当前快照 + 2Hz 定时采样 (rad, 跟 arms keyframe 单位对齐) | `_arm_joints_sen_listen_and_drain` |
 | `system_info.py` | 电池 + 主板状态 stateless query (无 daemon, 无 ring buffer) | `_system_info_sen_read` |
+| `vision.py` | 摄像头滑动窗口式视觉感知 (fps × window 严格 token 预算, 第三变体范式) | `_vision_probe` (硬件路径), `_vision_sen_window` (待实装) |
 
 ### 动作执行类
 
@@ -302,7 +339,8 @@ from ...g1.sdk import get_audio_client
 - **不要照抄已有模块** — `asr.py` / `locomotion.py` 是两类范式样例, 不是模板. 新模块进来时, 先确认你的物理事实跟样例是否同构, 再选范式. 当前矩阵里 `forgotten` 字段被全部上行感知类照抄, 但低频模块 (motion 10Hz / imu 2Hz / arm_joints 2Hz / system_info 无 daemon) 永不触发 — 是范式一致性的代价之一. 你接手新模块时, 应根据自身物理事实裁减无意义字段, 而不是 copy-paste.
 - **`health()` schema 跨模块未统一** — 各模块独立设计字段名和粒度. 不在本期强行对齐, 等 channel 集成阶段倒推 (channel 真用上才知道什么字段必要).
 - **范式偏离要在偏离模块自身的 docstring 明文化** — 例如 `listener.py` 偏离 `asr.py` 的对称范式 (独立 setup probe / `Utterance` ≠ `AsrResult` / 流式 partial 与整句 VAD), 因为耳机近场流式跟 G1 远场整句的物理事实不同. 这类理由必须写在偏离模块的 docstring, 不要让后续模型实例误判成"历史负债待清理".
-- **未完成**: `arms` keyframe animation 引擎. 设计文档 `2026-06-30_g1_arms_animation.md` 已定型, 实现路径明确 (照 `locomotion.py` 动作执行类范式扩展 — version 互斥 + async 命令面 + Observe reason). 留给下一迭代.
+- **未完成**: `arms` keyframe animation 引擎. 7-01 讨论后设计路径重估 (详见 FEATURE.md "能力路线图" + "arms 能力金字塔" 节), 6-30 设计文档 `2026-06-30_g1_arms_animation.md` §3/§5 命令面部分已被推翻, 上位范式 §0 仍成立. 本期目标降级为 L1 (闲时呼吸), L2 起 (ExecuteAction 包装) 依赖 action state probe 实测. arms 高级形态 (LLM 写动画 / 复杂中断 / 稻草人) 全部需要 "中断三基础" (碰撞反馈/脱力 + 复位 + 首帧过渡) 达成才能开始 — 这不是本期范围.
+- **未完成**: `vision` 摄像头感知. 设计 docstring 已定型 (滑动窗口 + fps × window 严格 token 预算, 见 `vision.py`), 实现待 Jetson 硬件路径 5 分钟脚本验证 (7-02 早晨) 后落地. 数值 (默认 fps / window / max 上限) 依赖实测调, 不能在虚拟机里定死.
 
 ## 待实测 / 待回填 (打开 README 时的 TODO)
 
@@ -321,6 +359,11 @@ from ...g1.sdk import get_audio_client
 - `arm_joints.py`: 10 个手臂关节 rad 零位 + 正方向标定 (一个一个手动摆到极限位看 q 值). 标定完去掉 Field description 里的"未校准"警告.
 - `arm_joints.py`: `_HISTORY_DELTA_THRESHOLD` (0.05 rad) 是否合理 — 实测一段 wave 动画看是否过滤掉了应该看见的关节.
 - `arm_joints.py`: Sport 模式下手臂自然摇摆/呼吸时, sampler 是否会把空闲噪声当成"在动" — 实测后可能要调 `_DQ_MOVING_THRESHOLD`.
+- `vision.py`: Jetson 摄像头硬件路径 (cv2.VideoCapture 直出 / GStreamer V4L2 / CSI nvargus 四种 fallback 哪条成立). 5 分钟脚本验证.
+- `vision.py`: cv2.read() 在 Jetson 上单帧耗时 (估 5-15ms). 影响能否吃满 5fps 上限.
+- `vision.py`: max_fps / max_window / resolution 合理上限, 跟当前部署 LLM token 预算挂钩. 起点建议 fps=2.0 × window=1.0, 实测调.
+- `vision.py`: deque 内 PIL.Image 长期持有的内存开销 (5 帧 × 640×480 RGB ≈ 5MB, 应无压力, 实测确认无泄漏).
+- `vision.py`: 摄像头子线程 OpenCV 异常容错策略 (跟 asr 一致 log + sleep + 保持循环).
 - `system_info.py`: `last_update_seconds_ago` 实际反映的是 LowState (1052Hz) 健康度, 不是 bmsstate / mainboardstate 本身的新鲜度. 想区分需在 sdk 层 per-topic 记录 last_update, 不在本期范围.
 - `system_info.py`: 电池温度阈值 (>50°C 警告) / 主板温度阈值 (>70°C 警告) 是从官方文档抄的, 实机正常范围待实测回填到 Field description.
 - `audio.py`: TtsMaker 能否被 PlayStop 中断 (大概率不能 — TTS 是独立通道). 长文本 TTS 中途 `:cancel` 实测验证.
