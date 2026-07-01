@@ -95,23 +95,56 @@ def _try_drain_and_enqueue() -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _on_headphone_btn() -> None:
-    """耳机按键 → 翻转聆听开关 + LED + 语音播报."""
-    logger.info("headphone button pressed, toggling listening...")
+    """耳机按键 → 按 listener status 分状态反馈.
+
+    status != "ok" 时不做假 resume — LED/TTS 反馈实际原因, 避免"绿闪 +
+    '聆听开启'"骗人 (真实 ASR 链路仍断).
+    """
+    logger.info("headphone button pressed, checking listener status...")
     try:
-        if listener.health().paused:
+        h = listener.health()
+        logger.info("listener health: status=%s paused=%s", h.status, h.paused)
+
+        if h.status == "no_config":
+            logger.warning(
+                "headphone toggle blocked: no_config. run "
+                "`python -m ghoshell_moss_contrib.unitree.g1.runtime._listener_sen_setup` "
+                "on PC2 to generate ~/.moss_g1_listener.json."
+            )
+            led.play_event(led.blink("#ff8800", count=3, period_ms=150))
+            audio.speak("耳机未配置")
+            return
+        if h.status == "no_device":
+            logger.warning("headphone toggle blocked: no_device (bluetooth headphone not connected)")
+            led.play_event(led.blink("#ff8800", count=3, period_ms=150))
+            audio.speak("蓝牙耳机未连接")
+            return
+        if h.status in ("device_down", "ws_error"):
+            logger.warning("headphone toggle blocked: status=%s (backend recovering)", h.status)
+            led.play_event(led.blink("#ff8800", count=3, period_ms=150))
+            audio.speak("耳机后台重连中")
+            return
+        if h.status == "stopped":
+            logger.warning("headphone toggle blocked: listener not started")
+            led.play_event(led.blink("#ff8800", count=3, period_ms=150))
+            audio.speak("耳机未启动")
+            return
+
+        # h.status == "ok" — 真正可 toggle
+        if h.paused:
             logger.info("currently paused → resuming")
             listener.resume()
             led.play_event(led.blink("#00ff44", count=2, period_ms=150))
             audio.speak("聆听开启")
-            logger.info("listener resumed + LED green + TTS '聆听开启'")
+            logger.info("listener resumed + LED green + TTS")
         else:
             logger.info("currently listening → pausing")
             listener.pause()
             led.play_event(led.blink("#ff2200", count=2, period_ms=150))
             audio.speak("聆听关闭")
-            logger.info("listener paused + LED red + TTS '聆听关闭'")
+            logger.info("listener paused + LED red + TTS")
     except Exception:
-        logger.exception("_on_headphone_btn: listener pause/resume 异常")
+        logger.exception("_on_headphone_btn: 异常 (isolated)")
 
 
 def _on_fsm_button(button_name: str) -> None:
@@ -170,6 +203,11 @@ context 里看到.
 A 键:
 - 无论自由对话是否开启, 按 A 键立即把当前累积内容通知你.
 
+**Y/A 键的前置**: 需要先按遥控器 L1+Start 进 AI 模式, Y/A 才生效. 未进 AI 模式时
+按 Y/A 只在 fsm history 留一条 "人按了但没生效" 事件 (你能通过 g1_fsm channel
+的 <g1.fsm_events> 看到), 不触发本 channel 效果. 如果佩戴者反映 "按了 Y/A
+没反应" — 直接告诉他: "按一下 L1+Start 进 AI 模式先, 然后再按 Y 或 A".
+
 远场听觉:
 - G1 机身自带麦克风阵列 (g1.asr channel). 走到 G1 身边说话会被自动识别进 context.
   不需要按键, 但距离有限 (< 3m), 没有声源方位.
@@ -201,6 +239,21 @@ async def _on_startup() -> None:
     headphone_buttons.start()
     listener.start()
     audio.start()
+
+    # 显式 report listener runtime status — 5 个非终态 (stopped / no_config /
+    # no_device / device_down / ok) 里只有 ok 才能真实听. 假设都是 ok 会给
+    # 模型/人类假反馈 (LED 绿闪 + '聆听开启' TTS 但真实链路断).
+    h = listener.health()
+    if h.status == "no_config":
+        logger.warning(
+            "listener started in status=no_config: config file not found. "
+            "run `python -m ghoshell_moss_contrib.unitree.g1.runtime._listener_sen_setup` "
+            "on PC2 to generate ~/.moss_g1_listener.json before headphone toggle will work."
+        )
+    elif h.status not in ("ok", "stopped"):
+        logger.warning("listener started in status=%s, backend may not be ready", h.status)
+    else:
+        logger.info("listener started: status=%s", h.status)
 
     # 默认关闭聆听. start() 后立刻 pause — pause 只设 _paused flag,
     # backend 线程检查 flag 后不会开 ASR session.

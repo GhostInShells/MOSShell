@@ -19,8 +19,10 @@ procedural 的 if/elif, 由 handler 函数直接写. 不做"哪些迁移合法/�
 三元组语义
 ═══════════════════════════════════════════════════════════════════════════════
 
-- **ai_mode: bool** — MOSS 是否被授权控制 G1. 根阀门. False 时 MOSS 对遥控器"聋"
-  (仅监听 L1+Start 一键), 遥控器由 G1 主机全权处理.
+- **ai_mode: bool** — MOSS 是否被授权控制 G1. 根阀门. False 时按键 binding 常驻,
+  但语义 dispatch 关闸: `_set_auth_level` / `_exit_ai_mode` 内部早退, `_dispatch_button`
+  跳过下游 listener. 按键 history 无条件写入 ring buffer, 模型能通过 recent_events
+  看到"人按了 A 但没生效", 主动教人类先按 L1+Start.
 
 - **sport_mode: FsmMode** — G1 主机当前 FSM 模式 (Sit/Stand/WalkRun/...).
   来源 sdk.state.register_sport_mode_callback. MOSS 只读, 不写.
@@ -30,22 +32,22 @@ procedural 的 if/elif, 由 handler 函数直接写. 不做"哪些迁移合法/�
   need_fsm_state 里声明所需档位集合, 无中央表.
 
 ═══════════════════════════════════════════════════════════════════════════════
-按键映射 (进 AI 模式后动态注册, 退出时反注册)
+按键映射 (binding 常驻注册, 效果按 _ai_mode 关闸)
 ═══════════════════════════════════════════════════════════════════════════════
 
-**AI 模式外唯一监听的键** (根阀门):
+**根阀门键** (无授权关闸, 任何时候都生效):
 - L1+Start → 进 AI 模式 (ai_mode=True, auth_level=0)
 
-**AI 模式内新增监听**:
-- L1+Select → 显式退 AI 模式
+**AI 模式语义键** (binding 常驻, 语义效果需 ai_mode=True):
+- L1+Select → 显式退 AI 模式 (`_exit_ai_mode` 内部早退)
 - 摇杆任一轴 |v| > 0.15 → 退 AI 模式 (20Hz 轮询, 表示人类接管)
-- L1+上   → auth_level = 0
+- L1+上   → auth_level = 0 (`_set_auth_level` 内部早退)
 - L1+右   → auth_level = 1
 - L1+下   → auth_level = 2
 - L1+左   → auth_level = 3
-- X → interrupt (分发到下游 button listener)
-- A → trigger (分发到下游 button listener)
-- Y → audio_toggle (分发到下游 button listener)
+- X → interrupt (`_dispatch_button` 按 _ai_mode 关闸下游 listener)
+- A → trigger
+- Y → audio_toggle
 
 方向键映射固化. 修改点集中在 _AI_MODE_BUTTONS + BTN_AUTH_* 常量.
 
@@ -87,7 +89,7 @@ procedural 的 if/elif, 由 handler 函数直接写. 不做"哪些迁移合法/�
 生命周期
 ═══════════════════════════════════════════════════════════════════════════════
 
-- start(): 一次性. 挂 sport_mode 回调 + 挂 L1+Start binding + 起摇杆轮询 daemon.
+- start(): 一次性. 挂 sport_mode 回调 + 常驻注册全部 button binding + 起摇杆轮询 daemon.
 - stop(): 反注册 + 停轮询. 幂等.
 - 前置: sdk.bootstrap() + control_pad.start() 必须先跑.
 """
@@ -247,7 +249,11 @@ def start() -> None:
     步骤:
       1. 重置三元组 → (False, UNKNOWN, L0).
       2. 注册 sdk sport_mode 回调.
-      3. 注册 L1+Start binding (AI 模式外唯一监听的键).
+      3. 常驻注册全部 button binding (L1+Start / L1+Select / L1+方向 / X / A / Y).
+         AI 模式外这些 binding 仍然收得到按键事件, history ring buffer 会写, 但
+         语义 dispatch 由各 handler / _dispatch_button 内部按 _ai_mode 关闸.
+         设计意图: binding 常驻, 效果按授权关闸 (人按了 A 但没在 AI 模式 →
+         history 有事件, 但不 dispatch 到下游 listener).
       4. 起摇杆轮询 daemon.
     """
     global _running, _ai_mode, _sport_mode, _auth_level
@@ -276,6 +282,23 @@ def start() -> None:
     )
     with _state_lock:
         _control_pad_handles["ai_enter"] = handle
+
+    # AI 模式内 button binding — 常驻注册, 关闸在 handler / _dispatch_button 内做.
+    # 各 handler 的授权语义:
+    #   - ai_exit → _exit_ai_mode 内部 `if not _ai_mode: return` 早退
+    #   - auth_N → _set_auth_level 内部 `if not _ai_mode: return` 早退
+    #   - interrupt / trigger / audio_toggle → _dispatch_button 按 _ai_mode 关闸
+    for name, keys in _AI_MODE_BUTTONS.items():
+        try:
+            binding_handle = control_pad.register_binding(
+                name=f"fsm_{name}",
+                keys=keys,
+                callback=_make_ai_button_handler(name),
+            )
+            with _state_lock:
+                _control_pad_handles[name] = binding_handle
+        except Exception:
+            logger.exception("register AI-mode binding %s failed", name)
 
     # 摇杆轮询
     _joystick_thread = threading.Thread(
@@ -445,10 +468,12 @@ def unregister_change_callback(handle: str) -> None:
 def register_button_callback(cb: ButtonCallback) -> str:
     """注册 AI 模式按键回调.
 
-    仅在 AI 模式激活期间, X (interrupt) / A (trigger) / Y (audio_toggle)
-    按下时触发一次, cb 收到对应的语义名字符串.
+    binding 常驻注册, 按键事件在 AI 模式外仍进 history ring buffer, 但下游
+    dispatch (即本 cb 被调用) 只在 AI 模式激活期间发生. AI 模式外按下
+    X / A / Y, 模型可通过 `recent_events()` 看到 "人按了 A 但没生效" 事件,
+    从而主动教人类先按 L1+Start.
 
-    退出 AI 模式后 control_pad 上的 binding 被反注册, 相应按键不再触发本 cb.
+    收到 cb 时对应语义名: "interrupt" / "trigger" / "audio_toggle".
 
     **cb 跑在 cyclonedds reader 线程**, 不能阻塞.
     """
@@ -469,13 +494,11 @@ def unregister_button_callback(handle: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _enter_ai_mode() -> None:
-    """L1+Start → 进 AI 模式. 注册 AI 模式下的全部 binding, 分发 change.
+    """L1+Start → 进 AI 模式. 翻状态位 + 写 history + 分发 change.
 
-    Register 在 FSM 锁内: 防止跟 _exit_ai_mode 的 race — 若 enter 释放锁后
-    再注册, joystick / L1+Select 可能中途插入执行 exit, exit 拿到的 handles
-    快照缺少后续注册的 binding, 那些 binding 会成孤儿.
-    control_pad 的 callback 在其锁外触发 (见 control_pad._dispatch_press
-    "阶段 2"), 所以 FSM 锁内调 control_pad.register_binding 无跨锁死锁风险.
+    binding 在 start() 中常驻注册, 本函数不管 binding 生命周期. AI 模式外
+    X/A/Y 会照常触发 handler → _dispatch_button, 后者按 _ai_mode 关闸
+    dispatch 到下游 listener. history 无论如何都写.
     """
     global _ai_mode, _auth_level
     snapshot: Optional[StateSnapshot] = None
@@ -485,18 +508,6 @@ def _enter_ai_mode() -> None:
             return
         _ai_mode = True
         _auth_level = AUTH_LEVEL_MIN
-        for name, keys in _AI_MODE_BUTTONS.items():
-            if name in _control_pad_handles:
-                continue  # defensive: 不应存在
-            try:
-                handle = control_pad.register_binding(
-                    name=f"fsm_{name}",
-                    keys=keys,
-                    callback=_make_ai_button_handler(name),
-                )
-                _control_pad_handles[name] = handle
-            except Exception:
-                logger.exception("register AI binding %s failed", name)
         _record_event_locked("ai_mode", "l1+start", "AI on")
         snapshot = (_ai_mode, _sport_mode, _auth_level)
 
@@ -505,10 +516,11 @@ def _enter_ai_mode() -> None:
 
 
 def _exit_ai_mode(source: str = "unknown") -> None:
-    """L1+Select / 摇杆 → 退 AI 模式. 反注册 AI 模式全部 binding, 分发 change.
+    """L1+Select / 摇杆 → 退 AI 模式. 翻状态位 + 写 history + 分发 change.
 
     :param source: 触发源, 进 history 事件的 source 字段. "l1+select" / "joystick".
-    Unregister 在 FSM 锁内, 同 _enter_ai_mode 的说明.
+
+    binding 常驻注册 (见 start()), 本函数不管 binding 生命周期.
     """
     global _ai_mode, _auth_level
     snapshot: Optional[StateSnapshot] = None
@@ -518,15 +530,6 @@ def _exit_ai_mode(source: str = "unknown") -> None:
             return
         _ai_mode = False
         _auth_level = AUTH_LEVEL_MIN
-        # 只反注册 AI 模式 binding, 保留 ai_enter
-        for name in list(_control_pad_handles.keys()):
-            if name == "ai_enter":
-                continue
-            handle = _control_pad_handles.pop(name)
-            try:
-                control_pad.unregister_binding(handle)
-            except Exception:
-                logger.exception("unregister AI binding %s failed (ignored)", name)
         _record_event_locked("ai_mode", source, "AI off")
         snapshot = (_ai_mode, _sport_mode, _auth_level)
 
@@ -676,12 +679,20 @@ def _dispatch_change(snapshot: StateSnapshot) -> None:
 def _dispatch_button(button_name: str) -> None:
     """通知全部 button listener. 锁外调用, cb 异常隔离.
 
-    同时把事件写入 history — button 也是模型该看到的"人类刚做了什么"痕迹.
+    History 无论授权与否都写 — 模型能看到"人按了 X 但没生效", 主动教人类
+    先按 L1+Start 进 AI 模式. dispatch 到下游 listener 按 _ai_mode 关闸,
+    授权外 no-op (符合 "binding 常驻, 没授权时按键不生效" 设计).
+
     Source 就是按键本身 (x / a / y), 与 name 对应关系固定.
     """
     _source_map = {"interrupt": "x", "trigger": "a", "audio_toggle": "y"}
     with _state_lock:
         _record_event_locked("button", _source_map.get(button_name, "?"), button_name)
+        authorized = _ai_mode
+
+    if not authorized:
+        logger.info("button %s pressed but AI mode off, dispatch skipped", button_name)
+        return
 
     with _listeners_lock:
         cbs = list(_button_listeners.values())
@@ -851,6 +862,9 @@ def _configure_for_testing() -> None:
 
     要求: control_pad._configure_for_testing() 先跑 (否则 register_binding 失败).
 
+    binding 侧跟 start() 一致 — 常驻注册全部 button binding (ai_enter +
+    _AI_MODE_BUTTONS), 让 _dispatch_button 的 _ai_mode 关闸得到覆盖.
+
     用法: 在 _fsm_sen_*.py / _fsm_tes_*.py 里调用, 然后用 control_pad
     的 _dispatch_press_for_testing 注入按键, 用 _inject_sport_mode_for_testing
     注入 FSM 变化.
@@ -877,6 +891,16 @@ def _configure_for_testing() -> None:
     )
     with _state_lock:
         _control_pad_handles["ai_enter"] = handle
+
+    # 常驻注册 AI 模式 binding, 跟 start() 一致
+    for name, keys in _AI_MODE_BUTTONS.items():
+        binding_handle = control_pad.register_binding(
+            name=f"fsm_{name}",
+            keys=keys,
+            callback=_make_ai_button_handler(name),
+        )
+        with _state_lock:
+            _control_pad_handles[name] = binding_handle
 
 
 def _inject_sport_mode_for_testing(new: int) -> None:

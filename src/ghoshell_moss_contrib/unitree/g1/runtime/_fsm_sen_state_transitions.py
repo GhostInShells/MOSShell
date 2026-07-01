@@ -141,14 +141,14 @@ def scenario_3_button_dispatch():
 
 
 def scenario_4_button_dispatch_off_when_not_ai():
-    """AI 模式退出后, X/A/Y binding 应反注册, 按下无效 (走 fallthrough)."""
+    """AI 模式外, X/A/Y binding 常驻但 _dispatch_button 按 _ai_mode 关闸, 下游 listener 不触发."""
     print("\n─── scenario 4: buttons silent off-mode ───────────")
     _reset_all()
 
     received: list[str] = []
     handle = fsm.register_button_callback(lambda name: received.append(name))
 
-    # AI 模式外按 X — 不应触发 (无 binding, 走 fallthrough)
+    # AI 模式外按 X — binding 常驻但 _dispatch_button 按 _ai_mode 关闸, 下游 listener 不触发
     control_pad._dispatch_press_for_testing("x", {"x"})
     assert len(received) == 0, f"AI off-mode X should not dispatch, got {received}"
 
@@ -158,7 +158,7 @@ def scenario_4_button_dispatch_off_when_not_ai():
     control_pad._dispatch_press_for_testing("x", {"x"})
     assert received == ["interrupt"], f"expected [interrupt], got {received}"
 
-    # 退 AI 后再按 X — 又不应触发
+    # 退 AI 后再按 X — binding 仍在, 但 _dispatch_button 关闸, 下游不触发
     time.sleep(DEBOUNCE_CLEAR)
     control_pad._dispatch_press_for_testing("select", {"l1", "select"})
     time.sleep(DEBOUNCE_CLEAR)
@@ -166,7 +166,7 @@ def scenario_4_button_dispatch_off_when_not_ai():
     assert received == ["interrupt"], f"AI off-mode again, X should not dispatch, got {received}"
 
     fsm.unregister_button_callback(handle)
-    print("  dynamic register/unregister of AI-mode bindings verified.")
+    print("  AI-mode dispatch gating verified (bindings 常驻, gate 在 _dispatch_button).")
     print("PASS: scenario_4_button_dispatch_off_when_not_ai")
 
 
