@@ -105,7 +105,8 @@ async def _on_startup() -> None:
 | `locomotion` | `locomotion` | 空间移动 — 前后 / 横移 / 转身 / 强停 7 命令, context_messages 上报 active session (无 active 不打扰) |
 | `fsm` (`g1_fsm`) | `story_202607_fsm` | 授权状态三元组 + AI 模式按键规则. change callback → LED/TTS 播报; X 键 → InterruptSignal + `locomotion.stop()` |
 | `asr` (`g1_asr`) | `asr` | G1 远场麦克风 ASR 纯感知 — `peek_window(3)` 每帧进 context, 不发命令不发 signal |
-| `listener` | `listener` + `headphone_buttons` + `story_202607_fsm` | 蓝牙耳机近场流式 ASR — 无命令面 (开关提交在硬件按键侧), context_messages 走 tail-N 只读. 头戴按键 → toggle 聆听; Y 键 (需 AI 模式) → 自由对话切换; A 键 (需 AI 模式) → 强制 drain + NotifySignal |
+| `listener` | `listener` + `headphone_buttons` + `story_202607_fsm` | 蓝牙耳机近场流式 ASR — 无命令面 (开关提交在硬件按键侧), context_messages 走 tail-N 只读. 耳机中键 / 遥控器 F1 → toggle 聆听 (F1 需 AI 模式); Y 键 (需 AI 模式) → 自由对话切换; A 键 (需 AI 模式) → 强制 drain + NotifySignal |
+| `arms` | `arms` | G1 手臂 L2 命名调用 (wave/clap/heart/release), L2+ 授权 + STAND/WALK_RUN, ExecuteAction 阻塞 + 自动 release_arm, 忙时拒绝新命令 |
 
 新 channel 落地后在表里加一行。
 

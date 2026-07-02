@@ -447,8 +447,12 @@ def batch_to_xml(batch: AsrBatch) -> str:
 
 
 def to_message(r: AsrResult) -> Message:
-    """单条结果 → ghoshell_moss Message. channel 把它入 context_messages."""
-    attrs: dict = {"id": r.id}
+    """单条结果 → ghoshell_moss Message. channel 把它入 context_messages.
+
+    只带对模型有用的字段: 时间戳 + 非零可选字段. id 是 ulid 字符串, 对 LLM 无用,
+    不放 attributes. source 由 tag 承载, 不重复.
+    """
+    attrs: dict = {"ts": r.received_at}
     if r.speaker_id is not None and r.speaker_id != 0:
         attrs["speaker"] = r.speaker_id
     if r.angle is not None and r.angle != 0:

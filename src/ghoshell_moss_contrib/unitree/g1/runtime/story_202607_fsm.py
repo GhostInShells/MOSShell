@@ -47,7 +47,8 @@ procedural 的 if/elif, 由 handler 函数直接写. 不做"哪些迁移合法/�
 - L1+左   → auth_level = 3
 - X → interrupt (`_dispatch_button` 按 _ai_mode 关闸下游 listener)
 - A → trigger
-- Y → audio_toggle
+- Y → audio_toggle (自由对话切换)
+- F1 → listener_toggle (ASR 硬开关, 等价于耳机中键)
 
 方向键映射固化. 修改点集中在 _AI_MODE_BUTTONS + BTN_AUTH_* 常量.
 
@@ -77,7 +78,7 @@ procedural 的 if/elif, 由 handler 函数直接写. 不做"哪些迁移合法/�
 **AI 按键钩子 (X/A/Y 分发)**:
 
     def _on_button(name):
-        # name in {"interrupt", "trigger", "audio_toggle"}
+        # name in {"interrupt", "trigger", "audio_toggle", "listener_toggle"}
         janus_q.sync_q.put(("button", name))
 
     handle = fsm.register_button_callback(_on_button)
@@ -139,7 +140,8 @@ BTN_AUTH_2 = frozenset({"l1", "down"})          # 授权直选 → 2
 BTN_AUTH_3 = frozenset({"l1", "left"})          # 授权直选 → 3
 BTN_INTERRUPT = frozenset({"x"})                # 中断当前 command loop (下游)
 BTN_TRIGGER = frozenset({"a"})                  # 触发模型立即回复 (下游)
-BTN_AUDIO_TOGGLE = frozenset({"y"})             # ASR 模式切换 (下游)
+BTN_AUDIO_TOGGLE = frozenset({"y"})             # 自由对话模式切换 (下游)
+BTN_LISTENER_TOGGLE = frozenset({"f1"})         # listener ASR 硬开关 (下游, 等价耳机中键)
 
 # 参考: 观测但不 bind (L2+B = G1 硬件急停, 我们只知情, 不处理)
 BTN_HARDWARE_ESTOP = frozenset({"l2", "b"})
@@ -155,11 +157,12 @@ _AI_MODE_BUTTONS: dict[str, frozenset[str]] = {
     "interrupt": BTN_INTERRUPT,
     "trigger": BTN_TRIGGER,
     "audio_toggle": BTN_AUDIO_TOGGLE,
+    "listener_toggle": BTN_LISTENER_TOGGLE,
 }
 
 # 下游 button listener 收到的语义名 (以上 keys 的子集, 其余是内部状态迁移)
 _DOWNSTREAM_BUTTONS: frozenset[str] = frozenset({
-    "interrupt", "trigger", "audio_toggle",
+    "interrupt", "trigger", "audio_toggle", "listener_toggle",
 })
 
 # 摇杆退出阈值 (任一轴 |v| > threshold → 退 AI). 4 轴: lx / ly / rx / ry.
@@ -249,7 +252,7 @@ def start() -> None:
     步骤:
       1. 重置三元组 → (False, UNKNOWN, L0).
       2. 注册 sdk sport_mode 回调.
-      3. 常驻注册全部 button binding (L1+Start / L1+Select / L1+方向 / X / A / Y).
+      3. 常驻注册全部 button binding (L1+Start / L1+Select / L1+方向 / X / A / Y / F1).
          AI 模式外这些 binding 仍然收得到按键事件, history ring buffer 会写, 但
          语义 dispatch 由各 handler / _dispatch_button 内部按 _ai_mode 关闸.
          设计意图: binding 常驻, 效果按授权关闸 (人按了 A 但没在 AI 模式 →

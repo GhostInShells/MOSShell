@@ -4,7 +4,10 @@ Headphone buttons runtime — 蓝牙耳机按键事件监听.
 跟 sdk/_buttons.py 同范式: evdev 后台线程监听耳机按键,
 按下边沿时调用注册的回调. 回调跑在 evdev reader 线程, 不能阻塞.
 
-OpenRun by Shokz (AVRCP): 单键 KEY_PLAYCD (code=200). 单击切换聆听开关.
+OpenRun by Shokz (AVRCP): 多功能中键是 AVRCP 状态感知 toggle, 交替发送
+KEY_PLAYCD (200) / KEY_PAUSECD (201) — 耳机根据自己认为的"当前播放态"决定
+code, 对 MOSS 来说都是同一个 toggle 语义信号, 两个 code 都触发 dispatch.
+(实测于 2026-07-02 _headphone_buttons_probe)
 
 Usage:
     from ghoshell_moss_contrib.unitree.g1.runtime import headphone_buttons
@@ -30,8 +33,9 @@ _BT_HINT_KEYWORDS = (
     "beats", "avrcp", "hfp", "a2dp", "openrun", "shokz",
 )
 
-# 关注的按键: KEY_PLAYCD = 200 (Shokz 单键)
-_PLAYCD_CODE = 200
+# 关注的按键 codes: AVRCP 中键交替发 KEY_PLAYCD(200) / KEY_PAUSECD(201),
+# 都视为同一 toggle 语义. 用 frozenset 让 in 查询 O(1) 且不可变.
+_TRIGGER_CODES: frozenset[int] = frozenset({200, 201})
 
 # evdev 读超时. 200ms 平衡响应速度 vs CPU
 _READ_TIMEOUT_MS = 200
@@ -146,23 +150,18 @@ def _find_device() -> tuple[str, str] | tuple[None, None]:
     return None, None
 
 
+_DEVICE_RETRY_INTERVAL = 3.0  # 设备未找到 / 断连后重试间隔 (s)
+
+
 def _evdev_loop(device_path: str | None, stop_evt: threading.Event) -> None:
-    """evdev 读循环, 跑在 daemon 线程内."""
+    """evdev 读循环, 跑在 daemon 线程内.
+
+    外层: 设备发现 retry 循环. 蓝牙 AVRCP evdev 设备在 bluetoothctl connect
+    完成后还需数秒才注册进内核; 断连后设备消失. 两种情况都重试, 不退出 thread.
+    内层: 事件读循环. OSError (设备断连) → break 回外层重新发现.
+    """
     global _device_name
 
-    # 设备发现
-    if device_path is not None:
-        path = device_path
-    else:
-        found = _find_device()
-        if found[0] is None:
-            logger.warning("headphone_buttons: no bluetooth input device found")
-            return
-        path, name = found
-        _device_name = name
-        logger.info("headphone_buttons: auto-selected %s (%s)", path, name)
-
-    # 打开设备
     try:
         import evdev
         from evdev import ecodes
@@ -170,50 +169,79 @@ def _evdev_loop(device_path: str | None, stop_evt: threading.Event) -> None:
         logger.error("headphone_buttons: evdev not installed")
         return
 
-    dev = None
-    try:
-        try:
-            dev = evdev.InputDevice(path)
-        except PermissionError:
-            logger.error(
-                "headphone_buttons: no permission for %s. "
-                "user must be in 'input' group.", path
-            )
-            return
-        except Exception as e:
-            logger.error("headphone_buttons: cannot open %s: %s", path, e)
-            return
-
-        _device_name = _device_name or dev.name
-        logger.info("headphone_buttons: listening on %s", dev.name)
-
-        poll_s = _READ_TIMEOUT_MS / 1000.0
-        while not stop_evt.is_set():
-            try:
-                event = dev.read_one()
-            except OSError as e:
-                logger.warning("headphone_buttons: read error: %s (device gone?)", e)
-                break
-
-            if event is None:
-                # read_one 非阻塞, 无事件时 sleep 防 CPU 空转.
-                # stop_evt 同时作为 sleep 的 timeout, shutdown 及时响应.
-                stop_evt.wait(poll_s)
+    while not stop_evt.is_set():
+        # ── 设备发现 ──────────────────────────────────────────────────────
+        if device_path is not None:
+            path, name = device_path, device_path
+        else:
+            path, name = _find_device()
+            if path is None:
+                logger.debug(
+                    "headphone_buttons: no device found, retry in %.0fs",
+                    _DEVICE_RETRY_INTERVAL,
+                )
+                stop_evt.wait(_DEVICE_RETRY_INTERVAL)
                 continue
 
-            if event.type == ecodes.EV_KEY and event.code == _PLAYCD_CODE:
-                if event.value == 1:  # press edge
-                    _dispatch()
-            # ignore release (0) and hold (2)
+        _device_name = name
+        logger.info("headphone_buttons: auto-selected %s (%s)", path, name)
 
-    except Exception:
-        logger.exception("headphone_buttons: evdev loop exception")
-    finally:
-        if dev is not None:
+        # ── 打开设备 + 事件读循环 ─────────────────────────────────────────
+        dev = None
+        try:
             try:
-                dev.close()
-            except Exception:
-                pass
+                dev = evdev.InputDevice(path)
+            except PermissionError:
+                logger.error(
+                    "headphone_buttons: no permission for %s. "
+                    "user must be in 'input' group.", path
+                )
+                return  # 权限问题需手动修, 不 retry
+            except Exception as e:
+                logger.warning(
+                    "headphone_buttons: cannot open %s: %s — retry in %.0fs",
+                    path, e, _DEVICE_RETRY_INTERVAL,
+                )
+                _device_name = None
+                stop_evt.wait(_DEVICE_RETRY_INTERVAL)
+                continue
+
+            _device_name = dev.name
+            logger.info("headphone_buttons: listening on %s", dev.name)
+
+            poll_s = _READ_TIMEOUT_MS / 1000.0
+            while not stop_evt.is_set():
+                try:
+                    event = dev.read_one()
+                except OSError as e:
+                    logger.warning(
+                        "headphone_buttons: read error: %s (device gone?) — retry in %.0fs",
+                        e, _DEVICE_RETRY_INTERVAL,
+                    )
+                    break  # break 内层, 外层 retry
+
+                if event is None:
+                    stop_evt.wait(poll_s)
+                    continue
+
+                if event.type == ecodes.EV_KEY and event.code in _TRIGGER_CODES:
+                    if event.value == 1:  # press edge
+                        _dispatch()
+                # ignore release (0) and hold (2)
+
+        except Exception:
+            logger.exception("headphone_buttons: evdev loop exception")
+        finally:
+            _device_name = None
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+
+        # 断连后等一下再重新发现
+        if not stop_evt.is_set():
+            stop_evt.wait(_DEVICE_RETRY_INTERVAL)
 
 
 def _dispatch() -> None:

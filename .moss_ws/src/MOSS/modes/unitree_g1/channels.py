@@ -17,10 +17,12 @@ from ghoshell_moss_contrib.unitree.g1.channels.face_led import face_led
 from ghoshell_moss_contrib.unitree.g1.channels.listener import listener_channel
 from ghoshell_moss_contrib.unitree.g1.channels.asr import g1_asr
 from ghoshell_moss_contrib.unitree.g1.channels.locomotion import locomotion_channel
+from ghoshell_moss_contrib.unitree.g1.channels.arms import arms_channel
 
 g1_root.import_channels(g1_fsm)
 g1_root.import_channels(face_led)
 g1_root.import_channels(listener_channel)
 g1_root.import_channels(g1_asr)
 g1_root.import_channels(locomotion_channel)
+g1_root.import_channels(arms_channel)
 main.import_channels(g1_root)

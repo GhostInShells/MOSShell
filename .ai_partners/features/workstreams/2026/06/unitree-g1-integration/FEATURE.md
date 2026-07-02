@@ -209,6 +209,17 @@ L0 通道骨架: arms channel 起 + main.py 串起来 + show_current 命令
 
 **7-02 早晨三个 5 分钟脚本** (arm weight=0 释放 / Jetson 摄像头 / ExecuteAction 99 复位) 因下午集中集成 channels 未跑, 顺延到 7-03 开机后. 不阻塞 showcase 基线.
 
+**7-02 晚间 — 耳机按键实机定位 + 改遥控器 F1** (由 claude-sonnet-4-6 与人类工程师协作):
+
+- **HFP profile 全流程通** (含蓝牙连接稳定脚本 `openrun_ready.sh` — 蓝牙连 → HFP profile → verify source 一次到位). `_listener_sen_setup` voiced 占比 48.4% 确认物理链路 OK. 8kHz CVSD codec 未升 mSBC, PulseAudio 层客户端接入时自动上采样到 16kHz 送火山引擎, 识别效果实测可用. `_listener_sen_dialog` 端到端 partial + FINAL 全通.
+- **耳机按键 code 假设错**: `runtime/headphone_buttons.py:_PLAYCD_CODE = 200` 是从别的耳机移植的注释, `_headphone_buttons_probe` 实测 OpenRun Pro AVRCP 中键**交替发 `KEY_PLAYCD (200)` / `KEY_PAUSECD (201)`** — 耳机根据自己认为的"当前播放态"决定 code. 修为 `_TRIGGER_CODES = frozenset({200, 201})`, 两个 code 都触发 dispatch. 但 `_headphone_sen_toggle` 实机验证仍无 `[TOGGLE]` 打印 — 未继续折腾根因 (推测 evdev 事件流可能有 blocking / 时序问题, 或 AVRCP 通道在无播放上下文时按键被 BlueZ 拦截).
+- **改方案 — 遥控器 F1 = listener ASR toggle 主入口**. F1/F3 已在 `sdk/_buttons.py:VALID_BUTTONS` 定义, 遥控器物理键映射已就绪. 选 F1 而非 L1+Y: 遥控器 L1 组合键已占满 (start/select/方向 5 键); F 键是独立按键, F1 归 listener toggle, F3 留给未来. F1 走 AI 模式 gate (跟 X/A/Y 一致), 耳机按键路径保留作**无 AI 模式前置的替代入口** — 两条路径正交, 耳机是"无授权直接开麦", F1 是"授权状态下模型可见的开麦". 落地:
+  - `story_202607_fsm.py`: 加 `BTN_LISTENER_TOGGLE = frozenset({"f1"})`, 挂进 `_AI_MODE_BUTTONS` + `_DOWNSTREAM_BUTTONS`, 语义名 `listener_toggle`.
+  - `channels/listener.py: _on_fsm_button`: 加 `elif button_name == "listener_toggle": _on_headphone_btn()` — 复用现有 pause/resume + LED + TTS + status 分路反馈逻辑.
+  - `_INSTRUCTION`: 明文 F1/耳机中键**两个等价入口**, F1 需 AI 模式前置.
+  - Y 键保留原自由对话切换语义 — ASR 硬开关 (F1/耳机) 与自由对话通知策略 (Y) 语义正交, 两个开关独立: ASR = 数据源, 自由对话 = 通知策略, 依赖关系是"自由对话依赖 ASR 开".
+- **给后续实例的坑**: 耳机按键实机在 evdev 层看到设备但 dispatch 不触发的问题未闭环 — 如果后续要复用蓝牙耳机按键 (e.g. 换耳机型号), 需要重跑 probe + 在 `_headphone_sen_toggle` 里加 raw evdev 事件日志, 定位 evdev event 是否真的进了 `_dispatch()`. 现在 code 已修但没实机确认, 是一颗 dormant bug.
+
 **给后续实例的复盘**:
 
 - **多状态运行时依赖必须在 startup 显式 report status**. listener runtime 有 5 个非终态 (stopped / no_config / no_device / device_down / ok), channel startup 假设都是 ok, 出问题时给模型的反馈是假的 (LED 绿闪 + "聆听开启" TTS 但真实链路断). 假反馈比不反馈更误导 — 假反馈让排查方向错.
