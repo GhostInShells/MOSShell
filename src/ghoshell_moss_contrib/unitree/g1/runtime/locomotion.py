@@ -55,7 +55,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Optional
 
 from ghoshell_moss_contrib.unitree.g1.sdk import get_loco_client
 
@@ -69,11 +69,8 @@ logger = logging.getLogger("moss.g1.runtime.locomotion")
 V_FORWARD: float = 0.25      # 前/后直行, m/s. script 19 稳定值.
 V_LATERAL: float = 0.25      # 左/右横移, m/s. 0.15 不动（低于启动阈值）, 0.5 恐怖. 0.25 待明天实测.
 
-V_YAW: dict[str, float] = {  # 转身角速度, rad/s. 全是猜值, 实机标定.
-    "low":    0.3,
-    "medium": 0.6,
-    "high":   1.0,
-}
+V_YAW: float = 1.0           # 转身角速度, rad/s. 2026-07-03 实机: 1.0 rad/s ≈ 57.3°/s 精确
+                             # (走正方形 90°=1.57s 命中). 之前 low/medium 三档估值不准, 砍掉.
 
 # publish loop tick. 20Hz = 50ms 反应窗口. version 抢占的"最坏延迟"就是这个值.
 _TICK_SEC: float = 0.05
@@ -249,35 +246,26 @@ async def strafe_right(duration: float) -> str:
     return await _run_session("strafe_right", duration, vx=0.0, vy=-V_LATERAL, vyaw=0.0)
 
 
-async def turn_left(
-    duration: float,
-    speed: Literal["low", "medium", "high"] = "low",
-) -> str:
-    """G1 原地左转 (yaw 增加方向). 三档角速度, 通过 duration 控制转角.
+async def turn_left(duration: float) -> str:
+    """G1 原地左转 (yaw 增加方向). 固定角速度 1.0 rad/s (≈57.3°/s).
 
-    粗略对照: low ≈ 17°/s, medium ≈ 34°/s, high ≈ 57°/s. 实机标定后修订.
-    例: low + duration=1.0s ≈ 转 17°; medium + 2.0s ≈ 68°.
+    换算: duration=1.57s ≈ 90°, duration=3.14s ≈ 180°.
 
     :param duration: 持续时间 (秒).
-    :param speed: "low" 谨慎打量, "medium" 一般转身, "high" 应急回头.
-    :return: Observe 文本, cmd_name 包含档位 (e.g. "turn_left_medium").
+    :return: Observe 文本, 如 "turn_left duration after 1.57s".
     """
-    vyaw = V_YAW[speed]
-    return await _run_session(f"turn_left_{speed}", duration, vx=0.0, vy=0.0, vyaw=vyaw)
+    return await _run_session("turn_left", duration, vx=0.0, vy=0.0, vyaw=V_YAW)
 
 
-async def turn_right(
-    duration: float,
-    speed: Literal["low", "medium", "high"] = "low",
-) -> str:
-    """G1 原地右转 (yaw 减少方向). 三档角速度, 通过 duration 控制转角.
+async def turn_right(duration: float) -> str:
+    """G1 原地右转 (yaw 减少方向). 固定角速度 1.0 rad/s (≈57.3°/s).
+
+    换算: duration=1.57s ≈ 90°, duration=3.14s ≈ 180°.
 
     :param duration: 持续时间 (秒).
-    :param speed: "low" / "medium" / "high".
     :return: Observe 文本.
     """
-    vyaw = -V_YAW[speed]
-    return await _run_session(f"turn_right_{speed}", duration, vx=0.0, vy=0.0, vyaw=vyaw)
+    return await _run_session("turn_right", duration, vx=0.0, vy=0.0, vyaw=-V_YAW)
 
 
 async def stop() -> str:

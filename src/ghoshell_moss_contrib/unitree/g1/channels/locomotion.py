@@ -33,11 +33,8 @@ observe 分工:
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
-from ghoshell_moss.core.blueprint.channel_builder import (
-    new_channel, CommandUtil,
-)
+from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.message import Message
 
 from ghoshell_moss_contrib.unitree.g1.runtime import locomotion
@@ -137,15 +134,6 @@ async def _authorization_context() -> list[Message]:
 # 命令面
 # ═════════════════════════════════════════════════════════════════════════════
 
-_VALID_SPEEDS = ("low", "medium", "high")
-
-
-def _check_speed(speed: str) -> None:
-    if speed not in _VALID_SPEEDS:
-        CommandUtil.raise_observe(
-            f"speed 必须是 {'/'.join(_VALID_SPEEDS)}, 给的是 {speed}"
-        )
-
 
 @locomotion_channel.build.command(available=_move_available)
 async def walk_forward(duration: float) -> str:
@@ -192,37 +180,29 @@ async def strafe_right(duration: float) -> str:
 
 
 @locomotion_channel.build.command(available=_turn_available)
-async def turn_left(
-    duration: float,
-    speed: Literal["low", "medium", "high"] = "low",
-) -> str:
-    """原地左转 (yaw 增加方向). 通过 duration + speed 组合控制转角.
+async def turn_left(duration: float) -> str:
+    """原地左转 (yaw 增加方向). 固定角速度 1.0 rad/s ≈ 57.3°/s.
 
-    粗略对照: low ≈ 17°/s, medium ≈ 34°/s, high ≈ 57°/s (实机标定中).
+    换算: duration=1.57s ≈ 90°, duration=3.14s ≈ 180°, duration=6.28s ≈ 360°.
 
     duration: 持续时间 (秒), 必须 > 0.
-    speed: "low" (谨慎打量) / "medium" (一般转身) / "high" (应急回头).
     """
     check_g1_available()
-    _check_speed(speed)
     async with fsm.warrant(_turn_available):
-        return await locomotion.turn_left(duration, speed)
+        return await locomotion.turn_left(duration)
 
 
 @locomotion_channel.build.command(available=_turn_available)
-async def turn_right(
-    duration: float,
-    speed: Literal["low", "medium", "high"] = "low",
-) -> str:
-    """原地右转 (yaw 减少方向).
+async def turn_right(duration: float) -> str:
+    """原地右转 (yaw 减少方向). 固定角速度 1.0 rad/s ≈ 57.3°/s.
+
+    换算: duration=1.57s ≈ 90°, duration=3.14s ≈ 180°, duration=6.28s ≈ 360°.
 
     duration: 持续时间 (秒), 必须 > 0.
-    speed: "low" (谨慎打量) / "medium" (一般转身) / "high" (应急回头).
     """
     check_g1_available()
-    _check_speed(speed)
     async with fsm.warrant(_turn_available):
-        return await locomotion.turn_right(duration, speed)
+        return await locomotion.turn_right(duration)
 
 
 @locomotion_channel.build.command(blocking=False, available=_stop_available)

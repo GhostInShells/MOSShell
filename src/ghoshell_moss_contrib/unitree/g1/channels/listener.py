@@ -79,16 +79,14 @@ def _toggle_free_dialog() -> None:
 _event_q: janus.Queue | None = None
 
 
-def _try_drain_and_enqueue(*, force_finalize_partial: bool = False) -> None:
+def _try_drain_and_enqueue() -> None:
     """drain listener, 非空则入队. 可被多个 callback 源安全调用.
 
-    force_finalize_partial=True: 把当前正在说的 partial 也强制当 final 拿走,
-    并 abort 当前 recognize session — 服务端后续对这句的 final 更新被丢弃.
-    A 键 (立即打断 + 交付) 用这个, 自由对话 VAD 判停 (整句已完成) 走默认 False.
+    drain() 始终包含 partial 并 abort 当前 session — 无论 partial 是否存在.
     """
     if _event_q is None:
         return
-    batch = listener.drain(force_finalize_partial=force_finalize_partial)
+    batch = listener.drain()
     if batch.items:
         try:
             _event_q.sync_q.put_nowait(batch)
@@ -164,8 +162,7 @@ def _on_fsm_button(button_name: str) -> None:
     logger.info("fsm button: %s", button_name)
     try:
         if button_name == "trigger":
-            # A 键 = 立即打断 + 交付. 强制拿 partial + abort session, 丢弃后续 final.
-            _try_drain_and_enqueue(force_finalize_partial=True)
+            _try_drain_and_enqueue()
             led.play_event(led.blink("#ffffff", count=2, period_ms=200))
         elif button_name == "audio_toggle":
             _toggle_free_dialog()
@@ -334,6 +331,13 @@ async def _listener_context() -> list[Message]:
     if h.status != "ok" or h.paused:
         return messages
 
+    # 未 drain 的历史 (finalized, 按到达时间升序)
+    if h.forgotten_since_last_drain:
+        messages.append(Message.new(
+            tag="g1.listener",
+            attributes={"forgotten": h.forgotten_since_last_drain},
+        ).with_content(f"有 {h.forgotten_since_last_drain} 句话被遗忘了."))
+
     recent = listener.peek_recent_finalized(_RECENT_N)
     for u in recent:
         ts = time.strftime("%H:%M:%S", time.localtime(u.received_at))
@@ -342,11 +346,15 @@ async def _listener_context() -> list[Message]:
             attributes={"ts": ts},
         ).with_content(u.text))
 
-    if h.forgotten_since_last_drain:
+    # 当前流式 partial — 独立一条, 与 finalized 历史语义不同:
+    # 人正在说、还没说完. drain 时会被一并带走并 abort session.
+    partial = listener.peek_partial()
+    if partial is not None:
+        ts = time.strftime("%H:%M:%S", time.localtime(partial.received_at))
         messages.append(Message.new(
-            tag="g1.listener",
-            attributes={"forgotten": h.forgotten_since_last_drain},
-        ).with_content(f"有 {h.forgotten_since_last_drain} 句话被遗忘了."))
+            tag="g1.listener_utterance",
+            attributes={"ts": ts, "partial": "true"},
+        ).with_content(partial.text))
 
     return messages
 

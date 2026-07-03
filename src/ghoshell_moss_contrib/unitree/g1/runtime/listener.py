@@ -355,22 +355,21 @@ def is_running() -> bool:
         return _health.status == "ok"
 
 
-def drain(*, force_finalize_partial: bool = False) -> UtteranceBatch:
-    """拿走 finalized buffer 内全部 utterance + forgotten 计数.
+def drain() -> UtteranceBatch:
+    """拿走 finalized buffer 内全部 utterance + 当前 partial (若有) + forgotten 计数.
 
-    :param force_finalize_partial:
-        默认 False: 只拿 is_final=True 的 utterance, _partial 保留, 下次 drain
-        若已 final 则一并拿走.
+    始终 abort 当前 recognize session, 无论 _partial 是否存在:
+    - _partial 存在: 强制作为 forced=True utterance 拿走, abort session, 后续同 id 更新丢弃.
+    - _partial 为 None: 用户刚停止说话但 is_final 还在 pipeline 里 (ASR 延迟窗口).
+      此时 finalized 和 partial 都为空, drain 返回空 batch. 但 session 仍然 abort —
+      in-flight is_final 被丢弃, 不会在下次 drain 时以"上一轮内容"重新出现.
 
-        True: 把当前 _partial (若存在) 也强制当作完成的 utterance 拿走 (打 forced=True
-        标记), 并立即 abort 当前 recognize session — 服务端后续送来的同 utterance 更新
-        将被丢弃, backend 自动开新 session 接下一句. 这是 "按键打断 ASR VAD" 的入口.
+    这解决了 "第二次按 A 又是上一轮的内容" bug: 不 abort session 时, is_final 在
+    drain 后到达, 写入 _finalized_dq, 下次 drain 拿到.
 
     线程安全. 与 backend 线程的 _partial 覆盖 / _finalized_dq.append 串行共用 _state_lock.
     """
     global _forgotten_since_last_drain, _partial
-
-    abort_session: Optional[_Session] = None
 
     with _state_lock:
         items = list(_finalized_dq)
@@ -378,22 +377,24 @@ def drain(*, force_finalize_partial: bool = False) -> UtteranceBatch:
         forgotten = _forgotten_since_last_drain
         _forgotten_since_last_drain = 0
 
-        if force_finalize_partial and _partial is not None:
+        if _partial is not None:
             forced = _partial.model_copy(update={"is_final": True, "forced": True})
             items.append(forced)
             _partial = None
-            abort_session = _current_session  # backend loop 外触发 abort, 见下
+
+        # 始终 abort 当前 session — 无论 partial 是否存在.
+        # 这是防止 in-flight is_final 污染下次 drain 的关键.
+        abort_session = _current_session
 
         _refresh_pending_partial_locked()
         _refresh_utterances_pending_drain_locked()
 
-    # abort 必须 lock 外做 — call_soon_threadsafe 自己拿 loop 内锁, 跟 _state_lock 没冲突
-    # 但 abort.set() 后 backend 立即响应, 它会拿 _state_lock 更新状态, 避免持锁等.
+    # abort 必须 lock 外做 — call_soon_threadsafe 自己拿 loop 内锁, 跟 _state_lock 没冲突.
     if abort_session is not None and _backend_loop is not None:
         try:
             _backend_loop.call_soon_threadsafe(abort_session.abort.set)
         except RuntimeError:
-            logger.debug("drain force: backend loop already stopped, abort skipped")
+            logger.debug("drain: backend loop already stopped, abort skipped")
 
     return UtteranceBatch(items=items, forgotten=forgotten)
 
