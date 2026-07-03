@@ -445,7 +445,9 @@ async def _run_session(
     finally:
         # ── 阶段 3: finally StopMove + done ──────────────────────────
         # 仅当我仍是 current 时才 StopMove. 被抢占的 session 让位, 不抽搐 G1.
-        _loco_stop_versioned(my_version)
+        # 卸载到线程池 — StopMove 是同步 RPC (100-500ms), 直接调会阻塞 event loop,
+        # 走正方形累积 4+ 次后 G1 底层 RPC 队列排队, 后段命令看到长停顿 (2026-07-03 定位).
+        await asyncio.to_thread(_loco_stop_versioned, my_version)
         session.done.set()
         # 清 _current_session 仅当还指向我 (防抢占覆盖后又被我清)
         if _current_session is session:
