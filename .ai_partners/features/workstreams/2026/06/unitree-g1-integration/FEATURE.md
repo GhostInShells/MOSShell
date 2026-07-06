@@ -1,14 +1,13 @@
 ---
-title: Unitree G1 Integration
-status: in-progress
-priority: P0
 created: 2026-06-04
-updated: 2026-07-01
 depends: []
-milestone:
-description: >-
-  将 Unitree G1 人形机器人通过 unitree_sdk2_python 集成到 MOSS，作为 bodies app 提供 CTML 可调用的全身运动控制、手臂操作和音频交互能力。
-  安全优先的渐进式推进：文档摸底 → 脚本验证 → channel 设计 → 多级模式迭代。不做高阶开发。
+description: 将 Unitree G1 人形机器人通过 unitree_sdk2_python 集成到 MOSS，作为 bodies app 提供 CTML
+  可调用的全身运动控制、手臂操作和音频交互能力。 安全优先的渐进式推进：文档摸底 → 脚本验证 → channel 设计 → 多级模式迭代。不做高阶开发。
+milestone: null
+priority: P0
+status: completed
+title: Unitree G1 Integration
+updated: '2026-07-06'
 ---
 
 # Unitree G1 Integration
@@ -95,10 +94,10 @@ moss --ai codex blueprint mindflow           # Signal/Nucleus/Impulse/Articulato
 | B | 代码仓库摸底 | 完成 (2026-06-08) |
 | C | 硬件环境记录 | 完成 (2026-06-14) |
 | D | MOSS 装机 | 完成 (2026-06-14/15) |
-| E | 基线实验 (SDK 脚本) | **进行中** — P0 17/18/19 通过; P1 21 通过; P2 26/27 通过; 20/22 待实机 |
-| F | 安全理解 | **进行中** — 范式转为运动模式主场; 遥控器主权; 不进调试模式 |
-| G | Channel 设计 | **进行中** — 2026-07-02 六个 channel 全部落地并集成到 unitree_g1 mode; 5/6 端到端验证通过, listener 待修 |
-| H | 多级模式迭代 | 未开始 (依赖 showcase 基线通过, 预计 7-03) |
+| E | 基线实验 (SDK 脚本) | 完成 (2026-06-29/30) — P0 17/18/19; P1 21; P2 26/27 通过. 20/22/24 延期: 20 吊架风险暂缓, 22 待 SDK 修正, 24 不阻塞主线 |
+| F | 安全理解 | 完成 (2026-06-30) — 范式定型: 运动模式主场, 遥控器永久主权, 不进调试模式 |
+| G | Channel 设计与集成 | 完成 (2026-07-02/05) — 六个 channel 全部落地, listener drain 语义修正, 全部集成到 unitree_g1 mode |
+| H | 多级模式迭代 | **延期** — 待 MOSS beta1 收敛 (matrix cells 治理) + 整体架构规划后作为独立长期任务推进 |
 
 ## 能力路线图 (四轴)
 
@@ -178,6 +177,36 @@ L0 通道骨架: arms channel 起 + main.py 串起来 + show_current 命令
 
 完整 session 历史按时间倒序索引. 详细内容已迁移到 design/ 与 discuss/, FEATURE.md
 只保留入口与关键节点结论.
+
+### 2026-07-05/06 — listener drain 语义修正 + 第一集成阶段收口
+
+由 claude-sonnet-4-6 与人类工程师协作.
+
+**listener channel drain 语义三项修正**:
+
+1. `drain()` 去掉 `force_finalize_partial` 参数 — 始终 drain partial + abort session.
+   无论人说到一半还是刚说完, drain 都能把当前全部内容交出去.
+2. `drain()` 始终 abort 当前 session, 即使 partial 为 None — 消除"第二次按 A 拿到
+   上一轮内容"的 bug. 根因: 用户刚停止说话时 partial 已 None 但 is_final 仍在 pipeline,
+   不 abort 则 in-flight final 会在 drain 后写入 buffer, 下次 drain 才被消费.
+3. `context_messages` 加入 partial 独立一条 (partial="true" 属性); forgotten 告警
+   移到历史列表前方 (时序语义: 先告知有 gap 再给历史).
+
+**MODE.md CTML 作用域文档**: 补充 `until="flow"` (默认) vs `until="all"` 的语义说明
++ "数一二三同时前后走"具体对比例子 — 防止 LLM 因默认 flow 导致动作与语音时序脱节.
+
+**第一集成阶段闭环**: Phase A-G 完成. 遗留问题已知且不阻塞 — 作为后续迭代任务承接.
+
+**已知遗留问题 (不阻塞闭环, 后续迭代)**:
+
+- listener ASR drain 仍非最佳实践 (边说边触发的自由对话模式时序待细化)
+- action 队列可能阻塞 (locomotion 命令未加超时保护, 长时间占用 channel 未处理)
+- 耳机按键 evdev dispatch 未闭环 (OpenRun Pro AVRCP 中键 code 修正后未实机确认)
+- arms channel 为空骨架, L0-L1 未实装 (待 weight=0 释放行为实机验证后推进)
+- script 20/22/24 未跑 (sit/stand 物理行为, arm action state, FSM 完整可达图)
+
+**后续计划**: Phase H (多级模式迭代) 延期. 待 MOSS beta1 收敛 (核心: matrix cells 治理)
++ 整体架构规划完成后, 作为独立长期任务持续推进.
 
 ### 2026-07-02 — 全 channel 落地 + 集成验证 (listener 除外)
 
@@ -539,4 +568,3 @@ index.md 里明确写了 `mode_machine` 是 Dof 配置字节 (不是 FSM),
   - Mindflow 能力评估 → partial-triggered 抢占已在 mindflow + listener app 实装, 不需要新建 Articulator
 - **已推翻 / 重估**:
   - arms channel 拓扑 (6-30 `design/2026-06-30_g1_arms_animation.md` §3/§5) → **7-01 讨论后推翻 §3 命令面 + §5 学习闭环**. Track 派 + Animation JSON 让 LLM 写 keyframe 违反 §0.3 上位范式纪律 (Logos 层调度命名 VLA, 不接触内部实现). 上位范式 §0 仍成立. 设计文件已加"已被 7-01 修正"标注, 保留原内容作为设计演进档案. 本期 arms 形态改按 "能力金字塔" 节推进, 不写完整修正设计文档 (等 L2/L3 实践积累后一次收口)
-
