@@ -148,3 +148,7 @@ cython_debug/
 .setup_env
 .uv_cache
 .ruff_cache
+
+# g1_sim downloadable binary assets
+.moss_ws/apps/bodies/g1_sim/assets/g1/meshes/
+.moss_ws/apps/bodies/g1_sim/assets/policies/*.pt

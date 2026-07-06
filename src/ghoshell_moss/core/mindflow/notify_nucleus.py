@@ -8,7 +8,8 @@
 priority 完全继承 ``Signal.priority`` (调用方控制). 默认 ``NOTICE`` —
 典型用例是 "ghost 思考时用户说话", 不打断就留痕.
 """
-from typing import Self, Callable, Iterable
+from typing import Callable, Iterable
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer
 

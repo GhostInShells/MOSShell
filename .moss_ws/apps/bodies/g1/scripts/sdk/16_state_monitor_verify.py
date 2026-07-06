@@ -28,16 +28,16 @@ def main():
 
     # ── 1. bootstrap ──
     print("\n[1] bootstrap() ...")
-    from ghoshell_moss_contrib.unitree.g1 import bootstrap, is_initialized
+    from ghoshell_moss_contrib.unitree.g1.sdk import bootstrap, is_bootstrapped
 
-    assert not is_initialized(), "模块应未初始化"
+    assert not is_bootstrapped(), "模块应未初始化"
     bootstrap(nic)
-    assert is_initialized(), "bootstrap 后应已初始化"
+    assert is_bootstrapped(), "bootstrap 后应已初始化"
     print("    OK — DDS domain + AudioClient + monitor thread 已启动")
 
     # ── 2. 等待首帧 ──
     print("\n[2] 等待 monitor 线程拉取首帧 (最多 5s) ...")
-    from ghoshell_moss_contrib.unitree.g1.state import last_update
+    from ghoshell_moss_contrib.unitree.g1.sdk.state import last_update
 
     for i in range(100):
         if last_update() > 0:
@@ -50,7 +50,7 @@ def main():
 
     # ── 3. 六组状态读取 ──
     print("\n[3] 状态快照:")
-    from ghoshell_moss_contrib.unitree.g1.state import (
+    from ghoshell_moss_contrib.unitree.g1.sdk.state import (
         motion, joints, imu, remote, battery, health,
     )
 

@@ -10,9 +10,18 @@ from ghoshell_moss import CommandError, CommandErrorCode, new_channel_state
 from ghoshell_moss.contracts import ResourceRegistry
 from ghoshell_moss.core import PyCommand, ChannelCtx
 
-from framework.events import StreamEvent, ClearEvent, AppendEvent, PopEvent, UpdateEvent, SetEvent, LayoutEvent, EventModel
+from framework.events import StreamEvent, ClearEvent, AppendEvent, PopEvent, UpdateEvent, SetEvent, LayoutEvent, EventModel, VideoLocator
 
 _CMD_TIMEOUT = 5.0  # 非流式命令等待 UI 处理的超时秒数
+_RESOURCE_BASE = "http://127.0.0.1:20880/resources"
+
+
+def _locator_to_url(locator: str) -> str:
+    """locator → HTTP URL: local-video://host/path → http://127.0.0.1:20880/resources/local-video/host/path"""
+    if "://" not in locator:
+        raise CommandError(code=CommandErrorCode.FAILED, message=f"Invalid locator: {locator}")
+    scheme, rest = locator.split("://", 1)
+    return f"{_RESOURCE_BASE}/{scheme}/{rest}"
 
 
 async def _await_event(queue: asyncio.Queue, event: EventModel, timeout: float = _CMD_TIMEOUT) -> None:
@@ -39,7 +48,15 @@ def build(state_name, state_class: type[rx.State], layout_state_class: type[rx.C
     annotations = state_class.__annotations__
     for name, type_ in annotations.items():
         ori_type = typing.get_origin(type_)
-        if str in [type_, ori_type]:
+        if ori_type is list and typing.get_args(type_)[0] is VideoLocator:
+            commands.extend(
+                generate_video_list_command(name, state_class, queue)
+            )
+        elif type_ is VideoLocator:
+            commands.extend(
+                generate_video_command(name, state_class, queue)
+            )
+        elif str in [type_, ori_type]:
             commands.extend(
                 generate_stream_command(name, state_class, queue)
             )
@@ -267,7 +284,7 @@ def generate_list_command(name: str, state_class: type[rx.State], field_type, qu
             PyCommand(
                 func=append_image_command,
                 name=f"append_{name}",
-                doc=f"追加渲染一张图片，使用locator格式的字符串"
+                doc=f"追加渲染一张图片到{name}列表，参数 locator 为资源定位符，必须作为 XML 属性传入。例如 <append_{name} locator=\"pil-image://path\" />"
             )
         ])
 
@@ -354,11 +371,99 @@ def generate_image_command(name: str, state_class: type[rx.State], queue: asynci
         PyCommand(
             func=set_command,
             name=f"set_{name}",
-            doc=f"渲染一张图片，使用locator格式的字符串",
+            doc=f"渲染一张图片到{name}字段，参数 locator 为资源定位符，必须作为 XML 属性传入。例如 <set_{name} locator=\"pil-image://path\" />",
         ),
         PyCommand(
             func=clear_command,
             name=f"clear_{name}",
             doc=f"清空{name}字段"
         )
+    ]
+
+
+def generate_video_command(name: str, state_class: type[rx.State], queue: asyncio.Queue):
+    async def set_(state: state_class, t: str):  # type: ignore[valid-type]
+        setattr(state, name, t)
+
+    async def clear(state: state_class):  # type: ignore[valid-type]
+        setattr(state, name, "")
+
+    set_.__name__ = set_.__qualname__ = f"set_{name}"
+    clear.__name__ = clear.__qualname__ = f"clear_{name}"
+
+    set_decorated = rx.event(set_)
+    clear_decorated = rx.event(clear)
+    setattr(state_class, f"set_{name}", set_decorated)
+    setattr(state_class, f"clear_{name}", clear_decorated)
+
+    async def set_command(locator: str):
+        url = _locator_to_url(locator)
+        await _await_event(queue, SetEvent(field=name, data=url))
+
+    async def clear_command():
+        await _await_event(queue, ClearEvent(field=name))
+
+    return [
+        PyCommand(
+            func=set_command,
+            name=f"set_{name}",
+            doc=f"设置{name}视频，参数 locator 为资源定位符。例如 <set_{name} locator=\"local-video://host/path\" />",
+        ),
+        PyCommand(
+            func=clear_command,
+            name=f"clear_{name}",
+            doc=f"清空{name}字段",
+        )
+    ]
+
+
+def generate_video_list_command(name: str, state_class: type[rx.State], queue: asyncio.Queue):
+    async def append(state: state_class, t: str):  # type: ignore[valid-type]
+        getattr(state, name).append(t)
+
+    async def pop(state: state_class):  # type: ignore[valid-type]
+        ll = getattr(state, name)
+        if ll:
+            ll.pop()
+
+    async def clear(state: state_class):  # type: ignore[valid-type]
+        getattr(state, name).clear()
+
+    append.__name__ = append.__qualname__ = f"append_{name}"
+    pop.__name__ = pop.__qualname__ = f"pop_{name}"
+    clear.__name__ = clear.__qualname__ = f"clear_{name}"
+
+    append_decorated = rx.event(append)
+    pop_decorated = rx.event(pop)
+    clear_decorated = rx.event(clear)
+    setattr(state_class, f"append_{name}", append_decorated)
+    setattr(state_class, f"pop_{name}", pop_decorated)
+    setattr(state_class, f"clear_{name}", clear_decorated)
+
+    async def append_command(locator: str):
+        url = _locator_to_url(locator)
+        await _await_event(queue, AppendEvent(field=name, data=url))
+
+    async def pop_command():
+        await _await_event(queue, PopEvent(field=name))
+
+    async def clear_command():
+        await _await_event(queue, ClearEvent(field=name))
+
+    return [
+        PyCommand(
+            func=append_command,
+            name=f"append_{name}",
+            doc=f"追加视频到{name}列表，参数 locator 为资源定位符。例如 <append_{name} locator=\"local-video://host/path\" />",
+        ),
+        PyCommand(
+            func=pop_command,
+            name=f"pop_{name}",
+            doc=f"弹出{name}列表最后一个元素",
+        ),
+        PyCommand(
+            func=clear_command,
+            name=f"clear_{name}",
+            doc=f"清空{name}列表",
+        ),
     ]

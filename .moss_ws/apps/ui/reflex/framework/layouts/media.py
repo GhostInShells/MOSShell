@@ -1,6 +1,7 @@
 import reflex as rx
 from PIL import Image
 
+from framework.events import VideoLocator
 from framework.helpers.mixin import NameMixin
 
 
@@ -14,6 +15,7 @@ class MediaLayout(rx.ComponentState, NameMixin):
     title: str = ""
     sub_title: str = ""
     image: list[Image.Image] = []
+    videos: list[VideoLocator] = []
 
     @classmethod
     def name(cls) -> str:
@@ -35,7 +37,7 @@ class MediaLayout(rx.ComponentState, NameMixin):
                 height="25px",
                 loading=cls.sub_title == "",
             ),
-            # ── 媒体区域 ──
+            # ── 图片区域 ──
             rx.skeleton(
                 rx.hstack(
                     rx.foreach(
@@ -45,6 +47,23 @@ class MediaLayout(rx.ComponentState, NameMixin):
                 width="200px",
                 height="200px",
                 loading=cls.image.length() == 0
+            ),
+            # ── 视频区域 ──
+            rx.skeleton(
+                rx.vstack(
+                    rx.foreach(
+                        cls.videos,
+                        lambda v: rx.box(
+                            rx.video(src=v, controls=True),
+                            width="640px",
+                            max_width="100%",
+                        ),
+                    ),
+                    spacing="4",
+                ),
+                width="640px",
+                height="360px",
+                loading=cls.videos.length() == 0,
             ),
             **props,
         )

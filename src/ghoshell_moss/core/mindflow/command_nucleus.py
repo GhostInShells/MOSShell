@@ -9,7 +9,8 @@ priority 完全继承 ``Signal.priority`` — nucleus 不强制 floor, 调用方
 ``Priority.FATAL`` 表达 "强制指令" (等价于 ``ImpulsePrimitive.fatal_command``),
 用 ``Priority.NOTICE`` 表达 "普通命令". 单一 nucleus 覆盖两种.
 """
-from typing import Self, Callable, Iterable
+from typing import Callable, Iterable
+from typing_extensions import Self
 
 from ghoshell_container import IoCContainer
 from pydantic import Field

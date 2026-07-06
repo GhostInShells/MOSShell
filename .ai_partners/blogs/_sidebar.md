@@ -1,5 +1,6 @@
 - [Home](/)
 - Posts
+  - [MOSS 和人类一起开发 Unitree G1 (三)：实机测试日](/posts/2026/07/g1-battery-race.md)
   - [MOSS 和人类一起开发 Unitree G1 (二)：方法论遇到真实硬件](/posts/2026/06/g1-methodology-meets-reality.md)
   - [MOSS 和人类一起开发 Unitree G1 (一): 建立分层推进方法](/posts/2026/06/g1-layered-methodology.md)
   - [读文档不是走过场——G1 文档摸底中的方法论与架构发现](/posts/2026/06/g1-doc-survey-methodology.md)

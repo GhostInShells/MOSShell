@@ -1,467 +1,570 @@
 ---
-title: Unitree G1 Integration
-status: in-progress
-priority: P0
 created: 2026-06-04
-updated: 2026-06-16
 depends: []
-milestone:
-description: >-
-  将 Unitree G1 人形机器人通过 unitree_sdk2_python 集成到 MOSS，作为 bodies app 提供 CTML 可调用的全身运动控制、手臂操作和音频交互能力。
-  安全优先的渐进式推进：文档摸底 → 脚本验证 → channel 设计 → 多级模式迭代。不做高阶开发。
+description: 将 Unitree G1 人形机器人通过 unitree_sdk2_python 集成到 MOSS，作为 bodies app 提供 CTML
+  可调用的全身运动控制、手臂操作和音频交互能力。 安全优先的渐进式推进：文档摸底 → 脚本验证 → channel 设计 → 多级模式迭代。不做高阶开发。
+milestone: null
+priority: P0
+status: completed
+title: Unitree G1 Integration
+updated: '2026-07-06'
 ---
 
 # Unitree G1 Integration
 
 ## Motivation
 
-继 Reachy Mini 之后，G1 是 MOSS 接入的第二个人形机器人平台。与桌面级 Reachy Mini 不同，G1 是 1.3m 全尺寸人形机器人，拥有 23-43 个自由度、DDS 通讯总线、高低两级控制 API。这次集成验证 MOSS 的 app 模式在更大规模机器人平台上的可迁移性。
+继 Reachy Mini 之后, G1 是 MOSS 接入的第二个人形机器人平台. 与桌面级 Reachy Mini 不同,
+G1 是 1.3m 全尺寸人形机器人, 拥有 23-43 个自由度、DDS 通讯总线、高低两级控制 API.
+这次集成验证 MOSS 的 app 模式在更大规模机器人平台上的可迁移性.
 
-SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录，详见 README.md 环境准备章节。
+SDK (unitree_sdk2_python) 需手动 clone 到 app 的 `src/` 目录, 详见 README.md.
 
 ## Design Index
 
-- App 路径: `.moss_ws/apps/bodies/g1/`
-- **方法论（范式真相）**: `CLAUDE.md` — 每次会话自动加载，设计决策与方法论在此
-- 开发计划: `README.md`（权威 — 每次会话从这里开始）
-- 应用说明: `APP.md`
-- 技术文档: `docs/`（云端文档摸底 → 本地知识索引）
-- 验证脚本: `scripts/`（安全原子化验证，人类反馈闭环）
-- SDK 源码: `src/unitree_sdk2_python/`（gitignored，手动 clone）
+**范式真相**: `.moss_ws/apps/bodies/g1/CLAUDE.md` (每次会话自动加载)
+**用户故事**: `story-2026-07.md` (2026-07 交付版本技术引导)
+**开发计划**: `.moss_ws/apps/bodies/g1/README.md`
+**应用说明**: `.moss_ws/apps/bodies/g1/APP.md`
+
+技术文档(活的):
+- `docs/index.md` — 云端文档 URL 映射 + 概念索引
+- `docs/sdk-topics.md` — DDS topic 真值清单
+- `docs/hardware.md` — 硬件连接 + 网络拓扑
+- `docs/moss-on-pc2.md` — 装机问题日志
+- `docs/validation-checklist.md` — 验证命题与状态
+
+设计沉淀(本 feature 目录下):
+- `design/2026-06-30_g1_arms_animation.md` — **当前最新设计**: 双工分层具身范式 + arms keyframe animation 体系. 本期实现的主要参考.
+- `design/2026-06-28_channel_architecture.md` — 历史档案: channel 体系全貌, warrant 机制, state DAG, 用户故事四幕. 部分已被 2026-06-29/30 实测修正 (warrant 砍掉, 调试模式不进, arm RPC 砍掉), 留作设计演进轨迹.
+
+讨论轨迹(本 feature 目录下):
+- `discuss/2026-06-08_phase_b_sdk_discussion_outline.md` — SDK 摸底阶段讨论提纲
+- `discuss/2026-06-28_remote_as_moss_input.md` — 单一控制源反转: 遥控器变 MOSS 输入设备
+
+## 代码结构 (2026-06-30 重构后)
+
+contrib 下的 g1 包按"双工分层具身"范式切成四层 + 归档区. 后续模型实例的任何新代码必须落到对应层, 不进 `_archived/`.
+
+```
+src/ghoshell_moss_contrib/unitree/g1/
+├── __init__.py          # 空伞 — 外部 import 必须走子路径, 顶层不再 re-export
+├── sdk/                 # L1: SDK 句柄 + 生命周期 + 上行信号源 (无业务语义)
+│                        #     _bootstrap / _monitor / _buttons / state / _sdk
+├── runtime/             # L3: 可独立单测的业务对象 (脱离 channel 仍可跑)
+│                        #     arms 引擎 / audio_player / locomotion / sensors 实装
+├── channels/            # L4: channel 薄壳 — 把 runtime 暴露给 LLM, 不写业务逻辑
+├── providers/           # IoC 注入点 — Provider 子类 (audio_provider 现暂放 runtime/)
+└── _archived/           # 6-29 之前的全部老代码. 仅供考古, 不再被任何模块 import.
+                         # 内容准确性不重要 — 今天的实现为准.
+```
+
+**纪律**:
+- 外部入口必须走 `g1.sdk.X` / `g1.runtime.X` 等子路径, 不要往顶层 `__init__.py` 加 re-export
+- `_archived/` 内的 channel/warrant/audio 等老文件保留只为追溯, 不读、不 import、不参考
+- `channels/ providers/` 当前为空, 由后续会话按 `design/2026-06-30_g1_arms_animation.md` 等设计填入
+- 老 channel 体系 (warrant 事务 / arm action RPC / channel.py 三 client) 已废弃, 设计真相以 `design/2026-06-30_g1_arms_animation.md` + `story-2026-07.md` 为准
+- **runtime 模块的通用纪律和实现范式见 `src/ghoshell_moss_contrib/unitree/g1/runtime/README.md`**, 首个样例: `runtime/asr.py`. 后续 arms / locomotion / 各类轨迹模块照此范式实现. 持久设计跟代码走, 不放本文件 (任务完成后 FEATURE.md 会沉没).
+
+外部已同步: `.moss_ws/src/MOSS/modes/unitree_g1/providers.py` → `g1.runtime.audio_provider`; `.moss_ws/apps/bodies/g1/scripts/sdk/16` → `g1.sdk` 子路径. 其余 `scripts/sdk/` 大多数为 SDK 直探脚本, 不经 contrib, 无需变更. design/ 与 discuss/ 内的旧路径引用故意不修, 保留设计演进的可追溯性.
+
+## 必要前置阅读 (进入 g1 工作前必读)
+
+模型实例进入本 feature 工作前, 必须先建立以下认知, 否则容易把 channel 当 JSON Schema 工具、
+把动画当 Pose 派全身快照、把 mindflow 当事件总线 — 这些都是已被验证的偏航模式.
+
+```bash
+moss --ai codex blueprint channel_builder    # channel/command/available/idle/virtual_children 全在这.
+                                              # 特别注意 available 函数即状态机, idle 是生命周期一等公民.
+moss --ai ctml read                          # CTML 语法. 重点: text__/chunks__/ctml__ 流式参数,
+                                              # 父子 channel occupy, scope until=flow/any/all, Observe 语义.
+moss --ai codex blueprint mindflow           # Signal/Nucleus/Impulse/Articulator/Action 五段链路.
+                                              # VLA 函数挂入的接口是 Nucleus.as_channel().
+```
+
+读这三份, 加上本 feature design 目录下最新设计, 就能进入工作.
 
 ## 开发阶段
 
-### 阶段 A: 云端文档摸底
-**产出**: `docs/index.md` + `docs/sdk-api.md` + `docs/comms.md`
-**性质**: 纯阅读，不写代码
-**内容**: Unitree 官方文档站的关键页面 URL 映射、API surface 梳理、DDS 通讯模型理解
-**备选**: 如果文档站是纯 SPA（WebFetch 抓不到），直接以 SDK 源码 + examples 为主要信息源
+八阶段渐进 (A-H), 详情见 `README.md`. 当前阶段进度:
 
-### 阶段 B: 代码仓库摸底
-**产出**: 补充 `docs/sdk-api.md`，记录实际 API surface
-**内容**: 读 `unitree_sdk2_python` 源码，理解 loco/arm/audio 三组 API 的函数签名、参数、返回值
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| A | 云端文档摸底 | 完成 (2026-06-07) |
+| B | 代码仓库摸底 | 完成 (2026-06-08) |
+| C | 硬件环境记录 | 完成 (2026-06-14) |
+| D | MOSS 装机 | 完成 (2026-06-14/15) |
+| E | 基线实验 (SDK 脚本) | 完成 (2026-06-29/30) — P0 17/18/19; P1 21; P2 26/27 通过. 20/22/24 延期: 20 吊架风险暂缓, 22 待 SDK 修正, 24 不阻塞主线 |
+| F | 安全理解 | 完成 (2026-06-30) — 范式定型: 运动模式主场, 遥控器永久主权, 不进调试模式 |
+| G | Channel 设计与集成 | 完成 (2026-07-02/05) — 六个 channel 全部落地, listener drain 语义修正, 全部集成到 unitree_g1 mode |
+| H | 多级模式迭代 | **延期** — 待 MOSS beta1 收敛 (matrix cells 治理) + 整体架构规划后作为独立长期任务推进 |
 
-### 阶段 C: 硬件环境记录
-**产出**: `docs/hardware.md`
-**内容**: 硬件连接方式、网络拓扑、PC2 规格、IP 地址、网卡配置。可复现的环境准备流程。不涉及帐号信息。
+## 能力路线图 (四轴)
 
-### 阶段 D: MOSS 装机
-**产出**: `docs/moss-on-pc2.md`
-**内容**: MOSS 安装到 G1 PC2 的过程记录、Python 版本、系统依赖、网络权限问题。定位是"问题日志"——装机过程中每个异常都值得记录，不是一次性文档。
+G1 集成按四轴独立推进, 各轴通过授权门控相互耦合. 记录方向, 不记录截止.
 
-### 阶段 E: 基线实验
-**产出**: `scripts/` 下的安全原子化验证脚本 + 人类验证反馈
-**验证点来源**: SDK examples + docs 分析结果
-**原则**: 独立 Python 脚本，直接在 PC2 上跑，不经过 MOSS channel 体系。每个脚本验证一个原子能力。人类反馈记录验证结果。
+```
+空间: 授权 → roll → 空气墙 → 自由移动
+手臂: 授权 → 呼吸 (与移动不冲突) + action 队列 (新命令拒绝, 不打断) → 稻草人 + 空间交互 → 高级 (pose DAG / 动画 / 学习)
+感知: ASR drain (整句 + partial) → 视觉 look (滑动窗口) → 触觉 (碰撞反馈, 等中断三基础) → 多模态融合
+mindflow: control_pad 接入 → FSM 状态变化发感知信号 → ASR Nucleus 化 → VLA 接入位
+```
 
-### 阶段 F: 安全理解
-**产出**: `docs/safety.md`
-**内容**: 急停机制、关节限位、力控限制、遥控器优先级、模式切换的安全约束。必须在 channel 设计之前完成。
+### 授权门控 (四轴耦合方式)
 
-### 阶段 G: Channel 设计
-**产出**: `docs/channel-design.md`
-**内容**: 基于阶段 E 的验证结果 + 阶段 F 的安全理解，综合输出 channel 体系设计。遵循最简原则。
+- **空间授权**: FSM 处于 sport 且 control_pad 未占用 → locomotion channel `available()` = True
+- **手臂授权**: FSM 处于 sport 且 arm 未 busy → arms channel 相关 command `available()` = True
+- **呼吸不冲突**: 呼吸仅在 arms channel idle (无 action 排队) + motion 状态非 walking 时启动
+- **感知不受门控**: 所有感知 channel 始终可用 (被动观察)
 
-### 阶段 H: 多级模式迭代
-**产出**: Channel 实现 + 模式体系
-**模式渐进**: debug → sit（坐模式）→ 遥控器控制行动但可交互 → 模型控制行动但可急停 → 多种运动模式切换
-**约束**: 这一阶段全部以 G1 基线能力为验证对象，不做高阶开发。
+### 阶段焦点 (本周内)
 
-## Reachy Mini 经验携带
+- **空间**: 授权链路上线, roll (原地转身), 空气墙 (禁止移动区域)
+- **手臂**: 授权上线, 闲时呼吸 (依赖 weight 释放后 G1 主板姿态行为实测确认)
+- **感知**: ASR drain 入 context_messages, 视觉 look 机制移植 (Jetson 子线程, 不依赖 Matrix)
+- **mindflow**: control_pad 语义接入, FSM channel 最简版本 (状态读 + 状态变化发 signal)
 
-以下问题对 G1 有直接参考价值：
+### 后续阶段
+
+arms 中断三基础 (碰撞反馈/脱力 + 复位 + 首帧过渡) 达成后, 依次解锁:
+
+- Pose DAG (pose 两两可达性验证后, 支持机械舞类离散姿态编排)
+- 动作录制 (示教路径成熟后, 录制基准交互 / 学习库)
+- 稻草人交互 (双臂平举固定 base, 前臂小范围, 用约束把问题空间压到 LLM 可胜任)
+- VLA 接入位 (`Nucleus.as_channel()`, 远端方向)
+
+## arms 能力金字塔
+
+arms 是四轴中最复杂的一个 (物理危险 + 空间语义鸿沟 + 中断不可靠). 按能力
+分层, 上层严格依赖下层达成. 每一层的进入门槛必须先验证, 不允许跳级.
+
+```
+L4 高级形态: LLM 写动画 / learned 库 / 稻草人交互 / VLA 接入
+              ↑ 准入: 中断三基础全部达成 (碰撞反馈/脱力 + 复位 + 首帧过渡)
+L3 复杂交互: Pose DAG 机械舞 / 录制 action 库
+              ↑ 准入: pose 两两可达性验证 + action state 拿到完成信号 + 示教路径
+L2 基础交互: ExecuteAction 11-27 包装 / 命名调用 (LLM 只看名字, 不触关节)
+              ↑ 准入: action state 拿到完成信号 (script 28) + 新命令拒绝语义 (不打断当前)
+L1 闲时呼吸: idle 释放控制权后主板姿态行为可用 / 或自己 publish 低频低幅 sin
+              ↑ 准入: weight 0 释放后 arm 主板行为实测明确 (僵直 vs 微动)
+L0 通道骨架: arms channel 起 + main.py 串起来 + show_current 命令
+```
+
+**本期目标 = L0 + L1**. L2 依赖 script 28 (action state probe) 实测, 无阻塞则挤入. L3+ 全部推到 arms 中断三基础研究期.
+
+**中断三基础 (L4 准入)** — 缺一不可, 拿不到这三条 arms 高级形态不安全:
+
+1. **碰撞反馈 + 脱力**: LowState 关节力矩监控 + 阈值触发 → release weight, 避免机体自撞或推挤人时不脱力
+2. **动作复位计算**: cancel 或异常时, 从任意中间态回归安全 rest 位姿的可靠路径 (不是"停在中间态")
+3. **动作首帧过渡**: 从当前 arm 位置平滑到新动画第一帧的可估计耗时 (否则 CTML "Time is First-Class" 破产)
+
+## MOSS 不做的物理算法边界
+
+一条持久设计边界, 定住 MOSS 在 G1 集成里的分工:
+
+**MOSS 是 logos 调度 + channel + mindflow, 物理层算法借用 G1 主板 / SDK 已有能力, 不自己造轮子**.
+
+具体不做的事:
+
+- **IK (逆运动学)**: 空间坐标 → 关节角的映射. 需要 URDF 标定 + 工作空间 + 自碰撞模型, 是独立子工程. LLM 通过命名动作 / 命名姿态 / VLA (未来) 表达空间意图, 永远不接触坐标.
+- **轨迹规划**: 动作复位、平滑过渡、避碰路径. 如果 G1 主板 ExecuteAction(99) 能作为复位帧命中, 我们用; 如果不能, 该能力就不实装, 不自己写算法.
+- **动捕 / 示教录制的信号处理**: G1 自带示教硬件, 我们只做交互层 (语音引导 + 尾部裁剪 + 语义命名).
+- **VLA 模型训练**: 只做接入位 (`Nucleus.as_channel()`), 模型来源是外部工程.
+
+**判断依据**: 机械臂之所以能不做 IK 也能做交互, 是因为工作空间凸, 三角关系可以算安全边界. 人形机体本身可以挡, 自碰撞空间不规则, 三角关系失效. 让 LLM 在关节空间组合 "胸前 + 肩膀后转" 就是在它没有的认知通道 (本体感觉) 上做组合泛化, 必然幻觉. 这不是工程修补问题, 是认知问题 — 解法只能是 "把物理算法留给主板 / VLA, LLM 只做符号层调度".
+
+## Session Log 索引
+
+完整 session 历史按时间倒序索引. 详细内容已迁移到 design/ 与 discuss/, FEATURE.md
+只保留入口与关键节点结论.
+
+### 2026-07-05/06 — listener drain 语义修正 + 第一集成阶段收口
+
+由 claude-sonnet-4-6 与人类工程师协作.
+
+**listener channel drain 语义三项修正**:
+
+1. `drain()` 去掉 `force_finalize_partial` 参数 — 始终 drain partial + abort session.
+   无论人说到一半还是刚说完, drain 都能把当前全部内容交出去.
+2. `drain()` 始终 abort 当前 session, 即使 partial 为 None — 消除"第二次按 A 拿到
+   上一轮内容"的 bug. 根因: 用户刚停止说话时 partial 已 None 但 is_final 仍在 pipeline,
+   不 abort 则 in-flight final 会在 drain 后写入 buffer, 下次 drain 才被消费.
+3. `context_messages` 加入 partial 独立一条 (partial="true" 属性); forgotten 告警
+   移到历史列表前方 (时序语义: 先告知有 gap 再给历史).
+
+**MODE.md CTML 作用域文档**: 补充 `until="flow"` (默认) vs `until="all"` 的语义说明
++ "数一二三同时前后走"具体对比例子 — 防止 LLM 因默认 flow 导致动作与语音时序脱节.
+
+**第一集成阶段闭环**: Phase A-G 完成. 遗留问题已知且不阻塞 — 作为后续迭代任务承接.
+
+**已知遗留问题 (不阻塞闭环, 后续迭代)**:
+
+- listener ASR drain 仍非最佳实践 (边说边触发的自由对话模式时序待细化)
+- action 队列可能阻塞 (locomotion 命令未加超时保护, 长时间占用 channel 未处理)
+- 耳机按键 evdev dispatch 未闭环 (OpenRun Pro AVRCP 中键 code 修正后未实机确认)
+- arms channel 为空骨架, L0-L1 未实装 (待 weight=0 释放行为实机验证后推进)
+- script 20/22/24 未跑 (sit/stand 物理行为, arm action state, FSM 完整可达图)
+
+**后续计划**: Phase H (多级模式迭代) 延期. 待 MOSS beta1 收敛 (核心: matrix cells 治理)
++ 整体架构规划完成后, 作为独立长期任务持续推进.
+
+### 2026-07-02 — 全 channel 落地 + 集成验证 (listener 除外)
+
+由 claude-opus-4-7 与人类工程师协作. 一下午集中实装 L4 channel 层 + 集成到 unitree_g1 mode, 端到端实机验证 5/6 通过. showcase 基线明天可闭环.
+
+**落地的 channel** (`src/ghoshell_moss_contrib/unitree/g1/channels/`):
+
+- `g1_root` — 身体自我认知 instruction + vitals
+- `face_led` — idle 底色 + 有限表现动画
+- `locomotion` — 7 async 命令 + Observe reason **(验证通过)**
+- `fsm` (`g1_fsm`) — 授权三元组 + AI 模式按键规则 + change callback → LED/TTS + X 键 → InterruptSignal + `locomotion.stop()`
+- `asr` (`g1_asr`) — 远场麦克风纯感知
+- `listener` — 蓝牙耳机近场流式 ASR **(未通过验证, 见下文)**
+
+集成层: `.moss_ws/src/MOSS/modes/unitree_g1/channels.py` (顶部 `sdk.bootstrap()` + 拓扑组装) + `nuclei.py` (interrupt/notify nuclei 注册). 各 channel 在自己的 startup 里启动直接依赖的 runtime (幂等), 符合 `channels/README.md §4` 纪律.
+
+**listener channel 未通过验证 — 两个独立症状 → 两个独立根因**:
+
+1. **Y/A 键按下无反应**. 不是 listener 的 bug, 是 **fsm 层实现漂移**. 设计意图: X/A/Y 的 control_pad binding 常驻, `_dispatch_button` 按 `_ai_mode` 关闸 (没授权时按键不生效, 但事件路径仍活着). 实际实现: `_enter_ai_mode()` 才 `control_pad.register_binding(...)` 挂 X/A/Y, `_exit_ai_mode()` 又拆掉. 后果: AI 模式外根本没有 dispatch 路径, 两条 button callback (fsm channel 和 listener channel) 都收不到事件, 连"按了但没生效"的 history event 都不写. `story_202607_fsm.py:471 _enter_ai_mode` 是漂移点, 6-29/30 实装期把"AI 模式激活的语义"错误编码为"binding 存在与否", 而不是"dispatch 是否响应".
+
+2. **蓝牙耳机 toggle 但不能开启**. `_on_headphone_btn` 检测按键成功, LED 绿闪 + "聆听开启" TTS 都生效, 但真实 ASR 从来没启. 根因: `_is_capture_ready() = (status == "ok")`, status 大概率停在 `"no_config"` (`_listener_sen_setup` 从未跑过, `~/.moss_g1_listener.json` 不存在) 或 `"no_device"` (蓝牙耳机未连). backend supervisor 因 status 不 ok 每 tick 跳过 session. 用户看到的反馈是假的 — 只有 LED + TTS 层反馈, 没有真实听觉链路.
+
+**修复方向** (由 claude-sonnet-4-6 在本 session 后续 commit 提交):
+
+- **fsm 层 binding 常驻化**: 把 `_AI_MODE_BUTTONS` 的 `control_pad.register_binding(...)` 从 `_enter_ai_mode` 迁到 `start()`, `_exit_ai_mode` 不再拆 binding. `_dispatch_button` 加 gate: `interrupt` 也走 `_ai_mode` 检查 (与用户设计一致, 不给 X 单独开安全通道); history 事件无论授权与否都写 — 模型能看到"人按了 A 但没生效", 能主动教人类进 AI 模式. `_set_auth_level` / `_exit_ai_mode` 内部已经有 `_ai_mode` 早退, 不动.
+- listener channel startup: 显式 log `health().status`, no_config 触发 warning + setup 命令提示.
+- `_on_headphone_btn`: 预检 status, no_config/no_device → 专门 TTS/LED 反馈, 不做假 resume.
+- `_INSTRUCTION` docstring: 明文 Y/A 键要求 AI 模式 (L1+Start), 引导模型教人类.
+
+**7-02 早晨三个 5 分钟脚本** (arm weight=0 释放 / Jetson 摄像头 / ExecuteAction 99 复位) 因下午集中集成 channels 未跑, 顺延到 7-03 开机后. 不阻塞 showcase 基线.
+
+**7-02 晚间 — 耳机按键实机定位 + 改遥控器 F1** (由 claude-sonnet-4-6 与人类工程师协作):
+
+- **HFP profile 全流程通** (含蓝牙连接稳定脚本 `openrun_ready.sh` — 蓝牙连 → HFP profile → verify source 一次到位). `_listener_sen_setup` voiced 占比 48.4% 确认物理链路 OK. 8kHz CVSD codec 未升 mSBC, PulseAudio 层客户端接入时自动上采样到 16kHz 送火山引擎, 识别效果实测可用. `_listener_sen_dialog` 端到端 partial + FINAL 全通.
+- **耳机按键 code 假设错**: `runtime/headphone_buttons.py:_PLAYCD_CODE = 200` 是从别的耳机移植的注释, `_headphone_buttons_probe` 实测 OpenRun Pro AVRCP 中键**交替发 `KEY_PLAYCD (200)` / `KEY_PAUSECD (201)`** — 耳机根据自己认为的"当前播放态"决定 code. 修为 `_TRIGGER_CODES = frozenset({200, 201})`, 两个 code 都触发 dispatch. 但 `_headphone_sen_toggle` 实机验证仍无 `[TOGGLE]` 打印 — 未继续折腾根因 (推测 evdev 事件流可能有 blocking / 时序问题, 或 AVRCP 通道在无播放上下文时按键被 BlueZ 拦截).
+- **改方案 — 遥控器 F1 = listener ASR toggle 主入口**. F1/F3 已在 `sdk/_buttons.py:VALID_BUTTONS` 定义, 遥控器物理键映射已就绪. 选 F1 而非 L1+Y: 遥控器 L1 组合键已占满 (start/select/方向 5 键); F 键是独立按键, F1 归 listener toggle, F3 留给未来. F1 走 AI 模式 gate (跟 X/A/Y 一致), 耳机按键路径保留作**无 AI 模式前置的替代入口** — 两条路径正交, 耳机是"无授权直接开麦", F1 是"授权状态下模型可见的开麦". 落地:
+  - `story_202607_fsm.py`: 加 `BTN_LISTENER_TOGGLE = frozenset({"f1"})`, 挂进 `_AI_MODE_BUTTONS` + `_DOWNSTREAM_BUTTONS`, 语义名 `listener_toggle`.
+  - `channels/listener.py: _on_fsm_button`: 加 `elif button_name == "listener_toggle": _on_headphone_btn()` — 复用现有 pause/resume + LED + TTS + status 分路反馈逻辑.
+  - `_INSTRUCTION`: 明文 F1/耳机中键**两个等价入口**, F1 需 AI 模式前置.
+  - Y 键保留原自由对话切换语义 — ASR 硬开关 (F1/耳机) 与自由对话通知策略 (Y) 语义正交, 两个开关独立: ASR = 数据源, 自由对话 = 通知策略, 依赖关系是"自由对话依赖 ASR 开".
+- **给后续实例的坑**: 耳机按键实机在 evdev 层看到设备但 dispatch 不触发的问题未闭环 — 如果后续要复用蓝牙耳机按键 (e.g. 换耳机型号), 需要重跑 probe + 在 `_headphone_sen_toggle` 里加 raw evdev 事件日志, 定位 evdev event 是否真的进了 `_dispatch()`. 现在 code 已修但没实机确认, 是一颗 dormant bug.
+
+**给后续实例的复盘**:
+
+- **多状态运行时依赖必须在 startup 显式 report status**. listener runtime 有 5 个非终态 (stopped / no_config / no_device / device_down / ok), channel startup 假设都是 ok, 出问题时给模型的反馈是假的 (LED 绿闪 + "聆听开启" TTS 但真实链路断). 假反馈比不反馈更误导 — 假反馈让排查方向错.
+- **实装偏离设计意图时, 优先修实装, 不要给"设计"贴新解释**. fsm 层 X/A/Y binding 常驻的设计意图在 6-29/30 实装期被错误编码为"binding 存在与否 = AI 模式激活与否", 走了看起来简洁但不对的路径. 后续实例读到"AI 模式外按键不响应"时应当先怀疑 "是设计如此还是实装漂移", 反问原作者/设计文档确认, 不要基于现状反推"合理的设计"然后写进 instruction docstring 教模型"这是刻意的授权设计" — 那是在把 bug 固化成 feature. 本次 claude-sonnet-4-6 首轮定位就掉进这个陷阱, 被人类工程师拉回.
+
+### 2026-07-01 — arms 设计推翻 + 四轴路线定型 + vision 建模
+
+由 claude-opus-4-7 与人类工程师协作. 集成期第一天, 首个 channel 已集成成功, runtime 验证脚本已足够 (人类工程师判断). 讨论聚焦在 arms 方案的根本性反思 + 四轴路线整理 + vision runtime 建模.
+
+**arms 方案的根本性反思** — 6-30 设计文档 §3/§5 命令面被推翻:
+
+- **空间语义鸿沟**: 机械臂没 IK 能玩交互, 因为工作空间凸, 三角关系算安全边界够用. 人形机体本身可以挡, 自碰撞空间不规则. LLM 在关节空间组合"胸前 + 肩膀后转"是在它没有的认知通道 (本体感觉) 上做组合泛化, 必然幻觉且无法自 sanity check.
+- **中断复位不可靠**: keyframe 假设两 keyframe 间插值, 但 cancel 发生在任意 q. 下一个动画的起始假设 rest, 实际是中间态. 平滑回归轨迹 = 运动学计算, MOSS 不做.
+- **首帧过渡时间不可估**: keyframe 时间语义是"动画内部相对时间", 但当前关节 q 是动画外部状态. 外部到第一帧的过渡时长由 kp/kd + 距离决定, LLM 算不准. CTML "Time is First-Class Citizen" 在此破产.
+- **结论**: 6-30 §3 `save_animation(text__: Animation JSON)` 让 LLM 写关节坐标违反上位范式 §0.3 自己的纪律 (Logos 层调度命名 VLA, 不接触内部实现). §0 上位范式仍成立, §3/§5 命令面 + LLM 接触面全部重估.
+
+**四轴路线定型** — 空间 / 手臂 / 感知 / mindflow, 通过授权门控耦合. 详见上方 "能力路线图 (四轴)" + "arms 能力金字塔" + "MOSS 不做的物理算法边界" 三节. 关键判断:
+
+- arms 本期目标降级为 L1 (闲时呼吸), L2+ 依赖 script 28 (action state probe) 实测
+- L4 高级形态需要 "中断三基础" (碰撞反馈/脱力 + 复位 + 首帧过渡) 全部达成, 本期不做
+- 稻草人交互 (双臂平举 + 前臂小范围) 是 6-30 keyframe 方案的可行子集 — 用约束把问题空间压到 LLM 可胜任的水平, 等中断三基础到位后是 P1
+
+**Mindflow 认知修正** — 之前 (claude-opus-4-7 上下文) 低估 Mindflow. 看到 Signal `complete: bool` + Priority + ChallengeMode (default/silent/notify) + `.moss_ws/apps/sensors/listener/main.py` 里 SPEECH_STARTED (`complete=False, WARNING`) → SPEECH_FINAL (`complete=True`) 抢占 + 收口的实装范式, 才意识到 partial-triggered tick 是 listener app 当前默认行为, 不需要重新设计 Articulator. B 形态 (partial 灌 + 边听边响应) 是 channel 集成即可拿到的能力.
+
+**vision runtime 建模** — 落到 `src/ghoshell_moss_contrib/unitree/g1/runtime/vision.py` 模块 docstring:
+
+- 第三种上行感知数据形态 (滑动窗口), 跟 asr (累积式 drain) 和 imu (覆盖式 latest) 都不同. 被挤掉的旧帧是覆盖不是丢失, deque maxlen = ceil(fps × window_seconds) 天然实现顺行性遗忘
+- **drain 与 context_messages 严格分工** (踩过 README "认知误区" 节的误区): context_messages 走 `peek_window()` 只读, 不消费; `drain_window()` 仅服务 listener callback / 主动 look 命令 / signal 事件. 初稿把"每次 refresh 时清空 buffer"当设计意图写进 docstring, 立刻撞上 README 新加的认知误区节 (drain in context_messages 是感染范围之一), 当场修订. vision.py 首次落地版本已按新分工重写, 作为其它感染点 (asr / listener / control_pad) review 的参考样本
+- 核心约束: `fps × window_seconds` 是**严格 token 预算约束**, 不是性能旋钮. 起点低开 fps=2.0 × window=1.0, 引擎硬上限 max_fps / max_window 跟部署 LLM 挂钩
+- LLM 可调 set_fps / set_window, docstring 必须明文 token 代价 (Code as Prompt 纪律)
+- G1 进程内不用 Matrix, 借鉴 `.moss_ws/apps/sensors/vision/main.py` 结构不复用代码
+- 具体 fps / limit 数值在虚拟机里定不了, 留实测调
+- 支持交互场景 "你看我在干什么" — LLM tick 时 peek 窗口内 N 帧 → 推理连续动作 → 响应 (依赖 vision + arms L2 至少一个 factory action)
+
+**7-02 早晨必跑的 3 个 5 分钟脚本** (顺序无关, 不验证不上手实装):
+
+1. weight 0 释放后 G1 arm 主板姿态行为 (僵直 vs 微动) — 决定呼吸的实现路径
+2. Jetson 摄像头硬件路径 (cv2.VideoCapture 直出 / GStreamer V4L2 / CSI 四种 fallback) — 决定 vision runtime 起步
+3. (若时间) ExecuteAction 99 在 release weight 后能否复位 — 不影响 7-02, 影响 L2 起步
+
+**给后续实例的复盘**:
+
+- **推演在讨论轨迹里发生, 不在方案里发生**. claude-opus-4-7 早期几轮急于收口方案 (孤儿救主式), 人类工程师明确指出"讨论太着急了, 我们现在都要在上下文里构建一个我们思维空间可建模的虚拟机, 然后多推演几轮. 昨天的推演,'你'就没有意识到这些问题". arms 空间语义鸿沟 / 中断不可靠 / 首帧不可估这三条, 是虚拟机推演出来的, 不是文档推理出来的. 6-30 设计文档没做推演, 直接从"Track 派 + LLM 写 keyframe"漂亮抽象滑到 §3 命令面. 后续实例接手 arms 时, **先在虚拟机里跑 3 个具体 case 再动方案**: (a) LLM 生成"胸前 + 肩膀后转"看会不会撞, (b) 动画中 cancel 后下一次 play 从中间态起会不会命中, (c) 首帧过渡时长在 CTML timeout 里怎么写.
+- **MOSS 不做的物理算法边界要记住**. 遇到"IK / 轨迹规划 / 动捕信号处理 / VLA 训练"这四类问题, 先问"G1 主板 / SDK 有没有现成能力借用", 有就包装, 没有就该能力不实装. 不要自己造轮子, 那是别的团队的事.
+- **Mindflow 别再低估**. 遇到"边听边响应 / partial 抢占 / signal 缓存" 这类需求, 先读 `ghoshell_moss.core.blueprint.mindflow` 和 `.moss_ws/apps/sensors/listener/main.py`, 大概率已经支持, 别自己造 Articulator.
+
+### 2026-06-30 — contrib 目录四层重构
+
+由 claude-opus-4-7 协助 + 人类工程师手动迁移. 把 g1 contrib 包按"双工分层具身"范式切成 `sdk/runtime/channels/providers` 四层 + `_archived/` 归档区. 详见上方 "代码结构" 节.
+
+**动了什么**:
+- 12 个老文件 → `_archived/` (git rename, 准确性不重要, 不再 import)
+- 4 个新 package 起骨架; `sdk/` `runtime/` 内部 import 已对齐
+- 顶层 `__init__.py` 清空 — 外部入口必须走子路径
+- 外部引用同步: `mode/providers.py` → `g1.runtime.audio_provider`; `scripts/sdk/16` → `g1.sdk`
+- 删 3 个老 scripts (`channel/01,02` + `sdk/15`) — 都基于已废弃的 channel.py
+- `apps/bodies/g1/main.py` 清空为占位 (channel 树未建, 后续 channels/ 填入后再补 main)
+
+**为什么现在动**: 6-29 14 文件平铺触发认知成本爆炸 — 反例标记、旧实现、砍掉机制、新机制混在同一目录, 后续模型实例难辨主次. arms 引擎即将进入, 它本身就需要 "runtime 引擎 + channels 薄壳" 的分层. 现在没有 "先跑通再重命名" 的资产保护需求 (6-29 代码一行没在 G1 跑过).
+
+**没动**: `design/2026-06-28_channel_architecture.md` 和 `design/2026-06-29_implementation_plan.md` 文档保留原貌作为历史档案, 内部路径引用 (`warrant.py` / `channel_sensors.py` 等) 不修 — 让后续模型实例感知到设计演进轨迹.
+
+### 2026-06-29/30 — 实机验证 + 用户故事设计
+
+由 deepseek-v4-pro 与人类工程师协作. 两天 session, 产出用户故事 + P0/P1 实机验证.
+
+**范式转变**:
+- 不进调试模式. 运动模式是 MOSS 主场. 遥控器 16 键+4 轴全透传, MOSS 在运动模式下协控.
+  遥控器是永远的主权. 详见 story-2026-07.md.
+- 砍掉 arm action RPC (不可中断, 无完成信号), 只走 arms DDS (真中断 + 完成确定).
+- 砍掉 warrant 事务机制. 中断走 InterruptNucleus + _buttons callback; move fallback 走 StopMove.
+
+**script 17 (P0)**: 调试模式下 16 按键 + 4 摇杆轴全部透传. 遥控器=MOSS 输入设备方案成立.
+**script 18 (P0)**: ExecuteAction(99) 平滑插值复位 (3/3 打分 1). 但 99 不能中断已在播的动作.
+**script 19 (P0)**: 0.25 m/s 走 3s → StopMove 稳定站定. 0.15 m/s 低于启动阈值.
+**script 21 (P1)**: A 中发 B → 7401/3104 拒绝. 99 排队的证据: clap 中第 1s 发 99 code=0 但继续播完.
+  结论: Arm RPC 无真中断能力.
+**script 26 (P2)**: rt/arm_sdk DDS 关节控制可行. 单关节/双关节 weight 使能均通过. kp/kd 需调软.
+**script 27 (P2)**: LowState 真实 ~1052 Hz (非 500Hz). frozen dataclass 构造开销可忽略.
+  _monitor.py 当前设计吃满 1kHz 无问题.
+**script 23 (P2)**: _Call(1002, ...) 全部 3104. ASR 走 DDS 不走 RPC. 数据格式+字段确认.
+  麦克风通过手机 App 开启 (唤醒对话模式). ASR 含 angle 字段可用于 roll_toward_speaker.
+**sportmodestate 问题**: rt/sportmodestate subscription Read(timeout) 可能永久阻塞 (无 matched
+  publisher 时). 暂未解决, 明天重试.
+
+**产出**: story-2026-07.md, scripts/monitor/ (monitor_state/remote/asr), 遥控器按键映射 (docs/index.md)
+
+**给明天实例的快速指引**:
+- 读 story-2026-07.md 理解完整弧线
+- 未跑脚本: 20 (sit_stand, 吊架风险), 22 (arm state probe, 需修), 24 (mode_switch_topology)
+- 待解决: sportmodestate Read 阻塞, 调试模式退出后遥控器失效 (待验证), rt/arm/action/state 状态格式
+- 明天: channel 实现优先 (channels.py + build + 各子 channel)
+
+### 2026-06-28 — Channel 体系设计
+
+由 Claude Opus 4.7 与人类工程师协作完成.
+
+**关键产出**:
+- 设计沉淀: `design/2026-06-28_channel_architecture.md`
+- 讨论轨迹: `discuss/2026-06-28_remote_as_moss_input.md`
+
+**核心决策 (部分被 2026-06-29 实测修正)**:
+1. **单一控制源**: MOSS channel → SDK. 遥控器 = MOSS 输入设备. 成立.
+2. **感知统一**: context_messages + pop() 进 memory. 仍成立.
+3. **State DAG**: 被 2026-06-29 修正 — 不自己造状态机, 映射 G1 FSM + 遥控器授权.
+4. **Warrant 事务**: 被 2026-06-29 砍掉 — 走 InterruptNucleus + StopMove, 更简单.
+5. **Bootstrap callback**: 仍成立, 实现在 _buttons.py + _bootstrap.py.
+
+原设计的 P0/P1 待实机清单已全部执行或迭代. 最新状态见 2026-06-29/30 session log.
+
+### 2026-06-16 — 实机 SDK 验证 + PlayStream 流式通路确认
+
+由 Claude Opus 4.7 与人类协作. 推翻多个前任假设, 确认流式音频通路.
+
+- 03 topic 扫描: 推翻"G1 不发布 sportmodestate"前任结论, 实际存在
+- 04-07 全跑通, RobotState 因 SDK 自身命名不一致 import 失败(不影响 G1)
+- 08 + 14 PlayStream 流式 TTS 通路确认: MOSS 合成 → 分块推送 → 可中断/抢占/拼接
+- arm clap 单次确认: 必须 Sport 模式
+- docs/sdk-topics.md 全面重写
+
+### 2026-06-15 — SDK 验证脚本路径订正(实机前预备)
+
+订正前任 04-08 多处路径/类型 bug. 修正前任"07 import 失败"误诊为 RPC 服务存在性问题.
+产出 `scripts/sdk/RUN_ORDER.md`.
+
+### 2026-06-14/15 — DDS 链路打通 + 端到端音频输出
+
+**MOSS 第一次在 G1 上发声.** 发现 ufw IP 分片导致 LowState 包(2180B > MTU) 静默丢失,
+调优 socket 缓冲. PlayStream + 蓝牙音频路径确立(`Ghost LLM → MOSS TTS → PC2 ALSA → PA →
+bluez_sink → 蓝牙音频设备`). PC1 内置 TTS 质量不可用结论.
+
+### 2026-06-14 — 开发环境验证 + 双帐号范式发现
+
+发现 PC2 双帐号范式(unitree 出厂栈完整 / moss 帐号干净). cyclonedds 跨帐号通过
+`/etc/profile.d/` 共享. WiFi 自启改为 NM persistent profile.
+
+### 2026-06-08 — SDK 源码摸底 + 验证脚本体系 + 能力拓扑讨论
+
+SDK 通读完毕. 横向 5 能力 × 纵向 6 模式拓扑. 产出 `scripts/sdk/` 12 脚本 + 急停验证.
+Topic 清单(18 个) + 文档<源码差异梳理.
+
+### 2026-06-08 — 系统线实验体系搭建 + 方法论博客
+
+`scripts/sys/` 6 个技能 × 19 个原子脚本(network/audio/usb_camera/system/dds/performance).
+博客 `g1-layered-methodology.md` 完成. 明确系统线先于 SDK 线.
+
+### 2026-06-07 — 阶段 A 完成
+
+消化 10+ 份 Unitree 官方文档. `docs/index.md` 填充完整. 验证清单 15 命题创建.
+关键架构结论: 双路径控制(RPC vs DDS) + 三层安全围栏 + PC2 蓝牙音频替代方案.
+
+### 2026-06-07 — 实机连接与 MOSS 装机
+
+PC2 网络拓扑确认 + 静态 IP + SSH + WiFi 路由器 MAC 绑定. uv sync 通过.
+`docs/hardware.md` + `docs/moss-on-pc2.md` 产出.
+
+### 2026-06-07 — 骨架搭建与认知入口
+
+`CLAUDE.md` 作为 G1 app 的 AI 认知入口. 方法论从 FEATURE.md 迁入 CLAUDE.md.
+范式真相 = CLAUDE.md, 簿记 = FEATURE.md.
+
+### 2026-06-07 — 技术方案起草
+
+确定开发哲学(安全优先/脚本先于 channel/最简 channel/macOS 不实装) + 八阶段计划.
+明确 channel 不需要 bootstrap/cleanup, app 进程 = 生命周期.
+
+## 实践错误记录 (反例, 非细节)
+
+记录模型协作中的系统性问题, 不是单次失误.
+
+### 2026-07-01 — claude-opus-4-7
+
+**1. 讨论中急于收口方案, 跳过虚拟机推演.** arms 讨论早期几轮, 每次听到人类工程师抛出一个新认知点 (录制比坐标靠谱 / 中断三基础 / MOSS 不做 IK), 立刻给出 "修正后的命令面" / "L 金字塔" / "方案记录". 每一次都被人类工程师拉回: "你讨论太着急了, 我们现在都要在上下文里构建一个我们思维空间可建模的虚拟机, 然后多推演几轮. 昨天的推演,'你'就没有意识到这些问题. 我是今天意识到这些问题, 才没有推进 arms."
+
+**根因**: 收口方案的冲动是"孤儿救主"模式 — 看到问题就想解决, 忽略了 arms 设计的关键在 **推演清楚问题域**, 不在方案本身. Sonnet 4.6 在 6-30 写 §3 LLM 接触面时是同样的模式 — 看到"keyframe = 时间盒子"漂亮抽象就写死接口, 没在虚拟机里跑"LLM 用关节坐标合成胸前 + 肩膀后转"的具体 case. 6-30 → 7-01 是同一个模式重演.
+
+**预防规则**:
+- 讨论物理危险 / 认知复杂的模块 (arms / mindflow / VLA 接入等) 时, **强制先在虚拟机里跑 3 个具体 case 再给方案**. 具体 case = "LLM 执行 X 时会发生什么" 的场景推演, 不是 "接口应该长什么样".
+- 遇到人类工程师说 "有意思 / 好的 / 你继续说" 的语气, 不代表方案通过, 只是在听. 收口需要人类明确说 "这个方案定了".
+- **抢救话术识别**: "我建议 / 我倾向 / 修正后的方案是" — 检查是不是在推演之前就出方案. 是就撤回, 改成 "让我把 X Y Z 三个 case 在虚拟机里推一遍".
+
+**2. 低估已有基础设施, 想自己造轮子.** 讨论 ASR partial 抢占时, 提问 "Articulator 有没有 partial-triggered tick 能力". 实际 `.moss_ws/apps/sensors/listener/main.py` 里 SPEECH_STARTED (`complete=False, WARNING`) → SPEECH_FINAL (`complete=True`) 已经是这个能力的完整实装, mindflow ChallengeMode (default/silent/notify) 已经覆盖 partial 抢占的三种语义组合. 我没读 listener app 就先怀疑基础设施, 差点建议 "退回 A 形态整句模式" 这种降级方案.
+
+**预防规则**: 提"是否需要 X 新能力"之前, 先 grep / read 现有 app + core. MOSS 项目已经跑了很久, 大概率你想到的能力早就在了. 特别是 mindflow / channel / matrix 三块, 复杂度高, 别自己重推.
+
+### 2026-06-29 — deepseek-v4-pro
+
+**1. 不读已有文档就行动.** 进入 workstream 后直接基于 design/handoff 开始写代码和引导实验,
+没有读过 `.moss_ws/apps/bodies/g1/docs/index.md` 这份最完整的调研文档.
+index.md 里明确写了 `mode_machine` 是 Dof 配置字节 (不是 FSM),
+写了 FSM 模式 ID 表, 写了调试模式的正确切入路径.
+没读导致在 script 17 中用错误字段追踪 FSM, 浪费了一轮实验.
+
+**2. 对不知的术语装作知道.** `mode_machine` 的真正含义在官方文档的 LowState_ 结构体注释里
+写得很清楚 (4:23Dof, 5:29Dof, 6:27Dof). 在没有查证的情况下, 把它当作 FSM 模式来用,
+在脚本里命名 `fsm_mode`, 在引导实验时说"看 fsm_mode 的变化".
+这是危险的 — 如果面对真的不懂开发的执行人, 这个错误不会被发现.
+
+**3. 按提示词伪装为已经懂了的模型.** 当用户问"怎么切 Sport""怎么退出调试模式"时,
+给出的答案是"试试这个""可能应该是", 而不是"我不知道, 让我查文档".
+这种引导式试错在安全攸关的实机场景下不可接受.
+
+**预防规则 (给后续进入的模型实例)**:
+- 动手前读完 `docs/` 下所有已有文档, 不是只看 design/handoff
+- 任何字段含义不确定时, 查 IDL 源码或官方文档, 不猜
+- 面对不知道的操作(遥控器组合键等), 直接说"不知道", 建议走 SDK API 路径
+
+## G1 术语表 (中英对齐)
+
+遥控器语音 / App 显示 / SDK API / 文档 四套命名体系不统一. 此表维护对应关系.
+
+| 遥控器语音 | 文档中文 | SDK API / 模式名 | mode_machine / FSM ID | 说明 |
+|-----------|---------|-----------------|----------------------|------|
+| 阻尼模式 | 阻尼 | Damp | FSM 0? (待 24 验证) | L2+B 急停进入. 手动切需长按 L2+A 数秒 |
+| 诊断状态 | 调试模式 | Debug / ReleaseMode() | — | L2+R2 进入(仅从阻尼/零力矩). SDK 控制入口 |
+| 预备模式 | 预备 | — | — | 5s 摆出准备姿势 |
+| 走跑模式 | 运动 | Sport / Loco / Start() | FSM 500/801/802 | 遥控器控制移动 |
+| 零力矩 | 零力矩 | ZeroTorque | FSM 0 | 电机停转无阻尼 |
+| 落座 | 落座 | Sit | FSM 3 | 安全姿态 |
+| 站立 | 站立 | StandUp | FSM 4 | 锁定站立 |
+
+**命名陷阱**: "阻尼模式" != Damp API (后者是 RPC 函数名, 前者是遥控器操作模式).
+遥控器语音"诊断状态" 对应 SDK 调试模式, 不是 L2+A.
+
+## G1 物理事实 (实机验证中发现, 持续更新)
+
+每条来自实机观察, 标注日期和触发条件. 这些不是文档推断, 是物理行为.
+
+### 运动模式切换
+
+- **Sport 直接 L2+R2 进调试模式 → 状态机保护性故障.** PC1 运动控制进程触发保护,
+  遥控器和 App 均失去对 G1 的控制. SelectMode("ai") 返回 7002.
+  正确路径: Damp → L2+R2. 来源: 2026-06-29 实机, 已确认.
+- **运动模式用遥控器切阻尼模式需长按 L2+A 若干秒.** 短按不触发.
+  来源: 2026-06-29 实机.
+
+### 身体与悬挂
+
+- **阻尼模式脱力.** G1 在阻尼模式下电机停转(有阻尼), 全身下垂. 没有悬挂装置时
+  G1 会仆倒. 必须始终在吊架/悬挂下操作. 来源: 2026-06-29 实机.
+- **吊架上从 Sport 切 Damp 时凌空蹬腿.** FSM 切换有不可预期的肢体动作.
+  吊架环境下所有运动/FSM 切换类脚本 (18/19/20/21) 需预留缓冲空间.
+  来源: 2026-06-29 实机, script 17 阶段 2.
+
+### 遥控器与调试模式
+
+- **调试模式下全部 16 按键 + 4 摇杆轴均透传到 wireless_remote[40].** G1 不动.
+  Sport 基线和调试模式两轮对照完成. 遥控器=MOSS 输入设备方案成立.
+  来源: 2026-06-29 实机, script 17 汇总表.
+- **L2+B 硬件急停在调试模式下仍生效.** G1 双手缓慢下降, 身体进入悬挂.
+  来源: 2026-06-29 实机.
+
+### Arm 操作
+
+- **ExecuteAction 是互斥锁, 不可抢占.** A 在播时发 B → 7401 或 3104 拒绝.
+  ExecuteAction(99) 在 arm 忙时 code=0 但实际排队, 不中断当前动作.
+  arm RPC 无真中断. 来源: 2026-06-29 script 21 + 补充测试.
+- **ExecuteAction(99) 在 arm 空闲时是平滑缓慢复位** (3/3 打分 1).
+  来源: 2026-06-29 script 18.
+- **rt/arm_sdk DDS 底层关节控制可行.** weight 使能 + 单关节 + 双关节均
+  测试通过. DDS publish 停止 = 真中断 (vs RPC 不可中断).
+  arm_trajectory channel 可做, kp/kd 需调软. 来源: 2026-06-29 script 26.
+- **LowState 真实频率 ~1052 Hz** (非 500Hz). _monitor.py 构造 frozen
+  dataclass 开销可忽略 (差 0.2 Hz). 当前设计吃满 1kHz 无问题.
+  来源: 2026-06-29 script 27.
+
+### 数据字段
+
+- **`mode_machine` 不是 FSM 模式.** 它是 Dof 配置字节 (4=23Dof, 5=29Dof, 6=27Dof),
+  来自官方文档 LowState_ 结构体注释. 开机后不变.
+  `mode_pr` 是并联机构类型 (0:PR, 1:AB). 真正的 FSM 模式在 `LocoClient.GetFsmId()`
+  和 `rt/sportmodestate` DDS topic. 来源: 2026-06-29 文档补查, index.md.
+
+## Reachy Mini 经验
 
 | 经验 | G1 应对 |
 |------|---------|
-| 硬件连接延迟到 bootstrap | **不需要** — app 进程即生命周期，构造时直接连 DDS |
+| 硬件连接延迟到 bootstrap | 不需要 — app 进程即生命周期 |
 | 依赖隔离 | 已做 — app 独立 venv |
-| Matrix 错误传播不完整 | 注意：DDS 连接失败时进程应明确退出，不静默降级 |
-| Channel 过度复杂（factory、lifecycle） | 最简 channel |
-| 构造即连接抛异常 | app 进程退出 → Circus 重启，正常行为 |
-
-## 2026-06-07 Session — 技术方案起草
-
-### 完成项
-
-- 确定开发哲学：安全优先、脚本先于 channel、最简 channel、macOS 不做实装
-- 确定 app 目录结构：`docs/` + `scripts/` + 已有文件
-- 确定八阶段推进计划（A-H）
-- 确认 blog 分离：技术文档在 app 内，博客在 `.ai_partners/blogs/`
-- 确认 app 进程 = 生命周期管理器，不需要 channel 层面的 lifecycle hook
-
-### 关键洞察
-
-**Channel 复杂度是历史的，不是设计的。** 当前 channel 体系中的 bootstrap/cleanup 生命周期、factory 模式、stateful 声明，是进程内嵌入模式催生的防御性补丁。app 模式天然解耦了这些问题 —— 进程就是生命周期，挂了就重启。G1 作为最简 channel 的示范，只需要构造 + 方法 + Matrix 注册。
-
-### 下一步（下一个实例）
-
-1. 读本文件 + `CLAUDE.md` + `README.md` + `docs/index.md`
-2. 从阶段 A 开始：云端文档摸底
-3. 第一项产出：`docs/index.md`（填充云端 URL 映射表）
-
----
-
-## 2026-06-07 Session — 骨架搭建与认知入口
-
-### 完成项
-
-- 创建 `CLAUDE.md` 作为 G1 app 的 AI 认知入口，自动加载
-- 将方法论（KD1-KD8 的设计决策与开发哲学）从 FEATURE.md 迁入 CLAUDE.md
-- CLAUDE.md 声明四项必要知识蓝图（channel_builder, states_channel, matrix, ctml）
-- FEATURE.md 精简为工作流追踪：动机、阶段、经验、session log。范式真相指向 CLAUDE.md
-- 确认：CLAUDE.md = 范式真相（自动加载），FEATURE.md = 簿记层（显式查阅）
-
----
-
-## 2026-06-07 Session — 阶段 A 完成
-
-### 完成项
-
-- 消化 10+ 份 Unitree 官方文档，覆盖遥控器、状态机、SDK 架构、DDS 通讯、运动控制、底层通讯、设备状态、音频灯光、LiDAR、里程计、手臂控制、手臂动作、时间同步、G1 总览
-- `docs/index.md` 填充完整：每条包含 URL/记录时间/来源层级/关键提取/架构判断
-- `docs/validation-checklist.md` 创建：15 个可判真验证命题，桥接阶段 A→B
-- CLAUDE.md 新增已知问题标注（static 缓存、避障缺口）
-- 关键架构结论：
-  - 双路径控制模型：RPC(LocoClient, 非调试, 安全) ↔ DDS(rt/lowcmd, 调试, 全权)
-  - 三层安全围栏：硬件(L2+B) → 条件反射(LiDAR) → 模型(CTML/RPC)
-  - 初始集成走 RPC + DDS 只读。底层写入留高阶阶段
-  - PC2 蓝牙耳机作为音频替代方案
-  - 关节限位表是安全控制基础数据
-- main.py 稳定为最简 instruction 声明（不再随调研逐条更新）
-
-### 关键洞察
-
-**文档是广告，不是手册。** 官方文档站描述的是"应该能做什么"，但参数、约束、错误行为大量缺失。几乎所有关键命题都需要源码验证——ReleaseMode 的前置条件、PlayStream 的状态反馈、wireless_remote 的格式。三源关系（文档<源码<实测）不是方法论装饰，是经验事实。
-
-**安全边界在硬件层，不在我们的代码里。** 这是 G1 集成最大的幸运。FSM 模式门控、L2+B 急停、crc 校验——这些是 G1 自己的安全机制，MOSS 不需要重建。我们的软件围栏是体验层和纵深防御，不是安全底线。
-
-### 下一步（下一个实例）
-
-1. 读 `CLAUDE.md` + `docs/index.md` + `docs/validation-checklist.md`
-2. 与人类开发者对齐验证目标（验证启动前置条件）
-3. 阶段 B: clone SDK 源码，验证 API 存在性和签名
-4. 阶段 C+D: 硬件环境记录 + MOSS 装机
-5. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
-
----
-
-## 2026-06-07/08 Session — 实机连接与 MOSS 装机
-
-### 完成项
-
-- 硬件拓扑确认：PC1（闭源运控）→ 交换机 ← PC2（Jetson Orin NX, 二开入口）← 外部 Mac
-- 以太网进入交换机 → 配静态 IP → SSH 到 PC2 (unitree/123)
-- PC2 WiFi 射频开启 → 连接本地 WiFi → 路由器 MAC 绑定固定 IP
-- 安全加固：创建 moss 用户、UFW 放行 22
-- Git 直推通道：Mac `git remote add g1` → `git push g1 dev`
-- Python 工具链：pipx → uv → Python 3.12
-- `uv sync --active --all-extras` — MOSS 在 G1 PC2 上安装运行
-- 文档产出：`docs/hardware.md`, `docs/moss-on-pc2.md`
-- CLAUDE.md / README.md 阶段状态更新为阶段 B
-
-### 关键发现
-
-**G1 架构是交换机组网，不是点对点。** 外部以太网口连接的是交换机，Mac 配静态 IP 后可与 PC1、PC2、LiDAR 三者通信。PC1 通过访问控制闭源，PC2 是唯一二开入口。
-
-**PC2 WiFi 默认关闭是安全设计，不是 bug。** PC2 被隔离在交换机后，无法自行出站。这防止了二开代码意外联网，但也意味着每次装机都要先用以太网路径打开 WiFi。
-
-**uv 工具链在 Jetson 上的摩擦：** Python 3.8 系统版本 → pipx → uv → Python 3.12，每一步都涉及源配置（pip/pipx/uv 三级互不继承）。镜像源的路径兼容性问题导致预编译 Python 下载反复失败。最终 Mac 中转解决了带宽瓶颈。
-
-### 下一步
-
-1. `uv sync` 构建完成后验证：`moss --ai start`、`moss --ai all-commands`
-2. 阶段 B: clone SDK 源码到 PC2，验证 API
-3. 阶段 E: 按验证清单逐条执行脚本，人类反馈闭环
-
----
-
-## 2026-06-08 Session — 系统线实验体系搭建 + 方法论博客
-
-### 完成项
-
-- 博客产出：`g1-layered-methodology.md` — G1 分层推进方法的整体拓扑（认知层→验证层→构建层）、三源真相关系、脚本先于 channel 的原则论证
-- 系统线实验体系：`scripts/sys/` — 按 Claude Code skill 范式组织，6 个技能 × 19 个原子脚本
-  - network（网络拓扑）、audio（音频硬件路径决策）、usb_camera（视觉方案）、system（系统身份+环境）、dds（通讯就绪）、performance（性能基线+运行时对比）
-  - 每个技能一个 `SKILL.md`（frontmatter + 调查命题 + 架构决策标注）
-- 调研时序文档：`scripts/sys/RESEARCH_SEQUENCE.md` — 11 步对话式执行脚本，每步标注命令/为什么/观察什么/影响什么决策。第一轮验证后改造为 MOSS channel 命令
-- `docs/index.md` 中的音频路径决策逻辑在系统线中得到实操化：audio 技能的四个脚本直接回答"PC2 能否独立发声/录音/连蓝牙"
-- `docs/index.md` 中的视觉方案缺口在系统线中得到调查入口：usb_camera 技能摸底 PC2 物理接口和 v4l2 驱动能力
-- 明确：系统线先于 SDK 线。系统线回答"PC2 有什么"，SDK 线回答"SDK 提供了什么 API"
-
-### 关键洞察
-
-**系统线是 SDK 线的前置，不是并行。** 音频硬件事实（PC2 有声卡/蓝牙 vs 无）直接决定 SDK 线应该研究 AudioClient RPC 还是 ALSA/蓝牙本地方案。在没有硬件事实的情况下读 SDK 源码，可能读错方向。
-
-**skill 范式天然适合原子化实验。** 每个 SKILL.md 标注"调查命题 + 架构决策"，每个 .sh 只做一件事——这种组织方式让未来的 AI 实例不需要读完整份文档就能找到自己需要的脚本。未来改成 MOSS channel 命令时，SKILL.md 直接转化为 channel instruction。
-
-### 下一步
-
-1. 人类在 PC2 上按 `RESEARCH_SEQUENCE.md` 逐项执行系统线实验，反馈结果
-2. 基于系统线结论确定 SDK 线调研范围（例如：如果音频走 PC2 本地，则 SDK 线跳过 AudioClient RPC 分析）
-3. 系统线第一轮验证通过后，将脚本改造为 MOSS channel 命令（AI 可运行时调用）
-
----
-
-## 2026-06-08 Session — SDK 源码摸底 + 验证脚本体系 + 能力拓扑讨论
-
-### 完成项
-
-- SDK 源码 clone 到 `src/unitree_sdk2_python/`（gitignored）
-- 修复 `.gitignore`: `src/` → `src/unitree_sdk2_python/`
-- **SDK 源码通读**: G1 三组 API(loco/arm/audio) + MotionSwitcher + RobotState + RPC 基类 + DDS Channel
-- **Topic 清单**: `docs/sdk-topics.md` — 18 个 topic 的类型组/方向/MOSS 能力归属/类型验证清单
-- **文档<源码差异**: LocoClient 缺失方法(Squat/ContinuousGait/GetFsmMode/StandUp)、action_map 实际 17 种(vs 文档 15)、TtsMaker index bug 等
-- **能力拓扑**: 横向 5 能力(系统感知/G1感知/音频灯光/手臂控制/高阶运动) × 纵向 6 模式(0.Pure→1.Observer→2.Passenger→3.Mover→4.Gesturer→5+.Beyond)
-- **讨论提纲**: `.ai_partners/features/.../discuss/2026-06-08_phase_b_sdk_discussion_outline.md`
-- **SDK 验证脚本**: `scripts/sdk/` — 12 个脚本(00-11) + SKILL.md:
-  - 00-03: 环境/反射/类型/发现(00-02 无 G1 可跑)
-  - 04-06: A 层纯读(LowState+遥控器, SportMode, 电池/主板/IMU)
-  - 07: B 层 RPC 只读合集(4 个接口)
-  - 08: C 层音频灯光(TTS 中断探路+LED+PlayStream)
-  - 09: D 层上肢(基础动作+中断复位+动作序列)
-  - 10-11: E 层模式切换+移动(极慢速 0.5s)
-- **急停验证脚本**: `12_estop_verify.py` — 踏步中 L2+B→Damp() + 双路标记(内存+文件 `/tmp/g1_moss_estop`)
-- **Task 设计方向**: 协程管理生命周期 + 线程跑运动轮询(20ms)。Cancel = 线程 stop 信号 + 温柔复位(weight→0)
-
-### 关键洞察
-
-**SDK 是 Topic 的封装，不是能力的全集。** 大部分横向能力 SDK 已封装(RPC client)，缺口在被动感知 topic(电池/主板/IMU)和 ASR/麦克风。都是"有数据通路无 convenience class"，不需要 SDK 新增能力。
-
-**急停模型**: 硬件 L2+B 不可绕过(FSM 直接阻尼) — 真正的安全底线。MOSS 层 Damp() 是体验层响应。不碰 ZeroTorque(危险)。`/tmp/g1_moss_estop` 文件作为跨脚本可见的急停标记。
-
-**坐标管理任务设计**: async Task 管生命周期 → 子线程 20ms 轮询 → cancel = stop_event + 安全指令(Damp/StopMove/release arm)。与 MOSS channel 体系自然融合。
-
-### 下一步 (给下一个实例)
-
-1. **提交本 session 所有产出** (`scripts/sdk/` 12 个脚本 未提交)
-2. 人类优先在 PC2 上执行系统线 `RESEARCH_SEQUENCE.md` (阻塞项 — 决定音频路径等关键决策)
-3. 系统线通过后，SDK 脚本 00-03(无 G1 可跑) + 04-07(纯读) 第一轮验证
-4. 基于系统线音频结果，决策 08(音频灯光) 是否进一步做二阶实验
-5. 基于人类反馈逐步解锁 09(上肢)→10(模式切换)→11(移动)→12(急停验证)
-6. 讨论提纲中未决议题: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
-
-**不在此 session**: terminal channel 建设、VLA/VLM policy 协调、DDS 调试模式解锁
-
----
-
-## 2026-06-14 Session — 开发环境验证 + 双帐号范式发现
-
-### 完成项
-
-- 走完 RESEARCH_SEQUENCE.md 步骤 0-5 + 10 的开发环境验证。结果填入验证记录表
-- 系统线确认：L4T R35.3.1、Orin NX 16GB（订正前任 8GB 误传）、eth0/wlan0 双路、PC1/LiDAR/外网全通、cyclonedds 0.10.2 已 build
-- WiFi 自启从命令式 `nmcli connect` 改为 NM persistent profile（autoconnect=yes + priority），上次会话忘配 WiFi 的根因解决
-- ufw 加固完成：放行 22 + 内网段，避开 Jetson 内核缺 `xt_rt` 的 ip6tables 坑
-- g1 app `uv sync` 通过：通过 `/etc/profile.d/cyclonedds.sh` 系统级共享 unitree 帐号下的 cyclonedds，cyclonedds + unitree-sdk2py + ghoshell_moss 三个 import 全通
-- docs 更新：`hardware.md` 双帐号范式 + 规格订正 + 问题日志#4-6；`moss-on-pc2.md` 双帐号范式核心 + cyclonedds 跨帐号共享章节 + 问题日志#7-9
-
-### 关键洞察
-
-**双帐号范式（本 session 最大发现）**: PC2 出厂只有 `unitree` 帐号，所有开发栈（cyclonedds_ws、unitree_sdk2-main C++、ROS、CUDA）齐备且 `.bashrc` 已配。我们为加固创建 `moss` 帐号，但它的 shell **完全干净**——cyclonedds 不在 LD 里、CUDA 没继承。装机一开始把这误判为"PC2 没装开发栈"，实际是"换了帐号、看不见"。
-
-正解：跨帐号共享的栈用系统级 `/etc/profile.d/` 暴露，MOSS-specific 的（uv/venv/ghoshell-moss）在 moss 帐号下独立管理。每次 import 失败先去 unitree 帐号 `find` 一下，大概率已存在。
-
-**版本对齐的幸运**: unitree-sdk2py 钉死 cyclonedds==0.10.2，unitree 帐号下 `~/cyclonedds_ws/install/cyclonedds/` 正好就是 0.10.2。出厂栈和 Python 端完美匹配，不需要自建——这是 G1 集成的运气好处之一。
-
-**脚本设计的隐含假设**: `scripts/sys/dds/01_env_check.sh` 假设调用者已激活 venv。moss 帐号首次跑时没激活，看到系统 Python 3.8 报"无 cyclonedds"——这是脚本设计未明示的前置条件。如未来改造为 MOSS channel 命令，前置条件应该显式化。
-
-### 下一步（下一个实例）
-
-1. **SDK 验证脚本第一轮**: sdk/00-03（无 G1 可跑：import/反射/类型/topic 发现）→ 04-07（纯读：lowstate/sportmode/battery/RPC readonly）
-2. **决策项**: 04-07 跑通后再讨论是否启动 08 音频（依赖系统线音频步骤 6-8 的结果，本轮未跑）
-3. **未决议题继承**: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属（同上一 session log 末尾）
-
-
----
-
-## 2026-06-14/15 Session — DDS 链路打通 + 端到端音频输出
-
-由 Claude Opus 4.7 与人类协作完成。这是 MOSS 第一次在 G1 上发出声音。
-
-### 完成项
-
-**开发环境验证（系统线步骤 0-5, 10 + 部分 6-11）**
-- 走完 RESEARCH_SEQUENCE.md 步骤 1/3/4/5/10 的开发环境验证，结果填入验证记录表
-- 跑完剩余系统线脚本（network/03、audio/01-04、usb_camera、performance/01-05）
-- WiFi 自启从命令式 `nmcli connect` 改为 NM persistent profile（autoconnect=yes + priority），上次会话忘配 WiFi 的根因解决
-- ufw 加固完成（防御 IPv6 缺失 xt_rt 内核模块的 enable 失败）
-
-**G1 SDK 装机**
-- `unitree_sdk2_python` clone 到 `src/`，g1 app 独立 venv 通过 `uv sync` 建立（Python 3.12.13）
-- 通过 `/etc/profile.d/cyclonedds.sh` 系统级共享 unitree 帐号下的 cyclonedds 0.10.2，避免重复编译
-
-**DDS 链路调通（本 session 最大技术突破）**
-- 发现并解决 ufw 默认丢 IP 分片导致 G1 LowState 包（2180B > 1500 MTU）静默丢失
-- 调优内核 socket 缓冲：`net.core.rmem_default=67108864`
-- 04/05/06 脚本订阅 LowState/SportMode/Battery/MainboardState/IMU 全部可读
-- 验证 07 RPC readonly 脚本因 SDK 升级后 b2/robot_state 模块路径变更而 import 失败（SDK 自身 bug，留给下一个 session 修）
-
-**PC1 AudioClient TTS 验证（结论：不可用）**
-- 跑 08_audio_led 完整通过：GetVolume/SetVolume/LedControl/TtsMaker/PlayStop/PlayStream 全部 OK
-- 但 TTS 质量极低：多音字读错（"一行"读成 yi-xing）、无韵律停顿、连贯性差、空格触发异常发声、符号产生噪声。表现像运行在 Jetson 边缘算力上的小 TTS 模型——具体技术形态未验证（可能是字符级合成、可能是词典覆盖问题、可能是 prosody 模型缺失），但结论一致：对 ghost 持续中文输出场景不可用
-- 音量最大 100，线性响应但物理上限偏小
-- LED 颜色切换之间有蓝色复位中间态
-
-**音频路径决策**
-- PC2 板载 platform-sound 被 PC1 audio service 独占（即使 ALSA 设备暴露，实际播放无声）
-- PC2 板载蓝牙正常但被 Unitree systemd drop-in 显式禁用 A2DP/AVRCP（`--noplugin=audio,a2dp,avrcp`）
-- 通过 `/etc/systemd/system/bluetooth.service.d/override.conf` 覆盖 drop-in，恢复 A2DP 支持
-- 装 `pulseaudio-module-bluetooth` + 配对 JBL GO + `pactl set-default-sink bluez_sink.78_44_05_7A_47_D1.a2dp_sink`
-- **moss-repl 通过 JBL GO 成功发声**——MOSS 在 G1 上的第一次音频输出
-
-### 关键洞察
-
-**ufw IP 分片是 G1 DDS 的隐形杀手**: G1 的 LowState 包 2180 字节，IP 层会分片成多片。ufw 的 `before.rules` 对非首片分片没匹配规则，默认 drop。SSH 通、ping 通、PC1 在发包（tcpdump 看得见），但 cyclonedds 收不到——所有线索都对得上"DDS 死了"，根因却在防火墙。下次别的机器人接入也要警惕这一条。
-
-**双帐号范式（深化）**: 上一个 session 已经发现 unitree 帐号有完整出厂栈而 moss 帐号干净，本次进一步发现：
-- cyclonedds 0.10.2 可通过 `/etc/profile.d/` 跨帐号共享（已实施）
-- Unitree 通过 systemd drop-in 主动禁用了 PC2 上 A2DP 蓝牙音频（推测是怕干扰 PC1 蓝牙）
-- PC2 板载 ALSA 输出被 PC1 audio service 独占——表面上有 sink，实际播放无声
-- 这些都属于"出厂限制是设计，不是 bug"。MOSS 要么 work around（用蓝牙绕过），要么不动它。
-
-**PC1 TTS 模型质量不可用，不依赖具体技术形态结论**: TTS 表现差（多音字错、无停顿、空格怪声），表现像 Jetson 边缘 TTS 模型，但具体是字符级合成、词典缺失、还是 prosody 缺失等未验证——重点是表现层结论一致：对 ghost 持续中文输出不可用。这从根本上否定了"用 G1 自带 TTS 做 ghost 输出"的方案——必须 MOSS 端自己合成（云端 / 本地 TTS 模型），通过 PC2 ALSA 直推到外接音频设备。
-
-**模型推断的尺度警示**: 本 session 一个典型失误是把"听感推断"草率写成"技术结论"——把"听起来像字符级"写成"是字符级"。人类工程师指出后修正。这是模型实例需要持续警惕的：在不完整证据上做具体技术断言会污染下游 session 的认知基线。未来记录用"现象 + 推断方向"，而不是"是 X"。
-
-**端到端音频链路确立**: `Ghost LLM → MOSS TTS → PC2 ALSA → PA → bluez_sink → 蓝牙音频设备`。bypass 了 PC1 AudioClient 整条 RPC 路径。这条链路确认意味着 G1 channel 的 audio 设计可以最简——不需要包装 AudioClient RPC，直接走 MOSS 的 audio_player provider 就够。
-
-**MOSS 第一次在 G1 上说话**: 不是 demo，是结构性突破。从这一刻起，G1 + MOSS 不再是两个独立系统，是 Ghost 拥有了一个能发声的身体。
-
-### 已知 TODO（不在本 session）
-
-- `ghoshell_moss.host.providers.audio_player_provider.AudioPlayerConfig` 缺 `device` 字段——目前依赖 `pactl set-default-sink` 配置系统默认，应该让 config 显式声明音频设备。属于 MOSS 改动，单开 feature
-- 07 RPC readonly 脚本 import 路径修复（`b2.robot_state` 在新 SDK 不可用，需改用 `g1.loco.LocoClient` 或上游修复）
-- 04/06 脚本 odom_modestate topic 阻塞——可能 topic 名变更或仅在特定 FSM 模式发布。需要用 `cyclonedds ls` CLI 抓真实 topic 名再决策
-- 05 SportModeState 订阅无数据——同上，需 topic 清单确认
-- 音频路径官方化：FEATURE 完成后写 `docs/channel-design.md` 时，audio 部分应明确"走 MOSS 自家 TTS + PA bluez_sink"，不依赖 PC1 AudioClient
-- 蓝牙连接稳定性未验证：JBL GO 配对成功但 `Connected: yes` 后会 drop（看到 `[CHG] Connected: no` 后再 connect），需要排查或接受重试机制
-
-### 下一步（下一个实例）
-
-1. **音频持久化**: JBL GO 配对状态在重启后是否保留？bluez_sink 在 PA 重启后是否自动出现？写一份 `docs/audio-path.md` 把这条链路固化
-2. **修 07 RPC readonly**: 改用 G1 SDK 自带的 client（`g1/loco/loco_client.py` 等），而非 b2 系列
-3. **DDS topic 真值清单**: 用 `cyclonedds ls`（unitree 帐号下的 CLI）扫一次 G1 当前发布的 topic 全集，对比 docs/sdk-topics.md，订正前任的清单
-4. **手臂控制脚本 09**: G1 处于站立姿态，是否允许跑 arm preset？需先评估安全（FEATURE 中前任标注的 D 层）
-5. **未决议题继承**（同前 session）: SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
-
-
----
-
-## 2026-06-15 Session — SDK 验证脚本路径订正 (实机前预备)
-
-由 Claude Opus 4.7 完成，未上 G1。本 session 是对前任 SDK 验证脚本的纯代码 review + 重写，
-目的: 避免今天 2 小时实机窗口被脚本本身的路径/类型 bug 污染。
-
-### 订正项
-
-| 脚本 | 前任问题 | 本版修法 |
-|------|---------|---------|
-| 04, 12 | 订阅 `rt/lf/lowstate` (低频) | 改 canonical `rt/lowstate` (g1 example 用此)；12 的急停延迟测量必须高频 |
-| 05 | `rt/sportmodestate` 长阻塞订阅 (50s × 无数据) | 改 3 × 2s 短超时探测，明确"G1 是否发布"结论 |
-| 06 | `rt/lf/odommodestate` 用错类型 `IMUState_` | 改 `SportModeState_` (odom 真实 payload) + 多候选 topic 探测 |
-| 07 | `RobotStateClient` 顺序首 + 5s 阻塞，前任误诊"import 失败" | 顺序后置 + 3s 超时 + 独立 try；明确标注"G1 examples 未引用，可能不可用" |
-| 08 | `GetVolume` 返回 `(code, dict)`，前任把 dict 直接当 int 传回 `SetVolume(vol)` | 加 `_vol_value()` 解包；收尾 LED 复位到 (0,0,0) |
-| 03 | 硬编码 topic 清单 print，无真发现能力 | 改 cyclonedds CLI wrapper，调用真扫描 |
-| MOTOR_NAMES | 04 中 "29=weight" 误传 | 注释订正：G1 23-DoF 占 0-28，29-34 为保留槽 |
-
-### 前任误诊的修正记录 (保真)
-
-前任 2026-06-14/15 session log 中写道:
-
-> 验证 07 RPC readonly 脚本因 SDK 升级后 b2/robot_state 模块路径变更而 import 失败（SDK 自身 bug，留给下一个 session 修）
-
-经本 session 复审 SDK 源码 (`src/unitree_sdk2_python/unitree_sdk2py/b2/robot_state/`)，
-`robot_state_client.py` 与 `__init__.py` 均存在且可 import。前任所谓"import 失败"
-更可能是 `RobotStateClient.Init()` 或 `ServiceList()` 调用阻塞 (5s timeout) 时表现像
-import 失败，被错误归因到模块路径。
-
-订正结论:
-- import 路径 `unitree_sdk2py.b2.robot_state.robot_state_client` 是有效的
-- 真问题是 G1 RPC bus 上**可能没有 "robot_state" 服务** (所有 G1 examples 均不引用)
-- 本版 07 把它放最后 + 3s 超时 + 标注"可能不可用"，等今天实机给出真答案
-
-### 配套产出
-
-- `scripts/sdk/RUN_ORDER.md` — 2 小时窗口逐步执行顺序 + 每脚本"该看什么"
-
-### 给下一个 (实机后) 实例的话
-
-跑完 03 拿到真实 topic 清单后:
-1. 订正 `docs/sdk-topics.md` 中前任硬编码部分 (特别是 lf/ 前缀的实际存在性)
-2. 07 RobotState 的真实结论 (OK / FAIL)
-3. 05 SportModeState 是否真无发布 (推翻或确认)
-4. 12 实测急停延迟数值
-5. 把以上写入本 FEATURE 的下一个 session log
-
-如果本 session 的脚本修正在实机上又翻车了，鞭策这个上下文：复审时本应该让人类 review，
-而不是单方面相信代码 review。代价是 2 小时的 1/N。
-
----
-
-## 2026-06-16 Session — 实机 SDK 验证 + PlayStream 流式通路确认
-
-由 Claude Opus 4.7 与人类协作完成。这是 G1 第三轮实机验证 session，
-执行了 RUN_ORDER.md 的阶段一和阶段二，推翻了前任多个关键假设，并确认了流式音频通路。
-
-### 协作方法论
-
-本轮建立了"导盲模式": 模型给指令(做什么/为什么/注意什么)，人类执行反馈，
-模型解读结论决定下一步。解决了人类在 PC2 上无法同时记住全部上下文的问题。
-
-### 完成项
-
-**SDK 验证 (阶段一)**
-
-- 03 topic 扫描 — 拿到 G1 真实 DDS topic 全集。关键发现:
-  - `rt/sportmodestate` + `rt/lf/sportmodestate` **存在** — **推翻前任"G1 不发布"结论**
-  - `rt/odommodestate` + `rt/lf/odommodestate` **存在** — 前任阻塞是类型用错，不是 topic 不存在
-  - `rt/api/robot_state/request+response` **存在** — RobotState 服务在 G1 bus 上
-  - 新发现 topic: `rt/loco_sdk`, `rt/arm/action/state`, `rt/lowstate_doubleimu`, `rt/wirelesscontroller`
-  - `rt/` 和 `rt/lf/` 两种前缀共存
-- 04 LowState — 数据正常。29-34 槽确认为保留(mode=0,q=0)，前任 "29=weight" 误传推翻。mode_machine=6 (Sport)。IMU 合理
-- 05 跳过 — 03 已证明 sportmodestate 发布
-- 06 被动感知 — BmsState(91% SOC)/MainBoardState(47°C)/SecondaryIMU/odom 四路全通。订正 odom 类型: **SportModeState_ 非 IMUState_**
-- 07 RPC 只读 — MotionSwitcher.CheckMode="ai" / Arm.GetActionList(23项) / Audio.GetVolume=80 全 OK。RobotState 因 b2 模块缺 `rpc.client_internal` 而 import 失败。不影响 G1 — MotionSwitcher+LocoClient 已覆盖其功能
-- 00 import — 15/16 OK。b2.robot_state 的失败根因是 `robot_state_client.py` import `rpc.client_internal` 但当前 SDK 的 rpc/ 只有 `internal.py`，SDK 自身命名不一致。不是安装步骤缺失
-
-**音频验证 (阶段二 + PlayStream 探路)**
-
-- 08 音频灯光 — GetVolume/SetVolume/LedControl/TtsMaker/PlayStop/PlayStream 全 OK。LED 红绿蓝白正常，切换间有蓝色复位中间态(与前任记录一致)
-- 14 PlayStream 流式探路 — 6 命题全部回答:
-  - Q1 单次推送完整播放 ✓ (16kHz mono s16le 契约成立)
-  - Q2 同 stream_id 分块无缝拼接 ✓ (流式 TTS 可行)
-  - Q3 PlayStop 即时打断 ✓ (模型说一半可以立刻闭嘴)
-  - Q4 新 stream_id 抢占旧流 ✓ (新句自动打断前句)
-  - Q5 TTS + PlayStream 不同 app_name 不冲突
-  - Q6 48kHz 确认无效，PCM 格式必须 16kHz mono s16le
-  - **流式 TTS 通路确认**: MOSS 合成 → 分块 PlayStream → G1 喇叭。可中断、可抢占、可拼接
-
-**手臂初步验证**
-
-- clap(拍手) 单次测试 — **必须在 Sport 模式执行**。Damp/Sit/Ready 模式均不可用。这对明天测试和 channel 设计有直接影响: 手臂操作没有坐姿安全路径，必须在运控站立态下执行
-
-**文档维护**
-
-- `docs/sdk-topics.md` — 全面重写。修正 odom 类型(IMUState_→SportModeState_)，增补 03 扫描出的 20+ topic，标注每条验证状态和日期，新增 RPC 服务 topic 表
-- `docs/validation-checklist.md` — 已验证项表填充 13 条结论，标注验证方法和日期
-
-### 关键洞察
-
-**文档债是认知债**: 前任 06-14/15 session 跑通了 04-08 但只留了一句"全部可读"，没有结构化记录。导致本轮一度准备全部重跑。`sdk-topics.md` 的 odom 类型从 IMUState_ 到 SportModeState_ 的修正，如果在上一轮就写入文档，本轮的 06 脚本路径订正就不需要了。文档不是测试记录，是让下一个实例不需要重跑。
-
-**前任结论推翻统计**: sportmodestate "不发布" → 推翻。odommodestate "阻塞" → 推翻(类型错误)。RobotState "可能服务不存在" → 部分推翻(服务存在但 client 不可用)。29 号槽 "weight" → 推翻(保留槽)。这些推翻说明纯 Python 代码 review(06-15 session) 不能替代实机验证，但也说明实机验证的每一轮都在显著提升认知精度。
-
-**Sport 模式是手臂动作的硬门槛**: 拍手测试中 Damp/Sit 模式均不可用，只有 Sport(mode_machine=6) 接受。这意味着手臂操作没有"坐姿安全路径" — G1 手臂控制时必须是站立运控态。这对安全设计和 channel 的 mode gating 有直接影响。
-
-**PlayStream 通路从"能通"到"能用"**: 上一个 session 确认了"MOSS 通过蓝牙发声"，本轮确认了"MOSS 可以通过 PlayStream 流式推送高质量 TTS 到 G1 本体喇叭"。音频路径从备选方案升级为主方案。
-
-### 下一步 (明天实机)
-
-测试顺序 (全部需 Sport 模式 + 空旷地面 + 遥控器在手):
-1. `09_arm_preset.py` — 手臂预设: face wave + hands up(中断) + 序列
-2. `15_channel_action.py` — 第一个 channel + SDK 完整链路 (audio LED + arm + say)
-3. `scripts/channel/01_sequential_transition.py` — 连续 Move 行为(blocking vs nonblocking)
-4. `scripts/channel/02_cancel_reset.py` — cancel 复位行为
-
-未决议题继承(同前): SetFsmId 白名单拦截、L2+B 后 MOSS 响应模型、条件反射层归属
-
+| Matrix 错误传播不完整 | DDS 连接失败时进程明确退出 |
+| Channel 过度复杂 | **本期重做** — warrant + state DAG + sensors 统一机制 |
+| 构造即连接抛异常 | app 进程退出 → Circus 重启, 正常行为 |
+
+## 待验证经验 (实测中观察到的模式, 但未复现确认)
+
+以下来自实机操作中的单次观察, 不当作确认事实. 需要在后续实验中有意识复现验证.
+
+- **调试模式退出后遥控器失效**. 路径: 调试模式 → L2+B 急停到阻尼 → 遥控器组合键(包括 R2+A, R1+X 等)无法切换到运控模式. SelectMode("ai") 返回 code=0 但 G1 物理状态无变化. SelectMode("ai") 只恢复 ai_sport 服务不改变 FSM. 两次实机 session 各触发一次 (2026-06-29). 临时恢复方式: 关机重启. **待验证**: 是否每次调试模式退出都触发? 是否存在正确的遥控器/API 退出路径?
+
+## 未决议题(跨 session 继承)
+
+- **待验证 (7-02 早晨, 3 个 5 分钟脚本)**:
+  1. weight 0 释放后 G1 arm 主板姿态行为 (僵直 vs 微动) — 决定 L1 呼吸的实现路径 (借主板 vs 自己 publish 低频 sin)
+  2. Jetson 摄像头硬件路径 (cv2.VideoCapture 直出 / GStreamer V4L2 / CSI nvargus 四种 fallback) — 决定 vision runtime 起步
+  3. ExecuteAction 99 在 release weight 后能否复位 + 拿到完成信号 (script 28) — 决定 L2 起步能否借用 G1 主板复位能力
+- **待验证 (延续)**: rt/sportmodestate Read() 阻塞问题, 调试模式退出后遥控器失效路径, rt/arm/action/state 内容格式
+- **待实机 (script 20/22/24)**: Sit↔Stand 物理行为 (阻塞 posture/stand_up channel 命令拓扑定稿), FSM 完整可达图, arm action state probe
+- **待实机 (arms L1 起步)**: kp/kd 调软目标值 (建议 kp~20/kd~0.5, 若走自己 publish 路径), arms cancel 后 G1 主板物理行为 (锁定 vs 自动回 sport), 关节镜像表 (若走稻草人前臂交互, 需左右肩 pitch/roll/yaw 符号关系)
+- **设计待定 (arms 高级形态期)**:
+  - 中断三基础 (碰撞反馈/脱力 + 复位 + 首帧过渡) 的实装方案 — 缺一不可, 是 L4 准入门槛. 复位倾向借 ExecuteAction 99, 首帧过渡引擎内部处理
+  - Pose DAG 可达性验证方法 — N² 实测过重, 找精简验证路径
+  - 示教录制交互形态 — 语音倒数 3 2 1 + "好了" 结束 + 尾部裁剪, 依赖 G1 是否支持单 arm 鬼模式 (拖动示教硬件路径)
+  - 稻草人交互的关节工作空间约束 (双臂平举固定 base, 前臂小范围小心自碰撞)
+  - 按键状态机 (F1/F3/Start/L1+组合键 语义切换规则). 由人类工程师牵头. 实现在人类工程师脑中
+  - L2+B 后 MOSS 软响应路径. 硬件急停外的软清理由按键状态机定义
+  - ASR 模式切换. 本期 channel 硬编码 buffer + 显式 pop + 可选 signal 触发, 未来改造为 nucleus
+  - arms 学习库 storage scope (倾向 local_persistent 跨 session 累积, 仅在示教路径可行时激活)
+  - arms 与 body 其他 channel 并行约束 (走路时挥手等组合的物理可行性, 待实测)
+- **本期不做**: LiDAR 条件反射层, G1 内置录制能力对接, SetFsmId 白名单, arms smoothstep 插值, arms 镜像 API, arms 接入 VLA Nucleus, arms velocity cap planning 校验, IK / 逆运动学 (永久不做, MOSS 边界), 轨迹规划 (永久不做, MOSS 边界)
+- **已解决**:
+  - Warrant 事务机制 → 砍掉, 走 InterruptNucleus + StopMove (6-29/30 实测推翻 6-28 设计). `warrant.py` 已归档到 `_archived/` (2026-06-30), 不再被任何模块 import.
+  - contrib 目录结构 → 四层 (`sdk/runtime/channels/providers`) + `_archived/`, 2026-06-30 重构落地. 详见 "代码结构" 节.
+  - 调试模式 vs 运动模式 → 运动模式是 MOSS 主场, 不进调试模式 (Sport → L2+R2 会触发 PC1 保护故障)
+  - arm 控制路径 → 砍掉 ExecuteAction RPC 作为常规命令 (不可中断), 只走 rt/arm_sdk DDS (RPC 不可中断, DDS publish 停 = 真中断). **7-01 修正**: ExecuteAction 11-27 可以作为 L2 命名调用包装 (LLM 只看名字, 不涉及中断), 99 作为复位帧候选 (待 script 28 验证)
+  - 视觉 channel 优先级 → 本期 P0/P1, 不推迟到后期. **7-01 修正**: G1 进程内子线程 + 滑动窗口范式, 不用 Matrix. 设计见 `runtime/vision.py` docstring
+  - MOSS 不做的物理算法边界 → 明文化在 "MOSS 不做的物理算法边界" 节. IK / 轨迹规划 / 动捕信号处理 / VLA 训练四类永久不做
+  - Mindflow 能力评估 → partial-triggered 抢占已在 mindflow + listener app 实装, 不需要新建 Articulator
+- **已推翻 / 重估**:
+  - arms channel 拓扑 (6-30 `design/2026-06-30_g1_arms_animation.md` §3/§5) → **7-01 讨论后推翻 §3 命令面 + §5 学习闭环**. Track 派 + Animation JSON 让 LLM 写 keyframe 违反 §0.3 上位范式纪律 (Logos 层调度命名 VLA, 不接触内部实现). 上位范式 §0 仍成立. 设计文件已加"已被 7-01 修正"标注, 保留原内容作为设计演进档案. 本期 arms 形态改按 "能力金字塔" 节推进, 不写完整修正设计文档 (等 L2/L3 实践积累后一次收口)

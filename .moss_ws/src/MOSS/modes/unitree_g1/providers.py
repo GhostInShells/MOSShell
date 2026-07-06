@@ -5,6 +5,6 @@
 from MOSS.manifests.providers import *  # noqa: F403
 
 # G1 PlayStream 音频播放器 — 覆写全局 MiniAudioStreamPlayer
-from ghoshell_moss_contrib.unitree.g1 import G1StreamPlayerProvider
+from ghoshell_moss_contrib.unitree.g1.runtime.audio_provider import G1StreamPlayerProvider
 
 player_service_provider = G1StreamPlayerProvider()

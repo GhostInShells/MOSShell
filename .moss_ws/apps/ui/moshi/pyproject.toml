@@ -1,0 +1,21 @@
+[project]
+name = "moss-moshi"
+version = "0.1.0"
+description = "show_moshi director app with native desktop shell"
+license = { text = "Apache License 2.0" }
+requires-python = ">=3.12"
+dependencies = [
+    "ghoshell-moss",
+    "ghoshell-moss[host,ghost]",
+    "PySide6>=6.7.0",
+    "qasync>=0.27.0",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }
+
+[tool.pdm.build]
+includes = []
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"

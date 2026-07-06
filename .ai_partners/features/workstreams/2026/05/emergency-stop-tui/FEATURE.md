@@ -7,7 +7,7 @@ description: TUI 快捷键触发全局急停，级联中断所有有状态双工
 priority: P0
 status: in-progress
 title: Emergency Stop — TUI 快捷键全局急停
-updated: '2026-06-16'
+updated: '2026-06-15'
 ---
 
 # Emergency Stop — TUI 快捷键全局急停

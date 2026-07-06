@@ -64,7 +64,8 @@ def reflect(app, depth: int = 3) -> str:
     lines = [
         "## moss command tree (reflected)",
         "",
-        "You can execute any of these commands via the `exec` command.",
+        "Execute commands via `exec` with the subcommand + arguments ONLY.",
+        "'moss --ai' is prepended automatically — do NOT include them.",
         "Example: <apps.tools_moss_self:exec>codex get-interface ghoshell_moss.channels.typer_channel</apps.tools_moss_self:exec>",
         "",
     ]

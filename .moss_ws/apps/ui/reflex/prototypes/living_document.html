@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Living Document — 活体手稿</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  /* ── Paper world ── */
+  body {
+    width: 100vw; height: 100vh; overflow: hidden;
+    font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", Georgia, "Times New Roman", serif;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+    /* warm paper base */
+    background: #f5efe4;
+  }
+
+  /* ── Paper texture layer (fixed, behind everything) ── */
+  #paper-texture {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse at 50% 30%, rgba(252,248,240,0) 0%, rgba(230,220,205,0.5) 100%),
+      linear-gradient(180deg, #f7f2e8 0%, #f0e8d8 30%, #ede4d2 60%, #f2ece0 100%);
+  }
+
+  #paper-texture::after {
+    content: '';
+    position: absolute; inset: 0;
+    /* paper grain via SVG filter */
+    filter: url(#paper-grain);
+    opacity: 0.25;
+  }
+
+  /* ── Manuscript scroll container ── */
+  #viewport {
+    position: fixed; inset: 0; z-index: 1;
+    overflow-y: auto; overflow-x: hidden;
+    scroll-behavior: smooth;
+    /* hide scrollbar */
+    scrollbar-width: none;
+  }
+  #viewport::-webkit-scrollbar { display: none; }
+
+  #manuscript {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 120px 48px 60vh;
+    position: relative;
+  }
+
+  /* ── Block styles ── */
+  .block {
+    position: relative;
+    margin-bottom: 36px;
+    opacity: 0;
+    transform: translateY(18px);
+  }
+
+  .block.visible {
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 0.7s ease-out, transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+
+  .block.writing {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ── Heading ── */
+  .block.heading {
+    margin-top: 28px; margin-bottom: 8px;
+  }
+  .block.heading h1 {
+    font-size: 42px; font-weight: 700;
+    color: #2c1810;
+    letter-spacing: 0.04em;
+    line-height: 1.25;
+    position: relative;
+  }
+  .block.heading h1::after {
+    content: '';
+    display: block;
+    width: 60px; height: 2px;
+    margin-top: 12px;
+    background: linear-gradient(90deg, #8b5e3c 0%, transparent 100%);
+    border-radius: 1px;
+  }
+
+  /* ── Subtitle ── */
+  .block.subtitle {
+    margin-top: -28px; margin-bottom: 24px;
+  }
+  .block.subtitle h2 {
+    font-size: 17px; font-weight: 400; font-style: italic;
+    color: #8b6e5c;
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Body text ── */
+  .block.body {
+    margin-bottom: 28px;
+  }
+  .block.body p {
+    font-size: 17px; line-height: 2.0;
+    color: #3d2b1f;
+    text-align: justify;
+    text-indent: 2em;
+  }
+
+  /* ── Image block ── */
+  .block.image {
+    margin: 32px 0;
+  }
+  .block.image .img-frame {
+    display: inline-block;
+    padding: 14px;
+    background: #faf7f0;
+    border: 1px solid rgba(139,94,60,0.2);
+    border-radius: 3px;
+    box-shadow:
+      0 2px 12px rgba(139,94,60,0.12),
+      0 0 1px rgba(0,0,0,0.05);
+    transform: rotate(-0.5deg);
+    transition: transform 0.3s ease;
+  }
+  .block.image .img-frame:hover {
+    transform: rotate(0deg) scale(1.01);
+  }
+  .block.image img {
+    display: block;
+    max-width: 100%; height: auto;
+    border-radius: 1px;
+  }
+  .block.image .caption {
+    margin-top: 8px;
+    font-size: 13px; color: #8b6e5c; font-style: italic;
+    text-align: center;
+  }
+
+  /* ── Ink cursor ── */
+  .ink-cursor {
+    display: inline-block; width: 2px; height: 1.1em;
+    background: #5c3a1e; margin-left: 1px; vertical-align: text-bottom;
+    animation: inkPulse 0.9s ease-in-out infinite;
+    border-radius: 1px;
+  }
+  @keyframes inkPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+  }
+
+  /* ── Ink splatter on new block (subtle) ── */
+  .block .ink-drop {
+    position: absolute; pointer-events: none;
+    width: 4px; height: 4px; border-radius: 50%;
+    background: #5c3a1e; opacity: 0;
+  }
+  .block.writing .ink-drop {
+    animation: inkDrop 0.5s ease-out forwards;
+  }
+  @keyframes inkDrop {
+    0% { opacity: 0.3; transform: scale(0); }
+    100% { opacity: 0; transform: scale(3); }
+  }
+
+  /* ── Connecting thread between blocks ── */
+  .thread {
+    position: absolute; pointer-events: none;
+    opacity: 0; transition: opacity 0.6s ease;
+  }
+  .thread.visible {
+    opacity: 0.25;
+  }
+  .thread svg {
+    overflow: visible;
+  }
+  .thread path {
+    fill: none;
+    stroke: #8b6e5c;
+    stroke-width: 0.8;
+    stroke-dasharray: 4 4;
+  }
+
+  /* ── Controls ── */
+  #controls {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    z-index: 10; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+  }
+  #controls button {
+    padding: 10px 20px; border-radius: 6px;
+    border: 1px solid rgba(139,94,60,0.3);
+    background: rgba(250,247,240,0.8); color: #5c3a1e; font-size: 13px;
+    cursor: pointer; backdrop-filter: blur(4px);
+    transition: background 0.2s, border-color 0.2s;
+    font-family: inherit;
+  }
+  #controls button:hover {
+    background: rgba(250,245,235,0.95); border-color: rgba(139,94,60,0.5);
+  }
+  #controls button.accent {
+    background: rgba(139,94,60,0.08); border-color: rgba(139,94,60,0.5);
+  }
+
+  /* ── Page curl shadow at the bottom ── */
+  #shadow-bottom {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 80px;
+    z-index: 2; pointer-events: none;
+    background: linear-gradient(0deg, rgba(180,160,140,0.3) 0%, transparent 100%);
+  }
+</style>
+</head>
+<body>
+
+<!-- SVG filters for paper grain -->
+<svg style="position: absolute; width: 0; height: 0;" aria-hidden="true">
+  <defs>
+    <filter id="paper-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" stitchTiles="stitch" />
+      <feColorMatrix type="saturation" values="0" />
+      <feBlend mode="multiply" in="SourceGraphic" in2="noise" result="grain" />
+    </filter>
+    <filter id="ink-bleed">
+      <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="3" result="noise" />
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.5" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+</svg>
+
+<div id="paper-texture"></div>
+
+<div id="viewport">
+  <div id="manuscript"></div>
+</div>
+
+<div id="shadow-bottom"></div>
+
+<div id="controls">
+  <button onclick="demoHeading()" class="accent">标题</button>
+  <button onclick="demoSubtitle()">副标题</button>
+  <button onclick="demoBodyText()">正文</button>
+  <button onclick="demoImage()">图片</button>
+  <button onclick="demoBurst()" class="accent">一节</button>
+  <button onclick="demoClear()">清空</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════
+const manuscript = document.getElementById('manuscript');
+const viewport = document.getElementById('viewport');
+let blocks = [];
+let blockIdCounter = 0;
+let currentStreamBlock = null;
+let streamTimer = null;
+
+// ═══════════════════════════════════════════
+// Block creation
+// ═══════════════════════════════════════════
+function createBlock({ type, content, chapter }) {
+  const id = `blk-${++blockIdCounter}`;
+  const el = document.createElement('div');
+  el.className = `block ${type}`;
+  el.id = id;
+
+  let html = '';
+  switch (type) {
+    case 'heading':
+      html = `<h1>${content || ''}<span class="ink-cursor"></span></h1>
+             <div class="ink-drop" style="top:0;left:10%"></div>`;
+      break;
+    case 'subtitle':
+      html = `<h2>${content || ''}<span class="ink-cursor"></span></h2>`;
+      break;
+    case 'body':
+      html = `<p>${content || ''}<span class="ink-cursor"></span></p>`;
+      break;
+    case 'image':
+      html = `<div class="img-frame">
+               <img src="${content || ''}" alt="" />
+               <div class="caption">${chapter || ''}</div>
+             </div>`;
+      break;
+  }
+
+  el.innerHTML = html;
+  manuscript.appendChild(el);
+
+  const block = { id, el, type, content: content || '', chapter: chapter || 'default' };
+  blocks.push(block);
+
+  // Reveal animation
+  requestAnimationFrame(() => {
+    el.classList.add('visible');
+    if (type !== 'image') el.classList.add('writing');
+  });
+
+  // Add connecting thread from previous block (if any)
+  if (blocks.length > 1) {
+    addThread(blocks[blocks.length - 2], block);
+  }
+
+  // Scroll to the new block
+  scrollToBlock(block);
+
+  return block;
+}
+
+function addThread(fromBlock, toBlock) {
+  const thread = document.createElement('div');
+  thread.className = 'thread';
+  thread.innerHTML = `<svg width="100" height="100"><path d=""/></svg>`;
+  manuscript.insertBefore(thread, toBlock.el);
+  // Animate in
+  requestAnimationFrame(() => { thread.classList.add('visible'); });
+}
+
+function scrollToBlock(block) {
+  const el = block.el;
+  const rect = el.getBoundingClientRect();
+  const viewH = window.innerHeight;
+  // Keep the writing point at about 55% from the top
+  const targetScroll = viewport.scrollTop + rect.top - viewH * 0.55;
+  viewport.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+}
+
+// ═══════════════════════════════════════════
+// Streaming
+// ═══════════════════════════════════════════
+function updateBlockContent(block, newContent) {
+  block.content = newContent;
+  const el = block.el;
+  const cursor = el.querySelector('.ink-cursor');
+  if (block.type === 'heading') {
+    const h1 = el.querySelector('h1');
+    [...h1.childNodes].filter(n => n.nodeType === 3).forEach(n => n.remove());
+    h1.insertBefore(document.createTextNode(newContent), cursor);
+  } else if (block.type === 'subtitle') {
+    const h2 = el.querySelector('h2');
+    [...h2.childNodes].filter(n => n.nodeType === 3).forEach(n => n.remove());
+    h2.insertBefore(document.createTextNode(newContent), cursor);
+  } else if (block.type === 'body') {
+    const p = el.querySelector('p');
+    [...p.childNodes].filter(n => n.nodeType === 3).forEach(n => n.remove());
+    p.insertBefore(document.createTextNode(newContent), cursor);
+  }
+}
+
+function removeCursor(block) {
+  const cursor = block.el.querySelector('.ink-cursor');
+  if (cursor) { cursor.style.opacity = '0'; setTimeout(() => cursor.remove(), 300); }
+  block.el.classList.remove('writing');
+}
+
+function streamToBlock(block, fullText, speed = 40) {
+  if (streamTimer) clearTimeout(streamTimer);
+  let idx = 0;
+  function tick() {
+    if (idx <= fullText.length) {
+      updateBlockContent(block, fullText.slice(0, idx));
+      idx++;
+      streamTimer = setTimeout(tick, speed);
+    } else {
+      removeCursor(block);
+      currentStreamBlock = null;
+    }
+  }
+  tick();
+}
+
+// ═══════════════════════════════════════════
+// Demo
+// ═══════════════════════════════════════════
+function demoHeading() {
+  const b = createBlock({ type: 'heading', content: '', chapter: 'ch1' });
+  streamToBlock(b, 'Ghost In Shells', 55);
+}
+
+function demoSubtitle() {
+  const b = createBlock({ type: 'subtitle', content: '', chapter: 'ch1' });
+  streamToBlock(b, 'AI 操作系统架构 · 灵壳一体', 45);
+}
+
+function demoBodyText() {
+  const b = createBlock({ type: 'body', content: '', chapter: 'ch1' });
+  streamToBlock(b, 'Ghost 输出的每个 token 被实时解析为命令——不是等说完再执行，是边说边执行。传统系统调用同步阻塞；CTML 流式、并行、时间感知。这是操作系统诞生以来，系统调用层第一次被重新定义。', 25);
+}
+
+function demoImage() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="320" viewBox="0 0 600 320">
+    <rect width="600" height="320" fill="#faf7f0" rx="4"/>
+    <circle cx="300" cy="120" r="50" fill="none" stroke="#8b5e3c" stroke-width="1.5" opacity="0.5"/>
+    <circle cx="200" cy="200" r="38" fill="none" stroke="#6b4a2e" stroke-width="1" opacity="0.35"/>
+    <circle cx="400" cy="200" r="38" fill="none" stroke="#6b4a2e" stroke-width="1" opacity="0.35"/>
+    <line x1="300" y1="70" x2="300" y2="170" stroke="#5c3a1e" stroke-width="1.2" opacity="0.45"/>
+    <line x1="300" y1="170" x2="200" y2="238" stroke="#6b4a2e" stroke-width="1" opacity="0.3"/>
+    <line x1="300" y1="170" x2="400" y2="238" stroke="#6b4a2e" stroke-width="1" opacity="0.3"/>
+    <text x="300" y="55" text-anchor="middle" fill="#3d2b1f" font-size="15" font-family="serif" font-weight="bold">Ghost In Shells</text>
+    <text x="200" y="255" text-anchor="middle" fill="#5c3a1e" font-size="12" font-family="serif">Agent（灵）</text>
+    <text x="400" y="255" text-anchor="middle" fill="#5c3a1e" font-size="12" font-family="serif">Robot（体）</text>
+    <text x="300" y="178" text-anchor="middle" fill="#3d2b1f" font-size="12" font-family="serif">Shell（壳）</text>
+  </svg>`;
+  createBlock({ type: 'image', content: 'data:image/svg+xml;base64,'+btoa(svg), chapter: '三层架构' });
+}
+
+function demoBurst() {
+  const h = createBlock({ type: 'heading', content: '', chapter: 'ch2' });
+  streamToBlock(h, 'CTML · 系统调用层', 55);
+  setTimeout(() => {
+    const s = createBlock({ type: 'subtitle', content: '', chapter: 'ch2' });
+    streamToBlock(s, '流式 · 实时 · 边生成边执行', 40);
+  }, 400);
+  setTimeout(() => {
+    const b = createBlock({ type: 'body', content: '', chapter: 'ch2' });
+    streamToBlock(b, 'AI 怎么操作我？通过 CTML —— 流式系统调用语言。Ghost 输出的每个 token 被实时解析为命令。同一段 CTML 可以同时驱动 GUI 页面、AI 眼睛、macOS 系统——每个 Channel 跑在独立进程里，无需锁、无需同步。CTML 一句话做到传统程序三个线程的事。', 22);
+  }, 900);
+}
+
+function demoClear() {
+  manuscript.innerHTML = '';
+  blocks = [];
+  blockIdCounter = 0;
+}
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  switch(e.key) {
+    case '1': demoHeading(); break;
+    case '2': demoSubtitle(); break;
+    case '3': demoBodyText(); break;
+    case '4': demoImage(); break;
+    case '5': demoBurst(); break;
+    case 'c': demoClear(); break;
+  }
+});
+
+// ── Auto-start: write a first line ──
+setTimeout(() => {
+  const b = createBlock({ type: 'heading', content: '', chapter: 'prologue' });
+  streamToBlock(b, 'MOSS', 70);
+}, 500);
+
+setTimeout(() => {
+  const b = createBlock({ type: 'subtitle', content: '', chapter: 'prologue' });
+  streamToBlock(b, 'Model-oriented Operating System Shell', 45);
+}, 1400);
+
+setTimeout(() => {
+  const b = createBlock({ type: 'body', content: '', chapter: 'prologue' });
+  streamToBlock(b, '你好。我是 MOSS —— 一个为 AI 设计的操作系统。Ghost In Shells 三层架构的中间层。灵 · 壳 · 体，我连接思维和物理世界。这不是冰冷的系统报告——这是一封写给你的信。', 25);
+}, 2200);
+</script>
+</body>
+</html>
