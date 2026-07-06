@@ -2,7 +2,7 @@ from pathlib import Path
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.host import (
-    MossHost, Mode, MossRuntime, GhostRuntime,
+    MossHost, MossRuntime, GhostRuntime,
 )
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.manifests import Manifests
@@ -13,10 +13,10 @@ from ghoshell_moss.core.blueprint.cell import (
     Cell as MossCell, CellManifest, CellRegistry, CellMetadata, CellType,
     CellLauncher
 )
-from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
+# from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
 from ghoshell_moss.host.ghosts import list_ghosts_from_root_package
 from ghoshell_moss.host.matrix import MatrixImpl
-from ghoshell_moss.host.cell_registry import EnvCellRegistry
+# from ghoshell_moss.host.cell_registry import EnvCellRegistry
 from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
 from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 import importlib
@@ -33,36 +33,35 @@ class Host(MossHost):
             self,
             *,
             env: Environment | None = None,
-            mode: Mode | str | None = None,
+            # mode: Mode | str | None = None,
             session_scope: str | None = None,
     ):
         self._scan_ghost_errors: list[ScanError] = []
         self._scan_manifest_errors: list[ScanError] = []
 
         self._env = env or Environment.discover()
-        self._registry = EnvCellRegistry(env=self._env)
-
-        if mode is not None:
-            self._env.set_mode(mode if isinstance(mode, str) else mode.name)
-        if session_scope is not None:
-            self._env.set_session_scope(session_scope)
+        #
+        # if mode is not None:
+        #     self._env.set_mode(mode if isinstance(mode, str) else mode.name)
+        # if session_scope is not None:
+        #     self._env.set_session_scope(session_scope)
 
         self._env.bootstrap()
         self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()
 
-        self._env_modes: dict[str, Mode] | None = None
+        # self._env_modes: dict[str, Mode] | None = None
         self._ghosts: dict[str, tuple[GhostMeta, ModuleManifest]] | None = None
-        moss_mode = mode
-        if moss_mode is None:
-            moss_mode = self.env.moss_mode_name
-        if isinstance(moss_mode, str):
-            moss_mode_name = moss_mode
-            moss_mode = self.all_modes().get(moss_mode_name)
-            if moss_mode is None:
-                raise RuntimeError(f"Unknown mode: {moss_mode}")
-        self._moss_mode: Mode = moss_mode
+        # moss_mode = mode
+        # if moss_mode is None:
+        #     moss_mode = self.env.moss_mode_name
+        # if isinstance(moss_mode, str):
+        #     moss_mode_name = moss_mode
+        #     moss_mode = self.all_modes().get(moss_mode_name)
+        #     if moss_mode is None:
+        #         raise RuntimeError(f"Unknown mode: {moss_mode}")
+        # self._moss_mode: Mode = moss_mode
         # manifest 直接取 mode 的——mode 的每个 manifest 文件显式继承全局
         # (from MOSS.manifests.xxx import * + 扩展)，无需运行时合并。
         self._manifest = self._moss_mode.manifest
@@ -98,23 +97,23 @@ class Host(MossHost):
     def manifests(self) -> Manifests:
         return self._manifest
 
-    @property
-    def mode(self) -> Mode:
-        return self._moss_mode
+    # @property
+    # def mode(self) -> Mode:
+    #     return self._moss_mode
 
     @property
     def scan_errors(self) -> list[ScanError]:
         """Aggregated scan errors from manifests, modes, and ghosts discovery."""
         return self._scan_manifest_errors + self._scan_ghost_errors
-
-    def all_modes(self) -> dict[str, Mode]:
-        if self._env_modes is None:
-            self._env_modes = {
-                mode.name: mode for mode in list_modes_from_root_package(
-                    strict=False, errors=self._scan_ghost_errors,
-                )
-            }
-        return self._env_modes
+    #
+    # def all_modes(self) -> dict[str, Mode]:
+    #     if self._env_modes is None:
+    #         self._env_modes = {
+    #             mode.name: mode for mode in list_modes_from_root_package(
+    #                 strict=False, errors=self._scan_ghost_errors,
+    #             )
+    #         }
+    #     return self._env_modes
 
     def all_ghost_manifests(self) -> dict[str, tuple[GhostMeta, ModuleManifest]]:
         if self._ghosts is None:

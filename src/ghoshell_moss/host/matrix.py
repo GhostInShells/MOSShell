@@ -19,18 +19,17 @@ from ghoshell_moss.contracts import (
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.manifests import Manifests
 from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject
-from ghoshell_moss.core.blueprint.host import Mode
+# from ghoshell_moss.core.blueprint.host import Mode
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
 from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellType, CellNetwork, Cell
-from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
     WorkspaceZenohProvider, HostLoggerProvider, ZenohTopicServiceProvider,
     HostSessionProvider,
 )
-from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
+# from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelProvider, ZenohProxyChannel
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 
 import concurrent.futures
@@ -58,7 +57,7 @@ class MatrixImpl(Matrix):
             *,
             # 当前启动的 cell.
             cell: MossCell,
-            mode: Mode,
+            # mode: Mode,
             env: Environment,
             manifest: Manifests,
             logger: LoggerItf | logging.Logger | None = None,
@@ -66,12 +65,12 @@ class MatrixImpl(Matrix):
         env.bootstrap()
         self._env = env
         self._ctml_version_cache: dict[str, str] = {}
-        self._current_mode: Mode = mode
+        # self._current_mode: Mode = mode
         self._manifests = manifest
         self._workspace = env.workspace
-        self._session_scope = env.session_scope
+        self._session_scope = env.network_scope
         # 准备改进 cell, 使之具备完整的路径.
-        self._curr_cell = prepare_cell_with_env(cell, env)
+        # self._curr_cell = prepare_cell_with_env(cell, env)
         # 准备一个 cell 的 workspace.
         self._cell_workspace = LocalWorkspace(Path(self._curr_cell.launcher.cwd))
 
@@ -87,7 +86,7 @@ class MatrixImpl(Matrix):
         self._closed_event = ThreadSafeEvent()
         self._exit_stack = contextlib.ExitStack()
         self._async_exit_stack = contextlib.AsyncExitStack()
-        self._log_prefix = f"<HostMatrix address={self._cell_address} session_scope={self.env.session_scope}>"
+        self._log_prefix = f"<HostMatrix address={self._cell_address} session_scope={self.env.network_scope}>"
         self._task_group: set[asyncio.Task] = set()
         self._container = self._prepare_container()
 
@@ -215,7 +214,7 @@ class MatrixImpl(Matrix):
 
         # 注册 Topic Service.
         default_providers.append(ZenohTopicServiceProvider(
-            session_scope=self.env.session_scope,
+            session_scope=self.env.network_scope,
             cell_address=self._curr_cell.address,
         ))
         return default_providers
@@ -237,11 +236,11 @@ class MatrixImpl(Matrix):
         可以用于 debug.
         """
         # 做显式的声明, 方便了解底层逻辑.
-        return self.env.runtime_scope.dump_env_data()
+        return self.env.runtime_scope.dump_runtime_scope()
 
-    @property
-    def mode(self) -> Mode:
-        return self._current_mode
+    # @property
+    # def mode(self) -> Mode:
+    #     return self._current_mode
 
     # def list_cells(self) -> dict[str, Cell]:
     #     return self._cells
@@ -347,7 +346,7 @@ class MatrixImpl(Matrix):
             stderr: int | None = None,
     ) -> asyncio.subprocess.Process:
         self._check_running()
-        env = self.env.dump_moss_env(
+        env = self.env.dump_cell_env(
             parent_cell_address=self.this.address,
             cell_address=cell_address or '',
             with_os_env=True,
@@ -634,7 +633,7 @@ class MatrixImpl(Matrix):
             # 管理最后的子进程退出.
             await self._async_exit_stack.enter_async_context(self._nursery_spawned_process_ctx_manager())
 
-            self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_moss_env(
+            self.logger.info("%s initialized with env: %s", self._log_prefix, self.env.dump_cell_env(
                 with_os_env=False,
             ))
             self._curr_cell.status.state = 'alive'
@@ -684,7 +683,7 @@ class MatrixImpl(Matrix):
         now = datetime.now(timezone.utc).isoformat()
         meta = SessionMetadata(
             session_id=self.session_id,
-            session_scope=self.session_scope,
+            session_scope=self.network_scope,
             mode_name=self.mode_name,
             ghost_name=self.ghost_name,
             host_cell_address=self._this_cell_address,

@@ -708,37 +708,6 @@ class TestCellRegistryMatchCells:
 
 
 # ==================================================================
-# CellNetwork — ABC 契约验证
-# ==================================================================
-
-class TestCellNetworkABC:
-    """验证 ABC abstractmethod 的存在。子类必须实现。"""
-
-    def test_required_properties(self):
-        import inspect
-        abstract = set()
-        for name, method in inspect.getmembers(CellNetwork, predicate=inspect.isfunction):
-            if getattr(method, '__isabstractmethod__', False):
-                abstract.add(name)
-        assert 'get_host' in abstract
-        assert 'all_hosts' in abstract
-        assert 'get_live_cells' in abstract
-        assert 'create_provider' in abstract
-        assert 'create_proxy' in abstract
-        assert 'update_cell' in abstract
-        assert 'revoke_cell' in abstract
-
-    def test_required_abstract_properties(self):
-        abstract = set()
-        for name, prop in CellNetwork.__dict__.items():
-            if isinstance(prop, property) and getattr(prop.fget, '__isabstractmethod__', False):
-                abstract.add(name)
-        assert 'name' in abstract
-        assert 'description' in abstract
-        assert 'scope' in abstract
-
-
-# ==================================================================
 # Integration: CELL.md → manifest → cell → runtime file
 # ==================================================================
 

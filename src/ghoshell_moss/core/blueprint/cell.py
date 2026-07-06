@@ -32,6 +32,7 @@ __all__ = [
     'CellManifest',
     'CellStatus',
     'Cell',
+    'CellLog',
     'CellRegistry',
     'CellNetwork',
     'make_address',
@@ -297,10 +298,6 @@ class CellManifest(BaseModel):
         else:
             manifest.launcher.cwd = str(found_dir)
         return manifest
-
-
-class DuplicatedError(RuntimeError):
-    """cell 重复启动异常."""
 
 
 class CellStatus(BaseModel):
@@ -742,140 +739,281 @@ class CellRegistry(ABC):
         return proc
 
 
+class DuplicatedError(RuntimeError):
+    """cell 重复启动异常."""
+
+
+class CellLog(BaseModel):
+    """CellNetwork 上轻量事件 — 不广播 cell snapshot, 只广播事件信号 (§SS-2).
+
+    用途: status 变更 (failure/degraded 等中间态), cell 死亡通知, channel ready/gone.
+    接收方语义:
+    - terminal=False → append log + 触发 follow-up query 刷新 cache.
+    - terminal=True  → append log + pop cache entry, 不 query (cell 已没了).
+    """
+
+    address: CellAddress = Field(
+        description="事件来源 cell 的 address (含 uid, 网络精确)."
+    )
+    content: str = Field(
+        default='',
+        description="自由文本事件内容. 第一期不约定 enum — 隐藏 type 留在心里, 不暴露给模型."
+    )
+    timestamp: float = Field(
+        default_factory=time.time,
+        description="事件产生时刻."
+    )
+    terminal: bool = Field(
+        default=False,
+        description="True 表示 cell 已没了, 接收方别 query, 直接删 cache."
+    )
+
+
 class CellNetwork(ABC):
     """
-    Cell 网络通讯层.
-    负责运行时发现 (网络查询存活 cell)、provider/proxy 连线、
-    通过网络只获取通讯链路上存在的 cells.
+    Cell 网络通讯层 — cell 发现 + provider/proxy 单一真相源.
 
-    Cell 在网络间通讯的基本原理:
-    1. liveness: 声明自己存活和下线.
-    2. queryable: 通过地址可以读取.
-    3. pub: 广播改动内容.
+    屏蔽底层 hub (zenoh / 未来 IPC 等) 的差异性. 调用方拿到 CellNetwork 就拿到了:
+    - 网络上谁在线 (get_live_cells / live_cells)
+    - 状态变更轻量事件 (recent_logs, broadcast_log)
+    - 跨 cell 通讯通道 (provide / proxies / get_proxy / wait_connected)
+    - 上下文唤醒回调 (on_change / on_provider_online / on_provider_offline)
 
-    方便构建动态更新和缓存机制:
-    1. query 全量节点, 构建启动缓存.
-    2. 监听 liveness, 上线配合 query 构建缓存; 下线删除缓存.
-    3. 通过 pub 仅在有改动时监听改动.
+    二元真相承诺 (§NN):
+      live_cells() 返回的是延迟视图. 只承诺 online/offline 准确, status 字段可能滞后到
+      下次 reconcile. 需要实时 status 的调用方必须 get_live_cells(refresh=True).
+      cell 想让网络知道 degraded, 应主动 revoke_cell + update_cell — liveness DELETE+PUT
+      会传出去. 这是 cell 有意识的传播, 不是框架默认行为.
+
+    底层原语 (zenoh 实现):
+    1. liveness: 声明自己存活和下线. PUT=上线 DELETE=下线 subscriber 实时感知.
+    2. queryable: 通过地址按需拉取 Cell snapshot.
+    3. logs publisher/subscriber: 轻量事件 (CellLog) 广播, 不广播 snapshot.
+
+    缓存机制:
+    1. seed: 全量 liveness get + queryable, 启动缓存.
+    2. liveness subscriber: 上线 PUT → query + 写 cache; 下线 DELETE → pop cache.
+    3. log subscriber: terminal=False → re-query 刷 cache; terminal=True → 提前 pop cache.
+    4. reconcile loop: 低频全量对账, 兜底极端丢事件.
     """
 
-    # -- 存活发现 -- #
+    # ── 标识 ──────────────────────────────────────────────────────────
 
     @property
     @abstractmethod
     def name(self) -> str:
         """通常用于 debug. """
-        pass
+        ...
 
     @property
     @abstractmethod
     def description(self) -> str:
-        pass
+        ...
 
     @property
     @abstractmethod
     def scope(self) -> str:
-        """
-        通讯子空间标识. 同一 scope 下的 cell 可以互相发现, scope 之间隔离.
+        """通讯子空间标识. 同一 scope 下的 cell 可以互相发现, scope 之间隔离.
         zenoh key 空间: MOSS/matrix/scopes/{scope}/cells/...
         Host 节点同时发布到 scope 空间和 hosts 空间.
         """
-        pass
+        ...
+
+    # ── 发现 ──────────────────────────────────────────────────────────
 
     @abstractmethod
     async def get_host(self) -> Cell | None:
-        """
-        尝试获取当前 Network 内的 Host 节点.
-        """
-        pass
+        """尝试获取当前 Network 内的 Host 节点."""
+        ...
 
     @abstractmethod
     async def all_hosts(self) -> list[Cell]:
-        """
-        返回所处网络中所有的 host 节点.
-        """
-        pass
+        """返回所处网络中所有的 host 节点 (跨 scope)."""
+        ...
 
     @abstractmethod
-    async def get_live_cells(self, *, type: str | None = None, refresh: bool = False) -> dict[CellAddress, Cell]:
+    async def get_live_cells(
+            self,
+            *,
+            type: str | None = None,
+            local: bool | None = None,
+            refresh: bool = False,
+    ) -> dict[CellAddress, Cell]:
         """
         主动获取当前网络中在线的 cell.
-        所有的 Cell 入网后, 应该用类似 Queryable 的逻辑支持被主动调用获取数据.
-        :param type: 指定按特定的 type 类型查询.
-        :param refresh: 是否全量查询.
+
+        :param type: 仅返回指定 type 的 cell (开放命名空间, 'host' / 'worker' / 用户自定义).
+        :param local: None=不过滤; True=仅本 project; False=仅其它 project.
+                     "local" 判定: cell.status.project_id == self_project_id.
+                     如果 CellNetwork 不知道 self_project_id, local 过滤一律忽略.
+        :param refresh: True=全量 liveness get + queryable refresh, False=读 cache.
         """
-        pass
+        ...
 
     @abstractmethod
     def live_cells(self) -> dict[CellAddress, Cell]:
-        """
-        直接通过缓存获取 cells.
-        """
+        """直接通过 cache 获取 cells (零延时, 延迟视图)."""
         ...
 
     @abstractmethod
     def on_change(self, callback: Callable[[Cell, bool], None]) -> None:
-        """
-        注册 callback, 监听 tuple[Cell, alive] 的改动.
+        """注册 callback, 监听 (Cell, online) 的改动.
+
+        回调可能在 zenoh subscriber 线程或 reconcile loop 任务中触发,
+        caller 负责线程安全.
         """
         ...
 
-    # --- channel -- #
+    # ── 唯一性 ────────────────────────────────────────────────────────
 
     @abstractmethod
-    def create_provider(
+    async def check_unique(self, cell: Cell) -> None:
+        """检查 cell 在网络上是否唯一可宣告.
+
+        - singleton 节点: 同 identity (type/name) 在 scope 内不允许多个.
+          实现层面: 查 identity wildcard, 命中即冲突.
+        - non-singleton 节点: 同 address (含 uid) 不允许重复.
+          实现层面: 查 address exact 即可.
+
+        :raise DuplicatedError: 已被别处声明.
+        """
+        ...
+
+    # ── 轻量事件 (CellLog) ─────────────────────────────────────────────
+
+    @abstractmethod
+    async def broadcast_log(
             self,
             address: CellAddress,
-            channel: Channel,
-    ) -> ChannelProvider:
+            content: str,
+            *,
+            terminal: bool = False,
+    ) -> None:
+        """向 network 广播一个 CellLog 事件 (§SS-2).
+
+        不广播 cell snapshot — 接收方按需 query cache.
+
+        terminal=True 触发场景:
+        - 自身 revoke_cell 时
+        - 观察到 liveness DELETE → 自动 broadcast cell-gone (terminal=True)
+        - CellsManager 观察到 ProcessManager on_exit → broadcast exited (terminal=True)
         """
-        基于当前 Network 的通讯协议创建一个 ChannelProvider.
-        address 必须是自己 update 过的 cell.
-        """
-        pass
+        ...
 
     @abstractmethod
-    def create_proxy(
+    def recent_logs(
+            self,
+            *,
+            limit: int = 20,
+            local: bool | None = None,
+    ) -> list[CellLog]:
+        """最近 CellLog 时间窗口 (ring buffer).
+
+        :param limit: 返回条数上限 (FIFO, 最新优先).
+        :param local: None=不过滤; True=仅本 project 的 cell; False=仅其它 project.
+        """
+        ...
+
+    # ── 宣告 ──────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def update_cell(self, cell: Cell, *, log: str = '') -> None:
+        """声明一个 Cell 的存在, 或更新 cell 的数据.
+
+        首次更新前检查 liveness 唯一性, 然后宣告 liveness + queryable.
+        如果是 Host 节点, 同时被广播到特殊的 hosts 命名空间下.
+
+        :param log: 若非空, 同时 broadcast_log(address, log) (terminal=False).
+        :raise DuplicatedError: 已被别处声明.
+        """
+        ...
+
+    @abstractmethod
+    async def revoke_cell(self, cell: Cell, *, log: str = '') -> None:
+        """取消网络中对一个 cell 的声明.
+
+        :param log: 若非空, 同时 broadcast_log(address, log, terminal=True).
+        :raise LookupError: 并不是自己 update 过的 cell.
+        """
+        ...
+
+    # ── channel (provider/proxy) ─────────────────────────────────────
+
+    @abstractmethod
+    async def provide(
+            self,
+            channel: Channel,
+            *,
+            address: CellAddress | None = None,
+    ) -> ChannelProvider:
+        """将 Channel 通过本 network 暴露出去, 让远端 cell 能 proxy 到.
+
+        三层调用: matrix.provide → network.provide → hub.provider.
+
+        :param address: 必须是已 update 过的 cell address (自己 own 的).
+                       None 时由实现决定 (Matrix 通常会传 self.this.address).
+        :raise ValueError: address 为 None 且实现无默认.
+        """
+        ...
+
+    @abstractmethod
+    def proxies(self) -> dict[CellAddress, ChannelProxy]:
+        """当前自动构建的全部 proxy. 每个 key 对应一个网络上观察到的 provider.
+
+        触发链: zenoh hub liveness PUT (channels_ns/{address}) → CellNetwork
+        自动 build proxy → 放入 proxies dict → broadcast_log "channel-ready".
+
+        第一期约束 (§SS-5): 只有 host 视角的 CellNetwork 才会构建 proxy.
+        worker 视角的 network proxies() 永远空.
+        """
+        ...
+
+    @abstractmethod
+    def get_proxy(self, address: CellAddress) -> ChannelProxy | None:
+        """按 address 取 proxy. 不存在返回 None."""
+        ...
+
+    @abstractmethod
+    async def wait_connected(
             self,
             address: CellAddress,
             *,
-            name: str = '',
-            description: str = '',
-    ) -> ChannelProxy:
-        """
-        基于 address 创建一个 CellNetwork 内部的 Proxy.
-        实际上 CellNetwork 只负责创建, 不负责生命周期治理.
-        """
-        pass
+            timeout: float = 30,
+    ) -> bool:
+        """等待 address 对应的 proxy 上线并可用.
 
-    # --- announce -- #
-
-    @abstractmethod
-    async def update_cell(self, cell: Cell) -> None:
+        实现: 注册 on_provider_online callback + 检查 proxies() 当前是否已含 address.
+        :return: True=超时前 ready, False=超时.
         """
-        声明一个 Cell 的存在, 或更新 cell 的数据.
-        首次更新会先检查 liveness 的唯一性, 然后抛出 liveness.
-        同时支持 query. 非首次更新会 pub. Network 关闭时会自动下线.
+        ...
 
-        如果是 Host 节点, 同时会被广播到特殊的 Host 命名空间下.
-        :raise DuplicatedError: 如果目标节点已经被别的地方声明过, 则会抛出异常.
-        """
-        pass
+    # ── channel 上下线回调 ────────────────────────────────────────────
 
     @abstractmethod
-    async def revoke_cell(self, cell: Cell) -> None:
-        """
-        取消环中中对一个 cell 的声明.
-        :raise LookupError: 如果并不是自己 update 过的 cell, 会抛出异常.
-        """
-        pass
+    def on_provider_online(
+            self,
+            callback: Callable[[CellAddress], None],
+    ) -> Callable[[], None]:
+        """注册 provider 上线回调. 返回 unsubscribe 函数.
 
-    # -- 生命周期 -- #
+        回调可能在 zenoh 后台线程 fire, 调用方负责线程安全.
+        """
+        ...
+
+    @abstractmethod
+    def on_provider_offline(
+            self,
+            callback: Callable[[CellAddress], None],
+    ) -> Callable[[], None]:
+        """注册 provider 下线回调. 返回 unsubscribe 函数."""
+        ...
+
+    # ── 生命周期 ──────────────────────────────────────────────────────
 
     @abstractmethod
     async def __aenter__(self) -> Self:
-        pass
+        ...
 
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        pass
+        ...

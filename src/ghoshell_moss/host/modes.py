@@ -1,4 +1,4 @@
-from ghoshell_moss.core.blueprint.host import Mode
+# from ghoshell_moss.core.blueprint.host import Mode
 from ghoshell_moss.core.blueprint.environment import Environment, MODE_STUB_PACKAGE
 from ghoshell_moss.core.codex.discover import scan_package, ScanError
 from importlib import import_module
@@ -12,7 +12,7 @@ __all__ = [
     'MODE_PACKAGE',
     "DEFAULT_MODE_FILENAME",
     'find_mode_from_package',
-    'list_modes_from_root_package',
+    # 'list_modes_from_root_package',
     'new_mode',
 ]
 
@@ -71,85 +71,85 @@ def new_mode(
 
     return target_mode_dir
 
-
-def list_modes_from_root_package(
-        package_import_path: str = ROOT_MODES_PACKAGE,
-        *,
-        strict: bool = False,
-        errors: list[ScanError] | None = None,
-) -> list[Mode]:
-    """
-    通过复用 scan_package 逻辑发现所有模式。
-    """
-    modes = []
-    # 我们只关心根包下的一级子包 (max_depth=1)
-    # scan_package 第一个产出通常是 ROOT 本身，我们需要跳过它或过滤掉
-    for module_manifest in scan_package(
-        package_import_path, max_depth=1, strict=strict, errors=errors,
-    ):
-        # 排除掉根包本身，只处理子包（即具体的 Mode 包）
-        if module_manifest.module_path == package_import_path:
-            continue
-
-        # 只要是子包，就尝试解析为 Mode
-        mode = find_mode_from_package(module_manifest.module_path, strict=strict)
-        if mode:
-            modes.append(mode)
-    return modes
-
-
-def _ensure_manifest_to_mode(package_path: str, mode: Mode) -> Mode:
-    """
-    如果 Mode 还没有关联 Manifest，尝试为其绑定一个 PackageManifest。
-    CTML versions 从 Environment 扫描，mode 不会独立覆盖 ctml_versions。
-    """
-    if mode.__manifest__ is None:
-        if mode.import_path:
-            package_path = mode.import_path
-        env = Environment.discover()
-        env.bootstrap()
-        ctml_versions = PackageManifests.find_ctml_versions_from_env(env=env)
-        mode.with_manifest(PackageManifests(package_path, ctml_versions=ctml_versions))
-    return mode
+#
+# def list_modes_from_root_package(
+#         package_import_path: str = ROOT_MODES_PACKAGE,
+#         *,
+#         strict: bool = False,
+#         errors: list[ScanError] | None = None,
+# ) -> list[Mode]:
+#     """
+#     通过复用 scan_package 逻辑发现所有模式。
+#     """
+#     modes = []
+#     # 我们只关心根包下的一级子包 (max_depth=1)
+#     # scan_package 第一个产出通常是 ROOT 本身，我们需要跳过它或过滤掉
+#     for module_manifest in scan_package(
+#         package_import_path, max_depth=1, strict=strict, errors=errors,
+#     ):
+#         # 排除掉根包本身，只处理子包（即具体的 Mode 包）
+#         if module_manifest.module_path == package_import_path:
+#             continue
+#
+#         # 只要是子包，就尝试解析为 Mode
+#         mode = find_mode_from_package(module_manifest.module_path, strict=strict)
+#         if mode:
+#             modes.append(mode)
+#     return modes
 
 
-def find_mode_from_package(package_import_path: str, *, strict: bool = False) -> Mode | None:
-    try:
-        module = import_module(package_import_path)
-    except ImportError:
-        if strict:
-            raise
-        return None
-
-    mode: Mode | None = None
-
-    # 1. 尝试从 module 属性中直接获取实例
-    for attr in ("mode", "__mode__"):
-        instance = getattr(module, attr, None)
-        if isinstance(instance, Mode):
-            mode = instance
-            break
-
-    # 2. 如果没有实例，尝试从 MODE.md 发现
-    expect_mode_name = package_import_path.split(".")[-1]
-    if mode is None and hasattr(module, "__file__") and module.__file__:
-        mode_dir = Path(module.__file__).parent.resolve()
-        expect_file = mode_dir.joinpath(DEFAULT_MODE_FILENAME)
-        if expect_file.exists() and expect_file.is_file():
-            mode = Mode.from_markdown(expect_file, mode_name=expect_mode_name)
-
-    # 3. 如果还是没有，根据约定自动生成（Convention over Configuration）
-    if mode is None:
-        description = inspect.getdoc(module) or f"Auto-generated mode for {package_import_path}"
-        docstring = ''
-        mode = Mode(
-            name=expect_mode_name,
-            instruction=docstring,
-            description=description,
-            import_path=package_import_path,
-        )
-        if hasattr(module, "__file__") and module.__file__:
-            mode.file = str(Path(module.__file__).parent.resolve())
-
-    # 最后确保 Manifest 被挂载
-    return _ensure_manifest_to_mode(package_import_path, mode)
+# def _ensure_manifest_to_mode(package_path: str, mode: Mode) -> Mode:
+#     """
+#     如果 Mode 还没有关联 Manifest，尝试为其绑定一个 PackageManifest。
+#     CTML versions 从 Environment 扫描，mode 不会独立覆盖 ctml_versions。
+#     """
+#     if mode.__manifest__ is None:
+#         if mode.import_path:
+#             package_path = mode.import_path
+#         env = Environment.discover()
+#         env.bootstrap()
+#         ctml_versions = PackageManifests.find_ctml_versions_from_env(env=env)
+#         mode.with_manifest(PackageManifests(package_path, ctml_versions=ctml_versions))
+#     return mode
+#
+#
+# def find_mode_from_package(package_import_path: str, *, strict: bool = False) -> Mode | None:
+#     try:
+#         module = import_module(package_import_path)
+#     except ImportError:
+#         if strict:
+#             raise
+#         return None
+#
+#     mode: Mode | None = None
+#
+#     # 1. 尝试从 module 属性中直接获取实例
+#     for attr in ("mode", "__mode__"):
+#         instance = getattr(module, attr, None)
+#         if isinstance(instance, Mode):
+#             mode = instance
+#             break
+#
+#     # 2. 如果没有实例，尝试从 MODE.md 发现
+#     expect_mode_name = package_import_path.split(".")[-1]
+#     if mode is None and hasattr(module, "__file__") and module.__file__:
+#         mode_dir = Path(module.__file__).parent.resolve()
+#         expect_file = mode_dir.joinpath(DEFAULT_MODE_FILENAME)
+#         if expect_file.exists() and expect_file.is_file():
+#             mode = Mode.from_markdown(expect_file, mode_name=expect_mode_name)
+#
+#     # 3. 如果还是没有，根据约定自动生成（Convention over Configuration）
+#     if mode is None:
+#         description = inspect.getdoc(module) or f"Auto-generated mode for {package_import_path}"
+#         docstring = ''
+#         mode = Mode(
+#             name=expect_mode_name,
+#             instruction=docstring,
+#             description=description,
+#             import_path=package_import_path,
+#         )
+#         if hasattr(module, "__file__") and module.__file__:
+#             mode.file = str(Path(module.__file__).parent.resolve())
+#
+#     # 最后确保 Manifest 被挂载
+#     return _ensure_manifest_to_mode(package_import_path, mode)

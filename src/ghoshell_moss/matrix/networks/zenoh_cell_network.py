@@ -1,24 +1,38 @@
-"""Zenoh-based CellNetwork — 推拉结合的 cell 发现与宣告.
+"""Zenoh-based CellNetwork — 推拉结合的 cell 发现 + 事件总线 + 自动 proxy.
 
-每个 cell 在网络上的存在 = 1 个 key, 2 种 zenoh 原语:
+Cell 在网络上的存在 = 1 个 key, 2 种 zenoh 原语:
   {cells_ns}/{cell.address}  → liveness token (推: 上线/下线, subscriber 实时感知)
   {cells_ns}/{cell.address}  → queryable   (拉: Cell JSON 全量, 按需 get)
 
 Host 额外跨域宣告:
   {hosts_ns}/{scope}/cells/liveness/{cell.address} → liveness token
 
+CellLog 总线 (§SS-2 轻量事件, 不广播 cell snapshot):
+  {cells_ns}/logs/{cell.address}  → cell-owned zenoh.Publisher pub/sub
+  - owner: announce 时 declare_publisher, broadcast_log 时 publisher.put(version+=1)
+  - subscriber: 订阅 {cells_ns}/logs/** , put_nowait 到 janus queue 卸载到 event loop
+  - consumer: 单 asyncio task 串行消费, 按 address 维度 last-version-wins
+  - terminal=True → pop cache + fire on_change(False); terminal=False → refetch cache
+
 发现:
   subscriber 实时推 — PUT=上线 DELETE=下线, 零轮询
   reconcile loop 低频兜底 — 60s+ 全量对账, 覆盖极端丢事件
 
-cell 不变 (meta/launcher 静态, status 只有 starting→alive→stopped),
-所以不需要 change pub. 上下线由 liveness 推, 数据由 queryable 拉.
+自动 build proxy (§SS-3 / §SS-5, 仅 allow_create_proxy=True 启用):
+  hub liveness PUT (channels_ns/{address})
+    → hub._on_provider_online → fan-out to self._auto_build_proxy
+    → 查 cells_ns 拿 Cell snapshot → hub.proxy(address, name=cell.channel_name)
+    → broadcast_log(address, "channel-ready")
 """
 
 import asyncio
 import threading
-from dataclasses import dataclass
+import time
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Callable
+
+import janus
 
 from ghoshell_moss.depends import depend_zenoh
 
@@ -28,6 +42,7 @@ import zenoh
 from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellAddress,
+    CellLog,
     CellNetwork,
     DuplicatedError,
 )
@@ -39,31 +54,43 @@ import logging
 
 __all__ = ['ZenohCellNetwork']
 
+# 大数, log 是低频事件, 这里不做背压. 入队失败说明上游异常, 走 logger.error 暴露问题.
+_LOG_QUEUE_MAXSIZE = 10000
+
 
 @dataclass
 class _Announce:
-    """一次 cell announce 持有的 zenoh 资源."""
+    """一次 cell announce 持有的 zenoh 资源 + log publisher."""
     liveness_token: zenoh.LivelinessToken
     queryable: zenoh.Queryable
+    log_publisher: zenoh.Publisher
     cell: Cell
+    host_token: zenoh.LivelinessToken | None = None
 
     def close(self) -> None:
-        try:
-            self.queryable.undeclare()
-        except RuntimeError:
-            pass
-        try:
-            self.liveness_token.undeclare()
-        except RuntimeError:
-            pass
+        for resource_name in ("log_publisher", "queryable", "liveness_token", "host_token"):
+            resource = getattr(self, resource_name, None)
+            if resource is None:
+                continue
+            try:
+                resource.undeclare()
+            except RuntimeError:
+                pass
 
 
 class ZenohCellNetwork(CellNetwork):
     """基于 zenoh 的 CellNetwork 实现.
 
-    不持有 cell 引用, 不假设 host/worker 身份.
-    推拉结合: liveness token 推上下线, queryable 拉全量数据.
-    subscriber 实时感知, reconcile loop 低频兜底.
+    线程模型:
+    - zenoh subscriber 回调线程: liveness sample, log sample. 只做最薄工作 (put_nowait 入队 / 同步 cache 操作).
+    - asyncio event loop 线程: 主流程, log consumer task, reconcile loop.
+    - 跨线程数据卸载用 janus.Queue (避免锁竞争阻塞 zenoh 线程).
+
+    缓存写者:
+    - liveness subscriber (zenoh 线程): cache PUT/DELETE.
+    - log consumer task (event loop): cache PUT (refetch) / DELETE (terminal log).
+    - reconcile loop (event loop): cache diff 补救.
+    三方写者共享 self._cache, 用 threading.Lock 保护 (跨线程必需).
     """
 
     def __init__(
@@ -75,6 +102,8 @@ class ZenohCellNetwork(CellNetwork):
             scope: str,
             allow_create_proxy: bool = False,
             reconcile_interval: float = 60.0,
+            self_project_id: str | None = None,
+            log_buffer_size: int = 100,
     ):
         self._session = session
         self._logger = logger
@@ -82,21 +111,27 @@ class ZenohCellNetwork(CellNetwork):
         self._scope = scope
         self._allow_create_proxy = allow_create_proxy
         self._reconcile_interval = reconcile_interval
+        self._self_project_id = self_project_id
 
         # -- zenoh key 约定, 全部在 init 生成 ---------------------------
-        # 跨 scope queryable 回查根前缀
         self._scopes_root = "MOSS/matrix/scopes"
-        # prefix strip 用
         self._cells_ns_prefix = self._ns.cells_ns + '/'
         self._hosts_ns_prefix = self._ns.hosts_ns + '/'
         # host 跨域 key 中的语义分隔标记: {scope}/cells/liveness/{address}
         self._host_liveness_marker = "/cells/liveness/"
-        # wildcard
+
+        # cells wildcards
         self._cell_liveness_wildcard = self._join(self._ns.cells_ns, "**")
         self._host_discovery_wildcard = self._join(self._ns.cells_ns, "host", "**")
         self._cross_hosts_wildcard = self._join(
             self._ns.hosts_ns, "*", "cells", "liveness", "**",
         )
+
+        # CellLog 总线 — 挂在 cells 分组下 (§SS-2). 单 key per cell, address 段后不再追加.
+        # 同 key 多次 put 在 zenoh pub/sub 模型下都会送达 subscriber.
+        self._cells_logs_ns = self._join(self._ns.cells_ns, "logs")
+        self._cells_logs_ns_prefix = self._cells_logs_ns + '/'
+        self._cells_logs_wildcard = self._join(self._cells_logs_ns, "**")
 
         # -- channel 层委托 hub ------------------------------------------
         self._hub = ZenohChannelHub(
@@ -108,17 +143,31 @@ class ZenohCellNetwork(CellNetwork):
 
         # -- 自身宣告 ----------------------------------------------------
         self._announcements: dict[CellAddress, _Announce] = {}
-        self._host_tokens: dict[CellAddress, zenoh.LivelinessToken] = {}
 
-        # -- 发现缓存 — 写者: subscriber (zenoh 线程) + reconcile (event loop 线程)
+        # -- 发现缓存 — 写者跨线程, 必须锁
         self._cache: dict[CellAddress, Cell] = {}
-        self._lock = threading.Lock()
+        self._cache_lock = threading.Lock()
 
         # change callbacks — 调用线程不固定, caller 负责线程安全
         self._change_callbacks: list[Callable[[Cell, bool], None]] = []
 
-        # subscriber — 推: 实时感知上下线
-        self._subscriber: zenoh.Subscriber | None = None
+        # -- CellLog ---------------------------------------------------
+        # ring buffer 容量上限, 单写者 (consumer task) 不需要锁
+        self._log_buffer: deque[CellLog] = deque(maxlen=log_buffer_size)
+        # janus 队列 — zenoh 线程 put_nowait, consumer task get
+        self._log_queue: janus.Queue[CellLog] | None = None
+        # consumer task, last-version-wins state 由其私有持有
+        self._log_consumer_task: asyncio.Task | None = None
+
+        # subscribers
+        self._cell_subscriber: zenoh.Subscriber | None = None
+        self._log_subscriber: zenoh.Subscriber | None = None
+
+        # hub callback unsubscribe handles
+        self._hub_unsubs: list[Callable[[], None]] = []
+
+        # main event loop ref — zenoh 后台线程 schedule async 工作时用
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         # reconcile — 低频兜底
         self._reconcile_task: asyncio.Task | None = None
@@ -126,7 +175,7 @@ class ZenohCellNetwork(CellNetwork):
         self._started = False
         self._closed = False
 
-    # -- properties ----------------------------------------------------
+    # ── properties ────────────────────────────────────────────────────
 
     @property
     def name(self) -> str:
@@ -152,6 +201,10 @@ class ZenohCellNetwork(CellNetwork):
         """scope 内 cell 的 liveness + queryable key: {cells_ns}/{address}"""
         return self._join(self._ns.cells_ns, address)
 
+    def _cell_log_key(self, address: CellAddress) -> str:
+        """cell 的 log publisher key: {cells_ns}/logs/{address}. 单 key, 不带后缀."""
+        return self._join(self._cells_logs_ns, address)
+
     def _host_liveness_key(self, scope: str, address: CellAddress) -> str:
         """host 跨域 liveness key: {hosts_ns}/{scope}/cells/liveness/{address}"""
         return self._join(self._ns.hosts_ns, scope, "cells", "liveness", address)
@@ -164,16 +217,24 @@ class ZenohCellNetwork(CellNetwork):
         """从 {cells_ns}/{address} liveness key 提取 cell address.
 
         用 prefix strip 而非段数索引 — address 自身含 / 不受影响.
+        注意排除 log key: {cells_ns}/logs/... 也匹配 cells_ns_prefix.
         """
         if not key.startswith(self._cells_ns_prefix):
             return None
-        return key[len(self._cells_ns_prefix):]
+        rest = key[len(self._cells_ns_prefix):]
+        # logs/... 是 log key, 不是 cell liveness key
+        if rest.startswith('logs/'):
+            return None
+        return rest
+
+    def _log_key_to_address(self, key: str) -> CellAddress | None:
+        """从 {cells_ns}/logs/{address} log key 提取 cell address."""
+        if not key.startswith(self._cells_logs_ns_prefix):
+            return None
+        return key[len(self._cells_logs_ns_prefix):]
 
     def _parse_host_liveness_key(self, key: str) -> tuple[str, CellAddress] | None:
-        """从 {hosts_ns}/{scope}/cells/liveness/{address} 解析 (scope, address).
-
-        用 marker 匹配 — address 自身含 /, 段数不确定.
-        """
+        """从 {hosts_ns}/{scope}/cells/liveness/{address} 解析 (scope, address)."""
         if not key.startswith(self._hosts_ns_prefix):
             return None
         rest = key[len(self._hosts_ns_prefix):]
@@ -190,30 +251,20 @@ class ZenohCellNetwork(CellNetwork):
     # announce
     # ==================================================================
 
-    async def update_cell(self, cell: Cell) -> None:
+    async def update_cell(self, cell: Cell, *, log: str = '') -> None:
         address = cell.address
 
         if address in self._announcements:
             # 同 address 重复宣告: 仅更新 cell 引用, queryable handler 下次查询返回新数据
             self._announcements[address].cell = cell
+            if log:
+                await self.broadcast_log(address, log, terminal=False)
             return
 
         key = self._cell_key(address)
 
-        # 首次宣告前检查重复 — host 一个 scope 只允许一个, worker 检查 exact key
-        if cell.is_host:
-            dup_check_key = self._host_discovery_wildcard
-        else:
-            dup_check_key = key
-
-        existing = await asyncio.to_thread(
-            self._session.liveliness().get, dup_check_key,
-        )
-        for reply in existing:
-            if reply.ok:
-                raise DuplicatedError(
-                    f"cell address '{address}' is already announced on the network"
-                )
+        # 首次宣告前检查唯一性
+        await self.check_unique(cell)
 
         # queryable 必须先于 liveness token 注册 — 避免 subscriber 收到 PUT
         # 时 queryable 尚未就位导致 _sync_fetch_cell 空返回
@@ -229,46 +280,87 @@ class ZenohCellNetwork(CellNetwork):
 
         queryable = self._session.declare_queryable(key, _on_query)
 
+        # log publisher — cell-owned, 每个 cell 一个 publisher 复用 routing
+        log_publisher = self._session.declare_publisher(self._cell_log_key(address))
+
         # liveness token — 推: 上线/下线由 subscriber 实时感知
         liveness_token = self._session.liveliness().declare_token(key)
+
+        host_token = None
+        if cell.is_host:
+            host_key = self._host_liveness_key(self._scope, address)
+            host_token = self._session.liveliness().declare_token(host_key)
 
         self._announcements[address] = _Announce(
             liveness_token=liveness_token,
             queryable=queryable,
+            log_publisher=log_publisher,
             cell=cell,
+            host_token=host_token,
         )
-
-        if cell.is_host:
-            host_key = self._host_liveness_key(self._scope, address)
-            self._host_tokens[address] = self._session.liveliness().declare_token(host_key)
 
         self._logger.debug("cell announced: address=%s host=%s", address, cell.is_host)
 
-    async def revoke_cell(self, cell: Cell) -> None:
+        if log:
+            await self.broadcast_log(address, log, terminal=False)
+
+    async def revoke_cell(self, cell: Cell, *, log: str = '') -> None:
         address = cell.address
 
-        ann = self._announcements.pop(address, None)
+        ann = self._announcements.get(address)
         if ann is None:
             raise LookupError(
                 f"cell address '{address}' was not announced by this instance"
             )
-        ann.close()
 
-        host_token = self._host_tokens.pop(address, None)
-        if host_token is not None:
+        # 先 broadcast terminal log (publisher 还活着), 再 close
+        if log:
             try:
-                host_token.undeclare()
-            except RuntimeError:
-                pass
+                await self.broadcast_log(address, log, terminal=True)
+            except Exception:
+                self._logger.exception("broadcast revoke log failed for %s", address)
 
+        self._announcements.pop(address, None)
+        ann.close()
         self._logger.debug("cell revoked: address=%s", address)
+
+    # ==================================================================
+    # check_unique
+    # ==================================================================
+
+    async def check_unique(self, cell: Cell) -> None:
+        """检查 cell 在网络上是否唯一可宣告.
+
+        - host: scope 内只允许 1 个 host (无论 name) — 查 {cells_ns}/host/**.
+        - 其它 singleton: 同 identity (type/name) 唯一 — 查 {cells_ns}/type/name/*.
+        - non-singleton: 仅检 address exact key (含 uid).
+
+        :raise DuplicatedError: 已被别处声明.
+        """
+        if cell.is_host:
+            check_key = self._host_discovery_wildcard
+        elif cell.meta.singleton:
+            check_key = self._join(
+                self._ns.cells_ns, cell.meta.type, cell.meta.name, "*",
+            )
+        else:
+            check_key = self._cell_key(cell.address)
+
+        replies = await asyncio.to_thread(
+            self._session.liveliness().get, check_key,
+        )
+        for reply in replies:
+            if reply.ok:
+                raise DuplicatedError(
+                    f"cell '{cell.identity}' is already announced on the network "
+                    f"(is_host={cell.is_host}, singleton={cell.meta.singleton})"
+                )
 
     # ==================================================================
     # discovery
     # ==================================================================
 
     async def get_host(self) -> Cell | None:
-        """liveness get scope 内 host 节点, 返回第一个."""
         replies = await asyncio.to_thread(
             self._session.liveliness().get,
             self._host_discovery_wildcard,
@@ -285,17 +377,11 @@ class ZenohCellNetwork(CellNetwork):
         return None
 
     async def all_hosts(self) -> list[Cell]:
-        """跨 scope 发现所有 host.
-
-        liveness get {hosts_ns}/*/cells/liveness/** → key 解析得 scope + address
-        → 回查 scopes/{scope}/cells/{address} queryable 拿完整 Cell.
-        """
         replies = await asyncio.to_thread(
             self._session.liveliness().get,
             self._cross_hosts_wildcard,
         )
         result: list[Cell] = []
-
         for reply in replies:
             if not reply.ok:
                 continue
@@ -308,22 +394,32 @@ class ZenohCellNetwork(CellNetwork):
             )
             if cell is not None:
                 result.append(cell)
-
         return result
 
     async def get_live_cells(
             self,
             *,
             type: str | None = None,
+            local: bool | None = None,
             refresh: bool = False,
     ) -> dict[CellAddress, Cell]:
         if not refresh:
-            with self._lock:
+            with self._cache_lock:
                 cells = dict(self._cache)
-            if type is not None:
-                cells = {a: c for a, c in cells.items() if c.type == type}
-            return cells
+        else:
+            cells = await self._refresh_cache_full()
 
+        if type is not None:
+            cells = {a: c for a, c in cells.items() if c.type == type}
+        if local is not None and self._self_project_id:
+            cells = {
+                a: c for a, c in cells.items()
+                if (c.status.project_id == self._self_project_id) == local
+            }
+        return cells
+
+    async def _refresh_cache_full(self) -> dict[CellAddress, Cell]:
+        """liveness get 全量 → queryable get 每个 cell → 写 cache. 返回结果副本."""
         cells: dict[CellAddress, Cell] = {}
         replies = await asyncio.to_thread(
             self._session.liveliness().get,
@@ -335,53 +431,317 @@ class ZenohCellNetwork(CellNetwork):
             address = self._key_to_address(str(reply.result.key_expr))
             if address is None:
                 continue
-            if type is not None and not address.startswith(f"{type}/"):
-                continue
             cell = await self._fetch_cell(address)
             if cell is not None:
                 cells[address] = cell
 
-        with self._lock:
+        with self._cache_lock:
             self._cache.update(cells)
         self._logger.debug("live cells refreshed: %d cells", len(cells))
         return cells
 
     def live_cells(self) -> dict[CellAddress, Cell]:
-        with self._lock:
+        with self._cache_lock:
             return dict(self._cache)
 
     def on_change(self, callback: Callable[[Cell, bool], None]) -> None:
-        """注册 cell 上下线回调.
-
-        回调在 zenoh subscriber 线程 (上线) 或 reconcile loop (下线对账) 触发.
-        caller 负责线程安全.
-        """
         self._change_callbacks.append(callback)
 
     # ==================================================================
-    # channel
+    # channel (provider / proxy delegate to hub)
     # ==================================================================
 
-    def create_provider(
+    async def provide(
             self,
-            address: CellAddress,
             channel: Channel,
+            *,
+            address: CellAddress | None = None,
     ) -> ChannelProvider:
+        if not address:
+            raise ValueError(
+                "ZenohCellNetwork.provide requires explicit address — "
+                "Matrix layer should pass self.this.address"
+            )
         return self._hub.provider(address)
 
-    def create_proxy(
+    def proxies(self) -> dict[CellAddress, ChannelProxy]:
+        """delegate to hub. 仅在 allow_create_proxy=True 时有非空内容."""
+        if not self._allow_create_proxy:
+            return {}
+        return self._hub.proxies
+
+    def get_proxy(self, address: CellAddress) -> ChannelProxy | None:
+        if not self._allow_create_proxy:
+            return None
+        return self._hub.get_proxy(address)
+
+    async def wait_connected(
             self,
             address: CellAddress,
             *,
-            name: str = '',
-            description: str = '',
-    ) -> ChannelProxy:
-        if not self._allow_create_proxy:
-            raise RuntimeError(
-                "create_proxy is disabled on this CellNetwork. "
-                "Set allow_create_proxy=True for host nodes that manage channel proxies."
+            timeout: float = 30,
+    ) -> bool:
+        """等 address 对应 proxy 上线. 已 ready 立即返回 True; 超时返回 False."""
+        if self._hub.get_proxy(address) is not None:
+            return True
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[bool] = loop.create_future()
+
+        def _on_online(addr: str) -> None:
+            if addr != address or fut.done():
+                return
+            loop.call_soon_threadsafe(
+                lambda: fut.done() or fut.set_result(True)
             )
-        return self._hub.proxy(address, name=name, description=description)
+
+        unsub = self._hub.on_provider_online(_on_online)
+        try:
+            # double-check 防 race
+            if self._hub.get_proxy(address) is not None:
+                return True
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            unsub()
+
+    def on_provider_online(
+            self,
+            callback: Callable[[CellAddress], None],
+    ) -> Callable[[], None]:
+        return self._hub.on_provider_online(callback)
+
+    def on_provider_offline(
+            self,
+            callback: Callable[[CellAddress], None],
+    ) -> Callable[[], None]:
+        return self._hub.on_provider_offline(callback)
+
+    # ==================================================================
+    # CellLog 总线 (broadcast_log / recent_logs)
+    # ==================================================================
+
+    async def broadcast_log(
+            self,
+            address: CellAddress,
+            content: str,
+            *,
+            terminal: bool = False,
+    ) -> None:
+        """broadcast 一条 CellLog 到 network.
+
+        约定: 只能为本 network 已 announce 的 cell broadcast log.
+        别的 cell 死亡观察靠 liveness subscriber, 不是再次 broadcast.
+
+        :raise LookupError: address 没在本 network announce.
+        """
+        ann = self._announcements.get(address)
+        if ann is None:
+            raise LookupError(
+                f"cannot broadcast log for {address}: not announced by this network"
+            )
+        log = CellLog(
+            address=address,
+            content=content,
+            timestamp=time.time(),
+            terminal=terminal,
+        )
+        payload = log.model_dump_json().encode('utf-8')
+        try:
+            await asyncio.to_thread(ann.log_publisher.put, payload)
+        except Exception:
+            self._logger.exception(
+                "publisher.put failed for log: address=%s content=%s",
+                address, content,
+            )
+
+    def recent_logs(
+            self,
+            *,
+            limit: int = 20,
+            local: bool | None = None,
+    ) -> list[CellLog]:
+        """FIFO 最近 N 条 (最新优先). local 过滤需要 self_project_id, 否则忽略 local.
+
+        log_buffer 是 deque, 单消费者 (log consumer task) 写, 多读者 snapshot.
+        CPython GIL 保证 list(deque) atomic, 不需要锁.
+        """
+        snapshot = list(self._log_buffer)
+        snapshot.reverse()  # 最新优先
+        if local is not None and self._self_project_id:
+            filtered = []
+            for log in snapshot:
+                with self._cache_lock:
+                    cell = self._cache.get(log.address)
+                if cell is None:
+                    # cache miss — terminal=True 的 log 留下 (cell 已没了, 无法回查)
+                    if log.terminal:
+                        filtered.append(log)
+                    continue
+                cell_local = (cell.status.project_id == self._self_project_id)
+                if cell_local == local:
+                    filtered.append(log)
+            snapshot = filtered
+        return snapshot[:limit]
+
+    # ==================================================================
+    # log subscriber + consumer (janus 卸载)
+    # ==================================================================
+
+    def _on_log_sample(self, sample: zenoh.Sample) -> None:
+        """zenoh log subscriber 回调 — zenoh 后台线程. 只做最薄工作:
+        parse + put_nowait 入队. 处理逻辑卸载到 consumer task.
+        """
+        if sample.kind != zenoh.SampleKind.PUT:
+            return
+        try:
+            log = CellLog.model_validate_json(sample.payload.to_bytes())
+        except Exception:
+            self._logger.exception(
+                "failed to parse CellLog from sample, key=%s", sample.key_expr,
+            )
+            return
+
+        if self._log_queue is None:
+            return  # 已关闭
+
+        try:
+            self._log_queue.sync_q.put_nowait(log)
+        except janus.SyncQueueFull:
+            # log 是低频事件, 满了说明 consumer 严重落后. 报 error 暴露问题, 丢弃此条.
+            self._logger.error(
+                "log queue full (maxsize=%d), dropping log: address=%s content=%s",
+                _LOG_QUEUE_MAXSIZE, log.address, log.content,
+            )
+        except janus.SyncQueueShutDown:
+            pass
+
+    async def _log_consumer_loop(self) -> None:
+        """单消费者循环 — 串行处理 log.
+
+        单 publisher per cell + zenoh subscriber 串行回调 + 单 consumer task =
+        天然按 cell 维度有序. 不需要 version 去重.
+        """
+        while not self._closed:
+            try:
+                if self._log_queue is None:
+                    return
+                log = await self._log_queue.async_q.get()
+            except janus.AsyncQueueShutDown:
+                return
+            except asyncio.CancelledError:
+                return
+
+            try:
+                await self._process_log(log)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception(
+                    "log consumer failed on: address=%s content=%s",
+                    log.address, log.content,
+                )
+
+    async def _process_log(self, log: CellLog) -> None:
+        """串行处理一条 log. 单 consumer task 内, 无并发.
+
+        on_change 语义: cell 上下线状态变化, 不是 cache snapshot 刷新.
+        - terminal=True: 主动终结信号, fire on_change(False) (与 liveness DELETE 同义).
+        - terminal=False: snapshot 已变, refetch 写 cache. **不** fire on_change —
+          cell 仍在线, observer 需要新 snapshot 时自取 live_cells / get_live_cells.
+        """
+        # 单写者 (本 task), deque 无锁
+        self._log_buffer.append(log)
+
+        if log.terminal:
+            with self._cache_lock:
+                cell = self._cache.pop(log.address, None)
+            if cell is not None:
+                self._fire_on_change(cell, False)
+            return
+
+        # 非 terminal — refetch cell snapshot 更新 cache, 不 fire on_change
+        try:
+            cell = await self._fetch_cell(log.address)
+        except Exception:
+            self._logger.debug(
+                "refetch_into_cache failed: address=%s", log.address,
+            )
+            return
+        if cell is None:
+            return
+        with self._cache_lock:
+            self._cache[log.address] = cell
+
+    # ==================================================================
+    # internal: auto build proxy chain (hub callback fan-out)
+    # ==================================================================
+
+    def _auto_build_proxy(self, address: CellAddress) -> None:
+        """hub.on_provider_online 回调 (zenoh 后台线程) — 自动 build proxy.
+
+        仅 allow_create_proxy=True 启用 (host 视角).
+        """
+        if not self._allow_create_proxy:
+            return
+        if self._hub.get_proxy(address) is not None:
+            return
+        try:
+            cell = _sync_fetch_cell(self._session, self._cell_key(address))
+        except Exception:
+            self._logger.exception("auto_build_proxy: fetch %s failed", address)
+            return
+        if cell is None:
+            # cell snapshot 尚未就位 — 跳过, 后续 hub callback 会重触发
+            self._logger.debug(
+                "auto_build_proxy: cell snapshot not yet ready for %s, skip",
+                address,
+            )
+            return
+        try:
+            self._hub.proxy(address, name=cell.channel_name)
+        except Exception:
+            self._logger.exception("auto_build_proxy: hub.proxy %s failed", address)
+            return
+        self._logger.debug("auto built proxy: address=%s name=%s", address, cell.channel_name)
+        # schedule broadcast_log to event loop — 当前在 zenoh 线程, 不能 await
+        if self._loop is not None and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._safe_broadcast_log(address, "channel-ready", terminal=False),
+                self._loop,
+            )
+
+    def _auto_drop_proxy(self, address: CellAddress) -> None:
+        """hub.on_provider_offline 回调 — hub 已自动 pop proxy, 这里 broadcast log."""
+        if not self._allow_create_proxy:
+            return
+        if self._loop is not None and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._safe_broadcast_log(address, "channel-gone", terminal=True),
+                self._loop,
+            )
+
+    async def _safe_broadcast_log(
+            self,
+            address: CellAddress,
+            content: str,
+            *,
+            terminal: bool,
+    ) -> None:
+        """broadcast_log 的容错包装 — 用于 schedule 入口, 异常吞掉记日志."""
+        try:
+            await self.broadcast_log(address, content, terminal=terminal)
+        except LookupError:
+            # 这种情况是: hub 看到的 provider 不是本 network announce 的 cell.
+            # 这是合法的 — hub 跨 network 都能看, 只是本 network 不该广播.
+            self._logger.debug(
+                "auto broadcast skipped: %s not announced here", address,
+            )
+        except Exception:
+            self._logger.exception(
+                "auto broadcast failed: address=%s content=%s", address, content,
+            )
 
     # ==================================================================
     # lifecycle
@@ -391,21 +751,33 @@ class ZenohCellNetwork(CellNetwork):
         if self._started:
             return self
         self._started = True
+        self._loop = asyncio.get_running_loop()
+        self._log_queue = janus.Queue(maxsize=_LOG_QUEUE_MAXSIZE)
 
         await self._hub.__aenter__()
 
         # 先订阅 — 避免 declare 和 get 之间的 TOCTOU 丢事件
-        self._subscriber = self._session.liveliness().declare_subscriber(
+        self._cell_subscriber = self._session.liveliness().declare_subscriber(
             self._cell_liveness_wildcard,
             self._on_liveness_sample,
         )
+        self._log_subscriber = self._session.declare_subscriber(
+            self._cells_logs_wildcard,
+            self._on_log_sample,
+        )
 
-        # 再初始全量 seed — subscriber 已就位, 重复事件无害 (缓存写入幂等)
+        # log consumer task
+        self._log_consumer_task = self._loop.create_task(self._log_consumer_loop())
+
+        # 注册 hub 回调 — auto build/drop proxy
+        self._hub_unsubs.append(self._hub.on_provider_online(self._auto_build_proxy))
+        self._hub_unsubs.append(self._hub.on_provider_offline(self._auto_drop_proxy))
+
+        # 初始全量 seed — subscriber 已就位, 重复事件无害
         await self._seed_cache()
 
-        # 低频 reconcile — 兜底极端丢事件, 不替代 subscriber
-        loop = asyncio.get_running_loop()
-        self._reconcile_task = loop.create_task(self._reconcile_loop())
+        # 低频 reconcile — 兜底极端丢事件
+        self._reconcile_task = self._loop.create_task(self._reconcile_loop())
 
         self._logger.debug(
             "ZenohCellNetwork started: scope=%s cells_ns=%s",
@@ -416,38 +788,56 @@ class ZenohCellNetwork(CellNetwork):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._closed = True
 
-        if self._reconcile_task is not None:
-            self._reconcile_task.cancel()
+        # 取消 reconcile + log consumer
+        for task in (self._reconcile_task, self._log_consumer_task):
+            if task is None or task.done():
+                continue
+            task.cancel()
             try:
-                await self._reconcile_task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._reconcile_task = None
+            except Exception:
+                self._logger.exception("task cancellation surfaced")
+        self._reconcile_task = None
+        self._log_consumer_task = None
 
-        if self._subscriber is not None:
+        # 关闭 subscribers
+        for sub in (self._cell_subscriber, self._log_subscriber):
+            if sub is None:
+                continue
             try:
-                self._subscriber.undeclare()
+                sub.undeclare()
             except RuntimeError:
                 pass
-            self._subscriber = None
+        self._cell_subscriber = None
+        self._log_subscriber = None
 
+        # 关闭 janus queue
+        if self._log_queue is not None:
+            self._log_queue.shutdown(immediate=True)
+            self._log_queue = None
+
+        # 注销 hub 回调
+        for unsub in self._hub_unsubs:
+            try:
+                unsub()
+            except Exception:
+                self._logger.exception("hub unsub failed")
+        self._hub_unsubs.clear()
+
+        # 关闭所有自身宣告 (含 log publisher / queryable / liveness / host_token)
         for ann in list(self._announcements.values()):
             ann.close()
         self._announcements.clear()
 
-        for host_token in list(self._host_tokens.values()):
-            try:
-                host_token.undeclare()
-            except RuntimeError:
-                pass
-        self._host_tokens.clear()
-
         await self._hub.__aexit__(exc_type, exc_val, exc_tb)
 
-        with self._lock:
+        with self._cache_lock:
             self._cache.clear()
 
         self._started = False
+        self._loop = None
         self._logger.debug("ZenohCellNetwork stopped: scope=%s", self._scope)
 
     # ==================================================================
@@ -458,7 +848,6 @@ class ZenohCellNetwork(CellNetwork):
         return await self._fetch_cell_via(self._cell_key(address))
 
     async def _fetch_cell_via(self, info_key: str) -> Cell | None:
-        """queryable get 拉取单个 cell 的完整数据."""
         try:
             replies = await asyncio.to_thread(self._session.get, info_key)
             for reply in replies:
@@ -469,14 +858,13 @@ class ZenohCellNetwork(CellNetwork):
         return None
 
     # ==================================================================
-    # internal: subscriber
+    # internal: liveness subscriber
     # ==================================================================
 
     def _on_liveness_sample(self, sample: zenoh.Sample) -> None:
-        """zenoh liveness subscriber 回调 — 在 zenoh 后台线程执行.
+        """zenoh liveness subscriber 回调 — zenoh 后台线程.
 
-        不持锁做 I/O (_sync_fetch_cell 是同步阻塞的 session.get).
-        锁仅用于缓存写入的最小临界区.
+        不持锁做 I/O. cache 锁只在写入瞬间持有.
         """
         address = self._key_to_address(str(sample.key_expr))
         if address is None:
@@ -492,12 +880,12 @@ class ZenohCellNetwork(CellNetwork):
                 return
             if cell is None:
                 return
-            with self._lock:
+            with self._cache_lock:
                 self._cache[address] = cell
             self._fire_on_change(cell, True)
 
         elif sample.kind == zenoh.SampleKind.DELETE:
-            with self._lock:
+            with self._cache_lock:
                 cell = self._cache.pop(address, None)
             if cell is not None:
                 self._fire_on_change(cell, False)
@@ -507,11 +895,7 @@ class ZenohCellNetwork(CellNetwork):
     # ==================================================================
 
     async def _seed_cache(self) -> None:
-        """启动时全量 liveness get, 填充初始缓存.
-
-        subscriber 已先于本调用就位, 期间到达的事件不会丢失 —
-        subscriber 写入的缓存条目会被 seed 的 update 覆盖, 幂等.
-        """
+        """启动时全量 liveness get, 填充初始缓存."""
         try:
             replies = await asyncio.to_thread(
                 self._session.liveliness().get,
@@ -521,25 +905,25 @@ class ZenohCellNetwork(CellNetwork):
             self._logger.exception("initial cell liveness query failed")
             return
 
-        with self._lock:
-            for reply in replies:
-                if not reply.ok:
+        for reply in replies:
+            if not reply.ok:
+                continue
+            address = self._key_to_address(str(reply.result.key_expr))
+            if address is None:
+                continue
+            with self._cache_lock:
+                if address in self._cache:
                     continue
-                address = self._key_to_address(str(reply.result.key_expr))
-                if address is None or address in self._cache:
-                    continue
-                cell = await self._fetch_cell(address)
-                if cell is not None:
-                    self._cache[address] = cell
+            cell = await self._fetch_cell(address)
+            if cell is None:
+                continue
+            with self._cache_lock:
+                self._cache.setdefault(address, cell)
 
         self._logger.debug("cache seeded: %d cells", len(self._cache))
 
     async def _reconcile_loop(self) -> None:
-        """低频全量对账 — 兜底 subscriber 极端丢事件.
-
-        对比 liveness 全量结果与本地缓存 diff → fire on_change.
-        subscriber 是主路径, 此 loop 是备用, 间隔长 (默认 60s).
-        """
+        """低频全量对账 — 兜底 subscriber 极端丢事件."""
         while not self._closed:
             try:
                 await asyncio.sleep(self._reconcile_interval)
@@ -558,7 +942,7 @@ class ZenohCellNetwork(CellNetwork):
                     if address is not None:
                         live_addresses.add(address)
 
-                with self._lock:
+                with self._cache_lock:
                     cached = set(self._cache.keys())
                     added = live_addresses - cached
                     removed = cached - live_addresses
@@ -567,12 +951,12 @@ class ZenohCellNetwork(CellNetwork):
                     cell = await self._fetch_cell(address)
                     if cell is None:
                         continue
-                    with self._lock:
+                    with self._cache_lock:
                         self._cache[address] = cell
                     self._fire_on_change(cell, True)
 
                 for address in removed:
-                    with self._lock:
+                    with self._cache_lock:
                         cell = self._cache.pop(address, None)
                     if cell is not None:
                         self._fire_on_change(cell, False)

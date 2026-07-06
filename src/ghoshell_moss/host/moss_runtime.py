@@ -6,7 +6,7 @@ from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, Mode, MossSystemPrompter
+    MossRuntime, MossSystemPrompter
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.helpers import ThreadSafeEvent
@@ -28,7 +28,7 @@ class MossRuntimeImpl(MossRuntime):
             *,
             env: Environment,
             workspace: Workspace,
-            mode: Mode,
+            # mode: Mode,
             matrix: MatrixImpl,
             run_shell_on_start: bool = True,
             name: str | None = None,
@@ -47,7 +47,7 @@ class MossRuntimeImpl(MossRuntime):
         self._paused = False
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
-        self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.session_scope}>"
+        self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.network_scope}>"
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._action_task: asyncio.Task | None = None

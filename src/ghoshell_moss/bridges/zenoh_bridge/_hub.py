@@ -1,6 +1,6 @@
 import threading
 from datetime import datetime, timezone
-from typing import NamedTuple, Literal
+from typing import Callable, NamedTuple, Literal
 
 from ghoshell_container import IoCContainer
 
@@ -30,6 +30,19 @@ class HubRecord(NamedTuple):
 
 
 class ZenohChannelHub:
+    """Zenoh channel provider/proxy 注册中心 + 上下线感知.
+
+    职责:
+      - provider/proxy 单例去重 (按 address dedup)
+      - liveness listener 转 callback fan-out (4 路: provider/proxy × online/offline)
+      - 启动唯一性: 同 address 重复 declare provider 第二次 raise (hub 层 dedup, 非协议层 TOCTOU)
+
+    不职责 (留给 ZenohChannelProvider / ZenohProxyChannel 内部):
+      - 实际通讯 channel 建立, key 暴露
+      - proxy own liveness (让对端感知 watcher 死亡) — §SS-5 TODO, 需改 proxy 内部, 暂未做
+      - provider declare 后二次 confirm 防 TOCTOU — §SS-5 TODO, 需改 provider 内部, 暂未做
+    """
+
     def __init__(
             self,
             zenoh_session: zenoh.Session,
@@ -49,12 +62,19 @@ class ZenohChannelHub:
         self._liveness_check_interval = liveness_check_interval
         self._max_records = max_records
         self._logger = logger or get_moss_logger()
+        self._providers: dict[str, ZenohChannelProvider] = {}
         self._proxies: dict[str, ZenohProxyChannel] = {}
         self._records: list[HubRecord] = []
         self._lock = threading.Lock()
 
+        # user-registered callbacks (fan-out from listener / explicit calls)
+        self._cb_provider_online: list[Callable[[str], None]] = []
+        self._cb_provider_offline: list[Callable[[str], None]] = []
+        self._cb_proxy_online: list[Callable[[str], None]] = []
+        self._cb_proxy_offline: list[Callable[[str], None]] = []
+
         # liveness 发现委托给 ZenohLivenessListener
-        # 用 hub_expr 推导 prefix，与 provider 端 key 结构自动对齐
+        # 用 hub_expr 推导 prefix, 与 provider 端 key 结构自动对齐
         liveness_prefix = self._hub_expr.new_expr('**').provider_liveness_prefix
         self._liveness_listener = ZenohLivenessListener(
             liveness_prefix=liveness_prefix,
@@ -65,8 +85,23 @@ class ZenohChannelHub:
         )
         self._started = False
 
+    # ── provider ──────────────────────────────────────────────────────
+
     def provider(self, address: str) -> ZenohChannelProvider:
-        return ZenohChannelProvider(
+        """声明 address 为本 hub 提供 channel.
+
+        :raise RuntimeError: 同 address 已在本 hub 注册 provider (dedup).
+                            注意: 这是 hub 实例内 dedup, 不是网络级唯一性检查 —
+                            网络级唯一性应由 CellNetwork.check_unique 完成.
+        """
+        with self._lock:
+            existing = self._providers.get(address)
+            if existing is not None:
+                raise RuntimeError(
+                    f"hub already has provider for address={address!r}; "
+                    f"call get_provider() instead of provider() to retrieve it"
+                )
+        new_provider = ZenohChannelProvider(
             zenoh_session=self._zenoh_session,
             container=self._container,
             address=address,
@@ -74,8 +109,26 @@ class ZenohChannelHub:
             liveness_check_interval=self._liveness_check_interval,
             namespace=self._namespace,
         )
+        with self._lock:
+            existing = self._providers.get(address)
+            if existing is not None:
+                # 并发 race: 让 caller 拿到先到的 (此处仅为防御)
+                return existing
+            self._providers[address] = new_provider
+        return new_provider
+
+    def get_provider(self, address: str) -> ZenohChannelProvider | None:
+        """按 address 取已注册 provider. 不存在返回 None."""
+        with self._lock:
+            return self._providers.get(address)
+
+    # ── proxy ─────────────────────────────────────────────────────────
 
     def proxy(self, address: str, *, name: str | None = None, description: str = '') -> ZenohProxyChannel:
+        """获取或创建 address 对应的 proxy. 已存在则返回现有实例.
+
+        与 provider() 不同, proxy() 允许多次 call 同 address — 多个 caller 共享同一 proxy.
+        """
         existing = self._proxies.get(address)
         if existing is not None:
             return existing
@@ -84,7 +137,7 @@ class ZenohChannelHub:
         if not Channel.validate_name(parsed_name):
             raise ValueError(f"Invalid channel name {name} of proxy {address} ")
 
-        proxy = ZenohProxyChannel(
+        new_proxy = ZenohProxyChannel(
             zenoh_session=self._zenoh_session,
             address=address,
             scope=self._scope,
@@ -93,14 +146,39 @@ class ZenohChannelHub:
             namespace=self._namespace,
         )
         with self._lock:
-            if address in self._proxies:
-                return self._proxies[address]
-            self._proxies[address] = proxy
-            return proxy
+            existing = self._proxies.get(address)
+            if existing is not None:
+                return existing
+            self._proxies[address] = new_proxy
+        # proxy 创建 = "proxy online" 事件 fan-out (不依赖 liveness listener)
+        # 设计选择: proxy 上线由 hub 显式触发 (调用 self.proxy()), 不依赖远端 liveness.
+        # 而 provider online/offline 来自 ZenohLivenessListener 的 zenoh 后台线程回调.
+        self._fan_out(self._cb_proxy_online, address)
+        return new_proxy
+
+    def get_proxy(self, address: str) -> ZenohProxyChannel | None:
+        """按 address 取已注册 proxy. 不存在返回 None."""
+        return self._proxies.get(address)
+
+    def drop_proxy(self, address: str) -> bool:
+        """主动移除 proxy. 触发 on_proxy_offline 回调.
+
+        :return: 真的 pop 了返回 True.
+        """
+        with self._lock:
+            removed = self._proxies.pop(address, None)
+        if removed is None:
+            return False
+        self._fan_out(self._cb_proxy_offline, address)
+        return True
 
     @property
     def proxies(self) -> dict[str, ZenohProxyChannel]:
         return dict(self._proxies)
+
+    @property
+    def providers(self) -> dict[str, ZenohChannelProvider]:
+        return dict(self._providers)
 
     @property
     def records(self) -> list[HubRecord]:
@@ -108,11 +186,48 @@ class ZenohChannelHub:
             return list(self._records)
 
     def get_liveness_provider_address(self) -> list[str]:
-        """同步阻塞查询当前在线的 provider address 列表。"""
+        """同步阻塞查询当前在线的 provider address 列表."""
         return self._liveness_listener.get_liveness_keys()
 
     async def get_liveness_provider_address_async(self) -> list[str]:
         return await self._liveness_listener.get_liveness_keys_async()
+
+    # ── callback 注册 (返回 unsubscribe 函数) ─────────────────────────
+
+    def on_provider_online(self, cb: Callable[[str], None]) -> Callable[[], None]:
+        return self._register(self._cb_provider_online, cb)
+
+    def on_provider_offline(self, cb: Callable[[str], None]) -> Callable[[], None]:
+        return self._register(self._cb_provider_offline, cb)
+
+    def on_proxy_online(self, cb: Callable[[str], None]) -> Callable[[], None]:
+        return self._register(self._cb_proxy_online, cb)
+
+    def on_proxy_offline(self, cb: Callable[[str], None]) -> Callable[[], None]:
+        return self._register(self._cb_proxy_offline, cb)
+
+    @staticmethod
+    def _register(target: list, cb: Callable[[str], None]) -> Callable[[], None]:
+        target.append(cb)
+
+        def _unsubscribe() -> None:
+            try:
+                target.remove(cb)
+            except ValueError:
+                pass
+        return _unsubscribe
+
+    def _fan_out(self, callbacks: list[Callable[[str], None]], address: str) -> None:
+        for cb in list(callbacks):
+            try:
+                cb(address)
+            except Exception:
+                self._logger.exception(
+                    "ZenohChannelHub(%s) callback raised for address=%s",
+                    self._scope, address,
+                )
+
+    # ── lifecycle ─────────────────────────────────────────────────────
 
     async def __aenter__(self):
         if self._started:
@@ -124,37 +239,50 @@ class ZenohChannelHub:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._liveness_listener.__aexit__(exc_type, exc_val, exc_tb)
         self._proxies.clear()
+        self._providers.clear()
+        self._cb_provider_online.clear()
+        self._cb_provider_offline.clear()
+        self._cb_proxy_online.clear()
+        self._cb_proxy_offline.clear()
         self._started = False
 
-    # -- liveness callbacks -------------------------------------------
+    # ── liveness listener callbacks (zenoh 后台线程) ─────────────────
 
     def _on_provider_online(self, address: str) -> None:
+        """ZenohLivenessListener 回调 — provider 在网络上上线."""
         now = datetime.now(timezone.utc)
         try:
-            if address not in self._proxies:
-                name = normalize(address)
-                self.proxy(address, name=name)
             self._add_record(
                 HubRecord(address=address, status="online", updated_at=now)
             )
         except Exception:
             self._logger.exception(
-                "ZenohChannelHub(%s) failed to handle provider online: %s",
+                "ZenohChannelHub(%s) failed to record provider online: %s",
                 self._scope, address,
             )
+        # 注意: hub 不再自动 build proxy — 由上层 CellNetwork 决定建不建 proxy.
+        # 仅 fan-out 通知, 上层 (CellNetwork) 自己调 self.proxy(address) 完成 build.
+        self._fan_out(self._cb_provider_online, address)
 
     def _on_provider_offline(self, address: str) -> None:
+        """ZenohLivenessListener 回调 — provider 在网络上下线."""
         now = datetime.now(timezone.utc)
         try:
-            self._proxies.pop(address, None)
+            # 自动 pop 对应 proxy, 防止悬挂
+            with self._lock:
+                popped = self._proxies.pop(address, None)
             self._add_record(
                 HubRecord(address=address, status="offline", updated_at=now)
             )
         except Exception:
             self._logger.exception(
-                "ZenohChannelHub(%s) failed to handle provider offline: %s",
+                "ZenohChannelHub(%s) failed to record provider offline: %s",
                 self._scope, address,
             )
+            popped = None
+        if popped is not None:
+            self._fan_out(self._cb_proxy_offline, address)
+        self._fan_out(self._cb_provider_offline, address)
 
     def _add_record(self, record: HubRecord) -> None:
         with self._lock:
