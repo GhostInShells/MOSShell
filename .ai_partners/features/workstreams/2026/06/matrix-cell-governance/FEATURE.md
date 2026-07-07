@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-06-28
+updated: 2026-07-08
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,6 +15,13 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
+  2026-07-07 claude-fable-5 + 人类架构师复审会话 (§TT):
+  §SS 执行部分崩于边界设计错误, 工作模式转为人类亲手重建全部抽象 + 模型 review.
+  根因诊断: 抽象融合 (非过多). 收敛: 身份拆分 (uuid + alias 表, check_unique 取消),
+  PM 收敛为机制层, BackgroundTask 三分, 新立 JobSupervisor (认知胶囊三层),
+  Matrix 分灶台 (~8 首页成员), Project = 治理域句柄 (taxonomy 禁入内核),
+  Environment seal 两相提案. 待人类拍板项见 §TT-10.
+  --
   2026-06-28 claude-opus-4-7 + 人类架构师讨论会话:
   (1) 补完前任未显式记录的 L0→L3 跃迁认知 (§MM) — matrix 成为最小通讯依赖, cells 真相源上升到 network.
   (2) 二元真相显式承认 (§NN) — status 变更不广播, live_cells 是延迟视图. 选 (c) 不加回 pub/sub.
@@ -2277,4 +2284,276 @@ N. **singleton 含义边界**: project-scoped, 不是 network-scoped. 同 identi
 
 - **subscribe_changes 抽象不做**: cells_channel 直接读 recent_logs (pull) +
   watch hub 回调 (on_provider_online), 不需要中间 pub/sub 层.
+
+## 2026-07-07 设计复审会话 (claude-fable-5 + 人类架构师) — §TT
+
+### TT-0. 工作模式转变 (最重要的上下文)
+
+§SS 契约由模型执行, steps 0-2 落地 (`7e3a7a40` / `d3489a14` / `3f62e165`),
+step 3+ (CellsManager) 未启动, 执行在边界设计错误上崩了.
+**人类架构师决定亲手重建全部抽象, 模型转为 review 角色.**
+beta1 前一切可推翻, 无沉没成本, 关键是决策要对.
+本节记录的是复审结论, 不是实施契约. FEATURE.md 后续可能被人类整体重写或退化为 review 记录.
+
+### TT-1. 根因诊断: 抽象融合, 不是抽象过多
+
+反复出现的"不优雅感"病灶统一定性为**融合** (一个抽象承诺了两件事), 而非数量:
+
+- `ProcessMeta.task_id / background_task_id` — 机制层长了业务层外键
+- `BackgroundRunType.on_prompt` docstring 写"对应 ProjectManager 的 RefreshMode" — 进程层焊死帧语义
+- `Cell.channel_name` — 入网身份和 project 身份熔在一个属性
+- `BackgroundTask` 一个类装三种语义 (once/loop/on_prompt)
+
+**检验法**: 每个抽象的承诺能否一句话说完, 且不提兄弟抽象的名字. 说不出来即融合信号.
+(Erlang 参照: proc_lib / gen_server / supervisor 都小且单一, 从没人嫌多.)
+
+**污染路径**: Desktop (原名 ProjectManager, 可丢弃层任务, Opus 设计)
+→ 其消费需求长成了 PM 的 Layer 2/3 (contracts/, 内核面) → PM 计划入 Matrix
+→ 人类在 Matrix 重构时被迫消化从未打算负责细节的模块.
+根因是结构性的: **设计真空 + 对 contracts/ 的写权限 = 必然污染**, 换任何模型结果相同.
+
+**挡板规则** (防复发):
+- 可丢弃模块只能组合已冻结的契约, 不能扩展它们.
+- 契约不够用时, 正确输出是留需求记录 + 自己层内凑合 (Desktop Stage 1 的"裸 asyncio 兜底"即正确形态),
+  不是伸手改 contracts/.
+- contracts/ 的 diff 必须过人类之手 (可 CODEOWNERS 物理化). 守一个目录比守全部设计细节负荷低一个量级.
+
+### TT-2. 身份拆分 (推翻 §SS-1 的部分设计)
+
+三层拆分:
+1. **wire identity** = `address = uuid` — 免费, 自动, 无冲突.
+2. CELL.md 的 `type/name` 降级为 **suggestion**, 随 announce 携带.
+3. host 侧 **alias 绑定表** (`alias → address`) — 模型可见/可改名,
+   auto-accept + 采纳 suggestion + 冲突时确定性后缀. 第一期内存态.
+
+推论: **`check_unique` 从协议中删除** — 其 check-then-announce 竞态
+(zenoh_cell_network.py:331-357) 成为被取消的问题, 不是被解决的问题.
+`Cell.channel_name` property 删除. host scope 排他 = leader election, 另案处理.
+
+### TT-3. ProcessManager 外观收敛
+
+- **Layer 1 保留为纯机制层** (~8 抽象方法): executing/executed/get,
+  execute/shell (加 `capture=CaptureSpec(...)` 可选参数吸收原 ProcessTask),
+  kill/killpg, aenter/aexit.
+- ManagedProcess 富句柄: meta / process / output(可选) / add_done_callback / **补 `stop(timeout)`**.
+- **契约必须文档化"子进程不比 owner 活得久"承诺** (setsid+killpg / pipe fencing / polling 三件套).
+- `cd/pwd` 移出 — 是 terminal session / Desktop 状态, 不是共享基建
+  (实证: Desktop 已自持 cd/pwd, PM 只需收 cwd 参数).
+- PM 进 contracts 的正当性 = IoC 依赖隔离 (两个正当契约来源: 依赖隔离 + 控制反转).
+- 可能改名 SubProcesses (未拍板).
+- 多 MOSS 共存一 OS: 铁律 **治理 = 所有权**. ps/全局扫描只用于自录 pid 的活性检查.
+  模型只拿 scoped 面, 不拿裸 kill(pid).
+
+### TT-4. JobSupervisor 新抽象 (BackgroundTask 三分的归宿)
+
+BackgroundTask 解剖: `once` → 死掉回归普通 execute; `loop` → JobSupervisor;
+`on_prompt` → 本来就是 channel 的 `get_context_messages()`.
+
+JobSupervisor 形状: contracts/ 小 ABC, IoC 非单例工厂 per-owner 实例;
+`submit(JobSpec) → Job` (调度即数据: interval/times/at, 不做模式多态);
+Job = N 次短命进程的可观测 **fold** (fold-identity 是它存在的资格);
+底层组合 PM; owner 死 → jobs 死; 无全局任务板 (§SS-9 per-owner 哲学).
+
+**认知胶囊三层** (Job 概念的存在目的 = 关键帧认知胶囊, 让后台任务结果可读):
+1. PM (机制) — 不知道胶囊
+2. JobSupervisor (fold) — 胶囊**原料**: status / 最近输出窗口 / 执行计数
+3. channel / `_pin` / get_context_messages (呈现) — 胶囊**投影**: 哪个胶囊进哪一帧
+
+**胶囊显式化为数据契约** (pydantic snapshot model), 不散落在方法签名里 —
+呈现层消费统一快照结构, 层间变纯数据流, 融合不回去.
+MCP 无状态 request/response 装不下"活着的快照" — 这是 MCP 生态不能替代此层的根本原因.
+
+### TT-5. 维护外包地图
+
+- **PM Layer 1 必须自持** — 焊死 owner 生命周期 (gunicorn/celery/uvicorn 各自持有同款是证据;
+  "才几百行所以没有行业库"是当时接受的错误理由).
+- **JobSupervisor ≈ 100 行胶水** — interval-only 用 asyncio loop 即可, cron 需求出现才引 APScheduler.
+- **工具语义 (bash/read/write) 外包 MCP 生态** — 头部实现: 官方 server-filesystem (TS,
+  分页 read/diff edit; 沙箱 CVE 多), Desktop Commander (Node, 长进程会话管理最认真,
+  但 in-memory 历史无 reclaim 契约), mark3labs (Go). **无 Python 头部库** —
+  能力都焊在各 agent runtime 内部, 反证 substrate 是焊死的.
+  集成姿态: **MCP server 以 cell 形态被自己的 PM spawn** (fencing 覆盖其会话泄漏缺陷);
+  沙箱永不信任, scope 收窄在 cell launcher 层; g1 体控保持 native channel.
+- **Desktop 的 IP 是元规则** (read-before-write / 统一截断 / _pin / ReflectionHint),
+  不是原语 — 元规则依赖 MOSS 帧语义, MCP server 没有"帧"概念. Desktop 自建成立,
+  理由修正为"IP 焊在本体", 不是"行业没有实现".
+- CTML / channel / mindflow = 项目本体, 不外包.
+
+### TT-6. Matrix 复审: 厨房分灶台
+
+定位确认: Matrix 就是厨房; channel_builder + matrix 两个 blueprint 是模型开发 cell 的
+认知总入口 (code as prompt, 认知单元而不完全是抽象). "厨房水槽"批评只在
+30 成员摊平一个平面时成立, 解法是分灶台不是拆房间.
+
+实证: 两个样例 app (screen_capture / trafilatura) 实际只用了
+`provide_channel + logger + discover().run()` 三个成员; screen_capture 把 tmp.png
+写进了**源码目录** (main.py:21,67) — 边界 API 存在但发现成本高于绕过成本的铁证.
+
+收敛方案:
+- 首页 ~8 成员: discover/run, this, env, network (+provide_channel/channel_proxy),
+  workspace (一扇门), container (一扇门), logger, + scoped processes/jobs (新灶台).
+- storage 全家 (~10 成员) 收进 workspace 门后; 平铺便捷属性
+  (mode_name/ghost_name/network_scope/session_id) 删除 (env 上已有);
+  session / cells 降级出首页.
+- **边界做成环境而非 API**: cell spawn 时 cwd = 自己的 runtime 目录;
+  `matrix.processes` 天生 root 在自己 runtime 子树. 无知代码也落在界内 —
+  API 形式的边界要求开发者知情, 环境形式的边界对无知代码也生效.
+
+### TT-7. Project 复审: 治理域句柄
+
+- 逐成员检查: Project ABC 的目录成员几乎全指向 workspace, 真 project 概念只有 `root` 一行.
+  初判"名字被占", 经交锋修正为: **Project = 被治理领地的句柄 (governance-domain handle)**,
+  成员指向 workspace 是因为 workspace 正是治理真相的存放地. **保名**, 条件:
+  契约改写为治理域句柄语义; taxonomy 永久禁入内核 API.
+- **taxonomy 禁入的最硬论证**: project 内容是 ghost 自管理的 —
+  内核持有目录 taxonomy (memory_dir/resources_dir...) 会让 ghost 不能重组自己的领地.
+  与 Desktop KD7 同源 (原语不硬编码约定). 行业趋同方案 (Claude Code 系) 未来以
+  mount 形式接入, 不需要重构.
+- **Manifests 思想成立且是必然**: 跨 interpreter 能共享真相的载体只有
+  文件 / 环境变量 / 网络. manifests=静态能力真相, env vars=治理身份继承通道,
+  network announce=运行时活性真相. 挂 Project (作为环境真相的灶台门) 正确,
+  Matrix 不一级暴露.
+- **A/B 动机成立**: A 目录运行时拉起 B 目录 cell — B 只是代码出处, 治理归属
+  (日志/runtime/身份/网络) 全归 A. 治理=所有权的目录投影, systemd 同构
+  (ExecStart 指向任意路径, journal/cgroup 归 init 域).
+- 遗留: project.py 一个文件七个认知单元需拆分; cells 三处露头
+  (Project.cells / HostMode.cells / matrix.cells) 待收敛成一条链路.
+
+### TT-8. Environment 两相问题 (git 考古 + 提案)
+
+- 活读 os.environ 机制是 `536c8a56` (6-25, "refact zenoh session") 搭车引入, v1 是冻结的.
+- **真实动机 = CLI 晚到参数化**: Environment.discover() 被 discover 链提前触发成单例,
+  CLI 解析完 `--mode/--ghost/--scope` 后只能靠 set_* 写 os.environ + 属性活读绕过构造时序.
+  全部 setter 调用点都在"进程启动后、运行时 run 之前"窗口内, 无运行中改身份的真场景.
+- **提案 (方案 B, seal 两相)**: 配置窗口内 setter 可用 (写属性);
+  `seal()` 时一次性 export 到 os.environ (只作子进程继承通道, 写一次不回读);
+  seal 后 setter 抛异常, 属性冻结. dump_cell_env 不受影响.
+  人类反馈: 非常认可, 但 v1→v2 的改动可能还有其他忘记的动机, 回忆中;
+  **回忆不起来则以此结论为准**.
+- `project_path` docstring ("永远是 workspace 父目录") 与 `MOSS_PROJECT_DIR`
+  自由绑定机制矛盾 — 待拍板 invariant vs free binding (模型倾向 free binding
+  + 修 docstring, 正当场景: 治理不能写入 .moss 的只读领地).
+
+### TT-9. 三目录松耦合定型 (初共识)
+
+**workspace = 治理真相的存放地; project = 被治理的领地 (薄句柄, 挂 Matrix 一级);
+cell 目录 = 代码出处 (自带依赖/interpreter, 治理归属仍是启动方).**
+cwd 只是发现起点, 不承载语义.
+
+### TT-10. 待人类拍板项 (open decisions)
+
+1. alias 绑定表生命周期: session 态 vs workspace 持久化
+2. host scope 排他的 leader election 协议
+3. PM 改名与否 (SubProcesses?)
+4. MCP server 集成形态细化 (cell wrap 的 launcher 层设计)
+5. project 绑定: invariant vs free binding (+docstring 修正)
+6. Environment seal 两相方案 (等人类回忆 v2 动机后定)
+7. stale docstring/注释治理 (低优先, 人类已记入自己的关注点)
+8. Matrix 剩余 review 点 (本轮未完, 人类提到还有三处要 review, 移至后续会话)
+
+## 2026-07-08 复审续 (claude-fable-5 + 人类架构师) — §TT 续: cell 路径收敛
+
+### TT-11. CellsManager 取消, run_cell 单原语
+
+§SS step 3+ 停在 CellsManager 的真原因 (人类语言化): 需要一个新抽象包两个底层抽象
+才能合并到 Matrix 上, 复杂度高于治理目标. 复审结论: **砍掉 manager, 保留一个原语**.
+
+- `matrix.run_cell(filepath)` 承诺一句话: "以本 Matrix 为治理域, 从某路径拉起
+  cell 进程并接入网络". 过 TT-1 融合检验.
+- CellsManager 天然装四件事 (发现/拉起/生命周期/命名), 其中三件已有真相载体:
+  **发现=manifests/glob(文件真相), 活性=announce(网络真相), 命名=alias 表 (TT-2)**.
+  manager 若存在只能持有第四份不一致的内存副本.
+- registry 退化为 glob(CELL.md), 与 features 套件同构. `moss cells list` 是视图不是存储.
+  注意 inventory (领地里装了什么) 与 spawn 能力 (从哪都能拉, 无远弗届) 是两个问题, 不熔.
+- 源码路径无界, 治理归属有界: runtime/日志/scoped processes 落 spawner workspace 子树 (TT-9 的 API 化).
+  Desktop 有 bash 即有等价能力, filepath 从来不是安全边界.
+- 返回富句柄 CellHandle (address=uuid / stop / status), 对齐 ManagedProcess 形态.
+- **API 选层**: run_cell 是底 (Python API); `moss cell run` CLI 是主面 —
+  模型操作面塌缩到 bash 通用文法, 治理域从环境变量继承 (dump_cell_env 通道), 又是边界做成环境;
+  CTML channel 面可选且必须薄 (帧内高频场景才有存在资格, 只做转发).
+- Desktop 与 Matrix **不直接结合**: Desktop 是 run_cell + PM + 基底契约的消费者 (可丢弃层).
+- pwd/cd 进一步下放: 连 Desktop 抽象也不持有, 是具体 session 的状态.
+  一般法则: **机制层全收显式 cwd 参数, 可变状态只钉在最靠近对话的叶子上**.
+
+### TT-12. cell singleton = 风险锚点, 两档 scope 各找真相载体
+
+人类纠正模型的低估: 锁的初始动机不是无错, 是**用最小实现显式锚定风险** —
+第二实例被拒时的错误信息本身就是 prompt ("g1 声明了硬件单点, 地址 X 已有活实例"),
+debug 第一时间回归声明语义. code as prompt 在错误路径上的延伸.
+
+- 约束力方案: 薄字段 + **唯一咽喉点** (run_cell 是唯一 spawn 路径, 无旁路) +
+  **全投影** (announce 携带 / alias 表标注 / cells list 显示 / 拒绝错误引用原文).
+- singleton cell 冲突语义从 TT-2 的"确定性后缀"翻转为**硬拒绝**; 非 singleton 保持可多开 (browser-1/-2).
+- **scope 两档**: `singleton: domain` 靠 run_cell + alias 活性 (网络真相);
+  `singleton: host` (硬件级, 跨 workspace) 靠 launcher 启动时 flock 约定路径
+  (文件真相, 进程死自动释放, 无 stale 清理). 两档恰好对应 TT-7 的跨 interpreter 真相载体论.
+
+### TT-13. CELL.md 定性: exec spec 是地基, PEP 723 是匝道 (APP.md v1 六坑考古)
+
+人类披露 APP.md 第一版就是 PEP 723, 坑有六:
+(1) 依赖 uv, 环境在 moss 外; (2) 无 pyproject 则运行时依赖不可解, 修复靠逐层 pyproject;
+(3) 无声明文件则只剩 Python 兼容, 而 moss 还没能力下沉 OS 级 (apt install moss);
+(4) 缺模型可自主控制的 AppStore/桌面概念; (5) 无法做启动 DAG (但也不想做);
+(6) supervisord/circusd 非通用解 (g1 pc2 跨机).
+
+收敛 (模型收回上一轮"cell=裸 py 文件"作地基的方案):
+
+- **通用原子是 exec spec** (一条命令 + 环境注入 + announce 协议), 即 systemd ExecStart 原理.
+  Tier 0: CELL.md 带 `run:`, 语言/机器无关, 承诺一句话 = "把一个可执行物声明为本治理域可拉起的 cell".
+  它是 moss 未下沉 OS 前的 unit file / .desktop 快捷方式替身, 这一层不可选.
+- Tier 1: 裸 .py + PEP 723 零声明, 是**语法糖降解为 exec spec** (`uv run path.py`).
+  uv 依赖与依赖混乱全部圈死在此层, 内核契约只见"命令+环境".
+  v1 的错不是用 PEP 723, 是把它放在地基; 零声明价值保住, 作匝道不作路基.
+- launcher 拿不掉但做到不可见: 无用户面, 即 run_cell 内部三件机械事 (uv run / dump_cell_env 注入 / cwd=runtime).
+- 坑 4 (桌面/AppStore) = glob+alias 表+announce+run_cell 的**投影视图**, 可丢弃层, 永不进 contracts/ —
+  内核引力高危区, 挡板规则主守对象.
+- 坑 5 (DAG): 机器级归 systemd; 治理域内**排序是认知任务, DAG 求解器就是模型本身**,
+  内核只给 run_cell + 活性真相.
+- **领域定位**: systemd (单机/root/配置驱动/非模型面向) 与 k8s (数据中心假设) 之间存在真实空隙 —
+  具身智能体的治理域跨两三台机器、进程异构、操作者是模型. ROS 是存在性证明:
+  做总线者必然被迫长出 manifest/launch/lifecycle (package.xml/roslaunch), 这是领域形状不是设计者贪婪.
+  过度设计判据: 空隙内无轮子的原子自持 (身份/announce/run_cell/env 继承/模型面向声明),
+  有轮子的外包 (uv/systemd/flock/MCP) — TT-5 纪律未越界.
+
+### TT-14. 跨机 = channel 分形挂载, 不是 run_cell 加 target 参数
+
+模型收回 TT-13 讨论前的"契约别焊死本机"建议, 方向反了:
+
+- **run_cell 焊死本机**. 治理=所有权的机器投影: B 机 matrix 只治理 B 机进程,
+  A 通过 B provide 的 channel 子树操作 (`os_b.cells:run`). 跨机是**组合不是参数**, 无控制平面.
+- fractal (blueprint/fractal.py) 被拿掉是粒度问题非设计错误: 整 runtime 作 provide 单位太粗,
+  cell/network 重建后正确单位是子树 (cells channel / terminal channel).
+- 行业对齐: 最近先例 Plan 9 namespace import/export, 但只覆盖文件、单工;
+  **channel 原生分形 + duplex = Plan 9 挂载哲学做到能力层**, 无已知第二家.
+  MCP 表达不了 (单向 request/response 装不下"活的能力子树挂载"), skill 在 prompt 层不在运行时.
+  "为什么不是 MCP/skill"的真答案: 那两个是单点能力的接线标准, channel 是能力空间的**拓扑**;
+  拓扑可降级模拟接线, 反之不行. (MOSS channel 设计早于两者.)
+- duplex 协议不稳定但通过大量基线测试且实际在用.
+
+### TT-15. cell 生命周期协议 (模型承认 TT-13 坑 5 的框架想浅了)
+
+真问题不是启动顺序, 是**完备生命周期语义**: 启动/运行/进程内优雅启动/状态变化/优雅结束/已杀.
+无精确语义时模型只能被动轮询.
+
+- 关键结构: **进程真相 (PM 免费可见: spawn/exit/kill) 与应用真相
+  (ready/draining/degraded, 只有子进程自己知道) 是两个来源**, 后者必须走自报告侧信道.
+  行业对应物: systemd sd_notify (READY=1/STOPPING=1/WATCHDOG), k8s 三 probe.
+  **MOSS 侧信道已存在 = announce/总线**, 只需封闭状态 enum 挂 announce payload, 两源 fold 成一条事件流.
+- 模型得知: **一条真相流两个消费面** — command 内 wait (`run_cell(wait='ready')`,
+  拉起即用主路径) + 生命周期跃迁作 signal 进 mindflow (crash 必须推送:
+  轮询视角下静默与运行不可区分). 与胶囊三层同构.
+- **MVP 切法** (人类策略: 先稳固 MVP 再推进): v1 三态 —
+  spawned (PM) / ready (announce 到达即 ready, 零新协议) / dead (liveness 丢失或进程退出取先).
+  推迟 STOPPING/draining/watchdog/进程内状态变化, 但**状态 enum 现在就进契约**, payload 后扩.
+  状态即数据, 与 JobSpec 同纪律.
+
+### TT-16. 待拍板项增补 (在 TT-10 之上)
+
+9. Desktop 基底数据契约形状 (元规则 read-before-write/截断需要基底上报状态,
+   薄 pydantic 快照契约, MCP/native 实现适配之 — TT-4 胶囊显式化同手法)
+10. 本地 cell 进程与远端 (network) 的分离方式 (人类仍在想)
+11. run_cell 参数面与错误语义细节 (人类亲手打磨, 防偏航)
+12. 生命周期状态 enum 的具体取值与 announce payload 结构
+13. 整体评审 (是否过度设计/项目层面) — 人类点名放在最后, 模型记账中
+
 
