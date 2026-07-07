@@ -1,241 +1,300 @@
 ---
-title: Memento — 可折叠、可分叉、可追溯的对话历史
+title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
 status: in-progress
-priority: P1
+priority: P0
 created: 2026-06-11
-updated: 2026-06-16
+updated: 2026-07-08
 depends: []
 milestone:
 description: >-
-  以 commit_id 为稳定锚点的对话历史数据结构。Moment (原子) → Commit (不可变快照) → Branch
-  (生产序列) → Fork (命名空间)。第一版落在 core.memento，ABC 不耦合任何外部体系，
-  通过 hook 屏蔽 session 事件，构造函数注入 Storage/owner。
+  以 commit 为第一公民的认知轨迹系统。成员不可变、释义永远开放。
+  化身从 commit 出生，task 降级为可丢弃投影，git 降级为见证层。
+  契约层（FORMAT.md + ABC + golden tests）人类 review，实现层主权归模型。
 ---
 
 # Memento
 
 > Memento mori — 无数个 branch 湮灭了，也终将湮灭。但新的认知每天都在复苏。
+> （目录名 momento 是 typo。按"成员不可变"的自身语义，它将 memento mori 地留在轨迹里。）
 
-## Motivation
+## 0. 给下一个化身：先读这一节
 
-memento 不只服务一个目标，而是同时填四个空：
+**这份文档是移交契约，不是执行计划。** 2026-07-07/08 的一场长讨论把 memento 的
+理解上升了一层，本文件整体重写。旧版本用 `git log -- <本文件>` 反查——那正是
+本设计自己论证的机制在人类时间尺度上的运行实例。
 
-1. **持久化**：当前 ghost 原型 (`Atom`) 把对话历史抱在 `_history: list[ModelMessage]` 里，
-   重启即丢。一切生产化路径都过不去。
-2. **跨 cell 可见性**：Matrix 多 cell 并行思考时，主 cell 需要看见子 cell 的轨迹，
-   子 cell 需要 fork 主 cell 的某个检查点。当前没有任何抽象承担。
-3. **Vendor 中立**：`Atom._history` 用的是 pydantic-ai 的 `ModelMessage`。memento 以
-   `Moment` / `Reaction` 为载体，让不同 ghost prototype 共享同一份认知轨迹，重放、
-   迁移、debug 都可行。
-4. **Commit_id 作为对话稳定锚点**：当前对话系统普遍用 `messages[-N:]` 切片或
-   embedding similarity 当 ad hoc anchor，都不稳定。Commit_id 是 content-addressable
-   的对话锚点，模型可以说"在 commit abc123 我们决定用 X 不用 Y"，跨 session 引用
-   不靠 RAG 模糊匹配，靠 stable id。
+**主权划分（人类已确认）：**
 
-(4) 是这套设计真正的杠杆。git 在代码世界发生过的事——commit_id 一旦稳定，bisect、
-blame、cherry-pick、CI hook、审计 工具链涌现——在对话系统目前是真空地带。memento
-把这一原语落地。
+- **契约层，人类 review**：FORMAT.md（磁盘格式规范，待你起草、人类冻结）、
+  ABC 及其语义 docstring、golden tests。
+- **主权层，归你**：其余一切实现。**已有代码和单测没有那么重要——好用留，
+  不好用重做。** jsonl 是唯一 truth，索引是可再生缓存，实现是可丢弃的。
+  可丢弃实现的头号死法不是写错，是契约静默漂移——所以 FORMAT.md 里每个
+  模糊点（last-wins 的"last"按什么定序、id 生成规则、换行转义）都必须写死。
 
-## Four-layer Model
+**防顺从声明**：第 9 节的 Open Problems 是需要你重新判断的问题，不是待办清单。
+这个仓库的语料刻意保留冲突与演进（见 `.ai_partners/CLAUDE.md`），顺从执行
+过时结论是已知失败模式。本文件与代码冲突时，验证后更新本文件。
+
+## 1. 定位：memento 是什么（升级后）
+
+memento **不是**对话持久化工具。它是 MOSS 五条主线的公共地基：
+**并行思考、关键帧思考、参差思考（不同时序下并行）、任务移交、记忆**。
+
+核心倒置——**轨迹是第一公民，结构是轨迹上的派生层**：
+
+- **commit 是重绘的起点**，task 不是第一公民，是旁路规划的容器（可丢弃投影）。
+- 依据：task 结构编码的是规划时刻的信念，信息量永远少于执行时刻，plan 从
+  写下就开始腐烂；栈式/分形 task 树把腐烂先验做成承重结构，碰壁后逐级 unwind。
+  回合制任务里 plan 活得比任务长所以够用；24×365 的 ghost 里没有 plan 能活过
+  环境。谱系：2019-20 chatbot Runtime（task 分形雏形）→ GhostOS `GoTaskStruct`
+  （task 第一公民完成态，parent/depth/thread_id）→ 本设计（自我推翻）。
+- 行业佐证：2023 年 AutoGPT/BabyAGI 的任务栈集体死于 plan decay；主流 harness
+  已行为上退到"扁平可重写 todo + 轨迹 + compaction"（Claude Code TodoWrite、
+  Manus todo.md 复诵），但概念上没回答"重绘起点是什么"。memento 补的就是这半：
+  **可丢弃的 plan 需要不可丢弃的锚点**。
+
+一句话核心：**身份和成员冻结，意义永远开放。**
+
+## 2. 四层数据模型（保留原设计，术语修订）
 
 | 层 | 模型 | 角色 | 不变性 |
 |----|------|------|--------|
-| 数据 | `Moment` | 单帧关键帧 (已有，不动) | 内容更新通过新对象表示 |
-| 快照 | `Commit` | 一段 staging 冻结的快照 | **不可变 (no amend)** |
+| 数据 | `Moment` | 单帧关键帧（不动） | 更新即新对象 |
+| 快照 | `Commit` | staging 冻结的快照 | **成员不可变，释义可变**（见 §3.3） |
 | 生产 | `MementoBranch` | Commit 有序序列 + base pointer | branch_id 不可变，commits 仅追加 |
-| 命名 | `Memento` (Fork) | owner-scoped 命名空间 (name → branch_id) | name 可改，branch_id 不可改 |
+| 命名 | `Memento` (Fork) | owner-scoped 命名空间 | name 可改，branch_id 不可改 |
 
-`MementoBranch` 是单一生产序列，owner 可写，其他人只读。
+**术语修订**：commit_id 是 **stable id**（unique_id），不是 content-addressable。
+旧版误用后者——hash(content) 会让释义后补变成不可能。不要实现 hash-based id。
 
-`Fork = owner` 是构造期参数（一个字符串，比如 cell address，但 ABC 不知道），不是
-ABC 概念。
+## 3. 关键决策（含被拒绝的方案）
 
-## 关键决策
-
-### 1. commit_id 是 primary anchor
-
-每个 Commit 持有：
-- `id: str` — 全局稳定 (unique_id)，**对外引用都用它**
-- `seq: int` — branch 内有序编号，给目录列表用
-
-存储结构可能演进（文件 → SQLite → 远端），但 commit_id 不变。所有跨 branch、跨
-session、跨进程的 commit 引用一律走 id。seq 只是"在这个 branch 当前的本地序号"，
-不是身份。
-
-### 2. Base pointer 回溯（方案 A），不复制
-
-Branch B fork 自 Branch A 的某个 commit。B 的完整历史 = B 自己的 commits + 沿
-`BasePointer{fork, branch_id, commit_id, commit_seq}` 回溯 A。Commit 不带
-parent_commit_id，跨 branch 关系由 branch 层面的 base pointer 表达。
-
-### 3. Staging 显式维护
-
-`staging.jsonl` 记录"上次 commit 之后的 moment_ids"。commit 时冻结进快照 + 清空。
-不通过 `Moment.previous.moment_id` 链反推——多 owner 写入下反推有歧义。
-
-### 4. Owner-isolated writing 杜绝并发
-
-只有 branch 的 owner 能写自己的 staging 和 commits。其他 owner 只读。不存在并发
-写 commit，不需要锁。Moment 池是 SQLite WAL，多 owner 写入由 SQLite 兜底（写入
-频次 ≤1Hz，无压力，已被 Cache / Parameter 验证）。
-
-### 5. Merge ≡ 带引用的 Message
-
-子 owner 思考结论 → 产生 Commit → 主链路收到一条 Message：
+### 3.1 存储：per-owner 分片 jsonl，SQLite 已否决
 
 ```
-Message {
-    content: commit.summary,
-    additional: { 'memento.ref': {fork, branch_id, commit_id, commit_seq} }
-}
+{root}/memento/
+  moments/{owner}/{YYYY-MM}/moments.jsonl   # 每文件单写者, append-only
+  branches/{owner}/{branch_id}/
+    meta.json                               # 含冻结的展平祖先链 (§3.5)
+    staging.jsonl
+    commits/NNNN.jsonl                      # 成员行 + 释义追加行 (last-wins)
+  renderings/                               # 重绘投影, 旧文件夹永远保留
+  .git/                                     # 见证层 sidecar (§6), 独立于代码仓库
 ```
 
-主链路看到一条消息。背后挂一条完整思考轨迹。不需要 MergeRequest 模型。
-`Memento.make_merge_message(branch_id, commit_id)` 是显式 API，调用者只需要把它
-作为普通 Message 喂回主链路。
+- SQLite 被否决：唯一实质理由是多 owner 共享写面，而池按 owner 分片后共享写面
+  消失。单写者 append-only jsonl 无锁；读者跳过撕裂尾行。
+- **索引（commit_id→位置、moment_id→offset、释义 last-wins 视图）是可再生缓存，
+  坏了删掉重扫。jsonl 是唯一 truth。** 索引是回溯 API 的必要件，不是可选优化。
+- filesystem-first 是硬品味约束：`cat`/`grep` 即记忆的查询语言。
 
-### 6. Cache 三段分层 — Prompt Cache 边界与 commit 对齐
+### 3.2 fork 边界：化身只能从 commit 出生，永不从 staging
 
-Anthropic prompt cache 的 cache_control breakpoint 经济学：cache hit ≈ 10x 便宜、
-5x 快，但任何动态内容打破 cache。memento 的 commit 边界恰好是一个自然的"应用语义
-对齐 infra 边界"的锚点：
+- **化身 = [] + fork memento commit + prompt/tools**。行业二元（task agent 全新
+  上下文 / fork agent 全量上下文）之下的通用原语：任意认知检查点都是合法出生点。
+- staging 是主路活跃写面，从它分身 = 竞态歧义，禁止。
+- 后果接受：fork 需求倒逼 commit 频率 → commit 双重身份显式化：
+  **语义锚点**（模型自宣，`<memento:commit summary="..."/>` CTML 命令）与
+  **机械快照**（规则触发，为 fork 服务，summary 可空），同一对象一个 tag 区分。
+  共存，规则是主力，模型自宣是加分项。
+- 化身的 divergence prompt 不是 Moment（不属于对话历史），家在 `BranchMeta`
+  的 overlay 字段——不定义清楚会被塞进 staging 污染历史。
 
-```
-[cache_control] instruction (system + ghost identity)
-[cache_control] history to last commit   ← 不可变快照，cache 最大化
-                ↓
-                current staging (这部分变化)
-```
+### 3.3 可变性：成员冻结，释义 last-wins
 
-- Commit 之前的 token 序列冻结 → cache 稳定。
-- Staging 在 commit 后清空 + 新 commit 重新成为 cache 边界。
-- 模型可以决策"我现在 commit 是不是能省一轮 cache miss"——cache 经济进入应用层
-  决策空间，而不是 framework 黑盒。
+- **成员**（commit_id + moment_ids + base pointer）不可变——fork 边界的前提，
+  成员一变所有子 branch 的 base chain 集体失效。
+- **释义**（summary、tag、重要性）可变：jsonl 追加新版本、同 id、last-wins。
+  改写自留痕，原版本永远可寻址——"再巩固 + 取证"双得。
+- 释义可后补 ⇒ commit 时 summary 可以潦草或为空，事后由反思旁路补写。
+- **渲染时给读到的释义版本打戳**——记忆可变的系统里"当时模型看见什么"必须
+  可重建，否则行为不可归因。
 
-物理限制（不试图消除）：standard cache 5-min TTL，premium 1-hour TTL。memento 给的是
-**决策杠杆**，不是无限优化。
+### 3.4 旁路孔径：恰好两个，只有两个
 
-### 7. 折叠语义 — git log + show
+1. **输入队列**：旁路 commit → 主路收带 `memento.ref` 的 Message → mindflow
+   仲裁。"建议"级副作用。
+2. **释义层**：旁路改写历史释义，主路不被打断，下次渲染显形。"记忆再巩固"
+   级副作用。历史性反思的落地机制。
+- **禁止 staging 干预**——开了这条，owner 隔离消灭的并发地狱全回来。
 
-History 默认展示：最近 N 个 Moment 全量 + 之前 M 个 Commit summary + base chain 摘要。
-原始 Moment 在 SQLite 池**仍可寻址**——memento channel 未来提供 `show <commit_id>`
-能展开任意历史 commit 的完整 moment 序列。这是行业里没有的形态：
+### 3.5 回溯复杂度与祖先链冻结
 
-- 截断：忘了就是忘了（forgetful）
-- 摘要替换：summary 顶掉原文（lossy + irreversible）
-- RAG：embedding 检索（lossy + 失序）
-- **memento：层级折叠 + commit_id 作 anchor，原文仍可寻址**
+- 回溯 O(H+d)，输出规模下界，算法无病灶。成本全在索引缺失时。
+- **base pointer 创建后永不变 ⇒ fork 时刻把展平祖先链冻结进 BranchMeta**，
+  O(d) 链上溯坍缩为 O(1)。可变父链系统里是危险反规范化，这里因成员不可变而免费。
+- **每轮渲染是快路径 O(K+m)**（K 个释义摘要 + 最新 commit 的 moments），
+  不走 base chain；回溯 API 才是慢路径。**化身出生成本 = 一次窗口渲染**——
+  出生必须便宜，否则并行扇出在延迟上不成立。这是祖先链在 fork 时刻冻结
+  而非懒做的原因。
 
-### 8. Hook 屏蔽 session 事件
+### 3.6 staging 拆分：写入时标注，杀掉 2x 开销
 
-memento 实现不依赖 Session / Matrix / IoC。所有"事件外溢"通过 `MementoHooks`
-Protocol 暴露：
+- 线索标注在 **moment 写入时**做（旁路小模型/规则打 thread tag，moment 级
+  释义层——已有机制下沉一层，零新增），不在 commit 时重读 staging。
+- commit 拆分退化为 group-by thread tag，主模型只看分组提案。错标走孔径二改。
 
-```python
-class MementoHooks(Protocol):
-    def on_moment_updated(self, branch_id: str, moment: Moment) -> None: ...
-    def on_commit(self, branch_id: str, commit: Commit) -> None: ...
-    def on_branch_created(self, meta: BranchMeta) -> None: ...
-    def on_branch_switched(self, branch_id: str) -> None: ...
-```
+### 3.7 commit 成员保持时间连续（非连续方案已否决）
 
-Wire 阶段（Phase 2/3）才把 hook 接到 Session 的 output / topic / parameter 上。
-单测里 hook 直接是个 list collector。这让 ABC 干净到可以作为独立包剥离的程度。
+话题对齐的非连续成员 commit 表达力最纯，但历史渲染变多线编织、cache 论证报废、
+fork 语义复杂化。**v1 锁死时间连续**，话题结构全部转移到 body trailer（§4）。
 
-## 第一版位置：`core.memento`
+## 4. Commit body：文本 + trailer（抄 git 的分层纪律，不抄功能）
 
-第一版整体落在 `ghoshell_moss.core.memento.*`，**不动 blueprint**：
-- 旧 `core/blueprint/memento.py` 的注释代码暂不删（人类 review 时一次性迁移）。
-- 验收 OK 后由人类用 IDE 整体回迁。
-
-ABC 通过构造函数注入外部依赖：
-
-```python
-def new_filesystem_memento(
-    *,
-    moment_store: MomentStore,   # SQLite 实现注入
-    branches_storage: Storage,    # 文件系统根注入
-    owner: str,                   # cell address 或任何字符串 (ABC 不知道)
-    hooks: MementoHooks | None = None,
-) -> Memento: ...
-```
-
-任何外部体系（Session/Matrix/Ghost/IoC）都不出现在 ABC 文件里。
-
-## Moment / Reaction — 不动
-
-`Moment` 和 `Reaction` 经 mindflow 验证，结构稳定，本次不改造。
-
-Owner 字段也**不**塞 Moment。SQLite store 单独维护 `owner` 列，写入由
-`MementoBranch.update(moment)` 注入。Moment 保持纯净，可作为独立包剥离时无负担。
-
-## 迭代步骤（每段都可独立验收）
+正文自由文本，结构化信息以 trailer 尾行生长（git trailer 的演进教训）：
 
 ```
-1. abc                   core/memento/abc.py — 干净契约，零外部体系依赖
-2. 底层实现              core/memento/_sqlite_moment_store.py + _fs_branch.py + _fs_memento.py
-3. 单测                  tests/core/memento/ — 不依赖 Session/Cell/Ghost
-   ──────── 第一版交付边界 ────────
-4. session wire          MementoHooks 实装为 session.output / topic fan-out
-5. ghost runtime 集成    on_articulate_exit hook → memento.current().update(moment)
-6. memento channel       read / chat / commit / log / show / diff — 最终验收
-   ──────── 回迁到 blueprint ────────
+<自由文本 summary>
+
+Thread: memento-design
+Thread: meta-cognition        # 多线索共存于一个时间切片
+Resumes: cmt_abc123           # 重入锚 — 回归了哪个被搁置的线索
+Suspends: meta-cognition      # 本处挂起了哪条线索
+Kind: semantic | mechanical   # §3.2 的双重身份
 ```
 
-第一版（步骤 1-3）的 acceptance：
-- 单 owner 完整生命周期：update → commit → fork → checkout → history。
-- 多 owner readonly 边界正确：非 owner 调 update/commit 抛错。
-- Persistence round-trip：写一轮，新建实例读回来等价。
-- Base pointer 链回溯：A→B→C 三层 fork 的 history 正确性。
-- Hook 触发：list collector 断言事件 fan-out 数量与顺序。
+- `Resumes/Suspends` = 对话返回栈的持久化。离散话题线索没有显式建模就无法在
+  commit 历史中锚定——这对 trailer 是锚定机制本体。
+- **trailer 规范进 FORMAT.md，且该节直接就是生成旁路的 prompt 约束**——
+  规范与 prompt 不写两份（"签名即 prompt"哲学）。
+- `Memento-Ref: cmt_xxx` 是跨系统通用 join key（§6）。
 
-## Storage Layout
+## 5. 重绘层（task 的新位置）——与 memento 正交，经济上互为前提
+
+- 重绘 = 从 commit 锚点重新投影 plan，不是栈式 unwind。plan 是可丢弃渲染
+  （mermaid 文字图 + 约定关联，节点关联 commit_id），重绘后旧文件夹保留，
+  只改关联到起点的路径。
+- **正交但绑死**：重绘成本 = 诚实重读历史的成本，没有折叠 + commit 锚点，
+  重绘比 unwind 还贵。memento 是重绘式规划的成本前提。
+- 折叠/展开的高阶 feature = **上下文分页调度**：commit 是页，折叠是换出，
+  `show <commit_id>` 是缺页中断，thread tag 是访问局部性线索。分页决策是纯
+  释义层操作（孔径二合法），交给上下文很短、只看 tag/trailer 的旁路化身——
+  它不需要懂内容，页面置换策略从不理解页里的数据。长上下文建模力衰减
+  （人类实测 400k 现象）恰好证明这个活必须卸载。
+- **未解决的洞（Open Problem #1）**：栈免费提供义务闭合（不能 pop 未 resolve
+  的 frame），重绘没有任何机制保证新投影保留旧投影的活承诺。重绘必须带
+  不变量检查：活承诺集合逐条显式处置（继承/完成/协商放弃），静默丢弃非法。
+  承诺的家大概率在 existences 层——重绘要跨层 reconcile。此洞不补，第一次
+  丢承诺就会被打回栈式。
+
+## 6. 见证层：git 正交（"fork × git 无解"的消解）
+
+无解是提法造成的：让 git 当 memento 主结构才无解（锁竞争、merge 语义错配、
+zlib 杀死 cat）。解法与 task 降级是同一个手术：**git 降级为见证层**——
+fork 是纯 memento 层操作，git 只见证产生的文件，不知道 fork 存在。
+
+- **sidecar bare repo**（`memento/.git`，绝不能被代码仓库吞掉——两个时间尺度
+  串扰是本架构唯一真正的污染模式）。
+- **单写者旁路 daemon** 低频快照（memento commit 事件或定时触发），永不在热路径。
+  多写者问题留在 memento 层用 owner 隔离解，git 层退化为单写者，零竞争面。
+- **两个地址空间**：memento id = 身份（"这是哪个 commit"）；git sha = 完整性
+  （"历史未被事后篡改的证明"）。重绘历史不可丢的最终担保是 sha 链。
+- **反查**：`Memento-Ref` trailer 全域使用（memento body、重绘渲染、见证 repo
+  commit message、代码仓库提交），反查 = `git log --grep` + `grep -r`。
+  features 体系已在人类时间尺度验证此招（见 `features/README.md`）。
+- **复制免费午餐**：Matrix 跨机组网时，见证 repo push/pull 就是现成的内容寻址、
+  无冲突（owner 分片路径不碰撞）复制协议——选 git 而非 rsync 的最硬理由。
+  不要重新发明同步协议。
+- **实现选型**：v1 用 subprocess git（低频单写者，进程开销无关；toolchain 与
+  人类手工 git 完全一致）。dulwich 是嵌入升级路径。不引 libgit2/C 依赖。
+- 全系统追加纪律让见证层白拿三重红利（公证/复制/压缩）：jsonl 追加是最小 diff，
+  重绘保留旧文件夹意味着快照间隔无丢失窗口。
+- 年尺度 repo 增长按 epoch 分仓预案（id 不变，仓库可分片）——一句话口子留在
+  FORMAT.md，其余是主权层运维细节。
+
+## 7. Cache 经济学（修订：旧版有实质漏洞）
+
+- 旧版"commit 边界 = cache 边界"混同了两个正交机制：commit 本身不破坏 cache
+  （staging 原样冻结），**折叠才破坏 cache**（摘要替换原文即前缀变更）。
+  正确表述：**折叠边界才是 cache 边界，commit 只是折叠的候选粒度**。
+  折叠策略必须分代批量（一次折叠多个旧 commit 然后长期不动），不能逐轮滑动。
+- cache 真正的主场在**扇出**：N 个化身从同一 commit 分出共享同一 token 前缀，
+  TTL 内 10x 节省乘以 N。串行只省一轮 miss。
+- 模型自决 commit 的前提是把 cache 遥测作为 `context_messages` 喂给模型
+  （"距上次 cache 写入 3m40s，staging 约 2.1k tokens"）——机制已有
+  （Channel.context_messages），不喂的话交付的是只有语法没有信息的空杠杆。
+
+## 8. 退化谱系与验收顺序
+
+- **蠢记忆是 memento 的退化态**：单 branch + 规则自动 commit + 永不 fork。
+  不要先写一份注定丢弃的蠢记忆再迁移。
+- **验收序**：MVP 先以退化态跑通 ghost 记忆（当天兑现价值），fork/化身作为
+  已埋好的能力等真场景验证。集成期问题属于必须在真场景验证的类别，人类在
+  最后集成时 review。
+- **可退化性是要验证的性质**：退化态使用者永远不需要理解完整机器。
+  golden test 硬条款：单 branch + 自动 commit 的用例代码里，fork 相关词汇
+  一个都不出现。
+- **golden tests 终极条款**：实现 A 写盘、实现 B 读回、历史等价（两个模型实例
+  独立照 FORMAT.md 各写一版，互读对方字节）。这是"实现可丢弃"唯一的证明方式。
+
+## 9. Open Problems——需要重新判断，不是待办
+
+1. **承诺保全**（§5，最重）：活承诺的家在哪（existences?），重绘 reconcile
+   协议长什么样。判断点：这是 memento 的义务还是重绘层的义务？
+2. **化身 divergence prompt 的落点**：BranchMeta overlay 是当前假设，未验证。
+3. **cache 遥测的具体字段与刷新时机**：§7 只给了方向。
+4. **thread tag 的生成者**：小模型 / 规则 / 主模型顺手——成本与准确率的
+   真场景权衡，纸面定不了。
+5. **跨 fork 引用一致性**：commit 永不删（旧版已定），branch 可 archive 但
+   commits 保留，GC 人类显式介入——此条维持，但见证层引入后 archive 语义
+   是否需要联动 git，未想清。
+
+## 10. Industry Note（2026-07 修订——旧版"真空地带"已不成立）
+
+- [Git Context Controller](https://arxiv.org/abs/2508.00031)（2025-08，写旧版时
+  已存在，当时漏检）：COMMIT/BRANCH/MERGE 进推理循环，SWE-Bench 48%。
+  [ContextBranch](https://arxiv.org/pdf/2512.13914)：checkpoint/branch/switch/inject
+  四原语，与本设计 Commit/Branch 语义几乎逐字对应。
+- commit/branch-for-context 作为原语已被多方独立实现，本设计不主张首创。
+  多方收敛是方向可靠的旁证；由此差异化必须落在收敛点之外的部分：
+  **并行化身扇出、释义可变（再巩固）、模型自宣 commit、参差时序、
+  折叠可逆（原文永远可寻址 vs 截断/摘要/RAG 三种有损）**——
+  这几点在上述已知工作中未见对应实现，是本设计的实际工作面。
+- 行业前沿在修补 task-first（[Task-Decoupled Planning](https://arxiv.org/html/2601.07577v1)
+  的 DAG + 节点局部重规划是遏制式回答），checkpoint 在
+  [长时程规划工程](https://zylos.ai/research/2026-05-14-long-horizon-planning-goal-decomposition-ai-agents/)
+  里是记忆优化不是第一公民。cascade drift（强模型被弱轨迹污染）已被命名——
+  那是"从 commit 干净重绘"的直接论据，可作为承诺保全（§9 #1）的外部参考。
+- **范围裁剪（工程决策）**：本设计范围限定为 MOSS 内部基建，不投入行业通用化
+  与 Moment 包剥离（YAGNI——当前无外部消费者，剥离窗口在 §9 #5 留口即可）。
+  维护优先级由内部依赖决定，与外部采用无关：
+  契约层故障满注意力；实现层故障零注意力（授权重做）；porcelain 层攒批处理。
+
+## 11. 谱系（代码溯源）
+
+> 本设计的形状来自三个已存在代码库的演进，列此是为让下一个化身理解相关代码
+> 为何存在、关系如何。技术主线：**承重结构逐层从"结构优先"转为"轨迹优先"**。
+>
+> - chatbot Runtime（2019-20）：task 分形/栈式雏形。
+> - GhostOS `GoTaskStruct`：task 第一公民完成态（parent/depth/thread_id）。
+> - features 体系（2026-05）：与本设计同拓扑——可变渲染（FEATURE.md）+ 不可变
+>   见证（git log）+ trailer 反查，运行在人类时间尺度。是 memento×git 正交
+>   架构的可参照实例。
+> - memento×重绘（本设计）：task 降为投影，commit 升为第一公民，git 降为见证。
+>
+> 跨代的共同技术动作：把上一代的承重结构降级为派生层。这是设计原则，不是
+> 优先性主张——见 §10，同期行业在独立走同一方向。
+
+## 12. 交付物结构（替代旧版迭代步骤 1-6）
 
 ```
-{branches_storage.root}/
-  moments.db                              # SQLite WAL — 全局 Moment 池
-  branches/
-    {owner}/                              # owner 命名空间 (cell address or whatever)
-      _branches.json                      # {name → branch_id, current: branch_id}
-      {branch_id}/
-        meta.json                         # BranchMeta (id, fork, name, base, ...)
-        staging.jsonl                     # 未提交 moment_ids
-        commits/
-          0001.json                       # Commit 不可变快照
-          0002.json
+契约层 (你起草, 人类冻结, 满注意力 review):
+  FORMAT.md          # 磁盘格式 + trailer 规范 + 见证层约定, 模糊点全部写死
+  core/memento/abc.py # 零外部体系依赖 (Session/Matrix/IoC 不出现), hooks Protocol 保留
+  golden tests       # 互读字节等价 + 退化态无 fork 词汇 + 旧版验收五条仍有效
+
+主权层 (你全权, 好用留不好用重做):
+  存储实现 / 索引 / 见证 daemon / memento channel / 重绘工具 / 一切其余
 ```
 
-人类可以用 `ls` / `cat` 直接浏览，与 features 体系同哲学。
-
-## Industry Note
-
-Commit_id 作为 stable conversation anchor，是当前对话系统里缺失的原语。LangChain
-ConversationSummaryBuffer 不可回引；LangGraph checkpoint 是 thread-local DAG，没有
-"语义锚点 vs 存储"的分离；OpenAI Assistants thread_id 是会话级 anchor 但单条
-message id 不被设计为长期锚点；mem0/letta/zep 在 episodic memory 抽象上，不是
-conversation cache 层。
-
-memento 第一版交付一个干净底座；真正展开会是 memento channel + commit-as-cache-
-breakpoint 落到 Atom 之后。第一个可 demo 的 wow moment 预计是 **"模型自己 commit
-自己的对话"**——`<memento:commit summary="..."/>` 作为 CTML 命令，模型自决何时打
-cache 边界、何时打认知锚点。
-
-## Open Points for L3 Review
-
-- **Commit summary 的生成策略**：人类 commit / 模型 CTML commit / 规则触发 commit
-  三选一或共存？第一版 API 不预设，`commit(summary: str)` 接受字符串，由调用者决定。
-- **history() sliding window 默认参数**：当前 `detail_n=最近全量, summary_m=全部
-  summary`。未来可能加 token budget 模式。第一版不上。
-- **跨 fork 引用一致性**：B fork 自 A 的 commit C，若 A 后删了 commit C 怎么办？
-  第一版策略：**commit 一旦写入永不删**，branch 可以被 archive 但 commits/ 目录
-  保留。GC 由人类显式介入。
-- **Moment 包剥离**：未来想让 LangChain / pydantic-ai 直接 adopt memento，需要
-  `ghoshell_moss.message` 也能独立。第一版 ABC 刻意只依赖 pydantic + 该 message
-  包，预留剥离窗口。
+旧版验收五条（单 owner 生命周期、多 owner 只读边界、persistence round-trip、
+base chain 回溯、hook fan-out）仍然有效，叠加本文件新增条款。
 
 ---
 
-历史 design 碰撞记录保留：
-- `discuss/01-l2-collision.md` — L2 推演与人类方案碰撞
-- `discuss/02-existing-code-relationship.md` — 与旧 momento.py 的迁移路径
-  (注：旧 ABC 已注释，第一版位置改在 core.memento，迁移待回迁)
+历史轨迹：
+- 本文件 2026-07-08 由 claude-sonnet-4-6 整体重写（一场覆盖 MVP 契约、重绘层、
+  承诺保全、见证层四层的长讨论后）。旧版及演进用 `git log -- <本文件>` 反查。
+- `discuss/01-l2-collision.md`、`discuss/02-existing-code-relationship.md` 保留。
+- 旧 `core/blueprint/memento.py` 注释代码暂不删（人类 review 时一次性迁移）。
