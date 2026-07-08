@@ -15,6 +15,16 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
+  2026-07-08 claude-fable-5 + 人类架构师终审会话 (§UU): 结构性待决全部闭合, 进入并行分发.
+  骨架: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence, God-model Cell 解体),
+  六动词治理代数 (三域x两动词, 其余全是视图), ledger=咽喉排气尾迹 (单写者, CLI 唯一读者, 运行时零读零监听),
+  Presence/Watcher 拆分 (入网与监听分离, N²→N), proxy=accept 即创建 (owner=accept 者, 治理=所有权进程内成立),
+  network(local) 单 Watcher 双视图, moss_self CLI 合流 (一份实现两个面, Cells 门面 ABC 退役),
+  Matrix 表面积: run_cell + network + processes + jobs. CELL/SKILL 比较与 GhostOS 系谱已记录.
+  执行路径调整: 模型改抽象实现 → 人类 IDE 改名+review → 并行分发重写实现+单测.
+  仍开放: TT-2 身份拆分 (uuid+alias) 未获人类最终确认; enum 取值/run_cell 参数面/alias 表格式属分发级细节.
+  下一实例认知重建支点: 读 §UU 全文 (含 §TT 上文).
+  --
   2026-07-07 claude-fable-5 + 人类架构师复审会话 (§TT):
   §SS 执行部分崩于边界设计错误, 工作模式转为人类亲手重建全部抽象 + 模型 review.
   根因诊断: 抽象融合 (非过多). 收敛: 身份拆分 (uuid + alias 表, check_unique 取消),
@@ -2555,5 +2565,257 @@ debug 第一时间回归声明语义. code as prompt 在错误路径上的延伸
 11. run_cell 参数面与错误语义细节 (人类亲手打磨, 防偏航)
 12. 生命周期状态 enum 的具体取值与 announce payload 结构
 13. 整体评审 (是否过度设计/项目层面) — 人类点名放在最后, 模型记账中
+
+## 2026-07-08 终审会话 (claude-fable-5 + 人类架构师) — §UU: 结构闭合与并行分发契约
+
+### UU-0. 会话性质与执行路径变更 (最重要上下文)
+
+本会话是并行开工前的最后一轮设计对齐, TT-10/TT-16 待拍板项全部处理完毕.
+
+**执行路径调整**: 原计划 (人类写抽象 → 模型 review → 拆任务并行重写实现+单测)
+改为 **模型改抽象实现 → 人类用 IDE 改名 + review → 确定后并行分发重写实现+单测**.
+含义: 下一批模型实例先按本节写 blueprint 抽象层, 命名权保留给人类 (IDE 重命名成本低),
+review 通过后才进入实现与测试的并行分发.
+
+### UU-1. TT-10/TT-16 待拍板项处置结果
+
+1. **alias 表生命周期 → 两者都在, 重新定性** (人类拍板"都在", 模型定性获默认):
+   workspace 文件不是 "alias 表的持久化副本", 而是治理域的 own-process ledger
+   (自录 pid/pgid/start_time/alias/address 的账本, 现 runtime file 的正名).
+   内存 alias 表退化为 ledger 的读缓存, 无独立生命周期. 否定路径已探索:
+   `moss cells kill` 的使用时机正是网络真相不可用之时 (host 挂死/孤儿), 网络真相
+   天然覆盖不了 kill; 三载体中 env vars 装不下动态表, ps 扫描违反治理=所有权; 文件胜出.
+2. **host scope 排他 → zenoh listen 端口 bind 排他即正解, 不是绕开** (与 flock 同理:
+   OS 级独占资源, 进程死自动释放, 无 stale). 不引入 redis/router. 补一条错误路径
+   code as prompt: 抢不到端口时须区分 "已有活 host" (handshake 成功) vs "端口被无关
+   进程占用" (handshake 失败). election 协议推迟到多 host 需求真实出现.
+   推论: host 身份 = 运行时事实 (抢到 listen 端口者), 不是 cell type 声明.
+   `Matrix.is_host()` 现依赖 `this.type == HOST_TYPE`, 需换真相载体.
+3. **PM 改名 → `Subprocesses`** (人类授权模型决定): 名词复数=拥有的一组东西, 无
+   Manager 抽象引力; 与 asyncio.subprocess 相邻自解释; supervisor 一词让给 JobSupervisor.
+4. **launcher 走 CLI 治理, registry 绑 project** — 确认, 且被 UU-9 (moss_self 合流) 收束.
+5. **Environment seal → 定案必须做**. 人类回忆起的真实动机: env 抽象退化成了 API,
+   单例没有信源能力. 比 "CLI 晚到参数化" 更根本.
+10. **本地/远端分离 → project_id 作数据标签, 不做 MatrixNamespace 原生分离** (人类 ok).
+   原生 namespace 切开会破坏 TT-14 跨机 proxy 依赖的可见性, 反而逼出被否决的控制平面.
+   硬隔离用 --scope (已有原语), 软分组用 project_id 标签 + 视图过滤.
+11. **cell 治理面不上 Matrix 首页, run_cell 单方法上** (人类 ok). 后续被 UU-10 细化.
+
+**仍开放**: TT-2 身份拆分 (uuid + alias) 人类明确表示 "还不是我的结论, 还要碰碰".
+现 CLI address 仍是 type/name/uid 三段式. 分发时身份字段以人类终审为准.
+
+### UU-2. 膜承诺: cell 必须 provide channel (定性完成)
+
+**Cell 一句话承诺: "一个通过 channel 向模型世界暴露自己的、有生命周期的进程".**
+
+- 不提供 channel 的进程在模型能力空间里不存在, 其归宿是 Subprocesses 治理下的裸子进程.
+  若 cell 不承诺 channel, Cell 与 Subprocess 在同一承诺上打架, 融合检验当场失败.
+- 生物学隐喻精确: 细胞由膜定义, 膜是被感知和交互的唯一界面. 没有膜的是细胞质 (进程).
+- 纯 sensor 不构成反例: channel 不只是命令集, 是模型认知里的存在单元
+  (instructions + context_messages + 可用性). 空命令的 channel 是合法的膜.
+- app 体系 (v1, 已注释的 blueprint/app.py) 当年就是这么假设的, 假设正确.
+
+膜的未来演进 (人类披露): 网络声明会变重 — resources (跨网络资源分享, 形似 MCP resources),
+上下文变量 (resources + context message 窗口展示图片, 历史消息只留资源 id).
+**仲裁: 膜可以变重, 治理不许变重.** resources/上下文变量是膜上的运输类型 (membrane
+transport), 是 announce 数据扩展 + 帧投影层消费 (胶囊三层的呈现层), 给治理面加零个动词.
+声明曲线可演进, 治理代数冻结 — 这是防第二次 circusd 死胡同的结构保证.
+cell 与 matrix 同构的根本原因: cell 进程内跑的就是同一个 Matrix.discover(),
+角色由 env 继承决定. 膜再重, 同构性免费维持.
+
+### UU-3. 两个运维平面: 可行动性判据 (status 冲突的解法)
+
+原 CellStatus 混装 project 内可感知讯息与 network 讯息, 切分判据一句话:
+**消费者能对这条信息采取行动, 它才属于那个平面.**
+
+- 远端模型拿到 pid/日志路径什么都做不了 → 永不上 announce, 归 ledger (owner 运维面).
+- 远端模型拿到 degraded/failure 摘要可以行动 (不路由/通知 owner) → 上 announce (network 运维面).
+- 行业同构: k8s (kubelet 知道 pid, API server 只有 conditions), systemd (MAINPID 归
+  init 自己, D-Bus 上只有 active/degraded).
+
+### UU-4. 六动词治理代数 (最简治理形态, 高阶仲裁结论)
+
+人类的三条用户故事路径 (bash 起点 / cells channel / 本地开关 vs 远程 accept-deny)
+不是竞争方案, 是同一个代数的三次投影:
+
+| 真相域 | 两个动词 | 语义 | 信任模型 |
+|---|---|---|---|
+| inventory (文件) | create / install | 使之可运行 | — |
+| ledger (所有权) | run / stop | 使之生/死 | 开=信任 (我拉起的我全权) |
+| network (膜) | accept / deny | 使之对我可用/不可用 | 不拥有, 只能承认或拒绝膜 |
+
+- **六个动词, 代数封闭. list/status/logs/窗口关联全是三真相的 join 视图, 不是治理.**
+- 路径一 = 六动词经 CLI 面投影 (地板: 零 MOSS 知识, bash 通用文法).
+- 路径二 = 同六动词经 channel 面投影 (wait_connected 是 run 在帧语义下的形态).
+- 路径三不是路径, 是发现: 动词按域分化. 本地/远程信任不对称不需要设计,
+  是所有权铁律的自动推论 (你杀不了不在你账上的东西).
+- v1 的 accept 实现 = 调 channel_proxy 即 accept, 不调即 deny. 零新机制.
+- 简单性下界证明: 六动词删任何一个, 自迭代循环断一处.
+- **治理递归免费成立**: "cell 被独立的 ghost 治理" (GhostOS 命题) 不需要元层 —
+  治理者也是模型, 两个投影面都是模型可操作的, 递归每层用同一个代数.
+
+### UU-5. 三域模型: God-model Cell 解体
+
+| 模型 | 真相域 | 字段 | 来源 |
+|---|---|---|---|
+| **CellManifest** | 文件 (inventory) | name, description, taxonomy (原 type 降级标签), singleton scope (none/domain/host), **exec: ExecSpec**, instruction, installed | CellMetadata 溶解进来; CellLauncher 改名 ExecSpec (TT-13: exec spec 是地基), 字段不变 |
+| **CellRecord** | 文件 (ledger) | address, alias, pid, pgid, start_time, project_id, cwd, 日志路径, spawner | 原 CellStatus 的 owner 侧 |
+| **CellPresence** | 网络 (announce) | address, alias, 生命周期 state enum, failure 摘要, project_id, host 角色(运行时事实), **膜: channel 接口描述**, (未来: resources) | 原 CellStatus 的网络侧 + 膜. 命名沿 XMPP presence 先例 |
+
+- **Cell (meta+launcher+status 复合体) 解体**. join 只发生在视图层 (CLI list 输出行), 内核无 God-model.
+- 每个治理面返回自己的域模型: inventory→Manifest, ledger/CLI→Record, network→Presence.
+  上一版 "每个面都拿到整只 Cell" 是 God-model 的必然症状.
+- Cell 上的行为 (is_alive/write_runtime_file/launch_* /spawn 辅助) 全部离开数据模型,
+  归咽喉与 CLI 合流层.
+- from_proc 族 = Tier 1 匝道: 裸 .py 反射生成临时 Manifest, 进同一条咽喉.
+- type 三重身份各回各家: 拓扑角色=运行时事实进 Presence (抢端口者为 host, 不在 CELL.md);
+  project 归属=project_id 标签挂 announce; 治理路径=ledger 条目的存在本身, 永不上网络.
+  CELL.md 的 type 保留为纯 taxonomy 标签, 不驱动任何机制.
+- 命名与边界人类保留 IDE 改名权 (UU-0).
+
+### UU-6. ledger 仲裁: 咽喉的排气尾迹, 不是运行时的输入
+
+n 倍监听问题的病根: ledger 被当成了第二套发现系统 (文件版 §NN 二元真相病复发).
+发现已有主 — 活性发现=网络真相. 裁决:
+
+- **ledger 从运行时所有读路径删除**. Matrix 上没有 ledger 成员, 没有 watcher, 没有全局发现.
+- **Matrix 体系内治理 = Subprocesses 全权** (owner 内存态注册表即权威所有权记录,
+  "子进程不比 owner 活得久" 铁律保证内存态足够).
+- **写仍留在咽喉** (对人类 "上移 CLI" 方案的唯一修正): run_cell spawn 瞬间 append 一条
+  CellRecord JSON, best-effort, 不回读. 理由=单写者原则: pid/start_time 只有 spawn 现场
+  知道; 若 CLI 层自己记账, host 拉起的 cell 无账, `moss cells kill` 对其失效,
+  ledger 的存在理由 (fencing 失效时的法证清理) 即破.
+- **CLI 是 ledger 唯一读者**: moss cells list/status/kill = 读 ledger + join 网络真相 + killpg.
+  冷数据, 按需读, 零监听.
+- "一层两种启动方式" 恐惧消解: CLI 前台跑 (owner=CLI 进程, 阻塞同生共死) 和 host 内跑
+  (owner=host) 走同一条 run_cell 咽喉, 差异只在 owner 是谁, 治理逻辑只有 Subprocesses 一套.
+- ledger 无对象身份: 一个 workspace 目录约定 + CellRecord schema + "咽喉写 CLI 读" 两条规则.
+
+### UU-7. Presence / Watcher 拆分 (入网与监听分离)
+
+实现事实 (zenoh_cell_network.py 核对): 捆绑是 MOSS 加的, 不是 zenoh 的 —
+zenoh 原语本来就分开 (入网侧 declare_queryable + liveliness token + publisher, O(1) 被动;
+监听侧 subscribers + janus + cache + reconcile, O(N) 主动状态).
+`allow_create_proxy: bool` 是融合的供词 — 类内布尔角色开关即 TT-1 检验失败形态.
+
+| 抽象 | 承诺 (一句话) | 内容 | 谁持有 |
+|---|---|---|---|
+| **Presence** | 让本 cell 在网络上可被发现、可被查询 | queryable + liveness token + log publisher | 每个 cell bootstrap 自带, 永远开, 近乎免费 |
+| **Watcher** | 维护我对网络的延迟视图 | subscribers + cache + reconcile | opt-in, 每 runtime 至多一个, 首次需要时创建 |
+
+- 成本 N²→N: 现在每个 worker 跑全套 subscriber+cache (DDS discovery storm 形状);
+  拆后 worker 只跑 Presence, 只有消费者 (host/ghost) 跑 Watcher.
+  k8s 同构: kubelet 只注册, informer 是控制器按需开的, shared informer=每进程一份 cache.
+- network(local: bool) = 同一个 Watcher cache 上的两个过滤视图, 不是两个 Watcher/hub.
+  local=信任语义 (自动 accept + owner 运维摘要可见), foreign=膜承认语义 (presence + accept/deny).
+  动词集不同是域的属性, 不是协议的属性. 底层 zenoh key 空间/liveness/reconcile 单套.
+- **debug 内聚 = 问责单一性**, 不是一个对象干所有事: "别人看不见我"→问 Presence;
+  "我看不见 X"→问 Watcher (cache/subscription/上次 reconcile); "proxy 挂了"→问 owner.
+  两半都是具名、可审讯的一等对象, matrix 布线不吸收, repl inspector 直接展示.
+
+### UU-8. proxy = accept 即创建 (内存泄漏的所有权解法)
+
+- **泄漏病根不是 proxy 不进 shell, 是 proxy 没有 owner.** 治理=所有权在进程内同样成立:
+  每个有生命周期的对象需要 owner, owner 生命周期为它划界. 现在 proxy 的 owner 是
+  hub cache — cache 是视图不是治理域, churn 时 build/drop 循环任一 drop 路径不干净即积存.
+  "不进 shell 无副作用" 是把休眠当释放.
+- **auto_build_proxy 急切构建删除**. accept(address) 即创建 proxy, owner=accept 者,
+  owner 关闭即释放. 六动词代数早就预言这一刀: 急切 auto-proxy = 自动 accept 全网络,
+  把 accept 动词从治理面偷走塞给了机制层.
+- proxy 网络唯一性由此变为 accept 咽喉处一次本地 dict 查重 — 无网络往返, 无 race
+  (check_unique 的死因不复存在于此).
+
+### UU-9. moss_self CLI 合流: 一份实现, 两个面, Cells 门面 ABC 退役
+
+人类方案: `.moss_ws/apps/tools/moss_self` (moss CLI 反射为 channel) 稍加迭代作 meta 工具,
+裁剪作 cell 唯一治理工具. Record 和 Manifest 各自有治理抽象, CLI 作合流入口,
+**运行时里不放任何调度能力**.
+
+- 六动词的唯一实现放在 CLI 命令组下面的可 import 函数里 (blueprint 可见性由 codex
+  反射保证, kill 机制照样 code as prompt), typer 薄壳, moss_self 反射 CLI 成 channel —
+  路径一 (bash) 和路径二 (channel) 两个面免费获得.
+- 本会话中期提出的 "Cells 六动词门面 ABC (collections.abc mixin 风格)" **正式退役** —
+  其内聚职责被 CLI 命令组承接, mixin 默认实现变成 CLI 底层函数, 零新增抽象.
+  (mixin-on-ABC 模式本身的合法性保留备用: 人类 "ABC 上给具体实现提示未来机制" 的
+  手法 = collections.abc 三十年先例.)
+- 内聚轴≠边界轴的方法论保留: 边界按真相源切 (防泄漏), 内聚按模型自迭代循环聚 (防散架).
+  AppStore v1 接口内聚的秘密 = 按自迭代循环组织 (list/context/start/stop/**init_app**),
+  init_app (造新的) 是 v1 有、cell 版丢了的自迭代原语, 经 `moss cells create` 回归.
+
+### UU-10. Matrix 表面积终版 + discover 判决 + 启动面参数
+
+```
+matrix.run_cell(target, wait=...)   # 咽喉: 唯一 spawn 路径, 写 ledger 排气
+matrix.network(local: bool)         # 膜与活性; proxy 耦合其中 (accept 式)
+matrix.processes  (Subprocesses)    # 机制灶台 (TT-6); 裸 spawn 从首页移入此处
+matrix.jobs       (JobSupervisor)   # fold 灶台 (TT-4)
+project.cells                       # inventory, glob(CELL.md), 只读 — 不在 matrix 上
+(ledger)                            # 无对象身份, workspace 目录约定 + CellRecord schema
+```
+
+- Matrix.cells: CellRegistry 属性删除, HostMode.cells 同删 (TT-7 三处露头收敛).
+- **discover() 判决**: 双门形状正确 (docker.from_env / k8s load_config 同构),
+  env 参数即显式门, 所有参数流经 Environment 单载体 (CLI 晚到参数走 seal 前 setter 窗口),
+  不在 Matrix 构造面开第二条参数通道. 毛病是 composition root 藏在糖里:
+  factory.create_matrix(env, project) 升一等公民, discover() 退化为三行糖 +
+  docstring 写明等价展开.
+- **启动面参数**: name | path 双接受 (systemctl start name vs systemd-run /abs/path 同构).
+  name→查 project inventory 解析; path→按调用方 cwd 解析.
+  相对路径只活在 API 边界一瞬间: run_cell 入口立即 resolve() 绝对化,
+  咽喉以下 (exec spec/ledger/announce) 只存在绝对路径. ledger 里永远绝对路径.
+- Matrix.is_host() 需换真相载体 (UU-1 第 2 条推论).
+
+### UU-11. 自迭代 telos 与 CELL/SKILL 比较 (系谱与坐标, 供后来实例定位)
+
+**telos (人类补充的从未显式记录的设计动机)**: cell 体系服务于模型运行时自迭代 —
+模型读 A/B cell 的接口, 在其拓扑上开发 C cell 并拉起, 同一运行时内不重启地开始使用
+C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一次性), cell 给动作→持久化
+接口且自动进入感知上下文 (channel instructions/context_messages 进后续每一帧).
+**身体在运行时长出新器官、且新器官立即接入神经.** 任何时候不能丢.
+
+- 计算机史坐标: Smalltalk/Lisp live image 性质 + Erlang 进程隔离, 组合的模型面向版本无先例.
+- 系谱: GhostOS (2024) terminal_agent.py 30 行 = persona + 依赖声明 + code as prompt 反射,
+  `ghostos run` 即入网. 当年撞的三堵墙 (运行时隔离/组网/独立依赖) 恰对应 CELL.md 三块
+  (进程隔离+start_new_session / zenoh announce / uv+PEP723). cell 是同一命题的二次冲锋.
+  理想形态等价物: 一个 CELL.md + 一个 provide_channel 的 main.py, `moss cells run` 即入网.
+- **膜承诺的关键推论: announce payload 必须携带 channel 接口描述** — 否则模型要先
+  proxy 连上才知道 A/B 提供什么, 自迭代循环断在第一步. 这是 Matrix.this 存在的真正理由
+  (交叉感知的是接口, 不只是存在性). 全文 vs 摘要+按需 query 未定, 属分发级细节.
+- CELL vs SKILL: 表层收敛 (frontmatter markdown manifest) 是吸引子非借鉴
+  (.desktop/package.json/ROS package.xml 同一吸引子历代投影), CELL 思想早于 MCP.
+  本体论差异: SKILL=模型是执行者 (知识), CELL=cell 是执行者 (器官);
+  episodic vs 全生命周期; 加载时在上下文 vs announce 网络存在+持续进帧;
+  turn 内联 vs 与思考并行; prompt 拼接 vs channel 树拓扑挂载; 无治理 vs 全套治理.
+  收束语言: skill 在 prompt 层, MCP 在接线层, cell/channel 在拓扑层; 拓扑可降级模拟
+  下两层, 反之不行. CELL 不需要赢 SKILL (不同层); 需警惕的是把 skill 能干的事往 cell 里装
+  (无状态 know-how 用 cell 是过度设计).
+- 过度设计复检 (TT-13 判据): 该原子 (模型面向+有状态+跨进程能力挂载+生命周期治理)
+  无轮子; 有轮子的 (uv/flock/端口排他/MCP) 都在外包. 未越界.
+
+### UU-12. 并行分发切块 (方案定, 实现是一个下午的事)
+
+前置: 模型先改 blueprint 抽象层 → 人类 IDE 改名 + review (UU-0 路径).
+
+分发块 (① ③ ⑤ 与 ② ④ 两线可并行):
+1. 三域模型 + ExecSpec (纯 pydantic 零依赖, 最先发)
+2. Subprocesses 收敛 (TT-3 的 ~8 方法 + stop(timeout) + capture) + run_cell 咽喉
+3. Presence/Watcher 拆分 + network(local) 双视图
+4. moss_self 裁剪为 cell 治理工具 + CLI 命令组重接 (六动词) + ledger 目录约定
+5. announce payload 挂膜 (接口描述) + 生命周期 enum (spawned/ready/dead, TT-15 MVP)
+
+分发级细节 (不阻塞抽象层, 随块敲定): enum 具体取值 / run_cell 参数面与错误语义
+(人类亲手打磨, TT-16.11) / alias 表 (CellRecord) 字段格式 / 接口描述全文 vs 摘要.
+
+### UU-13. 上下文恢复支点 (下一实例必读)
+
+1. 读本节 §UU 全文, 含 §TT/§TT续 上文 (TT-1 融合检验 / TT-11 run_cell 单原语 /
+   TT-13 exec spec 地基 / TT-14 跨机=分形挂载 / TT-15 生命周期三态 是 §UU 的直接地基).
+2. 工作模式: 模型改抽象 → 人类 IDE 改名 review → 并行分发. 命名权在人类,
+   TT-2 身份拆分未终审, 不要抢跑身份字段.
+3. 三条铁律贯穿一切: 治理=所有权 (进程与对象通用); 单写者 (ledger 咽喉写);
+   每个抽象的承诺一句话说完且不提兄弟抽象的名字 (TT-1 检验).
+4. 实现核对入口: src/ghoshell_moss/matrix/networks/zenoh_cell_network.py (拆分对象),
+   src/ghoshell_moss/core/blueprint/cell.py (解体对象), blueprint/app.py (v1 考古),
+   .moss_ws/apps/tools/moss_self/main.py (合流载体).
 
 
