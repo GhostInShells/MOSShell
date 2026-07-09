@@ -279,7 +279,13 @@ class HostAppStore(AppStore):
 
             self._managed_apps_with_fullname.add(app_fullname)
             if not started_in_add:
-                r2 = await self._call_circus({"command": "start", "name": app.address})
+                r2 = None
+                for attempt in range(10):
+                    r2 = await self._call_circus({"command": "start", "name": app.address})
+                    reason = str(r2.get("reason", ""))
+                    if r2.get('status') != "error" or "arbiter is already running" not in reason:
+                        break
+                    await asyncio.sleep(0.2 * (attempt + 1))
                 if r2.get('status') == "error":
                     self._logger.error(
                         "%s failed to start app %s on error: %s",
@@ -393,12 +399,12 @@ class HostAppStore(AppStore):
         self._polling_task = asyncio.create_task(self._polling_loop())
 
         # 3. Bring-up
-        bringup_apps_cors = []
         if self._bringup:
             for app_info in self.match_apps(self.list_apps(), self._bringup):
-                bringup_apps_cors.append(self.start_app(app_info.fullname))
-        if len(bringup_apps_cors) > 0:
-            _ = await asyncio.gather(*bringup_apps_cors, return_exceptions=False)
+                # Circus arbiter still serializes watcher start internally.
+                # Sequential bringup avoids transient "arbiter is already running"
+                # failures when multiple apps are launched for an interactive mode.
+                await self.start_app(app_info.fullname)
 
         return self
 

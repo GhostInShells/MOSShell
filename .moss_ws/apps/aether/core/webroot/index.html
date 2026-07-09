@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MOSS · Aether Core 能量核心</title>
+<link rel="stylesheet" href="./web/style.css">
+</head>
+<body>
+<div id="app">
+    <canvas id="glcanvas"></canvas>
+
+    <!-- 顶部状态条 -->
+    <div class="topbar">
+        <div class="brand">MOSS<span class="sub">AETHER CORE · 能量核心</span></div>
+        <div id="mode-pill" class="mode-pill local">本地演示模式</div>
+        <button id="btn-ws" style="padding:4px 10px;font-size:11px">连接后端</button>
+        <div class="state-dots">
+            <div class="state-dot" data-s="idle"      title="idle · 呼吸"></div>
+            <div class="state-dot" data-s="listen"    title="listen · 收缩凝聚"></div>
+            <div class="state-dot" data-s="queue"     title="queue · speak 中待答"></div>
+            <div class="state-dot" data-s="think"     title="think · 内部翻涌"></div>
+            <div class="state-dot" data-s="speak"     title="speak · 喷涌脉动"></div>
+            <div class="state-dot" data-s="interrupt" title="interrupt · 急刹冻结"></div>
+        </div>
+        <div class="current-state">
+            <div style="font-size:9px;color:var(--text-dim);letter-spacing:0.2em">STATE</div>
+            <div class="name" id="current-state-name">idle</div>
+        </div>
+    </div>
+
+    <!-- 并发活动层 -->
+    <div id="activity-stack" class="activity-stack" data-primary="idle" aria-hidden="true">
+        <div class="activity-ring mic" data-layer="mic"><span>MIC</span></div>
+        <div class="activity-ring listen" data-layer="listen"><span>LISTEN</span></div>
+        <div class="activity-ring queue" data-layer="queue"><span>QUEUE</span></div>
+        <div class="activity-ring think" data-layer="think"><span>THINK</span></div>
+        <div class="activity-ring speak" data-layer="speak"><span>SPEAK</span></div>
+        <div class="activity-ring interrupt" data-layer="interrupt"><span>STOP</span></div>
+    </div>
+
+    <!-- 状态层小图 -->
+    <div class="stategraph">
+        <div class="panel-title">并发层</div>
+        <div class="edge" data-to="idle"><span>→ idle</span> 呼吸</div>
+        <div class="edge" data-to="listen"><span>+ listen</span> ASR 已收到语音</div>
+        <div class="edge" data-to="queue"><span>+ queue</span> speak 中待回答</div>
+        <div class="edge" data-to="think"><span>+ think</span> Ghost 推理中</div>
+        <div class="edge" data-to="speak"><span>+ speak</span> TTS 输出中</div>
+        <div class="edge" data-to="interrupt"><span>★ interrupt</span> 急停抢占</div>
+    </div>
+
+    <!-- 语音链路诊断 -->
+    <div class="voice-diag">
+        <div class="panel-title">语音诊断</div>
+        <div class="diag-section">
+            <div class="diag-label">ASR 当前识别</div>
+            <div id="asr-current" class="asr-current">
+                <div class="diag-empty">等待 ASR partial</div>
+            </div>
+        </div>
+        <div class="diag-section">
+            <div class="diag-label">ASR 最近 final</div>
+            <div id="asr-diag" class="asr-diag">
+                <div class="diag-empty">等待 final</div>
+            </div>
+        </div>
+        <div id="asr-error" class="asr-error" hidden></div>
+        <div class="diag-section">
+            <div class="diag-label">VPIO 采集</div>
+            <div id="vpio-diag" class="vpio-diag">等待音频统计</div>
+        </div>
+    </div>
+
+    <!-- 左侧提示 -->
+    <div class="hint">
+        <b>急刹打断</b><br>
+        说「立刻停下」（或点「打断」按钮），整团能量在 &lt;100ms 内急刹冻结、聚焦闪白。
+        <br><br>
+        <b>LISTEN</b> 可与 <b>THINK</b>/<b>SPEAK</b> 同时亮起<br>
+        <b>ASR 慢线</b> 确认急停并停止 TTS<br>
+        不是互斥五态，是全双工叠层
+    </div>
+
+    <!-- 打断闪白 + 大字 -->
+    <div id="interrupt-flash" class="interrupt-flash"></div>
+    <div id="state-label" class="state-label">IDLE</div>
+
+    <!-- 日志 -->
+    <div class="log" id="log"></div>
+
+    <!-- 底部控制面板 -->
+    <div class="bottom">
+        <div class="panel">
+            <div class="panel-title">主控</div>
+            <div class="row">
+                <button id="btn-demo" class="primary">演示模式</button>
+                <button id="btn-mic">开启本地VAD</button>
+                <button id="btn-asr-mode">火山ASR 连续</button>
+                <button id="btn-asr-arm" disabled>开始火山收音</button>
+                <button id="btn-interrupt" class="danger">■ 立即停下</button>
+                <button id="btn-reset" class="warn">↻ 重置上下文</button>
+                <span id="mic-status" class="mic-status">麦克风未开</span>
+                <span id="asr-control-status" class="mic-status on">ASR 连续监听</span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">VAD 快线（能量阈值）</div>
+            <div class="row">
+                <div class="level-bar" id="level-bar">
+                    <div></div>
+                    <div id="threshold-mark" class="threshold-mark" style="left:28%"></div>
+                </div>
+                <span style="font-size:10px;color:var(--text-dim)">阈值</span>
+                <input id="vad-threshold" type="range" min="0.003" max="0.08" step="0.001" value="0.008" style="width:140px">
+                <span id="vad-threshold-value" style="font-size:10px;min-width:42px">0.008</span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">手动状态切换</div>
+            <div class="row">
+                <button class="btn-state" data-s="idle">idle</button>
+                <button class="btn-state" data-s="listen">listen</button>
+                <button class="btn-state" data-s="think">think</button>
+                <button class="btn-state" data-s="speak">speak</button>
+                <button class="btn-state" data-s="interrupt">interrupt</button>
+            </div>
+            <div class="row" style="margin-top:10px">
+                <div class="intensity-slider">
+                    <span style="font-size:10px;color:var(--text-dim)">intensity</span>
+                    <input id="intensity-slider" type="range" min="0" max="1" step="0.001" value="0">
+                    <span id="intensity-value" style="font-size:10px;min-width:32px">0.00</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="module" src="./web/main.js"></script>
+</body>
+</html>

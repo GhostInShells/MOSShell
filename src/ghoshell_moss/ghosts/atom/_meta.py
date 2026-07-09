@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from ghoshell_container import IoCContainer
@@ -9,9 +9,10 @@ from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 from ghoshell_moss.contracts import SystemPrompter
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
-from pydantic_ai.providers import Provider
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
+from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 if TYPE_CHECKING:
     from ._runtime import Atom
@@ -38,7 +39,7 @@ class AtomMeta(GhostMeta):
             soul_path: str | Path | None = None,
             soul_content: str | None = None,
             model: Model | None = None,
-            provider: Provider | None = None,
+            provider: Any = None,
             on_agent_build: Callable[[Agent[IoCContainer]], None] | None = None,
             nuclei_metas: list[NucleusMeta] | None = None,
     ):
@@ -119,20 +120,49 @@ class AtomMeta(GhostMeta):
             self._load_soul(ghost_workspace)
         model = self._model
         if model is None:
-            model_name = os.environ.get("ANTHROPIC_MODEL")
-            if not model_name:
-                raise RuntimeError(
-                    "ANTHROPIC_MODEL env var not set. "
-                    "Set it or pass model= explicitly."
+            llm_provider = os.environ.get("MOSS_LLM_PROVIDER", "openai").lower()
+            if llm_provider == "anthropic":
+                model_name = os.environ.get("ANTHROPIC_MODEL")
+                if not model_name:
+                    raise RuntimeError(
+                        "ANTHROPIC_MODEL env var not set. "
+                        "Set it or pass model= explicitly."
+                    )
+                model = AnthropicModel(
+                    model_name=model_name,
+                    provider=self._provider or AnthropicProvider(),
+                    # disable extended thinking by default; enable via model= param if needed
+                    settings=AnthropicModelSettings(
+                        anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
+                        timeout=120.0,
+                    ),
                 )
-            model = AnthropicModel(
-                model_name=model_name,
-                provider=self._provider or AnthropicProvider(),
-                # disable extended thinking by default; enable via model= param if needed
-                settings=AnthropicModelSettings(
-                    anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
-                ),
-            )
+            else:
+                # OpenAI 兼容 (DeepSeek / 通义 / Moonshot OpenAI 等)
+                model_name = os.environ.get("OPENAI_MODEL")
+                if not model_name:
+                    raise RuntimeError(
+                        "OPENAI_MODEL env var not set. "
+                        "Set it or pass model= explicitly."
+                    )
+                base_url = os.environ.get("OPENAI_BASE_URL")
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if not base_url or not api_key:
+                    raise RuntimeError(
+                        "OPENAI_BASE_URL / OPENAI_API_KEY env var not set."
+                    )
+                model_settings = OpenAIModelSettings(timeout=60.0)
+                if "deepseek" in model_name.lower() or "deepseek" in base_url.lower():
+                    # DeepSeek V4 defaults to thinking mode. Aether voice mode
+                    # needs low-latency non-thinking responses, while streaming
+                    # remains handled by Agent.run_stream().
+                    model_settings["extra_body"] = {"thinking": {"type": "disabled"}}
+                    model_settings["openai_continuous_usage_stats"] = False
+                model = OpenAIModel(
+                    model_name=model_name,
+                    provider=OpenAIProvider(base_url=base_url, api_key=api_key),
+                    settings=model_settings,
+                )
 
         agent = Agent[IoCContainer](
             name=self._name,

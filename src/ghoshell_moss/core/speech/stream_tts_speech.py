@@ -203,6 +203,14 @@ class BaseTTSSpeech(TTSSpeech):
         self.logger.info("%s clear", self._log_prefix)
         outputted = self._outputted.copy()
         self._outputted.clear()
+        results = await asyncio.gather(
+            self._tts.clear(),
+            self._player.clear(),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error("%s clear backend failed: %s", self._log_prefix, result)
         return outputted
 
     async def start(self) -> None:

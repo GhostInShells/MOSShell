@@ -10,7 +10,7 @@ from ghoshell_moss.message import Message, Text, Base64Image
 from pydantic_ai.messages import ModelRequest, ModelResponse
 from pydantic_ai import UserContent, TextContent, ImageUrl
 
-__all__ = ["messages_to_parts", "moment_to_request"]
+__all__ = ["messages_to_parts", "moment_to_request", "moment_to_user_text"]
 
 
 def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
@@ -23,6 +23,22 @@ def messages_to_parts(messages: Iterable[Message]) -> list[UserContent]:
             elif base64_image := Base64Image.from_content(content):
                 parts.append(ImageUrl(url=base64_image.data_url))
     return parts
+
+
+def moment_to_user_text(moment) -> str:
+    """将 Moment 的所有请求消息合并为单个纯文本字符串.
+
+    避免 pydantic_ai OpenAIModel streaming 与包含 XML 的多个 TextContent
+    user_prompt 不兼容 (AssertionError: Expected code to be unreachable).
+    perspectives (mindflow 状态) 与用户输入合并为一段文本传给模型.
+    """
+    chunks: list[str] = []
+    for msg in moment.as_request_messages():
+        for content in msg.as_contents(with_meta=True):
+            if text := Text.from_content(content):
+                if text.text and text.text.strip():
+                    chunks.append(text.text)
+    return "\n\n".join(chunks)
 
 
 def moment_to_request(moment) -> ModelRequest:

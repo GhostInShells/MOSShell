@@ -70,3 +70,18 @@ class TestProtocol:
         resp = parse_response(data)
         assert resp.message_type.value == "server_error"
         assert resp.error_code == 1234
+
+    def test_parse_server_error_without_sequence(self):
+        header = _Protocol.get_header(
+            _Protocol.SERVER_ERROR_RESPONSE,
+            _Protocol.NO_SEQUENCE,
+            _Protocol.JSON,
+            _Protocol.NO_COMPRESSION,
+        )
+        message = b"server busy"
+        data = header + _Protocol.int_to_bytes(106) + _Protocol.int_to_bytes(len(message)) + message
+        resp = parse_response(data)
+        assert resp.message_type.value == "server_error"
+        assert resp.sequence == 0
+        assert resp.error_code == 106
+        assert resp.payload == "server busy"

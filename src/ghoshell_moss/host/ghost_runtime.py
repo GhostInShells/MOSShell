@@ -14,6 +14,7 @@ from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.command import CommandTask
 from ghoshell_container import Provider, IoCContainer
 from ghoshell_moss.message import Message
+from ghoshell_moss.topics.audio import AudioRuntimeTopic
 import pathlib
 
 __all__ = ["GhostRuntimeImpl"]
@@ -228,12 +229,41 @@ class GhostRuntimeImpl(GhostRuntime):
         matrix.create_task(self._main_loop(), stop_matrix_on_error=True)
         matrix.create_task(self._articulate_loop(), stop_matrix_on_error=True)
         matrix.create_task(self._action_loop(), stop_matrix_on_error=True)
+        matrix.create_task(self._audio_interrupt_loop(), stop_matrix_on_error=False)
         # 等待应该发生在循环外侧.
         await self._mindflow.wait_started()
         # ignore any signals before started
         matrix.session.on_signal(_route_signal_to_mindflow)
 
     # ── 三循环 ────────────────────────────────────
+
+    async def _audio_interrupt_loop(self) -> None:
+        """Out-of-band audio emergency stop.
+
+        Mindflow interrupt remains the semantic path, but voice barge-in must
+        stop buffered TTS immediately. Waiting for the current attention/action
+        to observe abort can leave tens of seconds of audio already buffered in
+        the player.
+        """
+        audio_win = self.moss.matrix.session.topics.create_window_for(AudioRuntimeTopic, max_size=16)
+        last_started_at = 0.0
+        while self.moss.is_running():
+            for topic in reversed(list(audio_win.values())):
+                if getattr(topic, "device_name", "") != "interrupt" or not topic.running:
+                    continue
+                started_at = float(getattr(topic, "started_at", 0.0) or 0.0)
+                if started_at > last_started_at:
+                    last_started_at = started_at
+                    self.moss.logger.info(
+                        "%s audio interrupt topic received, clearing shell immediately",
+                        self._log_prefix,
+                    )
+                    try:
+                        await self.moss.shell.clear()
+                    except Exception:
+                        self.moss.logger.exception("%s audio interrupt clear failed", self._log_prefix)
+                break
+            await asyncio.sleep(0.03)
 
     def _moss_dynamic_messages(self) -> list[Message]:
         shell = self._moss_runtime.shell

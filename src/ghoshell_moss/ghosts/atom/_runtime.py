@@ -77,12 +77,27 @@ class Atom(Ghost):
 
     async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
         moment = articulator.moment
-        request = self.to_model_request(moment)
-        history = self.model_history()
+        # /reset 命令：清空对话历史
+        user_text = ""
+        for p in moment.percepts:
+            content = getattr(p, "content", None)
+            if isinstance(content, str) and content.strip():
+                user_text = content.strip()
+                break
+        if user_text == "/reset":
+            self._history.clear()
+            self._logger.info("[Atom] context reset by /reset command")
+            yield "上下文已重置，我们重新开始。"
+            return
+        # 合并 moment 所有消息为单字符串，避免 pydantic_ai OpenAIModel streaming
+        # 与多个 TextContent (含 mindflow XML) 不兼容
+        from ._adapter import moment_to_user_text
+        user_prompt = moment_to_user_text(moment)
 
+        # 注：语音对话为短上下文场景，不传 message_history 避免 pydantic_ai
+        # OpenAIModel streaming 与历史 TextContent 不兼容 (同 user_prompt 问题)
         async with self._agent.run_stream(
-            user_prompt=request.parts,
-            message_history=history,
+            user_prompt=user_prompt,
             deps=self._container,
         ) as stream:
             async for text in stream.stream_text(delta=True):

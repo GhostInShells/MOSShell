@@ -1,0 +1,16 @@
+[project]
+name = "moss-sensor-vpio-capture"
+version = "0.1.0"
+description = "macOS VPIO-based audio capture with system-level AEC for full-duplex voice conversation."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pyobjc-core>=10.0",
+    "pyobjc-framework-AVFoundation>=10.0",
+    "numpy>=2.0.0",
+    "scipy>=1.11.0",
+    "ghoshell-moss[host]",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }

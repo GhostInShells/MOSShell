@@ -47,11 +47,11 @@ class AudioNucleus(BufferNucleus):
 
     def _rebuild_impulse(self) -> Impulse | None:
         impulse = super()._rebuild_impulse()
-        if impulse is not None and impulse.complete:
-            # 首包打断: incomplete impulse preempts attention, claims it
-            # via complete=False.  Complete (FINAL) delivers content to
-            # the occupied attention without re-interrupting.
-            impulse.interrupt = True
+        if impulse is not None:
+            # 普通语音不是急停。让 wake word / InterruptNucleus 负责真正的
+            # shell.clear()，否则每个 ASR final 都会在响应前清掉 TTS/解释器，
+            # 破坏 Aether 的全双工 speak+listen 语义。
+            impulse.interrupt = False
         return impulse
 
     def suppress(self, suppress_by: Impulse) -> None:

@@ -50,7 +50,7 @@ G1 pure software simulation app.
 ## 麦克风指挥
 
 - MOSS 里已经有现成的麦克风链路，不需要为了 `g1_sim` 额外再造一个新的麦克风 app
-- 连续监听链路：`sensors/audio_capture` + `sensors/listener`
+- 连续监听链路：`sensors/audio_capture` + `aether/listener`
 - 按键说话链路：`sensors/ptt_listener`
 - `listener / ptt_listener` 会把用户语音识别成文本，发布成 `SpeechTopic` 并发出 `AudioSignal`
 - 默认 Ghost 会通过 `audio_nucleus` 接收这些语音输入，再结合 `apps.bodies_g1_sim` 的动态接口与说明，把自然语言转成 CTML 调用
@@ -60,7 +60,7 @@ G1 pure software simulation app.
 ```ctml
 <apps:start fullname="bodies/g1_sim" />
 <apps:start fullname="sensors/audio_capture" />
-<apps:start fullname="sensors/listener" />
+<apps:start fullname="aether/listener" />
 ```
 
 如果你更想避免环境噪声误触发，推荐先用 PTT：

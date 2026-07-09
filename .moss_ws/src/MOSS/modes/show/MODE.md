@@ -1,9 +1,9 @@
 ---
-apps: ["browsers/*", "games/*", "tools/*", "ui/*", "sensors/*"]
+apps: ["browsers/*", "games/*", "tools/*", "ui/*", "sensors/*", "aether/*"]
 bringup_apps: [
     "tools/screen_capture",
     "ui/reflex",
-    "sensors/audio_capture", "sensors/listener",
+    "sensors/audio_capture", "aether/listener",
     "games/ai_eye", "sensors/vision",
 ]
 ctml_version: ''
