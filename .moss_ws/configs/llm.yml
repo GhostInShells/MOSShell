@@ -1,28 +1,14 @@
 services:
 - name: anthropic
-  base_url: $ANTHROPIC_BASE_URL
+  base_url: https://api.anthropic.com
   api_key: $ANTHROPIC_API_KEY
   api_type: anthropic
 - name: openai_compat
-  base_url: $DEEPSEEK_BASE_URL
-  api_key: $DEEPSEEK_API_KEY
+  base_url: https://api.openai.com
+  api_key: $OPENAI_API_KEY
   api_type: openai
 
 models:
-- model: deepseek-v4-flash
-  service: openai_compat
-  model_type: flash
-  context_window: 1000000
-  max_output_tokens: 8192
-  protocols:
-  - text
-- model: kimi-k2.6
-  service: anthropic
-  model_type: default
-  context_window: 200000
-  max_output_tokens: 8192
-  protocols:
-  - text
 - model: claude-sonnet-4-6
   service: anthropic
   model_type: default
@@ -48,4 +34,4 @@ models:
   - text
   - image
 
-default_model: deepseek-v4-flash
+default_model: claude-sonnet-4-6

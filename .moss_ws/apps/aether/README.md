@@ -9,19 +9,23 @@ Aether 是 MOSS 的实时语音交互外壳。它把麦克风采集、ASR、Ghos
 ```text
 .moss_ws/apps/aether/
   core/          前端可视化和 WebSocket 状态聚合
-  listener/      音频到 ASR，再到 SpeechTopic / AudioSignal
   vpio_capture/  macOS VPIO 音频采集和系统级回声消除
 ```
 
-三个 app 的 canonical address 是:
+Aether 自己维护两个 app:
 
 ```text
 aether/core
-aether/listener
 aether/vpio_capture
 ```
 
-旧地址 `ui/aether_core`、`sensors/listener`、`sensors/vpio_capture` 已不再作为 Aether 入口使用。
+ASR listener 仍然使用仓库原有的公共 sensor app:
+
+```text
+sensors/listener
+```
+
+不要把 `sensors/listener` 挪进 Aether 目录。它同时服务普通 listener mode、show mode 和 Aether mode。
 
 ## 一键启动
 
@@ -41,7 +45,7 @@ http://127.0.0.1:8765/
 
 ```text
 aether/vpio_capture
-aether/listener
+sensors/listener
 aether/core
 ```
 
@@ -68,7 +72,7 @@ aether/core
 只启动 ASR listener。排查时建议先用 manual 模式，避免连续 ASR 抢占调试过程:
 
 ```bash
-LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test aether/listener
+LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test sensors/listener
 ```
 
 只启动 macOS VPIO 采集:
@@ -92,9 +96,9 @@ LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test aether/list
 
 它不负责 ASR、不负责判断用户意图、不负责调用 Ghost。
 
-### aether/listener
+### sensors/listener
 
-`aether/listener` 是语音识别层。
+`sensors/listener` 是仓库原有的语音识别层，Aether 只复用它，不拥有它。
 
 它负责:
 
@@ -129,7 +133,7 @@ LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test aether/list
 麦克风
   -> aether/vpio_capture
   -> audio topic
-  -> aether/listener
+  -> sensors/listener
   -> SpeechTopic + AudioSignal
   -> MOSS Mindflow / Ghost
   -> TTS
@@ -144,21 +148,21 @@ LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test aether/list
 browser button / VAD
   -> aether/core WebSocket
   -> AudioRuntimeTopic(asr_control / interrupt)
-  -> aether/listener 或 MOSS host runtime
+  -> sensors/listener 或 MOSS host runtime
 ```
 
 ## 关键 Topic
 
 | Topic | 发布者 | 消费者 | 作用 |
 | --- | --- | --- | --- |
-| `SpeechTopic` | `aether/listener` | Ghost / `aether/core` | 用户一句完整语音文本 |
-| `AudioSignal(SPEECH_STARTED)` | `aether/listener` | Mindflow | 用户已经开始说话 |
-| `AudioSignal(SPEECH_FINAL)` | `aether/listener` | Mindflow | 用户一句话完成 |
+| `SpeechTopic` | `sensors/listener` | Ghost / `aether/core` | 用户一句完整语音文本 |
+| `AudioSignal(SPEECH_STARTED)` | `sensors/listener` | Mindflow | 用户已经开始说话 |
+| `AudioSignal(SPEECH_FINAL)` | `sensors/listener` | Mindflow | 用户一句话完成 |
 | `AudioRuntimeTopic(device_name="vpio")` | `aether/vpio_capture` | `aether/core` | 采集状态和音量诊断 |
-| `AudioRuntimeTopic(device_name="asr")` | `aether/listener` | `aether/core` | ASR running/partial/final/error/idle |
-| `AudioRuntimeTopic(device_name="asr_control")` | `aether/core` | `aether/listener` | 连续/手动 ASR 控制 |
+| `AudioRuntimeTopic(device_name="asr")` | `sensors/listener` | `aether/core` | ASR running/partial/final/error/idle |
+| `AudioRuntimeTopic(device_name="asr_control")` | `aether/core` | `sensors/listener` | 连续/手动 ASR 控制 |
 | `AudioRuntimeTopic(device_name="speaker")` | TTS/player | `aether/core` | TTS 播放状态 |
-| `AudioRuntimeTopic(device_name="interrupt")` | `aether/core` / `aether/listener` | `aether/core` / host runtime | 打断当前输出 |
+| `AudioRuntimeTopic(device_name="interrupt")` | `aether/core` / `sensors/listener` | `aether/core` / host runtime | 打断当前输出 |
 
 ## 常见排错
 
@@ -188,7 +192,7 @@ curl -s http://127.0.0.1:8765/
 
 ### 停顿后 ASR 不再识别
 
-优先检查 `aether/listener` 日志:
+优先检查 `sensors/listener` 日志:
 
 - 是否还在读取 audio frames。
 - 是否还有 ASR partial/final。
@@ -198,7 +202,7 @@ curl -s http://127.0.0.1:8765/
 如果只是调试 listener，先用:
 
 ```bash
-LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test aether/listener
+LISTENER_ASR_MODE=manual .venv/bin/moss --ai --mode aether apps test sensors/listener
 ```
 
 这样可以把连续收音问题和 ASR 服务问题分开看。
@@ -234,8 +238,8 @@ aether/vpio_capture
 Aether 代码以后尽量收敛在本目录内:
 
 - 前端和 WebSocket 状态聚合放在 `aether/core/`。
-- ASR listener 放在 `aether/listener/`。
 - macOS VPIO 采集放在 `aether/vpio_capture/`。
+- ASR listener 继续放在原仓库公共位置 `sensors/listener/`。
 - MOSS host、Mindflow、Speech provider 的公共能力仍放在 `src/ghoshell_moss/`，不要复制到 app 目录。
 
 如果新增说明文档，优先更新这个 README。不要再在仓库根 `Docs/` 下新增 Aether 历史说明。

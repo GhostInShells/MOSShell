@@ -3,14 +3,14 @@ apps:
   - '*/*'
 bringup_apps:
   - 'aether/vpio_capture'
-  - 'aether/listener'
+  - 'sensors/listener'
   - 'aether/core'
 ctml_version: ''
 description: 'Aether Core · 能量核心 UI 模式 — 听→想→说 完整回路 + 急刹打断 (macOS VPIO AEC)'
 name: aether
 ---
 
-Aether Core 模式：拉起 `aether/vpio_capture` + `aether/listener` + `aether/core` 三个 app，ghost 通过语音对话（ASR→LLM→TTS），前端能量核心实时反映 idle/listen/think/speak/interrupt 状态。
+Aether Core 模式：拉起 `aether/vpio_capture` + `sensors/listener` + `aether/core` 三个 app，ghost 通过语音对话（ASR→LLM→TTS），前端能量核心实时反映 idle/listen/think/speak/interrupt 状态。
 
 语音演示优先级：低延迟短回应优先于复杂 CTML。Ghost 收到语音时应优先直接输出一句自然语言纯文本，让 SpeechChannel 立刻播放；不要主动启动 app，不要输出 Markdown 代码块，不要使用 `<say emotion=...>` 等 speech channel 不支持的属性。
 

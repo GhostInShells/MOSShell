@@ -4,8 +4,8 @@ Consumes PCM stream from audio_capture, feeds to Volcengine ASR,
 publishes SpeechTopic on final recognition, emits AudioSignal to mindflow.
 
 Usage:
-    moss apps test aether/listener
-    moss apps start aether/listener
+    moss apps test sensors/listener
+    moss apps start sensors/listener
 """
 import asyncio
 import json

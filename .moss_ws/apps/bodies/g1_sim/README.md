@@ -48,7 +48,7 @@
 - 已实现 viewer 自动跟随相机与稳定地面视角
 - 已实现语音编排模板和精准同步版 CTML
 - 已接好麦克风控制的系统侧前提:
-- `sensors/audio_capture + aether/listener`
+- `sensors/audio_capture + sensors/listener`
 - `sensors/ptt_listener`
 
 ## 运行方式
