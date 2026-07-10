@@ -19,7 +19,9 @@ class VolcengineASRConfig(BaseModel):
     appid: str = Field("$VOLCENGINE_BM_ASR_APPID", description="火山引擎 asr 的 appid")
     token: str = Field("$VOLCENGINE_BM_ASR_TOKEN", description="火山引擎的 asr app token")
     api_key: str = Field("$VOLCENGINE_BM_ASR_API_KEY", description="新版控制台 API Key")
-    url: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    # 默认 URL 保持历史兼容。新版 async 端点可通过 VOLCENGINE_BM_ASR_URL
+    # 覆盖，例如 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async。
+    url: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
     sample_rate: int = Field(16000, description="默认的采样率")
     bits: int = Field(16)
     channel: int = Field(1)
@@ -39,7 +41,7 @@ class VolcengineASRConfig(BaseModel):
     )
     audio_packet_ms: int = Field(
         200,
-        description="发送到火山 ASR 的音频包时长。官方建议 100-200ms，双向流式优化版推荐 200ms。",
+        description="发送到火山 ASR 的音频包时长。官方建议 100-200ms；可用环境变量覆盖。",
     )
     resource_id: str = Field("volc.bigasr.sauc.duration")
 

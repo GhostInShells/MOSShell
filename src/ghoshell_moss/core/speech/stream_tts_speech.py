@@ -203,6 +203,9 @@ class BaseTTSSpeech(TTSSpeech):
         self.logger.info("%s clear", self._log_prefix)
         outputted = self._outputted.copy()
         self._outputted.clear()
+        # clear 是急停路径：TTS 后端可能还在生成，player 也可能已经缓冲了
+        # 音频。两边同时清理，才能保证 shell.clear()/barge-in 后不再继续播放
+        # 旧语音；return_exceptions=True 避免一侧失败阻塞另一侧清理。
         results = await asyncio.gather(
             self._tts.clear(),
             self._player.clear(),

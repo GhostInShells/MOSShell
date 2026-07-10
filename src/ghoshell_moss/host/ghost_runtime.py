@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 from typing import Callable, Type
 
 import janus
@@ -229,7 +230,12 @@ class GhostRuntimeImpl(GhostRuntime):
         matrix.create_task(self._main_loop(), stop_matrix_on_error=True)
         matrix.create_task(self._articulate_loop(), stop_matrix_on_error=True)
         matrix.create_task(self._action_loop(), stop_matrix_on_error=True)
-        matrix.create_task(self._audio_interrupt_loop(), stop_matrix_on_error=False)
+        if os.environ.get("MOSS_ENABLE_AUDIO_INTERRUPT_TOPIC") == "1":
+            # 这是 aEther 全双工语音的旁路急停能力：listener 识别到“停下”等
+            # wake word 时，会发布 AudioRuntimeTopic(device_name="interrupt")，
+            # GhostRuntime 立即清空 shell/TTS 缓冲。默认不启用，避免普通 runtime
+            # 因同名 topic 或误报绕过 Mindflow 的正常 interrupt 仲裁。
+            matrix.create_task(self._audio_interrupt_loop(), stop_matrix_on_error=False)
         # 等待应该发生在循环外侧.
         await self._mindflow.wait_started()
         # ignore any signals before started
@@ -238,12 +244,12 @@ class GhostRuntimeImpl(GhostRuntime):
     # ── 三循环 ────────────────────────────────────
 
     async def _audio_interrupt_loop(self) -> None:
-        """Out-of-band audio emergency stop.
+        """语音旁路急停循环。
 
-        Mindflow interrupt remains the semantic path, but voice barge-in must
-        stop buffered TTS immediately. Waiting for the current attention/action
-        to observe abort can leave tens of seconds of audio already buffered in
-        the player.
+        语义上的打断仍应优先走 Mindflow/InterruptNucleus；这里处理的是
+        aEther 这类全双工语音产品的工程现实：TTS player 可能已经缓冲了
+        大量音频，仅等待 action abort 会让用户继续听到数秒甚至更久的旧声音。
+        因此该循环只在显式配置 MOSS_ENABLE_AUDIO_INTERRUPT_TOPIC=1 时运行。
         """
         audio_win = self.moss.matrix.session.topics.create_window_for(AudioRuntimeTopic, max_size=16)
         last_started_at = 0.0

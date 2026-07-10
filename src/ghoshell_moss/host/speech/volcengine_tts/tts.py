@@ -713,7 +713,12 @@ class VolcengineTTS(TTS):
             url = os.environ.get("VOLCENGINE_STREAM_TTS_URL", self._conf.url)
             # 创建初始连接.
             self.logger.info("%s prepare to connect to %s with header %s", self._log_prefix, url, header)
-            async with connect(url, additional_headers=header, proxy=None) as ws:
+            connect_kwargs = {"additional_headers": header}
+            if os.environ.get("VOLCENGINE_STREAM_TTS_DISABLE_PROXY") == "1":
+                # 默认尊重系统代理；只有在实时语音本地链路明确不希望走代理时
+                # 才禁用。这样不会影响依赖代理访问火山 TTS 的普通部署环境。
+                connect_kwargs["proxy"] = None
+            async with connect(url, **connect_kwargs) as ws:
                 # 建连确认.
                 await start_connection(ws)
                 self.logger.debug("%s start connection %s", self._log_prefix, connection_id)

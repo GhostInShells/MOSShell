@@ -400,11 +400,18 @@ class HostAppStore(AppStore):
 
         # 3. Bring-up
         if self._bringup:
-            for app_info in self.match_apps(self.list_apps(), self._bringup):
-                # Circus arbiter still serializes watcher start internally.
-                # Sequential bringup avoids transient "arbiter is already running"
-                # failures when multiple apps are launched for an interactive mode.
-                await self.start_app(app_info.fullname)
+            bringup_apps = list(self.match_apps(self.list_apps(), self._bringup))
+            if os.environ.get("MOSS_APPSTORE_BRINGUP_SERIAL") == "1":
+                # 仅在显式配置时串行启动。aEther 同时拉起多个实时音频/前端
+                # app 时，Circus arbiter 偶发 “already running” 竞争；串行化能
+                # 降低交互模式启动失败率。默认仍保持原来的并行 bringup，避免
+                # 拖慢普通 workspace 或改变已有 AppStore 行为。
+                for app_info in bringup_apps:
+                    await self.start_app(app_info.fullname)
+            else:
+                cors = [self.start_app(app_info.fullname) for app_info in bringup_apps]
+                if cors:
+                    await asyncio.gather(*cors)
 
         return self
 

@@ -120,7 +120,10 @@ class AtomMeta(GhostMeta):
             self._load_soul(ghost_workspace)
         model = self._model
         if model is None:
-            llm_provider = os.environ.get("MOSS_LLM_PROVIDER", "openai").lower()
+            # Atom 是 MOSS 的最小 Ghost 原型，默认 provider 保持历史兼容：
+            # 没有显式配置 MOSS_LLM_PROVIDER 时仍走 Anthropic。OpenAI-compatible
+            # provider 支持保留给 aEther/其它 mode 通过环境变量主动启用。
+            llm_provider = os.environ.get("MOSS_LLM_PROVIDER", "anthropic").lower()
             if llm_provider == "anthropic":
                 model_name = os.environ.get("ANTHROPIC_MODEL")
                 if not model_name:
@@ -152,10 +155,10 @@ class AtomMeta(GhostMeta):
                         "OPENAI_BASE_URL / OPENAI_API_KEY env var not set."
                     )
                 model_settings = OpenAIModelSettings(timeout=60.0)
-                if "deepseek" in model_name.lower() or "deepseek" in base_url.lower():
-                    # DeepSeek V4 defaults to thinking mode. Aether voice mode
-                    # needs low-latency non-thinking responses, while streaming
-                    # remains handled by Agent.run_stream().
+                if os.environ.get("MOSS_OPENAI_DISABLE_THINKING") == "1":
+                    # 部分 OpenAI-compatible 服务（例如某些 DeepSeek 兼容端点）
+                    # 支持在 extra_body 中关闭 thinking，以换取语音场景低延迟。
+                    # 这不是 OpenAI 兼容协议的通用能力，必须由 mode/env 显式启用。
                     model_settings["extra_body"] = {"thinking": {"type": "disabled"}}
                     model_settings["openai_continuous_usage_stats"] = False
                 model = OpenAIModel(

@@ -55,6 +55,18 @@ _WAKE_WORDS = (
 )
 
 
+def _tts_gate_enabled() -> bool:
+    """是否启用 TTS 播放期间的 ASR 门控。
+
+    通用 listener 默认保持保守策略：speaker 正在播报时不把回声送进 ASR，
+    只允许 wake word 走急停路径。aEther 依赖 VPIO/AEC 做全双工，所以在
+    aether mode 中通过 LISTENER_GATE_DURING_TTS=0 显式关闭。
+    """
+    if os.environ.get("LISTENER_DISABLE_TTS_GATE") == "1":
+        return False
+    return os.environ.get("LISTENER_GATE_DURING_TTS", "1") == "1"
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if not raw:
@@ -171,9 +183,9 @@ async def _audio_generator(
     ``asr.recognize()`` finishes) does NOT reach ``consumer.__anext__()``
     and silently drop a chunk.
 
-    NOTE: TTS playback no longer aborts the generator. Instead, ASR continues
-    recognizing during TTS. In Aether mode VPIO provides system AEC, so
-    non-wake-word user speech during TTS must still become a normal turn.
+    NOTE: 这里不直接检查 TTS 状态。是否在 speaker 播放期间暂停 ASR，
+    由 main loop 的 _tts_gate_enabled() 控制；aEther 可以关闭门控以支持
+    VPIO/AEC 全双工，普通 listener 默认仍保持保守门控。
     """
     # Unbounded queue: pump must never block on put(), otherwise cancellation
     # can land inside put() and the None sentinel never reaches the reader.
@@ -300,8 +312,7 @@ def _is_tts_playing(runtime_window, logger: logging.Logger | None = None) -> boo
     的最新状态即可；旧的状态可能已被 running=False 覆盖。
 
     环境变量 ``LISTENER_DISABLE_TTS_GATE=1`` 可关闭此门控。
-    Aether 的 VPIO AEC 场景默认允许 TTS 播放时继续接收用户语音；如果
-    需要旧的保守回声过滤，可设置 ``LISTENER_GATE_DURING_TTS=1``。
+    默认门控由 ``LISTENER_GATE_DURING_TTS`` 控制，未设置时为开启。
     """
     if os.environ.get("LISTENER_DISABLE_TTS_GATE") == "1":
         return False
@@ -320,11 +331,10 @@ async def main(matrix: Matrix) -> None:
     # -- transport & source (consumer only, do not start capture) --
     transport: AudioTransport = MatrixAudioTransport(matrix=matrix)
     capture_config = AudioCaptureConfig()
-    # Aether's vpio_capture publishes 16kHz mono PCM. The legacy MiniAudio
-    # capture path used AudioCaptureConfig.sample_rate (44.1k by default), but
-    # applying that default to VPIO double-resamples 16k audio and corrupts ASR
-    # timing. Keep this env-tunable for non-VPIO listener modes.
-    input_sample_rate = _env_int("LISTENER_INPUT_SAMPLE_RATE", _ASR_SAMPLE_RATE)
+    # 通用 listener 默认跟随 capture_config.sample_rate，保持原来的
+    # MiniAudio/audio_capture 路径兼容。aEther 的 vpio_capture 输出 16kHz
+    # mono PCM，因此由 aether mode 设置 LISTENER_INPUT_SAMPLE_RATE=16000。
+    input_sample_rate = _env_int("LISTENER_INPUT_SAMPLE_RATE", capture_config.sample_rate)
     source = MiniAudioCaptureSource(transport=transport, config=capture_config)
     consumer = source.new_sequential_consumer(max_queue_frames=128)
     await consumer.start()
@@ -377,6 +387,27 @@ async def main(matrix: Matrix) -> None:
                 continue
 
             logger.info("Waiting for speech...")
+            if _tts_gate_enabled():
+                while _is_tts_playing(runtime_window, logger):
+                    drained = await _drain_consumer(consumer)
+                    logger.info("TTS gate active; holding ASR, drained=%d", drained)
+                    transport.pub_topic(AudioRuntimeTopic(
+                        running=False,
+                        device_name="asr",
+                        device_explain=_asr_diag_payload(
+                            source=asr_source,
+                            state="tts_gate",
+                        ),
+                        started_at=time.monotonic(),
+                        last_heartbeat=time.monotonic(),
+                    ))
+                    await asyncio.sleep(0.08)
+                    asr_control = _refresh_asr_control(runtime_window, asr_control)
+                    if asr_control.mode == "manual" and not asr_control.enabled:
+                        break
+                if asr_control.mode == "manual" and not asr_control.enabled:
+                    continue
+
             preflight_timeout = _env_float("LISTENER_PRE_ASR_AUDIO_TIMEOUT", 2.0)
             try:
                 first_chunk = await asyncio.wait_for(consumer.__anext__(), timeout=preflight_timeout)
@@ -403,10 +434,8 @@ async def main(matrix: Matrix) -> None:
                 await asyncio.sleep(0.2)
                 continue
 
-            # NOTE: 不再在 TTS 播放时 hold ASR。
-            # VPIO AEC 已经在系统层抑制扬声器回声；如果仍在这里把
-            # speaker running 时的非唤醒词结果丢弃，用户在 speak 期间说的话
-            # 就永远不会发布 SpeechTopic，前端会表现成 listen 后直接 idle。
+            # TTS 播放期间是否继续识别由 _tts_gate_enabled() 控制：
+            # 默认保守过滤回声；aEther mode 关闭门控，依赖 VPIO/AEC 支持全双工。
 
             # Fresh abort flag and utterance id for this utterance.
             abort_event = asyncio.Event()
@@ -524,7 +553,7 @@ async def main(matrix: Matrix) -> None:
 
                 # 旧的保守模式：TTS 播放时只保留 wake word，其他结果丢弃。
                 # Aether 默认关闭这条门控，保证真正全双工。
-                if tts_active and os.environ.get("LISTENER_GATE_DURING_TTS") == "1":
+                if tts_active and _tts_gate_enabled():
                     continue
 
                 # Emit SPEECH_STARTED on first non-empty intermediate result for

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import AsyncIterable, Optional
 
@@ -222,10 +223,14 @@ class VolcengineASR(ASR):
                         message[:500],
                         connection_id,
                     )
-                    await result_queue.put(ASRResult(
-                        text=f"{_ASR_ERROR_PREFIX}{response.error_code}|{message}",
-                        is_final=True,
-                    ))
+                    # 通用 ASR 合约不应把服务端错误伪装成用户说的话；默认只
+                    # 返回空 final，让调用方结束本轮识别并查看日志。aEther
+                    # listener 需要把错误码发布到运行时诊断 topic，因此通过
+                    # VOLCENGINE_BM_ASR_PROPAGATE_ERRORS=1 显式启用哨兵文本。
+                    text = ""
+                    if os.environ.get("VOLCENGINE_BM_ASR_PROPAGATE_ERRORS") == "1":
+                        text = f"{_ASR_ERROR_PREFIX}{response.error_code}|{message}"
+                    await result_queue.put(ASRResult(text=text, is_final=True))
                     break
 
                 elif response.message_type == ResponseMessageType.server_ack:

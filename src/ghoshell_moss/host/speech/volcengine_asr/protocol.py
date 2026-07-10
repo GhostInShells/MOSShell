@@ -2,6 +2,7 @@ import enum
 import gzip
 import io
 import json
+import os
 import struct
 from typing import NamedTuple, Optional
 
@@ -80,7 +81,13 @@ async def connect(config: VolcengineASRConfig, connection_id: str = "") -> webso
     else:
         headers["X-Api-App-Key"] = config.appid
         headers["X-Api-Access-Key"] = config.token
-    return await websockets.connect(config.url, additional_headers=headers, proxy=None)
+    connect_kwargs = {"additional_headers": headers}
+    if os.environ.get("VOLCENGINE_BM_ASR_DISABLE_PROXY") == "1":
+        # websockets 新版本会读取系统代理环境变量。某些本地实时语音 demo
+        # 不希望走代理，可显式关闭；默认尊重用户/系统代理配置，避免影响
+        # 需要代理访问火山服务的通用环境。
+        connect_kwargs["proxy"] = None
+    return await websockets.connect(config.url, **connect_kwargs)
 
 
 def create_init_request(uid: str, config: VolcengineASRConfig) -> tuple[bytes, int]:
@@ -181,8 +188,9 @@ def parse_response(data: bytes) -> Response:
             offset += 4
             payload = data[offset:offset + payload_size] if len(data) >= offset + payload_size else data[offset:]
         else:
-            # Volcengine docs define error frames without sequence/outer size:
-            # Header + Error code (4B) + Error message size (4B) + Error message.
+            # 火山错误帧有两种形态。部分服务端返回不带 sequence/outer size：
+            # Header + Error code (4B) + Error message size (4B) + Error message。
+            # 这里兼容两种格式，避免把 55000/服务繁忙等错误解析成乱码。
             payload = data[offset:]
 
         if len(payload) >= 8:
