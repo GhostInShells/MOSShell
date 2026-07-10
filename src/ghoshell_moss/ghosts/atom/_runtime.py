@@ -1,3 +1,4 @@
+import os
 from typing import AsyncIterator, TYPE_CHECKING
 from typing_extensions import Self
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta
@@ -77,14 +78,39 @@ class Atom(Ghost):
 
     async def articulate(self, articulator: Articulator) -> AsyncIterator[str]:
         moment = articulator.moment
-        request = self.to_model_request(moment)
-        history = self.model_history()
+        # /reset 命令：清空 Atom 的内存对话历史。该命令只在用户输入精确等于
+        # /reset 时触发，不改变普通文本对话语义。
+        user_text = ""
+        for p in moment.percepts:
+            content = getattr(p, "content", None)
+            if isinstance(content, str) and content.strip():
+                user_text = content.strip()
+                break
+        if user_text == "/reset":
+            self._history.clear()
+            self._logger.info("[Atom] context reset by /reset command")
+            yield "上下文已重置，我们重新开始。"
+            return
 
-        async with self._agent.run_stream(
-            user_prompt=request.parts,
-            message_history=history,
-            deps=self._container,
-        ) as stream:
+        history = self.model_history()
+        if os.environ.get("MOSS_ATOM_TEXT_PROMPT_COMPAT") == "1":
+            # 兼容路径：把 Moment 的多个 TextContent 合并成单个纯文本 prompt。
+            # 这是为 OpenAI-compatible streaming 的已知兼容问题准备的开关，
+            # 不作为 Atom 的默认协议，避免丢失多模态/结构化 parts 的能力。
+            from ._adapter import moment_to_user_text
+            user_prompt = moment_to_user_text(moment)
+        else:
+            request = self.to_model_request(moment)
+            user_prompt = request.parts
+
+        run_kwargs = {
+            "user_prompt": user_prompt,
+            "deps": self._container,
+        }
+        if os.environ.get("MOSS_ATOM_DISABLE_HISTORY") != "1":
+            run_kwargs["message_history"] = history
+
+        async with self._agent.run_stream(**run_kwargs) as stream:
             async for text in stream.stream_text(delta=True):
                 yield text
             self.save_model_request(moment, stream.response)

@@ -1,0 +1,9 @@
+# runtime
+runtime/
+*.log
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+uv.lock

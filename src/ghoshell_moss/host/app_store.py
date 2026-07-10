@@ -279,7 +279,13 @@ class HostAppStore(AppStore):
 
             self._managed_apps_with_fullname.add(app_fullname)
             if not started_in_add:
-                r2 = await self._call_circus({"command": "start", "name": app.address})
+                r2 = None
+                for attempt in range(10):
+                    r2 = await self._call_circus({"command": "start", "name": app.address})
+                    reason = str(r2.get("reason", ""))
+                    if r2.get('status') != "error" or "arbiter is already running" not in reason:
+                        break
+                    await asyncio.sleep(0.2 * (attempt + 1))
                 if r2.get('status') == "error":
                     self._logger.error(
                         "%s failed to start app %s on error: %s",
@@ -393,12 +399,19 @@ class HostAppStore(AppStore):
         self._polling_task = asyncio.create_task(self._polling_loop())
 
         # 3. Bring-up
-        bringup_apps_cors = []
         if self._bringup:
-            for app_info in self.match_apps(self.list_apps(), self._bringup):
-                bringup_apps_cors.append(self.start_app(app_info.fullname))
-        if len(bringup_apps_cors) > 0:
-            _ = await asyncio.gather(*bringup_apps_cors, return_exceptions=False)
+            bringup_apps = list(self.match_apps(self.list_apps(), self._bringup))
+            if os.environ.get("MOSS_APPSTORE_BRINGUP_SERIAL") == "1":
+                # 仅在显式配置时串行启动。aEther 同时拉起多个实时音频/前端
+                # app 时，Circus arbiter 偶发 “already running” 竞争；串行化能
+                # 降低交互模式启动失败率。默认仍保持原来的并行 bringup，避免
+                # 拖慢普通 workspace 或改变已有 AppStore 行为。
+                for app_info in bringup_apps:
+                    await self.start_app(app_info.fullname)
+            else:
+                cors = [self.start_app(app_info.fullname) for app_info in bringup_apps]
+                if cors:
+                    await asyncio.gather(*cors)
 
         return self
 

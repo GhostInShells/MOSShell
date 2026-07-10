@@ -23,19 +23,27 @@ __all__ = [
 class AudioNucleus(BufferNucleus):
     """Audio signal nucleus — aggregate ASR signals into attention impulses.
 
-    SPEECH_STARTED (incomplete) signals preempt attention immediately on the
-    first packet — the incomplete Impulse carries interrupt=True, triggers
-    shell.stop_interpretation(), and occupies attention via complete=False.
-    Subsequent signals in the same session accumulate silently into the buffer.
+    SPEECH_STARTED (incomplete) signals occupy attention for the current
+    utterance id via complete=False. Whether they interrupt an existing shell
+    execution is controlled by the produced Impulse/Signal semantics rather
+    than being forced here.
 
     SPEECH_FINAL purges incomplete predecessors and produces a complete
-    Impulse (interrupt=False) that delivers the full speech content to the
-    already-occupied attention.  If no STARTED preceded it (standalone FINAL),
-    the complete impulse goes through normal arbitration without interrupt.
+    Impulse that delivers the full speech content to the already-occupied
+    attention.  For compatibility, complete impulses interrupt by default;
+    aEther full-duplex voice mode disables this via interrupt_on_complete=False.
 
     Reverse suppress (aligned with InterruptNucleus): pop_impulse starts a
     victory-side cooldown; suppress only clears the buffer on the failure side.
     """
+
+    def __init__(self, *, interrupt_on_complete: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        # 兼容默认语义：历史上 AudioNucleus 会把 complete 的语音 impulse
+        # 标记为 interrupt，用于旧 listener/show 场景在最终语音到达时抢占当前
+        # attention。aEther 的全双工语音不适合这个默认值，因此由
+        # AudioNucleusMeta(interrupt_on_complete=False) 在 aEther mode 内显式关闭。
+        self._interrupt_on_complete = interrupt_on_complete
 
     async def _process_signal(self, signal: Signal) -> None:
         audio_meta = AudioSignal.from_signal(signal)
@@ -48,10 +56,9 @@ class AudioNucleus(BufferNucleus):
     def _rebuild_impulse(self) -> Impulse | None:
         impulse = super()._rebuild_impulse()
         if impulse is not None and impulse.complete:
-            # 首包打断: incomplete impulse preempts attention, claims it
-            # via complete=False.  Complete (FINAL) delivers content to
-            # the occupied attention without re-interrupting.
-            impulse.interrupt = True
+            # 只在 complete impulse 上保留旧行为开关；incomplete impulse 的
+            # interrupt 语义仍由 BufferNucleus/Signal 自身决定，避免扩大改动面。
+            impulse.interrupt = self._interrupt_on_complete
         return impulse
 
     def suppress(self, suppress_by: Impulse) -> None:
@@ -75,6 +82,9 @@ class AudioNucleus(BufferNucleus):
 class AudioNucleusMeta(NucleusMeta):
     """音频感知核工厂 — 生产监听 audio 信号的 AudioNucleus。"""
 
+    def __init__(self, *, interrupt_on_complete: bool = True):
+        self._interrupt_on_complete = interrupt_on_complete
+
     def name(self) -> str:
         return "audio_nucleus"
 
@@ -95,4 +105,5 @@ class AudioNucleusMeta(NucleusMeta):
             min_priority=Priority.WARNING,
             pulse_beat_interval=3.0,
             logger=container.force_fetch(LoggerItf),
+            interrupt_on_complete=self._interrupt_on_complete,
         )

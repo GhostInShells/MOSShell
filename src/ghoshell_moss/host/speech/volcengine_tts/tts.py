@@ -309,6 +309,7 @@ class VolcengineTTSConf(BaseModel):
     resource_id: str = Field(default="seed-tts-2.0", description="官方的默认资源")
     sample_rate: int = Field(default=44100, description="生成音频的采样率要求.")
     audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
+    require_usage_tokens_return: bool = Field(default=False, description="返回火山 TTS 计费字符统计")
 
     disconnect_on_idle: int = Field(
         default=300,
@@ -350,12 +351,17 @@ class VolcengineTTSConf(BaseModel):
     def gen_header(self, *, connection_id: str = "", resource_id: Optional[str] = None) -> _Head:
         connection_id = connection_id or unique_id()
         app_key = self.unwrap_env(self.app_key)
+        resolved_resource_id = (
+            os.environ.get("VOLCENGINE_STREAM_TTS_RESOURCE_ID")
+            or resource_id
+            or self.resource_id
+        )
         # 旧版鉴权 header 始终发送（兼容新旧控制台）
         ws_header = {
             "X-Api-App-Key": app_key,
             "X-Api-App-Id": app_key,
             "X-Api-Access-Key": self.unwrap_env(self.access_token),
-            "X-Api-Resource-Id": resource_id or self.resource_id,
+            "X-Api-Resource-Id": resolved_resource_id,
             "X-Api-Request-Id": unique_id(),
             "X-Api-Connect-Id": connection_id,
         }
@@ -363,6 +369,8 @@ class VolcengineTTSConf(BaseModel):
         api_key = self.unwrap_env(self.api_key)
         if api_key:
             ws_header["X-Api-Key"] = api_key
+        if self.require_usage_tokens_return or os.environ.get("VOLCENGINE_STREAM_TTS_REQUIRE_USAGE") == "1":
+            ws_header["X-Control-Require-Usage-Tokens-Return"] = "*"
         return ws_header
 
     def to_session(self, speaker: SpeakerConf) -> Session:
@@ -381,7 +389,7 @@ class VolcengineTTSConf(BaseModel):
                     emotion=speaker.voice.emotion,
                 ),
                 speaker=speaker.tone,
-                model=self.model,
+                model=os.environ.get("VOLCENGINE_STREAM_TTS_MODEL", self.model or "") or None,
                 additions=additions,
             ),
         )
@@ -702,10 +710,15 @@ class VolcengineTTS(TTS):
             resource_id = speaker.resource_id or self._conf.resource_id
             connection_id = unique_id()
             header = self._conf.gen_header(connection_id=connection_id, resource_id=resource_id)
-            url = self._conf.url
+            url = os.environ.get("VOLCENGINE_STREAM_TTS_URL", self._conf.url)
             # 创建初始连接.
             self.logger.info("%s prepare to connect to %s with header %s", self._log_prefix, url, header)
-            async with connect(url, additional_headers=header) as ws:
+            connect_kwargs = {"additional_headers": header}
+            if os.environ.get("VOLCENGINE_STREAM_TTS_DISABLE_PROXY") == "1":
+                # 默认尊重系统代理；只有在实时语音本地链路明确不希望走代理时
+                # 才禁用。这样不会影响依赖代理访问火山 TTS 的普通部署环境。
+                connect_kwargs["proxy"] = None
+            async with connect(url, **connect_kwargs) as ws:
                 # 建连确认.
                 await start_connection(ws)
                 self.logger.debug("%s start connection %s", self._log_prefix, connection_id)
