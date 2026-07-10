@@ -3,7 +3,7 @@ title: Matrix Cell Governance
 status: in-progress
 priority: P0
 created: 2026-06-09
-updated: 2026-07-08
+updated: 2026-07-10
 depends:
   - cell-discovery-refactor
   - cell-session-bootstrap
@@ -15,6 +15,11 @@ description: >-
   进程管理三件套：start_new_session + pipe fencing + polling。
   不碰现有 apps 代码，先建 parallel node 线。
 status_note: >-
+  2026-07-10 claude-fable-5 开工定案 (§VV): 模型全权起草抽象层 (技术目标入 comments 不入 docstring),
+  人类 IDE 改名+review. 四条挡板 + 块①金丝雀. 十三步拓扑路线图已记录 (FEATURE.md 裁剪 → env 先行 →
+  cell/matrix 重绘 → 7-8 并行实现 → wire up → moss-as-mcp 验证 → 第一个 cells channel →
+  apps 重走=自迭代验证). 下一实例按 §VV 拓扑展开, 不要线性重放对话历史.
+  --
   2026-07-08 claude-fable-5 + 人类架构师终审会话 (§UU): 结构性待决全部闭合, 进入并行分发.
   骨架: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence, God-model Cell 解体),
   六动词治理代数 (三域x两动词, 其余全是视图), ledger=咽喉排气尾迹 (单写者, CLI 唯一读者, 运行时零读零监听),
@@ -2817,5 +2822,78 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
 4. 实现核对入口: src/ghoshell_moss/matrix/networks/zenoh_cell_network.py (拆分对象),
    src/ghoshell_moss/core/blueprint/cell.py (解体对象), blueprint/app.py (v1 考古),
    .moss_ws/apps/tools/moss_self/main.py (合流载体).
+
+---
+
+## §VV. 开工执行决策与拓扑路线图 (2026-07-10, 睡前定案)
+
+§UU 收束了全部结构性设计. 本节记录执行层决策与推进路线图 —
+路线图是拓扑序而非线性序, 下一实例按此展开, 不要从对话历史线性重放.
+
+### VV-1. 执行决策定案
+
+**模型全权起草抽象层** — 不再走"人类写抽象、模型 review"的原计划:
+
+- 模型依据 §UU 契约直接改写 blueprint 抽象 (三域模型/ExecSpec/Presence/Watcher/
+  Subprocesses/network(local) 等).
+- 技术目标与设计动机写入 **comments** (面向 reviewer/后来实例),
+  **不写入 docstring** (docstring 是模型运行时的 prompt 面, 只放使用契约).
+- 人类在 IDE 中做**改名 + review** — 命名权始终在人类. review 通过后,
+  实现层 + 单测按 UU-12 分块并行分发.
+
+**四条挡板** (模型自守):
+
+1. **契约即 §UU** — 起草时遇到 §UU/§TT 未覆盖的歧义, 停下来问, 不自行发明.
+2. **TT-2 身份字段占位** — 身份拆分 (uuid+alias vs type/name/uid) 人类未终审.
+   相关字段用可整体重命名的占位名, 不锁死, 不抢跑.
+3. **抽象层 PR 单独小批** — 抽象改动与实现改动分开提交, 保证人类 review
+   带宽内可消化.
+4. **块①金丝雀** — UU-12 分发块① (三域模型+ExecSpec, 纯 pydantic 零依赖)
+   最先发, 用它校准人类 review 节奏与模型起草质量, 再放开其余块.
+
+### VV-2. 拓扑路线图 (十三步)
+
+依赖拓扑, 非严格时序. 步骤间标注了已知依赖:
+
+1. **FEATURE.md 裁剪** — 按最新决策 (§UU/§VV) 截断/摘要历史章节.
+   本文件全文已在 commit 历史中, 裁剪不丢轨迹. 裁剪时保留人类可读的
+   review 结构 (见 VV-4).
+2. **desktop/memento 讨论平行推进** — 已确认与本 workstream 平行,
+   依赖 Subprocesses + JobSupervisor 两个抽象稳定后即可开线.
+3. **Environment seal 先行** — env 退化为 API (无信源能力), 结论已有 (UU-1),
+   实施在 cell 抽象重绘之前, 扫清依赖.
+4. **重绘 cell 抽象拆分** — 三域模型落地 (CellManifest/CellRecord/CellPresence
+   + ExecSpec), God-model Cell 解体. 即 UU-12 块①.
+5. **project 验收一轮** — inventory 归 project (project.cells), 对齐细节.
+6. **重绘 matrix** — 表面积按 UU-10 收敛. 两个待定项:
+   storages() 边界可能拿掉、也可能保留作最显眼的提示位;
+   factory 单一入口调整 (create_matrix(env, project) 升一等公民,
+   discover() 退化为糖).
+7. **并行推进所有实现** — 分开单测 + CLI review, 约 7-8 个并行任务
+   (UU-12 五块 + env + 杂项).
+8. **matrix wire up** — 修改 CLI 接线.
+9. **moss runtime 集成 mode manifests** — 大概率只需微调生命周期.
+10. **CLI 整体梳理对齐** — 六动词命令组 (UU-9) 全面就位.
+11. **验证 moss-as-mcp 启动** — 集成冒烟.
+12. **实现第一个 cells channel** — 大概率直接叫 moss channel.
+    模型通过它拿到六动词 (UU-9 的 moss_self 合流产物).
+13. **重走 apps 个别逻辑** — 开着 MCP 走完 create→run→接口进帧,
+    即 UU-11 自迭代 telos 的第一次运行时验证.
+
+### VV-3. 终局
+
+十三步走完后: 仓库既有 apps 可大规模搬迁为 cells;
+人类开始 g1 (宇树) 与能力 demo 的结合. 本 workstream 到步骤 13 为界,
+搬迁与 demo 是下一个 workstream 的事.
+
+### VV-4. 人类 review 方式说明 (供裁剪 FEATURE.md 的化身参考)
+
+人类工程师重建上下文的方式: 逐个抽象读接口、在 review 中写注释、重新加载
+认知 — 一轮完整 review 约数小时量级 (模型 10 秒的事). 因此:
+
+- 裁剪 FEATURE.md 时保留**按抽象组织的结构** (而非按对话时序),
+  让人类能按抽象逐个进入.
+- 抽象层 PR 小批发 (VV-1 挡板③) 就是为这个带宽设计的.
+- comments 里的技术目标是给这个 review 过程的输入, 不是装饰.
 
 
