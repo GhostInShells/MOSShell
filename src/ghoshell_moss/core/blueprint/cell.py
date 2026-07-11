@@ -25,14 +25,16 @@ accept/deny → network. 其余一切 (list / status / logs) 都是三域的 joi
 #    模型自迭代循环断一处. 治理代数冻结, 膜的声明曲线 (announce payload) 可演进.
 # -- TT-2 身份拆分 (uuid + alias) 未终审: address / alias 是可整体重命名的占位字段.
 #    实现不得对 address 的内部结构做任何假设.
-# -- 网络侧抽象 (Presence / Watcher, 原 CellNetwork 的拆分继任者) 见 §UU-7,
-#    随分发块③ 进场; 原 CellNetwork / CellLog 已随 God-model 一并移除.
+# -- 网络侧抽象 = Presence / Watcher (§UU-7, 原 CellNetwork 的拆分继任者):
+#    入网与监听分离, N²→N. 原 CellNetwork / CellLog 已删除,
+#    CellEvent 是 CellLog 的精简继任 (terminal 标志由 liveness 原语承载).
 
 import sys
 import time
 from enum import Enum
 from pathlib import Path
-from typing import ClassVar, Iterable, Literal
+from typing import Callable, ClassVar, Iterable, Literal
+from typing_extensions import Self
 from abc import ABC, abstractmethod
 
 import fnmatch
@@ -40,6 +42,7 @@ import frontmatter
 import shlex
 from pydantic import BaseModel, Field
 
+from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider, ChannelProxy
 from ghoshell_moss.message import unique_id
 
 __all__ = [
@@ -53,6 +56,9 @@ __all__ = [
     'CellManifest',
     'CellRecord',
     'CellPresence',
+    'CellEvent',
+    'Presence',
+    'Watcher',
     'CellRegistry',
     'DuplicatedError',
 ]
@@ -433,6 +439,214 @@ class CellPresence(BaseModel):
         default_factory=time.time,
         description="本 presence 最后更新的时间戳.",
     )
+
+
+class CellEvent(BaseModel):
+    """
+    网络上的轻量事件: 一个 cell 广播的状态跃迁或异常摘要.
+
+    事件是传播载体, 不是状态本身 — 状态的真相载体是 CellPresence.
+    接收方收到事件后按需重新查询 presence, 不从事件里读状态.
+    """
+    # -- 原 CellLog 的精简继任. terminal 标志删除: "cell 没了" 的语义由
+    #    liveness DELETE 承载 (网络原语), 不需要事件层重复声明.
+    # -- 存在理由 (UU-3): failure/degraded 摘要是远端可行动信息, 需要一个
+    #    announce 面的传播载体; presence 重宣告只更新 queryable, 不推送.
+    # -- WW-5 故事 7: 主动性全部归 signal (mindflow 仲裁), 网络事件只是原料.
+    #    事件 → signal 的转换发生在消费侧 (Watcher 的持有者), 不在这里.
+
+    address: CellAddress = Field(
+        description="事件来源 cell 的 address.",
+    )
+    content: str = Field(
+        default='',
+        description="自由文本事件内容.",
+    )
+    timestamp: float = Field(
+        default_factory=time.time,
+        description="事件产生时刻.",
+    )
+
+
+class Presence(ABC):
+    """
+    本 cell 的入网侧: 让自己在网络上可被发现、可被查询、可提供 channel.
+
+    每个入网 cell 持有一个. 只管 "我在网络上如何存在", 不观察别人 —
+    观察是 Watcher 的事.
+    """
+    # -- §UU-7 拆分: 原 CellNetwork 融合了入网 (O(1) 被动: queryable + liveness
+    #    token + publisher) 与监听 (O(N) 主动: subscriber + cache + reconcile).
+    #    allow_create_proxy 布尔角色开关是融合的供词 (TT-1 检验失败形态).
+    #    拆开后 worker 只跑 Presence, 成本 N²→N (k8s 同构: kubelet 只注册,
+    #    informer 是控制器按需开的).
+    # -- debug 问责单一性 (UU-7): "别人看不见我" → 审讯 Presence.
+    # -- check_unique 无继任 (TT-2): check-then-announce 竞态是被取消的问题.
+    #    domain 档单例查重在 run_cell 咽喉 (owner 内存态), host 档靠 flock.
+    # -- 与 CellPresence (payload 数据模型) 的撞名保留给人类 IDE 改名权衡:
+    #    一个是入网机制对象, 一个是宣告数据. 二者一一对应.
+
+    @property
+    @abstractmethod
+    def this(self) -> CellPresence:
+        """本 cell 当前宣告的 presence 内容."""
+        pass
+
+    @abstractmethod
+    async def announce(self, presence: CellPresence) -> None:
+        """
+        宣告或更新本 cell 的 presence. 首次调用即入网 (liveness 上线).
+
+        :raise DuplicatedError: 网络层确知地址冲突时 (尽力而为, 不承诺强一致).
+        """
+        pass
+
+    @abstractmethod
+    async def revoke(self) -> None:
+        """主动下线: 撤回 liveness 与 queryable. 进程退出时的优雅路径."""
+        pass
+
+    @abstractmethod
+    async def provide(self, channel: Channel) -> ChannelProvider:
+        """
+        把 channel 作为本 cell 的膜暴露到网络上.
+
+        膜是 cell 在模型能力空间里存在的前提: 不提供 channel 的进程
+        不是 cell (它应该由 Subprocesses 治理).
+        """
+        # 膜承诺 (UU-2) 的机制面. announce payload 的 channel_interface 字段
+        # 应在 provide 后由实现回填 — 接口描述随 presence 传播 (UU-11),
+        # 模型不必先连 proxy 才知道对方提供什么.
+        pass
+
+    @abstractmethod
+    async def publish_event(self, content: str) -> None:
+        """向网络广播一个本 cell 的轻量事件 (CellEvent)."""
+        pass
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+
+class Watcher(ABC):
+    """
+    对网络的观察侧: 维护网络上所有 cell presence 的延迟视图, 并按需接纳远端的膜.
+
+    opt-in: 只有需要观察网络的消费者 (host / ghost runtime) 才创建,
+    每个 runtime 至多一个. 纯 worker cell 不需要它.
+
+    延迟视图承诺: 只有 online/offline 边缘是实时的 (liveness 推送),
+    presence 内容可能滞后到下次 refresh. 要实时内容就 refresh(address).
+    """
+    # -- §UU-7: subscriber + cache + reconcile 归这里. 每 runtime 至多一个
+    #    (shared informer 同构). "我看不见 X" → 审讯 Watcher.
+    # -- §NN 二元真相在此正式化: 延迟视图是承诺不是缺陷, 消费方 (WW-5 故事 7:
+    #    network channel command 全被动读视图) 接受滞后.
+    # -- accept/deny (网络域两动词, UU-4) 放在这里: Watcher 是消费者侧对象,
+    #    proxy 的 owner 就是 accept 者 (UU-8), 本地 dict 查重零网络往返.
+    #    deny 的 v1 实现 = 不 accept / release. matrix.network(local) 双视图
+    #    是本对象之上的过滤投影 (UU-10), 不是第二个 Watcher.
+    # -- get_host/all_hosts 无继任: host 是 presence 上的运行时事实字段,
+    #    视图过滤即得, 不值一个专门方法.
+
+    @abstractmethod
+    def view(
+            self,
+            *,
+            project_id: str | None = None,
+            state: CellState | None = None,
+    ) -> dict[CellAddress, CellPresence]:
+        """
+        当前延迟视图 (零等待, 读 cache).
+
+        :param project_id: 仅返回指定治理域的 cell (local/foreign 过滤的原料).
+        :param state: 仅返回指定状态的 cell.
+        """
+        pass
+
+    @abstractmethod
+    async def refresh(self, address: CellAddress | None = None) -> dict[CellAddress, CellPresence]:
+        """主动对账: 拉取指定 cell (None=全量) 的最新 presence 并更新视图."""
+        pass
+
+    @abstractmethod
+    def on_change(
+            self,
+            callback: Callable[[CellPresence, bool], None],
+    ) -> Callable[[], None]:
+        """
+        注册 (presence, online) 变更回调, 返回 unsubscribe 函数.
+
+        回调可能在网络后台线程触发, 调用方负责线程安全.
+        """
+        # 事件 → mindflow signal 的转换点: run_cell 的调用方在这里
+        # 把 ready/dead 跃迁接进注意力仲裁 (WW-5 故事 4/5, 四弧全部经此).
+        pass
+
+    @abstractmethod
+    def recent_events(self, *, limit: int = 20) -> list[CellEvent]:
+        """最近的网络轻量事件窗口 (ring buffer, 最新优先)."""
+        pass
+
+    @abstractmethod
+    async def wait_present(
+            self,
+            address: CellAddress,
+            *,
+            timeout: float = 30,
+    ) -> CellPresence | None:
+        """
+        等待某个 cell 的 presence 出现 (ready).
+
+        程序化场景专用 (host bringup / run_cell(wait=...)).
+        模型面不 wait — 生命周期跃迁作 signal 进 mindflow (WW-5).
+
+        :return: presence, 或超时 None.
+        """
+        pass
+
+    # -- 网络域治理动词: accept / deny (UU-4) -- #
+
+    @abstractmethod
+    async def accept(self, address: CellAddress) -> ChannelProxy:
+        """
+        承认一个远端 cell 的膜: 创建 (或返回已有的) channel proxy.
+
+        proxy 的 owner 是本 Watcher 的持有者 — owner 关闭即释放.
+        同一 address 重复 accept 返回同一个 proxy (本地查重).
+
+        :raise LookupError: address 不在网络上.
+        """
+        # UU-8: 急切 auto-proxy 已删除 — 那等于自动 accept 全网络,
+        # 把 accept 动词从治理面偷走塞给机制层. accept 即创建是唯一构建路径.
+        pass
+
+    @abstractmethod
+    async def release(self, address: CellAddress) -> None:
+        """
+        撤回对一个膜的承认: 关闭并释放 proxy. 幂等.
+
+        deny 的 v1 语义 = 不 accept, 或 accept 后 release (UU-4).
+        """
+        pass
+
+    @abstractmethod
+    def accepted(self) -> dict[CellAddress, ChannelProxy]:
+        """当前已 accept 的全部 proxy."""
+        pass
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        pass
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
 
 
 class CellRegistry(ABC):
