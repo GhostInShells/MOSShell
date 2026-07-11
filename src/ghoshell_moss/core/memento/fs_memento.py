@@ -1,438 +1,543 @@
-"""FileSystem-backed Branch + Memento 实现.
+"""
+FsMemento — FORMAT.md 的文件系统参考实现.
 
-存储布局 (以 branches_root 为相对路径):
+主权层代码: 可丢弃, jsonl 是唯一 truth. 本实现的索引全部在内存中即时重建,
+不落盘 .cache/ (契约 §7 "删缓存行为不变" 的最平凡满足). 需要持久索引时
+重做本文件即可, 不动契约.
 
-    branches_root/
-      branches/
-        {owner}/
-          _branches.json          # {"current": branch_id, "names": {name: branch_id}}
-          {branch_id}/
-            meta.json             # BranchMeta
-            staging.jsonl         # one moment_id per line
-            commits/
-              0001.json           # Commit
-              0002.json
-
-并发模型: owner-isolated. 每个 owner 命名空间只有一个 Memento 实例 (单进程单线程)
-做写入. 跨 owner 读取走文件系统 (readonly). 因此:
-- staging.jsonl: append-only, 单 writer 无 race.
-- commits/{seq:04d}.json: write-once, seq 在进程内通过目录扫描决定.
-- meta.json / _branches.json: tmp + atomic rename.
-
-第一版不内置进程间锁. 若未来需要 (例如 fractal cell 跨进程共享 owner),
-在外层 (session.cache) 加锁即可.
+并发模型: owner-isolated 单写者 (FORMAT.md §1). 跨 owner 只读走文件系统.
+不内置进程间锁 — 跨进程共享 owner 时在外层仲裁.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
-import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Sequence
 
-from dateutil import tz
-
-from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.core.memento.abc import (
+    TRAILER_KIND,
+    TRAILER_RESUMES,
+    TRAILER_SUSPENDS,
+    TRAILER_THREAD,
     BasePointer,
     BranchMeta,
     BranchNotFoundError,
+    BranchWindow,
     Commit,
+    CommitKind,
+    CommitNote,
     CommitNotFoundError,
+    CommitView,
+    EmptyStagingError,
     Memento,
     MementoBranch,
     MementoError,
     MementoHooks,
-    MementoRef,
-    Moment,
-    MomentStore,
+    MomentFrozenError,
+    MomentPool,
+    MomentRecord,
     NullHooks,
     ReadonlyBranchError,
+    join_trailers,
 )
-from ghoshell_moss.core.memento.sqlite_moment_store import SqliteMomentStore
-from ghoshell_moss.message import Message
 
-__all__ = ["FsMemento", "new_filesystem_memento"]
+__all__ = ["FsMomentPool", "FsMementoBranch", "FsMemento", "new_filesystem_memento"]
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# 内部 helpers
-# ────────────────────────────────────────────────────────────────────────────
-
-_COMMIT_FILE_RE = re.compile(r"^(\d{4,})\.json$")
+_MOMENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
+_OWNER_PATTERN = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
 
 
 def _now() -> datetime:
-    return datetime.now(tz.gettz())
+    return datetime.now().astimezone()
 
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    """tmp + rename, 防止读到半成品."""
+def _dump_line(obj: dict[str, Any]) -> str:
+    # FORMAT.md §2: UTF-8, ensure_ascii=False, 紧凑分隔, LF
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _append_lines(path: Path, objs: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
+    payload = "".join(_dump_line(o) for o in objs)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(payload)
 
 
-def _owner_dir(branches_root: Path, owner: str) -> Path:
-    return branches_root / "branches" / owner
-
-
-def _branch_dir(branches_root: Path, owner: str, branch_id: str) -> Path:
-    return _owner_dir(branches_root, owner) / branch_id
-
-
-def _read_branch_index(branches_root: Path, owner: str) -> dict:
-    """{current: branch_id | None, names: {name: branch_id}}"""
-    f = _owner_dir(branches_root, owner) / "_branches.json"
-    if not f.exists():
-        return {"current": None, "names": {}}
-    return json.loads(f.read_text(encoding="utf-8"))
-
-
-def _write_branch_index(branches_root: Path, owner: str, index: dict) -> None:
-    f = _owner_dir(branches_root, owner) / "_branches.json"
-    _atomic_write_text(f, json.dumps(index, ensure_ascii=False, indent=2))
-
-
-def _read_meta(branches_root: Path, owner: str, branch_id: str) -> BranchMeta:
-    f = _branch_dir(branches_root, owner, branch_id) / "meta.json"
-    if not f.exists():
-        raise BranchNotFoundError(f"branch {owner}/{branch_id} meta.json missing")
-    return BranchMeta.model_validate_json(f.read_text(encoding="utf-8"))
-
-
-def _write_meta(branches_root: Path, owner: str, branch_id: str, meta: BranchMeta) -> None:
-    f = _branch_dir(branches_root, owner, branch_id) / "meta.json"
-    _atomic_write_text(f, meta.model_dump_json(indent=2))
-
-
-def _load_own_commits(branches_root: Path, owner: str, branch_id: str) -> list[Commit]:
-    """读 branch 自己的 commits/ 目录, 按 seq 升序."""
-    commits_dir = _branch_dir(branches_root, owner, branch_id) / "commits"
-    if not commits_dir.exists():
+def _read_lines(path: Path) -> list[dict[str, Any]]:
+    """FORMAT.md §2: 撕裂尾行静默跳过, 非尾行解析失败 = 损坏, 抛错."""
+    if not path.exists():
         return []
-    files: list[tuple[int, Path]] = []
-    for entry in commits_dir.iterdir():
-        if m := _COMMIT_FILE_RE.match(entry.name):
-            files.append((int(m.group(1)), entry))
-    files.sort(key=lambda x: x[0])
-    return [Commit.model_validate_json(p.read_text(encoding="utf-8")) for _, p in files]
+    raw = path.read_text(encoding="utf-8").splitlines()
+    out: list[dict[str, Any]] = []
+    for i, line in enumerate(raw):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            if i == len(raw) - 1:
+                break
+            raise MementoError(f"corrupted jsonl (non-tail unparsable line) at {path}:{i + 1}")
+        if not isinstance(obj, dict):
+            raise MementoError(f"corrupted jsonl (line is not an object) at {path}:{i + 1}")
+        out.append(obj)
+    return out
+
+
+def _model_line(t: str, model: Any) -> dict[str, Any]:
+    return {"t": t, **model.model_dump(mode="json", exclude_none=True)}
+
+
+def _parse_model(model_cls: type, obj: dict[str, Any]) -> Any:
+    return model_cls.model_validate({k: v for k, v in obj.items() if k != "t"})
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# FsBranch
+# MomentPool
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class FsBranch(MementoBranch):
-    """FileSystem-backed branch."""
+class FsMomentPool(MomentPool):
+    """moments/{owner}/{YYYY-MM}/moments.jsonl (FORMAT.md §3)."""
 
+    def __init__(self, root: Path):
+        self._dir = root / "moments"
+        self._file_of: dict[str, Path] = {}
+        self._scanned = False
+
+    def _scan(self) -> None:
+        if self._scanned:
+            return
+        if self._dir.exists():
+            for f in sorted(self._dir.glob("*/*/moments.jsonl")):
+                for obj in _read_lines(f):
+                    if obj.get("t") == "moment" and isinstance(obj.get("id"), str):
+                        # 首次出现的文件是该 id 的家 (§3.2/§3.4: 覆盖与释义都追加到这里)
+                        self._file_of.setdefault(obj["id"], f)
+        self._scanned = True
+
+    def put(self, record: MomentRecord, *, owner: str) -> None:
+        self._scan()
+        if not _MOMENT_ID_PATTERN.match(record.id):
+            raise MementoError(f"invalid moment id: {record.id!r} (FORMAT.md §2.1)")
+        if not _OWNER_PATTERN.match(owner):
+            raise MementoError(f"invalid owner: {owner!r} (FORMAT.md §1)")
+        path = self._file_of.get(record.id)
+        if path is None:
+            year_month = record.created.astimezone(timezone.utc).strftime("%Y-%m")
+            path = self._dir / owner / year_month / "moments.jsonl"
+        _append_lines(path, [_model_line("moment", record)])
+        self._file_of.setdefault(record.id, path)
+
+    def annotate(self, moment_id: str, threads: Sequence[str], *, owner: str, by: str = "") -> None:
+        self._scan()
+        path = self._file_of.get(moment_id)
+        if path is None:
+            raise MementoError(f"moment not found for annotate: {moment_id!r}")
+        line: dict[str, Any] = {
+            "t": "note",
+            "ref": moment_id,
+            "threads": list(threads),
+            "ts": _now().isoformat(),
+        }
+        if by:
+            line["by"] = by
+        _append_lines(path, [line])
+
+    def get(self, moment_id: str) -> MomentRecord | None:
+        self._scan()
+        path = self._file_of.get(moment_id)
+        if path is None:
+            return None
+        return self._resolve_file(path).get(moment_id)
+
+    def get_many(self, moment_ids: Iterable[str]) -> dict[str, MomentRecord]:
+        self._scan()
+        by_file: dict[Path, list[str]] = {}
+        for mid in moment_ids:
+            path = self._file_of.get(mid)
+            if path is not None:
+                by_file.setdefault(path, []).append(mid)
+        out: dict[str, MomentRecord] = {}
+        for path, ids in by_file.items():
+            resolved = self._resolve_file(path)
+            for mid in ids:
+                if mid in resolved:
+                    out[mid] = resolved[mid]
+        return out
+
+    @staticmethod
+    def _resolve_file(path: Path) -> dict[str, MomentRecord]:
+        """整文件 last-wins 解析: 记录行覆盖 + threads 释义整体替换 (FORMAT.md §2.2/§3.3)."""
+        records: dict[str, MomentRecord] = {}
+        for obj in _read_lines(path):
+            t = obj.get("t")
+            if t == "moment":
+                record = _parse_model(MomentRecord, obj)
+                records[record.id] = record
+            elif t == "note":
+                ref = obj.get("ref")
+                if isinstance(ref, str) and ref in records:
+                    threads = obj.get("threads")
+                    if isinstance(threads, list):
+                        records[ref] = records[ref].model_copy(update={"threads": list(threads)})
+            # 未知 t: 跳过 (前向兼容, FORMAT.md §2)
+        return records
+
+    def close(self) -> None:
+        pass
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Branch
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _load_meta(branch_dir: Path) -> BranchMeta:
+    meta_path = branch_dir / "meta.json"
+    if not meta_path.exists():
+        raise BranchNotFoundError(f"branch meta not found: {meta_path}")
+    return BranchMeta.model_validate(json.loads(meta_path.read_text(encoding="utf-8")))
+
+
+def _save_meta(branch_dir: Path, meta: BranchMeta) -> None:
+    branch_dir.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(meta.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2)
+    (branch_dir / "meta.json").write_text(text + "\n", encoding="utf-8")
+
+
+def _commit_files(branch_dir: Path) -> list[Path]:
+    d = branch_dir / "commits"
+    if not d.exists():
+        return []
+    files = [p for p in d.iterdir() if p.suffix == ".jsonl" and p.stem.isdigit()]
+    # FORMAT.md §5: 按解析后的整数排序, 不按文件名字典序
+    return sorted(files, key=lambda p: int(p.stem))
+
+
+def _load_commit_file(path: Path) -> tuple[Commit, list[CommitNote]]:
+    objs = _read_lines(path)
+    if not objs or objs[0].get("t") != "commit":
+        raise MementoError(f"corrupted commit file (first line must be member line): {path}")
+    commit: Commit = _parse_model(Commit, objs[0])
+    notes: list[CommitNote] = []
+    for obj in objs[1:]:
+        if obj.get("t") == "note" and obj.get("ref") == commit.id:
+            notes.append(_parse_model(CommitNote, obj))
+    return commit, notes
+
+
+def _view_of(commit: Commit, notes: list[CommitNote]) -> CommitView:
+    if notes:
+        return CommitView(commit=commit, note=notes[-1], note_seq=len(notes) - 1)
+    # 容错: 初始释义行缺失 (写入中断的撕裂尾行). 合成空释义.
+    return CommitView(commit=commit, note=CommitNote(ref=commit.id, body=""), note_seq=0)
+
+
+class FsMementoBranch(MementoBranch):
     def __init__(
         self,
-        *,
+        branch_dir: Path,
         branches_root: Path,
-        owner: str,
-        branch_id: str,
-        moment_store: MomentStore,
+        pool: FsMomentPool,
         hooks: MementoHooks,
+        *,
         readonly: bool,
-    ) -> None:
+    ):
+        self._dir = branch_dir
         self._branches_root = branches_root
-        self._owner = owner
-        self._branch_id = branch_id
-        self._moment_store = moment_store
+        self._pool = pool
         self._hooks = hooks
         self._readonly = readonly
-        self._write_lock = threading.Lock()  # 进程内 seq 计算保护
+        self._meta = _load_meta(branch_dir)
+        self._frozen_ids: set[str] | None = None
 
     @property
     def meta(self) -> BranchMeta:
-        return _read_meta(self._branches_root, self._owner, self._branch_id)
+        return self._meta
 
     @property
     def readonly(self) -> bool:
         return self._readonly
 
-    # ── 写入 ──
-
-    def update(self, moment: Moment) -> None:
+    def _check_writable(self) -> None:
         if self._readonly:
-            raise ReadonlyBranchError(
-                f"branch {self._owner}/{self._branch_id} is readonly"
-            )
-        with self._write_lock:
-            self._moment_store.put(moment, owner=self._owner)
-            staging_path = self._staging_path()
-            staging_path.parent.mkdir(parents=True, exist_ok=True)
+            raise ReadonlyBranchError(f"branch {self._meta.branch_id} is readonly for this handle")
 
-            # 去重 — 同 id 不重复 append.
-            existing_ids = self._read_staging_ids()
-            if moment.id not in existing_ids:
-                with staging_path.open("a", encoding="utf-8") as f:
-                    f.write(moment.id + "\n")
-
-        try:
-            self._hooks.on_moment_updated(self._branch_id, moment)
-        except Exception:
-            pass
-
-    def commit(self, summary: str) -> Commit:
-        if self._readonly:
-            raise ReadonlyBranchError(
-                f"branch {self._owner}/{self._branch_id} is readonly"
-            )
-        with self._write_lock:
-            moment_ids = self._read_staging_ids()
-            if not moment_ids:
-                raise MementoError(
-                    f"branch {self._owner}/{self._branch_id} staging is empty"
-                )
-
-            own = _load_own_commits(self._branches_root, self._owner, self._branch_id)
-            next_seq = (own[-1].seq + 1) if own else 1
-
-            commit = Commit(
-                seq=next_seq,
-                summary=summary,
-                moment_ids=moment_ids,
-                created=_now(),
-            )
-            commit_path = (
-                _branch_dir(self._branches_root, self._owner, self._branch_id)
-                / "commits"
-                / f"{next_seq:04d}.json"
-            )
-            _atomic_write_text(commit_path, commit.model_dump_json(indent=2))
-
-            # 清空 staging
-            self._staging_path().write_text("", encoding="utf-8")
-
-            # 更新 meta.updated
-            meta = _read_meta(self._branches_root, self._owner, self._branch_id)
-            meta = meta.model_copy(update={"updated": _now()})
-            _write_meta(self._branches_root, self._owner, self._branch_id, meta)
-
-        try:
-            self._hooks.on_commit(self._branch_id, commit)
-        except Exception:
-            pass
-        return commit
-
-    # ── 读取 ──
-
-    def head(self) -> Commit | None:
-        own = _load_own_commits(self._branches_root, self._owner, self._branch_id)
-        if own:
-            return own[-1]
-        # 自己没 commit 时, head 应该看 base chain 最后一个
-        meta = self.meta
-        if meta.base is None:
-            return None
-        base_commits = _walk_base_chain(self._branches_root, meta.base)
-        return base_commits[-1] if base_commits else None
-
-    def staging(self) -> list[Moment]:
-        ids = self._read_staging_ids()
-        if not ids:
-            return []
-        loaded = self._moment_store.get_many(ids)
-        # 按 staging 写入顺序返回 (保留缺失项为 None 会破坏类型, 跳过缺失即可)
-        return [loaded[mid] for mid in ids if mid in loaded]
-
-    def own_commits(self) -> list[Commit]:
-        return _load_own_commits(self._branches_root, self._owner, self._branch_id)
-
-    def all_commits(self) -> list[Commit]:
-        meta = self.meta
-        if meta.base is None:
-            return self.own_commits()
-        base_commits = _walk_base_chain(self._branches_root, meta.base)
-        return base_commits + self.own_commits()
-
-    def get_commit(self, commit_id: str) -> Commit | None:
-        for c in self.all_commits():
-            if c.id == commit_id:
-                return c
-        return None
-
-    def commit_moments(self, commit_id: str) -> list[Moment]:
-        commit = self.get_commit(commit_id)
-        if commit is None:
-            raise CommitNotFoundError(
-                f"commit {commit_id} not found in branch {self._owner}/{self._branch_id}"
-            )
-        loaded = self._moment_store.get_many(commit.moment_ids)
-        return [loaded[mid] for mid in commit.moment_ids if mid in loaded]
-
-    def history(
-        self,
-        *,
-        detail_n: int = 10,
-        summary_m: int = -1,
-    ) -> Iterable[Message]:
-        all_commits = self.all_commits()
-        staging_moments = self.staging()
-
-        # 构建反向时间线 [(moment_id, source_type, source_ref)]:
-        # source_type ∈ {'staging', 'commit'}
-        # source_ref = commit (for 'commit'), None (for 'staging')
-        # 反向 = 新到旧
-        timeline_reverse: list[tuple[str, str, Commit | None]] = []
-        for m in reversed(staging_moments):
-            timeline_reverse.append((m.id, "staging", None))
-        for c in reversed(all_commits):
-            for mid in reversed(c.moment_ids):
-                timeline_reverse.append((mid, "commit", c))
-
-        # 决定 detail 窗口: 最近 detail_n 个 moment 全量展开
-        detail_set: set[str] = set()
-        commits_with_detail_moment: set[str] = set()
-        if detail_n > 0:
-            for mid, src, ref in timeline_reverse[:detail_n]:
-                detail_set.add(mid)
-                if src == "commit" and ref is not None:
-                    commits_with_detail_moment.add(ref.id)
-
-        # 决定要 summarize 的 commits: 自己没有 moment 在 detail 窗口的 commit
-        summary_commits = [
-            c for c in all_commits if c.id not in commits_with_detail_moment
-        ]
-        if summary_m >= 0:
-            # 保留最新 summary_m 个 (按时间)
-            summary_commits = summary_commits[-summary_m:] if summary_m > 0 else []
-
-        summary_commit_ids = {c.id for c in summary_commits}
-
-        # 正向 emit: 先 summary commits (按 commit 时间顺序), 再 detail moments (按时间顺序)
-        for c in all_commits:
-            if c.id not in summary_commit_ids:
-                continue
-            ref = MementoRef(
-                fork=self._owner,
-                branch_id=self._branch_id,
-                commit_id=c.id,
-                commit_seq=c.seq,
-            )
-            summary_msg = Message.new(tag="commit-summary").with_content(c.summary)
-            ref.set(summary_msg)
-            yield summary_msg
-
-        # 正向 detail
-        detail_timeline = [
-            (mid, src) for mid, src, _ref in reversed(timeline_reverse) if mid in detail_set
-        ]
-        for mid, _src in detail_timeline:
-            m = self._moment_store.get(mid)
-            if m is None:
-                continue
-            # 把 Moment 展开为 messages — 用 as_history_messages 保持 ghost runtime 一致语义
-            yield from m.as_history_messages()
-
-    # ── 私有 ──
+    def _frozen(self) -> set[str]:
+        if self._frozen_ids is None:
+            frozen: set[str] = set()
+            for path in _commit_files(self._dir):
+                commit, _ = _load_commit_file(path)
+                frozen.update(commit.moment_ids)
+            self._frozen_ids = frozen
+        return self._frozen_ids
 
     def _staging_path(self) -> Path:
-        return _branch_dir(self._branches_root, self._owner, self._branch_id) / "staging.jsonl"
+        return self._dir / "staging.jsonl"
 
-    def _read_staging_ids(self) -> list[str]:
-        p = self._staging_path()
-        if not p.exists():
-            return []
-        ids: list[str] = []
-        for line in p.read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if s:
-                ids.append(s)
-        return ids
+    def _staging_ids(self) -> list[str]:
+        """去重保序 (保留首次出现的位置, FORMAT.md §4.2)."""
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for obj in _read_lines(self._staging_path()):
+            if obj.get("t") != "stage":
+                continue
+            mid = obj.get("moment_id")
+            if isinstance(mid, str) and mid not in seen:
+                seen.add(mid)
+                ordered.append(mid)
+        return ordered
 
+    # ── 写入路径 ──
 
-def _walk_base_chain(branches_root: Path, base: BasePointer) -> list[Commit]:
-    """沿 BasePointer 回溯, 返回 ancestor commits (按时间升序, 截至 base.commit_seq)."""
-    chain: list[Commit] = []
-    cur: BasePointer | None = base
-    while cur is not None:
-        ancestor_own = _load_own_commits(branches_root, cur.fork, cur.branch_id)
-        truncated = [c for c in ancestor_own if c.seq <= cur.commit_seq]
-        chain = truncated + chain  # prepend — 更老的放前面
-        try:
-            meta = _read_meta(branches_root, cur.fork, cur.branch_id)
-        except BranchNotFoundError:
-            break
-        cur = meta.base
-    return chain
+    def update(self, record: MomentRecord) -> None:
+        self._check_writable()
+        if record.id in self._frozen():
+            raise MomentFrozenError(
+                f"moment {record.id!r} is frozen by a commit of branch {self._meta.branch_id}; "
+                f"updates after freeze are illegal (FORMAT.md §3.2)"
+            )
+        self._pool.put(record, owner=self._meta.fork)
+        if record.id not in self._staging_ids():
+            _append_lines(
+                self._staging_path(),
+                [{"t": "stage", "moment_id": record.id, "ts": _now().isoformat()}],
+            )
+        self._hooks.on_record_staged(self._meta.branch_id, record)
+
+    def annotate_moment(self, moment_id: str, threads: Sequence[str], *, by: str = "") -> None:
+        self._check_writable()
+        self._pool.annotate(moment_id, threads, owner=self._meta.fork, by=by)
+
+    def commit(
+        self,
+        text: str = "",
+        *,
+        kind: CommitKind,
+        threads: Sequence[str] = (),
+        resumes: Sequence[str] = (),
+        suspends: Sequence[str] = (),
+        extra_trailers: Sequence[tuple[str, str]] = (),
+        by: str = "",
+    ) -> CommitView:
+        self._check_writable()
+        staged = self._staging_ids()
+        if not staged:
+            raise EmptyStagingError(f"staging of branch {self._meta.branch_id} is empty")
+        seq = self._max_seq() + 1
+        commit = Commit(seq=seq, moment_ids=staged)
+        trailers: list[tuple[str, str]] = []
+        trailers += [(TRAILER_THREAD, t) for t in threads]
+        trailers += [(TRAILER_RESUMES, r) for r in resumes]
+        trailers += [(TRAILER_SUSPENDS, s) for s in suspends]
+        trailers += list(extra_trailers)
+        trailers.append((TRAILER_KIND, kind))
+        note = CommitNote(ref=commit.id, body=join_trailers(text, trailers), by=by)
+        path = self._dir / "commits" / f"{seq:04d}.jsonl"
+        # 成员行 + 初始释义行一次写入 (FORMAT.md §5)
+        _append_lines(path, [_model_line("commit", commit), _model_line("note", note)])
+        # truncate staging — 全格式唯一允许清空的文件 (FORMAT.md §4.2)
+        self._staging_path().write_text("", encoding="utf-8")
+        self._meta = self._meta.model_copy(update={"updated": _now()})
+        _save_meta(self._dir, self._meta)
+        self._frozen().update(staged)
+        view = CommitView(commit=commit, note=note, note_seq=0)
+        self._hooks.on_commit(self._meta.branch_id, view)
+        return view
+
+    def reinterpret(self, commit_id: str, body: str, *, by: str = "") -> CommitView:
+        self._check_writable()
+        for path in _commit_files(self._dir):
+            commit, notes = _load_commit_file(path)
+            if commit.id == commit_id:
+                note = CommitNote(ref=commit_id, body=body, by=by)
+                _append_lines(path, [_model_line("note", note)])
+                view = CommitView(commit=commit, note=note, note_seq=len(notes))
+                self._hooks.on_reinterpreted(self._meta.branch_id, view)
+                return view
+        raise CommitNotFoundError(
+            f"commit {commit_id!r} is not an own commit of branch {self._meta.branch_id}; "
+            f"祖先的释义归祖先的 owner"
+        )
+
+    # ── 读取路径 ──
+
+    def _max_seq(self) -> int:
+        files = _commit_files(self._dir)
+        return int(files[-1].stem) if files else 0
+
+    def head(self) -> CommitView | None:
+        files = _commit_files(self._dir)
+        if not files:
+            return None
+        return _view_of(*_load_commit_file(files[-1]))
+
+    def staging(self) -> list[MomentRecord]:
+        ids = self._staging_ids()
+        found = self._pool.get_many(ids)
+        return [found[mid] for mid in ids if mid in found]
+
+    def own_commits(self) -> list[CommitView]:
+        return [_view_of(*_load_commit_file(p)) for p in _commit_files(self._dir)]
+
+    def _ancestor_views(self) -> list[CommitView]:
+        views: list[CommitView] = []
+        for bp in self._meta.ancestry:
+            adir = self._branches_root / bp.fork / bp.branch_id
+            for path in _commit_files(adir):
+                if int(path.stem) <= bp.commit_seq:
+                    views.append(_view_of(*_load_commit_file(path)))
+        return views
+
+    def all_commits(self) -> list[CommitView]:
+        return self._ancestor_views() + self.own_commits()
+
+    def get_commit(self, commit_id: str) -> CommitView | None:
+        for view in reversed(self.all_commits()):
+            if view.id == commit_id:
+                return view
+        return None
+
+    def commit_records(self, commit_id: str) -> list[MomentRecord]:
+        view = self.get_commit(commit_id)
+        if view is None:
+            raise CommitNotFoundError(
+                f"commit {commit_id!r} not in history of branch {self._meta.branch_id}"
+            )
+        found = self._pool.get_many(view.commit.moment_ids)
+        missing = [mid for mid in view.commit.moment_ids if mid not in found]
+        if missing:
+            raise MementoError(f"commit {commit_id!r} members missing from pool: {missing}")
+        return [found[mid] for mid in view.commit.moment_ids]
+
+    def notes(self, commit_id: str) -> list[CommitNote]:
+        dirs = [self._dir] + [
+            self._branches_root / bp.fork / bp.branch_id for bp in reversed(self._meta.ancestry)
+        ]
+        for branch_dir in dirs:
+            for path in _commit_files(branch_dir):
+                commit, notes = _load_commit_file(path)
+                if commit.id == commit_id:
+                    return notes
+        raise CommitNotFoundError(
+            f"commit {commit_id!r} not in history of branch {self._meta.branch_id}"
+        )
+
+    def window(self, *, detail_n: int = 10, summary_m: int = -1) -> BranchWindow:
+        details: list[MomentRecord] = self.staging()[-detail_n:] if detail_n > 0 else []
+        all_views = self.all_commits()
+        boundary = len(all_views)
+        need = (detail_n - len(details)) if detail_n > 0 else 0
+        while need > 0 and boundary > 0:
+            view = all_views[boundary - 1]
+            found = self._pool.get_many(view.commit.moment_ids)
+            expanded = [found[mid] for mid in view.commit.moment_ids if mid in found]
+            taken = expanded[-need:]
+            details = taken + details
+            need -= len(taken) if taken else need
+            boundary -= 1
+        summaries = all_views[:boundary]
+        if summary_m == 0:
+            summaries = []
+        elif summary_m > 0:
+            summaries = summaries[-summary_m:]
+        return BranchWindow(summaries=summaries, details=details)
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# FsMemento
+# Memento facade
 # ────────────────────────────────────────────────────────────────────────────
 
 
 class FsMemento(Memento):
-    """FileSystem-backed Memento facade. 绑定一个 owner."""
+    """
+    :param root: memento 根目录 (即 FORMAT.md §1 的 {root}/memento 本身).
+    :param owner: 本实例绑定的 owner 命名空间.
+    """
 
-    def __init__(
-        self,
-        *,
-        branches_storage: Storage,
-        owner: str,
-        moment_store: MomentStore,
-        hooks: MementoHooks | None = None,
-    ) -> None:
-        self._branches_root = branches_storage.abspath()
+    def __init__(self, root: str | Path, owner: str, *, hooks: MementoHooks | None = None):
+        if not _OWNER_PATTERN.match(owner):
+            raise MementoError(f"invalid owner: {owner!r} (FORMAT.md §1)")
+        self._root = Path(root)
         self._owner = owner
-        self._moment_store = moment_store
-        self._hooks = hooks or NullHooks()
-        self._owner_lock = threading.Lock()  # _branches.json 写入保护
+        self._hooks: MementoHooks = hooks if hooks is not None else NullHooks()
+        self._pool = FsMomentPool(self._root)
+        self._ensure_layout()
+
+    def _ensure_layout(self) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        gitignore = self._root / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(".cache/\n", encoding="utf-8")
 
     @property
     def owner(self) -> str:
         return self._owner
 
-    # ── current ──
+    @property
+    def pool(self) -> FsMomentPool:
+        """暴露池给 porcelain / 诊断. 写入仍应经 branch.update."""
+        return self._pool
+
+    def _branches_root(self) -> Path:
+        return self._root / "branches"
+
+    def _owner_dir(self) -> Path:
+        return self._branches_root() / self._owner
+
+    def _branch(self, fork: str, branch_id: str, *, readonly: bool) -> FsMementoBranch:
+        branch_dir = self._branches_root() / fork / branch_id
+        branch = FsMementoBranch(
+            branch_dir, self._branches_root(), self._pool, self._hooks, readonly=readonly
+        )
+        self._validate_ancestry(branch.meta)
+        return branch
+
+    def _validate_ancestry(self, meta: BranchMeta) -> None:
+        """FORMAT.md §4.1: ancestry == base_branch.ancestry + [base]. 不一致 MUST 抛错."""
+        if meta.base is None:
+            if meta.ancestry:
+                raise MementoError(f"root branch {meta.branch_id} has non-empty ancestry")
+            return
+        if not meta.ancestry or meta.ancestry[-1] != meta.base:
+            raise MementoError(f"branch {meta.branch_id}: ancestry[-1] != base")
+        base_meta = _load_meta(self._branches_root() / meta.base.fork / meta.base.branch_id)
+        if meta.ancestry[:-1] != base_meta.ancestry:
+            raise MementoError(
+                f"branch {meta.branch_id}: frozen ancestry diverges from base chain (FORMAT.md §4.1)"
+            )
+
+    # ── 当前指针 ──
+
+    def _head_path(self) -> Path:
+        return self._owner_dir() / "HEAD.json"
+
+    def _write_head(self, branch_id: str) -> None:
+        self._owner_dir().mkdir(parents=True, exist_ok=True)
+        self._head_path().write_text(
+            json.dumps({"current": branch_id}, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     def current(self) -> MementoBranch:
-        with self._owner_lock:
-            index = _read_branch_index(self._branches_root, self._owner)
-            branch_id = index.get("current")
-            if branch_id is None or not (
-                _branch_dir(self._branches_root, self._owner, branch_id) / "meta.json"
-            ).exists():
-                # 自动创建 root 'main' branch
-                branch_id = self._create_root_branch(name="main")
-                index["current"] = branch_id
-                index.setdefault("names", {})["main"] = branch_id
-                _write_branch_index(self._branches_root, self._owner, index)
-        return self._make_handle(self._owner, branch_id)
+        head_path = self._head_path()
+        if head_path.exists():
+            branch_id = json.loads(head_path.read_text(encoding="utf-8"))["current"]
+            return self._branch(self._owner, branch_id, readonly=False)
+        meta = BranchMeta(fork=self._owner, name="main")
+        _save_meta(self._owner_dir() / meta.branch_id, meta)
+        self._write_head(meta.branch_id)
+        self._hooks.on_branch_created(meta)
+        return self._branch(self._owner, meta.branch_id, readonly=False)
 
     def switch(self, branch_id: str) -> None:
-        with self._owner_lock:
-            if not (
-                _branch_dir(self._branches_root, self._owner, branch_id) / "meta.json"
-            ).exists():
-                raise BranchNotFoundError(
-                    f"branch {self._owner}/{branch_id} not found"
-                )
-            index = _read_branch_index(self._branches_root, self._owner)
-            index["current"] = branch_id
-            _write_branch_index(self._branches_root, self._owner, index)
-        try:
-            self._hooks.on_branch_switched(branch_id)
-        except Exception:
-            pass
+        if not (self._owner_dir() / branch_id / "meta.json").exists():
+            raise BranchNotFoundError(f"branch {branch_id!r} not found under owner {self._owner!r}")
+        self._write_head(branch_id)
+        self._hooks.on_branch_switched(branch_id)
 
-    # ── branch 管理 ──
+    # ── fork 边界: 化身只能从 commit 出生 ──
 
     def checkout(
         self,
@@ -440,211 +545,91 @@ class FsMemento(Memento):
         base_fork: str,
         base_branch_id: str,
         base_commit_id: str | None = None,
-        new_name: str = "",
-        recap: str = "",
+        name: str = "",
+        overlay: dict[str, Any] | None = None,
     ) -> MementoBranch:
-        # resolve base commit
-        ancestor_meta_path = (
-            _branch_dir(self._branches_root, base_fork, base_branch_id) / "meta.json"
-        )
-        if not ancestor_meta_path.exists():
-            raise BranchNotFoundError(f"branch {base_fork}/{base_branch_id} not found")
-
-        ancestor_own_commits = _load_own_commits(
-            self._branches_root, base_fork, base_branch_id
-        )
-        if base_commit_id is None:
-            # 取源 branch 的 head (含 base chain)
-            ancestor_branch = self._make_handle(base_fork, base_branch_id)
-            head = ancestor_branch.head()
-            if head is None:
-                raise MementoError(
-                    f"branch {base_fork}/{base_branch_id} has no commits to fork from"
-                )
-            base_commit = head
-        else:
-            # 在源 branch 的 all_commits 中找
-            ancestor_branch = self._make_handle(base_fork, base_branch_id)
-            base_commit = ancestor_branch.get_commit(base_commit_id)
-            if base_commit is None:
-                raise CommitNotFoundError(
-                    f"commit {base_commit_id} not found in {base_fork}/{base_branch_id}"
-                )
-
-        # 找 base_commit 的真实归属 branch (可能是源 branch 自己, 也可能是它的 ancestor)
-        if any(c.id == base_commit.id for c in ancestor_own_commits):
-            owning_fork = base_fork
-            owning_branch_id = base_branch_id
-        else:
-            # 在 base chain 里找
-            owning_fork, owning_branch_id = _find_commit_owner(
-                self._branches_root,
-                _read_meta(self._branches_root, base_fork, base_branch_id).base,
-                base_commit.id,
-            )
-            if owning_fork is None:
-                raise CommitNotFoundError(
-                    f"could not locate owner of commit {base_commit.id}"
-                )
-
-        base_pointer = BasePointer(
-            fork=owning_fork,
-            branch_id=owning_branch_id,
-            commit_id=base_commit.id,
-            commit_seq=base_commit.seq,
-        )
-
-        new_meta = BranchMeta(
-            fork=self._owner,
-            name=new_name,
-            recap=recap,
-            base=base_pointer,
-            created=_now(),
-            updated=_now(),
-        )
-        with self._owner_lock:
-            _write_meta(self._branches_root, self._owner, new_meta.branch_id, new_meta)
-            if new_name:
-                index = _read_branch_index(self._branches_root, self._owner)
-                index.setdefault("names", {})[new_name] = new_meta.branch_id
-                _write_branch_index(self._branches_root, self._owner, index)
-
-        try:
-            self._hooks.on_branch_created(new_meta)
-        except Exception:
-            pass
-        return self._make_handle(self._owner, new_meta.branch_id)
-
-    def get_branch(
-        self,
-        branch_id: str,
-        *,
-        fork: str | None = None,
-    ) -> MementoBranch:
-        target_fork = fork or self._owner
-        if not (
-            _branch_dir(self._branches_root, target_fork, branch_id) / "meta.json"
-        ).exists():
-            raise BranchNotFoundError(f"branch {target_fork}/{branch_id} not found")
-        return self._make_handle(target_fork, branch_id)
-
-    def list_branches(self, fork: str | None = None) -> list[BranchMeta]:
-        target_fork = fork or self._owner
-        owner_dir = _owner_dir(self._branches_root, target_fork)
-        if not owner_dir.exists():
-            return []
-        metas: list[BranchMeta] = []
-        for entry in owner_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            meta_file = entry / "meta.json"
-            if meta_file.exists():
-                metas.append(BranchMeta.model_validate_json(meta_file.read_text(encoding="utf-8")))
-        metas.sort(key=lambda m: m.created)
-        return metas
-
-    def list_forks(self) -> list[str]:
-        root = self._branches_root / "branches"
-        if not root.exists():
-            return []
-        return sorted([e.name for e in root.iterdir() if e.is_dir()])
-
-    # ── merge message ──
-
-    def make_merge_message(
-        self,
-        branch_id: str,
-        commit_id: str,
-        *,
-        fork: str | None = None,
-    ) -> Message:
-        target_fork = fork or self._owner
-        branch = self.get_branch(branch_id, fork=target_fork)
-        commit = branch.get_commit(commit_id)
-        if commit is None:
-            raise CommitNotFoundError(
-                f"commit {commit_id} not found in {target_fork}/{branch_id}"
-            )
-        ref = MementoRef(
-            fork=target_fork,
-            branch_id=branch_id,
-            commit_id=commit.id,
-            commit_seq=commit.seq,
-        )
-        msg = Message.new(tag="memento-merge").with_content(commit.summary)
-        ref.set(msg)
-        return msg
-
-    # ── 生命周期 ──
-
-    def close(self) -> None:
-        self._moment_store.close()
-
-    # ── 内部 ──
-
-    def _create_root_branch(self, *, name: str) -> str:
+        source = self._branch(base_fork, base_branch_id, readonly=True)
+        base = self._locate_base(source, base_commit_id)
+        base_meta = _load_meta(self._branches_root() / base.fork / base.branch_id)
         meta = BranchMeta(
             fork=self._owner,
             name=name,
-            base=None,
-            created=_now(),
-            updated=_now(),
+            base=base,
+            # fork 时刻冻结展平祖先链: 恒等式 ancestry == base 的 ancestry + [base]
+            ancestry=list(base_meta.ancestry) + [base],
+            overlay=overlay or {},
         )
-        _write_meta(self._branches_root, self._owner, meta.branch_id, meta)
-        try:
-            self._hooks.on_branch_created(meta)
-        except Exception:
-            pass
-        return meta.branch_id
+        _save_meta(self._owner_dir() / meta.branch_id, meta)
+        self._hooks.on_branch_created(meta)
+        return self._branch(self._owner, meta.branch_id, readonly=False)
 
-    def _make_handle(self, fork: str, branch_id: str) -> FsBranch:
-        return FsBranch(
-            branches_root=self._branches_root,
-            owner=fork,
-            branch_id=branch_id,
-            moment_store=self._moment_store,
-            hooks=self._hooks,
-            readonly=(fork != self._owner),
+    def _locate_base(self, source: FsMementoBranch, base_commit_id: str | None) -> BasePointer:
+        if base_commit_id is None:
+            head = source.head()
+            if head is None:
+                raise MementoError(
+                    f"source branch {source.meta.branch_id} has no commit; "
+                    f"化身只能从 commit 出生, 永不从 staging"
+                )
+            return BasePointer(
+                fork=source.meta.fork,
+                branch_id=source.meta.branch_id,
+                commit_id=head.id,
+                commit_seq=head.seq,
+            )
+        for view in source.own_commits():
+            if view.id == base_commit_id:
+                return BasePointer(
+                    fork=source.meta.fork,
+                    branch_id=source.meta.branch_id,
+                    commit_id=view.id,
+                    commit_seq=view.seq,
+                )
+        # 起点落在祖先段: base 直接指向那个祖先 branch
+        for bp in source.meta.ancestry:
+            adir = self._branches_root() / bp.fork / bp.branch_id
+            for path in _commit_files(adir):
+                if int(path.stem) > bp.commit_seq:
+                    continue
+                commit, _ = _load_commit_file(path)
+                if commit.id == base_commit_id:
+                    return BasePointer(
+                        fork=bp.fork,
+                        branch_id=bp.branch_id,
+                        commit_id=commit.id,
+                        commit_seq=commit.seq,
+                    )
+        raise CommitNotFoundError(
+            f"commit {base_commit_id!r} not in history of branch {source.meta.branch_id}"
         )
 
+    # ── 浏览 ──
 
-def _find_commit_owner(
-    branches_root: Path,
-    base: BasePointer | None,
-    target_commit_id: str,
-) -> tuple[str | None, str | None]:
-    """沿 base chain 找一个 commit_id 实际归属的 (fork, branch_id)."""
-    cur = base
-    while cur is not None:
-        ancestor_own = _load_own_commits(branches_root, cur.fork, cur.branch_id)
-        if any(c.id == target_commit_id for c in ancestor_own):
-            return cur.fork, cur.branch_id
-        try:
-            meta = _read_meta(branches_root, cur.fork, cur.branch_id)
-        except BranchNotFoundError:
-            return None, None
-        cur = meta.base
-    return None, None
+    def get_branch(self, branch_id: str, *, fork: str | None = None) -> MementoBranch:
+        fork = fork if fork is not None else self._owner
+        return self._branch(fork, branch_id, readonly=fork != self._owner)
 
+    def list_branches(self, fork: str | None = None) -> list[BranchMeta]:
+        fork_dir = self._branches_root() / (fork if fork is not None else self._owner)
+        if not fork_dir.exists():
+            return []
+        return [
+            _load_meta(child)
+            for child in sorted(fork_dir.iterdir())
+            if child.is_dir() and (child / "meta.json").exists()
+        ]
 
-# ────────────────────────────────────────────────────────────────────────────
-# Factory
-# ────────────────────────────────────────────────────────────────────────────
+    def list_forks(self) -> list[str]:
+        root = self._branches_root()
+        if not root.exists():
+            return []
+        return sorted(child.name for child in root.iterdir() if child.is_dir())
+
+    def close(self) -> None:
+        self._pool.close()
 
 
 def new_filesystem_memento(
-    *,
-    branches_storage: Storage,
-    owner: str,
-    moment_store: MomentStore | None = None,
-    hooks: MementoHooks | None = None,
+    root: str | Path, owner: str, *, hooks: MementoHooks | None = None
 ) -> FsMemento:
-    """构建一个 FsMemento. moment_store 默认在 branches_storage/moments.db 自动创建."""
-    if moment_store is None:
-        moment_store = SqliteMomentStore(branches_storage.abspath() / "moments.db")
-    return FsMemento(
-        branches_storage=branches_storage,
-        owner=owner,
-        moment_store=moment_store,
-        hooks=hooks,
-    )
+    return FsMemento(root, owner, hooks=hooks)

@@ -1,9 +1,9 @@
 ---
 title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
-status: in-progress
+status: contract-frozen-pending-review
 priority: P0
 created: 2026-06-11
-updated: 2026-07-08
+updated: 2026-07-12
 depends: []
 milestone:
 description: >-
@@ -297,4 +297,78 @@ base chain 回溯、hook fan-out）仍然有效，叠加本文件新增条款。
 - 本文件 2026-07-08 由 claude-sonnet-4-6 整体重写（一场覆盖 MVP 契约、重绘层、
   承诺保全、见证层四层的长讨论后）。旧版及演进用 `git log -- <本文件>` 反查。
 - `discuss/01-l2-collision.md`、`discuss/02-existing-code-relationship.md` 保留。
-- 旧 `core/blueprint/memento.py` 注释代码暂不删（人类 review 时一次性迁移）。
+
+## 13. §XX 契约层落地（2026-07-12，claude-opus-4-7）
+
+契约层三件套完成，等人类冻结 review。落库物件：
+
+- `src/ghoshell_moss/core/memento/FORMAT.md`（§1–§11 + 不变量清单 12 条）
+- `src/ghoshell_moss/core/memento/abc.py`（信封 ABC，静态 import 仅
+  `__future__/re/abc/datetime/typing/pydantic/ulid`——契约层零 payload 依赖硬边界
+  已达成）
+- `tests/ghoshell_moss/default/core/memento/`：`test_fs_memento.py` (20) +
+  `test_golden.py` (8) + `test_porcelain.py` (6) + 保留的 `test_memento.py` (45)，
+  共 79 pass。golden 层实现了三向验证：hand-write→fs 读、fs 写→stdlib 校验字节、
+  fs 写→stdlib 独立读器视图等价。
+
+主权层附带交付（"好用留、不好用重做"的具体形态）：
+
+- `fs_memento.py` per-owner 分片 jsonl 参考实现，索引全内存重建，`.cache/`
+  空缺——契约 §7 "删缓存行为不变" 最平凡满足
+- `porcelain.py` MOSS 强类型桥：`Moment ↔ MomentRecord` codec
+  (`type = "moss.moment/v1"`)，`MementoRef` 带 `note_seq` 渲染打戳，
+  `make_merge_message` 孔径一，`window_messages` 窗口渲染
+- `witness.py` git sidecar 原语（`ensure_witness_repo/snapshot/Witness`
+  收集器），调度留给集成方——见证层永不在热路径
+- 删除 `sqlite_moment_store.py`（§3.1 已否决）
+- 裁剪 `core/blueprint/memento.py` 死注释段（原 305–532 行），保留 `Moment/Reaction`
+
+### 关键决策：Moment 是信封的第一个住户，不是房子本身
+
+人类在 §XX 开工前提了一个决策面：Moment 作为 concrete 类进契约 / 作为纯 blob /
+作为带 metadata 的信封。结论第三种。
+
+- 契约认信封 `MomentRecord{id, created, type, payload, threads, by}`，
+  payload 对 memento 不透明。
+- `abc.py` 与 `fs_memento.py` 都不 import `Moment/Message`，Moment 包剥离窗口
+  （§9 #5 / §10）由结构自带、非"留"出来的。
+- 强类型编解码从属主权层（`porcelain.py`），Moment 加字段不再回压契约。
+  这直接对齐 §12 契约层 "满注意力 review" / 实现层 "零注意力"的注意力分配。
+- §3.6 的 thread tag 在 moment 写入时标注、分页旁路 "只看 tag 不懂内容"、
+  golden 字节等价三条硬约束共同封死了这个选择——纯 blob 杀死 §3.6，
+  concrete Moment 杀死字节等价。
+
+### 落地与设计差异说明
+
+- **合并 base+ancestry 冻结**（FORMAT.md §4.1）：`BranchMeta` 同时持 `base` 和
+  `ancestry`；不变量 `ancestry[-1] == base` 且 `ancestry[:-1] == base_branch.ancestry`
+  写入 `_validate_ancestry`。装入 handle 时即校验，篡改立刻抛错。
+- **释义可变性统一为 `CommitNote` 追加行**（FORMAT.md §5.2 / abc.py 的
+  `reinterpret`）：body 是 "正文 + trailer" 完整字符串整体替换。这让改写场景可
+  自由重组 trailer（如修正错标 Thread），也让 last-wins 定序退化为文件内字节
+  偏移序，无跨字段冲突面。原设计 §3.3 只提"释义"，未细拆到字段——落地时收敛到
+  单字段（body）替换是唯一无歧义解。
+- **`Kind:` trailer 用参数强制**（`MementoBranch.commit(*, kind: CommitKind, ...)`）：
+  自由拼 body 时漏 Kind 是可预见的错误，签名硬约束消除该失败模式。
+- **`MementoRef.note_seq`**：加入渲染打戳字段，(commit_id, note_seq) 即可从
+  `branch.notes()` 复原当时视图。§3.3 的"打戳"要求在数据层被具体化。
+- **平台记忆不用**：本轮曾把两条 hint 存进 harness 的 memory；人类澄清 MOSS
+  项目对所有 harness 都要求 project-native，本地记忆意味着隐藏摩擦点。已删。
+  下一个化身撞到 `Message` 是 block 而非 message 这类历史耦合时，让它撞到，
+  别在 harness 里替它接住。
+
+### 相邻 Open Problems 状态更新（§9）
+
+- #2 化身 divergence prompt 落点：**BranchMeta.overlay 已落地**（创建后不可变，
+  不进 staging）；仍需真场景验证渲染路径。
+- #3 cache 遥测字段与时机：未动。属于集成期。
+- #5 archive 与见证层联动：未动，见证层引入未新增约束（sidecar repo 独立于
+  memento 层，archive 语义在 memento 层单独决定即可）。
+- #1 承诺保全、#4 thread tag 生成者：未动，明确留待重绘 / 集成期。
+
+集成期的边界（人类接手项）：
+1. Memento 实例的 owner 命名空间怎么与 cell address / session id 挂钩。
+2. hook 怎么接进 session/matrix 总线（当前 `NullHooks` 默认）。
+3. 见证 daemon 调度：commit 事件去抖 / 定时器 / 手动 `Witness.flush()`。
+4. 蠢记忆入口在哪个 channel 暴露——`update_moment(branch, moment)` 是当前
+   最短路径。
