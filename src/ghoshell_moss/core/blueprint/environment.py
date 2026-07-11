@@ -17,6 +17,8 @@ import stat
 
 __all__ = [
     'Environment',
+    'EnvironmentSealedError',
+    'EnvironmentNotSealedError',
     # workspace
     'DEFAULT_WORKSPACE_DIR_NAME',
     'WORKSPACE_ENV_FILENAME',
@@ -286,7 +288,7 @@ class Environment:
         self._project_dir = project_dir
         # 当前进程 id.
         self._self_pid: int = os.getpid()
-        self._bootstrapped = False
+        self._sealed = False
 
         self._mode_name = mode or os.environ.get(ENV_MOSS_MODE_KEY, self._meta.default_mode)
         # 为当前启动的实例赋予一个 uid. 通常也可以设置在 cell 上.
@@ -314,17 +316,26 @@ class Environment:
         moss_meta.write_to_directory(directory)
         return moss_meta
 
-    def bootstrap(self) -> None:
+    def seal(self) -> None:
         """
-        根据实例化的 Env, 完善进程的运行状态, 让当前进程和子进程可以分享.
+        封存 Environment: 一次性把 runtime scope 写入 os.environ (作子进程继承通道),
+        并注册为进程级单例. 之后 discover() 拿到的都是这个实例.
+
+        Environment 是进程内配置的唯一信源 — self._* 是权威, os.environ 只是 seal
+        瞬间的镜像输出, 不再回读. 二次调用 seal 视为 bug (配置定稿是一次性的),
+        抛 EnvironmentSealedError.
         """
-        if self._bootstrapped:
-            return
+        # 单例职责: seal 后进程内 discover 拿到的都是本实例, 保证 matrix / project /
+        # host 等消费者看到同一份 env, 不糊涂.
+        # os.environ 职责: fork/spawn 子进程时的继承通道, 单向写不再回读.
+        if self._sealed:
+            raise EnvironmentSealedError(
+                "Environment.seal() called twice. seal 是一次性跃迁, "
+                "配置窗口关闭后不允许再次封存."
+            )
         if not self.workspace_path.exists():
             raise EnvironmentError(f"Workspace `{self.workspace_path}` does not exist")
 
-        # 先同步当前状态到 os.environ, 再标记 bootstrapped.
-        # 标记后属性走 os.environ, 确保外部运行时修改生效.
         env_data = self.dump_runtime_scope()
         for key, value in env_data.items():
             if value:
@@ -332,49 +343,47 @@ class Environment:
 
         global _environment
         _environment = self
-        self._bootstrapped = True
+        self._sealed = True
+
+    @property
+    def is_sealed(self) -> bool:
+        return self._sealed
 
     # --- 环境发现逻辑 --- #
 
     @classmethod
-    def discover(cls) -> Self:
+    def discover(cls, *, bootstrap: bool = True) -> Self:
         """
-        从环境发现中获取进程级单例. 可以在各个模块中共享.
+        从进程发现 Environment 单例.
+
+        - 已有单例: 直接返回 (无论 bootstrap 参数).
+        - 无单例, bootstrap=True (默认): 无参构造并 seal, 全部字段从 os.environ /
+          find_workspace_path 兜底. 适合子 cell main.py 场景 (父进程已注入环境变量,
+          子进程一行 discover() 完成入网).
+        - 无单例, bootstrap=False: 抛 EnvironmentNotSealedError. 适合断言"上游必须
+          已 seal"的场景 (Host/Runtime.run 入口做前置检查, CLI 单测起步防兜底).
         """
-        # Env 对象本质上是进程级别单例.
         global _environment
-        # 返回进程级别单例.
-        # 或者根据路径发现创建单例.
         if _environment is not None:
-            # 在 workspace 中发现 runtime scope.
             return _environment
-        env = cls()
-        env.bootstrap()
-        return env
-
-    @classmethod
-    def reset(cls) -> None:
-        global _environment
-        _environment = None
-
-    @staticmethod
-    def set_instance(env: 'Environment'):
-        global _environment
-        _environment = env
+        if not bootstrap:
+            raise EnvironmentNotSealedError(
+                "Environment.discover(bootstrap=False) 被调用但进程内无已 seal 的单例. "
+                "构造路径 (CLI/Host) 必须先 Environment(...).seal(); "
+                "worker 路径 (cell main.py) 传 bootstrap=True 或直接调用 discover()."
+            )
+        cls().seal()
+        return _environment
 
     # --- 暴露属性. --- #
-    # bootstrap 前读存储属性, bootstrap 后读 os.environ — 运行时修改 env 立即生效.
+    # 单一信源: 一律读 self._*, os.environ 只在 seal 瞬间被写入, 不回读.
 
     @property
     def mode_name(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_MOSS_MODE_KEY, NONE_MOSS_MODE)
         return self._mode_name
 
     @property
     def ghost_name(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_GHOST_NAME_KEY, NONE_GHOST_NAME)
         return self._ghost_name
 
     @property
@@ -387,38 +396,26 @@ class Environment:
 
     @property
     def network_scope(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_NETWORK_SCOPE_KEY, DEFAULT_NETWORK_SCOPE)
         return self._network_scope
 
     @property
     def session_id(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_SESSION_ID_KEY, '') or self._session_id
         return self._session_id
 
     @property
     def project_id(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_PROJECT_ID_KEY, '') or self._project_id
         return self._project_id
 
     @property
     def network(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_NETWORK_KEY, DEFAULT_NETWORK_NAME)
         return self._network
 
     @property
     def this_cell_address(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_CELL_ADDRESS_KEY, '')
         return self._cell_address
 
     @property
     def parent_cell_address(self) -> str:
-        if self._bootstrapped:
-            return os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
         return self._parent_cell_address
 
     @property
@@ -553,24 +550,6 @@ class Environment:
     def log_config_file(self) -> Path:
         return self._workspace_path / 'configs' / 'logging.yml'
 
-    # --- env attributes -- #
-
-    @classmethod
-    def set_mode(cls, mode: str) -> None:
-        os.environ[ENV_MOSS_MODE_KEY] = mode
-
-    @classmethod
-    def set_network_scope(cls, scope: str) -> None:
-        os.environ[ENV_NETWORK_SCOPE_KEY] = scope
-
-    @classmethod
-    def set_session_id(cls, session_id: str) -> None:
-        os.environ[ENV_SESSION_ID_KEY] = session_id
-
-    @classmethod
-    def set_ghost_name(cls, ghost_name: str) -> None:
-        os.environ[ENV_GHOST_NAME_KEY] = ghost_name
-
     def dump_cell_env(
             self,
             *,
@@ -657,6 +636,14 @@ class Environment:
                         os.chmod(target_item, FILE_MODE)
 
         copy_recursive(stub_resources, workspace_dir)
+
+
+class EnvironmentSealedError(EnvironmentError):
+    """seal 已完成, 拒绝二次 seal 或封存后配置变更."""
+
+
+class EnvironmentNotSealedError(EnvironmentError):
+    """discover(bootstrap=False) 断言上游必须已 seal, 但进程内无单例."""
 
 
 _environment: Environment | None = None

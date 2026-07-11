@@ -1,7 +1,7 @@
 """Environment 蓝图抽象层单元测试 — 进程级环境发现与变量治理.
 
-测试 Environment 的数据模型行为、env var 序列化、路径发现逻辑。
-不测完整的 discover() 链路 (需要真实 .moss_ws 目录结构)。
+测试 Environment 的数据模型行为、env var 序列化、路径发现逻辑、seal 生命周期.
+不测完整的 discover() 链路 (需要真实 .moss_ws 目录结构).
 """
 
 import os
@@ -11,6 +11,8 @@ import pytest
 
 from ghoshell_moss.core.blueprint.environment import (
     Environment,
+    EnvironmentSealedError,
+    EnvironmentNotSealedError,
     DEFAULT_WORKSPACE_DIR_NAME,
     ENV_WORKSPACE_DIR_KEY,
     ENV_PROJECT_DIR_KEY,
@@ -26,45 +28,12 @@ from ghoshell_moss.core.blueprint.environment import (
     MossMeta,
 )
 
-# -- env vars set by bootstrap(), must be cleaned between tests --
-_BOOTSTRAP_ENV_VARS = {
-    ENV_WORKSPACE_DIR_KEY,
-    ENV_PROJECT_DIR_KEY,
-    ENV_PROJECT_ID_KEY,
-    ENV_NETWORK_KEY,
-    ENV_NETWORK_SCOPE_KEY,
-    ENV_MOSS_MODE_KEY,
-    ENV_GHOST_NAME_KEY,
-    ENV_CELL_ADDRESS_KEY,
-    ENV_PARENT_CELL_ADDRESS_KEY,
-}
-
 
 @pytest.fixture(autouse=True)
 def _reset_env_singleton():
-    """每个测试前后清理 bootstrap() 的全局副作用.
-
-    bootstrap() 会:
-    1. 设模块级 _environment 单例
-    2. 写 os.environ (MOSS_WORKSPACE / MOSS_MODE_NAME 等)
-
-    此 fixture 确保测试间完全隔离.
-    """
+    """每个测试前后清理 seal 的全局副作用 (单例 + os.environ 快照)."""
     with Environment.fixture():
         yield
-    # import sys
-    # # -- 测试前清理 --
-    # for k in _BOOTSTRAP_ENV_VARS:
-    #     os.environ.pop(k, None)
-    # module = sys.modules['ghoshell_moss.core.blueprint.environment']
-    # module._environment = None
-    #
-    # yield
-    #
-    # # -- 测试后清理 --
-    # for k in _BOOTSTRAP_ENV_VARS:
-    #     os.environ.pop(k, None)
-    # module._environment = None
 
 
 # ==================================================================
@@ -221,36 +190,61 @@ class TestEnvironmentSessionId:
 
 
 # ==================================================================
-# Environment — bootstrap
+# Environment — seal
 # ==================================================================
 
-class TestEnvironmentBootstrap:
-    def test_bootstrap_sets_global_env_vars(self, tmp_path):
+class TestEnvironmentSeal:
+    def test_seal_writes_os_environ_snapshot(self, tmp_path):
+        """seal 一次性把 runtime scope 写入 os.environ (子进程继承通道)."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws, mode='test-mode', network='my-net')
-        env.bootstrap()
+        env.seal()
         assert os.environ[ENV_WORKSPACE_DIR_KEY] == str(ws)
         assert os.environ[ENV_MOSS_MODE_KEY] == 'test-mode'
         assert os.environ[ENV_NETWORK_KEY] == 'my-net'
         assert os.environ[ENV_PROJECT_ID_KEY] == env.project_id
 
-    def test_bootstrap_idempotent(self, tmp_path):
+    def test_seal_twice_raises(self, tmp_path):
+        """seal 是一次性跃迁, 二次调用抛 EnvironmentSealedError."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws, mode='m1')
-        env.bootstrap()
-        pid1 = os.environ[ENV_PROJECT_ID_KEY]
-        env.bootstrap()
-        assert os.environ[ENV_PROJECT_ID_KEY] == pid1
+        env.seal()
+        with pytest.raises(EnvironmentSealedError):
+            env.seal()
 
-    def test_bootstrap_sets_global_singleton(self, tmp_path):
+    def test_seal_registers_singleton(self, tmp_path):
+        """seal 后 discover 返回同一实例."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws)
-        env.bootstrap()
+        env.seal()
         discovered = Environment.discover()
         assert discovered is env
+
+    def test_is_sealed_flag(self, tmp_path):
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        env = Environment(workspace=ws)
+        assert env.is_sealed is False
+        env.seal()
+        assert env.is_sealed is True
+
+    def test_getter_reads_self_not_os_environ(self, tmp_path, monkeypatch):
+        """seal 后 getter 一律回读 self._*, 不受 os.environ 后续变更影响.
+
+        Environment 是权威信源, os.environ 只是 seal 瞬间的镜像输出.
+        """
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        env = Environment(workspace=ws, mode='original', ghost='echo-orig')
+        env.seal()
+        # 恶意外部改动 os.environ 不应干扰 env 的信源身份
+        monkeypatch.setenv(ENV_MOSS_MODE_KEY, 'hacked')
+        monkeypatch.setenv(ENV_GHOST_NAME_KEY, 'hacked')
+        assert env.mode_name == 'original'
+        assert env.ghost_name == 'echo-orig'
 
 
 # ==================================================================
@@ -389,50 +383,50 @@ class TestFindWorkspacePath:
 
 
 # ==================================================================
-# Environment — set_* classmethods
-# ==================================================================
-
-class TestEnvironmentSetters:
-    def test_set_mode(self, monkeypatch):
-        Environment.set_mode('desktop')
-        assert os.environ[ENV_MOSS_MODE_KEY] == 'desktop'
-
-    def test_set_network_scope(self, monkeypatch):
-        Environment.set_network_scope('swarm-1')
-        assert os.environ[ENV_NETWORK_SCOPE_KEY] == 'swarm-1'
-
-    def test_set_session_id(self, monkeypatch):
-        Environment.set_session_id('sid-test')
-        assert os.environ[ENV_SESSION_ID_KEY] == 'sid-test'
-
-    def test_set_ghost_name(self, monkeypatch):
-        Environment.set_ghost_name('echo')
-        assert os.environ[ENV_GHOST_NAME_KEY] == 'echo'
-
-
-# ==================================================================
-# Environment — discover (singleton)
+# Environment — discover (singleton + bootstrap flag)
 # ==================================================================
 
 class TestEnvironmentDiscover:
-    def test_discover_returns_same_instance_after_bootstrap(self, tmp_path):
+    def test_discover_returns_same_instance_after_seal(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws)
-        env.bootstrap()
+        env.seal()
         d1 = Environment.discover()
         d2 = Environment.discover()
         assert d1 is d2
         assert d1 is env
 
-    def test_discover_auto_creates_when_no_singleton(self, tmp_path, monkeypatch):
-        """discover() 无已 bootstrapped 实例时自动创建."""
+    def test_discover_default_bootstraps_when_no_singleton(self, tmp_path, monkeypatch):
+        """discover() 默认 bootstrap=True: 无单例时自动 Environment().seal() 兜底.
+
+        子 cell main.py 场景: 父进程注入 os.environ, 子进程一行 discover() 完成入网.
+        """
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         monkeypatch.chdir(tmp_path)
-        # 没有显式调用 bootstrap — discover 内部调用 cls() + bootstrap
         env = Environment.discover()
         assert env.workspace_path == ws
+        assert env.is_sealed is True
+
+    def test_discover_bootstrap_false_raises_when_no_singleton(self, tmp_path, monkeypatch):
+        """discover(bootstrap=False) 断言上游必须已 seal, 无单例时抛异常.
+
+        Host/Runtime.run 入口做前置检查 / CLI 单测起步防兜底, 都走这条路径.
+        """
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(EnvironmentNotSealedError):
+            Environment.discover(bootstrap=False)
+
+    def test_discover_bootstrap_false_returns_singleton_when_sealed(self, tmp_path):
+        """discover(bootstrap=False) 有单例时正常返回, 不管 flag."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        env = Environment(workspace=ws)
+        env.seal()
+        assert Environment.discover(bootstrap=False) is env
 
 
 # ==================================================================
@@ -489,7 +483,7 @@ class TestMossMetaDefaults:
         env = Environment(workspace=ws)
         assert env.mode_name == 'none'
         assert env.ghost_name == 'none'
-        assert env.network == 'default'
+        assert env.network == 'local'
         assert env.network_scope == 'default'
 
 

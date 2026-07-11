@@ -34,7 +34,7 @@ class MossRuntimeImpl(MossRuntime):
             name: str | None = None,
             description: str | None = None,
     ):
-        env.bootstrap()
+        env.seal()
         self._env = env
         self._name = name or env.moss_meta.name
         # 主节点自解释发现逻辑, 手动定义优先, 其次是模式定义, 其次是环境定义.

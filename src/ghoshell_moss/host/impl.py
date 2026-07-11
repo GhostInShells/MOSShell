@@ -10,7 +10,7 @@ from ghoshell_moss.core.codex.discover import ScanError, ModuleManifest
 from ghoshell_moss.contracts.workspace import LocalWorkspace
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.cell import (
-    Cell as MossCell, CellManifest, CellRegistry, CellMetadata, CellType,
+    Cell as MossCell, CellManifest, CellRegistry, CellMetadata,
     CellLauncher
 )
 # from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
@@ -46,7 +46,7 @@ class Host(MossHost):
         # if session_scope is not None:
         #     self._env.set_session_scope(session_scope)
 
-        self._env.bootstrap()
+        self._env.seal()
         self._workspace = LocalWorkspace(self.env.workspace_path)
         if not self._workspace.root_path().exists():
             raise RuntimeError()

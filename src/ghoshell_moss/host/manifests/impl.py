@@ -61,7 +61,7 @@ class PackageManifests(Manifests):
         找到环境下的声明资源.
         """
         env = env or Environment.discover()
-        env.bootstrap()
+        env.seal()
         ctml_versions = cls.find_ctml_versions_from_env(env=env)
         return cls(ENVIRONMENT_MANIFESTS_ROOT_PACKAGE, ctml_versions=ctml_versions,
                    strict=strict, errors=errors)

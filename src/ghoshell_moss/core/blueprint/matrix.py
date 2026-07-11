@@ -56,7 +56,7 @@ class Matrix(ABC):
         from ghoshell_moss.factory import create_matrix, create_project
         env = env or Environment.discover()
         # 初始化 env
-        env.bootstrap()
+        env.seal()
         project = create_project(env)
         # 初始化 project.
         project.bootstrap()

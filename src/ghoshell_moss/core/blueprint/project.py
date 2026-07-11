@@ -540,7 +540,7 @@ class Project(ABC):
         from ghoshell_moss.factory import create_project
         env = env or Environment.discover()
         # 确认 env 启动.
-        env.bootstrap()
+        env.seal()
         project = create_project(env)
         # project 设置成单例.
         project.bootstrap()

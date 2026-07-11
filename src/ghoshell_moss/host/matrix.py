@@ -22,7 +22,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject
 # from ghoshell_moss.core.blueprint.host import Mode
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.host import MossSystemPrompter
-from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellType, CellNetwork, Cell
+from ghoshell_moss.core.blueprint.cell import Cell as MossCell, CellNetwork
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.host.providers import (
@@ -62,7 +62,7 @@ class MatrixImpl(Matrix):
             manifest: Manifests,
             logger: LoggerItf | logging.Logger | None = None,
     ):
-        env.bootstrap()
+        env.seal()
         self._env = env
         self._ctml_version_cache: dict[str, str] = {}
         # self._current_mode: Mode = mode
