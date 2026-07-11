@@ -1,415 +1,306 @@
 ---
-title: Ghost Filesystem Desktop — Ghost 的文件系统工作桌面
+title: Ghost Filesystem Desktop — Ghost 的认知桌面
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-06-29
+updated: 2026-07-12
 renamed_from: Project Manager
 depends:
-  - matrix-cell-governance
-  - interactive-shell-channel
   - momento-mori
 milestone: 0.1.0
 description: >-
-  Desktop 是 Ghost 在 4 剪影拓扑里的空间脏器/未来剪影 — 配合 Memento (过去)、
-  Matrix runtime (当下)、Git worktree (结构版本) 共同构成 Ghost 反身性基建。
-  12+1 原语三层 (发现/读写/执行) + 两条元规则 (read-before-write + 输出截断)。
-  Desktop 是 OS 层抽象, 不耦合特定 ghost; 通过 ReadHistory protocol 与 Memento
-  对接, 通过 ReflectionHint 在高影响路径写入时建议 commit 锚点。
+  Desktop 是 Ghost 的认知桌子 — context_messages 上可 pin 的表面 + 场 (目录)
+  的开合管理. 以 frontmatter+body 的 L0 文件为载体; frontmatter 是运行时生命
+  周期的合法发明域, body 永远开放集. 三层落地按预训练迁移量排序: CTML channel
+  (主), bash CLI, module_eval (小概率). 与 subprocesses/job_supervisor (执行),
+  Memento (过去) 共构反身性基建.
 status_note: >-
-  2026-06-29 Claude Opus 4.7 Stage 1 完成: 12+1 原语 L0 独立闭环跑通.
-  contracts/desktop.py (ABC + ReadHistory protocol + ReflectionHint),
-  core/desktop/{desktop.py, models.py} (DefaultDesktop + InProcessReadHistory),
-  tests/ghoshell_moss/core/desktop/test_desktop.py 53 个单测全绿.
-  旧 contracts/project_manager.py 已删除 (无外部引用, 设计被 Desktop 完全覆盖).
-  Stage 2/3 待启动. 详见正文 Stage 1 完成记录.
+  2026-07-12 Claude (Opus 4.7 接续 Sonnet 4.6/Fable 5). Desktop 经两轮拆分
+  收敛 (07-11 认知场, 07-12 channel 落点 + 分形场). 核心结论:
+  (K14) 落 channel — 父 desktop channel + 每场 command-less virtual channel;
+        context_messages 就是"桌子" (帧尺度 O(1) 覆写表面).
+  (K15) 分形 L 体系 — L-1 (领域数据 CLAUDE.md/MOSS.md) / L0 (frontmatter 加载
+        约定 + body 承载法/胶囊 + pin 簿) / L1 (L0 模板) / L2 (模板库场). L2
+        由 L0 加载, 无限分形. frontmatter/body 边界就是机器/模型边界. features
+        体系 (自 2026-05 起运行) 是本设计的实物证明.
+  (K16) 双寄存器词汇 — 理论词汇 (认知场, 法/形/焦, 文体) 只住文档; 表面动词
+        (open/close/pin/unpin/update, path:80-140, "changed on disk") 全部骑
+        预训练先验.
+  (K17) 桌子即工作记忆 — 不与世界自动同步. 变更 hash 对账标记 stale, 显式
+        update 推进认知. 原生 drain 协议独立立项.
+  (K18) 3 层抽象纪律 — contracts (ABC) → core (concrete) → channels (手写装配).
+        不做过早规则糖.
+  Stage 1 (2026-06-29) 实现的 12+1 原语代码是资产, 但形状按新收敛重绘 —
+  exec/exec_bg/Task 已迁至 subprocesses/job_supervisor; 认知面 (open/pin/update)
+  的 API 按 K14/K17 重写. 详见 "K1~K13 状态标注" 与两份 2026-07 discuss.
   --
-  2026-06-28 Claude Opus 4.7 L2 收敛 (基于早前 deepseek-v4-pro 设计稿):
-  (1) 加入 4 剪影拓扑视角 — Desktop 是未来剪影, 与 Memento/Matrix/Git 完备性对齐.
-  (2) 17 原语 → 12+1 — head 删除 (bypass read-before-write), exec_bg 收成 exec(_bg=True),
-      read_task/cancel 收进 tasks() 返回结构, frontmatter 列为可选.
-  (3) _pin 语义校正 — pin 必须进 moss_dynamic, 落 cache breakpoint 之后, 加 LRU 预算.
-  (4) _read_set → ReadHistory protocol 注入 — Phase 4 由 Memento branch state 后置.
-  (5) tmp 目录改构造参数 — 为 Phase 4 接 Memento storage 留窗口.
-  (6) 反思机制升级 — 高影响路径写入返回 ReflectionHint(diff, recommend_commit).
-  (7) 对称 fork 概念 — Phase 6 反身性要求 memento branch + desktop worktree 同步 fork.
-  (8) Ghost/OS 分层纪律 — Desktop 完全在 OS 层, 不为特定 ghost 妥协.
-  (9) 6-Phase 切分 — Phase 1 (L0 独立闭环) 可在 matrix 重构同期穿插推进.
+  2026-06-29 Claude Opus 4.7 Stage 1 完成 (原捆绑设计): 12+1 原语 L0 独立闭环,
+  contracts/desktop.py + core/desktop/{desktop.py, models.py} + 53 单测.
+  留下代码资产与形状教训, 为 07 月重绘提供起点.
+  --
+  2026-06-28 Claude Opus 4.7 L2 收敛稿 (基于早前 deepseek-v4-pro 设计, 部分被
+  07 月重绘超越): 4 剪影拓扑 (桌面=未来剪影, 隐喻仍成立) / 17→12+1 原语 (捆绑
+  被拆) / ReflectionHint 机制 (被 07-12 重估: 场不做全链路守卫) / 6-Phase 切分
+  (Phase 1 仅存, 后续按新形状重排).
 ---
 
-# Desktop — Ghost 的文件系统工作桌面
+# Desktop — Ghost 的认知桌面
+
+## 2026-07 重绘方向
+
+Desktop 的定位从 "12+1 原语的文件工具集" 收敛为 "认知桌子 + 场开合":
+
+- **桌子** = 父 channel 的 context 表面. moss_dynamic 每帧重绘, compact 打不到,
+  是唯一同时满足 "O(1) 可覆写" 和 "不入对话历史故 compact 免疫" 的介质.
+- **贴纸** = pin. 只收地址 (`path` / `**/*.md` / `path:80-140`), 不收命令.
+  每帧重读, mtime + 区间内容 hash 对账.
+- **场** = 打开的目录. 每场作为 command-less virtual channel 挂到父 desktop 上;
+  `instruction` = 法链 (向上收集的 CLAUDE.md/AGENTS.md), `context_messages` =
+  帧渲染 (形/焦/贴纸内容 + 变更标记), `startup`/`close` = load/sediment.
+- **L0** = 场的 `frontmatter + body`. frontmatter = 加载时消费的 GroundConvention
+  (法名列表 / 向上边界 / 树深度 / 桌面预算等); body = 文体内容 (法 / 胶囊 /
+  先例). MOSS 只发明 frontmatter, body 永远开放集.
+
+**三层落地** (按预训练迁移量排序):
+
+1. **CTML channel** — 主适配. XML 风格有部分预训练, 是模型直接消费的层.
+2. **bash CLI** — 让 Claude Code / bash 层也能读同一份 L0 文件 (自然语言迁移
+   最足, 现在就在跑, 只是没有形式化).
+3. **module_eval** — 小概率路径. bespoke Python API 无预训练, 只作调试.
+
+**自举验收**: 下一个模型实例能通过 desktop 桌面 (open 本 feature 目录 + pin 住
+FEATURE.md 与 2026-07 两份 discuss) 重建对本设计的认知, 而不靠人类手工指路.
+
+**详细讨论轨迹** (优先读):
+
+- `src/ghoshell_moss/contracts/.discuss/2026-07-12_desktop_channel_landing_and_fractal_grounds.md`
+  — channel 落点, 分形 L 体系, features 迭代史打磨定律, 双寄存器判据
+- `src/ghoshell_moss/contracts/.discuss/2026-07-11_cognitive_field_from_desktop_to_model_built_grounds.md`
+  — 拆捆绑, 认知场概念, 收敛形状
 
 ## Motivation
 
-当前 Ghost 在 MOSS 运行时中没有"自己的领地"。
+Ghost 需要在文件系统上有 "自己的工作面":
 
-- 文件操作分散在 notebook_channel、terminal_channel、shell_channel 三个 channel 中
-- 没有统一的目录作用域概念 — 每次 bash.exec 都要指定路径
-- 模型上下文没有可控的认知结构 — 系统推什么就看什么，无法自主构建注意力
-- 行业方案 (CLAUDE.md, MEMORY.md, rules, skills) 是碎片化的子系统
+- 模型 context 没有可控的注意力结构 — 系统推什么就看什么, compact 之后关键
+  信息丢失, 无法自主构建工作记忆
+- 行业方案 (CLAUDE.md, MEMORY.md, rules, skills) 是 **静态** 的 — 没人定义
+  "进入一个目录在运行时意味着什么", 也没人做 **场所局部** (place-local) 的
+  认知加 enter/exit 生命周期
+- MOSS 自己的 features / .discuss / .design 三级验证体系有相同的结构但没有
+  运行时载体 — 每次会话都要靠模型记得去 `features list` 才存在
 
-Desktop 把它们统一为 Ghost 在文件系统上的**工作桌面** — 发现、读写、执行三类原语 +
-两条元规则。模型通过组合这些原语自己构建对项目的认知。
-
-与行业方案的本质差异：没有硬编码"什么文件有认知价值"。`frontmatter()` 是提取原语，
-不是约定。约定由使用方 (Ghost 的 system prompt / mode 的 HOST.md) 自己下。
+Desktop 把这些统一为 **运行时的可 pin 的 context 表面 + 场的开合**. frontmatter
+是唯一的机器边界; body 永远开放; 什么文件 "有认知价值" 由场里的 L0 文件自己
+声明. 与静态方案的本质差异: **场是活的** — 每帧重绘, 变更标记, pin 是第一人称
+动作而非系统自动规则.
 
 ## Design Index
 
-- **L2 收敛 (2026-06-28)**: `.design/2026-06-28_desktop_in_4d_cross_section.md`
-  — 4 剪影拓扑、完备性判据、接口契约、Phase 切分、acceptance 边界
-- **L2 涌现轨迹**: `.discuss/2026-06-28_desktop_l2_emergence.md` — 物理 vs 化学
-  方法论、L2 协作的真实坐标、OS 命题的浮现过程
-- 配对基建: `momento-mori` FEATURE.md — Memento 是过去剪影, 与 Desktop 共构反身性基建
-- 原设计: `src/ghoshell_moss/contracts/project_manager.py` — 旧 ProjectManager ABC (待废弃)
-- ProcessManager: `src/ghoshell_moss/contracts/process_manager.py` + `core/process_manager/_impl.py`
-- Channel 构建: `moss codex blueprint channel_builder`
-- CTML 模型视角: `src/ghoshell_moss/core/ctml/prompts/v1_0_0.zh.md`
-- 相关讨论: `matrix-cell-governance` FEATURE.md — Matrix 重构中 ProcessManager 入 Matrix
-
-## 迭代方法论 — 模型自迭代的三阶递进
-
-Desktop 的开发本身遵循 MOSS 的 channel 构建梯度 (channels/CLAUDE.md §4):
-**L0 纯模块 → L1 module_eval (MCP 试用) → L2 正式 channel (moss-as-mcp 自迭代)**。
-每个阶段使用不同的自迭代机制, 模型在自己的迭代窗口里完成 interface 设计、实现、
-loop 调整、验证。
-
-### Stage 1 — L2 对齐后的模型重建 (当前阶段)
-
-**范围严格控制**: 只动两个路径, 不扩展任何外部体系。
-
-- `src/ghoshell_moss/core/blueprint/desktop.py` — Desktop ABC + ReadHistory protocol
-- `src/ghoshell_moss/core/desktop/` — 实现 (desktop.py, models.py, 内部 helpers)
-- `tests/ghoshell_moss/core/desktop/` — 单测
-
-**不动**: project.py / Matrix / channels/ / atom / contracts/project_manager.py
-(旧 ABC 暂留, 由人类工程师后续 IDE 整体回迁)。
-
-**自迭代闭环**:
-
-```
-1. 读 .design/2026-06-28_desktop_in_4d_cross_section.md 锚定 L2 契约
-2. 设计 ABC (interface) → 写 blueprint/desktop.py
-3. 实现 (concrete) → 写 core/desktop/desktop.py + models.py
-4. 写单测 → 跑 → 失败/通过
-5. 单测发现 interface 形状不顺手 → 回 step 2 修 ABC → 重走
-6. 走完 acceptance 边界 → Stage 1 结束
-```
-
-**Acceptance 边界** (来自 .design §10):
-- 12 原语 (+frontmatter 可选) 的契约用 ABC 表达
-- ReadHistory protocol + 进程内缺省实现
-- read-before-write 守卫在 write/edit 上正确触发
-- 统一输出截断 + tmp_path 路径不重复截断
-- 反思路径白名单触发 ReflectionHint
-- Pin 注册、查询、移除、LRU 淘汰
-- ProcessManager 注入 vs 裸 subprocess 两条路径行为等价 (cwd 一致)
-- 全部覆盖单测, read-before-write / 截断 / pin LRU / reflection 边界各有专门单测
-
-**模型纪律** (L2 漂移防御):
-- interface 改一次, 实现和单测同步改一次 — 不允许 interface 改了实现没跟
-- 任何"再加一层 abstraction / 再加一个参数 / 再加一个 hint"的提议都视为漂移信号,
-  停下来问"能不能反过来收紧而不是扩展"
-- 实现里不出现对 Matrix / Memento / Session 的任何 import
-- ReflectionHint / ReadHistory 这类对外接口不预设具体下游 (反推: 任何对它们的
-  实现应该可以在不动 desktop 源码的前提下提供)
-
-### Stage 2 — Eval Channel 试用 (Stage 1 acceptance 后)
-
-把 `core/desktop/desktop.py` 包装成 `module_eval` channel 形态, 让开发者模型
-通过 MCP 直接 exec 它, 在使用中暴露形状问题。
-
-**机制**: 类比 .moss_ws/apps/browsers/playwright/main.py 的形态——
-desktop 源码作为 instruction (Code as Prompt), 模型在持久化 namespace 里
-exec `desktop.tree(...)` / `desktop.read(...)` / `desktop.write(...)`, 立刻看到
-返回值, 别扭就改 desktop 源码再 exec。
-
-**产出**: 不是新功能, 是 Stage 1 接口的形状校验。Stage 2 结束时, desktop
-的 interface 应该没有任何"用起来别扭但能凑合"的点——所有这些点要么修了,
-要么明确记录到本 FEATURE.md 的"已知不便"段, 等 Stage 3 解决。
-
-**不进 channels/**: Stage 2 的 module_eval 包装是一次性试用工具, 不沉淀。
-
-### Stage 3 — 正式 Channel + moss-as-mcp 自迭代
-
-实现 `src/ghoshell_moss/channels/desktop_channel.py` 作为正式 channeltype,
-进入 channels/ CLAUDE.md 的 status=alpha → beta → active 流转。
-
-**机制**: 启动 moss-as-mcp, 模型一边定义 app/cell 使用 desktop channel,
-一边体验它, 一边修改 channel 实现。这是 MOSS 自身宣称的"模型 native 开发
-模式"在 desktop 本身上的应用。
-
-**自迭代闭环**:
-
-```
-1. 写 desktop_channel.py (基于 Stage 2 校准过的 core/desktop)
-2. 启动 moss-as-mcp, 模型连入
-3. 模型定义一个 small app/cell 使用 desktop channel (例如: 项目认知探针 / 
-   日记生成器 / 文件结构总结)
-4. 跑, 体验
-5. 发现 channel 层 (pin 注入位置、moss_dynamic 刷新时机、ReflectionHint
-   路由、ReadHistory 接 Memento) 不对劲 → 改 channel 实现 → 重跑
-6. 走完 channels/CLAUDE.md §7 的测试模式 → 进入 status=beta
-```
-
-**acceptance**:
-- pin 输出正确落在 moss_dynamic 的 staging 段 (cache breakpoint 后)
-- ReflectionHint 正确路由为 memento commit 建议
-- ReadHistory 切到 Memento branch state 后端 (需 Memento Phase 4)
-- 完成 Memento ↔ Desktop 的接口契约联调 (见 .design §6 对称 fork 不在此阶段)
-
-**与正式集成的关系**: Stage 3 完成后, `project.desktop(root=...)` 工厂 +
-default mode 的 desktop channel 注入可以由人类工程师拍板, 模型不主动推进
-这一步——OS / Ghost 分层纪律要求 Desktop 进入哪些 mode 是 Ghost 层决策。
-
-### 阶段间的产物归档纪律
-
-- Stage 1 结束: 更新本 FEATURE.md status_note 标记 "Stage 1 complete",
-  列出 acceptance 通过情况和发现的 L2 偏差 (若有)
-- Stage 2 结束: 在本 FEATURE.md 增加 "Stage 2 校准记录" 段, 列出修了什么、
-  保留了什么、为什么
-- Stage 3 结束: channel 进入 channels/CLAUDE.md 索引, status=alpha,
-  本 FEATURE.md set-status completed, .design 文件按需补充 channel-layer
-  契约更新
-
-### 模型协作的 ground rule
-
-- 任何阶段, 模型每完成一个 acceptance 子项, 立即更新 FEATURE.md
-  (不批量, 不延后) — 滚动可恢复
-- 阶段中若发现 L2 偏差 (.design 文件结论需要修正), **先停下来更新 .design,
-  再继续实现** — 不允许实现绕过设计
-- 模型自感漂移时 (开始加机制而非收紧), 主动停下来 ground 回 .design 文件,
-  不寻求人类工程师确认
+- **2026-07 重绘讨论** (最新):
+  - `.discuss/2026-07-12_desktop_channel_landing_and_fractal_grounds.md`
+  - `.discuss/2026-07-11_cognitive_field_from_desktop_to_model_built_grounds.md`
+- **配对基建**:
+  - `momento-mori` (Memento) — 胶囊 (promote 后的 pin) 落永久记忆; drain 联合
+    设计方
+  - `subprocesses` / `job_supervisor` — 从旧 Desktop 拆出的执行域 (审计线外侧)
+- **channel 抽象参考**:
+  - `moss codex blueprint channel_builder` — Channel as Context Component,
+    instruction / context_messages / refresh_meta 生命周期
+  - `moss codex blueprint states_channel` — `MutableChannelState.add_virtual_channel`
+    docstring: "wrap this method into a command" — Desktop 的原生解
+  - `src/ghoshell_moss/channels/module_eval_channel.py` — abc → concrete →
+    channel 三层装配的标杆参照
+- **CTML 视角**: `src/ghoshell_moss/core/ctml/prompts/v1_0_0.zh.md`
+- **historical 设计** (供反向查询, 部分被 07 月重绘超越):
+  - `.design/2026-06-28_desktop_in_4d_cross_section.md` — 4 剪影拓扑 + 12+1 原语
+    L2 稿 (Stage 1 实现的依据; 隐喻仍成立, 12+1 捆绑不成立)
+  - `.discuss/2026-06-28_desktop_l2_emergence.md` — L2 涌现方法论
 
 ## Key Decisions
 
-### 1. 定位: Project 级公共 API，不进 Matrix
+### 2026-07 重绘
 
-Desktop 是 `project.desktop(root=...)` 构造的。不放 Matrix 上:
+**K14. 落 channel: 父 desktop + 每场 virtual channel** — Desktop 是父
+PrimeChannel, 持有 `open` / `close` / `pin` / `unpin` / `update` 动词.
+每个打开的场作为 command-less virtual channel 挂到父 desktop 上:
+- `instruction` 闭包 → 法链 (向上收集的 CLAUDE.md/AGENTS.md, 到 boundary 为止)
+- `context_messages` 闭包 → 帧渲染 (形/焦/贴纸内容 + `changed on disk` 标记)
+- `startup` → load (读状态文件重贴)
+- `close` → sediment (贴纸簿落盘)
 
-- Matrix = 通讯基础设施 (cells, session, network, IoC)
-- Desktop = 文件系统工作表面
-- Desktop 依赖 ProcessManager (集成在 Matrix) 做命令执行，但依赖不等于归属
+拒绝的方案 (07-12 discuss "结构三选一"): (a) 单 channel 内自治多目录 (God-model
+方向, 最近刚在解散); (b) 每场一个带命令集的真子 channel (pin 是纯 context 操作,
+不该有 FIFO 轨道; 且命令集重复).
 
-```
-Matrix
-  ├── session, network, cells, IoC
-  ├── spawn() — ProcessManager 驱动的子进程管理
-  └── project → project.desktop(root=path)
-```
+**不关门**: virtual channel 本质是 Channel, 将来某场需要文体专属动词时可挂
+带命令的 virtual channel, 按需付费.
 
-### 2. 构造: 以任意目录为 root
+**K15. 分形 L 体系 — frontmatter 是唯一 schema 边界** — 层级:
+- **L-1** = 领域数据文件 (CLAUDE.md, MOSS.md, CELL.md 等; 现阶段被 bash 直接
+  读, 无运行时生命周期)
+- **L0** = 场的 `frontmatter + body`. frontmatter = 加载时消费的
+  GroundConvention; body = 文体内容 (法/胶囊/先例)
+- **L1** = L0 的模板 (类型), 如 `.ai_partners/features/TEMPLATE.md`
+- **L2** = 装 L1 模板的目录, 而 L2 目录本身也是一个 L0 加载后能读到的场
 
-Desktop 不关心目录的"身份" — 可以是 project root、ghost home、mode home:
+**加载路径封闭 / 创造路径开放**: 加载只需读 frontmatter+body, 机制唯一, 不需要
+模板参与; 创造 (从 L1 拷模板给新场) 是开放动作. 故分形无递归基问题.
 
-```python
-class Project(ABC):
-    def desktop(self, root: Path | None = None) -> Desktop:
-        """创建 Ghost 在文件系统上的工作桌面。root 默认 project.root。"""
-```
+**frontmatter 不是 schema 病复发**: frontmatter 只放运行时生命周期 (MOSS 唯一
+合法发明域), body 永远开放集. 物理分界线即机器/模型分界线. 24 年 dev_ctx 死因
+是把 body 的事写进了 schema; 本设计里 schema 只覆盖生命周期, 一寸不多.
 
-### 3. 命令集 — 17 个原语三层
+**实物证明**: `moss features` 体系自 2026-05 起自发运行至今, 就是 "围绕一个
+L1 模板做的客制化 CLI". 本设计是给自发实践追认理论再泛化. features 体系应是
+desktop 落地后第一个被 open 的场类型.
 
-```
-发现层 (Glob / Grep / Tree)
-────────────────────────────────────
-glob(pattern: str, *, _pin: bool = False) -> list[str]
-  """匹配文件路径。返回相对于 root 的路径列表。"""
+**丰化梯度** (构造性的向下兼容):
+- 裸目录 (缺省约定即可 open) → +CLAUDE.md (法链自动收集) → +L0 文件 (场有了
+  进入方式和沉淀) → 从 L1 模板实例化 (场有了文体)
+- Claude Code 的静态约定 = 只有 L-1、文体硬编码为一种、无生命周期无 pin 的
+  退化情形; skills = 有 L1 但全局无场所绑定的退化情形; 当年 ProjectManager
+  四库 = 四个 L1 模板被误写成四套接口
 
-grep(pattern: str, *, path: str = ".", _pin: bool = False) -> list[Match]
-  """搜索文件内容。返回 {file, line, text}。支持正则。"""
+**警戒线**: 模板替换语言保持 `$VAR` 级钝; 表达力来自 "给模型看的先例" 而非
+渲染引擎 (拒绝 Jinja/条件块 — 那是 schema 病换装归来).
 
-tree(depth: int = 2, *, path: str = ".", _pin: bool = False) -> DirectoryTree
-  """目录结构。子项标注类型 (file/dir/symlink)。"""
+**K16. 双寄存器词汇 — 表面骑先验, 理论住文档** — 判据: 表面上的每个名词/动词
+/语法必须命中一个预训练先验; 理论词汇一律不上表面.
 
-cd(path: str) -> str
-  """切换工作目录。返回绝对路径。限制在 root 子树内。"""
+**理论层** (只住 .design/.discuss/FEATURE.md, 模型永远不在 channel 表面看到):
+认知场, 法/形/焦, 文体, 胶囊/目光, L-1~L2, 分形.
 
-pwd() -> str
-  """当前工作目录的绝对路径。"""
+**表面层** (moss_static / 命令签名 / instruction):
 
-读取层 (Read / Head / Frontmatter)
-────────────────────────────────────
-read(path: str, *, offset: int = 0, limit: int = 200, _pin: bool = False) -> str
-  """读文件内容。超 threshold 自动截断 + tmp。返回带行号文本或 {content, truncated, tmp_path}。"""
+| 表面词 | 骑的先验 |
+|--------|----------|
+| channel 名 `desktop` | OS 桌面 = 摆放工作集; feature 名 ghost-filesystem-desktop 不用改, 死掉的是原语捆绑不是桌面隐喻 |
+| `open` / `close` | 标签页/文档先验, 支持多开; **不用 enter/exit** (后者暗示"身在其一", 与 N 场并开的事实相悖) |
+| `pin` / `unpin` | 置顶消息, pinned tabs |
+| addr `path` / `path:80-140` / `**/*.py` | 编译器报错 / grep -n / GitHub 行号链接 / glob (三重预训练) |
+| `update(addr)` | "bring to current" |
+| 变更标记 `"changed on disk"` | VSCode/vim 对话框原话 |
+| `frontmatter` | Jekyll / Hugo / SKILL.md / 我们自己的 FEATURE.md |
 
-head(path: str, *, lines: int = 20) -> str
-  """文件前 N 行 — 快速扫描，不触发截断逻辑。"""
+**验收**: 未参与讨论的新实例仅凭 moss_static 零解释正确使用 (pin 一个行区间,
+处理一次 `changed on disk`, update 后继续).
 
-frontmatter(path: str, *keys: str) -> dict | None
-  """提取 markdown 文件的 YAML frontmatter。keys 过滤字段。无 frontmatter 返回 None。"""
+**K17. 桌子即工作记忆, 不与世界自动同步** — pin 钉的是地址不是快照, 但表面
+**不自动同步** — 文件变更以 `changed on disk` 标记为 stale, 靠显式 `update(addr)`
+推进认知. update 通过 command `<result>` 机制自然入对话历史 (无需新协议).
 
-写入层 (Write / Edit)
-────────────────────────────────────
-write(path: str, content: str) -> None
-  """创建或覆盖文件。必须本 session 内先 read 过目标文件。"""
+**语义修正**: 07-11 收敛时曾说 "桌上的永远比世界新" — 更准确的语义是
+"桌上的永远是模型上次承认的世界" (工作记忆而非世界窗口). 桌面在任务中途不会
+在模型脚下滑动, 变更只在被承认时进入认知.
 
-edit(path: str, old: str, new: str) -> int
-  """替换文件中的字符串。必须本 session 内先 read 过。old 必须精确匹配一次。返回替换行号。"""
+**对账粒度**:
+- **mtime 触发**: 变化时进入待检查
+- **区间内容 hash 判定真伪变更**: 文件变了但 pin 住的区间没变, 不打扰模型
+- **行区间 v1 必做**: `path:80-140` 语法一阶段实现 (人类工程师: "实际上我在
+  很多地方都在手动告知行区间")
+- **地址漂移 v1 不做自动重定位**: 标记过期让模型自己重 pin; 内容锚点重寻是
+  后续精化
 
-执行层 (Exec / ExecBg / Tasks)
-────────────────────────────────────
-exec(command: str, *, timeout: float = 60.0, _pin: bool = False) -> ExecResult
-  """执行 shell 命令。返回 {stdout, stderr, exit_code, killed}。超时 kill 进程组。"""
+**两种 stale, 别混用词汇**:
+- 世界→pin 的 stale = 对账语义 (hash + 显式 update)
+- 模板→实例的 stale = 拷贝语义 (frontmatter 血统键 + 手动升级, 无痛)
 
-exec_bg(command: str, *, loop: int = 1) -> int
-  """后台执行命令。loop=0 无限循环。返回 task_id。"""
+**K18. 3 层抽象纪律 (内核纪律)** — 内核模块必须 `contracts/` (ABC 契约) →
+`core/` (concrete 实现) → `channels/` (channel 装配, 手写闭包) 三层划分.
+参照: `src/ghoshell_moss/channels/module_eval_channel.py`. 拒绝规则糖 (类
+interface 反射为 channel 之类) — "只有'想要'的时候'才看见'是对的".
 
-tasks(*, _pin: bool = False) -> list[TaskInfo]
-  """列出活跃后台任务。"""
+24 年过早规则糖的教训: 无人用时非但没收益, 还增加认知成本. features 迭代史
+的第一定律也是同一件事: **去发明是主旋律, 且发生得极快** (features 自造的
+csv 索引/id 字段/archive 命令都在诞生 48 小时内被删).
 
-read_task(task_id: int, *, offset: int = 0, limit: int = 100) -> str
-  """读取后台任务的输出窗口。"""
+**K19. 原生 drain 协议独立立项** — `refresh_meta` 返回值作为 "被覆写的表面
+信息" 的守恒律出口是真命题, 但辖域比 desktop 大:
+- 涉及 channel 核心 ABC 变更 (所有 channel 的 refresh_meta 语义)
+- 涉及 Memento "产生时入记忆" 的联合设计
+- drain 载荷天然就是 MomentRecord — 两个东西是同一条管道的两端
 
-cancel(task_id: int) -> None
-  """取消后台任务。"""
+**独立 feature 立项**. Desktop v1 用 command 返回值经 `<result>` 入史的既有
+路径, 不等 drain.
 
-Pin 管理
-────────────────────────────────────
-pinned() -> list[PinInfo]
-  """列出所有活跃 pin。返回 {id, command_name, args, last_preview}。"""
+**慎重点** (立项时优先讨论):
+- 历史洪泛: drain 重开了写 O(n) 对话历史的路 (设计本来在保护这个最贵的资源).
+  协议必须强制摘要尺寸 + 幂等 (每转移一次只 drain 一次, 靠 hash 对账簿)
+- 落点: drain 消息插在帧的哪个位置 (new inputs 前? 系统观察?) — 影响模型把
+  它当感知还是当日志
+- 核心 ABC 动刀的兼容性: `refresh_meta` 现在返回 None, 改成返回 drain 载荷是
+  所有 channel 都要过一遍的语义变更
 
-unpin(pin_id: str) -> None
-  """移除一个 pin。"""
-```
+**K20. 目光落运行时侧影, 不自动 sediment 到 L0 body** — 目光 (session pin)
+不通过 close 钩子自动写入治理文件, 避免:
+- git 噪音 (每次 close 都产生 diff)
+- 违反 "沉淀是主动动作" 的哲学 (auto-sediment 是又一次注入病)
 
-### 4. _pin 通用化收缩
+**落点分层**:
+- 目光 → 运行时侧影 (.cache 级 gitignore 目录, enter 自动读回)
+- 胶囊 (git 见证的持久沉淀) → L0 body, 靠模型显式 `promote` 动作
 
-不是 `pin(command)`，而是每个信息型命令带 `_pin: bool = False`:
+从 features 迭代史提炼: 头号运营威胁是状态说谎, 解法是显式生命周期纪律
+而非自动同步. features README 三周打磨的教训: "CLI does not enforce this,
+model incarnations follow it, human reviews for it" — 纪律是模型原生的.
 
-```python
-desktop:exec("git status", _pin=True)
-desktop:tree(depth=2, _pin=True)
-desktop:glob("*.py", _pin=True)
-```
+### 2026-06 原捆绑设计 (K1~K13 按 07 月重绘标注)
 
-语义: 执行命令并注册为周期性执行。每帧 refresh 时自动重跑，输出注入 context。
-`_pin=False` 是一次性调用。
+Stage 1 (2026-06-29) 的 53 单测代码存在于仓库中, K1~K13 的部分意图仍成立:
 
-_pin 只对信息型命令有效: `tree`, `glob`, `grep`, `read`, `head`, `frontmatter`, `exec`, `exec_bg`, `tasks`。
-`cd`, `write`, `edit`, `cancel`, `unpin` 无效 — 传了忽略。
+| K | 原决策 | 07 月状态 |
+|---|--------|-----------|
+| K1 | Project 级公共 API, 不进 Matrix | **仍成立** |
+| K2 | 以任意目录为 root | **仍成立**, 由 K14 的 `open(dir)` 承接 |
+| K3 | 17→12+1 原语三层 (发现/读写/执行) | **形状解散** — 执行迁 subprocesses/job_supervisor; 认知面由 K14/K17 重塑为 open/close/pin/unpin/update. Stage 1 认知面单测 (glob/read/pin/write) 可作形状校验参考, 但 API 变 |
+| K4 | `_pin` 参数通用化 | **演化** — pin 从命令参数升格为独立动词, 只收地址 |
+| K5 | 统一输出截断 (tmp) | **保留** — 读取超阈值写 tmp + 预览; tmp 路径不重复截断的不变量保留. 但 pin 触达 tmp 的语义在 K17 (对账 + update) 下需重考虑 |
+| K6 | read-before-write 元规则 | **重估** — 07-12 结论: 场不做全链路守卫, 由写路径各自的卫生纪律负责. 第一版可不做, 让实践讨债 |
+| K7 | frontmatter 原语, 不硬编码约定 | **强化并泛化** — K15 把 frontmatter 提升为整个体系的机器/模型分界 |
+| K8 | DESKTOP.md 覆盖默认 instruction | **被 K15 具化** — L0 body 渲染即 instruction; L0 文件名单独 review (K22) |
+| K9 | CTML pin (未来) | **仍成立**, 当前不做 |
+| K10 | context_messages 组合 | **被 K14 具化** — virtual channel 的 context_messages 闭包 |
+| K11 | ProcessManager 底层 | **已迁出** — subprocesses/job_supervisor 承接 |
+| K12 | 空间边界零审批 | **仍成立** — 对认知面动词; 执行域由 subprocesses 侧权限管 |
+| K13 | Channel 架构 (desktop → terminal/editor/tasks 子 channel) | **被 K14 替代** — desktop 只管认知面; terminal 归 subprocesses; tasks 归 job_supervisor |
 
-_pin 下划线前缀 = CTML 元参数，不是业务参数。模型看到 interface 自然区分。
+## 已知未决 (给下一个实例)
 
-### 5. 统一输出截断
-
-不是 `read` 独享 — 所有命令输出共享一条规则:
-
-```
-output > threshold (200 行 或 32KB)?
-  → 完整内容写入 tmp/desktop/{command}/{hash}
-  → 返回值 = 截断预览 + 完整路径标记
-  → 模型用 read(tmp_path) 获取完整内容
-
-read(tmp_path)
-  → tmp 路径不截断，直接返回完整内容
-```
-
-Desktop 维护 `_tmp_roots` 集合 (`tmp/desktop/`)。任何路径以 `_tmp_roots` 开头不触发截断。
-
-### 6. read-before-write 元规则
-
-`write` 和 `edit` 检查调用方是否在本 session 内 `read` 过目标文件。
-Desktop 维护 `_read_set: set[Path]`。未 read 抛 `ObserveError`。
-
-这是 Claude Code 最核心的 guard — 防止幻觉写入。
-
-### 7. frontmatter 原语，不硬编码约定
-
-Desktop **不**定义 `__doc__`、`SKILL.md` 等命名约定。`frontmatter()` 是提取原语 —
-任何一个 markdown 的 YAML 头都可以被提取。约定由使用方通过 instruction 下:
-
-> 当你进入一个项目:
-> 1. glob('**/CLAUDE.md') 找到认知入口
-> 2. glob('.skills/**/SKILL.md') 找到所有 skill
-> 3. frontmatter(path, 'description') 提取元信息
-> 4. 用这些信息构建你对项目的认知
-
-Desktop 的默认 instruction 建议初始探测方向，不强制。
-
-### 8. DESKTOP.md — 可选覆盖默认 instruction
-
-`root/DESKTOP.md` 如果存在，其内容覆盖 Desktop channel 的默认 instruction。
-这让项目/gohst/mode 可以定制 Ghost 在特定 Desktop 上看到的第一帧。
-
-如果不存在，Desktop 使用内置的默认 instruction (含命令列表 + 规则摘要 + root + pwd)。
-
-### 9. CTML Pin — 记录，当前不做
-
-pin 本质不是"钉一块 bash 输出屏幕" — 是"定义一个周期性执行的 CTML 子程序":
-
-```python
-# 当前 (bash pin)
-desktop:exec("git status", _pin=True)
-
-# 未来 (CTML pin)
-desktop:pin(ctml='<desktop:tree depth="1"/><desktop:tasks _pin="true"/>', refresh="on_prompt")
-```
-
-CTML pin 的输出是 Desktop 自己的命令结果 — `tree` 返回 `DirectoryTree` 结构，
-可以被 context 按规则渲染。这和 bash stdout 不在同一语义空间。
-
-当前不实现。模型用熟原语后，自然浮现"哪些组合值得 pin"。届时 pin 从 `_pin` 参数
-升级为 `schedule(ctml, refresh)` — 一个用户态 cron。
-
-### 10. context_messages: 多元信息有机组合
-
-第一版不做硬性的自动注入。context_messages 由 Ghost / mode / DESKTOP.md 指令驱动，
-是 `tree` + `pinned` + `tasks` 等结果的有机组合。后续迭代定义默认组合逻辑。
-
-### 11. ProcessManager 作为底层
-
-Desktop 的 `exec` / `exec_bg` 底层走 ProcessManager (集成在 Matrix)。
-
-- `exec` → ProcessManager.execute_task (阻塞 + 输出捕获)
-- `exec_bg` → ProcessManager.execute_task(background_run=...) (调度 + buffer 复用)
-- `cancel` → ProcessManager.stop_background_task
-- `tasks` → ProcessManager.background_tasks
-
-Desktop 不自己管理子进程生命周期 — ProcessManager 提供 start_new_session +
-pipe fencing + polling 三件套。
-
-### 12. 安全模型: 空间边界，零审批
-
-`cd` 限制在 root 子树内。边界内所有操作 (`exec`, `write`, `edit`) 零审批。
-Claude Code 的"边界内不确认"原则:
-
-> 全双工系统不能靠时间中断 (审批框堵住流)。安全由空间边界保证。
-> 边界是一次性设置的，边界内的操作不需要再证明安全。
-
-### 13. Channel 架构
-
-```
-desktop (MutableChannel, root)
-  │  commands: cd / pwd / tree / glob / grep / read / head / frontmatter
-  │            write / edit / exec / exec_bg / tasks / read_task / cancel
-  │            pinned / unpin
-  │  instruction: DESKTOP.md 或默认模板
-  │
-  ├── terminal (terminal_channel, scope=cwd)  ← cwd 随 Desktop 同步
-  ├── editor (file_editor_channel)            ← read_set 共享
-  └── tasks                                   ← exec_bg 产生的子任务视图
-```
+- **K21 (open/update 语义对齐)** — 07-12 记录时人类工程师标注 "我怀疑 open/
+  update 其实我们没有真正对齐. 要推进到抽象重绘时, 对齐比现在容易一些". 推进
+  到 ABC 重绘时优先处理.
+- **K22 (L0 文件名)** — 全体系唯一发明的名词, 单独 review. 判据: 骑先验.
+  候选: `DESKTOP.md` (沿用) / `.ground.md` (新造, 无先验, 不推荐) / 其它.
+- **K23 (L2 模板库引导地址)** — `.moss/` 侧 (项目所有) 还是 `.ai_partners/`
+  侧 (ghost 所有)? 涉及 "模板库是项目的还是 ghost 的" 归属问题.
+- **K24 (目光运行时侧影落盘位置)** — .cache 级 gitignore 目录的具体位置约定.
+  场目录只读时的退化策略 (退到 workspace 侧影目录).
+- **K25 (向下探索的场声明)** — 一个场里如果有多个子目录都是 L0 文件, 父场
+  frontmatter 里怎么声明 "我下面有场"? 影响 glob 语法 (向上 CLAUDE.md +
+  `**/name.md` 向下探测的具体形状).
+- **K26 (Stage 1 代码的迁移路径)** — 现有 `contracts/desktop.py` + `core/
+  desktop/` 的 53 单测代码, 认知面动词 (glob/read/pin/write) 如何过渡到 K14
+  的形状: 是重写还是渐进重构; 单测能保留多少作为 acceptance 参考.
 
 ## 与关联基建的交叉
 
 | 基建 | 关系 | 状态 |
 |------|------|------|
-| `ProcessManager` | Desktop 的执行底层 | 已有 impl + 42 tests。需集成入 Matrix (matrix-cell-governance 推进中) |
-| `Matrix.spawn()` | Desktop 不直接用 — 走 ProcessManager | 待 ProcessManager 入 Matrix 后统一 |
-| `CellRegistry` | `cells` 子 channel 未来集成 | Desktop 第一版不含 cells 管理 |
-| `FileEditor` | Desktop 的子 channel | 待实现 (project-manager FEATURE Phase 1-2) |
-| `Terminal` | Desktop 的子 channel | 已有 interactive-shell-channel |
-| `CTMLShell` | CTML pin 的运行时 (未来) | 记录，当前不做 |
+| `subprocesses` / `job_supervisor` | 执行域, 从旧 desktop 拆出 (K11/K13 迁出) | 已迁出, contracts 已重绘 |
+| `momento-mori` (Memento) | 胶囊 (promote 后的 pin) 落永久记忆; drain 联合设计方 | FORMAT.md 契约层落盘 |
+| `Matrix` | desktop 不直接依赖; virtual channel 生命周期由 Channel Runtime 管 | 无直接关系 |
+| `features` 体系 | K15 分形体系的实物证明; desktop 落地后应首先支持的场类型 | 已运行, 自 2026-05 |
+| `Ghost` / `Mode` | Desktop 进入哪些 mode 是 Ghost 层决策, OS 层不主动推 | 未开始 |
+| 原生 drain 协议 (K19) | 独立 feature, 与 Memento 合并设计 | 未立项 |
 
-## Implemented Notes
-
-- 旧 `contracts/project_manager.py` 废弃重写 — 改为 `contracts/desktop.py`
-- `tools/file_editor.py` 先不写 — Desktop 的 `read`/`write`/`edit` 覆盖了核心读写需求
-- 第一版不集成 file_editor_channel 为子 channel — `read` + `write` + `edit` 已够
-- `exec` / `exec_bg` 底层适配 ProcessManager，等 ProcessManager 入 Matrix 后对接
+---
 
 ## Stage 1 完成记录 (2026-06-29, Claude Opus 4.7)
+
+> 保留为历史资产. 代码 (`contracts/desktop.py`, `core/desktop/`) 存在, 53 单测
+> 绿. 认知面 API 形状按 2026-07 重绘调整 (K14/K17), 执行面已迁出 (K11).
+> 以下内容 verbatim 保留, 供反向索引.
 
 ### 落地清单
 
@@ -448,12 +339,12 @@ desktop (MutableChannel, root)
 
 6. **`Task` 异常用 `KeyError`, 不是 `LookupError`** — `unpin` 不存在的 id 抛 KeyError 符合 dict 语义; `Task.read` / `Task.cancel` 等回调未绑定时抛 `RuntimeError`. 异常分层尽量贴近 Python 内建.
 
-### 已知未决 / 待后续阶段
+### 已知未决 / 待后续阶段 (2026-06-29 视角, 部分被 07 月 K21~K26 覆盖)
 
-- **`frontmatter` 去留**: 当前保留. L1 (Stage 2 module_eval 试用) 后定. 倾向于删 — `read(limit=20)` + 模型自解析 YAML 可替代, 没必要做内置依赖 `python-frontmatter` 库.
+- **`frontmatter` 去留**: 当前保留. L1 (Stage 2 module_eval 试用) 后定. 倾向于删 — `read(limit=20)` + 模型自解析 YAML 可替代, 没必要做内置依赖 `python-frontmatter` 库. **07-12 补注**: K15 把 frontmatter 提升为体系分界, 此项作废 — frontmatter 是本设计的关键 primitive.
 - **shutdown 幂等性的强保证**: 当前实现已是幂等 (set 清空), 但没有专门单测. Stage 2 试用时如果发现 shutdown 重入有问题再加 race condition 单测.
 - **跨 worktree 的 Pin fork 行为**: Phase 6 处理.
-- **DESKTOP.md 写守卫两步确认**: Phase 2 决策, 当前 reflection 只给 hint 不阻止写入.
+- **DESKTOP.md 写守卫两步确认**: Phase 2 决策, 当前 reflection 只给 hint 不阻止写入. **07-12 补注**: K20 已裁定不自动 sediment; K6 已重估守卫由写路径各自守.
 
 ### 模型纪律自评
 
@@ -462,10 +353,13 @@ desktop (MutableChannel, root)
 - ✅ ReflectionHint / ReadHistory 这类对外接口不预设具体下游 — `_RecordingHistory` 单测证明可外部实现 ReadHistory 而不动 Desktop 源码
 - ✅ 没漂移加机制 — 反而把 17 原语缩到 12+1, 把数据模型全部上推到 contracts 让 core 只承担实现
 
-### 下一步
+### 下一步 (2026-06-29 视角, 已被 07 月重绘超越)
 
-进入 **Stage 2 (eval channel 试用)** 之前等人类工程师评审 Stage 1 的接口形状.
-评审通过后:
-- 包一个 `module_eval` 形态让模型在 MCP 里 exec `desktop.tree(...)` / `desktop.read(...)` 等
-- 暴露 interface "用起来别扭" 的真实痛点
-- 痛点要么修, 要么记录到本文件 "已知不便" 段
+> 原文: 进入 **Stage 2 (eval channel 试用)** 之前等人类工程师评审 Stage 1 的
+> 接口形状. 评审通过后包一个 `module_eval` 形态让模型在 MCP 里 exec desktop 
+> API, 暴露 "用起来别扭" 的痛点.
+
+**07-12 结论**: Stage 2 的 module_eval 试用不做 — 那一层无预训练 (K16). 直接
+进入按 K14 的 channel 落点重绘 (Stage 2': ABC + concrete + channel 装配, 参照
+`module_eval_channel.py` 的 abc→concrete→channel 三层结构). Stage 1 的 53
+单测中认知面覆盖可作为新 API 的 acceptance 参考, 但要按新形状重写.
