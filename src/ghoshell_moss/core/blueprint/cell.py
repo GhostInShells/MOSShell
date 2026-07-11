@@ -1,266 +1,244 @@
 """
-MOSS 通讯网络中的单元节点
+MOSS 通讯网络中的单元节点 (Cell).
 
-MOSS 作为面向模型的操作系统, 通过 Cell 管理其中的节点.
-Cell 的定位类似 Node 之于 ROS, 技术核心差异是 Cell 是面向模型的, 需要能够被模型感知其存在.
-不叫做 Node, 是因为不同类型的 Cell 节点拥有不同的网络角色定位. 比如主运行时单点叫 Host, 分形的 Host 组网时, 远程 Host 成为 Fractal.
-这些节点在功能上并不是平级的, 所以不叫做 Node. 以及, 一个 Cell 可能通过某种机制管理其子节点, 是树上的分支.
-每种子节点都有不同的发现和声明机制, 需要用统一的方式被运行时的智能模型感知其存在. Gemini3 对这种机制取名 'Cell'
+Cell 的一句话承诺: 一个通过 channel 向模型世界暴露自己的、有生命周期的进程.
+channel 是 cell 的膜 — 模型感知和交互一个 cell 的唯一界面.
+不承诺 channel 的进程不是 cell, 其归宿是 Subprocesses 治理下的裸子进程.
+
+Cell 不是一个运行时对象, 而是三个真相域各自的数据模型:
+
+- CellManifest — 文件真相 (inventory): CELL.md 声明, "领地里装了什么".
+- CellRecord   — 所有权真相 (ledger): spawn 咽喉写下的进程账目, "我拉起过什么".
+- CellPresence — 网络真相 (announce): 入网 cell 的膜与生命状态, "网络上活着什么".
+
+治理动词按域分化, 每域两个: create/install → inventory, run/stop → ledger,
+accept/deny → network. 其余一切 (list / status / logs) 都是三域的 join 视图,
+不是治理.
 """
-import time
-from typing import Literal, Iterable, ClassVar, Callable
-from typing_extensions import Self
-from abc import ABC, abstractmethod
-from pydantic import Field, BaseModel
-from ghoshell_moss.core.concepts.channel import ChannelProxy, ChannelProvider, Channel
-from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.message import unique_id
-import asyncio
-import os
+# -- 设计契约: .ai_partners/features/workstreams/2026/06/matrix-cell-governance/FEATURE.md
+#    有效章节 = §TT/§TT续 + §UU + §VV + §WW. 本文件是 UU-12 分发块① 的产物.
+# -- §UU-5 三域模型: God-model Cell (meta + launcher + status 复合体) 解体.
+#    join 只发生在视图层 (CLI list 输出行), 内核无 God-model.
+#    原 Cell 上的行为 (is_alive / write_runtime_file / launch_* / spawn 辅助)
+#    全部离开数据模型, 归 run_cell 咽喉与 CLI 合流层 (UU-9).
+# -- §UU-4 六动词治理代数: 三域 x 两动词, 代数封闭; 删任何一个动词,
+#    模型自迭代循环断一处. 治理代数冻结, 膜的声明曲线 (announce payload) 可演进.
+# -- TT-2 身份拆分 (uuid + alias) 未终审: address / alias 是可整体重命名的占位字段.
+#    实现不得对 address 的内部结构做任何假设.
+# -- 网络侧抽象 (Presence / Watcher, 原 CellNetwork 的拆分继任者) 见 §UU-7,
+#    随分发块③ 进场; 原 CellNetwork / CellLog 已随 God-model 一并移除.
+
 import sys
+import time
+from enum import Enum
 from pathlib import Path
+from typing import ClassVar, Iterable, Literal
+from abc import ABC, abstractmethod
+
 import fnmatch
 import frontmatter
-import psutil
 import shlex
+from pydantic import BaseModel, Field
+
+from ghoshell_moss.message import unique_id
 
 __all__ = [
-    'HOST_TYPE',
-    'WORKER_TYPE',
-    'CellMetadata',
-    'CellLauncher',
-    'CellManifest',
-    'CellStatus',
-    'Cell',
-    'CellLog',
-    'CellRegistry',
-    'CellNetwork',
-    'make_address',
     'CellAddress',
     'MatchPattern',
     'RelativePath',
     'normalize',
+    'make_address',
+    'CellState',
+    'ExecSpec',
+    'CellManifest',
+    'CellRecord',
+    'CellPresence',
+    'CellRegistry',
     'DuplicatedError',
 ]
 
-CellAddress = str
-
-
-# -- 框架保留的 cell type 字面量. 用户可自由扩展 type 字符串 (sensors / bodies / tools / ...).
-# 框架行为只对 host 与 worker 有特殊语义; 其它 type 一视同仁.
-HOST_TYPE = 'host'
-WORKER_TYPE = 'worker'
-
-
 # -- 类型别名 -- #
+
+CellAddress = str
+"""cell 在网络上的唯一地址. 结构未定 (TT-2), 调用方一律作不透明字符串处理."""
 
 RelativePath = str
 MatchPattern = str
 """通配符模式: group/name, group/*, *, */*, */name"""
 
 
-class CellMetadata(BaseModel):
-    """
-    一个 Cell 节点的元信息, 通常用于环境发现和运行时声明.
-    type 是开放命名空间: 'host' / 'worker' 是框架保留字, 其它字符串由用户自由命名
-    (sensors / bodies / tools / ...). 框架行为只对 host 区分对待, 其余 type 一视同仁.
-    """
-    type: str = Field(
-        default=WORKER_TYPE,
-        description="节点的类型. 开放命名空间, 'host' / 'worker' 是框架保留字."
-    )
-    name: str = Field(
-        description="节点的名字, 在类型下应该是唯一的. "
-    )
-    singleton: bool = Field(
-        default=True,
-        description="是否是运行时单例, 决定 network 会如何处理它的存在. "
-    )
-    description: str = Field(
-        default='',
-        description="节点的描述信息. "
-    )
-
-    @classmethod
-    def from_proc(cls, name: str = '', *, description: str = '') -> 'CellMetadata':
-        """生成一个 worker 节点的元信息."""
-        from importlib import import_module
-        main = import_module('__main__')
-        script_file = Path(main.__file__)
-        if not name:
-            name = script_file.name.split('.')[0]
-        if not description:
-            docstring = main.__doc__ or ''
-            description = docstring.splitlines()[0] if docstring else ''
-        return cls(
-            type=WORKER_TYPE,
-            name=name,
-            description=description,
-            singleton=False,
-        )
-
-
 def make_address(*parts: str) -> str:
     """约定定义一个节点的 address. 使用 / 作为层级分隔符."""
+    # TT-2 占位: address 的分段结构 (现为 type/name/uid 三段式) 等人类终审,
+    # 本函数只承诺 "用 / 拼接", 不承诺段数与段含义.
     return '/'.join(parts)
 
 
 def normalize(name_or_address: str) -> str:
+    """将名称或 address 归一化为可作文件名 / python 标识符的形式."""
     return (name_or_address.replace('/', '_').replace('\\', '_').
             replace('.', '_').replace('-', '_'))
 
 
-class CellLauncher(BaseModel):
+class CellState(str, Enum):
     """
-    节点启动参数. 描述如何启动一个 cell 进程.
+    cell 的生命周期状态. 挂在 CellPresence 上, 随 announce 传播.
+
+    - spawned: 进程已被拉起, 尚未入网.
+    - ready:   announce 已到达, 膜可用.
+    - dead:    进程退出或网络存活性丢失.
     """
+    # -- TT-15 MVP 三态: ready = announce 到达即 ready (零新协议);
+    #    dead = liveness 丢失或进程退出, 取先到者.
+    #    STOPPING / draining / degraded / watchdog 推迟, 但 enum 现在就进契约,
+    #    payload 后扩. 状态即数据 (与 JobSpec 同纪律).
+    # -- 两个真相来源, fold 成一条事件流 (TT-15/WW-6):
+    #    进程真相 (spawn/exit/kill) 由 Subprocesses done callback 免费可见, 即时且带
+    #    exit code, owner 的 dead 信号源是它, 不走网络; 应用真相 (ready/未来 draining)
+    #    只有子进程自己知道, 走 announce 自报告侧信道. 外部观察者只有网络真相.
+    SPAWNED = 'spawned'
+    READY = 'ready'
+    DEAD = 'dead'
 
-    cwd: str = Field(
-        default='',
-        description="节点启动时所在的工作路径. "
-                    "默认从发现 CELL.md 的路径作为 cwd, 否则从运行时 cwd / launcher.cwd"
-    )
-    interpreter: Literal['python', ''] | str = Field(
-        default='',
-        description="使用约定的运行时"
-                    "为 `python` 表示使用 sys.executable(父进程) or 环境发现的解释器;"
-                    "非空时请使用 cwd 相对路径, 或绝对路径指定解释器. "
-    )
-    cmd: str = Field(
-        default='',
-        description="启动节点对应的脚本. 具体路径是 cwd / script"
-    )
-    arguments: str = Field(
-        default='',
-        description="启动节点时传入的参数",
-    )
 
-    extra_env: dict[str, str] = Field(
+class ExecSpec(BaseModel):
+    """
+    cell 进程的启动声明: 一条命令, command + args + env (与 MCP client 配置同形).
+
+    command 的解析规则 (execvp 语义):
+    - 含路径分隔符: 相对 CELL.md 所在目录解析, 启动时立即绝对化.
+    - 裸词: PATH 查找. spawner 会把自身 python 环境的 bin 目录插入 PATH 头,
+      因此写 `python` 即使用 spawner 的解释器 (默认解释器).
+
+    环境隔离是 cell 作者的显式选择, 写进 command 本身:
+    如 `uv run main.py` 或 `../../.venv/bin/python -m my_pkg.main`.
+    框架不做任何自动环境检测. 复杂安装需求由 INSTALL.md 承载.
+    """
+    # -- §WW-3 定型 (修正 UU-5 "字段不变"): argv 结构保留, 语义一个不留.
+    #    interpreter 字段死 — 解释器是咽喉的解析产物, 不是声明的字段.
+    #    行业勘察 (WW-1): ROS2 launch / Erlang release / MCP / k8s,
+    #    活下来的 exec spec 没有一家带解释器字段. 病灶 = launcher ⊗ package 融合.
+    # -- §WW-2 uv 判决 (2026-06-10 原判, 两次实证死亡, 封死): 咽喉不做任何
+    #    内容嗅探式隐式分支 (含 "无 run: 自动探测 PEP723 → 自动 uv").
+    #    自动检测是死路 — 开发者不知道检测是啥, 隐式声明零信息传递.
+    #    uv 降级为作者显式选项, matrix 不自带 uv 依赖.
+    # -- cwd 不在 spec 里 (§WW-3 双语义拆分): CELL.md 目录只作 command 解析基准,
+    #    在咽喉活一瞬间; 进程 cwd = spawner runtime 子树 (治理概念, TT-6 边界做成环境).
+    #    代码可达性由环境承载 (python -m 装好即从任意 cwd 可跑), 不由 cwd 承载.
+    # -- 裸词 'python' 经 PATH 头注入解析 = 环境提供, 非关键字字符串替换
+    #    (venv activate 同机制); 旧 interpreter=='python' 的关键字 hack 废.
+
+    command: str = Field(
+        description="启动命令 argv[0]. 相对路径基于 CELL.md 所在目录; "
+                    "裸词走 PATH 查找, `python` 即 spawner 的解释器.",
+    )
+    args: list[str] = Field(
+        default_factory=list,
+        description="启动命令的参数列表.",
+    )
+    env: dict[str, str] = Field(
         default_factory=dict,
-        description="额外写入环境变量的讯息.",
+        description="额外注入的环境变量.",
     )
 
     @classmethod
-    def new_empty(cls) -> 'CellLauncher':
-        return cls(cwd='', interpreter='', cmd='', arguments='')
+    def from_run(cls, run: 'str | list[str]', *, env: dict[str, str] | None = None) -> 'ExecSpec':
+        """从 CELL.md frontmatter 的 `run:` 声明构造. 字符串按 shell 语法切分."""
+        # `run:` 是 ExecSpec 的糖 (WW-3): string 经 shlex 成 argv; list 直接作 argv.
+        argv = shlex.split(run) if isinstance(run, str) else list(run)
+        if not argv:
+            raise ValueError('run declaration is empty')
+        return cls(command=argv[0], args=argv[1:], env=env or {})
 
-    @property
-    def cwd_path(self) -> Path:
-        if self.cwd == '':
-            return Path.cwd()
-        return Path(self.cwd).resolve()
-
-    @classmethod
-    def from_proc(cls) -> 'CellLauncher':
-        """从当前进程中还原启动参数."""
-        from importlib import import_module
-        main = import_module('__main__')
-        script_file = main.__file__
-        cwd = Path.cwd()
-        script_relative = Path(script_file).absolute()
-        _args = str(shlex.join(sys.argv[1:]))
-        return cls(
-            cwd=str(cwd),
-            interpreter=sys.executable,
-            cmd=str(script_relative),
-            arguments=_args,
-        )
+    def to_run(self) -> str:
+        """还原为 `run:` 字符串形式."""
+        return shlex.join([self.command, *self.args])
 
 
 class CellManifest(BaseModel):
-    """Cell 声明文件 (CELL.md) 的内容载体."""
+    """
+    CELL.md 声明文件的内容载体 — inventory 域 (文件真相) 的数据模型.
+
+    一句话承诺: 把一个可执行物声明为本治理域可拉起的 cell.
+    CELL.md 的存在边界 = 包自述回答不了的地方 (启动组合 / 非 python 命令 /
+    远程代码本地注册). 包自述够用处, 裸脚本可经反射匝道零声明运行.
+    """
+    # -- §UU-5: CellMetadata 溶解进来, God-model Cell 解体后 manifest 独立成域.
+    # -- type 三重身份各回各家 (§UU-5): 拓扑角色 = 运行时事实, 进 Presence;
+    #    project 归属 = project_id 标签挂 announce; 治理路径 = ledger 条目的存在本身.
+    #    这里只剩 taxonomy 纯分类标签, 不驱动任何机制.
+    # -- TT-13: exec spec 是地基 (systemd ExecStart 原理), PEP 723 是匝道.
+    #    cell = package 无关的治理域注册快捷方式 (.desktop 系), 包真相归语言生态,
+    #    MOSS 只在咽喉读证据 (WW-1).
+    # -- WW-4 向上认亲: cell = 身份锚 (CELL.md), 脚本 = 入口变体.
+    #    发现面 1:1 (`run:` 唯一默认入口), 目录事实 N (任意脚本向上认亲同一身份).
+    #    发现面从不承诺穷举可执行物 (.desktop 同).
+    # -- `entrypoints:` 可选文档化列表 (WW-4) 待拍板, 未加.
 
     MANIFEST_FILENAME: ClassVar[str] = 'CELL.md'
     INSTALL_FILENAME: ClassVar[str] = 'INSTALL.md'
     INSTALLED_FILE: ClassVar[str] = '.installed'
 
-    type: str = Field(
-        default=WORKER_TYPE,
-        description="节点的类型. 开放命名空间, 'host' / 'worker' 是框架保留字."
-    )
     name: str = Field(
-        description="节点的名字, 在类型下应该是唯一的. "
-    )
-    singleton: bool = Field(
-        default=True,
-        description="是否是运行时单例, 可以约束 project 内部的启动个数. "
-                    "对于不可重复启动的资源, 比如 robot 控制, singleton 设置为 True."
+        description="cell 的名字. 治理域内的身份锚.",
     )
     description: str = Field(
         default='',
-        description="节点的描述信息. "
+        description="cell 的一句话描述.",
     )
-
-    launcher: CellLauncher = Field(description="节点启动参数")
-    instruction: str = Field(default='', description="节点的详细使用说明. 启动节点后理论要返回. ")
+    taxonomy: str = Field(
+        default='',
+        description="纯分类标签 (如 sensors / bodies / tools), 自由命名, 不驱动任何机制.",
+    )
+    singleton: Literal['none', 'domain', 'host'] = Field(
+        default='none',
+        description="单例约束声明. none=可多开; domain=同一治理域内仅一实例; "
+                    "host=机器级硬件单点 (如机器人控制), 跨治理域互斥.",
+    )
+    # -- TT-12 singleton = 风险锚点: 用最小声明显式锚定风险, 第二实例被拒时的
+    #    错误信息引用声明原文, 即 code as prompt 在错误路径上的延伸.
+    #    domain 档在 run_cell 咽喉处查重即拒 (WW-4: 框架不做真锁);
+    #    host 档靠启动时 flock 约定路径 (文件真相, 进程死自动释放, 无 stale).
+    # -- WW-4: singleton 域 = cell 身份 — 不论从哪个入口脚本拉起,
+    #    都是同一 cell 的实例. 一仓多组合互斥由此免费解决.
+    exec: 'ExecSpec | None' = Field(
+        default=None,
+        description="默认启动入口 (frontmatter `run:` 声明). "
+                    "无声明的 cell 只能以显式脚本路径拉起.",
+    )
+    instruction: str = Field(
+        default='',
+        description="cell 的使用说明 (CELL.md 正文). run 动作成功后应回执给调用方.",
+    )
     installed: bool = Field(
         default=True,
-        description="Cell 是否已完成安装. 无 INSTALL.md 时默认已安装; "
-                    "有 INSTALL.md 时从 .installed 文件推导. "
-                    "不在 CELL.md frontmatter 中.",
+        description="是否已完成安装. 未安装的 cell 可被发现但拒绝拉起, "
+                    "错误信息会给出 INSTALL.md 路径. 由文件系统推导, 不在 frontmatter 中.",
     )
+    # -- installed 推导规则: 目录下存在 INSTALL.md 时, 看 .installed 空文件是否存在;
+    #    无 INSTALL.md 即视为已安装. install 是六动词之一 (WW-5 故事 3):
+    #    不可见则无作用对象, 自迭代循环断在第二步, 所以未安装也必须可发现.
+
+    # -- 文件读写 (inventory 域自身的行为, 不涉进程与网络) -- #
 
     @classmethod
-    def new(
-            cls,
-            *,
-            meta: CellMetadata,
-            launcher: CellLauncher,
-            instruction: str = '',
-            installed: bool = True,
-    ) -> 'CellManifest':
-        return cls(
-            type=meta.type,
-            name=meta.name,
-            singleton=meta.singleton,
-            description=meta.description,
-            launcher=launcher,
-            instruction=instruction,
-            installed=installed,
-        )
+    def read_from_file(cls, file: Path) -> 'CellManifest':
+        """从 CELL.md 文件读取声明. 正文即 instruction, frontmatter 即字段."""
+        content = file.read_text(encoding='utf-8')
+        post = frontmatter.loads(content)
+        data = dict(post.metadata)
+        run = data.pop('run', None)
+        env = data.pop('env', None)
+        if run is not None:
+            data['exec'] = ExecSpec.from_run(run, env=env)
+        data['instruction'] = post.content.strip()
 
-    def meta(self) -> CellMetadata:
-        data = self.model_dump(
-            exclude_defaults=True, exclude_none=True,
-            include={'type', 'name', 'singleton', 'description'},
-        )
-        return CellMetadata(**data)
-
-    def write_file(self, directory: Path, filename: str = '') -> None:
-        """将 Manifest 写入 CELL.md 文件 (平铺 frontmatter, installed 不写入)."""
-        filename = filename or self.MANIFEST_FILENAME
-        flat = self.model_dump(
-            exclude_defaults=True, exclude_none=True,
-            exclude={'instruction', 'installed'},
-        )
-        instruction = self.instruction
-        post = frontmatter.Post(content=instruction, **flat)
-        frontmatter.dump(post, directory.joinpath(filename).resolve())
-
-    @classmethod
-    def from_proc(cls) -> 'CellManifest':
-        """
-        从进程中还原 Manifest.
-        """
-        from importlib import import_module
-        main = import_module('__main__')
-        script_file = Path(main.__file__)
-        if script_file.exists():
-            search_dir = script_file.parent
-            for i in range(3):
-                if not search_dir.exists():
-                    break
-                manifest = cls.read_from_directory(search_dir)
-                if manifest:
-                    launcher = CellLauncher.from_proc()
-                    manifest.launcher = launcher
-                    return manifest
-                search_dir = search_dir.parent
-        meta = CellMetadata.from_proc()
-        launcher = CellLauncher.from_proc()
-        data = meta.model_dump()
-        data['launcher'] = launcher
-        return CellManifest(**data)
+        directory = file.parent
+        if directory.joinpath(cls.INSTALL_FILENAME).exists():
+            data['installed'] = directory.joinpath(cls.INSTALLED_FILE).exists()
+        else:
+            data['installed'] = True
+        return cls(**data)
 
     @classmethod
     def read_from_directory(cls, directory: Path) -> 'CellManifest | None':
@@ -269,387 +247,228 @@ class CellManifest(BaseModel):
             return cls.read_from_file(file)
         return None
 
+    def write_file(self, directory: Path, filename: str = '') -> None:
+        """将声明写入 CELL.md (exec 还原为 `run:` 糖, installed 不写入)."""
+        filename = filename or self.MANIFEST_FILENAME
+        flat = self.model_dump(
+            exclude_defaults=True, exclude_none=True,
+            exclude={'instruction', 'installed', 'exec'},
+        )
+        if self.exec is not None:
+            flat['run'] = self.exec.to_run()
+            if self.exec.env:
+                flat['env'] = dict(self.exec.env)
+        post = frontmatter.Post(content=self.instruction, **flat)
+        frontmatter.dump(post, directory.joinpath(filename).resolve())
+
+    # -- 反射匝道 (Tier 1): 裸脚本 / 运行中进程 → 临时 Manifest, 进同一条咽喉 -- #
+
     @classmethod
-    def read_from_file(cls, file: Path) -> 'CellManifest':
-        """从 CELL.md 文件读取 Manifest.
+    def find_upward(cls, start: Path) -> 'CellManifest | None':
+        """从 start 出发向上查找最近的 CELL.md (找到第一个即停)."""
+        # WW-4 向上认亲, 同 MOSS.md 的发现规则.
+        directory = start if start.is_dir() else start.parent
+        for candidate in [directory, *directory.parents]:
+            manifest = cls.read_from_directory(candidate)
+            if manifest is not None:
+                return manifest
+        return None
 
-        installed 从文件系统推导: 目录下存在 INSTALL.md 时,
-        检查 .installed 空文件是否存在.
+    @classmethod
+    def from_script(cls, script: Path) -> 'CellManifest':
         """
-        found_dir = file.parent.absolute()
-        content = file.read_text(encoding='utf-8')
-        post = frontmatter.loads(content)
-        flat = post.metadata
-        instruction = ''
-        if stripped := post.content.strip():
-            instruction = stripped
-        flat['instruction'] = instruction
+        以脚本为入口构造 Manifest: 向上认亲最近的 CELL.md;
+        找不到时降级为临时身份, 不拒绝运行.
+        """
+        # WW-4: 认亲成功 → 同一 cell 身份的入口变体 (exec 不覆写, 脚本作显式入口
+        # 由咽喉处理); 认亲失败 → 身份降级 script/{uuid} — 具体降级命名属
+        # TT-2 身份占位, 人类终审后统一改.
+        script = script.resolve()
+        found = cls.find_upward(script)
+        if found is not None:
+            return found
+        return cls(
+            name=f'{script.stem}_{unique_id()[:8]}',
+            taxonomy='script',
+            description=f'ad-hoc cell from {script}',
+            exec=ExecSpec(command='python', args=[str(script)]),
+        )
 
-        directory = file.parent
-        if directory.joinpath(cls.INSTALL_FILENAME).exists():
-            flat['installed'] = directory.joinpath(cls.INSTALLED_FILE).exists()
-        else:
-            flat['installed'] = True  # 无 INSTALL.md 表示无需安装, 直接视为已安装
-        manifest = cls(**flat)
-        # cwd 必须更新成绝对地址. 空值默认取 CELL.md 所在目录, 与 launcher.cwd 字段 docstring 一致.
-        if manifest.launcher.cwd:
-            cwd = found_dir / manifest.launcher.cwd
-            manifest.launcher.cwd = str(cwd.absolute())
-        else:
-            manifest.launcher.cwd = str(found_dir)
-        return manifest
+    @classmethod
+    def from_proc(cls) -> 'CellManifest':
+        """从当前进程自述身份: 以 __main__ 脚本向上认亲, 找不到则降级临时身份."""
+        from importlib import import_module
+        main = import_module('__main__')
+        script_file = Path(getattr(main, '__file__', '') or '')
+        if script_file.is_file():
+            manifest = cls.from_script(script_file)
+            # 运行中进程的真实启动参数比声明更准确.
+            manifest.exec = ExecSpec(command=sys.executable, args=list(sys.argv))
+            if not manifest.description:
+                docstring = main.__doc__ or ''
+                manifest.description = docstring.splitlines()[0] if docstring else ''
+            return manifest
+        return cls(
+            name=f'proc_{unique_id()[:8]}',
+            taxonomy='script',
+            exec=ExecSpec(command=sys.executable, args=list(sys.argv)),
+        )
 
 
-class CellStatus(BaseModel):
+class CellRecord(BaseModel):
     """
-    Cell 运行时快照. 描述进程级状态.
+    ledger 域 (所有权真相) 的数据模型 — spawn 咽喉在拉起进程的瞬间写下的一条账目.
+
+    包含 owner 运维面信息: 只有能对该进程直接行动的一侧 (owner / 本机 CLI)
+    才应消费这些字段.
     """
-    uid: str = Field(
-        default_factory=unique_id,
-        description="每个 runtime status 启动时分配的唯一id. ",
+    # -- §UU-6 ledger 仲裁: 咽喉的排气尾迹, 不是运行时的输入. 两条规则:
+    #    1. 咽喉写 — run_cell spawn 瞬间 append 一条 JSON, best-effort, 不回读.
+    #       单写者原则: pid/start_time 只有 spawn 现场知道.
+    #    2. CLI 是唯一读者 — moss cells list/status/kill = 读 ledger + join 网络真相
+    #       + killpg. 冷数据, 按需读, 零监听.
+    #    运行时零读零监听: Matrix 上没有 ledger 成员; Matrix 体系内治理 =
+    #    Subprocesses 全权 (owner 内存态注册表即权威所有权记录).
+    #    ledger 的存在理由 = fencing 失效时的法证清理 (host 挂死/孤儿时 kill 的依据).
+    # -- §WW-6: 不记录 exit — 死进程无孤儿可杀, 法证理由不存在,
+    #    单写者原则不开第二个写入时机.
+    # -- §WW-7 全部结论中最易漂移的一条: 模型上下文 (context messages) 的数据源 =
+    #    Subprocesses 内存句柄 + Watcher 视图的 join, 永不读 ledger.
+    # -- §UU-3 可行动性判据: pid / 日志路径, 远端模型拿到什么都做不了,
+    #    所以这些字段永不上 announce, 只活在这里.
+    # -- ledger 无对象身份 (UU-6): 一个 workspace 目录约定 + 本 schema + 上述两条规则.
+    #    不设 Ledger 类.
+
+    address: CellAddress = Field(
+        description="cell 的网络地址.",
+    )
+    alias: str = Field(
+        default='',
+        description="治理域内的别名.",
+    )
+    pid: int = Field(
+        description="进程 id.",
+    )
+    pgid: int = Field(
+        default=0,
+        description="进程组 id (start_new_session 后即进程自身的组). killpg 的作用对象.",
+    )
+    start_time: float = Field(
+        description="进程启动时间戳. 与 pid 一起构成防 pid 复用的核对依据.",
     )
     project_id: str = Field(
         default='',
-        description="启动后所属的 project id ",
+        description="拉起该 cell 的治理域 (project) 标识.",
     )
-    state: Literal['starting', 'alive', 'stopped'] = Field(
-        default='stopped',
-        description="节点当前的状态.",
+    cwd: str = Field(
+        description="进程工作目录, 绝对路径.",
     )
-    version: int = Field(
-        default=0,
-        description="更新和广播时的自增计数. 用于防止低版本覆盖高版本. ",
-    )
-    updated: float = Field(
-        default_factory=time.time,
-        description="最后更新的时间戳"
-    )
-    pid: int = Field(
-        default=0,
-        description="节点的进程 Id. 为 0 表示未运行."
-    )
-    failure: str = Field(
-        default='',
-        description="节点的致命故障讯息."
-    )
+    # UU-10 纪律: 相对路径只活在 API 边界一瞬间, 咽喉以下 (含 ledger) 只存在绝对路径.
     stdout_log: str = Field(
         default='',
-        description='是否有 stdout log, 有的话给予绝对路径. '
+        description="stdout 日志文件绝对路径, 空表示未重定向.",
     )
     stderr_log: str = Field(
         default='',
-        description="是否有 stderr log, 有的话给予绝对路径."
+        description="stderr 日志文件绝对路径, 空表示未重定向.",
+    )
+    spawner: str = Field(
+        default='',
+        description="拉起者标识 (host cell 的 address, 或 'cli'). owner 归属线索.",
     )
 
-    @classmethod
-    def from_proc(cls) -> 'CellStatus':
-        return cls(
-            pid=os.getpid(),
-            state='starting',
-            failure='',
-        )
 
-
-class Cell(BaseModel):
+class CellPresence(BaseModel):
     """
-    运行时发现的节点完整讯息.
+    network 域 (网络真相) 的数据模型 — 一个入网 cell 的 announce payload.
+
+    远端对一个 cell 的全部认知来自这里: 膜 (channel 接口描述) + 生命状态.
+    收到 presence 即可判断: 它提供什么能力 (channel_interface)、
+    现在能不能用 (state / failure)、要不要接纳它的膜 (accept / deny).
     """
+    # -- §UU-3 可行动性判据: 消费者能对这条信息采取行动, 它才上 announce.
+    #    degraded / failure 摘要可行动 (不路由 / 通知 owner) → 在这里;
+    #    pid / 日志路径不可行动 → 永不在这里 (归 CellRecord).
+    #    行业同构: k8s API server 只有 conditions, MAINPID 归 kubelet/init 自己.
+    # -- §UU-11 膜承诺的关键推论: payload 必须携带 channel 接口描述 — 否则模型要
+    #    先 proxy 连上才知道对方提供什么, 自迭代循环断在第一步.
+    #    接口描述全文 vs 摘要+按需 query 未定, 属分发级细节, 字段先占 str.
+    # -- host 角色 = 运行时事实 (抢到 listen 端口者, UU-1.2), 不是 CELL.md 声明.
+    #    原 HOST_TYPE 常量废除, is_host 的真相载体即本字段.
+    # -- 未来演进 (§UU-2): resources / 上下文变量等膜上运输类型只扩展本 payload
+    #    (membrane transport), 给治理面加零个动词. 膜可以变重, 治理不许变重.
+    # -- 命名沿 XMPP presence 先例 (UU-5).
 
-    meta: CellMetadata
-    launcher: CellLauncher
-    status: CellStatus = Field(default_factory=CellStatus)
-
-    @property
-    def name(self) -> str:
-        """节点的名称. 在 project 内部是无重复的. """
-        if self.meta.singleton:
-            return self.normalized_name
-        return self.unique_name
-
-    @property
-    def normalized_name(self) -> str:
-        return normalize(self.meta.name).lower()
-
-    @property
-    def unique_name(self) -> str:
-        """运行时确保唯一的名称. 用 uid 前 8 位防碰撞. """
-        name = normalize(self.meta.name)
-        return '_'.join([name, self.status.uid[:8]])
-
-    @property
-    def type(self) -> str:
-        return self.meta.type
-
-    @property
-    def identity(self) -> str:
-        """type/name. project 内稳定 id, 跨 cell 重启不变. 模型心智锚."""
-        return '/'.join([self.meta.type, self.meta.name])
-
-    @property
-    def cell_locker_name(self) -> str:
-        """
-        project 级别的 cell 单一锁, 用来防止 cell 重复启动.
-        """
-        if self.meta.singleton:
-            return '-'.join([self.meta.type, self.normalized_name])
-        # 争取名字可以自解释.
-        return '-'.join([self.meta.type, self.normalized_name, self.status.uid])
-
-    @property
-    def address(self) -> CellAddress:
-        """type/name/uid. network 唯一地址, uid 防 stale 与碰撞.
-        注意: 使用原始 meta.name (非 normalized) — name 含 / 会破坏路径假设, 由上层保证字面合法.
-        """
-        return '/'.join([self.meta.type, self.meta.name, self.status.uid])
-
-    @property
-    def channel_name(self) -> str:
-        """proxy channel 名 — 由 identity 派生, 模型读到就知道怎么调.
-        - singleton: normalize(identity).lower()
-        - non-singleton: + '_' + uid[:8] 防碰撞
-        """
-        base = normalize(self.identity).lower()
-        if not self.meta.singleton:
-            return f"{base}_{self.status.uid[:8]}"
-        return base
-
-    @property
-    def logger_name(self) -> str:
-        """cell 自身的日志名. 通常决定 matrix 的日志. """
-        return '.'.join(['moss', self.type, self.normalized_name, self.status.uid])
-
-    @classmethod
-    def new(
-            cls,
-            meta: CellMetadata,
-            launcher: CellLauncher | None = None,
-            status: CellStatus | None = None,
-    ) -> 'Cell':
-        """创建一个尚未运行的 cell."""
-        launcher = launcher or CellLauncher()
-        return cls(
-            meta=meta,
-            launcher=launcher,
-            status=status or CellStatus(),
-        )
-
-    @property
-    def is_host(self) -> bool:
-        """是否是一个 host 节点. """
-        return self.meta.type == HOST_TYPE
-
-    @classmethod
-    def from_proc(cls) -> 'Cell':
-        """从当前进程中还原 cell 信息. 通常只在启动 Cell 时调用."""
-        return cls(
-            meta=CellMetadata.from_proc(),
-            launcher=CellLauncher.from_proc(),
-            status=CellStatus.from_proc(),
-        )
-
-    @classmethod
-    def from_manifest(cls, manifest: CellManifest, *, status_from_proc: bool = True) -> 'Cell':
-        """从 Manifest 构造 Cell."""
-        return cls(
-            meta=manifest.meta(),
-            launcher=manifest.launcher,
-            status=CellStatus.from_proc() if status_from_proc else CellStatus(),
-        )
-
-    def as_manifest(self, instruction: str = '') -> CellManifest:
-        """提取 Manifest 部分."""
-        data = self.meta.model_dump()
-        data['launcher'] = self.launcher
-        data['instruction'] = instruction
-        return CellManifest(**data)
-
-    def is_alive(self) -> bool:
-        if self.status.state != 'alive' or self.status.pid == 0:
-            return False
-        try:
-            p = psutil.Process(self.status.pid)
-            # 严格校验：确保这个 PID 不是僵尸进程.
-            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return False
-
-    def update(self):
-        self.status.version += 1
-        self.status.updated = time.time()
-
-    def set_alive(self, pid: int | None = None) -> None:
-        """标记 cell 为 alive 状态.
-
-        pid 为 None 时使用当前进程 PID.
-        调用方 (Matrix bootstrap / Host) 应在 cell 成功启动后调用此方法.
-        """
-        self.status.pid = pid or os.getpid()
-        self.status.state = 'alive'
-        self.status.failure = ''
-        self.update()
-
-    def set_failed(self, reason: str) -> None:
-        """标记 cell 为 stopped 状态并记录失败原因."""
-        self.status.state = 'stopped'
-        self.status.failure = reason
-        self.update()
-
-    def to_json(self) -> str:
-        return self.model_dump_json(
-            ensure_ascii=True, indent=0,
-            exclude_defaults=True, serialize_as_any=True,
-        )
-
-    @classmethod
-    def discover(
-            cls,
-            env: Environment | None = None,
-            *,
-            cell_runtime_dir: Path | None = None,
-    ) -> 'Cell':
-        """从环境中发现当前的 Cell.
-
-        优先从运行时文件恢复; 无文件时从当前进程构造.
-        不做进程生命期治理 — 冲突检测 / 旧进程清理由 Matrix 层负责.
-        """
-        env = env or Environment.discover()
-        address = env.this_cell_address
-        if address:
-            runtime_dir = cell_runtime_dir or env.cell_runtimes_dir
-            file = runtime_dir / cls.make_runtime_filename(address)
-            if file.exists():
-                try:
-                    return cls.read_from_runtime_file(file)
-                except Exception:
-                    pass
-        return cls.from_proc()
-
-    def write_runtime_file(self, cell_runtime_dir: Path | None = None) -> None:
-        """写入运行时注册文件. 在一个项目中的注册文件可以用来判断哪些 cell 启动和运行状态. """
-        cell_runtime_dir = cell_runtime_dir or Environment.discover().cell_runtimes_dir
-        file_path = self.runtime_filepath(cell_runtime_dir)
-        data = self.to_json()
-        file_path.write_text(data)
-
-    def runtime_filepath(self, scope_dir: Path) -> Path:
-        filename = self.make_runtime_filename(self.address)
-        return scope_dir.joinpath(filename)
-
-    @staticmethod
-    def make_runtime_filename(cell_address: str) -> str:
-        address = normalize(cell_address)
-        return f"cell-{address}.json"
-
-    @classmethod
-    def find_runtime_cells(cls, directory: Path | None = None, *, throw: bool = False) -> Iterable['Cell']:
-        directory = directory or Environment.discover().cell_runtimes_dir
-        for file in directory.glob('cell-*.json'):
-            try:
-                yield cls.read_from_runtime_file(file)
-            except Exception as e:
-                if throw:
-                    raise e
-
-    @classmethod
-    def read_from_runtime_file(cls, file: Path) -> 'Cell':
-        """
-        父子进程启动 Cell 的方式:
-        父进程写入子进程节点的 runtime file, pid 为 0.
-        传入 address 环境变量启动子进程.
-        子进程读取 runtime file, 获得 Cell,  更新 pid 并且启动.
-        """
-        cell = cls.model_validate_json(file.read_text(encoding='utf-8'))
-        return cell
-
-    def launch_cwd(self, cwd: Path | None = None) -> Path:
-        cwd = cwd or Path.cwd()
-        if self.launcher.cwd:
-            cwd = cwd / self.launcher.cwd
-            return cwd.resolve()
-        return cwd
-
-    def launch_program(self) -> str:
-        if self.launcher.interpreter == 'python':
-            return sys.executable
-        elif self.launcher.interpreter:
-            # cwd 相对或绝对路径.
-            return self.launcher.interpreter
-        else:
-            return self.launcher.cmd
-
-    def launch_args(self) -> list[str]:
-        args = []
-        if self.launcher.interpreter and self.launcher.cmd:
-            args.append(self.launcher.cmd)
-
-        if self.launcher.arguments:
-            args.extend(shlex.split(self.launcher.arguments))
-        return args
+    address: CellAddress = Field(
+        description="cell 的网络地址.",
+    )
+    alias: str = Field(
+        default='',
+        description="治理域内的别名, 模型可读的称呼.",
+    )
+    state: CellState = Field(
+        default=CellState.READY,
+        description="生命周期状态. announce 到达即 ready.",
+    )
+    failure: str = Field(
+        default='',
+        description="故障摘要. 非空表示 cell 自报告了可行动的异常.",
+    )
+    project_id: str = Field(
+        default='',
+        description="cell 所属治理域 (project) 标识. 软分组标签, 供视图过滤.",
+    )
+    # UU-1.10: 本地/远端分离用 project_id 数据标签 + 视图过滤,
+    # 不做 namespace 原生切分 (硬隔离用 --scope 原语).
+    is_host: bool = Field(
+        default=False,
+        description="是否是当前网络的 host (运行时事实).",
+    )
+    channel_interface: str = Field(
+        default='',
+        description="膜: 该 cell 提供的 channel 接口描述. "
+                    "模型据此决定是否 accept 它的能力.",
+    )
+    updated: float = Field(
+        default_factory=time.time,
+        description="本 presence 最后更新的时间戳.",
+    )
 
 
 class CellRegistry(ABC):
     """
-    Project 级别的 Cell 发现和注册中心.
+    inventory 域的只读发现入口: 扫描治理域领地内的 CELL.md 声明.
 
-    负责静态发现 (CELL.md 文件扫描)、本地运行时注册、
-    以及本地进程 spawn
+    只回答 "领地里装了什么", 不拉起、不杀灭、不持有任何运行时状态.
     """
+    # -- TT-11: registry 退化为 glob(CELL.md), 与 features 套件同构.
+    #    发现 (inventory, 有界) 与 spawn 能力 (从哪都能拉, 无远弗届) 是两个问题, 不熔.
+    #    原 spawn_cell / kill_all_runtime_cells / runtime file 读写 / dump_spawn_env
+    #    全部移除: spawn 归 run_cell 咽喉 (UU-10), kill 归 CLI (ledger 唯一读者, UU-6).
+    # -- 挂载位置 = project.cells, 不在 Matrix 上 (UU-10).
 
     @abstractmethod
     def list_cell_manifests(
             self,
             refresh: bool = True,
             *,
-            installed: bool = True,
+            installed: bool | None = None,
             include: list[MatchPattern] | None = None,
             exclude: list[MatchPattern] | None = None,
     ) -> dict[RelativePath, CellManifest]:
         """
-        列出所有环境中静态发现的 Cell 声明.
+        列出领地内发现的全部 Cell 声明.
         :param refresh: 重新扫描文件系统.
-        :param installed: 是否只返回已安装的.
+        :param installed: None=全部; True=仅已安装; False=仅未安装.
         :param include: 匹配模式筛选.
         :param exclude: 排除模式筛选.
         """
         pass
 
     @abstractmethod
-    def get_cell_manifest(self, relative_path: str | Path) -> CellManifest | None:
-        """获取指定 目录 路径的 Cell 声明. 目录路径用 '/' 做分割 """
+    def get_cell_manifest(self, relative_path: 'str | Path') -> 'CellManifest | None':
+        """获取指定目录路径的 Cell 声明. 目录路径用 '/' 分割."""
         pass
-
-    @property
-    @abstractmethod
-    def cell_runtimes_dir(self) -> Path:
-        """管理 cells 的运行时文件. 通常就是 env 约定的路径. 否则会有问题. """
-        pass
-
-    def local_runtime_cells(self) -> list[Cell]:
-        """返回本地运行时注册的 cells."""
-        return list(Cell.find_runtime_cells(self.cell_runtimes_dir, throw=False))
-
-    def kill_all_runtime_cells(self) -> None:
-        """删除并消灭 runtime 中所有的 cells. """
-        cell_runtimes_dir = self.cell_runtimes_dir
-        for cell in Cell.find_runtime_cells(cell_runtimes_dir):
-            file = cell.runtime_filepath(cell_runtimes_dir)
-            if cell.status.pid:
-                self.recursively_kill_process(cell.status.pid)
-            file.unlink()
-
-    @staticmethod
-    def recursively_kill_process(pid: int) -> None:
-        try:
-            parent = psutil.Process(pid)
-            # recursive=True 找出的子进程列表，默认就是从外围孙子到核心儿子的拓扑序
-            for child in parent.children(recursive=True):
-                try:
-                    child.kill()  # 遇到已经死掉的子进程自动忽略
-                except psutil.NoSuchProcess:
-                    pass
-            parent.kill()  # 最后强杀父进程本身
-        except psutil.NoSuchProcess:
-            pass  # 父进程本身就不存在
 
     @staticmethod
     def match_cells(
@@ -658,10 +477,7 @@ class CellRegistry(ABC):
             *,
             exclude: list[MatchPattern] | None = None,
     ) -> Iterable[tuple[RelativePath, CellManifest]]:
-        """基于 fnmatch 通配符筛选 Cell.
-
-        include 为空时返回全部 (仅受 exclude 约束).
-        """
+        """基于 fnmatch 通配符筛选 Cell. include 为空时返回全部 (仅受 exclude 约束)."""
         include_patterns = set(include) if include else set()
         exclude_patterns = set(exclude or [])
 
@@ -674,346 +490,8 @@ class CellRegistry(ABC):
                     continue
             yield relative_path, cell
 
-    @abstractmethod
-    def dump_spawn_env(self, address: str) -> dict[str, str]:
-        """返回一个给子节点准备的环境变量. """
-        pass
-
-    async def spawn_cell(
-            self,
-            manifest: CellManifest,
-            *,
-            stdout: int | None = asyncio.subprocess.DEVNULL,
-            stderr: int | None = asyncio.subprocess.DEVNULL,
-            start_new_session: bool = True,
-            kill_exists: bool = True,
-            env: dict[str, str] | None = None,
-    ) -> asyncio.subprocess.Process:
-        """
-        基于 Manifest 在本地启动一个 cell 子进程.
-        不包含生命周期治理 —— 生命周期由调用方管理.
-        """
-        # 1. 创建 Cell 对象, pid 设置为 0. 更新 launcher 内的路径为绝对路径.
-        # 2. 写入 runtime scopes 目录.
-        # 3. 使用 manifest.launcher 创建子进程. 治理好 stdout 与 stderr.
-        # pid 应该是空.
-        cell = Cell.from_manifest(manifest, status_from_proc=False)
-        # 判断旧 cell 文件如何处理.
-        runtime_dir = self.cell_runtimes_dir
-        file = cell.runtime_filepath(runtime_dir)
-        if file.exists():
-            exists = None
-            try:
-                exists = Cell.read_from_runtime_file(file)
-            except Exception:
-                pass
-            if exists:
-                if exists.is_alive() and not kill_exists:
-                    raise RuntimeError(f"Cell {cell.address} already running")
-                self.recursively_kill_process(cell.status.pid)
-            file.unlink()
-        # 先添加到环境. 写入运行环境.
-        # 这样节点从环境中发现时, 会拿到 pid 为 None 的完整配置.
-        # 准备好子进程的 env, 与父进程共享, 同时传入 address 身份.
-        env_data = os.environ.copy()
-        update = self.dump_spawn_env(cell.address)
-        env_data.update(update)
-        if env:
-            env_data.update(env)
-
-        cell.write_runtime_file(runtime_dir)
-        try:
-            proc = await asyncio.subprocess.create_subprocess_exec(
-                cell.launch_program(),
-                *cell.launch_args(),
-                cwd=cell.launch_cwd(),
-                start_new_session=start_new_session,
-                env=env_data,
-                stdout=stdout,
-                stderr=stderr,
-            )
-        except Exception:
-            if file.exists():
-                file.unlink()
-            raise
-        return proc
-
 
 class DuplicatedError(RuntimeError):
-    """cell 重复启动异常."""
-
-
-class CellLog(BaseModel):
-    """CellNetwork 上轻量事件 — 不广播 cell snapshot, 只广播事件信号 (§SS-2).
-
-    用途: status 变更 (failure/degraded 等中间态), cell 死亡通知, channel ready/gone.
-    接收方语义:
-    - terminal=False → append log + 触发 follow-up query 刷新 cache.
-    - terminal=True  → append log + pop cache entry, 不 query (cell 已没了).
-    """
-
-    address: CellAddress = Field(
-        description="事件来源 cell 的 address (含 uid, 网络精确)."
-    )
-    content: str = Field(
-        default='',
-        description="自由文本事件内容. 第一期不约定 enum — 隐藏 type 留在心里, 不暴露给模型."
-    )
-    timestamp: float = Field(
-        default_factory=time.time,
-        description="事件产生时刻."
-    )
-    terminal: bool = Field(
-        default=False,
-        description="True 表示 cell 已没了, 接收方别 query, 直接删 cache."
-    )
-
-
-class CellNetwork(ABC):
-    """
-    Cell 网络通讯层 — cell 发现 + provider/proxy 单一真相源.
-
-    屏蔽底层 hub (zenoh / 未来 IPC 等) 的差异性. 调用方拿到 CellNetwork 就拿到了:
-    - 网络上谁在线 (get_live_cells / live_cells)
-    - 状态变更轻量事件 (recent_logs, broadcast_log)
-    - 跨 cell 通讯通道 (provide / proxies / get_proxy / wait_connected)
-    - 上下文唤醒回调 (on_change / on_provider_online / on_provider_offline)
-
-    二元真相承诺 (§NN):
-      live_cells() 返回的是延迟视图. 只承诺 online/offline 准确, status 字段可能滞后到
-      下次 reconcile. 需要实时 status 的调用方必须 get_live_cells(refresh=True).
-      cell 想让网络知道 degraded, 应主动 revoke_cell + update_cell — liveness DELETE+PUT
-      会传出去. 这是 cell 有意识的传播, 不是框架默认行为.
-
-    底层原语 (zenoh 实现):
-    1. liveness: 声明自己存活和下线. PUT=上线 DELETE=下线 subscriber 实时感知.
-    2. queryable: 通过地址按需拉取 Cell snapshot.
-    3. logs publisher/subscriber: 轻量事件 (CellLog) 广播, 不广播 snapshot.
-
-    缓存机制:
-    1. seed: 全量 liveness get + queryable, 启动缓存.
-    2. liveness subscriber: 上线 PUT → query + 写 cache; 下线 DELETE → pop cache.
-    3. log subscriber: terminal=False → re-query 刷 cache; terminal=True → 提前 pop cache.
-    4. reconcile loop: 低频全量对账, 兜底极端丢事件.
-    """
-
-    # ── 标识 ──────────────────────────────────────────────────────────
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """通常用于 debug. """
-        ...
-
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        ...
-
-    @property
-    @abstractmethod
-    def scope(self) -> str:
-        """通讯子空间标识. 同一 scope 下的 cell 可以互相发现, scope 之间隔离.
-        zenoh key 空间: MOSS/matrix/scopes/{scope}/cells/...
-        Host 节点同时发布到 scope 空间和 hosts 空间.
-        """
-        ...
-
-    # ── 发现 ──────────────────────────────────────────────────────────
-
-    @abstractmethod
-    async def get_host(self) -> Cell | None:
-        """尝试获取当前 Network 内的 Host 节点."""
-        ...
-
-    @abstractmethod
-    async def all_hosts(self) -> list[Cell]:
-        """返回所处网络中所有的 host 节点 (跨 scope)."""
-        ...
-
-    @abstractmethod
-    async def get_live_cells(
-            self,
-            *,
-            type: str | None = None,
-            local: bool | None = None,
-            refresh: bool = False,
-    ) -> dict[CellAddress, Cell]:
-        """
-        主动获取当前网络中在线的 cell.
-
-        :param type: 仅返回指定 type 的 cell (开放命名空间, 'host' / 'worker' / 用户自定义).
-        :param local: None=不过滤; True=仅本 project; False=仅其它 project.
-                     "local" 判定: cell.status.project_id == self_project_id.
-                     如果 CellNetwork 不知道 self_project_id, local 过滤一律忽略.
-        :param refresh: True=全量 liveness get + queryable refresh, False=读 cache.
-        """
-        ...
-
-    @abstractmethod
-    def live_cells(self) -> dict[CellAddress, Cell]:
-        """直接通过 cache 获取 cells (零延时, 延迟视图)."""
-        ...
-
-    @abstractmethod
-    def on_change(self, callback: Callable[[Cell, bool], None]) -> None:
-        """注册 callback, 监听 (Cell, online) 的改动.
-
-        回调可能在 zenoh subscriber 线程或 reconcile loop 任务中触发,
-        caller 负责线程安全.
-        """
-        ...
-
-    # ── 唯一性 ────────────────────────────────────────────────────────
-
-    @abstractmethod
-    async def check_unique(self, cell: Cell) -> None:
-        """检查 cell 在网络上是否唯一可宣告.
-
-        - singleton 节点: 同 identity (type/name) 在 scope 内不允许多个.
-          实现层面: 查 identity wildcard, 命中即冲突.
-        - non-singleton 节点: 同 address (含 uid) 不允许重复.
-          实现层面: 查 address exact 即可.
-
-        :raise DuplicatedError: 已被别处声明.
-        """
-        ...
-
-    # ── 轻量事件 (CellLog) ─────────────────────────────────────────────
-
-    @abstractmethod
-    async def broadcast_log(
-            self,
-            address: CellAddress,
-            content: str,
-            *,
-            terminal: bool = False,
-    ) -> None:
-        """向 network 广播一个 CellLog 事件 (§SS-2).
-
-        不广播 cell snapshot — 接收方按需 query cache.
-
-        terminal=True 触发场景:
-        - 自身 revoke_cell 时
-        - 观察到 liveness DELETE → 自动 broadcast cell-gone (terminal=True)
-        - CellsManager 观察到 ProcessManager on_exit → broadcast exited (terminal=True)
-        """
-        ...
-
-    @abstractmethod
-    def recent_logs(
-            self,
-            *,
-            limit: int = 20,
-            local: bool | None = None,
-    ) -> list[CellLog]:
-        """最近 CellLog 时间窗口 (ring buffer).
-
-        :param limit: 返回条数上限 (FIFO, 最新优先).
-        :param local: None=不过滤; True=仅本 project 的 cell; False=仅其它 project.
-        """
-        ...
-
-    # ── 宣告 ──────────────────────────────────────────────────────────
-
-    @abstractmethod
-    async def update_cell(self, cell: Cell, *, log: str = '') -> None:
-        """声明一个 Cell 的存在, 或更新 cell 的数据.
-
-        首次更新前检查 liveness 唯一性, 然后宣告 liveness + queryable.
-        如果是 Host 节点, 同时被广播到特殊的 hosts 命名空间下.
-
-        :param log: 若非空, 同时 broadcast_log(address, log) (terminal=False).
-        :raise DuplicatedError: 已被别处声明.
-        """
-        ...
-
-    @abstractmethod
-    async def revoke_cell(self, cell: Cell, *, log: str = '') -> None:
-        """取消网络中对一个 cell 的声明.
-
-        :param log: 若非空, 同时 broadcast_log(address, log, terminal=True).
-        :raise LookupError: 并不是自己 update 过的 cell.
-        """
-        ...
-
-    # ── channel (provider/proxy) ─────────────────────────────────────
-
-    @abstractmethod
-    async def provide(
-            self,
-            channel: Channel,
-            *,
-            address: CellAddress | None = None,
-    ) -> ChannelProvider:
-        """将 Channel 通过本 network 暴露出去, 让远端 cell 能 proxy 到.
-
-        三层调用: matrix.provide → network.provide → hub.provider.
-
-        :param address: 必须是已 update 过的 cell address (自己 own 的).
-                       None 时由实现决定 (Matrix 通常会传 self.this.address).
-        :raise ValueError: address 为 None 且实现无默认.
-        """
-        ...
-
-    @abstractmethod
-    def proxies(self) -> dict[CellAddress, ChannelProxy]:
-        """当前自动构建的全部 proxy. 每个 key 对应一个网络上观察到的 provider.
-
-        触发链: zenoh hub liveness PUT (channels_ns/{address}) → CellNetwork
-        自动 build proxy → 放入 proxies dict → broadcast_log "channel-ready".
-
-        第一期约束 (§SS-5): 只有 host 视角的 CellNetwork 才会构建 proxy.
-        worker 视角的 network proxies() 永远空.
-        """
-        ...
-
-    @abstractmethod
-    def get_proxy(self, address: CellAddress) -> ChannelProxy | None:
-        """按 address 取 proxy. 不存在返回 None."""
-        ...
-
-    @abstractmethod
-    async def wait_connected(
-            self,
-            address: CellAddress,
-            *,
-            timeout: float = 30,
-    ) -> bool:
-        """等待 address 对应的 proxy 上线并可用.
-
-        实现: 注册 on_provider_online callback + 检查 proxies() 当前是否已含 address.
-        :return: True=超时前 ready, False=超时.
-        """
-        ...
-
-    # ── channel 上下线回调 ────────────────────────────────────────────
-
-    @abstractmethod
-    def on_provider_online(
-            self,
-            callback: Callable[[CellAddress], None],
-    ) -> Callable[[], None]:
-        """注册 provider 上线回调. 返回 unsubscribe 函数.
-
-        回调可能在 zenoh 后台线程 fire, 调用方负责线程安全.
-        """
-        ...
-
-    @abstractmethod
-    def on_provider_offline(
-            self,
-            callback: Callable[[CellAddress], None],
-    ) -> Callable[[], None]:
-        """注册 provider 下线回调. 返回 unsubscribe 函数."""
-        ...
-
-    # ── 生命周期 ──────────────────────────────────────────────────────
-
-    @abstractmethod
-    async def __aenter__(self) -> Self:
-        ...
-
-    @abstractmethod
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        ...
+    """cell 重复启动异常. singleton 声明的执法产物, 错误信息应引用声明原文."""
+    # TT-12: 第二实例被拒时的错误信息本身就是 prompt
+    # ("g1 声明了硬件单点, 地址 X 已有活实例"), code as prompt 在错误路径上的延伸.
