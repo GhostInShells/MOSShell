@@ -279,6 +279,10 @@ class JobSupervisorImpl(JobSupervisor):
                 return j
         return None
 
+    def new(self) -> "JobSupervisorImpl":
+        # 复制内部依赖引用, 状态归零 (jobs/history 独立). peer 未启动, owner 自负 async with.
+        return JobSupervisorImpl(subprocesses=self._sp, logger=self.logger)
+
     async def __aenter__(self) -> "JobSupervisorImpl":
         self._started = True
         self.logger.info("JobSupervisor started")

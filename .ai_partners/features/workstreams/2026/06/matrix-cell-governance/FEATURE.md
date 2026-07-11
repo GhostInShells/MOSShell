@@ -12,8 +12,16 @@ description: >-
   Matrix cell 体系治理总任务。从 circusd 死胡同出发, 历经六轮设计-推翻循环,
   收敛为: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence),
   六动词治理代数, ledger 单写者, Presence/Watcher 拆分, moss_self CLI 合流。
-  当前有效契约 = §TT/§TT续 + §UU + §VV + §WW。终局服务于模型运行时自迭代。
+  当前有效契约 = §TT/§TT续 + §UU + §VV + §WW + §XX。终局服务于模型运行时自迭代。
 status_note: >-
+  2026-07-12 claude-opus-4-7 Subprocesses/JobSupervisor Provider 面定案 (§XX):
+  两个 Provider (都 singleton), JobSupervisor 契约加 .new() 方法作 IoC 复制姿态 —
+  依赖引用 copy 内部封装 / 变量走 .new() 显式参数 / 不用 container.make(kwargs=)
+  以保 IoC 自解释性. JobSupervisor 契约不长 Matrix 反向依赖 (拆走 Matrix 纯 lib 场景也能用).
+  四个否定纪念碑钉正文: root+group 拆分 / supervisor 持 path/cwd / 不写 Provider 让 Matrix 直构造 /
+  matrix.jobs() 作 factory. Opus 4.7 因反 factory 直觉三次跑偏, 人类连推三次纠正到位.
+  下一步: Matrix wire 阶段接入 Provider (不在本次任务).
+  --
   2026-07-10 claude-fable-5 cell 侧化身会话 (§WW): ExecSpec 定型 — command/args/env 纯 argv (MCP 同形),
   interpreter 字段死, 默认 sys.executable (修正 UU-5 "字段不变"); uv 判决从 git 历史复活钉回正文
   (全 uv run 两次实证死亡, 自动检测死路原则); 向上认亲 + 多脚本一 cell + singleton 域 = cell 身份
@@ -879,5 +887,69 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
 - 本节结论按 VV-1 纪律落入实现 comments (code as prompt), 技术目标不入 docstring.
 - 分发级细节 (不阻塞抽象层): 环境卫生 unset 清单; `run:` string|list 双接受;
   `entrypoints:` 列表 (WW-4 待拍板).
+
+## §XX. Subprocesses/JobSupervisor Provider 面 + IoC 复制方法论 (2026-07-12)
+
+> 抽象层已交付 (commit c8d285c4 契约 / 31ca6e06 实现+测试, 55/55 通过).
+> 本节记录 Provider 面定案与三个否掉方案 — 钉住防复推.
+> 本节**取代 §XX 前一版**中 "不写 Provider / matrix.jobs() factory / 从 Matrix 借"
+> 的错误结论 (那一版基于 Opus 4.7 反 factory 直觉不接受 `instance.new()` 反范式,
+> 被人类连推三次纠正到位).
+
+### XX-1. 方法论钉子: IoC 复制姿态 = `instance.new(**variables)`, 不是 `container.make(kwargs=)`
+
+- **依赖 (Subprocesses/logger) = 内部封装, 由 `.new()` 引用 copy 传递, 消费者零知情.**
+- **变量 (per-owner 参数) = 外部, 作为 `.new()` 显式参数** (当前 `.new()` 零参数, 未来若
+  真出现 per-owner 变量再加).
+- **IoC 自解释性的核心承诺 = "fetch 即用, wiring 我搞定"**. `container.make(ABC, kwargs=)`
+  让消费者半懂 wiring 半懂 IoC, 承诺破裂. `.new()` 反过来 — wiring 完全封装在实例内,
+  消费者只面对 "变量".
+- 本项目通用约定, 不止 JobSupervisor 一个抽象适用. 未来任何"依赖 + per-owner 变量"
+  的组合都走这条 (方法层 factory), 不引入 `container.make(kwargs=)`.
+
+### XX-2. Subprocesses = per-Matrix singleton via Provider
+
+- **`HostSubprocessesProvider`** (`singleton=True`): factory 从 IoC 拿 Workspace + Logger,
+  `cwd = ws.root().abspath()`, `output_dir = ws.runtime().sub_storage("subprocesses").abspath()`
+  (TT-6 "边界做成环境", cwd/output 自动落治理域内, 无知代码也界内).
+- Matrix wire 时通过 `_lifecycle_level_contracts()` yield `Subprocesses` 或
+  `register_lifecycle_object` 接入 async lifecycle stack. **不融合** — Provider 只负责
+  new 实例, Matrix 只负责 async 启停, 两阶段解耦.
+- 代价: 早 IoC bootstrap fetch 拿到未启动实例 (与 Session/TopicService 同规格).
+  消费者知道要在 Matrix lifecycle 就绪后再 fetch.
+
+### XX-3. JobSupervisor = IoC singleton + `.new()` 复制 (契约独立于 Matrix)
+
+- 契约层加一个方法: **`JobSupervisor.new() -> JobSupervisor`** — 派生隔离 peer,
+  内部依赖引用 copy, 状态 (jobs/history) 归零, peer 未启动 (owner 自负 async with).
+- **`HostJobSupervisorProvider`** (`singleton=True`): factory `sp = con.force_fetch(Subprocesses); return JobSupervisorImpl(subprocesses=sp)`.
+- **契约不长 Matrix 反向依赖** — JobSupervisor 只知道 Subprocesses 的存在, 不知道 Matrix
+  存在. 拆走 Matrix (纯 lib 场景) 也能用, 给个 Subprocesses 就行.
+- 消费者姿态: `root = container.force_fetch(JobSupervisor); peer = root.new(); async with peer: ...`.
+  UU-10 表面积中 `matrix.jobs` 保留为**属性** — 语义 = IoC 里那个 singleton root 的便利 shortcut,
+  不是 factory 方法 (与 XX 前一版 `matrix.jobs()` 结论对立, 以本节为准).
+
+### XX-4. 四个否掉的方案 (钉住防复推)
+
+1. **JobSupervisor 拆 root + JobGroup** — 为迎合 IoC singleton 硬拗的过度设计.
+   `groups()` 方法直接违反 SS-9 "无全局任务板" (TT-4 per-owner 哲学);
+   name 无 groups 后退化成 log label, 不进 API 面. 结构服从工具的坏味道.
+2. **`new(path)` / `clone()` 持 cwd 状态** — cwd 已 TT-3 移入 `JobSpec.cwd`, supervisor
+   不持目录状态, 无隔离信息可传, `new(path)` 无对象.
+3. **不写 Provider, Matrix 直接构造 + register** — 表面上"lifecycle 一条路径", 实际
+   代价是 Subprocesses/JobSupervisor **反向依赖 Matrix**, 变成不可拆卸模块.
+   未来支付的重构代价 >> Provider 集成成本. Provider factory 同步 new + Matrix 通过
+   `_lifecycle_level_contracts()` 接 async 启停 = host 已有标准桥, 不是融合.
+4. **`matrix.jobs()` 方法作 factory** — 反向依赖 Matrix 同问题. `matrix.jobs` 属性
+   作 IoC shortcut 无问题 (语义 = `container.force_fetch(JobSupervisor)`);
+   派生 peer 走 `matrix.jobs.new()` 或 `container.force_fetch(JobSupervisor).new()`.
+
+### XX-5. 命名收敛
+
+- `Subprocesses` (UU-1.3 定案) — 名词复数, 无 Manager 抽象引力.
+- `JobSupervisor.new()` — 实例方法, 复制姿态 (方法论钉子 XX-1 的应用).
+- `matrix.jobs` 属性 — UU-10 表面积成员位保留, 语义 = IoC singleton 的便利 shortcut.
+- 抽象层 60/60 测试通过 (55 原有 + 5 `.new()` 隔离系), Provider 面待 Matrix wire 阶段
+  接入验证.
 
 

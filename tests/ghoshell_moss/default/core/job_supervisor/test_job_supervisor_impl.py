@@ -359,3 +359,64 @@ class TestConcurrency:
             snaps = await asyncio.gather(j1.wait(), j2.wait(), j3.wait())
             for snap in snaps:
                 assert snap.status == JobStatus.FINISHED
+
+
+# ============================================================
+# .new() — IoC 复制姿态
+# ============================================================
+
+
+class TestNew:
+
+    @pytest.mark.asyncio
+    async def test_new_shares_subprocesses(self, tmp_cwd, tmp_output):
+        async with running_jobs(tmp_cwd, tmp_output) as root:
+            peer = root.new()
+            assert peer._sp is root._sp
+
+    @pytest.mark.asyncio
+    async def test_new_state_isolated(self, tmp_cwd, tmp_output):
+        async with running_jobs(tmp_cwd, tmp_output) as root:
+            peer = root.new()
+            async with peer:
+                j_root = root.submit(JobSpec(name="on-root", args=("true",), times=1))
+                j_peer = peer.submit(JobSpec(name="on-peer", args=("true",), times=1))
+                await asyncio.gather(j_root.wait(), j_peer.wait())
+                assert j_root in root.jobs()
+                assert j_peer not in root.jobs()
+                assert j_peer in peer.jobs()
+                assert j_root not in peer.jobs()
+
+    @pytest.mark.asyncio
+    async def test_new_before_root_entered(self, tmp_cwd, tmp_output):
+        # 根实例即使未 async with, .new() 也能派生可启用 peer.
+        from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
+        sp = SubprocessesImpl(cwd=tmp_cwd, output_dir=tmp_output)
+        async with sp:
+            root = JobSupervisorImpl(subprocesses=sp)
+            peer = root.new()
+            async with peer:
+                job = peer.submit(JobSpec(name="peer_only", args=("true",), times=1))
+                snap = await job.wait()
+                assert snap.status == JobStatus.FINISHED
+
+    @pytest.mark.asyncio
+    async def test_peer_shutdown_leaves_root_alive(self, tmp_cwd, tmp_output):
+        async with running_jobs(tmp_cwd, tmp_output) as root:
+            peer = root.new()
+            async with peer:
+                j_peer = peer.submit(JobSpec(name="peer", args=("true",), times=1))
+                await j_peer.wait()
+            # peer 已关, root 仍可 submit
+            j_root = root.submit(JobSpec(name="root", args=("true",), times=1))
+            snap = await j_root.wait()
+            assert snap.status == JobStatus.FINISHED
+
+    @pytest.mark.asyncio
+    async def test_new_produces_new_instance(self, tmp_cwd, tmp_output):
+        async with running_jobs(tmp_cwd, tmp_output) as root:
+            peer1 = root.new()
+            peer2 = root.new()
+            assert peer1 is not peer2
+            assert peer1 is not root
+            assert peer2 is not root

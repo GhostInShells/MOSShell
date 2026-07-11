@@ -3,3 +3,5 @@ from .logger_provider import HostLoggerProvider
 from .topic_provider import ZenohTopicServiceProvider
 from .configs_provider import HostEnvConfigStoreProvider
 from .moss_session_provider import HostSessionProvider
+from .subprocesses_provider import HostSubprocessesProvider
+from .job_supervisor_provider import HostJobSupervisorProvider

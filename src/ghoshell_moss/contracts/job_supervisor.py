@@ -237,10 +237,16 @@ class Job(ABC):
 # -- JobSupervisor --
 
 class JobSupervisor(ABC):
-    """job 灶台 — 提交 / 查询 / 生命周期.
+    """job 灶台 — 提交 / 查询 / 复制 / 生命周期.
 
     每 owner 一实例. owner 关闭 (__aexit__) 时全部 job 停止,
     运行中的子进程随底层 Subprocesses 清场.
+
+    IoC 复制姿态: 消费者 ``container.force_fetch(JobSupervisor).new()``
+    拿一个隔离 peer, 内部依赖 (Subprocesses/logger) 引用共享,
+    状态 (jobs/history) 独立. owner 自负 ``async with`` 管生命周期.
+    这是本项目的通用约定 — 不通过 ``container.make(kwargs=)`` 半懂 wiring,
+    保 IoC 自解释性.
 
     使用方式::
 
@@ -266,6 +272,18 @@ class JobSupervisor(ABC):
     @abstractmethod
     def get(self, job_id: str) -> Job | None:
         """按 id 获取 job 句柄."""
+        ...
+
+    # -- 复制 --
+
+    @abstractmethod
+    def new(self) -> "JobSupervisor":
+        """派生一个隔离 peer 实例.
+
+        - 内部依赖 (Subprocesses/logger) 引用共享 — 消费者零 wiring 知情.
+        - 状态 (jobs/history) 独立 — peer 上 submit 不进本实例的账.
+        - peer 处于未启动状态, owner 需自负 async with 管生命周期.
+        """
         ...
 
     # -- 生命周期 --
