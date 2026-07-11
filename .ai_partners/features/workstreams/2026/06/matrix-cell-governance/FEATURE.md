@@ -12,8 +12,14 @@ description: >-
   Matrix cell 体系治理总任务。从 circusd 死胡同出发, 历经六轮设计-推翻循环,
   收敛为: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence),
   六动词治理代数, ledger 单写者, Presence/Watcher 拆分, moss_self CLI 合流。
-  当前有效契约 = §TT/§TT续 + §UU + §VV。终局服务于模型运行时自迭代。
+  当前有效契约 = §TT/§TT续 + §UU + §VV + §WW。终局服务于模型运行时自迭代。
 status_note: >-
+  2026-07-10 claude-fable-5 cell 侧化身会话 (§WW): ExecSpec 定型 — command/args/env 纯 argv (MCP 同形),
+  interpreter 字段死, 默认 sys.executable (修正 UU-5 "字段不变"); uv 判决从 git 历史复活钉回正文
+  (全 uv run 两次实证死亡, 自动检测死路原则); 向上认亲 + 多脚本一 cell + singleton 域 = cell 身份
+  (G1 一仓多组合互斥免费解决); CELL.md 用户故事九条 + 四弧; exit 弧 fold (owner 走 Subprocesses
+  done callback 不走网络). 实现纪律钉子: context 数据源永不读 ledger. 下一步: 按 §VV 块① 起草抽象层.
+  --
   2026-07-10 claude-fable-5 开工定案 (§VV): 模型全权起草抽象层 (技术目标入 comments 不入 docstring),
   人类 IDE 改名+review. 四条挡板 + 块①金丝雀. 十三步拓扑路线图已记录 (FEATURE.md 裁剪 → env 先行 →
   cell/matrix 重绘 → 7-8 并行实现 → wire up → moss-as-mcp 验证 → 第一个 cells channel →
@@ -74,7 +80,8 @@ circusd 被设计为独立系统守护进程，它的核心能力（重启、监
 > 本节是六轮设计-推翻循环的压缩摘要, 只保留演进弧线, 细节不再维护.
 > 各阶段全文在 git 历史中: `git log --follow -p -- <本文件>`,
 > 或按下列日期检索对应 commit. 当前有效契约 = §TT/§TT续 (地基) +
-> §UU (结构闭合) + §VV (执行决策与路线图), 冲突处一律以后者为准.
+> §UU (结构闭合) + §VV (执行决策与路线图) + §WW (ExecSpec 定型与使用故事),
+> 冲突处一律以后者为准.
 
 **演进弧线** (每轮: 做了什么 → 后来怎么被取代):
 
@@ -731,5 +738,146 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
   让人类能按抽象逐个进入.
 - 抽象层 PR 小批发 (VV-1 挡板③) 就是为这个带宽设计的.
 - comments 里的技术目标是给这个 review 过程的输入, 不是装饰.
+
+---
+
+## §WW. ExecSpec 定型与 CELL.md 使用故事 (2026-07-10, cell 侧化身会话)
+
+> 本 workstream 由并行化身分工推进, 本节出自侧重 cell 的会话.
+> 本节**修正 UU-5 的 ExecSpec 行 ("CellLauncher 改名 ExecSpec, 字段不变" 中
+> "字段不变" 作废)**, 细化 TT-13/TT-15, 冲突处以本节为准.
+
+### WW-0. 方法论教训: 被裁剪进 git 的结论等于不存在的结论
+
+2026-06-10 的 uv 判决 (WW-2) 随历史章节裁剪只存在于 git log, 导致人类与模型在
+2026-07-10 第三次走到同一岔口重新推演 (人类顺行性遗忘 + 模型会话失忆,
+唯一共享海马体是本文件正文). 裁剪纪律修正: **判决类结论 (走过且封死的路)
+必须以摘要钉在正文, 只裁过程不裁判决.**
+
+### WW-1. 病灶定性与行业勘察: exec spec 的公约数是 argv, 零语义
+
+- interpreter 字段的病 = **launcher ⊗ package 融合** (启动声明兼任环境归属);
+  v1 六坑 (TT-13) 是同病反向发作 (PEP723 包描述被迫兼任启动声明).
+  TT-1 融合检验在同一条缝上两次失败.
+- 行业勘察: ROS2 = workspace(环境)/package(分发)/launch(组合) 三正交,
+  launch 文件从不声明解释器 (环境靠 source setup.bash); Erlang release 入口脚本
+  自相对解析 (`$SCRIPT_DIR/../erts-X.Y/bin/erl`), 分发保真靠 artifact 内部相对拓扑;
+  MCP client 配置 = command + args + env 纯 argv, 环境解析推给 argv[0] 里的
+  runner 工具 (uvx/npx); k8s/docker = command/args 数组, 镜像即环境.
+  **活下来的 exec spec 没有一家带解释器字段.**
+- 结论一: 解释器概念在 spec 中无处栖身 — 它是咽喉的解析产物, 不是声明的字段.
+- 结论二: **package 概念不实体化进内核**. 包真相归语言生态
+  (pyproject/PEP723/package.json/INSTALL.md), MOSS 只在咽喉读证据.
+  cell = package 无关的治理域注册快捷方式 (.desktop 系, 远程 main.py 可注册为本地 CELL.md);
+  **CELL.md 的存在边界 = 包自述回答不了的地方** (启动组合/非 python 命令/远程代码本地注册),
+  包自述够用处 cell 可零声明 (Tier 1 反射匝道, §UU 已有).
+
+### WW-2. uv 判决 (2026-06-10 原判, 从 git 历史复活钉回正文)
+
+> "`executable` 默认 `sys.executable`, 不碰 `uv run` 等环境管理魔法 —
+> 一周实际使用验证坑太多, pep 737 [应为 723 笔误] 不稳定, 隐式约定过多.
+> 复杂环境需求由 install.sh 处理." (commit 0fcb72f7)
+
+- 尸检证据 (host/app_store.py 注释尸体): `get_uv_executable()` 四级 fallback
+  只为定位 uv 本体 (`python -m uv` / venv bin / 全局 which 排 pyenv shims / 裸 'uv') —
+  **"matrix 自带 uv 包" 也做过** (其方案 A), 解决不了定位问题;
+  `executable == 'uv'` 关键字特判 (不优雅关键字约定的实物);
+  circus `copy_env=True` → VIRTUAL_ENV 泄漏 → uv 子进程解析错环境
+  (--active 疤与 CLAUDE.md worktree 警告同源).
+- **"全部 cell 用 uv run" 两次实证死亡** (v1 APP.md 六坑 + 6-10 一周使用), 封死.
+- 处决原则 (人类 2026-07-10 语言化): **自动检测是死路 — 不是做不了聪明检测,
+  是开发者不知道检测是啥, 隐式声明零信息传递.** uv run 本身就是一台不可见的
+  自动检测器 (script header > project > active env 优先级链).
+  推论: 咽喉分派中一切内容嗅探式隐式分支 (含 "无 run: 自动探测 PEP723 → 自动 uv") 删除.
+- uv 降级为**作者显式选项** (`run: uv run main.py`, 自愿则疣圈死在该 cell);
+  matrix 不自带 uv 依赖 (TT-13 坑 1 维持原判).
+
+### WW-3. ExecSpec 定型 (修正 UU-5 "字段不变")
+
+- **字段 = command + args + env** (MCP 同形, argv 结构保留, 语义一个不留).
+  frontmatter `run:` 字符串是糖 (读取时 shlex 成 argv; string|list 双接受属分发细节).
+  interpreter 字段死; cmd 承担 interpreter 角色.
+- **默认解释器 = spawner 的 sys.executable** (6-10 原判决; 轻量场景零声明零成本,
+  "uv 做默认对场景 1 太重" — 装完 matrix|host 不该再起重复环境).
+- argv[0] 解析规则 (execvp 语义 + 一条基准约定, 无其他发明):
+  含路径分隔符 → 相对 CELL.md 目录解析, 咽喉立即绝对化 (UU-10 纪律);
+  裸词 → PATH 查找, 咽喉把 spawner `sys.executable` 所在 bin 插 PATH 头
+  (环境提供, 非关键字字符串替换 — venv activate 同机制, 'python'=sys.executable
+  关键字 hack 废).
+- 三场景覆盖: 轻量 (无声明或 `run: python main.py` → sys.executable);
+  孤立 (作者显式 `run: uv run main.py`); 重/G1
+  (`run: ../../.venv/bin/python -m g1_core.locomotion`, 环境 = INSTALL.md 产物,
+  Erlang 自相对逻辑, 分发靠目标机按 INSTALL.md 重建同一相对拓扑).
+- **cwd 双语义拆分**: CELL.md 目录只作解析基准 (在咽喉活一瞬间, 咽喉以下不存在
+  "CELL.md 在哪"); 进程 cwd = spawner runtime 子树 (TT-6, screen_capture 反例继续成立).
+  代码可达性由环境承载 (`python -m` 装好即从任意 cwd 可跑), 不由 cwd 承载 —
+  这是 cwd 能纯化为治理概念的前提.
+- **咽喉环境卫生单点** (v1 copy_env 病的解药): 跨环境分支 unset
+  VIRTUAL_ENV/PYTHONPATH/PYTHONHOME (清单属分发细节), 继承分支保持一致;
+  + dump_cell_env 注入 + cwd=runtime, 全是 run_cell 咽喉的机械事.
+  散装启动永远修不好环境假设漂移, 唯一咽喉一次修完 —
+  这是 "moss cells run 唯一入口" 的最硬理由 (bash 路径塌缩进 CLI 面;
+  徒手 python main.py 依然可能但不是 "cell 入网", owner=终端会话, 不在契约里).
+
+### WW-4. 向上认亲与多脚本一 cell (6-10 设计复活 + G1 收敛)
+
+- 脚本 → **向上查找 CELL.md** (同 MOSS.md 规则, 找到第一个即停);
+  找不到 → 身份降级 `script/{uuid}`, 不拒绝运行. 与 from_proc 反射逻辑同源.
+- **cell = 身份锚 (CELL.md), 脚本 = 入口变体**. 发现面 1:1 (`run:` 唯一默认入口,
+  目录/名称模式用), 目录事实 N (文件模式跑任意脚本, 向上认亲同一身份).
+  发现面从不承诺穷举可执行物 (.desktop 同).
+- **singleton 域 = cell 身份**: 不论从哪个入口脚本拉起都是同一 cell 的实例,
+  host 内查重即拒. G1 一仓多组合互斥免费解决. flock/锁名记账撤销 —
+  singleton 是 code as prompt 提示声明, 防 host 内重复拉起, 框架不做真锁 (人类原判).
+- 待拍板: `entrypoints:` 可选文档化列表 (纯提示不驱动机制) 加不加.
+
+### WW-5. CELL.md 使用的用户故事 (九条 + 四弧, 人类起草模型 review 定稿)
+
+1. 发现: cells channel (主) / bash CLI — 六动词两投影面 (UU-9).
+2. run 返回 CELL.md body (= instruction 字段, 现 docstring "启动节点后理论要返回" 即此意).
+   与 UU-11 announce 接口描述是接力: body = 文件真相的即时回执,
+   接口描述 = 膜起来后的网络真相进帧, 不重复.
+3. 未安装: 扫得到 + installed=false 可见; run 拒绝且错误信息给 INSTALL.md 路径.
+   (install 是六动词之一, 不可见则无作用对象, 自迭代循环断在第二步; 错误路径 code as prompt.)
+4/5. **channel 面不 wait**: ready/dead 等生命周期跃迁作 signal 进 mindflow 仲裁 (duplex 哲学,
+   模型发完 cells:run 继续思考行动, 入网作为感知抵达); Python API `run_cell(wait=...)`
+   保留给程序化场景 (host bringup). TT-15 "两个消费面" 的面分配就此定案.
+6. owner 的 context messages 含 pid/日志路径 — 过 UU-3 可行动性判据合法
+   (owner 模型有 bash, 全可行动; 即 UU-7 local 信任视图的内容).
+7. network channel command 全被动 (读 Watcher 延迟视图, §NN 正式化);
+   主动性全部归 signal. 零监听纪律 (UU-6) 无损.
+8. debug = 日志文件 + bash; debug() 返回 workspace/日志路径 (= Record 的 owner 面投影).
+   机制脚注: **pipe fencing 的 fd 与 std 重定向分离** — stdout/stderr 进日志文件后,
+   存活检测需独立管道, 否则 "子进程不比 owner 活得久" 失去传感器.
+9. kill 等工具 = 六动词经 channel / bash+moss 两面, 已闭合.
+
+四弧: ① **stop 弧** — 主动关闭 + proxy 释放 (UU-8, owner 关闭即释放);
+② **crash 弧** — 必须推送 (TT-15: 轮询视角下静默与运行不可区分);
+③ **永不入网弧** — spawn 成功但 announce 永远不来, 提示语:
+"该进程未提供 channel — 若本不该有膜, 用 matrix.processes 跑它, 不要用 cells"
+(膜承诺 UU-2 的 UX 执法点, 无膜的是细胞质);
+④ **正常退出弧** — exit 0 也发 signal (器官脱落, context messages 不得继续显示活着).
+②④ 同为 exit 弧, exit code 区分, 仲裁权重不同 (exit 0 → notify 级, 非零/被杀 → 高优先 impulse) —
+两种通知不在 cell 层发明, 交给 mindflow 注意力竞争.
+
+### WW-6. exit 弧的 fold 形状 (TT-15 两源 fold 的具体化)
+
+- **owner 的 dead 信号源 = Subprocesses done callback (进程真相, 即时, 带 exit code),
+  不走网络.** 网络 liveness 丢失对 owner 降级为对账 (reconcile);
+  外部观察者只有网络真相 ("不在了") — 死进程无法自报死因
+  (STOPPING/draining 自报告维持 TT-15 的推迟判决).
+- signal 内容 = 胶囊薄快照 (TT-4 纪律): address/alias, 跃迁, exit code,
+  日志路径**指针**, 至多 stderr 尾部数行. 日志本体不进 signal (拉取面归故事第 8 条).
+- 不发明 cell 专有 log: runtime 下 stdout/stderr 文件即 log (v1 FileStream 方向正确).
+  **ledger 不加 exit 记录** — 死进程无孤儿可杀, 法证理由不存在,
+  单写者原则不开第二个写入时机 (UU-6 原判维持).
+
+### WW-7. 实现纪律钉子 (分发时写进对应模块 comments)
+
+- **context messages 数据源 = Subprocesses 内存句柄 + Watcher 视图的 join, 永不读 ledger**
+  (UU-6: 运行时零读, CLI 唯一读者). 全部结论中最易在实现时漂移的一条.
+- 本节结论按 VV-1 纪律落入实现 comments (code as prompt), 技术目标不入 docstring.
+- 分发级细节 (不阻塞抽象层): 环境卫生 unset 清单; `run:` string|list 双接受;
+  `entrypoints:` 列表 (WW-4 待拍板).
 
 
