@@ -28,6 +28,35 @@ accept/deny → network. 其余一切 (list / status / logs) 都是三域的 joi
 # -- 网络侧抽象 = Presence / Watcher (§UU-7, 原 CellNetwork 的拆分继任者):
 #    入网与监听分离, N²→N. 原 CellNetwork / CellLog 已删除,
 #    CellEvent 是 CellLog 的精简继任 (terminal 标志由 liveness 原语承载).
+# ============================================================================
+# -- 2026-07-12 人类明示 (本文件锚点, FEATURE.md 未追加, L1 升级探索):
+# ============================================================================
+# 1. **announce payload 永不携带膜的具体内容, 只提示"要搭什么类型的桥"**.
+#    CellPresence.membrane: list[Literal[...]] 是纯类型标签.
+#    具体协议对接靠各自通道:
+#      channel  → hub.proxy(address) + refresh_metas 一步同步 (duplex, 廉价)
+#      topic    → session.topics 按 pydantic model pub/sub
+#      stream   → session bus 按 key pub/sub
+#      signal   → session.add_signal / on_signal
+#      resource → ResourceRegistry.get(locator) lazy load
+#    早期一版 CellPresence.channel_interface: str 是错的 (拓扑层→接线层降维,
+#    等价 MCP 化), 已作废.
+# 2. **membrane 字段由 matrix 层全权控制类型扩展**. Literal 而非 Enum
+#    (py3.10 + pydantic + Enum + str dump 需要 mode 参数, Literal 兼容性更干净).
+# 3. **CellEvent 是推拉结合的推侧**: refetch 布尔标记是否要 refetch (不做 kind 枚举).
+#    Watcher 上两个订阅点服务两个方向:
+#      on_change → 结构变化 (蝴蝶右翼: cache 视图消费者)
+#      on_event  → 注意力候选 (蝴蝶左翼: 未来 nucleus 转 Signal 送 mindflow)
+# 4. **channel/proxy 双工是同步廉价的** (tests/matrix/transport/test_bridge_suites.py
+#    实证): proxy.bootstrap → wait_connected → refresh_metas 一步拿到 command 树.
+#    因此不需要 announce 层预置 channel 描述. UU-11 "announce 必带接口描述" 前提作废.
+# 5. **蝴蝶横 8 字模型** (mindflow.py + session.py + channel_builder 三份合读得):
+#    左翼: 外部世界 → signal → nucleus → impulse → Mindflow.challenge → Attention.
+#    右翼: Attention → Articulator → logos → Action → outcome → 下一帧 percepts.
+#    交叉: 右翼可发 signal 回左翼 (command 内 send_signal),
+#          左翼可发 topic 横穿右翼 (bypass 大脑做反射弧).
+#    CellEvent 属于左翼原料 (外部世界打进大脑注意力候选).
+# ============================================================================
 
 import sys
 import time
@@ -388,21 +417,36 @@ class CellPresence(BaseModel):
     """
     network 域 (网络真相) 的数据模型 — 一个入网 cell 的 announce payload.
 
-    远端对一个 cell 的全部认知来自这里: 膜 (channel 接口描述) + 生命状态.
-    收到 presence 即可判断: 它提供什么能力 (channel_interface)、
-    现在能不能用 (state / failure)、要不要接纳它的膜 (accept / deny).
+    远端对一个 cell 的全部认知来自这里: 生命状态 + 承运哪些类型的膜.
+    收到 presence 即可判断: 现在能不能用 (state / failure)、
+    要不要接纳它的膜 (accept / deny) —— 具体膜内容永远走各自的桥.
     """
     # -- §UU-3 可行动性判据: 消费者能对这条信息采取行动, 它才上 announce.
     #    degraded / failure 摘要可行动 (不路由 / 通知 owner) → 在这里;
     #    pid / 日志路径不可行动 → 永不在这里 (归 CellRecord).
     #    行业同构: k8s API server 只有 conditions, MAINPID 归 kubelet/init 自己.
-    # -- §UU-11 膜承诺的关键推论: payload 必须携带 channel 接口描述 — 否则模型要
-    #    先 proxy 连上才知道对方提供什么, 自迭代循环断在第一步.
-    #    接口描述全文 vs 摘要+按需 query 未定, 属分发级细节, 字段先占 str.
+    # -- 关键契约 (2026-07-12 人类明示): announce payload **永不** 声明具体膜内容,
+    #    只提示"要搭什么类型的桥". 具体协议对接靠各自通道 —
+    #      channel  → accept 后 hub proxy 建 duplex, 自动同步 ChannelMetaUpdate,
+    #                 廉价 (test_bridge_suites 实证: bootstrap + refresh_metas
+    #                 一步拿到全部 command 签名 + 子 channel 树).
+    #      topic    → session.topics 上按 pydantic model 直接 pub/sub.
+    #      stream   → session bus 按 key 直接读写.
+    #      signal   → session.add_signal / on_signal.
+    #      resource → ResourceRegistry.get(locator) 懒加载.
+    #    早期 (2026-07-10 前) 一版曾把 channel 接口描述塞 CellPresence.channel_interface: str,
+    #    等价把 channel 降级到 MCP 接线层字符串 (拓扑层 → 接线层降维), 已作废.
+    #    UU-11 "announce payload 必须携带 channel 接口描述" 的论证前提
+    #    (proxy 建立昂贵) 与实证不符, 一并作废.
+    # -- 分层照片:
+    #      静态声明层 (manifests) : project/mode/cell 声明什么协议存在 (json schema).
+    #      发现层     (announce)  : 网络上什么 cell 在哪、承运什么类型的膜 (本对象).
+    #      通讯层     (Session)   : 五种协议原语, cell mesh 直接对接, 无中枢.
+    #      能力层     (channel/resource/...) : accept 后各自建桥同步内容.
     # -- host 角色 = 运行时事实 (抢到 listen 端口者, UU-1.2), 不是 CELL.md 声明.
     #    原 HOST_TYPE 常量废除, is_host 的真相载体即本字段.
-    # -- 未来演进 (§UU-2): resources / 上下文变量等膜上运输类型只扩展本 payload
-    #    (membrane transport), 给治理面加零个动词. 膜可以变重, 治理不许变重.
+    # -- 未来演进 (§UU-2): resources / 上下文变量等膜上运输类型只在 `membrane`
+    #    追加类型标签, 承运协议自身零改动. 膜可以变重, 治理不许变重.
     # -- 命名沿 XMPP presence 先例 (UU-5).
 
     address: CellAddress = Field(
@@ -430,11 +474,16 @@ class CellPresence(BaseModel):
         default=False,
         description="是否是当前网络的 host (运行时事实).",
     )
-    channel_interface: str = Field(
-        default='',
-        description="膜: 该 cell 提供的 channel 接口描述. "
-                    "模型据此决定是否 accept 它的能力.",
+    membrane: list[Literal['channel']] = Field(
+        default_factory=list,
+        description="本 cell 承运的膜类型标签. v1 唯一支持 'channel'; "
+                    "未来由 matrix 层扩展 Literal 追加 'resource' / 'topic' / etc. "
+                    "只标记类型, 不带具体内容 — 内容靠各自协议桥拉取.",
     )
+    # -- membrane 字段的所有权 (2026-07-12 人类明示): matrix 体系全权控制类型扩展.
+    #    cell 作者不自行往里加新字面量. 加类型 = matrix 版本演进事件, 不是 cell 声明事件.
+    #    typing Literal 而非 str Enum 的原因: pydantic + Enum + str 在 py3.10 dump
+    #    需要额外 mode 参数, Literal 兼容性更干净.
     updated: float = Field(
         default_factory=time.time,
         description="本 presence 最后更新的时间戳.",
@@ -443,28 +492,45 @@ class CellPresence(BaseModel):
 
 class CellEvent(BaseModel):
     """
-    网络上的轻量事件: 一个 cell 广播的状态跃迁或异常摘要.
+    网络上的 on-change 通知: 一个 cell 广播的变更 hint (推拉结合的推侧).
 
-    事件是传播载体, 不是状态本身 — 状态的真相载体是 CellPresence.
-    接收方收到事件后按需重新查询 presence, 不从事件里读状态.
+    事件本身是廉价的推送信号 ("我变了"), 具体内容永远由消费侧按需拉:
+      refetch=True → 消费方 refetch CellPresence 更新缓存 (推拉的拉)
+      refetch=False → 消费方仅记事件, 不动缓存 (纯 signal/debug 信号)
+
+    双重消费面 (Watcher 上的两个订阅点分别服务):
+      结构变化 → Watcher.on_change (Cell 快照消费者: cache 视图 / CLI 展示)
+      注意力候选 → Watcher.on_event (nucleus 消费者: 转 Signal 送 mindflow)
     """
-    # -- 原 CellLog 的精简继任. terminal 标志删除: "cell 没了" 的语义由
-    #    liveness DELETE 承载 (网络原语), 不需要事件层重复声明.
-    # -- 存在理由 (UU-3): failure/degraded 摘要是远端可行动信息, 需要一个
-    #    announce 面的传播载体; presence 重宣告只更新 queryable, 不推送.
-    # -- WW-5 故事 7: 主动性全部归 signal (mindflow 仲裁), 网络事件只是原料.
-    #    事件 → signal 的转换发生在消费侧 (Watcher 的持有者), 不在这里.
+    # -- 推拉结合的推侧原语. terminal 标志不加: "cell 没了" 语义由 liveness DELETE
+    #    承载 (网络原语), 事件层无需重复声明. kind 枚举不加 (人类明示 2026-07-11):
+    #    枚举=预设分类空间, 与"膜可以变重"演进方向冲突, 且 py3.10 + pydantic + Enum + str
+    #    dump 需要 mode 参数, 不干净.
+    # -- 事件 → Signal 转换发生在消费侧 (未来的 cell nucleus, 见 mindflow.py):
+    #      nucleus.add_signal 接受 Signal, 走 Impulse 加工链, 争夺 Attention.
+    #      "ASR cell 上线" event → nucleus 加工成 "新感官接入" Impulse
+    #                            → mindflow.challenge → 也许 background_notice 让大脑下一帧看到,
+    #                              也许 notify 更高优, 也许 suppress.
+    #    Watcher 本身不做 signal 转换 — 只把 event 分发给注册者 (职责单一, TT-1 检验).
+    # -- refetch 语义 (2026-07-11 人类明示): 大多数 event 都是变更通知, 默认 True;
+    #    纯 debug/log 场景 (event 只作痕迹) 显式 refetch=False. 消费者据此决定拉不拉.
 
     address: CellAddress = Field(
         description="事件来源 cell 的 address.",
     )
     content: str = Field(
         default='',
-        description="自由文本事件内容.",
+        description="事件的自由文本 hint. 可空. 消费方作参考, 不作调度依据.",
     )
     timestamp: float = Field(
         default_factory=time.time,
         description="事件产生时刻.",
+    )
+    refetch: bool = Field(
+        default=True,
+        description="True → 消费方应 refetch CellPresence 更新缓存 "
+                    "(cell 状态/膜类型可能变了); "
+                    "False → 仅追加事件缓冲, 缓存不动 (纯 signal/debug).",
     )
 
 
@@ -513,10 +579,19 @@ class Presence(ABC):
 
         膜是 cell 在模型能力空间里存在的前提: 不提供 channel 的进程
         不是 cell (它应该由 Subprocesses 治理).
+
+        实现副作用:
+          1. hub.provider(address) 建 bare provider (未跑, 由 matrix 层 arun);
+          2. 在 presence.membrane 中确保含 'channel' 标签;
+          3. 更新 presence.updated 时间戳 (queryable 下次查询返回新值);
+          4. 可选发一个 refetch=True 的 CellEvent 提示网络刷视图.
+        不做的事: 不塞 channel meta 到 announce payload — 那是 duplex 层的事,
+                 accept 后 hub.proxy(address) + refresh_metas 一步同步全量.
         """
-        # 膜承诺 (UU-2) 的机制面. announce payload 的 channel_interface 字段
-        # 应在 provide 后由实现回填 — 接口描述随 presence 传播 (UU-11),
-        # 模型不必先连 proxy 才知道对方提供什么.
+        # -- v1 唯一 provide 类型. 未来加 provide_resource / provide_topic 等,
+        #    每加一种 = matrix 版本演进事件 + membrane Literal 追加一个标签.
+        #    抽象层现在**不预设**泛型 provide_ability(...) —— 那是过度设计,
+        #    §UU-2 "膜可以变重, 治理不许变重" 只允许标签空间演进, 不允许方法空间爆炸.
         pass
 
     @abstractmethod
@@ -580,12 +655,36 @@ class Watcher(ABC):
             callback: Callable[[CellPresence, bool], None],
     ) -> Callable[[], None]:
         """
-        注册 (presence, online) 变更回调, 返回 unsubscribe 函数.
+        注册 (presence, online) 结构变化回调, 返回 unsubscribe 函数.
+
+        触发时机: presence cache 有增删或 refetch 后内容变化.
+        消费者: cache 视图使用者 (accept 决策 / CLI list / 视图渲染).
 
         回调可能在网络后台线程触发, 调用方负责线程安全.
         """
-        # 事件 → mindflow signal 的转换点: run_cell 的调用方在这里
-        # 把 ready/dead 跃迁接进注意力仲裁 (WW-5 故事 4/5, 四弧全部经此).
+        # -- 服务的是"结构消费者"(蝴蝶图右翼的视图侧): 关心 "谁在 / 谁的膜类型变了"
+        #    这个稳态问题. 不服务大脑注意力仲裁 —— 那是 on_event 的活.
+        pass
+
+    @abstractmethod
+    def on_event(
+            self,
+            callback: Callable[['CellEvent'], None],
+    ) -> Callable[[], None]:
+        """
+        注册 CellEvent 到达回调, 返回 unsubscribe 函数.
+
+        触发时机: 网络上任何一条 CellEvent 到达 (无论 refetch 值).
+        消费者: 未来的 cell nucleus (mindflow.py 里的 Nucleus 抽象) —
+                把 event 加工为 Signal → Impulse → challenge attention.
+
+        回调可能在网络后台线程触发, 调用方负责线程安全.
+        """
+        # -- 服务的是"注意力候选消费者"(蝴蝶图左翼的感知侧): 外部世界打进来的
+        #    每一个 event 都是可能争夺大脑注意力的候选. 加工/降频/仲裁是 nucleus
+        #    的事, 不是 Watcher 的事 (Watcher 只做分发, TT-1 融合检验).
+        # -- 蝴蝶横 8 字里 event 是**外部世界打进大脑左翼的原料**, 与 CellEvent
+        #    的 refetch=True/False 语义正交 (refetch 服务视图侧, on_event 服务注意力侧).
         pass
 
     @abstractmethod
