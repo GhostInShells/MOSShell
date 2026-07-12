@@ -1,3 +1,14 @@
+"""
+ProjectCellRegistry — 只读 inventory 实现.
+
+扫描治理域领地内的 CELL.md 声明, 只回答 "领地里装了什么".
+不拉起、不杀灭、不持有任何运行时状态.
+"""
+# -- TT-11 / UU-9: registry 退化为 glob(CELL.md).
+#    原 spawn_cell / kill_all_runtime_cells / dump_spawn_env / cell_runtimes_dir
+#    已在 blueprint 层删除 — spawn 归 run_cell 咽喉, kill 归 CLI (ledger 唯一读者).
+#    本实现只保留扫描与查表.
+
 from pathlib import Path
 
 from ghoshell_moss.core.blueprint.cell import (
@@ -10,6 +21,9 @@ __all__ = ['ProjectCellRegistry']
 
 class ProjectCellRegistry(CellRegistry):
 
+    # 扫描时跳过的目录名
+    _SKIP_DIRS: set[str] = {'__pycache__', 'node_modules'}
+
     def __init__(
             self,
             env: Environment,
@@ -19,15 +33,11 @@ class ProjectCellRegistry(CellRegistry):
         self._cell_dirs = cell_dirs
         self._cache: dict[RelativePath, CellManifest] | None = None
 
-    @property
-    def cell_runtimes_dir(self) -> Path:
-        return self._env.cell_runtimes_dir
-
     def list_cell_manifests(
             self,
             refresh: bool = True,
             *,
-            installed: bool = True,
+            installed: bool | None = None,
             include: list[MatchPattern] | None = None,
             exclude: list[MatchPattern] | None = None,
     ) -> dict[RelativePath, CellManifest]:
@@ -35,8 +45,9 @@ class ProjectCellRegistry(CellRegistry):
             self._cache = self._scan()
 
         result = self._cache.copy()
-        if installed:
-            result = {k: v for k, v in result.items() if v.installed}
+        # installed=None → 全部返回 (含未安装, 让 CLI 能提示 INSTALL.md 路径, WW-5 故事 3).
+        if installed is not None:
+            result = {k: v for k, v in result.items() if v.installed is installed}
         if include or exclude:
             result = dict(self.match_cells(result, include=include, exclude=exclude))
         return result
@@ -47,16 +58,6 @@ class ProjectCellRegistry(CellRegistry):
         if path.is_dir():
             return CellManifest.read_from_directory(path)
         return None
-
-    def dump_spawn_env(self, address: str) -> dict[str, str]:
-        return self._env.dump_cell_env(
-            cell_address=address,
-            parent_cell_address=self._env.this_cell_address,
-            with_os_env=False,
-        )
-
-    # 扫描时跳过的目录名
-    _SKIP_DIRS: set[str] = {'__pycache__', 'node_modules'}
 
     def _scan(self) -> dict[RelativePath, CellManifest]:
         result: dict[RelativePath, CellManifest] = {}
