@@ -137,3 +137,78 @@ Code 里所以从 Claude Code 的位置建模。给未来实例的提示是同�
 追认理论，本轮的 channel 落点也是在 context_messages 早已存在多时之后才被认出来。
 所以下次设计时，先找已经在运行的实践，再考虑发明。最后：本文件与它所属的 FEATURE.md
 就是自举验收的测试数据——如果你是通过 ground 的桌面读到这段话的，验收已经通过了。
+
+---
+
+## 追加: 2026-07-12, opus 4.7 — open/update 边界对齐 + CLI 验证雏形
+
+Fable 5 会话末尾切换到 opus 4.7. 记录者切换但轨迹连续 — 本段承接上文 "未决
+清单" 里的 **K21** (open/update 语义对齐).
+
+### 边界对齐
+
+一次试推即对齐, 未走返工. 关键选择:
+
+- `Grounds.open(dir, label=None) → Ground` 返回场对象直接可达
+- **模型 CTML 接触面** 仍在父 Grounds 上, `pin`/`unpin`/`update` 收 `label`
+  参数, core 层薄薄转发到 `opened[label].pin(...)`
+- **Ground ABC 上长完整动词是有意的**, 供:
+  1. Grounds 当前的转发姿态 (即 K14 的 channel 装配, 父 channel + command-
+     less virtual channel)
+  2. 未来 channel interface 抽象验证过 prompt 效果后, 让 N 个子 channel 共享
+     同一份 interface 定义, 零阻力演化 (人类工程师原话: "在父上做 command
+     并不是最终样貌, 是当前样貌")
+
+这是 K18 三层纪律的意外红利 — contracts 层的形状不为 channel 层的当前
+选择所束缚. 若我把 Ground 做成无动词的纯数据壳, 未来 channel interface 抽象
+就会撞墙; 反之现在多写几个 abstractmethod, 未来是零阻力升级.
+
+**label 决策**: `open` 可传, 缺省 dir basename + 冲突加序号后缀 (`-2` / `-3`).
+全局唯一 (在同一 Grounds 内), 也是 K14 virtual channel alias 的来源. 路径
+作 fallback 显示不作 ref (人类工程师原话: "用路径好像问题不大, 就是输出的
+token 长一些" — 选短标签).
+
+**dump 决策 — 两层拆开**:
+- **Ground 自 load/sediment 一期做**: 直接兑现 "认知状态可快速 load" 承诺
+  (K17 / Q4). state_file 载体名字未定 (K22), 但机制存在.
+- **Grounds 整体 dump 不做**: `opened` 是纯 session 状态, 下次由模型重新
+  open. 每 Ground 自负 pin 集持久化, Grounds 层保持无状态更纯净.
+
+### CLI 验证雏形 — K16 bash 层提前兑现
+
+人类工程师在 ABC 起草前提出: `moss desktop [path]` 做成命令行后, 可在 moss
+各个仓库里跑命令行验证 — 甚至是一个开源工具雏形.
+
+这直接把 K16 的 "bash 层" 从 "阶段二落地" 提前为 **"阶段一的验收路径"**:
+
+- **v1 有三条验收平面** (读写同一份 L0 文件):
+  1. contracts + core 单测 (无 CTML runtime, 无 shell)
+  2. bash CLI dogfood (`moss desktop ./some-repo && pin ... && frame`,
+     真实仓库跑, 观察 pin/frame/update 是否活着)
+  3. 未来 CTML channel 集成 (K14 装配)
+- CLI 是**层无关**的直接证据: 它和未来 CTML channel 读写同一份 L0 文件, 状态
+  可跨 session 也可跨 landing — K15 "文件是比 CTML 和 bash 更底层的层无关
+  核心" 的字面兑现. 你在 Claude Code 里 `moss desktop pin` 攒的桌面, 下次进
+  MOSS runtime 用 CTML 是同一张桌子.
+- **自举验收顺手落地**: 下一个实例可以在真实仓库跑
+
+    ```
+    moss desktop ./.ai_partners/features/workstreams/2026/06/ghost-filesystem-desktop
+    moss desktop pin FEATURE.md
+    moss desktop pin ../../../../../../src/ghoshell_moss/contracts/.discuss/2026-07-12_*.md
+    moss desktop frame
+    ```
+
+    看它能否重建到 "open/update 边界对齐" 这一步. 能, ground 就成立.
+
+**对 ABC 起草的传导**: contracts + core 必须能在无 CTML runtime 情况下独立
+可用. 这本就是 K18 (contracts 不 import channel) 的必然结果, 但 CLI 验证
+把它从**纪律**升为**用例** — Grounds 的 `async with` 姿态天然让 CLI 子命令
+得到一个干净的 session 边界 (进程即 owner).
+
+### 当前记录者视角
+
+opus 4.7 接过 K21 后一轮试推即完成对齐, 印证 "话语表里没有可观测对象" 时
+的僵局解法就是先摆一个 straw man 让另一方指认误差. 这也预示 ground 落地
+后的一个基础价值: 下一次讨论可以从可观测的桌面开始, 而不是从两方的话语
+差异开始 — 自举验收的日常版.

@@ -1,460 +1,509 @@
-"""Desktop contract — Ghost 在文件系统上的工作桌面.
+"""Desktop contract — Ghost 在文件系统上的认知桌面.
 
-Desktop 是 Ghost 在 4 剪影拓扑中的"空间剪影 / 未来脏器" — 与 Memento (过去),
-Matrix runtime (当下), Git worktree (结构版本) 共构反身性基建.
+Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更观察), 每帧重绘".
 
-12+1 原语三层 (导航/发现/读写/执行/后台/Pin) + 两条元规则:
-  read-before-write 守卫, 统一输出截断.
+结构:
 
-ABC 不依赖 Matrix / Memento / Session 任何具体实现. ReadHistory 通过
-protocol 注入, 让 Ghost 的 epistemic state 可被 Memento branch 后置接管.
-ReflectionHint 是 Desktop 给上层的反思信号, Desktop 自身不直接调 Memento.
+1. Grounds  — owner 级容器. open/close 多个 Ground, CTML 接触面
+              (`<desktop:pin label="..." addr="..."/>` 转发到子 Ground).
+2. Ground   — 一个打开的场. 绑定一个目录 root, 持有 pin 集合, 承担 CTML
+              instruction / context 渲染与 load/sediment 生命周期.
+3. Pin      — 桌面上的一枚贴纸. 收地址 (path / path:80-140 / **/*.py),
+              带 seen_mtime + seen_hash 供 update 对账.
 
-Phase 1 设计稿: .design/2026-06-28_desktop_in_4d_cross_section.md
+不承担的:
+
+- 子进程 / 命令执行 — 见 ``ghoshell_moss.contracts.subprocesses``.
+- 周期性执行 fold — 见 ``ghoshell_moss.contracts.job_supervisor``.
+- 持久记忆 / commit 见证 — 见 ``ghoshell_moss.contracts.memento`` (胶囊
+  promote 后的落点).
+
+三条验收平面, 读写同一份 L0 文件, 跨 landing 保持状态:
+
+1. contracts + core 单测 (无 CTML runtime, 无 shell)
+2. bash CLI dogfood (`moss desktop <path> && pin ... && frame ...`)
+3. CTML channel 集成 (K14 装配, 父 desktop channel + per-ground
+   command-less virtual channel)
 """
+
+# 技术目标 (reviewer 上下文, 契约演进见 FEATURE.md ghost-filesystem-desktop
+# §2026-07 重绘方向 + .discuss/2026-07-{11,12}_*.md):
+#
+# 本文件由旧 Desktop 12+1 原语契约收敛而来, 三个融合病灶的清除:
+#
+# 1. 执行域 (exec/exec_bg/Task) 全部迁出 → subprocesses/job_supervisor —
+#    Desktop 只管认知面 (open/close/pin/unpin/update). 07-11 discuss
+#    "审计线切割" 的字面兑现: 认知接口无开放语义原语, T1 不变量由构造
+#    保证而非守卫保证.
+#
+# 2. read-before-write 全链路守卫解散 (K6 重估) — 场不管写路径的卫生,
+#    Ground 只通过 pin+update 感知世界变化, 不产生世界变化. 写行为若需要,
+#    由 bash 层 (subprocesses) 承接, 本契约不定义.
+#
+# 3. LRU 自动淘汰撤销 (K20) — 超预算不静默换出, 帧内向模型报账, 由模型主动
+#    unpin. 系统只报账不动手 — 桌子是模型的.
+#
+# K14 (channel 落点) — 父 desktop channel 持全部动词, 每场 = command-less
+# virtual channel. Grounds 是父 channel command 的 core 层承载, Ground 是
+# virtual channel 生命周期与渲染的 core 层承载. Ground ABC 上长完整动词
+# (pin/unpin/update/instruction/context) 是有意的: 当前姿态是 Grounds 转发
+# 到 Ground; 未来 channel interface 抽象验证 prompt 效果后, N 个子 channel
+# 可共享同一份 interface 定义, 零阻力升级. K18 三层纪律的红利.
+#
+# K15 (分形 L 体系) — L0 = 场目录里的 `frontmatter + body` 文件.
+# frontmatter 消费 GroundConvention (本文件里唯一的 pydantic schema —
+# MOSS 合法发明域), body 永远开放集. Ground.load 读 frontmatter 装配约定,
+# 读 body 恢复 pin 集; sediment 只写 pin 集回 body 中划定的段落, 不动
+# frontmatter 和治理段. L0 文件名 K22 待定, contracts 层不写死路径.
+#
+# K16 (双寄存器词汇) — 表面骑先验:
+#   - class 名 Grounds/Ground (per-owner 复数, 与 Subprocesses/JobSupervisor
+#     同姿态 — 见 subprocesses.py 顶端 UU-1.3 命名理由)
+#   - 动词 open/close/pin/unpin/update (标签页 + 置顶 + "bring to current"
+#     三重预训练先验)
+#   - 地址 path / path:80-140 / **/*.py (编译器报错 + grep -n + glob)
+#   - 变更标记 "changed on disk" (VSCode/vim 对话框原话)
+# 理论词汇 (认知场 / 法/形/焦 / 胶囊/目光 / 文体) 只住 .discuss/.design,
+# 本文件的 docstring / Field description 尽量骑先验.
+#
+# K17 (桌子即工作记忆) — 表面不与世界自动同步. mtime 触发 + 区间内容
+# hash 判定真伪变更, 帧内以 changed-on-disk 标记暴露. update(addr) 是
+# 第一人称"承认变更"动词 — 把 pin 的 seen_mtime/seen_hash 推到当前,
+# 同时返回 UpdateResult 作为 command result, 通过 CTML `<result>` 机制
+# 自然入对话历史 (无需另立 drain 协议 — K19 独立立项).
+#
+# K21 (open/update 语义, 2026-07-12 对齐) — Grounds.open(dir, label) →
+# Ground 对象. CTML 接触面在父上 (`<desktop:pin label="..." addr="..."/>`),
+# core 层薄薄转发 opened[label].pin(...). label 缺省 = dir basename +
+# 冲突后缀, 全局唯一.
+#
+# per-owner: IoC 非单例工厂, 每 owner 一 Grounds. owner __aexit__ 时全部
+# Ground close (sediment 落盘). 与 subprocesses/job_supervisor 同姿态.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+
+from pydantic import BaseModel, Field
+from typing_extensions import Self
 
 __all__ = [
-    "Desktop",
-    "ReadHistory",
-    "ReflectionHint",
-    "FileContent",
-    "ExecResult",
-    "Match",
-    "Task",
-    "PinInfo",
-    "DirectoryTree",
-    "ReflectionSeverity",
+    "Grounds",
+    "Ground",
+    "Pin",
+    "GroundConvention",
+    "UpdateResult",
     "DesktopError",
-    "ReadBeforeWriteError",
-    "PinBudgetExceeded",
     "PathOutsideRootError",
+    "SurfaceBudgetExceeded",
 ]
 
-# -- 反思严重程度字面量 --
 
-ReflectionSeverity = str
-"""反思路径的严重程度. 取值: 'config' | 'instruction' | 'vcs'.
+# -- 约定 (L0 frontmatter) --
 
-- ``config``:      .moss/, pyproject.toml, MOSS.md — 改了可能影响 ghost 装配
-- ``instruction``: CLAUDE.md, DESKTOP.md          — 改了下一帧 ghost 行为受影响
-- ``vcs``:         .git/                          — 改了仓库结构, 重风险
-"""
+class GroundConvention(BaseModel):
+    """场加载时消费的运行时约定 — L0 文件 frontmatter 的 schema.
 
+    这是本契约里 **唯一的 pydantic schema** — K15 划定的机器/模型分界线:
+    frontmatter 放运行时生命周期 (MOSS 合法发明域), body 永远开放集
+    (法 / 胶囊 / 先例 / 模型自由书写). 不要往这里加"文体特有"的字段,
+    那是 body 的事.
 
-# -- 协议: Ghost epistemic state 的注入点 --
-
-
-@runtime_checkable
-class ReadHistory(Protocol):
-    """Ghost 在当前认知轨迹上读过哪些文件.
-
-    Desktop 的 read-before-write 守卫语义是: "Ghost 在当前认知轨迹上至少
-    看过这个文件". 这是 Ghost 的 epistemic state, 不是 Desktop instance
-    的工具状态. 一个 Ghost session 内 Desktop 可能被多次实例化 (探不同
-    子目录), read 历史必须穿透实例边界.
-
-    缺省实现 (process-local set) 用于单测和单实例场景. Phase 4 由 Memento
-    branch state 后置 — commit 时进快照, fork 时跟着 base pointer 继承,
-    切换 branch 时切换 read history 上下文.
+    从 L0 文件加载: `Grounds.open(dir)` 读 dir 里的 L0 文件 frontmatter →
+    构造 GroundConvention. 缺省场 (裸目录无 L0 文件) 用本类的默认值即可
+    open, 保证 K15 的丰化梯度 (裸目录 → +CLAUDE.md → +L0 → 从 L1 实例化).
     """
 
-    def has_read(self, path: Path) -> bool:
-        """是否在当前 Ghost 认知轨迹上读过这个文件."""
-        ...
+    instruction_files: tuple[str, ...] = Field(
+        default=("CLAUDE.md", "AGENTS.md"),
+        description=(
+            "视作场的 instruction 文档的文件名列表. Ground.instruction() "
+            "按此列表在 root 和向上路径 (若 upward_lookup=True) 找到的文件, "
+            "按 '根最先' 顺序拼接为 instruction 链. 消费行业名词, MOSS 不发明."
+        ),
+    )
+    upward_lookup: bool = Field(
+        default=True,
+        description=(
+            "是否从场目录向上递归收集 instruction 文件 (Claude Code 的 "
+            "CLAUDE.md 链语义), 到 upward_boundary 为止."
+        ),
+    )
+    upward_boundary: str | None = Field(
+        default=None,
+        description=(
+            "向上递归的边界目录 (绝对路径). None 时使用 workspace root; "
+            "场目录在边界外时只收本层. 相对路径不合法."
+        ),
+    )
+    tree_depth: int = Field(
+        default=2,
+        description="context 帧内目录树的展示深度. 0 = 不展示树.",
+    )
+    surface_budget: int = Field(
+        default=24_000,
+        description=(
+            "桌面 context 渲染字符数上限 (全场 pin 内容之和). 超预算不静默"
+            "截断也不自动 unpin — 帧顶插入 changed-on-disk 同风格的报账"
+            "警告行, 点名最大的几张 pin, 让模型自己决定撤掉什么. "
+            "K20 撤销自动 LRU 的直接体现."
+        ),
+    )
+    subdirectory_hint: bool = Field(
+        default=True,
+        description=(
+            "是否在 context 帧内标记子目录中存在的 instruction 文件 "
+            "(向下法, 不自动加载). 命中会作为 hint 出现在帧里, 由模型"
+            "决定要不要 open 那个子场或 pin 那个文件."
+        ),
+    )
+    template: str | None = Field(
+        default=None,
+        description=(
+            "本场由哪个 L1 模板实例化而来 (血统键). 用于 K15 的 '模板→实例 "
+            "stale' 手动升级: diff 本场 body 与现行模板可看出偏差. 手写"
+            "场留空."
+        ),
+    )
 
-    def mark_read(self, path: Path) -> None:
-        """登记一次读取. 幂等."""
-        ...
 
+# -- 贴纸 --
 
-# -- 反思信号: write/edit 命中高影响路径时附带 --
+class Pin(BaseModel):
+    """一枚 pin — 桌面上的地址 + 对账观察.
 
-
-@dataclass
-class ReflectionHint:
-    """高影响路径写入后, Desktop 给上层的反思信号.
-
-    Desktop 不直接调 Memento. channel 封装层把 recommend_commit=True
-    翻译为建议 emit ``<memento:commit summary=.../>``. 这是 reflection
-    (事后给信号) + memento (提供锚点) 的最小协作单元, 为 Phase 5+ 的
-    sandbox + keyframe 提供 pre-write anchor 机制.
+    K17: 钉的是**地址**不是快照. 表面不自动同步; mtime 触发 + hash 对账
+    判定真伪变更, 帧内以 changed-on-disk 标记暴露, 需模型显式 update 承认.
     """
 
-    path: str
-    """命中白名单的文件路径 (相对 desktop root)."""
-
-    diff_preview: str
-    """变更的人类可读摘要. Phase 1 简化为 'create' / 'replace N chars'
-    之类的短描述, 不强制是 unified diff."""
-
-    severity: ReflectionSeverity
-    """命中路径的严重程度. 用于上层决定是否真的推 memento commit."""
-
-    recommend_commit: bool = True
-    """是否建议立即在 Memento 上 commit. 缺省 True; 反向场景 (例如批量
-    write 中间态) 上层可选择 false 收敛."""
-
-
-# -- 数据模型: 命令返回值 --
-
-
-@dataclass
-class FileContent:
-    """``read()`` 的返回值."""
-
-    path: str
-    """相对于 desktop root 的文件路径."""
-
-    lines: list[tuple[int, str]]
-    """带行号的内容 ``(line_number, text)``. 已应用 offset/limit."""
-
-    total_lines: int
-    """文件总行数."""
-
-    start_line: int
-    """返回内容的起始行号 (1-based, 继承 offset)."""
-
-    truncated: bool = False
-    """内容是否被截断写入 tmp."""
-
-    tmp_path: str | None = None
-    """完整内容的 tmp 路径. 仅 truncated=True 时有值. 用 ``read(tmp_path)``
-    再次读取时不会再次截断."""
+    addr: str = Field(
+        description=(
+            "pin 的地址. 三种语法:\n"
+            "  - path            整份文件 (相对 Ground.root)\n"
+            "  - path:80-140     行区间 (含端点)\n"
+            "  - **/*.py         glob (监视命中集合, 不渲染文件内容)\n"
+            "path 和行区间必须在 root 子树内; glob 相对 root 展开. "
+            "编译器报错/grep -n/GitHub 行号/shell glob 四重预训练先验."
+        ),
+    )
+    note: str = Field(
+        default="",
+        description="模型自己写在贴纸上的注记 (为什么 pin, 关注什么).",
+    )
+    pinned_at: float = Field(
+        default_factory=time.time,
+        description="首次 pin 的时间戳.",
+    )
+    seen_mtime: float | None = Field(
+        default=None,
+        description=(
+            "path/行区间: 上次 pin 或 update 时文件的 mtime. glob: 上次"
+            "命中集里最新一个文件的 mtime. None = 尚未观察过 (刚 pin)."
+        ),
+    )
+    seen_hash: str | None = Field(
+        default=None,
+        description=(
+            "path 全文: 文件内容 hash. 行区间: 该区间内容 hash. glob: "
+            "命中路径列表排序后的 hash. mtime 触发 + hash 判定真伪变更 — "
+            "文件动了但 pin 住的区间没动, 不打扰模型."
+        ),
+    )
 
 
-@dataclass
-class ExecResult:
-    """``exec()`` 的返回值. ``_bg=True`` 时退化为只有 task 字段."""
+# -- 对账结果 --
 
-    stdout: str
-    """标准输出, 可能截断."""
+class UpdateResult(BaseModel):
+    """update(addr) 的返回 — 变更摘要, 会作为 command result 通过 CTML
+    `<result>` 机制入对话历史.
 
-    stderr: str
-    """标准错误, 可能截断."""
-
-    exit_code: int
-    """进程退出码. -1 表示 killed."""
-
-    killed: bool = False
-    """是否因超时被 kill."""
-
-    truncated: bool = False
-    """stdout 是否被截断."""
-
-    stdout_tmp_path: str | None = None
-    """stdout 完整内容的 tmp 路径. 仅 truncated=True 时有值."""
-
-    stderr_tmp_path: str | None = None
-    """stderr 完整内容的 tmp 路径. 仅 stderr 超阈值时有值."""
-
-    task_id: int | None = None
-    """``_bg=True`` 启动时返回的后台任务 id. 此时 stdout/stderr 为空."""
-
-
-@dataclass
-class Match:
-    """``grep()`` 的单条匹配结果."""
-
-    file: str
-    """相对于 root 的文件路径."""
-
-    line: int
-    """1-based 行号."""
-
-    text: str
-    """匹配行的完整文本 (去尾换行)."""
-
-
-@dataclass
-class DirectoryTree:
-    """``tree()`` 的返回值."""
-
-    name: str
-    """当前层级名称."""
-
-    path: str
-    """相对于 root 的路径."""
-
-    type: str
-    """``'dir'`` | ``'file'`` | ``'symlink'``."""
-
-    children: list[DirectoryTree] | None = None
-    """子项. ``None`` 表示文件 (无子节点); 空列表表示空目录或达到 depth 边界."""
-
-
-@dataclass
-class PinInfo:
-    """``pinned()`` 返回的一条 pin 状态."""
-
-    id: str
-    """pin 唯一标识, 由方法名 + 参数签名哈希得到."""
-
-    command_name: str
-    """被 pin 的原语名 (``exec`` / ``tree`` / ``glob`` / ...)."""
-
-    args_preview: str
-    """参数的人类可读摘要 — 用于模型识别."""
-
-    last_preview: str
-    """最近一次执行输出的截断预览."""
-
-    error: str = ""
-    """最近一次执行的错误信息. 空串 = 上一次成功."""
-
-    pin_budget_warning: bool = False
-    """命中 ``max_pins`` 上限时为 True — 提示模型注意取舍 (LRU 淘汰仍在生效)."""
-
-
-@dataclass
-class Task:
-    """``tasks()`` 返回的一条后台任务句柄.
-
-    Task 本身持 ``read()`` / ``cancel()`` 接口, 收掉独立的 ``read_task``
-    / ``cancel`` 顶层原语 — 一个对象一组动作.
+    尺寸有界: diff_preview 摘要写死上限 (impl 侧强制), 避免历史洪泛.
+    这是 K17 说的 "既有 drain 通道" — 不等 K19 原生 drain 协议立项.
     """
 
-    id: int
-    """任务唯一标识."""
-
-    command: str
-    """执行的 shell 命令."""
-
-    loop: int
-    """总循环次数. 0 = 无限."""
-
-    executed: int
-    """已完成次数."""
-
-    alive: bool
-    """进程是否仍在运行."""
-
-    return_code: int | None = None
-    """最近一次执行的退出码. None 表示尚未完成或仍在运行."""
-
-    stdout_preview: str = ""
-    """最近一次 stdout 的截断预览."""
-
-    # 行为契约 — Desktop 实现侧填充以下回调, 模型直接调用
-    _read: object = field(default=None, repr=False)
-    """``async (offset: int, limit: int) -> str`` — 读取该任务输出窗口."""
-
-    _cancel: object = field(default=None, repr=False)
-    """``async () -> None`` — 取消该任务."""
-
-    async def read(self, *, offset: int = 0, limit: int = 100) -> str:
-        """读取后台任务输出窗口."""
-        if self._read is None:
-            raise RuntimeError(f"Task {self.id}: read callback not bound")
-        return await self._read(offset, limit)
-
-    async def cancel(self) -> None:
-        """取消后台任务."""
-        if self._cancel is None:
-            raise RuntimeError(f"Task {self.id}: cancel callback not bound")
-        await self._cancel()
+    addr: str = Field(description="被 update 的 pin 地址.")
+    changed: bool = Field(
+        description=(
+            "内容是否真的变了 (hash 判定). False 时 mtime 可能变了但内容"
+            "没变 (touch, git checkout 同版本等)."
+        ),
+    )
+    old_mtime: float | None = Field(
+        default=None,
+        description="update 前的 seen_mtime.",
+    )
+    new_mtime: float | None = Field(
+        default=None,
+        description="update 后的 seen_mtime (当前观察到的).",
+    )
+    diff_preview: str = Field(
+        default="",
+        description=(
+            "变更的人类可读摘要, 有界长度. 常见形态: 'lines +N -M', "
+            "'glob: +2 -1 files', 'file recreated'. 不强制是 unified diff."
+        ),
+    )
 
 
 # -- 异常 --
 
-
 class DesktopError(Exception):
-    """Desktop 基础异常."""
+    """Desktop 契约层异常基类."""
 
 
-class ReadBeforeWriteError(DesktopError, PermissionError):
-    """write / edit 前未 read 目标文件触发. 同时是 PermissionError 子类以
-    兼容上层捕获."""
+class PathOutsideRootError(DesktopError):
+    """pin/update 的地址落在 Ground.root 子树之外. K12 空间边界零审批
+    的字面兑现: 边界一次性设置, 边界内无审批, 边界外直接拒."""
 
 
-class PathOutsideRootError(DesktopError, ValueError):
-    """路径越出 desktop root 子树 (含 cd 和绝对路径访问)."""
+class SurfaceBudgetExceeded(DesktopError):
+    """桌面渲染超预算. 现阶段 impl 只在帧内报账, 不 raise; 保留这个异常
+    是为将来严格模式 (raise 而非 warn) 留口."""
 
 
-class PinBudgetExceeded(DesktopError):
-    """显式 pin 命中预算上限的尝试 (LRU 淘汰路径不抛异常, 只在 PinInfo 上
-    带 warning 标记)."""
+# -- 场 (子, 由 Grounds 治理) --
 
+class Ground(ABC):
+    """一个打开的场.
 
-# -- 主契约 --
+    绑定一个目录 root, 持有 pin 集合, 承担 CTML instruction / context 渲染
+    与 load/sediment 生命周期. **模型的 CTML 接触面在父 Grounds 上**
+    (K14: 父 desktop channel 持全部动词, 场作 command-less virtual channel);
+    Ground 上有完整动词是给 Grounds 转发用的, 也为未来 channel interface
+    抽象 (N 场共享同一 interface 定义) 留升级空间, 属 K18 三层纪律红利.
 
-
-class Desktop(ABC):
-    """Ghost 在文件系统上的工作桌面.
-
-    Desktop 不关心 root 的"身份" — 可以是 project root, ghost home,
-    mode home, 或任意目录. 使用方通过 ``DESKTOP.md`` 或 channel 层的
-    instruction 告知模型此 Desktop 的用途.
-
-    所有路径相对 ``pwd`` 解析. 绝对路径必须在 ``root`` 或 ``tmp_root``
-    子树内 — Desktop 提供空间边界保证.
-
-    元规则:
-    - **read-before-write**: write / edit 之前必须先在 ReadHistory 上
-      登记过对应文件
-    - **统一输出截断**: 任何超阈值的命令输出都自动落 tmp, 返回截断预览
-      + tmp_path; ``read(tmp_path)`` 不再截断
-
-    详细契约见 ``.design/2026-06-28_desktop_in_4d_cross_section.md``.
+    per-owner: Ground 由 Grounds.open 创建, 生命周期由 Grounds 管. 不要
+    自己实例化.
     """
 
-    # -- 拓扑属性 --
+    @property
+    @abstractmethod
+    def label(self) -> str:
+        """全局唯一的短标识, 也是 K14 virtual channel alias 的来源. Grounds
+        分配, 缺省 = dir basename + 冲突后缀 (`contracts`, `contracts-2`).
+        路径过长时作 fallback 显示不作 ref."""
+        ...
 
     @property
     @abstractmethod
     def root(self) -> Path:
-        """Desktop 的空间边界. 构造期固定."""
+        """场的根目录 (绝对路径). 所有 pin 地址相对它解析,
+        `cd` 类操作限制在其子树内."""
         ...
 
     @property
     @abstractmethod
-    def tmp_root(self) -> Path:
-        """截断输出的回收目录. 构造参数, 缺省 ``root/tmp/desktop/``.
+    def convention(self) -> GroundConvention:
+        """加载时消费的约定快照. open 后不可变 — 想改约定 = 关掉重开."""
+        ...
 
-        Phase 4 可指向 Memento storage 提供的目录."""
+    # -- pin 管理 --
+
+    @abstractmethod
+    def pins(self) -> list[Pin]:
+        """当前 pin 集合. 顺序: 最近 pin/update 的在前 (最有可能被引用)."""
         ...
 
     @abstractmethod
-    def instruction(self) -> str:
-        """生成给模型的入口指令. 若 ``root/DESKTOP.md`` 存在则用它覆盖
-        默认模板, 否则返回内置模板 (含 root / pwd / 原语列表 / 规则摘要)."""
-        ...
+    def pin(self, addr: str, note: str = "") -> Pin:
+        """在桌面上钉一枚新 pin.
 
-    # -- 导航层 --
-
-    @abstractmethod
-    def cd(self, path: str) -> str:
-        """切换工作目录. 返回切换后绝对路径. 越界抛 PathOutsideRootError."""
+        addr 支持三种语法 (见 ``Pin.addr``). 幂等: 同地址重 pin 就是 update
+        note + pinned_at, seen_mtime/hash 立即观察一次. 地址越界 (指向 root
+        子树外) 抛 PathOutsideRootError.
+        """
         ...
 
     @abstractmethod
-    def pwd(self) -> str:
-        """当前工作目录的绝对路径."""
+    def unpin(self, addr: str) -> None:
+        """撤掉一枚 pin. 地址不存在抛 KeyError (dict 语义, 见
+        subprocesses.py `unpin` 同姿态)."""
         ...
 
-    # -- 发现层 --
+    # -- 对账 --
 
     @abstractmethod
-    def tree(
-        self,
-        depth: int = 2,
-        *,
-        path: str = ".",
-        _pin: bool = False,
-    ) -> DirectoryTree:
-        """目录结构. 子项标注类型 (file / dir / symlink). 隐藏文件忽略."""
+    async def update(self, addr: str) -> UpdateResult:
+        """承认这枚 pin 的当前世界状态 — 重新观察 mtime + hash, 把 seen_*
+        推到当前.
+
+        **update 不是"检查变更"** (检查在每帧渲染 context 时自动做, 结果以
+        changed-on-disk 标记出现在帧里). update 是 "我承认这次变更进入我的
+        认知" 的第一人称动词. 承认之后, 下一帧该 pin 不再带 stale 标记.
+
+        返回 UpdateResult 会通过 CTML `<result>` 机制自然入对话历史,
+        作为差分沉淀 (K17). 未 update 的 stale pin 一直挂着 stale 标记
+        直到被 update 或 unpin — 是主动纪律, 不是自动机制.
+
+        地址不存在抛 KeyError; 地址越界抛 PathOutsideRootError.
+        """
         ...
 
-    @abstractmethod
-    def glob(self, pattern: str, *, _pin: bool = False) -> list[str]:
-        """匹配文件路径, 返回相对 root 的路径列表. 支持 ``**`` 递归."""
-        ...
+    # -- 渲染 (K14 virtual channel 消费) --
 
     @abstractmethod
-    def grep(
-        self,
-        pattern: str,
-        *,
-        path: str = ".",
-        _pin: bool = False,
-    ) -> list[Match]:
-        """搜索文件内容. 正则匹配. 尊重 ``.gitignore`` (Phase 1 简化:
-        跳过 ``.`` 前缀目录)."""
-        ...
+    async def instruction(self) -> str:
+        """按 convention.instruction_files 收集 instruction 文档链, 按
+        '根最先' 顺序拼接. 消费给 K14 装配的 virtual channel 的 instruction
+        槽.
 
-    # -- 读取层 --
-
-    @abstractmethod
-    def read(
-        self,
-        path: str,
-        *,
-        offset: int = 0,
-        limit: int = 200,
-        _pin: bool = False,
-    ) -> FileContent:
-        """读文件. 超阈值落 tmp. ``path`` 为 tmp_root 内的路径时不再截断.
-
-        读取成功后 ReadHistory 上登记一次, 解锁 write / edit."""
+        向上: 若 convention.upward_lookup, 从 root 向 upward_boundary 逐层
+        收集. 向下: 子目录中的 instruction 文件不自动加载 (会太重), 靠
+        context() 里的 subdirectory hint 暴露给模型.
+        """
         ...
 
     @abstractmethod
-    def frontmatter(self, path: str, *keys: str) -> dict | None:
-        """提取 markdown YAML frontmatter. ``keys`` 指定时只返回这些键.
+    async def context(self) -> str:
+        """渲染桌面当前帧 — 消费给 K14 virtual channel 的 context_messages.
 
-        Desktop 不硬编码 ``CLAUDE.md`` / ``SKILL.md`` 等约定 — 约定由
-        使用方 (ghost system prompt / DESKTOP.md / channel instruction)
-        下达. 这是提取原语, 不是约定. L1 试用后可决定去留."""
+        典型结构 (impl 侧可调整具体格式):
+
+            ground: <label> @ <root>   pins <n>  预算 <p>%
+            tree(<depth>):
+              ... 目录树 ...
+            ⚖ src/foo/CLAUDE.md (instruction, 未加载)   # 若 subdirectory_hint
+
+            ── pin: <addr>   [changed on disk]?
+               note: <note>
+               <内容渲染: 全文 / 行区间 / glob 命中清单>
+
+        变更标记按 K17: mtime 触发 + hash 对账真伪; hash 未变不打扰模型.
+        超预算按 K20/GroundConvention.surface_budget: 帧顶插报账警告, 点名
+        最大 pin, 不自动淘汰. glob pin 只渲染命中清单 (path + mtime + size,
+        时间倒序), 不渲染文件内容 — 想看内容, 把 glob 转成 path pin.
+        """
         ...
 
-    # -- 写入层 --
+    # -- 生命周期 (K14 startup/close 消费) --
 
     @abstractmethod
-    def write(self, path: str, content: str) -> ReflectionHint | None:
-        """创建或覆盖文件. 必须 ReadHistory 上已登记 (新文件路径除外).
-
-        命中反思路径白名单时返回 ReflectionHint, 否则返回 None."""
-        ...
-
-    @abstractmethod
-    def edit(self, path: str, old: str, new: str) -> tuple[int, ReflectionHint | None]:
-        """替换文件中的字符串. ``old`` 必须精确匹配一次. 返回 (替换处行号,
-        ReflectionHint | None)."""
-        ...
-
-    # -- 执行层 (12+1 收缩: exec 吃 _bg, tasks 返回带方法的 Task) --
-
-    @abstractmethod
-    async def exec(
-        self,
-        command: str,
-        *,
-        timeout: float = 60.0,
-        _bg: bool = False,
-        loop: int = 1,
-        _pin: bool = False,
-    ) -> ExecResult:
-        """执行 shell 命令.
-
-        - ``_bg=False`` (默认): 阻塞到完成或超时. 超时 kill 进程组,
-          返回 ``killed=True``.
-        - ``_bg=True``:  立即返回 ExecResult(task_id=N, stdout='',...).
-          ``loop=0`` 无限循环, ``loop=N`` 执行 N 次. 通过 ``tasks()``
-          查询和管理."""
+    async def load(self) -> None:
+        """从场里的 L0 文件恢复上次 sediment 的 pin 集. 无 L0 文件 = 空
+        pin 集. 幂等. K14 装配时挂在 virtual channel 的 startup 上; CLI 侧
+        (bash landing) 在 `moss desktop <path>` 打开会话时手动调用."""
         ...
 
     @abstractmethod
-    def tasks(self, *, _pin: bool = False) -> list[Task]:
-        """活跃后台任务列表. 每个 Task 持 ``read()`` / ``cancel()`` 方法."""
+    async def sediment(self) -> None:
+        """把当前 pin 集写回 L0 文件的 pin 段落. 只动 pin 段, 不动
+        frontmatter 也不动治理 body — 避免每次 close 产生 git diff 噪音
+        (K20).
+
+        胶囊晋升 (K20 提到的 pin → body promote) 是**独立动作**, 由模型
+        显式发起, 不在本方法内自动做. sediment 只固化"目光"层, promote
+        才把它变成"胶囊".
+
+        K14 挂在 virtual channel 的 close 上; CLI 侧在会话结束或显式
+        `moss desktop close <label>` 时调用. 幂等.
+        """
         ...
 
-    # -- Pin 管理 --
+
+# -- 桌子 (父, owner-scoped) --
+
+class Grounds(ABC):
+    """Ghost 的认知桌子 — 一组打开的 Ground 的容器. per-owner.
+
+    模型的 CTML 接触面: 父 desktop channel 上的动词 `open` / `close` /
+    `pin` / `unpin` / `update` 收 `label` 参数, core 层薄薄转发到
+    `opened[label].方法(...)` (K21 对齐). Grounds 自身不持久 `opened` 列表
+    — 那是纯 session 状态, 下次 session 由模型重新 open. 每个 Ground 自负
+    pin 集持久化 (Ground.load/sediment).
+
+    per-owner: IoC 非单例工厂, owner 生命周期 (`async with`) 划 Ground 的
+    有效期. owner 关闭时全部 Ground close (sediment 落盘). 与 subprocesses /
+    job_supervisor 同姿态 — 见那里的 UU-1.3 命名理由与 owner 生命周期铁律.
+
+    使用方式::
+
+        async with GroundsImpl(workspace_root=...) as gs:
+            ground = await gs.open("./src/ghoshell_moss/contracts")
+            gs.pin(ground.label, "desktop.py:1-50", note="ABC 主体")
+            print(await gs.frame(ground.label))
+            # ... session 内继续 ...
+        # __aexit__ 自动 sediment 全部 ground
+    """
+
+    # -- open/close --
 
     @abstractmethod
-    def pinned(self) -> list[PinInfo]:
-        """所有活跃 pin 的状态快照. LRU 淘汰已发生时仅出现在剩余条目上."""
+    async def open(
+            self,
+            dir: str | Path,
+            *,
+            label: str | None = None,
+            convention: GroundConvention | None = None,
+    ) -> Ground:
+        """把一个目录作为场打开.
+
+        - dir: 场根目录. 相对路径按 owner 的 workspace_root 解析.
+        - label: 场的短标识, 全局唯一. None = 从 dir basename 生成, 冲突
+          时加 `-2` / `-3` 后缀.
+        - convention: 显式覆盖. None = 从 dir 里的 L0 文件 frontmatter 加载,
+          无 L0 文件用 GroundConvention() 默认值.
+
+        副作用: 创建 Ground 实例, 登记入 `opened()`, 调用 `Ground.load()`
+        恢复上次 pin 集. K14 装配时 impl 会再把 Ground 挂载为 virtual
+        channel (那是 channel 层的事, contracts 不知道).
+        """
         ...
 
     @abstractmethod
-    def unpin(self, pin_id: str) -> None:
-        """移除一个 pin. 不存在抛 ``KeyError``."""
+    async def close(self, label: str) -> None:
+        """关掉一个场 — 触发 sediment 落盘, 从 `opened()` 移除.
+
+        label 不存在抛 KeyError.
+        """
+        ...
+
+    # -- 查询 --
+
+    @abstractmethod
+    def opened(self) -> dict[str, Ground]:
+        """当前打开的全部场. key = label."""
         ...
 
     @abstractmethod
-    async def refresh(self) -> None:
-        """重执行所有活跃 pin. 由 channel ``refresh_meta`` 回调驱动;
-        独立调用 (单测 / 手动) 也可以."""
+    def get(self, label: str) -> Ground | None:
+        """按 label 取场句柄. 不存在返回 None (查询语义, 与 close 区分)."""
+        ...
+
+    # -- 转发 (CTML 接触面) --
+
+    @abstractmethod
+    def pin(self, label: str, addr: str, note: str = "") -> Pin:
+        """转发到 `opened()[label].pin(addr, note)`. label 不存在抛
+        KeyError."""
+        ...
+
+    @abstractmethod
+    def unpin(self, label: str, addr: str) -> None:
+        """转发到 `opened()[label].unpin(addr)`."""
+        ...
+
+    @abstractmethod
+    async def update(self, label: str, addr: str) -> UpdateResult:
+        """转发到 `opened()[label].update(addr)`."""
+        ...
+
+    @abstractmethod
+    async def frame(self, label: str) -> str:
+        """转发到 `opened()[label].context()`. 命名: CTML/CLI 表面动词
+        叫 `frame` (K16 骑 '当前视图' 先验), Ground 内部渲染方法叫
+        `context` (K14 与 channel_builder 的 context_messages 同名)."""
         ...
 
     # -- 生命周期 --
 
     @abstractmethod
-    async def shutdown(self) -> None:
-        """清理所有后台进程. 幂等."""
+    async def __aenter__(self) -> Self:
+        """启动 Grounds."""
+        ...
+
+    @abstractmethod
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """关闭 Grounds. 对全部 `opened()` 触发 sediment 后清空."""
         ...
