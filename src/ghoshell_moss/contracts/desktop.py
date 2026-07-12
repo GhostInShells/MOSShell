@@ -74,7 +74,7 @@ Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更�
 #
 # K21 (open/update 语义, 2026-07-12 对齐) — Grounds.open(dir, label) →
 # Ground 对象. CTML 接触面在父上 (`<desktop:pin label="..." addr="..."/>`),
-# core 层薄薄转发 opened[label].pin(...). label 缺省 = dir basename +
+# core 层薄薄转发 active[label].pin(...). label 缺省 = dir basename +
 # 冲突后缀, 全局唯一.
 #
 # per-owner: IoC 非单例工厂, 每 owner 一 Grounds. owner __aexit__ 时全部
@@ -97,7 +97,7 @@ __all__ = [
     "UpdateResult",
     "DesktopError",
     "PathOutsideRootError",
-    "SurfaceBudgetExceeded",
+    "ContextBudgetExceeded",
 ]
 
 
@@ -142,7 +142,7 @@ class GroundConvention(BaseModel):
         default=2,
         description="context 帧内目录树的展示深度. 0 = 不展示树.",
     )
-    surface_budget: int = Field(
+    context_budget: int = Field(
         default=24_000,
         description=(
             "桌面 context 渲染字符数上限 (全场 pin 内容之和). 超预算不静默"
@@ -151,7 +151,7 @@ class GroundConvention(BaseModel):
             "K20 撤销自动 LRU 的直接体现."
         ),
     )
-    subdirectory_hint: bool = Field(
+    hint_children: bool = Field(
         default=True,
         description=(
             "是否在 context 帧内标记子目录中存在的 instruction 文件 "
@@ -258,7 +258,7 @@ class PathOutsideRootError(DesktopError):
     的字面兑现: 边界一次性设置, 边界内无审批, 边界外直接拒."""
 
 
-class SurfaceBudgetExceeded(DesktopError):
+class ContextBudgetExceeded(DesktopError):
     """桌面渲染超预算. 现阶段 impl 只在帧内报账, 不 raise; 保留这个异常
     是为将来严格模式 (raise 而非 warn) 留口."""
 
@@ -371,7 +371,7 @@ class Ground(ABC):
                <内容渲染: 全文 / 行区间 / glob 命中清单>
 
         变更标记按 K17: mtime 触发 + hash 对账真伪; hash 未变不打扰模型.
-        超预算按 K20/GroundConvention.surface_budget: 帧顶插报账警告, 点名
+        超预算按 K20/GroundConvention.context_budget: 帧顶插报账警告, 点名
         最大 pin, 不自动淘汰. glob pin 只渲染命中清单 (path + mtime + size,
         时间倒序), 不渲染文件内容 — 想看内容, 把 glob 转成 path pin.
         """
@@ -409,7 +409,7 @@ class Grounds(ABC):
 
     模型的 CTML 接触面: 父 desktop channel 上的动词 `open` / `close` /
     `pin` / `unpin` / `update` 收 `label` 参数, core 层薄薄转发到
-    `opened[label].方法(...)` (K21 对齐). Grounds 自身不持久 `opened` 列表
+    `active[label].方法(...)` (K21 对齐). Grounds 自身不持久 `active` 列表
     — 那是纯 session 状态, 下次 session 由模型重新 open. 每个 Ground 自负
     pin 集持久化 (Ground.load/sediment).
 
@@ -445,7 +445,7 @@ class Grounds(ABC):
         - convention: 显式覆盖. None = 从 dir 里的 L0 文件 frontmatter 加载,
           无 L0 文件用 GroundConvention() 默认值.
 
-        副作用: 创建 Ground 实例, 登记入 `opened()`, 调用 `Ground.load()`
+        副作用: 创建 Ground 实例, 登记入 `active()`, 调用 `Ground.load()`
         恢复上次 pin 集. K14 装配时 impl 会再把 Ground 挂载为 virtual
         channel (那是 channel 层的事, contracts 不知道).
         """
@@ -453,7 +453,7 @@ class Grounds(ABC):
 
     @abstractmethod
     async def close(self, label: str) -> None:
-        """关掉一个场 — 触发 sediment 落盘, 从 `opened()` 移除.
+        """关掉一个场 — 触发 sediment 落盘, 从 `active()` 移除.
 
         label 不存在抛 KeyError.
         """
@@ -462,7 +462,7 @@ class Grounds(ABC):
     # -- 查询 --
 
     @abstractmethod
-    def opened(self) -> dict[str, Ground]:
+    def active(self) -> dict[str, Ground]:
         """当前打开的全部场. key = label."""
         ...
 
@@ -475,23 +475,23 @@ class Grounds(ABC):
 
     @abstractmethod
     def pin(self, label: str, addr: str, note: str = "") -> Pin:
-        """转发到 `opened()[label].pin(addr, note)`. label 不存在抛
+        """转发到 `active()[label].pin(addr, note)`. label 不存在抛
         KeyError."""
         ...
 
     @abstractmethod
     def unpin(self, label: str, addr: str) -> None:
-        """转发到 `opened()[label].unpin(addr)`."""
+        """转发到 `active()[label].unpin(addr)`."""
         ...
 
     @abstractmethod
     async def update(self, label: str, addr: str) -> UpdateResult:
-        """转发到 `opened()[label].update(addr)`."""
+        """转发到 `active()[label].update(addr)`."""
         ...
 
     @abstractmethod
     async def frame(self, label: str) -> str:
-        """转发到 `opened()[label].context()`. 命名: CTML/CLI 表面动词
+        """转发到 `active()[label].context()`. 命名: CTML/CLI 表面动词
         叫 `frame` (K16 骑 '当前视图' 先验), Ground 内部渲染方法叫
         `context` (K14 与 channel_builder 的 context_messages 同名)."""
         ...
@@ -505,5 +505,5 @@ class Grounds(ABC):
 
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """关闭 Grounds. 对全部 `opened()` 触发 sediment 后清空."""
+        """关闭 Grounds. 对全部 `active()` 触发 sediment 后清空."""
         ...
