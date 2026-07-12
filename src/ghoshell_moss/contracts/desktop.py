@@ -344,14 +344,36 @@ class Ground(ABC):
     # -- 渲染 (K14 virtual channel 消费) --
 
     @abstractmethod
-    async def instruction(self) -> str:
+    def instruction(self) -> str:
         """按 convention.instruction_files 收集 instruction 文档链, 按
         '根最先' 顺序拼接. 消费给 K14 装配的 virtual channel 的 instruction
-        槽.
+        槽 — 落在 <moss_dynamic> 里 (virtual 节点不进 <moss_static>, 见
+        core/ctml/v1_0/prompts.py:105).
+
+        **同步 + 内部缓存**: 首次挂载时 (Ground.load) 计算并缓存, 之后
+        instruction() 返回缓存字符串. 每帧刷不刷不影响 CTML 语义 —
+        选择不刷是缓存命中率考量: 场的法链动辄几 KB (向上 CLAUDE.md 链
+        拼接), 每帧刷相同内容不划算.
+
+        本方法应无 IO / 无并发风险 — impl 违反此声明是 bug. 世界变化
+        (法文件被外部修改) 走显式 refresh_instruction() 承认, 与 Pin 的
+        update() 对账语义同源.
 
         向上: 若 convention.upward_lookup, 从 root 向 upward_boundary 逐层
         收集. 向下: 子目录中的 instruction 文件不自动加载 (会太重), 靠
-        context() 里的 subdirectory hint 暴露给模型.
+        context() 里的 hint_children 暴露给模型.
+        """
+        ...
+
+    @abstractmethod
+    async def refresh_instruction(self) -> None:
+        """重读法链文件, 刷新 instruction 缓存. 幂等.
+
+        与 Pin.update() 同姿态 — 世界变化不自动追认, 承认前上一帧的
+        instruction 保持不变. 场的 CLAUDE.md 被外部修改后, 模型需要通过
+        这个动词显式承认.
+
+        Impl 侧: 走 IO, 允许 asyncio.gather 并行读多个法文件.
         """
         ...
 
@@ -364,7 +386,7 @@ class Ground(ABC):
             ground: <label> @ <root>   pins <n>  预算 <p>%
             tree(<depth>):
               ... 目录树 ...
-            ⚖ src/foo/CLAUDE.md (instruction, 未加载)   # 若 subdirectory_hint
+            ⚖ src/foo/CLAUDE.md (instruction, 未加载)   # 若 hint_children
 
             ── pin: <addr>   [changed on disk]?
                note: <note>
@@ -374,6 +396,10 @@ class Ground(ABC):
         超预算按 K20/GroundConvention.context_budget: 帧顶插报账警告, 点名
         最大 pin, 不自动淘汰. glob pin 只渲染命中清单 (path + mtime + size,
         时间倒序), 不渲染文件内容 — 想看内容, 把 glob 转成 path pin.
+
+        **async 契约**: 本方法 IO 密集 (stat 全部 pin + 读 pin 内容 +
+        hash 对账). Impl 应用 asyncio.gather 并行 stat 与文件读取, 不得
+        串行. 违反此声明是性能 bug.
         """
         ...
 
@@ -445,9 +471,15 @@ class Grounds(ABC):
         - convention: 显式覆盖. None = 从 dir 里的 L0 文件 frontmatter 加载,
           无 L0 文件用 GroundConvention() 默认值.
 
-        副作用: 创建 Ground 实例, 登记入 `active()`, 调用 `Ground.load()`
-        恢复上次 pin 集. K14 装配时 impl 会再把 Ground 挂载为 virtual
-        channel (那是 channel 层的事, contracts 不知道).
+        **同目录幂等**: 若 dir 已被 open (按 root 绝对路径规范化后比较),
+        返回已 active 的 Ground 实例, 忽略传入的 label/convention (以已
+        active 的为准). 目录是认知单元 — 一个目录只有一份 pin 集与法链
+        状态, 同 session 内多次 open 无异议看到同一份. 跨 session 持久化
+        由 L0 文件承担, 不由 Grounds 记忆.
+
+        副作用 (首次 open): 创建 Ground 实例, 登记入 `active()`, 调用
+        `Ground.load()` 恢复上次 pin 集. K14 装配时 impl 会再把 Ground
+        挂载为 virtual channel (那是 channel 层的事, contracts 不知道).
         """
         ...
 
