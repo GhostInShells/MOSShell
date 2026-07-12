@@ -489,7 +489,7 @@ async def test_task_read_and_cancel(desk: DefaultDesktop):
 @pytest.mark.asyncio
 async def test_exec_via_process_manager_cwd(root: Path):
     """ProcessManager 注入 vs 裸 subprocess 行为等价 (cwd 一致)."""
-    from ghoshell_moss.core.process_manager._impl import ProcessManagerImpl
+    from ghoshell_moss.core.subprocesses._impl import ProcessManagerImpl
 
     async with ProcessManagerImpl(root=root, output_path=root / "tmp" / "pm") as pm:
         d = DefaultDesktop(root=root, process_manager=pm)
