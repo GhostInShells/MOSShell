@@ -266,7 +266,7 @@ class Matrix(ABC):
         继任: 裸 spawn 走 processes.execute, cwd/output 默认落在治理域
         runtime 子树 — 无知代码也界内 (TT-6 边界做成环境).
         """
-        # per-Matrix singleton via HostSubprocessesProvider (XX-2);
+        # per-Matrix singleton via MatrixSubprocessesProvider (§XX-2 / §ZZ-2);
         # matrix 只负责 async 启停 (lifecycle), Provider 只负责 new — 两阶段解耦.
         pass
 

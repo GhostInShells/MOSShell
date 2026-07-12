@@ -1,7 +1,6 @@
 from .zenoh_provider import WorkspaceZenohProvider, HostEnvZenohProvider
-from .logger_provider import HostLoggerProvider
 from .topic_provider import ZenohTopicServiceProvider
 from .configs_provider import HostEnvConfigStoreProvider
 from .moss_session_provider import HostSessionProvider
-from .subprocesses_provider import HostSubprocessesProvider
-from .job_supervisor_provider import HostJobSupervisorProvider
+# Subprocesses / JobSupervisor / Logger 三个 provider 已迁至 matrix/providers/
+# (matrix baseline, §ZZ-2). host/providers/ 只保留 driver-specific 或 host 侧特有的.

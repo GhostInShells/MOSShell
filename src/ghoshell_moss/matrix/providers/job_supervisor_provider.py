@@ -1,10 +1,9 @@
-"""JobSupervisor IoC Provider — host 默认接线.
+"""MatrixJobSupervisorProvider — matrix baseline default (§ZZ-2).
 
-singleton=True: 一个"根实例"住 IoC. 消费者拿到后调用 ``.new()`` 派生隔离 peer
-(内部依赖引用共享, 状态独立), owner 自负 async with. 这条路径避免了
-``container.make(kwargs=)`` 的自解释性丢失.
+matrix 层承接 JobSupervisor 的接线, 不再走 host layer. singleton=True: 一个
+根实例住 IoC. 消费者拿到后调用 ``.new()`` 派生隔离 peer (§XX-4 判决).
 
-底层依赖 Subprocesses (由 HostSubprocessesProvider 提供), factory 内 fetch 组合.
+底层依赖 Subprocesses (由 MatrixSubprocessesProvider 提供), factory 内 fetch 组合.
 """
 
 from typing import Type
@@ -16,10 +15,10 @@ from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.core.job_supervisor._impl import JobSupervisorImpl
 
-__all__ = ["HostJobSupervisorProvider"]
+__all__ = ["MatrixJobSupervisorProvider"]
 
 
-class HostJobSupervisorProvider(Provider[JobSupervisor]):
+class MatrixJobSupervisorProvider(Provider[JobSupervisor]):
 
     def singleton(self) -> bool:
         return True

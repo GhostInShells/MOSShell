@@ -1014,3 +1014,272 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
   按 VV-1 挡板① 停下来问, 以 §UU + §YY 为准.
 
 
+## §ZZ. matrix 实现层设计对齐 (2026-07-12, opus 接力 + 人类, VV-2 步骤 7 预实施)
+
+> §YY 定表面积 (契约), §ZZ 定实现层拓扑 (装配). 接力实例 opus 与 fable 的判决合流,
+> matrix 实现动手前的最后一轮设计对齐. 编码开始前必须以本节为准.
+> WW-0 教训执行: 判决类结论钉在正文, 只裁过程不裁判决 — 本节即判决摘要.
+
+### ZZ-1. 依赖分发轴: `[matrix]` = cell 最小依赖
+
+- MatrixManifest (workspace baseline, `MOSS.manifests`) 归 matrix 层承接;
+  ModeManifests (mode 级, `HOST`) 归 MossRuntime 承接.
+- 意图: `pip install ghoshell_moss[matrix]` 装的是 cell 入网 / 膜 / subprocess /
+  job / session 所需的最小依赖. 不含 mindflow / nuclei / 主 channel /
+  audio / ml / tts 等 mode 层重依赖.
+- 意义: §UU-2 "膜可以变重, 治理不许变重" 的**依赖轴同构** — 治理层不强迫工人
+  cell 承担思考层依赖. sensor cell 只装 `[matrix]`; thinking cell 才装 `[host]`.
+- 这是 §WW-4 "cell = package 无关的治理域快捷方式" 在 pip 分发面的落实,
+  解决 v1 时代的极端依赖冲突问题 (audio + vision + ml 同时装).
+
+### ZZ-2. matrix_manifests 补齐 (project 侧漏)
+
+- Project ABC 增 `matrix_manifests() -> MatrixManifest` abstract (project.py 补).
+- LocalProject 实现返回 `ScannedMatrixManifest(env.moss_meta.matrix_manifest_package)`.
+- IoC 装配次序:
+  matrix.__init__ 装 matrix_manifests().providers 到 IoC (baseline);
+  MossRuntime.__init__ 叠加 mode.manifests().providers (mode 覆盖 baseline).
+- default 兜底: matrix 内建 `_default_providers()` 列表 (HostSubprocessesProvider /
+  HostJobSupervisorProvider), 装完 baseline 后 `if not container.bound(p.contract()):
+  container.register(p)`. workspace 用户在 MatrixManifest.providers 里显式覆写即可.
+
+### ZZ-3. adapter 模式 — 窄接口, 三件承诺
+
+- `MatrixNetworkAdapter` ABC 一期放 `src/ghoshell_moss/matrix/adapter.py`;
+  未来倾向迁 blueprint (blueprint = interface, 现在 adapter 归实现层).
+- **窄接口** (刻意, 为未来 driver 混合形态留门):
+  - `driver_name(cls) -> str` (classmethod, 与 NetworkConfig.driver_name 同构)
+  - `async __aenter__ / __aexit__` — 起 driver 底层资源
+  - `new_presence(presence_data: CellPresence, *, logger) -> Presence`
+  - `new_watcher(*, self_project_id: str, logger, ...) -> Watcher`
+- **不承诺内部结构**: session 数量 / hub 数量 / 连接形态全归 adapter 私有.
+  driver 可以是 zenoh 单 session, 也可以是 redis + mqtt + ws + http 混合客户端,
+  matrix 层无感 (人类点: "搞不好不是用一种方式构建, 而是 api_key 访问不同类型接口").
+- ZenohAdapter 实现放 `src/ghoshell_moss/matrix/networks/zenoh_adapter.py`;
+  与 zenoh_presence / zenoh_watcher / zenoh_network 同目录.
+- adapter 发现: driver_name → adapter class 的 module-level registry
+  (`register_adapter(cls)` 装饰器 + `get_adapter(driver_name)` 查询).
+
+### ZZ-4. build_self_presence 就近 (放 cell.py) — worker 专用, host 走独立约定
+
+- 老 God-model Cell 时代 "manifest → cell" 预生成路径已死 (host/impl.py L165-179
+  即断头处). 三域拆分后 CellPresence 需要重新定义构造机制 — 遵 code as prompt
+  就近原则, 放 `blueprint/cell.py`:
+
+  ```python
+  def build_self_presence(env, manifest: CellManifest) -> CellPresence:
+      address = env.this_cell_address or make_address(
+          'cell', manifest.name, unique_id()[:8],
+      )
+      return CellPresence(
+          address=address, alias=manifest.name,
+          project_id=env.project_id, is_host=False,  # worker 硬编
+      )
+  ```
+
+- **本函数只服务 worker cell** (matrix.discover 路径): cell 由父 matrix 通过 env
+  注入身份, 从 env.this_cell_address 拿, 空则自造 (裸脚本 / ad-hoc 场景).
+- **host 走独立约定** (不共用本函数): host 从 Host 抽象走 concrete 显式构造,
+  身份 100% 确认非判断. 拆分理由 = 避免 build_self_presence 被迫承担两种语义
+  变成 god function.
+- Environment 不承担 build 职责 (拒绝 god module 化): env 是身份/路径的载体,
+  build 是 cell 域的合成动作.
+
+### ZZ-5. IoC 两阶段与 provide 懒注册 (Session/TopicService/zenoh.Session 装配)
+
+**IoC 生命周期两阶段** (ghoshell_container 契约):
+- **sync 注册阶段** (container.bootstrap 前): 实例已在直接 `container.set(instance)`;
+  实例是 provider 拉起的用 `container.register(provider)`. 全部依赖注册必须做完.
+- **sync bootstrap** (container.bootstrap()): 触发 bootstrapper 副作用改造 +
+  装 configs. 依赖必须全部注册完否则成环.
+- **async 实例化阶段** (bootstrap 后): 消费者 force_fetch 时 factory 才执行.
+
+**关键疑问点 (人类点破, opus 曾搞反)**: MOSS Session (blueprint/session.py) ≠
+zenoh.Session (driver transport). 依赖方向:
+```
+zenoh.Session  (driver, adapter 起)
+     ↑
+TopicService   (ZenohTopicService factory 里 force_fetch(zenoh.Session))
+     ↑
+MOSS Session   (MossSessionWithZenoh, 要 topic_service + zenoh_session + ...)
+```
+
+**provide 语法糖的实际用途** (落地场景):
+`async 阶段才实例化, 但 sync 注册阶段就要进入 IoC provider chain 才能编译` 的对象.
+zenoh.Session 是典型例子 — Matrix.__aenter__ 的 sync 阶段要注册它 (否则
+TopicService/Session 的 provider chain 不能装配), 但它真正实例化要等 adapter
+的 async __aenter__:
+
+```python
+# sync 注册阶段: lambda 闭包捕捉 adapter 引用
+container.register(
+    provide(zenoh.Session, singleton=True)(lambda con: adapter._session)
+)
+# async 阶段: adapter.__aenter__ 后 adapter._session 已填, first fetch 返回它
+```
+
+**Matrix 装配次序** (Matrix.__aenter__):
+1. sync 阶段:
+   - `set(Matrix/Env/Project/Workspace/MatrixNetworkAdapter, ...)` 5 个直接 set
+   - matrix_manifests().providers 全 register (workspace baseline)
+   - matrix default_providers (Subprocesses/JobSupervisor) — if not bound
+   - `adapter.bind_ioc(container)` → 注册 lazy zenoh.Session
+   - `adapter.default_providers()` → 注册 TopicService + Session Provider (if not bound)
+   - logger provider — if not bound
+   - `container.bootstrap()` — 触发副作用, 不 fetch zenoh.Session 所以不成环
+   - pull LoggerItf from IoC 覆写 self._logger (§ZZ-6)
+2. async 阶段:
+   - `await adapter.__aenter__()` → self._session 填充
+   - `container.force_fetch(TopicService)` → factory 拿 zenoh.Session ✓
+   - `container.force_fetch(Session)` → factory 拿 topic + zenoh ✓
+   - 依次入 async_exit_stack
+
+**面向 workspace 用户可覆写的接线** (Subprocesses/JobSupervisor/LoggerItf) 保留
+Provider 子类形式 (HostSubprocessesProvider 等) — 类结构 registered_at 显示位置,
+比闭包更利可发现性. 两种模式分工: matrix 内部反绑 (async 阶段才实例化) 用
+provide 语法糖; 外部可覆写 (面向 override) 用 Provider 子类.
+
+### ZZ-6. Logger 分层 (matrix pull, 命名冒泡, 不写双文件)
+
+- **顶层 `moss` logger**: project.bootstrap 已写死实现 (TimedRotatingFileHandler
+  挂 `{workspace}/logs/moss.log`, 见 project._ensure_log_file_handler).
+  **保持不动, 不走 Provider** — 那是 workspace 级 root, 不该被 IoC 消费者关心.
+- **matrix 私有 logger**: matrix.__init__ 拿
+  `logging.getLogger(f'moss.cell.{normalize(this.address)}')` (java log4j 风格
+  hierarchical name, propagate=True 自动冒泡到 moss.log).
+- **反绑模式 = pull, 不 push** (人类明确修正):
+  matrix.__aenter__ 里 container.bootstrap 后一次性 pull IoC 的 LoggerItf,
+  有覆写就替代 self._logger. 老 host/matrix.py __aenter__ L580-583 已有此 pattern,
+  **保留**.
+- **不写 cell 独立 log 文件** — 顶层 moss.log 已足, 命名冒泡自然分层, crash
+  现场按 cell 名 grep. 双写增加 fd 泄漏面 + 幂等复杂度. 未来有明确需求
+  (远程 cell 独立日志分发) 再加.
+- python logging 坑规避锚点:
+  - handler.set_name + `any(h.get_name()==name for h in logger.handlers)` 幂等
+  - matrix.__aexit__ removeHandler (若加过 cell 私有 handler)
+  - propagate=True 保持默认, 不 disable
+
+### ZZ-7. host vs cell matrix — 本期不拆两个类
+
+- 决策: 这一期**不拆** HostMatrix / CellMatrix 两个 Matrix 实现类, 单 MatrixImpl.
+- 理由:
+  1. is_host 已通过传入的 CellPresence 100% 确认 (非运行时判断);
+  2. 内部差异全在 adapter 起 driver 的 config 参数 (zenoh listen vs connect);
+  3. 拆两个类 90% 骨架重复, 收益负.
+- 未来可能拆: 若 host 侧治理动作 (workspace 级 flock host lock / host_pid 写
+  workspace / 域内 singleton 执法) 大幅分化成独立机制, 再拆.
+- 人类补: "拆没啥收益, 未来可能要. 你是执行者, 写得顺手为准" — 本期以简为准.
+
+### ZZ-8. 文件布局最终定案
+
+| 文件 | 内容 | 状态 |
+|------|------|------|
+| `blueprint/cell.py` | + `build_self_presence()` factory | patch |
+| `blueprint/project.py` | + `Project.matrix_manifests()` abstract | patch |
+| `project/local_project.py` | + `LocalProject.matrix_manifests()` 实现 | patch |
+| `matrix/adapter.py` | MatrixNetworkAdapter ABC + registry | 新建 |
+| `matrix/networks/zenoh_adapter.py` | ZenohAdapter | 新建 |
+| `matrix/matrix_impl.py` | MatrixImpl (骨架承 host/matrix.py, 表面按 §YY) | 新建 |
+| `factory.py` | fill `_create_matrix` (project → NetworkMetadata → adapter → matrix) | patch |
+| `host/impl.py` + `host/moss_runtime.py` | 修 import + 老 Cell/CellLauncher 断头调用 | 修补 (让 CLI 通) |
+| `host/matrix.py` (老) | 保留不动 | 遗迹待清理 (VV-2 步骤 8 后) |
+
+### ZZ-9. 编码顺序 (opus 接力实施路径)
+
+1. §ZZ 落 FEATURE.md (本节, 留轨迹)
+2. blueprint 补丁: build_self_presence + Project.matrix_manifests abstract
+3. LocalProject.matrix_manifests 实现
+4. matrix/adapter.py — MatrixNetworkAdapter ABC + registry
+5. matrix/networks/zenoh_adapter.py — ZenohAdapter (含 zenoh session + hub)
+6. matrix/matrix_impl.py — MatrixImpl (核心, 骨架承老代码)
+7. factory._create_matrix wire
+8. host/impl.py + host/moss_runtime.py 修 import 让 CLI 通 (VV-2 步骤 8 前哨)
+9. `moss --ai all-commands` 冒烟
+
+小批 PR 纪律 (VV-1 挡板③): 编码顺序内每几步可独立 commit, 保 review 带宽.
+
+### ZZ-10. TT-2 address 终审: 三段结构 + CellKind Literal (2026-07-13 人类+opus)
+
+> 本节是 TT-2 占位判决的终审. §YY-1 第 2 条曾说 "host 节点 address 形式人类
+> 仍在观测未定案" — 本轮观测结束, 形态定死.
+
+**背景**: 上一版 (§UU-5 + fable-5) 把 address 从"强类型两段" (V1) 降解到
+"占位不承诺段数" (V5), 是清算副作用没系统重建. address 无结构导致发现层
+放弃 zenoh wildcard subscribe 能力, 所有筛选走 python O(N) filter.
+本轮通过 Zooko 三角 (全局唯一 / 人类可读 / 无中心, 三取二) 承认 MOSS 的
+命名立场 = 网络层用 uid 底层 + 本地 alias 展示 (放弃"网络内可读全局名").
+
+**address 三段** (`address[0] / address[1:-1] / address[-1]`):
+- **[0]** = 保留字, `Literal['host', 'cell', 'bridge']`. matrix 层控扩展
+  (与 CellPresence.membrane 同模式, §UU 已跑通的架构先例).
+  发现层维度: `MOSS/matrix/scopes/{scope}/cells/host/**` = zenoh wildcard
+  一次拿所有 host cell.
+- **[1:-1]** = 治理域路径, 允许多段. 承载 moss_name / project_id / 未来分形
+  嵌套 (`fractal.remote_moss` 语义). 简单形只有一段, 分形展开自然扩展.
+- **[-1]** = uid, 短随机 (8 位), 全局唯一性来源.
+
+**host address**: `host/{normalize(moss_name)}/{project_id_short}`
+- moss_name 来自 MOSS.md.name (workspace 声明式)
+- project_id 来自 workspace/project_id (第一次启动自生成 uid, 短化 8 位入 address)
+
+**cell address**: `cell/{manifest.name}/{uid_short}`
+- host 内引用, 不携带 host 段 (URL 语法里 host 段在 authority)
+- name 来自 CELL.md.name (治理域内 unique)
+
+**URL 形态**: `scheme://{normalize(host_address)}/cells/{normalize(cell_address)}`
+- 例: `channel://host.desktop.01KXABC/cells/cell.microphone.YY5X`
+- normalize = '/' → '.', URL authority 语法要求
+
+**CellPresence.is_host 从字段拿掉走 property**:
+```python
+class CellPresence(BaseModel):
+    address: CellAddress
+    # is_host 字段消失
+    # ...
+
+    @property
+    def is_host(self) -> bool:
+        return self.address.startswith('host/')
+```
+- 三域拆分把 type 融合概念拆到独立位置; 本轮 address 结构升级后, is_host
+  信息完全落在 address[0], 保留字段是历史包袱 — 拿掉非回退, 是**结构升级
+  后的自然消解**.
+- pydantic model_dump 里 is_host 不出现, 反序列化时 property 自动生效.
+
+**分类的正交**:
+- address[0] = **发现层维度** (host / cell / bridge, wildcard subscribe 用)
+- CellManifest.taxonomy = **功能分类** (ghost / shell / sensor / actuator...,
+  自由字符串, 人类阅读用, 未来 mindflow 可 payload filter)
+- ghost / shell 分类**这一期不进 address** — 是功能定位不是发现维度;
+  未来 mindflow 实测需求出现再上升 (可加保留字 `ghost.host` / `shell.host` 到 [0]
+  而不改结构)
+
+**scope 与 address 正交**:
+- scope 保留作 zenoh session 通讯子空间隔离 (原意不变)
+- 与 address 命名解耦: scope 决定"通不通"(隔离), address 决定"叫啥"(身份)
+- URL 里可选带 scope 段 (跨 scope 引用时), 同 scope 内引用不带
+
+**副路径 `MOSS/matrix/hosts/{scope}/cells/liveness/*` 处理**:
+- 老版做的旁路 host 声明 (为了不依赖 address[0] 保留字机制)
+- 本轮承认 address[0] 保留字 → 副路径**语义作废但暂不删代码**
+- 未来 mesh 拓扑清理时统一移除 (归 wire-up 后期或 §AAA)
+
+**Zooko 三角的明确立场**:
+- MOSS 选择: 放弃"网络内人类可读全局名"
+- 网络层身份 = uid (address[-1] + [1:-1] 里的 project_id 短化)
+- 本地展示 = alias (从 manifest.name, 走 CLI/日志 alias 反查)
+- 未来若加 mDNS / consul 等中心权威, 只需把 project_id 段替换为可读 name,
+  上层结构不变 — **架构决策向后兼容**.
+
+**编码顺序 (§ZZ-10 落地)**:
+1. FEATURE.md 落 §ZZ-10 (本节)
+2. blueprint/cell.py: CellKind Literal + make_address 新签名 + build_self_presence
+   更新 + build_host_presence 新增 + CellPresence.is_host 字段→property
+3. factory._create_matrix 用新 build_self_presence 签名 (无变化, 内部实现变)
+4. Host 抽象 concrete 用 build_host_presence (task #10 wire-up 时接)
+5. zenoh_presence.py: is_host 读取保持 (property 语义); hosts_ns 副路径 comment
+   记 "作废待清"
+6. 冒烟: matrix + factory 端到端 (blueprint / matrix_impl / factory 都不崩)
+
+
+

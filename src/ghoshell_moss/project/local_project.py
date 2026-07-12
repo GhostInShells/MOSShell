@@ -5,13 +5,14 @@ from ghoshell_moss.contracts import Workspace
 from ghoshell_moss.core.blueprint.cell import CellRegistry
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.project import (
-    Project, HostMode, Manifest, HostModeMeta, HOST_MODE_FILE,
+    Project, HostMode, Manifest, MatrixManifest, HostModeMeta, HOST_MODE_FILE,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.workspace import LocalWorkspace
 from ghoshell_moss.project.cell_registry import ProjectCellRegistry
 from ghoshell_moss.project.local_host_mode import LocalHostMode
 from ghoshell_moss.project.manifests.ghosts import search_ghost_manifests
+from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
 from ghoshell_moss.project.manifests.base import ScannedManifest
 
 __all__ = ['LocalProject']
@@ -26,6 +27,7 @@ class LocalProject(Project):
         self._cells: CellRegistry | None = None
         self._ghosts_cache: dict[str, tuple[Path, GhostMeta]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
+        self._matrix_manifests: MatrixManifest | None = None
 
     @property
     def env(self) -> Environment:
@@ -123,3 +125,14 @@ class LocalProject(Project):
                 cell_dirs = self._env.cell_dirs()
             self._cells = ProjectCellRegistry(self._env, cell_dirs=cell_dirs)
         return self._cells
+
+    # -- matrix manifests -- #
+
+    def matrix_manifests(self) -> MatrixManifest:
+        # 单例缓存 — scanner 是 lazy generator, 重复构造无副作用, 但缓存避免
+        # 每次 fetch 都重新扫包.
+        if self._matrix_manifests is None:
+            self._matrix_manifests = ScannedMatrixManifest(
+                self._env.moss_meta.matrix_manifest_package,
+            )
+        return self._matrix_manifests

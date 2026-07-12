@@ -237,6 +237,11 @@ class ZenohPresence(Presence):
 
         host_token: zenoh.LivelinessToken | None = None
         if self._presence.is_host:
+            # §ZZ-10 副路径 hosts_ns/{scope}/cells/liveness/{address} 作废但暂不删.
+            # 老版做的旁路 host 声明 (为了不依赖 address[0] 保留字机制) — 本轮
+            # 承认 address[0]='host/' 保留字 + wildcard subscribe, 副路径语义
+            # 已由主路径 (cells_ns 下的 host/xxx address) 承担. 保留代码以免破坏
+            # 现有 ZenohLivenessListener 消费者, wire-up 后期或 §AAA 统一清理.
             host_token = self._session.liveliness().declare_token(
                 self._host_liveness_key(address),
             )

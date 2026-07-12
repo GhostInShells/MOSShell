@@ -8,7 +8,6 @@ from typing import ClassVar, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from ghoshell_moss.core.blueprint.cell import HOST_TYPE
 from ghoshell_moss.core.blueprint.project import NetworkConfig, NetworkMetadata
 
 if TYPE_CHECKING:
@@ -60,29 +59,41 @@ class ZenohNetworkConfig(NetworkConfig):
     )
     cell_type_configs: dict[str, ZenohNodeConfig] = Field(
         default_factory=dict,
-        description="根据其它 type 做的映射",
+        description="非 host worker 按 cell 分类的覆盖表 (可选, 未来 sensor/robot 类需要独立 endpoint 时用).",
     )
 
     @classmethod
     def driver_name(cls) -> str:
         return cls.DRIVER
 
-    def for_cell(self, cell_type: str) -> ZenohNodeConfig:
-        """取对应 cell type 的节点配置."""
-        cell_type = str(cell_type)
-        if cell_type == HOST_TYPE:
+    def for_cell(
+            self,
+            *,
+            is_host: bool,
+            cell_type: str = '',
+    ) -> ZenohNodeConfig:
+        """
+        取对应节点配置. is_host 是显式确认 (§UU-1.2 / §ZZ-7 非判断),
+        cell_type 是可选的 worker 子分类覆盖.
+        """
+        # HOST_TYPE 常量已废 (§ZZ-7 / UU-1.2). 分派 = is_host 布尔 + 可选 cell_type 覆盖.
+        if is_host:
             return self.host
-        elif cell_type in self.cell_type_configs:
+        if cell_type and cell_type in self.cell_type_configs:
             return self.cell_type_configs[cell_type]
-        else:
-            return self.worker
+        return self.worker
 
 
-def create_zenoh_session_from_metadata(metadata: NetworkMetadata, cell_type: str) -> 'zenoh.Session | None':
+def create_zenoh_session_from_metadata(
+        metadata: NetworkMetadata,
+        *,
+        is_host: bool,
+        cell_type: str = '',
+) -> 'zenoh.Session | None':
     config = ZenohNetworkConfig.from_metadata(metadata)
     if config is None:
         return None
-    node_config = config.for_cell(cell_type)
+    node_config = config.for_cell(is_host=is_host, cell_type=cell_type)
     return _create_zenoh_session(node_config)
 
 

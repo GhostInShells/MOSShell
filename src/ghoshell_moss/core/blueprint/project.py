@@ -643,6 +643,20 @@ class Project(ABC):
         """
         ...
 
+    @abstractmethod
+    def matrix_manifests(self) -> MatrixManifest:
+        """
+        workspace 级基线声明 (§ZZ-2, MOSS.manifests 包扫描产物).
+
+        matrix 层承接 MatrixManifest 而非 ModeManifests, 落实依赖分发轴:
+        `pip install ghoshell_moss[matrix]` = cell 最小依赖, 不含 mode 层重依赖
+        (mindflow / nuclei / audio / ml). MossRuntime 才承接 mode.manifests()
+        叠加 mode 专属.
+
+        意图: cell = package 无关的治理域快捷方式 (§WW-4) 在 pip 分发面的落实.
+        """
+        ...
+
     @property
     @abstractmethod
     def cells(self) -> CellRegistry:

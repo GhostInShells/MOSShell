@@ -76,10 +76,17 @@ from ghoshell_moss.message import unique_id
 
 __all__ = [
     'CellAddress',
+    'CellKind',
+    'HOST_KIND',
+    'CELL_KIND',
+    'BRIDGE_KIND',
     'MatchPattern',
     'RelativePath',
     'normalize',
     'make_address',
+    'parse_address',
+    'build_self_presence',
+    'build_host_presence',
     'CellState',
     'ExecSpec',
     'CellManifest',
@@ -95,24 +102,153 @@ __all__ = [
 # -- 类型别名 -- #
 
 CellAddress = str
-"""cell 在网络上的唯一地址. 结构未定 (TT-2), 调用方一律作不透明字符串处理."""
+"""
+cell 在网络上的唯一地址. 三段结构 (§ZZ-10 TT-2 终审):
+
+    address = kind / middle_path / uid
+
+- kind (address[0]): 保留字 Literal, 值域 = CellKind.
+- middle_path (address[1:-1]): 治理域路径, 允许多段 (moss_name / project_id /
+  未来分形嵌套). 简单形只有一段, 分形展开自然扩展.
+- uid (address[-1]): 短随机 (8 位), 全局唯一性来源.
+
+调用方一律作字符串处理; 结构化操作走 make_address / parse_address.
+"""
+
+CellKind = Literal['host', 'cell', 'bridge']
+"""
+address[0] 保留字 — 发现层维度分类 (§ZZ-10).
+
+值域由 matrix 层控扩展 (与 CellPresence.membrane 同模式):
+- 'host'   — 网络的架构入口 + 治理起点 (西部世界隐喻的承载体)
+- 'cell'   — worker cell, 挂在 host 下的功能单元
+- 'bridge' — 未来: 跨 mesh / 跨 scope 的桥接节点 (保留)
+
+功能分类 (ghost / shell / sensor / actuator 等) 走 CellManifest.taxonomy,
+不进本枚举 — [0] 只承担发现层维度 (zenoh wildcard subscribe), 不承担
+功能定位.
+"""
+
+HOST_KIND: CellKind = 'host'
+CELL_KIND: CellKind = 'cell'
+BRIDGE_KIND: CellKind = 'bridge'
 
 RelativePath = str
 MatchPattern = str
 """通配符模式: group/name, group/*, *, */*, */name"""
 
 
-def make_address(*parts: str) -> str:
-    """约定定义一个节点的 address. 使用 / 作为层级分隔符."""
-    # TT-2 占位: address 的分段结构 (现为 type/name/uid 三段式) 等人类终审,
-    # 本函数只承诺 "用 / 拼接", 不承诺段数与段含义.
-    return '/'.join(parts)
+def make_address(kind: CellKind, *middle: str, uid: str) -> str:
+    """
+    构造 address (§ZZ-10 三段结构).
+
+    :param kind: address[0] 保留字, 必须是 CellKind 值域之一.
+    :param middle: address[1:-1] 治理域路径, 至少一段 (moss_name / project_id 等),
+        分形时可多段.
+    :param uid: address[-1] 唯一性来源, 短随机字符串.
+
+    例:
+        host: make_address('host', 'my_moss', uid='01KXABC')
+              → 'host/my_moss/01KXABC'
+        cell: make_address('cell', 'microphone', uid='YY5X')
+              → 'cell/microphone/YY5X'
+        分形: make_address('cell', 'proj_a', 'sub_proj_b', uid='ZZ7')
+              → 'cell/proj_a/sub_proj_b/ZZ7'
+    """
+    if not middle:
+        raise ValueError(
+            f'address must have at least one middle segment (kind={kind!r}, uid={uid!r})'
+        )
+    if not uid:
+        raise ValueError(f'address uid must be non-empty (kind={kind!r})')
+    for seg in (kind, *middle, uid):
+        if '/' in seg:
+            raise ValueError(f'address segment must not contain "/": {seg!r}')
+    return '/'.join([kind, *middle, uid])
+
+
+def parse_address(address: CellAddress) -> tuple[CellKind, tuple[str, ...], str]:
+    """
+    拆解 address 到三 slice: (kind, middle_path, uid).
+
+    :raise ValueError: address 段数 < 3 或 kind 不在 CellKind 值域.
+    """
+    parts = address.split('/')
+    if len(parts) < 3:
+        raise ValueError(
+            f'address must have at least 3 segments (kind/middle+/uid), got {address!r}'
+        )
+    kind, uid = parts[0], parts[-1]
+    if kind not in ('host', 'cell', 'bridge'):
+        raise ValueError(
+            f'address[0] must be in CellKind (host/cell/bridge), got {kind!r}'
+        )
+    return kind, tuple(parts[1:-1]), uid  # type: ignore[return-value]
 
 
 def normalize(name_or_address: str) -> str:
     """将名称或 address 归一化为可作文件名 / python 标识符的形式."""
     return (name_or_address.replace('/', '_').replace('\\', '_').
             replace('.', '_').replace('-', '_'))
+
+
+def build_self_presence(
+        env,
+        manifest: 'CellManifest',
+) -> 'CellPresence':
+    """
+    构造**本 worker cell** 的 self presence (§ZZ-4 / §ZZ-10).
+
+    服务 worker (非 host) 场景, address 前缀硬编 CELL_KIND ('cell/').
+
+    调用路径: **matrix.discover (worker cell)** — cell 由父 matrix 通过 env
+    注入身份 (environment.py 父子传递机制), 本函数从 env.this_cell_address 拿,
+    若为空则自造 (裸脚本 / ad-hoc 场景, address = 'cell/{name}/{uid_short}').
+
+    **host 场景不走本函数** — host 从 Host 抽象走 concrete 显式构造, 走
+    build_host_presence.
+
+    :param env: 环境载体 (类型标注避 blueprint 内循环 import; 实为 Environment).
+    :param manifest: 本 cell 的 CellManifest (from_proc / 反查 project.cells).
+    :return: worker CellPresence, 未 announce (announce 在 Matrix.__aenter__ 中做).
+    """
+    address = env.this_cell_address or make_address(
+        CELL_KIND, manifest.name, uid=unique_id()[:8],
+    )
+    return CellPresence(
+        address=address,
+        alias=manifest.name,
+        project_id=env.project_id,
+        # is_host 从字段拿掉, 是 property (§ZZ-10): address.startswith('host/') 推断.
+    )
+
+
+def build_host_presence(
+        env,
+        *,
+        moss_name: str = '',
+        project_id_short: str = '',
+) -> 'CellPresence':
+    """
+    构造**本 host cell** 的 self presence (§ZZ-10).
+
+    服务 host 场景 (顶层启动, Host 抽象走 concrete). address 硬编 HOST_KIND
+    前缀, 形如 'host/{moss_name}/{project_id_short}'.
+
+    :param env: Environment (已 sealed).
+    :param moss_name: 从 env.moss_meta.name 取, 默认 fallback.
+    :param project_id_short: env.project_id 短化 (前 8 位), 默认自取.
+    :return: host CellPresence, address 三段结构.
+    """
+    moss_name = moss_name or normalize(env.moss_meta.name or 'moss')
+    project_id_short = project_id_short or (env.project_id[:8] if env.project_id else unique_id()[:8])
+    address = make_address(HOST_KIND, moss_name, uid=project_id_short)
+    return CellPresence(
+        address=address,
+        alias=moss_name,
+        project_id=env.project_id,
+        # is_host property 会自动返回 True (address.startswith('host/')).
+    )
 
 
 class CellState(str, Enum):
@@ -470,10 +606,6 @@ class CellPresence(BaseModel):
     )
     # UU-1.10: 本地/远端分离用 project_id 数据标签 + 视图过滤,
     # 不做 namespace 原生切分 (硬隔离用 --scope 原语).
-    is_host: bool = Field(
-        default=False,
-        description="是否是当前网络的 host (运行时事实).",
-    )
     membrane: list[Literal['channel']] = Field(
         default_factory=list,
         description="本 cell 承运的膜类型标签. v1 唯一支持 'channel'; "
@@ -488,6 +620,16 @@ class CellPresence(BaseModel):
         default_factory=time.time,
         description="本 presence 最后更新的时间戳.",
     )
+
+    # -- is_host 字段消解 (§ZZ-10 TT-2 终审) -- #
+    # 三段结构升级后, is_host 信息完全落在 address[0] (=='host'). 保留字段是历史
+    # 包袱 — 拿掉字段 + 加 property 让消费者按老接口读, 序列化时不 dump 冗余键.
+    # 反面容错: 老 JSON 里若还带 is_host 字段, pydantic v2 默认 ignore extra.
+
+    @property
+    def is_host(self) -> bool:
+        """本 cell 是否是网络的 host — 从 address[0] 推断 (§ZZ-10)."""
+        return self.address.startswith(f'{HOST_KIND}/')
 
 
 class CellEvent(BaseModel):

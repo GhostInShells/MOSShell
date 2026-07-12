@@ -1,22 +1,24 @@
-"""Subprocesses IoC Provider — host 默认接线.
+"""MatrixSubprocessesProvider — matrix baseline default (§ZZ-2).
 
-singleton=True: Matrix 一份, 消费者从 IoC fetch. cwd/output_dir 从 Workspace 派生
-(TT-6 边界做成环境). Matrix 通过 lifecycle_level_contracts 接入 async lifecycle.
+matrix 层承接 Subprocesses 的接线, 不再走 host layer. 语义 = per-Matrix singleton,
+cwd/output_dir 从 Workspace 派生 (TT-6 边界做成环境).
+
+workspace 用户在 MatrixManifest.providers 里显式覆写即可覆盖 default.
 """
 
 from typing import Type
 
-from ghoshell_container import IoCContainer, Provider, INSTANCE
+from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
 
-__all__ = ["HostSubprocessesProvider"]
+__all__ = ["MatrixSubprocessesProvider"]
 
 
-class HostSubprocessesProvider(Provider[Subprocesses]):
+class MatrixSubprocessesProvider(Provider[Subprocesses]):
 
     def singleton(self) -> bool:
         return True
