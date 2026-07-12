@@ -953,3 +953,64 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
   接入验证.
 
 
+## §YY. Matrix/Project 表面积定稿 (2026-07-12, fable + 人类, VV-2 步骤 5+6 交付)
+
+> blueprint/matrix.py 重绘完成 (死 import 修复, blueprint 层可 import),
+> project.py 治理三件落地. 本节记录仲裁结论与理由 — 细节全在 matrix.py comments,
+> 此处只钉决策. 接力实例 (opus 1m) 从这里 + matrix.py 全文进入.
+
+### YY-1. 仲裁结论 (相对 UU-10/TT-6 的增量)
+
+1. **session 永在首页** — 人类明示: session 是 Matrix 最重要的原件, 永不拿出,
+   只有 API 上升到 Matrix 表面的可能性. TT-6 "session 降级出首页" 作废.
+2. **`this -> CellPresence`** — 凡入网皆有身份, mesh 可读是自迭代地基;
+   形如 discover 的入口不预设代码定义时自我声明. CellPresence 待人类 IDE
+   改名为 Cell. host 节点 address 形式人类仍在观测.
+3. **`mesh()` 惰性门** — Watcher 归 Matrix (不升 runtime 层), 但 opt-in by
+   usage: 首次调用创建+启动+绑生命周期. 旧 only_allowed_in_host_cell 布尔
+   门禁 = TT-6 批评的 API 形式边界, 废. 多 adapter 变体属实现层投影, 不进 ABC.
+4. **`network` 属性改暴露 NetworkMetadata** — 运行时自解释: cell 定义时不知道
+   自己的网络配置, 暴露即可编程. network_name/network_scope 平铺属性随之删.
+5. **`get_runtime_url` 保名, URL 承诺当真** — 未来 scheme://cell_address/scoped/path
+   可解引用 (cell_address 或 project address 实现期定). scoped 三件套按家族拆:
+   runtime_scopes + get_runtime_url 留 (身份族, 运行时才存在故归 Matrix);
+   get_runtime_scope_storage 删, 降为 get_runtime_url comments 里的两行示例.
+6. **`home` 双目录判决** (本轮最重要的新结论): "cell 的领地"是两种寿命 —
+   持久领地 `{workspace}/cells/{normalize(稳定身份)}` (matrix.home, manifest
+   name 键, 无泄漏, 永不自动清, L4 时是 cell ghost 的记忆归宿, CELL.md 可覆写,
+   多实例共享属作者自担) vs 实例残迹 `runtime/cells/{address含uid}` (spawn
+   cwd/日志/scratch, 咽喉在 spawn 同身份下一实例时修剪留 N 份 — crash 现场
+   留到下次 spawn 才清, 最后一次 crash 永远可查; 清理者=创建者, 单写者不破).
+   熔一个键则两头输: uid 键泄漏+记忆找不回, 退出自动清丢 debug.
+   systemd StateDirectory= 同构. TT-2 占位: 稳定身份现用 manifest name.
+7. **run_cell 签名定稿** (人类让渡打磨权, fable 定):
+   `async run_cell(target, *, extra_env=None, wait=30.0) -> CellPresence`.
+   错误语义即 prompt (TT-12), 五个 raise 各带下一步指引; wait>0 迫使 owner
+   惰性创建 Watcher (spawner 天然是观察者, 合理耦合); 咽喉六步次序写在
+   matrix.py run_cell comments. stop 不在 Matrix: owner 走 processes,
+   跨进程走 CLI.
+8. **is_host_running 保留** (cell 侧 code as prompt); wait_host_running 候选留锚未加.
+9. **`publish_event` 上首页** (refetch=True 固定); provide_channel 实现内自动
+   publish 一个 CellEvent, 调用方不需手动跟发.
+10. **Matrix 名字的哲学锚点钉进 docstring**: Matrix 实例是"整体在局部的投影"
+    (洞穴之光投影出蜂巢), 投影与实体的指代等价有哲学实在性. fable 的
+    "per-cell mesh 客户端"批评被此论证拆解, 真心接受非让步. God-object 的
+    解药是表面收敛不是改名.
+
+### YY-2. project 侧三件 (VV-2 步骤 5)
+
+- `HostMode.cells` 删 — cells 三处露头收敛为 project.cells 一条链路,
+  mode 只贡献 cells_discover_paths 配置.
+- Project docstring 改写为治理域句柄语义 (TT-7 保名条件履行), TT-9 三目录
+  松耦合 + A/B 动机钉进 comments.
+- project.py 七认知单元的文件拆分**不做** — 搬家不是设计, 归实现清理阶段.
+
+### YY-3. 搬家地图与接力提示
+
+- 旧 Matrix 成员的完整搬家地图在 matrix.py 头部 comments (wire-up 按图改调用方).
+- blueprint 层已可 import (matrix + project 冒烟通过); 下游 (factory._create_matrix
+  为空 / host 实现 / CLI) 尚未 wire, CLI 仍不可用 — 即 VV-2 步骤 7/8 的活.
+- 人类明示还有很多细节摩擦力但不再语言层面找 — 实现期发现契约歧义时,
+  按 VV-1 挡板① 停下来问, 以 §UU + §YY 为准.
+
+

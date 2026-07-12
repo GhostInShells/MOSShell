@@ -458,12 +458,9 @@ class HostMode(ABC):
         """
         ...
 
-    @abstractmethod
-    def cells(self) -> CellRegistry:
-        """根据模式配置生成的 cell 注册表. """
-        ...
-
     def cells_discover_paths(self) -> list[Path]:
+        # 原 HostMode.cells 已删 (UU-10/TT-7: cells 三处露头收敛为 project.cells
+        # 一条链路). mode 只贡献发现路径配置, 不再持有第二个 registry 实例.
         return self.meta.cell_dirs(self.env)
 
 
@@ -472,10 +469,21 @@ _project: 'Project | None' = None
 
 class Project(ABC):
     """
-    MOSS 所在的 Project 感知.
-    环境配置的 moss workspace 所在目录为 Project.
-    在 Project 中需要反应出 MOSS 可以操作的存储环境, 可以启动的模式, 能力声明等.
+    被治理领地的句柄 (governance-domain handle).
+
+    Project 的一句话承诺: 指认一片领地, 并提供领地内治理真相的入口.
+    成员几乎都指向 workspace, 因为 workspace 正是治理真相的存放地 —
+    project 目录本身的内容对 MOSS 是动态可变的 (ghost 自管理的领地),
+    目录 taxonomy 永不进内核 API (TT-7).
     """
+    # -- TT-7 保名判决: "Project" 不是名字被占, 而是治理域句柄的正名.
+    #    保名条件 = 契约按治理域句柄语义改写 (本 docstring) + taxonomy 禁入.
+    # -- TT-9 三目录松耦合: workspace = 治理真相存放地; project = 被治理领地
+    #    (薄句柄, 挂 Matrix 一级); cell 目录 = 代码出处 (治理归属仍是启动方).
+    #    cwd 只是发现起点, 不承载语义.
+    # -- A/B 动机: A 目录运行时拉起 B 目录 cell — B 只是代码出处,
+    #    治理归属 (日志/runtime/身份/网络) 全归 A. systemd 同构
+    #    (ExecStart 指向任意路径, journal/cgroup 归 init 域).
 
     @property
     def id(self) -> str:
