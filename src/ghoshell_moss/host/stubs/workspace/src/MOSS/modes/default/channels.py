@@ -5,7 +5,7 @@ from ghoshell_moss import new_shell_main_channel
 from ghoshell_moss.core.ctml.shell.ctml_main import inject_system_primitives
 
 from ghoshell_moss.channels.app_store_channel import AppStoreChannel
-from ghoshell_moss.channels.fractal_hub import matrix_fractal_hub_channel_factory
+
 from ghoshell_moss.core.speech import SpeechChannelModule
 
 main = new_shell_main_channel()
@@ -15,9 +15,6 @@ inject_system_primitives(main, extended=True)
 
 # -- Speech --------------------------------------------------
 main.with_module(SpeechChannelModule())
-
-# -- fractal hub ---------------------------------------------
-main.import_channels(matrix_fractal_hub_channel_factory())
 
 # -- app store ---------------------------------------------
 main.import_channels(AppStoreChannel())

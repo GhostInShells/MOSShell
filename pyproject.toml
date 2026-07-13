@@ -57,7 +57,7 @@ moss = "ghoshell_moss.cli:main_entry"
 moss-cli = "ghoshell_moss.cli.cli_controller:main"
 moss-repl = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
 moss-as-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
-moss-as-fractal = 'ghoshell_moss.cli.moss_as_fractal:main'
+
 moss-run-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 
 [tool.setuptools.packages.find]
