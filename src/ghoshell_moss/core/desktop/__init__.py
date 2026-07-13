@@ -11,10 +11,6 @@
 - _render.py       context 帧渲染
 - _ground.py       DefaultGround
 - _grounds.py      DefaultGrounds
-
-历史资产 (K26): ``desktop.py`` / ``models.py`` 是 2026-06-29 Stage 1
-的 12+1 原语实现, 已与新契约不兼容, 保留磁盘不再 import. 迁移完成后
-删除.
 """
 
 from ghoshell_moss.contracts.desktop import (
