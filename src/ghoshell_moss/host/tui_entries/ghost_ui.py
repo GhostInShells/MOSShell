@@ -10,6 +10,7 @@ from ghoshell_moss.host.tui import TUIState, MossHostTUI, Renderable
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_ghost import GhostInspector
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
+from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
 
 __all__ = ["GhostREPLState", "GhostTUI"]
 
@@ -33,14 +34,20 @@ class GhostREPLState(REPLState):
     # ── REPLState overrides ──────────────────────
 
     def _create_repl_inspectors(self) -> dict[str, object]:
+        moss = self._gr.moss
+        mode = moss.mode if moss.is_running() else None
         return {
             "ghost": GhostInspector(
                 ghost_runtime=self._gr,
                 ghost=self._gr.ghost,
                 mindflow=self._gr.mindflow,
-                shell=self._gr.moss.shell,
+                shell=moss.shell,
             ),
-            "matrix": MatrixInspector(self._gr.moss.matrix),
+            "matrix": MatrixInspector(moss.matrix),
+            "manifests": ManifestsInspector(
+                moss.project.matrix_manifests(),
+                mode.manifests() if mode else None,
+            ),
         }
 
     async def _on_text_input(self, console_input: str) -> None:
@@ -108,7 +115,7 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
     """Ghost TUI — 组合 echo ghost state 和 Moss shell state。
 
     用法: GhostTUI().run()
-    启动前通过 host.env.set_ghost_name("echo") 指定 ghost。
+    启动前通过 Environment(ghost="echo").seal() 指定 ghost。
     """
 
     def __init__(self, host: MossHost | None = None):
@@ -146,9 +153,10 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
 
 
 if __name__ == "__main__":
+    from ghoshell_moss.core.blueprint.environment import Environment
     from ghoshell_moss.host import Host
 
-    env = Environment.discover()
-    env.set_ghost_name("echo")
+    env = Environment(ghost="echo")
+    env.seal()
     tui = GhostTUI(host=Host(env=env))
     tui.run()

@@ -555,9 +555,16 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             expand=False
         )
 
-        # 2. Node & Cell Info (打印 CellPresence 的 model_dump)
-        # §UU-5 God-model Cell 解体后 this 是 pydantic CellPresence, 用 model_dump.
-        cell_data = self.host.matrix().this.model_dump()
+        # 2. Node & Cell Info
+        env = self.host.env
+        cell_data = {
+            "address": env.this_cell_address,
+            "mode": env.mode_name,
+            "ghost": env.ghost_name,
+            "network": env.network,
+            "scope": env.network_scope,
+            "project_id": env.project_id,
+        }
         node_table = Table(title="Current Cell Info", expand=True, box=None)
         node_table.add_column("Property", style="bold yellow")
         node_table.add_column("Value")
