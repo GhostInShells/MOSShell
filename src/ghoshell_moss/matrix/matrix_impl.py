@@ -263,13 +263,12 @@ class MatrixImpl(Matrix):
             target: str,
             *,
             extra_env: dict[str, str] | None = None,
-            wait: float = 30.0,
     ) -> CellPresence:
         """
-        拉起一个 cell — 咽喉六步 (§YY blueprint/matrix.py run_cell docstring 中钉住).
+        拉起一个 cell — 咽喉五步 (§YY blueprint/matrix.py run_cell docstring 中钉住).
 
         本期实现覆盖: target 解析 (name / path) → singleton 查重 (domain 档 owner
-        内存态) → processes.execute spawn → 可选 wait_present.
+        内存态) → processes.execute spawn.
 
         本期简化 / TODO 记号:
           - host 档 flock 单例执法暂不实施 (§WW 判决 v2 落地)
@@ -282,7 +281,6 @@ class MatrixImpl(Matrix):
         :raise FileNotFoundError: path 不存在
         :raise RuntimeError: cell 未安装 (给 INSTALL.md 绝对路径)
         :raise DuplicatedError: singleton 声明冲突
-        :raise TimeoutError: wait 超时未见 ready (给 stdout/stderr 日志绝对路径)
         """
         self._check_running()
 
@@ -372,21 +370,11 @@ class MatrixImpl(Matrix):
         )
         # TODO: 落盘 workspace/runtime/cells/ledger.jsonl (§UU-6 咽喉唯一写者)
 
-        # -- 步骤 6: wait_present (可选) -- #
-        if wait > 0:
-            # 迫使 owner 惰性创建 Watcher (合理耦合, spawner 天然是观察者).
-            watcher = await self.mesh()
-            presence = await watcher.wait_present(new_address, timeout=wait)
-            if presence is None:
-                raise TimeoutError(
-                    f"cell {manifest.name!r} spawned but announce not received "
-                    f"within {wait}s. Check logs at {instance_cwd}/ for startup errors."
-                )
-            return presence
-
-        # wait=0: 合成 SPAWNED 态 presence, 网络真相待后续观察.
+        # -- 返回合成 SPAWNED 态 presence (WW-5 无 wait) -- #
         # is_host 从 address 推断 (§ZZ-10 property), 子 cell 一律 worker
         # (host 是顶层启动, 不经 run_cell → address='cell/...' → is_host=False).
+        # 后续 ready / crash / normal exit / 永不入网 通过 CellEvent → Signal
+        # 送 MossRuntime.mindflow 作 background hint (M7.5), 不在此处 wait.
         return CellPresence(
             address=new_address,
             alias=manifest.name,

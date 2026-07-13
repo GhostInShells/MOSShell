@@ -209,7 +209,6 @@ class Matrix(ABC):
             target: str,
             *,
             extra_env: dict[str, str] | None = None,
-            wait: float = 30.0,
     ) -> CellPresence:
         """
         拉起一个 cell — 唯一的 cell spawn 路径.
@@ -221,18 +220,21 @@ class Matrix(ABC):
               或其目录 → 用声明入口; 指向脚本 → 向上认亲 (WW-4),
               认亲失败降级临时身份, 不拒绝运行.
         :param extra_env: 追加注入子进程的环境变量.
-        :param wait: 等待 presence ready 的秒数; 0 = spawn 即返回不等入网
-            (返回合成的 SPAWNED 态 presence, 网络真相待后续观察).
-        :return: 入网 cell 的 CellPresence — 凡入网皆有身份,
-            拿到身份即可走 (await mesh()).accept(address) 接纳它的膜.
+        :return: spawn 现场合成的 CellPresence (SPAWNED 态, 无网络真相).
+            后续 ready / crash / normal exit / 永不入网 等生命周期跃迁通过
+            CellEvent → Signal 送 MossRuntime.mindflow 作 background hint,
+            调用方不 wait, 也不假设 presence 已 ready.
 
         :raise LookupError: name 不在 inventory (错误信息列出近似名).
         :raise FileNotFoundError: path 不存在.
         :raise RuntimeError: cell 未安装 (错误信息给出 INSTALL.md 绝对路径).
         :raise DuplicatedError: singleton 声明冲突 (错误信息引用声明原文).
-        :raise TimeoutError: wait 超时未见 ready — 进程已 spawn,
-            错误信息给出 stdout/stderr 日志绝对路径供排查.
         """
+        # -- WW-5 硬结构: channel 面不 wait, 模型面走 signal.
+        #    run_cell 只承诺 spawn 现场, 生命周期抵达通过 CellEvent 链路
+        #    (M7.5 CellEventNucleus, MossRuntime 层挂载). API 无 wait 参数,
+        #    也不留 "程序化 bootstrap 场景" 例外 — 例外一存在就有 CTML 反射
+        #    误传 wait>0 挂模型的可能.
         # -- 咽喉内部次序 (UU-6/UU-10/WW 纪律, 实现必须遵守):
         #    1. 解析 target → CellManifest + ExecSpec (相对路径只活在
         #       API 边界一瞬间, 此步之后只存在绝对路径);
@@ -244,10 +246,7 @@ class Matrix(ABC):
         #    4. processes.execute spawn, cwd = 实例残迹目录
         #       runtime/cells/{normalize(address)} (边界做成环境, TT-6);
         #    5. append ledger 一条 CellRecord JSON — best-effort, 不回读,
-        #       咽喉是唯一写者, CLI 是唯一读者, 运行时零读零监听;
-        #    6. wait>0 时 (await mesh()).wait_present(address, timeout=wait) —
-        #       注意: 这会迫使 owner 侧惰性创建 Watcher, 属合理耦合
-        #       (spawner 天然是观察者); wait=0 保持 O(1).
+        #       咽喉是唯一写者, CLI 是唯一读者, 运行时零读零监听.
         # -- 错误信息即 prompt (TT-12): 每条 raise 的 message 是模型
         #    自迭代循环里的下一步指引, 不是给人看的堆栈装饰.
         # -- stop 动词不在这里: owner 侧走 processes (内存句柄),

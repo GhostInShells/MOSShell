@@ -74,6 +74,8 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 
 6. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
 
+7. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
+
 ## 你的角色与任务
 
 通过 claude code 或其它 Coding 能力进入项目时，不同身份做不同的事。

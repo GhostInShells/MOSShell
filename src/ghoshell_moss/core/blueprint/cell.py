@@ -844,8 +844,9 @@ class Watcher(ABC):
         """
         等待某个 cell 的 presence 出现 (ready).
 
-        程序化场景专用 (host bringup / run_cell(wait=...)).
-        模型面不 wait — 生命周期跃迁作 signal 进 mindflow (WW-5).
+        程序化场景专用 (host bringup 观察侧). run_cell 咽喉不 wait —
+        cell 生命周期跃迁走 CellEvent → Signal 送 MossRuntime.mindflow
+        (WW-5 硬结构, M7.5 nucleus).
 
         :return: presence, 或超时 None.
         """
