@@ -35,7 +35,7 @@ from ghoshell_moss.core.desktop._addr import (
 )
 from ghoshell_moss.core.desktop._hash import Observation, observe, observe_sync
 from ghoshell_moss.core.desktop._instruction import collect_instructions
-from ghoshell_moss.core.desktop._l0 import dump_l0_pins, load_l0
+from ghoshell_moss.core.desktop._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
 from ghoshell_moss.core.desktop._render import render_context
 
 __all__ = ["DefaultGround"]
@@ -57,6 +57,7 @@ class DefaultGround(Ground):
         self._workspace_root = workspace_root
         self._pins: OrderedDict[str, Pin] = OrderedDict()
         self._instruction_cache: str = ""
+        self._body: str = ""  # DESKTOP.md body, 每次 load/refresh_instruction 从 L0 读
 
     # ---- 元信息 ---------------------------------------------------------
 
@@ -137,25 +138,52 @@ class DefaultGround(Ground):
         return self._instruction_cache
 
     async def refresh_instruction(self) -> None:
-        self._instruction_cache = await asyncio.to_thread(
+        """从 upward CLAUDE.md 链 + 本 ground 的 DESKTOP.md body 重建 instruction.
+
+        顺序: 上游 (根最先) → 本 ground body (最本地的法, 最后拼).
+        K20 的 promote (pin → body) 出口就在这 — body 里的内容自然进 instruction.
+        """
+        upward = await asyncio.to_thread(
             collect_instructions,
             self._root,
             self._convention,
             workspace_root=self._workspace_root,
         )
+        contents = await asyncio.to_thread(load_l0, self._root)
+        self._body = contents.body
+        self._instruction_cache = _compose_instruction(
+            upward, self._body, self._root
+        )
 
     async def context(self) -> str:
+        l0_exists = (self._root / DEFAULT_L0_FILENAME).is_file()
         return await render_context(
-            self._root, self._label, self._convention, self.pins()
+            self._root,
+            self._label,
+            self._convention,
+            self.pins(),
+            workspace_root=self._workspace_root,
+            l0_file_exists=l0_exists,
+            l0_filename=DEFAULT_L0_FILENAME,
         )
 
     # ---- 生命周期 -------------------------------------------------------
 
     async def load(self) -> None:
         contents = await asyncio.to_thread(load_l0, self._root)
-        # convention 已在构造时确定; 这里只装载 pins + instruction 缓存
+        # convention 已在构造时确定; 这里装载 pins + body
         self._pins = OrderedDict((p.addr, p) for p in contents.pins)
-        await self.refresh_instruction()
+        self._body = contents.body
+        # instruction 缓存: 上游 CLAUDE.md 链 + 本 body
+        upward = await asyncio.to_thread(
+            collect_instructions,
+            self._root,
+            self._convention,
+            workspace_root=self._workspace_root,
+        )
+        self._instruction_cache = _compose_instruction(
+            upward, self._body, self._root
+        )
 
     async def sediment(self) -> None:
         await asyncio.to_thread(dump_l0_pins, self._root, self.pins())
@@ -174,3 +202,18 @@ def _diff_preview(old_pin: Pin, obs: Observation, parsed: ParsedAddr) -> str:
     if parsed.kind == "range":
         return f"range {parsed.start}-{parsed.end} content changed"
     return "file content changed"
+
+
+def _compose_instruction(upward: str, body: str, root: Path) -> str:
+    """upward CLAUDE.md 链 + local DESKTOP.md body → 一份 instruction.
+
+    body 空则退化为纯 upward. 顺序钉死 upward → local (根最先 + 内层覆盖).
+    """
+    body_stripped = body.strip()
+    if not body_stripped:
+        return upward
+    local = (
+        f"<!-- from: {root / DEFAULT_L0_FILENAME} (body) -->\n\n"
+        f"{body_stripped}\n"
+    )
+    return f"{upward}\n\n{local}" if upward else local

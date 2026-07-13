@@ -36,7 +36,28 @@ from ghoshell_moss.core.desktop._addr import (
 )
 from ghoshell_moss.core.desktop._hash import Observation, observe
 
-__all__ = ["render_context"]
+__all__ = ["render_context", "BUILTIN_TREE_IGNORE"]
+
+
+# tree 段的 built-in 过滤集. K16 判据: 完整 gitignore 语义 (`**/`, `!`) 对 tree
+# 呈现毫无价值, 且引 pathspec 依赖不值当. 这一层只做 basename 精确匹配 +
+# GroundConvention.tree_ignore_extra 提供加法口. K9 未来 pin bash 承接更精细
+# 过滤 (`find | grep -v ...`) 后, 这里不需要升级.
+BUILTIN_TREE_IGNORE: frozenset[str] = frozenset({
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".DS_Store",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".idea",
+    ".vscode",
+})
 
 
 async def render_context(
@@ -44,6 +65,10 @@ async def render_context(
     label: str,
     convention: GroundConvention,
     pins: list[Pin],
+    *,
+    workspace_root: Path | None = None,
+    l0_file_exists: bool = False,
+    l0_filename: str = "DESKTOP.md",
 ) -> str:
     """渲染桌面当前帧."""
     root_abs = root.resolve()
@@ -57,8 +82,11 @@ async def render_context(
     ) if parsed_pins else []
 
     # 三个静态段并行 (通过 to_thread)
+    ignore_names = BUILTIN_TREE_IGNORE | set(convention.tree_ignore_extra)
     tree_task = asyncio.create_task(
-        asyncio.to_thread(_render_tree, root_abs, convention.tree_depth)
+        asyncio.to_thread(
+            _render_tree, root_abs, convention.tree_depth, ignore_names
+        )
     ) if convention.tree_depth > 0 else None
     hints_task = asyncio.create_task(
         asyncio.to_thread(_find_child_hints, root_abs, convention)
@@ -72,8 +100,28 @@ async def render_context(
     for (pin, parsed), obs in zip(parsed_pins, observations):
         pin_blocks.append(_render_pin(pin, parsed, obs, root_abs))
 
-    # 组装
-    lines: list[str] = [f"ground: {label} @ {root_abs}   pins: {len(pins)}"]
+    # 报账 (K20): 只在超预算时插入警告行
+    total_body = sum(len(b) for b in pin_blocks)
+    budget = convention.context_budget
+    over_budget = total_body > budget
+
+    # 组装. K16 head 承担元信息: root / workspace / L0 status / pins / budget
+    l0_status = "exists" if l0_file_exists else "defaults (no file)"
+    pct = int(round(total_body / budget * 100)) if budget > 0 else 0
+    lines: list[str] = [
+        f"ground: {label} @ {root_abs}",
+    ]
+    if workspace_root is not None:
+        lines.append(f"workspace: {workspace_root}")
+    lines.append(
+        f"{l0_filename}: {l0_status}   pins: {len(pins)}   budget: {pct}% "
+        f"({total_body}/{budget})"
+    )
+
+    # 报账警告紧贴 head, 不埋在 tree 之后
+    if over_budget:
+        lines.append("")
+        lines.append(_render_budget_warning(pins, pin_blocks, budget))
 
     if tree_str:
         lines.append("")
@@ -85,12 +133,6 @@ async def render_context(
         for h in hints:
             lines.append(f"⚖ {h} (instruction, unloaded)")
 
-    # 报账 (K20): 只在超预算时插入警告行
-    total_body = sum(len(b) for b in pin_blocks)
-    if total_body > convention.context_budget:
-        lines.append("")
-        lines.append(_render_budget_warning(pins, pin_blocks, convention.context_budget))
-
     for block in pin_blocks:
         lines.append("")
         lines.append(block)
@@ -101,13 +143,18 @@ async def render_context(
 # ---- tree --------------------------------------------------------------
 
 
-def _render_tree(root: Path, depth: int, prefix: str = "") -> str:
+def _render_tree(
+    root: Path,
+    depth: int,
+    ignore_names: set[str],
+    prefix: str = "",
+) -> str:
     if depth <= 0:
         return ""
     try:
-        # 目录优先, 同类字典序
         entries = sorted(
-            root.iterdir(), key=lambda p: (p.is_file(), p.name.lower())
+            (e for e in root.iterdir() if e.name not in ignore_names),
+            key=lambda p: (p.is_file(), p.name.lower()),
         )
     except OSError:
         return ""
@@ -120,7 +167,7 @@ def _render_tree(root: Path, depth: int, prefix: str = "") -> str:
         lines.append(f"{prefix}{connector}{entry.name}{marker}")
         if entry.is_dir() and depth > 1:
             sub_prefix = prefix + ("    " if is_last else "│   ")
-            sub = _render_tree(entry, depth - 1, sub_prefix)
+            sub = _render_tree(entry, depth - 1, ignore_names, sub_prefix)
             if sub:
                 lines.append(sub)
     return "\n".join(lines)

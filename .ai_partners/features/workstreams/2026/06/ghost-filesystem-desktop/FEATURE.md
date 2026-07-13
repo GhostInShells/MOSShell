@@ -3,18 +3,32 @@ title: Ghost Filesystem Desktop — Ghost 的认知桌面
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-07-12
+updated: 2026-07-13
 renamed_from: Project Manager
 depends:
   - momento-mori
 milestone: 0.1.0
 description: >-
   Desktop 是 Ghost 的认知桌子 — context_messages 上可 pin 的表面 + 场 (目录)
-  的开合管理. 以 frontmatter+body 的 L0 文件为载体; frontmatter 是运行时生命
-  周期的合法发明域, body 永远开放集. 三层落地按预训练迁移量排序: CTML channel
-  (主), bash CLI, module_eval (小概率). 与 subprocesses/job_supervisor (执行),
-  Memento (过去) 共构反身性基建.
+  的开合管理. 以 frontmatter+body 的 L0 文件 (DESKTOP.md) 为载体; frontmatter
+  是运行时生命周期的合法发明域, body 永远开放集. 三层落地按预训练迁移量排序:
+  CTML channel (主), bash CLI (`moss desktop`), module_eval (小概率). 与
+  subprocesses/job_supervisor (执行), Memento (过去) 共构反身性基建.
 status_note: >-
+  2026-07-13 Claude Opus 4.7. v1 concrete 层 + CLI 落地. contracts/desktop.py
+  按 K21 对齐 (Grounds.open 返回 Ground 对象; CTML 表面在父, core 转发子;
+  同 dir 幂等), core/desktop/{_addr,_hash,_l0,_instruction,_render,_ground,
+  _grounds}.py 六模块 + 87 单测全绿, channels/desktop_channel.py (未测未装配),
+  cli/desktop_cli.py 落地 (`moss desktop init/status/pin/unpin/update/pins/
+  frame/instruction`). CLI 是 K16 三验收平面之一 (与单测 / 未来 CTML channel
+  平行), 三面读写同一份 DESKTOP.md.
+  --
+  本轮沉淀的 K 号 (K21~K32): K21 open/update 对齐 = 已决; K22 L0 文件名 =
+  已决 (DESKTOP.md); K26 Stage 1 迁移路径 = 部分完成 (新 concrete 已 ship,
+  旧 12+1 impl 磁盘保留待清). K27 async ceremony 裁决 / K28 dir-idempotent
+  open / K29 body 入 instruction / K30 tree_ignore 轻方案 / K31 DESKTOP.md
+  不向上查找 / K32 CLI 三验收之一落地. K23/K24/K25 保持未决.
+  --
   2026-07-12 Claude (Opus 4.7 接续 Sonnet 4.6/Fable 5). Desktop 经两轮拆分
   收敛 (07-11 认知场, 07-12 channel 落点 + 分形场). 核心结论:
   (K14) 落 channel — 父 desktop channel + 每场 command-less virtual channel;
@@ -103,7 +117,9 @@ Desktop 把这些统一为 **运行时的可 pin 的 context 表面 + 场的开�
 - **配对基建**:
   - `momento-mori` (Memento) — 胶囊 (promote 后的 pin) 落永久记忆; drain 联合
     设计方
-  - `subprocesses` / `job_supervisor` — 从旧 Desktop 拆出的执行域 (审计线外侧)
+  - `subprocesses` / `job_supervisor` — 从旧 Desktop 拆出的执行域 (审计线外侧).
+    契约层形态是 K18 三层纪律的样板参照 (顶端 `技术目标 (reviewer 上下文)`
+    注释块 + pydantic BaseModel + ABC + per-owner IoC 姿态).
 - **channel 抽象参考**:
   - `moss codex blueprint channel_builder` — Channel as Context Component,
     instruction / context_messages / refresh_meta 生命周期
@@ -245,6 +261,91 @@ csv 索引/id 字段/archive 命令都在诞生 48 小时内被删).
 而非自动同步. features README 三周打磨的教训: "CLI does not enforce this,
 model incarnations follow it, human reviews for it" — 纪律是模型原生的.
 
+### 2026-07-13 v1 落地打磨
+
+K27~K32 是 concrete 层 + CLI 落地过程中的具体决策. 与 K14~K20 的区别: K14~
+K20 是"重绘方向", K27~K32 是"落地路线上遇到的岔口"— 大都是"能推翻抽象不
+能将就实现"精神下的即时收敛.
+
+**K27. async ceremony 裁决 — 不容 empty async wrapper** — Python async 契约
+的裁决点不是"内部有没有 await", 而是**语言缺陷追认后的 trade off**:
+- 同步场景 (CLI) 里调 async 函数要拉起整套 loop 资源.
+- Loop 里看到同步函数不敢用 (不知阻塞不阻塞), 100% 卸载线程池.
+
+裁决: **要么 docstring 声明到不容质疑, 要么在两者中二选一并承认 trade off**.
+
+具体落到 Ground / Grounds ABC:
+- **`Ground.instruction() -> str` 同步** — 首次挂载缓存, 之后纯状态访问,
+  docstring 声明"无 IO 无并发风险, impl 违反是 bug".
+- **`Ground.refresh_instruction()` async** — 显式动作走 IO, 与 pin 的
+  `update()` 姿态同源.
+- **`Ground.context()` async** — IO 密集 (stat + read + hash 全 pin),
+  docstring 声明"应用 asyncio.gather 并行, 不得串行, 违反是性能 bug".
+- **`Ground.pin()` 同步 + 内部 observe_sync** — pin 是第一人称动作, 允许
+  blocking IO 以省一次 loop 拉起 (K17 initial 承认).
+
+**K28. dir-idempotent open — Grounds 幂等按目录 abspath** — 同 dir 再次
+open 返回已 active 的 Ground 实例, 传入的 label / convention 被忽略 (以已
+active 者为准). 幂等键 = `dir.resolve()`, 而非 label. 理由: **目录是认知
+单元, 不是工具** — 一个 dir 只有一份 pin 集与法链, 同 session 内多次 open
+无异议看到同一份. 跨 session 持久化由 L0 文件承担, Grounds 层不做记忆.
+
+CLI 场景直接受益: `moss desktop pin a.md && moss desktop pin b.md` 两次进程
+调用天然幂等, 每次都新构造 Grounds 但读同一份 L0.
+
+**K29. DESKTOP.md body 入 instruction — K20 promote 的显式出口** — K20 定的
+"胶囊 = promote 后的 pin", 但一直没定 promote 后内容住哪 / 从哪呈现. 本轮
+定案:
+- 载体: **DESKTOP.md body**. sediment 只重写 pin 段, body 保留 verbatim,
+  模型或人可编辑, git 见证.
+- 呈现: `Ground.instruction()` 返回 `upward CLAUDE.md 链 + DESKTOP.md body`,
+  顺序钉死 (根最先 + 本地最后), 与 upward 同格式 (`<!-- from: ... -->` 前
+  缀).
+
+**语义分工**: CLAUDE.md 链 = 继承的法 (向上收集, 每层叠加); DESKTOP.md
+body = 本 ground 的法 (per-scope, 不上不下); pins = 本 ground 的目光
+(per-scope). body 和 pins 局部性对称 — 都随 ground 走.
+
+**K30. tree ignore 走轻方案 — 不引 pathspec, K9 承接高级过滤** — 帧内 tree
+段需要过滤 `.git .venv __pycache__ node_modules ...` 之类噪音, 两案选轻:
+- 轻: BUILTIN_TREE_IGNORE 常量 + `GroundConvention.tree_ignore_extra: tuple`
+  加法口. basename 精确匹配, 不解析 `.gitignore`. 零新依赖.
+- 重: 引 pathspec 库, 完整 gitignore 语义 (`**/`, `!`, 路径锚定).
+
+理由: **tree 是模型认知辅助, 不是 build 工具**. 完整 gitignore 语义
+(反选 `!except.log` 等) 对模型呈现零价值; 且 K9 (未来 CTML pin bash) 会
+承接更精细过滤 (`find | grep -v ...`) —— 现在做完 pathspec, K9 落地时又
+一次废弃. 用户加法口留升级路径: 若真需要 pathspec, 换一处即可.
+
+**K31. DESKTOP.md 不向上查找 — 与 K17 一以贯之** — 是否让 open 一个没有
+DESKTOP.md 的目录时向上查找? 定案: **不做**.
+
+理由:
+- CLAUDE.md 承担继承的法 (向上收集, 每层叠加).
+- DESKTOP.md body 承担本 ground 的法 (per-scope).
+- pin 集也 per-scope.
+- 三者局部性对称. 若 DESKTOP.md 支持向上查找, 会破坏 K17 的"第一人称"
+  哲学: 打开哪个场变成 fs 遍历回答, 不是模型说的算. 且 pin 集写回哪里
+  会产生歧义 (读上游写本地不对称; 写上游跨 ground 污染).
+- 反悔判据: 只有出现真实痛感 (频繁抱怨"每个 workstream 都要手写 tree_depth"
+  之类) 才反悔. 目前 0 痛感, 且共享法有 CLAUDE.md 链兜底.
+
+**K32. CLI 三验收之一落地 — `moss desktop`** — K16 声明"三层落地按预训练
+迁移量排序" (CTML channel > bash CLI > module_eval). CLI 版本先落地是有意的:
+- **三条验收平面** (读写同一份 L0 文件): (a) contracts + core 单测,
+  (b) `moss desktop` CLI dogfood, (c) 未来 CTML channel 集成.
+- 平面 (b) 提前落地把 K16 的"bash 层"从"阶段二落地"提前为"阶段一验收路径".
+  能立刻 dogfood, 且**层无关的直接证据** (同一份 L0 被单测和 CLI 消费).
+
+**workspace_root 探测**: CLI 层用 `Project.discover().root` 作首选 (MOSS
+capability 内使用 MOSS 能力, 与 K18 不冲突), 兜底最近的 `.git` / `.moss`
+向上, 再兜底 fs root. Core 层不 import Project, 副作用属 discover 不该在
+open Ground 时触发.
+
+**越界错误 hint**: `PathOutsideRootError` 消息里附带 workspace 建议
+(`moss desktop pin <addr> --in <workspace>`), K12 教育代价落在错误消息上,
+不落在用户困惑上.
+
 ### 2026-06 原捆绑设计 (K1~K13 按 07 月重绘标注)
 
 Stage 1 (2026-06-29) 的 53 单测代码存在于仓库中, K1~K13 的部分意图仍成立:
@@ -267,21 +368,26 @@ Stage 1 (2026-06-29) 的 53 单测代码存在于仓库中, K1~K13 的部分意�
 
 ## 已知未决 (给下一个实例)
 
-- **K21 (open/update 语义对齐)** — 07-12 记录时人类工程师标注 "我怀疑 open/
-  update 其实我们没有真正对齐. 要推进到抽象重绘时, 对齐比现在容易一些". 推进
-  到 ABC 重绘时优先处理.
-- **K22 (L0 文件名)** — 全体系唯一发明的名词, 单独 review. 判据: 骑先验.
-  候选: `DESKTOP.md` (沿用) / `.ground.md` (新造, 无先验, 不推荐) / 其它.
+已在 2026-07-13 v1 落地过程中收敛的原 K21/K22/K26: 见 §2026-07-13 v1 落地
+打磨 与 K1~K13 状态表. K23/K24/K25 保持未决.
+
 - **K23 (L2 模板库引导地址)** — `.moss/` 侧 (项目所有) 还是 `.ai_partners/`
   侧 (ghost 所有)? 涉及 "模板库是项目的还是 ghost 的" 归属问题.
 - **K24 (目光运行时侧影落盘位置)** — .cache 级 gitignore 目录的具体位置约定.
-  场目录只读时的退化策略 (退到 workspace 侧影目录).
+  场目录只读时的退化策略 (退到 workspace 侧影目录). K20 已定"目光不自动
+  sediment 到 L0 body", 侧影载体本身仍未定.
 - **K25 (向下探索的场声明)** — 一个场里如果有多个子目录都是 L0 文件, 父场
   frontmatter 里怎么声明 "我下面有场"? 影响 glob 语法 (向上 CLAUDE.md +
-  `**/name.md` 向下探测的具体形状).
-- **K26 (Stage 1 代码的迁移路径)** — 现有 `contracts/desktop.py` + `core/
-  desktop/` 的 53 单测代码, 认知面动词 (glob/read/pin/write) 如何过渡到 K14
-  的形状: 是重写还是渐进重构; 单测能保留多少作为 acceptance 参考.
+  `**/name.md` 向下探测的具体形状). 现在 `hint_children` 只做浅一层子目录
+  CLAUDE.md 提示, 未涉及子场声明.
+- **K33 (channels/desktop_channel.py 装配未验证)** — 已写但未测未验收. CTML
+  channel 层的 prompt 效果 (`virtual_children` 的挂载/卸载时序, 每帧刷新的
+  `instruction` vs `context` 语义分区) 需要 moss-as-mcp 场景实测. 单元测试
+  在这层无用 —— 那层没预训练锁死语义. 手感验收先于自动化.
+- **K34 (旧 Stage 1 代码清理)** — `core/desktop/desktop.py` /
+  `core/desktop/models.py` 已与新契约不兼容, 保留磁盘为反向索引参考. 旧
+  `tests/ghoshell_moss/core/desktop/test_desktop.py` import 已废符号故
+  collection error. K26 尾巴, 待独立 cleanup commit.
 
 ## 与关联基建的交叉
 

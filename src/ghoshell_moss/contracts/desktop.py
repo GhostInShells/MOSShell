@@ -142,6 +142,15 @@ class GroundConvention(BaseModel):
         default=2,
         description="context 帧内目录树的展示深度. 0 = 不展示树.",
     )
+    tree_ignore_extra: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "tree 段过滤的额外条目 (在 built-in 集之上叠加). 每项按目录/文件 "
+            "basename 匹配. built-in 覆盖 .git .venv __pycache__ node_modules "
+            ".DS_Store .mypy_cache .pytest_cache .ruff_cache dist build . "
+            "轻量语义, 不解析 .gitignore — 未来 pin bash 会承接完整过滤."
+        ),
+    )
     context_budget: int = Field(
         default=24_000,
         description=(
