@@ -13,6 +13,7 @@ Startup flow:
 
 import asyncio
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,17 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.environment import (
+    Environment,
+    ENV_MOSS_MODE_KEY,
+    ENV_GHOST_NAME_KEY,
+    ENV_NETWORK_KEY,
+    ENV_NETWORK_SCOPE_KEY,
+    NONE_MOSS_MODE,
+    NONE_GHOST_NAME,
+    DEFAULT_NETWORK_NAME,
+    DEFAULT_NETWORK_SCOPE,
+)
 from ghoshell_moss.core.blueprint.project import Project, HostModeMeta
 
 __all__ = ["TyperAppController", "TyperAppCompleter", "main"]
@@ -147,20 +158,22 @@ class TyperAppController:
         parts: StyleAndTextTuples = [
             ("class:toolbar.label", " " + self.display_name + " "),
         ]
-        if self.env:
-            ctx_parts = []
-            if self.env.mode_name and self.env.mode_name != "none":
-                ctx_parts.append(f"mode={self.env.mode_name}")
-            if self.env.ghost_name and self.env.ghost_name != "none":
-                ctx_parts.append(f"ghost={self.env.ghost_name}")
-            if self.env.network and self.env.network != "default":
-                ctx_parts.append(f"net={self.env.network}")
-            scope = self.env.network_scope
-            if scope and scope != "default":
-                ctx_parts.append(f"scope={scope}")
-            if ctx_parts:
-                parts.append(("", " | "))
-                parts.append(("class:toolbar.context", " ".join(ctx_parts)))
+        mode = os.environ.get(ENV_MOSS_MODE_KEY, "")
+        ghost = os.environ.get(ENV_GHOST_NAME_KEY, "")
+        network = os.environ.get(ENV_NETWORK_KEY, "")
+        scope = os.environ.get(ENV_NETWORK_SCOPE_KEY, "")
+        ctx_parts = []
+        if mode and mode != NONE_MOSS_MODE:
+            ctx_parts.append(f"mode={mode}")
+        if ghost and ghost != NONE_GHOST_NAME:
+            ctx_parts.append(f"ghost={ghost}")
+        if network and network != DEFAULT_NETWORK_NAME:
+            ctx_parts.append(f"net={network}")
+        if scope and scope != DEFAULT_NETWORK_SCOPE:
+            ctx_parts.append(f"scope={scope}")
+        if ctx_parts:
+            parts.append(("", " | "))
+            parts.append(("class:toolbar.context", " ".join(ctx_parts)))
         parts.extend([
             ("", " | "),
             ("class:toolbar.key", " [Tab] "),
@@ -251,19 +264,24 @@ class TyperAppController:
         self.console.clear()
         self.console.print(Rule(title="[bold green] MOSS Shell [/]", style="green"))
 
-        if self.env:
-            rows = [
-                ["mode", self.env.mode_name or "none"],
-                ["ghost", self.env.ghost_name or "none"],
-                ["network", f"{self.env.network} / {self.env.network_scope}"],
-                ["workspace", str(self.env.workspace_path)],
-            ]
-            table = Table(show_header=False, box=None, padding=(0, 2))
-            table.add_column(style="dim")
-            table.add_column(style="cyan")
-            for label, value in rows:
-                table.add_row(label, value)
-            self.console.print(table)
+        mode = os.environ.get(ENV_MOSS_MODE_KEY, "") or (self.env.mode_name if self.env else "") or NONE_MOSS_MODE
+        ghost = os.environ.get(ENV_GHOST_NAME_KEY, "") or (self.env.ghost_name if self.env else "") or NONE_GHOST_NAME
+        network = os.environ.get(ENV_NETWORK_KEY, "") or (self.env.network if self.env else "") or DEFAULT_NETWORK_NAME
+        scope = os.environ.get(ENV_NETWORK_SCOPE_KEY, "") or (self.env.network_scope if self.env else "") or DEFAULT_NETWORK_SCOPE
+        workspace = str(self.env.workspace_path) if self.env else "—"
+
+        rows = [
+            ["mode", mode],
+            ["ghost", ghost],
+            ["network", f"{network} / {scope}"],
+            ["workspace", workspace],
+        ]
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column(style="dim")
+        table.add_column(style="cyan")
+        for label, value in rows:
+            table.add_row(label, value)
+        self.console.print(table)
         self.console.print(
             f"\nType [bold yellow]{self.CMD_MARK}[/] before a command "
             f"([bold yellow]{self.CMD_MARK}help[/] for reference)."
@@ -293,7 +311,7 @@ def _select_mode(project: Project) -> str:
       Enter (default) — keep current env value
     """
     console = Console()
-    current = project.env.mode_name or "none"
+    current = project.env.mode_name or NONE_MOSS_MODE
     modes = list(project.list_modes())
 
     console.print(Rule(title="[bold yellow]Step 1: Select Mode[/]", style="yellow"))
@@ -309,9 +327,9 @@ def _select_mode(project: Project) -> str:
     table.add_column("Name", style="cyan")
     table.add_column("Description", style="green")
 
-    none_label = "none [current]" if current == "none" else "none"
+    none_label = f"{NONE_MOSS_MODE} [current]" if current == NONE_MOSS_MODE else NONE_MOSS_MODE
     table.add_row("0", none_label, "No mode — use project defaults only")
-    idx_to_name[0] = "none"
+    idx_to_name[0] = NONE_MOSS_MODE
 
     default_idx = 0
     for i, (_, manifest) in enumerate(modes, 1):
@@ -333,7 +351,7 @@ def _select_mode(project: Project) -> str:
         show_default=False,
     ).strip()
     idx = int(choice) if choice.isdigit() else default_idx
-    return idx_to_name.get(idx, "none")
+    return idx_to_name.get(idx, NONE_MOSS_MODE)
 
 
 def _select_ghost(project: Project) -> str:
@@ -345,7 +363,7 @@ def _select_ghost(project: Project) -> str:
       Enter (default) — keep current env value
     """
     console = Console()
-    current = project.env.ghost_name or "none"
+    current = project.env.ghost_name or NONE_GHOST_NAME
     ghosts = list(project.ghosts())
 
     console.print(Rule(title="[bold yellow]Step 2: Select Ghost[/]", style="yellow"))
@@ -360,9 +378,9 @@ def _select_ghost(project: Project) -> str:
     table.add_column("Name", style="cyan")
     table.add_column("Description", style="green")
 
-    none_label = "none [current]" if current == "none" else "none"
+    none_label = f"{NONE_GHOST_NAME} [current]" if current == NONE_GHOST_NAME else NONE_GHOST_NAME
     table.add_row("0", none_label, "No ghost — shell-only session")
-    idx_to_name[0] = "none"
+    idx_to_name[0] = NONE_GHOST_NAME
 
     default_idx = 0
     ghost_list = list(ghosts)
@@ -384,7 +402,7 @@ def _select_ghost(project: Project) -> str:
         show_default=False,
     ).strip()
     idx = int(choice) if choice.isdigit() else default_idx
-    return idx_to_name.get(idx, "none")
+    return idx_to_name.get(idx, NONE_GHOST_NAME)
 
 
 def _select_network(project: Project, default_network: str) -> str:
@@ -392,7 +410,7 @@ def _select_network(project: Project, default_network: str) -> str:
     console = Console()
     metas = project.network_metas()
     if not metas:
-        console.print("[dim]No network configs found. Using 'default'.[/dim]")
+        console.print(f"[dim]No network configs found. Using '{DEFAULT_NETWORK_NAME}'.[/dim]")
         return default_network
 
     console.print(Rule(title="[bold yellow]Step 3: Select Network[/]", style="yellow"))
@@ -452,8 +470,9 @@ def _select_scope(default_scope: str) -> str:
 def interactive_config(project: Project) -> None:
     """Walk through mode / ghost / network / scope, explaining each choice.
 
-    Modifies the project's Environment in-place so that downstream
-    subprocesses inherit the selected context via env vars.
+    Sets environment variables so that subprocesses inherit the selected
+    context.  Environment is sealed + immutable — env vars are the correct
+    mechanism for per-session overrides in a subprocess-execution model.
     """
     env = project.env
     console = Console()
@@ -466,29 +485,28 @@ def interactive_config(project: Project) -> None:
 
     # mode
     mode_name = _select_mode(project)
-    if mode_name and mode_name != "none":
-        env.set_mode(mode_name)
+    if mode_name and mode_name != NONE_MOSS_MODE:
+        os.environ[ENV_MOSS_MODE_KEY] = mode_name
         console.print(f"[green]Mode set to:[/] [cyan]{mode_name}[/]")
 
     # ghost
     ghost_name = _select_ghost(project)
-    if ghost_name and ghost_name != "none":
-        env.set_ghost_name(ghost_name)
+    if ghost_name and ghost_name != NONE_GHOST_NAME:
+        os.environ[ENV_GHOST_NAME_KEY] = ghost_name
         console.print(f"[green]Ghost set to:[/] [cyan]{ghost_name}[/]")
 
     # network
-    default_network = env.network or "default"
+    default_network = env.network or DEFAULT_NETWORK_NAME
     network = _select_network(project, default_network)
-    if network and network != "default":
-        import os
-        os.environ["MOSS_NETWORK"] = network
+    if network and network != DEFAULT_NETWORK_NAME:
+        os.environ[ENV_NETWORK_KEY] = network
         console.print(f"[green]Network set to:[/] [cyan]{network}[/]")
 
     # scope
-    default_scope = env.network_scope or "default"
+    default_scope = env.network_scope or DEFAULT_NETWORK_SCOPE
     scope = _select_scope(default_scope)
-    if scope and scope != "default":
-        env.set_network_scope(scope)
+    if scope and scope != DEFAULT_NETWORK_SCOPE:
+        os.environ[ENV_NETWORK_SCOPE_KEY] = scope
         console.print(f"[green]Scope set to:[/] [cyan]{scope}[/]")
 
     console.print(Rule(style="dim"))
@@ -511,16 +529,15 @@ def main_entry(mode: str | None, ghost: str | None, network: str | None, scope: 
     project = Project.discover()
     env = project.env
 
-    # 2. apply CLI overrides immediately
+    # 2. apply CLI overrides as env vars (inherited by subprocess)
     if mode:
-        env.set_mode(mode)
+        os.environ[ENV_MOSS_MODE_KEY] = mode
     if ghost:
-        env.set_ghost_name(ghost)
+        os.environ[ENV_GHOST_NAME_KEY] = ghost
     if network:
-        import os
-        os.environ["MOSS_NETWORK"] = network
+        os.environ[ENV_NETWORK_KEY] = network
     if scope:
-        env.set_network_scope(scope)
+        os.environ[ENV_NETWORK_SCOPE_KEY] = scope
 
     # 3. interactive config for any remaining unset values
     if not no_interactive:

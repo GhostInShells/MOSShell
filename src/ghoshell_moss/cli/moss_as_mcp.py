@@ -118,7 +118,7 @@ def main_entry(
         async with moss_host.run() as toolset:
             state.host = moss_host
             state.toolset = toolset
-            moss_host.matrix().logger.info(
+            toolset.matrix.logger.info(
                 'Moss MCP toolset started with params: %r',
                 params,
             )
