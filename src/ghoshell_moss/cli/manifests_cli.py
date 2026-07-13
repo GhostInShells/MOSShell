@@ -6,17 +6,24 @@ baseline (MOSS.manifests) and ModeManifests for the active mode's effective
 view (HOST, which extends MOSS.manifests via Python import).
 
 Each command shows two tables when a mode is active; a single Matrix table
-plus a hint when no mode is active.
+when no mode is active.  Context header (mode/network/ghost) only appears in
+``explain`` — list commands show just their data.
 """
 
-import json
 import inspect as _inspect
+import json
 from pathlib import Path
 from typing import Iterable
 
 import typer
-
 from ghoshell_container import Provider
+
+from ghoshell_moss.core.blueprint.environment import (
+    NONE_MOSS_MODE,
+    NONE_GHOST_NAME,
+    DEFAULT_NETWORK_NAME,
+    DEFAULT_NETWORK_SCOPE,
+)
 from ghoshell_moss.core.blueprint.project import Manifest, Project, MatrixManifest, ModeManifests, HostMode
 from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
 
@@ -71,14 +78,14 @@ def _get_context() -> _Context:
 def _display_context_header(project: Project, mode: HostMode | None) -> None:
     """Show the active context: mode, network, ghost, scope."""
     env = project.env
-    mode_name = mode.name if mode else "none"
+    mode_name = mode.name if mode else NONE_MOSS_MODE
     mode_source = env.moss_meta.default_mode if env.moss_meta.default_mode else "—"
-    ghost_name = env.ghost_name or env.moss_meta.default_ghost or "—"
-    network_name = env.network or "default"
-    scope = env.network_scope
+    ghost_name = env.ghost_name or env.moss_meta.default_ghost or NONE_GHOST_NAME
+    network_name = env.network or DEFAULT_NETWORK_NAME
+    scope = env.network_scope or DEFAULT_NETWORK_SCOPE
 
     rows = [
-        ["Mode", mode_name + (f"  (from MOSS.md default: {mode_source})" if mode_name != "none" else "")],
+        ["Mode", mode_name + (f"  (from MOSS.md default: {mode_source})" if mode_name != NONE_MOSS_MODE else "")],
         ["Network", f"{network_name}  /  scope: {scope}"],
         ["Ghost", ghost_name],
     ]
@@ -94,123 +101,45 @@ def _display_no_mode_hint() -> None:
     print_info("Use 'moss modes list' to see available modes.")
 
 
-def _display_no_matrix_items(type_label: str, matrix_pkg: str = "MOSS.manifests") -> None:
-    print_warning(f"No {type_label} found in Matrix ({matrix_pkg}.{type_label}).")
-
-
-def _display_no_mode_items(type_label: str, mode_name: str, mode_pkg: str = "HOST") -> None:
-    print_warning(f"No {type_label} found in mode '{mode_name}' ({mode_pkg}.{type_label}).")
-
-
 # ---------------------------------------------------------------------------
-# table helpers
+# two-layer display (Matrix + optional Mode)
 # ---------------------------------------------------------------------------
-
-def _collect_table_rows(
-    manifests: Iterable[Manifest],
-    columns: list[str],
-) -> list[list[str]]:
-    """Convert Manifest[T] items to table rows based on column spec.
-
-    columns: list of attribute keys. Supported:
-      'name', 'description', 'found_at', 'import_path',
-      'type' (provider singleton/factory),
-      'scheme' (resource scheme),
-      'host' (resource host),
-      'signals' (nucleus signal names),
-    """
-    rows = []
-    for m in manifests:
-        if m.is_error():
-            rows.append([m.name(), "ERROR", str(m.error())[:80], str(m.found_at())])
-            continue
-        row = []
-        for col in columns:
-            if col == 'name':
-                row.append(m.name())
-            elif col == 'description':
-                row.append((m.description() or '')[:120])
-            elif col == 'found_at':
-                row.append(str(m.found_at()))
-            elif col == 'import_path':
-                row.append(m.import_path() or '')
-            elif col == 'type':
-                # provider specific
-                v = m.value()
-                row.append("Singleton" if v.singleton() else "Factory")
-            elif col == 'topic_type':
-                v = m.value()
-                row.append(getattr(v, 'topic_type', ''))
-            elif col == 'scheme':
-                v = m.value()
-                row.append(v.scheme())
-            elif col == 'host':
-                v = m.value()
-                row.append(v.host)
-            elif col == 'signals':
-                v = m.value()
-                names = [s.signal_name() for s in v.signals()]
-                row.append(", ".join(names))
-            else:
-                row.append('')
-        rows.append(row)
-    return rows
-
-
-def _display_manifest_list(
-    manifests: Iterable[Manifest],
-    headers: list[str],
-    columns: list[str],
-    title: str,
-) -> int:
-    """Display a manifest list as a table. Returns count of displayed items."""
-    items = list(manifests)
-    if not items:
-        return 0
-    rows = _collect_table_rows(items, columns)
-    print_simple_table(data=rows, headers=headers, title=title)
-    return len(items)
-
 
 def _display_two_layer(
-    matrix_items: Iterable[Manifest],
-    matrix_mf: MatrixManifest,
-    mode_items: Iterable[Manifest] | None,
-    mode_mf: ModeManifests | None,
+    matrix_rows: list[list[str]],
+    matrix_count: int,
+    matrix_pkg: str,
+    mode_rows: list[list[str]] | None,
+    mode_count: int | None,
+    mode_pkg: str | None,
+    mode_name: str | None,
     headers: list[str],
-    columns: list[str],
-    type_label: str,
-    mode: HostMode | None,
+    title_label: str,
 ) -> None:
-    """Display Matrix + Mode tables, handling edge cases."""
-    matrix_pkg = matrix_mf.root_package()
-    matrix_title = f"Matrix ({matrix_pkg}.{type_label})"
-
-    matrix_count = _display_manifest_list(
-        matrix_items, headers, columns,
-        title=matrix_title,
-    )
+    """Display Matrix + optional Mode tables from pre-built rows."""
     if matrix_count == 0:
-        _display_no_matrix_items(type_label, matrix_pkg)
-
-    if mode is not None and mode_items is not None and mode_mf is not None:
-        echo("")
-        mode_pkg = mode_mf.root_package()
-        mode_title = f"Mode: {mode.name} ({mode_pkg}.{type_label})"
-        mode_count = _display_manifest_list(
-            mode_items, headers, columns,
-            title=mode_title,
+        print_warning(f"No {title_label} found in Matrix ({matrix_pkg}.{title_label}).")
+    else:
+        print_simple_table(
+            data=matrix_rows, headers=headers,
+            title=f"Matrix ({matrix_pkg}.{title_label})",
         )
+
+    if mode_rows is not None and mode_pkg is not None and mode_name is not None:
         if mode_count == 0:
-            _display_no_mode_items(type_label, mode.name, mode_pkg)
+            echo("")
+            print_warning(f"No {title_label} found in mode '{mode_name}' ({mode_pkg}.{title_label}).")
         else:
+            echo("")
+            print_simple_table(
+                data=mode_rows, headers=headers,
+                title=f"Mode: {mode_name} ({mode_pkg}.{title_label})",
+            )
             echo("")
             print_info(
                 f"{matrix_count} from {matrix_pkg}, {mode_count} effective in mode "
                 f"({mode_pkg} extends {matrix_pkg} via import)"
             )
-    elif mode is None:
-        _display_no_mode_hint()
 
 
 def _filter_manifests(
@@ -226,45 +155,38 @@ def _filter_manifests(
 # providers
 # ---------------------------------------------------------------------------
 
-@manifest_app.command(name="providers")
-def list_providers(
-    search: str = typer.Argument(
-        "", help="Search pattern for contract import path or provider type.",
-    ),
-):
-    """List IoC providers discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
+def _import_path(cls: type) -> str:
+    """Convert a class to its Python import path."""
+    module = getattr(cls, '__module__', '')
+    qualname = getattr(cls, '__qualname__', cls.__name__)
+    if module:
+        return f'{module}.{qualname}'
+    return qualname
 
-    matrix_raw = matrix_mf.providers()
-    mode_raw = mode_mf.providers() if mode_mf else None
 
-    if search:
-        matrix_raw = _filter_manifests(matrix_raw, search)
-        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else None
-        # single match in mode → detail
-        mode_list = list(mode_raw) if mode_raw else []
-        matrix_list = list(matrix_raw)
-        if len(mode_list) == 1 and len(matrix_list) <= 1:
-            _display_provider_detail(mode_list[0])
-            return
-        if len(matrix_list) == 1 and not mode_list:
-            _display_provider_detail(matrix_list[0])
-            return
-        if not matrix_list and not mode_list:
-            print_warning(f"No providers matching '{search}'.")
-            return
-        matrix_raw = matrix_list
-        mode_raw = mode_list
+def _provider_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for provider manifests.
 
-    _display_two_layer(
-        matrix_raw, matrix_mf,
-        mode_raw, mode_mf,
-        headers=["Contract", "Type", "Found At"],
-        columns=["name", "type", "found_at"],
-        type_label="providers",
-        mode=mode,
-    )
+    Columns: Contract | Aliases | Type | Docstring | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", "—", str(m.error())[:80], str(m.found_at())])
+            continue
+        p = m.value()
+        alias_strs = [_import_path(a) for a in p.aliases()] if p.aliases() else []
+        aliases = ", ".join(alias_strs) if alias_strs else "—"
+        ptype = "Singleton" if p.singleton() else "Factory"
+        desc = (m.description() or "—")[:100]
+        rows.append([
+            m.name(),
+            aliases,
+            ptype,
+            desc,
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
 
 def _display_provider_detail(manifest: Manifest[Provider]) -> None:
@@ -275,10 +197,13 @@ def _display_provider_detail(manifest: Manifest[Provider]) -> None:
     provider = manifest.value()
     contract_type = provider.contract()
 
+    alias_strs = [_import_path(a) for a in provider.aliases()] if provider.aliases() else []
+    aliases = ", ".join(alias_strs) if alias_strs else "—"
     echo("")
     print_simple_table(
         data=[
             ["Contract", manifest.name()],
+            ["Aliases", aliases],
             ["Type", "Singleton" if provider.singleton() else "Factory"],
             ["Found At", str(manifest.found_at())],
             ["Import Path", manifest.import_path() or "—"],
@@ -288,61 +213,90 @@ def _display_provider_detail(manifest: Manifest[Provider]) -> None:
         title="Provider Detail",
     )
 
-    # contract source
-    try:
-        source = _inspect.getsource(contract_type)
+    if manifest.source():
         echo("")
-        print_simple_panel(source, title="Contract Source")
-    except (TypeError, OSError):
-        print_info("Source unavailable (compiled or built-in contract).")
+        print_simple_panel(manifest.source(), title="Contract Source")
+    else:
+        try:
+            source = _inspect.getsource(contract_type)
+            echo("")
+            print_simple_panel(source, title="Contract Source")
+        except (TypeError, OSError):
+            print_info("Source unavailable (compiled or built-in contract).")
+
+
+@manifest_app.command(name="providers")
+def list_providers(
+    search: str = typer.Argument(
+        "", help="Search pattern for contract import path or provider type.",
+    ),
+):
+    """List IoC providers discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_raw = list(matrix_mf.providers())
+    mode_raw = list(mode_mf.providers()) if mode_mf else []
+
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        # single match → detail
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_provider_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_provider_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No providers matching '{search}'.")
+            return
+
+    m_rows, m_count = _provider_rows(matrix_raw)
+    mode_rows, mode_count = _provider_rows(mode_raw) if mode_raw else (None, None)
+
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Contract", "Aliases", "Type", "Docstring", "Found At"],
+        title_label="providers",
+    )
 
 
 # ---------------------------------------------------------------------------
 # configs
 # ---------------------------------------------------------------------------
 
-@manifest_app.command(name="configs")
-def list_configs(
-    search: str = typer.Argument("", help="Search pattern for config name."),
-    detail: bool = typer.Option(False, "--detail", "-d", help="Show full schema and defaults."),
-):
-    """List configuration models discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
+def _config_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for config manifests.
 
-    matrix_raw = matrix_mf.configs()
-    mode_raw = mode_mf.configs() if mode_mf else None
-
-    if search:
-        matrix_raw = _filter_manifests(matrix_raw, search)
-        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else None
-        mode_list = list(mode_raw) if mode_raw else []
-        matrix_list = list(matrix_raw)
-        if (len(mode_list) == 1 and len(matrix_list) <= 1) or (len(matrix_list) == 1 and not mode_list):
-            target = mode_list[0] if mode_list else matrix_list[0]
-            if detail or search:
-                _display_config_detail(target)
-                return
-        if not matrix_list and not mode_list:
-            print_warning(f"No configs matching '{search}'.")
-            return
-        matrix_raw = matrix_list
-        mode_raw = mode_list
-
-    if detail and mode_raw:
-        mode_list = list(mode_raw)
-        if len(mode_list) == 1:
-            _display_config_detail(mode_list[0])
-            return
-
-    _display_two_layer(
-        matrix_raw, matrix_mf,
-        mode_raw, mode_mf,
-        headers=["Name", "Module Path", "Description"],
-        columns=["name", "import_path", "description"],
-        type_label="configs",
-        mode=mode,
-    )
+    Columns: Name | Fields | Description | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", str(m.error())[:80], str(m.found_at())])
+            continue
+        cfg = m.value()
+        # extract field names:type from json_schema
+        try:
+            schema = cfg.to_config_schema()
+            props = schema.json_schema.get("properties", {})
+            fields = ", ".join(
+                f"{k}:{v.get('type', '?')}" for k, v in props.items()
+            ) if props else "—"
+        except Exception:
+            fields = "—"
+        desc = schema.description if schema.description else (m.description() or "—")
+        rows.append([
+            m.name(),
+            fields[:120],
+            desc[:100],
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
 
 def _display_config_detail(manifest: Manifest) -> None:
@@ -363,7 +317,6 @@ def _display_config_detail(manifest: Manifest) -> None:
         title="Config Detail",
     )
 
-    # YAML defaults
     try:
         yaml_str = cfg.to_yaml()
     except AttributeError:
@@ -374,7 +327,6 @@ def _display_config_detail(manifest: Manifest) -> None:
     echo("")
     print_simple_panel(yaml_str, title="Default Values (YAML)")
 
-    # JSON Schema
     try:
         schema = cfg.to_config_schema().json_schema
         schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
@@ -383,7 +335,6 @@ def _display_config_detail(manifest: Manifest) -> None:
     except Exception:
         pass
 
-    # source
     try:
         source = _inspect.getsource(type(cfg))
         echo("")
@@ -392,46 +343,74 @@ def _display_config_detail(manifest: Manifest) -> None:
         pass
 
 
+@manifest_app.command(name="configs")
+def list_configs(
+    search: str = typer.Argument("", help="Search pattern for config name."),
+    detail: bool = typer.Option(False, "--detail", "-d", help="Show full schema and defaults."),
+):
+    """List configuration models discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_raw = list(matrix_mf.configs())
+    mode_raw = list(mode_mf.configs()) if mode_mf else []
+
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_config_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_config_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No configs matching '{search}'.")
+            return
+
+    if detail and mode_raw:
+        if len(mode_raw) == 1:
+            _display_config_detail(mode_raw[0])
+            return
+
+    m_rows, m_count = _config_rows(matrix_raw)
+    mode_rows, mode_count = _config_rows(mode_raw) if mode_raw else (None, None)
+
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Name", "Fields", "Description", "Found At"],
+        title_label="configs",
+    )
+
+
 # ---------------------------------------------------------------------------
 # topics
 # ---------------------------------------------------------------------------
 
-@manifest_app.command(name="topics")
-def list_topics(
-    search: str = typer.Argument("", help="Search pattern for topic name or type."),
-):
-    """List event topic schemas discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
+def _topic_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for topic manifests.
 
-    matrix_raw = matrix_mf.topics()
-    mode_raw = mode_mf.topics() if mode_mf else None
-
-    if search:
-        matrix_raw = _filter_manifests(matrix_raw, search)
-        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else None
-        mode_list = list(mode_raw) if mode_raw else []
-        matrix_list = list(matrix_raw)
-        if len(mode_list) == 1 and len(matrix_list) <= 1:
-            _display_topic_detail(mode_list[0])
-            return
-        if len(matrix_list) == 1 and not mode_list:
-            _display_topic_detail(matrix_list[0])
-            return
-        if not matrix_list and not mode_list:
-            print_warning(f"No topics matching '{search}'.")
-            return
-        matrix_raw = matrix_list
-        mode_raw = mode_list
-
-    _display_two_layer(
-        matrix_raw, matrix_mf,
-        mode_raw, mode_mf,
-        headers=["Name", "Type", "Description"],
-        columns=["name", "topic_type", "description"],
-        type_label="topics",
-        mode=mode,
-    )
+    Columns: Name | Type | Model Path | Description | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", "—", str(m.error())[:80], str(m.found_at())])
+            continue
+        schema = m.value()
+        model_path = m.import_path() or "—"
+        desc = schema.description or m.description() or "—"
+        rows.append([
+            m.name(),
+            schema.topic_type,
+            model_path,
+            desc[:100],
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
 
 def _display_topic_detail(manifest: Manifest) -> None:
@@ -447,20 +426,98 @@ def _display_topic_detail(manifest: Manifest) -> None:
             ["Type", schema.topic_type],
             ["Description", schema.description or "—"],
             ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
         ],
         headers=["Property", "Value"],
         title="Topic Detail",
     )
 
-    # JSON Schema
     schema_json = json.dumps(schema.json_schema, indent=2, ensure_ascii=False)
     echo("")
     print_simple_panel(schema_json, title="Payload JSON Schema")
+
+    if manifest.source():
+        echo("")
+        print_simple_panel(manifest.source(), title="Topic Model Source")
+
+
+@manifest_app.command(name="topics")
+def list_topics(
+    search: str = typer.Argument("", help="Search pattern for topic name or type."),
+):
+    """List event topic schemas discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_raw = list(matrix_mf.topics())
+    mode_raw = list(mode_mf.topics()) if mode_mf else []
+
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_topic_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_topic_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No topics matching '{search}'.")
+            return
+
+    m_rows, m_count = _topic_rows(matrix_raw)
+    mode_rows, mode_count = _topic_rows(mode_raw) if mode_raw else (None, None)
+
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Name", "Type", "Model Path", "Description", "Found At"],
+        title_label="topics",
+    )
 
 
 # ---------------------------------------------------------------------------
 # signals
 # ---------------------------------------------------------------------------
+
+def _signal_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for signal manifests.
+
+    Columns: Name | Description | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), str(m.error())[:80], str(m.found_at())])
+            continue
+        desc = m.description() or "—"
+        rows.append([m.name(), desc[:120], str(m.found_at())])
+    return rows, len(rows)
+
+
+def _display_signal_detail(manifest: Manifest) -> None:
+    """Show a single signal with full description and source if available."""
+    if manifest.is_error():
+        print_error(f"Signal scan error: {manifest.error()}")
+        return
+    schema = manifest.value()
+    echo("")
+    print_simple_table(
+        data=[
+            ["Name", manifest.name()],
+            ["Description", (manifest.description() or "—")[:300]],
+            ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+        ],
+        headers=["Property", "Value"],
+        title="Signal Detail",
+    )
+    if manifest.source():
+        echo("")
+        print_simple_panel(manifest.source(), title="Signal Source")
+
 
 @manifest_app.command(name="signals")
 def list_signals(
@@ -468,59 +525,40 @@ def list_signals(
 ):
     """List signal schemas discovered from manifests."""
     project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
 
-    matrix_raw = matrix_mf.signals()
-    mode_raw = mode_mf.signals() if mode_mf else None
+    matrix_raw = list(matrix_mf.signals())
+    mode_raw = list(mode_mf.signals()) if mode_mf else []
 
     if search:
         matrix_raw = _filter_manifests(matrix_raw, search)
-        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else None
-        mode_list = list(mode_raw) if mode_raw else []
-        matrix_list = list(matrix_raw)
-        if not matrix_list and not mode_list:
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_signal_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_signal_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
             print_warning(f"No signals matching '{search}'.")
             return
-        matrix_raw = matrix_list
-        mode_raw = mode_list
+
+    m_rows, m_count = _signal_rows(matrix_raw)
+    mode_rows, mode_count = _signal_rows(mode_raw) if mode_raw else (None, None)
 
     _display_two_layer(
-        matrix_raw, matrix_mf,
-        mode_raw, mode_mf,
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
         headers=["Name", "Description", "Found At"],
-        columns=["name", "description", "found_at"],
-        type_label="signals",
-        mode=mode,
+        title_label="signals",
     )
 
 
 # ---------------------------------------------------------------------------
 # parameters
 # ---------------------------------------------------------------------------
-
-@manifest_app.command(name="parameters")
-def show_parameters():
-    """Show the parameter schema (single-value, mode-overrides-matrix)."""
-    project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
-
-    matrix_param = matrix_mf.parameters()
-    echo("")
-    _display_single_manifest_detail(
-        matrix_param,
-        layer=f"Matrix ({matrix_mf.root_package()}.parameters)",
-    )
-
-    if mode is not None and mode_mf is not None:
-        mode_param = mode_mf.parameters()
-        echo("")
-        _display_single_manifest_detail(
-            mode_param,
-            layer=f"Mode: {mode.name} ({mode_mf.root_package()}.parameters)",
-        )
-    elif mode is None:
-        _display_no_mode_hint()
-
 
 def _display_single_manifest_detail(manifest: Manifest, layer: str) -> None:
     """Display a single-value manifest as a detail block."""
@@ -540,9 +578,53 @@ def _display_single_manifest_detail(manifest: Manifest, layer: str) -> None:
     )
 
 
+@manifest_app.command(name="parameters")
+def show_parameters():
+    """Show the parameter schema (single-value, mode-overrides-matrix)."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_param = matrix_mf.parameters()
+    echo("")
+    _display_single_manifest_detail(
+        matrix_param,
+        layer=f"Matrix ({matrix_mf.root_package()}.parameters)",
+    )
+
+    if mode is not None and mode_mf is not None:
+        mode_param = mode_mf.parameters()
+        echo("")
+        _display_single_manifest_detail(
+            mode_param,
+            layer=f"Mode: {mode.name} ({mode_mf.root_package()}.parameters)",
+        )
+
+
 # ---------------------------------------------------------------------------
 # resources
 # ---------------------------------------------------------------------------
+
+def _resource_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for resource manifests.
+
+    Columns: Scheme | Storage Host | Description | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", str(m.error())[:80], str(m.found_at())])
+            continue
+        meta = m.value()
+        scheme = meta.scheme() if hasattr(meta, 'scheme') else m.name()
+        host = meta.host if hasattr(meta, 'host') else "—"
+        desc = (meta.description() if hasattr(meta, 'description') else m.description() or "—")
+        rows.append([
+            scheme,
+            host,
+            desc[:100],
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
+
 
 @manifest_app.command(name="resources")
 def list_resources(
@@ -550,29 +632,28 @@ def list_resources(
 ):
     """List resource storage declarations discovered from manifests."""
     project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
 
-    matrix_raw = matrix_mf.resources()
-    mode_raw = mode_mf.resources() if mode_mf else None
+    matrix_raw = list(matrix_mf.resources())
+    mode_raw = list(mode_mf.resources()) if mode_mf else []
 
     if search:
         matrix_raw = _filter_manifests(matrix_raw, search)
-        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else None
-        mode_list = list(mode_raw) if mode_raw else []
-        matrix_list = list(matrix_raw)
-        if not matrix_list and not mode_list:
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if not matrix_raw and not mode_raw:
             print_warning(f"No resources matching '{search}'.")
             return
-        matrix_raw = matrix_list
-        mode_raw = mode_list
+
+    m_rows, m_count = _resource_rows(matrix_raw)
+    mode_rows, mode_count = _resource_rows(mode_raw) if mode_raw else (None, None)
 
     _display_two_layer(
-        matrix_raw, matrix_mf,
-        mode_raw, mode_mf,
-        headers=["Scheme", "Host", "Description", "Found At"],
-        columns=["scheme", "host", "description", "found_at"],
-        type_label="resources",
-        mode=mode,
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Scheme", "Storage Host", "Description", "Found At"],
+        title_label="resources",
     )
 
 
@@ -584,7 +665,6 @@ def list_resources(
 def show_channel():
     """Show the __main__ channel (mode only)."""
     project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
 
     if mode is None or mode_mf is None:
         print_error("Channel is mode-scoped. No active mode.")
@@ -615,36 +695,57 @@ def show_channel():
 # nuclei
 # ---------------------------------------------------------------------------
 
+def _nucleus_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for nucleus manifests.
+
+    Columns: Name | Description | Signals | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), str(m.error())[:80], "—", str(m.found_at())])
+            continue
+        v = m.value()
+        signals = ", ".join(s.signal_name() for s in v.signals()) if hasattr(v, 'signals') else "—"
+        desc = (v.description() if hasattr(v, 'description') else m.description() or "—")
+        rows.append([
+            m.name(),
+            desc[:100],
+            signals,
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
+
+
 @manifest_app.command(name="nuclei")
 def list_nuclei(
     search: str = typer.Argument("", help="Search pattern for nucleus name, description, or signal."),
 ):
     """List nucleus factories (mode only)."""
     project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
 
     if mode is None or mode_mf is None:
         print_error("Nuclei are mode-scoped. No active mode.")
         print_info("Use 'moss modes list' to see available modes, then activate one.")
         raise typer.Exit(code=1)
 
-    mode_raw = mode_mf.nuclei()
+    raw = list(mode_mf.nuclei())
     if search:
-        mode_raw = _filter_manifests(mode_raw, search)
-        items = list(mode_raw)
-        if not items:
+        raw = _filter_manifests(raw, search)
+        if not raw:
             print_warning(f"No nuclei matching '{search}'.")
             return
-        mode_raw = items
 
-    count = _display_manifest_list(
-        mode_raw,
-        headers=["Name", "Description", "Signals", "Found At"],
-        columns=["name", "description", "signals", "found_at"],
-        title=f"Mode: {mode.name} ({mode_mf.root_package()}.nuclei)",
-    )
+    rows, count = _nucleus_rows(raw)
     if count == 0:
         print_warning(f"No nuclei found in mode '{mode.name}'.")
+        return
+
+    print_simple_table(
+        data=rows,
+        headers=["Name", "Description", "Signals", "Found At"],
+        title=f"Mode: {mode.name} ({mode_mf.root_package()}.nuclei)",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +756,6 @@ def list_nuclei(
 def list_ctml_versions():
     """List CTML versions available in this project."""
     project, mode, matrix_mf, mode_mf = _get_context()
-    _display_context_header(project, mode)
 
     versions = project.ctml_versions()
     if not versions:
@@ -673,7 +773,7 @@ def list_ctml_versions():
 
 
 # ---------------------------------------------------------------------------
-# explain
+# explain — single source of truth for context + manifest system
 # ---------------------------------------------------------------------------
 
 @manifest_app.command(name="explain")
@@ -682,6 +782,7 @@ def explain_manifests():
     project, mode, matrix_mf, mode_mf = _get_context()
     _display_context_header(project, mode)
 
+    echo("")
     echo(matrix_mf.explain())
 
     if mode_mf is not None:
@@ -693,5 +794,4 @@ def explain_manifests():
             f"{matrix_mf.root_package()} (全局) + {mode_mf.root_package()} (模式追加)"
         )
     else:
-        echo("")
         _display_no_mode_hint()
