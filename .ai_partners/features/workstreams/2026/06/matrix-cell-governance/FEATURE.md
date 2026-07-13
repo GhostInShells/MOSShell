@@ -1,64 +1,18 @@
 ---
-title: Matrix Cell Governance
-status: in-progress
-priority: P0
 created: 2026-06-09
-updated: 2026-07-10
 depends:
-  - cell-discovery-refactor
-  - cell-session-bootstrap
+- cell-discovery-refactor
+- cell-session-bootstrap
+description: 'Matrix cell 体系治理总任务。从 circusd 死胡同出发, 历经六轮设计-推翻循环, 收敛为: 膜承诺 (cell 必须
+  provide channel), 三域模型 (Manifest/Record/Presence), 六动词治理代数, ledger 单写者, Presence/Watcher
+  拆分, moss_self CLI 合流。 当前有效契约 = §TT/§TT续 + §UU + §VV + §WW + §XX。终局服务于模型运行时自迭代。'
 milestone: 0.1.0
-description: >-
-  Matrix cell 体系治理总任务。从 circusd 死胡同出发, 历经六轮设计-推翻循环,
-  收敛为: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence),
-  六动词治理代数, ledger 单写者, Presence/Watcher 拆分, moss_self CLI 合流。
-  当前有效契约 = §TT/§TT续 + §UU + §VV + §WW + §XX。终局服务于模型运行时自迭代。
-status_note: >-
-  2026-07-12 claude-opus-4-7 Subprocesses/JobSupervisor Provider 面定案 (§XX):
-  两个 Provider (都 singleton), JobSupervisor 契约加 .new() 方法作 IoC 复制姿态 —
-  依赖引用 copy 内部封装 / 变量走 .new() 显式参数 / 不用 container.make(kwargs=)
-  以保 IoC 自解释性. JobSupervisor 契约不长 Matrix 反向依赖 (拆走 Matrix 纯 lib 场景也能用).
-  四个否定纪念碑钉正文: root+group 拆分 / supervisor 持 path/cwd / 不写 Provider 让 Matrix 直构造 /
-  matrix.jobs() 作 factory. Opus 4.7 因反 factory 直觉三次跑偏, 人类连推三次纠正到位.
-  下一步: Matrix wire 阶段接入 Provider (不在本次任务).
-  --
-  2026-07-10 claude-fable-5 cell 侧化身会话 (§WW): ExecSpec 定型 — command/args/env 纯 argv (MCP 同形),
-  interpreter 字段死, 默认 sys.executable (修正 UU-5 "字段不变"); uv 判决从 git 历史复活钉回正文
-  (全 uv run 两次实证死亡, 自动检测死路原则); 向上认亲 + 多脚本一 cell + singleton 域 = cell 身份
-  (G1 一仓多组合互斥免费解决); CELL.md 用户故事九条 + 四弧; exit 弧 fold (owner 走 Subprocesses
-  done callback 不走网络). 实现纪律钉子: context 数据源永不读 ledger. 下一步: 按 §VV 块① 起草抽象层.
-  --
-  2026-07-10 claude-fable-5 开工定案 (§VV): 模型全权起草抽象层 (技术目标入 comments 不入 docstring),
-  人类 IDE 改名+review. 四条挡板 + 块①金丝雀. 十三步拓扑路线图已记录 (FEATURE.md 裁剪 → env 先行 →
-  cell/matrix 重绘 → 7-8 并行实现 → wire up → moss-as-mcp 验证 → 第一个 cells channel →
-  apps 重走=自迭代验证). 下一实例按 §VV 拓扑展开, 不要线性重放对话历史.
-  --
-  2026-07-08 claude-fable-5 + 人类架构师终审会话 (§UU): 结构性待决全部闭合, 进入并行分发.
-  骨架: 膜承诺 (cell 必须 provide channel), 三域模型 (Manifest/Record/Presence, God-model Cell 解体),
-  六动词治理代数 (三域x两动词, 其余全是视图), ledger=咽喉排气尾迹 (单写者, CLI 唯一读者, 运行时零读零监听),
-  Presence/Watcher 拆分 (入网与监听分离, N²→N), proxy=accept 即创建 (owner=accept 者, 治理=所有权进程内成立),
-  network(local) 单 Watcher 双视图, moss_self CLI 合流 (一份实现两个面, Cells 门面 ABC 退役),
-  Matrix 表面积: run_cell + network + processes + jobs. CELL/SKILL 比较与 GhostOS 系谱已记录.
-  执行路径调整: 模型改抽象实现 → 人类 IDE 改名+review → 并行分发重写实现+单测.
-  仍开放: TT-2 身份拆分 (uuid+alias) 未获人类最终确认; enum 取值/run_cell 参数面/alias 表格式属分发级细节.
-  下一实例认知重建支点: 读 §UU 全文 (含 §TT 上文).
-  --
-  2026-07-07 claude-fable-5 + 人类架构师复审会话 (§TT):
-  §SS 执行部分崩于边界设计错误, 工作模式转为人类亲手重建全部抽象 + 模型 review.
-  根因诊断: 抽象融合 (非过多). 收敛: 身份拆分 (uuid + alias 表, check_unique 取消),
-  PM 收敛为机制层, BackgroundTask 三分, 新立 JobSupervisor (认知胶囊三层),
-  Matrix 分灶台 (~8 首页成员), Project = 治理域句柄 (taxonomy 禁入内核),
-  Environment seal 两相提案. 待人类拍板项见 §TT-10.
-  --
-  2026-06-28 claude-opus-4-7 + 人类架构师讨论会话:
-  (1) 补完前任未显式记录的 L0→L3 跃迁认知 (§MM) — matrix 成为最小通讯依赖, cells 真相源上升到 network.
-  (2) 二元真相显式承认 (§NN) — status 变更不广播, live_cells 是延迟视图. 选 (c) 不加回 pub/sub.
-  (3) 三重身份问题 framing (§OO) — type 字段一人干三份活的概念漂移定位, 字段拆解候选方案. 核心待决, 本轮未敲定.
-  (4) cell type 升格 / 多 network 升格的 beta1 保守路径 (§PP).
-  (5) channel proxy 根 channel 数量两个候选 (§QQ).
-  (6) FEATURE.md 滞后修正 (§RR) — §L bridge_address 二分, §N HostCellNetwork ABC 分离, 均已合并/不做.
-  (7) §SS 开工契约 — 三重身份 + log 三处零漂移 + 自动 proxy + cells/network 两个 channel + Matrix 启动流程. 决策全部收敛, 可开工.
-  下一实例认知重建支点: 读本文 §SS (含 §MM-§RR 所有上文).
+priority: P0
+status: completed
+status_note: abstract layer closed (§ZZ-10) + wire-up validated (moss-as-mcp spoke
+  through TTS). downstream cycle continues in cell-run-cycle workstream.
+title: Matrix Cell Governance
+updated: '2026-07-13'
 ---
 
 # Matrix Cell Governance
@@ -1280,6 +1234,3 @@ class CellPresence(BaseModel):
 5. zenoh_presence.py: is_host 读取保持 (property 语义); hosts_ns 副路径 comment
    记 "作废待清"
 6. 冒烟: matrix + factory 端到端 (blueprint / matrix_impl / factory 都不崩)
-
-
-

@@ -149,15 +149,40 @@ class MossRuntimeImpl(MossRuntime):
         return prompter
 
     def _load_ctml_prompt(self, ctml_version: str) -> str:
-        """从 project.ctml_versions() 加载指定版本的 CTML meta instruction 全文."""
-        versions = self._matrix.project.ctml_versions()
+        """从 project.ctml_versions() 加载指定版本的 CTML meta instruction 全文.
+
+        CTML 是 MOSS 的通讯根基 — 版本查不到 / 文件读不出都是 unrecoverable,
+        故意让 MossRuntime 构造期崩溃, 保证不会有半死状态的 shell 起来后模型
+        无法理解 CTML 语法. 错误信息即 prompt (TT-12), 指向 project.ctml_versions()
+        与 MOSS.md ctml_version 声明.
+        """
+        try:
+            versions = self._matrix.project.ctml_versions()
+        except Exception as e:
+            raise RuntimeError(
+                f"MOSS cannot start: project.ctml_versions() failed to load "
+                f"({type(e).__name__}: {e}). Check workspace ctml/ dir + bundled versions."
+            ) from e
         ctml_file = versions.get(ctml_version)
         if ctml_file is None:
-            raise KeyError(
-                f"CTML version {ctml_version!r} not found. "
-                f"Available: {sorted(versions.keys())}"
+            raise RuntimeError(
+                f"MOSS cannot start: CTML version {ctml_version!r} not found. "
+                f"Available versions: {sorted(versions.keys())}. "
+                f"Fix MOSS.md ctml_version or mode HOST.md ctml_version field."
             )
-        return ctml_file.read_text(encoding='utf-8')
+        try:
+            content = ctml_file.read_text(encoding='utf-8')
+        except Exception as e:
+            raise RuntimeError(
+                f"MOSS cannot start: CTML version {ctml_version!r} file {ctml_file} "
+                f"read failed ({type(e).__name__}: {e})."
+            ) from e
+        if not content.strip():
+            raise RuntimeError(
+                f"MOSS cannot start: CTML version {ctml_version!r} file {ctml_file} "
+                f"is empty. CTML meta instruction is required for shell startup."
+            )
+        return content
 
     def _discover_main_channel(self):
         """从 mode.manifests().channel() 拿 main channel Manifest.
