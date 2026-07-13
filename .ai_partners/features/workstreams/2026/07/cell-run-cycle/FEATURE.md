@@ -255,6 +255,9 @@ MCP 侧观察到 cell 入网 announce, `(await mesh()).view()` 能看到膜.
 
 ### M7.5. MossRuntime 挂 CellEventNucleus — CellEvent → Signal 链路
 
+**执行文档: 本目录 `cell-event-nucleus.md` (2026-07-13 拆出)**. 含本轮增补:
+signal 是 matrix 层可不消费的协议动作 → nucleus 无条件挂载, 不按运行模式分支.
+
 **判据**: MossRuntime 生命周期 aenter 时挂一个专属 nucleus (工作命名
 `CellEventNucleus`), 消费 `(await matrix.mesh()).on_event`, 每条 CellEvent 转一条
 Signal 送 `runtime.mindflow`. 全部作 **background hint 姿态** (低优 impulse,
@@ -302,12 +305,17 @@ cell 立刻崩 → 模型不知道, 继续调不存在的 channel). **留监测�
 **判据**: UU-9 moss_self 合流的第一个 channel 落地. 六动词 (create/install /
 run/stop / accept/deny) 经 CTML 层投影, 模型可通过 CTML 操作 cell 治理.
 
-**待决**:
-- channel 命名 (moss / moss.cells / etc.)
-- 六动词的具体命令签名 (对应 UU-4 治理代数)
-- state 分组 (M6 若 CTML 视图更多, 分层拓扑)
-- `context_messages` 承载 "最近 cells 状态概要 + 最近几轮日志"
-  (M7.5 讨论时人类明示的历史面)
+**设计已定案 (2026-07-13 讨论), 详见本目录 `cells-channel.md`**. 结论速览:
+- 拓扑: 单 `cells` channel, 六动词 nonblocking own commands 在 top,
+  proxy 走 virtual children (refresh_meta + get_virtual_children 缓存模式).
+  治理子 channel 方案否掉 (nonblocking 消解漏斗动机).
+- foreign 挂载: 构造期 `auto_accept` flag; local 永远自动挂 (UU-7);
+  flag 开时 accept/release 命令不注册.
+- 信息三分 (instruction / context_messages / 命令返回) 与 always_observe
+  分档见子文档 §4/§5.
+- channel 零 signal — CellEvent → Signal 独占归 M7.5 CellEventNucleus.
+- **UU-9 纠偏**: channel 手写绑 Matrix, 不是 typer 反射 CLI —
+  原判决模型不了解 channel 实现, run/stop/accept 必须 in-process.
 
 ### M8.5. L1 hello-world tutorial 从 apps 迁 cells 语法
 
