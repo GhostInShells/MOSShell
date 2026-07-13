@@ -302,7 +302,12 @@ class TestUtilities:
         assert normalize('worker/cam.front-1') == 'worker_cam_front_1'
 
     def test_make_address_joins(self):
-        assert make_address('worker', 'cam', 'uid-8') == 'worker/cam/uid-8'
+        # §ZZ-10 三段结构: kind (Literal) + middle+ (治理域路径) + uid.
+        assert make_address('cell', 'cam', uid='uid-8') == 'cell/cam/uid-8'
+        assert (
+            make_address('cell', 'proj_a', 'sub_proj_b', uid='ZZ7')
+            == 'cell/proj_a/sub_proj_b/ZZ7'
+        )
 
     def test_duplicated_error_is_runtime_error(self):
         assert issubclass(DuplicatedError, RuntimeError)

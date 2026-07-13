@@ -66,11 +66,19 @@ async def test_hub_discover_provider_liveness():
 
 
 @pytest.mark.asyncio
-async def test_hub_context_manager_auto_discover():
-    """__aenter__ 后 provider 上线时 hub 自动创建 proxy 并记录 online record。"""
+async def test_hub_context_manager_liveness_and_explicit_proxy():
+    """__aenter__ opens liveness listener; provider online produces record + fires
+    callback; proxy is NOT auto-built (§UU-8: proxy = accept-on-create belongs to
+    the upper CellNetwork layer, hub only fans out notifications).
+    """
     session = zenoh.open(zenoh.Config())
     scope = unique_id()
     hub = ZenohChannelHub(zenoh_session=session, scope=scope)
+
+    online_callback_fired: list[str] = []
+    offline_callback_fired: list[str] = []
+    hub.on_provider_online(lambda a: online_callback_fired.append(a))
+    hub.on_provider_offline(lambda a: offline_callback_fired.append(a))
 
     try:
         address = "test/hub_auto"
@@ -81,29 +89,38 @@ async def test_hub_context_manager_auto_discover():
             return 7
 
         async with hub:
-            # hub 进入上下文，开始监听 provider liveness
             provider = hub.provider(address)
 
             async with provider.arun(chan):
-                # provider 宣告 liveness 后，hub 应自动创建 proxy
+                # provider announces liveness; hub records + fires callback,
+                # but does NOT auto-build a proxy (§UU-8).
                 await asyncio.sleep(0.3)
 
-                assert address in hub.proxies
-                auto_proxy = hub.proxies[address]
-                assert auto_proxy is not None
+                assert address not in hub.proxies, (
+                    "hub must not auto-build proxy on provider online (§UU-8)"
+                )
+                assert address in online_callback_fired, (
+                    f"on_provider_online should have fired for {address}"
+                )
 
-                # 验证自动创建的 proxy 可以正常连接
-                async with auto_proxy.bootstrap() as runtime:
+                # explicit proxy build works and can connect to the provider.
+                proxy = hub.proxy(address, name="explicit_proxy")
+                assert hub.proxies.get(address) is proxy
+
+                async with proxy.bootstrap() as runtime:
                     await runtime.wait_connected()
                     assert runtime.is_running()
                     result = await runtime.execute_command("foo")
                     assert result == 7
 
-            # provider 退出后，应收到 offline record
+            # provider exits: hub records offline, fires callback, and drops proxy.
             await asyncio.sleep(0.3)
-            records = hub.records
-            assert len(records) >= 2
+            assert address in offline_callback_fired
+            assert address not in hub.proxies, (
+                "hub should drop proxy on provider offline (see _on_provider_offline)"
+            )
 
+            records = hub.records
             online_records = [r for r in records if r.status == "online" and r.address == address]
             offline_records = [r for r in records if r.status == "offline" and r.address == address]
             assert len(online_records) >= 1
