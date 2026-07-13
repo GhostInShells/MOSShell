@@ -555,8 +555,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             expand=False
         )
 
-        # 2. Node & Cell Info (打印 Cell 的 to_dict)
-        cell_data = self.host.matrix().this.to_dict()
+        # 2. Node & Cell Info (打印 CellPresence 的 model_dump)
+        # §UU-5 God-model Cell 解体后 this 是 pydantic CellPresence, 用 model_dump.
+        cell_data = self.host.matrix().this.model_dump()
         node_table = Table(title="Current Cell Info", expand=True, box=None)
         node_table.add_column("Property", style="bold yellow")
         node_table.add_column("Value")
@@ -607,30 +608,68 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         return None
 
     def _get_system_alerts(self) -> RenderableType | None:
-        """启动时系统告警 — 默认展示 manifests scan errors。子类可追加。
+        """启动时系统告警 — walk host.project 的 manifests, 展示 is_error() 条目.
+
+        错误载体是 Manifest 自身 (blueprint/project.py Manifest ABC):
+          .name() / .found_at() / .error() — TUI 直读, Host 不背汇聚桶.
 
         TODO: 未来 system alerts 应在 matrix 或 TopicService ringbuffer
-        中作为原生模块实现，TUI 订阅而非直接读 host.scan_errors。
+        中作为原生模块实现，TUI 订阅而非直接 walk manifests.
         """
-        errors = self.host.scan_errors
+        errors = self._collect_manifest_errors()
         if not errors:
             return None
 
         err_table = Table(box=None, expand=True)
-        err_table.add_column("Module", style="bold red")
-        err_table.add_column("Stage")
+        err_table.add_column("Manifest", style="bold red")
+        err_table.add_column("Found At")
         err_table.add_column("Error", style="yellow")
-        for err in errors:
+        for m in errors:
+            exc = m.error()
             err_table.add_row(
-                err.module_path,
-                err.stage,
-                f"{type(err.exception).__name__}: {err.exception}",
+                m.name(),
+                str(m.found_at()),
+                f"{type(exc).__name__}: {exc}" if exc else "unknown",
             )
         return Panel(
             err_table,
-            title=f"[bold yellow]! Scan Warnings ({len(errors)})[/bold yellow]",
+            title=f"[bold yellow]! Manifest Errors ({len(errors)})[/bold yellow]",
             border_style="yellow",
         )
+
+    def _collect_manifest_errors(self) -> list:
+        """Walk project.matrix_manifests + mode.manifests, 收 is_error() 的 Manifest."""
+        errors = []
+        project = self.host.project
+
+        # 1. matrix baseline
+        try:
+            mm = project.matrix_manifests()
+            for it in (mm.providers, mm.configs, mm.topics, mm.signals, mm.resources):
+                for m in it():
+                    if m.is_error():
+                        errors.append(m)
+        except Exception:
+            pass
+
+        # 2. mode manifests (需 bootstrap)
+        try:
+            mode = project.current_mode()
+            if mode is not None:
+                mode.bootstrap()
+                modem = mode.manifests()
+                for it in (modem.providers, modem.configs, modem.topics,
+                           modem.signals, modem.resources, modem.nuclei):
+                    for m in it():
+                        if m.is_error():
+                            errors.append(m)
+                ch = modem.channel()
+                if ch is not None and ch.is_error():
+                    errors.append(ch)
+        except Exception:
+            pass
+
+        return errors
 
     def _on_emergency_pause(self) -> None:
         """急停 hook — 子类 override 实现具体 pause/resume 逻辑."""

@@ -541,16 +541,17 @@ class Project(ABC):
             cls,
             env: Environment | None = None,
     ) -> 'Project':
-        """从环境中发现 Project. """
+        """从环境中发现 Project.
+
+        env 传入契约: 已 seal (调用方职责). None 时走 Environment.discover(),
+        返回的 singleton 也已 seal — 本方法不重复 seal (§UU-1 一次性事实).
+        """
         global _project
         if _project is not None:
             return _project
         from ghoshell_moss.factory import create_project
         env = env or Environment.discover()
-        # 确认 env 启动.
-        env.seal()
         project = create_project(env)
-        # project 设置成单例.
         project.bootstrap()
         return project
 

@@ -13,8 +13,11 @@ adapter registry (get_adapter_class('zenoh') 即可查到).
 
 import asyncio
 import logging
+from typing import Iterable
 
 from typing_extensions import Self
+
+from ghoshell_container import IoCContainer, Provider, provide
 
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import CellPresence, Presence, Watcher
@@ -25,6 +28,8 @@ from ghoshell_moss.matrix.networks.zenoh_network import (
 )
 from ghoshell_moss.matrix.networks.zenoh_presence import ZenohPresence
 from ghoshell_moss.matrix.networks.zenoh_watcher import ZenohWatcher
+from ghoshell_moss.matrix.providers.topic_provider import ZenohTopicServiceProvider
+from ghoshell_moss.matrix.providers.moss_session_provider import ProjectZenohSessionProvider
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 
 __all__ = ['ZenohAdapter']
@@ -181,3 +186,39 @@ class ZenohAdapter(MatrixNetworkAdapter):
             hub=self._hub,
             self_project_id=self_project_id or None,
         )
+
+    # ---- IoC hooks (§ZZ-5) ------------------------------------------------
+
+    def bind_ioc(self, container: IoCContainer) -> None:
+        """注册 lazy zenoh.Session provider (§ZZ-5 provide 语法糖场景).
+
+        闭包捕捉 self, 首次 fetch 时读 self._session — 那时 __aenter__ 已完成
+        (matrix 装配次序: sync bind_ioc → sync bootstrap → async adapter.__aenter__
+        → async force_fetch(TopicService) 触发本 provider chain).
+        """
+        import zenoh
+
+        adapter_ref = self
+
+        def _fetch_zenoh_session(_container: IoCContainer) -> zenoh.Session:
+            if adapter_ref._session is None:
+                raise RuntimeError(
+                    "zenoh.Session fetched before ZenohAdapter.__aenter__ completed. "
+                    "Check matrix装配次序 (§ZZ-5): adapter 起 driver 是 async 阶段,"
+                    "在 container.bootstrap() 之后."
+                )
+            return adapter_ref._session
+
+        if not container.bound(zenoh.Session):
+            container.register(
+                provide(zenoh.Session, singleton=True)(_fetch_zenoh_session),
+            )
+
+    def default_providers(self) -> Iterable[Provider]:
+        """zenoh driver 的默认 provider — TopicService / Session (§ZZ-5).
+
+        matrix 以 "if not bound" 兜底装配, workspace 用户在 MatrixManifest.providers
+        里显式覆写即可覆盖.
+        """
+        yield ZenohTopicServiceProvider()
+        yield ProjectZenohSessionProvider()

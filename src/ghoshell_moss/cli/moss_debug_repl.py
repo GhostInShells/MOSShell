@@ -1,5 +1,6 @@
 import click
-from ghoshell_moss.host import Host, Environment
+from ghoshell_moss.host import Host
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.host.tui_entries.moss_runtime_ui import MossRuntimeTUI
 
 
@@ -20,12 +21,11 @@ def moss_debug_repl_main(mode: str, scope: str):
     """
     click.echo(f"Starting MOSS Debug REPL in [{mode}] mode, scope: [{scope}]")
 
-    # 初始化环境
-    env = Environment.discover()
-    env.set_mode(mode)
-    env.set_session_scope(scope)
+    # §UU-1 seal 定案: 入口点显式构造 Environment(**cli_args) + seal, 注册 singleton.
+    # Host 只消费 sealed env, 不承担参数收集责任.
+    env = Environment(mode=mode, scope=scope)
+    env.seal()
 
-    # 启动 Host 与 TUI
     host = Host(env=env)
     tui = MossRuntimeTUI(host=host)
     tui.run()

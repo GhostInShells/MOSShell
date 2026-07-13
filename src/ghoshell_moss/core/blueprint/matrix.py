@@ -106,11 +106,11 @@ class Matrix(ABC):
         需要显式控制装配时 (测试 / 多实例 / 自定义 env) 直接用它, 不走本糖.
         """
         # UU-10 discover 判决: 双门形状正确 (docker.from_env / k8s load_config 同构),
-        # 所有参数流经 Environment 单载体 (CLI 晚到参数走 seal 前 setter 窗口),
-        # 不在 Matrix 构造面开第二条参数通道.
+        # 所有参数流经 Environment 单载体 (CLI 晚到参数走 env vars 进 __init__ 兜底,
+        # 不在 Matrix 构造面开第二条参数通道; env.seal 在 Environment.discover 里
+        # 完成, 本方法信任 singleton 已 sealed 不重复).
         from ghoshell_moss.factory import create_matrix, create_project
         env = env or Environment.discover()
-        env.seal()
         project = create_project(env)
         project.bootstrap()
         return create_matrix(env, project)

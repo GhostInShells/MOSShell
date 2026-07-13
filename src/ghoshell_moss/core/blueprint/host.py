@@ -426,8 +426,7 @@ class MossHost(ABC):
             ...
         """
         from ghoshell_moss.factory import create_host, create_project
-        env = env or Environment()
-        env.seal()
+        env = env or Environment.discover()
         project = create_project(env)
         project.bootstrap()
         # 使用反范式定义项目的默认约定.

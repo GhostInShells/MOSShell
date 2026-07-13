@@ -1,3 +1,14 @@
+"""
+MossRuntime concrete — 编排 CTMLShell + Matrix + Mode 生命周期.
+
+wire-up 契约 (§ZZ):
+- Matrix 层承接 SystemPrompter 基础契约 (contracts/system_prompter.py),
+  MossRuntime 承接 MossSystemPrompter (blueprint/host.py, ctml/project/mode/static
+  4 slot 命名访问器) — 跨 cell 展示 feature 过重, 本期不上.
+- mode 参数化: mode 是 MossRuntime 关注点, 不进 matrix. matrix 无 .manifests/.mode.
+- main channel 从 mode.manifests().channel() 单 Manifest 拿; 无声明用 new_shell_main_channel 兜底.
+- static slot 在 shell 起来后接 ctml_shell.static_messages callable (dynamic leaf).
+"""
 from typing_extensions import Self
 
 import janus
@@ -6,19 +17,29 @@ from ghoshell_moss.message.message import Message
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.ctml.shell.ctml_shell import CTMLShell
 from ghoshell_moss.core.blueprint.host import (
-    MossRuntime, MossSystemPrompter
+    MossRuntime, MossSystemPrompter,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.helpers import ThreadSafeEvent
-from ghoshell_moss.core.ctml import new_ctml_shell
-from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
-from ghoshell_moss.contracts import Workspace
-from .matrix import MatrixImpl
+from ghoshell_moss.core.blueprint.project import HostMode
 from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
+from ghoshell_moss.core.ctml import new_ctml_shell
+from ghoshell_moss.core.helpers import ThreadSafeEvent
+from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
+
+from ghoshell_moss.matrix.matrix_impl import MatrixImpl
+
 import contextlib
 import asyncio
 
 __all__ = ['MossRuntimeImpl']
+
+
+class _MossSystemPrompterImpl(BaseSystemPrompter, MossSystemPrompter):
+    """具象化 MossSystemPrompter — BaseSystemPrompter 提供 tree/组装, MossSystemPrompter
+    提供命名 slot API. 钻石继承合流, 一实例既作 SystemPrompter 又作 MossSystemPrompter.
+    """
+    pass
 
 
 class MossRuntimeImpl(MossRuntime):
@@ -28,45 +49,55 @@ class MossRuntimeImpl(MossRuntime):
             *,
             env: Environment,
             workspace: Workspace,
-            # mode: Mode,
+            mode: HostMode,
             matrix: MatrixImpl,
             run_shell_on_start: bool = True,
             name: str | None = None,
             description: str | None = None,
     ):
-        env.seal()
+        # env 已由 Host 侧 seal (Host.__init__ 承担). 这里假设 env 已 sealed.
+        # 二次 seal 会抛 EnvironmentSealedError.
         self._env = env
-        self._name = name or env.moss_meta.name
-        # 主节点自解释发现逻辑, 手动定义优先, 其次是模式定义, 其次是环境定义.
-        self._description = description or mode.description or env.moss_meta.description
         self._workspace = workspace
-        self._matrix = matrix
         self._mode = mode
+        self._matrix = matrix
+        self._name = name or env.moss_meta.name
+        # 描述发现三级优先: 传参 > mode > env moss_meta.
+        self._description = (
+            description
+            or mode.meta.description
+            or env.moss_meta.description
+        )
+        self._run_shell_on_start = run_shell_on_start
+
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._paused = False
         self._closing_event = ThreadSafeEvent()
         self._closed_event = ThreadSafeEvent()
-        self._log_prefix = f"<HostMossRuntime mode={self._mode.name} session_id={self._env.network_scope}>"
+        self._log_prefix = (
+            f"<HostMossRuntime mode={self._mode.name} "
+            f"session_id={self._env.network_scope}>"
+        )
         self._interpreting_future: asyncio.Future | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._action_task: asyncio.Task | None = None
-        self._started = False
-        self._run_shell_on_start = run_shell_on_start
+
         # --- shell action loop --- #
         self._shell_logos_queue: janus.Queue = janus.Queue()
+
+        # --- system prompter (matrix 层不构造, MossRuntime 层持有全 4 slot tree) --- #
+        # ctml/project/mode 三 slot 在此填充; static slot 在 _bootstrap_after_matrix 补
+        # (依赖 ctml_shell 起来).
+        self._system_prompter: _MossSystemPrompterImpl = self._build_system_prompter()
+
         # --- prepare shell --- #
-        system_prompt = self._matrix.moss_system_prompter()
-        # 从 manifest 发现 __main__ channel，没有则用默认空白 main。
-        # main channel 上的 import_channels / with_state / with_module 已在 manifest 中完成组合。
-        # channels() key 是 Python 变量名，查找需匹配 channel.name()。
-        manifests_main = next(
-            (ch for ch in self._matrix.manifests.channels().values() if ch.name() == "__main__"),
-            None,
-        )
+        # main channel 从 mode.manifests().channel() 单 Manifest 拿 (§ZZ-1 ModeManifests
+        # 由 MossRuntime 承接). 无声明用默认空白 main 兜底.
+        manifests_main = self._discover_main_channel()
         if manifests_main is None:
             manifests_main = new_shell_main_channel(
-                description=f"Default main channel for {self._description or self._name}"
+                description=f"Default main channel for {self._description or self._name}",
             )
         self._ctml_shell = new_ctml_shell(
             name=self._name,
@@ -74,8 +105,80 @@ class MossRuntimeImpl(MossRuntime):
             parent_container=self.matrix.container,
             main_channel=manifests_main,
             experimental=False,
-            meta_instruction=system_prompt.instruction(),
+            meta_instruction=self._system_prompter.instruction(),
         )
+
+    def _build_system_prompter(self) -> _MossSystemPrompterImpl:
+        """构造 MossSystemPrompter tree 的 ctml/project/mode 三 slot.
+
+        static slot 依赖 ctml_shell.static_messages, 在 _bootstrap_after_matrix 补.
+        """
+        prompter = _MossSystemPrompterImpl(
+            description=(
+                "MOSS system instruction — assembled from ctml/project/mode/static layers."
+            ),
+        )
+        # ctml slot: 版本优先 mode > moss_meta
+        ctml_version = self._mode.meta.ctml_version or self._env.moss_meta.ctml_version
+        ctml_prompt = self._load_ctml_prompt(ctml_version)
+        prompter.with_prompter(
+            MossSystemPrompter.CTML_SLOT,
+            BaseSystemPrompter(
+                own_instruction=ctml_prompt,
+                description=f"CTML grammar prompt (version {ctml_version}).",
+            ),
+        )
+        # project slot: workspace 根 MOSS.md 声明的 project instruction
+        # (MossMeta.system_project 字段, 老代码写 system_prompt 是遗迹 bug —
+        # 老 host/matrix.py 里同一 typo, 只是从未跑通过).
+        prompter.with_prompter(
+            MossSystemPrompter.PROJECT_SLOT,
+            BaseSystemPrompter(
+                own_instruction=self._env.moss_meta.system_project,
+                description="Workspace root MOSS.md project instruction.",
+            ),
+        )
+        # mode slot: 模式内 HOST.md 声明的 instruction
+        prompter.with_prompter(
+            MossSystemPrompter.MODE_SLOT,
+            BaseSystemPrompter(
+                own_instruction=self._mode.meta.system_prompt,
+                description=f"Mode '{self._mode.name}' instruction.",
+            ),
+        )
+        return prompter
+
+    def _load_ctml_prompt(self, ctml_version: str) -> str:
+        """从 project.ctml_versions() 加载指定版本的 CTML meta instruction 全文."""
+        versions = self._matrix.project.ctml_versions()
+        ctml_file = versions.get(ctml_version)
+        if ctml_file is None:
+            raise KeyError(
+                f"CTML version {ctml_version!r} not found. "
+                f"Available: {sorted(versions.keys())}"
+            )
+        return ctml_file.read_text(encoding='utf-8')
+
+    def _discover_main_channel(self):
+        """从 mode.manifests().channel() 拿 main channel Manifest.
+
+        新 ABC (§ZZ-1 ModeManifests): channel() -> Manifest[PrimeChannel] 单值.
+        老 API .channels().values() 已废, 老代码 next(...) 迭代形态一并作废.
+        """
+        try:
+            manifests = self._mode.manifests()
+        except Exception:
+            return None
+        try:
+            channel_manifest = manifests.channel()
+        except Exception:
+            return None
+        if channel_manifest is None or channel_manifest.is_error():
+            return None
+        try:
+            return channel_manifest.value()
+        except Exception:
+            return None
 
     @property
     def name(self) -> str:
@@ -84,6 +187,10 @@ class MossRuntimeImpl(MossRuntime):
     @property
     def description(self) -> str:
         return self._description or self._env.moss_meta.description
+
+    @property
+    def mode(self) -> HostMode:
+        return self._mode
 
     def _check_running(self):
         if not self.is_running():
@@ -115,7 +222,6 @@ class MossRuntimeImpl(MossRuntime):
         return self._ctml_shell.static_messages()
 
     async def moss_refresh_metas(self, timeout: float = 2.0) -> None:
-        """刷新 channel metas 缓存, 使 static/dynamic 消息反映最新状态."""
         self._check_shell_running()
         await self._ctml_shell.refresh_metas(timeout)
 
@@ -158,13 +264,11 @@ class MossRuntimeImpl(MossRuntime):
 
     async def moss_interrupt(self) -> list[Message]:
         self._check_running()
-        # 清空状态.
         await self._ctml_shell.clear()
         interpreter = self._ctml_shell.interpreting()
         if interpreter is None:
             return [Message.new().with_content('no logos are executing')]
-        else:
-            return interpreter.interpretation().executed_messages()
+        return interpreter.interpretation().executed_messages()
 
     def is_running(self) -> bool:
         return self._started and not (
@@ -201,21 +305,23 @@ class MossRuntimeImpl(MossRuntime):
         return self._matrix
 
     def _bootstrap_after_matrix(self) -> None:
-        # __main__ channel 已在 __init__ 中从 manifests 发现并传入 shell。
-        # 所有 import_channels / with_state / with_module 组合在 manifest 中已完成。
+        # ctml_shell 起来后, 补 static slot (dynamic leaf: ctml_shell.static_messages
+        # 是 callable, 每次读取时动态计算); 注册 SystemPrompter / MossSystemPrompter
+        # 两个 IoC key 指向同一实例 (钻石继承).
         self._matrix.container.set(MOSShell, self._ctml_shell)
         self._matrix.container.set(CTMLShell, self._ctml_shell)
-        moss_system_prompter = self._matrix.container.force_fetch(MossSystemPrompter)
-        moss_system_prompter.with_prompter(
+        self._system_prompter.with_prompter(
             MossSystemPrompter.MOSS_STATIC_SLOT,
             self._ctml_shell.static_messages,
         )
+        self._matrix.container.set(SystemPrompter, self._system_prompter)
+        self._matrix.container.set(MossSystemPrompter, self._system_prompter)
 
     @contextlib.asynccontextmanager
     async def _manager_shell_lifecycle(self):
         if self._run_shell_on_start:
             await self._ctml_shell.__aenter__()
-            # just kick off first round refresh meta
+            # kick off first round refresh_meta
             await self._ctml_shell.refresh_metas(0.5)
         try:
             yield
@@ -225,22 +331,19 @@ class MossRuntimeImpl(MossRuntime):
 
     async def __aenter__(self) -> Self:
         if self._started:
-            raise RuntimeError('Host Toolset is already started')
+            raise RuntimeError('MossRuntime is already started')
         self._started = True
         await self._async_exit_stack.__aenter__()
-        # 启动 matrix.
+        # 启动 matrix
         await self._async_exit_stack.enter_async_context(self._matrix)
-        # 启动 app 并且 bringup
+        # 补 IoC 注册 (system prompter / MOSShell) — 之前挂 _app_store 的位置
         self._bootstrap_after_matrix()
-        await self._async_exit_stack.enter_async_context(self._app_store)
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
-        # 注册日志到当前 app store 里.
-        self._started = True
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # 进入即标记 closing, 通知所有依赖方提前结束运行时逻辑.
+        # 进入即标记 closing, 通知依赖方提前结束运行时逻辑.
         self._closing_event.set()
         self._matrix.close()
         try:

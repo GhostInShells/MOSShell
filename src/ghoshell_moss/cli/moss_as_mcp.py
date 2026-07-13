@@ -6,6 +6,7 @@ from mcp.types import ContentBlock, TextContent, ImageContent
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
 from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
+from ghoshell_moss.core.blueprint.environment import Environment
 import click
 
 
@@ -82,6 +83,13 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         return "MOSS runtime interrupted."
 
 
+def _bootstrap_env(mode: str | None, session_scope: str | None) -> Environment:
+    """入口显式构造 + seal (§UU-1). Host 消费 sealed singleton."""
+    env = Environment(mode=mode, scope=session_scope)
+    env.seal()
+    return env
+
+
 def main_entry(
         mode: str | None = None,
         session_scope: str | None = None,
@@ -96,8 +104,7 @@ def main_entry(
         host=host,
         port=port,
     )
-
-    moss_host = Host(mode=mode, session_scope=session_scope)
+    moss_host = Host(env=_bootstrap_env(mode, session_scope))
     state = ServerState()
     # 注册对应的工具.
     bootstrap(state, mcp)

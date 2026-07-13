@@ -1,70 +1,73 @@
-from pathlib import Path
+"""
+Host — MOSS 顶层入口. 从环境发现 project + mode + matrix, 编排 MossRuntime / GhostRuntime.
+
+wire-up 契约: §ZZ 全套 + §YY-2 (HostMode.cells 删, project.cells 一条链路) +
+§ZZ-4 (build_host_presence 走 Host 抽象 concrete, 不走 factory).
+
+Host 侧 Matrix concrete 构造路径:
+    build_host_presence(env) + create_matrix_helper(env, project, is_host=True)
+    → 与 worker 路径 (factory._create_matrix) 分开约定, 避免 build_self_presence
+      god function 化 (§ZZ-4).
+"""
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint.host import (
-    MossHost, MossRuntime, GhostRuntime,
-)
-from ghoshell_moss.core.blueprint.ghost import GhostMeta
-from ghoshell_moss.core.blueprint.manifests import Manifests
-from ghoshell_moss.core.codex.discover import ScanError, ModuleManifest
-from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.cell import (
-    Cell as MossCell, CellManifest, CellRegistry, CellMetadata,
-    CellLauncher
-)
-# from ghoshell_moss.host.modes import list_modes_from_root_package, new_mode
-from ghoshell_moss.host.ghosts import list_ghosts_from_root_package
-from ghoshell_moss.host.matrix import MatrixImpl
-# from ghoshell_moss.host.cell_registry import EnvCellRegistry
-from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
-from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 import importlib
 import pathlib
 
+from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime, GhostRuntime
+from ghoshell_moss.core.blueprint.ghost import GhostMeta
+from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.project import Project
+from ghoshell_moss.core.blueprint.cell import CellManifest, build_host_presence
+from ghoshell_moss.contracts.workspace import LocalWorkspace
+
+from ghoshell_moss.matrix.matrix_impl import MatrixImpl
+from ghoshell_moss.matrix.adapter import get_adapter_class, list_adapter_drivers
+from ghoshell_moss.factory import resolve_network
+
+from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
+from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
+
 __all__ = ['Host']
 
-_host_instance = None
+_host_instance: 'Host | None' = None
 
 
 class Host(MossHost):
+    """MOSS 顶层入口的 concrete."""
 
     def __init__(
             self,
             *,
             env: Environment | None = None,
-            # mode: Mode | str | None = None,
-            session_scope: str | None = None,
     ):
-        self._scan_ghost_errors: list[ScanError] = []
-        self._scan_manifest_errors: list[ScanError] = []
+        # §UU-1 seal 定案: Environment 无 set_*, 参数一次性塞 __init__, seal 一次性事实.
+        # 入口点 (CLI callback / moss-as-mcp / moss-repl) 负责构造 + seal, Host 只做消费.
+        # 库直接使用 (Host()) 走 Environment.discover(bootstrap=True), 构造裸 env + seal.
+        # Host 不承担 CLI 参数收集责任 (那是入口的活), 也不重复 seal (§UU-1 一次性).
+        if env is None:
+            env = Environment.discover()
+        if not env.is_sealed:
+            raise RuntimeError(
+                "Host requires a sealed Environment. "
+                "Entry-point should construct Environment(**cli_args) + seal() first, "
+                "then pass to Host(env=env). "
+                "Library-direct users can call Environment.discover() which auto-seals."
+            )
+        self._env = env
 
-        self._env = env or Environment.discover()
-        #
-        # if mode is not None:
-        #     self._env.set_mode(mode if isinstance(mode, str) else mode.name)
-        # if session_scope is not None:
-        #     self._env.set_session_scope(session_scope)
+        # Project: 通过 factory.create_project 拿 LocalProject 实例, bootstrap 会
+        # 加载 .env / 挂 moss.log handler / 注册全局单例.
+        from ghoshell_moss.factory import create_project
+        self._project = create_project(self._env)
+        self._project.bootstrap()
 
-        self._env.seal()
-        self._workspace = LocalWorkspace(self.env.workspace_path)
-        if not self._workspace.root_path().exists():
-            raise RuntimeError()
+        # workspace: mode 无关的项目 workspace (matrix 层已经从 project 拿到,
+        # 这里额外持一份供 MossRuntimeImpl.__init__ 使用).
+        self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        # self._env_modes: dict[str, Mode] | None = None
-        self._ghosts: dict[str, tuple[GhostMeta, ModuleManifest]] | None = None
-        # moss_mode = mode
-        # if moss_mode is None:
-        #     moss_mode = self.env.moss_mode_name
-        # if isinstance(moss_mode, str):
-        #     moss_mode_name = moss_mode
-        #     moss_mode = self.all_modes().get(moss_mode_name)
-        #     if moss_mode is None:
-        #         raise RuntimeError(f"Unknown mode: {moss_mode}")
-        # self._moss_mode: Mode = moss_mode
-        # manifest 直接取 mode 的——mode 的每个 manifest 文件显式继承全局
-        # (from MOSS.manifests.xxx import * + 扩展)，无需运行时合并。
-        self._manifest = self._moss_mode.manifest
+        # Matrix concrete 单例 — 首次 matrix() 调用时构造, 后续复用.
+        self._matrix: MatrixImpl | None = None
 
     def name(self) -> str:
         return self._env.moss_meta.name
@@ -86,74 +89,61 @@ class Host(MossHost):
         _host_instance = new_host
         return new_host
 
-    def cell_registry(self) -> CellRegistry:
-        return self._registry
-
     @property
     def env(self) -> Environment:
         return self._env
 
     @property
-    def manifests(self) -> Manifests:
-        return self._manifest
+    def project(self) -> Project:
+        return self._project
 
-    # @property
-    # def mode(self) -> Mode:
-    #     return self._moss_mode
+    # scan_errors 已作废: TUI 直接 walk host.project 的 manifests 通路即可
+    # (Manifest 自持异常载体). Host 不背 alerts 汇聚这份担子 —
+    # 未来 alerts 归 TopicService ringbuffer (tui.py L613 承诺).
 
-    @property
-    def scan_errors(self) -> list[ScanError]:
-        """Aggregated scan errors from manifests, modes, and ghosts discovery."""
-        return self._scan_manifest_errors + self._scan_ghost_errors
-    #
-    # def all_modes(self) -> dict[str, Mode]:
-    #     if self._env_modes is None:
-    #         self._env_modes = {
-    #             mode.name: mode for mode in list_modes_from_root_package(
-    #                 strict=False, errors=self._scan_ghost_errors,
-    #             )
-    #         }
-    #     return self._env_modes
+    def matrix(self) -> MatrixImpl:
+        """Host 侧 Matrix concrete — build_host_presence + adapter registry (§ZZ-4).
 
-    def all_ghost_manifests(self) -> dict[str, tuple[GhostMeta, ModuleManifest]]:
-        if self._ghosts is None:
-            self._ghosts = list_ghosts_from_root_package(
-                strict=False, errors=self._scan_ghost_errors,
+        单进程内单例: 首次调用构造并缓存, 后续调用返回同一实例.
+
+        与 factory._create_matrix (worker cell 路径) 的差别只在 presence 构造:
+          host → build_host_presence(env), address='host/{moss_name}/{project_id_short}'
+          worker → build_self_presence(env, manifest), address='cell/{name}/{uid}'
+        adapter driver / network 解析 / IoC 装配全走同一套.
+        """
+        if self._matrix is not None:
+            return self._matrix
+
+        # register_adapter 副作用触发 (与 factory._create_matrix 保持一致)
+        import ghoshell_moss.matrix.networks.zenoh_adapter  # noqa: F401
+
+        network = resolve_network(self._env, self._project)
+        adapter_cls = get_adapter_class(network.driver)
+        if adapter_cls is None:
+            raise RuntimeError(
+                f"No MatrixNetworkAdapter registered for driver {network.driver!r}. "
+                f"Registered drivers: {list_adapter_drivers()}"
             )
-        return self._ghosts
 
-    def all_ghosts(self) -> dict[str, GhostMeta]:
-        return {name: value[0] for name, value in self.all_ghost_manifests().items()}
-
-    def new_mode(self, name: str, apps: list[str], bringup_apps: list[str], description: str = "") -> Path:
-        """
-        create new mode follow convertion
-        """
-        if name in self.all_modes():
-            raise NameError(f"Mode {name} already exists")
-        return new_mode(name=name, apps=apps, bring_up_apps=bringup_apps, description=description)
-
-    def matrix(self, cell: MossCell | None = None) -> MatrixImpl:
-        """
-        返回当前环境下发现的 Matrix 实例.
-        可以直接用于开发一个节点.
-        """
-        if cell is None:
-            # 通过反射获取 cell
-            cell = self._registry.discover_current_cell()
-
-        return MatrixImpl(
-            cell=cell,
-            mode=self._moss_mode,
-            env=self._env,
-            manifest=self._manifest,
+        # host 的 "manifest" 用 moss_meta 承接身份 (§ZZ-4 host 独立约定, 不走 CELL.md).
+        # name 是 home 稳定身份键 (§YY-1 第 6 条), 用 moss_meta.name 作 host 身份锚.
+        manifest = CellManifest(
+            name=self._env.moss_meta.name or 'host',
+            description=self._env.moss_meta.description or '',
+            installed=True,
         )
+        presence = build_host_presence(self._env)
+        adapter = adapter_cls.from_metadata(network, is_host=True)
 
-    def scan_manifest_errors(self) -> list[ScanError]:
-        return self._scan_manifest_errors
-
-    def scan_ghost_errors(self) -> list[ScanError]:
-        return self._scan_ghost_errors
+        self._matrix = MatrixImpl(
+            env=self._env,
+            project=self._project,
+            manifest=manifest,
+            presence=presence,
+            adapter=adapter,
+            network=network,
+        )
+        return self._matrix
 
     def run(
             self,
@@ -162,60 +152,46 @@ class Host(MossHost):
             name: str | None = None,
             description: str | None = None,
     ) -> MossRuntime:
-        meta = CellMetadata(
-            type=CellType.host.value,
-            name=self.mode.name,
-            description=self.mode.description,
-            singleton=True,
-        )
-        launcher = CellLauncher.from_proc()
-        cell_manifest = CellManifest.new(
-            meta=meta,
-            launcher=launcher,
-            instruction=self._moss_mode.instruction,
-            installed=True,
-        )
-        cell = MossCell.from_manifest(cell_manifest, status_from_proc=True)
-        matrix = self.matrix(cell=cell)
+        mode = self._project.current_mode()
+        if mode is None:
+            raise RuntimeError(
+                f"No mode available (env.mode_name={self._env.mode_name!r}, "
+                f"env.no_mode={self._env.no_mode}). "
+                f"Set --mode or ensure the workspace has at least one HOST.md."
+            )
+        mode.bootstrap()
+
+        matrix = self.matrix()
         return MossRuntimeImpl(
-            env=self.env,
+            env=self._env,
             workspace=self._workspace,
-            mode=self._moss_mode,
+            mode=mode,
             matrix=matrix,
             run_shell_on_start=run_shell,
+            name=name,
+            description=description,
         )
 
     def run_ghost(
             self,
-            ghost: str | GhostMeta,
+            ghost: 'str | GhostMeta',
             *,
             run_shell: bool = True,
     ) -> GhostRuntime:
-        """创建 GhostRuntime — 编排 MossRuntime + Ghost 生命周期.
-
-        Args:
-            ghost: ghost 名称 (从 all_ghosts() 查找) 或 GhostMeta 实例.
-                   传入实例时环境无关，可用于测试.
-            run_shell: 传递给 MossRuntime.
-        """
         if isinstance(ghost, str):
-            ghost_meta, _manifest = self.all_ghost_manifests().get(ghost)
-            if ghost_meta is None:
-                raise KeyError(f"Ghost '{ghost}' not found in workspace")
-            manifest: ModuleManifest = _manifest
-            module = importlib.import_module(manifest.module_path)
-            source_path = pathlib.Path(module.__file__).parent.absolute()
+            ghost_meta = self._project.get_ghost(ghost)
+            module = importlib.import_module(ghost_meta.import_path()) if hasattr(ghost_meta, 'import_path') and callable(getattr(ghost_meta, 'import_path', None)) else None
+            source_path = pathlib.Path(module.__file__).parent.absolute() if module is not None else None
         elif isinstance(ghost, GhostMeta):
             ghost_meta = ghost
             source_path = None
         else:
-            raise ValueError(f'invalid ghost argument type {type(ghost)}')
+            raise ValueError(f"invalid ghost argument type {type(ghost)}")
 
-        # env.ghost_name 必须在 self.run() 之前设置: Matrix.ghost_home
-        # 在 MossRuntime.__aenter__ 期间从 env.ghost_name 解析,
-        # GhostWorkspace.home → matrix.ghost_home → ghosts/{name}/.
-        # 不设则解析为 ghosts/None/, soul 加载失败.
-        self.env.set_ghost_name(ghost_meta.name())
+        # env.ghost_name 必须在 run() 之前 seal 前构造时设置; 已 seal 后无路径
+        # (Environment.set_ghost_name 已删, seal 是一次性跃迁). host 侧无法在
+        # 已 seal env 上改 ghost_name — Ghost 归属由 env 构造时决定.
+        # (moss_as_mcp / moss-run-ghost 应通过 Environment(ghost=...) 传入)
         moss_runtime = self.run(run_shell=run_shell)
         return GhostRuntimeImpl(
             moss_runtime=moss_runtime,

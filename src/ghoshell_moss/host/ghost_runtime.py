@@ -68,7 +68,7 @@ class GhostRuntimeImpl(GhostRuntime):
         # 三循环队列: main loop → (articulate, action)
         self._articulate_queue: janus.Queue[Articulator] = janus.Queue()
         self._action_queue: janus.Queue[Action] = janus.Queue()
-        self._log_prefix: str = f"<GhostRuntime cls={self.__class__} ghost={ghost_meta.name()} mode={self._moss_runtime.mode}>"
+        self._log_prefix: str = f"<GhostRuntime cls={self.__class__} ghost={ghost_meta.name()} mode={self._moss_runtime.mode.name}>"
 
     # ── GhostRuntime ABC ──────────────────────────
 
@@ -190,8 +190,25 @@ class GhostRuntimeImpl(GhostRuntime):
         container.set(Mindflow, mindflow)
 
         nuclei_factories = {}
-        for env_nucleus_info in self.moss.matrix.manifests.nuclei().values():
-            nuclei_factories[env_nucleus_info.name] = env_nucleus_info.nucleus_meta
+        # §ZZ-1: ModeManifests 归 MossRuntime 承接 — 从 mode.manifests().nuclei()
+        # 拿 Iterable[Manifest[NucleusMeta]] 而非老 matrix.manifests.nuclei() dict.
+        try:
+            mode_manifests = self._moss_runtime.mode.manifests()
+        except Exception:
+            self.moss.logger.exception(
+                "%s failed to load mode manifests, skipping mode nuclei",
+                self._log_prefix,
+            )
+            mode_manifests = None
+        if mode_manifests is not None:
+            for nucleus_manifest in mode_manifests.nuclei():
+                if nucleus_manifest.is_error():
+                    self.moss.logger.warning(
+                        "%s skip nucleus manifest with error: %s (%s)",
+                        self._log_prefix, nucleus_manifest.name(), nucleus_manifest.error(),
+                    )
+                    continue
+                nuclei_factories[nucleus_manifest.name()] = nucleus_manifest.value()
 
         # 注册 nuclei — 从 meta 工厂生成，add 到 mindflow
         for ghost_nucleus_factory in self._ghost_meta.nuclei_metas():
@@ -549,5 +566,7 @@ class GhostWorkspaceProvider(Provider[GhostWorkspace]):
     def factory(self, con: IoCContainer) -> GhostWorkspace:
         from ghoshell_moss.core.blueprint.matrix import Matrix
         matrix = con.force_fetch(Matrix)
-        home_path = matrix.ghost_home.abspath()
+        # matrix.ghost_home 已删 (UU-10 首页收敛). ghost 归属挂 project (治理域句柄),
+        # 具体路径 = project.get_ghost_home(env.ghost_name) — TT-9 三目录松耦合的一环.
+        home_path = matrix.project.get_ghost_home(matrix.env.ghost_name)
         return GhostWorkspace(home=home_path, source=self._source_path)

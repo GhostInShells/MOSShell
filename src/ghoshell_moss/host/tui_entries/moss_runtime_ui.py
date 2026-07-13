@@ -4,9 +4,7 @@ from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
-from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
 from ghoshell_moss.host.repl.inspector_moss_runtime import MOSSRuntimeInspector
-from ghoshell_moss.host.repl.inspector_fractal import FractalInspector
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 __all__ = ['MOSSRuntimeREPLState', 'MossRuntimeTUI']
@@ -25,12 +23,14 @@ class MOSSRuntimeREPLState(REPLState):
         super().__init__(name)
 
     def _create_repl_inspectors(self) -> dict[str, object]:
-        # 数量已经过多, 要开始用 states 分组.
+        # ManifestsInspector 与 FractalInspector 已随 CLI 重做外包 —
+        # ManifestsInspector 写在老 Manifests god-basket 上, 新拆分为
+        # MatrixManifest + ModeManifests 需整套重画;
+        # FractalInspector 依赖已死 MossRuntime.get_fractal_hub(), fractal
+        # 按 §TT-14 已弃用. 两者留待 CLI 重做统一处理.
         return {
             "matrix": MatrixInspector(self._host.matrix()),
-            "manifests": ManifestsInspector(self._host.manifests),
             "moss": MOSSRuntimeInspector(self._moss_runtime, self.console),
-            "fractal": FractalInspector(self._moss_runtime.matrix, self._moss_runtime.get_fractal_hub())
         }
 
     def output_on_switch(self, enter_else_leave: bool) -> None:

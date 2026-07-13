@@ -5,7 +5,10 @@ from typing_extensions import Self
 from abc import ABC, abstractmethod
 
 from ghoshell_moss.core.concepts.channel import Channel, ChannelProvider
-from ghoshell_moss.core.blueprint.cell import Cell
+from ghoshell_moss.core.blueprint.cell import CellPresence as Cell
+# -- §UU-5: Cell 三域拆分后 fractal 的 "connected cell" 语义最贴近 CellPresence
+#    (网络真相域). 别名让下游签名不动. fractal 本身按 §TT-14 打算完全放弃,
+#    维持能 import 即可, 不投入抽象整改.
 
 if TYPE_CHECKING:
     from .host import MossRuntime

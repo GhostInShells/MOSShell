@@ -9,6 +9,7 @@ __all__ = [
     'create_host',
     'create_project',
     'create_matrix',
+    'resolve_network',
 ]
 
 
@@ -45,7 +46,7 @@ def _create_matrix(env: Environment, project: Project) -> Matrix:
     from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
     # 1. 解析 network metadata
-    network = _resolve_network(env, project)
+    network = resolve_network(env, project)
 
     # 2/3. 查 adapter class
     adapter_cls = get_adapter_class(network.driver)
@@ -75,10 +76,13 @@ def _create_matrix(env: Environment, project: Project) -> Matrix:
     )
 
 
-def _resolve_network(env: Environment, project: Project) -> NetworkMetadata:
+def resolve_network(env: Environment, project: Project) -> NetworkMetadata:
     """
     从 env.network 名字 → project.network_metas() 拿 NetworkMetadata.
     找不到时兜底: driver=zenoh, name/scope 取 env 值.
+
+    host 侧 (Host.matrix concrete) 与 worker 侧 (_create_matrix factory) 共用
+    本函数, 保证网络接线一致.
     """
     all_networks = project.network_metas()
     metadata = all_networks.get(env.network)

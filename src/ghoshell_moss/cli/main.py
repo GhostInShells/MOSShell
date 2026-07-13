@@ -107,33 +107,38 @@ def _set_global_environment(
     workspace: Path | None,
 ) -> None:
     """
-    将全局 CLI 参数注入到进程级 Environment 单例。
+    CLI callback: 显式构造 Environment + seal, 注册为进程 singleton.
 
-    必须早于任何 Host() / Environment.discover() 调用。
-    用 try/except 包裹，因为 workspace 可能尚未创建，这不应阻断无环境需求的命令。
+    §UU-1 seal 定案纪律: Environment 无 set_* (mid-life 修改), 参数一次性塞
+    __init__, seal 一次性事实. CLI 入口负责在任何 Environment.discover() 之前
+    完成 "构造 + seal", 让 subcommand 的 discover 直接拿到含 CLI 参数的 singleton.
+
+    老实现是 "discover 后 set_mode" — set 接口被 §UU-1 拿掉后, 参数无声无息全部
+    丢失, 是 CLI 参数化不生效的根因. commit 4c75f76b 已 flag 本入口为"下一次
+    fix pass" 待办, 本次修完.
+
+    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, howtos,
+    features) 不需要 env; 需要的命令走 Environment.discover 会自触发裸构造并暴露
+    具体错误.
     """
     from ghoshell_moss.core.blueprint.environment import Environment
 
-    # workspace 通过环境变量注入 —— Environment.find_workspace_path() 第一优先级
     if workspace is not None:
+        # workspace 通过环境变量注入 —— Environment.find_workspace_path() 第一优先级
+        # (这不是隐式约定, 是 workspace 探测独立机制, 与 CLI 参数化正交)
         os.environ["MOSS_WORKSPACE"] = str(workspace.resolve())
 
     try:
-        env = Environment.discover()
-    except Exception:
-        if workspace is not None:
-            print_warning(f"Workspace not found: {workspace}")
-            print_warning("Commands that require a workspace (manifests, modes) will fail.")
+        env = Environment(
+            mode=mode,
+            ghost=ghost,
+            network=network,
+            scope=scope,
+        )
+    except EnvironmentError:
+        # workspace 不存在等. 需环境的命令会在自己 discover 时报出具体错误.
         return
-
-    if mode is not None:
-        env.set_mode(mode)
-    if ghost is not None:
-        env.set_ghost_name(ghost)
-    if network is not None:
-        os.environ["MOSS_NETWORK"] = network
-    if scope is not None:
-        env.set_network_scope(scope)
+    env.seal()
 
 
 @app.command(

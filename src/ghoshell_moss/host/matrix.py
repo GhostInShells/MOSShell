@@ -1,3 +1,19 @@
+"""
+DEPRECATED — old MatrixImpl. Replaced by ghoshell_moss.matrix.matrix_impl.MatrixImpl.
+
+Kept as reference to preserve context for a future cleanup pass. Do NOT import.
+Import chain is broken (Cell/CellNetwork removed in §UU-5 three-domain split);
+this file will raise at parse time if executed as a module.
+
+Removal deferred (per human): more legacy files to clean, don't burn cycles here.
+Target commit: post moss-as-mcp validation, in a batched cleanup workstream.
+"""
+raise ImportError(
+    "ghoshell_moss.host.matrix is deprecated. "
+    "Use ghoshell_moss.matrix.matrix_impl.MatrixImpl instead. "
+    "See FEATURE.md §ZZ-8 file layout table."
+)
+
 import asyncio
 import os
 import signal
