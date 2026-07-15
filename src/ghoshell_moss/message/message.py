@@ -216,8 +216,10 @@ class MessageMeta(BaseModel):
     )
 
     def is_stale(self) -> bool:
-        # todo
-        return False
+        if self.stale_time is None or self.stale_time <= 0:
+            return False
+        elapsed = (datetime.now(tz.gettz()) - self.created).total_seconds()
+        return elapsed > self.stale_time
 
     def gen_attributes(self, timestamp: bool = True) -> dict[str, Any]:
         attributes = self.attributes.copy()
