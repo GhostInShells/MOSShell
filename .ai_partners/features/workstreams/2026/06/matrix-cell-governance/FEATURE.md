@@ -8,11 +8,13 @@ description: 'Matrix cell 体系治理总任务。从 circusd 死胡同出发, �
   拆分, moss_self CLI 合流。 当前有效契约 = §TT/§TT续 + §UU + §VV + §WW + §XX。终局服务于模型运行时自迭代。'
 milestone: 0.1.0
 priority: P0
-status: completed
-status_note: abstract layer closed (§ZZ-10) + wire-up validated (moss-as-mcp spoke
-  through TTS). downstream cycle continues in cell-run-cycle workstream.
+status: in-progress
+status_note: 2026-07-16 人类 review 发现核心实现存在 silent TODO (ledger 未落盘 /
+  singleton='host' 只 warn / is_host_running 撒谎). abstract layer closed (§ZZ-10)
+  判据不成立. 打回重开. cell.py 已重写 (详见 cell-run-cycle FEATURE.md
+  2026-07-14/16 Review 会话).
 title: Matrix Cell Governance
-updated: '2026-07-13'
+updated: '2026-07-16'
 ---
 
 # Matrix Cell Governance
@@ -84,7 +86,7 @@ circusd 被设计为独立系统守护进程，它的核心能力（重启、监
    Manifest[T] 通用抽象 + 8 种 scanner 矩阵; MossMeta 回归, HostModeMeta,
    LocalProject 原型, CLI 重建.
    → manifests 体系存活; Project 线被 TT-7 重新定性为治理域句柄
-   (taxonomy 禁入内核), inventory 归 project (§UU-10).
+   (category 禁入内核), inventory 归 project (§UU-10).
 
 6. **2026-06-28 三重身份诊断 + §SS 开工契约 (claude-opus-4-7 + 人类架构师)**.
    L0→L3 跃迁认知补完 (§MM), 二元真相承认 — status 变更不广播 (§NN),
@@ -224,9 +226,9 @@ MCP 无状态 request/response 装不下"活着的快照" — 这是 MCP 生态�
 - 逐成员检查: Project ABC 的目录成员几乎全指向 workspace, 真 project 概念只有 `root` 一行.
   初判"名字被占", 经交锋修正为: **Project = 被治理领地的句柄 (governance-domain handle)**,
   成员指向 workspace 是因为 workspace 正是治理真相的存放地. **保名**, 条件:
-  契约改写为治理域句柄语义; taxonomy 永久禁入内核 API.
-- **taxonomy 禁入的最硬论证**: project 内容是 ghost 自管理的 —
-  内核持有目录 taxonomy (memory_dir/resources_dir...) 会让 ghost 不能重组自己的领地.
+  契约改写为治理域句柄语义; category 永久禁入内核 API.
+- **category 禁入的最硬论证**: project 内容是 ghost 自管理的 —
+  内核持有目录 category (memory_dir/resources_dir...) 会让 ghost 不能重组自己的领地.
   与 Desktop KD7 同源 (原语不硬编码约定). 行业趋同方案 (Claude Code 系) 未来以
   mount 形式接入, 不需要重构.
 - **Manifests 思想成立且是必然**: 跨 interpreter 能共享真相的载体只有
@@ -468,7 +470,7 @@ cell 与 matrix 同构的根本原因: cell 进程内跑的就是同一个 Matri
 
 | 模型 | 真相域 | 字段 | 来源 |
 |---|---|---|---|
-| **CellManifest** | 文件 (inventory) | name, description, taxonomy (原 type 降级标签), singleton scope (none/domain/host), **exec: ExecSpec**, instruction, installed | CellMetadata 溶解进来; CellLauncher 改名 ExecSpec (TT-13: exec spec 是地基), 字段不变 |
+| **CellManifest** | 文件 (inventory) | name, description, category (原 type 降级标签), singleton scope (none/domain/host), **exec: ExecSpec**, instruction, installed | CellMetadata 溶解进来; CellLauncher 改名 ExecSpec (TT-13: exec spec 是地基), 字段不变 |
 | **CellRecord** | 文件 (ledger) | address, alias, pid, pgid, start_time, project_id, cwd, 日志路径, spawner | 原 CellStatus 的 owner 侧 |
 | **CellPresence** | 网络 (announce) | address, alias, 生命周期 state enum, failure 摘要, project_id, host 角色(运行时事实), **膜: channel 接口描述**, (未来: resources) | 原 CellStatus 的网络侧 + 膜. 命名沿 XMPP presence 先例 |
 
@@ -480,7 +482,7 @@ cell 与 matrix 同构的根本原因: cell 进程内跑的就是同一个 Matri
 - from_proc 族 = Tier 1 匝道: 裸 .py 反射生成临时 Manifest, 进同一条咽喉.
 - type 三重身份各回各家: 拓扑角色=运行时事实进 Presence (抢端口者为 host, 不在 CELL.md);
   project 归属=project_id 标签挂 announce; 治理路径=ledger 条目的存在本身, 永不上网络.
-  CELL.md 的 type 保留为纯 taxonomy 标签, 不驱动任何机制.
+  CELL.md 的 type 保留为纯 category 标签, 不驱动任何机制.
 - 命名与边界人类保留 IDE 改名权 (UU-0).
 
 ### UU-6. ledger 仲裁: 咽喉的排气尾迹, 不是运行时的输入
@@ -1202,7 +1204,7 @@ class CellPresence(BaseModel):
 
 **分类的正交**:
 - address[0] = **发现层维度** (host / cell / bridge, wildcard subscribe 用)
-- CellManifest.taxonomy = **功能分类** (ghost / shell / sensor / actuator...,
+- CellManifest.category = **功能分类** (ghost / shell / sensor / actuator...,
   自由字符串, 人类阅读用, 未来 mindflow 可 payload filter)
 - ghost / shell 分类**这一期不进 address** — 是功能定位不是发现维度;
   未来 mindflow 实测需求出现再上升 (可加保留字 `ghost.host` / `shell.host` 到 [0]

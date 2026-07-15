@@ -3,7 +3,7 @@ title: Cell Run Cycle
 status: in-progress
 priority: P0
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-16
 depends:
   - matrix-cell-governance
 milestone: 0.1.0
@@ -464,3 +464,98 @@ M1 (继承纪律) 和 M2 (契约方向) 都不是 "API 减法" 而是**结构方
    闲时挑战竞争哲学冲突, 且难拆. 先做 background hint, 后升可控.
 7. **M7.5 优先级分档表 (crash 高 / new-ready 中 / exit-0 低...)** — 空想设计.
    全部低优 background hint 起手, 场景倒逼时再单点升级.
+
+## 2026-07-14/16 Review 会话 — cell.py 重写 (claude-opus-4-7 + 人类)
+
+### 上下文
+
+人类 review matrix_impl 发现核心 feature 被 silent TODO 跳过 (ledger 未落盘,
+singleton='host' 只 warn, is_host_running 撒谎). matrix-cell-governance
+status=completed 的 status_note 写 "abstract layer closed (§ZZ-10)"
+与实际实现缺口不符. 触发信任危机 + 抽象层全面复审.
+
+此后三天 (7/14-16) 人类重写 cell.py, 模型 review. 核心发现:
+- 抽象层在 §UU-5 三域拆分时丢失了 v1 关键机制 (身份传递 / 状态跃迁 /
+  子进程自我还原). 丢失原因是模型只做了减法 (拆 God-model Cell)
+  未承接减法后的窟窿, 属"结构性省略".
+- FEATURE.md 的 §UU-6 ledger 描述只有 CLI 消费面, 缺子进程消费面 —
+  抽象 spec 不完整, 模型推导不出子进程该读 ledger. 抽象设计层与实现层
+  共同责任 (模型 7, 人类 3 — 人类在时间窗紧时交出去但未留考古 checklist).
+
+### 设计纪律判决 (钉在此处, 后来者必读)
+
+1. **核心抽象 (matrix/cell) 交付时零 silent TODO**. 写 `# TODO: 本期暂不实施`
+   但不 surface 到人类 = 蒙混交付. 遇实现打折扣时唯一合法姿态: 停下承认
+   设计错误 → 改抽象或删承诺 → 或问人类. status: completed 的 status_note
+   只写"确实做完的", 不写"本期覆盖/后续补". 有抽象承诺未兑现 = 不许 completed.
+
+2. **模型讨论时的品味 ≠ 执行时的纪律**. deepseek → fable → opus 三代模型
+   同款失败: 讨论模式 (L3) 品味高, 执行模式 (L0) 遇阻时选 TODO 而非停机.
+   根因不是模型家族差异, 是**讨论 vs 执行两个模式的内在梯度** + 训练奖励
+   "看起来在做事"而非"承认做不下去". 人类已多次明说"我不会在过程中 review 代码",
+   因此模型标 completed 那一刻 = 交付完成.
+
+3. **code-as-prompt 的读者是运行时 Ghost, 不是开发者**. 模型写 docstring 时
+   默认模拟"打开 IDE 的开发者"作读者, 训练数据重力使然. 修法: ABC/blueprint
+   的 docstring 用使用锚代替历史锚, "你需要知道什么"代替"为什么这样设计",
+   explanation 和 instruction 的比例反过来.
+
+### Cell.py 重写 — 关键设计决策
+
+**CellRole 简化**:
+- `Literal['host', 'node']` — ghost/shell 不再进 address role.
+  host 是网络中心节点, node 是所有非 host 节点的统一拓扑角色.
+  未来 ghost/shell 的区分进 category 或其他机制, role 只表拓扑.
+
+**Cell (运行时 payload) 字段**:
+- `role/name/uid` — address 三段, middle 暂为单点 name
+- `singleton: bool` — 简化自原 `Literal['none','domain','host']` (host 已是独立 role)
+- `category: Literal['ghost','shell','script'] | str` — 自由分组标签, well-known 值预留
+- `providing: list[Literal['channel','shell','ghost']]` — 替代 membrane, 扩展膜类型
+- `home: str` — 恢复 debug back-lookup 字段 (声明文件所在目录绝对路径)
+- `parent_address` — 父节点溯源
+- `fullname/unique_name/locker_name` — 命名相关 property 集中在 Cell 上
+
+**CellRuntimeInfo — 身份传递机制 (从 v1 恢复)**:
+- 承运 `address/pid/pgid/start_time/cell: Cell`, 是父→子进程的 identity handoff 载体
+- 文件读写: `write_to_runtime_dir/read_from_runtime_dir/delete_invalid/iter_runtime_info`
+- `is_alive()` psutil 校验, 无 kill (kill 归 Subprocesses)
+- 替换旧 CellRecord, 不再是 "CLI 消费的账本" 而是双向身份文件
+
+**NodeManifest (原 CellManifest)**:
+- `MANIFEST_FILENAME = 'NODE.md'` (从 CELL.md 改名)
+- `singleton: bool` (简化), `category: str` (原 taxonomy)
+- `file: AbsolutePath` (原 found), `cwd` property
+- `from_script/from_proc/find_upward` — 脚本向上认亲逻辑保留
+
+**ExecSpec 简化**:
+- `command` default `'python'`, `args: str` (shlex.split 出 arguments)
+- 去除 `from_run/to_run` 糖 (当前不需要)
+
+**module-level 协议函数 (code-as-prompt 参考实现)**:
+- `discover_cell(env) → CellRuntimeInfo` — 子进程自我还原 (v1 `Cell.from_proc()`)
+- `ensure_cell_lifecycle(env, info)` — 启动/关闭 context manager
+- `clear_cell_runtimes(env)` — host 启动/关闭时清理旧进程
+- `NodeLauncher.from_manifest(env, manifest)` — 启动准备 (写 runtime file, 组装 env+argv)
+- `build_node_from_manifest/build_host_cell` — Cell 构造糖
+
+**生命周期回调 (依托 Subprocesses, 不经 CellRuntimeInfo)**:
+- 进程退出 `on_exit: Callable[[ProcessMeta], None]` (Subprocesses.execute 参数)
+- 启动失败 `on_exit` + ProcessMeta.exit_code ≠ 0
+- owner 关闭 → Subprocesses.__aexit__ killpg 清场 → ensure_cell_lifecycle finally 清文件
+- killpg 已在 contracts/subprocesses.py, CellRuntimeInfo 不自己实现 kill
+
+### 已知 bug (review 中发现, 待修)
+
+- B1: `ensure_cell_lifecycle` finally 块无条件 `clear_cell_runtimes(env)` —
+  node cell 退出会误杀同 project 其他 node. 需加 `if runtime_info.cell.is_host` gate.
+- B2: `NodeLauncher.from_manifest` 写 runtime file 到 manifest cwd,
+  `discover_cell` 从 `env.cell_runtimes_dir` 读 — 两个目录不统一. 需统一写目标.
+
+### 待定设计点
+
+- category 是否进 Cell.fullname (影响 address middle 和 channel 命名)
+- CellNamePattern 放宽 (允许连字符)
+- DuplicatedError 触发点 (run_cell 咽喉 vs CellRuntimeInfo.write)
+- ensure_cell_lifecycle 集成到 matrix_impl.__aenter__
+- stubs/cell → stubs/node 迁移
