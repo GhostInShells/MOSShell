@@ -41,6 +41,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellMesh,
     normalize,
 )
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.concepts.channel import ChannelProxy
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace
 
@@ -71,7 +72,9 @@ class ZenohCellMesh(CellMesh):
             keyspace: CellsKeyspace,
             scope: str,
             hub: ZenohChannelHub,
-            self_project_id: str | None = None,
+            env: Environment,
+            auto_accept_local: bool = True,
+            auto_accept_foreign: bool = False,
             reconcile_interval: float = 60.0,
             event_buffer_size: int = 100,
     ):
@@ -80,7 +83,9 @@ class ZenohCellMesh(CellMesh):
         self._keyspace = keyspace
         self._scope = scope
         self._hub = hub
-        self._self_project_id = self_project_id
+        # env: 用于 cell.is_local(env) 判定 (§UU-7 local/foreign 分档来源).
+        # 传 env 而非 project_id str, 与 blueprint Cell.is_local(env) 语义对齐.
+        self._env = env
         self._reconcile_interval = reconcile_interval
 
         # -- 缓存 & 回调 -------------------------------------------------
@@ -88,7 +93,16 @@ class ZenohCellMesh(CellMesh):
         self._cache_lock = threading.Lock()
         self._change_callbacks: list[Callable[[Cell, bool], None]] = []
         self._event_callbacks: list[Callable[[CellEvent], None]] = []
-        # accepted proxy 本地表 — UU-8 零网络往返查重.
+        # accept/reject 意图集 (§UU-8, 与在线状态正交).
+        # 优先级 (在 _should_build_proxy 里判定): reject > accept > auto_accept.
+        self._accept_set: set[CellAddress] = set()
+        self._reject_set: set[CellAddress] = set()
+        # auto_accept 默认策略 — 可通过 set_auto_accept toggle.
+        # 默认: local True, foreign False — host 自然接纳本 project 的 cell,
+        # 拒绝 foreign; foreign 场景需上层 (cells channel command) 显式开.
+        self._auto_accept_local = auto_accept_local
+        self._auto_accept_foreign = auto_accept_foreign
+        # 已建 proxy 表 — 上下线的 owner 视角 dict (§UU-8 "从 dict 拿掉即下线").
         self._accepted: dict[CellAddress, ChannelProxy] = {}
         self._event_buffer: deque[CellEvent] = deque(maxlen=event_buffer_size)
 
@@ -131,9 +145,15 @@ class ZenohCellMesh(CellMesh):
                 # 拉不到就当离线, 从 cache 移除.
                 with self._cache_lock:
                     self._cache.pop(address, None)
+                self._try_drop_proxy(address)
                 return {}
             with self._cache_lock:
                 self._cache[address] = presence
+            # 单点 refresh 后按规则触发上下线 (auto_accept + accept 表都靠这个入口生效).
+            if self._should_build_proxy(presence):
+                self._try_build_proxy(presence)
+            else:
+                self._try_drop_proxy(address)
             return {address: presence}
 
         result: dict[CellAddress, Cell] = {}
@@ -155,7 +175,17 @@ class ZenohCellMesh(CellMesh):
             if presence is not None:
                 result[addr] = presence
         with self._cache_lock:
+            # 差集: 之前 cache 有的 address 但这次全量拉不到 → 视为下线.
+            gone = set(self._cache.keys()) - set(result.keys())
             self._cache = result.copy()
+        # 全量 refresh 后走一遍上下线规则 (seed 阶段/reconcile 补漏时也走同一条路径).
+        for addr in gone:
+            self._try_drop_proxy(addr)
+        for cell in result.values():
+            if self._should_build_proxy(cell):
+                self._try_build_proxy(cell)
+            else:
+                self._try_drop_proxy(cell.address)
         return result
 
     # ── 回调注册 (返回 unsubscribe) ────────────────────────────────────
@@ -234,33 +264,115 @@ class ZenohCellMesh(CellMesh):
         finally:
             unsub()
 
-    # ── accept / reject / accepted ────────────────────────────────────
+    # ── accept / reject / set_auto_accept ─────────────────────────────
 
-    async def accept(self, address: CellAddress) -> ChannelProxy:
-        # UU-8: accept = 本地 dict 查重 → hub.proxy(address, name=...) → track.
-        # owner = 本 Mesh, reject 或 __aexit__ 时清理.
-        existing = self._accepted.get(address)
-        if existing is not None:
-            return existing
+    def set_auto_accept(
+            self,
+            *,
+            local: bool | None = None,
+            foreign: bool | None = None,
+    ) -> None:
+        """
+        切换默认 auto-accept 策略, 触发即扫.
 
-        # proxy name 派生规则:
-        #   优先 cell.fullname (category_name 归一, 稳定跨启动),
-        #   缺则 normalize(address) 兜底. 命名冲突交给上层.
+        新策略立刻作用于 cache 中已知的每个 cell:
+          - 应建 (通过 _should_build_proxy) 且未建 → 补建
+          - 不应建但已建 → 撤销 (显式 accept 集里的不会被撤, reject 优先级最高)
+        """
+        if local is not None:
+            self._auto_accept_local = local
+        if foreign is not None:
+            self._auto_accept_foreign = foreign
+        # 触发即扫: 用 cache 快照过一遍规则.
         with self._cache_lock:
-            presence = self._cache.get(address)
-        if presence is None:
-            raise LookupError(
-                f"cell {address} not in network view (refresh first if needed)"
-            )
-        name = normalize(presence.fullname) if presence.fullname else normalize(address)
+            cells = list(self._cache.values())
+        for cell in cells:
+            if self._should_build_proxy(cell):
+                self._try_build_proxy(cell)
+            else:
+                self._try_drop_proxy(cell.address)
 
-        proxy = self._hub.proxy(address, name=name)
-        self._accepted[address] = proxy
-        self._logger.debug("accepted proxy: address=%s name=%s", address, name)
-        return proxy
+    async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:
+        # UU-8: accept 集 (承认表达, 与在线正交). 显式 accept 覆盖 reject.
+        self._reject_set.discard(address)
+        self._accept_set.add(address)
+
+        with self._cache_lock:
+            cached = self._cache.get(address)
+        if cached is None and lookup:
+            # lookup=True: 视图中无该 address 先 refresh 一次再判.
+            await self.refresh(address)
+            with self._cache_lock:
+                cached = self._cache.get(address)
+            if cached is None:
+                raise LookupError(
+                    f"cell {address} not present in network after refresh"
+                )
+        if cached is not None:
+            self._try_build_proxy(cached)
+        # lookup=False 且视图中无: 只加集, 等 present-later 触发.
 
     async def reject(self, address: CellAddress) -> None:
-        # 幂等. hub.drop_proxy 内部关闭 zenoh 连接.
+        # 幂等. reject 集覆盖 accept 集与 auto_accept 规则.
+        self._accept_set.discard(address)
+        self._reject_set.add(address)
+        self._try_drop_proxy(address)
+
+    def channel_proxies(self) -> dict[CellAddress, ChannelProxy]:
+        return dict(self._accepted)
+
+    def has_host(self) -> bool:
+        """
+        本 network 是否有 host 在 view 里. host 在 network 级唯一, 不需按
+        project_id 过滤 (§YY: host = 抢到 zenoh listen 端口的那个).
+        """
+        with self._cache_lock:
+            for cell in self._cache.values():
+                if cell.is_host:
+                    return True
+        return False
+
+    # ── 规则判定 & proxy 上下线原语 (event loop 线程内调用) ───────────
+
+    def _should_build_proxy(self, cell: Cell) -> bool:
+        """判断是否应为该 cell 建 proxy.
+
+        优先级 (从高到低): reject > !has_channel > accept > auto_accept.
+        """
+        address = cell.address
+        if address in self._reject_set:
+            return False
+        if 'channel' not in cell.providing:
+            return False
+        if address in self._accept_set:
+            return True
+        # auto_accept 分档: is_local(env) 决定看哪个开关.
+        if cell.is_local(self._env):
+            return self._auto_accept_local
+        return self._auto_accept_foreign
+
+    def _try_build_proxy(self, cell: Cell) -> None:
+        """幂等: 应建且未建时走 hub.proxy 建 (name_hint=fullname)."""
+        address = cell.address
+        if address in self._accepted:
+            return
+        if not self._should_build_proxy(cell):
+            return
+        hint = cell.fullname or address.replace('/', '_')
+        try:
+            proxy = self._hub.proxy(address, name_hint=hint)
+        except Exception:
+            self._logger.exception(
+                "hub.proxy failed: address=%s hint=%s", address, hint,
+            )
+            return
+        self._accepted[address] = proxy
+        self._logger.debug(
+            "proxy built: address=%s hint=%s", address, hint,
+        )
+
+    def _try_drop_proxy(self, address: CellAddress) -> None:
+        """幂等: 从 _accepted pop + hub.drop_proxy 释放 zenoh 资源."""
         proxy = self._accepted.pop(address, None)
         if proxy is None:
             return
@@ -268,10 +380,25 @@ class ZenohCellMesh(CellMesh):
             self._hub.drop_proxy(address)
         except Exception:
             self._logger.exception("hub.drop_proxy failed for %s", address)
-        self._logger.debug("released proxy: address=%s", address)
+        self._logger.debug("proxy dropped: address=%s", address)
 
-    def channel_proxies(self) -> dict[CellAddress, ChannelProxy]:
-        return dict(self._accepted)
+    def recent_events(self, *, limit: int = 20) -> list[CellEvent]:
+        # deque 单写者 (consumer task), 读快照免锁靠 CPython GIL 保护 list(deque).
+        snapshot = list(self._event_buffer)
+        snapshot.reverse()
+        return snapshot[:limit]
+
+    def cell_events(
+            self,
+            address: CellAddress,
+            *,
+            limit: int = 20,
+    ) -> list[CellEvent]:
+        """某个 cell 的最近事件 (按到达时间倒序). 从 event_buffer 按 address 过滤."""
+        snapshot = list(self._event_buffer)
+        filtered = [e for e in snapshot if e.address == address]
+        filtered.reverse()
+        return filtered[:limit]
 
     # ── 生命周期 ──────────────────────────────────────────────────────
 
@@ -352,8 +479,10 @@ class ZenohCellMesh(CellMesh):
         self._liveness_queue = None
 
         # 释放所有 accept 的 proxy — owner 关闭即释放 (UU-8).
+        # 直接走 _try_drop_proxy (幂等 pop + hub.drop_proxy), 不用 reject
+        # (reject 会往 _reject_set 加, 这里只是清资源).
         for addr in list(self._accepted.keys()):
-            await self.reject(addr)
+            self._try_drop_proxy(addr)
 
         with self._cache_lock:
             self._cache.clear()
@@ -434,9 +563,14 @@ class ZenohCellMesh(CellMesh):
             with self._cache_lock:
                 self._cache[address] = presence
             self._fire_on_change(presence, True)
+            # 上线: 按规则决定是否建 proxy (幂等, 应建才建).
+            self._try_build_proxy(presence)
         elif kind == zenoh.SampleKind.DELETE:
             with self._cache_lock:
                 presence = self._cache.pop(address, None)
+            # 下线: 从 dict 拿掉 proxy (owner 视角). hub 内部 _on_provider_offline
+            # 会并行清 hub._proxies, 本处仍显式 drop 保幂等.
+            self._try_drop_proxy(address)
             if presence is not None:
                 # 反映"下线"事实, 传给回调时 state 保留最后一次记录 (仅供参考).
                 self._fire_on_change(presence, False)
@@ -480,6 +614,12 @@ class ZenohCellMesh(CellMesh):
                 # cache 内容变化了 (即使 online 状态不变), fire on_change
                 # 供视图消费者刷视图.
                 self._fire_on_change(presence, True)
+                # 补触发: cell 添了 channel → 应建就建; 移了 channel → 应撤就撤.
+                # 两个 helper 都幂等, 允许每次 refetch 都走一遍.
+                if self._should_build_proxy(presence):
+                    self._try_build_proxy(presence)
+                else:
+                    self._try_drop_proxy(event.address)
 
         # 无论 refetch 与否, 事件本身都要分发给 on_event 订阅者
         # (nucleus / signal 消费者).
@@ -522,10 +662,14 @@ class ZenohCellMesh(CellMesh):
                     with self._cache_lock:
                         self._cache[addr] = presence
                     self._fire_on_change(presence, True)
+                    # reconcile 补 auto-accept (subscriber 漏包时的兜底路径).
+                    self._try_build_proxy(presence)
 
                 for addr in removed:
                     with self._cache_lock:
                         presence = self._cache.pop(addr, None)
+                    # 下线 proxy 兜底.
+                    self._try_drop_proxy(addr)
                     if presence is not None:
                         self._fire_on_change(presence, False)
 

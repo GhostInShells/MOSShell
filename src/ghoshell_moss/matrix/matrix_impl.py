@@ -29,6 +29,7 @@ ThreadSafeEvent 模式经过考验), 表面按 §YY 的 Matrix ABC 重整.
 import asyncio
 import contextlib
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Coroutine, Iterable, Type, Callable, Any
 from typing_extensions import Self
@@ -39,15 +40,16 @@ from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.contracts import Workspace, ConfigStore
 from ghoshell_moss.contracts.configs import WorkspaceYamlConfigStoreProvider
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
-from ghoshell_moss.contracts.subprocesses import Subprocesses
+from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
-from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject
+from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, CellHandle
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata, MatrixManifest
 from ghoshell_moss.core.blueprint.cell import (
-    CellAddress, CellPresence, CellManifest, CellRecord, CellState,
-    Presence, Watcher, ExecSpec, normalize, make_address, DuplicatedError,
+    CellAddress, Cell, NodeManifest, CellRuntimeInfo, CellPresence, CellMesh,
+    NodeLauncher, NODE_ROLE, normalize, make_address, DuplicatedError,
+    build_node_from_manifest, enter_cell_lifecycle,
 )
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.channel import Channel
@@ -78,8 +80,8 @@ class MatrixImpl(Matrix):
             *,
             env: Environment,
             project: Project,
-            manifest: CellManifest,
-            presence: CellPresence,
+            manifest: NodeManifest,
+            presence: Cell,
             adapter: MatrixNetworkAdapter,
             network: NetworkMetadata,
             logger: logging.Logger | None = None,
@@ -125,8 +127,16 @@ class MatrixImpl(Matrix):
         self._container: Container | None = None    # sync 阶段填
 
         # -- 网络三件, __aenter__ async 阶段填 -- #
-        self._presence: Presence | None = None   # adapter.new_presence 产物
-        self._watcher: Watcher | None = None     # mesh() 惰性创建
+        self._presence: CellPresence | None = None   # adapter.new_presence 产物
+        self._watcher: CellMesh | None = None     # mesh() 惰性创建
+
+        # -- 治理: run_node 拉起的所有 cell handle (§YY handled_cells 契约) -- #
+        # 与 Subprocesses.executing/executed 同构: 活着的 handle 在 dict,
+        # 死掉的进 FIFO (bounded). on_exit callback 完成 dict → deque 转移.
+        self._handled_cells: dict[CellAddress, CellHandle] = {}
+        self._dead_cells: deque[CellHandle] = deque(maxlen=128)
+        # 本 cell 自身的 runtime info — __aenter__ 里 enter_cell_lifecycle 时构造.
+        self._this_runtime_info: CellRuntimeInfo | None = None
 
         # -- 生命周期挂载对象 (承老代码) -- #
         # 运行前 register_lifecycle_object 塞入, __aenter__ async 阶段依次 enter.
@@ -134,8 +144,9 @@ class MatrixImpl(Matrix):
 
         # -- 任务组 -- #
         self._task_group: set[asyncio.Task] = set()
-        # provide_channel 起的 channel provider tasks, 收尾时统一 cancel
-        self._channel_provider_tasks: set[asyncio.Task] = set()
+        # provide_channel 的单槽任务 — 一个 cell 只提供一个根 channel (§UU-2).
+        # 收尾时 cancel 触发 provider.arun_until_closed 走 finally.
+        self._channel_provider_task: asyncio.Task | None = None
 
         # -- 日志前缀 -- #
         self._log_prefix = (
@@ -156,7 +167,7 @@ class MatrixImpl(Matrix):
         return self._project
 
     @property
-    def this(self) -> CellPresence:
+    def this(self) -> Cell:
         # §YY-1 第 2 条: this 是纯数据 (CellPresence), 入网机制对象 (Presence)
         # 藏在 self._presence 里 (provide_channel/publish_event 是它的糖).
         return self._presence_data
@@ -172,55 +183,83 @@ class MatrixImpl(Matrix):
 
     def provide_channel(self, channel: Channel) -> asyncio.Future[None]:
         """
-        把 channel 作为本 cell 的膜暴露到网络 (§YY blueprint/matrix.py).
+        把 channel 作为本 cell 的膜暴露到网络.
 
-        实现: 委托 self._presence.provide(channel) 拿 ChannelProvider,
-        create_task(provider.arun_until_closed(channel)) 启动, 返回 future
-        在 provider.wait_connected() 完成时 resolve.
+        -- 设计意图 (人类 2026-07-13 明示, 修正 refactor 漂移) --
+
+        1. **单实例**: 每个 Matrix 只允许 provide 一次 root channel; 二次调用
+           直接 raise. 不做替换语义, 不做集合化 — cell 只提供一个根 channel
+           是硬约束 (§UU-2 膜承诺).
+
+        2. **单根**: 一个 matrix + cell = 一个 channel 根节点. 若未来需要
+           子挂 / fractal 视图, 那是 Watcher 侧的事, 不是这里第二次 provide.
+
+        3. **Fire-and-forget, 但外面可以 await**. 事实上绝大多数 cell 的
+           主循环就是 `await matrix.provide_channel(channel)` — 阻塞到膜下线
+           为止. 因此**返回的 Future = 跑 arun_until_closed 的 Task 本身**
+           (Task IS asyncio.Future[None]). 不另造 future, 不改语义.
+
+        4. **副作用委托给 Presence**: membrane += 'channel' + updated 时间戳
+           + publish 'channel added' event 全部由 `self._presence.provide(channel)`
+           完成 — 这是 Presence ABC 的承诺 (cell.py L718, §UU-7). 本函数
+           只负责启动 provider, 不重复副作用.
+
+        5. **不猜 provider 的 ready 信号**. Provider 与 Proxy 之间是自动
+           通讯的, 上层调用者不需要读底层 wait_connected. 试图"猜"一个
+           ready 语义就是上一版翻车的直接病因 (见"漂移记").
+
+        -- 漂移记 (探索备查, 后来者勿再入坑) --
+
+        上一版 (被本次 commit 覆盖) 做了三件错事:
+
+        a) 起了双 task 结构 (outer `_run` + inner `_wait_connected`) 并调用
+           `provider.wait_connected()` — provider 端**根本没这个方法**, 只在
+           `ChannelProxy` (duplex/proxy.py) 和 `ChannelRuntime` (concepts/channel.py)
+           上有. AttributeError 被内层 try 吞进另造的 future, 表面无声,
+           实际 future 永不 resolve. `await matrix.provide_channel(...)`
+           作为 cell 主循环的写法就被打断.
+
+        b) 字段 `_channel_provider_tasks: set[Task]` 假设多实例 →
+           违反单根 channel 约束.
+
+        c) 误读 ABC docstring "future 在膜可被远端连接时 resolve" 为
+           "另造一个 ready 信号 future", 实际原意是 "future = task 生命周期,
+           走完 = 膜下线". 一字之差, 语义倒过来.
+
+        moss-as-mcp 的 TTS 之所以还能说话, 是因为外层 task 事实上跑起了
+        `arun_until_closed`, provider 副作用生效; 只是所有 `await` 调用者
+        拿到的 future 是坏的. 这种"表面工作 + 隐性坏 API"是最难诊断的漂移形态.
         """
         self._check_running()
+        if (
+                self._channel_provider_task is not None
+                and not self._channel_provider_task.done()
+        ):
+            raise RuntimeError(
+                'Matrix.provide_channel called twice; a cell provides exactly '
+                'one root channel (§UU-2 膜承诺). If you need a different '
+                'channel, close this Matrix and start a new one.'
+            )
         loop = self._event_loop
         if loop is None:
             raise RuntimeError('Matrix event loop not ready')
         if self._presence is None:
             raise RuntimeError('Matrix presence not initialized (adapter not started)')
 
-        future: asyncio.Future[None] = loop.create_future()
+        async def _providing() -> None:
+            # Presence.provide: 拿 bare ChannelProvider, 顺带完成
+            # membrane 声明 + 'channel added' event 广播 (§UU-7, zenoh_presence.py).
+            provider = await self._presence.provide_channel(channel)
+            # 跑到关闭 — matrix __aexit__ 会 cancel 本 task, 触发 provider
+            # 自身的 finally 收尾 (arun_until_closed 内部处理 CancelledError).
+            await provider.arun_until_closed(channel)
 
-        async def _run() -> None:
-            try:
-                # 1. Presence.provide 返回 bare ChannelProvider (未 arun);
-                #    副作用已完成: presence.membrane += ['channel'] + touch updated
-                #    + 尝试 publish 'channel added' CellEvent (refetch=True).
-                provider = await self._presence.provide(channel)
-                # 2. 后台任务里跑 provider 到关闭. wait_connected 到达 = 膜可用,
-                #    此时 resolve future.
-                async def _wait_connected() -> None:
-                    try:
-                        await provider.wait_connected()
-                        if not future.done():
-                            future.set_result(None)
-                    except Exception as e:
-                        if not future.done():
-                            future.set_exception(e)
-                loop.create_task(_wait_connected())
-                # 3. arun_until_closed 会跑到 provider 关闭 (matrix __aexit__ cancel).
-                await provider.arun_until_closed(channel)
-            except asyncio.CancelledError:
-                if not future.done():
-                    future.cancel()
-                raise
-            except Exception as e:
-                self._logger.exception(
-                    "%s provide_channel task exception: %s", self._log_prefix, e,
-                )
-                if not future.done():
-                    future.set_exception(e)
-
-        task = loop.create_task(_run(), name=f'provide_channel:{channel.name if hasattr(channel, "name") else "?"}')
-        self._channel_provider_tasks.add(task)
-        task.add_done_callback(self._channel_provider_tasks.discard)
-        return future
+        task = loop.create_task(
+            _providing(),
+            name=f'provide_channel:{channel.name}',
+        )
+        self._channel_provider_task = task
+        return task
 
     async def publish_event(self, content: str) -> None:
         """向网络广播 CellEvent (refetch=True). 委托 self._presence."""
@@ -233,7 +272,7 @@ class MatrixImpl(Matrix):
     # 观察: 惰性门 mesh() → Watcher (§UU-7 / §YY-1 第 3 条 opt-in by usage)
     # ==================================================================
 
-    async def mesh(self) -> Watcher:
+    async def mesh(self) -> CellMesh:
         """
         惰性门: 首次调用时 adapter.new_watcher + add_lifecycle_object;
         后续调用返回同一实例. worker cell 不调即 O(1) 不付 O(N) 观察成本.
@@ -242,10 +281,9 @@ class MatrixImpl(Matrix):
         if self._watcher is not None:
             return self._watcher
         # -- 惰性构造 -- #
-        # self_project_id 用于 Watcher.view(project_id=...) 的本地/远端过滤
-        # (UU-1.10 数据标签 + 视图过滤, 不做 namespace 硬切分).
+        # env 传给 mesh 用于 cell.is_local(env) 判定 (§UU-7 local/foreign 分档).
         watcher = self._adapter.new_watcher(
-            self_project_id=self._project.id,
+            env=self._env,
             logger=self._logger,
         )
         # 加进 async exit stack, 触发 __aenter__ 完成订阅 + 初始 refresh.
@@ -255,200 +293,193 @@ class MatrixImpl(Matrix):
         return watcher
 
     # ==================================================================
-    # 治理咽喉: run_cell (六动词的 run, ledger 域, §YY blueprint/matrix.py L204+)
+    # 治理咽喉: run_node (六动词的 run, §YY blueprint/matrix.py L204+)
     # ==================================================================
 
-    async def run_cell(
+    async def run_node(
             self,
-            target: str,
+            target: Path,
             *,
             extra_env: dict[str, str] | None = None,
-    ) -> CellPresence:
+    ) -> CellHandle:
         """
-        拉起一个 cell — 咽喉五步 (§YY blueprint/matrix.py run_cell docstring 中钉住).
+        拉起一个 node cell — 咽喉步骤 (§YY blueprint/matrix.py run_node docstring):
 
-        本期实现覆盖: target 解析 (name / path) → singleton 查重 (domain 档 owner
-        内存态) → processes.execute spawn.
-
-        本期简化 / TODO 记号:
-          - host 档 flock 单例执法暂不实施 (§WW 判决 v2 落地)
-          - 实例残迹目录修剪保留策略暂不实施 (每次 spawn 新 uid)
-          - ledger append 仅 logger.info, 不落 JSON (§UU-6 ledger 无对象身份,
-            咽喉写 best-effort 不回读, CLI 是唯一读者, 本期无 CLI 消费者)
-          留 TODO 引 §UU/§WW 章节, 后续补.
-
-        :raise LookupError: name 不在 inventory (含近似名提示)
-        :raise FileNotFoundError: path 不存在
-        :raise RuntimeError: cell 未安装 (给 INSTALL.md 绝对路径)
-        :raise DuplicatedError: singleton 声明冲突
+        1. 解析 target → NodeManifest (NODE.md / 目录 / 脚本)
+        2. installed 校验 (未装 raise, 错误指向 INSTALL.md)
+        3. NodeLauncher.from_manifest 打包 (Cell + env + argv + runtime info)
+        4. singleton 查重 (§UU-6 ledger 单一真相: 遍历 project.cell_runtimes 找活的同 fullname)
+        5. spawn cwd = runtime 子目录 (§TT-6 边界做成环境); processes.execute
+        6. 回填 runtime pid/pgid; 写 CellRuntimeInfo 到 env.cell_runtimes_dir (§UU-6 单写者)
+        7. 组装 CellHandle 入 _handled_cells; 注册 on_exit callback (dict→FIFO 转移 + 清 ledger 文件)
         """
         self._check_running()
 
-        # -- 咽喉步骤 1: 解析 target → CellManifest + ExecSpec 绝对化 -- #
+        # -- 步骤 1-2: 解析 + installed 校验 -- #
         manifest = self._resolve_target(target)
-        if manifest.exec is None:
-            raise RuntimeError(
-                f"cell {manifest.name!r} has no exec spec (CELL.md missing `run:` "
-                f"declaration); cannot spawn without explicit entrypoint. "
-                f"Declare `run:` in {manifest.name}/CELL.md."
-            )
         if not manifest.installed:
-            # TT-12 错误信息即 prompt: 指向 INSTALL.md 让模型下一步知道去装
-            # (INSTALL.md 路径 = CELL.md 同目录, 但 manifest 层没有 abs path,
-            #  本期先给 name 提示, 后续补 abs)
+            install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
             raise RuntimeError(
-                f"cell {manifest.name!r} is not installed. See "
-                f"{manifest.name}/{CellManifest.INSTALL_FILENAME} for install steps."
+                f"node {manifest.name!r} not installed. See {install_path} for install steps."
             )
 
-        # -- 步骤 2: singleton 查重 (domain 档 owner 内存态) -- #
-        new_address = make_address(
-            'cell', manifest.name, uid=unique_id()[:8],
-        )
-        if manifest.singleton == 'domain':
-            # owner 内存态查重: 遍历 processes.executing() 看有没有同 name 的
-            # 已跑实例. 本期只做 name 匹配 (address 里 name 段作为 key).
-            for meta in self._processes_snapshot():
-                if meta.get('cell_name') == manifest.name:
+        # -- 步骤 3: NodeLauncher 打包 -- #
+        # from_manifest 内部走 build_node_from_manifest → Cell + CellRuntimeInfo,
+        # dump_cell_env 注入 parent_cell_address (§UU-6 身份传递).
+        launcher = NodeLauncher.from_manifest(self._env, manifest)
+        new_cell = launcher.runtime.cell
+        new_address = new_cell.address
+
+        # -- 步骤 4: singleton 查重 (§UU-6 ledger 单写者 + is_alive 核对) -- #
+        # 遍历 project.cell_runtimes() 直读文件系统, 活着且同 fullname 即冲突.
+        if new_cell.singleton:
+            for existing in self._project.cell_runtimes():
+                if not existing.is_alive():
+                    continue
+                if existing.cell.fullname == new_cell.fullname:
                     raise DuplicatedError(
-                        f"cell {manifest.name!r} declares singleton=domain and is "
-                        f"already running (pid={meta.get('pid')}); "
+                        f"node {manifest.name!r} declares singleton and is "
+                        f"already running (address={existing.address} pid={existing.pid}); "
                         f"stop the existing instance before running a new one."
                     )
-        elif manifest.singleton == 'host':
-            # host 档 = 机器级硬件单点 (机器人控制类), 走 flock 跨治理域互斥.
-            # TODO: 本期暂不实施 flock 执法 (§WW-4 判决), 走 domain 档同样查重.
-            self._logger.warning(
-                "cell %r declares singleton=host; flock enforcement not yet implemented (§WW-4)",
-                manifest.name,
-            )
 
-        # -- 步骤 3: 修剪同稳定身份的旧实例残迹目录 -- #
-        # §YY-1 第 6 条: crash 现场留到下次 spawn 才清, 保留策略在 spawn 时执行.
-        # TODO: 本期暂不实施, 每次 spawn 新 uid 目录不清理.
-
-        # -- 步骤 4: processes.execute spawn -- #
+        # -- 步骤 5: spawn cwd = runtime 子目录 (§TT-6 环境做边界) -- #
+        # launcher.cwd = manifest 目录 (声明位置), 与 spawn cwd 不同用途.
+        # spawn cwd = runtime/cells/{normalize(address)}, 承接子进程 scratch/日志.
         instance_cwd = self._instance_runtime_dir(new_address)
         instance_cwd.mkdir(parents=True, exist_ok=True)
 
-        # 子进程环境: env.dump_cell_env + 用户 extra_env 覆盖
-        child_env = self.env.dump_cell_env(
-            cell_address=new_address,
-            parent_cell_address=self.this.address,
-            with_os_env=True,
-        )
+        # 环境: launcher.env (含 dump_cell_env 注入) + manifest.exec.env + 用户 extra_env
+        child_env = dict(launcher.env)
+        if manifest.exec.env:
+            child_env.update(manifest.exec.env)
         if extra_env:
             child_env.update(extra_env)
 
-        # 组装 argv: manifest.exec.command + args
-        argv = [manifest.exec.command, *manifest.exec.args]
+        # -- 步骤 6: spawn -- #
         managed = await self.processes.execute(
-            *argv,
+            *launcher.run,
             name=f'cell:{manifest.name}',
-            description=manifest.description or f'cell {manifest.name}',
+            description=manifest.description or f'node cell {manifest.name}',
             cwd=instance_cwd,
-            extra_env={**manifest.exec.env, **child_env},
-            with_os_env=False,   # child_env 已含 os_env 副本
+            extra_env=child_env,
+            with_os_env=False,   # launcher.env 已包含必要 env
+            on_exit=self._on_cell_exit(new_address),
         )
 
-        # -- 步骤 5: append ledger CellRecord -- #
-        # §UU-6: 咽喉 spawn 瞬间 append JSON best-effort, 单写者原则.
-        # 本期只 logger.info 记录 (无 CLI 消费者, 落盘 TODO):
-        record = CellRecord(
-            address=new_address,
-            alias=manifest.name,
-            pid=managed.meta.pid if hasattr(managed.meta, 'pid') else 0,
-            pgid=0,   # TODO: process group id from ManagedProcess
-            start_time=0.0,   # TODO: 从 managed.meta 取
-            project_id=self.project.id,
-            cwd=str(instance_cwd.absolute()),
-            spawner=self.this.address,
-        )
+        # 回填 runtime info 的 pid/pgid, 写 ledger.
+        launcher.runtime.pid = managed.meta.pid
+        if managed.meta.pgid is not None:
+            launcher.runtime.pgid = managed.meta.pgid
+        try:
+            launcher.runtime.write_to_runtime_dir(self._env.cell_runtimes_dir)
+        except Exception:
+            self._logger.exception(
+                "%s failed to write CellRuntimeInfo for %s",
+                self._log_prefix, new_address,
+            )
+
+        # -- 步骤 7: 组装 CellHandle 入 _handled_cells -- #
+        handle = CellHandle(runtime=launcher.runtime, process=managed)
+        self._handled_cells[new_address] = handle
         self._logger.info(
-            "%s run_cell append record: %s",
-            self._log_prefix, record.model_dump_json(exclude_defaults=True),
+            "%s run_node spawned: address=%s pid=%s cwd=%s",
+            self._log_prefix, new_address, managed.meta.pid, instance_cwd,
         )
-        # TODO: 落盘 workspace/runtime/cells/ledger.jsonl (§UU-6 咽喉唯一写者)
+        return handle
 
-        # -- 返回合成 SPAWNED 态 presence (WW-5 无 wait) -- #
-        # is_host 从 address 推断 (§ZZ-10 property), 子 cell 一律 worker
-        # (host 是顶层启动, 不经 run_cell → address='cell/...' → is_host=False).
-        # 后续 ready / crash / normal exit / 永不入网 通过 CellEvent → Signal
-        # 送 MossRuntime.mindflow 作 background hint (M7.5), 不在此处 wait.
-        return CellPresence(
-            address=new_address,
-            alias=manifest.name,
-            state=CellState.SPAWNED,
-            project_id=self.project.id,
-        )
+    def _on_cell_exit(
+            self,
+            address: CellAddress,
+    ) -> Callable[[ProcessMeta], None]:
+        """构造 on_exit callback: 从 _handled_cells → _dead_cells FIFO + 清 ledger 文件.
 
-    def _resolve_target(self, target: str) -> CellManifest:
+        闭包捕捉 address, 避免 self._handled_cells 在同 address 复用时误清新条目.
+        callback 在 asyncio loop 线程触发 (Subprocesses 承诺), 无需线程安全.
         """
-        解析 target → CellManifest (§YY run_cell docstring 步骤 1).
-
-        name (不含路径分隔符) → project.cells 遍历查 name;
-        path (含路径分隔符) → 按调用方 cwd 解析绝对化, 目录/CELL.md/脚本三种.
-        """
-        if '/' in target or '\\' in target or target.endswith('.py'):
-            # path 形式
-            path = Path(target).expanduser()
-            if not path.is_absolute():
-                path = (Path.cwd() / path).resolve()
-            if not path.exists():
-                raise FileNotFoundError(
-                    f"cell target path {target!r} does not exist "
-                    f"(resolved to {path}). Check the path or use a name in inventory."
+        def _callback(meta: ProcessMeta) -> None:
+            handle = self._handled_cells.pop(address, None)
+            if handle is not None:
+                self._dead_cells.append(handle)
+            # 清 ledger runtime file (§UU-6 单写者: 咽喉写, 咽喉在 exit 时删).
+            info_path = CellRuntimeInfo.filepath(
+                self._env.cell_runtimes_dir, address,
+            )
+            try:
+                if info_path.exists():
+                    info_path.unlink()
+            except Exception:
+                self._logger.exception(
+                    "%s failed to clean ledger file for %s",
+                    self._log_prefix, address,
                 )
-            if path.is_dir():
-                manifest = CellManifest.read_from_directory(path)
-                if manifest is None:
-                    raise LookupError(
-                        f"no {CellManifest.MANIFEST_FILENAME} found in {path}. "
-                        f"Either add CELL.md or point to a script file directly."
-                    )
-                return manifest
-            # 脚本文件 → 向上认亲 (WW-4)
-            return CellManifest.from_script(path)
+            self._logger.info(
+                "%s cell exited: address=%s exit_code=%s",
+                self._log_prefix, address, meta.exit_code,
+            )
+        return _callback
 
-        # name 形式: project.cells inventory 反查
-        cells = self.project.cells.list_cell_manifests(refresh=False)
-        # cells: dict[relative_path, CellManifest]. name 反查 = 遍历.
-        for _rel, manifest in cells.items():
-            if manifest.name == target:
-                return manifest
-        # 未找到 — 给近似名 (TT-12 错误信息即 prompt)
-        names = sorted({m.name for m in cells.values()})
-        raise LookupError(
-            f"cell name {target!r} not found in project inventory. "
-            f"Available: {names[:10]}{'...' if len(names) > 10 else ''}"
-        )
+    def handled_cells(self) -> dict[CellAddress, CellHandle]:
+        """§YY: 当前活着的 cell handle. 返回 dict 快照, 调用方不应 mutate."""
+        return dict(self._handled_cells)
+
+    def dead_cells(self) -> list[CellHandle]:
+        """§YY: 最近死亡的 cell handle FIFO 快照, 最新在末尾."""
+        return list(self._dead_cells)
+
+    def _kill_orphan_cell(self, info: CellRuntimeInfo) -> None:
+        """host 侧 clear_cell_runtimes 的 kill 回调 — 走 project.kill_cell 统一入口. 幂等."""
+        try:
+            self._project.kill_cell(info.address)
+        except Exception:
+            self._logger.exception(
+                "%s failed to kill orphan cell %s",
+                self._log_prefix, info.address,
+            )
+
+    def _resolve_target(self, target: Path) -> NodeManifest:
+        """
+        解析 target → NodeManifest (§YY run_node docstring 步骤 1).
+
+        Path 相对路径 → 相对 project.root 解析并绝对化;
+        指向 NODE.md → 直接读; 指向目录 → 找目录下的 NODE.md;
+        指向脚本 → NodeManifest.from_script 向上认亲 (§WW-4).
+        """
+        if not isinstance(target, Path):
+            target = Path(target)
+        path = target.expanduser()
+        if not path.is_absolute():
+            path = (Path(self._project.root) / path).resolve()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"node target path {target!r} does not exist "
+                f"(resolved to {path}). Check the path or provide a valid target."
+            )
+        if path.is_dir():
+            manifest = NodeManifest.read_from_directory(path)
+            if manifest is None:
+                raise LookupError(
+                    f"no {NodeManifest.MANIFEST_FILENAME} found in {path}. "
+                    f"Either add NODE.md or point to a script file directly."
+                )
+            return manifest
+        # 文件: NODE.md 直接读, 其他 (脚本) 向上认亲
+        if path.name == NodeManifest.MANIFEST_FILENAME:
+            return NodeManifest.read_from_file(path)
+        return NodeManifest.from_script(path)
 
     def _instance_runtime_dir(self, address: CellAddress) -> Path:
         """
         本次 spawn 的实例残迹目录 (§YY-1 第 6 条 uid 键).
 
-        {workspace}/runtime/cells/{normalize(address)}/ — 保 spawn cwd + 日志 + scratch.
-        与 home (稳定身份键) 分离.
+        {workspace}/runtime/cells/{normalize(address)}/ — 保 spawn cwd + scratch.
+        与 home (稳定身份键, ABC default = Path(self.this.home)) 分离.
         """
         return (
             self.workspace.runtime()
             .sub_storage('cells').sub_storage(normalize(address))
             .abspath()
         )
-
-    def _processes_snapshot(self) -> Iterable[dict]:
-        """占位: 返回 processes.executing() 里可能匹配 singleton 查重的 meta.
-
-        Subprocesses.executing 返回 dict[int, ProcessMeta]. ProcessMeta 上有
-        name 字段 (spawn 时 name=f'cell:{manifest.name}'), 用来 dedup.
-        """
-        for _idx, meta in self.processes.executing().items():
-            name = getattr(meta, 'name', '') or ''
-            cell_name = name[5:] if name.startswith('cell:') else ''
-            yield {
-                'cell_name': cell_name,
-                'pid': getattr(meta, 'pid', 0),
-            }
 
     # ==================================================================
     # 灶台 (§UU-2 / §YY: Subprocesses / JobSupervisor 从 IoC pull)
@@ -460,7 +491,11 @@ class MatrixImpl(Matrix):
 
     @property
     def jobs(self) -> JobSupervisor:
+        # todo: matrix 没有在第一次创建时持有它, 管理它, 治理它.
         return self._container.force_fetch(JobSupervisor)
+
+    def new_jobs(self) -> JobSupervisor:
+        return self.jobs.new()
 
     # ==================================================================
     # 门: session / workspace / home / container / logger
@@ -474,27 +509,12 @@ class MatrixImpl(Matrix):
 
     # workspace 由 Matrix ABC 提供 concrete: return self.project.workspace.
     # (blueprint/matrix.py L298-301) 无需 override.
-
-    @property
-    def home(self) -> Workspace:
-        """
-        本 cell 的持久领地 (§YY-1 第 6 条双目录判决 — 稳定身份键).
-
-        {workspace}/cells/{normalize(manifest.name)}/. name 而非 address —
-        cell 重启后必须找得回自己的记忆. 与实例残迹 (uid 键) 分离,
-        永不自动清 (systemd StateDirectory= 同构).
-
-        TODO: CELL.md 声明可覆写归宿, 本期未实施.
-        """
-        # 用 workspace 的 sub_storage 组合. LocalWorkspace 的 sub_storage 返回
-        # 一个 LocalWorkspace 子实例 — 但 Workspace ABC 不承诺 sub 是 Workspace,
-        # 而是 Storage. 这里我们要 Workspace, 所以直接构造 LocalWorkspace(path).
-        from ghoshell_moss.contracts.workspace import LocalWorkspace
-        home_path = (
-            self.workspace.root().abspath() / 'cells' / normalize(self._manifest.name)
-        )
-        home_path.mkdir(parents=True, exist_ok=True)
-        return LocalWorkspace(home_path)
+    #
+    # home 由 Matrix ABC 提供 default: Path(self.this.home). 不 override.
+    # (§YY-1 第 6 条 "双目录判决" 中的 "cells/{name}" 稳定身份键路径, 由
+    # build_node_from_manifest / build_host_cell 决定 Cell.home. 若未来需要
+    # 强制 {workspace}/cells/{name} 语义, 应改 build 函数, 不在 Matrix 层
+    # 硬 override — 保持 Path 类型契约, 不返 Workspace 破坏 ABC.)
 
     @property
     def container(self) -> IoCContainer:
@@ -517,24 +537,9 @@ class MatrixImpl(Matrix):
         if not self.is_running():
             raise RuntimeError(f'Matrix is not running (address={self.this.address})')
 
-    def is_host_running(self) -> bool:
-        """
-        §YY blueprint/matrix.py L397-404: cell 侧判断组网状态的 code as prompt.
-
-        本 cell 是 host → 直接返回 self.is_running().
-        本 cell 是 worker → 走 mesh() view 查有 is_host=True 的 presence.
-          注意: 这会迫使 owner 惰性创建 Watcher — 与 wait_present 同一合理耦合.
-        本期实现: worker 侧默认 True (未来补 host liveness 判定).
-        """
-        if self.this.is_host:
-            return self.is_running()
-        # TODO: worker 侧走 mesh view host filter. mesh() 是 async, is_host_running
-        # 是 sync — 本期先返回 True 兜底, 需求真出现时把签名改成 async 或引入
-        # 缓存 (Watcher 已有 view() 是 sync).
-        if self._watcher is not None:
-            hosts = [p for p in self._watcher.view().values() if p.is_host]
-            return len(hosts) > 0
-        return True   # mesh 未惰性化 → 兜底
+    # is_host_running 从 Matrix ABC 拿掉 (2026-07 review): sync 依赖惰性 mesh
+    # 是设计瑕疵 (worker 未 mesh() 就无从判). 消费者需要判组网状态时走
+    # `(await matrix.mesh()).has_host()` — host 在 network 级唯一, 不需 project_id 过滤.
 
     # ==================================================================
     # 生命周期基础 (承 host/matrix.py)
@@ -690,6 +695,24 @@ class MatrixImpl(Matrix):
 
         # -- sync 阶段 -- #
         self._exit_stack.__enter__()
+
+        # 本 cell 生命周期先落地 (§UU-6 单写者原则):
+        #   1. singleton → workspace.lock() 争抢 (host 一律 singleton)
+        #   2. host → 启动时 clear_cell_runtimes 清孤儿
+        #   3. 写 self CellRuntimeInfo 到 env.cell_runtimes_dir (让 CLI/其他 cell 能看见)
+        #   4. 反卷: 删自己的 runtime file, host 再清一遍孤儿
+        # 位置在 container 之前 — 装配失败时 exit_stack 会反卷释放锁/删文件.
+        self._this_runtime_info = CellRuntimeInfo(
+            address=self._presence_data.address,
+            cell=self._presence_data,
+        )
+        enter_cell_lifecycle(
+            self._exit_stack,
+            self._env,
+            self._this_runtime_info,
+            kill=self._kill_orphan_cell,
+        )
+
         self._container = self._prepare_container()
         self._exit_stack.enter_context(
             self._container_lifecycle_ctx()
@@ -787,13 +810,16 @@ class MatrixImpl(Matrix):
             self._container.shutdown()
 
     async def _cancel_channel_provider_tasks(self) -> None:
-        tasks = list(self._channel_provider_tasks)
-        self._channel_provider_tasks.clear()
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        if tasks:
-            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        task = self._channel_provider_task
+        self._channel_provider_task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def _cancel_task_group(self) -> None:
         tasks = list(self._task_group)

@@ -19,7 +19,8 @@ from typing import Iterable
 from typing_extensions import Self
 
 from ghoshell_container import Provider, IoCContainer
-from ghoshell_moss.core.blueprint.cell import CellPresence, Presence, Watcher
+from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellMesh
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import NetworkMetadata
 
 import logging
@@ -61,10 +62,10 @@ class MatrixNetworkAdapter(ABC):
     @abstractmethod
     def new_presence(
             self,
-            presence_data: CellPresence,
+            presence_data: Cell,
             *,
             logger: logging.Logger,
-    ) -> Presence:
+    ) -> CellPresence:
         """
         构造本 cell 的入网侧对象.
 
@@ -77,15 +78,17 @@ class MatrixNetworkAdapter(ABC):
     def new_watcher(
             self,
             *,
-            self_project_id: str,
+            env: Environment,
             logger: logging.Logger,
-    ) -> Watcher:
+    ) -> CellMesh:
         """
         构造网络观察侧对象.
 
         返回未 enter 的 Watcher — matrix.mesh() 惰性调用, 首次调用时把它加进
         exit stack. opt-in by usage (§UU-7): 纯 worker cell 不调 mesh() 即不
         创建, 网络观察成本 O(N) 只对必要消费者付出.
+
+        :param env: 环境载体, 用于 cell.is_local(env) 判定 (§UU-7 local/foreign 分档).
         """
         ...
 

@@ -18,7 +18,7 @@ from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime, GhostRuntim
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
-from ghoshell_moss.core.blueprint.cell import CellManifest, build_host_presence
+from ghoshell_moss.core.blueprint.cell import NodeManifest, build_host_cell
 from ghoshell_moss.contracts.workspace import LocalWorkspace
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
@@ -30,11 +30,17 @@ from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
 
 __all__ = ['Host']
 
-_host_instance: 'Host | None' = None
-
 
 class Host(MossHost):
-    """MOSS 顶层入口的 concrete."""
+    """MOSS 顶层入口的 concrete.
+
+    显式构造姿态 (§UU-1 seal 判决 + 用户 2026-07 明示"host 不走 discover 而是走正常 init"):
+    - 入口点 (CLI callback / moss-as-mcp / moss-repl / tui) 负责构造 Environment(**cli_args)
+      + seal(), 然后 Host(env=env).
+    - 库直接使用 (Host()) 走 Environment.discover(bootstrap=True), 构造裸 env + seal.
+    - 无 module 级单例, 无 Host.discover classmethod — 每次 Host(env=env) 是新实例.
+      需要"全局唯一 host"语义时, 由调用方 (通常是 MossRuntime 或 GhostRuntime) 自持引用.
+    """
 
     def __init__(
             self,
@@ -42,9 +48,7 @@ class Host(MossHost):
             env: Environment | None = None,
     ):
         # §UU-1 seal 定案: Environment 无 set_*, 参数一次性塞 __init__, seal 一次性事实.
-        # 入口点 (CLI callback / moss-as-mcp / moss-repl) 负责构造 + seal, Host 只做消费.
-        # 库直接使用 (Host()) 走 Environment.discover(bootstrap=True), 构造裸 env + seal.
-        # Host 不承担 CLI 参数收集责任 (那是入口的活), 也不重复 seal (§UU-1 一次性).
+        # 入口点负责构造 + seal, Host 只做消费. 不重复 seal (§UU-1 一次性).
         if env is None:
             env = Environment.discover()
         if not env.is_sealed:
@@ -66,7 +70,7 @@ class Host(MossHost):
         # 这里额外持一份供 MossRuntimeImpl.__init__ 使用).
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        # Matrix concrete 单例 — 首次 matrix() 调用时构造, 后续复用.
+        # Matrix concrete — 首次 matrix() 调用时构造, 后续复用 (per-Host 单例).
         self._matrix: MatrixImpl | None = None
 
     def name(self) -> str:
@@ -74,20 +78,6 @@ class Host(MossHost):
 
     def description(self) -> str:
         return self._env.moss_meta.description
-
-    @classmethod
-    def discover(cls, env: Environment | None = None) -> Self:
-        global _host_instance
-        if _host_instance is None:
-            _host_instance = Host(env=env)
-        return _host_instance
-
-    def reboot(self) -> Self:
-        global _host_instance
-        _host_instance = None
-        new_host = Host(env=self._env)
-        _host_instance = new_host
-        return new_host
 
     @property
     def env(self) -> Environment:
@@ -127,12 +117,12 @@ class Host(MossHost):
 
         # host 的 "manifest" 用 moss_meta 承接身份 (§ZZ-4 host 独立约定, 不走 CELL.md).
         # name 是 home 稳定身份键 (§YY-1 第 6 条), 用 moss_meta.name 作 host 身份锚.
-        manifest = CellManifest(
+        manifest = NodeManifest(
             name=self._env.moss_meta.name or 'host',
             description=self._env.moss_meta.description or '',
             installed=True,
         )
-        presence = build_host_presence(self._env)
+        presence = build_host_cell(self._env)
         adapter = adapter_cls.from_metadata(network, is_host=True)
 
         self._matrix = MatrixImpl(

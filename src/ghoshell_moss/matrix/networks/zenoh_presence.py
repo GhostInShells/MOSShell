@@ -1,5 +1,5 @@
 """
-ZenohCellPresence — 单 cell 入网侧实现 (Presence ABC).
+ZenohCellPresence — 单 cell 入网侧实现 (CellPresence ABC).
 
 一个 Presence 实例治理一个 cell 的入网 zenoh 资源 (key 表见 _utils.py):
   cell_key                                → liveness token + queryable
@@ -11,18 +11,29 @@ Presence 的承诺: 让本 cell 在网络上可被发现、可被查询、可提
 
 announce payload 只包含膜类型标签 (Cell.providing), 不含膜具体内容 —
 channel meta 靠 duplex hub.proxy + refresh_metas 同步 (廉价).
+
+生命周期:
+  __aenter__ 触发首次 announce (declare queryable / liveness / event publisher).
+  __aexit__ 触发 revoke (undeclare 全部资源, 幂等).
+  运行时 payload 变化 (如 providing 添加 'channel') 通过 self._cell_presence.update()
+  就地修改, queryable 回复函数每次 dump 现值; publish_event 广播 CellEvent 提示
+  订阅侧 refetch.
 """
 # -- §UU-7: 入网侧成本 O(1) 被动, 每个 cell 永远开.
 #    debug 问责单一性: "别人看不见我" → 审讯本对象.
 # -- §UU-8: accept/deny 归 Mesh, 不在这里. 本对象只管入网.
+# -- Provider 归属: hub.provider(address) 返 ChannelProvider, provide_channel
+#    只做副作用 (providing += 'channel' + publish event) + 返 provider.
+#    provider.arun_until_closed 的 task 归 Matrix 起 (单根约束在 Matrix 侧).
 # -- check_unique 不实现 (TT-2 已作废): 一致性问题让位给单写者原则 (run_node 咽喉
 #    domain 档查重, host 档 flock). 网络层若发现冲突不 raise, 交由上层治理.
 
 import asyncio
-import contextlib
 from dataclasses import dataclass
 
 import zenoh
+from typing_extensions import Self
+
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
@@ -63,9 +74,10 @@ class ZenohCellPresence(CellPresence):
     """
     基于 zenoh 的单 cell 入网实现.
 
-    构造时传入初始 CellPresence 与 hub. __aenter__ 触发首次 announce,
-    __aexit__ 触发 revoke. announce() 可在运行中再次调用更新 payload
-    (address 不变则复用资源, 只 touch queryable; address 变了先 revoke 再重建).
+    构造时传入初始 Cell 与 hub. __aenter__ 触发首次 announce,
+    __aexit__ 触发 revoke. 运行时 payload 变化通过 self._cell_presence.update()
+    就地修改, queryable 每次回复读现值; 通过 publish_event 广播 CellEvent
+    提示订阅侧 refetch.
 
     hub 由外部传入 (matrix 层拥有, 与 ZenohCellMesh 共享同一 hub) —
     避免每 cell 建独立 hub 的 O(N) 资源开销.
@@ -95,55 +107,45 @@ class ZenohCellPresence(CellPresence):
             scope, presence.address,
         )
         self._handles: _ZenohHandles | None = None
-        self._provide_channel_task: asyncio.Task | None = None
 
-    # -- ABC 实现 ------------------------------------------------------
+    # -- CellPresence ABC 实现 -----------------------------------------
 
     @property
     def this(self) -> Cell:
         return self._cell_presence
 
-    async def announce(self) -> None:
-        self._cell_presence.update()
+    async def provide_channel(self, channel: Channel) -> ChannelProvider:
+        """
+        声明本 cell 提供 channel 能力.
 
-        # 首次 announce 或 address 未变: 装好资源即返回.
+        1. 从 hub 拿 provider (hub 内部按 address dedup, 二次 provide raise).
+        2. 副作用: providing += 'channel', update 时间戳, publish CellEvent
+           提示订阅侧 refetch.
+        3. 返回 provider — 不起 task. task 归调用方 (MatrixImpl 单根约束).
+
+        :raise RuntimeError: 尚未 __aenter__ (无 announce 上下文).
+        :raise RuntimeError: 同 address 已在本 hub 注册 provider (hub dedup).
+        """
         if self._handles is None:
-            await self._install_handles()
+            raise RuntimeError(
+                f"presence for {self._cell_presence.address} not entered; "
+                f"call `async with presence: ...` before provide_channel"
+            )
 
-    async def revoke(self) -> None:
-        if self._handles is None:
-            return
-        handles = self._handles
-        self._handles = None
-        # close 是同步 zenoh 调用, 放到 to_thread 避免阻塞 event loop.
-        await asyncio.to_thread(handles.close, self._logger)
-
-    async def provide_channel(self, channel: Channel) -> tuple[ChannelProvider, asyncio.Task[None]]:
-        if self._provide_channel_task is not None and not self._provide_channel_task.done():
-            self._provide_channel_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._provide_channel_task
-        self._provide_channel_task = None
-
-        # run provider background.
         provider = self._hub.provider(self._cell_presence.address)
-        self._provide_channel_task = asyncio.create_task(provider.arun_until_closed(channel))
 
+        # 副作用: 更新 payload, 广播事件.
         if 'channel' not in self._cell_presence.providing:
             self._cell_presence.providing.append('channel')
-            self._cell_presence.update()
-        # publish 是尽力而为, 首次 provide 时若尚未 announce 则跳过 event 广播.
-        if self._handles is not None:
-            try:
-                await self.publish_event(
-                    'channel added', updated=True,
-                )
-            except Exception:
-                self._logger.exception(
-                    "publish 'channel added' event failed for %s",
-                    self._cell_presence.address,
-                )
-        return provider, self._provide_channel_task
+        self._cell_presence.update()
+        try:
+            await self.publish_event('channel added', updated=True)
+        except Exception:
+            self._logger.exception(
+                "publish 'channel added' event failed for %s",
+                self._cell_presence.address,
+            )
+        return provider
 
     async def publish_event(
             self,
@@ -152,8 +154,9 @@ class ZenohCellPresence(CellPresence):
             updated: bool = True,
     ) -> None:
         if self._handles is None:
-            raise LookupError(
-                f"presence for {self._cell_presence.address} not announced yet"
+            raise RuntimeError(
+                f"presence for {self._cell_presence.address} not entered; "
+                f"call `async with presence: ...` before publish_event"
             )
         event = CellEvent(
             address=self._cell_presence.address,
@@ -169,6 +172,22 @@ class ZenohCellPresence(CellPresence):
                 self._cell_presence.address, content,
             )
 
+    async def __aenter__(self) -> Self:
+        if self._handles is not None:
+            # 幂等: 已 announce 直接返回, 不重装资源.
+            return self
+        self._cell_presence.update()
+        await self._install_handles()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._handles is None:
+            return
+        handles = self._handles
+        self._handles = None
+        # close 是同步 zenoh 调用, 放到 to_thread 避免阻塞 event loop.
+        await asyncio.to_thread(handles.close, self._logger)
+
     # -- 内部 ---------------------------------------------------------
 
     async def _install_handles(self) -> None:
@@ -178,7 +197,8 @@ class ZenohCellPresence(CellPresence):
 
         def _on_query(query: zenoh.Query):
             # 每次远端 query 时 dump 当前 presence 快照 —
-            # self._cell_presence 在 announce/provide 中被 in-place 更新, dump 是原子的.
+            # self._cell_presence 在 provide_channel 中被 in-place 更新,
+            # dump 是原子的.
             try:
                 payload = self._cell_presence.model_dump_json().encode('utf-8')
                 query.reply(query.key_expr, payload)

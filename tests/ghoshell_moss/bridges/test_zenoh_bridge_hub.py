@@ -17,7 +17,7 @@ async def test_hub_provider_proxy_connect_and_execute():
     try:
         address = "test/hub_node"
         provider = hub.provider(address)
-        proxy = hub.proxy(address, name="hub_proxy")
+        proxy = hub.proxy(address, name_hint="hub_proxy")
 
         chan = PyChannel(name="provider")
 
@@ -46,7 +46,7 @@ async def test_hub_discover_provider_liveness():
     try:
         address = "test/hub_discover"
         provider = hub.provider(address)
-        proxy = hub.proxy(address, name="hub_discover_proxy")
+        proxy = hub.proxy(address, name_hint="hub_discover_proxy")
 
         chan = PyChannel(name="provider")
 
@@ -104,7 +104,7 @@ async def test_hub_context_manager_liveness_and_explicit_proxy():
                 )
 
                 # explicit proxy build works and can connect to the provider.
-                proxy = hub.proxy(address, name="explicit_proxy")
+                proxy = hub.proxy(address, name_hint="explicit_proxy")
                 assert hub.proxies.get(address) is proxy
 
                 async with proxy.bootstrap() as runtime:

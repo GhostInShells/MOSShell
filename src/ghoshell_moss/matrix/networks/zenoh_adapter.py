@@ -22,6 +22,7 @@ from ghoshell_container import IoCContainer, Provider, provide
 
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellMesh
+from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import NetworkMetadata
 from ghoshell_moss.matrix.adapter import MatrixNetworkAdapter, register_adapter
 from ghoshell_moss.matrix.networks._utils import CellsKeyspace
@@ -175,7 +176,7 @@ class ZenohAdapter(MatrixNetworkAdapter):
     def new_watcher(
             self,
             *,
-            self_project_id: str,
+            env: Environment,
             logger: logging.Logger,
     ) -> CellMesh:
         if not self._started or self._session is None or self._hub is None:
@@ -188,7 +189,7 @@ class ZenohAdapter(MatrixNetworkAdapter):
             keyspace=self._cells_keyspace,
             scope=self._scope,
             hub=self._hub,
-            self_project_id=self_project_id or None,
+            env=env,
         )
 
     # ---- IoC hooks (§ZZ-5) ------------------------------------------------
