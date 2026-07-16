@@ -1,15 +1,17 @@
+import signal
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from ghoshell_moss.contracts import Workspace
-from ghoshell_moss.core.blueprint.cell import CellRegistry
+from ghoshell_moss.core.blueprint.cell import CellRuntimeInfo, NodeManager
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.project import (
     Project, HostMode, Manifest, MatrixManifest, HostModeMeta, HOST_MODE_FILE,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.project.cell_registry import ProjectCellRegistry
+from ghoshell_moss.core.subprocesses._utils import killpg
+from ghoshell_moss.project.node_manager import ProjectNodeManager
 from ghoshell_moss.project.local_host_mode import LocalHostMode
 from ghoshell_moss.project.manifests.ghosts import search_ghost_manifests
 from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
@@ -24,7 +26,7 @@ class LocalProject(Project):
         self._env = env
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        self._cells: CellRegistry | None = None
+        self._cells: NodeManager | None = None
         self._ghosts_cache: dict[str, tuple[Path, GhostMeta]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
         self._matrix_manifests: MatrixManifest | None = None
@@ -116,15 +118,38 @@ class LocalProject(Project):
     # -- cells -- #
 
     @property
-    def cells(self) -> CellRegistry:
+    def nodes(self) -> NodeManager:
         if self._cells is None:
             try:
                 mode = self.current_mode()
                 cell_dirs = mode.cells_discover_paths() if mode else self._env.cell_dirs()
             except Exception:
                 cell_dirs = self._env.cell_dirs()
-            self._cells = ProjectCellRegistry(self._env, cell_dirs=cell_dirs)
+            self._cells = ProjectNodeManager(self._env, cell_dirs=cell_dirs)
         return self._cells
+
+    def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
+        # 直接读文件系统, 不做活性核对 — 活性判断由调用方按 info.is_alive() 自负.
+        # 目录不存在时 (从未 spawn 过 cell) 返回空迭代, 不引 FileNotFoundError.
+        runtime_dir = self._env.cell_runtimes_dir
+        if not runtime_dir.is_dir():
+            return
+        yield from CellRuntimeInfo.iter_runtime_info(runtime_dir)
+
+    def kill_cell(self, address: str) -> bool:
+        # 孤儿清理: 尝试对本 project ledger 里的 cell 进程发 signal + 清账本.
+        # ledger 里没有 = 不属本地治理域, 无操作 (契约 False).
+        # ledger 里有 = 属本地, 无论进程还活着与否都要清账本 (契约 True).
+        runtime_dir = self._env.cell_runtimes_dir
+        info = CellRuntimeInfo.read_from_runtime_dir(runtime_dir, address)
+        if info is None:
+            return False
+        if info.is_alive() and info.pgid:
+            # 对进程组发 SIGTERM — 孤儿场景没有 owner 走优雅退出, SIGTERM 一发即杀.
+            # killpg 内部吞 ProcessLookupError, 我们不 care 是否真正落地.
+            killpg(info.pgid, signal.SIGTERM)
+        info.delete_invalid(runtime_dir)
+        return True
 
     # -- matrix manifests -- #
 

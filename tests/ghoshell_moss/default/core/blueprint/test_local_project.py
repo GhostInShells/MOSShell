@@ -110,9 +110,9 @@ class TestLocalProjectCells:
     def test_cells_returns_registry(self, tmp_path):
         ws, env = _minimal_project(tmp_path)
         project = LocalProject(env)
-        cells = project.cells
+        cells = project.nodes
         assert cells is not None
-        cells2 = project.cells
+        cells2 = project.nodes
         assert cells is cells2
 
 

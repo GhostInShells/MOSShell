@@ -54,9 +54,10 @@ __all__ = [
 
     'CellName',
     'CellNamePattern',
-    '_ProjectRelativePath',
     'AbsolutePath',
-    '_MatchPattern',
+    'ProjectRelativePath',
+    'MatchPattern',
+    'NodeLauncher',
 ]
 
 CellRole = Literal['host', 'node']
@@ -75,9 +76,9 @@ CellAddress = str
 cell 在网络上的唯一地址: address = CellRole / unique_name / uid
 """
 
-_ProjectRelativePath = str
+ProjectRelativePath = str
 AbsolutePath = str
-_MatchPattern = str
+MatchPattern = str
 """通配符模式: group/name, group/*, *, */*, */name"""
 
 CellName = str
@@ -111,7 +112,7 @@ class Cell(BaseModel):
     )
     category: Literal['ghost', 'shell', 'script'] | str = Field(
         default='',
-        pattern=CellNamePattern,
+        pattern=r"^[a-zA-Z0-9_]*$",
         description='cell 的分类.'
     )
     description: str = Field(
@@ -221,7 +222,7 @@ class NodeManifest(BaseModel):
     category: str = Field(
         default='',
         description="纯分类标签 (如 sensors / bodies / scripts / tools), 自由命名, 不驱动任何机制.",
-        pattern=CellNamePattern,
+        pattern=r"^[a-zA-Z0-9_]*$",
     )
     singleton: bool = Field(
         default=True,
@@ -567,15 +568,21 @@ def build_node_from_manifest(
     # node uid 每次 spawn 独立生成, 保证 address 全局唯一.
     # 不用 env.session_id: 同一父进程连续 spawn 多个 node 时 session_id 相同会撞.
     uid = unique_id()
+    cell_name = name or manifest.name
     if manifest.file:
         # 以发现 node 声明文件的位置作为 cell 的 workspace.
         home = Path(manifest.file).parent.resolve()
     else:
         # 在 workspace 内部为 cell 创建一个临时的 workspace.
-        home = env.cell_runtimes_dir.joinpath(manifest.fullname).resolve()
+        # fullname 表达与 Cell.fullname property 同源 — 二者变则同变.
+        if manifest.category:
+            fullname = '_'.join([manifest.category, normalize(cell_name)])
+        else:
+            fullname = normalize(cell_name)
+        home = env.cell_runtimes_dir.joinpath(fullname).resolve()
     return Cell(
         role=NODE_ROLE,
-        name=name or manifest.name,
+        name=cell_name,
         category=manifest.category,
         uid=uid,
         singleton=manifest.singleton,
@@ -842,9 +849,9 @@ class NodeManager(ABC):
             *,
             paths: list[Path] | None = None,
             installed: bool | None = None,
-            include: list[_MatchPattern] | None = None,
-            exclude: list[_MatchPattern] | None = None,
-    ) -> dict[_ProjectRelativePath, NodeManifest]:
+            include: list[MatchPattern] | None = None,
+            exclude: list[MatchPattern] | None = None,
+    ) -> dict[ProjectRelativePath, NodeManifest]:
         """
         列出领地内发现的全部 Cell 声明.
         :param refresh: 重新扫描文件系统.
@@ -866,11 +873,11 @@ class NodeManager(ABC):
 
     @staticmethod
     def match_nodes(
-            cells: dict[_ProjectRelativePath, NodeManifest],
-            include: list[_MatchPattern] | None = None,
+            cells: dict[ProjectRelativePath, NodeManifest],
+            include: list[MatchPattern] | None = None,
             *,
-            exclude: list[_MatchPattern] | None = None,
-    ) -> Iterable[tuple[_ProjectRelativePath, NodeManifest]]:
+            exclude: list[MatchPattern] | None = None,
+    ) -> Iterable[tuple[ProjectRelativePath, NodeManifest]]:
         """基于 fnmatch 通配符筛选 Cell. include 为空时返回全部 (仅受 exclude 约束)."""
         include_patterns = set(include) if include else set()
         exclude_patterns = set(exclude or [])
