@@ -11,7 +11,7 @@ priority: P0
 status: in-progress
 status_note: vendor + contracts + core + 45 tests all green, ready for channel assembly
 title: File Editor Contract — vendor openhands-aci 为薄契约，与 Desktop 平级
-updated: '2026-07-14'
+updated: '2026-07-16'
 ---
 
 # File Editor Contract
@@ -61,7 +61,7 @@ subprocesses/job_supervisor 的 precedent 已定.
 | 契约 | 语义 | 状态 |
 |---|---|---|
 | `Grounds` / `Ground` (contracts/desktop.py) | 钉地址 + 对账 + 帧渲染 (认知面) | 已落地, 87 单测 |
-| `FileEditor` (contracts/file_editor.py, 本 feature) | view/create/str_replace/insert/undo_edit (写路径 + 结构化查看) | 待落地 |
+| `FileEditor` (contracts/file_editor.py, 本 feature) | view/create/str_replace/insert/undo_edit (写路径 + 结构化查看) | v1 已落地 (contracts + core + 45 tests) |
 | `Subprocesses` / `JobSupervisor` (contracts/subprocesses.py, job_supervisor.py) | 起进程 / 后台 fold | 已落地 |
 
 **channel 层可合体, contract 层不合体**: 新 desktop channel 完全可以同时消费
@@ -206,8 +206,8 @@ handler 装配 (composition, 不是 contract 义务).
 - [x] `core/file_editor/_default.py` (DefaultFileEditor + 异常转译)
 - [x] `core/file_editor/__init__.py` (公开 API)
 - [x] `tests/ghoshell_moss/core/file_editor/test_file_editor.py` (45 测试, 全绿)
-- [x] `ghost-filesystem-desktop/FEATURE.md` "与关联基建的交叉" 表追加一行指向
-  本 feature
+- [ ] `ghost-filesystem-desktop/FEATURE.md` "与关联基建的交叉" 表追加一行指向
+  本 feature (skip — 文件被 parallel incarnation 同时修改, 等下次 desktop session 补)
 - [x] `architecture.py` 加 import 索引 (`file_editor_impl`)
 
 ## v1 落地追加决策 (2026-07-14, Claude Opus 4.7)
@@ -291,5 +291,56 @@ filesystem-desktop` 那边推进, 本 feature v1 结束点为**契约 + 实现 +
 | 契约文件 | contracts/desktop.py | contracts/file_editor.py |
 | Core 目录 | core/desktop/ | core/file_editor/ |
 | Channel 装配 | 未来 desktop channel (K33) | 复用 desktop channel (K1 A 案) |
-| 共享空间边界 | root + PathOutsideRootError | 复用 |
-| 状态 | in-progress | draft |
+| 共享空间边界 | root + PathOutsideRootError (Grounds 管辖) | 不共享 — K4 落地改主意, 两个 contract 彻底解耦 |
+| 状态 | in-progress | in-progress (v1 已交付, 装配+联动 未完成) |
+
+---
+
+## 给下一个模型实例
+
+这份 FEATURE.md 是 2026-07-13 立项、07-13/14 Claude Opus 4.7 (1M) 完成 v1
+落地时的完整认知记录. 以下是最小路径还原当前状态:
+
+**核心事实**:
+
+- v1 已交付: contracts + core + 45 单测. **不在 scope**: channel 装配, pin
+  联动, tmp 大文件策略 (这些等具体需求或 desktop channel 落地时一起做).
+- 为什么一个 file editor 要单独 feature: K1 有判据 — FileEditor 与 Ground
+  的最小依赖不同, 塞一起就是老 Desktop 融合病灶第三次复发.
+- 为什么 vendor 而不是 pip install: K2 + K9 — upstream ~30 依赖, 净依赖归零.
+
+**你要做的 (拿到 file-editor-contract 后要看或改时)**:
+
+```
+# 1. 确认当前状态
+moss features status file-editor-contract
+python -m pytest tests/ghoshell_moss/core/file_editor/ -q  # 应 45 全绿
+
+# 2. 读契约 (3 分钟掌握全貌)
+moss codex get-interface ghoshell_moss.contracts.file_editor
+
+# 3. 读 vendor 差异 (30 秒)
+cat src/ghoshell_moss/core/file_editor/_openhands/UPSTREAM.md
+
+# 4. 上游升级: UPSTREAM.md 记录了 patch 清单, 换 commit 后按列表重 apply
+```
+
+**已知未决 (等你或下个 incarnation 推进)**:
+
+1. Channel 装配 — 与 desktop channel 合体 (A 案) 还是独立 (B 案)?
+   人类倾向 A. 需等 desktop channel (K33) 落地.
+2. Pin 联动 — 编辑命中已 pin 地址时触发 stale 标记. Channel 层
+   composition, 不进契约. 设计和单测都还没.
+3. tmp / 大文件 — 当前 10 MB cap 直接抛 FileValidationError. 是否要
+   做 truncation + cache-on-disk 等, 暂无痛感, 不加.
+
+**相关的 memory 文件**:
+
+- `feedback_io_contract_sync.md` — K3 依赖的这个原则 (IO 契约默认 sync)
+- 项目根 `MEMORY.md` 索引有写
+
+**相关 feature (平级, 非依赖)**:
+
+- `ghost-filesystem-desktop` — 认知面 (pin/update/frame). 两个 feature
+  contract 层解耦, channel 层未来合体. desktop FEATURE.md 交叉表应
+  有一行指向本 feature (这次 session 跳过了, human 或另一个化身补).
