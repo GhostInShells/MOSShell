@@ -9,6 +9,7 @@ from pathlib import Path
 from importlib import resources
 
 from ghoshell_moss.message import unique_id
+from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace
 from pydantic import BaseModel, Field
 import contextlib
 import frontmatter
@@ -270,6 +271,7 @@ class Environment:
         if not workspace or not workspace.exists():
             raise EnvironmentError(f"Expected workspace `{workspace}` not exists")
         self._workspace_path = workspace
+        self._workspace = LocalWorkspace(workspace)
         if project:
             project_dir = project
         else:
@@ -407,12 +409,19 @@ class Environment:
         return self._project_id
 
     @property
+    def project_name(self) -> str:
+        return self.moss_meta.name
+
+    @property
     def network(self) -> str:
         return self._network
 
     @property
     def this_cell_address(self) -> str:
         return self._cell_address
+
+    def set_this_cell_address(self, address: str) -> None:
+        self._cell_address = address
 
     @property
     def parent_cell_address(self) -> str:
@@ -509,6 +518,10 @@ class Environment:
         return self._workspace_path
 
     @property
+    def workspace(self) -> Workspace:
+        return self._workspace
+
+    @property
     def project_path(self) -> Path:
         """
         按约定, project 地址永远是 workspace 的父目录.
@@ -525,14 +538,17 @@ class Environment:
 
     @property
     def default_project_cells_dir(self) -> Path:
+        """project 默认的 cells 发现路径. """
         return self.project_path.joinpath(DEFAULT_CELLS_DIR)
 
     @property
     def default_workspace_cells_dir(self) -> Path:
+        """workspace 内部默认的 cells 发现路径. """
         return self.workspace_path.joinpath(DEFAULT_CELLS_DIR)
 
     @property
     def cell_runtimes_dir(self) -> Path:
+        """workspace 用来管理 cell 运行时状态的根目录. """
         return self.workspace_path.joinpath(WORKSPACE_CELL_RUNTIME_DIR)
 
     @classmethod

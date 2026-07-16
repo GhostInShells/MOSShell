@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Iterable, Any, Generic, TypeVar, ClassVar
+from typing import Iterable, Any, Generic, TypeVar, ClassVar, Iterator
 from typing_extensions import Self
 from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
@@ -8,7 +8,7 @@ from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_CELLS_DIR, MOSS_NAME_PATTERN,
     ENV_WORKSPACE_DIR_KEY,
 )
-from ghoshell_moss.core.blueprint.cell import CellRegistry
+from ghoshell_moss.core.blueprint.cell import NodeManager, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
@@ -474,10 +474,11 @@ class Project(ABC):
     Project 的一句话承诺: 指认一片领地, 并提供领地内治理真相的入口.
     成员几乎都指向 workspace, 因为 workspace 正是治理真相的存放地 —
     project 目录本身的内容对 MOSS 是动态可变的 (ghost 自管理的领地),
-    目录 taxonomy 永不进内核 API (TT-7).
+    目录 category 永不进内核 API (TT-7).
     """
+
     # -- TT-7 保名判决: "Project" 不是名字被占, 而是治理域句柄的正名.
-    #    保名条件 = 契约按治理域句柄语义改写 (本 docstring) + taxonomy 禁入.
+    #    保名条件 = 契约按治理域句柄语义改写 (本 docstring) + category 禁入.
     # -- TT-9 三目录松耦合: workspace = 治理真相存放地; project = 被治理领地
     #    (薄句柄, 挂 Matrix 一级); cell 目录 = 代码出处 (治理归属仍是启动方).
     #    cwd 只是发现起点, 不承载语义.
@@ -660,10 +661,36 @@ class Project(ABC):
 
     @property
     @abstractmethod
-    def cells(self) -> CellRegistry:
+    def nodes(self) -> NodeManager:
         """
-        默认的 cells 发现机制.
-        根据 env 的 project & workspace cells 约定获取.
+        治理域里可以拉起的 node 声明发现器 (基于 NODE.md 扫描).
+
+        与 cell_runtimes() 的分工:
+        - nodes: 静态声明 (领地里"可以拉起什么", 只回答 node — host 不走声明).
+        - cell_runtimes: 运行时事实 (领地里"已经拉起了什么", host + node 都在).
+        """
+        ...
+
+    @abstractmethod
+    def kill_cell(self, address: str) -> bool:
+        """
+        孤儿清理: 尝试终止本 project 治理域内已死或残留的 cell 进程.
+
+        典型场景是父进程崩溃后 ledger 残留, cell_runtimes() 迭代时按需清理.
+        active cell 的正常停止不走这里, 走 owner 的 Subprocesses.
+
+        :return: True = address 属于本 project 且 kill 尝试完成 (进程已死或成功 killpg);
+                 False = address 不在本地 ledger, 无治理权限, 无操作.
+        """
+        ...
+
+    @abstractmethod
+    def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
+        """
+        遍历本 project 治理域内已拉起的所有 cell (host + node) 的 runtime 信息.
+
+        直接读文件系统 (env.cell_runtimes_dir 下的 json), 不做活性核对;
+        活性判断由调用方自负 (info.is_alive()).
         """
         ...
 

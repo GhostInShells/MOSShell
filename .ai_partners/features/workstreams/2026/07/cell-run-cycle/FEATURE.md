@@ -559,3 +559,30 @@ status=completed 的 status_note 写 "abstract layer closed (§ZZ-10)"
 - DuplicatedError 触发点 (run_cell 咽喉 vs CellRuntimeInfo.write)
 - ensure_cell_lifecycle 集成到 matrix_impl.__aenter__
 - stubs/cell → stubs/node 迁移
+
+## 2026-07-16 Blueprint 再审收敛 (claude-opus-4-7 + 人类)
+
+上一次 cell.py 重写 review 后, 人类继续调整 cell / matrix / project / environment
+blueprint 至第二稳定态. 本节只留状态锚, 判决与语义以代码为准 (代码自解释).
+
+**已收敛的抽象** (blueprint 层, 无 silent TODO):
+
+- `Cell` / `NodeManifest` — 三段 address + singleton 开发者视角 docstring
+- `CellRuntimeInfo` — locker_name 单一出口 (含 debug 语义 docstring)
+- `CellPresence` / `CellMesh` — 分家; accept/reject 与在线状态正交
+- `NodeManager` (原 CellRegistry) — node 声明层 / cell 运行时的命名分家
+- `Matrix.run_node` (原 run_cell) — target: Path, 相对 project.root
+- `CellHandle` — runtime + process 组合, wait/stop 是 process 侧转发糖
+- `Matrix.handled_cells()` — 所有权真相, 与 mesh 网络真相对偶
+- `Matrix.home` — 从 abstract 降为 default `Path(self.this.home)`
+- `Project.kill_cell` / `cell_runtimes` — 孤儿清理入口, 非 CLI 发明逻辑
+- module-level `enter_cell_lifecycle` / `discover_this_node` / `clear_cell_runtimes`
+  作 code as prompt 参考实现
+
+**未来方向** (未落, 只留锚):
+
+- Matrix channel: 分 cells / shell / jobs 三个 sub-channel, 暴露六动词给 ghost
+  (M8 cells channel 的自然拓展)
+
+**状态**: blueprint 层第二稳定态, 实现层 (factory / matrix_impl / host / cli /
+tests) 由下一批化身按此推进. matrix-cell-governance status_note 待实现层落地后更新.
