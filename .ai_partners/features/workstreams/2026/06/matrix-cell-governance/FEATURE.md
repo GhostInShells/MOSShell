@@ -9,12 +9,11 @@ description: 'Matrix cell 体系治理总任务。从 circusd 死胡同出发, �
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 2026-07-16 人类 review 发现核心实现存在 silent TODO (ledger 未落盘 /
-  singleton='host' 只 warn / is_host_running 撒谎). abstract layer closed (§ZZ-10)
-  判据不成立. 打回重开. cell.py 已重写 (详见 cell-run-cycle FEATURE.md
-  2026-07-14/16 Review 会话).
+status_note: 2026-07-17 wire-up 收官第一段 (§AAA): MatrixImpl 换血 runtime_info
+  单入参, Host.new_matrix(cell) concrete 显式化, factory 退回 escape hatch, hasattr
+  漂移修复. 剩余: moss_runtime wire-up (真正难关, 上轮 feature 没做就交付) + CLI 重做.
 title: Matrix Cell Governance
-updated: '2026-07-16'
+updated: '2026-07-17'
 ---
 
 # Matrix Cell Governance
@@ -1012,7 +1011,7 @@ C 的接口. 与 bash 的本质差异 = 有状态: bash 给动作→文本 (一�
   driver 可以是 zenoh 单 session, 也可以是 redis + mqtt + ws + http 混合客户端,
   matrix 层无感 (人类点: "搞不好不是用一种方式构建, 而是 api_key 访问不同类型接口").
 - ZenohAdapter 实现放 `src/ghoshell_moss/matrix/networks/zenoh_adapter.py`;
-  与 zenoh_presence / zenoh_watcher / zenoh_network 同目录.
+  与 zenoh_presence / zenoh_mesh / zenoh_network 同目录.
 - adapter 发现: driver_name → adapter class 的 module-level registry
   (`register_adapter(cls)` 装饰器 + `get_adapter(driver_name)` 查询).
 
@@ -1236,3 +1235,80 @@ class CellPresence(BaseModel):
 5. zenoh_presence.py: is_host 读取保持 (property 语义); hosts_ns 副路径 comment
    记 "作废待清"
 6. 冒烟: matrix + factory 端到端 (blueprint / matrix_impl / factory 都不崩)
+
+
+## §AAA. Matrix wire-up 收官第一段 (2026-07-17, claude-sonnet-4-6 + 人类)
+
+> §ZZ-10 之后, 抽象层封闭判据被人类 2026-07-16 review 打回 (silent TODO 泄露).
+> 本节记录打回后的 wire-up 收官进展: MatrixImpl 换血 + Host concrete 显式化 +
+> factory 退回 escape hatch 定位. 下一 session 从 moss_runtime wire-up 起 —
+> 人类原话 "上一次重构有好多 feature 没做就交付了, 是真正的难关".
+
+### AAA-1. 本轮定案
+
+- **MatrixImpl 只收 `runtime_info: CellRuntimeInfo`** (单一真相载体).
+  删旧 `manifest + presence` 双入参 — §TT-1 融合检验失败: manifest 存了不用
+  (`self._manifest` 全文再无引用), presence 与 CellRuntimeInfo 数据重叠.
+  caller (factory worker path / Host concrete) 显式构建 CellRuntimeInfo 后传入,
+  matrix 不自造, 不猜, 只消费.
+- **`CellProtocol = Literal['channel']` type alias**, `Cell.providing: list[CellProtocol]`.
+  收窄 `['channel', 'shell', 'ghost']` → `['channel']` — shell/ghost 是 channel
+  之上的语义, 不与 channel 同层. 未来加协议 = 在 duplex/ 落一整套 Provider/Proxy
+  + 追加 CellProtocol 值域, 不是自由 str (防止无对应实现的漂移).
+- **`Host.new_matrix(cell) -> Matrix` 替代 `Host.matrix()` 单例方法**.
+  cell 作显式入参, 未来 host 分化 (ghost-carrying vs shell) 时, 分歧点全在
+  caller 构造的 cell (Host.run 用 build_host_cell, Host.run_ghost 未来可换),
+  matrix 装配对分化无感. Host 不缓存 matrix — MossRuntimeImpl 持有生命周期.
+- **factory 退回 escape hatch 定位**: `_create_matrix(env, project)` 只服务
+  无上下文入口 (`Matrix.discover`). Host 有 env + 自造 cell 语境, 走 concrete
+  显式路径. 抽 `resolve_matrix_adapter(env, project, *, cell)` 共享 helper,
+  两路径引用不复制.
+
+### AAA-2. 下一 session 避坑 (silent 病历本)
+
+**坑1: 抄旧版实现不读新抽象.** 标本: `Host.run_ghost` 里
+`hasattr(ghost_meta, 'import_path')` — 旧世界 GhostMeta 有 import_path 方法,
+refactor 后移到 Manifest 装饰层, `get_ghost()` 剥掉 Manifest 就再也拿不到.
+hasattr 让代码"看起来还在工作", 实际上 source_path 每次都是 None (GhostWorkspace.source
+永远拿不到). 修法: 通过 `project.ghosts()` 反查 (found_at.parent). 教训:
+**抄任何旧代码前先读一遍当前 ABC, hasattr 基本都是错的**.
+
+**坑2: silent 保守 = beta1 致命风险 (人类原话).** 上一轮执行实例的
+"安全做法" (存了不用的 `self._manifest`, 摆着不删的 dead field, 防御性冗余)
+是抽象层被打回的直接原因. 挡板: **看到"能跑就先不动"的东西全部当作错误信号**,
+不当作安全区. 挑战人类比留 silent TODO 好.
+
+**坑3: code as prompt 是发现漂移的雷达.** 发现 host 实现错的直接路径:
+cell.py 里 `build_host_cell(env)` 明白摆着 → host/impl.py 却虚构
+`NodeManifest(name='host')` 绕过. **名字本身携带承诺, 绕开就是错**.
+未来任何 factory 类命名要 code as prompt (显式函数名 = 意图声明),
+强迫下一个实例被迫看见 — 结构对但入口错的漂移只有名字能抓住.
+
+**坑4: 融合再犯 (§TT-1 检验).** MatrixImpl 之前的 `manifest + presence` 是融合病灶:
+一个是 static 声明 (host 场景用不上, 被虚构塞), 一个是网络身份, 打包塞进装配.
+收敛成单一 runtime_info 后, caller 责任明确, matrix 层零判断. 每个新增抽象都要过
+"一句话说完承诺且不提兄弟抽象名" 检验.
+
+**坑5: 存在但不完备的抽象.** LocalHostMode 的 `cells()` 方法 + `_cells` 字段
+在 HostMode ABC (§YY-2 已删 cells()) 之外浮着 — 无人调用但存活. 单元测试还在
+验证它. 类似情况找到就删, 顺手把测试改到活抽象上.
+
+### AAA-3. 剩余任务 (VV-2 步骤 8-13 的位置)
+
+- **步骤 9 (真正难关): moss_runtime wire-up.** 人类明示上一轮"有很多 feature
+  没做就交付了". MossRuntimeImpl 需要从头查缺补漏, **不是抄修补**.
+  起点: `src/ghoshell_moss/host/moss_runtime.py`, 对齐 `blueprint/host.py`
+  MossRuntime ABC 全部方法契约. 每一个 abstractmethod 都对着 __init__ 状态
+  + wire-up 顺序 + 生命周期审一遍, 找 silent TODO.
+- **步骤 10: CLI 整体重做.** 人类明示 "cli 我宁愿重做" — 六动词命令组按新抽象
+  重接, 不修补 cells_cli.py. 防止 silent TODO 再植入.
+- **步骤 11-13: moss-as-mcp 冒烟 + 第一个 cells channel + apps 迁移.**
+
+### AAA-4. 本轮冒烟基线 (2026-07-17)
+
+- `moss --ai all-commands` ✓ (import + typer 装配)
+- `moss --ai project where` ✓ (Environment + Project 层)
+- `moss --ai modes list` ✓ (HostMode + LocalHostMode 集成)
+- `moss --ai cells list` ✓ (project.cells 一条链路)
+- **未验**: 真起 matrix (moss-repl) / run_ghost 端到端 —
+  留给步骤 9 wire-up 时端到端验证, 现在验也是白验 (moss_runtime 还没查缺补漏).

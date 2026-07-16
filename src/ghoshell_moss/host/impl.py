@@ -1,29 +1,29 @@
 """
-Host — MOSS 顶层入口. 从环境发现 project + mode + matrix, 编排 MossRuntime / GhostRuntime.
+Host — MOSS 顶层入口. 从环境发现 project + mode, 编排 MossRuntime / GhostRuntime.
 
-wire-up 契约: §ZZ 全套 + §YY-2 (HostMode.cells 删, project.cells 一条链路) +
-§ZZ-4 (build_host_presence 走 Host 抽象 concrete, 不走 factory).
-
-Host 侧 Matrix concrete 构造路径:
-    build_host_presence(env) + create_matrix_helper(env, project, is_host=True)
-    → 与 worker 路径 (factory._create_matrix) 分开约定, 避免 build_self_presence
-      god function 化 (§ZZ-4).
+wire-up 契约:
+- Host 侧 Matrix 走 concrete: build_host_cell → CellRuntimeInfo → new_matrix(cell),
+  不经 factory (factory 是 patch escape hatch, 服务无上下文的 Matrix.discover).
+- new_matrix(cell) 显式收 cell — 未来 host 分化 (ghost/shell) 时, 分歧点全在
+  caller 构造的 cell, matrix 装配对分化无感.
+- Host 不缓存 matrix: 一个 Host 生命周期里 run / run_ghost 只调一次,
+  返回的 matrix 由 MossRuntimeImpl / GhostRuntimeImpl 持有生命周期.
 """
 from typing_extensions import Self
 
-import importlib
 import pathlib
+from pathlib import Path
 
 from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime, GhostRuntime
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project
-from ghoshell_moss.core.blueprint.cell import NodeManifest, build_host_cell
+from ghoshell_moss.core.blueprint.cell import Cell, CellRuntimeInfo, build_host_cell
+from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.contracts.workspace import LocalWorkspace
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
-from ghoshell_moss.matrix.adapter import get_adapter_class, list_adapter_drivers
-from ghoshell_moss.factory import resolve_network
+from ghoshell_moss.factory import create_project, resolve_matrix_adapter
 
 from ghoshell_moss.host.moss_runtime import MossRuntimeImpl
 from ghoshell_moss.host.ghost_runtime import GhostRuntimeImpl
@@ -47,8 +47,6 @@ class Host(MossHost):
             *,
             env: Environment | None = None,
     ):
-        # §UU-1 seal 定案: Environment 无 set_*, 参数一次性塞 __init__, seal 一次性事实.
-        # 入口点负责构造 + seal, Host 只做消费. 不重复 seal (§UU-1 一次性).
         if env is None:
             env = Environment.discover()
         if not env.is_sealed:
@@ -62,16 +60,12 @@ class Host(MossHost):
 
         # Project: 通过 factory.create_project 拿 LocalProject 实例, bootstrap 会
         # 加载 .env / 挂 moss.log handler / 注册全局单例.
-        from ghoshell_moss.factory import create_project
         self._project = create_project(self._env)
         self._project.bootstrap()
 
         # workspace: mode 无关的项目 workspace (matrix 层已经从 project 拿到,
         # 这里额外持一份供 MossRuntimeImpl.__init__ 使用).
         self._workspace = LocalWorkspace(self._env.workspace_path)
-
-        # Matrix concrete — 首次 matrix() 调用时构造, 后续复用 (per-Host 单例).
-        self._matrix: MatrixImpl | None = None
 
     def name(self) -> str:
         return self._env.moss_meta.name
@@ -87,53 +81,29 @@ class Host(MossHost):
     def project(self) -> Project:
         return self._project
 
-    # scan_errors 已作废: TUI 直接 walk host.project 的 manifests 通路即可
-    # (Manifest 自持异常载体). Host 不背 alerts 汇聚这份担子 —
-    # 未来 alerts 归 TopicService ringbuffer (tui.py L613 承诺).
+    def new_matrix(self, cell: Cell) -> Matrix:
+        """基于给定 cell 构造未启动的 Matrix.
 
-    def matrix(self) -> MatrixImpl:
-        """Host 侧 Matrix concrete — build_host_presence + adapter registry (§ZZ-4).
+        cell 由 caller 显式构造 (build_host_cell / 未来 build_*_cell 分化),
+        这里只负责: CellRuntimeInfo 组装 + adapter/network 解析 + MatrixImpl 装配.
 
-        单进程内单例: 首次调用构造并缓存, 后续调用返回同一实例.
-
-        与 factory._create_matrix (worker cell 路径) 的差别只在 presence 构造:
-          host → build_host_presence(env), address='host/{moss_name}/{project_id_short}'
-          worker → build_self_presence(env, manifest), address='cell/{name}/{uid}'
-        adapter driver / network 解析 / IoC 装配全走同一套.
+        每次调用返回新实例, Host 不缓存. 调用方 (MossRuntimeImpl 等) 自持生命周期.
         """
-        if self._matrix is not None:
-            return self._matrix
-
-        # register_adapter 副作用触发 (与 factory._create_matrix 保持一致)
-        import ghoshell_moss.matrix.networks.zenoh_adapter  # noqa: F401
-
-        network = resolve_network(self._env, self._project)
-        adapter_cls = get_adapter_class(network.driver)
-        if adapter_cls is None:
-            raise RuntimeError(
-                f"No MatrixNetworkAdapter registered for driver {network.driver!r}. "
-                f"Registered drivers: {list_adapter_drivers()}"
-            )
-
-        # host 的 "manifest" 用 moss_meta 承接身份 (§ZZ-4 host 独立约定, 不走 CELL.md).
-        # name 是 home 稳定身份键 (§YY-1 第 6 条), 用 moss_meta.name 作 host 身份锚.
-        manifest = NodeManifest(
-            name=self._env.moss_meta.name or 'host',
-            description=self._env.moss_meta.description or '',
-            installed=True,
+        runtime_info = CellRuntimeInfo(
+            address=cell.address,
+            pid=self._env.pid,
+            cell=cell,
         )
-        presence = build_host_cell(self._env)
-        adapter = adapter_cls.from_metadata(network, is_host=True)
-
-        self._matrix = MatrixImpl(
+        adapter, network = resolve_matrix_adapter(
+            self._env, self._project, cell=cell,
+        )
+        return MatrixImpl(
             env=self._env,
             project=self._project,
-            manifest=manifest,
-            presence=presence,
+            runtime_info=runtime_info,
             adapter=adapter,
             network=network,
         )
-        return self._matrix
 
     def run(
             self,
@@ -151,7 +121,8 @@ class Host(MossHost):
             )
         mode.bootstrap()
 
-        matrix = self.matrix()
+        cell = build_host_cell(self._env)
+        matrix = self.new_matrix(cell)
         return MossRuntimeImpl(
             env=self._env,
             workspace=self._workspace,
@@ -170,15 +141,17 @@ class Host(MossHost):
     ) -> GhostRuntime:
         if isinstance(ghost, str):
             ghost_meta = self._project.get_ghost(ghost)
-            module = importlib.import_module(ghost_meta.import_path()) if hasattr(ghost_meta, 'import_path') and callable(getattr(ghost_meta, 'import_path', None)) else None
-            source_path = pathlib.Path(module.__file__).parent.absolute() if module is not None else None
+            source_path = self._find_ghost_source(ghost_meta)
         elif isinstance(ghost, GhostMeta):
             ghost_meta = ghost
+            # 直接传实例 = 测试/自定义构造场景, 无发现路径, 源码定位由 caller 自负.
             source_path = None
         else:
-            raise ValueError(f"invalid ghost argument type {type(ghost)}")
+            raise TypeError(
+                f"run_ghost: expected str or GhostMeta, got {type(ghost).__name__}"
+            )
 
-        # env.ghost_name 必须在 run() 之前 seal 前构造时设置; 已 seal 后无路径
+        # env.ghost_name 必须在 seal 前构造 Environment 时设置; 已 seal 后无路径
         # (Environment.set_ghost_name 已删, seal 是一次性跃迁). host 侧无法在
         # 已 seal env 上改 ghost_name — Ghost 归属由 env 构造时决定.
         # (moss_as_mcp / moss-run-ghost 应通过 Environment(ghost=...) 传入)
@@ -188,3 +161,17 @@ class Host(MossHost):
             ghost_meta=ghost_meta,
             source_path=source_path,
         )
+
+    def _find_ghost_source(self, ghost_meta: GhostMeta) -> Path | None:
+        """从 project.ghosts() 迭代反查 ghost 源码目录.
+
+        LocalProject.ghosts() 产出 (found_at, meta) tuple, found_at 是 ghost
+        源文件绝对路径. .parent = 源码目录, 供 GhostWorkspace.source 消费.
+        get_ghost() 只返回 meta, 反查是这里的责任; identity 比较避免同名歧义.
+        """
+        for path, meta in self._project.ghosts():
+            if isinstance(meta, Exception):
+                continue
+            if meta is ghost_meta:
+                return pathlib.Path(path).parent.absolute()
+        return None

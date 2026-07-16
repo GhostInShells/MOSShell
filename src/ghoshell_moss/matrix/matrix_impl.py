@@ -80,22 +80,14 @@ class MatrixImpl(Matrix):
             *,
             env: Environment,
             project: Project,
-            manifest: NodeManifest,
-            presence: Cell,
+            runtime_info: CellRuntimeInfo,
             adapter: MatrixNetworkAdapter,
             network: NetworkMetadata,
             logger: logging.Logger | None = None,
     ):
-        # -- 显式入参 -- #
-        # env: 环境载体 (身份/路径唯一信源, seal 后 discover 全局单例)
-        # project: 治理域句柄
-        # manifest: 本 cell 的稳定身份 (name 作 home 键, §YY-1 第 6 条双目录判决)
-        # presence: 本 cell 网络身份 (address/is_host/alias 已定死, factory 或 Host 侧构造)
-        # adapter: driver 私有 (§ZZ-3), 未 __aenter__
-        # network: metadata (name/scope/driver/config), 运行时自解释
-        # env 必须已 seal (factory / Host concrete 侧责任).
-        # 老 host/matrix.py 里 __init__ 调 env.seal() 是遗迹 — seal 是一次性
-        # 跃迁, 二次抛错. Matrix 层假设 env 已 sealed 到达.
+        # runtime_info 是 Matrix 唯一的身份真相载体 — cell + pid/pgid/start_time
+        # 全部由 caller (factory worker path / Host concrete) 显式构建后传入.
+        # Matrix 层不自造, 不猜, 只消费.
         if not env.is_sealed:
             raise RuntimeError(
                 'Matrix requires sealed Environment; '
@@ -103,16 +95,16 @@ class MatrixImpl(Matrix):
             )
         self._env = env
         self._project = project
-        self._manifest = manifest
-        self._presence_data = presence
+        self._runtime_info = runtime_info
         self._adapter = adapter
         self._network_metadata = network
 
-        # -- logger: §ZZ-6 命名层级 + pull 反绑 -- #
-        # 默认 logger = moss.cell.{normalize(address)}, java log4j hierarchy
+        cell = runtime_info.cell
+
+        # 默认 logger = moss.cell.{normalize(address)}, hierarchical name
         # 冒泡到顶层 moss.log (project.bootstrap 已挂 handler).
         self._logger: logging.Logger = logger or logging.getLogger(
-            f'moss.cell.{normalize(presence.address)}',
+            f'moss.cell.{normalize(cell.address)}',
         )
 
         # -- 生命周期原语 (承 host/matrix.py) -- #
@@ -135,8 +127,6 @@ class MatrixImpl(Matrix):
         # 死掉的进 FIFO (bounded). on_exit callback 完成 dict → deque 转移.
         self._handled_cells: dict[CellAddress, CellHandle] = {}
         self._dead_cells: deque[CellHandle] = deque(maxlen=128)
-        # 本 cell 自身的 runtime info — __aenter__ 里 enter_cell_lifecycle 时构造.
-        self._this_runtime_info: CellRuntimeInfo | None = None
 
         # -- 生命周期挂载对象 (承老代码) -- #
         # 运行前 register_lifecycle_object 塞入, __aenter__ async 阶段依次 enter.
@@ -150,8 +140,8 @@ class MatrixImpl(Matrix):
 
         # -- 日志前缀 -- #
         self._log_prefix = (
-            f"<Matrix address={presence.address} "
-            f"scope={network.scope} is_host={presence.is_host}>"
+            f"<Matrix address={cell.address} "
+            f"scope={network.scope} is_host={cell.is_host}>"
         )
 
     # ==================================================================
@@ -168,9 +158,9 @@ class MatrixImpl(Matrix):
 
     @property
     def this(self) -> Cell:
-        # §YY-1 第 2 条: this 是纯数据 (CellPresence), 入网机制对象 (Presence)
+        # §YY-1 第 2 条: this 是纯数据 (Cell), 入网机制对象 (Presence)
         # 藏在 self._presence 里 (provide_channel/publish_event 是它的糖).
-        return self._presence_data
+        return self._runtime_info.cell
 
     @property
     def network(self) -> NetworkMetadata:
@@ -702,14 +692,11 @@ class MatrixImpl(Matrix):
         #   3. 写 self CellRuntimeInfo 到 env.cell_runtimes_dir (让 CLI/其他 cell 能看见)
         #   4. 反卷: 删自己的 runtime file, host 再清一遍孤儿
         # 位置在 container 之前 — 装配失败时 exit_stack 会反卷释放锁/删文件.
-        self._this_runtime_info = CellRuntimeInfo(
-            address=self._presence_data.address,
-            cell=self._presence_data,
-        )
+        # runtime_info 由 __init__ 注入 (caller 显式构建), 此处不自造.
         enter_cell_lifecycle(
             self._exit_stack,
             self._env,
-            self._this_runtime_info,
+            self._runtime_info,
             kill=self._kill_orphan_cell,
         )
 
@@ -737,7 +724,7 @@ class MatrixImpl(Matrix):
 
             # 2. new_presence + async ctx (触发首次 announce)
             self._presence = self._adapter.new_presence(
-                self._presence_data,
+                self._runtime_info.cell,
                 logger=self._logger,
             )
             await self._async_exit_stack.enter_async_context(self._presence)

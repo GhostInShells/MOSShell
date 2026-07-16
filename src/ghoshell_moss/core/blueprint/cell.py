@@ -35,6 +35,7 @@ import asyncio
 __all__ = [
     'CellAddress',
     'CellRole',
+    'CellProtocol',
     'HOST_ROLE',
     'NODE_ROLE',
     'normalize',
@@ -42,6 +43,7 @@ __all__ = [
     'parse_address',
     'build_node_from_manifest',
     'build_host_cell',
+    'discover_this_node',
     'ExecSpec',
     'NodeManifest',
     'CellRuntimeInfo',
@@ -62,14 +64,21 @@ __all__ = [
 
 CellRole = Literal['host', 'node']
 """
-描述 Cell 在 Matrix 网络拓扑中的位置角色. 
-- 'host': 网络的中心节点, 将所有能力组织在一起供躯体或智能体驱动. 
-- 'node': 功能性节点. 可能控制躯体, 提供 gui, 有独立的应用能力等等. 
+描述 Cell 在 Matrix 网络拓扑中的位置角色.
+- 'host': 网络的中心节点, 将所有能力组织在一起供躯体或智能体驱动.
+- 'node': 功能性节点. 可能控制躯体, 提供 gui, 有独立的应用能力等等.
 """
 HOST_ROLE: CellRole = 'host'
 NODE_ROLE: CellRole = 'node'
 
 ROLES = frozenset({HOST_ROLE, NODE_ROLE})
+
+CellProtocol = Literal['channel']
+"""
+Cell 提供的 MOSS 双工通讯协议名. 封闭集: 每个值对应 duplex/ 里一整套 Provider/Proxy
+角色对 + 事件词汇 (见 duplex/protocol.py). 未来加协议 = 加一套 Provider/Proxy 实现,
+且在此 type alias 追加值 — 不是自由字符串, 不能靠约定加名字.
+"""
 
 CellAddress = str
 """
@@ -127,10 +136,11 @@ class Cell(BaseModel):
         default='',
         description='cell 所在项目的名字.'
     )
-    providing: list[Literal['channel', 'shell', 'ghost']] = Field(
+    providing: list[CellProtocol] = Field(
         default_factory=list,
-        description="本 cell 当前运行状态提供的能力. "
-                    "只标记类型, 不带具体内容 — 内容靠各自协议桥拉取.",
+        description="本 cell 当前运行状态提供的 MOSS 双工通讯协议. "
+                    "只标记协议名, 内容靠各自 Provider/Proxy 桥拉取. "
+                    "值域受 CellProtocol 封闭 — 加协议要先在 duplex/ 落地对应角色.",
     )
     updated: AwareDatetime = Field(
         default_factory=lambda: datetime.datetime.now(dateutil.tz.gettz()),
