@@ -1,32 +1,31 @@
 """
-ZenohWatcher — 对网络的观察侧 + accept/release 实现 (Watcher ABC).
+ZenohCellMesh — 对网络的观察侧 + accept/reject 实现 (CellMesh ABC).
 
-一个 Watcher 实例治理:
-  liveness subscriber ({cells_ns}/**)      → PUT/DELETE 更新 cache 边缘
-  event subscriber   ({cells_ns}/events/**) → CellEvent 到达 → refetch + on_event
-  queryable get       (按需拉 CellPresence 快照)
+一个 Mesh 实例治理 (key 表见 _utils.py):
+  liveness subscriber (cell_liveness_wildcard)  → PUT/DELETE 更新 cache 边缘
+  event subscriber   (events_wildcard)           → CellEvent 到达 → refetch + on_event
+  queryable get       (按需拉 Cell 快照)
   reconcile loop      (低频对账兜底)
   hub.proxy(address)  (accept: 本地 dict 查重 + hub 建 duplex proxy)
 
 opt-in: 每 runtime 至多一个 (§UU-7 shared informer 同构). 纯 worker cell 不需要.
 
 延迟视图承诺 (§NN):
-  只有 online/offline 边缘是实时的 (liveness 推送); presence 内容可能滞后到
+  只有 online/offline 边缘是实时的 (liveness 推送); cell 内容可能滞后到
   下次 refresh. 要实时内容就 refresh(address). 消费者面对这一延迟做视图/信号
   的二次消费, 不当强一致源.
 """
 # -- §UU-7 拆分: subscriber + cache + reconcile 归这里 (O(N) 主动).
 #    "我看不见 X" → 审讯本对象.
-# -- §UU-8: accept/deny 归 Watcher. accept 即建 proxy (owner = 本 Watcher 持有者),
-#    release 即调 hub.drop_proxy. auto-build-proxy 已删 (那等于自动 accept 全网络).
-# -- 蝴蝶横 8 字里 Watcher 是左翼数据源:
-#      liveness 边缘 + CellEvent → on_change 服务视图 / on_event 服务 nucleus.
+# -- §UU-8: accept/deny 归 Mesh. accept 即建 proxy (owner = 本 Mesh 持有者),
+#    reject 即调 hub.drop_proxy. auto-build-proxy 已删 (那等于自动 accept 全网络).
+# -- 蝴蝶横 8 字里 Mesh 是左翼数据源:
+#      liveness 边缘 + CellEvent → on_updated 服务视图 / on_event 服务 nucleus.
 #    nucleus 把 event 加工成 Signal 送 mindflow 争夺 Attention.
-#    Watcher 只做分发, 不 signal 化 (职责单一, TT-1 融合检验).
+#    Mesh 只做分发, 不 signal 化 (职责单一, TT-1 融合检验).
 
 import asyncio
 import threading
-import time
 from collections import deque
 from typing import Callable
 
@@ -38,23 +37,22 @@ from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
 from ghoshell_moss.core.blueprint.cell import (
     CellAddress,
     CellEvent,
-    CellPresence,
-    CellState,
-    Watcher,
+    Cell,
+    CellMesh,
     normalize,
 )
 from ghoshell_moss.core.concepts.channel import ChannelProxy
-from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
+from ghoshell_moss.matrix.networks._utils import CellsKeyspace
 
 import logging
 
-__all__ = ['ZenohWatcher']
+__all__ = ['ZenohCellMesh']
 
 # 大数, 事件是低频, 满了说明消费严重落后, 报 error 暴露问题.
 _QUEUE_MAXSIZE = 10000
 
 
-class ZenohWatcher(Watcher):
+class ZenohCellMesh(CellMesh):
     """
     基于 zenoh 的观察侧实现.
 
@@ -70,7 +68,7 @@ class ZenohWatcher(Watcher):
             *,
             session: zenoh.Session,
             logger: logging.Logger,
-            namespace: MatrixNamespace,
+            keyspace: CellsKeyspace,
             scope: str,
             hub: ZenohChannelHub,
             self_project_id: str | None = None,
@@ -79,25 +77,16 @@ class ZenohWatcher(Watcher):
     ):
         self._session = session
         self._logger = logger
-        self._ns = namespace
+        self._keyspace = keyspace
         self._scope = scope
         self._hub = hub
         self._self_project_id = self_project_id
         self._reconcile_interval = reconcile_interval
 
-        # -- key 命名空间 ------------------------------------------------
-        self._cells_ns_prefix = self._ns.cells_ns + '/'
-        self._cells_events_ns = f"{self._ns.cells_ns}/events"
-        self._cells_events_ns_prefix = self._cells_events_ns + '/'
-        # cell liveness 通配: {cells_ns}/**. events 分层挂在下面, 需要
-        # _key_to_address 主动过滤 (排除 events/... 匹配).
-        self._cell_liveness_wildcard = f"{self._ns.cells_ns}/**"
-        self._cells_events_wildcard = f"{self._cells_events_ns}/**"
-
         # -- 缓存 & 回调 -------------------------------------------------
-        self._cache: dict[CellAddress, CellPresence] = {}
+        self._cache: dict[CellAddress, Cell] = {}
         self._cache_lock = threading.Lock()
-        self._change_callbacks: list[Callable[[CellPresence, bool], None]] = []
+        self._change_callbacks: list[Callable[[Cell, bool], None]] = []
         self._event_callbacks: list[Callable[[CellEvent], None]] = []
         # accepted proxy 本地表 — UU-8 零网络往返查重.
         self._accepted: dict[CellAddress, ChannelProxy] = {}
@@ -117,45 +106,23 @@ class ZenohWatcher(Watcher):
         self._started = False
         self._closed = False
 
-    # ── key 转换 ──────────────────────────────────────────────────────
-
-    def _cell_key(self, address: CellAddress) -> str:
-        return f"{self._ns.cells_ns}/{address}"
-
-    def _key_to_address(self, key: str) -> CellAddress | None:
-        # 从 {cells_ns}/{address} 剥前缀. 排除 events/... 命中.
-        if not key.startswith(self._cells_ns_prefix):
-            return None
-        rest = key[len(self._cells_ns_prefix):]
-        if rest.startswith('events/'):
-            return None
-        return rest
-
-    def _event_key_to_address(self, key: str) -> CellAddress | None:
-        if not key.startswith(self._cells_events_ns_prefix):
-            return None
-        return key[len(self._cells_events_ns_prefix):]
-
     # ── 视图 ──────────────────────────────────────────────────────────
 
     def view(
             self,
             *,
             project_id: str | None = None,
-            state: CellState | None = None,
-    ) -> dict[CellAddress, CellPresence]:
+    ) -> dict[CellAddress, Cell]:
         with self._cache_lock:
             snapshot = dict(self._cache)
         if project_id is not None:
             snapshot = {a: p for a, p in snapshot.items() if p.project_id == project_id}
-        if state is not None:
-            snapshot = {a: p for a, p in snapshot.items() if p.state is state}
         return snapshot
 
     async def refresh(
             self,
             address: CellAddress | None = None,
-    ) -> dict[CellAddress, CellPresence]:
+    ) -> dict[CellAddress, Cell]:
         # None → 全量 liveness get + per-cell queryable → 覆盖 cache.
         # 具体地址 → 单个 queryable get → 更新 cache 对应条目.
         if address is not None:
@@ -169,11 +136,11 @@ class ZenohWatcher(Watcher):
                 self._cache[address] = presence
             return {address: presence}
 
-        result: dict[CellAddress, CellPresence] = {}
+        result: dict[CellAddress, Cell] = {}
         try:
             replies = await asyncio.to_thread(
                 self._session.liveliness().get,
-                self._cell_liveness_wildcard,
+                self._keyspace.cell_liveness_wildcard,
             )
         except Exception:
             self._logger.exception("refresh full liveness query failed")
@@ -181,7 +148,7 @@ class ZenohWatcher(Watcher):
         for reply in replies:
             if not reply.ok:
                 continue
-            addr = self._key_to_address(str(reply.result.key_expr))
+            addr = self._keyspace.address_from_cell_key(str(reply.result.key_expr))
             if addr is None:
                 continue
             presence = await self._fetch_presence(addr)
@@ -193,9 +160,9 @@ class ZenohWatcher(Watcher):
 
     # ── 回调注册 (返回 unsubscribe) ────────────────────────────────────
 
-    def on_change(
+    def on_updated(
             self,
-            callback: Callable[[CellPresence, bool], None],
+            callback: Callable[[Cell, bool], None],
     ) -> Callable[[], None]:
         self._change_callbacks.append(callback)
 
@@ -232,22 +199,21 @@ class ZenohWatcher(Watcher):
             address: CellAddress,
             *,
             timeout: float = 30,
-    ) -> CellPresence | None:
-        # 已在 cache 即返回; 否则挂 on_change 等待.
+    ) -> Cell | None:
+        # 已在 cache 即返回; 否则挂 on_updated 等待.
+        # 缓存里出现 = liveness token 在网络上 = "present" (§NN 边缘实时).
         with self._cache_lock:
             existing = self._cache.get(address)
-        if existing is not None and existing.state is CellState.READY:
+        if existing is not None:
             return existing
 
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future[CellPresence | None] = loop.create_future()
+        fut: asyncio.Future[Cell | None] = loop.create_future()
 
-        def _on_change(presence: CellPresence, online: bool) -> None:
+        def _on_change(presence: Cell, online: bool) -> None:
             if presence.address != address:
                 return
             if not online:
-                return
-            if presence.state is not CellState.READY:
                 return
             if fut.done():
                 return
@@ -255,12 +221,12 @@ class ZenohWatcher(Watcher):
                 lambda: fut.done() or fut.set_result(presence),
             )
 
-        unsub = self.on_change(_on_change)
+        unsub = self.on_updated(_on_change)
         try:
             # double-check 防 race.
             with self._cache_lock:
                 existing = self._cache.get(address)
-            if existing is not None and existing.state is CellState.READY:
+            if existing is not None:
                 return existing
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
@@ -268,32 +234,32 @@ class ZenohWatcher(Watcher):
         finally:
             unsub()
 
-    # ── accept / release / accepted ───────────────────────────────────
+    # ── accept / reject / accepted ────────────────────────────────────
 
     async def accept(self, address: CellAddress) -> ChannelProxy:
         # UU-8: accept = 本地 dict 查重 → hub.proxy(address, name=...) → track.
-        # owner = 本 Watcher, release 或 __aexit__ 时清理.
+        # owner = 本 Mesh, reject 或 __aexit__ 时清理.
         existing = self._accepted.get(address)
         if existing is not None:
             return existing
 
         # proxy name 派生规则:
-        #   优先 alias, 缺则 normalize(address). 命名冲突交给上层
-        #   (matrix.channel_proxy 有 name 覆写口子, 这里给最保守默认).
+        #   优先 cell.fullname (category_name 归一, 稳定跨启动),
+        #   缺则 normalize(address) 兜底. 命名冲突交给上层.
         with self._cache_lock:
             presence = self._cache.get(address)
         if presence is None:
             raise LookupError(
                 f"cell {address} not in network view (refresh first if needed)"
             )
-        name = normalize(presence.alias) if presence.alias else normalize(address)
+        name = normalize(presence.fullname) if presence.fullname else normalize(address)
 
         proxy = self._hub.proxy(address, name=name)
         self._accepted[address] = proxy
         self._logger.debug("accepted proxy: address=%s name=%s", address, name)
         return proxy
 
-    async def release(self, address: CellAddress) -> None:
+    async def reject(self, address: CellAddress) -> None:
         # 幂等. hub.drop_proxy 内部关闭 zenoh 连接.
         proxy = self._accepted.pop(address, None)
         if proxy is None:
@@ -304,7 +270,7 @@ class ZenohWatcher(Watcher):
             self._logger.exception("hub.drop_proxy failed for %s", address)
         self._logger.debug("released proxy: address=%s", address)
 
-    def accepted(self) -> dict[CellAddress, ChannelProxy]:
+    def channel_proxies(self) -> dict[CellAddress, ChannelProxy]:
         return dict(self._accepted)
 
     # ── 生命周期 ──────────────────────────────────────────────────────
@@ -319,11 +285,11 @@ class ZenohWatcher(Watcher):
 
         # 先订阅, 再 seed, 避免 declare 和 get 之间丢事件.
         self._cell_subscriber = self._session.liveliness().declare_subscriber(
-            self._cell_liveness_wildcard,
+            self._keyspace.cell_liveness_wildcard,
             self._on_liveness_sample,
         )
         self._event_subscriber = self._session.declare_subscriber(
-            self._cells_events_wildcard,
+            self._keyspace.events_wildcard,
             self._on_event_sample,
         )
 
@@ -340,8 +306,8 @@ class ZenohWatcher(Watcher):
         self._reconcile_task = self._loop.create_task(self._reconcile_loop())
 
         self._logger.debug(
-            "ZenohWatcher started: scope=%s cells_ns=%s",
-            self._scope, self._ns.cells_ns,
+            "ZenohCellMesh started: scope=%s cells_ns=%s",
+            self._scope, self._keyspace.cells_ns,
         )
         return self
 
@@ -387,20 +353,20 @@ class ZenohWatcher(Watcher):
 
         # 释放所有 accept 的 proxy — owner 关闭即释放 (UU-8).
         for addr in list(self._accepted.keys()):
-            await self.release(addr)
+            await self.reject(addr)
 
         with self._cache_lock:
             self._cache.clear()
 
         self._started = False
         self._loop = None
-        self._logger.debug("ZenohWatcher stopped: scope=%s", self._scope)
+        self._logger.debug("ZenohCellMesh stopped: scope=%s", self._scope)
 
     # ── zenoh 后台线程回调 ────────────────────────────────────────────
 
     def _on_liveness_sample(self, sample: zenoh.Sample) -> None:
         # zenoh 后台线程. 只做最薄工作: 入队, 卸载到 consumer.
-        address = self._key_to_address(str(sample.key_expr))
+        address = self._keyspace.address_from_cell_key(str(sample.key_expr))
         if address is None:
             return
         if self._liveness_queue is None:
@@ -530,7 +496,7 @@ class ZenohWatcher(Watcher):
                 try:
                     replies = await asyncio.to_thread(
                         self._session.liveliness().get,
-                        self._cell_liveness_wildcard,
+                        self._keyspace.cell_liveness_wildcard,
                     )
                 except Exception:
                     self._logger.exception("reconcile liveness query failed")
@@ -540,7 +506,7 @@ class ZenohWatcher(Watcher):
                 for reply in replies:
                     if not reply.ok:
                         continue
-                    addr = self._key_to_address(str(reply.result.key_expr))
+                    addr = self._keyspace.address_from_cell_key(str(reply.result.key_expr))
                     if addr is not None:
                         live_addresses.add(addr)
 
@@ -575,13 +541,13 @@ class ZenohWatcher(Watcher):
 
     # ── 数据拉取 ──────────────────────────────────────────────────────
 
-    async def _fetch_presence(self, address: CellAddress) -> CellPresence | None:
-        key = self._cell_key(address)
+    async def _fetch_presence(self, address: CellAddress) -> Cell | None:
+        key = self._keyspace.cell_key(address)
         try:
             replies = await asyncio.to_thread(self._session.get, key)
             for reply in replies:
                 if reply.ok:
-                    return CellPresence.model_validate_json(
+                    return Cell.model_validate_json(
                         reply.ok.payload.to_bytes(),
                     )
         except Exception:
@@ -590,7 +556,7 @@ class ZenohWatcher(Watcher):
 
     # ── 回调分发 ──────────────────────────────────────────────────────
 
-    def _fire_on_change(self, presence: CellPresence, online: bool) -> None:
+    def _fire_on_change(self, presence: Cell, online: bool) -> None:
         # 在 event loop 线程内 fire — 回调者不需要跨线程防御.
         # 快照回调列表, 避免回调内 add/remove 导致遍历破坏.
         for cb in list(self._change_callbacks):
