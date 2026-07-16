@@ -785,6 +785,16 @@ class CellMesh(ABC):
         """
         ...
 
+    @abstractmethod
+    def has_host(self) -> bool:
+        """
+        本 network 是否有 host 在运行 (view 层判断).
+
+        host 在 network 级别唯一 — 无需按 project_id 过滤. 消费者 (通常是
+        worker cell 或 CLI) 判断组网状态的 code as prompt.
+        """
+        ...
+
     # -- 网络域治理动词: accept / reject -- #
     #
     # accept/reject 表达"是否承认某 cell 的资源", 与该 cell 是否在线正交.
@@ -793,6 +803,29 @@ class CellMesh(ABC):
     #   cell present + 在 reject 表 → 忽略, 不建句柄
     #   cell offline → 已建的句柄按实现决定保留或清理
     # cell update 事件到达时按当前表状态自动重装/撤销资源句柄.
+
+    @abstractmethod
+    def set_auto_accept(
+            self,
+            *,
+            local: bool | None = None,
+            foreign: bool | None = None,
+    ) -> None:
+        """
+        切换 auto-accept 默认策略. None 表示不改动.
+
+        触发即扫: 调用后立即按新策略扫一遍当前视图 —
+          - 新纳入策略 (原不接受, 现接受) 的 cell 会补加进 accept 表 + 组装句柄
+          - 移出策略 (原接受, 现不接受) 的 cell 会撤销句柄
+        显式 accept/reject 表覆盖默认策略, toggle 不动它们.
+
+        典型使用: 上层 channel (如 cells channel) 通过 command 暴露给模型,
+        运行时可自主开关是否自动接纳 foreign cell 的资源.
+
+        :param local: is_local(env) 的 cell 是否自动 accept. None=不改.
+        :param foreign: 非 local 的 cell 是否自动 accept. None=不改.
+        """
+        ...
 
     @abstractmethod
     async def accept(self, address: CellAddress, *, lookup: bool = False) -> None:

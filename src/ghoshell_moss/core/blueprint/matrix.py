@@ -213,13 +213,24 @@ class Matrix(ABC):
     @abstractmethod
     def handled_cells(self) -> dict[CellAddress, CellHandle]:
         """
-        本 matrix 已拉起的所有 cell handle, 按 address 索引.
+        本 matrix 当前**活着**的 cell handle, 按 address 索引.
 
-        生命周期: cell 拉起时加入; 同 address 再次拉起时旧条目被替换 —
-        crash / 正常退出的 handle 保留到下次同 address 拉起才清,
-        方便调试最近死亡的 cell (exit code / stderr 尾部通过 handle.process 拿).
+        与 Subprocesses.executing() 同构 — 只含 process 未退出的条目.
+        crash / 正常退出的 handle 会移出本 dict, 进入 dead_cells() FIFO.
 
         :return: dict 快照, 调用方不应 mutate 返回值.
+        """
+        ...
+
+    @abstractmethod
+    def dead_cells(self) -> list[CellHandle]:
+        """
+        最近死亡的 cell handle FIFO (bounded).
+
+        与 Subprocesses.executed() 同构 — 保留有限条数, 溢出丢最老的.
+        debug 视角: 通过 handle.process 拿 exit code / stderr 尾部.
+
+        :return: list 快照, 最新的在末尾. 调用方不应 mutate 返回值.
         """
         ...
 
@@ -315,13 +326,6 @@ class Matrix(ABC):
     def is_host(self) -> bool:
         """本 cell 是否是当前网络的 host — 通常对一些 Cell 治理包提供. """
         return self.this.is_host
-
-    @abstractmethod
-    def is_host_running(self) -> bool:
-        """
-        当前网络的 host 是否在运行 — worker cell 判断组网状态的 code as prompt.
-        """
-        pass
 
     # -- 生命周期 -- #
 
