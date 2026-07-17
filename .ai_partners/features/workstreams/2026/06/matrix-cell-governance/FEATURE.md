@@ -1263,6 +1263,13 @@ class CellPresence(BaseModel):
   无上下文入口 (`Matrix.discover`). Host 有 env + 自造 cell 语境, 走 concrete
   显式路径. 抽 `resolve_matrix_adapter(env, project, *, cell)` 共享 helper,
   两路径引用不复制.
+- **关闭 publish + ledger 同步** (fixup): §WW-5 四弧发送侧补齐.
+  MatrixImpl.__aexit__ 在 async_exit_stack 反卷前 publish 一次 (normal /
+  keyboard interrupt / cancel / crash 四态, updated=False); provide_channel
+  在 Presence.provide 后同步调 `_sync_cell_ledger()` 让 CellRuntimeInfo 文件
+  反映最新 providing/updated. 分工纪律 (人类 2026-07-17 明示): matrix 层
+  只保障 event 发送成功, event → signal → mindflow 消费侧归 channel 层.
+  event 与 mesh 回调等待逻辑独立, 前者做信号后者做副作用, 不熔.
 
 ### AAA-2. 下一 session 避坑 (silent 病历本)
 

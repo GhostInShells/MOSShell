@@ -240,6 +240,10 @@ class MatrixImpl(Matrix):
             # Presence.provide: 拿 bare ChannelProvider, 顺带完成
             # membrane 声明 + 'channel added' event 广播 (§UU-7, zenoh_presence.py).
             provider = await self._presence.provide_channel(channel)
+            # cell 已被 Presence 就地 mutate (providing += 'channel', update 时间戳),
+            # 同步 ledger 让 CLI (moss cells status/show) 看到最新真相.
+            # 与网络 announce 是两个正交的更新目标 (§UU-3).
+            self._sync_cell_ledger()
             # 跑到关闭 — matrix __aexit__ 会 cancel 本 task, 触发 provider
             # 自身的 finally 收尾 (arun_until_closed 内部处理 CancelledError).
             await provider.arun_until_closed(channel)
@@ -426,6 +430,48 @@ class MatrixImpl(Matrix):
                 "%s failed to kill orphan cell %s",
                 self._log_prefix, info.address,
             )
+
+    def _sync_cell_ledger(self) -> None:
+        """将 runtime_info 落盘, 反映 self._runtime_info.cell 的最新状态到 ledger.
+
+        调用时机: 任何修改 self._runtime_info.cell 的操作之后 (今为 provide_channel;
+        未来 providing 增删 / update() 触发同源写盘). 让 CLI (moss cells status/show)
+        看到最新真相. 与 network announce 是两个正交的更新目标 (§UU-3 owner/network 两平面).
+
+        失败只 log 不 raise: ledger 是 debug 便利, 写失败不应阻断运行时.
+        """
+        try:
+            self._runtime_info.write_to_runtime_dir(self._env.cell_runtimes_dir)
+        except Exception:
+            self._logger.exception(
+                "%s failed to sync CellRuntimeInfo to ledger",
+                self._log_prefix,
+            )
+
+    def _closing_publish_hint(
+            self, exc_type, exc_val,
+    ) -> str | None:
+        """决定关闭时 publish 的 content — §WW-5 四弧发送侧.
+
+        None 表示不 publish (罕见, 目前 always publish).
+        - 正常 exit → 弧④ "closing normally"
+        - KeyboardInterrupt → 弧①的一种 "closing on keyboard interrupt"
+        - CancelledError → "closing on cancel"
+        - 其他 Exception → 弧② "crash: {type}: {msg}"
+
+        content 里带 exc_type 名, 让远端 mesh 消费者在生成 signal 时有分类依据
+        (event → signal → mindflow 的转换归 channel 层, 不在本 matrix 层做).
+        """
+        if exc_val is None:
+            return 'closing normally'
+        if isinstance(exc_val, KeyboardInterrupt):
+            return 'closing on keyboard interrupt'
+        if isinstance(exc_val, asyncio.CancelledError):
+            return 'closing on cancel'
+        # 其他 exception: crash 弧②. 截 200 字符防超长 payload.
+        msg = str(exc_val)[:200] if str(exc_val) else ''
+        exc_name = exc_type.__name__ if exc_type is not None else 'Exception'
+        return f'crash: {exc_name}: {msg}' if msg else f'crash: {exc_name}'
 
     def _resolve_target(self, target: Path) -> NodeManifest:
         """
@@ -818,6 +864,27 @@ class MatrixImpl(Matrix):
             _ = await asyncio.gather(*tasks, return_exceptions=True)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # -- 关闭 publish (§WW-5 四弧发送侧) -- #
+        # matrix 层保障 event 发送成功即完成责任, 消费侧 (event → signal → mindflow)
+        # 归 channel 层, 这里不等待送达. 必须在 async_exit_stack 反卷之前 —
+        # 否则 presence 已 close, publisher 已释放.
+        # updated=False: cell 即将下线, mesh 消费者 refetch 无意义, 只推送信号.
+        if self._presence is not None:
+            content = self._closing_publish_hint(exc_type, exc_val)
+            if content is not None:
+                try:
+                    await self._presence.publish_event(content, updated=False)
+                except asyncio.CancelledError:
+                    self._logger.info(
+                        "%s publish closing event cancelled: %s",
+                        self._log_prefix, content,
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "%s failed to publish closing event: %s",
+                        self._log_prefix, content,
+                    )
+
         try:
             if exc_val is not None:
                 if isinstance(exc_val, KeyboardInterrupt):
@@ -835,5 +902,6 @@ class MatrixImpl(Matrix):
             self._closing_event.set()
             self._closed_event.set()
 
-        # sync stack 反卷 (container shutdown 在此触发)
+        # sync stack 反卷 (container shutdown + enter_cell_lifecycle finally 触发 —
+        # runtime file 删除在此)
         self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
