@@ -1,23 +1,23 @@
-"""Constrained CTML control surface for Data's current Memento branch."""
+"""Constrained CTML control surface for Aurelius's current Memento branch."""
 
 from collections.abc import Callable
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
-from ._memory import DataMemory
+from ._memory import AureliusMemory
 
 __all__ = ["new_memento_channel"]
 
 
 def new_memento_channel(
-    memory: DataMemory,
+    memory: AureliusMemory,
     *,
     on_reflect: Callable[[], None] | None = None,
 ) -> MutableChannel:
-    """Expose only the Data owner's current branch; cross-owner writes stay impossible."""
+    """Expose only the Aurelius owner's current branch; cross-owner writes stay impossible."""
     channel = new_channel(
         name="ghost",
-        description="Data Ghost 的 Memento 控制面：查看、锚定、改写与分叉当前记忆。",
+        description="Aurelius Ghost 的 Memento 控制面：查看、锚定、改写与分叉当前记忆。",
     )
 
     @channel.build.command(always_observe=True)

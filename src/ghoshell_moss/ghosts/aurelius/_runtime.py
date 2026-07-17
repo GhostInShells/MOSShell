@@ -1,4 +1,4 @@
-"""Data Ghost runtime: Memento-backed conversation, no in-process history."""
+"""Aurelius Ghost runtime: Memento-backed conversation, no in-process history."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -17,22 +17,22 @@ from ghoshell_moss.message import Message
 
 from ._adapter import moment_to_request
 from ._channel import new_memento_channel
-from ._memory import DataMemory
-from ._reflection import DataReflector
+from ._memory import AureliusMemory
+from ._reflection import AureliusReflector
 
 if TYPE_CHECKING:
-    from ._meta import DataMeta
+    from ._meta import AureliusMeta
 
-__all__ = ["Data"]
+__all__ = ["Aurelius"]
 
 
-class Data(Ghost):
+class Aurelius(Ghost):
     """Ghost prototype whose conversation history lives only in Memento."""
 
     def __init__(
         self,
         *,
-        meta: "DataMeta",
+        meta: "AureliusMeta",
         agent: Agent[IoCContainer],
         container: IoCContainer,
         memory_root: str | Path,
@@ -50,7 +50,7 @@ class Data(Ghost):
         self._agent = agent
         self._container = container
         self._logger = container.get(LoggerItf) or get_moss_logger()
-        self._memory = DataMemory(
+        self._memory = AureliusMemory(
             memory_root,
             memory_owner,
             detail_n=memory_detail_n,
@@ -58,7 +58,7 @@ class Data(Ghost):
             auto_commit_every=auto_commit_every,
         )
         self._reflector = (
-            DataReflector(
+            AureliusReflector(
                 reflection_agent,
                 max_summary_chars=reflection_max_summary_chars,
                 max_source_chars=reflection_max_source_chars,
@@ -78,7 +78,7 @@ class Data(Ghost):
         return self._meta
 
     @property
-    def memory(self) -> DataMemory:
+    def memory(self) -> AureliusMemory:
         return self._memory
 
     def system_prompt(self) -> str:
@@ -148,7 +148,7 @@ class Data(Ghost):
             except Exception as error:  # Reflection is intentionally a non-fatal side path.
                 message = f"{type(error).__name__}: {error}"
                 self._reflection_errors.append(message)
-                self._logger.warning("Data memory reflection failed for %s: %s", view.id, message)
+                self._logger.warning("Aurelius memory reflection failed for %s: %s", view.id, message)
             finally:
                 self._reflection_inflight.discard(view.id)
 

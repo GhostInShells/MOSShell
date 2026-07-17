@@ -5,9 +5,9 @@ from pydantic_ai import Agent
 
 from ghoshell_moss.core.memento import CommitView
 
-from ._memory import DataMemory
+from ._memory import AureliusMemory
 
-__all__ = ["DataReflector"]
+__all__ = ["AureliusReflector"]
 
 
 _INSTRUCTION = """You curate a Ghost's durable memory after a completed conversation segment.
@@ -17,7 +17,7 @@ Do not invent facts. Do not describe hidden reasoning. If evidence is weak, say 
 Return only the note itself, without headings, quotes, or markdown."""
 
 
-class DataReflector:
+class AureliusReflector:
     """LLM-backed, retryable-by-replay reflection for frozen mechanical commits."""
 
     def __init__(
@@ -31,7 +31,12 @@ class DataReflector:
         self._max_summary_chars = max_summary_chars
         self._max_source_chars = max_source_chars
 
-    async def reflect(self, memory: DataMemory, view: CommitView, container: IoCContainer) -> CommitView | None:
+    async def reflect(
+        self,
+        memory: AureliusMemory,
+        view: CommitView,
+        container: IoCContainer,
+    ) -> CommitView | None:
         transcript = memory.commit_transcript(view.id, max_chars=self._max_source_chars)
         if not transcript:
             return None

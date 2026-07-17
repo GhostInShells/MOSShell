@@ -1,4 +1,4 @@
-"""MOSS Message / Moment to pydantic-ai message adapters for Data."""
+"""MOSS Message / Moment to pydantic-ai message adapters for Aurelius."""
 
 from collections.abc import Iterable
 

@@ -2,7 +2,7 @@
 
 > 状态：指导文档；不修改 `moss-in-reachy-mini`、不修改 moshi mode 或 App 代码。
 >
-> 依据：当前 MOSS Data Ghost/Memento 实现、`Docs/moshi支持讨论.md`，以及
+> 依据：当前 MOSS Aurelius Ghost/Memento 实现、`Docs/moshi支持讨论.md`，以及
 > `moss-in-reachy-mini/.moss_ws/apps/ui/moshi` 的现状代码。
 
 ## 1. 结论
@@ -28,7 +28,7 @@ MoshiProgress 权威状态 ─┘       │
 
 ## 2. 当前事实与差距
 
-| 项目 | 当前 moshi/Lynn | Data/Memento 可提供 | 集成后仍需新增 |
+| 项目 | 当前 moshi/Lynn | Aurelius/Memento 可提供 | 集成后仍需新增 |
 |---|---|---|---|
 | 对话历史 | `LocalConversationStore` 保存完整回合，但模型只见最近 5 轮 | commit、折叠、原文展开、跨重启 | 从旧 store 的迁移策略 |
 | 课程导航 | `next_chapter`/`jump_chapter`，状态仅进程内 | 可把导航经过保留为 Moment | 持久化权威课程进度 |
@@ -39,7 +39,7 @@ MoshiProgress 权威状态 ─┘       │
 | 合并 | 无 | commit 引用，不是真 merge | 冲突、来源、授权与合并语义 |
 
 另一个硬前提是依赖版本：`moss-in-reachy-mini` 当前固定本地
-`ghoshell_moss-0.1.0b0` wheel，其中没有此分支新增的 Data Ghost 与 `core.memento`。
+`ghoshell_moss-0.1.0b0` wheel，其中没有此分支新增的 Aurelius Ghost 与 `core.memento`。
 集成前必须先用包含本分支提交的 wheel/发行物替换它；不能只改 moshi 的 Python 文件。
 
 ## 3. 推荐的身份与记忆命名空间
@@ -138,20 +138,20 @@ moshi 已有章节索引和 `jump_chapter`，可以先把“按需取相关章�
 
 ### Phase 0：依赖与回归基线
 
-1. 将 `moss-in-reachy-mini` 升级到包含 Data/Memento 的 MOSS 发行物；
+1. 将 `moss-in-reachy-mini` 升级到包含 Aurelius/Memento 的 MOSS 发行物；
 2. 保留 Lynn/`LocalConversationStore` 只读，导出一份可回滚的历史备份；
 3. 用同一课程和同一输入录制当前输出、章节跳转和 TTS 行为，作为回归基线。
 
-验收：不改变 moshi 行为时，Data 能在独立 Ghost 中完成跨重启记忆、机械 commit 与反思。
+验收：不改变 moshi 行为时，Aurelius 能在独立 Ghost 中完成跨重启记忆、机械 commit 与反思。
 
-### Phase 1：先接 Data，不接个性化
+### Phase 1：先接 Aurelius，不接个性化
 
-1. 将 moshi 使用的 Ghost 原型从 Lynn/Atom 迁移到 Data，或让 Lynn 复用 DataMemory；
+1. 将 moshi 使用的 Ghost 原型从 Lynn/Atom 迁移到 Aurelius，或让 Lynn 复用 AureliusMemory；
    二者选其一，不能保留两份同时写的历史；
 2. 用 `memory_owner=moshi:{course_id}:session:{session_id}` 先做匿名单会话；
 3. 用 `MemoryConfig` 设置较小的 `auto_commit_every`（建议 2–4）和有限的
    `reflection_startup_limit`；
-4. 为运营/调试保留 Data 的 `memory_inspect`、`memory_log`、`memory_show`。
+4. 为运营/调试保留 Aurelius 的 `memory_inspect`、`memory_log`、`memory_show`。
 
 验收：重启后能回答此前问题；旧问题可回到对应章节；反思失败不影响讲课。
 

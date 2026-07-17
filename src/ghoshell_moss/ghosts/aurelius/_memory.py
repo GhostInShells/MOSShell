@@ -22,13 +22,13 @@ from ghoshell_moss.message import Message
 
 from ._adapter import messages_to_parts
 
-__all__ = ["DataMemory"]
+__all__ = ["AureliusMemory"]
 
 _REFLECTION_BY = "memento-reflection"
 
 
-class DataMemory:
-    """Single-owner persistent conversation memory for one Data Ghost."""
+class AureliusMemory:
+    """Single-owner persistent conversation memory for one Aurelius Ghost."""
 
     def __init__(
         self,

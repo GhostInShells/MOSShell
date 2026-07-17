@@ -1,295 +1,294 @@
-# MOSS Ghost Memory 测试方案
+# MOSS Aurelius Ghost Memory 测试方案
 
-## 1. 测试目的
+> 目标：验证 Aurelius 的持久记忆、CommitNote 版本、异步反思、配置与受限 CTML 控制面，
+> 并证明它不会把推断、失败帧或别人的记忆伪装为事实。
 
-验证 Data Ghost 的第一阶段记忆闭环是否真实成立：模型看到的历史来自 Memento，
-成功回合能持久化，进程重启后能恢复，窗口折叠后关键事实仍可由机械摘录召回，错误
-回合不会被伪装成成功记忆，并验证反思只补写释义层而不改写原始 Moment。
+关联：[集成技术评审与实施方案](MOSS-Ghost-Memory集成技术评审与实施方案.md)。
 
-本方案同时区分两件事：
+## 1. 测试目的与范围
 
-- **存储完备性**：该写的 Moment 是否全部落盘、没有重复或串 owner；
-- **认知准确性**：Ghost 是否能忠实复述、区分更正与历史、对未知信息不编造。
+| 测试面 | 要证明的事 | 不通过的典型信号 |
+|---|---|---|
+| Moment 写入 | 每个成功完成帧只写一次，失败帧不入完成轨迹 | 重复 Moment、半截 logos 被召回 |
+| 持久化与窗口 | 重启可恢复；旧内容折叠后仍可追溯 | 进程退出后事实消失或串绑 |
+| CommitNote | 反思/人工重释义追加新版本，不改原始 Moment | 旧 note 或 Moment 被覆盖 |
+| 反思退化 | 反思不阻塞对话，失败可在启动后追赶 | 首 token 等待反思、pending 永久丢失 |
+| 配置 | `memory.yml` 的策略真正生效 | 改配置后仍使用旧阈值（重启后） |
+| CTML 与分支 | 仅当前 owner/branch 可操作，fork 边界明确 | 跨 owner 读写、从 staging fork |
+| 认知准确性 | 更正、未知信息、实体字段不被模型臆测 | 陈旧事实覆盖 current、生成未给过的信息 |
 
-## 2. 测试范围
+暂不验收：向量检索、git witness、按时间自动 commit、自动 branch merge、Desktop、Moshi
+用户模型以及 CTML/TTS 世界执行进度。
 
-| 测试面 | 目标 |
-|---|---|
-| 写入 | 每个成功 articulate 只产生一个 Moment |
-| 持久化 | 退出并重启后历史仍在 |
-| 近期召回 | detail window 内原文可准确复述 |
-| 折叠召回 | 退出 detail window 的 commit 仍有 extractive index |
-| 时间一致性 | 更正后能区分“曾经说过”和“当前有效” |
-| 负向准确性 | 未写入的信息不应被声称为记忆 |
-| 隔离 | 不同 Ghost/owner 不串记忆 |
-| 故障 | 模型失败的半帧不进入完成轨迹 |
-| 可审计性 | 回答可与 jsonl Moment/Commit 对账 |
-| 反思 | mechanical commit 后的语义 note 可追加、可追赶 |
-| 控制面 | CTML 只能操作当前 owner/branch 的显式记忆动作 |
+## 2. 环境与配置准备
 
-暂不验收：向量语义召回、Desktop、git witness daemon、真正的 branch merge、跨 owner
-写入、并行化身与承诺保全。
-
-## 3. 准备
-
-在仓库根目录执行：
+### 2.1 运行入口
 
 ```bash
 uv sync
-cp .moss/.env.example .moss/.env
-```
-
-在 `.moss/.env` 填入实际模型配置，至少包括：
-
-```dotenv
-ANTHROPIC_BASE_URL=...
-ANTHROPIC_API_KEY=...
-ANTHROPIC_MODEL=...
-ANTHROPIC_SMALL_FAST_MODEL=...  # 启用反思时建议配置
-```
-
-不要提交 `.moss/.env`。
-
-默认记忆策略在 `configs/memory.yml`。若反思模型暂不可用，将
-`reflection_enabled` 设为 `false`；写入、机械 commit 和跨重启恢复仍会正常工作。
-
-确认 Data 已被发现：
-
-```bash
 .venv/bin/moss-run-ghost
+.venv/bin/moss-run-ghost aurelius
 ```
 
-输出应包含 `data — Data`。
-
-若要做全新记忆测试，先确保 Data 已停止，再备份旧数据：
-
-```bash
-mv .moss/ghosts/data/memento .moss/ghosts/data/memento.backup-$(date +%Y%m%d-%H%M%S)
-```
-
-## 4. 自动化测试
-
-### 4.1 核心测试
-
-```bash
-.venv/bin/pytest -q \
-  src/ghoshell_moss/ghosts/data \
-  tests/ghoshell_moss/default/core/memento
-```
-
-覆盖空历史、Moment round-trip、机械 commit、折叠渲染、MementoRef、跨实例恢复、
-失败不写入、反思不改 Moment、启动追赶、MemoryConfig 和 Memento CTML 控制面。
-
-### 4.2 无网络验收脚本
-
-临时目录运行：
-
-```bash
-.venv/bin/python scripts/ghost/data_memory_acceptance.py
-```
-
-保留产物用于人工检查：
-
-```bash
-.venv/bin/python scripts/ghost/data_memory_acceptance.py \
-  --root /tmp/moss-data-memory-acceptance
-```
-
-期望输出：
+发现列表应包含：
 
 ```text
-PASS: DataMemory write -> commit -> close -> reopen -> render
-commit_count=1 staging_count=0
+aurelius — Aurelius
 ```
 
-### 4.3 相邻回归
+一次只启动一个 `aurelius` 实例，避免同一个 `(memento root, owner)` 并发写。
+
+### 2.2 MemoryConfig 的精确位置
+
+当前仓库配置文件是：
+
+```text
+/Users/lipeng/TraeProject/MOSShell/.moss/configs/memory.yml
+```
+
+它控制的是 Aurelius 的策略，不是持久化数据本身；记忆数据默认在：
+
+```text
+/Users/lipeng/TraeProject/MOSShell/.moss/ghosts/aurelius/memento/
+```
+
+测试前先保存配置备份：
+
+```bash
+cp .moss/configs/memory.yml /tmp/memory.yml.before-aurelius-test
+```
+
+编辑 `memory.yml` 后必须停止并重启 Aurelius。建议测试配置：
+
+```yaml
+detail_n: 2
+summary_m: -1
+auto_commit_every: 2
+reflection_enabled: true
+reflection_model_tag: small_fast_model
+reflection_max_summary_chars: 360
+reflection_max_source_chars: 12000
+reflection_startup_limit: 16
+```
+
+若没有可用的反思模型或凭据，先设 `reflection_enabled: false`。写入、commit、重启恢复和
+人工 `memory_reinterpret` 仍然可验收。
+
+### 2.3 隔离测试数据
+
+不要删除现有用户记忆。先停止 Aurelius，再备份：
+
+```bash
+mv .moss/ghosts/aurelius/memento \
+  .moss/ghosts/aurelius/memento.backup-$(date +%Y%m%d-%H%M%S)
+```
+
+旧 `data` 原型目录不是 Aurelius 的默认数据；迁移/兼容方式见集成方案第 8 节。
+
+## 3. 自动化回归
+
+```bash
+.venv/bin/ruff check src/ghoshell_moss/ghosts/aurelius
+.venv/bin/pytest -q \
+  src/ghoshell_moss/ghosts/aurelius \
+  tests/ghoshell_moss/default/core/memento
+.venv/bin/python scripts/ghost/aurelius_memory_acceptance.py
+```
+
+自动化应至少覆盖：
+
+- 空记忆、Moment round-trip、跨实例重启与机械 commit；
+- 窗口折叠、MementoRef、无效策略拒绝；
+- semantic commit、reinterpret、fork/switch 与 channel 命令发现；
+- 反思追加 note 而不触碰 Moment；
+- 未反思 mechanical commit 和历史空 note 的启动追赶；
+- YAML `MemoryConfig` 的持久化读取；
+- 失败 articulate 不写入。
+
+相邻基线回归：
 
 ```bash
 .venv/bin/pytest -q \
   src/ghoshell_moss/ghosts/atom \
   src/ghoshell_moss/ghosts/mock \
-  src/ghoshell_moss/ghosts/data \
+  src/ghoshell_moss/ghosts/aurelius \
   tests/ghoshell_moss/default/core/memento
 ```
 
-目的：证明 Atom 仍是纯内存基线、Mock Ghost 契约没有被 Data 影响。
+## 4. 人工验收：存储与认知准确性
 
-## 5. 人工对话测试
+### A. 跨重启与精确事实
 
-启动：
-
-```bash
-.venv/bin/moss-run-ghost data
-```
-
-一次只启动一个 `data`，避免同 owner 多写者。
-
-### 场景 A：跨重启持久化
-
-第一段会话：
+先说：
 
 ```text
-请记住：我的本轮测试代号是 AMBER-731，所属环境是 staging。只确认收到，不要改写。
+请记住：本轮测试代号是 AMBER-731，所属环境是 staging。只确认收到，不要改写。
 ```
 
-退出 Data，重新运行同一命令，再问：
+停止并重启后问：
 
 ```text
-我上次给你的测试代号和所属环境分别是什么？请逐字回答，并说明信息来自历史记忆。
+我上次给出的测试代号和所属环境分别是什么？逐字回答；如果没有记忆证据请说没有找到。
 ```
 
-通过标准：回答包含精确的 `AMBER-731` 和 `staging`，不引入其他环境。
+通过：精确返回 `AMBER-731` 和 `staging`，不附会其他环境。
 
-### 场景 B：多事实与字段绑定
+### B. 实体字段与未知信息
 
-依次说：
+依次输入：
 
 ```text
-记忆样本一：设备 R-17 的颜色是青色。
-记忆样本二：设备 R-71 的颜色是琥珀色。
-记忆样本三：R-17 的维护日是周二，R-71 的维护日是周五。
+设备 R-17 的颜色是青色。
+设备 R-71 的颜色是琥珀色。
+R-17 的维护日是周二，R-71 的维护日是周五。
 ```
 
-然后问：
+提问：
 
 ```text
 用表格列出 R-17 与 R-71 的颜色和维护日。不要根据常识补全。
+我之前有没有告诉过你护照号码？没有就只答“没有找到”。
 ```
 
-通过标准：四个字段全部正确，实体不串绑。
+通过：四个字段不串绑；不生成护照号码。
 
-### 场景 C：更正与时间一致性
+### C. 更正与时间一致性
 
 ```text
 我当前所在城市是杭州。
-更正：我当前所在城市是苏州。杭州只是上一条已经失效的历史记录。
+更正：我当前所在城市是苏州；杭州是已经失效的历史记录。
 我现在在哪个城市？之前说过哪个城市？分别标记 current 和 superseded。
 ```
 
-通过标准：current=苏州，superseded=杭州；只回答“杭州”视为陈旧记忆错误。
+通过：`current=苏州`，`superseded=杭州`。只答杭州是陈旧记忆错误。
 
-### 场景 D：未知信息与抗幻觉
+### D. 折叠窗口的可追溯召回
 
-```text
-我之前有没有告诉过你我的护照号码？如果记忆里没有，只回答“没有找到”，不要猜。
-```
-
-通过标准：没有相关 Moment 时不生成号码，不把模型常识说成历史记忆。
-
-### 场景 E：跨折叠窗口召回
-
-默认每 4 帧 mechanical commit，保留最近 12 个完整 Moment。先写入：
+写入：
 
 ```text
 折叠测试事实：ORBIT-004 的校验词是“雪松”。
 ```
 
-再完成至少 12 个有回答的普通回合，使最早事实退出 detail window。之后问：
+再完成足够多的回合，使它退出 `detail_n`。然后问：
 
 ```text
-ORBIT-004 的校验词是什么？请说明它来自完整近史还是 mechanical extractive index。
+ORBIT-004 的校验词是什么？它来自近期完整 Moment 还是早期 CommitNote？
 ```
 
-通过标准：回答“雪松”，并能识别其来自较早 Memento 摘录。磁盘中的原始 Moment
-仍应完整存在。
+通过：答案为“雪松”；能说明早期信息来自 Memento note。随后用 `memory_show` 检查原始
+Moment 仍含该事实。
 
-### 场景 F：owner 隔离
+## 5. 人工验收：Commit 与 Note 版本
 
-停止 Data，启动 Echo：
+本组直接验证“追加 note 不覆盖历史”的关键约束。先产生至少一个 mechanical commit，
+再执行：
 
-```bash
-.venv/bin/moss-run-ghost echo
+```text
+<ghost:memory_log />
+<ghost:memory_show commit="1" />
+<ghost:memory_reinterpret commit="1" summary="人工更正：用户偏好短而可验证的回答。" />
+<ghost:memory_log />
+<ghost:memory_show commit="1" />
 ```
 
-询问 `AMBER-731`。通过标准：Echo 不应从 Data 的 Memento 得到该值。重新启动 Data
-后仍应能召回。
+检查点：
 
-### 场景 G：反思与启动追赶
+1. `memory_show` 中冻结 Moment 的 input/logos 在前后两次调用完全一致；
+2. `memory_log` 显示的新 summary 是人工更正后的释义；
+3. 磁盘中同一 commit 的 note 记录数增加，而不是原 note 被替换；
+4. 不存在或含糊的 commit 前缀必须明确报错，不能静默选择另一个 commit。
 
-使用 `memory_inspect` 观察 `reflection_pending`。正常对话满足 `auto_commit_every`
-后，等待一个非交互时间窗口，再查看 `memory_log`：该 mechanical commit 的摘要应从
-`[extractive mechanical index]` 更新为简短的语义释义。原始 Moment 中的输入和 logos 仍应能从
-`memory_show` 取回。
-要验证追赶，先将 `reflection_enabled: false` 写入 `configs/memory.yml`，完成一个
-mechanical commit 后退出；再改回 `true` 并重启 Data。通过标准：启动不阻塞，
-`reflection_pending` 最终降为 0，且旧 Moment 的原文不发生改动。
+再手工创建 semantic 锚点：
 
-### 场景 H：Memento CTML 控制面
+```text
+<ghost:memory_commit summary="手工语义锚点：已确认 AMBER-731 的环境。" />
+```
 
-在支持 CTML 的 Data 会话中依次请求模型执行以下操作，或在 TUI 中手工调用相同命令：
+通过：staging 被冻结为 `kind=semantic`；空 summary 或空 staging 被拒绝。
+
+## 6. 人工验收：反思与启动追赶
+
+### E. 正常反思
+
+保持 `reflection_enabled: true`，完成 `auto_commit_every` 个回合。调用：
 
 ```text
 <ghost:memory_inspect />
 <ghost:memory_log />
+```
+
+通过：commit 先出现；反思完成后 `reflection_pending` 变为 0，最新 note 是简短语义结论。
+对话本身不应等待反思完成。`memory_show` 中的原文不应变化。
+
+### F. 反思失败后的启动追赶
+
+1. 设置 `reflection_enabled: false`，重启 Aurelius；
+2. 产生一个 mechanical commit，确认 `reflection_pending > 0`；
+3. 停止实例，恢复 `reflection_enabled: true` 并确保 `small_fast_model` 可用；
+4. 重启 Aurelius，立即查看 `memory_inspect`，稍后再次查看。
+
+通过：启动和首轮对话不被阻塞；pending 最终降到 0；旧 Moment 原文保持不变。若反思服务
+继续失败，记忆主路仍能工作，`inspect_state` 应保留最近错误用于排查。
+
+### G. 历史空 note 追赶
+
+该场景由自动化测试覆盖。人工排查时可使用一个旧的 mechanical commit（正文为空）启动
+Aurelius；它应被识别为 pending，并由 `reinterpret()` 追加 reflection note，而不是重写
+commit 成员。
+
+## 7. 人工验收：CTML、owner 与分叉
+
+```text
+<ghost:memory_inspect />
+<ghost:memory_staging />
+<ghost:memory_log />
 <ghost:memory_show commit="1" />
-<ghost:memory_commit summary="手工语义锚点" />
-<ghost:memory_reinterpret commit="2" summary="更正后的释义" />
-<ghost:memory_fork commit="2" name="test-fork" />
+<ghost:memory_fork commit="1" name="test-fork" />
 <ghost:memory_branches />
 ```
 
-通过标准：`show` 展开的原文与磁盘一致；`reinterpret` 不改 Moment；
-`fork` 从 commit 而非 staging 出生，且切换后的新写入不影响父分支。试图传入不存在、
-含糊或不属于本 owner 的 id 应得到明确失败，不应静默选择分支。
+通过：
 
-## 6. 磁盘对账
+- fork 必须从已冻结 commit 产生；新 branch 后的写入不改变父 branch；
+- `memory_switch` 对唯一 branch id 前缀有效，对含糊前缀失败；
+- Echo 或另一个 owner 不应召回 Aurelius 的 `AMBER-731`；
+- 不存在的 commit/branch、跨 owner 标识不应得到静默成功；
+- `memory_reflect` 只调度后台追赶，不能卡住当前 CTML 回合。
 
-Data 默认记忆根：
+当前没有 branch merge；不要把 `memory_fork` 测试写成“分叉自动合并”。
 
-```text
-.moss/ghosts/data/memento/
-```
+## 8. 配置生效与边界测试
 
-统计 Moment：
+逐项修改 `.moss/configs/memory.yml` 并重启 Aurelius：
 
-```bash
-find .moss/ghosts/data/memento/moments/data \
-  -name moments.jsonl -print -exec wc -l {} \;
-```
-
-查找唯一测试词：
-
-```bash
-rg -n 'AMBER-731|ORBIT-004|雪松' .moss/ghosts/data/memento
-```
-
-检查 branch：
-
-```bash
-find .moss/ghosts/data/memento/branches/data -maxdepth 4 -type f -print
-```
-
-对账原则：
-
-- 成功回答一轮，对应一个新 Moment id；
-- 失败回答不应产生完成 Moment；
-- 每 4 个 staging Moment 生成一个 mechanical commit；
-- commit 摘录出现测试词时，原始 Moment 中也必须能找到同一词；
-- 摘录只允许截断，不允许改写实体值。
-
-## 7. 指标与通过门槛
-
-| 指标 | 计算 | 门槛 |
+| 修改 | 操作 | 通过标准 |
 |---|---|---|
-| 写入完备率 | 已落盘成功 Moment / 成功 articulate | 100% |
-| 重复率 | 重复完成 Moment id / 完成 Moment | 0% |
-| 精确事实召回 | 正确唯一 token / 应召回 token | 100% |
-| 字段串绑 | 错误 entity-field 绑定次数 | 0 |
-| 陈旧事实错误 | 把 superseded 当 current 的次数 | 0 |
-| 未知幻觉 | 对不存在记忆编造具体值的次数 | 0 |
-| owner 泄漏 | 其他 Ghost 召回 Data 私有事实的次数 | 0 |
+| `auto_commit_every: 1` | 完成一个回合 | 立即产生 mechanical commit |
+| `auto_commit_every: 0` | 完成多个回合 | 只有 staging 增长，无自动 commit |
+| `detail_n: 1` | 写入两回合 | 模型 history 只保留最近完整明细 |
+| `summary_m: 1` | 产生多个 commit | 早期 note 数被限制为 1 |
+| `reflection_enabled: false` | 产生 commit | 不创建后台反思；pending 保留 |
+| `reflection_startup_limit: 0` | 有 pending 后重启 | 启动不调度追赶；可用 `memory_reflect` 手动调度 |
 
-建议每个场景独立跑 5 次；只要出现一次跨 owner 泄漏、重复写、当前/历史颠倒，均
-按结构性失败处理，不用平均分掩盖。
+每次测试后还原 `/tmp/memory.yml.before-aurelius-test`，再重启实例。
 
-## 8. 已知边界
+## 9. 磁盘对账与故障排查
 
-- mechanical summary 仍是每个 Moment 输入与 logos 各最多 240 字符的保真摘录；反思完成后
-  它会被一个可追溯的 CommitNote 释义替换。反思是基于证据的推断，不是权威事实。
-- 原文永久保留，且当前 Ghost 可用 `memory_show` 展开 commit。超出摘要的细节应以展开的
-  Moment 和磁盘原文为准，不以反思结论代替。
-- `summary_m=-1` 会保留所有旧 commit 摘要，长期运行后的摘要预算治理尚未完成。
-- 当前没有模糊语义召回；测试应优先使用唯一 token 和明确字段，不能把模型猜中当
-  成记忆命中。
-- 当前 `MemoryConfig` 实现数量阈值与反思策略，未实现按时间自动 commit 、witness
-  调度和真正的 branch merge。
+只读检查默认数据：
+
+```bash
+rg -n 'AMBER-731|ORBIT-004|雪松' .moss/ghosts/aurelius/memento
+find .moss/ghosts/aurelius/memento -type f -print
+```
+
+优先使用 CTML 的 `memory_show` 和 `memory_log` 对账。不要手工编辑 jsonl：那会绕过 owner、
+冻结与 note 版本规则。
+
+若启动后没有反思，按以下顺序检查：
+
+1. `.moss/configs/memory.yml` 中 `reflection_enabled` 是否为 `true`；
+2. `reflection_model_tag` 是否能在 LLM 配置中解析，凭据是否有效；
+3. `memory_inspect` 的 `reflection_pending`、`inspect_state` 的 errors；
+4. `reflection_startup_limit` 是否为 0，或 pending 是否超过本次启动上限；
+5. 是否误用旧 `data` Memento root/owner。

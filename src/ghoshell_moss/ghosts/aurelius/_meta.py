@@ -1,4 +1,4 @@
-"""Data Ghost bootstrapper."""
+"""Aurelius Ghost bootstrapper."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -19,16 +19,16 @@ from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
 
 from ._config import MemoryConfig
 
-__all__ = ["DataMeta"]
+__all__ = ["AureliusMeta"]
 
 
-class DataMeta(GhostMeta):
-    """Bootstrapper for the Memento-backed Data Ghost prototype."""
+class AureliusMeta(GhostMeta):
+    """Bootstrapper for the Memento-backed Aurelius Ghost prototype."""
 
     def __init__(
         self,
-        name: str = "data",
-        description: str = "Data Ghost — persistent Memento-backed conversation.",
+        name: str = "aurelius",
+        description: str = "Aurelius Ghost — persistent Memento-backed conversation.",
         *,
         soul_path: str | Path | None = None,
         soul_content: str | None = None,
@@ -175,7 +175,7 @@ class DataMeta(GhostMeta):
         )
 
     def factory(self, container: IoCContainer) -> Ghost:
-        from ._runtime import Data
+        from ._runtime import Aurelius
 
         workspace = container.force_fetch(GhostWorkspace)
         config = self._memory_config(container)
@@ -193,7 +193,7 @@ class DataMeta(GhostMeta):
         auto_commit_every = (
             self._auto_commit_every if self._auto_commit_every is not None else config.auto_commit_every
         )
-        return Data(
+        return Aurelius(
             meta=self,
             agent=self.build_agent(container),
             container=container,

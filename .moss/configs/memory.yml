@@ -1,0 +1,35 @@
+# Aurelius 的 Memento 记忆策略。
+#
+# 此文件只控制“如何保存、折叠和反思”，不保存聊天原文；原文位于
+# .moss/ghosts/aurelius/memento/。修改后请重启 Aurelius 才会生效。
+
+# 保留在模型上下文中的最近完整 Moment 数。增大可提升近期细节准确性，
+# 但会增加每轮 prompt；必须至少为 1。
+detail_n: 12
+
+# 保留在模型上下文中的早期 CommitNote 数。-1 表示全部；长会话建议设置
+# 为有限正数，以避免摘要无限占用 prompt。
+summary_m: -1
+
+# staging 中达到多少个成功完成的 Moment 后，自动形成 mechanical commit。
+# 每个成功 Moment 都会立即落盘到 staging；0 仅关闭“自动冻结”，不关闭保存。
+auto_commit_every: 4
+
+# 是否在 commit 后调用后台小模型追加反思 note。关闭后主记忆仍完整可用，
+# 已有待反思 commit 会保留，重新开启并重启后可自动追赶。
+reflection_enabled: true
+
+# 反思模型在 LLMConfig 中使用的 tag。默认 small_fast_model 应映射到成本和延迟都
+# 合适的模型；若该 tag 未配置，请改成已有 tag 或先关闭 reflection_enabled。
+reflection_model_tag: small_fast_model
+
+# 单条反思 note 的最大字符数。它约束持久化释义长度，不是模型 token 限额。
+reflection_max_summary_chars: 360
+
+# 单次发送给反思模型的冻结可见原文最大字符数。输入只含用户可见 percepts 和 logos，
+# 不包含模型隐藏思维链。
+reflection_max_source_chars: 12000
+
+# 单次启动时最多追赶多少个尚未反思的 commit。0 表示不在启动时追赶，
+# 可稍后通过 <ghost:memory_reflect /> 手动调度。
+reflection_startup_limit: 16
