@@ -57,7 +57,7 @@ __all__ = [
     'WORKSPACE_ENV_EXAMPLE_FILENAME',
 
     'WORKSPACE_CELL_RUNTIME_DIR',
-    'DEFAULT_CELLS_DIR',
+    'DEFAULT_NODES_DIR',
 
     'MATRIX_MANIFESTS_PACKAGE',
     'GHOST_MANIFESTS_PACKAGE',
@@ -79,7 +79,7 @@ META_CONFIG_FILENAME = 'MOSS.md'
 WORKSPACE_ENV_FILENAME = '.env'
 WORKSPACE_ENV_EXAMPLE_FILENAME = '.env.example'
 WORKSPACE_CELL_RUNTIME_DIR = 'runtime/cells'
-DEFAULT_CELLS_DIR = 'cells'
+DEFAULT_NODES_DIR = 'nodes'
 
 # --- stubs --- #
 # workspace 的原始文件所处的 package 路径.
@@ -187,12 +187,12 @@ class MossMeta(BaseModel):
         default='',
         description='moss system prompt',
     )
-    cell_paths: list[str] = Field(
+    node_paths: list[str] = Field(
         default_factory=lambda: [
-            DEFAULT_CELLS_DIR,
-            f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_CELLS_DIR}",
+            DEFAULT_NODES_DIR,
+            f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
         ],
-        description="以 project 为出发点, 发现 cells 的路径.",
+        description="以 project 为出发点, 发现 nodes 的路径.",
     )
 
     file: str = Field(
@@ -215,11 +215,11 @@ class MossMeta(BaseModel):
         data['system_project'] = post.content
         return cls(**data)
 
-    def cell_dirs(self, env: 'Environment') -> list[Path]:
-        """基于 cell_paths 解析为绝对路径."""
+    def node_dirs(self, env: 'Environment') -> list[Path]:
+        """基于 node_paths 解析为绝对路径."""
         result = []
         project_dir = env.project_path
-        for relative_path in self.cell_paths:
+        for relative_path in self.node_paths:
             relative_path = relative_path.replace(
                 f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
             )
@@ -532,19 +532,19 @@ class Environment:
     def moss_meta(self) -> MossMeta:
         return self._meta
 
-    def cell_dirs(self) -> list[Path]:
-        """返回 MossMeta 中配置的、实际存在的 cell 发现路径."""
-        return self._meta.cell_dirs(self)
+    def node_dirs(self) -> list[Path]:
+        """返回 MossMeta 中配置的、实际存在的 node 发现路径."""
+        return self._meta.node_dirs(self)
 
     @property
-    def default_project_cells_dir(self) -> Path:
-        """project 默认的 cells 发现路径. """
-        return self.project_path.joinpath(DEFAULT_CELLS_DIR)
+    def default_project_nodes_dir(self) -> Path:
+        """project 默认的 nodes 发现路径. """
+        return self.project_path.joinpath(DEFAULT_NODES_DIR)
 
     @property
-    def default_workspace_cells_dir(self) -> Path:
-        """workspace 内部默认的 cells 发现路径. """
-        return self.workspace_path.joinpath(DEFAULT_CELLS_DIR)
+    def default_workspace_nodes_dir(self) -> Path:
+        """workspace 内部默认的 nodes 发现路径. """
+        return self.workspace_path.joinpath(DEFAULT_NODES_DIR)
 
     @property
     def cell_runtimes_dir(self) -> Path:

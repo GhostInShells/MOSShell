@@ -5,7 +5,7 @@ from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_NETWORK_SCOPE, DEFAULT_NETWORK_NAME, Environment,
-    DEFAULT_CELLS_DIR, MOSS_NAME_PATTERN,
+    DEFAULT_NODES_DIR, MOSS_NAME_PATTERN,
     ENV_WORKSPACE_DIR_KEY,
 )
 from ghoshell_moss.core.blueprint.cell import NodeManager, CellRuntimeInfo
@@ -73,16 +73,16 @@ class HostModeMeta(BaseModel):
         description="补充到 CTML meta instruction 后面的内容. version 为空, 这里应该包含完整的 meta instruction"
     )
 
-    cell_paths: list[str] = Field(
+    node_paths: list[str] = Field(
         default_factory=lambda: [
-            DEFAULT_CELLS_DIR,
-            f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_CELLS_DIR}",
+            DEFAULT_NODES_DIR,
+            f"${ENV_WORKSPACE_DIR_KEY}/{DEFAULT_NODES_DIR}",
         ],
-        description="以 project 为出发点, 发现 cells 的路径. ",
+        description="以 project 为出发点, 发现 nodes 的路径. ",
     )
-    exclude_cell_paths: list[str] = Field(
+    exclude_node_paths: list[str] = Field(
         default_factory=lambda: [],
-        description="排除掉 cells 的路径, 匹配规则从 project 出发的相对路径, 以 fnmatch 语法为准过滤. "
+        description="排除掉 nodes 的路径, 匹配规则从 project 出发的相对路径, 以 fnmatch 语法为准过滤. "
     )
 
     # --- 运行时的动态生成字段 --- #
@@ -98,11 +98,11 @@ class HostModeMeta(BaseModel):
             return cls.from_file(file)
         return None
 
-    def cell_dirs(self, env: Environment) -> list[Path]:
-        """基于 cell_paths 解析为绝对路径."""
+    def node_dirs(self, env: Environment) -> list[Path]:
+        """基于 node_paths 解析为绝对路径."""
         result = []
         project_dir = env.project_path
-        for relative_path in self.cell_paths:
+        for relative_path in self.node_paths:
             relative_path = relative_path.replace(
                 f'${ENV_WORKSPACE_DIR_KEY}', str(env.workspace_path),
             )
@@ -458,10 +458,10 @@ class HostMode(ABC):
         """
         ...
 
-    def cells_discover_paths(self) -> list[Path]:
+    def nodes_discover_paths(self) -> list[Path]:
         # 原 HostMode.cells 已删 (UU-10/TT-7: cells 三处露头收敛为 project.cells
         # 一条链路). mode 只贡献发现路径配置, 不再持有第二个 registry 实例.
-        return self.meta.cell_dirs(self.env)
+        return self.meta.node_dirs(self.env)
 
 
 _project: 'Project | None' = None

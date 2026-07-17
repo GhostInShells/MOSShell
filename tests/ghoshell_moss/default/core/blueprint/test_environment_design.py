@@ -435,14 +435,14 @@ class TestEnvironmentDiscover:
 
 class TestEnvironmentDirPaths:
 
-    def test_cell_dirs_under_project(self, tmp_path):
+    def test_node_dirs_under_project(self, tmp_path):
         project = tmp_path / 'proj'
         project.mkdir()
         ws = project / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         env = Environment(workspace=ws)
-        assert env.default_project_cells_dir.relative_to(env.project_path)
-        assert env.default_workspace_cells_dir.relative_to(env.workspace_path)
+        assert env.default_project_nodes_dir.relative_to(env.project_path)
+        assert env.default_workspace_nodes_dir.relative_to(env.workspace_path)
 
     def test_runtime_and_log_dirs_under_workspace(self, tmp_path):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME

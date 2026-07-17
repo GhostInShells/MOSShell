@@ -26,7 +26,7 @@ class LocalProject(Project):
         self._env = env
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
-        self._cells: NodeManager | None = None
+        self._nodes: NodeManager | None = None
         self._ghosts_cache: dict[str, tuple[Path, GhostMeta]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
         self._matrix_manifests: MatrixManifest | None = None
@@ -115,18 +115,18 @@ class LocalProject(Project):
                 )
             self._modes_cache[manifest.name()] = (host_md, manifest)
 
-    # -- cells -- #
+    # -- nodes -- #
 
     @property
     def nodes(self) -> NodeManager:
-        if self._cells is None:
+        if self._nodes is None:
             try:
                 mode = self.current_mode()
-                cell_dirs = mode.cells_discover_paths() if mode else self._env.cell_dirs()
+                node_dirs = mode.nodes_discover_paths() if mode else self._env.node_dirs()
             except Exception:
-                cell_dirs = self._env.cell_dirs()
-            self._cells = ProjectNodeManager(self._env, cell_dirs=cell_dirs)
-        return self._cells
+                node_dirs = self._env.node_dirs()
+            self._nodes = ProjectNodeManager(self._env, node_dirs=node_dirs)
+        return self._nodes
 
     def cell_runtimes(self) -> Iterator[CellRuntimeInfo]:
         # 直接读文件系统, 不做活性核对 — 活性判断由调用方按 info.is_alive() 自负.

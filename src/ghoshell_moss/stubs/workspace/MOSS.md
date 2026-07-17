@@ -4,7 +4,7 @@
 # default_ghost: none
 # default_network: default
 # default_network_scope: default
-# cell_paths:
-#   - cells
-#   - $MOSS_WORKSPACE/cells
+# node_paths:
+#   - nodes
+#   - $MOSS_WORKSPACE/nodes
 ---

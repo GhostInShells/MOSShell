@@ -67,7 +67,7 @@ def show_mode(
             ["Home", str(mode.workspace_dir)],
             ["Manifest Package", meta.manifest_package],
             ["HOST.md", str(Path(meta.file))],
-            ["Cell Paths", "\n".join(str(p) for p in mode.cells_discover_paths()) or "—"],
+            ["Node Paths", "\n".join(str(p) for p in mode.nodes_discover_paths()) or "—"],
         ],
         headers=["Property", "Value"],
         title=f"Mode: {meta.name}",

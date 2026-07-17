@@ -27,11 +27,11 @@ class ProjectNodeManager(NodeManager):
     def __init__(
             self,
             env: Environment,
-            cell_dirs: list[Path],
+            node_dirs: list[Path],
     ):
         self._env = env
         # 默认扫描根目录集合. list_nodes(paths=...) 可 override.
-        self._cell_dirs = cell_dirs
+        self._node_dirs = node_dirs
         self._cache: dict[ProjectRelativePath, NodeManifest] | None = None
 
     def list_nodes(
@@ -49,7 +49,7 @@ class ProjectNodeManager(NodeManager):
             scanned = self._scan(paths)
         else:
             if refresh or self._cache is None:
-                self._cache = self._scan(self._cell_dirs)
+                self._cache = self._scan(self._node_dirs)
             scanned = self._cache.copy()
 
         # installed=None → 全部返回 (含未安装, 让 CLI 能提示 INSTALL.md 路径, WW-5 故事 3).

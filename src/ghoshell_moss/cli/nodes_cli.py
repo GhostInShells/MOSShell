@@ -209,10 +209,10 @@ def create_node(
         help="Group directory (e.g. 'tools', 'sensors').",
     ),
 ):
-    """Create a new node from the stub template under {workspace}/cells/."""
+    """Create a new node from the stub template under {workspace}/nodes/."""
     project = Project.discover()
 
-    target_dir = project.workspace_dir / "cells"
+    target_dir = project.workspace_dir / "nodes"
     if group:
         target_dir = target_dir / group
     target_dir = target_dir / name
@@ -384,7 +384,7 @@ def run_node(
     Ctrl+C forwards SIGTERM to the child; 5s grace then SIGKILL bottom-line.
     Extra args after `--` are appended to the child argv:
 
-        moss nodes run cells/tools/foo -- --port 8000 --debug
+        moss nodes run nodes/tools/foo -- --port 8000 --debug
     """
     project = Project.discover()
     env = project.env

@@ -74,16 +74,16 @@ class TestLocalHostModeBootstrapGuard:
         with pytest.raises(RuntimeError, match='not bootstrapped'):
             mode.manifests()
 
-    def test_cells_raises_before_bootstrap(self, tmp_path):
-        # HostMode.cells() 已在 §YY-2 删除, 只剩 cells_discover_paths().
+    def test_nodes_raises_before_bootstrap(self, tmp_path):
+        # HostMode.cells() 已在 §YY-2 删除, 只剩 nodes_discover_paths().
         # 该方法不受 bootstrap 守卫 (纯 meta 配置解析, 无副作用).
         mode_dir, env, meta = _minimal_mode(tmp_path)
         mode = LocalHostMode(env=env, meta=meta, workspace_dir=mode_dir)
-        # cells_discover_paths 不依赖 bootstrap, 应可直接调用
-        paths = mode.cells_discover_paths()
+        # nodes_discover_paths 不依赖 bootstrap, 应可直接调用
+        paths = mode.nodes_discover_paths()
         assert isinstance(paths, list)
 
-    def test_bootstrap_makes_manifest_and_cells_available(self, tmp_path):
+    def test_bootstrap_makes_manifest_and_nodes_available(self, tmp_path):
         mode_dir, env, meta = _minimal_mode(tmp_path)
         mode = LocalHostMode(env=env, meta=meta, workspace_dir=mode_dir)
         mode.bootstrap()
@@ -109,14 +109,14 @@ class TestLocalHostModeCache:
         b = mode.manifests()
         assert a is b
 
-    def test_cells_returns_same_instance(self, tmp_path):
-        # cells_discover_paths 每次读 meta.cell_dirs — 不做缓存 (纯投影视图,
+    def test_nodes_returns_same_instance(self, tmp_path):
+        # nodes_discover_paths 每次读 meta.node_dirs — 不做缓存 (纯投影视图,
         # 缓存是漂移种子). meta 配置就是权威, list 每次新构造.
         mode_dir, env, meta = _minimal_mode(tmp_path)
         mode = LocalHostMode(env=env, meta=meta, workspace_dir=mode_dir)
         mode.bootstrap()
-        a = mode.cells_discover_paths()
-        b = mode.cells_discover_paths()
+        a = mode.nodes_discover_paths()
+        b = mode.nodes_discover_paths()
         assert a == b
 
 

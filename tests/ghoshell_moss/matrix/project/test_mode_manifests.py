@@ -82,11 +82,13 @@ class TestScannedModeManifests:
         assert not ch.is_error()
         assert ch.name() == '__main__'
 
-    def test_nuclei_empty_when_no_instances(self):
-        """stub mode nuclei.py 只有 import 没有实例，返回空列表."""
+    def test_nuclei_finds_default_instances(self):
+        """stub mode nuclei/__init__.py 声明了 5 个默认 NucleusMeta 实例."""
         m = ScannedModeManifests(STUB_MODE_ROOT)
         results = list(m.nuclei())
-        assert results == []
+        assert len(results) == 5
+        for r in results:
+            assert not r.is_error()
 
     def test_providers_inherited_from_matrix(self):
         """继承自 ScannedMatrixManifest 的 providers 和 signals 正常工作."""
