@@ -79,7 +79,9 @@ class ZenohStreamSubscriber(StreamSubscriber):
         elif self._sub is not None:
             raise RuntimeError('Session Stream is already started')
         self._queue = janus.Queue(maxsize=self._maxsize)
-        self._sub = self._zenoh_session.declare_subscriber(
+        # declare_subscriber 是同步 zenoh 调用, to_thread 卸载 (runtime 路径).
+        self._sub = await asyncio.to_thread(
+            self._zenoh_session.declare_subscriber,
             self._full_key,
             self._on_zenoh_sample,
         )
@@ -90,7 +92,7 @@ class ZenohStreamSubscriber(StreamSubscriber):
         self._closed = True
         if self._sub is not None and not self._zenoh_session.is_closed():
             try:
-                self._sub.undeclare()
+                await asyncio.to_thread(self._sub.undeclare)
             except Exception:
                 # zenoh 的 python 包可能有不同类型的异常, 暂时不用处理.
                 pass

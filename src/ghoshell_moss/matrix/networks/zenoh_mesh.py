@@ -411,11 +411,15 @@ class ZenohCellMesh(CellMesh):
         self._liveness_queue = janus.Queue(maxsize=_QUEUE_MAXSIZE)
 
         # 先订阅, 再 seed, 避免 declare 和 get 之间丢事件.
-        self._cell_subscriber = self._session.liveliness().declare_subscriber(
+        # declare_subscriber 是同步 zenoh 调用 (registry 操作 + 潜在网络握手),
+        # 走 to_thread 避免阻塞 event loop (matrix runtime 路径, 1ms 铁律).
+        self._cell_subscriber = await asyncio.to_thread(
+            self._session.liveliness().declare_subscriber,
             self._keyspace.cell_liveness_wildcard,
             self._on_liveness_sample,
         )
-        self._event_subscriber = self._session.declare_subscriber(
+        self._event_subscriber = await asyncio.to_thread(
+            self._session.declare_subscriber,
             self._keyspace.events_wildcard,
             self._on_event_sample,
         )
@@ -460,12 +464,14 @@ class ZenohCellMesh(CellMesh):
         self._event_consumer_task = None
         self._liveness_consumer_task = None
 
-        # 关 subscriber.
+        # 关 subscriber. undeclare 是同步 zenoh 调用, 走 to_thread —
+        # __aexit__ 虽然在 matrix 关闭链路上, 但仍可能被 event loop 里的其他 task
+        # 观察等待, 1ms 铁律照样适用.
         for sub in (self._cell_subscriber, self._event_subscriber):
             if sub is None:
                 continue
             try:
-                sub.undeclare()
+                await asyncio.to_thread(sub.undeclare)
             except RuntimeError:
                 pass
         self._cell_subscriber = None
