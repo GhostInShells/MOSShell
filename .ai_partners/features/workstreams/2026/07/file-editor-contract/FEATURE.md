@@ -9,9 +9,13 @@ description: 'vendor All-Hands-AI/openhands-aci 的 editor 子集 (5 动词: vie
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: vendor + contracts + core + 45 tests all green, ready for channel assembly
+status_note: >-
+  v1 (contracts + core + 45 tests) committed. Channel assembly K13 选定 B案
+  (独立 file_editor_channel, desktop 通过 import_channels 合体). Blocking
+  语义: view=nonblocking, 写动词=blocking, 全部 always_observe. 不加 cwd.
+  装配实现在下一 session (moss-as-mcp dogfooding 先行).
 title: File Editor Contract — vendor openhands-aci 为薄契约，与 Desktop 平级
-updated: '2026-07-16'
+updated: '2026-07-18'
 ---
 
 # File Editor Contract
@@ -199,16 +203,23 @@ FileEditor.create / str_replace / insert 命中已 pin 的地址时, 理论上�
 对账语义的自然延伸, **但不进 FileEditor 契约** — 在 channel 层装配时由
 handler 装配 (composition, 不是 contract 义务).
 
-## 交付清单 (v1)
+## 交付清单
+
+### v1 (已交付, committed)
 
 - [x] vendor 拷贝 + `UPSTREAM.md` + LICENSE 归位
 - [x] `contracts/file_editor.py` (ABC + Result + 异常, 232 行)
 - [x] `core/file_editor/_default.py` (DefaultFileEditor + 异常转译)
 - [x] `core/file_editor/__init__.py` (公开 API)
 - [x] `tests/ghoshell_moss/core/file_editor/test_file_editor.py` (45 测试, 全绿)
-- [ ] `ghost-filesystem-desktop/FEATURE.md` "与关联基建的交叉" 表追加一行指向
-  本 feature (skip — 文件被 parallel incarnation 同时修改, 等下次 desktop session 补)
 - [x] `architecture.py` 加 import 索引 (`file_editor_impl`)
+
+### v2 (channel 装配, 设计已定, 实现待)
+
+- [ ] `channels/file_editor_channel.py` — K13 spec (B案, 独立 channel)
+- [ ] `tests/ghoshell_moss/channels/test_file_editor_channel.py` — 按 channels/ 惯例
+- [ ] moss-as-mcp dogfooding — 手感验收
+- [ ] `ghost-filesystem-desktop/FEATURE.md` 交叉引用补一行 (skip — 文件被 parallel incarnation 同时修改)
 
 ## v1 落地追加决策 (2026-07-14, Claude Opus 4.7)
 
@@ -277,11 +288,81 @@ history found for {path}." — 没有独立类型.
 **决策**: adapter 层 catch 时判断 isinstance(Path) 后 str() 一次, 让
 `ParameterInvalidError` 的消息干净. 上游若来日修了, 这段 patch 可删.
 
-## 装配 (未来, 不在 v1 范围)
+## 装配 — K13: 独立 file_editor_channel (B案, 2026-07-18 决策)
 
-Channel 层未定, 见 Implementation Notes 的 A / B 两案. K1 判定 A 更好
-但依赖 desktop channel (K33) 落地. Desktop channel 落地由 `ghost-
-filesystem-desktop` 那边推进, 本 feature v1 结束点为**契约 + 实现 + 单测**.
+A / B 两案已裁决, **选 B: 独立 `channels/file_editor_channel.py`**, 不嵌入
+desktop channel.
+
+**判据**:
+
+1. FileEditor 对 Grounds/Desktop 零依赖 — 独立 channel 反映这个事实.
+2. Desktop channel 以后用 `chan.build.import_channels(file_editor_channel)`
+   一行合体, 模型看到 `desktop:view` / `desktop:create` 等统一命名空间.
+3. 独立测试、独立演进、独立使用 (简单 CTML shell 场景不需要 desktop).
+
+**Channel 接口**:
+
+```python
+def new_file_editor_channel(
+    *,
+    workspace_root: str | Path | None = None,
+    max_file_size_mb: int | None = None,
+    channel_name: str = "file_editor",
+) -> MutableChannel:
+```
+
+`workspace_root` / `max_file_size_mb` 直传 `DefaultFileEditor`. 无复杂
+生命周期 — editor 是纯内存状态 (undo 历史 session-scoped), 不需要
+startup/close.
+
+**CTML 表面**:
+
+```
+<file_editor:view path="/abs/path/to/file.py"/>
+<file_editor:view path="/abs/path/to/file.py" view_range="1,50"/>
+<file_editor:create path="/abs/path/to/new.py" file_text="print('hello')"/>
+<file_editor:str_replace path="..." old_str="foo" new_str="bar"/>
+<file_editor:insert path="..." insert_line="10" new_str="new line"/>
+<file_editor:undo_edit path="/abs/path/to/file.py"/>
+```
+
+**view_range 参数**: str 格式 `"start,end"` (1-based, 含端点). Channel 层
+parse 为 `[int, int]` 后传 FileEditor.view(). 空字符串 → None (全文). 骑
+Anthropic text_editor 的 `[start, end]` 先验.
+
+### K13a. Blocking 语义
+
+| 动词 | blocking | always_observe | 理由 |
+|------|----------|----------------|------|
+| view | False | True | 纯读, 模型需要内容决定下一步 |
+| create | True | True | 写, 顺序执行保安全 |
+| str_replace | True | True | 写, 模型必须验证编辑结果再发下一条 |
+| insert | True | True | 同上 |
+| undo_edit | True | True | 写, 与编辑顺序执行 |
+
+全部 `always_observe=True` — 模型发出编辑后**必须**看到 old_content /
+new_content / snippet 验证正确性. 这是 str_replace_editor 血统的核心
+交互模式.
+
+写操作 `blocking=True` 而非 False 的理由: 模型思考代码变更是顺序的,
+实践中几乎没有并行编辑需求. 保守安全, 以后可以放松 (向后兼容).
+
+### K13b. 不加 cwd
+
+cwd 是 shell 的概念, bash channel 持有它是职责所在. File editor 只管
+"在这个路径上做这个动作" — 路径解析不是它的事. 多个 channel 各自维护
+cwd 会导致 N 份不同步的真相. 模型构造绝对路径没有认知负担.
+
+### 装配实施计划
+
+实现在下个 session — 用户开 `moss-as-mcp` 做 dogfooding, 手感验收先于
+自动化 (K33 原话). Channel 层单测按 `tests/ghoshell_moss/channels/` 惯例:
+bootstrap → refresh_metas → 验证 command 存在 + 签名 + 执行正确.
+
+**不做** (v1 scope 外, 与 contracts/core v1 一致):
+- Pin-edit 联动 (编辑命中已 pin 地址时标记 stale)
+- CLI dogfood (`moss edit`)
+- Desktop channel 导入 file_editor (等 desktop channel 落地时一行 import_channels)
 
 ## 与 ghost-filesystem-desktop 的交叉
 
@@ -290,7 +371,7 @@ filesystem-desktop` 那边推进, 本 feature v1 结束点为**契约 + 实现 +
 | 辖域 | 认知面 (pin/update/frame) | 写路径 + 结构化 view |
 | 契约文件 | contracts/desktop.py | contracts/file_editor.py |
 | Core 目录 | core/desktop/ | core/file_editor/ |
-| Channel 装配 | 未来 desktop channel (K33) | 复用 desktop channel (K1 A 案) |
+| Channel 装配 | 未来 desktop channel (K33) | 独立 file_editor_channel (K13 B案), desktop 通过 import_channels 合体 |
 | 共享空间边界 | root + PathOutsideRootError (Grounds 管辖) | 不共享 — K4 落地改主意, 两个 contract 彻底解耦 |
 | 状态 | in-progress | in-progress (v1 已交付, 装配+联动 未完成) |
 
@@ -299,40 +380,40 @@ filesystem-desktop` 那边推进, 本 feature v1 结束点为**契约 + 实现 +
 ## 给下一个模型实例
 
 这份 FEATURE.md 是 2026-07-13 立项、07-13/14 Claude Opus 4.7 (1M) 完成 v1
-落地时的完整认知记录. 以下是最小路径还原当前状态:
+落地、07-18 Claude Opus 4.7 完成 channel 装配设计的完整认知记录.
 
 **核心事实**:
 
-- v1 已交付: contracts + core + 45 单测. **不在 scope**: channel 装配, pin
-  联动, tmp 大文件策略 (这些等具体需求或 desktop channel 落地时一起做).
-- 为什么一个 file editor 要单独 feature: K1 有判据 — FileEditor 与 Ground
-  的最小依赖不同, 塞一起就是老 Desktop 融合病灶第三次复发.
+- v1 (contracts + core + 45 tests) 已提交. K13 (channel 装配) 设计已定,
+  实现待下一 session (moss-as-mcp dogfooding).
+- A/B 案已裁决 → **B案**: 独立 `channels/file_editor_channel.py`, desktop
+  以后用 `import_channels` 合体. K13 有完整 spec.
+- 为什么一个 file editor 要单独 feature: K1.
 - 为什么 vendor 而不是 pip install: K2 + K9 — upstream ~30 依赖, 净依赖归零.
 
-**你要做的 (拿到 file-editor-contract 后要看或改时)**:
+**你要做的 (接手 channel 装配时)**:
 
 ```
 # 1. 确认当前状态
 moss features status file-editor-contract
 python -m pytest tests/ghoshell_moss/core/file_editor/ -q  # 应 45 全绿
 
-# 2. 读契约 (3 分钟掌握全貌)
-moss codex get-interface ghoshell_moss.contracts.file_editor
+# 2. 读 K13 决策 (本文件, 装配章节)
+# 3. 读 channel builder 参考
+moss codex blueprint channel_builder
+cat src/ghoshell_moss/channels/module_eval_channel.py  # L1 标杆
 
-# 3. 读 vendor 差异 (30 秒)
-cat src/ghoshell_moss/core/file_editor/_openhands/UPSTREAM.md
-
-# 4. 上游升级: UPSTREAM.md 记录了 patch 清单, 换 commit 后按列表重 apply
+# 4. 写 channels/file_editor_channel.py
+# 5. 写 tests/ghoshell_moss/channels/test_file_editor_channel.py
+# 6. moss-as-mcp dogfooding → 手感验收
 ```
 
-**已知未决 (等你或下个 incarnation 推进)**:
+**已知未决**:
 
-1. Channel 装配 — 与 desktop channel 合体 (A 案) 还是独立 (B 案)?
-   人类倾向 A. 需等 desktop channel (K33) 落地.
+1. Channel 装配实现 — K13 spec 已定, 代码未写. 在 moss-as-mcp 下 dogfooding.
 2. Pin 联动 — 编辑命中已 pin 地址时触发 stale 标记. Channel 层
    composition, 不进契约. 设计和单测都还没.
-3. tmp / 大文件 — 当前 10 MB cap 直接抛 FileValidationError. 是否要
-   做 truncation + cache-on-disk 等, 暂无痛感, 不加.
+3. tmp / 大文件 — 当前 10 MB cap 直接抛 FileValidationError. 暂无痛感.
 
 **相关的 memory 文件**:
 
