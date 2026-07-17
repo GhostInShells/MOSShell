@@ -103,3 +103,71 @@ specification 定义约定，模型读后自己改 CELL.md。CLI 只生成一种
 - `show` 的入参是 project-relative 目录路径，不做向上查找
 - `register` 创建的 CELL.md 放在 workspace/cells/ 下
 - 命令间无状态的 CLI 模式——每个命令独立 `Project.discover()`，不跨命令共享
+
+---
+
+## §Rewrite 2026-07-17 (opus-4.7-1m + 人类架构师)
+
+> 上文 (06-28 版) 的 API 命名 (`CellRegistry` / `spawn_cell` /
+> `local_runtime_cells` / `recursively_kill_process` / `kill_all_runtime_cells`)
+> 在当前抽象层**全部不存在**. matrix-cell-governance §UU 三域拆分后, 治理
+> API 是 `NodeManager` / `NodeManifest` / `matrix.run_node` / `Subprocesses` /
+> `CellRuntimeInfo` (blueprint/cell.py 权威). 命令树核心动作虽然大部分保留,
+> 但**实现路径与命名全部要按新抽象重来** (§AAA-3 步骤 10 判决 "cli 我宁愿重做").
+>
+> **本节以后为权威**. 上文只作历史轨迹, 请以 `plan.md` (同目录) + 本节为准.
+
+### §R-1. 决策差异一览 (vs 06-28)
+
+| 项 | 06-28 | 2026-07-17 |
+|---|---|---|
+| 命令组 | `moss cells` | `moss nodes` (抽象层 node 化, code as prompt 对齐) |
+| Manifest 文件 | `CELL.md` | `NODE.md` (`NodeManifest.MANIFEST_FILENAME`) |
+| target 参数 | 目录 / 脚本 / **name** 三模式 | **path only** 三合一 (dir / NODE.md / .py). 无 name 反查 (name 属运行时) |
+| `specification` 命令 | 认知入口, 强 hint | **删除**. 探索路径指向 `moss codex get-interface`/`codex blueprint`/`ctml read`/`howtos`, 不誊抄 |
+| 五类 cell 分类 | standalone/project/isolated/script/remote | **删除**. 抽象层无此分类, 是旧 launcher.interpreter 时代产物 |
+| `register` | 快捷方式命名 (语义不清) | 改名 `link`. 参数 = A 目录 (cell workspace) + B 脚本 (绝对路径), 无自动检测 (`--command` 必填, WW-2 判决) |
+| `run:` frontmatter 糖 | fable 版 stub 引入 (WW-3) | **彻底删除**. NODE.md 与 `NodeManifest` pydantic 1:1, `exec: {command, args, env}` 直书, 无翻译层 |
+| stub 目录 | `stubs/cell/` | `stubs/node/`. 加 `.gitignore` (`.installed`/`__pycache__`/`.venv`/`*.log`/`runtime/logs/`, 有注释解释为什么). README 极简骨架 |
+| stub `singleton` 默认 | `false` | `true` (与 `NodeManifest.singleton` field default 一致) |
+| run 实现 | `CellRegistry.spawn_cell` | CLI 独立 launcher: `NodeLauncher.from_manifest` + `subprocess.Popen(start_new_session=True)` + signal handler + `killpg` 兜底. 100% Project 层, 不起 matrix |
+| status | `CellRegistry.local_runtime_cells` | `CellRuntimeInfo.iter_runtime_info(env.cell_runtimes_dir)` + `is_alive()` |
+| kill | 立即杀 | 默认 `SIGTERM + 3s → SIGKILL`, `--force` 立即 `SIGKILL` |
+| prune (新) | 无 | 孤儿 killer, 默认统统杀 (孤儿会锁 singleton), `--keep-alive` 只删死的 |
+| stdout/stderr | 记录到文件 | CLI 前台 = inherit 终端 (直接看); 后台记录归 Jobs 层 (未定, 与 channel 一起讨论) |
+
+### §R-2. 定位钉子 (最重要, 未来化身必读)
+
+**CLI = cell 开发生命周期的地面站 (操作员/维护动作面)**. 严守边界:
+
+- **100% Project 层** (0% Matrix, 除 subprocess.Popen 本身外). CLI 命令秒级
+  返回, 不起 zenoh session, **网络挂掉时仍可用**.
+- **五件事**: 发现 (list/show) / 创建 (create/link/install) / 启动 (run) /
+  debug (status) / 清理 (kill/prune). 只做这些.
+- **运行时智能面完全不塞**: 无 accept/deny (agent 在 channel 内通过
+  `CommandUtil` 拿 mesh 自决), 无 mesh view (需要就写 debug cell), 无 attach
+  (跨到 channel 层归 moss-repl).
+- **深度 debug = 写 debug cell**: channel 交互 / mesh 观察 / 命令调用属
+  "临时创建一个 cell 里面 Matrix.discover() 自己看" 的路径, 不塞 CLI.
+- **target 只走 path** (不走 name): name 是运行时 (address / mesh view /
+  agent) 的东西, path 是文件层原生货币. tab completion 天然 file completion.
+- **stdout/stderr 不做文件记录**: 前台 inherit 到终端, 后台归 Jobs 层未来命题.
+
+### §R-3. 待 dogfood 验证点
+
+以下决策基于讨论时的最佳猜想, 实现完毕后跑 `.ai_partners/regressions/nodes-cli/`
+(待建) baseline 验证:
+
+- `show` 命令输出格式 (verbatim NODE.md + 目录列表) 是否操作员用着顺
+- `run` launch debug 段字段是否覆盖 debug 所需, 有无漏项
+- `prune` 默认统统杀在真孤儿场景是否好用, 是否需要 `--dry-run`
+- `kill` grace = 3s 是否足够 (cell 关 zenoh session / cancel task 需时)
+- `run` grace = 5s 是否足够
+- `link` 命令的绝对路径策略在 cell 移动场景是否合理 (还是改相对更好)
+- README stub 的骨架结构是否够用 (还是应该更简/更繁)
+
+### §R-4. 后续 (超出本 workstream)
+
+- Jobs 层设计 (stdout/stderr 后台记录的命题归宿) — 与 channel workstream 结合讨论
+- nodes CLI regression set (`.ai_partners/regressions/nodes-cli/`) — dogfood 期建立
+- 未来若增运行时可视化需求, 走 `moss-repl` 或 `debug cell` 路径, 不塞 CLI
