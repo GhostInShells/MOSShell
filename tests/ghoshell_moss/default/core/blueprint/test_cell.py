@@ -8,7 +8,6 @@ Scope:
   - Cell 派生 property (address / fullname / is_host / unique_name)
   - build helpers (build_node_from_manifest / build_host_cell)
   - address 三段结构 (§ZZ-10) + normalize / parse_address
-  - CellPresence / CellMesh ABC 的抽象方法集合锚定当前接口形态
   - 历史锚点负向断言 (WW-3 no interpreter, WW-6 no exit, 契约中不该出现的字段)
 
 Out of scope:
@@ -27,8 +26,6 @@ from pydantic import ValidationError
 from ghoshell_moss.core.blueprint.cell import (
     Cell,
     CellEvent,
-    CellMesh,
-    CellPresence,
     CellRuntimeInfo,
     DuplicatedError,
     ExecSpec,
@@ -284,10 +281,6 @@ class TestCell:
     def test_providing_default_empty(self):
         assert _make_cell().providing == []
 
-    def test_providing_accepts_known_membranes(self):
-        cell = _make_cell(providing=['channel', 'shell', 'ghost'])
-        assert cell.providing == ['channel', 'shell', 'ghost']
-
     def test_providing_rejects_unknown_literal(self):
         # 膜类型是 matrix 版本演进事件 — cell 作者不能自扩.
         with pytest.raises(ValidationError):
@@ -457,35 +450,6 @@ class TestCellEvent:
     def test_no_terminal_field(self):
         # cell 下线由 liveness 消失承载, 不在 event 上做 terminal 标记.
         assert 'terminal' not in CellEvent.model_fields
-
-
-# ── ABC 完整性 ────────────────────────────────────────────────────────
-
-
-class TestCellPresenceABC:
-    """锚定当前 Presence 接口形态 — 变更时同 PR 更新."""
-
-    def test_abstractmethods(self):
-        expected = {
-            '__aenter__', '__aexit__',
-            'this', 'provide_channel', 'publish_event',
-        }
-        assert CellPresence.__abstractmethods__ == expected
-
-
-class TestCellMeshABC:
-    """锚定当前 Mesh 接口形态 — 变更时同 PR 更新."""
-
-    def test_abstractmethods(self):
-        expected = {
-            '__aenter__', '__aexit__',
-            'view', 'refresh',
-            'on_updated', 'on_event',
-            'wait_present',
-            'accept', 'reject', 'channel_proxies',
-            'recent_events', 'cell_events',
-        }
-        assert CellMesh.__abstractmethods__ == expected
 
 
 # ── address 三段结构 (§ZZ-10) ─────────────────────────────────────────

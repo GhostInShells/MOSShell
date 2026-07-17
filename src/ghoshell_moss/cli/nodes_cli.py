@@ -203,19 +203,17 @@ def show_node(
 
 @nodes_app.command(name="create")
 def create_node(
-    name: str = typer.Argument(help="Node name (e.g. 'web-fetch')."),
-    group: str = typer.Option(
-        "", "--group", "-g",
-        help="Group directory (e.g. 'tools', 'sensors').",
+    path: Path = typer.Argument(
+        help="Target directory for the new node (e.g. '.moss/nodes/tools/my-node').",
     ),
 ):
-    """Create a new node from the stub template under {workspace}/nodes/."""
-    project = Project.discover()
+    """Create a new node from the stub template at the given path.
 
-    target_dir = project.workspace_dir / "nodes"
-    if group:
-        target_dir = target_dir / group
-    target_dir = target_dir / name
+    The directory's last component becomes the node name. All other commands
+    (run, show, install, link) already use path — this one does too.
+    """
+    target_dir = path.resolve()
+    name = target_dir.name
 
     if target_dir.exists():
         print_error(f"Directory already exists: {target_dir}")
@@ -224,37 +222,29 @@ def create_node(
     target_dir.mkdir(parents=True, exist_ok=False)
 
     stub_resources = resources.files(_NODE_STUB_PACKAGE)
-    _copy_stub(stub_resources, target_dir, name=name, group=group)
+    _copy_stub(stub_resources, target_dir, name=name)
 
     print_success(f"Node '{name}' created at {target_dir}")
     echo("")
-    try:
-        rel = target_dir.relative_to(project.root)
-    except ValueError:
-        rel = target_dir
-    print_info("Next steps:")
-    print_info(f"  1. Edit {target_dir / NodeManifest.MANIFEST_FILENAME}"
-               f"  (name, description, singleton, exec, instruction body)")
-    print_info(f"  2. Edit {target_dir / 'main.py'}  (build channel via channel_builder)")
-    print_info(f"  3. moss nodes run {rel}")
-    echo("")
-    print_info("Field reference:")
-    print_info("  moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest")
+    print_info(f"  Read {target_dir / 'README.md'}"
+               f"  — what to fill in before running or sharing.")
+    print_info(f"  Edit {target_dir / NodeManifest.MANIFEST_FILENAME}"
+               f"  — name, exec, instruction body.")
+    print_info(f"  Run: moss nodes run {path}")
 
 
-def _copy_stub(stub_node, target_dir: Path, *, name: str, group: str) -> None:
-    """Copy stub files into target_dir, replacing placeholders."""
+def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
+    """Copy stub files into target_dir, replacing {name} placeholders."""
     for item in stub_node.iterdir():
         if item.name == "__init__.py":
             continue
         target_item = target_dir / item.name
         if item.is_dir():
             target_item.mkdir(exist_ok=True)
-            _copy_stub(item, target_item, name=name, group=group)
+            _copy_stub(item, target_item, name=name)
         else:
             content = item.read_text()
             content = content.replace("{name}", name)
-            content = content.replace("{group}", group or "")
             target_item.write_text(content)
 
 
