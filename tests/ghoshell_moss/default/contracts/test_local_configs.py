@@ -397,3 +397,148 @@ class TestCacheKeyModeIndependent:
         mode_store.save(AppConfig(name="val"))
         mode_store.invalidate("app_config")
         assert "app_config" not in mode_store._cache
+
+
+# ══════════════════════════════════════════════════════════════════
+# 14. Explicit mode kwarg (§Config-2 kwargs 扩展)
+# ══════════════════════════════════════════════════════════════════
+
+class TestExplicitMode:
+    """显式 mode kwarg 覆盖 store 默认 mode. 空串 '' 强制 base 视图."""
+
+    def test_get_explicit_mode_reads_from_that_mode_file(self, mode_store):
+        _raw_write(mode_store, "app_config.desktop.yml",
+                   "name: desktop-val\nversion: '1.0'\ndebug: false")
+        _raw_write(mode_store, "app_config.other.yml",
+                   "name: other-val\nversion: '1.0'\ndebug: false")
+        loaded = mode_store.get(AppConfig, mode="other")
+        assert loaded.name == "other-val"
+
+    def test_get_explicit_empty_string_forces_base_view(self, mode_store):
+        """mode='' 显式指定读 base 文件, 忽略 store 默认 mode."""
+        _raw_write(mode_store, "app_config.yml",
+                   "name: base-val\nversion: '1.0'\ndebug: false")
+        _raw_write(mode_store, "app_config.desktop.yml",
+                   "name: desktop-val\nversion: '1.0'\ndebug: false")
+        loaded = mode_store.get(AppConfig, mode="")
+        assert loaded.name == "base-val"
+
+    def test_get_or_create_explicit_mode_writes_to_that_mode(self, mode_store):
+        """explicit mode 写入落到该 mode 文件, 不动 store 默认 mode 文件."""
+        mode_store.get_or_create(AppConfig(name="other-fresh"), mode="other")
+        assert _raw_exists(mode_store, "app_config.other.yml")
+        assert not _raw_exists(mode_store, "app_config.desktop.yml")
+
+    def test_save_explicit_mode_writes_to_that_mode(self, mode_store):
+        mode_store.save(AppConfig(name="staging-val"), mode="staging")
+        assert _raw_exists(mode_store, "app_config.staging.yml")
+        # store 默认 mode (desktop) 文件不应存在
+        assert not _raw_exists(mode_store, "app_config.desktop.yml")
+
+    def test_get_config_path_explicit_mode(self, mode_store):
+        p = mode_store.get_config_path("app_config", mode="staging")
+        assert p.endswith("app_config.staging.yml")
+
+    def test_get_config_path_none_uses_default_mode(self, mode_store):
+        """mode=None 走默认 mode (desktop)."""
+        p = mode_store.get_config_path("app_config")
+        assert p.endswith("app_config.desktop.yml")
+
+
+# ══════════════════════════════════════════════════════════════════
+# 15. fallback=False — 严格只读指定 mode
+# ══════════════════════════════════════════════════════════════════
+
+class TestFallbackFalse:
+    """fallback=False 严格模式: mode 文件不存在直接 raise, 不 fallback base."""
+
+    def test_get_fallback_false_raises_when_mode_file_missing(self, mode_store):
+        _raw_write(mode_store, "app_config.yml",
+                   "name: base-val\nversion: '1.0'\ndebug: false")
+        # store 默认 mode = desktop, mode 文件不存在, fallback=False → raise
+        with pytest.raises(FileNotFoundError):
+            mode_store.get(AppConfig, fallback=False)
+
+    def test_get_fallback_true_default_still_falls_back(self, mode_store):
+        """fallback 默认 True 保持旧行为."""
+        _raw_write(mode_store, "app_config.yml",
+                   "name: base-val\nversion: '1.0'\ndebug: false")
+        loaded = mode_store.get(AppConfig)  # fallback 默认 True
+        assert loaded.name == "base-val"
+
+    def test_get_or_create_fallback_false_creates_when_mode_absent(self, mode_store):
+        """fallback=False 且 mode 文件不存在, get_or_create 创建 mode 文件."""
+        _raw_write(mode_store, "app_config.yml",
+                   "name: base-val\nversion: '1.0'\ndebug: false")
+        # base 存在但 fallback=False → 只看 mode 文件, 不存在则创建
+        result = mode_store.get_or_create(
+            AppConfig(name="fresh-mode-val"), fallback=False,
+        )
+        assert result.name == "fresh-mode-val"
+        assert _raw_exists(mode_store, "app_config.desktop.yml")
+
+    def test_get_fallback_false_with_explicit_mode(self, mode_store):
+        """显式 mode + fallback=False: 只查指定 mode 文件."""
+        _raw_write(mode_store, "app_config.desktop.yml",
+                   "name: desktop-val\nversion: '1.0'\ndebug: false")
+        # 查 other mode, 无该文件, fallback=False → raise
+        with pytest.raises(FileNotFoundError):
+            mode_store.get(AppConfig, mode="other", fallback=False)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 16. 显式 mode 绕过缓存 — 保 "一 store 一 mode 缓存" 不变量
+# ══════════════════════════════════════════════════════════════════
+
+class TestExplicitModeCacheBypass:
+    """显式非默认 mode 的读写均绕过 self._cache."""
+
+    def test_get_explicit_mode_does_not_populate_default_cache(self, mode_store):
+        """explicit mode 读到的实例不进默认 mode 缓存槽."""
+        _raw_write(mode_store, "app_config.other.yml",
+                   "name: other-val\nversion: '1.0'\ndebug: false")
+        mode_store.get(AppConfig, mode="other")
+        assert "app_config" not in mode_store._cache
+
+    def test_get_explicit_mode_does_not_read_default_cache(self, mode_store):
+        """默认 mode 缓存已有值时, explicit mode 读磁盘不复用缓存."""
+        _raw_write(mode_store, "app_config.desktop.yml",
+                   "name: desktop-val\nversion: '1.0'\ndebug: false")
+        _raw_write(mode_store, "app_config.other.yml",
+                   "name: other-val\nversion: '1.0'\ndebug: false")
+        mode_store.get(AppConfig)  # 走默认 mode, 填入 cache
+        assert mode_store._cache["app_config"].name == "desktop-val"
+        # explicit mode 读, 不复用缓存, 走磁盘
+        other = mode_store.get(AppConfig, mode="other")
+        assert other.name == "other-val"
+        # 缓存仍是默认 mode 的值, 未被 explicit mode 覆盖
+        assert mode_store._cache["app_config"].name == "desktop-val"
+
+    def test_save_explicit_mode_does_not_update_default_cache(self, mode_store):
+        """explicit mode save 不动默认 mode 缓存."""
+        _raw_write(mode_store, "app_config.desktop.yml",
+                   "name: desktop-val\nversion: '1.0'\ndebug: false")
+        mode_store.get(AppConfig)  # 填 cache
+        assert mode_store._cache["app_config"].name == "desktop-val"
+        # explicit mode save
+        mode_store.save(AppConfig(name="other-val"), mode="other")
+        # cache 仍是 desktop, 未被污染
+        assert mode_store._cache["app_config"].name == "desktop-val"
+        assert _raw_exists(mode_store, "app_config.other.yml")
+
+    def test_set_config_explicit_mode_cache_only_is_noop(self, mode_store):
+        """explicit mode + override=False: cache-only 分支变 no-op (显式 mode 绕过
+        缓存, cache-only + explicit mode 是矛盾姿态)."""
+        mode_store.set_config(
+            AppConfig(name="phantom"), override=False, mode="other",
+        )
+        assert "app_config" not in mode_store._cache
+        assert not _raw_exists(mode_store, "app_config.other.yml")
+
+    def test_explicit_mode_equals_default_mode_uses_cache(self, mode_store):
+        """explicit mode 等于 store 默认 mode 时走缓存路径 (视同 mode=None)."""
+        mode_store.save(AppConfig(name="val"))
+        # explicit mode = 'desktop' (与默认 mode 相同) 应该走 cache
+        loaded = mode_store.get(AppConfig, mode="desktop")
+        assert loaded.name == "val"
+        assert "app_config" in mode_store._cache
