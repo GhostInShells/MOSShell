@@ -46,7 +46,6 @@ import ghoshell_moss.core.blueprint.mindflow as mindflow
 import ghoshell_moss.core.blueprint.host as host
 import ghoshell_moss.core.blueprint.ghost as ghost
 import ghoshell_moss.core.blueprint.environment as environment
-import ghoshell_moss.core.blueprint.manifests as manifests
 import ghoshell_moss.core.blueprint.session as session
 import ghoshell_moss.core.blueprint.states_channel as states_channel
 import ghoshell_moss.core.blueprint.memento as memento
@@ -70,7 +69,6 @@ import ghoshell_moss.core.file_editor as file_editor_impl
 import ghoshell_moss.host as host_impl
 import ghoshell_moss.host.tui as tui_design
 import ghoshell_moss.host.tui_entries as tui_entries
-import ghoshell_moss.host.manifests as host_manifests
 import ghoshell_moss.matrix.session as session_impl
 import ghoshell_moss.bridges as bridges
 import ghoshell_moss.ghosts as ghosts

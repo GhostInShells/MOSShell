@@ -1,16 +1,19 @@
 from typing import Type, Iterable
 
-from ghoshell_container import IoCContainer, BootstrapProvider, INSTANCE
+from ghoshell_container import IoCContainer, Provider, INSTANCE
 from ghoshell_moss.contracts.workspace import Workspace
 from ghoshell_moss.contracts.configs import ConfigStore, YamlConfigStore
-from ghoshell_moss.core.blueprint.manifests import Manifests
 
 __all__ = [
     'EnvConfigStoreProvider',
 ]
 
 
-class EnvConfigStoreProvider(BootstrapProvider):
+class EnvConfigStoreProvider(Provider):
+    # ConfigStore 装配的 workspace 声明入口. 老实现是 BootstrapProvider — bootstrap
+    # 方法读老 core.blueprint.manifests.Manifests, 逐个 config_info 装载. 那条路径
+    # 已由 MatrixImpl._container_lifecycle_ctx 承接 (新 MatrixManifest.configs()),
+    # 老 bootstrap 是死代码, 一并清除, 类型降级为普通 Provider.
 
     def singleton(self) -> bool:
         return True
@@ -28,13 +31,3 @@ class EnvConfigStoreProvider(BootstrapProvider):
 
     def aliases(self) -> Iterable[Type[INSTANCE]]:
         yield YamlConfigStore
-
-    def bootstrap(self, container: IoCContainer) -> None:
-        this = container.force_fetch(ConfigStore)
-        manifests = container.get(Manifests)
-        if manifests:
-            for config_info in manifests.configs().values():
-                if config_info.is_override:
-                    this.set_config(config_info.config)
-                else:
-                    this.get_or_create(config_info.config)

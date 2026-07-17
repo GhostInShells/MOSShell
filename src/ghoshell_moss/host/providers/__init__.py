@@ -1,6 +1,3 @@
-from .zenoh_provider import WorkspaceZenohProvider, HostEnvZenohProvider
-from .topic_provider import ZenohTopicServiceProvider
-from .configs_provider import HostEnvConfigStoreProvider
-from .moss_session_provider import HostSessionProvider
-# Subprocesses / JobSupervisor / Logger 三个 provider 已迁至 matrix/providers/
-# (matrix baseline, §ZZ-2). host/providers/ 只保留 driver-specific 或 host 侧特有的.
+# host/providers/ — 保留音频模块 (audio_player / tts_service / speech_service).
+# session / topic / config / logger / zenoh 系全部迁到 matrix/providers/ 作为
+# matrix baseline (§ZZ-2). 剩余仅音频 driver-specific 三件, 按需从子模块直接 import.

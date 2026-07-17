@@ -52,7 +52,7 @@ STUB_MANIFESTS_CONFIGS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.confi
 STUB_MANIFESTS_SIGNALS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.signals'
 STUB_MANIFESTS_TOPICS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.topics'
 STUB_MANIFESTS_PARAMETERS = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests.parameters'
-STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.host.stubs.workspace.src.MOSS.manifests.nuclei'
+STUB_MANIFESTS_NUCLEI = 'ghoshell_moss.stubs.workspace.modes.default.src.HOST.nuclei'
 STUB_MANIFESTS_ROOT = 'ghoshell_moss.stubs.workspace.src.MOSS.manifests'
 
 
