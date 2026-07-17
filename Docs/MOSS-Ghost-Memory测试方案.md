@@ -4,7 +4,7 @@
 
 验证 Data Ghost 的第一阶段记忆闭环是否真实成立：模型看到的历史来自 Memento，
 成功回合能持久化，进程重启后能恢复，窗口折叠后关键事实仍可由机械摘录召回，错误
-回合不会被伪装成成功记忆。
+回合不会被伪装成成功记忆，并验证反思只补写释义层而不改写原始 Moment。
 
 本方案同时区分两件事：
 
@@ -24,9 +24,11 @@
 | 隔离 | 不同 Ghost/owner 不串记忆 |
 | 故障 | 模型失败的半帧不进入完成轨迹 |
 | 可审计性 | 回答可与 jsonl Moment/Commit 对账 |
+| 反思 | mechanical commit 后的语义 note 可追加、可追赶 |
+| 控制面 | CTML 只能操作当前 owner/branch 的显式记忆动作 |
 
-暂不验收：向量语义召回、CTML `show/commit/fork`、自动反思摘要、Desktop、见证
-daemon、并行化身与承诺保全。这些不是本期已交付能力。
+暂不验收：向量语义召回、Desktop、git witness daemon、真正的 branch merge、跨 owner
+写入、并行化身与承诺保全。
 
 ## 3. 准备
 
@@ -43,9 +45,13 @@ cp .moss/.env.example .moss/.env
 ANTHROPIC_BASE_URL=...
 ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=...
+ANTHROPIC_SMALL_FAST_MODEL=...  # 启用反思时建议配置
 ```
 
 不要提交 `.moss/.env`。
+
+默认记忆策略在 `configs/memory.yml`。若反思模型暂不可用，将
+`reflection_enabled` 设为 `false`；写入、机械 commit 和跨重启恢复仍会正常工作。
 
 确认 Data 已被发现：
 
@@ -72,7 +78,7 @@ mv .moss/ghosts/data/memento .moss/ghosts/data/memento.backup-$(date +%Y%m%d-%H%
 ```
 
 覆盖空历史、Moment round-trip、机械 commit、折叠渲染、MementoRef、跨实例恢复、
-失败不写入和默认 workspace 路径。
+失败不写入、反思不改 Moment、启动追赶、MemoryConfig 和 Memento CTML 控制面。
 
 ### 4.2 无网络验收脚本
 
@@ -198,6 +204,34 @@ ORBIT-004 的校验词是什么？请说明它来自完整近史还是 mechanica
 询问 `AMBER-731`。通过标准：Echo 不应从 Data 的 Memento 得到该值。重新启动 Data
 后仍应能召回。
 
+### 场景 G：反思与启动追赶
+
+使用 `memory_inspect` 观察 `reflection_pending`。正常对话满足 `auto_commit_every`
+后，等待一个非交互时间窗口，再查看 `memory_log`：该 mechanical commit 的摘要应从
+`[extractive mechanical index]` 更新为简短的语义释义。原始 Moment 中的输入和 logos 仍应能从
+`memory_show` 取回。
+要验证追赶，先将 `reflection_enabled: false` 写入 `configs/memory.yml`，完成一个
+mechanical commit 后退出；再改回 `true` 并重启 Data。通过标准：启动不阻塞，
+`reflection_pending` 最终降为 0，且旧 Moment 的原文不发生改动。
+
+### 场景 H：Memento CTML 控制面
+
+在支持 CTML 的 Data 会话中依次请求模型执行以下操作，或在 TUI 中手工调用相同命令：
+
+```text
+<ghost:memory_inspect />
+<ghost:memory_log />
+<ghost:memory_show commit="1" />
+<ghost:memory_commit summary="手工语义锚点" />
+<ghost:memory_reinterpret commit="2" summary="更正后的释义" />
+<ghost:memory_fork commit="2" name="test-fork" />
+<ghost:memory_branches />
+```
+
+通过标准：`show` 展开的原文与磁盘一致；`reinterpret` 不改 Moment；
+`fork` 从 commit 而非 staging 出生，且切换后的新写入不影响父分支。试图传入不存在、
+含糊或不属于本 owner 的 id 应得到明确失败，不应静默选择分支。
+
 ## 6. 磁盘对账
 
 Data 默认记忆根：
@@ -250,10 +284,12 @@ find .moss/ghosts/data/memento/branches/data -maxdepth 4 -type f -print
 
 ## 8. 已知边界
 
-- mechanical summary 是每个 Moment 输入与 logos 各最多 240 字符的保真摘录，不是
-  反思模型生成的语义摘要；超长事实应把唯一标识放在前部。
-- 原文永久保留，但本期 Ghost 还不能用 CTML 主动 `show <commit_id>`；超出摘录的
-  细节需要人工磁盘核对。
+- mechanical summary 仍是每个 Moment 输入与 logos 各最多 240 字符的保真摘录；反思完成后
+  它会被一个可追溯的 CommitNote 释义替换。反思是基于证据的推断，不是权威事实。
+- 原文永久保留，且当前 Ghost 可用 `memory_show` 展开 commit。超出摘要的细节应以展开的
+  Moment 和磁盘原文为准，不以反思结论代替。
 - `summary_m=-1` 会保留所有旧 commit 摘要，长期运行后的摘要预算治理尚未完成。
 - 当前没有模糊语义召回；测试应优先使用唯一 token 和明确字段，不能把模型猜中当
   成记忆命中。
+- 当前 `MemoryConfig` 实现数量阈值与反思策略，未实现按时间自动 commit 、witness
+  调度和真正的 branch merge。

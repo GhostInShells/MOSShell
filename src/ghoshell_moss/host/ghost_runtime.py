@@ -304,6 +304,11 @@ class GhostRuntimeImpl(GhostRuntime):
         """
         mindflow = self._mindflow
         await mindflow.wait_started()
+        # Ghost-owned reflective controls share the shell's virtual-channel path.
+        # This keeps Memento policy inside Data while making its explicit CTML
+        # operations available to the same interpreter as every other capability.
+        if channel := self._ghost_instance.channel():
+            self.moss.shell.main_channel.add_virtual_channel(channel)
         # 组装 mindflow channel.
         if channel := self._mindflow.as_channel():
             self.moss.shell.main_channel.add_virtual_channel(channel)

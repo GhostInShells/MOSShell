@@ -10,6 +10,8 @@
 # 用 ConfigType 实例定义默认值，Matrix 扫描自动发现并注册到 ConfigStore。
 
 from ghoshell_moss.contracts.llms import LLMConfig
+from ghoshell_moss.ghosts.data import MemoryConfig
 
 # LLM provider configuration
 llm_config = LLMConfig()
+memory_config = MemoryConfig()

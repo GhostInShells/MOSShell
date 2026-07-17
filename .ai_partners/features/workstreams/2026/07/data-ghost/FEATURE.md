@@ -2,8 +2,9 @@
 title: Data Ghost
 status: in-progress
 status_note: >-
-  Memento-backed conversation v1 is implemented and verified; Data remains
-  in-progress for Desktop, CTML memory control, and reflection curation.
+  Memento-backed conversation, asynchronous reflection catch-up, MemoryConfig,
+  and constrained CTML controls are implemented and verified. Desktop and
+  Moshi-specific progress integration remain future work.
 priority: P1
 created: 2026-07-13
 updated: 2026-07-17
@@ -78,8 +79,20 @@ Data 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这�
 - **owner 与存储根终决: 稳定 Ghost 身份, 非 session scope.** 默认 root 是
   `GhostWorkspace.home/memento`，owner 是 ghost name。这样跨进程重启能恢复；
   同 `(root, owner)` 仍严格单写者。并行化身以后用新 owner/branch，不抢跑。
-- **本期不接 Desktop / CTML memento channel / 反思摘要 / witness.** 先验收单
-  branch 退化态的跨重启记忆；这些能力都保留在 Memento 现有接口上，不改契约。
+- **首版曾不接 Desktop / CTML memento channel / 反思摘要 / witness。** 先验收单
+  branch 退化态的跨重启记忆；随后反思与受限 CTML 控制面在既有 Memento 接口上实现，
+  仍不改契约，Desktop 与 witness 留待后续。
+- **第二期接线：反思是异步释义旁路，不是写入热路径。** 每个 mechanical commit 先以
+  保真摘录冻结，再由 `small_fast_model`（或明确注入的模型）读取已冻结成员并
+  `reinterpret()`。反思只能追加 CommitNote，不能修改 Moment；失败不影响对话，启动时
+  扫描尚无反思 note 的 mechanical commit 追赶。反思产物只含可见证据上的简短结论，
+  不持久化模型私有推理。
+- **MemoryConfig 是 Data 的持久策略面。** Window、count-based commit 与 reflection
+  参数由 workspace `configs/memory.yml` 提供默认值；DataMeta 显式参数只作为宿主/测试
+  覆盖。时间阈值与 witness 调度尚无 worker，不在本次伪装成已实现能力。
+- **CTML 控制面只暴露本 owner/current branch 的显式动作。** inspect/log/staging/show、
+  semantic commit、reinterpret、fork、switch 均经 Ghost.channel() 进入 Shell；不提供
+  跨 owner 写和隐式 merge。fork 的出生点仍必须是冻结 commit。
 - **thinking 期切片原文不进 Moment.** ghost 自持内存状态, 必要时按 moment
   commit 拆分. `Reaction.executed_logos` ("系统执行的 logos ≠ 模型生成的 logos")
   与 `Reaction.messages` (回声) 已为缝合留好位置, memento 契约
@@ -138,3 +151,11 @@ ghost.articulate(articulator):
   script 与人工测试方案。相关回归 138 passed；正式 `tests/ghoshell_moss` 为 1650
   passed、5 failed、2 errors，其中 Mindflow 单项重跑通过，Cell 两项是当前分支旧测试
   与新 ABC 不一致，Zenoh 三项为顺序/关闭超时，均不在本 workstream 路径。
+- 2026-07-17 第二阶段已落地：`MemoryConfig` 注册到 workspace config manifest；Data 在
+  mechanical commit 后用独立任务反思，在下一次启动时有限追赶；`ghost` channel 只开放
+  当前 owner 的 inspect/log/staging/show、semantic commit、reinterpret、fork/switch 与
+  手动追赶。反思任务可取消、去重、失败留观测，不进入 articulate 热路径。
+- 第二阶段定向回归：`ruff check src/ghoshell_moss/ghosts/data`、Data + Memento 的 pytest
+  共 96 passed、`scripts/ghost/data_memory_acceptance.py` 通过，`moss-run-ghost` 成功发现
+  `data`。`ghost_runtime.py` 的全文件 ruff 仍有改动前已有的 import/type/line-length
+  问题，本次仅在其既有虚拟 channel 机制中加入 Ghost channel 注册，未扩大清理范围。

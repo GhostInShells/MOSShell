@@ -10,6 +10,7 @@ from ghoshell_moss.core.memento import (
     CommitView,
     Memento,
     MementoBranch,
+    join_trailers,
     new_filesystem_memento,
 )
 from ghoshell_moss.core.memento.porcelain import (
@@ -22,6 +23,8 @@ from ghoshell_moss.message import Message
 from ._adapter import messages_to_parts
 
 __all__ = ["DataMemory"]
+
+_REFLECTION_BY = "memento-reflection"
 
 
 class DataMemory:
@@ -104,6 +107,99 @@ class DataMemory:
             return self._branch.commit(self._mechanical_summary(), kind="mechanical", by=self._owner)
         return None
 
+    def reflection_candidates(self) -> list[CommitView]:
+        """Own unreflected mechanical commits, plus legacy commits with an empty note."""
+        candidates: list[CommitView] = []
+        for view in self._branch.own_commits():
+            is_legacy_empty = not view.summary().strip()
+            if view.note.kind() != "mechanical" and not is_legacy_empty:
+                continue
+            if any(note.by == _REFLECTION_BY for note in self._branch.notes(view.id)):
+                continue
+            candidates.append(view)
+        return candidates
+
+    def apply_reflection(self, commit_id: str, summary: str) -> CommitView:
+        """Append an LLM-derived interpretation without touching frozen Moment records."""
+        view = self.find_commit(commit_id)
+        if view is None:
+            raise ValueError(f"commit not found or ambiguous: {commit_id!r}")
+        body = join_trailers(summary.strip(), [("Kind", view.note.kind()), ("Reflection", "llm")])
+        return self._branch.reinterpret(commit_id, body, by=_REFLECTION_BY)
+
+    def commit_transcript(self, commit_id: str, *, max_chars: int) -> str:
+        """Bounded observable source for a reflector; never exposes hidden model reasoning."""
+        lines: list[str] = []
+        for record in self._branch.commit_records(commit_id):
+            moment = record_to_moment(record)
+            for messages in moment.percepts.values():
+                for message in messages:
+                    text = message.to_content_string().strip()
+                    if text:
+                        lines.append(f"input: {text}")
+            if moment.logos.strip():
+                lines.append(f"logos: {moment.logos.strip()}")
+        return "\n".join(lines)[:max_chars]
+
+    def find_commit(self, token: str) -> CommitView | None:
+        """Resolve a stable sequence number or an unambiguous commit-id prefix."""
+        matched = [
+            view for view in self._branch.all_commits()
+            if token == str(view.seq) or view.id.startswith(token)
+        ]
+        return matched[0] if len(matched) == 1 else None
+
+    def semantic_commit(self, summary: str) -> CommitView:
+        if not summary.strip():
+            raise ValueError("semantic commit summary cannot be empty")
+        return self._branch.commit(summary.strip(), kind="semantic", by=self._owner)
+
+    def reinterpret(self, token: str, summary: str) -> CommitView:
+        view = self.find_commit(token)
+        if view is None:
+            raise ValueError(f"commit not found or ambiguous: {token!r}")
+        body = join_trailers(summary.strip(), [("Kind", view.note.kind())])
+        return self._branch.reinterpret(view.id, body, by=self._owner)
+
+    def fork(self, token: str, name: str = "") -> MementoBranch:
+        view = self.find_commit(token)
+        if view is None:
+            raise ValueError(f"commit not found or ambiguous: {token!r}")
+        child = self._memento.checkout(
+            base_fork=self._branch.meta.fork,
+            base_branch_id=self._branch.meta.branch_id,
+            base_commit_id=view.id,
+            name=name or f"fork-of-{view.seq}",
+        )
+        self._memento.switch(child.meta.branch_id)
+        self._branch = child
+        return child
+
+    def switch(self, prefix: str) -> MementoBranch:
+        matched = [meta for meta in self._memento.list_branches() if meta.branch_id.startswith(prefix)]
+        if len(matched) != 1:
+            raise ValueError(f"branch not found or ambiguous: {prefix!r}")
+        self._memento.switch(matched[0].branch_id)
+        self._branch = self._memento.get_branch(matched[0].branch_id)
+        return self._branch
+
+    def branches(self) -> list[dict[str, str]]:
+        return [
+            {"id": meta.branch_id, "name": meta.name, "current": str(meta.branch_id == self._branch.meta.branch_id)}
+            for meta in self._memento.list_branches()
+        ]
+
+    def describe_commit(self, token: str) -> str:
+        view = self.find_commit(token)
+        if view is None:
+            raise ValueError(f"commit not found or ambiguous: {token!r}")
+        lines = [f"commit seq={view.seq} id={view.id} kind={view.note.kind()}", f"summary: {view.summary()}"]
+        for record in self._branch.commit_records(view.id):
+            moment = record_to_moment(record)
+            inputs = " | ".join(moment.percepts_texts())
+            lines.append(f"moment={moment.id} input={inputs} logos={moment.logos}")
+        return "\n".join(lines)
+
     def _mechanical_summary(self) -> str:
         """Build a bounded extractive index without inventing an interpretation."""
         lines = ["[extractive mechanical index]"]
@@ -126,6 +222,7 @@ class DataMemory:
             "detail_n": self._detail_n,
             "summary_m": self._summary_m,
             "auto_commit_every": self._auto_commit_every,
+            "reflection_pending": len(self.reflection_candidates()),
         }
 
     def close(self) -> None:
