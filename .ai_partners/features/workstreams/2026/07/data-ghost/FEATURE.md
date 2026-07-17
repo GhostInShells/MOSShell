@@ -1,9 +1,12 @@
 ---
 title: Data Ghost
-status: draft
+status: in-progress
+status_note: >-
+  Memento-backed conversation v1 is implemented and verified; Data remains
+  in-progress for Desktop, CTML memory control, and reflection curation.
 priority: P1
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-17
 depends: [ghost-filesystem-desktop, momento-mori]
 milestone: 0.1.0
 description: >-
@@ -67,6 +70,16 @@ Data 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这�
   拥有: memento 作可复用契约+实现, 各 ghost 在 `__aenter__/__aexit__` 实例化并
   持有. GhostRuntime 对 memento 零感知 (Atom 无, Data 有). 配套: memento channel
   控下轮展示规则 (v1 极简裁剪), 旁路加工做异步精炼 (raw 轨迹全存, 展示走裁剪).
+- **首版接线终决: Data 持有薄 DataMemory 适配, GhostRuntime 零感知.** 读路径在
+  `Data.articulate()` 从 branch window 重建模型历史; 写路径复用
+  `Ghost.on_articulate_exit()`，此时完整 logos 已写回 Moment，且正常沉默帧也不会
+  丢。失败半帧不入记忆。默认每 4 帧 mechanical commit，初始释义只做限长的
+  输入/输出原文摘录索引，不伪造意义；未来旁路可 `reinterpret()`。
+- **owner 与存储根终决: 稳定 Ghost 身份, 非 session scope.** 默认 root 是
+  `GhostWorkspace.home/memento`，owner 是 ghost name。这样跨进程重启能恢复；
+  同 `(root, owner)` 仍严格单写者。并行化身以后用新 owner/branch，不抢跑。
+- **本期不接 Desktop / CTML memento channel / 反思摘要 / witness.** 先验收单
+  branch 退化态的跨重启记忆；这些能力都保留在 Memento 现有接口上，不改契约。
 - **thinking 期切片原文不进 Moment.** ghost 自持内存状态, 必要时按 moment
   commit 拆分. `Reaction.executed_logos` ("系统执行的 logos ≠ 模型生成的 logos")
   与 `Reaction.messages` (回声) 已为缝合留好位置, memento 契约
@@ -117,3 +130,11 @@ ghost.articulate(articulator):
 - 依赖 desktop (`ghost-filesystem-desktop`) 与 memento (`momento-mori`) 的契约
   就位程度. memento 当前 contract-frozen-pending-review, desktop in-progress
   (channel 落点已定, K14~K18). 起步前先对齐这两条的可用表面.
+- 2026-07-17 技术评审落在
+  `Docs/MOSS-Ghost-Memory集成技术评审与实施方案.md`。当前分支的 `moss` 根 CLI
+  因 `cells_cli.py` 导入已删除的 `CellRegistry` 无法启动，本 workstream 不借机修改
+  该相邻重构；feature 状态按同一 frontmatter 契约直接维护。
+- 已交付 `ghosts/data`（DataMeta/Data/DataMemory）、workspace 注册、无网络 acceptance
+  script 与人工测试方案。相关回归 138 passed；正式 `tests/ghoshell_moss` 为 1650
+  passed、5 failed、2 errors，其中 Mindflow 单项重跑通过，Cell 两项是当前分支旧测试
+  与新 ABC 不一致，Zenoh 三项为顺序/关闭超时，均不在本 workstream 路径。

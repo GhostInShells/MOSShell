@@ -1,6 +1,7 @@
 """moss-run-ghost — 启动 Ghost TUI 交互终端."""
 
 import click
+
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.host import Host
 from ghoshell_moss.host.tui_entries.ghost_ui import GhostTUI
@@ -19,7 +20,7 @@ def ghost_run_main(ghost: str | None, mode: str, scope: str):
     env.seal()
 
     host = Host(env=env)
-    available = host.all_ghosts()
+    available = {meta.name(): meta for _, meta in host.project.ghosts() if not isinstance(meta, Exception)}
 
     if not available:
         click.echo("No ghosts found in workspace.")

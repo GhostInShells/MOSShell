@@ -181,7 +181,7 @@ class TestAtomMessages:
         from pydantic_ai.messages import ModelRequest
         atom = self._atom(tmp_path)
         msg = Message.new().with_content("hello")
-        moment = Moment(percepts=[msg])
+        moment = Moment(percepts={"test": [msg]})
         request = atom.to_model_request(moment)
         assert isinstance(request, ModelRequest)
 
@@ -192,7 +192,7 @@ class TestAtomMessages:
     def test_save_adds_to_history(self, tmp_path: Path):
         from pydantic_ai.messages import ModelRequest, ModelResponse
         atom = self._atom(tmp_path)
-        moment = Moment(percepts=[Message.new().with_content("hi")])
+        moment = Moment(percepts={"test": [Message.new().with_content("hi")]})
         response = ModelResponse(parts=[])
         atom.save_model_request(moment, response)
         history = atom.model_history()
@@ -263,7 +263,7 @@ class TestAdapter:
     def test_moment_to_request(self):
         from ._adapter import moment_to_request
         from pydantic_ai.messages import ModelRequest
-        moment = Moment(percepts=[Message.new().with_content("test")])
+        moment = Moment(percepts={"test": [Message.new().with_content("test")]})
         request = moment_to_request(moment)
         assert isinstance(request, ModelRequest)
         assert len(request.parts) > 0
@@ -271,7 +271,7 @@ class TestAdapter:
     def test_moment_to_request_includes_percepts(self):
         from ._adapter import moment_to_request
         msg = Message.new().with_content("percept content")
-        request = moment_to_request(Moment(percepts=[msg]))
+        request = moment_to_request(Moment(percepts={"test": [msg]}))
         assert any("percept content" in str(p) for p in request.parts)
 
     def test_moment_to_request_includes_previous_outcomes(self):
