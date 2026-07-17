@@ -3,14 +3,16 @@ title: CTML 1.0.0 English Revision — 协议级 review 锚点 + 术语零跳转
 status: draft
 priority: P1
 created: 2026-06-15
-updated: 2026-06-15
+updated: 2026-07-17
 depends: []
 milestone:
 description: >-
   Rewrite CTML 1.0.0 prompt in English to align terminology with code (channel /
   scope / command), clear out legacy metaphors (funnel / parent-child dispatch),
-  and tighten the prompt budget toward the 5-6k sweet spot. Pre-beta1, no
-  protocol promise yet — version stays 1.0.0.
+  and tighten the prompt budget toward the 5-6k sweet spot. Includes one scoped
+  protocol change: remove until="flow", converge until to pure quantifiers
+  (all/any) with the default closing semantics unnamed. Pre-beta1, no protocol
+  promise yet — version stays 1.0.0.
 ---
 
 # CTML 1.0.0 English Revision
@@ -42,6 +44,8 @@ CTML 1.0.0 中文版当前可工作但有显而易见的话术包袱:
 CTML 当前还在 pre-beta1, **没有正式协议承诺**. 英文版以 1.0.0 落地, 不动版本号. 常见错误未来 0.1.0 之后走 patch.
 
 **Why**: 版本号变更暗示协议变更, 但英文版只是话术 refactor + 术语对齐, 协议事实不变. 双写一段时间 (中文 v1.0.0 默认 + 英文版试用), 收集模型在两版本上的踩坑频率对比 (用现有 300+ 单测 + ThreeLoopSuite 作为压力测试), 数据支持后再决定是否切默认.
+
+**2026-07-17 松动**: 协议事实允许**仅一处**改动 — KD7 的 scope until 语义收敛 (删 flow). 版本号仍不动 (pre-beta1 无承诺). 除 KD7 外协议事实仍然不变, 双写对比实验的对照性由"两版本同步应用 KD7"保证.
 
 ### KD2: Token 预算上限 5~6k, 不突破 8k
 
@@ -112,6 +116,41 @@ CTML 当前还在 pre-beta1, **没有正式协议承诺**. 英文版以 1.0.0 �
 
 **应升级为 "父子阻塞规则的直接推论"**, 并在解释父子阻塞时同步说出来. 这样读者第一次读到父子阻塞就知道为什么并行命令要前置, 而不需要在远端章节才理解.
 
+### KD7: scope until 语义收敛 — 删 flow, until 纯量词, 默认无名 (2026-07-17)
+
+唯一一处协议改动 (见 KD1 松动). 与人类工程师 2026-07-17 会话对齐, 完整碰撞轨迹见本 workstream `discuss/2026-07-17_scope_until_semantics.md`.
+
+**改动内容**:
+
+1. **删除 `until="flow"` 枚举值**. 默认态不再有关键字 — `<_>` 不写 until 时, 语义为: 作用域在自己的 occupy 链 (blocking 命令序列) 跑完时关闭, 仍在运行的并行子任务被 cancel.
+2. **`until` 收敛为纯量词**, 仅 `all` / `any` 两值. 读作 "until all/any (complete)", 与 Python `all()`/`any()` 语义正向迁移, 落在预训练心智模型上.
+3. **默认态刻意不命名**. 文档用行为句描述, 不造锚词 — 一旦有名字, 模型迟早会把它回写进 `until=`, flow 的问题就会复活.
+4. **scope 语法只教 `<path:_>` 前缀式**. `channel="xxx"` 属性写法保留解析兼容, 但文档不暴露 (原则: 对模型无歧义的错误输出尽量兼容, 有歧义的才拒绝).
+5. **默认 cancel 语义确认不变** (非 drain): CTML 做的是精确时序拓扑规划, drain 类逻辑交给其他机制.
+
+**Why**:
+
+- `all`/`any` 是 join 谓词 (描述"等什么"), `flow` 描述的是结构主体 (作用域自己的顺序轨), 三者不属于同一语法范畴; 默认值恰好落在最难命名的那个上.
+- `flow` 要求模型先理解通道 occupy 拓扑才能预测行为, `all`/`any` 对拓扑无感知; 实现里"空轨退化成 all"的容错开关正是 flow 语义在空轨时退化的证据 — all/any 永远不需要这种补丁.
+- 默认态语义可以直接挂靠在模型已经从 command interface 学到的 blocking/occupy 概念上, 零新增认知负担. flow 的根本问题是为一个可从 blocking 推导的概念平白发明了新词.
+- scope 的本质是**可嵌套的分形时序规划原语** (剪枝单位): 每层把内部时序复杂度收敛为有确定完成语义的黑箱. 三个闭合基元中"占据链跑完"最常用又最难命名, 无名化是最干净的收尾.
+
+**边界声明**: 本版 scope 语法解决不了图时序规划 — 树可分形剪枝, DAG 上 until 语义不闭合. 图时序是 CTML 未来版本的命题, 不是本版缺陷.
+
+### KD8: `_cid` 措辞去"自增" — 辨识标签语义 (2026-07-17)
+
+措辞改动, 实现不动. 现行规范 "通常用自增整数, 请自行决定用值" 中的**"自增"**诱导模型维护一个跨命令的计数器状态 (看不见的心智账本). 真实语义: `_cid` 是命令实例的**辨识标签**, 用于把 `<result>` 对回具体某次调用 — 任意有区分度的值即可 (整数/短名), 无需自增, 无需有序, 无需全局唯一; 只在要引用结果时才需要写, 不写合法.
+
+与 KD7 同一母题: **协议本身无状态, 措辞却诱导模型维护状态.**
+
+### KD9: 原语内容撤出 instruction 正文, 留指路句 (2026-07-17)
+
+原语 (`<clear>`/`<sleep>`/`<interrupt>` 等) 由运行时自动填充进 `__main__` 的 interface, 模型能看到真实签名. 正文里的原语说明与 interface **重复**, 且原语集随环境/版本变化, 写死在正文里有 drift 风险.
+
+**改法**: 正文只留一句指路 — 主通道 `__main__` 提供全局控制原语, 用法见其 interface; 原语只能在主通道用, 省略通道名. 具体清单和签名交给 interface 自己讲 (code as prompt).
+
+与 KD5 同一哲学: 协议层最小化, 会变的内容不进正文. 同时服务 KD2 的 token 预算.
+
 ## Implementation Notes
 
 ### 验收 Bar
@@ -133,7 +172,8 @@ CTML 当前还在 pre-beta1, **没有正式协议承诺**. 英文版以 1.0.0 �
 
 ### 不在本次范围
 
-- CTML 2.0 设计 (远期, 等 1.0.0 跑稳定再看)
+- CTML 2.0 设计 (远期, 等 1.0.0 跑稳定再看); 图时序规划归属 2.0+ (KD7 边界声明)
+- `__content__` 空轨容错开关 (无本通道命令的默认 scope 退化成 all) 的可解释性 — 挂账再看, content 概念本身确认保留 (并行时序语法里无标记文本的必要落点, 协议层已显性: 定义了 content_command 才暴露签名)
 - 自动 tooling: CTML 语法 lint / 反例自动生成 (可以是后续 patch workstream)
 - 中文版废弃 (双写期保留, 数据支持后再决定)
 
