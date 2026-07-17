@@ -57,7 +57,7 @@ Example 不执行，只为 code as prompt —— 让读代码的模型一眼知�
 | `交互能力` | 向外部世界的输出或感知 | speech_channel |
 | `集成` | 将已有外部能力封装为 Channel | module_channel, typer_channel |
 | `系统控制` | 操作系统级别控制 | mac_channel |
-| `认知模块` | 对文件系统等资源的动态结构化认知 | notebook_channel |
+| `认知模块` | 对文件系统等资源的动态结构化认知 | — |
 
 *此分类为草拟（2026-06-02），随 channel 增多自然演进。新 channel 的类型可以追加，无需修改已有。*
 
@@ -85,7 +85,7 @@ alpha → beta → active
 | 层级 | API | 场景 | 参考 |
 |------|-----|------|------|
 | L0 | `new_module_channel()` | 纯函数模块，零手工反射 | module_channel |
-| L1 | `new_channel()` + Builder | 需 instruction/context/生命周期 | notebook_channel, typer_channel |
+| L1 | `new_channel()` + Builder | 需 instruction/context/生命周期 | typer_channel |
 | L2 | 继承 Channel ABC | 复杂运行时，封装 contract | speech_channel |
 | L3 | StatefulChannel | 运行时切换状态/能力集 | app_store_channel |
 | L4 | PrimeChannel | 全能：stateful + mutable + builder | — |
