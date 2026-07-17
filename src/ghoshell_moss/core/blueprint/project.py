@@ -84,6 +84,11 @@ class HostModeMeta(BaseModel):
         default_factory=lambda: [],
         description="排除掉 nodes 的路径, 匹配规则从 project 出发的相对路径, 以 fnmatch 语法为准过滤. "
     )
+    bringup_nodes: list[str] = Field(
+        default_factory=list,
+        description="mode 启动时自动拉起的 node 列表. 每项是相对 project.root 的路径, "
+                    "支持目录 (找 NODE.md)、NODE.md 文件或脚本. 单个失败记日志, 不阻断 mode 启动.",
+    )
 
     # --- 运行时的动态生成字段 --- #
     file: str = Field(

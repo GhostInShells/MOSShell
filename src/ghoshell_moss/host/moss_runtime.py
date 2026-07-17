@@ -11,6 +11,7 @@ wire-up 契约 (§ZZ):
 """
 from typing_extensions import Self
 
+from pathlib import Path
 import janus
 
 from ghoshell_moss.message.message import Message
@@ -227,6 +228,19 @@ class MossRuntimeImpl(MossRuntime):
                 ResourceStorageFactoryBootstrapper(r.value()),
             )
 
+    async def _bringup_nodes(self) -> None:
+        """按 mode 声明顺序拉起 bringup_nodes, 单个失败记日志不阻断.
+
+        matrix 已启动时调用, run_node 依赖 matrix 运行态.
+        """
+        for target in self._mode.meta.bringup_nodes:
+            try:
+                await self._matrix.run_node(Path(target))
+            except Exception:
+                self._matrix.logger.exception(
+                    "bringup node failed: %s", target,
+                )
+
     def _discover_main_channel(self):
         """从 mode.manifests().channel() 拿 main channel Manifest.
 
@@ -406,6 +420,8 @@ class MossRuntimeImpl(MossRuntime):
         await self._async_exit_stack.enter_async_context(self._matrix)
         # 补 IoC 注册 (system prompter / MOSShell) — 之前挂 _app_store 的位置
         self._bootstrap_after_matrix()
+        # bringup: 按 mode 声明拉起 nodes, 单个失败记日志不阻断启动.
+        await self._bringup_nodes()
         # 启动 ctml shell
         await self._async_exit_stack.enter_async_context(self._manager_shell_lifecycle())
         return self

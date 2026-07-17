@@ -9,7 +9,8 @@ description: 'Matrix cell 体系治理总任务。从 circusd 死胡同出发, �
 milestone: 0.1.0
 priority: P0
 status: in-progress
-status_note: 2026-07-17 wire-up 收官第一段 (§AAA): MatrixImpl 换血 runtime_info
+status_note: >-
+  2026-07-17 wire-up 收官第一段 (§AAA): MatrixImpl 换血 runtime_info
   单入参, Host.new_matrix(cell) concrete 显式化, factory 退回 escape hatch, hasattr
   漂移修复. 剩余: moss_runtime wire-up (真正难关, 上轮 feature 没做就交付) + CLI 重做.
 title: Matrix Cell Governance
