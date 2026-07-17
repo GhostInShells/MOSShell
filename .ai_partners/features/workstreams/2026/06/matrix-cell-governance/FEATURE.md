@@ -1270,6 +1270,15 @@ class CellPresence(BaseModel):
   反映最新 providing/updated. 分工纪律 (人类 2026-07-17 明示): matrix 层
   只保障 event 发送成功, event → signal → mindflow 消费侧归 channel 层.
   event 与 mesh 回调等待逻辑独立, 前者做信号后者做副作用, 不熔.
+- **1ms 铁律 (async def 内的同步阻塞审计, fixup)**: MOSS 是全双工系统,
+  **runtime 阶段** (`async with matrix:` 之后) 内任何 async def 内部
+  超过 1ms 的同步阻塞 = stop-the-world. 本轮清理:
+  `_sync_cell_ledger` (provide_channel 后) + `run_node` 五处
+  (target resolve / singleton 查重 / mkdir / write ledger) 全走 `asyncio.to_thread`,
+  同步 helper (`_sync_cell_ledger_impl` / `_find_singleton_conflict` /
+  `_resolve_target`) 显式分离供 offload. **startup / shutdown 阶段**
+  (`__aenter__` / `__aexit__` 内的 sync exit_stack) 允许保持同步 —
+  runtime 尚未开始, 依赖顺序清晰. 保 to_thread 是 async 顺序 await, 不引入并发.
 
 ### AAA-2. 下一 session 避坑 (silent 病历本)
 

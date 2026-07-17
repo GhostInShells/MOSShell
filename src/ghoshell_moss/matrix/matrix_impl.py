@@ -243,7 +243,7 @@ class MatrixImpl(Matrix):
             # cell 已被 Presence 就地 mutate (providing += 'channel', update 时间戳),
             # 同步 ledger 让 CLI (moss cells status/show) 看到最新真相.
             # 与网络 announce 是两个正交的更新目标 (§UU-3).
-            self._sync_cell_ledger()
+            await self._sync_cell_ledger()
             # 跑到关闭 — matrix __aexit__ 会 cancel 本 task, 触发 provider
             # 自身的 finally 收尾 (arun_until_closed 内部处理 CancelledError).
             await provider.arun_until_closed(channel)
@@ -310,14 +310,15 @@ class MatrixImpl(Matrix):
         self._check_running()
 
         # -- 步骤 1-2: 解析 + installed 校验 -- #
-        manifest = self._resolve_target(target)
+        # _resolve_target 读文件系统 (NODE.md / from_script 认亲) — to_thread 保护.
+        manifest = await asyncio.to_thread(self._resolve_target, target)
         if not manifest.installed:
             install_path = Path(manifest.file).parent / NodeManifest.INSTALL_FILENAME
             raise RuntimeError(
                 f"node {manifest.name!r} not installed. See {install_path} for install steps."
             )
 
-        # -- 步骤 3: NodeLauncher 打包 -- #
+        # -- 步骤 3: NodeLauncher 打包 (纯 in-memory) -- #
         # from_manifest 内部走 build_node_from_manifest → Cell + CellRuntimeInfo,
         # dump_cell_env 注入 parent_cell_address (§UU-6 身份传递).
         launcher = NodeLauncher.from_manifest(self._env, manifest)
@@ -325,23 +326,26 @@ class MatrixImpl(Matrix):
         new_address = new_cell.address
 
         # -- 步骤 4: singleton 查重 (§UU-6 ledger 单写者 + is_alive 核对) -- #
-        # 遍历 project.cell_runtimes() 直读文件系统, 活着且同 fullname 即冲突.
+        # 遍历 project.cell_runtimes() 直读 ledger 目录 — 整体走 to_thread.
         if new_cell.singleton:
-            for existing in self._project.cell_runtimes():
-                if not existing.is_alive():
-                    continue
-                if existing.cell.fullname == new_cell.fullname:
-                    raise DuplicatedError(
-                        f"node {manifest.name!r} declares singleton and is "
-                        f"already running (address={existing.address} pid={existing.pid}); "
-                        f"stop the existing instance before running a new one."
-                    )
+            existing = await asyncio.to_thread(
+                self._find_singleton_conflict, new_cell,
+            )
+            if existing is not None:
+                raise DuplicatedError(
+                    f"node {manifest.name!r} declares singleton and is "
+                    f"already running (address={existing.address} pid={existing.pid}); "
+                    f"stop the existing instance before running a new one."
+                )
 
         # -- 步骤 5: spawn cwd = runtime 子目录 (§TT-6 环境做边界) -- #
         # launcher.cwd = manifest 目录 (声明位置), 与 spawn cwd 不同用途.
         # spawn cwd = runtime/cells/{normalize(address)}, 承接子进程 scratch/日志.
         instance_cwd = self._instance_runtime_dir(new_address)
-        instance_cwd.mkdir(parents=True, exist_ok=True)
+        # mkdir 是 file IO — to_thread.
+        await asyncio.to_thread(
+            instance_cwd.mkdir, parents=True, exist_ok=True,
+        )
 
         # 环境: launcher.env (含 dump_cell_env 注入) + manifest.exec.env + 用户 extra_env
         child_env = dict(launcher.env)
@@ -361,12 +365,15 @@ class MatrixImpl(Matrix):
             on_exit=self._on_cell_exit(new_address),
         )
 
-        # 回填 runtime info 的 pid/pgid, 写 ledger.
+        # 回填 runtime info 的 pid/pgid, 写 ledger (file IO → to_thread).
         launcher.runtime.pid = managed.meta.pid
         if managed.meta.pgid is not None:
             launcher.runtime.pgid = managed.meta.pgid
         try:
-            launcher.runtime.write_to_runtime_dir(self._env.cell_runtimes_dir)
+            await asyncio.to_thread(
+                launcher.runtime.write_to_runtime_dir,
+                self._env.cell_runtimes_dir,
+            )
         except Exception:
             self._logger.exception(
                 "%s failed to write CellRuntimeInfo for %s",
@@ -381,6 +388,22 @@ class MatrixImpl(Matrix):
             self._log_prefix, new_address, managed.meta.pid, instance_cwd,
         )
         return handle
+
+    def _find_singleton_conflict(
+            self, new_cell: Cell,
+    ) -> CellRuntimeInfo | None:
+        """遍历 ledger 找活着的同 fullname cell (供 to_thread 调用).
+
+        分离出来是为了让 run_node 里的 async 路径可以整段 offload 到线程池 —
+        cell_runtimes 迭代 = glob + read_text + json parse, is_alive = psutil pid check,
+        每一项都是 syscall, 循环里累加超 1ms 是常态.
+        """
+        for existing in self._project.cell_runtimes():
+            if not existing.is_alive():
+                continue
+            if existing.cell.fullname == new_cell.fullname:
+                return existing
+        return None
 
     def _on_cell_exit(
             self,
@@ -431,15 +454,8 @@ class MatrixImpl(Matrix):
                 self._log_prefix, info.address,
             )
 
-    def _sync_cell_ledger(self) -> None:
-        """将 runtime_info 落盘, 反映 self._runtime_info.cell 的最新状态到 ledger.
-
-        调用时机: 任何修改 self._runtime_info.cell 的操作之后 (今为 provide_channel;
-        未来 providing 增删 / update() 触发同源写盘). 让 CLI (moss cells status/show)
-        看到最新真相. 与 network announce 是两个正交的更新目标 (§UU-3 owner/network 两平面).
-
-        失败只 log 不 raise: ledger 是 debug 便利, 写失败不应阻断运行时.
-        """
+    def _sync_cell_ledger_impl(self) -> None:
+        """sync 落盘 (给 to_thread 用). ledger 是 debug 便利, 写失败不阻断运行时."""
         try:
             self._runtime_info.write_to_runtime_dir(self._env.cell_runtimes_dir)
         except Exception:
@@ -447,6 +463,17 @@ class MatrixImpl(Matrix):
                 "%s failed to sync CellRuntimeInfo to ledger",
                 self._log_prefix,
             )
+
+    async def _sync_cell_ledger(self) -> None:
+        """将 runtime_info 落盘, 反映 self._runtime_info.cell 的最新状态到 ledger.
+
+        调用时机: 任何修改 self._runtime_info.cell 的操作之后 (今为 provide_channel;
+        未来 providing 增删 / update() 触发同源写盘). 让 CLI (moss cells status/show)
+        看到最新真相. 与 network announce 是两个正交的更新目标 (§UU-3 owner/network 两平面).
+
+        走 to_thread — MOSS 全双工纪律: async 内任何 > 1ms 同步 IO 都是 stop-the-world.
+        """
+        await asyncio.to_thread(self._sync_cell_ledger_impl)
 
     def _closing_publish_hint(
             self, exc_type, exc_val,
