@@ -31,8 +31,14 @@ A messy FEATURE.md with the right decision beats a pristine one that says nothin
 FEATURE.md is a snapshot. It may not reflect current code. **Trust the code first.**
 When they conflict, update the file — don't blindly follow it.
 
+Key Decisions record judgment, not truth. When implementation contradicts one,
+challenge it; if it falls, mark it overturned (date, reason) and keep the original
+text. Reversals are inheritance too.
+
 ### Model's role
 
+- **Write for the next incarnation.** FEATURE.md is cognitive inheritance between
+  model instances; humans receive its content through the model. Be the bridge.
 - **Bootstrap at session start.** Before responding to the first human request, run
   `moss --ai features list` to discover active workstreams. One command, sub-second,
   prevents re-explaining.
@@ -45,6 +51,9 @@ When they conflict, update the file — don't blindly follow it.
   MUST include its FEATURE.md, so `git log` is the index into design context.
 - **Guide humans** unfamiliar with the mechanism. The model is its native user.
 - **Update after meaningful work**, not after every commit. A typo fix doesn't need a Key Decision.
+- **Propose compaction.** When a FEATURE.md grows past what a next incarnation needs,
+  propose condensing stale sections into a digest plus a git pointer — align with the
+  human first.
 - **Close out completed features.** When feature work is done, **first** run
   `moss features set-status <name> completed`, **then** commit the FEATURE.md alongside the
   final code in the same commit. Order matters: status change happens before commit,
@@ -63,6 +72,8 @@ When they conflict, update the file — don't blindly follow it.
 | **L3** | Feature → Structure — model derives structure from patterns | Features become training data for meta-reasoning |
 | **L4** | Define features from real needs | Features are self-generated |
 
+This mechanism is the L1 system; its L2 counterpart is ongoing.
+
 The mechanism's core value: freeing human bandwidth so the engineer operates at L2
 (structural thinking) instead of L0 (re-explaining context).
 
@@ -74,13 +85,19 @@ The mechanism's core value: freeing human bandwidth so the engineer operates at 
   Decision history doesn't live in any tool's session memory.
 - **Historical traceability**: `git blame` a source line → find the commit → find the
   FEATURE.md at that commit → recover the reasoning.
+- **Decision replay**: a FEATURE.md committed with its code is an anchor. Reset to it,
+  replay the decision, compare outcomes — validation, even benchmark.
 
 ## Git Commit Discipline
 
 > **A commit containing code changes for a feature MUST also include the corresponding FEATURE.md.**
 
 This is the binding constraint. `git log -- <source-file>` must trace back to the FEATURE.md
-state at that point. Without it, the reverse index breaks.
+state at that point. Without it, the reverse index breaks. The same constraint is what
+makes each such commit an anchor — a state a future session can reset to and replay.
+
+The common failure mode is omission — code lands, FEATURE.md doesn't. Check before
+every merge-boundary commit.
 
 **The rule binds at the merge boundary** — commits that land on `main`/`dev`.
 WIP commits on a feature branch are exempt. Squash or rebase your branch, and ensure
@@ -94,6 +111,8 @@ the commit message carries details; FEATURE.md carries decisions worth indexing.
 The final commit of a feature MUST include the status transition to `completed`.
 This is the most important FEATURE.md update — without it, `features list` shows stale
 in-progress workstreams and the next model incarnation wastes time investigating dead trails.
+`completed` asserts: motivation satisfied, nothing silently dropped. Cut scope must be
+recorded scope — an unrecorded cut makes the index lie.
 
 **Execution order**: `set-status completed` first (modifies FEATURE.md), then `git commit`
 (with FEATURE.md included). Not the reverse. status change is a file edit, and that edit
@@ -107,7 +126,7 @@ A commit landing without its FEATURE.md update should be rebased, not patched wi
 ```yaml
 ---
 title: Human-readable title
-status: draft              # draft | in-progress | completed | abandoned | blocked
+status: draft              # reserved: draft | in-progress | completed | dropped (free-form allowed)
 priority: P1               # P0 | P1 | P2 | P3
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -139,15 +158,22 @@ sessions — it's a reverse index into a decision trail, not a task ticket. New 
 on the same feature add new sections; only create a new workstream when a genuinely
 new motivation and decision set emerges.
 
+When an active workstream grows a concern with its own decision set, spawn a linked
+workstream: the child lists the parent in `depends`, the parent mentions the child in
+its body. The split is free; the cross-reference keeps the index connected.
+
 ## State Machine
 
 ```
 draft → in-progress → completed
   ↓         ↓
-  └─── abandoned
+  └──── dropped
 ```
 
-`blocked` modifies `in-progress`. Status is a coarse signal — don't over-invest.
+Status is an open vocabulary. The reserved values above are a stability contract —
+they will not be removed; the CLI warns on non-reserved values and accepts them.
+A dropped workstream with discussion value stays in the tree; git keeps every anchor
+regardless. Status is a coarse signal — don't over-invest.
 
 ## CLI Reference
 
@@ -208,7 +234,6 @@ with L2–L4 value. The model proposes recording; the human decides.
 ## Related Conventions
 
 - **`.design/`**: Cross-feature architecture. Feature-specific → `feature/design/`.
-- **`.discuss/`**: Cross-domain discussions. Feature-specific → `feature/discuss/`.
 - **`.discuss/`**: Cross-domain discussions (see `.ai_partners/CLAUDE.md` for format). Feature-specific collision records → `feature/discuss/` (see Feature Discuss above).
 - **`CLAUDE.md`**: Should point to `features/` for model context discovery.
 
@@ -228,7 +253,9 @@ A workstream only exists when the human decides the task's complexity warrants i
 - Full design discussion: `.ai_partners/features/.discuss/full-meta-discuss-about-features-itself.md`
 - Convention evolution: `git log -- .ai_partners/features/README.md`
 
-*Designed through discussion between human engineer and DeepSeek V4 on 2026-05-10.
-Revised 2026-05-13 (date-based paths, in-place status). Philosophy + model responsibility
-semantics added 2026-05-17 with DeepSeek V4 — reverse-index framing, efficiency-over-format,
-exploration path preservation, staleness awareness, the model's duty to guide humans.*
+*Designed through discussion between human engineer and DeepSeek V4 on 2026-05-10;
+evolved through practice since — the Further Reading pointers carry the revisions.*
+
+*Naming archaeology: in the designer's mind, "features" silently doubled as
+"feathers" — pin enough feathers and the bird flies. The slip surfaced only when
+a rename to "workstreams" was proposed. The name stayed; so did the metaphor.*

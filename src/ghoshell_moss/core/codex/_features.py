@@ -16,7 +16,8 @@ from typing import Optional
 # Frontmatter
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"draft", "in-progress", "completed", "abandoned", "blocked"}
+# Open vocabulary: free-form statuses are allowed; these reserved values are the stability contract.
+RESERVED_STATUSES = {"draft", "in-progress", "completed", "dropped"}
 
 
 def parse_frontmatter(filepath: str | Path) -> Optional[dict]:
@@ -268,7 +269,7 @@ def update_feature_status(
     """
     Update the status (and updated date) of a feature's frontmatter — in place, no move.
 
-    Terminal statuses (completed/abandoned) are just frontmatter updates.
+    Terminal statuses (completed/dropped) are just frontmatter updates.
     The file stays where it was created.
 
     Returns True on success, False if feature not found.

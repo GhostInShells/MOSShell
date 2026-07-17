@@ -17,7 +17,7 @@
 ## Path Semantics
 
 - **Path encodes creation date** at `create` time. Features stay in place for their entire
-  lifecycle — `completed`/`abandoned` are just a `status` field update in frontmatter, no file move.
+  lifecycle — `completed`/`dropped` are just a `status` field update in frontmatter, no file move.
   This preserves clean git history without path-forking from rename detection.
 - **`workstreams/` is the single source of truth** for all features in all states. There is no
   `archive/` or `completed/` sibling — terminal states live alongside active ones.
