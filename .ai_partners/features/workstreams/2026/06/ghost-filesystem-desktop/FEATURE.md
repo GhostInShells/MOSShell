@@ -3,7 +3,7 @@ title: Ghost Filesystem Desktop — Ghost 的认知桌面
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-07-13
+updated: 2026-07-15
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -15,6 +15,32 @@ description: >-
   CTML channel (主), bash CLI (`moss desktop`), module_eval (小概率). 与
   subprocesses/job_supervisor (执行), Memento (过去) 共构反身性基建.
 status_note: >-
+  2026-07-15 Claude Fable 5 (接续 07-14). 第二轮对齐: marker 重选, $id
+  身份体系, .grands/ 设计分支, pin 类型扩展方向, ghost 认知场草图. GROUND.md
+  定为 marker 首选 (GROUND = 认知参考基准, 骑电气工程 + common ground 双料
+  先验, 行业碰撞概率最低). $id 替代 $template (身份声明而非血统记录, JSON
+  Schema $id 先验). K36 激进简化: seen_* 连侧影都不必落盘, pin 段只剩 addr
+  + note, 首次进入无上帧故不标记 stale. K42: $id 是字符串 (如
+  `moss:features`) 非路径, 解析是 ghost 映射表的事. K43: .grands/ 设计
+  分支 — well-known 目录装认知方法文件, 向上查找 .grands/, pin root = cwd
+  (非 .grands/ 自身), 认知与内容分离但多认知方法天然解. K41: pin 类型扩展
+  — frontmatter 字段 (path#field) / markdown 段落 (path## heading),
+  `#` = CSS id selector / markdown anchor 先验. K40 携带/属地合成 + K28
+  幂等冲突待 dogfooding 裁决; 多认知方法 (一个目录多种读法) 开放问题.
+  Ghost 认知场: users/memory/skills/tasks/tmp 子场结构, stub 从 L1 实例化.
+  --
+  2026-07-14 Claude Fable 5. 行业对照调研 + 理论/实现 5 偏差点对齐 + L2
+  方向讨论 (未动代码). 行业结论: 零件全有退化形态 (嵌套 AGENTS.md / Cursor
+  .mdc / Letta memory blocks / since / Manus / Anthropic memory tool /
+  VISTA arXiv 2606.30005), 但 place-local + open/close 生命周期 + 地址 pin
+  显式对账的组合仍是空位. 本轮沉淀 K35~K39: K35 携带/属地合成语义 (方向);
+  K36 pin 观察态字段迁运行时侧影 (倾向, 动 contracts, K24 答案候选);
+  K37 L1/L2 纪律 = 冷启动 fewshot + 可验证; K38 L2 落地 = 追认
+  .ai_partners/ 为索引场, README 文体先行, moss 自建 L2 dogfood;
+  K39 五问信息传递 (where/what/which/how/why 劈机器域/文体域) + 三级
+  发现链 (L2→L1→L0, marker 文件 + glob). 新未决 K40 (合成语义 contracts
+  形状 / K28 冲突 / ghost 默认场), K41 (L1 marker 文件名).
+  --
   2026-07-13 Claude Opus 4.7. v1 concrete 层 + CLI 落地. contracts/desktop.py
   按 K21 对齐 (Grounds.open 返回 Ground 对象; CTML 表面在父, core 转发子;
   同 dir 幂等), core/desktop/{_addr,_hash,_l0,_instruction,_render,_ground,
@@ -135,7 +161,179 @@ Desktop 把这些统一为 **运行时的可 pin 的 context 表面 + 场的开�
 
 ## Key Decisions
 
-### 2026-07 重绘
+### 2026-07-14 认知场对齐 (行业对照 + 偏差盘点 + L2 方向)
+
+本轮为人类工程师与模型对 "文件目录构建认知场" 理论与 v1 实现的偏差盘点,
+外加行业对照调研. 未动代码, 先沉淀共识与未决.
+
+**行业对照** — 零件全有退化形态, 组合仍是空位: 嵌套 AGENTS.md (静态法链,
+无运行时生命周期) / Cursor .mdc rules (frontmatter 机器域 + body 开放集的
+现成实物, 但激活被动) / Letta memory blocks (可编辑常驻表面, 内容快照而非
+地址, 无场所) / since MCP (stale 检测, 自动推送而非显式承认) / Manus
+recitation (O(n) 追加的帧重绘退化形) / Anthropic memory tool (agent 全局
+/memories 目录, 无场所局部性) / VISTA (arXiv 2606.30005, 可寻址 block +
+运行时仪表盘, 自管理 context 的学术旁证). Motivation 的 "没人定义进入一个
+目录在运行时意味着什么" 仍成立 — place-local + open/close 生命周期 + 地址
+pin 显式对账的组合无对标.
+
+**K35. 携带场与属地场 — 合成语义, 不做二元覆盖 (方向)** — 理论原点是
+"带着认知场进入目录", v1 实现是 "场锚定目录, 约定读自属地 L0", 无携带
+概念 (Claude Code 实为两半合成: 携带全局场 + 本地法链; v1 只做了后半).
+对齐结论: 场 (pins + body) 天然属地; 可携带的是文体/约定 (L1). "携带 vs
+属地" 的三种组合 (无场→默认 / 有场→被携带覆盖 / 有场→不被覆盖) 用分层
+合成消解仲裁:
+
+- convention (机器域): per-field merge, 显式者胜
+- 法 (body/instruction): 链式合成 — 携带的作上游层, 属地最后拼 (骑
+  Claude Code 全局/项目 CLAUDE.md 先例, 与 upward 链语义一以贯之)
+- pins (目光): 永不携带, 纯属地
+
+默认属地胜; 携带方强制覆盖须 open 时显式参数. 未决: 与 K28 幂等 open
+(忽略后传 convention) 的冲突裁决; contracts 形状未画.
+
+**K36. pin 观察态字段迁运行时侧影 (倾向, 动 contracts)** — 现状 sediment
+把 pinned_at / seen_mtime / seen_hash 写进 git 见证的 DESKTOP.md, 每次
+update 产生 diff 噪音, float 时间戳对人对模型均不可读. 倾向: DESKTOP.md
+pin 段只留 addr + note (语义, git 见证); seen_* 迁 K24 运行时侧影 (.cache
+级, enter 读回, 跨 session 变更信号不丢); pinned_at 删除候选. 这是 K24
+未决的答案候选. note 字段在 K38/K39 下获得非平凡用途 (L2 索引场里每枚
+pin 的 note = 该文体的一句话 why).
+
+**K37. L1/L2 纪律 — 冷启动 fewshot + 可验证** — L1 模板本身可改, 预建
+不是牢笼: 修改记录即 "未被囚禁" 的可验证证据 (features TEMPLATE 48h 内
+删 csv/id/archive 的先例). 关键只有两条: 冷启动 fewshot 质量, 验收可观测
+(diff 模板与实例). 自解释来自 L1 — sediment 裸建的 DESKTOP.md 只有 pin
+段零 body 是实证缺口 (仓库根 DESKTOP.md 即证据); `moss desktop init` 应
+从 L1 实例化, 不把 scaffold 硬编码进 dump_l0_pins (K16 去发明纪律).
+
+**K38. L2 落地 — 追认 .ai_partners/, 索引场而非模板仓库** — 不新建无人
+居住的 templates/ 目录 (过早规则糖). L1 住在活实例旁边 (features/
+TEMPLATE.md 模式) — 验证即同目录 diff. L2 = 一个普通 ground: DESKTOP.md
+body 写创建协议 (how 在场内部定义, "@ 文档" 姿态), 发现 L1 走 K39 发现链.
+README 文体先行: 仓库 109 份 README.md 已是自发实践 (.moss/ 与
+.ai_partners/ 每个子体系一份), README 文体 L1 ≈ 一行 convention
+(`instruction_files: ("README.md",)`), 109 个目录零改动向下兼容. moss
+自建 L2 = 对整套机制的 dogfooding; 验收是 "场发现场": open .ai_partners/
+后, 下一实例能否不靠人工指路自主发现并 open features/.
+
+**K39. 五问信息传递 + 三级发现链** — 体系传递信息的完备性标准, 五问:
+where (当前在哪 / 根在哪) / what (自己是什么认知场) / which (哪些子目录
+有什么讯息) / how (如何操作 / 如何创建) / why (在解决什么问题, 可溯源).
+落点劈两半, 防 dev_ctx 式 schema 病复发:
+
+- **机器域**: where = 帧头 (label @ root, 补 workspace root 渲染);
+  which = 发现链 (K25 由此获得形状).
+- **文体域**: what / how / why 住 L1 模板 — 模板里立骨架 (分段结构),
+  具体场可重新定义细节. 实例经 template 血统键指回 L1 一跳, ABC 不加
+  字段, 帧头渲染血统键即可 (`genre: <template>`).
+
+五问是丰化梯度的天花板, 不是入场线 — 裸目录只答 where/which 仍可 open.
+
+**发现链** (which 的递归解): L2 → L1 → L0 逐级发现, 每级 = marker 文件
+约定 + glob. L2 找 L1 (如 `**/GROUND.md`, marker 名未定, 举例而已); L1
+找自己的实例 (features: `workstreams/**/FEATURE.md`). glob pin 已支持
+命中集监视, 发现链骑既有机制, 不需要新原语. features 体系即实物:
+specification (L1) → workstream (L0), 缺的只是 L1 marker 的形式化.
+
+### 2026-07-15 marker 重选 + $id 身份 + .grands/ 分支 + pin 类型
+
+**K22 重审 — DESKTOP.md → GROUND.md (方向, 待实测)** — DESKTOP.md 是 K22
+在单场概念期定的名. 现在新约束压在上面: (a) desktop 同时是父 channel 名,
+"desktop 到底指桌子还是指文件" 的解释成本; (b) 发现链 glob `**/DESKTOP.md`
+语义偏离 (pin/update 不是发现链关心的).
+重选理由与候选:
+
+- GROUND.md = 认知参考基准. 骑 electrical engineering "ground" (零电位
+  参考点) + "common ground" (共识基础) 双料先验. AI 行业无人用 EE 词汇命名
+  文件, 碰撞概率最低. 上一轮的 "理论词汇不上表面" 否定是错的 — 电学里的
+  ground 是百年预训练锚点, 模型读到 GROUND.md 的第一反应是 "参考基准" 而
+  非 MOSS 内部术语.
+- SITE.md — 人类工程师自报冲突: web/server 开发多年, SITE 第一映射是
+  nginx config 和 sites-available/, 不可用.
+- CONTEXT.md — 预训练最强但行业碰撞风险太高; 2026 context engineering
+  满天飞, 被大厂捡走做另一种语义概率大. 撞车后同名不同义解释成本翻倍.
+- MINDSET.md — 人类工程师 2020 年会选. 偏"态度和信念" (how to think)
+  而非"位置和结构" (where + what). 2026 预训练把 mindset 钉死在 self-help
+  语义上回不来. 但设计直觉是对的: the directory is a reading stance. 现在
+  GROUND.md 管 where/what, L1 body 管 how/why — MINDSET 想一肩挑的拆成
+  两个东西各司其职.
+- CORE.md — 备选, 骑 core dump / core concept 先验, 不如 GROUND 精确.
+
+采用 GROUND.md, K22 更新. 同时不影响 feature 名 (ghost-filesystem-desktop
+仍然为真, K16 原判: 死掉的是原语捆绑不是桌面隐喻). CLI 重命名同理独立裁决.
+
+**K42. $id 身份体系 — 字符串声明, 非路径** — 三件套 (JSON Schema `$id`
+先验, 不说 "去哪找我" 而是 "我声称我是谁", 身份声明不腐烂):
+
+1. GROUND.md frontmatter 里 `$id: moss:features` — 目录声称自己是什么
+2. Grounds 层持 `$id → L1 模板` 映射 — ghost 携带的认知图式库
+3. `open(dir, use="moss:features")` — 用特定图式进入; 不带参数 = 读本地声明
+
+`$id` 优于 `$template`: 后者暗示血统记录 (我是从某模板拷出来的), 前者
+是身份声明 (我是谁). 你要的是身份.
+
+带 `$id` 时的覆盖立场 (人类工程师立场, 记录待 dogfooding 验证): use=
+参数在时它赢 (覆盖本地 GROUND.md 的 $id), 但帧内标记 "本目录有自声明的
+ground 存在". 理由: 不带参数 = 已有 ground 生效; 带参数 = 覆盖; 若带参数
+在有 ground 目录里无效, use 参数本身无意义. "先试试" + dump/修改语义.
+对立立场 (K28 "目录是认知单元不是工具" + 属地优先): 本地声明默认优先,
+携带只作未声明时的默认. 两立场不在此裁决, 靠 dogfooding 讨债.
+
+**K43. .grands/ 设计分支 (记录, 不裁决)** — GROUND.md 的单文件模型压抑了
+"一个目录可以有多种读法" 的需求. .grands/ 是把认知方法从目录**之上**搬到
+目录**旁边**的设计分支, 来自人类工程师早期 `.ghostos` 隐藏目录的直觉:
+
+- 结构: `.grands/features.md`, `.grands/memory.md`, `.grands/ghost.md` —
+  每个文件独立的 convention + body + pin 段落, 独立 `$id`, 认知方法并置
+  不冲突
+- 发现: 从 cwd **向上**找 `.grands/` 目录 — well-known 名字即发现, 不需要
+  指针 (像 .git, 像 .moss)
+- pin root: **以 cwd 为根, 不以 .grands/ 为根** — `.grands/` 只是认知
+  方法容器, 不是认知单元
+- 向下探索: `**/.grands/*.md` 发现所有认知入口 — 比 K25 "L1 声明实例
+  glob" 更暴力也更简单 (well-known 名字本身就是声明)
+- K23 引导问题消解: well-known 约定即发现, 不需要 meta 指针
+
+相对于 GROUND.md 路线的核心差异: **认知与内容分离** (GROUND.md = 目录的一
+部分, 目录被赋予认知身份; .grands/ = 外挂, 目录不知道有人在用某种方式看它).
+代价: pin root 语义变为 cwd (跨边界), 认知身份属地性丧失.
+
+open 参数影响: `.grands/` 下 `open(dir)` 不带 use= — 选择 = 从 .grands/
+里挑文件, 文件本身包含完整 convention + body + pin 模板, 即 "要么全部参数
+都塞进去, 要么没啥好填的".
+
+当前优先 GROUND.md 闭环, .grands/ 作为设计分支记录. 反悔判据: 如果多认知
+方法成为真实痛感 (同一目录频繁需要不同方式进入), .grands/ 是回退方案.
+
+**K36 激进简化 — seen_* 连侧影都不必落盘 (方向)** — 上一轮倾向是 seen_*
+迁 K24 运行时侧影. 人类工程师更激进: pin 是运行时生产物, 第一次 pin 就是
+全新的, 时间戳无意义. DESKTOP.md (GROUND.md) pin 段只剩 addr + note. 是否
+stale: runtime 启动时实时观察一次, 首次进入无上帧故不标记 stale — 世界即
+认知. sediment 写回的 YAML 只有 addr + note 两项; git diff 里 pin 段只反
+映 "人类(或模型)主动改了什么东西".
+
+**K41. pin 类型扩展 — frontmatter 字段 + markdown 段落** — bash 之外:
+
+| 类型 | addr 语法 | 做什么 | 先验 |
+|------|----------|--------|------|
+| file 全文 | `path` | 已有 | — |
+| 行区间 | `path:80-140` | 已有 | grep -n, compiler errors |
+| glob 命中集 | `**/*.py` | 已有 | shell glob |
+| frontmatter 字段 | `path#field` | pin 某 YAML 字段值, 变了才 stale | CSS id selector |
+| markdown 段落 | `path## heading` | pin 某 heading 下内容 | markdown anchor |
+
+`#` 双关 (CSS + markdown) 骑在同一个预训练锚上. 行区间用 `:`, 段落用 `##`,
+字段用 `#`——三个语法不冲突. 两条新类型是 K41 的候选, 待 dogfooding 验证.
+
+**Ghost 认知场草图 (记录, 不动代码)** — ghost home 子场结构:
+`GROUND.md` (根场, body: ghost 是谁 + what/why) / `users/` (用户记忆文体) /
+`memory/` (持久记忆文体, K20 promote 出口) / `skills/` (能力声明文体) /
+`tasks/` (运行时侧影, tmp 级) / `tmp/` (纯运行时). 初始化: stub 从 ghost
+L1 模板库实例化. 与 project 级认知场是同一套机制在两个宿主上的实例化,
+区别仅在 bootstrap 路径 (ghost home 是 well-known 位置, runtime 知道开门
+在哪, 不需要发现链引导).
+
+### 2026-07-14 认知场对齐 (行业对照 + 偏差盘点 + L2 方向)
 
 **K14. 落 channel: 父 desktop + 每场 virtual channel** — Desktop 是父
 PrimeChannel, 持有 `open` / `close` / `pin` / `unpin` / `update` 动词.
@@ -373,13 +571,19 @@ Stage 1 (2026-06-29) 的 53 单测代码存在于仓库中, K1~K13 的部分意�
 
 - **K23 (L2 模板库引导地址)** — `.moss/` 侧 (项目所有) 还是 `.ai_partners/`
   侧 (ghost 所有)? 涉及 "模板库是项目的还是 ghost 的" 归属问题.
+  (2026-07-14 K38 补: moss 仓库侧已定 — 追认 .ai_partners/ 为 L2 索引场.
+  残余问题变为: ghost 携带的 L2 与项目属地的 L2 的关系, 即 K35 合成语义
+  在 L2 层级的应用.)
 - **K24 (目光运行时侧影落盘位置)** — .cache 级 gitignore 目录的具体位置约定.
   场目录只读时的退化策略 (退到 workspace 侧影目录). K20 已定"目光不自动
-  sediment 到 L0 body", 侧影载体本身仍未定.
+  sediment 到 L0 body", 侧影载体本身仍未定. (2026-07-14 K36 补: seen_* 观察
+  态字段是侧影的首个确定客户.)
 - **K25 (向下探索的场声明)** — 一个场里如果有多个子目录都是 L0 文件, 父场
   frontmatter 里怎么声明 "我下面有场"? 影响 glob 语法 (向上 CLAUDE.md +
   `**/name.md` 向下探测的具体形状). 现在 `hint_children` 只做浅一层子目录
-  CLAUDE.md 提示, 未涉及子场声明.
+  CLAUDE.md 提示, 未涉及子场声明. (2026-07-14 K39 补: 发现链给 K25 提供了
+  形状 — 向下场声明 = marker 文件约定 + glob, L1 声明实例 glob, L2 声明
+  L1 marker glob. README 文体与 L2 dogfood 是第一批真实客户.)
 - **K33 (channels/desktop_channel.py 装配未验证)** — 已写但未测未验收. CTML
   channel 层的 prompt 效果 (`virtual_children` 的挂载/卸载时序, 每帧刷新的
   `instruction` vs `context` 语义分区) 需要 moss-as-mcp 场景实测. 单元测试
@@ -388,12 +592,26 @@ Stage 1 (2026-06-29) 的 53 单测代码存在于仓库中, K1~K13 的部分意�
   `core/desktop/models.py` 已与新契约不兼容, 保留磁盘为反向索引参考. 旧
   `tests/ghoshell_moss/core/desktop/test_desktop.py` import 已废符号故
   collection error. K26 尾巴, 待独立 cleanup commit.
+- **K40 (K35 合成语义与 K28 幂等的冲突 + ghost 默认场)** — 携带 L1
+  约定与属地 L0 的分层合成如何进 open 签名与 GroundConvention; 携带方强制
+  覆盖 vs 属地优先 的对立立场靠 dogfooding 裁决; ghost 默认场
+  (Claude Code `~/.claude` 半边) 的声明位置.
+- **K41 (L1 marker 文件名 + pin 类型扩展)** — L2 发现 L1 的 marker 是否
+  与 GROUND.md 同名加字段区分, 或独立 marker. pin 类型扩展 (path#field,
+  path## heading) 已记录语法候选, 待实现.
+- **K43 (.grands/ 设计分支)** — 记录为回退方案. 反悔判据: 多认知方法成为
+  真实痛感时启用. 与 GROUND.md 路线的取舍见 K43 条目.
+- **多认知方法 (一个目录多种读法)** — GROUND.md 单文件模型下的开放问题.
+  未证明需求, 靠 dogfooding 讨债, 不预建机制. K43 .grands/ 是已知回退.
+- **Ghost 认知场初始化** — users/memory/skills/tasks/tmp 子场结构草图已定,
+  实现等 GROUND.md 闭环 + L1 实例化动词就位后启动.
 
 ## 与关联基建的交叉
 
 | 基建 | 关系 | 状态 |
 |------|------|------|
 | `subprocesses` / `job_supervisor` | 执行域, 从旧 desktop 拆出 (K11/K13 迁出) | 已迁出, contracts 已重绘 |
+| `file-editor-contract` | 写路径 + 结构化 view (view/create/str_replace/insert/undo_edit), vendor openhands-aci. contract 独立, channel 层可合体. K6 撤守卫留下的空档由本 feature 承接 | draft, 2026-07-13 立项 |
 | `momento-mori` (Memento) | 胶囊 (promote 后的 pin) 落永久记忆; drain 联合设计方 | FORMAT.md 契约层落盘 |
 | `Matrix` | desktop 不直接依赖; virtual channel 生命周期由 Channel Runtime 管 | 无直接关系 |
 | `features` 体系 | K15 分形体系的实物证明; desktop 落地后应首先支持的场类型 | 已运行, 自 2026-05 |

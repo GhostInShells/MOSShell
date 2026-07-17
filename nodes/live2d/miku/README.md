@@ -25,29 +25,6 @@ Miku 是一个 live2d 数字人躯体, 用来测试 MOSS 架构对躯体的多�
   - Leg_L（左腿）
   - Leg_R（右腿）
 
-# 运行
+# 当前状态
 
-## 配置环境变量
-
-在项目根目录下创建 `.workspace/.env` 文件，配置环境变量：
-
-```bash
-cp .workspace/.env.example .workspace/.env
-```
-
-编辑 `.workspace/.env` 文件，填写您的 模型 API 密钥等信息：
-
-```bash
-MOSS_LLM_API_KEY=your_api_key_here
-MOSS_LLM_BASE_URL=your_llm_base_url_here
-MOSS_LLM_MODEL=your_llm_model_here
-
-VOLCENGINE_STREAM_TTS_APP=your_volcengine_stream_tts_app_id_here
-VOLCENGINE_STREAM_TTS_ACCESS_TOKEN=your_volcengine_stream_tts_access_token_here
-```
-
-## 启动
-
-```bash
-python main.py
-```
+miku 是 alpha 版实现, 现在要重构成一个 beta1 版本独立的 node. 重构未完成. 
