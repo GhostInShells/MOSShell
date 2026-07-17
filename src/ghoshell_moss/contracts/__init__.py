@@ -6,7 +6,10 @@ from .workspace import (
     Workspace, Storage, LocalWorkspace, FileLocker, Lock, LocalStorage,
     AsyncStorageProxy,
 )
-from .configs import ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider
+from .configs import (
+    ConfigStore, ConfigType, ConfigSchema, YamlConfigStore, WorkspaceYamlConfigStoreProvider,
+    ConfigInstanceRegisterBootstrapper,
+)
 from .system_prompter import SystemPrompter, BaseSystemPrompter
 from .cache import Cache
 from .resource import (

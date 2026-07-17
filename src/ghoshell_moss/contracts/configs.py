@@ -1,11 +1,11 @@
 import yaml
 from abc import ABC, abstractmethod
-from typing import TypeVar, Type, Optional, Union, Any, ClassVar, Callable
+from typing import TypeVar, Type, Optional, Any, ClassVar, Callable
 from typing_extensions import Self
 from pydantic import BaseModel, Field
 from ghoshell_common.helpers import generate_import_path
 from ghoshell_common.helpers import yaml_pretty_dump
-from ghoshell_container import IoCContainer, Provider
+from ghoshell_container import IoCContainer, Provider, Bootstrapper
 from .workspace import Storage, Workspace
 import os
 import pathlib
@@ -16,6 +16,7 @@ __all__ = [
     'LocalConfigStore',
     'WorkspaceYamlConfigStoreProvider',
     'CONF_TYPE',
+    'ConfigInstanceRegisterBootstrapper',
 ]
 
 
@@ -436,33 +437,39 @@ class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
             self,
             *configs: ConfigType,
             on_save: Callable[[str], None] | None = None,
+            mode: str | None = None,
     ):
         self._configs = list(configs)
         self._on_save = on_save
+        self._mode = mode
 
     def singleton(self) -> bool:
         return True
 
     def factory(self, con: IoCContainer) -> ConfigStore:
-        # lazy import: contracts 层不能顶层引 core.blueprint (blueprint.environment
         # 已经反向依赖 contracts.workspace, 会形成循环). factory 在 IoC bootstrap
-        # 之后调用, 此时所有模块已 loaded, lazy import 安全.
-        from ghoshell_moss.core.blueprint.environment import Environment
-
         ws = con.force_fetch(Workspace)
         storage = ws.configs()
 
-        # mode_name 从 Environment 注入 (mode-aware ConfigStore §Config-3).
-        # no_mode 场景 (env.mode_name == 'none') 传空串, 走 base 视图, 兼容
-        # 无 mode 声明的历史 workspace.
-        env = con.get(Environment)
-        mode_name = ''
-        if env is not None and not env.no_mode:
-            mode_name = env.mode_name
-
         config_store = YamlConfigStore(
-            storage, on_save=self._on_save, mode_name=mode_name,
+            storage, on_save=self._on_save, mode_name=self._mode,
         )
         for config in self._configs:
             config_store.get_or_create(config)
         return config_store
+
+
+class ConfigInstanceRegisterBootstrapper(Bootstrapper):
+    """
+    register config type instance when container bootstrapping.
+    """
+
+    def __init__(self, *configs: ConfigType, mode: str | None = None, fallback: bool = False) -> None:
+        self._configs = list(configs)
+        self._mode = mode
+        self._fallback = fallback
+
+    def bootstrap(self, container: IoCContainer) -> None:
+        store = container.force_fetch(ConfigStore)
+        for config in self._configs:
+            store.get_or_create(config, mode=self._mode, fallback=self._fallback)

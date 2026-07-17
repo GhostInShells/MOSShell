@@ -26,6 +26,8 @@ from ghoshell_moss.core.blueprint.states_channel import new_shell_main_channel
 from ghoshell_moss.core.ctml import new_ctml_shell
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import Workspace, SystemPrompter, BaseSystemPrompter
+from ghoshell_moss.contracts.configs import ConfigInstanceRegisterBootstrapper
+from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 
 from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
@@ -69,6 +71,12 @@ class MossRuntimeImpl(MossRuntime):
             or env.moss_meta.description
         )
         self._run_shell_on_start = run_shell_on_start
+
+        # --- mode 层 IoC 叠加 (§ZZ-5: mode providers/configs/resources 覆盖 baseline) --- #
+        # container 已在 MatrixImpl.__init__ 创建并完成 baseline 注册,
+        # 此时注册 mode 层: providers 走 register (覆盖语义), configs/resources 走
+        # bootstrapper (bootstrap 时合并).
+        self._wire_mode_overlays()
 
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
@@ -183,6 +191,41 @@ class MossRuntimeImpl(MossRuntime):
                 f"is empty. CTML meta instruction is required for shell startup."
             )
         return content
+
+    def _wire_mode_overlays(self) -> None:
+        """在 matrix.container 上叠加 mode 层 providers/configs/resources.
+
+        MatrixImpl.__init__ 已完成 baseline 注册, container 存在但未 bootstrap.
+        mode providers 走 register (后注册覆盖同 contract 的 baseline),
+        mode configs/resources 走 bootstrapper (bootstrap 时与 baseline 合并).
+        nuclei 不在此处理 — 归 GhostRuntime.
+        """
+        container = self._matrix.container
+        manifests = self._mode.manifests()
+
+        # -- mode providers: register 覆盖同 contract baseline -- #
+        for p in manifests.providers():
+            if p.is_error():
+                continue
+            container.register(p.value())
+
+        # -- mode configs: bootstrapper 追加到 baseline ConfigStore -- #
+        mode_configs = [
+            m.value() for m in manifests.configs()
+            if not m.is_error()
+        ]
+        if mode_configs:
+            container.add_bootstrapper(
+                ConfigInstanceRegisterBootstrapper(*mode_configs),
+            )
+
+        # -- mode resources: bootstrapper 追加到 baseline resource factories -- #
+        for r in manifests.resources():
+            if r.is_error():
+                continue
+            container.add_bootstrapper(
+                ResourceStorageFactoryBootstrapper(r.value()),
+            )
 
     def _discover_main_channel(self):
         """从 mode.manifests().channel() 拿 main channel Manifest.
