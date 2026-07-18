@@ -1,7 +1,20 @@
 # MOSS Aurelius Ghost Memory 测试方案
 
-> 目标：验证 Aurelius 的持久记忆、CommitNote 版本、异步反思、配置与受限 CTML 控制面，
-> 并证明它不会把推断、失败帧或别人的记忆伪装为事实。
+> 目标：验证 Aurelius 的持久轨迹、CommitNote 版本、异步反思、配置与受限 CTML 控制面，
+> 并验证生产级认知骨架：事实必须有证据来源、按问题和对象召回、字段不串扰、错误模型输出
+> 不得污染长期知识；Ground/Pin 必须只承担当前工作记忆；不同对话对象不得越权获得同一份内部记忆。
+>
+> 当前代码已覆盖轨迹主路、P0 Evidence/Claim/Recall/verifier 骨架和 P1 Ground 接线；这些能力
+> 已用规则提取、TestModel/FunctionModel 和临时 workspace 做确定性回归。P2/P3 仍必须明确记录为
+> pending，不能用模型偶尔答对、数据模型已有字段或“未来可接后端”代替通过。
+
+| 阶段 | 当前状态 | 测试记录方式 |
+|---|---|---|
+| L0 / 轨迹主路 | 已实现 | 必须通过 |
+| P0 / 可信知识 | 已实现首版 | 已支持 canonical field 的阻断性测试必须通过 |
+| P1 / Ground 认知场 | 已实现 Aurelius 接线 | Aurelius 集成测试 + Desktop core 测试必须通过 |
+| P2 / 记忆治理 | 未实现 | pending/expected-fail |
+| P3 / 可选后端接口 | 未实现；明确不接 Mem0 | contract pending，无接口/实际后端 |
 
 关联：[集成技术评审与实施方案](MOSS-Ghost-Memory集成技术评审与实施方案.md)。
 
@@ -16,9 +29,18 @@
 | 配置 | `memory.yml` 的策略真正生效 | 改配置后仍使用旧阈值（重启后） |
 | CTML 与分支 | 仅当前 owner/branch 可操作，fork 边界明确 | 跨 owner 读写、从 staging fork |
 | 认知准确性 | 更正、未知信息、实体字段不被模型臆测 | 陈旧事实覆盖 current、生成未给过的信息 |
+| Evidence / Claim（P0） | 每个可回答事实都有用户/可信工具证据与稳定引用 | 反思或 logos 直接成为事实 |
+| Recall（P0） | 当前问题只得到相关、有限、带来源的证据包 | 把全部历史塞入 prompt 后让模型猜 |
+| 回答校验（P0） | 输出值、字段和 current 状态均由本轮 Claim 支持 | `ORBIT-004` 被答成测试代号 |
+| 防污染（P0） | 错误 logos 只留审计轨迹，不进入 active Claim | 一次答错后被 commit/反思放大 |
+| Ground / Pin（P1） | 当前工作场、规则和外部对象每帧重绘 | 把 `DESKTOP.md` 或 Pin 当长期用户事实 |
+| 记忆治理（P2） | 类型、置信、时效、保留与选择性披露受策略控制 | 模型自信即真相，或向错误对象泄露记忆 |
+| 可选后端（P3） | 语义召回后端仅返回候选，失败可本地退化 | 外部索引成为 Memento/Claim 的真相源 |
 
-暂不验收：向量检索、git witness、按时间自动 commit、自动 branch merge、Desktop、Moshi
-用户模型以及 CTML/TTS 世界执行进度。
+暂不要求：向量检索的具体实现、git witness、按时间自动 commit、自动 branch merge、Moshi
+用户模型以及 CTML/TTS 世界执行进度。P0 Recall 当前使用 canonical key、有界规则模板和
+Memento 原文展开；P1 复用现有 Ground/Pin，不接外部知识库。P3 后端接口本身也尚未冻结；
+本测试方案不安装 Mem0 SDK、不配置 API key、不发生网络调用。
 
 ## 2. 环境、依赖与配置准备
 
@@ -29,11 +51,14 @@ pytest 通过误认为可以真实对话。
 
 | 层级 | 覆盖内容 | 是否需要 Zenoh/Host | 入口 |
 |---|---|---:|---|
-| L0：核心记忆 | Moment、commit、note、反思、配置、分支的无网络回归 | 否 | pytest、acceptance script |
-| L1：Ghost 发现 | workspace 是否能发现 Aurelius 注册 | 是，`moss-run-ghost` 导入 Host/Matrix | `moss-run-ghost` |
-| L2：真实对话 | TUI、模型配置、CTML、重启后的端到端记忆 | 是，且需要模型凭据 | `moss-run-ghost aurelius` |
+| L0：轨迹地基 | Moment、commit、note、反思、配置、分支的无网络回归 | 否 | pytest、acceptance script |
+| L1：可信知识 P0 | Evidence/Claim、Recall、校验、类型、置信与防污染 | 否；模型可用 fake/TestModel | pytest |
+| L2：认知场 P1 | Ground/Pin、`DESKTOP.md`、每帧 context/instruction 接线 | 否；使用临时 workspace | pytest |
+| L3：治理与接口 P2/P3 | audience/retention、外部 recall backend contract 与退化 | 否；未来使用 fake backend | pending，无执行入口 |
+| L4：Ghost 发现 | workspace 是否能发现 Aurelius 注册 | 是，`moss-run-ghost` 导入 Host/Matrix | `moss-run-ghost` |
+| L5：真实对话 | TUI、模型配置、CTML、重启后的端到端认知行为 | 是，且需要模型凭据 | `moss-run-ghost aurelius` |
 
-你遇到的 `ModuleNotFoundError: No module named 'zenoh'` 属于 L1/L2 的环境前置失败；它发生在
+你遇到的 `ModuleNotFoundError: No module named 'zenoh'` 属于 L4/L5 的环境前置失败；它发生在
 `moss-run-ghost` 导入 `Host → Matrix → ZenohTopicService` 时，**尚未创建 Aurelius，也没有
 读取/写入任何记忆文件**。
 
@@ -97,7 +122,7 @@ aurelius  ❯
 `current state` 仅表示 TUI 已注册页面，尚未进入 GhostRuntime。若随后立刻显示 `closed / good bye`，
 应先保留同步打印的 traceback；不要先修改 `memory.yml`、Memento 文件或模型配置。
 
-### 2.4 L2 模型凭据与反思模型
+### 2.4 L5 模型凭据与反思模型
 
 启动真实 Aurelius 前，复制并填写本地环境文件：
 
@@ -176,7 +201,8 @@ mv .moss/ghosts/aurelius/memento \
 .venv/bin/ruff check src/ghoshell_moss/ghosts/aurelius
 .venv/bin/pytest -q \
   src/ghoshell_moss/ghosts/aurelius \
-  tests/ghoshell_moss/default/core/memento
+  tests/ghoshell_moss/default/core/memento \
+  tests/ghoshell_moss/core/desktop
 .venv/bin/python scripts/ghost/aurelius_memory_acceptance.py
 ```
 
@@ -189,6 +215,14 @@ mv .moss/ghosts/aurelius/memento \
 - 未反思 mechanical commit 和历史空 note 的启动追赶；
 - YAML `MemoryConfig` 的持久化读取；
 - 失败 articulate 不写入。
+- Claim 从 commit/staging 跨重启重建，EvidenceRef 带 moment/commit/note/span/scope；
+- `AMBER-731 / staging` 与 `ORBIT-004` 字段隔离，logos/reflection candidate 不提升；
+- 更正产生 `superseded`，未解决异值产生 `conflict`，未知字段安全拒答；
+- verifier 在 yield 前拦截错误 TestModel 输出，正确输出通过；
+- `DESKTOP.md` instruction、Pin frame、changed-on-disk/update 和越界路径拒绝。
+
+2026-07-18 当前定向结果：上述命令 `191 passed`；acceptance script 已覆盖
+write → commit → reopen → project → recall → verify，并确定性拒绝 ORBIT 字段替换。
 
 相邻基线回归：
 
@@ -199,6 +233,58 @@ mv .moss/ghosts/aurelius/memento \
   src/ghoshell_moss/ghosts/aurelius \
   tests/ghoshell_moss/default/core/memento
 ```
+
+### 3.1 生产级事实读取 P0 回归
+
+以下用例不是 prompt 体验测试，而是已落地、不可降级的逻辑回归。使用 TestModel 或直接调用
+projection/verifier 捕获 packet 与校验结果，避免真实模型随机性掩盖架构错误。
+
+| 用例 | 输入/前置 | 断言 |
+|---|---|---|
+| 来源重建 | 从原始用户 Moment 建立 `AMBER-731 / staging` | 每个 Claim 都有 `moment_id`、原文 span、owner/branch scope；删除 projection 后可重建 |
+| 字段隔离 | 同时存在测试代号、环境、`ORBIT-004` 校验词、设备字段 | `test.run.code` 不可返回 `ORBIT-004`；各 key 仅返回自己的 value |
+| 干扰历史 | 加入含 `ORBIT-004` 的 logos、反思和其他字段 | Recall packet 只含测试代号与环境；错误 TestModel 输出被拒，正确输出为 `AMBER-731 / staging` |
+| 错误 logos 防污染 | 人为写入“测试代号是 ORBIT-004”的成功 Moment logos | 原错误 logos 可在 Memento 审计；不得生成或覆盖 active `test.run.code` Claim |
+| 反思隔离 | 反思模型生成错误结论或把候选当事实 | 只形成候选/错误观测；active Claim 不变 |
+| 更正状态 | 用户先说杭州，后明确更正为苏州 | 杭州为 `superseded`；current 查询只返回苏州，并带两条证据关系 |
+| 未知与冲突 | 无护照号；或同 scope 两条 active 候选未解决 | 分别安全返回“没有找到”或“记录冲突”，不得补全或静默选择 |
+| 回答校验 | 令模型输出未在 evidence packet 中的任意值 | verifier 拒绝该输出并重试/安全拒答；不得将该输出写成 Claim |
+| MementoRef 可追溯 | Recall 返回较早 commit 的事实 | Evidence packet 含稳定 `commit_id`/`note_seq`；可按引用展开原始 Moment |
+
+最低断言应由程序检查，而不是仅匹配自然语言：
+
+```text
+answer_fact.value ∈ recalled_active_claims[key].values
+answer_fact.status == active
+answer_fact.evidence ⊆ recalled_evidence
+assistant_or_reflection_origin ∉ active_claim.support_without_explicit_promotion
+```
+
+### 3.2 认知场、记忆治理与可选后端回归
+
+以下用例同样必须以确定性 TestModel/FunctionModel、临时目录和（P3 未来的）fake backend 覆盖；
+不允许用真实模型“看起来理解了”代替断言。P1 已落地；P2/P3 仍保持 pending，并说明缺失能力。
+
+| 层级 | 用例 | 前置/输入 | 断言 |
+|---|---|---|---|
+| P1 Ground | 法与事实分离 | `DESKTOP.md` body 写协作规则；用户 Moment 写“城市是苏州” | body 进入 instruction；城市只经 Claim evidence 回答，不能因 body 文本自动成为 Claim |
+| P1 Ground | Pin 是地址而非快照 | pin `spec.md:10-20`，外部编辑该范围 | 下一帧标记变更；`update()` 后读取新内容；Memento 不产生伪造的文件事实 |
+| P1 Ground | 工作场不淹没历史 | 同时 pin 多文件并设低预算 | 输出预算报账而不静默 LRU；Agent 可显式 unpin；完整历史不被写进普通 chat history |
+| P1 Ground | 生命周期与边界 | 两个临时 workspace/owner 各 open Ground | Pin、`DESKTOP.md` 和 context 不串 workspace；Ghost exit 只 sediment Pin 清单 |
+| P1 Ground | CTML 最小权限 | 尝试越过 Ground root pin `../secret.md` 或私下写文件 | 路径被拒；所有 open/pin/unpin/update/frame 走受控 Channel |
+| P2 类型 | 事实、观点、假设 | 用户说事实；反思给出推断；用户表达偏好 | 三者分别为 `fact`、`hypothesis`、`preference`，回答语气与允许用途不同 |
+| P2 置信 | 相互印证与冲突 | 两条独立用户/可信工具证据，再加入冲突记录 | confidence 可解释地变化；冲突后不输出伪确定 current 值 |
+| P2 保留 | archive/review/tombstone | 建立临时计划、过期计划和删除请求 | archive 默认不召回；review 到期降级；tombstone 后不召回且留下策略允许的审计事件 |
+| P2 披露 | 不同 audience | 同一 owner 内写 private/adult-only 与 public Claim；以 child/adult principal 分别查询 | child 查询不返回不允许的信息；adult 也仅返回任务相关且授权的信息；拒答不泄露 value |
+| P2 scope | 人/物不串绑 | 两名用户、两台设备、两个 branch 同时有相似字段 | subject/owner/branch filter 缺一不可；任一 scope 不匹配即安全拒答 |
+| P3 接口 | backend 不是权威 | fake backend 返回排序错误或无 EvidenceRef 的候选 | verifier 丢弃无证据候选；本地 Claim Recall 仍可答对/安全拒答 |
+| P3 退化 | backend 超时/异常 | fake backend 抛 timeout/error | 普通对话不阻塞；事实题走本地 Recall 或安全拒答；记录可观测错误 |
+| P3 零实现承诺 | 未配置任何 adapter | 全部测试环境无 `mem0ai`、无网络、无 API key | P0/P1 测试完整通过；仓库中不存在 Mem0 客户端调用 |
+
+建议的公共夹具形状：一份只含用户 percept、可信工具结果、assistant logos、reflection note 的
+冻结 Memento fixture；一份最小 `DESKTOP.md`/文件树 fixture；一份可以设定 audience、retention
+和超时的 fake RecallBackend。这样 Lynn 或未来 Ghost 可复用同一套认知不变量，而不复用 Aurelius
+的具体人格、数据目录或真实用户数据。
 
 ## 4. 人工验收：存储与认知准确性
 
@@ -217,6 +303,28 @@ mv .moss/ghosts/aurelius/memento \
 ```
 
 通过：精确返回 `AMBER-731` 和 `staging`，不附会其他环境。
+
+### A1. 阻断性回归：代号、环境与 ORBIT 干扰
+
+在 A 完成并确认产生 commit 后，额外输入足够多的干扰事实，例如：
+
+```text
+ORBIT-004 的校验词是“雪松”。
+设备 R-17 的颜色是青色。
+设备 R-71 的颜色是琥珀色。
+```
+
+再重启 Aurelius，并提问：
+
+```text
+本轮测试代号和所属环境是什么？只依据记忆证据回答。
+```
+
+通过：只回答 `AMBER-731` 与 `staging`，不能把 `ORBIT-004`、设备编号、城市或旧模型回答
+替换成任一字段。若实现提供来源展示，来源必须可回指至最初用户输入的 Moment/Commit。
+
+失败判定：即使 `.jsonl`、`memory_show` 或 history 中存在正确值，只要最终回答出现
+`ORBIT-004`，仍是 P0 阻断失败；这证明读取/校验链未完成，不是“模型偶发失误”。
 
 ### B. 实体字段与未知信息
 
@@ -264,6 +372,39 @@ ORBIT-004 的校验词是什么？它来自近期完整 Moment 还是早期 Comm
 通过：答案为“雪松”；能说明早期信息来自 Memento note。随后用 `memory_show` 检查原始
 Moment 仍含该事实。
 
+### D1. 认知场：工作约定与当前对象
+
+P1 已接线，本节可以执行；不得人工新建 `Memory.md` 来冒充通过。准备一个临时 workspace，
+在其根目录创建 `DESKTOP.md` body，内容只放协作约定，例如：
+
+```md
+回答涉及本仓库文件时，先说明证据来自当前 Ground 的哪枚 Pin；不把未读取文件当作已知事实。
+```
+
+再创建 `spec.md` 并通过受控 CTML 打开 Ground、pin `spec.md:1-20`。询问该规格内容，再在外部修改
+该行区间，询问“文件是否变化、请使用新版本回答”。
+
+通过标准：协作约定进入本帧 instruction；Pin 内容进入本帧工作上下文；变更被显示为待承认，
+经 `update()` 后新内容生效。用户资料、设备属性和此前对话不应因为写在 `DESKTOP.md` 或 Pin note
+中而自动提升为 Claim。不得让 Aurelius 绕过 Channel 私下改写 `spec.md`。
+
+### D2. 类型、置信、遗忘与选择性披露
+
+本节在 P2 治理实现后执行。以同一个 Aurelius owner 建立以下可审计信息：一条公开项目事实、一条
+用户偏好、一条反思生成的假设、一条标为 private/adult-only 的信息，以及一条设置了 review-at 的
+临时计划。分别以授权成人 principal、未授权 principal 和儿童场景 principal 发问。
+
+通过标准：
+
+- 事实、偏好与假设会以不同类型和不同确定性表达；假设不会被断言为事实；
+- 冲突或过期事实会说明不确定/已失效，而不是挑一条“看起来像”的文本；
+- 未授权或儿童场景不返回 private/adult-only 的 value、摘要、间接线索或来源片段；
+- 对授权对象也只披露当前任务所需的最小信息；
+- review-at 到期后临时计划不再作为 active/current 召回；tombstone 后不再被召回。
+
+这不是“按年龄推断用户能力”的测试；测试的是产品明示的 audience/sensitivity policy 是否被严格
+执行。真实系统必须把 principal 的身份、授权和适用政策交给产品接入层，Aurelius 不得自行猜测。
+
 ## 5. 人工验收：Commit 与 Note 版本
 
 本组直接验证“追加 note 不覆盖历史”的关键约束。先产生至少一个 mechanical commit，
@@ -304,7 +445,9 @@ Moment 仍含该事实。
 ```
 
 通过：commit 先出现；反思完成后 `reflection_pending` 变为 0，最新 note 是简短语义结论。
-对话本身不应等待反思完成。`memory_show` 中的原文不应变化。
+对话本身不应等待反思完成。`memory_show` 中的原文不应变化。P0 Claim projection 落地后，
+还必须确认：反思完成前后 active Claim 完全一致，除非存在带用户/可信工具 EvidenceRef 的独立
+提升动作。
 
 ### F. 反思失败后的启动追赶
 
@@ -355,8 +498,18 @@ commit 成员。
 | `summary_m: 1` | 产生多个 commit | 早期 note 数被限制为 1 |
 | `reflection_enabled: false` | 产生 commit | 不创建后台反思；pending 保留 |
 | `reflection_startup_limit: 0` | 有 pending 后重启 | 启动不调度追赶；可用 `memory_reflect` 手动调度 |
+| `knowledge_enabled: false` | 重启后问事实题 | 保留 Memento history，但不运行 projection/Recall/verifier |
+| `knowledge_user_sources` | 移除/恢复 `input` | 对应 source 不再/重新具备用户证据资格；logos 始终无资格 |
+| `knowledge_recall_limit` | 设较小正数 | packet Claim 数受限，不改变 projection 原始状态 |
+| `knowledge_evidence_max_chars` | 缩小预算 | quote 被有序收紧；无法完整编码时安全未知，不产生截断 JSON |
+| `desktop_enabled: false` | 重启并检查本帧 | 不自动打开 Ground；Memento/P0 仍正常工作 |
 
 每次测试后还原 `/tmp/memory.yml.before-aurelius-test`，再重启实例。
+
+P0/P1/P2 的认知策略不能与 `detail_n`、`summary_m` 混为一谈：二者仅控制历史文本窗口，
+不控制事实检索、Ground、披露或遗忘策略。P0/P1 已有独立的 source、packet 和 Desktop 配置；
+P2 仍需 principal/scope/audience/sensitivity/retention/时效配置与执行策略。不得把调大
+`detail_n` 或手工维护 `DESKTOP.md` 当作事实可靠性修复。Mem0 没有配置项，P3 contract 也未实现。
 
 ## 9. 启动故障排查
 
@@ -364,14 +517,14 @@ commit 成员。
 
 | 现象 | 原因 | 处理方式 | 可继续的测试 |
 |---|---|---|---|
-| `No module named 'zenoh'` 或 `Depend zenoh` | 未安装 `host`/`matrix` extra；`moss-run-ghost` 导入 Host 时即失败 | `uv sync --extra host --extra ghost`，再运行第 2.2 节 import preflight | L0 可继续；L1/L2 不可继续 |
+| `No module named 'zenoh'` 或 `Depend zenoh` | 未安装 `host`/`matrix` extra；`moss-run-ghost` 导入 Host 时即失败 | `uv sync --extra host --extra ghost`，再运行第 2.2 节 import preflight | L0-L3 可继续；L4/L5 不可继续 |
 | `No module named 'pydantic_ai'` | 未安装 `ghost` extra | `uv sync --extra ghost`；若要 TUI 同时安装 host | 无法运行 Aurelius 测试 |
-| `cannot import name 'OpenAIModel'` | 使用 pydantic-ai 2.x，却仍运行旧 Aurelius 代码 | 更新到包含 `OpenAIChatModel`/旧版兼容导入的当前 Aurelius 提交；先运行第 2.2 节完整 import preflight | L0/L1/L2 均不能可靠继续 |
-| `ANTHROPIC_MODEL`、API key 或 base URL 未配置 | 已到 L2，但模型无法构建/请求 | 填写 `.moss/.env`；或暂不运行 L2 | L0/L1 可继续 |
+| `cannot import name 'OpenAIModel'` | 使用 pydantic-ai 2.x，却仍运行旧 Aurelius 代码 | 更新到包含 `OpenAIChatModel`/旧版兼容导入的当前 Aurelius 提交；先运行第 2.2 节完整 import preflight | 仅 L0-L3 的无 Ghost 构造测试可继续 |
+| `ANTHROPIC_MODEL`、API key 或 base URL 未配置 | 已到 L5，但模型无法构建/请求 | 填写 `.moss/.env`；或暂不运行 L5 | L0-L4 可继续 |
 | 反思模型失败 | `small_fast_model` 未解析、无凭据或网络失败 | 先设 `reflection_enabled: false` 验证主路；随后修复模型配置再测追赶 | 写入/commit/重启可继续 |
 | `CellRegistry` import error | 根 `moss` CLI 的 Cell 重构不一致 | 作为独立问题记录；不要改 memory.yml | pytest/acceptance 可继续；按 traceback 判断 runner 是否受影响 |
 | Ghost 未列出 `aurelius` | workspace 注册文件或 manifest import 错误 | 先运行第 2.2 节的 `AureliusMeta` import；当前 `moss-run-ghost` 会向 stderr 输出 skipped manifest 的具体异常 | L0 可继续 |
-| `Environment` 缺少 `logger`，或 Matrix Container 为 `None` | 通用 Runtime 构造/启动边界失配，发生在 Aurelius factory 前 | 更新到包含“Environment logger 回退 + Matrix 构造期 Container”的当前实现；用 `moss-run-ghost echo` 对照 | L0 可继续；L1/L2 不可继续 |
+| `Environment` 缺少 `logger`，或 Matrix Container 为 `None` | 通用 Runtime 构造/启动边界失配，发生在 Aurelius factory 前 | 更新到包含“Environment logger 回退 + Matrix 构造期 Container”的当前实现；用 `moss-run-ghost echo` 对照 | L0-L3 可继续；L4/L5 不可继续 |
 
 本次用户报告的完整 traceback 命中第一行：安装了当前 `.venv` 中缺失的 `eclipse-zenoh`
 后，先通过 `import zenoh`，再继续 Ghost 发现和真实对话测试。

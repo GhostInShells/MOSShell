@@ -2,12 +2,13 @@
 title: Aurelius Ghost
 status: in-progress
 status_note: >-
-  Aurelius/Memento conversation, asynchronous reflection catch-up, MemoryConfig,
-  and constrained CTML controls are implemented and verified. Desktop and
-  Moshi-specific progress integration remain future work.
+  Aurelius/Memento trajectory is implemented. The current landing adds the P0
+  Evidence/Claim/Recall/verifier skeleton and P1 Ground lifecycle/context wiring
+  without changing Ghost, Memento, or Desktop core contracts. P2 governance and
+  product-specific integrations remain future work.
 priority: P1
 created: 2026-07-13
-updated: 2026-07-17
+updated: 2026-07-18
 depends: [ghost-filesystem-desktop, momento-mori]
 milestone: 0.1.0
 description: >-
@@ -100,6 +101,41 @@ Aurelius 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (�
 - **模型层选型: pydantic-ai 现阶段用, 不承诺长期** (对自封装 agent 无兴趣).
   Aurelius 的 `_meta` 不重走 Atom 的 AnthropicModel+环境变量硬编码, 改走
   `contracts/llms.py` 的 LLMConfig 契约.
+- **Memento 轨迹不等于可回答事实。** 2026-07-18 的真实回归表明，正确的 commit note 已
+  进入模型 history 时，模型仍可将另一字段（`ORBIT-004`）误答为测试代号。Aurelius 的生产级
+  路线因此必须在 Memento 之上增加 Evidence/Claim projection、问题驱动 Recall 与答案校验：
+  Moment/Commit 是不可变证据，reflection 与 logos 仅是解释/未验证陈述，不能自动升级为
+  active Claim。该层借用 Grounds 的“每帧重绘、地址而非快照、读写分离”纪律，但不把长期事实
+  错存进 Desktop；`core.memento` 的 payload 不透明契约保持不变。
+- **Aurelius 的目标是认知能力，不是长上下文。** 最终形态明确为：`DESKTOP.md` 承载工作场的
+  法、长期协作约定和人工策展胶囊；Ground/Pin 承载当前注意力与可观察世界；Memento 承载不可变
+  轨迹；Evidence/Claim 承载可问答、可校验知识。Claim 必须区分 fact/preference/opinion/plan/
+  procedure/hypothesis，并带证据、置信、状态、subject/owner/branch scope、audience/sensitivity
+  和 retention。模型隐藏思维链不属于此系统。
+- **存、取、说、忘是四道独立的门。** 用户直接陈述/可信工具结果可以形成候选；logos/reflection
+  不能自动提升。Recall 必须先按问题、scope、时效召回，再按 audience/sensitivity 做最小披露，
+  最后由 verifier 逐项校验。archive/review/tombstone 是显式治理，不采用静默 LRU 抹掉原始证据。
+  同一 Ghost 可记得同一件事，不代表可向儿童、成人、另一用户或另一产品无差别透露。
+- **Ground 已可用，Aurelius 尚未接线。** `core.desktop` 的 DefaultGrounds/DESKTOP.md/Pin 是完成的
+  通用能力，但当前 Aurelius runtime 未创建 Grounds，也未把 instruction/frame 接入 Agent。本
+  workstream 的 P1 是按 Ghost 生命周期和 Channel/CTML 原则接入它；不新造 `Memory.md`/`User.md`
+  来混写用户事实与工作规则。
+- **Mem0 不在当前实现范围。** 只保留 `MemoryRecallBackend` 的可选 adapter 端口；本地、可重建的
+  Claim Recall 始终是权威退化路径。当前不引入 mem0 SDK、API key、配置或网络调用；未来后端只能
+  提供候选 ClaimRef，不能成为 Memento/Claim 的真相源。
+- **P0 投影首版不另造真相文件。** `MemoryProjection` 每次从当前 branch 的冻结 commit 与 staging
+  重建 Evidence/Claim；commit id/note seq 只作稳定引用，Moment 原文仍是唯一证据。规则提取器只
+  自动提升明确可解析的用户输入和显式 trusted-tool source；assistant logos 与 reflection 即使能
+  解析，也只能成为 rejected candidate。这样先钉死来源、防污染和可重建不变量，再按真实语料扩展
+  extractor，不引入第二份会漂移的持久状态。
+- **记忆型事实题采用有限 evidence packet + 输出后校验。** Aurelius 只在问题能映射到 canonical
+  key 时召回，未知/冲突直接安全回答；有证据时才让主模型组织语言，并在向 Shell yield 前整体校验
+  requested key/value、current 状态和结构化干扰值。普通对话保留流式；记忆型事实题为避免先泄露
+  后撤回而有意缓冲一轮输出。
+- **P1 只做 Ghost 侧适配，不修改 Desktop 抽象。** Aurelius 生命周期持有 owner-scoped
+  `DefaultGrounds`，真实 Host 优先以 `Project.root` 为 workspace，测试/嵌入场景退化到
+  `GhostWorkspace.home`。Ground instruction 作为本帧附加 instruction，frame 作为临时 user
+  context 注入且不写入 Moment；open/pin/unpin/update/frame 继续经 `ghost` channel 的受限命令面。
 
 ## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
 
@@ -184,3 +220,21 @@ ghost.articulate(articulator):
   `__aenter__` 才建 IoC Container，而 GhostRuntime 早于 Matrix enter 注册 Ghost provider；dev
   的 Container 则在 Matrix 构造期准备。现恢复“构造期注册、进入期 bootstrap”的两阶段边界。
   两项修复都不使 GhostRuntime 感知 Aurelius，也不改变 Memento 或 LLM 的生命周期。
+- 2026-07-18 将生产级事实读取定义为本 workstream 的 P0 后续：实现前 Aurelius 只能称为
+  “可审计持久轨迹原型”，不能声称事实型长期记忆可靠。两份验收文档已记录阻断性
+  `AMBER-731 / staging` 对 `ORBIT-004` 干扰回归、错误 logos 防污染、反思隔离、来源重建及
+  `current/superseded` 校验；实现必须使用 fake/TestModel 做确定性验证，不能以真实模型偶发
+  答对作为通过。
+- 2026-07-18 P0 首版落地：新增 `_knowledge.py`，从当前 Memento branch 的 commit + staging
+  即时重建 Evidence/Claim，不写第二份 projection 真相；规则 extractor 支持显式 canonical
+  key 以及已评审的测试/设备/城市/偏好字段。用户与 trusted-tool source 可提升，logos/reflection
+  只保留 rejected candidate；Recall 按 key 返回 bounded packet，unknown/conflict fail closed，
+  事实题输出在 yield 前校验。顺带修复真实带 history 请求时 pydantic-ai 2 要求
+  `UserPromptPart` 的既有适配缺口。
+- 2026-07-18 P1 首版落地：新增 `_desktop.py` 薄适配，Aurelius 生命周期持有 DefaultGrounds；
+  Host 使用 `Project.root`，测试/嵌入退化到 GhostWorkspace.home。DESKTOP body 作为 run
+  instruction、Ground frame 作为临时 request context；CTML 仅开放 workspace-bound 的
+  desktop open/close/pin/unpin/update/frame，不提供世界写入。
+- 当前定向回归：Aurelius + Memento + Desktop 共 191 passed；ruff 全绿；acceptance 完成
+  write → commit → reopen → project → recall → verify，并拒绝 ORBIT 字段替换。P2 principal/
+  audience/retention 治理与 P3 backend contract 均未实现，文档已从“目标”改为准确状态。

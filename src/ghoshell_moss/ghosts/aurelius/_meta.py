@@ -20,6 +20,7 @@ from ghoshell_moss.contracts.configs import get_conf, get_or_create_conf
 from ghoshell_moss.contracts.llms import LLMConfig, ResolvedModel
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
+from ghoshell_moss.core.blueprint.project import Project
 
 from ._config import MemoryConfig
 
@@ -47,6 +48,9 @@ class AureliusMeta(GhostMeta):
         memory_summary_m: int | None = None,
         auto_commit_every: int | None = None,
         reflection_enabled: bool | None = None,
+        knowledge_enabled: bool | None = None,
+        desktop_enabled: bool | None = None,
+        desktop_root: str | Path | None = None,
         on_agent_build: Callable[[Agent[IoCContainer]], None] | None = None,
         nuclei_metas: list[NucleusMeta] | None = None,
     ) -> None:
@@ -65,6 +69,9 @@ class AureliusMeta(GhostMeta):
         self._memory_summary_m = memory_summary_m
         self._auto_commit_every = auto_commit_every
         self._reflection_enabled = reflection_enabled
+        self._knowledge_enabled = knowledge_enabled
+        self._desktop_enabled = desktop_enabled
+        self._desktop_root = Path(desktop_root) if desktop_root is not None else None
         self._on_agent_build = on_agent_build
         self._nuclei_metas = nuclei_metas or []
 
@@ -197,6 +204,18 @@ class AureliusMeta(GhostMeta):
         auto_commit_every = (
             self._auto_commit_every if self._auto_commit_every is not None else config.auto_commit_every
         )
+        knowledge_enabled = (
+            self._knowledge_enabled if self._knowledge_enabled is not None else config.knowledge_enabled
+        )
+        desktop_enabled = self._desktop_enabled if self._desktop_enabled is not None else config.desktop_enabled
+        project = container.get(Project)
+        project_root = project.root if project is not None else workspace.home
+        if self._desktop_root is None:
+            desktop_root = project_root
+        elif self._desktop_root.is_absolute():
+            desktop_root = self._desktop_root
+        else:
+            desktop_root = project_root / self._desktop_root
         return Aurelius(
             meta=self,
             agent=self.build_agent(container),
@@ -211,4 +230,12 @@ class AureliusMeta(GhostMeta):
             reflection_max_source_chars=config.reflection_max_source_chars,
             reflection_startup_limit=config.reflection_startup_limit,
             reflection_enabled=reflection_enabled,
+            knowledge_enabled=knowledge_enabled,
+            knowledge_user_sources=config.knowledge_user_sources,
+            knowledge_trusted_tool_sources=config.knowledge_trusted_tool_sources,
+            knowledge_recall_limit=config.knowledge_recall_limit,
+            knowledge_evidence_max_chars=config.knowledge_evidence_max_chars,
+            desktop_enabled=desktop_enabled,
+            desktop_workspace_root=project_root,
+            desktop_root=desktop_root,
         )

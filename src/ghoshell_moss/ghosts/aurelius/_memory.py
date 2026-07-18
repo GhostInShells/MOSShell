@@ -2,8 +2,7 @@
 
 from pathlib import Path
 
-from pydantic_ai import TextContent
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from ghoshell_moss.core.blueprint.mindflow import Moment
 from ghoshell_moss.core.memento import (
@@ -88,14 +87,14 @@ class AureliusMemory:
                 "</memento>"
                 for view in window.summaries
             ]
-            history.append(ModelRequest(parts=[TextContent(content="\n".join(lines))]))
+            history.append(ModelRequest(parts=[UserPromptPart(content="\n".join(lines))]))
             history.append(ModelResponse(parts=[TextPart(content="[memento summaries loaded]")]))
 
         moments = [record_to_moment(record) for record in window.details]
         for messages, logos in Moment.to_history_turns(moments):
             parts = messages_to_parts(messages)
             if parts:
-                history.append(ModelRequest(parts=parts))
+                history.append(ModelRequest(parts=[UserPromptPart(content=parts)]))
             if logos:
                 history.append(ModelResponse(parts=[TextPart(content=logos)]))
         return history

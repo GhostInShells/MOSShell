@@ -7,13 +7,13 @@ import tempfile
 from pathlib import Path
 
 from ghoshell_moss.core.blueprint.mindflow import Moment
-from ghoshell_moss.ghosts.aurelius import AureliusMemory
+from ghoshell_moss.ghosts.aurelius import AureliusMemory, MemoryProjection
 from ghoshell_moss.message import Message
 
 
 def _moment(user: str, assistant: str) -> Moment:
     return Moment(
-        percepts={"acceptance": [Message.new().with_content(user)]},
+        percepts={"user": [Message.new().with_content(user)]},
         logos=assistant,
     )
 
@@ -23,10 +23,15 @@ def _history_text(memory: AureliusMemory) -> str:
 
 
 def verify(root: Path) -> None:
-    token = "moss-memory-acceptance-731"
+    token = "AMBER-731"
     first = AureliusMemory(root, "acceptance", auto_commit_every=2)
-    first.remember(_moment(f"请记住验证码 {token}", "已记录。"))
-    commit = first.remember(_moment("现在关闭并重新打开。", "可以。"))
+    first.remember(
+        _moment(
+            f"本轮测试代号是 {token}，所属环境是 staging。",
+            "测试代号是 ORBIT-004。",
+        )
+    )
+    commit = first.remember(_moment("ORBIT-004 的校验词是“雪松”。", "已记录。"))
     assert commit is not None, "mechanical commit was not created"
     first.close()
 
@@ -36,9 +41,15 @@ def verify(root: Path) -> None:
     assert "已记录" in text, "persisted Ghost response was not restored"
     state = reopened.inspect()
     assert state["commit_count"] == 1, state
+    projection = MemoryProjection(reopened)
+    packet = projection.recall("本轮测试代号和所属环境是什么？")
+    assert packet.status == "ok", packet
+    assert {claim.value for claim in packet.claims} == {token, "staging"}, packet
+    assert projection.verify(f"{token}，staging。", packet).accepted
+    assert not projection.verify("ORBIT-004，staging。", packet).accepted
     reopened.close()
 
-    print("PASS: AureliusMemory write -> commit -> close -> reopen -> render")
+    print("PASS: Aurelius write -> commit -> reopen -> project -> recall -> verify")
     print(f"root={root}")
     print(f"commit_count={state['commit_count']} staging_count={state['staging_count']}")
 

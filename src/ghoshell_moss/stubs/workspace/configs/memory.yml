@@ -33,3 +33,26 @@ reflection_max_source_chars: 12000
 # 单次启动时最多追赶多少个尚未反思的 commit。0 表示不在启动时追赶，
 # 可稍后通过 <ghost:memory_reflect /> 手动调度。
 reflection_startup_limit: 16
+
+# 是否启用 Memento 之上的 Evidence/Claim 投影、按问题 Recall 与回答校验。
+# 投影从当前 branch 重建，不是另一份事实数据库；关闭后仍保留轨迹记忆。
+knowledge_enabled: true
+
+# 只有这些 percept source 可作为用户直接陈述。真实交互的默认 Input nucleus
+# 使用 input；user 供嵌入和确定性测试使用。不要把 command/logos/reflection 加入。
+knowledge_user_sources:
+  - input
+  - user
+
+# 只有产品接入层明确认证并写入这些 source 的工具结果才可直接提升。
+# 普通 CTML 控制输出不属于 trusted_tool。
+knowledge_trusted_tool_sources:
+  - trusted_tool
+
+# 单帧 Recall 的 Claim 数和 evidence packet 字符预算。它们独立于历史窗口。
+knowledge_recall_limit: 8
+knowledge_evidence_max_chars: 6000
+
+# Aurelius 启动时自动打开项目根 Ground。DESKTOP.md body 进入本帧 instruction，
+# Pin/frame 进入本帧 context；二者都不会自动形成长期 Claim。
+desktop_enabled: true

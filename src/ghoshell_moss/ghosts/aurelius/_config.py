@@ -24,6 +24,20 @@ class MemoryConfig(ConfigType):
     reflection_startup_limit: int = Field(
         default=16, ge=0, description="单次启动最多追赶的待反思 commit 数；0 表示不追赶。"
     )
+    knowledge_enabled: bool = Field(default=True, description="是否启用可重建 Evidence/Claim 与事实题校验。")
+    knowledge_user_sources: tuple[str, ...] = Field(
+        default=("input", "user"), description="可作为用户直接陈述证据的 Moment percept source。"
+    )
+    knowledge_trusted_tool_sources: tuple[str, ...] = Field(
+        default=("trusted_tool",), description="可直接提升事实的已认证工具 percept source。"
+    )
+    knowledge_recall_limit: int = Field(default=8, ge=1, le=64, description="单帧 evidence packet 的 Claim 上限。")
+    knowledge_evidence_max_chars: int = Field(
+        default=6000, ge=256, description="单帧 evidence packet 的最大字符数。"
+    )
+    desktop_enabled: bool = Field(
+        default=True, description="是否在 Aurelius 生命周期中自动打开项目 Ground 并注入当前帧。"
+    )
 
     @classmethod
     def conf_name(cls) -> str:

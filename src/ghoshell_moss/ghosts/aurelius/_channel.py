@@ -4,6 +4,8 @@ from collections.abc import Callable
 
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
+from ._desktop import AureliusDesktop
+from ._knowledge import MemoryProjection
 from ._memory import AureliusMemory
 
 __all__ = ["new_memento_channel"]
@@ -12,18 +14,23 @@ __all__ = ["new_memento_channel"]
 def new_memento_channel(
     memory: AureliusMemory,
     *,
+    knowledge: MemoryProjection | None = None,
+    desktop: AureliusDesktop | None = None,
     on_reflect: Callable[[], None] | None = None,
 ) -> MutableChannel:
     """Expose only the Aurelius owner's current branch; cross-owner writes stay impossible."""
     channel = new_channel(
         name="ghost",
-        description="Aurelius Ghost 的 Memento 控制面：查看、锚定、改写与分叉当前记忆。",
+        description="Aurelius 的受限认知控制面：Memento、可信 Recall 与当前 Ground。",
     )
 
     @channel.build.command(always_observe=True)
     def memory_inspect() -> dict:
         """查看当前 Memento 分支、暂存区、commit 与反思追赶状态。"""
-        return memory.inspect()
+        state = memory.inspect()
+        if knowledge is not None:
+            state["knowledge"] = knowledge.inspect()
+        return state
 
     @channel.build.command(always_observe=True)
     def memory_log() -> str:
@@ -83,5 +90,52 @@ def new_memento_channel(
             return "reflection is disabled"
         on_reflect()
         return "reflection catch-up scheduled"
+
+    if knowledge is not None:
+
+        @channel.build.command(always_observe=True)
+        def memory_recall(query: str) -> dict:
+            """按 canonical field 召回本 owner/current branch 的可验证 Claim。"""
+            return knowledge.recall(query).model_dump(mode="json")
+
+        @channel.build.command(always_observe=True)
+        def memory_claims() -> dict:
+            """审计当前分支可重建的 Claim 与未提升候选；不修改 Memento。"""
+            return knowledge.snapshot().model_dump(mode="json")
+
+    if desktop is not None:
+
+        @channel.build.command(always_observe=True)
+        async def desktop_open(directory: str = ".", label: str = "") -> str:
+            """在 Aurelius workspace 边界内打开一个 Ground。"""
+            ground = await desktop.open(directory, label=label or None)
+            return f"opened ground label={ground.label} root={ground.root}"
+
+        @channel.build.command(always_observe=True)
+        async def desktop_close(label: str) -> str:
+            """关闭一个 Ground，并仅 sediment 其 Pin 清单。"""
+            await desktop.close(label)
+            return f"closed ground label={label}"
+
+        @channel.build.command(always_observe=True)
+        def desktop_pin(label: str, addr: str, note: str = "") -> dict:
+            """把 Ground 内的地址 pin 到当前工作表面；不保存文件快照。"""
+            return desktop.pin(label, addr, note).model_dump(mode="json")
+
+        @channel.build.command(always_observe=True)
+        def desktop_unpin(label: str, addr: str) -> str:
+            """从当前 Ground 工作表面移除一枚 Pin。"""
+            desktop.unpin(label, addr)
+            return f"unpinned {addr} from {label}"
+
+        @channel.build.command(always_observe=True)
+        async def desktop_update(label: str, addr: str) -> dict:
+            """显式承认 Pin 指向对象的当前变化。"""
+            return (await desktop.update(label, addr)).model_dump(mode="json")
+
+        @channel.build.command(always_observe=True)
+        async def desktop_frame(label: str) -> str:
+            """重绘指定 Ground 的当前帧。"""
+            return await desktop.frame(label)
 
     return channel
