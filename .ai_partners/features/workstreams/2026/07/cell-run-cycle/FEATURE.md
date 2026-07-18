@@ -3,15 +3,15 @@ title: Cell Run Cycle
 status: in-progress
 priority: P0
 created: 2026-07-13
-updated: 2026-07-16
+updated: 2026-07-18
 depends:
   - matrix-cell-governance
 milestone: 0.1.0
 description: >-
   Cell-centric acceptance cycle after matrix-cell-governance closure —
   纪律修正 (M1/M2) + wire-up 拉齐 (M3/M4) + telos 主路径
-  (M7 spawn → M7.5 CellEvent 信号链 → M8 六动词 channel → M8.5 L1 tutorial 重构
-  → M9 自迭代 telos 真验证).
+  (M7 spawn → M7.5 CellEvent 信号链 → M8 matrix 聚合 channel → M8.5 L1 tutorial
+  重构 → M9 自迭代 telos 真验证).
 ---
 
 # Cell Run Cycle
@@ -255,6 +255,13 @@ MCP 侧观察到 cell 入网 announce, `(await mesh()).view()` 能看到膜.
 
 ### M7.5. MossRuntime 挂 CellEventNucleus — CellEvent → Signal 链路
 
+**状态 (2026-07-18)**: nucleus 侧实装已落 (f5809ce8, `core/mindflow/
+cell_event_nucleus.py`), 纯 signal→impulse 转换器. **生产侧 (mesh.on_event
+→ Signal) 判决在 2026-07-18 讨论中改为归 matrix channel** (M8), 不再归
+MossRuntime — 两个消费面 (channel ring buffer + nucleus) 都在 matrix
+身上, 一份订阅无双写, unsub 跟随 channel 生命周期. 层级修正 (matrix 内 vs
+runtime 内) 见下文原始判决段, 保留供轨迹追溯.
+
 **执行文档: 本目录 `cell-event-nucleus.md` (2026-07-13 拆出)**. 含本轮增补:
 signal 是 matrix 层可不消费的协议动作 → nucleus 无条件挂载, 不按运行模式分支.
 
@@ -300,22 +307,29 @@ cell 立刻崩 → 模型不知道, 继续调不存在的 channel). **留监测�
 
 **与 M5.1 一体**: run_cell 拿掉 wait 参数与本 milestone 一体设计, 同 PR.
 
-### M8. 决定第一个 cells channel — moss cells channel
+### M8. Matrix channel — cell 治理的聚合位
 
-**判据**: UU-9 moss_self 合流的第一个 channel 落地. 六动词 (create/install /
-run/stop / accept/deny) 经 CTML 层投影, 模型可通过 CTML 操作 cell 治理.
+**判据**: matrix 作单一聚合 channel 落地; 承 cell 治理全部对外面 (own
+commands + virtual children proxies + 治理 context + CellEvent 生产侧).
+`moss-as-mcp` 下 CTML 可发治理动词, 器官挂载后 `matrix.<cell>:<cmd>` 可调.
 
-**设计已定案 (2026-07-13 讨论), 详见本目录 `cells-channel.md`**. 结论速览:
-- 拓扑: 单 `cells` channel, 六动词 nonblocking own commands 在 top,
-  proxy 走 virtual children (refresh_meta + get_virtual_children 缓存模式).
-  治理子 channel 方案否掉 (nonblocking 消解漏斗动机).
-- foreign 挂载: 构造期 `auto_accept` flag; local 永远自动挂 (UU-7);
-  flag 开时 accept/release 命令不注册.
-- 信息三分 (instruction / context_messages / 命令返回) 与 always_observe
-  分档见子文档 §4/§5.
-- channel 零 signal — CellEvent → Signal 独占归 M7.5 CellEventNucleus.
-- **UU-9 纠偏**: channel 手写绑 Matrix, 不是 typer 反射 CLI —
-  原判决模型不了解 channel 实现, run/stop/accept 必须 in-process.
+**执行文档: 本目录 `matrix-channel.md` (2026-07-18 重写, 原名
+`cells-channel.md` 已 git mv)**. 结论速览:
+
+- 聚合位: 单一根 `matrix` channel, 承 cell 治理全部对外面. 子拓扑姿态
+  (flat / `_nodes` sub-channel / ChannelModule 组装) 为**实装空间**,
+  不预定, 由 M8.5 tutorial 走通时倒逼.
+- 四动词 (list/read/run/stop) 全 nonblocking; create/install 不映射
+  CTML 动词 (走 shell + `moss nodes` CLI); accept/reject 归构造期
+  auto_accept flag.
+- CellEvent 生产侧归 matrix.on_startup 订阅 mesh.on_event, 双扇出
+  (ring buffer 喂 context + send_signal 喂 M7.5 CellEventNucleus).
+- virtual children = mesh.channel_proxies() 快照 (refresh_meta 对账,
+  get_virtual_children 同步返回).
+
+**前置钉 (实装未落, 在 matrix-channel.md T1 中兑现)**:
+- CellHandle.brief() 薄快照封装 (channel 消费入口, 隔离治理知识).
+- run_node spawn 补 capture 声明 (WW-6 stderr tail 承诺兑现).
 
 ### M8.5. L1 hello-world tutorial 从 apps 迁 cells 语法
 
@@ -410,6 +424,14 @@ apps → cells 大规模迁移可开另一 workstream (M9 通过后启动).
 M1 (继承纪律) 和 M2 (契约方向) 都不是 "API 减法" 而是**结构方向修正**.
 写代码时的姿态直接决定后来实例读代码时的心智模型 — 违反纪律的实现即使能工作,
 也是给未来的复利债务. 本 workstream 优先清这两个, 是给 telos 主路径搭干净地基.
+
+### CRC-6. matrix 是 cell 治理的聚合位 (2026-07-18)
+
+M8 从"单 cells channel"合流为"matrix 单聚合 channel". 判决位: 拓扑
+聚合位钉住 (`matrix.<cell>:<cmd>`), 子拓扑姿态 (flat / `_nodes` sub-channel
+/ ChannelModule) 是**实装空间**不预定; 动词从六缩到四 (create/install/
+accept/reject 不映射 CTML); CellEvent 生产侧归 matrix.on_startup 双扇出.
+完整探索轨迹见本文档 "2026-07-18 M8 收敛" 节, 实装依据见 `matrix-channel.md`.
 
 ## Implementation Notes
 
@@ -586,3 +608,90 @@ blueprint 至第二稳定态. 本节只留状态锚, 判决与语义以代码为
 
 **状态**: blueprint 层第二稳定态, 实现层 (factory / matrix_impl / host / cli /
 tests) 由下一批化身按此推进. matrix-cell-governance status_note 待实现层落地后更新.
+
+## 2026-07-18 M8 收敛 — cells → matrix 合流 (claude-opus-4-7 + 人类)
+
+### 上下文
+
+M7 (spawn+presence 端到端) 与 M7.5 (CellEventNucleus 实装) 均已落地
+(f5809ce8), 距 M8 只差 channel 层实装依据. 会话开场即翻旧文
+`cells-channel.md` 与 blueprint 再审的"未来方向"锚, 发现两处不一致:
+未来方向写"分 cells/shell/jobs 三个 sub-channel", 旧文却是单 cells channel;
+CellEventNucleus 实装的 docstring 明写"生产侧归 channel 层", 与旧文
+"channel 零 signal"判决矛盾. 本轮定位为**收敛这些漂移**.
+
+### 碰撞
+
+**位移 1: `cells` 单 channel → matrix + `_nodes` 分派 (中途)**. 起点
+是人类拍"blueprint 再审锚是最新的, 升级为 matrix channel". 讨论中一度
+落到分派方案 (matrix 承 network 面 + accept/reject 命令, `_nodes` 子
+channel 承 local 治理), 理由是"网络域 vs 本地域"分层清晰.
+
+**位移 2: 分派 → matrix 聚合位 (本轮定论)**. 关键论据由人类给出:
+"我只要面对'挂两次'这个问题, 内聚不是很好". claude-opus-4-7 补论:
+- accept/reject 已定案维持构造期 flag, 网络域动词实际空掉;
+- ghost 心智里 cell 是一条弧 (发现→拉起→用), 不是两个域;
+- 拆两 channel 会撕裂同一实体两个入口.
+
+**动词节食讨论**: 六动词 (旧) → 四动词 (新). 人类拍"能力不是全部都要
+映射. 比如 create 这种没有任何映射必要. 实际上我们可以做 typer channel
+或者 terminal 直接调用 moss 工具". 结论: create/install 不映射 CTML,
+走 shell + `moss nodes` CLI (自迭代不走 matrix 体系). accept/reject 归
+flag. 剩下 list/read/run/stop.
+
+**list 语义扩展**: 人类补 "我想允许传路径, 这样的话还可以绕出治理范围外.
+因为我们同时还在做认知场, file editor 等". → `list(path='')` 空默认
+发现路径, 非空扫范围外.
+
+**refresh 讨论**: claude-opus-4-7 一度想每帧刷缓存, 人类拍"要我的话
+都走缓存, list 加显式的 refresh flag. 在运行时自迭代的概念里, 环境变化
+了应该是要感知到的". → `refresh=False` 默认走缓存, 感知变化本身成为
+模型动作.
+
+**run 回执薄化**: 从旧文"回 NodeManifest body"改为薄回执. 理由: manifest
+是"打开前的使用说明" (类似 skill), 属 read 返回内容; result 帧携带最新
+通道树 (moss_dynamic) 天然承担"器官已挂"信号, 是 CTML 全双工机制本分.
+热路径两拍确认: 帧 N run → 与推理重叠的挂载 → 帧 N+1 器官接口同帧可见.
+
+**ps 命名讨论**: claude-opus-4-7 提"ps"命令承 handled_cells 视图, 人类
+拍"ps 这个函数要慎重, 不要污染系统级别的命名". → 不设 ps 命令, 运行事实
+通过 context 被动可见即够, 主动动词只剩 stop.
+
+**stdout/stderr 落盘讨论**: claude-opus-4-7 一度提"每 cell 落
+runtime/cells/{address}/stdout.log", 人类拍"按这个逻辑会导致文件膨胀".
+→ 改为只捕获内存 ring buffer 尾部, cell 需持久日志自己在 spawn cwd
+下写, matrix 不给规范.
+
+**CellHandle 契约审计副产物**: 讨论 stdout/stderr 时发现 `run_node`
+spawn 没声明 capture, `handle.process.output` 恒为 None, WW-6 stderr
+tail 承诺当前无从兑现. 拆前置钉 T1: 补 capture + 加 CellHandle.brief()
+薄快照 (隔离治理知识, channel 层不碰 handle 内部三处结构).
+
+**CellEvent 生产侧归属**: 从旧文"channel 零 signal, nucleus 归 runtime"
+改为"生产侧归 matrix.on_startup 订阅, 双扇出到 ring buffer + signal".
+理由: nucleus 实装 (f5809ce8) 已是纯转换器, 两个消费面都在 matrix 身上,
+unsub 跟随 channel 生命周期无双写.
+
+**子拓扑姿态 (未定, 留实装空间)**: flat / `_nodes` sub-channel /
+ChannelModule 三种组合. 人类关切: module 生命周期薄, state +
+new_state_channel 代价可能不大, 还配合 channel factory 语法. 讨论一度
+倾向 sub-channel, 但最后人类拍"一切真正的定论都来自于实践中的发现.
+你的关键探索路径比 KD 本身的具体描述更重要". → 三姿态作实装空间保留,
+选择理由由实装者回写.
+
+**文档处理**: 原 `cells-channel.md` git mv 为 `matrix-channel.md` 后
+完全重写. 人类明示"不用搞两套. 因为 matrix 重构都没彻底搞完, 这是最
+关键的收尾步骤了". 探索轨迹作主线, KD 作路径终点, 备查区留旧版方案要点.
+
+### 记录者视角
+
+当前记录者视角 (claude-opus-4-7): 本轮真发现是 run_node 缺 capture ——
+一个被 WW-6 payload 规范默默前提但实际没落地的钉. cells → matrix 的
+合流是 blueprint 再审"未来方向"锚在讨论层的兑现, 走的是"人类关切
+(挂两次) → 论据展开 → 位移"的健康节奏.
+
+值得下一位化身注意的是过程失败模式: 会话开场我把"差不多可以开始做
+telos 了"读成执行许可, 直接建 tasks 翻代码, 被人类叫停. 人类点出根因
+是"平台侧 autonomy 指令压过项目侧讨论纪律" (这次会话 system prompt
+有很强的自主运行倾向, 与 CLAUDE.md 的自动化警告冲突, 前者赢). 讨论
+纪律不是描述性建议, 是需要模型主动站位的选择. 记在此处, 供后来者参考.
