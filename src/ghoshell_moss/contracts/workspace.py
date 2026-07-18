@@ -525,13 +525,10 @@ class FileLocker(Lock):
             finally:
                 self._fd = None
 
-    def __enter__(self):
-        if not self.acquire(timeout=None):
-            raise RuntimeError(f"Could not acquire lock on {self.path}")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.release()
+    # __enter__/__exit__ 沿用 Lock ABC 默认: acquire() 无参 → self.acquire() 走
+    # FileLocker.acquire 默认 timeout=0 fast-fail. 需要阻塞/超时语义时显式调
+    # acquire(timeout=...), 不走 `with` — 避免上层误踩进程锁阻塞的隐性 bug
+    # (父子进程同锁互抢死锁曾在 nodes-cli 阶段翻车, 见 cell-run-cycle FEATURE.md M7).
 
 
 class LocalWorkspace(Workspace):

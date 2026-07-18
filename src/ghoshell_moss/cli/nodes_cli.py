@@ -424,15 +424,17 @@ def run_node(
 
     try:
         with contextlib.ExitStack() as stack:
+            # singleton 冲突: 只读探测给友好提示, 但**不抢锁** — 真锁归子进程
+            # (enter_cell_lifecycle fast-fail). 父子进程共抢同一锁曾在 M7 死锁
+            # (父抢 → 子等到超时), 见 cell-run-cycle FEATURE.md 与 workspace.py
+            # FileLocker 注释. is_locked 是只读探测: _flock_ex_nb 拿到就释放,
+            # 无 TOCTOU 死锁; 子进程 fast-fail 作兜底.
             if launcher.runtime.cell.singleton:
-                try:
-                    stack.enter_context(
-                        env.workspace.lock(launcher.runtime.locker_name())
-                    )
-                except Exception as e:
+                probe = env.workspace.lock(launcher.runtime.locker_name())
+                if probe.is_locked():
                     print_error(
-                        f"Singleton conflict for '{manifest.name}': cannot acquire lock "
-                        f"'{launcher.runtime.locker_name()}' ({e})."
+                        f"Singleton conflict for '{manifest.name}': lock "
+                        f"'{launcher.runtime.locker_name()}' held by another process."
                     )
                     print_info("  moss nodes status         # inspect what's running")
                     print_info("  moss nodes kill <address> # stop the running instance")

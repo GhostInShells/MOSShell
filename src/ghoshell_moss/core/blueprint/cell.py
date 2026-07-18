@@ -676,8 +676,18 @@ def enter_cell_lifecycle(
         kill: Callable[[CellRuntimeInfo], None],
 ):
     if runtime_info.cell.singleton:
+        # 单写者纪律 (§UU-6): singleton cell 的进程锁由 cell 自身争抢, 且必须
+        # fast-fail — 父进程 (CLI / matrix.run_node) 只写 ledger, 不抢锁.
+        # timeout=0: 撞车立即报, 不阻塞. FileLocker.acquire 默认就是 timeout=0
+        # (契约 fast-fail), 此处显式写值表达意图.
         locker = env.workspace.lock(runtime_info.locker_name())
-        stack.enter_context(locker)
+        if not locker.acquire(timeout=0):
+            raise DuplicatedError(
+                f"singleton cell {runtime_info.cell.fullname!r} lock "
+                f"{runtime_info.locker_name()!r} held by another process; "
+                f"a live instance already exists."
+            )
+        stack.callback(locker.release)
 
     @contextlib.contextmanager
     def _runtime_info_ctx():
