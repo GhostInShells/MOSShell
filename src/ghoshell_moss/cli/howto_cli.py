@@ -69,7 +69,7 @@ def list_docs(
         return
 
     if not query:
-        console.print("Tip: 添加或修改 howto 前, 先读 how-to-make-how-to.md 了解编写规范.\n")
+        console.print("Tip: 添加或修改 howto 前, 先读 README.md — 判定入口三问 + 反模式清单.\n")
 
     rows = [
         [
@@ -88,7 +88,7 @@ def list_docs(
 
 @howto_app.command(name="read")
 def read_doc(
-        path: str = typer.Argument(help="Document path, e.g. 'how-to-make-how-to.md'"),
+        path: str = typer.Argument(help="Document path."),
         raw: bool = typer.Option(False, "--raw", help="Output raw markdown without syntax highlighting."),
 ):
     """Read a how-to document by path."""

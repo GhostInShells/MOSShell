@@ -142,19 +142,13 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
 `howto_cli.py` + `how_tos/` 目录组成一个反身性知识库:
 
 - **存储**: `how_tos/` 目录下的 markdown 文件, 通过 `MarkdownKnowledgeBase` (来自 `ghoshell_moss.core.resources.markdown_kb`) 做资源管理
-- **结构**:
-  - `how_tos/README.md` → howto_app 的 help text
-  - `how_tos/*.md` → 一级文档
-  - `how_tos/<subdir>/README.md` → 子目录领域概述
-  - `how_tos/<subdir>/*.md` → 子目录下的文档, path 为 `<subdir>/<filename>.md`
+- **结构**: 扁平——`how_tos/README.md` (元规则 + help text) + `how_tos/*.md` (howto 文档)
 - **命令**:
   - `moss howtos list [-q keyword] [--json]`: 列出所有文档
   - `moss howtos read <path>`: 读取文档 (带 syntax highlighting)
   - `moss howtos recall <question>`: AI 语义召回 (需 `ANTHROPIC_SMALL_FAST_MODEL` 环境变量)
-- **贡献方式**: 见 `how_tos/how-to-make-how-to.md`。必须包含 YAML frontmatter (`title` + `description`), description 是给 AI 召回用的关键字段
-- **当前文档**:
-  - `host-dev/`: Host 环境内开发相关 (manifests 注册, IoC 使用, mode 创建, 资源存储, 环境探查, ROS2 集成)
-  - `how-to-make-how-to.md`: meta 文档，howtos 体系的编写规范
+- **元规则**: `how_tos/README.md` 承担——入口判定三问 + 反模式清单 + 写作纪律。写 howto 前必读
+- **当前定位**: 复合任务入口 ("师傅领进门"), 不是组件用法手册。历史上曾积累 16 篇混合内容, 2026-07-18 doc-governance 治理后收敛为 3 篇 (见 `.ai_partners/features/workstreams/2026/07/doc-governance/`)
 
 ## 架构小贴士
 

@@ -194,3 +194,83 @@ matrix-cell-governance 是内核重构，关注的是 cell/matrix 抽象的正�
 实际 CLI 已经重写为 `nodes_cli.py`（commit 43da7647）。
 这个 FEATURE.md 应该标记为 `completed` 或更新为描述 nodes_cli.py 的实际行为。
 属于 matrix-cell-governance 的收尾工作，不在本 workstream 范围内。
+
+## 2026-07-18 KD 转向记录
+
+> 记录：Claude Opus 4.7 & 人类工程师复盘 KD-2/3/4/5，做了下述反转。
+> 按 features 约定，原 KD 文字保留不删，本节标注哪一条被推翻及原因。
+
+### 触发
+
+进入本任务时，Claude 直接按原 FEATURE.md 蓝本推进（先立三重系统纪律、
+补 KD-3 子目录 README、按 KD-5 全量修 docs+howtos+tutorials）。人类工程师
+叫停，重申项目第一原理：**code as prompt**。项目自解释分层——L0 code /
+L1 CLI-flow / L2 目录 README / L3 docs / tutorials。howtos 在这个分层里
+**位置最模糊，也最易 stale**。
+
+### 核心洞察 — howtos 的历史失败模式
+
+git blame 全部 16 篇后发现的模式：
+
+- **4 篇 (`use-cache`/`use-parameters`/`use-topics-and-windows`/`use-mcp-hub`)
+  与"引入新组件"的 commit 一同提交**——"新组件顺带写 howto"是反模式：
+  组件的 interface 已经是 prompt，howto 只是抄一遍，制造 stale 源
+- 大部分是"操作步骤级"，被 `moss --ai all-commands` + `moss codex get-interface`
+  完全覆盖
+- 只有 3 篇 (`integrate-ros2`/`build-a-gui-app`/`develop-moss-via-mcp`)
+  是真正的复合任务入口——跨多个组件/系统的复合行为，CLI 单命令覆盖不了
+
+原审计"只有 2 篇 howtos 过期"是**幸存者偏差**——命令名恰好还稳定而已。
+底层抽象再动一次，操作步骤类会集体过期。这解释了为什么 KD-5 里
+"修 2 篇过期 howtos"是错的目标——真正的问题是**大部分 howto 不该存在**。
+
+### KD 反转
+
+- **KD-2 反转**：howtos 定位从"任务导向操作指南"收窄为"复合任务入口
+  （师傅领进门）"。三重系统的强化方向：
+  - docs 收紧到架构推演 — 不变
+  - **howtos**：从"补全子目录 README"变为"整体清理，只保留复合任务入口"
+  - **tutorials**：从"全量重做"变为"直接删旧留 case 给 dogfooding"
+
+- **KD-3 作废**：howtos 扁平化后无子目录（3 篇不构成"领域"）；docs
+  本来就无子目录；tutorials 也无子目录。KD-3 的四个待建 README 全部
+  不需要。
+
+- **KD-4 简化**：tutorials 不重写。删旧的，dogfooding 时由模型即写。
+  "自验证机制"、"最小依赖原则"等原则保留在 `tutorials/README.md`，
+  本轮不新建 tutorial。
+
+- **KD-5 scope 收缩**：
+  - 保留：docs 7 篇过期修复（本轮**实际主体**，尚未开始）
+  - 反转：howtos "修 2 篇过期" → "整体收敛为 3 篇 + 元规则 README"
+  - 反转：tutorials "重做" → "删旧"
+  - 移出本轮：非 doc 文件（stubs README、cell.py docstring、cells-cli
+    FEATURE.md）留给 matrix-cell-governance 收尾
+
+### 新增 KD-6：howtos 入口判定三问
+
+写 howto 前必答，任何一条答不出来不写：
+1. **复合任务吗？** 跨多个组件/系统协作，不是单一命令或单一接口。
+2. **CLI/codex 覆盖不了吗？** `moss codex get-interface` + `moss --ai all-commands`
+   组合为什么不够？说不出理由就说明够了。
+3. **入口路径半年内稳定吗？** 依赖的抽象是否已经过实战、不在活跃演进中？
+
+反模式明确禁止：新组件顺带写 howto、操作步骤级 howto、决策/架构讨论、
+接口用法说明。
+
+**完整元规则**：`src/ghoshell_moss/cli/how_tos/README.md`——`moss howtos`
+命令的 help text 就是它，写 howto 前必读。
+
+### 本轮已落地 / 未落地
+
+已落地（commit 370f29b0 + 本 commit）：
+- howtos 16 → 3 篇 + 元规则 README（删 12，保留 build-a-gui-app /
+  develop-moss-via-mcp / integrate-ros2）
+- 空子目录 (app-dev/channels/host-dev/matrix-usage) 全清
+- `howto_cli.py` 引用更新、`cli/CLAUDE.md` 描述更新
+
+未落地（doc-governance status 保持 in-progress）：
+- **docs 7 篇过期修复**——本轮实际主体，下轮开始
+- tutorials 删旧留 case 待人类工程师确认后执行
+- 保留的 3 篇 howto 内容本身未按新纪律 review（"这轮治理哪些该存在，
+  不治理存在的写得对不对"）
