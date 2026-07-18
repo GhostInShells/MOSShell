@@ -555,7 +555,7 @@ commit c1
 | `reflection_max_source_chars` | `12000` | 单次送入反思模型的冻结原文上限。 |
 | `reflection_startup_limit` | `16` | 单次启动最多追赶的待反思 commit；`0` 暂停启动追赶。 |
 | `knowledge_enabled` | `true` | 启用可重建 Claim、按问题 Recall 与事实回答校验；关闭不影响 Memento 轨迹。 |
-| `knowledge_user_sources` | `[input, user]` | 可作为用户直接陈述的 percept source；不要加入 logos/command。 |
+| `knowledge_user_sources` | `[input_signal_nucleus, input, user]` | `input_signal_nucleus` 是真实 Shell 的默认用户输入 source；`input`/`user` 供显式嵌入；不要加入 logos/command。 |
 | `knowledge_trusted_tool_sources` | `[trusted_tool]` | 产品接入层已认证的工具 source；普通 CTML 输出不属于此类。 |
 | `knowledge_recall_limit` | `8` | 单帧 evidence packet 的 Claim 上限。 |
 | `knowledge_evidence_max_chars` | `6000` | packet 字符预算；超预算收紧 quote，仍超出则安全未知。 |

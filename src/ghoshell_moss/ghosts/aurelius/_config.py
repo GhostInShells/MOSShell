@@ -26,7 +26,8 @@ class MemoryConfig(ConfigType):
     )
     knowledge_enabled: bool = Field(default=True, description="是否启用可重建 Evidence/Claim 与事实题校验。")
     knowledge_user_sources: tuple[str, ...] = Field(
-        default=("input", "user"), description="可作为用户直接陈述证据的 Moment percept source。"
+        default=("input_signal_nucleus", "input", "user"),
+        description="可作为用户直接陈述证据的 Moment percept source。",
     )
     knowledge_trusted_tool_sources: tuple[str, ...] = Field(
         default=("trusted_tool",), description="可直接提升事实的已认证工具 percept source。"

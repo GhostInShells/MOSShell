@@ -13,7 +13,7 @@ from ghoshell_moss.message import Message
 
 def _moment(user: str, assistant: str) -> Moment:
     return Moment(
-        percepts={"user": [Message.new().with_content(user)]},
+        percepts={"input_signal_nucleus": [Message.new().with_content(user)]},
         logos=assistant,
     )
 

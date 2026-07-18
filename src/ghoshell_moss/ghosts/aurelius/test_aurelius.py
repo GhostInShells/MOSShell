@@ -29,7 +29,7 @@ from ._reflection import AureliusReflector
 
 def _moment(user: str, assistant: str = "") -> Moment:
     return Moment(
-        percepts={"user": [Message.new().with_content(user)]},
+        percepts={"input_signal_nucleus": [Message.new().with_content(user)]},
         logos=assistant,
     )
 
@@ -305,6 +305,7 @@ class TestAureliusKnowledge:
         assert active["test.run.environment"].value == "staging"
         assert active["test.run.code"].evidence_refs[0].commit_id is not None
         assert active["test.run.code"].evidence_refs[0].note_seq == 0
+        assert active["test.run.code"].evidence_refs[0].source == "input_signal_nucleus"
         assert active["test.run.code"].evidence_refs[0].quote == "本轮测试代号是 AMBER-731"
         rejected = [item for item in snapshot.candidates if item.value == "ORBIT-004"]
         assert len(rejected) == 1

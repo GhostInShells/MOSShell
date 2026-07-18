@@ -136,6 +136,9 @@ Aurelius 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (�
   `DefaultGrounds`，真实 Host 优先以 `Project.root` 为 workspace，测试/嵌入场景退化到
   `GhostWorkspace.home`。Ground instruction 作为本帧附加 instruction，frame 作为临时 user
   context 注入且不写入 Moment；open/pin/unpin/update/frame 继续经 `ghost` channel 的受限命令面。
+- **真实 Shell 用户证据 source 是 `input_signal_nucleus`。** Evidence 白名单必须包含该核心
+  Mindflow source；`input`/`user` 仅作显式嵌入兼容。测试 helper 与 acceptance 必须默认使用
+  `input_signal_nucleus`，避免人工 `user` percept 绕过真实接线而产生假阳性。
 
 ## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
 
@@ -238,3 +241,8 @@ ghost.articulate(articulator):
 - 当前定向回归：Aurelius + Memento + Desktop 共 191 passed；ruff 全绿；acceptance 完成
   write → commit → reopen → project → recall → verify，并拒绝 ORBIT 字段替换。P2 principal/
   audience/retention 治理与 P3 backend contract 均未实现，文档已从“目标”改为准确状态。
+- 2026-07-18 真实 TUI 验收发现 source 集成缺口：Moment 已将用户输入写入
+  `input_signal_nucleus`，而 Evidence 默认值仅含 `input`/`user`，导致已落盘证据被跳过。
+  修复只补齐真实 source，并让单测与 acceptance 共用该 source；不改 Memento/Ghost 契约。
+  Aurelius + Memento + Desktop + InputSignalNucleus 定向回归 200 passed，且对真实 TUI
+  staging 副本重建出 `AMBER-731 / staging`。

@@ -241,7 +241,7 @@ projection/verifier 捕获 packet 与校验结果，避免真实模型随机性�
 
 | 用例 | 输入/前置 | 断言 |
 |---|---|---|
-| 来源重建 | 从原始用户 Moment 建立 `AMBER-731 / staging` | 每个 Claim 都有 `moment_id`、原文 span、owner/branch scope；删除 projection 后可重建 |
+| 来源重建 | 从真实 Shell source `input_signal_nucleus` 的原始用户 Moment 建立 `AMBER-731 / staging` | 每个 Claim 都有 `moment_id`、原文 span、owner/branch scope；删除 projection 后可重建 |
 | 字段隔离 | 同时存在测试代号、环境、`ORBIT-004` 校验词、设备字段 | `test.run.code` 不可返回 `ORBIT-004`；各 key 仅返回自己的 value |
 | 干扰历史 | 加入含 `ORBIT-004` 的 logos、反思和其他字段 | Recall packet 只含测试代号与环境；错误 TestModel 输出被拒，正确输出为 `AMBER-731 / staging` |
 | 错误 logos 防污染 | 人为写入“测试代号是 ORBIT-004”的成功 Moment logos | 原错误 logos 可在 Memento 审计；不得生成或覆盖 active `test.run.code` Claim |
@@ -499,7 +499,7 @@ commit 成员。
 | `reflection_enabled: false` | 产生 commit | 不创建后台反思；pending 保留 |
 | `reflection_startup_limit: 0` | 有 pending 后重启 | 启动不调度追赶；可用 `memory_reflect` 手动调度 |
 | `knowledge_enabled: false` | 重启后问事实题 | 保留 Memento history，但不运行 projection/Recall/verifier |
-| `knowledge_user_sources` | 移除/恢复 `input` | 对应 source 不再/重新具备用户证据资格；logos 始终无资格 |
+| `knowledge_user_sources` | 移除/恢复 `input_signal_nucleus` | 真实 Shell 输入不再/重新具备用户证据资格；logos 始终无资格 |
 | `knowledge_recall_limit` | 设较小正数 | packet Claim 数受限，不改变 projection 原始状态 |
 | `knowledge_evidence_max_chars` | 缩小预算 | quote 被有序收紧；无法完整编码时安全未知，不产生截断 JSON |
 | `desktop_enabled: false` | 重启并检查本帧 | 不自动打开 Ground；Memento/P0 仍正常工作 |

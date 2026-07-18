@@ -170,7 +170,7 @@ class MemoryProjection:
         self,
         memory: AureliusMemory,
         *,
-        user_sources: tuple[str, ...] = ("input", "user"),
+        user_sources: tuple[str, ...] = ("input_signal_nucleus", "input", "user"),
         trusted_tool_sources: tuple[str, ...] = ("trusted_tool",),
         recall_limit: int = 8,
         evidence_max_chars: int = 6000,
