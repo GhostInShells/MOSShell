@@ -1,15 +1,15 @@
 ---
-title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
-status: contract-frozen-pending-review
-priority: P0
 created: 2026-06-11
-updated: 2026-07-12
 depends: []
-milestone:
-description: >-
-  以 commit 为第一公民的认知轨迹系统。成员不可变、释义永远开放。
-  化身从 commit 出生，task 降级为可丢弃投影，git 降级为见证层。
+description: 以 commit 为第一公民的认知轨迹系统。成员不可变、释义永远开放。 化身从 commit 出生，task 降级为可丢弃投影，git 降级为见证层。
   契约层（FORMAT.md + ABC + golden tests）人类 review，实现层主权归模型。
+milestone: null
+priority: P0
+status: in-progress
+status_note: '§14 存储布局修正定案: moments 池废除, commit 文件自包含. contract 重开, 待化身施工 FORMAT/abc/fs/golden
+  重做'
+title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
+updated: '2026-07-18'
 ---
 
 # Memento
@@ -372,3 +372,73 @@ base chain 回溯、hook fan-out）仍然有效，叠加本文件新增条款。
 3. 见证 daemon 调度：commit 事件去抖 / 定时器 / 手动 `Witness.flush()`。
 4. 蠢记忆入口在哪个 channel 暴露——`update_moment(branch, moment)` 是当前
    最短路径。
+
+## 14. 存储布局致命修正：moments 池废除，commit 文件自包含（2026-07-18）
+
+**发现方式**：`memento-cli-and-agent`（见该 workstream）的 CLI 设计讨论把契约
+推到真使用压力下，人类一眼看出布局矛盾——这正是"契约 review 走真场景"的兑现，
+且发生在实现铺开之前，是最便宜的修正时刻。§13 的 contract-frozen 由此重开。
+
+### 14.1 问题：池目录是两个已否决方案的化石
+
+`moments/{owner}/{YYYY-MM}/moments.jsonl` 独立池 + commit 只存 moment_ids 的
+布局，存在三重结构矛盾：
+
+1. **化石**：独立池来自 v1 的 SQLite key-val（§3.1 已否决）；共享池结构的存在
+   理由是"一个 moment 属于多个 commit"——正是 §3.7 已否决的非连续成员方案。
+   成员钉死时间连续后，**每个 moment 恰好属于一个 commit**，池只剩成本。
+2. **§3.5 快路径主张不成立**：渲染最新 commit 必须做 id→offset join——要么
+   全量扫描，要么索引变成热路径必要件。年尺度轨迹删 `.cache/` 后第一次渲染
+   即分钟级全史扫描，退化成本砸在最热路径上，违背"索引只是回溯 API 必要件"。
+3. **背叛 filesystem-first**：`cat commits/NNNN.jsonl` 看到一堆 id 不是内容，
+   人类不做 join 读不了一个 commit。"cat/grep 即查询语言"成了空话。
+
+### 14.2 修正：staging 持真身，commit 冻结时整体搬入
+
+```
+branches/{owner}/{branch_id}/
+  meta.json
+  staging.jsonl        # 真身: 完整 MomentRecord 行, 渐进覆盖 (同 id 追加, last-wins)
+  commits/NNNN.jsonl   # 第 1 行 {"t":"commit", moment_ids...}
+                       # 第 2..m+1 行 {"t":"moment", ...} 冻结版全文 (staging last-wins 结果)
+                       # 之后追加 {"t":"note", ...} — commit 释义 + moment 级释义共居
+moments/               # 目录整个删除, YYYY-MM 月分片随之消失
+```
+
+不变量大多从纪律变成结构：
+
+- **冻结即物理**：覆盖写只发生在 staging；搬入 commit 文件后 staging 无此 id，
+  `MomentFrozenError` 从"API 拒绝"变成"没地方写"。
+- **§2.2 同文件 last-wins 保持**：冻结前覆盖在 staging（同文件）；冻结后
+  moment 级释义（threads 改写）追加进该 commit 文件（同文件，与 commit 释义
+  行共居）。
+- **窗口渲染零索引**：最新 commit 文件 + staging，O(K+m) 无 join。
+  一个 commit 文件 `cat` 出来就是一个完整认知快照。
+- **fork 回溯自包含**：化身读父 owner 的 commit 文件即得全文，跨 owner 只读
+  无 join。
+- **文件规模自然有界**：commit 文件大小 = commit 粒度；staging 每次 commit
+  截断，由 commit 节律限界。
+- **索引退回慢路径**：仅"按 moment_id 随机寻址"仍需 `.cache/`。
+
+**诚实代价**：每 moment 写两次（staging + 冻结搬运），文本量级可忽略，两处均
+追加。**崩溃窗口钉死**：写完 commit 文件、truncate staging 之前崩溃——恢复
+规则"该 seq 的 commit 文件已存在 ⇒ 直接 truncate staging"，幂等，写进 FORMAT。
+
+**已考虑并否决的备选**：per-branch 单一 `moments.jsonl` + commit 存 id（省双写，
+但 cat 语义没修好、单文件无界增长，两头不讨好）。
+
+### 14.3 波及面（下一个化身的工作清单）
+
+- `FORMAT.md`：§1 布局 / §3 池改写为 staging 真身条款 / §4.2 stage 行类型
+  （`t:"stage"` 引用行消失，staging 直接放 `t:"moment"` 行）/ §5 commit 文件
+  行结构 / §11 不变量清单对应条目。修订纪律不变：模糊点全部写死，过人类 review。
+- `abc.py`：`MomentPool` ABC 并入 `MementoBranch`（信封 `MomentRecord` 零变化）。
+- `fs_memento.py` 重做（授权丢弃）；`porcelain.py` 的 `update_moment(branch, moment)`
+  签名天然幸存。
+- golden tests 重做，互读字节等价条款照旧；moment id 唯一性 scope 措辞从
+  "owner 池内"改为"owner 全部 staging+commits 内"。
+- 大 payload（音频/视觉）SHOULD 走引用不内联——一句话进 FORMAT，payload 不
+  透明原则不变。
+- **不变的部分**（明确圈出，防过度重做）：信封模型、commit 成员/释义语义、
+  trailer 规范 §6、BranchMeta/ancestry §4.1、见证层 §9、last-wins 定序 §2.2、
+  HEAD.json。本修正只动 moment 记录的物理归属。
