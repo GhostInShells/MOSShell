@@ -184,9 +184,20 @@ reflection_startup_limit: 16
 若没有可用的反思模型或凭据，先设 `reflection_enabled: false`。写入、commit、重启恢复和
 人工 `memory_reinterpret` 仍然可验收。
 
-### 2.6 隔离测试数据
+### 2.6 清除或隔离测试数据
 
-不要删除现有用户记忆。先停止 Aurelius，再备份：
+每轮全新验收前，先在 TUI 中停止 Aurelius，然后在仓库根目录执行以下安全清理
+命令：
+
+```bash
+.venv/bin/python scripts/ghost/aurelius_memory_reset.py
+```
+
+该命令只解析当前仓库的 `.moss/ghosts/aurelius/memento`；Aurelius 仍在运行、目标是
+symlink、目录越界或出现非 Memento 顶层内容时均会拒绝删除。目录不存在时是成功
+no-op。成功后输出 `CLEARED`，下次启动 Aurelius 会自动创建空 Memento。清理不可恢复。
+
+若需保留现有记忆，不要运行上述清理命令；改为停止 Aurelius 后备份：
 
 ```bash
 mv .moss/ghosts/aurelius/memento \
@@ -221,7 +232,7 @@ mv .moss/ghosts/aurelius/memento \
 - verifier 在 yield 前拦截错误 TestModel 输出，正确输出通过；
 - `DESKTOP.md` instruction、Pin frame、changed-on-disk/update 和越界路径拒绝。
 
-2026-07-18 当前定向结果：上述命令 `191 passed`；acceptance script 已覆盖
+2026-07-18 当前定向结果：Aurelius + Memento + Desktop + InputSignalNucleus `200 passed`；acceptance script 已覆盖
 write → commit → reopen → project → recall → verify，并确定性拒绝 ORBIT 字段替换。
 
 相邻基线回归：

@@ -246,3 +246,6 @@ ghost.articulate(articulator):
   修复只补齐真实 source，并让单测与 acceptance 共用该 source；不改 Memento/Ghost 契约。
   Aurelius + Memento + Desktop + InputSignalNucleus 定向回归 200 passed，且对真实 TUI
   staging 副本重建出 `AMBER-731 / staging`。
+- 人工验收的旧数据清理收口为 `scripts/ghost/aurelius_memory_reset.py`：目标从脚本位置
+  固定解析，运行中进程、symlink、越界或异常顶层内容均 fail closed，避免文档中的
+  裸 `rm -rf` 与手工选路径。
