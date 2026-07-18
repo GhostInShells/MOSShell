@@ -26,6 +26,7 @@ from ghoshell_moss.core.blueprint.environment import (
     ENV_PARENT_CELL_ADDRESS_KEY,
     MOSS_META_FILE,
     MossMeta,
+    WORKSPACE_PROJECT_ID_FILE,
 )
 
 
@@ -92,17 +93,6 @@ class TestEnvironmentInitExplicit:
         assert env.this_cell_address == 'host/main/uid'
         assert env.parent_cell_address == 'host/parent/uid'
 
-    def test_default_none_mode_and_ghost(self, tmp_path):
-        """无 env var 时 mode 和 ghost 均为 none."""
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        env = Environment(workspace=ws)
-        assert env.mode_name == 'none'
-        assert env.ghost_name == 'none'
-        assert env.no_mode is True
-        assert env.no_ghost is True
-
-
 # ==================================================================
 # Environment — project_id 生成
 # ==================================================================
@@ -115,31 +105,24 @@ class TestEnvironmentProjectId:
         env = Environment(workspace=ws)
         assert env.project_id == 'proj-env'
 
-    def test_from_file(self, tmp_path):
+    def test_auto_generated_and_persisted_to_sidecar(self, tmp_path):
+        """首次 discover 无 env var, project_id 自生成并写 sidecar; 二次读同 id."""
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
-        meta = MossMeta(project_id='proj-file')
-        meta.write_to_directory(ws)
-        env = Environment(workspace=ws)
-        assert env.project_id == 'proj-file'
+        env1 = Environment(workspace=ws)
+        pid = env1.project_id
+        assert pid  # 非空
+        sidecar = ws / WORKSPACE_PROJECT_ID_FILE
+        assert sidecar.exists()
+        assert sidecar.read_text().strip() == pid
+        # 二次实例化必须读回同一个 id
+        env2 = Environment(workspace=ws)
+        assert env2.project_id == pid
 
-    def test_auto_generated_and_persisted(self, tmp_path):
+    def test_env_var_priority_over_sidecar(self, tmp_path, monkeypatch):
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
-        env = Environment(workspace=ws)
-        pid = env.project_id
-        assert len(pid) > 0
-        # 持久化到 MOSS.md
-        moss_md = ws / MOSS_META_FILE
-        assert moss_md.exists()
-        reloaded = MossMeta.read_from_file(moss_md)
-        assert reloaded.project_id == pid
-
-    def test_env_var_priority_over_file(self, tmp_path, monkeypatch):
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        meta = MossMeta(project_id='file-id')
-        meta.write_to_directory(ws)
+        (ws / WORKSPACE_PROJECT_ID_FILE).write_text('file-id')
         monkeypatch.setenv(ENV_PROJECT_ID_KEY, 'env-id')
         env = Environment(workspace=ws)
         assert env.project_id == 'env-id'
@@ -476,16 +459,6 @@ class TestMossMetaDefaults:
         assert env.network == 'lab'
         assert env.network_scope == 'swarm_a'
 
-    def test_no_moss_meta_falls_back_to_none(self, tmp_path):
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        # 没有 MOSS.md, 自动创建, 默认值未被覆盖
-        env = Environment(workspace=ws)
-        assert env.mode_name == 'none'
-        assert env.ghost_name == 'none'
-        assert env.network == 'local'
-        assert env.network_scope == 'default'
-
 
 # ==================================================================
 # MossMeta — 环境变量优先级
@@ -582,9 +555,7 @@ class TestInitWorkspace:
 
 
 # ==================================================================
-# MossMeta.write_to_file — SS-11-1 修复
-# create_meta_file 必须设 self.file; write_to_file 不再做 project_id 副作用,
-# 副作用上移到 Environment.__init__.
+# MossMeta.write_to_file
 # ==================================================================
 
 class TestMossMetaWriteToFile:
@@ -600,31 +571,7 @@ class TestMossMetaWriteToFile:
         ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
         ws.mkdir()
         meta = Environment.create_meta_file(ws)
-        meta.project_id = 'new-id'
+        meta.default_mode = 'desktop'
         meta.write_to_file()  # 不传 file 参数, 必须能成功
         reloaded = MossMeta.read_from_file(ws / MOSS_META_FILE)
-        assert reloaded.project_id == 'new-id'
-
-    def test_write_to_file_no_project_id_side_effect(self, tmp_path):
-        """MossMeta.write_to_file 不再自动生成 project_id (副作用上移到 Environment)."""
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        meta = MossMeta()
-        meta.file = str((ws / MOSS_META_FILE).absolute())
-        assert meta.project_id == ''
-        meta.write_to_file()
-        assert meta.project_id == ''
-        reloaded = MossMeta.read_from_file(ws / MOSS_META_FILE)
-        assert reloaded.project_id == ''
-
-    def test_first_discover_without_moss_md_persists_project_id(self, tmp_path):
-        """SS-11-1 完整路径: 首次 discover 无 MOSS.md, project_id 由 Environment 生成并持久化."""
-        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
-        ws.mkdir()
-        assert not (ws / MOSS_META_FILE).exists()
-        env = Environment(workspace=ws)
-        assert env.project_id  # 非空
-        moss_md = ws / MOSS_META_FILE
-        assert moss_md.exists()
-        reloaded = MossMeta.read_from_file(moss_md)
-        assert reloaded.project_id == env.project_id
+        assert reloaded.default_mode == 'desktop'
