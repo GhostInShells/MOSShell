@@ -166,7 +166,7 @@ ghost.articulate(articulator):
 - `MemoryConfig` 的可编辑模板落在 `.moss/configs/memory.yml`（stub 同步）；它带字段注释。
   YAML 在 Aurelius 初始化时读取，修改后需要重启。集成方案已按最终运行目标重组，并明确了
   `commit → reinterpret → CommitNote` 的追加版本机制、反思 writer、失败追赶和 CTML 边界。
-- 2026-07-18 已完成 Lynn 对接方案（仅文档，未修改 reachy 项目）：推荐 Lynn 基于
+- 2026-07-18 已完成 Lynn 对接技术评审（仅文档，未修改 reachy 项目）：推荐 Lynn 基于
   Aurelius 形成唯一对话主写，保留 SimpleMemory 与 Lynn 的 thinking/flash/取消语义；
   `person_id` 是长期 owner 的候选真相源，但多人 pin/匿名转身份必须经过显式路由，不能
-  自动合并。详见 `Docs/Lynn-Aurelius-Memory集成技术方案.md`。
+  自动合并。详见 `Docs/Lynn-Aurelius-Memory集成技术评审.md`。

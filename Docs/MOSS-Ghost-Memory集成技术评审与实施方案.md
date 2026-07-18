@@ -2,7 +2,7 @@
 
 > 状态：已实现的 Aurelius/Memento 记忆主路；本文描述当前代码的目标、边界与运行方式。
 >
-> 关联文档：[测试方案](MOSS-Ghost-Memory测试方案.md)、[Moshi 集成技术指导](Moshi-长期记忆与进度集成技术指导.md)。
+> 关联文档：[测试方案](MOSS-Ghost-Memory测试方案.md)、[Moshi 集成技术评审](Moshi-长期记忆与进度集成技术评审.md)。
 
 ## 1. 结论与命名
 
@@ -50,7 +50,7 @@
 - 不保存模型隐藏思维链；反思只处理用户可见输入、已完成 logos 与显式执行结果。
 - 不实现向量检索、git witness 调度、时间阈值 commit、自动 branch merge 或跨 owner 写。
 - 不把反思推断当作用户身份、课程进度、CTML 成功或 TTS 播放位置的权威事实。
-- 不修改 moshi App/mode 代码；Moshi 的接入路线见关联指导文档。
+- 不修改 moshi App/mode 代码；Moshi 的接入路线见关联技术评审。
 
 ### 2.3 三类状态不能混写
 

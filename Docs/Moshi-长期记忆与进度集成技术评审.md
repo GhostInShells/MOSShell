@@ -1,6 +1,6 @@
-# Moshi 长期记忆与进度集成技术指导
+# Moshi 长期记忆与进度集成技术评审
 
-> 状态：指导文档；不修改 `moss-in-reachy-mini`、不修改 moshi mode 或 App 代码。
+> 状态：技术评审；不修改 `moss-in-reachy-mini`、不修改 moshi mode 或 App 代码。
 >
 > 依据：当前 MOSS Aurelius Ghost/Memento 实现、`Docs/moshi支持讨论.md`，以及
 > `moss-in-reachy-mini/.moss_ws/apps/ui/moshi` 的现状代码。
@@ -23,7 +23,7 @@ MoshiProgress 权威状态 ─┘       │
   offset。它是权威状态，绝不能由 LLM 摘要覆盖。
 
 当前 moshi/Lynn 仅有“同一 session 下最近 `max_turns=5` 的线性持久化对话”和进程内
-`course/current_id`。它尚不满足上述目标；本指导的目标是定义可实施的迁移顺序，而不是
+`course/current_id`。它尚不满足上述目标；本评审的目标是定义可实施的迁移顺序，而不是
 把现有能力说成已经具备。
 
 ## 2. 当前事实与差距

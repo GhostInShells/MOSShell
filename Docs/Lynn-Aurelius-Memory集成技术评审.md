@@ -1,6 +1,6 @@
-# Lynn 对接 Aurelius/Memento 记忆技术方案
+# Lynn 对接 Aurelius/Memento 记忆技术评审
 
-> 状态：方案评审稿；**不修改** `/Users/lipeng/TraeProject/moss-in-reachy-mini` 的代码、配置或运行数据。
+> 状态：技术评审；**不修改** `/Users/lipeng/TraeProject/moss-in-reachy-mini` 的代码、配置或运行数据。
 >
 > 依据：`moss-in-reachy-mini/.moss_ws/src/MOSS/ghosts/lynn.py`、
 > `src/framework/apps/conversation/local_store.py`、
