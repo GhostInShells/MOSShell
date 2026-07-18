@@ -20,12 +20,59 @@
 暂不验收：向量检索、git witness、按时间自动 commit、自动 branch merge、Desktop、Moshi
 用户模型以及 CTML/TTS 世界执行进度。
 
-## 2. 环境与配置准备
+## 2. 环境、依赖与配置准备
 
-### 2.1 运行入口
+### 2.1 先选择测试层级
+
+本方案有两条独立的执行路径。不要因为 Host/TUI 缺依赖而阻塞核心记忆回归，也不要把
+pytest 通过误认为可以真实对话。
+
+| 层级 | 覆盖内容 | 是否需要 Zenoh/Host | 入口 |
+|---|---|---:|---|
+| L0：核心记忆 | Moment、commit、note、反思、配置、分支的无网络回归 | 否 | pytest、acceptance script |
+| L1：Ghost 发现 | workspace 是否能发现 Aurelius 注册 | 是，`moss-run-ghost` 导入 Host/Matrix | `moss-run-ghost` |
+| L2：真实对话 | TUI、模型配置、CTML、重启后的端到端记忆 | 是，且需要模型凭据 | `moss-run-ghost aurelius` |
+
+你遇到的 `ModuleNotFoundError: No module named 'zenoh'` 属于 L1/L2 的环境前置失败；它发生在
+`moss-run-ghost` 导入 `Host → Matrix → ZenohTopicService` 时，**尚未创建 Aurelius，也没有
+读取/写入任何记忆文件**。
+
+### 2.2 安装正确的 extras
+
+本项目把 Zenoh 放在可选 extra 中。普通 `uv sync` 不会保证安装 Host/TUI 所需依赖；真实
+运行 Ghost 前，在仓库根目录执行：
 
 ```bash
-uv sync
+# 不要加 --active；确保操作当前仓库的 .venv。
+uv sync --extra host --extra ghost
+```
+
+`host` extra 安装 `eclipse-zenoh`（其 Python import 名为 `zenoh`）及 TUI 依赖；`ghost`
+extra 安装 pydantic-ai/Anthropic 依赖。不要用 `pip install zenoh` 猜测包名，也不要只安装
+`matrix` extra 后就假设 TUI 依赖齐全。
+
+安装完成后必须先执行 import preflight：
+
+```bash
+.venv/bin/python - <<'PY'
+import zenoh
+import pydantic_ai
+print("PASS: host/ghost runtime dependencies are available")
+PY
+```
+
+若只运行 L0 自动化回归，可使用较小依赖集：
+
+```bash
+uv sync --extra ghost
+```
+
+它不保证 `moss-run-ghost` 可运行；此时只执行第 3 节的 pytest 与 acceptance script。
+
+### 2.3 Ghost 发现与 TUI 运行入口
+
+```bash
+# 仅在上节 import preflight 成功后执行。
 .venv/bin/moss-run-ghost
 .venv/bin/moss-run-ghost aurelius
 ```
@@ -38,7 +85,33 @@ aurelius — Aurelius
 
 一次只启动一个 `aurelius` 实例，避免同一个 `(memento root, owner)` 并发写。
 
-### 2.2 MemoryConfig 的精确位置
+### 2.4 L2 模型凭据与反思模型
+
+启动真实 Aurelius 前，复制并填写本地环境文件：
+
+```bash
+cp .moss/.env.example .moss/.env
+```
+
+至少填写：
+
+```dotenv
+ANTHROPIC_BASE_URL=...
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=...
+ANTHROPIC_SMALL_FAST_MODEL=...
+```
+
+`.moss/.env` 不得提交。主对话使用 `ANTHROPIC_MODEL`；当
+`reflection_enabled: true` 时，反思模型 tag `small_fast_model` 还需要能解析到
+`ANTHROPIC_SMALL_FAST_MODEL`。若只想先验证 TUI 写入、commit 和重启恢复，可先把
+`reflection_enabled: false`，避免反思服务配置影响主路验收。
+
+如果根命令 `.venv/bin/moss --ai ...` 在 Zenoh preflight 之后仍报 `CellRegistry`，那是根
+`moss` CLI 的独立 Cell 重构不一致问题，不是 Zenoh 或 Aurelius 记忆问题；请记录完整
+traceback，不要通过修改记忆配置规避它。`moss-run-ghost` 的第一道环境门仍是 `import zenoh`。
+
+### 2.5 MemoryConfig 的精确位置
 
 当前仓库配置文件是：
 
@@ -74,7 +147,7 @@ reflection_startup_limit: 16
 若没有可用的反思模型或凭据，先设 `reflection_enabled: false`。写入、commit、重启恢复和
 人工 `memory_reinterpret` 仍然可验收。
 
-### 2.3 隔离测试数据
+### 2.6 隔离测试数据
 
 不要删除现有用户记忆。先停止 Aurelius，再备份：
 
@@ -273,7 +346,23 @@ commit 成员。
 
 每次测试后还原 `/tmp/memory.yml.before-aurelius-test`，再重启实例。
 
-## 9. 磁盘对账与故障排查
+## 9. 启动故障排查
+
+先判断错误发生在哪一层，避免把 Python 环境问题误判为记忆实现问题。
+
+| 现象 | 原因 | 处理方式 | 可继续的测试 |
+|---|---|---|---|
+| `No module named 'zenoh'` 或 `Depend zenoh` | 未安装 `host`/`matrix` extra；`moss-run-ghost` 导入 Host 时即失败 | `uv sync --extra host --extra ghost`，再运行第 2.2 节 import preflight | L0 可继续；L1/L2 不可继续 |
+| `No module named 'pydantic_ai'` | 未安装 `ghost` extra | `uv sync --extra ghost`；若要 TUI 同时安装 host | 无法运行 Aurelius 测试 |
+| `ANTHROPIC_MODEL`、API key 或 base URL 未配置 | 已到 L2，但模型无法构建/请求 | 填写 `.moss/.env`；或暂不运行 L2 | L0/L1 可继续 |
+| 反思模型失败 | `small_fast_model` 未解析、无凭据或网络失败 | 先设 `reflection_enabled: false` 验证主路；随后修复模型配置再测追赶 | 写入/commit/重启可继续 |
+| `CellRegistry` import error | 根 `moss` CLI 的 Cell 重构不一致 | 作为独立问题记录；不要改 memory.yml | pytest/acceptance 可继续；按 traceback 判断 runner 是否受影响 |
+| TUI 已启动但 Ghost 未列出 `aurelius` | workspace 注册文件或导入错误 | 检查 `.moss/src/MOSS/ghosts/aurelius.py` 和 `ghoshell_moss.ghosts.aurelius` import | L0 可继续 |
+
+本次用户报告的完整 traceback 命中第一行：安装了当前 `.venv` 中缺失的 `eclipse-zenoh`
+后，先通过 `import zenoh`，再继续 Ghost 发现和真实对话测试。
+
+## 10. 磁盘对账
 
 只读检查默认数据：
 

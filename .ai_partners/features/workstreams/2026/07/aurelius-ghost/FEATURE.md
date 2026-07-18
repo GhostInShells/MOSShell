@@ -170,3 +170,6 @@ ghost.articulate(articulator):
   Aurelius 形成唯一对话主写，保留 SimpleMemory 与 Lynn 的 thinking/flash/取消语义；
   `person_id` 是长期 owner 的候选真相源，但多人 pin/匿名转身份必须经过显式路由，不能
   自动合并。详见 `Docs/Lynn-Aurelius-Memory集成技术评审.md`。
+- 测试分层已校正：pytest/acceptance 是不依赖 Zenoh 的 L0；`moss-run-ghost` 的发现和
+  TUI 对话属于 L1/L2，必须先 `uv sync --extra host --extra ghost` 并验证 `import zenoh`。
+  缺少该 extra 的 traceback 发生在 Host/Matrix 导入期，不能误判为 Aurelius 记忆故障。
