@@ -20,7 +20,18 @@ def ghost_run_main(ghost: str | None, mode: str, scope: str):
     env.seal()
 
     host = Host(env=env)
-    available = {meta.name(): meta for _, meta in host.project.ghosts() if not isinstance(meta, Exception)}
+    available = {}
+    failures = []
+    for source, meta in host.project.ghosts():
+        if isinstance(meta, Exception):
+            failures.append((source, meta))
+            continue
+        available[meta.name()] = meta
+
+    if failures:
+        click.echo("Skipped Ghost manifests (fix these before running them):", err=True)
+        for source, error in failures:
+            click.echo(f"  {source}: {type(error).__name__}: {error}", err=True)
 
     if not available:
         click.echo("No ghosts found in workspace.")

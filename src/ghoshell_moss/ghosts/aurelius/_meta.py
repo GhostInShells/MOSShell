@@ -7,9 +7,13 @@ from ghoshell_container import IoCContainer
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+
+try:  # pydantic-ai 2.x renamed the chat-completions model.
+    from pydantic_ai.models.openai import OpenAIChatModel as OpenAICompatibleModel
+except ImportError:  # pragma: no cover - exercised by supported pydantic-ai 1.x environments.
+    from pydantic_ai.models.openai import OpenAIModel as OpenAICompatibleModel
 
 from ghoshell_moss.contracts import ConfigStore, SystemPrompter
 from ghoshell_moss.contracts.configs import get_conf, get_or_create_conf
@@ -134,7 +138,7 @@ class AureliusMeta(GhostMeta):
             api_key=resolved.service.api_key,
             base_url=resolved.service.base_url,
         )
-        return OpenAIModel(resolved.model.model, provider=provider)
+        return OpenAICompatibleModel(resolved.model.model, provider=provider)
 
     def build_agent(self, container: IoCContainer) -> Agent[IoCContainer]:
         workspace = container.get(GhostWorkspace)

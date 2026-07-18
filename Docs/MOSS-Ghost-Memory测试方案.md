@@ -57,7 +57,8 @@ extra 安装 pydantic-ai/Anthropic 依赖。不要用 `pip install zenoh` 猜测
 .venv/bin/python - <<'PY'
 import zenoh
 import pydantic_ai
-print("PASS: host/ghost runtime dependencies are available")
+from ghoshell_moss.ghosts.aurelius import AureliusMeta
+print(f"PASS: host/ghost runtime dependencies are available; ghost={AureliusMeta().name()}")
 PY
 ```
 
@@ -354,10 +355,11 @@ commit 成员。
 |---|---|---|---|
 | `No module named 'zenoh'` 或 `Depend zenoh` | 未安装 `host`/`matrix` extra；`moss-run-ghost` 导入 Host 时即失败 | `uv sync --extra host --extra ghost`，再运行第 2.2 节 import preflight | L0 可继续；L1/L2 不可继续 |
 | `No module named 'pydantic_ai'` | 未安装 `ghost` extra | `uv sync --extra ghost`；若要 TUI 同时安装 host | 无法运行 Aurelius 测试 |
+| `cannot import name 'OpenAIModel'` | 使用 pydantic-ai 2.x，却仍运行旧 Aurelius 代码 | 更新到包含 `OpenAIChatModel`/旧版兼容导入的当前 Aurelius 提交；先运行第 2.2 节完整 import preflight | L0/L1/L2 均不能可靠继续 |
 | `ANTHROPIC_MODEL`、API key 或 base URL 未配置 | 已到 L2，但模型无法构建/请求 | 填写 `.moss/.env`；或暂不运行 L2 | L0/L1 可继续 |
 | 反思模型失败 | `small_fast_model` 未解析、无凭据或网络失败 | 先设 `reflection_enabled: false` 验证主路；随后修复模型配置再测追赶 | 写入/commit/重启可继续 |
 | `CellRegistry` import error | 根 `moss` CLI 的 Cell 重构不一致 | 作为独立问题记录；不要改 memory.yml | pytest/acceptance 可继续；按 traceback 判断 runner 是否受影响 |
-| TUI 已启动但 Ghost 未列出 `aurelius` | workspace 注册文件或导入错误 | 检查 `.moss/src/MOSS/ghosts/aurelius.py` 和 `ghoshell_moss.ghosts.aurelius` import | L0 可继续 |
+| Ghost 未列出 `aurelius` | workspace 注册文件或 manifest import 错误 | 先运行第 2.2 节的 `AureliusMeta` import；当前 `moss-run-ghost` 会向 stderr 输出 skipped manifest 的具体异常 | L0 可继续 |
 
 本次用户报告的完整 traceback 命中第一行：安装了当前 `.venv` 中缺失的 `eclipse-zenoh`
 后，先通过 `import zenoh`，再继续 Ghost 发现和真实对话测试。

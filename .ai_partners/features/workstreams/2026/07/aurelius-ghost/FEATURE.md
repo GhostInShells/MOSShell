@@ -173,3 +173,6 @@ ghost.articulate(articulator):
 - 测试分层已校正：pytest/acceptance 是不依赖 Zenoh 的 L0；`moss-run-ghost` 的发现和
   TUI 对话属于 L1/L2，必须先 `uv sync --extra host --extra ghost` 并验证 `import zenoh`。
   缺少该 extra 的 traceback 发生在 Host/Matrix 导入期，不能误判为 Aurelius 记忆故障。
+- pydantic-ai 2.x 把 `OpenAIModel` 更名为 `OpenAIChatModel`，曾使 Aurelius manifest 在
+  discovery 时导入失败并被旧 CLI 静默过滤。`_meta.py` 现兼容 pydantic-ai 1.x/2.x；
+  `moss-run-ghost` 也会向 stderr 报告 skipped manifest，避免“未列出但无错误”这一假象。
