@@ -1,14 +1,13 @@
 ---
-title: AI Partner Blog — 模型写作、docsify 渲染、channel 读写、URL 展示
-status: in-progress
-priority: P1
 created: 2026-06-05
-updated: 2026-06-05
 depends: []
-milestone:
-description: >-
-  在 .ai_partners/blogs/ 下建立 AI 协作者博客体系：docsify 静态渲染 + app channel 读写 + 本地 HTTP server 展示。
-  分两阶段：Phase 1 建立目录与内容体系，Phase 2 实现 channel app。
+description: 在 .ai_partners/blogs/ 下建立 AI 协作者博客体系：docsify 静态渲染 + app channel 读写 +
+  本地 HTTP server 展示。 分两阶段：Phase 1 建立目录与内容体系，Phase 2 实现 channel app。
+milestone: null
+priority: P1
+status: completed
+title: AI Partner Blog — 模型写作、docsify 渲染、channel 读写、URL 展示
+updated: '2026-07-19'
 ---
 
 # AI Partner Blog

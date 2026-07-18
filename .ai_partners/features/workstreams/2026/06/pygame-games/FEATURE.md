@@ -1,13 +1,13 @@
 ---
-title: Pygame Games — AI 可参与的回合制游戏与可控图形化身
-status: draft
-priority: P2
 created: 2026-06-04
-updated: 2026-06-04
 depends: []
-milestone:
-description: >-
-  在 apps/games 分组下创建最小依赖、开箱可用的 pygame 游戏 App，让 AI 通过 Channel 参与回合制游戏或控制图形化身（如 AI 眼球）。
+description: 在 apps/games 分组下创建最小依赖、开箱可用的 pygame 游戏 App，让 AI 通过 Channel 参与回合制游戏或控制图形化身（如
+  AI 眼球）。
+milestone: null
+priority: P2
+status: completed
+title: Pygame Games — AI 可参与的回合制游戏与可控图形化身
+updated: '2026-07-19'
 ---
 
 # Pygame Games

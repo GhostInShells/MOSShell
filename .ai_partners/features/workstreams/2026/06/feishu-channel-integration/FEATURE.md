@@ -1,15 +1,14 @@
 ---
-title: Feishu Channel Integration
-status: in-progress
-priority: P2
 created: 2026-06-04
-updated: 2026-06-11
 depends: []
-milestone:
-description: >-
-  飞书 IM 集成。MOSS App（group=im）作为独立进程运行，lark-channel-sdk WebSocket 长连接接入飞书。
-  推轻量 Signal 给 Ghost，Ghost 通过 Channel 命令 pull/send。Push-pull 分离，Builder 模式，
-  不新增抽象，不修改 MOSS 核心。
+description: 飞书 IM 集成。MOSS App（group=im）作为独立进程运行，lark-channel-sdk WebSocket 长连接接入飞书。
+  推轻量 Signal 给 Ghost，Ghost 通过 Channel 命令 pull/send。Push-pull 分离，Builder 模式， 不新增抽象，不修改
+  MOSS 核心。
+milestone: null
+priority: P2
+status: pending
+title: Feishu Channel Integration
+updated: '2026-07-19'
 ---
 
 # Feishu Channel Integration

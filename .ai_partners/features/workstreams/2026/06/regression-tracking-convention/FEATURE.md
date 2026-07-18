@@ -1,14 +1,13 @@
 ---
-title: Regression Tracking Convention
-status: in-progress
-priority: P0
 created: 2026-06-15
-updated: 2026-06-16
 depends: []
-milestone:
-description: >-
-  Document-led regression tracking in .ai_partners/ — methodology + test cases + baselines,
-  a sibling mechanism to features for verification trajectory handoff.
+description: Document-led regression tracking in .ai_partners/ — methodology + test
+  cases + baselines, a sibling mechanism to features for verification trajectory handoff.
+milestone: null
+priority: P0
+status: completed
+title: Regression Tracking Convention
+updated: '2026-07-19'
 ---
 
 # Regression Tracking Convention

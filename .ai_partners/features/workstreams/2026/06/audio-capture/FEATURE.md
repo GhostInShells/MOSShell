@@ -1,13 +1,19 @@
 ---
 created: 2026-06-03
-depends: [session-parameter-store, topic-ringbuffer]
-description: 完整音频感知管线 — miniaudio PCM 捕获 → Zenoh 流 → ASR 识别 → SpeechTopic 广播 → mindflow AudioSignal 抢占注意力。五种交互模式 + 四项可选能力界面 + Matrix 解耦。MVP 收敛为单一交互方式跑通 input signal → callback ghost。
+depends:
+- session-parameter-store
+- topic-ringbuffer
+description: 完整音频感知管线 — miniaudio PCM 捕获 → Zenoh 流 → ASR 识别 → SpeechTopic 广播 → mindflow
+  AudioSignal 抢占注意力。五种交互模式 + 四项可选能力界面 + Matrix 解耦。MVP 收敛为单一交互方式跑通 input signal → callback
+  ghost。
 milestone: null
 priority: P1
-status: in-progress
-status_note: Step 1-16 全部完成，Step 18-20 补充完成（Listener 环境变量门控、dotenv 配置、listener mode）。PTT Listener 已落地。内核 ASR 模块、Listener App、PTT Listener App、Mindflow AudioNucleus 全部落地。已知问题：VolcengineASR 偶现服务端错误码 2065851762（待排查）。下一步：Step 13 Preemptable（TTS 打断）或 feature 收尾。
+status: completed
+status_note: Step 1-16 全部完成，Step 18-20 补充完成（Listener 环境变量门控、dotenv 配置、listener mode）。PTT
+  Listener 已落地。内核 ASR 模块、Listener App、PTT Listener App、Mindflow AudioNucleus 全部落地。已知问题：VolcengineASR
+  偶现服务端错误码 2065851762（待排查）。下一步：Step 13 Preemptable（TTS 打断）或 feature 收尾。
 title: Audio Capture — 音频感知全链路
-updated: '2026-06-09'
+updated: '2026-07-19'
 ---
 
 # Audio Capture — 音频感知全链路
