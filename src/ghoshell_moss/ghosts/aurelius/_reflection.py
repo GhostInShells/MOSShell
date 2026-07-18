@@ -40,12 +40,18 @@ class AureliusReflector:
         transcript = memory.commit_transcript(view.id, max_chars=self._max_source_chars)
         if not transcript:
             return None
-        result = await self._agent.run(
+        # Use the same stream transport as the foreground conversation. Some
+        # Anthropic-compatible providers accept a model only with stream=true;
+        # reflection remains invisible to the user because we consume locally.
+        parts: list[str] = []
+        async with self._agent.run_stream(
             f"Commit: {view.id}\n\nObservable transcript:\n{transcript}",
             deps=container,
             instructions=_INSTRUCTION,
-        )
-        summary = " ".join(str(result.output).split())[:self._max_summary_chars]
+        ) as stream:
+            async for delta in stream.stream_text(delta=True):
+                parts.append(delta)
+        summary = " ".join("".join(parts).split())[:self._max_summary_chars]
         if not summary:
             return None
         return memory.apply_reflection(view.id, summary)

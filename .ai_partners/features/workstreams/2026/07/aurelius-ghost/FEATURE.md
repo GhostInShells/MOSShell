@@ -184,3 +184,7 @@ ghost.articulate(articulator):
   `__aenter__` 才建 IoC Container，而 GhostRuntime 早于 Matrix enter 注册 Ghost provider；dev
   的 Container 则在 Matrix 构造期准备。现恢复“构造期注册、进入期 bootstrap”的两阶段边界。
   两项修复都不使 GhostRuntime 感知 Aurelius，也不改变 Memento 或 LLM 的生命周期。
+- Kimi 的真实验收还暴露了反思侧的传输协议不对称：主对话已使用 `Agent.run_stream()`，反思却用
+  `Agent.run()`，在 Anthropic-compatible Moonshot 上分别形成 `stream=true` 与 `stream=false` 请求；
+  后者对同一 `kimi-k2.6` 返回 `unsupported_model`。反思改为本地消费 `run_stream()` 的完整文本，
+  保持用户界面无反思输出、CommitNote 仍只在生成完毕后原子追加。

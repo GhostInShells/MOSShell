@@ -368,6 +368,7 @@ commit 成员。
 | `No module named 'pydantic_ai'` | 未安装 `ghost` extra | `uv sync --extra ghost`；若要 TUI 同时安装 host | 无法运行 Aurelius 测试 |
 | `cannot import name 'OpenAIModel'` | 使用 pydantic-ai 2.x，却仍运行旧 Aurelius 代码 | 更新到包含 `OpenAIChatModel`/旧版兼容导入的当前 Aurelius 提交；先运行第 2.2 节完整 import preflight | L0/L1/L2 均不能可靠继续 |
 | `ANTHROPIC_MODEL`、API key 或 base URL 未配置 | 已到 L2，但模型无法构建/请求 | 填写 `.moss/.env`；或暂不运行 L2 | L0/L1 可继续 |
+| 主对话可用、反思返回同一模型的 `unsupported_model` | 服务只接受该模型的流式 transport，而反思仍在运行旧的非流式实现 | 更新到反思使用 `run_stream()` 的 Aurelius；重启后触发追赶或 `memory_reflect` | 主记忆可继续；反思 note 暂不可用 |
 | 反思模型失败 | `small_fast_model` 未解析、无凭据或网络失败 | 先设 `reflection_enabled: false` 验证主路；随后修复模型配置再测追赶 | 写入/commit/重启可继续 |
 | `CellRegistry` import error | 根 `moss` CLI 的 Cell 重构不一致 | 作为独立问题记录；不要改 memory.yml | pytest/acceptance 可继续；按 traceback 判断 runner 是否受影响 |
 | Ghost 未列出 `aurelius` | workspace 注册文件或 manifest import 错误 | 先运行第 2.2 节的 `AureliusMeta` import；当前 `moss-run-ghost` 会向 stderr 输出 skipped manifest 的具体异常 | L0 可继续 |

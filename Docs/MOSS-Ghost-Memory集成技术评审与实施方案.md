@@ -177,8 +177,10 @@ commit c1
 6. 后续上下文读取新的 note，原 Moment 和原始机械索引仍可审计。
 
 反思任务在 `asyncio` 后台运行：自动 commit 不等待它；同一 commit 通过 inflight set
-去重；失败只记入 `inspect_state()['reflection']['errors']`，下次启动仍可重试。退出时正在
-执行的任务会取消，未写出 reflection note 的 commit 留待下次启动追赶。
+去重；失败只记入 `inspect_state()['reflection']['errors']`，下次启动仍可重试。反思在内部使用与
+主对话相同的流式模型 transport，但只在后台聚合完整文本，不向用户输出 token；这避免部分
+Anthropic-compatible 服务对同一模型的非流式请求不兼容。退出时正在执行的任务会取消，未写出
+reflection note 的 commit 留待下次启动追赶。
 
 ### 5.3 人工/CTML 追加 note
 
