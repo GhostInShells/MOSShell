@@ -45,6 +45,7 @@ __all__ = [
     'WORKSPACE_PROJECT_ID_FILE',
 
     'NONE_MOSS_MODE',
+    'DEFAULT_MODE_NAME',
     'NONE_GHOST_NAME',
 
     # stubs
@@ -108,6 +109,7 @@ ENV_SESSION_ID_KEY = 'MOSS_SESSION_ID'
 
 ENV_MOSS_MODE_KEY = 'MOSS_MODE_NAME'
 NONE_MOSS_MODE = "none"
+DEFAULT_MODE_NAME = "default"
 
 # 如果当前 MOSS 实例启动时, 启用了 Ghost, 则 GHOST_NAME 不应该为空.
 ENV_GHOST_NAME_KEY = 'MOSS_GHOST_NAME'
@@ -167,7 +169,7 @@ class MossMeta(BaseModel):
         pattern=MOSS_NAME_PATTERN,
     )
     default_mode: str = Field(
-        default=NONE_MOSS_MODE,
+        default=DEFAULT_MODE_NAME,
         description='default moss mode',
         pattern=MOSS_NAME_PATTERN,
     )
@@ -178,10 +180,6 @@ class MossMeta(BaseModel):
     )
     matrix_manifest_package: str = Field(
         default=MATRIX_MANIFESTS_PACKAGE,
-    )
-    project_id: str = Field(
-        default='',
-        description='moss project id',
     )
     system_project: str = Field(
         default='',
@@ -300,11 +298,15 @@ class Environment:
         self._parent_cell_address = parent_cell_address or os.environ.get(ENV_PARENT_CELL_ADDRESS_KEY, '')
         self._network = network or os.environ.get(ENV_NETWORK_KEY, self._meta.default_network)
         self._network_scope = scope or os.environ.get(ENV_NETWORK_SCOPE_KEY, self._meta.default_network_scope)
-        project_id = os.environ.get(ENV_PROJECT_ID_KEY) or self._meta.project_id
+        project_id = os.environ.get(ENV_PROJECT_ID_KEY, '')
         if not project_id:
-            project_id = unique_id()
-            self._meta.project_id = project_id
-            self._meta.write_to_file()
+            project_id_file = workspace / WORKSPACE_PROJECT_ID_FILE
+            if project_id_file.exists():
+                project_id = project_id_file.read_text().strip()
+            if not project_id:
+                project_id = unique_id()
+                workspace.mkdir(parents=True, exist_ok=True)
+                project_id_file.write_text(project_id)
         self._project_id = project_id
 
     @classmethod

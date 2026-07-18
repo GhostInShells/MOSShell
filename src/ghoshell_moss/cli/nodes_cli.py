@@ -18,6 +18,13 @@ Target for run/show/install is path only. Three-in-one resolve:
   - .py script       → NodeManifest.from_script (upward NODE.md, ad-hoc fallback)
   - no arg           → NodeManifest.find_upward(cwd)
 
+Future direction: the current implementation still carries CLI-specific glue
+(singleton lock, signal forwarding, crash-fast messaging, address matching).
+Ideally the CLI becomes a thin shell over blueprint abstractions —
+each command a one-liner delegating to Project/NodeManager/NodeLauncher.
+When blueprint grows enough surface (e.g. a Runner contract that owns
+spawn+lock+wait+cleanup, an address-query helper), collapse the glue here.
+
 Design record: .ai_partners/features/workstreams/2026/06/cells-cli/plan.md
 """
 
@@ -34,7 +41,8 @@ import typer
 
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.cell import (
-    NodeManifest, NodeLauncher, CellRuntimeInfo, ExecSpec, normalize,
+    NodeManifest, NodeLauncher, CellRuntimeInfo, ExecSpec,
+    parse_address,
 )
 
 from .utils import (
@@ -196,6 +204,17 @@ def show_node(
         title=f"{NodeManifest.MANIFEST_FILENAME} (verbatim)",
     )
 
+    install_md = node_dir / NodeManifest.INSTALL_FILENAME
+    installed_marker = node_dir / NodeManifest.INSTALLED_FILE
+    if install_md.exists() and not installed_marker.exists():
+        echo("")
+        print_warning(
+            f"Not installed. {NodeManifest.INSTALL_FILENAME} declares steps; "
+            f"'run' will refuse until installed."
+        )
+        print_info(f"  Read: {install_md}")
+        print_info(f"  Then: moss nodes install {path}")
+
 
 # ===========================================================================
 # creation: create — scaffold from stub
@@ -226,15 +245,18 @@ def create_node(
 
     print_success(f"Node '{name}' created at {target_dir}")
     echo("")
-    print_info(f"  Read {target_dir / 'README.md'}"
-               f"  — what to fill in before running or sharing.")
-    print_info(f"  Edit {target_dir / NodeManifest.MANIFEST_FILENAME}"
-               f"  — name, exec, instruction body.")
+    print_info(f"  Read {target_dir / 'README.md'} — what to fill in before running or sharing.")
+    print_info(f"  Edit {target_dir / NodeManifest.MANIFEST_FILENAME} — name, exec, instruction body.")
+    install_md = target_dir / NodeManifest.INSTALL_FILENAME
+    if install_md.exists():
+        print_info(f"  Read {install_md} — declares install steps.")
+        print_info(f"       Delete it if no install is needed (then the node is installed by default).")
+        print_info(f"       Otherwise run the steps, then: moss nodes install {path}")
     print_info(f"  Run: moss nodes run {path}")
 
 
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
-    """Copy stub files into target_dir, replacing {name} placeholders."""
+    """Copy stub files into target_dir, replacing {name} placeholders in text files."""
     for item in stub_node.iterdir():
         if item.name == "__init__.py":
             continue
@@ -243,9 +265,13 @@ def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
             target_item.mkdir(exist_ok=True)
             _copy_stub(item, target_item, name=name)
         else:
-            content = item.read_text()
-            content = content.replace("{name}", name)
-            target_item.write_text(content)
+            content = item.read_bytes()
+            try:
+                text = content.decode('utf-8')
+                text = text.replace("{name}", name)
+                target_item.write_text(text)
+            except UnicodeDecodeError:
+                target_item.write_bytes(content)
 
 
 # ===========================================================================
@@ -394,35 +420,27 @@ def run_node(
     if ctx.args:
         launcher.run.extend(ctx.args)
 
-    # singleton check — same source of truth as matrix.run_node
-    if launcher.runtime.cell.singleton:
-        for existing in project.cell_runtimes():
-            if not existing.is_alive():
-                continue
-            if existing.cell.fullname == launcher.runtime.cell.fullname:
-                print_error(
-                    f"Singleton conflict: '{manifest.name}' is already running "
-                    f"(address={existing.address}, pid={existing.pid})."
-                )
-                print_info(f"  moss nodes kill {existing.address}")
-                raise typer.Exit(code=1)
+    _print_launch_debug(launcher, env)
 
-    spawn_cwd = env.cell_runtimes_dir / normalize(launcher.runtime.address)
-    spawn_cwd.mkdir(parents=True, exist_ok=True)
-
-    _print_launch_debug(launcher, spawn_cwd, env)
-
-    proc: subprocess.Popen | None = None
     try:
         with contextlib.ExitStack() as stack:
             if launcher.runtime.cell.singleton:
-                stack.enter_context(
-                    env.workspace.lock(launcher.runtime.locker_name())
-                )
+                try:
+                    stack.enter_context(
+                        env.workspace.lock(launcher.runtime.locker_name())
+                    )
+                except Exception as e:
+                    print_error(
+                        f"Singleton conflict for '{manifest.name}': cannot acquire lock "
+                        f"'{launcher.runtime.locker_name()}' ({e})."
+                    )
+                    print_info("  moss nodes status         # inspect what's running")
+                    print_info("  moss nodes kill <address> # stop the running instance")
+                    raise typer.Exit(code=1)
 
             proc = subprocess.Popen(
                 launcher.run,
-                cwd=str(spawn_cwd),
+                cwd=str(launcher.cwd),
                 env=launcher.env,
                 start_new_session=True,
                 # stdout/stderr default = inherit → directly to terminal
@@ -446,16 +464,19 @@ def run_node(
                             pass
                         proc.wait()
                 launcher.runtime.delete_invalid(env.cell_runtimes_dir)
-    except Exception as e:
-        print_error(f"Failed to launch node: {e}")
-        raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
 
-    sys.exit(proc.returncode if proc else 1)
+    if proc.returncode != 0:
+        echo("")
+        print_error(
+            f"Node exited abnormally (returncode={proc.returncode}). "
+            f"See child stderr above for cause."
+        )
+    sys.exit(proc.returncode)
 
 
-def _print_launch_debug(
-    launcher: NodeLauncher, spawn_cwd: Path, env,
-) -> None:
+def _print_launch_debug(launcher: NodeLauncher, env) -> None:
     """Launch-debug section — printed before spawn.
 
     Operator sees: who / where / with what env / ledger location. First-order
@@ -466,7 +487,7 @@ def _print_launch_debug(
     echo("")
     print_info("[run] Starting node cell")
     print_info(f"  address:   {cell.address}")
-    print_info(f"  cwd:       {spawn_cwd}")
+    print_info(f"  cwd:       {launcher.cwd}")
     print_info(f"  argv:      {' '.join(launcher.run)}")
     print_info(f"  ledger:    {ledger_path}")
     if cell.singleton:
@@ -474,10 +495,10 @@ def _print_launch_debug(
     else:
         print_info("  singleton: false")
     print_info("  env:")
-    for key in sorted(launcher.env.keys()):
-        if key.startswith("MOSS_"):
-            value = launcher.env[key] or "(empty)"
-            print_info(f"    {key:<30s}  {value}")
+    runtime_env = env.dump_runtime_scope()
+    for key in sorted(runtime_env.keys()):
+        value = runtime_env[key] or "(empty)"
+        print_info(f"    {key:<30s}  {value}")
     print_info("--- child stdout/stderr below ---")
 
 
@@ -490,6 +511,53 @@ def _forward_signals(proc: subprocess.Popen) -> None:
             pass
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
+
+
+def _match_address(info_address: str, query: str) -> bool:
+    """Match a query against a full cell address.
+
+    Two modes:
+      - Full address: exact match on 'role/name/uid'.
+      - UID prefix:   query matches the leading chars of the address's uid segment.
+                      Git short-hash style — operator can type a few chars of uid.
+
+    Ambiguity (multiple matches) is caller's problem — this function only judges
+    one-at-a-time. Callers should collect all matches, not break early.
+    """
+    if info_address == query:
+        return True
+    try:
+        _, _, uid = parse_address(info_address)
+    except ValueError:
+        return False
+    return bool(query) and uid.startswith(query)
+
+
+def _find_runtime(runtime_dir: Path, query: str) -> list[CellRuntimeInfo]:
+    """Collect all runtime infos matching query. Returns [] if none, [one] on unique."""
+    return [
+        info for info in CellRuntimeInfo.iter_runtime_info(runtime_dir)
+        if _match_address(info.address, query)
+    ]
+
+
+def _resolve_single_runtime(
+    runtime_dir: Path, query: str, *, action: str,
+) -> CellRuntimeInfo | None:
+    """Resolve query to exactly one runtime. Print operator hint on ambiguity."""
+    matches = _find_runtime(runtime_dir, query)
+    if not matches:
+        print_error(f"No runtime entry found for '{query}'.")
+        return None
+    if len(matches) > 1:
+        print_error(
+            f"Ambiguous '{query}' — matches {len(matches)} runtime entries. "
+            f"Use full address to {action}:"
+        )
+        for m in matches:
+            print_info(f"  {m.address}")
+        return None
+    return matches[0]
 
 
 # ===========================================================================
@@ -538,18 +606,11 @@ def _list_runtime(runtime_dir: Path) -> None:
 
 
 def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> None:
-    matched: CellRuntimeInfo | None = None
-    for info in CellRuntimeInfo.iter_runtime_info(runtime_dir):
-        if info.address == address or info.address.endswith(address):
-            matched = info
-            break
-
+    matched = _resolve_single_runtime(runtime_dir, address, action="inspect")
     if matched is None:
-        print_error(f"No runtime entry found for '{address}'.")
         return
 
     state = "alive" if matched.is_alive() else "stale"
-    spawn_cwd = runtime_dir / normalize(matched.address)
 
     # Best-effort NodeManifest.description reverse lookup via project.nodes
     manifest_desc = "—"
@@ -558,8 +619,8 @@ def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> N
             if m.name == matched.cell.name and m.category == matched.cell.category:
                 manifest_desc = m.description or "—"
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        print_warning(f"Manifest reverse lookup failed: {e}")
 
     echo("")
     print_simple_table(
@@ -578,7 +639,6 @@ def _show_runtime_detail(project: Project, runtime_dir: Path, address: str) -> N
             ["home", matched.cell.home or "—"],
             ["parent", matched.cell.parent_address or "—"],
             ["providing", ", ".join(matched.cell.providing) or "—"],
-            ["spawn_cwd", str(spawn_cwd)],
             ["ledger", str(CellRuntimeInfo.filepath(runtime_dir, matched.address))],
         ],
         headers=["Property", "Value"],
@@ -602,14 +662,8 @@ def kill_node(
     project = Project.discover()
     runtime_dir = project.env.cell_runtimes_dir
 
-    matched: CellRuntimeInfo | None = None
-    for info in CellRuntimeInfo.iter_runtime_info(runtime_dir):
-        if info.address == address or info.address.endswith(address):
-            matched = info
-            break
-
+    matched = _resolve_single_runtime(runtime_dir, address, action="kill")
     if matched is None:
-        print_error(f"No runtime entry for '{address}'.")
         raise typer.Exit(code=1)
 
     if matched.pgid > 0:
