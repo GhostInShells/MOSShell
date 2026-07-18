@@ -4,8 +4,9 @@ status: in-progress
 status_note: >-
   Aurelius/Memento trajectory is implemented. The current landing adds the P0
   Evidence/Claim/Recall/verifier skeleton and P1 Ground lifecycle/context wiring
-  without changing Ghost, Memento, or Desktop core contracts. P2 governance and
-  product-specific integrations remain future work.
+  without changing Ghost, Memento, or Desktop core contracts. Autobiographical
+  self-act recall, durable interruption continuation, P2 principal/audience
+  governance, and product-specific integrations remain future work.
 priority: P1
 created: 2026-07-13
 updated: 2026-07-18
@@ -140,6 +141,99 @@ Aurelius 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (�
   Mindflow source；`input`/`user` 仅作显式嵌入兼容。测试 helper 与 acceptance 必须默认使用
   `input_signal_nucleus`，避免人工 `user` percept 绕过真实接线而产生假阳性。
 
+## Future Memory Deliverables (pending)
+
+下列能力对 Aurelius “像一个连续存在的主体”有实际价值，但当前**均未实现**。
+Memento 已保存部分所需原始轨迹，不等于已经形成可靠的召回、续说或披露能力。
+后续实现必须遵守：
+
+- Memento 继续是不可变事件账本；新能力默认作为 Aurelius 层的可重建投影，不另造真相数据库。
+- “Aurelius 曾说过 X”是可验证的行为事件；它不能单独证明“X 是事实”。
+- 只持久化可观测输入、生成/实际执行输出、结果与停止原因；不保存模型隐藏思维链。
+- 优先不改 Ghost/Memento/Desktop 核心抽象。若精确执行边界缺少可观测交接点，必须单独评审
+  最小 hook，不能借本 feature 暗改 core 契约。
+
+### P2-A Autobiographical / SelfAct projection
+
+目标是让 Aurelius 可审计地回答“我曾经说过/做过/拒绝过什么”，不把自己的话污染为外部事实。
+候选投影形状：
+
+```text
+SelfAct {
+  actor, audience, action_kind,
+  generated_text_ref, executed_text_ref,
+  status, moment_id, created_at, stop_reason
+}
+```
+
+- `action_kind` 至少区分 utterance/tool-call/decision/refusal/silence；`status` 至少区分
+  completed/interrupted/failed。
+- `Moment.logos` 只是 generated utterance 证据；`Reaction.executed_logos` 才是世界实际收到的输出证据。
+- SelfAct Recall 必须返回 Moment/Reaction 稳定引用；不经转述文本猜测行为是否发生。
+
+完成标准：用确定性 fake stream 产生一次说话、一次拒绝和一次工具行为，跨进程重启后按 actor/
+audience/action_kind 召回结果不串类；同时证明该说话的命题未因 logos 来源而进入 active Claim。
+
+### P2-B Interruption / Continuation
+
+目标是让 Aurelius 知道上一次实际说到哪里、为什么停止，并在用户明确要求“继续”时从可验证
+边界恢复，而不是根据模型印象重新生成整段。候选短期状态：
+
+```text
+ContinuationState {
+  source_moment_id, original_request_ref,
+  partial_generated_ref, partial_executed_ref,
+  stop_reason, resumable, status
+}
+```
+
+- `status` 至少区分 pending/resumed/abandoned/superseded，且只允许一个当前 active continuation。
+- “继续”走 Continuation Recall；新任务、换 principal 或用户明确取消时不得无声续说。
+- 当前 `Aurelius.on_articulate_exit(error is not None)` 直接 `skipped_on_error`，因此不能把已有
+  `Reaction.stop_reason/executed_logos` 字段当成已完成的持久化续说链。
+
+完成标准：确定性 stream 在 N 个 chunk 后中断，记录原请求、generated/executed 边界与 stop reason；
+同进程和重启后的“继续”都不重复已执行前缀；新话题使旧 continuation 变为 abandoned/superseded，
+不自动向新对话对象泄露片段。
+
+### P2-C Principal / Audience governance
+
+目标是让“记得”与“此刻可以对谁说”分离。`Memento owner` 是 Ghost 身份，不是当前对话者身份；
+principal/audience 必须来自产品接入层的已认证上下文，不允许模型从文本、声音或自称中猜测。
+
+- 每次 Recall 输入至少包含 principal id/role、audience class、workspace/product scope 与授权上下文。
+- Claim/SelfAct/Continuation 的召回和生成前都执行 audience/sensitivity 过滤；回答校验同样不得越权。
+- principal 缺失、不可验证或 scope 冲突时 fail closed，不把“我不知道你是谁”降级为全量披露。
+
+完成标准：至少两个 principal、两个 product/workspace scope 和 public/private 证据的确定性矩阵；
+同一 Ghost 只返回当前 principal 获授权的最小证据，换人/换应用/缺失身份均不串记忆。
+
+### P2-D Memory query router
+
+不同记忆问题不得全部落入事实 Claim extractor。召回路由至少区分：
+
+| 查询意图 | 权威表面 | 例子 |
+|---|---|---|
+| world/user fact | Claim + EvidenceRef | “我的测试代号是什么？” |
+| autobiographical event | Episode/SelfAct + Moment/Reaction ref | “你刚才说过什么？” |
+| continuation | ContinuationState + executed boundary | “继续刚才被打断的话” |
+| current task/world | Ground/Pin/frame | “现在在处理哪个文件？” |
+
+每类查询使用自己的 scope/filter/verifier；意图不明时安全追问或退化为普通对话，不得把
+logos 提升成 fact 来“显得记得”。
+
+完成标准：用同一组包含用户事实、错误 logos、完整行为、中断行为和 Ground 变化的混合轨迹，
+确定性证明四类问题只访问对应表面，错误路由安全拒答，不交叉污染。
+
+### Cross-cutting definition of done
+
+- 上述每项都必须有无网络的 fake/TestModel 确定性测试和至少一条真实 TUI 验收路径；
+  真实模型偶然答对不算通过。
+- 投影删除/重建、进程重启与 branch switch 后语义一致；每个结果能追溯到 Memento 证据。
+- 受限 CTML/调试面能检查路由、SelfAct、active continuation 和披露决策，但不提供跨 owner 修改。
+- 实现、测试方案、配置说明和本 FEATURE 状态同步更新；未达到本节标准前不得宣称
+  Aurelius 已具有可靠的“自传记忆”、“中断续说”或“分对象披露”能力。
+
 ## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
 
 thinking 期用 tool 调 moss + 结束后 text block 出 logos. 候选实现形状:
@@ -249,3 +343,7 @@ ghost.articulate(articulator):
 - 人工验收的旧数据清理收口为 `scripts/ghost/aurelius_memory_reset.py`：目标从脚本位置
   固定解析，运行中进程、symlink、越界或异常顶层内容均 fail closed，避免文档中的
   裸 `rm -rf` 与手工选路径。
+- 2026-07-18 人类协作者明确提出：仅有事实 Claim 不足以支撑有用的持久智能体，还必须
+  能区分“外部事实”与“自己曾经的行为”，持久记录可恢复的中断边界，并根据已认证
+  principal 做最小披露。本文新增 P2-A~P2-D 和 cross-cutting definition of done，作为后续
+  实现与验收的明确轨迹；当前状态仍是 pending。
