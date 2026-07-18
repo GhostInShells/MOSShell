@@ -26,7 +26,7 @@ from ghoshell_moss.core.memento.abc import (
     MementoError,
     MementoHooks,
     MomentFrozenError,
-    MomentPool,
+    MomentNotInCommitError,
     MomentRecord,
     NullHooks,
     ReadonlyBranchError,
@@ -39,7 +39,6 @@ from ghoshell_moss.core.memento.abc import (
 from ghoshell_moss.core.memento.fs_memento import (
     FsMemento,
     FsMementoBranch,
-    FsMomentPool,
     new_filesystem_memento,
 )
 from ghoshell_moss.core.memento.porcelain import (
@@ -66,7 +65,6 @@ __all__ = [
     "BranchWindow",
     "MementoHooks",
     "NullHooks",
-    "MomentPool",
     "MementoBranch",
     "Memento",
     "MementoError",
@@ -74,6 +72,7 @@ __all__ = [
     "BranchNotFoundError",
     "CommitNotFoundError",
     "MomentFrozenError",
+    "MomentNotInCommitError",
     "EmptyStagingError",
     "split_trailers",
     "join_trailers",
@@ -86,7 +85,6 @@ __all__ = [
     "TRAILER_KIND",
     "TRAILER_MEMENTO_REF",
     # fs 实现
-    "FsMomentPool",
     "FsMementoBranch",
     "FsMemento",
     "new_filesystem_memento",

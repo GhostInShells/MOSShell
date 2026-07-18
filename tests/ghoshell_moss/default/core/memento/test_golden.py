@@ -1,11 +1,13 @@
 """
-Golden tests — FORMAT.md 契约锚点.
+Golden tests — FORMAT.md v1.1 契约锚点.
 
 两条硬条款:
 1. 字节等价: 独立照 FORMAT.md 各写一份历史, 互读对方字节, 重建等价.
    本文件里的 "独立实现" 就是纯 stdlib (json + pathlib) 直接照 FORMAT.md
    拼字节, 与 FsMemento 无共享代码路径.
 2. 退化态纯净: 单 branch + 自动 commit 的用例代码里, fork 词汇一个都不出现.
+
+§14 布局: 无独立 moment 池, staging 持真身, commit 文件自包含.
 """
 
 from __future__ import annotations
@@ -16,10 +18,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from ghoshell_moss.core.memento import (
-    FsMemento,
     MomentRecord,
     new_filesystem_memento,
     split_trailers,
@@ -28,7 +27,7 @@ from ghoshell_moss.core.memento import (
 
 
 # ============================================================
-# 独立最小写入器: 只依赖 json + pathlib, 照 FORMAT.md 手工拼字节.
+# 独立最小写入器: 只依赖 json + pathlib, 照 FORMAT.md §14 手工拼字节.
 # 用来给 FsMemento 读; 反过来 FsMemento 写的也用 stdlib 校验.
 # ============================================================
 
@@ -42,25 +41,10 @@ def _hand_write_history(
     commit_seq: int,
     body: str,
 ) -> None:
-    """按 FORMAT.md 逐字节拼一份最小历史."""
+    """按 FORMAT.md §14 逐字节拼一份最小历史 (commit 文件自包含, 无 pool)."""
     now = datetime.now().astimezone().isoformat()
-    ym = datetime.now().astimezone().astimezone().strftime("%Y-%m")
-    # 简化: 直接 UTC 换算月份 (FORMAT.md §3.4)
-    from datetime import timezone
-    ym = datetime.now().astimezone(timezone.utc).strftime("%Y-%m")
 
     root.mkdir(parents=True, exist_ok=True)
-
-    # moments/{owner}/{YYYY-MM}/moments.jsonl
-    mfile = root / "moments" / owner / ym / "moments.jsonl"
-    mfile.parent.mkdir(parents=True, exist_ok=True)
-    with mfile.open("w", encoding="utf-8") as f:
-        for r in records:
-            line = {"t": "moment", "id": r["id"], "created": r.get("created", now),
-                    "type": r.get("type", "test.data/v1"), "payload": r["payload"]}
-            if r.get("threads"):
-                line["threads"] = r["threads"]
-            f.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     # branches/{owner}/{branch_id}/meta.json
     bdir = root / "branches" / owner / branch_id
@@ -78,15 +62,31 @@ def _hand_write_history(
         json.dumps({"current": branch_id}, ensure_ascii=False) + "\n", encoding="utf-8"
     )
 
-    # commits/0001.jsonl: 成员行 + 初始释义行
+    # commits/NNNN.jsonl: 成员行 + m 行冻结 moment + 初始 commit_note
     cdir = bdir / "commits"
     cdir.mkdir(exist_ok=True)
+    lines: list[dict] = []
+    member = {
+        "t": "commit", "id": commit_id, "seq": commit_seq,
+        "moment_ids": [r["id"] for r in records], "created": now,
+    }
+    lines.append(member)
+    for r in records:
+        mline = {
+            "t": "moment",
+            "id": r["id"],
+            "created": r.get("created", now),
+            "type": r.get("type", "test.data/v1"),
+            "payload": r["payload"],
+        }
+        if r.get("threads"):
+            mline["threads"] = r["threads"]
+        lines.append(mline)
+    note = {"t": "commit_note", "ref": commit_id, "body": body, "ts": now}
+    lines.append(note)
     with (cdir / f"{commit_seq:04d}.jsonl").open("w", encoding="utf-8") as f:
-        member = {"t": "commit", "id": commit_id, "seq": commit_seq,
-                  "moment_ids": [r["id"] for r in records], "created": now}
-        note = {"t": "note", "ref": commit_id, "body": body, "ts": now}
-        f.write(json.dumps(member, ensure_ascii=False, separators=(",", ":")) + "\n")
-        f.write(json.dumps(note, ensure_ascii=False, separators=(",", ":")) + "\n")
+        for obj in lines:
+            f.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     # staging.jsonl 空文件
     (bdir / "staging.jsonl").write_text("", encoding="utf-8")
@@ -127,7 +127,7 @@ def test_hand_written_history_readable_by_fs(tmp_path: Path):
 
 
 # ============================================================
-# 硬条款 1: 字节等价 — FsMemento -> hand-written 校验字节
+# 硬条款 1: 字节等价 — FsMemento -> stdlib 校验字节
 # ============================================================
 
 
@@ -140,32 +140,36 @@ def test_fs_written_history_conforms_to_format(tmp_path: Path):
     view = b.commit("golden", kind="semantic", threads=["t"])
     m.close()
 
-    # 池文件
-    mfiles = list((root / "moments" / "alice").rglob("moments.jsonl"))
-    assert len(mfiles) == 1
-    lines = mfiles[0].read_text(encoding="utf-8").splitlines()
-    # 每行 JSON object, 有 t 字段
-    for line in lines:
-        obj = json.loads(line)
-        assert "t" in obj
-        assert obj["t"] in {"moment", "note"}
-    # 非 ASCII 无转义 (ensure_ascii=False)
-    assert "早" in mfiles[0].read_text(encoding="utf-8")
-    # 换行按 JSON 标准转义 (物理行内不含未转义 \n)
-    assert r"line1\nline2" in mfiles[0].read_text(encoding="utf-8")
+    # §14: 无独立 pool 目录, moment 真身在 commit 文件里
+    assert not (root / "moments").exists(), "§14: moments/ 目录已废除"
 
-    # commit 文件: 首行 t=commit, 次行 t=note, ref=commit id
+    # commit 文件: 首行 t=commit, 中间 m 行 t=moment (冻结全文), 末尾 t=commit_note
     cfile = root / "branches" / "alice" / b.meta.branch_id / "commits" / "0001.jsonl"
-    cl = cfile.read_text(encoding="utf-8").splitlines()
-    assert len(cl) == 2
-    m0, n0 = json.loads(cl[0]), json.loads(cl[1])
+    text = cfile.read_text(encoding="utf-8")
+    cl = text.splitlines()
+    assert len(cl) == 4, "member + 2 moments + 1 commit_note"
+    m0 = json.loads(cl[0])
+    m1_line = json.loads(cl[1])
+    m2_line = json.loads(cl[2])
+    n0 = json.loads(cl[3])
     assert m0["t"] == "commit" and m0["seq"] == 1 and m0["id"] == view.id
-    assert n0["t"] == "note" and n0["ref"] == view.id
+    assert m0["moment_ids"] == ["m1", "m2"]
+    assert m1_line["t"] == "moment" and m1_line["id"] == "m1"
+    assert m1_line["payload"] == {"text": "早"}
+    assert m2_line["t"] == "moment" and m2_line["id"] == "m2"
+    assert m2_line["payload"] == {"text": "line1\nline2"}
+    assert n0["t"] == "commit_note" and n0["ref"] == view.id
+
     # note body 含 Kind trailer
-    text, trailers = split_trailers(n0["body"])
-    assert text == "golden"
+    body_text, trailers = split_trailers(n0["body"])
+    assert body_text == "golden"
     assert trailer_values(trailers, "Kind") == ["semantic"]
     assert trailer_values(trailers, "Thread") == ["t"]
+
+    # 非 ASCII 无转义 (ensure_ascii=False)
+    assert "早" in text
+    # 物理行内换行按 JSON 标准转义
+    assert r"line1\nline2" in text
 
     # id 前缀
     assert view.id.startswith("cmt_")
@@ -185,31 +189,34 @@ def test_fs_written_history_conforms_to_format(tmp_path: Path):
 
 
 def _hand_read_head(root: Path, owner: str) -> dict:
-    """纯 stdlib 读取, 复原 (head_commit_id, summary, moment_ids, payloads) 视图."""
+    """
+    纯 stdlib 读取, 复原 (head_commit_id, summary, moment_ids, payloads) 视图.
+    §14: 所有身份直接在 commit 文件里, 一次读一个文件即得整视图.
+    """
     head_json = json.loads((root / "branches" / owner / "HEAD.json").read_text())
     bid = head_json["current"]
     bdir = root / "branches" / owner / bid
     cfiles = sorted((bdir / "commits").glob("*.jsonl"), key=lambda p: int(p.stem))
     latest = cfiles[-1]
-    lines = latest.read_text(encoding="utf-8").splitlines()
-    member = json.loads(lines[0])
-    notes = [json.loads(line) for line in lines[1:] if json.loads(line)["t"] == "note"]
-    body = notes[-1]["body"]  # last-wins
-    # 展开 payloads: 扫所有池文件
-    payloads = {}
-    threads_of = {}
-    for f in (root / "moments" / owner).rglob("moments.jsonl"):
-        for line in f.read_text(encoding="utf-8").splitlines():
-            obj = json.loads(line)
-            if obj["t"] == "moment":
-                payloads[obj["id"]] = obj["payload"]
-                threads_of[obj["id"]] = obj.get("threads", [])
-            elif obj["t"] == "note":
-                threads_of[obj["ref"]] = obj["threads"]  # last-wins
+    objs = [json.loads(line) for line in latest.read_text(encoding="utf-8").splitlines()]
+    member = objs[0]
+    assert member["t"] == "commit"
+    payloads: dict[str, dict] = {}
+    threads_of: dict[str, list[str]] = {}
+    body = ""
+    for obj in objs[1:]:
+        t = obj["t"]
+        if t == "moment":
+            payloads[obj["id"]] = obj["payload"]
+            threads_of[obj["id"]] = obj.get("threads", [])
+        elif t == "moment_note":
+            threads_of[obj["ref"]] = obj["threads"]  # last-wins
+        elif t == "commit_note":
+            body = obj["body"]  # last-wins
     return {
         "commit_id": member["id"],
         "moment_ids": member["moment_ids"],
-        "summary": body.split("\n\n")[0] if "\n\n" in body else "",
+        "summary": body.split("\n\n")[0] if "\n\n" in body else body,
         "payloads": {mid: payloads[mid] for mid in member["moment_ids"]},
         "threads": {mid: threads_of.get(mid, []) for mid in member["moment_ids"]},
     }
@@ -224,8 +231,6 @@ def test_fs_output_reads_equivalent_via_stdlib(tmp_path: Path):
     view = b.commit("cross-read", kind="semantic")
     m.close()
 
-    # FsMemento 视图
-    m2 = new_filesystem_memento(root, "alice")
     fs_view = {
         "commit_id": view.id,
         "moment_ids": ["m1", "m2"],
@@ -235,7 +240,6 @@ def test_fs_output_reads_equivalent_via_stdlib(tmp_path: Path):
     }
     hand = _hand_read_head(root, "alice")
     assert hand == fs_view
-    m2.close()
 
 
 # ============================================================
@@ -248,19 +252,21 @@ def test_torn_tail_line_is_tolerated(tmp_path: Path):
     m = new_filesystem_memento(root, "o")
     b = m.current()
     b.update(MomentRecord(id="m1", type="test.data/v1", payload={"n": 1}))
-    b.commit("s", kind="mechanical")
+    view = b.commit("s", kind="mechanical")
     m.close()
 
-    # 追加撕裂尾行
-    mfile = next((root / "moments" / "o").rglob("moments.jsonl"))
-    with mfile.open("a", encoding="utf-8") as f:
-        f.write('{"t":"moment","id":"m2","incompl')
+    # 追加撕裂尾行到 commit 文件末尾 (无换行结尾)
+    cfile = root / "branches" / "o" / b.meta.branch_id / "commits" / "0001.jsonl"
+    with cfile.open("a", encoding="utf-8") as f:
+        f.write('{"t":"moment_note","ref":"m1","incompl')
 
     m2 = new_filesystem_memento(root, "o")
-    # 应仍能读到 m1
-    assert m2.pool.get("m1").payload == {"n": 1}
-    # 撕裂行不成 record
-    assert m2.pool.get("m2") is None
+    b2 = m2.current()
+    # 应仍能读到 commit 与 m1 的正常 record
+    records = b2.commit_records(view.id)
+    assert len(records) == 1
+    assert records[0].id == "m1"
+    assert records[0].payload == {"n": 1}
 
 
 def test_unknown_t_field_is_ignored(tmp_path: Path):
@@ -268,15 +274,19 @@ def test_unknown_t_field_is_ignored(tmp_path: Path):
     m = new_filesystem_memento(root, "o")
     b = m.current()
     b.update(MomentRecord(id="m1", type="test.data/v1", payload={}))
-    b.commit("s", kind="mechanical")
+    view = b.commit("s", kind="mechanical")
     m.close()
 
-    mfile = next((root / "moments" / "o").rglob("moments.jsonl"))
-    with mfile.open("a", encoding="utf-8") as f:
+    cfile = root / "branches" / "o" / b.meta.branch_id / "commits" / "0001.jsonl"
+    with cfile.open("a", encoding="utf-8") as f:
         f.write('{"t":"future-thing-v99","x":1}\n')
 
     m2 = new_filesystem_memento(root, "o")
-    assert m2.pool.get("m1") is not None  # 未知 t 静默跳过, 不影响
+    b2 = m2.current()
+    # 未知 t 静默跳过, 不影响正常读取
+    records = b2.commit_records(view.id)
+    assert len(records) == 1
+    assert records[0].id == "m1"
 
 
 # ============================================================
@@ -300,14 +310,96 @@ def test_cache_directory_is_regenerable(tmp_path: Path):
         shutil.rmtree(cache)
 
     m2 = new_filesystem_memento(root, "o")
-    assert m2.current().head().id == view.id
-    assert m2.pool.get("m1").payload == {"n": 1}
+    b2 = m2.current()
+    assert b2.head().id == view.id
+    records = b2.commit_records(view.id)
+    assert records[0].payload == {"n": 1}
+
+
+# ============================================================
+# §14 崩溃恢复: commit 落盘后 truncate staging 前中断, 装入时幂等收敛
+# ============================================================
+
+
+def test_crash_recovery_truncates_stale_staging(tmp_path: Path):
+    root = tmp_path / "memento"
+    m = new_filesystem_memento(root, "o")
+    b = m.current()
+    b.update(MomentRecord(id="m1", type="test.data/v1", payload={"n": 1}))
+    view = b.commit("committed", kind="mechanical")
+    m.close()
+
+    # 模拟崩溃: 手工把 m1 的原始 stage 记录塞回 staging.jsonl
+    staging = root / "branches" / "o" / b.meta.branch_id / "staging.jsonl"
+    staging.write_text(
+        json.dumps({"t": "moment", "id": "m1", "created": "2026-07-19T00:00:00+08:00",
+                    "type": "test.data/v1", "payload": {"n": 1}},
+                   ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    # 重新装入: 装入路径应自动 truncate 该残留 (幂等)
+    m2 = new_filesystem_memento(root, "o")
+    b2 = m2.current()
+    assert b2.staging() == []
+    assert b2.head().id == view.id
 
 
 # ============================================================
 # 硬条款 2: 退化态纯净 — 蠢记忆用例, fork 词汇一个不出现
 # 用 inspect + regex 静态扫描本函数源码, 保证契约级纯净.
 # ============================================================
+
+
+# ============================================================
+# §14: checkout from (commit_id, moment_id) — commit 内前缀切片
+# ============================================================
+
+
+def test_checkout_from_moment_id_slices_commit_inclusive(tmp_path: Path):
+    """(commit, moment_id) 化身: ancestry 最末 commit 只贡献到该 moment 为止 (inclusive)."""
+    from ghoshell_moss.core.memento import MomentNotInCommitError
+
+    root = tmp_path / "memento"
+    src = new_filesystem_memento(root, "alpha")
+    b = src.current()
+    b.update(MomentRecord(id="m1", type="test.data/v1", payload={"n": 1}))
+    b.update(MomentRecord(id="m2", type="test.data/v1", payload={"n": 2}))
+    b.update(MomentRecord(id="m3", type="test.data/v1", payload={"n": 3}))
+    b.update(MomentRecord(id="m4", type="test.data/v1", payload={"n": 4}))
+    view = b.commit("full commit", kind="mechanical")
+
+    # inclusive 切到 m3 — m1..m3 应可见, m4 应缺席
+    beta = new_filesystem_memento(root, "beta")
+    forked = beta.checkout(
+        base_fork="alpha",
+        base_branch_id=b.meta.branch_id,
+        base_commit_id=view.id,
+        base_moment_id="m3",
+        name="slice",
+    )
+    assert forked.meta.base is not None
+    assert forked.meta.base.moment_id == "m3"
+    assert forked.meta.base.moment_seq == 2
+
+    records = forked.commit_records(view.id)
+    assert [r.id for r in records] == ["m1", "m2", "m3"], "inclusive 切片, m4 不应可见"
+
+    win = forked.window(detail_n=10, summary_m=-1)
+    detail_ids = [r.id for r in win.details]
+    assert "m4" not in detail_ids, f"m4 泄漏进 window: {detail_ids}"
+
+    # 篡改测试: 无效 moment_id 应抛
+    try:
+        beta.checkout(
+            base_fork="alpha",
+            base_branch_id=b.meta.branch_id,
+            base_commit_id=view.id,
+            base_moment_id="does-not-exist",
+        )
+        raise AssertionError("should have raised MomentNotInCommitError")
+    except MomentNotInCommitError:
+        pass
 
 
 def test_dumb_memory_degenerate_form(tmp_path: Path):

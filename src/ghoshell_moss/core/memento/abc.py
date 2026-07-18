@@ -12,10 +12,16 @@ Memento — 轨迹第一公民的认知基建. 契约层 ABC.
   同 id, last-wins (定序规则钉死在 FORMAT.md §2.2).
 - 信封模型: memento 不理解 payload. 本模块 MUST NOT import 任何 payload schema
   (含 ghoshell_moss 的 Moment / Message). 强类型编解码在信封之上 (codec 模块).
-- owner-isolated writing: 只有 owner 可写自己的池分片 / staging / commits / 释义.
+- owner-isolated writing: 只有 owner 可写自己的 staging / commits / 释义.
   跨 owner 只读. 旁路释义改写经由 owner 实例落盘 (孔径二, FEATURE.md §3.4).
 - 化身只能从 commit 出生, 永不从 staging. divergence prompt 的家在
   BranchMeta.overlay, 不属于对话历史, 禁止进 staging.
+- Moment 记录的物理归属 = staging 或某个 commit 文件, 二者互斥 (FORMAT.md §1).
+  无独立池, commit 文件自包含 moment 全文 (§5.2). MomentPool 抽象已废除,
+  写入/读取由 MementoBranch 统一负责.
+- checkout 支持 commit 内 moment 前缀切片: BasePointer 可选 (moment_id, moment_seq),
+  给定时该 commit 只贡献 [第一个 moment ... moment_id] 前缀 (含) 给继承者.
+  空前缀在类型层不可构造 (FORMAT.md §4.1.1).
 
 磁盘格式契约见同目录 FORMAT.md — 实现与其冲突时以 FORMAT.md 为准.
 设计上下文见 workstreams/2026/06/momento-mori/FEATURE.md.
@@ -28,7 +34,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Iterable, Literal, Protocol, Sequence, runtime_checkable
 
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from ulid import ULID
 
 __all__ = [
@@ -57,7 +63,6 @@ __all__ = [
     "MementoHooks",
     "NullHooks",
     # ABC
-    "MomentPool",
     "MementoBranch",
     "Memento",
     # 异常
@@ -66,6 +71,7 @@ __all__ = [
     "BranchNotFoundError",
     "CommitNotFoundError",
     "MomentFrozenError",
+    "MomentNotInCommitError",
     "EmptyStagingError",
 ]
 
@@ -250,14 +256,41 @@ class CommitView(BaseModel):
 
 class BasePointer(BaseModel):
     """
-    branch 的 fork 起点 (FORMAT.md §4.1). 创建后永不变 —
+    branch 的 fork 起点 (FORMAT.md §4.1 / §4.1.1). 创建后永不变 —
     这是祖先链可以在 fork 时刻冻结的前提.
+
+    支持 commit 内前缀切片:
+    - moment_id / moment_seq 均缺省 (None): 整个 commit 参与继承.
+    - moment_id 给定: 该 commit 只贡献 [第一个 moment ... moment_id] 前缀 (含).
+      moment_seq 是该 moment 在 commit moment_ids 中的 0-based 位置, MUST 与
+      moment_id 同时给定同时缺省 (类型层约束).
+
+    空前缀不可构造 — 想表达 "commit 完全不继承" 请直接指向父 commit,
+    不用 (commit, moment=?) 构造空切片.
     """
 
     fork: str = Field(description="源 branch 的 owner 命名空间.")
     branch_id: str = Field(description="源 branch id.")
     commit_id: str = Field(description="fork 起点 commit id.")
     commit_seq: int = Field(description="起点 commit 在源 branch 的 seq. 目录截断用.")
+    moment_id: str | None = Field(
+        default=None,
+        description="commit 内前缀切片的截止 moment id (含). None = 整个 commit.",
+    )
+    moment_seq: int | None = Field(
+        default=None,
+        description="截止 moment 在 commit moment_ids 中的 0-based 位置. 与 moment_id 同伴生同缺省.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_moment_slice(self) -> BasePointer:
+        if (self.moment_id is None) != (self.moment_seq is None):
+            raise ValueError(
+                "BasePointer.moment_id / moment_seq MUST both present or both absent"
+            )
+        if self.moment_seq is not None and self.moment_seq < 0:
+            raise ValueError("BasePointer.moment_seq MUST be >= 0")
+        return self
 
 
 class BranchMeta(BaseModel):
@@ -316,7 +349,7 @@ class MementoHooks(Protocol):
     """
 
     def on_record_staged(self, branch_id: str, record: MomentRecord) -> None:
-        """Branch.update() 写入池 + staging 后触发."""
+        """Branch.update() 追加 moment 真身到 staging 后触发."""
         ...
 
     def on_commit(self, branch_id: str, view: CommitView) -> None:
@@ -377,58 +410,18 @@ class CommitNotFoundError(MementoError):
 
 
 class MomentFrozenError(MementoError):
-    """moment 已被 commit 冻结, 拒绝覆盖写 (FORMAT.md §3.2)."""
+    """moment 已随 commit 搬入 commit 文件, staging 无该 id 的可写槽位 (FORMAT.md §3.2)."""
+
+
+class MomentNotInCommitError(MementoError):
+    """
+    BasePointer.moment_id 不在目标 commit 的成员列表内, 或 moment_seq 与
+    实际位置不一致 (FORMAT.md §4.1.1). checkout 时立即校验.
+    """
 
 
 class EmptyStagingError(MementoError):
     """staging 为空, 禁止 commit (FORMAT.md §5.1)."""
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# MomentPool — per-owner 分片的信封池
-# ────────────────────────────────────────────────────────────────────────────
-
-
-class MomentPool(ABC):
-    """
-    MomentRecord 的持久化池 (FORMAT.md §3). 按 record.id 寻址.
-
-    写面按 owner 分片 (moments/{owner}/...), 单写者 append-only, 无锁;
-    读全局. owner 是分片键, 不是 record 字段.
-    """
-
-    @abstractmethod
-    def put(self, record: MomentRecord, *, owner: str) -> None:
-        """
-        追加一条记录行. 同 id 重复 put = 覆盖写 (last-wins),
-        覆盖行落在该 id 首次出现的同一文件 (FORMAT.md §3.2/§3.4).
-
-        冻结检查在 Branch 层做 (池不知道 commit 的存在).
-        """
-        pass
-
-    @abstractmethod
-    def annotate(self, moment_id: str, threads: Sequence[str], *, owner: str, by: str = "") -> None:
-        """
-        追加 moment 级释义行: 整体替换 threads (FORMAT.md §3.3).
-        payload 永远不可经此改写.
-        :raise MementoError: moment_id 不在该 owner 池中.
-        """
-        pass
-
-    @abstractmethod
-    def get(self, moment_id: str) -> MomentRecord | None:
-        """按 id 取当前视图 (记录 last-wins + threads 释义 last-wins 已解析). 不存在返回 None."""
-        pass
-
-    @abstractmethod
-    def get_many(self, moment_ids: Iterable[str]) -> dict[str, MomentRecord]:
-        """批量取. 缺失 id 不在返回字典中."""
-        pass
-
-    @abstractmethod
-    def close(self) -> None:
-        pass
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -460,16 +453,26 @@ class MementoBranch(ABC):
     @abstractmethod
     def update(self, record: MomentRecord) -> None:
         """
-        写入池 + staging. 同 id 覆盖 (staging 保持首次出现的位置序, FORMAT.md §4.2).
+        写入 staging (moment 真身). 同 id 覆盖直接追加 staging.jsonl,
+        读者按 last-wins 取最新 (FORMAT.md §4.2).
+
+        commit 时 staging last-wins 视图整块搬入 commit 文件, staging truncate.
 
         :raise ReadonlyBranchError:
-        :raise MomentFrozenError: 该 id 已被本 branch 历史上的 commit 冻结.
+        :raise MomentFrozenError: 该 id 已随本 branch 某次 commit 搬入 commit 文件.
         """
         pass
 
     @abstractmethod
     def annotate_moment(self, moment_id: str, threads: Sequence[str], *, by: str = "") -> None:
-        """moment 级释义 (整体替换 threads). 冻结后仍合法 — threads 是释义不是成员."""
+        """
+        moment 级释义 (整体替换 threads). 冻结后仍合法 — threads 是释义不是成员.
+
+        - moment 未冻结 (在 staging): 追加 t:"moment_note" 到 staging.jsonl.
+        - moment 已冻结 (在某 commit 文件): 追加 t:"moment_note" 到该 commit 文件.
+          跨 owner 只读 — 他 owner 的 branch 冻结的 moment MUST 经其 owner 实例
+          落盘 (孔径二).
+        """
         pass
 
     @abstractmethod
@@ -618,6 +621,7 @@ class Memento(ABC):
         base_fork: str,
         base_branch_id: str,
         base_commit_id: str | None = None,
+        base_moment_id: str | None = None,
         name: str = "",
         overlay: dict[str, Any] | None = None,
     ) -> MementoBranch:
@@ -625,11 +629,16 @@ class Memento(ABC):
         从任意 owner 的某个 commit fork 出新 branch (owner = self.owner).
         fork 时刻冻结展平祖先链进 BranchMeta (= 源的 ancestry + 源的截断点).
 
-        :param base_commit_id: fork 起点. None = 源 branch 的 head.
+        :param base_commit_id: fork 起点 commit. None = 源 branch 的 head.
             staging 永远不是合法出生点 — 没有参数能表达它.
+        :param base_moment_id: 可选. 给定时, 该 commit 只贡献
+            [第一个 moment ... base_moment_id] 前缀 (含) 给继承者
+            (FORMAT.md §4.1.1). 用于按 moment 粒度重绘 / 化身分叉.
+            None = 整个 commit 参与继承.
         :param overlay: 出生注入物 (divergence prompt 等). 创建后不可变.
         :raise BranchNotFoundError: 源 branch 不存在.
         :raise CommitNotFoundError: base_commit_id 不在源 branch 历史中.
+        :raise MomentNotInCommitError: base_moment_id 不在该 commit 成员内.
         :raise MementoError: 源 branch 从未 commit 且 base_commit_id=None.
         """
         pass

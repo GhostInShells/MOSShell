@@ -99,13 +99,16 @@ def test_empty_staging_rejects_commit(root: Path):
 
 
 def test_moment_annotate_threads_after_freeze(root: Path):
-    # threads 是释义不是成员 — 冻结后仍可改写 (孔径二在 moment 级的形态)
+    # threads 是释义不是成员 — 冻结后仍可改写 (孔径二在 moment 级的形态).
+    # §14 后, 冻结 moment 的释义追加到其所在 commit 文件, 通过 commit_records 读回.
     m = new_filesystem_memento(root, "o")
     b = m.current()
     b.update(_rec("a"))
-    b.commit(kind="mechanical")
+    view = b.commit(kind="mechanical")
     b.annotate_moment("a", ["retagged"], by="tagger")
-    assert m.pool.get("a").threads == ["retagged"]
+    records = b.commit_records(view.id)
+    got = next(r for r in records if r.id == "a")
+    assert got.threads == ["retagged"]
 
 
 def test_reinterpret_last_wins_and_forensics(root: Path):

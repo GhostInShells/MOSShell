@@ -54,7 +54,8 @@ def test_update_moment_convenience(tmp_path: Path):
     update_moment(b, Moment(id="m2", logos="two"))
     view = b.commit("s", kind="semantic")
     assert view.commit.moment_ids == ["m1", "m2"]
-    stored = m.pool.get("m1")
+    records = b.commit_records(view.id)
+    stored = next(r for r in records if r.id == "m1")
     assert stored.threads == ["chat"]
     assert record_to_moment(stored).logos == "one"
 

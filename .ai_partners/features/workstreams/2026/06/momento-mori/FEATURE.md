@@ -442,3 +442,103 @@ moments/               # 目录整个删除, YYYY-MM 月分片随之消失
 - **不变的部分**（明确圈出，防过度重做）：信封模型、commit 成员/释义语义、
   trailer 规范 §6、BranchMeta/ancestry §4.1、见证层 §9、last-wins 定序 §2.2、
   HEAD.json。本修正只动 moment 记录的物理归属。
+
+## 15. §14 落地 + checkout(commit_id, moment_id) 新能力（2026-07-19）
+
+由 `claude-opus-4-7` 施工，人类拍板。
+
+### 15.1 §14 布局落地
+
+按 §14.3 波及面清单逐项落到代码：
+
+- **FORMAT.md v1.1 重写完成**：§1 布局删 `moments/`；§3 从 "Moment 池" 改写为
+  "staging 与 commit 中的 moment 记录"（§3.4 月分片删除，`MomentPool` 概念消失，
+  信封 `MomentRecord` 零变化）；§4.2 staging 行结构从 `t:"stage"` 引用行改为
+  `t:"moment"` 全文行（同 id 覆盖 last-wins）；§5 commit 文件结构新增 m 行冻结
+  `t:"moment"` + 释义拆为 `t:"commit_note"` / `t:"moment_note"` 两类型（不走前缀
+  路由方案）；§11 不变量清单调整；新增 §12 崩溃恢复条款；新增 §14 大 payload
+  引用建议。
+- **abc.py**：`MomentPool` ABC 及其导出整体删除；`BasePointer` 加 `moment_id` /
+  `moment_seq` 两个可选字段 + `model_validator` 校验（同缺同在、seq 非负）；
+  新增 `MomentNotInCommitError`；`Memento.checkout()` 加 `base_moment_id`
+  参数；`MementoBranch.update` / `annotate_moment` docstring 反映 "staging 直写、
+  冻结即物理" 语义。
+- **fs_memento.py**：授权重做，无独立池路径。核心新逻辑：
+  1. `_resolve_staging()` 扫 staging.jsonl 得 (首现序, id → last-wins record)。
+  2. `_load_commit_file()` 一次读一个 commit 文件即得 (Commit, m 个冻结 moment
+     按 moment_ids 序 + moment_note last-wins, commit_note 列表)。
+  3. `commit()` 一次写入 (成员 + 冻结 moments + 初始 commit_note)，fsync commit
+     文件后再 truncate staging（§12 原子锚点）。
+  4. `_recover_from_crash()` 装入时执行：无 commit 文件 = 无操作；成员行缺失 =
+     删该 commit 文件；staging 全部 id 都是 last commit 成员 = truncate staging
+     残留（避免误伤 "commit 之后又写新 record" 的合法状态是这里的关键判据）。
+  5. `annotate_moment()` 按冻结状态分流：未冻结 → staging；已冻结 → 找到该
+     moment 所在 commit 文件，追加 `t:"moment_note"` 行。
+- **porcelain.py**：零改动。`update_moment(branch, moment)` 从纯 ABC 表面消费，
+  内部路径变化对它透明——契约层重构不外溢的兑现。
+- **golden tests 重做**：手写字节 + 手读字节两条硬约束照旧；手写器与手读器都
+  按 §14 布局重拼；新增 `test_crash_recovery_truncates_stale_staging` 覆盖崩溃
+  恢复；`test_dumb_memory_degenerate_form` fork-vocabulary 静态扫描保留。
+
+### 15.2 checkout(commit_id, moment_id) 新能力（§4.1 扩展）
+
+**人类问题**：能否从 `(commit, moment_id)` 出发化身？如果不能就想要。
+
+**答案**：新做，且 **§14 布局下几乎白拿** —— ancestry 最末段的 "commit 前缀切片"
+= 读该 commit 文件、按 `moment_ids` 索引位置取切片，零 join、零索引。旧池布局
+下此能力反而更贵。这是布局改动之外的白色礼物。
+
+**契约面**：
+- `BasePointer` 加 `moment_id`（str | None）+ `moment_seq`（int | None）。
+- 语义 inclusive：切片 = commit 内 `[第一个 ... moment_id]`（含）。
+- **空前缀在类型层不可构造**：`moment_id != None ⇒ MUST 命中该 commit 内实际
+  存在的成员 id`，否则 `MomentNotInCommitError`。想表达 "c1 完全不继承"
+  用 c1 的父 commit，不用 `(c1, ...)`。契约层从没有 "空前缀" 概念。这一条把
+  人类担心的 "空 commit → 空 commit → 空 commit 递归路径" 从可能性中消灭。
+- ancestry 冻结规则不变——`(commit, moment)` 对仍是稳定不可变锚点。
+
+**主权面**：
+- `FsMemento._locate_base()` 校验 `base_moment_id` 命中 commit 成员，
+  写入 `BasePointer` 时同时 fill `moment_id` + `moment_seq`。
+- `FsMementoBranch._load_records_of()` 读祖先 commit 时若命中 ancestry 末段的
+  切片声明，返回 `records[: moment_seq + 1]`。
+- `window()` / `commit_records()` 都走此路径，切片对上层完全透明。
+
+**验收**（`test_checkout_from_moment_id_slices_commit_inclusive`）：alpha 提交
+含 m1..m4 的 commit，beta 从 (view, "m3") checkout，`commit_records`
+返回 `[m1, m2, m3]`、`window.details` 不含 m4；无效 moment_id 抛
+`MomentNotInCommitError`。
+
+### 15.3 施工中的两个非平凡判断
+
+- **崩溃恢复判据的精化**：第一版 "commit 文件完整 + staging 非空 = 截断"
+  过度触发，把 "commit 之后合法追加新 record" 的 staging 也误清。修正为
+  "staging 所有 id 都是 last commit 成员才截断"。写路径 `update` 已经拒绝
+  frozen id 覆盖，所以合法状态下 staging 里不会出现 last-commit-id；出现
+  仅可能来自崩溃前 truncate 未落。判据幂等且不误伤。
+- **note 行路由方案的撤回**：起草时我倾向单 `t:"note"` 类型 + `ref` 前缀
+  路由（`cmt_...` = commit 释义走 body，否则 = moment 释义走 threads），
+  外加 "moment id MUST NOT 以 cmt_/brn_ 开头" 的防呆约束。人类指出 §14 后
+  moment id 已经降级为 commit 文件内的定位键，没必要拿 id 语义空间做类型
+  区分。改用两个独立类型 `t:"commit_note"` / `t:"moment_note"`，字段结构
+  本来就不共用，jsonl 视觉上也清晰。
+
+### 15.4 未动的部分（明确圈出）
+
+- 信封 `MomentRecord`、CommitKind、CommitNote/CommitView、Trailer §6、
+  BranchMeta ancestry 冻结规则、见证层 §9、HEAD.json、last-wins 定序 §2.2。
+- `memento-cli-and-agent` workstream 的钉子裁决面：13 颗钉子在
+  `porcelain.py + abc.py` 表面消费，§14 布局落地不改变其消费面，等此
+  workstream 收尾后 memento-cli-and-agent 可直接开工。
+
+### 15.5 验收
+
+- `tests/ghoshell_moss/default/core/memento/` 81 项全绿。
+- 主 tests 树全项目回归 1745/1745 全绿，无外溢。
+- 三项契约锚点：字节等价（hand-write ↔ hand-read）、退化态无 fork 词汇、
+  index-regenerable（无 .cache/ 也运行正常）全部通过。
+
+### 15.6 契约状态
+
+FORMAT.md v1.1 冻结完毕。下一位化身若要动 memento 契约面，请：读 §14 + §15，
+理解为什么池被删、`(commit, moment_id)` 的白拿从何而来，再决定动作。
