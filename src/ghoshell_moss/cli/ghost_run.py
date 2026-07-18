@@ -11,7 +11,14 @@ from ghoshell_moss.host.tui_entries.ghost_ui import GhostTUI
 @click.argument("ghost", required=False, default=None)
 @click.option("--mode", default="default", help="MOSS 运行模式.")
 @click.option("--scope", default="default", help="会话范围 (session scope).")
-def ghost_run_main(ghost: str | None, mode: str, scope: str):
+@click.option(
+    "--output-mode",
+    type=click.Choice(["normal", "verbose", "trace"]),
+    default="normal",
+    show_default=True,
+    help="输出级别：normal 仅回复，verbose 显示摘要，trace 显示完整内部结果.",
+)
+def ghost_run_main(ghost: str | None, mode: str, scope: str, output_mode: str):
     """启动 Ghost TUI 交互终端 — 与 Ghost 实时对话。
 
     GHOST: 要启动的 Ghost 名称。不提供时列出所有可用的 Ghost。
@@ -51,7 +58,7 @@ def ghost_run_main(ghost: str | None, mode: str, scope: str):
         return
 
     click.echo(f"Starting Ghost TUI for [{ghost}] in [{mode}] mode, scope: [{scope}]")
-    tui = GhostTUI(host=host)
+    tui = GhostTUI(host=host, output_mode=output_mode)
     tui.run()
 
 

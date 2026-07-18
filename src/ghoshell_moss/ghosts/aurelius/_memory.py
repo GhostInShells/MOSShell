@@ -1,5 +1,6 @@
 """Ghost-side Memento adapter: persistent frames in, model history out."""
 
+import re
 from pathlib import Path
 
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
@@ -24,6 +25,25 @@ from ._adapter import messages_to_parts
 __all__ = ["AureliusMemory"]
 
 _REFLECTION_BY = "memento-reflection"
+_DEFAULT_USER_SOURCES = ("input_signal_nucleus", "input", "user")
+_MECHANICAL_SUMMARY_MAX_CHARS = 600
+_MECHANICAL_INPUT_MAX_CHARS = 140
+_MECHANICAL_REPLY_MAX_CHARS = 140
+_PAIRED_COMMAND_RE = re.compile(
+    r"<(?P<name>[A-Za-z_][\w.-]*:[\w.-]+)\b[^>]*>.*?</(?P=name)\s*>",
+    re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]+>", re.DOTALL)
+
+
+def _compact_visible_text(text: str, limit: int) -> str:
+    visible = text
+    previous = None
+    while visible != previous:
+        previous = visible
+        visible = _PAIRED_COMMAND_RE.sub("", visible)
+    visible = _TAG_RE.sub("", visible)
+    return " ".join(visible.split())[:limit]
 
 
 class AureliusMemory:
@@ -37,6 +57,7 @@ class AureliusMemory:
         detail_n: int = 12,
         summary_m: int = -1,
         auto_commit_every: int = 4,
+        index_user_sources: tuple[str, ...] = _DEFAULT_USER_SOURCES,
     ) -> None:
         if detail_n <= 0:
             raise ValueError("detail_n must be greater than zero")
@@ -49,6 +70,7 @@ class AureliusMemory:
         self._detail_n = detail_n
         self._summary_m = summary_m
         self._auto_commit_every = auto_commit_every
+        self._index_user_sources = tuple(index_user_sources)
         self._memento: Memento = new_filesystem_memento(self._root, owner)
         self._branch: MementoBranch = self._memento.current()
         self._closed = False
@@ -151,6 +173,8 @@ class AureliusMemory:
     def semantic_commit(self, summary: str) -> CommitView:
         if not summary.strip():
             raise ValueError("semantic commit summary cannot be empty")
+        if not self._branch.staging():
+            raise ValueError("semantic commit requires at least one staged Moment")
         return self._branch.commit(summary.strip(), kind="semantic", by=self._owner)
 
     def reinterpret(self, token: str, summary: str) -> CommitView:
@@ -200,14 +224,30 @@ class AureliusMemory:
         return "\n".join(lines)
 
     def _mechanical_summary(self) -> str:
-        """Build a bounded extractive index without inventing an interpretation."""
-        lines = ["[extractive mechanical index]"]
-        for record in self._branch.staging():
+        """Build a globally bounded user-facing index without internal control turns."""
+        records = self._branch.staging()
+        lines = [f"[extractive mechanical index] moments={len(records)}"]
+        for record in records:
             moment = record_to_moment(record)
-            inputs = " ".join(" ".join(moment.percepts_texts()).split())[:240]
-            logos = " ".join(moment.logos.split())[:240]
-            lines.append(f"- moment={moment.id} input={inputs or '[none]'} logos={logos or '[silent]'}")
-        return "\n".join(lines)
+            inputs = " ".join(
+                message.to_content_string()
+                for source in self._index_user_sources
+                for message in moment.percepts.get(source, [])
+            )
+            user_text = _compact_visible_text(inputs, _MECHANICAL_INPUT_MAX_CHARS)
+            if not user_text:
+                continue
+            reply_text = _compact_visible_text(moment.logos, _MECHANICAL_REPLY_MAX_CHARS)
+            line = f"- user={user_text}"
+            if reply_text:
+                line += f" reply={reply_text}"
+            lines.append(line)
+
+        body = "\n".join(lines)
+        if len(body) <= _MECHANICAL_SUMMARY_MAX_CHARS:
+            return body
+        suffix = "\n[truncated]"
+        return body[: _MECHANICAL_SUMMARY_MAX_CHARS - len(suffix)].rstrip() + suffix
 
     def inspect(self) -> dict:
         head = self._branch.head()

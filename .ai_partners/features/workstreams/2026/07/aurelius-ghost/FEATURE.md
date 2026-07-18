@@ -4,7 +4,8 @@ status: in-progress
 status_note: >-
   Aurelius/Memento trajectory is implemented. The current landing adds the P0
   Evidence/Claim/Recall/verifier skeleton and P1 Ground lifecycle/context wiring
-  without changing Ghost, Memento, or Desktop core contracts. Autobiographical
+  plus default-quiet TUI and bounded memory administration without changing Ghost,
+  Memento, or Desktop core contracts. Autobiographical
   self-act recall, durable interruption continuation, P2 principal/audience
   governance, and product-specific integrations remain future work.
 priority: P1
@@ -140,6 +141,14 @@ Aurelius 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (�
 - **真实 Shell 用户证据 source 是 `input_signal_nucleus`。** Evidence 白名单必须包含该核心
   Mindflow source；`input`/`user` 仅作显式嵌入兼容。测试 helper 与 acceptance 必须默认使用
   `input_signal_nucleus`，避免人工 `user` percept 绕过真实接线而产生假阳性。
+- **记忆运维不是普通 Agent 行为。** 完成 Moment 已自动持久化，事实题已有内部 Recall；因此
+  `memory_*` 默认对模型不可见且不 `always_observe`，仅保留为人类显式 Shell/CTML 运维面。
+  `memory_claims` 默认返回紧凑计数与 Claim 摘要，只有 `detail=true` 才返回最多 `limit` 条完整
+  证据/候选。这样阻断“普通陈述 → commit → claims → 再 commit”的自激回路，而不删合法工具帧。
+- **默认 UI 与审计轨迹分层。** `moss-run-ghost` normal 模式只显示去除 CTML 后的人类可读回复；
+  verbose 显示运行摘要，trace 才显示完整 command-result。Memento 仍保存可审计认知帧，隐藏 UI
+  不等于删除轨迹。机械 Note 只摘录可信用户 source 与对应可见回复，单条全局上限 600 字符，
+  不再把纯内部控制帧和完整审计 JSON 折回模型 history。
 
 ## Future Memory Deliverables (pending)
 
@@ -347,3 +356,7 @@ ghost.articulate(articulator):
   能区分“外部事实”与“自己曾经的行为”，持久记录可恢复的中断边界，并根据已认证
   principal 做最小披露。本文新增 P2-A~P2-D 和 cross-cutting definition of done，作为后续
   实现与验收的明确轨迹；当前状态仍是 pending。
+- 2026-07-18 对真实 `tmp/log` 与 Memento 只读对账：一次普通事实输入被模型放大为 5 个
+  Moment、2 次 semantic commit、2 次全量 claims 审计；17 个总 Moment 中大量是无用户 source
+  的内部再观察，机械 Note 又摘录了这些 CTML/长回复。修复后 memory 运维面默认隐藏且不触发
+  Re-Act，normal/verbose/trace 分层，claims/Note 有界。文档命令回归 198 passed，acceptance 通过。

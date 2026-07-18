@@ -26,6 +26,13 @@ from ._config import MemoryConfig
 
 __all__ = ["AureliusMeta"]
 
+_MEMORY_OPERATION_LAW = """
+记忆运行规则：完成的 Moment 会自动持久化，事实型记忆问题也会由 Aurelius 自动执行有界召回与校验。
+普通对话中不得主动调用 memory_* 管理命令，不得为了“记住”逐条 commit，也不得自行执行 claims 审计。
+用户明确要求记忆运维、审计、分支或重释义时，应引导其使用显式 Shell/CTML 管理面，不得伪造结果。
+默认只给出完成当前请求所需的简洁答复；除非用户明确要求，不披露 CTML、commit、Claim、Evidence 或内部进度。
+""".strip()
+
 
 class AureliusMeta(GhostMeta):
     """Bootstrapper for the Memento-backed Aurelius Ghost prototype."""
@@ -102,6 +109,7 @@ class AureliusMeta(GhostMeta):
         parts = [prompter.instruction()] if prompter is not None else []
         if self.soul_content:
             parts.append(self.soul_content)
+        parts.append(_MEMORY_OPERATION_LAW)
         return "\n".join(parts)
 
     def build_instruction(self, context: RunContext[IoCContainer]) -> str:

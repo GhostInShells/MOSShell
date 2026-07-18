@@ -1,16 +1,15 @@
-from abc import ABC, abstractmethod
-from typing import Coroutine
-
-from prompt_toolkit.completion import Completer
-from typing_extensions import Self
-
-from prompt_toolkit.key_binding import KeyPressEvent, KeyBindings
-
-from ghoshell_moss.host.tui import TUIState
-from ghoshell_moss.host.repl.repl_registrar import REPLRegistrar
-from rich.traceback import Traceback
 import asyncio
 import contextlib
+from abc import ABC, abstractmethod
+from collections.abc import Coroutine
+
+from prompt_toolkit.completion import Completer
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from rich.traceback import Traceback
+from typing_extensions import Self
+
+from ghoshell_moss.host.repl.repl_registrar import REPLRegistrar
+from ghoshell_moss.host.tui import TUIState
 
 __all__ = ["REPLState"]
 
@@ -43,6 +42,10 @@ class REPLState(TUIState, ABC):
 
     def completer(self) -> Completer | None:
         return self._repl
+
+    def operation_hints_enabled(self) -> bool:
+        """Whether routine start/done hints belong in this state's UI."""
+        return True
 
     def on_switch(self, alive: bool) -> None:
         if alive:
@@ -122,13 +125,17 @@ class REPLState(TUIState, ABC):
         self._operation_task.set_name(name)
 
     async def _ensure_operation_done(self, cor: Coroutine, name: str) -> None:
-        self.console.hint("- {} started. press ESC to interrupt.".format(name))
+        show_hints = self.operation_hints_enabled()
+        if show_hints:
+            self.console.hint("- {} started. press ESC to interrupt.".format(name))
         try:
             r = await cor
             self._handle_operation_result(r)
-            self.console.hint("- {} done".format(name))
+            if show_hints:
+                self.console.hint("- {} done".format(name))
         except asyncio.CancelledError:
-            self.console.hint("- {} cancelled".format(name))
+            if show_hints:
+                self.console.hint("- {} cancelled".format(name))
             pass
         except Exception as e:
             self.console.hint("- {} failed".format(name))
@@ -139,16 +146,14 @@ class REPLState(TUIState, ABC):
     def _handle_operation_result(self, result) -> None:
         if result is None:
             return
-        if hasattr(result, "__rich__") or hasattr(result, "__rich_console__"):
-            self.console.rprint(result)
-        elif isinstance(result, str):
+        if hasattr(result, "__rich__") or hasattr(result, "__rich_console__") or isinstance(result, str):
             self.console.rprint(result)
         # 增加对 dict/list 等复杂类型的 JSON 格式化支持
         elif isinstance(result, (dict, list)):
             try:
                 self.console.json(result)
             except Exception:
-                value = "%r" % result
+                value = f"{result!r}"
                 self.console.rprint(value)
             return
         else:

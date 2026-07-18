@@ -1,18 +1,61 @@
 """Ghost TUI — 主界面 logos 流式输出 + 文本输入，调试走 REPL inspector."""
 
 import asyncio
-from typing import Iterable
+import re
+from collections.abc import Iterable
+from typing import Literal
 
-from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.core.blueprint.host import GhostRuntime, MossHost
 from ghoshell_moss.core.blueprint.session import OutputItem
-from ghoshell_moss.host.tui import TUIState, MossHostTUI, Renderable
-from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_ghost import GhostInspector
-from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
 from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
+from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
+from ghoshell_moss.host.repl.repl_state import REPLState
+from ghoshell_moss.host.tui import MossHostTUI, Renderable, TUIState
 
-__all__ = ["GhostREPLState", "GhostTUI"]
+__all__ = ["GhostOutputMode", "GhostREPLState", "GhostTUI"]
+
+GhostOutputMode = Literal["normal", "verbose", "trace"]
+_OUTPUT_MODES = frozenset({"normal", "verbose", "trace"})
+_NORMAL_OUTPUT_ROLES = frozenset({"command-output", "error"})
+_VERBOSE_HIDDEN_ROLES = frozenset({"command-result"})
+_PAIRED_COMMAND_RE = re.compile(
+    r"<(?P<name>[A-Za-z_][\w.-]*:[\w.-]+)\b[^>]*>.*?</(?P=name)\s*>",
+    re.DOTALL,
+)
+_SELF_CLOSING_TAG_RE = re.compile(r"<[A-Za-z_][\w.:-]*(?:\s+[^<>]*?)?/\s*>", re.DOTALL)
+_TAG_RE = re.compile(r"</?[A-Za-z_][\w.:-]*(?:\s+[^<>]*?)?>", re.DOTALL)
+
+
+def _normal_logos_text(logos: str) -> str:
+    """Return user-facing text while keeping CTML control syntax private."""
+    visible = logos
+    previous = None
+    while visible != previous:
+        previous = visible
+        visible = _PAIRED_COMMAND_RE.sub("", visible)
+    visible = _SELF_CLOSING_TAG_RE.sub("", visible)
+    visible = _TAG_RE.sub("", visible)
+    lines = [line.rstrip() for line in visible.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    compact: list[str] = []
+    for line in lines:
+        if not line.strip() and compact and not compact[-1].strip():
+            continue
+        compact.append(line)
+    return "\n".join(compact)
+
+
+def _output_item_visible(role: str, mode: GhostOutputMode) -> bool:
+    if mode == "normal":
+        return role in _NORMAL_OUTPUT_ROLES
+    if mode == "verbose":
+        return role not in _VERBOSE_HIDDEN_ROLES
+    return True
 
 
 class GhostREPLState(REPLState):
@@ -22,9 +65,11 @@ class GhostREPLState(REPLState):
             self,
             ghost_runtime: GhostRuntime,
             name: str = "echo",
+            output_mode: GhostOutputMode = "normal",
     ) -> None:
         self._gr = ghost_runtime
         self._logos_task: asyncio.Task | None = None
+        self._output_mode = output_mode
         super().__init__(name)
 
     @property
@@ -55,7 +100,16 @@ class GhostREPLState(REPLState):
             console_input,
             description="from ghost tui",
         )
-        self.console.hint(f"signal sent: {console_input[:60]}...")
+        if self.operation_hints_enabled():
+            self.console.hint(f"signal sent: {console_input[:60]}...")
+
+    def operation_hints_enabled(self) -> bool:
+        return self._output_mode != "normal"
+
+    def set_output_mode(self, mode: GhostOutputMode) -> None:
+        if mode not in _OUTPUT_MODES:
+            raise ValueError(f"unsupported Ghost output mode: {mode}")
+        self._output_mode = mode
 
     def output_on_switch(self, enter_else_leave: bool) -> None:
         if enter_else_leave:
@@ -89,26 +143,62 @@ class GhostREPLState(REPLState):
 
     def _on_session_output(self, item: OutputItem) -> None:
         """session output 回调：将 OutputItem 渲染到 TUI。"""
+        if not _output_item_visible(item.role, self._output_mode):
+            return
+        if self._output_mode == "normal":
+            if item.role == "error":
+                detail = item.messages_string() or item.log or "unknown runtime error"
+                self.console.error(detail)
+            else:
+                content = item.messages_string()
+                if content:
+                    self.console.rprint(content, spacing=False)
+            return
         if not item.messages:
+            if item.log:
+                self.console.hint(f"{item.role}: {item.log}")
             return
         self.console.output(item)
 
     async def _consume_logos(self) -> None:
-        """消费 logos 流，遇到换行立即输出。"""
-        buffer = ""
+        """Consume logos; normal mode emits only sanitized final user-facing text."""
+        normal_buffer = ""
+        line_buffer = ""
         try:
             async for delta in self._session.get_logos():
                 if not delta:
                     continue
-                buffer += delta
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
+                if self._output_mode == "normal":
+                    if line_buffer:
+                        self.console.rprint(line_buffer, spacing=False)
+                        line_buffer = ""
+                    if delta == "\n\n":
+                        visible = _normal_logos_text(normal_buffer)
+                        if visible:
+                            self.console.rprint(visible)
+                        normal_buffer = ""
+                    else:
+                        normal_buffer += delta
+                    continue
+
+                if normal_buffer:
+                    visible = _normal_logos_text(normal_buffer)
+                    if visible:
+                        self.console.rprint(visible)
+                    normal_buffer = ""
+                line_buffer += delta
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
                     self.console.rprint(line, spacing=False)
         except asyncio.CancelledError:
             pass
         finally:
-            if buffer:
-                self.console.rprint(buffer)
+            if normal_buffer:
+                visible = _normal_logos_text(normal_buffer)
+                if visible:
+                    self.console.rprint(visible)
+            if line_buffer:
+                self.console.rprint(line_buffer)
 
 
 class GhostTUI(MossHostTUI[GhostRuntime]):
@@ -118,7 +208,11 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
     启动前通过 Environment(ghost="echo").seal() 指定 ghost。
     """
 
-    def __init__(self, host: MossHost | None = None):
+    def __init__(self, host: MossHost | None = None, *, output_mode: GhostOutputMode = "normal"):
+        if output_mode not in _OUTPUT_MODES:
+            raise ValueError(f"unsupported Ghost output mode: {output_mode}")
+        self._output_mode = output_mode
+        self._ghost_repl_state: GhostREPLState | None = None
         super().__init__(host=host or MossHost.discover())
 
     def _get_runtime(self) -> GhostRuntime:
@@ -136,7 +230,24 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         parts = super()._prompt_status()
         if self.runtime.is_paused():
             parts.append(("fg:red bold", "[PAUSED] "))
+        if self._output_mode != "normal":
+            parts.append(("fg:yellow", f"[{self._output_mode}] "))
         return parts
+
+    def default_commands(self):
+        commands = super().default_commands()
+        commands.update({
+            "normal": ("show only user-facing replies", lambda: self._set_output_mode("normal")),
+            "verbose": ("show runtime summaries", lambda: self._set_output_mode("verbose")),
+            "trace": ("show full internal command results", lambda: self._set_output_mode("trace")),
+        })
+        return commands
+
+    def _set_output_mode(self, mode: GhostOutputMode) -> None:
+        self._output_mode = mode
+        if self._ghost_repl_state is not None:
+            self._ghost_repl_state.set_output_mode(mode)
+        self.console.notice(f"Ghost output mode: {mode}")
 
     def _get_custom_intro(self) -> Renderable:
         from rich.text import Text
@@ -147,7 +258,12 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         )
 
     def create_states(self) -> Iterable[TUIState]:
-        yield GhostREPLState(self.runtime, name=self.host.env.ghost_name)
+        self._ghost_repl_state = GhostREPLState(
+            self.runtime,
+            name=self.host.env.ghost_name,
+            output_mode=self._output_mode,
+        )
+        yield self._ghost_repl_state
         from ghoshell_moss.host.tui_entries.moss_runtime_ui import MOSSRuntimeREPLState
         yield MOSSRuntimeREPLState(self.host, self.runtime.moss, name="shell")
 

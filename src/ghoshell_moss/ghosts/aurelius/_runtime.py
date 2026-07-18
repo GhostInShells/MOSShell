@@ -66,6 +66,7 @@ class Aurelius(Ghost):
             detail_n=memory_detail_n,
             summary_m=memory_summary_m,
             auto_commit_every=auto_commit_every,
+            index_user_sources=knowledge_user_sources,
         )
         self._reflector = (
             AureliusReflector(

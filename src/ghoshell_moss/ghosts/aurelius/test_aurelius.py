@@ -14,12 +14,14 @@ from ghoshell_moss.contracts.configs import ConfigStore, YamlConfigStore
 from ghoshell_moss.contracts.desktop import PathOutsideRootError
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.contracts.workspace import LocalStorage
+from ghoshell_moss.core.blueprint.channel_builder import test_channel as _run_channel_test
 from ghoshell_moss.core.blueprint.ghost import GhostWorkspace
 from ghoshell_moss.core.blueprint.mindflow import Moment
 from ghoshell_moss.core.memento import MementoRef
 from ghoshell_moss.ghosts.mock import MockArticulator
 from ghoshell_moss.message import Message
 
+from ._channel import _memory_claims_view, new_memento_channel
 from ._config import MemoryConfig
 from ._knowledge import MemoryProjection
 from ._memory import AureliusMemory
@@ -118,6 +120,40 @@ class TestAureliusMemory:
         assert memory.branch.all_commits()[0].id == view.id
         memory.close()
 
+    def test_semantic_commit_rejects_empty_staging(self, tmp_path: Path):
+        memory = AureliusMemory(tmp_path / "memento", "aurelius", auto_commit_every=0)
+        with pytest.raises(ValueError, match="staged Moment"):
+            memory.semantic_commit("unnecessary anchor")
+
+    def test_mechanical_note_is_globally_bounded_and_skips_internal_turns(self, tmp_path: Path):
+        memory = AureliusMemory(tmp_path / "memento", "aurelius", auto_commit_every=4)
+        memory.remember(
+            _moment(
+                "设备 R-71 的颜色是琥珀色。" + "用户补充" * 100,
+                '<ghost:memory_commit summary="internal" />\n收到，已记住。' + "解释" * 100,
+            )
+        )
+        for _ in range(2):
+            memory.remember(
+                Moment(
+                    percepts={"MindflowBuffer": [Message.new().with_content("internal-result" * 200)]},
+                    logos='<ghost:memory_claims>{"huge":"payload"}</ghost:memory_claims>',
+                )
+            )
+        view = memory.remember(
+            Moment(
+                percepts={"MindflowBuffer": [Message.new().with_content("final-internal-result" * 200)]},
+                logos="<ghost:memory_claims />",
+            )
+        )
+        assert view is not None
+        summary = view.summary()
+        assert len(summary) <= 600
+        assert "设备 R-71" in summary
+        assert "收到，已记住" in summary
+        assert "internal-result" not in summary
+        assert "ghost:memory" not in summary
+
     @pytest.mark.parametrize(
         ("kwargs", "message"),
         [
@@ -197,6 +233,25 @@ class TestAureliusGhost:
             "desktop_update",
             "desktop_frame",
         }
+        commands = ghost.channel().main_state().own_commands()
+        for name, command in commands.items():
+            if name.startswith("memory_"):
+                assert command.meta().visible is False
+                assert command.meta().always_observe is False
+        assert commands["desktop_open"].meta().visible is True
+        assert "普通对话中不得主动调用 memory_*" in ghost.system_prompt()
+
+    @pytest.mark.asyncio
+    async def test_hidden_memory_admin_remains_explicitly_executable_without_react(self, tmp_path: Path):
+        memory = AureliusMemory(tmp_path / "memento", "aurelius", auto_commit_every=1)
+        memory.remember(_moment("设备 R-71 的颜色是琥珀色。"))
+        channel = new_memento_channel(memory, knowledge=MemoryProjection(memory))
+        tasks = await _run_channel_test(channel, ctml="<ghost:memory_claims />")
+        assert len(tasks) == 1
+        result = await tasks[0]
+        assert result["active_count"] == 1
+        assert "candidates" not in result
+        assert tasks[0].task_result().observe is False
 
     @pytest.mark.asyncio
     async def test_reflection_rewrites_note_without_touching_moment(self, tmp_path: Path):
@@ -289,6 +344,24 @@ class TestAureliusGhost:
 
 
 class TestAureliusKnowledge:
+    def test_claim_audit_defaults_to_compact_bounded_view(self, tmp_path: Path):
+        memory = AureliusMemory(tmp_path / "memento", "aurelius", auto_commit_every=1)
+        memory.remember(_moment("设备 R-71 的颜色是琥珀色。", "设备 R-17 的颜色是黑色。"))
+        projection = MemoryProjection(memory)
+
+        compact = _memory_claims_view(projection, detail=False, limit=20)
+        assert compact["active_count"] == 1
+        assert compact["claims"][0]["value"] == "琥珀色"
+        assert "evidence_refs" not in compact["claims"][0]
+        assert "candidates" not in compact
+
+        detailed = _memory_claims_view(projection, detail=True, limit=1)
+        assert len(detailed["claims"]) == 1
+        assert len(detailed["candidates"]) == 1
+        assert detailed["claims"][0]["evidence_refs"]
+        with pytest.raises(ValueError, match="between 1 and 100"):
+            _memory_claims_view(projection, detail=True, limit=0)
+
     def test_projection_rebuilds_claims_with_stable_memento_evidence(self, tmp_path: Path):
         root = tmp_path / "memento"
         memory = AureliusMemory(root, "aurelius", auto_commit_every=1)

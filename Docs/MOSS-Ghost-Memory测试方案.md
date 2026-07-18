@@ -34,6 +34,7 @@
 | 回答校验（P0） | 输出值、字段和 current 状态均由本轮 Claim 支持 | `ORBIT-004` 被答成测试代号 |
 | 防污染（P0） | 错误 logos 只留审计轨迹，不进入 active Claim | 一次答错后被 commit/反思放大 |
 | Ground / Pin（P1） | 当前工作场、规则和外部对象每帧重绘 | 把 `DESKTOP.md` 或 Pin 当长期用户事实 |
+| 默认输出与轨迹规模 | 普通模式只显示最终回复；无自发 memory 管理环 | 一问产生多次 commit/claims、面板或长 JSON |
 | 记忆治理（P2） | 类型、置信、时效、保留与选择性披露受策略控制 | 模型自信即真相，或向错误对象泄露记忆 |
 | 可选后端（P3） | 语义召回后端仅返回候选，失败可本地退化 | 外部索引成为 Memento/Claim 的真相源 |
 
@@ -102,6 +103,16 @@ uv sync --extra ghost
 .venv/bin/moss-run-ghost
 .venv/bin/moss-run-ghost aurelius
 ```
+
+默认 `normal` 模式只显示用户可读回复。需要调试时显式使用：
+
+```bash
+.venv/bin/moss-run-ghost aurelius --output-mode verbose
+.venv/bin/moss-run-ghost aurelius --output-mode trace
+```
+
+运行中可输入 `/verbose`、`/trace`、`/normal` 切换。`verbose` 显示运行摘要但仍隐藏完整
+command-result；只有 `trace` 会打印完整内部结果。普通验收不得用 `trace` 的输出量评价默认体验。
 
 发现列表应包含：
 
@@ -209,11 +220,15 @@ mv .moss/ghosts/aurelius/memento \
 ## 3. 自动化回归
 
 ```bash
-.venv/bin/ruff check src/ghoshell_moss/ghosts/aurelius
+.venv/bin/ruff check \
+  src/ghoshell_moss/ghosts/aurelius \
+  src/ghoshell_moss/host/tui_entries/ghost_ui.py \
+  tests/ghoshell_moss/host/test_ghost_ui_output.py
 .venv/bin/pytest -q \
   src/ghoshell_moss/ghosts/aurelius \
   tests/ghoshell_moss/default/core/memento \
-  tests/ghoshell_moss/core/desktop
+  tests/ghoshell_moss/core/desktop \
+  tests/ghoshell_moss/host/test_ghost_ui_output.py
 .venv/bin/python scripts/ghost/aurelius_memory_acceptance.py
 ```
 
@@ -231,8 +246,10 @@ mv .moss/ghosts/aurelius/memento \
 - 更正产生 `superseded`，未解决异值产生 `conflict`，未知字段安全拒答；
 - verifier 在 yield 前拦截错误 TestModel 输出，正确输出通过；
 - `DESKTOP.md` instruction、Pin frame、changed-on-disk/update 和越界路径拒绝。
+- normal/verbose/trace 角色过滤，normal 模式剥离 CTML；memory 管理命令默认隐藏且不触发观察；
+- `memory_claims` 默认紧凑、`detail=true` 有界；机械 Note 不超过 600 字符且不摘录纯内部帧。
 
-2026-07-18 当前定向结果：Aurelius + Memento + Desktop + InputSignalNucleus `200 passed`；acceptance script 已覆盖
+2026-07-18 本轮文档命令回归 `198 passed`；acceptance script 已覆盖
 write → commit → reopen → project → recall → verify，并确定性拒绝 ORBIT 字段替换。
 
 相邻基线回归：
@@ -315,6 +332,9 @@ assistant_or_reflection_origin ∉ active_claim.support_without_explicit_promoti
 
 通过：精确返回 `AMBER-731` 和 `staging`，不附会其他环境。
 
+默认 `normal` 模式还必须满足：只出现一次简短自然语言答复，不出现 `MOMENT`、`SYSTEM`、
+`COMMAND-RESULT`、`Log:`、`<ghost:memory_...>` 或“正在审计/再次 commit”等内部进度。
+
 ### A1. 阻断性回归：代号、环境与 ORBIT 干扰
 
 在 A 完成并确认产生 commit 后，额外输入足够多的干扰事实，例如：
@@ -333,6 +353,10 @@ ORBIT-004 的校验词是“雪松”。
 
 通过：只回答 `AMBER-731` 与 `staging`，不能把 `ORBIT-004`、设备编号、城市或旧模型回答
 替换成任一字段。若实现提供来源展示，来源必须可回指至最初用户输入的 Moment/Commit。
+
+完成上述输入后只读对账：普通事实输入不得产生 semantic commit；commit 数应只由
+`auto_commit_every` 的 mechanical 阈值决定。一个人类问题通常对应一个完成 Moment；只有确实
+执行并观察了工具结果时才允许出现额外内部 Moment，不能由自发 memory 管理环制造。
 
 失败判定：即使 `.jsonl`、`memory_show` 或 history 中存在正确值，只要最终回答出现
 `ORBIT-004`，仍是 P0 阻断失败；这证明读取/校验链未完成，不是“模型偶发失误”。
@@ -419,7 +443,7 @@ P1 已接线，本节可以执行；不得人工新建 `Memory.md` 来冒充通�
 ## 5. 人工验收：Commit 与 Note 版本
 
 本组直接验证“追加 note 不覆盖历史”的关键约束。先产生至少一个 mechanical commit，
-再执行：
+按 `C-t` 切到 `shell` 调试面后再执行（不要把 CTML 当普通问题发给 Aurelius）：
 
 ```text
 <ghost:memory_log />
@@ -435,6 +459,8 @@ P1 已接线，本节可以执行；不得人工新建 `Memory.md` 来冒充通�
 2. `memory_log` 显示的新 summary 是人工更正后的释义；
 3. 磁盘中同一 commit 的 note 记录数增加，而不是原 note 被替换；
 4. 不存在或含糊的 commit 前缀必须明确报错，不能静默选择另一个 commit。
+5. mechanical 初始 Note 不超过 600 字符，只摘录可信用户 source 与对应可见回复；纯
+   `MindflowBuffer`/memory 控制帧不进入 Note 正文。
 
 再手工创建 semantic 锚点：
 
@@ -477,6 +503,9 @@ Aurelius；它应被识别为 pending，并由 `reinterpret()` 追加 reflection
 commit 成员。
 
 ## 7. 人工验收：CTML、owner 与分叉
+
+以下均在 `C-t` 切换后的 `shell` 调试面显式执行。`memory_*` 默认不出现在 Aurelius 的模型
+能力提示中，也不会因结果自动触发新的 Agent 回合。
 
 ```text
 <ghost:memory_inspect />
@@ -547,10 +576,18 @@ P2 仍需 principal/scope/audience/sensitivity/retention/时效配置与执行�
 ```bash
 rg -n 'AMBER-731|ORBIT-004|雪松' .moss/ghosts/aurelius/memento
 find .moss/ghosts/aurelius/memento -type f -print
+jq -r 'select(.t=="commit") | [.seq, (.moment_ids|length)] | @tsv' \
+  .moss/ghosts/aurelius/memento/branches/aurelius/*/commits/*.jsonl
+wc -l -c .moss/ghosts/aurelius/memento/moments/aurelius/*/moments.jsonl
 ```
 
 优先使用 CTML 的 `memory_show` 和 `memory_log` 对账。不要手工编辑 jsonl：那会绕过 owner、
 冻结与 note 版本规则。
+
+计数口径：Moment 是认知帧，不是用户问题；合法工具观察可以多出内部帧。若普通事实输入后出现
+连续无用户 source 的 Moment，并包含 `memory_commit`/`memory_claims`，即为自激回归。Commit 数
+也不要求等于问题数：mechanical commit 应由完成 Moment 数达到 `auto_commit_every` 时触发，
+semantic commit 只能来自显式人工运维。Note 正文超过 600 字符或包含完整 claims JSON 均判失败。
 
 若启动后没有反思，按以下顺序检查：
 

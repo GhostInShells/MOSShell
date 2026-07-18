@@ -5,6 +5,8 @@
 > logos/reflection 污染、校验回答，并把 `DESKTOP.md`/Pin 作为本帧工作场。P2 的 principal/
 > audience/retention 治理、通用语义抽取与 P3 外部召回后端尚未实现，因此不能把这一骨架表述为
 > 任意领域、任意对话对象下都已达到生产级可靠性的长期记忆产品。
+> 2026-07-18 的真实 TUI 采样还修复了默认输出与轨迹放大问题：普通模式只展示用户可读回复，
+> 记忆运维命令不再进入普通模型提示或自动触发 Re-Act，机械 Note 有 600 字符全局上限。
 >
 > 关联文档：[测试方案](MOSS-Ghost-Memory测试方案.md)、[Moshi 集成技术评审](Moshi-长期记忆与进度集成技术评审.md)。
 
@@ -63,6 +65,7 @@
 6. 明确可解析的用户/可信工具事实形成带 Memento 证据的 Claim，模型输出与反思不能自动提升。
 7. 记忆型事实题按 canonical key 召回有限证据，并在输出给 Shell 前校验；未知/冲突安全拒答。
 8. Ground 的 instruction/frame 只进入当前帧，不因出现在 `DESKTOP.md` 或 Pin 中成为长期事实。
+9. 默认 TUI 不暴露 CTML、Moment、System、command-result 或 `Log:`；详细观测必须显式开启。
 
 ### 2.2 生产级定位、已修复的 P0 故障与剩余边界
 
@@ -400,9 +403,16 @@ Aurelius 的省察能力，又阻断“答错一次 → 自动记成真相”的
 4. `memory_show` 仍用于人工或模型按稳定 `MementoRef` 缺页展开，而不是替代 Recall；
 5. `memory_log`、完整控制面结果与反思长文不得无限回流为普通对话 history。
 
-当前 runtime 的具体行为是：普通对话继续使用历史窗口并流式输出；只有能识别 canonical key 的
-问题进入 Recall。`unknown/conflict` 不调用主模型，直接安全回答；`ok` 才注入 packet，并为校验
-缓冲该轮模型输出。Ground/evidence 都是临时 request part，不修改当前 Moment。
+当前 runtime 的具体行为是：普通对话继续使用历史窗口，模型 logos 仍流式送入 Shell 执行；
+normal TUI 为避免 CTML 泄露，在 articulation 边界统一输出净化后的人类文本。只有能识别
+canonical key 的问题进入 Recall。`unknown/conflict` 不调用主模型，直接安全回答；`ok` 才注入
+packet，并为校验缓冲该轮模型输出。Ground/evidence 都是临时 request part，不修改当前 Moment。
+
+记忆管理面不应成为普通对话的自激工具环。完成 Moment 已自动写 staging，事实题也已有内部
+Recall，因此 `memory_commit`、`memory_recall`、`memory_claims` 等 `memory_*` 命令默认
+`visible=False`、`always_observe=False`：它们仍可由人类在 Shell/CTML 调试面显式执行，但不进入
+模型日常能力提示，也不会因返回值自动制造下一帧。`desktop_*` 仍是 Aurelius 正常工作的可见
+能力，不受此限制。
 
 现有 `ResourceStorage.recall(query) -> Recollection` 是可优先评估的契约方向；若它不适合
 owner/branch/MementoRef 语义，也应在同等抽象层增加专用 Recall 接口，而不是将检索规则隐入
@@ -435,12 +445,18 @@ IoC Container → GhostRuntime 注册 Ghost providers 并校验 contracts → Ma
 1. `update_moment()` 把完整 Moment 写入 owner 的 pool，并把 id 放入 staging；
 2. 若 `len(staging) < auto_commit_every`，流程结束；staging 已经落盘，进程退出不会丢；
 3. 若达到阈值，`branch.commit(..., kind="mechanical", by="aurelius")` 冻结全部 staging；
-4. 初始正文是可确定复现的 extractive index：每帧输入与 logos 各截断 240 字符；
+4. 初始正文是可确定复现的 extractive index：只摘录配置认可的用户 source 及对应可见回复，
+   跳过纯内部控制子帧；单条输入/回复分别最多 140 字符，整条机械 Note 最多 600 字符；
 5. commit 成功后才安排反思任务。
 
 因此默认值 `auto_commit_every: 4` 的意思是“每四个完成帧形成一个认知锚点”，**不是**
 “每四轮才保存一次”。第 1 到第 3 帧已经在 staging 中持久化。`0` 禁用自动 commit，
 但仍保留 staging，直到使用 `memory_commit` 进行显式 semantic commit。
+
+Moment 是认知帧，不等于人类问题数。合法工具结果可能触发后续观察并形成额外 Moment；但普通
+记忆陈述不应触发 `commit → claims → commit → claims` 的自审计链。该链会同时放大终端输出、
+Moment 数、mechanical/semantic commit 计数和 Note 内容，属于行为/展示缺陷，不应通过删除内部
+Moment 或修改 Memento 核心语义掩盖。
 
 当 articulate 出错时，Aurelius 标记 `memory_write=skipped_on_error`，不写入未完成的
 Moment。正常沉默帧仍是完整轨迹事件，可以保存。
@@ -506,8 +522,7 @@ commit c1
 
 ### 5.3 人工/CTML 追加 note
 
-`memory_reinterpret(commit="<seq 或唯一 id 前缀>", summary="...")` 是显式人工或 Agent
-动作：
+`memory_reinterpret(commit="<seq 或唯一 id 前缀>", summary="...")` 是显式人工运维动作：
 
 1. `find_commit()` 解析稳定 seq 或无歧义 commit id 前缀；含糊、不存在的 token 失败；
 2. `join_trailers()` 生成新正文并保留原 commit 的 `Kind`；
@@ -567,8 +582,8 @@ commit c1
 
 ## 7. CTML 控制面与分支规则
 
-Aurelius 通过 `Ghost.channel()` 注册虚拟 channel `ghost`。能力均为 `always_observe`，用于
-显式检查和控制；它们不提供跨 owner 读取/写入。
+Aurelius 通过 `Ghost.channel()` 注册虚拟 channel `ghost`。`memory_*` 是人类显式运维/审计面，
+默认对模型隐藏且不自动触发观察；`desktop_*` 仍对模型可见。两类能力都不提供跨 owner 读写。
 
 | CTML 命令 | 作用 | 关键约束 |
 |---|---|---|
@@ -582,13 +597,27 @@ Aurelius 通过 `Ghost.channel()` 注册虚拟 channel `ghost`。能力均为 `a
 | `memory_fork` | 从已冻结 commit 创建并切换新 branch | 不能从 staging fork |
 | `memory_switch` | 按唯一 branch id 前缀切换 | 含糊或不存在即失败 |
 | `memory_recall` | 按问题审计本地 Claim 召回结果 | 只读；不把未支持自由文本猜成 key |
-| `memory_claims` | 查看当前 branch 重建的 Claim 与 rejected candidate | 只读；可能包含本 owner 原文证据 |
+| `memory_claims` | 查看当前 branch 重建的 Claim | 默认紧凑摘要；`detail=true` 才返回有界证据/候选，`limit` 为 1..100 |
 | `desktop_open` / `desktop_close` | 在项目 workspace 内开关 Ground | 不能越过 workspace root |
 | `desktop_pin` / `desktop_unpin` | 管理 Ground 的地址 Pin | Pin 是地址与观察，不是文件快照 |
 | `desktop_update` / `desktop_frame` | 承认外部变化并重绘当前场 | 只读世界内容，不提供写文件动作 |
 
 `fork` 是有祖先关系的时间线分叉，不是复制后自动合并。当前没有真 branch merge；
 `make_merge_message()` 只能把 commit 引用带入后续对话，不能解决冲突、来源和人格主权。
+
+### 7.1 TUI 输出级别
+
+`moss-run-ghost` 默认 `--output-mode normal`：仅显示人类可读 logos、显式 command-output 和错误；
+CTML 标签、`MOMENT`、`SYSTEM`、模型专用 `COMMAND-RESULT`、操作 start/done 与 `Log:` 均隐藏。
+普通回复在一个 articulation 完成后去除 CTML 再输出，避免控制标签泄露。
+
+- `--output-mode verbose` 或运行中 `/verbose`：显示 Moment/System 等运行摘要，但仍隐藏完整
+  command-result；
+- `--output-mode trace` 或 `/trace`：显式显示完整内部结果，适用于排障；
+- `/normal`：恢复默认精简模式。
+
+这只是展示策略；内部 Session 事件和 Memento 轨迹仍按各自契约保存。不能以“界面隐藏”为由
+丢弃错误、合法工具观察或可审计轨迹。
 
 ## 8. 存储、升级与观测
 
@@ -666,8 +695,8 @@ Prompt 只属于最后一层防御，可明确要求“仅使用 evidence packet
 - 反思模型、网络或凭据失败时，机械轨迹和现有 active Claim 仍可读取；不阻断对话。
 - Recall 索引或 projection 损坏时，可从 Memento 重建；重建期间事实问答安全拒答，普通对话
   可退化为有限近期 history，但不得宣称长期事实。
-- `summary_m=-1` 会让无界早期 note 进入 prompt；生产配置应有 token 预算，且不能用“全量
-  history”替代 Recall。
+- `summary_m=-1` 会让全部早期 note 进入 prompt；机械 Note 已有 600 字符单条上限，生产配置仍应
+  有总 token 预算，且不能用“全量 history”替代 Recall。
 - 对话同时写同一 owner、直接改 jsonl、把模型猜测当作执行进度，都会破坏保真性，必须避免。
 
 ## 10. 测试与验收入口
@@ -676,8 +705,8 @@ Prompt 只属于最后一层防御，可明确要求“仅使用 evidence packet
 最低回归命令：
 
 ```bash
-.venv/bin/ruff check src/ghoshell_moss/ghosts/aurelius
-.venv/bin/pytest -q src/ghoshell_moss/ghosts/aurelius tests/ghoshell_moss/default/core/memento tests/ghoshell_moss/core/desktop
+.venv/bin/ruff check src/ghoshell_moss/ghosts/aurelius src/ghoshell_moss/host/tui_entries/ghost_ui.py
+.venv/bin/pytest -q src/ghoshell_moss/ghosts/aurelius tests/ghoshell_moss/default/core/memento tests/ghoshell_moss/core/desktop tests/ghoshell_moss/host/test_ghost_ui_output.py
 .venv/bin/python scripts/ghost/aurelius_memory_acceptance.py
 .venv/bin/moss-run-ghost
 ```
@@ -685,7 +714,8 @@ Prompt 只属于最后一层防御，可明确要求“仅使用 evidence packet
 验收应覆盖：成功帧写入、失败帧跳过、跨重启、窗口折叠、note 追加版本、反思失败与启动
 追赶、配置生效、owner 隔离、fork 边界以及 CTML 的错误输入。P0/P1 自动化现已覆盖：
 Evidence/Claim 重建、按问题 Recall、干扰字段隔离、错误 logos/reflection 防污染、
-current/superseded/conflict、答案校验、Ground instruction/frame 注入、Pin changed/update 和路径越界。
-2026-07-18 当前定向结果为 `191 passed`，acceptance 完成 write → commit → reopen → project →
+current/superseded/conflict、答案校验、Ground instruction/frame 注入、Pin changed/update、路径越界、
+默认精简输出、CTML 隐藏、运维命令不触发 Re-Act、Note 全局限长与内部帧排除。
+2026-07-18 本轮文档命令回归为 `198 passed`，acceptance 完成 write → commit → reopen → project →
 recall → verify。P2/P3 与真实 LLM/Host 手工验收仍按测试方案单列；Moshi 的用户模型和世界执行
 进度属于下一层产品集成，不能以 Aurelius 的反思 note 代替。
