@@ -10,7 +10,16 @@ from .utils import (
     print_simple_table,
     print_error,
     print_info,
+    echo,
 )
+
+
+def _print_hint() -> None:
+    echo("")
+    print_info(
+        "Design: 'moss project design'. "
+        "See mode-level declarations with 'moss manifests providers' (configs / topics / signals / resources)."
+    )
 
 
 def _get_project():
@@ -40,6 +49,7 @@ def list_ghosts() -> None:
         headers=["Name", "Prototype", "Description"],
         title="Ghosts",
     )
+    _print_hint()
 
 
 @ghosts_app.command(
@@ -76,3 +86,4 @@ def show_ghost(
         headers=["Property", "Value"],
         title=f"Ghost: {meta.name()}",
     )
+    _print_hint()

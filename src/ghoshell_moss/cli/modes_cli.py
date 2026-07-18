@@ -19,6 +19,14 @@ from .utils import (
 )
 
 
+def _print_hint() -> None:
+    echo("")
+    print_info(
+        "Design: 'moss project design'. "
+        "Declarations in a mode: 'moss manifests providers' (configs / topics / signals / resources / parameters / channel / nuclei)."
+    )
+
+
 def _get_project():
     from ghoshell_moss.core.blueprint.project import Project
     return Project.discover()
@@ -47,6 +55,7 @@ def list_modes() -> None:
         headers=["Name", "Description", "CTML Version"],
         title="Modes",
     )
+    _print_hint()
 
 
 @modes_app.command(
@@ -79,6 +88,7 @@ def show_mode(
     )
     if meta.system_prompt.strip():
         print_simple_panel(meta.system_prompt.strip(), title="Instruction")
+    _print_hint()
 
 
 @modes_app.command(
@@ -118,6 +128,7 @@ def create_mode(
     echo("")
     print_info(f"  Edit {host_md}  — description, node_paths, ctml_version.")
     print_info(f"  Show: moss modes show {name}")
+    _print_hint()
 
 
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:

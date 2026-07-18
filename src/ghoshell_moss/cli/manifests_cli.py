@@ -32,6 +32,14 @@ from .utils import (
     print_error, print_warning, print_info, echo,
 )
 
+
+def _print_hint() -> None:
+    echo("")
+    print_info(
+        "Design: 'moss project design'. "
+        "Files to edit are the 'Found At' paths in the tables above."
+    )
+
 manifest_app = typer.Typer(
     help="Inspect capability declarations: providers, configs, topics, signals, parameters, resources, channel, nuclei.",
     no_args_is_help=True,
@@ -140,6 +148,7 @@ def _display_two_layer(
                 f"{matrix_count} from {matrix_pkg}, {mode_count} effective in mode "
                 f"({mode_pkg} extends {matrix_pkg} via import)"
             )
+    _print_hint()
 
 
 def _filter_manifests(
@@ -597,6 +606,7 @@ def show_parameters():
             mode_param,
             layer=f"Mode: {mode.name} ({mode_mf.root_package()}.parameters)",
         )
+    _print_hint()
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +699,7 @@ def show_channel():
         headers=["Property", "Value"],
         title=f"Channel: {channel_obj.name()}",
     )
+    _print_hint()
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +757,7 @@ def list_nuclei(
         headers=["Name", "Description", "Signals", "Found At"],
         title=f"Mode: {mode.name} ({mode_mf.root_package()}.nuclei)",
     )
+    _print_hint()
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +782,7 @@ def list_ctml_versions():
         headers=["Version", "File"],
         title="CTML Versions",
     )
+    _print_hint()
 
 
 # ---------------------------------------------------------------------------
@@ -795,3 +808,4 @@ def explain_manifests():
         )
     else:
         _display_no_mode_hint()
+    _print_hint()

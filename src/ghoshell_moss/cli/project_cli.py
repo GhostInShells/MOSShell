@@ -19,6 +19,9 @@ from .utils import (
 )
 
 
+_DESIGN_MD = Path(__file__).resolve().parents[1] / "project" / "DESIGN.md"
+
+
 @project_app.command(
     name="where",
     short_help="Show current workspace location and status.",
@@ -103,3 +106,19 @@ def env_init() -> None:
     if target.exists():
         echo("")
         print_warning(f"{target.name} already exists. Manual merge recommended.")
+
+
+@project_app.command(
+    name="design",
+    short_help="Print the project-layer declaration ecosystem design.",
+)
+def design() -> None:
+    """Show the design thinking behind MOSS's declaration ecosystem —
+    Matrix / Mode manifests, config / provider / topic / signal / resource
+    positioning, mode/ghost/network runtime axes. Points to codex commands
+    for field-level details.
+    """
+    if not _DESIGN_MD.exists():
+        print_error(f"DESIGN.md missing at {_DESIGN_MD}")
+        raise typer.Exit(code=1)
+    echo(_DESIGN_MD.read_text())
