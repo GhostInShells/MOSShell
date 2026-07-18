@@ -78,7 +78,17 @@ alpha → beta → active
 - 当前 `active` 的模块：app_store_channel、fractal_hub
 - 进入 `active` 后，接口变更需跟随项目的语义化版本号
 
-## 4. 构建梯度
+## 4. 开发前必读
+
+开发 channel 前先过一遍下面三条命令，覆盖关注点：
+
+```bash
+moss codex blueprint channel_builder   # Builder API、生命周期、CommandUtil
+moss codex blueprint states_channel    # StatefulChannel / ChannelModule / PrimeChannel
+moss ctml read                          # 三种阻塞机制、Observe 语义、context 供给
+```
+
+## 5. 构建梯度
 
 现有 channel 覆盖不同的构建层级，可作为新 channel 开发的参考起点：
 
@@ -90,7 +100,7 @@ alpha → beta → active
 | L3 | StatefulChannel | 运行时切换状态/能力集 | app_store_channel |
 | L4 | PrimeChannel | 全能：stateful + mutable + builder | — |
 
-## 5. 封装策略
+## 6. 封装策略
 
 两种互不排斥的策略，可在同一模块内混用：
 
@@ -98,7 +108,7 @@ alpha → beta → active
 
 **As Channel** — 外部已有的事物包装为 Channel。把 module、CLI、API、设备等外部能力反射/封装，不要求被包装者感知 Channel 的存在。参考：module_channel、typer_channel。
 
-## 6. 发现与使用
+## 7. 发现与使用
 
 ```bash
 # 列出所有正式 channel 类型
@@ -119,7 +129,7 @@ moss codex channeltypes app_store_channel --deps
 | 来源 | `ghoshell_moss.channels` 包 | workspace manifests |
 | 使用者 | 开发新功能/新 app 前查阅 | 调试/理解当前运行环境 |
 
-## 7. 测试
+## 8. 测试
 
 单测路径：`tests/ghoshell_moss/channels/`
 
@@ -131,7 +141,7 @@ moss codex channeltypes app_store_channel --deps
 
 只测本模块职责。CTML 解析、调度时序等问题由各自模块的测试覆盖。
 
-## 8. 深入调研
+## 9. 深入调研
 
 ```bash
 # 查看本目录的历史演进

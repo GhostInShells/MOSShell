@@ -39,6 +39,8 @@ from typing import Callable
 from pydantic import BaseModel, Field
 from typing_extensions import Self
 
+from ghoshell_moss.message.message import Additional
+
 __all__ = [
     "Subprocesses",
     "ManagedProcess",
@@ -103,6 +105,11 @@ class ProcessMeta(BaseModel):
     updated: float = Field(
         default_factory=time.time,
         description="最后状态更新时间戳",
+    )
+    additional: Additional = Field(
+        default=None,
+        description="Addition 挂载点 (HasAdditional). 调用方可绑强类型附加数据"
+                    " (message.AdditionType), 随 meta 流经 on_exit 回调等通路.",
     )
 
 
@@ -350,6 +357,15 @@ class Subprocesses(ABC):
         ...
 
     # -- 生命周期 --
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """本实例是否处于运行中 (已 __aenter__ 且未关闭).
+
+        消费方 (如 channel) 据此决定生命周期归属: 已 running 的实例
+        由其 owner 治理, 只用不管; 未启动的实例由消费方托管 async with.
+        """
+        ...
 
     @abstractmethod
     async def __aenter__(self) -> Self:

@@ -201,6 +201,9 @@ class SubprocessesImpl(Subprocesses):
 
     # -- 生命周期 --
 
+    def is_running(self) -> bool:
+        return self._started and not self._stopped
+
     async def __aenter__(self) -> "SubprocessesImpl":
         self._started = True
         self.logger.info("Subprocesses started, default_cwd=%s", self._default_cwd)

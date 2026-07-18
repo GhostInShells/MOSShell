@@ -1,149 +1,137 @@
 ---
-title: AI Terminal — Ghost 的操作系统双手（bash + 文件读写）
-status: completed
+title: AI Terminal — Ghost 的操作系统双手（Subprocesses rebase）
+status: in-progress
 status_note: >-
-  2026-06-12 Phase 1 prototype completed — SubprocessTerminal + terminal_channel + 11 tests + MCP verified.
-  Phase 2 (Terminal ABC extraction, multi-channel split, approval chain, context messages) triggers when
-  project-manager and matrix-cell-governance are ready. The abstraction is clean: three method signatures
-  are the implicit protocol boundary.
+  2026-07-18 Phase 2 重启 — matrix 进程管理体系 (Subprocesses) 已落地，
+  file_editor_channel 平级落地。terminal channel 瘦身为纯进程控制并
+  rebase 到 Subprocesses 契约。设计已收敛，见 Phase 2 章节。
 priority: P0
 created: 2026-05-29
-updated: 2026-06-12
-depends: []
+updated: 2026-07-18
+depends: [cell-run-cycle, file-editor-contract]
 milestone: prototype
 description: >-
-  Ghost 最基础的操作系统工具链：bash.exec/run + file.read/write。
-  Phase 1 原型已完成：core/terminal 实现 + channel 适配 + 11 单测 + MCP 验证。
-  下阶段滚动更新每个原子功能。
+  Ghost 最基础的操作系统工具链。Phase 1 (bash.exec/run + file.read/write,
+  subprocess.run 后端) 已完成并 MCP 验证。Phase 2: read/write 移交
+  file_editor，exec/run rebase 到 Subprocesses（真后台进程 + 退出异步通知
+  + 进程可感知可查），两层构建。
 ---
 
 # AI Terminal
 
 ## Motivation
 
-MOSS 的 Ghost 没有操作系统的"手"——不能执行命令，不能读写文件。
-对标 Claude Code 的 Bash/Read/Write，这是最基础的能力缺口。
+MOSS 的 Ghost 没有操作系统的"手"——不能执行命令。对标 Claude Code 的 Bash，
+这是最基础的能力缺口。相对优势不在"bash 执行得更好"，而在 MOSS 的执行模型：
+Code as Prompt（Python 签名即接口）+ CTML 并行调度。
 
-相对优势不在"bash 执行得更好"，而在 MOSS 的执行模型：
-- **Code as Prompt**：Python 函数签名即接口，不走 JSON Schema
-- **CTML 并行调度**：bash + 文件操作 + 语音同时跑
-- **审批链可插拔**：allow-all → whitelist → ask-human（Phase 2+）
+## Phase 1（2026-06-12 完成，已压缩）
 
-### 与 pexpect (interactive-shell-channel) 的关系
-
-| | ai-terminal | interactive-shell-channel |
-|---|---|---|
-| 定位 | 工具型：一次性命令 + 文件操作 | 会话型：持久 PTY 终端 |
-| 后端 | Phase 1: subprocess | pexpect |
-| 典型场景 | `npm test`, `cat file.py`, `git status` | REPL, SSH, DB CLI |
-
-Phase 2 不统一为一个协议。ai-terminal 和 interactive-shell-channel 是两个独立的
-交互范式——一次性命令执行 vs 持久交互会话。它们在 core/terminal/ 下各自持有
-自己的抽象协议（Terminal ABC 和 InteractiveSession ABC），不互相实现。
-
-## Architecture
-
-### 分层与路径（实际实现）
-
-参考 `core/concepts/topic.py` → `core/topic/` 的分层模式：
+subprocess.run 后端的 bash.exec/run + file.read/write 原型，11 单测 + MCP
+递归自举验证（channel 内跑 moss 命令）。当时的架构细节、五条 Key Decisions
+见 git 历史：
 
 ```
-core/terminal/                  ← 零 MOSS 依赖的实现
-  │ subprocess_terminal.py     CommandResult + SubprocessTerminal
-  ▼
-channels/terminal_channel.py    ← MOSS Channel 适配层 (L1 Builder)
-  │ bash:exec  (blocking)      阻塞执行，需要结果时用
-  │ bash:run   (@nonblocking)  不阻塞，后台任务
-  │ bash:read  (always_observe) 读文件，带行号
-  │ bash:write                 写文件，text__ 参数
+git log --follow -- .ai_partners/features/workstreams/2026/05/ai-terminal/FEATURE.md
+git log -- src/ghoshell_moss/channels/terminal_channel.py
 ```
 
-Phase 1 不抽协议，但 **有协议思维**：`SubprocessTerminal` 的方法签名干净——
-`exec()`, `read_file()`, `write_file()` 三个方法就是未来的协议边界。
-Phase 2 提 ABC 时，接口不加不减，只加 `class Terminal(ABC)` 和 `@abstractmethod`。
+仍然有效的判决：
+- 与 interactive-shell-channel (pexpect) 是两个独立协议——一次性命令执行 vs
+  持久交互会话，不互相实现。
+- L1 Builder 模式（`new_channel()` + `chan.build.command()`），不注册 App。
+- blocking / @nonblocking 是 Builder 原生调度语义，模型据此表达拓扑依赖。
 
-contracts 层未创建——等 Phase 2 有第二个 backend（pexpect）时再提协议。
+已被 Phase 2 推翻的部分：假 non-blocking 的 `run`（同步跑完才返回）、
+`bash.read/write` 文件动词、SubprocessTerminal 后端的 exec 路径。
 
-### Channel 命令设计
+## Phase 2 — Subprocesses Rebase（2026-07-18 设计收敛）
 
-四个命令，`blocking` 和 `@nonblocking` 是 Builder API 的原生调度标记：
+> 触发条件已满足：matrix 进程管理体系 (Subprocesses/JobSupervisor 契约 +
+> MatrixSubprocessesProvider) 随 cell-run-cycle 落地；file_editor_channel
+> 平级落地 (b5605077)。本节是 claude-fable-5 + 人类的设计收敛记录，
+> 实装即按此执行，实装中发现问题回讨论修正（features 纪律，不 silent todo）。
 
-| 命令 | 调度 | always_observe | 说明 |
-|------|------|----------------|------|
-| `bash:exec` | blocking | True | 阻塞，需要结果时用 |
-| `bash:run` | @nonblocking | False | 不阻塞，fire-and-forget |
-| `bash:read` | blocking | True | 读文件，带行号 |
-| `bash:write` | blocking | False | 写文件，text__ 传内容 |
+### 职责三分（定案）
 
-Ghost 自行管理拓扑顺序：依赖前序结果的用 `exec`，可并行的用 `run`。
-Phase 2 可拆为多 channel 实现真正的跨 channel 并行。
+file_editor 管文件、shell_channel (pexpect) 管持久交互会话、**本 channel 管进程**：
+一次性命令执行 + 真后台进程的 spawn/感知/停止。`bash.read/write` 移除。
+Phase 1 的假 non-blocking `run`（同步跑完才返回）由 Subprocesses 真后台进程取代。
 
-### Phase 1 边界
+jobs（调度语义：interval/重启/持久化后台任务）**另开 workstream**，本 channel
+零 JobSupervisor 依赖。边界：`bash:run` = owner 生命周期内的一次性后台进程；
+jobs = 带调度语义的持久任务。未来 jobs channel 复用本 channel 的 context
+行格式约定。
 
-- allow-all 模式，无审批
-- subprocess.run(shell=True)
-- 零外部依赖
-- cwd 默认为进程 cwd（workspace root）
+### 三种阻塞机制显式区分（人类判决）
 
-## Prototype Verification (2026-06-08)
+MOSS 有三种阻塞机制，模型要能据此做时序规划，interface 必须显式区分：
 
-### 实现
+1. **同步阻塞**（blocking）— 占据 channel FIFO，同 channel 后续命令等待。
+2. **non-blocking** — 不占 channel，但解释器等其返回才进下一关键帧。
+3. **全异步** — 命令 spawn 即返回，完成只能通过异步通知感知。
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `core/terminal/subprocess_terminal.py` | 116 | CommandResult dataclass + SubprocessTerminal (exec/read_file/write_file + _safe_path) |
-| `channels/terminal_channel.py` | 79 | L1 Builder 适配，4 命令 (exec/run/read/write) |
-| `tests/.../test_terminal_channel.py` | 113 | 11 单测全过 |
+| 动词 | 机制 | always_observe | 说明 |
+|---|---|---|---|
+| `exec(cmd, cwd='', timeout=60)` | ① blocking | True | shell 模式 + capture，等退出回 stdout/stderr tail + exit code |
+| `run(cmd, name='', cwd='', notify_priority=...)` | ③ 全异步 | True | spawn 即返薄回执 (index/pid)，进程结束异步通知 |
+| `read_output(index, ...)` | ② nonblocking | True | 读 ProcessOutput 内存 tail 窗口，**默认限长** + offset/limit，附落盘文件路径提示 |
+| `stop(index)` | ② nonblocking | False | ManagedProcess.stop() 优雅停止（SIGINT→SIGKILL）。是否需要同步阻塞版留实践verdict，先不过度设计 |
 
-### MCP 验证
+### run 的退出通知（人类判决）
 
-通过 `<bash:exec>` 成功调用 moss CLI 命令（`moss features list`, `moss codex architecture`），
-实现递归自举——MOSS channel 内跑 moss 命令。
+- 退出必发 Signal，notify 模式。默认 `background_notice`（BACKGROUND +
+  notify：不抢占注意力，buffer 留痕）。
+- `run` 带优先级参数，模型对"死了要紧"的进程（dev server）可升 NOTICE/WARNING。
+- 优先级通过 **ProcessMeta.additional (Addition)** 随 meta 走——on_exit 回调
+  只收 ProcessMeta，优先级绑在 meta 上是最干净的通路（契约变更 1）。
+- **docstring 零 signal 概念**：ghost 只需知道"创建成功，结束会异步通知"，
+  不暴露 signal/mindflow 内部词汇。
 
-## Key Decisions
+### 两层构建（人类判决）
 
-### 1. 不抽协议，但有协议思维
+- **层 1** `new_terminal_channel(processes: Subprocesses, *, cwd, name='bash')`：
+  传入实例。按 `processes.is_running()` 决定是否托管生命周期——已 running
+  （如 matrix.processes 共享单例）则只用不管；未启动则 channel 在
+  on_startup/on_close 托管 async with（契约变更 2：`Subprocesses.is_running()`）。
+- **层 2** `build_terminal_channel(container)`：IoC 工厂。`container.get(Subprocesses)`
+  （matrix 场景拿到 per-Matrix singleton）→ 拿不到自建 SubprocessesImpl。
+- matrix channel 挂载本能力时，调用层 1 传 `matrix.processes`（函数归
+  matrix-channel 实装，cell-run-cycle workstream）。
+- **cwd 是构建前参数**：channel 级默认 cwd，exec/run 的 cwd 参数相对它解析。
 
-Phase 1 只有 `SubprocessTerminal` 一个实现，不创建 ABC。但方法签名即隐式契约。
-Phase 2 有第二个 backend 时再提协议。
+### 所有权隔离（共享单例场景）
 
-### 2. blocking / @nonblocking 标记并行调度
+共享 matrix.processes 时，singleton 的 executing() 混入 run_node 的 cell
+进程。channel **自持 spawned indices 集合**：context 只展示自己 spawn 的；
+`stop(index)` 只允许停自己的（cell 停止归 matrix channel 的 stop(address)，
+不开第二条 kill 路径）。
 
-`bash:exec` 和 `bash:run` 的区别在于 `blocking` 参数——这是 Builder API 的原生语义，
-不是我们在 channel 层自己实现的。模型通过选择不同命令来表达拓扑依赖。
+### 暴露的系统级讯息（人类判决）
 
-### 3. CommandResult 是纯 dataclass
+- **instruction（固定参数）**：[System Context] 块——OS / user / 默认 cwd /
+  TZ / lang / encoding（继承 GhostOS TerminalContext 血统），加三种机制的
+  使用说明。
+- **context_messages（每帧动态）**：后台任务简表——executing (own-only:
+  index/name/pid/uptime) + 最近退出 (index/exit_code，非零附 stderr 内存
+  tail)。后台任务**可感知 + 可查**（read_output 按 index 回溯）。
+- 数据源纪律：全部来自 Subprocesses 内存视图（executing/executed +
+  ProcessOutput 内存窗口），不落盘不读账本。
 
-```python
-@dataclass
-class CommandResult:
-    exit_code: int = -1
-    stdout: str = ""
-    stderr: str = ""
-```
+### 契约变更清单
 
-当前和 `SubprocessTerminal` 同文件，Phase 2 提协议时分离。
+1. `ProcessMeta` 加 `additional: Additional = None`（满足 HasAdditional，
+   打开 Addition 生态；本次用于退出通知优先级）。
+2. `Subprocesses` ABC 加 `is_running() -> bool`（两层构建的生命周期判据；
+   SubprocessesImpl 已有 `_started` 内部态，公开为契约）。
 
-### 4. file 操作走 Terminal 自身，不走 Storage 协议
+### 实装文件
 
-Terminal 管"操作系统文件系统"，Storage 管"MOSS workspace 持久化"。两个边界。
-路径安全：`_safe_path()` 拒绝穿透和绝对路径。
-
-### 5. L1 Builder 模式，不注册 App
-
-`new_channel()` + `chan.build.command()`，不用 StatefulChannel（无状态切换需求）。
-不作为独立 App 暴露——Ghost 需要随时可调用的命令，不是进程生命周期。
-
-## Next Phase
-
-- 审批链：allow-all → whitelist → ask-human
-- pexpect backend：会话持久性
-- 多 channel 拆分：真正的跨 channel 并行
-- context messages：进程状态仪表盘
-- Terminal 抽象协议：提 ABC，抽 contracts
-
-## 设计参考
-
-- `notebook_channel.py` — L1 Builder + text__ + _safe_path
-- `core/concepts/topic.py` → `core/topic/` — 概念层 → 实现层分层模式
-- `module_eval_channel.py` — Sandbox 集成 + always_observe 模式
+- `contracts/subprocesses.py` — 两处契约变更
+- `core/subprocesses/_impl.py` — is_running 实现
+- `channels/terminal_channel.py` — 重写（两层构建 + 四动词）
+- `tests/ghoshell_moss/channels/test_terminal_channel.py` — 重写
+- `channels/CLAUDE.md` — 顺手修：channel 开发前必读三件套
+  (channel_builder / states_channel / ctml read) 前置到构建梯度之前
+- `core/terminal/subprocess_terminal.py` — 不动（read_file/write_file 仍被
+  引用处理时再清理；exec 路径由 Subprocesses 取代）
