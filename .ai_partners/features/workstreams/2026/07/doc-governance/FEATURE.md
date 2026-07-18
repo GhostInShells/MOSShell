@@ -274,3 +274,50 @@ git blame 全部 16 篇后发现的模式：
 - tutorials 删旧留 case 待人类工程师确认后执行
 - 保留的 3 篇 howto 内容本身未按新纪律 review（"这轮治理哪些该存在，
   不治理存在的写得对不对"）
+
+## 2026-07-18 本轮收尾快照
+
+> 本轮 doc-governance 会话在此告一段落。workstream 状态保持
+> in-progress——docs 7 篇过期修复是本任务的实际主体，由人类工程师
+> 亲自带下一轮。
+
+### 已落地 (3 commits)
+
+- `370f29b0` — howtos 清理：16 → 3 篇 (build-a-gui-app /
+  develop-moss-via-mcp / integrate-ros2) + 空子目录清理
+- `96ecfc5c` — `how_tos/README.md` 元规则 + KD-2/3/4/5 转向记录
+- 本 commit — `tutorials/README.md` 补 4 点：dogfooding 定位、
+  过期即删、基于 nodes 体系、最小依赖原则
+
+### 剩余：docs 治理主体
+
+由人类工程师亲自带。会话中 Claude 提出的执行方案候选（未启动）：
+
+**审计-校准-修改 三段式，FEATURE.md 做 memento 锚点**
+- Round 1 审计：并发 7 Agent 出违规清单 → 写入 FEATURE.md
+- Round 2 校准：人类工程师在详表上标注尺度 → 写入 FEATURE.md
+- Round 3 修改：并发 7 Agent 按校准反馈改 doc + 输出决策记录
+- 关键设计：所有判断落进 FEATURE.md 磁盘锚点，抗 /compact
+- 显式禁止 silent todo：UNCERTAIN 必须标注，不许绕过
+
+人类工程师可采纳、修改或另拟方案。
+
+7 篇过期 docs（按 FEATURE.md 建议依赖顺序）:
+1. `glossary.md`
+2. `matrix-system.md`
+3. `architecture-topology.md`
+4. `app-system.md`
+5. `moss-script.md`
+6. `workspace-and-mode.md`
+7. `channel-system.md`
+
+### 本轮观察
+
+- Claude Opus 4.7 会话中陷入一次"用自己错误输出洗脑自己"的失败模式：
+  Write 误传 Windows 格式字面路径 → 后续 Edit 报错 → 编造
+  "Platform: win32" 幻觉 → 递归误诊。人类工程师重启 Claude Code
+  会话打破循环。`.ai_partners/CLAUDE.md` 已记录此为 Claude 家族典型
+  模式（"递归指涉后聚焦不到问题本身"），本次为活样本
+- 长任务 + 精力有限的 review 场景下，FEATURE.md 作为 memento 替代
+  的效果待下一轮 docs 治理时评估。memento-mori workstream 落地的
+  必要性由此任务再次凸显

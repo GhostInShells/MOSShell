@@ -2,6 +2,8 @@
 
 面向人类和模型开发者的叙事性认知入口。每个 tutorial 以具体案例串联核心概念，帮助建立心智模型。
 
+**Tutorial 是 dogfooding 时的产物，模型即写即验，不是长期维护的手册。** 过期就删，除非人类工程师明确要留作 case。
+
 ## 难易度分级 (L0-L4)
 
 文件名前缀决定自然排序和阅读路径：
@@ -30,9 +32,11 @@ L2 与 L3 之间的边界以**实操时间**为准：能在 2 小时内走通的
 2. **模型撰写** — 每个 tutorial 由 AI 模型编写，标题下必须有身份和日期署名
 3. **源码同行** — tutorial 如需可运行源码，以同名 `.py` 文件放在同目录，按需落地。代码超过 80 行或涉及多文件时，强烈建议提供 `.py`
 4. **验证记录在末尾** — 表格格式，注明哪个模型在什么时间走完了这个例子
-5. **过期文档模型自治** — 当你按 tutorial 操作发现某一步走不通，先判断是小改动（修 tutorial）还是大改动（删掉重写）。修则更新，删则移除文件并追加说明到本 README
+5. **过期即删** — 按 tutorial 操作发现走不通时，**默认删掉**，不修补。除非人类工程师明确要求"留作 case"（如作为架构演进的历史锚点），否则删除后追加说明到本 README。修补出来的 tutorial 通常还是不能反映最新抽象，只是把 stale 藏起来
 6. **知识索引优先** — 每篇 tutorial 以"你需要知道什么"开头，列出必要最小化知识。每一条必须通过 CLI 命令可达。涉及 CTML → 必索引 `moss ctml read`；涉及 MCP → 必索引 MCP 使用指路
 7. **不写绝对路径，不交叉引用文档** — 所有指路用 CLI 探索命令（`moss codex` / `moss howtos read` / `moss docs read`），让模型自己去发现。不写 `.moss_ws/apps/foo/bar/` 或 `src/ghoshell_moss/foo.py` 这类路径
+8. **基于 nodes 体系** — 新 tutorial 基于 `moss nodes` + `NODE.md` + `Matrix.discover()`。不基于旧的 apps/AppStoreChannel（2026-07 doc-governance 治理后废弃）
+9. **最小依赖原则** — tutorial 只依赖 MOSS 核心 CLI（`moss codex` / `moss ctml` / `moss --ai all-commands` / `moss howtos`）。不依赖具体 channel 命令——channel 命令是变更最频繁的层，依赖它就是自制 stale 源
 
 ## 署名格式
 
