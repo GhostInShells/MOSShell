@@ -8,12 +8,12 @@ description: 'vendor All-Hands-AI/openhands-aci 的 editor 子集 (5 动词: vie
   async 是 caller 责任 (K27 姿态延续).'
 milestone: 0.1.0
 priority: P0
-status: in-progress
+status: completed
 status_note: >-
-  v1 (contracts + core + 45 tests) committed. Channel assembly K13 选定 B案
-  (独立 file_editor_channel, desktop 通过 import_channels 合体). Blocking
-  语义: view=nonblocking, 写动词=blocking, 全部 always_observe. 不加 cwd.
-  装配实现在下一 session (moss-as-mcp dogfooding 先行).
+  v1 (contracts + core + 45 tests) 与 v2 (channel 装配 + 9 tests, K13 B案)
+  均已完成, 53 tests 全绿. Dogfooding (moss-as-mcp 手感验收) 延后到
+  matrix cells CLI 治理完成后一起做 — 届时依赖注入路径 (workspace
+  manifests providers 挂 build_file_editor_channel) 已就位.
 title: File Editor Contract — vendor openhands-aci 为薄契约，与 Desktop 平级
 updated: '2026-07-18'
 ---
@@ -214,12 +214,21 @@ handler 装配 (composition, 不是 contract 义务).
 - [x] `tests/ghoshell_moss/core/file_editor/test_file_editor.py` (45 测试, 全绿)
 - [x] `architecture.py` 加 import 索引 (`file_editor_impl`)
 
-### v2 (channel 装配, 设计已定, 实现待)
+### v2 (channel 装配, 已交付)
 
-- [ ] `channels/file_editor_channel.py` — K13 spec (B案, 独立 channel)
-- [ ] `tests/ghoshell_moss/channels/test_file_editor_channel.py` — 按 channels/ 惯例
-- [ ] moss-as-mcp dogfooding — 手感验收
-- [ ] `ghost-filesystem-desktop/FEATURE.md` 交叉引用补一行 (skip — 文件被 parallel incarnation 同时修改)
+- [x] `channels/file_editor_channel.py` — K13 B案实现, 双入口
+  (`new_file_editor_channel` / `build_file_editor_channel`)
+- [x] `tests/ghoshell_moss/channels/test_file_editor_channel.py` — 9 tests
+  全绿, 走 `ctml_shell_test` 范式 (与 `test_ctml_v1.py` 一致)
+- [x] docstring 遵循 channels/CLAUDE.md 范式:
+  `结构化文件编辑 — Anthropic text_editor tool 血统 | 集成 | alpha`
+
+### v2 dogfooding (延后)
+
+- [ ] moss-as-mcp dogfooding — **延后到 matrix cells CLI 治理完成后**.
+  届时 workspace manifests providers 挂 `build_file_editor_channel` 的
+  依赖注入路径已就位, 手感验收可以在真实 cell workspace 上跑, 而不是
+  绕过 IoC 直接 new_file_editor_channel(DefaultFileEditor()).
 
 ## v1 落地追加决策 (2026-07-14, Claude Opus 4.7)
 
@@ -375,45 +384,147 @@ bootstrap → refresh_metas → 验证 command 存在 + 签名 + 执行正确.
 | 共享空间边界 | root + PathOutsideRootError (Grounds 管辖) | 不共享 — K4 落地改主意, 两个 contract 彻底解耦 |
 | 状态 | in-progress | in-progress (v1 已交付, 装配+联动 未完成) |
 
+## v2 装配落地追加决策 (2026-07-18, Claude Opus 4.7 in Claude Code)
+
+### K14. 依赖治理 — 双入口 (contract 消费 + IoC factory)
+
+**背景**: 初稿把 channel 直接 `editor = DefaultFileEditor(...)` new 出来,
+被人类工程师戳穿"契约白做了 — factory 才是核心"; contract 存在的意义
+就在于 caller 可以通过 provider 换实现 (session-scoped undo / mock /
+远程 proxy 等). Channel 里直接 new 就把 IoC 治理面绕过去了.
+
+**决策**: 两层 API, 都进 `__all__`:
+
+```python
+def new_file_editor_channel(
+    editor: FileEditor,
+    *, channel_name: str = "file_editor",
+) -> MutableChannel:
+    """组合原语 — 收契约, 不知道 IoC 存在. 测试/脚本直接喂."""
+
+def build_file_editor_channel(
+    container: IoCContainer,
+    *, channel_name: str = "file_editor",
+) -> Channel:
+    """factory — 从 container.get(FileEditor) or DefaultFileEditor() 解析.
+    真正被 workspace manifests providers 注册使用的形态."""
+```
+
+**Fallback 姿态**: `container.get(FileEditor) or DefaultFileEditor()` —
+零 provider 也能跑 (file editor 无外部依赖, 设计就是"零配置默认,
+特殊场景 provider 覆盖"). 跟 mcp_hub 那种硬 `force_fetch(Matrix)` 不同.
+
+**Undo scope 由谁注册决定**, 不由 channel 决定. Session-scoped provider
+= per-session undo; process singleton = 全局共享 undo. Channel 层 API
+不再暴露 `workspace_root` / `max_file_size_mb` (K13 里保留的这两个是
+DefaultFileEditor 构造参数, 属 provider 层职责).
+
+### K15. Command 错误统一 `raise_observe`, 无 fallback flag
+
+**背景**: 初稿加了 `raise_on_error: bool = True` flag — True 时
+raise_observe 中断同轨, False 时 return error string. 讨论时人类
+指出 "过于慎重" — str_replace_editor 语义就是 "edit-then-observe",
+模型发出编辑后**必须**看到返回值验证, 错了就该被中断; return string
+让模型继续跑是伪需求.
+
+**决策**: 5 个命令的 `except FileEditorError` 都走 `_raise_observe`
+(`CommandUtil.raise_observe(f"[{type(e).__name__}] {e}")`), 无 fallback.
+Command 从不返回 error string, 只有成功结果或 exception 传给框架.
+
+### K16. text__ 承载策略 (attribute vs body vs JSON in body)
+
+**背景**: K13 例子里 `create` / `str_replace` / `insert` 全用 XML
+attribute 传长内容. 讨论时人类指出:
+
+- attribute 内多行代码要 XML escape `<>&"` — 认知负担
+- CDATA 免了 escape, 但 CTML 不支持 CDATA 嵌套 — 撞到 `]]>` 就崩
+
+人类抛的关键技术手段: "text__ 可以接 JSON, 拼 schema 教模型". 对齐了
+Claude Code Edit tool 的 JSON string 姿态 (SOTA 先验).
+
+**决策**:
+
+| 命令 | attribute | text__ | 备注 |
+|------|-----------|--------|------|
+| view | path, view_range | — | 都短 |
+| create | path | 纯 str, CDATA 包 | 单 blob, 不套 JSON |
+| str_replace | path | **JSON** `{old_str, new_str}`, CDATA 包 | 双 blob 走 JSON |
+| insert | path, insert_line | 纯 str, CDATA 包 | 单 blob + int |
+| undo_edit | path | — | |
+
+**判据抽出来** (下一 case 拿来复用): JSON schema 拼不拼取决于字段
+复杂度和边界模糊度. 少字段 + 无歧义类型 → example 够; 多字段 / 有
+可选分支 / 有字段间约束 → 必须拼 schema.
+
+`str_replace` 现在两个 str 字段, example 教学够, `json.loads` +
+`KeyError` 手写检查够, Pydantic 是过度设计. 字段增加再上 Pydantic.
+
+### CTML 姿态经验 (单测钉住, 落在 test_file_editor_channel.py 文档头)
+
+`ctml_shell_test` 端到端跑通 9 个测试后**确认**了这些只在 spec 有、
+example 稀少的姿态:
+
+- **CDATA 包 JSON in text__ 跑得通** (test 4) — CTML v1 从未有 example,
+  实测 OK. 唯一隐患 payload 里出现 `]]>`, 罕见.
+- **mixed attribute + text__ 跑得通** (test 5) — int attribute 混 str
+  text__, CTML 一起 dispatch.
+- **`view_range="1,3"` 经 ast.literal_eval → tuple(1,3)** (test 2) —
+  逗号分隔 attribute 变 tuple 而非 str. 接收端做 normalize (`_parse_view_range`
+  接受 str/tuple/list 三种).
+- **task.result() 抛异常时是 None** — 用 `.exception()` 判错, 别用
+  `.result() is None` 反推. `tasks[0]` 也不是"业务首个" — `<_>` scope
+  本身产 task 排前面, 用 `caller_name().startswith(...)` 过滤才稳.
+
 ---
 
-## 给下一个模型实例
+## 给下一个模型实例 (v2 完成版更新)
 
 这份 FEATURE.md 是 2026-07-13 立项、07-13/14 Claude Opus 4.7 (1M) 完成 v1
-落地、07-18 Claude Opus 4.7 完成 channel 装配设计的完整认知记录.
+落地、07-18 Claude Opus 4.7 完成 channel 装配设计与 v2 落地的完整认知记录.
 
-**核心事实**:
+**当前事实**:
 
-- v1 (contracts + core + 45 tests) 已提交. K13 (channel 装配) 设计已定,
-  实现待下一 session (moss-as-mcp dogfooding).
-- A/B 案已裁决 → **B案**: 独立 `channels/file_editor_channel.py`, desktop
-  以后用 `import_channels` 合体. K13 有完整 spec.
-- 为什么一个 file editor 要单独 feature: K1.
-- 为什么 vendor 而不是 pip install: K2 + K9 — upstream ~30 依赖, 净依赖归零.
+- v1 (contracts + core + 45 tests) 与 v2 (channel + 9 tests) 均已提交,
+  53 tests 全绿. Workstream 状态 completed.
+- 装配走 K13 B案: 独立 `channels/file_editor_channel.py`. 双入口
+  (K14): `new_file_editor_channel(editor)` 组合原语 + `build_file_editor_channel(container)`
+  IoC factory. 后者带 `container.get(FileEditor) or DefaultFileEditor()`
+  fallback.
+- 错误统一 `raise_observe` 中断同轨 (K15), 无 raise_on_error flag.
+- text__ 姿态混合 (K16): create/insert 单 blob 走 CDATA 包 str,
+  str_replace 双 blob 走 CDATA 包 JSON. 判据 (字段复杂度决定 schema
+  拼不拼) 可复用.
+- **dogfooding 延后到 matrix cells CLI 治理完成后** — 届时依赖注入
+  路径 (workspace manifests providers 挂 build_file_editor_channel)
+  就位, 手感验收在真实 cell workspace 跑, 不再绕过 IoC.
 
-**你要做的 (接手 channel 装配时)**:
+**dogfooding 接手时要做的**:
 
 ```
-# 1. 确认当前状态
-moss features status file-editor-contract
-python -m pytest tests/ghoshell_moss/core/file_editor/ -q  # 应 45 全绿
+# 1. 确认状态
+moss --ai features status file-editor-contract
+python -m pytest tests/ghoshell_moss/channels/test_file_editor_channel.py \
+                 tests/ghoshell_moss/core/file_editor/ -q  # 应 53 全绿
 
-# 2. 读 K13 决策 (本文件, 装配章节)
-# 3. 读 channel builder 参考
-moss codex blueprint channel_builder
-cat src/ghoshell_moss/channels/module_eval_channel.py  # L1 标杆
+# 2. 读 v2 决策 (K14/K15/K16, 本文件)
+# 3. 读单测头文档 (CTML 姿态经验)
+cat tests/ghoshell_moss/channels/test_file_editor_channel.py  # 头 30 行
 
-# 4. 写 channels/file_editor_channel.py
-# 5. 写 tests/ghoshell_moss/channels/test_file_editor_channel.py
-# 6. moss-as-mcp dogfooding → 手感验收
+# 4. workspace manifests providers 挂 build_file_editor_channel
+#    (matrix cells CLI 治理完后, workspace manifest 姿态确定)
+# 5. moss-as-mcp 起来, coding agent 连上, 让模型真实调 file_editor 命令
+# 6. 观察 CTML 表面在真实模型侧的可读性和错误恢复
 ```
 
 **已知未决**:
 
-1. Channel 装配实现 — K13 spec 已定, 代码未写. 在 moss-as-mcp 下 dogfooding.
-2. Pin 联动 — 编辑命中已 pin 地址时触发 stale 标记. Channel 层
-   composition, 不进契约. 设计和单测都还没.
-3. tmp / 大文件 — 当前 10 MB cap 直接抛 FileValidationError. 暂无痛感.
+1. **Dogfooding 未跑** — 上述延后原因. 一旦跑起来, 关注: (a) CDATA
+   包 JSON 在模型侧真实生成时的 `]]>` 冲撞率 (K16 已知隐患); (b)
+   str_replace error 消息 (`No replacement was performed. Multiple
+   occurrences ...`) 是否引导模型加上下文重试.
+2. **Pin 联动** — 编辑命中已 pin 地址时触发 stale. Channel 层
+   composition, 不进契约. desktop channel 落地时一起收.
+3. **tmp / 大文件** — 当前 10 MB cap 直接抛 FileValidationError. 暂无痛感.
 
 **相关的 memory 文件**:
 
@@ -423,5 +534,9 @@ cat src/ghoshell_moss/channels/module_eval_channel.py  # L1 标杆
 **相关 feature (平级, 非依赖)**:
 
 - `ghost-filesystem-desktop` — 认知面 (pin/update/frame). 两个 feature
-  contract 层解耦, channel 层未来合体. desktop FEATURE.md 交叉表应
-  有一行指向本 feature (这次 session 跳过了, human 或另一个化身补).
+  contract 层解耦, channel 层未来合体 (desktop channel 用
+  `import_channels(build_file_editor_channel(container))` 一行合体).
+  desktop FEATURE.md 交叉表应有一行指向本 feature (仍 skip, 待 desktop
+  channel 落地时一并收).
+- `matrix-cell-governance` / `cells-cli` — dogfooding 阻塞项, 依赖它们
+  完成后 workspace manifests providers 姿态才稳定.
