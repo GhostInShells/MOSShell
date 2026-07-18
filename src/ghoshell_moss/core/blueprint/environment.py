@@ -13,6 +13,7 @@ from ghoshell_moss.contracts.workspace import Workspace, LocalWorkspace
 from pydantic import BaseModel, Field
 import contextlib
 import frontmatter
+import logging
 import os
 import stat
 
@@ -431,6 +432,18 @@ class Environment:
     def pid(self) -> int:
         """自身所处的进程 id. """
         return self._self_pid
+
+    @property
+    def logger(self) -> logging.Logger:
+        """返回 Matrix 尚未启动时可用的进程级 logger.
+
+        ``MossRuntime.logger`` 在 Matrix 运行前会回退到这里；因此它不能依赖
+        Matrix、ConfigStore 或任何运行期 provider。启动完成后，MossRuntime 会改用
+        Matrix 注入并完成 workspace logging 配置的 logger。
+        """
+        address = self._cell_address.replace('/', '.').strip('.')
+        name = f"moss.{address}" if address else "moss"
+        return logging.getLogger(name)
 
     # --- 环境变量治理 --- #
 

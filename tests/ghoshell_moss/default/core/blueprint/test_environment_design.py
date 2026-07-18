@@ -4,6 +4,7 @@
 不测完整的 discover() 链路 (需要真实 .moss_ws 目录结构).
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -101,6 +102,14 @@ class TestEnvironmentInitExplicit:
         assert env.ghost_name == 'none'
         assert env.no_mode is True
         assert env.no_ghost is True
+
+    def test_logger_is_available_before_matrix_startup(self, tmp_path):
+        """GhostRuntime 可在 Matrix 启动前安全取得 MossRuntime.logger 的回退值."""
+        ws = tmp_path / DEFAULT_WORKSPACE_DIR_NAME
+        ws.mkdir()
+        env = Environment(workspace=ws, cell_address='host/default/uid001')
+
+        assert env.logger is logging.getLogger('moss.host.default.uid001')
 
 
 # ==================================================================

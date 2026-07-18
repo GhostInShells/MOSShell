@@ -116,7 +116,9 @@ class MatrixImpl(Matrix):
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
         # -- container -- #
-        self._container: Container | None = None    # sync 阶段填
+        # 构造期只注册 provider；进入期才 bootstrap。GhostRuntime 需要在 Matrix
+        # 启动前向同一个容器注册 Ghost provider，因此 container 必须早于 __aenter__ 可用。
+        self._container: Container | None = None
 
         # -- 网络三件, __aenter__ async 阶段填 -- #
         self._presence: CellPresence | None = None   # adapter.new_presence 产物
@@ -143,6 +145,7 @@ class MatrixImpl(Matrix):
             f"<Matrix address={cell.address} "
             f"scope={network.scope} is_host={cell.is_host}>"
         )
+        self._container = self._prepare_container()
 
     # ==================================================================
     # 身份 (Matrix ABC properties)
@@ -508,6 +511,8 @@ class MatrixImpl(Matrix):
 
     @property
     def container(self) -> IoCContainer:
+        if self._container is None:  # pragma: no cover - constructor invariant
+            raise RuntimeError("Matrix container was not prepared")
         return self._container
 
     @property
@@ -700,7 +705,6 @@ class MatrixImpl(Matrix):
             kill=self._kill_orphan_cell,
         )
 
-        self._container = self._prepare_container()
         self._exit_stack.enter_context(
             self._container_lifecycle_ctx()
         )

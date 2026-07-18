@@ -86,6 +86,17 @@ aurelius — Aurelius
 
 一次只启动一个 `aurelius` 实例，避免同一个 `(memento root, owner)` 并发写。
 
+启动成功的最低判据不是出现 `current state is aurelius`，而是随后出现 Welcome 面板和交互提示：
+
+```text
+Ghost: aurelius
+Type anything to talk to the ghost.
+aurelius  ❯
+```
+
+`current state` 仅表示 TUI 已注册页面，尚未进入 GhostRuntime。若随后立刻显示 `closed / good bye`，
+应先保留同步打印的 traceback；不要先修改 `memory.yml`、Memento 文件或模型配置。
+
 ### 2.4 L2 模型凭据与反思模型
 
 启动真实 Aurelius 前，复制并填写本地环境文件：
@@ -360,6 +371,7 @@ commit 成员。
 | 反思模型失败 | `small_fast_model` 未解析、无凭据或网络失败 | 先设 `reflection_enabled: false` 验证主路；随后修复模型配置再测追赶 | 写入/commit/重启可继续 |
 | `CellRegistry` import error | 根 `moss` CLI 的 Cell 重构不一致 | 作为独立问题记录；不要改 memory.yml | pytest/acceptance 可继续；按 traceback 判断 runner 是否受影响 |
 | Ghost 未列出 `aurelius` | workspace 注册文件或 manifest import 错误 | 先运行第 2.2 节的 `AureliusMeta` import；当前 `moss-run-ghost` 会向 stderr 输出 skipped manifest 的具体异常 | L0 可继续 |
+| `Environment` 缺少 `logger`，或 Matrix Container 为 `None` | 通用 Runtime 构造/启动边界失配，发生在 Aurelius factory 前 | 更新到包含“Environment logger 回退 + Matrix 构造期 Container”的当前实现；用 `moss-run-ghost echo` 对照 | L0 可继续；L1/L2 不可继续 |
 
 本次用户报告的完整 traceback 命中第一行：安装了当前 `.venv` 中缺失的 `eclipse-zenoh`
 后，先通过 `import zenoh`，再继续 Ghost 发现和真实对话测试。

@@ -176,3 +176,11 @@ ghost.articulate(articulator):
 - pydantic-ai 2.x 把 `OpenAIModel` 更名为 `OpenAIChatModel`，曾使 Aurelius manifest 在
   discovery 时导入失败并被旧 CLI 静默过滤。`_meta.py` 现兼容 pydantic-ai 1.x/2.x；
   `moss-run-ghost` 也会向 stderr 报告 skipped manifest，避免“未列出但无错误”这一假象。
+- 2026-07-18 人工启动验收揭示当前分支相对 `dev` 的通用启动契约断裂：`MossRuntime.logger`
+  在 Matrix 尚未启动时承诺回退 `Environment.logger`，但 Environment 重构时该属性被删除。
+  这发生在 `GhostRuntime.__aenter__` 的第一个通用步骤，早于 Aurelius factory；`echo` 与
+  `aurelius` 都会复现。恢复无运行期依赖的 `Environment.logger` 回退，并让 TUI 同步打印启动
+  异常，避免用 `closed / good bye` 掩盖根因。随后暴露第二个同源失配：当前 Matrix 延迟到
+  `__aenter__` 才建 IoC Container，而 GhostRuntime 早于 Matrix enter 注册 Ghost provider；dev
+  的 Container 则在 Matrix 构造期准备。现恢复“构造期注册、进入期 bootstrap”的两阶段边界。
+  两项修复都不使 GhostRuntime 感知 Aurelius，也不改变 Memento 或 LLM 的生命周期。

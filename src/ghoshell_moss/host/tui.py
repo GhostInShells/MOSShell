@@ -849,7 +849,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 self.current_state().on_switch(True)
                 await input_loop_task
         except Exception:
-            self.console.print_exception()
+            # Runtime 尚未完全进入时，异步 render queue 可能随 finally 一起关闭，
+            # 导致唯一的启动异常被 ``closed / good bye`` 覆盖。这里必须同步输出。
+            self._rich_console.print_exception()
         finally:
             self._closing_event.set()
 

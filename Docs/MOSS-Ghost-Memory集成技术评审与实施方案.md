@@ -92,6 +92,23 @@ Aurelius
 
 这使重启恢复、窗口折叠和审计使用同一份持久事实。
 
+### 3.1 运行时启动边界
+
+`AureliusMeta.factory()` 不是命令启动的第一步。正确链路是：CLI 封存 `Environment` →
+`Host` 发现 Ghost manifest 并构造 `GhostRuntime` → Matrix 在构造期准备同一个未 bootstrap 的
+IoC Container → GhostRuntime 注册 Ghost providers 并校验 contracts → Matrix enter/bootstrap →
+`AureliusMeta.factory()` 创建 Agent、Memory 与反思器 → Ghost enter/启动追赶 → Mindflow 三循环。
+
+这个边界有两条通用契约：
+
+- Matrix 启动前读取 `MossRuntime.logger` 必须有无依赖的 `Environment.logger` 回退；不能等待
+  ConfigStore、Matrix provider 或 Aurelius 才能记录启动日志。
+- Ghost providers 必须在 Matrix bootstrap 前注册到同一个 Container；因此 Container 可在 Matrix
+  构造期取得，但只能在 Matrix enter 时 bootstrap。
+
+它们与 Aurelius 无关，`echo` 与任何未来 Ghost 都共享。TUI 在 Runtime enter 失败时必须同步
+打印 traceback；`closed / good bye` 只是正常收尾文案，不能作为启动成功的信号。
+
 ## 4. Moment、Stage 与 Commit 的写入机制
 
 ### 4.1 成功帧的写入规则
