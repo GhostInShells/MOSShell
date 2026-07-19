@@ -18,5 +18,7 @@
 # 保持为单文件模块 (非 package)。Matrix 扫描 name() == '__main__' 的 Channel 实例。
 
 from ghoshell_moss import new_default_shell_main_channel
+from ghoshell_moss.channels.terminal_channel import build_terminal_channel
 
 main = new_default_shell_main_channel()
+main.import_channels(build_terminal_channel())

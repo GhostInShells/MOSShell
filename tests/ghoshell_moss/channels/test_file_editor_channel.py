@@ -210,7 +210,7 @@ async def test_error_aborts_sequence(tmp_path, editor):
 @pytest.mark.asyncio
 async def test_build_factory_fallback_to_default(tmp_path):
     container = Container()
-    chan = build_file_editor_channel(container)
+    chan = build_file_editor_channel()(container)
     f = tmp_path / "hello.py"
     f.write_text("factory fallback works\n")
 

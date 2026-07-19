@@ -5,7 +5,9 @@ Example:
     from ghoshell_moss import new_shell_main_channel
     from ghoshell_moss.channels.terminal_channel import build_terminal_channel
     main = new_shell_main_channel()
-    main.import_channels(build_terminal_channel)
+    main.import_channels(build_terminal_channel())
+    # rename / retag:
+    main.import_channels(build_terminal_channel(name="sh"))
 
     # direct composition (tests / hand-wired scripts)
     from ghoshell_moss.channels.terminal_channel import new_terminal_channel
@@ -29,6 +31,7 @@ from ghoshell_moss.contracts.subprocesses import (
     Subprocesses,
 )
 from ghoshell_moss.core.blueprint.channel_builder import (
+    ChannelFactory,
     CommandUtil,
     MutableChannel,
     new_channel,
@@ -70,32 +73,45 @@ class ExitNotifyAddition(Addition):
 
 
 def build_terminal_channel(
-    container: IoCContainer,
     *,
-    channel_name: str = "bash",
-) -> Channel:
-    """IoC-integrated factory. Registered in workspace manifests providers.
+    name: str = "bash",
+    description: str | None = None,
+) -> ChannelFactory:
+    """High-order factory: configure name/description, return a ChannelFactory.
+
+    Configuration (name/description) is decoupled from IoC — because
+    ``ChannelFactory`` is ``(IoCContainer) -> Channel``, config has no place
+    in that signature. Call ``build_terminal_channel(...)`` at declaration
+    time to get a factory, hand the factory to ``import_channels``.
 
     Resolves Subprocesses from the container (matrix environments register a
     per-Matrix singleton via MatrixSubprocessesProvider); falls back to a
     private SubprocessesImpl whose lifecycle the channel then manages itself.
     Default cwd derives from Workspace root when available.
 
-    :param container: IoC container (session / mode / process — determined
-        by whoever imported this factory).
-    :param channel_name: CTML tag name (default ``bash``).
+    :param name: CTML tag name (default ``bash``).
+    :param description: Override the built-in description; ``None`` = default.
     """
-    from ghoshell_moss.contracts.workspace import Workspace
 
-    cwd = ""
-    ws = container.get(Workspace)
-    if ws is not None:
-        cwd = ws.root().abspath()
-    processes = container.get(Subprocesses)
-    if processes is None:
-        from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
-        processes = SubprocessesImpl(cwd=cwd or None)
-    return new_terminal_channel(processes, cwd=cwd, channel_name=channel_name)
+    def factory(container: IoCContainer) -> Channel:
+        from ghoshell_moss.contracts.workspace import Workspace
+
+        cwd = ""
+        ws = container.get(Workspace)
+        if ws is not None:
+            cwd = ws.root().abspath()
+        processes = container.get(Subprocesses)
+        if processes is None:
+            from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
+            processes = SubprocessesImpl(cwd=cwd or None)
+        return new_terminal_channel(
+            processes,
+            cwd=cwd,
+            name=name,
+            description=description,
+        )
+
+    return factory
 
 
 # -- composition primitive (contract consumer, no IoC knowledge) ------------
@@ -105,7 +121,8 @@ def new_terminal_channel(
     processes: Subprocesses,
     *,
     cwd: str = "",
-    channel_name: str = "bash",
+    name: str = "bash",
+    description: str | None = None,
 ) -> MutableChannel:
     """Compose a process-control channel over the Subprocesses contract.
 
@@ -123,17 +140,20 @@ def new_terminal_channel(
     :param cwd: default working directory for spawned commands
         (empty = current process cwd). Relative ``cwd`` command args
         resolve against it.
-    :param channel_name: CTML tag name.
+    :param name: CTML tag name.
+    :param description: Override the built-in description; ``None`` = default.
     """
     default_cwd = Path(cwd).resolve() if cwd else Path.cwd()
-
-    chan = new_channel(
-        name=channel_name,
-        description=(
+    if description is None:
+        description = (
             "Process control: run shell commands (exec), start background "
             "processes (run), inspect their output (read_output), stop them "
             "(stop). No shell session state — pass cwd explicitly per command."
-        ),
+        )
+
+    chan = new_channel(
+        name=name,
+        description=description,
     )
 
     spawned: dict[int, ManagedProcess] = {}
@@ -189,26 +209,35 @@ def new_terminal_channel(
     # -- exec (机制①: 同步阻塞, 占据 channel FIFO) --------------------------
 
     @chan.build.command(name="exec", blocking=True, always_observe=True)
-    async def exec_cmd(cmd: str, *, cwd: str = "", timeout: float = 60.0) -> str:
+    async def exec_cmd(text__: str = "", *, cwd: str = "", timeout: float = 60.0) -> str:
         """Run a shell command and wait for its result.
 
         Occupies this channel until done — chain dependent steps through it.
+        The command body is passed as the tag body (open-close tag). Wrap in
+        ``<![CDATA[...]]>`` when it contains shell metacharacters (``&``,
+        ``<``, ``>``, ``|``) so you do not have to XML-escape them.
 
-        :param cmd: shell command line (pipes / redirection supported)
+        :param text__: shell command line (pipes / redirection supported)
         :param cwd: working directory (relative to the channel default cwd,
             empty = default)
         :param timeout: max seconds to wait; on timeout the process is stopped
         """
         import asyncio
 
+        cmd = text__.strip()
+        if not cmd:
+            return CommandUtil.observe(
+                "[exec] empty command — put the shell line inside the tag body, "
+                "e.g. <bash:exec><![CDATA[ls foo]]></bash:exec>"
+            )
         managed = await processes.shell(
             cmd,
             cwd=_resolve_cwd(cwd),
             capture=CaptureSpec(buffer_lines=_EXEC_BUFFER_LINES),
         )
         index = managed.meta.index
-        spawned[index] = managed
-        _prune_dead()
+        # exec 是一次性同步命令, 结果已完整返回 — 不进 spawned dict.
+        # read_output / stop 只作用于 run 起的后台进程.
         try:
             await asyncio.wait_for(managed.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -228,7 +257,7 @@ def new_terminal_channel(
 
     @chan.build.command(name="run", blocking=False, always_observe=True)
     async def run_cmd(
-        cmd: str,
+        text__: str = "",
         *,
         name: str = "",
         cwd: str = "",
@@ -236,17 +265,26 @@ def new_terminal_channel(
     ) -> str:
         """Start a background process. Returns immediately with its index.
 
+        The command body is passed as the tag body (open-close tag). Wrap in
+        ``<![CDATA[...]]>`` when it contains shell metacharacters.
+
         The process keeps running while you do other things; when it ends
         you will be told about it. Check on it any time with
         ``read_output(index)``. Background processes never outlive this
         channel.
 
-        :param cmd: shell command line
+        :param text__: shell command line
         :param name: short label for the process (defaults to the command)
         :param cwd: working directory (relative to the channel default cwd)
         :param notify: how prominently to surface the end-of-process notice —
             ``background`` (quiet, default) | ``info`` | ``notice`` | ``warning``
         """
+        cmd = text__.strip()
+        if not cmd:
+            return CommandUtil.observe(
+                "[run] empty command — put the shell line inside the tag body, "
+                "e.g. <bash:run><![CDATA[python worker.py]]></bash:run>"
+            )
         level = notify if notify in _NOTIFY_LEVELS else "background"
         managed = await processes.shell(
             cmd,
@@ -302,7 +340,7 @@ def new_terminal_channel(
         """
         managed = spawned.get(index)
         if managed is None:
-            CommandUtil.raise_observe(
+            return CommandUtil.observe(
                 f"[#{index}] unknown process index (yours: {sorted(spawned)})"
             )
         body = _output_text(managed, offset=offset, limit=limit)
@@ -323,13 +361,13 @@ def new_terminal_channel(
         """
         managed = spawned.get(index)
         if managed is None:
-            CommandUtil.raise_observe(
+            return CommandUtil.observe(
                 f"[#{index}] unknown process index (yours: {sorted(spawned)})"
             )
         await managed.stop(timeout=timeout)
         return f"[#{index} stopped, exit: {managed.process.returncode}]"
 
-    # -- context messages (own-only 后台任务简表) ---------------------------
+    # -- context messages (own-only 后台任务简表, run 起的进程) ------------
 
     @chan.build.context_messages
     def terminal_context() -> list[str]:
@@ -338,18 +376,21 @@ def new_terminal_channel(
         now = datetime.now().timestamp()
         for index, managed in spawned.items():
             meta = managed.meta
+            cmd_preview = meta.command if len(meta.command) <= 60 else meta.command[:57] + "..."
             if managed.process.returncode is None:
                 uptime = int(now - meta.created)
                 running.append(
-                    f"  #{index} '{meta.name}' pid={meta.pid} uptime={uptime}s"
+                    f"  #{index} '{meta.name}' pid={meta.pid} uptime={uptime}s "
+                    f"cmd={cmd_preview!r}"
                 )
             else:
                 exited.append(
-                    f"  #{index} '{meta.name}' exit={managed.process.returncode}"
+                    f"  #{index} '{meta.name}' exit={managed.process.returncode} "
+                    f"cmd={cmd_preview!r}"
                 )
         if not running and not exited:
             return []
-        lines = [f"[{chan.name()}] processes (read_output(index) to inspect):"]
+        lines = [f"[{chan.name()}] background processes (read_output(index) to inspect):"]
         if running:
             lines.append("running:")
             lines.extend(running)

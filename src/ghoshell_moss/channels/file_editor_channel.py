@@ -5,7 +5,9 @@ Example:
     from ghoshell_moss import new_shell_main_channel
     from ghoshell_moss.channels.file_editor_channel import build_file_editor_channel
     main = new_shell_main_channel()
-    main.import_channels(build_file_editor_channel)
+    main.import_channels(build_file_editor_channel())
+    # rename / retag:
+    main.import_channels(build_file_editor_channel(name="fs"))
 
     # direct composition (tests / hand-wired scripts)
     from ghoshell_moss.channels.file_editor_channel import new_file_editor_channel
@@ -26,6 +28,7 @@ from ghoshell_moss.contracts.file_editor import (
     ParameterMissingError,
 )
 from ghoshell_moss.core.blueprint.channel_builder import (
+    ChannelFactory,
     CommandUtil,
     MutableChannel,
     new_channel,
@@ -40,11 +43,16 @@ __all__ = ["new_file_editor_channel", "build_file_editor_channel"]
 
 
 def build_file_editor_channel(
-    container: IoCContainer,
     *,
-    channel_name: str = "file_editor",
-) -> Channel:
-    """IoC-integrated factory. Registered in workspace manifests providers.
+    name: str = "file_editor",
+    description: str | None = None,
+) -> ChannelFactory:
+    """High-order factory: configure name/description, return a ChannelFactory.
+
+    Configuration (name/description) is decoupled from IoC — because
+    ``ChannelFactory`` is ``(IoCContainer) -> Channel``, config has no place
+    in that signature. Call ``build_file_editor_channel(...)`` at declaration
+    time to get a factory, hand the factory to ``import_channels``.
 
     Resolves FileEditor from the container; falls back to DefaultFileEditor()
     if no provider is registered. The fallback is intentional — file editor
@@ -52,13 +60,15 @@ def build_file_editor_channel(
     Undo scope, workspace boundary, size caps are all decided by the
     provider (whoever registers a FileEditor into which scope of container).
 
-    :param container: IoC container (session / mode / process — determined
-        by whoever imported this factory).
-    :param channel_name: CTML tag name (default ``file_editor``). Change
-        if renaming under a parent channel via ``import_channels``.
+    :param name: CTML tag name (default ``file_editor``).
+    :param description: Override the built-in description; ``None`` = default.
     """
-    editor = container.get(FileEditor) or DefaultFileEditor()
-    return new_file_editor_channel(editor, channel_name=channel_name)
+
+    def factory(container: IoCContainer) -> Channel:
+        editor = container.get(FileEditor) or DefaultFileEditor()
+        return new_file_editor_channel(editor, name=name, description=description)
+
+    return factory
 
 
 # -- composition primitive (contract consumer, no IoC knowledge) ------------
@@ -67,7 +77,8 @@ def build_file_editor_channel(
 def new_file_editor_channel(
     editor: FileEditor,
     *,
-    channel_name: str = "file_editor",
+    name: str = "file_editor",
+    description: str | None = None,
 ) -> MutableChannel:
     """Compose a file editor channel over a FileEditor contract.
 
@@ -85,14 +96,17 @@ def new_file_editor_channel(
     commands from running blind.
 
     :param editor: FileEditor contract implementation.
-    :param channel_name: CTML tag name.
+    :param name: CTML tag name.
+    :param description: Override the built-in description; ``None`` = default.
     """
-    chan = new_channel(
-        name=channel_name,
-        description=(
+    if description is None:
+        description = (
             "Structured file editor — view / create / str_replace / insert / "
             "undo_edit. Absolute paths only. For directory listing use bash/glob."
-        ),
+        )
+    chan = new_channel(
+        name=name,
+        description=description,
     )
 
     # -- view (nonblocking, always_observe) --------------------------------
