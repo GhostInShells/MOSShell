@@ -49,6 +49,10 @@ status_note: >-
   CTML channel 层从未落地. K14 装配等 SPEC 就绪 + K49 重命名完成后启动.
   K34 完成 — 旧 Stage 1 代码 (12+1 原语 1548 行) 已由 d75a0112 (07-14)
   删除. 从"已知未决"移出.
+  2026-07-19 追补 K50~K54: 包结构隔离 vs 物理拆库两层分离 (K50), frame
+  拓扑修订加 `## ground:content` heading + args 始终引号 (K51), switch_to
+  (move = pop+enter) 语义留位 (K52), feature 目录改名待议 — K49 "保留 git
+  历史" 被覆盖 (K53), 零魔法值纪律 — label 长度 / ls depth 转命名常量 (K54).
   未决 (给下一实例): K23 (L2 引导地址) / K24 (侧影载体位置) / K25 (向下场
   声明的形状) / K40 (K35 合成语义与 K28 幂等的冲突) / K41 (pin 类型扩展)
   / K43 (.grands/ 回退路线); 多认知方法开放; Ghost 认知场初始化等 GROUND.md
@@ -274,6 +278,92 @@ commit.
   `core/desktop/models.py` 65 + `tests/.../test_desktop.py` 529). 从
   "已知未决" 移出.
 
+### 07-19 追补 (K50~K54)
+
+K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修订 /
+新动作留位 / feature 目录改名 / 实现纪律.
+
+- **K50. 包结构隔离 vs 物理拆库 — 两层分离** — SPEC §9 已明确语言无关性,
+  ground 是一个协议, Python 侧只是 reference implementation. 协议边界
+  值得在包结构上可见.
+  - **层次 A (包结构隔离)**: `ghoshell_moss.ground` 独立子包, 公共 API
+    在 `ground/__init__.py` 显式声明. **K49 重命名同期完成** (顺路比事后
+    折腾便宜). 结构提议:
+    ```
+    src/ghoshell_moss/ground/
+      __init__.py              # 公共 API
+      contracts.py             # ABC 层 (原 contracts/desktop.py)
+      SPECIFICATION.md         # SPEC 契约 (随目录搬)
+      core/                    # concrete 层 (原 core/desktop/)
+      pin_types/               # 四 verb 实现 (K45)
+      channel.py               # CTML channel 装配 (K14, 未做, 位置留位)
+    src/ghoshell_moss/cli/ground_cli.py     # CLI 仍在 cli/ 树
+    ```
+  - **层次 B (物理拆库为独立 PyPI `ghoshell-ground`)**: **现在过早**.
+    判据 = SPEC 稳定 3~6 个月 dogfooding + 3+ 非 MOSS 消费者信号.
+    落到 milestone 0.2.0 之后评估.
+  - **依赖体检结论 (支撑 B 可行性)**: pin verbs / GROUND.md 解析 / frame
+    渲染 / Grounds ABC — 全部 stdlib + pathspec + pyyaml, MOSS-free.
+    CTML channel 装配 (channel.py) 强耦合 MOSS Channel/Scope/GhostWorkspace,
+    未来拆库时这层留在 MOSS 侧. 这个天然分层意味着未来拆库的物理边界已经
+    在包结构里画好.
+
+- **K51. Frame 拓扑修订 — 加 `## ground:content` heading + args 引号纪律**
+  — SPEC §6 原稿结果区直接列 fenced blocks, 无 heading 标签. 本轮修订:
+  - 结果区加 `## ground:content` heading. 与声明区 `## ground:pins`
+    对称, 语义分组明确, body 里的自由 heading 用 `ground:` 前缀命名空间
+    保护 (body 写 `## Motivation` 不与分隔符打架).
+  - 声明区 args 里的字符串**始终引号** (`file("FEATURE.md")` 而非
+    `file(FEATURE.md)`). 代价 4 字符/pin, 收益 = 解析规则一致, 模型
+    不需推断 shell 引号规则. SPEC §6 原稿的 "quoted where they contain
+    whitespace or shell-significant characters" 被覆盖.
+  - **同构原则**: 渲染格式与 GROUND.md 存储格式在骨架上同构 —
+    存储 `## ground:pins` 是 YAML 段, 渲染 `## ground:pins` 是每行一 pin
+    的声明块 (`label:verb(args) # description`), 语义都是 "pin 清单",
+    模型习得成本最低.
+
+- **K52. `switch_to` (move = pop + enter) 语义留位** — SPEC §7.1 只有
+  open/close, 缺 move. 本轮不实现, 但在 SPEC 加 §7.1.1 reserved 段
+  锁定语义:
+  - API: `Grounds.switch_to(dir, label=None) -> Ground` = `close(active) +
+    open(dir)` 的原子化.
+  - **语义分野**: exit 触发 drain (K19), **move 不触发 drain**. 理由:
+    move 是 "移步换景", Ghost 并未真正 "离开" 意识流, 工作记忆不该被归档.
+  - **与 Memento 的第二个耦合点**: 一系列 move 组成 Ghost 的 trajectory
+    breadcrumb, 本身是需要 commit 的 moment. 与 K19 promote-drain 是
+    ground↔memento 两条独立耦合线.
+  - **与 Mindflow 的耦合**: move = attention spotlight 的连续平移
+    (vs exit+enter 的离散槽切换). 如果 mindflow 未来把 attention 建模为
+    可连续变换的量, move 是它的自然原语.
+  - **实现窗口**: K19 drain 落定 + Memento §14 (checkout(commit_id,
+    moment_id)) 完成后启动. 本 feature 不做, 只在 SPEC 留 stub 锁形状.
+
+- **K53. Feature 目录改名 (K49 "保留 git 历史" 被覆盖)** — 原 K49 判定
+  "feature 目录名 ghost-filesystem-desktop 保留 (git 历史语义, 不动
+  发现链)". 本轮覆盖. 理由:
+  - 全库 desktop→ground 后, 保留 desktop 后缀的 feature 目录成为
+    "未申明的语言" — 未来模型看到 K49 说保留 git 历史, 但代码 / CLI /
+    文档全部用 ground, 语义会崩.
+  - "git 历史语义" 用 `git mv` 保留 (rename 检测由 git 自动完成),
+    不需要靠目录名承担.
+  - "不动发现链" 由 features 体系的 `list/status` 命令承担, 也不需要
+    靠目录名.
+  - **候选名待议**: `ghost-ground` / `ghost-cognitive-ground` /
+    `cognitive-ground` / `ground` (纯名). 选择原则 = 与 momento-mori
+    同族命名 (Ghost 认知基建), 与全库 ground 术语统一, 短.
+
+- **K54. 零魔法值纪律 (SPEC 落代码时的强判)** — SPEC 里有两处需要
+  rationale 或转为命名常量:
+  - **SPEC §4 `label` 长度 63** — rationale 未有. 提为 `PIN_LABEL_MAX_LEN
+    = 63` 常量 + 注释说明选择 (可能是 "1 byte length prefix + 64 chars"
+    历史约定, 或者只是 "看着够用" — 后者要在注释里承认).
+  - **SPEC §5.4 `ls` 默认 `depth = 2`** — 提为 `LS_DEFAULT_DEPTH = 2`
+    常量, 注释 "一屏可扫的默认值".
+  - 其余边界令牌 (`GROUND.md` / `## ground:pins` / `## ground:content` /
+    四 verb 名字 / CLI 四动词) 都有 K44~K49 撑腰, 是 "命名的边界令牌",
+    不是魔法值; 但仍作模块级常量, 便于协议演进时集中修改.
+  - 实现时全库 grep `\d+` 与硬编码字符串, 逐个判 rationale.
+
 ## 已知未决 (给下一个实例)
 
 - **K23 (L2 模板库引导地址)** — moss 侧已定 .ai_partners/ (K38). 残余问题:
@@ -305,25 +395,43 @@ commit.
 
 ## 下一步 (2026-07-19 视角)
 
-**先手动**: 用户 IDE 重命名 desktop → ground 全库 (代码 + CLI + 文件路径).
+**07-19 追补对落地顺序的影响** (K50/K53 同期化, K51/K52/K54 后置):
 
-**然后按 SPEC 重写**:
+- 重命名不是纯 `desktop → ground` 的字符串替换. K50 A 层同期完成:
+  concrete 从 `core/desktop/` 收拢到 `ghoshell_moss.ground/` 子包
+  (`contracts.py` 从 `contracts/desktop.py` 迁入, `core/` 保留, 加
+  `pin_types/` 子目录, `SPECIFICATION.md` 随目录搬).
+- K53 feature 目录改名: `.ai_partners/features/workstreams/2026/06/
+  ghost-filesystem-desktop/` → 新名 (待议). 用 `git mv` 保留历史.
+- SPEC 修订 (K51 加 `## ground:content` heading + args 引号 / K52 §7.1.1
+  switch_to reserved 段 / K54 两个常量的 rationale) 在人工重命名完成后
+  与代码同期落地. 位置对齐后一次改, 避免同一文件两轮编辑.
 
-1. `contracts/ground.py` — Pin 字段调整 (label/pin/description; 撤 addr/note/pinned_at);
+**先手动**: 用户 IDE 重命名 desktop → ground 全库 (代码 + CLI + 文件路径),
+
+**然后按 SPEC 重写** (路径按 K50 A 层 `ghoshell_moss.ground/` 子包):
+
+1. `ground/contracts.py` — Pin 字段调整 (label/pin/description; 撤 addr/note/pinned_at);
    GroundConvention 加 `$id: str | None` (pydantic alias `$id`), 撤 `template`;
-   Ground ABC 保持完整动词 (K21 红利).
-2. `core/ground/_l0.py` — 常量 `GROUND.md` + `## ground:pins`; pin 段 YAML
-   shape 按 SPEC (`pin: [verb, args]`); Pin 反序列化按 argv.
-3. `core/ground/_ground.py` — pin 内部走 argv dispatcher; load() 结束后对所有
+   Ground ABC 保持完整动词 (K21 红利); §7.1.1 `switch_to` 作 stub (K52).
+2. `ground/core/_l0.py` — 常量 `GROUND_FILENAME = "GROUND.md"` + `PINS_HEADING
+   = "## ground:pins"` (K54); pin 段 YAML shape 按 SPEC (`pin: [verb, args]`);
+   Pin 反序列化按 argv; `PIN_LABEL_MAX_LEN = 63` 常量 (K54).
+3. `ground/core/_ground.py` — pin 内部走 argv dispatcher; load() 结束后对所有
    pin 并行 observe 一次 (populate 运行时侧影); pin/update 不写 seen_* 到盘.
-4. `core/ground/_render.py` — 按 K47 拓扑重写 (head + body + 声明区 + 结果区);
-   fenced block 用 label 作 lang tag; 声明区行格式 `label:verb(args) # description`.
-5. `core/ground/_pin_types.py` (新) — 四个 pin verb 实现 (file/glob/frontmatter/ls);
-   pathspec 依赖引入; 失败模式按 SPEC.
-6. `cli/ground_cli.py` — 收敛到四命令 (spec/init/frame/observe); 撤原六命令.
-7. 单测按新形状全部重写 (test_l0.py / test_ground.py / test_grounds.py /
+4. `ground/core/_render.py` — 按 K47 + K51 拓扑重写: head + body + `## ground:pins`
+   声明区 + `## ground:content` 结果区; fenced block 用 label 作 lang tag;
+   声明区行格式 `label:verb("arg1", "arg2") # description` (args 始终引号, K51).
+5. `ground/pin_types/` (新子目录) — 四个 pin verb 实现, 每 verb 一个文件
+   (`file.py` / `glob.py` / `frontmatter.py` / `ls.py`); `LS_DEFAULT_DEPTH = 2`
+   常量 (K54); pathspec 依赖引入; 失败模式按 SPEC.
+6. `ground/__init__.py` — 公共 API 显式声明 (K50 A 层边界).
+7. `cli/ground_cli.py` — 收敛到四命令 (spec/init/frame/observe); 撤原六命令.
+8. 单测按新形状全部重写 (test_l0.py / test_ground.py / test_grounds.py /
    test_render.py + 新 test_pin_types.py). 87 单测预计缩到 ~40 (原 pin/update
    的观察态测试大量作废).
+9. SPEC §6 修订 (加 `## ground:content` heading + args 引号 K51) + §7.1.1
+   `switch_to` reserved 段 (K52) + §4 §5.4 两个常量 rationale (K54).
 
 **验收**:
 - 全量单测跑绿
