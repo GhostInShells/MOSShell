@@ -5,15 +5,15 @@ def test_normal_logos_hides_ctml_controls_but_keeps_reply():
     logos = (
         '<ghost:memory_commit summary="internal" />\n'
         "收到，设备 R-71 的颜色是琥珀色。\n"
-        '<ghost:memory_claims _cid="2" />'
+        '<ghost:memory_search keyword="R-71" />'
     )
     assert _normal_logos_text(logos) == "收到，设备 R-71 的颜色是琥珀色。"
 
 
-def test_normal_logos_hides_paired_command_payload_and_keeps_safe_wrapper_text():
+def test_normal_logos_hides_paired_command_payload_and_keeps_wrapper_text():
     logos = (
         '<mcp:exec server="memory">private payload</mcp:exec>\n'
-        "<memory_recall_verified>AMBER-731，staging。</memory_recall_verified>"
+        "AMBER-731，staging。"
     )
     assert _normal_logos_text(logos) == "AMBER-731，staging。"
 

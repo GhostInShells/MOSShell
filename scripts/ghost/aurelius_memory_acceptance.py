@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from ghoshell_moss.core.blueprint.mindflow import Moment
-from ghoshell_moss.ghosts.aurelius import AureliusMemory, MemoryProjection
+from ghoshell_moss.ghosts.aurelius import AureliusMemory
 from ghoshell_moss.message import Message
 
 
@@ -41,15 +41,16 @@ def verify(root: Path) -> None:
     assert "已记录" in text, "persisted Ghost response was not restored"
     state = reopened.inspect()
     assert state["commit_count"] == 1, state
-    projection = MemoryProjection(reopened)
-    packet = projection.recall("本轮测试代号和所属环境是什么？")
-    assert packet.status == "ok", packet
-    assert {claim.value for claim in packet.claims} == {token, "staging"}, packet
-    assert projection.verify(f"{token}，staging。", packet).accepted
-    assert not projection.verify("ORBIT-004，staging。", packet).accepted
+
+    # Grep-style recall over the frozen trajectory — no Claim/verifier layer.
+    hits = reopened.search(token)
+    assert hits, "search found no frozen evidence for the persisted fact"
+    assert any(token in hit.snippet for hit in hits), hits
+    # A term never written must return nothing (fail closed, not guess).
+    assert not reopened.search("ORBIT-999"), "search fabricated a hit"
     reopened.close()
 
-    print("PASS: Aurelius write -> commit -> reopen -> project -> recall -> verify")
+    print("PASS: Aurelius write -> commit -> reopen -> restore -> search")
     print(f"root={root}")
     print(f"commit_count={state['commit_count']} staging_count={state['staging_count']}")
 

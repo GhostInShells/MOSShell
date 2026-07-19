@@ -9,6 +9,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 try:  # pydantic-ai 2.x renamed the chat-completions model.
     from pydantic_ai.models.openai import OpenAIChatModel as OpenAICompatibleModel
@@ -27,10 +28,10 @@ from ._config import MemoryConfig
 __all__ = ["AureliusMeta"]
 
 _MEMORY_OPERATION_LAW = """
-记忆运行规则：完成的 Moment 会自动持久化，事实型记忆问题也会由 Aurelius 自动执行有界召回与校验。
-普通对话中不得主动调用 memory_* 管理命令，不得为了“记住”逐条 commit，也不得自行执行 claims 审计。
-用户明确要求记忆运维、审计、分支或重释义时，应引导其使用显式 Shell/CTML 管理面，不得伪造结果。
-默认只给出完成当前请求所需的简洁答复；除非用户明确要求，不披露 CTML、commit、Claim、Evidence 或内部进度。
+记忆运行规则：完成的 Moment 会自动持久化。memory_search / memory_show / memory_log 用于逐字查回记忆，
+可按需调用；memory_commit / memory_fork / memory_reinterpret 等运维命令普通对话中不主动使用，
+用户明确要求记忆运维、审计、分支或重释义时才用，且不得伪造结果。
+默认只给出完成当前请求所需的简洁答复；除非用户明确要求，不主动罗列 CTML、commit 或内部进度。
 """.strip()
 
 
@@ -55,7 +56,8 @@ class AureliusMeta(GhostMeta):
         memory_summary_m: int | None = None,
         auto_commit_every: int | None = None,
         reflection_enabled: bool | None = None,
-        knowledge_enabled: bool | None = None,
+        curation_model: Model | None = None,
+        curation_enabled: bool | None = None,
         desktop_enabled: bool | None = None,
         desktop_root: str | Path | None = None,
         on_agent_build: Callable[[Agent[IoCContainer]], None] | None = None,
@@ -76,7 +78,8 @@ class AureliusMeta(GhostMeta):
         self._memory_summary_m = memory_summary_m
         self._auto_commit_every = auto_commit_every
         self._reflection_enabled = reflection_enabled
-        self._knowledge_enabled = knowledge_enabled
+        self._curation_model = curation_model
+        self._curation_enabled = curation_enabled
         self._desktop_enabled = desktop_enabled
         self._desktop_root = Path(desktop_root) if desktop_root is not None else None
         self._on_agent_build = on_agent_build
@@ -110,6 +113,9 @@ class AureliusMeta(GhostMeta):
         if self.soul_content:
             parts.append(self.soul_content)
         parts.append(_MEMORY_OPERATION_LAW)
+        discipline = self._memory_config(container).memory_discipline.strip()
+        if discipline:
+            parts.append(discipline)
         return "\n".join(parts)
 
     def build_instruction(self, context: RunContext[IoCContainer]) -> str:
@@ -159,12 +165,23 @@ class AureliusMeta(GhostMeta):
         workspace = container.get(GhostWorkspace)
         if workspace is not None:
             self._load_soul(workspace)
-        model = self._model or self._build_configured_model(self._resolved_model(container))
+        # An injected model carries its own settings; only a configured model needs the
+        # contract's max_output_tokens wired in. Without it pydantic-ai falls back to the
+        # provider default max_tokens, which rejects longer replies before generation
+        # ("token limit (provider default) exceeded") even though the prompt fits easily.
+        model_settings: ModelSettings | None = None
+        if self._model is not None:
+            model = self._model
+        else:
+            resolved = self._resolved_model(container)
+            model = self._build_configured_model(resolved)
+            model_settings = ModelSettings(max_tokens=resolved.model.max_output_tokens)
         agent = Agent[IoCContainer](
             name=self._name,
             description=self._description,
             instructions=self.build_instruction,
             model=model,
+            model_settings=model_settings,
         )
         if self._on_agent_build is not None:
             self._on_agent_build(agent)
@@ -193,11 +210,42 @@ class AureliusMeta(GhostMeta):
             model=model,
         )
 
+    def build_curation_agent(
+        self,
+        container: IoCContainer,
+        config: MemoryConfig,
+        *,
+        enabled: bool,
+    ) -> Agent[IoCContainer] | None:
+        if not enabled:
+            return None
+        model = self._curation_model or self._model
+        if model is None:
+            model = self._build_configured_model(
+                self._resolved_model(container, tag=config.curation_model_tag),
+            )
+        return Agent[IoCContainer](
+            name=f"{self._name}-memory-curator",
+            description="Background Memento curation worker; writes a pinned notes file.",
+            model=model,
+        )
+
     def factory(self, container: IoCContainer) -> Ghost:
         from ._runtime import Aurelius
 
         workspace = container.force_fetch(GhostWorkspace)
         config = self._memory_config(container)
+        # Input budget comes from the model contract; an injected model has no contract
+        # so budgeting is disabled (0) and the overflow-retry fallback still guards.
+        context_input_budget = 0
+        if self._model is None:
+            model_config = self._resolved_model(container).model
+            context_input_budget = max(
+                model_config.context_window
+                - model_config.max_output_tokens
+                - config.context_token_margin,
+                0,
+            )
         reflection_enabled = (
             self._reflection_enabled if self._reflection_enabled is not None else config.reflection_enabled
         )
@@ -212,8 +260,8 @@ class AureliusMeta(GhostMeta):
         auto_commit_every = (
             self._auto_commit_every if self._auto_commit_every is not None else config.auto_commit_every
         )
-        knowledge_enabled = (
-            self._knowledge_enabled if self._knowledge_enabled is not None else config.knowledge_enabled
+        curation_enabled = (
+            self._curation_enabled if self._curation_enabled is not None else config.curation_enabled
         )
         desktop_enabled = self._desktop_enabled if self._desktop_enabled is not None else config.desktop_enabled
         project = container.get(Project)
@@ -238,12 +286,17 @@ class AureliusMeta(GhostMeta):
             reflection_max_source_chars=config.reflection_max_source_chars,
             reflection_startup_limit=config.reflection_startup_limit,
             reflection_enabled=reflection_enabled,
-            knowledge_enabled=knowledge_enabled,
-            knowledge_user_sources=config.knowledge_user_sources,
-            knowledge_trusted_tool_sources=config.knowledge_trusted_tool_sources,
-            knowledge_recall_limit=config.knowledge_recall_limit,
-            knowledge_evidence_max_chars=config.knowledge_evidence_max_chars,
+            curation_agent=self.build_curation_agent(container, config, enabled=curation_enabled),
+            curation_notes_path=Path(desktop_root) / config.curation_notes_name,
+            curation_max_source_chars=config.curation_max_source_chars,
+            curation_max_notes_chars=config.curation_max_notes_chars,
+            curation_enabled=curation_enabled,
+            curation_index_sources=config.curation_index_sources,
             desktop_enabled=desktop_enabled,
             desktop_workspace_root=project_root,
             desktop_root=desktop_root,
+            context_budget_enabled=config.context_budget_enabled,
+            context_input_budget=context_input_budget,
+            context_min_detail_n=config.context_min_detail_n,
+            context_fixed_overhead_tokens=config.context_fixed_overhead_tokens,
         )

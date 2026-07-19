@@ -5,71 +5,40 @@ from collections.abc import Callable
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel, new_channel
 
 from ._desktop import AureliusDesktop
-from ._knowledge import MemoryProjection
 from ._memory import AureliusMemory
 
 __all__ = ["new_memento_channel"]
 
 
-def _memory_claims_view(knowledge: MemoryProjection, *, detail: bool, limit: int) -> dict:
-    if limit < 1 or limit > 100:
-        raise ValueError("limit must be between 1 and 100")
-    snapshot = knowledge.snapshot()
-    result = knowledge.inspect()
-    selected_claims = snapshot.claims[:limit]
-    if detail:
-        result.update({
-            "claims": [claim.model_dump(mode="json") for claim in selected_claims],
-            "candidates": [item.model_dump(mode="json") for item in snapshot.candidates[:limit]],
-            "claims_truncated": len(snapshot.claims) > limit,
-            "candidates_truncated": len(snapshot.candidates) > limit,
-        })
-        return result
-    result.update({
-        "claims": [
-            {
-                "key": claim.key,
-                "value": claim.value,
-                "kind": claim.kind,
-                "status": claim.status,
-                "subject_scope": claim.subject_scope,
-                "confidence": claim.confidence,
-            }
-            for claim in selected_claims
-        ],
-        "claims_truncated": len(snapshot.claims) > limit,
-        "detail": "set detail=true to include bounded evidence and candidates",
-    })
-    return result
-
-
 def new_memento_channel(
     memory: AureliusMemory,
     *,
-    knowledge: MemoryProjection | None = None,
     desktop: AureliusDesktop | None = None,
     on_reflect: Callable[[], None] | None = None,
+    on_curate: Callable[[], None] | None = None,
 ) -> MutableChannel:
     """Expose only the Aurelius owner's current branch; cross-owner writes stay impossible."""
     channel = new_channel(
         name="ghost",
         description=(
-            "Aurelius 的受限认知控制面。完成的 Moment 和事实 Recall 已自动处理；"
-            "memory_* 是仅供用户显式运维/审计的隐藏命令，普通对话不得主动调用。"
+            "Aurelius 的认知控制面。过去发生的一切都在 Memento 轨迹里，可用 memory_search / "
+            "memory_show 逐字查回原文。回答具体事实前若上下文不明确可见，先查证再作答。"
         ),
     )
 
-    @channel.build.command(visible=False)
-    def memory_inspect() -> dict:
-        """查看当前 Memento 分支、暂存区、commit 与反思追赶状态。"""
-        state = memory.inspect()
-        if knowledge is not None:
-            state["knowledge"] = knowledge.inspect()
-        return state
+    # These three read the trajectory to answer the current question, so their result
+    # MUST feed the next Re-Act cycle. Without always_observe the model — following the
+    # discipline instruction to "search first, then answer" — would emit memory_search,
+    # get the hits, and never observe them back: the turn settles silently. That is the
+    # exact failure on a canonical-key question like "ORBIT-004".
+    @channel.build.command(always_observe=True)
+    def memory_search(keyword: str, limit: int = 20) -> list[dict]:
+        """在本 owner 的记忆轨迹里逐字检索关键词，返回命中的稳定地址（commit/moment）与片段。"""
+        return [hit.model_dump(mode="json") for hit in memory.search(keyword, limit=limit)]
 
-    @channel.build.command(visible=False)
+    @channel.build.command(always_observe=True)
     def memory_log() -> str:
-        """列出当前时间线的 commit 锚点和释义。"""
+        """列出当前时间线的 commit 锚点和释义，像 git log。"""
         views = memory.branch.all_commits()
         lines = [f"commits={len(views)} staging={len(memory.branch.staging())}"]
         lines.extend(
@@ -78,16 +47,21 @@ def new_memento_channel(
         )
         return "\n".join(lines)
 
+    @channel.build.command(always_observe=True)
+    def memory_show(commit: str) -> str:
+        """按 commit 序号或唯一 id 前缀展开冻结的原始 Moment，逐字取回证据。"""
+        return memory.describe_commit(commit)
+
+    @channel.build.command(visible=False)
+    def memory_inspect() -> dict:
+        """查看当前 Memento 分支、暂存区、commit 与反思追赶状态。"""
+        return memory.inspect()
+
     @channel.build.command(visible=False)
     def memory_staging() -> str:
         """查看尚未冻结的完成 Moment；原文仍在 owner 的 staging 中。"""
         records = memory.branch.staging()
         return "\n".join(f"moment={record.id} type={record.type}" for record in records) or "staging is empty"
-
-    @channel.build.command(visible=False)
-    def memory_show(commit: str) -> str:
-        """按 commit 序号或唯一 id 前缀展开冻结的原始 Moment。"""
-        return memory.describe_commit(commit)
 
     @channel.build.command(visible=False)
     def memory_commit(summary: str) -> str:
@@ -126,17 +100,13 @@ def new_memento_channel(
         on_reflect()
         return "reflection catch-up scheduled"
 
-    if knowledge is not None:
-
-        @channel.build.command(visible=False)
-        def memory_recall(query: str) -> dict:
-            """按 canonical field 召回本 owner/current branch 的可验证 Claim。"""
-            return knowledge.recall(query).model_dump(mode="json")
-
-        @channel.build.command(visible=False)
-        def memory_claims(detail: bool = False, limit: int = 20) -> dict:
-            """有界审计；默认仅摘要，detail=true 才包含证据与候选。"""
-            return _memory_claims_view(knowledge, detail=detail, limit=limit)
+    @channel.build.command(visible=False)
+    def memory_curate() -> str:
+        """请求后台旁路策展：从冻结轨迹重写记忆笔记文件，不阻塞当前回合。"""
+        if on_curate is None:
+            return "curation is disabled"
+        on_curate()
+        return "curation scheduled"
 
     if desktop is not None:
 

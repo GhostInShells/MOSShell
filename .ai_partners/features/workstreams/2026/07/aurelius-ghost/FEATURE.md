@@ -2,15 +2,20 @@
 title: Aurelius Ghost
 status: in-progress
 status_note: >-
-  Aurelius/Memento trajectory is implemented. The current landing adds the P0
-  Evidence/Claim/Recall/verifier skeleton and P1 Ground lifecycle/context wiring
-  plus default-quiet TUI and bounded memory administration without changing Ghost,
-  Memento, or Desktop core contracts. Autobiographical
-  self-act recall, durable interruption continuation, P2 principal/audience
-  governance, and product-specific integrations remain future work.
+  Aurelius/Memento trajectory is implemented. The 2026-07-19 landing replaces the
+  earlier regex Evidence/Claim/Recall/verifier layer with grep-style memory_search +
+  memory_show paging, a memory-discipline instruction, and bypass curation; it also
+  fixes the CTML worker-thread scheduling crash, adds an in-process write lock, stamps
+  folded summaries with note_seq (no fabricated model turns), records failed frames
+  honestly, and adds input-side context budgeting: token-estimated window shrinking
+  plus provider-overflow retry, folding (never destroying) history per the Memento
+  stance. P1 Ground lifecycle/context wiring, default-quiet TUI, and bounded memory
+  administration stand, without changing Ghost, Memento, or Desktop core contracts.
+  Budget-triggered proactive semantic commit, precise tokenizers, autobiographical
+  self-act recall, P2 principal/audience governance remain future work.
 priority: P1
 created: 2026-07-13
-updated: 2026-07-18
+updated: 2026-07-19
 depends: [ghost-filesystem-desktop, momento-mori]
 milestone: 0.1.0
 description: >-
@@ -276,6 +281,81 @@ ghost.articulate(articulator):
 - **desktop 修改动作的落点** — 若 interleaved 方案成立, 经 ctml tool 顺解;
   若不成立, 首版 desktop read-mostly.
 
+## 上下文预算与自动压缩 (2026-07-19 落地 P1)
+
+### 缺口
+
+`articulate` 组装 history 时只按**帧数**切窗 (`window(detail_n=12, summary_m=-1)`), 与
+输入 token 无关: `summary_m=-1` 让折叠摘要**无界增长**, 多模态帧 (base64 图) 单帧就可能
+顶满窗口。articulate 只组装一次即发, 无 token 计数、无溢出捕获、无重试 — 输入超窗时请求
+直接失败, 对话中断, 且 `max_tokens` 修复救不了 (那是输出侧)。
+
+上下文压缩本是记忆的一等能力。行业做法分四层: ①滑窗+头部保留 ②主动触发压缩
+(Claude Code `/compact`、Codex auto-compaction, 逼近阈值即摘要替换) ③分层外部化
+(CLAUDE.md / RAG, 不常驻窗口) ④溢出兜底重试。Memento 的"折叠而非丢弃、原文
+`memory_show` 可缺页取回"就是第③层且**比 RAG 更保真** (无损)。所以我们借鉴 ②④ 的
+**触发时机与 token 预算工程**, 但压缩落点用自己的 commit/reinterpret 折叠机制, 不抄
+它们的有损摘要替换 — 这正是 momento-mori "对抗行业三种有损方案"的兑现点。
+
+### 落地方案 (本次实现 step 1+2, 收敛为同一机制)
+
+**token 预算 = `context_window - max_output_tokens - context_token_margin`。** 三个值都取
+自 `ResolvedModel` 契约 (`context_window`/`max_output_tokens` 已存在), margin 为估算误差
++ 输出 headroom 的安全垫。估算器 `_budget.py` 走 char/CJK 保守除数, base64 图按固定
+名义 token 计 (不计其 base64 长度, 否则严重高估)。**保守方向 = 高估输入 → 提前压缩**,
+估算不准由第④层兜底。
+
+- **step 2 主动预算 (`_budgeted_history`)**: 先按配置 `detail_n/summary_m` 渲染, 若
+  `估算(history)+固定开销 > 预算` 则收敛: **先降 `detail_n`** (明细帧折叠为摘要, 省 token
+  同时经 summary 仍可寻址), 再压 `summary_m` (最旧摘要移出上下文, 磁盘原文仍在,
+  `memory_show` 可取回), 直到入预算或触底 `min_detail_n`。折叠不销毁任何原文 —
+  只缩"渲染进上下文的量", 与 Memento 折叠哲学一致。
+- **step 1 溢出兜底 (`articulate` 重试环)**: 若 provider 仍以 `_is_context_overflow`
+  文案 (跨 anthropic/openai 归一) 拒绝, 且**尚未 yield 任何 token**, 则进一步腰斩窗口
+  重试。**已 yield 后一律上抛** (不能 un-yield, 也不与 attention abort 冲突: abort 非
+  overflow 文案, 直接上抛交 driver)。
+
+`inspect_context` 记录实际用的 `detail_n/summary_m/budget/estimated_tokens/shrunk`,
+压缩发生与否对人类/模型可见 (报账, 不藏)。`context_budget_enabled=False` 或注入
+TestModel 时退化为旧的一次性组装, 不改既有测试语义。
+
+### 仍未做 (留给后续)
+
+- **主动折叠 commit**: 目前压缩只在"渲染"层缩量, 未在逼近阈值时**主动 semantic
+  commit** 把最老明细真正冻结成摘要 (Claude Code auto-compact 的完整形态)。当前
+  auto_commit_every 已在 staging 侧做机械折叠, 二者合流 (预算触发→提前 commit) 是
+  下一步, 涉及"压缩要不要顺手改写轨迹"的产品取舍, 待定。
+- **精确 tokenizer**: 现用 char 估算 + 兜底重试, 未接 provider tokenizer。图 token 名义
+  值未按尺寸计算。真场景校准 margin/除数后再决定是否值得引精确计数。
+
+## 运行时缺陷 (2026-07-19 人工对话暴露, 已在 Aurelius 侧修正)
+
+真实 `moss-run-ghost aurelius` 连续对话时暴露两个 articulate 阶段缺陷。二者都不是记忆
+写入语义的问题 (失败帧仍被 witness 为 `failed`, 记忆哲学未受影响), 而在流式 articulate
+的物理收尾与模型配置接线上。两者都继承自 Atom 基线 (`atom/_runtime.py`、`atom/_meta.py`
+写法相同), **本次按协作者要求只修 Aurelius, 不碰 Atom / Ghost 基类** — Atom 作为纯净对照
+基线保留同款缺陷, 跨原型的统一收敛 (安全流式收尾 helper + 契约 max_tokens 接线放哪一层)
+留给后续独立 workstream, 因为它横跨两个原型, 不属于 aurelius-ghost 这条线。
+
+- **打断时未捕获异常逃逸事件循环 (`asynchronous generator is already running`)。**
+  新输入抢占当前帧 → attention abort → `AttentionAbortedError` 从 `stream_text()` 的
+  `async for` 体内抛出 → 穿过 `run_stream(...)` 的 `__aexit__`, 后者试图 aclose 一个仍在
+  运行的 httpx SSE 生成器, 抛出二次异常逃逸到事件循环顶层。第一条
+  `❌ articulate error: Attention is already aborted` 是被 driver 正确处理的预期打断;
+  逃逸的是第二条。修法: 在 `_runtime.py` 把 `stream_text()` 迭代器放进独立 try/finally,
+  abort 传播时先 `aclose()` 文本流并 suppress 其二次 teardown 噪音, 打断本身仍向上传播由
+  driver 处理。测试盲区已坐实: Atom/Aurelius 对"流式生成中途被 abort"零覆盖。
+
+- **`max_output_tokens` 未接线 → `token limit (provider default) exceeded`。**
+  `_meta._build_configured_model` 构造 `AnthropicModel`/`OpenAICompatibleModel` 时未传
+  `max_tokens`, `Agent(...)` 也无 `model_settings`, 于是回退 provider 默认输出上限
+  (错误信息里的 `(provider default)` 即此)。与输入长度、模型上下文窗口无关 — 几百字小说
+  的 prompt 离 200k 差数量级; 触发点在输出侧预估叠加 thinking 预算在默认上限边缘抖动,
+  故时有时无。契约层 `LLMConfig.max_output_tokens` (默认 4096) 早已存在却从未读出。修法:
+  仅在走配置构造 (非注入 model) 时以 `ModelSettings(max_tokens=resolved.model.max_output_tokens)`
+  设到 Agent `model_settings`; 注入 model 携带自身 settings, 不覆盖。回归
+  `test_configured_model_wires_max_output_tokens` 已锁定。
+
 ## Implementation Notes
 
 <!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->
@@ -286,7 +366,9 @@ ghost.articulate(articulator):
   就位程度. memento 当前 contract-frozen-pending-review, desktop in-progress
   (channel 落点已定, K14~K18). 起步前先对齐这两条的可用表面.
 - 2026-07-17 技术评审落在
-  `Docs/MOSS-Ghost-Memory集成技术评审与实施方案.md`。当前分支的 `moss` 根 CLI
+  `Docs/MOSS-Ghost-Memory集成技术评审与实施方案.md`（2026-07-19 移入包内
+  `src/ghoshell_moss/cli/docs/memory/aurelius-memory-review.md`，随 wheel 发布并入 `moss docs`
+  体系；测试方案同迁为 `aurelius-memory-test-plan.md`）。当前分支的 `moss` 根 CLI
   因 `cells_cli.py` 导入已删除的 `CellRegistry` 无法启动，本 workstream 不借机修改
   该相邻重构；feature 状态按同一 frontmatter 契约直接维护。
 - 已交付 `ghosts/aurelius`（AureliusMeta/Aurelius/AureliusMemory）、workspace 注册、无网络 acceptance
@@ -360,3 +442,37 @@ ghost.articulate(articulator):
   Moment、2 次 semantic commit、2 次全量 claims 审计；17 个总 Moment 中大量是无用户 source
   的内部再观察，机械 Note 又摘录了这些 CTML/长回复。修复后 memory 运维面默认隐藏且不触发
   Re-Act，normal/verbose/trace 分层，claims/Note 有界。文档命令回归 198 passed，acceptance 通过。
+- 2026-07-19 记忆读取路线转向：删除正则 Evidence/Claim/Recall/Verifier 层（`_knowledge.py`）。
+  该层只在极窄的手工 canonical 模板内有效，把语义判断硬编码成脆弱正则并压到契约外层，与
+  momento-mori “记忆是主体生产的轨迹、不是管线蒸馏的数据库” 相悖。改为三件套：(1) grep 式
+  `memory_search` 在本 owner 全部冻结 commit + staging 上做原文子串扫描，返回稳定地址供
+  `memory_show` 缺页展开——承认“按字面找”，把语义判断留给读到证据的模型；(2) `memory_discipline`
+  instruction 注入 system prompt，要求无可见依据时先检索、再核对、查不到如实说未找到；(3) 旁路
+  curation（`AureliusCurator`）从冻结轨迹重写人类可读笔记并 pin 进 Ground，带出处横幅、可回溯、
+  可 unpin，不建第二真相文件。承接的哲学债：正确性不再靠输出后校验，靠不可变证据 + 字面检索 +
+  行为纪律。字面检索有诚实边界（同义改写/时间推理覆盖不到），模型应表达不确定而非编造。
+- 2026-07-19 修复三个确认缺陷：(1) **CTML 调度崩溃** — CTML 命令在 `asyncio.to_thread` 工作线程
+  执行，`memory_reflect`/`memory_curate` 原先直接 `create_task` 因无运行中 loop 抛 `RuntimeError`；
+  现由 `Aurelius._spawn()` 用 `__aenter__` 捕获的 loop 经 `call_soon_threadsafe` 编组回主循环。
+  (2) **进程内写竞争** — `remember`/反思跑在事件循环，`memory_commit`/`fork`/`switch`/`reinterpret`
+  跑在工作线程，两个写者域共享 `staging.jsonl` 与 `self._branch`；`AureliusMemory` 现持 `RLock`，
+  所有写方法与读 branch 指针的渲染方法都在锁内，单写者纪律在进程内也成立。(3) **渲染打戳缺失** —
+  折叠摘要曾丢 `note_seq`，反思改写 note 后不可归因；现 `<memento commit=... note_seq=... kind=...>`
+  满足 FORMAT.md 不变量 13。
+- 2026-07-19 落地两个设计项：(1) **折叠摘要不伪造模型回合** — 早期在摘要块后紧跟捏造的
+  `ModelResponse("[memento summaries loaded]")`（模型从未说过的话），现将摘要 preamble 折叠进下一条
+  真实用户 request，无任何虚构 assistant 轮次；note 正文 `<`/`>` 转义防伪造 `</memento>` 边界。
+  (2) **失败帧如实入轨迹** — `on_articulate_exit(error=...)` 不再丢弃失败帧。按 momento-mori “noop 是
+  轨迹事件” 的对称推论，“看见 X、尝试、出错” 同样值得 witness；失败帧带 `failed` thread tag 写入，
+  永不读作完成回合，`inspect_context['memory_write']` 记 `staged_failed`/`committed_failed`。此外
+  多模态 percept 无法转文本/图像时保留占位标记，不静默丢失该轮存在。
+- 2026-07-19 实测修复「模型不回复」：`moss-run-ghost aurelius` 问 canonical-key 事实题
+  （ORBIT-004）时 ghost 静默。日志显示 CTML `compiled=1 done=1 failed=0 observe=False`——模型
+  按记忆纪律先发 `memory_search` 而非散文，但检索命令未标 `always_observe`，命中不回灌下一轮
+  Re-Act，回合无人阅读即静默结算。修复：`memory_search`/`memory_show`/`memory_log` 三个「读以
+  作答」命令改 `always_observe=True`（写/运维命令保持 False，它们是动作不是答案）。加结构化回归
+  断言检索面 observe、写面不 observe，防下个实例静默回退。
+- 2026-07-19 定向回归：Aurelius 33 passed（含新增 CTML 工作线程调度、并发 remember/commit、grep
+  检索、失败帧、渲染打戳、注入转义、无伪造回合用例），Memento core 79 + host UI 3 passed，ruff 全绿，
+  acceptance 完成 write → commit → reopen → search → show 链。两份文档（集成方案、测试方案）已按
+  grep 检索 + 纪律 + curation 的真实实现重写，作废 Evidence/Claim 相关 P0 章节与用例。

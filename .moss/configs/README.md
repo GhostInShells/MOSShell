@@ -12,7 +12,8 @@
 - 其它 workspace 的文件：`<workspace root>/configs/memory.yml`；
 - 修改后需重启 Aurelius 才会生效；
 - 字段含义和安全边界见 `memory.yml` 内注释及
-  `Docs/MOSS-Ghost-Memory集成技术评审与实施方案.md`。
+  `moss docs read memory/aurelius-memory-review.md`（源文件
+  `src/ghoshell_moss/cli/docs/memory/aurelius-memory-review.md`）。
 
 考虑会有的配置项:
 

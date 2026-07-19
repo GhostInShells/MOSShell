@@ -5,6 +5,16 @@
 > 依据：`moss-in-reachy-mini/.moss_ws/src/MOSS/ghosts/lynn.py`、
 > `src/framework/apps/conversation/local_store.py`、
 > `src/framework/apps/memory/storage_memory.py`、当前 Aurelius 实现，以及 Lynn 的身份服务。
+>
+> **2026-07-19 修订**：对齐 Aurelius 最新实现。要点：(1) 事实读取是 grep 式
+> `memory_search`/`memory_show`（`always_observe` 回灌 Re-Act）+ 记忆纪律 instruction +
+> 旁路 curation，早期的正则 Evidence/Claim 层已删除，Lynn 不得重建同类层；(2) Aurelius
+> 新增输入侧 token 预算（`context_budget_*` 配置）与溢出折半重试，Lynn 的 `max_turns=5`
+> 顾虑由此有了运行时替代；(3) **失败帧语义变化**：articulate 出错的帧现以 `failed` thread
+> 如实入轨迹（不再丢弃）——Lynn 的"取消不保存"要求需按 §5.2 修订后的对齐方案处理；
+> (4) **owner 命名修正**：owner 必须匹配 `^[A-Za-z0-9._\-]{1,64}$`（FORMAT.md §1），
+> 旧稿冒号命名非法，本稿改为点号分隔；(5) 进程内并发写已由 AureliusMemory 的 RLock
+> 保护，CTML 工作线程调度崩溃已修复。
 
 ## 1. 结论：Lynn 应接入哪一种记忆
 
@@ -130,12 +140,15 @@ Moment → LynnGhost.articulate()
 
 ### 3.2 owner 命名与选择策略
 
+owner 必须匹配 `^[A-Za-z0-9._\-]{1,64}$`（FORMAT.md §1）；用点号分层，各段 id 先归一为
+合法字符集，超长截断加短 hash：
+
 | 场景 | 推荐 owner | 规则 |
 |---|---|---|
-| 已明确的一对一对话 | `lynn:person:<person_id>` | 仅当 identity 选择器明确确认唯一人 |
-| 未识别的临时对话 | `lynn:anonymous:<session_scope>:<conversation_id>` | 会话隔离，不自动归属任何人 |
-| 多人场景的公共互动 | `lynn:group:<session_scope>:<conversation_id>` | 只保存可公开共享的群体互动 |
-| Lynn 自身连续叙事/运维 | `lynn:self` | 与人的个人记忆绝对分离 |
+| 已明确的一对一对话 | `lynn.p-{person_id}` | 仅当 identity 选择器明确确认唯一人 |
+| 未识别的临时对话 | `lynn.anon.{scope}-{conversation_id}` | 会话隔离，不自动归属任何人 |
+| 多人场景的公共互动 | `lynn.group.{scope}-{conversation_id}` | 只保存可公开共享的群体互动 |
+| Lynn 自身连续叙事/运维 | `lynn.self` | 与人的个人记忆绝对分离 |
 
 建议新增一个**显式的 MemoryOwnerResolver 概念**（实现留待后续）：它在创建/切换 Lynn
 记忆会话前读取 identity 选择结果并返回 immutable owner。其输入应是明确的
@@ -208,8 +221,13 @@ Lynn 当前的 producer queue 解决流式 SSE 被中断时的异常传播和 as
 1. producer 成功完整消费 `stream_text()` 后才视为成功完成；
 2. 外层取消时 cancel 并 await producer；
 3. `CancelledError` 不转化为已完成对话；
-4. 只有 runtime 的成功 `on_articulate_exit(error is None)` 才调用 Aurelius 的
-   `remember(moment)`；
+4. **失败帧语义对齐（本次修订的关键差异）**：当前 Aurelius 的 `on_articulate_exit` 在
+   `error is not None` 时不再丢弃帧，而是带 `failed` thread 如实写入轨迹（"看见 X、尝试、
+   出错"是轨迹事件）。这与 Lynn 旧的"取消不保存"要求并不冲突，但语义要对齐：failed 帧
+   **永远不会被渲染为已完成回合**进入模型历史，`memory_write` 记为 `staged_failed`。
+   Lynn 侧需要决定的只是：语音场景的用户主动打断（abort）是否也值得 witness——建议保留
+   Aurelius 默认（witness 为 failed），因为"用户打断了我"本身是社交信号；若产品确认某类
+   打断完全无记忆价值，应在 Lynn 适配层显式过滤，而不是改 Aurelius 的默认；
 5. thinking part 只用于实时展示，不写入 Moment logos、Memento 或反思 prompt；
 6. `moss_execute_ctml` 的 fire-and-forget 结果仍在后续 Moment 作为感知回流，不能被
    当作本轮已确认事实。
@@ -246,7 +264,18 @@ reflection_model_tag: small_fast_model
 reflection_max_summary_chars: 300
 reflection_max_source_chars: 9000
 reflection_startup_limit: 8
+# 输入侧上下文预算（Aurelius 2026-07-19 起自带；语音实时场景建议全开）
+context_budget_enabled: true
+context_token_margin: 4096
+context_min_detail_n: 2
+context_fixed_overhead_tokens: 2048   # Lynn 的 SimpleMemory/Profile 注入大时相应调大
+# 旁路 curation（可选：把"对该用户的稳定观察"沉淀为带出处笔记并 pin 进 Ground）
+curation_enabled: true
+curation_model_tag: small_fast_model
 ```
+
+同时在 `llms.yml` 为 Lynn 实际使用的模型填准 `context_window` 与 `max_output_tokens`——
+预算直接从模型契约推导，这两个值不准，主动收缩的触发时机就不准。
 
 这是建议起点而非硬编码。Lynn 的实时互动比纯文本问答更频繁，`3` 可较快形成锚点；但应先
 通过真实 token、延迟和对话质量数据校准。反思必须使用低成本模型并且永不阻塞 Lynn 的语音
@@ -273,13 +302,20 @@ reflection_startup_limit: 8
 
 Lynn 可继承 Aurelius 的 `ghost` CTML memory channel，但分层授权：
 
+Aurelius 当前的可见性/观察语义是：`memory_search`/`memory_show`/`memory_log` 对模型
+可见且 `always_observe=True`（"读以作答"必须回灌下一轮 Re-Act，否则模型检索后静默）；
+`memory_commit`/`memory_reinterpret`/`memory_reflect`/`memory_curate`/`memory_fork`/
+`memory_switch`/`memory_inspect` 对模型隐藏（`visible=False`），仅供人工 Shell/CTML 运维。
+Lynn 继承此默认即可，无需另行分层：
+
 | 命令类别 | 开发/运维 | Lynn 模型默认权限 | 说明 |
 |---|---:|---:|---|
-| inspect/log/show | 允许 | 可按需调用 | 只读，仍应受 owner 过滤 |
-| semantic commit | 允许 | 仅明确策略触发 | 防止模型把每句话都锚定 |
-| reinterpret | 允许 | 默认不主动调用 | 人工更正优先，避免自我改写叙事 |
-| reflect | 允许 | 不需要频繁调用 | 自动反思/启动追赶优先 |
-| fork/switch | 允许 | 默认禁止 | 分叉会改变后续上下文，需要明确产品动作 |
+| search/show/log | 允许 | 可见，结果自动回灌 Re-Act | 只读，受 owner 过滤；是模型自证回忆的主路 |
+| inspect/staging | 允许 | 隐藏 | 人工诊断面 |
+| semantic commit | 允许 | 隐藏 | 防止模型把每句话都锚定 |
+| reinterpret | 允许 | 隐藏 | 人工更正优先，避免自我改写叙事 |
+| reflect/curate | 允许 | 隐藏 | 自动旁路/启动追赶优先 |
+| fork/switch | 允许 | 隐藏 | 分叉会改变后续上下文，需要明确产品动作 |
 
 `moss_execute_ctml` 在 thinking 内仍应拒绝会返回 Observation 的命令。Memento 的 inspect/
 show 等只读命令是否能进入 thinking，必须根据其真实返回/observe 语义测试后决定；不要仅因
@@ -344,7 +380,7 @@ conversation id。不要对导入的全部历史立即并发反思；先限速�
 |---|---|
 | history 等价 | 指定旧 conversation 的最后 N 回合与 Memento 近期窗口渲染符合预期 |
 | 正常完成 | 一个完整 Lynn 输出恰好形成一个 Moment；达到阈值恰好形成一个 commit |
-| 取消/断流 | producer 被取消、HTTP 流异常时不写完成 Moment/commit |
+| 取消/断流 | producer 被取消、HTTP 流异常时**不产生完成回合**；若按 Aurelius 默认 witness，帧必须带 `failed` thread 且不进入模型历史渲染 |
 | thinking 隔离 | ThinkingPart 不出现在 logos、Moment、note 或 reflection 输入 |
 | SimpleMemory 共存 | personality/behavior instruction 仍进入 prompt，未被 Memento 覆盖 |
 | 反思 | 只追加 note；原始 Moment、初始 note 可审计；失败后可追赶 |
@@ -366,10 +402,11 @@ conversation id。不要对导入的全部历史立即并发反思；先限速�
 
 ### 9.3 观测指标与回滚阈值
 
-上线需至少记录：写入成功率、取消后误写率、commit/turn 比、反思 pending age、反思失败率、
+上线需至少记录：写入成功率、失败帧误渲染率、commit/turn 比、反思 pending age、反思失败率、
 反思 P50/P95、模型 history token 估算、owner 越权拒绝数、旧/新 history 回归差异数。
 
-以下任一项应停止灰度并回滚到旧 ConversationStore 主读写：跨 owner 泄漏、取消帧误写、
+以下任一项应停止灰度并回滚到旧 ConversationStore 主读写：跨 owner 泄漏、取消/失败帧被
+渲染为完成回合、
 Lynn thinking/logos 混写、首 token 延迟显著回归、导入出现非幂等重复、身份不明确却被自动
 归入个人 owner。
 
@@ -392,7 +429,8 @@ Lynn thinking/logos 混写、首 token 延迟显著回归、导入出现非幂�
 1. 升级 reachy 项目的 MOSS 依赖到包含 Aurelius 的已验证发行物；
 2. 将 Lynn 的 ConversationStore 主读写替换为 AureliusMemory，但保留 Lynn 全部流式、
    thinking、flash 和 tool 行为；
-3. 先只使用 `lynn:anonymous:<scope>:<conversation>` owner，不接自动 identity 路由；
+3. 先只使用 `lynn.anon.{scope}-{conversation_id}` owner（注意字符集限制），不接自动
+   identity 路由；
 4. 保留 SimpleMemory；不做旧 conversation 自动导入；
 5. `auto_commit_every=3`、后台反思开启、无 fork/merge 的模型权限；
 6. 使用专门测试 scope 连续运行、重启、断流和反思故障验收。

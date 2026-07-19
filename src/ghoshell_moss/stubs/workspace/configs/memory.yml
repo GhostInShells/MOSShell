@@ -34,26 +34,52 @@ reflection_max_source_chars: 12000
 # 可稍后通过 <ghost:memory_reflect /> 手动调度。
 reflection_startup_limit: 16
 
-# 是否启用 Memento 之上的 Evidence/Claim 投影、按问题 Recall 与回答校验。
-# 投影从当前 branch 重建，不是另一份事实数据库；关闭后仍保留轨迹记忆。
-knowledge_enabled: true
+# 是否启用旁路策展：后台小模型异步读取冻结轨迹，把稳定事实沉淀到 facts.md 并
+# pin 进认知场 Ground。它是 reflection 的姊妹旁路——只追加人类可读原文、可失败、
+# 不进 articulate 热路径，且从不解析 Moment 正文语义（payload 不透明）。
+# 关闭后事实回忆仍可用：模型自行 memory_search / memory_show 查证冻结原文。
+curation_enabled: true
 
-# 只有这些 percept source 可作为用户直接陈述。真实 Shell 的默认 Input nucleus
-# 使用 input_signal_nucleus；input/user 保留给显式嵌入。不要加入 command/logos/reflection。
-knowledge_user_sources:
+# 策展模型在 LLMConfig 中使用的 tag。默认复用 small_fast_model；若未配置该 tag，
+# 请改成已有 tag 或先关闭 curation_enabled。
+curation_model_tag: small_fast_model
+
+# mechanical 索引与 curation 摘录时视为“用户输入”的 Moment percept source。
+# 真实 Shell 默认 Input nucleus 使用 input_signal_nucleus；input/user 保留给显式嵌入。
+curation_index_sources:
   - input_signal_nucleus
   - input
   - user
 
-# 只有产品接入层明确认证并写入这些 source 的工具结果才可直接提升。
-# 普通 CTML 控制输出不属于 trusted_tool。
-knowledge_trusted_tool_sources:
-  - trusted_tool
+# 单次发送给策展模型的冻结轨迹最大字符数。输入只含用户可见 percepts、logos 与
+# 已冻结的 CommitNote，不包含模型隐藏思维链。
+curation_max_source_chars: 12000
 
-# 单帧 Recall 的 Claim 数和 evidence packet 字符预算。它们独立于历史窗口。
-knowledge_recall_limit: 8
-knowledge_evidence_max_chars: 6000
+# facts.md 的最大字符数。策展产物是给模型阅读的可读笔记，不是结构化事实库。
+curation_max_notes_chars: 4000
+
+# 策展笔记文件名，写在 Ground 根下并被 pin 进当前帧。
+curation_notes_name: facts.md
 
 # Aurelius 启动时自动打开项目根 Ground。DESKTOP.md body 进入本帧 instruction，
 # Pin/frame 进入本帧 context；二者都不会自动形成长期 Claim。
 desktop_enabled: true
+
+# ── 上下文预算（输入侧）──
+# detail_n/summary_m 只按帧数切窗，与 token 无关；以下配置让 articulate 按
+# 模型契约 (context_window - max_output_tokens - margin) 主动收缩渲染窗口，
+# 并在 provider 仍报输入溢出时兜底折半重试。压缩只减少"渲染进上下文的量"，
+# 不销毁任何 Memento 原文（memory_show 永远可取回）。
+
+# 是否启用 token 预算与溢出兜底。关闭则退回一次性组装（撞墙即失败）。
+context_budget_enabled: true
+
+# 预算安全垫 (tokens)：从 context_window - max_output_tokens 再扣除，
+# 吸收字符估算误差。估算器方向保守（宁可提前压缩，不可撞墙）。
+context_token_margin: 4096
+
+# 主动收缩时明细帧窗口的下限；触底仍超预算则交给溢出兜底重试。
+context_min_detail_n: 2
+
+# system prompt + 当前输入 + ground 注入的固定开销估算 (tokens)，计入预算占用。
+context_fixed_overhead_tokens: 2048
