@@ -152,3 +152,12 @@ cython_debug/
 # g1_sim downloadable binary assets
 .moss_ws/apps/bodies/g1_sim/assets/g1/meshes/
 .moss_ws/apps/bodies/g1_sim/assets/policies/*.pt
+
+# local scratch / demo playground
+/tmp/
+
+# Aurelius runtime artifacts: Memento trajectory data and the curation-rewritten
+# notes file are per-instance state, never repo content. Ghost homes themselves
+# (README/soul.md) stay tracked.
+.moss/ghosts/*/memento/
+/facts.md
