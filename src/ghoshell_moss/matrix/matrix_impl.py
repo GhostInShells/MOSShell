@@ -311,13 +311,17 @@ class MatrixImpl(Matrix):
                     f"stop the existing instance before running a new one."
                 )
 
-        # -- 步骤 5: spawn cwd = runtime 子目录 (§TT-6 环境做边界) -- #
-        # launcher.cwd = manifest 目录 (声明位置), 与 spawn cwd 不同用途.
-        # spawn cwd = runtime/cells/{normalize(address)}, 承接子进程 scratch/日志.
-        instance_cwd = self._instance_runtime_dir(new_address)
-        # mkdir 是 file IO — to_thread.
+        # -- 步骤 5: spawn cwd = cell.home (NODE.md 所在目录) -- #
+        spawn_cwd = Path(launcher.runtime.cell.home)
+        # runtime 子目录: 平铺 ledger json + stdout/stderr log, 同 stem 不同 suffix.
+        # 约定见 CellRuntimeInfo (cell.py).
+        runtime_dir = spawn_cwd / CellRuntimeInfo.RUNTIME_SUBDIR
         await asyncio.to_thread(
-            instance_cwd.mkdir, parents=True, exist_ok=True,
+            runtime_dir.mkdir, parents=True, exist_ok=True,
+        )
+        # 前置维护: 扫 runtime_dir 里所有 ledger, 进程已死的连 stdout/stderr 一起清.
+        await asyncio.to_thread(
+            CellRuntimeInfo.clear_dead_runtimes, runtime_dir,
         )
 
         # 环境: launcher.env (含 dump_cell_env 注入) + manifest.exec.env + 用户 extra_env
@@ -328,21 +332,20 @@ class MatrixImpl(Matrix):
             child_env.update(extra_env)
 
         # -- 步骤 6: spawn -- #
-        # capture: 内存 ring buffer (供 channel context / read_output 取 tail) +
-        # 完整落盘到 spawn cwd 的 stdout.log / stderr.log (供 cell 死后诊断,
-        # host restart 时随 spawn cwd 一起清孤儿). 详见 cell-run-cycle
-        # matrix-channel.md §5.4 (host 生命周期尺度 debug).
+        # capture: 内存 ring buffer + 完整落盘到 cell.home/runtime/.
+        # stdout/stderr 路径由 CellRuntimeInfo 命名约定统一生成 (同 stem, suffix).
+        # 清理策略待 dogfood 定案 (cell-run-cycle matrix-channel.md §5.4).
         managed = await self.processes.execute(
             *launcher.run,
             name=f'cell:{manifest.name}',
             description=manifest.description or f'node cell {manifest.name}',
-            cwd=instance_cwd,
+            cwd=spawn_cwd,
             extra_env=child_env,
             with_os_env=False,  # launcher.env 已包含必要 env
             capture=CaptureSpec(
                 buffer_lines=200,
-                stdout_file=instance_cwd / 'stdout.log',
-                stderr_file=instance_cwd / 'stderr.log',
+                stdout_file=CellRuntimeInfo.default_stdout_log(runtime_dir, new_address),
+                stderr_file=CellRuntimeInfo.default_stderr_log(runtime_dir, new_address),
             ),
             on_exit=self._on_cell_exit(new_address),
         )
@@ -351,10 +354,14 @@ class MatrixImpl(Matrix):
         launcher.runtime.pid = managed.meta.pid
         if managed.meta.pgid is not None:
             launcher.runtime.pgid = managed.meta.pgid
+        # 双写: workspace ledger (CLI 发现用) + cell local runtime dir (清理扫描用).
         try:
             await asyncio.to_thread(
                 launcher.runtime.write_to_runtime_dir,
                 self._env.cell_runtimes_dir,
+            )
+            await asyncio.to_thread(
+                launcher.runtime.write_to_runtime_dir, runtime_dir,
             )
         except Exception:
             self._logger.exception(
@@ -366,8 +373,8 @@ class MatrixImpl(Matrix):
         handle = CellHandle(runtime=launcher.runtime, process=managed)
         self._handled_cells[new_address] = handle
         self._logger.info(
-            "%s run_node spawned: address=%s pid=%s cwd=%s",
-            self._log_prefix, new_address, managed.meta.pid, instance_cwd,
+            "%s run_node spawned: address=%s pid=%s home=%s",
+            self._log_prefix, new_address, managed.meta.pid, spawn_cwd,
         )
         return handle
 
@@ -514,19 +521,6 @@ class MatrixImpl(Matrix):
         if path.name == NodeManifest.MANIFEST_FILENAME:
             return NodeManifest.read_from_file(path)
         return NodeManifest.from_script(path)
-
-    def _instance_runtime_dir(self, address: CellAddress) -> Path:
-        """
-        本次 spawn 的实例残迹目录 (§YY-1 第 6 条 uid 键).
-
-        {workspace}/runtime/cells/{normalize(address)}/ — 保 spawn cwd + scratch.
-        与 home (稳定身份键, ABC default = Path(self.this.home)) 分离.
-        """
-        return (
-            self.workspace.runtime()
-            .sub_storage('cells').sub_storage(normalize(address))
-            .abspath()
-        )
 
     # ==================================================================
     # 灶台 (§UU-2 / §YY: Subprocesses / JobSupervisor 从 IoC pull)

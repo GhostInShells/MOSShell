@@ -358,6 +358,13 @@ class CellRuntimeInfo(BaseModel):
     MOSS Project 管理 Cell 进程时的数据.
     包含运维面信息: 只有能对该进程直接行动的一侧 (owner / 本机 CLI) 才应消费这些字段.
     """
+
+    # -- 运行时文件命名约定 -- #
+    RUNTIME_SUBDIR: ClassVar[str] = 'runtime'
+    SUFFIX_JSON: ClassVar[str] = '.json'
+    SUFFIX_STDOUT: ClassVar[str] = '.stdout.log'
+    SUFFIX_STDERR: ClassVar[str] = '.stderr.log'
+
     address: CellAddress = Field(
         description="cell 的网络地址.",
     )
@@ -378,8 +385,24 @@ class CellRuntimeInfo(BaseModel):
     )
 
     @classmethod
-    def filename(cls, address: CellAddress) -> str:
-        return normalize(address) + ".json"
+    def filename(cls, address: CellAddress, *, suffix: str = SUFFIX_JSON) -> str:
+        return normalize(address) + suffix
+
+    @classmethod
+    def default_stdout_log(cls, cell_home: Path, address: CellAddress) -> Path:
+        filename = cls.filename(address, suffix=cls.SUFFIX_STDOUT)
+        return cell_home.joinpath(filename).resolve()
+
+    @classmethod
+    def default_stderr_log(cls, cell_home: Path, address: CellAddress) -> Path:
+        filename = cls.filename(address, suffix=cls.SUFFIX_STDERR)
+        return cell_home.joinpath(filename).resolve()
+
+    @classmethod
+    def get_normalized_address_from_file(cls, file: Path) -> str:
+        if not file.is_file():
+            raise FileNotFoundError(f'{file} is not a valid file')
+        return file.stem
 
     @classmethod
     def filepath(cls, runtime_dir: Path, address: CellAddress) -> Path:
@@ -422,10 +445,25 @@ class CellRuntimeInfo(BaseModel):
 
     @classmethod
     def iter_runtime_info(cls, runtime_dir: Path) -> 'Iterable[CellRuntimeInfo]':
-        for file in runtime_dir.glob('*.json'):
+        for file in runtime_dir.glob(f'*{cls.SUFFIX_JSON}'):
             found = cls.read_from_file(file, delete_invalid=False)
             if found is not None:
                 yield found
+
+    @classmethod
+    def clear_dead_runtimes(cls, runtime_dir: Path) -> int:
+        """扫 runtime_dir 里所有 ledger, 进程已死的连日志文件一起清. 返回清理数."""
+        cleaned = 0
+        for info in cls.iter_runtime_info(runtime_dir):
+            if info.is_alive():
+                continue
+            info.delete_invalid(runtime_dir)
+            for suffix in (cls.SUFFIX_STDOUT, cls.SUFFIX_STDERR):
+                f = runtime_dir / cls.filename(info.address, suffix=suffix)
+                if f.exists():
+                    f.unlink()
+            cleaned += 1
+        return cleaned
 
     def is_alive(self) -> bool:
         return psutil.pid_exists(self.pid)

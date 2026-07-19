@@ -108,7 +108,8 @@ tutorial 走通时倒逼。
 **契约**: CellHandle 上加 `brief() -> CellBrief` (dataclass)，字段:
 address / role_name / alive / pid / exit_code / uptime_seconds /
 stderr_tail (从 ProcessOutput 内存 ring buffer 取，缺省 N 行) /
-instance_dir (spawn cwd，well-known 根供 ghost 自己 shell/file-editor 探索)。
+home (Cell.home, NODE.md 所在目录. spawn cwd = 此目录).
+stderr/stdout 完整日志在 `{home}/runtime/` 下, 详见 §5.4.
 
 `wait` / `add_done_callback` 等阻塞或回调型接口 channel 一概不碰——
 wait 违反 nonblocking，callback 是 matrix 内务。
@@ -126,17 +127,9 @@ wait 违反 nonblocking，callback 是 matrix 内务。
 
 ### 1.7 stdout/stderr 捕获约定
 
-**前置钉 (实装未落)**: `run_node` spawn 目前**未声明 capture** (matrix_impl.py
-run_node)，导致 `handle.process.output = None`，WW-6 stderr 尾部承诺无从
-兑现。
-
-**方案**: 
-- 只捕获**内存 ring buffer 尾部** (bounded, ~32KB/stream)，channel 不给
-  matrix 侧强制落盘。
-- cell 需要持久日志，自行在 `instance_cwd/` (= spawn cwd = handle.runtime
-  已知路径) 下写文件——matrix 承诺该目录为 well-known 根，ghost 可通过
-  shell/file editor 浏览，但不做规范。
-- context 里出现的是 stderr **tail 内容**本身或短提示，不是"我们给你落盘了"。
+**当前解决办法** (2026-07-20, 待 dogfood 验证): `run_node` spawn 时声明
+capture, 内存 ring buffer + 完整落盘. 落盘位置与命名约定以
+`CellRuntimeInfo` (cell.py) 的类常量与方法为准. 清理策略待 §5.4 定案.
 
 ### 1.8 instruction 分层 (机器人 ghost 友好)
 
@@ -296,27 +289,27 @@ output 三处内部结构。
   jobs 有 contract 但无 channel，本轮不挂。
 - 未来发现 matrix 需要 own commands 时随时加。**关键是自解释用极少 token**。
 
-### 5.4 stdout/stderr 与 debug 手段 — spawn cwd 承担 host 生命周期尺度
+### 5.4 stdout/stderr 与 debug 手段 — 待 dogfood 定案
 
-原 §1.7 只定"内存 ring buffer + cell 自愿写日志"，未定"cell 结束后如何
-debug"。本节补齐:
+**2026-07-20 状态**: §5.4 旧版把 spawn cwd 错写成
+`env.cell_runtimes_dir / {addr}/` — 这是 ledger 目录, 不是 spawn cwd.
+spawn cwd = `cell.home` (NODE.md 所在目录).
 
-| 层 | 数据 | 存活期 | 谁访问 |
-|---|---|---|---|
-| 内存 ring buffer | 活着的 cell 实时输出 (32KB × stderr/stdout) | 进程活着期间 | context tail + `nodes:read_output` |
-| exit 尾部 flush | 死时 buffer 最后 N 行 | 到下次 host restart 前 | `nodes:read_output` (地址匹配 dead_cells) + 直接查文件 |
-| 持久日志 | 完整轨迹 | 由 cell 自愿决定 | 不归 matrix 管 |
+本轮修正:
+- `matrix_impl.run_node` 删 `_instance_runtime_dir`, spawn cwd 改为
+  `Path(launcher.runtime.cell.home)`.
+- stdout/stderr 通过 `CellRuntimeInfo.default_stdout_log(runtime_dir, addr)`
+  落盘到 `{cell.home}/runtime/`. 同一 stem, `.stdout.log` / `.stderr.log` /
+  `.json` 三种 suffix 共存, 清理时扫 `*.json` 判死活即可定位全部文件.
+- 命名约定常量收在 `CellRuntimeInfo.RUNTIME_SUBDIR / SUFFIX_JSON /
+  SUFFIX_STDOUT / SUFFIX_STDERR`.
 
-- **spawn cwd** = `env.cell_runtimes_dir / {addr}/` (matrix_impl.py:317
-  `_instance_runtime_dir` 已建). 每次 spawn 独立目录, 按 uid 天然隔离.
-- **exit flush** 归 matrix on_cell_exit: 从 `handle.process.output` ring buffer
-  尾部一次性写 `{spawn_cwd}/exit.stderr.tail` 和 `exit.stdout.tail`.
-- **spawn cwd 清理**: 到下次 host restart, `clear_cell_runtimes` 扩展 —
-  除清 ledger 文件外，孤儿 spawn cwd 目录也清 (活着的不清).
-- **debug 期限声明**: **host 生命周期尺度** (host restart 前可 debug 死掉的
-  cell). 跨 host restart 的 debug 需要 cell 自愿写 cell.home，matrix 不承担 —
-  cell.home 有多 spawn 共享问题，需要子目录切分，复杂度陡增. 本轮不做,
-  M8.5 / M9 观察是否踩坑再升级到 cell.home 方案.
+**清理策略**待下轮 dogfood (M8.5 / M9) 定案:
+- 候选方向: `run_node` spawn 前扫 `{cell.home}/runtime/*.json`,
+  `is_alive()` 死的连 stdout/stderr log 一起清 (前置维护).
+- 或 spawn 后写 ledger json 到 `runtime_dir`, 双写 workspace ledger
+  与 cell local runtime dir, 供清理扫描.
+- debug 期限倾向 "host 生命周期尺度", 但本轮不强定.
 
 ### 5.5 context_messages 具体形态 (三构造期可配数字)
 

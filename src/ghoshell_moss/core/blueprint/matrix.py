@@ -118,6 +118,11 @@ class Matrix(ABC):
         pass
 
     @property
+    def project_home(self) -> Path:
+        """moss 所在项目的根目录. """
+        return self.project.root
+
+    @property
     def workspace(self) -> Workspace:
         """当前 project 内, moss 自身的 workspace. 相同 project 下的 Cell 共享的空间. """
         return self.project.workspace

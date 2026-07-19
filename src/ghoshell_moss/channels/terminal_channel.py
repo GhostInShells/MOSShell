@@ -74,12 +74,13 @@ class ExitNotifyAddition(Addition):
 
 def build_terminal_channel(
     *,
+    cwd: str = "",
     name: str = "bash",
     description: str | None = None,
 ) -> ChannelFactory:
-    """High-order factory: configure name/description, return a ChannelFactory.
+    """High-order factory: configure name/description/cwd, return a ChannelFactory.
 
-    Configuration (name/description) is decoupled from IoC — because
+    Configuration (name/description/cwd) is decoupled from IoC — because
     ``ChannelFactory`` is ``(IoCContainer) -> Channel``, config has no place
     in that signature. Call ``build_terminal_channel(...)`` at declaration
     time to get a factory, hand the factory to ``import_channels``.
@@ -87,26 +88,36 @@ def build_terminal_channel(
     Resolves Subprocesses from the container (matrix environments register a
     per-Matrix singleton via MatrixSubprocessesProvider); falls back to a
     private SubprocessesImpl whose lifecycle the channel then manages itself.
-    Default cwd derives from Workspace root when available.
 
+    Default cwd resolution (highest → lowest priority):
+
+    1. Explicit ``cwd`` argument here.
+    2. ``Matrix.project_home`` from container (the moss project root, NOT
+       the workspace ``.moss/`` subdir — MCP scenarios spend most of their
+       time on repo-root paths).
+    3. Process cwd (falls through in ``new_terminal_channel``).
+
+    :param cwd: default working directory for commands. Empty = matrix
+        project_home if available, else process cwd.
     :param name: CTML tag name (default ``bash``).
     :param description: Override the built-in description; ``None`` = default.
     """
 
     def factory(container: IoCContainer) -> Channel:
-        from ghoshell_moss.contracts.workspace import Workspace
+        resolved_cwd = cwd
+        if not resolved_cwd:
+            from ghoshell_moss.core.blueprint.matrix import Matrix
 
-        cwd = ""
-        ws = container.get(Workspace)
-        if ws is not None:
-            cwd = ws.root().abspath()
+            matrix = container.get(Matrix)
+            if matrix is not None:
+                resolved_cwd = str(matrix.project_home)
         processes = container.get(Subprocesses)
         if processes is None:
             from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
-            processes = SubprocessesImpl(cwd=cwd or None)
+            processes = SubprocessesImpl(cwd=resolved_cwd or None)
         return new_terminal_channel(
             processes,
-            cwd=cwd,
+            cwd=resolved_cwd,
             name=name,
             description=description,
         )
