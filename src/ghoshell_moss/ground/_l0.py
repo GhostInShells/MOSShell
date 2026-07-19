@@ -1,4 +1,4 @@
-"""L0 file — Ground 的持久化载体 (DESKTOP.md).
+"""L0 file — Ground 的持久化载体 (GROUND.md).
 
 L0 是场目录里一份 markdown 文件, 载体结构 (K15):
 
@@ -8,7 +8,7 @@ L0 是场目录里一份 markdown 文件, 载体结构 (K15):
 
     <free-form body>          ← 法 / 治理 / 先例, 模型消费
 
-    ## desktop:pins           ← sediment 目标段, moss 独占
+    ## ground:pins            ← sediment 目标段, moss 独占
 
     ```yaml
     - addr: ...
@@ -19,8 +19,8 @@ frontmatter 缺 → GroundConvention() 默认. body 缺 → 空. pin 段缺 → 
 集. sediment 只重写 pin 段, 保留 frontmatter 与 body 的其余部分, 避免 git
 diff 噪音 (K20).
 
-文件名 `DESKTOP.md` (K22 决策 2026-07-13): 骑 CLAUDE.md / AGENTS.md /
-SKILL.md 命名先验; K8 原始候选之一, 无预训练风险.
+文件名 `GROUND.md` (K22 决策): 骑 CLAUDE.md / AGENTS.md / SKILL.md
+命名先验; K8 原始候选之一, 无预训练风险.
 
 sync IO: 本模块函数全部 sync — DefaultGround.load / sediment 在其调用点
 用 asyncio.to_thread 卸载. 测试因此可以走同步路径, 不用 asyncio.run 包壳.
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import yaml
 
-from ghoshell_moss.contracts.desktop import GroundConvention, Pin
+from ghoshell_moss.ground.contract import GroundConvention, Pin
 
 __all__ = [
     "DEFAULT_L0_FILENAME",
@@ -44,8 +44,8 @@ __all__ = [
     "dump_l0_pins",
 ]
 
-DEFAULT_L0_FILENAME = "DESKTOP.md"
-PIN_SECTION_HEADING = "## desktop:pins"
+DEFAULT_L0_FILENAME = "GROUND.md"
+PIN_SECTION_HEADING = "## ground:pins"
 
 # YAML frontmatter: 文件以 `---\n` 开头, 到下一个独占的 `---` 行为止
 _FRONTMATTER_RE = re.compile(
@@ -53,9 +53,9 @@ _FRONTMATTER_RE = re.compile(
     re.DOTALL,
 )
 
-# pin 段: `## desktop:pins` heading 到下一个任意级 heading 或 EOF
+# pin 段: `## ground:pins` heading 到下一个任意级 heading 或 EOF
 _PIN_SECTION_RE = re.compile(
-    r"^## desktop:pins[ \t]*\n"
+    r"^## ground:pins[ \t]*\n"
     r"(?P<body>.*?)"
     r"(?=^#+[ \t]+|\Z)",
     re.DOTALL | re.MULTILINE,
@@ -170,7 +170,7 @@ def _render_pin_section(pins: list[Pin]) -> str:
         yaml_text = "[]\n"
     return (
         f"{PIN_SECTION_HEADING}\n\n"
-        "<!-- Managed by `moss desktop`. Do not hand-edit unless you know "
+        "<!-- Managed by `moss ground`. Do not hand-edit unless you know "
         "what you are doing. -->\n\n"
         f"```yaml\n{yaml_text}```\n\n"
     )

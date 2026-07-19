@@ -1,14 +1,14 @@
-"""Desktop contract — Ghost 在文件系统上的认知桌面.
+"""Ground contract — Ghost 在文件系统上的认知场.
 
-Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更观察), 每帧重绘".
+Ground 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更观察), 每帧重绘".
 
 结构:
 
 1. Grounds  — owner 级容器. open/close 多个 Ground, CTML 接触面
-              (`<desktop:pin label="..." addr="..."/>` 转发到子 Ground).
+              (`<ground:pin label="..." addr="..."/>` 转发到子 Ground).
 2. Ground   — 一个打开的场. 绑定一个目录 root, 持有 pin 集合, 承担 CTML
               instruction / context 渲染与 load/sediment 生命周期.
-3. Pin      — 桌面上的一枚贴纸. 收地址 (path / path:80-140 / **/*.py),
+3. Pin      — 场上的一枚贴纸. 收地址 (path / path:80-140 / **/*.py),
               带 seen_mtime + seen_hash 供 update 对账.
 
 不承担的:
@@ -21,12 +21,12 @@ Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更�
 三条验收平面, 读写同一份 L0 文件, 跨 landing 保持状态:
 
 1. contracts + core 单测 (无 CTML runtime, 无 shell)
-2. bash CLI dogfood (`moss desktop <path> && pin ... && frame ...`)
-3. CTML channel 集成 (K14 装配, 父 desktop channel + per-ground
+2. bash CLI dogfood (`moss ground <path> && pin ... && frame ...`)
+3. CTML channel 集成 (K14 装配, 父 ground channel + per-ground
    command-less virtual channel)
 """
 
-# 技术目标 (reviewer 上下文, 契约演进见 FEATURE.md ghost-filesystem-desktop
+# 技术目标 (reviewer 上下文, 契约演进见 FEATURE.md ghost-ground
 # §2026-07 重绘方向 + .discuss/2026-07-{11,12}_*.md):
 #
 # 本文件由旧 Desktop 12+1 原语契约收敛而来, 三个融合病灶的清除:
@@ -43,7 +43,7 @@ Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更�
 # 3. LRU 自动淘汰撤销 (K20) — 超预算不静默换出, 帧内向模型报账, 由模型主动
 #    unpin. 系统只报账不动手 — 桌子是模型的.
 #
-# K14 (channel 落点) — 父 desktop channel 持全部动词, 每场 = command-less
+# K14 (channel 落点) — 父 ground channel 持全部动词, 每场 = command-less
 # virtual channel. Grounds 是父 channel command 的 core 层承载, Ground 是
 # virtual channel 生命周期与渲染的 core 层承载. Ground ABC 上长完整动词
 # (pin/unpin/update/instruction/context) 是有意的: 当前姿态是 Grounds 转发
@@ -73,7 +73,7 @@ Desktop 的一句话承诺: "在 context 表面上钉住一组 (地址, 变更�
 # 自然入对话历史 (无需另立 drain 协议 — K19 独立立项).
 #
 # K21 (open/update 语义, 2026-07-12 对齐) — Grounds.open(dir, label) →
-# Ground 对象. CTML 接触面在父上 (`<desktop:pin label="..." addr="..."/>`),
+# Ground 对象. CTML 接触面在父上 (`<ground:pin label="..." addr="..."/>`),
 # core 层薄薄转发 active[label].pin(...). label 缺省 = dir basename +
 # 冲突后缀, 全局唯一.
 #
@@ -95,7 +95,7 @@ __all__ = [
     "Pin",
     "GroundConvention",
     "UpdateResult",
-    "DesktopError",
+    "GroundBaseError",
     "PathOutsideRootError",
     "ContextBudgetExceeded",
 ]
@@ -154,7 +154,7 @@ class GroundConvention(BaseModel):
     context_budget: int = Field(
         default=24_000,
         description=(
-            "桌面 context 渲染字符数上限 (全场 pin 内容之和). 超预算不静默"
+            "ground context 渲染字符数上限 (全场 pin 内容之和). 超预算不静默"
             "截断也不自动 unpin — 帧顶插入 changed-on-disk 同风格的报账"
             "警告行, 点名最大的几张 pin, 让模型自己决定撤掉什么. "
             "K20 撤销自动 LRU 的直接体现."
@@ -181,7 +181,7 @@ class GroundConvention(BaseModel):
 # -- 贴纸 --
 
 class Pin(BaseModel):
-    """一枚 pin — 桌面上的地址 + 对账观察.
+    """一枚 pin — 场里的地址 + 对账观察.
 
     K17: 钉的是**地址**不是快照. 表面不自动同步; mtime 触发 + hash 对账
     判定真伪变更, 帧内以 changed-on-disk 标记暴露, 需模型显式 update 承认.
@@ -258,17 +258,17 @@ class UpdateResult(BaseModel):
 
 # -- 异常 --
 
-class DesktopError(Exception):
-    """Desktop 契约层异常基类."""
+class GroundBaseError(Exception):
+    """Ground 契约层异常基类."""
 
 
-class PathOutsideRootError(DesktopError):
+class PathOutsideRootError(GroundBaseError):
     """pin/update 的地址落在 Ground.root 子树之外. K12 空间边界零审批
     的字面兑现: 边界一次性设置, 边界内无审批, 边界外直接拒."""
 
 
-class ContextBudgetExceeded(DesktopError):
-    """桌面渲染超预算. 现阶段 impl 只在帧内报账, 不 raise; 保留这个异常
+class ContextBudgetExceeded(GroundBaseError):
+    """ground 渲染超预算. 现阶段 impl 只在帧内报账, 不 raise; 保留这个异常
     是为将来严格模式 (raise 而非 warn) 留口."""
 
 
@@ -279,7 +279,7 @@ class Ground(ABC):
 
     绑定一个目录 root, 持有 pin 集合, 承担 CTML instruction / context 渲染
     与 load/sediment 生命周期. **模型的 CTML 接触面在父 Grounds 上**
-    (K14: 父 desktop channel 持全部动词, 场作 command-less virtual channel);
+    (K14: 父 ground channel 持全部动词, 场作 command-less virtual channel);
     Ground 上有完整动词是给 Grounds 转发用的, 也为未来 channel interface
     抽象 (N 场共享同一 interface 定义) 留升级空间, 属 K18 三层纪律红利.
 
@@ -317,7 +317,7 @@ class Ground(ABC):
 
     @abstractmethod
     def pin(self, addr: str, note: str = "") -> Pin:
-        """在桌面上钉一枚新 pin.
+        """在场里钉一枚新 pin.
 
         addr 支持三种语法 (见 ``Pin.addr``). 幂等: 同地址重 pin 就是 update
         note + pinned_at, seen_mtime/hash 立即观察一次. 地址越界 (指向 root
@@ -388,7 +388,7 @@ class Ground(ABC):
 
     @abstractmethod
     async def context(self) -> str:
-        """渲染桌面当前帧 — 消费给 K14 virtual channel 的 context_messages.
+        """渲染场的当前帧 — 消费给 K14 virtual channel 的 context_messages.
 
         典型结构 (impl 侧可调整具体格式):
 
@@ -418,7 +418,7 @@ class Ground(ABC):
     async def load(self) -> None:
         """从场里的 L0 文件恢复上次 sediment 的 pin 集. 无 L0 文件 = 空
         pin 集. 幂等. K14 装配时挂在 virtual channel 的 startup 上; CLI 侧
-        (bash landing) 在 `moss desktop <path>` 打开会话时手动调用."""
+        (bash landing) 在 `moss ground <path>` 打开会话时手动调用."""
         ...
 
     @abstractmethod
@@ -432,7 +432,7 @@ class Ground(ABC):
         才把它变成"胶囊".
 
         K14 挂在 virtual channel 的 close 上; CLI 侧在会话结束或显式
-        `moss desktop close <label>` 时调用. 幂等.
+        `moss ground close <label>` 时调用. 幂等.
         """
         ...
 
@@ -442,7 +442,7 @@ class Ground(ABC):
 class Grounds(ABC):
     """Ghost 的认知桌子 — 一组打开的 Ground 的容器. per-owner.
 
-    模型的 CTML 接触面: 父 desktop channel 上的动词 `open` / `close` /
+    模型的 CTML 接触面: 父 ground channel 上的动词 `open` / `close` /
     `pin` / `unpin` / `update` 收 `label` 参数, core 层薄薄转发到
     `active[label].方法(...)` (K21 对齐). Grounds 自身不持久 `active` 列表
     — 那是纯 session 状态, 下次 session 由模型重新 open. 每个 Ground 自负
@@ -456,7 +456,7 @@ class Grounds(ABC):
 
         async with GroundsImpl(workspace_root=...) as gs:
             ground = await gs.open("./src/ghoshell_moss/contracts")
-            gs.pin(ground.label, "desktop.py:1-50", note="ABC 主体")
+            gs.pin(ground.label, "contract.py:1-50", note="ABC 主体")
             print(await gs.frame(ground.label))
             # ... session 内继续 ...
         # __aexit__ 自动 sediment 全部 ground

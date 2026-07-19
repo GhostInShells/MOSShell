@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ghoshell_moss.contracts.desktop import PathOutsideRootError
+from ghoshell_moss.ground.contract import PathOutsideRootError
 
 __all__ = [
     "AddrKind",

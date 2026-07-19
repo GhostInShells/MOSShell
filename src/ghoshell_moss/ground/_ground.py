@@ -22,21 +22,21 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from ghoshell_moss.contracts.desktop import (
+from ghoshell_moss.ground.contract import (
     Ground,
     GroundConvention,
     Pin,
     UpdateResult,
 )
-from ghoshell_moss.core.desktop._addr import (
+from ghoshell_moss.ground._addr import (
     ParsedAddr,
     parse_addr,
     resolve_file_addr,
 )
-from ghoshell_moss.core.desktop._hash import Observation, observe, observe_sync
-from ghoshell_moss.core.desktop._instruction import collect_instructions
-from ghoshell_moss.core.desktop._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
-from ghoshell_moss.core.desktop._render import render_context
+from ghoshell_moss.ground._hash import Observation, observe, observe_sync
+from ghoshell_moss.ground._instruction import collect_instructions
+from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
+from ghoshell_moss.ground._render import render_context
 
 __all__ = ["DefaultGround"]
 
@@ -57,7 +57,7 @@ class DefaultGround(Ground):
         self._workspace_root = workspace_root
         self._pins: OrderedDict[str, Pin] = OrderedDict()
         self._instruction_cache: str = ""
-        self._body: str = ""  # DESKTOP.md body, 每次 load/refresh_instruction 从 L0 读
+        self._body: str = ""  # GROUND.md body, 每次 load/refresh_instruction 从 L0 读
 
     # ---- 元信息 ---------------------------------------------------------
 
@@ -138,7 +138,7 @@ class DefaultGround(Ground):
         return self._instruction_cache
 
     async def refresh_instruction(self) -> None:
-        """从 upward CLAUDE.md 链 + 本 ground 的 DESKTOP.md body 重建 instruction.
+        """从 upward CLAUDE.md 链 + 本 ground 的 GROUND.md body 重建 instruction.
 
         顺序: 上游 (根最先) → 本 ground body (最本地的法, 最后拼).
         K20 的 promote (pin → body) 出口就在这 — body 里的内容自然进 instruction.
@@ -205,7 +205,7 @@ def _diff_preview(old_pin: Pin, obs: Observation, parsed: ParsedAddr) -> str:
 
 
 def _compose_instruction(upward: str, body: str, root: Path) -> str:
-    """upward CLAUDE.md 链 + local DESKTOP.md body → 一份 instruction.
+    """upward CLAUDE.md 链 + local GROUND.md body → 一份 instruction.
 
     body 空则退化为纯 upward. 顺序钉死 upward → local (根最先 + 内层覆盖).
     """

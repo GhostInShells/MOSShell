@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ghoshell_moss.contracts.desktop import GroundConvention, Pin
-from ghoshell_moss.core.desktop._l0 import (
+from ghoshell_moss.ground.contract import GroundConvention, Pin
+from ghoshell_moss.ground._l0 import (
     DEFAULT_L0_FILENAME,
     L0Contents,
     dump_l0_pins,
@@ -51,7 +51,7 @@ def test_load_l0_pin_section(tmp_path: Path) -> None:
         "\n"
         "# governance\n\n"
         "law law law\n\n"
-        "## desktop:pins\n\n"
+        "## ground:pins\n\n"
         "```yaml\n"
         "- addr: FEATURE.md\n"
         "  note: main\n"
@@ -63,7 +63,7 @@ def test_load_l0_pin_section(tmp_path: Path) -> None:
     c = load_l0(tmp_path)
     assert c.convention.tree_depth == 1
     assert "law law law" in c.body
-    assert "desktop:pins" not in c.body  # pin 段被剥离
+    assert "ground:pins" not in c.body  # pin 段被剥离
     assert len(c.pins) == 1
     p = c.pins[0]
     assert p.addr == "FEATURE.md"
@@ -75,7 +75,7 @@ def test_load_l0_pin_section(tmp_path: Path) -> None:
 
 def test_load_l0_pin_section_terminated_by_next_heading(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "## desktop:pins\n\n"
+        "## ground:pins\n\n"
         "```yaml\n"
         "- addr: a.md\n"
         "  note: ''\n"
@@ -93,7 +93,7 @@ def test_load_l0_pin_section_terminated_by_next_heading(tmp_path: Path) -> None:
 
 def test_load_l0_pin_section_empty_yaml_list(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "## desktop:pins\n\n"
+        "## ground:pins\n\n"
         "```yaml\n"
         "[]\n"
         "```\n"
@@ -104,11 +104,11 @@ def test_load_l0_pin_section_empty_yaml_list(tmp_path: Path) -> None:
 
 def test_load_l0_body_preserved_before_pin_section(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "# body\n\nprose\n\n## desktop:pins\n\n```yaml\n[]\n```\n"
+        "# body\n\nprose\n\n## ground:pins\n\n```yaml\n[]\n```\n"
     )
     c = load_l0(tmp_path)
     assert "prose" in c.body
-    assert "## desktop:pins" not in c.body
+    assert "## ground:pins" not in c.body
 
 
 # ---- dump_l0_pins ------------------------------------------------------
@@ -126,7 +126,7 @@ def test_dump_creates_file_when_missing(tmp_path: Path) -> None:
     path = tmp_path / DEFAULT_L0_FILENAME
     assert path.is_file()
     text = path.read_text()
-    assert "## desktop:pins" in text
+    assert "## ground:pins" in text
     assert "FEATURE.md" in text
 
 
@@ -153,15 +153,15 @@ def test_dump_appends_pin_section_to_body_only_file(tmp_path: Path) -> None:
     text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
     assert "# preserved" in text
     assert "hello" in text
-    assert "## desktop:pins" in text
+    assert "## ground:pins" in text
     # heading 顺序: body 先, pin 段后
-    assert text.index("# preserved") < text.index("## desktop:pins")
+    assert text.index("# preserved") < text.index("## ground:pins")
 
 
 def test_dump_replaces_existing_pin_section(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_L0_FILENAME).write_text(
         "# body\n\ntext\n\n"
-        "## desktop:pins\n\n"
+        "## ground:pins\n\n"
         "```yaml\n- addr: old.md\n  note: ''\n  pinned_at: 1.0\n```\n\n"
         "## after\n\nafter-body\n"
     )
@@ -193,7 +193,7 @@ def test_dump_empty_pin_list_writes_empty_yaml_list(tmp_path: Path) -> None:
     # 里面应该有 `[]` 或空列表 yaml
     assert "```yaml" in text
     # 语法要 parse 得动
-    section = text.split("## desktop:pins", 1)[1]
+    section = text.split("## ground:pins", 1)[1]
     yaml_body = section.split("```yaml", 1)[1].split("```", 1)[0]
     assert yaml.safe_load(yaml_body) in (None, [])
 

@@ -18,15 +18,15 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ghoshell_moss.contracts.desktop import (
+from ghoshell_moss.ground.contract import (
     Ground,
     GroundConvention,
     Grounds,
     Pin,
     UpdateResult,
 )
-from ghoshell_moss.core.desktop._ground import DefaultGround
-from ghoshell_moss.core.desktop._l0 import load_l0
+from ghoshell_moss.ground._ground import DefaultGround
+from ghoshell_moss.ground._l0 import load_l0
 
 __all__ = ["DefaultGrounds"]
 

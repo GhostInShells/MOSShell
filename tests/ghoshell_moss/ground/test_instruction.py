@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ghoshell_moss.contracts.desktop import GroundConvention
-from ghoshell_moss.core.desktop._instruction import collect_instructions
+from ghoshell_moss.ground.contract import GroundConvention
+from ghoshell_moss.ground._instruction import collect_instructions
 
 
 def _write(p: Path, content: str) -> None:

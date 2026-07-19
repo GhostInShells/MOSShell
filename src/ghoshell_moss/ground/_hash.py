@@ -21,7 +21,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from ghoshell_moss.core.desktop._addr import (
+from ghoshell_moss.ground._addr import (
     ParsedAddr,
     resolve_file_addr,
     resolve_glob_addr,

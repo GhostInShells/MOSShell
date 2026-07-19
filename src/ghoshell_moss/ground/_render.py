@@ -27,14 +27,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from ghoshell_moss.contracts.desktop import GroundConvention, Pin
-from ghoshell_moss.core.desktop._addr import (
+from ghoshell_moss.ground.contract import GroundConvention, Pin
+from ghoshell_moss.ground._addr import (
     ParsedAddr,
     parse_addr,
     resolve_file_addr,
     resolve_glob_addr,
 )
-from ghoshell_moss.core.desktop._hash import Observation, observe
+from ghoshell_moss.ground._hash import Observation, observe
 
 __all__ = ["render_context", "BUILTIN_TREE_IGNORE"]
 
@@ -68,7 +68,7 @@ async def render_context(
     *,
     workspace_root: Path | None = None,
     l0_file_exists: bool = False,
-    l0_filename: str = "DESKTOP.md",
+    l0_filename: str = "GROUND.md",
 ) -> str:
     """渲染桌面当前帧."""
     root_abs = root.resolve()

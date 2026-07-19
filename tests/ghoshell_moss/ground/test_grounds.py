@@ -14,15 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from ghoshell_moss.contracts.desktop import (
+from ghoshell_moss.ground.contract import (
     GroundConvention,
     PathOutsideRootError,
 )
-from ghoshell_moss.core.desktop import (
+from ghoshell_moss.ground import (
     DEFAULT_L0_FILENAME,
     DefaultGrounds,
 )
-from ghoshell_moss.core.desktop._l0 import load_l0
+from ghoshell_moss.ground._l0 import load_l0
 
 
 def run(coro):

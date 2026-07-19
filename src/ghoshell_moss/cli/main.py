@@ -12,7 +12,7 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    desktop_cli,
+    ground_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -41,7 +41,7 @@ app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect av
 app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
 app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
-app.add_typer(desktop_cli.desktop_app, name="desktop", short_help="Cognitive desktop — pin addresses to a directory")
+app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
 
 
 @app.callback(invoke_without_command=True)

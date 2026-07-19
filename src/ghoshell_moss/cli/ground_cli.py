@@ -1,39 +1,8 @@
-"""Desktop command group — bash-layer landing for the cognitive desktop.
+"""Ground command group — bash-layer landing for the cognitive ground.
 
 Every invocation is stateless: open a Grounds owner, open the Ground rooted
 at --in (or cwd), do one operation, sediment (via __aexit__), exit. L0 file
-(DESKTOP.md) is the single source of truth across invocations -- and across
-future CTML channel landing (K16 three parallel acceptance surfaces).
-
-Dogfood observations (2026-07-13, running against MOSShell repo itself):
-
-- Frame at repo-root grounds is dominated by the tree section — depth=2
-  produces ~200 lines just for the tree on a real repo, dwarfing pin
-  content. Tree currently does no ignore-list filtering (.git/, .venv/,
-  __pycache__/, node_modules/ all show up). Consider a tree_ignore
-  patterns field on GroundConvention, or dropping the tree for large
-  grounds and let hint_children carry the discovery.
-- Budget report is accurate but only counts pin blocks, not tree or
-  hints or headers. Total frame may exceed budget silently. See
-  _render.py:_render_budget_warning.
-- Budget warning line lands after tree/hints but before pin blocks.
-  Reader misses it if scanning bottom-up. Consider hoisting to top of
-  frame when triggered.
-- Boundary check (K12) is strict — pins that cross-cut multiple
-  workstreams need a ground rooted at their common ancestor. A
-  feature-scoped ground cannot pin sibling feature docs. This is
-  correct-by-design but easy to trip on; init/help could hint at it.
-- Multiple DESKTOP.md scatter across a repo (one per ground root).
-  Track-vs-ignore policy is a per-repo decision — users may want
-  .gitignore or explicit tracking of workstream-scoped DESKTOP.md.
-- Instruction chain requires a workspace boundary; passing ground root
-  as workspace kills upward walk. _find_repo_root heuristic (.git or
-  .moss/ upward) works for git-tracked repos; unrooted directories
-  fall back to fs root walk. Environment-driven workspace discovery
-  would be more principled once MOSS Environment plugs in.
-- Hash-based staleness (mtime trigger + hash truth) correctly filters
-  touch-only false alarms. K17 semantics verified end-to-end via
-  touch + update + edit + update sequence.
+(GROUND.md) is the single source of truth across invocations.
 """
 from __future__ import annotations
 
@@ -49,22 +18,22 @@ from ghoshell_moss.cli.utils import (
     print_info,
     print_success,
 )
-from ghoshell_moss.contracts.desktop import PathOutsideRootError
-from ghoshell_moss.core.desktop import (
+from ghoshell_moss.ground.contract import PathOutsideRootError
+from ghoshell_moss.ground import (
     DEFAULT_L0_FILENAME,
     DefaultGrounds,
 )
-from ghoshell_moss.core.desktop._l0 import dump_l0_pins, load_l0
+from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 
-__all__ = ["desktop_app"]
+__all__ = ["ground_app"]
 
 
-desktop_app = typer.Typer(
-    short_help="Cognitive desktop — pin addresses to a directory.",
+ground_app = typer.Typer(
+    short_help="Cognitive ground — pin addresses to a directory.",
     help=(
-        "Cognitive desktop: pin addresses (path / path:80-140 / **/*.py) to a "
+        "Cognitive ground: pin addresses (path / path:80-140 / **/*.py) to a "
         "directory, get a per-frame view of pinned content with change tracking. "
-        "State persists in DESKTOP.md per directory."
+        "State persists in GROUND.md per directory."
     ),
     no_args_is_help=True,
 )
@@ -87,13 +56,6 @@ async def _open_ground(root: Path):
 
     Returns (grounds, ground) — caller must `await grounds.__aexit__(...)`
     to sediment (or use the run_op helper below).
-
-    workspace_root probe order:
-    1. Project.discover().root — MOSS workspace anchor. Preferred; treats
-       desktop as a MOSS capability per K16 layering.
-    2. Nearest .git / .moss upward — fallback for repos outside MOSS
-       workspaces (e.g. arbitrary git clones).
-    3. None — falls through; instruction chain walks to fs root.
     """
     workspace = _probe_workspace_root(root)
     grounds = DefaultGrounds(workspace_root=workspace)
@@ -146,16 +108,16 @@ def _run_op(coro_fn) -> None:
 # ---- init --------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "init",
-    short_help="Create DESKTOP.md with defaults in the target directory.",
+    short_help="Create GROUND.md with defaults in the target directory.",
 )
 def cmd_init(
     path: Optional[Path] = typer.Argument(
         None, help="Directory to init (defaults to cwd)."
     ),
 ) -> None:
-    """Create DESKTOP.md with default GroundConvention + empty pin section."""
+    """Create GROUND.md with default GroundConvention + empty pin section."""
     root = _resolve_ground_root(path)
     target = root / DEFAULT_L0_FILENAME
     if target.exists():
@@ -169,7 +131,7 @@ def cmd_init(
 # ---- status ------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "status",
     short_help="Show ground info: root, convention, pin count.",
 )
@@ -187,7 +149,7 @@ def cmd_status(
     l0_path = root / DEFAULT_L0_FILENAME
     exists = "yes" if l0_path.is_file() else "no (defaults)"
     echo(f"ground root:      {root}")
-    echo(f"DESKTOP.md:       {exists}")
+    echo(f"GROUND.md:        {exists}")
     echo(f"instruction_files: {list(contents.convention.instruction_files)}")
     echo(f"upward_lookup:    {contents.convention.upward_lookup}")
     echo(f"tree_depth:       {contents.convention.tree_depth}")
@@ -206,7 +168,7 @@ def cmd_status(
 # ---- pin --------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "pin",
     short_help="Pin an address to a ground.",
 )
@@ -228,7 +190,7 @@ def cmd_pin(
         help="Ground root (defaults to cwd).",
     ),
 ) -> None:
-    """Pin an address. Auto-creates DESKTOP.md on sediment if missing."""
+    """Pin an address. Auto-creates GROUND.md on sediment if missing."""
     root = _resolve_ground_root(path)
 
     async def _op(grounds, ground):
@@ -236,12 +198,11 @@ def cmd_pin(
             pin = ground.pin(addr, note)
         except PathOutsideRootError as e:
             print_error(str(e))
-            # 越界: 提示更宽的 ground 该开在哪里. 优先 workspace, 兜底不给建议.
             workspace = _probe_workspace_root(root)
             if workspace is not None and workspace != root:
                 echo(
                     f"  hint: to reach this addr, open a wider ground:\n"
-                    f"    moss desktop pin {addr} --in {workspace}"
+                    f"    moss ground pin {addr} --in {workspace}"
                 )
             raise typer.Exit(code=2)
         except ValueError as e:
@@ -258,7 +219,7 @@ def cmd_pin(
 # ---- unpin ------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "unpin",
     short_help="Remove a pin.",
 )
@@ -284,7 +245,7 @@ def cmd_unpin(
 # ---- update -----------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "update",
     short_help="Acknowledge a pin's world change: re-observe, refresh seen state.",
 )
@@ -311,7 +272,7 @@ def cmd_update(
 # ---- pins -------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "pins",
     short_help="List active pins (most recent first).",
 )
@@ -341,7 +302,7 @@ def cmd_pins(
 # ---- frame ------------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "frame",
     short_help="Render the current frame (tree + pin contents + budget).",
 )
@@ -362,7 +323,7 @@ def cmd_frame(
 # ---- instruction ------------------------------------------------------
 
 
-@desktop_app.command(
+@ground_app.command(
     "instruction",
     short_help="Print the collected instruction chain (upward CLAUDE.md).",
 )

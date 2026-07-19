@@ -23,13 +23,13 @@ insert / undo_edit — 语义骑 Anthropic text_editor 血统, 契约不做加�
 三条验收平面:
 
 1. contracts + core 单测 (无 vendor 直接 import, 走 DefaultFileEditor)
-2. 未来 channel 装配 (K33 desktop_channel 落地时合体)
+2. 未来 channel 装配 (K33 ground_channel 落地时合体)
 3. 未来 CLI dogfood (moss edit / moss view 之类, 暂未立项)
 """
 
 # 技术目标 (reviewer 上下文, 契约演进见 FEATURE.md file-editor-contract):
 #
-# K1 (契约独立, 不入 desktop.py) — Grounds 与 FileEditor 最小依赖不同:
+# K1 (契约独立, 不入 ground/contract.py) — Grounds 与 FileEditor 最小依赖不同:
 # Pin 只在 Ground 里存在, FileEditor.write(path) 只需一个 path. 塞一起是
 # 融合病灶复发. channel 层可合体, contract 层不合体.
 #
@@ -94,7 +94,7 @@ class FileEditorResult:
 # -- 异常 --
 
 class FileEditorError(Exception):
-    """File editor 契约层异常基类. 与 DesktopError 兄弟平级, 不共享继承.
+    """File editor 契约层异常基类. 独立于其他契约层, 不共享继承.
 
     K1: FileEditor 与 Grounds 契约独立, 异常层也独立. Vendor 层 (OHEditor)
     的 ToolError 家族在 DefaultFileEditor 边界处转译为本类家族, 不透传.
