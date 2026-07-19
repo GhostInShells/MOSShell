@@ -8,8 +8,8 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: design-locked
-status_note: 13 钉子已裁决; 施工暂停等 momento-mori §16 (branch=ref 重构) 冻结 — MementoBranch ABC
-  将解体, 消费面变
+status_note: '13 钉子已裁决; 施工暂停等 momento-mori §16+§17 冻结 — MementoBranch ABC 解体, 且 §17
+  覆盖钉子 7: 同 owner 多线并行合法, flock 粒度 owner→branch, 复工时同步修订'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
 updated: '2026-07-19'
 ---

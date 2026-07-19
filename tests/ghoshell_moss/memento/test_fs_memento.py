@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ghoshell_moss.core.memento import (
+from ghoshell_moss.memento import (
     BranchWindow,
     CommitNotFoundError,
     EmptyStagingError,

@@ -255,7 +255,6 @@ class Moment(BaseModel, WithAdditional):
             yield from self.compacted_perspectives
         yield from self.inputs_messages(with_command_executing=with_command_executing, with_hint=with_hint)
 
-
     def as_history_messages(self) -> Iterable[Message]:
         """当 Moment 作为历史消息时, perspectives 无论是否存储都应该遗忘. """
         yield from self.previous_reaction_messages()
@@ -301,7 +300,3 @@ class Moment(BaseModel, WithAdditional):
             last_moment_has_logos = this_moment_has_logos
         if buffered_messages:
             yield buffered_messages, None
-
-# 旧版 memento ABC 草稿 (2026-06 前) 已删除 — 正式契约在 ghoshell_moss.core.memento
-# (FORMAT.md + abc.py). Moment/Reaction 经 core.memento.porcelain 编解码进入信封
-# (payload type 'moss.moment/v1'). 历史版本: git log -- <本文件>

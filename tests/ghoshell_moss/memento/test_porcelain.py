@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ghoshell_moss.core.blueprint.memento import Moment, Reaction
-from ghoshell_moss.core.memento import (
+from ghoshell_moss.memento import (
     MOSS_MOMENT_TYPE,
     CommitNotFoundError,
     MementoRef,

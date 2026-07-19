@@ -5,7 +5,7 @@ Memento — 轨迹第一公民的认知基建.
 主权层: fs_memento (参考实现) / porcelain (MOSS 强类型桥) / witness (git 见证).
 """
 
-from ghoshell_moss.core.memento.abc import (
+from ghoshell_moss.memento.abc import (
     TRAILER_KIND,
     TRAILER_MEMENTO_REF,
     TRAILER_RESUMES,
@@ -36,12 +36,12 @@ from ghoshell_moss.core.memento.abc import (
     split_trailers,
     trailer_values,
 )
-from ghoshell_moss.core.memento.fs_memento import (
+from ghoshell_moss.memento.fs_memento import (
     FsMemento,
     FsMementoBranch,
     new_filesystem_memento,
 )
-from ghoshell_moss.core.memento.porcelain import (
+from ghoshell_moss.memento.porcelain import (
     MOSS_MOMENT_TYPE,
     MementoRef,
     commit_summary_message,
@@ -51,7 +51,7 @@ from ghoshell_moss.core.memento.porcelain import (
     update_moment,
     window_messages,
 )
-from ghoshell_moss.core.memento.witness import Witness, ensure_witness_repo, snapshot
+from ghoshell_moss.memento.witness import Witness, ensure_witness_repo, snapshot
 
 __all__ = [
     # 契约层

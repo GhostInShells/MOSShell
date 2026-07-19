@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from ghoshell_moss.core.memento.abc import (
+from ghoshell_moss.memento.abc import (
     TRAILER_KIND,
     TRAILER_RESUMES,
     TRAILER_SUSPENDS,

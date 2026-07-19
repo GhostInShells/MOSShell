@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
-from ghoshell_moss.core.memento.abc import TRAILER_MEMENTO_REF, MementoError
+from ghoshell_moss.memento.abc import TRAILER_MEMENTO_REF, MementoError
 
 __all__ = ["ensure_witness_repo", "snapshot", "Witness"]
 

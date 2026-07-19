@@ -6,8 +6,8 @@ description: 以 commit 为第一公民的认知轨迹系统。成员不可变�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '§16 重开契约: branch 降维纯 ref / commit 自治目录出生即冻结 / staging 归 owner (worktree).
-  FORMAT v2 待起草, 三个次级决策待人类拍板 (§16.5)'
+status_note: '§17 时间线原生化: staging 归线 (worktree 类比拔除), HEAD 废除, ref 移动先落锚, commit_space
+  API, 释义跟随轨迹; §16+§17 合并待人类 review 冻结 → FORMAT v2; 下一轮 memento 升一级模块 ghoshell_moss/memento'
 title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
 updated: '2026-07-19'
 ---
@@ -658,3 +658,122 @@ owner"（cli-agent 钉子 6/7）天然对齐，不是缺陷。
 增殖压力），都发生在实现铺开之前——最便宜的修正时刻。§9 Open Problem #5
 大部分被本节消解（branch 增殖 / GC / archive），残余问题只剩 owner 目录
 整体 archive 的语义，降级为普通运维题。
+
+（2026-07-19 追记：§17 拔除了本节的 worktree 类比——staging 归 owner 被
+推翻，staging 归线。本节的 commit 自治目录 / 出生即冻结 / ancestry 入
+commit meta / 零锁 / merge 不存在全部存活。继续往下读。）
+
+## 17. 时间线原生化：staging 归线，worktree 类比拔除（2026-07-19）
+
+**触发**：人类指出 §16 的 worktree 类比在 object 层面断裂。git 的 object 是
+文件——工作区未提交内容是**空间性**的，一个 diff 浮在任意 base 上，checkout
+携带未提交文件是合法操作。memento 的 staging 内容是 moments——**时间性**的，
+因果上属于它延伸的那条线。跨线携带 = 伪造历史（在 commit A 下游经历的时刻
+被记成 commit B 的下游），违反 §3.7 时间连续。"checkout branch 共享同一个
+staging"这个逻辑在 memento 里不合法。
+
+第二判据是并行场景（人类给出的真实动机）：内存里开 N 个 agent 各持一个
+branch 句柄并行探索，最后各自返回结论 + last commit id。owner 级单一
+staging 在 N 线并行下根本摆不下。
+
+### 17.1 原生形状（不借 git）
+
+git 的世界有**地点**（working tree）：branch 是同一内容的不同版本，checkout
+是把地点传送过去，staging 是地点与历史的中介。memento 的世界没有地点，
+只有**时间线**：
+
+- owner 是**身份**，不是地点。一个身份可以同时活在 N 条线上。
+- 每条线 = 冻结的过去（commit 链）+ **活边**（staging）。
+- 活边与线不可分——staging 跟随 branch 是结构真命题，不是设计选择。
+
+### 17.2 布局修订（覆盖 §16.1 的 owner 级 staging + HEAD）
+
+```
+{root}/memento/{owner}/
+  meta.json                      ← owner 身份卡 (overlay 候选新家, §16.5 #2)
+  branches/
+    main/                        ← branch = 时间线: ref + 活边的小目录
+      ref                          {"fork": ..., "commit_id": "cmt_..."[, "moment_id": ...]}
+      staging.jsonl              ← 本线活边, 随线生随线死 (-D 即弃)
+    idea-x/
+      ref
+      staging.jsonl
+  commits/
+    cmt_<ULID>/                  ← §16 原样: 自治目录, 出生即冻结, 懒创建
+      meta.json
+      moments.jsonl
+      notes.jsonl
+```
+
+- **HEAD 文件废除**。owner 级"当前 branch"不是结构概念——没有地点就没有
+  "现在站在哪"。CLI 层可以留一个默认线名做人体工学，不进契约。
+- branch 从"纯 ref 文件"变成"ref + 活边的小目录"。§16 的胜利不回退：
+  `-D` 仍无痛（目录很小），增殖仍被结构消灭，commit 仍是唯一冻结体。
+
+### 17.3 语义收敛
+
+1. **"切换 branch"操作不存在**。只有三个动作：**开线**（checkout 新 branch
+   / fork）、**延线**（moment 落活边、commit 落锚）、**弃线**（`-D`，活边
+   随线死，冻结 commit 永存）。`-D` 是唯一显式丢弃活边的动作，人类已授权
+   彻底丢。§16.2 尾段"后果接受：一个 owner 同时只有一个活跃写面，切 branch
+   前 staging 要么 commit 要么丢"整段作废——那是 git 摩擦的错误移植。
+2. **ref 移动前活边先落锚**——真正的一致性规则，管的是 reset 而非 switch：
+   reset 前 staging 自动机械 commit（锚在原 ref 位置），然后 ref 原子移动。
+   什么都不静默丢，reset 因此合法。**commit 不是优先动作**：锚机械地落，
+   意义后补。未释义的机械 commit 可被发现（log 过滤 kind=mechanical 且
+   无 note），补释义走孔径二。
+3. **并行合法化**。N 线 = N 活边，无共享可变面，零锁契约在并行下自然成立。
+   branch = 单写者域，写者纪律归业务（flock / 内存句柄独占任选）。
+   **覆盖 cli-agent 钉子 7**：并行扇出不必走派生 owner——同 owner 多线并行
+   合法，锁粒度从 owner 级降到 branch 级。跨 owner fork 仍是跨身份协作的
+   形态，但不再是并行的必要条件。
+4. **commit 空间从 API 拿**：`commit_space(commit_id) -> path`，运行时对
+   root 解析。memento 内部存储的一切引用只许用 id 元组，**出现绝对路径即
+   契约违规**——memento 可跨项目分享，任何绝对路径和现场关联都无意义。
+   空间内怎么操作，契约不定义：保留名单（meta.json / moments.jsonl /
+   notes.jsonl）之外，契约沉默——不感知、不承诺、不禁止。业务自由空间
+   （ground 场快照、link、说明等范式留给 dogfooding），变动历史由见证层
+   兜底（sidecar git 拍下家具搬动，意义堆积自带时间锚）。
+5. **释义跟随轨迹，不跟随对象**。summary 是一次解释行为，发生在某条线的
+   某个时刻，属于解释者的轨迹。owner 自己的释义走 commit 目录 notes.jsonl
+   （孔径二，append-only last-wins，无锁）；外来轨迹对该 commit 的 summary
+   存在**它自己的空间**里，按 id 引用。"一个 commit 在不同轨迹里有不同
+   summary 版本"自然成立。**否决 meta summary 字段可变**——那会把 flock
+   问题请回来，并溶解"出生即冻结"的结构事实。
+
+### 17.4 §16 存活与覆盖清单
+
+- **存活**：commit 自治目录 / 出生即冻结 / 懒创建、ancestry 入 commit meta
+  （分段祖先、寻路可达）、时间前缀冻结、merge 不存在、零锁契约三承诺、
+  见证层反查、`-D` 无痛。
+- **覆盖**：§16.1 owner 级 staging + HEAD 文件；§16.2 #7 "staging 是 API
+  暴露的活目录"语义照旧但路径归线（branches/{name}/staging.jsonl）；
+  §16.2 尾段"单一活跃写面"作废；cli-agent 钉子 7 扇出纪律待其复工时同步
+  修订（见 17.3 #3）。
+- §16.5 三个次级决策仍待拍板，#3 ref 文件格式在 ref 移入
+  `branches/{name}/ref` 后照旧适用。
+
+### 17.5 模块提升：memento 升一级模块（下一轮）
+
+人类已决定 ground 提升一级；memento 下一轮多半同步提升：
+`core/memento/` → `ghoshell_moss/memento/`，意味着未来可独立拆包。
+
+模型侧赞同，理由：
+
+- 依赖方向本来就对：memento 契约刻意零依赖内核概念（信封不认 Moment、
+  零锁、filesystem-first），是被 core 消费的地基而非 core 的一部分。
+  一级位置让**"memento 不得 import ghoshell_moss.core.*"** 这条纪律
+  结构可见、可 lint。
+- 与 ground 对称：Ghost 反身性基建双柱——ground = 认知场（现在），
+  memento = 轨迹（过去）。同层摆放，互链（17.3 #4 的自由空间）不产生
+  层级穿刺。
+- 时机：建议与 §16/§17 重建同轮做——abc.py 反正重写、模块未发布、
+  兼容性明确不管，一次迁移比两次便宜。
+
+### 17.6 状态
+
+本节与 §16 合并构成契约第二次重开的完整定案。讨论边界已由模型划定并经
+人类确认：结构与一致性规则（本节四条）进契约；20-agent 编排范式、跨轨迹
+释义交换的具体形状、ground 互链格式**不再推演**——全是消费面的事，
+dogfooding 接触现实之前继续推演产出的是无现实接触的推测。等人类 review
+§16+§17 后冻结，起草 FORMAT.md v2。

@@ -17,7 +17,7 @@ import json
 from typing import Iterable, Sequence
 
 from ghoshell_moss.core.blueprint.memento import Moment
-from ghoshell_moss.core.memento.abc import (
+from ghoshell_moss.memento.abc import (
     BranchWindow,
     CommitNotFoundError,
     CommitView,

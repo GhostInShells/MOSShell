@@ -64,7 +64,7 @@ import ghoshell_moss.contracts as contracts
 # ============================================================================
 
 import ghoshell_moss.core.py_channel as channel_impl
-import ghoshell_moss.core.memento as memento_impl
+import ghoshell_moss.memento as memento_impl
 import ghoshell_moss.core.file_editor as file_editor_impl
 import ghoshell_moss.host as host_impl
 import ghoshell_moss.host.tui as tui_design

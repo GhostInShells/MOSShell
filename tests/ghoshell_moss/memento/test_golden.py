@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ghoshell_moss.core.memento import (
+from ghoshell_moss.memento import (
     MomentRecord,
     new_filesystem_memento,
     split_trailers,
@@ -358,7 +358,7 @@ def test_crash_recovery_truncates_stale_staging(tmp_path: Path):
 
 def test_checkout_from_moment_id_slices_commit_inclusive(tmp_path: Path):
     """(commit, moment_id) 化身: ancestry 最末 commit 只贡献到该 moment 为止 (inclusive)."""
-    from ghoshell_moss.core.memento import MomentNotInCommitError
+    from ghoshell_moss.memento import MomentNotInCommitError
 
     root = tmp_path / "memento"
     src = new_filesystem_memento(root, "alpha")
