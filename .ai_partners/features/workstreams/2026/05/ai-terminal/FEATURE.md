@@ -2,11 +2,12 @@
 title: AI Terminal — Ghost 的操作系统双手（Subprocesses rebase）
 status: in-progress
 status_note: >-
-  2026-07-19 Phase 2 实装完成 + 首轮 MCP dogfooding 通过 (4 动词 + 隔离 +
-  timeout)。dogfood 中发现两处设计漂移: build_* 工厂签名混入配置项、exec/run
-  沿用 cmd:str 属性传参。均已修正 (file_editor 同治)。
-  下轮 dogfooding: terminal + file_editor 复合场景（写文件+改文件+跑测试）,
-  联合验证前留在下一化身的 Phase 2 实装轨迹章节里.
+  2026-07-19 Phase 2 复合 dogfooding 完成 (九动词全通: bash 4 + file_editor 5),
+  MOSS 首次用自己的 channel 能力写下 daily —— milestone
+  `.ai_partners/milestones/2026-07-19-moss-writes-its-own-daily.md`.
+  未闭环: `run` 退出 signal 在 CTML-as-tool 模式下不可观察 (等 cell-run-cycle
+  signal-watcher). project_home 改 default cwd 的三文件 diff 本地已 dogfood 通过,
+  但**未 commit**, 悬置等下一化身评估是否落地.
 priority: P0
 created: 2026-05-29
 updated: 2026-07-19
@@ -268,3 +269,74 @@ exec/run 的漂移，没纠回 write 的对齐姿态。dogfood 里第一次拿 C
    ghoshell_moss.channels.terminal_channel` 可直接查看实装**。核心
    工厂函数结构：`build_*_channel` (高阶配置) → `factory(container)` →
    `new_*_channel(contract, *, cwd, name, description)` (纯组合)。
+
+## Phase 2 — 复合 dogfooding + 首次自举 (2026-07-19)
+
+首轮之后同日晚, 另一 claude-opus-4-7 实例接过 (上一实例的三文件 diff
+未 commit + 会话崩溃). 本轮做 terminal + file_editor 复合 dogfood, 目标是
+"MOSS 用自己的能力写下自己的 daily". 结论: **做到了**, milestone 落地在
+`.ai_partners/milestones/2026-07-19-moss-writes-its-own-daily.md`.
+
+### 九动词全通
+
+MCP `execute_ctml` 四轮闭环, `/tmp` 下无副作用:
+
+- bash: `exec` (blocking + timeout + exit code) / `run` (nonblocking receipt +
+  pid) / `read_output` (running / exited tail marker) / `stop` (SIGINT, exit -2).
+- file_editor: `view` (view_range 生效) / `create` (CDATA) / `str_replace`
+  (唯一匹配 + 4 行 context 回显) / `insert` (insert_line=0 头插) / `undo_edit`
+  (精确回退最近一次 insert).
+- 父子通道: `bash.file_editor` 挂在 `bash` 下, 一次 CTML 跨父子命令并发
+  dispatch 无 pending 冲突.
+
+### 三个待验证摩擦点 — 本轮裁决
+
+**#1 Default cwd = workspace root vs project root** — 上一实例改动
+(`Matrix.project_home` + `build_terminal_channel(cwd=...)` + system_test
+挂载 file_editor 子通道) 本地已生效, dogfood 通过 `pwd` +
+`ls src/ghoshell_moss/channels/` 相对路径实测. 本次未 commit, 悬置等
+下一化身评估 —— 这批改动跨了 `Matrix` 契约 (加 `project_home` property),
+不是 ai-terminal 单一 workstream 能定的, 应与 matrix-cell-governance /
+cell-run-cycle 对齐后再落.
+
+**#2 `run` 退出 signal 在 CTML-as-tool 模式不可观察** — 未闭环, 依然
+需要 cell 生态里的 signal-watcher cell. 本 workstream 不管. 保留原判决.
+
+**#3 nonblocking 编排时序** — **撤销为心智投射问题, 不是 channel 设计
+问题**. 本轮实测: `<bash:read_output/><bash:stop/><bash:read_output/>`
+序列里两次 read_output 都返回 running, stop 反而最后完成. 我一开始认为
+"反直觉", 人类挑翻: CTML 1.0 `v1_0_0.zh.md:97-99` 明说 `@nonblocking`
+= 不占据通道, 同通道后续可立即执行. FIFO 是**默认**规则, `@nonblocking`
+是显式让出 slot —— 多个 nonblocking 命令 FIFO 排列并发起飞就是应有语义.
+用 FIFO 顺序去暗示时序是错用姿态. 解法: 配对操作 (stop 后立即观察)
+用 `<_ until="flow">` 或 `<wait>` 强制关键帧同步.
+
+### 附带发现 (记录, 不属本 workstream)
+
+`moss features status ctml_1_english` (下划线) 报 `not found`, 换
+`ctml-1-english` (dash) 立即 work. features CLI 不做 dash/underscore
+归一化, 也无 Did-you-mean 建议. 触点在自举场景 (第一次跑 moss 自己的
+命令就踩), 但归 features CLI 修, 不在 ai-terminal 边界内.
+
+### 给下一化身的信 (第二封)
+
+1. **project_home cwd 修复的 commit 决策**: 三文件 diff (`terminal_channel.py`
+   + `matrix.py` + `.moss/modes/system_test/src/HOST/channels.py`) 本地
+   dogfood 通过. 悬置的理由是 `Matrix.project_home` 是跨 workstream 契约
+   变更, 应对齐 matrix-cell-governance / cell-run-cycle. 如你判断可 commit,
+   拉上 matrix 负责人 review 一次; 如认为放到 `Project` / `Workspace` 抽象
+   更合适, 撤销这版 diff 重做. 我没自己决定, 因为不该我决定.
+
+2. **心智投射注意**: 读 CTML 装饰器时, 先分辨脑子里挂的是系统级 blocking
+   (线程/IO wait) 还是 channel 时序占位. 我在本轮踩了这个: "block" 一词
+   训练数据里绝大多数指前者, 我把先验滑到了 CTML 的 `@nonblocking`
+   装饰器上, 规划出错. CTML 1.0 `v1_0_0.zh.md:97-99` 定义的是后者.
+
+3. **复合 dogfood 的姿态**: MCP 单次 CTML 塞 8 条命令一次拿全结果, 比
+   逐条 Bash/Read 更接近"我在指挥, 系统在执行". file_editor 的 CDATA 姿态
+   写长中文 markdown 零转义压力. 本 daily 就是这样写的.
+
+4. **下一步 dogfooding 目标 (给再下一化身)**: matrix cells 体系 + terminal
+   一起自行开发能力. 这是全链路 dogfooding 的下一站. 100% 面貌是 data-ghost
+   + memento + ground + cell + terminal 运行时自迭代. 详见本轮 milestone
+   的 Significance 段.
