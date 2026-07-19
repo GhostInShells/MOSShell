@@ -6,10 +6,10 @@ description: 以 commit 为第一公民的认知轨迹系统。成员不可变�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '§14 存储布局修正定案: moments 池废除, commit 文件自包含. contract 重开, 待化身施工 FORMAT/abc/fs/golden
-  重做'
+status_note: '§16 重开契约: branch 降维纯 ref / commit 自治目录出生即冻结 / staging 归 owner (worktree).
+  FORMAT v2 待起草, 三个次级决策待人类拍板 (§16.5)'
 title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
-updated: '2026-07-18'
+updated: '2026-07-19'
 ---
 
 # Memento
@@ -542,3 +542,119 @@ moments/               # 目录整个删除, YYYY-MM 月分片随之消失
 
 FORMAT.md v1.1 冻结完毕。下一位化身若要动 memento 契约面，请：读 §14 + §15，
 理解为什么池被删、`(commit, moment_id)` 的白拿从何而来，再决定动作。
+（2026-07-19 追记：§16 已再次重开契约，v1.1 冻结解除。继续往下读。）
+
+## 16. Branch 降维为纯 ref：commit 自治目录 + owner 级 worktree（2026-07-19）
+
+**触发**：人类指出运行期摩擦点——branch 是 checkout 的身份持有者，每次化身
+扇出 = 新 branch 目录 + ancestry 副本（memento-cli-and-agent 钉子 7 的必然
+产物），无限增殖，而 §9 #5 的 GC 承诺（"人类显式介入"）是空头支票。一轮
+讨论收敛后确认：这不是治理补丁能解的，是 **branch 承重过多**——它同时当了
+ref、staging 容器、commit 容器、ancestry 索引四个角色。本节拆开四个角色，
+branch 只留第一个。
+
+方法论注脚：FEATURE.md 的职责是反射出思维里的虚拟机，让下一个化身 dump 成
+code——本节是那场对话的压缩产物。老代码兼容性明确不管（模块未发布，
+仍在打磨周期）。
+
+### 16.1 定案布局
+
+```
+{root}/memento/{owner}/          ← owner = worktree = 会话身份 (借 git 概念:
+  meta.json                        staging 归 worktree, 不归 branch)
+  staging.jsonl                  ← 唯一活跃写面, owner 级, 切 branch 不跟走
+  HEAD                           ← 当前 branch 名, 一行文本
+  branches/
+    main                         ← ref 文件: {"fork": ..., "commit_id": "cmt_..."
+    idea-x                          [, "moment_id": ...]} — 可指向他 owner 的 commit
+  commits/
+    cmt_<ULID>/                  ← 自治目录: 全局稳定 id, 单一归属, 永不复用,
+      meta.json                    懒创建, 出生即冻结 (无 "活 commit" 概念)
+      moments.jsonl              ← 冻结成员真身
+      notes.jsonl                ← 释义追加 (commit_note / moment_note 共居)
+```
+
+- commit 目录懒创建：staging 冻结时才 materialize（tmp 目录 + 原子 rename）。
+  无内容永不落盘——checkout 不产生 commit。
+- `commits/` 列表按 ULID 字典序即时间序。branch 内 NNNN 序号消灭，
+  commit 定序全局化。
+- **ancestry 从 BranchMeta 迁入 commit meta**：每个 commit 冻结时写入自己的
+  祖先信息——parent = `(fork, commit_id[, moment_id])` 单父链 + 近端 N 段
+  跳跃指针（N 是主权层常量）。纪律两条：寻路可达（给定 commit_id 追任意
+  祖先 O(d/N) 或 O(log d)，禁止 O(全库)）；写入时确定（冻结后不变）。
+  §3.5 的"fork 时刻展平冻结进 BranchMeta"条款废除——那是可变父链系统的
+  危险反规范化在本系统的残影，祖先信息归 commit 自身后纯靠成员不可变背书。
+
+### 16.2 核心语义收敛
+
+1. **branch = 纯 ref**。创建/删除/重指向都是一行文件的原子写。`-D` 无痛——
+   丢的只是名字，commit 链独立存在。§9 #5 的 branch 增殖问题被结构消灭，
+   不需要 GC 机制。
+2. **commit 出生即冻结**。"活 commit"概念不存在——staging 是唯一活跃面，
+   且永远不可作为出生点。§3.2 "化身只能从 commit 出生，永不从 staging"
+   从 API 纪律变成结构事实：staging 没有 id，没有东西可指。
+3. **commit = 时间前缀冻结**（细节待拍板，见 16.5 #1）：冻结 staging 的
+   一段时间前缀（默认全量）。拆多 commit = 依次冻结多个前缀。§3.7 时间
+   连续不变，thread tag 只提示边界位置，不重排成员。
+4. **checkout 目标永远是冻结 commit**。跨 owner checkout = 本 owner 新建
+   branch ref 指向他 owner 的 `(fork, commit_id[, moment_id])`；首次 commit
+   才产生本 owner 的 commit（parent = 该外部锚点）。§15.2 的 moment 前缀
+   切片语义原样幸存为 parent 指针形态。
+5. **merge 不存在**。跨 owner 交互 = 只读 checkout + Matrix 消息（孔径一）。
+   单父链钉死，无冲突语义，无多父 commit。owner 身份治理归 host，各 cell
+   治理自己的 memento——owner ↔ cell 对应关系显式化。
+6. **契约层零锁**。契约只承诺三件事：commit 成员文件 immutable（原子
+   rename 发布）、append-only 文件读者跳撕裂尾行、ref 更新原子写。
+   互斥语义是业务方的事（flock / owner 分片纪律 / Matrix 串行化任选）。
+   git 的态度：只做数据结构一致性，不做锁。注意 immutable 的精确范围是
+   **成员文件**（meta.json + moments.jsonl）；notes.jsonl 冻结后仍可追加——
+   "身份和成员冻结，释义永远开放"在目录内的物理映射。
+7. **staging 是 API 暴露的活目录**。staging 路径/身份对业务方可见，供
+   关联性动作（见证 daemon 挂载、跨进程协调、消息引用）。filesystem-first
+   从"人类可 cat"扩展到"业务可挂"。
+8. **裸 commit_id 反查靠见证层**。O(1) dereference 必须带 owner 元组；
+   裸 `cmt_xxx`（文档/注释/消息里的锚点）= `git grep` 见证 repo，O(grep)，
+   路径不索引不维护。§6 的 Memento-Ref 机制原样承担，无新机制。
+
+后果接受：一个 owner 同时只有一个活跃写面，切 branch 前 staging 要么
+commit 要么丢（git 同款摩擦）。与 mindflow 单注意力焦点、"一个化身一个
+owner"（cli-agent 钉子 6/7）天然对齐，不是缺陷。
+
+### 16.3 被否决的备选
+
+- **commit 活目录（无独立 staging）**：极简一层，但"拆多 commit"治理动作
+  失去物理载体，逆向拆分破坏 append-only。死于治理动作不清晰。
+- **跨 owner 引用计数 / backlink**（archive 前查"谁借我"）：引入握手协议，
+  污染只读纯度。反查需求走见证层 grep。
+- **裸 commit_id 的 O(1) 全域 ref**（任意位置 ref 文件留锚点）：路径无法
+  维护好，中央索引违背 filesystem-first。接受 grep 成本。
+
+### 16.4 波及面
+
+- FORMAT.md v2 重写（v1.1 冻结解除；§14 布局被本节取代，但其"commit
+  自包含 moment 真身"哲学保留——从单文件变成自治目录，cat 语义更纯）。
+- abc.py 重写：**MementoBranch ABC 解体**——staging 操作、commit 操作、
+  branch ref 操作归 owner facade（Memento）；BranchMeta / BasePointer /
+  ancestry 冻结相关模型废除，parent 指针入 commit meta。信封 MomentRecord /
+  CommitNote / trailer 工具 / hooks 零变化。
+- fs_memento.py / golden tests 授权丢弃重做。
+- **不变的部分**（防过度重做）：信封模型、释义 last-wins §2.2、trailer
+  规范 §6、双孔径 §3.4、commit 永不删、时间连续 §3.7、见证层 §6/§9、
+  退化态验收（蠢记忆无 fork 词汇）、golden 互读字节等价条款。
+
+### 16.5 待人类拍板的三个次级决策
+
+1. **commit 的时间前缀边界参数**：`commit()` 收可选的 staging 内 record id
+   （含）作为冻结边界，默认全量。这是"拆多 commit"的最小 API 面。
+2. **overlay（化身出生注入物）的新家**：BranchMeta 死了。提议迁 owner 级
+   meta.json——化身 = 新 owner，worktree 身份卡正是出生注入物的语义位置。
+3. **ref 文件格式**：提议 JSON 元组 `{fork, commit_id[, moment_id]}` 而非
+   裸 id 一行——跨 owner checkout 需要 fork 字段。
+
+### 16.6 状态
+
+契约第二次重开（前次 §14）。memento-cli-and-agent 施工暂停，等本节冻结。
+两次重开同源：契约 review 走真场景压力（§14 是 CLI 设计压力，本节是运行期
+增殖压力），都发生在实现铺开之前——最便宜的修正时刻。§9 Open Problem #5
+大部分被本节消解（branch 增殖 / GC / archive），残余问题只剩 owner 目录
+整体 archive 的语义，降级为普通运维题。
