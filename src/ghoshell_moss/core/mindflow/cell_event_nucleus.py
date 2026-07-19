@@ -1,10 +1,18 @@
 """CellEventNucleus — 将 'cell_event' signal 转换为 background_notice impulse.
 
 纯 signal→impulse 转换单元, 不依赖 Matrix/mesh/session 等系统抽象.
-mesh.on_event → Signal('cell_event') 的生产侧归 channel 层 (cells channel).
+mesh.on_event → Signal('cell_event') 的生产侧归 channel 层 (mesh channel,
+matrix-channel.md §5.2).
+
+SignalMeta 与 Nucleus 同居: CellEventSignalMeta + CellTransition 定义在此,
+`ghoshell_moss.signals` 只做 re-export (那是 Signal 的策展导出地图,
+不是实现位置).
 """
+from enum import Enum
 from typing import Callable, Iterable
 from typing_extensions import Self
+
+from pydantic import Field
 
 from ghoshell_container import IoCContainer
 
@@ -13,11 +21,74 @@ from ghoshell_moss.core.blueprint.mindflow import (
     Nucleus, NucleusMeta, ImpulsePrimitive, Impulse,
 )
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
-from ghoshell_moss.signals import CellEventSignalMeta
 
-__all__ = ['CellEventNucleus', 'CellEventNucleusMeta']
+__all__ = [
+    'CellEventNucleus', 'CellEventNucleusMeta',
+    'CellEventSignalMeta', 'CellTransition',
+    'NAME',
+]
 
 NAME = 'cell_event_nucleus'
+
+
+# ==== signal payload =============================================
+
+
+class CellTransition(str, Enum):
+    """Cell 生命周期跃迁类型 (§WW-5 四弧 + spawned 起点).
+
+    nucleus 判决核心: 未来分档时按 transition override 优先级
+    (如 CRASHED → 从 BACKGROUND 提到 NOTICE), 一行代码扩展.
+    """
+
+    SPAWNED = 'spawned'
+    """父进程 spawn 完成, 子进程 pid 已知, 尚未入网."""
+
+    READY = 'ready'
+    """子进程 announce presence, 网络上可见 (新器官上线)."""
+
+    EXITED = 'exited'
+    """子进程正常退出 (exit_code == 0)."""
+
+    CRASHED = 'crashed'
+    """子进程异常退出 (exit_code != 0)."""
+
+
+class CellEventSignalMeta(SignalMeta):
+    """Cell 生命周期事件的信号类型.
+
+    由 mesh channel on_startup 订阅 mesh.on_event 桥接产生 (matrix-channel.md
+    §5.2), priority=BACKGROUND — 不会抢占 attention, 只作为 background hint
+    进 mindflow buffer. CellEventNucleus 消费转为 Impulse.
+
+    **字段是 nucleus 的判决依据, 不是 ghost 看的消息主体** — 消息主体
+    (退出码/stderr 尾/诊断入口路径) 走 to_signal(messages=..., description=...).
+    详见 SignalMeta docstring 的三尺度原则.
+
+    默认值让空构造合法 (测试 / 兜底信号):
+      CellEventSignalMeta() → address='' + transition=READY, 语义 = "有事发生".
+    """
+
+    address: str = Field(
+        default='',
+        description="cell address (kind/name/uid), 事件主语. "
+                    "nucleus 未来按 cell 去重/分组的锚. 空 = 未定/兜底.",
+    )
+    transition: CellTransition = Field(
+        default=CellTransition.READY,
+        description="生命周期跃迁类型. nucleus 分档判决的核心依据.",
+    )
+
+    @classmethod
+    def signal_name(cls) -> SignalName:
+        return 'cell_event'
+
+    @classmethod
+    def priority(cls) -> Priority:
+        return Priority.BACKGROUND
+
+
+# ==== nucleus ====================================================
 
 
 class CellEventNucleus(Nucleus):

@@ -2,8 +2,9 @@
 
 CellEvent → Signal 链路，M9 telos 的必经环节 ("新器官 ready 送模型注意力候选")。
 上游判决: cell-run-cycle FEATURE.md M7.5/M5.1 + matrix-cell-governance §WW-5/§WW-6。
-与 cells channel (cells-channel.md) 的边界: **channel 零 signal (pull 面)，
-本 nucleus 独占 push 面** — 二选一已定案，不双写。
+与 channel 层的边界: **生产侧归 mesh channel** (matrix-channel.md §5.2 定,
+2026-07-19 三 channel 拆分), 本 nucleus 独占消费侧 (signal → impulse 转换)。
+一份订阅 (mesh channel on_startup) 无双写, unsub 跟随 channel 生命周期。
 
 ## 1. 形态
 

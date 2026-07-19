@@ -18,7 +18,7 @@ from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.contracts import Workspace, ConfigStore, ConfigInstanceRegisterBootstrapper
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
-from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta
+from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
 from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, CellHandle
@@ -328,6 +328,10 @@ class MatrixImpl(Matrix):
             child_env.update(extra_env)
 
         # -- 步骤 6: spawn -- #
+        # capture: 内存 ring buffer (供 channel context / read_output 取 tail) +
+        # 完整落盘到 spawn cwd 的 stdout.log / stderr.log (供 cell 死后诊断,
+        # host restart 时随 spawn cwd 一起清孤儿). 详见 cell-run-cycle
+        # matrix-channel.md §5.4 (host 生命周期尺度 debug).
         managed = await self.processes.execute(
             *launcher.run,
             name=f'cell:{manifest.name}',
@@ -335,6 +339,11 @@ class MatrixImpl(Matrix):
             cwd=instance_cwd,
             extra_env=child_env,
             with_os_env=False,  # launcher.env 已包含必要 env
+            capture=CaptureSpec(
+                buffer_lines=200,
+                stdout_file=instance_cwd / 'stdout.log',
+                stderr_file=instance_cwd / 'stderr.log',
+            ),
             on_exit=self._on_cell_exit(new_address),
         )
 

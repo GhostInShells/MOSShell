@@ -222,6 +222,21 @@ class SignalMeta(BaseModel, ABC):
     定义一个 Signal 的补充协议 (围绕 metadata), 用于在环境中被发现, 从而可以做到自解释.
     所有字段应该都是支持序列化的, 否则会在传输时报错.
     同时 Pydantic BaseModel 定义的 Signal Meta 可以作为协议被发现, 提供 metadata 的 json schema 协议.
+
+    **字段设计三尺度** (钉在此处, 加字段前逐条自检):
+
+    1. **功能性** — 字段有 nucleus (未来或当下) 的判决用途. 无判决用途 =
+       不该加. metadata 是 nucleus 的判决依据, 不是消息展示位.
+    2. **易生产** — 生产侧 (channel / listener) 天然拿到, 不为了填字段
+       而额外做工作 (查库、拼字符串、格式化). 生产成本高的字段几乎一定
+       是设计错位.
+    3. **未来语义** — 现在不用没关系, 但要能预见 nucleus 什么时候会用它
+       做分档、去重、抢占. 说不出未来用途 = 不该加.
+
+    **反尺度** (常见错位): 把 "给 ghost 看的消息内容" 塞进 metadata —
+    退出码、错误尾、诊断入口路径、状态截图 URL 之类. 这些属于**消息主体**,
+    通过 to_signal(messages=..., description=...) 承载, 不进 metadata.
+    metadata 只应有让 nucleus 做出正确判决的最小信息.
     """
 
     @classmethod

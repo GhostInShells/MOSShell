@@ -2,6 +2,7 @@
 
 2026-07-13 首轮定案 (cells-channel.md, claude-fable-5 + 人类)。
 2026-07-18 推翻重写 (本文件, claude-opus-4-7 + 人类)。
+2026-07-19 三 channel 拆分定案 (本次追加, claude-opus-4-7 + 人类) — 见 §5。
 
 本文档以 **探索路径为主线**，KD 作路径终点标记。文档的价值不在具体 KD，
 而在留给下一位化身"我们如何走到这里、否掉过什么、为什么"的完整轨迹。
@@ -234,6 +235,183 @@ output 三处内部结构。
 **判据**: mode-level channels 装配处注册 matrix channel；`moss-as-mcp` 下
 `<matrix:run target=.../>` (或 `<matrix._nodes:run/>` 视 T2 拓扑决定) 可
 发；spawn 后下下帧器官 `matrix.<name>:<command>` 可调 (M7 端到端验收载体)。
+
+## 5. 三 channel 拆分定案 (2026-07-19)
+
+§1 说 matrix 是聚合位、子拓扑不预定；本节把子拓扑定住 —
+**matrix + nodes + mesh 三个独立 channel**，matrix `import_channels(nodes, mesh, ...)`
+静态挂载。理由：讨论中人类明示"独立实现 nodes + cell(mesh?) + matrix, 总共
+是三个"，命名对 mesh (§2.2 已定，非 cells)。matrix 本轮不做 own commands，
+预留后补。
+
+### 5.1 nodes channel — 本地治理
+
+命令 (五动词全 nonblocking，含 §1.2 之外新增的 `status`):
+
+| 命令 | 签名 | 返回 | always_observe |
+|---|---|---|---|
+| `list` | `(path='', category='', installed=None, refresh=False)` | 表: relative_path/name/category/installed/running_count/description | True |
+| `read` | `(target)` | NodeManifest 全量 (含 instruction 正文, INSTALL.md 路径若未装) | True |
+| `run` | `(target)` | 薄回执: `[node/{name}/{uid8}] pid=X — 器官下一帧可见` | True |
+| `stop` | `(address)` | 薄 ack | False |
+| `status` | `(address='')` | 空返回全体 running+dead 表; 给 address 返回单 cell brief 组合视图 | True |
+| `read_output` | `(address, stream='stderr', limit=50)` | 内存 ring buffer 尾部 | True |
+
+- `target` 用 relative_path (§1.2 已定，与 list 输出对齐；name 有歧义时报错)
+- `stop` 的 address 接受完整 CellAddress 或 `name_uidprefix` 短形式 (handled_cells 唯一匹配即可)
+- `run` singleton 冲突 → observe_error, 附现有 address + stop 提示 (走 §7 dedup 逻辑)
+- context_messages: 见 §5.4
+
+### 5.2 mesh channel — 网络投影 + 网络域治理
+
+命令 (三动词 + 一个读接口):
+
+| 命令 | 签名 | 返回 | always_observe |
+|---|---|---|---|
+| `accept` | `(address, lookup=False)` | 薄 ack | False |
+| `reject` | `(address)` | 薄 ack | False |
+| `set_auto_accept` | `(local=None, foreign=None)` | 薄 ack | False |
+| `events` | `(address='', limit=20)` | 事件列表: 全局或单 cell | True |
+
+- `accept / reject` 的 `available_fn` 检查 `mesh.auto_accept` 状态: 全开
+  (local=True, foreign=True) 时返回 False，命令**本轮不出现在模型上下文**
+  (available 是动态 perspectives 语义，非 error text —— 2026-07-19 澄清)。
+  幻觉调用得到通用 not_available error 即可，不附带 reason。
+- **virtual_children 覆写**: 返回 `mesh_impl.channel_proxies()` 快照，让
+  accepted cell 的 channel proxy 从 `matrix.mesh.<cell.fullname>` 寻址。
+- **CellEvent 生产侧归 mesh channel** (原 §1.6 说归 matrix, 这里下沉到
+  mesh —— 更内聚, mesh 本就是 mesh.on_event 订阅方):
+  `mesh.on_startup` 一次 `mesh_impl.on_event` 订阅, 双扇出:
+  (a) 写自持 ring buffer (喂 context_messages);
+  (b) `CommandUtil.send_signal(CellEventSignal(...))` → CellEventNucleus.
+- context_messages: 见 §5.4
+
+### 5.3 matrix channel — 集成点 + 自我介绍
+
+- **本轮无 own commands**。仅 description + 极简 instruction 自我介绍
+  ("这里是网络投影和本地器官治理的入口: nodes 管本地声明与拉起,
+   mesh 观察网络和承认远端资源")。
+- `import_channels(nodes, mesh, terminal_channel, file_editor_channel)`
+  静态挂载。terminal / file_editor 属于随包 channel，仅在 matrix 提供。
+  jobs 有 contract 但无 channel，本轮不挂。
+- 未来发现 matrix 需要 own commands 时随时加。**关键是自解释用极少 token**。
+
+### 5.4 stdout/stderr 与 debug 手段 — spawn cwd 承担 host 生命周期尺度
+
+原 §1.7 只定"内存 ring buffer + cell 自愿写日志"，未定"cell 结束后如何
+debug"。本节补齐:
+
+| 层 | 数据 | 存活期 | 谁访问 |
+|---|---|---|---|
+| 内存 ring buffer | 活着的 cell 实时输出 (32KB × stderr/stdout) | 进程活着期间 | context tail + `nodes:read_output` |
+| exit 尾部 flush | 死时 buffer 最后 N 行 | 到下次 host restart 前 | `nodes:read_output` (地址匹配 dead_cells) + 直接查文件 |
+| 持久日志 | 完整轨迹 | 由 cell 自愿决定 | 不归 matrix 管 |
+
+- **spawn cwd** = `env.cell_runtimes_dir / {addr}/` (matrix_impl.py:317
+  `_instance_runtime_dir` 已建). 每次 spawn 独立目录, 按 uid 天然隔离.
+- **exit flush** 归 matrix on_cell_exit: 从 `handle.process.output` ring buffer
+  尾部一次性写 `{spawn_cwd}/exit.stderr.tail` 和 `exit.stdout.tail`.
+- **spawn cwd 清理**: 到下次 host restart, `clear_cell_runtimes` 扩展 —
+  除清 ledger 文件外，孤儿 spawn cwd 目录也清 (活着的不清).
+- **debug 期限声明**: **host 生命周期尺度** (host restart 前可 debug 死掉的
+  cell). 跨 host restart 的 debug 需要 cell 自愿写 cell.home，matrix 不承担 —
+  cell.home 有多 spawn 共享问题，需要子目录切分，复杂度陡增. 本轮不做,
+  M8.5 / M9 观察是否踩坑再升级到 cell.home 方案.
+
+### 5.5 context_messages 具体形态 (三构造期可配数字)
+
+原 §1.3 5 大块过重. 本节收敛 —— **matrix 根 channel 无 context**，仅 nodes
+和 mesh 各自负责一部分:
+
+**nodes context** (构造期参数 `show_running=8, show_dead=3`):
+
+```
+[nodes] running (3):
+  camera/vision  uid=a1b2c3d4  uptime=42s  pid=12345
+  sensor/mic     uid=e5f6a7b8  uptime=18s  pid=12346
+  script/logger  uid=c9d0e1f2  uptime=3s   pid=12347
+recently exited (2):
+  demo/hello  exit=0  (2m ago)
+  test/crash  exit=1  (5s ago) — nodes:read_output(...) for stderr
+```
+
+超出 `show_running` 时尾部提示 `...+K more, nodes:status() for full list`.
+数据源: `matrix.handled_cells()` (running) + `matrix.dead_cells()` (recent exits).
+无 running 无 dead 时返回空 list (不出这段 context).
+
+**mesh context** (构造期参数 `show_events=8`):
+
+```
+[mesh] recent events (5):
+  12:34:56  sensor/mic     ready
+  12:34:52  camera/vision  spawned
+  12:34:41  body/robot     exited (exit=0)
+  ...
+network: 5 cells online, 3 accepted
+```
+
+数据源: 自持 ring buffer (`mesh.on_event` 订阅时喂). 无事件时只出 network 概要.
+读接口: `mesh:events(address='', limit=20)`.
+
+### 5.6 前置钉 (更新版, 2 项)
+
+原 §T1 里三件 (brief + capture + dead_cells) 中的 brief() 取消 ——
+CellHandle 定义在 matrix blueprint, matrix 引用 subprocess 是标准件依赖,
+channel 直接读 `handle.process.meta / .output / .runtime` 组合视图不算越界
+(2026-07-19 讨论校准).
+
+**保留 2 项**:
+
+1. **`run_node` 声明 `CaptureSpec(buffer_lines=200)`** —
+   `matrix_impl.py` `processes.execute(...)` 调用点补 capture 参数,
+   让 `handle.process.output` 非 None. `dead_cells` 已在 blueprint (无缺).
+2. **`CellEventSignal` payload 类** — `signals.py` 补, **metadata 只 2 字段**:
+   `address / transition (CellTransition enum)`. 消息主体 (exit_code /
+   stderr_tail / instance_dir 的诊断内容) 走 `meta.to_signal(messages=...,
+   description=...)`, 不进 metadata (2026-07-19 校准, 详见 §5.9).
+
+### 5.7 available_fn 语义澄清 (钉给下一位化身)
+
+`available_fn: Callable[[], bool]` 现有签名不变. 调用 not_available 命令的
+CommandError message 是 hardcoded 通用文本 (`Command X not available`),
+**不附带原因**. 这是**故意的**:
+
+- 命令 available 是**动态上下文 (perspectives)** 语义, 每帧不同. 返回 False
+  的命令**本轮不出现在模型上下文里** —— 模型看都看不见, 就不会主动调.
+- 幻觉调用 (基于历史或不存在的东西) 得到通用 error, 是 fallback, 数量很小.
+- 附带 reason 是过度设计. 幻觉真的多到影响协作时再补 (从 bool 扩到 bool|str).
+
+**给 mesh channel 的应用**: `accept / reject` 用普通 available_fn 返回 bool,
+auto_accept 全开时返回 False, 命令消失, 模型自然不调. 不需要副作用提示.
+
+### 5.8 讨论过程锚点
+
+- 上一轮 (§1.5) 提 CellHandle.brief() 前置钉的理由是"channel 自拼组合视图
+  会泄漏治理知识". 本轮人类推翻: matrix + subprocess + cell 是相邻抽象层,
+  channel 消费三处组合是自然的. brief() 有价值但不是前置钉.
+- gate/router channel 讨论: 人类问 matrix 是否需要 gate. 结论**不需要** —
+  matrix 挂载源是 mesh (自动) + import_channels (静态), 无"模型手动开关"
+  语义入口. gate 作独立通用需求出现时再抽.
+- context 大瘦身: 上一轮 §1.3 五大块 (inventory + running + dead + mesh +
+  events) 每帧塞. 本轮人类明示要控 token 开销, matrix 根不塞, nodes/mesh
+  各自极简 + 可配 + 有读接口. 治理讯息不进 context, 走 command.
+
+### 5.9 SignalMeta 字段设计三尺度 (钉给下一位化身)
+
+本轮首次做 CellEventSignalMeta payload 时误把 `exit_code / stderr_tail /
+instance_dir` 塞进 metadata, 被人类校正. 三尺度已沉淀在
+`core/blueprint/mindflow.py` 的 `SignalMeta` docstring:
+
+1. **功能性**: 字段有 nucleus 判决用途, 无判决用途 = 不加
+2. **易生产**: 生产侧天然拿到, 不为填字段而额外做工作
+3. **未来语义**: 说不出未来用途 = 不加
+
+**反尺度** (常见错位): 把消息内容 (退出码/错误尾/入口路径) 塞进 metadata.
+这些属于消息主体, 走 `to_signal(messages=..., description=...)` 承载.
+metadata 只应有让 nucleus 做出正确判决的最小信息.
+
+CellEventSignalMeta 最终形态: `address + transition` 两字段. 诊断内容
+在 mesh channel 生产 signal 时通过 `messages / description` 塞进主体.
 
 ## A. 备查区 — 旧版方案要点 (2026-07-13 cells 单 channel)
 

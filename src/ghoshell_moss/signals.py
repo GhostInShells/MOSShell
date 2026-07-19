@@ -5,6 +5,10 @@ MOSS 系统 Signal 地图 — 所有 SignalMeta 的策展入口.
 即可了解系统内全部信号类型. 新的 SignalMeta 在此注册后, 通过
 architecture.py 加入认知地图.
 
+**纪律**: SignalMeta 的实现随对应 Nucleus 同居 (`core/mindflow/xxx_nucleus.py`).
+本文件只 import + __all__. 不要在此就地 class body — 否则等于把两个抽象
+撕开放, 违反同伴原则.
+
 目录:
   InputSignalMeta   — 用户输入 (优先级 NOTICE, default mode)
   NotifySignalMeta  — 不丢消息 (优先级 NOTICE, notify mode)
@@ -24,29 +28,10 @@ from ghoshell_moss.core.mindflow import (
     SilentSignalMeta,
 )
 from ghoshell_moss.core.mindflow.audio_signal import AudioSignal
-
-from ghoshell_moss.core.blueprint.mindflow import (
-    SignalMeta, SignalName, Priority, Signal,
+from ghoshell_moss.core.mindflow.cell_event_nucleus import (
+    CellEventSignalMeta,
+    CellTransition,
 )
-
-# -- CellEvent: cell 生命周期变更 → background hint -- #
-
-
-class CellEventSignalMeta(SignalMeta):
-    """Cell 生命周期事件的信号类型.
-
-    由 CellEventNucleus 桥接 mesh.on_event 产生, priority=BACKGROUND —
-    不会抢占 attention, 只作为 background hint 进 mindflow buffer.
-    """
-
-    @classmethod
-    def signal_name(cls) -> SignalName:
-        return 'cell_event'
-
-    @classmethod
-    def priority(cls) -> Priority:
-        return Priority.BACKGROUND
-
 
 __all__ = [
     'InputSignalMeta',
@@ -56,4 +41,5 @@ __all__ = [
     'SilentSignalMeta',
     'AudioSignal',
     'CellEventSignalMeta',
+    'CellTransition',
 ]
