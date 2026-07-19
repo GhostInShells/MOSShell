@@ -1,5 +1,5 @@
 ---
-title: Ghost Filesystem Desktop — Ghost 的认知桌面
+title: Ghost Ground — Ghost 的认知场
 status: in-progress
 priority: P0
 created: 2026-06-10
@@ -69,8 +69,8 @@ status_note: >-
 ## 2026-07 收敛方向
 
 Ground 的定位: **认知场 (context 表面 + 场开合)**, 以 `GROUND.md` (frontmatter
-+ body + `## ground:pins`) 为 L0 载体. feature 名保留 `ghost-filesystem-desktop`
-的历史语义, 但代码层 / CLI 层 / 文档表面全部用 ground.
++ body + `## ground:pins`) 为 L0 载体. 代码层 / CLI 层 / 文档表面 / feature
+目录名 全部用 ground (K49 + K53).
 
 - **场** = 打开的目录, 挂到父 ground channel 上作 command-less virtual channel;
   `instruction` = 法链 (向上 CLAUDE.md + 本地 GROUND.md body), `context_messages`
@@ -86,7 +86,7 @@ Ground 的定位: **认知场 (context 表面 + 场开合)**, 以 `GROUND.md` (f
 **三层落地** (按预训练迁移量排序): CTML channel (主) > bash CLI (`moss ground`,
 极小面) > module_eval (小概率, 不做).
 
-**自举验收**: 下一个模型实例能通过 ground 桌面 (open 本 feature 目录 + pin
+**自举验收**: 下一个模型实例能通过 ground 场 (open 本 feature 目录 + pin
 FEATURE.md 与 2026-07 两份 discuss + SPECIFICATION.md) 重建对本设计的认知,
 而不靠人类手工指路.
 
