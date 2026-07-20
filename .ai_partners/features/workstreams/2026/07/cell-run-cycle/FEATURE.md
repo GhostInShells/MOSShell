@@ -81,7 +81,8 @@ description: >-
 ## Milestones
 
 **次序原则**: M1-M4 是纪律与形式修正 (机械或独立决策), M6 是护栏,
-M7 → M7.5 → M8 → M8.5 → M9 是 telos 主路径 (依次搭建).
+M7 → M7.5 → M8 → M8.1 → M8.5 → M9 是 telos 主路径 (依次搭建).
+M8.1 是 M8 + desktop-channel 首次联动验证点.
 M5.2 / M10 / M11 / M12 是与主路径解耦的独立决策, 挂在合适的时机拍板.
 
 ### M1. Host 抽象继承纪律修正
@@ -330,6 +331,25 @@ commands + virtual children proxies + 治理 context + CellEvent 生产侧).
 **前置钉 (实装未落, 在 matrix-channel.md T1 中兑现)**:
 - CellHandle.brief() 薄快照封装 (channel 消费入口, 隔离治理知识).
 - run_node spawn 补 capture 声明 (WW-6 stderr tail 承诺兑现).
+
+### M8.1. Matrix + Desktop 首次联动 — 运行时自迭代技术基础 (2026-07-20)
+
+**状态: 已完成**. 本次 dogfood 验证了以下闭环:
+
+- **Channel 树拆分正确**: matrix (cell 治理) 与 desktop (OS 工具) 平级挂载, 语义独立.
+- **Cell 全生命周期**: list → read → run → proxy mount → 跨进程 CTML → stop → status.
+- **Session 信号总线**: `add_signal(NotifySignalMeta)` → `on_signal(callback)` → janus.Queue
+  sync→async 卸载 → 跨 cell 接收验证通过.
+- **MCP 端到端**: 全部操作通过 CTML 下发, 包括 file_editor 创建 node 代码、bash 执行
+  moss nodes 命令、mesh proxy 跨进程调用.
+
+**为什么立 milestone**: M9 (Ghost 自迭代 telos) 需要三块基石 — cell 治理 (matrix)、
+OS 工具 (desktop)、信号感知 (session bus). 今天三块基石在运行时首次同时验证, 自迭代
+在技术概念上成立. 这不是 M8 的简单完成, 而是两个 feature (cell-run-cycle +
+desktop-channel) 在运行时的首次握手.
+
+**验证记录**: `.ai_partners/regressions/nodes-cli/baselines/2026-07-20_m7m8-matrix-dogfood.md`
+13 条 case 全部 PASS.
 
 ### M8.5. L1 hello-world tutorial 从 apps 迁 cells 语法
 
