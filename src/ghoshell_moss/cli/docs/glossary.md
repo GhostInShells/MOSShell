@@ -76,9 +76,9 @@ MOSS 体系中的通用单元。它不只是一种能力封装方式，而是整
 - **上下文治理**：每个 Channel 独立持有 instruction、memory、context message，AI 按需提取，子树折叠即上下文收缩
 - **状态机**：`states_channel` 让 Channel 在多个状态间切换，不同状态暴露不同命令集
 - **组网**：Matrix 自动发现 Channel 并将其桥接进通讯总线，跨进程透明调用
-- **应用管理**：`AppStoreChannel` 将 App 作为 Channel 管理——启动、监控、关闭，每个 App 是独立进程
+- **进程组网**：Cell 是 Matrix 网络中组网的最小进程单元
 - **感知与思维**：Mindflow 的 Nucleus（感知缓冲）、Articulator（输出）都可表达为 Channel
-- **知识供给**：Resources 作为 Channel 的数据后端，howtos 知识库通过 Channel 暴露
+- **知识供给**：Resources 可作为 Channel 的数据后端，知识库通过 Channel 暴露
 
 Ghost 自身的进化也依赖 Channel：未来的 memory channel、instruction channel 等思维单元会以 Channel 形态存在。Ghost 通过
 Channel 控制自己——这是 Ghost 反身性的工程基础：能修改自身能力的智能体，才可能演进。
@@ -87,7 +87,7 @@ Channel 控制自己——这是 Ghost 反身性的工程基础：能修改自�
 moss codex get-interface ghoshell_moss.core.blueprint.channel_builder  # 如何构建
 moss codex get-source tests.ghoshell_moss.core.channels.test_py_channel    # 命令定义
 moss codex get-source tests.ghoshell_moss.bridges.test_bridge_suites       # 跨进程通讯
-moss codex get-interface ghoshell_moss.channels.app_store_channel              # App 即 Channel
+moss codex get-interface ghoshell_moss.core.blueprint.cell                  # Cell 即能力载体
 moss codex get-interface ghoshell_moss.core.blueprint.states_channel       # 状态机 Channel
 ```
 
@@ -106,18 +106,18 @@ Matrix 做七件事，全部服务于一个目标——**让 AI 在运行时安�
 
 1. **约定式自集成**：AI 按 manifests 约定声明能力（provider/channel/resource），Matrix 自动发现并注入 IoC 容器，不需要关心布线逻辑
 2. **Workspace 沙盒**：AI 的迭代发生在 workspace 内，不污染项目源码。workspace 是自迭代的试验田
-3. **App 作为自迭代单元**：App 可通过工具创建，自带 `APP.md`（claude.md 等价物），可被命令行阅读理解。运行时由 `AppStore` 动态发现，通讯基于约定自动组网——每个 App 就是一个可独立启动、独立演进的迭代单元
-4. **进程隔离容错**：App 在独立进程中运行，AI 创建的能力崩了不会拖垮主进程。Fractal 对外部 Matrix 实例做同样级别的隔离
+3. **Cell 作为自迭代单元**：Cell 可通过工具创建，自带声明文件，可被命令行阅读理解。运行时由 Matrix 动态发现，通讯基于约定自动组网——每个 Cell 就是一个可独立启动、独立演进的迭代单元
+4. **进程隔离容错**：Cell 在独立进程中运行，AI 创建的能力崩了不会拖垮主进程
 5. **自描述 API**：`moss manifests` / `moss codex` 等工具让 AI 在运行时理解环境里有什么资源、在哪里、怎么用
 6. **跨会话资源传递**：`ResourceRegistry` 以 `scheme://host/path` 格式的 locator 共享资源元信息，图片、文件等可以跨 session 引用而不复制数据
-7. **运行时自迭代**：最终目标——通过运行时的 Channel 获得读写代码能力，AI 创建 App、修改 Channel、演进自身能力，全部在 Matrix 的隔离和约定框架内完成
+7. **运行时自迭代**：最终目标——通过运行时的 Channel 获得读写代码能力，AI 创建 Cell、修改 Channel、演进自身能力，全部在 Matrix 的隔离和约定框架内完成
 
-Cell 是 Matrix 中的节点，分三种类型：`host`（主进程）、`app`（子进程）、`fractal`（外部 Matrix 接入）。每个 Cell 有独立地址和生命周期，Matrix 的通讯总线自动感知所有 Cell 的存活状态。
+Cell 是 Matrix 中的节点，分两种角色：`host`（主进程，组织所有能力）和 `node`（功能节点）。每个 Cell 有独立地址和生命周期，Matrix 的通讯总线自动感知所有 Cell 的存活状态。
 
 ```bash
 moss codex get-interface ghoshell_moss.core.blueprint.matrix      # Matrix 完整接口
 moss codex get-interface ghoshell_moss.core.blueprint.manifests    # Manifests 声明体系
-moss codex get-interface ghoshell_moss.core.blueprint.app          # App 定义与发现
+moss codex get-interface ghoshell_moss.core.blueprint.cell        # Cell 定义与角色
 moss codex get-interface ghoshell_moss.contracts.resource          # 资源跨会话共享
 moss codex get-source tests.ghoshell_moss.matrix.test_zenoh       # Matrix 集成测试
 ```
