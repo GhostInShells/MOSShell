@@ -162,9 +162,7 @@ def new_nodes_channel(
     """本地 node 治理 channel. 五动词全 nonblocking, 数据源来自 matrix."""
 
     default_desc = (
-        'Local node governance: list / read / run / stop / status / '
-        'read_output declared cells in this project. '
-        'Running cells surface as siblings under matrix.mesh once accepted.'
+        'Local node governance — list/read/run/stop/status/read_output.'
     )
     chan = new_channel(name=name, description=description or default_desc)
 
@@ -177,18 +175,7 @@ def new_nodes_channel(
             installed: bool | None = None,
             refresh: bool = False,
     ) -> str:
-        """List discoverable node declarations in this project.
-
-        Empty ``path`` scans project.nodes_discover_paths (default). Absolute
-        or project-relative ``path`` scans that root — useful for exploring
-        outside the governed area (cognitive fields, file editor).
-
-        :param path: scan root; empty = default
-        :param category: filter by NodeManifest.category ('' = all)
-        :param installed: True = installed only; False = uninstalled only;
-            None = both
-        :param refresh: rescan filesystem (default = use cache)
-        """
+        """List discoverable node declarations. path='' scans default roots."""
         nodes_mgr = matrix.project.nodes
         scan_paths: list[Path] | None = None
         if path:
@@ -196,7 +183,7 @@ def new_nodes_channel(
             if not p.is_absolute():
                 p = matrix.project.root.abspath_of(p)
             scan_paths = [p]
-        found = nodes_mgr().list_nodes(
+        found = nodes_mgr.list_nodes(
             refresh=refresh, paths=scan_paths, installed=installed,
         )
         if not found:
@@ -230,18 +217,12 @@ def new_nodes_channel(
 
     @chan.build.command(name='read', blocking=False, always_observe=True)
     async def read_node(target: str) -> str:
-        """Read a node's manifest — signature (frontmatter) + usage (instruction body).
-
-        The manifest is "how to use this node before you run it": name,
-        category, singleton flag, ExecSpec, and the free-form instruction.
-
-        :param target: project-relative path to the node (from ``list`` output)
-        """
+        """Read a node manifest — frontmatter + instruction body."""
         if not target:
             CommandUtil.raise_observe(
                 "target required. Use nodes:list() to discover paths."
             )
-        manifest = matrix.project.nodes().get_node(target)
+        manifest = matrix.project.nodes.get_node(target)
         if manifest is None:
             CommandUtil.raise_observe(
                 f"node {target!r} not found. nodes:list() shows available paths."
@@ -269,15 +250,7 @@ def new_nodes_channel(
 
     @chan.build.command(name='run', blocking=False, always_observe=True)
     async def run_node(target: str) -> str:
-        """Spawn a node cell. Nonblocking — the organ becomes available next frame.
-
-        The receipt just confirms the spawn. Watch for the node's channel
-        under ``matrix.mesh.<fullname>`` on the next perspective refresh.
-        Errors (unknown target, uninstalled, singleton conflict) return
-        immediately without spawn.
-
-        :param target: project-relative path (from ``list``) or absolute path
-        """
+        """Spawn a node cell. Nonblocking — organ appears next frame under matrix.mesh."""
         if not target:
             CommandUtil.raise_observe(
                 "target required. nodes:list() to discover paths."
@@ -302,12 +275,7 @@ def new_nodes_channel(
 
     @chan.build.command(name='stop', blocking=False, always_observe=False)
     async def stop_node(address: str, timeout: float = 5.0) -> str:
-        """Stop a running node cell (SIGTERM → grace period → killpg).
-
-        :param address: full CellAddress ``node/name/uid`` or short form
-            (``fullname`` or ``uid_prefix``) if it uniquely matches
-        :param timeout: grace period in seconds before force kill
-        """
+        """Stop a running node (SIGTERM -> grace -> killpg)."""
         handled = matrix.handled_cells()
         handle = _resolve_handled_address(address, handled)
         if handle is None:
@@ -323,13 +291,7 @@ def new_nodes_channel(
 
     @chan.build.command(name='status', blocking=False, always_observe=True)
     async def status_node(address: str = '') -> str:
-        """Inspect running cells + recently exited.
-
-        Empty ``address`` returns the full picture. Given ``address`` returns
-        a single-cell brief (handle + process meta + spawn cwd path).
-
-        :param address: full CellAddress or short form; empty = full list
-        """
+        """Inspect running + recently exited cells. address='' = all."""
         handled = matrix.handled_cells()
         dead = list(matrix.dead_cells())
 
@@ -358,16 +320,7 @@ def new_nodes_channel(
     async def read_output(
             address: str, stream: str = 'stderr', limit: int = 50,
     ) -> str:
-        """Read a cell's captured output tail (memory ring buffer, ~200 lines).
-
-        Works for both running and recently dead cells. For dead cells the
-        full log is also persisted at ``{spawn_cwd}/{stdout,stderr}.log``
-        until the next host restart (matrix-channel.md §5.4).
-
-        :param address: full CellAddress or short form
-        :param stream: 'stdout' or 'stderr' (default 'stderr')
-        :param limit: max lines to return (0 = whole window)
-        """
+        """Read stdout/stderr tail from memory ring buffer."""
         handled = matrix.handled_cells()
         dead = list(matrix.dead_cells())
         handle = _find_handle_in_all(address, handled, dead)
@@ -489,9 +442,7 @@ def new_mesh_channel(
     CellEvent 生产侧订阅 mesh.on_event 双扇出 (ring buffer + Signal)."""
 
     default_desc = (
-        'Network projection: accepted cells surface as sub-channels '
-        '(matrix.mesh.<fullname>:<command>). accept/reject/set_auto_accept '
-        'govern which network cells are trusted resources.'
+        'Network projection — accepted cells surface as matrix.mesh.<fullname>.'
     )
     chan: PrimeChannel = new_channel(name=name, description=description or default_desc)
 
@@ -596,12 +547,7 @@ def new_mesh_channel(
         available=_accept_available,
     )
     async def accept_cell(address: str, lookup: bool = False) -> str:
-        """Trust a network cell's resources — build its channel proxy immediately.
-
-        :param address: full CellAddress ``kind/name/uid``
-        :param lookup: True = refresh mesh view first if address not visible;
-            False = wait for its presence to arrive naturally
-        """
+        """Trust a network cell — build channel proxy immediately."""
         mesh = await matrix.mesh()
         try:
             await mesh.accept(address, lookup=lookup)
@@ -614,10 +560,7 @@ def new_mesh_channel(
         available=_accept_available,
     )
     async def reject_cell(address: str) -> str:
-        """Refuse a network cell's resources — tear down any active proxy.
-
-        :param address: full CellAddress ``kind/name/uid``
-        """
+        """Refuse a network cell — tear down active proxy."""
         mesh = await matrix.mesh()
         await mesh.reject(address)
         return f'[mesh:reject {address}] resource withdrawn.'
@@ -628,15 +571,7 @@ def new_mesh_channel(
     async def set_auto_accept(
             local: bool | None = None, foreign: bool | None = None,
     ) -> str:
-        """Toggle auto-accept policy (None = leave alone).
-
-        Immediately re-scans the view: cells newly covered by policy get
-        proxies built; cells no longer covered get proxies torn down.
-        Explicit accept/reject tables override policy — this does not touch them.
-
-        :param local: auto-accept cells in this project (None = keep)
-        :param foreign: auto-accept cells outside this project (None = keep)
-        """
+        """Toggle auto-accept policy. None = keep current."""
         mesh = await matrix.mesh()
         mesh.set_auto_accept(local=local, foreign=foreign)
         return (
@@ -646,11 +581,7 @@ def new_mesh_channel(
 
     @chan.build.command(name='events', blocking=False, always_observe=True)
     async def events_cmd(address: str = '', limit: int = 20) -> str:
-        """Read recent cell events (network-level).
-
-        :param address: filter to a single cell; empty = all
-        :param limit: max events to return (default 20)
-        """
+        """Read recent cell events from network."""
         mesh = await matrix.mesh()
         if address:
             events = mesh.cell_events(address, limit=limit)
