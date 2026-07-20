@@ -1,14 +1,14 @@
 ---
-title: Desktop Channel — Shell 的 OS 交互工具集
-status: in-progress
-priority: P0
 created: 2026-07-20
-updated: 2026-07-20
 depends: []
-milestone:
-description: >-
-  建立 desktop channel 作为 MOSS Shell 操作面的工具组织层，挂载 bash / file_editor / ground，
+description: 建立 desktop channel 作为 MOSS Shell 操作面的工具组织层，挂载 bash / file_editor / ground，
   与 matrix (cell 治理) 平级。matrix 回归纯粹，不再直接挂 OS 工具。
+milestone: null
+priority: P0
+status: completed
+status_note: Desktop channel extracted, first linkage with matrix verified.
+title: Desktop Channel — Shell 的 OS 交互工具集
+updated: '2026-07-20'
 ---
 
 # Desktop Channel

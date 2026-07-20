@@ -113,18 +113,7 @@ def new_file_editor_channel(
 
     @chan.build.command(name="view", blocking=False, always_observe=True)
     async def view(path: str, view_range: str = "") -> str:
-        """Read a file, optionally a line range.
-
-        :param path: absolute file path
-        :param view_range: ``"start,end"`` 1-based inclusive (e.g. ``"1,50"``).
-            Empty = whole file. CTML parses attribute values via
-            ``ast.literal_eval``; ``"1,50"`` arrives as tuple ``(1, 50)``,
-            ``"[1, 50]"`` as list, ``view_range:str="1,50"`` as str.
-            All three forms accepted.
-
-        Returns ``cat -n`` style snippet. Directory paths error (use
-        bash/glob). Binary / oversized files error.
-        """
+        """Read a file, optionally a line range. Returns cat -n style snippet."""
         try:
             parsed = _parse_view_range(view_range)
             result = editor.view(path, view_range=parsed)
@@ -136,21 +125,7 @@ def new_file_editor_channel(
 
     @chan.build.command(name="create", blocking=True, always_observe=True)
     async def create(path: str, text__: str = "") -> str:
-        """Create a new file with the given content.
-
-        :param path: absolute file path (MUST NOT already exist)
-        :param text__: full file content, passed via CTML body with CDATA.
-
-        Example::
-
-            <file_editor:create path="/tmp/hello.py"><![CDATA[
-            def hello():
-                print("hi")
-            ]]></file_editor:create>
-
-        Parent directory must exist — no auto-mkdir. Errors if path exists;
-        overwrite via ``str_replace``.
-        """
+        """Create a new file. Parent dir must exist; overwrite via str_replace."""
         try:
             result = editor.create(path, text__)
             return result.output
@@ -161,26 +136,7 @@ def new_file_editor_channel(
 
     @chan.build.command(name="str_replace", blocking=True, always_observe=True)
     async def str_replace(path: str, text__: str = "") -> str:
-        """Replace an exact unique substring.
-
-        :param path: absolute file path
-        :param text__: JSON body ``{"old_str": ..., "new_str": ...}`` wrapped
-            in CDATA. ``new_str`` optional (empty = delete). Multi-line
-            strings use ``\\n`` inside JSON (native escaping, no XML
-            attribute pain).
-
-        Example::
-
-            <file_editor:str_replace path="/tmp/hello.py"><![CDATA[
-            {"old_str": "def hello():\\n    print(\\"hi\\")",
-             "new_str": "def hello():\\n    print(\\"hello world\\")"}
-            ]]></file_editor:str_replace>
-
-        ``old_str`` MUST match exactly once. Multiple matches: error
-        (add surrounding context to disambiguate). Zero matches:
-        whitespace-stripped retry, then error. ``new_str == old_str``:
-        error. Snippet with 4 lines of context returned. Enters undo stack.
-        """
+        """Replace an exact unique substring. text__ = JSON {"old_str": ..., "new_str": ...}."""
         try:
             old_str, new_str = _parse_str_replace_args(text__)
             result = editor.str_replace(path, old_str, new_str)
@@ -192,22 +148,7 @@ def new_file_editor_channel(
 
     @chan.build.command(name="insert", blocking=True, always_observe=True)
     async def insert(path: str, insert_line: int, text__: str = "") -> str:
-        """Insert text AFTER the given line.
-
-        :param path: absolute file path
-        :param insert_line: anchor. ``0`` = before file start. ``N`` (file
-            line count) = end of file. Out-of-range errors.
-        :param text__: text to insert, via CDATA body. Multi-line split
-            by ``\\n``.
-
-        Example::
-
-            <file_editor:insert path="/tmp/hello.py" insert_line="0"><![CDATA[
-            # -- header comment --
-            ]]></file_editor:insert>
-
-        Enters the undo stack.
-        """
+        """Insert text after the given line. 0 = before start, N = end of file."""
         try:
             result = editor.insert(path, insert_line, text__)
             return result.output
@@ -218,14 +159,7 @@ def new_file_editor_channel(
 
     @chan.build.command(name="undo_edit", blocking=True, always_observe=True)
     async def undo_edit(path: str) -> str:
-        """Undo the most recent edit to this file.
-
-        :param path: absolute file path
-
-        Errors ``NoEditHistoryError`` when no edits recorded for this file
-        in the current session (history is in-memory, per-editor instance,
-        cleared on process restart). Undo does not itself enter the stack.
-        """
+        """Undo the most recent edit to this file. History is per-session, in-memory."""
         try:
             result = editor.undo_edit(path)
             return result.output

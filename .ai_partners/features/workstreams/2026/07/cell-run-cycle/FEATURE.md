@@ -1,17 +1,16 @@
 ---
-title: Cell Run Cycle
-status: in-progress
-priority: P0
 created: 2026-07-13
-updated: 2026-07-18
 depends:
-  - matrix-cell-governance
+- matrix-cell-governance
+description: Cell-centric acceptance cycle after matrix-cell-governance closure —
+  纪律修正 (M1/M2) + wire-up 拉齐 (M3/M4) + telos 主路径 (M7 spawn → M7.5 CellEvent 信号链 → M8
+  matrix 聚合 channel → M8.5 L1 tutorial 重构 → M9 自迭代 telos 真验证).
 milestone: 0.1.0
-description: >-
-  Cell-centric acceptance cycle after matrix-cell-governance closure —
-  纪律修正 (M1/M2) + wire-up 拉齐 (M3/M4) + telos 主路径
-  (M7 spawn → M7.5 CellEvent 信号链 → M8 matrix 聚合 channel → M8.5 L1 tutorial
-  重构 → M9 自迭代 telos 真验证).
+priority: P0
+status: completed
+status_note: M8 closed, M8.1 milestone verified. Regression 13/13 PASS.
+title: Cell Run Cycle
+updated: '2026-07-20'
 ---
 
 # Cell Run Cycle

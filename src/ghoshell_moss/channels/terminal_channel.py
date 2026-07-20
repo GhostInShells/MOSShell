@@ -157,9 +157,7 @@ def new_terminal_channel(
     default_cwd = Path(cwd).resolve() if cwd else Path.cwd()
     if description is None:
         description = (
-            "Process control: run shell commands (exec), start background "
-            "processes (run), inspect their output (read_output), stop them "
-            "(stop). No shell session state — pass cwd explicitly per command."
+            "Shell command execution. No session state — pass cwd explicitly."
         )
 
     chan = new_channel(
@@ -221,18 +219,7 @@ def new_terminal_channel(
 
     @chan.build.command(name="exec", blocking=True, always_observe=True)
     async def exec_cmd(text__: str = "", *, cwd: str = "", timeout: float = 60.0) -> str:
-        """Run a shell command and wait for its result.
-
-        Occupies this channel until done — chain dependent steps through it.
-        The command body is passed as the tag body (open-close tag). Wrap in
-        ``<![CDATA[...]]>`` when it contains shell metacharacters (``&``,
-        ``<``, ``>``, ``|``) so you do not have to XML-escape them.
-
-        :param text__: shell command line (pipes / redirection supported)
-        :param cwd: working directory (relative to the channel default cwd,
-            empty = default)
-        :param timeout: max seconds to wait; on timeout the process is stopped
-        """
+        """Run a shell command and wait for its result. Occupies this channel until done."""
         import asyncio
 
         cmd = text__.strip()
@@ -274,22 +261,7 @@ def new_terminal_channel(
         cwd: str = "",
         notify: str = "background",
     ) -> str:
-        """Start a background process. Returns immediately with its index.
-
-        The command body is passed as the tag body (open-close tag). Wrap in
-        ``<![CDATA[...]]>`` when it contains shell metacharacters.
-
-        The process keeps running while you do other things; when it ends
-        you will be told about it. Check on it any time with
-        ``read_output(index)``. Background processes never outlive this
-        channel.
-
-        :param text__: shell command line
-        :param name: short label for the process (defaults to the command)
-        :param cwd: working directory (relative to the channel default cwd)
-        :param notify: how prominently to surface the end-of-process notice —
-            ``background`` (quiet, default) | ``info`` | ``notice`` | ``warning``
-        """
+        """Start a background process. Returns immediately; use read_output(index) to inspect."""
         cmd = text__.strip()
         if not cmd:
             return CommandUtil.observe(
@@ -340,15 +312,7 @@ def new_terminal_channel(
 
     @chan.build.command(name="read_output", blocking=False, always_observe=True)
     async def read_output(index: int, *, offset: int = 0, limit: int = 0) -> str:
-        """Read what a process has printed so far (or after it exited).
-
-        Output is a bounded in-memory tail window (last ~100-200 lines per
-        stream); long results are additionally truncated.
-
-        :param index: process index from exec / run receipts
-        :param offset: stdout line offset within the window
-        :param limit: stdout line count, 0 = whole window
-        """
+        """Read stdout/stderr from a process (memory tail window). Works for running and finished."""
         managed = spawned.get(index)
         if managed is None:
             return CommandUtil.observe(
@@ -363,13 +327,7 @@ def new_terminal_channel(
 
     @chan.build.command(name="stop", blocking=False, always_observe=False)
     async def stop(index: int, *, timeout: float = 5.0) -> str:
-        """Stop one of your background processes (graceful, then forceful).
-
-        Only processes started through this channel can be stopped here.
-
-        :param index: process index from exec / run receipts
-        :param timeout: grace period in seconds before force kill
-        """
+        """Stop a background process (SIGTERM → grace → killpg)."""
         managed = spawned.get(index)
         if managed is None:
             return CommandUtil.observe(
@@ -425,14 +383,8 @@ def new_terminal_channel(
     @chan.build.instruction
     def terminal_instruction() -> str:
         return (
-            "Shell command execution and background processes. No session "
-            "state — each command gets an explicit cwd.\n"
-            "- exec: run and wait (occupies this channel; chain dependent "
-            "steps with it).\n"
-            "- run: start a background process; returns at once, you'll be "
-            "told when it ends.\n"
-            "- read_output / stop: inspect or stop your processes by index.\n"
-            "Your background processes appear in context while they exist.\n\n"
+            "Shell command execution. No session state — each command gets "
+            "an explicit cwd. Background processes appear in context.\n\n"
             + system_context
         )
 
