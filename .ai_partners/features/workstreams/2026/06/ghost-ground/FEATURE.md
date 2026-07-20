@@ -3,7 +3,7 @@ title: Ghost Ground — Ghost 的认知场
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-07-19
+updated: 2026-07-20
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -16,51 +16,27 @@ description: >-
   (`moss ground`), module_eval (小概率). 与 subprocesses/job_supervisor
   (执行), Memento (过去) 共构反身性基建.
 status_note: >-
-  2026-07-19 Claude Opus 4.7 [1m]. 抽象锁定, 待人工重命名 desktop→ground
-  后按 SPEC 重写 concrete 与 CLI. 契约文档: core/desktop/SPECIFICATION.md
-  (将随目录重命名迁至 core/ground/). 本轮沉淀 K44~K49:
-  K44 pin 传参走 argv (`pin: [verb, arg1, arg2, ...]`), 命令名多态; 拒绝
-  kwargs 与强类型结构 (前者跨语言协议难定, 后者预训练迁移量差).
-  K45 pin 类型最小集 = file / glob / frontmatter / ls. bash 不做, 未来同族
-  加入; frontmatter 字段 / markdown 段落 (K41) 同族语法延伸而非新机制.
-  K46 label + description 手动指定, 撤自动派生 (拒绝理由: 未来 pin_bash
-  等类型使派生规则膨胀成一门未申明的语言). label = pin 声明第一字段, ground
-  内唯一, 承担 unpin 定位与 fenced block 语言标签双职. description = 边注
-  (合并原 note); 长解说走 body.
-  K47 拓扑分区 = ground 头 + body + 声明区 (每行 `label:verb(args) #
-  description`) + 结果区 (每 pin 一个 fenced block, label 作 lang tag).
-  声明区不允许自由文本. 展示格式细节 dogfooding 中调整.
-  K48 CLI 极小面 = spec / init / frame / observe 四动词. 撤 pin / unpin /
-  update / status / pins / instruction. 理由: SPEC 就绪后直接编辑 GROUND.md
-  的 YAML 是最快路径 (K16 去发明纪律); pin 动词的真正落点是 CTML channel
-  层 (K14), CLI 不必对应实现. 每次 CLI 调用是一次性 open→render→close,
-  无跨调用 opened 状态.
-  K49 全库 desktop→ground 重命名 (contracts/desktop.py → contracts/ground.py,
-  core/desktop/ → core/ground/, cli/desktop_cli.py → cli/ground_cli.py,
-  `moss desktop *` → `moss ground *`). Grounds/Ground/GroundConvention 类名
-  不变. feature 目录名 ghost-filesystem-desktop 保留 (git 历史语义). 07-12
-  K16 表格里 "channel 名 desktop 隐喻仍成立" 被本轮覆盖 — desktop 是"表面"
-  隐喻, ground 是"目录"实体, 混用两个词模型会崩. 全库 ground.
-  同时修正/收敛:
-  K30 tree_ignore 轻方案改为完整 .gitignore (`pathspec` 依赖) — pin_glob /
-  pin_ls 都需要完整语义, 硬编码兜底集不够用. 新增依赖代价可接受.
-  K33 更正 — channels/desktop_channel.py 从未存在于任何提交 (git log 验证).
-  07-13 记录的"已写未测未装配"是模型对不存在文件的凭空断言. 真实状况:
-  CTML channel 层从未落地. K14 装配等 SPEC 就绪 + K49 重命名完成后启动.
-  K34 完成 — 旧 Stage 1 代码 (12+1 原语 1548 行) 已由 d75a0112 (07-14)
-  删除. 从"已知未决"移出.
-  2026-07-19 追补 K50~K54: 包结构隔离 vs 物理拆库两层分离 (K50), frame
-  拓扑修订加 `## ground:content` heading + args 始终引号 (K51), switch_to
-  (move = pop+enter) 语义留位 (K52), feature 目录改名待议 — K49 "保留 git
-  历史" 被覆盖 (K53), 零魔法值纪律 — label 长度 / ls depth 转命名常量 (K54).
-  未决 (给下一实例): K23 (L2 引导地址) / K24 (侧影载体位置) / K25 (向下场
-  声明的形状) / K40 (K35 合成语义与 K28 幂等的冲突) / K41 (pin 类型扩展)
-  / K43 (.grands/ 回退路线); 多认知方法开放; Ghost 认知场初始化等 GROUND.md
-  闭环后启动.
+  2026-07-20 kimi-k3 [1m]. 新一轮抽象推演 (K55~K58), 与人工讨论
+  对齐, 四处覆盖旧判: K44 argv 契约 → K55 kwargs 信封 (label/verb/
+  arguments/description 固定信封, 多态关进 arguments, 展示语法同步
+  kwargs); instruction 旧机制 (CLAUDE.md 链 + 三配置 key) 整体溶解 →
+  K56 法链唯 GROUND.md body 向上至 $HOME, @ 静态法装载 vs pin 动态注视
+  按"对账"分界, doc 参数双锚落地 K35 携带/属地; K57 嵌套场平级, 向上
+  继承是规则向下发现是 pin (glob); K58 路径锚点语法 $GROUND (裸路径默
+  认) / $CWD (显式浮动) / $HOME (逃生口), 按锚定界, pins 与 @ 统一一
+  条文法. 协议由此自包含: GROUND.md 一个文件名扛 frontmatter/body/pins/
+  法链全部, 成为可 commit 的分发单元. SPEC 修订项已列明 (§4/§5/§6/§7
+  + Path Resolution), 待修订 SPEC 后按新 SPEC 重写 concrete 与 CLI.
+  K49/K50/K53 重命名已落 (commit 9e5d4c05).
+  --
+  2026-07-19 (压缩, 全文见 §Key Decisions): 抽象锁定尝试 K44~K54; 次日
+  被本轮部分覆盖 — K44 argv → K55, K51 args 引号纪律 → K55 kwargs 展示,
+  K36 落盘字段形状 → K55; 其余 (K45 四 verb 最小集 / K46 label+description
+  手动 / K47 声明区+结果区拓扑 / K48 CLI 极小面四动词 / K49 重命名 /
+  K50 包结构隔离 / K52 switch_to 留位 / K54 零魔法值) 仍然有效.
   --
   历史轨迹 (07-11~07-15 讨论 / 06-28~06-29 Stage 1 落地): 摘要保留在
-  §Key Decisions, 完整细节见 `git log --all -- .ai_partners/features/
-  workstreams/2026/06/ghost-filesystem-desktop/FEATURE.md` 与
+  §Key Decisions, 完整细节见 `git log --all -- 本文件` 与
   `src/ghoshell_moss/contracts/.discuss/2026-07-{11,12}_*.md`.
 ---
 
@@ -70,18 +46,21 @@ status_note: >-
 
 Ground 的定位: **认知场 (context 表面 + 场开合)**, 以 `GROUND.md` (frontmatter
 + body + `## ground:pins`) 为 L0 载体. 代码层 / CLI 层 / 文档表面 / feature
-目录名 全部用 ground (K49 + K53).
+目录名 全部用 ground (K49 + K53, 已落 9e5d4c05).
 
 - **场** = 打开的目录, 挂到父 ground channel 上作 command-less virtual channel;
-  `instruction` = 法链 (向上 CLAUDE.md + 本地 GROUND.md body), `context_messages`
-  = 帧渲染 (声明区 + 结果区), `startup`/`close` = load/sediment.
-- **贴纸** = pin. argv 契约 (`pin: [verb, arg1, ...]`), 命令名多态; 每帧重读,
-  mtime + 内容 hash 对账.
-- **L0** = 场的 `frontmatter + body + pins`. frontmatter 是 MOSS 唯一发明域;
-  body 与 pins 永远开放集.
+  `instruction` = 法链 (祖先 GROUND.md body 链 + 本地 body + @ 展开, K56),
+  `context_messages` = 帧渲染 (声明区 + 结果区), `startup`/`close` = load/sediment.
+- **贴纸** = pin. kwargs 信封 (`label` + `verb` + `arguments` + `description`,
+  K55); 每帧重读, mtime + 内容 hash 对账 — 对账是 pin 与 @ 装载的唯一分界 (K56).
+- **法** = 本地 body + `@path` 静态装载 + 向上法链 (祖先 GROUND.md body,
+  $HOME 边界, root-first). 协议自包含, 不读 CLAUDE.md 等外部约定 (K56).
+- **路径** = 锚点语法: 裸相对路径默认 = `$GROUND` (文档锚), 显式浮动 `$CWD`,
+  机器逃生口 `$HOME`; 一切路径 (pin 与 @) 按锚定界 (K58).
+- **L0** = 场的 `frontmatter + body + pins`. frontmatter 是 MOSS 唯一发明域
+  (`$id` + `label`); body 与 pins 永远开放集.
 
-**契约文档**: `src/ghoshell_moss/core/desktop/SPECIFICATION.md` (待随 K49 重命名
-迁至 `contracts/ground/` 或 `core/ground/`).
+**契约文档**: `src/ghoshell_moss/ground/SPECIFICATION.md` (K49/K50 已落).
 
 **三层落地** (按预训练迁移量排序): CTML channel (主) > bash CLI (`moss ground`,
 极小面) > module_eval (小概率, 不做).
@@ -117,8 +96,8 @@ Ground 把这些统一为 **运行时的可 pin 的 context 表面 + 场的开�
 ## Design Index
 
 - **契约文档 (SPEC)**:
-  - `src/ghoshell_moss/core/desktop/SPECIFICATION.md` — GROUND.md 格式规范,
-    pin 类型契约, frame 拓扑, CLI 极小面, 语言无关性要求
+  - `src/ghoshell_moss/ground/SPECIFICATION.md` — GROUND.md 格式规范,
+    pin 类型契约, frame 拓扑, CLI 极小面, 语言无关性要求 (K49 后已迁)
 - **2026-07 重绘讨论**:
   - `.discuss/2026-07-12_desktop_channel_landing_and_fractal_grounds.md`
   - `.discuss/2026-07-11_cognitive_field_from_desktop_to_model_built_grounds.md`
@@ -143,10 +122,10 @@ Ground 把这些统一为 **运行时的可 pin 的 context 表面 + 场的开�
 
 ## Key Decisions
 
-保留 07-12 起的核心方向 (K14~K21) 与 07-14/15 对齐 (K35~K43) 的摘要, 加本轮
-07-19 (K44~K49). 更早的 K1~K13 (原捆绑设计) 大部分已随 Stage 1 代码删除
-(d75a0112), 需要考古走 `git log --all -- FEATURE.md`. K23/K24/K25 收在
-"已知未决".
+保留 07-12 起的核心方向 (K14~K21) 与 07-14/15 对齐 (K35~K43) 的摘要, 加
+07-19 (K44~K54) 与 07-20 (K55~K58). 更早的 K1~K13 (原捆绑设计) 大部分已随
+Stage 1 代码删除 (d75a0112), 需要考古走 `git log --all -- FEATURE.md`.
+K23/K24/K25 收在 "已知未决".
 
 ### 07-12 核心方向 (K14~K21)
 
@@ -193,7 +172,8 @@ commit.
   从 marker 层升级为全库层.
 - **K36. pin 落盘瘦身** — 只留 argv `pin` + `label` + optional `description`.
   seen_* 观察态是运行时侧影, 不入 GROUND.md. 首次进入无上帧故不标 stale.
-  本轮 SPEC 落定.
+  本轮 SPEC 落定. (字段形状 07-20 由 K55 修订为 label/verb/arguments/
+  description; seen_* 不入盘维持.)
 - **K41. pin 类型扩展 (path#field, path## heading)** — 语法候选, 本轮 K44
   argv 契约 (`pin: [type, arg1, ...]`) 天然容纳同族扩展.
 - **K42. $id 身份体系** — frontmatter `$id: <URI>` 字符串, MOSS 不校验, 解析
@@ -207,7 +187,8 @@ commit.
 本轮为 "抽象锁死, 待人工重命名后按 SPEC 落代码" 的收敛点. 契约文档独立到
 `src/ghoshell_moss/core/desktop/SPECIFICATION.md`.
 
-- **K44. pin 传参 = list[str] 位置参数, 命令名多态** — 三方案对照:
+- **K44. pin 传参 = list[str] 位置参数, 命令名多态** ⚠ 07-20 被 K55 覆盖
+  — 三方案对照:
   - 方案 1 (kwargs `pin_file(path=..., range=...)`) — 参数名要跨语言协议化,
     模板压力大 (可选参数空值处理麻烦).
   - 方案 2 (强类型结构 `PinFile(path=..., range=...)`) — 跨语言协议难定,
@@ -309,7 +290,9 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
     在包结构里画好.
 
 - **K51. Frame 拓扑修订 — 加 `## ground:content` heading + args 引号纪律**
-  — SPEC §6 原稿结果区直接列 fenced blocks, 无 heading 标签. 本轮修订:
+  (⚠ 07-20: args 引号纪律被 K55 kwargs 展示覆盖; `## ground:content`
+  heading 维持) — SPEC §6 原稿结果区直接列 fenced blocks, 无 heading 标签.
+  本轮修订:
   - 结果区加 `## ground:content` heading. 与声明区 `## ground:pins`
     对称, 语义分组明确, body 里的自由 heading 用 `ground:` 前缀命名空间
     保护 (body 写 `## Motivation` 不与分隔符打架).
@@ -364,6 +347,106 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
     不是魔法值; 但仍作模块级常量, 便于协议演进时集中修改.
   - 实现时全库 grep `\d+` 与硬编码字符串, 逐个判 rationale.
 
+### 07-20 本轮决策 (K55~K58)
+
+本轮重开 K44 (pin 传参), 并顺势解决三个关联问题: instruction 机制归属 /
+嵌套场语义 / 路径锚点. 出发点: **展示语法与配置语法的高一致性** — GROUND.md
+是模型看着 frame 手写的, 双向推导必须机械, 翻译出错率是主导成本. 教训记录:
+"没有锁定啥, 方案打磨不够好就无法推进到下一步" (人工原话) — K44~K54 的
+"抽象锁定" 宣言被证明过早, 本轮推翻了其中两条.
+
+- **K55. pin 信封 = kwargs + 信封/载荷分离 (K44 覆盖)** — 三方案对照:
+  - argv (K44 原判 `pin: [verb, arg1, ...]`) — 落盘最简但演进脆 (verb 加
+    可选参 = 老读者错义), 参数无语义 (`"80-140"` 是什么要背顺序), YAML
+    原生类型冲突 (`depth: 2` 解析成 int, 打破 "全字符串" 契约).
+  - kwargs 内联 (`pin: {verb: file, path: ...}`) — 信封仍多态 (key 集随
+    verb 变), tagged union 只是被压扁没消失.
+  - **信封/载荷分离 (采用)**:
+    ```yaml
+    - label: hot
+      verb: file
+      arguments: {path: "src/hot.py", range: "80-140"}
+      description: "hot spot"
+    ```
+    信封 `{label, verb, arguments, description}` 永远单态; 多态关进
+    `arguments` 一个字段. 理由: (1) 信封固定 → 不认识 verb 的工具也能
+    解析/改写/round-trip; (2) 未知 verb 时 arguments 天然不透明, 前向
+    兼容是构造副产品而非 SPEC 规则; (3) 骑 function calling wire format
+    先验 (`{name, arguments}` — OpenAI tools / Anthropic tool use / MCP
+    tool call 同构); (4) pydantic 侧普通 BaseModel + 显式注册表
+    (`VERB_SCHEMAS[verb]`) 分发, 不需 discriminated union 框架魔法;
+    (5) bash 先验本就是 "必填位置参 + 可选命名参" (`tree -L 2 .`), K44
+    "argv 骑 bash 先验" 记岔了 — 纯位置可选参恰恰不是 bash 成语.
+  - **展示语法同步 kwargs** (K51 args 引号纪律被覆盖):
+    `hot:file(path="src/hot.py", range="80-140") # hot spot`. 双 kwargs 后
+    双向翻译零特判: 冒号前 label, 括号原样进 arguments 加 verb, `#` 后
+    description. 若展示保持 positional 而配置 kwargs, arg 名表成为隐藏
+    第三语法 — 模型模仿读到的形状, 不背 SPEC.
+  - 字段顺序镜像展示 (label→verb→arguments→description). `arguments`
+    可缺省 = `{}`. **未知 arguments key 保留不拒绝** (与 frontmatter 未知
+    key 同纪律) — verb schema 自身可演进.
+
+- **K56. 法链唯 GROUND.md + @ 装载 + pin 重定义 (instruction 旧机制溶解)**
+  — 原 instruction 机制 (GroundConvention.instruction_files / upward_lookup /
+  upward_boundary 读 CLAUDE.md/AGENTS.md 链) 整体撤除, 替换为:
+  - **法链** = 祖先目录 GROUND.md 的 body (含其 @ 展开), root-first, 边界
+    `$HOME` (非祖先则到文件系统根). 协议自包含: 一个文件名扛
+    frontmatter/body/pins/法链全部, 不寄生 Claude Code 约定; 法传播要求
+    祖先显式 ground 化 — 没有惰性免费的法, 只有被声明的法. pins 永不携带
+    (K35 不变), frontmatter 不继承.
+  - **@ = 静态法装载**: body 里 `@path` 自动展开. 先验已验证 — Claude Code
+    的 @-import 机制 (本轮记录者 context 里的 start.md 即经 CLAUDE.md 的
+    `@` 行进入, 未手动 Read). **无对账**: 法随文档现状走, 变化不通报.
+    body 在 frame 保持 verbatim, 展开块独立成段 (fenced block, label =
+    @路径), 位于 body 与 pins 声明区之间 — 法在上, 目光在下.
+  - **pin = 动态注视**: 内容 + 变更对账 (每帧观察 / stale / update 承认).
+    与 @ 的唯一分界 = 对账. Guidance 一句话: **稳定的引它 (@), 易变的
+    盯它 (pin)**. 四 verb (file/glob/frontmatter/ls) 不变.
+  - **doc 参数双锚**: `open(dir, doc=path)` — 法锚 = doc 所在目录 (链从
+    doc 目录向上), pin 锚 = 当前目录. K35 携带/属地首次落地: 可携带单元
+    = doc, 属地单元 = pins; "强制覆盖须 open 显式参数" 即 doc 参数本身.
+    frame head 在 doc≠默认时标注来源.
+  - 旧 GroundConvention 的 instruction 三 key + hint_children 全撤;
+    SPEC §3 保持 `$id`+`label` 不膨胀. 代价: 失去对现存 CLAUDE.md 仓库的
+    自动继承 — 逃生口 = body `@` (经 `$HOME`, 见 K58).
+  - 法链内容落 K14 channel 的 instruction 槽 (稳定层); frame 只渲染本场
+    (body + @ + pins). CLI frame 头部可选一行法链路径清单 (dogfooding 定).
+
+- **K57. 嵌套场平级 + 向上规则 / 向下 pin** — 回答 "进入 GROUND.md 标记
+  目录体系的子目录会发生什么":
+  - 什么都不自动发生. marker 惰性, 场是开出来的不是走进去的.
+  - 子目录有自己的 GROUND.md: open 后是独立场, 与父场**平级**非嵌套;
+    继承不需要合成规则, 文件系统即继承机制 (子场法链向上自然读到祖先
+    body). K35/K40 冲突维持未决, 不动.
+  - 子目录裸: open 得裸目录场 (SPEC §2 已定义), K15 丰化梯度最底档.
+  - 父场对子目录无认知管辖; 父 pin 可注视子目录文件 (root 内路径合法)
+    — 注视≠法; 两场 pin 同一文件 = 两份独立 shadow, 是模型的选择不是冲突.
+  - **向上继承是规则 (加载约定), 向下发现是 pin (第一人称目光)** — 不对称
+    是结构性的: pin 限 root 子树所以朝下, 法链从祖先加载所以朝上.
+    hint_children 之死: 向下发现 = glob pin (`*/GROUND.md`), 只出结构不出
+    内容 (SPEC §5.2 强判).
+  - GROUND.md body 不向下继承 — 想向下传播的法就写在祖先 GROUND.md body
+    里, 子场法链自然读到 (协议内闭环, 不借 CLAUDE.md).
+
+- **K58. 路径锚点语法** — 解决 file pin (compact 免疫的 read) 的锚点敏感:
+  绝对路径不可分发, 裸相对路径随 cwd 漂移. 采用 env-var 语法 (shell / .env
+  / Docker / GitHub Actions 共用最深处预训练):
+  - 三锚点: `$GROUND` (被加载 GROUND.md 所在目录, 法锚) / `$CWD` (open 当前
+    目录, 属地锚) / `$HOME` (机器逃生口).
+  - **裸相对路径默认 = `$GROUND`** — 文档先验 (markdown 链接相对文档解析);
+    默认情形 doc 在 cwd 时两锚重合, 默认值不可见, 只在手动 doc 时咬人 —
+    而那时 doc 相对正是可分发选择. 漂移从默认危害变成显式声明 (`$CWD`).
+  - 本轮对 K56 讨论初稿 "pin 锚以当前目录为锚" 的修正: **存储锚 =
+    `$GROUND`**; `$CWD` 显式浮动是模板场景刚需 (L1 模板
+    `file("$CWD/src/main.py")` = 盯应用我这个项目的入口, 浮动是意图不是
+    事故).
+  - **K12 按锚重述**: 任何路径 (pin 或 @) 解析后必须落在**自己锚点的子树
+    内**; 越界 `..` 拒绝; 无锚绝对路径拒绝; `$HOME` = sanctioned 逃生口
+    (语法把 "依赖本机布局" 摆明, 诚实可 grep). pins 与 @ 统一一条路径文法
+    — SPEC 一句话覆盖全协议.
+  - frame 声明区照存储形式渲染 (锚点全程可见). literal `$` 转义 `\$`
+    (impl 细节, SPEC 一句话). Windows 映射在 §9 提一句.
+
 ## 已知未决 (给下一个实例)
 
 - **K23 (L2 模板库引导地址)** — moss 侧已定 .ai_partners/ (K38). 残余问题:
@@ -371,11 +454,15 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
 - **K24 (目光运行时侧影载体)** — .cache 级 gitignore 目录的具体约定. K36
   已定 seen_* 不入 GROUND.md; 侧影落盘位置未定 (SPEC 目前无强制要求, 只
   规定不能在 GROUND.md 中).
-- **K25 (向下探索的场声明)** — 发现链形状已有 (K39: marker + glob), L1
-  marker 文件名待收 (可能是 GROUND.md 加 `$id` 承担, 也可能独立 marker).
+- **K25 (向下探索的场声明)** — 发现链形状已有 (K39: marker + glob); 运行时
+  向下发现已由 K57 回答 (glob pin `*/GROUND.md`). 残余: L1 marker 文件名
+  待收 (可能是 GROUND.md 加 `$id` 承担, 也可能独立 marker).
 - **K40 (K35 合成语义与 K28 幂等的冲突; ghost 默认场)** — dogfooding 讨债.
-- **K41 (pin 类型扩展 path#field, path## heading)** — argv 契约留位, 具体
-  实现按 dogfooding 需求推进.
+  K56 doc 参数已落地 K35 的携带/属地机制 (可携带单元 = doc), 合成细节
+  冲突维持未决.
+- **K41 (pin 类型扩展 path#field, path## heading)** — K55 arguments 契约
+  天然容纳同族扩展 (新 key 入 arguments, 不需新机制), 具体实现按
+  dogfooding 需求推进.
 - **K43 (.grands/ 分支)** — 回退方案. 反悔判据: 多认知方法成为真实痛感.
 - **多认知方法** — 未证明需求, 靠 dogfooding 讨债, 不预建机制.
 - **Ghost 认知场初始化 (users/memory/skills/tasks/tmp 子场结构)** — 等
@@ -393,50 +480,35 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
 | `Ghost` / `Mode` | ground 进入哪些 mode 是 Ghost 层决策, OS 层不主动推 | 未开始 |
 | 原生 drain 协议 (K19) | 独立 feature, 与 Memento 合并设计 | 未立项 |
 
-## 下一步 (2026-07-19 视角)
+## 下一步 (2026-07-20 视角)
 
-**07-19 追补对落地顺序的影响** (K50/K53 同期化, K51/K52/K54 后置):
+K49/K50/K53 重命名已落 (commit 9e5d4c05). K55~K58 后 SPEC 需要先修订再
+实施, 顺序:
 
-- 重命名不是纯 `desktop → ground` 的字符串替换. K50 A 层同期完成:
-  concrete 从 `core/desktop/` 收拢到 `ghoshell_moss.ground/` 子包
-  (`contracts.py` 从 `contracts/desktop.py` 迁入, `core/` 保留, 加
-  `pin_types/` 子目录, `SPECIFICATION.md` 随目录搬).
-- K53 feature 目录改名: `.ai_partners/features/workstreams/2026/06/
-  ghost-filesystem-desktop/` → 新名 (待议). 用 `git mv` 保留历史.
-- SPEC 修订 (K51 加 `## ground:content` heading + args 引号 / K52 §7.1.1
-  switch_to reserved 段 / K54 两个常量的 rationale) 在人工重命名完成后
-  与代码同期落地. 位置对齐后一次改, 避免同一文件两轮编辑.
-
-**先手动**: 用户 IDE 重命名 desktop → ground 全库 (代码 + CLI + 文件路径),
-
-**然后按 SPEC 重写** (路径按 K50 A 层 `ghoshell_moss.ground/` 子包):
-
-1. `ground/contracts.py` — Pin 字段调整 (label/pin/description; 撤 addr/note/pinned_at);
-   GroundConvention 加 `$id: str | None` (pydantic alias `$id`), 撤 `template`;
-   Ground ABC 保持完整动词 (K21 红利); §7.1.1 `switch_to` 作 stub (K52).
-2. `ground/core/_l0.py` — 常量 `GROUND_FILENAME = "GROUND.md"` + `PINS_HEADING
-   = "## ground:pins"` (K54); pin 段 YAML shape 按 SPEC (`pin: [verb, args]`);
-   Pin 反序列化按 argv; `PIN_LABEL_MAX_LEN = 63` 常量 (K54).
-3. `ground/core/_ground.py` — pin 内部走 argv dispatcher; load() 结束后对所有
-   pin 并行 observe 一次 (populate 运行时侧影); pin/update 不写 seen_* 到盘.
-4. `ground/core/_render.py` — 按 K47 + K51 拓扑重写: head + body + `## ground:pins`
-   声明区 + `## ground:content` 结果区; fenced block 用 label 作 lang tag;
-   声明区行格式 `label:verb("arg1", "arg2") # description` (args 始终引号, K51).
-5. `ground/pin_types/` (新子目录) — 四个 pin verb 实现, 每 verb 一个文件
-   (`file.py` / `glob.py` / `frontmatter.py` / `ls.py`); `LS_DEFAULT_DEPTH = 2`
-   常量 (K54); pathspec 依赖引入; 失败模式按 SPEC.
-6. `ground/__init__.py` — 公共 API 显式声明 (K50 A 层边界).
-7. `cli/ground_cli.py` — 收敛到四命令 (spec/init/frame/observe); 撤原六命令.
-8. 单测按新形状全部重写 (test_l0.py / test_ground.py / test_grounds.py /
-   test_render.py + 新 test_pin_types.py). 87 单测预计缩到 ~40 (原 pin/update
-   的观察态测试大量作废).
-9. SPEC §6 修订 (加 `## ground:content` heading + args 引号 K51) + §7.1.1
-   `switch_to` reserved 段 (K52) + §4 §5.4 两个常量 rationale (K54).
-
-**验收**:
-- 全量单测跑绿
-- 本 feature 目录 dogfood: `moss ground init && 编辑 GROUND.md pin FEATURE.md
-  + 两份 discuss + SPECIFICATION.md && moss ground frame` — 能重建到本轮
-  决策为止的认知
-- 提交按规范: 英文标题 + `coding by claude-opus-4-7` 后缀 + `via claude code`
-  正文
+1. **SPEC 修订** (`src/ghoshell_moss/ground/SPECIFICATION.md`):
+   - §4 pins YAML = 信封结构 (label/verb/arguments/description) + 未知
+     arguments key 保留规则 (K55)
+   - §5 四 verb 参数表 argv → arguments keys (K55)
+   - §6 frame 拓扑: body 与 pins 声明区之间加 @ 展开段 (K56); 声明区行
+     格式 kwargs (K55, K51 引号纪律覆盖); head 加 doc 来源标注 (K56) 与
+     可选法链一行清单 (dogfooding 定)
+   - 新增 §7.x 法链段: GROUND.md-only / body-only / root-first / $HOME
+     边界 (K56)
+   - §7.1 `open` 加 `doc` 参数 + 双锚语义 (K56)
+   - 新增 §7.x Path Resolution: 锚点表 + 裸路径 = `$GROUND` + 按锚定界
+     + `\$` 转义 (K58)
+   - §9 加 Windows 锚点映射一句 (K58)
+   - K54 常量清单加 `CHAIN_BOUNDARY` / `AT_MAX_DEPTH` / `AT_BUDGET` / 锚点名
+2. **contract 重写** (按修订后 SPEC):
+   - Pin = `{label, verb, arguments, description}` (K55); seen_* 运行时
+     侧影不入盘 (K36 不变)
+   - GroundConvention 溶解为 `$id`+`label`; `instruction()` /
+     `refresh_instruction()` 撤除, 法链渲染落 K14 channel 层 (K56)
+   - `VERB_SCHEMAS` 注册表 + arguments per-verb pydantic (K55)
+   - 路径解析器: 锚点展开 + 按锚定界校验 (K58)
+3. **concrete + CLI + 单测**按新 contract 重写 (CLI 四动词不变, K48).
+4. **dogfood 验收**: 本 feature 目录 GROUND.md — pin FEATURE.md + discuss
+   + SPEC, frame 重建认知; `@` 一份文档验证装载; 子目录嵌套场验证平级
+   语义; `$CWD` 浮动 pin 验证模板场景.
+5. **历史重摘要**: SPEC 修订落地后, Key Decisions 里被覆盖的 K44/K51
+   原文与 07-19 前的考古细节重新摘要压缩 (本轮已做覆盖标记, 未动原文).
