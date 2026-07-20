@@ -1,0 +1,16 @@
+{
+"address": "node/signal_sender/01KXZF5NABMM8H30JPEVYET56S",
+"pid": 59821,
+"pgid": 59821,
+"start_time": 1784541271.372417,
+"cell": {
+"role": "node",
+"name": "signal_sender",
+"uid": "01KXZF5NABMM8H30JPEVYET56S",
+"singleton": true,
+"project_id": "01KW4H1T8TTZ5B4VEQWQNH9TZ1",
+"project_name": "moss",
+"updated": "2026-07-20T17:54:31.372275+08:00",
+"home": "/Users/BrightRed/Develop/github.com/GhostInShells/MOSShell/.moss/system_test_nodes/signal_sender"
+}
+}

@@ -1,0 +1,16 @@
+{
+"address": "node/signal_receiver/01KXZF7A6ACNGJN6QF9VD87R1V",
+"pid": 59888,
+"pgid": 59888,
+"start_time": 1784541325.515075,
+"cell": {
+"role": "node",
+"name": "signal_receiver",
+"uid": "01KXZF7A6ACNGJN6QF9VD87R1V",
+"singleton": true,
+"project_id": "01KW4H1T8TTZ5B4VEQWQNH9TZ1",
+"project_name": "moss",
+"updated": "2026-07-20T17:55:25.514923+08:00",
+"home": "/Users/BrightRed/Develop/github.com/GhostInShells/MOSShell/.moss/system_test_nodes/signal_receiver"
+}
+}
