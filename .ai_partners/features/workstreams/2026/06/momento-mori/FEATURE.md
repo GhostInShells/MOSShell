@@ -6,10 +6,12 @@ description: 以 commit 为第一公民的认知轨迹系统。成员不可变�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '§17 时间线原生化: staging 归线 (worktree 类比拔除), HEAD 废除, ref 移动先落锚, commit_space
-  API, 释义跟随轨迹; §16+§17 合并待人类 review 冻结 → FORMAT v2; 下一轮 memento 升一级模块 ghoshell_moss/memento'
+status_note: '§18 CLI 定案: branch 动作位置参数无默认 / fork 入 create / rewind=branch
+  reset / annotate-moment 砍掉; commits/ Y-m 分桶 (ULID→UTC 纯函数), commits.jsonl owner
+  级时序日志契约化, .cache/ 处决; 下一步 FORMAT v2 起草 → memento 改造 → cli-and-agent
+  复工'
 title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
-updated: '2026-07-19'
+updated: '2026-07-20'
 ---
 
 # Memento
@@ -777,3 +779,161 @@ git 的世界有**地点**（working tree）：branch 是同一内容的不同�
 释义交换的具体形状、ground 互链格式**不再推演**——全是消费面的事，
 dogfooding 接触现实之前继续推演产出的是无现实接触的推测。等人类 review
 §16+§17 后冻结，起草 FORMAT.md v2。
+## 18. CLI 定案 + commits/ Y-m 分桶 + commits.jsonl 时序日志（2026-07-20，kimi-k3 对齐，人类拍板）
+
+**触发**：人类定下验收路径——用 CLI 体系做验收，正式把 memento 改造到能用；
+然后走 memento agent 做"一个可能没啥用，可能很有用的实现"（人类原话）。
+本轮对齐定下 CLI 形状与两个存储层补丁。
+
+**对齐方法论**（下一个化身必读）：人类本轮明示——**FEATURE.md 是模型写给
+下一个模型的移交契约，不是给人类看的文档，更不是人类写的**。与人类对齐时
+禁止拿文档章节号当权威考人类；人类的心智模型（moments.jsonl / record /
+commit / annotate 附带数据）才是对齐基准。§3.6 thread tag 本轮被人类一句
+"我记忆中没有"合法处决，证明此纪律不是装饰。模型本轮被驳回的三个判断
+记录防重演：(a) §14 概念惯性带入 §17（.cache/、rebuild-index、recover 命令）；
+(b) rewind 误读为 commit 级改写（实为 branch 级，见 18.5）；(c) CLI 默认值 /
+唯一性推断方案（人类："核心参数取默认我不觉得有啥收益"，主张位置参数
+不允许默认值）。
+
+### 18.1 commits/ Y-m 分桶（人类拍板）
+
+§17 的 commits/ 平铺有物理增长问题（单目录年尺度爆炸，人类确认此为讨论点）。
+定案：
+
+```
+commits/
+  2026-07/
+    cmt_01H.../
+      meta.json / moments.jsonl / notes.jsonl
+```
+
+- **commit_id → Y-m 是纯函数**：ULID 前 10 字符 = 48-bit 毫秒时间戳
+  （Crockford base32），解码取 UTC 年月。无冗余字段、无索引、无扫描。
+- **严格 UTC**：从 ULID 时间戳解出，不从 wall clock、不用本地时区——
+  memento 可跨项目/时区分享（§17.3 #4），UTC 无歧义。
+- **时钟回拨接受**：Y-m 只是物理位置，逻辑时序由 commits.jsonl 保证
+  （18.2），两者解耦。
+- **遍历**：全局时间序 = `ls commits/`（字典序）+ 逐月 `ls commits/{Y-m}/`
+  （ULID 字典序），两层拼接无需 sort。
+- ref 文件仍存纯 id 元组，解析时确定性算 Y-m，不违反 §17.3 #4。
+- 被否备选：ULID 前缀分桶（`01H/` 不直观）、epoch-N 数量分桶（数量与时间
+  边界错位）、`YYYY/MM` 两层（层数 +1 无收益）。
+
+### 18.2 commits.jsonl：owner 级 append-only 时序日志（契约化）
+
+人类提出的问题："commits.jsonl 这个 append only 是否还有，如果有的话时序
+实际上不会乱"——答案：有，契约化。
+
+```
+{owner}/
+  commits.jsonl            # append-only
+  commits/{Y-m}/cmt_.../   # 真身
+```
+
+行格式：
+
+```json
+{"t":"commit_ref","commit_id":"cmt_...","branch":"main",
+ "parent":{"fork":"...","commit_id":"..."[,"moment_id":"..."]},
+ "ts":"...","kind":"semantic|mechanical"}
+```
+
+- **定位**：派生层（可从 commits/ 扫描重建）但**契约化**——崩溃恢复判据
+  依赖它。
+- **时序物理保证**：append 顺序即真实时序，不依赖 ULID 时间戳。
+- **并发安全**：多 branch 并行 commit 时，POSIX O_APPEND 写 < PIPE_BUF
+  (4096B) 的行原子，多进程 append 无需 flock——§17.3 #3 的 branch 级锁
+  粒度不破。
+- **崩溃恢复精化**：commit() = 写 commit 目录 → fsync → append
+  commits.jsonl → fsync → truncate staging。恢复判据从 §12/§15 的"staging
+  所有 id 都是 last commit 成员"精化为"属于 commits.jsonl 尾行 commit_id"，
+  无需扫描推断。
+- **红利**：见证层增量快照抓手（tail 自上次 offset）、运维 `tail -f`、
+  CLI `owner log` 的数据源。
+
+### 18.3 .cache/ 处决 + rebuild-index / recover 命令删除
+
+§14 的 `.cache/`（可再生索引）三项职能在 §17 全部消解：commit_id→位置
+（18.1 纯函数）、全局时序（18.2）、last-wins 视图（notes.jsonl 直读）。
+唯一幸存的 moment_id→commit 反查走 grep（§17.3 #8 精神：路径不索引不维护，
+接受 grep 成本；错标修正低频）。`.cache/` 从 FORMAT v2 删除，`rebuild-index`
+命令同步删除；`recover` 命令删除，恢复报告并入 `status` 输出（装入时自动
+恢复已有，CLI 独立命令价值弱）。
+
+### 18.4 CLI 命令树（定案）
+
+**CLI 是全功能模块**：退化态纯净归 ghost 集成层与 golden test（契约不变量
+#12），不归 CLI。CLI 用户 = 人类操作员 / 高级 agent，本该理解 branch。
+
+**寻址统一 `<owner>/<name>`**（`cmt_` 前缀 = commit，否则 = branch）。
+**branch 级动作用必填位置参数，无默认值**（人类拍板：默认值的失败模式是
+静默写错线，且不好核对）。
+
+```
+moss memento init [DIR] [--witness sidecar|outer|none]
+
+moss memento owner list
+moss memento owner status <owner>                   # 含恢复报告
+moss memento owner log <owner>                      # commits.jsonl 物理时序
+
+moss memento branch create <owner/name> [--from <owner/cmt_...>] [--overlay "..."]
+moss memento branch list <owner>
+moss memento branch record <owner/name> [data]
+moss memento branch commit <owner/name> [-m "..."] [--to <moment_id>] [--kind semantic|mechanical]
+moss memento branch staging <owner/name>
+moss memento branch log <owner/name>                # parent 链因果历史
+moss memento branch window <owner/name>
+moss memento branch reset <owner/name> --to <owner/cmt_...>   # rewind
+moss memento branch delete <owner/name>
+
+moss memento commit show <owner/cmt_...> [--notes]
+moss memento commit annotate <owner/cmt_...> -m "..."
+moss memento commit space <owner/cmt_...>           # 输出 commit_space 路径
+
+moss memento witness snapshot|status
+```
+
+- **fork 被 `branch create --from` 吸收**：`--from` 跨 owner 时结构上即 fork
+  （ref 带 fork 字段），无独立 fork 命令。`--overlay` 落 owner meta.json——
+  §16.5 #2 顺带定案。
+- **`commit --to <moment_id>`** = §16.5 #1 边界参数的 CLI 形状：git add 的
+  空间性选择被时间性切点吸收，"add" 概念消解。
+- **log 两层次非冗余**：`owner log` = 物理时序（commits.jsonl），
+  `branch log` = 因果链（parent 链回溯）。并行场景显著分叉。
+- **ref 文件 = JSON 元组** `{fork, commit_id[, moment_id]}`：§16.5 #3 由
+  本节寻址体系隐含定案（fork 字段支持跨 owner）。
+- **record 可选手动指定 moment_id**：低优先级（人类："可以试试，不过这个
+  点不那么重要"）。
+
+### 18.5 rewind 定义钉死：branch 级，不是 commit 级
+
+模型本轮误读 rewind 为 commit 级改写并据此反对——错误。人类定案：
+**rewind = branch reset**，移 ref 不改历史。写错线的修复闭环：
+
+1. `branch reset owner/main --to owner/cmt_误写前`
+2. staging 活边自动落锚为机械 commit（误写 moment 在内，什么都不丢，
+   §17.3 #2）
+3. ref 移走，该机械 commit 成孤儿，永远可寻址
+4. annotate 打标"误写，已 reset"
+
+rewind 不违背成员不可变，**恰恰依赖它**——reset 安全正因为旧位置永远
+可寻址。错误哲学三段：commit 前 staging 是可编辑文本（filesystem-first
+红利）；commit 后 annotate 打标；历史诚实，意义可补。
+
+### 18.6 annotate-moment 从 CLI 第一版砍掉
+
+§3.6 thread tag 是文档自标"纸面定不了"的预设（§9 #4 生成者未定），人类
+心智模型中不存在，未经真场景验证。CLI 第一版不含 annotate-moment；
+MomentRecord 信封的 threads 字段在契约层保留不动，CLI 暴露等真场景
+（分页旁路 / commit 拆分）逼着它出现再加。
+
+### 18.7 波及面与状态
+
+- **FORMAT v2 起草输入**：§16+§17 + 本节（Y-m 分桶、commits.jsonl 契约化、
+  .cache/ 删除、崩溃恢复精化、ref JSON 元组）。
+- **abc.py 重写输入**：MementoBranch 解体（§16.4）+ owner/branch/commit
+  三层操作面（18.4 反推）。
+- **memento-cli-and-agent 复工条件**：等 FORMAT v2；命令树按 18.4 对齐，
+  agent 命令挂进此树；§16.5 #1（--to）/ #2（overlay→owner meta）已顺带
+  定案。
+- **验收方式**：CLI 体系（人类定）。memento 改造目标 = 18.4 全部命令可用。

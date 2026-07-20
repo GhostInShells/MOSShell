@@ -8,10 +8,11 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: design-locked
-status_note: '13 钉子已裁决; 施工暂停等 momento-mori §16+§17 冻结 — MementoBranch ABC 解体, 且 §17
-  覆盖钉子 7: 同 owner 多线并行合法, flock 粒度 owner→branch, 复工时同步修订'
+status_note: '13 钉子已裁决; CLI 命令树定案见 momento-mori §18.4 (branch 位置参数无默认 / fork
+  入 create / rewind=branch reset / annotate-moment 砍掉); §16.5 #1 (--to) / #2 (overlay→owner
+  meta) 顺带定案; 复工等 FORMAT v2, 验收方式 = CLI 体系'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-19'
+updated: '2026-07-20'
 ---
 
 # Memento CLI & Agent
@@ -190,3 +191,13 @@ result = await agent.run("do X")     # 一次 invocation, 退出即 commit
 - 成本预估（可行性讨论定案）：codec adapter ~200 行 / facade+policy ~200 行 /
   tools 包装 ~100 行 / runner ~150 行 / 窗口文本渲染 ~100 行 / CLI ~200 行，
   合计 ~1k 行 + 测试，单 workstream 体量。超出量级即回看 §0 放弃触发器。
+- **2026-07-20 对齐（kimi-k3）**：CLI 命令树定案见 momento-mori §18.4。
+  关键对齐点：(1) 钉子 5 commit 命令挂进 §18.4 树，agent 命令同根；
+  (2) 钉子 6 owner = prompt 文件 stem 不变，但寻址统一为 `<owner>/<name>`，
+  `cmt_` 前缀是 commit 否则是 branch; (3) 钉子 7 已由 §17.3 #3 覆盖，
+  本 workstream §3 钉子 7 的"派生 owner"表述作废，同 owner 多线并行合法;
+  (4) §16.5 #1 (`commit --to <moment_id>`) / #2 (overlay→owner meta.json) /
+  #3 (ref = JSON 元组 `{fork, commit_id[, moment_id]}`) 三颗钉子全部顺带定案;
+  (5) `moss memento agent` 命令挂进 §18.4 树（owner 级或独立组待施工时定）。
+  复工条件：等 FORMAT v2 起草 + abc.py 重写（MementoBranch 解体）。验收方式
+  由人类定为 CLI 体系——本 workstream 的 agent 是 CLI 验收后的下一站。
