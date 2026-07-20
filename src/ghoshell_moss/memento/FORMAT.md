@@ -1,4 +1,4 @@
-# Memento FORMAT v1
+# Memento FORMAT v2
 
 磁盘格式契约。本文件是 memento 的**契约层**交付物之一（另两件：`abc.py`、golden
 tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/channel）是可丢弃的；
@@ -6,7 +6,40 @@ tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/cha
 
 - MUST / MUST NOT：违反即实现 bug，golden tests 直接锚定这些条款。
 - SHOULD：推荐约定，违反需在实现处注释理由。
-- 设计动机不在此展开，见 `workstreams/2026/06/momento-mori/FEATURE.md`。
+- 设计动机不在此展开，见 `workstreams/2026/06/momento-mori/FEATURE.md`（尤其
+  §16 branch 降维、§17 时间线原生化、§18 CLI 定案 + Y-m 分桶 + commits.jsonl）。
+
+## 0. v1 → v2 变更摘要
+
+- **branch 降维为纯 ref**（§16）：`BranchMeta` / ancestry 冻结 / `HEAD.json`
+  整体废除。branch = `branches/{name}/` 小目录（`ref` + `staging.jsonl`）。
+  ancestry 从 BranchMeta 迁入 commit meta。`branch_id`（brn_ ULID）消灭，
+  branch 用 name 寻址。
+- **staging 归线**（§17）：staging 从 owner 级挪到 branch 级
+  （`branches/{name}/staging.jsonl`）。HEAD 文件废除。"切换 branch"操作不存在，
+  只有开线 / 延线 / 弃线。同 owner 多线并行合法，锁粒度 owner → branch。
+- **commit 自治目录**（§16+§17）：commit 从 `commits/{NNNN}.jsonl` 单文件升级
+  为 `commits/{Y-m}/cmt_<ULID>/` 自治目录（meta.json + moments.jsonl +
+  notes.jsonl）。NNNN branch 内序号消灭，commit 定序全局化（ULID 字典序 +
+  commits.jsonl 行序）。出生即冻结，懒创建。
+- **commits/ Y-m 分桶**（§18.1）：`commits/{Y-m}/cmt_<ULID>/`，Y-m 从 ULID
+  时间戳纯函数解出，严格 UTC。
+- **commits.jsonl 时序日志**（§18.2）：owner 级 append-only commit 日志，
+  契约化（崩溃恢复判据依赖）。POSIX O_APPEND 原子写，多 branch 并发安全无 flock。
+- **`.cache/` 处决**（§18.3）：commit_id→位置（ULID→Y-m 纯函数）、全局时序
+  （commits.jsonl）、last-wins 视图（notes.jsonl 直读）三项职能全部消解。
+  moment_id → commit 反查走 grep。
+- **`renderings/` 删除**：重绘层归主权层，物理归宿走 §17.3 #4 commit_space
+  业务自由空间（本文件 §8）。
+- **ref = JSON 元组** `{fork, commit_id[, moment_id]}`（§16.5 #3）：跨 owner
+  fork 需要 fork 字段。BasePointer 删除 `branch_id` / `commit_seq`。
+- **崩溃恢复精化**（§18.2）：判据从"staging 所有 id 都是 last commit 成员"
+  改为"基于 commits.jsonl 尾行 commit_id"。
+
+不变的部分（v1 → v2 显式保留）：信封 `MomentRecord`、payload 透明原则、
+trailer 规范 §6、释义 last-wins 定序（同文件字节偏移序）、双孔径（§3.4）、
+commit 永不删、时间连续（§3.7）、见证层 sidecar 模型、退化态验收（蠢记忆
+无 fork 词汇）、golden 互读字节等价。
 
 ---
 
@@ -14,26 +47,45 @@ tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/cha
 
 ```
 {root}/memento/
-  branches/{owner}/HEAD.json                  # 该 owner 的 current branch 指针
-  branches/{owner}/{branch_id}/
-    meta.json                                 # BranchMeta, 含冻结祖先链
-    staging.jsonl                             # 活跃写面, moment 真身在此渐进构建
-    commits/{NNNN}.jsonl                      # 每 commit 一个文件, 自包含 moment 全文
-  renderings/                                 # 重绘投影, 自由格式, 只增不删
-  .cache/                                     # 可再生索引, 删掉重扫, 见证层忽略
-  .git/                                       # 见证层 sidecar repo (§9)
-  .gitignore                                  # 至少包含: .cache/
+  {owner}/                                    # owner = 身份 = 工作目录
+    meta.json                                # owner 身份卡 (overlay 等, §4.4)
+    commits.jsonl                            # owner 级 append-only 时序日志 (§7)
+    branches/
+      {name}/                                # branch = 时间线小目录
+        ref                                  # JSON 元组 {fork, commit_id[, moment_id]} (§4.1)
+        staging.jsonl                        # 本线活边 (§4.2)
+    commits/
+      {Y-m}/                                 # Y-m 分桶, UTC, 从 ULID 时间戳纯函数 (§5.0)
+        cmt_<ULID>/                          # commit 自治目录, 出生即冻结, 懒创建
+          meta.json                          # parent + ancestry 跳跃指针 (§5.1)
+          moments.jsonl                      # 冻结成员真身 (§5.2)
+          notes.jsonl                        # commit_note + moment_note 共居, last-wins (§5.3)
+  .git/                                       # 见证层 sidecar repo (§9), root 级
+  .gitignore                                  # 至少含: .cache/ (若实现仍产生临时缓存)
 ```
 
 - `{owner}` 是 owner 命名空间字符串，同时是目录名。MUST 匹配
-  `[A-Za-z0-9._\-]{1,64}`。memento 不解释其语义（可以是 cell address 或任意约定）。
-- **单写者纪律**：`branches/{owner}/` 下的所有文件，MUST 只由绑定该 owner 的单一
-  Memento 实例写入。跨 owner 只读。释义改写（含旁路发起的）MUST 经由 owner 实例
-  落盘——格式层不提供多写者协议。
-- **无独立 moment 池**：moment 记录的物理归属 = staging 或某个 commit 文件，
-  二者互斥。commit 冻结即把 staging 的 last-wins 视图整块搬入 commit 文件，
-  staging truncate。fork 出的 branch 通过 `BranchMeta.ancestry` 引用祖先 commit
-  文件中的 moment，永不复制。
+  `[A-Za-z0-9._\-]{1,64}`。memento 不解释其语义（可以是 cell address、prompt
+  文件 stem 或任意约定）。
+- `{name}` 是 branch 名，MUST 匹配 `[A-Za-z0-9._\-]{1,64}`，MUST NOT 以 `cmt_`
+  开头（与 commit id 前缀碰撞）。memento 不解释 branch 名语义。
+- `{Y-m}` 是 4 位年-2 位月（如 `2026-07`），从 `cmt_<ULID>` 的 ULID 时间戳
+  部分解出，严格 UTC（§5.0）。
+- **单写者纪律**：`{owner}/` 下的所有文件，MUST 只由绑定该 owner 的单一
+  Memento 实例写入。跨 owner 只读。释义改写（含旁路发起的）MUST 经由 owner
+  实例落盘——格式层不提供多写者协议。
+  - **branch 级单写者**：同一 `{owner}/branches/{name}/` 下的文件，MUST 只由
+    绑定该 branch 的单一进程/句柄写入。多 branch 并行合法（§17.3 #3），但
+    每条线各自单写。
+- **commit 自治目录出生即冻结**：`commits/{Y-m}/cmt_<ULID>/` 一经原子 rename
+  发布，目录内 `meta.json` / `moments.jsonl` 的已写内容 MUST NOT 再改。
+  `notes.jsonl` 是唯一允许追加的文件（释义 last-wins）。
+- **无独立 moment 池**：moment 记录的物理归属 = staging 或某个 commit 目录的
+  `moments.jsonl`，二者互斥。commit 冻结即把 staging 的 last-wins 视图整块
+  搬入 commit 目录，staging truncate。跨 owner checkout 通过 ref 指向他
+  owner 的 commit，moment 永不复制。
+- **merge 不存在**（§17.3 #5）：跨 owner 交互 = 只读 checkout + Matrix 消息
+  （孔径一）。单父链钉死，无冲突语义，无多父 commit。
 
 ## 2. 通用行格式
 
@@ -58,14 +110,19 @@ tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/cha
 |------|------|--------|
 | moment record | 生产者自带 id 原样透传 | 生产者 |
 | commit | `cmt_<ULID>` | memento |
-| branch | `brn_<ULID>` | memento |
 
-- ULID：26 字符 Crockford base32 大写。
-- moment id MUST 非空、匹配 `[A-Za-z0-9._\-]{1,128}`、在同一 branch 的**可写范围**
-  （staging + 该 branch 自己的 commits）内唯一。祖先 commit 中的 moment 不参与此
-  唯一性——祖先 moment 只经 `(fork, branch_id, commit_id, moment_id)` 四元组
-  引用，不会与本 branch 的 moment id 空间冲突。
-- 前缀 `cmt_` / `brn_` 保留给 memento；grep 任意文本中的 `cmt_` 即得 commit 引用。
+- ULID：26 字符 Crockford base32 大写。**前 10 字符 = 48-bit 毫秒时间戳（UTC）**。
+- moment id MUST 非空、匹配 `[A-Za-z0-9._\-]{1,128}`、在该 moment 所属
+  branch 的可写范围（staging + 该 branch 自己的 commits）内唯一。祖先 commit
+  中的 moment 不参与此唯一性——祖先 moment 经 `(fork, commit_id, moment_id)`
+  三元组引用（§4.1），不会与本 branch 的 moment id 空间冲突。
+- 前缀 `cmt_` 保留给 memento；grep 任意文本中的 `cmt_` 即得 commit 引用。
+- **branch 无 id**：branch 用 `{name}` 寻址，不分配 ULID。branch 的"身份"
+  = owner + name 组合。
+- **commit_id → Y-m 是纯函数**（§5.0）：`commit_id.removeprefix("cmt_")[:10]`
+  Crockford base32 解码为 48-bit 毫秒时间戳，
+  `datetime.fromtimestamp(ms/1000, tz=UTC).strftime("%Y-%m")` 即得分桶目录。
+  无冗余字段、无索引。
 
 ### 2.2 last-wins 定序（钉死）
 
@@ -73,9 +130,10 @@ tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/cha
 
 - **"last" = 同一文件内更大的字节偏移**（即更靠后的行）。不比时间戳，不比 id。
 - 释义行 MUST 追加到**包含所释义对象的同一个文件**：
-  - moment 在 staging 时，其覆盖行与 `moment_note` 都写 `staging.jsonl`；
-  - moment 已冻结于某 commit 文件时，其 `moment_note` 追加到该 commit 文件；
-  - commit 的 `commit_note` 一律追加到该 commit 自己的文件。
+  - moment 在 staging 时，其覆盖行与 `moment_note` 都写 `branches/{name}/staging.jsonl`；
+  - moment 已冻结于某 commit 目录时，其 `moment_note` 追加到该 commit 的
+    `notes.jsonl`；
+  - commit 的 `commit_note` 一律追加到该 commit 自己的 `notes.jsonl`。
 - 跨文件释义非法——这是 last-wins 无歧义的前提。
 - 时间戳字段（`ts`）只作展示与诊断，MUST NOT 参与定序。
 
@@ -86,7 +144,7 @@ tests），人类 review 后冻结。实现层（存储/索引/见证 daemon/cha
 memento 不理解 Moment 的内部结构。存储的是 **MomentRecord 信封**：
 
 ```json
-{"t":"moment","id":"<生产者id>","created":"<RFC3339>","type":"moss.moment/v1","threads":["memento-design"],"payload":{...},"by":"ghost.main"}
+{"t":"moment","id":"<生产者id>","created":"<RFC3339>","type":"moss.moment/v1","threads":["memento-design"],"payload":{...}}
 ```
 
 | 字段 | 必选 | 语义 |
@@ -97,7 +155,6 @@ memento 不理解 Moment 的内部结构。存储的是 **MomentRecord 信封**�
 | `type` | ✓ | payload schema 标识，如 `moss.moment/v1`。schema 归生产者所有 |
 | `payload` | ✓ | 任意 JSON object，**memento 原样透传，MUST NOT 解析或改写** |
 | `threads` | | 线索标签，写入时标注（可空可缺省），可经 `moment_note` 更新 |
-| `by` | | 写入者标识（模型名/规则 id），诊断用 |
 
 - payload 对 memento 不透明是硬边界：`abc.py` 与存储实现 MUST NOT import 任何
   payload schema（包括 `ghoshell_moss` 的 `Moment`/`Message`）。强类型编解码
@@ -113,11 +170,12 @@ Moment 在一轮交互内是渐进构建的（感知先到、logos 后到）。�
 
 - 同一 `id` 的 `t:"moment"` 行 MAY 在 `staging.jsonl` 中出现多次，读者按 §2.2
   last-wins 取最新——每次覆盖写都是一个新对象共享同一 id（"更新即新对象"）。
-- **一旦某 id 随 commit 搬入 commit 文件（§5），继续向 staging 追加其
-  `t:"moment"` 行即契约违规**。写 API MUST 拒绝（`MomentFrozenError`）；
-  语义上此时 staging 已无该 id 的槽位——冻结即物理，不是 API 层的软约束。
-- commit 文件内的 `t:"moment"` 行 MUST NOT 出现同一 id 的第二条。commit 冻结
-  的是 "冻结时刻该 id 的 staging last-wins 视图"，一次性、不再动。
+- **一旦某 id 随 commit 搬入 commit 目录的 `moments.jsonl`（§5.2），继续向
+  staging 追加其 `t:"moment"` 行即契约违规**。写 API MUST 拒绝
+  （`MomentFrozenError`）；语义上此时 staging 已无该 id 的槽位——冻结即物理，
+  不是 API 层的软约束。
+- commit 目录内 `moments.jsonl` 的 `t:"moment"` 行 MUST NOT 出现同一 id 的第二条。
+  commit 冻结的是 "冻结时刻该 id 的 staging last-wins 视图"，一次性、不再动。
 
 ### 3.3 moment 级释义（`moment_note`）
 
@@ -126,30 +184,105 @@ Moment 在一轮交互内是渐进构建的（感知先到、logos 后到）。�
 ```
 
 - `ref` 指向同文件内已有 `t:"moment"` 行的 id：
-  - moment 未冻结时，写入 `staging.jsonl`；
-  - moment 已冻结时，追加到该 moment 所在的 commit 文件。
+  - moment 未冻结时，写入 `branches/{name}/staging.jsonl`；
+  - moment 已冻结时，追加到该 moment 所在 commit 目录的 `notes.jsonl`。
 - 语义：**整体替换**该 moment 的 `threads`（非增量合并）。
-- moment 级释义 v1 只开放 `threads` 一个键。payload 永远不可经释义改写。
+- moment 级释义 v2 只开放 `threads` 一个键。payload 永远不可经释义改写。
+- **跨 owner 只读**：他 owner 的 commit 冻结的 moment，其 threads 只有该
+  commit 的 owner 有权改写（走 owner 实例落盘，孔径二）。外来轨迹对该 commit
+  的释义存于它自己的空间（§8 业务自由空间），MUST NOT 写入本 commit 的
+  `notes.jsonl`。
 
 ## 4. Branch 目录
 
-### 4.1 meta.json
+branch = 时间线小目录：`branches/{name}/ref` + `branches/{name}/staging.jsonl`。
+branch 没有自己的 meta.json——身份（owner + name）+ ref（指向 commit）+ staging
+（活边）就是它的全部。
 
-唯一的整文件重写（非追加）JSON 文件。释义可变性由见证层留痕（§9），
-不在数据层追加。
+### 4.1 ref 文件
+
+JSON 元组，整文件原子写：
+
+```json
+{"fork": "ghost.main", "commit_id": "cmt_01J...", "moment_id": "mmt_ab12"}
+```
+
+| 字段 | 必选 | 语义 |
+|------|:---:|------|
+| `fork` | ✓ | 源 owner。本线从哪个 owner 的 commit 出生。本 owner 自身的 commit 时 `fork` = 本 owner |
+| `commit_id` | ✓ | 本线当前指向的 commit id |
+| `moment_id` | | 可选。给定时，本线从该 commit 的 `[第一个 moment ... moment_id]` 前缀（含）出生 |
+
+- ref 文件创建后，`fork` 与 `commit_id` 的组合 MUST NOT 改变（fork 起点永恒）。
+  `commit_id` / `moment_id` 随 `branch reset`（§4.3）移动。
+- `moment_id` 给定时 MUST 是该 commit 实际成员之一，否则读取时 MUST 抛错
+  （`MomentNotInCommitError`）。**空前缀在类型层不可构造**——"完全不继承"
+  用父 commit 表达，不用 `(commit, moment=null)` 构造空切片。
+- 切片 **inclusive**：截止 moment 本身被继承者读到，"新故事从这个 moment
+  之后开始"。
+- **ref 移动前活边先落锚**（§17.3 #2）：任何 `branch reset` 操作 MUST 先
+  把当前 staging 冻结为机械 commit（锚在原 ref 位置），然后原子 rewrite ref
+  文件。什么都不静默丢。
+- root branch（owner 第一个 branch）的 ref：`fork` = 本 owner，`commit_id`
+  缺省或 null（表示"无前驱"，本线从零开始）。首次 commit 后 ref 指向该 commit。
+
+### 4.2 staging.jsonl
+
+本线活跃写面。**全格式中唯一允许清空（truncate）的文件**——它是投影，
+冻结后的事实真身在 commit 目录里。路径 `branches/{name}/staging.jsonl`。
+
+staging 直接容纳 moment 真身（v1 §4.2 原文保留，路径同步更新）：
+
+- `t:"moment"` 行：同 id 覆盖直接追加，读者按 §2.2 last-wins 取最新版本。
+  同一 moment_id 在 staging 中出现次数无上限，但只有 last-wins 视图参与 commit。
+- `t:"moment_note"` 行（§3.3）：追加到 staging，`ref` 指向 staging 内的 moment
+  id。冻结后此行不再迁移——commit 目录冻结的是 staging last-wins 时刻的 threads
+  最终值。
+- 首次出现顺序即成员定序：commit 时，`moment_ids` 按每个 id 在 staging 中首次
+  出现的行号升序排列（后续覆盖行不改变次序）。
+
+commit 时的原子动作序列（详见 §5 与 §11）：
+
+1. 计算 staging 的 last-wins 视图（可选：截止到 `boundary_moment_id` 的前缀，
+   §16.5 #1——只冻结首次出现序 ≤ boundary 的 moments，剩余留在 staging）；
+2. 写 tmp 目录 `commits/{Y-m}/cmt_<ULID>.tmp/`：meta.json + moments.jsonl +
+   notes.jsonl（含初始 `commit_note`）；
+3. fsync tmp 目录内所有文件；
+4. 原子 rename tmp → `commits/{Y-m}/cmt_<ULID>/`；
+5. append `{owner}/commits.jsonl` 一行 `commit_ref`；
+6. fsync commits.jsonl；
+7. rewrite `branches/{name}/ref` 指向新 commit；
+8. truncate `staging.jsonl`（若 §4.2.1 有 boundary，只 truncate 已冻结部分）。
+
+### 4.2.1 commit 边界参数（§16.5 #1）
+
+`commit()` 接受可选 `boundary_moment_id`：
+
+- 缺省 = 冻结 staging 全部 last-wins 视图。
+- 给定时 = 只冻结 staging 中首次出现序 ≤ `boundary_moment_id` 首现序的 moments。
+  剩余 moments 留在 staging 继续活，下次 commit 再冻。
+- `boundary_moment_id` MUST 是 staging 内实际存在的 moment id，否则抛错。
+- git add 的空间性选择被时间性切点吸收——"add" 概念消解。
+
+### 4.3 branch reset（rewind）
+
+移 ref，不改历史。语义见 §17.3 #2 + momento-mori §18.5。
+
+- reset 前 staging 非空时，MUST 先按 §4.2 commit 流程把 staging 冻结为机械
+  commit（kind=mechanical），锚在原 ref 位置。该机械 commit 成为孤儿（不被
+  任何 ref 指向），但永远可寻址。
+- 然后 rewrite ref 文件指向目标 commit。
+- 孤儿机械 commit 可经 `commit annotate` 打标"误写，已 reset"——历史诚实，
+  意义可补。
+- rewind 不违背成员不可变，**恰恰依赖它**——reset 安全正因为旧位置永远可寻址。
+
+### 4.4 owner meta.json
+
+owner 身份卡。整文件重写（非追加）。路径 `{owner}/meta.json`。
 
 ```json
 {
-  "branch_id": "brn_01J...",
-  "fork": "ghost.main",
-  "name": "main",
-  "title": "",
-  "description": "",
-  "base": {"fork":"...","branch_id":"brn_...","commit_id":"cmt_...","commit_seq":7,"moment_id":null,"moment_seq":null},
-  "ancestry": [
-    {"fork":"...","branch_id":"brn_...","commit_id":"cmt_...","commit_seq":3,"moment_id":null,"moment_seq":null},
-    {"fork":"...","branch_id":"brn_...","commit_id":"cmt_...","commit_seq":7,"moment_id":"mmt_ab12","moment_seq":4}
-  ],
+  "owner": "ghost.main",
   "overlay": {"divergence_prompt": "..."},
   "created": "<RFC3339>",
   "updated": "<RFC3339>"
@@ -158,143 +291,125 @@ Moment 在一轮交互内是渐进构建的（感知先到、logos 后到）。�
 
 | 字段 | 可变性 | 语义 |
 |------|--------|------|
-| `branch_id` `fork` `created` | 不可变 | 身份 |
-| `base` | 不可变 | fork 起点。null/缺省 = root branch。见 §4.1.1 BasePointer |
-| `ancestry` | 不可变 | **冻结的展平祖先链**，自最老祖先到直接 base，顺序排列。root branch 为空数组。fork 时刻一次性计算写入（= 父的 ancestry + 父的 base 条目），此后 MUST NOT 改写。回溯 O(d)→O(1) 的依据 |
-| `overlay` | 创建后不可变 | 化身 divergence prompt 等出生注入物的家。**不属于对话历史，MUST NOT 进 staging** |
-| `name` `title` `description` `updated` | 可变 | 释义性字段 |
+| `owner` | 不可变 | owner 名（= 目录名） |
+| `overlay` | 创建后不可变 | 化身出生注入物（§16.5 #2）。divergence prompt 等。MUST NOT 进 staging——不属于对话历史 |
+| `created` | 不可变 | 创建时间 |
+| `updated` | 可变 | 最后更新时间 |
 
-- `ancestry` 的最后一项 MUST 等于 `base`（有 base 时）。
-- 校验：读者发现 `ancestry` 与沿 `base` 链实际回溯结果不一致时 MUST 抛错
-  （冻结链是反规范化，成员不可变保证其安全；不一致 = 数据被篡改或写入 bug）。
+- `overlay` 在 fork 时写入：从父 owner fork 出新 owner 时，overlay 作为出生
+  注入物一次性确定，此后不改。
+- overlay 字段集开放（divergence_prompt / system_prompt_override / tools_diff
+  等），memento 不解释其语义——消费方（ghost / agent）自定。
 
-### 4.1.1 BasePointer 与 commit 内前缀切片
+## 5. Commit 自治目录
 
-BasePointer 语义：从某 branch 的某 commit（可选：commit 内某 moment 为止）
-出生。
+路径 `commits/{Y-m}/cmt_<ULID>/`。自治目录，出生即冻结，懒创建——staging
+冻结时才 materialize（tmp 目录 + 原子 rename）。无内容永不落盘——checkout
+不产生 commit。
+
+### 5.0 Y-m 分桶
+
+`{Y-m}` 从 `cmt_<ULID>` 的 ULID 时间戳部分纯函数解出：
+
+```python
+def y_m_of(commit_id: str) -> str:
+    ulid_part = commit_id.removeprefix("cmt_")
+    ms = crockford_b32_decode(ulid_part[:10])  # 48-bit 毫秒时间戳
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m")
+```
+
+- **严格 UTC**：从 ULID 时间戳解出，不从 wall clock、不用本地时区。
+- **时钟回拨接受**：Y-m 只是物理位置，逻辑时序由 commits.jsonl（§7）保证。
+  时钟回拨可能导致新 commit 落在旧 Y-m 目录，但行序在 commits.jsonl 中仍然
+  正确。
+- 遍历全局时间序 = `ls commits/`（字典序 = 时间序）+ 逐月 `ls commits/{Y-m}/`
+  （ULID 字典序 = 时间序），两层拼接无需 sort。
+
+### 5.1 meta.json
+
+整文件原子写（commit 冻结时一次性写入，此后不改）。
 
 ```json
-{"fork":"ghost.main","branch_id":"brn_...","commit_id":"cmt_...","commit_seq":7,"moment_id":"mmt_ab12","moment_seq":4}
+{
+  "commit_id": "cmt_01J...",
+  "parent": {"fork": "ghost.main", "commit_id": "cmt_01J...", "moment_id": null},
+  "ancestry_skips": [
+    {"commit_id": "cmt_01J...", "depth": 16},
+    {"commit_id": "cmt_01J...", "depth": 256}
+  ],
+  "branch": "main",
+  "kind": "semantic",
+  "created": "<RFC3339>"
+}
 ```
 
 | 字段 | 必选 | 语义 |
 |------|:---:|------|
-| `fork` | ✓ | 源 branch 的 owner 命名空间 |
-| `branch_id` | ✓ | 源 branch id |
-| `commit_id` | ✓ | fork 起点 commit id |
-| `commit_seq` | ✓ | 起点 commit 在源 branch 的 seq，目录截断用 |
-| `moment_id` | | 可选。给定时，该 commit 只贡献 `[第一个 moment ... moment_id]` 的前缀（含）给继承者 |
-| `moment_seq` | | 可选。给定时 MUST 等于该 moment 在 commit `moment_ids` 中的 0-based 位置。缺省 = 无 moment 前缀切片 |
+| `commit_id` | ✓ | 本 commit 的 id（= 目录名去前缀） |
+| `parent` | | 父 commit。root commit（owner 第一个 commit）时缺省。结构 = ref 元组 `{fork, commit_id[, moment_id]}`（§4.1） |
+| `ancestry_skips` | | 近端 N 段跳跃指针（§16.1）。N 是主权层常量，FORMAT 不写死。每项 `{commit_id, depth}` 表示"第 depth 代祖先是 commit_id"。寻路 O(d/N) 或 O(log d) |
+| `branch` | ✓ | 本 commit 从哪条 branch 冻结而来（诊断用，非结构身份） |
+| `kind` | ✓ | `semantic` \| `mechanical`（§6 trailer Kind 的物化） |
+| `created` | ✓ | 冻结时间 |
 
-- `moment_id` 缺省 / null = 整个 commit 参与继承（`moment_seq` MUST 同时缺省）。
-- `moment_id` 给定时：MUST 是该 commit 实际成员之一，MUST 与 `moment_seq` 位置
-  一致；否则读取时 MUST 抛错。
-- **空前缀在类型层不可构造**——`moment_id` 要么缺省，要么至少载 1 个 moment。
-  "commit 完全不继承"的表达 = 直接用其父 commit，不用 `(commit, moment=?)`
-  构造空切片。ancestry 中每个 BasePointer 都是非空的历史锚点。
-- 切片是 **inclusive** 的：截止 moment 本身被继承者读到，"新故事从这个 moment
-  之后开始"。
-- fork 时刻切片语义即冻结进 ancestry，此后不再变——与整段 commit 同一档不变性。
+- `parent` 与 `ancestry_skips` 写入时确定，此后 MUST NOT 改（成员不可变保证
+  其安全）。
+- `ancestry_skips` 是反规范化（可从 parent 链回溯重建），不一致时读者 MUST
+  抛错。
+- `ancestry_skips` 的具体 N 值与跳跃策略（固定间隔 vs 指数间隔）归主权层，
+  FORMAT 沉默。MUST 满足"寻路可达，写入时确定"两条纪律。
 
-### 4.2 staging.jsonl
+### 5.2 moments.jsonl
 
-活跃写面。**全格式中唯一允许清空（truncate）的文件**——它是投影，
-冻结后的事实真身在 commit 文件里。
+冻结成员真身。整文件原子写（commit 冻结时一次性写入，此后不改）。
 
-staging 直接容纳 moment 真身（不再是引用行）：
-
-- `t:"moment"` 行：同 id 覆盖直接追加，读者按 §2.2 last-wins 取最新版本。
-  同一 moment_id 在 staging 中出现次数无上限，但只有 last-wins 视图参与 commit。
-- `t:"moment_note"` 行（§3.3）：追加到 staging，`ref` 指向 staging 内的 moment
-  id。冻结后此行不再迁移——commit 文件冻结的是 staging last-wins 时刻的 threads
-  最终值。
-- 首次出现顺序即成员定序：commit 时，`moment_ids` 按每个 id 在 staging 中首次
-  出现的行号升序排列（后续覆盖行不改变次序）。
-
-commit 时的原子动作序列（详见 §5 与 §12）：
-
-1. 计算 staging 的 last-wins 视图（同 id 保留最后一版全字段，threads 应用
-   `moment_note` 最终替换值）；
-2. 写 `commits/{NNNN}.jsonl`：第 1 行 `t:"commit"` 成员行 + 第 2..m+1 行
-   `t:"moment"` 冻结版全文（按首次出现序）+ 第 m+2 行 `t:"commit_note"` 初始释义；
-3. `fsync` commit 文件；
-4. truncate `staging.jsonl`；
-
-### 4.3 HEAD.json
+第 1 行：成员行
 
 ```json
-{"current": "brn_01J..."}
+{"t":"commit","id":"cmt_01J...","moment_ids":["a","b","c"],"created":"<RFC3339>"}
 ```
 
-owner 的 current branch 指针。整文件重写。缺失时实现自动创建 root branch
-（`name: "main"`）。
+第 2..m+1 行：`t:"moment"` 冻结版全文，顺序 MUST 与 `moment_ids` 一致。
 
-## 5. Commit 文件
-
-路径 `commits/{NNNN}.jsonl`。`NNNN` = seq 左零填充至少 4 位（`0001.jsonl`）。
-seq 从 1 起、branch 内连续递增。溢出 4 位自然加宽（`10000.jsonl`）——读者
-MUST 按解析后的整数排序，MUST NOT 按文件名字典序。
-
-commit 文件自包含：不依赖外部池，`cat commits/0007.jsonl` 即得该认知快照的
-完整内容（成员表 + 每个 moment 全文 + 释义历史）。
-
-### 5.1 成员行（第一行，不可变）
-
-```json
-{"t":"commit","id":"cmt_01J...","seq":12,"moment_ids":["a","b","c"],"created":"<RFC3339>"}
-```
-
-- MUST 是文件第一行。`moment_ids` 是 staging 冻结时刻的去重有序列表，MUST 非空
-  （空 staging 禁止 commit）。
+- `moment_ids` MUST 非空（空 staging 禁止 commit）。
 - 成员行写下后 MUST NOT 出现第二条 `t:"commit"` 行。成员不可变是 fork 边界的
   前提：动它，所有子 branch 的 ancestry 集体作废。
-
-### 5.2 Moment 冻结行（第 2..m+1 行，不可变）
-
-```json
-{"t":"moment","id":"a","created":"<RFC3339>","type":"moss.moment/v1","threads":[...],"payload":{...},"by":"ghost.main"}
-```
-
-- 第 1 行 `t:"commit"` 之后紧跟的 m 行 MUST 是 `t:"moment"` 冻结版全文，
-  顺序 MUST 与成员行的 `moment_ids` 逐个一致。
 - 每个 `t:"moment"` 行的 id MUST 出现在同文件 `moment_ids` 中；反之亦然
   （一一对应，禁止漏行漏 id）。
 - 这些行是 staging last-wins 视图的物理搬运结果，字段结构与 §3.1 完全一致。
-- commit 文件内的 `t:"moment"` 行 **不参与 last-wins**——冻结即定型，同 id 不
-  再出现。moment 级 threads 的后续更新走 §5.3 的 `moment_note`。
+- commit 目录内 `moments.jsonl` 的 `t:"moment"` 行 **不参与 last-wins**——
+  冻结即定型，同 id 不再出现。moment 级 threads 的后续更新走 §5.3 的
+  `moment_note`。
 
-### 5.3 释义行（追加，last-wins）
+### 5.3 notes.jsonl
 
-commit 释义（commit 整体的语义摘要）：
+commit_note + moment_note 共居，append-only，last-wins。
+
+commit 释义：
 
 ```json
-{"t":"commit_note","ref":"cmt_01J...","body":"<正文+trailer, §6>","ts":"<RFC3339>","by":"ghost.main"}
+{"t":"commit_note","ref":"cmt_01J...","title":"一行摘要","body":"<正文+trailer, §6>","ts":"<RFC3339>","by":"ghost.main"}
 ```
 
-- `ref` MUST 等于本文件成员行的 id。
-- `body` 整体替换语义：读者取最后一条 `commit_note` 的 body 为当前释义，
-  **历史版本永远可寻址**（按行序枚举即全部版本）。
-- commit 动作 MUST 在冻结的 `t:"moment"` 行之后紧跟写入一条初始 `commit_note`
-  （机械 commit 的 body 可以只有 trailer 块，见 §6）。
-- **渲染打戳**：任何把释义内容展示给模型的渲染，MUST 可追溯到所读的释义版本
-  （实现记录 `(commit_id, 行号)` 或等价物）。"当时模型看见什么"必须可重建。
+- `commit_note.title`: 一行摘要。用于窗口渲染和模型搜索。可选，缺省为空串。
 
-moment 级释义（冻结后追加，仅 threads）：
+moment 级释义：
 
 ```json
 {"t":"moment_note","ref":"<moment_id>","threads":["a","b"],"ts":"<RFC3339>","by":"tagger.rule"}
 ```
 
-- `ref` MUST 是同文件 `t:"moment"` 行的 id（该 moment 冻结后 threads 变更的落点）。
-- 语义同 §3.3：整体替换 `threads`，payload 永不可改。
-- 跨 owner 只读：他 owner 的 branch 冻结的 moment，其 threads 只有该 branch 的
-  owner 有权改写（走 owner 实例落盘，孔径二）。
-
-### 5.4 note 行的两种类型：为何分开
-
-commit 释义（`body`）和 moment 释义（`threads`）字段结构不同，两个 `t:` 类型
-使解析路径彼此独立，无需按 `ref` 前缀区分。读者遇到未知 `t:` 值按 §2 跳过，
-前向兼容自然满足。
+- `commit_note.ref` MUST 等于本 commit id。
+- `moment_note.ref` MUST 是同 commit `moments.jsonl` 中某 `t:"moment"` 行的 id。
+- commit 动作 MUST 在 moments.jsonl 写完后、目录 rename 前，向 notes.jsonl
+  追加一条初始 `commit_note`（机械 commit 的 body 可只有 trailer 块，见 §6）。
+- 两种 note 类型字段结构不同，解析路径独立，无需按 ref 前缀区分。读者遇到
+  未知 `t:` 值按 §2 跳过，前向兼容自然满足。
+- **渲染打戳**：任何把释义内容展示给模型的渲染，MUST 可追溯到所读的释义版本
+  （实现记录 `(commit_id, note_seq)` 或等价物）。"当时模型看见什么"必须可重建。
+- **释义跟随轨迹**（§17.3 #5）：owner 自己的释义走本 commit 的 `notes.jsonl`
+  （孔径二，append-only last-wins，无锁）。外来轨迹对该 commit 的 summary
+  存在它自己的空间（§8），MUST NOT 写入本 commit 的 `notes.jsonl`。
 
 ## 6. Body 与 Trailer 规范
 
@@ -322,7 +437,7 @@ Kind: semantic
   风格（`Memento-Ref`）。
 - 解析器遇到未知 key MUST 保留原样（前向兼容），MUST NOT 报错。
 
-**v1 注册的 trailer key**：
+**v2 注册的 trailer key**：
 
 | Key | 值 | 语义 |
 |-----|----|------|
@@ -341,37 +456,67 @@ Kind: semantic
 4. 挂起话题时给 `Suspends:`。
 5. 机械快照不要编造正文，`Kind: mechanical` + 需要的 trailer 即可。
 
-## 7. 索引与缓存
+## 7. owner 级 commits.jsonl（时序日志）
 
-- 索引（commit_id → branch+seq、moment_id → commit_id+行号、释义 last-wins
-  视图等）MUST 全部放在 `{root}/memento/.cache/` 下。
-- **jsonl 是唯一 truth，索引是可再生缓存**：删除 `.cache/` 后系统 MUST 能全量
-  重扫重建，行为不变。
-- 快路径（`window()` 渲染最新 commit）MUST NOT 依赖 `.cache/`：读最新 commit
-  文件即得完整成员与 payload，零 join。索引仅在慢路径（按 commit_id / moment_id
-  随机寻址、`all_commits()` 回溯）为必要件。
-- `.cache/` 内部格式不属于本契约，实现自定（升级时直接作废重建）。
-- `.cache/` MUST 被见证层忽略（§9）。
+owner 级 append-only commit 日志。路径 `{owner}/commits.jsonl`。**契约化**
+（非可选索引）——崩溃恢复判据依赖它（§11）。
 
-## 8. renderings/
+行格式：
 
-重绘投影（plan 渲染等）的家。本契约 v1 只约束三条：
+```json
+{"t":"commit_ref","commit_id":"cmt_01J...","branch":"main",
+ "parent":{"fork":"...","commit_id":"..."[,"moment_id":"..."]},
+ "ts":"<RFC3339>","kind":"semantic"}
+```
 
-1. 子目录**只增不删**——旧投影永远保留，重绘 = 新建目录。
-2. 投影内引用 commit 一律用 `Memento-Ref: cmt_...` 行（§6）。
-3. 目录内格式自由（mermaid / markdown / 任意），不属于本契约。
+| 字段 | 必选 | 语义 |
+|------|:---:|------|
+| `t` | ✓ | 恒为 `commit_ref` |
+| `commit_id` | ✓ | 本行记录的 commit id |
+| `branch` | ✓ | 从哪条 branch 冻结（诊断用） |
+| `parent` | | 父 commit 元组（与 commit meta.json 的 parent 一致） |
+| `ts` | ✓ | 冻结时间（展示用，不参与定序） |
+| `kind` | ✓ | `semantic` \| `mechanical` |
+
+- **append-only**：MUST 只追加，MUST NOT 改写已有行。
+- **行序 = 物理时序**：POSIX `O_APPEND` 写 < PIPE_BUF(4096B) 的行原子，多
+  branch 并发 append 无需 flock——branch 级锁粒度（§17.3 #3）不破。
+- **派生层**：可从 `commits/{Y-m}/cmt_<ULID>/meta.json` 全量扫描重建，但
+  崩溃恢复判据（§11）依赖它，所以契约化。
+- `owner log` CLI 命令的数据源（momento-mori §18.4）。
+
+## 8. commit_space 与业务自由空间
+
+`commits/{Y-m}/cmt_<ULID>/` 目录是 commit 的"空间"，经 `commit_space(commit_id)`
+API 运行时解析为路径。保留名单（契约管）：
+
+- `meta.json`（§5.1）
+- `moments.jsonl`（§5.2）
+- `notes.jsonl`（§5.3）
+
+保留名单之外，契约**沉默**——不感知、不承诺、不禁止。业务（重绘渲染、ground
+场快照、跨轨迹释义文档、link 等）可在 commit 目录内自由创建文件/子目录，变动
+历史由见证层（§9）兜底。
+
+- memento 内部存储的一切引用只许用 id 元组（`{fork, commit_id[, moment_id]}`），
+  **出现绝对路径即契约违规**——memento 可跨项目分享，绝对路径无意义。
+- `commit_space()` 是运行时 API，返回的 path 不进 memento 任何持久化结构。
+- 重绘层（v1 §8 renderings/）的物理归宿由此节承载——重绘渲染作为 commit
+  目录内的业务自由文件存在，"旧投影永不删除"的纪律由业务自守（契约不再管
+  renderings/ 目录）。
 
 ## 9. 见证层（git sidecar）
 
 git 不是 memento 的结构，是**见证**：fork 是纯 memento 层操作，git 只见证文件，
 不知道 fork 存在。
 
-- repo 位于 `{root}/memento/.git`，工作树即 `memento/`。
+- repo 位于 `{root}/memento/.git`（**root 级**，覆盖全部 owner），工作树即
+  `memento/`。owner 隔离是 memento 层的事，git 层退化为单写者（旁路 daemon）。
   **MUST NOT 被外层代码仓库吞掉**——memento root 必须被外层仓库 ignore，或位于
   仓库之外。两个时间尺度串扰是本架构唯一真正的污染模式。
-- `memento/.gitignore` MUST 至少含 `.cache/`。
+- `memento/.gitignore` MUST 至少含 `.cache/`（若实现仍产生临时缓存）。
 - 快照由**单写者旁路 daemon** 执行（memento commit 事件触发或定时），
-  MUST NOT 出现在任何热路径。v1 实现用 subprocess git；不引 C 依赖。
+  MUST NOT 出现在任何热路径。v2 实现用 subprocess git；不引 C 依赖。
 - 快照 commit message 格式：
 
   ```
@@ -381,59 +526,80 @@ git 不是 memento 的结构，是**见证**：fork 是纯 memento 层操作，g
   Memento-Ref: cmt_01JBBB...
   ```
 
-  正文 trailer 列出自上次快照以来新增的 memento commit id。
-  由此 `git log --grep=cmt_xxx` 反查任意 commit 首次被见证的时刻。
+  正文 trailer 列出自上次快照以来新增的 memento commit id（可从 commits.jsonl
+  tail 自上次 offset 增量获取）。由此 `git log --grep=cmt_xxx` 反查任意 commit
+  首次被见证的时刻。
 - 两个地址空间：memento id = 身份（这是哪个 commit）；git sha = 完整性
   （历史未被事后篡改的证明）。
 - Matrix 跨机复制直接复用见证 repo push/pull（owner 分片路径不碰撞，无冲突）。
   MUST NOT 为 memento 另造同步协议。
 - 见证层是可选组件：不启用时其余格式条款全部照常成立。
 
-## 10. Epoch 分仓（预留口子）
+## 10. 不变量清单（golden tests 锚点）
 
-年尺度增长下，`{root}/memento/` MAY 按 epoch 分仓
-（如 `memento-2027H1/` 平行目录）。id 全局稳定不变，跨 epoch 定位归 `.cache/`
-索引层。本契约 v1 只保留此口子，分仓协议在启用时再冻结为 v2 条款。
-
-## 11. 不变量清单（golden tests 锚点）
-
-1. 成员行/记录行一经 commit 冻结即不可变（§3.2、§5.1、§5.2）。
-2. 释义 last-wins = 同文件字节偏移序，且释义行与所释义对象的载体同文件（§2.2）：
-   staging 内 moment 的释义在 staging；冻结 moment / commit 的释义在其 commit 文件。
-3. payload 原样透传，字节不动；`abc.py` 与存储实现零 payload schema 依赖（§3.1）。
-4. ancestry 冻结且与 base 链回溯一致（§4.1）。BasePointer 的 `moment_id/moment_seq`
-   给定时 MUST 指向该 commit 实际成员，二者位置一致；`moment_id` 缺省 =
-   `moment_seq` 缺省。空前缀在类型层不可构造（§4.1.1）。
-5. staging 是唯一可 truncate 的文件（§4.2）。
-6. 空 staging 禁止 commit；commit 原子动作 = 成员行 + m 个冻结 moment 行 +
-   初始 `commit_note`（含 `Kind:`） + fsync commit 文件 + truncate staging（§5、§12）。
-7. 撕裂尾行跳过，中段损坏抛错（§2）。
-8. 删除 `.cache/` 后行为不变（§7）；快路径不依赖 `.cache/`。
-9. renderings 与旧投影永不删除（§8）。
-10. 见证 repo 独立于代码仓库，快照 message 携带 `Memento-Ref:`（§9）。
-11. **互读等价**：两个独立实现照本文件各写一份历史，互读对方字节，重建出的
+1. **commit 自治目录出生即冻结**：`meta.json` / `moments.jsonl` 一经原子
+   rename 发布，已写内容 MUST NOT 改。`notes.jsonl` 是唯一允许追加的文件。
+2. **staging 归线**：staging 路径 MUST 是 `branches/{name}/staging.jsonl`，
+   不存在 owner 级 staging。"切换 branch"操作不存在，只有开线/延线/弃线。
+3. **branch ref 移动前活边先落锚**：`branch reset` 时 staging 非空 MUST 先
+   冻结为机械 commit，然后移 ref。什么都不静默丢。
+4. **commit 永不删**：commit 目录一经发布 MUST NOT 删除（即使成为孤儿）。
+5. **释义 last-wins = 同文件字节偏移序**：释义行与所释义对象同文件。
+   staging 内 moment 的释义在 staging；冻结 moment / commit 的释义在其 commit
+   目录的 `notes.jsonl`。
+6. **payload 原样透传**：`abc.py` 与存储实现零 payload schema 依赖（§3.1）。
+7. **commit_id → Y-m 纯函数**：从 ULID 时间戳解出，严格 UTC，无冗余字段、
+   无索引。`commit_space(commit_id)` 经此函数定位（§5.0）。
+8. **commits.jsonl append-only，行序 = 物理时序**：多 branch 并发 append
+   无 flock。崩溃恢复判据依赖它（§7、§11）。
+9. **ref = JSON 元组** `{fork, commit_id[, moment_id]}`：`fork` + `commit_id`
+   组合创建后不改；`moment_id` 给定时 MUST 命中 commit 成员，空前缀在类型
+   层不可构造（§4.1）。
+10. **撕裂尾行跳过，中段损坏抛错**（§2）。
+11. **见证 repo 独立于代码仓库**，快照 message 携带 `Memento-Ref:`（§9）。
+12. **互读等价**：两个独立实现照本文件各写一份历史，互读对方字节，重建出的
     历史（commit 序列、成员、每个 commit 内的 moment 全文序列、当前释义、
     ancestry）等价。
-12. **退化态纯净**：单 branch + 自动 commit 的用例代码中，fork 相关词汇
-    （fork/checkout/ancestry/overlay/base/moment_id 切片）一个不出现。
-13. **冻结即物理**（§3.2）：某 moment id 被搬入 commit 文件后，staging 中 MUST
+13. **退化态纯净**：单 branch + 自动 commit 的用例代码中，fork 相关词汇
+    （fork/checkout/ancestry/overlay/parent/moment_id 切片）一个不出现。
+14. **冻结即物理**（§3.2）：某 moment id 被搬入 commit 目录后，staging 中 MUST
     无同 id 的可写槽位——冻结检查是 API 拒绝之上的结构约束。
-14. **恢复幂等**（§12）：任何时刻中断，按 §12 恢复规则重放后系统状态与"无中断
-    完成"等价，不产生重复 commit 或悬空 staging。
+15. **恢复幂等**（§11）：任何时刻中断，按 §11 恢复规则重放后系统状态与
+    "无中断完成"等价，不产生重复 commit 或悬空 staging。
+16. **绝对路径禁用**：memento 持久化结构（ref / commits.jsonl / commit meta /
+    notes 等）中出现绝对路径即违规。`commit_space()` 返回的 path 是运行时值，
+    不进任何持久化结构。
+17. **merge 不存在**：单父链钉死，无多父 commit。跨 owner 交互走只读 checkout
+    + Matrix 消息（§1）。
 
-## 12. 崩溃恢复
+## 11. 崩溃恢复
 
-commit 的原子动作序列（§4.2 复述）：
-写 commit 文件 → fsync → truncate staging。中间任意点崩溃，恢复规则：
+commit() 原子动作序列（§4.2 复述）：
 
-- **该 seq 的 commit 文件不存在**：staging 未动，等同没 commit 过；无需任何操作。
-- **该 seq 的 commit 文件存在但成员行残缺或撕裂**：MUST 删除该文件重试
-  （成员行是 commit 的物理身份，缺失即无 commit）。
-- **该 seq 的 commit 文件存在且成员行完整**：commit 已成立（fsync 之后崩溃），
-  MUST 直接 truncate `staging.jsonl`；本次已完成，不重跑。
+1. 计算 staging last-wins 视图（可选截止到 boundary）；
+2. 写 tmp 目录（meta.json + moments.jsonl + notes.jsonl 含初始 commit_note）；
+3. fsync tmp 目录内所有文件；
+4. 原子 rename tmp → `commits/{Y-m}/cmt_<ULID>/`；
+5. append `{owner}/commits.jsonl` 一行 commit_ref；
+6. fsync commits.jsonl；
+7. rewrite `branches/{name}/ref` 指向新 commit；
+8. truncate `staging.jsonl`。
 
-规则幂等：多次触发 = 一次触发。恢复 MUST 在 Memento 装入 branch handle 时
-（或首次访问 staging / head 时）执行。
+中间任意点崩溃，恢复规则（基于 commits.jsonl 尾行判据，§18.2）：
+
+- **commits.jsonl 尾行 commit_id 的目录不存在**：append commits.jsonl 后、
+  rename 前 crash 的残骸。MUST 删除 commits.jsonl 尾行（或截断到尾行前），
+  然后重跑 commit。
+- **commits.jsonl 尾行 commit_id 的目录存在但残缺**（meta.json 缺失或撕裂）：
+  MUST 删除该目录 + 删除 commits.jsonl 尾行，重跑 commit。
+- **commits.jsonl 尾行 commit_id 的目录完整，但 ref 未更新 / staging 未
+  truncate**：commit 已成立（fsync 后崩溃），MUST 直接 rewrite ref 指向该
+  commit_id + truncate staging。本次已完成，不重跑。
+- **commits.jsonl 尾行 commit_id 的目录完整，ref 已更新，但 staging 未
+  truncate**：同上，truncate staging 即可。
+
+恢复 MUST 在 Memento 装入 branch handle 时（或首次访问 staging / ref 时）
+执行。规则幂等：多次触发 = 一次触发。
 
 ---
 
@@ -443,3 +609,6 @@ commit 的原子动作序列（§4.2 复述）：
   staging 持真身、commit 文件自包含；新增 §4.1.1 BasePointer moment 前缀切片、
   §5.2 冻结 moment 行、§5.3 note 类型二分、§12 崩溃恢复；相应更新 §11 不变量清单。
   依据 workstreams/2026/06/momento-mori/FEATURE.md §14。
+- 2026-07-20 由 kimi-k3 起草 v2：§16 branch 降维 + §17 时间线原生化 +
+  §18 CLI 定案 / Y-m 分桶 / commits.jsonl 契约化 / .cache/ 处决 / ref JSON 元组
+  / 崩溃恢复精化。依据 workstreams/2026/06/momento-mori/FEATURE.md §16/§17/§18。
