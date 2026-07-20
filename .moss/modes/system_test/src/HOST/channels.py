@@ -22,6 +22,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss import new_default_shell_main_channel
 from ghoshell_moss.channels.file_editor_channel import build_file_editor_channel
 from ghoshell_moss.channels.terminal_channel import build_terminal_channel
+from ghoshell_moss.channels.matrix_channel import build_matrix_channel
 from ghoshell_moss.core.blueprint.channel_builder import MutableChannel
 from ghoshell_moss.core.concepts.channel import Channel
 
@@ -37,4 +38,5 @@ def _build_bash_with_file_editor(container: IoCContainer) -> Channel:
 
 
 main = new_default_shell_main_channel()
+main.import_channels(build_matrix_channel())
 main.import_channels(_build_bash_with_file_editor)
