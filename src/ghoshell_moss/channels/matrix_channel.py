@@ -4,9 +4,10 @@
 - nodes: 本地治理 (list/read/run/stop/status/read_output). 数据源 =
   matrix.project.nodes() + matrix.handled_cells() + matrix.dead_cells().
 - mesh: 网络投影 (accept/reject/set_auto_accept + events). virtual_children
-  镜像 mesh.channel_proxies(). CellEvent → Signal 生产侧归本 channel.
-- matrix: 集成点. 静态挂 nodes/mesh 及可选的 terminal/file_editor. 本轮
-  无 own commands, 极简自我介绍.
+  镜像 mesh.channel_proxies(). CellEvent -> Signal 生产侧归本 channel.
+- matrix: 集成点. 静态挂 nodes/mesh. 本轮无 own commands.
+
+OS 工具 (bash / file_editor) 已迁至 desktop channel, 与 matrix 平级.
 
 Example:
     # matrix 环境自动装配 (推荐, IoC 走 container)
@@ -734,13 +735,13 @@ def new_matrix_channel(
         description: str | None = None,
         extra_children: tuple[Channel | ChannelFactory, ...] = (),
 ) -> Channel:
-    """集成点. import_channels 挂 nodes + mesh + extras (terminal / file_editor).
-    本轮 matrix 自身无 own commands, 极简自我介绍."""
+    """集成点. import_channels 挂 nodes + mesh. 本轮 matrix 自身无 own commands."""
 
     default_desc = (
         'Matrix integration point: network projection and local organ '
         'governance. Children: nodes (local cell declarations + spawn), '
-        'mesh (accepted network cells surface here), plus attached tools.'
+        'mesh (accepted network cells surface here). '
+        'OS tools live under desktop, not here.'
     )
     chan = new_channel(name=name, description=description or default_desc)
 
@@ -752,11 +753,9 @@ def new_matrix_channel(
     @chan.build.instruction
     def matrix_instruction() -> str:
         return (
-            'This is your body\'s integration point. '
+            'Cell governance integration point. '
             'nodes: what organs can be declared / running locally. '
-            'mesh: what organs (yours and others\') are on the network. '
-            'Tools attached here run in this process, addressable as '
-            'matrix.<tool>:<command>.'
+            'mesh: what organs (yours and others\') are on the network.'
         )
 
     return chan
@@ -766,38 +765,23 @@ def build_matrix_channel(
         *,
         name: str = 'matrix',
         description: str | None = None,
-        with_terminal: bool = True,
-        with_file_editor: bool = True,
         extra_children: tuple[Channel | ChannelFactory, ...] = (),
 ) -> ChannelFactory:
     """High-order factory: config → ChannelFactory.
 
-    Resolves Matrix from container, composes nodes + mesh + optional tools
-    (terminal / file_editor) as static children of matrix.
+    Resolves Matrix from container, composes nodes + mesh as static children.
+    OS tools (bash / file_editor) live under desktop channel, not here.
 
     :param name: matrix channel tag (default 'matrix')
     :param description: override default description
-    :param with_terminal: attach ``terminal_channel`` as ``matrix.bash``
-    :param with_file_editor: attach ``file_editor_channel`` as ``matrix.file_editor``
     :param extra_children: additional Channel or ChannelFactory to import
     """
 
     def factory(container: IoCContainer) -> Channel:
         matrix = container.force_fetch(Matrix)
-
-        extras: list[Channel | ChannelFactory] = list(extra_children)
-        if with_terminal:
-            from ghoshell_moss.channels.terminal_channel import build_terminal_channel
-            extras.append(build_terminal_channel())
-        if with_file_editor:
-            from ghoshell_moss.channels.file_editor_channel import (
-                build_file_editor_channel,
-            )
-            extras.append(build_file_editor_channel())
-
         return new_matrix_channel(
             matrix, name=name, description=description,
-            extra_children=tuple(extras),
+            extra_children=extra_children,
         )
 
     return factory
