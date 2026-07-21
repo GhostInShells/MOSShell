@@ -66,6 +66,9 @@ __all__ = [
     'MOSS_NAME_PATTERN',
     'MossMeta',
     'MOSS_META_FILE',
+
+    # stub
+    'STUB_IGNORE_MARK',
 ]
 
 # --- moss 的 workspace 发现机制 --- #
@@ -86,6 +89,10 @@ DEFAULT_NODES_DIR = 'nodes'
 # workspace 的原始文件所处的 package 路径.
 WORKSPACE_STUB_PACKAGE = 'ghoshell_moss.stubs.workspace'
 MODE_STUB_PACKAGE = 'ghoshell_moss.stubs.workspace.modes.default'
+
+# `# stub:ignore` 写在文件第一行, 表示 stub 复制时跳过该文件.
+# 用于 __init__.py 等纯 package marker, 避免污染目标 workspace.
+STUB_IGNORE_MARK = '# stub:ignore'
 
 # --- 主要的环境变量名 --- #
 # 这些环境变量不在 .env 中定义, 而是启动时 发现/生成, 或者通过父子进程传递的.
@@ -143,6 +150,15 @@ MOSSRuntimeScopeEnvKey: TypeAlias = Literal[
 MOSS_NAME_PATTERN = r'^[a-zA-Z_][a-zA-Z0-9_]*$'
 
 MOSS_META_FILE = 'MOSS.md'
+
+
+def _is_stub_ignored(file: Path) -> bool:
+    """文件第一行以 # stub:ignore 开头则跳过复制."""
+    try:
+        first_line = file.read_text(encoding='utf-8').lstrip()
+        return first_line.startswith(STUB_IGNORE_MARK)
+    except Exception:
+        return False
 
 
 class MossMeta(BaseModel):
@@ -639,7 +655,8 @@ class Environment:
 
         def copy_recursive(source_node, target_dir: Path):
             for item in source_node.iterdir():
-                if source_node == stub_resources and item.name == "__init__.py": continue
+                if item.is_file() and _is_stub_ignored(item):
+                    continue
                 target_item = target_dir / item.name
 
                 if item.is_dir():

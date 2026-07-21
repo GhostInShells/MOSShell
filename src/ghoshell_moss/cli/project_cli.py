@@ -122,3 +122,50 @@ def design() -> None:
         print_error(f"DESIGN.md missing at {_DESIGN_MD}")
         raise typer.Exit(code=1)
     echo(_DESIGN_MD.read_text())
+
+
+@project_app.command(
+    name="overwrite-stubs",
+    short_help="Overwrite .moss/ files with latest stub templates.",
+)
+def overwrite_stubs(
+        yes: bool = typer.Option(
+            False, "--yes", "-y",
+            help="Skip confirmation prompt.",
+        ),
+) -> None:
+    """Re-copy all stub template files into the current .moss workspace.
+
+    This is useful when the installed ghoshell-moss package has updated stubs
+    (new manifest directories, new default nuclei, etc.) and you want to pull
+    those updates into an existing workspace.
+
+    Works with git — after running, review and keep what you need:
+      git diff .moss/          # see what changed
+      git checkout .moss/      # revert unwanted overwrites
+      git add .moss/ -p        # stage desired changes interactively
+    """
+    from ghoshell_moss.core.blueprint.environment import Environment
+
+    try:
+        env = Environment.discover()
+    except EnvironmentError as e:
+        print_error(f"Environment Discovery Failed: {e}")
+        raise typer.Exit(code=1)
+
+    ws_dir = env.workspace_path
+
+    if not yes and not typer.confirm(
+        f"Overwrite all stub files in '{ws_dir}' with latest templates?",
+        default=True,
+    ):
+        print_warning("Aborted.")
+        return
+
+    Environment.init_workspace(ws_dir, force=True)
+    print_success("Stub files overwritten.")
+    echo("")
+    print_info("Review changes with git:")
+    print_info("  git diff .moss/")
+    print_info("  git checkout .moss/   # revert unwanted overwrites")
+    print_info("  git add .moss/ -p     # stage desired changes")

@@ -131,10 +131,63 @@ def create_mode(
     _print_hint()
 
 
+@modes_app.command(
+    name="overwrite-stubs",
+    short_help="Overwrite an existing mode's files with latest stub templates.",
+)
+def overwrite_mode_stubs(
+        name: str = typer.Argument(..., help="Mode name to overwrite."),
+        yes: bool = typer.Option(
+            False, "--yes", "-y",
+            help="Skip confirmation prompt.",
+        ),
+) -> None:
+    """Re-copy default mode stub files into .moss/modes/<name>/.
+
+    Works with git — after running, review and keep what you need:
+      git diff .moss/modes/<name>/
+      git checkout .moss/modes/<name>/   # revert unwanted overwrites
+      git add .moss/modes/<name>/ -p     # stage desired changes
+    """
+    from ghoshell_moss.core.blueprint.environment import (
+        MOSS_NAME_PATTERN, MODE_STUB_PACKAGE,
+    )
+
+    if not re.match(MOSS_NAME_PATTERN, name):
+        print_error(f"Invalid mode name '{name}'. Must match {MOSS_NAME_PATTERN}")
+        raise typer.Exit(code=1)
+
+    project = _get_project()
+    target_dir = project.get_mode_home(name)
+
+    if not target_dir.exists():
+        print_error(f"Mode '{name}' does not exist at {target_dir}.")
+        print_info(f"Use 'moss modes create {name}' to create a new mode.")
+        raise typer.Exit(code=1)
+
+    if not yes and not typer.confirm(
+        f"Overwrite all stub files in mode '{name}' ({target_dir}) with latest templates?",
+        default=True,
+    ):
+        print_warning("Aborted.")
+        return
+
+    stub_resources = resources.files(MODE_STUB_PACKAGE)
+    _copy_stub(stub_resources, target_dir, name=name)
+
+    print_success(f"Mode '{name}' stub files overwritten.")
+    echo("")
+    print_info("Review changes with git:")
+    print_info(f"  git diff .moss/modes/{name}/")
+    print_info(f"  git checkout .moss/modes/{name}/   # revert unwanted overwrites")
+
+
 def _copy_stub(stub_node, target_dir: Path, *, name: str) -> None:
     """Copy stub files into target_dir, replacing {name} placeholders."""
+    from ghoshell_moss.core.blueprint.environment import _is_stub_ignored
+
     for item in stub_node.iterdir():
-        if item.name == "__init__.py":
+        if item.is_file() and _is_stub_ignored(item):
             continue
         target_item = target_dir / item.name
         if item.is_dir():
