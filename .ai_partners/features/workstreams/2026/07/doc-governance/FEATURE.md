@@ -1,15 +1,14 @@
 ---
-title: Doc Governance
-status: in-progress
-priority: P1
 created: 2026-07-18
-updated: 2026-07-18
 depends:
-  - matrix-cell-governance
+- matrix-cell-governance
+description: MOSS 文档体系治理 — docs/howtos/tutorials 三重知识系统的编写纪律、过期修复、地基约定。 matrix-cell-governance
+  的连带任务，作为未来文档治理的参考蓝本。
 milestone: 0.1.0
-description: >-
-  MOSS 文档体系治理 — docs/howtos/tutorials 三重知识系统的编写纪律、过期修复、地基约定。
-  matrix-cell-governance 的连带任务，作为未来文档治理的参考蓝本。
+priority: P1
+status: completed
+title: Doc Governance
+updated: '2026-07-21'
 ---
 
 # Doc Governance

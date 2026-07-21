@@ -303,7 +303,7 @@ MOSS 的 Mode 机制天然支持这一点：同一个 Ghost 在"desktop" mode �
 - Ghost 如何感知当前可用的能力集合？通过 `moss manifests channels`？通过 system prompt 中的 mode 层？
 - 如果 Ghost 在 mode A 中学到的技能需要在 mode B 中使用，记忆如何迁移？
 
-**相关位置**：`moss modes list` / `moss modes show <name>`。`moss docs read workspace-and-mode.md`。
+**相关位置**：`moss modes list` / `moss modes show <name>`。`moss docs read project-and-mode.md`。
 
 ---
 
@@ -385,7 +385,7 @@ Ghost 相关的功能分散在多个 feature 中，各自独立推进。以下�
 ```
 moss docs read what-is-moss.md              # MOSS 整体心智模型
 moss docs read architecture-topology.md     # 八层拓扑（Ghost 在意识架构层）
-moss docs read workspace-and-mode.md        # Mode 与躯体适配
+moss docs read project-and-mode.md          # Project 与 Mode 体系
 moss docs read ctml.md                      # CTML——Ghost 的输出语言
 moss docs read channel-system.md            # Channel——Ghost 的能力来源
 moss docs read matrix-system.md             # Matrix——Ghost 的通讯脊柱

@@ -138,7 +138,7 @@ moss modes show <name>               # 单个 mode 的 apps/bringup 配置
 - **Mode** 显式继承全局 manifest 的能力视图——不同场景不同能力组合
 - **App** 与 **src→manifests** 是两条开发路径：前者隔离，后者复用
 
-**深入**：`moss docs read workspace-and-mode.md`
+**深入**：`moss docs read project-and-mode.md`
 
 ---
 

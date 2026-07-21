@@ -158,7 +158,7 @@ Manifests 是声明，Matrix 是执行者。
 
 **声明和实现分离**：开发者（人类和 AI）只在 manifest 文件中写 Python 实例声明，Matrix 负责发现、注入、组网。换一个 transport 实现（zenoh → 未来的其他协议），声明层不需要改动。
 
-**深入**：`moss docs read workspace-and-mode.md` — manifests 声明体系完整论述
+**深入**：`moss docs read project-and-mode.md` — Project 与 Mode 体系
 
 ---
 
@@ -177,5 +177,5 @@ Matrix 的抽象层（Cell、Presence/CellMesh、Session）不绑定具体传输
 | Channel 抽象 | `moss codex get-interface ghoshell_moss.core.concepts.channel` |
 | Session 通讯总线 | `moss codex get-interface ghoshell_moss.core.blueprint.session` |
 | 架构拓扑中 Matrix 的定位 | `moss docs read architecture-topology.md` |
-| Manifests 声明体系 | `moss docs read workspace-and-mode.md` |
+| Manifests 声明体系 | `moss docs read project-and-mode.md` |
 

@@ -1,337 +1,140 @@
 ---
-title: MOSS App 体系
-description: App 作为独立进程单元，AI 可在运行时创建、启动、调用、关闭。需要创建、调试或理解 App 时阅读
+title: Matrix Node 体系
+description: Node 是 Matrix 网络中的功能节点——可被发现、被 CLI 和模型控制、跨进程通讯。需要创建或理解 Node 时阅读
 ---
 
-# MOSS App 体系
+# Matrix Node 体系
 
-App 是 MOSS 架构中**AI 可在运行时创建、启动、调用、关闭的进程单元**。它是 Ghost 可插拔的器官——独立进程、独立依赖、Matrix 总线通讯。
+Node 是 Matrix 网络中提供具体能力的进程单元。它是 Ghost 可插拔的器官——独立进程、独立依赖、Matrix 总线通讯。
 
----
-
-## 1. 核心叙事：运行时自迭代
-
-MOSS 的 App 体系与所有已知 Agent 框架的根本区别在于：**AI 不是工具调用者，而是能力的创造者**。
-
-完整闭环：
-
-```
-moss apps create ai_tools/calc          # 1. 在磁盘上创建 App 脚手架
-vim apps/ai_tools/calc/main.py        # 2. 写 Python 代码定义命令
-<apps:start fullname="ai_tools/calc"/> # 3. Circus 拉起子进程，Zenoh 建立 proxy
-<apps.ai_tools_calc:add a=3 b=7 />   # 4. CTML 调用刚创建的命令 → 10.0
-<apps.ai_tools_calc:div a=1 b=0 />    # 5. 异常返回 → Error: division by zero
-<apps:stop fullname="ai_tools/calc"/>  # 6. 关闭
-```
-
-每一步都在**同一个 MCP 会话中**完成，不需要重启 host，不需要人类介入。这就是 "运行时自迭代"——AI 扩展自己的能力边界，如同 OS 中 `fork` + `exec` 让进程可以创造进程。
-
-### 为什么其它架构做不到
-
-| 架构 | 能力注册 | 进程托管 | AI 可创造 | 即时可用 |
-|------|----------|----------|-----------|----------|
-| MCP | 静态 server 声明 | 无 | 否 | 否 |
-| Agent 框架 | exec() 进程内裸跑 | 无隔离 | 是(不安全) | 是(不持久) |
-| Skills/Plugins | 人类预定义 | 宿主进程内 | 否 | 否 |
-| Erlang/OTP | hot code reload | supervision tree | 否(人类驱动) | 是 |
-| **MOSS App** | Matrix 动态注册 | Circus 子进程 | **是** | **是** |
-
-MOSS 把这个假设倒过来了：能力由 AI 创造，人类也可以提供。为此通讯总线必须支持动态注册、进程托管必须支持按需拉起、能力发现必须支持热刷新——每一层都为"未知的未来能力"留口子。
+读完本文你应该能回答：Node 怎么被系统发现？有哪些方式控制它？Node 之间怎么通讯？开发一个 Node 的最小路径是什么？
 
 ---
 
-## 2. What App Is
+## 1. Node 在 Matrix 中的位置
 
-App 是放在 `apps/<group>/<name>/` 下的目录，最小包含 `APP.md`（元信息声明）和入口脚本。
+Matrix 网络中有两种角色：**host**（中心节点，组织所有能力供 Ghost 驱动）和 **node**（功能节点，提供具体能力）。host 与 node 不是两种程序——它们跑的是同一个 `Matrix.discover()`，角色由环境变量继承决定。
 
-- MOSS 通过**目录约定**自动发现 App
-- Circus 管理其**进程生命周期**
-- Matrix (Zenoh) 将它接入**通讯总线**
-- AI 通过 AppStoreChannel (`list_apps` / `start` / `stop`) 在运行时控制
-
-**App 不一定是 Channel provider。** 它可以是：
-- Channel 树根（AI 通过 CTML 调用命令）
-- 给人用的 GUI（AI 打开，人操作）
-- 自主感知 Agent（独立运行，通过 Signal 向 Ghost 汇报）
-- 纯后台进程（日志输出、数据处理）
-
-关键：App 的生命周期由 **AI** 决定。模型看到所有已发现的 App，按需 `start`/`stop`。这不是微服务的"自主运行"——AI 是操作者。
-
-### 核心抽象
+host/node 的相互发现和组网机制见 Matrix 体系文档：
 
 ```bash
-moss codex get-interface ghoshell_moss.core.blueprint.app
+moss docs read matrix-system.md
 ```
 
-- `AppInfo` — 可发现的 App 描述（name, group, address, watcher, state）
-- `AppWatcher` — 启动配置（executable, script, workers, respawn, max_age）
-- `AppStore` — 生命周期管理（list, init, start, stop, get_apps_context）
-- `AppState` — 状态机：STOPPED → STARTING → RUNNING → ERROR
+本文聚焦 node 本身：怎么声明、怎么控制、怎么通讯、怎么开发。
 
-AI 控制面：
+---
+
+## 2. 发现 — 目录即声明
+
+Node 通过目录约定被系统自动发现。一个目录下放一份声明文件，描述"这是什么、怎么启动"，Matrix 的 NodeManager 扫描约定路径后即可发现并拉起。
+
+声明文件承载了 node 的元信息：名称、分类标签、启动命令、是否为单例等。正文是给 AI 看的 instruction。
+
+具体声明格式和字段通过 codex 自省：
 
 ```bash
-moss codex get-interface ghoshell_moss.channels.app_store_channel
+moss codex get-interface ghoshell_moss.core.blueprint.cell NodeManifest
 ```
 
-AppStoreChannel 注册在 Shell Channel 树中，暴露 `list_apps` / `start` / `stop`。
-
----
-
-## 3. 创建与调试
-
-### 从零创建
+声明文件的发现路径由 Mode 配置。当前 Mode 下有哪些 node 可被拉起：
 
 ```bash
-moss apps create my_group/my_app -d "what it does"
+moss --ai nodes list
 ```
 
-产物：
-```
-apps/my_group/my_app/
-├── APP.md       # frontmatter (executable, script, workers, respawn...)
-├── main.py      # 入口脚本（helloworld 模板）
-└── CLAUDE.md    # AI 开发者上下文
-```
-
-`APP.md` 的 frontmatter 即为 `AppWatcher` 全部配置：
-
-```yaml
 ---
-executable: uv        # 启动器，默认 uv
-script: main.py       # 入口脚本
-arguments: ""         # 启动参数
-description: ""       # 描述
-respawn: false        # 崩溃后自动重启
-workers: 1            # 工作进程数
-max_age: null         # 进程最大存活秒数
----
-```
 
-不写则用默认值。`moss apps create` 会自动刷新 AppStore 的发现缓存。
+## 3. 控制 — 三面合一
 
-### 调试
+Node 的生命周期有三个控制面，共享同一套治理动词（run/stop），只是入口不同：
+
+| 控制面 | 入口 | 适用场景 |
+|--------|------|---------|
+| CLI | `moss nodes` 命令组 | 人类调试、脚本 |
+| Matrix API | `matrix.run_node(target)` | 父进程以本 Matrix 为治理域拉起子 node |
+| 模型 (CTML) | 通过 Channel 暴露的治理命令 | Ghost 在运行时自迭代——创建、启动、调用新能力 |
+
+三个面共享同一个 spawn 咽喉，差异只在"谁发起的"——CLI 进程、host 进程、还是模型通过 channel。治理逻辑是一套。
+
+CLI 命令的完整列表：
 
 ```bash
-moss apps list                  # 发现所有 App，含运行状态
-moss apps show my_group/my_app  # 查看详情
-moss apps test my_group/my_app  # 前台运行，Ctrl+C 停止
+moss --ai all-commands --group nodes
 ```
 
-MCP 侧通过 CTML：
+Matrix API 入口：
 
-```ctml
-<apps:list_apps />
-<apps:start fullname="my_group/my_app" timeout="3.0" />
-<apps:stop fullname="my_group/my_app" />
+```bash
+moss codex get-interface ghoshell_moss.core.blueprint.matrix  # run_node, handled_cells
 ```
-
-`start` 的 timeout：
-- `-1` (默认): 不等，立即返回
-- `0`: 无限等待直到 Channel connected
-- `>0`: 等待 N 秒后超时返回 WARN
 
 ---
 
-## 4. App 入口模式
+## 4. 通讯 — 跨进程、跨环境、跨网络
 
-所有 App 共享同一个入口模式：
+### 4.1 跨进程：Session 总线
 
-```python
-from ghoshell_moss.core.blueprint.matrix import Matrix
+Node 启动后接入 Matrix 网络，自动获得 Session 通讯能力。五种通讯原语——topic、stream、signal、output、file——共享同一条总线。Node 可以向总线发 signal 驱动 Ghost 的注意力、写 stream 输出实时数据、订阅 topic 感知其他 node 的状态变化。
 
-async def main(matrix: Matrix):
-    # App 逻辑
-
-if __name__ == "__main__":
-    Matrix.discover().run(main)
+```bash
+moss codex get-interface ghoshell_moss.core.blueprint.session
 ```
 
-`Matrix.discover()` 通过环境变量 (`MOSS_CELL_ADDRESS`, `MOSS_WORKSPACE` 等) 自动发现当前进程的 Cell 身份。`run(main)` 管理 Matrix 的 `__aenter__`/`__aexit__` 生命周期。
+### 4.2 提供 Channel 给模型
 
-### 4.1 纯进程 App
+Node 可以通过 `matrix.provide_channel(channel)` 将自己的能力以 Channel 树形态暴露给模型。模型在 CTML 中调用远程 Channel 的语法和本地完全相同——不感知这个能力跑在哪个进程、哪台机器上。
 
-不参与 Matrix 通讯。AI 启动它、关闭它——仅此而已。
+Channel 构建：
 
-```python
-if __name__ == "__main__":
-    print("hello world")
+```bash
+moss codex get-interface ghoshell_moss.core.blueprint.channel_builder
 ```
 
-典型用途：GUI 工具窗口、独立游戏——AI 启动，人使用。
+### 4.3 跨网络：scope 对齐即组网
 
-### 4.2 Channel App
+同一台机器上的 node 通过 Session scope 天然互通。跨机器时，每台机器有自己的 host 治理本地 node，A 机器需要 B 机器的能力时，B 将 Channel 子树 provide 到网络中，A accept 后挂载。只要 scope 对齐，不同机器上的 node 就像在同一个网络中。
 
-向 Matrix 注册 Channel，让 Shell/Ghost 通过 CTML 调用其命令、读取其上下文。
+跨机器是组合同构网络的组合，不是对远端 spawn 的参数。详见 Matrix 体系文档 §3.6。
+
+---
+
+## 5. 开发 — 最小路径
+
+开发一个可被模型发现和调用的 node，只需要理解四个 blueprint：
+
+| 需要知道 | 去哪看 |
+|----------|--------|
+| Channel 怎么构建（命令定义、上下文注入） | `moss codex get-interface ghoshell_moss.core.blueprint.channel_builder` |
+| Matrix 怎么入网（身份、provide、生命周期） | `moss codex get-interface ghoshell_moss.core.blueprint.matrix` |
+| Session 怎么通讯（发 signal、写 stream、订阅 topic） | `moss codex get-interface ghoshell_moss.core.blueprint.session` |
+| CTML 怎么让模型控制你的 Channel | `moss ctml read` |
+
+这四个 blueprint 是 code as prompt——Python 函数签名就是接口文档。读完就能写出一个标准 node 入口：
 
 ```python
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
-
-channel = new_channel(name="my_tool", description="does something")
-
-@channel.build.command()
-async def add(a: float, b: float) -> float:
-    """Add two numbers."""
-    return a + b
-
-@channel.build.context_messages
-async def context() -> list[str]:
-    return ["current state — 3 items pending"]
+from ghoshell_moss.core.blueprint.matrix import Matrix
 
 async def main(matrix: Matrix):
+    # 构建 Channel → 注册到 Matrix → 模型可见
     await matrix.provide_channel(channel)
 
 if __name__ == "__main__":
     Matrix.discover().run(main)
 ```
 
-Channel 构建的完整知识：
-
-```bash
-moss codex get-interface ghoshell_moss.core.blueprint.channel_builder
-```
-
-要点：
-- `Builder.command()` 将 Python async 函数反射为 Command，函数签名即为 Code as Prompt interface
-- `Builder.context_messages()` 在每个思维关键帧注入动态上下文
-- 一个 App 提供一个 Channel 树根，子节点通过 `import_channels()` 组织
-- Channel 名称会成为 CTML 调用路径的一部分（如 `apps.ai_tools_calc:add`）
-
-### 4.3 GUI App
-
-GUI 占据主线程，Matrix 在异步侧运行。
-
-```python
-async def monitor_main(matrix: Matrix):
-    monitor = MossMonitor(matrix)
-    await monitor.run()  # TUI 主循环
-
-if __name__ == "__main__":
-    Matrix.discover().run(monitor_main)
-```
-
-关键：`matrix.session.output_buffer()` 订阅总线输出，`matrix.create_task()` 将后台协程托管给 Matrix 生命周期。
-
-### 4.4 Signal 生产者 App
-
-周期性向总线推送消息。
-
-```python
-async def producer_task(matrix: Matrix):
-    session = matrix.session_storage
-    while True:
-        msg = Message.new().with_content("periodic signal")
-        session.output('log', msg)
-        await asyncio.sleep(1)
-
-
-if __name__ == "__main__":
-    Matrix.discover().run(producer_task)
-```
+node 可以有独立依赖（视觉 node 装 opencv，GUI node 装 PyQt6，互不污染）。依赖隔离机制和启动方式通过 ExecSpec 声明，细节在 NodeManifest 接口中自省。
 
 ---
 
-## 5. 依赖隔离
+## 6. 深入探索
 
-App 默认以 `uv run` 启动，三层回退：
-
-| 优先级 | 方式 | 适用场景 |
-|--------|------|----------|
-| 1 | `pyproject.toml`（独立 venv） | 需要特定依赖版本的复杂 App |
-| 2 | PEP 723（`// script` 内联元数据） | 单文件 App，轻量依赖声明 |
-| 3 | 共享运行时 | 快速原型，只依赖 `ghoshell_moss` |
-
-独立依赖意味着视觉 App 可以装 `opencv`，GUI App 可以装 `PyQt6`，互不污染。
-
----
-
-## 6. Mode 集成
-
-App 的可见性和自动启动由 Mode 控制。在 Mode 的 `MODE.md` 中声明：
-
-```yaml
-apps:
-  - '_system_tests/*'
-  - 'perception/*'
-bringup_apps:
-  - 'perception/vision'
-```
-
-- `apps` — 该 Mode 下可见的 App（通配符匹配 `group/name`）
-- `bringup_apps` — Mode 启动时自动拉起
-
-不带 bringup 标记的 App 按需启动，不占上下文。
-
----
-
-## 7. 架构拓扑（当前实现）
-
-以下是 2026-05-19 版本的实现拓扑，作为一个具体示例帮助理解。实现会演进，不要把这当作唯一真理。
-
-```
-AI (CTML via MCP)
-  └─ AppStoreChannel  ───  list_apps / start / stop
-       └─ HostAppStore  ──── 目录扫描 + Circus 进程管理
-            └─ Circus Daemon ── 子进程生命周期
-                 └─ App Process
-                      └─ Matrix.discover() → Cell("app", fullname)
-                           └─ matrix.provide_channel(channel)
-                                └─ ZenohProvider  ─── 注册到通讯总线
-                                     │
-Main Cell (Host) ←── Zenoh Proxy ──┘
-  └─ Shell Channel Tree
-       └─ apps.ai_tools_calc:add / multiply / div
-```
-
----
-
-## 8. 开发过程中的反身性
-
-App 体系的设计有一个内在循环：开发 App 体系本身的过程，就是使用 App 体系的过程。
-
-2026-05-18 ~ 2026-05-19 的开发和调试链路证明了这一点：
-
-- `moss apps create` 创建测试 App（greeter, ping_test, calc）
-- 通过 MCP 启动、调试、发现 bug
-- 修复 bug（address 一致性、proxy chan 路径、list_apps refresh）后立即在同一会话中验证
-- 测试 App 本身成为了开发工具的一部分
-
-这就是 MOSS 的 "自迭代" 在实践中的形态：**基础设施的开发者和使用者是同一个人——AI**。
-
----
-
-## 9. 常用 CLI 工具
-
-```bash
-# App 创建与管理
-moss apps create <group/name>        # 创建 App 脚手架
-moss apps list                     # 发现所有 App，含运行状态
-moss apps show <group/name>        # 查看单个 App 详情
-
-# Mode 集成
-moss modes list                    # 列出所有 Mode
-moss modes show <name>             # 查看 Mode 的 apps/bringup 配置
-
-# Matrix 体系资源（App 开发最常用）
-moss manifests contracts            # IoC 容器中的全局服务——最重要的，知道能注入什么
-moss manifests providers            # 环境中的 Provider 实现
-moss manifests topics               # 发布订阅 Topic
-moss manifests resources            # 资源存储
-```
-
-所有命令支持 `--json` 输出结构化数据，`--ai` 输出纯文本。
-
----
-
-## 深入理解
-
-- Matrix API: `moss codex get-interface ghoshell_moss.core.blueprint.matrix`
-- Session 与双工通讯: `moss codex get-interface ghoshell_moss.core.blueprint.session`
-- Channel 构建: `moss codex get-interface ghoshell_moss.core.blueprint.channel_builder`
-- States Channel (高阶): `moss codex list ghoshell_moss.core.blueprint.states_channel`
-- Signal 与感知体系: `moss codex list ghoshell_moss.core.blueprint.mindflow`
-- 完整示例: `.moss_ws/apps/_system_tests/` 目录
-
----
-
-写下于 2026-05-19T12:23+08:00，第一个运行时自迭代 milestone 达成后。
+| 想了解 | 去这里 |
+|--------|--------|
+| Node 声明格式与字段 | `moss codex get-interface ghoshell_moss.core.blueprint.cell NodeManifest` |
+| Node 发现与管理 API | `moss codex get-interface ghoshell_moss.core.blueprint.cell NodeManager` |
+| Matrix 组网与 host/node 关系 | `moss docs read matrix-system.md` |
+| Channel 构建完整知识 | `moss codex get-interface ghoshell_moss.core.blueprint.channel_builder` |
+| Session 五种通讯原语 | `moss codex get-interface ghoshell_moss.core.blueprint.session` |
+| CLI 控制面 | `moss --ai all-commands --group nodes` |
