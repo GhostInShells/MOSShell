@@ -256,7 +256,7 @@ class FsMemento(MementoABC):
     """Memento v2 参考实现."""
 
     def __init__(self, root: str | Path, owner: str, hooks: MementoHooks | None = None):
-        self._root = Path(root) / "memento"
+        self._root = Path(root)
         self._owner = owner
         self._hooks = hooks or NullHooks()
 
@@ -278,14 +278,19 @@ class FsMemento(MementoABC):
     def _staging_path(self, name: str) -> Path:
         return self._branch_dir(name) / _STAGING_FILE
 
-    def _commit_dir(self, commit_id: str) -> Path:
+    def _commit_dir_for(self, owner: str, commit_id: str) -> Path:
+        """commit 自治目录路径，可指定 owner（跨 owner 查阅）."""
         if not commit_id.startswith(_CMT_PREFIX):
             raise CommitNotFoundError(f"commit {commit_id!r} not found")
         try:
             ym = _y_m(commit_id)
         except (ValueError, IndexError):
             raise CommitNotFoundError(f"commit {commit_id!r} not found")
-        return self._owner_dir() / "commits" / ym / commit_id
+        return self._root / owner / "commits" / ym / commit_id
+
+    def _commit_dir(self, commit_id: str) -> Path:
+        """commit 自治目录路径 (本 owner)."""
+        return self._commit_dir_for(self._owner, commit_id)
 
     def _commits_jsonl(self) -> Path:
         return self._owner_dir() / _COMMITS_JSONL
@@ -603,8 +608,10 @@ class FsMemento(MementoABC):
         branch_dir = self._branch_dir(name)
         if branch_dir.exists():
             raise MementoError(f"line {name!r} already exists for owner {self._owner!r}")
-        if from_ref is not None and not self._commit_dir(from_ref.commit_id).exists():
-            raise CommitNotFoundError(f"from_ref commit {from_ref.commit_id!r} not found")
+        if from_ref is not None:
+            ref_owner = from_ref.origin
+            if not self._commit_dir_for(ref_owner, from_ref.commit_id).exists():
+                raise CommitNotFoundError(f"from_ref commit {from_ref.commit_id!r} not found")
         branch_dir.mkdir(parents=True)
         if from_ref is not None:
             self._write_ref(name, from_ref)

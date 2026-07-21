@@ -2,7 +2,7 @@
 Memento CLI — CLI for the memento cognitive-trajectory system (FORMAT v2).
 
 Each command maps 1:1 to the Memento / Line interface.
-Storage root defaults to ``.moss/memento/`` under the current directory.
+Storage root defaults to ``.memento/`` under the current directory.
 """
 
 from __future__ import annotations
@@ -86,7 +86,9 @@ def _note_kind(v: CommitView) -> str:
 
 
 def _format_view(v: CommitView) -> str:
-    return f"{v.id}  [{_note_kind(v)}]  {v.summary()[:80]}"
+    kind = _note_kind(v)
+    kind_part = f"[{kind}]  " if kind else ""
+    return f"{v.id}  {kind_part}{v.summary()[:80]}"
 
 
 def _format_ref(r: CommitRef) -> str:
@@ -119,7 +121,7 @@ def specification():
 def init_cmd(
     root: Optional[Path] = typer.Option(
         None, "--root", "-r",
-        help="Memento root directory. Defaults to .moss/memento/ in current dir.",
+        help="Memento root directory. Defaults to .memento/ in current dir.",
     ),
 ):
     """Create the memento storage root. Safe to run multiple times."""
@@ -161,7 +163,7 @@ def owner_status(
     root: Optional[Path] = typer.Option(None, "--root", "-r"),
 ):
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     lines = m.list_lines()
     log_entries = len(m.log())
     recovery = ""
@@ -181,7 +183,7 @@ def owner_log(
     root: Optional[Path] = typer.Option(None, "--root", "-r"),
 ):
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     entries = m.log()
     if limit > 0:
         entries = entries[-limit:]
@@ -201,7 +203,7 @@ memento_app.add_typer(branch_app, name="branch")
 
 
 def _get_line(root: Path, owner: str, name: str):
-    m = new_filesystem_memento(root.parent if root.name == "memento" else root, owner)
+    m = new_filesystem_memento(root, owner)
     return m, m.get_line(name)
 
 
@@ -217,7 +219,7 @@ def branch_create(
 ):
     owner, name = _parse_owner_name(owner_name)
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     fr = _parse_ref(from_ref) if from_ref else None
     ov = json.loads(overlay) if overlay else None
     line = m.create_line(name, from_ref=fr, overlay=ov)
@@ -230,7 +232,7 @@ def branch_list(
     root: Optional[Path] = typer.Option(None, "--root", "-r"),
 ):
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     for name in m.list_lines():
         line = m.get_line(name)
         ref_str = ""
@@ -346,7 +348,7 @@ def branch_reset(
 ):
     owner, name = _parse_owner_name(owner_name)
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     target = _parse_ref(to)
     m.reset_line(name, target)
     print_success(f"Line {owner}/{name} reset to {to}")
@@ -359,7 +361,7 @@ def branch_delete(
 ):
     owner, name = _parse_owner_name(owner_name)
     r = _resolve_root(root)
-    m = new_filesystem_memento(r.parent if r.name == "memento" else r, owner)
+    m = new_filesystem_memento(r, owner)
     m.delete_line(name)
     print_success(f"Line {owner}/{name} deleted (commits preserved).")
 
@@ -373,7 +375,7 @@ memento_app.add_typer(commit_app, name="commit")
 
 
 def _get_memento_for_owner(root: Path, owner: str):
-    return new_filesystem_memento(root.parent if root.name == "memento" else root, owner)
+    return new_filesystem_memento(root, owner)
 
 
 @commit_app.command("show", short_help="Show a commit's full content.")

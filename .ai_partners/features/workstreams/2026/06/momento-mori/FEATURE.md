@@ -11,7 +11,7 @@ status_note: '§18 CLI 定案: branch 动作位置参数无默认 / fork 入 cre
   级时序日志契约化, .cache/ 处决; 下一步 FORMAT v2 起草 → memento 改造 → cli-and-agent
   复工'
 title: Memento — 轨迹第一公民的认知基建（commit 锚点 / 化身分叉 / 重绘 / git 见证）
-updated: '2026-07-20'
+updated: '2026-07-21'
 ---
 
 # Memento
@@ -937,3 +937,39 @@ MomentRecord 信封的 threads 字段在契约层保留不动，CLI 暴露等真
   agent 命令挂进此树；§16.5 #1（--to）/ #2（overlay→owner meta）已顺带
   定案。
 - **验收方式**：CLI 体系（人类定）。memento 改造目标 = 18.4 全部命令可用。
+
+## 19. CLI 第一轮自解释验收（2026-07-21，claude-opus-4-7 测试，deepseek-v4-pro 修）
+
+两轮 CLI 功能测试。第二轮修了 fork ref 共享、reset 不生效、--from-ref 缺校验
+三个功能级 bug。specification 子命令已加入命令树。
+
+### 19.1 已验证通过
+
+dumb memory 全流程（init → create → record → commit → window）/ fork 隔离 /
+reset（staging 自动 mechanical commit 后 ref 移动）/ delete 保留 commits /
+annotate 追加 / commit show --notes / commit space / owner list/status/log /
+branch list/log/staging / window -s/-d / stdin record / -n limit / 错误处理（重名
+branch、不存在 commit、缺 owner 前缀的 from-ref 格式校验）。
+
+### 19.2 未修 bug
+
+- **cross-owner fork 不工作**：`branch create other/x --from-ref test/cmt_...`
+  → "from_ref commit not found"。from-ref 里的 owner 前缀被接受但 commit 查找
+  仍在目标 owner 目录下进行。
+
+### 19.3 低优先级
+
+- `init --help` 默认路径写 `.moss/memento/`，实际已改为 `.memento/`。
+- `.memento/memento/` 路径冗余——root 就是 `.memento/`，内部不应再套一层
+  `memento/`。人类定性为"另一个模型偷懒的结果"。
+- `commit annotate` 输出 `[]`（空 threads 展示），无信息量。
+- `witness status/snapshot` 占位 "not yet implemented"。
+- `commit show` 默认不显示 annotation（需 `--notes`）——设计选择，暂维持。
+
+### 19.4 设计判断（已确认）
+
+- cross-owner fork 的 `branch log` 不追踪跨 owner 边界：parent 指针在 commit
+  meta 里完整，磁盘因果链不丢。当前行为合理——跨 owner = 跨身份叙事。未来可
+  加 `--follow` 按需穿越，不急。
+- memento 真正的集成位置是 ghost runtime + API，不是 CLI。CLI 是第一验收面。
+  blueprint 层封装留待后续。
