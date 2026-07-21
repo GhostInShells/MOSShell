@@ -122,3 +122,64 @@ async def test_filters_low_priority():
         nuc.add_signal(Signal.new("input", priority=Priority.INFO))
         await asyncio.sleep(0.01)
         assert nuc.peek() is None
+
+
+@pytest.mark.asyncio
+async def test_suppress_clears_impulse_from_peek():
+    """suppress 后 peek 应返回 None — 被压制的 impulse 不再参与 mindflow ranking.
+
+    复现场景:
+      1. signal 入队 → impulse 缓存 → mindflow peek 可见
+      2. challenge 失败, default 路径调 suppress() → 只设 _suppress_until
+      3. peek() 不检查 suppress 状态 → 返回同一 impulse
+      4. mindflow 每 0.5s timeout 重新 rank → peek → 同一 impulse → 反复 suppress → 重放
+
+    当前行为: suppress 后 peek 仍返回 impulse (BUG).
+    预期行为: suppress 后 peek 返回 None.
+    """
+    async with InputSignalNucleus(suppress_seconds=0.5) as nuc:
+        nuc.add_signal(Signal.new(
+            "input",
+            Message.new().with_content("hello"),
+            stale_timeout=0,  # 永不 stale, 模拟默认信号
+        ))
+        await asyncio.sleep(0.01)
+        imp_before = nuc.peek()
+        assert imp_before is not None, "信号入队后 peek 应该有 impulse"
+
+        # 模拟 mindflow challenge 失败 → suppress
+        nuc.suppress(Impulse(source="other_nucleus"))
+
+        # 关键断言: suppress 后 peek 不应再看到该 impulse
+        imp_after = nuc.peek()
+        assert imp_after is None, (
+            f"suppress 后 peek 应返回 None, 但实际返回了 {imp_after.id} "
+            f"(source={imp_after.source}). "
+            f"这会导致 mindflow 在 _on_impulse_consuming_loop 的 0.5s timeout 循环中 "
+            f"反复 rank 到同一 impulse, 造成消息重放."
+        )
+
+
+@pytest.mark.asyncio
+async def test_suppress_expired_then_new_signal_revives():
+    """suppress 期满后新信号到达才重新产出 impulse."""
+    async with InputSignalNucleus(suppress_seconds=0.1) as nuc:
+        nuc.add_signal(Signal.new("input", Message.new().with_content("first")))
+        await asyncio.sleep(0.01)
+        assert nuc.peek() is not None
+
+        nuc.suppress(Impulse(source="other"))
+        # 压制期内
+        assert nuc.peek() is None, "suppress 期内 peek 应返回 None"
+
+        await asyncio.sleep(0.15)
+        # 压制期满, 但没有新信号 → 缓存仍为空 (被 suppress 清理了)
+        assert nuc.peek() is None
+
+        # 新信号到达 → 重新构建
+        nuc.add_signal(Signal.new("input", Message.new().with_content("second")))
+        await asyncio.sleep(0.01)
+        imp = nuc.peek()
+        assert imp is not None
+        texts = [m.to_content_string() for m in imp.messages]
+        assert texts == ["second"]

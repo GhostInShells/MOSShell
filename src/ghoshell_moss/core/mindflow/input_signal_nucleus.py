@@ -105,6 +105,9 @@ class InputSignalNucleus(Nucleus):
 
     def suppress(self, suppress_by: Impulse) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
+        # default 路径 suppress = 信丢, 清空 buffer 防止 cooldown 后重放.
+        # _suppress_until 控制 notify 回调防抖, 不影响 buffer 清空.
+        self._atomic_clear_buffer()
 
     def pop_impulse(self, impulse: Impulse) -> None:
         if not self.is_running():
@@ -115,6 +118,8 @@ class InputSignalNucleus(Nucleus):
         if self._impulse_cache is None:
             return None
         if no_stale and self._impulse_cache.is_stale():
+            return None
+        if time.monotonic() < self._suppress_until:
             return None
         return self._impulse_cache
 
