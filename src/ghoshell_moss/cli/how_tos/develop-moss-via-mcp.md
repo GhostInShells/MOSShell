@@ -85,8 +85,8 @@ MCP (Model Context Protocol) 是开发 MOSS App 和 Channel 时的辅助调试�
 # 终端 1: MCP server
 .venv/bin/moss-as-mcp --mode default
 
-# 终端 2 (可选): 前台跑 app 看日志
-.venv/bin/moss apps test my-app
+# 终端 2 (可选): 前台跑 node 看日志
+.venv/bin/moss nodes run <path>
 ```
 
 ## 与 moss-run-ghost 的分工
@@ -105,5 +105,5 @@ Ghost 运行阶段
 ## 深入路径
 
 - MOSS tools 的实现细节：`moss codex get-source ghoshell_moss.cli.moss_as_mcp`
-- MCP Hub（将外部 MCP server 的工具接入 MOSS CTML 调度）：`moss howtos read channels/use-mcp-hub`
+- MCP Hub（将外部 MCP server 的工具接入 MOSS CTML 调度）：`moss codex list ghoshell_moss.channels.mcp_hub`
 - Ghost 运行时：`moss codex blueprint ghost`

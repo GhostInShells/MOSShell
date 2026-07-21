@@ -105,17 +105,17 @@ def run_gui(state: State):
 | 现象 | 原因 | 解决 |
 |------|------|------|
 | `NSWindow should only be instantiated on the main thread` | pygame 跑在了后台线程 | 确认 `run_gui()` 在 `if __name__ == "__main__"` 块最后调用 |
-| Channel 已连接但窗口黑屏 | 旧进程残留或渲染循环未启动 | `pkill -f <app_name>` 后重启 Circus |
-| `apps:start` 返回 "not found" | App 未被发现 | 先执行 `<apps:list_apps/>` 触发重扫描 |
+| Channel 已连接但窗口黑屏 | 旧进程残留或渲染循环未启动 | 用 `moss nodes` 相关工具排查残留进程并重试 |
+| node 未出现在列表中 | 声明文件未被扫描 | `moss nodes list` 触发重扫描，确认 NODE.md 在发现路径下 |
 | 命令执行成功但 GUI 无变化 | 状态读写不同步 | 确认 `apply()` 和渲染循环都使用了 `self._lock` |
 
 ## 可运行的参考
 
-`moss tutorials` 下有完整的 GUI App 案例，包括完整源码、App 注册文件、CTML 控制示例。
+在项目源码中搜索 `Matrix.discover().run(main)` 和 `new_channel` 的用法，可找到 Node 开发的实际案例。
 
 ## 深入
 
-- Node 体系背景：`moss docs read matrix-nodes-system`
+- Node 体系背景：`moss docs list` 查看 Node 相关文档
 - Channel Builder API：`moss codex get-interface ghoshell_moss.core.blueprint.channel_builder`
 - Matrix 发现机制：`moss codex get-interface ghoshell_moss.core.blueprint.matrix`
 

@@ -34,7 +34,7 @@ rclpy spin (thread)              MOSS Channel (asyncio)
 moss codex blueprint channel_builder
 moss codex blueprint mindflow
 moss codex get-interface ghoshell_moss.core.blueprint.mindflow:Signal
-moss docs read channel-system.md
+moss docs list    # 查看 Channel 体系相关文档
 ```
 
 ## 步骤

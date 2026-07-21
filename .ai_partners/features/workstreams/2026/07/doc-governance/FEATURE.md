@@ -320,3 +320,55 @@ git blame 全部 16 篇后发现的模式：
 - 长任务 + 精力有限的 review 场景下，FEATURE.md 作为 memento 替代
   的效果待下一轮 docs 治理时评估。memento-mori workstream 落地的
   必要性由此任务再次凸显
+
+## 2026-07-21 第二轮收尾 — docs 治理闭环 + howtos review
+
+> 记录：Claude Opus 4.7 & 人类工程师。上一轮 howtos 16→3 清理完成后，
+> 保留的 3 篇未按 KD-6 纪律 review。本轮重开，完成 howtos review +
+> 上一轮遗漏的 docs 残留问题。
+
+### 驱动事件
+
+人类工程师要求重开 doc-governance，原因是：
+
+1. howtos 治理没做完——保留的 3 篇内容未按新纪律审查
+2. 上一轮 docs 修复后仍有残留（dead refs、CLI 命令过期）
+
+### 本轮修改
+
+**Bug fix**:
+- `docs_cli.py`: `moss docs read` 缺少 `.md` 后缀自动补全（howto_cli.py 有此逻辑，docs_cli.py 遗漏）。已补。
+
+**删除**:
+- `development-workflow.md` — 全篇基于已删除的 apps 体系（`moss apps`、`apps:list_apps`、AppStoreChannel）。CLI 自解释体系已足够，不需要中间层路径指南。
+
+**重写**:
+- `matrix-nodes-system.md` — 从操作手册转向设计目标。核心改动：
+  - §1 新建 "为什么需要 Node"——对比 MCP/Skills 的缺口，澄清 Node 作为运行时自迭代单元的定位
+  - §2 核心设计决策：膜承诺、目录即声明、三面控制、进程隔离
+  - §3 跨机器组网——Plan 9 哲学、scope 机制、local/lan 配置
+  - §4 与相邻概念关系：Cell/Matrix/Channel/Ghost
+  - 操作细节退到后半部，指向 CLI 而非复制命令
+  - 文档间不强引用（`moss docs read xxx` → `moss docs list` 查看相关文档）
+
+**Howtos review（KD-6 三条通过，内容修复）**:
+
+| Howto | KD-6 判定 | 修复 |
+|---|---|---|
+| `build-a-gui-app.md` | 通过（跨 GUI+Matrix+threading 复合任务） | 故障排查表 2 行: Circus → moss nodes 工具, `apps:start/ list_apps` → nodes 等价; "可运行参考" 去掉不存在 tutorials 引用; "深入" 去掉文档强引用 |
+| `develop-moss-via-mcp.md` | 通过（跨 MCP+MossRuntime+agent 复合任务） | `moss apps test my-app` → `moss nodes run`; 删除不存在的 `channels/use-mcp-hub` howto 引用 |
+| `integrate-ros2.md` | 通过（跨 ROS2+Channel+Matrix 复合任务） | `moss docs read channel-system.md` → `moss docs list` 引导 |
+
+**未动**:
+- `glossary.md` — Cell/Node 条目缺，但本次不改。glossary 本身需要一次整体审视（哪些术语缺、哪些描述过时），不是一个条目的事。
+- `.moss_ws/apps/CLAUDE.md` — 旧体系将整体舍弃，不修。
+- Tutorials 目录 — 保持空，dogfooding 时由模型即写。
+
+### 新增 KD: 文档间不强引用
+
+本轮澄清的原则：文档不直接引用另一篇文档的路径（`moss docs read xxx.md` / `moss howtos read xxx`）。改为引导模型通过 CLI 发现：
+- `moss docs list` 查看相关文档
+- `moss --ai all-commands --group <name>` 查看相关命令
+- `moss codex get-interface <module>` 查看相关接口
+
+理由：文档文件名和 howto 路径是变更频繁的实现细节。CLI 的 list/discover 命令是稳定的自解释入口。
