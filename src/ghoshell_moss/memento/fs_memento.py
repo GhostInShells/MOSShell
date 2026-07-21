@@ -603,6 +603,8 @@ class FsMemento(MementoABC):
         branch_dir = self._branch_dir(name)
         if branch_dir.exists():
             raise MementoError(f"line {name!r} already exists for owner {self._owner!r}")
+        if from_ref is not None and not self._commit_dir(from_ref.commit_id).exists():
+            raise CommitNotFoundError(f"from_ref commit {from_ref.commit_id!r} not found")
         branch_dir.mkdir(parents=True)
         if from_ref is not None:
             self._write_ref(name, from_ref)
@@ -762,8 +764,10 @@ class FsMemento(MementoABC):
             self._truncate_commits_jsonl_tail()
             return
 
-        # 补完 ref
+        # 补完 ref — 只在缺失或指向不存在 commit 时修复
         cur = self._read_ref(name)
+        if cur is not None and self._commit_dir(cur.commit_id).exists():
+            return  # ref 有效, 不动 (可能是 reset 故意移走的)
         if cur is None or cur.commit_id != cid:
             self._write_ref(name, BranchRef(origin=self._owner, commit_id=cid))
 

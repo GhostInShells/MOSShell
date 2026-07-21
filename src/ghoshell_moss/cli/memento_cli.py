@@ -47,7 +47,7 @@ memento_app = typer.Typer(
     no_args_is_help=True,
 )
 
-_DEFAULT_ROOT = Path.cwd() / ".moss" / "memento"
+_DEFAULT_ROOT = Path.cwd() / ".memento"
 
 
 def _resolve_root(root: Optional[Path]) -> Path:

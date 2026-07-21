@@ -291,16 +291,73 @@ class TestDegenerate:
 
 
 class TestCrashRecovery:
-    def test_recover_truncates_stale_staging(self, tmp_root):
+    def test_recover_repairs_ref_and_truncates_staging(self, tmp_root):
+        """FORMAT v2 §11: commit dir exists + commits.jsonl appended, but ref
+        not updated and staging not truncated. Recovery should repair ref and
+        truncate staging."""
         m = new_filesystem_memento(tmp_root, "ghost.test")
         line = m.create_line("main")
         line.record(MomentRecord(id="m1", type="t", payload={}))
         view = line.commit(kind="semantic")
-        # simulate crash: stale staging with frozen id
+        cid = view.id
+
+        # simulate crash: write the staging content back (as if truncate didn't happen)
+        # and roll back the ref (as if ref rewrite didn't happen)
         sp = m._staging_path("main")
         sp.write_text(
             '{"t":"moment","id":"m1","created":"2026-07-21T00:00:00+00:00","type":"t","payload":{},"threads":[]}\n',
             encoding="utf-8",
         )
+        # roll back ref to before the commit (simulate crash before ref update)
+        import json as _json
+        ref_path = m._ref_path("main")
+        ref_path.write_text("{}", encoding="utf-8")
+
+        # re-open → recovery repairs ref and truncates staging
         line2 = m.get_line("main")
+        assert line2.ref is not None
+        assert line2.ref.commit_id == cid
         assert line2.staging() == []
+
+    def test_fork_lines_have_independent_refs(self, tmp_root):
+        """Bug: recovery was overwriting all line refs with the last commits.jsonl entry."""
+        m = new_filesystem_memento(tmp_root, "ghost.test")
+        main = m.create_line("main")
+        main.record(MomentRecord(id="m1", type="t", payload={}))
+        v1 = main.commit(kind="semantic")
+
+        # fork from main's commit
+        idea = m.create_line("idea-x", from_ref=BranchRef(origin="ghost.test", commit_id=v1.id))
+        idea.record(MomentRecord(id="i1", type="t", payload={}))
+        v2 = idea.commit(kind="semantic")
+
+        # re-open both lines — recovery should not overwrite refs
+        main2 = m.get_line("main")
+        idea2 = m.get_line("idea-x")
+        assert main2.ref.commit_id == v1.id, f"main ref should be {v1.id}, got {main2.ref.commit_id}"
+        assert idea2.ref.commit_id == v2.id, f"idea ref should be {v2.id}, got {idea2.ref.commit_id}"
+
+    def test_reset_survives_recovery(self, tmp_root):
+        """Bug: recovery was undoing reset by restoring ref to the mechanical commit."""
+        m = new_filesystem_memento(tmp_root, "ghost.test")
+        a = m.create_line("a")
+        a.record(MomentRecord(id="a1", type="t", payload={}))
+        va = a.commit(kind="semantic")
+        b = m.create_line("b")
+        b.record(MomentRecord(id="b1", type="t", payload={}))
+        vb = b.commit(kind="semantic")
+
+        # reset a to b's commit (with staging to trigger mechanical commit)
+        a.record(MomentRecord(id="a2", type="t", payload={}))
+        m.reset_line("a", BranchRef(origin="ghost.test", commit_id=vb.id))
+
+        # re-open — recovery should not undo the reset
+        a2 = m.get_line("a")
+        assert a2.ref.commit_id == vb.id, f"reset ref should be {vb.id}, got {a2.ref.commit_id}"
+        assert a2.staging() == []
+
+    def test_create_line_validates_from_ref(self, tmp_root):
+        """from_ref pointing to non-existent commit should raise."""
+        m = new_filesystem_memento(tmp_root, "ghost.test")
+        with pytest.raises(CommitNotFoundError):
+            m.create_line("idea-x", from_ref=BranchRef(origin="ghost.test", commit_id="cmt_nonexistent"))
