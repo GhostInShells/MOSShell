@@ -1,88 +1,122 @@
-"""Pin observation — mtime + hash 对账 (K17).
+"""Pin observation — per-class mtime + hash 对账.
 
-Pin.seen_mtime / seen_hash 存的是"上次承认时的观察". update() / pin() 时
-对目标做一次 observe(), 拿到 Observation 更新 Pin. 帧渲染时对每个 pin
-再 observe() 一次, 与 seen_* 对比: hash 相同 → 不打扰; hash 不同 →
-帧内标 changed-on-disk.
+每种子类自带观察逻辑:
+- FilePin: 读文件全文 (可选 range 切片) → sha256
+- GlobPin: 展开 + hash 命中路径列表 (不读内容)
+- FrontmatterPin: 读文件 frontmatter → sha256
+- LsPin: 展开目录树 + hash 条目列表 (不读内容)
 
-Impl 契约:
-
-- observe(parsed, root) 是 IO 密集 async, 内部对独立 stat/read 用
-  asyncio.to_thread 或 gather. 单调用只观察一个 addr, 帧渲染层需要并行
-  观察 N 个 pin 时在外面用 asyncio.gather(*[observe(...) for pin in pins]).
-- 不 raise 对账错误 (文件不存在等) — Observation.exists 表达状态, 帧
-  渲染判定. Raise 只在 addr 越界 (PathOutsideRootError, 来自 _addr).
+文件不存在 → Observation(exists=False).
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from ghoshell_moss.ground._addr import (
-    ParsedAddr,
-    resolve_file_addr,
-    resolve_glob_addr,
+from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
+from ghoshell_moss.ground.contract import (
+    FilePin,
+    FrontmatterPin,
+    GlobPin,
+    LsPin,
+    Pin,
+    PathOutsideRootError,
 )
 
-__all__ = ["Observation", "observe", "observe_sync"]
-
-
-@dataclass(frozen=True)
-class Observation:
-    """一次对 Pin addr 的观察.
-
-    进 Pin.seen_mtime / seen_hash 的对账三元:
-
-    - exists: 目标是否存在.
-      file/range: 文件存在 → True.
-      glob: 恒 True (空命中集也是合法状态, mtime 为 None, hash 为空集 hash).
-      exists=False 时 mtime 和 hash 都为 None.
-    - mtime: file/range: 文件 mtime. glob: 命中集里最大 mtime (None 若空集).
-    - hash: sha256 hex.
-      file: 内容全文 hash.
-      range: 该行区间内容 hash (行 splitkeepends 后切片).
-      glob: 命中路径列表 (相对 root 排序后) 拼接 hash — 不含内容, 只关注
-      命中集变化.
-    """
-
-    exists: bool
-    mtime: float | None
-    hash: str | None
-
+__all__ = ["Observation", "PinShadow", "observe", "observe_sync"]
 
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
 
-async def observe(parsed: ParsedAddr, root: Path) -> Observation:
-    """观察一次 addr 的当前状态. async wrapper — 内部 IO 卸载到线程池.
+@dataclass(frozen=True)
+class Observation:
+    """一次观察的结果."""
 
-    见 ``observe_sync`` 的语义说明. 帧渲染层批量调用时用
-    ``asyncio.gather(*(observe(p, root) for p in pins))`` 并发.
+    exists: bool
+    mtime: float | None = None
+    hash: str | None = None
+
+
+@dataclass
+class PinShadow:
+    """运行时观察影子 — 不进 GROUND.md.
+
+    每 pin 一个, 存上次承认时的观察状态. context() 时与当前 Observation
+    对比: hash 相同 → 不标; hash 不同 → [changed on disk].
     """
-    return await asyncio.to_thread(observe_sync, parsed, root)
+
+    mtime: float | None = None
+    hash: str | None = None
 
 
-def observe_sync(parsed: ParsedAddr, root: Path) -> Observation:
-    """sync 版本. Ground.pin() 沿用它做 "立即观察一次" 契约 —
-    pin 是模型的第一人称动作, 允许 blocking IO (K17 pin 时刻的 initial 承认).
-
-    实现分支按 kind:
-    - glob: expand + hash 命中路径列表 (不读文件内容)
-    - file: read + hash 全文
-    - range: read + slicelines + hash 行区间
-
-    地址越界 (PathOutsideRootError) 传播不吞.
-    """
-    if parsed.kind == "glob":
-        return _observe_glob_sync(parsed, root)
-    return _observe_path_sync(parsed, root)
+# -- async entry (context() 并发调用) ---------------------------------------
 
 
-def _observe_glob_sync(parsed: ParsedAddr, root: Path) -> Observation:
-    matches = resolve_glob_addr(parsed, root)
+async def observe(pin: Pin, anchor: Anchor) -> Observation:
+    """观察 pin 当前状态. async wrapper — IO 卸载到线程池."""
+    return await asyncio.to_thread(observe_sync, pin, anchor)
+
+
+# -- sync entry (pin() / update() 内置观察) ---------------------------------
+
+
+def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
+    """同步观察, 按 pin 子类分发."""
+    if isinstance(pin, FilePin):
+        return _observe_file(pin, anchor)
+    if isinstance(pin, GlobPin):
+        return _observe_glob(pin, anchor)
+    if isinstance(pin, FrontmatterPin):
+        return _observe_frontmatter(pin, anchor)
+    if isinstance(pin, LsPin):
+        return _observe_ls(pin, anchor)
+    raise TypeError(f"unknown pin type: {type(pin).__name__}")
+
+
+# -- per-class observers ----------------------------------------------------
+
+
+def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
+    target = resolve_path(pin.path, anchor)
+    try:
+        mtime = target.stat().st_mtime
+    except FileNotFoundError:
+        return Observation(exists=False)
+
+    if pin.range is not None:
+        text = target.read_text(encoding="utf-8", errors="replace")
+        start, end = _parse_range(pin.range, len(text.splitlines()))
+        sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
+        digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
+    else:
+        content = target.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+
+    return Observation(exists=True, mtime=mtime, hash=digest)
+
+
+def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
+    root = anchor.ground
+    pattern = pin.pattern
+
+    # 锚点语法解析后做 glob
+    if pattern.startswith("$"):
+        resolved = resolve_path(pattern, anchor)
+        pattern = str(resolved.relative_to(root)) if resolved.is_relative_to(root) else str(resolved)
+
+    matches: list[Path] = []
+    for hit in sorted(root.glob(pattern)):
+        if not hit.is_file():
+            continue
+        try:
+            hit.relative_to(root)
+        except ValueError:
+            continue
+        matches.append(hit)
+
     if not matches:
         return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
 
@@ -94,28 +128,71 @@ def _observe_glob_sync(parsed: ParsedAddr, root: Path) -> Observation:
             continue
     latest = max(mtimes) if mtimes else None
 
-    root_abs = root.resolve()
-    rels = sorted(str(m.relative_to(root_abs)) for m in matches)
+    rels = sorted(str(m.relative_to(root)) for m in matches)
     digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
     return Observation(exists=True, mtime=latest, hash=digest)
 
 
-def _observe_path_sync(parsed: ParsedAddr, root: Path) -> Observation:
-    target = resolve_file_addr(parsed, root)
+def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
+    target = resolve_path(pin.path, anchor)
     try:
         mtime = target.stat().st_mtime
+        text = target.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return Observation(exists=False, mtime=None, hash=None)
+        return Observation(exists=False)
 
-    if parsed.kind == "file":
-        content = target.read_bytes()
-        digest = hashlib.sha256(content).hexdigest()
-        return Observation(exists=True, mtime=mtime, hash=digest)
-
-    # range: parsed.start / end 均 1-based 含端点
-    text = target.read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines(keepends=True)
-    assert parsed.start is not None and parsed.end is not None
-    slice_text = "".join(lines[parsed.start - 1 : parsed.end])
-    digest = hashlib.sha256(slice_text.encode("utf-8")).hexdigest()
+    # 提取 frontmatter 块: ---\n...\n---
+    import re
+    fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+    payload = fm_match.group(1) if fm_match else text
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return Observation(exists=True, mtime=mtime, hash=digest)
+
+
+def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
+    root_dir = resolve_path(pin.path, anchor)
+    if not root_dir.is_dir():
+        return Observation(exists=False)
+
+    entries: list[str] = []
+    _walk_ls(root_dir, depth=pin.depth, prefix="", entries=entries)
+
+    if not entries:
+        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+
+    digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+    return Observation(exists=True, mtime=None, hash=digest)
+
+
+# -- helpers ----------------------------------------------------------------
+
+
+def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:
+    """'N' or 'N-M' → (start, end) 1-indexed inclusive, clamped to file."""
+    if "-" in raw:
+        a, b = raw.split("-", 1)
+        start, end = int(a), int(b)
+    else:
+        start = end = int(raw)
+    return (max(1, start), min(end, total_lines))
+
+
+def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
+    if depth <= 0:
+        return
+    try:
+        items = sorted(
+            dir_.iterdir(),
+            key=lambda p: (p.is_file(), p.name.lower()),
+        )
+    except OSError:
+        return
+
+    for i, entry in enumerate(items):
+        is_last = i == len(items) - 1
+        connector = "└── " if is_last else "├── "
+        marker = "/" if entry.is_dir() else ""
+        entries.append(f"{prefix}{connector}{entry.name}{marker}")
+        if entry.is_dir() and depth > 1:
+            sub_prefix = prefix + ("    " if is_last else "│   ")
+            _walk_ls(entry, depth - 1, sub_prefix, entries)

@@ -1,283 +1,368 @@
-"""Frame rendering for Ground.context().
+"""Frame rendering — SPEC §6 布局.
 
-一帧渲染的结构 (契合 K14 virtual channel 的 context_messages 消费):
+结构:
+    ground: <label> @ <path> [(doc: <doc>)]
+    [chain: <paths>]
+    [$id: <id>]
 
-    ground: <label> @ <root>   pins: <n>
+    <body verbatim>
 
-    tree(depth=<d>):
-      <tree>
+    ```@<ref>
+    <ref content>
+    ```
 
-    ⚖ <path> (instruction, unloaded)     # 若 hint_children
+    <label>:<kind>(key="val") # <description>
 
-    ⚠ context over budget: ...            # 若超预算 (K20 报账)
-
-    ── pin: <addr>   [changed on disk]?   [missing]?
-       note: <note>
-       <内容渲染: 全文 / 行区间 / glob 命中清单>
-
-async: 顶层 render_context 是 async, 内部 tree/hints/read 用 asyncio.gather
-或 to_thread 并行, 符合 ABC 的 async 契约声明.
-
-内容截断: **不做**. K20 明说超预算只报账不动手, 由模型自主 unpin. 全文/
-行区间照实渲染. 有意的形状 — 别加自动截断.
+    ```<label>
+    <pin expansion>
+    ```
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
-from ghoshell_moss.ground.contract import GroundConvention, Pin
-from ghoshell_moss.ground._addr import (
-    ParsedAddr,
-    parse_addr,
-    resolve_file_addr,
-    resolve_glob_addr,
+from ghoshell_moss.ground._addr import Anchor, resolve_path
+from ghoshell_moss.ground._hash import Observation, PinShadow, observe
+from ghoshell_moss.ground.contract import (
+    AT_BUDGET,
+    AT_MAX_DEPTH,
+    FilePin,
+    FrontmatterPin,
+    GlobPin,
+    LsPin,
+    Pin,
 )
-from ghoshell_moss.ground._hash import Observation, observe
 
-__all__ = ["render_context", "BUILTIN_TREE_IGNORE"]
+__all__ = ["render_context"]
 
-
-# tree 段的 built-in 过滤集. K16 判据: 完整 gitignore 语义 (`**/`, `!`) 对 tree
-# 呈现毫无价值, 且引 pathspec 依赖不值当. 这一层只做 basename 精确匹配 +
-# GroundConvention.tree_ignore_extra 提供加法口. K9 未来 pin bash 承接更精细
-# 过滤 (`find | grep -v ...`) 后, 这里不需要升级.
-BUILTIN_TREE_IGNORE: frozenset[str] = frozenset({
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "node_modules",
-    ".DS_Store",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "dist",
-    "build",
-    ".idea",
-    ".vscode",
-})
+# @path recognition (SPEC §6.1): @ at line-start or after whitespace,
+# followed by path-start char, not in fenced block.
+_AT_REF_RE = re.compile(
+    r"(?:^|(?<=\s))@([a-zA-Z0-9_./$-][a-zA-Z0-9_./$-]*)",
+    re.MULTILINE,
+)
 
 
 async def render_context(
-    root: Path,
     label: str,
-    convention: GroundConvention,
-    pins: list[Pin],
-    *,
-    workspace_root: Path | None = None,
-    l0_file_exists: bool = False,
-    l0_filename: str = "GROUND.md",
-) -> str:
-    """渲染桌面当前帧."""
-    root_abs = root.resolve()
-
-    # 观察全部 pin (并行)
-    parsed_pins: list[tuple[Pin, ParsedAddr]] = [(p, parse_addr(p.addr)) for p in pins]
-    observations: list[Observation] = list(
-        await asyncio.gather(
-            *(observe(parsed, root_abs) for _, parsed in parsed_pins)
-        )
-    ) if parsed_pins else []
-
-    # 三个静态段并行 (通过 to_thread)
-    ignore_names = BUILTIN_TREE_IGNORE | set(convention.tree_ignore_extra)
-    tree_task = asyncio.create_task(
-        asyncio.to_thread(
-            _render_tree, root_abs, convention.tree_depth, ignore_names
-        )
-    ) if convention.tree_depth > 0 else None
-    hints_task = asyncio.create_task(
-        asyncio.to_thread(_find_child_hints, root_abs, convention)
-    ) if convention.hint_children else None
-
-    tree_str = await tree_task if tree_task else ""
-    hints = await hints_task if hints_task else []
-
-    # 渲染 pin blocks (同步, 观察已完成)
-    pin_blocks: list[str] = []
-    for (pin, parsed), obs in zip(parsed_pins, observations):
-        pin_blocks.append(_render_pin(pin, parsed, obs, root_abs))
-
-    # 报账 (K20): 只在超预算时插入警告行
-    total_body = sum(len(b) for b in pin_blocks)
-    budget = convention.context_budget
-    over_budget = total_body > budget
-
-    # 组装. K16 head 承担元信息: root / workspace / L0 status / pins / budget
-    l0_status = "exists" if l0_file_exists else "defaults (no file)"
-    pct = int(round(total_body / budget * 100)) if budget > 0 else 0
-    lines: list[str] = [
-        f"ground: {label} @ {root_abs}",
-    ]
-    if workspace_root is not None:
-        lines.append(f"workspace: {workspace_root}")
-    lines.append(
-        f"{l0_filename}: {l0_status}   pins: {len(pins)}   budget: {pct}% "
-        f"({total_body}/{budget})"
-    )
-
-    # 报账警告紧贴 head, 不埋在 tree 之后
-    if over_budget:
-        lines.append("")
-        lines.append(_render_budget_warning(pins, pin_blocks, budget))
-
-    if tree_str:
-        lines.append("")
-        lines.append(f"tree(depth={convention.tree_depth}):")
-        lines.append(tree_str)
-
-    if hints:
-        lines.append("")
-        for h in hints:
-            lines.append(f"⚖ {h} (instruction, unloaded)")
-
-    for block in pin_blocks:
-        lines.append("")
-        lines.append(block)
-
-    return "\n".join(lines)
-
-
-# ---- tree --------------------------------------------------------------
-
-
-def _render_tree(
     root: Path,
-    depth: int,
-    ignore_names: set[str],
-    prefix: str = "",
+    doc_path: Path,
+    body: str,
+    pins: list[Pin],
+    shadows: dict[str, PinShadow],
+    anchor: Anchor,
+    *,
+    id_: str | None = None,
+    chain_summary: str = "",
 ) -> str:
-    if depth <= 0:
-        return ""
-    try:
-        entries = sorted(
-            (e for e in root.iterdir() if e.name not in ignore_names),
-            key=lambda p: (p.is_file(), p.name.lower()),
+    """渲染一帧 — Ground.context() 的后端.
+
+    所有 IO 密集段 (pin 观察 + 内容读取) 在此并行处理.
+    """
+    lines: list[str] = []
+
+    # ---- head ----------------------------------------------------------
+    doc_annotation = ""
+    if doc_path != root / "GROUND.md":
+        doc_annotation = f" (doc: {doc_path})"
+    lines.append(f"ground: {label} @ {root}{doc_annotation}")
+
+    if chain_summary:
+        lines.append(f"chain: {chain_summary}")
+
+    if id_:
+        lines.append(f"$id: {id_}")
+
+    lines.append("")
+
+    # ---- body (verbatim) -----------------------------------------------
+    if body.strip():
+        lines.append(body.rstrip())
+        lines.append("")
+
+    # ---- @-expansion ---------------------------------------------------
+    at_blocks = _expand_at_refs(body, anchor, budget=AT_BUDGET)
+    for block in at_blocks:
+        lines.append(block)
+        lines.append("")
+
+    # ---- observe all pins (parallel) -----------------------------------
+    observations: dict[str, Observation] = {}
+    if pins:
+        tasks = {p.label: observe(p, anchor) for p in pins}
+        results = await asyncio.gather(*tasks.values())
+        observations = dict(zip(tasks.keys(), results))
+
+    # ---- declaration block ----------------------------------------------
+    decl_lines = [_render_declaration(p) for p in pins]
+    if decl_lines:
+        lines.extend(decl_lines)
+        lines.append("")
+
+    # ---- result blocks --------------------------------------------------
+    for p in pins:
+        obs = observations.get(p.label)
+        shadow = shadows.get(p.label, PinShadow())
+
+        # stale 判定
+        stale = (
+            shadow.hash is not None
+            and obs is not None
+            and obs.exists
+            and obs.hash != shadow.hash
         )
-    except OSError:
-        return ""
+        missing = obs is not None and not obs.exists
 
-    lines: list[str] = []
-    for i, entry in enumerate(entries):
-        is_last = i == len(entries) - 1
-        connector = "└── " if is_last else "├── "
-        marker = "/" if entry.is_dir() else ""
-        lines.append(f"{prefix}{connector}{entry.name}{marker}")
-        if entry.is_dir() and depth > 1:
-            sub_prefix = prefix + ("    " if is_last else "│   ")
-            sub = _render_tree(entry, depth - 1, ignore_names, sub_prefix)
-            if sub:
-                lines.append(sub)
-    return "\n".join(lines)
+        lines.append(_render_result_block(p, obs, stale, missing, anchor))
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
-# ---- child hints -------------------------------------------------------
+# -- declaration block ----------------------------------------------------
 
 
-def _find_child_hints(root: Path, convention: GroundConvention) -> list[str]:
-    """一层深度扫子目录里的 instruction 文件, 返回相对路径列表."""
-    hints: list[str] = []
-    try:
-        for sub in sorted(root.iterdir()):
-            if not sub.is_dir():
-                continue
-            for name in convention.instruction_files:
-                target = sub / name
-                if target.is_file():
-                    hints.append(str(target.relative_to(root)))
-                    break  # 每子目录最多一个 hint
-    except OSError:
-        pass
-    return hints
+def _render_declaration(pin: Pin) -> str:
+    """一行: label:kind(key="val") # description."""
+    kwargs = _pin_kwargs(pin)
+    desc = f" # {pin.description}" if pin.description else ""
+    return f"{pin.label}:{pin.kind}({kwargs}){desc}"
 
 
-# ---- pin block ---------------------------------------------------------
+def _pin_kwargs(pin: Pin) -> str:
+    """Pin 子类 → kwargs 展示字符串."""
+    parts: list[str] = []
+    if isinstance(pin, FilePin):
+        parts.append(f'path="{pin.path}"')
+        if pin.range is not None:
+            parts.append(f'range="{pin.range}"')
+    elif isinstance(pin, GlobPin):
+        parts.append(f'pattern="{pin.pattern}"')
+    elif isinstance(pin, FrontmatterPin):
+        parts.append(f'path="{pin.path}"')
+    elif isinstance(pin, LsPin):
+        parts.append(f'path="{pin.path}"')
+        if pin.depth != 2:
+            parts.append(f"depth={pin.depth}")
+    return ", ".join(parts)
 
 
-def _render_pin(
-    pin: Pin, parsed: ParsedAddr, obs: Observation, root: Path
+# -- result block ---------------------------------------------------------
+
+
+def _render_result_block(
+    pin: Pin,
+    obs: Observation | None,
+    stale: bool,
+    missing: bool,
+    anchor: Anchor,
 ) -> str:
-    """一枚 pin 的渲染块 — header + optional note + content."""
-    lines: list[str] = []
-
-    header = f"── pin: {pin.addr}"
-    if not obs.exists:
-        header += "   [missing]"
-    elif pin.seen_hash is not None and obs.hash != pin.seen_hash:
-        header += "   [changed on disk]"
-    lines.append(header)
-
-    if pin.note:
-        lines.append(f"   note: {pin.note}")
-
-    if not obs.exists:
-        lines.append("   (target does not exist)")
-    elif parsed.kind == "glob":
-        lines.append(_render_glob_hits(parsed, root))
-    elif parsed.kind == "file":
-        lines.append(_render_file_content(parsed, root))
+    """Fenced code block with label as lang tag."""
+    if missing:
+        content = "[missing]"
+    elif stale:
+        content = _render_pin_content(pin, anchor) + "\n[changed on disk]"
+    elif obs is not None and obs.exists:
+        content = _render_pin_content(pin, anchor)
+    elif obs is not None and not obs.exists:
+        content = "[missing]"
     else:
-        lines.append(_render_range_content(parsed, root))
+        content = "[not yet observed]"
 
-    return "\n".join(lines)
+    return f"```{pin.label}\n{content}\n```"
 
 
-def _render_glob_hits(parsed: ParsedAddr, root: Path) -> str:
-    matches = resolve_glob_addr(parsed, root)
-    if not matches:
-        return "   (no matches)"
-    lines: list[str] = []
-    for m in matches:
+def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
+    """按 pin 子类渲染内容."""
+    if isinstance(pin, FilePin):
+        return _content_file(pin, anchor)
+    if isinstance(pin, GlobPin):
+        return _content_glob(pin, anchor)
+    if isinstance(pin, FrontmatterPin):
+        return _content_frontmatter(pin, anchor)
+    if isinstance(pin, LsPin):
+        return _content_ls(pin, anchor)
+    return f"error: unknown pin type: {type(pin).__name__}"
+
+
+def _content_file(pin: FilePin, anchor: Anchor) -> str:
+    try:
+        target = resolve_path(pin.path, anchor)
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return "error: cannot read file"
+
+    lines = text.splitlines()
+    if pin.range is not None:
+        start, end = _parse_range(pin.range, len(lines))
+        if start > len(lines):
+            return "error: range beyond file end"
+        return "\n".join(
+            f"{i}: {lines[i - 1]}" for i in range(start, min(end, len(lines)) + 1)
+        )
+    return "\n".join(f"{i+1}: {ln}" for i, ln in enumerate(lines))
+
+
+def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
+    import glob as glob_mod
+
+    root = anchor.ground
+    pattern = pin.pattern
+    if pattern.startswith("$"):
         try:
-            stat = m.stat()
-            rel = m.relative_to(root)
-            lines.append(
-                f"   {rel}  ({stat.st_size}B, mtime={stat.st_mtime:.0f})"
-            )
+            resolved = resolve_path(pattern, anchor)
+            pattern = str(resolved.relative_to(root))
+        except (ValueError, OSError):
+            return "error: invalid glob path"
+
+    hits = sorted(root.glob(pattern))
+    files = [h for h in hits if h.is_file()]
+    if not files:
+        return "(no matches)"
+
+    lines: list[str] = []
+    for f in files:
+        try:
+            st = f.stat()
+            rel = f.relative_to(root)
+            lines.append(f"{rel}  ({st.st_size}B, mtime={st.st_mtime:.0f})")
         except OSError:
             continue
-    return "\n".join(lines) if lines else "   (all matches vanished)"
+    return "\n".join(lines) if lines else "(all matches vanished)"
 
 
-def _render_file_content(parsed: ParsedAddr, root: Path) -> str:
+def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
     try:
-        target = resolve_file_addr(parsed, root)
-        content = target.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return "   (read failed)"
-    file_lines = content.splitlines()
-    return "\n".join(f"   {i+1}: {ln}" for i, ln in enumerate(file_lines))
-
-
-def _render_range_content(parsed: ParsedAddr, root: Path) -> str:
-    assert parsed.start is not None and parsed.end is not None
-    try:
-        target = resolve_file_addr(parsed, root)
+        target = resolve_path(pin.path, anchor)
         text = target.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return "error: cannot read file"
+
+    fm = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+    if fm is None:
+        return "error: no frontmatter found"
+    return fm.group(1)
+
+
+def _content_ls(pin: LsPin, anchor: Anchor) -> str:
+    try:
+        root_dir = resolve_path(pin.path, anchor)
+    except (OSError, ValueError):
+        return "error: invalid path"
+
+    if not root_dir.is_dir():
+        return "error: not a directory"
+
+    entries: list[str] = []
+    _walk_ls_entries(root_dir, pin.depth, "", entries)
+    return "\n".join(entries) if entries else "(empty)"
+
+
+# -- @-expansion ----------------------------------------------------------
+
+
+def _expand_at_refs(
+    body: str,
+    anchor: Anchor,
+    *,
+    budget: int = AT_BUDGET,
+) -> list[str]:
+    """扫描 body 中 @path 引用, 返回 fenced expansion blocks.
+
+    SPEC §6.1 约束: cycle 检测, depth cap, budget cap.
+    """
+    refs = _find_at_refs(body)
+    if not refs:
+        return []
+
+    visited: set[str] = set()
+    blocks: list[str] = []
+    spent = 0
+
+    for ref_path in refs:
+        if ref_path in visited:
+            blocks.append(f"```@{ref_path}\n(@{ref_path} already expanded above)\n```")
+            continue
+
+        visited.add(ref_path)
+        content, ok = _load_at_ref(ref_path, anchor, depth=0)
+        if not ok:
+            blocks.append(f"```@{ref_path}\nerror: cannot load\n```")
+            continue
+
+        spent += len(content)
+        if spent > budget:
+            blocks.append(f"```@{ref_path}\n(@{ref_path} skipped: budget exceeded)\n```")
+            continue
+
+        blocks.append(f"```@{ref_path}\n{content}\n```")
+
+    if spent > budget:
+        blocks.insert(0, f"⚠ @-expansion over budget: {spent} > {budget}")
+
+    return blocks
+
+
+def _find_at_refs(body: str) -> list[str]:
+    """从 body 中提取 @path 引用, 去重保持首次出现顺序."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in _AT_REF_RE.finditer(body):
+        ref = m.group(1).rstrip(".-")
+        if ref not in seen:
+            seen.add(ref)
+            result.append(ref)
+    return result
+
+
+def _load_at_ref(
+    ref: str,
+    anchor: Anchor,
+    depth: int,
+) -> tuple[str, bool]:
+    """加载一个 @path 引用. 返回 (content, ok)."""
+    if depth >= AT_MAX_DEPTH:
+        return f"(@{ref} exceeds depth cap)", False
+
+    try:
+        target = resolve_path(ref, anchor)
+        content = target.read_text(encoding="utf-8", errors="replace")
+        return content, True
+    except (OSError, ValueError):
+        return f"(@{ref} not found or inaccessible)", False
+
+
+# -- helpers --------------------------------------------------------------
+
+
+def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:
+    if "-" in raw:
+        a, b = raw.split("-", 1)
+        return int(a), int(b)
+    return int(raw), int(raw)
+
+
+def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
+    if depth <= 0:
+        return
+    try:
+        items = sorted(dir_.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
     except OSError:
-        return "   (read failed)"
-    file_lines = text.splitlines()
-    if parsed.start > len(file_lines):
-        return "   (range beyond file end)"
-    end = min(parsed.end, len(file_lines))
-    return "\n".join(
-        f"   {i+1}: {file_lines[i]}" for i in range(parsed.start - 1, end)
-    )
+        return
 
-
-# ---- budget report ------------------------------------------------------
-
-
-def _render_budget_warning(
-    pins: list[Pin], blocks: list[str], budget: int
-) -> str:
-    """报账行. 点名最大 3 张 pin, 让模型决定撤谁."""
-    total = sum(len(b) for b in blocks)
-    sized = sorted(zip(pins, blocks), key=lambda pb: -len(pb[1]))[:3]
-    biggest = ", ".join(f"{p.addr} ({len(b)}B)" for p, b in sized)
-    return (
-        f"⚠ context over budget: {total} > {budget}  "
-        f"top pins: {biggest}"
-    )
+    for i, entry in enumerate(items):
+        is_last = i == len(items) - 1
+        connector = "└── " if is_last else "├── "
+        marker = "/" if entry.is_dir() else ""
+        try:
+            st = entry.stat()
+            size_info = f"  ({st.st_size}B)" if entry.is_file() else ""
+        except OSError:
+            size_info = ""
+        entries.append(f"{prefix}{connector}{entry.name}{marker}{size_info}")
+        if entry.is_dir() and depth > 1:
+            sub_prefix = prefix + ("    " if is_last else "│   ")
+            _walk_ls_entries(entry, depth - 1, sub_prefix, entries)

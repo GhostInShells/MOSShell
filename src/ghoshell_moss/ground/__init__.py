@@ -1,49 +1,60 @@
-"""Ground — Ghost 的文件系统认知场 (concrete 层).
+"""Ground — Ghost 的文件系统认知场.
 
 公开契约: ``ghoshell_moss.ground.contract``.
-进程内默认实现: ``DefaultGrounds`` (owner-scoped) + ``DefaultGround``.
+进程内默认实现: ``DefaultGroundSet`` + ``DefaultGround``.
 
-内部模块 (下划线前缀, 不承诺稳定):
-- _addr.py         地址解析 (path / range / glob)
-- _hash.py         对账观察 (mtime + hash)
-- _l0.py           L0 (GROUND.md) frontmatter + pin 段 IO
-- _instruction.py  法链向上收集 (CLAUDE.md 等)
-- _render.py       context 帧渲染
+内部模块:
+- contract.py      契约 (ABC + 数据模型)
+- _addr.py         路径锚点解析 ($GROUND / $CWD / $HOME)
+- _hash.py         pin 观察 (per-class 多态)
+- _l0.py           GROU.md 读写
+- _chain.py        法链 (祖先 GROU.md body 收集)
+- _render.py       frame 渲染 (SPEC §6 布局)
 - _ground.py       DefaultGround
-- _grounds.py      DefaultGrounds
+- _grounds.py      DefaultGroundSet
 """
 
 from ghoshell_moss.ground.contract import (
-    ContextBudgetExceeded,
-    GroundBaseError,
+    AT_BUDGET,
+    AT_MAX_DEPTH,
+    PIN_LABEL_MAX_LEN,
+    FilePin,
+    FrontmatterPin,
+    GlobPin,
     Ground,
     GroundConvention,
-    Grounds,
+    GroundError,
+    GroundSet,
+    LsPin,
     PathOutsideRootError,
     Pin,
     UpdateResult,
 )
-from ghoshell_moss.ground._grounds import DefaultGrounds
+from ghoshell_moss.ground._grounds import DefaultGroundSet
 from ghoshell_moss.ground._ground import DefaultGround
-from ghoshell_moss.ground._l0 import (
-    DEFAULT_L0_FILENAME,
-    PIN_SECTION_HEADING,
-)
+from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, PIN_SECTION_HEADING
 
 __all__ = [
-    # 契约 re-export (便利导入)
+    # contract
+    "GroundSet",
     "Ground",
-    "Grounds",
     "Pin",
+    "FilePin",
+    "GlobPin",
+    "FrontmatterPin",
+    "LsPin",
     "GroundConvention",
     "UpdateResult",
-    "GroundBaseError",
+    "GroundError",
     "PathOutsideRootError",
-    "ContextBudgetExceeded",
-    # 实现
-    "DefaultGrounds",
+    # constants
+    "AT_BUDGET",
+    "AT_MAX_DEPTH",
+    "PIN_LABEL_MAX_LEN",
+    # concrete
+    "DefaultGroundSet",
     "DefaultGround",
-    # L0 常量
+    # L0
     "DEFAULT_L0_FILENAME",
     "PIN_SECTION_HEADING",
 ]

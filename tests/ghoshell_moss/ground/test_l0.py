@@ -1,12 +1,17 @@
-"""Tests for _l0.py — L0 file parsing 与 sediment 半程."""
-from __future__ import annotations
+"""Tests for _l0.py — GROUND.md serialization with discriminated union pins."""
 
 from pathlib import Path
 
 import pytest
 import yaml
 
-from ghoshell_moss.ground.contract import GroundConvention, Pin
+from ghoshell_moss.ground.contract import (
+    FilePin,
+    FrontmatterPin,
+    GlobPin,
+    LsPin,
+    Pin,
+)
 from ghoshell_moss.ground._l0 import (
     DEFAULT_L0_FILENAME,
     L0Contents,
@@ -15,221 +20,194 @@ from ghoshell_moss.ground._l0 import (
 )
 
 
-# ---- load_l0 (缺文件, 空文件, 只有 frontmatter, 全套) --------------------
+# -- load ------------------------------------------------------------------
 
 
-def test_load_l0_no_file(tmp_path: Path) -> None:
-    c = load_l0(tmp_path)
-    assert c.convention == GroundConvention()
-    assert c.body == ""
-    assert c.pins == []
+class TestLoadL0:
+    def test_no_file_returns_empty(self, tmp_path):
+        c = load_l0(tmp_path)
+        assert c.pins == []
+        assert c.body == ""
+
+    def test_file_with_pins(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "---\n"
+            '$id: "moss:test"\n'
+            "---\n"
+            "\n"
+            "# My Ground\n\n"
+            "some body text\n\n"
+            "## ground:pins\n\n"
+            "```yaml\n"
+            "- kind: file\n"
+            "  label: main\n"
+            "  path: src/main.py\n"
+            "  description: entry point\n"
+            "- kind: glob\n"
+            "  label: py\n"
+            "  pattern: '**/*.py'\n"
+            "- kind: ls\n"
+            "  label: root\n"
+            "  path: .\n"
+            "  depth: 1\n"
+            "- kind: frontmatter\n"
+            "  label: status\n"
+            "  path: FEATURE.md\n"
+            "```\n"
+        )
+        c = load_l0(tmp_path)
+        assert len(c.pins) == 4
+
+        file_pin = c.pins[0]
+        assert isinstance(file_pin, FilePin)
+        assert file_pin.label == "main"
+        assert file_pin.path == "src/main.py"
+        assert file_pin.description == "entry point"
+
+        glob_pin = c.pins[1]
+        assert isinstance(glob_pin, GlobPin)
+        assert glob_pin.pattern == "**/*.py"
+
+        ls_pin = c.pins[2]
+        assert isinstance(ls_pin, LsPin)
+        assert ls_pin.depth == 1
+
+        fm_pin = c.pins[3]
+        assert isinstance(fm_pin, FrontmatterPin)
+
+        assert "some body text" in c.body
+        assert "ground:pins" not in c.body
+
+    def test_pin_section_terminated_by_next_heading(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "## ground:pins\n\n"
+            "```yaml\n"
+            "- kind: file\n"
+            "  label: a\n"
+            "  path: a.md\n"
+            "```\n\n"
+            "## Other\n\n"
+            "unrelated\n"
+        )
+        c = load_l0(tmp_path)
+        assert len(c.pins) == 1
+        assert "unrelated" in c.body
+
+    def test_empty_pin_list(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "## ground:pins\n\n```yaml\n[]\n```\n"
+        )
+        c = load_l0(tmp_path)
+        assert c.pins == []
+
+    def test_unknown_kind_skipped(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "## ground:pins\n\n"
+            "```yaml\n"
+            "- kind: file\n"
+            "  label: good\n"
+            "  path: a.py\n"
+            "- kind: unknown_type\n"
+            "  label: bad\n"
+            "  path: b.py\n"
+            "```\n"
+        )
+        c = load_l0(tmp_path)
+        assert len(c.pins) == 1
+        assert c.pins[0].label == "good"
+
+    def test_frontmatter_id_loaded(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "---\n"
+            '$id: "moss:ghost"\n'
+            "label: myground\n"
+            "---\n"
+            "\nbody\n"
+        )
+        c = load_l0(tmp_path)
+        assert c.convention.id == "moss:ghost"
+        assert c.convention.label == "myground"
 
 
-def test_load_l0_frontmatter_only(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "---\ntree_depth: 3\ncontext_budget: 8000\n---\n"
-    )
-    c = load_l0(tmp_path)
-    assert c.convention.tree_depth == 3
-    assert c.convention.context_budget == 8000
-    # frontmatter 之外没有正文
-    assert c.body.strip() == ""
-    assert c.pins == []
+# -- dump ------------------------------------------------------------------
 
 
-def test_load_l0_body_no_frontmatter(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text("# hello\n\nsome prose\n")
-    c = load_l0(tmp_path)
-    assert c.convention == GroundConvention()
-    assert "some prose" in c.body
-    assert c.pins == []
+class TestDumpL0:
+    def test_creates_file_when_missing(self, tmp_path):
+        dump_l0_pins(tmp_path, [FilePin(label="main", path="FEATURE.md")])
+        path = tmp_path / DEFAULT_L0_FILENAME
+        assert path.is_file()
+        assert "## ground:pins" in path.read_text()
+
+    def test_roundtrip(self, tmp_path):
+        original = [
+            FilePin(label="main", path="FEATURE.md", description="entry"),
+            GlobPin(label="py", pattern="**/*.py"),
+            LsPin(label="root", path=".", depth=2),
+        ]
+        dump_l0_pins(tmp_path, original)
+        loaded = load_l0(tmp_path).pins
+        assert len(loaded) == 3
+        for a, b in zip(original, loaded):
+            assert a.label == b.label
+            assert a.kind == b.kind
+
+    def test_preserves_frontmatter_and_body(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "---\n"
+            '$id: "moss:test"\n'
+            "---\n"
+            "\n# Body\n\nlaw text\n"
+        )
+        dump_l0_pins(tmp_path, [FilePin(label="x", path="x.py")])
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert '$id: "moss:test"' in text
+        assert "law text" in text
+        assert "x.py" in text
+
+    def test_replaces_existing_pin_section(self, tmp_path):
+        (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "# body\n\ntext\n\n"
+            "## ground:pins\n\n"
+            "```yaml\n- kind: file\n  label: old\n  path: old.md\n```\n\n"
+            "## after\n\nafter\n"
+        )
+        dump_l0_pins(tmp_path, [FilePin(label="new", path="new.md")])
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "new.md" in text
+        assert "old.md" not in text
+        assert "after" in text
+
+    def test_idempotent(self, tmp_path):
+        pins = [FilePin(label="a", path="a.py"), GlobPin(label="b", pattern="*.py")]
+        dump_l0_pins(tmp_path, pins)
+        first = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        dump_l0_pins(tmp_path, pins)
+        second = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert first == second
+
+    def test_creates_parent_dirs(self, tmp_path):
+        nested = tmp_path / "sub" / "deep"
+        dump_l0_pins(nested, [FilePin(label="x", path="x.md")])
+        assert (nested / DEFAULT_L0_FILENAME).is_file()
+
+    def test_empty_pins_writes_empty_list(self, tmp_path):
+        dump_l0_pins(tmp_path, [])
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        section = text.split("## ground:pins", 1)[1]
+        yaml_body = section.split("```yaml", 1)[1].split("```", 1)[0]
+        assert yaml.safe_load(yaml_body) in (None, [])
+
+    def test_pin_serialized_with_kind_field(self, tmp_path):
+        dump_l0_pins(tmp_path, [FilePin(label="f", path="a.py", range="1-5")])
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "kind: file" in text
+        assert "path: a.py" in text
+        assert "range: 1-5" in text
 
 
-def test_load_l0_pin_section(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "---\ntree_depth: 1\n---\n"
-        "\n"
-        "# governance\n\n"
-        "law law law\n\n"
-        "## ground:pins\n\n"
-        "```yaml\n"
-        "- addr: FEATURE.md\n"
-        "  note: main\n"
-        "  pinned_at: 100.0\n"
-        "  seen_mtime: 90.0\n"
-        "  seen_hash: abc\n"
-        "```\n"
-    )
-    c = load_l0(tmp_path)
-    assert c.convention.tree_depth == 1
-    assert "law law law" in c.body
-    assert "ground:pins" not in c.body  # pin 段被剥离
-    assert len(c.pins) == 1
-    p = c.pins[0]
-    assert p.addr == "FEATURE.md"
-    assert p.note == "main"
-    assert p.pinned_at == 100.0
-    assert p.seen_mtime == 90.0
-    assert p.seen_hash == "abc"
-
-
-def test_load_l0_pin_section_terminated_by_next_heading(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "## ground:pins\n\n"
-        "```yaml\n"
-        "- addr: a.md\n"
-        "  note: ''\n"
-        "  pinned_at: 1.0\n"
-        "```\n\n"
-        "## Other\n\n"
-        "unrelated body\n"
-    )
-    c = load_l0(tmp_path)
-    assert len(c.pins) == 1
-    assert c.pins[0].addr == "a.md"
-    assert "unrelated body" in c.body
-    assert "## Other" in c.body
-
-
-def test_load_l0_pin_section_empty_yaml_list(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "## ground:pins\n\n"
-        "```yaml\n"
-        "[]\n"
-        "```\n"
-    )
-    c = load_l0(tmp_path)
-    assert c.pins == []
-
-
-def test_load_l0_body_preserved_before_pin_section(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "# body\n\nprose\n\n## ground:pins\n\n```yaml\n[]\n```\n"
-    )
-    c = load_l0(tmp_path)
-    assert "prose" in c.body
-    assert "## ground:pins" not in c.body
-
-
-# ---- dump_l0_pins ------------------------------------------------------
-
-
-def _pin(addr: str, **kw) -> Pin:
-    kw.setdefault("note", "")
-    kw.setdefault("pinned_at", 0.0)
-    return Pin(addr=addr, **kw)
-
-
-def test_dump_creates_file_when_missing(tmp_path: Path) -> None:
-    pins = [_pin("FEATURE.md", note="main")]
-    dump_l0_pins(tmp_path, pins)
-    path = tmp_path / DEFAULT_L0_FILENAME
-    assert path.is_file()
-    text = path.read_text()
-    assert "## ground:pins" in text
-    assert "FEATURE.md" in text
-
-
-def test_dump_then_load_roundtrip(tmp_path: Path) -> None:
-    original = [
-        _pin("FEATURE.md", note="main", pinned_at=100.0),
-        _pin("**/*.py", note="glob", pinned_at=200.0, seen_hash="xxx"),
-        _pin("a.py:1-10", note="range", pinned_at=300.0, seen_mtime=99.0),
-    ]
-    dump_l0_pins(tmp_path, original)
-    loaded = load_l0(tmp_path).pins
-    assert len(loaded) == 3
-    for a, b in zip(original, loaded):
-        assert a.addr == b.addr
-        assert a.note == b.note
-        assert a.pinned_at == b.pinned_at
-        assert a.seen_mtime == b.seen_mtime
-        assert a.seen_hash == b.seen_hash
-
-
-def test_dump_appends_pin_section_to_body_only_file(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text("# preserved\n\nhello\n")
-    dump_l0_pins(tmp_path, [_pin("a.md")])
-    text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-    assert "# preserved" in text
-    assert "hello" in text
-    assert "## ground:pins" in text
-    # heading 顺序: body 先, pin 段后
-    assert text.index("# preserved") < text.index("## ground:pins")
-
-
-def test_dump_replaces_existing_pin_section(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "# body\n\ntext\n\n"
-        "## ground:pins\n\n"
-        "```yaml\n- addr: old.md\n  note: ''\n  pinned_at: 1.0\n```\n\n"
-        "## after\n\nafter-body\n"
-    )
-    dump_l0_pins(tmp_path, [_pin("new.md", note="fresh")])
-    text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-    assert "new.md" in text
-    assert "old.md" not in text
-    # body 与 pin 段之后的 heading 都保留
-    assert "text" in text
-    assert "## after" in text
-    assert "after-body" in text
-
-
-def test_dump_preserves_frontmatter(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "---\ntree_depth: 5\ncontext_budget: 12345\n---\n\n"
-        "# body\n"
-    )
-    dump_l0_pins(tmp_path, [_pin("a.md")])
-    reloaded = load_l0(tmp_path)
-    assert reloaded.convention.tree_depth == 5
-    assert reloaded.convention.context_budget == 12345
-    assert len(reloaded.pins) == 1
-
-
-def test_dump_empty_pin_list_writes_empty_yaml_list(tmp_path: Path) -> None:
-    dump_l0_pins(tmp_path, [])
-    text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-    # 里面应该有 `[]` 或空列表 yaml
-    assert "```yaml" in text
-    # 语法要 parse 得动
-    section = text.split("## ground:pins", 1)[1]
-    yaml_body = section.split("```yaml", 1)[1].split("```", 1)[0]
-    assert yaml.safe_load(yaml_body) in (None, [])
-
-
-def test_dump_idempotent(tmp_path: Path) -> None:
-    pins = [_pin("FEATURE.md", pinned_at=1.0), _pin("**/*.py", pinned_at=2.0)]
-    dump_l0_pins(tmp_path, pins)
-    first = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-    dump_l0_pins(tmp_path, pins)
-    second = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-    assert first == second
-
-
-def test_dump_creates_parent_dirs(tmp_path: Path) -> None:
-    nested = tmp_path / "sub" / "sub2"
-    # 目录不存在
-    dump_l0_pins(nested, [_pin("x.md")])
-    assert (nested / DEFAULT_L0_FILENAME).is_file()
-
-
-# ---- L0Contents.empty --------------------------------------------------
-
-
-def test_l0_contents_empty() -> None:
-    c = L0Contents.empty()
-    assert c.convention == GroundConvention()
-    assert c.body == ""
-    assert c.pins == []
-
-
-# ---- validation errors -------------------------------------------------
-
-
-def test_load_l0_invalid_frontmatter_raises(tmp_path: Path) -> None:
-    (tmp_path / DEFAULT_L0_FILENAME).write_text(
-        "---\ntree_depth: not-a-number\n---\n"
-    )
-    with pytest.raises(Exception):  # pydantic ValidationError
-        load_l0(tmp_path)
+class TestL0Contents:
+    def test_empty(self):
+        c = L0Contents.empty()
+        assert c.pins == []
+        assert c.body == ""

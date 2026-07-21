@@ -1,65 +1,59 @@
 """DefaultGround — Ground ABC 的进程内实现.
 
-一个 Ground 实例 = 一个已打开的场. 由 DefaultGrounds.open() 构造, 生命
-周期由 Grounds 治理 (async with).
-
-内部状态:
-- _pins: OrderedDict[addr, Pin] — 最新 pin/update 在前, 契合 pins() 顺序契约
-- _instruction_cache: str — 首次 load 计算, 之后 refresh_instruction 显式刷新
-- _convention: 从 L0 frontmatter 或构造参数固定, 之后不可变
-
-sync/async 边界:
-- pin / unpin / pins / instruction: sync (ABC 定义). pin 同步执行 observe_sync
-  是有意的 (K17 initial 承认).
-- update / refresh_instruction / context / load / sediment: async, 内部 IO 走
-  to_thread + gather (符合 ABC async 契约).
+一个 Ground 实例 = 一个已打开的场. 由 DefaultGroundSet.open() 构造,
+生命周期由 GroundSet 治理.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import OrderedDict
 from pathlib import Path
 
+from ghoshell_moss.ground._addr import Anchor
+from ghoshell_moss.ground._chain import collect_chain
+from ghoshell_moss.ground._hash import PinShadow, observe_sync
+from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
+from ghoshell_moss.ground._render import render_context
 from ghoshell_moss.ground.contract import (
     Ground,
     GroundConvention,
+    GlobPin,
     Pin,
     UpdateResult,
 )
-from ghoshell_moss.ground._addr import (
-    ParsedAddr,
-    parse_addr,
-    resolve_file_addr,
-)
-from ghoshell_moss.ground._hash import Observation, observe, observe_sync
-from ghoshell_moss.ground._instruction import collect_instructions
-from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
-from ghoshell_moss.ground._render import render_context
 
 __all__ = ["DefaultGround"]
 
 
 class DefaultGround(Ground):
+    """Ground ABC 的默认实现.
+
+    Internal state:
+    - _pins: OrderedDict[label, Pin] — 最新 pin/update 在前
+    - _shadows: dict[label, PinShadow] — 运行时观察影子, 不进盘
+    - _body: GROUND.md body, 每次 load 时更新
+    """
 
     def __init__(
         self,
         label: str,
         root: Path,
+        doc_path: Path,
         convention: GroundConvention,
         *,
         workspace_root: Path | None = None,
     ) -> None:
         self._label = label
         self._root = root.resolve()
+        self._doc_path = doc_path.resolve()
         self._convention = convention
         self._workspace_root = workspace_root
         self._pins: OrderedDict[str, Pin] = OrderedDict()
-        self._instruction_cache: str = ""
-        self._body: str = ""  # GROUND.md body, 每次 load/refresh_instruction 从 L0 读
+        self._shadows: dict[str, PinShadow] = {}
+        self._body: str = ""
 
-    # ---- 元信息 ---------------------------------------------------------
+    # -- 元信息 -----------------------------------------------------------
 
     @property
     def label(self) -> str:
@@ -70,150 +64,113 @@ class DefaultGround(Ground):
         return self._root
 
     @property
+    def doc_path(self) -> Path:
+        return self._doc_path
+
+    @property
     def convention(self) -> GroundConvention:
         return self._convention
 
-    # ---- pin 管理 -------------------------------------------------------
+    # -- pin 管理 ---------------------------------------------------------
 
     def pins(self) -> list[Pin]:
         return list(self._pins.values())
 
-    def pin(self, addr: str, note: str = "") -> Pin:
-        parsed = parse_addr(addr)
-        if parsed.kind != "glob":
-            resolve_file_addr(parsed, self._root)  # boundary check
-        obs = observe_sync(parsed, self._root)
-        existing = self._pins.get(addr)
-        # note 处理: 显式传入优先, 否则继承 (幂等重 pin 时不丢注记)
-        final_note = note if note else (existing.note if existing else "")
-        new_pin = Pin(
-            addr=addr,
-            note=final_note,
-            pinned_at=time.time(),
-            seen_mtime=obs.mtime,
-            seen_hash=obs.hash,
-        )
-        self._insert_pin_at_front(new_pin)
-        return new_pin
+    def pin(self, pin: Pin) -> Pin:
+        self._pins[pin.label] = pin
+        self._pins.move_to_end(pin.label, last=False)
 
-    def unpin(self, addr: str) -> None:
-        del self._pins[addr]  # KeyError 契约
+        # 初始观察 — 建立 shadow 基线
+        anchor = self._make_anchor()
+        obs = observe_sync(pin, anchor)
+        self._shadows[pin.label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
+        return pin
 
-    async def update(self, addr: str) -> UpdateResult:
-        if addr not in self._pins:
-            raise KeyError(addr)
-        old = self._pins[addr]
-        parsed = parse_addr(addr)
-        if parsed.kind != "glob":
-            resolve_file_addr(parsed, self._root)
-        obs = await observe(parsed, self._root)
-        changed = old.seen_hash != obs.hash
-        new_pin = Pin(
-            addr=old.addr,
-            note=old.note,
-            pinned_at=old.pinned_at,
-            seen_mtime=obs.mtime,
-            seen_hash=obs.hash,
-        )
-        self._insert_pin_at_front(new_pin)
+    def unpin(self, label: str) -> None:
+        del self._pins[label]
+        self._shadows.pop(label, None)
+
+    # -- 对账 -------------------------------------------------------------
+
+    async def update(self, label: str) -> UpdateResult:
+        pin = self._pins[label]  # KeyError if missing
+        old_shadow = self._shadows.get(label, PinShadow())
+
+        anchor = self._make_anchor()
+        obs = await asyncio.to_thread(observe_sync, pin, anchor)
+
+        changed = old_shadow.hash != obs.hash
+        self._shadows[label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
+        self._pins.move_to_end(label, last=False)
+
         return UpdateResult(
-            addr=addr,
+            label=label,
             changed=changed,
-            old_mtime=old.seen_mtime,
-            new_mtime=obs.mtime,
-            diff_preview=_diff_preview(old, obs, parsed),
+            old_hash=old_shadow.hash,
+            new_hash=obs.hash,
+            summary=_summary(pin, obs, changed),
         )
 
-    def _insert_pin_at_front(self, pin: Pin) -> None:
-        """有则替换, 无则插入; 结果都 move-to-front (最新在前)."""
-        addr = pin.addr
-        if addr in self._pins:
-            del self._pins[addr]
-        self._pins[addr] = pin
-        self._pins.move_to_end(addr, last=False)
-
-    # ---- 渲染 -----------------------------------------------------------
-
-    def instruction(self) -> str:
-        return self._instruction_cache
-
-    async def refresh_instruction(self) -> None:
-        """从 upward CLAUDE.md 链 + 本 ground 的 GROUND.md body 重建 instruction.
-
-        顺序: 上游 (根最先) → 本 ground body (最本地的法, 最后拼).
-        K20 的 promote (pin → body) 出口就在这 — body 里的内容自然进 instruction.
-        """
-        upward = await asyncio.to_thread(
-            collect_instructions,
-            self._root,
-            self._convention,
-            workspace_root=self._workspace_root,
-        )
-        contents = await asyncio.to_thread(load_l0, self._root)
-        self._body = contents.body
-        self._instruction_cache = _compose_instruction(
-            upward, self._body, self._root
-        )
+    # -- 渲染 -------------------------------------------------------------
 
     async def context(self) -> str:
-        l0_exists = (self._root / DEFAULT_L0_FILENAME).is_file()
+        chain = await asyncio.to_thread(
+            collect_chain,
+            self._doc_path.parent,
+        )
+        chain_summary = _chain_one_liner(chain) if chain else ""
+
         return await render_context(
-            self._root,
-            self._label,
-            self._convention,
-            self.pins(),
-            workspace_root=self._workspace_root,
-            l0_file_exists=l0_exists,
-            l0_filename=DEFAULT_L0_FILENAME,
+            label=self._label,
+            root=self._root,
+            doc_path=self._doc_path,
+            body=self._body,
+            pins=list(self._pins.values()),
+            shadows=dict(self._shadows),
+            anchor=self._make_anchor(),
+            id_=self._convention.id,
+            chain_summary=chain_summary,
         )
 
-    # ---- 生命周期 -------------------------------------------------------
+    # -- 生命周期 ---------------------------------------------------------
 
     async def load(self) -> None:
         contents = await asyncio.to_thread(load_l0, self._root)
-        # convention 已在构造时确定; 这里装载 pins + body
-        self._pins = OrderedDict((p.addr, p) for p in contents.pins)
         self._body = contents.body
-        # instruction 缓存: 上游 CLAUDE.md 链 + 本 body
-        upward = await asyncio.to_thread(
-            collect_instructions,
-            self._root,
-            self._convention,
-            workspace_root=self._workspace_root,
+        self._pins = OrderedDict(
+            (p.label, p) for p in contents.pins
         )
-        self._instruction_cache = _compose_instruction(
-            upward, self._body, self._root
-        )
+        self._shadows.clear()
 
     async def sediment(self) -> None:
-        await asyncio.to_thread(dump_l0_pins, self._root, self.pins())
+        await asyncio.to_thread(
+            dump_l0_pins, self._root, list(self._pins.values())
+        )
+
+    # -- internal ---------------------------------------------------------
+
+    def _make_anchor(self) -> Anchor:
+        return Anchor(
+            ground=self._doc_path.parent.resolve(),
+            cwd=self._root,
+        )
 
 
-def _diff_preview(old_pin: Pin, obs: Observation, parsed: ParsedAddr) -> str:
-    """bounded diff 摘要 — UpdateResult.diff_preview 载体, 避免历史洪泛."""
-    if old_pin.seen_hash == obs.hash:
+# -- helpers --------------------------------------------------------------
+
+
+def _summary(pin: Pin, obs, changed: bool) -> str:
+    if not changed:
         return "no change"
-    if old_pin.seen_hash is None:
-        return "initial observation"
     if not obs.exists:
         return "target removed"
-    if parsed.kind == "glob":
+    if isinstance(pin, GlobPin):
         return "glob hit set changed"
-    if parsed.kind == "range":
-        return f"range {parsed.start}-{parsed.end} content changed"
-    return "file content changed"
+    return "content changed"
 
 
-def _compose_instruction(upward: str, body: str, root: Path) -> str:
-    """upward CLAUDE.md 链 + local GROUND.md body → 一份 instruction.
-
-    body 空则退化为纯 upward. 顺序钉死 upward → local (根最先 + 内层覆盖).
-    """
-    body_stripped = body.strip()
-    if not body_stripped:
-        return upward
-    local = (
-        f"<!-- from: {root / DEFAULT_L0_FILENAME} (body) -->\n\n"
-        f"{body_stripped}\n"
-    )
-    return f"{upward}\n\n{local}" if upward else local
+def _chain_one_liner(chain: str) -> str:
+    """从 chain body 中提取路径, 拼成一行来源列表."""
+    import re as _re
+    paths = _re.findall(r"from:\s*(\S+)", chain)
+    return " → ".join(paths) if paths else ""
