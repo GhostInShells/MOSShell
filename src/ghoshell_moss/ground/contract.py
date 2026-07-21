@@ -56,14 +56,16 @@ AT_BUDGET = 24_000
 
 
 class GroundConvention(BaseModel):
-    """L0 frontmatter — 场的身份声明.
+    """L0 frontmatter — 场的身份声明 + pins 清单.
 
-    K56: frontmatter 只有两个保留 key; 旧 GroundConvention 的 8 字段全部撤除.
-    未知 key 保留不拒 (与 SPEC §3 一致).
+    K56: frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
+    列表驻留在 frontmatter 中, body 保持纯粹的人/模型叙事域.
+    未知 key 保留不拒 (extra="allow").
     """
 
     id: str | None = Field(default=None, alias="$id")
     label: str | None = None
+    pins: list[dict] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
 

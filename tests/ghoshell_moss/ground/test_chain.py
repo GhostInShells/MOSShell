@@ -66,7 +66,7 @@ class TestCollectChain:
         # dump_l0_pins creates a fresh GROUND.md; add body manually
         text = (root / DEFAULT_L0_FILENAME).read_text()
         (root / DEFAULT_L0_FILENAME).write_text(
-            "---\n$id: test\n---\n\n# My Body\n\nlaw here\n\n## ground:pins\n[]\n"
+            "---\n$id: test\n---\n\n# My Body\n\nlaw here\n"
         )
         result = collect_chain(root)
         assert "# My Body" in result

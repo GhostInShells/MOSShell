@@ -1,10 +1,11 @@
-"""Ground command group — SPEC §9: spec / init / frame / meta / observe / validate.
+"""Ground command group — spec / init / frame / meta / observe / validate.
 
 Every invocation is stateless: open → act → sediment (via __aexit__) → exit.
 GROUND.md is the single source of truth across invocations.
 
-Pin management is done by editing GROUND.md directly (the YAML format is
-defined in SPECIFICATION.md).  Use `validate` to check your edits.
+Pin management is done by editing GROUND.md's frontmatter directly (the
+YAML format is defined in SPECIFICATION.md).  Use `validate` to check
+your edits.
 """
 
 from __future__ import annotations
@@ -73,22 +74,6 @@ async def _run_one(root: Path, coro_fn):
         await coro_fn(gs, ground)
 
 
-def _run(coro_fn) -> None:
-    root = _resolve_root(_current_root())
-
-    async def _driver():
-        await _run_one(root, coro_fn)
-
-    asyncio.run(_driver())
-
-
-_current_root_path: Path | None = None
-
-
-def _current_root() -> Path | None:
-    return _current_root_path
-
-
 # -- spec -----------------------------------------------------------------
 
 
@@ -130,8 +115,8 @@ def cmd_init(
 
 @ground_app.command("frame", short_help="Render the current frame.")
 def cmd_frame(
-    path: Path | None = typer.Option(
-        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    path: Path | None = typer.Argument(
+        None, help="Ground root (defaults to cwd)."
     ),
 ) -> None:
     root = _resolve_root(path)
@@ -148,8 +133,8 @@ def cmd_frame(
 
 @ground_app.command("meta", short_help="Show ground identity and pin TOC.")
 def cmd_meta(
-    path: Path | None = typer.Option(
-        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    path: Path | None = typer.Argument(
+        None, help="Ground root (defaults to cwd)."
     ),
 ) -> None:
     """Show ground location, law chain, $id, and pin table of contents.
@@ -182,8 +167,8 @@ def cmd_meta(
     short_help="Run pin observations only; emit per-pin diagnostics.",
 )
 def cmd_observe(
-    path: Path | None = typer.Option(
-        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    path: Path | None = typer.Argument(
+        None, help="Ground root (defaults to cwd)."
     ),
 ) -> None:
     root = _resolve_root(path)
@@ -214,7 +199,6 @@ def cmd_observe(
 # -- validate -------------------------------------------------------------
 
 
-# required fields per pin kind (SPEC §4)
 _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "file": frozenset({"path"}),
     "glob": frozenset({"pattern"}),
@@ -226,13 +210,11 @@ _KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 
 @ground_app.command("validate", short_help="Validate GROUND.md format and pin definitions.")
 def cmd_validate(
-    path: Path | None = typer.Option(
-        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    path: Path | None = typer.Argument(
+        None, help="Ground root (defaults to cwd)."
     ),
 ) -> None:
-    """Check GROUND.md for format errors: YAML validity, pin field completeness,
-    label patterns, unknown kinds.  Exits 0 on clean, 1 on warnings, 2 on errors.
-    """
+    """Check GROUND.md frontmatter and pins for format errors."""
     import re
 
     import yaml
@@ -250,58 +232,34 @@ def cmd_validate(
     warnings: list[str] = []
 
     # --- frontmatter parse ---
-    fm_text = ""
     fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
     if fm_match:
-        fm_text = fm_match.group(1)
         try:
-            yaml.safe_load(fm_text)
+            fm_data = yaml.safe_load(fm_match.group(1)) or {}
         except yaml.YAMLError as e:
             errors.append(f"frontmatter YAML: {e}")
-    # no frontmatter is valid
-
-    # --- pins section parse ---
-    # K55: bare YAML under ## ground:pins (no fenced code block).
-    # Extract everything from the heading to the next heading or EOF.
-    pins_section = text.split("## ground:pins", 1)
-    if len(pins_section) < 2:
-        if errors:
-            for e in errors:
-                print_error(e)
+            for e2 in errors:
+                print_error(e2)
             raise typer.Exit(code=2)
-        print_info("no pins section — valid but empty")
+    else:
+        fm_data = {}
+        # no frontmatter is valid for bare-directory ground
+
+    # --- pins ---
+    pins_data = fm_data.get("pins")
+    if pins_data is None:
+        print_info("no pins in frontmatter — valid")
         return
 
-    yaml_part = pins_section[1]
-    # strip to next heading boundary
-    yaml_match = re.search(r"^(.*?)(?=^#+[ \t]+|\Z)", yaml_part, re.DOTALL | re.MULTILINE)
-    yaml_body = yaml_match.group(1).strip() if yaml_match else yaml_part.strip()
-
-    if not yaml_body or yaml_body == "[]":
-        if errors:
-            for e in errors:
-                print_error(e)
-            raise typer.Exit(code=2)
-        return  # empty pins, valid
-
-    try:
-        pins_data = yaml.safe_load(yaml_body)
-    except yaml.YAMLError as e:
-        errors.append(f"pins YAML: {e}")
-        for e2 in errors:
-            print_error(e2)
-        raise typer.Exit(code=2)
-
-    if pins_data is None:
-        pins_data = []
-
     if not isinstance(pins_data, list):
-        errors.append("pins section: YAML must be a list")
+        errors.append("frontmatter 'pins': must be a list")
         for e in errors:
             print_error(e)
         raise typer.Exit(code=2)
 
-    # --- per-pin validation ---
+    if len(pins_data) == 0:
+        return
+
     label_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
     seen_labels: set[str] = set()
 

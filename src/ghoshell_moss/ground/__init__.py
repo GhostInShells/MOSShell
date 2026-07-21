@@ -36,7 +36,7 @@ from ghoshell_moss.ground.contract import (
 )
 from ghoshell_moss.ground._grounds import DefaultGroundSet
 from ghoshell_moss.ground._ground import DefaultGround
-from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, PIN_SECTION_HEADING
+from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME
 
 __all__ = [
     # contract
@@ -64,5 +64,4 @@ __all__ = [
     "DefaultGround",
     # L0
     "DEFAULT_L0_FILENAME",
-    "PIN_SECTION_HEADING",
 ]

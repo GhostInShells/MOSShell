@@ -37,11 +37,7 @@ class TestLoadL0:
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
             "---\n"
             '$id: "moss:test"\n'
-            "---\n"
-            "\n"
-            "# My Ground\n\n"
-            "some body text\n\n"
-            "## ground:pins\n"
+            "pins:\n"
             "- verb: file\n"
             "  label: main\n"
             "  arguments: {path: src/main.py}\n"
@@ -55,6 +51,10 @@ class TestLoadL0:
             "- verb: frontmatter\n"
             "  label: status\n"
             "  arguments: {path: FEATURE.md}\n"
+            "---\n"
+            "\n"
+            "# My Ground\n\n"
+            "some body text\n"
         )
         c = load_l0(tmp_path)
         assert len(c.pins) == 4
@@ -76,41 +76,46 @@ class TestLoadL0:
         fm_pin = c.pins[3]
         assert isinstance(fm_pin, FrontmatterPin)
 
-        assert "some body text" in c.body
-        assert "ground:pins" not in c.body
+        assert "some body text" in c.body  # no pins section in body
+        assert "ground:pins" not in c.body  # pins are in frontmatter
 
     def test_pin_section_terminated_by_next_heading(self, tmp_path):
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
-            "## ground:pins\n"
+            "---\n"
+            "pins:\n"
             "- verb: file\n"
             "  label: a\n"
-            "  arguments: {path: a.md}\n\n"
+            "  arguments: {path: a.md}\n"
+            "---\n"
+            "\n"
             "## Other\n\n"
             "unrelated\n"
         )
         c = load_l0(tmp_path)
-        assert len(c.pins) == 1
-        assert "unrelated" in c.body
+        assert len(c.pins) == 1  # pin in frontmatter
+        assert "unrelated" in c.body  # body only, no pins
 
     def test_empty_pin_list(self, tmp_path):
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
-            "## ground:pins\n[]\n"
+            "---\n---\n\n"
         )
         c = load_l0(tmp_path)
         assert c.pins == []
 
     def test_unknown_kind_skipped(self, tmp_path):
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
-            "## ground:pins\n"
+            "---\n"
+            "pins:\n"
             "- verb: file\n"
             "  label: good\n"
             "  arguments: {path: a.py}\n"
             "- verb: unknown_type\n"
             "  label: bad\n"
             "  arguments: {path: b.py}\n"
+            "---\n\n"
         )
         c = load_l0(tmp_path)
-        assert len(c.pins) == 1
+        assert len(c.pins) == 1  # pin in frontmatter
         assert c.pins[0].label == "good"
 
     def test_frontmatter_id_loaded(self, tmp_path):
@@ -134,7 +139,7 @@ class TestDumpL0:
         dump_l0_pins(tmp_path, [FilePin(label="main", arguments=FileArguments(path="FEATURE.md"))])
         path = tmp_path / DEFAULT_L0_FILENAME
         assert path.is_file()
-        assert "## ground:pins" in path.read_text()
+        assert "verb: file" in path.read_text()  # pins in frontmatter
 
     def test_roundtrip(self, tmp_path):
         original = [
@@ -158,15 +163,17 @@ class TestDumpL0:
         )
         dump_l0_pins(tmp_path, [FilePin(label="x", arguments=FileArguments(path="x.py"))])
         text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-        assert '$id: "moss:test"' in text
+        assert 'moss:test' in text  # re-serialized, quotes may change
         assert "law text" in text
         assert "x.py" in text
 
     def test_replaces_existing_pin_section(self, tmp_path):
         (tmp_path / DEFAULT_L0_FILENAME).write_text(
+            "---\n"
+            "pins:\n"
+            "- verb: file\n  label: old\n  arguments: {path: old.md}\n"
+            "---\n\n"
             "# body\n\ntext\n\n"
-            "## ground:pins\n"
-            "- verb: file\n  label: old\n  arguments: {path: old.md}\n\n"
             "## after\n\nafter\n"
         )
         dump_l0_pins(tmp_path, [FilePin(label="new", arguments=FileArguments(path="new.md"))])
@@ -191,9 +198,9 @@ class TestDumpL0:
     def test_empty_pins_writes_empty_list(self, tmp_path):
         dump_l0_pins(tmp_path, [])
         text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
-        # K55: bare YAML, check for empty list
-        assert "[]" in text
-        # YAML format verified above
+        # no pins → no 'pins' key in frontmatter
+        assert "---\n" in text
+        assert "pins:" not in text
 
     def test_pin_serialized_with_kind_field(self, tmp_path):
         dump_l0_pins(tmp_path, [FilePin(label="f", arguments=FileArguments(path="a.py", range="1-5"))])
