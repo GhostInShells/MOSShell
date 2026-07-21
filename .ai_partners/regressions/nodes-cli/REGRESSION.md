@@ -1,10 +1,10 @@
 ---
 title: nodes CLI
-version: 1
+version: 2
 status: active
 priority: P0
 created: 2026-07-18
-updated: 2026-07-18
+updated: 2026-07-21
 scope: subsystem
 depends:
   - cells-cli
@@ -85,6 +85,7 @@ is the dogfood-owned discovery path (added to a `system_test` mode's `node_paths
 | TC-020  | P2 | `moss nodes prune --keep-alive` preserves live orphans | Run node, `moss nodes prune --keep-alive` | Live entry preserved (skipped count > 0), dead ones removed |
 | TC-021  | P2 | `moss nodes link <workspace> <script> --command python` shortcut | Create a `hello.py` outside workspace, link it into `.moss/system_test_nodes/link_test/` | NODE.md created with `exec.command: python`, `exec.args: <abs path>`; description mentions absolute-path fragility |
 | TC-022  | P2 | `moss nodes link` fails without `--command` (no auto-detection) | Same but omit `--command` | Exit code 1 with `--command is required` guidance |
+| TC-023  | P0 | Cross-project topic pub/sub: producer in project A, consumer in project B, same network scope | 1. Project A (MCP): `matrix.nodes:run dogfood_consumer`<br>2. Project B (CLI): `moss --mode system_test nodes run dogfood_producer`<br>3. Project A: `matrix.nodes:read_output <consumer> stdout` | Consumer receives heartbeat #1→#N continuously (1/sec). CLI-launched producer takes ~8s for Matrix/Zenoh bootstrap before first publish. |
 
 ## Known Limitations Recorded This Round (Not Blockers for v1 baseline)
 
@@ -119,8 +120,7 @@ is the dogfood-owned discovery path (added to a `system_test` mode's `node_paths
   path arg over cwd walk.
 - `--force` on kill is safer than default 3s grace during dogfood — the
   stub node's blocking behavior means SIGTERM alone may not be enough.
-- `.moss/system_test_nodes/` is not tracked (dogfood-only) — recreate as
-  needed by rerunning the setup section.
+- `.moss/system_test_nodes/` is now tracked (v2) — dogfood nodes (dogfood_producer, dogfood_consumer, etc.) are committed.
 - The `_match_address` helper (uid-prefix + full-address) replaces earlier
   `endswith` semantics. Historic short-form kills relying on trailing chars
   will break — retest any external tooling against uid prefix.

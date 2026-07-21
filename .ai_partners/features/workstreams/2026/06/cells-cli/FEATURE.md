@@ -1,15 +1,14 @@
 ---
-title: Cells CLI
-status: in-progress
-priority: P0
 created: 2026-06-28
-updated: 2026-06-28
 depends:
-  - matrix-cell-governance
+- matrix-cell-governance
+description: moss cells 命令行体系 — 统一取代 apps/script/runtime 三个旧 CLI 组。 静态发现、生命周期管理、运行时治理、认知引导全部归入
+  cells 命令组。
 milestone: 0.1.0
-description: >-
-  moss cells 命令行体系 — 统一取代 apps/script/runtime 三个旧 CLI 组。
-  静态发现、生命周期管理、运行时治理、认知引导全部归入 cells 命令组。
+priority: P0
+status: completed
+title: Cells CLI
+updated: '2026-07-21'
 ---
 
 # Cells CLI
