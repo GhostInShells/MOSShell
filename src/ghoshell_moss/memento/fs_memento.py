@@ -313,22 +313,20 @@ class FsMemento(MementoABC):
     def _resolve_staging_of(self, name: str) -> tuple[list[str], dict[str, MomentRecord]]:
         return _resolve_staging(self._staging_path(name))
 
-    def _frozen_ids(self) -> set[str]:
-        """扫描全部 commits/ 目录, 收集已冻结 moment id."""
+    def _frozen_ids(self, name: str) -> set[str]:
+        """沿 parent 链收集本 branch 所有 commit 中的已冻结 moment id."""
         frozen: set[str] = set()
-        commits_root = self._owner_dir() / "commits"
-        if not commits_root.exists():
-            return frozen
-        for ym_dir in sorted(commits_root.iterdir()):
-            if not ym_dir.is_dir():
-                continue
-            for commit_dir in sorted(ym_dir.iterdir()):
-                moments_path = commit_dir / _MOMENTS_JSONL
-                if not moments_path.exists():
-                    continue
-                for obj in _read_lines(moments_path):
+        ref = self._read_ref(name)
+        cid = ref.commit_id if ref else None
+        while cid:
+            mp = self._commit_dir(cid) / _MOMENTS_JSONL
+            if mp.exists():
+                for obj in _read_lines(mp):
                     if obj.get("t") == _T_MOMENT:
                         frozen.add(obj["id"])
+            meta = self._load_commit_meta(cid)
+            p = meta.get("parent") if meta else None
+            cid = p["commit_id"] if p else None
         return frozen
 
     def _record(self, name: str, record: MomentRecord) -> None:
@@ -337,7 +335,7 @@ class FsMemento(MementoABC):
             raise LineNotFoundError(
                 f"line {name!r} not found for owner {self._owner!r}: branch dir missing"
             )
-        if record.id in self._frozen_ids():
+        if record.id in self._frozen_ids(name):
             raise MomentFrozenError(f"moment {record.id!r} is frozen")
         _append_lines(staging_path, [{"t": _T_MOMENT, **record.model_dump(mode="json")}])
         self._hooks.on_record_staged(name, record)
@@ -773,7 +771,7 @@ class FsMemento(MementoABC):
         sp = self._staging_path(name)
         if sp.exists():
             _, recs = self._resolve_staging_of(name)
-            frozen = self._frozen_ids()
+            frozen = self._frozen_ids(name)
             if recs and all(rid in frozen for rid in recs):
                 sp.write_text("", encoding="utf-8")
 
