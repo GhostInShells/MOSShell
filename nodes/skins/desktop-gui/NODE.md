@@ -1,5 +1,5 @@
 ---
-name: 'desktop-gui'
+name: 'desktop_gui'
 description: 'Desktop GUI — human observation and approval interface for the desktop channel'
 singleton: true
 exec:

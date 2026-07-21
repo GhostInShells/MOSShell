@@ -2,7 +2,7 @@
 
 import reflex as rx
 
-from ghoshell_desktop_gui.state import DesktopState, CommandStatus
+from ghoshell_desktop_gui.state import DesktopState
 
 
 def _no_selection() -> rx.Component:
@@ -16,47 +16,59 @@ def _no_selection() -> rx.Component:
 def _command_view(command) -> rx.Component:
     return rx.vstack(
         rx.heading(command.summary, size="3"),
-        rx.text(f"{command.channel_path}:{command.command_name}", color_scheme="gray", font_size="12px"),
+        rx.text(
+            command.channel_path + ":" + command.command_name,
+            color_scheme="gray",
+            font_size="12px",
+        ),
         rx.divider(),
         # payload section
         rx.text("Command", font_weight="bold", font_size="13px"),
         rx.code_block(
-            str(command.payload) if command.payload else "(no payload)",
+            rx.cond(
+                command.payload,
+                command.payload.to_string(),
+                "(no payload)",
+            ),
             language="json",
             width="100%",
         ),
-        # approval section — only shown when awaiting approval
+        # approval section
         rx.cond(
-            command.status == CommandStatus.AWAITING_APPROVAL,
+            command.status == "awaiting_approval",
             rx.vstack(
                 rx.divider(),
                 rx.text("Awaiting Approval", font_weight="bold", color="orange"),
-                rx.text(command.approval_prompt or "Approve this action?"),
+                rx.text(
+                    rx.cond(command.approval_prompt, command.approval_prompt, "Approve this action?")
+                ),
                 rx.hstack(
                     rx.button("Approve", color_scheme="green"),
                     rx.button("Reject", color_scheme="red"),
                 ),
             ),
         ),
-        # result section — only shown when completed/error
+        # result section
         rx.cond(
-            (command.status == CommandStatus.COMPLETED) | (command.status == CommandStatus.ERROR),
+            (command.status == "completed") | (command.status == "error"),
             rx.vstack(
                 rx.divider(),
                 rx.text("Result", font_weight="bold", font_size="13px"),
                 rx.code_block(
-                    command.result or "(no output)",
+                    rx.cond(command.result, command.result, "(no output)"),
                     width="100%",
                 ),
             ),
         ),
         # rejected note
         rx.cond(
-            command.status == CommandStatus.REJECTED,
+            command.status == "rejected",
             rx.vstack(
                 rx.divider(),
                 rx.text("Rejected", font_weight="bold", color="red"),
-                rx.text(command.human_reply or "No reason given"),
+                rx.text(
+                    rx.cond(command.human_reply, command.human_reply, "No reason given")
+                ),
             ),
         ),
         padding="16px",

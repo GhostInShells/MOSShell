@@ -2,7 +2,7 @@
 
 import reflex as rx
 
-from ghoshell_desktop_gui.state import DesktopState, CommandStatus
+from ghoshell_desktop_gui.state import DesktopState
 from ghoshell_desktop_gui.components.status_light import status_light
 
 

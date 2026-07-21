@@ -1,42 +1,28 @@
 """Shared state — the single source of truth between Matrix and Reflex UI."""
 
 import time
-from enum import Enum
 from typing import Optional
 
+import pydantic
 import reflex as rx
 
 
-class CommandStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    AWAITING_APPROVAL = "awaiting_approval"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    COMPLETED = "completed"
-    ERROR = "error"
-
-
-class CommandRecord(rx.Base):
+class CommandRecord(pydantic.BaseModel):
     """A single command in the desktop activity stream."""
 
+    model_config = {"extra": "forbid"}
+
     id: str
-    channel_path: str = ""        # e.g. "desktop.bash", "desktop.file_editor"
-    command_name: str = ""        # e.g. "exec", "view", "str_replace"
-    summary: str = ""             # one-line description for the sidebar
-    status: CommandStatus = CommandStatus.PENDING
-    created_at: float = 0.0
+    channel_path: str = ""
+    command_name: str = ""
+    summary: str = ""
+    status: str = "pending"
+    created_at: float = pydantic.Field(default_factory=time.time)
     stale: bool = False
-    # detail fields — populated as the command progresses
-    payload: dict = {}
+    payload: dict = pydantic.Field(default_factory=dict)
     result: Optional[str] = None
     approval_prompt: Optional[str] = None
     human_reply: Optional[str] = None
-
-    def __init__(self, **kwargs):
-        if "created_at" not in kwargs or kwargs["created_at"] == 0.0:
-            kwargs["created_at"] = time.time()
-        super().__init__(**kwargs)
 
 
 class DesktopState(rx.State):

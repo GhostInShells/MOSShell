@@ -6,13 +6,13 @@ from ghoshell_desktop_gui.pages.index import index
 from ghoshell_desktop_gui.components.status_light import pulse_keyframes
 
 
-def _global_style() -> rx.Component:
+def _global_css() -> rx.Component:
     return rx.html(
         f"<style>{pulse_keyframes()}</style>",
     )
 
 
-def main():
-    app = rx.App(style=_global_style())
-    app.add_page(index, route="/")
-    app.run()
+app = rx.App(
+    head_components=[_global_css()],
+)
+app.add_page(index, route="/")
