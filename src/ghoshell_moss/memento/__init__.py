@@ -43,12 +43,18 @@ from ghoshell_moss.memento.abc import (
     ReadonlyLineError,
 )
 
-# ── 主权层 (v2 abc 重写后待重做) ──
-# from ghoshell_moss.memento.fs_memento import FsMemento, new_filesystem_memento
-# from ghoshell_moss.memento.porcelain import (
-#     MOSS_MOMENT_TYPE, MementoRef, commit_summary_message, make_merge_message,
-#     moment_to_record, record_to_moment, update_moment, window_messages,
-# )
+from ghoshell_moss.memento.fs_memento import FsMemento, new_filesystem_memento
+from ghoshell_moss.memento.porcelain import (
+    MOSS_MOMENT_TYPE,
+    MementoRef,
+    commit_summary_message,
+    make_merge_message,
+    moment_to_record,
+    record_to_moment,
+    update_moment,
+    window_messages,
+)
+# ── 主权层 (witness 待重做) ──
 # from ghoshell_moss.memento.witness import Witness, ensure_witness_repo, snapshot
 
 __all__ = [
@@ -80,4 +86,16 @@ __all__ = [
     "TRAILER_SUSPENDS",
     "TRAILER_KIND",
     "TRAILER_MEMENTO_REF",
+    # fs
+    "FsMemento",
+    "new_filesystem_memento",
+    # porcelain
+    "MOSS_MOMENT_TYPE",
+    "MementoRef",
+    "moment_to_record",
+    "record_to_moment",
+    "update_moment",
+    "make_merge_message",
+    "commit_summary_message",
+    "window_messages",
 ]

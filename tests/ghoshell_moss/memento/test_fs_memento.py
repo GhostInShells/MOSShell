@@ -1,386 +1,306 @@
-"""
-FsMemento 契约行为测试 — 旧版验收五条 + FORMAT.md 新增条款.
-
-验收五条: 单 owner 生命周期 / 多 owner 只读边界 / persistence round-trip /
-base chain 回溯 / hook fan-out.
-"""
+"""FsMemento golden tests — FORMAT v2 contract verification."""
 
 from __future__ import annotations
 
-import json
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from ghoshell_moss.memento import (
+from ghoshell_moss.memento.abc import (
+    BranchRef,
     BranchWindow,
+    CommitDetail,
     CommitNotFoundError,
+    CommitRef,
+    CommitView,
     EmptyStagingError,
-    FsMemento,
+    LineNotFoundError,
     MementoError,
+    MementoHooks,
     MomentFrozenError,
+    MomentNotInCommitError,
     MomentRecord,
-    ReadonlyBranchError,
-    join_trailers,
+    new_commit_id,
+)
+from ghoshell_moss.memento.fs_memento import (
+    FsMemento,
+    _read_lines,
+    _resolve_staging,
+    _y_m,
     new_filesystem_memento,
-    split_trailers,
-    trailer_values,
 )
 
 
-def _rec(mid: str, **payload) -> MomentRecord:
-    return MomentRecord(id=mid, type="test.data/v1", payload=payload or {"n": mid})
+@pytest.fixture
+def tmp_root() -> Path:
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d)
 
 
-@pytest.fixture()
-def root(tmp_path: Path) -> Path:
-    return tmp_path / "memento"
+@pytest.fixture
+def memento(tmp_root) -> FsMemento:
+    return new_filesystem_memento(tmp_root, "ghost.test")
 
 
-# ============================================================
-# 1. 单 owner 生命周期
-# ============================================================
-
-
-def test_single_owner_lifecycle(root: Path):
-    m = new_filesystem_memento(root, "ghost.main")
-    branch = m.current()
-    assert branch.meta.name == "main"
-    assert branch.head() is None
-    assert branch.staging() == []
-
-    branch.update(_rec("m1"))
-    branch.update(_rec("m2"))
-    assert [r.id for r in branch.staging()] == ["m1", "m2"]
-
-    view = branch.commit("first slice", kind="semantic", threads=["alpha"])
-    assert view.seq == 1
-    assert view.commit.moment_ids == ["m1", "m2"]
-    assert view.summary() == "first slice"
-    assert view.note.kind() == "semantic"
-    assert view.note.threads() == ["alpha"]
-    assert branch.staging() == []
-    assert branch.head().id == view.id
-
-    branch.update(_rec("m3"))
-    view2 = branch.commit(kind="mechanical")
-    assert view2.seq == 2
-    assert view2.summary() == ""  # 机械快照不编造正文
-    assert [v.seq for v in branch.own_commits()] == [1, 2]
-
-    records = branch.commit_records(view.id)
-    assert [r.id for r in records] == ["m1", "m2"]
-    m.close()
-
-
-def test_update_overwrite_keeps_staging_order(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a", v=1))
-    b.update(_rec("b"))
-    b.update(_rec("a", v=2))  # 覆盖写: staging 保持首次出现位置序
-    assert [r.id for r in b.staging()] == ["a", "b"]
-    assert b.staging()[0].payload == {"v": 2}  # last-wins
-
-
-def test_frozen_moment_rejects_update(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a"))
-    b.commit(kind="mechanical")
-    with pytest.raises(MomentFrozenError):
-        b.update(_rec("a", v=2))
-
-
-def test_empty_staging_rejects_commit(root: Path):
-    m = new_filesystem_memento(root, "o")
-    with pytest.raises(EmptyStagingError):
-        m.current().commit(kind="mechanical")
-
-
-def test_moment_annotate_threads_after_freeze(root: Path):
-    # threads 是释义不是成员 — 冻结后仍可改写 (孔径二在 moment 级的形态).
-    # §14 后, 冻结 moment 的释义追加到其所在 commit 文件, 通过 commit_records 读回.
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a"))
-    view = b.commit(kind="mechanical")
-    b.annotate_moment("a", ["retagged"], by="tagger")
-    records = b.commit_records(view.id)
-    got = next(r for r in records if r.id == "a")
-    assert got.threads == ["retagged"]
-
-
-def test_reinterpret_last_wins_and_forensics(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a"))
-    v0 = b.commit("draft summary", kind="semantic")
-    v1 = b.reinterpret(v0.id, join_trailers("better summary", [("Kind", "semantic")]), by="reflector")
-    assert v1.note_seq == 1
-    assert b.get_commit(v0.id).summary() == "better summary"  # last-wins
-    versions = b.notes(v0.id)
-    assert len(versions) == 2
-    assert versions[0].text() == "draft summary"  # 原版本永远可寻址
-
-
-def test_switch_and_list(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b1 = m.current()
-    b1.update(_rec("a"))
-    b1.commit(kind="mechanical")
-    b2 = m.checkout(base_fork="o", base_branch_id=b1.meta.branch_id, name="side")
-    m.switch(b2.meta.branch_id)
-    assert m.current().meta.branch_id == b2.meta.branch_id
-    assert {meta.name for meta in m.list_branches()} == {"main", "side"}
-
-
-# ============================================================
-# 2. 多 owner 只读边界
-# ============================================================
-
-
-def test_cross_owner_readonly(root: Path):
-    alice = new_filesystem_memento(root, "alice")
-    ab = alice.current()
-    ab.update(_rec("a1"))
-    committed = ab.commit("alice work", kind="semantic")
-
-    bob = new_filesystem_memento(root, "bob")
-    handle = bob.get_branch(ab.meta.branch_id, fork="alice")
-    assert handle.readonly
-    assert handle.head().id == committed.id  # 读没问题
-    with pytest.raises(ReadonlyBranchError):
-        handle.update(_rec("b1"))
-    with pytest.raises(ReadonlyBranchError):
-        handle.commit(kind="mechanical")
-    with pytest.raises(ReadonlyBranchError):
-        handle.reinterpret(committed.id, "rewrite")
-    assert "alice" in bob.list_forks() and "bob" not in bob.list_forks()  # bob 还没写过
-
-
-# ============================================================
-# 3. persistence round-trip
-# ============================================================
-
-
-def test_persistence_round_trip(root: Path):
-    m1 = new_filesystem_memento(root, "o")
-    b = m1.current()
-    b.update(_rec("a", text="早上好"))  # 非 ASCII 保真
-    b.update(_rec("b", text="line1\nline2"))  # 换行转义
-    view = b.commit("多行\n正文", kind="semantic", threads=["t1", "t2"])
-    b.update(_rec("c"))
-    m1.close()
-
-    # 全新实例, 冷读
-    m2 = new_filesystem_memento(root, "o")
-    b2 = m2.current()
-    assert b2.meta.branch_id == b.meta.branch_id
-    head = b2.head()
-    assert head.id == view.id
-    assert head.summary() == "多行\n正文"
-    assert head.note.threads() == ["t1", "t2"]
-    records = b2.commit_records(view.id)
-    assert records[0].payload == {"text": "早上好"}
-    assert records[1].payload == {"text": "line1\nline2"}
-    assert [r.id for r in b2.staging()] == ["c"]  # staging 也存活
-    m2.close()
-
-
-# ============================================================
-# 4. base chain 回溯
-# ============================================================
-
-
-def _grow(branch, prefix: str, n: int):
-    views = []
-    for i in range(n):
-        branch.update(_rec(f"{prefix}{i}"))
-        views.append(branch.commit(f"{prefix} commit {i}", kind="mechanical"))
-    return views
-
-
-def test_base_chain_traversal_two_levels(root: Path):
-    m = new_filesystem_memento(root, "o")
-    root_branch = m.current()
-    rv = _grow(root_branch, "r", 3)
-
-    # 从 root 的第 2 个 commit 分出 child
-    child = m.checkout(
-        base_fork="o", base_branch_id=root_branch.meta.branch_id, base_commit_id=rv[1].id, name="child"
-    )
-    assert len(child.meta.ancestry) == 1
-    cv = _grow(child, "c", 2)
-
-    # 从 child 的 head 分出 grandchild — 祖先链应冻结为两段
-    grand = m.checkout(base_fork="o", base_branch_id=child.meta.branch_id, name="grand")
-    assert len(grand.meta.ancestry) == 2
-    assert grand.meta.ancestry[-1] == grand.meta.base
-
-    history = grand.all_commits()
-    # root 截至 seq2 (2 个) + child 全部 (2 个)
-    assert [v.id for v in history] == [rv[0].id, rv[1].id, cv[0].id, cv[1].id]
-    # 回溯 API 能取到祖先的 commit 与成员
-    assert grand.get_commit(rv[0].id) is not None
-    assert [r.id for r in grand.commit_records(cv[1].id)] == ["c1"]
-    # rv[2] 在截断点之后, 不属于 grand 的历史
-    assert grand.get_commit(rv[2].id) is None
-
-
-def test_checkout_from_ancestor_segment(root: Path):
-    m = new_filesystem_memento(root, "o")
-    rb = m.current()
-    rv = _grow(rb, "r", 2)
-    child = m.checkout(base_fork="o", base_branch_id=rb.meta.branch_id, name="child")
-    _grow(child, "c", 1)
-    # 从 child 的历史里取一个"其实属于 root"的 commit 作起点
-    grand = m.checkout(
-        base_fork="o", base_branch_id=child.meta.branch_id, base_commit_id=rv[0].id, name="grand"
-    )
-    # base 直接指向 root branch, 不经过 child
-    assert grand.meta.base.branch_id == rb.meta.branch_id
-    assert grand.meta.base.commit_seq == 1
-    assert [v.id for v in grand.all_commits()] == [rv[0].id]
-
-
-def test_checkout_never_from_staging(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a"))  # 只有 staging, 没有 commit
-    with pytest.raises(MementoError):
-        m.checkout(base_fork="o", base_branch_id=b.meta.branch_id)
-
-
-def test_checkout_cross_owner_with_overlay(root: Path):
-    alice = new_filesystem_memento(root, "alice")
-    ab = alice.current()
-    ab.update(_rec("a"))
-    ab.commit(kind="mechanical")
-
-    bob = new_filesystem_memento(root, "bob")
-    nb = bob.checkout(
-        base_fork="alice",
-        base_branch_id=ab.meta.branch_id,
-        overlay={"divergence_prompt": "you are the side thinker"},
-    )
-    assert nb.meta.fork == "bob"
-    assert not nb.readonly
-    assert nb.meta.overlay["divergence_prompt"] == "you are the side thinker"
-    # overlay 不在对话历史里
-    assert nb.staging() == []
-
-
-def test_ancestry_tamper_detected(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    b.update(_rec("a"))
-    b.commit(kind="mechanical")
-    child = m.checkout(base_fork="o", base_branch_id=b.meta.branch_id)
-    meta_path = root / "branches" / "o" / child.meta.branch_id / "meta.json"
-    data = json.loads(meta_path.read_text())
-    data["ancestry"] = []  # 篡改冻结祖先链
-    meta_path.write_text(json.dumps(data))
-    with pytest.raises(MementoError):
-        m.get_branch(child.meta.branch_id)
-
-
-# ============================================================
-# 5. hook fan-out
-# ============================================================
-
-
-class CollectorHooks:
+class Collector(MementoHooks):
     def __init__(self):
-        self.events: list[tuple] = []
+        self.events: list[tuple[str, dict]] = []
 
-    def on_record_staged(self, branch_id, record):
-        self.events.append(("staged", branch_id, record.id))
+    def on_record_staged(self, line: str, record: MomentRecord) -> None:
+        self.events.append(("record_staged", {"line": line, "id": record.id}))
 
-    def on_commit(self, branch_id, view):
-        self.events.append(("commit", branch_id, view.id))
+    def on_commit(self, line: str, view: CommitView) -> None:
+        self.events.append(("commit", {"line": line, "id": view.id}))
 
-    def on_reinterpreted(self, branch_id, view):
-        self.events.append(("reinterpreted", branch_id, view.note_seq))
+    def on_reinterpreted(self, commit_id: str, view: CommitView) -> None:
+        self.events.append(("reinterpreted", {"commit_id": commit_id}))
 
-    def on_branch_created(self, meta):
-        self.events.append(("created", meta.branch_id))
+    def on_line_created(self, name: str, from_ref: BranchRef | None) -> None:
+        self.events.append(("line_created", {"name": name}))
 
-    def on_branch_switched(self, branch_id):
-        self.events.append(("switched", branch_id))
-
-
-def test_hook_fan_out(root: Path):
-    hooks = CollectorHooks()
-    m = new_filesystem_memento(root, "o", hooks=hooks)
-    b = m.current()
-    bid = b.meta.branch_id
-    b.update(_rec("a"))
-    v = b.commit("s", kind="semantic")
-    b.reinterpret(v.id, "s2")
-    nb = m.checkout(base_fork="o", base_branch_id=bid)
-    m.switch(nb.meta.branch_id)
-
-    kinds = [e[0] for e in hooks.events]
-    assert kinds == ["created", "staged", "commit", "reinterpreted", "created", "switched"]
-    assert ("staged", bid, "a") in hooks.events
-    assert ("commit", bid, v.id) in hooks.events
-    assert ("reinterpreted", bid, 1) in hooks.events
+    def on_line_deleted(self, name: str) -> None:
+        self.events.append(("line_deleted", {"name": name}))
 
 
-# ============================================================
-# 窗口快路径
-# ============================================================
+# ── basic lifecycle ─────────────────────────────────────────────────────────
 
 
-def test_window_fast_path(root: Path):
-    m = new_filesystem_memento(root, "o")
-    b = m.current()
-    views = _grow(b, "x", 3)  # 每个 commit 1 帧
-    b.update(_rec("live"))
+class TestBasicLifecycle:
+    def test_create_line_and_record(self, memento):
+        line = memento.create_line("main")
+        assert line.name == "main"
+        assert line.ref is None
+        assert not line.readonly
+        line.record(MomentRecord(id="m1", type="test/x", payload={"k": "v"}))
+        assert len(line.staging()) == 1
 
-    w: BranchWindow = b.window(detail_n=2, summary_m=-1)
-    # 明细 2 帧: staging 的 live + 最新 commit 展开的 x2
-    assert [r.id for r in w.details] == ["x2", "live"]
-    # 前两个 commit 折叠为摘要
-    assert [v.id for v in w.summaries] == [views[0].id, views[1].id]
+    def test_record_overwrite_last_wins(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={"v": 1}))
+        line.record(MomentRecord(id="m1", type="t", payload={"v": 2}))
+        assert line.staging()[0].payload["v"] == 2
 
-    w2 = b.window(detail_n=0, summary_m=1)
-    assert w2.details == []
-    assert [v.id for v in w2.summaries] == [views[2].id]
+    def test_commit_and_show(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={"k": "hello"}))
+        line.record(MomentRecord(id="m2", type="t", payload={"k": "world"}))
+        view = line.commit(text="first", kind="semantic")
+        assert view.commit.id.startswith("cmt_")
+        assert line.staging() == []
+        assert line.ref is not None
+        assert line.ref.commit_id == view.id
+        detail = memento.show(view.id)
+        assert len(detail.moments) == 2
+        assert detail.moments[0].id == "m1"
+
+    def test_commit_empty_staging_raises(self, memento):
+        line = memento.create_line("main")
+        with pytest.raises(EmptyStagingError):
+            line.commit(kind="semantic")
+
+    def test_frozen_moment_raises(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        line.commit(kind="semantic")
+        with pytest.raises(MomentFrozenError):
+            line.record(MomentRecord(id="m1", type="t", payload={}))
+
+    def test_annotate(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        view = line.commit(text="original", kind="semantic")
+        v2 = memento.annotate(view.id, title="revised", body="new body")
+        assert v2.summary() == "revised"
+        with pytest.raises(CommitNotFoundError):
+            memento.annotate("cmt_nonexistent")
+
+    def test_notes(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        view = line.commit(text="first", kind="semantic")
+        memento.annotate(view.id, title="v2")
+        assert len(memento.notes(view.id)) == 2
+
+    def test_boundary_commit(self, memento):
+        line = memento.create_line("main")
+        for rid in ["a", "b", "c"]:
+            line.record(MomentRecord(id=rid, type="t", payload={}))
+        view = line.commit(kind="semantic", boundary_moment_id="b")
+        assert [m.id for m in memento.show(view.id).moments] == ["a", "b"]
+        assert [r.id for r in line.staging()] == ["c"]
+
+    def test_commit_space(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        view = line.commit(kind="semantic")
+        assert Path(memento.commit_space(view.id)).exists()
+
+    def test_show_nonexistent_raises(self, memento):
+        with pytest.raises(CommitNotFoundError):
+            memento.show("cmt_nonexistent")
 
 
-# ============================================================
-# trailer 规范 (abc 纯函数)
-# ============================================================
+# ── multi-line ───────────────────────────────────────────────────────────────
 
 
-def test_trailer_round_trip():
-    body = join_trailers(
-        "did the thing.",
-        [("Thread", "alpha"), ("Thread", "beta"), ("Resumes", "cmt_X"), ("Kind", "semantic")],
-    )
-    text, trailers = split_trailers(body)
-    assert text == "did the thing."
-    assert trailer_values(trailers, "Thread") == ["alpha", "beta"]
-    assert trailer_values(trailers, "Resumes") == ["cmt_X"]
+class TestMultiLine:
+    def test_list_lines(self, memento):
+        memento.create_line("main")
+        memento.create_line("idea-x")
+        assert memento.list_lines() == ["idea-x", "main"]
+
+    def test_parallel_independent_staging(self, memento):
+        a = memento.create_line("a")
+        b = memento.create_line("b")
+        a.record(MomentRecord(id="a1", type="t", payload={}))
+        b.record(MomentRecord(id="b1", type="t", payload={}))
+        assert a.staging()[0].id == "a1"
+        assert b.staging()[0].id == "b1"
+
+    def test_delete_line_keeps_commits(self, memento):
+        line = memento.create_line("tmp")
+        line.record(MomentRecord(id="x", type="t", payload={}))
+        cid = line.commit(kind="mechanical").id
+        memento.delete_line("tmp")
+        assert memento.show(cid).commit.id == cid
+
+    def test_reset_auto_mechanical_commit(self, memento):
+        a = memento.create_line("a")
+        b = memento.create_line("b")
+        a.record(MomentRecord(id="a1", type="t", payload={}))
+        a.commit(text="anchor", kind="semantic")
+        b.record(MomentRecord(id="b1", type="t", payload={}))
+        vb = b.commit(kind="semantic")
+        # staging has content → reset triggers auto mechanical commit
+        a.record(MomentRecord(id="a2", type="t", payload={}))
+        memento.reset_line("a", BranchRef(origin="ghost.test", commit_id=vb.id))
+        assert a.ref.commit_id == vb.id
+        assert a.staging() == []
+
+    def test_line_not_found(self, memento):
+        with pytest.raises(LineNotFoundError):
+            memento.get_line("nonexistent")
 
 
-def test_trailer_only_body():
-    body = join_trailers("", [("Kind", "mechanical")])
-    text, trailers = split_trailers(body)
-    assert text == ""
-    assert trailers == [("Kind", "mechanical")]
+# ── log ──────────────────────────────────────────────────────────────────────
 
 
-def test_trailer_requires_blank_line_separation():
-    # 正文紧贴 Key: value 行 (无空行) — 整体视为正文, 不解析 trailer
-    text, trailers = split_trailers("prose line\nKind: semantic")
-    assert trailers == []
-    assert "Kind: semantic" in text
+class TestLog:
+    def test_owner_log(self, memento):
+        a = memento.create_line("a")
+        b = memento.create_line("b")
+        a.record(MomentRecord(id="1", type="t", payload={}))
+        a.commit(kind="semantic")
+        b.record(MomentRecord(id="2", type="t", payload={}))
+        b.commit(kind="mechanical")
+        entries = memento.log()
+        assert len(entries) == 2
+        assert entries[0].branch == "a"
+        assert entries[1].branch == "b"
+
+    def test_line_log_parent_chain(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        v1 = line.commit(text="first", kind="semantic")
+        line.record(MomentRecord(id="m2", type="t", payload={}))
+        v2 = line.commit(text="second", kind="semantic")
+        history = line.log()
+        assert len(history) == 2
+        assert history[0].id == v1.id
+        assert history[1].id == v2.id
+
+    def test_window(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        line.commit(text="first", kind="semantic")
+        line.record(MomentRecord(id="m2", type="t", payload={}))
+        win = line.window(detail_n=3, summary_m=3)
+        assert len(win.summaries) == 1
+        assert len(win.details) == 1
 
 
-def test_trailer_unknown_key_preserved():
-    body = join_trailers("x", [("Kind", "semantic"), ("X-Custom", "kept")])
-    _, trailers = split_trailers(body)
-    assert trailer_values(trailers, "X-Custom") == ["kept"]
+# ── hooks ────────────────────────────────────────────────────────────────────
+
+
+class TestHooks:
+    def test_hooks_fire(self, tmp_root):
+        c = Collector()
+        m = new_filesystem_memento(tmp_root, "ghost.test", hooks=c)
+        line = m.create_line("main")
+        assert c.events[-1][0] == "line_created"
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        assert c.events[-1][0] == "record_staged"
+        view = line.commit(kind="semantic")
+        assert c.events[-1][0] == "commit"
+        m.annotate(view.id, title="t")
+        assert c.events[-1][0] == "reinterpreted"
+        m.delete_line("main")
+        assert c.events[-1][0] == "line_deleted"
+
+
+# ── Y-m utility ──────────────────────────────────────────────────────────────
+
+
+class TestYM:
+    def test_y_m_format(self):
+        cid = new_commit_id()
+        ym = _y_m(cid)
+        assert len(ym) == 7
+        assert "-" in ym
+
+    def test_y_m_deterministic(self):
+        cid = new_commit_id()
+        assert _y_m(cid) == _y_m(cid)
+
+
+# ── degenerate form ──────────────────────────────────────────────────────────
+
+
+class TestDegenerate:
+    """Invariant #13: no fork vocabulary in dumb-memory usage."""
+
+    def test_no_fork_vocabulary(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={"v": 1}))
+        v1 = line.commit(kind="mechanical")
+        line.record(MomentRecord(id="m2", type="t", payload={"v": 2}))
+        v2 = line.commit(kind="mechanical")
+        assert len(line.window().summaries) >= 1
+        assert len(memento.show(v1.id).moments) == 1
+        memento.annotate(v2.id, title="ok")
+
+    def test_annotate_moment(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        view = line.commit(kind="semantic")
+        memento.annotate_moment(view.id, "m1", threads=["t1", "t2"])
+        # verify threads updated
+        detail = memento.show(view.id)
+        assert detail.moments[0].threads == ["t1", "t2"]
+
+    def test_annotate_moment_in_staging(self, memento):
+        line = memento.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        # annotate before freeze
+        memento.annotate_moment("cmt_nonexistent", "m1", threads=["a"])
+        assert line.staging()[0].threads == ["a"]
+
+
+# ── crash recovery ───────────────────────────────────────────────────────────
+
+
+class TestCrashRecovery:
+    def test_recover_truncates_stale_staging(self, tmp_root):
+        m = new_filesystem_memento(tmp_root, "ghost.test")
+        line = m.create_line("main")
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        view = line.commit(kind="semantic")
+        # simulate crash: stale staging with frozen id
+        sp = m._staging_path("main")
+        sp.write_text(
+            '{"t":"moment","id":"m1","created":"2026-07-21T00:00:00+00:00","type":"t","payload":{},"threads":[]}\n',
+            encoding="utf-8",
+        )
+        line2 = m.get_line("main")
+        assert line2.staging() == []
