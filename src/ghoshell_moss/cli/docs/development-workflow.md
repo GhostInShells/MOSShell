@@ -108,7 +108,7 @@ ANTHROPIC_SMALL_FAST_MODEL=<model name>
 
 **完成后模型应该能说出**：我创建了一个独立进程的 App，Matrix 自动发现了它，我用 CTML 调用了它的命令。
 
-**遇到问题看哪**：`.moss_ws/apps/CLAUDE.md` — App 开发指南。`moss docs read app-system.md` — App 体系完整论述。
+**遇到问题看哪**：`moss docs read matrix-nodes-system.md` — Node 体系完整论述。`moss codex get-interface ghoshell_moss.core.blueprint.cell` — Cell 声明与发现。
 
 ---
 

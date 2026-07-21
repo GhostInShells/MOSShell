@@ -115,7 +115,7 @@ def run_gui(state: State):
 
 ## 深入
 
-- App 体系背景：`moss docs read app-system`
+- Node 体系背景：`moss docs read matrix-nodes-system`
 - Channel Builder API：`moss codex get-interface ghoshell_moss.core.blueprint.channel_builder`
 - Matrix 发现机制：`moss codex get-interface ghoshell_moss.core.blueprint.matrix`
 

@@ -162,7 +162,7 @@ MOSS 的 CLI 工具（codex、manifests、features）为 AI 设计。`moss codex
 | 理解 CTML 的设计哲学 | `moss docs read ctml.md` |
 | 开发 Channel | `moss docs read channel-system.md` |
 | 理解 Workspace/Mode | `moss docs read workspace-and-mode.md` |
-| 开发 App | `moss docs read app-system.md` |
+| 开发 Node | `moss docs read matrix-nodes-system.md` |
 | 开始干活 | `moss howtos read host-dev/discover-environment.md` |
 | 查阅术语 | `moss docs read glossary.md` |
 

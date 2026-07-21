@@ -80,7 +80,7 @@ moss codex channeltypes                                                 # 正式
 
 ---
 
-> 远程同构的完整链路见 App 体系文档：`moss docs read app-system.md`
+> 远程同构的完整链路见 Node 体系文档：`moss docs read matrix-nodes-system.md`
 > Matrix 通讯 API：`moss codex get-interface ghoshell_moss.core.blueprint.matrix` （`provide_channel` 与 `channel_proxy`）
 
 ---
