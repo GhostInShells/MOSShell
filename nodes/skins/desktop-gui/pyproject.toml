@@ -1,0 +1,22 @@
+[project]
+name = "ghoshell-desktop-gui"
+version = "0.1.0"
+description = "Desktop GUI — human-Ghost shared perception space for the desktop channel"
+license = { text = "Apache License 2.0" }
+requires-python = ">=3.12"
+dependencies = [
+    "ghoshell-moss[matrix]",
+    "reflex>=0.9.0",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
