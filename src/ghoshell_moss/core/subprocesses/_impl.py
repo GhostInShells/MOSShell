@@ -91,18 +91,14 @@ class SubprocessesImpl(Subprocesses):
     """契约的 asyncio 实现.
 
     cwd: spawn 未显式传 cwd 时的默认工作目录. None = 进程当前目录.
-    output_dir: capture 落盘文件的默认存放目录. None = 首次需要时在
-                系统 tmp 下创建.
     """
 
     def __init__(
             self,
             cwd: str | Path | None = None,
-            output_dir: str | Path | None = None,
             logger: logging.Logger | None = None,
     ):
         self._default_cwd = Path(cwd).resolve() if cwd else Path.cwd()
-        self._output_dir = Path(output_dir).resolve() if output_dir else None
         self.logger = logger or get_moss_logger()
 
         self._started = False
@@ -273,12 +269,6 @@ class SubprocessesImpl(Subprocesses):
             path = self._default_cwd / path
         return str(path.resolve())
 
-    def _ensure_output_dir(self) -> Path:
-        if self._output_dir is None:
-            import tempfile
-            self._output_dir = Path(tempfile.mkdtemp(prefix="moss_subprocesses_"))
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        return self._output_dir
 
     @staticmethod
     def _build_env(with_os_env: bool, extra_env: dict[str, str] | None) -> dict:
@@ -398,14 +388,8 @@ class SubprocessesImpl(Subprocesses):
             index: int,
             capture: CaptureSpec,
     ) -> _ProcessOutputImpl:
-        if capture.stdout_file is not None:
-            stdout_file = capture.stdout_file
-        else:
-            stdout_file = self._ensure_output_dir() / f"proc_{index}" / "stdout.txt"
-        if capture.stderr_file is not None:
-            stderr_file = capture.stderr_file
-        else:
-            stderr_file = self._ensure_output_dir() / f"proc_{index}" / "stderr.txt"
+        stdout_file = capture.stdout_file
+        stderr_file = capture.stderr_file
 
         output = _ProcessOutputImpl(
             stdout_file=stdout_file,
@@ -443,26 +427,34 @@ class SubprocessesImpl(Subprocesses):
     async def _drain(
             self,
             stream: asyncio.StreamReader,
-            out_file: Path,
+            out_file: Path | None,
             buffer: list[str],
             buffer_lines: int,
             label: str,
     ) -> None:
-        """从 stream 持续读取, 完整写文件 + 维护内存 tail 窗口."""
+        """从 stream 持续读取, 维护内存 tail 窗口; out_file 非空时同步落盘."""
         maintain_buffer = buffer_lines > 0
         try:
-            out_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_file, "a") as f:
+            if out_file is not None:
+                out_file.parent.mkdir(parents=True, exist_ok=True)
+                f = open(out_file, "a")
+            else:
+                f = None
+            try:
                 while True:
                     line = await stream.readline()
                     if not line:
                         break
                     decoded = line.decode() if isinstance(line, bytes) else line
-                    f.write(decoded)
+                    if f is not None:
+                        f.write(decoded)
                     if maintain_buffer:
                         buffer.append(decoded)
                         if len(buffer) > buffer_lines:
                             buffer.pop(0)
+            finally:
+                if f is not None:
+                    f.close()
         except asyncio.CancelledError:
             pass
         except Exception:

@@ -1,7 +1,7 @@
 """MatrixSubprocessesProvider — matrix baseline default (§ZZ-2).
 
 matrix 层承接 Subprocesses 的接线, 不再走 host layer. 语义 = per-Matrix singleton,
-cwd/output_dir 从 Workspace 派生 (TT-6 边界做成环境).
+cwd 从 Workspace 派生 (TT-6 边界做成环境).
 
 workspace 用户在 MatrixManifest.providers 里显式覆写即可覆盖 default.
 """
@@ -29,11 +29,5 @@ class MatrixSubprocessesProvider(Provider[Subprocesses]):
     def factory(self, con: IoCContainer) -> Subprocesses:
         ws = con.get(Workspace)
         logger = con.get(LoggerItf)
-        if ws is not None:
-            runtime = ws.runtime().sub_storage("subprocesses").abspath()
-            cwd = ws.root().abspath()
-            output_dir = runtime
-        else:
-            cwd = None
-            output_dir = None
-        return SubprocessesImpl(cwd=cwd, output_dir=output_dir, logger=logger)
+        cwd = ws.root().abspath() if ws is not None else None
+        return SubprocessesImpl(cwd=cwd, logger=logger)

@@ -26,8 +26,8 @@ def tmp_output(tmp_path: Path) -> Path:
 
 
 @asynccontextmanager
-async def running_jobs(cwd: Path, output: Path):
-    sp = SubprocessesImpl(cwd=cwd, output_dir=output)
+async def running_jobs(cwd: Path):
+    sp = SubprocessesImpl(cwd=cwd)
     async with sp:
         jobs = JobSupervisorImpl(subprocesses=sp)
         async with jobs:
@@ -43,7 +43,7 @@ class TestLifecycle:
 
     @pytest.mark.asyncio
     async def test_submit_before_enter(self, tmp_cwd, tmp_output):
-        sp = SubprocessesImpl(cwd=tmp_cwd, output_dir=tmp_output)
+        sp = SubprocessesImpl(cwd=tmp_cwd)
         async with sp:
             jobs = JobSupervisorImpl(subprocesses=sp)
             with pytest.raises(RuntimeError, match="not started"):
@@ -51,14 +51,14 @@ class TestLifecycle:
 
     @pytest.mark.asyncio
     async def test_submit_after_exit(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             pass
         with pytest.raises(RuntimeError, match="already stopped"):
             jobs.submit(JobSpec(name="test", args=("true",)))
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_all_jobs(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             j1 = jobs.submit(JobSpec(name="j1", args=("sleep", "30")))
             j2 = jobs.submit(JobSpec(name="j2", args=("sleep", "30")))
             await asyncio.sleep(0.2)
@@ -78,26 +78,26 @@ class TestSubmit:
 
     @pytest.mark.asyncio
     async def test_submit_exec_mode(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(name="echo_test", args=("echo", "hello")))
             assert job.id is not None
             assert job.spec.name == "echo_test"
 
     @pytest.mark.asyncio
     async def test_submit_shell_mode(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(name="shell_test", shell_cmd="echo hello"))
             assert job.id is not None
 
     @pytest.mark.asyncio
     async def test_submit_rejects_no_command(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             with pytest.raises(ValueError):
                 jobs.submit(JobSpec(name="bad"))
 
     @pytest.mark.asyncio
     async def test_submit_rejects_both_args_and_shell(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             with pytest.raises(ValueError):
                 jobs.submit(JobSpec(name="bad", args=("true",), shell_cmd="true"))
 
@@ -111,7 +111,7 @@ class TestExecution:
 
     @pytest.mark.asyncio
     async def test_single_execution_completes(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(name="once", args=("echo", "done"), times=1))
             snap = await job.wait()
             assert snap.status == JobStatus.FINISHED
@@ -120,7 +120,7 @@ class TestExecution:
 
     @pytest.mark.asyncio
     async def test_multiple_times(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="multi",
                 args=("echo", "tick"),
@@ -133,7 +133,7 @@ class TestExecution:
 
     @pytest.mark.asyncio
     async def test_infinite_loop_stopped_by_supervisor(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="infinite",
                 args=("echo", "loop"),
@@ -151,7 +151,7 @@ class TestExecution:
     @pytest.mark.asyncio
     async def test_interval_timing(self, tmp_cwd, tmp_output):
         """interval 控制轮间延迟."""
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="timed",
                 args=("true",),
@@ -175,7 +175,7 @@ class TestSnapshot:
 
     @pytest.mark.asyncio
     async def test_snapshot_captures_stdout(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="output_test",
                 args=("echo", "captured"),
@@ -187,7 +187,7 @@ class TestSnapshot:
 
     @pytest.mark.asyncio
     async def test_snapshot_captures_stderr(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="err_test",
                 shell_cmd="echo err_msg >&2",
@@ -199,7 +199,7 @@ class TestSnapshot:
 
     @pytest.mark.asyncio
     async def test_snapshot_buffer_lines(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="buffer_test",
                 shell_cmd="for i in $(seq 1 200); do echo line$i; done",
@@ -222,7 +222,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_stop_terminates_job(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="stoppable",
                 args=("sleep", "30"),
@@ -235,7 +235,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_stop_kills_running_iteration(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="long_running",
                 args=("sleep", "30"),
@@ -249,7 +249,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_stop_idempotent(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(name="once", args=("true",), times=1))
             await job.wait()
             # 已 FINISHED, 再 stop 不抛
@@ -259,7 +259,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_on_failure_pause(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="fail_once",
                 shell_cmd="exit 1",
@@ -275,7 +275,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_resume_from_pause(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="resume_test",
                 shell_cmd="exit 1",
@@ -295,7 +295,7 @@ class TestStopResume:
 
     @pytest.mark.asyncio
     async def test_on_failure_continue(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(
                 name="continue_on_fail",
                 shell_cmd="exit 42",
@@ -318,7 +318,7 @@ class TestQuery:
 
     @pytest.mark.asyncio
     async def test_jobs_list_active_and_history(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             j1 = jobs.submit(JobSpec(name="active", args=("sleep", "30")))
             j2 = jobs.submit(JobSpec(name="done", args=("true",), times=1))
             await j2.wait()
@@ -331,14 +331,14 @@ class TestQuery:
 
     @pytest.mark.asyncio
     async def test_get_by_id(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             job = jobs.submit(JobSpec(name="findme", args=("true",)))
             found = jobs.get(job.id)
             assert found is job
 
     @pytest.mark.asyncio
     async def test_get_nonexistent(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             found = jobs.get("nonexistent-id")
             assert found is None
 
@@ -352,7 +352,7 @@ class TestConcurrency:
 
     @pytest.mark.asyncio
     async def test_multiple_jobs_run_concurrently(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as jobs:
+        async with running_jobs(tmp_cwd) as jobs:
             j1 = jobs.submit(JobSpec(name="job1", args=("sleep", "0.3"), times=1))
             j2 = jobs.submit(JobSpec(name="job2", args=("sleep", "0.3"), times=1))
             j3 = jobs.submit(JobSpec(name="job3", args=("sleep", "0.3"), times=1))
@@ -370,13 +370,13 @@ class TestNew:
 
     @pytest.mark.asyncio
     async def test_new_shares_subprocesses(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as root:
+        async with running_jobs(tmp_cwd) as root:
             peer = root.new()
             assert peer._sp is root._sp
 
     @pytest.mark.asyncio
     async def test_new_state_isolated(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as root:
+        async with running_jobs(tmp_cwd) as root:
             peer = root.new()
             async with peer:
                 j_root = root.submit(JobSpec(name="on-root", args=("true",), times=1))
@@ -391,7 +391,7 @@ class TestNew:
     async def test_new_before_root_entered(self, tmp_cwd, tmp_output):
         # 根实例即使未 async with, .new() 也能派生可启用 peer.
         from ghoshell_moss.core.subprocesses._impl import SubprocessesImpl
-        sp = SubprocessesImpl(cwd=tmp_cwd, output_dir=tmp_output)
+        sp = SubprocessesImpl(cwd=tmp_cwd)
         async with sp:
             root = JobSupervisorImpl(subprocesses=sp)
             peer = root.new()
@@ -402,7 +402,7 @@ class TestNew:
 
     @pytest.mark.asyncio
     async def test_peer_shutdown_leaves_root_alive(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as root:
+        async with running_jobs(tmp_cwd) as root:
             peer = root.new()
             async with peer:
                 j_peer = peer.submit(JobSpec(name="peer", args=("true",), times=1))
@@ -414,7 +414,7 @@ class TestNew:
 
     @pytest.mark.asyncio
     async def test_new_produces_new_instance(self, tmp_cwd, tmp_output):
-        async with running_jobs(tmp_cwd, tmp_output) as root:
+        async with running_jobs(tmp_cwd) as root:
             peer1 = root.new()
             peer2 = root.new()
             assert peer1 is not peer2
