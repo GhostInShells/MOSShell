@@ -162,24 +162,26 @@ async def test_suppress_clears_impulse_from_peek():
 
 @pytest.mark.asyncio
 async def test_suppress_expired_then_new_signal_revives():
-    """suppress 期满后新信号到达才重新产出 impulse."""
+    """suppress 期满后新信号到达时, 累积的旧消息与新消息合并重建 impulse."""
     async with InputSignalNucleus(suppress_seconds=0.1) as nuc:
         nuc.add_signal(Signal.new("input", Message.new().with_content("first")))
         await asyncio.sleep(0.01)
         assert nuc.peek() is not None
 
         nuc.suppress(Impulse(source="other"))
-        # 压制期内
+        # 压制期内 — cache 已清, peek 不可见
         assert nuc.peek() is None, "suppress 期内 peek 应返回 None"
 
         await asyncio.sleep(0.15)
-        # 压制期满, 但没有新信号 → 缓存仍为空 (被 suppress 清理了)
+        # 压制期满, 但没有新信号 → cache 为空 (suppress 清了 cache)
         assert nuc.peek() is None
 
-        # 新信号到达 → 重新构建
+        # 新信号到达 → 从累积的 signals (first + second) 重建
         nuc.add_signal(Signal.new("input", Message.new().with_content("second")))
         await asyncio.sleep(0.01)
         imp = nuc.peek()
         assert imp is not None
         texts = [m.to_content_string() for m in imp.messages]
-        assert texts == ["second"]
+        assert texts == ["first", "second"], (
+            f"suppress 保留 signals, 新信号应合并旧消息, 实际: {texts}"
+        )
