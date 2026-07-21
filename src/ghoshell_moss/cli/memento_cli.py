@@ -94,6 +94,23 @@ def _format_ref(r: CommitRef) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# specification
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SPEC_PATH = Path(__file__).parent / "docs" / "memento_spec.md"
+
+
+@memento_app.command("specification", short_help="Read the memento concept map — start here.")
+def specification():
+    """Display the memento cognitive-trajectory system specification."""
+    if not _SPEC_PATH.is_file():
+        print_error(f"Specification not found: {_SPEC_PATH}")
+        raise typer.Exit(code=1)
+    echo(_SPEC_PATH.read_text(encoding="utf-8"))
+    echo(f"\nSpecification path: {_SPEC_PATH.resolve()}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # init
 # ═══════════════════════════════════════════════════════════════════════════════
 
