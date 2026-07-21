@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ghoshell_moss.ground._chain import collect_chain
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins
-from ghoshell_moss.ground.contract import FilePin
+from ghoshell_moss.ground.contract import FileArguments, FilePin
 
 
 def _write_ground(root: Path, body: str) -> None:
@@ -62,11 +62,11 @@ class TestCollectChain:
     def test_body_only_no_frontmatter_or_pins(self, tmp_path):
         # GROUND.md with frontmatter + body + pins — only body should appear
         root = tmp_path
-        dump_l0_pins(root, [FilePin(label="f", path="a.py")])
+        dump_l0_pins(root, [FilePin(label="f", arguments=FileArguments(path="a.py"))])
         # dump_l0_pins creates a fresh GROUND.md; add body manually
         text = (root / DEFAULT_L0_FILENAME).read_text()
         (root / DEFAULT_L0_FILENAME).write_text(
-            "---\n$id: test\n---\n\n# My Body\n\nlaw here\n\n## ground:pins\n\n```yaml\n[]\n```\n"
+            "---\n$id: test\n---\n\n# My Body\n\nlaw here\n\n## ground:pins\n[]\n"
         )
         result = collect_chain(root)
         assert "# My Body" in result

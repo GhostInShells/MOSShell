@@ -215,13 +215,13 @@ def cmd_observe(
 
 
 # required fields per pin kind (SPEC §4)
-_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+_REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "file": frozenset({"path"}),
     "glob": frozenset({"pattern"}),
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
 }
-_KNOWN_KINDS = frozenset(_REQUIRED_FIELDS.keys())
+_KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 
 
 @ground_app.command("validate", short_help="Validate GROUND.md format and pin definitions.")
@@ -261,6 +261,8 @@ def cmd_validate(
     # no frontmatter is valid
 
     # --- pins section parse ---
+    # K55: bare YAML under ## ground:pins (no fenced code block).
+    # Extract everything from the heading to the next heading or EOF.
     pins_section = text.split("## ground:pins", 1)
     if len(pins_section) < 2:
         if errors:
@@ -270,16 +272,18 @@ def cmd_validate(
         print_info("no pins section — valid but empty")
         return
 
-    # extract YAML block from pins section
     yaml_part = pins_section[1]
-    yaml_match = re.search(r"```yaml\s*\n(.*?)\n```", yaml_part, re.DOTALL)
-    if not yaml_match:
-        errors.append("pins section: no ```yaml ... ``` fenced block found")
-        for e in errors:
-            print_error(e)
-        raise typer.Exit(code=2)
+    # strip to next heading boundary
+    yaml_match = re.search(r"^(.*?)(?=^#+[ \t]+|\Z)", yaml_part, re.DOTALL | re.MULTILINE)
+    yaml_body = yaml_match.group(1).strip() if yaml_match else yaml_part.strip()
 
-    yaml_body = yaml_match.group(1)
+    if not yaml_body or yaml_body == "[]":
+        if errors:
+            for e in errors:
+                print_error(e)
+            raise typer.Exit(code=2)
+        return  # empty pins, valid
+
     try:
         pins_data = yaml.safe_load(yaml_body)
     except yaml.YAMLError as e:
@@ -308,13 +312,13 @@ def cmd_validate(
 
         idx = f"pin[{i}]"
 
-        # kind
-        kind = entry.get("kind")
-        if not kind:
-            errors.append(f"{idx}: missing 'kind' field")
+        # verb
+        verb = entry.get("verb")
+        if not verb:
+            errors.append(f"{idx}: missing 'verb' field")
             continue
-        if kind not in _KNOWN_KINDS:
-            warnings.append(f"{idx}: unknown kind '{kind}' — will be skipped on load")
+        if verb not in _KNOWN_VERBS:
+            warnings.append(f"{idx}: unknown verb '{verb}' — will be skipped on load")
 
         # label
         label = entry.get("label")
@@ -334,22 +338,23 @@ def cmd_validate(
                 warnings.append(f"{idx}: duplicate label '{label}'")
             seen_labels.add(label)
 
-        # kind-specific required fields
-        if kind in _REQUIRED_FIELDS:
-            for field in _REQUIRED_FIELDS[kind]:
-                if field not in entry:
-                    errors.append(f"{idx} ({kind}): missing required field '{field}'")
+        # verb-specific required arguments (K55: inside arguments map)
+        args = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
+        if verb in _REQUIRED_ARGS:
+            for field in _REQUIRED_ARGS[verb]:
+                if field not in args:
+                    errors.append(f"{idx} ({verb}): missing required argument '{field}'")
 
-        # optional field type checks
-        if "range" in entry and kind == "file":
-            rv = entry["range"]
+        # optional argument type checks
+        if "range" in args and verb == "file":
+            rv = args["range"]
             if not isinstance(rv, str) and not isinstance(rv, int):
                 errors.append(f"{idx}: 'range' must be str or int, got {type(rv).__name__}")
             elif isinstance(rv, str) and not re.match(r"^\d+(-\d+)?$", rv):
                 errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
-        if "depth" in entry and kind == "ls":
-            if not isinstance(entry["depth"], int):
-                errors.append(f"{idx}: 'depth' must be int, got {type(entry['depth']).__name__}")
+        if "depth" in args and verb == "ls":
+            if not isinstance(args["depth"], int):
+                errors.append(f"{idx}: 'depth' must be int, got {type(args['depth']).__name__}")
         if "description" in entry:
             desc = entry["description"]
             if not isinstance(desc, str):

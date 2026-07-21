@@ -5,7 +5,7 @@ Ground 一句话承诺: "在 context 表面钉住一组注视目标, 每帧重�
 结构:
 1. GroundSet — 容器. open/close 多个 Ground, CTML 接触面
 2. Ground   — 一个打开的场. 绑定目录 root, 持有 pin 集, 承担 frame 渲染
-3. Pin      — 一枚注视声明. 具体子类携带目标地址 (file/glob/frontmatter/ls)
+3. Pin      — 一枚注视声明. 具体子类携带 verb + typed arguments (K55 envelope)
 
 不承担: 子进程执行 / 周期性 fold / 持久记忆 — 各自由独立 contract 负责.
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from typing_extensions import Self
@@ -30,6 +30,10 @@ __all__ = [
     "GlobPin",
     "FrontmatterPin",
     "LsPin",
+    "FileArguments",
+    "GlobArguments",
+    "FrontmatterArguments",
+    "LsArguments",
     "GroundConvention",
     "UpdateResult",
     "GroundError",
@@ -64,21 +68,71 @@ class GroundConvention(BaseModel):
     model_config = {"extra": "allow"}
 
 
+# -- pin: verb arguments models (K55) ----------------------------------------
+
+
+class FileArguments(BaseModel):
+    """file verb 的 arguments."""
+    path: str = Field(description="文件路径, 锚点语法允许.")
+    range: str | None = Field(
+        default=None,
+        pattern=r"^\d+(-\d+)?$",
+        description="行区间: 'N' (单行) 或 'N-M' (1-indexed).",
+    )
+
+    model_config = {"extra": "allow"}
+
+
+class GlobArguments(BaseModel):
+    """glob verb 的 arguments."""
+    pattern: str = Field(description="glob pattern (*, **, ? 标准语义).")
+
+    model_config = {"extra": "allow"}
+
+
+class FrontmatterArguments(BaseModel):
+    """frontmatter verb 的 arguments."""
+    path: str = Field(description="markdown 文件路径.")
+
+    model_config = {"extra": "allow"}
+
+
+class LsArguments(BaseModel):
+    """ls verb 的 arguments."""
+    path: str = Field(description="目录路径.")
+    depth: int = Field(default=2, ge=1, le=8, description="遍历深度. 默认 2.")
+
+    model_config = {"extra": "allow"}
+
+
+# -- pin verb registry -------------------------------------------------------
+
+_VERB_CLASSES: dict[str, type[Pin]] = {}
+"""verb → Pin subclass dispatch.  Populated below after class definitions."""
+
+
+def _register(verb: str):
+    def _deco(cls: type[Pin]) -> type[Pin]:
+        _VERB_CLASSES[verb] = cls
+        return cls
+    return _deco
+
+
 # -- pins --------------------------------------------------------------------
 
 
 class Pin(BaseModel):
     """pin 基类 — 场里的一枚注视声明.
 
-    具体子类携带目标地址, 每种子类自带 observe/render 多态.
-    落盘用 ``kind`` 做 discriminated union 鉴别.
+    K55 envelope: {label, verb, arguments, description}.  具体子类携带
+    typed arguments — verb 是 Literal discriminator, arguments 是多态载体.
     """
 
     label: str = Field(
         min_length=1,
         max_length=PIN_LABEL_MAX_LEN,
         pattern=_PIN_LABEL_RE.pattern,
-        description="ground 内唯一标识, 承担 unpin 定位 + frame fenced-block lang tag.",
+        description="ground 内唯一标识, 承担 unpin 定位.",
     )
     description: str = Field(
         default="",
@@ -89,38 +143,36 @@ class Pin(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+@_register("file")
 class FilePin(Pin):
     """单文件注视, 可选行区间."""
 
-    kind: Literal["file"] = "file"
-    path: str = Field(description="文件路径, 锚点语法 ($GROUND / $CWD / $HOME) 允许.")
-    range: str | None = Field(
-        default=None,
-        pattern=r"^\d+(-\d+)?$",
-        description="行区间: 'N' (单行) 或 'N-M' (含端点, 1-indexed).",
-    )
+    verb: Literal["file"] = "file"
+    arguments: FileArguments
 
 
+@_register("glob")
 class GlobPin(Pin):
     """glob 注视 — 命中路径清单, 不出内容."""
 
-    kind: Literal["glob"] = "glob"
-    pattern: str = Field(description="glob pattern (*, **, ? 标准语义). 锚点语法允许.")
+    verb: Literal["glob"] = "glob"
+    arguments: GlobArguments
 
 
+@_register("frontmatter")
 class FrontmatterPin(Pin):
     """单文件 frontmatter 注视 — 只出 YAML frontmatter, 不出 body."""
 
-    kind: Literal["frontmatter"] = "frontmatter"
-    path: str = Field(description="markdown 文件路径. 锚点语法允许.")
+    verb: Literal["frontmatter"] = "frontmatter"
+    arguments: FrontmatterArguments
 
 
+@_register("ls")
 class LsPin(Pin):
     """目录列表注视 — 结构视图, 不出内容."""
 
-    kind: Literal["ls"] = "ls"
-    path: str = Field(description="目录路径. 锚点语法允许.")
-    depth: int = Field(default=2, ge=1, le=8, description="遍历深度. 默认 2 = 一屏可扫.")
+    verb: Literal["ls"] = "ls"
+    arguments: LsArguments
 
 
 # -- errors ------------------------------------------------------------------
@@ -216,7 +268,7 @@ class Ground(ABC):
     async def context(self) -> str:
         """渲染当前帧 — 消费给 virtual channel 的 context_messages.
 
-        SPEC §6 frame 布局: head → body → @-expansion → 声明区 → 结果区.
+        SPEC §6: body verbatim + pin result blocks delimited by HTML comments.
         async: 并行观察所有 pin + 读文件内容.
         """
 
@@ -229,6 +281,12 @@ class Ground(ABC):
     @abstractmethod
     async def sediment(self) -> None:
         """把当前 pin 集写回 GROUND.md 的 pin 段. 不动 frontmatter 和 body."""
+
+    # -- 法链 -----------------------------------------------------------------
+
+    @abstractmethod
+    async def chain_text(self) -> str:
+        """返回法链 body — 祖先 GROUND.md body 的 root-first 收集."""
 
 
 # -- GroundSet --------------------------------------------------------------

@@ -7,7 +7,16 @@ import pytest
 
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._hash import Observation, PinShadow, observe, observe_sync
-from ghoshell_moss.ground.contract import FilePin, GlobPin, FrontmatterPin, LsPin
+from ghoshell_moss.ground.contract import (
+    FileArguments,
+    FilePin,
+    FrontmatterArguments,
+    FrontmatterPin,
+    GlobArguments,
+    GlobPin,
+    LsArguments,
+    LsPin,
+)
 
 
 def _run(coro):
@@ -22,7 +31,7 @@ class TestFilePinObservation:
     def test_observes_full_content(self, tmp_path):
         (tmp_path / "a.py").write_text("hello world\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="f", path="a.py")
+        pin = FilePin(label="f", arguments=FileArguments(path="a.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("hello world\n")
@@ -30,7 +39,7 @@ class TestFilePinObservation:
     def test_observes_range(self, tmp_path):
         (tmp_path / "a.py").write_text("L1\nL2\nL3\nL4\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="f", path="a.py", range="2-3")
+        pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2-3"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("L2\nL3\n")
@@ -38,14 +47,14 @@ class TestFilePinObservation:
     def test_observes_single_line_range(self, tmp_path):
         (tmp_path / "a.py").write_text("L1\nL2\nL3\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="f", path="a.py", range="2")
+        pin = FilePin(label="f", arguments=FileArguments(path="a.py", range="2"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("L2\n")
 
     def test_missing_file(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="f", path="nope.py")
+        pin = FilePin(label="f", arguments=FileArguments(path="nope.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is False
         assert obs.mtime is None
@@ -54,7 +63,7 @@ class TestFilePinObservation:
     def test_async_observe(self, tmp_path):
         (tmp_path / "a.py").write_text("x\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="f", path="a.py")
+        pin = FilePin(label="f", arguments=FileArguments(path="a.py"))
         obs = _run(observe(pin, anchor))
         assert obs.exists is True
 
@@ -64,14 +73,14 @@ class TestGlobPinObservation:
         (tmp_path / "a.py").write_text("a")
         (tmp_path / "b.py").write_text("b")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", pattern="*.py")
+        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("a.py\nb.py")
 
     def test_empty_hit_is_still_exists(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", pattern="nonexistent-*")
+        pin = GlobPin(label="g", arguments=GlobArguments(pattern="nonexistent-*"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.mtime is None
@@ -81,7 +90,7 @@ class TestFrontmatterPinObservation:
     def test_observes_frontmatter(self, tmp_path):
         (tmp_path / "f.md").write_text("---\ntitle: test\n---\n\nbody text\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FrontmatterPin(label="fm", path="f.md")
+        pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="f.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("title: test")
@@ -89,7 +98,7 @@ class TestFrontmatterPinObservation:
     def test_no_frontmatter_falls_back_to_full_text(self, tmp_path):
         (tmp_path / "f.md").write_text("just body, no frontmatter")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FrontmatterPin(label="fm", path="f.md")
+        pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="f.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
 
@@ -100,14 +109,14 @@ class TestLsPinObservation:
         (tmp_path / "sub").mkdir()
         (tmp_path / "sub" / "b.py").write_text("b")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = LsPin(label="ls", path=".", depth=2)
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
 
     def test_not_a_directory(self, tmp_path):
         (tmp_path / "f.py").write_text("x")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = LsPin(label="ls", path="f.py")
+        pin = LsPin(label="ls", arguments=LsArguments(path="f.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is False
 
@@ -116,7 +125,7 @@ class TestBinaryDetection:
     def test_detects_binary_file(self, tmp_path):
         (tmp_path / "img.bin").write_bytes(b"\x00\x01\x02\x03" * 256)
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="b", path="img.bin")
+        pin = FilePin(label="b", arguments=FileArguments(path="img.bin"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.is_binary is True
@@ -125,7 +134,7 @@ class TestBinaryDetection:
     def test_text_file_not_binary(self, tmp_path):
         (tmp_path / "a.py").write_text("hello world\n")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = FilePin(label="t", path="a.py")
+        pin = FilePin(label="t", arguments=FileArguments(path="a.py"))
         obs = observe_sync(pin, anchor)
         assert obs.is_binary is False
 
@@ -136,7 +145,7 @@ class TestGlobIgnore:
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "__pycache__" / "cached.py").write_text("cache")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="py", pattern="**/*.py")
+        pin = GlobPin(label="py", arguments=GlobArguments(pattern="**/*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         # only a.py, __pycache__/cached.py excluded
@@ -147,7 +156,7 @@ class TestGlobIgnore:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".git" / "config").write_text("x")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = LsPin(label="ls", path=".", depth=2)
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
 

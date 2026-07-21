@@ -116,7 +116,7 @@ def render_meta(
         for p in pins:
             kwargs = _pin_kwargs(p)
             desc = f"  # {p.description}" if p.description else ""
-            lines.append(f"  {p.label}:{p.kind}({kwargs}){desc}")
+            lines.append(f"  {p.label}:{p.verb}({kwargs}){desc}")
     else:
         lines.append("pins: (none)")
 
@@ -170,7 +170,7 @@ def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
     try:
-        target = resolve_path(pin.path, anchor)
+        target = resolve_path(pin.arguments.path, anchor)
     except (OSError, ValueError):
         return "error: cannot read file"
 
@@ -182,9 +182,9 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
     except (OSError, ValueError):
         return "error: cannot read file"
 
-    if pin.range is not None:
+    if pin.arguments.range is not None:
         lines_list = text.splitlines()
-        start, end = _parse_range(pin.range, len(lines_list))
+        start, end = _parse_range(pin.arguments.range, len(lines_list))
         if start > len(lines_list):
             return "error: range beyond file end"
         return "\n".join(lines_list[start - 1 : min(end, len(lines_list))])
@@ -194,7 +194,7 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
 
 def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
     root = anchor.ground
-    pattern = pin.pattern
+    pattern = pin.arguments.pattern
     if pattern.startswith("$"):
         try:
             resolved = resolve_path(pattern, anchor)
@@ -222,7 +222,7 @@ def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
     import re
 
     try:
-        target = resolve_path(pin.path, anchor)
+        target = resolve_path(pin.arguments.path, anchor)
         text = target.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return "error: cannot read file"
@@ -235,7 +235,7 @@ def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
 
 def _content_ls(pin: LsPin, anchor: Anchor) -> str:
     try:
-        root_dir = resolve_path(pin.path, anchor)
+        root_dir = resolve_path(pin.arguments.path, anchor)
     except (OSError, ValueError):
         return "error: invalid path"
 
@@ -243,7 +243,7 @@ def _content_ls(pin: LsPin, anchor: Anchor) -> str:
         return "error: not a directory"
 
     entries: list[str] = []
-    _walk_ls_entries(root_dir, pin.depth, "", entries)
+    _walk_ls_entries(root_dir, pin.arguments.depth, "", entries)
     return "\n".join(entries) if entries else "(empty)"
 
 
@@ -254,17 +254,17 @@ def _pin_kwargs(pin: Pin) -> str:
     """Pin subclass → kwargs display string."""
     parts: list[str] = []
     if isinstance(pin, FilePin):
-        parts.append(f'path="{pin.path}"')
-        if pin.range is not None:
-            parts.append(f'range="{pin.range}"')
+        parts.append(f'path="{pin.arguments.path}"')
+        if pin.arguments.range is not None:
+            parts.append(f'range="{pin.arguments.range}"')
     elif isinstance(pin, GlobPin):
-        parts.append(f'pattern="{pin.pattern}"')
+        parts.append(f'pattern="{pin.arguments.pattern}"')
     elif isinstance(pin, FrontmatterPin):
-        parts.append(f'path="{pin.path}"')
+        parts.append(f'path="{pin.arguments.path}"')
     elif isinstance(pin, LsPin):
-        parts.append(f'path="{pin.path}"')
-        if pin.depth != 2:
-            parts.append(f"depth={pin.depth}")
+        parts.append(f'path="{pin.arguments.path}"')
+        if pin.arguments.depth != 2:
+            parts.append(f"depth={pin.arguments.depth}")
     return ", ".join(parts)
 
 

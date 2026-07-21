@@ -99,7 +99,7 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
 
 
 def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
-    target = resolve_path(pin.path, anchor)
+    target = resolve_path(pin.arguments.path, anchor)
     try:
         mtime = target.stat().st_mtime
     except FileNotFoundError:
@@ -107,9 +107,9 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
 
     binary = _is_binary(target)
 
-    if pin.range is not None:
+    if pin.arguments.range is not None:
         text = target.read_text(encoding="utf-8", errors="replace")
-        start, end = _parse_range(pin.range, len(text.splitlines()))
+        start, end = _parse_range(pin.arguments.range, len(text.splitlines()))
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
         digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
         return Observation(exists=True, mtime=mtime, hash=digest, is_binary=binary)
@@ -126,7 +126,7 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
 
 def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
     root = anchor.ground
-    pattern = pin.pattern
+    pattern = pin.arguments.pattern
 
     # 锚点语法解析后做 glob
     if pattern.startswith("$"):
@@ -162,7 +162,7 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
 
 
 def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
-    target = resolve_path(pin.path, anchor)
+    target = resolve_path(pin.arguments.path, anchor)
     try:
         mtime = target.stat().st_mtime
         text = target.read_text(encoding="utf-8", errors="replace")
@@ -178,12 +178,12 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
 
 
 def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
-    root_dir = resolve_path(pin.path, anchor)
+    root_dir = resolve_path(pin.arguments.path, anchor)
     if not root_dir.is_dir():
         return Observation(exists=False)
 
     entries: list[str] = []
-    _walk_ls(root_dir, depth=pin.depth, prefix="", entries=entries)
+    _walk_ls(root_dir, depth=pin.arguments.depth, prefix="", entries=entries)
 
     if not entries:
         return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)

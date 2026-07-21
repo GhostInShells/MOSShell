@@ -8,13 +8,9 @@ label: MOSShell
 Project root cognitive field. Primary law source: @CLAUDE.md
 
 ## ground:pins
-
-<!-- Managed by `moss ground`. Do not hand-edit unless you know what you are doing. -->
-
-```yaml
-- kind: file
+- verb: file
   label: claude
+  arguments:
+    path: CLAUDE.md
   description: project instructions for AI collaborators
-  path: CLAUDE.md
-```
 

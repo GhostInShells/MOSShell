@@ -11,7 +11,15 @@ import pytest
 
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
 from ghoshell_moss.ground._l0 import load_l0
-from ghoshell_moss.ground.contract import FilePin, GlobPin, LsPin, PathOutsideRootError
+from ghoshell_moss.ground.contract import (
+    FileArguments,
+    FilePin,
+    GlobArguments,
+    GlobPin,
+    LsArguments,
+    LsPin,
+    PathOutsideRootError,
+)
 
 
 def run(coro):
@@ -78,7 +86,7 @@ class TestOpenClose:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="x", path="some_file.md"))
+                g.pin(FilePin(label="x", arguments=FileArguments(path="some_file.md")))
                 await gs.close(g.label)
                 assert g.label not in gs.active()
 
@@ -114,8 +122,8 @@ class TestOpenClose:
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 ga = await gs.open(tmp_path / "a")
                 gb = await gs.open(tmp_path / "b")
-                ga.pin(FilePin(label="a_pin", path="a.md"))
-                gb.pin(FilePin(label="b_pin", path="b.md"))
+                ga.pin(FilePin(label="a_pin", arguments=FileArguments(path="a.md")))
+                gb.pin(FilePin(label="b_pin", arguments=FileArguments(path="b.md")))
 
             a_pins = load_l0(tmp_path / "a").pins
             b_pins = load_l0(tmp_path / "b").pins
@@ -149,7 +157,7 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                p = g.pin(FilePin(label="t", path="target.py"))
+                p = g.pin(FilePin(label="t", arguments=FileArguments(path="target.py")))
                 assert p.label == "t"
                 assert p in g.pins()
 
@@ -161,8 +169,8 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", path="a.md", description="first"))
-                g.pin(FilePin(label="f", path="a.md", description="second"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md"), description="first"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md"), description="second"))
                 pins = g.pins()
                 assert len(pins) == 1
                 assert pins[0].description == "second"
@@ -177,9 +185,9 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="a", path="a.md"))
-                g.pin(FilePin(label="b", path="b.md"))
-                g.pin(FilePin(label="c", path="c.md"))
+                g.pin(FilePin(label="a", arguments=FileArguments(path="a.md")))
+                g.pin(FilePin(label="b", arguments=FileArguments(path="b.md")))
+                g.pin(FilePin(label="c", arguments=FileArguments(path="c.md")))
                 assert [p.label for p in g.pins()] == ["c", "b", "a"]
 
         run(scenario())
@@ -188,7 +196,7 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="x", path="x.md"))
+                g.pin(FilePin(label="x", arguments=FileArguments(path="x.md")))
                 g.unpin("x")
                 assert "x" not in {p.label for p in g.pins()}
 
@@ -210,7 +218,7 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", path="a.md"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
                 target.write_text("v2")
                 result = await g.update("f")
                 assert result.changed is True
@@ -225,7 +233,7 @@ class TestPins:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", path="a.md"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
                 result = await g.update("f")
                 assert result.changed is False
 
@@ -242,7 +250,7 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="greeting", path="hello.md", description="welcome"))
+                g.pin(FilePin(label="greeting", arguments=FileArguments(path="hello.md"), description="welcome"))
                 frame = await g.context()
                 assert "line1" in frame
                 assert "<!-- ground:pin:greeting -->" in frame
@@ -257,7 +265,7 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="s", path="shift.md"))
+                g.pin(FilePin(label="s", arguments=FileArguments(path="shift.md")))
                 target.write_text("after — different")
                 frame = await g.context()
                 assert "changed on disk" in frame
@@ -268,7 +276,7 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="nope", path="does-not-exist.md"))
+                g.pin(FilePin(label="nope", arguments=FileArguments(path="does-not-exist.md")))
                 frame = await g.context()
                 assert "[missing]" in frame
 
@@ -281,7 +289,7 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(GlobPin(label="py", pattern="*.py"))
+                g.pin(GlobPin(label="py", arguments=GlobArguments(pattern="*.py")))
                 frame = await g.context()
                 assert "a.py" in frame
                 assert "b.py" in frame
@@ -294,8 +302,8 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="entry", path="a.py", range="1", description="start"))
-                g.pin(LsPin(label="layout", path="."))
+                g.pin(FilePin(label="entry", arguments=FileArguments(path="a.py", range="1"), description="start"))
+                g.pin(LsPin(label="layout", arguments=LsArguments(path=".")))
                 frame = await g.context()
                 # declaration block removed from frame; pin results use HTML comments
                 assert "<!-- ground:pin:entry -->" in frame
@@ -317,8 +325,8 @@ class TestRoundtrip:
         async def phase1():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="first", path="a.md"))
-                g.pin(GlobPin(label="second", pattern="*.py"))
+                g.pin(FilePin(label="first", arguments=FileArguments(path="a.md")))
+                g.pin(GlobPin(label="second", arguments=GlobArguments(pattern="*.py")))
 
         async def phase2():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
@@ -341,7 +349,7 @@ class TestRoundtrip:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="x", path="x.md"))
+                g.pin(FilePin(label="x", arguments=FileArguments(path="x.md")))
 
             text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
             assert "Governance" in text
@@ -358,7 +366,7 @@ class TestBinaryFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="img", path="img.bin"))
+                g.pin(FilePin(label="img", arguments=FileArguments(path="img.bin")))
                 frame = await g.context()
                 assert "[binary file, not rendered]" in frame
 
@@ -375,7 +383,7 @@ class TestGroundSetForwarding:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                p = gs.pin(g.label, FilePin(label="f", path="a.py"))
+                p = gs.pin(g.label, FilePin(label="f", arguments=FileArguments(path="a.py")))
                 assert p.label == "f"
                 assert "f" in {pp.label for pp in g.pins()}
 
@@ -385,7 +393,7 @@ class TestGroundSetForwarding:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                gs.pin(g.label, FilePin(label="f", path="x.md"))
+                gs.pin(g.label, FilePin(label="f", arguments=FileArguments(path="x.md")))
                 gs.unpin(g.label, "f")
                 assert "f" not in {p.label for p in g.pins()}
 
@@ -397,7 +405,7 @@ class TestGroundSetForwarding:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", path="a.py"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.py")))
                 frame = await gs.frame(g.label)
                 assert "hello" in frame
 
@@ -410,7 +418,7 @@ class TestGroundSetForwarding:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(FilePin(label="f", path="a.md"))
+                g.pin(FilePin(label="f", arguments=FileArguments(path="a.md")))
                 target.write_text("v2")
                 result = await gs.update(g.label, "f")
                 assert result.changed

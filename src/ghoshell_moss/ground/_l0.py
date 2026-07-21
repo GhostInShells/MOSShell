@@ -6,7 +6,7 @@
     ---
     <body markdown>
     ## ground:pins
-    <YAML list, discriminated union by ``kind``>
+    <bare YAML list, K55 envelope: {label, verb, arguments, description}>
 
 seen_* (PinShadow) 不进盘 — SPEC §7.2 的铁律.
 """
@@ -20,10 +20,15 @@ from pathlib import Path
 import yaml
 
 from ghoshell_moss.ground.contract import (
+    _VERB_CLASSES,
+    FileArguments,
     FilePin,
+    FrontmatterArguments,
     FrontmatterPin,
+    GlobArguments,
     GlobPin,
     GroundConvention,
+    LsArguments,
     LsPin,
     Pin,
 )
@@ -39,15 +44,7 @@ __all__ = [
 DEFAULT_L0_FILENAME = "GROUND.md"
 PIN_SECTION_HEADING = "## ground:pins"
 
-# kind → Pin subclass dispatch
-_PIN_CLASSES: dict[str, type[Pin]] = {
-    "file": FilePin,
-    "glob": GlobPin,
-    "frontmatter": FrontmatterPin,
-    "ls": LsPin,
-}
-
-# --- regex ----------------------------------------------------------------
+# -- regex ----------------------------------------------------------------
 
 _FRONTMATTER_RE = re.compile(
     r"\A---\s*\n(?P<yaml>.*?)\n---[ \t]*\n(?P<rest>.*)",
@@ -59,13 +56,16 @@ _PIN_SECTION_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
-_PIN_YAML_BLOCK_RE = re.compile(
-    r"```ya?ml[ \t]*\n(?P<yaml>.*?)\n```",
-    re.DOTALL,
-)
+# K55: arguments models per verb — used for deserialization
+_ARG_CLASSES: dict[str, type] = {
+    "file": FileArguments,
+    "glob": GlobArguments,
+    "frontmatter": FrontmatterArguments,
+    "ls": LsArguments,
+}
 
 
-# --- L0Contents -----------------------------------------------------------
+# -- L0Contents -----------------------------------------------------------
 
 
 @dataclass
@@ -81,7 +81,7 @@ class L0Contents:
         return cls(convention=GroundConvention(), body="", pins=[])
 
 
-# --- load -----------------------------------------------------------------
+# -- load -----------------------------------------------------------------
 
 
 def load_l0(root: Path, filename: str = DEFAULT_L0_FILENAME) -> L0Contents:
@@ -107,15 +107,14 @@ def load_l0(root: Path, filename: str = DEFAULT_L0_FILENAME) -> L0Contents:
         convention = GroundConvention()
         rest = text
 
-    # pins
+    # pins — bare YAML under ## ground:pins (K55: no fenced code block)
     pins: list[Pin] = []
     pin_match = _PIN_SECTION_RE.search(rest)
     if pin_match is not None:
-        yaml_match = _PIN_YAML_BLOCK_RE.search(pin_match.group("body"))
-        if yaml_match is not None:
-            raw_list = yaml.safe_load(yaml_match.group("yaml")) or []
+        yaml_text = pin_match.group("body").strip()
+        if yaml_text:
+            raw_list = yaml.safe_load(yaml_text) or []
             pins = _deserialize_pins(raw_list)
-        # 剥离 pin 段 body
         body = rest[: pin_match.start()] + rest[pin_match.end() :]
     else:
         body = rest
@@ -124,22 +123,38 @@ def load_l0(root: Path, filename: str = DEFAULT_L0_FILENAME) -> L0Contents:
 
 
 def _deserialize_pins(raw: list[dict]) -> list[Pin]:
-    """kind → class dispatch. 未知 kind 跳过 (SPEC §4.2 保留)."""
+    """K55 envelope → Pin subclass dispatch.
+
+    Each item: {label, verb, arguments: {...}, description?}.
+    ``arguments`` is passed to the verb's arguments model constructor;
+    unknown verbs are skipped (SPEC §4.2).
+    """
     result: list[Pin] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        kind = item.get("kind", "")
-        cls = _PIN_CLASSES.get(kind)
+        verb = item.get("verb", "")
+        cls = _VERB_CLASSES.get(verb)
         if cls is None:
             continue
-        # 移除 kind 后传给对应类 constructor
-        fields = {k: v for k, v in item.items() if k != "kind"}
-        result.append(cls(**fields))
+
+        args_data = item.get("arguments") or {}
+        args_cls = _ARG_CLASSES.get(verb)
+        if args_cls is not None:
+            arguments = args_cls(**args_data)
+        else:
+            # unknown verb — preserve raw dict as-is
+            arguments = args_data
+
+        result.append(cls(
+            label=item["label"],
+            arguments=arguments,
+            description=item.get("description", ""),
+        ))
     return result
 
 
-# --- dump -----------------------------------------------------------------
+# -- dump -----------------------------------------------------------------
 
 
 def dump_l0_pins(
@@ -147,12 +162,13 @@ def dump_l0_pins(
     pins: list[Pin],
     filename: str = DEFAULT_L0_FILENAME,
 ) -> None:
-    """把 pin 集写回 GROUND.md 的 ``## ground:pins`` 段.
+    """把 pin 集写回 GROUND.md 的 ``## ground:pins`` 段 (K55 envelope).
 
     - 文件不存在: 创建, 只写 pin 段.
     - 文件存在, 无 pin 段: 追加.
     - 文件存在, 有 pin 段: in-place 替换.
     - 保留 frontmatter 与 body — 只动 pin 段 (K20).
+    - 裸 YAML, 无 fenced code block (K55).
 
     seen_* 永远不落盘 — Pin 模型不含观察影子.
     """
@@ -177,7 +193,7 @@ def dump_l0_pins(
 
 
 def _render_pin_section(pins: list[Pin]) -> str:
-    """渲染 pin 段: ``## ground:pins`` + yaml code block."""
+    """渲染 pin 段: ``## ground:pins`` + 裸 YAML (K55 envelope)."""
     if pins:
         data = [_serialize_pin(p) for p in pins]
         yaml_text = yaml.safe_dump(
@@ -189,24 +205,25 @@ def _render_pin_section(pins: list[Pin]) -> str:
     else:
         yaml_text = "[]\n"
 
-    return (
-        f"{PIN_SECTION_HEADING}\n\n"
-        "<!-- Managed by `moss ground`. Do not hand-edit unless you know "
-        "what you are doing. -->\n\n"
-        f"```yaml\n{yaml_text}```\n\n"
-    )
+    return f"{PIN_SECTION_HEADING}\n{yaml_text}\n"
 
 
 def _serialize_pin(pin: Pin) -> dict:
-    """Pin → dict, kind discriminator first, never emit nulls."""
-    data = pin.model_dump(exclude_none=True, exclude_defaults=True)
-    # Reorder: kind first, then label, then the rest
+    """Pin → K55 envelope: {label, verb, arguments: {...}, description?}.
+
+    verb always first.  arguments excludes None/default values.
+    description omitted when empty.
+    """
     out: dict[str, object] = {}
-    if "kind" in data:
-        out["kind"] = data.pop("kind")
-    else:
-        out["kind"] = type(pin).model_fields["kind"].default
-    if "label" in data:
-        out["label"] = data.pop("label")
-    out.update(data)
+    # verb — always present, always first
+    out["verb"] = type(pin).model_fields["verb"].default
+    # label
+    out["label"] = pin.label
+    # arguments — exclude None/defaults within
+    out["arguments"] = pin.arguments.model_dump(
+        exclude_none=True, exclude_defaults=True
+    )
+    # description — only when non-empty
+    if pin.description:
+        out["description"] = pin.description
     return out
