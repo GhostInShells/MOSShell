@@ -9,13 +9,14 @@ from ghoshell_moss.host.tui_entries.ghost_ui import GhostTUI
 @click.command()
 @click.argument("ghost", required=False, default=None)
 @click.option("--mode", default="default", help="MOSS 运行模式.")
-@click.option("--scope", default="default", help="会话范围 (session scope).")
-def ghost_run_main(ghost: str | None, mode: str, scope: str):
+@click.option("--scope", default="default", help="网络通讯子空间 (network scope).")
+@click.option("--network", default="local", help="网络驱动 (network driver).")
+def ghost_run_main(ghost: str | None, mode: str, scope: str, network: str):
     """启动 Ghost TUI 交互终端 — 与 Ghost 实时对话。
 
     GHOST: 要启动的 Ghost 名称。不提供时列出所有可用的 Ghost。
     """
-    env = Environment(mode=mode, ghost=ghost, scope=scope)
+    env = Environment(mode=mode, ghost=ghost, scope=scope, network=network)
     env.seal()
 
     host = Host(env=env)

@@ -83,16 +83,21 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         return "MOSS runtime interrupted."
 
 
-def _bootstrap_env(mode: str | None, session_scope: str | None) -> Environment:
+def _bootstrap_env(
+        mode: str | None,
+        scope: str | None,
+        network: str | None,
+) -> Environment:
     """入口显式构造 + seal (§UU-1). Host 消费 sealed singleton."""
-    env = Environment(mode=mode, scope=session_scope)
+    env = Environment(mode=mode, scope=scope, network=network)
     env.seal()
     return env
 
 
 def main_entry(
         mode: str | None = None,
-        session_scope: str | None = None,
+        scope: str | None = None,
+        network: str | None = None,
         transport: Literal['sse', 'std', 'streamable_http'] = 'sse',
         server_name: str = 'MOSS-Toolset-Server',
         host: str = '127.0.0.1',
@@ -104,12 +109,12 @@ def main_entry(
         host=host,
         port=port,
     )
-    moss_host = Host(env=_bootstrap_env(mode, session_scope))
+    moss_host = Host(env=_bootstrap_env(mode, scope, network))
     state = ServerState()
     # 注册对应的工具.
     bootstrap(state, mcp)
     params = dict(
-        mode=mode, session_scope=session_scope, transport=transport,
+        mode=mode, scope=scope, network=network, transport=transport,
         server_name=server_name, host=host, port=port,
     )
 
@@ -140,18 +145,20 @@ def main_entry(
 
 @click.command()
 @click.option('--mode', default='default', help='MOSS 运行时模式')
-@click.option('--session-scope', default='default', help='Session 作用域')
+@click.option('--scope', default='default', help='网络通讯子空间 (network scope)')
+@click.option('--network', default='local', help='网络驱动 (network driver)')
 @click.option('--transport', type=click.Choice(['sse', 'std', 'streamable_http']), default='sse', help='通信协议')
 @click.option('--host', default='127.0.0.1', help='SSE 服务地址 (仅在 transport=sse 时生效)')
 @click.option('--port', default=20773, help='SSE 服务端口 (仅在 transport=sse 时生效)')
 @click.option('--server-name', default='MOSS-Toolset-Server', help='MCP 服务名称')
-def main(mode, session_scope, transport, host, port, server_name):
+def main(mode, scope, network, transport, host, port, server_name):
     """MOSS MCP 服务启动程序"""
 
     # 传递给你的 main_entry
     main_entry(
         mode=mode,
-        session_scope=session_scope,
+        scope=scope,
+        network=network,
         transport=transport,
         server_name=server_name,
         host=host,
