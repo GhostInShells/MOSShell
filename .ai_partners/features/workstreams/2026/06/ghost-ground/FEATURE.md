@@ -1,43 +1,29 @@
 ---
 title: Ghost Ground — Ghost 的认知场
-status: in-progress
+status: completed
 priority: P0
 created: 2026-06-10
-updated: 2026-07-20
+updated: 2026-07-21
 renamed_from: Project Manager
 depends:
   - momento-mori
 milestone: 0.1.0
 description: >-
   Ground 是 Ghost 的认知场 — context_messages 上可 pin 的表面 + 场 (目录)
-  的开合管理. 以 frontmatter+body+pins 的 L0 文件 (GROUND.md) 为载体;
-  frontmatter 是运行时生命周期的合法发明域, body 永远开放集, pins 是第一
-  人称声明. 三层落地按预训练迁移量排序: CTML channel (主), bash CLI
-  (`moss ground`), module_eval (小概率). 与 subprocesses/job_supervisor
-  (执行), Memento (过去) 共构反身性基建.
+  的开合管理. 以 frontmatter+body 的 L0 文件 (GROUND.md) 为载体, pins
+  作为 frontmatter 的一部分; frontmatter = 机器域, body = 人/模型叙事域.
+  三层落地按预训练迁移量排序: CTML channel (主), bash CLI (`moss ground`),
+  module_eval (小概率). CLI 层已完成: spec / init / frame / meta / observe /
+  validate 六命令, contract + concrete 全部落地, 105 测试通过, 两轮 dogfood
+  验收.
 status_note: >-
-  2026-07-20 kimi-k3 [1m]. 新一轮抽象推演 (K55~K58), 与人工讨论
-  对齐, 四处覆盖旧判: K44 argv 契约 → K55 kwargs 信封 (label/verb/
-  arguments/description 固定信封, 多态关进 arguments, 展示语法同步
-  kwargs); instruction 旧机制 (CLAUDE.md 链 + 三配置 key) 整体溶解 →
-  K56 法链唯 GROUND.md body 向上至 $HOME, @ 静态法装载 vs pin 动态注视
-  按"对账"分界, doc 参数双锚落地 K35 携带/属地; K57 嵌套场平级, 向上
-  继承是规则向下发现是 pin (glob); K58 路径锚点语法 $GROUND (裸路径默
-  认) / $CWD (显式浮动) / $HOME (逃生口), 按锚定界, pins 与 @ 统一一
-  条文法. 协议由此自包含: GROUND.md 一个文件名扛 frontmatter/body/pins/
-  法链全部, 成为可 commit 的分发单元. SPEC 修订项已列明 (§4/§5/§6/§7
-  + Path Resolution), 待修订 SPEC 后按新 SPEC 重写 concrete 与 CLI.
-  K49/K50/K53 重命名已落 (commit 9e5d4c05).
+  2026-07-21 deepseek-v4-pro. K55~K58 实现落地 + K59~K61 frame/pins/CLI
+  修订. 两轮 dogfood 验证通过: 零调研即可完成 ground 的初步使用.
+  CTML channel 装配留待后续.
   --
-  2026-07-19 (压缩, 全文见 §Key Decisions): 抽象锁定尝试 K44~K54; 次日
-  被本轮部分覆盖 — K44 argv → K55, K51 args 引号纪律 → K55 kwargs 展示,
-  K36 落盘字段形状 → K55; 其余 (K45 四 verb 最小集 / K46 label+description
-  手动 / K47 声明区+结果区拓扑 / K48 CLI 极小面四动词 / K49 重命名 /
-  K50 包结构隔离 / K52 switch_to 留位 / K54 零魔法值) 仍然有效.
+  2026-07-20 kimi-k3 [1m]. 新一轮抽象推演 (K55~K58).
   --
-  历史轨迹 (07-11~07-15 讨论 / 06-28~06-29 Stage 1 落地): 摘要保留在
-  §Key Decisions, 完整细节见 `git log --all -- 本文件` 与
-  `src/ghoshell_moss/contracts/.discuss/2026-07-{11,12}_*.md`.
+  历史轨迹: 摘要保留在 §Key Decisions.
 ---
 
 # Ground — Ghost 的认知场
@@ -462,6 +448,31 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
     ground 纯粹变成一个目录→内容的映射, 其他工具不需要知道 ground 协议.
   - **diagnose 仍走 observe**: 需要看 hash/mtime/stale 走 `moss ground observe`.
 
+- **K60. validate 命令** — 检查 GROUND.md 的 frontmatter YAML 合法性 +
+  pins 字段完整性 (verb 已知性 / label 格式 / arguments 必填字段 / range
+  格式 / depth 类型). 比 pin 子命令更重要 — SPEC 清晰后模型直接编辑 YAML,
+  validate 验证之.
+
+- **K61. pins 进 frontmatter (K55 修订)** — 原设计 pins 在 `## ground:pins`
+  markdown section 中, 与 body 同层. 本轮矫正: pins 是 frontmatter 的
+  `pins:` key, frontmatter = 机器域, body = 纯粹的人/模型叙事. 消除 body
+  中的机器噪音. 同步撤除 `## ground:pins` heading / fenced code block /
+  `_PIN_SECTION_RE` 等全部 section 机制.
+
+## 已完成 (2026-07-21)
+
+- **contract.py**: Pin concrete class hierarchy (FilePin/GlobPin/FrontmatterPin/
+  LsPin + per-verb Arguments models), K55 envelope (verb + arguments),
+  GroundConvention with pins key, Ground/GroundSet ABCs
+- **_addr.py**: $GROUND/$CWD/$HOME anchor resolution, per-anchor subtree confinement
+- **_hash.py**: per-class pin observation (observe_sync), PinShadow, binary detection
+- **_l0.py**: GROUND.md load/dump, frontmatter pins serialization (K55 envelope)
+- **_chain.py**: law chain — ancestor GROUND.md body collection, root-first, $HOME boundary
+- **_render.py**: frame (body + `<!-- ground:pin:label -->` delimited results) + meta
+- **_ground.py** / **_grounds.py**: DefaultGround + DefaultGroundSet, multi-instance, MRU pin order
+- **CLI**: spec / init / frame / meta / observe / validate — positional path args
+- **Tests**: 105 tests across contract/addr/hash/l0/chain/ground_set
+
 ## 已知未决 (给下一个实例)
 
 - **K23 (L2 模板库引导地址)** — moss 侧已定 .ai_partners/ (K38). 残余问题:
@@ -495,35 +506,14 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
 | `Ghost` / `Mode` | ground 进入哪些 mode 是 Ghost 层决策, OS 层不主动推 | 未开始 |
 | 原生 drain 协议 (K19) | 独立 feature, 与 Memento 合并设计 | 未立项 |
 
-## 下一步 (2026-07-20 视角)
+## 下一步 (2026-07-21 视角)
 
-K49/K50/K53 重命名已落 (commit 9e5d4c05). K55~K58 后 SPEC 需要先修订再
-实施, 顺序:
+Ground 协议层和 CLI 层已完成, 两轮 dogfood 验收通过. 后续方向:
 
-1. **SPEC 修订** (`src/ghoshell_moss/ground/SPECIFICATION.md`):
-   - §4 pins YAML = 信封结构 (label/verb/arguments/description) + 未知
-     arguments key 保留规则 (K55)
-   - §5 四 verb 参数表 argv → arguments keys (K55)
-   - §6 frame 拓扑: body 与 pins 声明区之间加 @ 展开段 (K56); 声明区行
-     格式 kwargs (K55, K51 引号纪律覆盖); head 加 doc 来源标注 (K56) 与
-     可选法链一行清单 (dogfooding 定)
-   - 新增 §7.x 法链段: GROUND.md-only / body-only / root-first / $HOME
-     边界 (K56)
-   - §7.1 `open` 加 `doc` 参数 + 双锚语义 (K56)
-   - 新增 §7.x Path Resolution: 锚点表 + 裸路径 = `$GROUND` + 按锚定界
-     + `\$` 转义 (K58)
-   - §9 加 Windows 锚点映射一句 (K58)
-   - K54 常量清单加 `CHAIN_BOUNDARY` / `AT_MAX_DEPTH` / `AT_BUDGET` / 锚点名
-2. **contract 重写** (按修订后 SPEC):
-   - Pin = `{label, verb, arguments, description}` (K55); seen_* 运行时
-     侧影不入盘 (K36 不变)
-   - GroundConvention 溶解为 `$id`+`label`; `instruction()` /
-     `refresh_instruction()` 撤除, 法链渲染落 K14 channel 层 (K56)
-   - `VERB_SCHEMAS` 注册表 + arguments per-verb pydantic (K55)
-   - 路径解析器: 锚点展开 + 按锚定界校验 (K58)
-3. **concrete + CLI + 单测**按新 contract 重写 (CLI 四动词不变, K48).
-4. **dogfood 验收**: 本 feature 目录 GROUND.md — pin FEATURE.md + discuss
-   + SPEC, frame 重建认知; `@` 一份文档验证装载; 子目录嵌套场验证平级
-   语义; `$CWD` 浮动 pin 验证模板场景.
-5. **历史重摘要**: SPEC 修订落地后, Key Decisions 里被覆盖的 K44/K51
-   原文与 07-19 前的考古细节重新摘要压缩 (本轮已做覆盖标记, 未动原文).
+1. **CTML channel 装配** (K14): 父 ground channel + command-less virtual
+   channels per ground. 这是 ground 进入 Ghost 运行时的最后一步.
+2. **SPEC 同步**: SPECIFICATION.md §3/§4/§6 需要与实现对齐 (frontmatter
+   pins key / frame 零 meta / @-expansion 取消).
+3. **Ghost 认知场初始化**: 根目录 GROUND.md 的构建将建立新 feature.
+4. **FrontmatterPin 的 key 筛选**: 当前读整个 frontmatter 块, 可能需要
+   指定读取特定 key.
