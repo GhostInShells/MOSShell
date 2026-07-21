@@ -6,7 +6,8 @@ from ghoshell_moss.core.blueprint.states_channel import ChannelModule
 from ghoshell_moss.core.concepts.command import Command, PyCommand
 from ghoshell_moss.contracts.speech import Speech, SpeechStream, TTSSpeech
 from ghoshell_moss.core.speech.null import NullSpeech
-from ghoshell_moss.topics import SpeechTopic, Publisher
+from ghoshell_moss.topics import SpeechTopic
+from ghoshell_moss.core.topic import Publisher
 
 
 def build_content_command(speech: Speech) -> Command:
