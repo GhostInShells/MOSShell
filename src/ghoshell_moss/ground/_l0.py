@@ -198,9 +198,15 @@ def _render_pin_section(pins: list[Pin]) -> str:
 
 
 def _serialize_pin(pin: Pin) -> dict:
-    """Pin → dict, 注入 kind discriminator."""
-    data = pin.model_dump(exclude_none=False)
-    # Ensure kind is present for deserialization
-    if "kind" not in data:
-        data["kind"] = type(pin).model_fields["kind"].default
-    return data
+    """Pin → dict, kind discriminator first, never emit nulls."""
+    data = pin.model_dump(exclude_none=True, exclude_defaults=True)
+    # Reorder: kind first, then label, then the rest
+    out: dict[str, object] = {}
+    if "kind" in data:
+        out["kind"] = data.pop("kind")
+    else:
+        out["kind"] = type(pin).model_fields["kind"].default
+    if "label" in data:
+        out["label"] = data.pop("label")
+    out.update(data)
+    return out

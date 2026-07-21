@@ -1,7 +1,10 @@
-"""Ground command group — SPEC §9 四命令: spec / init / frame / observe.
+"""Ground command group — SPEC §9: spec / init / frame / meta / observe / validate.
 
 Every invocation is stateless: open → act → sediment (via __aexit__) → exit.
 GROUND.md is the single source of truth across invocations.
+
+Pin management is done by editing GROUND.md directly (the YAML format is
+defined in SPECIFICATION.md).  Use `validate` to check your edits.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from ghoshell_moss.cli.utils import echo, print_error, print_info, print_success
 from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
 from ghoshell_moss.ground._hash import PinShadow, observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
+from ghoshell_moss.ground._render import render_meta
 from ghoshell_moss.ground.contract import Ground, GroundSet
 
 __all__ = ["ground_app"]
@@ -139,6 +143,37 @@ def cmd_frame(
     asyncio.run(_run_one(root, _op))
 
 
+# -- meta -----------------------------------------------------------------
+
+
+@ground_app.command("meta", short_help="Show ground identity and pin TOC.")
+def cmd_meta(
+    path: Path | None = typer.Option(
+        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    ),
+) -> None:
+    """Show ground location, law chain, $id, and pin table of contents.
+
+    Separated from ``frame`` so consumers who don't need ground protocol
+    get a clean content-only frame.
+    """
+    root = _resolve_root(path)
+
+    async def _op(gs: GroundSet, ground: Ground) -> None:
+        chain = await ground.chain_text()
+        text = render_meta(
+            root=ground.root,
+            doc_path=ground.doc_path,
+            chain=chain,
+            pins=ground.pins(),
+            id_=ground.convention.id,
+            label=ground.label,
+        )
+        echo(text)
+
+    asyncio.run(_run_one(root, _op))
+
+
 # -- observe --------------------------------------------------------------
 
 
@@ -174,3 +209,164 @@ def cmd_observe(
             echo(f"{p.label}: {status}  mtime={mtime_str}  hash={hash_short}")
 
     asyncio.run(_run_one(root, _op))
+
+
+# -- validate -------------------------------------------------------------
+
+
+# required fields per pin kind (SPEC §4)
+_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "file": frozenset({"path"}),
+    "glob": frozenset({"pattern"}),
+    "frontmatter": frozenset({"path"}),
+    "ls": frozenset({"path"}),
+}
+_KNOWN_KINDS = frozenset(_REQUIRED_FIELDS.keys())
+
+
+@ground_app.command("validate", short_help="Validate GROUND.md format and pin definitions.")
+def cmd_validate(
+    path: Path | None = typer.Option(
+        None, "--in", "-C", help="Ground root (defaults to cwd)."
+    ),
+) -> None:
+    """Check GROUND.md for format errors: YAML validity, pin field completeness,
+    label patterns, unknown kinds.  Exits 0 on clean, 1 on warnings, 2 on errors.
+    """
+    import re
+
+    import yaml
+
+    root = _resolve_root(path)
+    l0_path = root / DEFAULT_L0_FILENAME
+
+    if not l0_path.is_file():
+        print_error(f"no GROUND.md found at {root}")
+        print_info("run 'moss ground init' to create one")
+        raise typer.Exit(code=2)
+
+    text = l0_path.read_text(encoding="utf-8")
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # --- frontmatter parse ---
+    fm_text = ""
+    fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+    if fm_match:
+        fm_text = fm_match.group(1)
+        try:
+            yaml.safe_load(fm_text)
+        except yaml.YAMLError as e:
+            errors.append(f"frontmatter YAML: {e}")
+    # no frontmatter is valid
+
+    # --- pins section parse ---
+    pins_section = text.split("## ground:pins", 1)
+    if len(pins_section) < 2:
+        if errors:
+            for e in errors:
+                print_error(e)
+            raise typer.Exit(code=2)
+        print_info("no pins section — valid but empty")
+        return
+
+    # extract YAML block from pins section
+    yaml_part = pins_section[1]
+    yaml_match = re.search(r"```yaml\s*\n(.*?)\n```", yaml_part, re.DOTALL)
+    if not yaml_match:
+        errors.append("pins section: no ```yaml ... ``` fenced block found")
+        for e in errors:
+            print_error(e)
+        raise typer.Exit(code=2)
+
+    yaml_body = yaml_match.group(1)
+    try:
+        pins_data = yaml.safe_load(yaml_body)
+    except yaml.YAMLError as e:
+        errors.append(f"pins YAML: {e}")
+        for e2 in errors:
+            print_error(e2)
+        raise typer.Exit(code=2)
+
+    if pins_data is None:
+        pins_data = []
+
+    if not isinstance(pins_data, list):
+        errors.append("pins section: YAML must be a list")
+        for e in errors:
+            print_error(e)
+        raise typer.Exit(code=2)
+
+    # --- per-pin validation ---
+    label_pattern = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+    seen_labels: set[str] = set()
+
+    for i, entry in enumerate(pins_data):
+        if not isinstance(entry, dict):
+            errors.append(f"pin[{i}]: not a mapping")
+            continue
+
+        idx = f"pin[{i}]"
+
+        # kind
+        kind = entry.get("kind")
+        if not kind:
+            errors.append(f"{idx}: missing 'kind' field")
+            continue
+        if kind not in _KNOWN_KINDS:
+            warnings.append(f"{idx}: unknown kind '{kind}' — will be skipped on load")
+
+        # label
+        label = entry.get("label")
+        if not label:
+            errors.append(f"{idx}: missing 'label' field")
+        elif not isinstance(label, str):
+            errors.append(f"{idx}: 'label' must be a string, got {type(label).__name__}")
+        elif not label_pattern.match(label):
+            errors.append(
+                f"{idx}: label '{label}' does not match pattern "
+                f"[a-zA-Z_][a-zA-Z0-9_-]* (max 63 chars)"
+            )
+        elif len(label) > 63:
+            errors.append(f"{idx}: label '{label}' exceeds 63 char limit")
+        else:
+            if label in seen_labels:
+                warnings.append(f"{idx}: duplicate label '{label}'")
+            seen_labels.add(label)
+
+        # kind-specific required fields
+        if kind in _REQUIRED_FIELDS:
+            for field in _REQUIRED_FIELDS[kind]:
+                if field not in entry:
+                    errors.append(f"{idx} ({kind}): missing required field '{field}'")
+
+        # optional field type checks
+        if "range" in entry and kind == "file":
+            rv = entry["range"]
+            if not isinstance(rv, str) and not isinstance(rv, int):
+                errors.append(f"{idx}: 'range' must be str or int, got {type(rv).__name__}")
+            elif isinstance(rv, str) and not re.match(r"^\d+(-\d+)?$", rv):
+                errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
+        if "depth" in entry and kind == "ls":
+            if not isinstance(entry["depth"], int):
+                errors.append(f"{idx}: 'depth' must be int, got {type(entry['depth']).__name__}")
+        if "description" in entry:
+            desc = entry["description"]
+            if not isinstance(desc, str):
+                errors.append(f"{idx}: 'description' must be a string")
+            elif len(desc) > 280:
+                warnings.append(f"{idx}: description exceeds 280 chars ({len(desc)})")
+
+    # --- report ---
+    for w in warnings:
+        print_info(f"[WARN] {w}")
+    for e in errors:
+        print_error(e)
+
+    if errors:
+        raise typer.Exit(code=2)
+
+    if warnings:
+        print_success(f"GROUND.md is valid ({len(warnings)} warning(s))")
+    else:
+        print_success("GROUND.md is valid")

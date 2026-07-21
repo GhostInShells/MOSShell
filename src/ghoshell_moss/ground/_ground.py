@@ -114,23 +114,16 @@ class DefaultGround(Ground):
     # -- 渲染 -------------------------------------------------------------
 
     async def context(self) -> str:
-        chain = await asyncio.to_thread(
-            collect_chain,
-            self._doc_path.parent,
-        )
-        chain_summary = _chain_one_liner(chain) if chain else ""
-
         return await render_context(
-            label=self._label,
-            root=self._root,
-            doc_path=self._doc_path,
             body=self._body,
             pins=list(self._pins.values()),
             shadows=dict(self._shadows),
             anchor=self._make_anchor(),
-            id_=self._convention.id,
-            chain_summary=chain_summary,
         )
+
+    async def chain_text(self) -> str:
+        """返回法链 body (供 meta / instruction 使用)."""
+        return await asyncio.to_thread(collect_chain, self._doc_path.parent)
 
     # -- 生命周期 ---------------------------------------------------------
 
@@ -167,10 +160,3 @@ def _summary(pin: Pin, obs, changed: bool) -> str:
     if isinstance(pin, GlobPin):
         return "glob hit set changed"
     return "content changed"
-
-
-def _chain_one_liner(chain: str) -> str:
-    """从 chain body 中提取路径, 拼成一行来源列表."""
-    import re as _re
-    paths = _re.findall(r"from:\s*(\S+)", chain)
-    return " → ".join(paths) if paths else ""

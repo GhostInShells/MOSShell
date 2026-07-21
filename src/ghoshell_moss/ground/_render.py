@@ -1,34 +1,26 @@
-"""Frame rendering — SPEC §6 布局.
+"""Frame rendering — body + pin result blocks.
 
-结构:
-    ground: <label> @ <path> [(doc: <doc>)]
-    [chain: <paths>]
-    [$id: <id>]
+Frame is body verbatim followed by pin observations, delimited by
+HTML comment markers.  No meta, no @-expansion, no declaration block,
+no line numbers.
 
     <body verbatim>
 
-    ```@<ref>
-    <ref content>
-    ```
+    <!-- ground:pin:<label> -->
+    <pin observation content>
+    <!-- /ground:pin:<label> -->
 
-    <label>:<kind>(key="val") # <description>
-
-    ```<label>
-    <pin expansion>
-    ```
+Meta is a separate rendering path used by ``moss ground meta``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path
 from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe
 from ghoshell_moss.ground.contract import (
-    AT_BUDGET,
-    AT_MAX_DEPTH,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -36,78 +28,39 @@ from ghoshell_moss.ground.contract import (
     Pin,
 )
 
-__all__ = ["render_context"]
-
-# @path recognition (SPEC §6.1): @ at line-start or after whitespace,
-# followed by path-start char, not in fenced block.
-_AT_REF_RE = re.compile(
-    r"(?:^|(?<=\s))@([a-zA-Z0-9_./$-][a-zA-Z0-9_./$-]*)",
-    re.MULTILINE,
-)
+__all__ = ["render_context", "render_meta"]
 
 
 async def render_context(
-    label: str,
-    root: Path,
-    doc_path: Path,
     body: str,
     pins: list[Pin],
     shadows: dict[str, PinShadow],
     anchor: Anchor,
-    *,
-    id_: str | None = None,
-    chain_summary: str = "",
 ) -> str:
-    """渲染一帧 — Ground.context() 的后端.
+    """Render a frame: body + pin result blocks.
 
-    所有 IO 密集段 (pin 观察 + 内容读取) 在此并行处理.
+    All IO-heavy segments (pin observation) run in parallel.
     """
     lines: list[str] = []
-
-    # ---- head ----------------------------------------------------------
-    doc_annotation = ""
-    if doc_path != root / "GROUND.md":
-        doc_annotation = f" (doc: {doc_path})"
-    lines.append(f"ground: {label} @ {root}{doc_annotation}")
-
-    if chain_summary:
-        lines.append(f"chain: {chain_summary}")
-
-    if id_:
-        lines.append(f"$id: {id_}")
-
-    lines.append("")
 
     # ---- body (verbatim) -----------------------------------------------
     if body.strip():
         lines.append(body.rstrip())
         lines.append("")
 
-    # ---- @-expansion ---------------------------------------------------
-    at_blocks = _expand_at_refs(body, anchor, budget=AT_BUDGET)
-    for block in at_blocks:
-        lines.append(block)
-        lines.append("")
-
     # ---- observe all pins (parallel) -----------------------------------
-    observations: dict[str, Observation] = {}
-    if pins:
-        tasks = {p.label: observe(p, anchor) for p in pins}
-        results = await asyncio.gather(*tasks.values())
-        observations = dict(zip(tasks.keys(), results))
+    if not pins:
+        return "\n".join(lines).rstrip() + "\n"
 
-    # ---- declaration block ----------------------------------------------
-    decl_lines = [_render_declaration(p) for p in pins]
-    if decl_lines:
-        lines.extend(decl_lines)
-        lines.append("")
+    tasks = {p.label: observe(p, anchor) for p in pins}
+    results = await asyncio.gather(*tasks.values())
+    observations: dict[str, Observation] = dict(zip(tasks.keys(), results))
 
     # ---- result blocks --------------------------------------------------
     for p in pins:
         obs = observations.get(p.label)
         shadow = shadows.get(p.label, PinShadow())
 
-        # stale 判定
         stale = (
             shadow.hash is not None
             and obs is not None
@@ -122,32 +75,52 @@ async def render_context(
     return "\n".join(lines).rstrip() + "\n"
 
 
-# -- declaration block ----------------------------------------------------
+def render_meta(
+    root: Path,
+    doc_path: Path,
+    chain: str,
+    pins: list[Pin],
+    *,
+    id_: str | None = None,
+    label: str | None = None,
+) -> str:
+    """Render the meta section — ground identity + pin TOC.
 
+    Used by ``moss ground meta``.  Separated from frame so consumers
+    who don't care about ground protocol get a clean content-only frame.
+    """
+    lines: list[str] = []
 
-def _render_declaration(pin: Pin) -> str:
-    """一行: label:kind(key="val") # description."""
-    kwargs = _pin_kwargs(pin)
-    desc = f" # {pin.description}" if pin.description else ""
-    return f"{pin.label}:{pin.kind}({kwargs}){desc}"
+    # location
+    if doc_path.resolve() == root.resolve() / "GROUND.md":
+        lines.append(f"cd {root}")
+    else:
+        lines.append(f"cd {root}")
+        lines.append(f"ground: {doc_path}")
 
+    # chain
+    if chain:
+        n = chain.count("from:")
+        lines.append(f"chain: +{n}")
+    else:
+        lines.append("chain: +0")
 
-def _pin_kwargs(pin: Pin) -> str:
-    """Pin 子类 → kwargs 展示字符串."""
-    parts: list[str] = []
-    if isinstance(pin, FilePin):
-        parts.append(f'path="{pin.path}"')
-        if pin.range is not None:
-            parts.append(f'range="{pin.range}"')
-    elif isinstance(pin, GlobPin):
-        parts.append(f'pattern="{pin.pattern}"')
-    elif isinstance(pin, FrontmatterPin):
-        parts.append(f'path="{pin.path}"')
-    elif isinstance(pin, LsPin):
-        parts.append(f'path="{pin.path}"')
-        if pin.depth != 2:
-            parts.append(f"depth={pin.depth}")
-    return ", ".join(parts)
+    # id
+    if id_:
+        lines.append(f"$id: {id_}")
+
+    # pins
+    lines.append("")
+    if pins:
+        lines.append("pins:")
+        for p in pins:
+            kwargs = _pin_kwargs(p)
+            desc = f"  # {p.description}" if p.description else ""
+            lines.append(f"  {p.label}:{p.kind}({kwargs}){desc}")
+    else:
+        lines.append("pins: (none)")
+
+    return "\n".join(lines)
 
 
 # -- result block ---------------------------------------------------------
@@ -160,7 +133,7 @@ def _render_result_block(
     missing: bool,
     anchor: Anchor,
 ) -> str:
-    """Fenced code block with label as lang tag."""
+    """HTML-comment-delimited pin observation block."""
     if missing:
         content = "[missing]"
     elif stale:
@@ -172,11 +145,15 @@ def _render_result_block(
     else:
         content = "[not yet observed]"
 
-    return f"```{pin.label}\n{content}\n```"
+    return (
+        f"<!-- ground:pin:{pin.label} -->\n"
+        f"{content}\n"
+        f"<!-- /ground:pin:{pin.label} -->"
+    )
 
 
 def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
-    """按 pin 子类渲染内容."""
+    """Dispatch per pin subclass."""
     if isinstance(pin, FilePin):
         return _content_file(pin, anchor)
     if isinstance(pin, GlobPin):
@@ -186,6 +163,9 @@ def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
     if isinstance(pin, LsPin):
         return _content_ls(pin, anchor)
     return f"error: unknown pin type: {type(pin).__name__}"
+
+
+# -- per-kind content renderers -------------------------------------------
 
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
@@ -202,20 +182,17 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
     except (OSError, ValueError):
         return "error: cannot read file"
 
-    lines = text.splitlines()
     if pin.range is not None:
-        start, end = _parse_range(pin.range, len(lines))
-        if start > len(lines):
+        lines_list = text.splitlines()
+        start, end = _parse_range(pin.range, len(lines_list))
+        if start > len(lines_list):
             return "error: range beyond file end"
-        return "\n".join(
-            f"{i}: {lines[i - 1]}" for i in range(start, min(end, len(lines)) + 1)
-        )
-    return "\n".join(f"{i+1}: {ln}" for i, ln in enumerate(lines))
+        return "\n".join(lines_list[start - 1 : min(end, len(lines_list))])
+
+    return text
 
 
 def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
-    import glob as glob_mod
-
     root = anchor.ground
     pattern = pin.pattern
     if pattern.startswith("$"):
@@ -242,6 +219,8 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
 
 
 def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
+    import re
+
     try:
         target = resolve_path(pin.path, anchor)
         text = target.read_text(encoding="utf-8", errors="replace")
@@ -268,81 +247,28 @@ def _content_ls(pin: LsPin, anchor: Anchor) -> str:
     return "\n".join(entries) if entries else "(empty)"
 
 
-# -- @-expansion ----------------------------------------------------------
+# -- meta helpers ---------------------------------------------------------
 
 
-def _expand_at_refs(
-    body: str,
-    anchor: Anchor,
-    *,
-    budget: int = AT_BUDGET,
-) -> list[str]:
-    """扫描 body 中 @path 引用, 返回 fenced expansion blocks.
-
-    SPEC §6.1 约束: cycle 检测, depth cap, budget cap.
-    """
-    refs = _find_at_refs(body)
-    if not refs:
-        return []
-
-    visited: set[str] = set()
-    blocks: list[str] = []
-    spent = 0
-
-    for ref_path in refs:
-        if ref_path in visited:
-            blocks.append(f"```@{ref_path}\n(@{ref_path} already expanded above)\n```")
-            continue
-
-        visited.add(ref_path)
-        content, ok = _load_at_ref(ref_path, anchor, depth=0)
-        if not ok:
-            blocks.append(f"```@{ref_path}\nerror: cannot load\n```")
-            continue
-
-        spent += len(content)
-        if spent > budget:
-            blocks.append(f"```@{ref_path}\n(@{ref_path} skipped: budget exceeded)\n```")
-            continue
-
-        blocks.append(f"```@{ref_path}\n{content}\n```")
-
-    if spent > budget:
-        blocks.insert(0, f"⚠ @-expansion over budget: {spent} > {budget}")
-
-    return blocks
+def _pin_kwargs(pin: Pin) -> str:
+    """Pin subclass → kwargs display string."""
+    parts: list[str] = []
+    if isinstance(pin, FilePin):
+        parts.append(f'path="{pin.path}"')
+        if pin.range is not None:
+            parts.append(f'range="{pin.range}"')
+    elif isinstance(pin, GlobPin):
+        parts.append(f'pattern="{pin.pattern}"')
+    elif isinstance(pin, FrontmatterPin):
+        parts.append(f'path="{pin.path}"')
+    elif isinstance(pin, LsPin):
+        parts.append(f'path="{pin.path}"')
+        if pin.depth != 2:
+            parts.append(f"depth={pin.depth}")
+    return ", ".join(parts)
 
 
-def _find_at_refs(body: str) -> list[str]:
-    """从 body 中提取 @path 引用, 去重保持首次出现顺序."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for m in _AT_REF_RE.finditer(body):
-        ref = m.group(1).rstrip(".-")
-        if ref not in seen:
-            seen.add(ref)
-            result.append(ref)
-    return result
-
-
-def _load_at_ref(
-    ref: str,
-    anchor: Anchor,
-    depth: int,
-) -> tuple[str, bool]:
-    """加载一个 @path 引用. 返回 (content, ok)."""
-    if depth >= AT_MAX_DEPTH:
-        return f"(@{ref} exceeds depth cap)", False
-
-    try:
-        target = resolve_path(ref, anchor)
-        content = target.read_text(encoding="utf-8", errors="replace")
-        return content, True
-    except (OSError, ValueError):
-        return f"(@{ref} not found or inaccessible)", False
-
-
-# -- helpers --------------------------------------------------------------
+# -- general helpers ------------------------------------------------------
 
 
 def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:

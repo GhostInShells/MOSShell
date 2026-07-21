@@ -244,9 +244,9 @@ class TestFrame:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="greeting", path="hello.md", description="welcome"))
                 frame = await g.context()
-                assert "greeting" in frame
-                assert "welcome" in frame
                 assert "line1" in frame
+                assert "<!-- ground:pin:greeting -->" in frame
+                assert "<!-- /ground:pin:greeting -->" in frame
 
         run(scenario())
 
@@ -297,8 +297,11 @@ class TestFrame:
                 g.pin(FilePin(label="entry", path="a.py", range="1", description="start"))
                 g.pin(LsPin(label="layout", path="."))
                 frame = await g.context()
-                assert 'entry:file(path="a.py", range="1") # start' in frame
-                assert 'layout:ls(path=".")' in frame
+                # declaration block removed from frame; pin results use HTML comments
+                assert "<!-- ground:pin:entry -->" in frame
+                assert "<!-- /ground:pin:entry -->" in frame
+                assert "<!-- ground:pin:layout -->" in frame
+                assert "<!-- /ground:pin:layout -->" in frame
 
         run(scenario())
 

@@ -447,6 +447,21 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
   - frame 声明区照存储形式渲染 (锚点全程可见). literal `$` 转义 `\$`
     (impl 细节, SPEC 一句话). Windows 映射在 §9 提一句.
 
+### 07-21 本轮决策 (K59)
+
+- **K59. Frame 退化为纯内容输出, 零 meta** — K47 的 head+声明区+结果区拓扑
+  被覆盖. dogfooding 发现 frame 里的 meta 信息 (ground:/chain:/$id:/声明行)
+  对没读过 SPEC 的消费者是噪音. 新格式:
+  - **零 meta**: 不输出 cd/ground/chain/$id/pin 声明.
+  - **结构**: body verbatim + pin 结果块, 用 `<!-- ground:pin:label -->...<!-- /ground:pin:label -->`
+    分隔 (HTML 注释 = 机器间信号, 语义准确, 不与用户 markdown 碰撞).
+  - **文件内容不带行号**: 行号是人调试用的, 模型不需要.
+  - **@-expansion 取消**: body 里的 `@path` 保留原文不展开, 模型读到 @ref
+    后自然在 pin 结果块中找到对应内容 (同路径有同名 pin 时).
+  - **退化为 instruction 工具**: frame 可以加 `--no-meta` 参数 (未来),
+    ground 纯粹变成一个目录→内容的映射, 其他工具不需要知道 ground 协议.
+  - **diagnose 仍走 observe**: 需要看 hash/mtime/stale 走 `moss ground observe`.
+
 ## 已知未决 (给下一个实例)
 
 - **K23 (L2 模板库引导地址)** — moss 侧已定 .ai_partners/ (K38). 残余问题:
