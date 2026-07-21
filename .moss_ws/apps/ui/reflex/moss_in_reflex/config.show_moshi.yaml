@@ -1,0 +1,15 @@
+# show_moshi mode 布局配置
+# CohesionField 是新增的通用凝聚场布局，与其他布局并列，Ghost 自由切换
+
+layouts:
+  - "framework.layouts.cohesion_field.CohesionField"
+  - "framework.layouts.living_document.LivingDocument"
+  - "framework.layouts.mirror.MirrorLayout"
+  - "framework.layouts.hero.HeroLayout"
+  - "framework.layouts.course.CourseLayout"
+  - "framework.layouts.stage.StageLayout"
+  - "framework.layouts.matrix.MatrixLayout"
+  - "framework.layouts.media.MediaLayout"
+  - "framework.layouts.video_player.VideoPlayerLayout"
+  - "framework.layouts.brain.BrainLayout"
+  - "framework.layouts.danmaku.DanmakuLayout"

@@ -5,7 +5,10 @@ import pytest
 
 from ghoshell_moss.core.concepts.command import CommandError
 from ghoshell_moss.core.py_channel import PyChannel
-from ghoshell_moss.bridges.zmq_channel.zmq_channel import ZMQSocketType, create_zmq_channel
+from ghoshell_moss.bridges.zmq_channel.zmq_channel import (
+    ZMQSocketType,
+    create_zmq_channel,
+)
 
 
 def get_random_port():
@@ -267,3 +270,72 @@ async def test_zmq_channel_multiple_commands():
     finally:
         provider.close()
         provider.wait_closed_sync()
+
+
+@pytest.mark.asyncio
+async def test_zmq_channel_reconnect_after_heartbeat_loss():
+    """测试心跳丢失后 proxy 在 socket 层面自动重连并恢复通讯。
+
+    模拟场景: 网络闪断导致心跳包有去无回，proxy 通过心跳超时检测到断连，
+    在 socket 层面 close + start 重建连接，然后重建 session，全程无需重启 provider。
+    """
+    port = get_random_port()
+    address = f"tcp://127.0.0.1:{port}"
+
+    provider, proxy = create_zmq_channel(
+        name="reconnect_test",
+        address=address,
+        heartbeat_interval=0.1,
+        heartbeat_timeout=0.3,
+    )
+
+    channel = PyChannel(name="provider")
+
+    @channel.build.command()
+    async def ping() -> str:
+        return "pong"
+
+    provider.run_in_thread(channel)
+
+    try:
+        async with proxy.bootstrap() as runtime:
+            await runtime.wait_connected()
+            assert runtime.is_connected()
+
+            cmd = runtime.get_command("ping")
+            assert await cmd() == "pong"
+
+            # 模拟心跳丢失: 拦截 provider 的心跳响应 handler，
+            # 让 proxy 发出的心跳请求有去无回，_last_activity 不再更新。
+            provider_conn = provider._connection
+
+            async def _drop_heartbeat(event):
+                pass
+
+            original_handler = provider_conn._handle_heartbeat
+            provider_conn._handle_heartbeat = _drop_heartbeat
+
+            # 等待 proxy 通过心跳超时检测到断连
+            for _ in range(30):
+                if not runtime.is_connected():
+                    break
+                await asyncio.sleep(0.1)
+            assert not runtime.is_connected(), "proxy 应通过心跳超时检测到断连"
+
+            # 恢复心跳 handler，让 provider 重新响应心跳
+            provider_conn._handle_heartbeat = original_handler
+
+            # 等待 proxy 完成 socket 级重连 + session 重建
+            for _ in range(50):
+                if runtime.is_connected():
+                    break
+                await asyncio.sleep(0.1)
+            assert runtime.is_connected(), "proxy 应自动重连成功"
+
+            # 验证重连后命令能正常执行（同一个 channel，同一个命令）
+            cmd = runtime.get_command("ping")
+            assert await cmd() == "pong"
+    finally:
+        if provider.is_running():
+            provider.close()
+            provider.wait_closed_sync()

@@ -1,0 +1,9 @@
+*.log
+venv/
+.venv/
+uv.lock
+.idea
+.env
+__pycache__/
+server/data/*
+!server/data/.gitignore

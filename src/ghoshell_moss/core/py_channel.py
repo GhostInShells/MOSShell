@@ -3,13 +3,12 @@ import inspect
 import logging
 from typing import Optional, Callable, Iterable
 
-from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, provide, Container
+from ghoshell_container import BINDING, INSTANCE, IoCContainer, Provider, provide
 from typing_extensions import Self
 
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.concepts.channel import (
     Channel,
-    ChannelRuntime,
     ChannelMeta,
     ChannelNamePattern,
     ChannelName,
@@ -34,7 +33,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     ChannelFactory,
 )
 from ghoshell_moss.core.blueprint.states_channel import ChannelModule
-from copy import copy
+import time
 import re
 
 __all__ = ["PyChannel", "StatefulChannelRuntimeImpl", "PyChannelBuilder", "BaseStateChannel"]
@@ -55,6 +54,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
         self._on_start_up_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_stop_funcs: list[tuple[LifecycleFunction, bool]] = []
         self._on_running_funcs: list[tuple[LifecycleFunction, bool]] = []
+        self._on_refresh_meta_funcs: list[tuple[LifecycleFunction, bool]] = []
 
         self._context_messages_functions: list[MessageFunction] = []
         self._instruction_functions: StringType | None = None
@@ -168,6 +168,8 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
     async def get_instruction(self) -> str:
         if self._instruction_functions is None:
             return ''
+        if isinstance(self._instruction_functions, str):
+            return self._instruction_functions
         if inspect.iscoroutinefunction(self._instruction_functions):
             return await self._instruction_functions()
         return self._instruction_functions()
@@ -203,6 +205,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
             return_command: bool = False,
             always_observe: bool = False,
             timeout: Optional[float] = None,
+            visible: bool = True,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
 
         def wrapper(func: CommandFunction) -> CommandFunction:
@@ -220,6 +223,7 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
                 call_soon=call_soon,
                 always_observe=always_observe,
                 timeout=timeout,
+                visible=visible,
             )
             self.add_command(command, override=override)
             if return_command:
@@ -321,6 +325,15 @@ class PyChannelBuilder(MutableChannelState, ChannelState):
 
     async def on_running(self) -> None:
         await self._run_funcs(self._on_running_funcs)
+
+    def refresh_meta(self, func: LifecycleFunction) -> LifecycleFunction:
+        is_coroutine = inspect.iscoroutinefunction(func)
+        self._on_refresh_meta_funcs.append((func, is_coroutine))
+        self._dynamic = True
+        return func
+
+    async def on_refresh_meta(self) -> None:
+        await self._run_funcs(self._on_refresh_meta_funcs)
 
     def with_binding(self, contract: type[INSTANCE], binding: Optional[BINDING] = None) -> Self:
         self._container_instances[contract] = binding
@@ -634,6 +647,10 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         if self.is_available() and self._static_meta_cache:
             # 返回缓存.
             return {'': self._static_meta_cache}
+
+        # 通知所有 state/module: 即将重新生成 metas, 先做 async 状态同步
+        await self.on_refresh_meta()
+
         dynamic = self.is_dynamic()
         name = self._name
         description = self.channel.description()
@@ -672,6 +689,8 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
             meta.dynamic = dynamic
             meta.commands = command_metas
         except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
             raise
         except Exception as e:
             meta = ChannelMeta(
@@ -829,6 +848,19 @@ class StatefulChannelRuntimeImpl(StatefulChannelRuntime, AbsChannelTreeRuntime[S
         except Exception as e:
             self.logger.exception("%r on idle failed: %s", self, e)
             raise
+
+    async def on_refresh_meta(self) -> None:
+        """通知 main state, modules, current state: 即将重新生成 metas。"""
+        refresh_funcs = [self._main_state.on_refresh_meta()]
+        if self._current_state is not None:
+            refresh_funcs.append(self._current_state.on_refresh_meta())
+        for module in self._modules.values():
+            if hasattr(module, 'on_refresh_meta'):
+                refresh_funcs.append(module.on_refresh_meta())
+        done = await asyncio.gather(*refresh_funcs, return_exceptions=True)
+        for r in done:
+            if isinstance(r, Exception):
+                self.logger.error("%r on_refresh_meta func failed: %s", self, r)
 
     def __repr__(self):
         return self.log_prefix

@@ -4,6 +4,12 @@ from importlib import import_module
 from .reflector import reflect_module, reflect_module_by_import_path, reflect_any_by_import_path, Reflector
 from .compiler import Compiler
 from .executor import Executor
+from .sandbox import Sandbox, SANDBOX_BUILTINS
+from .discover import (
+    ModuleManifest, ScanError, CodexReflectionError,
+    scan_module, from_module, scan_package,
+    is_subclass_of, is_class, is_routine, is_native_to,
+)
 from ._features import (
     parse_frontmatter,
     list_features,
@@ -11,15 +17,19 @@ from ._features import (
     create_feature,
     update_feature_status,
     init_features,
-    VALID_STATUSES,
+    RESERVED_STATUSES,
 )
 
 __all__ = [
+    # Reflector
     'Reflector',
     'reflect_module', 'reflect_module_by_import_path', 'reflect_any_by_import_path',
-    'Compiler',
-    'compile',
-    'Executor',
+    # Compiler / Executor / Sandbox
+    'Compiler', 'compile', 'Executor', 'Sandbox', 'SANDBOX_BUILTINS',
+    # Discovery
+    'ModuleManifest', 'ScanError', 'CodexReflectionError',
+    'scan_module', 'from_module', 'scan_package',
+    'is_subclass_of', 'is_class', 'is_routine', 'is_native_to',
     # Features
     'parse_frontmatter',
     'list_features',
@@ -27,7 +37,7 @@ __all__ = [
     'create_feature',
     'update_feature_status',
     'init_features',
-    'VALID_STATUSES',
+    'RESERVED_STATUSES',
 ]
 
 

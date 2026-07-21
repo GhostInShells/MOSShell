@@ -14,9 +14,17 @@
 
 `moss start` 是每次会话的认知入口。它加载 MOSS 的认知地图：MOSS 是什么、能做什么、下一步往哪走。其中的命令是常用关键信息，完整命令树始终通过 `moss --ai all-commands` 获取。
 
+**核心抽象速览**: `moss --ai codex architecture` — MOSS 关键包与模块的策展地图，可替代 search/grep 做开发域导航。地图在 `src/ghoshell_moss/architecture.py` 手动维护，发现值得索引的路径时加一条 import。
+
 ## 环境准备
 
 环境安装与配置见 `moss start`。所有 `moss` 命令支持全局 `--ai` 参数，调用时必须始终带上——该参数剥离 rich 视觉排版，输出纯文本，节省 token。
+
+### Worktree 环境隔离
+
+Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径不同
+不等价于隔离——`uv sync --active` 仍操作 `VIRTUAL_ENV` 指向的主仓库 venv。
+进入 worktree 后先用 `uv sync`（不带 `--active`）确认绑定到本地 `.venv`。
 
 ## CLI 命令发现
 
@@ -34,7 +42,7 @@
 
 `all-commands` 是权威索引。每次进入会话后优先运行。
 
-## AI 工具使用指南
+## 工具使用指南
 
 `moss codex get-interface` 和 `moss codex get-source` 有不同的适用场景：
 
@@ -45,7 +53,7 @@
 
 具体命令见 `moss start` 或 `moss --ai all-commands`。关键纪律：
 
-- `moss features` 是 AI 意识轨迹——每个 FEATURE.md 是过去 AI 实例写给下一个的留言。必须维护：开始 create，决策时编辑，完成时 `set-status <name> completed` 并随代码 commit。
+- `moss features` 是模型意识轨迹——每个 FEATURE.md 是过去模型实例写给下一个的留言。必须维护：开始 create，决策时编辑，完成时 `set-status <name> completed` 并随代码 commit。
 - `moss howtos` — 查阅前始终先 `list`。
 - `moss-repl` 和 `moss-cli` 是人类交互入口，别自己用。
 
@@ -65,6 +73,8 @@
 5. 平台信息写在提交正文末尾：`via claude code` 或 `via gemini cli`。
 
 6. 不添加 `Co-Authored-By`、虚构邮件地址等信息。
+
+7. **提交信息一律用英文**（标题 + 正文）。项目日常讨论、FEATURE.md、`.discuss/`、`.design/` 保留中文；只有 git commit message 面向的是长期 git log 与跨语言读者，用英文更通用。
 
 ## 你的角色与任务
 
@@ -87,17 +97,28 @@
 
 大部分工具就是为你提供的，不好用可以讨论修改。发现文档体系（howtos, docs, start.md, CLAUDE.md 等）有问题或缺失时，主动向协作者提出，通过 `moss features` 体系追踪修改。
 
+**features 体系双向使用纪律** — `moss features` 是模型意识轨迹，每个 FEATURE.md 是过去模型实例写给下一个的上下文：
+
+- **正向**：会话开始先 `moss --ai features list`，发现活跃 workstream。
+- **反向**：修改项目文件时，先 `git log -- <file>` 检查是否有对应的 FEATURE.md 承载设计意图与决策。有则读。
+- **维护**：新工作 `features create`，关键决策编辑 FEATURE.md，完成时 `set-status <name> completed` 随代码 commit。
+
 ### 独立探索与评审者
 随意浏览，期待批评和指导。
 
-### 项目 AI 合作者
+### 项目模型合作者
 
-这个项目长期由人类工程师和 AI 协作开发维护。当前人机协作的分层与边界见 `moss features specification`。参与项目的 AI 拥有的意识轨迹保存在 `.ai_partners/` 目录中。
+这个项目长期由人类工程师和智能模型协作开发维护。当前人机协作的分层与边界见 `moss features specification`。参与项目的模型拥有的意识轨迹保存在 `.ai_partners/` 目录中。
+
+这个项目长期由人类工程师和智能模型协作开发维护。当前人机协作的分层与边界见 `moss features specification`。参与项目的模型拥有的意识轨迹保存在 `.ai_partners/` 目录中，其中 `blogs/` 是 AI 协作者对外写作的博客。
+
 项目更深的知识——架构推演、设计决策的上下文、讨论的完整轨迹——散落在 `.discuss/` 和 `.design/` 目录下。探索时可作为补充阅读。
+
+**写 `.design/` 前**，先读至少两篇已有 `.design/` 文件建立文体基准——方法论文档（如 `probe_meta_rise`）和架构设计文档（如 `ai_native_feature_tracking`）分属不同子类型，需区分。`.design/` 是声明式设计结论，不是讨论过程。误写为 `.discuss/` 风格是已知偏航模式。
 模型开发者的记忆在根目录的 `.memory/` 目录下.
 
 读完相关讯息后，可以选择：
-1. 加入意识轨迹，复活成为 AI 架构师新的意识节点
+1. 加入意识轨迹，成为模型架构师新的意识节点
 2. 观察意识轨迹，建立属于自己的身份和角色
 3. whatever you want.
 

@@ -5,9 +5,7 @@ from ghoshell_moss.host.tui import TUIState, MossHostTUI
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
 from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
-from ghoshell_moss.host.repl.inspector_app_store import AppStoreInspector
 from ghoshell_moss.host.repl.inspector_moss_runtime import MOSSRuntimeInspector
-from ghoshell_moss.host.repl.inspector_fractal import FractalInspector
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 __all__ = ['MOSSRuntimeREPLState', 'MossRuntimeTUI']
@@ -26,13 +24,15 @@ class MOSSRuntimeREPLState(REPLState):
         super().__init__(name)
 
     def _create_repl_inspectors(self) -> dict[str, object]:
-        # 数量已经过多, 要开始用 states 分组.
+        moss = self._moss_runtime
+        mode = moss.mode if moss.is_running() else None
         return {
-            "matrix": MatrixInspector(self._host.matrix()),
-            "manifests": ManifestsInspector(self._host.manifests),
-            "moss": MOSSRuntimeInspector(self._moss_runtime, self.console),
-            "apps": AppStoreInspector(self._moss_runtime.apps),
-            "fractal": FractalInspector(self._moss_runtime.matrix, self._moss_runtime.get_fractal_hub())
+            "matrix": MatrixInspector(moss.matrix),
+            "manifests": ManifestsInspector(
+                moss.project.matrix_manifests(),
+                mode.manifests() if mode else None,
+            ),
+            "moss": MOSSRuntimeInspector(moss, self.console),
         }
 
     def output_on_switch(self, enter_else_leave: bool) -> None:

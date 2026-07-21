@@ -1,172 +1,236 @@
 ---
-title: Session Metadata & JSONL Storage — session 元信息持久化与 JSONL 存储机制
-status: draft
-priority: P0
 created: 2026-06-02
-updated: 2026-06-02
-depends: []
-milestone:
-description: >-
-  Storage 层增加 JSONL 追加读写机制；Session 增加可运行时修改的元信息（标题、描述）；启动时
-  基于持久化元信息判断 session 创建/恢复策略。
+depends:
+- storage-typed-protocols
+- storage-scope-governance
+- session-communication-bus
+description: Session 获得人类可读身份与持久化元信息。三层结构： ScopeMeta（scope 级发现文件，host 写，PID 验活）、SessionRecord（scope
+  级 JSONL 索引，不可变追加）、SessionMetadata（session 级 YAML，matrix 写，含完整运行时现场）。 发现流：scope meta
+  + PID check 替代 meta.yaml 存在性检查。
+milestone: null
+priority: P0
+status: completed
+title: Session Metadata & JSONL Storage — session 元信息持久化
+updated: '2026-06-07'
 ---
 
 # Session Metadata & JSONL Storage
 
-> Session 目前是无身份的——每次启动生成随机 session_id，没有标题、描述等人类可读的元信息。
-> 同时 Storage 只有裸 bytes 读写，缺乏结构化追加写能力。此 feature 补上这两块，并为
-> `session-communication-bus` 的 Journal 原语提供 JSONL 基础。
+> 2026-06-07 设计重对齐。原版 scope meta 隐式耦合在 meta.yaml 存在性中，
+> 讨论后显式分离：scope meta 是 discovery 文件（host 创建/删除，PID 验活），
+> session metadata 是 matrix 运行时现场记录。两文件生命周期不同，职责不同。
+>
+> 原版 SessionMetadata 无运行时现场字段——补入 matrix.scopes() 内容，去掉 status
+> 字段（状态由 PID 推导，不维护标记）。
 
 ## Motivation
 
-三个紧密相关的缺口：
+Session 目前无身份——每次启动生成随机 session_id，无法区分"上周调试机械臂的 session"
+和"刚才测试语音的 session"。同时，scope 作为认知隔离边界，scope 内的 session 是
+同一 Ghost 的连续"生命片段"，应该有索引可回溯。
 
-1. **Storage 只有 get/put**：没有追加写（append），每次写都要读-改-写全量数据。JSONL 一行一条记录，天然适合日志、事件、索引等追加场景。`local_image.py` 已经用手工 JSONL 证明了模式可行，现在是抽出通用机制的时候。
+多 cell 组网场景：新 cell 通过 CLI 加入时只有 `workspace + scope`，无法知道
+当前 scope 是否有活着的 session、session_id 是什么、host 主节点是谁。
+需要一个 scope 级发现文件。
 
-2. **Session 没有人类可读身份**：`session_id` 是随机 uuid，在 REPL 或 TUI 中无法区分"上周那个调试机械臂的 session"和"刚才测试语音的 session"。给 session 加上 title + description 元信息，Matrix 启动时即可展示"可恢复的 session 列表"。
+三个问题现已解决：
+1. **Storage 无追加写** → `Storage.append_model`/`read_models` 已解决
+2. **Session 无人类可读身份** → 本 feature 补 ScopeMeta + SessionRecord + SessionMetadata
+3. **组网发现** → scope meta 文件，PID 验活
 
-3. **启动时无法判断创建/恢复**：当前 `HostSessionProvider.factory()` 每次都创建新 session（或从 env 拿 session_id）。有了持久化的 session 元信息索引，启动时可以：检查 scope 下有哪些 session → 展示列表 → 决定新建还是恢复。
+## Philosophical Foundation
 
-三个部分互为依赖：JSONL 是存储基础，SessionMeta 是数据模型，启动检查是消费场景。
+**Scope = 认知隔离，不是通讯隔离。**
 
-## Design Index
+虽然 ghost 和 mode 是用户可见的隔离维度，但真正的隔离边界是 session scope。
+未来 ghost/mode 运行时自动生成不同 scope，物理上不同 scope 的 session 互相不可见。
 
-- Session 蓝图：`ghoshell_moss.core.blueprint.session:Session`
-- Session 实现：`ghoshell_moss.host.session.zenoh_session:MossSessionWithZenoh`
-- Session 创建：`ghoshell_moss.host.providers.moss_session_provider:HostSessionProvider`
-- Storage 契约：`ghoshell_moss.contracts.workspace:Storage`
-- 已有 JSONL 先例：`ghoshell_moss.core.resources.local_image:LocalImageStorage`
-- 下游消费 feature：`session-communication-bus`（Journal 原语依赖 JSONL）
-- Session 存储约定：`Session.storage` / `Session.scope_storage`
+这带来语义一致性：
+- **Ghost 看到自己的历史**：同一 scope 下 `sessions.jsonl` 列出"我上次怎么了"
+- **不同 Ghost 不可见**：不同 scope 物理隔离，JSONL 文件不同
+- **Ghost/mode 不在 record 中**：scope 本身隐含了认知归属，不需要冗余字段
+- **恢复语义清晰**："恢复上次" = 当前 scope 内找最近一条记录
+
+## Data Structures
+
+三个模型，三层职责：
+
+### ScopeMeta — scope 级发现文件（host 创建/删除）
+
+位置：`workspace/runtime/scopes/scope-{scope}.yml`
+
+写者唯一：host 主进程。创建于进程锁之后、session 创建之前。
+host 正常退出时删除。残留文件通过 PID 验尸。
+
+```python
+class ScopeMeta(BaseModel):
+    """scope 级发现文件 — host 写，PID 验活."""
+    session_id: str           # 当前 scope 的 active session — 新 cell 加入时用
+    host_pid: int             # 存活验证
+    host_cell_address: str    # 主节点地址
+    created_at: str           # ISO 8601
+```
+
+Environment 提供读写接口：
+- `restore_from_scope_meta(scope_storage)` → 找到 + PID 存活 → 设置 session_id
+- `write_scope_meta(scope_storage)` → 创建/覆盖
+
+### SessionRecord — JSONL 索引行（不可变，scope 级）
+
+位置：`scope_storage/sessions.jsonl`，`Storage.append_model` 追加。
+
+```python
+class SessionRecord(BaseModel):
+    """scope 级 JSONL 索引行 — append-only, 不可变."""
+    session_id: str           # uuid
+    created_at: str           # ISO 8601
+    # ghost/mode 不在 record 里 — scope 隐含了认知归属
+```
+
+只追加，不修改，不删除。scope 内所有 session 的创建事实记录。
+列出 scope 下有哪些 session 时，读这个文件即可——不需遍历子目录。
+
+### SessionMetadata — YAML 详情（matrix 写，session 级）
+
+位置：`session.storage/meta.yaml`，`Storage.read_yaml`/`write_yaml` 读写。
+
+写者：matrix（`_is_main` 才写），session 创建后写入。
+读者：所有 cell 的 matrix，通过 `Session.meta` 只读 property 访问。
+
+```python
+class SessionMetadata(BaseModel):
+    """session 运行时现场记录 — matrix 写."""
+    # 运行时现场（来自 matrix.scopes()）
+    session_id: str           # uuid
+    session_scope: str        # 认知隔离 scope
+    mode_name: str            # 当前 mode
+    ghost_name: str           # ghost 名，"None" 表示无 ghost
+    host_cell_address: str    # 主节点 cell address
+    host_pid: int             # host 进程 PID
+    created_at: str           # ISO 8601
+    # 人类可读可变字段
+    title: str = ""
+    description: str = ""
+    updated_at: str = ""      # 最后修改时间
+
+    # 无 status 字段 — "活着"由 host_pid 推导，"已关闭"由 scope meta 被删除推导，
+    # "崩溃"由 scope meta 残留但 PID 不存活推导。不维护可推导的状态标记。
+```
 
 ## Key Decisions
 
-### 1. JsonlFile 作为独立工具类，不侵入 Storage 接口
+### 1. 三层结构，不同生命周期
 
-`Storage` 保持最小接口（get/put/remove/exists/sub_storage）。在其上构建 `JsonlFile`：
+| 层 | 生命周期 | 写者 | 格式 |
+|----|---------|------|------|
+| ScopeMeta | host 创建，退出删除 | host 主进程 | YAML |
+| SessionRecord | 不可变追加，永久保留 | matrix (main) | JSONL |
+| SessionMetadata | 创建后可变 | matrix (main) | YAML |
+
+**接受**：三个模型，两个文件（scope meta + session meta），一个 JSONL 索引。
+**拒绝**：合并 scope meta 和 session metadata——生命周期不同（删 vs 留），合并后无法独立清理。
+
+### 2. 发现流：scope meta + PID，非 meta.yaml 存在性
+
+原版用 `meta.yaml` 存在性判断创建/恢复。但 meta.yaml 在 session 子目录下，
+新 cell 不知道 session_id 时连路径都拼不出来。scope meta 在固定位置，只依赖
+`workspace + scope` 就能定位。
+
+**启动发现流**：
+1. 进程锁获取后
+2. 读 `workspace/runtime/scopes/scope-{scope}.yml`
+3. 文件存在 + host_pid 存活 → 恢复 session_id，加入已有 session
+4. 文件不存在 OR host_pid 已死 → 创建新 session，写 scope meta
+5. 非 main cell 读不到 scope meta 不拒绝启动——允许无主进程测试
+
+**接受**：scope meta 作为 discovery 约定。
+**拒绝**：遍历 session 子目录找 meta.yaml——不知道 session_id 时无法定位。
+
+### 3. 无 status 字段
+
+"active"/"closed"/"crashed" 是派生状态，不是本原事实：
+- **active**：scope meta 存在且 host_pid 存活
+- **closed**：scope meta 被 host 正常退出时删除
+- **crashed**：scope meta 残留但 host_pid 不存活
+
+维护一个 status 字段 = 在多个地方同步同一事实 = 不一致风险。
+session metadata 只记录创建时的运行时现场，不做状态标记。
+
+**接受**：状态由 PID 推导。
+**拒绝**：`status: Literal["active", "closed", "crashed"]` 字段。
+
+### 4. Ghost/mode 不在 SessionRecord 中
+
+Scope 即认知隔离——scope 本身隐含了 ghost + mode 的归属信息。
+在 record 中冗余存储违反单一事实源原则。
+
+**接受**：record 只含 session_id + created_at。
+**拒绝**：ghost_name / mode_name 字段——scope 已定义认知边界，重复存储会产生不一致风险。
+
+### 5. 写者分离：host 写 scope meta，matrix 写 session metadata
+
+Scope meta 是进程级发现文件，由启动流程（host 侧）在进程锁后写入。
+Session metadata 是 matrix 运行时现场，由 matrix（`_is_main`）在 session
+创建后写入。Session ABC 暴露 `meta` property 为只读接口。
+
+**接受**：两个写点，不同层级。Session 不承担写入职责。
+**拒绝**：Session 自己写 meta.yaml——session 不应感知自己的持久化生命周期。
+
+### 6. 基建已就绪，不需新工具类
+
+- `append_model` = JSONL 追加
+- `read_models` = JSONL 全量读
+- `read_yaml` / `write_yaml` = YAML 读写
+
+三个模型只是 pydantic BaseModel，配合现有方法即可。不需要额外封装。
+
+## File Path Convention
+
+```
+workspace/runtime/
+  scopes/
+    scope-{scope}.yml                          ← scope 级发现文件 (YAML, host 创建/删除)
+
+  sessions/                                     ← sessions_root_storage
+    scope-{scope}/                              ← scope_storage
+      sessions.jsonl                             ← scope 级 session 索引 (JSONL)
+      session-{session_id}/                     ← storage (单个 session)
+        meta.yaml                                ← session 运行时现场 (YAML)
+        ...
+
+  sessions-tmp/                                 ← sessions_tmp_root_storage
+    {scope}-{session_id}/                       ← tmp_storage
+      cache.db                                   ← sqlite3 cache
+```
+
+## Relation to session-communication-bus
+
+- `session-communication-bus` 讨论的 meta index（`sessions/meta.jsonl`，matrix 管理）
+  记录 `{created, closed, crashed, reclaimed}` —— 矩阵用它做生命周期治理（tmp 回收等）。
+  本 feature 的 `sessions.jsonl` 是 scope 级 session 创建索引。
+- 两者可以是同一文件，也可以是不同层级的两个文件。实现时再定。
+
+## Environment 方法
 
 ```python
-class JsonlFile:
-    """Storage 上的 JSONL 追加读写工具。"""
-    def __init__(self, storage: Storage, file_path: str): ...
-    def append(self, obj: dict | BaseModel) -> None: ...    # 追加一行
-    def tail(self, n: int = 1) -> list[dict]: ...            # 读最后 n 行
-    def read_all(self) -> list[dict]: ...                    # 读全部行
-    def count(self) -> int: ...                              # 行数
-    def find(self, **kwargs) -> list[dict]: ...              # 简单字段匹配遍历
+class Environment:
+    def restore_from_scope_meta(self, scope_storage: Storage) -> bool:
+        """从 scope meta 恢复。返回 True 表示成功恢复（文件存在 + PID 存活）。"""
+        ...
+
+    def write_scope_meta(self, scope_storage: Storage) -> None:
+        """写入 scope meta（host 进程锁后调用）。"""
+        ...
 ```
 
-位置：`ghoshell_moss.core.session.jsonl` 或 `ghoshell_moss.core.helpers.jsonl_utils`。
+## Implementation
 
-**接受**：薄封装，不引入 sqlite/第三方依赖，百级数据量足够。大量数据场景换 sqlite 时接口不变。
-**拒绝**：把 append 方法直接加到 Storage 接口上——Storage 是通用文件抽象，JSONL 是特定格式约定；直接加会污染接口。
+实现路径：
+1. `ScopeMeta` + `SessionRecord` + `SessionMetadata` 模型定义（`core/blueprint/session.py`）
+2. `Environment.restore_from_scope_meta` / `write_scope_meta`
+3. `MatrixImpl.__aenter__`：进程锁后执行 scope meta 发现，`_is_main` 时写 scope meta + session metadata
+4. `Session.meta` 只读 property（`storage.read_yaml("meta", SessionMetadata)`）
+5. `MatrixImpl.__aexit__`：host 正常退出时删除 scope meta
+6. 单测：mock storage 验证 create/recover/append 流程
 
-### 2. SessionMeta：pydantic 模型，存于 scope 级 JSONL 索引 + session 级 YAML
-
-```python
-class SessionMeta(BaseModel):
-    session_id: str                              # 对应 Session.session_id
-    title: str = ""                              # 人类可读标题
-    description: str = ""                        # 内容描述
-    status: Literal["active", "closed", "crashed"] = "active"
-    created_at: str                              # ISO 8601
-    updated_at: str                              # ISO 8601
-```
-
-存储两层：
-- **scope 索引**：`scope_storage/sessions.jsonl`，每个 session 一行，append-only。用于列出 scope 下所有 session。
-- **session 级详情**：`storage/meta.yaml`，包含完整元信息，可运行时读写。用于单个 session 的元信息管理。
-
-**接受**：双写（JSONL 索引 + YAML 详情）。JSONL 索引让你不必扫描所有 session 子目录就能列出列表；YAML 详情提供人类可编辑的完整信息。
-**拒绝**：只存 JSONL 索引——列出全部 session 时快，但单个 session 的元信息更新需要重写整个 JSONL 文件（append-only 不支持原地修改）。只存 YAML——列出 session 列表需要遍历所有子目录读 YAML，session 多了变慢。
-
-### 3. JSONL 索引不可变追加，YAML 详情可原地修改
-
-JSONL 索引行是 **不可变的 session 创建记录**。title/description 变更只写 YAML 详情，不更新 JSONL（append-only 无法更新已有行）。
-
-如果需要"最新的 session 元信息"：读 `storage/meta.yaml`。
-如果需要"列出 scope 下有哪些 session"：读 `scope_storage/sessions.jsonl`，然后用每行的 session_id 找到对应 storage 读 meta.yaml 获取最新 title。
-
-**接受**：JSONL 作为 append-only 事实记录 + YAML 作为可变状态。这和 Journal（append-only）与 ParameterStore（可变 KV）的分工一致。
-**拒绝**：用 SQLite 统一管理——过度设计，百级 session 不需要数据库。
-
-### 4. Session 抽象增加 meta 相关方法
-
-在 `Session` ABC 中增加：
-
-```python
-@property
-@abstractmethod
-def meta(self) -> SessionMeta:
-    """当前 session 的元信息（内存态）"""
-    pass
-
-@abstractmethod
-def update_meta(self, *, title: str | None = None, description: str | None = None) -> None:
-    """运行时修改元信息，同时更新内存和持久化"""
-    pass
-
-@abstractmethod
-def save_meta(self) -> None:
-    """显式持久化当前元信息到 YAML"""
-    pass
-```
-
-`MossSessionWithZenoh` 实现时，在 `__init__` 中从 `storage/meta.yaml` 加载已有 meta（如果存在），否则创建默认 meta。
-
-### 5. 启动检查流程在 HostSessionProvider 中实现
-
-`HostSessionProvider.factory()` 的启动逻辑：
-
-1. 创建 `MossSessionWithZenoh` 实例（此时 session 从 `storage/meta.yaml` 加载或创建默认 meta）
-2. 检查 `scope_storage/sessions.jsonl` 是否存在该 session_id 的记录
-3. 如果不存在：这是新 session → `append` 到 JSONL 索引 + `save_meta()` 写 YAML
-4. 如果存在且 status=active：这是恢复已有 session → 从 YAML 加载最新 meta
-5. 如果存在且 status=closed/crashed：根据策略决定（默认创建新 session？还是恢复？）
-
-**当前阶段**（scope 内单一 session 运行）：启动时自动处理，不需要交互选择。
-**未来阶段**（scope 内多 session 并存）：REPL/TUI 在启动时展示 JSONL 索引中的 session 列表，让人类选择新建或恢复哪个。
-
-### 6. 命名与文件路径约定
-
-```
-{workspace}/runtime/sessions/                 ← sessions_root_storage
-  scope-{scope}/                              ← scope_storage
-    sessions.jsonl                             ← scope 级 session 索引
-    session-{session_id}/                     ← storage (单个 session)
-      meta.yaml                                ← session 元信息详情
-      ...
-
-{workspace}/runtime/sessions-tmp/             ← sessions_tmp_root_storage
-  {scope}-{session_id}/                       ← tmp_storage
-```
-
-**接受**：meta.yaml 放在 session 自己的 storage 根下，与 session 生命周期绑定。sessions.jsonl 放在 scope 级，作为 scope 内所有 session 的索引。
-
-## Implementation Notes
-
-### 实现顺序
-
-1. **JsonlFile** — 纯工具类，无外部依赖，可先独立实现并单测
-2. **SessionMeta + Session ABC 扩展** — 在 session blueprint 中加模型和抽象方法
-3. **MossSessionWithZenoh 实现** — 在 `__init__` 中加 meta 加载逻辑，实现 `update_meta` / `save_meta`
-4. **HostSessionProvider 启动检查** — 在 `factory()` 中加 JSONL 索引检查与写入
-
-### JSONL 格式细节
-
-- 每行一个完整 JSON object，`json.dumps(ensure_ascii=False)` + `\n`
-- 写入时用 `storage.put()` 全量覆盖（当前 Storage 不支持 append 模式），追加场景下 JsonlFile 内部做 read-append-write
-- 如果未来 Storage 支持流式写入，JsonlFile 可以优化为真正的 append
-
-### 与 session-communication-bus 的关系
-
-此 feature 是 `session-communication-bus` 的前置依赖：
-- `JsonlFile` 被 Journal 原语直接复用
-- `SessionMeta` 的 JSONL 索引模式被 `sessions/meta.jsonl`（matrix 管理的 meta index）参考
-- `session-communication-bus` 中讨论的 Cabinet 可以封装 JsonlFile 的使用
-
-### 单测策略
-
-- `JsonlFile`: 用 mock Storage (in-memory dict) 测试 append/tail/read_all/count/find
-- `SessionMeta`: pydantic 序列化/反序列化
-- `MossSessionWithZenoh.meta`: 用 mock storage 测试加载/保存/更新流程
+全部基于已有 Storage typed methods，零新基建。

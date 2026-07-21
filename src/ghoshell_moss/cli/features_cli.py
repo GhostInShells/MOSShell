@@ -16,7 +16,7 @@ from ghoshell_moss.core.codex._features import (
     create_feature,
     init_features,
     update_feature_status,
-    VALID_STATUSES,
+    RESERVED_STATUSES,
     _find_templates_dir,
 )
 from ghoshell_moss.cli.utils import (
@@ -34,10 +34,26 @@ features_app = typer.Typer(
 _STATUS_HINTS = {
     ("draft", "in-progress"): "Record key decisions in FEATURE.md as you implement.",
     ("in-progress", "completed"): "Now commit this FEATURE.md with your code in the same commit — status change must land together with the code, not after.",
-    ("in-progress", "blocked"): "Update depends: in frontmatter if a specific workstream is blocking this one.",
     ("in-progress", "draft"): "Update the Motivation section if context has changed.",
 }
-_ABANDONED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
+_DROPPED_HINT = "Record why in -m 'reason' for future reference. The workstream stays in place."
+
+
+def _print_parse_errors(parse_errors: list[dict]) -> None:
+    """Print FEATURE.md frontmatter parse errors — called at end of list/status output."""
+    echo("")
+    print_warning(f"Parse errors — {len(parse_errors)} FEATURE.md file(s) have broken YAML frontmatter "
+                  f"and were excluded from the list:")
+    echo("")
+    for err in parse_errors:
+        echo(f"  [{err['feature_dir']}]")
+        echo(f"    path:  {err['path']}")
+        echo(f"    error: {err['error']}")
+        echo(f"    hint:  {err['hint']}")
+        echo("")
+    echo("  Fix: open the file and correct the YAML frontmatter between the --- markers.")
+    echo("")
+
 
 # Default features directory for the MOSShell project itself
 _DEFAULT_FEATURES_DIR = Path.cwd() / ".ai_partners" / "features"
@@ -92,7 +108,7 @@ def specification(
 def list_cmd(
     status: Optional[str] = typer.Option(
         None, "--status", "-s",
-        help="Filter by status: draft, in-progress, completed, abandoned, blocked",
+        help="Filter by status. Reserved: draft, in-progress, completed, dropped; free-form values match exactly.",
     ),
     all_months: bool = typer.Option(
         False, "--all",
@@ -109,18 +125,14 @@ def list_cmd(
     Defaults to workstreams from the last 2 months. Use --all to see everything.
     """
     fd = _resolve_dir(features_dir)
-    if status and status not in VALID_STATUSES:
-        print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
-        raise typer.Exit(code=1)
-
-    features = list_features(str(fd), status_filter=status, all_months=all_months)
+    features, parse_errors = list_features(str(fd), status_filter=status, all_months=all_months)
     title = "Workstreams"
     if status:
         title += f" [status={status}]"
     if not all_months:
         title += " (last 2 months)"
 
-    if not features:
+    if not features and not parse_errors:
         print_info("No workstreams found.")
         return
 
@@ -136,13 +148,11 @@ def list_cmd(
         status_display = stat
         if stat == "in-progress":
             status_display = f"[bold green]{stat}[/bold green]"
-        elif stat == "blocked":
-            status_display = f"[bold red]{stat}[/bold red]"
         elif stat == "draft":
             status_display = f"[dim]{stat}[/dim]"
         elif stat == "completed":
             status_display = f"[bold cyan]{stat}[/bold cyan]"
-        elif stat == "abandoned":
+        elif stat == "dropped":
             status_display = f"[dim red]{stat}[/dim red]"
 
         table_data.append([name, status_display, pri, title_str, updated, feat_path])
@@ -158,6 +168,9 @@ def list_cmd(
         "[dim]Read the convention: [/dim]"
         "[bold]moss features specification[/bold]"
     )
+
+    if parse_errors:
+        _print_parse_errors(parse_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +194,11 @@ def status_cmd(
     fd = _resolve_dir(features_dir)
 
     if feature_name:
-        meta = get_feature(str(fd), feature_name)
+        meta, parse_err = get_feature(str(fd), feature_name)
+        if parse_err is not None:
+            print_error(f"Workstream '{feature_name}' exists but FEATURE.md has a YAML parse error:")
+            _print_parse_errors([parse_err])
+            raise typer.Exit(code=1)
         if meta is None:
             print_error(f"Workstream '{feature_name}' not found.")
             raise typer.Exit(code=1)
@@ -205,8 +222,8 @@ def status_cmd(
         )
     else:
         # Compact all-workstreams view
-        features = list_features(str(fd))
-        if not features:
+        features, parse_errors = list_features(str(fd))
+        if not features and not parse_errors:
             print_info("No workstreams found.")
             return
 
@@ -243,13 +260,11 @@ def status_cmd(
                 # Color the status
                 if stat == "in-progress":
                     stat_disp = f"[bold green]{stat}[/bold green]"
-                elif stat == "blocked":
-                    stat_disp = f"[bold red]{stat}[/bold red]"
                 elif stat == "draft":
                     stat_disp = f"[dim]{stat}[/dim]"
                 elif stat == "completed":
                     stat_disp = f"[bold cyan]{stat}[/bold cyan]"
-                elif stat == "abandoned":
+                elif stat == "dropped":
                     stat_disp = f"[dim red]{stat}[/dim red]"
                 else:
                     stat_disp = stat
@@ -266,6 +281,9 @@ def status_cmd(
             "[dim]Read the convention: [/dim]"
             "[bold]moss features specification[/bold]"
         )
+
+        if parse_errors:
+            _print_parse_errors(parse_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -303,31 +321,35 @@ def create_cmd(
 @features_app.command("set-status", short_help="Set workstream status without opening the file.")
 def set_status_cmd(
     feature_name: str = typer.Argument(..., help="Feature name to update."),
-    status: str = typer.Argument(..., help=f"New status: {', '.join(sorted(VALID_STATUSES))}"),
+    status: str = typer.Argument(..., help=f"New status. Reserved: {', '.join(sorted(RESERVED_STATUSES))}; free-form allowed."),
     features_dir: Optional[Path] = typer.Option(
         None, "--dir", "-d",
         help="Path to .ai_partners/features/ directory. Defaults to current project.",
     ),
     message: Optional[str] = typer.Option(
         None, "--message", "-m",
-        help="One-line context note explaining the current status (e.g. why blocked, what's next).",
+        help="One-line context note explaining the current status (e.g. why dropped, what's next).",
     ),
 ):
     """
     Quick-set the status of a workstream without opening the file.
 
     Updates the 'status' and 'updated' fields in the YAML frontmatter.
-    Use -m to attach a one-line status_note for context (e.g. why blocked, what's next).
+    Use -m to attach a one-line status_note for context (e.g. why dropped, what's next).
 
     Faster than manually editing FEATURE.md — one shell call vs Read+Edit.
     """
     fd = _resolve_dir(features_dir)
 
-    if status not in VALID_STATUSES:
-        print_error(f"Invalid status '{status}'. Valid: {', '.join(sorted(VALID_STATUSES))}")
-        raise typer.Exit(code=1)
+    if status not in RESERVED_STATUSES:
+        print_warning(f"'{status}' is not a reserved status ({', '.join(sorted(RESERVED_STATUSES))}). "
+                      f"Free-form statuses are allowed; reserved values drive list coloring and check.")
 
-    meta = get_feature(str(fd), feature_name)
+    meta, parse_err = get_feature(str(fd), feature_name)
+    if parse_err is not None:
+        print_error(f"Workstream '{feature_name}' exists but FEATURE.md has a YAML parse error:")
+        _print_parse_errors([parse_err])
+        raise typer.Exit(code=1)
     if meta is None:
         print_error(f"Workstream '{feature_name}' not found.")
         raise typer.Exit(code=1)
@@ -347,8 +369,8 @@ def set_status_cmd(
 
         # Print a next-step hint for the transition
         hint = None
-        if status == "abandoned":
-            hint = _ABANDONED_HINT
+        if status == "dropped":
+            hint = _DROPPED_HINT
         else:
             hint = _STATUS_HINTS.get((old_status, status))
         if hint:
@@ -384,7 +406,7 @@ def init_cmd(
 # check
 # ---------------------------------------------------------------------------
 
-_TERMINAL_STATUSES = {"completed", "abandoned"}
+_TERMINAL_STATUSES = {"completed", "dropped"}
 
 
 @features_app.command("check", short_help="List unfinished workstreams — pre-commit reminder.")
@@ -395,7 +417,7 @@ def check_cmd(
     ),
 ):
     """
-    List workstreams that are NOT in a terminal state (completed/abandoned).
+    List workstreams that are NOT in a terminal state (completed/dropped).
 
     Intended as a non-blocking pre-commit hook — always exits 0.
     If you're committing code for any listed feature, run:
@@ -405,7 +427,10 @@ def check_cmd(
     before committing.
     """
     fd = _resolve_dir(features_dir)
-    features = list_features(str(fd))
+    features, parse_errors = list_features(str(fd))
+
+    if parse_errors:
+        _print_parse_errors(parse_errors)
 
     unfinished = [f for f in features if f.get("status") not in _TERMINAL_STATUSES]
     if not unfinished:

@@ -5,7 +5,6 @@ from ghoshell_moss.message import unique_id
 import zenoh
 from ._provider import ZenohChannelProvider
 from ._proxy import ZenohProxyChannel
-import time
 
 __all__ = ["ZenohBridgeTestSuite"]
 
@@ -19,11 +18,11 @@ class ZenohBridgeTestSuite(BridgeTestSuite):
         self._session = zenoh.open(zenoh.Config())
         node_name = "test/zenoh"
         session_id = unique_id()
-        provider = ZenohChannelProvider(zenoh_session=self._session, address=node_name, session_scope=session_id)
+        provider = ZenohChannelProvider(zenoh_session=self._session, address=node_name, scope=session_id)
         proxy = ZenohProxyChannel(
             name=proxy_name,
             description="",
-            zenoh_session=self._session, address=node_name, session_scope=session_id,
+            zenoh_session=self._session, address=node_name, scope=session_id,
         )
         return provider, proxy
 

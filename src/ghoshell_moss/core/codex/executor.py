@@ -15,8 +15,10 @@ class ExecutionResult:
     """
     result of the execution
     """
-    returns: Any
-    std_output: str
+    returns: Any = None
+    std_output: str = ''
+    exception: str | None = None
+    traceback: str | None = None
 
 
 class Executor:

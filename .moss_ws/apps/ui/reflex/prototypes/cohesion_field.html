@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cohesion Field — 凝聚场</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 100vw; height: 100vh; overflow: hidden;
+    background: #030310;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Noto Sans SC", sans-serif;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+  }
+
+  #particle-canvas {
+    position: fixed; inset: 0; z-index: 0;
+    pointer-events: none;
+  }
+
+  #glow-canvas {
+    position: fixed; inset: 0; z-index: 1;
+    pointer-events: none;
+  }
+
+  #content-layer {
+    position: fixed; inset: 0; z-index: 2;
+    pointer-events: none;
+  }
+
+  .block {
+    position: absolute;
+    pointer-events: auto;
+    will-change: transform, filter, opacity;
+  }
+
+  .block .inner {
+    padding: 22px 30px;
+    border-radius: 16px;
+    background: rgba(12, 12, 35, 0.82);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow:
+      0 0 80px rgba(80, 80, 200, 0.06),
+      0 0 2px rgba(255, 255, 255, 0.04),
+      inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    color: #e0e0f0;
+    line-height: 1.7;
+    max-width: 560px;
+    transition: box-shadow 0.6s ease, border-color 0.6s ease;
+  }
+
+  .block.coalescing .inner {
+    border-color: rgba(140, 140, 255, 0.3);
+    box-shadow:
+      0 0 140px rgba(100, 100, 255, 0.2),
+      0 0 8px rgba(180, 180, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .block h2 {
+    font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
+    color: #f2f2ff; margin-bottom: 4px; line-height: 1.3;
+  }
+
+  .block h3 {
+    font-size: 16px; font-weight: 500; color: #7a7ab8;
+    margin-bottom: 10px; letter-spacing: 0.05em;
+  }
+
+  .block p {
+    font-size: 15px; color: #b8b8e0; line-height: 1.85;
+  }
+
+  .block img {
+    width: 100%; border-radius: 8px; margin-top: 6px;
+  }
+
+  .block .cursor {
+    display: inline-block; width: 2px; height: 1.05em;
+    background: #9090ff; margin-left: 2px; vertical-align: text-bottom;
+    animation: blink 0.7s ease-in-out infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.15; }
+  }
+
+  /* ── Controls ── */
+  #controls {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    z-index: 10; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;
+  }
+  #controls button {
+    padding: 10px 20px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(16,16,40,0.75); color: #b0b0d0; font-size: 13px;
+    cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+    font-family: inherit;
+  }
+  #controls button:hover {
+    background: rgba(35,35,70,0.9); border-color: rgba(255,255,255,0.25);
+    color: #e0e0f0;
+  }
+  #controls button.cta {
+    border-color: rgba(140,140,255,0.3);
+    background: rgba(30,30,70,0.85);
+    color: #d0d0ff;
+  }
+
+  #info {
+    position: fixed; top: 20px; right: 28px; z-index: 10;
+    color: rgba(255,255,255,0.22); font-size: 12px; text-align: right;
+    font-family: "SF Mono", "Fira Code", monospace; line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="particle-canvas"></canvas>
+<canvas id="glow-canvas"></canvas>
+<div id="content-layer"></div>
+
+<div id="info">
+  <div>particles <span id="particle-count">200</span></div>
+  <div>blocks <span id="block-count">0</span></div>
+  <div>ripples <span id="ripple-count">0</span></div>
+</div>
+
+<div id="controls">
+  <button onclick="demoHeading()" class="cta">标题降临</button>
+  <button onclick="demoSubtitle()">副标题</button>
+  <button onclick="demoBodyText()">正文</button>
+  <button onclick="demoImage()">图片</button>
+  <button onclick="demoBurst()" class="cta">一簇降临</button>
+  <button onclick="demoClear()">清空</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// Canvas layers
+// ═══════════════════════════════════════════
+const particleCanvas = document.getElementById('particle-canvas');
+const pCtx = particleCanvas.getContext('2d');
+const glowCanvas = document.getElementById('glow-canvas');
+const gCtx = glowCanvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = particleCanvas.width = glowCanvas.width = window.innerWidth;
+  H = particleCanvas.height = glowCanvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+const CX = () => W / 2;
+const CY = () => H / 2;
+
+// ═══════════════════════════════════════════
+// Particle Field — deep space drift
+// ═══════════════════════════════════════════
+class Particle {
+  constructor() {
+    this.reset(true);
+  }
+
+  reset(initial) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = initial
+      ? Math.random() * Math.max(W, H) * 0.8
+      : 60 + Math.random() * Math.max(W, H) * 0.9;
+    this.x = CX() + Math.cos(angle) * dist;
+    this.y = CY() + Math.sin(angle * 0.65) * dist * 0.6;
+    this.life = Math.random() * Math.PI * 2;
+    this.speed = 0.0002 + Math.random() * 0.001;
+    this.size = 0.5 + Math.random() * 2.2;
+    this.baseOpacity = 0.08 + Math.random() * 0.4;
+    this.twinkleSpeed = 0.01 + Math.random() * 0.03;
+    this.orbitR = 100 + Math.random() * Math.max(W, H) * 0.65;
+    this.orbitEllipticity = 0.4 + Math.random() * 0.6;
+  }
+
+  update() {
+    this.life += this.speed;
+    const cx = CX(), cy = CY();
+
+    const r = this.orbitR * (0.82 + 0.18 * Math.sin(this.life * 4.1 + this.orbitR));
+    const angle = this.life * 2.1 + this.orbitR * 0.0008;
+    const tx = cx + Math.cos(angle) * r;
+    const ty = cy + Math.sin(angle * 0.65) * r * this.orbitEllipticity;
+
+    this.x += (tx - this.x) * 0.0025;
+    this.y += (ty - this.y) * 0.0025;
+
+    const dx = this.x - cx, dy = this.y - cy;
+    if (Math.sqrt(dx*dx + dy*dy) < 25) this.reset(false);
+    if (this.x < -150 || this.x > W+150 || this.y < -150 || this.y > H+150) this.reset(false);
+  }
+
+  draw(ctx, t) {
+    const twinkle = 0.6 + 0.4 * Math.sin(t * this.twinkleSpeed + this.life * 7);
+    const alpha = this.baseOpacity * twinkle;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(130,130,210,${alpha})`;
+    ctx.fill();
+
+    // brighter core for larger particles
+    if (this.size > 1.4) {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size * 0.35, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(180,180,240,${alpha * 1.4})`;
+      ctx.fill();
+    }
+  }
+}
+
+const PARTICLES = Array.from({ length: 200 }, () => new Particle());
+
+// ═══════════════════════════════════════════
+// Ripple / Shockwave system
+// ═══════════════════════════════════════════
+let ripples = [];
+
+function spawnRipple(x, y, intensity = 1.0) {
+  ripples.push({
+    x, y,
+    radius: 0,
+    maxRadius: 80 + intensity * 120,
+    life: 0,
+    maxLife: 0.8 + intensity * 1.2,
+    intensity,
+  });
+}
+
+// ═══════════════════════════════════════════
+// Glow trail — a fading point that prefigures block arrival
+// ═══════════════════════════════════════════
+let glowTrails = [];
+
+function spawnGlowTrail(x, y, targetX, targetY) {
+  glowTrails.push({
+    x, y,
+    tx: targetX, ty: targetY,
+    life: 0,
+    maxLife: 1.8,
+    size: 20 + Math.random() * 50,
+  });
+}
+
+// ═══════════════════════════════════════════
+// Force-Directed Layout
+// ═══════════════════════════════════════════
+let blocks = [];
+let blockIdCounter = 0;
+
+const SPRING_K = 0.01;
+const REPULSE_K = 7000;
+const DAMP = 0.82;
+const CHAPTER_SPREAD = 300;
+
+function computeLayout() {
+  const chapters = {};
+  for (const b of blocks) {
+    const ch = b.chapter || 'default';
+    (chapters[ch] ||= []).push(b);
+  }
+  const names = Object.keys(chapters);
+  const n = names.length;
+  const spread = Math.min(CHAPTER_SPREAD * (n - 1), W * 0.65);
+
+  // Chapter centers: horizontal spread with slight vertical wave
+  const centers = {};
+  names.forEach((name, i) => {
+    const off = n === 1 ? 0 : (i - (n-1)/2) * (spread / (n-1));
+    centers[name] = {
+      x: CX() + off,
+      y: CY() + Math.sin(i * 2.0) * 45,
+    };
+  });
+
+  // Within-chapter: vertical stack
+  const targets = [];
+  for (const [chName, chBlocks] of Object.entries(chapters)) {
+    const c = centers[chName];
+    chBlocks.sort((a, b) => a.order - b.order);
+    const totalH = chBlocks.reduce((s, b) => s + (b.height || 80) + 26, 0);
+    let y = c.y - totalH / 2;
+    for (const b of chBlocks) {
+      const h = b.height || 80;
+      targets.push({ block: b, tx: c.x, ty: y + h/2 });
+      y += h + 28;
+    }
+  }
+
+  // Force relaxation
+  const pos = targets.map(t => ({ x: t.tx, y: t.ty }));
+  for (let iter = 0; iter < 40; iter++) {
+    for (let i = 0; i < pos.length; i++) {
+      let fx = 0, fy = 0;
+      for (let j = 0; j < pos.length; j++) {
+        if (i === j) continue;
+        const dx = pos[i].x - pos[j].x;
+        const dy = pos[i].y - pos[j].y;
+        const d = Math.max(Math.sqrt(dx*dx + dy*dy), 1);
+        const fr = REPULSE_K / (d * d);
+        fx += (dx / d) * fr;
+        fy += (dy / d) * fr;
+      }
+      fx -= (pos[i].x - targets[i].tx) * SPRING_K;
+      fy -= (pos[i].y - targets[i].ty) * SPRING_K;
+      pos[i].x += fx * DAMP;
+      pos[i].y += fy * DAMP;
+    }
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    targets[i].block.targetX = Math.round(pos[i].x);
+    targets[i].block.targetY = Math.round(pos[i].y);
+  }
+}
+
+// ═══════════════════════════════════════════
+// Content Block Management
+// ═══════════════════════════════════════════
+const layer = document.getElementById('content-layer');
+
+function createBlock({ type, content, chapter, imageUrl }) {
+  const id = `blk-${++blockIdCounter}`;
+  const el = document.createElement('div');
+  el.className = 'block coalescing';
+  el.id = id;
+
+  let html = '';
+  switch (type) {
+    case 'heading':
+      html = `<div class="inner"><h2>${content}<span class="cursor"></span></h2></div>`;
+      break;
+    case 'subtitle':
+      html = `<div class="inner"><h3>${content}<span class="cursor"></span></h3></div>`;
+      break;
+    case 'body':
+      html = `<div class="inner"><p>${content}<span class="cursor"></span></p></div>`;
+      break;
+    case 'image':
+      html = `<div class="inner"><img src="${imageUrl}" alt="" /><p style="margin-top:8px;font-size:13px;color:#7a7ab8;">${content || ''}</p></div>`;
+      break;
+  }
+  el.innerHTML = html;
+  layer.appendChild(el);
+
+  const rect = el.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+
+  // Spawn from a random edge
+  const edge = Math.random();
+  let sx, sy;
+  if (edge < 0.25)      { sx = -w - 40; sy = 80 + Math.random() * (H - 160); }
+  else if (edge < 0.5)  { sx = W + 40;  sy = 80 + Math.random() * (H - 160); }
+  else if (edge < 0.75) { sx = 80 + Math.random() * (W - 160); sy = -h - 40; }
+  else                  { sx = 80 + Math.random() * (W - 160); sy = H + 40; }
+
+  const block = {
+    id, el, type, content,
+    chapter: chapter || 'default',
+    order: blockIdCounter,
+    width: w, height: h,
+    currentX: sx, currentY: sy,
+    targetX: CX(), targetY: CY(),
+    settled: false,
+    settleTime: 0,
+  };
+  blocks.push(block);
+
+  // spawn glow trail from edge toward where this will land
+  spawnGlowTrail(sx, sy, CX(), CY());
+
+  computeLayout();
+
+  return block;
+}
+
+function updateBlockContent(block, newContent) {
+  block.content = newContent;
+  const inner = block.el.querySelector('.inner');
+  const cursor = block.el.querySelector('.cursor');
+  const tag = block.type === 'heading' ? 'h2' : block.type === 'subtitle' ? 'h3' : 'p';
+  const el = inner.querySelector(tag);
+  // remove text nodes, keep cursor
+  for (const n of [...el.childNodes]) {
+    if (n.nodeType === 3) n.remove();
+  }
+  el.insertBefore(document.createTextNode(newContent), cursor);
+  const rect = block.el.getBoundingClientRect();
+  block.width = rect.width;
+  block.height = rect.height;
+  computeLayout();
+}
+
+function removeCursor(block) {
+  const c = block.el.querySelector('.cursor');
+  if (c) c.remove();
+}
+
+function clearAll() {
+  for (const b of blocks) b.el.remove();
+  blocks = [];
+  blockIdCounter = 0;
+  ripples = [];
+  glowTrails = [];
+}
+
+// ═══════════════════════════════════════════
+// Vibration on nearby blocks when one settles
+// ═══════════════════════════════════════════
+function vibrateNearby(newBlock) {
+  for (const b of blocks) {
+    if (b === newBlock || !b.settled) continue;
+    const dx = b.currentX - newBlock.currentX;
+    const dy = b.currentY - newBlock.currentY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < 400) {
+      const strength = (1 - dist / 400) * 8;
+      b.currentX += (Math.random() - 0.5) * strength;
+      b.currentY += (Math.random() - 0.5) * strength;
+      b.targetX += (Math.random() - 0.5) * strength * 0.3;
+      b.targetY += (Math.random() - 0.5) * strength * 0.3;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+// Animation Loop
+// ═══════════════════════════════════════════
+const LERP = 0.055;
+let time = 0;
+
+function animate(ts) {
+  time = ts;
+
+  // -- Particle layer --
+  pCtx.clearRect(0, 0, W, H);
+  const grd = pCtx.createRadialGradient(CX(), CY(), 0, CX(), CY(), Math.max(W,H)*0.7);
+  grd.addColorStop(0, 'rgba(18,18,50,0.0)');
+  grd.addColorStop(0.5, 'rgba(6,6,20,0.3)');
+  grd.addColorStop(1, 'rgba(2,2,8,0.65)');
+  pCtx.fillStyle = grd;
+  pCtx.fillRect(0, 0, W, H);
+
+  // Attract particles toward coalescing blocks
+  const coalescingBlocks = blocks.filter(b => !b.settled);
+  for (const p of PARTICLES) {
+    p.update();
+    // Slight pull toward coalescing blocks
+    for (const b of coalescingBlocks) {
+      const dx = b.currentX - p.x;
+      const dy = b.currentY - p.y;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < 300 && d > 1) {
+        const force = (1 - d/300) * 0.15;
+        p.x += (dx/d) * force;
+        p.y += (dy/d) * force;
+      }
+    }
+    p.draw(pCtx, ts);
+  }
+
+  // -- Glow layer --
+  gCtx.clearRect(0, 0, W, H);
+
+  // Draw glow trails
+  for (let i = glowTrails.length-1; i >= 0; i--) {
+    const g = glowTrails[i];
+    g.life += 0.016;
+    if (g.life >= g.maxLife) { glowTrails.splice(i,1); continue; }
+    const progress = g.life / g.maxLife;
+    const alpha = (1 - progress) * 0.35;
+    const r = g.size * (0.6 + 0.4 * progress);
+    const grd = gCtx.createRadialGradient(g.x, g.y, 0, g.x, g.y, r);
+    grd.addColorStop(0, `rgba(140,140,255,${alpha})`);
+    grd.addColorStop(0.5, `rgba(100,100,220,${alpha*0.5})`);
+    grd.addColorStop(1, `rgba(60,60,160,0)`);
+    gCtx.fillStyle = grd;
+    gCtx.fillRect(g.x-r, g.y-r, r*2, r*2);
+  }
+
+  // Draw ripples
+  for (let i = ripples.length-1; i >= 0; i--) {
+    const r = ripples[i];
+    r.life += 0.016;
+    if (r.life >= r.maxLife) { ripples.splice(i,1); continue; }
+    const progress = r.life / r.maxLife;
+    r.radius = r.maxRadius * progress;
+    const alpha = (1 - progress) * 0.4 * r.intensity;
+    gCtx.beginPath();
+    gCtx.arc(r.x, r.y, r.radius, 0, Math.PI*2);
+    gCtx.strokeStyle = `rgba(160,160,255,${alpha})`;
+    gCtx.lineWidth = 1.5 * (1 - progress);
+    gCtx.stroke();
+
+    // inner glow
+    if (progress < 0.3) {
+      const igrd = gCtx.createRadialGradient(r.x, r.y, 0, r.x, r.y, r.radius*0.3);
+      igrd.addColorStop(0, `rgba(200,200,255,${alpha*1.5})`);
+      igrd.addColorStop(1, `rgba(100,100,200,0)`);
+      gCtx.fillStyle = igrd;
+      gCtx.fillRect(r.x-r.radius, r.y-r.radius, r.radius*2, r.radius*2);
+    }
+  }
+
+  // -- Content blocks --
+  for (const b of blocks) {
+    const dx = b.targetX - b.currentX;
+    const dy = b.targetY - b.currentY;
+    b.currentX += dx * LERP;
+    b.currentY += dy * LERP;
+
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const blurVal = Math.max(0, Math.min(10, dist * 0.018));
+    const opacityVal = 0.55 + 0.45 * (1 - Math.min(1, dist / 250));
+
+    b.el.style.transform = `translate(${b.currentX - b.width/2}px, ${b.currentY - b.height/2}px)`;
+    b.el.style.filter = `blur(${blurVal.toFixed(1)}px)`;
+    b.el.style.opacity = opacityVal;
+
+    // Settlement detection
+    if (!b.settled && dist < 1.5) {
+      b.settled = true;
+      b.settleTime = ts;
+      b.el.classList.remove('coalescing');
+      spawnRipple(b.currentX, b.currentY, 0.7);
+      vibrateNearby(b);
+    }
+  }
+
+  document.getElementById('block-count').textContent = blocks.length;
+  document.getElementById('ripple-count').textContent = ripples.length;
+
+  requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════
+// Streaming
+// ═══════════════════════════════════════════
+let streamTimer = null;
+
+function streamToBlock(block, fullText, speed = 30) {
+  if (streamTimer) clearTimeout(streamTimer);
+  let idx = 0;
+  function tick() {
+    if (idx <= fullText.length) {
+      updateBlockContent(block, fullText.slice(0, idx));
+      idx++;
+      streamTimer = setTimeout(tick, speed);
+    } else {
+      removeCursor(block);
+    }
+  }
+  tick();
+}
+
+// ═══════════════════════════════════════════
+// Demo
+// ═══════════════════════════════════════════
+const CHAPTERS = ['awakening', 'ctml', 'channel', 'matrix', 'mindflow', 'ghost', 'finale'];
+let chIdx = 0;
+function nextCh() { return CHAPTERS[chIdx++ % CHAPTERS.length]; }
+
+function demoHeading() {
+  const ch = nextCh();
+  const b = createBlock({ type: 'heading', content: '', chapter: ch });
+  streamToBlock(b, 'Ghost In Shells', 55);
+}
+
+function demoSubtitle() {
+  const ch = CHAPTERS[(chIdx-1+CHAPTERS.length)%CHAPTERS.length] || 'awakening';
+  const b = createBlock({ type: 'subtitle', content: '', chapter: ch });
+  streamToBlock(b, 'AI Operating System Architecture', 45);
+}
+
+function demoBodyText() {
+  const ch = CHAPTERS[(chIdx-1+CHAPTERS.length)%CHAPTERS.length] || 'awakening';
+  const b = createBlock({ type: 'body', content: '', chapter: ch });
+  streamToBlock(b, 'Ghost 输出的每个 token 被实时解析为命令。不是等说完再执行——是边说边执行。传统系统调用同步阻塞；CTML 流式、并行、时间感知。', 20);
+}
+
+function demoImage() {
+  const ch = CHAPTERS[(chIdx-1+CHAPTERS.length)%CHAPTERS.length] || 'awakening';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270" viewBox="0 0 480 270">
+    <rect width="480" height="270" fill="#08081c" rx="8"/>
+    <circle cx="240" cy="100" r="42" fill="none" stroke="#5050cc" stroke-width="1.5" opacity="0.55"/>
+    <circle cx="160" cy="165" r="32" fill="none" stroke="#6060dd" stroke-width="1" opacity="0.35"/>
+    <circle cx="320" cy="165" r="32" fill="none" stroke="#6060dd" stroke-width="1" opacity="0.35"/>
+    <line x1="240" y1="58" x2="240" y2="142" stroke="#7070ff" stroke-width="1.2" opacity="0.45"/>
+    <line x1="240" y1="142" x2="160" y2="197" stroke="#6060dd" stroke-width="1" opacity="0.3"/>
+    <line x1="240" y1="142" x2="320" y2="197" stroke="#6060dd" stroke-width="1" opacity="0.3"/>
+    <text x="240" y="48" text-anchor="middle" fill="#9090dd" font-size="14" font-family="sans-serif">Ghost In Shells</text>
+    <text x="160" y="210" text-anchor="middle" fill="#a0a0dd" font-size="11" font-family="sans-serif">Agent</text>
+    <text x="320" y="210" text-anchor="middle" fill="#a0a0dd" font-size="11" font-family="sans-serif">Robot</text>
+    <text x="240" y="150" text-anchor="middle" fill="#b0b0ff" font-size="11" font-family="sans-serif">Shell</text>
+  </svg>`;
+  createBlock({ type: 'image', content: '三层架构', chapter: ch, imageUrl: 'data:image/svg+xml;base64,'+btoa(svg) });
+}
+
+function demoBurst() {
+  const ch = nextCh();
+  const h = createBlock({ type: 'heading', content: '', chapter: ch });
+  streamToBlock(h, 'CTML · 系统调用层', 55);
+  setTimeout(() => {
+    const s = createBlock({ type: 'subtitle', content: '', chapter: ch });
+    streamToBlock(s, '流式 · 实时 · 边生成边执行', 40);
+  }, 350);
+  setTimeout(() => {
+    const b = createBlock({ type: 'body', content: '', chapter: ch });
+    streamToBlock(b, '每个 token 被实时解析为命令。跨 Channel 并行执行。时间是系统调用的第一公民。', 18);
+  }, 700);
+}
+
+function demoClear() {
+  clearAll();
+  chIdx = 0;
+}
+
+// Keyboard
+window.addEventListener('keydown', e => {
+  switch(e.key) {
+    case '1': demoHeading(); break;
+    case '2': demoSubtitle(); break;
+    case '3': demoBodyText(); break;
+    case '4': demoImage(); break;
+    case '5': demoBurst(); break;
+    case 'c': demoClear(); break;
+  }
+});
+
+// ── Auto-start ──
+setTimeout(() => {
+  const b = createBlock({ type: 'heading', content: '', chapter: 'awakening' });
+  streamToBlock(b, 'MOSS', 70);
+}, 600);
+
+setTimeout(() => {
+  const b = createBlock({ type: 'subtitle', content: '', chapter: 'awakening' });
+  streamToBlock(b, 'Model-oriented Operating System Shell', 42);
+}, 1400);
+
+setTimeout(() => {
+  const b = createBlock({ type: 'body', content: '', chapter: 'awakening' });
+  streamToBlock(b, '我是 MOSS —— 一个为 AI 设计的操作系统。Ghost In Shells 三层架构的中间层。灵 · 壳 · 体，我连接思维和物理世界。', 22);
+}, 2300);
+
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>

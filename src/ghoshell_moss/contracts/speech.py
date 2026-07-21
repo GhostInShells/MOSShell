@@ -287,7 +287,7 @@ class AudioFormat(Enum):
 class StreamAudioPlayer(ABC):
     """
     音频播放的极简抽象.
-    底层可能是 pyaudio, pulseaudio 或者别的实现.
+    底层可能是 miniaudio, pulseaudio 或者别的实现.
     """
 
     audio_type: AudioFormat

@@ -1,19 +1,27 @@
 from abc import ABC, abstractmethod
-from typing import Protocol, Union
+from typing import (
+    Protocol, Union, Iterator, TypeVar, Optional,
+)
 import re
 
+import asyncio
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+
+import frontmatter
+import yaml
+from pydantic import BaseModel
 
 # ── 跨平台文件锁 ──────────────────────────────────────────────
 if sys.platform != "win32":
     import fcntl
 
+
     def _flock_ex(fd: int):
         fcntl.flock(fd, fcntl.LOCK_EX)
+
 
     def _flock_ex_nb(fd: int) -> bool:
         """尝试排他锁（非阻塞），成功返回 True，已被占用返回 False"""
@@ -23,10 +31,12 @@ if sys.platform != "win32":
         except BlockingIOError:
             return False
 
+
     def _flock_un(fd: int):
         fcntl.flock(fd, fcntl.LOCK_UN)
 else:
     import msvcrt
+
 
     def _flock_ex(fd: int):
         """排他锁（阻塞）—— msvcrt 没有原生阻塞锁，手动重试"""
@@ -37,6 +47,7 @@ else:
             except OSError:
                 time.sleep(0.05)
 
+
     def _flock_ex_nb(fd: int) -> bool:
         """尝试排他锁（非阻塞）"""
         try:
@@ -45,6 +56,7 @@ else:
         except OSError:
             return False
 
+
     def _flock_un(fd: int):
         try:
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
@@ -52,7 +64,34 @@ else:
             pass
 
 # ── 公开接口 ──────────────────────────────────────────────────
-__all__ = ["Workspace", "Storage", "LocalStorage", "Lock", "LocalWorkspace", "FileLocker"]
+__all__ = [
+    "Workspace", "Storage", "LocalStorage", "Lock", "LocalWorkspace", "FileLocker",
+    "AsyncStorageProxy",
+]
+
+T = TypeVar("T", bound=BaseModel)
+
+_SUFFIX_MD = ".md"
+_SUFFIX_JSONL = ".jsonl"
+_SUFFIX_YML = ".yml"
+_SUFFIXES = (_SUFFIX_MD, _SUFFIX_JSONL, _SUFFIX_YML)
+
+
+def _resolve_name(name: str, expected_suffix: str) -> str:
+    """Resolve a logical name to a file path with the expected suffix.
+
+    If *name* already ends with *expected_suffix*, it is returned unchanged.
+    If it ends with a different known suffix, ValueError is raised.
+    Otherwise, *expected_suffix* is appended.
+    """
+    if name.endswith(expected_suffix):
+        return name
+    for sfx in _SUFFIXES:
+        if name.endswith(sfx):
+            raise ValueError(
+                f"Name '{name}' has suffix '{sfx}', expected '{expected_suffix}'"
+            )
+    return name + expected_suffix
 
 
 class Lock(Protocol):
@@ -144,6 +183,126 @@ class Storage(Protocol):
         """
         pass
 
+    @abstractmethod
+    def append(self, file_path: str | Path, content: bytes) -> None:
+        """OS-level atomic append. 以 'ab' 模式追加写入，跨进程安全."""
+        pass
+
+    # -- typed model methods (default implementations) -------------
+
+    def read_model(self, name: str, model_type: type[T]) -> tuple[T, str] | None:
+        """Read a frontmatter file (.md) as (model, content).  None if absent."""
+        path = _resolve_name(name, _SUFFIX_MD)
+        if not self.exists(path):
+            return None
+        raw = self.get(path)
+        post = frontmatter.loads(raw.decode("utf-8"))
+        return model_type(**post.metadata), post.content
+
+    def write_model(self, name: str, obj: BaseModel, content: str = "") -> None:
+        """Write a model as a frontmatter file (.md)."""
+        path = _resolve_name(name, _SUFFIX_MD)
+        post = frontmatter.Post(content=content, **obj.model_dump())
+        self.put(path, frontmatter.dumps(post).encode("utf-8"))
+
+    def read_models(self, name: str, model_type: type[T]) -> Iterator[T]:
+        """Lazily read all items from a JSONL file (.jsonl)."""
+        path = _resolve_name(name, _SUFFIX_JSONL)
+        if not self.exists(path):
+            return iter(())
+        raw = self.get(path)
+        for line in raw.decode("utf-8").splitlines():
+            stripped = line.strip()
+            if stripped:
+                yield model_type.model_validate_json(stripped)
+
+    def append_model(self, name: str, item: BaseModel) -> None:
+        """Append one item as a JSON line (.jsonl)."""
+        path = _resolve_name(name, _SUFFIX_JSONL)
+        line = item.model_dump_json() + "\n"
+        self.append(path, line.encode("utf-8"))
+
+    def read_yaml(self, name: str, model_type: type[T]) -> T | None:
+        """Read a YAML file (.yml) as a model.  None if absent."""
+        path = _resolve_name(name, _SUFFIX_YML)
+        if not self.exists(path):
+            return None
+        raw = self.get(path)
+        data = yaml.safe_load(raw)
+        return model_type(**data)
+
+    def write_yaml(self, name: str, obj: BaseModel) -> None:
+        """Write a model as a pretty-printed YAML file (.yml)."""
+        from ghoshell_common.helpers import yaml_pretty_dump, generate_import_path
+
+        path = _resolve_name(name, _SUFFIX_YML)
+        data = obj.model_dump(exclude_none=True)
+        content = yaml_pretty_dump(data)
+        import_path = generate_import_path(type(obj))
+        content = f"# dump from `{import_path}` \n" + content
+        self.put(path, content.encode("utf-8"))
+
+    @property
+    def async_(self) -> "AsyncStorageProxy":
+        """Return an async proxy that wraps every method via asyncio.to_thread."""
+        return AsyncStorageProxy(self)
+
+
+class AsyncStorageProxy:
+    """Thin async wrapper around a Storage.
+
+    Every method is delegated through :func:`asyncio.to_thread` so that models
+    authoring CTML never need to reason about sync vs. async I/O.
+    """
+
+    def __init__(self, storage: Storage) -> None:
+        self._s = storage
+
+    # -- raw bytes -------------------------------------------------
+
+    async def get(self, file_path: str | Path) -> bytes:
+        return await asyncio.to_thread(self._s.get, file_path)
+
+    async def put(self, file_path: str | Path, content: bytes) -> None:
+        return await asyncio.to_thread(self._s.put, file_path, content)
+
+    async def append(self, file_path: str | Path, content: bytes) -> None:
+        return await asyncio.to_thread(self._s.append, file_path, content)
+
+    async def exists(self, file_path: str | Path) -> bool:
+        return await asyncio.to_thread(self._s.exists, file_path)
+
+    async def remove(self, file_path: str | Path) -> None:
+        return await asyncio.to_thread(self._s.remove, file_path)
+
+    async def sub_storage(self, relative_path: str | Path) -> "AsyncStorageProxy":
+        sub = await asyncio.to_thread(self._s.sub_storage, relative_path)
+        return AsyncStorageProxy(sub)
+
+    async def abspath(self) -> Path:
+        return await asyncio.to_thread(self._s.abspath)
+
+    # -- typed model methods ---------------------------------------
+
+    async def read_model(self, name: str, model_type: type[T]) -> tuple[T, str] | None:
+        return await asyncio.to_thread(self._s.read_model, name, model_type)
+
+    async def write_model(self, name: str, obj: BaseModel, content: str = "") -> None:
+        return await asyncio.to_thread(self._s.write_model, name, obj, content)
+
+    async def read_models(self, name: str, model_type: type[T]) -> list[T]:
+        """Async version of read_models — collects the iterator into a list."""
+        return await asyncio.to_thread(lambda: list(self._s.read_models(name, model_type)))
+
+    async def append_model(self, name: str, item: BaseModel) -> None:
+        return await asyncio.to_thread(self._s.append_model, name, item)
+
+    async def read_yaml(self, name: str, model_type: type[T]) -> T | None:
+        return await asyncio.to_thread(self._s.read_yaml, name, model_type)
+
+    async def write_yaml(self, name: str, obj: BaseModel) -> None:
+        return await asyncio.to_thread(self._s.write_yaml, name, obj)
+
 
 class Workspace(ABC):
     """
@@ -159,13 +318,6 @@ class Workspace(ABC):
 
     def root_path(self) -> Path:
         return self.root().abspath()
-
-    @abstractmethod
-    def cwd(self) -> Path:
-        """
-        system current working directory.
-        """
-        pass
 
     @abstractmethod
     def lock(self, key: str) -> Lock:
@@ -184,6 +336,9 @@ class Workspace(ABC):
         配置文件存储路径.
         """
         return self.root().sub_storage("configs")
+
+    def source(self) -> Storage:
+        return self.root().sub_storage("src")
 
     def runtime(self) -> Storage:
         """
@@ -238,6 +393,12 @@ class LocalStorage(Storage):
         # 自动创建中间目录
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
+
+    def append(self, file_path: Union[str, Path], content: bytes) -> None:
+        target = self._safe_path(file_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "ab") as f:
+            f.write(content)
 
     def remove(self, file_path: Union[str, Path]) -> None:
         target = self._safe_path(file_path)
@@ -364,13 +525,10 @@ class FileLocker(Lock):
             finally:
                 self._fd = None
 
-    def __enter__(self):
-        if not self.acquire(timeout=None):
-            raise RuntimeError(f"Could not acquire lock on {self.path}")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.release()
+    # __enter__/__exit__ 沿用 Lock ABC 默认: acquire() 无参 → self.acquire() 走
+    # FileLocker.acquire 默认 timeout=0 fast-fail. 需要阻塞/超时语义时显式调
+    # acquire(timeout=...), 不走 `with` — 避免上层误踩进程锁阻塞的隐性 bug
+    # (父子进程同锁互抢死锁曾在 nodes-cli 阶段翻车, 见 cell-run-cycle FEATURE.md M7).
 
 
 class LocalWorkspace(Workspace):
@@ -378,14 +536,9 @@ class LocalWorkspace(Workspace):
     def __init__(self, root_path: Union[str, Path], cwd: Optional[Path] = None):
         storage = LocalStorage(root_path)
         self._root = storage
-        cwd = cwd or Path(os.getcwd()).resolve()
-        self._cwd = cwd
 
     def root(self) -> Storage:
         return self._root
-
-    def cwd(self) -> Path:
-        return self._cwd
 
     def lock(self, key: str) -> Lock:
         """

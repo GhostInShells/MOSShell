@@ -19,12 +19,13 @@ import importlib
 import importlib.util
 import pkgutil
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Any, Callable, Iterator, Optional, Tuple, TypeVar
 
 __all__ = [
     'ModuleManifest', 'MemberPredicate',
     'CodexReflectionError', 'ScanError',
-    'scan_module', 'scan_package',
+    'scan_module', 'from_module', 'scan_package',
     'is_subclass_of', 'is_class', 'is_routine', 'is_native_to',
 ]
 
@@ -164,6 +165,22 @@ def scan_module(module_path: str, *, timeout: float | None = None) -> ModuleMani
         )
     except Exception as e:
         raise CodexReflectionError(f"Error scanning module '{module_path}': {e}")
+
+
+def from_module(module: ModuleType) -> ModuleManifest:
+    """Build a ModuleManifest from an already-imported module.
+
+    Unlike scan_module() which uses importlib spec-finding (no execution),
+    this wraps a live module object — useful when the module is already
+    in sys.modules and you want the structured manifest without re-scanning.
+    """
+    file_path: str | None = getattr(module, '__file__', None)
+    is_package = hasattr(module, '__path__')
+    return ModuleManifest(
+        module_path=module.__name__,
+        file_path=file_path,
+        is_package=is_package,
+    )
 
 
 def scan_package(

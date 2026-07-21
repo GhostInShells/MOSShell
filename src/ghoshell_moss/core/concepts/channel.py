@@ -308,6 +308,22 @@ class ChannelState(ABC):
         """
         return None
 
+    async def on_refresh_meta(self) -> None:
+        """
+        fires each refresh cycle, before the channel regenerates its own metas.
+
+        async by design — the sync structure-refresh path (get_virtual_children,
+        get_children) must return instantly.  Heavy work lives here instead:
+        alive_cells queries, proxy cache rebuilds, any I/O-bound state sync.
+
+        This hook and get_virtual_children are the two halves of a dynamic
+        channel: on_refresh_meta updates the internal cache (async), and
+        get_virtual_children returns it (sync).  One-cycle delay is expected.
+
+        default noop.
+        """
+        return None
+
     @abstractmethod
     def own_commands(self) -> dict[str, Command]:
         """
@@ -417,6 +433,11 @@ class Channel(ABC):
     @abstractmethod
     def materialize(self, container: IoCContainer) -> 'ChannelState | ChannelRuntime':
         pass
+
+    @classmethod
+    def validate_name(cls, name: str) -> bool:
+        import regex as re
+        return re.fullmatch(ChannelNamePattern, name) is not None
 
 
 TaskDoneCallback = Callable[[CommandTask], None]
@@ -528,7 +549,7 @@ class ChannelRuntime(ABC):
         """
         pass
 
-    def topic_publisher(self, topic: str | type[TopicModel]) -> Publisher:
+    def topic_publisher(self, topic: type[TopicModel]) -> Publisher[TopicModel]:
         """
         创建一个独立的 publisher 可以在链路中广播 topic.
         """

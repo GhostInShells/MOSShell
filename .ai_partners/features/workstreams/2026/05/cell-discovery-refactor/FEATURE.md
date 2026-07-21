@@ -6,8 +6,11 @@ description: 重构 Matrix cell 发现机制：用 zenoh queryable (中心化查
 milestone: null
 priority: P0
 status: completed
+status_note: 2026-06-07 重做完成。queryable-per-cell + wildcard get (ALL+NONE) 模式。CellDiscovery 全部重写。
+  Cell 去 is_alive() 和 reported_at，回归纯描述模型。is_host_running 走 ScopeMeta PID 验活。
+  get_alive_cells() — Future 去重 + 缓存 + staleness。NetworkCell 包装网络响应为强类型。
 title: Cell Discovery Refactor — 从去中心化 liveness 到中心化 queryable
-updated: '2026-05-25'
+updated: '2026-06-08'
 ---
 
 # Cell Discovery Refactor
@@ -177,13 +180,63 @@ async def alist_cells(self) -> dict[str, Cell]:
 
 这个闭环验证了：发现 → 启动 → 通讯 → 停止 → 状态一致性，全部基于新的 queryable 机制。
 
-## Migration Path
+## Actual Implementation (2026-06-07)
 
-1. 新增 `reported_at` 到 Cell，`is_alive()` 改为 concrete
-2. 新增 `alist_cells()` 到 Matrix ABC 和 MatrixImpl
-3. 新增 6 个钩子方法到 MatrixImpl
-4. 实现 queryable + put/delete 机制
-5. 删除旧 liveness 代码 (`_register_cell_liveness_listener`, `_all_cell_liveness_check_ctx_manager`, `_this_liveness_ctx_managers`, `_check_initial_liveness`, `_cell_alive_events`, `_matrix_cell_liveness_key_*`)
-6. 更新 TUI/Inspector 中对 `is_alive` → `reported_at` 的引用
-7. 更新 FractalCell 移除 `is_alive()` override
-8. T1 → T2 → T3 → T4 逐层通过
+原设计与实现的关键差异：
+
+| 设计 | 实际 |
+|---|---|
+| `session.put` + `get` 聚合 | `declare_queryable` per-cell + wildcard `get` (Zenoh peer-to-peer 下 `put` 不可被 `get` 检索) |
+| `reported_at` 时间戳 + `is_alive()` concrete | Cell 回归纯描述模型，去 `reported_at` 和 `is_alive()` |
+| 门户 handler 内做 live `get` | 门户返回缓存 (Zenoh 不允许 handler 内嵌套 `get`) |
+| 6 个钩子方法 | 未实现——当前 MatrixImpl 只有一个实现，不需要扩展点 |
+| `alist_cells()` 异步网络查询 | 演化为 `get_alive_cells()` — Future 去重 + 缓存 + staleness |
+
+### 新增/修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `core/blueprint/matrix.py` | Cell 去 `reported_at`/`is_alive()`；新增 `alist_cells()` 抽象；`list_cells()` 标记重命名为 `discovered_cells()` |
+| `host/cell_discovery.py` | 全部重写: liveness token → queryable-per-cell + `serve_query_portal` + `query_cells` |
+| `host/matrix.py` | `AppCell/HostCell/UnknownCell` 去 `_alive_event`；`MatrixImpl` 去 `_cell_alive_events`；新增 `NetworkCell`、`get_alive_cells()`、`_do_refresh_live_cells()`；`is_host_running()` → ScopeMeta PID；`_session_communication_bus_ctx_manager` → queryable announce + portal |
+| `host/fractal/_base.py` | `FractalCell` 去 `is_alive()` override |
+| `host/repl/inspector_matrix.py` | 保留 `list_cells()`，`alive_cells()` 留待 `get_alive_cells()` 可用后添加 |
+| `host/repl/inspector_fractal.py` | `c.is_alive()` → `c.accepted` |
+| `tests/ghoshell_moss/host/test_cell_discovery.py` | 全部重写: 9 个 queryable 模式测试 |
+| `tests/ghoshell_moss/matrix/test_zenoh.py` | 新增 5 个 queryable 金丝雀测试 |
+
+### 人类验收流程
+
+**前置**: `moss-run-ghost echo` 或 `moss-as-mcp` 启动一个 host cell。
+
+**1. CellDiscovery 单元测试**
+```bash
+.venv/bin/python -m pytest tests/ghoshell_moss/host/test_cell_discovery.py tests/ghoshell_moss/matrix/test_zenoh.py -v
+# 21 个应全部通过
+```
+
+**2. REPL 内验证 get_alive_cells()**
+```bash
+.venv/bin/moss-repl --mode default
+# 在 REPL 中:
+#   /matrix.alist_cells()     ← 旧的 async 网络查询，验证 Zenoh 通路
+#   等待 get_alive_cells 的 Inspector 命令加入后可用 /matrix.get_alive_cells
+```
+
+**3. Moss Apps 回归**
+```bash
+.venv/bin/python -m pytest tests/ghoshell_moss/host/ -v
+# 38 个应全部通过（含 app_store, zenoh_fractal, matrix_init）
+```
+
+**4. 旧 liveness 代码确认已删除**
+```bash
+grep -r "_cell_alive_events\|_alive_event" src/ghoshell_moss/host/matrix.py
+# 应无结果
+```
+
+**5. Cell 纯描述模型确认**
+```bash
+grep -r "is_alive\|reported_at" src/ghoshell_moss/core/blueprint/matrix.py
+# 应无结果
+```

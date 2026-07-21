@@ -8,7 +8,7 @@ from ghoshell_moss.host import Host
 from ghoshell_moss.ghosts.mock import MockGhostMeta
 from ghoshell_moss.core.speech.mock import MockSpeech
 from ghoshell_moss.core.blueprint.mindflow import (
-    Mindflow, MindflowHook, ChallengeVerdict, InputSignal, Impulse,
+    Mindflow, MindflowHook, ChallengeVerdict, InputSignalMeta, Impulse,
 )
 from ghoshell_moss.contracts.speech import Speech
 
@@ -56,7 +56,7 @@ async def main():
         mf.with_hook(hook)
 
         # ── 4. send signal → wait for challenge ──
-        signal = InputSignal().to_signal(
+        signal = InputSignalMeta().to_signal(
             "你好",
             description="hello ghost",
         )

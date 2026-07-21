@@ -16,31 +16,41 @@ dependencies = [
     "orjson>=3.11.8",
     "pillow>=12.1.0",
     "python-dateutil>=2.9.0.post0",
-    "python-frontmatter>=1.1.0",
     "python-ulid>=3.1.0",
-
+    "regex>=2024.0.0",
+    "python-frontmatter>=1.1.0",
+    "psutil>=7.2.1",
 ]
 
 [project.optional-dependencies]
-zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0", "psutil>=7.2.1"]
+zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
 redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
-audio = ["pulsectl>=24.12.0", "pyaudio>=0.2.14", "scipy>=1.15.3"]
 
 ghost = [
     "pydantic-ai>=1.90.0",
     "anthropic>=0.84.0",
 ]
 
-host = [
-    "prompt-toolkit>=3.0.52",
-    "miniaudio>=0.67",
-    "typer>=0.24.1",
-    "circus>=0.19.0",
+matrix = [
     "eclipse-zenoh>=1.8.0",
-    "uv>=0.11.8",
+    "python-dotenv>=1.0.0",
+]
+
+host = [
+    "eclipse-zenoh>=1.8.0",
+    "pexpect>=4.9.0",
+    "prompt-toolkit>=3.0.52",
+    "typer>=0.24.1",
+    "miniaudio>=0.67",
+    "circus>=0.19.0",
     "uvloop>=0.22.1",
     "websockets>=15.0.1",
+    "httpx>=0.28.0",
     "fastmcp>=3.1.1",
+    "loadenv>=0.1.1",
+]
+web = [
+    "playwright>=1.60.0",
 ]
 
 [project.scripts]
@@ -48,7 +58,7 @@ moss = "ghoshell_moss.cli:main_entry"
 moss-cli = "ghoshell_moss.cli.cli_controller:main"
 moss-repl = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
 moss-as-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
-moss-as-fractal = 'ghoshell_moss.cli.moss_as_fractal:main'
+
 moss-run-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
 
 [tool.setuptools.packages.find]
@@ -59,7 +69,7 @@ exclude = ["test_*", ".discuss*", ".design", ".memory"]
 # 简化匹配逻辑，专注于非代码资源. by gemini 3
 "ghoshell_moss.core.codex" = ["_features_templates/*.md"]
 "ghoshell_moss.cli.docs" = ["**/*.md"]
-"ghoshell_moss.host.stubs" = [
+"ghoshell_moss.stubs" = [
     "**/*.md",
     "**/.env.example",
     "**/.gitignore",

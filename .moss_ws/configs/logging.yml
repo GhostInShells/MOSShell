@@ -25,3 +25,7 @@ loggers:
   moss:
     level: INFO
     handlers: [ debug ]
+
+  moss_in_reflex:
+    level: DEBUG
+    handlers: [ debug ]

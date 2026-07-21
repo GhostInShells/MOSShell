@@ -1,0 +1,11 @@
+[project]
+name = "moss-game-ai-eye"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "pygame>=2.5.0",
+    "ghoshell-moss[host]",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }

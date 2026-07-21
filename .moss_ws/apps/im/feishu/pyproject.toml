@@ -1,0 +1,12 @@
+[project]
+name = "moss-im-feishu"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[host]",
+    "janus>=2.0.0",
+    "lark-channel-sdk>=1.0.0",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }

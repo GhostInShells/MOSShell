@@ -2,7 +2,7 @@ from textwrap import indent
 
 from ghoshell_moss.core.concepts.command import Command
 from ghoshell_moss.core.blueprint.host import MossRuntime
-from ghoshell_moss.host.tui import ConsoleOutput
+from ghoshell_moss.host.tui import TuiRender
 from ghoshell_moss.core.blueprint.session import OutputItem
 
 __all__ = ['MOSSRuntimeInspector']
@@ -11,7 +11,7 @@ __all__ = ['MOSSRuntimeInspector']
 class MOSSRuntimeInspector:
     """封装对 ToolSet 的操作与观测接口。"""
 
-    def __init__(self, moss_runtime: MossRuntime, output: ConsoleOutput) -> None:
+    def __init__(self, moss_runtime: MossRuntime, output: TuiRender) -> None:
         self._moss_runtime = moss_runtime
         self._output = output
 

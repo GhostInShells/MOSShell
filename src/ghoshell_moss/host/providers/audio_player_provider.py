@@ -1,20 +1,16 @@
-from typing import Iterable, Literal, Type
-
 from ghoshell_moss.contracts.speech import StreamAudioPlayer
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore
-from ghoshell_container import IoCContainer, Provider
+from ghoshell_moss.core.blueprint.matrix import Matrix
+from ghoshell_moss.host.speech.capture.matrix_audio_transport import MatrixAudioTransport
 from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
+from ghoshell_container import IoCContainer, Provider
 from pydantic import Field
 
 __all__ = ["AudioPlayerProvider", "AudioPlayerConfig"]
 
 
 class AudioPlayerConfig(ConfigType):
-    backend: Literal["miniaudio", "pyaudio"] = Field(
-        default="miniaudio",
-        description="Audio player backend. 'miniaudio' is zero-dependency default; 'pyaudio' requires `pip install ghoshell_moss[audio]`.",
-    )
     samplerate: int = Field(
         default=44100,
         description="Sample rate of audio player stream",
@@ -38,29 +34,12 @@ class AudioPlayerProvider(Provider[StreamAudioPlayer]):
         store = con.force_fetch(ConfigStore)
         conf = store.get_or_create(AudioPlayerConfig())
         logger = con.force_fetch(LoggerItf)
-
-        if conf.backend == "miniaudio":
-            return MiniAudioStreamPlayer(
-                sample_rate=conf.samplerate,
-                channels=1,
-                logger=logger,
-                safety_delay=conf.safety_delay,
-            )
-
-        if conf.backend == "pyaudio":
-            try:
-                from ghoshell_moss.host.speech.player.pyaudio_player import PyAudioStreamPlayer
-            except ImportError:
-                raise ImportError(
-                    "PyAudio backend selected but not installed. "
-                    "Run: pip install ghoshell_moss[audio]"
-                )
-            return PyAudioStreamPlayer(
-                device_index=0,
-                sample_rate=conf.samplerate,
-                channels=1,
-                logger=logger,
-                safety_delay=conf.safety_delay,
-            )
-
-        raise ValueError(f"Unknown audio backend: {conf.backend}")
+        matrix = con.force_fetch(Matrix)
+        transport = MatrixAudioTransport(matrix=matrix)
+        return MiniAudioStreamPlayer(
+            sample_rate=conf.samplerate,
+            channels=1,
+            logger=logger,
+            safety_delay=conf.safety_delay,
+            transport=transport,
+        )

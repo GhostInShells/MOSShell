@@ -254,7 +254,12 @@ class CommandMeta(BaseModel):
         description="the delta arg type",
         json_schema_extra={"enum": CommandDeltaArgName.all()},
     )
-
+    visible: bool = Field(
+        default=True,
+        description="whether this command is visible for model."
+                    "if a command is invisible to model, means it is in protocol that model does not need to see again,"
+                    "or a system backdoor that bypass model recognition.",
+    )
     interface: str = Field(
         default="",
         description="大模型所看到的关于这个命令的 prompt. 类似于 FunctionCall 协议提供的 JSON Schema."
@@ -552,6 +557,7 @@ class PyCommand(CliCommand):
             delta_types: Optional[set] = None,
             with_json_schema: bool = False,
             timeout: Optional[float] = None,
+            visible: bool = True,
     ):
         """
         :param func: origin coroutine function
@@ -569,6 +575,7 @@ class PyCommand(CliCommand):
         :param priority: the priority of the command. see command meta
         :param always_observe: shall always observe the command result
         :param delta_types: don't set it if you do not know why
+        :param visible: if the command is visible to model
         """
         self._chan = chan
         self._func_name = func.__name__
@@ -596,6 +603,7 @@ class PyCommand(CliCommand):
         self._call_soon = call_soon
         self._blocking = blocking
         self._tags = tags
+        self._visible = visible
         self._meta = meta
         self._always_observe = always_observe
         self._json_arg_parser: JsonArgumentParser | None = None
@@ -683,7 +691,9 @@ class PyCommand(CliCommand):
         meta.call_soon = self._call_soon
         meta.tags = self._tags or []
         meta.blocking = self._blocking
+        meta.always_observe = self._always_observe
         meta.timeout = self._timeout
+        meta.visible = self._visible
         docstring = doc or self._func_itf.docstring
         meta.description = docstring.splitlines()[0] if docstring else ''
         # 标记 meta 是否是动态变更的.
@@ -979,6 +989,7 @@ class CommandTask(Generic[RESULT], ABC):
         self.state: str = "created"
         self.meta = meta
         self.func = func
+        self.progress: str = ''
         self.partial = partial
         self.errcode: Optional[int] = None
         self.errmsg: Optional[str] = None
@@ -1007,6 +1018,14 @@ class CommandTask(Generic[RESULT], ABC):
 
     def __del__(self):
         CommandTask.instances_count -= 1
+
+    @abstractmethod
+    def set_progress(self, progress: str) -> None:
+        pass
+
+    @abstractmethod
+    def on_progress_callback(self, callback: Callable[['CommandTask'], None]) -> None:
+        pass
 
     def set_command(self, command: Command) -> None:
         self.func = command.__call__
@@ -1309,6 +1328,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
         self.__done_lock = threading.Lock()
         self.__done_callbacks = set()
         self.__task_result: Optional[CommandTaskResult] = None
+        self.__progress_callbacks: set[Callable[[CommandTask], None]] = set()
 
     def result(self, throw: bool = True) -> Optional[RESULT]:
         if throw:
@@ -1323,6 +1343,25 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
 
     def remove_done_callback(self, fn: Callable[[CommandTask], None]):
         self.__done_callbacks.discard(fn)
+
+    def set_progress(self, progress: str) -> None:
+        self.progress = progress
+        invalid = None
+        if len(self.__progress_callbacks) > 0:
+            for callback in self.__progress_callbacks:
+                try:
+                    callback(self)
+                except Exception as e:
+                    logging.exception(f"Error in Command {self.caller_name()}  progress callback: {e}")
+                    if invalid is None:
+                        invalid = []
+                    invalid.append(callback)
+            if invalid is not None and len(invalid) > 0:
+                for c in invalid:
+                    self.__progress_callbacks.remove(c)
+
+    def on_progress_callback(self, callback: Callable[['CommandTask'], None]) -> None:
+        self.__progress_callbacks.add(callback)
 
     def copy(self, cid: str = "") -> Self:
         """ copy 过的 task 不是同一个 task. """
@@ -1436,6 +1475,7 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                         continue
             # 避免互相持有.
             self.__done_callbacks.clear()
+            self.__progress_callbacks.clear()
             return True
 
     def fail(self, error: Exception | str) -> None:

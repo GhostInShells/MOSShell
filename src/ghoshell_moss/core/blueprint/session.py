@@ -1,8 +1,10 @@
 from typing import Callable, AsyncIterator, AsyncGenerator, Protocol, NamedTuple
 from typing_extensions import Self
 from ghoshell_moss.contracts.workspace import Storage
+from ghoshell_moss.contracts.cache import Cache
+from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
-from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignal
+from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignalMeta
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
 from ghoshell_moss.message import Message
@@ -149,10 +151,6 @@ class Session(ABC):
       - file: 基于 Session 级别的文件夹, 可以做文件级别读写通讯.
       - stream: 字节流 pub/sub, 适合 logos 等实时流式数据, 可以自定义协议. 原则上是单一有序发布, 多端接收.
       - topic service: 基于可用的 Topic 强类型广播协议通讯. 是原子化的 n * m  广播总线.
-
-    todo:
-        1. 实现共享的 parameters. 类似分布式中心协议.
-        2. 实现可注册的基于 key 的函数. actor 协议.
     """
 
     LOGOS_KEY = 'logos'
@@ -162,7 +160,9 @@ class Session(ABC):
     @abstractmethod
     def session_scope(self) -> str:
         """
-        所属的会话 scope
+        会话作用域, 可重入的组合标识.
+        mode_{mode}-ghost_{ghost}-network_{network}
+        同一 session_scope 下共享 storage 和 logos 流.
         """
         pass
 
@@ -170,7 +170,8 @@ class Session(ABC):
     @abstractmethod
     def session_id(self) -> str:
         """
-        session id
+        当前进程专属的 session id.
+        每个进程中实例化的 Session 会有不同的 session id.
         """
         pass
 
@@ -192,7 +193,7 @@ class Session(ABC):
         """
         easy way to add a default input signal to the Mindflow
         """
-        meta = meta or InputSignal()
+        meta = meta or InputSignalMeta()
         signal = meta.to_signal(
             *values,
             description=description,
@@ -307,17 +308,17 @@ class Session(ABC):
     def pub_logos(
             self,
             *deltas: str,
-            session_id: str | None = None,
+            stream_id: str | None = None,
     ) -> None:
         """
         发送模型生产的 logos 片段 (默认是 ctml 流, 详见 Mindflow) 到总线.
 
         :param deltas: 流式数据的片段.
-        :param session_id: 默认使用当前会话的 Session id 传递 logos 流.
+        :param stream_id: 指定 stream id 隔离不同的 logos 流.
 
         技术上需要实现有序.
         """
-        sid = session_id or self.session_id
+        sid = stream_id or self.session_scope
         for delta in deltas:
             self.pub_stream_delta(
                 f"{self.LOGOS_KEY}/{sid}",
@@ -325,12 +326,12 @@ class Session(ABC):
             )
 
     async def get_logos(
-            self, *, session_id: str | None = None,
+            self, *, stream_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         基于约定的协议, 获取广播的 Stream 流.
         """
-        sid = session_id or self.session_id
+        sid = stream_id or self.session_scope
         stream = self.get_stream(f"{self.LOGOS_KEY}/{sid}")
         async with stream:
             async for delta in stream:
@@ -340,42 +341,52 @@ class Session(ABC):
 
     @property
     @abstractmethod
-    def sessions_root_storage(self) -> Storage:
+    def storage(self) -> Storage:
         """
-        所有历史 sessions 所在的持久化 storage.
+        session scope 专属的 storage.
+        需要的话可以将文件作为通讯方式. 只对 project 内部有效.
+        约定在 [ws]/runtime/sessions/[session-scope] 路径下
         """
         pass
 
     @property
     @abstractmethod
-    def sessions_tmp_root_storage(self) -> Storage:
+    def tmp_storage(self) -> Storage:
         """
-        所有 sessions 临时存储路径的鹅共用 Storage.
+        Session scope 级别的临时文件区.
+        应该在启动和关闭时检查清理.
+        约定在 [ws]/runtime/tmp/session-[session-scope] 路径下.
         """
         pass
 
-    @property
-    def scope_storage(self) -> Storage:
-        """
-        Session scope 级别的持久化 Storage.
-        """
-        return self.sessions_root_storage.sub_storage(f"scope-{self.session_scope}")
+    # ── cache ──
 
     @property
-    def storage(self) -> Storage:
+    @abstractmethod
+    def cache(self) -> Cache:
         """
-        session id 专属的 storage.
-        需要的话可以将文件作为通讯方式.
+        Session 级别的跨进程共享缓存与仲裁组件.
+
+        Cell 之间通过 Session 总线通讯时，Cache 提供基于文件的共享读写：
+        KV 存储 (set/get)、Hash map (set_member/get_member)、分布式锁 (lock/unlock)。
+
+        所有 cell 指向 tmp_storage 下同一个 sqlite db 文件，
+        Session 启动时自动创建，Session 退出时随 tmp 目录清理。
         """
-        return self.scope_storage.sub_storage(f"session-{self.session_id}")
+        pass
+
+    # ── parameters ──
 
     @property
-    def tmp_storage(self) -> Storage:
+    @abstractmethod
+    def parameters(self) -> "ParameterStore":
         """
-        Session 级别的临时文件区.
-        应该在启动和关闭时检查清理.
+        Session 级别强类型共享参数存储，对齐 ROS2 parameter 语义。
+
+        declare 声明 → get/set 读写 + version CAS → on-change 跨进程感知。
+        低频写 (<1Hz)、高频读、有零值 (miss 返回 default)。
         """
-        return self.sessions_tmp_root_storage.sub_storage(f"{self.session_scope}-{self.session_id}")
+        pass
 
     @abstractmethod
     async def __aenter__(self) -> Self:

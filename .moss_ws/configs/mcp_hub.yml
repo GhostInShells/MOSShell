@@ -1,0 +1,25 @@
+# MCP Hub 全局预设配置。
+# 此处定义的 server 对所有 Ghost 可见，通过 <mcp:connect name="..." /> 连接。
+# env 中以 $ 开头的值由 ConfigStore 在读时自动解析为真值，此处存储 $VAR 占位符。
+servers:
+  test:
+    name: test
+    transport: stdio
+    command: .venv/bin/python
+    description: Local MCP test server — echo, add, get_time, slow_echo
+    args:
+    - scripts/mcp_test_server.py
+    - --stdio
+    env: {}
+    url: ''
+    headers: {}
+  baidu_map:
+    name: baidu_map
+    transport: stdio
+    command: mcp-server-baidu-maps
+    description: Baidu Maps — location search, geocoding, directions, weather, traffic, and POI extraction
+    args: []
+    env:
+      BAIDU_MAPS_API_KEY: $BAIDU_MAPS_API_KEY
+    url: ''
+    headers: {}

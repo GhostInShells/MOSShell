@@ -25,7 +25,10 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
     blocks = []
     blocks.append("```python")
     for cmd_meta in commands:
-        if not cmd_meta.available:
+        if not cmd_meta.visible:
+            # ignore invisible
+            continue
+        elif not cmd_meta.available:
             continue
         elif cmd_meta.dynamic and not dynamic:
             # 排除掉非动态的 command meta.

@@ -1,14 +1,16 @@
-from abc import abstractmethod
-from typing import Coroutine, Callable, AsyncIterator, AsyncGenerator
+from abc import abstractmethod, ABC
+from typing import Coroutine, Callable, AsyncIterator, AsyncGenerator, Iterable
 from typing_extensions import Self
+
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import (
     Attention, Impulse, Flag, Priority, Moment,
     AttentionAbortedError, Action, Articulator, Logos, Reaction, ObserveError,
-    ArticulateAbortedError, ActionAbortedError,
+    ArticulateAbortedError, ActionAbortedError, ImpulseAbsorbed, ThinkingEffort
 )
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.contracts import LoggerItf, get_moss_logger
+from collections import deque
 import time
 import threading
 import asyncio
@@ -92,11 +94,11 @@ class AttentionContext:
     def stop_at_outcome(self) -> Reaction:
         """生成新对象, 只有 Attention 调用, 应该是线程安全的. """
         last = self.moment.new_reaction()
-        last.logos = self._logos
+        last.executed_logos = self._logos
         if self._outcome_messages:
-            last.outcomes.extend(self._outcome_messages)
+            last.messages.extend(self._outcome_messages)
         if self._observe_messages:
-            last.outcomes.extend(self._observe_messages)
+            last.messages.extend(self._observe_messages)
         if self._stop_reason:
             last.stop_reason = self._stop_reason
         return last
@@ -174,18 +176,25 @@ class BaseArticulator(Articulator):
             *,
             ctx: AttentionContext,
             exited_event: ThreadSafeEvent,
+            thinking_effort: ThinkingEffort,
+            on_active: Callable[[], None] | None = None,
     ):
         self._ctx = ctx
         self._task_group = BaseTaskGroup()
         self._exited_event = exited_event
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._thinking_effort = thinking_effort
         self._started = False
         self._closing = False
+        self._on_active = on_active
 
     @property
     def moment(self) -> Moment:
         self._check_running()
         return self._ctx.moment
+
+    def thinking_effort(self) -> ThinkingEffort:
+        return self._thinking_effort
 
     def _check_running(self):
         if not self._started:
@@ -239,9 +248,10 @@ class BaseArticulator(Articulator):
         return self._ctx.flag(name)
 
     def send_nowait(self, logos_delta: str) -> None:
+        if self._on_active:
+            self._on_active()
         if self._ctx.is_aborted() or self._exited_event.is_set():
             self._ctx.logger.debug("%r articulate drop delta %s after aborted", self._ctx, logos_delta)
-            # 中断循环及其外部逻辑.
             raise AttentionAbortedError("Attention is already aborted")
         try:
             self._ctx.logos_queue.sync_q.put_nowait(logos_delta)
@@ -299,6 +309,7 @@ class BaseAction(Action):
             *,
             ctx: AttentionContext,
             exited_event: ThreadSafeEvent,
+            on_active: Callable[[], None] | None = None,
     ):
         self._ctx = ctx
         self._task_group = BaseTaskGroup()
@@ -306,11 +317,43 @@ class BaseAction(Action):
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._started = False
         self._closing = False
+        self._prefetched_delta: str | None = None
+        self._on_active = on_active
+
+    async def wait_ready(self) -> None:
+        """Wait until first logos delta arrives or attention is aborted.
+        消费第一个 delta 并缓存，received_logos() 从缓存开始消费。
+        """
+        if self._ctx.is_aborted():
+            return
+        try:
+            while not self._ctx.is_aborted():
+                try:
+                    item = await asyncio.wait_for(
+                        self._ctx.logos_queue.async_q.get(),
+                        timeout=0.05,
+                    )
+                    self._prefetched_delta = item
+                    return
+                except asyncio.TimeoutError:
+                    continue
+        except janus.AsyncQueueShutDown:
+            pass
 
     def received_logos(self) -> Logos:
         return self._logos()
 
     async def _logos(self) -> AsyncGenerator[str, None]:
+        # drain prefetched delta first
+        if self._prefetched_delta is not None:
+            item = self._prefetched_delta
+            self._prefetched_delta = None
+            if item is None:
+                return
+            self._ctx.buffer_executed_logos(item)
+            if self._on_active:
+                self._on_active()
+            yield item
         try:
             while not self._ctx.is_aborted() and not self._exited_event.is_set():
                 try:
@@ -323,6 +366,8 @@ class BaseAction(Action):
                 if item is None:
                     break
                 self._ctx.buffer_executed_logos(item)
+                if self._on_active:
+                    self._on_active()
                 yield item
         except janus.SyncQueueShutDown:
             return
@@ -371,6 +416,9 @@ class BaseAction(Action):
             # 通知运行结束.
             self._exited_event.set()
 
+    def is_aborted(self) -> bool:
+        return self._ctx.is_aborted()
+
     def abort(self, error: str | AttentionAbortedError | Exception | None) -> None:
         self._ctx.abort(error)
         self._task_group.close()
@@ -385,7 +433,7 @@ class BaseAction(Action):
         return self._ctx.flag(name)
 
 
-class AbsAttention(Attention):
+class AbsAttention(Attention, ABC):
     """
     Attention 的抽象基类. 管理全部生命周期机械: loop, observe 循环, context func,
     abort, Articulator/Action 创建, 强度状态存储.
@@ -402,7 +450,7 @@ class AbsAttention(Attention):
             system_floor_strength: float = 0.0,  # 当 current_strength() <= 此值时自行 fade out
     ):
         self._init_impulse: Impulse = impulse
-        self._wait_impulse_is_complete_event = ThreadSafeEvent()
+        self._has_any_completed_impulse = ThreadSafeEvent()
 
         self._logger = logger or get_moss_logger()
 
@@ -413,14 +461,15 @@ class AbsAttention(Attention):
         self._previous_reaction: Reaction = previous
         # 发送 observation 时的回调.
         self._on_moment_callbacks: list[Callable[[Moment], None]] = []
-        self._context_funcs: dict[str, Callable[[], list[Message]]] = {}
+        self._perspectives_funcs: dict[str, Callable[[], list[Message]]] = {}
+        self._thinking_effort = impulse.thinking_effort
 
         # 运行时.
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._inner_arbiter_task: asyncio.Task | None = None
 
         # 这三个值通过 update impulse 更新，子类只读.
-        self._initial_strength: float = 0.0
+        self._strength_start_value: float = 0.0
         self._strength_refreshed_at: float = 0.0
         self._strength_decay_time: float = 0.0
 
@@ -430,23 +479,25 @@ class AbsAttention(Attention):
         self._started: bool = False
         self._closing: bool = False
         self._closed_event = ThreadSafeEvent()
+        # 帧计数: loop 每产出一帧 +1, 用于 _inner_attention_lifecycle 判断是否真正卡死.
+        self._frame_count: int = 0
         # update the impulse
         self._log_prefix = f"<Attention id={self._init_impulse.id}>"
-        self._update_current_impulse(impulse)
 
         self._articulate_stop_event = ThreadSafeEvent()
         self._action_stop_event = ThreadSafeEvent()
         self._articulate_stop_event.set()
         self._action_stop_event.set()
+        self._percepts_funcs: dict[str, Callable[[], list[Message]]] = {}
+        self._buffered_impulses: deque[Impulse] = deque()
+        self._buffered_impulse_ids: set[str] = set()
+        self._buffer_impulse(impulse)
 
         # ctx 会持续存在.
         self._ctx = AttentionContext(
             attention_id=self._init_impulse.id,
-            moment=self._previous_reaction.new_moment(
-                reflex_logos=impulse.reflex_logos,
-                percepts=impulse.messages,
-                reaction_instruction=impulse.reaction_instruction,
-            ),
+            # 当前的 moment 帧. 每一帧在生产时都会更新.
+            moment=self._previous_reaction.new_moment(),
             aborted_event=self._aborted_event,
             logger=self._logger,
             flags=self._flags,
@@ -456,38 +507,77 @@ class AbsAttention(Attention):
     def __repr__(self):
         return self._log_prefix
 
-    def _update_current_impulse(self, impulse: Impulse) -> None:
+    def _buffer_impulse(self, impulse: Impulse) -> None:
         """更新当前持有的 impulse. """
-        self._init_impulse = impulse
-        self._initial_strength = impulse.strength
+        if impulse.id in self._buffered_impulse_ids:
+            # 说明这个 impulse 已经被 buffer 过了.
+            # 可能有某个 nucleus 的机制不生效, 造成了重复请求.
+            return
+        # 起始强度, 用于计算当前强度.
+        self._strength_start_value = impulse.strength
+        # 强度最后更新时间.
         self._strength_refreshed_at = time.monotonic()
+        # 保护期所在时间点.
+        self._protected_until = self._strength_refreshed_at + impulse.protection_time
         self._strength_decay_time = self._init_impulse.strength_decay_seconds
         if self._strength_decay_time <= 0:
             # 不要让它为0.
             self._strength_decay_time = 1
         if impulse.complete:
-            # 最后才设置.
-            self._wait_impulse_is_complete_event.set()
+            # 只有 complete 类型的 impulse 才会进入 buffer, 其它的只是占据注意力.
+            self._buffered_impulses.append(impulse)
+            self._buffered_impulse_ids.add(impulse.id)
+            self._thinking_effort = impulse.thinking_effort
+            self._has_any_completed_impulse.set()
         else:
-            self._wait_impulse_is_complete_event.clear()
+            self._has_any_completed_impulse.clear()
+
+    def _pop_buffered_impulses(self) -> Iterable[Impulse]:
+        """退出最后一个 impulse. """
+        while len(self._buffered_impulses) > 0:
+            impulse = self._buffered_impulses.popleft()
+            yield impulse
 
     @property
     def strength_refreshed_at(self) -> float:
+        """测试专用参数, 避免取私有值. """
         return self._strength_refreshed_at
 
-    def peek(self) -> Impulse:
+    @property
+    def thinking_effort(self) -> ThinkingEffort:
+        """当前 attention 持有的 thinking_effort, 由最后一个 complete impulse 决定.
+        与 yielded Articulator.thinking_effort() 同源, 用于测试与反身性观察."""
+        return self._thinking_effort
+
+    @property
+    def strength_start_value(self) -> float:
+        """强度衰减曲线起点. 由最新进入 buffer 的 impulse 刷新."""
+        return self._strength_start_value
+
+    @property
+    def strength_decay_time(self) -> float:
+        """attention 衰减总时长, 钉在 init impulse 的 strength_decay_seconds (clamp 到 >=1)."""
+        return self._strength_decay_time
+
+    @property
+    def protected_until(self) -> float:
+        """同优先级保护期截止 monotonic 时间."""
+        return self._protected_until
+
+    @property
+    def buffered_impulses(self) -> list[Impulse]:
+        """快照尚未被 drain 的 buffered impulses (不消费). 用于测试与反身性观察."""
+        return list(self._buffered_impulses)
+
+    def draw_from(self) -> Impulse:
         return self._init_impulse
 
     def is_aborted(self) -> bool:
         return self._aborted_event.is_set()
 
-    async def wait_first_impulse(self) -> Impulse | None:
+    async def wait_any_completed_impulse(self) -> None:
         # 阻塞等待第一个 complete event.
-        await self._wait_impulse_is_complete_event.wait()
-        # 等待到了可能是别的原因. aborted 了.
-        if self._aborted_event.is_set():
-            return None
-        return self._init_impulse
+        await self._has_any_completed_impulse.wait()
 
     def flag(self, name: str) -> Flag:
         # 让 ctx 的状态对齐到一起.
@@ -497,10 +587,14 @@ class AbsAttention(Attention):
         """register observation callback"""
         self._on_moment_callbacks.append(callback)
 
-    def with_context_func(self, context_name: str, context_func: Callable[[], list[Message]]) -> Self:
+    def with_perspective_func(self, perspective_key: str, perspective_func: Callable[[], list[Message]]) -> Self:
         """注册获取动态上下文的方式. """
         # 直接覆盖存在的 context func. Attention 应该在创建时, 至少包含 Mindflow 的
-        self._context_funcs[context_name] = context_func
+        self._perspectives_funcs[perspective_key] = perspective_func
+
+    def with_percepts_func(self, percepts_key: str, percepts_func: Callable[[], list[Message]]) -> Self:
+        # 注册上下文函数, 在运行前丰满上下文.
+        self._percepts_funcs[percepts_key] = percepts_func
 
     async def wait_aborted(self) -> None:
         # 单纯阻塞到失效.
@@ -519,29 +613,44 @@ class AbsAttention(Attention):
         await self._aborted_event.wait()
 
     def _escalation_on_active(self) -> None:
-        # 先简单用时间刷新来做提权. 方便 AI 大神未来帮我改.
+        # 刷新活跃时间, 阻止强度衰减误触发自尽; 同时在 challenge 时维持当前强度.
         self._strength_refreshed_at = time.monotonic()
+        self._logger.debug("%s _escalation_on_active: strength_refreshed_at=%.3f",
+                           self._log_prefix, self._strength_refreshed_at)
 
     @abstractmethod
     def current_strength(self) -> int:
-        """子类实现各自的强度计算. 用于 _inner_attention_lifecycle 的 fade-out 检查."""
-        ...
+        """基于剩余生存权重的线性衰减模型."""
+        pass
 
     def loop(self) -> AsyncIterator[tuple[Articulator, Action]]:
         return self._loop()
 
     def _prepare_moment(self, moment: Moment) -> None:
-        if len(self._context_funcs) > 0:
+        if len(self._perspectives_funcs) > 0:
             # 从缓存中获取数据. 速度应该是很快的.
-            for key, func in self._context_funcs.items():
+            for key, func in self._perspectives_funcs.items():
                 try:
                     messages = func()
                     moment.perspectives[key] = messages
                 except Exception as e:
                     self._logger.error(
-                        "%s failed to prepare context messages of %s: %s",
+                        "%s failed to prepare perspective messages of %s: %s",
                         self._log_prefix, key, e,
                     )
+        if len(self._percepts_funcs) > 0:
+            for key, func in self._percepts_funcs.items():
+                try:
+                    messages = func()
+                    moment.percepts[key] = messages
+                except Exception as e:
+                    self._logger.error(
+                        "%s failed to prepare percepts messages of %s: %s",
+                        self._log_prefix, key, e,
+                    )
+        for impulse in self._pop_buffered_impulses():
+            # 更新哩个 moment.
+            impulse.update_moment(moment)
 
     def _callback_moment(self, moment: Moment) -> None:
         if len(self._on_moment_callbacks) > 0:
@@ -557,26 +666,17 @@ class AbsAttention(Attention):
     async def _loop(self) -> AsyncGenerator[tuple[Articulator, Action], None]:
         # 等待第一个完整的信号. 本质是一个抢占式注意力锁, 比如 ASR 首包打断时
         # 已经抢占了注意力, 但要等待一个完整的逻辑包才采取行动.
-        impulse = await self.wait_first_impulse()
-        if impulse is None:
-            return
-        # Moment 已在 __init__ 中通过 Reaction.new_moment() 创建并填入 percepts / reaction_instruction / reflex_logos.
-        # 但 wait_first_impulse 期间 impulse 可能被 incomplete→complete 吸收更新,
-        # 所以此处用最终的 impulse 重新对齐 Moment 的三个关键字段, 确保数据为最新.
-        observation = self._ctx.moment
-        observation.percepts = impulse.messages
-        observation.reaction_instruction = impulse.reaction_instruction
-        observation.reflex_logos = impulse.reflex_logos
+        await self.wait_any_completed_impulse()
         while not self.is_aborted():
             # 每次刷新时会更新权重.
             self._escalation_on_active()
-            current_observation = self._ctx.moment
-
-            # 1. 准备本轮的 Observation
-            # 这里的逻辑要把 context_funcs 执行一遍，塞进 self._ctx.observation
-            self._prepare_moment(current_observation)
-            # 回调 observation.
-            self._callback_moment(current_observation)
+            self._frame_count += 1
+            self._logger.debug("%s _loop: producing frame #%d", self._log_prefix, self._frame_count)
+            current_moment = self._ctx.moment
+            # 1. 准备本轮的 moment. 要更新所有的运行时消息.
+            self._prepare_moment(current_moment)
+            # 回调 moment.
+            self._callback_moment(current_moment)
 
             # 2. 创建双工流 (8000 是个缓冲区大小，可以自定)
             # 3. 准备退出同步信号
@@ -586,8 +686,14 @@ class AbsAttention(Attention):
             articulate = BaseArticulator(
                 ctx=self._ctx,
                 exited_event=self._articulate_stop_event,
+                thinking_effort=self._thinking_effort,
+                on_active=self._escalation_on_active,
             )
-            action = BaseAction(ctx=self._ctx, exited_event=self._action_stop_event)
+            action = BaseAction(
+                ctx=self._ctx,
+                exited_event=self._action_stop_event,
+                on_active=self._escalation_on_active,
+            )
 
             # 4. 交给外部执行线程/任务
             yield articulate, action
@@ -603,19 +709,43 @@ class AbsAttention(Attention):
             if self._ctx.get_observe_messages() is None:
                 # 没有任何一方要求继续看，注意力自然结束
                 # 当前的 ctx 就是最后一帧了.
+                self._logger.debug("%s _loop: no observe, ending after frame #%d",
+                                   self._log_prefix, self._frame_count)
                 break
 
             # 7. 如果要继续, 要更新 ctx 准备下一轮.
+            # 更新后, moment 也是新的.
             self._ctx = self._ctx.next_frame()
 
-    @abstractmethod
     def challenge(self, challenger: Impulse) -> bool | None:
         """
         True: 抢占成功, 当前 attention 被 abort, 新 impulse 接管.
         False: 压制, 挑战失败. 挑战者被 suppress.
         None: 吸收, 挑战被内部消化 (如同源更新/buffer/DEBUG), 不影响当前 attention.
         """
-        ...
+        if challenger.is_stale():
+            return False
+        if challenger.id == self._init_impulse.id:
+            # 相同 id 的永远可以 buffer. 但只 buffer 一次.
+            self._buffer_impulse(challenger)
+            return ImpulseAbsorbed
+        elif challenger.priority == Priority.FATAL or challenger.priority > self._init_impulse.priority:
+            return True
+        elif challenger.priority < self._init_impulse.priority:
+            return False
+        # 相同优先级保护期.
+        elif self._protected_until > time.monotonic():
+            return False
+        return self.arbit_challenge_by_strength(challenger)
+
+    @abstractmethod
+    def arbit_challenge_by_strength(self, challenger: Impulse) -> bool | None:
+        """
+        True: 抢占成功, 当前 attention 被 abort, 新 impulse 接管.
+        False: 压制, 挑战失败. 挑战者被 suppress.
+        None: 吸收, 挑战被内部消化 (如同源更新/buffer/DEBUG), 不影响当前 attention.
+        """
+        pass
 
     def is_closed(self) -> bool:
         return self._aborted_event.is_set()
@@ -629,12 +759,16 @@ class AbsAttention(Attention):
 
     async def _inner_attention_lifecycle(self) -> None:
         """
-        在自己内部做自己是否应该结束的仲裁.
-        收到挑战, 第一时间返回属于条件反射.
-        实际上仍然可以有一个周期去内省.
+        自省任务: 检测 attention 是否真正卡死 (从未产出过任何帧).
+        与强度衰减无关 — 强度跌零只意味着可以被抢占, 不应自杀.
+        只有在 loop 从未产出过帧 (articulator/action 都未运行) 时才判定为卡死.
         """
         try:
             ttl = self._strength_decay_time
+            self._logger.debug(
+                "%s _inner_attention_lifecycle: waiting TTL %.1fs for first frame",
+                self._log_prefix, ttl,
+            )
             wait_task = asyncio.create_task(asyncio.sleep(ttl))
             wait_done_task = asyncio.create_task(self._ctx.wait_aborted())
             done, pending = await asyncio.wait(
@@ -644,25 +778,36 @@ class AbsAttention(Attention):
             for t in pending:
                 t.cancel()
 
-            # 如果 abort 先触发，直接退出
             if self._aborted_event.is_set():
+                self._logger.debug("%s _inner_attention_lifecycle: already aborted, exiting",
+                                   self._log_prefix)
                 return None
-            # 做一个低阶的自省, 防止另外两个循环卡死.
+
+            # TTL 已过, 检查是否真正卡死: loop 是否产出过至少一帧.
             while not self._aborted_event.is_set():
-                if self.current_strength() <= self._system_floor_strength:
-                    # 自主结束.
-                    self.abort(asyncio.TimeoutError("attention fade out"))
+                if self._frame_count == 0:
+                    self._logger.warning(
+                        "%s _inner_attention_lifecycle: no frame produced after TTL %.1fs, aborting",
+                        self._log_prefix, ttl,
+                    )
+                    self.abort(asyncio.TimeoutError("attention stalled: no frame produced"))
                     break
+                # 已经产出过帧, articulator/action 正在工作或已完成.
+                # 强度跌零不影响 — 只是让 challenge 更容易抢占, 不应自杀.
+                self._logger.debug(
+                    "%s _inner_attention_lifecycle: %d frames produced, strength=%.1f, alive",
+                    self._log_prefix, self._frame_count, self.current_strength(),
+                )
                 try:
                     await asyncio.wait_for(self._aborted_event.wait(), 0.5)
                 except asyncio.TimeoutError:
                     continue
             return None
         finally:
-            # 这个任务退出时, 一种情况是 aborted, 另一种情况是 aexit, 两种情况都去清理所有可能阻塞的锁.
-            self._wait_impulse_is_complete_event.set()
+            self._has_any_completed_impulse.set()
             self._action_stop_event.set()
             self._articulate_stop_event.set()
+            self._logger.debug("%s _inner_attention_lifecycle: cleanup done", self._log_prefix)
 
     async def __aenter__(self):
         if self._started:
@@ -699,7 +844,7 @@ class AbsAttention(Attention):
             await self._action_stop_event.wait()
         finally:
             # 清除一些容易互相持有的逻辑.
-            self._context_funcs.clear()
+            self._perspectives_funcs.clear()
             self._on_moment_callbacks.clear()
             # 两个确保能够退出的标记.
             self._aborted_event.set()
@@ -733,22 +878,7 @@ class BaseAttention(AbsAttention):
         self._max_protection_time: float = max_protection_time
         self._protection_duration_ratio: float = min(max(protection_duration_ratio, 0.0), 1.0)
 
-    def challenge(self, challenger: Impulse) -> bool | None:
-        if challenger.is_stale():
-            return False
-        if challenger.priority == Priority.DEBUG:
-            self._ctx.logger.warning(
-                "%s receive debug level impulse: %s",
-                self._log_prefix, challenger
-            )
-            return None
-        if challenger.id == self._init_impulse.id:
-            self._update_current_impulse(challenger)
-            return None
-        if challenger.priority == Priority.FATAL or challenger.priority > self._init_impulse.priority:
-            return True
-        elif challenger.priority < self._init_impulse.priority:
-            return False
+    def arbit_challenge_by_strength(self, challenger: Impulse) -> bool | None:
         challenger_strength = challenger.strength
         if challenger.source == self._init_impulse.source:
             challenger_strength = int(challenger_strength * self._source_escalation)
@@ -756,7 +886,7 @@ class BaseAttention(AbsAttention):
         return current_strength < challenger_strength
 
     def current_strength(self) -> int:
-        """基于剩余生存权重的线性衰减模型."""
+        """基于剩余生存权重的线性衰减模型. 强度在不提权情况下, 默认要衰减到 0"""
         now = time.monotonic()
         elapsed = now - self._strength_refreshed_at
 
@@ -765,11 +895,11 @@ class BaseAttention(AbsAttention):
             self._max_protection_time,
         )
         if elapsed < protection_time:
-            return int(self._initial_strength * self._source_escalation)
+            return int(self._strength_start_value * self._source_escalation)
 
         decay_elapsed = elapsed - protection_time
         decay_duration = self._strength_decay_time - protection_time
         progress = min(decay_elapsed / decay_duration, 1.0)
         decay_factor = 1.0 if self._init_impulse.complete else 1.5
-        current = self._initial_strength * (1.0 - (progress * decay_factor))
+        current = self._strength_start_value * (1.0 - (progress * decay_factor))
         return int(max(current, 0))

@@ -1,0 +1,7 @@
+*.log
+venv/
+.venv/
+uv.lock
+.idea
+.env
+src/unitree_sdk2_python/

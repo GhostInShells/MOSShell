@@ -11,3 +11,5 @@ def test_pathlib_baseline():
 
     assert not p.is_relative_to(s2)
     assert s2.is_relative_to(p)
+    assert s2.name == "test_pathlib.py"
+    assert s2.name[0:-len(s2.suffix)] == "test_pathlib"

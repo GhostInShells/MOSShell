@@ -15,6 +15,7 @@ __all__ = [
     'PrimeChannel', 'new_prime_channel', 'new_shell_main_channel',
     'ChannelModule',
     'new_default_shell_main_channel',
+    'StatefulChannelRuntime',
 ]
 
 """
@@ -45,6 +46,10 @@ class ChannelModule(Protocol):
         pass
 
     async def on_close(self) -> None:
+        # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
+        pass
+
+    async def on_refresh_meta(self) -> None:
         # 可以通过 CommandUtil.get_contract 获取 ioc 绑定依赖.
         pass
 

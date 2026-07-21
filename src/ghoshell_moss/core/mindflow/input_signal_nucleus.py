@@ -1,10 +1,20 @@
+"""示范最基础的 Signal 实现 | 系统 | beta """
+
 import asyncio
 import time
-from typing import Callable
+from typing import Callable, Iterable
+
+from ghoshell_container import IoCContainer
 from typing_extensions import Self
-from ghoshell_moss.core.blueprint.mindflow import Nucleus, Signal, Impulse, Priority
+
+from ghoshell_moss.core.blueprint.mindflow import (
+    Nucleus, Signal, Impulse, Priority, SignalMeta, NucleusMeta, InputSignalMeta,
+)
+
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 import threading
+
+__all__ = ["InputSignalNucleus", 'InputSignalMeta', 'InputNucleusMeta']
 
 
 class InputSignalNucleus(Nucleus):
@@ -21,8 +31,7 @@ class InputSignalNucleus(Nucleus):
             self,
             *,
             name: str = "input_signal_nucleus",
-            description: str = "user input signal nucleus",
-            target_signal: str = "input",
+            description: str = "default input signal nucleus",
             default_prompt: str = '',
             suppress_seconds: float = 0.5,
             buffer_size: int = 20,
@@ -31,7 +40,7 @@ class InputSignalNucleus(Nucleus):
     ):
         self._name = name
         self._description = description
-        self._target_signal = target_signal
+        self._target_signal = InputSignalMeta.signal_name()
         self._suppress_seconds = suppress_seconds
         self._buffer_size = buffer_size
         self._default_prompt = default_prompt
@@ -96,6 +105,10 @@ class InputSignalNucleus(Nucleus):
 
     def suppress(self, suppress_by: Impulse) -> None:
         self._suppress_until = time.monotonic() + self._suppress_seconds
+        # 清 cache 让 peek() 返回 None, 但保留 _signals:
+        # pop_impulse 才是一次性消费, suppress 只是冷静期,
+        # 下个信号到达时从累积的 _signals 重建 impulse.
+        self._impulse_cache = None
 
     def pop_impulse(self, impulse: Impulse) -> None:
         if not self.is_running():
@@ -106,6 +119,8 @@ class InputSignalNucleus(Nucleus):
         if self._impulse_cache is None:
             return None
         if no_stale and self._impulse_cache.is_stale():
+            return None
+        if time.monotonic() < self._suppress_until:
             return None
         return self._impulse_cache
 
@@ -163,7 +178,7 @@ class InputSignalNucleus(Nucleus):
             strength=max_strength,
             messages=all_msgs,
             description=latest.description,
-            reaction_instruction=latest.prompt or self._default_prompt,
+            hint=latest.hint or self._default_prompt,
             complete=all(s.complete for s in valid),
             stale_timeout=latest.stale_timeout,
         )
@@ -171,3 +186,45 @@ class InputSignalNucleus(Nucleus):
     def _atomic_clear_buffer(self) -> None:
         with self._data_state_lock:
             self.clear()
+
+
+class InputNucleusMeta(NucleusMeta):
+
+    def __init__(
+            self,
+            *,
+            name: str = "input_signal_nucleus",
+            description: str = "default input signal nucleus",
+            default_prompt: str = '',
+            suppress_seconds: float = 0.5,
+            buffer_size: int = 20,
+            min_priority: Priority = Priority.INFO,
+    ):
+        self._name = name
+        self._description = description
+        self._target_signal = InputSignalMeta.signal_name()
+        self._suppress_seconds = suppress_seconds
+        self._buffer_size = buffer_size
+        self._default_prompt = default_prompt
+        self._min_priority = min_priority
+
+    def name(self) -> str:
+        return self._name
+
+    def description(self) -> str:
+        return self._description
+
+    def signals(self) -> Iterable[type[SignalMeta]]:
+        yield InputSignalMeta
+
+    def factory(self, container: IoCContainer) -> Nucleus:
+        logger = container.get(LoggerItf)
+        return InputSignalNucleus(
+            name=self._target_signal,
+            description=self._description,
+            default_prompt=self._default_prompt,
+            suppress_seconds=self._suppress_seconds,
+            buffer_size=self._buffer_size,
+            min_priority=self._min_priority,
+            logger=logger,
+        )

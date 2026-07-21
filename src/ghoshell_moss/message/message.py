@@ -19,6 +19,7 @@ __all__ = [
     "Message",
     "MessageMeta",
     "WithAdditional",
+    "ContextType",
     "unique_id",
 ]
 
@@ -215,8 +216,10 @@ class MessageMeta(BaseModel):
     )
 
     def is_stale(self) -> bool:
-        # todo
-        return False
+        if self.stale_time is None or self.stale_time <= 0:
+            return False
+        elapsed = (datetime.now(tz.gettz()) - self.created).total_seconds()
+        return elapsed > self.stale_time
 
     def gen_attributes(self, timestamp: bool = True) -> dict[str, Any]:
         attributes = self.attributes.copy()
@@ -370,10 +373,6 @@ class Message(BaseModel, WithAdditional):
         """
         用来添加 content. 简单做一个向前兼容的.
         """
-
-        if self.contents is None:
-            self.contents = []
-
         for item in contents:
             if item is None:
                 continue
@@ -433,9 +432,9 @@ class Message(BaseModel, WithAdditional):
             attr_str = ' ' + attrs
         contents = [Text.new_content(f'<{tag}{attr_str}>\n')]
         contents.extend(self.contents)
-        contents.append(Text.new_content(f'</{tag}>\n'))
+        contents.append(Text.new_content(f'\n</{tag}>'))
         if join_text:
-            yield from self.join_contents(self.contents)
+            yield from self.join_contents(contents)
         else:
             yield from contents
 

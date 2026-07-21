@@ -1,617 +1,811 @@
-import typer
+"""
+moss manifests — workspace static declarations.
+
+Queries the manifest system via Project (not Host): MatrixManifest for global
+baseline (MOSS.manifests) and ModeManifests for the active mode's effective
+view (HOST, which extends MOSS.manifests via Python import).
+
+Each command shows two tables when a mode is active; a single Matrix table
+when no mode is active.  Context header (mode/network/ghost) only appears in
+``explain`` — list commands show just their data.
+"""
+
+import inspect as _inspect
 import json
-from rich.syntax import Syntax
-from rich.panel import Panel
-from ghoshell_moss.host.manifests.providers import (
-    match_provider_infos,
-    ProviderInfo
+from pathlib import Path
+from typing import Iterable
+
+import typer
+from ghoshell_container import Provider
+
+from ghoshell_moss.core.blueprint.environment import (
+    NONE_MOSS_MODE,
+    NONE_GHOST_NAME,
+    DEFAULT_NETWORK_NAME,
+    DEFAULT_NETWORK_SCOPE,
+)
+from ghoshell_moss.core.blueprint.project import Manifest, Project, MatrixManifest, ModeManifests, HostMode
+from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
+
+from .utils import (
+    print_simple_table, print_simple_panel,
+    print_error, print_warning, print_info, echo,
 )
 
-from ghoshell_moss.host.manifests.topics import (
-    match_topic_infos,
-    TopicInfo
-)
-from ghoshell_moss.host.manifests.configs import (
-    ConfigInfo
-)
-from ghoshell_moss.host.manifests.resource_storages import (
-    match_resource_storage_metas,
-    ResourceStorageInfo,
-)
-from ghoshell_moss.host.manifests.nuclei import (
-    match_nucleus_infos,
-)
-from ghoshell_moss.core.blueprint.manifests import NucleusMetaInfo
-from ghoshell_moss.core.concepts.channel import Channel
-from ghoshell_moss.host import Host
-from ghoshell_common.helpers import generate_import_path
-from .utils import console, display_scan_errors, print_simple_table
-import inspect
+
+def _print_hint() -> None:
+    echo("")
+    print_info(
+        "Design: 'moss project design'. "
+        "Files to edit are the 'Found At' paths in the tables above."
+    )
 
 manifest_app = typer.Typer(
-    help="MOSS Workspace Manifest Utilities. Handles environment discovery.",
-    no_args_is_help=True
+    help="Inspect capability declarations: providers, configs, topics, signals, parameters, resources, channel, nuclei.",
+    no_args_is_help=True,
 )
 
+# ---------------------------------------------------------------------------
+# context helpers
+# ---------------------------------------------------------------------------
 
-# TODO: MOSS CLI Discovery Utilities Optimization (by gemini 3)
-# 1. [AI Optimization] 实现 --json 标志位。当检测到 AI 调用时，跳过 Rich 渲染，
-#    直接输出纯净 JSON 以节省 Token 并避免格式解析错误。
-# 2. [UX] 在所有 list 接口底部增加交互提示 (e.g., "Hint: Use 'moss-ctl <cmd> <name>' for detail")。
-# 3. [Channel] 实现 Channel 详情页，补充运行时反射逻辑以获取 type(channel) 和所在模块路径。
-# 4. [Command] 优化 Command 详情展示，优先暴露 meta().json_schema 和 __prompt__()，
-#    确保 AI 能够根据输出直接构造合法的原语调用。
-# 5. [Refactor] 抽象一个统一的 BaseDiscovery 类来处理 "匹配则显示详情，否则显示列表" 的分发逻辑。
+_Context = tuple[
+    Project,          # project
+    HostMode | None,  # current mode (None if no_mode)
+    MatrixManifest,   # global (MOSS.manifests)
+    ModeManifests | None,  # mode effective view (None if no mode)
+]
+
+
+def _get_context() -> _Context:
+    """Resolve the current Project and manifests context.
+
+    Returns (project, mode, matrix_manifests, mode_manifests).
+    mode / mode_manifests are None when no mode is active.
+    """
+    project = Project.discover()
+
+    try:
+        mode = project.current_mode()
+    except Exception:
+        mode = None
+
+    matrix_mf = ScannedMatrixManifest()
+
+    mode_mf = None
+    if mode is not None:
+        try:
+            mode.bootstrap()
+            mode_mf = mode.manifests()
+        except Exception:
+            mode_mf = None
+
+    return project, mode, matrix_mf, mode_mf
+
+
+def _display_context_header(project: Project, mode: HostMode | None) -> None:
+    """Show the active context: mode, network, ghost, scope."""
+    env = project.env
+    mode_name = mode.name if mode else NONE_MOSS_MODE
+    mode_source = env.moss_meta.default_mode if env.moss_meta.default_mode else "—"
+    ghost_name = env.ghost_name or env.moss_meta.default_ghost or NONE_GHOST_NAME
+    network_name = env.network or DEFAULT_NETWORK_NAME
+    scope = env.network_scope or DEFAULT_NETWORK_SCOPE
+
+    rows = [
+        ["Mode", mode_name + (f"  (from MOSS.md default: {mode_source})" if mode_name != NONE_MOSS_MODE else "")],
+        ["Network", f"{network_name}  /  scope: {scope}"],
+        ["Ghost", ghost_name],
+    ]
+    print_simple_table(
+        data=rows,
+        headers=["Context", "Value"],
+        title="Active Context",
+    )
+
+
+def _display_no_mode_hint() -> None:
+    print_warning("No mode is active. Mode-level declarations are unavailable.")
+    print_info("Use 'moss modes list' to see available modes.")
+
+
+# ---------------------------------------------------------------------------
+# two-layer display (Matrix + optional Mode)
+# ---------------------------------------------------------------------------
+
+def _display_two_layer(
+    matrix_rows: list[list[str]],
+    matrix_count: int,
+    matrix_pkg: str,
+    mode_rows: list[list[str]] | None,
+    mode_count: int | None,
+    mode_pkg: str | None,
+    mode_name: str | None,
+    headers: list[str],
+    title_label: str,
+) -> None:
+    """Display Matrix + optional Mode tables from pre-built rows."""
+    if matrix_count == 0:
+        print_warning(f"No {title_label} found in Matrix ({matrix_pkg}.{title_label}).")
+    else:
+        print_simple_table(
+            data=matrix_rows, headers=headers,
+            title=f"Matrix ({matrix_pkg}.{title_label})",
+        )
+
+    if mode_rows is not None and mode_pkg is not None and mode_name is not None:
+        if mode_count == 0:
+            echo("")
+            print_warning(f"No {title_label} found in mode '{mode_name}' ({mode_pkg}.{title_label}).")
+        else:
+            echo("")
+            print_simple_table(
+                data=mode_rows, headers=headers,
+                title=f"Mode: {mode_name} ({mode_pkg}.{title_label})",
+            )
+            echo("")
+            print_info(
+                f"{matrix_count} from {matrix_pkg}, {mode_count} effective in mode "
+                f"({mode_pkg} extends {matrix_pkg} via import)"
+            )
+    _print_hint()
+
+
+def _filter_manifests(
+    manifests: Iterable[Manifest],
+    search: str,
+) -> list[Manifest]:
+    """Filter manifests by name or description containing search string."""
+    s = search.lower()
+    return [m for m in manifests if s in m.name().lower() or s in m.description().lower()]
+
+
+# ---------------------------------------------------------------------------
+# providers
+# ---------------------------------------------------------------------------
+
+def _import_path(cls: type) -> str:
+    """Convert a class to its Python import path."""
+    module = getattr(cls, '__module__', '')
+    qualname = getattr(cls, '__qualname__', cls.__name__)
+    if module:
+        return f'{module}.{qualname}'
+    return qualname
+
+
+def _provider_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for provider manifests.
+
+    Columns: Contract | Aliases | Type | Docstring | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", "—", str(m.error())[:80], str(m.found_at())])
+            continue
+        p = m.value()
+        alias_strs = [_import_path(a) for a in p.aliases()] if p.aliases() else []
+        aliases = ", ".join(alias_strs) if alias_strs else "—"
+        ptype = "Singleton" if p.singleton() else "Factory"
+        desc = (m.description() or "—")[:100]
+        rows.append([
+            m.name(),
+            aliases,
+            ptype,
+            desc,
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
+
+
+def _display_provider_detail(manifest: Manifest[Provider]) -> None:
+    """Show a single provider in detail: contract source code."""
+    if manifest.is_error():
+        print_error(f"Provider scan error: {manifest.error()}")
+        return
+    provider = manifest.value()
+    contract_type = provider.contract()
+
+    alias_strs = [_import_path(a) for a in provider.aliases()] if provider.aliases() else []
+    aliases = ", ".join(alias_strs) if alias_strs else "—"
+    echo("")
+    print_simple_table(
+        data=[
+            ["Contract", manifest.name()],
+            ["Aliases", aliases],
+            ["Type", "Singleton" if provider.singleton() else "Factory"],
+            ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+            ["Docstring", (manifest.description() or "—")[:200]],
+        ],
+        headers=["Property", "Value"],
+        title="Provider Detail",
+    )
+
+    if manifest.source():
+        echo("")
+        print_simple_panel(manifest.source(), title="Contract Source")
+    else:
+        try:
+            source = _inspect.getsource(contract_type)
+            echo("")
+            print_simple_panel(source, title="Contract Source")
+        except (TypeError, OSError):
+            print_info("Source unavailable (compiled or built-in contract).")
+
 
 @manifest_app.command(name="providers")
 def list_providers(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for ioc providers identity or provider path."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
+    search: str = typer.Argument(
+        "", help="Search pattern for contract import path or provider type.",
+    ),
 ):
-    """
-    Explore and inspect providers discovered in the MOSS workspace.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    # 1. 执行发现逻辑
-    # 默认从 MOSS.manifests.providers 扫描，这是我们在 Environment 中约定的路径
-    all_providers = host.manifests.providers()
+    """List IoC providers discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
 
-    # 2. 执行过滤逻辑
-    results = list(match_provider_infos(all_providers, search)) if search else all_providers
+    matrix_raw = list(matrix_mf.providers())
+    mode_raw = list(mode_mf.providers()) if mode_mf else []
 
-    if search and not results:
-        console.print(f"[yellow]No providers found matching: '{search}'[/yellow]")
-        return
-
-    # 3. 结果分发：唯一匹配显示详情，否则显示列表
     if search:
-        if len(results) == 1:
-            _display_provider_detail(results[0])
-        else:
-            _display_provider_table(results, is_filtered=bool(search))
-    else:
-        _display_provider_table(results, is_filtered=bool(search))
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        # single match → detail
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_provider_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_provider_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No providers matching '{search}'.")
+            return
 
+    m_rows, m_count = _provider_rows(matrix_raw)
+    mode_rows, mode_count = _provider_rows(mode_raw) if mode_raw else (None, None)
 
-def _display_provider_table(providers: list[ProviderInfo], is_filtered: bool):
-    """打印简洁的 Contract 列表"""
-    title = "Discovered MOSS providers"
-    if is_filtered:
-        title += " (Filtered)"
-
-    # 准备表格数据
-    table_data = []
-    for info in providers:
-        table_data.append([
-            f"[green]{info.name}[/green]",
-            "Singleton" if info.singleton else "Factory",
-            f"[blue]{info.file}[/blue]" if info.file else ""
-        ])
-
-    # 使用简洁表格显示
-    print_simple_table(
-        data=table_data,
-        headers=["Identity", "Type", "Found At"],
-        title=title,
-        column_styles=["green", "dim", "blue"],
-        title_style="bold cyan",
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Contract", "Aliases", "Type", "Docstring", "Found At"],
+        title_label="providers",
     )
 
-    console.print(f"\n[dim]Total: {len(providers)} providers found.[/dim]")
 
+# ---------------------------------------------------------------------------
+# configs
+# ---------------------------------------------------------------------------
 
-def _display_provider_detail(info: ProviderInfo):
-    """展示单个 Contract 的深度反射信息"""
-    console.print(f"\n[bold cyan]Contract Detail:[/bold cyan] [green]{info.name}[/green]")
-    console.print(f"[dim]Defined at: {info.file}[/dim]\n")
+def _config_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for config manifests.
 
-    # 打印 Docstring
-    if info.docstring:
-        console.print(f"[italic]{info.docstring}[/italic]\n")
-
-    # 展示 Provider 及其配置（如果存在）
-    console.print(f"[bold]Provider Instance:[/bold] {info.found}")
-    console.print(f"[bold]Provider Type:[/bold] {info.provider_type}")
-
-    # 核心：展示 Contract 的定义源码，让 AI 或开发者一目了然
-    console.print("\n[bold]Contract Source Definition:[/bold]")
-    syntax = Syntax(info.source, "python", theme="monokai", line_numbers=True)
-    console.print(syntax)
-
-
-@manifest_app.command(name="topics")
-def list_topics(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for topic name or topic type."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
-):
+    Columns: Name | Fields | Description | Found At
     """
-    Introspect and discover event topics available in the MOSS ecosystem.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    # 1. 发现
-    all_topics = host.manifests.topics()
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", str(m.error())[:80], str(m.found_at())])
+            continue
+        cfg = m.value()
+        # extract field names:type from json_schema
+        try:
+            schema = cfg.to_config_schema()
+            props = schema.json_schema.get("properties", {})
+            fields = ", ".join(
+                f"{k}:{v.get('type', '?')}" for k, v in props.items()
+            ) if props else "—"
+        except Exception:
+            fields = "—"
+        desc = schema.description if schema.description else (m.description() or "—")
+        rows.append([
+            m.name(),
+            fields[:120],
+            desc[:100],
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
-    # 2. 过滤
-    results = list(match_topic_infos(all_topics, search)) if search else list(all_topics.values())
 
-    if search and not results:
-        console.print(f"[yellow]No topics found matching: '{search}'[/yellow]")
+def _display_config_detail(manifest: Manifest) -> None:
+    """Show a single config: YAML defaults, JSON Schema, source."""
+    if manifest.is_error():
+        print_error(f"Config scan error: {manifest.error()}")
         return
-
-    # 3. 分发：唯一匹配显示 Schema 详情，否则显示列表
-    if len(results) == 1 and search:
-        _display_topic_detail(results[0])
-    else:
-        _display_topic_table(results, is_filtered=bool(search))
-
-
-def _display_topic_table(topics: list[TopicInfo], is_filtered: bool):
-    """展示 Topic 概览表"""
-    title = "MOSS Event Topics"
-    if is_filtered:
-        title += " (Filtered)"
-
-    # 准备表格数据
-    table_data = []
-    for info in sorted(topics, key=lambda x: x.name):
-        table_data.append([
-            f"[green]{info.name}[/green]",
-            f"[yellow]{info.type}[/yellow]",
-            info.description.split('\n')[0] if info.description else ""
-        ])
-
-    # 使用简洁表格显示
+    cfg = manifest.value()
+    echo("")
     print_simple_table(
-        data=table_data,
-        headers=["Topic Name", "Type", "Description"],
-        title=title,
-        column_styles=["green", "yellow", "dim"],
-        title_style="bold magenta",
+        data=[
+            ["Name", manifest.name()],
+            ["Module", manifest.import_path() or "—"],
+            ["Found At", str(manifest.found_at())],
+            ["Description", (manifest.description() or "—")[:200]],
+        ],
+        headers=["Property", "Value"],
+        title="Config Detail",
     )
 
-    console.print(f"\n[dim]Total: {len(topics)} topics discovered.[/dim]")
+    try:
+        yaml_str = cfg.to_yaml()
+    except AttributeError:
+        try:
+            yaml_str = cfg.model_dump_json(indent=2)
+        except Exception:
+            yaml_str = str(cfg)
+    echo("")
+    print_simple_panel(yaml_str, title="Default Values (YAML)")
 
+    try:
+        schema = cfg.to_config_schema().json_schema
+        schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
+        echo("")
+        print_simple_panel(schema_json, title="JSON Schema")
+    except Exception:
+        pass
 
-def _display_topic_detail(info: TopicInfo):
-    """展示 Topic 的深度定义和 JSON Schema，这是 AI 的“操作指南”"""
-    console.print(f"\n[bold magenta]Topic Detail:[/bold magenta]")
-    console.print(f"[dim]Name: {info.name}[/dim]")
-    console.print(f"[dim]Type: {info.type}[/dim]")
-    console.print(f"[dim]Found in: {info.found}[/dim]\n")
-
-    # 1. 描述部分
-    if info.description:
-        console.print(Panel(info.description, title="Description", title_align="left", border_style="dim"))
-
-    # 2. JSON Schema 部分 (模型最看重这个)
-    console.print("\n[bold cyan]Payload JSON Schema:[/bold cyan]")
-    schema_json = json.dumps(info.json_schema, indent=2, ensure_ascii=False)
-    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
-
-    # 3. 源码参考 (可选，如果模型想看具体的 Pydantic 逻辑)
-    if info.model_source:
-        console.print("\n[bold cyan]Python Model Definition:[/bold cyan]")
-        console.print(Syntax(info.model_source, "python", theme="monokai", line_numbers=True))
+    try:
+        source = _inspect.getsource(type(cfg))
+        echo("")
+        print_simple_panel(source, title="Config Source")
+    except (TypeError, OSError):
+        pass
 
 
 @manifest_app.command(name="configs")
 def list_configs(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for config name."
-        ),
-        detail: bool = typer.Option(
-            False, "--detail", "-d",
-            help="Show detailed schema and default values."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        )
+    search: str = typer.Argument("", help="Search pattern for config name."),
+    detail: bool = typer.Option(False, "--detail", "-d", help="Show full schema and defaults."),
 ):
-    """
-    Explore and manage environment configurations in MOSS.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    all_configs = host.manifests.configs()
+    """List configuration models discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
 
-    # 2. 匹配逻辑 (支持简单模糊匹配)
-    results = [
-        info for name, info in all_configs.items()
-        if search.lower() in name.lower()
-    ]
+    matrix_raw = list(matrix_mf.configs())
+    mode_raw = list(mode_mf.configs()) if mode_mf else []
 
-    if search and not results:
-        console.print(f"[yellow]No configurations found matching: '{search}'[/yellow]")
-        return
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_config_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_config_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No configs matching '{search}'.")
+            return
 
-    # 3. 展示逻辑：唯一匹配或强制 detail 时显示详情
-    if (len(results) == 1 and search) or detail:
-        for info in results:
-            _display_config_detail(info)
-    else:
-        _display_config_table(results)
+    if detail and mode_raw:
+        if len(mode_raw) == 1:
+            _display_config_detail(mode_raw[0])
+            return
 
+    m_rows, m_count = _config_rows(matrix_raw)
+    mode_rows, mode_count = _config_rows(mode_raw) if mode_raw else (None, None)
 
-def _display_config_table(configs: list[ConfigInfo]):
-    """展示配置项全景图"""
-    # 准备表格数据
-    table_data = []
-    for info in sorted(configs, key=lambda x: x.name):
-        table_data.append([
-            f"[green]{info.name}[/green]",
-            f"[dim]{info.found_import_path}[/dim]",
-            info.description.split('\n')[0] if info.description else ""
-        ])
-
-    # 使用简洁表格显示
-    print_simple_table(
-        data=table_data,
-        headers=["Config Name", "Module Path", "Description"],
-        title="MOSS Environment Configurations",
-        column_styles=["green", "dim", ""],
-        title_style="bold blue",
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Name", "Fields", "Description", "Found At"],
+        title_label="configs",
     )
 
-    console.print(f"\n[dim]Found {len(configs)} configuration definitions.[/dim]")
 
+# ---------------------------------------------------------------------------
+# topics
+# ---------------------------------------------------------------------------
 
-def _display_config_detail(info: ConfigInfo):
-    """展示具体的配置契约与默认值"""
-    console.print(f"\n[bold blue]Config Detail:[/bold blue] [green]{info.name}[/green]")
-    console.print(f"[dim]Defined in: {info.found_at_file}[/dim]\n")
-    console.print(f"[dim]ConfigType is: {info.model_path}[/dim]\n")
+def _topic_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for topic manifests.
 
-    # 1. 描述
-    if info.description:
-        console.print(Panel(info.description, title="Description", title_align="left", border_style="blue"))
-
-    # 2. 默认值展示 (YAML 格式对模型非常友好)
-    console.print("\n[bold cyan]Default Values (Seed):[/bold cyan]")
-    console.print(Syntax(info.dump_yaml(), "yaml", theme="monokai", background_color="default"))
-
-    # 3. JSON Schema (用于验证模型生成的配置是否合法)
-    console.print("\n[bold cyan]Structure JSON Schema:[/bold cyan]")
-    schema_json = json.dumps(info.schema.json_schema, indent=2, ensure_ascii=False)
-    console.print(Syntax(schema_json, "json", theme="monokai", background_color="default"))
-
-    # 4. 源码展示
-    console.print("\n[bold cyan]Config Logic Source:[/bold cyan]")
-    console.print(Syntax(info.source, "python", theme="monokai", line_numbers=True))
-    console.print("-" * 40)
-
-
-@manifest_app.command(name="channels")
-def list_channels(
-        search: str = typer.Argument("", help="Search pattern for channel name."),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
-):
+    Columns: Name | Type | Model Path | Description | Found At
     """
-    Inspect the __main__ channel discovered from MOSS manifests.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    channels = host.manifests.channels()
-    main_channel = channels.get(Channel.MAIN_CHANNEL_NAME)
-
-    if main_channel is None:
-        console.print("[yellow]No __main__ channel discovered in manifests.[/yellow]")
-        return
-
-    if search and search.lower() not in "__main__":
-        console.print(f"[yellow]Only __main__ channel exists. No match for: '{search}'[/yellow]")
-        return
-
-    # 发现位置
-    source = getattr(host.manifests, 'main_channel_source', lambda: None)()
-    found_at = source or "unknown"
-
-    if json_out:
-        data = {
-            "name": "__main__",
-            "type": str(type(main_channel)),
-            "description": main_channel.description(),
-            "found_module": found_at,
-        }
-        console.json(data=data)
-        return
-    _display_main_channel_detail(main_channel, found_at)
-
-
-def _display_main_channel_detail(channel, found_module: str):
-    """展示 __main__ channel 的详情视图。"""
-    console.print(f"\n[bold cyan]__main__ Channel[/bold cyan]")
-    console.print(f"[dim]Type:[/dim] {type(channel).__name__}")
-    console.print(f"[dim]Description:[/dim] {channel.description() or '(none)'}")
-    console.print(f"[dim]Discovered at:[/dim] {found_module}")
-
-
-@manifest_app.command(name="contracts")
-def list_contracts(
-        search: str = typer.Argument("", help="Search pattern for contract name or module path."),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(False, "--json", help="Output as raw JSON for AI.")
-):
-    """
-    Introspect bound contracts in the MOSS IOC container.
-    """
-    host = Host(mode=mode)  # 根据需要传入 mode
-    display_scan_errors(host.scan_errors)
-    # 获取所有注册的 contracts
-    all_contracts = list(host.matrix().container.contracts(recursively=True))
-    all_contracts_info = []
-    for contract in all_contracts:
-        if not isinstance(contract, type):
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", "—", str(m.error())[:80], str(m.found_at())])
             continue
-        doc = inspect.getdoc(contract) or ''
-        all_contracts_info.append(dict(
-            name=contract.__name__,
-            import_path=generate_import_path(contract),
-            contract=contract,
-            doc=doc,
-            short_doc=doc.split('\n')[0],
-        ))
-
-    # 过滤
-    results = [
-        c for c in all_contracts_info
-        if search.lower() in c['import_path'].lower()
-    ]
-
-    # 1. AI JSON 模式
-    if json_out:
-        data = {
-            c['import_path']: {
-                "name": c['name'],
-                "doc": c['doc']
-            } for c in results
-        }
-        console.json(data=data)
-        return
-
-    # 2. 唯一匹配显示详情，否则显示列表
-    if len(results) == 1 and search:
-        _display_contract_detail(results[0])
-    else:
-        _display_contract_table(results, is_filtered=bool(search))
-
-
-def _display_contract_table(contracts: list, is_filtered: bool):
-    # 准备表格数据
-    table_data = []
-    for c in sorted(contracts, key=lambda x: x['import_path']):
-        table_data.append([
-            f"[green]{c['import_path']}[/green]",
-            c['short_doc'] or ""
+        schema = m.value()
+        model_path = m.import_path() or "—"
+        desc = schema.description or m.description() or "—"
+        rows.append([
+            m.name(),
+            schema.topic_type,
+            model_path,
+            desc[:100],
+            str(m.found_at()),
         ])
+    return rows, len(rows)
 
-    # 使用简洁表格显示
+
+def _display_topic_detail(manifest: Manifest) -> None:
+    """Show a single topic: JSON Schema + model source."""
+    if manifest.is_error():
+        print_error(f"Topic scan error: {manifest.error()}")
+        return
+    schema = manifest.value()
+    echo("")
     print_simple_table(
-        data=table_data,
-        headers=["Contract Name", "Short Doc"],
-        title="MOSS Bound Contracts",
-        column_styles=["green", "italic"],
-        title_style="bold yellow",
+        data=[
+            ["Name", schema.topic_name],
+            ["Type", schema.topic_type],
+            ["Description", schema.description or "—"],
+            ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+        ],
+        headers=["Property", "Value"],
+        title="Topic Detail",
     )
 
-    console.print(
-        f"\n[dim]Total: {len(contracts)} contracts. Hint: Use [bold]moss manifest contracts <name>[/bold] for source detail.[/dim]")
+    schema_json = json.dumps(schema.json_schema, indent=2, ensure_ascii=False)
+    echo("")
+    print_simple_panel(schema_json, title="Payload JSON Schema")
+
+    if manifest.source():
+        echo("")
+        print_simple_panel(manifest.source(), title="Topic Model Source")
 
 
-def _display_contract_detail(contract_info: dict):
-    contract_type = contract_info['contract']
-    console.print(f"\n[bold yellow]Contract:[/bold yellow] {contract_info['name']}")
-
-    # 打印源码
-    console.print("\n[bold]Source Code:[/bold]")
-    try:
-        source = inspect.getsource(contract_type)
-        console.print(Syntax(source, "python", theme="monokai", line_numbers=True))
-    except Exception as e:
-        console.print(f"[red]Could not retrieve source: {e}[/red]")
-
-
-@manifest_app.command(name="ctml-versions")
-def list_ctml_versions(
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
+@manifest_app.command(name="topics")
+def list_topics(
+    search: str = typer.Argument("", help="Search pattern for topic name or type."),
 ):
+    """List event topic schemas discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_raw = list(matrix_mf.topics())
+    mode_raw = list(mode_mf.topics()) if mode_mf else []
+
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_topic_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_topic_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No topics matching '{search}'.")
+            return
+
+    m_rows, m_count = _topic_rows(matrix_raw)
+    mode_rows, mode_count = _topic_rows(mode_raw) if mode_raw else (None, None)
+
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Name", "Type", "Model Path", "Description", "Found At"],
+        title_label="topics",
+    )
+
+
+# ---------------------------------------------------------------------------
+# signals
+# ---------------------------------------------------------------------------
+
+def _signal_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for signal manifests.
+
+    Columns: Name | Description | Found At
     """
-    list the environment provided ctml versions.
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), str(m.error())[:80], str(m.found_at())])
+            continue
+        desc = m.description() or "—"
+        rows.append([m.name(), desc[:120], str(m.found_at())])
+    return rows, len(rows)
+
+
+def _display_signal_detail(manifest: Manifest) -> None:
+    """Show a single signal with full description and source if available."""
+    if manifest.is_error():
+        print_error(f"Signal scan error: {manifest.error()}")
+        return
+    schema = manifest.value()
+    echo("")
+    print_simple_table(
+        data=[
+            ["Name", manifest.name()],
+            ["Description", (manifest.description() or "—")[:300]],
+            ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+        ],
+        headers=["Property", "Value"],
+        title="Signal Detail",
+    )
+    if manifest.source():
+        echo("")
+        print_simple_panel(manifest.source(), title="Signal Source")
+
+
+@manifest_app.command(name="signals")
+def list_signals(
+    search: str = typer.Argument("", help="Search pattern for signal name or description."),
+):
+    """List signal schemas discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_raw = list(matrix_mf.signals())
+    mode_raw = list(mode_mf.signals()) if mode_mf else []
+
+    if search:
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if len(mode_raw) == 1 and len(matrix_raw) <= 1:
+            _display_signal_detail(mode_raw[0])
+            return
+        if len(matrix_raw) == 1 and not mode_raw:
+            _display_signal_detail(matrix_raw[0])
+            return
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No signals matching '{search}'.")
+            return
+
+    m_rows, m_count = _signal_rows(matrix_raw)
+    mode_rows, mode_count = _signal_rows(mode_raw) if mode_raw else (None, None)
+
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Name", "Description", "Found At"],
+        title_label="signals",
+    )
+
+
+# ---------------------------------------------------------------------------
+# parameters
+# ---------------------------------------------------------------------------
+
+def _display_single_manifest_detail(manifest: Manifest, layer: str) -> None:
+    """Display a single-value manifest as a detail block."""
+    if manifest.is_error():
+        print_warning(f"{layer}: {manifest.error()}")
+        return
+    echo(layer)
+    print_simple_table(
+        data=[
+            ["Name", manifest.name()],
+            ["Description", manifest.description() or "—"],
+            ["Found At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+        ],
+        headers=["Property", "Value"],
+        title="Parameter Schema",
+    )
+
+
+@manifest_app.command(name="parameters")
+def show_parameters():
+    """Show the parameter schema (single-value, mode-overrides-matrix)."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    matrix_param = matrix_mf.parameters()
+    echo("")
+    _display_single_manifest_detail(
+        matrix_param,
+        layer=f"Matrix ({matrix_mf.root_package()}.parameters)",
+    )
+
+    if mode is not None and mode_mf is not None:
+        mode_param = mode_mf.parameters()
+        echo("")
+        _display_single_manifest_detail(
+            mode_param,
+            layer=f"Mode: {mode.name} ({mode_mf.root_package()}.parameters)",
+        )
+    _print_hint()
+
+
+# ---------------------------------------------------------------------------
+# resources
+# ---------------------------------------------------------------------------
+
+def _resource_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for resource manifests.
+
+    Columns: Scheme | Storage Host | Description | Found At
     """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    for version, version_info in host.manifests.ctml_versions().items():
-        console.print("%s: %s" % (version, version_info.file))
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), "ERROR", str(m.error())[:80], str(m.found_at())])
+            continue
+        meta = m.value()
+        scheme = meta.scheme() if hasattr(meta, 'scheme') else m.name()
+        host = meta.host if hasattr(meta, 'host') else "—"
+        desc = (meta.description() if hasattr(meta, 'description') else m.description() or "—")
+        rows.append([
+            scheme,
+            host,
+            desc[:100],
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
 
 @manifest_app.command(name="resources")
 def list_resources(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for storage scheme, host, or description."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(
-            False, "--json",
-            help="Output as raw JSON for AI."
-        ),
+    search: str = typer.Argument("", help="Search pattern for scheme, host, or description."),
 ):
-    """
-    List discovered ResourceStorageMeta instances in the environment.
+    """List resource storage declarations discovered from manifests."""
+    project, mode, matrix_mf, mode_mf = _get_context()
 
-    Each entry describes a ResourceStorage available for registration:
-    scheme, host, description, and where it was found.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    resource_storage_items = host.manifests.resource_storage_manifests()
-
-    # collect metas
-    all_metas = [item.info for item in resource_storage_items]
+    matrix_raw = list(matrix_mf.resources())
+    mode_raw = list(mode_mf.resources()) if mode_mf else []
 
     if search:
-        metas_dict = {m.path: m for m in all_metas}
-        results = match_resource_storage_metas(metas_dict, search)
-    else:
-        results = all_metas
+        matrix_raw = _filter_manifests(matrix_raw, search)
+        mode_raw = _filter_manifests(mode_raw, search) if mode_raw else []
+        if not matrix_raw and not mode_raw:
+            print_warning(f"No resources matching '{search}'.")
+            return
 
-    if json_out:
-        data = [
-            {
-                "locator": m.locator,
-                "storage_scheme": m.storage_scheme,
-                "storage_host": m.storage_host,
-                "description": m.description,
-                "found_module": m.found_module,
-            }
-            for m in results
-        ]
-        import json as _json
-        console.print(_json.dumps(data, ensure_ascii=False, indent=2))
-        return
+    m_rows, m_count = _resource_rows(matrix_raw)
+    mode_rows, mode_count = _resource_rows(mode_raw) if mode_raw else (None, None)
 
-    if not results:
-        console.print(f"[yellow]No resource storages found matching: '{search}'[/yellow]")
-        return
-
-    _display_resource_storage_table(results)
-
-
-def _display_resource_storage_table(metas: list[ResourceStorageInfo]):
-    """展示发现的 ResourceStorage Meta"""
-    table_data = []
-    for info in sorted(metas, key=lambda x: x.path):
-        table_data.append([
-            f"[green]{info.storage_scheme}[/green]",
-            f"[yellow]{info.storage_host}[/yellow]",
-            info.description.split('\n')[0] if info.description else "",
-            f"[dim]{info.found_module}[/dim]",
-        ])
-
-    print_simple_table(
-        data=table_data,
-        headers=["Scheme", "Host", "Description", "Found At"],
-        title="Discovered Resource Storages",
-        column_styles=["green", "yellow", "", "dim"],
-        title_style="bold cyan",
+    _display_two_layer(
+        matrix_rows=m_rows, matrix_count=m_count,
+        matrix_pkg=matrix_mf.root_package(),
+        mode_rows=mode_rows, mode_count=mode_count,
+        mode_pkg=mode_mf.root_package() if mode_mf else None,
+        mode_name=mode.name if mode else None,
+        headers=["Scheme", "Storage Host", "Description", "Found At"],
+        title_label="resources",
     )
 
-    console.print(f"\n[dim]Total: {len(metas)} resource storages discovered.[/dim]")
+
+# ---------------------------------------------------------------------------
+# channel
+# ---------------------------------------------------------------------------
+
+@manifest_app.command(name="channel")
+def show_channel():
+    """Show the __main__ channel (mode only)."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    if mode is None or mode_mf is None:
+        print_error("Channel is mode-scoped. No active mode.")
+        print_info("Use 'moss modes list' to see available modes, then activate one.")
+        raise typer.Exit(code=1)
+
+    manifest = mode_mf.channel()
+    if manifest.is_error():
+        print_error(f"Channel not found: {manifest.error()}")
+        return
+
+    channel_obj = manifest.value()
+    echo("")
+    print_simple_table(
+        data=[
+            ["Name", channel_obj.name()],
+            ["Type", type(channel_obj).__name__],
+            ["Description", channel_obj.description() or "—"],
+            ["Discovered At", str(manifest.found_at())],
+            ["Import Path", manifest.import_path() or "—"],
+        ],
+        headers=["Property", "Value"],
+        title=f"Channel: {channel_obj.name()}",
+    )
+    _print_hint()
+
+
+# ---------------------------------------------------------------------------
+# nuclei
+# ---------------------------------------------------------------------------
+
+def _nucleus_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
+    """Build table rows for nucleus manifests.
+
+    Columns: Name | Description | Signals | Found At
+    """
+    rows = []
+    for m in manifests:
+        if m.is_error():
+            rows.append([m.name(), str(m.error())[:80], "—", str(m.found_at())])
+            continue
+        v = m.value()
+        signals = ", ".join(s.signal_name() for s in v.signals()) if hasattr(v, 'signals') else "—"
+        desc = (v.description() if hasattr(v, 'description') else m.description() or "—")
+        rows.append([
+            m.name(),
+            desc[:100],
+            signals,
+            str(m.found_at()),
+        ])
+    return rows, len(rows)
 
 
 @manifest_app.command(name="nuclei")
 def list_nuclei(
-        search: str = typer.Argument(
-            "",
-            help="Search pattern for nucleus name, description, or signal."
-        ),
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-        json_out: bool = typer.Option(
-            False, "--json",
-            help="Output as raw JSON for AI."
-        ),
+    search: str = typer.Argument("", help="Search pattern for nucleus name, description, or signal."),
 ):
-    """
-    List discovered NucleusFactory instances in the environment.
+    """List nucleus factories (mode only)."""
+    project, mode, matrix_mf, mode_mf = _get_context()
 
-    Each entry describes a NucleusFactory available for Ghost mindflow:
-    name, description, signal_names, and where it was found.
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    all_nuclei = host.manifests.nuclei()
+    if mode is None or mode_mf is None:
+        print_error("Nuclei are mode-scoped. No active mode.")
+        print_info("Use 'moss modes list' to see available modes, then activate one.")
+        raise typer.Exit(code=1)
 
+    raw = list(mode_mf.nuclei())
     if search:
-        results = match_nucleus_infos(all_nuclei, search)
-    else:
-        results = list(all_nuclei.values())
+        raw = _filter_manifests(raw, search)
+        if not raw:
+            print_warning(f"No nuclei matching '{search}'.")
+            return
 
-    if json_out:
-        data = [
-            {
-                "name": m.name,
-                "description": m.description,
-                "signal_names": m.signal_names,
-                "found_module": m.found_module,
-            }
-            for m in results
-        ]
-        import json as _json
-        console.print(_json.dumps(data, ensure_ascii=False, indent=2))
+    rows, count = _nucleus_rows(raw)
+    if count == 0:
+        print_warning(f"No nuclei found in mode '{mode.name}'.")
         return
-
-    if not results:
-        console.print(f"[yellow]No nucleus factories found matching: '{search}'[/yellow]")
-        return
-
-    _display_nuclei_table(results)
-
-
-def _display_nuclei_table(metas: list[NucleusMetaInfo]):
-    """展示发现的 NucleusFactory"""
-    table_data = []
-    for info in sorted(metas, key=lambda x: x.name):
-        table_data.append([
-            f"[green]{info.name}[/green]",
-            info.description.split('\n')[0] if info.description else "",
-            f"[yellow]{', '.join(info.signal_names)}[/yellow]",
-            f"[dim]{info.found_module}[/dim]",
-        ])
 
     print_simple_table(
-        data=table_data,
+        data=rows,
         headers=["Name", "Description", "Signals", "Found At"],
-        title="Discovered Nucleus Factories",
-        column_styles=["green", "", "yellow", "dim"],
-        title_style="bold cyan",
+        title=f"Mode: {mode.name} ({mode_mf.root_package()}.nuclei)",
     )
+    _print_hint()
 
-    console.print(f"\n[dim]Total: {len(metas)} nucleus factories discovered.[/dim]")
 
+# ---------------------------------------------------------------------------
+# ctml-versions
+# ---------------------------------------------------------------------------
+
+@manifest_app.command(name="ctml-versions")
+def list_ctml_versions():
+    """List CTML versions available in this project."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+
+    versions = project.ctml_versions()
+    if not versions:
+        print_warning("No CTML versions found in this project.")
+        return
+
+    rows = []
+    for ver, filepath in sorted(versions.items()):
+        rows.append([ver, str(filepath)])
+    print_simple_table(
+        data=rows,
+        headers=["Version", "File"],
+        title="CTML Versions",
+    )
+    _print_hint()
+
+
+# ---------------------------------------------------------------------------
+# explain — single source of truth for context + manifest system
+# ---------------------------------------------------------------------------
 
 @manifest_app.command(name="explain")
-def explain_manifests(
-        mode: str | None = typer.Option(
-            default=None,
-            help="set specific mode"
-        ),
-):
-    """
-    用自然语言自描述当前环境 manifest 的结构与含义。
-    这是 manifest 体系的唯一真相入口。
-    """
-    host = Host(mode=mode)
-    display_scan_errors(host.scan_errors)
-    explanation = host.manifests.explain()
-    console.print(explanation)
+def explain_manifests():
+    """Self-describe the manifest system — the single source of truth."""
+    project, mode, matrix_mf, mode_mf = _get_context()
+    _display_context_header(project, mode)
+
+    echo("")
+    echo(matrix_mf.explain())
+
+    if mode_mf is not None:
+        echo("")
+        echo(mode_mf.explain())
+        echo("")
+        print_info(
+            f"当前模式 '{mode.name}' 的有效视图 = "
+            f"{matrix_mf.root_package()} (全局) + {mode_mf.root_package()} (模式追加)"
+        )
+    else:
+        _display_no_mode_hint()
+    _print_hint()

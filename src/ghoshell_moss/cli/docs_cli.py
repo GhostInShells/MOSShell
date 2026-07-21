@@ -125,6 +125,8 @@ def read_doc(
 ):
     """Read an AI reference document by path."""
     item = asyncio.run(kb.get(path))
+    if item is None and not path.endswith(".md"):
+        item = asyncio.run(kb.get(path + ".md"))
     if item is None:
         print_error(f"Document not found: {path}")
         print_info("Use 'moss docs list' to see available documents.")

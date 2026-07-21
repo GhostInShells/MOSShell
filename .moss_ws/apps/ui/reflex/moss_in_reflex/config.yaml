@@ -1,0 +1,10 @@
+# Layout 配置文件
+# 在这里注册需要加载的 Layout，格式为 Python 模块路径
+# 添加新 Layout 后只需在此文件中添加一行即可启用
+
+layouts:
+  - "framework.layouts.media.MediaLayout"
+  - "framework.layouts.simple.SimpleLayout"
+  - "framework.layouts.lesson.LessonLayout"
+  - "framework.layouts.stage.StageLayout"
+  - "framework.layouts.hero.HeroLayout"

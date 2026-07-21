@@ -1,0 +1,34 @@
+# dump from `ghoshell_moss.contracts.llms:LLMConfig` 
+default:
+  service:
+    name: anthropic
+    base_url: $ANTHROPIC_BASE_URL
+    api_key: $ANTHROPIC_API_KEY
+    protocol: anthropic
+  default:
+    model: $ANTHROPIC_MODEL
+    tags:
+      small_fast_model: $ANTHROPIC_SMALL_FAST_MODEL
+    context_window: 200000
+    max_output_tokens: 4096
+    content_types:
+    - text
+    converters: {}
+  models: {}
+providers:
+  deepseek:
+    service:
+      name: deepseek
+      base_url: $DEEPSEEK_ANTHROPIC_BASE_URL
+      api_key: $DEEPSEEK_API_KEY
+      protocol: anthropic
+    default:
+      model: $DEEPSEEK_MODEL
+      tags:
+        small_fast_model: $DEEPSEEK_SMALL_FAST_MODEL
+      context_window: 200000
+      max_output_tokens: 4096
+      content_types:
+      - text
+      converters: {}
+    models: {}

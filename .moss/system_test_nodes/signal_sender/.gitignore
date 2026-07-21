@@ -1,0 +1,15 @@
+# .installed: local install-completion marker. Each environment installs on its own —
+# committing this would let one machine's install state leak into others.
+.installed
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Isolated venv (if this node owns its pyproject.toml + .venv)
+.venv/
+
+# MOSS-managed runtime files (ledger JSON, stdout/stderr logs).
+# These are transient — produced by run_node on spawn, cleaned by
+# clear_dead_runtimes on restart.
+runtime/

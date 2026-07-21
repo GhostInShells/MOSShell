@@ -1,123 +1,89 @@
 import typer
+from pathlib import Path
 
-from ghoshell_moss.host import Host
-from ghoshell_moss.core.codex.discover import ScanError
-from .utils import console, print_simple_table, print_simple_panel
-
-ghost_app = typer.Typer(
-    help="Manage MOSS Ghosts (Intelligent Agent Identities).",
+ghosts_app = typer.Typer(
+    help="MOSS ghost management — list and inspect available ghosts.",
     no_args_is_help=True,
 )
 
+from .utils import (
+    print_simple_table,
+    print_error,
+    print_info,
+    echo,
+)
 
-def _display_scan_errors(errors: list[ScanError]) -> None:
-    """显示发现过程中的非致命 scan 错误。"""
-    if not errors:
-        return
-    console.print(f"\n[yellow]Warning: {len(errors)} ghost discovery error(s):[/yellow]")
-    error_data = [
-        [err.module_path, err.stage, f"{type(err.exception).__name__}: {err.exception}"]
-        for err in errors
-    ]
-    print_simple_table(
-        data=error_data,
-        headers=["Module", "Stage", "Error"],
+
+def _print_hint() -> None:
+    echo("")
+    print_info(
+        "Design: 'moss project design'. "
+        "See mode-level declarations with 'moss manifests providers' (configs / topics / signals / resources)."
     )
 
 
-@ghost_app.command(name="list")
-def list_ghosts():
-    """List all discovered ghosts in the current MOSS workspace."""
-    host = Host()
-    ghosts = host.all_ghosts()
+def _get_project():
+    from ghoshell_moss.core.blueprint.project import Project
+    return Project.discover()
 
+
+@ghosts_app.command(
+    name="list",
+    short_help="List all discovered ghosts in the workspace.",
+)
+def list_ghosts() -> None:
+    project = _get_project()
+    ghosts = list(project.ghosts())
     if not ghosts:
-        console.print("[dim]No ghosts found in the workspace.[/dim]")
-        console.print(
-            "[dim]Place a GhostMeta instance in MOSS/ghosts/ "
-            "(as a module or package) to make it discoverable.[/dim]"
-        )
-        _display_scan_errors(host.scan_errors)
+        print_info("No ghosts found in this workspace.")
         return
 
-    table_data = []
-    for name, meta in ghosts.items():
-        table_data.append([
-            f"[green]{name}[/green]",
-            meta.prototype(),
-            meta.description().split("\n")[0][:120],
-        ])
+    rows = []
+    for _, meta_or_err in ghosts:
+        if isinstance(meta_or_err, Exception):
+            rows.append(["<error>", "—", str(meta_or_err)[:80]])
+        else:
+            rows.append([meta_or_err.name(), meta_or_err.prototype(), meta_or_err.description()])
+    print_simple_table(
+        data=rows,
+        headers=["Name", "Prototype", "Description"],
+        title="Ghosts",
+    )
+    _print_hint()
+
+
+@ghosts_app.command(
+    name="show",
+    short_help="Show detailed information for a specific ghost.",
+)
+def show_ghost(
+        name: str = typer.Argument(..., help="Ghost name"),
+) -> None:
+    project = _get_project()
+    try:
+        meta = project.get_ghost(name)
+    except LookupError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1)
+
+    import inspect
+    cls = type(meta)
+    import_path = f"{cls.__module__}:{cls.__qualname__}"
+    try:
+        source_file = str(Path(inspect.getfile(cls)))
+    except (TypeError, OSError):
+        source_file = "—"
 
     print_simple_table(
-        data=table_data,
-        headers=["Name", "Prototype", "Description"],
-        title="MOSS Discovered Ghosts",
-    )
-    console.print(f"\n[dim]Total: {len(ghosts)} ghost(s) found.[/dim]")
-    console.print("[dim]Use [bold]moss ghosts show <name>[/bold] for details.[/dim]")
-    _display_scan_errors(host.scan_errors)
-
-
-@ghost_app.command(name="show")
-def show_ghost(name: str):
-    """Show detailed information for a specific ghost."""
-    host = Host()
-    ghosts = host.all_ghosts()
-
-    if name not in ghosts:
-        console.print(f"[red]Error: Ghost '{name}' not found.[/red]")
-        _display_scan_errors(host.scan_errors)
-        raise typer.Exit(1)
-
-    meta = ghosts[name]
-
-    # 基本信息
-    print_simple_panel(
-        f"Prototype:  [dim]{meta.prototype()}[/dim]\n"
-        f"Version:    [dim]{meta.version() or '—'}[/dim]\n"
-        f"Identifier: [dim]{meta.identifier}[/dim]\n"
-        f"Description: [dim]{meta.description()}[/dim]",
+        data=[
+            ["Name", meta.name()],
+            ["Prototype", meta.prototype()],
+            ["Import Path", import_path],
+            ["Source File", source_file],
+            ["Version", meta.version() or "—"],
+            ["Description", meta.description()],
+        ],
+        headers=["Property", "Value"],
         title=f"Ghost: {meta.name()}",
     )
-
-    # Nuclei
-    nuclei = meta.nuclei_metas()
-    if nuclei:
-        console.print("\n[bold cyan]Nuclei:[/bold cyan]")
-        nuclei_data = [
-            [f"[green]{n.name()}[/green]", n.description() or "—"]
-            for n in nuclei
-        ]
-        print_simple_table(
-            data=nuclei_data,
-            headers=["Name", "Description"],
-        )
-    else:
-        console.print("\n[dim]Nuclei: none declared[/dim]")
-
-    # Providers
-    providers = meta.providers()
-    if providers:
-        console.print("\n[bold cyan]Providers:[/bold cyan]")
-        provider_data = [
-            [f"[green]{p.__class__.__name__}[/green]", str(p.contract or "—")]
-            for p in providers
-        ]
-        print_simple_table(
-            data=provider_data,
-            headers=["Provider Type", "Contract"],
-        )
-    else:
-        console.print("\n[dim]Providers: none declared[/dim]")
-
-    # Contracts
-    contracts = meta.contracts()
-    contract_list = list(contracts.contracts) if contracts else []
-    if contract_list:
-        console.print("\n[bold cyan]Contracts:[/bold cyan]")
-        for c in contract_list:
-            console.print(f"  [dim]•[/dim] {c}")
-    else:
-        console.print("\n[dim]Contracts: none declared[/dim]")
-
-    _display_scan_errors(host.scan_errors)
+    _print_hint()

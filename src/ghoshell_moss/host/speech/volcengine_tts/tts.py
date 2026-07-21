@@ -100,6 +100,7 @@ class SpeakerInfo(BaseModel):
 
 # 定义所有 Speaker 类型
 SpeakerTypes = Literal[
+    # Saturn 系列
     "zh_male_dayi_saturn_bigtts",
     "zh_female_mizai_saturn_bigtts",
     "zh_female_jitangnv_saturn_bigtts",
@@ -111,6 +112,22 @@ SpeakerTypes = Literal[
     "saturn_zh_male_shuanglangshaonian_tob",
     "saturn_zh_male_tiancaitongzhuo_tob",
     "saturn_zh_female_cancan_tob",
+    # 豆包 Seed-TTS 2.0 系列
+    "zh_female_vv_uranus_bigtts",
+    "zh_female_xiaohe_uranus_bigtts",
+    "zh_male_m191_uranus_bigtts",
+    "zh_male_taocheng_uranus_bigtts",
+    "en_male_tim_uranus_bigtts",
+    "en_female_dacey_uranus_bigtts",
+    "en_female_stokie_uranus_bigtts",
+    "zh_male_liufei_uranus_bigtts",
+    "zh_female_qingxinnvsheng_uranus_bigtts",
+    "zh_female_cancan_uranus_bigtts",
+    "zh_female_sajiaoxuemei_uranus_bigtts",
+    "zh_female_tianmeixiaoyuan_uranus_bigtts",
+    "zh_female_tianmeitaozi_uranus_bigtts",
+    "zh_female_shuangkuaisisi_uranus_bigtts",
+    "zh_female_peiqi_uranus_bigtts",
 ]
 
 # 创建 Speaker 信息字典
@@ -148,6 +165,52 @@ SPEAKER_INFO_MAP: dict[SpeakerTypes, SpeakerInfo] = {
     "saturn_zh_female_cancan_tob": SpeakerInfo(
         display_name="知性灿灿", language="中文", supports_english=False, use_case="角色扮演"
     ),
+    # 豆包 Seed-TTS 2.0 音色
+    "zh_female_vv_uranus_bigtts": SpeakerInfo(
+        display_name="vivi 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_xiaohe_uranus_bigtts": SpeakerInfo(
+        display_name="小何", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_male_m191_uranus_bigtts": SpeakerInfo(
+        display_name="云舟", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_male_taocheng_uranus_bigtts": SpeakerInfo(
+        display_name="小天", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "en_male_tim_uranus_bigtts": SpeakerInfo(
+        display_name="Tim", language="English", supports_english=True, use_case="通用场景"
+    ),
+    "en_female_dacey_uranus_bigtts": SpeakerInfo(
+        display_name="Dacey", language="English", supports_english=True, use_case="通用场景"
+    ),
+    "en_female_stokie_uranus_bigtts": SpeakerInfo(
+        display_name="Stokie", language="English", supports_english=True, use_case="通用场景"
+    ),
+    "zh_male_liufei_uranus_bigtts": SpeakerInfo(
+        display_name="刘飞 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_qingxinnvsheng_uranus_bigtts": SpeakerInfo(
+        display_name="清新女声 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_cancan_uranus_bigtts": SpeakerInfo(
+        display_name="知性灿灿 2.0", language="中文", supports_english=False, use_case="角色扮演"
+    ),
+    "zh_female_sajiaoxuemei_uranus_bigtts": SpeakerInfo(
+        display_name="撒娇学妹 2.0", language="中文", supports_english=False, use_case="角色扮演"
+    ),
+    "zh_female_tianmeixiaoyuan_uranus_bigtts": SpeakerInfo(
+        display_name="甜美小源 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_tianmeitaozi_uranus_bigtts": SpeakerInfo(
+        display_name="甜美桃子 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_shuangkuaisisi_uranus_bigtts": SpeakerInfo(
+        display_name="爽快思思 2.0", language="中文", supports_english=False, use_case="通用场景"
+    ),
+    "zh_female_peiqi_uranus_bigtts": SpeakerInfo(
+        display_name="佩奇猪 2.0", language="中文", supports_english=False, use_case="视频配音"
+    ),
 }
 
 # 获取所有 Speaker 类型的列表
@@ -169,6 +232,7 @@ class AudioParams(BaseModel):
 class ReqParams(BaseModel):
     audio_params: AudioParams = Field(default_factory=AudioParams)
     speaker: str = Field(default="zh_female_cancan_mars_bigtts")
+    model: Optional[str] = Field(default=None, description="TTS 2.0 model: seed-tts-2.0-standard / seed-tts-2.0-expressive")
     additions: Optional[str] = Field(default=None)
 
 
@@ -178,6 +242,7 @@ class Session(BaseModel):
     """
 
     user: User = Field(default_factory=User)
+    namespace: str = Field(default="BidirectionalTTS")
     event: int = EventType.StartSession.value
     req_params: ReqParams = Field(default_factory=ReqParams)
 
@@ -240,6 +305,7 @@ class VolcengineTTSConf(BaseModel):
 
     app_key: str = Field(default="$VOLCENGINE_STREAM_TTS_APP")
     access_token: str = Field(default="$VOLCENGINE_STREAM_TTS_ACCESS_TOKEN")
+    api_key: str = Field(default="$VOLCENGINE_STREAM_TTS_API_KEY", description="新版控制台 API Key")
     resource_id: str = Field(default="seed-tts-2.0", description="官方的默认资源")
     sample_rate: int = Field(default=44100, description="生成音频的采样率要求.")
     audio_format: Literal["pcm"] = Field(default="pcm", description="默认可用的数据格式")
@@ -250,6 +316,7 @@ class VolcengineTTSConf(BaseModel):
     )
 
     disable_markdown_filter: bool = Field(default=True, description="支持朗读 markdown 格式. ")
+    model: Optional[str] = Field(default=None, description="TTS 2.0 引擎: seed-tts-2.0-standard 或 seed-tts-2.0-expressive")
     url: str = Field(
         default="wss://openspeech.bytedance.com/api/v3/tts/bidirection",
         description="火山的流式语音模型的地址",
@@ -281,16 +348,21 @@ class VolcengineTTSConf(BaseModel):
         return conf
 
     def gen_header(self, *, connection_id: str = "", resource_id: Optional[str] = None) -> _Head:
-        """
-        :return: (header, url)
-        """
         connection_id = connection_id or unique_id()
+        app_key = self.unwrap_env(self.app_key)
+        # 旧版鉴权 header 始终发送（兼容新旧控制台）
         ws_header = {
-            "X-Api-App-Key": self.unwrap_env(self.app_key),
+            "X-Api-App-Key": app_key,
+            "X-Api-App-Id": app_key,
             "X-Api-Access-Key": self.unwrap_env(self.access_token),
             "X-Api-Resource-Id": resource_id or self.resource_id,
+            "X-Api-Request-Id": unique_id(),
             "X-Api-Connect-Id": connection_id,
         }
+        # 新版控制台 API Key（与旧版兼容共存）
+        api_key = self.unwrap_env(self.api_key)
+        if api_key:
+            ws_header["X-Api-Key"] = api_key
         return ws_header
 
     def to_session(self, speaker: SpeakerConf) -> Session:
@@ -309,6 +381,7 @@ class VolcengineTTSConf(BaseModel):
                     emotion=speaker.voice.emotion,
                 ),
                 speaker=speaker.tone,
+                model=self.model,
                 additions=additions,
             ),
         )
@@ -341,7 +414,7 @@ class VolcengineTTSBatch(TTSBatch):
             logger: LoggerItf,
             callback: Optional[TTSAudioCallback] = None,
     ):
-        self.default_speaker = speaker
+        self._speaker_conf = speaker
         self.callback = callback
         self.tone = tone
         self.voice: dict | None = voice
@@ -364,7 +437,7 @@ class VolcengineTTSBatch(TTSBatch):
         VolcengineTTSBatch.instance_count += 1
 
     def speaker(self) -> SpeakerConf:
-        conf = self.default_speaker.model_copy()
+        conf = self._speaker_conf.model_copy()
         if self.voice is not None:
             voice_conf = VoiceConf(**self.voice)
             conf.voice = voice_conf
@@ -562,7 +635,7 @@ class VolcengineTTS(TTS):
             loop=self._running_loop,
             speaker=speaker_conf,
             voice=voice,
-            tone=tone or speaker_conf.tone,
+            tone=tone or self._current_speaker,
             batch_id=batch_id,
             callback=callback,
             logger=self.logger,
@@ -678,7 +751,7 @@ class VolcengineTTS(TTS):
             self._running_batch = batch
             # 阻塞等待到 batch 被允许开始.
             await batch.wait_started()
-            resource_id = batch.default_speaker.resource_id or current_resource_id
+            resource_id = batch._speaker_conf.resource_id or current_resource_id
             if resource_id != current_resource_id:
                 # 连接不一致, 将未完成的 batch 入队, 关闭整个连接.
                 self._unfinished_batches.append(batch)

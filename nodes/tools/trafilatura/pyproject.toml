@@ -1,0 +1,18 @@
+[project]
+name = "node-trafilatura"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[matrix]",
+    "trafilatura>=1.12,<2",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }

@@ -14,7 +14,7 @@ from ghoshell_moss.core.concepts.interpreter import (
     CommandTokenParser,
     TextTokenParser,
     Interpreter,
-    Interpretation,
+    Interpretation, _TaskId,
 )
 from ghoshell_moss.contracts.speech import Speech
 from ghoshell_moss.core.concepts.tools import CommandAsTool
@@ -516,6 +516,15 @@ class CTMLInterpreter(Interpreter):
 
     def is_closed(self) -> bool:
         return self._closed
+
+    def progresses(self) -> dict[_TaskId, str]:
+        result = {}
+        for t in self._managing_tasks.values():
+            if t.done():
+                continue
+            elif t.progress:
+                result[t.cid] = t.progress
+        return result
 
     def is_running(self) -> bool:
         return self._started and not self._stopped_event.is_set() and not self._closed

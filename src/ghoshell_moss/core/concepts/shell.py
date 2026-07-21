@@ -3,6 +3,7 @@
 """
 
 import asyncio
+from typing import Callable
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, AsyncIterable, Generic, TypeVar, Any
@@ -92,7 +93,17 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    async def refresh_metas(self, timeout: float | None = None) -> None:
+    async def refresh_metas(
+            self,
+            timeout: float | None = None,
+            *,
+            stale_time: float | None = None,
+    ) -> bool:
+        """
+        刷新所有 channel 的元信息.
+        :param timeout: 最大的等待时间, 超过等待时间直接返回, 可能有一些 channel 没有刷新完.
+        :param stale_time: 最近一次刷新的过期时间. 小于过期时间立刻返回, 不会重新刷新. 为 None 则不会比较.
+        """
         pass
 
     @property
@@ -103,9 +114,11 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
     # --- runtime methods --- #
 
     @abstractmethod
-    def pause(self, toggle: bool = True) -> None:
+    def pause(self, toggle: bool = True, callback: Callable[[], None] | None = None) -> None:
         """
         急停, 立刻生效. 禁止新的命令输入, 除非取消 pause 状态.
+
+        callback 在 clear 完成时 fire (done 语义). 必须自行保证线程安全.
         """
         pass
 
@@ -180,6 +193,8 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             self,
             available_only: bool = False,
             config: Optional[list[ChannelFullPath]] = None,
+            *,
+            stale_time: float | None = None,
     ) -> dict[ChannelFullPath, ChannelMeta]:
         """
         当前运行状态中的 Channel meta 信息.
@@ -203,7 +218,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         pass
 
     @abstractmethod
-    def dynamic_messages(self, available_only: bool = True) -> list[Message]:
+    def dynamic_messages(self, available_only: bool = True, *, stale_time: float = 0.0) -> list[Message]:
         """
         context messages of all the channels.
         """
@@ -260,6 +275,7 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
             self,
             kind: InterpreterKind = "clear",
             *,
+            refresh_metas: bool = True,
             stream_id: Optional[str] = None,
             config: Optional[list[ChannelFullPath]] = None,
             prepare_timeout: float = 2.0,
@@ -284,9 +300,10 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
                     则运行时可用的命令由真实命令和这里传入的 channel metas 取交集.
                     是一种动态修改运行时能力的办法.
 
-        :param prepare_timeout: 准备过度阶段允许的时间.
+        :param prepare_timeout: 准备过度阶段允许的时间. 超过时间未完成, 就直接返回 interpreter.
 
         :param ignore_wrong_command: 遇到了幻想的 command 也不会解析错误.
+        :param refresh_metas: 运行前刷新 shell.
 
         :param token_replacements: 根据 key 替换 interpreter feed 获得的一部分 token, 将之替换为 value.
                     这种做法可以用 instruction 里的 token 置换输出时的 token. 响应速度和费用能够有调整.

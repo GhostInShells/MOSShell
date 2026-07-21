@@ -14,13 +14,11 @@ from rich.table import Table
 from rich.box import ROUNDED, DOUBLE, HEAVY, SIMPLE
 from rich.style import Style
 
-from ghoshell_moss.host import Host
 from ghoshell_moss.core.codex.discover import ScanError
 
 __all__ = [
     'console',
     'display_scan_errors',
-    'print_host_mode_info',
     'echo',
     'print_success',
     'print_error',
@@ -151,27 +149,6 @@ def show_status(message: str):
     else:
         with _real_console.status(f"[dim]{message}[/dim]") as status:
             yield status
-
-
-def print_host_mode_info(host: Host) -> None:
-    if _ai_mode:
-        click.echo(f"MODE: {host.mode.name}")
-        click.echo(f"workspace: {host.env.workspace_path}")
-        if host.mode.import_path:
-            click.echo(f"mode package: {host.mode.import_path}")
-        if host.mode.file:
-            click.echo(f"mode file: {host.mode.file}")
-        click.echo("—" * 40)
-        return
-
-    console.print(f"[bold cyan]MODE:[/bold cyan] [green]{host.mode.name}[/green]")
-    style = "dim italic"
-    console.print(f"[{style}]workspace: {host.env.workspace_path}[/{style}]")
-    if host.mode.import_path:
-        console.print(f"[{style}]mode package: {host.mode.import_path}[/{style}]")
-    if host.mode.file:
-        console.print(f"[{style}]mode file: {host.mode.file}[/{style}]")
-    console.print("[dim]" + "—" * 40 + "[/dim]")
 
 
 def echo(message: str):

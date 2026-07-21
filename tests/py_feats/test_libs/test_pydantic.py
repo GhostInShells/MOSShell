@@ -1,5 +1,6 @@
 from pydantic import Field, dataclasses, BaseModel, Discriminator
 from typing import TypeAlias, Union, Annotated, Literal
+import pytest
 
 
 def test_model_with_enum():
@@ -84,3 +85,19 @@ def test_pydantic_from_():
     data = foo.model_dump()
     foo1 = Foo.model_validate(data)
     assert foo1 == foo
+
+
+def test_field_pattern():
+    class Foo(BaseModel):
+        foo: str = Field(
+            default='',
+            pattern=r'^[a-z]+$',
+        )
+
+    foo = Foo(foo="foo")
+    assert foo.foo == "foo"
+    empty_foo = Foo()
+    assert empty_foo.foo == ""
+
+    with pytest.raises(ValueError):
+        foo = Foo(foo="foo123")

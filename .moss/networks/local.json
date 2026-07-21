@@ -1,0 +1,15 @@
+{
+  "name": "local",
+  "description": "本地单机通讯 — host listen localhost, worker 直连",
+  "driver": "zenoh",
+  "scope": "local",
+  "config": {
+    "host": {
+      "listen": "tcp/127.0.0.1:20380",
+      "multicast": false
+    },
+    "worker": {
+      "connect": "tcp/127.0.0.1:20380"
+    }
+  }
+}

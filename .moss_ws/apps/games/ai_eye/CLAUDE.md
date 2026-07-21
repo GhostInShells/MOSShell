@@ -1,0 +1,29 @@
+# AI Eye
+
+Animated eye pair as minimal AI avatar. Ghost controls via Channel.
+
+## Setup
+
+```bash
+cd .moss_ws/apps/games/ai_eye
+uv sync
+```
+
+Dependencies: `pygame>=2.5.0`, `ghoshell-moss[host]` (editable from workspace root). No extra models or services required.
+
+## Commands
+
+- `look_at(x, y)` — gaze direction (0..1 normalized); disables auto-drift
+- `dilate(amount)` — pupil size (0=pinhole, 1=fully dilated)
+- `blink()` — trigger single blink
+- `set_expression(name)` — preset: neutral/curious/surprised/focused/sleepy/thinking/speaking
+- `thinking()` — shortcut: thinking expression + auto-gaze drift
+- `speaking()` — shortcut: speaking expression (dilated, fast blinks)
+- `idle()` — back to neutral with auto-gaze drift
+
+## Auto-behavior
+
+- Random blinks every 1.5-7s (interval varies by expression)
+- Breathing pupil oscillation (~5s cycle) for "alive" look
+- Idle gaze drift — eyes slowly wander when no target is set
+- Gaze and dilation use smooth lerp interpolation

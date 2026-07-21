@@ -3,11 +3,12 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, Literal, Any, Protocol, Annotated
+from typing import Generic, TypeVar, Literal, Any, Protocol, Annotated, Callable, List
 from pydantic import BaseModel, Field, ValidationError
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.message import WithAdditional, Addition
 from typing_extensions import Self
+import datetime
 import time
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ErrorTopic",
     "TopicNamePattern",
     "TopicSchema",
+    "TopicWindow",
 ]
 
 TopicNamePattern = r"^(|[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*)$"
@@ -69,11 +71,13 @@ class TopicMeta(BaseModel):
     local: bool = Field(default=False, description="如果是 local 类型的 topic, 不会跨网络传输. ")
     creator: str = Field(
         default="",
-        description="The unique identifier of the topic creator, in RESTFul format.",
+        description="The unique identifier of the topic creator, in RESTFul format."
+                    "与 sender 的区别, 在同一个通讯链路里, 可能有多个角色创建 topic. "
     )
     sender: str = Field(
         default="",
-        description="the address of whom (topic service) sent this topic.",
+        description="the address of whom (topic service) sent this topic."
+                    "与 creator 区别, sender 是通讯链路的身份. ",
     )
     created_at: float = Field(
         default_factory=lambda: round(time.time(), 4),
@@ -126,6 +130,10 @@ class TopicModel(BaseModel, ABC):
     """
 
     meta: TopicMeta = Field(default_factory=TopicMeta, description="meta information")
+
+    @property
+    def created_at(self) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(self.meta.created_at)
 
     @classmethod
     @abstractmethod
@@ -345,6 +353,89 @@ class Publisher(Generic[TOPIC_MODEL], ABC):
         pass
 
 
+class TopicWindow(Generic[TOPIC_MODEL], ABC):
+    """
+    Bounded sliding window over a topic stream, backed by the TopicService lifecycle.
+
+    Holds the most recent ``max_size`` typed ``TopicModel`` items. Designed for
+    consumers that need the "latest N" pattern — monitoring dashboards, waveform
+    displays, dialogue context windows, log tails.
+
+    Every TopicWindow is created from and bound to a ``TopicService``. When the
+    service closes, the window closes automatically — no manual lifecycle management.
+
+    All read methods (``values()``, ``changed_at()``, ``__len__``) are thread-safe.
+    ``on_change()`` callbacks are invoked from a thread pool — treat the callback
+    body as a concurrent context.
+
+    Call ``await wait_started()`` after creation and before publishing to ensure
+    the underlying subscription is active.
+    """
+
+    @abstractmethod
+    async def wait_started(self) -> None:
+        """Block until the window's subscription is active and ready to receive."""
+        pass
+
+    @property
+    @abstractmethod
+    def max_size(self) -> int:
+        """Maximum number of items retained. Fixed at creation time."""
+        pass
+
+    @abstractmethod
+    def values(self) -> List[TOPIC_MODEL]:
+        """
+        Non-destructive snapshot of the current window contents.
+
+        Index 0 is the oldest item, index -1 the newest. Returns a copy — the
+        caller owns it and may mutate freely. Thread-safe.
+        """
+        pass
+
+    @abstractmethod
+    def __len__(self) -> int:
+        """Current number of items in the window. Thread-safe."""
+        pass
+
+    @abstractmethod
+    def changed_at(self) -> float:
+        """
+        ``time.monotonic()`` timestamp of the most recent topic arrival.
+
+        Updates on every receive, independent of ``on_change`` callback timing.
+        Enables polling consumers to detect new data without registering a callback.
+        Thread-safe.
+        """
+        pass
+
+    @abstractmethod
+    def on_change(
+            self,
+            callback: Callable[['TopicWindow'], None],
+            *,
+            debounce: float = 0,
+            throttle: float = 0,
+    ) -> Callable[[], None]:
+        """
+        Register a callback invoked when new topics arrive.
+
+        The callback receives this window instance — call ``values()`` inside to
+        get the current contents. Callbacks fire from a thread pool; keep the body
+        fast and avoid blocking the pool.
+
+        :param callback: Called with this window on new data.
+        :param debounce: Quiet period in seconds. After a topic arrives, wait
+            this long for further topics before firing. Resets on each arrival.
+            Use for patterns like "transcribe after the speaker pauses."
+        :param throttle: Maximum interval in seconds. If data keeps arriving
+            without a debounce-sized gap, fire at least this often. Guarantees
+            the callback won't be starved by a continuous stream.
+        :return: A handle — call it to unregister the callback.
+        """
+        pass
+
+
 class TopicService(ABC):
     """
     实现一个基本的 TopicService, 能够在 asyncio 环境中实现 pub / sub
@@ -444,6 +535,41 @@ class TopicService(ABC):
         )
 
     @abstractmethod
+    def create_window(
+            self,
+            topic_name: str,
+            *,
+            max_size: int,
+            model: type[TopicModel] | None = None,
+    ) -> TopicWindow:
+        """
+        Create a bounded sliding window over this topic.
+
+        The window is bound to this service's lifecycle — when the service
+        closes, the window closes automatically.
+
+        :param topic_name: Topic to subscribe to.
+        :param max_size: Maximum number of items retained. Must be >= 1.
+        :param model: Optional typed model for deserialization.
+        """
+        pass
+
+    def create_window_for(
+            self,
+            model: type[TOPIC_MODEL],
+            *,
+            topic_name: TopicName = "",
+            max_size: int,
+    ) -> TopicWindow[TOPIC_MODEL]:
+        """Typed convenience wrapper around ``create_window()``."""
+        topic_name = topic_name or model.default_topic_name()
+        return self.create_window(
+            topic_name,
+            max_size=max_size,
+            model=model,
+        )
+
+    @abstractmethod
     def pub(
             self,
             topic: Topic | TopicModel,
@@ -499,43 +625,3 @@ class TopicService(ABC):
             uid=uid,
             model=model,
         )
-
-
-# --- todo: creator 的声明约定. 未来再实现.
-
-class TopicCreator(Protocol):
-    """
-    方便未来做显示约定.
-    暂时不使用.
-    """
-
-    @classmethod
-    @abstractmethod
-    def from_creator(cls, creator: str) -> Self | None:
-        pass
-
-    def to_creator(self) -> str:
-        pass
-
-    def __str__(self):
-        return self.to_creator()
-
-
-class ChannelCreator(TopicCreator):
-
-    def __init__(self, channel_path: str):
-        self.channel_path = channel_path
-        self.creator = f"channel/{channel_path}"
-
-    @classmethod
-    def from_creator(cls, creator: str) -> Self | None:
-        if creator.startswith("channel/"):
-            parts = creator.split("/", maxsplit=1)
-            channel_path = ''
-            if len(parts) == 2:
-                channel_path = parts[1]
-            return cls(channel_path)
-        return None
-
-    def to_creator(self) -> str:
-        return self.creator

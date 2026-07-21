@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  minecraft-server:
+    image: itzg/minecraft-server
+    container_name: mcserver
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      MEMORY: 6G
+      VERSION: "1.21.8"
+      TYPE: FABRIC
+      # 开箱即用：关闭正版验证，本地测试无需 Mojang 账号
+      ONLINE_MODE: "FALSE"
+      # 和平模式，避免测试时被怪物干扰
+      DIFFICULTY: "peaceful"
+      # 允许飞行/悬浮，bot 移动需要
+      ALLOW_FLIGHT: "TRUE"
+      # 限制玩家数
+      MAX_PLAYERS: "10"
+      # 启用 RCON，方便外部管理服务器（如强制停止、查看状态）
+      ENABLE_RCON: "TRUE"
+      RCON_PASSWORD: "moss"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s

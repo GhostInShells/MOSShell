@@ -1,0 +1,15 @@
+{
+  "name": "lan",
+  "description": "局域网通讯 — host 监听所有接口 + multicast 发现",
+  "driver": "zenoh",
+  "scope": "lan",
+  "config": {
+    "host": {
+      "listen": "tcp/0.0.0.0:20380",
+      "multicast": true
+    },
+    "worker": {
+      "connect": "tcp/127.0.0.1:20380"
+    }
+  }
+}

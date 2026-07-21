@@ -9,9 +9,10 @@ from ghoshell_moss.cli.utils import (
     print_panel, echo, set_ai_mode, is_ai_mode
 )
 from ghoshell_moss.cli import (
-    codex_cli, workspace_cli, manifests_cli, apps_cli,
-    modes_cli, ctml_cli, howto_cli, features_cli, docs_cli,
-    ghosts_cli, scripts_cli, start_cli,
+    codex_cli, project_cli, manifests_cli,
+    ctml_cli, howto_cli, features_cli, docs_cli,
+    start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
+    ground_cli, memento_cli,
 )
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
@@ -30,17 +31,18 @@ app = typer.Typer(
 app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself — loads the MOSS cognitive map")
 
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
-app.add_typer(workspace_cli.workspace_app, name="workspace", short_help="MOSS Workspace tools")
+app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
 app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
-app.add_typer(modes_cli.mode_app, name="modes", short_help="moss runtime modes manager")
-app.add_typer(apps_cli.app_store_app, name="apps", short_help="default apps manager")
 app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
-app.add_typer(ghosts_cli.ghost_app, name="ghosts", short_help="MOSS ghost discovery and management")
-app.add_typer(scripts_cli.script_app, name="script", short_help="One-shot dev-time scripts for matrix debugging")
-
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
+app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
+app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
+app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
+app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
+app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
+app.add_typer(memento_cli.memento_app, name="memento", short_help="Memento — cognitive-trajectory system (commit anchors, fork, annotate)")
 
 
 @app.callback(invoke_without_command=True)
@@ -54,11 +56,19 @@ def main(
         ),
         mode: Optional[str] = typer.Option(
             None, "--mode", "-m",
-            help="MOSS mode for environment-dependent commands (manifests, apps, modes)",
+            help="MOSS mode (overrides MOSS.md default)",
         ),
-        session_scope: Optional[str] = typer.Option(
-            None, "--session-scope", "-s",
-            help="Session scope for environment-dependent commands",
+        ghost: Optional[str] = typer.Option(
+            None, "--ghost", "-g",
+            help="MOSS ghost (overrides MOSS.md default)",
+        ),
+        network: Optional[str] = typer.Option(
+            None, "--network",
+            help="Network driver (overrides MOSS.md default)",
+        ),
+        scope: Optional[str] = typer.Option(
+            None, "--scope",
+            help="Network scope (overrides MOSS.md default)",
         ),
         workspace: Optional[Path] = typer.Option(
             None, "--workspace", "-w",
@@ -84,8 +94,8 @@ def main(
 
     # 将全局环境选项注入到 Environment 单例
     # 只在用户显式提供参数时才触发，失败不影响不需要环境的命令（如 codex, concepts）
-    if mode is not None or session_scope is not None or workspace is not None:
-        _set_global_environment(mode, session_scope, workspace)
+    if mode is not None or ghost is not None or network is not None or scope is not None or workspace is not None:
+        _set_global_environment(mode, ghost, network, scope, workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -93,32 +103,45 @@ def main(
 # ---------------------------------------------------------------------------
 
 def _set_global_environment(
-    mode: str | None, session_scope: str | None, workspace: Path | None
+    mode: str | None,
+    ghost: str | None,
+    network: str | None,
+    scope: str | None,
+    workspace: Path | None,
 ) -> None:
     """
-    将全局 CLI 参数注入到进程级 Environment 单例。
+    CLI callback: 显式构造 Environment + seal, 注册为进程 singleton.
 
-    必须早于任何 Host() / Environment.discover() 调用。
-    用 try/except 包裹，因为 workspace 可能尚未创建，这不应阻断无环境需求的命令。
+    §UU-1 seal 定案纪律: Environment 无 set_* (mid-life 修改), 参数一次性塞
+    __init__, seal 一次性事实. CLI 入口负责在任何 Environment.discover() 之前
+    完成 "构造 + seal", 让 subcommand 的 discover 直接拿到含 CLI 参数的 singleton.
+
+    老实现是 "discover 后 set_mode" — set 接口被 §UU-1 拿掉后, 参数无声无息全部
+    丢失, 是 CLI 参数化不生效的根因. commit 4c75f76b 已 flag 本入口为"下一次
+    fix pass" 待办, 本次修完.
+
+    workspace 不存在时静默返回 — 无 workspace 需求的命令 (codex, ctml, howtos,
+    features) 不需要 env; 需要的命令走 Environment.discover 会自触发裸构造并暴露
+    具体错误.
     """
     from ghoshell_moss.core.blueprint.environment import Environment
 
-    # workspace 通过环境变量注入 —— Environment.find_workspace_path() 第一优先级
     if workspace is not None:
+        # workspace 通过环境变量注入 —— Environment.find_workspace_path() 第一优先级
+        # (这不是隐式约定, 是 workspace 探测独立机制, 与 CLI 参数化正交)
         os.environ["MOSS_WORKSPACE"] = str(workspace.resolve())
 
     try:
-        env = Environment.discover()
-    except Exception:
-        if workspace is not None:
-            print_warning(f"Workspace not found: {workspace}")
-            print_warning("Commands that require a workspace (manifests, apps, modes) will fail.")
+        env = Environment(
+            mode=mode,
+            ghost=ghost,
+            network=network,
+            scope=scope,
+        )
+    except EnvironmentError:
+        # workspace 不存在等. 需环境的命令会在自己 discover 时报出具体错误.
         return
-
-    if mode is not None:
-        env.set_mode(mode)
-    if session_scope is not None:
-        env.set_session_scope(session_scope)
+    env.seal()
 
 
 @app.command(
@@ -165,6 +188,126 @@ def all_commands(
         _print_command_tree(target, depth, prefix=group)
     else:
         _print_command_tree(app, depth)
+
+
+@app.command(
+    name="init",
+    short_help="Initialize a MOSS project — creates .moss workspace in the target directory",
+)
+def init_project(
+        path: Optional[Path] = typer.Argument(
+            None,
+            help="Project directory. The .moss workspace is created inside it.",
+        ),
+        cwd: bool = typer.Option(
+            False, "--cwd", "-c",
+            help="Use current directory as the project root.",
+        ),
+        yes: bool = typer.Option(
+            False, "--yes", "-y",
+            help="Skip all confirmation prompts (for non-interactive / AI use).",
+        ),
+        force: bool = typer.Option(
+            False, "--force", "-f",
+            help="Overwrite existing .moss with latest stub templates.",
+        ),
+) -> None:
+    from ghoshell_moss.core.blueprint.environment import Environment, DEFAULT_WORKSPACE_DIR_NAME
+    from ghoshell_moss.cli.utils import console as _console, print_info, print_success
+
+    # 1. Resolve project directory
+    if path is not None:
+        project_dir = path.resolve()
+    elif cwd:
+        project_dir = Path.cwd()
+    else:
+        # Interactive
+        cwd_path = Path.cwd()
+        _console.print("\n[bold cyan]MOSS Project Setup[/bold cyan]")
+        _console.print(f" 1) Current directory: [dim]{cwd_path}[/dim]")
+        _console.print(f" 2) Custom path")
+
+        if is_ai_mode():
+            print_error("Interactive mode not available with --ai flag.")
+            print_info("Use --cwd or provide a path argument (with --yes to skip confirmation).")
+            raise typer.Exit(code=1)
+
+        choice = typer.prompt("\nSelect an option", default="1", type=str)
+
+        if choice == "1":
+            project_dir = cwd_path
+        elif choice == "2":
+            custom_path = typer.prompt("Enter project path", type=Path)
+            project_dir = custom_path.resolve()
+        else:
+            print_error("Invalid selection.")
+            raise typer.Exit(code=1)
+
+    workspace_dir = project_dir / DEFAULT_WORKSPACE_DIR_NAME
+    is_reinit = workspace_dir.exists() and (workspace_dir / 'MOSS.md').exists()
+
+    # 2. Confirmation
+    if force:
+        pass
+    elif is_reinit:
+        if not yes and not typer.confirm(
+            f"'.moss' already exists in '{project_dir.name}'. Force re-initialize?",
+            default=False,
+        ):
+            print_warning("Aborted.")
+            return
+    elif not project_dir.exists():
+        if not yes and not typer.confirm(
+            f"Create project directory '{project_dir}' and initialize .moss?",
+            default=True,
+        ):
+            print_warning("Aborted.")
+            return
+    else:
+        if not yes and not typer.confirm(
+            f"Create .moss workspace in '{project_dir}'?",
+            default=True,
+        ):
+            print_warning("Aborted.")
+            return
+
+    # 3. Execute
+    action = "Re-initializing" if is_reinit else "Initializing"
+    print_info(f"{action} .moss in: {project_dir}")
+    try:
+        project_dir.mkdir(parents=True, exist_ok=True)
+        Environment.init_workspace(workspace_dir, force=force)
+        print_success(f"{action} completed successfully.")
+        print_info("Next step: use 'moss project env-init' to see environment template.")
+    except Exception as e:
+        print_error(f"Failed to initialize: {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command(
+    name="shell-init",
+    short_help="Export MOSS environment variables for shell evaluation",
+)
+def shell_init() -> None:
+    """Output shell-compatible export statements for the current MOSS environment.
+
+    Usage:
+        eval $(moss shell-init)
+        eval $(moss --mode desktop --ghost echo shell-init)
+
+    All values come from MOSS.md defaults or CLI override parameters.
+    """
+    from ghoshell_moss.core.blueprint.environment import Environment
+
+    try:
+        env = Environment.discover()
+    except EnvironmentError as e:
+        print_error(f"Environment discovery failed: {e}")
+        raise typer.Exit(code=1)
+
+    for key, value in env.dump_runtime_scope().items():
+        if value:
+            echo(f"export {key}='{value}'")
 
 
 # ---------------------------------------------------------------------------
