@@ -1,4 +1,4 @@
-"""Ghost TUI — 主界面 logos 流式输出 + 文本输入，调试走 REPL inspector."""
+"""Ghost TUI — logos stream + output items split into separate states, debug via REPL inspector."""
 
 import asyncio
 from typing import Iterable
@@ -12,26 +12,19 @@ from ghoshell_moss.host.repl.inspector_ghost import GhostInspector
 from ghoshell_moss.host.repl.inspector_matrix import MatrixInspector
 from ghoshell_moss.host.repl.inspector_manifests import ManifestsInspector
 
-__all__ = ["GhostREPLState", "GhostTUI"]
+__all__ = ["GhostLogosState", "GhostOutputState", "GhostTUI"]
 
 
-class GhostREPLState(REPLState):
-    """Ghost 交互主界面 — 文本输入驱动信号，logos 流式渲染。"""
+class _GhostStateBase(REPLState):
+    """Shared base: session access + ghost inspectors for both logos and output states."""
 
-    def __init__(
-            self,
-            ghost_runtime: GhostRuntime,
-            name: str = "echo",
-    ) -> None:
+    def __init__(self, ghost_runtime: GhostRuntime, name: str):
         self._gr = ghost_runtime
-        self._logos_task: asyncio.Task | None = None
         super().__init__(name)
 
     @property
     def _session(self):
         return self._gr.moss.session
-
-    # ── REPLState overrides ──────────────────────
 
     def _create_repl_inspectors(self) -> dict[str, object]:
         moss = self._gr.moss
@@ -57,22 +50,25 @@ class GhostREPLState(REPLState):
         )
         self.console.hint(f"signal sent: {console_input[:60]}...")
 
+
+class GhostLogosState(_GhostStateBase):
+    """Logos streaming display — text input drives signals, logos renders line by line."""
+
+    def __init__(self, ghost_runtime: GhostRuntime, name: str = "echo"):
+        self._logos_task: asyncio.Task | None = None
+        super().__init__(ghost_runtime, name)
+
     def output_on_switch(self, enter_else_leave: bool) -> None:
         if enter_else_leave:
             self.console.info(
                 f"Ghost [{self._gr.ghost.meta.name()}] — "
-                f"type anything to send an input signal.\n"
+                f"logos stream. Type to send input signals.\n"
                 f"REPL: /ghost.health()  /ghost.pause()  /ghost.resume()  /ghost.faculties()"
             )
         else:
-            self.console.info(f"Leave Ghost [{self._gr.ghost.meta.name()}]")
-
-    # ── lifecycle ────────────────────────────────
+            self.console.info(f"Leave logos [{self._gr.ghost.meta.name()}]")
 
     async def __aenter__(self):
-        # 注册 session output 回调 — OutputItem 实时渲染到 TUI
-        self._session.on_output(self._on_session_output)
-        # 启动 logos 流消费
         self._logos_task = asyncio.get_running_loop().create_task(self._consume_logos())
         await super().__aenter__()
 
@@ -85,16 +81,7 @@ class GhostREPLState(REPLState):
                 pass
         await super().__aexit__(exc_type, exc_val, exc_tb)
 
-    # ── output / logos ───────────────────────────
-
-    def _on_session_output(self, item: OutputItem) -> None:
-        """session output 回调：将 OutputItem 渲染到 TUI。"""
-        if not item.messages:
-            return
-        self.console.output(item)
-
     async def _consume_logos(self) -> None:
-        """消费 logos 流，遇到换行立即输出。"""
         buffer = ""
         try:
             async for delta in self._session.get_logos():
@@ -111,11 +98,36 @@ class GhostREPLState(REPLState):
                 self.console.rprint(buffer)
 
 
-class GhostTUI(MossHostTUI[GhostRuntime]):
-    """Ghost TUI — 组合 echo ghost state 和 Moss shell state。
+class GhostOutputState(_GhostStateBase):
+    """Output item display — structured messages from ghost session."""
 
-    用法: GhostTUI().run()
-    启动前通过 Environment(ghost="echo").seal() 指定 ghost。
+    def __init__(self, ghost_runtime: GhostRuntime, name: str = "messages"):
+        super().__init__(ghost_runtime, name)
+
+    def output_on_switch(self, enter_else_leave: bool) -> None:
+        if enter_else_leave:
+            self.console.info(
+                f"Ghost [{self._gr.ghost.meta.name()}] — "
+                f"output items. Structured messages from session."
+            )
+        else:
+            self.console.info(f"Leave output items [{self._gr.ghost.meta.name()}]")
+
+    async def __aenter__(self):
+        self._session.on_output(self._on_session_output)
+        await super().__aenter__()
+
+    def _on_session_output(self, item: OutputItem) -> None:
+        if not item.messages:
+            return
+        self.console.output(item)
+
+
+class GhostTUI(MossHostTUI[GhostRuntime]):
+    """Ghost TUI — logos stream, output items, and shell debug.
+
+    Usage: GhostTUI().run()
+    Start with ``moss-run-ghost <name>`` or configure via Environment.
     """
 
     def __init__(self, host: MossHost | None = None):
@@ -142,12 +154,13 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         from rich.text import Text
         return Text(
             f"\nGhost: {self.host.env.ghost_name}\n"
-            f"Type anything to talk to the ghost.",
+            f"Type anything to talk to the ghost. Ctrl+T to switch views.",
             style="dim italic",
         )
 
     def create_states(self) -> Iterable[TUIState]:
-        yield GhostREPLState(self.runtime, name=self.host.env.ghost_name)
+        yield GhostLogosState(self.runtime, name=self.host.env.ghost_name)
+        yield GhostOutputState(self.runtime)
         from ghoshell_moss.host.tui_entries.moss_runtime_ui import MOSSRuntimeREPLState
         yield MOSSRuntimeREPLState(self.host, self.runtime.moss, name="shell")
 
