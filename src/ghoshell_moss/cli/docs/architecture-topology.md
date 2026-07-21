@@ -121,7 +121,7 @@ Workspace 是一套目录约定。代码放在对的位置就自动成为 Channe
 
 **拓扑定位**：进程间通讯与资源共享总线。回答：面向模型的操作系统，如何向智能体提供可动态管理、动态集成的能力体系？
 
-Matrix 将每个独立进程抽象为 Cell（host / app / fractal），Cell 之间通过 Matrix 总线（当前基于 Eclipse Zenoh）共享 Channel、Topic、资源。Matrix 管理 IoC 容器生命周期，向每个进程提供统一的资源和通讯 API，使图形界面进程可以与躯体进程、工具进程互通共享。
+Matrix 将每个独立进程抽象为 Cell（host / node），Cell 之间通过 Matrix 总线（当前基于 Eclipse Zenoh）共享 Channel、Topic、资源。Matrix 管理 IoC 容器生命周期，向每个进程提供统一的资源和通讯 API，使图形界面进程可以与躯体进程、工具进程互通共享。
 
 Matrix 是人类与智能模型在迭代扩展 MOSS 能力时最小化的协作知识入口。
 
