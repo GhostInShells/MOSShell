@@ -33,6 +33,7 @@ ghost = [
 
 matrix = [
     "eclipse-zenoh>=1.8.0",
+    "python-dotenv>=1.0.0",
 ]
 
 host = [

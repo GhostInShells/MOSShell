@@ -20,7 +20,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.cell import Cell, CellMesh, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
-from ghoshell_moss.contracts import Workspace
+from ghoshell_moss.contracts import Workspace, ResourceRegistry
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ManagedProcess, ProcessMeta
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 from ghoshell_container import IoCContainer
@@ -145,6 +145,17 @@ class Matrix(ABC):
         独立的 project (自带 .moss), 从 Environment 重新 discover.
         """
         return Path(self.this.home)
+
+    @property
+    @abstractmethod
+    def cell_workspace(self) -> Workspace:
+        """
+        本 cell 自身的独立 workspace — 根目录为 cell home.
+
+        与 workspace (project 级共享) 不同, cell_workspace 提供 cell 隔离的
+        配置、资产、运行时数据. configs() 读取 cell 自己目录下的 configs/.
+        """
+        ...
 
     @property
     @abstractmethod
@@ -289,6 +300,17 @@ class Matrix(ABC):
     def logger(self) -> logging.Logger:
         """日志模块, 从属于当前节点."""
         pass
+
+    @property
+    @abstractmethod
+    def resources(self) -> ResourceRegistry:
+        """
+        跨 scheme+host 的资源路由层 (VFS).
+
+        cell 通过它注册/查询/访问资源存储. 底层由 manifests 声明的
+        ResourceStorageFactory 在 bootstrap 时注册到 IoC 容器.
+        """
+        ...
 
     # -- scoped 身份族: 运行时座标 → 存储隔离级别 -- #
 

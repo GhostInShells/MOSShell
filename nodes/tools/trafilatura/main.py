@@ -1,3 +1,8 @@
+"""Trafilatura web content extraction node.
+
+Channel: web_trafilatura
+CTML:     <web_trafilatura:extract url="..." />
+"""
 import asyncio
 import logging
 
@@ -15,17 +20,12 @@ async def main(matrix: Matrix):
         description="fetch any URL and extract clean Markdown content via trafilatura (local, no API key needed)",
     )
 
-    @channel.build.context_messages
-    async def context() -> list:
-        return []
-
     @channel.build.command(always_observe=True)
     async def extract(url: str, output_format: str = "markdown") -> str:
         """Fetch a URL and extract the main readable content.
 
         :param url: the web page URL to fetch
         :param output_format: 'markdown' (default), 'txt', 'xml', or 'html'
-        :return: extracted content as formatted text
         """
         loop = asyncio.get_running_loop()
         downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
@@ -46,7 +46,6 @@ async def main(matrix: Matrix):
 
         :param urls: list of web page URLs to fetch
         :param output_format: 'markdown' (default), 'txt', 'xml', or 'html'
-        :return: dict mapping url -> extracted content
         """
         results = {}
 

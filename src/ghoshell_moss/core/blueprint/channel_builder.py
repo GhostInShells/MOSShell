@@ -161,8 +161,8 @@ class CommandUtil:
             task.set_progress(progress)
 
     @classmethod
-    def observe(cls, value: str) -> Observe:
-        """返回一个需要立刻观察的信息"""
+    def observe(cls, value: str) -> 'str | Observe':
+        """返回一个需要立刻观察的信息. 实际上返回的是 Observe 对象, 但可以在 command 返回值定义为 str"""
         return Observe(messages=[Message.new().with_content(value)])
 
     @classmethod

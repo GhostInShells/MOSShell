@@ -165,7 +165,7 @@ class ManifestsInspector:
                 rows.append(row)
             return rows
 
-        result = {"matrix": _resource_rows(self._matrix.resources()), "mode": None}
+        result = {"matrix": _resource_rows(self._matrix.resources), "mode": None}
         if self._mode is not None:
             result["mode"] = _resource_rows(self._mode.resources())
         return result

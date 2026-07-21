@@ -139,19 +139,17 @@ def list_nodes(
 
     rows: list[list[str]] = []
     for rel_path, m in manifests.items():
-        suffix = ""
-        if not m.installed:
-            suffix += " [not installed]"
         rows.append([
-            m.name + suffix,
+            m.name,
             str(rel_path),
+            "yes" if m.installed else "no",
             (m.description or "")[:80],
         ])
 
     echo("")
     print_simple_table(
         data=rows,
-        headers=["Name", "Path", "Description"],
+        headers=["Name", "Path", "Installed", "Description"],
         title=f"Nodes ({len(rows)} found)",
     )
 

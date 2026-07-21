@@ -7,4 +7,6 @@ manifest_package: HOST
 name: system_test
 node_paths:
 - $MOSS_WORKSPACE/system_test_nodes
+- nodes
+- $MOSS_WORKSPACE/nodes
 ---

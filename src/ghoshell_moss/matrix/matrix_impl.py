@@ -16,7 +16,7 @@ from typing_extensions import Self
 from ghoshell_container import Container, IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, ConfigStore, ConfigInstanceRegisterBootstrapper
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, ResourceRegistry
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
@@ -549,13 +549,18 @@ class MatrixImpl(Matrix):
         return self._container.force_fetch(Session)
 
     # workspace 由 Matrix ABC 提供 concrete: return self.project.workspace.
-    # (blueprint/matrix.py L298-301) 无需 override.
+    # (blueprint/matrix.py) 无需 override.
     #
     # home 由 Matrix ABC 提供 default: Path(self.this.home). 不 override.
-    # (§YY-1 第 6 条 "双目录判决" 中的 "cells/{name}" 稳定身份键路径, 由
-    # build_node_from_manifest / build_host_cell 决定 Cell.home. 若未来需要
-    # 强制 {workspace}/cells/{name} 语义, 应改 build 函数, 不在 Matrix 层
-    # 硬 override — 保持 Path 类型契约, 不返 Workspace 破坏 ABC.)
+    # build_node_from_manifest / build_host_cell 决定 Cell.home.
+
+    @property
+    def cell_workspace(self) -> Workspace:
+        return LocalWorkspace(self.home)
+
+    @property
+    def resources(self) -> ResourceRegistry:
+        return self._container.force_fetch(ResourceRegistry)
 
     @property
     def container(self) -> IoCContainer:
