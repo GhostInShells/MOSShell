@@ -348,6 +348,20 @@ class TestRoundtrip:
         run(scenario())
 
 
+class TestBinaryFrame:
+    def test_frame_shows_binary_marker(self, tmp_path):
+        (tmp_path / "img.bin").write_bytes(b"\x00\x01\x02\x03" * 100)
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(tmp_path)
+                g.pin(FilePin(label="img", path="img.bin"))
+                frame = await g.context()
+                assert "[binary file, not rendered]" in frame
+
+        run(scenario())
+
+
 # -- GroundSet forwarding --------------------------------------------------
 
 

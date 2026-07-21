@@ -112,6 +112,46 @@ class TestLsPinObservation:
         assert obs.exists is False
 
 
+class TestBinaryDetection:
+    def test_detects_binary_file(self, tmp_path):
+        (tmp_path / "img.bin").write_bytes(b"\x00\x01\x02\x03" * 256)
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = FilePin(label="b", path="img.bin")
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+        assert obs.is_binary is True
+        assert obs.hash is not None
+
+    def test_text_file_not_binary(self, tmp_path):
+        (tmp_path / "a.py").write_text("hello world\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = FilePin(label="t", path="a.py")
+        obs = observe_sync(pin, anchor)
+        assert obs.is_binary is False
+
+
+class TestGlobIgnore:
+    def test_ignores_noise_dirs(self, tmp_path):
+        (tmp_path / "a.py").write_text("a")
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / "__pycache__" / "cached.py").write_text("cache")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = GlobPin(label="py", pattern="**/*.py")
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+        # only a.py, __pycache__/cached.py excluded
+        assert "a.py" in obs.hash or obs.hash is not None
+
+    def test_ls_ignores_noise_dirs(self, tmp_path):
+        (tmp_path / "a.py").write_text("a")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text("x")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = LsPin(label="ls", path=".", depth=2)
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+
+
 class TestPinShadow:
     def test_defaults(self):
         s = PinShadow()

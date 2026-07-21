@@ -1,10 +1,10 @@
 """Pin observation — per-class mtime + hash 对账.
 
 每种子类自带观察逻辑:
-- FilePin: 读文件全文 (可选 range 切片) → sha256
-- GlobPin: 展开 + hash 命中路径列表 (不读内容)
+- FilePin: 读文件全文 (可选 range 切片) → sha256. binary 文件跳过内容渲染, 仅 hash raw bytes.
+- GlobPin: 展开 + hash 命中路径列表 (不读内容). 过 GLOB_IGNORE 过滤噪声目录.
 - FrontmatterPin: 读文件 frontmatter → sha256
-- LsPin: 展开目录树 + hash 条目列表 (不读内容)
+- LsPin: 展开目录树 + hash 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
 
 文件不存在 → Observation(exists=False).
 """
@@ -26,9 +26,27 @@ from ghoshell_moss.ground.contract import (
     PathOutsideRootError,
 )
 
-__all__ = ["Observation", "PinShadow", "observe", "observe_sync"]
+__all__ = ["Observation", "PinShadow", "observe", "observe_sync", "GLOB_IGNORE"]
 
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
+
+# basename 精确匹配, 不解析 .gitignore. glob 展开时每层目录遇到这些就跳过.
+# ground root 不一定是 git root, pathspec 从 git root 读会错位.
+GLOB_IGNORE: frozenset[str] = frozenset({
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "node_modules",
+    ".DS_Store",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".idea",
+    ".vscode",
+})
 
 
 @dataclass(frozen=True)
@@ -38,6 +56,7 @@ class Observation:
     exists: bool
     mtime: float | None = None
     hash: str | None = None
+    is_binary: bool = False
 
 
 @dataclass
@@ -86,16 +105,23 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
     except FileNotFoundError:
         return Observation(exists=False)
 
+    binary = _is_binary(target)
+
     if pin.range is not None:
         text = target.read_text(encoding="utf-8", errors="replace")
         start, end = _parse_range(pin.range, len(text.splitlines()))
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
         digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
-    else:
+        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=binary)
+
+    if binary:
         content = target.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
+        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=True)
 
-    return Observation(exists=True, mtime=mtime, hash=digest)
+    text = target.read_text(encoding="utf-8", errors="replace")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return Observation(exists=True, mtime=mtime, hash=digest, is_binary=False)
 
 
 def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
@@ -110,6 +136,8 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
     matches: list[Path] = []
     for hit in sorted(root.glob(pattern)):
         if not hit.is_file():
+            continue
+        if _path_touches_ignore(hit, root):
             continue
         try:
             hit.relative_to(root)
@@ -182,7 +210,7 @@ def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
         return
     try:
         items = sorted(
-            dir_.iterdir(),
+            (e for e in dir_.iterdir() if e.name not in GLOB_IGNORE),
             key=lambda p: (p.is_file(), p.name.lower()),
         )
     except OSError:
@@ -196,3 +224,20 @@ def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
         if entry.is_dir() and depth > 1:
             sub_prefix = prefix + ("    " if is_last else "│   ")
             _walk_ls(entry, depth - 1, sub_prefix, entries)
+
+
+def _is_binary(path: Path) -> bool:
+    """读前 1024 bytes, 出现 null byte 判 binary."""
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(1024)
+    except OSError:
+        return False
+
+
+def _path_touches_ignore(path: Path, root: Path) -> bool:
+    """检查 path 任何一部分的 basename 是否在 GLOB_IGNORE 中."""
+    for part in path.relative_to(root).parts:
+        if part in GLOB_IGNORE:
+            return True
+    return False

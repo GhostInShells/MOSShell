@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path
-from ghoshell_moss.ground._hash import Observation, PinShadow, observe
+from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe
 from ghoshell_moss.ground.contract import (
     AT_BUDGET,
     AT_MAX_DEPTH,
@@ -191,6 +191,13 @@ def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
     try:
         target = resolve_path(pin.path, anchor)
+    except (OSError, ValueError):
+        return "error: cannot read file"
+
+    if _is_binary(target):
+        return "[binary file, not rendered]"
+
+    try:
         text = target.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return "error: cannot read file"
@@ -219,7 +226,7 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
             return "error: invalid glob path"
 
     hits = sorted(root.glob(pattern))
-    files = [h for h in hits if h.is_file()]
+    files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
     if not files:
         return "(no matches)"
 
@@ -349,7 +356,10 @@ def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) ->
     if depth <= 0:
         return
     try:
-        items = sorted(dir_.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        items = sorted(
+            (e for e in dir_.iterdir() if e.name not in GLOB_IGNORE),
+            key=lambda p: (p.is_file(), p.name.lower()),
+        )
     except OSError:
         return
 
@@ -366,3 +376,18 @@ def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) ->
         if entry.is_dir() and depth > 1:
             sub_prefix = prefix + ("    " if is_last else "│   ")
             _walk_ls_entries(entry, depth - 1, sub_prefix, entries)
+
+
+def _is_binary(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(1024)
+    except OSError:
+        return False
+
+
+def _path_touches_ignore(path: Path, root: Path) -> bool:
+    for part in path.relative_to(root).parts:
+        if part in GLOB_IGNORE:
+            return True
+    return False
