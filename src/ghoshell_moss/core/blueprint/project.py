@@ -292,7 +292,8 @@ class MatrixManifest(ABC):
     def explain(self) -> str:
         """自描述 — 此层声明的内容、来源与定位."""
         pkg = self.root_package()
-        types = ["providers", "configs", "topics", "signals", "parameters", "resources"]
+        types = ["providers", "configs", "topics", "signals", "parameters",
+                 "resources", "nuclei"]
         type_list = ", ".join(f"`{t}`" for t in types)
         return (
             f"# Matrix Manifest — 全局基线声明\n\n"
@@ -331,6 +332,10 @@ class MatrixManifest(ABC):
     def resources(self) -> Iterable[Manifest[ResourceStorageMeta]]:
         """找到的资源存储. """
         ...
+
+    def nuclei(self) -> Iterable[Manifest[NucleusMeta]]:
+        """找到的 nucleus meta. 默认空, mode 层覆盖."""
+        yield from []
 
 
 class ModeManifests(ABC):

@@ -19,7 +19,11 @@ def ghost_run_main(ghost: str | None, mode: str, scope: str):
     env.seal()
 
     host = Host(env=env)
-    available = host.all_ghosts()
+    available = {}
+    for _path, meta in host.project.ghosts():
+        if isinstance(meta, Exception):
+            continue
+        available[meta.name()] = meta
 
     if not available:
         click.echo("No ghosts found in workspace.")

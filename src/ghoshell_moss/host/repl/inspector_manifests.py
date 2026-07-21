@@ -187,19 +187,23 @@ class ManifestsInspector:
             "found_at": str(m.found_at()),
         }
 
-    def nuclei(self) -> list[dict] | None:
-        """Nucleus 声明 (mode 专属)."""
-        if self._mode is None:
-            return None
-        rows = []
-        for m in self._mode.nuclei():
-            row = {"name": m.name(), "found_at": str(m.found_at())}
-            if m.is_error():
-                row["error"] = str(m.error())
+    def nuclei(self) -> dict | None:
+        """Nucleus 声明 (matrix + mode 两层)."""
+        def _nuclei_rows(manifests):
+            rows = []
+            for m in manifests.nuclei():
+                row = {"name": m.name(), "found_at": str(m.found_at())}
+                if m.is_error():
+                    row["error"] = str(m.error())
+                    rows.append(row)
+                    continue
+                v = m.value()
+                row["description"] = v.description() or ""
+                row["signal_names"] = [s.signal_name() for s in v.signals()]
                 rows.append(row)
-                continue
-            v = m.value()
-            row["description"] = v.description() or ""
-            row["signal_names"] = [s.signal_name() for s in v.signals()]
-            rows.append(row)
-        return rows
+            return rows
+
+        result = {"matrix": _nuclei_rows(self._matrix), "mode": None}
+        if self._mode is not None:
+            result["mode"] = _nuclei_rows(self._mode)
+        return result

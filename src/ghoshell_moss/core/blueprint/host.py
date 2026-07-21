@@ -234,9 +234,9 @@ class MossRuntime(ABC):
 
     @property
     def logger(self) -> logging.Logger:
-        """运行时 logger. 未启动时回退到 env.logger, 启动后用 matrix.logger."""
+        """运行时 logger. 未启动时回退到 project.logger, 启动后用 matrix.logger."""
         if not self.is_running():
-            return self.env.logger
+            return self.project.logger
         return self.matrix.logger
 
     @abstractmethod

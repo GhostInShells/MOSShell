@@ -110,7 +110,7 @@ class GhostRuntimeImpl(GhostRuntime):
         if not container.bound(GhostWorkspace):
             container.register(GhostWorkspaceProvider(self._source_path))
 
-        # 2. MossRuntime.__aenter__ (Matrix 从 IoC 注入 LoggerItf 或 fallthrough 到 env.logger)
+        # 2. MossRuntime.__aenter__ (Matrix 从 IoC 注入 LoggerItf 或 fallthrough 到 project.logger)
         logger.debug("%s step 2/5: entering MossRuntime", self._log_prefix)
         await self._async_exit_stack.__aenter__()
         await self._async_exit_stack.enter_async_context(self._moss_runtime)
@@ -174,6 +174,25 @@ class GhostRuntimeImpl(GhostRuntime):
 
     # ── Mindflow wiring ───────────────────────────
 
+    def _collect_nuclei_manifests(self):
+        """收集 matrix 和 mode 两层的 manifests, 用于 nuclei 发现."""
+        # matrix 层
+        try:
+            yield self._moss_runtime.matrix.project.matrix_manifests()
+        except Exception:
+            self.moss.logger.exception(
+                "%s failed to load matrix manifests, skipping matrix nuclei",
+                self._log_prefix,
+            )
+        # mode 层
+        try:
+            yield self._moss_runtime.mode.manifests()
+        except Exception:
+            self.moss.logger.exception(
+                "%s failed to load mode manifests, skipping mode nuclei",
+                self._log_prefix,
+            )
+
     async def _wire_mindflow(self) -> None:
         ghost = self._ghost_instance
         matrix = self._moss_runtime.matrix
@@ -190,18 +209,11 @@ class GhostRuntimeImpl(GhostRuntime):
         container.set(Mindflow, mindflow)
 
         nuclei_factories = {}
-        # §ZZ-1: ModeManifests 归 MossRuntime 承接 — 从 mode.manifests().nuclei()
-        # 拿 Iterable[Manifest[NucleusMeta]] 而非老 matrix.manifests.nuclei() dict.
-        try:
-            mode_manifests = self._moss_runtime.mode.manifests()
-        except Exception:
-            self.moss.logger.exception(
-                "%s failed to load mode manifests, skipping mode nuclei",
-                self._log_prefix,
-            )
-            mode_manifests = None
-        if mode_manifests is not None:
-            for nucleus_manifest in mode_manifests.nuclei():
+        # 从 matrix manifests 和 mode manifests 一起收集 nuclei
+        for manifests in self._collect_nuclei_manifests():
+            if manifests is None:
+                continue
+            for nucleus_manifest in manifests.nuclei():
                 if nucleus_manifest.is_error():
                     self.moss.logger.warning(
                         "%s skip nucleus manifest with error: %s (%s)",

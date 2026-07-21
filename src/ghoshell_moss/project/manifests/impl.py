@@ -3,7 +3,7 @@ from typing import Iterable
 from ghoshell_container import Provider
 from ghoshell_moss.contracts.configs import ConfigType
 from ghoshell_moss.contracts.resource import ResourceStorageMeta
-from ghoshell_moss.core.blueprint.mindflow import SignalSchema
+from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.blueprint.project import Manifest, MatrixManifest
 from ghoshell_moss.core.blueprint.environment import MATRIX_MANIFESTS_PACKAGE
@@ -14,6 +14,7 @@ from ghoshell_moss.project.manifests.signals import search_signal_manifests
 from ghoshell_moss.project.manifests.topics import search_topic_manifests
 from ghoshell_moss.project.manifests.parameters import search_parameter_manifests
 from ghoshell_moss.project.manifests.resources import search_resource_manifests
+from ghoshell_moss.project.manifests.nuclei import search_nucleus_manifests
 
 __all__ = ['ScannedMatrixManifest']
 
@@ -47,3 +48,6 @@ class ScannedMatrixManifest(MatrixManifest):
 
     def resources(self) -> Iterable[Manifest[ResourceStorageMeta]]:
         yield from search_resource_manifests(f'{self._root}.resources')
+
+    def nuclei(self) -> Iterable[Manifest[NucleusMeta]]:
+        yield from search_nucleus_manifests(f'{self._root}.nuclei')
