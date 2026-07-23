@@ -2,7 +2,7 @@
 
 Frame is body verbatim followed by pin observations, delimited by
 HTML comment markers.  No meta, no @-expansion, no declaration block,
-no line numbers.
+no line numbers, no raw mtime.
 
     <body verbatim>
 
@@ -39,7 +39,7 @@ async def render_context(
 ) -> str:
     """Render a frame: body + pin result blocks.
 
-    All IO-heavy segments (pin observation) run in parallel.
+    All IO-heavy segments (pin observation) run in parallel via asyncio.gather.
     """
     lines: list[str] = []
 
@@ -187,9 +187,9 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
         start, end = _parse_range(pin.arguments.range, len(lines_list))
         if start > len(lines_list):
             return "error: range beyond file end"
-        return "\n".join(lines_list[start - 1 : min(end, len(lines_list))])
+        text = "\n".join(lines_list[start - 1 : min(end, len(lines_list))])
 
-    return text
+    return _apply_budget(text, pin.arguments.budget)
 
 
 def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
@@ -207,30 +207,112 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
     if not files:
         return "(no matches)"
 
+    limit = pin.arguments.limit
+    truncated = False
+    if limit is not None and len(files) > limit:
+        files = files[:limit]
+        truncated = True
+
     lines: list[str] = []
     for f in files:
         try:
             st = f.stat()
             rel = f.relative_to(root)
-            lines.append(f"{rel}  ({st.st_size}B, mtime={st.st_mtime:.0f})")
+            lines.append(f"{rel}  ({_fmt_size(st.st_size)})")
         except OSError:
             continue
-    return "\n".join(lines) if lines else "(all matches vanished)"
+
+    if not lines:
+        return "(all matches vanished)"
+    if truncated:
+        lines.append(f"[showing {limit} of {len(hits)} entries]")
+    return "\n".join(lines)
 
 
 def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
     import re
 
+    path_raw = pin.arguments.path
+
+    # Pattern mode: path contains glob characters
+    if _has_glob(path_raw):
+        return _content_frontmatter_pattern(pin, anchor)
+
+    # Single-file mode
     try:
-        target = resolve_path(pin.arguments.path, anchor)
+        target = resolve_path(path_raw, anchor)
         text = target.read_text(encoding="utf-8", errors="replace")
     except (OSError, ValueError):
         return "error: cannot read file"
 
-    fm = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+    fm = _extract_frontmatter(text)
     if fm is None:
         return "error: no frontmatter found"
-    return fm.group(1)
+    fm = _filter_keys(fm, pin.arguments.keys)
+    return _apply_budget(fm, pin.arguments.budget)
+
+
+def _content_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> str:
+    import re
+
+    root = anchor.ground
+    pattern = pin.arguments.path
+    if pattern.startswith("$"):
+        try:
+            resolved = resolve_path(pattern, anchor)
+            pattern = str(resolved.relative_to(root))
+        except (ValueError, OSError):
+            return "error: invalid pattern"
+
+    hits = sorted(root.glob(pattern))
+    files = [h for h in hits if h.is_file() and h.name != ""
+             and not _path_touches_ignore(h, root)]
+    if not files:
+        return "(no matches)"
+
+    limit = pin.arguments.limit
+    total = len(files)
+    if limit is not None and len(files) > limit:
+        files = files[:limit]
+
+    blocks: list[str] = []
+    total_chars = 0
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            continue
+
+        fm = _extract_frontmatter(text)
+        if fm is None:
+            continue
+
+        fm = _filter_keys(fm, pin.arguments.keys)
+        rel = f.relative_to(root)
+        block = f"-- {rel}\n{fm}"
+
+        # per-entry budget check
+        if pin.arguments.budget is not None:
+            budget = pin.arguments.budget
+            if total_chars + len(block) > budget:
+                remaining = budget - total_chars
+                if remaining > 50:
+                    block = block[:remaining] + "\n..."
+                else:
+                    break
+            total_chars += len(block)
+
+        blocks.append(block)
+
+    if not blocks:
+        return "(no frontmatter found in matched files)"
+
+    result = "\n\n".join(blocks)
+    if limit is not None and total > limit:
+        result += f"\n\n[showing {limit} of {total} entries]"
+    if pin.arguments.budget is not None and total_chars >= pin.arguments.budget:
+        result += f"\n[truncated at {pin.arguments.budget} chars]"
+    return result
 
 
 def _content_ls(pin: LsPin, anchor: Anchor) -> str:
@@ -243,8 +325,23 @@ def _content_ls(pin: LsPin, anchor: Anchor) -> str:
         return "error: not a directory"
 
     entries: list[str] = []
-    _walk_ls_entries(root_dir, pin.arguments.depth, "", entries)
-    return "\n".join(entries) if entries else "(empty)"
+    effective_depth = pin.arguments.depth
+    if pin.arguments.max_depth is not None:
+        effective_depth = min(effective_depth, pin.arguments.max_depth)
+    _walk_ls_entries(root_dir, effective_depth, "", entries)
+
+    limit = pin.arguments.limit
+    total = len(entries)
+    if limit is not None and len(entries) > limit:
+        entries = entries[:limit]
+
+    if not entries:
+        return "(empty)"
+
+    result = "\n".join(entries)
+    if limit is not None and total > limit:
+        result += f"\n[showing {limit} of {total} entries]"
+    return result
 
 
 # -- meta helpers ---------------------------------------------------------
@@ -257,15 +354,70 @@ def _pin_kwargs(pin: Pin) -> str:
         parts.append(f'path="{pin.arguments.path}"')
         if pin.arguments.range is not None:
             parts.append(f'range="{pin.arguments.range}"')
+        if pin.arguments.budget is not None:
+            parts.append(f"budget={pin.arguments.budget}")
     elif isinstance(pin, GlobPin):
         parts.append(f'pattern="{pin.arguments.pattern}"')
+        if pin.arguments.limit is not None:
+            parts.append(f"limit={pin.arguments.limit}")
     elif isinstance(pin, FrontmatterPin):
         parts.append(f'path="{pin.arguments.path}"')
+        if pin.arguments.keys:
+            parts.append(f"keys={pin.arguments.keys}")
+        if pin.arguments.budget is not None:
+            parts.append(f"budget={pin.arguments.budget}")
+        if pin.arguments.limit is not None:
+            parts.append(f"limit={pin.arguments.limit}")
     elif isinstance(pin, LsPin):
         parts.append(f'path="{pin.arguments.path}"')
         if pin.arguments.depth != 2:
             parts.append(f"depth={pin.arguments.depth}")
+        if pin.arguments.limit is not None:
+            parts.append(f"limit={pin.arguments.limit}")
     return ", ".join(parts)
+
+
+# -- format helpers -------------------------------------------------------
+
+
+def _fmt_size(n_bytes: int) -> str:
+    """Human-readable file size."""
+    if n_bytes < 1024:
+        return f"{n_bytes}B"
+    if n_bytes < 1024 * 1024:
+        return f"{n_bytes / 1024:.0f}K"
+    if n_bytes < 1024 * 1024 * 1024:
+        return f"{n_bytes / (1024 * 1024):.1f}M"
+    return f"{n_bytes / (1024 * 1024 * 1024):.1f}G"
+
+
+def _apply_budget(text: str, budget: int | None) -> str:
+    if budget is None or len(text) <= budget:
+        return text
+    return text[:budget] + f"\n[truncated at {budget} chars]"
+
+
+def _filter_keys(fm_text: str, keys: list[str] | None) -> str:
+    if keys is None:
+        return fm_text
+    import yaml
+    try:
+        fm_data = yaml.safe_load(fm_text) or {}
+    except yaml.YAMLError:
+        return fm_text
+    filtered = {k: fm_data[k] for k in keys if k in fm_data}
+    return yaml.safe_dump(filtered, allow_unicode=True, sort_keys=False).rstrip()
+
+
+def _extract_frontmatter(text: str) -> str | None:
+    import re
+    fm = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+    return fm.group(1) if fm else None
+
+
+def _has_glob(raw: str) -> bool:
+    unescaped = raw.replace("\\$", "$")
+    return any(c in unescaped for c in "*?[")
 
 
 # -- general helpers ------------------------------------------------------
@@ -295,7 +447,7 @@ def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) ->
         marker = "/" if entry.is_dir() else ""
         try:
             st = entry.stat()
-            size_info = f"  ({st.st_size}B)" if entry.is_file() else ""
+            size_info = f"  ({_fmt_size(st.st_size)})" if entry.is_file() else ""
         except OSError:
             size_info = ""
         entries.append(f"{prefix}{connector}{entry.name}{marker}{size_info}")

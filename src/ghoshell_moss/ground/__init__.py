@@ -32,6 +32,7 @@ from ghoshell_moss.ground.contract import (
     LsPin,
     PathOutsideRootError,
     Pin,
+    TemplateInfo,
     UpdateResult,
 )
 from ghoshell_moss.ground._grounds import DefaultGroundSet
@@ -53,6 +54,7 @@ __all__ = [
     "LsArguments",
     "GroundConvention",
     "UpdateResult",
+    "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
     # constants

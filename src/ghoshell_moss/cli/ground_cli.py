@@ -15,8 +15,8 @@ from pathlib import Path
 
 import typer
 
-from ghoshell_moss.cli.utils import echo, print_error, print_info, print_success
-from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet
+from ghoshell_moss.cli.utils import echo, print_error, print_info, print_simple_table, print_success
+from ghoshell_moss.ground import DEFAULT_L0_FILENAME, DefaultGroundSet, GroundSet
 from ghoshell_moss.ground._hash import PinShadow, observe_sync
 from ghoshell_moss.ground._l0 import dump_l0_pins, load_l0
 from ghoshell_moss.ground._render import render_meta
@@ -74,6 +74,14 @@ async def _run_one(root: Path, coro_fn):
         await coro_fn(gs, ground)
 
 
+async def _run_one_with_template(root: Path, coro_fn, template: str):
+    """open GroundSet + one Ground with template → act → sediment → exit."""
+    workspace = _probe_workspace(root)
+    async with DefaultGroundSet(workspace_root=workspace) as gs:
+        ground = await gs.open(root, template=template)
+        await coro_fn(gs, ground)
+
+
 # -- spec -----------------------------------------------------------------
 
 
@@ -99,6 +107,10 @@ def cmd_init(
     path: Path | None = typer.Argument(
         None, help="Directory to init (defaults to cwd)."
     ),
+    template: str | None = typer.Option(
+        None, "--template", "-t",
+        help="Template name from .grounds/ to initialize from.",
+    ),
 ) -> None:
     root = _resolve_root(path)
     target = root / DEFAULT_L0_FILENAME
@@ -106,8 +118,35 @@ def cmd_init(
         print_error(f"already exists: {target}")
         raise typer.Exit(code=1)
 
-    dump_l0_pins(root, [])
-    print_success(f"initialized {target}")
+    if template is not None:
+        # use GroundSet to load template + sediment to disk
+        async def _op(gs: GroundSet, ground: Ground) -> None:
+            await ground.sediment()
+        asyncio.run(_run_one_with_template(root, _op, template))
+        print_success(f"initialized {target} from template '{template}'")
+    else:
+        dump_l0_pins(root, [])
+        print_success(f"initialized {target}")
+
+
+# -- templates ------------------------------------------------------------
+
+
+@ground_app.command("templates", short_help="List available templates from .grounds/.")
+def cmd_templates() -> None:
+    """List all templates discovered from .grounds/ directories."""
+    workspace = _probe_workspace(Path.cwd())
+    gs = DefaultGroundSet(workspace_root=workspace)
+    tmpls = gs.templates()
+    if not tmpls:
+        print_info("no templates found")
+        return
+
+    rows = [
+        [t.name, t.source, t.description[:80] if t.description else "-"]
+        for t in tmpls
+    ]
+    print_simple_table(rows, headers=["name", "source", "description"])
 
 
 # -- frame ----------------------------------------------------------------

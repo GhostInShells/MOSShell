@@ -162,7 +162,14 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
 
 
 def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
-    target = resolve_path(pin.arguments.path, anchor)
+    path_raw = pin.arguments.path
+
+    # Pattern mode
+    if _has_glob(path_raw):
+        return _observe_frontmatter_pattern(pin, anchor)
+
+    # Single-file mode
+    target = resolve_path(path_raw, anchor)
     try:
         mtime = target.stat().st_mtime
         text = target.read_text(encoding="utf-8", errors="replace")
@@ -175,6 +182,41 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
     payload = fm_match.group(1) if fm_match else text
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return Observation(exists=True, mtime=mtime, hash=digest)
+
+
+def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observation:
+    root = anchor.ground
+    pattern = pin.arguments.path
+    if pattern.startswith("$"):
+        resolved = resolve_path(pattern, anchor)
+        pattern = str(resolved.relative_to(root))
+    hits = sorted(root.glob(pattern))
+    files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
+
+    if not files:
+        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+
+    import re
+    parts: list[str] = []
+    latest_mtime: float | None = None
+    for f in files:
+        try:
+            st = f.stat()
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, OSError):
+            continue
+        if latest_mtime is None or st.st_mtime > latest_mtime:
+            latest_mtime = st.st_mtime
+        fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
+        payload = fm_match.group(1) if fm_match else text
+        rel = str(f.relative_to(root))
+        parts.append(f"-- {rel}\n{payload}")
+
+    if not parts:
+        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+
+    digest = hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
+    return Observation(exists=True, mtime=latest_mtime, hash=digest)
 
 
 def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
@@ -193,6 +235,11 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
 
 
 # -- helpers ----------------------------------------------------------------
+
+
+def _has_glob(raw: str) -> bool:
+    unescaped = raw.replace("\\$", "$")
+    return any(c in unescaped for c in "*?[")
 
 
 def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:

@@ -1,6 +1,6 @@
 # GROUND Format Specification
 
-Status: v1.0.0 (2026-07-21)
+Status: v1.1.0-draft (2026-07-23)
 Location: `src/ghoshell_moss/ground/SPECIFICATION.md`
 
 Any runtime that reads and writes `GROUND.md` according to this SPEC can
@@ -8,7 +8,11 @@ participate in the ground protocol.
 
 ## 1. Concept
 
-A **ground** is a cognitive field bound to a directory. It carries:
+A **ground** is a cognitive field bound to a directory. A directory is a
+ground **if and only if** it contains a `GROUND.md` file. There is no
+"bare-directory" ground — the marker is the boundary.
+
+A ground carries:
 
 - a **loading convention** — the frontmatter block
 - a **body** of open-set markdown — law, field exposition,
@@ -23,6 +27,15 @@ A ground inherits **law** from its ancestors: the `body` content of
 `GROUND.md` files in parent directories, up to `$HOME`. This is the
 **law chain** (§7). The chain carries body content only — frontmatter
 and pins are never inherited.
+
+### 1.1 Templates
+
+A **template** is a pre-authored `GROUND.md` body + pins, stored under
+`.grounds/` and discovered by the ground runtime. Templates and instances
+share the same frontmatter + body + pins format. Role is determined by
+file location, not by a metadata field.
+
+Template discovery and usage rules are defined in §11.
 
 ## 2. File Structure
 
@@ -50,8 +63,10 @@ pins:
 The `pins` key holds the YAML list of pin declarations (§4). If absent,
 the pins list is empty.
 
-Absence of `GROUND.md` in the directory means the ground has no
-convention, empty body, and no pins.
+A directory without `GROUND.md` is not a ground. Attempting to open one
+loads an empty ground (no convention, empty body, no pins) — this is a
+creation pathway, not a "bare ground" concept. The ground becomes real
+when `sediment` writes `GROUND.md` to disk.
 
 ## 3. Reserved Frontmatter Keys
 
@@ -65,8 +80,7 @@ Implementations MUST NOT reject unknown frontmatter keys.
 
 ## 4. Pin Envelope
 
-Every pin uses a **fixed envelope** — the same four fields regardless
-of verb:
+Every pin uses a **fixed envelope** — the same fields regardless of verb:
 
 | Field | Required | Semantics |
 |-------|----------|-----------|
@@ -88,6 +102,20 @@ Validation may warn; it must not fail.
 **Label conflict**: adding a pin with an existing `label` overwrites
 the old entry (idempotent overwrite).
 
+### 4.1 Per-Pin Budget Parameters
+
+Every pin MAY carry three optional budget fields in `arguments`. These
+are declared once here and referenced by each verb's schema in §5:
+
+| Field | Type | Semantics |
+|-------|------|-----------|
+| `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, future `bash`). |
+| `limit` | int | Entry count limit. When exceeded, output is truncated with a marker showing `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
+| `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). |
+
+All three are optional. When absent, no limit is applied (implementation
+defaults may apply). Each verb declares which of these it supports in §5.
+
 ## 5. Known Pin Types
 
 All path-typed arguments use the anchor syntax in §8.
@@ -98,6 +126,7 @@ All path-typed arguments use the anchor syntax in §8.
 |-----|------|----------|-----------|
 | `path` | string | yes | File path. Anchor syntax (§8) allowed. |
 | `range` | string | no | Line range: `N-M` (inclusive) or bare `N`. |
+| `budget` | int | no | Content char limit (§4.1). |
 
 **Expansion**: file content, sliced to `range` if given.
 
@@ -108,25 +137,48 @@ All path-typed arguments use the anchor syntax in §8.
 | Key | Type | Required | Semantics |
 |-----|------|----------|-----------|
 | `pattern` | string | yes | Glob pattern (`*`, `**`, `?`). Anchor syntax (§8) allowed as prefix. |
+| `limit` | int | no | Entry count limit (§4.1). Default: implementation-defined. |
+| `max_depth` | int | no | Recursion depth cap for `**` patterns (§4.1). |
 
 Matches are filtered through `.gitignore`. **No file content is
 expanded** — a `glob` matching thousands of files must not blow up
 the context window. Use `file` for content.
 
-**Expansion**: matched paths with `mtime` and `size` per entry.
+**Expansion**: matched paths with size per entry (human-readable:
+`12K`, `1.2M`). `mtime` is not rendered — use `bash` for timestamp queries.
 
 **Empty match** renders an empty result (not an error).
 
-### 5.3 `frontmatter` — YAML frontmatter of a single file
+### 5.3 `frontmatter` — YAML frontmatter of markdown file(s)
 
 | Key | Type | Required | Semantics |
 |-----|------|----------|-----------|
-| `path` | string | yes | Path to a markdown file with YAML frontmatter, or a bare YAML file. |
+| `path` | string | yes | File path, or glob pattern matching multiple files. Anchor syntax (§8) allowed. |
+| `keys` | list[string] | no | Frontmatter keys to extract. Absent = full frontmatter block. |
+| `budget` | int | no | Content char limit (§4.1). |
+| `limit` | int | no | Entry count limit when `path` is a pattern (§4.1). |
+| `max_depth` | int | no | Recursion depth when `path` is a pattern (§4.1). |
 
-**Expansion**: the frontmatter block verbatim. Body is not included.
-Naturally bounded — no truncation needed.
+**Single-file mode** (`path` is a concrete file path): extracts the
+full frontmatter block verbatim. Body is not included.
 
-**Failure modes**: file not found; no frontmatter block; YAML syntax error.
+**Pattern mode** (`path` contains glob characters `*`, `?`, `[`):
+matches multiple files. Each matched file's frontmatter is rendered
+as an independent result block, labeled by file path. This enables
+**progressive disclosure** — a single `frontmatter` pin reveals the
+identities and gaze declarations of all child grounds without
+opening each one.
+
+**keys** filtering: when specified, only the named frontmatter keys
+are rendered. Unknown keys are preserved. This further reduces token
+cost for identity-only queries (`keys: ["$id", "label"]`).
+
+**Expansion**: frontmatter block(s) verbatim. Naturally bounded —
+no truncation needed for single files. Pattern mode subject to
+`limit` and `max_depth`.
+
+**Failure modes**: file not found; no frontmatter block; YAML syntax
+error; pattern matches zero files (not an error — renders empty).
 
 ### 5.4 `ls` — directory listing (structure only, no content)
 
@@ -134,23 +186,24 @@ Naturally bounded — no truncation needed.
 |-----|------|----------|-----------|
 | `path` | string | yes | Directory path. Anchor syntax (§8) allowed. |
 | `depth` | int | no | Traversal depth. Default `2`. |
+| `limit` | int | no | Entry count limit (§4.1). |
+| `max_depth` | int | no | Recursion depth cap (§4.1). Alias for `depth` — whichever is smaller wins. |
 
 Entries filtered through `.gitignore`. **No file content.**
 
-**Expansion**: tree view with `mtime` and `size` per file.
+**Expansion**: tree view with human-readable size per file
+(e.g. `12K`, `1.2M`). `mtime` is not rendered.
 
 **Failure modes**: path not found; path is not a directory.
 
 ## 6. Frame
 
-A **frame** is the rendered form of a ground — body, expanded
-`@`-references, and pin results assembled into a single output.
+A **frame** is the rendered form of a ground — body and pin results
+assembled into a single output.
 
 The frame covers:
 
 - **body** — the GROUND.md body verbatim
-- **@-expansions** — each `@path` reference in body is expanded to the
-  referenced document's content (§6.1)
 - **pin results** — each pin's observation is expanded per its verb (§5)
 
 The frame is a **derived view** — `GROUND.md` is authoritative.
@@ -159,7 +212,33 @@ The frame is a **derived view** — `GROUND.md` is authoritative.
 is available through a separate `meta` command, keeping the frame
 focused on content for consumers that don't need ground protocol.
 
-### 6.1 `@`-reference Expansion
+### 6.1 Pin Result Blocks
+
+Each pin result is delimited by HTML comment markers:
+
+```
+<!-- ground:pin:<label> -->
+<pin observation content>
+<!-- /ground:pin:<label> -->
+```
+
+The markers are machine-readable signals that do not collide with
+user markdown.
+
+Content rendered inside each block is verb-specific (§5). Content
+output follows these rules:
+
+- **No line numbers** — line numbers are for human debugging, not
+  model consumption.
+- **No raw mtime** — timestamps are shell-domain. Models that need
+  them call `bash`.
+- **Human-readable sizes** — file sizes render as `12K` / `1.2M` /
+  `300B`, not raw byte counts.
+- **Truncation markers** — when `budget` or `limit` is exceeded,
+  a visible marker is appended: `[truncated at N chars]` or
+  `[showing N of M entries]`.
+
+### 6.2 `@`-reference Expansion
 
 An `@`-reference in body loads another document as **static law**.
 It is **not change-tracked** — law follows the doc's current state
@@ -179,9 +258,8 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
 - **Depth cap**: max 3 levels of nested `@`-references
 - **Budget cap**: 24000 chars total (implementation may override).
   When exceeded, remaining `@`-blocks are skipped with a warning.
-  **Pin expansions are not subject to this budget** — each pin is a
-  declarative gaze commitment; the model is expected to manage pin
-  count and verb choice.
+  **Pin expansions are not subject to this budget** — pin content is
+  governed by per-pin `budget` parameters (§4.1).
 
 **Failure modes**: doc not found; path escapes anchor subtree.
 
@@ -189,16 +267,21 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
 
 ### 7.1 open / close
 
-`Grounds.open(dir, *, label=None, doc=None) -> Ground`
+`Grounds.open(dir, *, label=None, doc=None, template=None) -> Ground`
 
-- `dir` — ground root (pin anchor)
+- `dir` — ground root (pin anchor). Must be a directory.
 - `label` — short identifier, derived from `dir` basename if omitted
 - `doc` — explicit GROUND.md path (law anchor). Default `dir/GROUND.md`.
   When `doc` points elsewhere, the law anchor decouples from the pin
   anchor — `doc` is the portable law unit, `dir` is the local workplace.
+- `template` — name of a template from `.grounds/` (§11). When specified,
+  the ground is initialized with the template's body and pins. The
+  template is **copied**, not referenced — subsequent pin/unpin/update
+  operations do not affect the template file.
 
-`open` is idempotent by resolved path. `close(label)` removes from the
-collection without touching disk.
+`open` is idempotent by resolved path. `close(label)` triggers
+`sediment` (writes pins back to `GROUND.md`) and removes the
+ground from the active collection.
 
 ### 7.2 observe / stale
 
@@ -213,14 +296,13 @@ CLI invocations are stateless `open → render → close` cycles — stale
 marks never appear in CLI output. Stale marking is a session-level
 capability for long-lived CTML channel sessions.
 
-### 7.3 Pin budget
+### 7.3 Pin Content Budget
 
-`file` pins expand full content. `glob` and `ls` pins can match
-arbitrarily many entries. Implementations SHOULD apply a per-pin
-expansion budget. When a pin exceeds its budget, the result is
-truncated with a visible marker. The budget is a safety mechanism,
-not a correctness guarantee — models are expected to manage pin
-granularity.
+Every pin that emits content or lists entries is subject to optional
+per-pin budget parameters per §4.1. When a pin exceeds its budget or
+limit, the result is truncated with a visible marker. These are safety
+mechanisms, not correctness guarantees — models are expected to manage
+pin granularity.
 
 ### 7.4 Nested Grounds
 
@@ -230,18 +312,20 @@ not auto-opened. Their law chain naturally reads ancestor `GROUND.md`
 bodies.
 
 Pins never inherit across grounds. Discovery of descendant grounds is
-opt-in (e.g., via a `glob` pin on `*/GROUND.md`).
+opt-in: use a `frontmatter` pin with a pattern (`$CWD/*/GROUND.md`)
+for progressive disclosure of child ground identities, or a `glob`
+pin for structural listing.
 
 ### 7.5 Law Chain
 
 A ground inherits body content from `GROUND.md` files in ancestor
 directories, root-first, up to `$HOME`. The chain carries body only —
 no frontmatter, no pins. `@`-references in chain bodies are expanded
-in-place (subject to §6.1 caps).
+in-place (subject to §6.2 caps).
 
 Chain content is destined for the channel's instruction slot — the
 stable, cache-friendly context distinct from the volatile frame.
-The frame renders only the ground's own body, `@`-expansions, and pins.
+The frame renders only the ground's own body and pins.
 
 The chain reads `GROUND.md` only. To reference foreign conventions,
 use `@`-references with an explicit `$HOME` anchor.
@@ -274,11 +358,12 @@ The CLI is a diagnostic and bootstrapping surface, deliberately small:
 | Command | Purpose |
 |---------|---------|
 | `moss ground spec` | Print this specification |
-| `moss ground init [dir]` | Scaffold an empty `GROUND.md` |
+| `moss ground init [dir] [--template <name>]` | Scaffold GROUND.md, optionally from a template |
 | `moss ground frame [dir]` | Render the ground's frame (body + pins) |
 | `moss ground meta [dir]` | Show ground identity, law chain, and pin TOC |
 | `moss ground observe [dir]` | Run pin observations; emit per-pin diagnostics |
 | `moss ground validate [dir]` | Validate format and pin definitions |
+| `moss ground templates` | List available templates from `.grounds/` |
 
 No `pin` / `unpin` / `update` subcommands — `GROUND.md` is a plain
 markdown file; direct editing is the fastest path.
@@ -290,15 +375,100 @@ state belongs to the CTML channel layer.
 
 A compliant implementation must:
 
+- Recognize a directory as a ground iff it contains `GROUND.md` (§1)
 - Parse and emit the two-segment file structure per §2
 - Consume reserved frontmatter keys per §3; preserve unknown keys
 - Read and write pins per §4 with the fixed envelope; preserve unknown
   verbs and arguments keys
+- Support per-pin `budget` / `limit` / `max_depth` parameters per §4.1
 - Handle all four known pin types per §5, rendering failure modes
   into results
-- Expand `@`-references per §6.1 with cycle detection, depth cap, and
+- Support `frontmatter` in both single-file and pattern modes (§5.3)
+- Render human-readable file sizes, omit raw `mtime` (§6.1)
+- Expand `@`-references per §6.2 with cycle detection, depth cap, and
   budget cap
-- Render frames with body, `@`-expansions, and pin results per §6
 - Resolve paths per §8 with per-anchor subtree confinement
 - Implement the law chain per §7.5
 - Never persist observation shadow to `GROUND.md`
+
+## 11. Template Discovery (`.grounds/`)
+
+Templates are pre-authored GROUND.md equivalents stored under
+`.grounds/` directories. They share the frontmatter + body + pins
+format with instances — a `.md` file under `.grounds/` is structurally
+identical to a `GROUND.md`.
+
+### 11.1 Discovery
+
+On initialization, the ground runtime scans these paths for templates:
+
+1. `$CWD/.grounds/**/*.md` — project-local templates
+2. `$HOME/.grounds/**/*.md` — machine-global templates
+3. Ghost-carried templates (implementation-defined path)
+
+The three sources are merged into a single template catalog.
+**Project-local templates take priority** over machine-global ones
+with the same name.
+
+Template name = path relative to `.grounds/`, minus `.md` extension:
+`.grounds/python-project.md` → name `python-project`
+`.grounds/ghost/memory.md` → name `ghost/memory`
+
+### 11.2 File Format
+
+A template file uses the same two-segment structure as `GROUND.md`:
+
+```
+---
+$id: <optional>
+label: <optional>
+pins:
+- label: <id>
+  verb: <verb>
+  arguments: {<key>: <value>, ...}
+  description: <optional>
+---
+
+<body — free-form markdown>
+```
+
+The `$id` and `label` in the template are **template metadata**.
+When a ground is created from a template, these are carried over
+as initial values; the instance's own `GROUND.md` can override them.
+
+### 11.3 Usage
+
+`Grounds.open(dir, template="python-project")`:
+
+1. Resolve the template name against the merged catalog
+2. Create a new Ground at `dir`
+3. Initialize the ground with the template's convention, body, and pins
+4. The ground is now live — pin/unpin/update operate in memory
+5. `sediment` writes the current state to `dir/GROUND.md`
+
+The template is **copied**, not referenced. After `open`, the ground
+has an independent lifecycle.
+
+Creating a ground from scratch (without `template=`) initializes an
+empty ground — no convention, empty body, empty pins. The ground
+becomes real when the first `sediment` writes `GROUND.md`.
+
+### 11.4 Fractal Closure
+
+A `.grounds/` directory may itself contain a `GROUND.md` — making it
+a ground instance in its own right, discoverable by its parent
+ground's `frontmatter` pin. This is **fractal self-similarity**:
+the same protocol applies at every scale.
+
+L2 (a template collection) can discover other L2 collections through
+the same mechanism. No L3 registry is needed — file system traversal
+is the discovery protocol.
+
+### 11.5 Separation from Instance Discovery
+
+- `**/GROUND.md` — discovers ground **instances** (active cognitive fields)
+- `.grounds/**/*.md` — discovers **templates** (pre-authored field blueprints)
+
+The filename `GROUND.md` is reserved for instances. Templates use
+different filenames under `.grounds/`, guaranteeing that instance
+discovery never accidentally picks up templates.
