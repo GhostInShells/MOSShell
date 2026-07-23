@@ -27,6 +27,7 @@ if sys.platform != "win32":
     import uvloop
 import contextlib
 import sys
+import time
 import threading
 import json
 import os
@@ -506,6 +507,9 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
         self._bottom_toolbar_text: str = ""
         self._dummy_completer = DummyCompleter()
+        self._switching_state: bool = False
+        self._last_switch_at: float = 0.0
+        self._switch_min_interval: float = 0.25  # 250ms debounce
 
     def clear_console(self) -> None:
         """clear rich console"""
@@ -794,32 +798,33 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 self._direct_print(item)
 
     def _switch_state(self, state_name: str) -> None:
-        """切换当前状态. """
+        if state_name is None or state_name not in self._states:
+            raise RuntimeError(f"State {state_name} is not defined")
+
         current_state = self.current_state()
         if current_state.name() == state_name:
             return
         if self._closing_event.is_set():
             return
-        if state_name is not None:
-            if state_name not in self._states:
-                raise RuntimeError(f"State {state_name} is not defined")
-            old_state_name = current_state.name()
+        if self._switching_state:
+            return
+
+        now = time.monotonic()
+        if now - self._last_switch_at < self._switch_min_interval:
+            return
+
+        self._switching_state = True
+        self._last_switch_at = now
+        try:
             current_state.on_switch(False)
             self._current_state_name = state_name
             new_state = self._states[state_name]
-            new_state_name = state_name
             new_state.on_switch(True)
-            # replay buffered history from the new state
+
             if new_state.console is not None:
                 new_state.console.replay_buffer()
-            # add switch notice after replay so it sits at the bottom
-            notice = Rule(
-                f"From State `{old_state_name}` Switch to `{new_state_name}`",
-                style="cyan",
-                align="center",
-            )
-            self.console.rprint(notice)
-        return
+        finally:
+            self._switching_state = False
 
     def _toggle_state(self) -> None:
         """C-t: 循环切到下一个 state."""
