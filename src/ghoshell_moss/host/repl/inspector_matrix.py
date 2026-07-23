@@ -39,7 +39,7 @@ class MatrixInspector:
 
     def network(self) -> dict:
         """本 matrix 所接入网络的配置元信息."""
-        meta = self._matrix.network
+        meta = self._matrix.network_info
         return {
             "name": meta.name,
             "driver": meta.driver,

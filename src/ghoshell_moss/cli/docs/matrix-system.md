@@ -79,7 +79,7 @@ Cell 是 Matrix 网络中独立运行的进程。两种角色：
 | `host` | 主进程，组织所有能力供 Ghost 驱动 | 运行时事实——抢到 listen 端口者为 host |
 | `node` | 功能节点，提供具体能力 | 通过声明文件定义，由 host 或 CLI 拉起 |
 
-每个 Cell 有独立地址（`role/name/uid` 三段式）、独立 home 目录、独立生命周期。Cell 通过 **Presence** 宣告自己在网络上的存在（膜 + 活性），通过 **CellMesh** 观察其他 Cell。两者拆分——宣告是每个 Cell 启动时自带（近乎免费），观察是按需开启（只有 host/Ghost 需要）。
+每个 Cell 有独立地址（`role/name/uid` 三段式）、独立 home 目录、独立生命周期。Cell 通过 **Presence** 宣告自己在网络上的存在（膜 + 活性），通过 **CellNetwork** 观察其他 Cell。两者拆分——宣告是每个 Cell 启动时自带（近乎免费），观察是按需开启（只有 host/Ghost 需要）。
 
 Cell 治理由三个真相域组成，各有两个动词：
 
@@ -91,7 +91,7 @@ Cell 治理由三个真相域组成，各有两个动词：
 
 六个动词，代数封闭。list/status/logs 是三个真相域的 join 视图，不是治理。
 
-**探索**：`moss codex get-interface ghoshell_moss.core.blueprint.cell` — Cell、CellPresence、CellMesh、NodeManifest
+**探索**：`moss codex get-interface ghoshell_moss.core.blueprint.cell` — Cell、CellPresence、CellNetwork、NodeManifest
 
 ### 3.3 通讯总线 — 不止 Channel
 
@@ -131,7 +131,7 @@ matrix.provide_channel(chan)    mesh.channel_proxies()
 Provider 端声明"我有这个能力"，Consumer 端 accept 后创建 proxy。两端可以各自重启，不影响对方。
 
 **探索**：
-- `moss codex get-interface ghoshell_moss.core.blueprint.matrix` — `provide_channel()` 与 CellMesh
+- `moss codex get-interface ghoshell_moss.core.blueprint.matrix` — `provide_channel()` 与 CellNetwork
 - `moss codex get-interface ghoshell_moss.core.concepts.channel` — Channel、ChannelProxy
 
 ### 3.5 Session 与 Scope — 并行不串扰
@@ -164,7 +164,7 @@ Manifests 是声明，Matrix 是执行者。
 
 ## 5. 传输协议可替换
 
-Matrix 的抽象层（Cell、Presence/CellMesh、Session）不绑定具体传输协议。当前默认 transport 可替换——这是架构设计意图，不是临时妥协。未来如果出现更适合 AI OS 场景的通讯协议，切换 transport 不需要改动上层的 Channel 和 Shell。
+Matrix 的抽象层（Cell、Presence/CellNetwork、Session）不绑定具体传输协议。当前默认 transport 可替换——这是架构设计意图，不是临时妥协。未来如果出现更适合 AI OS 场景的通讯协议，切换 transport 不需要改动上层的 Channel 和 Shell。
 
 ---
 

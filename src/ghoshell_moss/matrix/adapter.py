@@ -19,7 +19,7 @@ from typing import Iterable
 from typing_extensions import Self
 
 from ghoshell_container import Provider, IoCContainer
-from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellMesh
+from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellNetwork
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import NetworkMetadata
 
@@ -80,7 +80,7 @@ class MatrixNetworkAdapter(ABC):
             *,
             env: Environment,
             logger: logging.Logger,
-    ) -> CellMesh:
+    ) -> CellNetwork:
         """
         构造网络观察侧对象.
 

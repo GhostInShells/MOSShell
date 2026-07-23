@@ -1,5 +1,5 @@
 """
-ZenohCellMesh — 对网络的观察侧 + accept/reject 实现 (CellMesh ABC).
+ZenohCellNetwork — 对网络的观察侧 + accept/reject 实现 (CellNetwork ABC).
 
 一个 Mesh 实例治理 (key 表见 _utils.py):
   liveness subscriber (cell_liveness_wildcard)  → PUT/DELETE 更新 cache 边缘
@@ -38,7 +38,7 @@ from ghoshell_moss.core.blueprint.cell import (
     CellAddress,
     CellEvent,
     Cell,
-    CellMesh,
+    CellNetwork,
     normalize,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -47,13 +47,13 @@ from ghoshell_moss.matrix.networks._utils import CellsKeyspace
 
 import logging
 
-__all__ = ['ZenohCellMesh']
+__all__ = ['ZenohCellNetwork']
 
 # 大数, 事件是低频, 满了说明消费严重落后, 报 error 暴露问题.
 _QUEUE_MAXSIZE = 10000
 
 
-class ZenohCellMesh(CellMesh):
+class ZenohCellNetwork(CellNetwork):
     """
     基于 zenoh 的观察侧实现.
 
@@ -437,7 +437,7 @@ class ZenohCellMesh(CellMesh):
         self._reconcile_task = self._loop.create_task(self._reconcile_loop())
 
         self._logger.debug(
-            "ZenohCellMesh started: scope=%s cells_ns=%s",
+            "ZenohCellNetwork started: scope=%s cells_ns=%s",
             self._scope, self._keyspace.cells_ns,
         )
         return self
@@ -495,7 +495,7 @@ class ZenohCellMesh(CellMesh):
 
         self._started = False
         self._loop = None
-        self._logger.debug("ZenohCellMesh stopped: scope=%s", self._scope)
+        self._logger.debug("ZenohCellNetwork stopped: scope=%s", self._scope)
 
     # ── zenoh 后台线程回调 ────────────────────────────────────────────
 

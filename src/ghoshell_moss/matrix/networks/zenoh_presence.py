@@ -79,7 +79,7 @@ class ZenohCellPresence(CellPresence):
     就地修改, queryable 每次回复读现值; 通过 publish_event 广播 CellEvent
     提示订阅侧 refetch.
 
-    hub 由外部传入 (matrix 层拥有, 与 ZenohCellMesh 共享同一 hub) —
+    hub 由外部传入 (matrix 层拥有, 与 ZenohCellNetwork 共享同一 hub) —
     避免每 cell 建独立 hub 的 O(N) 资源开销.
     """
 
@@ -211,7 +211,7 @@ class ZenohCellPresence(CellPresence):
         # queryable 尚未就位导致空回复 (老 ZenohCellNetwork 的 TOCTOU 教训).
         queryable = self._session.declare_queryable(cell_key, _on_query)
         # event publisher 必须落在 events 子命名空间 —
-        # ZenohCellMesh 订阅 {cells_ns}/events/**, 老代码在 cell_key 上发布是历史 bug.
+        # ZenohCellNetwork 订阅 {cells_ns}/events/**, 老代码在 cell_key 上发布是历史 bug.
         event_publisher = self._session.declare_publisher(event_key)
         liveness_token = self._session.liveliness().declare_token(cell_key)
 

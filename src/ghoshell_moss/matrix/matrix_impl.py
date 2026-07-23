@@ -25,7 +25,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix, MatrixLifecycleObject, C
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.core.blueprint.cell import (
-    CellAddress, Cell, NodeManifest, CellRuntimeInfo, CellPresence, CellMesh,
+    CellAddress, Cell, NodeManifest, CellRuntimeInfo, CellPresence, CellNetwork,
     NodeLauncher, normalize, DuplicatedError,
     enter_cell_lifecycle,
 )
@@ -93,7 +93,7 @@ class MatrixImpl(Matrix):
 
         # -- 网络三件, __aenter__ async 阶段填 -- #
         self._presence: CellPresence | None = None  # adapter.new_presence 产物
-        self._watcher: CellMesh | None = None  # mesh() 惰性创建
+        self._watcher: CellNetwork | None = None  # mesh() 惰性创建
 
         # -- 治理: run_node 拉起的所有 cell handle (§YY handled_cells 契约) -- #
         # 与 Subprocesses.executing/executed 同构: 活着的 handle 在 dict,
@@ -136,7 +136,7 @@ class MatrixImpl(Matrix):
         return self._runtime_info.cell
 
     @property
-    def network(self) -> NetworkMetadata:
+    def network_info(self) -> NetworkMetadata:
         # §YY-1 第 4 条: 运行时自解释 — cell 定义时不知道自己会被接进哪个网络.
         return self._network_metadata
 
@@ -239,7 +239,7 @@ class MatrixImpl(Matrix):
     # 观察: 惰性门 mesh() → Watcher (§UU-7 / §YY-1 第 3 条 opt-in by usage)
     # ==================================================================
 
-    async def mesh(self) -> CellMesh:
+    async def network(self) -> CellNetwork:
         """
         惰性门: 首次调用时 adapter.new_watcher + add_lifecycle_object;
         后续调用返回同一实例. worker cell 不调即 O(1) 不付 O(N) 观察成本.
