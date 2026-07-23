@@ -1,9 +1,9 @@
 ---
 title: Desktop GUI — 人类与 Ghost 共享 desktop 知觉空间
-status: draft
+status: in-progress
 priority: P0
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-23
 depends: []
 milestone:
 description: >-
@@ -29,7 +29,9 @@ Desktop GUI 是这一原则的实践——后续可以有 voice GUI、AR GUI 等
 ## Design Index
 
 - Key design documents: `design/`
-- Key discussion records: `discuss/`
+- Key discussion records:
+  - `discuss/2026-07-21-design-collision.md` — 初始设计碰撞（GUI 是人类窗口、MOSS 多皮囊、Reflex 技术选型）
+  - `discuss/2026-07-23-sequence-flows.md` — 六个核心时序流程 + 数据结构分离推导
 
 ## Key Decisions
 
@@ -107,40 +109,57 @@ stale 命令（超过阈值时间未活跃的已完成/已拒绝项）通过 tog
 
 ## Implementation Map
 
-### Phase 1: Node 骨架 + 依赖
+### Phase 1: Node 骨架 + 依赖 ✅ (2026-07-21)
 - 创建 node 目录结构 + NODE.md
 - INSTALL.md 声明依赖（reflex + extras）
 - `moss nodes list` 可发现
 
-### Phase 2: 界面原型
+### Phase 2: 界面原型 ✅ (2026-07-23)
 - 双栏布局（左侧列表 + 右侧详情）
 - 命令列表项 + 呼吸灯（CSS animation）
 - 最新/stale 切换 toggle
-- 通过 MCP 启动，浏览器验证布局
+- Mock 命令注入面板，可在浏览器内验证交互
+- Reflex 0.9.7 编译通过，localhost:3000 运行
 
-### Phase 3: 交互逻辑
-- 审批流：pending → running → awaiting_approval → approved/rejected
-- 状态自动流转
-- stale 判定与过滤
+### Phase 3: 交互逻辑 ✅ (2026-07-23，mock 层)
+- 数据结构三分离：CommandInvocation / ApprovalRequest / DialogueMessage
+- 审批流状态机：pending → running → awaiting_approval → approved/rejected → completed/error/stale
+- approve/reject 按钮 + 原因输入 + 追问对话输入
+- stale 判定与过滤（toggle 切换）
+- 注意：当前是纯本地 mock，无 Matrix 集成
 
-### Phase 4: Channel 集成
+### Phase 4: Channel 集成 🔲
 - 后台线程 Matrix + `provide_channel`
-- Command adapter 写 Reflex State
-- 审批 event handler 通过 Future 回传
+- Shell 侧 Command Adapter 拦截 + FutureRouter
+- GUI 侧订阅 Matrix topic + RPC 审批回传
+- 真实命令生命周期事件替换 mock
 
-### Phase 5: 差异化渲染
-- `str_replace` → diff 视图
-- `exec` → stdout/stderr
+### Phase 5: 差异化渲染 ✅ (2026-07-23，基础完成)
+- `str_replace` → diff 视图（服务端 difflib 预计算，rx.foreach 渲染）
+- `exec` → shell 命令原文 + cwd
+- `view` / `write` / `create` → 文件路径 + 内容预览
 - 通用 fallback
 
-### Phase 6: 打磨
+### Phase 6: 打磨 🔲
 - 视觉效果调整
 - tutorials 同步更新（create-node howto）
 - 端到端测试
+- Reflex Var 兼容性细节（string concat、icon 名称、Optional 类型）
 
 ## Implementation Notes
 
+### 已确认的技术约束
 - Reflex server 的 `run()` 必须在主线程——macOS GUI 限制
 - Node 进程通过 `matrix.run_node(target)` 由 host 拉起
 - 跨域 iframe 嵌入需要 Reflex 配置 CORS（未来需求，本轮不做）
 - Feature 期间同步维护 `tutorials/` 下的 create-node howto
+
+### Reflex Var 兼容性（2026-07-23 实践总结）
+- Python dict `.get(var)` / `dict[var]` 不可用——Var 不是可哈希的 Python 值
+- 替代方案：`rx.cond` 链或 `rx.match` 分发
+- Python string + Var 拼接（`"prefix" + var`）不可用——用 `rx.hstack` + 多个 `rx.text` 替代
+- `rx.code_block` 不支持 `language="text"`，去掉 language 参数使用默认
+- Lucide icon 名称用短横线（`"panel-left"`）而非下划线
+- `Optional[str]` 需用 `rx.cond(value != None, value, fallback)` 展开后再传入需要 `str` 的组件
+- difflib 必须在服务端（event handler）运行，不能在 render 函数中用 Var 参数调用
+- `rx.cond` 始终需要 3 个参数——条件、真值、假值（假值可用 `rx.fragment()` 表示不渲染）
