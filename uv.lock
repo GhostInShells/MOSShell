@@ -418,20 +418,6 @@ wheels = [
 ]
 
 [[package]]
-name = "circus"
-version = "0.19.0"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-dependencies = [
-    { name = "psutil" },
-    { name = "pyzmq" },
-    { name = "tornado" },
-]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/94/97/824bfce6949716ea93adcd5ff8aa4c277f40a735d7f644669674ec132ae4/circus-0.19.0.tar.gz", hash = "sha256:fbe6a5029998ac1239b17ebdd38251ac8b22627d30e4ec6f68cb10233911b0f4", size = 94206 }
-wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/f4/2c/1b09e40d512b7b9f9e58f2ee6c4648461e3fb40de2201856adaa1d22e96f/circus-0.19.0-py3-none-any.whl", hash = "sha256:15cac59d2bac8d8793f801a3a57e54acb261590c93e29fbfe639eaef8a680d39", size = 118155 },
-]
-
-[[package]]
 name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -783,7 +769,6 @@ ghost = [
     { name = "pydantic-ai" },
 ]
 host = [
-    { name = "circus" },
     { name = "eclipse-zenoh" },
     { name = "fastmcp" },
     { name = "httpx" },
@@ -797,7 +782,9 @@ host = [
 ]
 matrix = [
     { name = "eclipse-zenoh" },
+    { name = "prompt-toolkit" },
     { name = "python-dotenv" },
+    { name = "typer" },
 ]
 redis = [
     { name = "fakeredis" },
@@ -830,7 +817,6 @@ requires-dist = [
     { name = "aiozmq", marker = "extra == 'zmq'", specifier = ">=1.0.0" },
     { name = "anthropic", marker = "extra == 'ghost'", specifier = ">=0.84.0" },
     { name = "anyio", specifier = ">=4.12.1" },
-    { name = "circus", marker = "extra == 'host'", specifier = ">=0.19.0" },
     { name = "eclipse-zenoh", marker = "extra == 'host'", specifier = ">=1.8.0" },
     { name = "eclipse-zenoh", marker = "extra == 'matrix'", specifier = ">=1.8.0" },
     { name = "fakeredis", marker = "extra == 'redis'", specifier = ">=2.32.1" },
@@ -848,6 +834,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "playwright", marker = "extra == 'web'", specifier = ">=1.60.0" },
     { name = "prompt-toolkit", marker = "extra == 'host'", specifier = ">=3.0.52" },
+    { name = "prompt-toolkit", marker = "extra == 'matrix'", specifier = ">=3.0.52" },
     { name = "psutil", specifier = ">=7.2.1" },
     { name = "pydantic-ai", marker = "extra == 'ghost'", specifier = ">=1.90.0" },
     { name = "python-dateutil", specifier = ">=2.9.0.post0" },
@@ -857,6 +844,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=7.0.1" },
     { name = "regex", specifier = ">=2024.0.0" },
     { name = "typer", marker = "extra == 'host'", specifier = ">=0.24.1" },
+    { name = "typer", marker = "extra == 'matrix'", specifier = ">=0.24.1" },
     { name = "uvloop", marker = "extra == 'host'", specifier = ">=0.22.1" },
     { name = "websockets", marker = "extra == 'host'", specifier = ">=15.0.1" },
     { name = "zmq", marker = "extra == 'zmq'", specifier = ">=0.0.0" },
@@ -3527,23 +3515,6 @@ source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/51/db/03eaf4331631ef6b27d6e3c9b68c54dc6f0d63d87201fed600cc409307fd/tomlkit-0.15.0.tar.gz", hash = "sha256:7d1a9ecba3086638211b13814ea79c90dd54dd11993564376f3aa92271f5c7a3", size = 161875 }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6a/43/8bd850ee71a191bf072e31302c73a66be413fecdd98fdcd111ecbcce13ca/tomlkit-0.15.0-py3-none-any.whl", hash = "sha256:4dbc8f0fc024412b57ced8757ac7461305126a648ff8c2c807fcb8e133a78738", size = 41328 },
-]
-
-[[package]]
-name = "tornado"
-version = "6.5.7"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/64/24/95ec527ad67b76d59299e5465b3935d05e4294b7e0290a3924b7487df30b/tornado-6.5.7.tar.gz", hash = "sha256:66c513a76cda70d53907bc27cf1447557699c2e95aa48ba27a442ff61c3ddfc2", size = 519252 }
-wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/02/dc/c7043cab6fed8ae159fc1923ce829ada35c4dbd797d408a43858ffaf9639/tornado-6.5.7-cp39-abi3-macosx_10_9_universal2.whl", hash = "sha256:148b2eb15c2c765a50796172c1e499649b35f30d2e3c3d3e15913cfa56bfb163", size = 448543 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/92/4f/090b1431e5a43df696feceffc268c5383cc079ecb5f08ce58f917109aafe/tornado-6.5.7-cp39-abi3-macosx_10_9_x86_64.whl", hash = "sha256:9da38de27f1da3b78a966f0dae12b5a1ea9afe72ca805d84ff06508272ddf100", size = 446707 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/37/d8/ef374952fd5da67d4463122c2b8e5a96536ec10b4b339254c6dcde81d01c/tornado-6.5.7-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:8d759e71906ee783f8867b93bf26a265743da4c1e2f4a018464c1ba019862972", size = 449774 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/35/37/d434c73f4c6e014b745b9b37085f34f40c022f007efff3d7fe65991899f3/tornado-6.5.7-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8a46347a18f23fb92b396beebe0fb78f61dda0cc302445202c16203d8a18848b", size = 450745 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/b6/2b/56b9aff361d7f1ab728a805ec7d7ea835f8807afa9f5cc690ea0e630efb9/tornado-6.5.7-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:7778b30bef919231265e91c69963ce0f49a1e9c07ac900bbe75b19ce2575ba92", size = 450578 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/02/30/a7444fb23aa76860a14198fab96ac79f1866b0a6e19e26c4381b0938e50f/tornado-6.5.7-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e726f0c75da7726eec023aa62751ff8878bd2737e34fbdd33b1ae5897d2200f5", size = 449985 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5c/42/5f0e56c01e8d9d36f4e23f367b85ae6cae0c1ecddd5e6977d8388ad27488/tornado-6.5.7-cp39-abi3-win32.whl", hash = "sha256:f8de3bf12d3efdd0cbe7c8887868198f8a91415e3f29fcf258d9b8eb7b1d9ae4", size = 451047 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c9/a4/b393076ffb21b469eec5b328a0534cf03a3b90bfc6b1f09507cdd075d938/tornado-6.5.7-cp39-abi3-win_amd64.whl", hash = "sha256:de942f843533a039ef9fa3d9c88c7cd8a7c94553fb5ad0154270989b3d99a2c4", size = 451485 },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/71/2e/7b1c769803121b809112cf9a00681c472eae1d80e32d7ec0e0bd61d0d0e1/tornado-6.5.7-cp39-abi3-win_arm64.whl", hash = "sha256:ff934fce95643af5f11efdae618eaa73d469dc588641e5c8d19295a0c65c4796", size = 450506 },
 ]
 
 [[package]]
