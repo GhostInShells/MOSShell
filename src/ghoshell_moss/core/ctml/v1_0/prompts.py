@@ -42,6 +42,8 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
         available_commands += 1
         if not cmd_meta.blocking:
             blocks.append("@nonblocking")
+        if cmd_meta.always_observe:
+            blocks.append("@observe")
         blocks.append(cmd_meta.interface)
 
     # with not available commands
