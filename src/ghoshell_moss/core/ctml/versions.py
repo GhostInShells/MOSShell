@@ -1,7 +1,7 @@
 from typing import Iterable
 from pathlib import Path
 
-CTML_VERSION = "v1_0_0.zh"
+CTML_VERSION = "v1_0_0.en"
 
 __all__ = [
     'get_moss_ctml_meta_instruction',

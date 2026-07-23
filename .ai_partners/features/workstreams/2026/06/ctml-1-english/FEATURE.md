@@ -1,20 +1,19 @@
 ---
-title: CTML 1.0.0 English Revision — 协议级 review 锚点 + 术语零跳转
-status: draft
-priority: P1
 created: 2026-06-15
-updated: 2026-07-23
 depends: []
-milestone:
-description: >-
-  Rewrite CTML 1.0.0 prompt in English to align terminology with code (channel /
-  scope / command), clear out legacy metaphors (funnel / parent-child dispatch),
-  and tighten the prompt budget toward the 5-6k sweet spot. Scope syntax
-  converges to quantifier tags <_> <all> <any> (until=/channel= attributes
-  become invisible compat layer — prompt is the only truth). Primitives
-  reduced (wait/wait_idle removed, branch/sample to experimental). New
-  @observe decorator exposure + no-fabricated-results red line. Pre-beta1,
-  no protocol promise yet — version stays 1.0.0.
+description: Rewrite CTML 1.0.0 prompt in English to align terminology with code (channel
+  / scope / command), clear out legacy metaphors (funnel / parent-child dispatch),
+  and tighten the prompt budget toward the 5-6k sweet spot. Scope syntax converges
+  to quantifier tags <_> <all> <any> (until=/channel= attributes become invisible
+  compat layer — prompt is the only truth). Primitives reduced (wait/wait_idle removed,
+  branch/sample to experimental). New @observe decorator exposure + no-fabricated-results
+  red line. Pre-beta1, no protocol promise yet — version stays 1.0.0.
+milestone: null
+priority: P1
+status: completed
+status_note: landed en default + zh sync + compat layer + @observe + primitives regroup
+title: CTML 1.0.0 English Revision — 协议级 review 锚点 + 术语零跳转
+updated: '2026-07-24'
 ---
 
 # CTML 1.0.0 English Revision
@@ -273,4 +272,46 @@ CTML 话术演进史散落在与不同模型的对话中, 主要锚点:
 
 ---
 
-*调研与评审: DeepSeek V4 / Claude Opus 4.7 / claude-fable-5 / Claude Opus 4.7 (1M context) 与人类工程师, 2026-06-15 ~ 2026-07-23*
+### 2026-07-24 落地完成 (Claude Opus 4.7 (1M context) + claude-fable-5 + DeepSeek V4 与人类工程师)
+
+**落地范围**: 工作分解 7 步全部完成. 具体差异与最终形态:
+
+1. **兼容层代码** (`constants.py` / `token_parser.py` / `elements.py`): 标签集扩为 `{_, all, any, __scope__}`, 常量化 (无魔法值), 标签名→until 归一; 矛盾输入拒绝; runtime 与 `ChannelScopeDefaultType='flow'` **一行未动** (预期在下一代 CTML 收敛). 已 commit `3a6ec853`.
+2. **原语调整** (`ctml_main.py`): 从"物理删除 wait/wait_idle"改为"分组重排" — default 集精简到 5 (sleep, clear, observe, noop, loop) + 特殊挂载 (interrupt, thinking), experimental 集为 4 (wait, wait_idle, sample, branch). 决策变更理由: 物理删除需改写 `test_wait_primitive.py` 及 test_sleep/test_clear 中 4 处 `<wait>` CTML feed, 与本 workstream 无关的测试改动过多; 分组重排即达成 prompt-visibility 目标 (default 不再暴露), 内部使用不受影响. 已 commit `f76376a2`.
+3. **`@observe` 暴露** (`v1_0/prompts.py:make_interfaces`): `always_observe=True` 的命令在 interface 输出 `@observe` 行, 顺序 `@nonblocking → @observe → signature`. 单测 `test_prompts.py` 3 case 断言 (触发/不触发/装饰器堆栈顺序). 已 commit `f76376a2`.
+4. **单测扩展**: 量词标签 5 case + `_cid` 纯字符串 1 case + `@observe` 3 case, 总计 test_ctml_v1 47→48, 新增 test_prompts.py 3 case. ctml 全套 218 pass.
+5. **`v1_0_0.en.md`**: 落地全部 KD, 预算 **3927 tokens** (cl100k_base 估算, 显著低于 5-6k 目标). 关键改动:
+   - Scope 段完全用 `<_>` / `<all>` / `<any>` 三个量词标签教, `until=` / `channel=` 属性零暴露.
+   - `_cid` 段措辞: "identity tag ... does not need to increment, does not need to be ordered, does not need to be globally unique".
+   - "Fabrication red line" 独立段落 + few-shot 4 号反例, KD11 幻觉红线落地.
+   - 4 个 few-shots (基本分组 / 量词 / 父子阻塞对 / 观察纪律对) + 2 个 inline pitfalls (chunks__ 属性 / __main__ 前缀), 未放可选 capstone.
+   - **人类工程师 review 拿掉**: `## How MOSS is served` 段整段删除 (host 层信息不该进模型 prompt), 中文版此处也不存在.
+   - **元对话共识 slogan**: "May Model Ghost Wandering in Shells" (含语病但意图明确), 摒弃 "AI" 一词 — MOSS 项目哲学: 不承认"人工智能", 只承认"智慧通过硅基神经网络降临了".
+6. **中文版 `v1_0_0.zh.md` 同步** (claude-fable-5 主笔, DeepSeek V4 与 Claude Opus 4.7 1M review): KD7-R (scope 语法段) + KD8 (`_cid` 措辞) + KD11 (幻觉红线段) + slogan 同步. 中文版原有 "MOSS 提供方式" 段已一并删除 (英文版无对应段落). 双写对照性达成: 除措辞与语言外, 语义 1:1 对齐.
+7. **默认版本切换**: `versions.py:CTML_VERSION` 从 `v1_0_0.zh` 改为 `v1_0_0.en`. `.moss/modes/default/HOST.md` / `.moss/modes/system_test/HOST.md` / `stubs/workspace/modes/default/HOST.md` 三处硬编码 `ctml_version: v1_0_0.zh` 全部删除, 让默认走 versions.py. 218 单测在英文版 default 下全绿 — 单测行为不依赖 prompt 内容, 但切换本身证明 host 层通路无回归.
+
+**设计层差异 (英文版 vs 中文版, 均已在双版本达成)**:
+
+- **零 host 层泄漏**: 中文版历史遗留的 "MOSS 提供方式" 段 (CTML as tool / Answer in CTML 两种集成模式) 在英文版中彻底删除, 中文版同步删除. 集成模式由 host 决定, 与模型此刻的行为无关, 不进 prompt.
+- **术语零跳转**: 英文版 `channel` / `scope` / `command` 与代码 backtick 同名, 中文版同一术语在关键处保留英文 (`channel`, `scope`, `occupy`, `blocked`, `FIFO`), 避免"通道/作用域/占据/阻塞"再翻译一次的心智成本.
+- **父子阻塞措辞**: 弃 "漏斗式" / "父子分发", 用 "parent-child blocking (occupy propagation)" / "父子阻塞（occupy 传播）"; 直接从 Principle 3 推导, 不引入独立比喻.
+
+**未决尾巴** (下期 workstream 或挂账):
+
+- `<result command="...">` 中的 `cid` 附着形式 (人类工程师正在优化), 英文版当前措辞为 "MOSS emits `<result ...>` in a subsequent message", 不写死实现细节, 待后续 review.
+- KD10 "future note" 中的"解析时被调用的特殊 command" (编译期宏, branch/sample 的最终归宿) — 本期不动.
+- `__content__` 空轨容错开关的可解释性 — 挂账.
+- 双写数据采集 (用 800+ 单测 + ThreeLoopSuite 作为压力测试, 对比模型踩坑频率) — 不属于本 workstream, 待后续.
+
+**碰撞轨迹要点** (本次落地会话, 完整轨迹未落 discuss):
+
+1. **实现顺序的两次调整**: 步骤 2 (原语调整) 起初按 FEATURE.md 表格文字 "物理删除 wait/wait_idle" 执行, 人类工程师澄清"只做 ctml_main.py 里的分组重排"避免测试改动扩散; 改为 default/experimental 分组重排, 无功能改动只是 prompt 可见性收敛.
+2. **`_cid` 纯字符串单测**: 人类工程师主动提出 `_cid="some_id"` (纯字符串) 需要单测保护 — 担心 parser 若无意中经过 literal_eval 会把非数字标识符吞掉. 补 `test_ctml_command_cid_accepts_plain_string`, `_cid="first_call"` / `_cid="second-call"` (含连字符, 非合法 Python 标识符) 都无损传到 CommandTask.call_id, 约定被单测锁住.
+3. **元对话 rewind**: 起草英文版尾句时首次写 "AI Ghost Wandering in Shells", 元对话共识后改为 "May Model Ghost Wandering in Shells" — 有语病但意图明确, 双版本同步. MOSS 项目哲学此刻显性化.
+4. **测试的直接性**: `test_prompts.py` 首版试图从 PyChannel 反射出 ChannelMeta, 遭遇 pydantic 校验错误; 人类工程师澄清 "make_interfaces 是纯函数, 直接构造 CommandMeta 更干净, 不必从 channel 开始". 重写后 3 case pass, 单测风格更纯粹.
+
+**下一步**: FEATURE.md set-status completed + 整合 commit. 数据采集 (双写实验) 与 `<result>` 优化留作后续 workstream.
+
+---
+
+*调研与评审: DeepSeek V4 / Claude Opus 4.7 / claude-fable-5 / Claude Opus 4.7 (1M context) 与人类工程师, 2026-06-15 ~ 2026-07-24*

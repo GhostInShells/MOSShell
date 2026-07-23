@@ -661,6 +661,33 @@ async def test_ctml_command_cid_and_result():
 
 
 @pytest.mark.asyncio
+async def test_ctml_command_cid_accepts_plain_string():
+    """`_cid` is an identity tag — a plain string like `some_id` must reach
+    CommandTask.call_id and propagate into caller_name unchanged.
+
+    Guards KD8 (`_cid` is a label, not an auto-increment counter): if the
+    parser ever coerces `_cid` through literal_eval or numeric fast paths,
+    this test breaks."""
+    chan = new_channel(name="calc")
+
+    @chan.build.command()
+    async def double(x: int) -> int:
+        return x * 2
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <calc:double _cid="first_call" x="3"/>
+        <calc:double _cid="second-call" x="7"/>
+        """,
+    )
+    call_ids = {t.call_id for t in tasks}
+    assert call_ids == {"first_call", "second-call"}
+    results = {t.caller_name(): t.result() for t in tasks}
+    assert results == {"calc:double:first_call": 6, "calc:double:second-call": 14}
+
+
+@pytest.mark.asyncio
 async def test_ctml_observe_interrupt():
     """测试 ObserveError 中断所有运行中命令（Observe 返回则不中断）"""
     from ghoshell_moss.core.concepts.command import ObserveError
