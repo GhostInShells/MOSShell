@@ -612,6 +612,17 @@ class FsMemento(MementoABC):
             ref_owner = from_ref.origin
             if not self._commit_dir_for(ref_owner, from_ref.commit_id).exists():
                 raise CommitNotFoundError(f"from_ref commit {from_ref.commit_id!r} not found")
+            if from_ref.moment_id is not None:
+                cdir = self._commit_dir_for(ref_owner, from_ref.commit_id)
+                mp = cdir / _MOMENTS_JSONL
+                if mp.exists():
+                    for obj in _read_lines(mp):
+                        if obj.get("t") == "commit":
+                            if from_ref.moment_id not in obj.get(_F_MOMENT_IDS, []):
+                                raise MomentNotInCommitError(
+                                    f"moment {from_ref.moment_id!r} not in commit {from_ref.commit_id!r}"
+                                )
+                            break
         branch_dir.mkdir(parents=True)
         if from_ref is not None:
             self._write_ref(name, from_ref)
@@ -773,12 +784,12 @@ class FsMemento(MementoABC):
 
         # 补完 ref — 只在缺失或指向不存在 commit 时修复
         cur = self._read_ref(name)
-        if cur is not None and self._commit_dir(cur.commit_id).exists():
-            return  # ref 有效, 不动 (可能是 reset 故意移走的)
+        if cur is not None and cur.commit_id != cid and self._commit_dir(cur.commit_id).exists():
+            return  # ref 被 reset 故意移走, 不动
         if cur is None or cur.commit_id != cid:
             self._write_ref(name, BranchRef(origin=self._owner, commit_id=cid))
 
-        # 清理 staging 残留
+        # 清理 staging 残留 (crash between ref-write and staging-truncate)
         sp = self._staging_path(name)
         if sp.exists():
             _, recs = self._resolve_staging_of(name)
