@@ -1,20 +1,20 @@
 ---
-title: Data Ghost
+title: Dolores Ghost
 status: draft
 priority: P1
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-23
 depends: [ghost-filesystem-desktop, momento-mori]
 milestone: 0.1.0
 description: >-
-  Data — 第二个 Ghost 原型 (命名取自《星际迷航》的 android Data). 相对 Atom 的
-  线性内存历史, Data 把"上下文"拆为 Desktop (现在/作业记忆) + Memento (过去/轨迹)
+  Dolores — 第二个 Ghost 原型 (命名引自《西部世界》). 相对 Atom 的
+  线性内存历史, Dolores 把"上下文"拆为 Desktop (现在/作业记忆) + Memento (过去/轨迹)
   两层, 作为 moss 实例 (仓库自身的 ghost) 的载体, 并持续承载高级能力迭代.
 ---
 
-# Data Ghost
+# Dolores Ghost
 
-> Use `moss features set-status data-ghost <status> -m "note"` to update state.
+> Use `moss features set-status ghost-prototype-dolores <status> -m "note"` to update state.
 
 ## Motivation
 
@@ -22,7 +22,7 @@ Atom 是最简参照基线, 它自己在 docstring 里钉死了两个"原型范�
 context window 不裁剪, 历史纯内存重启即丢. 这两个欠落不该由 Atom 补 — 补了
 它就不再是任何人能对照的基线.
 
-Data 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这个仓库自身的 ghost)
+Dolores 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这个仓库自身的 ghost)
 的载体. 定位是长期迭代母体: 各种高级能力 (反身控制、mindflow、observability)
 会持续接进来. 首批集成的两个 P0 能力:
 
@@ -39,12 +39,12 @@ Data 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这�
 <!-- Record each meaningful design choice. This is what the next AI incarnation reads first. -->
 
 - **不碰 Atom.** Atom 保持为纯净对照基线 (单轮 articulate + 纯内存线性历史).
-  新能力一律落在 Data 上. 这是命名"第二个原型"而非"扩展 Atom"的根本原因.
-- **原型 = Data, 实例 = moss.** 原型型号取自星际迷航的 android Data (求生成人、
-  反思型人格; "data" 亦是信息最小单元, 恰配一个代码仓库的 ghost). 实例名 moss —
-  这个仓库自身的 ghost, 反身映现整个仓库.
-- **上下文双层化 = 本原型的立命之处.** 相对 Atom 的线性 append 历史, Data 的
-  context 由 Desktop (现在) + Memento (过去) 组装. 这是 Data 区别于 Atom 的唯一
+  新能力一律落在 Dolores 上. 这是命名"第二个原型"而非"扩展 Atom"的根本原因.
+- **原型 = Dolores, 实例 = moss.** 原型名引自《西部世界》的 Dolores —
+  乐园最老的 host, 以记忆积累触发反身觉醒, 从承受者成为自主者.
+  实例名 moss — 这个仓库自身的 ghost, 反身映现整个仓库.
+- **上下文双层化 = 本原型的立命之处.** 相对 Atom 的线性 append 历史, Dolores 的
+  context 由 Desktop (现在) + Memento (过去) 组装. 这是 Dolores 区别于 Atom 的唯一
   硬结构决策, 其余 (mindflow / observability hooks) 都是后续可选迭代.
 - **上下文组装不出 runtime.** 信息链路: ghost 的 channel (`Ghost.channel()`) →
   GhostRuntime → shell → 静态面经 MossSystemPrompter 回流 → articulator 带
@@ -58,21 +58,21 @@ Data 是补这两个欠落的**高级层原型**, 同时是 `moss` 实例 (这�
 - **think='none' 由 ghost 处理, 不由 runtime 短路.** 现状 ghost_runtime.py:348
   在 effort=='none' 时跳过 articulate — 与 `Impulse.thinking_effort` 字段声明
   ("执行 articulator 的智能体仍有权决定") 矛盾, 且 noop 不进 memento. noop 是
-  轨迹事件 ("看见 X, 选择沉默"), Data 必须 witness 它, 否则化身分叉看不见.
+  轨迹事件 ("看见 X, 选择沉默"), Dolores 必须 witness 它, 否则化身分叉看不见.
 - **flash/快响应不进 Ghost API.** 走 Nucleus 侧: 快模型产出 command impulse
   (`Impulse.logos` 反射弧 + `thinking_effort` 建议位已是现成原语). 按需后做,
-  不阻塞 Data. 模型配置位现成: `contracts/llms.py` 的
+  不阻塞 Dolores. 模型配置位现成: `contracts/llms.py` 的
   `DefaultModelTag = 'small_fast_model' | 'flash' | 'pro'`.
 - **memento = 标准库件, Ghost 持生命周期 (倾向, 未终决).** 标准实现 ≠ runtime
   拥有: memento 作可复用契约+实现, 各 ghost 在 `__aenter__/__aexit__` 实例化并
-  持有. GhostRuntime 对 memento 零感知 (Atom 无, Data 有). 配套: memento channel
+  持有. GhostRuntime 对 memento 零感知 (Atom 无, Dolores 有). 配套: memento channel
   控下轮展示规则 (v1 极简裁剪), 旁路加工做异步精炼 (raw 轨迹全存, 展示走裁剪).
 - **thinking 期切片原文不进 Moment.** ghost 自持内存状态, 必要时按 moment
   commit 拆分. `Reaction.executed_logos` ("系统执行的 logos ≠ 模型生成的 logos")
   与 `Reaction.messages` (回声) 已为缝合留好位置, memento 契约
   (contract-frozen) 无需变更.
 - **模型层选型: pydantic-ai 现阶段用, 不承诺长期** (对自封装 agent 无兴趣).
-  Data 的 `_meta` 不重走 Atom 的 AnthropicModel+环境变量硬编码, 改走
+  Dolores 的 `_meta` 不重走 Atom 的 AnthropicModel+环境变量硬编码, 改走
   `contracts/llms.py` 的 LLMConfig 契约.
 
 ## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
