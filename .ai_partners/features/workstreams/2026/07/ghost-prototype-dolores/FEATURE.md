@@ -46,11 +46,77 @@ Dolores 不做什么:
 
 - **Desktop 集成** — 独立的 feature (`ghost-filesystem-desktop`), 属 mode 层.
   Dolores 不直接触碰 desktop; desktop 是否被 Dolores 使用由 mode 配置决定.
-- **认知场构建** — 默认认知场的完整实现可能独立为另一个 feature. Dolores 的
-  ghost channel 提供挂载点, 认知场本体按需接入.
+- **认知场构建** — Ground 协议由 `ghost-ground` feature 提供通用基础设施.
+  Dolores 只做 ghost_home 认知场的装配和默认内容, 不做 ground 协议本身.
 - **Mindflow channel 完工** — 可能独立 feature. Dolores 不阻塞 mindflow 的后续迭代.
 - **"哪些 tool 不进 channel"** — 不做全局判据. 保留 prototype 接口, 由具体
   channel 实现自行决定注册策略.
+
+## Ghost Home Ground
+
+Dolores 的认知场 = ghost_home 目录 + Ground 协议. ghost_home 是 ghost 自身的
+认知基建根目录, 挂载在 ghost channel 的 `ground` 子路径上.
+
+### 双 GroundSet 架构
+
+Dolores 持有两个 GroundSet:
+
+| GroundSet | 根 | 何时使用 | 场是 |
+|---|---|---|---|
+| **ghost_home** | ghost 自身认知目录 | 始终存在, 默认 | skills / memory / experience |
+| **project_root** | 被操作项目的根 | `--mode` 决定 | features / .design / .discuss |
+
+两个 GroundSet 平级不嵌套. project_root 由 mode 提供 (如 `--mode meta` 时是
+MOSS 仓库本身), ghost_home 始终是 ghost 的默认面. ghost channel 负责管理
+当前注意力落在哪个 GroundSet 的哪个场上.
+
+### ghost_home 目录结构
+
+```
+ghost_home/
+  GROUND.md                    # ghost 自身认知入口 (L0)
+  skills/                      # Claude-compatible skills 范式
+  memory/                      # 大记忆体系
+    existential/               # 存在主义总结 — 我是谁, 我的价值观
+    temporal/                   # 时态摘选 — 年/月/周/日 分层
+  experience/                  # 经验机制 (project-level 场景经验)
+    L1/                        # 两层渐进式披露 — 索引层
+      ...                      # 详情层
+  .grounds/                    # ghost 自身模板
+```
+
+### 场上挂载
+
+Ghost channel 的 `ground` 子路径提供:
+
+```
+ghost.ground
+  ├── open / close / reopen    # 场开合 (两个 GroundSet 间切换)
+  ├── pin / unpin / update     # 注视操作
+  ├── frame / observe          # 诊断
+  └── <label>                  # 每个 opened ground = command-less virtual channel
+        instruction = 法链
+        context_messages = 帧
+```
+
+### 化身与认知自迭代
+
+活数据 (perspectives + memento + inputs) 每次运行产生. 上下文组装是独立化身
+接口 — 不同 mode/user/task 从同一份活数据组装不同上下文. Worktree fork 构建
+新化身, 复用活数据, 验证不同行为模式:
+
+```
+fork → worktree 隔离化身 → 并行运行 → snapshot → compare → 学习
+```
+
+这是 Dolores 独立思维模块 (并行化身 + 关键帧自测) 的地基.
+
+### 与 MOSS Project Ground 的关系
+
+`moss-project-ground` feature 定义 MOSS 项目自身的 GROUND.md (项目根,
+features/designs/specs 寻路). Dolores 在 `--mode meta` 下实例化两个
+GroundSet: ghost_home (自身认知) + project_root (MOSS 项目认知).
+在其他 mode 下 project_root 指向被操作的项目.
 
 ## Key Decisions
 
@@ -89,8 +155,20 @@ Dolores 不做什么:
 - **模型层选型: pydantic-ai 现阶段用, 不承诺长期** (对自封装 agent 无兴趣).
   Dolores 的 `_meta` 不重走 Atom 的 AnthropicModel+环境变量硬编码, 改走
   `contracts/llms.py` 的 LLMConfig 契约.
-- **模型自感知: llms.py 集成.** ghost 通过 LLMConfig 契约感知可用模型,
-  可切换自身使用的模型. 具体切换粒度与策略后续定.
+- **模型自感知: _llms 模块 + ghost.model channel.** Dolores 内建 `_llms` 模块,
+  封装 LLMConfig 的查询与切换. 通过 ghost channel 以 `ghost.model` 路径挂载,
+  暴露以下能力:
+
+  - **current-model**: 返回当前 `ResolvedModel` (provider, model name, context_window)
+  - **list-models**: 返回 `LLMConfig.list_models()`, 列出所有可切换模型
+  - **switch-model**: `ghost._meta` 更新持有的 `ResolvedModel`, 下一帧 `articulate()` 生效.
+    走 `LLMConfig.get_model()` 默认 fallback 到 default, 不怕误配
+  - **window-status**: 自省窗口压力 — context_window 上限 + 上一帧实际 token 用量 +
+    剩余预算. 运行时数据来自 adapter (输入侧 moment 组装的 token 数) 与 articulator
+    (API response 的 usage 字段)
+
+  切换本身是简单赋值, 回归周期预算小. 窗口自省让 ghost 知道自己"还剩多少",
+  自主决定裁剪或切换.
 - **独立思维模块: 并行化身 + 关键帧自测.** 思维模块从 ghost runtime 中独立出来,
   支持 fork 并行化身 (一个 moment 多条思维链) 和 checkpoint 关键帧自测
   (思维链中途 snapshot 评估). 设计细节施工时展开.
@@ -128,8 +206,13 @@ ghost.articulate(articulator):
 
 <!-- Gotchas, non-obvious behaviors, reasons for rejecting simpler alternatives. -->
 
-- 参照 `ghosts/atom/` 的分文件形态: `_meta.py` (GhostMeta bootstrapper) +
-  `_runtime.py` (Ghost runtime) + `_adapter.py` (Moment↔ModelRequest) + 单测.
+- 参照 `ghosts/atom/` 的分文件形态. Dolores 的文件结构预期:
+
+  - `_meta.py` — GhostMeta bootstrapper (LLMConfig 集成)
+  - `_runtime.py` — Ghost runtime (Memento + interleaved thinking)
+  - `_adapter.py` — Moment↔ModelRequest
+  - `_llms.py` — 模型自感知模块 (LLMConfig 查询/切换/窗口自省), 以 `ghost.model` 路径挂入 ghost channel
+  - 单测
 - 依赖 `momento-mori` 的契约就位程度. memento 当前 contract-frozen-pending-review.
   起步前先对齐可用表面.
 - 认知场默认实现、mindflow channel 完工是独立 feature, Dolores 的 ghost channel
