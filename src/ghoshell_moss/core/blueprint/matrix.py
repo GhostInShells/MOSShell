@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 
 from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.blueprint.cell import Cell, CellMesh, CellAddress, CellRuntimeInfo
+from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.contracts import Workspace, ResourceRegistry
@@ -159,7 +159,7 @@ class Matrix(ABC):
 
     @property
     @abstractmethod
-    def network(self) -> NetworkMetadata:
+    def network_info(self) -> NetworkMetadata:
         """
         本 matrix 所接入网络的配置元信息.
         通常 Cell 进程不需要关注具体信息. 除了运行逻辑和所处网络本身有关时查看.
@@ -190,7 +190,7 @@ class Matrix(ABC):
     # -- 观察: 网络的延迟视图 (惰性门) -- #
 
     @abstractmethod
-    async def mesh(self) -> CellMesh:
+    async def network(self) -> CellNetwork:
         """
         提供 API 观察网络中所有 Cell 的相关讯息.
         只有在运行时动态反映 cell 状态时, 才需要获取.
@@ -322,7 +322,7 @@ class Matrix(ABC):
             'mode': self.env.mode_name,
             'ghost': self.env.ghost_name,
             'cell': self.this.address,
-            'network': self.network.name,
+            'network': self.network_info.name,
         }
 
     def get_runtime_url_path(self, *scopes: RuntimeScopeKey, **kwargs: str) -> str:

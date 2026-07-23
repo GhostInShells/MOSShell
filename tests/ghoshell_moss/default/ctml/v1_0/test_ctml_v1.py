@@ -661,6 +661,33 @@ async def test_ctml_command_cid_and_result():
 
 
 @pytest.mark.asyncio
+async def test_ctml_command_cid_accepts_plain_string():
+    """`_cid` is an identity tag — a plain string like `some_id` must reach
+    CommandTask.call_id and propagate into caller_name unchanged.
+
+    Guards KD8 (`_cid` is a label, not an auto-increment counter): if the
+    parser ever coerces `_cid` through literal_eval or numeric fast paths,
+    this test breaks."""
+    chan = new_channel(name="calc")
+
+    @chan.build.command()
+    async def double(x: int) -> int:
+        return x * 2
+
+    tasks = await ctml_shell_test(
+        chan,
+        ctml="""
+        <calc:double _cid="first_call" x="3"/>
+        <calc:double _cid="second-call" x="7"/>
+        """,
+    )
+    call_ids = {t.call_id for t in tasks}
+    assert call_ids == {"first_call", "second-call"}
+    results = {t.caller_name(): t.result() for t in tasks}
+    assert results == {"calc:double:first_call": 6, "calc:double:second-call": 14}
+
+
+@pytest.mark.asyncio
 async def test_ctml_observe_interrupt():
     """测试 ObserveError 中断所有运行中命令（Observe 返回则不中断）"""
     from ghoshell_moss.core.concepts.command import ObserveError
@@ -1378,6 +1405,174 @@ async def test_primitive_cannot_be_used_in_non_root_channel():
 
 
 # ============= 总结性测试：端到端人机交互场景 =============
+
+# ============= CTML v1.0.0 KD7-R: 量词标签升格 (Claude Opus 4.7 1M) ============= #
+# 覆盖: <all>/<any> 标签映射 / <_> 与 until='flow' 归一 / 属性冲突拒绝 / 无效 until 报错 /
+# 带通道前缀的量词写法.
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_all_waits_for_parallel():
+    """<all> 标签等价 until='all': 等所有并行子任务完成."""
+    a = new_channel(name="a")
+    b = new_channel(name="b")
+    results = {}
+
+    @a.build.command()
+    async def fast():
+        await asyncio.sleep(0.01)
+        results["fast_done"] = True
+
+    @b.build.command()
+    async def slow():
+        try:
+            await asyncio.sleep(0.05)
+            results["slow_done"] = True
+        except asyncio.CancelledError:
+            results["slow_cancelled"] = True
+
+    ctml = """
+    <all>
+        <a:fast/>
+        <b:slow/>
+    </all>
+    """
+    await ctml_shell_test(a, b, ctml=ctml)
+    # all 语义: 两个都跑完.
+    assert results.get("fast_done") is True
+    assert results.get("slow_done") is True
+    assert "slow_cancelled" not in results
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_any_cancels_others():
+    """<any> 标签等价 until='any': 任一完成掐掉其余."""
+    a = new_channel(name="a")
+    b = new_channel(name="b")
+    results = {}
+
+    @a.build.command()
+    async def fast():
+        await asyncio.sleep(0.01)
+        results["fast_done"] = True
+
+    @b.build.command()
+    async def slow():
+        try:
+            await asyncio.sleep(0.1)
+            results["slow_done"] = True
+        except asyncio.CancelledError:
+            results["slow_cancelled"] = True
+
+    ctml = """
+    <any>
+        <a:fast/>
+        <b:slow/>
+    </any>
+    """
+    await ctml_shell_test(a, b, ctml=ctml)
+    assert results.get("fast_done") is True
+    assert results.get("slow_cancelled") is True
+    assert "slow_done" not in results
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_underscore_flow_compat():
+    """`<_>` 默认态 与 历史 `until='flow'` 行为一致: 占据链跑完即闭合, 并行子任务被 cancel."""
+    # 抄 test_ctml_flow_cancels_long_running_child 的形状.
+
+    async def _run(ctml_str: str) -> dict:
+        a = new_channel(name="a")
+        b = new_channel(name="b")
+        status = {"b_cancelled": False}
+
+        @a.build.command()
+        async def fast_cmd():
+            await asyncio.sleep(0.01)
+
+        @b.build.command()
+        async def slow_cmd():
+            try:
+                await asyncio.sleep(0.1)
+                status["b_finished"] = True
+            except asyncio.CancelledError:
+                status["b_cancelled"] = True
+                raise
+
+        await ctml_shell_test(a.import_channels((b, "b")), ctml=ctml_str, timeout=1)
+        return status
+
+    # 新写法: <_>
+    new_form = await _run("<_ channel='a'><a.b:slow_cmd/><fast_cmd/></_>")
+    assert new_form["b_cancelled"] is True
+    assert "b_finished" not in new_form
+
+    # 老写法: until='flow'. 归一到相同行为.
+    legacy_form = await _run("<_ channel='a' until='flow'><a.b:slow_cmd/><fast_cmd/></_>")
+    assert legacy_form["b_cancelled"] is True
+    assert "b_finished" not in legacy_form
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_conflict_rejected():
+    """`<all until='any'>` 标签与属性冲突, 拒绝解析."""
+    a = new_channel(name="a")
+
+    @a.build.command()
+    async def foo():
+        return 1
+
+    with pytest.raises(InterpretError):
+        await ctml_shell_test(a, ctml="<all until='any'><a:foo/></all>")
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_matches_attribute_ok():
+    """`<all until='all'>` 标签与属性一致, 允许 (纯冗余不算矛盾)."""
+    a = new_channel(name="a")
+    done = []
+
+    @a.build.command()
+    async def foo():
+        done.append("foo")
+
+    await ctml_shell_test(a, ctml="<all until='all'><a:foo/></all>")
+    assert done == ["foo"]
+
+
+@pytest.mark.asyncio
+async def test_scope_invalid_until_value_rejected():
+    """`<_ until='bogus'>` 不在合法枚举里, 报错."""
+    a = new_channel(name="a")
+
+    @a.build.command()
+    async def foo():
+        return 1
+
+    with pytest.raises(InterpretError):
+        await ctml_shell_test(a, ctml="<_ until='bogus'><a:foo/></_>")
+
+
+@pytest.mark.asyncio
+async def test_quantifier_tag_with_channel_prefix():
+    """`<a:all>` 前缀式量词: 通道从前缀取, 语义还是等所有."""
+    a = new_channel(name="a")
+    order = []
+
+    @a.build.command()
+    async def fast():
+        await asyncio.sleep(0.01)
+        order.append("fast")
+
+    @a.build.command()
+    async def slow():
+        await asyncio.sleep(0.03)
+        order.append("slow")
+
+    await ctml_shell_test(a, ctml="<a:all><fast/><slow/></a:all>")
+    # a 通道内 fast/slow 都跑完 (同通道命令串行, 按 FIFO 顺序).
+    assert order == ["fast", "slow"]
+
 
 @pytest.mark.asyncio
 async def test_end_to_end_assistant_greeting_and_question():

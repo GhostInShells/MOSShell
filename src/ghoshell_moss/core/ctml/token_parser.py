@@ -13,6 +13,7 @@ from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ghoshell_moss.core.ctml.v1_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
     CALL_ID_RESERVE_KEY, MAIN_CHANNEL_NAME, MAIN_CHANNEL_SHORTCUT,
+    SCOPE_TAG_NAMES,
 )
 from ast import literal_eval
 
@@ -380,8 +381,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
             call_id = parsed_kwargs.pop(self._call_id_reserve_key)
             call_id = str(call_id)
 
-        # 判断是否是 scope.
-        if command_name == self._scope_shortcut or command_name == self._scope_command_name:
+        # 判断是否是 scope. CTML v1.0.0 扩容为 {_, all, any, __scope__}:
+        # `<_>` 默认量词 / `<all>` `<any>` 升格量词 / `<__scope__>` 显式全名.
+        # 具体 until 语义在 elements.ScopeEnterTask 里统一处理 (标签名优先, 矛盾拒绝).
+        if command_name in SCOPE_TAG_NAMES:
             # CTML v1.0.0 规则, 使用指定的 key 返回 channel name.
             if not chan:
                 if self._scope_channel_name_key in parsed_kwargs:

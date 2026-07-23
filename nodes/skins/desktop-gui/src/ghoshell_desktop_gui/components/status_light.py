@@ -2,25 +2,36 @@
 
 import reflex as rx
 
-_STATUS_COLORS: dict[str, str] = {
-    "pending": "gray",
-    "running": "blue",
-    "awaiting_approval": "orange",
-    "approved": "green",
-    "rejected": "red",
-    "completed": "green",
-    "error": "red",
-}
 
-_ANIMATION_CLASS: dict[str, str] = {
-    "pending": "",
-    "running": "status-pulse-slow",
-    "awaiting_approval": "status-pulse-fast",
-    "error": "status-pulse-fast",
-    "approved": "",
-    "rejected": "",
-    "completed": "",
-}
+def status_light(status) -> rx.Component:
+    return rx.box(
+        width="10px",
+        height="10px",
+        border_radius="50%",
+        background=rx.cond(
+            status == "running", "blue",
+            rx.cond(status == "awaiting_approval", "orange",
+                rx.cond(status == "approved", "green",
+                    rx.cond(status == "rejected", "red",
+                        rx.cond(status == "completed", "green",
+                            rx.cond(status == "error", "red",
+                                "gray",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        class_name=rx.cond(
+            status == "running", "status-pulse-slow",
+            rx.cond(status == "awaiting_approval", "status-pulse-fast",
+                rx.cond(status == "error", "status-pulse-fast",
+                    "",
+                ),
+            ),
+        ),
+        flex_shrink="0",
+    )
 
 
 def pulse_keyframes() -> str:
@@ -36,14 +47,3 @@ def pulse_keyframes() -> str:
         animation: pulse-opacity 0.8s ease-in-out infinite;
     }
     """
-
-
-def status_light(status: str) -> rx.Component:
-    return rx.box(
-        width="10px",
-        height="10px",
-        border_radius="50%",
-        background=_STATUS_COLORS.get(status, "gray"),
-        class_name=_ANIMATION_CLASS.get(status, ""),
-        flex_shrink="0",
-    )

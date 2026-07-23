@@ -1,6 +1,5 @@
-from typing import Dict
 from ghoshell_moss.message import Message
-from ghoshell_moss.core.concepts.channel import ChannelMeta, ChannelFullPath, Channel
+from ghoshell_moss.core.concepts.channel import ChannelMeta, ChannelFullPath
 from ghoshell_moss.core.concepts.command import Command
 from .constants import MOSS_DYNAMIC, MOSS_STATIC, MAIN_CHANNEL_NAME, CONTENT_COMMAND_NAME
 import datetime
@@ -42,6 +41,8 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
         available_commands += 1
         if not cmd_meta.blocking:
             blocks.append("@nonblocking")
+        if cmd_meta.always_observe:
+            blocks.append("@observe")
         blocks.append(cmd_meta.interface)
 
     # with not available commands

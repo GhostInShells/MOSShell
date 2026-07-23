@@ -36,6 +36,7 @@ __all__ = [
     "LsArguments",
     "GroundConvention",
     "UpdateResult",
+    "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
 ]
@@ -81,6 +82,11 @@ class FileArguments(BaseModel):
         pattern=r"^\d+(-\d+)?$",
         description="行区间: 'N' (单行) 或 'N-M' (1-indexed).",
     )
+    budget: int | None = Field(
+        default=None,
+        ge=1,
+        description="内容字符数上限, 超限 truncate.",
+    )
 
     model_config = {"extra": "allow"}
 
@@ -88,13 +94,27 @@ class FileArguments(BaseModel):
 class GlobArguments(BaseModel):
     """glob verb 的 arguments."""
     pattern: str = Field(description="glob pattern (*, **, ? 标准语义).")
+    limit: int | None = Field(default=None, ge=1, description="命中路径数上限.")
+    max_depth: int | None = Field(default=None, ge=1, description="** 递归深度上限.")
 
     model_config = {"extra": "allow"}
 
 
 class FrontmatterArguments(BaseModel):
-    """frontmatter verb 的 arguments."""
-    path: str = Field(description="markdown 文件路径.")
+    """frontmatter verb 的 arguments.
+
+    Single-file mode (path 不含 glob 字符): 提取该文件 frontmatter.
+    Pattern mode (path 含 *?[): 匹配多文件, 每个文件的 frontmatter
+    作为独立结果块. 这是渐进式披露的核心 — 一个 pin 看全部子场身份.
+    """
+    path: str = Field(description="文件路径, 或 glob pattern 匹配多文件.")
+    keys: list[str] | None = Field(
+        default=None,
+        description="只提取指定 frontmatter key. None = 全块.",
+    )
+    budget: int | None = Field(default=None, ge=1, description="内容字符数上限.")
+    limit: int | None = Field(default=None, ge=1, description="多文件模式命中数上限.")
+    max_depth: int | None = Field(default=None, ge=1, description="递归发现深度上限.")
 
     model_config = {"extra": "allow"}
 
@@ -103,6 +123,12 @@ class LsArguments(BaseModel):
     """ls verb 的 arguments."""
     path: str = Field(description="目录路径.")
     depth: int = Field(default=2, ge=1, le=8, description="遍历深度. 默认 2.")
+    limit: int | None = Field(default=None, ge=1, description="输出条目数上限.")
+    max_depth: int | None = Field(
+        default=None,
+        ge=1,
+        description="递归深度上限. 与 depth 取较小者.",
+    )
 
     model_config = {"extra": "allow"}
 
@@ -202,6 +228,18 @@ class UpdateResult(BaseModel):
     old_hash: str | None = Field(default=None, description="update 前的 seen_hash.")
     new_hash: str | None = Field(default=None, description="update 后的 seen_hash.")
     summary: str = Field(default="", description="变更摘要, 有界: 'lines +N -M', 'glob: +2 -1', etc.")
+
+
+# -- template info -----------------------------------------------------------
+
+
+class TemplateInfo(BaseModel):
+    """.grounds/ 中的一枚模板."""
+
+    name: str = Field(description="模板名 — .grounds/ 下相对路径去掉 .md 后缀.")
+    source: str = Field(description="发现源: project / user / ghost.")
+    path: Path = Field(description="模板文件绝对路径.")
+    description: str = Field(default="", description="模板 frontmatter 的 description, 或 body 首行.")
 
 
 # -- Ground ------------------------------------------------------------------
@@ -313,6 +351,7 @@ class GroundSet(ABC):
         *,
         label: str | None = None,
         doc: str | Path | None = None,
+        template: str | None = None,
     ) -> Ground:
         """打开一个场.
 
@@ -320,6 +359,8 @@ class GroundSet(ABC):
         - label: 本 GroundSet 内唯一标识. None = dir basename, 冲突加 -2/-3.
         - doc: 显式 GROU.md 路径 (法锚点). None = dir/GROUND.md.
           doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 (K35 携带/属地).
+        - template: .grounds/ 中的模板名. 指定时用模板的 body + pins 初始化
+          Ground. 模板内容复制, 非引用.
 
         同目录幂等 (按 dir.resolve()): 返回已 active 的 Ground, 忽略传入参数.
         """
@@ -337,6 +378,10 @@ class GroundSet(ABC):
     @abstractmethod
     def get(self, label: str) -> Ground | None:
         """按 label 取场. 不存在返回 None (查询语义, 不抛)."""
+
+    @abstractmethod
+    def templates(self) -> list[TemplateInfo]:
+        """返回可用模板清单, 按 name 排序."""
 
     # -- 转发 (CTML 接触面) ---------------------------------------------------
 

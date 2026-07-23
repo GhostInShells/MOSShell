@@ -1,5 +1,7 @@
 """Tests for contract.py — Pin models, GroundConvention, validation."""
 
+from pathlib import Path
+
 import pytest
 
 from ghoshell_moss.ground.contract import (
@@ -86,6 +88,59 @@ class TestPinModels:
     def test_extra_fields_ignored(self):
         p = FilePin(label="f", arguments=FileArguments(path="x.py"))
         assert not hasattr(p, "extra_unknown")
+
+    # -- budget / limit / max_depth (K65) -------------------------------------
+
+    def test_file_pin_with_budget(self):
+        p = FilePin(label="f", arguments=FileArguments(path="x.py", budget=5000))
+        assert p.arguments.budget == 5000
+
+    def test_glob_pin_with_limit(self):
+        p = GlobPin(label="g", arguments=GlobArguments(pattern="*", limit=50))
+        assert p.arguments.limit == 50
+
+    def test_ls_pin_with_limit_and_max_depth(self):
+        p = LsPin(label="d", arguments=LsArguments(path=".", limit=100, max_depth=3))
+        assert p.arguments.limit == 100
+        assert p.arguments.max_depth == 3
+
+    def test_frontmatter_with_keys_and_budget(self):
+        p = FrontmatterPin(
+            label="fm",
+            arguments=FrontmatterArguments(
+                path="FEATURE.md", keys=["$id", "label"], budget=2000, limit=10
+            ),
+        )
+        assert p.arguments.keys == ["$id", "label"]
+        assert p.arguments.budget == 2000
+        assert p.arguments.limit == 10
+
+    def test_frontmatter_with_pattern(self):
+        p = FrontmatterPin(
+            label="children",
+            arguments=FrontmatterArguments(path="$CWD/*/GROUND.md", max_depth=2),
+        )
+        assert p.arguments.path == "$CWD/*/GROUND.md"
+        assert p.arguments.max_depth == 2
+
+    def test_budget_must_be_positive(self):
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            FileArguments(path="x.py", budget=0)
+
+    def test_limit_must_be_positive(self):
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            GlobArguments(pattern="*", limit=0)
+
+
+class TestTemplateInfo:
+    def test_create(self):
+        from ghoshell_moss.ground.contract import TemplateInfo
+        t = TemplateInfo(name="python", source="project", path=Path("/tmp"))
+        assert t.name == "python"
+        assert t.source == "project"
+        assert t.description == ""
 
 
 class TestGroundConvention:

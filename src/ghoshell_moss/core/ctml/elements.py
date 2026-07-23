@@ -27,6 +27,8 @@ from ghoshell_moss.core.helpers.stream import create_sender_and_receiver, ItemT,
 from ghoshell_moss.core.ctml.v1_0.constants import (
     CONTENT_COMMAND_NAME, SCOPE_COMMAND_NAME,
     SCOPE_SHORTCUT, SCOPE_ENTER_COMMAND_NAME, SCOPE_EXIT_COMMAND_NAME,
+    SCOPE_QUANTIFIER_ALL, SCOPE_QUANTIFIER_ANY, SCOPE_QUANTIFIER_TAGS,
+    SCOPE_UNTIL_LEGACY_FLOW, SCOPE_UNTIL_VALID_VALUES, SCOPE_TAG_NAMES,
 )
 from .token_parser import CMTLSaxElement
 
@@ -72,28 +74,50 @@ class ScopeEnterTask(BaseCommandTask[None]):
             name=SCOPE_ENTER_COMMAND_NAME,
             blocking=True,
         )
-        until = kwargs.get('until', None)
-        if until is not None and until not in ['flow', 'all', 'any']:
-            raise InterpretError(f"invalid scope argument until=`{until}`")
+        # CTML v1.0.0 KD7-R: 标签名与 until 属性的兼容归一.
+        # - 标签是 `<_>` / `<__scope__>` (即 SCOPE_QUANTIFIER_TAGS[tag] is None): 属性 until 优先.
+        # - 标签是 `<all>` / `<any>` (SCOPE_QUANTIFIER_TAGS[tag] 有量词值): 标签优先, 属性冲突则拒绝.
+        # - 历史 `until='flow'` 与省略 until 语义一致, 归一为不传.
+        tag_until = SCOPE_QUANTIFIER_TAGS.get(tag)
+        attr_until = kwargs.get('until', None)
+        if attr_until is not None and attr_until not in SCOPE_UNTIL_VALID_VALUES:
+            raise InterpretError(f"invalid scope argument until=`{attr_until}`")
+
+        if tag in (SCOPE_QUANTIFIER_ALL, SCOPE_QUANTIFIER_ANY):
+            # 标签是量词: 标签赢. 属性冲突 (量词值不同) 拒绝; 属性为 'flow' 也算冲突.
+            if attr_until is not None and attr_until != tag_until:
+                raise InterpretError(
+                    f"scope tag <{tag}> conflicts with until='{attr_until}'; "
+                    f"the tag name IS the quantifier, drop the attribute"
+                )
+            until = tag_until
+        else:
+            # 标签是 `_` / `__scope__` / 空: 属性优先. 'flow' 归一为 None (语义一致).
+            if attr_until == SCOPE_UNTIL_LEGACY_FLOW:
+                until = None
+            else:
+                until = attr_until
+
         timeout = kwargs.get('timeout', None)
         if timeout is not None:
             try:
                 timeout = float(timeout)
             except Exception:
                 raise InterpretError(f"invalid scope argument timeout=`{timeout}`")
-        if tag:
-            attrs_lines = []
-            if channel:
-                attrs_lines.append(f'channel="{channel}"')
 
-            if until is not None:
-                attrs_lines.append(f'until="{until}"')
+        if tag:
+            # 重拼 tokens 用标签名 (`<all>` / `<any>` / `<_>`), until/channel 属性不再出现.
+            # channel 走前缀式 (`<a.b:all>`) 更接近解析后的规范形态.
+            display_tag = tag if tag in SCOPE_QUANTIFIER_TAGS else tag
+            attrs_lines = []
             if timeout is not None:
                 attrs_lines.append(f'timeout="{timeout}"')
-            attrs_str = ' '.join(attrs_lines)
-            tokens = f"<{tag}{attrs_str}>"
+            attrs_str = (' ' + ' '.join(attrs_lines)) if attrs_lines else ''
+            prefix = f"{channel}:" if channel else ""
+            tokens = f"<{prefix}{display_tag}{attrs_str}>"
         else:
             tokens = ""
+
         kwargs = {}
         if until is not None:
             kwargs['until'] = until
@@ -394,7 +418,7 @@ class BaseCommandTokenParserElement(CommandTokenParser, ABC):
             )
             raise InterpretError(f"invalid tokens {token.content}")
         command = self._find_command(token.chan, token.name)
-        if token.name == SCOPE_COMMAND_NAME or token.name == SCOPE_SHORTCUT:
+        if token.name in SCOPE_TAG_NAMES:
             # 容错逻辑, 允许空 channel 表示是父 channel?
             # CommandWithoutDeltaArgElement 会发送一个 Scope 的开闭.
             child = CommandWithoutDeltaArgElement(
@@ -673,8 +697,13 @@ class CommandWithoutDeltaArgElement(BaseCommandTokenParserElement):
         tasks = []
         # 有 scope 的情况下, 先发送 scope.
         if with_scope and self.command_token:
-            # 如果是隐藏节点, tag 是 None
-            tag = SCOPE_SHORTCUT if self.current_task is None else ''
+            # 如果是隐藏节点 (current_task is None), tag 从 token.name 取以保留量词信息;
+            # 否则是命令自带的隐式 scope, tag 为空.
+            if self.current_task is None:
+                token_name = self.command_token.name
+                tag = token_name if token_name in SCOPE_TAG_NAMES else SCOPE_SHORTCUT
+            else:
+                tag = ''
             scope_task = ScopeEnterTask(channel=self.chan, kwargs=self.command_token.kwargs, tag=tag)
             # 隐藏节点, 所以不对外暴露 token.
             tasks.append(scope_task)

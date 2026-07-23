@@ -31,7 +31,10 @@ ghost = [
     "anthropic>=0.84.0",
 ]
 
+
 matrix = [
+    "prompt-toolkit>=3.0.52",
+    "typer>=0.24.1",
     "eclipse-zenoh>=1.8.0",
     "python-dotenv>=1.0.0",
 ]
@@ -42,7 +45,6 @@ host = [
     "prompt-toolkit>=3.0.52",
     "typer>=0.24.1",
     "miniaudio>=0.67",
-    "circus>=0.19.0",
     "uvloop>=0.22.1",
     "websockets>=15.0.1",
     "httpx>=0.28.0",

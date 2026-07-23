@@ -482,7 +482,7 @@ def new_mesh_channel(
 
     @chan.build.startup
     async def _startup() -> None:
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         unsub_holder[0] = mesh.on_event(_dispatch_event)
 
     @chan.build.close
@@ -499,7 +499,7 @@ def new_mesh_channel(
 
     @chan.build.refresh_meta
     async def _refresh() -> None:
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         proxies = mesh.channel_proxies()
         # 计算增删差异
         current = set(proxy_aliases.keys())
@@ -533,7 +533,7 @@ def new_mesh_channel(
 
     def _auto_accept_covers_all() -> bool:
         """auto_accept 全开时 accept/reject 命令不出现在 perspective."""
-        # CellMesh ABC 没暴露 auto_accept 查询接口, 用一个"守卫函数"占位.
+        # CellNetwork ABC 没暴露 auto_accept 查询接口, 用一个"守卫函数"占位.
         # 未来 mesh 加 get_auto_accept() 时替换掉 (matrix-channel.md §5.2).
         return False
 
@@ -548,7 +548,7 @@ def new_mesh_channel(
     )
     async def accept_cell(address: str, lookup: bool = False) -> str:
         """Trust a network cell — build channel proxy immediately."""
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         try:
             await mesh.accept(address, lookup=lookup)
         except LookupError as e:
@@ -561,7 +561,7 @@ def new_mesh_channel(
     )
     async def reject_cell(address: str) -> str:
         """Refuse a network cell — tear down active proxy."""
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         await mesh.reject(address)
         return f'[mesh:reject {address}] resource withdrawn.'
 
@@ -572,7 +572,7 @@ def new_mesh_channel(
             local: bool | None = None, foreign: bool | None = None,
     ) -> str:
         """Toggle auto-accept policy. None = keep current."""
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         mesh.set_auto_accept(local=local, foreign=foreign)
         return (
             f'[mesh:set_auto_accept] applied '
@@ -582,7 +582,7 @@ def new_mesh_channel(
     @chan.build.command(name='events', blocking=False, always_observe=True)
     async def events_cmd(address: str = '', limit: int = 20) -> str:
         """Read recent cell events from network."""
-        mesh = await matrix.mesh()
+        mesh = await matrix.network()
         if address:
             events = mesh.cell_events(address, limit=limit)
         else:
@@ -613,7 +613,7 @@ def new_mesh_channel(
         # 网络概要
         try:
             # 若 mesh 尚未惰性 fetch 过, mesh.view() 无 await 也应能返回缓存
-            # (CellMesh.view 是 sync). 但 mesh() 是 async factory, 需要
+            # (CellNetwork.view 是 sync). 但 mesh() 是 async factory, 需要
             # await — context_messages 是 sync, 只能读上次 refresh 的缓存.
             # 简化: mesh 概要只显示 accepted proxy 数量 (proxy_aliases 已同步)
             lines.append(

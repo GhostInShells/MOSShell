@@ -1,9 +1,9 @@
 ---
 title: Ghost Ground — Ghost 的认知场
-status: completed
+status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-07-21
+updated: 2026-07-23
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -17,6 +17,10 @@ description: >-
   validate 六命令, contract + concrete 全部落地, 105 测试通过, 两轮 dogfood
   验收.
 status_note: >-
+  2026-07-23 deepseek-v4-pro. K62~K66: 裸目录场删除, .grounds/ 模板发现,
+  frontmatter 动词扩展为渐进式披露, per-pin budget/limit/max_depth.
+  下一轮: SPEC 重写 + 实现对齐.
+  --
   2026-07-21 deepseek-v4-pro. K55~K58 实现落地 + K59~K61 frame/pins/CLI
   修订. 两轮 dogfood 验证通过: 零调研即可完成 ground 的初步使用.
   CTML channel 装配留待后续.
@@ -459,6 +463,86 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
   中的机器噪音. 同步撤除 `## ground:pins` heading / fenced code block /
   `_PIN_SECTION_RE` 等全部 section 机制.
 
+### 07-23 本轮决策 (K62~K66)
+
+本轮重开三个前提: (1) ground 的准入边界 — 只有 GROUND.md 标记的目录才是场;
+(2) 模板系统的载体与发现; (3) per-pin 预算参数. 同时否决了 mtime 格式化
+等过度设计. 核心方向: 分形自相似 — 模板和实例用同构格式, 角色由文件位置决定;
+L2 之间的互相发现使 L3 不存在.
+
+- **K62. 只有 GROUND.md 标记的目录才是认知场 — 删除裸目录场** — 原设计允许
+  没有 GROUND.md 的目录被 open (裸目录场). 本轮删除.
+  - **场 = 有 GROUND.md 的目录**. 没有 marker 就没有场 — `open(dir)` 在
+    无 GROUND.md 的目录上行为: open 本身不报错 (加载空 convention + 空 body
+    + 空 pins), 但这样的场不能 sediment (写回时自动创建 GROUND.md).
+  - **法链自然成立**: 每个场都有 GROUND.md, 法链从 doc_path 向上收集祖先
+    GROUND.md body, root-first.
+  - **子目录无 GROUND.md 时**: 不是场, 不处理. "什么都不自动发生" (K57)
+    维持 — 场是开出来的不是走进去的.
+  - **裸目录的残余价值**: 一个用户可以通过 `open(dir)` + pin 操作 + sediment
+    来从零构建一个 GROUND.md. 这不是 "裸目录场", 而是 "通过 GroundSet API
+    创建新场" — 文件在 sediment 时才出现.
+
+- **K63. `.grounds/**/*.md` 作为 L1/L2 模板发现约定** — 模板系统复用 ground
+  协议的 frontmatter + body + pins 格式, 但文件放在 `.grounds/` 目录下.
+  - **与实例的文件名分离**:
+    - `**/GROUND.md` — 扫认知场实例, 语义精确, 零误报
+    - `.grounds/**/*.md` — 扫模板, 天然隔离, 不需要 ignore 规则
+  - **内部格式同构**: 模板文件的内部结构仍是 frontmatter + body + pins,
+    与 GROUND.md 完全一致. open 时加载模板内容, 写入目标目录时命名为
+    `GROUND.md`.
+  - **发现**: GroundSet 构造时扫描三个路径, 合并为模板清单:
+    (1) `$CWD/.grounds/` — 项目属地模板; (2) `$HOME/.grounds/` — 机器
+    全局模板; (3) Ghost 携带的模板. 同名模板项目属地优先.
+  - **自动机制, 不需发现链**: `.grounds/` 是文件系统约定, 不需要 GROUND.md
+    里声明. 但可以在 body 里提一句作为人类文档.
+  - **open 语义**: `Grounds.open(dir, template="python-project")` —
+    从 `.grounds/` 找到模板, 复制其 body + pins 到新 Ground, pin/unpin/update
+    全部内存操作, dump/sediment 时写入目标目录 GROUND.md.
+  - **分形闭合**: L2 之间互相发现 (一个 L2 里有 `.grounds/` 可以引用另一个
+    L2 的模板), 不需要 L3 协调器. 文件系统就是注册中心.
+  - **角色由位置决定**: 同一个 `.md` 文件, 放在 `.grounds/` 里就是模板,
+    放在项目目录里就是实例. 不需要 `Level` 字段.
+
+- **K64. `frontmatter` 动词扩展为渐进式披露 — 多文件 pattern 匹配** —
+  原 `frontmatter` pin 只读单文件 frontmatter 块. 本轮扩展为可匹配多文件.
+  - **单文件**: `path: "FEATURE.md"` — 行为不变, 只出该文件 frontmatter.
+  - **多文件 pattern**: `path: "$CWD/*/GROUND.md"` — glob 匹配多文件,
+    每个命中文件的 frontmatter 块作为独立结果块渲染.
+  - **扩张内容**: 每个命中 GROUND.md 的 frontmatter (`$id` + `label` +
+    `pins` 清单). 不出 body — frontmatter 动词的语义边界不变.
+  - **渐进式披露**: 一个 `frontmatter` pin 就让模型看到所有子场的身份和
+    注视清单, 不需要逐个 open. 模型一眼判断哪个子场值得进入.
+  - **keys 筛选** (事后做): frontmatter pin 的未来参数 `keys: ["$id", "label"]`,
+    只取指定 key, 进一步控制 token 预算.
+  - **与 glob 的分工** (K45): glob 出结构 (路径 + mtime + size), frontmatter
+    出认知身份. 两个动词互补, 都是渐进式披露的一环.
+
+- **K65. per-pin 预算参数: `budget` / `limit` / `max_depth`** — SPEC §7.3
+  的 "per-pin expansion budget" 声明终于落地为字段.
+  - **`budget`** (int, 可选): 内容输出字符数上限, 超限截断 + 末尾
+    `[truncated at N chars]` 标记. 对内容型 pin (file, frontmatter, 未来
+    bash) 适用. glob / ls 只出结构不出内容, 不受此限.
+  - **`limit`** (int, 可选): 输出条目数上限. 对 glob (命中路径数), ls
+    (目录条目数), frontmatter 多文件 (命中文件数) 适用. 超限截断 + 标记.
+  - **`max_depth`** (int, 可选): 递归发现深度. 语义: 一旦在某层命中目标
+    (如 GROUND.md), 不再进入该目录的子目录继续找. 对该级以下来说就是
+    grounded — "停在此处, 不再下降". 对 frontmatter(pattern), ls, glob
+    适用. 默认值按 verb 各自设定.
+  - **三个参数进入各 verb 的 arguments model** (extra="allow" 已在契约层,
+    实现为字段声明). SPEC 统一描述, 每个 verb 在 §5 里声明自己支持哪些
+    预算参数.
+  - **与全局 `AT_BUDGET` 的关系**: `AT_BUDGET` 是 @-expansion 的全局常量,
+    维持不变. per-pin budget 是每个注视声明的独立约束.
+
+- **K66. 展示优化: 删除 mtime 格式化, size 人类可读** —
+  - **mtime 浮点显示**: `_content_glob` 里 `{st.st_mtime:.0f}` 是过度设计
+    — 认知场不需要做 `date` 命令的事. 模型要看 mtime 调用 bash 即可.
+    删除 mtime 字段的格式化展示.
+  - **size 人类可读**: 字节数 (`12345B`) 改为 `12K / 1.2M` 等人类可读格式.
+    仅影响展示层, Observation 内部仍用原始 int.
+  - **帧渲染不承载调试信息**: frame 是认知内容, 不给模型塞调试数据.
+
 ## 已完成 (2026-07-21)
 
 - **contract.py**: Pin concrete class hierarchy (FilePin/GlobPin/FrontmatterPin/
@@ -475,24 +559,22 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
 
 ## 已知未决 (给下一个实例)
 
-- **K23 (L2 模板库引导地址)** — moss 侧已定 .ai_partners/ (K38). 残余问题:
-  ghost 携带 L2 与项目属地 L2 的关系 (K35 合成在 L2 层级的应用).
+- **K23 (L2 模板库引导地址)** — 已由 K63 回答: `.grounds/**/*.md` 约定.
+  残余: ghost 携带模板与项目属地模板的合成优先级 (K63 已定 "项目属地优先").
 - **K24 (目光运行时侧影载体)** — .cache 级 gitignore 目录的具体约定. K36
-  已定 seen_* 不入 GROUND.md; 侧影落盘位置未定 (SPEC 目前无强制要求, 只
-  规定不能在 GROUND.md 中).
-- **K25 (向下探索的场声明)** — 发现链形状已有 (K39: marker + glob); 运行时
-  向下发现已由 K57 回答 (glob pin `*/GROUND.md`). 残余: L1 marker 文件名
-  待收 (可能是 GROUND.md 加 `$id` 承担, 也可能独立 marker).
+  已定 seen_* 不入 GROUND.md; 侧影落盘位置未定.
+- **K25 (向下探索的场声明)** — 已由 K64 回答: `frontmatter` pin 的 pattern
+  匹配 + K57 glob pin. 残余: L1 marker 文件名 (已不需要 — `.grounds/`
+  约定解决了注册问题).
 - **K40 (K35 合成语义与 K28 幂等的冲突; ghost 默认场)** — dogfooding 讨债.
-  K56 doc 参数已落地 K35 的携带/属地机制 (可携带单元 = doc), 合成细节
-  冲突维持未决.
-- **K41 (pin 类型扩展 path#field, path## heading)** — K55 arguments 契约
-  天然容纳同族扩展 (新 key 入 arguments, 不需新机制), 具体实现按
-  dogfooding 需求推进.
-- **K43 (.grands/ 分支)** — 回退方案. 反悔判据: 多认知方法成为真实痛感.
+- **K41 (pin 类型扩展 path#field, path## heading)** — K65 arguments 契约
+  天然容纳同族扩展. 具体实现按 dogfooding 需求推进.
+- **K43 (.grands/ 分支)** — K63 已用 `.grounds/` 替代.
 - **多认知方法** — 未证明需求, 靠 dogfooding 讨债, 不预建机制.
-- **Ghost 认知场初始化 (users/memory/skills/tasks/tmp 子场结构)** — 等
-  GROUND.md 闭环 + L1 实例化动词就位后启动.
+- **Ghost 认知场初始化** — 等 K62~K65 实现落定后启动.
+- **frontmatter keys 筛选** — K64 提及, 具体 key 语义事后 dogfooding 定.
+- **pin bash** — 本轮讨论过, 设计面大 (安全/超时/输出预算), 单独立项.
+- **file exists verb** — 轻量 stat 检查, K65 budget 实现后评估是否需要.
 
 ## 与关联基建的交叉
 
@@ -506,14 +588,31 @@ K44~K49 抽象锁定后, 本轮追补五点, 覆盖包结构 / frame 渲染修�
 | `Ghost` / `Mode` | ground 进入哪些 mode 是 Ghost 层决策, OS 层不主动推 | 未开始 |
 | 原生 drain 协议 (K19) | 独立 feature, 与 Memento 合并设计 | 未立项 |
 
-## 下一步 (2026-07-21 视角)
+## 下一步 (2026-07-23 视角)
 
-Ground 协议层和 CLI 层已完成, 两轮 dogfood 验收通过. 后续方向:
+K62~K66 已锁定抽象方向. 实现分三轮:
 
-1. **CTML channel 装配** (K14): 父 ground channel + command-less virtual
-   channels per ground. 这是 ground 进入 Ghost 运行时的最后一步.
-2. **SPEC 同步**: SPECIFICATION.md §3/§4/§6 需要与实现对齐 (frontmatter
-   pins key / frame 零 meta / @-expansion 取消).
-3. **Ghost 认知场初始化**: 根目录 GROUND.md 的构建将建立新 feature.
-4. **FrontmatterPin 的 key 筛选**: 当前读整个 frontmatter 块, 可能需要
-   指定读取特定 key.
+**第一轮 — SPEC 重写**:
+1. §2: 删除裸目录场 — GROUND.md 是场的唯一边界
+2. §4: 新增 per-pin budget/limit/max_depth 三个参数
+3. §5.3: `frontmatter` 动词扩展为单文件或多文件 pattern 匹配
+4. 新增 §11: `.grounds/` 模板发现约定 (L1/L2 分形体系)
+5. §6: frame 格式与 mtime/size 展示对齐 K66
+
+**第二轮 — 契约 + 核心实现**:
+1. `contract.py`: 各 verb arguments 加 budget/limit/max_depth 字段
+2. `_render.py` / `_hash.py`: budget 截断逻辑, mtime 移除, size 人类可读
+3. `_l0.py`: frontmatter 多文件解析模式
+4. `_grounds.py`: `.grounds/` 模板发现 + `open(dir, template=...)` 语义
+5. 裸目录场相关路径清理
+
+**第三轮 — CLI + 测试**:
+1. CLI: `ground templates` 命令 (列出可用模板)
+2. CLI: `init` 命令支持 `--template` 参数
+3. 测试: contract/args validation/budget truncation/template discovery
+4. 回归: 现有 105 测试全部通过
+
+**远期**:
+- CTML channel 装配 (K14)
+- pin bash (独立 feature)
+- Ghost 认知场初始化

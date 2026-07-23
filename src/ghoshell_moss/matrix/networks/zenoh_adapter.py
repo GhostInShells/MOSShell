@@ -6,7 +6,7 @@ Zenoh driver 的 MatrixNetworkAdapter 实现 (§ZZ-3).
   - 起 ZenohChannelHub (Presence/Mesh 共享)
   - 拿 CellsKeyspace (Presence/Mesh 共用同一份 key 定义, 无手写魔法值)
   - new_presence → ZenohCellPresence
-  - new_watcher  → ZenohCellMesh
+  - new_watcher  → ZenohCellNetwork
 
 import 副作用: register_adapter 自动把 ZenohAdapter 注册进 module-level
 adapter registry (get_adapter_class('zenoh') 即可查到).
@@ -21,7 +21,7 @@ from typing_extensions import Self
 from ghoshell_container import IoCContainer, Provider, provide
 
 from ghoshell_moss.bridges.zenoh_bridge import ZenohChannelHub
-from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellMesh
+from ghoshell_moss.core.blueprint.cell import Cell, CellPresence, CellNetwork
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import NetworkMetadata
 from ghoshell_moss.matrix.adapter import MatrixNetworkAdapter, register_adapter
@@ -30,7 +30,7 @@ from ghoshell_moss.matrix.networks.zenoh_network import (
     ZENOH_DRIVER, create_zenoh_session_from_metadata,
 )
 from ghoshell_moss.matrix.networks.zenoh_presence import ZenohCellPresence
-from ghoshell_moss.matrix.networks.zenoh_mesh import ZenohCellMesh
+from ghoshell_moss.matrix.networks.zenoh_mesh import ZenohCellNetwork
 from ghoshell_moss.matrix.providers.topic_provider import ZenohTopicServiceProvider
 from ghoshell_moss.matrix.providers.moss_session_provider import ProjectZenohSessionProvider
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
@@ -178,12 +178,12 @@ class ZenohAdapter(MatrixNetworkAdapter):
             *,
             env: Environment,
             logger: logging.Logger,
-    ) -> CellMesh:
+    ) -> CellNetwork:
         if not self._started or self._session is None or self._hub is None:
             raise RuntimeError(
                 "ZenohAdapter not started; call adapter.__aenter__() first"
             )
-        return ZenohCellMesh(
+        return ZenohCellNetwork(
             session=self._session,
             logger=logger,
             keyspace=self._cells_keyspace,

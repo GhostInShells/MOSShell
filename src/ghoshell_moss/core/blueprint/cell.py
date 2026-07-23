@@ -50,7 +50,7 @@ __all__ = [
     'Cell',
     'CellEvent',
     'CellPresence',
-    'CellMesh',
+    'CellNetwork',
     'NodeManager',
     'DuplicatedError',
 
@@ -783,7 +783,7 @@ class CellPresence(ABC):
         ...
 
 
-class CellMesh(ABC):
+class CellNetwork(ABC):
     """
     Matrix 网络的观测与连接层.
     用于发现 Cell 存在与连接 Cell 的能力.

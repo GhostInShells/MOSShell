@@ -24,19 +24,22 @@ class CTMLMainChannel(PyChannel):
     pass
 
 
+# CTML v1.0.0 KD10: 原语精简 default→5+interrupt/thinking.
+# default: 协议必需或 scope 无法表达的; experimental: 与新 scope 语法功能重叠或体系不成熟的.
 default_primitives = [
-    wait,
-    sample,
-    observe,
     sleep,
     clear,
-    wait_idle,
+    observe,
     noop,
-    branch,
     loop,
+    # experimental (功能有效但与 scope 语法重叠或 prompt 风格不成熟, 仅在 experimental=True 时注入):
+    wait,
+    wait_idle,
+    sample,
+    branch,
 ]
 
-experimental_primitives = ['wait', 'sample', 'observe', 'interrupt', 'wait_idle']
+experimental_primitives = ['wait', 'wait_idle', 'sample', 'branch']
 
 default_primitive_map: dict[str, PyCommand] = {
     func.__name__: PyCommand(func) for func in default_primitives
@@ -49,8 +52,8 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     """
     向 main channel 注入系统原语。这是原语列表的唯一权威来源。
 
-    标准原语 (始终注入): sleep, noop, observe, interrupt
-    扩展原语 (extended=True): wait, clear, wait_idle, loop, sample, branch
+    标准原语 (始终注入): sleep, clear, observe, noop, loop, interrupt, thinking
+    扩展原语 (extended=True): wait, wait_idle, sample, branch
 
     用法::
 
@@ -60,17 +63,16 @@ def inject_system_primitives(main: PrimeChannel, *, extended: bool = False) -> N
     """
     # 标准原语
     main.build.add_command(new_command(sleep))
+    main.build.add_command(new_command(clear))
+    main.build.add_command(new_command(observe))
     main.build.add_command(new_command(noop))
+    main.build.add_command(new_command(loop))
     main.build.add_command(interrupt_command)  # interrupt 已经是 PyCommand
-    main.build.add_command(thinking_command) # 兼容 thinking 原语.
+    main.build.add_command(thinking_command)  # 兼容 thinking 原语.
 
     if extended:
         main.build.add_command(new_command(wait))
-        # observe 治理完后, 这个原语已经不需要了.
-        main.build.add_command(new_command(observe))
-        main.build.add_command(new_command(clear))
         main.build.add_command(new_command(wait_idle))
-        main.build.add_command(new_command(loop))
         main.build.add_command(new_command(sample))
         main.build.add_command(new_command(branch))
 

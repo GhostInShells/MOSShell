@@ -1,6 +1,6 @@
 """
 Porcelain layer — Moment <-> MomentRecord codec + merge message.
-主权层测试, 覆盖信封与 MOSS 强类型之间的桥.
+主权层测试, 覆盖信封与 MOSS 强类型之间的桥 (v2 API).
 """
 
 from __future__ import annotations
@@ -28,16 +28,14 @@ from ghoshell_moss.message import Message
 def test_moment_codec_round_trip():
     m = Moment(id="mx", logos="hello", command_logos="run")
     m = m.with_percepts("input", [Message.new(tag="user").with_content("hi")])
-    rec = moment_to_record(m, threads=["chat"], by="ghost")
+    rec = moment_to_record(m, threads=["chat"])
     assert rec.type == MOSS_MOMENT_TYPE
     assert rec.id == "mx"
     assert rec.threads == ["chat"]
-    assert rec.by == "ghost"
     back = record_to_moment(rec)
     assert back.id == "mx"
     assert back.logos == "hello"
     assert back.command_logos == "run"
-    # percepts 保留 (percepts_texts 走 to_content_string, tag 会包裹原文)
     assert "hi" in back.percepts_texts()[0]
 
 
@@ -49,12 +47,12 @@ def test_record_to_moment_rejects_wrong_type():
 
 def test_update_moment_convenience(tmp_path: Path):
     m = new_filesystem_memento(tmp_path / "memento", "o")
-    b = m.current()
+    b = m.create_line("main")
     update_moment(b, Moment(id="m1", logos="one"), threads=["chat"])
     update_moment(b, Moment(id="m2", logos="two"))
     view = b.commit("s", kind="semantic")
-    assert view.commit.moment_ids == ["m1", "m2"]
-    records = b.commit_records(view.id)
+    records = m.show(view.id).moments
+    assert [r.id for r in records] == ["m1", "m2"]
     stored = next(r for r in records if r.id == "m1")
     assert stored.threads == ["chat"]
     assert record_to_moment(stored).logos == "one"
@@ -62,47 +60,46 @@ def test_update_moment_convenience(tmp_path: Path):
 
 def test_merge_message_carries_ref(tmp_path: Path):
     m = new_filesystem_memento(tmp_path / "memento", "o")
-    b = m.current()
+    b = m.create_line("main")
     update_moment(b, Moment(id="m1"))
     view = b.commit("summary text", kind="semantic")
 
-    msg = make_merge_message(b, view.id)
+    msg = make_merge_message(m, view.id)
     ref = MementoRef.read(msg)
     assert ref is not None
     assert ref.commit_id == view.id
-    assert ref.fork == "o"
-    assert ref.branch_id == b.meta.branch_id
+    assert ref.origin == "o"
     assert ref.note_seq == 0
 
     # Message content = commit summary (孔径一: 主路收 Message 而非展开原文)
     assert "summary text" in msg.to_content_string()
 
     with pytest.raises(CommitNotFoundError):
-        make_merge_message(b, "cmt_nonexistent")
+        make_merge_message(m, "cmt_nonexistent")
 
 
 def test_merge_message_ref_tracks_reinterpret(tmp_path: Path):
     """MementoRef.note_seq 是渲染打戳: 释义再改写后, 新 merge 拿到新版本号."""
     m = new_filesystem_memento(tmp_path / "memento", "o")
-    b = m.current()
+    b = m.create_line("main")
     update_moment(b, Moment(id="m1"))
     view = b.commit("v0", kind="semantic")
-    b.reinterpret(view.id, "v1\n\nKind: semantic")
+    m.annotate(view.id, body="v1\n\nKind: semantic")
 
-    msg = make_merge_message(b, view.id)
+    msg = make_merge_message(m, view.id)
     ref = MementoRef.read(msg)
     assert ref.note_seq == 1
     assert "v1" in msg.to_content_string()
 
     # 通过 (commit_id, note_seq) 回溯到 v0 的原释义
-    versions = b.notes(view.id)
+    versions = m.notes(view.id)
     assert versions[0].text() == "v0"
     assert versions[1].text() == "v1"
 
 
 def test_window_messages_expand(tmp_path: Path):
     m = new_filesystem_memento(tmp_path / "memento", "o")
-    b = m.current()
+    b = m.create_line("main")
     prev = Reaction(moment_id="prev0")
     prev.executed_logos = "cmd"
     m0 = prev.new_moment(percepts={"user": [Message.new().with_content("hi")]})

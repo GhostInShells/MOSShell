@@ -8,11 +8,15 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: design-locked
-status_note: '13 钉子已裁决; CLI 命令树定案见 momento-mori §18.4 (branch 位置参数无默认 / fork
-  入 create / rewind=branch reset / annotate-moment 砍掉); §16.5 #1 (--to) / #2 (overlay→owner
-  meta) 顺带定案; 复工等 FORMAT v2, 验收方式 = CLI 体系'
+status_note: '2026-07-23 定案收敛 (§8, 复工前最终层): 核心=协议化驱动唯一, 内部状态归实现;
+  MementoAgent[MOMENT] 泛型吃掉 codec 不对称 (§7.3 作废), pydantic-ai 退为具体实现; -m 指向 ABC
+  实现去 pydantic 耦合; 审批降级为实现命题+静态策略, 交互式审批屏蔽出无状态车道; 不做 Agent.iter()
+  逐节点 (harness 器官), runner 只收一帧 commit; 验收改口径=ABC+具体实现+memento 绑定 (覆盖 §18.7
+  CLI 体系, 待人类复核), CLI 降级为重启连续性测试夹具; 首场景=多 branch 翻译 concepts. 复工等
+  FORMAT v2 + abc.py 重写 (MementoBranch 解体).
+  背景框架见 §7: 正交三元组 prompt+toolsets(塌缩为 bash 可调)+conversation(memento 是该轴可移植实现)'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-20'
+updated: '2026-07-23'
 ---
 
 # Memento CLI & Agent
@@ -180,6 +184,225 @@ result = await agent.run("do X")     # 一次 invocation, 退出即 commit
 本 agent **只消费 ABC/facade 表面，不碰磁盘布局**——并行是安全的，唯一 API 级
 协调点：`MomentPool` 并入 `MementoBranch` 后的接口面。施工时以 momento-mori
 侧修订后的 abc.py 为准；它未就位时先按现行 abc.py 施工，接缝处留单点适配。
+
+## 7. 概念重构：prompt + toolsets + conversation 正交（2026-07-23，人类引导，claude-fable-5）
+
+一场关于"文件系统定义 agent 最佳实践"的讨论，把本 workstream 的 agent
+从"memento 验证器"升格出第二重身份：**轻量 agent 协议的参考实现**。
+钉子不推翻，框架重述。
+
+### 7.1 正交三元组（定案）
+
+agent 配置化的关键拆分是 **prompt + toolsets + conversation**，harness
+另行看待（loop/workflow = 外部进程重复 invocation，慢一点可接受）：
+
+- **toolsets 塌缩为 bash 可调**。toolsets 之所以是麻烦源，是它绑实现协议
+  （python/ts/mcp schema...）；bash 边界把多语言问题交给 `$PATH` 吸收，
+  skills（脚本+prompt 片段）是这条路的正解。"自己实现"和"封装别人的实现"
+  在 bash 边界上无差别。不引入 CTML/Channel——回合制里 tool use 够了。
+- **conversation 是轴，memento 是该轴的一个实现**。平台自有 store
+  （如 `claude -p --resume <session>`）是另一个实现。memento 的定位由此
+  收敛为：**不依赖平台的历史消息治理协议**——自带 conversation store、
+  跨平台可移植。它不是 `-p` 的竞品，是 `-p` 的解耦版。
+- **prompt 场景可带可不带**（本质 prompt 与 toolsets 配套）。
+
+### 7.2 轻量 agent 协议 = 调用约定，不是新协议
+
+行业实查（2026-07）：MCP = agent→tools，ACP (Zed) = editor→agent
+（JSON-RPC over stdio，带 IDE 会话语义，重），A2A = agent→agent over
+HTTP（网络发现层，重）。**"bash agent 协议"这个空位是故意空着的——
+Unix 进程调用本身就是协议**。真正无标准的只有四个字段，恰好是钉子 11
+的扩展：
+
+1. 上下文入参（`--branch` / session 寻址）
+2. 指令入参（`-p`）
+3. 结构化出参 schema（`--json`）
+4. 退出码语义
+
+这是 calling convention（量级同函数 ABI），不是发明新协议。锚点是
+memento：历史轴统一后，约定自然收敛到 memento 边界。agent 调 agent =
+bash 调子 agent CLI，子 agent 历史落自己 owner、base 指回父 commit
+（fork 语义现成）。
+
+### 7.3 不对称钉子：两种传参形式的治理方式不同（已被 §8 泛型吸收，保留作历史）
+
+> **作废提示（2026-07-23，§8 起草时）**：本节的 "per-platform codec 不对称"
+> 已被 `MementoAgent[MOMENT]` 泛型取代——codec 不再是运行时协商，而是类型
+> 参数。不再有 per-platform codec，只有 per-MOMENT 的具体类。下文保留仅供
+> 追溯这条判断如何演进。
+
+协议接纳两种传参形式的 agent，但 memento 对它们的治理路径不对称：
+
+- **prompt 形式**（`-p` 单发，agent 无状态）——**原生可治理**。
+  moss agent 驱动单轮、拿 stdout、写 moment。moss agent 本身就是
+  prompt 形式的驱动器：只负责调度 memento / instruction / 单轮 prompt、
+  包装历史更新。
+- **conversation 形式**（agent 自带 session store）——治理需
+  **per-platform codec** 导入其自有格式（钉子 1 的 pydantic-ai codec
+  即第一个实例），或退化为在不透明 session 外围锚定 commit 边界。
+  moss agent 不治理、也不该治理自带 store 的 agent。
+
+### 7.4 `.agents/` 目录构想（暂名，未钉死）
+
+`moss agent init` 一个 `.agents/` 目录，约定内部 bash 脚本支持 §7.2
+通用入参形式。有 `.agents/` 走约定调度；没有则用现有工具 + pydantic-ai
+实现一个即可（即本 workstream 钉子 4 的现状）。钉子 4 的 bash+file_editor
+固定工具集是 dogfooding 验证器的合理抄近路，不固化为通用模型。
+
+### 7.5 定义文件形状（讨论共识，待施工验证)
+
+- frontmatter (可选机器配置: model tag → LLMConfig) + markdown body
+  (prompt)，纯 markdown 无 frontmatter 依然合法——保住"任意文本文件即
+  agent"的退化态。
+- 身份 = 文件 stem（钉子 6 不变），不加 frontmatter name 覆盖——
+  filesystem-first，避免"文件说一套、目录说一套"。
+- prompt_sha 对整个文件取 hash（含 frontmatter）——换 model 也是行为
+  变更，归因闭环要覆盖。
+- 撞名风险待人类裁决：`AGENT.md` 与行业 AGENTS.md 标准（项目指令，
+  60k+ 仓库）单复数之差，路过的 coding agent 可能误读。备选
+  `*.agent.md` 后缀（多身份场景 `reviewer.agent.md` 更清晰，owner
+  发现可判定）。
+
+### 7.6 与 ghost 的边界
+
+本协议纯静态、无 runtime，供 ghost 调用（multi-agents channel 场景：
+ghost 与不同 agent 在不同 branch 对话，owner+branch 跨场域复用 =
+上下文治理能力）。ghost func（图灵完备规划，正常走已实现代码、
+cache-miss 时重新生成）属 ghost runtime 能力形态，不进本协议。
+
+## 8. 定案收敛：MementoAgent[MOMENT] 泛型 + 协议化驱动为唯一核心（2026-07-23，人类引导，claude-fable-5）
+
+§7 铺开了框架，本节把它收敛成可施工的形状。这是复工前的最终定案层，
+与 §3 钉子并列有效；冲突处以本节为准（本节更晚、更收敛）。
+
+### 8.1 核心倒置：协议化驱动是唯一核心，内部状态归实现
+
+整个概念的唯一核心是 **agent 能被外部协议化驱动**。至于 agent 内部有无
+状态（pydantic-ai 的 ctx、自持 loop 的 running state）、用 python 做运行时
+loop（性能更好）、还是无状态每次重建——**全交给实现自己管**。外层只保证
+一件事：它能被外部以约定方式驱动，产出一帧结果落进 memento。
+
+**推论**：不要在 runner 里做 `Agent.iter()` 逐节点落盘（§3 钉子 2 / §4
+生命周期第 5 步的 iter 循环）。iter 循环是 harness 器官，是 ABC 泄漏内部
+结构。runner 只驱动一次 invocation、收一帧 MOMENT、commit。tool 往返在
+实现内部消化，memento 看不见也不该看见。
+
+### 8.2 MementoAgent[MOMENT] 泛型（取代 §7.3 的 codec 不对称）
+
+```python
+class MementoAgent(Generic[MOMENT], ABC):
+    """外部协议化驱动一次 invocation，产出一帧 MOMENT 落进 memento。
+    MOMENT = payload 的类型参数，memento 视其为不透明。"""
+```
+
+- **MOMENT 参数化的是 payload，不是整条 MomentRecord**。信封
+  （id/created/type/by/threads）不动，`type` 值随具体 agent 变
+  （`text/v1` vs `pydantic_ai.messages/v2`）。这与 momento-mori §13
+  "Moment 是信封第一住户、payload 不透明、type 做判别符"完全一致——
+  泛型只是把这条契约在 Python 类型系统里显式化。
+- **codec 问题被泛型吃掉**：不再有运行时 per-platform codec 协商
+  （§7.3 作废），只有编译期 per-MOMENT 的具体类。
+  `MementoAgent[ModelMessages]` = pydantic-ai 实现，
+  `MementoAgent[tuple[str, str]]` = golden test 的 dumb 参考实现。
+- **pydantic-ai 退成一个具体实现，不是不变量**。§3 钉子 1 的 codec 仍是
+  第一个可用实现，但契约层不认它——契约只认 ABC 输出形状 = MOMENT。
+- **branch 对 MOMENT 保持同质**：一条 branch 内所有 moment 同类型
+  （同 `type` 值）。跨 agent 类型的混合不在本轮。
+
+### 8.3 -m 参数：指向 ABC 实现，去 pydantic-ai 耦合
+
+`-m module:attr` 指向一个 `MementoAgent[MOMENT]` 的具体实现（或工厂），
+CLI 用它替换默认锚点。**不耦合 pydantic-ai**——只要求符合 ABC、支持
+正交解耦输入、产出一帧 MOMENT。工具集调整因此合法（工具变了，只要输出
+仍是同一 MOMENT 类型，契约不破）。
+
+- 这是 §3 钉子 4 里 delay 的"选项 2：.py 定义 agent"前移。
+- memento 作为封装位置不变，CLI 职责（调度 memento / 单轮 prompt /
+  包装历史）一行不动。
+- 判据：**只要 `-m` 产物从同一 ABC 出、产出同 MOMENT 类型，就是在验证
+  memento 而非绕过它**。
+
+### 8.4 审批：从协议命题降级为实现命题（本轮枢纽决策）
+
+出口逻辑拆解（人类原话级）——外部 harness/task 视角下 agent 有四类出口：
+
+1. **tool 等底层运行时通讯，模型无感知** ← 唯一麻烦的一类。
+2. 模型依赖外部输入。
+3. 模型对外输出生命周期性质内容（≈ #2，但交互语义约定化：至少
+   `done` / `exception` 两类）。
+4. 外部 loop 形态决定身份：无模型一次自驱到底 ≈ task；有复杂逻辑 ≈
+   workflow；只有生命周期检查 ≈ loop。
+
+**#1 是设计难点**：交互式审批（"请求审批: xxx"）本质是**返回结果下发的**、
+不是模型主动发的，这逼无状态实现假装有状态、逼返回协议做分层。
+
+**定案：用 `-m` + 一帧输出把 #1 屏蔽出体系。** invocation 边界保持为纯
+函数（input → 一帧 MOMENT），进行中的有状态协商永不碰 memento。审批要么
+被 `-m` 实现内部消化，要么用调用前静态策略（见 8.5）。这让 memento 保持
+无状态。
+
+**两条干净车道 + 中间的坑（施工纪律）**：
+- **无状态车道**（本轮走）：`-m` 一帧、审批屏蔽进实现或静态策略。
+- **有状态车道**（未来）：session futures 协议落地 → moss agent 变
+  matrix cell，审批 = 一等挂起 future。选 matrix 而非 MCP：MCP 基建轻，
+  但跨进程交互 + 界面可扩展性撑不住。
+- **坑**（禁止）：把交互式审批硬塞进无状态 `-p` 式调用。就是要躲的那个。
+
+### 8.5 审批 = invocation 边界上的静态策略（claude code 事实佐证）
+
+claude code `-p` 从不是"无副作用 agent"——它把审批**前移**成调用前静态
+声明，三种形态：`--permission-mode`（default/acceptEdits/plan/
+bypassPermissions）、`--allowedTools`/`--disallowedTools` 白黑名单、
+`--permission-prompt-tool` 路由给 MCP 工具程序化批拒。
+
+对 memento agent 的设计课：**审批 = invocation 边界上的静态策略**，与
+"invocation = commit"同构（策略是被 commit、被归因之物的一部分）。§3
+钉子 10（bash 对 `.memento/` 读自由写禁止）已是这个形态——一条静态策略，
+无需运行时交互。
+
+### 8.6 验收口径变更（覆盖 momento-mori §18.7 的"CLI 体系"）
+
+之前验收锁为"CLI 体系"（momento-mori §18.7 人类拍板）。本轮"ABC 是定义、
+CLI 是皮"使"做完"的含义变化，需人类复核：
+
+- **验收 = ABC + 至少一个具体实现 + memento 绑定跑通**。
+- **CLI 降级为最薄的可选驱动**，但保留——它的价值不是对外协议，是**白送
+  一个重启连续性测试夹具**：每次 invocation = 新进程 = §1 最硬验收标准
+  （重启连续性）免费被验。ghost 进程内直调 `agent.run()` 不触发重启，
+  这个免费验证就没了，所以 CLI 夹具不删。
+- **不走命令行的驱动同样合法**：ghost 进程内直调、将来 matrix cell。
+  定义（ABC）与驱动（CLI / 直调 / cell）分离。
+
+### 8.7 行业注记（2026-07 实查，佐证"没有现成的可用，也不必等"）
+
+协议栈已拥挤，但没有一格是"外部驱动无状态一帧"——你的东西在格子中间：
+
+- **AG-UI**（streaming UI，16 事件类型 SSE/WS）——最接近生命周期语义
+  （#3），但它把 tool 层（#1）暴露成协议表面，正是本设计要屏蔽的。
+  **未来可作可选外围 adapter**：把一帧 completion 吐成 AG-UI completion
+  event。可选驱动，非核心。
+- **ACP (IBM 版，与 Zed ACP 重名)**——negotiation semantics、typed
+  performatives（propose/accept/reject/counter），即"嫌重的复杂协议"。
+- **pause/resume 派（Google ADK / checkpoint 系统）**——状态机
+  `PENDING→RUNNING⇄PAUSED→{STOPPED,COMPLETED,FAILED}`、协作式
+  `checkpoint()`。有状态车道同构，但状态存平台自有 store（回到平台耦合）。
+- **arxiv 2604.08224《Externalization in LLM Agents》**——把 agent 拆成
+  memory/skills/protocols/harness 四可外置关注点，与本设计
+  conversation/toolsets/协议/harness 近一一对应。学术侧 2026 也收敛到
+  "externalization"，但止于描述性归纳，未给最小规范契约。
+
+**判断**：没人做"agent 作为可被外部驱动的无状态一帧函数"，因为大厂卖
+runtime/平台，而"无状态一帧 + 历史外置到可移植 store"消灭平台锁定，反
+商业。memento 作为可移植 conversation store 是关键差异点。所以不该等，
+也不必造协议——本设计是**拒绝所有现存协议的复杂度**，一个 ABC + 泛型 +
+"invocation=一帧" 约定即可。
+
+### 8.8 首个验证场景（复工即做）
+
+**不同 branch 规划目录下 concepts 翻译**。填 §1"能力→CLI 动词→契约条款"
+自洽矩阵：多 branch 并存、各自累积历史、跨 invocation 重启连续性每次都验。
+纪律：默认 AGENT.md 干翻译；`-m` 留一个口子证明"换工具集/换 agent 实现，
+memento 边界不变"即可，**不必真接第二个 agent**。不加复杂度。
 
 ## Implementation Notes
 
