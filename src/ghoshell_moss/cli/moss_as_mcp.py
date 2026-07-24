@@ -1,10 +1,15 @@
-from typing import Literal, Iterable
+from typing import Literal, Iterable, Optional
 import asyncio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
 from ghoshell_moss.host import Host
+from ghoshell_moss.host.interleaved_thinking import (
+    InterleavedThinkingToolset,
+    ShellEvent,
+    InterpreterStatus,
+)
 from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
 import click
@@ -34,9 +39,23 @@ class ServerState:
     def __init__(self):
         self.host: MossHost | None = None
         self.toolset: MossRuntime | None = None
+        # server 级 watcher — 跨 MCP 调用持有 shell 观察器, 解决 K10 跨-interpreter 历史丢失.
+        # 生命周期与 MCP server 同长, 在 async with moss_host.run() 之内挂载.
+        self.watcher: InterleavedThinkingToolset | None = None
+
+
+def _events_to_messages(events: list[ShellEvent], status: InterpreterStatus) -> list[Message]:
+    """把 ShellEvent 列表 + 当下 status 投影成 list[Message], 供 MCP 层转 ContentBlock."""
+    messages: list[Message] = []
+    for ev in events:
+        messages.extend(ev.as_message())
+    messages.extend(status.as_message())
+    return messages
 
 
 def bootstrap(state: ServerState, mcp: FastMCP):
+    # --- 基线组 (A/B 对照): 保留原 4 工具, 一字不改 --- #
+
     @mcp.tool()
     async def moss_instruction() -> str:
         """
@@ -82,6 +101,91 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         await state.toolset.moss_interrupt()
         return "MOSS runtime interrupted."
 
+    # --- interleaved thinking 组 (K1-K10 落地): 4 个新工具 --- #
+    # 全部走 state.watcher (server-scoped, 跨 interpreter 观察), 与旧组独立.
+
+    @mcp.tool()
+    async def ctml_append(logos: str) -> list[ContentBlock]:
+        """铺一段 CTML 到执行轨道并立即返回, 附带累计执行游标图 (K8: append 即 observe).
+
+        语义:
+        - 以 append 分支起 interpreter, feed logos, wait_compiled 后返回 —— 不等 wait_stopped.
+        - 返回内容 = watcher.drain() 累计事件 (跨 interpreter 一直沉淀的结果) + 当下 status.
+        - 编译期异常不 rethrow; 走 InterpreterStopped 事件进 buffer, 在返回的投影里可见.
+        - 运行期结果异步沉淀在 watcher, 下一次调用时读回 (K8: 前进即观察).
+        """
+        if not state.toolset or not state.watcher:
+            return [TextContent(type='text', text="MOSS Runtime not initialized.")]
+
+        shell = state.toolset.shell
+        interpreter = await shell.interpreter(kind='append', clear_after_exit=False)
+        async with interpreter:
+            interpreter.feed(logos)
+            # throw=False: 编译期错误交给 tracer, 由 on_interpreter_stopped 写进 watcher
+            await interpreter.wait_compiled(throw=False)
+
+        events = state.watcher.drain()
+        status = state.watcher.status()
+        messages = _events_to_messages(events, status)
+        return list(FastMCPMessageAdapter.parse_message_to_blocks(messages))
+
+    @mcp.tool()
+    async def ctml_peek() -> list[ContentBlock]:
+        """只读快照: watcher.buffered() + status, **不 drain**, 不阻塞. 用于 debug / UI 观察.
+
+        与 ctml_append/ctml_observe 的区别: peek 不消费 buffer, 事件仍留待下次 drain.
+        """
+        if not state.watcher:
+            return [TextContent(type='text', text="Watcher not initialized.")]
+        events = state.watcher.buffered()
+        status = state.watcher.status()
+        messages = _events_to_messages(events, status)
+        return list(FastMCPMessageAdapter.parse_message_to_blocks(messages))
+
+    @mcp.tool()
+    async def ctml_observe(budget: Optional[float] = None) -> list[ContentBlock]:
+        """等 interpreter 停止 (或超时), drain 累计事件.
+
+        - budget=None: 等到 interpreter idle 才返回.
+        - budget>0: 最多等 budget 秒, 到点即返回当下 status + 累计事件.
+        - budget=0: 立即返回, 等价 "drain 一次".
+        """
+        if not state.watcher:
+            return [TextContent(type='text', text="Watcher not initialized.")]
+
+        if budget is None:
+            status = await state.watcher.wait_interpreter_done()
+        elif budget > 0:
+            try:
+                status = await asyncio.wait_for(
+                    state.watcher.wait_interpreter_done(),
+                    timeout=budget,
+                )
+            except asyncio.TimeoutError:
+                status = state.watcher.status()
+        else:
+            # budget<=0: 不等, 直接读一次
+            status = state.watcher.status()
+
+        events = state.watcher.drain()
+        messages = _events_to_messages(events, status)
+        return list(FastMCPMessageAdapter.parse_message_to_blocks(messages))
+
+    @mcp.tool()
+    async def ctml_interrupt() -> list[ContentBlock]:
+        """掐掉未执行段 (K2: 对读头前方轨道动手), 返回 drain 到的所有累计事件 + 当下 status.
+
+        clear() 会关掉当前 interpreter, tracer 收 on_interpreter_stopped 事件.
+        """
+        if not state.toolset or not state.watcher:
+            return [TextContent(type='text', text="MOSS Runtime not initialized.")]
+
+        await state.toolset.shell.clear()
+        events = state.watcher.drain()
+        status = state.watcher.status()
+        messages = _events_to_messages(events, status)
+        return list(FastMCPMessageAdapter.parse_message_to_blocks(messages))
+
 
 def _bootstrap_env(
         mode: str | None,
@@ -121,21 +225,25 @@ def main_entry(
     async def run_server():
         # 启动 MOSS 运行时环境
         async with moss_host.run() as toolset:
-            state.host = moss_host
-            state.toolset = toolset
-            toolset.matrix.logger.info(
-                'Moss MCP toolset started with params: %r',
-                params,
-            )
-            # 启动 MCP Server (FastMCP 内部会处理进程阻塞)
-            if transport == 'sse':
-                await mcp.run_sse_async()
-            elif transport == 'std':
-                await mcp.run_stdio_async()
-            elif transport == 'streamable_http':
-                await mcp.run_streamable_http_async()
-            else:
-                raise click.BadParameter(f"transport {transport} not supported")
+            # server-scoped watcher: shell 起来后立即注册, 与 server 同生命周期.
+            # 挂在 async with moss_host.run() 之内保证 shell 一定 running.
+            async with InterleavedThinkingToolset.new_from_shell(toolset.shell) as watcher:
+                state.host = moss_host
+                state.toolset = toolset
+                state.watcher = watcher
+                toolset.matrix.logger.info(
+                    'Moss MCP toolset started with params: %r',
+                    params,
+                )
+                # 启动 MCP Server (FastMCP 内部会处理进程阻塞)
+                if transport == 'sse':
+                    await mcp.run_sse_async()
+                elif transport == 'std':
+                    await mcp.run_stdio_async()
+                elif transport == 'streamable_http':
+                    await mcp.run_streamable_http_async()
+                else:
+                    raise click.BadParameter(f"transport {transport} not supported")
 
     try:
         asyncio.run(run_server())

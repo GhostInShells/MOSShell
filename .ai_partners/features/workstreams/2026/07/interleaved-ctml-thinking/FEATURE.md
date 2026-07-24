@@ -279,26 +279,73 @@ managing_tasks/observe，无需新抽象。三动作接口值不值得固化，�
 兼容两类错误）→ ② fail-closed 写拒 → ③ MCP 面对齐。**先 ① 再 ②**：否则 fail-closed 拦下失败后
 模型仍看不到 errmsg，联锁退化成「不让过又不说为什么」。
 
-## K10（存疑，未决）：跨-interpreter 历史丢失 —— MCP 特有，需人类拍板
+## K10 落地：跨-interpreter 历史丢失 —— 已选「标准化」路径 (2026-07-25)
 
-**这不是建议，是一个被 MCP 缝合暴露出的真实机制缺口。** append 模式下每次 `execute_ctml` 都新建
-一个 interpreter 并在后台 create task。场景：模型连续 append，**第二次 append 恰好发生在第一次的
-task 已执行完之后**——第一次那个 interpreter 的生命周期已移交，它承载的**已完成结果被静默丢弃**。
-连 `ObserveError` / critical failure 都可能因此永远不可感知（结果所在的 interpreter 没了）。
+**决策**：走「标准化」——MOSShell 原生一个跨-interpreter 的 shell 观察器,
+生命周期独立于单个 interpreter, 无消费不堆砌。这就是 K8「水位线挂 buffer 不挂
+interpreter」缺的那个 buffer 的正式形态与归属。
 
-- **根因**：MCP 把「一次工具调用 = 一个 interpreter 生命周期」缝了出来，于是 append 流实际跨越了
-  多个 interpreter。历史节点的结果绑在各自 interpreter 上，移交即丢。
-- **ghost runtime 没有这个问题**：它是单一持续的 interleaved 流，不按调用切 interpreter。
-- **两条路，人类未决**：
-  - **放弃**：不为 MCP 做这个支持。MCP 本就是有损投影、回合制退化载体，接受「跨 interpreter 历史丢失」
-    是 MCP 阶段的已知损，验证时绕开（单 interpreter 内完成观察）。
-  - **标准化**：MOSShell 原生支持一个**支持 drain 的全流式 Watcher**——跨 interpreter、
-    生命周期独立于单个 interpreter。约束：**不被调用就没有、被回收就没有**（无消费不堆砌，防内存泄漏）。
-    这正是 K8「水位线挂 buffer 不挂 interpreter」缺的那个 buffer 的正式形态与归属。
-- **倾向**：留给人类在实现前拍板。若做，它是 drain buffer 的标准机制化；若不做，MCP 验证需显式
-  规避跨-interpreter 观察场景。**本轮不决，记录存疑。**
+### 落地架构（三层）
+
+```
+[MCP 层]  cli/moss_as_mcp.py:bootstrap
+          ├── 旧 4 工具原封不动 (A/B 基线组)
+          └── 新 4 工具 (K1-K9 收敛): ctml_append / ctml_peek / ctml_observe / ctml_interrupt
+               |  server-scoped watcher, 挂在 async with moss_host.run() 之内
+               v
+[Host 层] host/interleaved_thinking.py:InterleavedThinkingToolset
+          |  订阅 shell.Tracer 钩子, 缓冲 ShellEvent, 提供 4 原语:
+          |  buffered / drain / status / wait_interpreter_done
+          v
+[Core 层] core/concepts/shell.py:Tracer Protocol
+          |  5 方法: is_running / is_closed / on_task_pushed / on_task_done / on_interpreter_stopped
+          |  fire-and-forget, 转交职责不做防御 (tracer 自持 is_closed 语义)
+          v
+          core/ctml/shell/ctml_shell.py:CTMLShell.add_tracer
+          core/ctml/interpreter.py:CTMLInterpreter.on_close_callback
+          (interpreter close 是 on_interpreter_stopped 的唯一权威 fire 点,
+           覆盖 async-with exit / stop_interpretation / shell 退出 三条路径)
+```
+
+### 关键设计沉淀
+
+- **Tracer Protocol 而非多回调注册**：加事件类型 = 加 Protocol 方法 + 加 tracer 实现,
+  不改 shell add_xxx_callback 的散乱面。
+- **exit 取值点选在 `Interpreter.close()` 末尾**：唯一 fire 点, shell 层不再各自 fire,
+  避免了 async-with 退出路径漏发的隐蔽 bug (Step 2 修复过一次)。
+- **task_done 不唤醒 waiter**：`wait_interpreter_done` 语义是「等 interpreter 到 idle」,
+  不是「等任一 task done」。分离两根信号避免半唤醒竞态。
+- **K9 空 outcome 兜底在 TaskDone.as_message 层**：空 result 投成
+  `<result command="...">(no output)</result>`, 存在性不蒸发 & 协议体合法非空。
+- **InterpreterStopped 只在有 exception 时入 buffer**：清洁停止表现在
+  `wait_interpreter_done` 语义里, 不用生成噪音事件。
+- **线程模型**: fire 是同步直调 (可能来自 channel 线程或 asyncio 线程), toolset 用
+  `threading.Lock` + `ThreadSafeEvent` 处理跨-loop asyncio wake, 锁临界区极小、
+  绝不嵌套、event.set() 一律在锁外。
+- **MossRuntime ABC 未动**：MCP 层直接组合 `state.toolset.shell` + `state.watcher`,
+  作为「先跑通、增函数不删除」的第一版, 待体验数据确认是否上升到 runtime facade。
+
+### 新 MCP 工具语义速览
+
+| 工具 | 语义 | K 决策映射 |
+|---|---|---|
+| `ctml_append(logos)` | 铺 CTML, `wait_compiled` 后立即返回 watcher.drain() + status | K1/K8 (append=observe) |
+| `ctml_peek()` | 只读 `buffered() + status`, 不 drain, 不阻塞 | K5 (拉侧原子读) |
+| `ctml_observe(budget)` | 等 interpreter idle 或超时, drain + status | K2 (观察游标) / K5 |
+| `ctml_interrupt()` | `shell.clear()` 掐 pending, drain 已完成结果 + status | K2 (对读头前方动手) |
+
+### 已落码 (commits)
+
+- `c2c22dab` — Shell Tracer Protocol (core 层, 5 tests)
+- `b5c8f37b` — InterleavedThinkingToolset + interpreter on_close_callback (host 层, 11 tests)
+- (this) — MCP bootstrap 挂 server-scoped watcher + 4 新工具
+
+**残留待验**：
+- 第三轮 MCP 盲测（模型当被试）：验 K4 观察盲区是否修通, B1（存在性蒸发）是否闭合,
+  A/B 对照 (旧 execute_ctml vs 新 ctml_append) 首次准确率差异。
+- fail-closed 写拒（K8 append 遇 critical failure 拒 push）尚未做, 需体验数据先驱动优先级。
 
 ---
 
-**本文件状态**：设计已收敛至 K1–K9，K10 存疑待人类拍板。第二轮体验(2026-07-24)产出 B1–B7 基线
-与 K9 重大发现（存在性 vs payload 解耦 + 空 payload 合法包裹约束）。实现未动代码，等人类驱动。
+**本文件状态**：K1–K10 已收敛并落码, 等第三轮体验验证。B1–B7 基线来自 2026-07-24
+(第二轮体验), K9/K10 是当轮重大发现。
