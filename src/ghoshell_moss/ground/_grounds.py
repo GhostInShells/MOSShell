@@ -78,8 +78,11 @@ class DefaultGroundSet(GroundSet):
                 template_body = contents.body
                 template_pins = contents.pins
 
-        # 从 GROUND.md 加载 convention (没有 GROUND.md 时为空)
-        contents = await asyncio.to_thread(load_l0, dir_abs)
+        # 从 doc (法锚) 加载 convention — doc 缺省 = dir/GROUND.md,
+        # doc≠dir 时法来自别处 (场内移动/便携法单元, SPEC §7.1)
+        contents = await asyncio.to_thread(
+            load_l0, doc_path.parent, doc_path.name
+        )
         convention = contents.convention
 
         # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先

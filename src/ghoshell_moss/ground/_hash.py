@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
 from ghoshell_moss.ground.contract import (
+    BashPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -57,6 +58,15 @@ class Observation:
     mtime: float | None = None
     hash: str | None = None
     is_binary: bool = False
+    payload: str | None = None
+    """观察即产出内容的 verb (bash) 把结果存这里, 渲染层直接消费 —
+    保证一帧只执行一次."""
+    size: int | None = None
+    """自然单位的规模:
+    file → bytes; glob/frontmatter/ls → 命中/条目数; bash → 输出字符数.
+    None = 不适用. observe 诊断展示直接消费."""
+    unit: str = ""
+    """size 的显示单位: 'B' / 'entries' / 'chars'."""
 
 
 @dataclass
@@ -92,6 +102,8 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
         return _observe_frontmatter(pin, anchor)
     if isinstance(pin, LsPin):
         return _observe_ls(pin, anchor)
+    if isinstance(pin, BashPin):
+        return _observe_bash(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
 
@@ -101,9 +113,11 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
 def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
     target = resolve_path(pin.arguments.path, anchor)
     try:
-        mtime = target.stat().st_mtime
+        st = target.stat()
     except FileNotFoundError:
         return Observation(exists=False)
+    mtime = st.st_mtime
+    size = st.st_size
 
     binary = _is_binary(target)
 
@@ -112,16 +126,25 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
         start, end = _parse_range(pin.arguments.range, len(text.splitlines()))
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
         digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
-        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=binary)
+        return Observation(
+            exists=True, mtime=mtime, hash=digest, is_binary=binary,
+            size=len(sliced.encode("utf-8")), unit="B",
+        )
 
     if binary:
         content = target.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
-        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=True)
+        return Observation(
+            exists=True, mtime=mtime, hash=digest, is_binary=True,
+            size=size, unit="B",
+        )
 
     text = target.read_text(encoding="utf-8", errors="replace")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=mtime, hash=digest, is_binary=False)
+    return Observation(
+        exists=True, mtime=mtime, hash=digest, is_binary=False,
+        size=size, unit="B",
+    )
 
 
 def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
@@ -146,7 +169,10 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
         matches.append(hit)
 
     if not matches:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     mtimes: list[float] = []
     for m in matches:
@@ -158,7 +184,10 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
 
     rels = sorted(str(m.relative_to(root)) for m in matches)
     digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=latest, hash=digest)
+    return Observation(
+        exists=True, mtime=latest, hash=digest,
+        size=len(matches), unit="entries",
+    )
 
 
 def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
@@ -181,7 +210,10 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
     fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
     payload = fm_match.group(1) if fm_match else text
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=mtime, hash=digest)
+    return Observation(
+        exists=True, mtime=mtime, hash=digest,
+        size=1, unit="entries",
+    )
 
 
 def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observation:
@@ -194,7 +226,10 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     import re
     parts: list[str] = []
@@ -213,10 +248,16 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
         parts.append(f"-- {rel}\n{payload}")
 
     if not parts:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     digest = hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=latest_mtime, hash=digest)
+    return Observation(
+        exists=True, mtime=latest_mtime, hash=digest,
+        size=len(parts), unit="entries",
+    )
 
 
 def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
@@ -228,10 +269,97 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
     _walk_ls(root_dir, depth=pin.arguments.depth, prefix="", entries=entries)
 
     if not entries:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=None, hash=digest)
+    return Observation(
+        exists=True, mtime=None, hash=digest,
+        size=len(entries), unit="entries",
+    )
+
+
+def _observe_bash(pin: BashPin, anchor: Anchor) -> Observation:
+    """observe 即执行. payload = 渲染就绪的结果文本, hash = sha256(payload).
+
+    失败可见: 非零退出附 [exit N] + stderr 尾部; 超时附 [timeout] 标记.
+    观察层不做 budget 截断 — 对账基于完整输出, 截断是渲染的事.
+    """
+    import os
+    import subprocess
+    import sys
+
+    args = pin.arguments
+    workdir = _resolve_at(args.at, anchor)
+    if workdir is None or not workdir.is_dir():
+        return Observation(exists=False)
+
+    env = dict(os.environ)
+    env["GROUND"] = str(anchor.ground)
+    env["CWD"] = str(anchor.cwd)
+    # 让 pin 里的 moss 命令解析到当前解释器环境, 不依赖调用方 PATH
+    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}" + env.get("PATH", "")
+
+    try:
+        proc = subprocess.run(
+            ["sh", "-c", args.run],
+            cwd=workdir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout if isinstance(e.stdout, str) else ""
+        payload = (partial.rstrip() + "\n" if partial.strip() else "") + \
+            f"[timeout after {args.timeout:g}s]"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return Observation(
+            exists=True, hash=digest, payload=payload,
+            size=len(payload), unit="chars",
+        )
+    except OSError as e:
+        payload = f"error: cannot execute: {e}"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return Observation(
+            exists=True, hash=digest, payload=payload,
+            size=len(payload), unit="chars",
+        )
+
+    parts: list[str] = []
+    if proc.stdout.strip():
+        parts.append(proc.stdout.rstrip())
+    if proc.returncode != 0:
+        parts.append(f"[exit {proc.returncode}]")
+        stderr_tail = "\n".join(proc.stderr.rstrip().splitlines()[-5:])
+        if stderr_tail.strip():
+            parts.append(stderr_tail)
+
+    payload = "\n".join(parts) if parts else "(no output)"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return Observation(
+        exists=True, hash=digest, payload=payload,
+        size=len(payload), unit="chars",
+    )
+
+
+def _resolve_at(at: str, anchor: Anchor) -> Path | None:
+    """bash pin 的工作目录锚解析. 裸 $CWD / $GROUND 合法 (指锚点自身)."""
+    if at == "$CWD":
+        return anchor.cwd.resolve()
+    if at == "$GROUND":
+        return anchor.ground.resolve()
+    if at == "$HOME":
+        import os
+        h = os.environ.get("HOME")
+        return Path(h).resolve() if h else None
+    try:
+        return resolve_path(at, anchor)
+    except (PathOutsideRootError, OSError, ValueError):
+        return None
 
 
 # -- helpers ----------------------------------------------------------------

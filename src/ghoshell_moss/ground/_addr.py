@@ -14,11 +14,26 @@ from ghoshell_moss.ground.contract import PathOutsideRootError
 
 __all__ = [
     "Anchor",
+    "anchor_kind",
     "resolve_path",
     "is_glob_pattern",
 ]
 
 _ANCHOR_PREFIXES = {"$GROUND", "$CWD", "$HOME"}
+
+
+def anchor_kind(raw: str) -> str:
+    """路径的锚归属: "cwd" / "home" / "ground" (裸相对路径默认).
+
+    场内移动时用于分流: $CWD 锚的 pin 随工作场移动展开,
+    其余 pin 属于场根, 折叠为 TOC.
+    """
+    unescaped = raw.replace("\\$", "$")
+    if unescaped.startswith("$CWD"):
+        return "cwd"
+    if unescaped.startswith("$HOME"):
+        return "home"
+    return "ground"
 
 
 @dataclass(frozen=True)

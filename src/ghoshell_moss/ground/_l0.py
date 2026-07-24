@@ -20,6 +20,7 @@ import yaml
 
 from ghoshell_moss.ground.contract import (
     _VERB_CLASSES,
+    BashArguments,
     FileArguments,
     FrontmatterArguments,
     GlobArguments,
@@ -50,6 +51,7 @@ _ARG_CLASSES: dict[str, type] = {
     "glob": GlobArguments,
     "frontmatter": FrontmatterArguments,
     "ls": LsArguments,
+    "bash": BashArguments,
 }
 
 

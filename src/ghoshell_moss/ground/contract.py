@@ -30,10 +30,12 @@ __all__ = [
     "GlobPin",
     "FrontmatterPin",
     "LsPin",
+    "BashPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
+    "BashArguments",
     "GroundConvention",
     "UpdateResult",
     "TemplateInfo",
@@ -133,6 +135,27 @@ class LsArguments(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class BashArguments(BaseModel):
+    """bash verb 的 arguments.
+
+    核心注视原语 — 领域策展视图 (features list / git log / 任意脚本)
+    不在标准动词里重造, 用命令生成. 信任边界 = Makefile 级:
+    frame 即执行 GROUND.md 声明的命令.
+    """
+    run: str = Field(description="sh -c 执行的命令. GROUND/CWD 注入为环境变量.")
+    at: str = Field(
+        default="$CWD",
+        description="工作目录锚: $CWD (默认, 随场内移动) / $GROUND / 锚点路径.",
+    )
+    timeout: float = Field(
+        default=10.0, gt=0, le=60,
+        description="秒. 超时渲染 [timeout] 标记, 不静默.",
+    )
+    budget: int | None = Field(default=None, ge=1, description="stdout 字符数上限.")
+
+    model_config = {"extra": "allow"}
+
+
 # -- pin verb registry -------------------------------------------------------
 
 _VERB_CLASSES: dict[str, type[Pin]] = {}
@@ -201,6 +224,14 @@ class LsPin(Pin):
 
     verb: Literal["ls"] = "ls"
     arguments: LsArguments
+
+
+@_register("bash")
+class BashPin(Pin):
+    """命令注视 — observe 即执行, 对账 = hash(输出)."""
+
+    verb: Literal["bash"] = "bash"
+    arguments: BashArguments
 
 
 # -- errors ------------------------------------------------------------------

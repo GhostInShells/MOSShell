@@ -136,7 +136,9 @@ class DefaultGround(Ground):
         return self._dirty
 
     async def load(self) -> None:
-        contents = await asyncio.to_thread(load_l0, self._root)
+        contents = await asyncio.to_thread(
+            load_l0, self._doc_path.parent, self._doc_path.name
+        )
         self._body = contents.body
         self._pins = OrderedDict(
             (p.label, p) for p in contents.pins
@@ -145,8 +147,13 @@ class DefaultGround(Ground):
         self._dirty = False
 
     async def sediment(self) -> None:
+        # 写回法锚 doc_path — 场内移动 (doc≠root) 时沉积回场根,
+        # 永不在工作场子目录创建 GROUND.md
         await asyncio.to_thread(
-            dump_l0_pins, self._root, list(self._pins.values())
+            dump_l0_pins,
+            self._doc_path.parent,
+            list(self._pins.values()),
+            self._doc_path.name,
         )
         self._dirty = False
 
