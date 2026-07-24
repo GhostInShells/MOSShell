@@ -314,13 +314,24 @@ class Ground(ABC):
 
     # -- 生命周期 -------------------------------------------------------------
 
+    @property
+    @abstractmethod
+    def dirty(self) -> bool:
+        """是否有未落盘的变更 (pin/unpin/update/模板注入).
+
+        只读消费 (frame/meta/observe) 不置 dirty — close 时跳过 sediment,
+        保证只读操作永不改写 GROUND.md.
+        """
+
     @abstractmethod
     async def load(self) -> None:
         """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集. K14 startup 消费."""
 
     @abstractmethod
     async def sediment(self) -> None:
-        """把当前 pin 集写回 GROUND.md 的 pin 段. 不动 frontmatter 和 body."""
+        """把当前 pin 集写回 GROUND.md 的 pin 段. 不动 frontmatter 和 body.
+
+        显式调用无条件写盘; dirty 检查是 close 的职责."""
 
     # -- 法链 -----------------------------------------------------------------
 

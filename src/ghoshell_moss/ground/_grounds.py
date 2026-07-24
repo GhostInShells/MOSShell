@@ -105,6 +105,10 @@ class DefaultGroundSet(GroundSet):
         ground._body = body
         for p in pins:
             ground._pins[p.label] = p
+        # 模板注入的 pins 尚未落盘 → 标 dirty, 让 close 触发 sediment.
+        # 无模板时 open 只是加载既有 GROUND.md, 保持 clean.
+        if template_pins and pins is template_pins:
+            ground._dirty = True
         self._active[final_label] = ground
         self._label_by_path[key] = final_label
         return ground
@@ -113,7 +117,10 @@ class DefaultGroundSet(GroundSet):
         if label not in self._active:
             raise KeyError(label)
         ground = self._active[label]
-        await ground.sediment()
+        # 只在内存有未落盘变更时写盘 — 只读消费 (frame/meta/observe)
+        # 永不改写 GROUND.md.
+        if ground.dirty:
+            await ground.sediment()
         del self._active[label]
         for path_key, mapped in list(self._label_by_path.items()):
             if mapped == label:

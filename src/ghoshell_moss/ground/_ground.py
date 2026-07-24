@@ -52,6 +52,7 @@ class DefaultGround(Ground):
         self._pins: OrderedDict[str, Pin] = OrderedDict()
         self._shadows: dict[str, PinShadow] = {}
         self._body: str = ""
+        self._dirty: bool = False
 
     # -- 元信息 -----------------------------------------------------------
 
@@ -79,6 +80,7 @@ class DefaultGround(Ground):
     def pin(self, pin: Pin) -> Pin:
         self._pins[pin.label] = pin
         self._pins.move_to_end(pin.label, last=False)
+        self._dirty = True
 
         # 初始观察 — 建立 shadow 基线
         anchor = self._make_anchor()
@@ -89,6 +91,7 @@ class DefaultGround(Ground):
     def unpin(self, label: str) -> None:
         del self._pins[label]
         self._shadows.pop(label, None)
+        self._dirty = True
 
     # -- 对账 -------------------------------------------------------------
 
@@ -102,6 +105,7 @@ class DefaultGround(Ground):
         changed = old_shadow.hash != obs.hash
         self._shadows[label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
         self._pins.move_to_end(label, last=False)
+        self._dirty = True
 
         return UpdateResult(
             label=label,
@@ -127,6 +131,10 @@ class DefaultGround(Ground):
 
     # -- 生命周期 ---------------------------------------------------------
 
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
     async def load(self) -> None:
         contents = await asyncio.to_thread(load_l0, self._root)
         self._body = contents.body
@@ -134,11 +142,13 @@ class DefaultGround(Ground):
             (p.label, p) for p in contents.pins
         )
         self._shadows.clear()
+        self._dirty = False
 
     async def sediment(self) -> None:
         await asyncio.to_thread(
             dump_l0_pins, self._root, list(self._pins.values())
         )
+        self._dirty = False
 
     # -- internal ---------------------------------------------------------
 
