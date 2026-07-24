@@ -8,16 +8,18 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: design-locked
-status_note: '2026-07-24 §9 起草 (beta1 刻度 + 轨迹作为产物 + 8 步节点式施工):
-  复工条件成熟 (FORMAT v2 冻结 / memento 一级 / CLI §19 通过 / pydantic-ai 2.5.0);
-  核心转向: commit 归 agent 全权, invoke≠commit 生命周期, staging 残留合法, runner 不摸写侧;
-  branch≈task 概念沉淀 (task 降级投影的物理落点), 分段多次提交是特性; 四锚 (factory+AGENT.md+
-  memento+ground) 留文档层, 不进代码 (v1 保 MementoAgent 命名, ground 退化为 cwd);
-  ABC tentative 4 方法 (invoke/compact/export_context_md/describe_line), 用 contract.py 不用 abc.py;
-  8 步施工每步 checkpoint 明说等 review; commit 前缀 step N 便于事后复盘. §8 存活但被 9.2/9.9 部分覆盖.
-  当前状态: 步 1 完成, 等 review 放行步 2 (目录结构 + 依赖复核).'
+status_note: '2026-07-25 §10 pivot 定案 (AGENT.md → .py + Sandbox 反射为 prompt):
+  AGENT.md 路径完成推动收敛的使命后退场, 走 .py 路径 (授权痛苦消失 + 上下文密度 10x
+  + 24 年 ghostos 已验证). 三个核心决策: sandbox 是 tool 认知归 runner (agent 不自己
+  管 memento 写入), v1 无 compact 无 magic hook (ABC 3 方法 + CLI 4 动词, 步 7-8 移出
+  本 workstream), 反射天然过滤 dunder. memento 归属: AGENT.py 兄弟 .memento/, owner=
+  文件 stem (*.agent.py 多身份). Compiler + Sandbox(SANDBOX_BUILTINS) in-process 即真
+  授权. 反射 prompt = sandbox.get_interface(). 复用 ghoshell_common.entity 做 ctx
+  变量序列化. 施工步 A-H, hello world (步 F) 验收判据: 模型能通过反射自陈能力.
+  首场景 (步 H) 换为 math 计算, 翻译 concepts 推到 tool_loop 触发后. 当前状态: 步 A
+  完成, 待 review 放行步 B (injections.py).'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-24'
+updated: '2026-07-25'
 ---
 
 # Memento CLI & Agent
@@ -614,3 +616,240 @@ you are ...
 **不同 branch 规划目录下 concepts 翻译**（§8.8）。填 §1 能力→CLI 动词→契约
 条款自洽矩阵。零工具、单轮翻译——v1 scope 越小 §0 触发器越远。tool_loop
 （bash + file_editor）等第二场景触发。
+
+## 10. 复工前最后一层: pivot 到 .py + Sandbox 反射为 prompt (2026-07-25, claude-opus-4-7-1m)
+
+§9 起草后步 1-4 落地过程中，人类引导展开了一场关于 "AGENT.md + tool 授权 vs
+纯 python 文件 + sandbox 预授权" 的收敛讨论。这是 §9 的再一次 pivot，本节承载
+最终定案。本节与 §9 并列有效，冲突处以本节为准。
+
+**方法论注脚**：AGENT.md 从头到尾是人类的第二方案。§7/§8/§9 讨论 AGENT.md
+路径是因为模型手感不够、上下文绕不进 .py 路径的复杂性。§9 起草沉淀了~200KB
+的讨论共识后，讨论空间被修剪到足够，才能真正谈 .py 路径的细节。下一个化身
+读到此处应理解: **AGENT.md 路径不是被"推翻"，而是被"用完即抛"** — 它做了
+它的工作 (推着讨论收敛)，本节起 .py 路径承担 v1 实现。
+
+### 10.1 pivot 动机: 授权痛苦 + 上下文密度
+
+**授权痛苦真实存在**。AGENT.md + bash/file_editor + tool 白名单机制在 claude
+code 是持续摩擦点 (每次撞未授权工具中断问用户)。给我们自己造一份等价的白名单
+机制 = 施工面翻倍，且授权本质无解 (要么无授权/危险，要么全授权/自欺，要么
+每次问/UX 崩)。
+
+**上下文密度是 10x 差异**。JSON schema tool 描述让模型看到 `{"name": "read",
+"parameters": {...}}` 只知道形状; 反射 Python 让模型看到 `def read_doc(path:
+str) -> str: """Read a MOSS concept doc from ..."""` 知道语义 + 类型 + 意图 +
+相邻工具关系。**LLM 读 Python 远好于读 JSON schema** — 训练分布集中在前者。
+
+**MOSS 已有基建 100% 就位**:
+- `ghoshell_moss.core.codex.compiler:Compiler` — .py 编译 into ModuleType
+- `ghoshell_moss.core.codex.sandbox:Sandbox` + `SANDBOX_BUILTINS` — 两层沙箱,
+  builtins 层屏蔽 `__import__` = 真授权 (不是 in-process exec 的自欺)
+- `ghoshell_moss.core.codex._reflect` — 反射即 prompt 的机制
+- `ghoshell_common.entity:EntityMeta` — 变量跨进程序列化契约 (来自 2024 ghostos
+  的 `PyContext.properties` 现代形态)
+
+24 年 ghostos 已经证明这条路走得通，代码在 `libs/moss/src/ghostos_moss/`，本轮
+是把该思路的 MOSS 内嵌版做出来。
+
+### 10.2 三个核心决策
+
+**决策 1: Sandbox 是 tool，认知归 runner**
+
+sandbox 是 pydantic-ai agent 的一个工具 (`exec(code: str) -> str`)。**记忆写入
+不在 sandbox 内做**，agent 不知道自己被记录，就跟人类不会主动"我要把这句话
+写进日记"一样。
+
+修订 §9.2 "agent 全权管写": 只有**任务级状态** (`ctx: AgentContext`) 归 agent
+主观感知，**轨迹记录** (moments) 归 runner 自动完成。
+
+责任分层:
+
+| 层 | 内容 |
+| --- | --- |
+| sandbox namespace 注入物 | `file_editor: FileEditor` / `ctx: AgentContext` (模型能触到的能力) |
+| runner (impl.py) | 编译 .py / 建 sandbox / 反射→prompt / 装 exec tool / 调 pydantic-ai / 收 result 后 record 一帧 / 序列化 ctx |
+
+**决策 2: v1 无 compact 无 magic hook**
+
+compact + magic function hooks + spec 三件套是 harness 家族 (§0 触发器)。
+一期完全不做:
+
+- ABC 从 4 方法减到 **3 方法** (`invoke` / `export_context_md` /
+  `describe_line`)，`compact` 完全从 ABC 拿掉
+- CLI 从 5 动词减到 **4 动词** (`parse` / `invoke` / `export-context` /
+  `describe`)
+- **staging 累积不 commit** — 需要 commit 时用户显式 `moss memento branch
+  commit`。这是 §9.2 "invoke ≠ commit 生命周期" 的最诚实兑现
+- 原 §9.6 步 7/8 (手动 compact / 自动 policy) **移出本 workstream**，未来
+  再开新 workstream
+
+**决策 3: 反射天然过滤 dunder**
+
+`Sandbox.get_interface()` 已过滤 `_` 开头，将来加 `__compact__` / `__on_end__`
+魔法函数自动被反射跳过。**惯例已在，约束不用新建**。
+
+### 10.3 memento 数据源归属
+
+**AGENT.py 就是锚**。
+
+单 agent 布局:
+```
+some/task/dir/
+  AGENT.py       # owner = "AGENT" (或从 __owner__ 覆盖)
+  .memento/      # 兄弟目录
+```
+
+多 agent 布局:
+```
+some/task/dir/
+  translator.agent.py    # owner = "translator"
+  reviewer.agent.py      # owner = "reviewer"
+  .memento/              # 共享目录, 内部 owner 分片
+```
+
+owner 名 = 文件 stem (去 `.agent` 后缀)。多 agent 共享 `.memento/` 时，memento
+契约层的 owner 分片 (`branches/{owner}/...`) + 跨 owner 只读机制天然支持协作。
+
+**owner 覆盖优先级**: `CLI --owner flag > AGENT.py __owner__ 魔法 attr >
+文件 stem > getpass.getuser()`。四层兜底。
+
+**branch 默认**: `main`。CLI `--branch/-b` 覆盖。
+
+### 10.4 AGENT.py 结构约定
+
+```python
+"""Translator agent — translate MOSS concepts to zh.
+
+Read source with file_editor; call ctx.define() to persist state across invokes.
+"""
+
+from ghoshell_moss.agents.injections import (
+    FileEditor, get_file_editor,
+    AgentContext, get_ctx,
+)
+
+__model__ = "claude-opus-4-7"     # 可选, 缺省走 ANTHROPIC_MODEL env
+# __owner__ = "translator"        # 可选, 覆盖文件 stem
+
+file_editor: FileEditor = get_file_editor()
+ctx: AgentContext = get_ctx()
+```
+
+关键性质:
+
+1. **顶部 docstring = task instruction** — agent 身份 + 目标描述
+2. **imports 声明能力面** — `SANDBOX_BUILTINS` 屏蔽 `__import__`，agent 只能碰
+   compile 阶段已 import 的东西 = 文件即白名单
+3. **`get_*()` 是 stub** — `injections.py` 里实现为 raise NotImplementedError,
+   factory 在 compile 后用 `sandbox.set(...)` 覆盖为真实现
+4. **模型看到的**: `sandbox.get_interface()` 反射输出 = 模块 docstring + 顶层
+   属性 (`file_editor: FileEditor` / `ctx: AgentContext`) + 引用类型的
+   signatures。**这就是 system prompt 的完整内容**
+5. **模型唯一工具**: `exec(code: str) -> str` — 写任意 Python 调用 sandbox
+   namespace 里的东西
+
+### 10.5 修订后的 v1 完整形状
+
+```
+factory(agent_path):
+  1. source = agent_path.read_text()
+  2. compiler = Compiler(source, modulename=agent_path.stem,
+                         filename=str(agent_path), compile_soon=True)
+  3. compiled = compiler.compiled
+  4. model_name = getattr(compiled, "__model__", None) or os.environ["ANTHROPIC_MODEL"]
+  5. owner = <CLI flag> or getattr(compiled, "__owner__", None) or <stem> or getuser()
+  6. Sandbox 二层 (init + agent):
+     - init_sandbox = Sandbox(builtins=None)
+     - copy compiled.__dict__ into init_sandbox (跳过 dunder)
+     - override: init_sandbox.set("file_editor", RealFileEditor(cwd=agent_path.parent))
+     - override: init_sandbox.set("ctx", RealAgentContext(loaded_from_memento))
+     - agent_sandbox = Sandbox(parent=init_sandbox, builtins=SANDBOX_BUILTINS)
+  7. build pydantic-ai Agent (Anthropic, __model__)
+  8. return MementoPydanticAgentImpl(agent, agent_sandbox, memento_binding, ...)
+
+impl.invoke(instruction, memento, line_name, ...):
+  1. system_prompt = agent_sandbox.get_interface()   ← 反射即 prompt
+  2. register tool: async def exec(code: str) -> str: return sandbox.exec(code)
+  3. result = await self._agent.run(instruction, instructions=system_prompt)
+  4. runner records to memento staging:
+     - moment A: pydantic-ai new_messages dump (type="pydantic_ai.messages/v2")
+     - moment B: ctx snapshot 如 ctx 有变 (type="agent.context/v1")
+  5. return result.output
+  # 不 commit / 不 compact / 无 magic hook
+```
+
+### 10.6 修订后的施工步骤 (A-H)
+
+| 步 | 内容 | 交付判据 |
+| --- | --- | --- |
+| A | §10 起草 | 本节即产物 |
+| B | `agents/injections.py` — Protocol + get_* stubs | import 通过, get_* 抛 NotImplementedError, get-interface 反射看到 3 个 Protocol 与 3 个 get_* 函数 |
+| C | `agents/memento_pydantic_agent/_context.py` — AgentContext (PyContext 现代版, 复用 EntityMeta) | 单测: define/get/iter/序列化-反序列化往返 |
+| D | `agents/memento_pydantic_agent/_injections_impl.py` — FileEditor / AgentContext 真实现 | 单测: file_editor 基本 view/create; ctx load-from-memento round-trip |
+| E | 改 `factory.py` + `impl.py` — Compiler + Sandbox + exec tool 装配 | 无网络单测: sandbox 装载 stub AGENT.py 成功, get_interface 输出符合预期 |
+| F | hello world AGENT.py + 跑通 | AGENT.py 只 import math + 顶部 docstring 说自己是什么, invoke "who are you and what can you do?" 模型能通过反射自陈能力 |
+| G | CLI 4 动词 (`parse` / `invoke` / `export-context` / `describe`) | `parse ./AGENT.py` 打印反射结果; `invoke` 走通; 其余暂 raise NotImplementedError 或 stub |
+| H | 首场景: math 计算 | AGENT.py 只依赖 `math` 库, invoke "compute the surface area of a torus with r=3 R=5" 模型 exec math.pi 计算完返回 |
+
+**每步 checkpoint 明说** — 施工化身做完一步停下等 review 放行。commit message
+前缀 `step X` 便于 `git log --grep="step "` 复盘。
+
+### 10.7 hello world 验收判据 (步 F)
+
+首个能跑通的 AGENT.py 极简:
+
+```python
+"""Hello agent — a minimal reflection-driven agent.
+
+You have access to the standard `math` library and can compute anything
+mathematical. When asked who you are, describe yourself from the
+interface you can see.
+"""
+import math
+
+__model__ = "claude-opus-4-7"
+```
+
+调用 `moss memento agent invoke ./AGENT.py "who are you and what can you do?"`。
+**验收判据**: 模型输出应说出自己有 math 库、自己能算什么 — 而这个信息**只能
+从反射出的 system prompt 里读到**。如果模型能通过反射自陈能力，反射即 prompt
+链路就打通了。
+
+**不判据**: 计算结果准确度 (那是 F+1 的场景 H 验收)、任何 memento 写入格式
+(那是集成期验证)。
+
+### 10.8 首场景: math 计算 (步 H)
+
+**AGENT.py 只依赖 math 库** — 无 file_editor / 无 ctx / 无 memento view 注入。
+verify 场景纯粹是 "反射 + 单一 stdlib + pydantic-ai tool loop" 三者协作。
+
+具体判据 (`invoke ./AGENT.py "compute the surface area of a torus with r=3 R=5"`):
+1. 模型至少调用一次 `exec("2 * math.pi ** 2 * ...")` 之类
+2. 最终 output 包含正确数值 (~592.176)
+3. memento staging 至少 1 条 moment (pydantic-ai messages dump)
+4. 手动 `moss memento branch commit` 后 staging 清空、`commit show` 能看到
+   frozen 内容
+
+**不测**: 多轮工具调用交错、错误重试、compact — 都推到未来 workstream。
+
+### 10.9 §9 存活与覆盖
+
+- **存活**: §9.1 beta1 刻度三条、§9.3 branch≈task 概念、§9.4 四锚留文档层不进
+  代码、§9.6 8 步施工方法论、§9.7 目录结构、§9.10 首场景 (math 版本落地)
+- **覆盖**:
+  - §9.2 "agent 全权管写" → 10.2 决策 1 (sandbox 是 tool, 认知归 runner)
+  - §9.5 ABC 4 方法 → 10.2 决策 2 (3 方法, 拿掉 compact)
+  - §9.6 步 5-8 → 10.6 步 A-H (compact/policy 移出本 workstream)
+  - §9.8 AGENT.md frontmatter → 10.4 AGENT.py 结构约定 (完全替换)
+
+### 10.10 剩余不确定项 (施工中撞到再定)
+
+1. **Compiler 是否允许 relative import** (`from . import helpers`)? 未验证。
+   若不允许, 任务目录内多文件 python 组织需要另想。beta1 判据: 撞到再决,
+   MVP 单文件不触发。
+2. **模型对 `sandbox.get_interface()` 输出格式的适应性**。人类日常在用
+   `moss codex get-interface`, 模型训练分布应该覆盖类似格式, 但正式协议前
+   未做过 evals。步 F/H 就是这条判据的第一次真验。
+3. **AgentContext 序列化的 moment type 值** (`agent.context/v1` vs
+   `moss.agent.ctx/v1` 或别的)。写代码时定，不需要现在拍。
