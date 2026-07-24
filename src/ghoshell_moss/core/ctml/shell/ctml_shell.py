@@ -216,13 +216,16 @@ class CTMLShell(MOSShell[PrimeChannel]):
             else:
                 self.logger.exception(exc_val)
         self.logger.info("%s shell is exiting", self._log_prefix)
-        # fire outstanding interpreter so tracer can drain final state.
-        # 覆盖 "shell 关闭时仍持有 last interpreter" 的场景 (interpreter_in_ctx 退出后
-        # self._interpreter 不会被清空).
+        # 若还持有一个 outstanding interpreter, 主动 close 它 —
+        # close 的 on_close_callback 会 fire on_interpreter_stopped 给 tracer, 保证收尾信号不漏.
         outstanding = self._interpreter
         if outstanding is not None:
             self._interpreter = None
-            self._fire_on_interpreter_stopped(outstanding)
+            if outstanding.is_running() or not outstanding.is_closed():
+                try:
+                    await outstanding.close(cancel_executing=True)
+                except Exception:
+                    self.logger.exception("%s close outstanding interpreter failed", self._log_prefix)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         self.logger.info("%s exited", self._log_prefix)
         return self._capture_errors_on_exit or None
@@ -398,14 +401,12 @@ class CTMLShell(MOSShell[PrimeChannel]):
             # append 会追加命令, 而不是清除.
             callback = self._interpreter_callback_task
             old_interpreter = self._interpreter
-            if old_interpreter is not None:
-                if old_interpreter.is_running():
-                    # 停止旧的 interpreter 继续提交新的信息.
-                    undone_tasks = old_interpreter.incomplete_tasks()
-                    interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
-                # 不管是否 running, 只要 shell 曾持有它, 就 fire 一次 stopped —
-                # 保证 tracer 能在 append 前拿到 previous interpreter 的收尾信号.
-                self._fire_on_interpreter_stopped(old_interpreter)
+            if old_interpreter is not None and old_interpreter.is_running():
+                # 停止旧的 interpreter 继续提交新的信息.
+                # (fire on_interpreter_stopped 由 old_interpreter.close 的 on_close_callback 触发,
+                # 不在这里显式 fire)
+                undone_tasks = old_interpreter.incomplete_tasks()
+                interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
             self._interpreter = None
 
         # 阻塞等待刷新结果.
@@ -428,6 +429,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             clear_after_exit=clear_after_exit,
             moss_static=self._moss_static_cache,
             task_context=task_context,
+            on_close_callback=self._fire_on_interpreter_stopped,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
@@ -575,23 +577,19 @@ class CTMLShell(MOSShell[PrimeChannel]):
         if old is None:
             return None
         self._interpreter = None
-        result: Optional[Interpretation] = None
-        if old.is_running():
-            # 考虑线程安全问题. 先简单做一层防御.
-            stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
-            # 防止交叉感染.
-            future = asyncio.get_running_loop().create_future()
+        if not old.is_running():
+            return None
+        # 考虑线程安全问题. 先简单做一层防御.
+        stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
+        # 防止交叉感染. (on_interpreter_stopped fire 由 old.close 的 on_close_callback 触发, 不在这里显式 fire)
+        future = asyncio.get_running_loop().create_future()
 
-            def done_callback(_t: asyncio.Task) -> None:
-                if not future.done():
-                    future.set_result(None)
+        def done_callback(_t: asyncio.Task) -> None:
+            if not future.done():
+                future.set_result(None)
 
-            stop_task.add_done_callback(done_callback)
-            result = await future
-        # 无论 running 与否, 只要 shell 曾持有它, 就 fire 一次 stopped —
-        # 保证 tracer 能拿到收尾信号 (包括 async-with 已 close 的场景).
-        self._fire_on_interpreter_stopped(old)
-        return result
+        stop_task.add_done_callback(done_callback)
+        return await future
 
     async def wait_until_closed(self) -> None:
         if not self.is_running():
