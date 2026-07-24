@@ -26,7 +26,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
 )
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
+from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell, Tracer
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel
 from ghoshell_moss.core.concepts.errors import PausedError
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
@@ -120,6 +120,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
         # --- hook? --- #
         self._wait_any_task: deque[ThreadSafeFuture[CommandTask]] = deque()
 
+        # --- tracers --- #
+        # fire and forget; 遍历时 skip is_closed / not is_running, 异常 catch + log.
+        self._tracers: list[Tracer] = []
+
     @property
     def container(self) -> IoCContainer:
         return self._container
@@ -212,6 +216,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
             else:
                 self.logger.exception(exc_val)
         self.logger.info("%s shell is exiting", self._log_prefix)
+        # fire outstanding interpreter so tracer can drain final state.
+        # 覆盖 "shell 关闭时仍持有 last interpreter" 的场景 (interpreter_in_ctx 退出后
+        # self._interpreter 不会被清空).
+        outstanding = self._interpreter
+        if outstanding is not None:
+            self._interpreter = None
+            self._fire_on_interpreter_stopped(outstanding)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         self.logger.info("%s exited", self._log_prefix)
         return self._capture_errors_on_exit or None
@@ -386,10 +397,15 @@ class CTMLShell(MOSShell[PrimeChannel]):
         elif kind == "append":
             # append 会追加命令, 而不是清除.
             callback = self._interpreter_callback_task
-            if self._interpreter and self._interpreter.is_running():
-                # 停止旧的 interpreter 继续提交新的信息.
-                undone_tasks = self._interpreter.incomplete_tasks()
-                interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
+            old_interpreter = self._interpreter
+            if old_interpreter is not None:
+                if old_interpreter.is_running():
+                    # 停止旧的 interpreter 继续提交新的信息.
+                    undone_tasks = old_interpreter.incomplete_tasks()
+                    interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
+                # 不管是否 running, 只要 shell 曾持有它, 就 fire 一次 stopped —
+                # 保证 tracer 能在 append 前拿到 previous interpreter 的收尾信号.
+                self._fire_on_interpreter_stopped(old_interpreter)
             self._interpreter = None
 
         # 阻塞等待刷新结果.
@@ -515,15 +531,53 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 ft = self._wait_any_task.popleft()
                 if not ft.done():
                     ft.set_result(task)
+            # tracer hooks — fire pushed + wire done
+            self._fire_on_task_pushed(task)
+            task.add_done_callback(self._on_task_done_hook)
 
         self._main_runtime.push_task(*tasks)
 
+    # --- tracers --- #
+
+    def add_tracer(self, tracer: Tracer) -> None:
+        self._tracers.append(tracer)
+
+    def _fire_on_task_pushed(self, task: CommandTask) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_task_pushed(task)
+            except Exception:
+                self.logger.exception("%s tracer.on_task_pushed failed", self._log_prefix)
+
+    def _on_task_done_hook(self, task: CommandTask) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_task_done(task)
+            except Exception:
+                self.logger.exception("%s tracer.on_task_done failed", self._log_prefix)
+
+    def _fire_on_interpreter_stopped(self, interpreter: Interpreter) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_interpreter_stopped(interpreter)
+            except Exception:
+                self.logger.exception("%s tracer.on_interpreter_stopped failed", self._log_prefix)
+
     async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
-        if self._interpreter is not None and self._interpreter.is_running():
+        old = self._interpreter
+        if old is None:
+            return None
+        self._interpreter = None
+        result: Optional[Interpretation] = None
+        if old.is_running():
             # 考虑线程安全问题. 先简单做一层防御.
-            old = self._interpreter
-            self._interpreter = None
             stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
             # 防止交叉感染.
             future = asyncio.get_running_loop().create_future()
@@ -533,8 +587,11 @@ class CTMLShell(MOSShell[PrimeChannel]):
                     future.set_result(None)
 
             stop_task.add_done_callback(done_callback)
-            return await future
-        return None
+            result = await future
+        # 无论 running 与否, 只要 shell 曾持有它, 就 fire 一次 stopped —
+        # 保证 tracer 能拿到收尾信号 (包括 async-with 已 close 的场景).
+        self._fire_on_interpreter_stopped(old)
+        return result
 
     async def wait_until_closed(self) -> None:
         if not self.is_running():
