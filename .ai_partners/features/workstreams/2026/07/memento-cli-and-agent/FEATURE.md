@@ -8,15 +8,16 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: design-locked
-status_note: '2026-07-23 定案收敛 (§8, 复工前最终层): 核心=协议化驱动唯一, 内部状态归实现;
-  MementoAgent[MOMENT] 泛型吃掉 codec 不对称 (§7.3 作废), pydantic-ai 退为具体实现; -m 指向 ABC
-  实现去 pydantic 耦合; 审批降级为实现命题+静态策略, 交互式审批屏蔽出无状态车道; 不做 Agent.iter()
-  逐节点 (harness 器官), runner 只收一帧 commit; 验收改口径=ABC+具体实现+memento 绑定 (覆盖 §18.7
-  CLI 体系, 待人类复核), CLI 降级为重启连续性测试夹具; 首场景=多 branch 翻译 concepts. 复工等
-  FORMAT v2 + abc.py 重写 (MementoBranch 解体).
-  背景框架见 §7: 正交三元组 prompt+toolsets(塌缩为 bash 可调)+conversation(memento 是该轴可移植实现)'
+status_note: '2026-07-24 §9 起草 (beta1 刻度 + 轨迹作为产物 + 8 步节点式施工):
+  复工条件成熟 (FORMAT v2 冻结 / memento 一级 / CLI §19 通过 / pydantic-ai 2.5.0);
+  核心转向: commit 归 agent 全权, invoke≠commit 生命周期, staging 残留合法, runner 不摸写侧;
+  branch≈task 概念沉淀 (task 降级投影的物理落点), 分段多次提交是特性; 四锚 (factory+AGENT.md+
+  memento+ground) 留文档层, 不进代码 (v1 保 MementoAgent 命名, ground 退化为 cwd);
+  ABC tentative 4 方法 (invoke/compact/export_context_md/describe_line), 用 contract.py 不用 abc.py;
+  8 步施工每步 checkpoint 明说等 review; commit 前缀 step N 便于事后复盘. §8 存活但被 9.2/9.9 部分覆盖.
+  当前状态: 步 1 完成, 等 review 放行步 2 (目录结构 + 依赖复核).'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-23'
+updated: '2026-07-24'
 ---
 
 # Memento CLI & Agent
@@ -424,3 +425,192 @@ memento 边界不变"即可，**不必真接第二个 agent**。不加复杂度�
   (5) `moss memento agent` 命令挂进 §18.4 树（owner 级或独立组待施工时定）。
   复工条件：等 FORMAT v2 起草 + abc.py 重写（MementoBranch 解体）。验收方式
   由人类定为 CLI 体系——本 workstream 的 agent 是 CLI 验收后的下一站。
+
+## 9. 复工前最后一层：beta1 刻度 + 轨迹作为产物 + 8 步节点式施工（2026-07-24，claude-opus-4-7-1m）
+
+复工条件成熟：FORMAT v2 冻结、`memento/abc.py` 重写完成（`MementoBranch` 解体成
+`Memento` facade + `Line` protocol）、`memento` 已提级一级模块、CLI 一轮自解释
+验收通过（§19）、pydantic-ai 2.5.0 在 `[ghost]` extra 就位。§8 的定案层与本节
+并列有效，冲突处以本节为准（本节更晚、更收敛）。
+
+### 9.1 认知刻度：beta1 不是发布前
+
+本项目 v0.1.0 未发版，处于人机协作生长期，不是"发布前的严谨设计冷项目"。
+过度严谨在此阶段是失败模式：它把注意力从"跑得快、撞到再调"移向"每个字段拍板、
+每个契约先冻结"。以下三条是 beta1 刻度的物理表达，与 §8 定案层不冲突但改变
+其应用方式：
+
+1. **契约压力就地打补丁，绕不过再重开**。memento agent 在施工中撞到 memento
+   契约压力时，判据是"能否加一条 §N 压力点条目 + 局部绕过"——能就绕，不能才
+   提议 momento-mori 重开（§14/§16/§17 三次重开走过的仪式）。beta1 下 95%
+   情况应属前者。
+2. **调整与回滚是产物，不是噪音**。git log 的形状本身是产物：一次 feature
+   40 个小 commit 记录调整节奏，比 1 个 squash 后的干净 commit 有价值——观测者
+   AI 可从中提取施工节奏、复现决策路径、benchmark 人机协作模式。**不 squash、
+   不 rebase、不"最后整理成干净 PR"。撞到问题往回改是新 commit，不是 amend**。
+3. **通用 vs 可用的边界重划**。harness 器官的核心风险是**通用化**（跨家族抽象），
+   不是**可用性**（家族内部堆策略）。判据：**只要 memento + record + commit
+   三原语在 memento 契约层保持通用，pydantic-ai 家族内部堆多少 `commit_policy` /
+   `compact_threshold` / 什么都行**。跨家族抽象等第二个 agent 家族出现再做。
+
+### 9.2 核心转向：commit 归 agent 全权，invoke ≠ commit 生命周期
+
+§1 "invocation 边界 = 天然机械 commit 边界" 本轮被推翻。**agent 一次 invoke =
+一个 final answer，内部有多少回合 / record / commit 都是家族自决**。具体：
+
+- **agent 全权管写**：runner 装 `Memento` 实例 + `cwd` + AGENT.md + `instruction`
+  → `agent.invoke(...)`。invoke 内部自己 `line.record()` + `line.commit()`。
+  **runner 不摸 line 写侧**。
+- **invoke 内多帧合法**：一次 invoke 内可 record N 次、可 commit 多次（"分段
+  多次提交"是特性不是补丁——它对得起"打磨 memento 概念"这条主线）、也可以
+  invoke 结束时 staging 有残留不 commit。
+- **staging 残留在 invoke 边界上合法**：不再是崩溃残留。§F 的 "pre-invoke sweep
+  （staging 非空 → 机械 commit 落锚）" 死掉。runner 层 v1 完全不管 staging。
+- **代价接受**：运行状态不可感知（invoke 内部没有流式协议）。beta1 不做
+  jsonl 流式吐帧，等真需求撞到再加。
+
+**副作用观察**：runner stdout 要 `--json` 元信息（commit_id / moment_count_delta），
+只能通过 invoke 前后 `line.log()` 差集观察。这是"agent 全权管写"的物理代价，
+不当 bug 修，允许 flake。
+
+### 9.3 概念一次沉淀：branch ≈ task（降级后的一等公民）
+
+**branch 就是 §5 "task 降级为可丢弃投影" 后的物理落点**：
+- branch = 一次思考 / 一个 sub-agent 会话 / 一个 workstream 段
+- commit = 段内自然节点
+- branch 摘要 = task summary 的自然存在
+- ancestry (parent commit 单父链) = task tree 的自然存在
+- "分段多次提交" = 段内规划的物理体现
+
+memento agent 打磨的东西**不只是 memento，是"降级后的 task 系统"**。这条纪律
+挂在本节，不进代码抽象——beta1 阶段代码层仍叫 `MementoAgent`，不叫 `TaskAgent`
+或其它任何提级名字。
+
+### 9.4 四锚框架保留在文档层，不进代码
+
+**factory + AGENT.md + memento + ground** 是 §7.1 orthogonal triad
+(prompt + toolsets + conversation) 加 spatial (ground) 的补全，构成 MOSS 通用
+agent 形状描述。但 v1 保持 memento agent family 定位：
+
+- 代码里**不出**现 `MossAgent` 抽象；ABC 名叫 `MementoAgent`，绑定 memento family。
+- 四锚是本文档描述性框架，不是代码强制。ground 在 v1 退化为 `cwd: Path`
+  （AGENT.md 所在目录 + `--cwd` 覆盖），不引 ground contract。
+- 第二个 agent family 出现 + ghost-ground workstream 集成成熟 后，再讨论 ABC
+  提级到通用位置。
+
+### 9.5 ABC 表面（tentative，v1 起点）
+
+命名不用 `abc.py`（IDE 冲突面）→ 用 `contract.py`（项目里 `contracts/` 一级
+已在，语义前置共识）。四个方法：
+
+```python
+class MementoAgent(ABC):
+    """
+    Memento family 内部 agent. beta1 阶段的 agent 契约面.
+    invoke = 单次交互 → final answer. 内部治理由家族自决.
+    """
+
+    @abstractmethod
+    async def invoke(
+        self, *,
+        instruction: str,
+        prompt: str,          # AGENT.md body, sha 由 runner 计算传 metadata
+        memento: Memento,
+        line_name: str,
+        cwd: Path,
+        metadata: dict[str, Any] = {},
+    ) -> str: ...
+    # 返回 final answer 文本. 副作用 (record/commit/compact) 全归 agent.
+
+    @abstractmethod
+    def compact(self, memento: Memento, line_name: str) -> None: ...
+    # 收 staging → semantic commit. agent 自我规划 summary + trailer.
+
+    @abstractmethod
+    def export_context_md(self, memento: Memento, line_name: str) -> str: ...
+    # agent 视角: system + window + recent 导出 markdown.
+
+    @abstractmethod
+    def describe_line(self, memento: Memento, line_name: str) -> str: ...
+    # line 的 agent 视角摘要.
+```
+
+`invoke` 返回 `str` 而非 `None` — §3 钉子 11 "stdout = 模型最终文本" 兑现。
+`compact` 独立方法 — AGENT.md body 可引导 agent "重要节点后调 compact"，也允许
+runner 通过 CLI flag `--pre-compact` / `--post-compact` 外部触发。
+
+四方法 tentative，施工中撞到冗余就砍、缺就加，不当契约冻结。
+
+### 9.6 8 步节点式施工方法论（本 workstream 主约束）
+
+**不是"设计好一次做完"，是"设计一部分做一部分，暴露的新信息喂回下一步"**。
+每步做完停下、明说 "步 N 完成"，等人类 review 放行才进下一步。8 个节点 =
+8 个投递讯息窗口。
+
+| 步 | 内容 | 产出判据 |
+|---|---|---|
+| 1 | FEATURE.md §9 起草 | 本节即产物 |
+| 2 | 目录结构 + 依赖复核 | `ghoshell_moss/agents/memento_pydantic_agent/` 就位，`[ghost]` extra 含 pydantic-ai |
+| 3 | `contract.py` ABC 四方法 | import 通过、类型检查通过、方法体 `raise NotImplementedError` |
+| 4 | factory + config 骨架 | `factory({})` 可实例化，方法留空 |
+| 5 | CLI 配套：声明与发现 | `moss memento agent <owner/line> <AGENT.md> -p "..."` 解析、定位 factory、打印 "would invoke with ..."，不真调 invoke |
+| 6 | 走完一轮：无自动 commit | invoke 能真调 pydantic-ai、能 record 一帧、staging 结束时有残留、人类可手动 `moss memento branch commit` 落锚 |
+| 7 | 手动 compact：触发 commit 规划 | agent 自我总结 staging + 生成合规 trailer + 落 semantic commit + 下次 invoke 装载时 render_window 读到 summary。**做好了万事大吉** |
+| 8 | 自动 commit policy：一个 | `per_invoke` 策略，config 字段可关。至此 v1 完成，是 Atom prototype 定位 |
+
+**每步阶段内自由多 commit**（撞坑 + 恢复 + 修正各一 commit）。commit message
+前缀 `step N` 便于事后 `git log --grep="step "` 复盘节奏。
+
+### 9.7 目录结构定案
+
+```
+src/ghoshell_moss/agents/
+  __init__.py
+  memento_pydantic_agent/
+    __init__.py
+    contract.py       # 步 3 的 ABC (MementoAgent)
+    config.py         # 步 4 factory config BaseModel
+    factory.py        # 步 4 factory 函数
+    impl.py           # 步 6+ 具体实现
+```
+
+pydantic-ai 依赖走 `[ghost]` extra（步 2 复核 pyproject.toml，缺则补）。
+
+### 9.8 AGENT.md 兼容规约（v1 具体形状）
+
+```yaml
+---
+name: translator                                              # claude code 兼容
+description: Translate concepts docs to zh                    # claude code 兼容
+model: claude-sonnet-4-5                                      # claude code 兼容
+tools: [bash, file_editor]                                    # claude code 兼容, 缺省 = 默认全集
+memento_agent: ghoshell_moss.agents.memento_pydantic_agent:factory  # 本 family 新增
+construct:                                                    # 本 family 新增, factory config sink
+  max_tokens: 4096
+---
+you are ...
+```
+
+- `name` 只作 agent 身份标签（塞 `MomentRecord.by`），**owner 仍走文件 stem**
+  （§3 钉子 6 不变）——避免"文件说一套、metadata 说一套"。
+- `memento_agent` 缺省 = 本 family factory；construct 缺省 = `{}`，factory
+  BaseModel 全字段默认能跑。
+- 极简下**只 name/description 必填**，其余全默认。
+- 撞名风险（AGENT.md vs 行业 AGENTS.md）：我们的 AGENT.md 语义等同 claude code
+  sub-agent 定义（`.claude/agents/*.md`），项目级说明是 CLAUDE.md/AGENTS.md
+  ——类别错配，不撞。真撞到留 `*.agent.md` 后缀逃生口。
+
+### 9.9 §8 定案层的存活与覆盖
+
+- **存活**：泛型 `MementoAgent[MOMENT]` 精神（payload 归 agent，memento 视为不透明）、
+  -m 指向工厂实现（AGENT.md `memento_agent` 字段即其形态）、审批降级为静态策略
+  （v1 零工具场景 moot）、CLI = 重启连续性夹具、首场景 = 多 branch 翻译 concepts。
+- **覆盖**：§8.1 "runner 只驱动一次 invocation、收一帧 MOMENT、commit" 被本节
+  9.2 推翻——runner 只驱动，不 commit 不 record；§8.2 泛型参数 MOMENT 在 v1
+  ABC 里不显式化（家族内部自持 payload 类型，跨家族移植不是 v1 目标）。
+
+### 9.10 首场景不变
+
+**不同 branch 规划目录下 concepts 翻译**（§8.8）。填 §1 能力→CLI 动词→契约
+条款自洽矩阵。零工具、单轮翻译——v1 scope 越小 §0 触发器越远。tool_loop
+（bash + file_editor）等第二场景触发。
