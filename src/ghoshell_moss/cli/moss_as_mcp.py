@@ -9,6 +9,7 @@ from ghoshell_moss.host.interleaved_thinking import (
     InterleavedThinkingToolset,
     ShellEvent,
     InterpreterStatus,
+    project_events,
 )
 from ghoshell_moss.core.blueprint.host import MossHost, MossRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -45,12 +46,11 @@ class ServerState:
 
 
 def _events_to_messages(events: list[ShellEvent], status: InterpreterStatus) -> list[Message]:
-    """把 ShellEvent 列表 + 当下 status 投影成 list[Message], 供 MCP 层转 ContentBlock."""
-    messages: list[Message] = []
-    for ev in events:
-        messages.extend(ev.as_message())
-    messages.extend(status.as_message())
-    return messages
+    """MCP 层薄封装: 直接委托到 host.interleaved_thinking.project_events.
+
+    K8/K9 分桶投影: 空成功折叠成 <shell_tally>, observe=True 占位, 其他走 payload.
+    """
+    return project_events(events, status)
 
 
 def bootstrap(state: ServerState, mcp: FastMCP):

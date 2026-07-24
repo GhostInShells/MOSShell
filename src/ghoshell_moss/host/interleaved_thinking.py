@@ -20,6 +20,7 @@
 """
 
 import threading
+import datetime
 from abc import ABC, abstractmethod
 from typing import Optional
 from typing_extensions import Self
@@ -35,6 +36,7 @@ __all__ = [
     'ShellEvent', 'TaskDone', 'InterpreterStopped',
     'InterpreterStatus',
     'InterleavedThinkingToolset',
+    'project_events',
 ]
 
 
@@ -53,23 +55,44 @@ class ShellEvent(ABC):
 
 
 class TaskDone(ShellEvent):
-    """一个 command task 完成事件. 最小状态: 只持 CommandTaskResult 指针.
+    """一个 command task 完成事件. 最小状态: 只持 CommandTaskResult 指针 + task 侧的成/败/取消判据.
 
-    K9 兜底: 空 outcome (result=None + messages=[]) 会被 CommandTaskResult.as_messages()
-    过滤成空列表, 存在性蒸发. TaskDone.as_message 在这种情况下给出一个合法非空包裹,
-    让 "这条命令跑过了" 的存在性不丢失.
+    K9 作用域收窄 (对齐 Interpretation.on_done_task):
+    - 有 payload → 返回 payload.
+    - 空 payload + observe=True (含 is_critical 自动 observe) → 给身份占位, 存在性不蒸发.
+    - 空 payload + observe=False → 返回 [], 由投影层聚合成计数. "连身份都不必给" (K8).
     """
 
-    def __init__(self, result: CommandTaskResult):
+    def __init__(
+            self,
+            result: CommandTaskResult,
+            *,
+            success: bool,
+            cancelled: bool,
+    ):
         self.result = result
+        self.success = success
+        self.cancelled = cancelled
+
+    @property
+    def failed(self) -> bool:
+        return not self.success and not self.cancelled
+
+    @property
+    def observe(self) -> bool:
+        return self.result.observe
 
     def as_message(self) -> list[Message]:
         msgs = self.result.as_messages(name=self.result.caller)
         if len(msgs) > 0:
             return msgs
-        # K9 兜底: 存在性 vs payload 丰度解耦
-        attrs = {'command': self.result.caller} if self.result.caller else None
-        return [Message.new(tag='result', attributes=attrs).with_content('(no output)')]
+        # 空 payload 分支
+        if self.result.observe:
+            # observe=True (含 is_critical 自动 observe): K9 占位, 存在性不蒸发
+            attrs = {'command': self.result.caller} if self.result.caller else None
+            return [Message.new(tag='result', attributes=attrs).with_content('(no output)')]
+        # observe=False + 空: 交给投影层聚合成计数
+        return []
 
 
 class InterpreterStopped(ShellEvent):
@@ -103,7 +126,72 @@ class InterpreterStatus(BaseModel):
             lines.append(f"parsing_exception: {self.parsing_exception}")
         if self.ongoing_callers:
             lines.append(f"ongoing: {', '.join(self.ongoing_callers)}")
-        return [Message.new(tag='shell_status').with_content('\n'.join(lines))]
+        return [
+            Message.new(
+                tag='shell_status',
+                attributes={'at': _now_short()},
+            ).with_content('\n'.join(lines))
+        ]
+
+
+def _now_short() -> str:
+    """shell 观察节点用的简化时间戳 HH:MM:SS (本地时区).
+
+    时间是第一公民, 但 shell 层只需要给 "这次观察的相对秩序" 打点; 完整 datetime
+    是 command 层的责任 (message.attributes.at 已带). 8 字符 tally-friendly.
+    """
+    return datetime.datetime.now().strftime('%H:%M:%S')
+
+
+def project_events(events: list[ShellEvent], status: InterpreterStatus) -> list[Message]:
+    """把 drain 出的事件列表 + 当下 status 投影成 list[Message].
+
+    分桶规则 (对齐 K8/K9 payload 分层, 参考 Interpretation.on_done_task):
+    - 有 payload 的 TaskDone (含 failed 带 errmsg / observe=True 占位): 逐条 emit, 保留身份.
+    - 空 payload 的 TaskDone: 按 success / cancelled / failed 计数聚合成一条 <shell_tally>.
+      "连身份都不必给" (K8) — 25年小红帽实测: 一轮 logos 可含数百 task, 批量 cancel
+      时 caller name 是纯 token 开销. 是否需要 debug 身份由 is_critical/observe=True
+      flag 精准闸口, 不走计数分桶.
+    - InterpreterStopped / 其他 ShellEvent: 走各自的 as_message().
+    """
+    messages: list[Message] = []
+    success_count = 0
+    cancelled_count = 0
+    failed_count = 0
+
+    for ev in events:
+        projected = ev.as_message()
+        if projected:
+            messages.extend(projected)
+            continue
+        # 空 payload 的 TaskDone → 计数聚合
+        if isinstance(ev, TaskDone):
+            if ev.success:
+                success_count += 1
+            elif ev.cancelled:
+                cancelled_count += 1
+            else:
+                failed_count += 1
+        # 非 TaskDone 的空 projected 忽略 (InterpreterStopped 无异常时不进 buffer,
+        # 到不了这里; 其他 ShellEvent 子类若刻意返回空, 视作显式静默)
+
+    if success_count or cancelled_count or failed_count:
+        tally_lines = []
+        if success_count:
+            tally_lines.append(f"success: {success_count}")
+        if cancelled_count:
+            tally_lines.append(f"cancelled: {cancelled_count}")
+        if failed_count:
+            tally_lines.append(f"failed: {failed_count}")
+        messages.append(
+            Message.new(
+                tag='shell_tally',
+                attributes={'at': _now_short()},
+            ).with_content('\n'.join(tally_lines))
+        )
+
+    messages.extend(status.as_message())
+    return messages
 
 
 # --- toolset --- #
@@ -150,8 +238,14 @@ class InterleavedThinkingToolset:
         result = task.task_result()
         if result is None:
             return
+        # 分桶判据在 shell 线程一次读定, 避免投影时再回访 task 引发跨线程读
+        event = TaskDone(
+            result,
+            success=task.success(),
+            cancelled=task.cancelled(),
+        )
         with self._buffer_lock:
-            self._buffer.append(TaskDone(result))
+            self._buffer.append(event)
         # 不 wake waiter: wait_interpreter_done 语义是等 interpreter stop, 不是等 task done.
         # 未来若需要 wait-any-event (全双工推送), 用独立的 waiter 集合, 别复用这个.
 
