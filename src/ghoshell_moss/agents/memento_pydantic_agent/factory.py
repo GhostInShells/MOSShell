@@ -1,19 +1,26 @@
 """
-memento_pydantic_agent factory — build an agent from an AGENT.py file.
+memento_pydantic_agent factory — build an agent from an agent .py file.
 
-Reads the .py source, compiles it via Compiler, sets up a two-layer Sandbox
-(init with unrestricted builtins holding the compiled namespace + agent
-with SANDBOX_BUILTINS blocking __import__), then wires a pydantic-ai Agent
-whose only tool is `sandbox_exec` — the model writes Python, the sandbox
-runs it.
+The pipeline (§10 pivot + §11 refinements):
 
-Magic attrs read from the compiled module:
+1. Read source, compile via Compiler with a recording __import__ that captures
+   the file's authorization surface.
+2. Set up a two-layer Sandbox — init holds the compiled namespace with
+   unrestricted builtins; agent shares the namespace but with SANDBOX_BUILTINS
+   plus a REPLAY __import__ that idempotently re-serves recorded imports.
+3. Inject `get_interface` into the sandbox as the model's on-demand reflection
+   verb (pull-mode capability discovery).
+4. Build a pydantic-ai Agent whose only tool is `sandbox_exec`.
+
+Magic attrs on the compiled module:
 - `__model__`: Anthropic model name. Fallback: ANTHROPIC_MODEL env var.
-- `__owner__`: (recognized but not used in v1 factory — CLI layer handles it)
+- `__owner__`: recognized but consumed at the CLI layer, not here.
+- `__interfaces__`: instruction-assembly appendix source; also consumed at
+  the impl layer (assemble_instruction reads it).
 
-Reflection: `sandbox.get_interface()` output becomes the system prompt.
-The model sees the module docstring + imported types + top-level bindings —
-the .py file is its instruction manual.
+The instruction the model sees is composed on demand by impl (meta + source
++ optional __interfaces__ appendix) — the factory does not build prompt
+text, it only shapes the runtime the impl will drive.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from ghoshell_moss.agents._imports import recording_builtins, replay_import
+from ghoshell_moss.agents._instruction import reflect_element
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.agents.memento_pydantic_agent.impl import MementoPydanticAgentImpl
 from ghoshell_moss.core.codex.compiler import Compiler
@@ -37,7 +45,7 @@ __all__ = ["factory"]
 
 
 def factory(agent_path: str | Path) -> MementoAgent:
-    """Build a MementoAgent from an AGENT.py file.
+    """Build a MementoAgent from an agent .py file.
 
     :param agent_path: path to the .py file. Read + compiled at factory time.
     :raises FileNotFoundError: if the path does not exist.
@@ -46,14 +54,13 @@ def factory(agent_path: str | Path) -> MementoAgent:
     """
     path = Path(agent_path).resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"AGENT.py not found: {path}")
+        raise FileNotFoundError(f"agent .py not found: {path}")
 
     source = path.read_text(encoding="utf-8")
     stem = path.stem.removesuffix(".agent") if path.stem.endswith(".agent") else path.stem
 
-    # Compile with recording builtins: imports + top-level side effects execute
-    # here, and every module name the file pulls in is recorded — the file's
-    # import table becomes the exec-time authorization whitelist.
+    # Compile-time: recording __import__ captures every module the file loads.
+    # That set becomes the exec-time authorization whitelist.
     compile_builtins, recorded_imports = recording_builtins()
     compiler = Compiler(
         source=source,
@@ -64,16 +71,16 @@ def factory(agent_path: str | Path) -> MementoAgent:
     )
     compiled = compiler.compiled
 
-    # Resolve model.
     model_name = getattr(compiled, "__model__", None) or os.environ.get("ANTHROPIC_MODEL")
     if not model_name:
         raise RuntimeError(
             f"model not resolved for {path}: set __model__ = '...' in the "
-            f"AGENT.py or export ANTHROPIC_MODEL env var."
+            f"agent .py or export ANTHROPIC_MODEL env var."
         )
 
-    # Two-layer sandbox: init holds compiled namespace with unrestricted builtins;
-    # agent shares the namespace but with SANDBOX_BUILTINS (__import__ blocked).
+    # Two-layer sandbox: init copies the compiled namespace under unrestricted
+    # builtins; agent shares the same __dict__ but under SANDBOX_BUILTINS with
+    # replay __import__ layered on top.
     init_sandbox = Sandbox(name=f"{stem}.init", builtins=None, source=source)
     for k, v in compiled.__dict__.items():
         if not k.startswith("__"):
@@ -82,29 +89,26 @@ def factory(agent_path: str | Path) -> MementoAgent:
     agent_sandbox = Sandbox(
         name=stem,
         parent=init_sandbox,
-        # Safe builtins + replay __import__: the model may re-import exactly
-        # what the definition file imported (idempotent), nothing else.
         builtins={
             **SANDBOX_BUILTINS,
             "__import__": replay_import(frozenset(recorded_imports)),
         },
         source=source,
     )
+    # get_interface lives in the sandbox as the model's pull-mode reflection.
+    # Named identically to `moss codex get-interface` on purpose — same verb,
+    # same output shape, whichever seat you are in.
+    agent_sandbox.set("get_interface", reflect_element)
 
-    # Sandbox exec tool — the only tool the model gets.
     def sandbox_exec(code: str) -> str:
         """Execute Python code in the agent's sandbox.
 
-        The sandbox namespace holds the agent's declared capabilities
-        (e.g. `file_editor`, `ctx`, imported modules). State persists
-        across calls — variables you assign remain in later exec calls.
-
-        Returns the exec result as text (stdout, exception, or __result__).
+        Namespace is cumulative across calls (REPL-style). Returns any
+        stdout, exception, or value assigned to `__result__`.
         """
         result = agent_sandbox.exec(code)
         return _format_result(result)
 
-    # Build pydantic-ai Agent.
     model = AnthropicModel(
         model_name=model_name,
         provider=AnthropicProvider(),
@@ -123,6 +127,8 @@ def factory(agent_path: str | Path) -> MementoAgent:
     return MementoPydanticAgentImpl(
         agent=ai_agent,
         sandbox=agent_sandbox,
+        compiled_module=compiled,
+        source=source,
         name=stem,
         description=description,
     )

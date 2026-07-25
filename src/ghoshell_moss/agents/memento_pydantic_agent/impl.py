@@ -1,20 +1,24 @@
 """
 memento_pydantic_agent impl — MementoAgent driven by pydantic-ai + Sandbox.
 
-The runner shape (v1 hello world):
-- system prompt = sandbox.get_interface() (reflection = compressed prompt)
-- model's only tool = sandbox_exec (registered at factory time)
+The runner shape (v1):
+- instruction = meta narrative + verbatim source + optional __interfaces__
+  appendix, composed on demand by `_assemble_instruction()`
+- model's only tool = sandbox_exec (registered by factory)
 - pydantic-ai drives the model loop; sandbox holds task state
-- memento operations: deferred (step F/G merges them in)
+- memento wiring: deferred to a later step; invoke still accepts the params
+  per the ABC so the CLI can pass them
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from pydantic_ai import Agent
 
+from ghoshell_moss.agents._instruction import assemble_instruction, prompt_sha
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.core.codex.sandbox import Sandbox
 from ghoshell_moss.memento.abc import Memento
@@ -23,18 +27,22 @@ __all__ = ["MementoPydanticAgentImpl"]
 
 
 class MementoPydanticAgentImpl(MementoAgent):
-    """v1 hello world impl. memento wiring is deferred to a later step."""
+    """v1 impl. memento recording is deferred to the next step."""
 
     def __init__(
         self,
         *,
         agent: Agent,
         sandbox: Sandbox,
+        compiled_module: ModuleType,
+        source: str,
         name: str,
         description: str,
     ):
         self._agent = agent
         self._sandbox = sandbox
+        self._compiled = compiled_module
+        self._source = source
         self._name = name
         self._description = description
 
@@ -43,29 +51,23 @@ class MementoPydanticAgentImpl(MementoAgent):
     async def invoke(
         self,
         *,
-        instruction: str,
-        prompt: str = "",
+        user_prompt: str,
         memento: Memento | None = None,
         line_name: str = "",
         cwd: Path | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Run one interaction. Returns final answer text.
+        """Run one interaction. Returns the final answer text.
 
-        v1 shape: reflection of the sandbox is the system prompt; the
-        `prompt` param is ignored (kept in signature per ABC). memento /
-        line_name / cwd accepted but not yet consumed — recording lands
-        in the next step.
+        memento / line_name / cwd accepted per the ABC but not yet consumed
+        — recording lands in a follow-up step.
         """
-        system_prompt = self._build_system_prompt()
+        instruction = self.compose_instruction()
         try:
-            result = await self._agent.run(instruction, instructions=system_prompt)
+            result = await self._agent.run(user_prompt, instructions=instruction)
         except Exception as e:
             raise RuntimeError(f"agent {self._name!r} invoke failed: {e}") from e
         return str(result.output)
-
-    def compact(self, memento: Memento, line_name: str) -> None:
-        raise NotImplementedError("compact is deferred beyond v1 scope (see FEATURE §10.2)")
 
     def export_context_md(self, memento: Memento, line_name: str) -> str:
         raise NotImplementedError("export_context_md will land in a later step")
@@ -73,22 +75,21 @@ class MementoPydanticAgentImpl(MementoAgent):
     def describe_line(self, memento: Memento, line_name: str) -> str:
         raise NotImplementedError("describe_line will land in a later step")
 
-    # ── internal ──
+    # ── introspection surface (used by CLI parse + memento metadata) ──
 
-    def _build_system_prompt(self) -> str:
-        """Reflect the sandbox to produce the model's system prompt."""
-        interface = self._sandbox.get_interface()
-        return (
-            "You are a MementoAgent running in a Python sandbox. Your capabilities "
-            "are declared in the sandbox namespace shown below. To do anything, call "
-            "the `sandbox_exec` tool with a Python code string — the sandbox will run "
-            "it and return stdout / exceptions / the value assigned to `__result__`.\n"
-            "\n"
-            "Sandbox state persists across `sandbox_exec` calls: variables you set "
-            "remain available in later calls. When you have a final answer, respond "
-            "in plain text (not via `sandbox_exec`).\n"
-            "\n"
-            "## Sandbox Interface\n"
-            "\n"
-            f"{interface}"
+    def compose_instruction(self) -> str:
+        """The exact system text the model will see on the next invoke.
+
+        parse-vs-run parity is the point: `moss memento agent PATH` prints
+        the return of THIS function, and `invoke` sends the return of THIS
+        function to the model. One truth, two arities.
+        """
+        return assemble_instruction(
+            name=self._name,
+            source=self._source,
+            module=self._compiled,
         )
+
+    def instruction_sha(self) -> str:
+        """SHA-256 (16-hex prefix) of the composed instruction."""
+        return prompt_sha(self.compose_instruction())
