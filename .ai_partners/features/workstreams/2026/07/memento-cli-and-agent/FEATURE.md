@@ -7,19 +7,14 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
   做不出来果断放弃。
 milestone: null
 priority: P0
-status: design-locked
-status_note: '2026-07-25 §10 pivot 定案 (AGENT.md → .py + Sandbox 反射为 prompt):
-  AGENT.md 路径完成推动收敛的使命后退场, 走 .py 路径 (授权痛苦消失 + 上下文密度 10x
-  + 24 年 ghostos 已验证). 三个核心决策: sandbox 是 tool 认知归 runner (agent 不自己
-  管 memento 写入), v1 无 compact 无 magic hook (ABC 3 方法 + CLI 4 动词, 步 7-8 移出
-  本 workstream), 反射天然过滤 dunder. memento 归属: AGENT.py 兄弟 .memento/, owner=
-  文件 stem (*.agent.py 多身份). Compiler + Sandbox(SANDBOX_BUILTINS) in-process 即真
-  授权. 反射 prompt = sandbox.get_interface(). 复用 ghoshell_common.entity 做 ctx
-  变量序列化. 施工步 A-H, hello world (步 F) 验收判据: 模型能通过反射自陈能力.
-  首场景 (步 H) 换为 math 计算, 翻译 concepts 推到 tool_loop 触发后. 当前状态: 步 A
-  完成, 待 review 放行步 B (injections.py).'
+status: in-progress
+status_note: '2026-07-26 §11 CLI 4 动词完工: parse/invoke/export-context/describe 全部可用,
+  invoke 验收通过 (模型通过反射自陈能力). CLI shape 精简: --owner 默认 stem,
+  --branch 默认 main, prompt 位置参数, *.agent.py 命名. .loop.py 方案定案
+  (用户空间图灵完备 Python, agent 是它 import 的库, CLI 不加 loop 动词).
+  下一步: memento 实装 (impl.py 接线 record + commit), 最后一轮 compact 设计.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-25'
+updated: '2026-07-26'
 ---
 
 # Memento CLI & Agent
@@ -853,3 +848,119 @@ verify 场景纯粹是 "反射 + 单一 stdlib + pydantic-ai tool loop" 三者�
    未做过 evals。步 F/H 就是这条判据的第一次真验。
 3. **AgentContext 序列化的 moment type 值** (`agent.context/v1` vs
    `moss.agent.ctx/v1` 或别的)。写代码时定，不需要现在拍。
+
+## 11. CLI 4 动词落地 + loop 策略定案 (2026-07-26, claude-opus-4-7)
+
+步 G 完成。CLI shape 经过两轮讨论收敛到最终形态。`.loop.py` 方案在同轮讨论中
+定案——bash while / .loop.py 双策略，CLI 不加 loop 动词。
+
+### 11.1 CLI 4 动词终态
+
+```
+moss memento agent parse   <agent.py>
+moss memento agent invoke  <agent.py> <prompt> [--owner O] [--branch B] [--cwd D] [--root R]
+moss memento agent export-context  <agent.py> [--owner O] [--branch B] [--root R]
+moss memento agent describe        <agent.py> [--owner O] [--branch B] [--root R]
+```
+
+关键设计：
+
+- **prompt 是位置参数**。无交互模式，不需要 `-p` 区分提示词来源。
+- **`--owner` 默认 = agent 文件 stem**。`translator.agent.py` → `translator`，
+  去 `.agent` 后缀。`_owner_from_path()` 在 CLI 层计算。
+- **`--branch` 默认 = `main`**。`-b` 短选项保留。
+- **取消了 `--line <owner/name>` 组合参数**。owner 和 branch 各自独立、各有
+  默认值，消除用户在命令行和文件名里说两遍同一信息的摩擦。
+- **`*.agent.py` 命名规范**。不用 `AGENT.py`（与行业 AGENTS.md 撞名风险，
+  §7.5 备选方案胜出）。`.agent.py` 是不可直接执行的 Python 文件标识。
+- **memento 按需接线**：root 存在时才建 Memento 实例传给 invoke。root 不存在
+  则 agent 无记录运行，不报错。
+
+### 11.2 模型配置
+
+`__model__` 不写在 agent 文件里。factory 已有 fallback 链：
+`__model__` attr → `ANTHROPIC_MODEL` env var → RuntimeError。
+日常使用走环境变量：
+
+```bash
+ANTHROPIC_MODEL=claude-opus-4-7 moss memento agent invoke hello.agent.py "prompt"
+```
+
+### 11.3 施工步进度
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| A | §10 起草 | done |
+| B | injections.py | done → §11 删除 (stub-swap 被直接 import 替代) |
+| C | AgentContext (_context.py) | done (未独立文件，合并进 impl) |
+| D | injections 真实现 | done → §11 收缩 (无 live capability，删模块) |
+| E | factory + Sandbox + exec tool 装配 | done |
+| F | hello world .py 跑通 | done (验收通过: 模型通过反射自陈能力) |
+| G | CLI 4 动词 | done (本节) |
+| H | math 首场景 + memento staging | next |
+
+### 11.4 loop 策略: bash while / .loop.py 双轨
+
+**loop 不是 CLI 的职责**。CLI 四动词保持单次语义——invoke = 一次 prompt → 一次
+final answer。
+
+两层 loop 方案，互不排斥：
+
+**退化态: bash while**
+
+```bash
+while true; do
+  output=$(moss memento agent invoke hello.agent.py "$prompt" --root .memento)
+  echo "$output"
+  if echo "$output" | grep -qE "DONE|STOP"; then break; fi
+  prompt="$output"
+done
+```
+
+每次 invoke = 新进程 = 重启连续性免费验证。stdout 文本匹配即停条件。
+§3 钉子 11 "stdout/退出码即编排协议" 的直接兑现。
+
+**完整态: `.loop.py`**
+
+```python
+# translate.loop.py
+"""Translate all pending concepts, one per invoke, until the task board is empty."""
+
+async def main(agent, memento, line_name, instruction):
+    prompt = instruction
+    while True:
+        output = await agent.invoke(
+            user_prompt=prompt,
+            memento=memento,
+            line_name=line_name,
+        )
+        if "ALL_DONE" in output:
+            break
+        prompt = output
+```
+
+`.loop.py` 是用户空间的图灵完备 Python。agent 是它 import 的库。
+约定 `main(agent, memento, line_name, instruction)` 签名。
+停的条件由用户自由定义——正则、计数器、外部文件状态——图灵完备不设限。
+
+两层的关系: bash while 是永远可用的退化态，`.loop.py` 是便利层。
+CLI 不加任何 loop 动词——瘦得诚实。
+
+### 11.5 下一步
+
+1. **步 H: memento 实装** — impl.py 接线 record + commit。单轮 invoke 后 staging
+   可见 pydantic-ai messages dump。手动 `moss memento branch commit` 落锚验证。
+2. **compact 设计** — 最后一个未决项。§10.2 决策 2 把 compact 移出 v1，等
+   memento 实装跑通后再开。方向已清楚：agent 自我总结 staging + 生成合规 trailer
+   + 落 semantic commit，不是 harness 器官。
+
+### 11.6 §10 存活与覆盖
+
+- **存活**: §10.2 三个核心决策 (sandbox 是 tool / v1 无 compact / 反射过滤
+  dunder)、§10.3 memento 数据源归属 (agent.py 兄弟 .memento/)、§10.4 结构约定、
+  §10.6 施工步、§10.7/10.8 验收判据
+- **覆盖**:
+  - §10.6 步 B (injections.py) → §11 删除 (stub-swap 被直接 import 替代)
+  - §10.6 步 C/D → §11 收缩 (无 live capability, 无独立文件)
+  - §10.3 AGENT.py → *.agent.py (命名规范变更)
+  - §10.6 步 G "CLI 4 动词" → 本节完工
