@@ -22,6 +22,8 @@ MOSS Host 层抽象 — 基于环境发现构建的高阶运行时门面.
 from typing import Callable, Literal
 from typing_extensions import Self, TypedDict
 from abc import ABC, abstractmethod
+from concurrent.futures import Future
+from dataclasses import dataclass
 from ghoshell_moss.core.concepts.shell import MOSShell
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.session import Session
@@ -38,6 +40,7 @@ import logging
 __all__ = [
     'MossRuntime', 'MossHost',
     'MossSystemPrompter', 'GhostRuntime', 'LoopHealth', 'LoopStatus',
+    'SafeMode', 'PendingApproval', 'Verdict',
 ]
 
 
@@ -294,6 +297,114 @@ class LoopHealth(TypedDict):
     action: LoopStatus
 
 
+# --- SafeMode — articulator→action 之间的人工审批闸口 --- #
+
+
+class PendingApproval(TypedDict):
+    """SafeMode 挂起的审批快照, TUI 拉取用. 只读语义, 请勿修改字段.
+
+    - ``uuid``: 本次审批的唯一标识. TUI 提交 approve/reject 时必须回传, 用于 stale 比对.
+    - ``logos``: articulator 完整产出的文本, 作为裁决依据. 用户实时读到的流即此文本.
+    """
+
+    uuid: str
+    logos: str
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """SafeMode 裁决结果 — 三态标签, 拦截点据此分派.
+
+    - ``approved``: 通过. 拦截点回放 buffered logos → ``articulator.send_nowait``.
+    - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(reason)``, 触发下一帧观察.
+    - ``cancelled``: 撤销. abort 到来时拦截点 finally 幂等 cancel; TUI 不主动产生.
+    """
+
+    kind: Literal['approved', 'rejected', 'cancelled']
+    reason: str = ''
+
+
+class SafeMode(ABC):
+    """GhostRuntime 的人工审批闸口 — 懒加载单例, 从 ``GhostRuntime.safe_mode()`` 取.
+
+    局部治理: 只闸 articulator 生成的 logos, 不闸输入 (输入通断是 pause 的职责).
+    ``moment.command_logos`` (impulse 反射弧) 绕行 gate. 详见 ghost-runtime-safemode FEATURE.
+
+    生命周期:
+      - ``enabled``: 开关. 只影响下一轮 articulation 的模式判定 (生成开始时判定一次),
+        不动在途逻辑. 已挂起的 pending 继续等人裁决完.
+      - ``pending``: 当前挂起的审批. 审批期间 articulate loop 串行阻塞,
+        任意时刻至多一个 pending, 因此 uuid 用于比对而非选择.
+    """
+
+    @abstractmethod
+    def is_enabled(self) -> bool:
+        """开关状态."""
+        ...
+
+    @abstractmethod
+    def set_enabled(self, enabled: bool = True) -> bool:
+        """翻转开关. 返回 True = 状态变更, False = 幂等无变化.
+
+        只影响下一轮 articulation 的模式判定; 已在等待的 pending 不受影响.
+        """
+        ...
+
+    @abstractmethod
+    def pending(self) -> PendingApproval | None:
+        """当前挂起的审批. 无 pending 时返回 None. 只读快照, 供 TUI toolbar 拉取."""
+        ...
+
+    @abstractmethod
+    def submit(self, logos: str) -> Future[Verdict]:
+        """拦截侧提交审批 — 由 ``_run_articulator`` 在开启态下调用.
+
+        生成 uuid, 写入 pending, 触发 ``on_pending_changed`` 回调.
+        返回的 Future 由 TUI 侧 ``approve``/``reject`` 或内部 ``cancel_current`` 结算.
+        articulate loop 通过 ``asyncio.wrap_future(...)`` await; abort 时挂靠
+        ``articulator.create_task(...)`` 联动取消.
+
+        任意时刻至多一个 pending — 上一个未结算时禁止再次 submit.
+        """
+        ...
+
+    @abstractmethod
+    def approve(self, uuid: str) -> bool:
+        """通过 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
+
+        决策 8: stale 静默 no-op, 绝不自动顺延到下一帧.
+        """
+        ...
+
+    @abstractmethod
+    def reject(self, uuid: str, reason: str) -> bool:
+        """否决 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
+
+        否决走 ``articulator.raise_observe(reason)`` 反馈, 不 abort attention.
+        reason 会随下一帧 Reaction 进 moment, ghost 感知后重新 articulate.
+        """
+        ...
+
+    @abstractmethod
+    def cancel_current(self) -> bool:
+        """撤销当前 pending, 结算为 ``cancelled``. 返回 True = 生效, False = 无 pending.
+
+        供拦截点 ``finally: safe_mode.cancel_current()`` 幂等收尾; TUI 不调用.
+        """
+        ...
+
+    @abstractmethod
+    def on_pending_changed(self, callback: Callable[[], None] | None) -> None:
+        """注册 pending 变更回调 (进入 pending / 离开 pending 都触发).
+
+        callback 无参; 消费方通过 ``pending()`` 拉取最新快照.
+        传入 None 清除回调. callback 必须自行保证线程安全 —
+        pending 变更可能来自 articulate loop 或 TUI 线程.
+        镜像 pause 的 callback 契约, 不引入队列 / ThreadSafeEvent.
+        """
+        ...
+
+
 # --- GhostRuntime --- #
 
 class GhostRuntime(ABC):
@@ -366,6 +477,16 @@ class GhostRuntime(ABC):
         """急停 — 幂等, 设值. callback 在级联完成后同步 fire (done 语义).
 
         callback 必须自行保证线程安全 (可能跨 loop 或跨线程调用).
+        """
+        ...
+
+    @abstractmethod
+    def safe_mode(self) -> SafeMode:
+        """SafeMode 懒加载单例入口 — articulator→action 之间的人工审批闸口.
+
+        每个 GhostRuntime 实例持有唯一一个 SafeMode; 未开启时零开销.
+        首次调用创建, 后续调用返回同一实例. 详见 ``SafeMode`` ABC 与
+        ghost-runtime-safemode FEATURE.
         """
         ...
 

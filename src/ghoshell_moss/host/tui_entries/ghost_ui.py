@@ -1,7 +1,10 @@
 """Ghost TUI — logos stream + output items split into separate states, debug via REPL inspector."""
 
 import asyncio
-from typing import Iterable
+from typing import Callable, Iterable
+
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.key_binding import ConditionalKeyBindings, KeyBindings, merge_key_bindings
 
 from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -132,6 +135,7 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
 
     def __init__(self, host: MossHost | None = None):
         super().__init__(host=host or MossHost.discover())
+        self._safe_mode_wired: bool = False
 
     def _get_runtime(self) -> GhostRuntime:
         return self.host.run_ghost(self.host.env.ghost_name)
@@ -148,13 +152,82 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         parts = super()._prompt_status()
         if self.runtime.is_paused():
             parts.append(("fg:red bold", "[PAUSED] "))
+        # SafeMode 只在开启后才实例化, 早期检查 hasattr 避免触发懒加载副作用.
+        # 直接调 safe_mode() 也 OK — 首次调用只是分配对象, 不改变行为.
+        if self.runtime.safe_mode().is_enabled():
+            parts.append(("fg:yellow bold", "[SAFE] "))
         return parts
+
+    # ── SafeMode ──────────────────────────────────
+
+    def _toggle_safe_mode(self) -> None:
+        sm = self.runtime.safe_mode()
+        target = not sm.is_enabled()
+        if sm.set_enabled(target):
+            # 首次开启时挂 pending 回调.
+            if target and not self._safe_mode_wired:
+                sm.on_pending_changed(self._on_safe_pending_changed)
+                self._safe_mode_wired = True
+            self._invalidate()
+
+    def _on_safe_pending_changed(self) -> None:
+        """SafeMode pending 进/出都回调此函数 — 刷 toolbar + invalidate."""
+        p = self.runtime.safe_mode().pending()
+        if p is None:
+            self.set_bottom_toolbar("")
+        else:
+            preview = p['logos'][:80].replace("\n", " ")
+            self.set_bottom_toolbar(
+                f"[SAFE pending {p['uuid'][:8]}] c-y approve · c-d reject | {preview}"
+            )
+        self._invalidate()
+
+    def _safe_approve(self) -> None:
+        p = self.runtime.safe_mode().pending()
+        if p is not None:
+            self.runtime.safe_mode().approve(p['uuid'])
+
+    def _safe_reject(self) -> None:
+        p = self.runtime.safe_mode().pending()
+        if p is not None:
+            self.runtime.safe_mode().reject(p['uuid'], "rejected by user via c-d")
+
+    def _invalidate(self) -> None:
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
+
+    def default_commands(self) -> dict[str, tuple[str, Callable[[], None]]]:
+        cmds = super().default_commands()
+        cmds["safe"] = ("toggle SafeMode gate on articulator→action", self._toggle_safe_mode)
+        return cmds
+
+    def default_key_bindings(self) -> KeyBindings:
+        base = super().default_key_bindings()
+        # c-y / c-d 仅在有 pending 时激活, 无 pending 时保留默认行为 (yank / delete-char).
+        gate_kb = KeyBindings()
+
+        @gate_kb.add('c-y')
+        def _approve(event) -> None:
+            if self._event_loop:
+                self._event_loop.call_soon_threadsafe(self._safe_approve)
+
+        @gate_kb.add('c-d')
+        def _reject(event) -> None:
+            if self._event_loop:
+                self._event_loop.call_soon_threadsafe(self._safe_reject)
+
+        conditional = ConditionalKeyBindings(
+            gate_kb,
+            Condition(lambda: self.runtime.safe_mode().pending() is not None),
+        )
+        return merge_key_bindings([base, conditional])
 
     def _get_custom_intro(self) -> Renderable:
         from rich.text import Text
         return Text(
             f"\nGhost: {self.host.env.ghost_name}\n"
-            f"Type anything to talk to the ghost. Ctrl+T to switch views.",
+            f"Type anything to talk to the ghost. Ctrl+T to switch views.\n"
+            f"/safe to toggle approval gate · c-y approve · c-d reject",
             style="dim italic",
         )
 

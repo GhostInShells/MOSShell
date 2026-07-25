@@ -5,10 +5,12 @@ from typing import Callable, Type
 import janus
 from typing_extensions import Self
 
-from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth, LoopStatus
+from ghoshell_moss.core.blueprint.host import GhostRuntime, MossRuntime, LoopHealth, LoopStatus, SafeMode
 from ghoshell_moss.host.pause_controller import PauseController
+from ghoshell_moss.host.safe_mode import SafeModeImpl
 from ghoshell_moss.core.blueprint.ghost import Ghost, GhostMeta, GhostWorkspace
 from ghoshell_moss.core.blueprint.mindflow import Mindflow, Articulator, Action, Signal
+from ghoshell_moss.core.concepts.command import ObserveError
 from ghoshell_moss.core.concepts.errors import FatalError
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.command import CommandTask
@@ -57,6 +59,7 @@ class GhostRuntimeImpl(GhostRuntime):
         self._ghost_instance: Ghost | None = None
         self._mindflow: Mindflow | None = None
         self._pause_ctrl = PauseController()
+        self._safe_mode: SafeModeImpl | None = None  # 懒加载, 未开启时零开销
         self._async_exit_stack = contextlib.AsyncExitStack()
         self._started = False
         self._loop_status: LoopHealth = LoopHealth(
@@ -159,6 +162,12 @@ class GhostRuntimeImpl(GhostRuntime):
         self._pause_ctrl.pause(toggle)
         if callback:
             callback()
+
+    def safe_mode(self) -> SafeMode:
+        """SafeMode 懒加载单例. 未开启时零开销 — 首次调用才实例化 SafeModeImpl."""
+        if self._safe_mode is None:
+            self._safe_mode = SafeModeImpl()
+        return self._safe_mode
 
     def close(self) -> None:
         logger = self.moss.logger
@@ -368,16 +377,44 @@ class GhostRuntimeImpl(GhostRuntime):
                 'moss_dynamic',
                 self.moss.shell.dynamic_messages(available_only=True, stale_time=self._refresh_meta_stale_time),
             )
+            # SafeMode: 生成开始时判定一次 (决策 2), 决定本轮是否 gate.
+            # 未开启时零开销 — safe_mode() 首次调用才实例化, 且 gated_mode 分支跳过.
+            gated_mode = self._safe_mode is not None and self._safe_mode.is_enabled()
             try:
                 async for delta in ghost.articulate(articulator):
-                    articulator.send_nowait(delta)
+                    if not gated_mode:
+                        articulator.send_nowait(delta)
                     session.pub_logos(delta)
                     logos_parts.append(delta)
+                if gated_mode:
+                    # 提交完整 logos 给 SafeMode gate, 等 TUI 裁决.
+                    # 挂到 articulator.create_task 上, abort 时 task 联动取消 (决策 4).
+                    verdict_future = self._safe_mode.submit("".join(logos_parts))
+                    verdict = await articulator.create_task(
+                        asyncio.wrap_future(verdict_future)
+                    )
+                    if verdict.kind == 'approved':
+                        # 回放 buffered logos → 走原来的 send_nowait 路径.
+                        for delta in logos_parts:
+                            articulator.send_nowait(delta)
+                    elif verdict.kind == 'rejected':
+                        # 否决走 raise_observe: attention 起下一帧, reason 进 percepts.
+                        # 不 send_nowait — 空流由 __aexit__ 收 (依赖 Phase 0 空流 bug 修).
+                        articulator.raise_observe(verdict.reason)
+                    # cancelled: abort 路径, 什么都不做, articulator.__aexit__ 自然收.
+            except ObserveError:
+                # 预期路径 (决策 5): safemode reject → raise_observe.
+                # 不 log error / session.output('error') — attention._catch 把
+                # messages 拼进 _observe_messages, 下一帧作为 percepts.
+                raise
             except Exception as e:
                 error = e
                 self.moss.logger.exception("%s articulate error: %s", self._log_prefix, e)
                 session.output('error', log=f"articulate error: {e}")
             finally:
+                # 幂等: 已被 approve/reject 结算时 no-op; abort 兜底.
+                if self._safe_mode is not None:
+                    self._safe_mode.cancel_current()
                 logos = "".join(logos_parts)
                 articulator.moment.logos = logos
                 ghost.on_articulate_exit(

@@ -791,6 +791,15 @@ class Articulator(ABC):
         """
         pass
 
+    @abstractmethod
+    def is_aborted(self) -> bool:
+        """
+        Articulator 所在 Attention 是否已被 abort.
+        与 ``Action.is_aborted`` 对称 — 用于事件驱动的 abort 感知 (如 SafeMode gate
+        等待任务在 abort 联动取消时, 用它区分 abort 取消 vs 真·shutdown 取消).
+        """
+        pass
+
     def raise_observe(self, message: str) -> None:
         """
         抛出一个 ObserveError 方便快速退出调用栈.
