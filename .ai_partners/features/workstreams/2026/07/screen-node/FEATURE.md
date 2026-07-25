@@ -1,16 +1,17 @@
 ---
-title: Screen Node — MOSS 开箱的标准可扩展屏幕躯体
-status: draft
-priority: P1
 created: 2026-07-24
-updated: 2026-07-24
 depends: []
-milestone:
-description: >-
-  为 Ghost 提供屏幕躯体的平台专属 node：数字人 background 槽 + n focus 槽 +
-  meta 游离层的自有合成器。窗 = URL 的最简契约，窗内操作走各 cell 自己的
-  channel，address 是 join key。每个平台一个独立 node（INSTALL.md 门控），
-  首个实现为 macOS PyQt6/QML。
+description: 为 Ghost 提供屏幕躯体的平台专属 node：数字人 background 槽 + n focus 槽 + meta 游离层的自有合成器。窗
+  = URL 的最简契约，窗内操作走各 cell 自己的 channel，address 是 join key。每个平台一个独立 node（INSTALL.md
+  门控）， 首个实现为 macOS PyQt6/QML。
+milestone: null
+priority: P1
+status: in-progress
+status_note: 'S1: dual-thread node scaffold landed — QML compositor (4-slot), ScreenBridge
+  (Signal+Future), EventBucket (peek/drain), StatefulChannel with solo/split states.
+  Standalone mode verified on macOS.'
+title: Screen Node — MOSS 开箱的标准可扩展屏幕躯体
+updated: '2026-07-26'
 ---
 
 # Screen Node
