@@ -4,7 +4,7 @@ Module source becomes channel instruction (Code as Prompt).
 Child compiles with full builtins, execs with SANDBOX_BUILTINS.
 
 Two spawn paths:
-  matrix=Matrix → matrix.spawn() with MOSS context injection
+  matrix=Matrix → matrix.processes.execute() with MOSS lifecycle
   matrix=None   → asyncio.create_subprocess_exec()
 
 Usage::
@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ghoshell_moss.core.blueprint.matrix import Matrix
+    from ghoshell_moss.contracts.subprocesses import ManagedProcess
 
 __all__ = ["JsonLineProcess", "ModuleEval"]
 
@@ -76,8 +77,8 @@ class ModuleEval:
         Path to a .py file.  The file is read at __init__ time; compilation
         and import happen in the child process at start() time.
     matrix:
-        If given, ``matrix.spawn()`` is used (the child inherits MOSS session
-        context).  If None, bare ``asyncio.create_subprocess_exec``.
+        If given, ``matrix.processes.execute()`` is used (the child is managed
+        by MOSS Subprocesses lifecycle).  If None, bare ``asyncio.create_subprocess_exec``.
     """
 
     def __init__(self, module_path: str, *, matrix: Matrix | None = None):
@@ -86,6 +87,7 @@ class ModuleEval:
         self._source = self._module_path.read_text()
         self._module_name = self._module_path.stem
         self._proc: asyncio.subprocess.Process | None = None
+        self._managed: ManagedProcess | None = None
         self._jsonline: JsonLineProcess | None = None
 
     # -- read-only ----------------------------------------------------------
@@ -116,13 +118,14 @@ class ModuleEval:
         }
 
         if self._matrix:
-            self._proc = await self._matrix.spawn(
+            self._managed = await self._matrix.processes.execute(
                 *args,
-                cell_address=f"module_eval/{self._module_name}",
+                name=f"module_eval/{self._module_name}",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 extra_env=extra_env,
             )
+            self._proc = self._managed.process
         else:
             self._proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -154,7 +157,10 @@ class ModuleEval:
         try:
             if self._jsonline is not None:
                 await self._jsonline.send({"code": "__SHUTDOWN__"})
-            await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+            if self._managed is not None:
+                await self._managed.stop(timeout=5.0)
+            else:
+                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:
             if self._proc.returncode is None:
                 self._proc.kill()
