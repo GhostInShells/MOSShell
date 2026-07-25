@@ -1,14 +1,14 @@
 ---
-title: Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
-status: draft
-priority: P1
 created: 2026-07-23
-updated: 2026-07-23
 depends: []
-milestone:
-description: >-
-  约定 interleaved thinking 过程中模型输出 CTML 控制外部世界的交互范式：
-  边想边铺执行轨、observe 只看执行游标、wait/interrupt 做思维剪枝。
+description: 约定 interleaved thinking 过程中模型输出 CTML 控制外部世界的交互范式： 边想边铺执行轨、observe 只看执行游标、wait/interrupt
+  做思维剪枝。
+milestone: null
+priority: P1
+status: completed
+status_note: 5-verb tool surface landed and blind-tested via MCP
+title: Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
+updated: '2026-07-25'
 ---
 
 # Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
@@ -345,7 +345,77 @@ interpreter」缺的那个 buffer 的正式形态与归属。
   A/B 对照 (旧 execute_ctml vs 新 ctml_append) 首次准确率差异。
 - fail-closed 写拒（K8 append 遇 critical failure 拒 push）尚未做, 需体验数据先驱动优先级。
 
+## K11 落地: 五动词工具面 + docstring 卫生 (2026-07-25)
+
+**结构性洞见**: create_task + 双 Event lifecycle. interpreter 在 fire-and-forget task 内跑完整生命周期,
+MCP 函数只 await 生命周期节点 (compiled / stopped Event), 不阻塞在 async with 内. **中断从此是同步动作,
+不干涉执行**. 这一步之前尝试过让 MCP 函数直接 async with interpreter, 结果每种动词的 close 时序都会坏
+一种语义 —— 用户手写伪代码钉住方向后才收敛.
+
+**关键洞见**:
+
+1. **budget 是等待时限, 不是运行时限** (人类明确纠正). 上限 30s, 只截断本次等待, 绝不中断命令.
+   任务续跑, 结果在下次任意动词调用带回. 回合制 MCP 面禁止无限阻塞的硬约束 —— 模型下发时无需猜任务耗时,
+   是真 on-the-fly.
+
+2. **observe 常态退化的消解**. 上一版设计: async with 立即 close, `shell.interpreting()` 拿到 closed 的
+   旧 interpreter, `is_running()=False`, observe 退化为只 drain 一次快照. **新架构 interpreter outlive
+   MCP 函数**, observe 抓到的是活的 interpreter, `wait_stopped()` 真等到任务完成 —— K5 拉侧的观察能力
+   自此完整.
+
+3. **切口同步进 drain**. `_set_result`(command.py:1450-1479) 全同步, done-hook 直接调用不走 call_soon.
+   `interpreter(kind='clear')` 内部 `await clear() + stop_interpretation()` 返回时, 被掐 task 的
+   cancelled 事件已同步进 watcher buffer. K10 依赖的底层同步性事实至此在盲测中验证 —— replan 与
+   interrupt 的切口在同一回合返回.
+
+4. **docstring 只面向模型 (K11 教训)**. MCP tool 的 docstring 通过反射变成模型可见的 tool description.
+   内部代号 (K1/K2/K8)、内部 API 名 (`kind='clear'`/`wait_stopped`/`shell.interpreting()`)、调试语境
+   ("wait_until_idle 时序 gap")、对话锚点 ("actually, I'm just going to..."、"前进即观察") 都会污染
+   tool schema. 开发讯息走 `#` 注释, docstring 只留 4 类信息: 动词做什么 / 什么场景用 / 参数含义 / 返回什么.
+
+   **写完必须反射一次拉出 description 字段验证**, 不能只看源码字符 —— 单看源码字符时 K/kind 术语与语义
+   讲解交织, 靠人眼分辨会漏.
+
+   **当轮就改的纪律**: 用户第一次指出 docstring 泄露时, 承认+继续泄露 (下一版又塞新的内部术语进去)
+   是不干活. 承认必须触发当轮修复 + 当轮反射验证, 不允许递延.
+
+**七工具面 (K10 后的最终形态)**:
+
+- 会话地基 (2): `moss_instruction` (1 次拉出静态面) / `get_moss_dynamic_info` (N 次拉刷动态增量)
+- CTML 动词 (5): `ctml_append` / `ctml_exec` / `ctml_observe` / `ctml_replan` / `ctml_interrupt`
+- 删除: `execute_ctml` (被 append/exec 取代) / `interrupt_execution` (被 interrupt/replan) /
+  `ctml_peek` (归 debug 不进模型面)
+
+**动词与内核映射**:
+
+| 动词 | kind | task 内等待 | MCP 函数返回时机 | 用户可见 budget |
+|---|---|---|---|---|
+| append | 'append' | wait_compiled → set(compiled) → wait_stopped | compiled | — |
+| exec | 'append' | 同上 | compiled + stopped (可 budget 截断) | ≤30s |
+| observe | 不建 | — | `interp.wait_stopped()` if running | ≤30s |
+| replan | 'clear' | 同 append | compiled | — |
+| interrupt | 不建 | — | `shell.clear()` 同步返回 | — |
+
+**盲测验证** (2026-07-25, 五动词全通):
+
+- `ctml_append(sleep 5s)` → `running:True, ongoing:sleep:s1`, 立即返回, interpreter outlive ✓
+- `ctml_observe(no budget)` → 等到 sleep 完成拿 `success:1` ✓ (**核心突破** — 之前只能拿快照)
+- `ctml_exec(sleep 6s)` → 阻塞至 done 直接 `success:1, running:False` ✓
+- `ctml_replan(掐 60s sleep + 铺 1s)` → `cancelled:1 + ongoing:short` 同步返回 ✓
+- `ctml_interrupt(掐 60s sleep)` → `cancelled:1 + running:False` ✓
+
+**残留 (下次起点)**:
+
+- **fail-closed 写拒** (K8): append 遇 critical failure 应拒 push, 尚未做. 需体验数据先驱动优先级.
+- **MCP restart 副作用**: server 重启会带走 accepted cell 但 node 子进程可能成孤儿. 当前依赖手动
+  `matrix.nodes:run` 恢复; 值得设计 server 生命周期与 node 子进程的正式契约.
+- **channel 上线推模式** (问题 2): `get_moss_dynamic_info` 目前只拉不推. ghost thinking 场景下长 thinking
+  内感知不到 channel 变更, MCP 面下也只能靠模型手动刷新. 需要 channel 上线的推通道设计.
+- **编译期 "did you mean"** (第三轮盲测发现): 通道路径拼错时无纠错. 我读过完整投影仍拼错 (多了一层 .probe),
+  错误里加一句 "closest: matrix.mesh.interleaved_probe:slow" 即可归零同类首错.
+- **进度投影** (第三轮盲测数据点): 运行中 task 的 `progress` 活串未在 status 里投影, 只有 `ongoing:name`.
+  interrupt 决策的输入残缺. FEATURE.md payload 规则里已经列过 ("callername + progress"), 待实现.
+
 ---
 
-**本文件状态**：K1–K10 已收敛并落码, 等第三轮体验验证。B1–B7 基线来自 2026-07-24
-(第二轮体验), K9/K10 是当轮重大发现。
+**本文件状态**: K1–K11 已收敛并落码验证. 五动词工具面盲测通过. workstream **completed**.
