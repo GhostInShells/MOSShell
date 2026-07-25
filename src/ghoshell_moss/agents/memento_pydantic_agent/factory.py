@@ -27,6 +27,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from ghoshell_moss.agents._imports import recording_builtins, replay_import
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.agents.memento_pydantic_agent.impl import MementoPydanticAgentImpl
 from ghoshell_moss.core.codex.compiler import Compiler
@@ -50,11 +51,15 @@ def factory(agent_path: str | Path) -> MementoAgent:
     source = path.read_text(encoding="utf-8")
     stem = path.stem.removesuffix(".agent") if path.stem.endswith(".agent") else path.stem
 
-    # Compile with full builtins (imports + top-level side effects execute here).
+    # Compile with recording builtins: imports + top-level side effects execute
+    # here, and every module name the file pulls in is recorded — the file's
+    # import table becomes the exec-time authorization whitelist.
+    compile_builtins, recorded_imports = recording_builtins()
     compiler = Compiler(
         source=source,
         modulename=stem,
         filename=str(path),
+        local_injections={"__builtins__": compile_builtins},
         compile_soon=True,
     )
     compiled = compiler.compiled
@@ -77,7 +82,12 @@ def factory(agent_path: str | Path) -> MementoAgent:
     agent_sandbox = Sandbox(
         name=stem,
         parent=init_sandbox,
-        builtins=SANDBOX_BUILTINS,
+        # Safe builtins + replay __import__: the model may re-import exactly
+        # what the definition file imported (idempotent), nothing else.
+        builtins={
+            **SANDBOX_BUILTINS,
+            "__import__": replay_import(frozenset(recorded_imports)),
+        },
         source=source,
     )
 
