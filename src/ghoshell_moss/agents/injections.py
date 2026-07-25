@@ -106,11 +106,17 @@ class _UnboundInjection:
         self._name = name
 
     def __getattr__(self, attr: str) -> Any:
+        if attr.startswith("__") and attr.endswith("__"):
+            # Dunder probes (hasattr, inspect, reflection) must fail softly:
+            # hasattr() only swallows AttributeError, so raising RuntimeError
+            # here would blow up any reflection pass over a pre-swap namespace
+            # (e.g. rendering the instruction of an agent file without running it).
+            raise AttributeError(attr)
         raise RuntimeError(
             f"{self._name!r} is an unbound sandbox injection — the runner "
             f"should have replaced it before the exec loop started. "
             f"If you are seeing this, either the runner did not do the swap, "
-            f"or this AGENT.py is being imported outside a MementoAgent context."
+            f"or this agent .py is being imported outside a MementoAgent context."
         )
 
     def __repr__(self) -> str:
