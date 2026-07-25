@@ -1,17 +1,17 @@
 ---
 title: Text Blocks — 人机共享文本块载体（流式可写、可批注、diff 上行）
-status: draft
+status: in-progress
 priority: P1
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-07-26
 depends: []
 milestone:
 description: >-
   双原生共享载体的第一个专职实现：模型经 chunks__ 流式写编号文本块
   （token 流可见即模型光标），人类在 web 界面任意位置修改/批注，
-  submit 产生 unified diff 经 peek/drain 双面桶上行。窗 = URL，
+  submit 产生 unified diff 经 signal 上行。窗 = URL，
   不依赖 screen；dump(path) 即资源协议，不依赖 matrix-resources。
-  验收标准是运行时自迭代：在该 surface 里协作演进它自己的设计。
+  S1 落地：Reflex node，store + channel + UI 三层，dialog 锚定交互。
 ---
 
 # Text Blocks
@@ -127,26 +127,58 @@ S3 的验收不是功能清单，是**在这个 surface 里协作演进它自己
 
 ## Implementation Notes
 
-- **Stages 草案**（实现会话可修订）：
-  - S1 骨架：node 出壳 + Reflex app + channel `__content__(chunks__)`
-    流式上屏 + id 自增经 result。单向可用。
-  - S2 上行：界面编辑/插入/submit → unified diff 入桶；context_messages
-    呈现（id 映射 + pending diffs tail-N）。MCP 降档形态即可验证。
+- **Stages**:
+  - S1 骨架：node 出壳 + Reflex app + channel definition + 纯 UI 回路。
+    Reflex 独立运行，浏览器可创建/编辑/提交 block，diff 在 UI 内闭环。
+    29 tests pass on store layer。**已完成，待体验测试。**
+  - S2 上行：channel 挂 Matrix，NoopScreenPush → ReflexScreenPush
+    （WebSocket push chunk），human edit → signal 上行，context_messages
+    呈现摘要。MCP 降档形态即可验证。
   - S3 dogfood 自迭代（Decision 7 验收）。
-  - S4 ghost 场景 drain→signal + `dump(path)` + revise 命令打磨。
-    screen 落地后挂窗免费。
-- **开放问题：channel/node 命名**。候选 `draft` / `blocks` / `paper`，
-  按"目视可解"纪律定夺（`artifact` 撞 Anthropic 产品词、`canvas` 撞
-  web 技术词，已排除）。目录归属（`nodes/skins/` 还是新类目）实现时定。
-- channel 草图：
+  - S4 ghost 场景 drain→signal + `dump(path)` + screen 落地后挂窗免费。
 
+- **Channel 命名**：定为 `blocks`。短、可键入、不撞产品词（`draft` 撞
+  Google Docs，`artifact` 撞 Anthropic，`canvas` 撞 web 技术词）。
+  描述用中文写清楚。
+
+- **路径**：`nodes/webview_apps/text_blocks/`。新类目 `webview_apps`
+  （与 skins/tools/screens 平级）：WebView 承载的双原生载体 node。
+
+- **数据模型**（2026-07-26 设计会话落地）：
+  - Block：id + title + versions 链 + lock(g/u/None) + status(streaming|sealed|error)
+  - BlockVersion：version(单调递增) + source(g/u) + content + created_at
+  - lock 只有三种状态，同一时刻只有一方持有
+  - content/revise/append 在 streaming 态写当前 version，seal 时快照
+
+- **回合制交互**：
+  - streaming(g) → 人类只读（dialog view，文字流式增长）
+  - sealed(lock=None) → 人类可编辑（dialog edit → submit → diff → signal）
+  - 人类 edit 不改变 block 状态，diff 是独立 event
+  - 人类创建 block 走 dialog，source=u，直接 sealed
+
+- **channel 命令（9 个）**：
   ```
-  <name>
-    __content__(chunks__)      # 自由文本 → 新块，流式上屏; result: item id
-    revise(item_id, chunks__)  # 模型主动改写某块
-    read(item_id) -> str       # compaction / 感知过期的逃生口
-    dump(path, ids=None)       # 导出到文件系统
+  content(chunks__, title="", done=True) -> str   # stream → new block
+  done(block_id) -> str                            # release lock, seal
+  revise(block_id, chunks__, done=True) -> str     # model rewrites
+  append(block_id, chunks__) -> str                # continue held block
+  replace_line(block_id, line_no, new_text, count=1) -> str
+  read_block(block_id, version=None) -> str         # cat -n style
+  list_blocks() -> str                              # index
+  read_file(path, title="") -> str                  # file → surface bridge
+  dump(path="", ids=None) -> str                    # export to filesystem
   ```
 
-- 本 FEATURE.md 由 2026-07-24~25 与人类工程师的设计对话沉淀
-  （Fable 5, via claude code）。哲学部分同轮落于 `.design/`。
+- **instruction 只写地址+交互规则**，不重述命令（interface 自动展开）。
+  context_messages 放 block 摘要 + action log tail-5，diff 走 signal 上行。
+
+- **引擎**：Reflex。WebSocket native、双向、在项目栈里、K3 线程模型现成。
+  对纯文本表面偏重但换轻量方案的 IPC 成本更高。
+
+- **read 格式**：对齐 file_editor 的 `cat -n` 风格（`     1\tcontent`）。
+
+- **dump 默认路径**：`tmp/text_blocks_{session_uid}/`，按 `{id:03d}_{title}.md`。
+
+- **本 FEATURE.md** 由两轮设计对话沉淀：
+  - 2026-07-24~25：Fable 5 + 人类工程师，哲学基础 + workstream 创立
+  - 2026-07-26：deepseek-v4-pro + 人类工程师，完整交互设计 + 数据模型 + S1 实现
