@@ -22,7 +22,7 @@ from pathlib import Path
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
 from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe
 from ghoshell_moss.ground.contract import (
-    BashPin,
+    ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -129,13 +129,11 @@ def render_meta(
 
 
 def _pin_target_raw(pin: Pin) -> str:
-    """Pin 的目标路径原文 (锚判定用)."""
+    """Pin 的目标路径原文 (锚判定用). exec 无位置概念, 返回空."""
     if isinstance(pin, GlobPin):
         return pin.arguments.pattern
     if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
         return pin.arguments.path
-    if isinstance(pin, BashPin):
-        return pin.arguments.at
     return ""
 
 
@@ -152,9 +150,11 @@ async def render_walk(
 
     编辑权在场根, 这里只有视角:
     - 法链位置提示 (一行指回场根, 不重复 body)
-    - 当前目录信息 (内建 ls, depth 1)
     - $CWD 锚 pins 对当前目录展开 (场教的注视习惯)
     - 其余 pins 折叠为 TOC (场根的注视留在场根)
+
+    不再有内建 ls — 若场希望站立位置有目录列表, 用 ``ls $CWD`` pin 声明.
+    观感由场决定, 不由 harness 塞入.
     """
     anchor = Anchor(ground=ground_root, cwd=cwd)
     rel_doc = os.path.relpath(doc_path, cwd)
@@ -164,14 +164,6 @@ async def render_walk(
     lines: list[str] = []
     lines.append(f"ground: {display}  (law: {rel_doc})")
     lines.append(f"cwd: $GROUND/{rel_cwd}")
-    lines.append("")
-
-    # 当前目录信息 — 内建 ls, 一层
-    entries: list[str] = []
-    _walk_ls_entries(cwd, 1, "", entries)
-    lines.append("<!-- ground:cwd -->")
-    lines.append("\n".join(entries) if entries else "(empty)")
-    lines.append("<!-- /ground:cwd -->")
     lines.append("")
 
     # $CWD 锚 pins 展开; 其余折叠
@@ -245,15 +237,15 @@ def _render_pin_content(
         return _content_frontmatter(pin, anchor)
     if isinstance(pin, LsPin):
         return _content_ls(pin, anchor)
-    if isinstance(pin, BashPin):
-        return _content_bash(pin, obs)
+    if isinstance(pin, ExecPin):
+        return _content_exec(pin, obs)
     return f"error: unknown pin type: {type(pin).__name__}"
 
 
 # -- per-kind content renderers -------------------------------------------
 
 
-def _content_bash(pin: BashPin, obs: Observation | None) -> str:
+def _content_exec(pin: ExecPin, obs: Observation | None) -> str:
     """观察阶段已执行, 直接消费 payload — 一帧只跑一次进程."""
     if obs is None or obs.payload is None:
         return "[not yet observed]"
@@ -466,15 +458,12 @@ def _pin_kwargs(pin: Pin) -> str:
             parts.append(f"depth={pin.arguments.depth}")
         if pin.arguments.limit is not None:
             parts.append(f"limit={pin.arguments.limit}")
-    elif isinstance(pin, BashPin):
-        run = pin.arguments.run
-        if len(run) > 60:
-            run = run[:57] + "..."
-        parts.append(f'run="{run}"')
-        if pin.arguments.at != "$CWD":
-            parts.append(f'at="{pin.arguments.at}"')
+    elif isinstance(pin, ExecPin):
+        parts.append(f'ref="{pin.arguments.ref}"')
         if pin.arguments.timeout != 10.0:
             parts.append(f"timeout={pin.arguments.timeout:g}")
+        if pin.arguments.budget is not None:
+            parts.append(f"budget={pin.arguments.budget}")
     return ", ".join(parts)
 
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
 from ghoshell_moss.ground.contract import (
-    BashPin,
+    ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -59,11 +59,11 @@ class Observation:
     hash: str | None = None
     is_binary: bool = False
     payload: str | None = None
-    """观察即产出内容的 verb (bash) 把结果存这里, 渲染层直接消费 —
+    """观察即产出内容的 verb (exec) 把结果存这里, 渲染层直接消费 —
     保证一帧只执行一次."""
     size: int | None = None
     """自然单位的规模:
-    file → bytes; glob/frontmatter/ls → 命中/条目数; bash → 输出字符数.
+    file → bytes; glob/frontmatter/ls → 命中/条目数; exec → 输出字符数.
     None = 不适用. observe 诊断展示直接消费."""
     unit: str = ""
     """size 的显示单位: 'B' / 'entries' / 'chars'."""
@@ -102,8 +102,8 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
         return _observe_frontmatter(pin, anchor)
     if isinstance(pin, LsPin):
         return _observe_ls(pin, anchor)
-    if isinstance(pin, BashPin):
-        return _observe_bash(pin, anchor)
+    if isinstance(pin, ExecPin):
+        return _observe_exec(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
 
@@ -281,31 +281,49 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
     )
 
 
-def _observe_bash(pin: BashPin, anchor: Anchor) -> Observation:
+def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     """observe 即执行. payload = 渲染就绪的结果文本, hash = sha256(payload).
 
+    授权模型 = Makefile 级信任: ref 必须是场根子树内的可执行文件.
+    - 相对路径, 不允许 ../ 跨场
+    - 场根 (anchor.ground) 是解析基准
+    - +x 位为准; 缺失 → missing (授权拒绝, 不是错误)
+    - shebang 决定解释器 (sh / python / binary 一视同仁)
+
     失败可见: 非零退出附 [exit N] + stderr 尾部; 超时附 [timeout] 标记.
-    观察层不做 budget 截断 — 对账基于完整输出, 截断是渲染的事.
     """
     import os
     import subprocess
-    import sys
 
     args = pin.arguments
-    workdir = _resolve_at(args.at, anchor)
-    if workdir is None or not workdir.is_dir():
+    ref = args.ref
+
+    # 授权检查: 拒绝绝对路径 / 跨场跳出
+    if Path(ref).is_absolute() or ".." in Path(ref).parts:
+        return Observation(exists=False)
+
+    resolved = (anchor.ground / ref).resolve()
+    # 必须在场根子树内
+    try:
+        resolved.relative_to(anchor.ground.resolve())
+    except ValueError:
+        return Observation(exists=False)
+
+    if not resolved.is_file():
+        return Observation(exists=False)
+
+    # +x 位检查 (Windows: os.access 语义有差异, 但至少 X_OK 不 crash)
+    if not os.access(resolved, os.X_OK):
         return Observation(exists=False)
 
     env = dict(os.environ)
     env["GROUND"] = str(anchor.ground)
     env["CWD"] = str(anchor.cwd)
-    # 让 pin 里的 moss 命令解析到当前解释器环境, 不依赖调用方 PATH
-    env["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}" + env.get("PATH", "")
 
     try:
         proc = subprocess.run(
-            ["sh", "-c", args.run],
-            cwd=workdir,
+            [str(resolved)],
+            cwd=str(anchor.ground),
             env=env,
             capture_output=True,
             text=True,
@@ -344,22 +362,6 @@ def _observe_bash(pin: BashPin, anchor: Anchor) -> Observation:
         exists=True, hash=digest, payload=payload,
         size=len(payload), unit="chars",
     )
-
-
-def _resolve_at(at: str, anchor: Anchor) -> Path | None:
-    """bash pin 的工作目录锚解析. 裸 $CWD / $GROUND 合法 (指锚点自身)."""
-    if at == "$CWD":
-        return anchor.cwd.resolve()
-    if at == "$GROUND":
-        return anchor.ground.resolve()
-    if at == "$HOME":
-        import os
-        h = os.environ.get("HOME")
-        return Path(h).resolve() if h else None
-    try:
-        return resolve_path(at, anchor)
-    except (PathOutsideRootError, OSError, ValueError):
-        return None
 
 
 # -- helpers ----------------------------------------------------------------

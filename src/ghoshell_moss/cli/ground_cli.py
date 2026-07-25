@@ -312,7 +312,7 @@ def _pin_target_display(pin, anchor) -> str:
     """Resolved absolute path/spec — makes MISSING self-explanatory."""
     from ghoshell_moss.ground._addr import resolve_path
     from ghoshell_moss.ground.contract import (
-        BashPin, FilePin, FrontmatterPin, GlobPin, LsPin,
+        ExecPin, FilePin, FrontmatterPin, GlobPin, LsPin,
     )
 
     try:
@@ -320,11 +320,11 @@ def _pin_target_display(pin, anchor) -> str:
             return str(resolve_path(pin.arguments.path, anchor))
         if isinstance(pin, GlobPin):
             return str(resolve_path(pin.arguments.pattern, anchor))
-        if isinstance(pin, BashPin):
-            run = pin.arguments.run
-            if len(run) > 50:
-                run = run[:47] + "..."
-            return f"{pin.arguments.at} $ {run}"
+        if isinstance(pin, ExecPin):
+            # 场根子树内相对路径 — 显示 resolved 绝对路径,
+            # missing 时用户一眼看清是哪个文件缺
+            resolved = (anchor.ground / pin.arguments.ref).resolve()
+            return str(resolved)
     except Exception as e:
         return f"[unresolved: {e}]"
     return "-"
@@ -332,13 +332,13 @@ def _pin_target_display(pin, anchor) -> str:
 
 def _obs_status_and_size(pin, obs) -> tuple[str, str]:
     """(status, size) — observation carries size/unit natively."""
-    from ghoshell_moss.ground.contract import BashPin
+    from ghoshell_moss.ground.contract import ExecPin
 
     if not obs.exists:
         return ("missing", "-")
 
-    # bash: 状态从 payload 头识别
-    if isinstance(pin, BashPin) and obs.payload is not None:
+    # exec: 状态从 payload 头识别
+    if isinstance(pin, ExecPin) and obs.payload is not None:
         head = obs.payload.splitlines()[0] if obs.payload else ""
         if head.startswith("[timeout"):
             return ("timeout", f"{obs.size}{obs.unit}" if obs.size else "-")
@@ -363,7 +363,7 @@ _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "glob": frozenset({"pattern"}),
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
-    "bash": frozenset({"run"}),
+    "exec": frozenset({"ref"}),
 }
 _KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 

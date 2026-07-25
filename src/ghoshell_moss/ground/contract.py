@@ -30,12 +30,12 @@ __all__ = [
     "GlobPin",
     "FrontmatterPin",
     "LsPin",
-    "BashPin",
+    "ExecPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
-    "BashArguments",
+    "ExecArguments",
     "GroundConvention",
     "UpdateResult",
     "TemplateInfo",
@@ -135,17 +135,17 @@ class LsArguments(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class BashArguments(BaseModel):
-    """bash verb 的 arguments.
+class ExecArguments(BaseModel):
+    """exec verb 的 arguments.
 
-    核心注视原语 — 领域策展视图 (features list / git log / 任意脚本)
-    不在标准动词里重造, 用命令生成. 信任边界 = Makefile 级:
-    frame 即执行 GROUND.md 声明的命令.
+    授权模型 = Makefile 级信任: ref 指向场根子树内可执行文件, 场作者背书.
+    协议禁止内联 shell 字符串 (授权泄漏), 禁止跨场引用 (../, 绝对路径).
+
+    shebang 决定解释器 — 协议不管 sh/python/binary. Windows 无 chmod 位时
+    fallback 到扩展名 (未来实现).
     """
-    run: str = Field(description="sh -c 执行的命令. GROUND/CWD 注入为环境变量.")
-    at: str = Field(
-        default="$CWD",
-        description="工作目录锚: $CWD (默认, 随场内移动) / $GROUND / 锚点路径.",
+    ref: str = Field(
+        description="场根子树内的可执行文件相对路径. 不允许 ../, 不允许绝对路径.",
     )
     timeout: float = Field(
         default=10.0, gt=0, le=60,
@@ -226,12 +226,16 @@ class LsPin(Pin):
     arguments: LsArguments
 
 
-@_register("bash")
-class BashPin(Pin):
-    """命令注视 — observe 即执行, 对账 = hash(输出)."""
+@_register("exec")
+class ExecPin(Pin):
+    """可执行文件注视 — observe 即执行, 对账 = hash(stdout).
 
-    verb: Literal["bash"] = "bash"
-    arguments: BashArguments
+    授权模型: ref 指向场作者背书的场内可执行文件, 类比 Makefile target.
+    不允许内联 shell 字符串, 不允许跨场引用.
+    """
+
+    verb: Literal["exec"] = "exec"
+    arguments: ExecArguments
 
 
 # -- errors ------------------------------------------------------------------

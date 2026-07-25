@@ -1,10 +1,11 @@
 # GROUND Format Specification
 
-Status: v1.1.0-draft (2026-07-23)
+Status: pre-release (2026-07-25 snapshot)
 Location: `src/ghoshell_moss/ground/SPECIFICATION.md`
 
 Any runtime that reads and writes `GROUND.md` according to this SPEC can
-participate in the ground protocol.
+participate in the ground protocol. Semantics are still in flux — version
+numbers appear only after the first release.
 
 ## 1. Concept
 
@@ -109,7 +110,7 @@ are declared once here and referenced by each verb's schema in §5:
 
 | Field | Type | Semantics |
 |-------|------|-----------|
-| `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, future `bash`). |
+| `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, `exec`). |
 | `limit` | int | Entry count limit. When exceeded, output is truncated with a marker showing `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
 | `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). |
 
@@ -145,7 +146,7 @@ expanded** — a `glob` matching thousands of files must not blow up
 the context window. Use `file` for content.
 
 **Expansion**: matched paths with size per entry (human-readable:
-`12K`, `1.2M`). `mtime` is not rendered — use `bash` for timestamp queries.
+`12K`, `1.2M`). `mtime` is not rendered — use `exec` for timestamp queries.
 
 **Empty match** renders an empty result (not an error).
 
@@ -196,6 +197,57 @@ Entries filtered through `.gitignore`. **No file content.**
 
 **Failure modes**: path not found; path is not a directory.
 
+### 5.5 `exec` — invoke a field-authored executable
+
+| Key | Type | Required | Semantics |
+|-----|------|----------|-----------|
+| `ref` | string | yes | Relative path to an executable file **within the ground subtree**. |
+| `timeout` | float | no | Seconds. Default `10`, max `60`. |
+| `budget` | int | no | Content char limit (§4.1). Applied to captured stdout. |
+
+**Authorization model** — this is the only pin verb that executes
+code. It is deliberately narrow:
+
+- `ref` MUST be a **relative path**. Absolute paths are rejected.
+- `ref` MUST resolve inside the ground subtree. `..` traversal
+  outside the ground is rejected.
+- The target file MUST have the executable bit set (`+x`). Files
+  without it are treated as missing (authorization denied).
+- The interpreter is chosen by the target's shebang. The protocol
+  does not distinguish `.sh` / `.py` / native binaries.
+- **The protocol never accepts inline shell strings.** A pin cannot
+  say "run this command"; it can only reference a script the field
+  author has committed to the ground subtree.
+
+Trust boundary is **Makefile-level**: loading a foreign ground into
+cognition is the same trust event as running `make` in a cloned repo.
+Making the executable surface a first-class named artifact (an
+audited file, not an inline string) is the primitive; the trust
+decision is made by whatever loads the ground, not by the protocol.
+
+**Execution environment**:
+
+- `cwd` = `$GROUND` (the ground root). The executable knows its
+  home. It reads `$CWD` from the environment if it cares about the
+  caller's position.
+- Environment variables `GROUND` and `CWD` are injected with
+  absolute path values.
+- `stdin` = `/dev/null`. `exec` pins are non-interactive.
+
+**Expansion**: captured `stdout`, subject to `budget` truncation.
+
+**Failure modes** — visible, not silent:
+
+- Non-zero exit: output is followed by `[exit N]` and up to 5 lines
+  of stderr tail.
+- Timeout: partial stdout is followed by `[timeout after Ns]`.
+- Missing / not executable / outside subtree: renders as `[missing]`.
+
+**Observation**: `exec` is a compute-on-observe verb. The captured
+payload is stored on the `Observation`; the frame renders the stored
+payload rather than re-executing. One frame = at most one process
+per pin.
+
 ## 6. Frame
 
 A **frame** is the rendered form of a ground — body and pin results
@@ -231,7 +283,7 @@ output follows these rules:
 - **No line numbers** — line numbers are for human debugging, not
   model consumption.
 - **No raw mtime** — timestamps are shell-domain. Models that need
-  them call `bash`.
+  them call `exec`.
 - **Human-readable sizes** — file sizes render as `12K` / `1.2M` /
   `300B`, not raw byte counts.
 - **Truncation markers** — when `budget` or `limit` is exceeded,
