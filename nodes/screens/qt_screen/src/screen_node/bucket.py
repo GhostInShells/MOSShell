@@ -68,7 +68,7 @@ class EventBucket:
             try:
                 event = self._drain_q.async_q.get_nowait()
                 drained.append(event)
-            except janus.QueueEmpty:
+            except janus.AsyncQueueEmpty:
                 break
         return drained
 
