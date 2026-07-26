@@ -8,13 +8,14 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '2026-07-26 §11 CLI 4 动词完工: parse/invoke/export-context/describe 全部可用,
-  invoke 验收通过 (模型通过反射自陈能力). CLI shape 精简: --owner 默认 stem,
-  --branch 默认 main, prompt 位置参数, *.agent.py 命名. .loop.py 方案定案
-  (用户空间图灵完备 Python, agent 是它 import 的库, CLI 不加 loop 动词).
-  下一步: memento 实装 (impl.py 接线 record + commit), 最后一轮 compact 设计.'
+status_note: '2026-07-26 §12 上下文窗口与 compact 体系定案: 双层游标 (summary cursor /
+  detail cursor = compact 点), 四级压缩 (0-3), ID 映射表 (整数 index), 主 agent
+  上下文工具 (read_commit + commit + sandbox_exec), compact agent 单帧 JSON
+  (pydantic-ai result_type), CompactDecision per-commit 对象 (moment_index +
+  summary + folded). 迭代路径: (a) 无压缩 memento → (b) context window →
+  (c) compact agent → (d) memento tools. 压缩级别数据模型在 (a) 阶段预留字段.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-26'
+updated: '2026-07-26T23'
 ---
 
 # Memento CLI & Agent
@@ -964,3 +965,141 @@ CLI 不加任何 loop 动词——瘦得诚实。
   - §10.6 步 C/D → §11 收缩 (无 live capability, 无独立文件)
   - §10.3 AGENT.py → *.agent.py (命名规范变更)
   - §10.6 步 G "CLI 4 动词" → 本节完工
+
+## 12. 上下文窗口、压缩级别与 compact 体系 (2026-07-26, claude-opus-4-7)
+
+memento 实装前最后一轮设计讨论。从 "compact 里的两种机制是什么" 展开，收敛到
+上下文窗口双层游标模型、四级压缩体系、上下文工具面、compact agent 单帧契约、
+以及四条迭代路径。本节与 §10/§11 并列有效。
+
+### 12.1 上下文窗口: 双层游标模型
+
+```
+[折叠的历史]              ← 老 commit, 压缩到 L3 (只计入计数)
+── summary cursor ──
+[摘要区: m 个 commit]     ← L1/L2 压缩, 每个 commit 一段摘要
+── detail cursor ──        ← THIS IS THE COMPACT POINT
+[展开区: k 个 commit]     ← L0 全文展开, 模型可读到完整内容
+                           ← 内部可有 fold: [...详情...] [folded] [...详情...]
+[staging 展开]
+[用户输入]
+```
+
+**两个游标**:
+
+- **summary cursor** — 摘要列表起点。轻易不改，是稳定的 cache 前缀边界。
+- **detail cursor (compact 点)** — 详细内容起点。compact 操作的本质就是移动
+  这个游标。移动到哪由 compact agent 决定。
+
+**commit 不是 compact**。主 agent 调用 `commit(summary)` → staging 冻结成新
+commit → 出现在展开区末尾 → index 映射不变（只是多了新 index）→ cache 前缀
+不破。commit 不移动 detail cursor——那是 compact agent 的独立行为。
+
+### 12.2 Commit 四级压缩 (L0–L3)
+
+commit 对象的压缩级别在数据模型中预留字段。即使 v1 只实现 L0，结构现在就定好：
+
+| Level | 名称 | 上下文呈现 | 数据结构 |
+|-------|------|-----------|----------|
+| L0 | 无压缩 | 全部 moment 内容展开 | `compression: 0, summary: null` |
+| L1 | 详细摘要 | 完整摘要 (≤500 chars) | `compression: 1, summary: "..."` |
+| L2 | 短摘要 | 标题 + 一行摘要 (≤120 chars) | `compression: 2, summary: "..."` |
+| L3 | 仅计数 | "还有 N 个更早的 commit" | `compression: 3, moment_count: N` |
+
+L3 的认知价值：**告知模型在可见范围外还有数据存在**。结合 `read_commit` tool
+的分级搜索能力，模型可以：
+
+1. L2 列表定位范围 A
+2. L1 检索范围 A 得到范围 B
+3. L0 (全文) 在范围 B 中定位精确信息
+
+这是"递归回溯搜索"的压缩经济学基础——不同级别承担不同的认知开销。
+
+**fold 不等于压缩级别**。fold 是展开区内部的异常状态：某个 commit 的内容被
+替换为摘要，但仍位于 detail cursor 之下。正常情况全部 L0 展开；fold 是 token
+压力下的局部让步。结合前缀缓存，fold 很可能不是必须的。
+
+### 12.3 ID 映射表
+
+主 agent 上下文里不暴露 ULID 字符串，只暴露整数 index：
+
+```
+[History]
+  [0] "translated concepts A-D" (semantic, 4 moments)
+  [1] "started concepts E-G" (semantic, 3 moments)
+  [2] "fixed typos" (mechanical, 1 moment)
+── detail cursor ──
+```
+
+映射表是 `List[commit_id]`，index 即数组位置。**稳定性约束**：同一个
+(branch, cursor_position) 下，index 映射不变。只有 compact 移动游标时才重建
+映射——前缀缓存恰好在那里断裂，成本已付出。
+
+### 12.4 主 Agent 的工具面
+
+两个家族，明确分工：
+
+| 家族 | 工具 | 语义 |
+|------|------|------|
+| exec | `sandbox_exec(code)` | Python 执行，任务能力 |
+| context | `read_commit(index)` | 读历史 commit 全文，支持按压缩级别检索 |
+| context | `commit(summary)` | 冻结 staging → 新 commit。agent 自决时机 |
+
+**`commit` 是 agent 自决的**——模型判断"这一段对话完整了，应该落锚"时自己调。
+§3.2 语义锚点车道的兑现。未来可扩展更多 context tool（回溯搜索、跨 branch
+读取、化身 fork），本轮只落这两个。
+
+**`commit` 不移动 compact 游标**——那是 compact agent 的事。commit 与 compact
+是两个独立操作，合并它们是把两种不同时间尺度的决策混为一谈。
+
+### 12.5 Compact Agent
+
+独立单帧任务。输入是带 `<--moment:id-->` 分隔符的上下文，输出是 pydantic-ai
+结构化 JSON（`result_type`）：
+
+```python
+class CompactDecision(BaseModel):
+    """Compact agent 的单帧交付物。"""
+    commits: list[CompactCommit]   # 按时间序, 每个 = 一个 frozen segment
+
+class CompactCommit(BaseModel):
+    start_moment_index: int        # 本 segment 起始 moment (inclusive)
+    end_moment_index: int          # 本 segment 结束 moment (inclusive)
+    summary: str                   # ≤120 chars, L2 级别
+    kind: Literal["semantic", "mechanical"]
+    folded: bool = False           # 是否在展开区内折叠
+```
+
+**关键性质**:
+
+- **一轮完成**。JSON schema 即 response format，利用服务端缓存——不需要
+  独立 compact agent 内部的缓存机制设计。
+- **分段由 agent 判断**。compact agent 看到所有 moment 全文 + 分隔符，
+  自己决定在哪切 commit 边界。
+- **不移动 detail cursor**。cursor 移动是 compact module 拿到决策后执行的
+  机械操作，不是 agent 的职责。agent 只负责"画地图"。
+- **CompactDecision 是数据，不是文本**。避免文本回喂主上下文造成的缓存污染。
+
+### 12.6 迭代路径
+
+每一步是下一步的前提，不可跳跃：
+
+| 阶段 | 内容 | 依赖 | 交付 |
+|------|------|------|------|
+| (a) | 无压缩 memento 集成 | — | invoke 落 moment、commit 冻结、多轮交互循环跑通 |
+| (b) | context window 策略 | (a) 的真实历史 | k/m 游标模型、ID 映射表、四级压缩字段预留 |
+| (c) | compact agent 集成 | (b) 的 window 存在 | CompactDecision 单帧、detail cursor 移动 |
+| (d) | memento tools 提供 | (c) 的 agent 已自洽 | read_commit (分级)、回溯搜索、跨 branch read |
+
+(a) 阶段就应在 commit 数据模型中预留 `compression`/`summary`/`moment_count`
+字段——即使只实现 L0。数据模型定了后面只追加不改结构。
+
+### 12.7 未来扩展 (不在本轮)
+
+- **外挂 `instruction.md`**：agent .py 的 docstring 之外，额外的文本指令入口。
+  对齐 §7 "prompt 场景可带可不带"。
+- **化身 fork**：同 branch 上下文 + 不同 prompt → 分叉出独立 line。"如果用
+  不同的思维模式看同一个问题"——共享 memento 过去，各自产出自己的 commit 链。
+- **ghost 的 memento tools**：当前 context tools 的消费者是单 agent。ghost
+  场景下，ghost 自身成为消费者——fork 化身、读取子 agent 的历史、回溯自己的
+  思维轨迹。memento agent 打磨出来的 tool 面是 ghost 的记忆基础设施。
