@@ -274,12 +274,13 @@ def print_simple_table(
         pad_edge=False,
         padding=(0, 2),
         collapse_padding=True,
+        width=_real_console.width,
     )
 
     for i, header in enumerate(headers):
         style = column_styles[i] if column_styles and i < len(column_styles) else None
         ratio = column_ratios[i] if column_ratios and i < len(column_ratios) else None
-        table.add_column(header, style=style, ratio=ratio)
+        table.add_column(header, style=style, ratio=ratio, overflow="fold")
 
     for row in data:
         table.add_row(*[str(cell) for cell in row])
