@@ -7,10 +7,10 @@ container.get(LoggerItf) 覆写 self._logger). 本 provider 是 IoC 侧的
 默认兜底 — 如果没有它, container.get(LoggerItf) 返回 None, matrix 沿用
 自己 __init__ 时的 `moss.cell.{address}` logger.
 
-有本 provider 的意义: 顶层 `moss` root logger 挂 workspace 文件 handler,
-让消费者 (channel / topic 等) fetch 时拿到一个已挂 handler 的 root, 而非
-未接线的裸 getLogger. 但 project.bootstrap 已经在做同样的事 (幂等), 所以
-本 provider 与 project bootstrap 是可替代关系.
+职责边界:
+- logging.yml 的 dictConfig 全局加载是 project.bootstrap() 的唯一职责
+- 本 provider 只做 handler 幂等兜底: 确保 moss logger 上有 TimedRotatingFileHandler
+- project.bootstrap 先跑先挂 handler, 本 provider 后续发现已有同名 handler 则直接返回
 """
 
 import logging
@@ -59,14 +59,18 @@ class MatrixLoggerProvider(Provider[LoggerItf]):
             if h.get_name() == self._handler_name:
                 return moss_logger
 
+        # 挂 TimedRotatingFileHandler → {workspace}/runtime/logs/moss.log
         handler = self._log_handler
         if handler is None:
-            filename = ws.runtime().sub_storage('logs').abspath().joinpath(self._log_file_name)
+            log_dir = ws.runtime().sub_storage('logs').abspath()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            filename = log_dir.joinpath(self._log_file_name)
             handler = TimedRotatingFileHandler(
                 filename=str(filename),
                 when='d',
                 interval=1,
                 backupCount=5,
+                encoding='utf-8',
             )
             handler.set_name(self._handler_name)
             handler.setLevel(logging.INFO)

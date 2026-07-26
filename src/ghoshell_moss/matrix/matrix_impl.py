@@ -16,7 +16,8 @@ from typing_extensions import Self
 from ghoshell_container import Container, IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, ResourceRegistry
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, \
+    ResourceRegistry
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
@@ -777,6 +778,8 @@ class MatrixImpl(Matrix):
         if pulled is not None:
             # 只在 pulled 不是 root moss logger 时覆写 (避免层级混乱)
             self._logger = pulled if isinstance(pulled, logging.Logger) else self._logger
+        else:
+            self._container.set(LoggerItf, self._logger)
 
         # -- async 阶段 -- #
         try:

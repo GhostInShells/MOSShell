@@ -14,6 +14,7 @@ from ghoshell_moss.matrix.providers import (
     ProjectZenohSessionProvider,
     ZenohTopicServiceProvider,
     EnvConfigStoreProvider,
+    MatrixLoggerProvider,
 )
 
 from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
@@ -26,6 +27,9 @@ config_store_provider = EnvConfigStoreProvider()
 
 # zenoh topic system
 topic_service_provider = ZenohTopicServiceProvider()
+
+# workspace logger — returns moss root logger with TimedRotatingFileHandler
+logger_provider = MatrixLoggerProvider()
 
 # in-memory resource registry
 resources_provider = InMemoryResourceRegistryProvider()
