@@ -3,7 +3,7 @@ title: Ghost Runtime Safemode — ghost 生成 logos 的人工审批闸口
 status: draft
 priority: P2
 created: 2026-07-20
-updated: 2026-07-20
+updated: 2026-07-26
 depends: []
 milestone:
 description: >-
@@ -88,3 +88,32 @@ ghost 下一帧。有意保持极简：这只是 GhostRuntime 的一个局部治
 - 审批等待期间 articulate loop 串行阻塞 → 任意时刻单 pending → 热路径无需 uuid
   选择。
 - prompt 状态行加 `[SAFE]`，镜像现有 `[PAUSED]`。
+
+## Post-implementation Optimization (发现于 e60b4fda 之后)
+
+`[SAFE]` prompt prefix 让 shell 语义视觉翻转 —— 实现后才看清的信号反过来撬动
+三条简化，作为 SafeMode 的连带产物记录，等实现启动时再落地。
+
+11. **回合制 via prompt，废快捷键。** SafeMode 有 pending 时，prompt line
+    重定向到审批：空 enter = approve，输入文本 = reject with reason。placeholder
+    显示 `<enter: approve · type: reject with reason>` 防误触。这样拆掉 c-y/c-d
+    ConditionalKeyBindings、`_safe_mode_wired`、toolbar 刷新链；reject reason 从
+    hardcoded `"rejected by user via c-d"` 升为用户真实内容；决策 7 的键位人机
+    工学争论（c-a vs c-y）整个消失。pending 期间新 input signal 强制先处理
+    pending，对齐单串行 pending 语义。原触发洞察：`[SAFE]` prefix 已把 shell
+    语义翻转，prompt line 的默认行为 *不应* 保留为普通信号 —— 视觉信号 + 语义
+    翻转应一致。
+
+12. **Approve-with-note 走 attention 内观通道，不动 Articulator ABC。**
+    Articulator 是纯流式推理输出，加 outcome 是概念泄漏。approve 若带 note，
+    走与 reject 同一条 attention observation 通道（`raise_observe` 已在此空间），
+    只是不 raise、不抢占下一帧。若目前只有 raise 变体，加一个 non-raising
+    observation attach。
+
+13. **内观 vs 外视 —— 概念锚点。** `Action.outcome` 是外视（command 执行后
+    世界的回应，与工具调用同步，交错 thinking 时序拥挤发生在此通道）；attention
+    observation 是内观（帧边界事件，articulate 结束→下一帧开始之间发生）。
+    SafeMode 裁决属于内观，天然不与 tool outcome 抢时序。两条通道**不合并**。
+    内观 message 靠自身封装结构（xml 分段等）自解释来源，**不加 source 字段** ——
+    抽象负担留白，未来加入异步人工评论、self-reflection、后台 critic agent 等
+    更多内观来源时，各自消息体自解释即可。
