@@ -168,8 +168,8 @@ class CommandUtil:
     def logger(cls):
         """返回日志模块 logging.Logger, 只保留基础的记录函数. """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
-        from ghoshell_common.contracts import LoggerItf
-        return ChannelCtx.get_contract(LoggerItf)
+        from ghoshell_moss.contracts import LoggerItf, get_moss_logger
+        return ChannelCtx.container().get(LoggerItf) or get_moss_logger()
 
     @classmethod
     def set_progress(cls, progress: str) -> None:

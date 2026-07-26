@@ -1,11 +1,11 @@
 """Screen root channel — window lifecycle + layout switching + context_messages.
 
-Channel tree:
+Channel tree (PrimeChannel = main state always active + switchable sub-states):
 
-    screen                               # root (StatefulChannel)
-      [module] window mgmt: open / close / set_background / switch_layout
-      [state]  solo:         focus / front / float / clear
-      [state]  split:        focus_left / focus_right / front / float / clear
+    screen                               # root (PrimeChannel)
+      [main]  window mgmt: open / close / set_background / switch_layout / drain
+      [state] solo:         focus / front / float / clear
+      [state] split:        focus / front / float / clear
 
 Events: peek/drain bucket via EventBucket. context_messages shows window
 directory, layout snapshot, and recent events.
@@ -15,21 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 
 from ghoshell_moss.core.blueprint.channel_builder import CommandUtil
-from ghoshell_moss.core.blueprint.states_channel import (
-    new_stateful_channel,
-    StatefulChannelRuntime,
-)
+from ghoshell_moss.core.blueprint.states_channel import new_prime_channel
 from ghoshell_moss.message import Message
 
 from ..bridge import ScreenBridge
 from ..bucket import EventBucket
 
-# Number of recent events to show in context_messages peek.
+logger = logging.getLogger("moss.screen")
+
 _PEEK_N = 10
 
-# Short ID counter.
 _id_counter = itertools.count(1)
 
 
@@ -44,9 +42,7 @@ def _next_id(label: str) -> str:
 def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
     """Build and return the complete screen channel tree."""
 
-    # ---- root: StatefulChannel -----------------------------------------------
-
-    screen = new_stateful_channel(
+    screen = new_prime_channel(
         name="screen",
         description=(
             "screen body compositor. manage windows (any URL) across four slot "
@@ -57,20 +53,15 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         ),
     )
 
-    # ---- window management module (always active) ----------------------------
+    # ---- window management (main state, always active) ----------------------
 
-    # Register commands on the main (default) state builder.
-    # The main state IS the window management module — always active.
-
-    # open
-    @screen.main_state().command(always_observe=True)
+    @screen.build.command(always_observe=True)
     async def open(url: str, label: str = "") -> str:
         """Register a URL as a screen window. Returns the window's short ID.
 
         Open creates the window resource but does NOT place it in any slot.
-        Use layout commands (focus/front/float) to place it. The page's
-        icon/title are extracted when the webview first loads; a hidden
-        webview is used if the window is registered as float (meta-only).
+        Use layout commands (focus/front/float) to place it. New windows
+        start in the float layer.
 
         :param url: full HTTP URL of the window content
         :param label: short human-readable label, used to generate the window ID
@@ -80,24 +71,22 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         await asyncio.wrap_future(f)
         return f"opened {window_id} -> {url}"
 
-    # close
-    @screen.main_state().command(always_observe=True)
+    @screen.build.command(always_observe=True)
     async def close(id: str) -> str:
         """Close a window and remove it from all slots.
 
-        :param id: the window's short ID (e.g. #mail, #01_blog)
+        :param id: the window's short ID (e.g. #mail)
         """
         f = bridge.submit("close_window", {"id": id})
         await asyncio.wrap_future(f)
         return f"closed {id}"
 
-    # set_background
-    @screen.main_state().command(always_observe=True)
+    @screen.build.command(always_observe=True)
     async def set_background(id: str) -> str:
         """Set the global background window (digital avatar / ambient layer).
 
-        The background slot is cross-layout — it persists across layout switches.
-        Use an empty string to clear: set_background(id="")
+        The background slot persists across layout switches.
+        Use empty string to clear: set_background(id="")
 
         :param id: window ID, or empty string to clear
         """
@@ -105,27 +94,23 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         await asyncio.wrap_future(f)
         return f"background = {id}" if id else "background cleared"
 
-    # switch_layout
-    @screen.main_state().command(always_observe=True)
+    @screen.build.command(always_observe=True)
     async def switch_layout(name: str) -> str:
         """Switch to a named layout. Occupies screen during transition.
 
         Available layouts: solo (single focus + front strip + float shelf).
-        During the transition, layout commands are blocked.
+        Layout commands are blocked during the transition.
 
         :param name: layout name (e.g. 'solo')
         """
-        # Update QML first (instant visual switch)
         f = bridge.submit("switch_layout", {"name": name})
         await asyncio.wrap_future(f)
-        # Switch channel state for proper command set swap
         runtime = CommandUtil.runtime()
-        if isinstance(runtime, StatefulChannelRuntime):
+        if hasattr(runtime, "switch_state"):
             await runtime.switch_state(name)
         return f"switched to {name} layout"
 
-    # drain
-    @screen.main_state().command(always_observe=True)
+    @screen.build.command(always_observe=True)
     async def drain() -> str:
         """Drain accumulated interaction events from the bucket.
 
@@ -138,22 +123,25 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
             return "no events to drain"
         lines = [f"{len(events)} event(s) drained:"]
         for ev in events:
-            lines.append(f"  [{ev['type']}] {ev.get('window_id', '')} {ev.get('action', ev.get('badge', ''))}")
+            lines.append(
+                f"  [{ev['type']}] {ev.get('window_id', '')} "
+                f"{ev.get('action', ev.get('badge', ''))}"
+            )
         return "\n".join(lines)
 
-    # ---- context_messages ----------------------------------------------------
+    # ---- context_messages ---------------------------------------------------
 
     @screen.build.context_messages
     async def screen_context() -> list[Message]:
-        bucket.start()  # idempotent
+        bucket.start()
 
         snapshot = bridge.snapshot()
-        if snapshot is None:
+        if not snapshot:
             return [Message.new(tag="screen").with_content("screen not ready")]
 
         messages: list[Message] = []
 
-        # 1. Window directory
+        # Window directory
         windows = snapshot.get("windows", {})
         if windows:
             lines = []
@@ -178,7 +166,7 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
                 )
             )
 
-        # 2. Layout state
+        # Layout state
         layout = snapshot.get("layout", {})
         bg = layout.get("background", "")
         layout_name = layout.get("name", "solo")
@@ -188,11 +176,15 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         if bg:
             layout_lines.append(f"  background: {bg}")
         focus_id = slots.get("focus", "")
-        layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: —")
+        layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: -")
         front_ids = slots.get("front", [])
-        layout_lines.append(f"  front: {' '.join(front_ids)}" if front_ids else "  front: —")
+        layout_lines.append(
+            f"  front: {' '.join(front_ids)}" if front_ids else "  front: -"
+        )
         float_ids = slots.get("float", [])
-        layout_lines.append(f"  float: {' '.join(float_ids)}" if float_ids else "  float: —")
+        layout_lines.append(
+            f"  float: {' '.join(float_ids)}" if float_ids else "  float: -"
+        )
 
         messages.append(
             Message.new(tag="screen", attributes={"section": "layout"}).with_content(
@@ -200,7 +192,7 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
             )
         )
 
-        # 3. Recent events (peek, non-destructive)
+        # Recent events (peek, non-destructive)
         events = bucket.peek(_PEEK_N)
         if events:
             event_lines = []
@@ -222,17 +214,16 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
 
         return messages
 
-    # ---- layout states -------------------------------------------------------
+    # ---- layout states ------------------------------------------------------
 
     _register_solo_state(screen, bridge)
     _register_split_state(screen, bridge)
 
-    # ---- startup / close -----------------------------------------------------
+    # ---- startup / close ----------------------------------------------------
 
     @screen.build.startup
     async def _on_startup() -> None:
         bucket.start()
-        logger = CommandUtil.logger()
         logger.info("screen channel started")
 
     @screen.build.close
@@ -242,10 +233,12 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
     return screen
 
 
-# ---- solo layout state -------------------------------------------------------
+# ---- solo layout state ------------------------------------------------------
 
 def _register_solo_state(screen, bridge: ScreenBridge) -> None:
-    solo = screen.new_state("solo", "single focus — one main slot + front strip + float shelf")
+    solo = screen.new_state(
+        "solo", "single focus — one main slot + front strip + float shelf"
+    )
 
     @solo.command(always_observe=True)
     async def focus(id: str) -> str:
@@ -291,14 +284,12 @@ def _register_solo_state(screen, bridge: ScreenBridge) -> None:
     screen.with_state(solo, is_default=True)
 
 
-# ---- split layout state (placeholder) ----------------------------------------
+# ---- split layout state (placeholder) ---------------------------------------
 
 def _register_split_state(screen, bridge: ScreenBridge) -> None:
-    split = screen.new_state("split", "dual focus — two independent focus slots + front + float")
-
-    # Minimal implementation: same commands as solo, just declared separately.
-    # The QML handles the slot mapping; the channel interface is identical.
-    # Future: left/right-specific commands (focus_left/focus_right).
+    split = screen.new_state(
+        "split", "dual focus — two independent focus slots + front + float"
+    )
 
     @split.command(always_observe=True)
     async def focus(id: str, slot: str = "focus") -> str:
