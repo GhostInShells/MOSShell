@@ -105,6 +105,18 @@ class ScreenBridge(QObject):
             else:
                 f.set_result(result)
 
+    _DISPATCH: dict[str, tuple[str, ...]] = {
+        # op -> ordered positional arg names matching QML function signatures
+        "open_window":     ("id", "url", "label"),
+        "close_window":    ("id",),
+        "set_background":  ("id",),
+        "switch_layout":   ("name",),
+        "focus_window":    ("id", "slot"),
+        "front_window":    ("id", "index"),
+        "float_window":    ("id",),
+        "clear_slot":      ("slot",),
+    }
+
     def _execute(self, op: str, args: dict) -> Any:
         """Execute operation on QML scene. Runs on GUI thread only."""
         root = self._root
@@ -115,6 +127,13 @@ class ScreenBridge(QObject):
         if method is None:
             raise ValueError(f"Unknown bridge op: {op}")
 
+        # QML functions require positional args, not keyword args.
+        # Build positional args list from the dispatch signature.
+        param_names = self._DISPATCH.get(op, ())
+        if param_names:
+            pos_args = [args.get(name) for name in param_names]
+            return method(*pos_args)
+        # Fallback for ops without explicit dispatch (e.g. future additions)
         return method(**args)
 
     # ---- snapshot (Matrix thread) -----------------------------------------
