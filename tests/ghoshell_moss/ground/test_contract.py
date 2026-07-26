@@ -41,7 +41,7 @@ class TestPinModels:
             FilePin(label="x", arguments=FileArguments(path="a.py", range="not-a-range"))
 
     def test_glob_pin(self):
-        p = GlobPin(label="py", arguments=GlobArguments(pattern="src/**/*.py"))
+        p = GlobPin(label="py", arguments=GlobArguments(path="src/**/*.py"))
         assert p.verb == "glob"
 
     def test_frontmatter_pin(self):
@@ -76,7 +76,7 @@ class TestPinModels:
             FilePin(label="my pin", arguments=FileArguments(path="a.py"))
 
     def test_description_inherited(self):
-        p = GlobPin(label="g", arguments=GlobArguments(pattern="*"), description="all files")
+        p = GlobPin(label="g", arguments=GlobArguments(path="*"), description="all files")
         assert p.description == "all files"
 
     def test_model_dump_includes_kind(self):
@@ -96,7 +96,7 @@ class TestPinModels:
         assert p.arguments.budget == 5000
 
     def test_glob_pin_with_limit(self):
-        p = GlobPin(label="g", arguments=GlobArguments(pattern="*", limit=50))
+        p = GlobPin(label="g", arguments=GlobArguments(path="*", limit=50))
         assert p.arguments.limit == 50
 
     def test_ls_pin_with_limit_and_max_depth(self):
@@ -131,7 +131,7 @@ class TestPinModels:
     def test_limit_must_be_positive(self):
         import pydantic
         with pytest.raises(pydantic.ValidationError):
-            GlobArguments(pattern="*", limit=0)
+            GlobArguments(path="*", limit=0)
 
 
 class TestTemplateInfo:

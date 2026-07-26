@@ -140,10 +140,12 @@ def dump_l0_pins(
     root: Path,
     pins: list[Pin],
     filename: str = DEFAULT_L0_FILENAME,
+    *,
+    body: str | None = None,
 ) -> None:
     """把 pin 集写回 GROUND.md 的 frontmatter ``pins`` key.
 
-    - 文件不存在: 创建, 只写 frontmatter + pins.
+    - 文件不存在: 创建, 写 frontmatter + pins + optional body.
     - 文件存在: 保留 frontmatter 其他 key + body, 原地替换 pins.
     - 永远不写 seen_* 观察态 (SPEC §7.2).
     """
@@ -158,7 +160,11 @@ def dump_l0_pins(
             sort_keys=False,
             default_flow_style=False,
         ).rstrip()
-        path.write_text(f"---\n{fm}\n---\n\n", encoding="utf-8")
+        if body:
+            body_block = body if body.startswith("\n") else f"\n{body}"
+        else:
+            body_block = "\n"
+        path.write_text(f"---\n{fm}\n---\n{body_block}", encoding="utf-8")
         return
 
     text = path.read_text(encoding="utf-8")

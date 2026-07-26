@@ -44,7 +44,7 @@ class TestLoadL0:
             "  description: entry point\n"
             "- verb: glob\n"
             "  label: py\n"
-            "  arguments: {pattern: '**/*.py'}\n"
+            "  arguments: {path: '**/*.py'}\n"
             "- verb: ls\n"
             "  label: root\n"
             "  arguments: {path: ., depth: 1}\n"
@@ -67,7 +67,7 @@ class TestLoadL0:
 
         glob_pin = c.pins[1]
         assert isinstance(glob_pin, GlobPin)
-        assert glob_pin.arguments.pattern == "**/*.py"
+        assert glob_pin.arguments.path == "**/*.py"
 
         ls_pin = c.pins[2]
         assert isinstance(ls_pin, LsPin)
@@ -144,7 +144,7 @@ class TestDumpL0:
     def test_roundtrip(self, tmp_path):
         original = [
             FilePin(label="main", arguments=FileArguments(path="FEATURE.md"), description="entry"),
-            GlobPin(label="py", arguments=GlobArguments(pattern="**/*.py")),
+            GlobPin(label="py", arguments=GlobArguments(path="**/*.py")),
             LsPin(label="root", arguments=LsArguments(path=".", depth=2)),
         ]
         dump_l0_pins(tmp_path, original)
@@ -183,7 +183,7 @@ class TestDumpL0:
         assert "after" in text
 
     def test_idempotent(self, tmp_path):
-        pins = [FilePin(label="a", arguments=FileArguments(path="a.py")), GlobPin(label="b", arguments=GlobArguments(pattern="*.py"))]
+        pins = [FilePin(label="a", arguments=FileArguments(path="a.py")), GlobPin(label="b", arguments=GlobArguments(path="*.py"))]
         dump_l0_pins(tmp_path, pins)
         first = (tmp_path / DEFAULT_L0_FILENAME).read_text()
         dump_l0_pins(tmp_path, pins)

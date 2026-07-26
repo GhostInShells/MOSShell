@@ -131,7 +131,7 @@ def render_meta(
 def _pin_target_raw(pin: Pin) -> str:
     """Pin 的目标路径原文 (锚判定用). exec 无位置概念, 返回空."""
     if isinstance(pin, GlobPin):
-        return pin.arguments.pattern
+        return pin.arguments.path
     if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
         return pin.arguments.path
     return ""
@@ -278,7 +278,7 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
 
 def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
     root = anchor.ground
-    pattern = pin.arguments.pattern
+    pattern = pin.arguments.path
     if pattern.startswith("$"):
         try:
             resolved = resolve_path(pattern, anchor)
@@ -441,7 +441,7 @@ def _pin_kwargs(pin: Pin) -> str:
         if pin.arguments.budget is not None:
             parts.append(f"budget={pin.arguments.budget}")
     elif isinstance(pin, GlobPin):
-        parts.append(f'pattern="{pin.arguments.pattern}"')
+        parts.append(f'path="{pin.arguments.path}"')
         if pin.arguments.limit is not None:
             parts.append(f"limit={pin.arguments.limit}")
     elif isinstance(pin, FrontmatterPin):

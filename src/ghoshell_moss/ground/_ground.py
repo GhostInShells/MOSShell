@@ -154,6 +154,7 @@ class DefaultGround(Ground):
             self._doc_path.parent,
             list(self._pins.values()),
             self._doc_path.name,
+            body=self._body if not self._doc_path.is_file() else None,
         )
         self._dirty = False
 

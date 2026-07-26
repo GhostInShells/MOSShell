@@ -149,7 +149,7 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
 
 def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
     root = anchor.ground
-    pattern = pin.arguments.pattern
+    pattern = pin.arguments.path
 
     # 锚点语法解析后做 glob
     if pattern.startswith("$"):

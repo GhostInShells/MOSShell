@@ -75,14 +75,14 @@ class TestGlobPinObservation:
         (tmp_path / "a.py").write_text("a")
         (tmp_path / "b.py").write_text("b")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.py"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("a.py\nb.py")
 
     def test_empty_hit_is_still_exists(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="nonexistent-*"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="nonexistent-*"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.mtime is None
@@ -147,7 +147,7 @@ class TestGlobIgnore:
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "__pycache__" / "cached.py").write_text("cache")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="py", arguments=GlobArguments(pattern="**/*.py"))
+        pin = GlobPin(label="py", arguments=GlobArguments(path="**/*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         # only a.py, __pycache__/cached.py excluded

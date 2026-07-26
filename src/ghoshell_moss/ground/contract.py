@@ -95,7 +95,7 @@ class FileArguments(BaseModel):
 
 class GlobArguments(BaseModel):
     """glob verb 的 arguments."""
-    pattern: str = Field(description="glob pattern (*, **, ? 标准语义).")
+    path: str = Field(description="glob 路径 (*, **, ? 标准语义).")
     limit: int | None = Field(default=None, ge=1, description="命中路径数上限.")
     max_depth: int | None = Field(default=None, ge=1, description="** 递归深度上限.")
 

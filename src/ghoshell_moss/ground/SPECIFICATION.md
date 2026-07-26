@@ -1,11 +1,7 @@
 # GROUND Format Specification
 
-Status: pre-release (2026-07-25 snapshot)
-Location: `src/ghoshell_moss/ground/SPECIFICATION.md`
-
 Any runtime that reads and writes `GROUND.md` according to this SPEC can
-participate in the ground protocol. Semantics are still in flux — version
-numbers appear only after the first release.
+participate in the ground protocol.
 
 ## 1. Concept
 
@@ -33,8 +29,7 @@ and pins are never inherited.
 
 A **template** is a pre-authored `GROUND.md` body + pins, stored under
 `.grounds/` and discovered by the ground runtime. Templates and instances
-share the same frontmatter + body + pins format. Role is determined by
-file location, not by a metadata field.
+share the same frontmatter + body + pins format.
 
 Template discovery and usage rules are defined in §11.
 
@@ -64,10 +59,8 @@ pins:
 The `pins` key holds the YAML list of pin declarations (§4). If absent,
 the pins list is empty.
 
-A directory without `GROUND.md` is not a ground. Attempting to open one
-loads an empty ground (no convention, empty body, no pins) — this is a
-creation pathway, not a "bare ground" concept. The ground becomes real
-when `sediment` writes `GROUND.md` to disk.
+A directory without `GROUND.md` is not a ground. Opening such a directory
+returns an empty ground; calling `sediment` on it creates `GROUND.md`.
 
 ## 3. Reserved Frontmatter Keys
 
@@ -137,7 +130,7 @@ All path-typed arguments use the anchor syntax in §8.
 
 | Key | Type | Required | Semantics |
 |-----|------|----------|-----------|
-| `pattern` | string | yes | Glob pattern (`*`, `**`, `?`). Anchor syntax (§8) allowed as prefix. |
+| `path` | string | yes | Glob path (`*`, `**`, `?`). Anchor syntax (§8) allowed as prefix. |
 | `limit` | int | no | Entry count limit (§4.1). Default: implementation-defined. |
 | `max_depth` | int | no | Recursion depth cap for `**` patterns (§4.1). |
 
@@ -219,11 +212,9 @@ code. It is deliberately narrow:
   say "run this command"; it can only reference a script the field
   author has committed to the ground subtree.
 
-Trust boundary is **Makefile-level**: loading a foreign ground into
-cognition is the same trust event as running `make` in a cloned repo.
-Making the executable surface a first-class named artifact (an
-audited file, not an inline string) is the primitive; the trust
-decision is made by whatever loads the ground, not by the protocol.
+The executable surface is a named artifact (a committed file),
+never an inline string. The trust decision belongs to the loader,
+not to the protocol.
 
 **Execution environment**:
 
@@ -293,10 +284,9 @@ output follows these rules:
 ### 6.2 `@`-reference Expansion
 
 An `@`-reference in body loads another document as **static law**.
-It is **not change-tracked** — law follows the doc's current state
-silently. This is the dividing line between `@` and `pin`:
-**对账 (accounting)**. `@` = load as law, no accounting.
-`pin` = watch as gaze, with change accounting (§7.2).
+It is **not change-tracked** — the loaded content reflects the file's
+current state at frame time. This contrasts with `pin`, which tracks
+change across observations (§7.2).
 
 **Recognition**: an `@` at line start or after whitespace, followed by
 a path-start character `[a-zA-Z0-9_./$]`, and not inside a fenced code
@@ -508,13 +498,9 @@ becomes real when the first `sediment` writes `GROUND.md`.
 ### 11.4 Fractal Closure
 
 A `.grounds/` directory may itself contain a `GROUND.md` — making it
-a ground instance in its own right, discoverable by its parent
-ground's `frontmatter` pin. This is **fractal self-similarity**:
-the same protocol applies at every scale.
-
-L2 (a template collection) can discover other L2 collections through
-the same mechanism. No L3 registry is needed — file system traversal
-is the discovery protocol.
+a ground instance discoverable by its parent ground's `frontmatter` pin.
+File system traversal is the discovery protocol; no separate registry
+is required.
 
 ### 11.5 Separation from Instance Discovery
 

@@ -11,6 +11,7 @@ your edits.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -36,6 +37,21 @@ ground_app = typer.Typer(
 
 
 # -- helpers --------------------------------------------------------------
+
+
+def _run_async(coro):
+    """asyncio.run() with pydantic error wrapping — consistent with validate."""
+    try:
+        return asyncio.run(coro)
+    except Exception as e:
+        # pydantic ValidationError → clean [ERROR] like validate
+        cls = type(e).__name__
+        msg = str(e)
+        # strip pydantic URL noise
+        if "For further information visit" in msg:
+            msg = msg.split("For further information visit")[0].strip()
+        print_error(f"{cls}: {msg}")
+        raise typer.Exit(code=2) from e
 
 
 def _resolve_root(path: Path | None) -> Path:
@@ -137,13 +153,21 @@ def cmd_init(
         raise typer.Exit(code=1)
 
     if template is not None:
-        # use GroundSet to load template + sediment to disk
         async def _op(gs: GroundSet, ground: Ground) -> None:
             await ground.sediment()
-        asyncio.run(_run_one_with_template(root, _op, template))
+
+        _run_async(_run_one_with_template(root, _op, template))
         print_success(f"initialized {target} from template '{template}'")
     else:
-        dump_l0_pins(root, [])
+        body = (
+            "# <label>\n"
+            "\n"
+            "Ground body — free-form markdown.  Pins are declared in\n"
+            "frontmatter above.  Available verbs: file, glob, frontmatter,\n"
+            "ls, exec.  Run `moss ground verbs` for argument reference.\n"
+            "Edit this file, then `moss ground validate` to check.\n"
+        )
+        dump_l0_pins(root, [], body=body)
         print_success(f"initialized {target}")
 
 
@@ -165,6 +189,50 @@ def cmd_templates() -> None:
         for t in tmpls
     ]
     print_simple_table(rows, headers=["name", "source", "description"])
+
+
+# -- verbs ----------------------------------------------------------------
+
+
+_VERB_HELP: dict[str, dict[str, str]] = {
+    "file": {
+        "path": "file path (required). Anchor syntax allowed.",
+        "range": "line range: N or N-M (1-indexed).",
+        "budget": "content char limit, truncates with marker.",
+    },
+    "glob": {
+        "path": "glob pattern *, **, ? (required). Anchor prefix allowed.",
+        "limit": "max matched paths.",
+        "max_depth": "recursion depth cap for **.",
+    },
+    "frontmatter": {
+        "path": "file path or glob pattern (required). Anchor syntax allowed.",
+        "keys": "frontmatter keys to extract; absent = full block.",
+        "budget": "content char limit.",
+        "limit": "max matched files in pattern mode.",
+        "max_depth": "recursion depth cap in pattern mode.",
+    },
+    "ls": {
+        "path": "directory path (required). Anchor syntax allowed.",
+        "depth": "traversal depth. default 2.",
+        "limit": "max directory entries.",
+        "max_depth": "recursion depth cap (min of depth and max_depth wins).",
+    },
+    "exec": {
+        "ref": "relative path to executable in ground subtree (required).",
+        "timeout": "seconds. default 10, max 60.",
+        "budget": "stdout char limit.",
+    },
+}
+
+
+@ground_app.command("verbs", short_help="List known pin verbs and their arguments.")
+def cmd_verbs() -> None:
+    """Show each verb's argument table — a quick reference for editing GROUND.md."""
+    for verb, args in _VERB_HELP.items():
+        echo(f"\n[{verb}]")
+        rows = [[k, v] for k, v in args.items()]
+        print_simple_table(rows, headers=["argument", "description"])
 
 
 # -- frame ----------------------------------------------------------------
@@ -191,7 +259,7 @@ def cmd_frame(
             text = await ground.context()
             echo(text)
 
-        asyncio.run(_run_one(root, _op))
+        _run_async(_run_one(root, _op))
         return
 
     ground_root = _find_ancestor_ground(root)
@@ -319,7 +387,7 @@ def _pin_target_display(pin, anchor) -> str:
         if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
             return str(resolve_path(pin.arguments.path, anchor))
         if isinstance(pin, GlobPin):
-            return str(resolve_path(pin.arguments.pattern, anchor))
+            return str(resolve_path(pin.arguments.path, anchor))
         if isinstance(pin, ExecPin):
             # 场根子树内相对路径 — 显示 resolved 绝对路径,
             # missing 时用户一眼看清是哪个文件缺
@@ -360,7 +428,7 @@ def _obs_status_and_size(pin, obs) -> tuple[str, str]:
 
 _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "file": frozenset({"path"}),
-    "glob": frozenset({"pattern"}),
+    "glob": frozenset({"path"}),
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
     "exec": frozenset({"ref"}),
@@ -479,6 +547,22 @@ def cmd_validate(
                 errors.append(f"{idx}: 'description' must be a string")
             elif len(desc) > 280:
                 warnings.append(f"{idx}: description exceeds 280 chars ({len(desc)})")
+
+        # exec ref reachability — warn if target missing or not +x
+        if verb == "exec" and "ref" in args:
+            ref = args["ref"]
+            if not isinstance(ref, str):
+                pass  # type error caught elsewhere
+            elif ref.startswith("/"):
+                warnings.append(f"{idx}: exec ref is absolute — exec requires relative path in ground subtree")
+            elif ".." in Path(ref).parts:
+                warnings.append(f"{idx}: exec ref contains '..' — must stay in ground subtree")
+            else:
+                resolved = (root / ref).resolve()
+                if not resolved.is_file():
+                    warnings.append(f"{idx}: exec ref '{ref}' not found on disk ({resolved})")
+                elif not os.access(resolved, os.X_OK):
+                    warnings.append(f"{idx}: exec ref '{ref}' missing +x — will render [missing]")
 
     # --- report ---
     for w in warnings:
