@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import uuid
+from uuid import uuid4
 from concurrent.futures import Future
 from typing import Any
 
