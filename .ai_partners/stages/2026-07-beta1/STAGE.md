@@ -63,10 +63,7 @@ makes MOSS a system rather than a collection of prototypes.
 - feature: cell-run-cycle
 - feature: cells-cli
 - feature: desktop-channel
-- feature: node-migration
 - feature: ctml-1-english
-- feature: ghost-ground
-- feature: momento-mori
 - regression: nodes-cli
 - regression: ghost-runtime
 
