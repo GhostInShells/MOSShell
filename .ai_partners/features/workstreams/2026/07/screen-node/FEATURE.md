@@ -220,8 +220,55 @@ screen.<current>       当前 layout 的 view command 集 (StatesChannel 换血)
   - `src/ghoshell_moss_contrib/unitree/g1/channels/listener.py` — peek/drain 双面 + janus.Queue 全样板
   - `src/ghoshell_moss_contrib/unitree/g1/channels/asr.py` — 纯 peek 顺行遗忘的退化形态
   - `src/ghoshell_moss_contrib/unitree/g1/channels/locomotion.py` — available 门控 + context_messages 陈述能力状态
-- **Stages 待定**：本 FEATURE.md 是设计讨论的锚点。具体实现 stages 需基于此锚点
-  重新确定，不在本轮预写。首个 stage 应是 Decision 11 的 mock 验证 node。
+- **Stages**：
+
+  ### S1: Dual-thread Node Scaffold (done, 2026-07-26)
+
+  提交：2b2dbf4, 5ea8a968, 6f3cc0ac, fc21ce71, cd3bdc18
+
+  **产出**：`nodes/screens/qt_screen/` — macOS PySide6/QML screen body node
+  直接上真实 node（跳过了 Decision 11 的 mock node）。
+
+  - **线程模型**：Qt 主线程（QApplication + QML engine）+ Matrix daemon 线程（asyncio + channel logic）
+  - **Bridge**：ScreenBridge QObject — Signal(str) queued connection + concurrent.futures.Future
+    跨线程 dispatch，positional args dispatch table 适配 QML 函数签名
+  - **Bucket**：EventBucket — peek/drain 双面，janus.Queue 单点汇入，参照 g1 listener
+  - **Channel 树**：`screen` PrimeChannel（main state: open/close/set_background/switch_layout/drain）+
+    solo/split 两个 StatefulChannel sub-states（focus/front/float/clear）
+  - **QML**：四槽 compositor（background placeholder + focus + front strip + float meta items），
+    人类点击即时生效 + bridge.human_clicked 入桶；WebEngine 就绪但当前 placeholder 模式
+  - **已验证**（MCP via moss-as-mcp）：open/focus/front/float/drain/close 全命令链路通，
+    QML 界面正确响应，context_messages 信道通（snapshot QVariant→dict 转换待修）
+
+  **目录决定**：`screens` 是品类目录（为多平台 screen 实现预留），具体 node 在 `screens/qt_screen`。
+
+  摩擦点记录：
+  - LoggerItf contract 在 node channel startup 里找不到 → 用户修复了 IoC 反绑逻辑
+  - Channel API 错误使用了 `screen.main_state().command()` → 修正为 `screen.build.command()`
+    （PrimeChannel.build 返回 MutableChannelState，main_state() 返回 ChannelState 无 command 方法）
+  - janus exception 名：`AsyncQueueEmpty` 非 `QueueEmpty`
+  - QML 函数从 Python 调用需 positional args，不能 keyword args
+
+  ### S2: WebView + Interactive Drain (next)
+
+  - focus/background slot 从 placeholder Rectangle 升级为 WebEngineView
+  - QWebChannel 注册 bridge，注入 `badge_intercept.js` — `navigator.setAppBadge()` 通路闭环
+  - WebEngineScript 自动为页面注入 `window.__screen_window_id`
+  - 人类在界面点击产生交互事件 → peek 桶可见 → drain 消费
+  - context_messages snapshot 修复 QVariant→dict 类型转换
+  - context_messages 篇幅优化（窗口目录压一行、事件截断）
+
+  ### S3: Layout Runtime + More Layouts
+
+  - switch_layout → QML transition 动画 + await finished（转场时长 = command 时长）
+  - split layout 完整实现（双 focus slot + 分屏 QML）
+  - Layout 运行时开发（模型 engine.load 新 QML 不需重启进程）
+
+  ### S4: Multi-Platform + Cell Providing
+
+  - Ubuntu node（PySide6/QML 同架构移植）
+  - matrix-resources `servers://` 消费 — 一次 list 恢复全部可开窗
+  - meta item source 字段 → matrix 级 cell providing 协议（红点发现标准化）
 - 第一期不依赖 matrix-resources：URL 发现走 provide 语义自述；`servers://` 落地后
   screen 可成为它的消费者（一次 list 即恢复全部可开的窗，compact 不遗忘）。
 - meta 游离层的动画（d3 式前台聚焦/后台游离的美化）只是实现升级，不动协议。
