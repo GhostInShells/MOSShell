@@ -8,12 +8,11 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
 milestone: null
 priority: P0
 status: in-progress
-status_note: '2026-07-26 §12 上下文窗口与 compact 体系定案: 双层游标 (summary cursor /
-  detail cursor = compact 点), 四级压缩 (0-3), ID 映射表 (整数 index), 主 agent
-  上下文工具 (read_commit + commit + sandbox_exec), compact agent 单帧 JSON
-  (pydantic-ai result_type), CompactDecision per-commit 对象 (moment_index +
-  summary + folded). 迭代路径: (a) 无压缩 memento → (b) context window →
-  (c) compact agent → (d) memento tools. 压缩级别数据模型在 (a) 阶段预留字段.'
+status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段完成:
+  impl.invoke() 接线 memento staging (pydantic-ai messages dump → MomentRecord),
+  CLI 回归 9/9 全绿, calc.agent.py 投入验证, regression set 建立.
+  迭代路径: (a) 无压缩 memento ✓ → (b) context window → (c) compact agent → (d) memento tools.
+  压缩级别数据模型在 (a) 阶段已预留字段.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
 updated: '2026-07-26T23'
 ---
