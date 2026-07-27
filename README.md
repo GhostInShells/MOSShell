@@ -15,7 +15,7 @@ MOSS 是一个**面向模型开发**的项目。所有工具、文档、命令�
 ```bash
 git clone https://github.com/GhostInShells/MOSShell && cd MOSShell
 uv sync --active --all-extras
-cp .moss_ws/.env.example .moss_ws/.env    # 模型配置必须，语音可选
+moss project env-init                     # review available env vars and create .env
 ```
 
 安装后，用 Claude Code、Gemini CLI 或任意 AI 工具打开项目。从 `moss start` 开始，模型会加载认知地图，自主发现全部命令和文档，能对人类解释 MOSS 是什么、参与到开发中来。建议用 token 成本较低的模型做调研探索。

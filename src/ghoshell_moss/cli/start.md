@@ -80,7 +80,7 @@ reference material, not prerequisites for application development.
 
 ### For humans
 
-Four commands are built for human interaction:
+Three commands are built for human interaction:
 
 | Command | What it does |
 |---------|-------------|
@@ -103,8 +103,7 @@ After install, initialize your project and configure the environment:
 
 ```bash
 moss init . --yes                         # create .moss workspace in current dir
-moss project env-init                     # review the .env.example template
-cp .moss/.env.example .moss/.env          # create your .env, add API keys
+moss project env-init                     # review available env vars and create .env
 ```
 
 Then launch MOSS as an MCP server and connect your coding agent:
@@ -165,11 +164,11 @@ moss shell-init              # export MOSS env vars for eval $(moss shell-init)
 
 ```
 moss project where           # show project root, workspace, defaults
-moss project env-init        # show .env.example template + copy instructions
-moss project list-modes      # list all discovered modes
-moss project show-mode <n>   # detail for a specific mode (name, home, CTML ver...)
-moss project list-ghosts     # list all discovered ghosts
-moss project show-ghost <n>  # detail for a specific ghost (import path, source file...)
+moss project env-init        # review available env vars and create .env
+moss modes list              # list all discovered modes
+moss modes show <n>          # detail for a specific mode (name, home, CTML ver...)
+moss ghosts list             # list all discovered ghosts
+moss ghosts show <n>         # detail for a specific ghost (import path, source file...)
 ```
 
 Global CLI flags override MOSS.md defaults:
@@ -235,8 +234,8 @@ When working within a MOSS workspace, these commands show what's available:
 ```
 moss manifests providers             # registered IoC services
 moss manifests configs               # configuration entries
-moss project list-modes              # available runtime modes
-moss project list-ghosts             # defined ghosts
+moss modes list                      # available runtime modes
+moss ghosts list                     # defined ghosts
 moss project where                   # project info + defaults
 ```
 
@@ -385,8 +384,8 @@ existing one, everything flows through the workspace. What you can do:
 
 **Project management:**
 - Create a workspace, manage environment — start at `moss init` and `moss project`
-- Understand mode-based isolation, discover modes — `moss project list-modes/show-mode`
-- See registered ghosts — `moss project list-ghosts/show-ghost`
+- Understand mode-based isolation, discover modes — `moss modes list/show`
+- See registered ghosts — `moss ghosts list/show`
 - Export environment for shell — `moss shell-init`
 
 **Develop integrable capabilities:**
@@ -399,7 +398,7 @@ existing one, everything flows through the workspace. What you can do:
 - Complex stateful channels — start at `moss codex blueprint states_channel` and `moss codex channeltypes`
 
 **Understand the runtime environment:**
-- Environment isolation modes — `moss project list-modes`
+- Environment isolation modes — `moss modes list`
 - Configuration entries — start at `moss manifests configs`
 - IoC-available modules — start at `moss manifests contracts`
 - Register runtime dependencies — start at `moss manifests providers`

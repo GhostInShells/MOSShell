@@ -1,6 +1,6 @@
 [project]
 name = "ghoshell-moss"
-version = "0.1.0-beta"
+version = "0.1.0-beta1"
 description = "LLM-oriented operating system with streaming interpreting shell, and Intelligent Ghost inside it"
 authors = [{ name = "thirdgerb" }, { name = "17wang" }]
 license = { text = "Apache License 2.0" }
