@@ -68,13 +68,23 @@ def test_approve_resolves_future_and_clears_pending():
     assert sm.pending() is None
 
 
+def test_approve_with_note_carries_message():
+    """approve(uuid, note='...') 把 note 装入 Verdict.message, 供拦截点 observe 用."""
+    sm = SafeModeImpl()
+    fut = sm.submit("logos")
+    uuid = sm.pending()['uuid']
+
+    assert sm.approve(uuid, note="looks good but tone down") is True
+    assert fut.result(timeout=0.1) == Verdict(kind='approved', message="looks good but tone down")
+
+
 def test_reject_carries_reason():
     sm = SafeModeImpl()
     fut = sm.submit("logos")
     uuid = sm.pending()['uuid']
 
     assert sm.reject(uuid, "too risky") is True
-    assert fut.result(timeout=0.1) == Verdict(kind='rejected', reason="too risky")
+    assert fut.result(timeout=0.1) == Verdict(kind='rejected', message="too risky")
     assert sm.pending() is None
 
 

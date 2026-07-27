@@ -315,13 +315,18 @@ class PendingApproval(TypedDict):
 class Verdict:
     """SafeMode 裁决结果 — 三态标签, 拦截点据此分派.
 
-    - ``approved``: 通过. 拦截点回放 buffered logos → ``articulator.send_nowait``.
-    - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(reason)``, 触发下一帧观察.
+    - ``approved``: 通过. 拦截点回放 buffered logos → ``articulator.send_nowait``;
+      若 ``message`` 非空 (approve-with-note), 再 ``raise_observe`` 使人类补充意见
+      作为下一帧内观.
+    - ``rejected``: 否决. 拦截点走 ``articulator.raise_observe(message)``, message
+      作为否决理由随下一帧 Reaction 进 moment.
     - ``cancelled``: 撤销. abort 到来时拦截点 finally 幂等 cancel; TUI 不主动产生.
+
+    ``message`` 语义在两态间共享 (决策 12/13): 都走 attention 内观通道, 不是外视 outcome.
     """
 
     kind: Literal['approved', 'rejected', 'cancelled']
-    reason: str = ''
+    message: str = ''
 
 
 class SafeMode(ABC):
@@ -369,10 +374,13 @@ class SafeMode(ABC):
         ...
 
     @abstractmethod
-    def approve(self, uuid: str) -> bool:
+    def approve(self, uuid: str, note: str = '') -> bool:
         """通过 uuid 匹配的 pending. 返回 True = 生效, False = uuid 不匹配 (stale, no-op).
 
         决策 8: stale 静默 no-op, 绝不自动顺延到下一帧.
+        决策 12: ``note`` 非空时, 拦截点在回放 logos 之后 ``raise_observe(note)``,
+        使人类补充的意见作为下一帧内观进入 ghost 感知; 保持默认参数使无 note
+        的清洁通过路径不变.
         """
         ...
 

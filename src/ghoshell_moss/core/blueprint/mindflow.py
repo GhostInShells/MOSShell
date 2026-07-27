@@ -808,6 +808,15 @@ class Articulator(ABC):
         raise ObserveError(message)
 
     @abstractmethod
+    def observe(self, message: str) -> None:
+        """
+        非中断版本的 observe: 挂一条内观消息到当前 attention, 下一帧作为 percept.
+        与 ``raise_observe`` 的区别: 不抛异常, 不影响当前调用栈的执行顺序.
+        用于需要 "logos 继续执行 + 附一条给下一帧的观察" 的场景.
+        """
+        pass
+
+    @abstractmethod
     async def send_logos(self, logos: Logos) -> None:
         """
         发送 Logos 流

@@ -1,14 +1,15 @@
 ---
-title: Ghost Runtime Safemode — ghost 生成 logos 的人工审批闸口
-status: draft
-priority: P2
 created: 2026-07-20
-updated: 2026-07-26
 depends: []
-milestone:
-description: >-
-  GhostRuntime 的极简安全模式：开启后 ghost 生成的 logos 不直接进 action 执行，
-  经 TUI 用户通过/否决后放行或回流反馈。范围有意收窄在 articulate→action 链路。
+description: GhostRuntime 的极简安全模式：开启后 ghost 生成的 logos 不直接进 action 执行， 经 TUI 用户通过/否决后放行或回流反馈。范围有意收窄在
+  articulate→action 链路。
+milestone: null
+priority: P2
+status: in-progress
+status_note: gate landed at e60b4fda; round 2 = decisions 11-13 (turn-based UX + introspection
+  channel)
+title: Ghost Runtime Safemode — ghost 生成 logos 的人工审批闸口
+updated: '2026-07-26'
 ---
 
 # Ghost Runtime Safemode
@@ -117,3 +118,66 @@ ghost 下一帧。有意保持极简：这只是 GhostRuntime 的一个局部治
     内观 message 靠自身封装结构（xml 分段等）自解释来源，**不加 source 字段** ——
     抽象负担留白，未来加入异步人工评论、self-reflection、后台 critic agent 等
     更多内观来源时，各自消息体自解释即可。
+
+## Round 2 Landed
+
+- **输入协议**：pending 时 `""` = approve；`"!<text>"` = approve-with-note；
+  `"<text>"` = reject with reason；`"/<cmd>"` bypass 让默认命令生效。默认 = reject
+  是刻意 —— 误发文本时不会误批准（approve 是更坏后果）。
+- **12 的实现修正**：raise_observe 混进"logos 需完整执行"路径是脆弱的（依赖
+  `capture_error` swallow 顺序 + `put_nowait(None)` 保序，一旦 `__aexit__` 语义
+  微调就崩）。给 `Articulator` ABC 加了非 raise 的 `observe(message)`，`BaseArticulator`
+  委托 `AttentionContext.observe`。approve-with-note 和 reject 都改用它，两条路径
+  对称。这即是决策 12 里预留的 fallback，最终采纳。
+- **13 的执行**：logos 用 `<safemode-approval-note>` / `<safemode-rejection>` xml
+  包裹后进内观通道，不加 source 字段。
+- **TUI 基类改造**：新增 `_pre_handle_input(item) -> bool` 和 `_get_input_placeholder()`
+  两个钩子（`host/tui.py`），子类覆盖即可劫持输入 / 挂 placeholder。GhostTUI 只写
+  ~30 行就消化掉审批交互。
+- **拆除**：c-y/c-d ConditionalKeyBindings、`_safe_mode_wired` 首次注册回调、
+  toolbar `[SAFE pending ...]` 刷新链、`_on_safe_pending_changed`、`_safe_approve`
+  / `_safe_reject`、hardcoded `"rejected by user via c-d"` 字符串。决策 7 完全废弃。
+- **`Verdict.reason` → `Verdict.message`**：approve-with-note 和 reject-with-reason
+  语义上共享 message 字段，字段名跟随。
+
+## Round 2 顺便修的 Round 1 遗留
+
+用户手动测试 round 2 时发现 gate 表面在工作 (`[SAFE]` prefix、`/safe` 都对)，但
+ghost 响应照常输出，pending 从未触发 `_pre_handle_input`。日志里露出真相：
+
+```
+articulate error: a coroutine was expected, got <Future pending>
+File "ghost_runtime.py", line 393, in _run_articulator
+    verdict = await articulator.create_task(
+File "base_attention.py", line 249, in create_task
+    task = self._event_loop.create_task(cor)
+TypeError: a coroutine was expected, got <Future pending>
+```
+
+**Bug**：round 1 (e60b4fda) 写成 `articulator.create_task(asyncio.wrap_future(fut))`。
+`wrap_future` 返回 `Future` 不是 `coroutine`，uvloop 的 `create_task` 严格拒收。
+gate 每次 activate 立即抛 TypeError → 被 `_run_articulator` 的 `except Exception`
+静默吞成 log 一行 → `finally` 里 `cancel_current` 把 pending 结算为 cancelled →
+verdict.kind == 'cancelled' 什么都不做 → `send_nowait` 从未执行，action pipeline
+从未跑；但 `pub_logos` 每 delta 都发了，TUI 看到 raw stream 以为"正常工作"。
+
+**修法**：用 async 函数包一层再喂 create_task：
+
+```python
+async def _await_gate_verdict():
+    return await asyncio.wrap_future(verdict_future)
+
+verdict = await articulator.create_task(_await_gate_verdict())
+```
+
+**Round 1 潜伏几周的根因是测试 gap**：`test_safe_mode.py` 只测 `SafeModeImpl` 自身
+状态转移（submit / approve / reject / cancel），完全没覆盖 gate 与 articulator
+的实际 await 路径。补 `test_safe_mode_gate_integration.py` 三个用例，直接跑
+`await articulator.create_task(_await_verdict())` 这个组合，任何等价 bug 复现
+就 TypeError 失败。
+
+**次生教训**：`_run_articulator` 的 `except Exception as e: logger.exception(...);
+session.output('error', ...)` 静默模式在这里咬了自己。虽然 error 有进 session
+output，但 TUI 默认停在 logos state 看不到；日志用户不主动 grep 也不知道。
+下一次遇到"表面正常但功能未生效"，第一动作就应该是 `tail -f .moss/runtime/logs/moss.log`。
+架构上是否要把 articulate error 也 push 到 logos state 显眼位置，值得单开讨论。

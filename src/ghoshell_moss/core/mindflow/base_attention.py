@@ -236,6 +236,9 @@ class BaseArticulator(Articulator):
     def is_aborted(self) -> bool:
         return self._ctx.is_aborted()
 
+    def observe(self, message: str) -> None:
+        self._ctx.observe(message)
+
     async def send_logos(self, logos: Logos) -> None:
         self._check_running()
         async for delta in logos:

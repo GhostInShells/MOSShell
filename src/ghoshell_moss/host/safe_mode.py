@@ -4,7 +4,8 @@
     - 单一 pending, uuid 对齐防批错帧, 并发裁决用锁串行化.
     - Future 用 ``concurrent.futures.Future``: TUI 线程 set_result, async 侧
       ``asyncio.wrap_future`` await (决策 3).
-    - Verdict 三态: approved / rejected(reason) / cancelled (决策 3).
+    - Verdict 三态: approved / rejected / cancelled, ``message`` 字段供 approve-note
+      与 reject-reason 共享 (决策 12/13).
     - 无历史记录, 无 pending changed 队列, 一读一回调 (决策 9/10).
 """
 
@@ -78,11 +79,11 @@ class SafeModeImpl(SafeMode):
 
     # -- TUI 侧裁决 --
 
-    def approve(self, uuid: str) -> bool:
-        return self._resolve(uuid=uuid, verdict=Verdict(kind='approved'))
+    def approve(self, uuid: str, note: str = '') -> bool:
+        return self._resolve(uuid=uuid, verdict=Verdict(kind='approved', message=note))
 
     def reject(self, uuid: str, reason: str) -> bool:
-        return self._resolve(uuid=uuid, verdict=Verdict(kind='rejected', reason=reason))
+        return self._resolve(uuid=uuid, verdict=Verdict(kind='rejected', message=reason))
 
     # -- 回调 --
 
