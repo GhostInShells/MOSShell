@@ -1,74 +1,156 @@
-# Dependency Governance
+# Dependency Governance — Execution Plan
 
-2026-07-26. 依赖分组的重设计 + depends.py 对齐 + 回归方案。
+2026-07-27. 调研完成，逐项可执行。
 
-## 分组语义
+## 1. pyproject.toml 重组
+
+当前 `[project.optional-dependencies]`：
 
 ```
-base (no extras):
-  纯内核。外部引用 from ghoshell_moss import new_ctml_shell 即可用。
-  CTML shell, Channel, 核心概念。不涉及 Project/Matrix/Host。
-
-cli ← base + CLI:
-  moss 命令行体系可用。轻量第三方可以用 moss ground 等命令。
-  依赖: typer, rich, python-dotenv
-
-matrix ← cli + zenoh:
-  Cell 最小依赖。能入网、发现 node、加入 matrix 网络。
-  不含 mode 层重依赖（mindflow/nuclei/audio/ml）。
-  新增依赖: eclipse-zenoh (唯一新增)
-
-host ← matrix + 运行时:
-  主节点最小运行。完整产品形态 — TUI, audio, subprocess, MCP。
-  新增依赖: prompt-toolkit, pexpect, miniaudio, uvloop, websockets, httpx, fastmcp, loadenv
-
-ghost (正交):
-  AI 模型支持。独立于上述链条。
-  依赖: pydantic-ai, anthropic
-
-contrib (非核心):
-  zmq: zmq, aiozmq
-  redis: fakeredis, redis
-  web: playwright
+zmq:    zmq, aiozmq
+redis:  fakeredis, redis
+ghost:  pydantic-ai, anthropic
+matrix: prompt-toolkit, typer, eclipse-zenoh, python-dotenv
+host:   eclipse-zenoh, pexpect, prompt-toolkit, typer, miniaudio, uvloop, websockets, httpx, fastmcp, loadenv
+web:    playwright
 ```
 
-## pyproject.toml 变更
+问题：
+- 没有 `cli` 组 → 新建
+- `matrix` 混入了 CLI 依赖（typer, prompt-toolkit, python-dotenv）→ 拆分
+- `host` 是"全抄"桶 → 按层重组
+- `web` 无人用（playwright 只在注释里出现）→ 删除
+- `rich` 隐式依赖（靠 typer 传递）→ 显式进 cli
+- `python-dotenv` 在 matrix 但被 core 用 → 移入 cli
 
-每个 extra 自描述，列出该层需要的全部依赖。python-dotenv 从 [matrix] 移入 [cli]。
+改为：
 
-## depends.py 重写
+```toml
+[project.optional-dependencies]
+# Core layers — each includes all deps of the layer below
+cli = [
+    "typer>=0.24.1",
+    "rich",                       # was implicit via typer
+    "python-dotenv>=1.0.0",       # was in [matrix], needed by Project.bootstrap()
+]
+matrix = [
+    "typer>=0.24.1",
+    "rich",
+    "python-dotenv>=1.0.0",
+    "eclipse-zenoh>=1.8.0",       # matrix 唯一新增
+]
+host = [
+    "typer>=0.24.1",
+    "rich",
+    "python-dotenv>=1.0.0",
+    "eclipse-zenoh>=1.8.0",
+    "prompt-toolkit>=3.0.52",
+    "pexpect>=4.9.0",
+    "miniaudio>=0.67",
+    "uvloop>=0.22.1",
+    "websockets>=15.0.1",
+    "httpx>=0.28.0",
+    "fastmcp>=3.1.1",
+    "loadenv>=0.1.1",
+]
+ghost = [
+    "pydantic-ai>=1.90.0",
+    "anthropic>=0.84.0",
+]
 
-四个函数，各自检查对应层的 imports：
+# Bridges — optional transport backends
+zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
+redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
+```
 
-- `depend_cli()` — typer, rich, dotenv
-- `depend_matrix()` — depend_cli() + zenoh
-- `depend_host()` — depend_matrix() + prompt_toolkit, pexpect, miniaudio, uvloop, websockets, httpx, fastmcp, loadenv
-- `depend_ghost()` — pydantic_ai, anthropic
+删除 `web`。
 
-删除旧函数: depend_zenoh (合并到 depend_matrix), depend_circus (从未使用), depend_pydantic_ai (重命名为 depend_ghost), 重复的 depend_cli。
+## 2. depends.py 重写
 
-## python-dotenv 惰性导入
+现状：depend_cli 重复定义两次（都未调用），depend_circus 未调用且不在依赖表，depend_pydantic_ai 未调用，只有 depend_matrix 被 11 处调用。
 
-`core/blueprint/project.py` 顶层 `import dotenv` → 改为在 `bootstrap()` 方法内惰性导入。避免 base 层被迫依赖 dotenv。
+重写为：
 
-## CLI main.py depends 检查
+```python
+def depend_cli():
+    try: import typer, rich, dotenv
+    except ImportError:
+        raise ImportError("install ghoshell_moss[cli]")
 
-`moss` 命令启动时按可用 extras 决定暴露哪些子命令组：
-- 仅 [cli]: start, codex, project, howtos, features, docs, ground, memento
-- [matrix]: + nodes, networks, manifests
-- [host]: + modes, ghosts
+def depend_matrix():
+    depend_cli()
+    try: import zenoh
+    except ImportError:
+        raise ImportError("install ghoshell_moss[matrix]")
 
-优雅降级，安装什么层就看见什么命令。
+def depend_host():
+    depend_matrix()
+    try:
+        import prompt_toolkit
+        import pexpect
+    except ImportError:
+        raise ImportError("install ghoshell_moss[host]")
 
-## 回归方案
+def depend_ghost():
+    try: import pydantic_ai, anthropic
+    except ImportError:
+        raise ImportError("install ghoshell_moss[ghost]")
+```
 
-新 regression set: `dependency-install`。
+调用点（替换现有 `depend_matrix` 为 `depend_matrix`）：
+- bridges/zenoh_bridge/ (4 文件)
+- matrix/providers/topic_provider.py
+- matrix/providers/moss_session_provider.py
+- matrix/networks/zenoh_network.py
+- matrix/session/ (2 文件)
+- matrix/topics/zenoh_topics.py
+- tools/zenoh_helper.py
 
-验证内容:
-1. Python 3.10 空 venv 中 `pip install ghoshell-moss` (base) → CTML shell 基本功能
-2. `pip install ghoshell-moss[cli]` → moss 命令可运行
-3. `pip install ghoshell-moss[matrix]` → moss nodes 可运行
-4. `pip install ghoshell-moss[host]` → moss-shell / moss-ghost 可启动（即便立刻退出）
-5. `pip install ghoshell-moss[ghost]` → pydantic_ai 可 import
+新增 `depend_host()` 调用点：
+- host/tui.py（MossHostTUI 的 prompt_toolkit import）
+- host/repl/repl_state.py (prompt_toolkit)
+- host/speech/capture/miniaudio_capture.py (miniaudio)
+- host/speech/player/miniaudio_player.py (miniaudio)
+- core/terminal/pexpect_session.py (pexpect)
 
-回归文件放在 `.ai_partners/regressions/dependency-install/REGRESSION.md`。
+新增 `depend_ghost()` 调用点：
+- agents/memento_pydantic_agent/impl.py (pydantic_ai)
+- ghosts/atom/_runtime.py (anthropic)
+- core/concepts/tools.py (pydantic_ai)
+
+## 3. python-dotenv 惰性导入
+
+`core/blueprint/project.py:26` 的 `import dotenv` 改为在 `HostMode.bootstrap()`(L429) 和 `Project.bootstrap()`(L581) 内部惰性 `import dotenv`。
+
+三层防御：
+1. 顶层不再 import dotenv
+2. bootstrap 内惰性 import，失败抛清晰的 ImportError
+3. CLI main.py 启动时先调 `depend_cli()` 确保 dotenv 可用
+
+## 4. CLI main.py depends 检查
+
+调研结论：所有 CLI 子命令模块的顶层 import 都不依赖 zenoh。zenoh 的依赖在 matrix 实现层（matrix/session/ 等），不在 CLI 层。
+
+两种策略：
+
+A) **全注册 + 运行时报错**（简单）：main.py 始终注册所有子命令。`moss nodes run` 执行时才调 `depend_matrix()`，无 zenoh 时报清晰错误。实现成本最低。
+
+B) **条件注册**（用户要求）：main.py 启动时尝试 `depend_matrix()`，失败则跳过 nodes/networks/manifests 的注册。用户看到更干净的帮助输出。
+
+建议 A — 所有 CLI 模块都能安全 import，运行时 depends 检查已经在更深层存在（depend_matrix 11 处调用）。条件注册增加了 CLI 启动时的副作用且收益有限。
+
+## 5. uv.lock + 回归
+
+- 改完 pyproject.toml 后 `uv lock`
+- 在 `.ai_partners/regressions/dependency-install/` 建 REGRESSION.md
+- 回归步骤：Python 3.10 venv → pip install .[cli] → moss --help / moss ground 可用 → pip install .[matrix] → moss nodes list 可运行 → pip install .[host] → moss-shell 可启动 → pip install .[ghost] → import pydantic_ai 可用
+
+## 执行顺序
+
+```
+1. pyproject.toml 重组
+2. python-dotenv 惰性导入 (project.py)
+3. depends.py 重写 + 调用点替换
+4. CLI main.py depends 检查 (§4-A 或 §4-B)
+5. uv lock + 回归文档
+```

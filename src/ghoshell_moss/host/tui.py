@@ -2,6 +2,9 @@
 from abc import ABC, abstractmethod
 from collections import deque
 from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
 from rich.console import Console, RenderableType

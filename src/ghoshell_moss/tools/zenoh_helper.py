@@ -3,9 +3,9 @@ import threading
 from hmac import new
 from typing import Callable
 
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 
-depend_zenoh()
+depend_matrix()
 
 from ghoshell_moss.core.blueprint.environment import Environment
 import zenoh

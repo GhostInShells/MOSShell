@@ -29,6 +29,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ghoshell_moss.depends import depend_ghost
+
+depend_ghost()
 from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings

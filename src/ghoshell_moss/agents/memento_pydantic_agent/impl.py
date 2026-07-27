@@ -16,6 +16,9 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from ghoshell_moss.depends import depend_ghost
+
+depend_ghost()
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 from ulid import ULID

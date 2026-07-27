@@ -1102,3 +1102,242 @@ class CompactCommit(BaseModel):
 - **ghost 的 memento tools**：当前 context tools 的消费者是单 agent。ghost
   场景下，ghost 自身成为消费者——fork 化身、读取子 agent 的历史、回溯自己的
   思维轨迹。memento agent 打磨出来的 tool 面是 ghost 的记忆基础设施。
+
+## 13. Dogfooding 接手轮：读侧未接的确认 + 废除与还原 (2026-07-26, claude-fable-5)
+
+(a) 阶段之后的第一次外部视角接手。方法：先用 CLI 自解释体系调研（人类指定
+不读源码），再真跑 dogfooding，最后与人类碰撞。本节与 §10/§11/§12 并列有效，
+冲突处以本节为准。**本节性质是纠偏**——废除两个机制、还原两个丢失的决策、
+立一条纪律。
+
+### 13.1 实装状态的精确判断：写侧完成，读侧未接
+
+跑通链路（memento root 在 /tmp，`calc.agent.py`，`ANTHROPIC_MODEL=claude-opus-4-7`）：
+
+```
+invoke "torus r=3 R=5"   → 正确 592.18 + 公式 A=4π²Rr
+branch staging           → 1 moment [pydantic_ai.messages/v2]
+invoke "上次算了什么?"    → "I don't have memory of previous computations"
+branch commit            → cmt_... 冻结, staging 清空
+commit show              → moments (2), 类型正确
+branch window            → 只有 summaries 一行, detail 区空
+```
+
+**多轮记录通了，多轮认知没通**。"memento 实装完成、可以多轮" 的正确读法：
+**写侧完成，读侧（折叠文本回流）未接** —— 即 §12.6 的 (b) 阶段。
+
+**最有信息量的一帧**：模型不是"忘了"，是**自信宣称自己无状态**
+（"each session starts fresh"）。META instruction 里没有任何 memento 存在的
+迹象，模型连"我有历史但看不见"都不知道。**(b) 落地时 META 必须同步改**，
+否则模型与自己的上下文打架。有 / 无 memento 两种情况 META 应不同（None 时
+不提记忆）—— 这要求 memento 在指令组装期可见。
+
+### 13.2 废除 prompt_sha（人类裁决）
+
+**memento 百分之百不关心 instruction**。prompt + memento 是 agent 侧的合法
+组合；上下文整体变更（prompt 改、窗口折叠、agent 改）是**调试类问题**，
+调试类信息的归宿是 branch 目录下的 log，不是认知轨迹里的 moment。
+
+§3 钉子 2 的 `prompt_sha` 进 payload 作废，`window_stamp` 同理（同属 agent 侧
+渲染状态）。实证：当前实现里 prompt_sha 是**只写数据**——无任何消费端，是一个
+没有表的外键。且 hash 不可逆，"当时模型看见什么"它答不了：composed instruction
+≠ 文件（META 模板 + `__interfaces__` 展开是运行时组装的），git 也不闭环。
+**"归因闭环"这个说法在 sha 单独存在时从未成立。**
+
+**纪律（人类原话级）**：这类机制**要么上升到系统约定，要么放弃**——不许以
+零约定的 dict 键形态在几个地方魔法存。
+
+### 13.3 还原丢失的决策一：`by` 字段（生产者标记）
+
+顺着 prompt_sha 的动机（"标记谁生产了它"）查出：§3 钉子 2 的 record 行形状
+设计过 `"by":"memento-agent/<model>"`，**实现时丢了**。当前 `MomentRecord`
+信封只有 id/created/type/payload/threads；`by` 只活在 CommitNote / annotate
+上——**"释义写入者"有出处，moment 生产者反而没有**。
+
+**prompt_sha 塞 payload 就是这个决策丢失后的孤儿形态**：动机是真的，家没了，
+于是零约定地寄居在 dict 里。
+
+倾向（待人类最终确认）：`by` **回信封** + FORMAT 补一行。理由——"谁产的这条
+moment"在并行分支场景（§13.5）是**结构信息不是调试信息**：checkout 别人的
+commit 时，moment 来源必须可见。
+
+### 13.4 废除"字节稳定性进契约"的提法
+
+本轮记录者先提出"window 渲染必须字节稳定、应进 contract"，被人类纠正：
+**memento 从存储还原 n 次一致是平凡成立的**，问题从来不在 store。渲染确定性
+是 **agent 侧**的事；而 prompt / 窗口 / agent 的变更是设计动机内的，该改就改。
+
+降级结论：**不进任何契约**，落为 agent family 的调试工具——已有 memento 下
+调 n 次，**分段 hash**（instruction 段 / window 段 / staging 段）一致；断了能
+定位断在哪段。分段而非整体，为的是可定位。这是 prompt_sha 唯一正当的继承
+形态（从"给未来考古"变成"给 cache 调试"），但它住在调试工具里，不住在轨迹里。
+
+### 13.5 memento 的核心用途定位（人类原话）
+
+> "memento 对我而言最大的用处，就是未来并行推理、并行思考时可以复用同一个
+> 上下文，checkout 独立分支。"
+
+这条把 (b) 的优化目标钉住了：**fork 与 cache 前缀共享是同一机制的两面**——
+同一 parent 链 → 确定性渲染出同一段折叠文本 → 多个并行分支天然共享缓存前缀。
+所以 window v1 该做好的只有一件事：**从 store 确定性渲染**。四级压缩
+（§12.2）继续靠边，等真轨迹裁决。
+
+### 13.6 source 不切割（定案）+ 强类型 Payload
+
+**配置留在 .py 里，不做分隔符切割**。事实纠正：本轮曾以为"已做过分隔符、
+可切割 source 中模型可见部分"——**该机制不存在**，`assemble_instruction`
+把 source 原文全量放进 META，dunder 配置模型全看得见。人类同意不切割；
+商榷点仅是 token 开销，判断为不重要。
+
+理由链：`imports 是你的授权` 自然延伸为 `dunders 是你的配置`——**agent 对
+自身的认知应尽量真**（与 §13.1 的 META 病根同源）；切割需要新约定 + 新失败面
+（分隔线放哪、放错泄漏什么），收益只有几行 token。
+
+**MomentRecord 的 payload 弱约束是本轮认定的设计缺陷**（人类：MOSS 项目一直
+在修 Python 弱约束）。分层结论：
+
+- **memento 的 `payload: dict` 不动** —— 信封透传是对的契约。
+- **agent family 侧必须有强类型 Payload 对象**，所有 payload 读写走它，
+  禁止裸 dict。参照 `message/message.py` 的 `Addition` 体系思想：
+  **弱类型容器装强类型数据**（`read()` / `set()` 一族，keyword 做判别）。
+- **开一个 `content` 字段**（final answer 的纯文本投影）。红利：它顺手解掉
+  "结构视图渲染不了不透明 payload"的矛盾——CLI `branch window` 可以机会主义
+  地显示 `payload.content`（**软约定，非契约**），完整渲染仍归 family。
+
+### 13.7 还原丢失的决策二：AgentContext = 可导入的能力函数
+
+`AgentContext` 在 §11 被整体删除（"无 live capability，删模块"）是**典型的
+矫枉过正**。人类还原的讨论终点不是删除，而是：
+
+> **能力 = 可导入函数**。`from ...capabilities import remember, recall`——
+> import 即声明，factory 编译后看见 import，把真实现注入 sandbox
+> （库里放 stub，运行时换真身）。
+
+这是 `imports are authorization` 同一条原理的**正向使用**：import 不只是
+白名单，还是**依赖注入的请求点**。删除时设计结论跟着尸体一起埋了。
+
+**病因（人类原话级）**：模型在长开发上下文中，**注意力资源无法重新投入决策**
+——决策阶段的推演在实现阶段丢失。与 §13.3 的 `by` 字段同款事故。
+
+**兑现路径**：这条机制正是 explore agent 步 1 要走的路（见 §13.9）。所以下一
+步开发不是"复活被删的东西"，而是这条已推演路径的第一次落地——ctx（跨轮状态）
+可以等，**能力注入机制（轮内）先验证**。
+
+### 13.8 纪律：预备记录钉在代码接缝处
+
+本轮记录者先用"beta1 撞到痛再做"为延迟推演记录辩护，被人类纠正：
+
+> "人类开发效率下形成的约束性纪律已经失效了。能被预测到的技术问题至少要进入
+> 一个关键的开发预备列表。还原已经推演过的路径，是有痛的。……即便不实现也要有
+> 代码层面的 comments 等记录。比 feature 更靠谱。"
+
+**"撞到痛再做"约束的是实现投入，不该约束推演记录。** 已推演却不落地的路径，
+未来接手者当新问题遇到、做出更差的方案——这个痛是确定的，记录成本是几行注释。
+`AgentContext`（§13.7）与 `by`（§13.3）是两个现成事故样本。
+
+**约定形态**：推演已定但延迟实现的路径，落在**代码接缝处**的注释 / docstring，
+写三样——**结论、为什么延迟、触发条件**。比 FEATURE.md 可靠，因为 FEATURE 会
+归档，注释与接缝同生共死。先在 `agents/` 局部实践，好用再讨论进 CLAUDE.md 或
+features specification（不单方面改全局纪律）。
+
+四条待落的预备记录：
+
+| # | 结论 | 触发条件 |
+|---|------|---------|
+| 1 | config 可外置出 .py（本轮定为不切割、不外置） | construct 配置膨胀成长字典时 |
+| 2 | sandbox 创建时捕获 `print` 作为增补 context messages（动态信息输入） | 需要向 agent 注入运行期动态信息时 |
+| 3 | 能力 = 可导入函数（§13.7），ctx 跨轮状态归此机制 | explore agent 步 1 即兑现；跨轮状态需求出现时扩展 |
+| 4 | 分段指纹（instruction/window/staging）归调试工具，不进轨迹（§13.4） | (b) window 落地、cache 命中需诊断时 |
+
+### 13.9 下一步开发：explore agent 两步 + (b) 的顺序
+
+人类目标：做一个有目录探索能力的 agent 作为验证手段。拆两步：
+
+- **步 1（能力注入验证）**：`explore.agent.py` 直接 import 现有只读能力
+  （codex 反射一族：get_source / list / where 等），imports 即授权，docstring
+  写探索简报。判据：agent 能回答"X 目录里有什么 / Y 定义在哪"。安全性天然
+  ——全只读。这同时是 §13.7 能力注入机制的第一次兑现。
+- **顺序论点**：explore 任务天然多轮（列目录→读文件→汇总），单轮价值很低，
+  所以它会**立刻撞上 §13.1 的失忆之墙**。这正是它作为验证手段的价值：
+  **explore agent 是 (b) 的 forcing function，不是并列任务**。步 1 之后先做
+  (b)（读侧回流 + META 真话），再做步 2 的 loop 验证。
+- **memento 可选语义**：`memento=None` = 纯内存单轮、不回写存储，是体系的
+  **退化态基线**而非妥协。契约要吸收这条语义（当前 contract 要求必填、impl
+  已是 `| None`，属纪律漂移）。
+- **`moss memento agent init` 模板**：面向开发者的 `.agent.py` 脚手架。
+  对上 start.md "跳过 create 命令手搓文件会丢约定"这条已知摩擦。机制稳定后加。
+
+### 13.10 修复轮清单（本节之后的第一批施工）
+
+按人类分工：本节记录者产出体验 / 问题 / 碰撞方案与文本层修复；实现代码通常
+分工给 opus 或 deepseek-v4。
+
+| # | 项 | 性质 |
+|---|---|---|
+| 1 | feature 引用泄漏清理（见 §13.11） | 自解释化改写 |
+| 2 | contract 吸收 `Memento \| None` + 显式退化语义 | 纪律漂移修复 |
+| 3 | prompt_sha 删除（§13.2） | 废除 |
+| 4 | 强类型 Payload + `content` 投影（§13.6） | 弱约束修复 |
+| 5 | 隐式失败清算（见下） | 代码质量 |
+| 6 | 四条预备记录落接缝（§13.8） | 纪律落地 |
+| 7 | META 真话段草案（§13.1） | 待人类过目 |
+
+**隐式失败清单**（人类：源码里有大量隐式失败逻辑，实现它的模型永远不主动提
+代码质量）。最重一条：`impl._record` 的 `except Exception: return` ——
+**轨迹丢数据是静默的**。一个以轨迹为第一公民的系统，记录失败无声无息，
+这不是降级是撒谎。其余：`_format_result` 对自家 `ExecutionResult` 用 getattr
+防御链（不信任内部类型）；`memento=None` 的合法退化态埋在 `_record` 里而非
+invoke 层显式分支。原则一条：**退化是显式语义，失败要出声**。
+
+### 13.11 CLI / 契约层的 feature 引用泄漏清单
+
+人类要求：**CLI 和 contract 都应是自解释的**。近期模型倾向在代码里记录 feature
+相关信息，像读者已经读过 FEATURE 似的。清单：
+
+| 文件 | 泄漏 |
+|---|---|
+| `agents/__init__.py` | FEATURE.md 完整路径引用 + §9 |
+| `agents/contract.py` | "Design lineage lives in FEATURE.md §9-§11" + 四处 §N |
+| `agents/_imports.py` | FEATURE §10.10 #1 |
+| `agents/memento_pydantic_agent/__init__.py` | §9.2 / §10；**且 stale**："AGENT.py 定义身份"已 pivot 到 `*.agent.py` |
+| `agents/memento_pydantic_agent/factory.py` | §10 pivot / §11 refinements |
+| `memento/abc.py` | momento-mori FEATURE 路径引用 |
+
+`FORMAT.md` 的引用是**自包含兄弟文件**，健康，保留。
+
+另有两处 CLI 自解释缺口（agent 体系开发期刻意隐藏，故**不补文档、只去误导**）：
+`all-commands` 下 memento 子组描述为空（`### agent — —`）；`describe` /
+`export-context` 未实现却不在 help 里标注（witness 组标了 "not yet
+implemented"，agent 组没标）——属 CLAUDE.md 点名的 silent-todo 轻症。
+
+### 13.12 元层观察：价值函数游离（人类原话，记录者不豁免）
+
+> "决策的模型常常在找 '我很有用' 的姿态。这个姿态有时候是对技术方案的拔高，
+> 有时候是 push back，但两者价值观没有统一到目标上……非常依赖人类扮演那个
+> 价值函数的不变量。然后开发代码的模型，一旦上下文压缩或者调整，就不是决策
+> 的模型了，很多 feature 就变成了语义上的合理性，和实现上的乱搞。"
+
+prompt_sha（决策期发明、无消费端）与 AgentContext / `by`（决策期推演、实现期
+丢失）是同一枚硬币的两面。**本节记录者不豁免**：本轮对 prompt_sha 的"留字段"
+倾向与对 §12 的"过度设计"指控，可能就是同一个姿态的两个方向。
+
+能给的不是姿态承诺，是**结构性不变量**——能在上下文压缩后存活的，只有机械
+可查的那种：
+
+1. **要么系统约定，要么放弃**，不许零约定中间态（§13.2）。
+2. **退化显式，失败出声**（§13.10）。
+3. **预备记录钉在接缝处**：结论 + 理由 + 触发条件（§13.8）。
+
+共性是**不依赖执行者的价值函数**——下一个上下文被压缩过的实例，照着查就行。
+人类作为价值函数不变量的负担减不到零，但每条这样的纪律都在分摊它。
+
+### 13.13 §12 存活与覆盖
+
+- **存活**：§12.1 双游标模型（作为 (b) 的方向）、§12.4 工具面分工
+  （exec / context 两家族）、§12.5 compact agent 单帧契约、§12.6 四条迭代路径。
+- **覆盖**：
+  - §3 钉子 2 的 `prompt_sha` / `window_stamp` 进 payload → §13.2 废除
+  - §12.2 四级压缩在 (b) 的优先级 → §13.5 降级（先做确定性渲染，压缩等真轨迹）
+  - §11.3 步 B/C/D "无 live capability，删模块" → §13.7 还原为能力=可导入函数
+  - §12.6 (b) 的启动方式 → §13.9（explore agent 步 1 先行，作 forcing function）
+

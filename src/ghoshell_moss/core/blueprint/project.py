@@ -23,7 +23,6 @@ from ghoshell_moss.core.ctml.versions import (
     search_version_file_in_dir, default_moss_ctml_meta_instruction_directory,
     get_version_from_filename, CTML_VERSION,
 )
-import dotenv
 import sys
 import logging
 
@@ -425,6 +424,7 @@ class HostMode(ABC):
         setattr(self, '_bootstrapped', True)
         env_file = Environment.env_file(self.workspace_dir)
         if env_file.exists():
+            import dotenv
             # !!! mode 的环境变量, 会做覆盖
             dotenv.load_dotenv(env_file, override=True)
 
@@ -577,6 +577,7 @@ class Project(ABC):
         setattr(self, '_bootstrapped', True)
         env_file = Environment.env_file(self.workspace_dir)
         if env_file.exists():
+            import dotenv
             # !! 全局环境变量只做补充, 不做覆盖.
             dotenv.load_dotenv(env_file, override=False)
 

@@ -5,9 +5,9 @@ import logging
 
 import pytest
 
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 
-depend_zenoh()
+depend_matrix()
 import zenoh
 
 from ghoshell_moss.tools.zenoh_helper import ZenohLivenessListener

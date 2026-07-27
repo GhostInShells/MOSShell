@@ -2,6 +2,9 @@ import queue
 import threading
 from typing import Optional
 
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 import miniaudio
 import numpy as np
 from ghoshell_common.contracts import LoggerItf

@@ -25,7 +25,7 @@ updated: '2026-06-01'
 当前耦合导致：安装 `[host]` 就必须拉 pydantic-ai 及其传递依赖。
 
 同时，`depends.py` 的 install hint 有维护债：
-- `depend_zenoh()` / `depend_circus()` 提示 `[matrix]`（实际是 `[host]`）
+- `depend_matrix()` / `depend_circus()` 提示 `[matrix]`（实际是 `[host]`）
 - `depend_cli()` 提示 `[cli`（括号缺失，且 cli 不是 extras group）
 - `depend_pydantic_ai()` 提示 `[host]`（应改为 `[ghosts]`）
 
@@ -74,7 +74,7 @@ updated: '2026-06-01'
 
 | 函数 | 旧 hint | 新 hint |
 |------|---------|---------|
-| `depend_zenoh()` | `[matrix]` | `[host]` |
+| `depend_matrix()` | `[matrix]` | `[host]` |
 | `depend_circus()` | `[matrix]` | `[host]` |
 | `depend_cli()` | `[cli` | 删掉（typer 已在 core deps） |
 | `depend_pydantic_ai()` | `[host]` | `[ghosts]` |
