@@ -1,4 +1,4 @@
-"""moss-run-ghost — 启动 Ghost TUI 交互终端."""
+"""moss-ghost — launch a Ghost interactive terminal."""
 
 import click
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -8,13 +8,15 @@ from ghoshell_moss.host.tui_entries.ghost_ui import GhostTUI
 
 @click.command()
 @click.argument("ghost", required=False, default=None)
-@click.option("--mode", default="default", help="MOSS 运行模式.")
-@click.option("--scope", default="default", help="网络通讯子空间 (network scope).")
-@click.option("--network", default="local", help="网络驱动 (network driver).")
+@click.option("--mode", default="default", help="MOSS runtime mode.")
+@click.option("--scope", default="default", help="Network scope for session isolation.")
+@click.option("--network", default="local", help="Network driver.")
 def ghost_run_main(ghost: str | None, mode: str, scope: str, network: str):
-    """启动 Ghost TUI 交互终端 — 与 Ghost 实时对话。
+    """Launch a Ghost interactive terminal — stream logos, inspect output,
+    operate the SafeMode approval gate. Meta-control surface for Ghost
+    development; real Ghost interaction lives in the nodes system.
 
-    GHOST: 要启动的 Ghost 名称。不提供时列出所有可用的 Ghost。
+    GHOST: Ghost name to launch. Without it, lists all available Ghosts.
     """
     env = Environment(mode=mode, ghost=ghost, scope=scope, network=network)
     env.seal()
@@ -36,7 +38,7 @@ def ghost_run_main(ghost: str | None, mode: str, scope: str, network: str):
         for name, meta in available.items():
             click.echo(f"  {click.style(name, fg='green', bold=True)} — {meta.prototype()}")
             click.echo(f"    {meta.description().split(chr(10))[0][:100]}")
-        click.echo(f"\nRun: {click.style('moss-run-ghost <name>', fg='cyan')}")
+        click.echo(f"\nRun: {click.style('moss-ghost <name>', fg='cyan')}")
         return
 
     if ghost not in available:

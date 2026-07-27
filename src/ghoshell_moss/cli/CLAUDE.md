@@ -18,14 +18,14 @@
 
 ```toml
 moss       = "ghoshell_moss.cli:main_entry"
-moss-cli   = "ghoshell_moss.cli.cli_controller:main"
-moss-repl  = "ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main"
-moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
+moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
+moss-mcp   = 'ghoshell_moss.cli.moss_as_mcp:main'
 ```
 
-安装后 (`uv sync --active --all-extras`), 这些命令可在 `.venv/bin/` 下找到四个可执行文件。
+安装后 (`uv sync --active --all-extras`), 这些命令可在 `.venv/bin/` 下找到可执行文件。
 
-## 四大入口点
+## 三大交互入口
 
 ### 1. `moss` — 纯命令行工具
 
@@ -46,27 +46,21 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
   - `help [commands...]`: 批量获取命令帮助。无参数显示根帮助, 带参数按路径解析 (如 `moss --ai help codex get-interface codex concepts`)
   - `all-commands`: 一次性列出所有命令树。`--depth 1/2/3` 控制深度, `--group <name>` 限定子树。设计目标: 将 AI 的 CLI 发现从 40+ 轮压缩到 2 轮
 
-### 2. `moss-cli` — 面向人类使用的交互式 Shell
-
-- **入口**: `cli_controller.py` → `main_entry()`
-- **框架**: Click (装饰器风格) + prompt_toolkit + Typer
-- **用途**: 人类工程师的交互式 REPL, 带 Tab 自动补完
-- **核心组件**:
-  - `TyperAppCompleter`: 基于 Typer/Click 命令树自动生成补全, 支持 `/` (命令) 和 `?` (帮助) 前缀
-  - `TyperAppController`: 异步 REPL 循环, 带 bottom toolbar 显示当前模式
-  - `interactive_config()`: 启动时的交互式模式选择和 session scope 配置
-- **执行方式**: 每个命令通过 `subprocess.run()` 在新的子进程中执行 (`python -m typer ghoshell_moss.cli.main run ...`), 注入 MOSS 环境变量。这意味着它实际调用了 `moss` 命令
-- **补全逻辑**: 递归解析 Typer → Click Group 的命令树, 逐层匹配
-
-### 3. `moss-repl` — MOSS Runtime 人类交互界面
+### 2. `moss-shell` — Shell 运行时调试 TUI
 
 - **入口**: `moss_debug_repl.py` → `moss_debug_repl_main()`
 - **框架**: Click (简单参数解析) + Textual/prompt_toolkit
-- **用途**: 启动完整 MOSS Host Runtime, 进入 TUI 调试终端
+- **用途**: 启动完整 MOSS Host Runtime (不含 Ghost), 进入 TUI 调试终端。人类在给模型 CTML 之前先在这里手动测试
 - **流程**: Environment.discover() → 设置 mode/scope → Host() → MossRuntimeTUI.run()
-- 这是最完整的运行时入口, mode/scope 均有默认值
+- Ghost 运行前调试 Shell 层的入口: 测 CTML、检 channels/matrix/manifests
 
-### 4. `moss-as-mcp` — MOSS Runtime 作为 MCP Server
+### 3. `moss-ghost` — Ghost 交互 TUI
+
+- **入口**: `ghost_run.py` → `ghost_run_main()`
+- **框架**: Click + GhostTUI (Textual/prompt_toolkit)
+- **用途**: 启动一个 Ghost 并进入 TUI 交互终端。Logos 流式输出、output 结构化消息、SafeMode 审批闸口。Ghost 真正的交互界面在 nodes 体系里, TUI 是元控制面
+
+### 4. `moss-mcp` — MOSS Runtime 作为 MCP Server
 
 - **入口**: `moss_as_mcp.py` → `main()`
 - **框架**: Click + FastMCP
@@ -110,7 +104,7 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
 ### 框架与风格
 
 1. **子命令用 Typer**, 不是 Click。每个文件是一个独立的 `typer.Typer()` instance, 在 `main.py` 中用 `app.add_typer()` 挂载
-2. **入口点用 Click**。`moss-cli`, `moss-repl`, `moss-as-mcp` 这三个独立进程不需要 Typer 的 tree handling, 用 Click 参数解析即可
+2. **入口点用 Click**。`moss-shell`, `moss-ghost`, `moss-mcp` 这三个独立进程不需要 Typer 的 tree handling, 用 Click 参数解析即可
 3. **输出统一走 `utils.py`**:
    - 表格用 `print_simple_table()`
    - 面板用 `print_simple_panel()` 或 `print_panel()`
@@ -153,6 +147,6 @@ moss-as-mcp = "ghoshell_moss.cli.moss_as_mcp:main"
 ## 架构小贴士
 
 - `Environment.discover()` 在多个命令中独立调用 — 这是设计意图, 因为各命令可能在不同 mode 或 scope 下独立运行
-- `moss-cli` 通过 subprocess 调用 `moss` 命令, 这种设计保证了隔离性: REPL 进程不加载业务代码, 避免内存泄漏和 import 冲突
+- `moss` CLI 子命令在独立的 Typer 子 app 中实现, 通过 `app.add_typer()` 挂载 — 隔离性好, 各子命令组可独立测试
 - `manifests_cli.py` 是最复杂的子命令组, 包含对 providers/topics/configs/channels/primitives/contracts/resources/ctml-versions 的完整自解释体系 — 这是 "code as prompt" 哲学的直接体现
-- `moss-as-mcp` 依赖 `fastmcp` 可选依赖 (`[project.optional-dependencies]` 中的 `mcp`), 未安装时无法运行
+- `moss-mcp` 依赖 `fastmcp` 可选依赖 (`[project.optional-dependencies]` 中的 `host`), 未安装时无法运行

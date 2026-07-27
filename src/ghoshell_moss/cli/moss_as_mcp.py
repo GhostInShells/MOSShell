@@ -280,7 +280,9 @@ def main_entry(
 @click.option('--port', default=20773, help='SSE 服务端口 (仅在 transport=sse 时生效)')
 @click.option('--server-name', default='MOSS-Toolset-Server', help='MCP 服务名称')
 def main(mode, scope, network, transport, host, port, server_name):
-    """MOSS MCP 服务启动程序"""
+    """Expose MOSS runtime as an MCP server for AI coding platforms (Claude Code,
+    Gemini CLI, etc.). Registers CTML execution and runtime introspection as
+    MCP tools."""
 
     # 传递给你的 main_entry
     main_entry(

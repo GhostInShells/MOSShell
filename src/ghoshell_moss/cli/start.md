@@ -84,10 +84,9 @@ Four commands are built for human interaction:
 
 | Command | What it does |
 |---------|-------------|
-| `moss-cli` | Interactive shell with tab completion — the daily driver |
-| `moss-repl` | Full runtime TUI — debug and observe the system live |
-| `moss-run-ghost <name>` | Start a ghost and talk to it in the terminal |
-| `moss-as-mcp` | Expose MOSS as an MCP server for AI coding tools |
+| `moss-shell` | Shell runtime debugger — test CTML and inspect channels before a Ghost runs |
+| `moss-ghost <name>` | Launch a Ghost interactive terminal — logos stream, SafeMode gate |
+| `moss-mcp` | Expose MOSS runtime as an MCP server for AI coding tools |
 
 The best practice: give your coding agent `moss start` and let the model
 self-drive exploration. The agent reads this document, discovers commands,
@@ -111,7 +110,7 @@ cp .moss/.env.example .moss/.env          # create your .env, add API keys
 Then launch MOSS as an MCP server and connect your coding agent:
 
 ```bash
-.venv/bin/moss-as-mcp                     # starts on default port 20773
+.venv/bin/moss-mcp                     # starts on default port 20773
 ```
 
 Configure Claude Code (or another agent) to connect to the MCP server.
@@ -279,7 +278,7 @@ moss project where
 ```
 
 Add MOSS to an existing project. Full Host + Matrix + Environment discovery.
-Expose capabilities via MCP (`moss-as-mcp`) or instantiate Host directly:
+Expose capabilities via MCP (`moss-mcp`) or instantiate Host directly:
 
 ```python
 from ghoshell_moss import MossHost
@@ -412,11 +411,11 @@ See `moss --ai all-commands` for the full surface.
 For every specific development task, use `moss howtos list` or
 `moss docs list` to find the minimum necessary knowledge entry point.
 
-**Typical development flow:** Launch MOSS via `moss-as-mcp` with a specific
+**Typical development flow:** Launch MOSS via `moss-mcp` with a specific
 mode, connect a coding agent (Claude Code, etc.) to the MCP server, and let
 the model develop cells within the workspace — providing channels for its own
 use and debugging through the MCP loop. The result can be experienced via
-`moss-run-ghost` or surfaced to other projects through the `moss codex
+`moss-ghost` or surfaced to other projects through the `moss codex
 blueprint host` API.
 
 MOSS is built for model-native development. The fundamental pattern: a

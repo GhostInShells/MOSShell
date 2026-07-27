@@ -35,8 +35,7 @@ class Host(MossHost):
     """MOSS 顶层入口的 concrete.
 
     显式构造姿态 (§UU-1 seal 判决 + 用户 2026-07 明示"host 不走 discover 而是走正常 init"):
-    - 入口点 (CLI callback / moss-as-mcp / moss-repl / tui) 负责构造 Environment(**cli_args)
-      + seal(), 然后 Host(env=env).
+    - Environment 由调用方构造 + seal() 后传入, Host 不负责参数收集.
     - 库直接使用 (Host()) 走 Environment.discover(bootstrap=True), 构造裸 env + seal.
     - 无 module 级单例, 无 Host.discover classmethod — 每次 Host(env=env) 是新实例.
       需要"全局唯一 host"语义时, 由调用方 (通常是 MossRuntime 或 GhostRuntime) 自持引用.
@@ -154,7 +153,7 @@ class Host(MossHost):
         # env.ghost_name 必须在 seal 前构造 Environment 时设置; 已 seal 后无路径
         # (Environment.set_ghost_name 已删, seal 是一次性跃迁). host 侧无法在
         # 已 seal env 上改 ghost_name — Ghost 归属由 env 构造时决定.
-        # (moss_as_mcp / moss-run-ghost 应通过 Environment(ghost=...) 传入)
+        # ghost_name 必须在 seal 前设置; Host 不负责补全.
         moss_runtime = self.run(run_shell=run_shell)
         return GhostRuntimeImpl(
             moss_runtime=moss_runtime,

@@ -127,7 +127,7 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
     """Ghost TUI — logos stream, output items, and shell debug.
 
     Usage: GhostTUI().run()
-    Start with ``moss-run-ghost <name>`` or configure via Environment.
+    Start with ``moss-ghost <name>`` or configure via Environment.
     """
 
     def __init__(self, host: MossHost | None = None):
