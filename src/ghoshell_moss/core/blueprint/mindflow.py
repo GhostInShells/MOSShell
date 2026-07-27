@@ -1,3 +1,5 @@
+"""Mindflow — perception, thought, and action arbitration for concurrent duplex state management."""
+
 from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any
 
 from typing_extensions import Self, Literal
@@ -15,9 +17,7 @@ import time
 import asyncio
 import enum
 
-"""
-Mindflow 架构设计. 解决 感知/执行/思考 三循环的全双工状态管理问题. 
-"""
+
 
 # 关于三循环:
 # 1. 思考循环: 模型接受信息, 思考并输出.

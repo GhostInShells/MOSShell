@@ -1,3 +1,5 @@
+"""Cross-process shared cache contract — KV storage, hash maps, distributed locks with TTL."""
+
 from __future__ import annotations
 
 import contextlib

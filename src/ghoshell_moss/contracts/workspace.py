@@ -1,3 +1,5 @@
+"""Workspace contract — file storage, resource management, and frontmatter I/O."""
+
 from abc import ABC, abstractmethod
 from typing import (
     Protocol, Union, Iterator, TypeVar, Optional,

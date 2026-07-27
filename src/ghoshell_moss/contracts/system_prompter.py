@@ -1,3 +1,5 @@
+"""System prompter contract — composable instruction tree for model agents."""
+
 from typing import Callable, Iterable
 from abc import ABC, abstractmethod
 

@@ -1,6 +1,6 @@
 ---
 title: MOSS Project Ground
-status: in_progress
+status: in-progress
 priority: P1
 created: 2026-07-23
 updated: 2026-07-25

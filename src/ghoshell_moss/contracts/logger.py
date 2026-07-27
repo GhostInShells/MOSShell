@@ -1,3 +1,5 @@
+"""Logging contract — workspace-aware logger provider and formatter utilities."""
+
 from typing import Iterable, Type
 
 from ghoshell_common.contracts import LoggerItf, config_logger_from_yaml
