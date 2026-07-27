@@ -1,5 +1,5 @@
 ---
-status: planning
+status: active
 period: 2026-07 ~ 2026-08
 delivery: v0.1.0
 ---

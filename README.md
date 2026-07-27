@@ -86,6 +86,17 @@ What the model sees:                  What the model outputs:
 
 Minimum knowledge entry points: `moss ctml read` (CTML syntax), `moss codex blueprint channel_builder` (building capabilities), `moss codex blueprint mindflow` (perception arbitration), `moss codex blueprint matrix` (process networking).
 
+## What You Can Do in Beta1
+
+Beta1 delivers the architectural foundation. What you can explore today:
+
+1. **Study MOSS's architectural approach** — is it yet another agent framework? What design decisions set it apart? Where can its ideas be borrowed?
+2. **Study CTML, Mindflow, and Shell** — how MOSS approaches real-time duplex interaction: streaming interpretation, concurrent perception arbitration, parallel command scheduling.
+3. **Understand the model-as-first-developer system** — how human–model collaboration is structured, how features track workstreams across sessions, and how the self-explaining system lets models independently explore and contribute.
+4. **Study specific technical implementations** — G1 humanoid robot integration, ReachiMini robotic arm, desktop GUI, and other integration paths.
+
+Turnkey application capabilities arrive with v0.1.0.
+
 ## Installation
 
 ```bash

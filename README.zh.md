@@ -84,6 +84,17 @@ MOSS 通过 CTML 技术构建智能模型的控制界面。一个人对机器人
 
 最小知识入口：`moss ctml read`（CTML 语法）、`moss codex blueprint channel_builder`（构建能力）、`moss codex blueprint mindflow`（感知仲裁）、`moss codex blueprint matrix`（进程组网）。
 
+## Beta1 可以做什么
+
+Beta1 交付的是架构基础。现在你可以：
+
+1. **调研 MOSS 的架构思路** — 它是 yet another agent framework 吗？设计决策的差异点在哪？哪些思路值得借鉴？
+2. **调研 CTML、Mindflow、Shell 等协议** — MOSS 解决实时双工交互的思路：流式解释调度、并发感知仲裁、并行命令调度。
+3. **理解模型第一公民的协作体系** — 人机协作如何结构化，features 体系如何跨会话追踪工作流，自解释系统如何让模型独立探索和参与开发。
+4. **调研具体技术实现路径** — G1 人形机器人集成、ReachiMini 机械臂、Desktop GUI 等整合方式与特点。
+
+开箱应用能力在 v0.1.0 正式版提供。
+
 ## 安装
 
 ```bash
