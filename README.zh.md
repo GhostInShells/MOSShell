@@ -21,7 +21,7 @@ MOSS 是一个**智能模型作为第一开发者**的项目。智能模型不�
 
 **并发多源感知。** 视觉、听觉、触觉、系统事件作为独立信号流同时涌入。不轮询、不排队、不序列化。[Mindflow](src/ghoshell_moss/core/blueprint/mindflow.py) 做并行仲裁——信号竞争注意力，Ghost 在任何时刻看到的是多源信号汇合后的关键帧。
 
-**流式解释调度。** [CTML](src/ghoshell_moss/core/ctml/) 边生成边解析边执行——模型生成 token 的过程本身就是时间轴。不是"生成完再执行"，而是"生成即执行"。时间是语法第一公民。多轨命令并行输出，包括物理躯体控制。
+**流式解释调度。** [CTML](src/ghoshell_moss/core/ctml/prompts/v1_0_0.en.md) 边生成边解析边执行——模型生成 token 的过程本身就是时间轴。不是"生成完再执行"，而是"生成即执行"。时间是语法第一公民。多轨命令并行输出，包括物理躯体控制。
 
 **运行时自迭代。** 有状态运行时：模型在运行中创建 [Cell](src/ghoshell_moss/core/blueprint/cell.py)、修改 [Channel](src/ghoshell_moss/core/blueprint/channel_builder.py)、演进自身能力——不停机、不重启。Cell 是独立进程，崩溃不拖垮主进程。文件系统约定替代配置——放到对的位置，自动发现，自动注入。
 

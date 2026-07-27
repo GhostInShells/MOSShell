@@ -24,7 +24,7 @@ The main body of human–model collaboration lives in [`.ai_partners/`](.ai_part
 
 **Concurrent multi-source perception.** Vision, audio, touch, system events — each arrives as an independent signal stream, simultaneously. No polling. No queuing. No serialization. [Mindflow](src/ghoshell_moss/core/blueprint/mindflow.py) arbitrates them in parallel — signals compete for attention, and Ghost sees keyframes fused from multi-source signals at every moment.
 
-**Streaming interpretation and scheduling.** [CTML](src/ghoshell_moss/core/ctml/) is parsed and dispatched as tokens stream. Not "generate first, execute later" — generation IS execution. Time is a first-class citizen of the syntax. Multiple command tracks execute in parallel, including physical body control.
+**Streaming interpretation and scheduling.** [CTML](src/ghoshell_moss/core/ctml/prompts/v1_0_0.en.md) is parsed and dispatched as tokens stream. Not "generate first, execute later" — generation IS execution. Time is a first-class citizen of the syntax. Multiple command tracks execute in parallel, including physical body control.
 
 **Runtime self-iteration.** A stateful runtime: models create [Cells](src/ghoshell_moss/core/blueprint/cell.py), modify [Channels](src/ghoshell_moss/core/blueprint/channel_builder.py), and evolve their own capabilities — without stopping, without restarting. Cells are independent processes; a crash in one never takes down the host. Filesystem conventions replace configuration — put things in the right place, they are auto-discovered and auto-injected.
 
