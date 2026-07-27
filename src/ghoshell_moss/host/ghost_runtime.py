@@ -380,6 +380,22 @@ class GhostRuntimeImpl(GhostRuntime):
             # SafeMode: 生成开始时判定一次 (决策 2), 决定本轮是否 gate.
             # 未开启时零开销 — safe_mode() 首次调用才实例化, 且 gated_mode 分支跳过.
             gated_mode = self._safe_mode is not None and self._safe_mode.is_enabled()
+            if gated_mode:
+                # 让 ghost 在 articulate 前就知道自己在 safemode 下 —— 否则 ghost
+                # 只能靠下一帧的 <safemode-rejection> percept 猜到"上一轮我说的
+                # 被拒了". 身份连续性依赖 ghost 感知当前语境.
+                moment.with_perspective(
+                    'safemode',
+                    [Message.new().with_content(
+                        "<safemode-active>\n"
+                        "Gate active on articulate→action path. Your logos is "
+                        "reviewed by a human before dispatch. Rejected logos will "
+                        "NOT be executed by the body; only your utterance stays "
+                        "in your own history. Feedback arrives next frame as "
+                        "<safemode-approval-note> or <safemode-rejection>.\n"
+                        "</safemode-active>"
+                    )],
+                )
             try:
                 async for delta in ghost.articulate(articulator):
                     if not gated_mode:
@@ -389,23 +405,42 @@ class GhostRuntimeImpl(GhostRuntime):
                 if gated_mode:
                     # 提交完整 logos 给 SafeMode gate, 等 TUI 裁决.
                     # 挂到 articulator.create_task 上, abort 时 task 联动取消 (决策 4).
+                    # asyncio.wrap_future 返回 Future 而非 coroutine, 需再包一层
+                    # async 函数才能喂给 create_task (uvloop 严格要求 coroutine).
                     verdict_future = self._safe_mode.submit("".join(logos_parts))
-                    verdict = await articulator.create_task(
-                        asyncio.wrap_future(verdict_future)
-                    )
+
+                    async def _await_gate_verdict():
+                        return await asyncio.wrap_future(verdict_future)
+
+                    verdict = await articulator.create_task(_await_gate_verdict())
                     if verdict.kind == 'approved':
                         # 回放 buffered logos → 走原来的 send_nowait 路径.
                         for delta in logos_parts:
                             articulator.send_nowait(delta)
+                        if verdict.message:
+                            # approve-with-note: 非 raise 版 observe, 避免把 raise
+                            # 混进 "要保留 logos 完整执行" 的路径; note 走 attention
+                            # 内观通道, 下一帧作为 percept.
+                            articulator.observe(
+                                "<safemode-approval-note>\n"
+                                "Previous logos approved and executed. Human note:\n"
+                                f"{verdict.message}\n"
+                                "</safemode-approval-note>"
+                            )
                     elif verdict.kind == 'rejected':
-                        # 否决走 raise_observe: attention 起下一帧, reason 进 percepts.
-                        # 不 send_nowait — 空流由 __aexit__ 收 (依赖 Phase 0 空流 bug 修).
-                        articulator.raise_observe(verdict.reason)
+                        # 否决反馈: 不回传被拒 logos (ghost 自己的 history 已有),
+                        # 只标记事实 + 理由, 靠 ghost 自身消化.
+                        articulator.observe(
+                            "<safemode-rejection>\n"
+                            "Previous logos rejected by human review; body did not execute.\n"
+                            f"Reason: {verdict.message}\n"
+                            "</safemode-rejection>"
+                        )
                     # cancelled: abort 路径, 什么都不做, articulator.__aexit__ 自然收.
             except ObserveError:
-                # 预期路径 (决策 5): safemode reject → raise_observe.
-                # 不 log error / session.output('error') — attention._catch 把
-                # messages 拼进 _observe_messages, 下一帧作为 percepts.
+                # ghost.articulate 内部 raise_observe (自我引发下一帧观察). 不 log
+                # error / session.output('error') — attention._catch 把 messages
+                # 拼进 _observe_messages, 下一帧作为 percepts.
                 raise
             except Exception as e:
                 error = e
