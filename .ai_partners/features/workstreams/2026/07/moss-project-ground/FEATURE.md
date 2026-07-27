@@ -1,9 +1,9 @@
 ---
 title: MOSS Project Ground
-status: draft
+status: in-progress
 priority: P1
 created: 2026-07-23
-updated: 2026-07-23
+updated: 2026-07-25
 depends: [ghost-ground]
 milestone: 0.1.0
 description: >-
@@ -85,6 +85,56 @@ Project ground 是额外的发现层, 不替代它们. 它在模型通过 MCP �
   ground 是空间化补充.
 - **与 ghost_home GroundSet 分离** — project ground 是 "我在看什么项目",
   ghost_home ground 是 "我是谁". 两套 GROUND.md, 两个 GroundSet.
+- **[2026-07-25] bash pin → exec pin (授权收窄)** —
+  `run: <inline shell>` 是标准授权泄漏, GROUND.md 变 RCE 载体.
+  改为 `exec` verb: `ref` 指向场根子树内可执行文件, 类比 `.zshrc` 函数.
+  绝对路径 / `../` / 缺 `+x` 一律 `[missing]`. shebang 决定解释器.
+  执行 cwd = `$GROUND`, env 注入 `GROUND` + `CWD`. 场作者背书 = Makefile 级信任.
+  arguments 极简: `{ref, timeout, budget}`, 无 `at` (executor 自知家在场根),
+  无 `run` (禁止内联).
+- **[2026-07-25] Walk 模式硬编码 ls 删除** —
+  同一 pin 通过 `$CWD` 锚在 field-root / walk 两态给出不同视图,
+  场教的注视习惯由 pin 承担, 不由 harness 塞入. features/GROUND.md
+  dogfood 了 `here: ls $CWD` + `focus: file $CWD/FEATURE.md` 的模式 —
+  walk 到 workstream 时 focus 自动展开 FEATURE.md 内容, cwd 变化天然给出不同视图.
+- **[2026-07-25] `resolve_path` 裸锚点合法化** —
+  bare `$CWD` / `$GROUND` / `$HOME` 从"报错"改为"指锚点自身",
+  让 `path: $CWD` 声明的 ls 在场根 (cwd==ground) 时也可求值.
+  `$CWDfoo` 这类粘着后缀改报 "anchor suffix ambiguous" (歧义显式拒绝).
+- **[2026-07-25] SPEC 去版本号** —
+  `v1.1.0-draft` 是补丁式迭代产物, 未发布前的版本号是幻觉. 改为
+  `pre-release (YYYY-MM-DD snapshot)`, 待真正稳定后再刻 v1.
+
+## L2 语义修正 (2026-07-25)
+
+L0 / L1 / L2 的正确语义 (由 human 校准):
+
+- **L0**: 锚定单个认知场 (类 skills)
+- **L1**: 能发现认知场 (ground 发现 ground) — 当前根 GROUND.md 的
+  `fields: frontmatter $GROUND/**/GROUND.md` pin 就是这一层
+- **L2**: 能用来构建认知场 (`.grounds/` 模板 + 元约定)
+
+后续 L2 → L1 递归即无穷阶, **二阶就是无穷**. 三者实现技术上已经统一
+(pin + GROUND.md + 相对路径), 不需要独立机制.
+
+Ground 的深层框架: **ghost 用它构建自己的认知自留地**. Spec 层保持中立
+(不写 "for ghost"), 但设计倾向服务于 ghost 主权. 主权泄漏的根本形态
+不是 RCE, 而是 "foreign body 被载入 ghost 认知" — spec 责任是让主权
+可审计, 不是防御主权泄漏, 决策层在 ghost 那里.
+
+## 剪枝路径 (2026-07-25)
+
+打磨过程中每次收敛都靠人类砍掉我提出的加法, 记录几处典型:
+
+- 提议 `where: root/leaves/any` filter 控制 pin 可见性 → 撤回. 空 pin
+  应当合法, filter 是 harness 味.
+- 提议 `moss ground path` 新命令做定位查询 → 撤回. 三态已够密, 加命令
+  是堆叠.
+- 提议 `.grounds/executors/` 专用目录 + 命名约定 → 撤回. executor 就是
+  场作者放的普通文件, `ref` 相对路径即可, 无新目录无新约定.
+
+原则: **变简单比变复杂难**. 每一次加法都可能是失去主权. 极简语义表面
+是 ground 面对未来发布的真实门槛.
 
 ## Implementation Notes
 

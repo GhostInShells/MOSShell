@@ -6,6 +6,9 @@ Atom 原型专用，仅处理 text + base64 image 两种 content type.
 
 from typing import Iterable
 
+from ghoshell_moss.depends import depend_ghost
+
+depend_ghost()
 from ghoshell_moss.message import Message, Text, Base64Image
 from pydantic_ai.messages import ModelRequest, ModelResponse
 from pydantic_ai import UserContent, TextContent, ImageUrl

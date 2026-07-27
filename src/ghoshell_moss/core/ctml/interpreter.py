@@ -64,6 +64,7 @@ class CTMLInterpreter(Interpreter):
             moss_static: str | None = None,
             moss_dynamic: list[Message] | None = None,
             task_context: dict[str, Any] | None = None,
+            on_close_callback: Optional[Callable[['CTMLInterpreter'], None]] = None,
     ):
         """
         :param commands: 所有 interpreter 可以使用的命令. key 是 channel path, value 是这个 channel 可以用的 commands.
@@ -79,6 +80,9 @@ class CTMLInterpreter(Interpreter):
         :param clear_after_exit: clear undone tasks after exit.
         :param moss_static: 静态讯息.
         :param moss_dynamic: 动态生成的讯息.
+        :param on_close_callback: 在 close() 完成清理后 fire 一次. 用于 shell 的 Tracer 机制
+            感知 interpreter 生命周期的 exit 取值点. 保证 fire 时 interpreter 是稳态
+            (_closed=True, interpretation.done=True, 未完成 tasks 已 fail). 幂等 close 只 fire 一次.
         """
         # 生成 stream id.
         self._id = stream_id or unique_id()
@@ -154,6 +158,7 @@ class CTMLInterpreter(Interpreter):
         self._task_sent_done = False
         self._parsing_loop_done = asyncio.Event()  # 标记解析完成.
         self._destroyed = False
+        self._on_close_callback: Optional[Callable[['CTMLInterpreter'], None]] = on_close_callback
         CTMLInterpreter.instances_count += 1
 
     def _set_interpreter_error(self, error: InterpretError) -> None:
@@ -509,6 +514,14 @@ class CTMLInterpreter(Interpreter):
             self._interpretation.exception = str(self._parsing_exception)
         self._interpretation.done = True
         r = self._interpretation
+        # Exit 取值点: 到达这里时 interpreter 是稳态 (closed=True, interpretation.done=True,
+        # 未完成 tasks 已 fail). fire 一次给 shell 的 Tracer 机制. try/except 保护 —
+        # 转交职责不做重级防御, 但 callback 挂了不能阻塞 close 返回.
+        if self._on_close_callback is not None:
+            try:
+                self._on_close_callback(self)
+            except Exception:
+                self._logger.exception("%s on_close_callback failed", self._log_prefix)
         return r
 
     def is_stopped(self) -> bool:

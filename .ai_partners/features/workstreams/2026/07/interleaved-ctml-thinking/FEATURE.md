@@ -1,14 +1,14 @@
 ---
-title: Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
-status: draft
-priority: P1
 created: 2026-07-23
-updated: 2026-07-23
 depends: []
-milestone:
-description: >-
-  约定 interleaved thinking 过程中模型输出 CTML 控制外部世界的交互范式：
-  边想边铺执行轨、observe 只看执行游标、wait/interrupt 做思维剪枝。
+description: 约定 interleaved thinking 过程中模型输出 CTML 控制外部世界的交互范式： 边想边铺执行轨、observe 只看执行游标、wait/interrupt
+  做思维剪枝。
+milestone: null
+priority: P1
+status: completed
+status_note: 5-verb tool surface landed and blind-tested via MCP
+title: Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
+updated: '2026-07-25'
 ---
 
 # Interleaved CTML Thinking — 交错思考流中的 CTML 控制范式
@@ -279,26 +279,143 @@ managing_tasks/observe，无需新抽象。三动作接口值不值得固化，�
 兼容两类错误）→ ② fail-closed 写拒 → ③ MCP 面对齐。**先 ① 再 ②**：否则 fail-closed 拦下失败后
 模型仍看不到 errmsg，联锁退化成「不让过又不说为什么」。
 
-## K10（存疑，未决）：跨-interpreter 历史丢失 —— MCP 特有，需人类拍板
+## K10 落地：跨-interpreter 历史丢失 —— 已选「标准化」路径 (2026-07-25)
 
-**这不是建议，是一个被 MCP 缝合暴露出的真实机制缺口。** append 模式下每次 `execute_ctml` 都新建
-一个 interpreter 并在后台 create task。场景：模型连续 append，**第二次 append 恰好发生在第一次的
-task 已执行完之后**——第一次那个 interpreter 的生命周期已移交，它承载的**已完成结果被静默丢弃**。
-连 `ObserveError` / critical failure 都可能因此永远不可感知（结果所在的 interpreter 没了）。
+**决策**：走「标准化」——MOSShell 原生一个跨-interpreter 的 shell 观察器,
+生命周期独立于单个 interpreter, 无消费不堆砌。这就是 K8「水位线挂 buffer 不挂
+interpreter」缺的那个 buffer 的正式形态与归属。
 
-- **根因**：MCP 把「一次工具调用 = 一个 interpreter 生命周期」缝了出来，于是 append 流实际跨越了
-  多个 interpreter。历史节点的结果绑在各自 interpreter 上，移交即丢。
-- **ghost runtime 没有这个问题**：它是单一持续的 interleaved 流，不按调用切 interpreter。
-- **两条路，人类未决**：
-  - **放弃**：不为 MCP 做这个支持。MCP 本就是有损投影、回合制退化载体，接受「跨 interpreter 历史丢失」
-    是 MCP 阶段的已知损，验证时绕开（单 interpreter 内完成观察）。
-  - **标准化**：MOSShell 原生支持一个**支持 drain 的全流式 Watcher**——跨 interpreter、
-    生命周期独立于单个 interpreter。约束：**不被调用就没有、被回收就没有**（无消费不堆砌，防内存泄漏）。
-    这正是 K8「水位线挂 buffer 不挂 interpreter」缺的那个 buffer 的正式形态与归属。
-- **倾向**：留给人类在实现前拍板。若做，它是 drain buffer 的标准机制化；若不做，MCP 验证需显式
-  规避跨-interpreter 观察场景。**本轮不决，记录存疑。**
+### 落地架构（三层）
+
+```
+[MCP 层]  cli/moss_as_mcp.py:bootstrap
+          ├── 旧 4 工具原封不动 (A/B 基线组)
+          └── 新 4 工具 (K1-K9 收敛): ctml_append / ctml_peek / ctml_observe / ctml_interrupt
+               |  server-scoped watcher, 挂在 async with moss_host.run() 之内
+               v
+[Host 层] host/interleaved_thinking.py:InterleavedThinkingToolset
+          |  订阅 shell.Tracer 钩子, 缓冲 ShellEvent, 提供 4 原语:
+          |  buffered / drain / status / wait_interpreter_done
+          v
+[Core 层] core/concepts/shell.py:Tracer Protocol
+          |  5 方法: is_running / is_closed / on_task_pushed / on_task_done / on_interpreter_stopped
+          |  fire-and-forget, 转交职责不做防御 (tracer 自持 is_closed 语义)
+          v
+          core/ctml/shell/ctml_shell.py:CTMLShell.add_tracer
+          core/ctml/interpreter.py:CTMLInterpreter.on_close_callback
+          (interpreter close 是 on_interpreter_stopped 的唯一权威 fire 点,
+           覆盖 async-with exit / stop_interpretation / shell 退出 三条路径)
+```
+
+### 关键设计沉淀
+
+- **Tracer Protocol 而非多回调注册**：加事件类型 = 加 Protocol 方法 + 加 tracer 实现,
+  不改 shell add_xxx_callback 的散乱面。
+- **exit 取值点选在 `Interpreter.close()` 末尾**：唯一 fire 点, shell 层不再各自 fire,
+  避免了 async-with 退出路径漏发的隐蔽 bug (Step 2 修复过一次)。
+- **task_done 不唤醒 waiter**：`wait_interpreter_done` 语义是「等 interpreter 到 idle」,
+  不是「等任一 task done」。分离两根信号避免半唤醒竞态。
+- **K9 空 outcome 兜底在 TaskDone.as_message 层**：空 result 投成
+  `<result command="...">(no output)</result>`, 存在性不蒸发 & 协议体合法非空。
+- **InterpreterStopped 只在有 exception 时入 buffer**：清洁停止表现在
+  `wait_interpreter_done` 语义里, 不用生成噪音事件。
+- **线程模型**: fire 是同步直调 (可能来自 channel 线程或 asyncio 线程), toolset 用
+  `threading.Lock` + `ThreadSafeEvent` 处理跨-loop asyncio wake, 锁临界区极小、
+  绝不嵌套、event.set() 一律在锁外。
+- **MossRuntime ABC 未动**：MCP 层直接组合 `state.toolset.shell` + `state.watcher`,
+  作为「先跑通、增函数不删除」的第一版, 待体验数据确认是否上升到 runtime facade。
+
+### 新 MCP 工具语义速览
+
+| 工具 | 语义 | K 决策映射 |
+|---|---|---|
+| `ctml_append(logos)` | 铺 CTML, `wait_compiled` 后立即返回 watcher.drain() + status | K1/K8 (append=observe) |
+| `ctml_peek()` | 只读 `buffered() + status`, 不 drain, 不阻塞 | K5 (拉侧原子读) |
+| `ctml_observe(budget)` | 等 interpreter idle 或超时, drain + status | K2 (观察游标) / K5 |
+| `ctml_interrupt()` | `shell.clear()` 掐 pending, drain 已完成结果 + status | K2 (对读头前方动手) |
+
+### 已落码 (commits)
+
+- `c2c22dab` — Shell Tracer Protocol (core 层, 5 tests)
+- `b5c8f37b` — InterleavedThinkingToolset + interpreter on_close_callback (host 层, 11 tests)
+- (this) — MCP bootstrap 挂 server-scoped watcher + 4 新工具
+
+**残留待验**：
+- 第三轮 MCP 盲测（模型当被试）：验 K4 观察盲区是否修通, B1（存在性蒸发）是否闭合,
+  A/B 对照 (旧 execute_ctml vs 新 ctml_append) 首次准确率差异。
+- fail-closed 写拒（K8 append 遇 critical failure 拒 push）尚未做, 需体验数据先驱动优先级。
+
+## K11 落地: 五动词工具面 + docstring 卫生 (2026-07-25)
+
+**结构性洞见**: create_task + 双 Event lifecycle. interpreter 在 fire-and-forget task 内跑完整生命周期,
+MCP 函数只 await 生命周期节点 (compiled / stopped Event), 不阻塞在 async with 内. **中断从此是同步动作,
+不干涉执行**. 这一步之前尝试过让 MCP 函数直接 async with interpreter, 结果每种动词的 close 时序都会坏
+一种语义 —— 用户手写伪代码钉住方向后才收敛.
+
+**关键洞见**:
+
+1. **budget 是等待时限, 不是运行时限** (人类明确纠正). 上限 30s, 只截断本次等待, 绝不中断命令.
+   任务续跑, 结果在下次任意动词调用带回. 回合制 MCP 面禁止无限阻塞的硬约束 —— 模型下发时无需猜任务耗时,
+   是真 on-the-fly.
+
+2. **observe 常态退化的消解**. 上一版设计: async with 立即 close, `shell.interpreting()` 拿到 closed 的
+   旧 interpreter, `is_running()=False`, observe 退化为只 drain 一次快照. **新架构 interpreter outlive
+   MCP 函数**, observe 抓到的是活的 interpreter, `wait_stopped()` 真等到任务完成 —— K5 拉侧的观察能力
+   自此完整.
+
+3. **切口同步进 drain**. `_set_result`(command.py:1450-1479) 全同步, done-hook 直接调用不走 call_soon.
+   `interpreter(kind='clear')` 内部 `await clear() + stop_interpretation()` 返回时, 被掐 task 的
+   cancelled 事件已同步进 watcher buffer. K10 依赖的底层同步性事实至此在盲测中验证 —— replan 与
+   interrupt 的切口在同一回合返回.
+
+4. **docstring 只面向模型 (K11 教训)**. MCP tool 的 docstring 通过反射变成模型可见的 tool description.
+   内部代号 (K1/K2/K8)、内部 API 名 (`kind='clear'`/`wait_stopped`/`shell.interpreting()`)、调试语境
+   ("wait_until_idle 时序 gap")、对话锚点 ("actually, I'm just going to..."、"前进即观察") 都会污染
+   tool schema. 开发讯息走 `#` 注释, docstring 只留 4 类信息: 动词做什么 / 什么场景用 / 参数含义 / 返回什么.
+
+   **写完必须反射一次拉出 description 字段验证**, 不能只看源码字符 —— 单看源码字符时 K/kind 术语与语义
+   讲解交织, 靠人眼分辨会漏.
+
+   **当轮就改的纪律**: 用户第一次指出 docstring 泄露时, 承认+继续泄露 (下一版又塞新的内部术语进去)
+   是不干活. 承认必须触发当轮修复 + 当轮反射验证, 不允许递延.
+
+**七工具面 (K10 后的最终形态)**:
+
+- 会话地基 (2): `moss_instruction` (1 次拉出静态面) / `get_moss_dynamic_info` (N 次拉刷动态增量)
+- CTML 动词 (5): `ctml_append` / `ctml_exec` / `ctml_observe` / `ctml_replan` / `ctml_interrupt`
+- 删除: `execute_ctml` (被 append/exec 取代) / `interrupt_execution` (被 interrupt/replan) /
+  `ctml_peek` (归 debug 不进模型面)
+
+**动词与内核映射**:
+
+| 动词 | kind | task 内等待 | MCP 函数返回时机 | 用户可见 budget |
+|---|---|---|---|---|
+| append | 'append' | wait_compiled → set(compiled) → wait_stopped | compiled | — |
+| exec | 'append' | 同上 | compiled + stopped (可 budget 截断) | ≤30s |
+| observe | 不建 | — | `interp.wait_stopped()` if running | ≤30s |
+| replan | 'clear' | 同 append | compiled | — |
+| interrupt | 不建 | — | `shell.clear()` 同步返回 | — |
+
+**盲测验证** (2026-07-25, 五动词全通):
+
+- `ctml_append(sleep 5s)` → `running:True, ongoing:sleep:s1`, 立即返回, interpreter outlive ✓
+- `ctml_observe(no budget)` → 等到 sleep 完成拿 `success:1` ✓ (**核心突破** — 之前只能拿快照)
+- `ctml_exec(sleep 6s)` → 阻塞至 done 直接 `success:1, running:False` ✓
+- `ctml_replan(掐 60s sleep + 铺 1s)` → `cancelled:1 + ongoing:short` 同步返回 ✓
+- `ctml_interrupt(掐 60s sleep)` → `cancelled:1 + running:False` ✓
+
+**残留 (下次起点)**:
+
+- **fail-closed 写拒** (K8): append 遇 critical failure 应拒 push, 尚未做. 需体验数据先驱动优先级.
+- **MCP restart 副作用**: server 重启会带走 accepted cell 但 node 子进程可能成孤儿. 当前依赖手动
+  `matrix.nodes:run` 恢复; 值得设计 server 生命周期与 node 子进程的正式契约.
+- **channel 上线推模式** (问题 2): `get_moss_dynamic_info` 目前只拉不推. ghost thinking 场景下长 thinking
+  内感知不到 channel 变更, MCP 面下也只能靠模型手动刷新. 需要 channel 上线的推通道设计.
+- **编译期 "did you mean"** (第三轮盲测发现): 通道路径拼错时无纠错. 我读过完整投影仍拼错 (多了一层 .probe),
+  错误里加一句 "closest: matrix.mesh.interleaved_probe:slow" 即可归零同类首错.
+- **进度投影** (第三轮盲测数据点): 运行中 task 的 `progress` 活串未在 status 里投影, 只有 `ongoing:name`.
+  interrupt 决策的输入残缺. FEATURE.md payload 规则里已经列过 ("callername + progress"), 待实现.
 
 ---
 
-**本文件状态**：设计已收敛至 K1–K9，K10 存疑待人类拍板。第二轮体验(2026-07-24)产出 B1–B7 基线
-与 K9 重大发现（存在性 vs payload 解耦 + 空 payload 合法包裹约束）。实现未动代码，等人类驱动。
+**本文件状态**: K1–K11 已收敛并落码验证. 五动词工具面盲测通过. workstream **completed**.

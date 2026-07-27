@@ -1,9 +1,22 @@
 """
-how to build a channel
+how to build a channel — MOSShell channel 构建总入口 (面向开发者模型的全局知识).
+the path of this module is ghoshell_moss.core.blueprint.channel_builder
+
+Channel 与模型 (大脑) 之间有三个数据方向, 构建 channel 时先分清信息该走哪条:
+
+- 下行 (result): command 返回值 -> `<result>` 消息. 观察语义三级:
+  `return Any` (反馈进上下文, 不触发思考) / `return CommandUtil.observe(...)` (触发 Re-Act)
+  / `raise CommandUtil.raise_observe(...)` (中断一切行动, 立刻思考).
+- 中行 (progress): `CommandUtil.set_progress`, 长命令执行中途的状态披露.
+- 上行 (signal): `CommandUtil.send_signal` / `send_input_signal` / `create_signal_task`,
+  command 主动推给大脑, 构成自驱循环 (由 Mindflow 仲裁).
+
+模型看到什么, 以 ChannelMeta 为唯一权威契约 (ghoshell_moss.core.concepts.channel:ChannelMeta):
+interface (命令签名自动反射) / instruction / context / memory / states.
+本模块是动词 (怎么构建), ChannelMeta 是名词 (暴露成什么), 此处不重复枚举那份契约.
+
+CTML 如何调用 channel: `moss ctml read`.
 """
-# # Blueprint
-# about how to build channel for MOSShell.
-# the path of this module is ghoshell_moss.core.blueprint.channel_builder
 
 from abc import ABC, abstractmethod
 
@@ -50,7 +63,10 @@ MessageFunction = Union[
 ]
 """
 可以生成消息体的函数. 这种函数注册到 Channel 中, 可以用来动态地生成 Context Messages 与 Memory Messages.
-AI 通过双工通讯, 在每个关键帧思考的瞬间, 提取对应的消息体替换到上下文中. 
+AI 通过双工通讯, 在每个关键帧思考的瞬间, 提取对应的消息体替换到上下文中.
+
+注: Memory Messages 的字段契约已在 ChannelMeta.memory 就位, 但 Builder 尚无挂载点
+(memory_messages 钩子未提供). 设计已锁定, 见 workstream channel-meta-dyn-static.
 """
 
 StringType = Union[
@@ -67,10 +83,13 @@ LifecycleFunction = Union[Callable[..., Coroutine[None, None, None]], Callable[.
 
 - [on startup] : channel 启动时
 - [on idle] : 闲时, 没有任何命令输入
-- [on close] : channel 关闭时 
+- [on close] : channel 关闭时
 - [on running] : start < running < close
 
-举一个典型的例子: 数字人在执行动画 command 时, 运行轨迹动画; 执行完毕后, 没有命令输入时, 需要返回呼吸效果 (on_idle) 
+另有 refresh_meta 钩子, 属于刷新节奏而非运行生命周期: 每个 refresh 周期重新生成 metas 前调用.
+见 Builder.refresh_meta.
+
+举一个典型的例子: 数字人在执行动画 command 时, 运行轨迹动画; 执行完毕后, 没有命令输入时, 需要返回呼吸效果 (on_idle)
 """
 
 _ChannelName = str
@@ -149,8 +168,8 @@ class CommandUtil:
     def logger(cls):
         """返回日志模块 logging.Logger, 只保留基础的记录函数. """
         from ghoshell_moss.core.concepts.channel import ChannelCtx
-        from ghoshell_common.contracts import LoggerItf
-        return ChannelCtx.get_contract(LoggerItf)
+        from ghoshell_moss.contracts import LoggerItf, get_moss_logger
+        return ChannelCtx.container().get(LoggerItf) or get_moss_logger()
 
     @classmethod
     def set_progress(cls, progress: str) -> None:
@@ -334,12 +353,12 @@ class Builder(ABC):
             由于 Channel 持有的 Command 可以影响自身的运行时状态, 所以 Channel 提供了完整的上下文反身性.
             结合后续的 StatefulChannel 实现, 同时提供渐进式披露的能力.
 
-        由 Channel 提供的 AI 上下文拓扑:
-        - instructions (System Prompt)
-        - memory messages
-        - current conversation messages
-        - context messages
-        - new inputs
+        红线: instruction 里绝不要重复罗列本 channel 有哪些 command ——
+        命令签名已由 interface 自动反射给模型 (Code as Prompt), 手写重列必然随代码漂移成谎言.
+        instruction 只写 interface 表达不了的东西: 整体用法, 协作约定, 状态语义.
+
+        channel 对模型暴露的完整上下文字段契约, 以 ChannelMeta 为唯一权威
+        (ghoshell_moss.core.concepts.channel:ChannelMeta).
 
         注意! Channel 仅在特别有必要的时候, 才需要提供上下文讯息. 大部分 channel 完全不用提供.
         """
@@ -361,7 +380,7 @@ class Builder(ABC):
         >>>         return [
         >>>             Message.new().with_content("dynamic information")
         >>>         ]
-        >>>     chan.build.perspective_messages(context)
+        >>>     chan.build.context_messages(context)
         """
         pass
 

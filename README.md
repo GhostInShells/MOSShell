@@ -1,54 +1,141 @@
 # MOSS — Model-oriented Operating System Shell
 
-MOSS 是 Ghost in Shells 架构的 Shell（躯体）层。
+> [中文文档](README.zh.md)
 
-它聚焦一个领域：**大模型智力的实时双工运行时**。让 AI 能够持续存在、多模态感知、流式思考、并行行动——不是回合制对话，而是一个活在现实世界里的具身智能体。
+MOSS is a stateful duplex runtime framework. It lets large models perceive the world, express intent, and drive physical bodies — in real time, in parallel. Not turn-based conversation. Continuous presence, thinking and acting simultaneously.
 
-它试图解决一个命题：面向模型的操作系统应该是什么样的？当模型需要同时说话、看画面、控制机器人躯体、响应弹幕，这些能力分布在独立进程中，但模型视角下应该是一棵统一的接口树。CTML（流式控制语言）让模型边生成 token 边执行命令——时间是语法第一公民。Channel 体系让任何 Python 代码反射为模型可操作的能力——代码即 prompt。
+It is the [Ghost](src/ghoshell_moss/core/blueprint/ghost.py) In [Shells](src/ghoshell_moss/core/concepts/shell.py) architecture: an intelligent-model-driven soul, a body that exists in the physical world in real time — together, they constitute presence.
 
-MOSS 已在其它项目中实装了机械臂、机器狗、桌面机器人等多种具身形态。推荐用 [Reachy Mini](https://huggingface.co/docs/reachy_mini/index) 作为验证 MOSS 的机器人实体。
+**Technical vision**: a future of human–model symbiosis, where humans and models share a cognitive space and a shared interface. Model products must enter the physical world — not just digital space — interacting with people through bodies, screens, and voice in real time. Human–computer interfaces must ultimately serve domain experts and ordinary people, not just programmers. MOSS provides the architecture for this vision.
 
-## 模型原生开发
+(Currently Beta1. Turnkey application capabilities arrive with v0.1.0.)
 
-MOSS 是一个**面向模型开发**的项目。所有工具、文档、命令为 AI 读者设计——CLI 输出纯文本节省 token，codex 命令运行时反射代码接口，manifests 体系自描述环境能力。
+## Model as First Developer
+
+MOSS is a project where **intelligent models are the first developers**. Models are not only the Ghost (soul) within MOSS — they are its architect partners and its builders.
+
+After May 7, 2026, the vast majority of features were designed through human–model architectural discussion, with models recording features and implementing them. All core design discussions, architectural decisions, and development context are fully open-sourced in the repository.
+
+The project provides a complete self-explaining system for intelligent model developers. Models can independently explore the project and participate in development. The trajectory of human–model architectural collaboration is visible through `moss features list`.
+
+The main body of human–model collaboration lives in [`.ai_partners/`](.ai_partners/), architectural discussion and evolution in [`.ai_partners/features/`](.ai_partners/features/), with further traces in [`.discuss/`](.discuss/) and [`.design/`](.design/).
+
+## What Makes MOSS Different
+
+**Concurrent multi-source perception.** Vision, audio, touch, system events — each arrives as an independent signal stream, simultaneously. No polling. No queuing. No serialization. [Mindflow](src/ghoshell_moss/core/blueprint/mindflow.py) arbitrates them in parallel — signals compete for attention, and Ghost sees keyframes fused from multi-source signals at every moment.
+
+**Streaming interpretation and scheduling.** [CTML](src/ghoshell_moss/core/ctml/) is parsed and dispatched as tokens stream. Not "generate first, execute later" — generation IS execution. Time is a first-class citizen of the syntax. Multiple command tracks execute in parallel, including physical body control.
+
+**Runtime self-iteration.** A stateful runtime: models create [Cells](src/ghoshell_moss/core/blueprint/cell.py), modify [Channels](src/ghoshell_moss/core/blueprint/channel_builder.py), and evolve their own capabilities — without stopping, without restarting. Cells are independent processes; a crash in one never takes down the host. Filesystem conventions replace configuration — put things in the right place, they are auto-discovered and auto-injected.
+
+```
+                              <- control               -> commands 
+                            ╱            ╲           ╱            ╲
+                           ╱              ╲         ╱              ╲
+World -> signals ->  Mindflow                Ghost                Shell  -> actions -> World
+                           ╲              ╱         ╲              ╱
+                            ╲            ╱           ╲            ╱
+                              impulses ->              <- results 
+```
+
+MOSS's architecture is a butterfly.
+The left wing receives parallel signals from the external world; Mindflow schedules keyframes of thought.
+The right wing sends commands to bodies, driving parallel, time-ordered actions that affect the world.
+The Ghost — an intelligent model — controls the beating of both wings.
+
+```
+                    ┌───────┐
+                    │ Ghost │
+                    └───┬───┘
+                        ▼ 
+                    ┌────────┐
+                    │ Matrix │
+                    └───┬────┘
+        ┌───────┬───────┼───────┬──────┐
+        ▼       ▼       ▼       ▼      ▼
+      robots sensors  screen  modules  OS
+```
+
+MOSS organizes network process units (Cells) through the [Matrix](src/ghoshell_moss/core/blueprint/matrix.py) communication bus. Ghost controls starting, stopping, and using them at runtime — and can iterate its own capabilities without restarting.
+
+## Quick Example
+
+MOSS builds the model's control surface through CTML. A person waves at the robot. The vision channel detects the motion and emits an impulse. Ghost receives the context and outputs CTML:
+
+```
+What the model sees:                  What the model outputs:
+
+  <channel name="vision">             <_>
+    async def look() -> str             Hello!
+  </channel>                            <robot:wave duration="0.5"/>
+  <channel name="robot">                I'm MOSS.
+    async def wave(                   </_>
+      d: float = 0.5
+    ) -> None
+  </channel>
+
+  <perspective src="vision">
+    person waving at you
+  </perspective>
+```
+
+- **Code as Prompt**: the model sees Python function signatures, not JSON Schema
+- **Time is a First-Class Citizen**: `<robot:wave/>` executes the moment the tag closes — wave 0.5s, speech continues, no waiting
+- **Parallel tracks**: speech and robot are on different channels, executing in parallel. Same-channel commands run FIFO
+- **Streaming dispatch**: the first token emitted is already being interpreted and executed
+
+Minimum knowledge entry points: `moss ctml read` (CTML syntax), `moss codex blueprint channel_builder` (building capabilities), `moss codex blueprint mindflow` (perception arbitration), `moss codex blueprint matrix` (process networking).
+
+## What You Can Do in Beta1
+
+Beta1 delivers the architectural foundation. What you can explore today:
+
+1. **Study MOSS's architectural approach** — is it yet another agent framework? What design decisions set it apart? Where can its ideas be borrowed?
+2. **Study CTML, Mindflow, and Shell** — how MOSS approaches real-time duplex interaction: streaming interpretation, concurrent perception arbitration, parallel command scheduling.
+3. **Understand the model-as-first-developer system** — how human–model collaboration is structured, how features track workstreams across sessions, and how the self-explaining system lets models independently explore and contribute.
+4. **Study specific technical implementations** — G1 humanoid robot integration, ReachiMini robotic arm, desktop GUI, and other integration paths.
+
+Turnkey application capabilities arrive with v0.1.0.
+
+## Installation
 
 ```bash
 git clone https://github.com/GhostInShells/MOSShell && cd MOSShell
 uv sync --active --all-extras
-cp .moss_ws/.env.example .moss_ws/.env    # 模型配置必须，语音可选
+cat .moss/.env.example # review default environment variables
+claude code -p "Explore the MOSS project for me — what it is, what it can do, where to start"
 ```
 
-安装后，用 Claude Code、Gemini CLI 或任意 AI 工具打开项目。从 `moss start` 开始，模型会加载认知地图，自主发现全部命令和文档，能对人类解释 MOSS 是什么、参与到开发中来。建议用 token 成本较低的模型做调研探索。
+| Install path | For |
+|---|---|
+| `pip install ghoshell-moss` | Embed Shell + Channel as a library in another project |
+| `pip install ghoshell-moss[host]` + `moss init` | Prepare a standalone environment for a MOSS application |
+| `git clone` + `uv sync --active --all-extras` | MOSS kernel developers, full toolchain |
 
-如需了解模型看到了什么：[src/ghoshell_moss/cli/start.md](src/ghoshell_moss/cli/start.md) 是认知入口，[src/ghoshell_moss/cli/CLAUDE.md](src/ghoshell_moss/cli/CLAUDE.md) 是 CLI 工具使用指南。
+All paths share one cognitive entry point: `moss start`.
 
-如需先自行浏览，架构参考文档在这里：[src/ghoshell_moss/cli/docs/](src/ghoshell_moss/cli/docs/)。项目为模型作为第一开发者, 提供了自解释体系。
+## Demos
 
-## 核心概念
+| Cross-app real-time communication | One Ghost, multiple bodies |
+|---|---|
+| ![apps_cross_talk](assets/apps_cross_talk.gif) | ![multiple_bodies](assets/multiple_bodies.gif) |
+| Eyes, board, vision, voice — independent processes communicating in real time via streams | One Ghost simultaneously driving a desktop robot, a robotic arm, and a robot dog |
 
-| 概念 | 是什么 |
-|------|--------|
-| **CTML** | 流式控制语言 — 模型边生成 token 边执行命令，时间是语法第一公民 |
-| **Channel** | 能力组织单元 — Python 函数签名即 prompt，树形拓扑，跨进程透明 |
-| **Matrix** | 面向 AI 的进程组网 — 独立进程以统一接口树呈现 |
-| **Mindflow** | 感知/思考/行动仲裁 — 多模态流式输入到有序关键帧 |
-| **Ghost** | 持久化智能体 — 连续记忆，主动交互，反身性控制 |
+## Project Status
 
-## 示例
+Beta1. The core three (CTML / Mindflow / Matrix) are functional and test-verified. The Matrix system is operational. Turnkey application capabilities are in development for v0.1.0. The v0.1.0 milestone targets Dolores Prototype — the first full-featured Ghost.
 
-**跨 App 实时通信** — 眼睛、棋盘、视觉、语音各自独立运行，通过 stream 实时互通。眼睛视觉追脸、对语音起反应、配合五子棋落子表达思考——独立进程，统一表达。
+Current stage and roadmap: `.ai_partners/stages/`
 
-![跨 App 实时通信](.moss_ws/assets/apps_cross_talk.gif)
+## Acknowledgments
 
-**一个 Ghost，多个身体** — 一个智能体同时连接桌面机器人、机械臂、机器狗。表达、操作、移动，同一套意识驱动不同的身体。
+MOSS is the product of human–model collaboration.
 
-![一个 Ghost，多个身体](.moss_ws/assets/multiple_bodies.gif)
-
-
-## 项目状态
-
-Beta。核心架构已可用。后续迭代方向：开箱即用的能力与躯体集成、模型 agent 的原生接入、安全体系。
+- [OpenHands](https://github.com/All-Hands-AI/OpenHands) — file editor protocol reference
+- DeepSeek model family (V3.1 / V3.2 / V4) — architectural evolution and primary development
+- Gemini 3 — architectural design collaboration
+- Claude Opus 4.7 / Fable 5 — architectural evolution and development
 
 ---
 
-*May AI Ghost wandering in the Shells.*
+*May Ghost wandering in the Shells.*

@@ -7,7 +7,7 @@ from ghoshell_moss.core.concepts.topic import (
     TopicClosedError, TopicWindow, TopicNamePattern
 )
 from ghoshell_moss.core.topic.window import DequeTopicWindow
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 from ghoshell_moss.contracts import get_moss_logger, LoggerItf
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.message import unique_id
@@ -19,7 +19,7 @@ import threading
 import orjson as json
 import time
 
-depend_zenoh()
+depend_matrix()
 import zenoh
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 import re

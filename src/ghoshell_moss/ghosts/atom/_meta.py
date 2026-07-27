@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
+from ghoshell_moss.depends import depend_ghost
+
+depend_ghost()
 from anthropic.types.beta import BetaThinkingConfigDisabledParam
 from ghoshell_container import IoCContainer
 from ghoshell_moss.core.blueprint.ghost import GhostMeta, GhostWorkspace

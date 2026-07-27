@@ -233,6 +233,12 @@ class BaseArticulator(Articulator):
         self._ctx.abort(error)
         self._task_group.close()
 
+    def is_aborted(self) -> bool:
+        return self._ctx.is_aborted()
+
+    def observe(self, message: str) -> None:
+        self._ctx.observe(message)
+
     async def send_logos(self, logos: Logos) -> None:
         self._check_running()
         async for delta in logos:
@@ -318,6 +324,10 @@ class BaseAction(Action):
         self._started = False
         self._closing = False
         self._prefetched_delta: str | None = None
+        # 独立标志位: wait_ready 拿到 None 哨兵时置 True.
+        # 不能用 _prefetched_delta is None 判断 "预取过 None" —— 与 "未预取" 无法区分,
+        # 空 articulator 场景下 _logos 会跳过 early-return 挂在轮询里 (决策 6).
+        self._prefetch_terminated: bool = False
         self._on_active = on_active
 
     async def wait_ready(self) -> None:
@@ -333,7 +343,11 @@ class BaseAction(Action):
                         self._ctx.logos_queue.async_q.get(),
                         timeout=0.05,
                     )
-                    self._prefetched_delta = item
+                    if item is None:
+                        # 空流哨兵 — 记标志位, _logos 立即返回, 不吞进 _prefetched_delta.
+                        self._prefetch_terminated = True
+                    else:
+                        self._prefetched_delta = item
                     return
                 except asyncio.TimeoutError:
                     continue
@@ -344,12 +358,13 @@ class BaseAction(Action):
         return self._logos()
 
     async def _logos(self) -> AsyncGenerator[str, None]:
+        # 空流: wait_ready 已消费 None 哨兵, 零 yield 立即返回.
+        if self._prefetch_terminated:
+            return
         # drain prefetched delta first
         if self._prefetched_delta is not None:
             item = self._prefetched_delta
             self._prefetched_delta = None
-            if item is None:
-                return
             self._ctx.buffer_executed_logos(item)
             if self._on_active:
                 self._on_active()

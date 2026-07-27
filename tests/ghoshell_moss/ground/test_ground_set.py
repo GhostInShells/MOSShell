@@ -289,7 +289,7 @@ class TestFrame:
         async def scenario():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
-                g.pin(GlobPin(label="py", arguments=GlobArguments(pattern="*.py")))
+                g.pin(GlobPin(label="py", arguments=GlobArguments(path="*.py")))
                 frame = await g.context()
                 assert "a.py" in frame
                 assert "b.py" in frame
@@ -326,7 +326,7 @@ class TestRoundtrip:
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:
                 g = await gs.open(tmp_path)
                 g.pin(FilePin(label="first", arguments=FileArguments(path="a.md")))
-                g.pin(GlobPin(label="second", arguments=GlobArguments(pattern="*.py")))
+                g.pin(GlobPin(label="second", arguments=GlobArguments(path="*.py")))
 
         async def phase2():
             async with DefaultGroundSet(workspace_root=tmp_path) as gs:

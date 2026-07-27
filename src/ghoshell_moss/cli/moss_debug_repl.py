@@ -8,18 +8,24 @@ from ghoshell_moss.host.tui_entries.moss_runtime_ui import MossRuntimeTUI
 @click.option(
     '--mode',
     default='default',
-    help='设置 MOSS 的运行模式 (例如: default, dev, robot).'
+    help='MOSS runtime mode (e.g. default, dev, robot).',
 )
 @click.option(
     '--scope',
     default='default',
-    help='设置当前的会话范围 (session scope).'
+    help='Network scope for session isolation.',
 )
-def moss_debug_repl_main(mode: str, scope: str):
+@click.option(
+    '--network',
+    default='local',
+    help='Network driver.',
+)
+def moss_debug_repl_main(mode: str, scope: str, network: str):
     """
-    启动 MOSS ToolSet TUI 调试终端。
+    MOSS Shell runtime debugger — interactive TUI for testing CTML,
+    inspecting channels, and debugging the MOSS runtime before a Ghost runs.
     """
-    click.echo(f"Starting MOSS Debug REPL in [{mode}] mode, scope: [{scope}]")
+    click.echo(f"Starting MOSS Shell debugger in [{mode}] mode, scope: [{scope}]")
 
     # §UU-1 seal 定案: 入口点显式构造 Environment(**cli_args) + seal, 注册 singleton.
     # Host 只消费 sealed env, 不承担参数收集责任.

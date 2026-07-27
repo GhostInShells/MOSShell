@@ -98,8 +98,8 @@ def create_zenoh_session_from_metadata(
 
 
 def _create_zenoh_session(config: ZenohNodeConfig) -> 'zenoh.Session':
-    from ghoshell_moss.depends import depend_zenoh
-    depend_zenoh()
+    from ghoshell_moss.depends import depend_matrix
+    depend_matrix()
     import zenoh
 
     zconfig = zenoh.Config()

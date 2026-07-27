@@ -1,8 +1,5 @@
 # GROUND Format Specification
 
-Status: v1.1.0-draft (2026-07-23)
-Location: `src/ghoshell_moss/ground/SPECIFICATION.md`
-
 Any runtime that reads and writes `GROUND.md` according to this SPEC can
 participate in the ground protocol.
 
@@ -32,8 +29,7 @@ and pins are never inherited.
 
 A **template** is a pre-authored `GROUND.md` body + pins, stored under
 `.grounds/` and discovered by the ground runtime. Templates and instances
-share the same frontmatter + body + pins format. Role is determined by
-file location, not by a metadata field.
+share the same frontmatter + body + pins format.
 
 Template discovery and usage rules are defined in §11.
 
@@ -63,10 +59,8 @@ pins:
 The `pins` key holds the YAML list of pin declarations (§4). If absent,
 the pins list is empty.
 
-A directory without `GROUND.md` is not a ground. Attempting to open one
-loads an empty ground (no convention, empty body, no pins) — this is a
-creation pathway, not a "bare ground" concept. The ground becomes real
-when `sediment` writes `GROUND.md` to disk.
+A directory without `GROUND.md` is not a ground. Opening such a directory
+returns an empty ground; calling `sediment` on it creates `GROUND.md`.
 
 ## 3. Reserved Frontmatter Keys
 
@@ -109,7 +103,7 @@ are declared once here and referenced by each verb's schema in §5:
 
 | Field | Type | Semantics |
 |-------|------|-----------|
-| `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, future `bash`). |
+| `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, `exec`). |
 | `limit` | int | Entry count limit. When exceeded, output is truncated with a marker showing `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
 | `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). |
 
@@ -136,7 +130,7 @@ All path-typed arguments use the anchor syntax in §8.
 
 | Key | Type | Required | Semantics |
 |-----|------|----------|-----------|
-| `pattern` | string | yes | Glob pattern (`*`, `**`, `?`). Anchor syntax (§8) allowed as prefix. |
+| `path` | string | yes | Glob path (`*`, `**`, `?`). Anchor syntax (§8) allowed as prefix. |
 | `limit` | int | no | Entry count limit (§4.1). Default: implementation-defined. |
 | `max_depth` | int | no | Recursion depth cap for `**` patterns (§4.1). |
 
@@ -145,7 +139,7 @@ expanded** — a `glob` matching thousands of files must not blow up
 the context window. Use `file` for content.
 
 **Expansion**: matched paths with size per entry (human-readable:
-`12K`, `1.2M`). `mtime` is not rendered — use `bash` for timestamp queries.
+`12K`, `1.2M`). `mtime` is not rendered — use `exec` for timestamp queries.
 
 **Empty match** renders an empty result (not an error).
 
@@ -196,6 +190,55 @@ Entries filtered through `.gitignore`. **No file content.**
 
 **Failure modes**: path not found; path is not a directory.
 
+### 5.5 `exec` — invoke a field-authored executable
+
+| Key | Type | Required | Semantics |
+|-----|------|----------|-----------|
+| `ref` | string | yes | Relative path to an executable file **within the ground subtree**. |
+| `timeout` | float | no | Seconds. Default `10`, max `60`. |
+| `budget` | int | no | Content char limit (§4.1). Applied to captured stdout. |
+
+**Authorization model** — this is the only pin verb that executes
+code. It is deliberately narrow:
+
+- `ref` MUST be a **relative path**. Absolute paths are rejected.
+- `ref` MUST resolve inside the ground subtree. `..` traversal
+  outside the ground is rejected.
+- The target file MUST have the executable bit set (`+x`). Files
+  without it are treated as missing (authorization denied).
+- The interpreter is chosen by the target's shebang. The protocol
+  does not distinguish `.sh` / `.py` / native binaries.
+- **The protocol never accepts inline shell strings.** A pin cannot
+  say "run this command"; it can only reference a script the field
+  author has committed to the ground subtree.
+
+The executable surface is a named artifact (a committed file),
+never an inline string. The trust decision belongs to the loader,
+not to the protocol.
+
+**Execution environment**:
+
+- `cwd` = `$GROUND` (the ground root). The executable knows its
+  home. It reads `$CWD` from the environment if it cares about the
+  caller's position.
+- Environment variables `GROUND` and `CWD` are injected with
+  absolute path values.
+- `stdin` = `/dev/null`. `exec` pins are non-interactive.
+
+**Expansion**: captured `stdout`, subject to `budget` truncation.
+
+**Failure modes** — visible, not silent:
+
+- Non-zero exit: output is followed by `[exit N]` and up to 5 lines
+  of stderr tail.
+- Timeout: partial stdout is followed by `[timeout after Ns]`.
+- Missing / not executable / outside subtree: renders as `[missing]`.
+
+**Observation**: `exec` is a compute-on-observe verb. The captured
+payload is stored on the `Observation`; the frame renders the stored
+payload rather than re-executing. One frame = at most one process
+per pin.
+
 ## 6. Frame
 
 A **frame** is the rendered form of a ground — body and pin results
@@ -231,7 +274,7 @@ output follows these rules:
 - **No line numbers** — line numbers are for human debugging, not
   model consumption.
 - **No raw mtime** — timestamps are shell-domain. Models that need
-  them call `bash`.
+  them call `exec`.
 - **Human-readable sizes** — file sizes render as `12K` / `1.2M` /
   `300B`, not raw byte counts.
 - **Truncation markers** — when `budget` or `limit` is exceeded,
@@ -241,10 +284,9 @@ output follows these rules:
 ### 6.2 `@`-reference Expansion
 
 An `@`-reference in body loads another document as **static law**.
-It is **not change-tracked** — law follows the doc's current state
-silently. This is the dividing line between `@` and `pin`:
-**对账 (accounting)**. `@` = load as law, no accounting.
-`pin` = watch as gaze, with change accounting (§7.2).
+It is **not change-tracked** — the loaded content reflects the file's
+current state at frame time. This contrasts with `pin`, which tracks
+change across observations (§7.2).
 
 **Recognition**: an `@` at line start or after whitespace, followed by
 a path-start character `[a-zA-Z0-9_./$]`, and not inside a fenced code
@@ -456,13 +498,9 @@ becomes real when the first `sediment` writes `GROUND.md`.
 ### 11.4 Fractal Closure
 
 A `.grounds/` directory may itself contain a `GROUND.md` — making it
-a ground instance in its own right, discoverable by its parent
-ground's `frontmatter` pin. This is **fractal self-similarity**:
-the same protocol applies at every scale.
-
-L2 (a template collection) can discover other L2 collections through
-the same mechanism. No L3 registry is needed — file system traversal
-is the discovery protocol.
+a ground instance discoverable by its parent ground's `frontmatter` pin.
+File system traversal is the discovery protocol; no separate registry
+is required.
 
 ### 11.5 Separation from Instance Discovery
 

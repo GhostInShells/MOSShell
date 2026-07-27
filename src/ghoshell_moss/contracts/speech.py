@@ -1,3 +1,5 @@
+"""Speech contract — audio capture, playback, and streaming speech interfaces."""
+
 import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum

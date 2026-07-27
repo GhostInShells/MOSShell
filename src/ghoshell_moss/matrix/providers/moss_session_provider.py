@@ -32,8 +32,8 @@ class ProjectZenohSessionProvider(Provider[Session]):
         yield ProjectZenohSession
 
     def factory(self, con: IoCContainer) -> 'MossSessionWithZenoh':
-        from ghoshell_moss.depends import depend_zenoh
-        depend_zenoh()
+        from ghoshell_moss.depends import depend_matrix
+        depend_matrix()
         import zenoh
         from ghoshell_moss.matrix.session.zenoh_session import ProjectZenohSession
         logger = con.get(LoggerItf)

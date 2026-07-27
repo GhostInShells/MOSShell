@@ -1,8 +1,8 @@
 from ghoshell_container import IoCContainer
 
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 
-depend_zenoh()
+depend_matrix()
 
 import zenoh
 from ghoshell_moss.core.duplex import (

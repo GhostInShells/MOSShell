@@ -1,7 +1,7 @@
 """Ghost TUI — logos stream + output items split into separate states, debug via REPL inspector."""
 
 import asyncio
-from typing import Iterable
+from typing import Callable, Iterable
 
 from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
@@ -127,11 +127,12 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
     """Ghost TUI — logos stream, output items, and shell debug.
 
     Usage: GhostTUI().run()
-    Start with ``moss-run-ghost <name>`` or configure via Environment.
+    Start with ``moss-ghost <name>`` or configure via Environment.
     """
 
     def __init__(self, host: MossHost | None = None):
         super().__init__(host=host or MossHost.discover())
+        self._safe_mode_wired: bool = False
 
     def _get_runtime(self) -> GhostRuntime:
         return self.host.run_ghost(self.host.env.ghost_name)
@@ -148,13 +149,68 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
         parts = super()._prompt_status()
         if self.runtime.is_paused():
             parts.append(("fg:red bold", "[PAUSED] "))
+        if self.runtime.safe_mode().is_enabled():
+            parts.append(("fg:yellow bold", "[SAFE] "))
         return parts
+
+    # ── SafeMode ──────────────────────────────────
+    # 回合制交互: [SAFE] prefix 已把 shell 语义翻转, prompt 输入行随之重定向到审批.
+    # 输入协议:
+    #   ""            → approve (无 note)
+    #   "!<text>"     → approve-with-note (text 作为附言给 ghost 下一帧内观)
+    #   "<text>"      → reject with reason (text 作为否决理由)
+    #   "/<cmd>"      → 走默认命令 (可 /safe 关掉 gate, /exit 等), pending 不消化
+    # 默认 = reject 是刻意: 误发文本时不会误批准 (approve 是更坏后果).
+
+    def _toggle_safe_mode(self) -> None:
+        sm = self.runtime.safe_mode()
+        target = not sm.is_enabled()
+        if sm.set_enabled(target):
+            # 首次开启时挂 invalidate 回调 — pending 变更时 placeholder 刷新.
+            if target and not self._safe_mode_wired:
+                sm.on_pending_changed(self._invalidate)
+                self._safe_mode_wired = True
+            self._invalidate()
+
+    def _pre_handle_input(self, item: str) -> bool:
+        p = self.runtime.safe_mode().pending()
+        if p is None:
+            return False
+        # /-prefix 让路给默认命令 (关 gate / exit 等), 不消化 pending.
+        if item.startswith('/'):
+            return False
+        sm = self.runtime.safe_mode()
+        if item == '':
+            sm.approve(p['uuid'])
+        elif item.startswith('!'):
+            sm.approve(p['uuid'], note=item[1:].lstrip())
+        else:
+            sm.reject(p['uuid'], item)
+        return True
+
+    def _get_input_placeholder(self):
+        def _build():
+            p = self.runtime.safe_mode().pending()
+            if p is None:
+                return ""
+            return f"[SAFE {p['uuid'][:8]}] enter=approve · !<text>=approve-with-note · <text>=reject"
+        return _build
+
+    def _invalidate(self) -> None:
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
+
+    def default_commands(self) -> dict[str, tuple[str, Callable[[], None]]]:
+        cmds = super().default_commands()
+        cmds["safe"] = ("toggle SafeMode gate on articulator→action", self._toggle_safe_mode)
+        return cmds
 
     def _get_custom_intro(self) -> Renderable:
         from rich.text import Text
         return Text(
             f"\nGhost: {self.host.env.ghost_name}\n"
-            f"Type anything to talk to the ghost. Ctrl+T to switch views.",
+            f"Type anything to talk to the ghost. Ctrl+T to switch views.\n"
+            f"/safe toggles approval gate — during pending: enter=approve, !<text>=approve-with-note, <text>=reject",
             style="dim italic",
         )
 

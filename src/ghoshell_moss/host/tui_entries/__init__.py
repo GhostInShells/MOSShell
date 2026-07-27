@@ -1,1 +1,1 @@
-"""TUI 具体入口 — MossRuntimeTUI (moss-repl), GhostTUI (moss-run-ghost)."""
+"""TUI entry points — MossRuntimeTUI (shell debugger), GhostTUI (ghost terminal)."""

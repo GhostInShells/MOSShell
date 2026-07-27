@@ -16,11 +16,13 @@ Meta is a separate rendering path used by ``moss ground meta``.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
-from ghoshell_moss.ground._addr import Anchor, resolve_path
+from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
 from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe
 from ghoshell_moss.ground.contract import (
+    ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -28,7 +30,7 @@ from ghoshell_moss.ground.contract import (
     Pin,
 )
 
-__all__ = ["render_context", "render_meta"]
+__all__ = ["render_context", "render_meta", "render_walk"]
 
 
 async def render_context(
@@ -123,6 +125,77 @@ def render_meta(
     return "\n".join(lines)
 
 
+# -- walk (场内移动) ------------------------------------------------------
+
+
+def _pin_target_raw(pin: Pin) -> str:
+    """Pin 的目标路径原文 (锚判定用). exec 无位置概念, 返回空."""
+    if isinstance(pin, GlobPin):
+        return pin.arguments.path
+    if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
+        return pin.arguments.path
+    return ""
+
+
+async def render_walk(
+    cwd: Path,
+    ground_root: Path,
+    doc_path: Path,
+    pins: list[Pin],
+    shadows: dict[str, PinShadow],
+    *,
+    label: str | None = None,
+) -> str:
+    """场内移动视图 — cwd 无 GROUND.md, 法来自祖先场根.
+
+    编辑权在场根, 这里只有视角:
+    - 法链位置提示 (一行指回场根, 不重复 body)
+    - $CWD 锚 pins 对当前目录展开 (场教的注视习惯)
+    - 其余 pins 折叠为 TOC (场根的注视留在场根)
+
+    不再有内建 ls — 若场希望站立位置有目录列表, 用 ``ls $CWD`` pin 声明.
+    观感由场决定, 不由 harness 塞入.
+    """
+    anchor = Anchor(ground=ground_root, cwd=cwd)
+    rel_doc = os.path.relpath(doc_path, cwd)
+    rel_cwd = os.path.relpath(cwd, ground_root)
+    display = label or ground_root.name
+
+    lines: list[str] = []
+    lines.append(f"ground: {display}  (law: {rel_doc})")
+    lines.append(f"cwd: $GROUND/{rel_cwd}")
+    lines.append("")
+
+    # $CWD 锚 pins 展开; 其余折叠
+    cwd_pins = [p for p in pins if anchor_kind(_pin_target_raw(p)) == "cwd"]
+    folded = [p for p in pins if anchor_kind(_pin_target_raw(p)) != "cwd"]
+
+    if cwd_pins:
+        tasks = {p.label: observe(p, anchor) for p in cwd_pins}
+        results = await asyncio.gather(*tasks.values())
+        observations = dict(zip(tasks.keys(), results))
+        for p in cwd_pins:
+            obs = observations.get(p.label)
+            shadow = shadows.get(p.label, PinShadow())
+            stale = (
+                shadow.hash is not None
+                and obs is not None
+                and obs.exists
+                and obs.hash != shadow.hash
+            )
+            missing = obs is not None and not obs.exists
+            lines.append(_render_result_block(p, obs, stale, missing, anchor))
+            lines.append("")
+
+    if folded:
+        lines.append(f"pins@{display} (moss ground frame {rel_doc.removesuffix('/GROUND.md') or '.'}):")
+        for p in folded:
+            desc = f"  # {p.description}" if p.description else ""
+            lines.append(f"  {p.label}:{p.verb}({_pin_kwargs(p)}){desc}")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # -- result block ---------------------------------------------------------
 
 
@@ -137,9 +210,9 @@ def _render_result_block(
     if missing:
         content = "[missing]"
     elif stale:
-        content = _render_pin_content(pin, anchor) + "\n[changed on disk]"
+        content = _render_pin_content(pin, anchor, obs) + "\n[changed on disk]"
     elif obs is not None and obs.exists:
-        content = _render_pin_content(pin, anchor)
+        content = _render_pin_content(pin, anchor, obs)
     elif obs is not None and not obs.exists:
         content = "[missing]"
     else:
@@ -152,7 +225,9 @@ def _render_result_block(
     )
 
 
-def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
+def _render_pin_content(
+    pin: Pin, anchor: Anchor, obs: Observation | None = None
+) -> str:
     """Dispatch per pin subclass."""
     if isinstance(pin, FilePin):
         return _content_file(pin, anchor)
@@ -162,10 +237,19 @@ def _render_pin_content(pin: Pin, anchor: Anchor) -> str:
         return _content_frontmatter(pin, anchor)
     if isinstance(pin, LsPin):
         return _content_ls(pin, anchor)
+    if isinstance(pin, ExecPin):
+        return _content_exec(pin, obs)
     return f"error: unknown pin type: {type(pin).__name__}"
 
 
 # -- per-kind content renderers -------------------------------------------
+
+
+def _content_exec(pin: ExecPin, obs: Observation | None) -> str:
+    """观察阶段已执行, 直接消费 payload — 一帧只跑一次进程."""
+    if obs is None or obs.payload is None:
+        return "[not yet observed]"
+    return _apply_budget(obs.payload, pin.arguments.budget)
 
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
@@ -194,7 +278,7 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
 
 def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
     root = anchor.ground
-    pattern = pin.arguments.pattern
+    pattern = pin.arguments.path
     if pattern.startswith("$"):
         try:
             resolved = resolve_path(pattern, anchor)
@@ -357,7 +441,7 @@ def _pin_kwargs(pin: Pin) -> str:
         if pin.arguments.budget is not None:
             parts.append(f"budget={pin.arguments.budget}")
     elif isinstance(pin, GlobPin):
-        parts.append(f'pattern="{pin.arguments.pattern}"')
+        parts.append(f'path="{pin.arguments.path}"')
         if pin.arguments.limit is not None:
             parts.append(f"limit={pin.arguments.limit}")
     elif isinstance(pin, FrontmatterPin):
@@ -374,6 +458,12 @@ def _pin_kwargs(pin: Pin) -> str:
             parts.append(f"depth={pin.arguments.depth}")
         if pin.arguments.limit is not None:
             parts.append(f"limit={pin.arguments.limit}")
+    elif isinstance(pin, ExecPin):
+        parts.append(f'ref="{pin.arguments.ref}"')
+        if pin.arguments.timeout != 10.0:
+            parts.append(f"timeout={pin.arguments.timeout:g}")
+        if pin.arguments.budget is not None:
+            parts.append(f"budget={pin.arguments.budget}")
     return ", ".join(parts)
 
 

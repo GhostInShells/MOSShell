@@ -1,3 +1,5 @@
+"""Mindflow — perception, thought, and action arbitration for concurrent duplex state management."""
+
 from typing import Callable, Coroutine, Protocol, Iterable, AsyncIterator, Any
 
 from typing_extensions import Self, Literal
@@ -15,9 +17,7 @@ import time
 import asyncio
 import enum
 
-"""
-Mindflow 架构设计. 解决 感知/执行/思考 三循环的全双工状态管理问题. 
-"""
+
 
 # 关于三循环:
 # 1. 思考循环: 模型接受信息, 思考并输出.
@@ -791,12 +791,30 @@ class Articulator(ABC):
         """
         pass
 
+    @abstractmethod
+    def is_aborted(self) -> bool:
+        """
+        Articulator 所在 Attention 是否已被 abort.
+        与 ``Action.is_aborted`` 对称 — 用于事件驱动的 abort 感知 (如 SafeMode gate
+        等待任务在 abort 联动取消时, 用它区分 abort 取消 vs 真·shutdown 取消).
+        """
+        pass
+
     def raise_observe(self, message: str) -> None:
         """
         抛出一个 ObserveError 方便快速退出调用栈.
         被 __aexit__ 捕获后, 会标记为需要下一轮观察.
         """
         raise ObserveError(message)
+
+    @abstractmethod
+    def observe(self, message: str) -> None:
+        """
+        非中断版本的 observe: 挂一条内观消息到当前 attention, 下一帧作为 percept.
+        与 ``raise_observe`` 的区别: 不抛异常, 不影响当前调用栈的执行顺序.
+        用于需要 "logos 继续执行 + 附一条给下一帧的观察" 的场景.
+        """
+        pass
 
     @abstractmethod
     async def send_logos(self, logos: Logos) -> None:

@@ -29,7 +29,7 @@ considered installed by default.
     moss nodes run .moss/nodes/tools/{name}/
 
 After launch, the node enters the Matrix network. Its channel commands
-appear in the model's context when accepted. Test via moss-repl.
+appear in the model's context when accepted. Test via moss-shell.
 -->
 
 ## Development

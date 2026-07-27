@@ -7,9 +7,9 @@ from ghoshell_container import Provider, IoCContainer, INSTANCE
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.tools.zenoh_helper import MatrixEnvNamespace
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 
-depend_zenoh()
+depend_matrix()
 import zenoh
 
 __all__ = ['ZenohTopicServiceProvider']

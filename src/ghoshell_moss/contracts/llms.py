@@ -1,3 +1,5 @@
+"""LLM provider contract — model configuration, client protocols, and provider resolution."""
+
 from typing import Literal, Iterable
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field

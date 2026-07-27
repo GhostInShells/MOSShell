@@ -122,6 +122,12 @@ class MockArticulator(Articulator):
     def abort(self, error: str | Exception | None) -> None:
         self._aborted = str(error) if error else "aborted"
 
+    def is_aborted(self) -> bool:
+        return self._aborted is not None
+
+    def observe(self, message: str) -> None:
+        pass
+
     def create_task(self, cor: Coroutine) -> asyncio.Future:
         return asyncio.ensure_future(cor)
 

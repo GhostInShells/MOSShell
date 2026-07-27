@@ -30,10 +30,12 @@ __all__ = [
     "GlobPin",
     "FrontmatterPin",
     "LsPin",
+    "ExecPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
+    "ExecArguments",
     "GroundConvention",
     "UpdateResult",
     "TemplateInfo",
@@ -93,7 +95,7 @@ class FileArguments(BaseModel):
 
 class GlobArguments(BaseModel):
     """glob verb 的 arguments."""
-    pattern: str = Field(description="glob pattern (*, **, ? 标准语义).")
+    path: str = Field(description="glob 路径 (*, **, ? 标准语义).")
     limit: int | None = Field(default=None, ge=1, description="命中路径数上限.")
     max_depth: int | None = Field(default=None, ge=1, description="** 递归深度上限.")
 
@@ -129,6 +131,27 @@ class LsArguments(BaseModel):
         ge=1,
         description="递归深度上限. 与 depth 取较小者.",
     )
+
+    model_config = {"extra": "allow"}
+
+
+class ExecArguments(BaseModel):
+    """exec verb 的 arguments.
+
+    授权模型 = Makefile 级信任: ref 指向场根子树内可执行文件, 场作者背书.
+    协议禁止内联 shell 字符串 (授权泄漏), 禁止跨场引用 (../, 绝对路径).
+
+    shebang 决定解释器 — 协议不管 sh/python/binary. Windows 无 chmod 位时
+    fallback 到扩展名 (未来实现).
+    """
+    ref: str = Field(
+        description="场根子树内的可执行文件相对路径. 不允许 ../, 不允许绝对路径.",
+    )
+    timeout: float = Field(
+        default=10.0, gt=0, le=60,
+        description="秒. 超时渲染 [timeout] 标记, 不静默.",
+    )
+    budget: int | None = Field(default=None, ge=1, description="stdout 字符数上限.")
 
     model_config = {"extra": "allow"}
 
@@ -201,6 +224,18 @@ class LsPin(Pin):
 
     verb: Literal["ls"] = "ls"
     arguments: LsArguments
+
+
+@_register("exec")
+class ExecPin(Pin):
+    """可执行文件注视 — observe 即执行, 对账 = hash(stdout).
+
+    授权模型: ref 指向场作者背书的场内可执行文件, 类比 Makefile target.
+    不允许内联 shell 字符串, 不允许跨场引用.
+    """
+
+    verb: Literal["exec"] = "exec"
+    arguments: ExecArguments
 
 
 # -- errors ------------------------------------------------------------------
@@ -314,13 +349,24 @@ class Ground(ABC):
 
     # -- 生命周期 -------------------------------------------------------------
 
+    @property
+    @abstractmethod
+    def dirty(self) -> bool:
+        """是否有未落盘的变更 (pin/unpin/update/模板注入).
+
+        只读消费 (frame/meta/observe) 不置 dirty — close 时跳过 sediment,
+        保证只读操作永不改写 GROUND.md.
+        """
+
     @abstractmethod
     async def load(self) -> None:
         """从 GROUND.md 恢复 pin 集 + body. 无 L0 文件 = 空集. K14 startup 消费."""
 
     @abstractmethod
     async def sediment(self) -> None:
-        """把当前 pin 集写回 GROUND.md 的 pin 段. 不动 frontmatter 和 body."""
+        """把当前 pin 集写回 GROUND.md 的 pin 段. 不动 frontmatter 和 body.
+
+        显式调用无条件写盘; dirty 检查是 close 的职责."""
 
     # -- 法链 -----------------------------------------------------------------
 

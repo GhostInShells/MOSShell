@@ -14,6 +14,7 @@ from ghoshell_moss.cli import (
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
     ground_cli, memento_cli,
 )
+from ghoshell_moss.depends import depend_matrix
 from typer.main import get_command
 from typer.models import DefaultPlaceholder
 
@@ -32,17 +33,26 @@ app.add_typer(start_cli.start_app, name="start", short_help="Orient yourself —
 
 app.add_typer(codex_cli.codex_app, name="codex", short_help="Runtime introspection and code evaluation tools")
 app.add_typer(project_cli.project_app, name="project", short_help="MOSS Project tools")
-app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 app.add_typer(ctml_cli.ctml_app, name="ctml", short_help="environment ctml manager")
 app.add_typer(howto_cli.howto_app, name="howtos", short_help="MOSS How-To knowledge base")
 app.add_typer(features_cli.features_app, name="features", short_help="AI-native feature tracking")
 app.add_typer(docs_cli.docs_app, name="docs", short_help="Systematic architecture reference docs (low frequency)")
 app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect available runtime modes")
-app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
-app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
 app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
 app.add_typer(memento_cli.memento_app, name="memento", short_help="Memento — cognitive-trajectory system (commit anchors, fork, annotate)")
+
+# Matrix-dependent groups: only register when zenoh is available.
+# All CLI modules import safely without zenoh — the check gates registration,
+# not import. A clean ``moss --help`` shouldn't list commands that can't run.
+try:
+    depend_matrix()
+except ImportError:
+    pass
+else:
+    app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
+    app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
+    app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
 
 
 @app.callback(invoke_without_command=True)

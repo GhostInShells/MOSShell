@@ -1,36 +1,30 @@
 """
-管理 ghoshell moss 第三方依赖的检查.
+管理 ghoshell_moss 第三方依赖的检查.
 """
 
 def depend_cli():
     try:
-        import typer
+        import typer, rich, dotenv  # noqa: F401
     except ImportError:
-        raise ImportError("Depend MOSS cli, please install by 'pip install ghoshell_moss[host]'")
+        raise ImportError("install ghoshell_moss[cli]")
 
-def depend_zenoh():
+def depend_matrix():
+    depend_cli()
     try:
-        import zenoh
+        import zenoh  # noqa: F401
     except ImportError:
-        raise ImportError(f"Depend zenoh, please install by 'pip install ghoshell_moss[matrix]' or 'ghoshell_moss[host]'")
+        raise ImportError("install ghoshell_moss[matrix]")
 
-
-def depend_circus():
+def depend_host():
+    depend_matrix()
     try:
-        import circus
+        import prompt_toolkit  # noqa: F401
+        import pexpect  # noqa: F401
     except ImportError:
-        raise ImportError(f"Depend circus, please install by 'pip install ghoshell_moss[host]'")
+        raise ImportError("install ghoshell_moss[host]")
 
-
-def depend_cli():
+def depend_ghost():
     try:
-        import typer
+        import pydantic_ai, anthropic  # noqa: F401
     except ImportError:
-        raise ImportError(f"Depend typer, please install by 'pip install ghoshell_moss[host]'")
-
-
-def depend_pydantic_ai():
-    try:
-        import pydantic_ai
-    except ImportError:
-        raise ImportError(f"Depend pydantic ai, please install by 'pip install ghoshell_moss[ghost]'")
+        raise ImportError("install ghoshell_moss[ghost]")

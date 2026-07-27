@@ -1,3 +1,5 @@
+"""Ghost agent blueprint — persistent intelligent agent with continuous memory and reflexivity."""
+
 import pathlib
 from typing import AsyncIterable, Optional
 from ghoshell_container import IoCContainer, Contracts, Provider

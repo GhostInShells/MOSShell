@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Coroutine
 
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 from prompt_toolkit.completion import Completer
 from typing_extensions import Self
 

@@ -104,16 +104,16 @@ moss ghosts show <name>            # 查看某个 Ghost 的详细信息
 ### 3.2 启动与交互
 
 ```
-moss-run-ghost <name>              # 终端中直接与 Ghost 对话
-moss-repl                          # 完整 TUI，选择 mode 和 ghost 后启动
+moss-ghost <name>              # 终端中直接与 Ghost 对话
+moss-shell                          # 完整 TUI，选择 mode 和 ghost 后启动
 ```
 
-`moss-run-ghost` 是轻量入口——启动 Host + GhostRuntime + 终端对话界面。`moss-repl` 是完整调试环境，三循环状态可见。
+`moss-ghost` 是轻量入口——启动 Host + GhostRuntime + 终端对话界面。`moss-shell` 是完整调试环境，三循环状态可见。
 
 ### 3.3 通过 MCP 连接
 
 ```bash
-moss-as-mcp                        # 启动 MCP server（默认端口 20773）
+moss-mcp                        # 启动 MCP server（默认端口 20773）
 ```
 
 配置 Claude Code 或其他 agent 连接后，agent 可以通过 MCP tools 与 Ghost 交互。

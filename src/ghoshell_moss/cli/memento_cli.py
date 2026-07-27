@@ -7,6 +7,7 @@ Storage root defaults to ``.memento/`` under the current directory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -441,3 +442,177 @@ def witness_status():
 @witness_app.command("snapshot", short_help="Trigger a witness snapshot (not yet implemented).")
 def witness_snapshot():
     print_info("Witness layer not implemented in this iteration.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# agent
+# ═══════════════════════════════════════════════════════════════════════════════
+
+agent_app = typer.Typer(no_args_is_help=True, short_help="Agent operations.")
+memento_app.add_typer(agent_app, name="agent")
+
+_AGENT_IMPORT_ERROR = (
+    "agent support requires pydantic-ai + anthropic extras. "
+    "Install with: pip install ghoshell-moss[ghost]"
+)
+
+
+def _owner_from_path(agent_path: Path) -> str:
+    """Derive owner name from agent file stem. translator.agent.py → translator."""
+    stem = agent_path.stem
+    return stem.removesuffix(".agent") if stem.endswith(".agent") else stem
+
+
+def _build_agent(agent_path: str):
+    """Build a MementoAgent from a .py file, with a friendly error if deps missing."""
+    try:
+        from ghoshell_moss.agents.memento_pydantic_agent import factory
+    except ImportError:
+        print_error(_AGENT_IMPORT_ERROR)
+        raise typer.Exit(code=1)
+    path = Path(agent_path).resolve()
+    if not path.is_file():
+        print_error(f"agent .py not found: {path}")
+        raise typer.Exit(code=1)
+    if not path.suffix == ".py":
+        print_warning(f"expected .py file, got {path.suffix!r}; attempting anyway")
+    return factory(path)
+
+
+def _resolve_agent_cwd(agent_path: Path, cwd: Optional[Path]) -> Path:
+    """Resolve cwd: explicit flag wins, else agent .py parent directory."""
+    if cwd is not None:
+        return cwd.resolve()
+    return agent_path.parent.resolve()
+
+
+def _resolve_memento(root: Optional[Path], owner: str):
+    """Resolve memento if the root exists, else return None."""
+    r = _resolve_root(root)
+    if r.exists():
+        return new_filesystem_memento(r, owner)
+    return None
+
+
+@agent_app.command("parse", short_help="Show the composed instruction (what the model sees).")
+def agent_parse(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+):
+    """Display the full system instruction that will be sent to the model.
+
+    This is the parse-vs-run parity guarantee: what you see here is exactly
+    what the model receives as its system text on `invoke`.
+    """
+    agent = _build_agent(agent_path)
+    instruction = agent.compose_instruction()
+    echo(instruction)
+    echo(f"\nsha: {agent.instruction_sha()}")
+
+
+@agent_app.command("invoke", short_help="Run the agent with a user prompt.")
+def agent_invoke(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+    prompt: str = typer.Argument(..., help="User prompt for the agent."),
+    owner: Optional[str] = typer.Option(
+        None, "--owner",
+        help="Owner name. Default: derived from file stem (translator.agent.py → translator).",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", "-b",
+        help="Line (branch) name. Default: main.",
+    ),
+    cwd: Optional[Path] = typer.Option(
+        None, "--cwd",
+        help="Working directory. Defaults to agent .py parent.",
+    ),
+    root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+):
+    """Run one agent invocation. Returns the model's final answer on stdout.
+
+    Owner defaults to the agent file stem (translator.agent.py → translator).
+    Branch defaults to "main". When the memento root exists, moments are
+    recorded to that line's staging.
+    """
+    agent = _build_agent(agent_path)
+    agent_py_path = Path(agent_path).resolve()
+    resolved_cwd = _resolve_agent_cwd(agent_py_path, cwd)
+    resolved_owner = owner or _owner_from_path(agent_py_path)
+
+    memento = _resolve_memento(root, resolved_owner)
+
+    try:
+        result = asyncio.run(agent.invoke(
+            user_prompt=prompt,
+            memento=memento,
+            line_name=branch,
+            cwd=resolved_cwd,
+            metadata={"prompt_sha": agent.instruction_sha()},
+        ))
+    except Exception as exc:
+        print_error(f"invoke failed: {exc}")
+        raise typer.Exit(code=1)
+
+    echo(result)
+
+
+@agent_app.command("export-context", short_help="Export current context as markdown.")
+def agent_export_context(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+    owner: Optional[str] = typer.Option(
+        None, "--owner",
+        help="Owner name. Default: derived from file stem.",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", "-b",
+        help="Line (branch) name. Default: main.",
+    ),
+    root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+):
+    """Export the agent-perspective current context as markdown.
+
+    Includes system prompt, folded window, and recent staging moments.
+    """
+    agent = _build_agent(agent_path)
+    resolved_owner = owner or _owner_from_path(Path(agent_path).resolve())
+    memento = _resolve_memento(root, resolved_owner)
+    if memento is None:
+        print_info("no memento root found; export may be incomplete.")
+        raise typer.Exit(code=0)
+    try:
+        md = agent.export_context_md(memento, branch)
+    except NotImplementedError:
+        print_info("export-context not yet implemented in this agent version.")
+        raise typer.Exit(code=0)
+    echo(md)
+
+
+@agent_app.command("describe", short_help="Agent-perspective line summary.")
+def agent_describe(
+    agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
+    owner: Optional[str] = typer.Option(
+        None, "--owner",
+        help="Owner name. Default: derived from file stem.",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", "-b",
+        help="Line (branch) name. Default: main.",
+    ),
+    root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+):
+    """Show an agent's semantic summary of a memento line.
+
+    Contrast with 'moss memento branch log/window' which gives the structural
+    view (commit / moment / trailer). This gives the agent's own interpretation.
+    """
+    agent = _build_agent(agent_path)
+    resolved_owner = owner or _owner_from_path(Path(agent_path).resolve())
+    memento = _resolve_memento(root, resolved_owner)
+    if memento is None:
+        print_info("no memento root found; describe requires a memento line.")
+        raise typer.Exit(code=0)
+    try:
+        summary = agent.describe_line(memento, branch)
+    except NotImplementedError:
+        print_info("describe not yet implemented in this agent version.")
+        raise typer.Exit(code=0)
+    echo(summary)

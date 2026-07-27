@@ -11,6 +11,9 @@ import re
 import threading
 from pathlib import Path
 
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 import pexpect
 
 __all__ = ["PexpectSession"]

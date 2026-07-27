@@ -2,6 +2,9 @@
 from abc import ABC, abstractmethod
 from collections import deque
 from typing import Iterable, Generic, TypeVar, Callable, Protocol, TypeAlias, Any, Optional
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 from prompt_toolkit import PromptSession
 from typing_extensions import Self
 from rich.console import Console, RenderableType
@@ -694,6 +697,22 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         """要在界面里输出告别信息. """
         self._direct_print("good bye")
 
+    def _pre_handle_input(self, item: str) -> bool:
+        """输入劫持钩子: 返回 True = 已消化, 主 loop 跳过默认分派. 默认 no-op.
+
+        子类覆盖用于状态相关的输入重定向 (例如 SafeMode 有 pending 时把 prompt
+        转成审批输入). 空 item 也会进此钩子.
+        """
+        return False
+
+    def _get_input_placeholder(self):
+        """prompt 输入行 placeholder 钩子 — 返回 prompt_toolkit AnyFormattedText.
+
+        默认返回 None. 子类可返回 str / FormattedText / callable, 后者每次渲染
+        重新求值, 用于随状态变化的动态提示.
+        """
+        return None
+
     def default_key_bindings(self) -> KeyBindings:
         """定义一个可以修改的函数注册不同的快捷键. """
         kb = KeyBindings()
@@ -895,7 +914,10 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                     complete_while_typing=True,
                     complete_in_thread=True,
                     bottom_toolbar=self.get_bottom_toolbar(),
+                    placeholder=self._get_input_placeholder(),
                 )
+            if self._pre_handle_input(item):
+                continue
             if not item:
                 continue
             # default command check

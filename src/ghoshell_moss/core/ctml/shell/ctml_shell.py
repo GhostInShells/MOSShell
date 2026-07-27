@@ -26,7 +26,7 @@ from ghoshell_moss.core.concepts.command import (
     CommandWrapper,
 )
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
-from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell
+from ghoshell_moss.core.concepts.shell import InterpreterKind, MOSShell, Tracer
 from ghoshell_moss.core.concepts.topic import Topic, TopicModel
 from ghoshell_moss.core.concepts.errors import PausedError
 from ghoshell_moss.core.ctml.interpreter import CTMLInterpreter
@@ -120,6 +120,10 @@ class CTMLShell(MOSShell[PrimeChannel]):
         # --- hook? --- #
         self._wait_any_task: deque[ThreadSafeFuture[CommandTask]] = deque()
 
+        # --- tracers --- #
+        # fire and forget; 遍历时 skip is_closed / not is_running, 异常 catch + log.
+        self._tracers: list[Tracer] = []
+
     @property
     def container(self) -> IoCContainer:
         return self._container
@@ -212,6 +216,16 @@ class CTMLShell(MOSShell[PrimeChannel]):
             else:
                 self.logger.exception(exc_val)
         self.logger.info("%s shell is exiting", self._log_prefix)
+        # 若还持有一个 outstanding interpreter, 主动 close 它 —
+        # close 的 on_close_callback 会 fire on_interpreter_stopped 给 tracer, 保证收尾信号不漏.
+        outstanding = self._interpreter
+        if outstanding is not None:
+            self._interpreter = None
+            if outstanding.is_running() or not outstanding.is_closed():
+                try:
+                    await outstanding.close(cancel_executing=True)
+                except Exception:
+                    self.logger.exception("%s close outstanding interpreter failed", self._log_prefix)
         await self._exit_stack.__aexit__(exc_type, exc_val, exc_tb)
         self.logger.info("%s exited", self._log_prefix)
         return self._capture_errors_on_exit or None
@@ -386,10 +400,13 @@ class CTMLShell(MOSShell[PrimeChannel]):
         elif kind == "append":
             # append 会追加命令, 而不是清除.
             callback = self._interpreter_callback_task
-            if self._interpreter and self._interpreter.is_running():
+            old_interpreter = self._interpreter
+            if old_interpreter is not None and old_interpreter.is_running():
                 # 停止旧的 interpreter 继续提交新的信息.
-                undone_tasks = self._interpreter.incomplete_tasks()
-                interrupted_interpretation = await self._interpreter.close(cancel_executing=False)
+                # (fire on_interpreter_stopped 由 old_interpreter.close 的 on_close_callback 触发,
+                # 不在这里显式 fire)
+                undone_tasks = old_interpreter.incomplete_tasks()
+                interrupted_interpretation = await old_interpreter.close(cancel_executing=False)
             self._interpreter = None
 
         # 阻塞等待刷新结果.
@@ -412,6 +429,7 @@ class CTMLShell(MOSShell[PrimeChannel]):
             clear_after_exit=clear_after_exit,
             moss_static=self._moss_static_cache,
             task_context=task_context,
+            on_close_callback=self._fire_on_interpreter_stopped,
         )
 
         # 会接受回调的话, 更新最新的 interpreter.
@@ -515,26 +533,63 @@ class CTMLShell(MOSShell[PrimeChannel]):
                 ft = self._wait_any_task.popleft()
                 if not ft.done():
                     ft.set_result(task)
+            # tracer hooks — fire pushed + wire done
+            self._fire_on_task_pushed(task)
+            task.add_done_callback(self._on_task_done_hook)
 
         self._main_runtime.push_task(*tasks)
 
+    # --- tracers --- #
+
+    def add_tracer(self, tracer: Tracer) -> None:
+        self._tracers.append(tracer)
+
+    def _fire_on_task_pushed(self, task: CommandTask) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_task_pushed(task)
+            except Exception:
+                self.logger.exception("%s tracer.on_task_pushed failed", self._log_prefix)
+
+    def _on_task_done_hook(self, task: CommandTask) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_task_done(task)
+            except Exception:
+                self.logger.exception("%s tracer.on_task_done failed", self._log_prefix)
+
+    def _fire_on_interpreter_stopped(self, interpreter: Interpreter) -> None:
+        for tracer in self._tracers:
+            try:
+                if tracer.is_closed() or not tracer.is_running():
+                    continue
+                tracer.on_interpreter_stopped(interpreter)
+            except Exception:
+                self.logger.exception("%s tracer.on_interpreter_stopped failed", self._log_prefix)
+
     async def stop_interpretation(self) -> Optional[Interpretation]:
         self._check_running()
-        if self._interpreter is not None and self._interpreter.is_running():
-            # 考虑线程安全问题. 先简单做一层防御.
-            old = self._interpreter
-            self._interpreter = None
-            stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
-            # 防止交叉感染.
-            future = asyncio.get_running_loop().create_future()
+        old = self._interpreter
+        if old is None:
+            return None
+        self._interpreter = None
+        if not old.is_running():
+            return None
+        # 考虑线程安全问题. 先简单做一层防御.
+        stop_task = self._event_loop.create_task(old.close(cancel_executing=True))
+        # 防止交叉感染. (on_interpreter_stopped fire 由 old.close 的 on_close_callback 触发, 不在这里显式 fire)
+        future = asyncio.get_running_loop().create_future()
 
-            def done_callback(_t: asyncio.Task) -> None:
-                if not future.done():
-                    future.set_result(None)
+        def done_callback(_t: asyncio.Task) -> None:
+            if not future.done():
+                future.set_result(None)
 
-            stop_task.add_done_callback(done_callback)
-            return await future
-        return None
+        stop_task.add_done_callback(done_callback)
+        return await future
 
     async def wait_until_closed(self) -> None:
         if not self.is_running():

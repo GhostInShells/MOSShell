@@ -7,6 +7,9 @@ import struct
 import time
 from typing import Callable
 
+from ghoshell_moss.depends import depend_host
+
+depend_host()
 import miniaudio
 import numpy as np
 

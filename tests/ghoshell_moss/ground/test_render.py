@@ -111,18 +111,18 @@ class TestContentGlob:
         return Anchor(ground=tmp_path, cwd=tmp_path)
 
     def test_no_mtime_in_output(self, anchor):
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.py"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="*.py"))
         result = _content_glob(pin, anchor)
         assert "mtime" not in result
         assert "B" in result or "K" in result
 
     def test_limit_truncation(self, anchor):
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.py", limit=1))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="*.py", limit=1))
         result = _content_glob(pin, anchor)
         assert "showing 1 of 2" in result
 
     def test_no_matches(self, anchor):
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.rs"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="*.rs"))
         result = _content_glob(pin, anchor)
         assert result == "(no matches)"
 

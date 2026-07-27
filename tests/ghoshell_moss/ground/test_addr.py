@@ -73,10 +73,17 @@ class TestResolvePath:
         with pytest.raises(PathOutsideRootError, match="bare absolute"):
             resolve_path("/etc/passwd", anchor)
 
-    def test_anchor_without_slash_rejected(self, tmp_path):
+    def test_bare_anchor_resolves_to_anchor_itself(self, tmp_path):
+        # bare $GROUND / $CWD 合法, 指锚点自身 (features 场用 path: $CWD 声明 ls)
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        with pytest.raises(PathOutsideRootError, match="missing path separator"):
-            resolve_path("$GROUND", anchor)
+        assert resolve_path("$GROUND", anchor) == tmp_path.resolve()
+        assert resolve_path("$CWD", anchor) == tmp_path.resolve()
+
+    def test_anchor_suffix_ambiguous_rejected(self, tmp_path):
+        # $CWDfoo — 锚点后紧跟字符, 语义歧义, 拒绝
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        with pytest.raises(PathOutsideRootError, match="anchor suffix ambiguous"):
+            resolve_path("$GROUNDfoo", anchor)
 
     def test_nonexistent_file_still_resolves(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())

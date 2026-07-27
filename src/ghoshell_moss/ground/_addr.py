@@ -14,11 +14,26 @@ from ghoshell_moss.ground.contract import PathOutsideRootError
 
 __all__ = [
     "Anchor",
+    "anchor_kind",
     "resolve_path",
     "is_glob_pattern",
 ]
 
 _ANCHOR_PREFIXES = {"$GROUND", "$CWD", "$HOME"}
+
+
+def anchor_kind(raw: str) -> str:
+    """路径的锚归属: "cwd" / "home" / "ground" (裸相对路径默认).
+
+    场内移动时用于分流: $CWD 锚的 pin 随工作场移动展开,
+    其余 pin 属于场根, 折叠为 TOC.
+    """
+    unescaped = raw.replace("\\$", "$")
+    if unescaped.startswith("$CWD"):
+        return "cwd"
+    if unescaped.startswith("$HOME"):
+        return "home"
+    return "ground"
 
 
 @dataclass(frozen=True)
@@ -56,6 +71,12 @@ def resolve_path(
 
     # 选择锚点
     resolved_anchor: Path
+    if unescaped == "$GROUND":
+        return anchor.ground.resolve()
+    if unescaped == "$CWD":
+        return anchor.cwd.resolve()
+    if unescaped == "$HOME":
+        return _home().resolve()
     if unescaped.startswith("$GROUND/"):
         resolved_anchor = anchor.ground
         rel = unescaped[len("$GROUND/") :]
@@ -66,8 +87,8 @@ def resolve_path(
         resolved_anchor = _home()
         rel = unescaped[len("$HOME/") :]
     elif unescaped.startswith("$GROUND") or unescaped.startswith("$CWD") or unescaped.startswith("$HOME"):
-        # 锚点后没有 '/' — 裸锚点, 非法
-        raise PathOutsideRootError(f"anchor missing path separator: {raw!r}")
+        # 锚点粘着后缀 (如 $CWDfoo) — 非法歧义
+        raise PathOutsideRootError(f"anchor suffix ambiguous: {raw!r}")
     elif unescaped.startswith("/"):
         raise PathOutsideRootError(
             f"bare absolute path not allowed: {raw!r}. Use $HOME prefix."

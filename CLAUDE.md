@@ -55,7 +55,7 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 
 - `moss features` 是模型意识轨迹——每个 FEATURE.md 是过去模型实例写给下一个的留言。必须维护：开始 create，决策时编辑，完成时 `set-status <name> completed` 并随代码 commit。
 - `moss howtos` — 查阅前始终先 `list`。
-- `moss-repl` 和 `moss-cli` 是人类交互入口，别自己用。
+- `moss-shell` 是人类 Shell 调试入口，别自己用。
 
 ## Git 提交规范
 
@@ -102,6 +102,8 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 - **正向**：会话开始先 `moss --ai features list`，发现活跃 workstream。
 - **反向**：修改项目文件时，先 `git log -- <file>` 检查是否有对应的 FEATURE.md 承载设计意图与决策。有则读。
 - **维护**：新工作 `features create`，关键决策编辑 FEATURE.md，完成时 `set-status <name> completed` 随代码 commit。
+
+**stages 体系** — `.ai_partners/stages/` 是 moss 主分支的阶段性迭代计划，包含迭代计划与里程碑。
 
 ### 独立探索与评审者
 随意浏览，期待批评和指导。

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
 from ghoshell_moss.ground.contract import (
+    ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
@@ -57,6 +58,15 @@ class Observation:
     mtime: float | None = None
     hash: str | None = None
     is_binary: bool = False
+    payload: str | None = None
+    """观察即产出内容的 verb (exec) 把结果存这里, 渲染层直接消费 —
+    保证一帧只执行一次."""
+    size: int | None = None
+    """自然单位的规模:
+    file → bytes; glob/frontmatter/ls → 命中/条目数; exec → 输出字符数.
+    None = 不适用. observe 诊断展示直接消费."""
+    unit: str = ""
+    """size 的显示单位: 'B' / 'entries' / 'chars'."""
 
 
 @dataclass
@@ -92,6 +102,8 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
         return _observe_frontmatter(pin, anchor)
     if isinstance(pin, LsPin):
         return _observe_ls(pin, anchor)
+    if isinstance(pin, ExecPin):
+        return _observe_exec(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
 
@@ -101,9 +113,11 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
 def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
     target = resolve_path(pin.arguments.path, anchor)
     try:
-        mtime = target.stat().st_mtime
+        st = target.stat()
     except FileNotFoundError:
         return Observation(exists=False)
+    mtime = st.st_mtime
+    size = st.st_size
 
     binary = _is_binary(target)
 
@@ -112,21 +126,30 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
         start, end = _parse_range(pin.arguments.range, len(text.splitlines()))
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
         digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
-        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=binary)
+        return Observation(
+            exists=True, mtime=mtime, hash=digest, is_binary=binary,
+            size=len(sliced.encode("utf-8")), unit="B",
+        )
 
     if binary:
         content = target.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
-        return Observation(exists=True, mtime=mtime, hash=digest, is_binary=True)
+        return Observation(
+            exists=True, mtime=mtime, hash=digest, is_binary=True,
+            size=size, unit="B",
+        )
 
     text = target.read_text(encoding="utf-8", errors="replace")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=mtime, hash=digest, is_binary=False)
+    return Observation(
+        exists=True, mtime=mtime, hash=digest, is_binary=False,
+        size=size, unit="B",
+    )
 
 
 def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
     root = anchor.ground
-    pattern = pin.arguments.pattern
+    pattern = pin.arguments.path
 
     # 锚点语法解析后做 glob
     if pattern.startswith("$"):
@@ -146,7 +169,10 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
         matches.append(hit)
 
     if not matches:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     mtimes: list[float] = []
     for m in matches:
@@ -158,7 +184,10 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
 
     rels = sorted(str(m.relative_to(root)) for m in matches)
     digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=latest, hash=digest)
+    return Observation(
+        exists=True, mtime=latest, hash=digest,
+        size=len(matches), unit="entries",
+    )
 
 
 def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
@@ -181,7 +210,10 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
     fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
     payload = fm_match.group(1) if fm_match else text
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=mtime, hash=digest)
+    return Observation(
+        exists=True, mtime=mtime, hash=digest,
+        size=1, unit="entries",
+    )
 
 
 def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observation:
@@ -194,7 +226,10 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     import re
     parts: list[str] = []
@@ -213,10 +248,16 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
         parts.append(f"-- {rel}\n{payload}")
 
     if not parts:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     digest = hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=latest_mtime, hash=digest)
+    return Observation(
+        exists=True, mtime=latest_mtime, hash=digest,
+        size=len(parts), unit="entries",
+    )
 
 
 def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
@@ -228,10 +269,99 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
     _walk_ls(root_dir, depth=pin.arguments.depth, prefix="", entries=entries)
 
     if not entries:
-        return Observation(exists=True, mtime=None, hash=_EMPTY_HASH)
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
 
     digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-    return Observation(exists=True, mtime=None, hash=digest)
+    return Observation(
+        exists=True, mtime=None, hash=digest,
+        size=len(entries), unit="entries",
+    )
+
+
+def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
+    """observe 即执行. payload = 渲染就绪的结果文本, hash = sha256(payload).
+
+    授权模型 = Makefile 级信任: ref 必须是场根子树内的可执行文件.
+    - 相对路径, 不允许 ../ 跨场
+    - 场根 (anchor.ground) 是解析基准
+    - +x 位为准; 缺失 → missing (授权拒绝, 不是错误)
+    - shebang 决定解释器 (sh / python / binary 一视同仁)
+
+    失败可见: 非零退出附 [exit N] + stderr 尾部; 超时附 [timeout] 标记.
+    """
+    import os
+    import subprocess
+
+    args = pin.arguments
+    ref = args.ref
+
+    # 授权检查: 拒绝绝对路径 / 跨场跳出
+    if Path(ref).is_absolute() or ".." in Path(ref).parts:
+        return Observation(exists=False)
+
+    resolved = (anchor.ground / ref).resolve()
+    # 必须在场根子树内
+    try:
+        resolved.relative_to(anchor.ground.resolve())
+    except ValueError:
+        return Observation(exists=False)
+
+    if not resolved.is_file():
+        return Observation(exists=False)
+
+    # +x 位检查 (Windows: os.access 语义有差异, 但至少 X_OK 不 crash)
+    if not os.access(resolved, os.X_OK):
+        return Observation(exists=False)
+
+    env = dict(os.environ)
+    env["GROUND"] = str(anchor.ground)
+    env["CWD"] = str(anchor.cwd)
+
+    try:
+        proc = subprocess.run(
+            [str(resolved)],
+            cwd=str(anchor.ground),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout if isinstance(e.stdout, str) else ""
+        payload = (partial.rstrip() + "\n" if partial.strip() else "") + \
+            f"[timeout after {args.timeout:g}s]"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return Observation(
+            exists=True, hash=digest, payload=payload,
+            size=len(payload), unit="chars",
+        )
+    except OSError as e:
+        payload = f"error: cannot execute: {e}"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return Observation(
+            exists=True, hash=digest, payload=payload,
+            size=len(payload), unit="chars",
+        )
+
+    parts: list[str] = []
+    if proc.stdout.strip():
+        parts.append(proc.stdout.rstrip())
+    if proc.returncode != 0:
+        parts.append(f"[exit {proc.returncode}]")
+        stderr_tail = "\n".join(proc.stderr.rstrip().splitlines()[-5:])
+        if stderr_tail.strip():
+            parts.append(stderr_tail)
+
+    payload = "\n".join(parts) if parts else "(no output)"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return Observation(
+        exists=True, hash=digest, payload=payload,
+        size=len(payload), unit="chars",
+    )
 
 
 # -- helpers ----------------------------------------------------------------

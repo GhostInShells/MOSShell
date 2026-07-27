@@ -1,3 +1,5 @@
+"""Configuration contract — typed config schemas, YAML stores, and IoC bootstrapping."""
+
 import yaml
 from abc import ABC, abstractmethod
 from typing import TypeVar, Type, Optional, Any, ClassVar, Callable

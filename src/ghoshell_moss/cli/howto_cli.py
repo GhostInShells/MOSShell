@@ -82,7 +82,7 @@ def list_docs(
     print_simple_table(
         data=rows,
         headers=["Path", "Title", "Description"],
-        title=f"MOSS How-To ({len(metas)} docs)",
+        title=f"MOSS How-To ({len(rows)} docs)",
     )
 
 

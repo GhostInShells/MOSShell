@@ -1,6 +1,6 @@
 [project]
 name = "ghoshell-moss"
-version = "0.1.0-beta"
+version = "0.1.0-beta1"
 description = "LLM-oriented operating system with streaming interpreting shell, and Intelligent Ghost inside it"
 authors = [{ name = "thirdgerb" }, { name = "17wang" }]
 license = { text = "Apache License 2.0" }
@@ -23,27 +23,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
-redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
-
-ghost = [
-    "pydantic-ai>=1.90.0",
-    "anthropic>=0.84.0",
+# Core layers — each includes all deps of the layer below
+cli = [
+    "typer>=0.24.1",
+    "rich",                       # was implicit via typer
+    "python-dotenv>=1.0.0",       # was in [matrix], needed by Project.bootstrap()
 ]
-
-
 matrix = [
-    "prompt-toolkit>=3.0.52",
     "typer>=0.24.1",
-    "eclipse-zenoh>=1.8.0",
+    "rich",
     "python-dotenv>=1.0.0",
+    "eclipse-zenoh>=1.8.0",       # matrix 唯一新增
 ]
-
 host = [
-    "eclipse-zenoh>=1.8.0",
-    "pexpect>=4.9.0",
-    "prompt-toolkit>=3.0.52",
     "typer>=0.24.1",
+    "rich",
+    "python-dotenv>=1.0.0",
+    "eclipse-zenoh>=1.8.0",
+    "prompt-toolkit>=3.0.52",
+    "pexpect>=4.9.0",
     "miniaudio>=0.67",
     "uvloop>=0.22.1",
     "websockets>=15.0.1",
@@ -51,17 +49,20 @@ host = [
     "fastmcp>=3.1.1",
     "loadenv>=0.1.1",
 ]
-web = [
-    "playwright>=1.60.0",
+ghost = [
+    "pydantic-ai>=1.90.0",
+    "anthropic>=0.84.0",
 ]
+
+# Bridges — optional transport backends
+zmq = ["zmq>=0.0.0", "aiozmq>=1.0.0"]
+redis = ["fakeredis>=2.32.1", "redis>=7.0.1"]
 
 [project.scripts]
 moss = "ghoshell_moss.cli:main_entry"
-moss-cli = "ghoshell_moss.cli.cli_controller:main"
-moss-repl = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
-moss-as-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
-
-moss-run-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
+moss-shell = 'ghoshell_moss.cli.moss_debug_repl:moss_debug_repl_main'
+moss-ghost = 'ghoshell_moss.cli.ghost_run:ghost_run_main'
+moss-mcp = 'ghoshell_moss.cli.moss_as_mcp:main'
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -78,8 +78,11 @@ class DefaultGroundSet(GroundSet):
                 template_body = contents.body
                 template_pins = contents.pins
 
-        # 从 GROUND.md 加载 convention (没有 GROUND.md 时为空)
-        contents = await asyncio.to_thread(load_l0, dir_abs)
+        # 从 doc (法锚) 加载 convention — doc 缺省 = dir/GROUND.md,
+        # doc≠dir 时法来自别处 (场内移动/便携法单元, SPEC §7.1)
+        contents = await asyncio.to_thread(
+            load_l0, doc_path.parent, doc_path.name
+        )
         convention = contents.convention
 
         # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先
@@ -105,6 +108,10 @@ class DefaultGroundSet(GroundSet):
         ground._body = body
         for p in pins:
             ground._pins[p.label] = p
+        # 模板注入的 pins 尚未落盘 → 标 dirty, 让 close 触发 sediment.
+        # 无模板时 open 只是加载既有 GROUND.md, 保持 clean.
+        if template_pins and pins is template_pins:
+            ground._dirty = True
         self._active[final_label] = ground
         self._label_by_path[key] = final_label
         return ground
@@ -113,7 +120,10 @@ class DefaultGroundSet(GroundSet):
         if label not in self._active:
             raise KeyError(label)
         ground = self._active[label]
-        await ground.sediment()
+        # 只在内存有未落盘变更时写盘 — 只读消费 (frame/meta/observe)
+        # 永不改写 GROUND.md.
+        if ground.dirty:
+            await ground.sediment()
         del self._active[label]
         for path_key, mapped in list(self._label_by_path.items()):
             if mapped == label:

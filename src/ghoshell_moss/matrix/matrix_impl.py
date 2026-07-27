@@ -16,7 +16,8 @@ from typing_extensions import Self
 from ghoshell_container import Container, IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, ResourceRegistry
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, \
+    ResourceRegistry
 from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
@@ -189,7 +190,7 @@ class MatrixImpl(Matrix):
            "另造一个 ready 信号 future", 实际原意是 "future = task 生命周期,
            走完 = 膜下线". 一字之差, 语义倒过来.
 
-        moss-as-mcp 的 TTS 之所以还能说话, 是因为外层 task 事实上跑起了
+        moss-mcp 的 TTS 之所以还能说话, 是因为外层 task 事实上跑起了
         `arun_until_closed`, provider 副作用生效; 只是所有 `await` 调用者
         拿到的 future 是坏的. 这种"表面工作 + 隐性坏 API"是最难诊断的漂移形态.
         """
@@ -777,6 +778,8 @@ class MatrixImpl(Matrix):
         if pulled is not None:
             # 只在 pulled 不是 root moss logger 时覆写 (避免层级混乱)
             self._logger = pulled if isinstance(pulled, logging.Logger) else self._logger
+        else:
+            self._container.set(LoggerItf, self._logger)
 
         # -- async 阶段 -- #
         try:

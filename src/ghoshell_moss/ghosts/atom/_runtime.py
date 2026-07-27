@@ -5,6 +5,9 @@ from ghoshell_moss.core.blueprint.mindflow import Articulator, Moment, Reaction
 from ghoshell_moss.contracts.logger import LoggerItf, get_moss_logger
 from ghoshell_moss.message import Message
 from ghoshell_container import IoCContainer
+from ghoshell_moss.depends import depend_ghost
+
+depend_ghost()
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 

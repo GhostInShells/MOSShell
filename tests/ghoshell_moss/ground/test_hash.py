@@ -8,6 +8,8 @@ import pytest
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._hash import Observation, PinShadow, observe, observe_sync
 from ghoshell_moss.ground.contract import (
+    ExecArguments,
+    ExecPin,
     FileArguments,
     FilePin,
     FrontmatterArguments,
@@ -73,14 +75,14 @@ class TestGlobPinObservation:
         (tmp_path / "a.py").write_text("a")
         (tmp_path / "b.py").write_text("b")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="*.py"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.hash == _sha256_text("a.py\nb.py")
 
     def test_empty_hit_is_still_exists(self, tmp_path):
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="g", arguments=GlobArguments(pattern="nonexistent-*"))
+        pin = GlobPin(label="g", arguments=GlobArguments(path="nonexistent-*"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         assert obs.mtime is None
@@ -145,7 +147,7 @@ class TestGlobIgnore:
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "__pycache__" / "cached.py").write_text("cache")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
-        pin = GlobPin(label="py", arguments=GlobArguments(pattern="**/*.py"))
+        pin = GlobPin(label="py", arguments=GlobArguments(path="**/*.py"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
         # only a.py, __pycache__/cached.py excluded
@@ -178,3 +180,112 @@ class TestObservation:
         o = Observation(exists=True, mtime=1.0, hash="abc")
         with pytest.raises(Exception):
             o.exists = False  # type: ignore[misc]
+
+
+class TestExecPinObservation:
+    """ExecPin 授权模型 — Makefile 级信任, 场根子树内 +x 文件."""
+
+    def _make_script(self, tmp_path: Path, name: str, content: str) -> Path:
+        script = tmp_path / name
+        script.write_text(content)
+        script.chmod(0o755)
+        return script
+
+    def test_runs_and_captures_stdout(self, tmp_path):
+        self._make_script(tmp_path, "hello.sh", "#!/bin/sh\necho hello\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="hello.sh"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists
+        assert obs.payload == "hello"
+        assert obs.unit == "chars"
+
+    def test_env_ground_and_cwd_injected(self, tmp_path):
+        cwd = tmp_path / "sub"
+        cwd.mkdir()
+        self._make_script(
+            tmp_path, "envdump.sh",
+            '#!/bin/sh\necho "GROUND=$GROUND"\necho "CWD=$CWD"\n',
+        )
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=cwd.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="envdump.sh"))
+        obs = observe_sync(pin, anchor)
+        assert f"GROUND={tmp_path.resolve()}" in obs.payload
+        assert f"CWD={cwd.resolve()}" in obs.payload
+
+    def test_rejects_absolute_path(self, tmp_path):
+        self._make_script(tmp_path, "hi.sh", "#!/bin/sh\necho hi\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(
+            label="x",
+            arguments=ExecArguments(ref=str(tmp_path / "hi.sh")),
+        )
+        obs = observe_sync(pin, anchor)
+        # 绝对路径 = 授权拒绝, 报 missing
+        assert obs.exists is False
+
+    def test_rejects_parent_traversal(self, tmp_path):
+        # 场外脚本
+        outer = tmp_path.parent / "outer.sh"
+        outer.write_text("#!/bin/sh\necho leaked\n")
+        outer.chmod(0o755)
+        try:
+            anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+            pin = ExecPin(
+                label="x",
+                arguments=ExecArguments(ref="../outer.sh"),
+            )
+            obs = observe_sync(pin, anchor)
+            assert obs.exists is False
+        finally:
+            outer.unlink(missing_ok=True)
+
+    def test_missing_ref_is_missing(self, tmp_path):
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="nope.sh"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is False
+
+    def test_no_exec_bit_is_missing(self, tmp_path):
+        script = tmp_path / "no-x.sh"
+        script.write_text("#!/bin/sh\necho hi\n")
+        # 无 +x
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="no-x.sh"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is False
+
+    def test_nonzero_exit_visible(self, tmp_path):
+        self._make_script(
+            tmp_path, "fail.sh",
+            "#!/bin/sh\necho oops\necho bad >&2\nexit 3\n",
+        )
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="fail.sh"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists
+        assert "[exit 3]" in obs.payload
+        assert "bad" in obs.payload  # stderr tail
+
+    def test_timeout_visible(self, tmp_path):
+        self._make_script(tmp_path, "slow.sh", "#!/bin/sh\nsleep 5\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = ExecPin(
+            label="x",
+            arguments=ExecArguments(ref="slow.sh", timeout=0.2),
+        )
+        obs = observe_sync(pin, anchor)
+        assert obs.exists
+        assert "[timeout" in obs.payload
+
+    def test_cwd_is_ground_root(self, tmp_path):
+        # exec 的进程 cwd = $GROUND, 不是 anchor.cwd
+        self._make_script(tmp_path, "pwd.sh", "#!/bin/sh\npwd\n")
+        subdir = tmp_path / "deep"
+        subdir.mkdir()
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=subdir.resolve())
+        pin = ExecPin(label="x", arguments=ExecArguments(ref="pwd.sh"))
+        obs = observe_sync(pin, anchor)
+        # macOS 有 /private prefix, 用 resolve 对齐
+        assert str(tmp_path.resolve()) in obs.payload
+        assert "deep" not in obs.payload.strip().split("\n")[-1]

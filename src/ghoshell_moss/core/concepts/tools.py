@@ -70,6 +70,8 @@ class ToolMeta(BaseModel):
         )
 
     def to_anthropic_tool_param(self) -> 'ToolParam':
+        from ghoshell_moss.depends import depend_ghost
+        depend_ghost()
         from anthropic.types import ToolParam
         return ToolParam(
             input_schema=self.parameters,
@@ -137,6 +139,8 @@ class CommandAsTool(Generic[R]):
         """
         return pydantic tool return.
         """
+        from ghoshell_moss.depends import depend_ghost
+        depend_ghost()
         from pydantic_ai import ToolReturn
         r, messages = await self.task_call(*args, **kwargs)
         content = None
@@ -163,6 +167,8 @@ class CommandAsTool(Generic[R]):
         """
         adapt into pydantic tool
         """
+        from ghoshell_moss.depends import depend_ghost
+        depend_ghost()
         from pydantic_ai import Tool
         meta = self.command.meta()
         return Tool.from_schema(

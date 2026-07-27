@@ -616,3 +616,65 @@ K62~K66 已锁定抽象方向. 实现分三轮:
 - CTML channel 装配 (K14)
 - pin bash (独立 feature)
 - Ghost 认知场初始化
+
+---
+
+## Dogfood 2026-07-26 (deepseek-v4-pro)
+
+完整试用报告见 `.discuss/` (待写). 策略锚点:
+
+### K67. verb 参数名统一 — `glob.pattern` → `glob.path`
+
+file/ls/frontmatter 都用 `path`, glob 独用 `pattern`, exec 用 `ref`.
+用户直觉 "我在指一个目标" — verb 本身已区分语义, 参数名应一致.
+**exec.ref 保留** — 携带安全语义 (相对路径/+x/子树约束), 名字本身就是授权模型信号.
+
+改动位置:
+- `contract.py`: GlobArguments.pattern → path, GlobPin 的 Field description
+- `_render.py`: `_content_glob` / `_pin_target_raw` / `_pin_kwargs` 中的 .pattern 引用
+- `cli/ground_cli.py`: `_REQUIRED_ARGS["glob"]`, `_pin_target_display` 中的 .pattern
+- `SPECIFICATION.md`: §5.2 的 arg table
+
+### K68. CLI 体验修补
+
+1. **frame 错误包装** — `cmd_frame` 中 pydantic ValidationError 暴 raw URL,
+   与 validate 的 `[ERROR]` 风格不一致. 统一走 `print_error`.
+2. **verb 发现命令** — `moss ground verbs` 列出已知 verb + 参数表.
+   用户不需要读 527 行 SPEC 才知道 glob 用哪个参数名.
+3. **init scaffolding** — 空 `---\n{}\n---` 无引导. 加入注释行提示
+   "编辑此文件添加 pins, 用 moss ground validate 检查, moss ground verbs 看可用动词".
+
+### K69. validate 补 exec ref 可达性检查
+
+exec pin 的 ref 目标不存在或缺 +x 时, validate 报 OK 但 frame 显示 [missing].
+validate 应 WARN ref 不可达.
+
+### K70. .grounds/ 模板引导
+
+`.grounds/` 不存在, `templates` 命令输出 "no templates found" 无下文.
+创建 `.grounds/` 目录 + 一个 `python-project` starter 模板,
+让用户 dogfood 时能看到模板系统的完整链路.
+
+### K71. 清理 stale pyc
+
+`__pycache__/_instruction.pyc` (K56 移除 _instruction.py 后残留)
++ `__pycache__/models.pyc` (旧重构残留). rm 即可.
+
+### 改动分层
+
+| 层 | Feature | 文件 |
+|---|---------|------|
+| 代码 | ghost-ground | contract.py, _render.py, cli/ground_cli.py, _l0.py, _ground.py, SPECIFICATION.md |
+| 内容 | moss-project-ground | .grounds/python-project.md (新), 根 GROUND.md pins 扩充 |
+
+### 实现完成 (2026-07-26)
+
+K67-K71 全部落地, 152 测试通过:
+
+- **K67** glob.pattern → glob.path, 文件/测试/SPEC 全部同步
+- **K68** frame 错误包装 (_run_async), `moss ground verbs` 发现命令, init 脚手架带引导 body
+- **K69** validate 检查 exec ref 可达性 (+x / 存在 / 相对路径)
+- **K70** .grounds/python-project.md starter 模板, dump_l0_pins 支持 body 参数, 模板 sediment 保留 body
+- **K71** 删除 stale _instruction.pyc + models.pyc
+
+额外: SPECIFICATION.md 净化 — 状态头/设计理由/哲学叙述移出, 保留纯契约语言

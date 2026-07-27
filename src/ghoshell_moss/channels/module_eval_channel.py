@@ -38,7 +38,7 @@ def new_module_eval_channel(
     AI 在 SANDBOX_BUILTINS 下 exec 后续代码。
 
     :param module_path: .py 文件路径（父进程只读源码，不 import）
-    :param matrix: 传入则用 matrix.spawn()（子进程获得 MOSS 上下文）
+    :param matrix: 传入则用 matrix.processes.execute()（子进程由 MOSS Subprocesses 托管生命周期）
     :param channel_name: CTML 标签名，默认取文件 stem
     :param description: 覆盖默认 description
     """

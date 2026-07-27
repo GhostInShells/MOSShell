@@ -18,11 +18,11 @@ from ghoshell_moss.core.blueprint.session import (
     Sample
 )
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace, MatrixEnvNamespace
-from ghoshell_moss.depends import depend_zenoh
+from ghoshell_moss.depends import depend_matrix
 from ghoshell_moss.message import unique_id
 from ghoshell_moss.core.session.utils import SimpleOutputBuffer
 
-depend_zenoh()
+depend_matrix()
 from .zenoh_stream_subscriber import ZenohStreamSubscriber
 from pydantic import BaseModel
 import zenoh
