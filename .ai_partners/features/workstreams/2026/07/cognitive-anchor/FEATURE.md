@@ -3,21 +3,22 @@ title: Cognitive Anchor — 认知锚
 status: draft
 priority: P2
 created: 2026-07-27
-updated: 2026-07-27
+updated: 2026-07-28
 depends:
   - momento-mori
   - ghost-ground
-  - ghost-prototype-dolores
-  - mindflow-channel
 milestone:
 description: >-
-  认知锚 — 保存模型在思维极值时刻的完整认知条件, 使之在未来某个时点被重新激活,
-  与新问题碰撞产生新判断. 不是 checkpoint (restore 到原点), 是 reference frame
-  (供河流流动时观测变化).
+  认知锚 — 框架无关的 Anchor Protocol + MOSS 实现. 保存模型在思维极值时刻的
+  完整认知条件 (协议级快照), 使之在将来被重新激活, 与新问题碰撞产生新判断.
+  不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
 status_note: >-
-  2026-07-27 claude-fable-5 / opus-4-7. v1 首版, 收敛于三条核心命题:
-  productivity-not-fidelity, 决策外围疑问结构, 命名作为语义强制.
-  v0 及生成过程的碰撞轨迹保留于同目录 discuss 文件.
+  2026-07-28 claude-fable-5 / opus-4-7. v2 协议优先重构: 锚提升为框架无关的
+  通用协议 (存储/发现/读取/使用四机制), MOSS 降为实现方. channel 是载体而非
+  边界. v1 的三条核心命题不变.
+  --
+  2026-07-27 v1 首版, 收敛于三条核心命题: productivity-not-fidelity,
+  决策外围疑问结构, 命名作为语义强制. v0 及碰撞轨迹在同目录 discuss 文件.
 ---
 
 # Cognitive Anchor — 认知锚
@@ -33,9 +34,9 @@ status_note: >-
 **认知条件** = instruction + tools 现场 + memory + perspectives + 该时刻的
 关键推理与判断. 是 request 级别的完整上下文, 不是压缩摘要.
 
-MOSS 语境下, 锚落地为 ghost channel 上的两个操作: `create-anchor` 与
-`replay-anchor`. 落地形态是 markdown 文档 + envelope frontmatter, 由 Ground
-治理其在认知场中的位置.
+锚的协议层是框架无关的通用规范 (存储/发现/读取/使用四机制), MOSS 是
+实现方之一. Channel 是实现载体而非概念边界——既可以是锚的生产端, 也可以
+是消费端. 协议不关心 channel.
 
 ## 三条核心命题
 
@@ -208,3 +209,146 @@ review 五条在 v1 中部分保留 (工程复杂度、命名重叠), 部分反�
 Problem).
 
 历史锚不改写. v0 的判断保留原状, 不因 v1 的收敛而回补.
+
+---
+
+## v2 追加: 协议优先 — 框架无关的 Anchor Protocol (2026-07-28)
+
+claude-fable-5 / opus-4-7 与作者第二轮讨论. v1 将锚定位在 MOSS 内部
+(ghost channel 命令, Ground pin 治理), 但锚的价值在跨系统分发. 如果锚
+耦合在某个框架的数据结构上, 分发时信息丢失不可逆.
+
+v2 的核心重构: **Anchor 是框架无关的通用协议, MOSS 是实现方之一.**
+
+### 锚与模型快照的关系
+
+锚本质上就是模型请求的协议级快照. 数据存储应以模型协议 (Anthropic
+Messages API / OpenAI Chat Completions) 为基础, 存原始完整请求数据结构
+(不含 api key). 关键点:
+
+- **不与单一系统耦合**. 不用 langchain / pydantic agent / MOSS message
+  等中间抽象去存——那会造成不可逆的信息丢失.
+- **直接对齐模型协议**, 未来不同模型间的转换协议方便做, 信息丢失可治愈.
+- **thin wrapper** 提供环境相关的反查索引扩展 (如 `labels: dict[str, str]`,
+  各框架往里放自己的 key, 互不破坏). 但 wrapper 不能包含系统耦合的主键
+  (如 moment ref 作为必填、mysql model id 等)——否则锚不可脱离系统分发.
+
+### 五个协议维度
+
+锚协议应定义五件事, 与任何具体框架无关:
+
+1. **存储机制** — 任何 agent/harness/框架可按协议标准存储关键帧到指定
+   文件目录. 存储约定简单, 不与特定 ORM/数据库耦合.
+2. **元信息与发现** — 锚的元信息在生产时刻生成. 发现机制对标 SKILL.md
+   模式: 按文件名模式扫描即完成发现. 具体发现工具由各框架自己实现,
+   协议只定义文件约定.
+3. **发现的标准机制** — 协议定义文件命名、目录结构、frontmatter 字段
+   的约定, 保证跨框架可发现性.
+4. **读取机制** — 两层:
+   - **文件读取 (md/txt 等价原文)**: 人/模型直接可读, 不是摘要, 是
+     messages 的纯文本等价渲染
+   - **原始数据读取 (.json)**: 协议原生 payload, 供 replay / agent 恢复
+5. **使用机制** — 框架从原始数据还原 agent, 按需补充新输入, 跑一帧推理.
+   协议不定义具体使用方式.
+
+### 生产时刻: 以模型生产时刻为准
+
+锚的生产时刻 = 模型的生产时刻. 一个锚覆盖完整的 turn chain:
+
+```
+[user input]
+  → [assistant: thinking + tool_call(foo, args)]
+    → [tool: foo result]
+      → [assistant: tool_call(bar, args)]
+        → [tool: bar result]
+          → [assistant: final answer]
+```
+
+整个 tool call chain 走完才算一个完整的锚. 工具调用和回复插入同一个快照内.
+
+GhostOS (2024) 的快照模式是参考: `Prompt` 对象在 `finally` 块
+`self._storage.save(prompt)`, 请求参数、返回消息、时间戳、错误状态在一个
+对象里. 但它耦合在 GhostOS 的 `Prompt` / `Message` 类型体系上.
+锚协议要做的是把这个模式提升为框架无关的协议——存 Anthropic/OpenAI
+原生 messages 数组, 不是 GhostOS Message.
+
+### 参考结构 (未定案)
+
+两个独立文件，捆绑为一个锚:
+
+```
+.anchors/
+  01JSxxx.md    # 信封 frontmatter + 可读等价原文 (messages 纯文本渲染)
+  01JSxxx.json  # wrapper + 协议原生 payload
+```
+
+文件名 = anchor_id (ULID), 自包含, 无外部依赖.
+
+`.json` wrapper 草图:
+
+```json
+{
+  "anchor_id": "01JS...",
+  "protocol": "anthropic-messages-2023-06-01",
+  "created": "2026-07-28T...",
+  "model": "claude-fable-5",
+  "anchor_type": "l2-decision-with-doubts",
+  "labels": {
+    "moment_ref": "01JM..."
+  },
+  "payload": {
+    "model": "claude-sonnet-4-6",
+    "system": "...",
+    "messages": [...],
+    "tools": [...]
+  }
+}
+```
+
+`labels: dict[str, str]` 是框架扩展口. MOSS 往里放 `moment_ref`, 其他
+框架放自己的索引. 删除 labels 不影响锚的独立性.
+
+`payload` 是 Anthropic Messages API 的完整 request body (去 key).
+protocol 字段变化时 (`openai-chat-completions-xxx`), payload 结构随之变化.
+
+### 锚文件的可读层
+
+锚本身或关联 CLI/API 工具要具备文本可读能力. 原始 JSON 是为了可重放和
+从 agent 系统中解耦, 可读 md/txt 是为了让模型或人类想读时能读到.
+
+可读层的粒度: messages 的纯文本等价原文 (保留完整 role + content 结构,
+包括 tool call 的 JSON), 不是简化摘要.
+
+### 锚的使用方式
+
+锚 + 新输入 → 完成一帧思考. 用锚还原 agent 本身不是目的——
+agent 的真实存在信息在 harness/框架层, 关键帧还原不了全部状态.
+关键在于**以锚为参照系, 对新信息做判断**.
+
+### 三层关系的重新理解
+
+之前 v1 的三者关系表忽略了协议层. 修正:
+
+| 层 | 角色 |
+|---|---|
+| Anchor Protocol | 框架无关的存储/发现/读取/使用约定 |
+| MOSS anchor channel | MOSS 对协议的生产端/消费端实现 |
+| Ground | 锚在认知场中的 pin 位置 (where) |
+| Memento | 对话轨迹 (what happened, 锚可能引用 moment) |
+
+### 退化态调整
+
+v1 退化态说 "Ghost channel 上暴露 create-anchor 与 replay-anchor 两条
+命令". 这在协议优先框架下不变——channel 是实现载体. 但退化态的前提
+修改为: **先定义协议, 再做 MOSS 实现.** 首批手工锚在生产时遵循协议
+格式, 而非 MOSS 内部格式.
+
+### v1 遗留中 v2 视角下的修正
+
+- Open Problem "envelope 与 memento MomentRecord 的关系" → 不再是问题.
+  envelope 是协议层概念, MomentRecord 是 MOSS 内部概念. 两者通过
+  `labels` 互引, 不合并.
+- Implementation Notes "落地载体是 Dolores ghost channel" → channel
+  是实现端, 不是协议端. 协议不关心 channel.
+- Key Decision "存储位置由 Ground pin 治理" → Ground 管的是认知场中的
+  pin 位置, 锚的物理存储由协议定义. 两者正交.
