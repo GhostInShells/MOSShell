@@ -3,7 +3,7 @@ title: Context Cache Engineering
 status: draft
 priority: P1
 created: 2026-07-30
-updated: 2026-07-30
+updated: 2026-07-31
 depends:
   - momento-mori
 milestone:
@@ -146,10 +146,56 @@ append-only，`to_history_turns` 自动正确处理），moment 层几乎零改�
 Moment（单帧），commit 是 staging 时间前缀的冻结批（memento §16/§17）。
 折叠/索引/展开的单位都是 memento commit。
 
+### D7. 缓存注入与计量由 pydantic_ai AnthropicModelSettings 承载
+
+pydantic_ai 2.5.0 已提供完整的 Anthropic prompt caching 支持，MOSS 无需直接
+操作 Anthropic SDK 的 `cache_control` 参数。
+
+**注入侧**（`AnthropicModelSettings` 三个字段）：
+
+| 字段 | 作用 | MOSS 用途 |
+|---|---|---|
+| `anthropic_cache_instructions: bool\|'5m'\|'1h'` | system prompt 末尾放 cache_control | Phase 0：一行启用 system instruction 全量缓存 |
+| `anthropic_cache: bool\|'5m'\|'1h'` | 服务端 automatic caching，断点随对话前移 | Phase 3+：history 前缀自动缓存 |
+| `anthropic_cache_messages: bool\|'5m'\|'1h'` | 最后一条 user message 末尾放 cache_control | 备选（与 `anthropic_cache` 互斥，给不兼容网关用） |
+
+`anthropic_cache` 与 `anthropic_cache_messages` 互斥，但均可与 `anthropic_cache_instructions` 组合。
+三者共享 Anthropic 的 4 个 cache point 预算（automatic 占 1 个，剩 3 个给 explicit）；
+pydantic_ai 内部 `_limit_cache_points` 做溢出裁剪。
+
+**计量侧**（`UsageBase` → `RequestUsage` / `RunUsage`）：
+
+```
+Anthropic API usage                      pydantic_ai UsageBase
+────────────────────────────────────────────────────────────────
+cache_creation_input_tokens          →   cache_write_tokens
+cache_read_input_tokens              →   cache_read_tokens
+input_tokens                         →   input_tokens
+```
+
+`_map_usage()` 通过 genai-prices 自动提取并映射，流式/非流式路径均覆盖。
+每个 `ModelResponse.usage` 携带当次请求的缓存计量，`RunUsage` 跨请求累加。
+
+**MOSS 接入点**：`Atom.articulate()`（`_runtime.py:86-92`）中
+`stream.response.usage` 在 stream 退出后可用，包含 `cache_write_tokens`、
+`cache_read_tokens`、`input_tokens`。当前未读取——需在 `on_articulate_exit`
+或 usage 监控点接入。
+
+缓存命中率 = `cache_read_tokens / input_tokens`。
+有效计费 = `(input_tokens - cache_read_tokens) + cache_read_tokens * 0.1 + cache_write_tokens * 1.25`。
+
 ## Implementation Notes
 
 ### 落地顺序（每步独立可验收）
 
+0. **`anthropic_cache_instructions=True`**（零依赖，一行改动）：`_meta.py:131-137`
+   的 `AnthropicModelSettings` 加 `anthropic_cache_instructions=True`。
+   system instruction（CTML + project + mode + static + soul）首次请求后
+   缓存 5 分钟，后续每轮静态部分 90% off。不依赖 A/B 修复、warm/hot 拆分、
+   变更检测——当前 system instruction 已是纯静态（`moss_dynamic` 走 Moment
+   perspective 通道，不污染 system prompt）。独立可验收：开前后各跑一轮，
+   对比 `stream.response.usage.cache_write_tokens` / `cache_read_tokens`。
+   后续 Phase 1-4 不会使此缓存失效——cold 内容不变，token 0 前缀不变。
 1. **Atom A/B 修复**（最小可落地，不依赖其余）：单次渲染两段返回；
    `save_model_request` 存 B；`as_request_messages` 翻转为 durable-first。
    注意：**单修存储不改顺序会更糟**（抽中段导致 percepts 位移 + 存发不一致），
@@ -161,6 +207,13 @@ Moment（单帧），commit 是 staging 时间前缀的冻结批（memento §16/
    hash map 是纯内存态，崩溃丢失退化为一次全量重绘，无需持久化。
 4. **usage 监控 + 重绘**：依赖 memento FORMAT v2 冻结与 ghost runtime 集成
    （memento §19.4：真正的集成位置是 ghost runtime + API）。
+   **已具备**：每轮 `ModelResponse.usage` 提供 `cache_write_tokens` /
+   `cache_read_tokens` / `input_tokens`，可直接计算缓存命中率与上下文
+   饱和度。监控逻辑建议挂在 `on_articulate_exit` 或独立的 usage hook。
+5. **`anthropic_cache=True` 叠加**（Phase 1-4 完成后）：在 Phase 0 的
+   instruction 缓存基础上叠加 automatic caching，让 history 前缀也享受
+   90% 折扣。前提是 A/B 投影已落地（否则 B 投影与前缀不一致导致静默 miss）。
+   与 `anthropic_cache_instructions` 组合时共享 4 个 cache point 预算。
 
 ### 与相邻 workstream 的边界
 
@@ -181,3 +234,13 @@ Moment（单帧），commit 是 staging 时间前缀的冻结批（memento §16/
 缓存机制事实核对 → 四方案算账 → cold/warm/hot 分层 → Atom 存储 bug 定位 →
 A/B 前缀不变式 → memento 对齐与 commit 粒度纠错。市场事实基准：Anthropic/
 DeepSeek 读价 ~10%，OpenAI 25–50%，写价加成 Anthropic 1.25×/2×（5min/1h TTL）。
+
+2026-07-31 补充（人类 + claude-sonnet-4.6 via claude code）：
+pydantic_ai 2.5.0 缓存能力全量调研。发现 AnthropicModelSettings 已提供
+`anthropic_cache_instructions` / `anthropic_cache` / `anthropic_cache_messages`
+三个注入字段，且 `UsageBase.cache_write_tokens` / `cache_read_tokens` 已通过
+`_map_usage()` → genai-prices 从 Anthropic API response 自动提取。MOSS 当前
+未读取这些字段。新增 D7（缓存注入与计量承载）+ Phase 0（一行启用 instruction
+缓存）+ Phase 5（automatic caching 叠加，需 A/B 投影前置）。与 channel-meta-dyn-static
+的 LSM 框架对对齐：Phase 0 先缓存 cold，LSM warm-delta 落地后 cold 进一步
+瘦身，token 0 前缀永不失效。
