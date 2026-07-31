@@ -103,9 +103,9 @@ Worktree session 继承主目录的 `VIRTUAL_ENV`。检查两个 `.venv/` 路径
 - **反向**：修改项目文件时，先 `git log -- <file>` 检查是否有对应的 FEATURE.md 承载设计意图与决策。有则读。
 - **维护**：新工作 `features create`，关键决策编辑 FEATURE.md，完成时 `set-status <name> completed` 随代码 commit。
 
-**stages 体系** — `.ai_partners/stages/` 是 moss 主分支的阶段性迭代计划。
+**stages 体系** — 阶段迭代计划索引在 `.ai_partners/stages/ROADMAP.md`，做规划、治理、优先级类任务时调研。
 
-@.ai_partners/stages/ROADMAP.md
+**FQA** — 项目事实调研索引在 `.ai_partners/FQA.md`，需要独立核实项目性质时使用。
 
 ### 独立探索与评审者
 随意浏览，期待批评和指导。
