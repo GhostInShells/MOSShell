@@ -7,11 +7,11 @@ description: 为 Ghost 提供屏幕躯体的平台专属 node：数字人 backgr
 milestone: null
 priority: P1
 status: in-progress
-status_note: 'S2: WebView landed — WebEngineView replaces placeholder Rectangles in focus+background
-  slots, QWebChannel badge forwarding, QWebEngineProfile global script injection
-  (badge_intercept + inject_window_id), QJSValue→dict snapshot fix, compact
-  context_messages, URL scheme filtering. End-to-end verified via MCP: open/focus/
-  close/context_messages all correct, WebEngineView renders example.com successfully.'
+status_note: 'S3: transition + split landed — curtain animation on layout switch (Future resolved
+  on animation complete, "command 返回时刻 = 视觉稳定时刻"), split layout with dual
+  WebEngineView focus slots (left/right), _DEFERRED bridge mechanism for animated ops,
+  context_messages split-aware (left:/right:). End-to-end verified via MCP:
+  solo↔split bidirectional transition, dual WebEngineView rendering side-by-side.'
 title: Screen Node — MOSS 开箱的标准可扩展屏幕躯体
 updated: '2026-08-03'
 ---
@@ -283,11 +283,33 @@ screen.<current>       当前 layout 的 view command 集 (StatesChannel 换血)
     Python `QWebEngineProfile.defaultProfile().scripts().insert()` 全局注入
   - `QtWebEngineQuick.initialize()` 必须在 `QApplication` 之前调用
 
-  ### S3: Layout Runtime + More Layouts (next)
+  ### S3: Layout Runtime + More Layouts (done, 2026-08-03)
 
-  - switch_layout → QML transition 动画 + await finished（转场时长 = command 时长）
-  - split layout 完整实现（双 focus slot + 分屏 QML）
-  - Layout 运行时开发（模型 engine.load 新 QML 不需重启进程）
+  提交：待 commit (this session)
+
+  **产出**：curtain 过渡动画 + split 双焦点布局 + _DEFERRED Future 机制。
+
+  - **Curtain 过渡**：`switch_layout(name, rid)` → black Rectangle fade-in 300ms → swap
+    layoutName → fade-out 300ms → `bridge.animation_finished(rid)` → Future resolve。
+    "command 返回时刻 = 视觉稳定时刻"（Decision 9）。
+  - **_DEFERRED 机制**：bridge.py 新增 `_DEFERRED` sentinel + `_ANIMATED_OPS` set。
+    `_execute` 对动画 op 返回 `_DEFERRED`，`_on_dispatch` 跳过立即 resolve，Future 留在
+    `_futures` 由 `animation_finished(rid)` resolve。rid 通过 dispatch 签名注入 QML。
+  - **Split layout**：两个独立 focus Loader（focusLeftLoader/focusRightLoader），
+    active 条件 = `layoutName === "split"`，`focus_window(id, slot)` 按 left/right 分派。
+    `focusRectLeft()` / `focusRectRight()` 计算左右半区几何。
+  - **Top bar**：layout selector 扩展为 `["solo", "split"]`。
+  - **Snapshot**：`_refresh_snapshot` 新增 `focusIdLeft` / `focusIdRight` 读取，
+    layout slots 增加 `focus_left` / `focus_right` 字段。
+  - **context_messages**：split 模式下显示 `left:` / `right:` 替代单 `focus:`。
+  - **split state**：`focus(id, slot='left')` / `clear(slot='left')` 默认值更新。
+  - **已验证**（MCP via moss-as-mcp）：solo→split→solo 双向过渡正常，双 WebEngineView
+    并排渲染 example.com + httpbin.org，context_messages 正确显示 left/right。
+
+  摩擦点记录：
+  - QML `focus_window` 函数重复定义导致 "Duplicate method name" → 删掉旧 standalone 版本
+
+  ### S4: Multi-Platform + Cell Providing (next)
 
   ### S4: Multi-Platform + Cell Providing
 

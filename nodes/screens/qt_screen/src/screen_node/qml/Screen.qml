@@ -32,8 +32,14 @@ Window {
     property string layoutName: "solo"
     property string backgroundId: ""
     property string focusId: ""
+    property string focusIdLeft: ""
+    property string focusIdRight: ""
     property var frontIds: []
     property var floatIds: []
+
+    // Curtain transition state
+    property string curtainTargetLayout: ""
+    property string curtainRid: ""
 
     // ---- helpers ----
     function win(id) {
@@ -46,6 +52,20 @@ Window {
         var bodyH = root.height - topBarH - bottomPad - margin;
         return { x: margin, y: topBarH + margin,
                  w: root.width - margin * 2, h: bodyH };
+    }
+
+    function focusRectLeft() {
+        var bodyH = root.height - topBarH - bottomPad - margin;
+        var halfW = (root.width - margin * 3) / 2;
+        return { x: margin, y: topBarH + margin,
+                 w: halfW, h: bodyH };
+    }
+
+    function focusRectRight() {
+        var bodyH = root.height - topBarH - bottomPad - margin;
+        var halfW = (root.width - margin * 3) / 2;
+        return { x: margin * 2 + halfW, y: topBarH + margin,
+                 w: halfW, h: bodyH };
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -64,18 +84,13 @@ Window {
 
     function close_window(id) {
         focusId = (focusId === id) ? "" : focusId;
+        focusIdLeft = (focusIdLeft === id) ? "" : focusIdLeft;
+        focusIdRight = (focusIdRight === id) ? "" : focusIdRight;
         backgroundId = (backgroundId === id) ? "" : backgroundId;
         frontIds = frontIds.filter(function(x) { return x !== id; });
         floatIds = floatIds.filter(function(x) { return x !== id; });
         if (windows) delete windows[id];
         windowsChanged();
-        focusIdChanged();
-        floatIdsChanged();
-    }
-
-    function focus_window(id, slot) {
-        _removeFromSlots(id);
-        focusId = id;
         focusIdChanged();
         floatIdsChanged();
     }
@@ -97,11 +112,20 @@ Window {
     }
 
     function clear_slot(slot) {
-        if (slot === "focus" && focusId) {
-            var old = focusId;
-            focusId = "";
-            focusIdChanged();
-            float_window(old);
+        if (slot === "focus") {
+            if (layoutName === "split") {
+                if (focusIdLeft) { var l = focusIdLeft; focusIdLeft = ""; focusIdLeftChanged(); float_window(l); }
+                if (focusIdRight) { var r = focusIdRight; focusIdRight = ""; focusIdRightChanged(); float_window(r); }
+            } else if (focusId) {
+                var old = focusId;
+                focusId = "";
+                focusIdChanged();
+                float_window(old);
+            }
+        } else if (slot === "left" && focusIdLeft) {
+            var left = focusIdLeft; focusIdLeft = ""; focusIdLeftChanged(); float_window(left);
+        } else if (slot === "right" && focusIdRight) {
+            var right = focusIdRight; focusIdRight = ""; focusIdRightChanged(); float_window(right);
         } else if (slot === "front") {
             while (frontIds.length > 0) float_window(frontIds[0]);
         }
@@ -111,12 +135,35 @@ Window {
         backgroundId = id;
     }
 
-    function switch_layout(name) {
-        layoutName = name;
+    function switch_layout(name, rid) {
+        // Trigger curtain transition. When animation completes,
+        // the curtain's onFinished calls bridge.animation_finished(rid).
+        curtainTargetLayout = name;
+        curtainRid = rid;
+        curtainIn.start();
+    }
+
+    function focus_window(id, slot) {
+        _removeFromSlots(id);
+        if (layoutName === "split") {
+            if (slot === "left") {
+                focusIdLeft = id;
+                focusIdLeftChanged();
+            } else {
+                focusIdRight = id;
+                focusIdRightChanged();
+            }
+        } else {
+            focusId = id;
+            focusIdChanged();
+        }
+        floatIdsChanged();
     }
 
     function _removeFromSlots(id) {
         if (focusId === id) focusId = "";
+        if (focusIdLeft === id) focusIdLeft = "";
+        if (focusIdRight === id) focusIdRight = "";
         frontIds = frontIds.filter(function(x) { return x !== id; });
         floatIds = floatIds.filter(function(x) { return x !== id; });
     }
@@ -128,6 +175,40 @@ Window {
             if (windows && windows[id]) {
                 windows[id].badge = badge;
                 windowsChanged();
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Curtain — transition overlay between layout switches
+    // ═══════════════════════════════════════════════════════════════════
+
+    Rectangle {
+        id: curtain
+        anchors.fill: parent
+        color: "#0d1117"
+        opacity: 0
+        z: 100
+
+        // Phase 1: fade in over 300ms
+        NumberAnimation {
+            id: curtainIn
+            target: curtain; property: "opacity"
+            to: 1.0; duration: 300; easing.type: Easing.InOutQuad
+            onFinished: {
+                // Swap layout behind the opaque curtain
+                root.layoutName = root.curtainTargetLayout;
+                curtainOut.start();
+            }
+        }
+
+        // Phase 2: fade out over 300ms, then resolve Future
+        NumberAnimation {
+            id: curtainOut
+            target: curtain; property: "opacity"
+            to: 0.0; duration: 300; easing.type: Easing.InOutQuad
+            onFinished: {
+                bridge.animation_finished(root.curtainRid);
             }
         }
     }
@@ -188,10 +269,10 @@ Window {
         }
     }
 
-    // ---- focus slot (WebEngineView + close button overlay) ----
+    // ---- focus slot — solo mode (WebEngineView + close button overlay) ----
     Loader {
         id: focusLoader
-        active: focusId !== ""
+        active: focusId !== "" && layoutName !== "split"
         sourceComponent: Item {
             id: focusContainer
             property string wwid: root.focusId
@@ -235,6 +316,102 @@ Window {
 
         onLoaded: {
             var r = root.focusRect();
+            item.x = r.x; item.y = r.y;
+            item.width = r.w; item.height = r.h;
+        }
+    }
+
+    // ---- focus slot — split mode left ----
+    Loader {
+        id: focusLeftLoader
+        active: focusIdLeft !== "" && layoutName === "split"
+        sourceComponent: Item {
+            id: focusLeftContainer
+            property string wwid: root.focusIdLeft
+
+            Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+
+            WebEngineView {
+                id: focusLeftView
+                anchors.fill: parent
+                url: root.win(focusLeftContainer.wwid).url || ""
+                webChannel: webChannel
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusLeftContainer.wwid + '";'
+                        );
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors { right: parent.right; top: parent.top; margins: 8 }
+                width: 28; height: 28; radius: 14; color: "#30363d"
+                z: 10
+                Text { anchors.centerIn: parent; text: "x"; color: "#c9d1d9" }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.float_window(focusLeftContainer.wwid);
+                        bridge.human_clicked(focusLeftContainer.wwid, "unfocus");
+                    }
+                }
+            }
+        }
+        onLoaded: {
+            var r = root.focusRectLeft();
+            item.x = r.x; item.y = r.y;
+            item.width = r.w; item.height = r.h;
+        }
+    }
+
+    // ---- focus slot — split mode right ----
+    Loader {
+        id: focusRightLoader
+        active: focusIdRight !== "" && layoutName === "split"
+        sourceComponent: Item {
+            id: focusRightContainer
+            property string wwid: root.focusIdRight
+
+            Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+            Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
+
+            WebEngineView {
+                id: focusRightView
+                anchors.fill: parent
+                url: root.win(focusRightContainer.wwid).url || ""
+                webChannel: webChannel
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusRightContainer.wwid + '";'
+                        );
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors { right: parent.right; top: parent.top; margins: 8 }
+                width: 28; height: 28; radius: 14; color: "#30363d"
+                z: 10
+                Text { anchors.centerIn: parent; text: "x"; color: "#c9d1d9" }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.float_window(focusRightContainer.wwid);
+                        bridge.human_clicked(focusRightContainer.wwid, "unfocus");
+                    }
+                }
+            }
+        }
+        onLoaded: {
+            var r = root.focusRectRight();
             item.x = r.x; item.y = r.y;
             item.width = r.w; item.height = r.h;
         }
@@ -373,7 +550,7 @@ Window {
                       verticalCenter: parent.verticalCenter }
             spacing: 10
             Repeater {
-                model: ["solo"]
+                model: ["solo", "split"]
                 delegate: Rectangle {
                     required property string modelData
                     width: 72; height: 28; radius: 14

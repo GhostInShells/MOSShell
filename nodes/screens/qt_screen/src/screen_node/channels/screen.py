@@ -179,8 +179,14 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         layout_lines = [f"layout: {layout_name}"]
         if bg:
             layout_lines.append(f"  background: {bg}")
-        focus_id = slots.get("focus", "")
-        layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: -")
+        if layout_name == "split":
+            left_id = slots.get("focus_left", "")
+            right_id = slots.get("focus_right", "")
+            layout_lines.append(f"  left: {left_id}" if left_id else "  left: -")
+            layout_lines.append(f"  right: {right_id}" if right_id else "  right: -")
+        else:
+            focus_id = slots.get("focus", "")
+            layout_lines.append(f"  focus: {focus_id}" if focus_id else "  focus: -")
         front_ids = slots.get("front", [])
         layout_lines.append(
             f"  front: {' '.join(front_ids)}" if front_ids else "  front: -"
@@ -296,7 +302,7 @@ def _register_split_state(screen, bridge: ScreenBridge) -> None:
     )
 
     @split.command(always_observe=True)
-    async def focus(id: str, slot: str = "focus") -> str:
+    async def focus(id: str, slot: str = "left") -> str:
         """Move a window into a focus slot.
 
         :param id: window short ID
@@ -328,7 +334,7 @@ def _register_split_state(screen, bridge: ScreenBridge) -> None:
         return f"floated {id}"
 
     @split.command(always_observe=True)
-    async def clear(slot: str = "focus") -> str:
+    async def clear(slot: str = "left") -> str:
         """Clear a slot, returning its window to the float layer.
 
         :param slot: 'left', 'right', 'front', or 'float'

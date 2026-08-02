@@ -31,6 +31,13 @@ logger = logging.getLogger("moss.screen.bridge")
 ANIM_FOCUS_MS = 1100
 ANIM_TRANSITION_MS = 800
 
+# Sentinel returned by _execute for ops whose Future is resolved asynchronously
+# by a QML animation callback (animation_finished), not by _on_dispatch.
+_DEFERRED = object()
+
+# Ops whose Future is deferred — QML resolves via animation_finished(rid).
+_ANIMATED_OPS = {"switch_layout"}
+
 
 class ScreenBridge(QObject):
     """Cross-thread bridge: Matrix thread submits ops, GUI thread executes.
@@ -91,12 +98,15 @@ class ScreenBridge(QObject):
         args = data["args"]
 
         try:
-            result = self._execute(op, args)
+            result = self._execute(op, args, rid)
         except Exception as exc:
             logger.exception("bridge dispatch failed: op=%s args=%s", op, args)
             result = exc
 
         self._refresh_snapshot()
+
+        if result is _DEFERRED:
+            return  # Future stays in _futures, resolved by animation_finished(rid)
 
         with self._lock:
             f = self._futures.pop(rid, None)
@@ -111,15 +121,19 @@ class ScreenBridge(QObject):
         "open_window":     ("id", "url", "label"),
         "close_window":    ("id",),
         "set_background":  ("id",),
-        "switch_layout":   ("name",),
+        "switch_layout":   ("name", "rid"),
         "focus_window":    ("id", "slot"),
         "front_window":    ("id", "index"),
         "float_window":    ("id",),
         "clear_slot":      ("slot",),
     }
 
-    def _execute(self, op: str, args: dict) -> Any:
-        """Execute operation on QML scene. Runs on GUI thread only."""
+    def _execute(self, op: str, args: dict, rid: str) -> Any:
+        """Execute operation on QML scene. Runs on GUI thread only.
+
+        Returns _DEFERRED for animated ops — the Future stays in _futures
+        until QML calls bridge.animation_finished(rid).
+        """
         root = self._root
         if root is None:
             raise RuntimeError("ScreenBridge: QML root not set")
@@ -129,11 +143,18 @@ class ScreenBridge(QObject):
             raise ValueError(f"Unknown bridge op: {op}")
 
         # QML functions require positional args, not keyword args.
-        # Build positional args list from the dispatch signature.
         param_names = self._DISPATCH.get(op, ())
         if param_names:
-            pos_args = [args.get(name) for name in param_names]
-            return method(*pos_args)
+            pos_args = []
+            for name in param_names:
+                if name == "rid":
+                    pos_args.append(rid)
+                else:
+                    pos_args.append(args.get(name))
+            method(*pos_args)
+            if op in _ANIMATED_OPS:
+                return _DEFERRED
+            return None
         # Fallback for ops without explicit dispatch (e.g. future additions)
         return method(**args)
 
@@ -171,6 +192,8 @@ class ScreenBridge(QObject):
             layout_name_raw = root.property("layoutName")
             background_id_raw = root.property("backgroundId")
             focus_id_raw = root.property("focusId")
+            focus_id_left_raw = root.property("focusIdLeft")
+            focus_id_right_raw = root.property("focusIdRight")
             front_ids_raw = root.property("frontIds")
             float_ids_raw = root.property("floatIds")
         except Exception:
@@ -188,6 +211,8 @@ class ScreenBridge(QObject):
                 "background": str(self._to_native(background_id_raw) or ""),
                 "slots": {
                     "focus": str(self._to_native(focus_id_raw) or ""),
+                    "focus_left": str(self._to_native(focus_id_left_raw) or ""),
+                    "focus_right": str(self._to_native(focus_id_right_raw) or ""),
                     "front": front_ids,
                     "float": float_ids,
                 },
