@@ -1,0 +1,11 @@
+[project]
+name = "node-screen"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[matrix]",
+    "pyside6>=6.8,<7",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../..", editable = true }

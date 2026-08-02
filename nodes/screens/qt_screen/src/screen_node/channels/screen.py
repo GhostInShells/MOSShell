@@ -66,6 +66,8 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         :param url: full HTTP URL of the window content
         :param label: short human-readable label, used to generate the window ID
         """
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return f"unsupported URL scheme: {url}. only http:// and https:// URLs are supported."
         window_id = _next_id(label)
         f = bridge.submit("open_window", {"id": window_id, "url": url, "label": label})
         await asyncio.wrap_future(f)
@@ -133,27 +135,29 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
 
     @screen.build.context_messages
     async def screen_context() -> list[Message]:
-        bucket.start()
-
         snapshot = bridge.snapshot()
         if not snapshot:
             return [Message.new(tag="screen").with_content("screen not ready")]
 
         messages: list[Message] = []
 
-        # Window directory
+        # Window directory — compact: one line per window
         windows = snapshot.get("windows", {})
         if windows:
             lines = []
             for wid, win in windows.items():
-                parts = [wid, win.get("label", ""), win.get("url", "")]
+                url = win.get("url", "")
+                short_url = url.removeprefix("https://").removeprefix("http://")
+                label = win.get("label", wid)
                 badge = win.get("badge", 0)
                 title = win.get("title", "")
+                parts = [wid, label, short_url]
                 if badge:
-                    parts.append(f"badge={badge}")
+                    parts.append(f"({badge})")
                 if title:
-                    parts.append(f'"{title}"')
-                lines.append("  ".join(parts))
+                    short_title = title[:30] + "..." if len(title) > 30 else title
+                    parts.append(f'"{short_title}"')
+                lines.append(" ".join(parts))
             messages.append(
                 Message.new(tag="screen", attributes={"section": "windows"}).with_content(
                     "windows:\n" + "\n".join(f"  {l}" for l in lines)
@@ -196,7 +200,7 @@ def build_screen_channel(bridge: ScreenBridge, bucket: EventBucket):
         events = bucket.peek(_PEEK_N)
         if events:
             event_lines = []
-            for ev in events[-5:]:
+            for ev in events[-3:]:
                 et = ev["type"]
                 wid = ev.get("window_id", "")
                 if et == "human_clicked":

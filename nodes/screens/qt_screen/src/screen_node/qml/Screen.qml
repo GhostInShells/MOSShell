@@ -8,6 +8,7 @@
 // (from Python side). Until then, web slots show colored placeholders.
 import QtQuick
 import QtQuick.Window
+import QtWebEngine
 
 Window {
     id: root
@@ -22,8 +23,7 @@ Window {
     readonly property int margin: 20
     readonly property int animMs: 1100
 
-    // Set from Python when QtWebEngine is ready.
-    property bool engineReady: false
+    // QtWebEngineQuick.initialize() runs before QApplication — always ready.
 
     // ---- window registry: {id: {url, label, title, badge, icon}} ----
     property var windows: ({})
@@ -144,26 +144,24 @@ Window {
         }
     }
 
-    // ---- background slot ----
+    // ---- background slot (WebEngineView — passive ambient layer) ----
     Loader {
         id: backgroundLoader
         anchors.fill: parent
         active: backgroundId !== ""
-        sourceComponent: Item {
+        sourceComponent: WebEngineView {
+            id: backgroundView
             anchors.fill: parent
-            // When engineReady: WebEngineView { url: root.win(backgroundId).url }
-            // Placeholder: tinted rect
-            Rectangle {
-                anchors.fill: parent
-                color: Qt.rgba(0.06, 0.08, 0.14, 0.9)
-                opacity: 0.6
-            }
-            Text {
-                anchors.centerIn: parent
-                text: "[bg] " + (root.win(root.backgroundId).label || root.backgroundId)
-                    + "\n" + root.win(root.backgroundId).url
-                color: "#484f58"; font.pixelSize: 14
-                horizontalAlignment: Text.AlignHCenter
+            url: root.win(root.backgroundId).url || ""
+
+            webChannel: webChannel
+
+            onLoadingChanged: function(loadRequest) {
+                if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                    runJavaScript(
+                        'window.__screen_window_id = "' + root.backgroundId + '";'
+                    );
+                }
             }
         }
     }
@@ -190,45 +188,36 @@ Window {
         }
     }
 
-    // ---- focus slot ----
+    // ---- focus slot (WebEngineView + close button overlay) ----
     Loader {
         id: focusLoader
         active: focusId !== ""
-        sourceComponent: Rectangle {
-            id: focusPlaceholder
-            property alias windowId: focusPlaceholder.wwid
+        sourceComponent: Item {
+            id: focusContainer
             property string wwid: root.focusId
-            color: "#161b22"
-            border { color: root.win(windowId).label ? "#30363d" : "#1f6feb"; width: 2 }
-            radius: 14
 
             Behavior on x { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on y { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on width { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
             Behavior on height { NumberAnimation { duration: root.animMs; easing.type: Easing.InOutCubic } }
 
-            Column {
-                anchors.centerIn: parent
-                spacing: 12
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.win(wwid).label || wwid
-                    color: "#c9d1d9"; font.pixelSize: 24; font.bold: true
-                }
-                Rectangle { width: 200; height: 1; color: "#30363d"; anchors.horizontalCenter: parent.horizontalCenter }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: root.win(wwid).url
-                    color: "#58a6ff"; font.pixelSize: 12
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: engineReady ? "" : "(WebEngine placeholder)"
-                    color: "#484f58"; font.pixelSize: 11
+            WebEngineView {
+                id: focusView
+                anchors.fill: parent
+                url: root.win(focusContainer.wwid).url || ""
+
+                webChannel: webChannel
+
+                onLoadingChanged: function(loadRequest) {
+                    if (loadRequest.status === WebEngineLoadRequest.LoadSucceededStatus) {
+                        runJavaScript(
+                            'window.__screen_window_id = "' + focusContainer.wwid + '";'
+                        );
+                    }
                 }
             }
 
-            // Close button → float
+            // Close button overlay (floats on top of WebEngineView)
             Rectangle {
                 anchors { right: parent.right; top: parent.top; margins: 8 }
                 width: 28; height: 28; radius: 14; color: "#30363d"
@@ -237,8 +226,8 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
-                        root.float_window(wwid);
-                        bridge.human_clicked(wwid, "unfocus");
+                        root.float_window(focusContainer.wwid);
+                        bridge.human_clicked(focusContainer.wwid, "unfocus");
                     }
                 }
             }

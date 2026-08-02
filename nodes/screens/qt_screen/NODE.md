@@ -4,7 +4,7 @@ description: 'screen body — multi-slot QML compositor for Ghost visual presenc
 category: skins
 singleton: true
 exec:
-  command: python
+  command: .venv/bin/python
   args: main.py
 ---
 

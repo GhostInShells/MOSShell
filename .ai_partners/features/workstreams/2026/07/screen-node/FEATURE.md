@@ -7,11 +7,13 @@ description: 为 Ghost 提供屏幕躯体的平台专属 node：数字人 backgr
 milestone: null
 priority: P1
 status: in-progress
-status_note: 'S1: dual-thread node scaffold landed — QML compositor (4-slot), ScreenBridge
-  (Signal+Future), EventBucket (peek/drain), StatefulChannel with solo/split states.
-  Standalone mode verified on macOS.'
+status_note: 'S2: WebView landed — WebEngineView replaces placeholder Rectangles in focus+background
+  slots, QWebChannel badge forwarding, QWebEngineProfile global script injection
+  (badge_intercept + inject_window_id), QJSValue→dict snapshot fix, compact
+  context_messages, URL scheme filtering. End-to-end verified via MCP: open/focus/
+  close/context_messages all correct, WebEngineView renders example.com successfully.'
 title: Screen Node — MOSS 开箱的标准可扩展屏幕躯体
-updated: '2026-07-26'
+updated: '2026-08-03'
 ---
 
 # Screen Node
@@ -249,16 +251,39 @@ screen.<current>       当前 layout 的 view command 集 (StatesChannel 换血)
   - janus exception 名：`AsyncQueueEmpty` 非 `QueueEmpty`
   - QML 函数从 Python 调用需 positional args，不能 keyword args
 
-  ### S2: WebView + Interactive Drain (next)
+  ### S2: WebView + Interactive Drain (done, 2026-08-03)
 
-  - focus/background slot 从 placeholder Rectangle 升级为 WebEngineView
-  - QWebChannel 注册 bridge，注入 `badge_intercept.js` — `navigator.setAppBadge()` 通路闭环
-  - WebEngineScript 自动为页面注入 `window.__screen_window_id`
-  - 人类在界面点击产生交互事件 → peek 桶可见 → drain 消费
-  - context_messages snapshot 修复 QVariant→dict 类型转换
-  - context_messages 篇幅优化（窗口目录压一行、事件截断）
+  提交：待 commit (this session)
 
-  ### S3: Layout Runtime + More Layouts
+  **产出**：WebEngineView 替换 placeholder Rectangle，badge 通路闭环，snapshot 修复。
+
+  - **WebEngineView**：focus + background slot 从 Rectangle placeholder → WebEngineView，
+    由 QML Loader 按 active 条件物化/销毁。close button 改为 overlay Item 浮于 WebEngineView 之上
+    （WebEngineView 不能包含 QML 子元素）。
+  - **QWebChannel**：Python 侧 `QWebChannel.registerObject("bridge", bridge)` → context property
+    → QML `WebEngineView.webChannel` 绑定，页面内 `qt.webChannelTransport` → `bridge.web_badge_changed()`
+    通路闭环。
+  - **脚本注入**：`inject_window_id.js`（DocumentCreation，定义 `__screen_window_id` 占位）+
+    `badge_intercept.js`（DocumentReady，拦截 `navigator.setAppBadge()`）→ QWebEngineProfile
+    全局注入，不再依赖 QML `WebEngineScript`（PySide6 6.11 QML 中不可创建）。
+  - **Per-window ID**：QML `onLoadingChanged` → `runJavaScript` 注入实际 window ID。
+  - **QJSValue snapshot fix**：`_to_native()` 递归调用 `QJSValue.toVariant()`，修复 QML
+    `property var` → Python 的 PySide6 不自动转换问题。context_messages windows 目录和
+    layout state 不再永远为空。
+  - **context_messages 优化**：window 一行紧凑格式（去 `https://` 前缀，title 截断 30 字符），
+    事件截断为 3 条（原 5），`bucket.start()` 从 context_messages 移除（已在 startup 调用）。
+  - **URL filtering**：`open` 命令拒绝非 http/https scheme。
+  - **node venv**：`pyproject.toml` + `uv sync` 独立 venv（trafilatura 模式），
+    `NODE.md exec.command: .venv/bin/python`。
+  - **已验证**（MCP via moss-as-mcp）：open/focus/close/context_messages/url_reject 全通路，
+    WebEngineView 渲染 example.com 成功，QML 窗口无崩溃。
+
+  摩擦点记录：
+  - `WebEngineScript` 在 PySide6 6.11 QML 中不可创建（"Element is not creatable"）→ 改用
+    Python `QWebEngineProfile.defaultProfile().scripts().insert()` 全局注入
+  - `QtWebEngineQuick.initialize()` 必须在 `QApplication` 之前调用
+
+  ### S3: Layout Runtime + More Layouts (next)
 
   - switch_layout → QML transition 动画 + await finished（转场时长 = command 时长）
   - split layout 完整实现（双 focus slot + 分屏 QML）

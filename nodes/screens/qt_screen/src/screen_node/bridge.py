@@ -21,6 +21,7 @@ from concurrent.futures import Future
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot, Qt
+from PySide6.QtQml import QJSValue
 
 from .bucket import EventBucket
 
@@ -143,6 +144,22 @@ class ScreenBridge(QObject):
         with self._lock:
             return self._snapshot_cache.copy()
 
+    @staticmethod
+    def _to_native(v: Any) -> Any:
+        """Convert QJSValue to Python dict/list/str recursively.
+
+        PySide6 does NOT auto-convert QML property var returns to Python
+        types (unlike PyQt6). QML property var stores JS values wrapped
+        as QJSValue; toVariant() unwraps them for shiboken auto-conversion.
+        """
+        if isinstance(v, QJSValue):
+            v = v.toVariant()
+        if isinstance(v, dict):
+            return {k: ScreenBridge._to_native(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [ScreenBridge._to_native(item) for item in v]
+        return v
+
     def _refresh_snapshot(self) -> None:
         """GUI thread: read QML state into cache."""
         root = self._root
@@ -150,34 +167,27 @@ class ScreenBridge(QObject):
             return
 
         try:
-            windows_prop = root.property("windows")
+            windows_raw = root.property("windows")
+            layout_name_raw = root.property("layoutName")
+            background_id_raw = root.property("backgroundId")
+            focus_id_raw = root.property("focusId")
+            front_ids_raw = root.property("frontIds")
+            float_ids_raw = root.property("floatIds")
         except Exception:
-            windows_prop = {}
+            logger.exception("_refresh_snapshot: QML property read failed")
+            return
 
-        windows = {}
-        if isinstance(windows_prop, dict):
-            windows = windows_prop
-
-        try:
-            layout_name = root.property("layoutName") or "solo"
-            background_id = root.property("backgroundId") or ""
-            focus_id = root.property("focusId") or ""
-            front_ids = list(root.property("frontIds") or [])
-            float_ids = list(root.property("floatIds") or [])
-        except Exception:
-            layout_name = "solo"
-            background_id = ""
-            focus_id = ""
-            front_ids = []
-            float_ids = []
+        windows = self._to_native(windows_raw) or {}
+        front_ids = self._to_native(front_ids_raw) or []
+        float_ids = self._to_native(float_ids_raw) or []
 
         snap = {
             "windows": windows,
             "layout": {
-                "name": layout_name,
-                "background": background_id,
+                "name": str(self._to_native(layout_name_raw) or "solo"),
+                "background": str(self._to_native(background_id_raw) or ""),
                 "slots": {
-                    "focus": focus_id,
+                    "focus": str(self._to_native(focus_id_raw) or ""),
                     "front": front_ids,
                     "float": float_ids,
                 },
