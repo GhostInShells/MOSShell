@@ -309,13 +309,13 @@ screen.<current>       当前 layout 的 view command 集 (StatesChannel 换血)
   摩擦点记录：
   - QML `focus_window` 函数重复定义导致 "Duplicate method name" → 删掉旧 standalone 版本
 
-  ### S4: Multi-Platform + Cell Providing (next)
+  ### 后续：跨平台与 Cell Providing
 
-  ### S4: Multi-Platform + Cell Providing
+  原 S4 计划 Ubuntu node + matrix-resources `servers://` 消费 + cell providing 协议，
+  现决定不独立推进——与 matrix-resources、desktop-gui 等 feature 合并一起看效果。
+  当前 screen node 仅 macOS + PySide6，跨平台能力门控保留在 `screens/` 目录下新增 node
+  （INSTALL.md 门控）的机制中。
 
-  - Ubuntu node（PySide6/QML 同架构移植）
-  - matrix-resources `servers://` 消费 — 一次 list 恢复全部可开窗
-  - meta item source 字段 → matrix 级 cell providing 协议（红点发现标准化）
 - 第一期不依赖 matrix-resources：URL 发现走 provide 语义自述；`servers://` 落地后
   screen 可成为它的消费者（一次 list 即恢复全部可开的窗，compact 不遗忘）。
 - meta 游离层的动画（d3 式前台聚焦/后台游离的美化）只是实现升级，不动协议。
