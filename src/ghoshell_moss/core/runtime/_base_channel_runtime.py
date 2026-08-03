@@ -333,8 +333,19 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
     def get_active_scope(self, scope_id: str | None, pop: bool) -> ChannelScopeImpl | None:
         if scope_id is None:
             with self._channel_scope_change_lock:
+                while len(self._uncommitted_scopes) > 0:
+                    scope_id = self._uncommitted_scopes[-1]
+                    scope = self._channel_scopes.get(scope_id)
+                    if scope is not None and scope.is_closed():
+                        self._uncommitted_scopes.pop()
+                        self._channel_scopes.pop(scope_id, None)
+                        scope_id = None
+                    else:
+                        break
                 if len(self._uncommitted_scopes) > 0:
                     scope_id = self._uncommitted_scopes[-1]
+                else:
+                    scope_id = None
         if scope_id is None:
             return None
         if pop:
@@ -348,21 +359,27 @@ class AbsChannelRuntime(Generic[CHANNEL], ChannelRuntime, ABC):
             return self._channel_scopes.get(scope_id, None)
 
     def commit_scope(self, task: CommandTask) -> None:
-        scope_id = None
         with self._channel_scope_change_lock:
-            if len(self._uncommitted_scopes) > 0:
+            while len(self._uncommitted_scopes) > 0:
                 scope_id = self._uncommitted_scopes.pop()
-        if scope_id is None:
+                scope = self._channel_scopes.get(scope_id)
+                if scope is not None and scope.is_closed():
+                    self._channel_scopes.pop(scope_id, None)
+                    self._logger.info(
+                        "%s skip closed scope %s during commit",
+                        self.log_prefix, scope_id,
+                    )
+                    continue
+                break
+            else:
+                scope_id = None
+                scope = None
+        if scope_id is None or scope is None:
             task.cancel("Scope Closed")
             self._logger.info(
                 "%s failed to commit scope %s with task %s, cid=%s",
                 self.log_prefix, scope_id, task.caller_name(), task.cid,
             )
-            return
-        with self._channel_scope_change_lock:
-            scope = self._channel_scopes.get(scope_id, None)
-        if scope is None:
-            task.cancel("Scope Closed")
             return
         scope.commit(task)
         task.scope_id = scope.scope_id
