@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Iterable, Any, Generic, TypeVar, ClassVar, Iterator
+from typing import Iterable, Any, Generic, TypeVar, ClassVar, Iterator, Callable
 from typing_extensions import Self
 from pathlib import Path
 from ghoshell_container import IoCContainer, Provider
@@ -801,6 +801,45 @@ class Project(ABC):
     @property
     def configs_dir(self) -> Path:
         return self.workspace_dir.joinpath('configs').absolute()
+
+    _configs_store: 'ConfigStore | None' = None
+
+    @property
+    def configs(self) -> 'ConfigStore':
+        """mode 专属 ConfigStore — workspace configs/ 目录的唯一构造出口, 懒加载.
+
+        Project 级只构造一次, CLI / matrix 的 ConfigStore provider 共享同一实例,
+        避免多路构造漂移. 默认取 env 推导的 mode, 无预注册.
+        """
+        if self._configs_store is None:
+            self._configs_store = self._configs()
+        return self._configs_store
+
+    def _configs(
+            self,
+            *,
+            on_save: Callable[[str], None] | None = None,
+            mode_name: str | None = None,
+            configs: Iterable[ConfigType] = (),
+    ) -> 'ConfigStore':
+        """ConfigStore 构造逻辑 — 唯一出口.
+
+        - mode_name=None → 从 env 推导: '' if env.no_mode else env.mode_name.
+        - mode_name 显式传入 (含 '') 原样透传给 YamlConfigStore.
+        - configs 按 get_or_create 预注册 (WorkspaceYamlConfigStoreProvider 语义).
+        """
+        from ghoshell_moss.contracts.configs import YamlConfigStore
+
+        if mode_name is None:
+            mode_name = '' if self.env.no_mode else self.env.mode_name
+        store = YamlConfigStore(
+            self.workspace.configs(),
+            on_save=on_save,
+            mode_name=mode_name,
+        )
+        for config in configs:
+            store.get_or_create(config)
+        return store
 
     @property
     def workspace_source_dir(self) -> Path:

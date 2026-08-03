@@ -449,16 +449,14 @@ class WorkspaceYamlConfigStoreProvider(Provider[ConfigStore]):
         return True
 
     def factory(self, con: IoCContainer) -> ConfigStore:
-        # 已经反向依赖 contracts.workspace, 会形成循环). factory 在 IoC bootstrap
-        ws = con.force_fetch(Workspace)
-        storage = ws.configs()
-
-        config_store = YamlConfigStore(
-            storage, on_save=self._on_save, mode_name=self._mode,
+        # 构造逻辑已收口到 Project._configs — 惰性 import 规避 core↔contracts 循环.
+        from ghoshell_moss.core.blueprint.project import Project
+        project = con.force_fetch(Project)
+        return project._configs(
+            on_save=self._on_save,
+            mode_name=self._mode or '',
+            configs=self._configs,
         )
-        for config in self._configs:
-            config_store.get_or_create(config)
-        return config_store
 
 
 class ConfigInstanceRegisterBootstrapper(Bootstrapper):

@@ -1,9 +1,8 @@
-from typing import Type, Iterable
+from typing import Type
 
 from ghoshell_container import IoCContainer, Provider, INSTANCE
-from ghoshell_moss.contracts.workspace import Workspace
-from ghoshell_moss.contracts.configs import ConfigStore, YamlConfigStore
-from ghoshell_moss.core.blueprint.environment import Environment
+from ghoshell_moss.contracts.configs import ConfigStore
+from ghoshell_moss.core.blueprint.project import Project
 
 __all__ = [
     'EnvConfigStoreProvider',
@@ -16,27 +15,15 @@ class EnvConfigStoreProvider(Provider):
     # 已由 MatrixImpl._container_lifecycle_ctx 承接 (新 MatrixManifest.configs()),
     # 老 bootstrap 是死代码, 一并清除, 类型降级为普通 Provider.
     #
-    # mode_name 从 Environment 注入 (mode-aware ConfigStore §Config-3). no_mode
-    # 场景传空串, 走 base 视图.
+    # 构造逻辑已收口到 Project.configs (mode-aware, 懒加载单例). 本 provider 只做
+    # 委托 — matrix 装配时 Project 已作为单例 set 进 container (MatrixImpl._prepare_container),
+    # 不走发现.
 
     def singleton(self) -> bool:
         return True
 
     def factory(self, con: IoCContainer) -> ConfigStore:
-        ws = con.force_fetch(Workspace)
-        storage = ws.configs()
-
-        env = con.get(Environment)
-        mode_name = ''
-        if env is not None and not env.no_mode:
-            mode_name = env.mode_name
-
-        config_store = YamlConfigStore(storage, mode_name=mode_name)
-
-        return config_store
+        return con.force_fetch(Project).configs
 
     def contract(self) -> Type[INSTANCE]:
         return ConfigStore
-
-    def aliases(self) -> Iterable[Type[INSTANCE]]:
-        yield YamlConfigStore

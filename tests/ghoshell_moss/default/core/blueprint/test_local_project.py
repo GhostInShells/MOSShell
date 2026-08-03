@@ -12,6 +12,7 @@ from ghoshell_moss.core.blueprint.project import HostModeMeta, HOST_MODE_FILE
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.project.local_project import LocalProject
 from ghoshell_moss.project.local_host_mode import LocalHostMode
+from ghoshell_moss.contracts.llms import LLMConfig
 
 
 def _minimal_project(tmp_path: Path) -> tuple[Path, Environment]:
@@ -123,3 +124,18 @@ class TestLocalProjectProperties:
         project = LocalProject(env)
         assert project.env is env
         assert project.workspace is not None
+
+
+class TestLocalProjectConfigs:
+
+    def test_configs_lazy_and_read_write(self, tmp_path):
+        ws, env = _minimal_project(tmp_path)
+        project = LocalProject(env)
+
+        store = project.configs
+        assert project.configs is store  # 懒加载单例
+
+        conf = store.get_or_create(LLMConfig())
+        assert isinstance(conf, LLMConfig)
+        # mode-aware 落盘到 store 声明的路径 (tmp 环境默认 mode='default')
+        assert Path(store.get_config_path('llms')).exists()
