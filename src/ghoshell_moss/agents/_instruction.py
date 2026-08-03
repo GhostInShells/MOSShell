@@ -22,11 +22,11 @@ function injected into the sandbox — the reflection default is pull, not
 push. That function is described in META and does not appear in the
 instruction otherwise.
 
-`prompt_sha` covers the FULL composed instruction, not the .py file bytes:
-a meta template change or interfaces expansion change both count as
-behaviour changes — attribution must not lie about that.
-
 Backstage: this module never appears in an agent's instruction.
+
+Deferred (see seam note in factory.py): segmented fingerprints of the
+composed instruction belong in a debug tool, not in the trajectory —
+introduce them when window rendering needs cache-hit diagnosis.
 """
 
 from __future__ import annotations
@@ -86,9 +86,7 @@ class Promptable(Protocol):
     Implement this on a runtime-constructed object (e.g. a config instance,
     a live handle) to have its prompt block generated dynamically. Note:
     dynamic elements break the "source alone determines instruction" story
-    — prompt_sha still covers the composed result, so attribution stays
-    honest, but the composed text can no longer be reproduced from the .py
-    alone.
+    — the composed text can no longer be reproduced from the .py alone.
     """
 
     def __prompt__(self) -> str: ...

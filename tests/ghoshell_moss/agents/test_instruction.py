@@ -11,7 +11,6 @@ from ghoshell_moss.agents._instruction import (
     META_INSTRUCTION,
     Promptable,
     assemble_instruction,
-    prompt_sha,
     reflect_element,
 )
 
@@ -64,28 +63,6 @@ def test_non_list_interfaces_raises():
     m = _fake_module(__interfaces__="not a list")
     with pytest.raises(TypeError, match="list or tuple"):
         assemble_instruction(name="p", source='"""x"""', module=m)
-
-
-def test_prompt_sha_is_stable_and_short():
-    a = assemble_instruction(name="p", source='"""a"""', module=_fake_module())
-    b = assemble_instruction(name="p", source='"""a"""', module=_fake_module())
-    assert prompt_sha(a) == prompt_sha(b)
-    assert len(prompt_sha(a)) == 16
-    # Different source → different sha
-    c = assemble_instruction(name="p", source='"""b"""', module=_fake_module())
-    assert prompt_sha(a) != prompt_sha(c)
-
-
-def test_prompt_sha_reflects_interfaces_change():
-    """Meta change / interfaces change must produce a new sha — attribution
-    contract: sha covers the composed instruction, not the .py alone."""
-    class A: ...
-    src = '"""x"""'
-    without = assemble_instruction(name="p", source=src, module=_fake_module())
-    with_iface = assemble_instruction(
-        name="p", source=src, module=_fake_module(__interfaces__=[A])
-    )
-    assert prompt_sha(without) != prompt_sha(with_iface)
 
 
 def test_reflect_element_matches_appendix_routing():
