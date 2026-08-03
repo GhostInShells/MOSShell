@@ -12,7 +12,7 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli,
+    ground_cli, memento_cli, llms_cli,
 )
 from ghoshell_moss.depends import depend_matrix
 from typer.main import get_command
@@ -41,6 +41,7 @@ app.add_typer(modes_cli.modes_app, name="modes", short_help="List and inspect av
 app.add_typer(ghosts_cli.ghosts_app, name="ghosts", short_help="List and inspect available ghosts")
 app.add_typer(ground_cli.ground_app, name="ground", short_help="Cognitive ground — pin addresses to a directory")
 app.add_typer(memento_cli.memento_app, name="memento", short_help="Memento — cognitive-trajectory system (commit anchors, fork, annotate)")
+app.add_typer(llms_cli.llms_app, name="llms", short_help="Inspect and call LLM configs — list models, verify availability.")
 
 # Matrix-dependent groups: only register when zenoh is available.
 # All CLI modules import safely without zenoh — the check gates registration,
