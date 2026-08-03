@@ -15,7 +15,10 @@ status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段�
   压缩级别数据模型在 (a) 阶段已预留字段.
   2026-08-04 §14 零上下文摩擦测试 + 669e0e18 review; delete tombstone/spec v3/gitignore
   验证通过; 新发现 tombstone fork_ref/created 语义缺陷与 spec -D 残留 (§14.2).
-  剩余: §13.10 修复轮 #1/#2/#3/#5/#6/#7 + §13.9 explore agent + §14.2 两个新缺陷.'
+  2026-08-04 §13.10 修复轮完成: #1 feature ref leak (afded430), #2 Memento|None (03f3a50f),
+  #3 prompt_sha 删除 (af3487eb), #5 隐式失败清算 (ccd042a7), #6 四条 seam notes (7140b703),
+  #7 META 真话段草案 (67f2ca25). #4 content 字段之前已完成.
+  剩余: §13.9 explore agent + (b) 读侧 + §14.2 tombstone fix + spec -D.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
 updated: '2026-08-04'
 ---
