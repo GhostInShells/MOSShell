@@ -13,7 +13,6 @@ The runner shape (v1):
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -33,7 +32,6 @@ from ghoshell_moss.memento.abc import Memento, MomentRecord
 __all__ = ["MementoPydanticAgentImpl"]
 
 _MESSAGE_TYPE: str = "pydantic_ai.messages/v2"
-_logger = logging.getLogger("moss.memento.agent")
 
 
 def _new_moment_id() -> str:
@@ -80,7 +78,11 @@ class MementoPydanticAgentImpl(MementoAgent):
         except Exception as e:
             raise RuntimeError(f"agent {self._name!r} invoke failed: {e}") from e
 
-        self._record(memento, line_name, result)
+        # Degraded baseline, explicit at the invoke layer: record only when a
+        # store exists AND a line is bound. memento=None or empty line_name =
+        # pure in-memory single round, no storage write.
+        if memento is not None and line_name:
+            self._record(memento, line_name, result)
 
         return str(result.output)
 
@@ -104,32 +106,32 @@ class MementoPydanticAgentImpl(MementoAgent):
 
     def _record(
         self,
-        memento: Memento | None,
+        memento: Memento,
         line_name: str,
         result: AgentRunResult[Any],
     ) -> None:
-        """Dump new messages as a MomentRecord and write to staging."""
-        if memento is None or not line_name:
-            return
+        """Dump new messages as a MomentRecord and write to staging.
 
+        Caller (invoke) guards the degraded baseline; this is only reached
+        when a store exists and a line is bound. Any failure here is a real
+        trajectory loss — raise loudly, never swallow.
+        """
         try:
             line = memento.get_line(line_name)
-        except Exception:
-            _logger.warning(
-                "agent %r: line %r not found, moment not recorded",
-                self._name, line_name,
+            raw_bytes: bytes = result.new_messages_json()
+            messages: Any = json.loads(raw_bytes.decode())
+
+            record: MomentRecord = MomentRecord(
+                id=_new_moment_id(),
+                type=_MESSAGE_TYPE,
+                content=str(result.output),
+                payload={
+                    "messages": messages,
+                },
             )
-            return
-
-        raw_bytes: bytes = result.new_messages_json()
-        messages: Any = json.loads(raw_bytes.decode())
-
-        record: MomentRecord = MomentRecord(
-            id=_new_moment_id(),
-            type=_MESSAGE_TYPE,
-            content=str(result.output),
-            payload={
-                "messages": messages,
-            },
-        )
-        line.record(record)
+            line.record(record)
+        except Exception as e:
+            raise RuntimeError(
+                f"agent {self._name!r}: failed to record moment to line "
+                f"{line_name!r}: {e}"
+            ) from e

@@ -42,6 +42,7 @@ from ghoshell_moss.agents._instruction import reflect_element
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.agents.memento_pydantic_agent.impl import MementoPydanticAgentImpl
 from ghoshell_moss.core.codex.compiler import Compiler
+from ghoshell_moss.core.codex.executor import ExecutionResult
 from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
 
 __all__ = ["factory"]
@@ -137,19 +138,15 @@ def factory(agent_path: str | Path) -> MementoAgent:
     )
 
 
-def _format_result(result: Any) -> str:
+def _format_result(result: ExecutionResult) -> str:
     """Format sandbox.exec ExecutionResult as agent-facing text."""
     parts: list[str] = []
-    std_output = getattr(result, "std_output", None)
-    if std_output:
-        parts.append(std_output.rstrip())
-    exception = getattr(result, "exception", None)
-    if exception:
-        parts.append(f"Error: {exception}")
-        tb = getattr(result, "traceback", None)
-        if tb:
-            parts.append(tb.rstrip())
-    returns = getattr(result, "returns", None)
-    if returns is not None:
-        parts.append(f"__result__: {returns!r}")
+    if result.std_output:
+        parts.append(result.std_output.rstrip())
+    if result.exception:
+        parts.append(f"Error: {result.exception}")
+        if result.traceback:
+            parts.append(result.traceback.rstrip())
+    if result.returns is not None:
+        parts.append(f"__result__: {result.returns!r}")
     return "\n".join(parts) if parts else "(executed, no output)"
