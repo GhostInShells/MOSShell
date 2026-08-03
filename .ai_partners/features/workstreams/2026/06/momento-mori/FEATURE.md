@@ -8,7 +8,7 @@ milestone: null
 priority: P0
 status: in-progress
 status_note: '2026-08-03 §5 第 5 次契约重开: uid 工作区、name/head 分离、fork-over-rewind、
-  存储/内存抽象分离、append-only 关联索引 (checkouts/merges/branches.jsonl)、branch≈task、
+  存储/内存抽象分离、append-only 关联索引 (checkouts/confluents/branches.jsonl)、branch≈task、
   MomentRecord +content。 语义与动作体系收敛完毕；数据结构与磁盘格式留待 specification 轮。'
 title: Memento — 轨迹第一公民的认知基建（第 5 次重开：uid 工作区、fork-over-rewind）
 updated: '2026-08-03'
@@ -135,7 +135,7 @@ git sha = 完整性。重绘历史不可被重绘丢失——最终担保是 sha
 核心原则：**可退化方案，不是最小实现**。判据——完整形态的需求来自自身架构的内部
 结构，还是对未来用户的想象。memento 的内部依赖是 MOSS 五条主线。
 
-验收退化态的硬条款：golden test 里"蠢记忆"用例代码中 fork / branch / merge 词汇
+验收退化态的硬条款：golden test 里"蠢记忆"用例代码中 fork / branch / confluent 词汇
 一个不出现。退化态 = `get_line("main")` + record/commit/log——fork 词汇完全不出现。
 
 ## 5. 第 5 次重开：当前设计方向
@@ -201,7 +201,7 @@ name 可 reset——所以 branch 不能承重；但纯 ref + `-D` 后叶子 com
       notes.jsonl
 
   checkouts.jsonl               # fork 事件记录 (派生方追加)
-  merges.jsonl                  # merge 事件记录 (引用式, commit 链不动)
+  confluents.jsonl                  # confluent 事件记录 (引用式, commit 链不动)
 ```
 
 - **ws/{uid}/ 内的契约沉默条款**（照 §17.3 #4 精神）：保留名单（ref / staging.jsonl /
@@ -212,9 +212,9 @@ name 可 reset——所以 branch 不能承重；但纯 ref + `-D` 后叶子 com
 - **checkouts.jsonl**：每次"从某 commit 开新 branch"追加一行。由**派生方本地追加**
   （零协调、无跨 owner 写）。正向（从 A 看 B）本地顺读；反向（"谁借了我"）低频，
   走 branches.jsonl 或见证层 grep。
-- **merges.jsonl**：引用式 merge——目标方追加"我接收了 {owner}/{branch} 的引用提交"。
-  commit 的 parent 链不动（单父链钉死），merge 是独立关联事件。"提交引用而非内容，
-  消灭冲突解决问题域"（07-30 discuss 的 merge 类型 1）。
+- **confluents.jsonl**：引用式 confluent——目标方追加"我接收了 {owner}/{branch} 的引用提交"。
+  commit 的 parent 链不动（单父链钉死），confluent 是独立关联事件。"提交引用而非内容，
+  消灭冲突解决问题域"（07-30 discuss 的 merge 类型 1，现更名为 confluent 融汇）。
 
 ### 5.4 O(1) 寻址与 path 作为运行时放置面
 
@@ -302,14 +302,14 @@ memento agent（`memento-cli-and-agent` workstream）是本契约的验证器和
 | BranchMeta 引入 uid | abc.py | 新增 `BranchMeta`（uid + status + fork_ref + created）。branch 的生命周期标识从 name 移到 uid。 |
 | Line protocol | abc.py | 签名调整：`get_line(uid)` 返回 Line handle；`create_line(name, from_ref)` 创建 uid + head 文件。 |
 | Memento facade | abc.py | 新增：`list_branches()` → 全量搜索（读 branches.jsonl）；`active_branches()` → glob heads/。删除或降级 `reset_line`。 |
-| FORMAT v3 | FORMAT.md | 磁盘布局重写：ws/{uid}/ + heads/ + branches.jsonl + checkouts.jsonl + merges.jsonl。§14–§18 的存活部分合并。 |
+| FORMAT v3 | FORMAT.md | 磁盘布局重写：ws/{uid}/ + heads/ + branches.jsonl + checkouts.jsonl + confluents.jsonl。§14–§18 的存活部分合并。 |
 
 ### 6.2 存储层
 
 | 项 | 文件 | 动作 |
 |---|---|---|
 | 全量重写 | fs_memento.py | 按新布局重写。存储层只操作 row types（不 import API models）。API facade 做 row→model 投影。授权丢弃旧实现。 |
-| 关联索引 | fs_memento.py | checkouts.jsonl / merges.jsonl / branches.jsonl 的 append-only 写入。读路径分离（正向 O(1) / 反向低频）。 |
+| 关联索引 | fs_memento.py | checkouts.jsonl / confluents.jsonl / branches.jsonl 的 append-only 写入。读路径分离（正向 O(1) / 反向低频）。 |
 | 崩溃恢复 | fs_memento.py | 精化恢复判据：commits.jsonl 尾行 commit_id 校验 + staging 截断（§18.2 精神保留）。新布局下恢复面扩大（ws/ + heads/ + * 索引文件），逐项定义恢复规则进 FORMAT v3。 |
 
 ### 6.3 CLI

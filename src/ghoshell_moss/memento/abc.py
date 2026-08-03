@@ -1,24 +1,52 @@
 """
-Memento 契约层 — 轨迹第一公民的认知基建.
+Memento contract — the public API surface for the cognitive-trajectory system.
 
-核心假设:
-- commit 是 fork 与重绘的不可变锚点. commit_id 是 stable id (非 content-addressable).
-- 成员 (commit + moments) 冻结后不可变; 释义 (title/body/threads) 追加新版本, last-wins.
-- payload 不透明: memento 原样透传, 不解析不改写. 本模块不 import 任何 payload schema.
-- owner 隔离: 只有 owner 可写自己的 staging/commits/释义. 跨 owner 只读.
-- 化身只能从 commit 出生, 永不从 staging. overlay 在 owner meta.json, 不进 staging.
-- branch = 时间线: name + ref (BranchRef) + staging. 无 ULID id. 只有开线/延线/弃线.
-- commit 自治目录, 出生即冻结, 懒创建. Y-m 分桶从 ULID 时间戳纯函数解出, 严格 UTC.
-- merge 不存在: 单父链钉死.
+Memento organises the "dynamic and static" of a thinking entity's context:
+static (completed anchors) live in commits; dynamic (in-progress thought)
+lives in branch workspaces. The core motivation is parallel thinking +
+history traceability and readability — compaction is a consumer, not the
+purpose.
 
-磁盘格式见同目录 FORMAT.md, 设计上下文见 workstreams/2026/06/momento-mori/FEATURE.md.
+Design invariants (self-contained, no external references needed):
+
+- **Immutable members, open interpretation**: commit members (moments) are
+  frozen on creation. Interpretation (title / body / threads) is appended,
+  last-wins, with full version history always addressable.
+- **Opaque payload**: Memento never parses payload. The ``type`` field is a
+  discriminator that consumers use to select a codec. Memento transparently
+  stores and returns it.
+- **Incarnation from commit, never from staging**: staging has no stable
+  identifier; nothing can refer to it as a birth point. Every new line of
+  thought starts from a frozen commit anchor.
+- **Single-parent chain**: each commit has exactly one parent (or none for
+  the root). A reference confluent (one branch submitting its ref to another)
+  is recorded as a separate associative event (see ConfluentRecord) — the
+  commit parent chain is never altered.
+- **Branch identity is stable; name is a movable pointer**: every branch
+  has a ``branch_identifier`` (``brn_`` ULID) that never changes. The human-
+  readable name is a head file pointing to it — rename, reset, and抢占
+  (name takeover) are all name-level operations that do not touch the
+  branch workspace or its commit trail.
+
+Storage-layer separation:
+  The pydantic models in this module define the CONSUMER-FACING API.
+  Storage row types (with jsonl discriminators like the ``t`` field) live
+  in ``_storage.py`` — they are private to the implementation layer.
+  The two layers share field shapes where the contract mandates it, but
+  evolve independently. Changing a storage format must not force a
+  consumer API change, and vice versa. This separation fixes the root
+  defect of the previous implementation, where ``MomentRecord`` served
+  double duty as API envelope and disk row.
+
+Disk format: ``FORMAT.md`` (same directory). Design lineage is preserved
+in the feature discuss directory — this module is self-explaining.
 """
 
 from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Literal, Protocol, Sequence, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, Field
@@ -34,9 +62,11 @@ __all__ = [
     "split_trailers",
     "join_trailers",
     "trailer_values",
-    # id
+    # id generators
     "new_commit_id",
-    # 数据模型
+    "new_branch_id",
+    "new_moment_id",
+    # data models
     "MomentRecord",
     "Commit",
     "CommitNote",
@@ -45,33 +75,53 @@ __all__ = [
     "CommitRef",
     "BranchWindow",
     "CommitDetail",
+    "BranchMeta",
+    "CheckoutRecord",
+    "ConfluentRecord",
     # hook
     "MementoHooks",
     "NullHooks",
     # Protocol / ABC
     "Line",
     "Memento",
-    # 异常
+    # exceptions
     "MementoError",
     "ReadonlyLineError",
     "LineNotFoundError",
+    "BranchNotFoundError",
     "CommitNotFoundError",
     "MomentFrozenError",
     "MomentNotInCommitError",
     "EmptyStagingError",
 ]
 
+# ── ID generators ──────────────────────────────────────────────────────────────
 
-def _now() -> datetime:
-    return datetime.now().astimezone()
+_COMMIT_ID_PREFIX = "cmt_"
+_BRANCH_ID_PREFIX = "brn_"
+_MOMENT_ID_PREFIX = "mmt_"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def new_commit_id() -> str:
-    """生成 commit id: 'cmt_' + ULID. 前缀保证 grep 可反查."""
-    return f"cmt_{ULID()}"
+    """Generate a commit id: ``cmt_`` + ULID. Prefix guarantees grep reversibility."""
+    return f"{_COMMIT_ID_PREFIX}{ULID()}"
 
 
-# ── trailer 工具 (FORMAT.md §6) ─────────────────────────────────────────────
+def new_branch_id() -> str:
+    """Generate a branch uid: ``brn_`` + ULID. Stable identity — survives rename, reset, and抢占."""
+    return f"{_BRANCH_ID_PREFIX}{ULID()}"
+
+
+def new_moment_id() -> str:
+    """Generate a moment id: ``mmt_`` + ULID."""
+    return f"{_MOMENT_ID_PREFIX}{ULID()}"
+
+
+# ── trailer tools (FORMAT.md §6) ─────────────────────────────────────────────
 
 TRAILER_THREAD = "Thread"
 TRAILER_RESUMES = "Resumes"
@@ -83,7 +133,7 @@ _TRAILER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*): .+$")
 
 
 def split_trailers(body: str) -> tuple[str, list[tuple[str, str]]]:
-    """拆分 body 为 (正文, [(key, value)...]). trailer 块 = body 末尾连续的 Key: Value 行."""
+    """Split body into (text, [(key, value)...]). Trailer block = contiguous Key: Value lines at end."""
     if not body:
         return "", []
     lines = body.split("\n")
@@ -108,7 +158,7 @@ def split_trailers(body: str) -> tuple[str, list[tuple[str, str]]]:
 
 
 def join_trailers(text: str, trailers: Iterable[tuple[str, str]]) -> str:
-    """组装 body = 正文 + 空行 + trailer 块. 只有 trailer 无正文时不加空行."""
+    """Assemble body = text + blank line + trailer block."""
     lines = text.split("\n") if text else []
     for k, v in trailers:
         lines.append(f"{k}: {v}")
@@ -116,66 +166,72 @@ def join_trailers(text: str, trailers: Iterable[tuple[str, str]]) -> str:
 
 
 def trailer_values(trailers: Iterable[tuple[str, str]], key: str) -> list[str]:
-    """取 trailer 块中指定 key 的所有值, 按出现序."""
+    """Return all values for a given trailer key, in appearance order."""
     return [v for k, v in trailers if k == key]
 
 
-# ── 数据模型 ─────────────────────────────────────────────────────────────────
+# ── Data models ────────────────────────────────────────────────────────────────
 
 
 class MomentRecord(BaseModel):
-    """
-    Moment 信封. payload 对 memento 不透明 — 原样透传, 字节不动.
+    """Moment envelope. Payload is opaque to memento — stored and returned as-is.
 
-    可变性: 同 id 在 staging 内覆盖写 (last-wins); 一旦冻结进 commit 目录,
-    再向 staging 写同 id 即 MomentFrozenError. threads 是释义, 冻结后仍可
-    经 annotate_moment 整体替换.
-    """
-
-    id: str = Field(description="生产者 id. 非空, [A-Za-z0-9._\\-]{1,128}, branch 可写范围唯一.")
-    created: AwareDatetime = Field(default_factory=_now)
-    type: str = Field(description="payload schema 标识 (如 'moss.moment/v1').")
-    payload: dict[str, Any] = Field(description="任意 JSON object. memento 原样透传.")
-    threads: list[str] = Field(default_factory=list, description="线索标签. 写入时标注, 可经 moment_note 更新.")
-
-
-class BranchRef(BaseModel):
-    """
-    指向某个 commit (可选: commit 内某 moment 为止的前缀切片).
-
-    origin: 目标 commit 所在的 owner. 同 owner 时 = 当前 owner; 跨 owner checkout
-    时 != 当前 owner. moment_id 缺省 = 整个 commit; 给定时 commit 只贡献
-    [首个 moment ... moment_id] 前缀 (含). 空前缀在类型层不可构造.
+    Mutability: same id in staging overwrites (last-wins). Once frozen into a
+    commit directory, writing the same id to staging raises MomentFrozenError.
+    Threads are interpretation — they can be updated via annotate_moment even
+    after freezing.
     """
 
-    origin: str = Field(description="目标 commit 所属的 owner.")
-    commit_id: str = Field(description="目标 commit id.")
-    moment_id: str | None = Field(default=None, description="切片截止 moment id (含). None = 整个 commit.")
+    id: str = Field(
+        description="Moment id (mmt_ prefix). Unique within the branch's "
+                    "staging and commit space."
+    )
+    created: AwareDatetime = Field(default_factory=_now_utc)
+    type: str = Field(
+        description="Payload schema identifier (e.g. 'pydantic_ai.messages/v2')."
+    )
+    content: str = Field(
+        default="",
+        description="Plain-text projection of this moment. Populated by the "
+                    "recording agent / runner. Enables structural views (CLI "
+                    "window, commit show) to render human-readable output "
+                    "without parsing opaque payload. May be empty for moments "
+                    "that have no natural text representation.",
+    )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Opaque payload. Memento never parses this.",
+    )
+    threads: list[str] = Field(
+        default_factory=list,
+        description="Thread tags. Write-time annotation; can be updated "
+                    "after freezing via annotate_moment.",
+    )
 
 
 class Commit(BaseModel):
-    """冻结的认知锚点. 成员不可变 — 动它所有子 branch 的 parent 链集体失效."""
+    """Frozen cognitive anchor. Members are immutable — changing them invalidates
+    all descendant branch parent chains."""
 
-    id: str = Field(default_factory=new_commit_id, description="全局稳定 id ('cmt_' ULID).")
-    created: AwareDatetime = Field(default_factory=_now)
+    id: str = Field(default_factory=new_commit_id, description="Stable identifier (cmt_ ULID).")
+    created: AwareDatetime = Field(default_factory=_now_utc)
 
 
 class CommitNote(BaseModel):
-    """
-    commit 释义. 追加式多版本, last-wins. 历史版本永远可寻址.
+    """Commit interpretation. Append-only multi-version, last-wins.
 
-    title: 一行摘要, 用于窗口渲染和搜索.
-    body: 正文 + trailer 块, 整体替换语义.
+    title: one-line summary for window rendering and search.
+    body: text + trailer block, full-replacement semantics.
     """
 
-    ref: str = Field(description="所释义的 commit id.")
-    title: str = Field(default="", description="一行摘要. 窗口渲染和搜索用.")
-    body: str = Field(default="", description="正文 + trailer 块.")
-    ts: AwareDatetime = Field(default_factory=_now, description="展示/诊断用, 不参与 last-wins 定序.")
-    by: str = Field(default="", description="释义写入者.")
+    ref: str = Field(description="Commit id being interpreted.")
+    title: str = Field(default="", description="One-line summary.")
+    body: str = Field(default="", description="Text + trailer block.")
+    ts: AwareDatetime = Field(default_factory=_now_utc, description="Display/diagnostic timestamp.")
+    by: str = Field(default="", description="Interpretation author.")
 
     def text(self) -> str:
-        """body 的正文部分 (剥离 trailer)."""
+        """Body text without trailers."""
         return split_trailers(self.body)[0]
 
     def trailers(self) -> list[tuple[str, str]]:
@@ -186,11 +242,11 @@ class CommitNote(BaseModel):
 
 
 class CommitView(BaseModel):
-    """Commit + 当前释义 (last-wins) 的读取视图. note_seq 是渲染打戳 (0-based 版本号)."""
+    """Commit + current interpretation (last-wins). note_seq is a rendering stamp."""
 
     commit: Commit
-    note: CommitNote = Field(description="当前 (最新) 释义.")
-    note_seq: int = Field(description="释义版本号, 0-based. 渲染方持有 (commit_id, note_seq) 即可复原当时视图.")
+    note: CommitNote = Field(description="Current (latest) interpretation.")
+    note_seq: int = Field(description="Interpretation version, 0-based.")
 
     @property
     def id(self) -> str:
@@ -200,61 +256,166 @@ class CommitView(BaseModel):
         return self.note.title or self.note.text()
 
 
+class BranchRef(BaseModel):
+    """Pointer to a commit, with optional moment-level slice.
+
+    When ``moment_id`` is None the entire commit is referenced. When set,
+    only moments from the first up to and including ``moment_id`` are included
+    (inclusive prefix slice). An empty prefix is impossible at the type level.
+
+    ``origin`` is the owner who produced the target commit. When equal to the
+    current owner it is typically left as the default (empty string).
+    """
+
+    origin: str = Field(
+        default="",
+        description="Owner who produced the target commit. Empty = current owner.",
+    )
+    commit_id: str = Field(description="Target commit id (cmt_ prefix).")
+    moment_id: str | None = Field(
+        default=None,
+        description="Slice cutoff moment id (inclusive). None = entire commit.",
+    )
+
+
 class CommitRef(BaseModel):
-    """commits.jsonl 行. owner 级 append-only — 行序 = 物理时序."""
+    """A row's worth of commits.jsonl — owner-level append-only timeline.
+
+    Row order = physical append order. ULID timestamp (via commit_id) is a
+    secondary sort, not the authority.
+    """
 
     commit_id: str
-    branch: str = Field(description="冻结时所在 line name (诊断用).")
-    parent: BranchRef | None = Field(default=None, description="父 commit. root 为 None.")
-    ts: AwareDatetime = Field(default_factory=_now, description="冻结时间, 展示用.")
+    branch: str = Field(description="Branch uid (brn_ prefix) at freeze time.")
+    parent: BranchRef | None = Field(default=None, description="Parent commit. None for root.")
+    ts: AwareDatetime = Field(default_factory=_now_utc, description="Freeze timestamp.")
     kind: Literal["semantic", "mechanical"] = Field(default="semantic")
 
 
 class BranchWindow(BaseModel):
-    """快路径窗口渲染: 折叠区摘要 + 明细区最近 N 帧."""
+    """Fast-path window render: folded summaries + recent detail frames."""
 
-    summaries: list[CommitView] = Field(description="折叠区: 之前 M 个 commit 的当前释义.")
-    details: list[MomentRecord] = Field(description="明细区: 最近 N 帧 (含 staging).")
+    summaries: list[CommitView] = Field(description="Folded zone: last M commit interpretations.")
+    details: list[MomentRecord] = Field(description="Detail zone: recent N frames (including staging).")
 
 
 class CommitDetail(BaseModel):
-    """show <commit_id> 的完整返回."""
+    """Full return from show <commit_id>."""
 
     commit: Commit
-    moments: list[MomentRecord] = Field(description="冻结成员全文, 与 commit 成员一一对应.")
-    notes: list[CommitNote] = Field(description="全部释义版本, 行序 (版本序).")
+    moments: list[MomentRecord] = Field(description="Frozen member frames, in commit order.")
+    notes: list[CommitNote] = Field(description="All interpretation versions, in append order.")
 
 
-# ── Hook 协议 ────────────────────────────────────────────────────────────────
+class BranchMeta(BaseModel):
+    """Branch identity and lifecycle. uid is stable; name is a movable pointer.
+
+    This is the API projection of the branch index (branches.jsonl).
+    """
+
+    uid: str = Field(
+        default_factory=new_branch_id,
+        description="Stable branch identity (brn_ ULID). Never changes.",
+    )
+    name: str = Field(
+        default="main",
+        description="Current head name. May differ from a previous name "
+                    "after rename or抢占 (name takeover).",
+    )
+    status: Literal["active", "frozen", "abandoned"] = Field(
+        default="active",
+        description="Branch lifecycle: active (in use) / frozen (completed, "
+                    "read-only) / abandoned (discarded, kept for traceability).",
+    )
+    fork_ref: BranchRef = Field(
+        ...,
+        description="Checkout origin — the commit this branch was created from.",
+    )
+    created: AwareDatetime = Field(
+        default_factory=_now_utc,
+    )
+    updated: AwareDatetime = Field(
+        default_factory=_now_utc,
+    )
+
+
+class CheckoutRecord(BaseModel):
+    """A fork event — recorded when a branch is created from a commit anchor.
+
+    This is the API projection of checkouts.jsonl.
+    """
+
+    branch_uid: str = Field(
+        ...,
+        description="The newly created branch.",
+    )
+    from_ref: BranchRef = Field(
+        ...,
+        description="The anchor commit (and optionally moment) forked from.",
+    )
+    owner: str = Field(
+        ...,
+    )
+    created: AwareDatetime = Field(
+        default_factory=_now_utc,
+    )
+
+
+class ConfluentRecord(BaseModel):
+    """A reference-confluent event — one branch submits its reference to another.
+
+    The recipient branch's commit parent chain is NOT altered; the confluent
+    is an associative event stored in a separate append-only log. This is
+    "提交引用而非内容" (submit the reference, not the content) — it eliminates
+    the entire conflict-resolution problem domain.
+
+    Metaphor: a tributary stream flowing into the main river (融汇). The
+    tributary's own path is unchanged; the river records that it received
+    the tributary's waters at this point.
+    """
+
+    from_branch_uid: str = Field(...)
+    from_owner: str = Field(...)
+    to_branch_uid: str = Field(...)
+    to_owner: str = Field(...)
+    kind: Literal["reference"] = Field(default="reference")
+    created: AwareDatetime = Field(default_factory=_now_utc)
+
+
+# ── Hook protocol ──────────────────────────────────────────────────────────────
 
 
 @runtime_checkable
 class MementoHooks(Protocol):
-    """fire-and-forget 事件回调. 抛错不得影响核心写入路径."""
+    """Fire-and-forget event callbacks. Errors must not affect the core write path."""
 
     def on_record_staged(self, line: str, record: MomentRecord) -> None:
-        """record() 追加 moment 到 staging 后触发."""
+        """Called after a moment is appended to staging."""
         ...
 
     def on_commit(self, line: str, view: CommitView) -> None:
-        """commit() 完成后触发. view 含初始释义."""
+        """Called after commit() completes. view carries the initial interpretation."""
         ...
 
     def on_reinterpreted(self, commit_id: str, view: CommitView) -> None:
-        """annotate() 追加释义后触发. view 为新版本."""
+        """Called after annotate() appends a new interpretation."""
         ...
 
     def on_line_created(self, name: str, from_ref: BranchRef | None) -> None:
-        """create_line() 后触发."""
+        """Called after create_line() creates a new branch."""
         ...
 
     def on_line_deleted(self, name: str) -> None:
-        """delete_line() 后触发."""
+        """Called after delete_line() removes a head name. The branch workspace survives."""
+        ...
+
+    def on_branch_checkout(self, branch_identifier: str, from_ref: BranchRef) -> None:
+        """Called after a branch is created (fork event). v3 new."""
         ...
 
 
 class NullHooks:
-    """全 no-op 默认实现."""
+    """All-noop default implementation."""
 
     def on_record_staged(self, line: str, record: MomentRecord) -> None:
         pass
@@ -271,73 +432,85 @@ class NullHooks:
     def on_line_deleted(self, name: str) -> None:
         pass
 
+    def on_branch_checkout(self, branch_identifier: str, from_ref: BranchRef) -> None:
+        pass
 
-# ── 异常 ─────────────────────────────────────────────────────────────────────
+
+# ── Exceptions ─────────────────────────────────────────────────────────────────
 
 
 class MementoError(Exception):
-    """memento 体系异常基类."""
+    """Base exception for the memento system."""
 
 
 class ReadonlyLineError(MementoError):
-    """对只读 line handle 调用了写操作."""
+    """Write operation called on a read-only line handle."""
 
 
 class LineNotFoundError(MementoError):
-    """line name 不存在."""
+    """Line name does not exist."""
+
+
+class BranchNotFoundError(MementoError):
+    """Branch uid does not exist in the owner's branch index."""
 
 
 class CommitNotFoundError(MementoError):
-    """commit_id 不存在."""
+    """Commit id does not exist."""
 
 
 class MomentFrozenError(MementoError):
-    """moment 已随 commit 搬入 commit 目录, staging 无该 id 的可写槽位."""
+    """Moment id has been frozen into a commit — staging write rejected."""
 
 
 class MomentNotInCommitError(MementoError):
-    """BranchRef.moment_id 不在目标 commit 的成员内."""
+    """BranchRef.moment_id is not in the target commit's member set."""
 
 
 class EmptyStagingError(MementoError):
-    """staging 为空, 禁止 commit."""
+    """Staging is empty — commit rejected."""
 
 
-# ── Line (时间线 handle, Protocol) ───────────────────────────────────────────
+# ── Line (branch handle, Protocol) ─────────────────────────────────────────────
 
 
 @runtime_checkable
 class Line(Protocol):
-    """
-    绑定到一条 branch (时间线) 的操作句柄.
+    """Handle bound to one branch (timeline).
 
-    branch = name + BranchRef + staging. 获取方式: memento.get_line(name).
-    跨 owner: get_line(name, origin=other) 返回 readonly handle.
+    A branch = stable uid + movable name + BranchRef + staging.
+    Obtain via ``memento.get_line(identifier)`` where identifier is a uid
+    or a head name. Cross-owner: ``get_line(uid, origin=other)`` returns
+    a read-only handle.
     """
 
     @property
+    def branch_identifier(self) -> str:
+        """Stable branch uid (brn_ prefix). Never changes across rename or reset."""
+        ...
+
+    @property
     def name(self) -> str:
-        """线名."""
+        """Current head name. May change — use uid for stable identity."""
         ...
 
     @property
     def ref(self) -> BranchRef | None:
-        """当前指向. None = root line 从未 commit."""
+        """Current ref pointer. None = root line, never committed."""
         ...
 
     @property
     def readonly(self) -> bool:
-        """只读 handle 上写操作 raise ReadonlyLineError."""
+        """True when this is a cross-owner read-only handle."""
         ...
 
-    # ── 延线 ──
+    # ── Write ──
 
     def record(self, record: MomentRecord) -> None:
-        """
-        写一条 moment 到 staging. 同 id 覆盖直接追加, 读者取 last-wins.
+        """Append a moment to staging. Same id overwrites (last-wins).
 
         :raise ReadonlyLineError:
-        :raise MomentFrozenError: 该 id 已冻结在 commit 目录.
+        :raise MomentFrozenError: the id is already frozen in a commit directory.
         """
         ...
 
@@ -353,57 +526,58 @@ class Line(Protocol):
         boundary_moment_id: str | None = None,
         by: str = "",
     ) -> CommitView:
-        """
-        冻结 staging → 新 commit.
+        """Freeze staging → new commit.
 
-        :param kind: 'semantic' (模型自宣) 或 'mechanical' (规则自动).
-        :param boundary_moment_id: 只冻结 staging 中首次出现序 ≤ 此 id 的前缀 (含),
-            剩余留在 staging. 缺省 = 冻结全部.
-        :param resumes: 回归的线索的 commit id.
-        :param suspends: 挂起的线索名.
+        :param kind: 'semantic' (agent self-declared) or 'mechanical' (rule-triggered).
+        :param boundary_moment_id: freeze only the prefix of staging up to and
+            including this moment id (inclusive). Remaining moments stay in staging.
+            None = freeze all.
+        :param resumes: thread commit ids being resumed.
+        :param suspends: thread names being suspended.
         :raise ReadonlyLineError:
         :raise EmptyStagingError:
         """
         ...
 
-    # ── 读 ──
+    # ── Read ──
 
     def staging(self) -> list[MomentRecord]:
-        """未冻结的 moments, 按首次写入序."""
+        """Unfrozen moments, in first-write order."""
         ...
 
     def log(self) -> list[CommitView]:
-        """本线历史 (沿 parent 链回溯)."""
+        """Branch history along the parent chain."""
         ...
 
     def window(self, *, detail_n: int = 10, summary_m: int = -1) -> BranchWindow:
-        """
-        滑动窗口快路径. detail_n: 最近 N 帧 (含 staging).
-        summary_m: 明细区之前的释义摘要数, -1 = 全量.
+        """Sliding window fast path. detail_n = recent N frames (including staging).
+        summary_m = interpretation summaries before the detail zone, -1 = all.
         """
         ...
 
 
-# ── Memento (owner facade, ABC) ──────────────────────────────────────────────
+# ── Memento (owner facade, ABC) ────────────────────────────────────────────────
 
 
 class Memento(ABC):
-    """
-    owner facade. 一个实例绑定一个 owner.
+    """Owner facade. One instance is bound to one owner.
 
-    跨 owner 只读: get_line(name, origin=other) 返回 readonly handle.
-    跨 owner 写不存在 — 新思考空间 = 新 owner 的新 Memento 实例.
+    Cross-owner read-only: ``get_line(uid, origin=other)`` returns a read-only
+    handle. Cross-owner write does not exist — a new thinking space = a new
+    Memento instance for a new owner.
 
-    退化态: 单 line + 自动 commit 的用例只接触 get_line("main") +
-    record/commit/staging/log — fork 相关词汇完全不出现.
+    Degenerate form: single line + auto-commit usage only touches
+    ``get_line("main")`` + record/commit/staging/log — fork vocabulary
+    never appears.
     """
 
     @property
     @abstractmethod
     def owner(self) -> str:
-        pass
+        """Owner identity."""
+        ...
 
-    # ── line 管理 ──
+    # ── Branch management ──
 
     @abstractmethod
     def create_line(
@@ -413,89 +587,131 @@ class Memento(ABC):
         from_ref: BranchRef | None = None,
         overlay: dict[str, Any] | None = None,
     ) -> Line:
-        """
-        开线.
+        """Create a new branch.
 
-        :param from_ref: fork 起点. 跨 owner 时 from_ref.origin != self.owner.
-            None = root line (无前驱, 首次 commit 自本 owner 开始).
-        :param overlay: 化身出生注入物. 仅在 from_ref 跨 owner 时有意义.
-            落 owner meta.json, 创建后不可变.
+        Generates a stable branch uid (brn_ ULID), creates the workspace
+        directory, writes the head file (name → uid), and appends a row to
+        branches.jsonl.
+
+        :param name: initial head name for this branch. Can be changed later
+            via rename or抢占 (name takeover).
+        :param from_ref: checkout origin. None = root line (no predecessor,
+            first commit starts this owner's history).
+        :param overlay: incarnation injection. Only meaningful when from_ref
+            crosses an owner boundary. Landed in owner meta.json, immutable
+            after creation.
+        :return: write handle for the new branch.
         """
-        pass
+        ...
 
     @abstractmethod
-    def get_line(self, name: str, *, origin: str | None = None) -> Line:
+    def get_line(self, identifier: str, *, origin: str | None = None) -> Line:
+        """Get a line handle.
+
+        ``identifier`` is first resolved as a branch uid (brn_ prefix);
+        if not found, resolved as a head name. ``origin`` != self.owner
+        returns a read-only cross-owner handle.
+
+        :raise BranchNotFoundError:
+        :raise LineNotFoundError: (for name-based lookup)
         """
-        取 line handle. origin=None 表示本 owner; origin != self.owner 时
-        返回 readonly handle.
-        :raise LineNotFoundError:
-        """
-        pass
+        ...
 
     @abstractmethod
     def list_lines(self) -> list[str]:
-        """本 owner 全部 line name."""
-        pass
+        """Active branch head names. Equivalent to globbing the heads/ directory."""
+        ...
+
+    @abstractmethod
+    def list_all_branches(self) -> list[BranchMeta]:
+        """All branches (including abandoned and frozen). Reads branches.jsonl.
+
+        This is the full-search API. The degenerate path (single line, active
+        only) uses ``list_lines()``.
+        """
+        ...
 
     @abstractmethod
     def delete_line(self, name: str) -> None:
-        """
-        弃线. ref + staging 随线死, 冻结 commit 永存.
+        """Remove a head name. The branch workspace and all commits survive.
+
+        This is name-level deletion, not branch deletion. The uid workspace
+        and its commit trail remain intact and are still reachable via
+        ``list_all_branches()`` and ``get_line(uid)``.
+
         :raise LineNotFoundError:
         """
-        pass
+        ...
 
-    @abstractmethod
-    def reset_line(self, name: str, to: BranchRef) -> None:
-        """
-        移 ref 不改历史. staging 非空时先自动机械 commit 落锚, 再移 ref.
-        :raise LineNotFoundError:
-        """
-        pass
-
-    # ── commit 读 & 释义 ──
+    # ── Commit read & interpretation ──
 
     @abstractmethod
     def show(self, commit_id: str) -> CommitDetail:
-        """展开一个 commit 的完整成员 + 全部释义版本. :raise CommitNotFoundError:"""
-        pass
+        """Expand a commit: all frozen members + all interpretation versions.
+
+        :raise CommitNotFoundError:
+        """
+        ...
 
     @abstractmethod
     def notes(self, commit_id: str) -> list[CommitNote]:
-        """某 commit 的全部释义版本 (行序). 取证接口. :raise CommitNotFoundError:"""
-        pass
+        """All interpretation versions for a commit, in append order.
 
-    @abstractmethod
-    def annotate(self, commit_id: str, title: str = "", body: str = "", *, by: str = "") -> CommitView:
-        """
-        孔径二: 追加一条 commit 释义. 整体替换语义, 原版本永远可寻址.
         :raise CommitNotFoundError:
         """
-        pass
+        ...
+
+    @abstractmethod
+    def annotate(
+        self, commit_id: str, title: str = "", body: str = "", *, by: str = ""
+    ) -> CommitView:
+        """Aperture two: append a commit interpretation. Full-replacement
+        semantics; prior versions are always addressable via ``notes()``.
+
+        :raise CommitNotFoundError:
+        """
+        ...
 
     @abstractmethod
     def annotate_moment(
         self, commit_id: str, moment_id: str, threads: Sequence[str], *, by: str = ""
     ) -> None:
-        """
-        moment 级释义 — 整体替换 threads. 冻结后仍合法 (threads 是释义不是成员).
-        跨 owner 只读: 他 owner 的 commit 只经其 owner 实例落盘.
+        """Moment-level interpretation — replace threads wholesale. Legal after
+        freezing (threads are interpretation, not members).
+
         :raise CommitNotFoundError:
         :raise MomentNotInCommitError:
         """
-        pass
+        ...
 
-    # ── owner 级 ──
+    # ── Owner-level queries ──
 
     @abstractmethod
     def log(self) -> list[CommitRef]:
-        """commits.jsonl 物理时序 — 全部 line 的 commit 按 append 序."""
-        pass
+        """commits.jsonl physical timeline — all lines' commits in append order."""
+        ...
 
     @abstractmethod
     def commit_space(self, commit_id: str) -> str:
-        """
-        commit 自治目录的绝对路径. 运行时解析, 不进入持久化结构.
+        """Absolute path to the commit's autonomous directory. Resolved at
+        runtime; never persisted in memento structures.
+
         :raise CommitNotFoundError:
         """
-        pass
+        ...
+
+    @abstractmethod
+    def checkouts(self) -> list[CheckoutRecord]:
+        """Fork events from checkouts.jsonl, in append order.
+
+        Forward direction: branches created by this owner from any anchor.
+        """
+        ...
+
+    @abstractmethod
+    def confluents(self) -> list[ConfluentRecord]:
+        """Reference-confluent events from confluents.jsonl, in append order.
+
+        Forward direction: confluents received by this owner's branches.
+        """
+        ...
