@@ -7,7 +7,8 @@ revisable.
 
 ## Core concept: trajectory is the first citizen
 
-A Ghost lives on **lines** (timelines). Each line extends forward by recording
+A Ghost lives on **lines** (timelines). Each line has a stable identity (uid)
+and a human-readable name (head pointer). It extends forward by recording
 **moments** into **staging**. When staging is frozen, it becomes a **commit** —
 an immutable cognitive anchor. Commits can never be deleted or modified, but
 their **annotation** (summary, title, thread tags) can be revised at any time.
@@ -25,12 +26,26 @@ record moment → staging (live, mutable)
 | Concept | What it is | Mutability |
 |---------|------------|------------|
 | **Owner** | An identity that writes. One owner = one directory under the memento root. | — |
-| **Line** (branch) | A timeline: a name + a ref pointer + staging. | staging: mutable; ref: movable (reset) |
+| **Line** (branch) | A stable uid (brn_ ULID) + a movable name + a ref pointer + staging workspace. | staging: mutable; ref: updated at each commit; name: movable/renameable |
 | **Commit** | A frozen snapshot of moments. Born immutable, lives forever. | Never. Members frozen; annotation appends new versions (last-wins). |
-| **Moment** | One frame of experience. An envelope: payload is opaque to memento. | In staging: overwritable (last-wins). Once in a commit: frozen. |
-| **Staging** | The live edge of a line — moments not yet committed. | The only truncatable file in the system. |
+| **Moment** | One frame of experience. An envelope with a plain-text content field + opaque payload. | In staging: overwritable (last-wins). Once in a commit: frozen. |
+| **Staging** | The live edge of a line — moments not yet committed. | The only overwritable file in the system. |
 | **Annotation** | Commit interpretation: title + body. Appended as new versions, last-wins. | Always revisable. Old versions forever addressable. |
 | **Witness** | A git sidecar that records every file change as a verifiable audit trail. | Optional. Append-only (daemon). |
+
+## Key design choices
+
+- **uid vs name**: Every line has a stable uid (brn_ ULID) that never changes. The
+  human-readable name is a movable pointer (heads/{name} → uid). Deleting a line
+  removes only the head pointer — the workspace and all commits survive.
+- **fork-over-reset**: To revisit a past commit, create a NEW line from it. The
+  old line is preserved (or marked abandoned). There is no destructive rewind.
+- **reference confluent (融汇)**: One line can submit its ref to another line.
+  The recipient's commit parent chain is NOT altered — the confluent is recorded
+  as a separate associative event in confluents.jsonl.
+- **content field**: Every moment carries a plain-text `content` field, populated
+  by the recording agent. Enables CLI views to render human-readable output
+  without parsing opaque payload.
 
 ## Two apertures
 
@@ -39,25 +54,38 @@ record moment → staging (live, mutable)
 2. **Aperture 2 (annotation layer)**: Revise interpretations of past commits
    without touching the main flow. "Memory reconsolidation" side effect.
 
-## Storage layout
+## Storage layout (FORMAT v3)
 
 ```
-{root}/memento/{owner}/
-  meta.json                    # owner identity (overlay, created/updated)
+{root}/{owner}/
+  meta.json                     # owner identity (overlay). Optional.
   commits.jsonl                 # append-only commit log (physical time order)
-  branches/{name}/
+  branches.jsonl                # append-only branch index (uid, name, status, fork_ref)
+  checkouts.jsonl               # fork event records (deriving side appends)
+  confluents.jsonl              # reference-confluent event records
+  heads/{name}                  # plain-text: branch_uid (one line, no JSON)
+  ws/{branch_uid}/
     ref                         # {origin, commit_id[, moment_id]}
-    staging.jsonl                # live moments
+    staging.jsonl               # live moments (t:"moment" rows)
+    status.json                 # lifecycle status + task description
   commits/{YYYY-MM}/cmt_<ULID>/
-    meta.json                    # parent pointer + ancestry skips
-    moments.jsonl                 # frozen member moments
-    notes.jsonl                   # annotations (commit_note + moment_note)
+    meta.json                   # parent pointer
+    moments.jsonl               # frozen member moments (t:"moment" rows, no header)
+    notes.jsonl                 # annotations (commit_note + moment_note)
 ```
 
 - **Y-m sharding**: `cmt_<ULID>` → UTC year-month is a pure function (no index needed).
-- **commits.jsonl**: owner-level append-only log. Line order = physical time. Crash recovery predicate.
-- **ref**: points to a commit. Moving it = `reset` (auto-mechanical-commit first, then move — nothing silently lost).
-- **Commit autonomous dir**: born frozen, lazily created. Only `notes.jsonl` can be appended after creation.
+- **commits.jsonl**: owner-level append-only log. Line order = physical time.
+  Crash recovery predicate.
+- **branches.jsonl**: append-only branch registry. Appended on create, status change,
+  and delete (abandoned tombstone). Full-search API reads this file.
+- **checkouts.jsonl**: fork events. Appended by the deriving side (local-only, zero
+  cross-owner coordination).
+- **heads/{name}**: lightweight pointer files. glob = active branch list. `-D` removes
+  only this file; workspace and commits survive.
+- **ref**: JSON `{origin, commit_id[, moment_id]}`. Updated at each commit.
+- **Commit autonomous dir**: born frozen, lazily created. Only `notes.jsonl` can be
+  appended after creation.
 
 ## Typical workflows
 
@@ -78,11 +106,16 @@ moss memento branch window <owner>/main
 moss memento branch create <owner>/idea-x --from-ref <other-owner>/cmt_xxx
 ```
 
-**Rewind (reset)**: Move a line's ref to a different commit. Staging is
-auto-committed first — nothing is silently discarded.
+**Delete (head only)**: Remove the head pointer. Workspace and commits survive.
 
 ```
-moss memento branch reset <owner>/main --to <owner>/cmt_yyy
+moss memento branch delete <owner>/old-idea
+```
+
+**Full branch index**: See all branches including abandoned.
+
+```
+moss memento branch list-all <owner>
 ```
 
 **Annotation (aperture 2)**: Revise a commit's interpretation.
@@ -98,14 +131,15 @@ moss memento commit show <owner>/cmt_xxx [--notes]
 moss memento commit space <owner>/cmt_xxx   # path to commit directory
 moss memento branch staging <owner>/main     # live (unfrozen) moments
 moss memento owner log <owner>               # physical commit timeline
+moss memento branch list-all <owner>         # all branches (full index)
 ```
 
 ## Key invariants
 
-1. Commit members (moment_ids) are frozen on creation — never modified.
+1. Commit members (moment frames) are frozen on creation — never modified.
 2. Annotations append new versions, last-wins (by file byte offset, not timestamp).
 3. Payload is opaque — memento never parses or rewrites it.
 4. Fork only from frozen commits, never from staging.
-5. Ref movement anchors staging first (auto mechanical commit).
-6. Merge does not exist — single parent chain only.
-7. Deleting a line removes staging + ref; commits survive forever.
+5. Single parent chain only — confluents are associative events, not parent-chain merges.
+6. Deleting a line removes the head pointer only. Workspace and commits survive forever.
+7. Every line has a stable uid. The human-readable name is a movable pointer.

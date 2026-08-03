@@ -968,9 +968,24 @@ class FsMemento(MementoABC):
         head_path = self._head_path(name)
         if not head_path.exists():
             raise LineNotFoundError(f"line {name!r} not found")
-        # Read the uid before deleting (for hook)
         uid = _read_text_file(head_path)
         head_path.unlink()
+        # Append tombstone entry to branches.jsonl — the branch is abandoned,
+        # not gone. Workspace and commits survive.
+        ref = self._read_ref(uid) if uid else None
+        fork_ref = _branch_ref_to_fields(ref) if ref and ref.commit_id else store.BranchRefFields(
+            commit_id="",
+        )
+        now = _now_utc()
+        _append_jsonl_lines(self._branches_jsonl_path(), [{
+            "t": store.ROW_TYPE_BRANCH_META,
+            "uid": uid or "",
+            "name": name,
+            "status": store.BRANCH_STATUS_ABANDONED,
+            "fork_ref": fork_ref.model_dump(mode="json"),
+            "created": now.isoformat(),
+            "updated": now.isoformat(),
+        }])
         self._logger.info("deleted head '%s' (uid=%s) — workspace and commits survive", name, uid)
         self._hooks.on_line_deleted(name)
 
