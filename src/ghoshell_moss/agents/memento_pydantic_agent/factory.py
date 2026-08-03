@@ -48,10 +48,19 @@ from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
 __all__ = ["factory"]
 
 
-def factory(agent_path: str | Path) -> MementoAgent:
+def factory(
+    agent_path: str | Path,
+    injections: dict[str, Any] | None = None,
+) -> MementoAgent:
     """Build a MementoAgent from an agent .py file.
 
     :param agent_path: path to the .py file. Read + compiled at factory time.
+    :param injections: additional key-value pairs injected into the agent
+        sandbox namespace. The capability-injection mechanism (§13.7):
+        "imports are authorization" is the positive use — a library module
+        exports a stub function; the factory receives the real one and
+        injects it here. Default None = no extra capabilities beyond
+        get_interface.
     :raises FileNotFoundError: if the path does not exist.
     :raises RuntimeError: if compilation fails or __model__ / ANTHROPIC_MODEL
         neither is set.
@@ -112,6 +121,8 @@ def factory(agent_path: str | Path) -> MementoAgent:
     # Named identically to `moss codex get-interface` on purpose — same verb,
     # same output shape, whichever seat you are in.
     agent_sandbox.set("get_interface", reflect_element)
+    for key, value in (injections or {}).items():
+        agent_sandbox.set(key, value)
 
     def sandbox_exec(code: str) -> str:
         """Execute Python code in the agent's sandbox.
