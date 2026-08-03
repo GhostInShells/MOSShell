@@ -86,9 +86,7 @@ class MementoAgent(ABC):
         :param cwd: working directory (the ground degenerate form). Default
             is the .py file's parent; CLI --cwd overrides. Used as the
             default cwd for any tool-like injections (file_editor etc.).
-        :param metadata: additional anchors. v1 keys: 'prompt_sha' (str;
-            16-hex prefix of sha256 over the composed instruction),
-            'model_override' (str | None). Families may extend; unknown
+        :param metadata: additional anchors. Families may extend; unknown
             keys are silently ignored.
 
         :return: final answer text. CLI writes this to stdout.

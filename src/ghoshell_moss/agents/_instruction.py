@@ -31,7 +31,6 @@ Backstage: this module never appears in an agent's instruction.
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 from types import ModuleType
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -44,7 +43,6 @@ __all__ = [
     "META_INSTRUCTION",
     "INTERFACES_ATTR",
     "assemble_instruction",
-    "prompt_sha",
     "reflect_element",
 ]
 
@@ -156,16 +154,6 @@ def assemble_instruction(*, name: str, source: str, module: ModuleType) -> str:
         source=source.rstrip(),
         interfaces_block=_render_interfaces_block(module),
     )
-
-
-def prompt_sha(instruction: str) -> str:
-    """SHA-256 of the composed instruction (not of the .py source alone).
-
-    Kept short (16 hex chars) — enough to disambiguate across a single
-    branch's history, cheap in metadata. Full hash is deterministic if
-    you need it: hashlib.sha256(instruction.encode()).hexdigest().
-    """
-    return hashlib.sha256(instruction.encode("utf-8")).hexdigest()[:16]
 
 
 def reflect_element(value: Any) -> str:

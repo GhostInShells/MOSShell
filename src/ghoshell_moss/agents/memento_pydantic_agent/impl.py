@@ -7,11 +7,13 @@ The runner shape (v1):
 - model's only tool = sandbox_exec (registered by factory)
 - pydantic-ai drives the model loop; sandbox holds task state
 - each invoke records new messages to memento staging as a single MomentRecord
+  with the final answer as the content field
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -23,7 +25,7 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 from ulid import ULID
 
-from ghoshell_moss.agents._instruction import assemble_instruction, prompt_sha
+from ghoshell_moss.agents._instruction import assemble_instruction
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.core.codex.sandbox import Sandbox
 from ghoshell_moss.memento.abc import Memento, MomentRecord
@@ -31,6 +33,7 @@ from ghoshell_moss.memento.abc import Memento, MomentRecord
 __all__ = ["MementoPydanticAgentImpl"]
 
 _MESSAGE_TYPE: str = "pydantic_ai.messages/v2"
+_logger = logging.getLogger("moss.memento.agent")
 
 
 def _new_moment_id() -> str:
@@ -77,7 +80,7 @@ class MementoPydanticAgentImpl(MementoAgent):
         except Exception as e:
             raise RuntimeError(f"agent {self._name!r} invoke failed: {e}") from e
 
-        self._record(memento, line_name, result, metadata)
+        self._record(memento, line_name, result)
 
         return str(result.output)
 
@@ -97,10 +100,6 @@ class MementoPydanticAgentImpl(MementoAgent):
             module=self._compiled,
         )
 
-    def instruction_sha(self) -> str:
-        """SHA-256 (16-hex prefix) of the composed instruction."""
-        return prompt_sha(self.compose_instruction())
-
     # ── memento recording ──
 
     def _record(
@@ -108,7 +107,6 @@ class MementoPydanticAgentImpl(MementoAgent):
         memento: Memento | None,
         line_name: str,
         result: AgentRunResult[Any],
-        metadata: dict[str, Any] | None,
     ) -> None:
         """Dump new messages as a MomentRecord and write to staging."""
         if memento is None or not line_name:
@@ -117,21 +115,21 @@ class MementoPydanticAgentImpl(MementoAgent):
         try:
             line = memento.get_line(line_name)
         except Exception:
+            _logger.warning(
+                "agent %r: line %r not found, moment not recorded",
+                self._name, line_name,
+            )
             return
 
         raw_bytes: bytes = result.new_messages_json()
         messages: Any = json.loads(raw_bytes.decode())
 
-        prompt_sha_val: str = ""
-        if metadata:
-            prompt_sha_val = metadata.get("prompt_sha", "")
-
         record: MomentRecord = MomentRecord(
             id=_new_moment_id(),
             type=_MESSAGE_TYPE,
+            content=str(result.output),
             payload={
                 "messages": messages,
-                "prompt_sha": prompt_sha_val,
             },
         )
         line.record(record)

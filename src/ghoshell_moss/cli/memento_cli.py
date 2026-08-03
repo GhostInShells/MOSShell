@@ -1,5 +1,5 @@
 """
-Memento CLI — CLI for the memento cognitive-trajectory system (FORMAT v2).
+Memento CLI — CLI for the memento cognitive-trajectory system (FORMAT v3).
 
 Each command maps 1:1 to the Memento / Line interface.
 Storage root defaults to ``.memento/`` under the current directory.
@@ -93,7 +93,8 @@ def _format_view(v: CommitView) -> str:
 
 
 def _format_ref(r: CommitRef) -> str:
-    return f"{r.commit_id}  [{r.kind}]  {r.branch}"
+    uid_short = r.branch[:16] if r.branch else ""
+    return f"{r.commit_id}  [{r.kind}]  {uid_short}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,13 +167,13 @@ def owner_status(
     r = _resolve_root(root)
     m = new_filesystem_memento(r, owner)
     lines = m.list_lines()
+    all_branches = m.list_all_branches()
     log_entries = len(m.log())
-    recovery = ""
     print_simple_panel(
-        f"owner:   {owner}\n"
-        f"lines:   {', '.join(lines) or '(none)'}\n"
-        f"commits: {log_entries}\n"
-        f"{recovery}",
+        f"owner:          {owner}\n"
+        f"active lines:   {', '.join(lines) or '(none)'} ({len(lines)})\n"
+        f"all branches:   {len(all_branches)}\n"
+        f"commits:        {log_entries}",
         title=f"Owner: {owner}",
     )
 
@@ -224,7 +225,7 @@ def branch_create(
     fr = _parse_ref(from_ref) if from_ref else None
     ov = json.loads(overlay) if overlay else None
     line = m.create_line(name, from_ref=fr, overlay=ov)
-    print_success(f"Line created: {owner}/{line.name}")
+    print_success(f"Line created: {owner}/{name} (uid={line.branch_identifier})")
 
 
 @branch_app.command("list", short_help="List lines for an owner.")
@@ -237,9 +238,10 @@ def branch_list(
     for name in m.list_lines():
         line = m.get_line(name)
         ref_str = ""
-        if line.ref:
-            ref_str = f" -> {line.ref.origin}/{line.ref.commit_id}"
-        echo(f"{owner}/{name}{ref_str}")
+        if line.ref and line.ref.commit_id:
+            origin = line.ref.origin or owner
+            ref_str = f" -> {origin}/{line.ref.commit_id}"
+        echo(f"{owner}/{name}  uid={line.branch_identifier}{ref_str}")
 
 
 @branch_app.command("record", short_help="Record a moment to a line's staging.")
@@ -299,7 +301,8 @@ def branch_staging(
         print_info("Staging is empty.")
         return
     for rec in records:
-        echo(f"{rec.id}  [{rec.type}]  {json.dumps(rec.payload, ensure_ascii=False)[:120]}")
+        content_preview = rec.content[:80] if rec.content else ""
+        echo(f"{rec.id}  [{rec.type}]  {content_preview}")
 
 
 @branch_app.command("log", short_help="Show line history (parent chain).")
@@ -336,26 +339,29 @@ def branch_window(
     if win.details:
         echo("── details ──")
         for rec in win.details:
-            echo(f"{rec.id}  [{rec.type}]")
+            content_preview = f"  {rec.content[:60]}" if rec.content else ""
+            echo(f"{rec.id}  [{rec.type}]{content_preview}")
     if not win.summaries and not win.details:
         print_info("Empty window.")
 
 
-@branch_app.command("reset", short_help="Move line ref (auto mechanical commit of staging).")
-def branch_reset(
-    owner_name: str = typer.Argument(..., help="<owner/name>."),
-    to: str = typer.Option(..., "--to", help="Target <owner/cmt_...>."),
+@branch_app.command("list-all", short_help="List all branches including abandoned (full index).")
+def branch_list_all(
+    owner: str = typer.Argument(..., help="Owner name."),
     root: Optional[Path] = typer.Option(None, "--root", "-r"),
 ):
-    owner, name = _parse_owner_name(owner_name)
     r = _resolve_root(root)
     m = new_filesystem_memento(r, owner)
-    target = _parse_ref(to)
-    m.reset_line(name, target)
-    print_success(f"Line {owner}/{name} reset to {to}")
+    branches = m.list_all_branches()
+    if not branches:
+        print_info("No branches.")
+        return
+    for br in branches:
+        active_mark = " " if br.status == "active" else "*"
+        echo(f"{active_mark} uid={br.uid}  name={br.name}  [{br.status}]")
 
 
-@branch_app.command("delete", short_help="Delete a line (commits survive).")
+@branch_app.command("delete", short_help="Delete a line (head only, workspace and commits survive).")
 def branch_delete(
     owner_name: str = typer.Argument(..., help="<owner/name>."),
     root: Optional[Path] = typer.Option(None, "--root", "-r"),
@@ -364,7 +370,7 @@ def branch_delete(
     r = _resolve_root(root)
     m = new_filesystem_memento(r, owner)
     m.delete_line(name)
-    print_success(f"Line {owner}/{name} deleted (commits preserved).")
+    print_success(f"Line {owner}/{name} deleted (head only — workspace and commits preserved).")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -394,7 +400,8 @@ def commit_show(
     if detail.moments:
         echo(f"moments ({len(detail.moments)}):")
         for mr in detail.moments:
-            echo(f"  {mr.id}  [{mr.type}]  threads={mr.threads}")
+            content_part = f"  content={mr.content[:60]!r}" if mr.content else ""
+            echo(f"  {mr.id}  [{mr.type}]  threads={mr.threads}{content_part}")
     if notes:
         echo(f"notes ({len(detail.notes)}):")
         for n in detail.notes:
@@ -546,7 +553,6 @@ def agent_invoke(
             memento=memento,
             line_name=branch,
             cwd=resolved_cwd,
-            metadata={"prompt_sha": agent.instruction_sha()},
         ))
     except Exception as exc:
         print_error(f"invoke failed: {exc}")
