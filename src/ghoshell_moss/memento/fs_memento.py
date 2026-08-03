@@ -928,6 +928,21 @@ class FsMemento(MementoABC):
             entry.name for entry in heads_dir.iterdir() if entry.is_file()
         )
 
+    def _read_branch_meta(self, uid: str) -> dict | None:
+        """Read the last-written branch_meta row for a uid from branches.jsonl.
+
+        branches.jsonl is append-only with last-wins by uid; iterating
+        reversed and taking the first match returns the effective row.
+        Returns None if no row is found for this uid.
+        """
+        branches_path = self._branches_jsonl_path()
+        if not branches_path.exists():
+            return None
+        for obj in reversed(_read_jsonl_lines(branches_path)):
+            if obj.get("t") == store.ROW_TYPE_BRANCH_META and obj.get("uid") == uid:
+                return obj
+        return None
+
     def list_all_branches(self) -> list[BranchMeta]:
         branches_path = self._branches_jsonl_path()
         if not branches_path.exists():
@@ -970,20 +985,33 @@ class FsMemento(MementoABC):
             raise LineNotFoundError(f"line {name!r} not found")
         uid = _read_text_file(head_path)
         head_path.unlink()
-        # Append tombstone entry to branches.jsonl — the branch is abandoned,
-        # not gone. Workspace and commits survive.
-        ref = self._read_ref(uid) if uid else None
-        fork_ref = _branch_ref_to_fields(ref) if ref and ref.commit_id else store.BranchRefFields(
-            commit_id="",
-        )
+
+        # Read the existing branch_meta row to preserve fork_ref and created.
+        # The current ref (ws/{uid}/ref) may have advanced past the fork point;
+        # the original row records where this line actually came from.
+        target_uid = uid or ""
+        existing = self._read_branch_meta(target_uid)
+        if existing is not None:
+            fork_ref = store.BranchRefFields(**existing.get("fork_ref", {}))
+            created = existing.get("created", _now_utc())
+        else:
+            # Edge case: line exists in heads/ but has no branch_meta row
+            # (shouldn't happen). Fall back to the current ref.
+            ref = self._read_ref(uid)
+            if ref and ref.commit_id:
+                fork_ref = _branch_ref_to_fields(ref)
+            else:
+                fork_ref = store.BranchRefFields(commit_id="")
+            created = _now_utc()
+
         now = _now_utc()
         _append_jsonl_lines(self._branches_jsonl_path(), [{
             "t": store.ROW_TYPE_BRANCH_META,
-            "uid": uid or "",
+            "uid": target_uid,
             "name": name,
             "status": store.BRANCH_STATUS_ABANDONED,
             "fork_ref": fork_ref.model_dump(mode="json"),
-            "created": now.isoformat(),
+            "created": created,
             "updated": now.isoformat(),
         }])
         self._logger.info("deleted head '%s' (uid=%s) — workspace and commits survive", name, uid)
