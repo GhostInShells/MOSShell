@@ -117,14 +117,21 @@ def _resolve_for_call(
         provider: str,
         model: str,
         tag: str | None,
+        no_fallback: bool = False,
 ) -> ResolvedModel:
-    resolved = conf.get_model(provider=provider, model=model, tag=tag)
-    key = resolved.service.api_key
-    if isinstance(key, str) and key.startswith("$"):
-        print_error(
-            f"env var {key[1:]} is not set — set it, or pick another provider/model."
-        )
-        raise typer.Exit(code=1)
+    resolved = conf.get_model(
+        provider=provider, model=model, tag=tag, no_fallback=no_fallback,
+    )
+    for name, field in [
+        ("api_key", resolved.service.api_key),
+        ("base_url", resolved.service.base_url),
+    ]:
+        if isinstance(field, str) and field.startswith("$"):
+            print_error(
+                f"env var {field[1:]} is not set (service {resolved.service.name!r} {name}) "
+                f"— set it, or pick another provider/model."
+            )
+            raise typer.Exit(code=1)
     return resolved
 
 
@@ -163,12 +170,16 @@ else:
             tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
             temperature: float = typer.Option(None, "--temperature", help="Sampling temperature."),
             max_output_tokens: int = typer.Option(None, "--max-output-tokens", help="Max output tokens."),
+            no_fallback: bool = typer.Option(
+                False, "--no-fallback",
+                help="Strict mode — raise if provider/model not found (no silent fallback to default).",
+            ),
     ) -> None:
         """One-shot LLM call for debugging. Resolves config internally — never prints secrets."""
         conf = _load_config()
         resolved = _resolve_for_call(
             conf.resolve(),
-            provider=provider, model=model, tag=tag,
+            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
         )
         try:
             output = _call(resolved, prompt, temperature=temperature, max_output_tokens=max_output_tokens)
@@ -185,12 +196,16 @@ else:
             provider: str = typer.Option("", "--provider", help="Provider/service name."),
             model: str = typer.Option("", "--model", help="Exact model name."),
             tag: str = typer.Option(None, "--tag", help="Model tag (small_fast_model/flash/pro)."),
+            no_fallback: bool = typer.Option(
+                False, "--no-fallback",
+                help="Strict mode — raise if provider/model not found (no silent fallback to default).",
+            ),
     ) -> None:
         """Integrated availability check — resolve, call, report. api_key never printed."""
         conf = _load_config()
         resolved = _resolve_for_call(
             conf.resolve(),
-            provider=provider, model=model, tag=tag,
+            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
         )
         try:
             output = _call(resolved, "Reply with exactly: pong")

@@ -1,14 +1,15 @@
 ---
-title: Llms Cli
-status: active
-priority: P1
 created: 2026-08-03
-updated: 2026-08-03
 depends: []
-milestone:
-description: >-
-  Make llms config genuinely usable — Project.configs() single-source ConfigStore
+description: Make llms config genuinely usable — Project.configs() single-source ConfigStore
   construction, then a `moss llms` CLI backed by pydantic-ai. Prep for dolores.
+milestone: null
+priority: P1
+status: completed
+status_note: 'CLI core done: list/call/test, no-fallback, three protocols (anthropic+openai).
+  .env.example and stub llms.yml deferred.'
+title: Llms Cli
+updated: '2026-08-03'
 ---
 
 # Llms Cli
