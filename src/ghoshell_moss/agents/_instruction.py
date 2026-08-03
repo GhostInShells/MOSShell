@@ -80,6 +80,37 @@ When you have your final answer, reply in plain text instead of calling
 `sandbox_exec`.
 """
 
+# ── DRAFT: META truth segment (for human review, workstream §13.1) ────────────
+#
+# Problem: META_INSTRUCTION above has zero trace of memento. In the (a) phase
+# the model — with real moments accumulating in staging — claimed "each
+# session starts fresh". It did not even know it had history it couldn't see;
+# it fought its own context.
+#
+# Truth rule: META must reflect whether a trajectory actually exists.
+#   - memento=None (degraded baseline): keep the text above. No memory
+#     mention — there is no memory to be honest about.
+#   - memento present + read-side window landed ((b)): META must say so, and
+#     say where the folded past lives, so the model acts as if it has
+#     continuity instead of denying it.
+#
+# This requires memento visibility at instruction-assembly time — i.e.
+# assemble_instruction() must learn whether a store + line exist before it
+# picks the META variant. The window text itself is rendered by the (b)
+# read-side, not by this module.
+#
+# Draft truth paragraph (memento-present case, proposed):
+#
+#     Your trajectory lives in a memento line — an append-only record of past
+#     moments, folded into the window below. Past invocations are not lost;
+#     they are summarized in the window (and retrievable in detail). Act with
+#     that continuity: this is the same self across invocations, not a fresh
+#     mind each time.
+#
+# Not landed: pending human review + (b) read-side. Changing META now, before
+# the window exists, would promise a memory the model cannot yet read.
+# ──────────────────────────────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class Promptable(Protocol):
