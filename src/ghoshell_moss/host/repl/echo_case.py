@@ -71,6 +71,10 @@ class EchoCase(MossHostTUI):
     def _get_runtime(self) -> RUNTIME:
         return FakeRuntime()
 
+    def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
+        # FakeRuntime 无 matrix — 异常已由 handler 打到 console, 这里不需要额外落日志.
+        pass
+
     def create_states(self) -> Iterable[TUIState]:
         return [
             EchoState("A"),

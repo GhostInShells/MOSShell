@@ -1,15 +1,15 @@
 ---
-title: Ghost TUI Refinement — 交互时序与治理
-status: draft
-priority: P2
 created: 2026-07-27
-updated: 2026-07-27
 depends:
-  - ghost-runtime-safemode
-milestone:
-description: >-
-  Ghost TUI 交互治理：logos 尾段丢失、input 计数残留、感知边界、快捷键约定、状态渲染跨线程、
-  日志可视化。safemode dogfooding 时暴露的一批交互问题，集中做一轮 refinement。
+- ghost-runtime-safemode
+description: Ghost TUI 交互治理：logos 尾段丢失、input 计数残留、感知边界、快捷键约定、状态渲染跨线程、 日志可视化。safemode
+  dogfooding 时暴露的一批交互问题，集中做一轮 refinement。
+milestone: null
+priority: P2
+status: in-progress
+status_note: interrupt→shell.clear 通路 + c-c 两级 + 干净关闭已实现并验证 (项5/6), 余项待做
+title: Ghost TUI Refinement — 交互时序与治理
+updated: '2026-08-03'
 ---
 
 # Ghost TUI Refinement — 交互时序与治理
@@ -82,6 +82,38 @@ signal"，包括通道配置、语音接口等元信息被重复声明。ghost �
 
 需要短暂 debounce 窗口（1-2s？）区分"连按"与"两次不同意图"。
 
+**定位（2026-08-03，确认 bug）**：TUI 的 interrupt 根本不触发 `shell.clear()`。现状两个按键都
+不走 interrupt 通路：
+
+- `c-c`（tui.py `default_key_bindings`）绑定 `graceful_exit` → `self.close()` 直接关掉整个
+  TUI，没有 interrupt 一级。
+- `escape` → `current_state().on_interrupt`，但 `REPLState.on_interrupt` 只 cancel 本地
+  `_operation_task`（文本输入处理），不产生 interrupt signal → ghost 生成不停、半截命令继续跑。
+
+而正确通路已存在，只是 TUI 没接：
+
+```
+new_interrupt_signal()  (core/mindflow/interrupt_nucleus.py:196)
+  → InterruptSignalMeta("interrupt") 信号
+  → InterruptNucleus 包装成 FATAL + notify + interrupt=True impulse
+  → ghost_runtime._main_loop  (host/ghost_runtime.py:298-299)
+  → await shell.clear()   ← 关 interpreter + 清 speech 缓冲 + 取消 pending commands
+```
+
+**修复设计（已实现，本会话）**：
+
+- `ghost_ui.py _GhostStateBase.on_interrupt` override：先 cancel 本地 REPL operation（复用
+  REPLState 逻辑），再向 session 发 `new_interrupt_signal(description="from ghost tui")`，
+  接入既有通路触发 `shell.clear()`。
+- **interrupt 与 exit 分离**：interrupt 唯一入口是 `escape`（走 `on_interrupt`，真实打断
+  生成）。`c-c`（tui.py）不再承担 interrupt——空输入区首按只提示 `press c-c again to exit`，
+  debounce 1.5s 内二按才 exit；输入区有内容则清空 buffer（项 #5，不打断不退出）。
+  理由（人类工程师定）：有 esc 时 c-c 做 interrupt 冗余，提示"下一轮 c-c 关闭"更合理。
+- 顺手修复暴露的老 bug（关闭路径）：`tui_exception_handler` 原用 `self.host.matrix()`
+  （Host 不缓存 matrix → AttributeError 让 "Task was destroyed" 变成 exception handler 崩溃）；
+  改为 abstract `_log_loop_exception`，三个 concrete TUI 各自经 runtime 取 matrix logger。
+  `run()` finally 里 cancel + gather pending tasks，消除 loop.close() 的 pending 噪音。
+
 ### 7. 跨线程 rich status 对象的可提交性
 
 需验证：rich 的 `Status` / `Live` 对象是否支持 "A 线程 render, B 线程改
@@ -117,3 +149,20 @@ REPL 常见惯例，直接加入。
   - P2: (9) 日志 tail —— 需要 project API 支持
 - (4) 与 `channel-meta-dyn-static` 可能有语义重叠，实现前先看那边有没有
   已 design-locked 的方向
+
+## Session Log
+
+### 2026-08-03 — interrupt → shell.clear 通路修复（项 #5、#6）
+
+修复确认 bug：TUI interrupt 不触发 `shell.clear()`（详见项 #6 定位）。
+
+- `ghost_ui.py`：`_GhostStateBase` 新增 `on_interrupt` override —— cancel 本地 REPL
+  operation 后向 session 发 `new_interrupt_signal()`，接入既有
+  InterruptNucleus → `shell.clear()` 通路。
+- `tui.py`：`c-c` 绑定从 `graceful_exit`（无条件关 TUI）改为提示两级 —— 输入区有内容清空
+  buffer；空则首按提示 `press c-c again to exit`、1.5s debounce 内二按 exit。interrupt
+  收归 `escape` 单一入口（项 #6 二次修订，人类工程师定）。
+- `tui.py` + 三个 concrete TUI：关闭路径修复 —— `tui_exception_handler` 弃用
+  `self.host.matrix()`，改 abstract `_log_loop_exception`；`run()` finally cancel +
+  gather pending tasks，消除 "Task was destroyed" 噪音与 handler 崩溃。
+- 未动：`moss-shell`（REPLState 本地 op cancel 语义保留）、项 #1 logos 尾段、项 #2 计数残留。

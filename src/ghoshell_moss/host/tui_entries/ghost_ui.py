@@ -3,9 +3,12 @@
 import asyncio
 from typing import Callable, Iterable
 
+from prompt_toolkit.key_binding import KeyPressEvent
+
 from ghoshell_moss.core.blueprint.host import MossHost, GhostRuntime
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.session import OutputItem
+from ghoshell_moss.core.mindflow.interrupt_nucleus import new_interrupt_signal
 from ghoshell_moss.host.tui import TUIState, MossHostTUI, Renderable
 from ghoshell_moss.host.repl.repl_state import REPLState
 from ghoshell_moss.host.repl.inspector_ghost import GhostInspector
@@ -49,6 +52,15 @@ class _GhostStateBase(REPLState):
             description="from ghost tui",
         )
         self.console.hint(f"signal sent: {console_input[:60]}...")
+
+    def on_interrupt(self, event: KeyPressEvent) -> None:
+        # 先停本地 REPL operation (文本输入处理), 再向 ghost session 发 interrupt
+        # signal → InterruptNucleus → ghost_runtime shell.clear() 停生成.
+        super().on_interrupt(event)
+        self._session.add_signal(
+            new_interrupt_signal(description="from ghost tui"),
+        )
+        self.console.hint("interrupt sent — generation stopped, shell cleared")
 
 
 class GhostLogosState(_GhostStateBase):
@@ -136,6 +148,9 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
 
     def _get_runtime(self) -> GhostRuntime:
         return self.host.run_ghost(self.host.env.ghost_name)
+
+    def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
+        self.runtime.moss.matrix.logger.exception("%s: %s", message, exception)
 
     def _on_emergency_pause(self) -> None:
         target = not self.runtime.is_paused()

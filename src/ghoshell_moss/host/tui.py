@@ -513,6 +513,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         self._switching_state: bool = False
         self._last_switch_at: float = 0.0
         self._switch_min_interval: float = 0.25  # 250ms debounce
+        self._last_ctrl_c_at: float = 0.0
+        self._ctrl_c_exit_debounce: float = 1.5  # 1.5s window: first c-c hints, second exits
 
     def clear_console(self) -> None:
         """clear rich console"""
@@ -547,6 +549,15 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     @abstractmethod
     def create_states(self) -> Iterable[TUIState]:
         """返回当前 repl 拥有的 states. 其中应该包含 default """
+        pass
+
+    @abstractmethod
+    def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
+        """把 event loop 未处理异常记录到运行时 logger.
+
+        Concrete TUI 用自己 runtime 的 matrix 取 logger — host 不缓存 matrix.
+        实现方保证不抛异常 (handler 侧另有兜底).
+        """
         pass
 
     def _input_completer(self) -> Completer:
@@ -718,8 +729,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         kb = KeyBindings()
 
         @kb.add('c-c')
-        def graceful_exit(event) -> None:
-            self.close()
+        def ctrl_c(event) -> None:
+            # 输入区有内容 → 清空 buffer, 不打断不退出.
+            buffer = event.current_buffer
+            if buffer and buffer.text:
+                buffer.reset()
+                return
+            # 空输入区 → 首按提示, debounce 内二按 exit. interrupt 由 escape 承担.
+            now = time.monotonic()
+            if now - self._last_ctrl_c_at < self._ctrl_c_exit_debounce:
+                self.close()
+                return
+            self._last_ctrl_c_at = now
+            self.console.hint("press c-c again to exit")
 
         # 添加 Shift+Enter 换行逻辑
         @kb.add('c-j')
@@ -994,17 +1016,25 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         except Exception:
             self._rich_console.print_exception()
         finally:
+            # 取消并等待剩余 pending tasks, 避免 loop.close() 时 "Task was destroyed" 噪音.
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
             self._closing_event.set()
             raise SystemExit(0)
 
     def tui_exception_handler(self, loop: asyncio.AbstractEventLoop, context: dict):
-        # 1. 提取异常对象
+        # 异常处理器绝不能自己抛异常 — 否则 uvloop 打印 "Unhandled error in exception handler".
         exception = context.get("exception")
         message = context.get("message", "Unhandled exception in event loop")
         self.console.error(message)
-        if self.host.matrix().is_running():
-            self.host.matrix().logger.exception("%s: %s", message, exception)
+        try:
+            self._log_loop_exception(message, exception)
+        except Exception:
+            pass
 
 
 # backward compatibility
