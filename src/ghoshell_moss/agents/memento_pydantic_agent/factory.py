@@ -1,7 +1,7 @@
 """
 memento_pydantic_agent factory — build an agent from an agent .py file.
 
-The pipeline (§10 pivot + §11 refinements):
+The pipeline:
 
 1. Read source, compile via Compiler with a recording __import__ that captures
    the file's authorization surface.

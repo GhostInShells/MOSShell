@@ -1,9 +1,8 @@
 """
 MementoAgent contract — the agents/ family-level abstraction.
 
-Layer placement (calibrated 2026-07-24, refined 2026-07-25 §11): this ABC
-is the family-level contract for `agents/`, not for
-`memento_pydantic_agent/` in particular. `memento_pydantic_agent` is one
+Layer placement: this ABC is the family-level contract for `agents/`, not
+for `memento_pydantic_agent/` in particular. `memento_pydantic_agent` is one
 concrete implementation family (pydantic-ai substrate); future families
 (anthropic-direct, deepseek, bash-only, …) reuse this ABC and carry their
 own factory configs, which are NOT part of this contract.
@@ -12,14 +11,13 @@ Filename is contract.py, not abc.py: some IDEs treat `abc.py` as special
 and clash on it; contract.py aligns with the project's top-level
 `contracts/` naming convention already in use.
 
-Design lineage lives in FEATURE.md §9-§11. Distilled:
+Design lineage, distilled:
 
 - **agent = single interaction → final answer**. How many rounds / records
   / commits happen inside is entirely the family's business. Interaction
   turns are not aligned with commit boundaries.
-- **v1 has no compact**. `compact` was ABC method #4 in §9.5 and got
-  removed by §10.2 (decision 2): compact / magic hooks / spec are harness
-  organs (§0 abandon-trigger territory). Staging accumulates; humans use
+- **v1 has no compact**. Compact / magic hooks / spec are harness organs
+  (the "no-harness" abandon trigger). Staging accumulates; humans use
   `moss memento branch commit` when they want a checkpoint. If a v2
   compact policy materializes it will grow back as a family concern first.
 - **staging residue at the invoke boundary is legal** — not a crash
@@ -58,7 +56,7 @@ class MementoAgent(ABC):
 
     The constructed instance is a family-specific concretization; `invoke`
     receives the per-call anchors (user_prompt / memento / line / cwd /
-    metadata). See FEATURE.md §9.5 / §10 / §11.
+    metadata).
     """
 
     @abstractmethod
@@ -93,7 +91,7 @@ class MementoAgent(ABC):
 
         Side effects — record / whatever — are family-internal. Observers
         infer commit landings via before/after `line.log()` diffs; some
-        flake is tolerated (§9.2).
+        flake is tolerated.
         """
         raise NotImplementedError
 

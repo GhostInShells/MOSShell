@@ -65,8 +65,9 @@ def recording_builtins() -> tuple[dict[str, Any], set[str]]:
             _record(name)
         else:
             # Relative import: resolve against the returned module's package.
-            # (FEATURE §10.10 #1 leaves relative-import support open; record
-            # whatever actually loaded so replay stays consistent with compile.)
+            # Relative-import support in the sandbox is intentionally left
+            # open; record whatever actually loaded so replay stays
+            # consistent with compile.
             _record(module.__name__)
         for sub in fromlist or ():
             candidate = f"{name}.{sub}"
