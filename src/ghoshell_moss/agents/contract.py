@@ -22,6 +22,10 @@ Design lineage, distilled:
   compact policy materializes it will grow back as a family concern first.
 - **staging residue at the invoke boundary is legal** — not a crash
   remnant. Runner does not sweep it.
+- **`memento=None` is the degraded baseline, not a compromise** — a pure
+  in-memory single round with no storage write. The contract absorbs this
+  explicitly: families branch on it at the invoke layer (record only when a
+  store exists) instead of burying the check inside a helper.
 
 Three v1 methods (tentative — cut if redundant, add if missing, no freeze):
 
@@ -64,9 +68,9 @@ class MementoAgent(ABC):
         self,
         *,
         user_prompt: str,
-        memento: Memento,
-        line_name: str,
-        cwd: Path,
+        memento: Memento | None = None,
+        line_name: str = "",
+        cwd: Path | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """
@@ -78,9 +82,13 @@ class MementoAgent(ABC):
             source verbatim + optional __interfaces__ expansion).
         :param memento: memento index + storage. The agent holds the owner
             perspective and writes through `memento.get_line(line_name)` if
-            recording is part of its family behaviour.
+            recording is part of its family behaviour. `None` is the degraded
+            baseline — a pure in-memory single round with no storage write;
+            the family must branch on this at the invoke layer, not inside a
+            recording helper.
         :param line_name: target line (branch). Runner chooses which line to
-            bind; the agent does not select lines.
+            bind; the agent does not select lines. Required for recording;
+            ignored when `memento` is None.
         :param cwd: working directory (the ground degenerate form). Default
             is the .py file's parent; CLI --cwd overrides. Used as the
             default cwd for any tool-like injections (file_editor etc.).
