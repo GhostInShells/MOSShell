@@ -39,6 +39,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from ghoshell_moss.agents._imports import recording_builtins, replay_import
 from ghoshell_moss.agents._instruction import reflect_element
+from ghoshell_moss.agents.capabilities import CAPABILITY_FACTORIES
 from ghoshell_moss.agents.contract import MementoAgent
 from ghoshell_moss.agents.memento_pydantic_agent.impl import MementoPydanticAgentImpl
 from ghoshell_moss.core.codex.compiler import Compiler
@@ -47,10 +48,13 @@ from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
 
 __all__ = ["factory"]
 
+_CAPABILITIES_MODULE: str = "ghoshell_moss.agents.capabilities"
+
 
 def factory(
     agent_path: str | Path,
     injections: dict[str, Any] | None = None,
+    cwd: Path | None = None,
 ) -> MementoAgent:
     """Build a MementoAgent from an agent .py file.
 
@@ -60,7 +64,10 @@ def factory(
         "imports are authorization" is the positive use — a library module
         exports a stub function; the factory receives the real one and
         injects it here. Default None = no extra capabilities beyond
-        get_interface.
+        get_interface and auto-detected capability imports.
+    :param cwd: working directory for capability implementations that need
+        filesystem grounding (e.g. look_at). Defaults to the agent .py
+        parent directory.
     :raises FileNotFoundError: if the path does not exist.
     :raises RuntimeError: if compilation fails or __model__ / ANTHROPIC_MODEL
         neither is set.
@@ -123,6 +130,24 @@ def factory(
     agent_sandbox.set("get_interface", reflect_element)
     for key, value in (injections or {}).items():
         agent_sandbox.set(key, value)
+
+    # Auto-detect capability imports: when the agent .py imports a name from
+    # the capabilities stub module, inject the real implementation bound to
+    # the working directory. The stub in capabilities.py never executes in
+    # the sandbox — it is overridden here.
+    resolved_cwd = cwd or path.parent
+    for name, obj in compiled.__dict__.items():
+        if name.startswith("_"):
+            continue
+        if not callable(obj):
+            continue
+        mod = getattr(obj, "__module__", None)
+        if mod != _CAPABILITIES_MODULE:
+            continue
+        make_impl = CAPABILITY_FACTORIES.get(name)
+        if make_impl is None:
+            continue
+        agent_sandbox.set(name, make_impl(resolved_cwd))
 
     def sandbox_exec(code: str) -> str:
         """Execute Python code in the agent's sandbox.

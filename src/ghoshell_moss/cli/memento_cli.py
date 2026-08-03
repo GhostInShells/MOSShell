@@ -470,8 +470,12 @@ def _owner_from_path(agent_path: Path) -> str:
     return stem.removesuffix(".agent") if stem.endswith(".agent") else stem
 
 
-def _build_agent(agent_path: str):
-    """Build a MementoAgent from a .py file, with a friendly error if deps missing."""
+def _build_agent(agent_path: str, cwd: Path | None = None):
+    """Build a MementoAgent from a .py file, with a friendly error if deps missing.
+
+    cwd defaults to the agent .py parent directory and grounds filesystem
+    capabilities (e.g. look_at). CLI --cwd overrides.
+    """
     try:
         from ghoshell_moss.agents.memento_pydantic_agent import factory
     except ImportError:
@@ -483,7 +487,7 @@ def _build_agent(agent_path: str):
         raise typer.Exit(code=1)
     if not path.suffix == ".py":
         print_warning(f"expected .py file, got {path.suffix!r}; attempting anyway")
-    return factory(path)
+    return factory(path, cwd=cwd)
 
 
 def _resolve_agent_cwd(agent_path: Path, cwd: Optional[Path]) -> Path:
@@ -540,9 +544,9 @@ def agent_invoke(
     Branch defaults to "main". When the memento root exists, moments are
     recorded to that line's staging.
     """
-    agent = _build_agent(agent_path)
     agent_py_path = Path(agent_path).resolve()
     resolved_cwd = _resolve_agent_cwd(agent_py_path, cwd)
+    agent = _build_agent(agent_path, cwd=resolved_cwd)
     resolved_owner = owner or _owner_from_path(agent_py_path)
 
     memento = _resolve_memento(root, resolved_owner)
