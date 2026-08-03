@@ -710,8 +710,9 @@ class FsMemento(MementoABC):
         3. head → workspace existence
         4. index file torn tail lines
         """
-        # 1. commits.jsonl tail integrity → truncate orphan staging
+        # 1. commits.jsonl tail integrity → truncate orphan staging + repair refs
         commits_path = self._commits_jsonl_path()
+        branch_to_latest_commit: dict[str, str] = {}
         if commits_path.exists():
             ref_rows = _read_jsonl_lines(commits_path)
             if ref_rows:
@@ -726,13 +727,36 @@ class FsMemento(MementoABC):
                         commit_moment_ids = {
                             m.id for m in self._load_commit_moments(last_commit_id)
                         }
-                        # If all staging ids are in the last commit, truncate
                         if staging_rows and set(staging_rows.keys()).issubset(commit_moment_ids):
                             self._logger.info(
                                 "recovery: truncating staging for %s (already in commit %s)",
                                 last_branch_uid, last_commit_id,
                             )
                             staging_path.write_text("", encoding="utf-8")
+                # Collect latest commit per branch for ref repair
+                for row in ref_rows:
+                    buid = row.get("branch_uid", "")
+                    cid = row.get("commit_id", "")
+                    if buid and cid:
+                        branch_to_latest_commit[buid] = cid
+
+        # Repair refs: if a workspace exists but its ref is missing/empty,
+        # restore from commits.jsonl.
+        ws_dir_repair = self._owner_dir() / "ws"
+        if ws_dir_repair.exists() and branch_to_latest_commit:
+            for ws_entry in ws_dir_repair.iterdir():
+                if not ws_entry.is_dir():
+                    continue
+                buid = ws_entry.name
+                latest_cid = branch_to_latest_commit.get(buid)
+                if latest_cid is None:
+                    continue
+                current_ref = self._read_ref(buid)
+                if current_ref is None or not current_ref.commit_id:
+                    self._logger.info(
+                        "recovery: repairing ref for %s → %s", buid, latest_cid,
+                    )
+                    self._write_ref(buid, BranchRef(origin="", commit_id=latest_cid))
 
         # 2. workspace ↔ branches.jsonl consistency
         ws_dir = self._owner_dir() / "ws"
@@ -872,23 +896,27 @@ class FsMemento(MementoABC):
                 )
             return FsLine(self, identifier, readonly=True)
 
-        # Degenerate path: if 'main' head does not exist, auto-create on first access
+        # Uid path: if identifier looks like a branch uid, resolve directly.
+        if identifier.startswith(store.BRANCH_ID_PREFIX):
+            ws = self._workspace_dir(identifier)
+            if ws.exists():
+                return FsLine(self, identifier)
+            raise BranchNotFoundError(
+                f"branch uid {identifier!r} not found for owner {self._owner!r}"
+            )
+
+        # Degenerate path: if 'main' head does not exist, auto-create on first access.
         if identifier == "main":
             head_path = self._head_path("main")
             if not head_path.exists():
                 return self._ensure_main_line()
 
-        # Check if identifier is a head name; if not found and looks like uid, try direct
+        # Name path: resolve head name → uid → workspace.
         head_path = self._head_path(identifier)
         if head_path.exists():
             uid = _read_text_file(head_path)
             if uid:
                 return FsLine(self, uid)
-
-        # Check if it's a uid directly
-        ws = self._workspace_dir(identifier)
-        if ws.exists():
-            return FsLine(self, identifier)
 
         raise LineNotFoundError(f"line {identifier!r} not found for owner {self._owner!r}")
 

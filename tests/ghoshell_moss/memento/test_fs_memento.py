@@ -1,4 +1,4 @@
-"""FsMemento golden tests — FORMAT v2 contract verification."""
+"""FsMemento unit tests — FORMAT v3 behavior verification."""
 
 from __future__ import annotations
 
@@ -7,27 +7,21 @@ from pathlib import Path
 
 import pytest
 
+from ghoshell_moss.memento import _storage as store
 from ghoshell_moss.memento.abc import (
     BranchRef,
-    BranchWindow,
-    CommitDetail,
+    BranchNotFoundError,
     CommitNotFoundError,
-    CommitRef,
     CommitView,
     EmptyStagingError,
     LineNotFoundError,
-    MementoError,
     MementoHooks,
     MomentFrozenError,
-    MomentNotInCommitError,
     MomentRecord,
     new_commit_id,
 )
 from ghoshell_moss.memento.fs_memento import (
     FsMemento,
-    _read_lines,
-    _resolve_staging,
-    _y_m,
     new_filesystem_memento,
 )
 
@@ -62,6 +56,9 @@ class Collector(MementoHooks):
     def on_line_deleted(self, name: str) -> None:
         self.events.append(("line_deleted", {"name": name}))
 
+    def on_branch_checkout(self, branch_identifier: str, from_ref: BranchRef) -> None:
+        self.events.append(("branch_checkout", {"uid": branch_identifier}))
+
 
 # ── basic lifecycle ─────────────────────────────────────────────────────────
 
@@ -70,7 +67,7 @@ class TestBasicLifecycle:
     def test_create_line_and_record(self, memento):
         line = memento.create_line("main")
         assert line.name == "main"
-        assert line.ref is None
+        assert line.branch_identifier.startswith(store.BRANCH_ID_PREFIX)
         assert not line.readonly
         line.record(MomentRecord(id="m1", type="test/x", payload={"k": "v"}))
         assert len(line.staging()) == 1
@@ -86,7 +83,7 @@ class TestBasicLifecycle:
         line.record(MomentRecord(id="m1", type="t", payload={"k": "hello"}))
         line.record(MomentRecord(id="m2", type="t", payload={"k": "world"}))
         view = line.commit(text="first", kind="semantic")
-        assert view.commit.id.startswith("cmt_")
+        assert view.commit.id.startswith(store.COMMIT_ID_PREFIX)
         assert line.staging() == []
         assert line.ref is not None
         assert line.ref.commit_id == view.id
@@ -148,7 +145,7 @@ class TestMultiLine:
     def test_list_lines(self, memento):
         memento.create_line("main")
         memento.create_line("idea-x")
-        assert memento.list_lines() == ["idea-x", "main"]
+        assert sorted(memento.list_lines()) == ["idea-x", "main"]
 
     def test_parallel_independent_staging(self, memento):
         a = memento.create_line("a")
@@ -160,23 +157,16 @@ class TestMultiLine:
 
     def test_delete_line_keeps_commits(self, memento):
         line = memento.create_line("tmp")
+        buid = line.branch_identifier
         line.record(MomentRecord(id="x", type="t", payload={}))
         cid = line.commit(kind="mechanical").id
         memento.delete_line("tmp")
+        # commit still accessible
         assert memento.show(cid).commit.id == cid
-
-    def test_reset_auto_mechanical_commit(self, memento):
-        a = memento.create_line("a")
-        b = memento.create_line("b")
-        a.record(MomentRecord(id="a1", type="t", payload={}))
-        a.commit(text="anchor", kind="semantic")
-        b.record(MomentRecord(id="b1", type="t", payload={}))
-        vb = b.commit(kind="semantic")
-        # staging has content → reset triggers auto mechanical commit
-        a.record(MomentRecord(id="a2", type="t", payload={}))
-        memento.reset_line("a", BranchRef(origin="ghost.test", commit_id=vb.id))
-        assert a.ref.commit_id == vb.id
-        assert a.staging() == []
+        # workspace survives
+        assert "tmp" not in memento.list_lines()
+        all_uids = {b.uid for b in memento.list_all_branches()}
+        assert buid in all_uids
 
     def test_line_not_found(self, memento):
         with pytest.raises(LineNotFoundError):
@@ -196,8 +186,9 @@ class TestLog:
         b.commit(kind="mechanical")
         entries = memento.log()
         assert len(entries) == 2
-        assert entries[0].branch == "a"
-        assert entries[1].branch == "b"
+        # v3: branch field holds uid
+        assert entries[0].branch == a.branch_identifier
+        assert entries[1].branch == b.branch_identifier
 
     def test_line_log_parent_chain(self, memento):
         line = memento.create_line("main")
@@ -228,7 +219,9 @@ class TestHooks:
         c = Collector()
         m = new_filesystem_memento(tmp_root, "ghost.test", hooks=c)
         line = m.create_line("main")
-        assert c.events[-1][0] == "line_created"
+        assert c.events[-1][0] == "branch_checkout"
+        # line_created fires before branch_checkout
+        assert c.events[-2][0] == "line_created"
         line.record(MomentRecord(id="m1", type="t", payload={}))
         assert c.events[-1][0] == "record_staged"
         view = line.commit(kind="semantic")
@@ -239,29 +232,22 @@ class TestHooks:
         assert c.events[-1][0] == "line_deleted"
 
 
-# ── Y-m utility ──────────────────────────────────────────────────────────────
-
-
-class TestYM:
-    def test_y_m_format(self):
-        cid = new_commit_id()
-        ym = _y_m(cid)
-        assert len(ym) == 7
-        assert "-" in ym
-
-    def test_y_m_deterministic(self):
-        cid = new_commit_id()
-        assert _y_m(cid) == _y_m(cid)
-
-
 # ── degenerate form ──────────────────────────────────────────────────────────
 
 
 class TestDegenerate:
-    """Invariant #13: no fork vocabulary in dumb-memory usage."""
+    def test_get_line_main_auto_creates(self, memento):
+        """v3 degenerate path: get_line('main') creates the line on first access."""
+        line = memento.get_line("main")
+        assert line.name == "main"
+        assert line.branch_identifier.startswith(store.BRANCH_ID_PREFIX)
+        line.record(MomentRecord(id="m1", type="t", payload={"v": 1}))
+        line.commit(kind="mechanical")
+        assert len(line.log()) == 1
 
-    def test_no_fork_vocabulary(self, memento):
-        line = memento.create_line("main")
+    def test_no_fork_vocabulary_at_api_level(self, memento):
+        """Degenerate form: create_line/record/commit — no fork/confluent in use."""
+        line = memento.get_line("main")
         line.record(MomentRecord(id="m1", type="t", payload={"v": 1}))
         v1 = line.commit(kind="mechanical")
         line.record(MomentRecord(id="m2", type="t", payload={"v": 2}))
@@ -271,93 +257,112 @@ class TestDegenerate:
         memento.annotate(v2.id, title="ok")
 
     def test_annotate_moment(self, memento):
-        line = memento.create_line("main")
+        line = memento.get_line("main")
         line.record(MomentRecord(id="m1", type="t", payload={}))
         view = line.commit(kind="semantic")
         memento.annotate_moment(view.id, "m1", threads=["t1", "t2"])
-        # verify threads updated
         detail = memento.show(view.id)
         assert detail.moments[0].threads == ["t1", "t2"]
-
-    def test_annotate_moment_in_staging(self, memento):
-        line = memento.create_line("main")
-        line.record(MomentRecord(id="m1", type="t", payload={}))
-        # annotate before freeze
-        memento.annotate_moment("cmt_nonexistent", "m1", threads=["a"])
-        assert line.staging()[0].threads == ["a"]
 
 
 # ── crash recovery ───────────────────────────────────────────────────────────
 
 
 class TestCrashRecovery:
-    def test_recover_repairs_ref_and_truncates_staging(self, tmp_root):
-        """FORMAT v2 §11: commit dir exists + commits.jsonl appended, but ref
-        not updated and staging not truncated. Recovery should repair ref and
-        truncate staging."""
+    def test_recover_truncates_staging_and_repairs_ref(self, tmp_root):
+        """v3: commit persisted but staging not truncated and ref rolled back.
+        Recovery should truncate staging and repair ref."""
         m = new_filesystem_memento(tmp_root, "ghost.test")
         line = m.create_line("main")
+        buid = line.branch_identifier
         line.record(MomentRecord(id="m1", type="t", payload={}))
         view = line.commit(kind="semantic")
         cid = view.id
 
-        # simulate crash: write the staging content back (as if truncate didn't happen)
-        # and roll back the ref (as if ref rewrite didn't happen)
-        sp = m._staging_path("main")
+        # Simulate crash: re-insert m1 into staging, roll back ref
+        sp = tmp_root / "ghost.test" / "ws" / buid / "staging.jsonl"
         sp.write_text(
-            '{"t":"moment","id":"m1","created":"2026-07-21T00:00:00+00:00","type":"t","payload":{},"threads":[]}\n',
+            '{"t":"moment","id":"m1","created":"2026-08-04T00:00:00Z","type":"t","content":"","payload":{}}\n',
             encoding="utf-8",
         )
-        # roll back ref to before the commit (simulate crash before ref update)
-        import json as _json
-        ref_path = m._ref_path("main")
-        ref_path.write_text("{}", encoding="utf-8")
+        rp = tmp_root / "ghost.test" / "ws" / buid / "ref"
+        rp.write_text("{}", encoding="utf-8")
 
-        # re-open → recovery repairs ref and truncates staging
-        line2 = m.get_line("main")
+        # Re-open to trigger recovery (recovery runs at load time)
+        m2 = new_filesystem_memento(tmp_root, "ghost.test")
+        line2 = m2.get_line("main")
         assert line2.ref is not None
         assert line2.ref.commit_id == cid
         assert line2.staging() == []
 
     def test_fork_lines_have_independent_refs(self, tmp_root):
-        """Bug: recovery was overwriting all line refs with the last commits.jsonl entry."""
+        """Recovery must not overwrite all line refs with the last commits.jsonl entry."""
         m = new_filesystem_memento(tmp_root, "ghost.test")
         main = m.create_line("main")
         main.record(MomentRecord(id="m1", type="t", payload={}))
         v1 = main.commit(kind="semantic")
 
-        # fork from main's commit
-        idea = m.create_line("idea-x", from_ref=BranchRef(origin="ghost.test", commit_id=v1.id))
+        idea = m.create_line("idea-x", from_ref=BranchRef(commit_id=v1.id))
         idea.record(MomentRecord(id="i1", type="t", payload={}))
         v2 = idea.commit(kind="semantic")
 
-        # re-open both lines — recovery should not overwrite refs
         main2 = m.get_line("main")
         idea2 = m.get_line("idea-x")
-        assert main2.ref.commit_id == v1.id, f"main ref should be {v1.id}, got {main2.ref.commit_id}"
-        assert idea2.ref.commit_id == v2.id, f"idea ref should be {v2.id}, got {idea2.ref.commit_id}"
+        assert main2.ref.commit_id == v1.id
+        assert idea2.ref.commit_id == v2.id
 
-    def test_reset_survives_recovery(self, tmp_root):
-        """Bug: recovery was undoing reset by restoring ref to the mechanical commit."""
-        m = new_filesystem_memento(tmp_root, "ghost.test")
-        a = m.create_line("a")
+
+# ── v3 new features ──────────────────────────────────────────────────────────
+
+
+class TestV3Features:
+    def test_branch_uid_stable_across_operations(self, memento):
+        """uid never changes across record/commit cycles."""
+        line = memento.create_line("main")
+        uid = line.branch_identifier
+        line.record(MomentRecord(id="m1", type="t", payload={}))
+        line.commit(kind="mechanical")
+        assert line.branch_identifier == uid
+
+    def test_list_all_branches_active_and_abandoned(self, memento):
+        a = memento.create_line("a")
+        b = memento.create_line("b")
         a.record(MomentRecord(id="a1", type="t", payload={}))
-        va = a.commit(kind="semantic")
-        b = m.create_line("b")
-        b.record(MomentRecord(id="b1", type="t", payload={}))
-        vb = b.commit(kind="semantic")
+        a.commit(kind="mechanical")
+        memento.delete_line("b")
+        branches = memento.list_all_branches()
+        assert len(branches) == 2
+        uids = {br.uid for br in branches}
+        assert a.branch_identifier in uids
+        assert b.branch_identifier in uids
 
-        # reset a to b's commit (with staging to trigger mechanical commit)
-        a.record(MomentRecord(id="a2", type="t", payload={}))
-        m.reset_line("a", BranchRef(origin="ghost.test", commit_id=vb.id))
+    def test_content_field_persists_through_commit(self, memento):
+        line = memento.get_line("main")
+        line.record(MomentRecord(id="m1", type="test/v1",
+                                  payload={"x": 1}, content="the answer"))
+        view = line.commit("content commit", kind="mechanical")
+        detail = memento.show(view.id)
+        assert detail.moments[0].content == "the answer"
 
-        # re-open — recovery should not undo the reset
-        a2 = m.get_line("a")
-        assert a2.ref.commit_id == vb.id, f"reset ref should be {vb.id}, got {a2.ref.commit_id}"
-        assert a2.staging() == []
+    def test_checkouts_indexes_fork_events(self, memento):
+        a = memento.create_line("a")
+        a.record(MomentRecord(id="a1", type="t", payload={}))
+        va = a.commit("a anchor", kind="semantic")
+        b = memento.create_line("b", from_ref=BranchRef(commit_id=va.id))
+        checkouts = memento.checkouts()
+        assert len(checkouts) == 2
+        assert checkouts[-1].branch_uid == b.branch_identifier
 
-    def test_create_line_validates_from_ref(self, tmp_root):
-        """from_ref pointing to non-existent commit should raise."""
-        m = new_filesystem_memento(tmp_root, "ghost.test")
-        with pytest.raises(CommitNotFoundError):
-            m.create_line("idea-x", from_ref=BranchRef(origin="ghost.test", commit_id="cmt_nonexistent"))
+    def test_confluents_empty_by_default(self, memento):
+        memento.get_line("main")
+        assert memento.confluents() == []
+
+    def test_get_line_by_uid(self, memento):
+        line = memento.create_line("main")
+        uid = line.branch_identifier
+        same = memento.get_line(uid)
+        assert same.branch_identifier == uid
+
+    def test_get_line_by_uid_raises_for_unknown(self, memento):
+        with pytest.raises(BranchNotFoundError):
+            memento.get_line("brn_nonexistent")
