@@ -610,6 +610,7 @@ class FsMemento(MementoABC):
     # ── Line history ────────────────────────────────────────────────────────
 
     def _line_log(self, branch_uid: str) -> list[CommitView]:
+        """Return commit history in chronological order (oldest first)."""
         result: list[CommitView] = []
         ref = self._read_ref(branch_uid)
         cid = ref.commit_id if ref else None
@@ -620,6 +621,7 @@ class FsMemento(MementoABC):
             meta = self._load_commit_meta(cid)
             parent = meta.get("parent") if meta else None
             cid = parent["commit_id"] if parent else None
+        result.reverse()
         return result
 
     def _line_window(
@@ -870,10 +872,10 @@ class FsMemento(MementoABC):
                 )
             return FsLine(self, identifier, readonly=True)
 
-        # Degenerate path: if no heads/ exist and identifier is 'main', auto-create
-        heads_dir = self._heads_dir()
-        if not heads_dir.exists() or not any(heads_dir.iterdir()):
-            if identifier == "main":
+        # Degenerate path: if 'main' head does not exist, auto-create on first access
+        if identifier == "main":
+            head_path = self._head_path("main")
+            if not head_path.exists():
                 return self._ensure_main_line()
 
         # Check if identifier is a head name; if not found and looks like uid, try direct
