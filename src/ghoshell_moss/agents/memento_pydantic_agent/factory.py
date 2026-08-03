@@ -75,6 +75,11 @@ def factory(agent_path: str | Path) -> MementoAgent:
     )
     compiled = compiler.compiled
 
+    # Deferred: config stays in the .py (dunders), no delimiter-split of the
+    # source — dunders are configuration, and the agent's self-knowledge
+    # should be as true as possible. Why: splitting needs new conventions +
+    # a new failure surface for a few tokens of savings. Trigger: construct /
+    # config grows into a long dict that needs externalization.
     model_name = getattr(compiled, "__model__", None) or os.environ.get("ANTHROPIC_MODEL")
     if not model_name:
         raise RuntimeError(
@@ -90,6 +95,10 @@ def factory(agent_path: str | Path) -> MementoAgent:
         if not k.startswith("__"):
             init_sandbox.set(k, v)
 
+    # Deferred: capture `print` at sandbox creation as supplemental context
+    # messages (dynamic-info input channel). Why: v1 injects nothing dynamic;
+    # the agent's input is the static composed instruction only. Trigger:
+    # when runtime dynamic info must reach the agent mid-run.
     agent_sandbox = Sandbox(
         name=stem,
         parent=init_sandbox,

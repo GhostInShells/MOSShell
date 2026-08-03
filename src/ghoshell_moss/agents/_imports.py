@@ -14,6 +14,16 @@ baffling failure for something the file explicitly authorized. Replay keeps
 the source honest — what you see importable is importable, nothing more.
 
 This module is backstage: it never enters an agent's instruction.
+
+Deferred: capability = importable function. `from ...capabilities import
+remember, recall` — an import is both an authorization declaration AND a
+dependency-injection request point. The factory sees the import at compile
+time and injects the real implementation into the sandbox (library ships a
+stub, runtime swaps in the real body). This is the positive use of the same
+"imports are authorization" principle. Why deferred: v1 ships only
+sandbox_exec; ctx (cross-round state) belongs under this mechanism too.
+Trigger: explore-agent step 1 — import existing read-only codex reflection
+capabilities; extend when cross-round state needs appear.
 """
 
 from __future__ import annotations

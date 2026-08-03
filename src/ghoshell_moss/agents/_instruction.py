@@ -24,9 +24,12 @@ instruction otherwise.
 
 Backstage: this module never appears in an agent's instruction.
 
-Deferred (see seam note in factory.py): segmented fingerprints of the
-composed instruction belong in a debug tool, not in the trajectory —
-introduce them when window rendering needs cache-hit diagnosis.
+Deferred: segmented fingerprints of the composed instruction (instruction /
+window / staging segments) belong in a DEBUG tool, not in the trajectory.
+Why: the trajectory must not carry attribution for agent-side rendering
+state (prompt / window / agent changes are design-motivated, debug-class
+concerns). Trigger: window rendering lands ((b) read-side) and cache-hit
+diagnosis needs to localize which segment drifted.
 """
 
 from __future__ import annotations
