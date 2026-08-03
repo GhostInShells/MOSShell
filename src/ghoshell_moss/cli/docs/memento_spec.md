@@ -81,8 +81,9 @@ record moment → staging (live, mutable)
   and delete (abandoned tombstone). Full-search API reads this file.
 - **checkouts.jsonl**: fork events. Appended by the deriving side (local-only, zero
   cross-owner coordination).
-- **heads/{name}**: lightweight pointer files. glob = active branch list. `-D` removes
-  only this file; workspace and commits survive.
+- **heads/{name}**: lightweight pointer files. glob = active branch list.
+  `moss memento branch delete` removes this file (appending an abandoned tombstone
+  to branches.jsonl); workspace and commits survive.
 - **ref**: JSON `{origin, commit_id[, moment_id]}`. Updated at each commit.
 - **Commit autonomous dir**: born frozen, lazily created. Only `notes.jsonl` can be
   appended after creation.
