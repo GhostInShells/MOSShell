@@ -44,6 +44,7 @@ from ghoshell_moss.core.codex._utils import get_callable_definition
 __all__ = [
     "Promptable",
     "META_INSTRUCTION",
+    "META_MEMORY_TRUTH",
     "INTERFACES_ATTR",
     "assemble_instruction",
     "reflect_element",
@@ -80,35 +81,22 @@ When you have your final answer, reply in plain text instead of calling
 `sandbox_exec`.
 """
 
-# ── DRAFT: META truth segment (for human review, workstream §13.1) ────────────
+# ── META truth segment — injected only when memento exists (window present) ───
 #
-# Problem: META_INSTRUCTION above has zero trace of memento. In the (a) phase
-# the model — with real moments accumulating in staging — claimed "each
-# session starts fresh". It did not even know it had history it couldn't see;
-# it fought its own context.
-#
-# Truth rule: META must reflect whether a trajectory actually exists.
-#   - memento=None (degraded baseline): keep the text above. No memory
-#     mention — there is no memory to be honest about.
-#   - memento present + read-side window landed ((b)): META must say so, and
-#     say where the folded past lives, so the model acts as if it has
-#     continuity instead of denying it.
-#
-# This requires memento visibility at instruction-assembly time — i.e.
-# assemble_instruction() must learn whether a store + line exist before it
-# picks the META variant. The window text itself is rendered by the (b)
-# read-side, not by this module.
-#
-# Draft truth paragraph (memento-present case, proposed):
-#
-#     Your trajectory lives in a memento line — an append-only record of past
-#     moments, folded into the window below. Past invocations are not lost;
-#     they are summarized in the window (and retrievable in detail). Act with
-#     that continuity: this is the same self across invocations, not a fresh
-#     mind each time.
-#
-# Not landed: pending human review + (b) read-side. Changing META now, before
-# the window exists, would promise a memory the model cannot yet read.
+# When memento=None (degraded baseline): the text above stands on its own.
+# When a memento window exists: this segment is appended after the base
+# instruction, before the window text. It tells the model it HAS continuity
+# so the model does not fight its own context (observed failure mode: the
+# model confidently claimed "each session starts fresh" while real moments
+# sat in staging).
+
+META_MEMORY_TRUTH = """\
+Your trajectory lives in a memento line — past invocations are recorded
+and shown in the window below. Each commit is a frozen checkpoint of what
+you previously thought and said. The window summarizes older commits and
+expands the latest frames. Read it as your own memory: this is the same
+self across invocations, not a fresh mind each time."""
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -179,13 +167,24 @@ def _render_interfaces_block(module: ModuleType) -> str:
     )
 
 
-def assemble_instruction(*, name: str, source: str, module: ModuleType) -> str:
-    """Compose the full instruction the model will receive as system text."""
-    return META_INSTRUCTION.format(
+def assemble_instruction(
+    *, name: str, source: str, module: ModuleType, window_text: str | None = None
+) -> str:
+    """Compose the full instruction the model will receive as system text.
+
+    When *window_text* is a non-empty string (memento exists, read-side
+    active), the memory-truth preamble is appended together with the window.
+    When *None* or empty (degraded baseline), the instruction is silent about
+    memory — there is none to be honest about.
+    """
+    body = META_INSTRUCTION.format(
         name=name,
         source=source.rstrip(),
         interfaces_block=_render_interfaces_block(module),
     )
+    if window_text:
+        body = body.rstrip() + "\n\n" + META_MEMORY_TRUTH + "\n\n" + window_text
+    return body
 
 
 def reflect_element(value: Any) -> str:
