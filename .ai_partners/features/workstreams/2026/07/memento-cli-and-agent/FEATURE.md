@@ -20,7 +20,11 @@ status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段�
   #7 META 真话段草案 (67f2ca25). #4 content 字段之前已完成.
   2026-08-04 §14.2 tombstone fork_ref/created 修复 (507a7e38) + spec -D cleanup (52cfb488)
   验证通过 (行为测试: fork→advance→delete, fork_ref 原点正确, created 保留).
-  剩余: §13.9 explore agent + (b) 读侧回流.'
+  2026-08-04 (b) 读侧窗口完成 (c53afe91): render_window + META_MEMORY_TRUTH + instruction
+  组装 + export_context_md/describe_line 实现. 端到端验证: invoke→commit→invoke, 第二次
+  invoke 模型读到过去 (\"Based on my history, explore agent first run — look_at not
+  injected\"). factory injections 参数就位 (fba009c3), CLI 未接线.
+  剩余: §13.9 explore agent 步 1 (能力注入 CLI 接线 + look_at 注入) 及后续.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
 updated: '2026-08-04'
 ---
