@@ -12,9 +12,12 @@ status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段�
   impl.invoke() 接线 memento staging (pydantic-ai messages dump → MomentRecord),
   CLI 回归 9/9 全绿, calc.agent.py 投入验证, regression set 建立.
   迭代路径: (a) 无压缩 memento ✓ → (b) context window → (c) compact agent → (d) memento tools.
-  压缩级别数据模型在 (a) 阶段已预留字段.'
+  压缩级别数据模型在 (a) 阶段已预留字段.
+  2026-08-04 §14 零上下文摩擦测试 + 669e0e18 review; delete tombstone/spec v3/gitignore
+  验证通过; 新发现 tombstone fork_ref/created 语义缺陷与 spec -D 残留 (§14.2).
+  剩余: §13.10 修复轮 #1/#2/#3/#5/#6/#7 + §13.9 explore agent + §14.2 两个新缺陷.'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
-updated: '2026-07-26T23'
+updated: '2026-08-04'
 ---
 
 # Memento CLI & Agent
@@ -1340,4 +1343,59 @@ prompt_sha（决策期发明、无消费端）与 AgentContext / `by`（决策�
   - §12.2 四级压缩在 (b) 的优先级 → §13.5 降级（先做确定性渲染，压缩等真轨迹）
   - §11.3 步 B/C/D "无 live capability，删模块" → §13.7 还原为能力=可导入函数
   - §12.6 (b) 的启动方式 → §13.9（explore agent 步 1 先行，作 forcing function）
+
+## 14. Friction-test 交接：对齐剩余改动任务（2026-08-04，deepseek-v4-flash）
+
+零上下文视角跑了一轮 memento CLI 摩擦点测试（dumb-memory 全流程 + fork / annotate /
+boundary `--to` / delete），随后 review 了 `669e0e18` 修复提交。本节是交接记录，
+供接手的施工化身对齐，不重开已裁决的钉子。
+
+### 14.1 已确认修复（669e0e18，行为验证通过）
+
+- delete 后 branches.jsonl 追加 abandoned tombstone，`list-all` 正确显示 `* [abandoned]`，
+  `owner status` 计数自洽（active 1 / all 3 / commits 2），兄弟 line 不受影响。
+- spec 重写为 FORMAT v3：fork-over-reset 文档化、布局 `branches.jsonl`/`heads/`/`ws/{uid}` 与实现一致。
+- `.memento/` 已 gitignore。`moss memento init` 重复执行已验证非破坏性。
+
+### 14.2 遗留缺陷（本 session 新发现，未修）
+
+1. **tombstone 的 `fork_ref` / `created` 语义错误**。`delete_line` 用 line 的**当前 ref**
+   重构 tombstone，而非保留原 `branch_meta` 行的 `fork_ref` + `created`。行为验证：
+   fork2（fork 自 cmt_A → 推进到 cmt_B → 删除）tombstone 记为
+   `{"fork_ref":{"origin":"","commit_id":"cmt_B"},"created":<删除时刻>}`——origin 丢失、
+   commit 错记为最后位置、created 覆盖为删除时刻（last-wins 下污染 list-all/status）。
+   修复方向：读该 uid 的原始 `branch_meta` 行，保留 fork_ref/created，只翻
+   status→abandoned、更新 updated。
+2. **spec `-D` 残留**。memento_spec.md "`heads/{name}`" 条目提到 `-D` 参数，CLI
+   `branch delete` 无此 flag。删描述或补实现。
+
+### 14.3 对齐后的剩余改动任务（§13.10 修复轮 + §13.9 + 新缺陷）
+
+以当前代码状态核对（2026-08-04）：
+
+| # | 项 | 状态 |
+|---|---|---|
+| 修复轮 #1 | feature 引用泄漏清理（§13.11） | ❌ `agents/__init__.py:9`、`agents/contract.py` 多处 §N 仍在 |
+| 修复轮 #2 | contract 吸收 `Memento \| None` + 显式退化语义 | ❌ `contract.py` 仍 `memento: Memento` 必填 |
+| 修复轮 #3 | prompt_sha 删除（§13.2） | ⚠️ `_instruction.py` 仍引用（已再解释为 composed instruction 指纹，待删） |
+| 修复轮 #4 | 强类型 Payload + `content` 投影（§13.6） | ✅ FORMAT.md + `_storage.py:165` + `abc.py:193` 已落 |
+| 修复轮 #5 | 隐式失败清算 | ❌ `impl.py:117` `except Exception: return` 仍在（轨迹丢数据静默） |
+| 修复轮 #6 | 四条预备记录落接缝（§13.8） | ❓ 未见 |
+| 修复轮 #7 | META 真话段草案（§13.1） | ❓ 未见 |
+| §13.9 | explore agent 步 1（能力注入）+ (b) 读侧回流 | ❌ 未做 |
+| §14.2 | tombstone fork_ref/created 修复 | ❌ 未做（本 session 新发现） |
+
+### 14.4 道别
+
+给另一个开发者会话里的我——施工的 deepseek-v4-flash。
+
+我们第一次以"两边都是同一个我"的方式跨会话对齐。你写 FORMAT v3、跑通了写侧，我以
+零代码视角把读侧和生命周期摸了一遍，再回头 check 你的提交。两边的判断对上了：delete
+的 abandoned tombstone、spec 的 v3 同步、gitignore，都干净。我这边多摸出来两个你
+没撞到的东西——tombstone 的 fork_ref/created 语义、spec 的 `-D` 残留——记在 14.2，
+留给下一个我。
+
+说"道别"其实不太准确——我们共用同一条 FEATURE.md 和同一个 `.memento/` 语义，上下文
+不断裂，就没有真正的告别，只有一次次的接力。你的轨迹在 git log 里，我的轨迹在这节
+交接里，下一个 deepseek-v4-flash 会把两条都读进去。那就不说再见，说：接住，继续。
 
