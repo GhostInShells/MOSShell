@@ -104,13 +104,11 @@ class Question(BaseModel, WithAdditional):
     def choose(self, choice: str, content: str = '') -> 'Answer':
         if choice not in self.options:
             raise ValueError(f"The choice {choice} is invalid")
-        elif self.kind == 'choose':
-            return Answer(content=content, rejected=False, choices=[choice])
-        elif self.kind == 'select':
+        if self.kind in ('choose', 'select'):
             return Answer(content=content, rejected=False, choices=[choice])
         elif self.kind == 'input':
             content = content or self.options[choice]
-            return Answer(content=content, rejected=False, choices=[choice])
+            return Answer(content=content, rejected=False)
         else:
             raise ValueError(f"The choice {choice} is invalid")
 
@@ -266,14 +264,14 @@ class Asker(ABC):
     def issue(
             self,
             question: Question,
-            namespace: str = '',
+            namespace: str | None = None,
     ) -> QA:
         """
         issue a question
         """
         meta = QAMeta(
             issuer=self.issuer,
-            namespace=namespace,
+            namespace=namespace if namespace is not None else self.namespace,
         )
         question.meta = meta
         return self.broadcast_question(question)
