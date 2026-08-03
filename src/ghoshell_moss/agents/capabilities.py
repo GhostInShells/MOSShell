@@ -28,6 +28,8 @@ __all__ = [
     "codex_where",
     "codex_list",
     "codex_source",
+    "file_view",
+    "file_list",
     "CAPABILITY_FACTORIES",
 ]
 
@@ -63,6 +65,28 @@ def codex_source(module_name: str) -> str:
     """Stub. Real: read the source code of a module."""
     raise NotImplementedError(
         "codex_source is a capability stub — inject the real one via factory"
+    )
+
+
+def file_view(path: str, view_range: list[int] | None = None) -> str:
+    """Stub. Real: read a file with line numbers, optionally a line range.
+
+    Unlike look_at (raw dump), this returns numbered lines with [start:end]
+    slicing, the same format as `moss file-editor view`.
+    """
+    raise NotImplementedError(
+        "file_view is a capability stub — inject the real one via factory"
+    )
+
+
+def file_list(path: str = ".") -> str:
+    """Stub. Real: list directory contents with sizes and types.
+
+    Returns one entry per line: name, size (human-readable), and kind
+    (file / dir / symlink). Dotfiles included.
+    """
+    raise NotImplementedError(
+        "file_list is a capability stub — inject the real one via factory"
     )
 
 
@@ -159,6 +183,71 @@ def _real_codex_source(_cwd: Path):
     return _source
 
 
+# ── Real implementations: file_editor bridge ──────────────────────────────────
+
+
+def _real_file_view(cwd: Path):
+    """Factory for file_view — wraps DefaultFileEditor.view()."""
+
+    def _view(path: str, view_range: list[int] | None = None) -> str:
+        from ghoshell_moss.core.file_editor._default import DefaultFileEditor
+
+        target = Path(path)
+        if not target.is_absolute():
+            target = cwd / target
+        target = target.resolve()
+        try:
+            target.relative_to(cwd)
+        except ValueError:
+            return f"Error: {path!r} is outside the working directory {cwd}"
+        editor = DefaultFileEditor(workspace_root=cwd)
+        try:
+            result = editor.view(target, view_range=view_range)
+            return result.output or "(empty file)"
+        except Exception as e:
+            return f"Error: {e}"
+
+    return _view
+
+
+def _real_file_list(cwd: Path):
+    """Factory for file_list — directory listing with sizes and types."""
+
+    def _list(path: str = ".") -> str:
+        target = Path(path)
+        if not target.is_absolute():
+            target = cwd / target
+        target = target.resolve()
+        try:
+            target.relative_to(cwd)
+        except ValueError:
+            return f"Error: {path!r} is outside the working directory {cwd}"
+        if not target.exists():
+            return f"Error: {path} does not exist"
+        if not target.is_dir():
+            return f"Error: {path} is not a directory"
+        entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name))
+        if not entries:
+            return f"Directory: {path}\n(empty)"
+        lines: list[str] = [f"Directory: {path}"]
+        for e in entries:
+            kind = "dir" if e.is_dir() else "symlink" if e.is_symlink() else "file"
+            try:
+                size = e.stat().st_size
+            except OSError:
+                size = 0
+            if size < 1024:
+                size_str = f"{size}B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f}K"
+            else:
+                size_str = f"{size / (1024 * 1024):.1f}M"
+            lines.append(f"  {e.name:<40} {size_str:>8}  {kind}")
+        return "\n".join(lines)
+
+    return _list
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 # Key = capability name (matching the stub function name).
 # Value = factory that takes cwd: Path and returns the real implementation.
@@ -170,4 +259,6 @@ CAPABILITY_FACTORIES: dict[str, Callable[[Path], Any]] = {
     "codex_where": _real_codex_where,
     "codex_list": _real_codex_list,
     "codex_source": _real_codex_source,
+    "file_view": _real_file_view,
+    "file_list": _real_file_list,
 }
