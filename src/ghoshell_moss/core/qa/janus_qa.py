@@ -37,6 +37,8 @@ import janus
 from threading import Lock
 from typing import Callable
 
+from ghoshell_common.contracts import LoggerItf
+from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.core.concepts.qa import (
     QAManager, Asker, Watcher, QA, QAMeta, Question, Answer,
 )
@@ -54,6 +56,11 @@ _BQ_CANCEL = 'cancel'
 _REPLY_QUEUE_SIZE = 16
 _BROADCAST_QUEUE_SIZE = 64
 _WATCHER_QUEUE_SIZE = 32
+
+
+def _short_qid(qid: str) -> str:
+    """First 8 chars of a question id — enough to identify in logs."""
+    return qid[:8]
 
 
 # ============================================================
@@ -80,11 +87,16 @@ class JanusQA(QA):
         identifier: str,
         reply_queue: janus.Queue,
         owned: bool,
+        *,
+        logger: LoggerItf | None = None,
     ) -> None:
         self._question = question
         self._identifier = identifier
         self._reply_queue = reply_queue
         self._owned = owned
+
+        self._logger = logger or get_moss_logger()
+        self._log_prefix = f"[JanusQA qid={_short_qid(question.meta.id)}]"
 
         self._done_event = ThreadSafeEvent()
         self._answer: Answer | None = None
@@ -111,11 +123,17 @@ class JanusQA(QA):
         """Owner-side: validate, record the accepted answer, finalise."""
         with self._reply_lock:
             if self._done_event.is_set():
+                self._logger.debug(
+                    "%s _accept_answer skipped — already done", self._log_prefix,
+                )
                 return
             answer.match_question(self._question)
             self._answer = answer
             self._replied = answer
             self._done_event.set()
+        self._logger.info(
+            "%s answer accepted rejected=%s", self._log_prefix, answer.rejected,
+        )
         self._fire_answer(answer)
 
     def _apply_verdict(self, answer: Answer) -> None:
@@ -129,6 +147,9 @@ class JanusQA(QA):
                 return
             self._answer = answer
             self._done_event.set()
+        self._logger.info(
+            "%s verdict applied (responder copy)", self._log_prefix,
+        )
         self._fire_answer(answer)
 
     def _apply_cancel(self, reason: str) -> None:
@@ -138,11 +159,16 @@ class JanusQA(QA):
                 return
             self._question.canceled = reason
             self._done_event.set()
+        self._logger.info(
+            "%s cancel verdict applied reason=%r", self._log_prefix, reason,
+        )
         for cb in self._cancel_callbacks:
             try:
                 cb(self._question)
             except Exception:
-                pass
+                self._logger.exception(
+                    "%s on_cancel callback failed", self._log_prefix,
+                )
 
     # -- private ---------------------------------------------------------
 
@@ -151,15 +177,21 @@ class JanusQA(QA):
             while True:
                 answer: Answer = await self._reply_queue.async_q.get()
                 self._accept_answer(answer)
-        except (asyncio.CancelledError, RuntimeError):
+        except asyncio.CancelledError:
             pass
+        except RuntimeError:
+            self._logger.exception(
+                "%s reply consumer aborted", self._log_prefix,
+            )
 
     def _fire_answer(self, answer: Answer) -> None:
         for cb in self._answer_callbacks:
             try:
                 cb(answer)
             except Exception:
-                pass
+                self._logger.exception(
+                    "%s on_answer callback failed", self._log_prefix,
+                )
 
     # -- read-only (QA contract) ----------------------------------------
 
@@ -204,11 +236,16 @@ class JanusQA(QA):
                 return
             self._question.canceled = reason
             self._done_event.set()
+        self._logger.info(
+            "%s cancelled reason=%r", self._log_prefix, reason,
+        )
         for cb in self._cancel_callbacks:
             try:
                 cb(self._question)
             except Exception:
-                pass
+                self._logger.exception(
+                    "%s on_cancel callback failed", self._log_prefix,
+                )
         if self._reply_consumer is not None:
             self._reply_consumer.cancel()
 
@@ -254,10 +291,14 @@ class JanusAsker(Asker):
         issuer: str,
         namespace: str,
         broadcast_queue: janus.Queue,
+        *,
+        logger: LoggerItf | None = None,
     ) -> None:
         self._issuer = issuer
         self._namespace = namespace
         self._broadcast_queue = broadcast_queue
+        self._logger = logger or get_moss_logger()
+        self._log_prefix = f"[JanusAsker ns={namespace}]"
         self._owned_qas: dict[str, QA] = {}
 
     @property
@@ -274,18 +315,27 @@ class JanusAsker(Asker):
     def broadcast_question(self, question: Question) -> QA:
         reply_queue: janus.Queue = janus.Queue(maxsize=_REPLY_QUEUE_SIZE)
 
-        qa = JanusQA(question, self._issuer, reply_queue, owned=True)
+        qa = JanusQA(
+            question, self._issuer, reply_queue, owned=True,
+            logger=self._logger,
+        )
         qid = question.meta.id
         self._owned_qas[qid] = qa
 
-        # When the owner accepts, broadcast the verdict so every watcher
-        # copy learns the final answer (KD8: 先到先得, KD1: requester 持真相).
         def _broadcast_verdict(answer: Answer) -> None:
+            self._logger.info(
+                "%s broadcasting verdict qid=%s rejected=%s",
+                self._log_prefix, _short_qid(qid), answer.rejected,
+            )
             self._broadcast_queue.sync_q.put_nowait(
                 (_BQ_VERDICT, qid, answer),
             )
 
         def _broadcast_cancel(question: Question) -> None:
+            self._logger.info(
+                "%s broadcasting cancel qid=%s reason=%r",
+                self._log_prefix, _short_qid(qid), question.canceled,
+            )
             self._broadcast_queue.sync_q.put_nowait(
                 (_BQ_CANCEL, qid, question.canceled),
             )
@@ -295,6 +345,10 @@ class JanusAsker(Asker):
 
         self._broadcast_queue.sync_q.put_nowait(
             (_BQ_QUESTION, question, reply_queue),
+        )
+        self._logger.info(
+            "%s question broadcast qid=%s kind=%s",
+            self._log_prefix, _short_qid(qid), question.kind,
         )
 
         return qa
@@ -318,10 +372,14 @@ class JanusWatcher(Watcher):
         namespace: str,
         identifier: str,
         inbound_queue: janus.Queue,
+        *,
+        logger: LoggerItf | None = None,
     ) -> None:
         self._namespace = namespace
         self._identifier = identifier
         self._inbound_queue = inbound_queue
+        self._logger = logger or get_moss_logger()
+        self._log_prefix = f"[JanusWatcher ns={namespace}]"
         self._qas: dict[str, JanusQA] = {}
         self._on_question_cbs: list[Callable[[QA], None]] = []
         self._consumer: asyncio.Task | None = None
@@ -341,30 +399,53 @@ class JanusWatcher(Watcher):
         self._consumer = asyncio.ensure_future(self._consume())
 
     async def _consume(self) -> None:
+        self._logger.info("%s consumer started", self._log_prefix)
         try:
             while True:
                 kind, *payload = await self._inbound_queue.async_q.get()
                 if kind == _BQ_QUESTION:
                     question, reply_queue = payload
-                    qa = JanusQA(question, self._identifier, reply_queue, owned=False)
+                    qa = JanusQA(
+                        question, self._identifier, reply_queue, owned=False,
+                        logger=self._logger,
+                    )
                     self._qas[question.meta.id] = qa
+                    self._logger.info(
+                        "%s received question qid=%s kind=%s",
+                        self._log_prefix, _short_qid(question.meta.id), question.kind,
+                    )
                     for cb in self._on_question_cbs:
                         try:
                             cb(qa)
                         except Exception:
-                            pass
+                            self._logger.exception(
+                                "%s on_question callback failed", self._log_prefix,
+                            )
                 elif kind == _BQ_VERDICT:
                     qid, answer = payload
                     qa = self._qas.get(qid)
                     if qa is not None:
                         qa._apply_verdict(answer)
+                    else:
+                        self._logger.debug(
+                            "%s verdict for unknown qid=%s", self._log_prefix, _short_qid(qid),
+                        )
                 elif kind == _BQ_CANCEL:
                     qid, reason = payload
                     qa = self._qas.get(qid)
                     if qa is not None:
                         qa._apply_cancel(reason)
-        except (asyncio.CancelledError, RuntimeError):
+                    else:
+                        self._logger.debug(
+                            "%s cancel for unknown qid=%s", self._log_prefix, _short_qid(qid),
+                        )
+        except asyncio.CancelledError:
             pass
+        except RuntimeError:
+            self._logger.exception(
+                "%s consumer aborted", self._log_prefix,
+            )
+        self._logger.info("%s consumer stopped", self._log_prefix)
 
     def stop(self) -> None:
         if self._consumer is not None:
@@ -396,8 +477,10 @@ class JanusQAManager(QAManager):
     :meth:`watch` to obtain role-bound actors (KD3).
     """
 
-    def __init__(self, issuer: str) -> None:
+    def __init__(self, issuer: str, *, logger: LoggerItf | None = None) -> None:
         self._issuer = issuer
+        self._logger = logger or get_moss_logger()
+        self._log_prefix = "[JanusQAManager]"
         self._broadcast_queues: dict[str, janus.Queue] = {}
         self._watcher_queues: dict[str, list[janus.Queue]] = {}
         self._distributor_tasks: dict[str, asyncio.Task] = {}
@@ -416,11 +499,16 @@ class JanusQAManager(QAManager):
             self._distributor_tasks[namespace] = asyncio.ensure_future(
                 self._run_distributor(namespace),
             )
+            self._logger.info(
+                "%s namespace created ns=%s", self._log_prefix, namespace,
+            )
         return self._broadcast_queues[namespace]
 
     async def _run_distributor(self, namespace: str) -> None:
         """Distribute broadcast-queue messages to all watcher queues."""
         broadcast_q = self._broadcast_queues[namespace]
+        log_prefix = f"{self._log_prefix} ns={namespace}"
+        self._logger.info("%s distributor started", log_prefix)
         try:
             while True:
                 kind, *payload = await broadcast_q.async_q.get()
@@ -440,17 +528,20 @@ class JanusQAManager(QAManager):
                         watcher_q.sync_q.put_nowait(
                             (_BQ_CANCEL, qid, reason),
                         )
-        except (asyncio.CancelledError, RuntimeError):
+        except asyncio.CancelledError:
             pass
+        except RuntimeError:
+            self._logger.exception("%s distributor aborted", log_prefix)
+        self._logger.info("%s distributor stopped", log_prefix)
 
     # -- QAManager ABC ---------------------------------------------------
 
     def asker(self, namespace: str) -> Asker:
         broadcast_q = self._ensure_namespace(namespace)
-        return JanusAsker(self._issuer, namespace, broadcast_q)
+        return JanusAsker(self._issuer, namespace, broadcast_q, logger=self._logger)
 
     def watch(self, namespace: str) -> Watcher:
         self._ensure_namespace(namespace)
         watcher_q = janus.Queue(maxsize=_WATCHER_QUEUE_SIZE)
         self._watcher_queues[namespace].append(watcher_q)
-        return JanusWatcher(namespace, self._issuer, watcher_q)
+        return JanusWatcher(namespace, self._issuer, watcher_q, logger=self._logger)
