@@ -18,13 +18,66 @@ async def test_basic_enqueue_and_peek():
 
 @pytest.mark.asyncio
 async def test_status_red_dot():
-    """status() 返回红点格式."""
+    """status() 返回红点摘要: pending 计数 + 最新 pending 消息预览, 无消息回退 description."""
     async with InputSignalNucleus() as nuc:
+        nuc.add_signal(Signal.new("input", Message.new().with_content("hello there")))
+        await asyncio.sleep(0.01)
+        status = nuc.status()
+        assert "pending: 1" in status
+        assert "hello there" in status
+
+        # 无消息内容时回退到 description 字段.
+        nuc.clear()
         nuc.add_signal(Signal.new("input", description="user says hi"))
         await asyncio.sleep(0.01)
         status = nuc.status()
         assert "pending: 1" in status
         assert "user says hi" in status
+
+
+@pytest.mark.asyncio
+async def test_status_empty_when_no_pending():
+    """无 pending 信号时 status() 为空 — nucleus 从 perspective 排除."""
+    async with InputSignalNucleus() as nuc:
+        assert nuc.status() == ""
+
+
+@pytest.mark.asyncio
+async def test_description_is_static_label():
+    """description() 是稳定标签 — 不随 pending 变化, 计数不塞进 description."""
+    async with InputSignalNucleus() as nuc:
+        desc_before = nuc.description()
+        nuc.add_signal(Signal.new("input", Message.new().with_content("hi")))
+        await asyncio.sleep(0.01)
+        assert nuc.description() == desc_before
+        assert "pending" not in nuc.description()
+
+
+@pytest.mark.asyncio
+async def test_pending_count_reflects_buffer_lifecycle():
+    """pending_count() 随入队增加, pop 消费后归零."""
+    async with InputSignalNucleus() as nuc:
+        assert nuc.pending_count() == 0
+        nuc.add_signal(Signal.new("input", Message.new().with_content("a")))
+        nuc.add_signal(Signal.new("input", Message.new().with_content("b")))
+        await asyncio.sleep(0.01)
+        assert nuc.pending_count() == 2
+        imp = nuc.peek()
+        assert imp is not None
+        nuc.pop_impulse(imp)
+        await asyncio.sleep(0.01)
+        assert nuc.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_count_excludes_stale():
+    """pending_count() 排除已 stale 的信号 — 不虚报 pending."""
+    async with InputSignalNucleus() as nuc:
+        nuc.add_signal(Signal.new("input", Message.new().with_content("fresh")))
+        nuc.add_signal(Signal.new("input", Message.new().with_content("stale"), stale_timeout=0.001))
+        await asyncio.sleep(0.02)
+        assert nuc.pending_count() == 1
+        assert "pending: 1" in nuc.status()
 
 
 @pytest.mark.asyncio

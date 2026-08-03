@@ -24,14 +24,17 @@ class InputSignalNucleus(Nucleus):
     与 BufferNucleus 的区别:
     - 无 pulse beat 循环, 仅在新信号到达时通知
     - pop 时 Impulse 保留全部消息的 FIFO 顺序
-    - status() 返回红点摘要
+    - status() 返回红点摘要: pending 计数 + 最新 pending 消息的预览
+
+    description() 是给模型读的静态标签 (user text input); 计数逻辑收敛在
+    public ``pending_count()``, status() 的 f-string 复用, 测试可直接断言.
     """
 
     def __init__(
             self,
             *,
             name: str = "input_signal_nucleus",
-            description: str = "default input signal nucleus",
+            description: str = "user text input",
             default_prompt: str = '',
             suppress_seconds: float = 0.5,
             buffer_size: int = 20,
@@ -66,18 +69,27 @@ class InputSignalNucleus(Nucleus):
         return self._name
 
     def description(self) -> str:
+        # 静态标签 — 稳定描述"这是什么", 不随 pending 变化. 计数在 status().
         return self._description
+
+    def pending_count(self) -> int:
+        """尚未交付给 mindflow 的 input signal 数量 (排除已 stale 的信号)."""
+        with self._data_state_lock:
+            return len([s for s in self._signals if not s.is_stale()])
 
     def is_running(self) -> bool:
         return self._running and self._event_loop is not None
 
     def status(self) -> str:
-        count = len(self._signals)
-        if count == 0:
-            return ""
-        latest = max(self._signals, key=lambda s: s.created_at.timestamp())
-        desc = f", top: {latest.description[:50]}" if latest.description else ''
-        return f"pending: {count}{desc}"
+        # 锁内只做 O(n) 引用级操作 (过滤 + max), 内容提取放锁外 —
+        # 保持 _data_state_lock 为快锁, 不阻塞跨线程调用方.
+        with self._data_state_lock:
+            valid = [s for s in self._signals if not s.is_stale()]
+            if not valid:
+                return ""
+            latest = max(valid, key=lambda s: s.created_at.timestamp())
+        preview = ' '.join(self._preview(latest).split())[:50]
+        return f"pending: {self.pending_count()}, last: {preview}"
 
     def signals(self) -> list[str]:
         return [self._target_signal]
@@ -135,6 +147,20 @@ class InputSignalNucleus(Nucleus):
         self._running = False
 
     # -- internal --
+
+    @staticmethod
+    def _preview(signal: Signal) -> str:
+        """红点预览: 最新消息的纯文本, 无消息时回退到 description 字段."""
+        if signal.messages:
+            last = signal.messages[-1]
+            parts = []
+            for content in last.as_contents(with_meta=False, join_text=True):
+                if isinstance(content, dict) and content.get('text'):
+                    parts.append(str(content['text']))
+            text = ' '.join(parts).strip()
+            if text:
+                return text
+        return signal.description or '<input>'
 
     def _process_signal(self, signal: Signal) -> None:
         with self._data_state_lock:
@@ -194,7 +220,7 @@ class InputNucleusMeta(NucleusMeta):
             self,
             *,
             name: str = "input_signal_nucleus",
-            description: str = "default input signal nucleus",
+            description: str = "user text input",
             default_prompt: str = '',
             suppress_seconds: float = 0.5,
             buffer_size: int = 20,
