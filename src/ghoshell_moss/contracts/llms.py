@@ -63,6 +63,10 @@ class ModelConfig(BaseModel):
         default="$ANTHROPIC_MODEL",
         description="模型名，如 claude-opus-4-7",
     )
+    description: str = Field(
+        default="",
+        description="human-readable description — used by list displays and Ghost model-selection channels",
+    )
     tags: dict[ModelTag, ModelName] = Field(
         default_factory=dict,
     )
@@ -215,6 +219,7 @@ class LLMConfig(ConfigType):
             ),
             default=ModelConfig(
                 model="$ANTHROPIC_MODEL",
+                description="Default Anthropic model — general-purpose, multimodal (text + image)",
                 tags={
                     'small_fast_model': "$ANTHROPIC_SMALL_FAST_MODEL",
                 },
@@ -232,6 +237,22 @@ class LLMConfig(ConfigType):
                 ),
                 default=ModelConfig(
                     model="$DEEPSEEK_MODEL",
+                    description="DeepSeek via Anthropic-compatible protocol — cost-efficient reasoning",
+                    tags={
+                        'small_fast_model': "$DEEPSEEK_SMALL_FAST_MODEL",
+                    },
+                )
+            ),
+            deepseek_openai=Provider(
+                service=ServiceConfig(
+                    name='deepseek_openai',
+                    base_url='$DEEPSEEK_OPENAI_BASE_URL',
+                    api_key='$DEEPSEEK_API_KEY',
+                    protocol='openai',
+                ),
+                default=ModelConfig(
+                    model="$DEEPSEEK_MODEL",
+                    description="DeepSeek via OpenAI-compatible protocol — for OpenAI client testing",
                     tags={
                         'small_fast_model': "$DEEPSEEK_SMALL_FAST_MODEL",
                     },

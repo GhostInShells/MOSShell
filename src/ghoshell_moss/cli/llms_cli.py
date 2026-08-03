@@ -83,14 +83,14 @@ def list_models_cmd(
             resolved.service.name,
             resolved.client_protocol,
             m.model,
+            m.description or "-",
             ",".join(sorted(m.tags)) or "-",
             ",".join(m.content_types) or "*",
-            str(m.context_window),
             str(m.max_output_tokens),
         ])
     print_simple_table(
         rows,
-        headers=["service", "protocol", "model", "tags", "content_types", "ctx_window", "max_out"],
+        headers=["service", "protocol", "model", "description", "tags", "content_types", "max_out"],
         title="LLM Models",
     )
 
