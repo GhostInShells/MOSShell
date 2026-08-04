@@ -17,6 +17,7 @@ from ghoshell_moss.core.cache import SqliteCache
 from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_moss.core.blueprint.session import (
     Session, Signal, Role, OutputItem, OutputBuffer, Sample, StreamSubscriber,
 )
@@ -81,6 +82,7 @@ class MockSession(Session):
             *,
             session_id: str | None = None,
             topics: TopicService | None = None,
+            qa_manager: QAManager | None = None,
             storage: Storage | None = None,
     ):
         from ghoshell_moss.message import unique_id
@@ -88,6 +90,7 @@ class MockSession(Session):
         self._session_scope = session_scope
         self._session_id = session_id or unique_id()
         self._topics = topics
+        self._qa_manager = qa_manager
         self._running = True
         self._stream_key_prefix = f"MOSS/{session_scope}/streams"
 
@@ -146,6 +149,10 @@ class MockSession(Session):
     @property
     def topics(self) -> TopicService:
         return self._topics
+
+    @property
+    def qa(self) -> QAManager | None:
+        return self._qa_manager
 
     def _make_session_level_storage(self, storage: Storage) -> Storage:
         scope_level_storage = storage.sub_storage(self._session_scope)

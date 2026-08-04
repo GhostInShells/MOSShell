@@ -9,6 +9,7 @@ from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.cache import SqliteCache
 from ghoshell_moss.core.parameter import SessionParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.parameter import ParameterStore
@@ -55,6 +56,7 @@ class MossSessionWithZenoh(Session):
             namespace: MatrixNamespace,
             zenoh_session: zenoh.Session,
             topic_service: TopicService,
+            qa_manager: QAManager | None = None,
             sessions_storage_dir: Path,
             sessions_tmp_storage_dir: Path,
             logger: logging.Logger | None = None,
@@ -99,6 +101,7 @@ class MossSessionWithZenoh(Session):
         # 与生命周期绑定有限个. 这个方法没有解绑的机制. 要考虑未来支持一个最小生命周期 handler.
         self._on_signal_callbacks: list[Callable[[Signal], None]] = []
         self._topic_service = topic_service
+        self._qa_manager = qa_manager
         self._closing_event = ThreadSafeEvent()
         # --- lazy 懒启动 --- #
         self._cache: Cache | None = None
@@ -156,6 +159,10 @@ class MossSessionWithZenoh(Session):
     @property
     def topics(self) -> TopicService:
         return self._topic_service
+
+    @property
+    def qa(self) -> QAManager | None:
+        return self._qa_manager
 
     @property
     def cache(self) -> Cache:
@@ -355,6 +362,7 @@ class ProjectZenohSession(MossSessionWithZenoh):
             project: Project,
             zenoh_session: zenoh.Session,
             topic_service: TopicService,
+            qa_manager: QAManager | None = None,
             logger: logging.Logger | None = None,
     ):
         session_scope = MossSessionWithZenoh.make_session_scope(project.env)
@@ -367,6 +375,7 @@ class ProjectZenohSession(MossSessionWithZenoh):
             namespace=namespace,
             zenoh_session=zenoh_session,
             topic_service=topic_service,
+            qa_manager=qa_manager,
             logger=logger,
             cell_address=project.env.this_cell_address,
             parent_cell_address=project.env.parent_cell_address,

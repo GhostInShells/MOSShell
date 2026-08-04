@@ -4,6 +4,7 @@ from ghoshell_moss.contracts.workspace import Storage
 from ghoshell_moss.contracts.cache import Cache
 from ghoshell_moss.core.blueprint.parameter import ParameterStore
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_moss.core.blueprint.mindflow import Signal, SignalMeta, InputSignalMeta
 from typing import Iterable, Literal
 from abc import ABC, abstractmethod
@@ -214,6 +215,14 @@ class Session(ABC):
     def topics(self) -> TopicService:
         """
         基于 Topic 协议的服务.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def qa(self) -> QAManager:
+        """
+        QA 广播问答协议 — 跨 cell 的 ask/answer 总线.
         """
         pass
 

@@ -2,6 +2,7 @@ from typing import Iterable, Type, TYPE_CHECKING
 
 from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.concepts.topic import TopicService
+from ghoshell_moss.core.concepts.qa import QAManager
 from ghoshell_container import IoCContainer, Provider
 
 from ghoshell_moss.contracts import LoggerItf
@@ -39,11 +40,13 @@ class ProjectZenohSessionProvider(Provider[Session]):
         logger = con.get(LoggerItf)
         project = con.force_fetch(Project)
         topic_service = con.force_fetch(TopicService)
+        qa_manager = con.force_fetch(QAManager)
         zenoh_session = con.force_fetch(zenoh.Session)
 
         return ProjectZenohSession(
             project=project,
             logger=logger,
             topic_service=topic_service,
+            qa_manager=qa_manager,
             zenoh_session=zenoh_session,
         )
