@@ -5,6 +5,19 @@ and cancel all travel through queues consumed by independent asyncio tasks.
 Callbacks fire in the consumer's context, never inline on the issuer or
 responder stack.
 
+Lifecycle
+---------
+Every spawned task is registered with :class:`JanusQAManager` and cancelled
+on ``__aexit__``.  Asker / Watcher are plain sync factories — they do not
+expose their own ``__aenter__``.  Use the manager as an async context::
+
+    async with JanusQAManager(issuer='ghost-1') as mgr:
+        asker = mgr.asker('safemode')
+        watcher = mgr.watch('safemode')
+        qa = asker.ask_approval('…')
+        await qa.wait()
+    # all distributor, watcher consumer, and owner reply tasks cancelled
+
 Why janus.Queue (not asyncio.Queue):
     reply() may be called from any thread (TUI input, sync callback, …).
     janus bridges sync-q puts and async-q gets without forcing the caller
@@ -15,25 +28,13 @@ Why ThreadSafeEvent (not asyncio.Event):
     from a sync context (cancel, owner's reply consumer receiving via
     janus async_q).  ThreadSafeEvent is the standard MOSS primitive for
     this crossing (see core/helpers/asyncio_utils.py).
-
-Flow::
-
-    Asker                         Distributor              Watcher(s)
-    -----                         -----------              ----------
-    broadcast_question --sync_q-> broadcast_q --async_q-> copy to watcher_q
-                                  (namespace task)
-
-    Owner QA                      Distributor              Watcher
-    --------                      -----------              -------
-    _consume_replies <-async_q-- reply_queue <-sync_q-- reply(answer)
-    _accept_answer -> verdict -sync_q-> broadcast_q --> copy to watcher_q
-    cancel() -> cancel -sync_q-> broadcast_q --> copy to watcher_q
 """
 
 from __future__ import annotations
 
 import asyncio
 import janus
+from collections.abc import Coroutine
 from threading import Lock
 from typing import Callable
 
@@ -57,6 +58,10 @@ _REPLY_QUEUE_SIZE = 16
 _BROADCAST_QUEUE_SIZE = 64
 _WATCHER_QUEUE_SIZE = 32
 
+# -- spawn callback type ---------------------------------------------------
+
+TaskSpawner = Callable[[Coroutine], asyncio.Task]
+
 
 def _short_qid(qid: str) -> str:
     """First 8 chars of a question id — enough to identify in logs."""
@@ -71,9 +76,9 @@ class JanusQA(QA):
     """In-process QA handle backed by janus queues.
 
     Owner copy (owned=True):
-        Spawns a consumer task that drains *reply_queue* and calls
-        :meth:`_accept_answer` on the first-arriving reply.  Subsequent
-        replies are silently dropped because the done-event is already set.
+        After construction the caller must invoke
+        :meth:`_start_reply_consumer` — the owner QA does **not** auto-spawn
+        its consumer task.  The task is tracked by the QAManager's registry.
 
     Responder copy (owned=False):
         :meth:`reply` locks locally then pushes the answer into the shared
@@ -106,12 +111,15 @@ class JanusQA(QA):
         self._answer_callbacks: list[Callable[[Answer], None]] = []
         self._cancel_callbacks: list[Callable[[Question], None]] = []
 
-        # Owned QAs spawn a background consumer task that drains the
-        # reply_queue and accepts the first answer.  Unowned copies
-        # receive the verdict through the distribute → watcher path.
         self._reply_consumer: asyncio.Task | None = None
-        if self._owned:
-            self._reply_consumer = asyncio.ensure_future(self._consume_replies())
+
+    # -- deferred start (called by Asker / Watcher via QAManager spawn) ---
+
+    def _start_reply_consumer(self, spawn: TaskSpawner) -> None:
+        """Start the reply consumer task.  Must only be called on owner copies."""
+        if not self._owned:
+            return
+        self._reply_consumer = spawn(self._consume_replies())
 
     # -- internal setters ------------------------------------------------
     # These are public-internal: called by JanusWatcher / JanusAsker to
@@ -284,6 +292,10 @@ class JanusAsker(Asker):
     answer round-trip.  When the owner accepts an answer or cancels, the
     verdict is pushed back to the broadcast queue so all watcher copies
     converge.
+
+    The reply consumer for each owner QA is spawned through the *spawn*
+    callback provided by the owning :class:`JanusQAManager` — that way
+    the task is tracked and cancelled on manager exit.
     """
 
     def __init__(
@@ -292,11 +304,13 @@ class JanusAsker(Asker):
         namespace: str,
         broadcast_queue: janus.Queue,
         *,
+        spawn: TaskSpawner | None = None,
         logger: LoggerItf | None = None,
     ) -> None:
         self._issuer = issuer
         self._namespace = namespace
         self._broadcast_queue = broadcast_queue
+        self._spawn = spawn or asyncio.ensure_future
         self._logger = logger or get_moss_logger()
         self._log_prefix = f"[JanusAsker ns={namespace}]"
         self._owned_qas: dict[str, QA] = {}
@@ -321,6 +335,9 @@ class JanusAsker(Asker):
         )
         qid = question.meta.id
         self._owned_qas[qid] = qa
+
+        # Start the owner-side reply consumer tracked by the QAManager.
+        qa._start_reply_consumer(self._spawn)
 
         def _broadcast_verdict(answer: Answer) -> None:
             self._logger.info(
@@ -365,6 +382,9 @@ class JanusWatcher(Watcher):
     QA copies when a new question arrives, then fires :meth:`on_question`
     callbacks.  Verdict / cancel broadcasts are also consumed here and
     applied to the local copy via ``_apply_verdict`` / ``_apply_cancel``.
+
+    The consumer task is **not** started in the constructor.  Call
+    :meth:`_start_consumer` (via the QAManager's spawn) to activate.
     """
 
     def __init__(
@@ -383,7 +403,6 @@ class JanusWatcher(Watcher):
         self._qas: dict[str, JanusQA] = {}
         self._on_question_cbs: list[Callable[[QA], None]] = []
         self._consumer: asyncio.Task | None = None
-        self._start()
 
     @property
     def namespace(self) -> str:
@@ -393,10 +412,10 @@ class JanusWatcher(Watcher):
     def identifier(self) -> str:
         return self._identifier
 
-    # -- lifecycle -------------------------------------------------------
+    # -- deferred start (called by QAManager) -----------------------------
 
-    def _start(self) -> None:
-        self._consumer = asyncio.ensure_future(self._consume())
+    def _start_consumer(self, spawn: TaskSpawner) -> None:
+        self._consumer = spawn(self._consume())
 
     async def _consume(self) -> None:
         self._logger.info("%s consumer started", self._log_prefix)
@@ -473,8 +492,15 @@ class JanusQAManager(QAManager):
     reads from the broadcast queue and copies each message to every
     registered watcher inbound queue in that namespace.
 
-    Construct one instance per process / cell and call :meth:`asker` /
-    :meth:`watch` to obtain role-bound actors (KD3).
+    All spawned tasks are tracked and cancelled on ``__aexit__``.
+    Construct one instance per process / cell and use as an async context
+    manager to obtain role-bound actors::
+
+        async with JanusQAManager(issuer='ghost-1') as mgr:
+            asker = mgr.asker('safemode')
+            watcher = mgr.watch('safemode')
+            qa = asker.ask_approval('…')
+            await qa.wait()
     """
 
     def __init__(self, issuer: str, *, logger: LoggerItf | None = None) -> None:
@@ -484,10 +510,39 @@ class JanusQAManager(QAManager):
         self._broadcast_queues: dict[str, janus.Queue] = {}
         self._watcher_queues: dict[str, list[janus.Queue]] = {}
         self._distributor_tasks: dict[str, asyncio.Task] = {}
+        self._tasks: set[asyncio.Task] = set()
 
     @property
     def issuer(self) -> str:
         return self._issuer
+
+    # -- lifecycle --------------------------------------------------------
+
+    async def __aenter__(self) -> JanusQAManager:
+        self._logger.info("%s entering", self._log_prefix)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._logger.info(
+            "%s exiting — cancelling %d tasks", self._log_prefix, len(self._tasks),
+        )
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            self._tasks.clear()
+        self._broadcast_queues.clear()
+        self._watcher_queues.clear()
+        self._distributor_tasks.clear()
+        self._logger.info("%s exited", self._log_prefix)
+
+    # -- task tracking ----------------------------------------------------
+
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     # -- namespace management --------------------------------------------
 
@@ -496,7 +551,7 @@ class JanusQAManager(QAManager):
             broadcast_q = janus.Queue(maxsize=_BROADCAST_QUEUE_SIZE)
             self._broadcast_queues[namespace] = broadcast_q
             self._watcher_queues[namespace] = []
-            self._distributor_tasks[namespace] = asyncio.ensure_future(
+            self._distributor_tasks[namespace] = self._spawn(
                 self._run_distributor(namespace),
             )
             self._logger.info(
@@ -538,10 +593,15 @@ class JanusQAManager(QAManager):
 
     def asker(self, namespace: str) -> Asker:
         broadcast_q = self._ensure_namespace(namespace)
-        return JanusAsker(self._issuer, namespace, broadcast_q, logger=self._logger)
+        return JanusAsker(
+            self._issuer, namespace, broadcast_q,
+            spawn=self._spawn, logger=self._logger,
+        )
 
     def watch(self, namespace: str) -> Watcher:
         self._ensure_namespace(namespace)
         watcher_q = janus.Queue(maxsize=_WATCHER_QUEUE_SIZE)
         self._watcher_queues[namespace].append(watcher_q)
-        return JanusWatcher(namespace, self._issuer, watcher_q, logger=self._logger)
+        watcher = JanusWatcher(namespace, self._issuer, watcher_q, logger=self._logger)
+        watcher._start_consumer(self._spawn)
+        return watcher
