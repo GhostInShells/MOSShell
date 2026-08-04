@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -505,6 +506,49 @@ def _resolve_memento(root: Optional[Path], owner: str):
     return None
 
 
+def _staging_count(memento, line_name: str) -> Optional[int]:
+    """Moments currently in a line's staging, or None when unresolvable.
+
+    Used for the invoke-before/after staging diff (§9.2 — the runner only
+    observes, it never writes). None propagates as "unknown", not as zero.
+    """
+    if memento is None:
+        return None
+    try:
+        return len(memento.get_line(line_name).staging())
+    except Exception:
+        return None
+
+
+_LOG_TARGET = "moss.memento_agent"
+
+
+def _configure_log_file(log_file: Optional[Path]) -> None:
+    """Attach a file handler to the memento-agent logger for opt-in tracing.
+
+    Without --log-file the logger stays inert: INFO/DEBUG are dropped by the
+    default level, WARNING+ surface on stderr via root's last-resort handler
+    (raw format — not user-friendly, but never silent).  With --log-file the
+    file captures everything at DEBUG; the logger's propagation is cut so
+    the file is the sole sink — no raw last-resort stderr mixed with the
+    CLI's own rich print_error diagnostics.
+    """
+    if log_file is None:
+        return
+    target = Path(log_file).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(_LOG_TARGET)
+    logger.setLevel(logging.DEBUG)
+    handler = logging.FileHandler(str(target), encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    logger.addHandler(handler)
+    logger.propagate = False
+    logger.info("log file opened: %s", target)
+
+
 @agent_app.command("parse", short_help="Show the composed instruction (what the model sees).")
 def agent_parse(
     agent_path: str = typer.Argument(..., help="Path to *.agent.py file."),
@@ -537,19 +581,33 @@ def agent_invoke(
         help="Working directory. Defaults to agent .py parent.",
     ),
     root: Optional[Path] = typer.Option(None, "--root", "-r", help="Memento root directory."),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit structured output: {ok, output, moment_count, commit_id, branch}.",
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None, "--log-file",
+        help="Write runtime lifecycle and error detail to this file (opt-in tracing).",
+    ),
 ):
     """Run one agent invocation. Returns the model's final answer on stdout.
 
     Owner defaults to the agent file stem (translator.agent.py → translator).
     Branch defaults to "main". When the memento root exists, moments are
     recorded to that line's staging.
+
+    Output contract (loop-callable): exit 0 ⟺ a non-empty final answer was
+    produced; stdout carries the answer (or JSON with --json). Any failure
+    exits 1 with a diagnostic on stderr; stdout is not trusted.
     """
+    _configure_log_file(log_file)
     agent_py_path = Path(agent_path).resolve()
     resolved_cwd = _resolve_agent_cwd(agent_py_path, cwd)
     agent = _build_agent(agent_path, cwd=resolved_cwd)
     resolved_owner = owner or _owner_from_path(agent_py_path)
 
     memento = _resolve_memento(root, resolved_owner)
+    staging_before = _staging_count(memento, branch)
 
     try:
         result = asyncio.run(agent.invoke(
@@ -559,8 +617,39 @@ def agent_invoke(
             cwd=resolved_cwd,
         ))
     except Exception as exc:
+        logging.getLogger(_LOG_TARGET).error(
+            "invoke failed: agent=%s owner=%s branch=%s: %s",
+            agent_path, resolved_owner, branch, exc, exc_info=True,
+        )
         print_error(f"invoke failed: {exc}")
         raise typer.Exit(code=1)
+
+    if not result.strip():
+        logging.getLogger(_LOG_TARGET).error(
+            "invoke produced empty output: agent=%s owner=%s branch=%s",
+            agent_path, resolved_owner, branch,
+        )
+        print_error(
+            f"invoke produced an empty final answer on {resolved_owner}/{branch} — "
+            f"treating as failure (a clean completion always ends in plain text)."
+        )
+        raise typer.Exit(code=1)
+
+    if as_json:
+        staging_after = _staging_count(memento, branch)
+        moment_count = None
+        if staging_before is not None and staging_after is not None:
+            moment_count = staging_after - staging_before
+        # v1 has no auto-commit (staging accumulates; humans commit explicitly),
+        # so commit_id is always null here — the field exists for contract shape.
+        echo(json.dumps({
+            "ok": True,
+            "output": result,
+            "moment_count": moment_count,
+            "commit_id": None,
+            "branch": branch,
+        }, ensure_ascii=False))
+        return
 
     echo(result)
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -33,6 +34,8 @@ from ghoshell_moss.core.codex.sandbox import Sandbox
 from ghoshell_moss.memento.abc import BranchWindow, Memento, MomentRecord
 
 __all__ = ["MementoPydanticAgentImpl"]
+
+logger = logging.getLogger("moss.memento_agent")
 
 _MESSAGE_TYPE: str = "pydantic_ai.messages/v2"
 _DEFAULT_DETAIL_N: int = 10
@@ -81,20 +84,30 @@ class MementoPydanticAgentImpl(MementoAgent):
     ) -> str:
         """Run one interaction. Records new messages to memento staging."""
         instruction: str = self.compose_instruction(memento, line_name)
+        logger.info(
+            "invoke start: agent=%s line=%s memento=%s",
+            self._name, line_name or "(none)", "yes" if memento else "no",
+        )
         try:
             result: AgentRunResult[Any] = await self._agent.run(
                 user_prompt, instructions=instruction
             )
         except Exception as e:
+            logger.exception("invoke failed: agent=%s", self._name)
             raise RuntimeError(f"agent {self._name!r} invoke failed: {e}") from e
 
         # Degraded baseline, explicit at the invoke layer: record only when a
         # store exists AND a line is bound. memento=None or empty line_name =
         # pure in-memory single round, no storage write.
+        # None output (run ended without a final text) collapses to "" — the
+        # CLI treats empty stdout as failure (exit 1), keeping the invoke
+        # protocol honest: exit 0 guarantees a non-empty final answer.
+        output: str = str(result.output or "")
         if memento is not None and line_name:
-            self._record(memento, line_name, result)
+            self._record(memento, line_name, result, output)
 
-        return str(result.output)
+        logger.info("invoke done: agent=%s output=%d chars", self._name, len(output))
+        return output
 
     def export_context_md(self, memento: Memento, line_name: str) -> str:
         """Current composed instruction including the window — the exact
@@ -190,6 +203,7 @@ class MementoPydanticAgentImpl(MementoAgent):
         memento: Memento,
         line_name: str,
         result: AgentRunResult[Any],
+        output: str,
     ) -> None:
         """Dump new messages as a MomentRecord and write to staging.
 
@@ -205,13 +219,17 @@ class MementoPydanticAgentImpl(MementoAgent):
             record: MomentRecord = MomentRecord(
                 id=_new_moment_id(),
                 type=_MESSAGE_TYPE,
-                content=str(result.output),
+                content=output,
                 payload={
                     "messages": messages,
                 },
             )
             line.record(record)
+            logger.info(
+                "recorded moment %s to %s/%s", record.id, self._name, line_name
+            )
         except Exception as e:
+            logger.exception("moment record failed: agent=%s line=%s", self._name, line_name)
             raise RuntimeError(
                 f"agent {self._name!r}: failed to record moment to line "
                 f"{line_name!r}: {e}"

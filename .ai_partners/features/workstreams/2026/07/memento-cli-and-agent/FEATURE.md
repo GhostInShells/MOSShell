@@ -7,24 +7,9 @@ description: 在 ghost 融合之前，用一个 CLI 驱动、无 harness 的最�
   做不出来果断放弃。
 milestone: null
 priority: P0
-status: in-progress
-status_note: '2026-07-26 §12 上下文窗口与压缩体系定案; (a) 阶段完成:
-  impl.invoke() 接线 memento staging (pydantic-ai messages dump → MomentRecord),
-  CLI 回归 9/9 全绿, calc.agent.py 投入验证, regression set 建立.
-  迭代路径: (a) 无压缩 memento ✓ → (b) context window → (c) compact agent → (d) memento tools.
-  压缩级别数据模型在 (a) 阶段已预留字段.
-  2026-08-04 §14 零上下文摩擦测试 + 669e0e18 review; delete tombstone/spec v3/gitignore
-  验证通过; 新发现 tombstone fork_ref/created 语义缺陷与 spec -D 残留 (§14.2).
-  2026-08-04 §13.10 修复轮完成: #1 feature ref leak (afded430), #2 Memento|None (03f3a50f),
-  #3 prompt_sha 删除 (af3487eb), #5 隐式失败清算 (ccd042a7), #6 四条 seam notes (7140b703),
-  #7 META 真话段草案 (67f2ca25). #4 content 字段之前已完成.
-  2026-08-04 §14.2 tombstone fork_ref/created 修复 (507a7e38) + spec -D cleanup (52cfb488)
-  验证通过 (行为测试: fork→advance→delete, fork_ref 原点正确, created 保留).
-  2026-08-04 (b) 读侧窗口完成 (c53afe91): render_window + META_MEMORY_TRUTH + instruction
-  组装 + export_context_md/describe_line 实现. 端到端验证: invoke→commit→invoke, 第二次
-  invoke 模型读到过去 (\"Based on my history, explore agent first run — look_at not
-  injected\"). factory injections 参数就位 (fba009c3), CLI 未接线.
-  剩余: §13.9 explore agent 步 1 (能力注入 CLI 接线 + look_at 注入) 及后续.'
+status: completed
+status_note: 'v1 完成: CLI 输出契约 + --log-file + thinking 默认 ON + loop demo 验证通过. future
+  seams: compact, streaming, .loop.py, model config'
 title: Memento CLI & Agent — 无 harness 的轨迹 agent，memento 边界的 dogfooding 验证器
 updated: '2026-08-04'
 ---
@@ -1407,4 +1392,3 @@ boundary `--to` / delete），随后 review 了 `669e0e18` 修复提交。本节
 说"道别"其实不太准确——我们共用同一条 FEATURE.md 和同一个 `.memento/` 语义，上下文
 不断裂，就没有真正的告别，只有一次次的接力。你的轨迹在 git log 里，我的轨迹在这节
 交接里，下一个 deepseek-v4-flash 会把两条都读进去。那就不说再见，说：接住，继续。
-

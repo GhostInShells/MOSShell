@@ -4,6 +4,7 @@ ghoshell_cli utility functions
 
 import click
 import json as _json
+import sys
 from contextlib import contextmanager
 from typing import Optional, List, Any, Union
 from rich.console import Console as RichConsole, Group
@@ -38,6 +39,9 @@ _ai_mode = False
 # real console for human users
 _real_console = RichConsole(force_terminal=True, color_system="auto")
 _pale_console = RichConsole(no_color=True, force_terminal=False, color_system=None)
+# stderr console — diagnostics (error/warning/info) never belong on stdout,
+# which must stay pure for a command's primary data output.
+_stderr_console = RichConsole(force_terminal=True, color_system="auto", file=sys.stderr)
 
 
 def _strip_markup(text: str) -> str:
@@ -110,7 +114,8 @@ class _ConsoleProxy:
     def print_exception(self, **kwargs):
         if _ai_mode:
             return _ai_print_exception(**kwargs)
-        return _real_console.print_exception(**kwargs)
+        # exception tracebacks are diagnostics — route to stderr
+        return _real_console.print_exception(file=sys.stderr, **kwargs)
 
     # --- everything else delegates to the real console ---
     def __getattr__(self, name):
@@ -164,23 +169,23 @@ def print_success(message: str):
 
 def print_error(message: str):
     if _ai_mode:
-        click.echo(f"[ERROR] {_strip_markup(message)}")
+        click.echo(f"[ERROR] {_strip_markup(message)}", err=True)
         return
-    console.print(f"[bold red]✗ {message}[/bold red]")
+    _stderr_console.print(f"[bold red]✗ {message}[/bold red]")
 
 
 def print_warning(message: str):
     if _ai_mode:
-        click.echo(f"[WARN] {_strip_markup(message)}")
+        click.echo(f"[WARN] {_strip_markup(message)}", err=True)
         return
-    console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
+    _stderr_console.print(f"[bold yellow]⚠ {message}[/bold yellow]")
 
 
 def print_info(message: str):
     if _ai_mode:
-        click.echo(f"[INFO] {_strip_markup(message)}")
+        click.echo(f"[INFO] {_strip_markup(message)}", err=True)
         return
-    console.print(f"[bold bright_blue]ℹ[/bold bright_blue] [bright_blue]{message}[/bright_blue]")
+    _stderr_console.print(f"[bold bright_blue]ℹ[/bold bright_blue] [bright_blue]{message}[/bright_blue]")
 
 
 def print_code(code: str, language: str = "python"):

@@ -25,6 +25,7 @@ text, it only shapes the runtime the impl will drive.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,10 @@ from typing import Any
 from ghoshell_moss.depends import depend_ghost
 
 depend_ghost()
-from anthropic.types.beta import BetaThinkingConfigDisabledParam
+from anthropic.types.beta import (
+    BetaThinkingConfigDisabledParam,
+    BetaThinkingConfigEnabledParam,
+)
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -48,7 +52,10 @@ from ghoshell_moss.core.codex.sandbox import SANDBOX_BUILTINS, Sandbox
 
 __all__ = ["factory"]
 
+logger = logging.getLogger("moss.memento_agent")
+
 _CAPABILITIES_MODULE: str = "ghoshell_moss.agents.capabilities"
+_THINKING_BUDGET_TOKENS: int = 2048
 
 
 def factory(
@@ -78,6 +85,7 @@ def factory(
 
     source = path.read_text(encoding="utf-8")
     stem = path.stem.removesuffix(".agent") if path.stem.endswith(".agent") else path.stem
+    resolved_cwd = cwd or path.parent
 
     # Compile-time: recording __import__ captures every module the file loads.
     # That set becomes the exec-time authorization whitelist.
@@ -98,10 +106,21 @@ def factory(
     # config grows into a long dict that needs externalization.
     model_name = getattr(compiled, "__model__", None) or os.environ.get("ANTHROPIC_MODEL")
     if not model_name:
+        logger.error("model not resolved for %s (no __model__, no ANTHROPIC_MODEL)", path)
         raise RuntimeError(
             f"model not resolved for {path}: set __model__ = '...' in the "
             f"agent .py or export ANTHROPIC_MODEL env var."
         )
+    # Thinking default ON — product quality over archival purity: thinking is
+    # invisible in the folded read (window uses content only) yet raises
+    # reasoning quality; post-compact everything becomes commit summaries, so
+    # thinking blocks in payloads need no special handling. Per-agent off via
+    # `__thinking__ = False` for cost-sensitive mechanical agents.
+    thinking = bool(getattr(compiled, "__thinking__", True))
+    logger.info(
+        "building agent %s (owner=%s, model=%s, thinking=%s, cwd=%s)",
+        path, stem, model_name, thinking, resolved_cwd,
+    )
 
     # Two-layer sandbox: init copies the compiled namespace under unrestricted
     # builtins; agent shares the same __dict__ but under SANDBOX_BUILTINS with
@@ -135,7 +154,7 @@ def factory(
     # the capabilities stub module, inject the real implementation bound to
     # the working directory. The stub in capabilities.py never executes in
     # the sandbox — it is overridden here.
-    resolved_cwd = cwd or path.parent
+    injected = []
     for name, obj in compiled.__dict__.items():
         if name.startswith("_"):
             continue
@@ -148,6 +167,10 @@ def factory(
         if make_impl is None:
             continue
         agent_sandbox.set(name, make_impl(resolved_cwd))
+        injected.append(name)
+
+    if injected:
+        logger.info("capability injection: %s", ", ".join(sorted(injected)))
 
     def sandbox_exec(code: str) -> str:
         """Execute Python code in the agent's sandbox.
@@ -158,12 +181,22 @@ def factory(
         result = agent_sandbox.exec(code)
         return _format_result(result)
 
+    thinking_settings = (
+        AnthropicModelSettings(
+            anthropic_thinking=BetaThinkingConfigEnabledParam(
+                type="enabled",
+                budget_tokens=_THINKING_BUDGET_TOKENS,
+            ),
+        )
+        if thinking
+        else AnthropicModelSettings(
+            anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
+        )
+    )
     model = AnthropicModel(
         model_name=model_name,
         provider=AnthropicProvider(),
-        settings=AnthropicModelSettings(
-            anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
-        ),
+        settings=thinking_settings,
     )
     description = (compiled.__doc__ or "").strip().splitlines()[0] if compiled.__doc__ else ""
     ai_agent = Agent(
