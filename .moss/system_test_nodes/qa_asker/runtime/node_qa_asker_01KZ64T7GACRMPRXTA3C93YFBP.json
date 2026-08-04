@@ -1,0 +1,16 @@
+{
+"address": "node/qa_asker/01KZ64T7GACRMPRXTA3C93YFBP",
+"pid": 63136,
+"pgid": 63136,
+"start_time": 1785839033.8669708,
+"cell": {
+"role": "node",
+"name": "qa_asker",
+"uid": "01KZ64T7GACRMPRXTA3C93YFBP",
+"singleton": true,
+"project_id": "01KW4H1T8TTZ5B4VEQWQNH9TZ1",
+"project_name": "moss",
+"updated": "2026-08-04T18:23:53.866803+08:00",
+"home": "/Users/BrightRed/Develop/github.com/GhostInShells/MOSShell/.moss/system_test_nodes/qa_asker"
+}
+}

@@ -15,6 +15,7 @@ from ghoshell_moss.matrix.providers import (
     ZenohTopicServiceProvider,
     EnvConfigStoreProvider,
     MatrixLoggerProvider,
+    ZenohQAManagerProvider,
 )
 
 from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
@@ -33,3 +34,6 @@ logger_provider = MatrixLoggerProvider()
 
 # in-memory resource registry
 resources_provider = InMemoryResourceRegistryProvider()
+
+# zenoh QA exchange (cross-process ask/answer)
+qa_manager_provider = ZenohQAManagerProvider()

@@ -33,6 +33,7 @@ from ghoshell_moss.matrix.networks.zenoh_presence import ZenohCellPresence
 from ghoshell_moss.matrix.networks.zenoh_mesh import ZenohCellNetwork
 from ghoshell_moss.matrix.providers.topic_provider import ZenohTopicServiceProvider
 from ghoshell_moss.matrix.providers.moss_session_provider import ProjectZenohSessionProvider
+from ghoshell_moss.matrix.providers.qa_provider import ZenohQAManagerProvider
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 
 __all__ = ['ZenohAdapter']
@@ -227,3 +228,4 @@ class ZenohAdapter(MatrixNetworkAdapter):
         """
         yield ZenohTopicServiceProvider()
         yield ProjectZenohSessionProvider()
+        yield ZenohQAManagerProvider()

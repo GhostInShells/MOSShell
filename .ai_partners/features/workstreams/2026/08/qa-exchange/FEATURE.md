@@ -3,7 +3,7 @@ title: QA Exchange Protocol
 status: in-progress
 priority: P1
 created: 2026-08-03
-updated: 2026-08-04
+updated: 2026-08-05
 depends: []
 milestone:
 description: >-
@@ -38,12 +38,17 @@ QA 的聚合价值：用 namespace 构建不同对话空间，将各种场景的
 - zenoh 集成测试: 6 条 (tests/.../matrix/qa/test_zenoh_qa.py)
 - 测试风格指南: `tests/CLAUDE.md`
 - safemode 审批场景评估: safemode 当前实现已经足够好，不再需要走 QA 体系接线
+- IoC Provider: `matrix/providers/qa_provider.py` — ZenohQAManagerProvider，singleton，合约 QAManager → ZenohQAManager
+- manifests 注册: `.moss/src/MOSS/manifests/providers/__init__.py` — qa_manager_provider
+- default_providers: `zenoh_adapter.py` — ZenohAdapter.default_providers() 自动装配
+- system_test_nodes: `qa_asker` / `qa_watcher` — 跨进程双节点实机验证通过 (2026-08-04)
 
 **下一步：**
-1. QA 进入 `.moss/src/MOSS/manifests/providers/` 体系
-2. `.moss/system_test_nodes/` 下创建双节点 QA 交互验证
-3. 进入 matrix 默认 IoC (zenoh_adapter.default_providers)
+1. ~~QA 进入 manifests 体系~~ Done
+2. ~~system_test_nodes 双节点交互验证~~ Done
+3. ~~进入 matrix 默认 IoC~~ Done
 4. 评估 shell / channel 级默认 API
+5. **修复 zenoh 回调线程问题**: ZenohWatcher._on_question_sample / ZenohAsker._on_reply_sample 当前在 zenoh I/O 线程执行用户回调和状态变更，需补 janus queue 卸载到 event loop task（janus 实现已有此隔离，zenoh 缺失）
 
 ## Design Index
 

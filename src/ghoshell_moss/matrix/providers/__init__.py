@@ -4,3 +4,4 @@ from .moss_session_provider import ProjectZenohSessionProvider
 from .subprocesses_provider import MatrixSubprocessesProvider
 from .job_supervisor_provider import MatrixJobSupervisorProvider
 from .logger_provider import MatrixLoggerProvider
+from .qa_provider import ZenohQAManagerProvider
