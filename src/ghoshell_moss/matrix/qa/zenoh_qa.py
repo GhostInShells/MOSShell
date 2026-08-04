@@ -30,6 +30,8 @@ from collections.abc import Coroutine
 from threading import Lock
 from typing import Callable
 
+import janus
+
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.core.concepts.qa import (
@@ -42,6 +44,9 @@ depend_matrix()
 import zenoh  # noqa: E402
 
 TaskSpawner = Callable[[Coroutine], asyncio.Task]
+
+_ASKR_QUEUE_SIZE = 16
+_WATCHER_QUEUE_SIZE = 64
 
 
 def _short_qid(qid: str) -> str:
@@ -234,8 +239,9 @@ class ZenohAsker(Asker):
     """Asker that broadcasts questions and receives replies via zenoh.
 
     Subscribes to ``{prefix}/replies/{ns}`` to receive answers from
-    watchers and dispatches them to the matching owner QA by
-    ``answer.meta.refer_to`` (qid).
+    watchers.  Zenoh callbacks run on zenoh's I/O thread and only
+    deserialise + enqueue; a consumer task on the event loop drains
+    the queue and dispatches to the matching owner QA.
     """
 
     def __init__(
@@ -264,6 +270,11 @@ class ZenohAsker(Asker):
         self._reply_subscriber: zenoh.Subscriber | None = None
         self._queryable: zenoh.Queryable | None = None
 
+        # janus queue + consumer — offloads dispatch from zenoh I/O thread
+        # to the event loop, matching the janus QA isolation pattern.
+        self._event_queue: janus.Queue | None = None
+        self._consumer: asyncio.Task | None = None
+
     @property
     def issuer(self) -> str:
         return self._issuer
@@ -277,8 +288,11 @@ class ZenohAsker(Asker):
 
     # -- lifecycle (called by QAManager) ---------------------------------
 
-    def _start(self) -> None:
-        """Declare zenoh subscribers and queryables."""
+    def _start(self, spawn: TaskSpawner) -> None:
+        """Declare zenoh subscribers, queryables, and consumer task."""
+        self._event_queue = janus.Queue(maxsize=_ASKR_QUEUE_SIZE)
+        self._consumer = spawn(self._consume())
+
         self._reply_subscriber = self._session.declare_subscriber(
             self._replies_key,
             self._on_reply,
@@ -293,7 +307,7 @@ class ZenohAsker(Asker):
         )
 
     def _stop(self) -> None:
-        """Undeclare zenoh resources."""
+        """Undeclare zenoh resources, cancel consumer, close queue."""
         for resource, name in [
             (self._reply_subscriber, "reply_subscriber"),
             (self._queryable, "queryable"),
@@ -305,12 +319,53 @@ class ZenohAsker(Asker):
                     pass
         self._reply_subscriber = None
         self._queryable = None
+
+        if self._consumer is not None:
+            self._consumer.cancel()
+            self._consumer = None
+        if self._event_queue is not None:
+            self._event_queue.close()
+            self._event_queue = None
+
         self._logger.info("%s stopped", self._log_prefix)
+
+    # -- consumer ---------------------------------------------------------
+
+    async def _consume(self) -> None:
+        """Drain the event queue on the event loop, dispatch replies."""
+        self._logger.info("%s consumer started", self._log_prefix)
+        try:
+            while True:
+                answer = await self._event_queue.async_q.get()
+                try:
+                    qid = answer.meta.refer_to if answer.meta else None
+                    if qid is None:
+                        self._logger.warning(
+                            "%s reply with no refer_to — dropped", self._log_prefix,
+                        )
+                        continue
+                    qa = self._owned_qas.get(qid)
+                    if qa is None or qa.done():
+                        self._logger.debug(
+                            "%s reply for unknown/done qid=%s",
+                            self._log_prefix, _short_qid(qid),
+                        )
+                        continue
+                    qa._accept_answer(answer)
+                except Exception:
+                    self._logger.exception(
+                        "%s dispatch reply failed", self._log_prefix,
+                    )
+        except asyncio.CancelledError:
+            pass
+        except janus.QueueClosedError:
+            pass
+        self._logger.info("%s consumer stopped", self._log_prefix)
 
     # -- zenoh callbacks -------------------------------------------------
 
     def _on_reply(self, sample: zenoh.Sample) -> None:
-        """Receive an answer on ``{prefix}/replies/{ns}``, dispatch to owner QA."""
+        """Deserialise reply on zenoh thread, enqueue for consumer."""
         try:
             data = json.loads(sample.payload.to_bytes())
             answer = Answer.model_validate(data)
@@ -319,22 +374,10 @@ class ZenohAsker(Asker):
                 "%s failed to deserialise reply", self._log_prefix,
             )
             return
-
-        qid = answer.meta.refer_to if answer.meta else None
-        if qid is None:
-            self._logger.warning(
-                "%s reply with no refer_to — dropped", self._log_prefix,
-            )
-            return
-
-        qa = self._owned_qas.get(qid)
-        if qa is None or qa.done():
-            self._logger.debug(
-                "%s reply for unknown/done qid=%s", self._log_prefix, _short_qid(qid),
-            )
-            return
-
-        qa._accept_answer(answer)
+        try:
+            self._event_queue.sync_q.put(answer)
+        except janus.QueueClosedError:
+            self._logger.debug("%s reply queue closed — dropped", self._log_prefix)
 
     def _on_query(self, query: zenoh.Query) -> None:
         """Respond to late-join query with list of undone questions."""
@@ -402,8 +445,9 @@ class ZenohWatcher(Watcher):
     """Watcher that receives questions and verdicts via zenoh.
 
     Subscribes to ``{prefix}/questions/{ns}`` and ``{prefix}/verdicts/{ns}``.
-    New questions are deserialised into responder :class:`ZenohQA` copies
-    and pushed to :meth:`on_question` callbacks.
+    Zenoh callbacks run on zenoh's I/O thread and only deserialise + enqueue;
+    a consumer task on the event loop drains the queue, creates responder
+    :class:`ZenohQA` copies, and fires :meth:`on_question` callbacks.
     """
 
     def __init__(
@@ -431,6 +475,11 @@ class ZenohWatcher(Watcher):
         self._question_subscriber: zenoh.Subscriber | None = None
         self._verdict_subscriber: zenoh.Subscriber | None = None
 
+        # janus queue + consumer — offloads dispatch from zenoh I/O thread
+        # to the event loop, matching the janus QA isolation pattern.
+        self._event_queue: janus.Queue | None = None
+        self._consumer: asyncio.Task | None = None
+
     @property
     def namespace(self) -> str:
         return self._namespace
@@ -441,7 +490,10 @@ class ZenohWatcher(Watcher):
 
     # -- lifecycle (called by QAManager) ---------------------------------
 
-    def _start(self) -> None:
+    def _start(self, spawn: TaskSpawner) -> None:
+        self._event_queue = janus.Queue(maxsize=_WATCHER_QUEUE_SIZE)
+        self._consumer = spawn(self._consume())
+
         self._question_subscriber = self._session.declare_subscriber(
             self._questions_key,
             self._on_question_sample,
@@ -467,7 +519,76 @@ class ZenohWatcher(Watcher):
                     pass
         self._question_subscriber = None
         self._verdict_subscriber = None
+
+        if self._consumer is not None:
+            self._consumer.cancel()
+            self._consumer = None
+        if self._event_queue is not None:
+            self._event_queue.close()
+            self._event_queue = None
+
         self._logger.info("%s stopped", self._log_prefix)
+
+    # -- consumer ---------------------------------------------------------
+
+    async def _consume(self) -> None:
+        """Drain the event queue on the event loop, dispatch questions/verdicts."""
+        self._logger.info("%s consumer started", self._log_prefix)
+        try:
+            while True:
+                kind, payload = await self._event_queue.async_q.get()
+                try:
+                    if kind == 'question':
+                        question = payload
+                        qa = ZenohQA(
+                            question, self._identifier, owned=False,
+                            reply_publisher=self._make_reply_publisher(),
+                            logger=self._logger,
+                        )
+                        self._qas[question.meta.id] = qa
+                        self._logger.info(
+                            "%s received question qid=%s kind=%s",
+                            self._log_prefix, _short_qid(question.meta.id), question.kind,
+                        )
+                        for cb in self._on_question_cbs:
+                            try:
+                                cb(qa)
+                            except Exception:
+                                self._logger.exception(
+                                    "%s on_question callback failed", self._log_prefix,
+                                )
+                    elif kind == 'verdict':
+                        data = payload
+                        qid = data.get('qid')
+                        qa = self._qas.get(qid)
+                        if qa is None:
+                            self._logger.debug(
+                                "%s verdict for unknown qid=%s",
+                                self._log_prefix, _short_qid(qid or '?'),
+                            )
+                            continue
+                        vtype = data.get('type')
+                        if vtype == 'verdict':
+                            try:
+                                answer = Answer.model_validate(data['answer'])
+                            except Exception:
+                                self._logger.exception(
+                                    "%s failed to parse verdict answer qid=%s",
+                                    self._log_prefix, _short_qid(qid),
+                                )
+                                continue
+                            qa._apply_verdict(answer)
+                        elif vtype == 'cancel':
+                            qa._apply_cancel(data.get('reason', ''))
+                except Exception:
+                    self._logger.exception(
+                        "%s dispatch event failed", self._log_prefix,
+                    )
+        except asyncio.CancelledError:
+            pass
+        except janus.QueueClosedError:
+            pass
+        self._logger.info("%s consumer stopped", self._log_prefix)
 
     # -- reply publisher factory -----------------------------------------
 
@@ -480,7 +601,7 @@ class ZenohWatcher(Watcher):
 
         return _publish
 
-    # -- zenoh callbacks -------------------------------------------------
+    # -- zenoh callbacks (zenoh I/O thread — deserialise + enqueue only) --
 
     def _on_question_sample(self, sample: zenoh.Sample) -> None:
         try:
@@ -492,24 +613,12 @@ class ZenohWatcher(Watcher):
                 "%s failed to deserialise question", self._log_prefix,
             )
             return
-
-        qa = ZenohQA(
-            question, self._identifier, owned=False,
-            reply_publisher=self._make_reply_publisher(),
-            logger=self._logger,
-        )
-        self._qas[question.meta.id] = qa
-        self._logger.info(
-            "%s received question qid=%s kind=%s",
-            self._log_prefix, _short_qid(question.meta.id), question.kind,
-        )
-        for cb in self._on_question_cbs:
-            try:
-                cb(qa)
-            except Exception:
-                self._logger.exception(
-                    "%s on_question callback failed", self._log_prefix,
-                )
+        try:
+            self._event_queue.sync_q.put(('question', question))
+        except janus.QueueClosedError:
+            self._logger.debug(
+                "%s question queue closed — dropped", self._log_prefix,
+            )
 
     def _on_verdict_sample(self, sample: zenoh.Sample) -> None:
         try:
@@ -519,27 +628,12 @@ class ZenohWatcher(Watcher):
                 "%s failed to deserialise verdict", self._log_prefix,
             )
             return
-
-        qid = data.get('qid')
-        qa = self._qas.get(qid)
-        if qa is None:
+        try:
+            self._event_queue.sync_q.put(('verdict', data))
+        except janus.QueueClosedError:
             self._logger.debug(
-                "%s verdict for unknown qid=%s", self._log_prefix, _short_qid(qid or '?'),
+                "%s verdict queue closed — dropped", self._log_prefix,
             )
-            return
-
-        kind = data.get('type')
-        if kind == 'verdict':
-            try:
-                answer = Answer.model_validate(data['answer'])
-            except Exception:
-                self._logger.exception(
-                    "%s failed to parse verdict answer qid=%s", self._log_prefix, _short_qid(qid),
-                )
-                return
-            qa._apply_verdict(answer)
-        elif kind == 'cancel':
-            qa._apply_cancel(data.get('reason', ''))
 
     # -- Watcher ABC -----------------------------------------------------
 
@@ -659,7 +753,7 @@ class ZenohQAManager(QAManager):
             query_key=self._query_key(namespace),
             logger=self._logger,
         )
-        asker._start()
+        asker._start(self._spawn)
         self._askers[namespace] = asker
         return asker
 
@@ -673,6 +767,6 @@ class ZenohQAManager(QAManager):
             verdicts_key=self._verdicts_key(namespace),
             logger=self._logger,
         )
-        watcher._start()
+        watcher._start(self._spawn)
         self._watchers.setdefault(namespace, []).append(watcher)
         return watcher
