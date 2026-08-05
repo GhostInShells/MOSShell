@@ -1,8 +1,8 @@
 """Unit tests for MatrixAudioTransport — verify delegation to Matrix/Session/Workspace."""
 from unittest.mock import MagicMock
 
-from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
-from ghoshell_moss.host.speech.capture.matrix_audio_transport import MatrixAudioTransport
+from ghoshell_moss.host.voice.capture.audio_transport import AudioTransport
+from ghoshell_moss.host.voice.capture.matrix_audio_transport import MatrixAudioTransport
 
 
 def _make_transport():

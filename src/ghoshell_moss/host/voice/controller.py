@@ -8,8 +8,8 @@ from typing import Callable
 
 import numpy as np
 
-from ghoshell_moss.host.speech.voice.capture import VoiceCapture
-from ghoshell_moss.host.speech.voice.contracts import (
+from ghoshell_moss.host.voice.capture import VoiceCapture
+from ghoshell_moss.host.voice.contracts import (
     Disposer,
     EventHandler,
     VoiceConfig,
@@ -17,8 +17,8 @@ from ghoshell_moss.host.speech.voice.contracts import (
     VoiceMode,
     VoiceNodeRuntime,
 )
-from ghoshell_moss.host.speech.voice.handlers import EventBus
-from ghoshell_moss.host.speech.voice.state import VoiceStateMachine
+from ghoshell_moss.host.voice.handlers import EventBus
+from ghoshell_moss.host.voice.state import VoiceStateMachine
 
 _ASR_SAMPLE_RATE = 16000
 
@@ -95,7 +95,7 @@ class VoiceControllerImpl(VoiceController):
 
     async def _run(self) -> None:
         """Main recognition loop — capture → ASR → state machine → dispatch."""
-        from ghoshell_moss.host.speech.volcengine_asr import VolcengineASR, VolcengineASRConfig
+        from ghoshell_moss.host.voice.volcengine_asr import VolcengineASR, VolcengineASRConfig
 
         asr = VolcengineASR(
             config=VolcengineASRConfig(
@@ -132,7 +132,7 @@ class VoiceControllerImpl(VoiceController):
 
     async def _audio_generator(self):
         """Yield audio chunks from the capture queue as numpy arrays."""
-        from ghoshell_moss.host.speech.voice._asr_helpers import iter_with_silence_timeout
+        from ghoshell_moss.host.voice._asr_helpers import iter_with_silence_timeout
 
         gen = self._queue_generator()
         async for chunk in iter_with_silence_timeout(gen, self._log):

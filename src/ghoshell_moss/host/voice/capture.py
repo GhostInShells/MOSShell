@@ -11,7 +11,7 @@ from ghoshell_moss.depends import depend_host
 depend_host()
 import miniaudio
 
-from ghoshell_moss.host.speech.voice.contracts import DeviceConfig
+from ghoshell_moss.host.voice.contracts import DeviceConfig
 
 _AUDIO_CHUNK = 640  # samples per chunk at 16kHz / 40ms
 

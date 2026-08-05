@@ -21,7 +21,7 @@ from ghoshell_moss.contracts.audio import (
     AudioPullLatest,
     AudioSequentialConsumer,
 )
-from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
+from ghoshell_moss.host.voice.capture.audio_transport import AudioTransport
 from ghoshell_moss.topics.audio import AudioRuntimeTopic
 from ghoshell_moss.core.blueprint.session import StreamSubscriber
 

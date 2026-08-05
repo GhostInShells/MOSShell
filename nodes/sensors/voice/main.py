@@ -6,7 +6,7 @@ Usage:
 
 The node:
 1. Reads VoiceConfig from voice.json (node home)
-2. Constructs VoiceControllerImpl (host/speech/voice)
+2. Constructs VoiceControllerImpl (host/voice)
 3. Registers a matrix-aware EventHandler (adapter → topics + signals)
 4. Provides the voice control channel to the matrix
 """
@@ -21,11 +21,8 @@ import click
 from ghoshell_moss.contracts.workspace import LocalStorage
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.core.blueprint.session import Session
-from ghoshell_moss.core.concepts.topic import TopicModel
 from ghoshell_moss.core.mindflow.audio_signal import AudioAction, AudioSignal
-from ghoshell_moss.host.speech.voice.capture import VoiceCapture
-from ghoshell_moss.host.speech.voice.contracts import (
+from ghoshell_moss.host.voice.contracts import (
     AsrFinal,
     AsrPartial,
     BufferUpdated,
@@ -36,7 +33,7 @@ from ghoshell_moss.host.speech.voice.contracts import (
     VoiceMode,
     VoiceNodeRuntime,
 )
-from ghoshell_moss.host.speech.voice.controller import VoiceControllerImpl
+from ghoshell_moss.host.voice.controller import VoiceControllerImpl
 
 _TTS_TOPIC_DEVICE = "speaker"
 _NODE_DIR = pathlib.Path(__file__).resolve().parent
@@ -125,7 +122,7 @@ async def _main(matrix: Matrix, config: VoiceConfig, mode: str) -> None:
     ctrl.add_handler(adapter)
 
     # Build the voice channel and provide it
-    from ghoshell_moss.host.speech.voice.channel import VoiceChannel
+    from ghoshell_moss.host.voice.channel import VoiceChannel
 
     # Inject VoiceController into channel's IoC scope
     main_chan = new_channel(name="main", description="voice input node")
@@ -143,7 +140,7 @@ async def _main(matrix: Matrix, config: VoiceConfig, mode: str) -> None:
     help="Launch mode: headless (pure process) or webview (with GUI)",
 )
 def cli(mode: str) -> None:
-    """Voice input node — thin shell for host/speech/voice core."""
+    """Voice input node — thin shell for host/voice core."""
     # Load config from node home
     storage = LocalStorage(_NODE_DIR)
 

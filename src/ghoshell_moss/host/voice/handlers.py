@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from ghoshell_moss.host.speech.voice.contracts import (
+from ghoshell_moss.host.voice.contracts import (
     EventHandler,
     VoiceLifecycleEvent,
     StreamStateChanged,

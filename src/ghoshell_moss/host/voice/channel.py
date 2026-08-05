@@ -18,7 +18,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
     new_channel,
 )
 
-from ghoshell_moss.host.speech.voice.contracts import VoiceConfig, VoiceController, VoiceMode
+from ghoshell_moss.host.voice.contracts import VoiceConfig, VoiceController, VoiceMode
 
 if TYPE_CHECKING:
     pass

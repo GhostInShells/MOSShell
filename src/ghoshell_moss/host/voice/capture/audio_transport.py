@@ -22,7 +22,7 @@ class AudioTransport(ABC):
     topic broadcast, and a logger. How those are implemented (Zenoh, FileLocker,
     TopicService) is the adapter's concern — not audio core's.
 
-    Single coupling point: MatrixAudioTransport in host/speech/capture/.
+    Single coupling point: MatrixAudioTransport in host/voice/capture/.
     """
 
     # -- PCM stream --

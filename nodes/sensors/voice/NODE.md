@@ -8,11 +8,11 @@ exec:
   args: main.py
 ---
 
-Voice input node — thin shell for the host/speech/voice core (VoiceController).
+Voice input node — thin shell for the host/voice core (VoiceController).
 
 ## 架构
 
-voice node 是薄壳，主体在 `ghoshell_moss.host.speech.voice`：
+voice node 是薄壳，主体在 `ghoshell_moss.host.voice`：
 
 - **core (host/)** : VoiceController contract + 实现（两轴状态机 + miniaudio 直采 + VolcengineASR）+ VoiceConfig（10 开关正交配置）
 - **channel** : voice/mode/config 子 channel 树，模型通过 CTML `<voice:start />` 等治理

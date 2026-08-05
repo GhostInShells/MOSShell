@@ -10,7 +10,7 @@ import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
-from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
+from ghoshell_moss.host.voice.capture.audio_transport import AudioTransport
 from ghoshell_moss.topics.audio import AudioRuntimeTopic
 
 __all__ = ["MiniAudioStreamPlayer"]

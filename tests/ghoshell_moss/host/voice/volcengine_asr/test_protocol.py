@@ -1,7 +1,7 @@
 import pytest
 
-from ghoshell_moss.host.speech.volcengine_asr.config import VolcengineASRConfig
-from ghoshell_moss.host.speech.volcengine_asr.protocol import (
+from ghoshell_moss.host.voice.volcengine_asr.config import VolcengineASRConfig
+from ghoshell_moss.host.voice.volcengine_asr.protocol import (
     _Protocol,
     create_audio_only_request,
     create_init_request,

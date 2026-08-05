@@ -2,7 +2,7 @@ from ghoshell_moss.contracts.speech import StreamAudioPlayer
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.speech.capture.matrix_audio_transport import MatrixAudioTransport
+from ghoshell_moss.host.voice.capture.matrix_audio_transport import MatrixAudioTransport
 from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
 from ghoshell_container import IoCContainer, Provider
 from pydantic import Field

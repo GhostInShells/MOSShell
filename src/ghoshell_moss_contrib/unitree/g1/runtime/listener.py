@@ -777,7 +777,7 @@ def _find_device(pattern: str, device_name: Optional[str] = None):
 
     miniaudio.Devices().get_captures() 返回 list[dict] (本仓库装的版本),
     dict 字段: name / type / id (cdata, 可直接传 CaptureDevice) / formats.
-    host/speech/capture/miniaudio_capture.py 里写的 .capture 是更老 API 的 typo,
+    host/voice/capture/miniaudio_capture.py 里写的 .capture 是更老 API 的 typo,
     本仓库当前版本会 AttributeError, 那条路径事实上 fallback 到默认设备.
     """
     import miniaudio
@@ -857,7 +857,7 @@ async def _asr_supervisor(pcm_queue: janus.Queue, cfg: _ListenerConfig) -> None:
     VolcengineASR.recognize() 是 per-utterance — 一次调用消费一段音频直到服务端 is_final.
     我们在外层无限循环, 一句话一句话地开 recognize, 中间 janus 缓冲不丢.
     """
-    from ghoshell_moss.host.speech.volcengine_asr import VolcengineASR, VolcengineASRConfig
+    from ghoshell_moss.host.voice.volcengine_asr import VolcengineASR, VolcengineASRConfig
 
     asr_cfg = VolcengineASRConfig(
         sample_rate=cfg.asr_sample_rate,
@@ -974,7 +974,7 @@ async def _pull_pcm(
 
 def _resample_int16(samples: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     """重采样 int16 PCM. scipy.signal.resample_poly, 用 gcd 算 up/down 比例."""
-    # scipy 是 host.speech.capture 已用的依赖, 不新增. 延迟 import.
+    # scipy 是 host.voice.capture 已用的依赖, 不新增. 延迟 import.
     from scipy import signal as _sig
 
     g = math.gcd(orig_sr, target_sr)

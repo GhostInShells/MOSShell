@@ -26,12 +26,12 @@ from ghoshell_moss.contracts.audio import (
     AudioChunk,
 )
 from ghoshell_moss.core.mindflow.audio_signal import AudioAction, AudioSignal
-from ghoshell_moss.host.speech.capture.audio_transport import AudioTransport
+from ghoshell_moss.host.voice.capture.audio_transport import AudioTransport
 from ghoshell_moss.topics.audio import AudioRuntimeTopic, SpeechTopic
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.speech.capture.matrix_audio_transport import MatrixAudioTransport
-from ghoshell_moss.host.speech.capture.miniaudio_capture import MiniAudioCaptureSource
-from ghoshell_moss.host.speech.volcengine_asr import VolcengineASR, VolcengineASRConfig
+from ghoshell_moss.host.voice.capture.matrix_audio_transport import MatrixAudioTransport
+from ghoshell_moss.host.voice.capture.miniaudio_capture import MiniAudioCaptureSource
+from ghoshell_moss.host.voice.volcengine_asr import VolcengineASR, VolcengineASRConfig
 from ghoshell_moss.message import Message
 from ghoshell_moss.core.blueprint.mindflow import Signal, Priority, unique_id
 
