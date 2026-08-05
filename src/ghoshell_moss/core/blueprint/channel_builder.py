@@ -389,7 +389,7 @@ class Builder(ABC):
             func: Callable[[AsyncIterable[str]], Coroutine[None, None, None | str]],
             doc: Optional[str] = None,
             override: bool = True,
-    ) -> Command[None]:
+    ) -> Command[None | str]:
         """
         register a special function for channel's content method.
         """

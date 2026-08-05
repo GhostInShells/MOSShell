@@ -368,6 +368,7 @@ class Channel(ABC):
     它的唯一性通过 channel.id 判断, 而不是实例本身.
     """
     MAIN_CHANNEL_NAME = '__main__'
+    PATH_SEPARATOR = '.'
 
     @abstractmethod
     def name(self) -> ChannelName:
@@ -394,11 +395,11 @@ class Channel(ABC):
         """
         pass
 
-    @staticmethod
-    def join_channel_path(parent: ChannelFullPath, *names: str) -> ChannelFullPath:
+    @classmethod
+    def join_channel_path(cls, parent: ChannelFullPath, *names: str) -> ChannelFullPath:
         """连接父子 channel 名称的标准语法. 作为全局的约束方式."""
         names = list(names)
-        names_str = '.'.join(names) if len(names) > 0 else ''
+        names_str = cls.PATH_SEPARATOR.join(names) if len(names) > 0 else ''
         if parent:
             if not names_str:
                 return parent
@@ -406,14 +407,14 @@ class Channel(ABC):
             return f"{parent}.{names_str}"
         return names_str
 
-    @staticmethod
-    def split_channel_path_to_names(channel_path: ChannelFullPath, limit: int = -1) -> ChannelPaths:
+    @classmethod
+    def split_channel_path_to_names(cls, channel_path: ChannelFullPath, limit: int = -1) -> ChannelPaths:
         """
         解析出 channel 名称轨迹的标准语法.
         """
         if not channel_path:
             return []
-        return channel_path.split(".", limit)
+        return channel_path.split(cls.PATH_SEPARATOR, limit)
 
     def bootstrap(self, container: Optional[IoCContainer] = None) -> "ChannelRuntime":
         """

@@ -9,6 +9,7 @@ from xml.sax import saxutils
 from ghoshell_moss.core.concepts.command import CommandToken
 from ghoshell_moss.core.concepts.errors import InterpretError
 from ghoshell_moss.core.concepts.interpreter import TextTokenParser
+from ghoshell_moss.core.concepts.channel import Channel
 from ghoshell_moss.core.helpers.token_filters import TokensReplacementMatcher
 from ghoshell_moss.core.ctml.v1_0.constants import (
     POSITION_ARGS_KEY, SCOPE_SHORTCUT, SCOPE_COMMAND_NAME, SCOPE_CHANNEL_NAME_KEY,
@@ -360,9 +361,10 @@ class CTMLSaxHandler(xml.sax.ContentHandler, xml.sax.ErrorHandler):
         parts = name.split(":", 2)
         call_id = None
         if len(parts) == 1:
-            # 没有命名空间时, 默认是名字.
+            # 没有命名空间时, 默认是名字. 除非字符串可以拆解路径.
+            line = parts[0]
             chan = ""
-            command_name = parts[0]
+            command_name = line
         elif len(parts) == 2:
             # 有命名空间时, 优先按命名空间语法.
             chan, command_name = parts

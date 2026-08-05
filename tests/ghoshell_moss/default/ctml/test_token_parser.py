@@ -613,3 +613,13 @@ def test_token_parser_raise_on_mismatched_tags():
     with pytest.raises(InterpretError):
         CTML2CommandTokenParser.parse(q.append, iter_content(), root_tag="speak", attr_parsers=ctml_default_parsers)
 
+
+def test_token_parser_with_sub_channel_content():
+    content = '<foo.bar:>hello world</foo.bar:><foo.bar:_>hello world</foo.bar:_>'
+    q: list[CommandToken] = []
+
+    CTML2CommandTokenParser.parse(q.append, iter(content), root_tag="speak", attr_parsers=ctml_default_parsers)
+    assert q.pop() is None
+    q = q[1:-1]
+    for token in q:
+        assert token.chan == "foo.bar"

@@ -578,7 +578,7 @@ class Interpreter(ABC):
             raise exp
 
     @abstractmethod
-    async def wait_compiled(self, timeout: float | None = None) -> None:
+    async def wait_compiled(self, timeout: float | None = None, throw: bool = True) -> None:
         """
         等待解释过程完成. 完成有两种情况:
         1. 输入已经完备.
@@ -740,6 +740,17 @@ class Interpreter(ABC):
         finally:
             task_callback(None)
             parser.destroy()
+
+    async def run(self, logos: str) -> dict[str, CommandTask]:
+        """
+        语法糖, 通常用于 debug 或单元测试.
+        """
+        async with self as itp:
+            itp.feed(logos)
+            itp.commit()
+            await itp.wait_stopped()
+            itp.raise_exception()
+            return itp.managing_tasks()
 
     def parse_text_to_command_tokens(
             self,
