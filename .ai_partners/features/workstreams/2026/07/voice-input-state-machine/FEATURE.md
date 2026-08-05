@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'Round 1 启动：nodes/sensors/voice/ 纯进程实现 + 10 开关正交体系 + 执行路径决策 (2026-08-04)'
+status_note: 'Round 1 代码落地：host/listener/ 核心 + nodes/sensors/listener/ 薄壳 + host.voice → host.listener 重命名 (2026-08-06)'
 priority: P0
 created: 2026-07-28
-updated: 2026-08-04
+updated: 2026-08-06
 depends:
   - audio-capture
   - node-migration
@@ -207,7 +207,7 @@ notify) 留痕。
 
 ### 节点边界
 
-`nodes/sensors/voice/` — 单一感知节点，模型通过 CTML (`<nodes:run_node>` /
+`nodes/sensors/listener/` — 单一感知节点，模型通过 CTML (`<nodes:run_node>` /
 `<nodes:stop_node>`) 或 matrix channel 命令开启/关闭/切换模式。
 
 内部聚合：
@@ -313,7 +313,7 @@ L2 流层感知 TTS 播放状态 (AudioRuntimeTopic)，在半双工模式下 gat
 
 ### KD8: voice 节点 = 单一进程，capture 保留为独立源
 
-`nodes/sensors/voice/` 在本进程内直持 capture pipeline，不经过 Zenoh PCM 流转发。
+`nodes/sensors/listener/` 在本进程内直持 capture pipeline，不经过 Zenoh PCM 流转发。
 模式切换需要同时改捕获时机和 ASR 送入时机——跨进程协调这两个维度的尝试
 (listener + audio_capture 分离) 是门控复杂度的根因。
 
@@ -500,7 +500,7 @@ class AudioSignal(SignalMeta):
 
 | 轴 | 内容 | 载体 | 理由 |
 |---|---|---|---|
-| **启动模式** | headless / webview | argv args：`moss nodes run nodes/sensors/voice -- --mode X` | nodes_cli 已支持 append（`allow_extra_args` + `launcher.run.extend`），每轮可能不同 |
+| **启动模式** | headless / webview | argv args：`moss nodes run nodes/sensors/listener -- --mode X` | nodes_cli 已支持 append（`allow_extra_args` + `launcher.run.extend`），每轮可能不同 |
 | **持久配置** | 10 开关 + device + 身份 | node home `config.toml` + env | 稳定跨启动共享，不该每次传参 |
 
 **协议层不做 RPC**：按 ROS2 经验 parameter + topic 足够。voice node 表面 = config 文件 (持久) + `VoiceNodeRuntimeTopic` (运行时快照) + 控制 channel (ghost 反身性写) + UI ws (交互直连 node 本地服务，零矩阵跳数)。matrix 间通讯协议层与核心**解耦**——核心只暴露事件，协议层作为 adapter 消费广播（见「模块抽象约定」），由人类工程师并行推进。
@@ -521,9 +521,9 @@ class AudioSignal(SignalMeta):
 
 | 层 | 位置 | 内容 |
 |---|---|---|
-| 核心 | `ghoshell_moss/host/speech/voice/` | VoiceController contract + 实现（两轴状态机 + capture + asr + buffer）。依赖方向干净：只依赖 contracts/audio、asr，不感知 channel/matrix |
-| channel | `ghoshell_moss/channels/` | voice channel：command 内 `CommandUtil.force_get_contract(VoiceController)` 或 `ChannelInterface.new(container)` 从 IoC 实例化，不 new 实现 |
-| node | `nodes/sensors/voice/` | 薄壳：IoC 装配 + provide channel + GUI 入口（webview 模式） |
+| 核心 | `ghoshell_moss/host/listener/` | VoiceController contract + 实现（两轴状态机 + capture + asr + buffer）。依赖方向干净：只依赖 contracts/audio、asr，不感知 channel/matrix |
+| channel | `ghoshell_moss/host/listener/channel.py` | VoiceChannel：`ChannelInterface.new(container)` 从 IoC 拉 VoiceController，command 内直调。channel 与核心同包——当前体量不足以独立成 channels 包 |
+| node | `nodes/sensors/listener/` | 薄壳：IoC 装配 + provide channel + GUI 入口（webview 模式） |
 
 IoC 机制已在 `channel_builder.py` 验证：`force_get_contract` (:108) / `with_binding` (:574) / `with_contract_factory` (:583) / `ChannelInterface.new` (:671)。
 
@@ -586,17 +586,17 @@ core 不感知 matrix。协议层（或 node adapter）注册 EventHandler → �
 
 ### Round 1 — host 核心 + IoC channel + 薄 node（今天可用）
 
-**目标**：`host/speech/voice/` 核心可用（两轴状态机 + 采集 + asr），voice channel 模型可治理，真实语音一次 ASR 走通。
+**目标**：`host/listener/` 核心可用（两轴状态机 + 采集 + asr），voice channel 模型可治理，真实语音一次 ASR 走通。
 
 | 步骤 | 内容 | 产物 |
 |---|---|---|
-| R1-1 | 核心契约 | `host/speech/voice/` VoiceController contract + 强类型事件 + EventHandler |
+| R1-1 | 核心契约 | `host/listener/` VoiceController contract + 强类型事件 + EventHandler |
 | R1-2 | 配置模块 | 读 node 内 config.toml：10 开关 + device 三级选择 |
 | R1-3 | 两轴状态机 | 话语生命周期（idle→capturing→finalizing）× 闸口/buffer（staged→committed/dropped） |
 | R1-4 | 采集/ASR 管道 | 采集边界自持（miniaudio 直采 16000）+ VolcengineASR（复用 listener 的 pump/silence-timeout/TTS gate 语义） |
 | R1-5 | 控制 channel | voice channel（IoC 拿 VoiceController）+ mode/config 子 channel |
 | R1-6 | 事件 adapter | 协议层注册 EventHandler → 队列 → 有序广播（SpeechTopic + AudioSignal 首包 complete=False / 尾包 complete=True 同 utterance_id） |
-| R1-7 | node 薄壳 | `nodes/sensors/voice/` NODE.md + provide channel + GUI 入口（--mode headless/webview） |
+| R1-7 | node 薄壳 | `nodes/sensors/listener/` NODE.md + provide channel + GUI 入口（--mode headless/webview） |
 | R1-8 | 验证 | `moss nodes run` 拉起 + moss-as-mcp 命令链路 + 真实语音一次 ASR |
 
 **Round 1 不做**：#2 human 移交、#6 音频存储、#7 manual gate、#8 自动重写、webview GUI。gate 默认 auto（passthrough）。
@@ -605,20 +605,20 @@ core 不感知 matrix。协议层（或 node adapter）注册 EventHandler → �
 
 | Step | 内容 | 状态 |
 |------|------|------|
-| 1 | 四层状态机合约 — contracts/voice.py + AudioSignal 扩展 | in-progress (R1) |
-| 2 | L2 流层状态机 — idle→armed→capturing→finalizing→staged 核心循环 | in-progress (R1) |
+| 1 | 四层状态机合约 — contracts.py + AudioSignal 扩展 | completed (R1) |
+| 2 | L2 流层状态机 — idle→armed→capturing→finalizing→staged 核心循环 | completed (R1) |
 | 3 | 模式实现 — PTT / enter / turn-taking / duplex 四种触发策略 | pending |
 | 4 | commit 推回流层 — ASR is_final 与模式 commit 信号解耦 | pending |
 | 5 | L4 ASR Nucleus 重构 — barge_in / attention 双 flag + 打断粒度 | pending |
 | 6 | Preemptable 集成 — TTS channel 实现 Preemptable.attenuate/resume | pending |
 | 7 | 门控接口 + 三种零智能实现 (passthrough / VAD / duration) | pending |
 | 8 | 快捷指令 — 白名单匹配 + fatal_command 反射 + 安全约束 | pending |
-| 9 | 说/听联动 — 半双工 TTS gate (AudioRuntimeTopic 读取) | pending |
-| 10 | VoiceNodeRuntimeTopic — 四层状态快照 Topic | in-progress (R1) |
-| 11 | 控制 channel — voice/mode/gate/config 子 channel 树 | in-progress (R1) |
+| 9 | 说/听联动 — 半双工 TTS gate (AudioRuntimeTopic 读取) | completed (R1) |
+| 10 | VoiceNodeRuntimeTopic — 四层状态快照 Topic | completed (R1) |
+| 11 | 控制 channel — voice/mode/config 子 channel 树 | completed (R1) |
 | 12 | 可视化 — TUI 状态条 (最小形态) + qt_screen window (正式形态) | pending (Round 2+) |
-| 13 | voice node 落地 — nodes/sensors/voice/ NODE.md + main.py | in-progress (R1) |
-| 14 | listener/ptt_listener 旧 app 退役 — 功能被 voice node 覆盖后删除 | pending (voice 三触发模式等价验证后) |
+| 13 | listener node 落地 — nodes/sensors/listener/ NODE.md + main.py | completed (R1) |
+| 14 | listener/ptt_listener 旧 app 退役 — 功能被 listener node 覆盖后删除 | pending (三触发模式等价验证后) |
 
 ### 0.1 不做
 
@@ -661,7 +661,7 @@ core 不感知 matrix。协议层（或 node adapter）注册 EventHandler → �
    可配置的双 flag 模式。
 
 4. **P0 — voice node 落地** (Step 7-13): 门控 + 快捷指令 + 半双工联动 +
-   Topic + channel + 可视化 + NODE.md。聚合所有组件为 nodes/sensors/voice/。
+   Topic + channel + 可视化 + NODE.md。聚合所有组件为 nodes/sensors/listener/。
 
 5. **P1 — 旧 app 退役** (Step 14): listener / ptt_listener 功能被 voice node
    覆盖后删除。需要 voice node 在三种触发模式下都通过功能等价性验证后再执行。
@@ -676,7 +676,29 @@ core 不感知 matrix。协议层（或 node adapter）注册 EventHandler → �
 - **Preemptable 现在是 P0 件**。它是打断粒度机制的前提，已从 audio-capture
   的遗留 P2 升级为此 feature 的 P0。
 
+## 2026-08-06 会话决策
+
+### voice → listener 重命名
+
+voice 是介质名，不是行为名。sensors 下都是行为（camera、listener），保持叙事一致。
+重命名范围：
+- `host/voice/` → `host/listener/`（核心 + capture + volcengine_asr + channel）
+- `nodes/sensors/voice/` → `nodes/sensors/listener/`（薄壳 node）
+- FEATURE.md 所有路径引用
+
+channel 保留在同包（`host/listener/channel.py`），不独立为 `channels/` 包——当前体量不足以支撑独立包。
+
+### 后续执行路径 (6 步)
+
+1. 重命名 + FEATURE.md 修改 ← 本轮
+2. 音频输入/输出依赖统一为 `moss[host]`，关联节点不做独立 venv
+3. 相关能力 provider 进 mode，包括音频输入/输出，作为基线能力
+4. 配套做全套无状态机调试工具：play / 音频采样 / tts / asr，根据 mode 配置项来，CLI 作为 moss 无关的底层调试工具
+5. 做 UI 无关的独立 listen node
+6. 最后做完整的交互模式与可视化
+
 ---
+
 
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*

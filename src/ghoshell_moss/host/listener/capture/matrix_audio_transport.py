@@ -7,7 +7,7 @@ implementation to switch transport (e.g. independent Zenoh session on port 20775
 import logging
 from typing import Callable
 
-from ghoshell_moss.host.voice.capture.audio_transport import AudioTransport
+from ghoshell_moss.host.listener.capture.audio_transport import AudioTransport
 from ghoshell_moss.contracts.workspace import Lock
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.session import Sample, StreamSubscriber

@@ -22,7 +22,7 @@ from ghoshell_moss.contracts.workspace import LocalStorage
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.mindflow.audio_signal import AudioAction, AudioSignal
-from ghoshell_moss.host.voice.contracts import (
+from ghoshell_moss.host.listener.contracts import (
     AsrFinal,
     AsrPartial,
     BufferUpdated,
@@ -33,7 +33,7 @@ from ghoshell_moss.host.voice.contracts import (
     VoiceMode,
     VoiceNodeRuntime,
 )
-from ghoshell_moss.host.voice.controller import VoiceControllerImpl
+from ghoshell_moss.host.listener.controller import VoiceControllerImpl
 
 _TTS_TOPIC_DEVICE = "speaker"
 _NODE_DIR = pathlib.Path(__file__).resolve().parent
@@ -122,7 +122,7 @@ async def _main(matrix: Matrix, config: VoiceConfig, mode: str) -> None:
     ctrl.add_handler(adapter)
 
     # Build the voice channel and provide it
-    from ghoshell_moss.host.voice.channel import VoiceChannel
+    from ghoshell_moss.host.listener.channel import VoiceChannel
 
     # Inject VoiceController into channel's IoC scope
     main_chan = new_channel(name="main", description="voice input node")

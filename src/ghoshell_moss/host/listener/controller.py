@@ -8,8 +8,8 @@ from typing import Callable
 
 import numpy as np
 
-from ghoshell_moss.host.voice.capture import VoiceCapture
-from ghoshell_moss.host.voice.contracts import (
+from ghoshell_moss.host.listener.capture import VoiceCapture
+from ghoshell_moss.host.listener.contracts import (
     Disposer,
     EventHandler,
     VoiceConfig,
@@ -17,8 +17,8 @@ from ghoshell_moss.host.voice.contracts import (
     VoiceMode,
     VoiceNodeRuntime,
 )
-from ghoshell_moss.host.voice.handlers import EventBus
-from ghoshell_moss.host.voice.state import VoiceStateMachine
+from ghoshell_moss.host.listener.handlers import EventBus
+from ghoshell_moss.host.listener.state import VoiceStateMachine
 
 _ASR_SAMPLE_RATE = 16000
 
@@ -95,8 +95,8 @@ class VoiceControllerImpl(VoiceController):
 
     async def _run(self) -> None:
         """Main recognition loop — capture → ASR → state machine → dispatch."""
-        from ghoshell_moss.host.voice._asr_helpers import iter_with_silence_timeout
-        from ghoshell_moss.host.voice.volcengine_asr import VolcengineASR, VolcengineASRConfig
+        from ghoshell_moss.host.listener._asr_helpers import iter_with_silence_timeout
+        from ghoshell_moss.host.listener.volcengine_asr import VolcengineASR, VolcengineASRConfig
 
         asr = VolcengineASR(
             config=VolcengineASRConfig(

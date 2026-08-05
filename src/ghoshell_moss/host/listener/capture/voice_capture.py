@@ -11,7 +11,7 @@ from ghoshell_moss.depends import depend_host
 depend_host()
 import miniaudio
 
-from ghoshell_moss.host.voice.contracts import DeviceConfig
+from ghoshell_moss.host.listener.contracts import DeviceConfig
 
 __all__ = ["VoiceCapture"]
 

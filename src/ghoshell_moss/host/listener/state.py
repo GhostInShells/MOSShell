@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 
-from ghoshell_moss.host.voice.contracts import (
+from ghoshell_moss.host.listener.contracts import (
     AsrFinal,
     AsrPartial,
     BufferUpdated,
@@ -22,7 +22,7 @@ from ghoshell_moss.host.voice.contracts import (
     VoiceMode,
     VoiceNodeRuntime,
 )
-from ghoshell_moss.host.voice.handlers import EventBus
+from ghoshell_moss.host.listener.handlers import EventBus
 
 __all__ = ["VoiceStateMachine"]
 
