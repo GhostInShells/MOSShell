@@ -741,6 +741,7 @@ class ZenohQAManager(QAManager):
     # -- QAManager ABC ---------------------------------------------------
 
     def asker(self, namespace: str) -> Asker:
+        namespace = namespace or "default"
         if namespace in self._askers:
             return self._askers[namespace]
         asker = ZenohAsker(
@@ -758,6 +759,7 @@ class ZenohQAManager(QAManager):
         return asker
 
     def watch(self, namespace: str) -> Watcher:
+        namespace = namespace or "default"
         watcher = ZenohWatcher(
             namespace=namespace,
             identifier=self._issuer,

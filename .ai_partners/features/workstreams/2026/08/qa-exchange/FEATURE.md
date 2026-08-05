@@ -1,14 +1,14 @@
 ---
 title: QA Exchange Protocol
-status: in-progress
+status: completed
 priority: P1
 created: 2026-08-03
-updated: 2026-08-05
+updated: 2026-08-06
 depends: []
 milestone:
 description: >-
   广播问答交换协议 — Asker 广播问题 / Watcher 发现并应答 / requester 持真相 / 先到先得裁定。
-  janus (进程内) 和 zenoh (跨进程) 双实现，31+6 条行为测试全过。
+  janus + zenoh 双实现，TUI 非阻塞交互，31+6 条行为测试，system_test 节点实机验证。
 ---
 
 # QA Exchange Protocol
@@ -26,35 +26,43 @@ future-router (completed, P2) 建了进程内 Future 路由基建 (concurrent.fu
 
 QA 的聚合价值：用 namespace 构建不同对话空间，将各种场景的对话需求汇总在同一个界面内。
 
-## Current Status (2026-08-04)
+## Current Status (2026-08-06)
 
 **已完成：**
 - 概念层 ABC: `core/concepts/qa.py` — QA / Asker / Watcher / QAManager
-- janus 进程内实现: `core/qa/janus_qa.py` — JanusQA / JanusAsker / JanusWatcher / JanusQAManager (v0.1)
-- zenoh 跨进程实现: `matrix/qa/zenoh_qa.py` — ZenohQA / ZenohAsker / ZenohWatcher / ZenohQAManager (v0.1)
-- 生命周期: QAManager 为 async context manager，Asker/Watcher 为纯同步工厂，全部 task/subscriber 在 exit 时清理
-- 概念层行为测试: 18 条 (tests/.../concepts/test_qa_concept.py)
-- janus 集成测试: 13 条 (tests/.../qa/test_janus_qa.py)
-- zenoh 集成测试: 6 条 (tests/.../matrix/qa/test_zenoh_qa.py)
-- 测试风格指南: `tests/CLAUDE.md`
-- safemode 审批场景评估: safemode 当前实现已经足够好，不再需要走 QA 体系接线
-- IoC Provider: `matrix/providers/qa_provider.py` — ZenohQAManagerProvider，singleton，合约 QAManager → ZenohQAManager
-- manifests 注册: `.moss/src/MOSS/manifests/providers/__init__.py` — qa_manager_provider
-- default_providers: `zenoh_adapter.py` — ZenohAdapter.default_providers() 自动装配
-- system_test_nodes: `qa_asker` / `qa_watcher` — 跨进程双节点实机验证通过 (2026-08-04)
+- janus 进程内实现: `core/qa/janus_qa.py`
+- zenoh 跨进程实现: `matrix/qa/zenoh_qa.py` + janus queue 线程隔离
+- 生命周期: QAManager async context manager，Asker/Watcher 纯同步工厂
+- 概念层行为测试 18 条 + janus 集成测试 13 条 + zenoh 测试 6 条
+- safemode 审批场景评估 (结论: 当前实现已足够好)
+- IoC Provider + manifests 注册 + default_providers 自动装配
+- system_test_nodes: `qa_asker` / `qa_watcher` / `qa_pusher` — 实机验证
+- `session.qa` 进入 Session ABC — 跨 cell 广播问答总线
+- `Question.markdown` 字段 + `password` kind — 富文本展示 + 密码输入
+- **TUI QA State** (`host/tui_entries/qa_state.py`):
+  - C-q 切换 QA 视图，非模态，SafeMode 仍是唯一模态闸
+  - list/detail 双模式，1-9 数字键直选、N+1 = reject
+  - kind-aware 交互：confirm/choose/apply 一键提交，select 多选，input/password 文本输入 + Tab 补全
+  - content + markdown 并行渲染
+  - bottom toolbar `[N Questions]` 实时计数
+  - 空列表 Enter = pop 回之前 state
+  - QA state 不参与 C-t 循环
+- `namespace or "default"` fallback — zenoh keyexpr 通配符友好
+- `qa_pusher` system_test 节点 — confirm/input/choose/select 四问实机验证通过
 
-**下一步：**
-1. ~~QA 进入 manifests 体系~~ Done
-2. ~~system_test_nodes 双节点交互验证~~ Done
-3. ~~进入 matrix 默认 IoC~~ Done
-4. 评估 shell / channel 级默认 API
-5. **修复 zenoh 回调线程问题**: ZenohWatcher._on_question_sample / ZenohAsker._on_reply_sample 当前在 zenoh I/O 线程执行用户回调和状态变更，需补 janus queue 卸载到 event loop task（janus 实现已有此隔离，zenoh 缺失）
+**未来迭代：**
+- shell / channel 级默认 API
+- TUI 体验直觉优化 (紧凑度、渲染刷新等)
+- Ghost 主动感知 QA namespace 并对问题发言
 
 ## Design Index
 
-- 概念层：`src/ghoshell_moss/core/concepts/qa.py` — QA / Asker / Watcher / QAManager ABC
+- 概念层：`src/ghoshell_moss/core/concepts/qa.py`
 - janus 实现：`src/ghoshell_moss/core/qa/janus_qa.py`
 - zenoh 实现：`src/ghoshell_moss/matrix/qa/zenoh_qa.py`
+- TUI QA State：`src/ghoshell_moss/host/tui_entries/qa_state.py`
+- TUI 基类 QA 集成：`src/ghoshell_moss/host/tui.py` (MossHostTUI)
+- 验证节点：`.moss/system_test_nodes/qa_pusher/`
 - 前身 (已冻结)：`src/ghoshell_moss/tools/future_router.py`
 - 前身 feature：`workstreams/2026/06/future-router/` — completed
 

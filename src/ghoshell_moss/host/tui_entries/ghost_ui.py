@@ -149,6 +149,9 @@ class GhostTUI(MossHostTUI[GhostRuntime]):
     def _get_runtime(self) -> GhostRuntime:
         return self.host.run_ghost(self.host.env.ghost_name)
 
+    def _get_session(self):
+        return self.runtime.moss.session
+
     def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
         self.runtime.moss.matrix.logger.exception("%s: %s", message, exception)
 

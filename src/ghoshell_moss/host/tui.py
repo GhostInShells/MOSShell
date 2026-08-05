@@ -21,8 +21,9 @@ from prompt_toolkit.key_binding import (
 from prompt_toolkit.completion import Completer, DummyCompleter, DynamicCompleter, Completion, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit import patch_stdout
-from ghoshell_moss.core.blueprint.session import OutputItem
+from ghoshell_moss.core.blueprint.session import OutputItem, Session
 from ghoshell_moss.core.blueprint.host import MossHost
+from ghoshell_moss.core.concepts.qa import QA, Watcher
 from ghoshell_moss.core.helpers import ThreadSafeEvent
 import asyncio
 import sys
@@ -509,12 +510,19 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         )
         self._main_console_output = TuiRender("", lambda: True, self._renderable_queue, self.clear_console)
         self._bottom_toolbar_text: str = ""
+        self._qa_bottom_text: str = ""  # persistent QA count, separate from urgent notifications
         self._dummy_completer = DummyCompleter()
         self._switching_state: bool = False
         self._last_switch_at: float = 0.0
         self._switch_min_interval: float = 0.25  # 250ms debounce
         self._last_ctrl_c_at: float = 0.0
         self._ctrl_c_exit_debounce: float = 1.5  # 1.5s window: first c-c hints, second exits
+
+        # QA protocol — non-blocking notification center
+        self._qa_registry: dict[str, QA] = {}  # qid → QA (shared with QAState)
+        self._previous_state_name: str = ""  # for C-q toggle back
+        self._qa_watcher_started: bool = False
+        self._qa_watcher: Watcher | None = None
 
     def clear_console(self) -> None:
         """clear rich console"""
@@ -544,6 +552,11 @@ class MossHostTUI(Generic[RUNTIME], ABC):
     @abstractmethod
     def _get_runtime(self) -> RUNTIME:
         """从 host 上拿到 runtime 对象. """
+        pass
+
+    @abstractmethod
+    def _get_session(self) -> Session | None:
+        """返回当前 runtime 的 session, 用于访问 session.qa 等协议."""
         pass
 
     @abstractmethod
@@ -753,6 +766,11 @@ class MossHostTUI(Generic[RUNTIME], ABC):
             if self._event_loop:
                 self._event_loop.call_soon_threadsafe(self._toggle_state)
 
+        @kb.add('c-q')
+        def toggle_qa_state(event) -> None:
+            if self._event_loop:
+                self._event_loop.call_soon_threadsafe(self._toggle_qa_state)
+
         @kb.add('escape')
         def interrupt(event) -> None:
             # notify interruption
@@ -788,7 +806,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         """
         def _build() -> str:
             parts: list[str] = []
-            names = list(self._states.keys())
+            names = [n for n in self._states if n != self.QA_STATE_NAME]
             if len(names) > 1:
                 current = self._current_state_name
                 state_parts = []
@@ -798,6 +816,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 parts.append("  C-t  ".join(state_parts))
             if self._bottom_toolbar_text:
                 parts.append(self._bottom_toolbar_text)
+            if self._qa_bottom_text:
+                parts.append(self._qa_bottom_text)
             return "  ▏ ".join(parts) if parts else ""
         return _build
 
@@ -876,6 +896,66 @@ class MossHostTUI(Generic[RUNTIME], ABC):
         next_idx = (current_idx + 1) % len(names)
         self._switch_state(names[next_idx])
 
+    QA_STATE_NAME = "qa"
+
+    def _toggle_qa_state(self) -> None:
+        """C-q: toggle QA state. If in QA, go back to previous. If not, enter QA."""
+        if self.QA_STATE_NAME not in self._states:
+            return
+        if self._current_state_name == self.QA_STATE_NAME:
+            target = self._previous_state_name or list(self._states.keys())[0]
+            if target == self.QA_STATE_NAME:
+                return
+            self._switch_state(target)
+        else:
+            self._previous_state_name = self._current_state_name
+            self._switch_state(self.QA_STATE_NAME)
+
+    def _start_qa_watcher(self) -> None:
+        """Start watching QA questions on the public namespace.
+
+        Schedules a watcher on the event loop.  New questions update
+        _qa_registry, refresh the bottom toolbar, and push a render
+        update into the QA state (if active).
+        """
+        if self._qa_watcher_started:
+            return
+        session = self._get_session()
+        if session is None or session.qa is None:
+            return
+        self._qa_watcher_started = True
+        watcher = session.qa.watch("")
+        self._qa_watcher = watcher
+
+        def _on_question(qa: QA) -> None:
+            qid = qa.question.meta.id if qa.question.meta else ""
+            self._qa_registry[qid] = qa
+            self._update_qa_bottom_text()
+            qa.on_answer(lambda _a: self._on_qa_resolved(qid))
+            qa.on_cancel(lambda _q: self._on_qa_resolved(qid))
+            # if QA state is active, trigger refresh
+            qa_state = self._states.get(self.QA_STATE_NAME)
+            if qa_state is not None and self._current_state_name == self.QA_STATE_NAME:
+                qa_state.refresh()
+
+        watcher.on_question(_on_question)
+
+    def _on_qa_resolved(self, qid: str) -> None:
+        """Remove resolved QA from registry and update UI."""
+        self._qa_registry.pop(qid, None)
+        self._update_qa_bottom_text()
+        # trigger refresh in QA state if active
+        qa_state = self._states.get(self.QA_STATE_NAME)
+        if qa_state is not None and self._current_state_name == self.QA_STATE_NAME:
+            qa_state.refresh()
+
+    def _update_qa_bottom_text(self) -> None:
+        """Refresh bottom toolbar QA count."""
+        n = len(self._qa_registry)
+        self._qa_bottom_text = f"[{n} Questions]" if n > 0 else ""
+        if self._prompt_session and self._prompt_session.app:
+            self._prompt_session.app.invalidate()
+
 
     async def _main_loop(self) -> None:
         try:
@@ -885,6 +965,8 @@ class MossHostTUI(Generic[RUNTIME], ABC):
                 await stack.enter_async_context(self.runtime)
                 # welcome after runtime initialized.
                 self.welcome()
+                # 启动 QA watcher — runtime 就绪后开始监听 public 命名空间的问题
+                self._start_qa_watcher()
                 # 启动所有的 state.
                 for state in self._states.values():
                     # 启动所有的状态面板.
@@ -996,6 +1078,18 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
         if self._current_state_name not in self._states:
             raise RuntimeError(f"Default State {self._current_state_name} is not defined")
+        # 注册 QA state (不在 C-t 循环中, 通过 C-q 进入)
+        from ghoshell_moss.host.tui_entries.qa_state import QAState
+        qa_state = QAState(self._qa_registry, on_exit=lambda: self._toggle_qa_state())
+        self._states[qa_state.name()] = qa_state
+        qa_output = TuiRender(
+            qa_state.name(),
+            self._is_alive_func(qa_state.name()),
+            self._renderable_queue,
+            self._drain_render_queue,
+            on_urgent=self.set_bottom_toolbar,
+        )
+        qa_state.with_output(qa_output)
         # 创建 app.
         if sys.platform == 'win32':
             loop = asyncio.new_event_loop()

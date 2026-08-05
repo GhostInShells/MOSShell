@@ -58,6 +58,9 @@ class MossRuntimeTUI(MossHostTUI[MossRuntime]):
     def _get_runtime(self) -> MossRuntime:
         return self.host.run()
 
+    def _get_session(self):
+        return self.runtime.session
+
     def _log_loop_exception(self, message: str, exception: BaseException | None) -> None:
         self.runtime.matrix.logger.exception("%s: %s", message, exception)
 
