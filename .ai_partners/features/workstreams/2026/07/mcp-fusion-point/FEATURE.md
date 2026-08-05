@@ -16,8 +16,9 @@ description: >-
 
 # MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 
-> 状态：draft。本 workstream 不急于落决议——当前位置判断与 RPC 底座的裁决仍
-> 开放，讨论轨迹见 `discuss/`。用 `moss features set-status mcp-fusion-point <status> -m "note"` 更新状态。
+> 状态：draft → 收敛中。RPC 底座裁决与 MCP 位置已收敛，node run as mcp server 机制
+> 敲定，node run mcp client 细节待讨论。讨论轨迹见 `discuss/` + `design/`。
+> 用 `moss features set-status mcp-fusion-point <status> -m "note"` 更新状态。
 
 ## Motivation
 
@@ -55,11 +56,34 @@ description: >-
 
 ## Design Index
 
-- Key design documents: `design/`（暂无）
+- Key design documents:
+  - `design/mcp-node-server.md` — 子任务 1：node run as mcp server（朝外），机制已敲定
+  - `design/mcp-node-client.md` — 子任务 2：node run mcp client（朝内），部分敲定，细节待讨论
 - Key discussion records: `discuss/2026-07-31_mcp_position_and_fusion.md`
 - 前置讨论：`.discuss/2026-07-30_mcp_duplex_convergence_and_memento_branch.md`
 
 ## Key Decisions
 
-<!-- 本 workstream 刻意不在此处堆积决议。三身份（server as cell / client as cell /
-client as channel）与 RPC 底座的判断轨迹记录在 discuss/，待收敛后回填。 -->
+### 1. RPC 底座：原生 matrix.rpc，不是 MCP（2026-08-05 收敛）
+
+cell 间 RPC 用原生 `matrix.rpc`——注册表 + 单一发现 channel + zenoh put/sub +
+JSON-RPC 2.0 + 回调身份 + caller 侧超时，从 zenoh_qa 泛化。MCP 作内部 RPC 协议
+零优势且双向外转损失类型。内部 cell↔cell 与外部边界分开。
+
+### 2. MCP 位置：外部皮，不是脊柱
+
+MCP 在 mesh 边界双向存在：node run as mcp server（朝外）/ node run mcp client
+（朝内）。内部通讯走 matrix.rpc。`moss as mcp`（moss_as_mcp.py）是整运行时降级，
+已做，独立于 node 级。
+
+### 3. node run as mcp server 机制（2026-08-05 敲定）
+
+`moss nodes run` 启动（非 `mcp run`）+ `matrix.run(mcp)` 糖（tools 先注册、run 不
+重新注册）+ stateless streamable-http + `main(port=0)` 约定 + announce 走 nodes
+channel EVENT（非 signal）、endpoint 双写 cell presence。详见
+`design/mcp-node-server.md`。
+
+### 4. node run mcp client 极简（部分敲定）
+
+薄 channel（list/read/exec，不 command 化）+ `moss mcp connect` CLI。mcp_hub 瘦身。
+授权 / 声明发现 / debug 细节待讨论。详见 `design/mcp-node-client.md`。
