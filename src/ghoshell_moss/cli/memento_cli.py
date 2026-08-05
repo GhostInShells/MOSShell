@@ -27,6 +27,7 @@ from ghoshell_moss.cli.utils import (
     print_success,
     print_warning,
 )
+from ghoshell_moss.contracts.workspace import FileLocker
 from ghoshell_moss.memento.abc import (
     BranchRef,
     CommitDetail,
@@ -284,9 +285,13 @@ def branch_commit(
 ):
     owner, name = _parse_owner_name(owner_name)
     r = _resolve_root(root)
-    m, line = _get_line(r, owner, name)
-    view = line.commit(text=message or "", kind=kind, boundary_moment_id=to)
-    echo(view.id)
+    locker = _acquire_owner_lock(r, owner)
+    try:
+        m, line = _get_line(r, owner, name)
+        view = line.commit(text=message or "", kind=kind, boundary_moment_id=to)
+        echo(view.id)
+    finally:
+        locker.release()
 
 
 @branch_app.command("staging", short_help="Show staging (unfrozen moments).")
@@ -506,6 +511,25 @@ def _resolve_memento(root: Optional[Path], owner: str):
     return None
 
 
+def _acquire_owner_lock(root: Path, owner: str) -> FileLocker:
+    """Acquire an exclusive lock on the owner directory in the memento root.
+
+    Uses the same fcntl.flock mechanism as cell.py run-cycle protection
+    (§3 nail 7: owner-level lock, timeout=0 fast-fail).  When the lock is
+    already held by another process the command exits 1 with a diagnostic
+    on stderr — the caller never competes.
+    """
+    lock_path = root / owner / ".lock"
+    locker = FileLocker(lock_path)
+    if not locker.acquire(timeout=0):
+        print_error(
+            f"owner {owner!r} is locked — another process is using this "
+            f"memento (lock file: {lock_path})."
+        )
+        raise typer.Exit(code=1)
+    return locker
+
+
 def _staging_count(memento, line_name: str) -> Optional[int]:
     """Moments currently in a line's staging, or None when unresolvable.
 
@@ -606,7 +630,16 @@ def agent_invoke(
     agent = _build_agent(agent_path, cwd=resolved_cwd)
     resolved_owner = owner or _owner_from_path(agent_py_path)
 
-    memento = _resolve_memento(root, resolved_owner)
+    # Resolve memento root and lock at the owner scope (fast-fail).
+    # Built separately from _resolve_memento so the resolved root is available
+    # for lock construction at the owner-directory level.
+    resolved_root = _resolve_root(root)
+    locker: Optional[FileLocker] = None
+    memento = None
+    if resolved_root.exists():
+        locker = _acquire_owner_lock(resolved_root, resolved_owner)
+        memento = new_filesystem_memento(resolved_root, resolved_owner)
+
     staging_before = _staging_count(memento, branch)
 
     try:
@@ -623,6 +656,9 @@ def agent_invoke(
         )
         print_error(f"invoke failed: {exc}")
         raise typer.Exit(code=1)
+    finally:
+        if locker is not None:
+            locker.release()
 
     if not result.strip():
         logging.getLogger(_LOG_TARGET).error(
