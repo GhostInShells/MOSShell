@@ -165,7 +165,9 @@ def list_cmd(
     )
     console.print(f"\n[dim]Features root: {fd.resolve()}/[/dim]")
     console.print(
-        "[dim]Read the convention: [/dim]"
+        "[dim]Workstreams are one part of [/dim]"
+        "[bold].ai_partners/features[/bold]"
+        "[dim]; read the convention: [/dim]"
         "[bold]moss features specification[/bold]"
     )
 
