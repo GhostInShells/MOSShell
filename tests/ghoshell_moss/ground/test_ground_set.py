@@ -424,3 +424,61 @@ class TestGroundSetForwarding:
                 assert result.changed
 
         run(scenario())
+
+
+# -- template open ----------------------------------------------------------
+
+
+class TestTemplateOpen:
+    def _make_template(self, tmp_path, name="mytmpl"):
+        (tmp_path / ".grounds").mkdir(exist_ok=True)
+        (tmp_path / ".grounds" / f"{name}.md").write_text(
+            "---\n"
+            "pins:\n"
+            "- verb: ls\n"
+            "  label: tree\n"
+            "  arguments: {path: $CWD}\n"
+            "  description: 目录树\n"
+            "---\n"
+            "# My Template\n\n"
+            "body text\n"
+        )
+
+    def test_open_with_template_copies_body_and_pins(self, tmp_path):
+        self._make_template(tmp_path)
+        target = tmp_path / "proj"
+        target.mkdir()
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(target, template="mytmpl")
+                frame = await g.context()
+                assert "body text" in frame
+                assert any(p.label == "tree" for p in g.pins())
+
+        run(scenario())
+
+    def test_open_unknown_template_raises(self, tmp_path):
+        target = tmp_path / "proj"
+        target.mkdir()
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                with pytest.raises(KeyError):
+                    await gs.open(target, template="nope")
+
+        run(scenario())
+
+    def test_template_init_sediments_on_close(self, tmp_path):
+        self._make_template(tmp_path)
+        target = tmp_path / "proj2"
+        target.mkdir()
+
+        async def scenario():
+            async with DefaultGroundSet(workspace_root=tmp_path) as gs:
+                g = await gs.open(target, template="mytmpl")
+                assert g.dirty  # 模板注入的 pins 未落盘 → close 触发 sediment
+                await gs.close(g.label)
+            assert (target / "GROUND.md").is_file()
+
+        run(scenario())

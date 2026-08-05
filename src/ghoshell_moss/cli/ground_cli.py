@@ -153,6 +153,17 @@ def cmd_init(
         raise typer.Exit(code=1)
 
     if template is not None:
+        # 预检模板存在性 — 找不到时报错并列出可用模板, 不静默生成空场
+        workspace = _probe_workspace(root)
+        names = [t.name for t in DefaultGroundSet(workspace_root=workspace).templates()]
+        if template not in names:
+            print_error(f"template '{template}' not found")
+            if names:
+                print_info("available templates: " + ", ".join(names))
+            else:
+                print_info("no templates found (.grounds/ empty or missing)")
+            raise typer.Exit(code=2)
+
         async def _op(gs: GroundSet, ground: Ground) -> None:
             await ground.sediment()
 
@@ -534,10 +545,23 @@ def cmd_validate(
         # optional argument type checks
         if "range" in args and verb == "file":
             rv = args["range"]
-            if not isinstance(rv, str) and not isinstance(rv, int):
+            if isinstance(rv, int):
+                if rv < 1:
+                    errors.append(f"{idx}: range {rv} must be >= 1 (1-indexed)")
+            elif isinstance(rv, str):
+                if not re.match(r"^\d+(-\d+)?$", rv):
+                    errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
+                else:
+                    if "-" in rv:
+                        r_start, r_end = (int(x) for x in rv.split("-", 1))
+                    else:
+                        r_start = r_end = int(rv)
+                    if r_start < 1:
+                        errors.append(f"{idx}: range start {r_start} must be >= 1 (1-indexed)")
+                    elif r_start > r_end:
+                        errors.append(f"{idx}: range start {r_start} > end {r_end}")
+            else:
                 errors.append(f"{idx}: 'range' must be str or int, got {type(rv).__name__}")
-            elif isinstance(rv, str) and not re.match(r"^\d+(-\d+)?$", rv):
-                errors.append(f"{idx}: 'range' '{rv}' does not match pattern N or N-M")
         if "depth" in args and verb == "ls":
             if not isinstance(args["depth"], int):
                 errors.append(f"{idx}: 'depth' must be int, got {type(args['depth']).__name__}")

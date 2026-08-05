@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
-from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe
+from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe, parse_range
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
@@ -268,10 +268,11 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
 
     if pin.arguments.range is not None:
         lines_list = text.splitlines()
-        start, end = _parse_range(pin.arguments.range, len(lines_list))
-        if start > len(lines_list):
-            return "error: range beyond file end"
-        text = "\n".join(lines_list[start - 1 : min(end, len(lines_list))])
+        try:
+            start, end = parse_range(pin.arguments.range, len(lines_list))
+        except ValueError:
+            return "error: invalid range (start beyond file end or descending)"
+        text = "\n".join(lines_list[start - 1 : end])
 
     return _apply_budget(text, pin.arguments.budget)
 
@@ -511,13 +512,6 @@ def _has_glob(raw: str) -> bool:
 
 
 # -- general helpers ------------------------------------------------------
-
-
-def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:
-    if "-" in raw:
-        a, b = raw.split("-", 1)
-        return int(a), int(b)
-    return int(raw), int(raw)
 
 
 def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:

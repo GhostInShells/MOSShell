@@ -27,7 +27,7 @@ from ghoshell_moss.ground.contract import (
     PathOutsideRootError,
 )
 
-__all__ = ["Observation", "PinShadow", "observe", "observe_sync", "GLOB_IGNORE"]
+__all__ = ["Observation", "PinShadow", "observe", "observe_sync", "GLOB_IGNORE", "parse_range"]
 
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
@@ -123,7 +123,10 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
 
     if pin.arguments.range is not None:
         text = target.read_text(encoding="utf-8", errors="replace")
-        start, end = _parse_range(pin.arguments.range, len(text.splitlines()))
+        try:
+            start, end = parse_range(pin.arguments.range, len(text.splitlines()))
+        except ValueError:
+            start, end = 0, 0  # invalid range → 空切片 hash, 确定性可对账
         sliced = "".join(text.splitlines(keepends=True)[start - 1 : end])
         digest = hashlib.sha256(sliced.encode("utf-8")).hexdigest()
         return Observation(
@@ -372,14 +375,22 @@ def _has_glob(raw: str) -> bool:
     return any(c in unescaped for c in "*?[")
 
 
-def _parse_range(raw: str, total_lines: int) -> tuple[int, int]:
-    """'N' or 'N-M' → (start, end) 1-indexed inclusive, clamped to file."""
+def parse_range(raw: str, total_lines: int) -> tuple[int, int]:
+    """'N' or 'N-M' → (start, end) 1-indexed inclusive, clamped to [1, total_lines].
+
+    clamp 后区间为空 (start 越过文件末尾或 descending range) 抛 ValueError —
+    render 与 hash 共用同一实现, 避免两份 _parse_range 行为漂移.
+    """
     if "-" in raw:
         a, b = raw.split("-", 1)
         start, end = int(a), int(b)
     else:
         start = end = int(raw)
-    return (max(1, start), min(end, total_lines))
+    start = max(1, start)
+    end = min(end, total_lines)
+    if start > end:
+        raise ValueError(f"invalid range {raw!r}: empty interval after clamp")
+    return start, end
 
 
 def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:

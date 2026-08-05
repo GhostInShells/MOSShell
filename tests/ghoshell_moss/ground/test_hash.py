@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ghoshell_moss.ground._addr import Anchor
-from ghoshell_moss.ground._hash import Observation, PinShadow, observe, observe_sync
+from ghoshell_moss.ground._hash import Observation, PinShadow, observe, observe_sync, parse_range
 from ghoshell_moss.ground.contract import (
     ExecArguments,
     ExecPin,
@@ -289,3 +289,28 @@ class TestExecPinObservation:
         # macOS 有 /private prefix, 用 resolve 对齐
         assert str(tmp_path.resolve()) in obs.payload
         assert "deep" not in obs.payload.strip().split("\n")[-1]
+
+
+class TestParseRange:
+    """共享 parse_range — clamp 与非法区间 (SPEC §5.1: 1-indexed N-M)."""
+
+    def test_basic_range(self):
+        assert parse_range("2-3", 4) == (2, 3)
+
+    def test_single_line(self):
+        assert parse_range("3", 5) == (3, 3)
+
+    def test_start_zero_clamps_to_one(self):
+        # 1-indexed 下 0 起点是用户错误; clamp 到 1 而非静默空
+        assert parse_range("0-2", 4) == (1, 2)
+
+    def test_end_beyond_file_clamps_to_total(self):
+        assert parse_range("1-999", 4) == (1, 4)
+
+    def test_descending_raises(self):
+        with pytest.raises(ValueError):
+            parse_range("5-3", 4)
+
+    def test_beyond_file_end_raises(self):
+        with pytest.raises(ValueError):
+            parse_range("999", 4)

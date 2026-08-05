@@ -68,15 +68,19 @@ class DefaultGroundSet(GroundSet):
         # doc 路径
         doc_path = Path(doc).resolve() if doc else dir_abs / DEFAULT_L0_FILENAME
 
-        # template: 找到模板, 复制 body + pins
+        # template: 找到模板, 复制 body + pins; 找不到显式报错, 不静默降级
         template_body = ""
         template_pins: list = []
         if template is not None:
             tmpl = self._find_template(template)
-            if tmpl is not None:
-                contents = load_l0(tmpl.path.parent, filename=tmpl.path.name)
-                template_body = contents.body
-                template_pins = contents.pins
+            if tmpl is None:
+                avail = ", ".join(t.name for t in self._templates) or "none"
+                raise KeyError(
+                    f"template {template!r} not found in .grounds/ (available: {avail})"
+                )
+            contents = load_l0(tmpl.path.parent, filename=tmpl.path.name)
+            template_body = contents.body
+            template_pins = contents.pins
 
         # 从 doc (法锚) 加载 convention — doc 缺省 = dir/GROUND.md,
         # doc≠dir 时法来自别处 (场内移动/便携法单元, SPEC §7.1)

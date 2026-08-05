@@ -3,7 +3,7 @@ title: Ground Channel — 认知场的运行时落点
 status: draft
 priority: P1
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-06
 depends: [ghost-ground]
 milestone:
 description: >-
@@ -110,9 +110,11 @@ CLI 侧，模型按需调用。per-file 常驻 = 滥用 context；目录级法�
   ```
 - **唯一 integration 问题（待定）**：channel 怎么知道"现在在哪" —— Ghost 显式 `walk`
   驱动，还是 channel 读 Ghost 当前工作目录。决定 static 何时重绘。
-- **推进前应修的 CLI P1 bug**（2026-08-05 调研发现，与 ghost-ground CLI 层相关）：
-  1. `init --template 不存在` 静默降级成空 GROUND.md，应报错/警告；
-  2. `range: "0-N"`（1-indexed 语法下非法 0 起点）validate 通过但 frame 静默渲染空，
-     `_hash.py` 与 `_render.py` 两份 `_parse_range` 行为不一致；
-  3. `ExecPin`/`ExecArguments` 未在 `ghoshell_moss.ground.__init__` 导出，`from
-     ghoshell_moss.ground import ExecPin` 失败。
+- **CLI P1 bug 已修**（2026-08-06 落地，154 ground 测试通过）：
+  1. `init --template 不存在` 静默降级成空 GROUND.md → 现在 CLI 报错 + 列出可用模板，
+     `open(template=...)` 抛 `KeyError`；
+  2. `range: "0-N"` 静默渲染空 → 统一 `_hash.py`/`_render.py` 两份 `_parse_range` 为共享
+     `parse_range`（clamp 到 `[1, total]`，空区间抛 `ValueError`），validate 拒绝 0 起点与
+     descending，frame 明确报错；
+  3. `ExecPin`/`ExecArguments` 未导出 → 补进 `ghoshell_moss.ground.__init__.__all__`。
+  基线判断：协议 + CLI 层功能完整、可建应用；channel 实现 + MOSS 项目场 dogfood 是应用阶段。

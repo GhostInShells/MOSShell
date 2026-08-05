@@ -3,7 +3,7 @@ title: Ghost Ground — Ghost 的认知场
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-07-23
+updated: 2026-08-06
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -14,9 +14,14 @@ description: >-
   作为 frontmatter 的一部分; frontmatter = 机器域, body = 人/模型叙事域.
   三层落地按预训练迁移量排序: CTML channel (主), bash CLI (`moss ground`),
   module_eval (小概率). CLI 层已完成: spec / init / frame / meta / observe /
-  validate 六命令, contract + concrete 全部落地, 105 测试通过, 两轮 dogfood
-  验收.
+  validate 六命令, contract + concrete 全部落地, 154 测试通过, 两轮 dogfood
+  验收. CTML channel 落点见 ground-channel workstream (薄 channel 设计).
 status_note: >-
+  2026-08-06 deepseek-v4-flash. CLI P1 修复落地: init --template 不存在报错
+  (open 抛 KeyError) / range "0-N" 统一 parse_range (validate 拒绝非法, frame 明确
+  报错) / ExecPin+ExecArguments 导出补齐. 154 测试通过. 基线判断: 协议 + CLI 层可建
+  应用. channel 实现转 ground-channel workstream.
+  --
   2026-07-23 deepseek-v4-pro. K62~K66: 裸目录场删除, .grounds/ 模板发现,
   frontmatter 动词扩展为渐进式披露, per-pin budget/limit/max_depth.
   下一轮: SPEC 重写 + 实现对齐.
