@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
+import uuid
 from typing import Callable
 
 import numpy as np
@@ -95,6 +95,7 @@ class VoiceControllerImpl(VoiceController):
 
     async def _run(self) -> None:
         """Main recognition loop — capture → ASR → state machine → dispatch."""
+        from ghoshell_moss.host.voice._asr_helpers import iter_with_silence_timeout
         from ghoshell_moss.host.voice.volcengine_asr import VolcengineASR, VolcengineASRConfig
 
         asr = VolcengineASR(
@@ -112,16 +113,21 @@ class VoiceControllerImpl(VoiceController):
                     await asyncio.sleep(0.05)
                 self._state.on_arm()
 
-                # One utterance per recognize() call
-                audio_gen = self._audio_generator()
-                async for result in asr.recognize(audio_gen):
-                    if result.text:
-                        self._log.info("ASR %s: %s", "final" if result.is_final else "partial", result.text)
-                    if not result.is_final and result.text:
-                        self._state.on_asr_partial("", result.text)
-                    elif result.is_final:
-                        self._state.on_asr_final("", result.text or "")
+                # Drain stale audio from inter-utterance silence
+                self._drain_queue()
+
+                # New utterance — feed raw PCM to ASR, wrap results with silence timeout
+                utterance_id = uuid.uuid4().hex[:12]
+                audio_gen = self._queue_generator()
+                async for result in iter_with_silence_timeout(asr.recognize(audio_gen), self._log):
+                    if not result.text:
+                        continue
+                    self._log.info("ASR %s: %s", "final" if result.is_final else "partial", result.text)
+                    if result.is_final:
+                        self._state.on_asr_final(utterance_id, result.text)
                         break
+                    else:
+                        self._state.on_asr_partial(utterance_id, result.text)
 
         except asyncio.CancelledError:
             self._log.info("Controller loop cancelled")
@@ -130,13 +136,13 @@ class VoiceControllerImpl(VoiceController):
         finally:
             await asr.close()
 
-    async def _audio_generator(self):
-        """Yield audio chunks from the capture queue as numpy arrays."""
-        from ghoshell_moss.host.voice._asr_helpers import iter_with_silence_timeout
-
-        gen = self._queue_generator()
-        async for chunk in iter_with_silence_timeout(gen, self._log):
-            yield chunk
+    def _drain_queue(self) -> None:
+        """Discard stale audio buffered between utterances."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     async def _queue_generator(self):
         """Yield int16 samples from the capture queue."""
