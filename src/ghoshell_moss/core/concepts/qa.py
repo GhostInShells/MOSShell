@@ -51,12 +51,16 @@ class Question(BaseModel, WithAdditional):
         default=None,
         description="Question meta",
     )
-    kind: Literal['input', 'confirm', 'apply', 'choose', 'select'] = Field(
+    kind: Literal['input', 'confirm', 'apply', 'choose', 'select', 'password'] = Field(
         default='input',
-        description="Question kind",
+        description="Question kind.  password = masked input for sensitive values.",
     )
     content: str = Field(
         description="Question content",
+    )
+    markdown: str | None = Field(
+        default=None,
+        description="Optional rich display in markdown. TUI renders this alongside content.",
     )
     max_selection: int = Field(
         default=0,
@@ -281,7 +285,7 @@ class Asker(ABC):
         """broadcast a completed question (with meta) to anyone watching the namespace"""
         ...
 
-    def ask(self, question: str, suggestions: list[str] | None = None) -> QA:
+    def ask(self, question: str, suggestions: list[str] | None = None, *, markdown: str | None = None) -> QA:
         """ask a question with suggestions, expect raw content as answer"""
         suggestions = suggestions or []
         options = {}
@@ -296,6 +300,7 @@ class Asker(ABC):
             default_choices=[],
             max_selection=0,
             min_selection=0,
+            markdown=markdown,
         )
         return self.issue(q)
 
@@ -304,6 +309,8 @@ class Asker(ABC):
             question: str,
             options: dict[str, str],
             default: str | None = None,
+            *,
+            markdown: str | None = None,
     ) -> QA:
         """
         ask choose from
@@ -320,10 +327,11 @@ class Asker(ABC):
             min_selection=1,
             default_choices=[default] if default else [],
             kind='choose',
+            markdown=markdown,
         )
         return self.issue(q)
 
-    def ask_confirm(self, content: str, yes: str, no: str, default: bool = True) -> QA:
+    def ask_confirm(self, content: str, yes: str, no: str, default: bool = True, *, markdown: str | None = None) -> QA:
         question = Question(
             content=content,
             options={
@@ -333,6 +341,7 @@ class Asker(ABC):
             max_selection=1,
             default_choices=['yes' if default else 'no'],
             kind='confirm',
+            markdown=markdown,
         )
         return self.issue(question)
 
@@ -344,6 +353,7 @@ class Asker(ABC):
             min_select: int = 0,
             max_select: int | None = None,
             default: list[str] | None = None,
+            markdown: str | None = None,
     ) -> QA:
         if len(options) < 1:
             raise ValueError(f"options must contain at least one option")
@@ -357,10 +367,11 @@ class Asker(ABC):
             min_selection=min_select,
             default_choices=default if default else [],
             kind='select',
+            markdown=markdown,
         )
         return self.issue(question)
 
-    def ask_approval(self, content: str) -> QA:
+    def ask_approval(self, content: str, *, markdown: str | None = None) -> QA:
         """request for approval"""
         question = Question(
             content=content,
@@ -368,6 +379,7 @@ class Asker(ABC):
             min_selection=0,
             options=dict(),
             kind='apply',
+            markdown=markdown,
         )
         return self.issue(question)
 
