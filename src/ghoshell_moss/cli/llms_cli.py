@@ -13,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-from ghoshell_moss.contracts.llms import LLMConfig, ResolvedModel
+from ghoshell_moss.contracts.llms import LLMConfig, ResolvedModel, ModelRef
 
 from .utils import (
     print_simple_table,
@@ -79,15 +79,15 @@ def list_models_cmd(
 
     rows = []
     for resolved in models:
-        m = resolved.model
+        ref = ModelRef.from_resolved(resolved)
         rows.append([
-            resolved.service.name,
-            resolved.client_protocol,
-            m.model,
-            m.description or "-",
-            ",".join(sorted(m.tags)) or "-",
-            ",".join(m.content_types) or "*",
-            str(m.max_output_tokens),
+            ref.service,
+            ref.protocol,
+            ref.model,
+            ref.description or "-",
+            ",".join(sorted(ref.tags)) or "-",
+            ",".join(ref.content_types) or "*",
+            str(ref.max_output_tokens),
         ])
     print_simple_table(
         rows,

@@ -1,12 +1,14 @@
 """LLM provider contract — model configuration, client protocols, and provider resolution."""
 
-from typing import Literal, Iterable
+from typing import Literal, Iterable, Type, Callable, Generic, TypeVar, Any
 from abc import ABC, abstractmethod
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, AwareDatetime
 from .configs import ConfigType
 from ghoshell_moss.message import Message, Content
 from ghoshell_common.helpers import import_from_path
 from ghoshell_container import IoCContainer
+from pathlib import Path
 
 __all__ = [
     "ClientProtocol",
@@ -359,3 +361,294 @@ class LLMConfig(ConfigType):
             service=self.default.service,
             model=self.default.default,
         )
+
+
+class ModelRef(BaseModel):
+    """模型引用的无密钥同构 — 从 ResolvedModel 挑出不泄密字段投影.
+
+    ``ResolvedModel`` 携带 api_key / base_url, 不可直接落盘或跨进程传递。
+    ``ModelRef`` 排除这两类, 保留其余字段与 ResolvedModel 同构, 可完整描述
+    一个模型引用, 作为通用载体:
+    - ``moss llms list`` 展示模型时的结构化标识
+    - benchmark 结果溯源 (``BenchmarkRun.model``)
+
+    运行时经 ``LLMConfig.get_model()`` 反查为 ``ResolvedModel`` 再调用,
+    密钥只在内存中复活。
+    """
+
+    service: str = Field(
+        description="service.name — 对应 LLMConfig provider 的 service.name",
+    )
+    protocol: str = Field(
+        description="service.protocol — anthropic / openai",
+    )
+    model: str = Field(
+        description="model.model — 已 resolve 的真实模型名",
+    )
+    description: str = Field(
+        default="",
+        description="model.description — 人类可读描述",
+    )
+    tags: dict[str, str] = Field(
+        default_factory=dict,
+        description="model.tags — 模型标签映射 (tag -> 实际模型名)",
+    )
+    context_window: int = Field(
+        default=200000,
+        description="model.context_window — 上下文窗口 (tokens)",
+    )
+    max_output_tokens: int = Field(
+        default=4096,
+        description="model.max_output_tokens — 最大输出 tokens",
+    )
+    content_types: list[str] = Field(
+        default_factory=list,
+        description="model.content_types — 原生支持的 content type 列表",
+    )
+
+    @classmethod
+    def from_resolved(cls, resolved: ResolvedModel) -> 'ModelRef':
+        """从解析结果构造 — 丢弃 service 的 api_key / base_url, 其余同构."""
+        service = resolved.service
+        model = resolved.model
+        return cls(
+            service=service.name,
+            protocol=service.protocol,
+            model=model.model,
+            description=model.description,
+            tags=dict(model.tags),
+            context_window=model.context_window,
+            max_output_tokens=model.max_output_tokens,
+            content_types=list(model.content_types),
+        )
+
+    def resolve(self, conf: LLMConfig, *, no_fallback: bool = False) -> ResolvedModel:
+        """从配置中心反查为可调用的 ResolvedModel (密钥复活, 仅内存)."""
+        return conf.get_model(
+            provider=self.service,
+            model=self.model,
+            no_fallback=no_fallback,
+        )
+
+
+RESULT_MODEL = TypeVar('RESULT_MODEL', bound=BaseModel)
+
+
+class LLMFuncResultRecord(BaseModel):
+    """Model func 单次调用的弱数据结果 — 持久化与 benchmark 汇总的最小形态.
+
+    由 ``LLMFuncResult.to_record()`` 产出。result 是结构化输出的 dict 表示
+    (已展平), 入库 / 写 jsonl 不依赖具体 result_type。反向 (record → 强类型)
+    意义不大 — 结构化只在内存中存活。
+    """
+
+    result: dict[str, Any] | None = Field(
+        default=None,
+        description="结构化输出的 dict 表示; 调用未指定 result_type 或解析失败时为 None",
+    )
+    content: str = Field(
+        default="",
+        description="模型原始文本输出; 结构化模式下模型可能仅在 tool call 中返回, 此字段可为空",
+    )
+    usage: dict[str, Any] = Field(
+        default_factory=dict,
+        description="token 开销 (标准 Usage 的 dict 表示)",
+    )
+    cast: float = Field(
+        default=0.0,
+        description="单次调用耗时 (秒)",
+    )
+    retries: int = Field(
+        default=0,
+        description="本轮调用内部的模型重试次数",
+    )
+
+
+class LLMFuncResult(BaseModel, Generic[RESULT_MODEL]):
+    """Model func 单次调用的强类型结果.
+
+    ``result`` 是 ``result_type`` 的实例 (RESULT_MODEL); 调用未指定结果类型时为
+    None, 此时 ``content`` 承载全部输出。需要持久化时 ``to_record()`` 转为弱数据。
+    """
+
+    result: RESULT_MODEL | None = Field(
+        default=None,
+        description="结构化输出 (result_type 实例); 无 result_type 时为 None",
+    )
+    content: str = Field(
+        default="",
+        description="模型原始文本输出",
+    )
+    usage: dict[str, Any] = Field(
+        default_factory=dict,
+        description="token 开销",
+    )
+    cast: float = Field(
+        default=0.0,
+        description="单次调用耗时 (秒)",
+    )
+    retries: int = Field(
+        default=0,
+        description="本轮调用内部的模型重试次数",
+    )
+
+    def to_record(self) -> LLMFuncResultRecord:
+        """转为弱数据 record, 用于持久化。result 展平为 dict。"""
+        result_dict = self.result.model_dump() if self.result is not None else None
+        return LLMFuncResultRecord(
+            result=result_dict,
+            content=self.content,
+            usage=self.usage,
+            cast=self.cast,
+            retries=self.retries,
+        )
+
+
+class BenchmarkMeta(BaseModel):
+    """benchmark 元信息 — bench.md 的 YAML frontmatter 部分, 模型无关.
+
+    声明 benchmark 在验证什么、产物结构是什么、公共 instruction 与用例文件。
+    模型不在此处 — 由运行时的 ``BenchmarkRun`` 绑定, 因此同一 benchmark 可换模型重跑对比。
+    """
+
+    title: str = Field(description="benchmark 标题")
+    description: str = Field(
+        default="",
+        description="benchmark 说明 (设计动机 / 验证目标)",
+    )
+    version: str = Field(
+        default="v1.0.0",
+        description="benchmark 版本, 用于结果溯源",
+    )
+    created: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="创建时间",
+    )
+    updated: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="更新时间",
+    )
+    # TODO(命名): 此字段是 benchmark 级公共 instruction, 与 case 级 instruction
+    # 重名易混淆, 语义上更接近"benchmark 的说明/背景"。名称待定。
+    instruction: str = Field(
+        default="",
+        description="benchmark 级缺省 instruction; case 未指定 instruction 时使用",
+    )
+    cases_file: str | None = Field(
+        default=None,
+        description="case.jsonl 路径, 相对运行 cwd 解析",
+    )
+
+    @classmethod
+    def read_from_markdown(cls, file: Path) -> 'BenchmarkMeta':
+        """从 bench.md 读取: YAML frontmatter 解析为 meta, markdown 正文作为 description."""
+        raise NotImplementedError('todo')
+
+    def dump_to_markdown(self, file: Path) -> None:
+        """写回 bench.md: 去掉默认值与 None, 序列化 frontmatter + 正文."""
+        raise NotImplementedError('todo')
+
+
+class BenchmarkCase(BaseModel):
+    """单个 benchmark 用例.
+
+    ``prompt`` / ``instruction`` 可以是字符串本身, 或是相对运行 cwd 的文件路径
+    (cwd 下同目录文件约定)。``expected`` 是打分参考。
+    """
+
+    label: str = Field(description="用例唯一标识, 结果中以此关联")
+    description: str = Field(
+        default="",
+        description="用例说明",
+    )
+    times: int = Field(
+        default=1,
+        description="本用例重复执行次数",
+    )
+    instruction: str = Field(
+        default="",
+        description="本用例 instruction (字符串或相对 cwd 的文件路径); 空则回退到 meta.instruction",
+    )
+    prompt: str = Field(
+        description="发给模型的 prompt (字符串或相对 cwd 的文件路径)",
+    )
+    expected: str = Field(
+        default="",
+        description="期望输出, 打分标准参考",
+    )
+
+
+class BenchmarkRun(BaseModel):
+    """一次 benchmark 运行的声明 — 某模型跑某 meta.
+
+    绑定 ``ModelRef`` (无密钥), 结果可安全持久化并溯源;
+    同一 meta 换模型重跑即产生多个 run, 用于对比。
+    """
+
+    label: str = Field(description="本次运行标识")
+    description: str = Field(
+        default="",
+        description="运行说明",
+    )
+    meta: BenchmarkMeta = Field(
+        description="benchmark 定义 (不含模型)",
+    )
+    model: ModelRef = Field(
+        description="本次运行绑定的模型 (无密钥引用)",
+    )
+
+
+class BenchmarkRecord(BaseModel):
+    """benchmark 完整结果产物 — 一次运行 + 逐 case 结果.
+
+    持久化为 jsonl: 首行 run (含 meta 与 model), 后续每行一个弱数据结果。
+    """
+
+    run: BenchmarkRun = Field(
+        description="运行声明 (meta + 模型)",
+    )
+    results: list[LLMFuncResultRecord] = Field(
+        default_factory=list,
+        description="逐 case 结果, 弱数据形态",
+    )
+
+    @classmethod
+    def read_from_jsonl(cls, file: Path) -> 'BenchmarkRecord':
+        """从结果 jsonl 读回 BenchmarkRecord."""
+        raise NotImplementedError('todo')
+
+
+class LLMFuncs(ABC):
+    """model func 引擎契约 — 模型调用的最小协议.
+
+    输入字符串 (instruction + prompt), 输出结构化 BaseModel, 单轮无状态。
+    引擎无关: pydantic-ai 是首个实现, 底层 API / 未来消息引擎可替换。
+    """
+
+    @abstractmethod
+    async def call(
+            self,
+            *,
+            instruction: str,
+            prompt: str,
+            result_type: Type[RESULT_MODEL],
+            model: ResolvedModel,
+    ) -> LLMFuncResult[RESULT_MODEL]:
+        """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
+
+        ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
+        """
+
+    @abstractmethod
+    async def run_benchmark(
+            self,
+            meta: BenchmarkMeta,
+            *,
+            cwd: Path | None = None,
+            output_file: Path | None = None,
+    ) -> BenchmarkRecord:
+        """运行一个 benchmark: 从 ``meta.cases_file`` (相对 cwd) 读用例, 逐条 call, 汇总.
+
+        ``cwd`` 默认当前进程工作目录 — case 的 prompt/instruction 文件路径相对它解析。
+        ``output_file`` 给定则结果写为 jsonl。
+        """
