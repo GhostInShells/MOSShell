@@ -3,7 +3,7 @@ title: Node Lifecycle — 身份、入口、验证与记忆
 status: in-progress
 priority: P1
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-06
 depends: []
 milestone: 0.1.0
 description: >-
@@ -82,3 +82,59 @@ node 启动后空转，失败只在 stderr 和 bounded FIFO 里，不进模型�
   动静分离的 discipline 继承自 `channel-meta-dyn-static`。
 - **与 node-migration 的关系**：本 workstream 的产出（UUID、probe 声明字段、open/read 语义）
   在迁移结束后直接用于所有 node；迁移本身的"git mv + NODE.md 转换"不依赖这些。
+
+## 调研增补 (2026-08-06)
+
+> 人类架构师 + ds-v4-pro。围绕"记账+入网是否值得砍、Script 要不要回归、启动性能"
+> 做了实证测量与机制溯源。结论收敛为: 启动成本不在入网机制, 矩阵核心不用改;
+> 真正要盯的是 mesh accept 的 provider 上线感知不被淹没。
+
+### 启动成本实测
+
+| 路径 | 平均 | 组成 |
+|---|---|---|
+| `moss nodes run` (CLI spawn + 记账+入网) | ~2764ms | CLI 自身 ~1.4s + node 侧 ~1.35s |
+| `python main.py` 直接 (记账+入网) | ~1353ms | |
+| 纯 python 基线 | ~11ms | |
+| 纯 `zenoh.open` 隔离 | ~505ms | Session 协议地板 |
+
+1.35s 分解: `import ghoshell_moss` ≈ 0.84s + `zenoh.open` ≈ 0.5s + 入网机制 ≈ 15ms
+(hub+liveness+announce+ledger 全部 ~5-15ms)。
+
+### 决策 5: 不砍 zenoh
+
+- matrix ≈ zenoh, Session 绑 zenoh。不用 zenoh 就不该用 matrix。0.5s 是 Session 协议的
+  地板, 不优化。
+- 非懒加载的 O(N) 观察 (hub liveness listener, 经 adapter 强制起, 共享给 presence/mesh)
+  实测 ~5ms; 记账 (ledger 写) ~0ms。都不是成本。
+
+### 决策 6: 修 `images.py` 的模块级 anthropic import
+
+`import ghoshell_moss` 0.84s 的大头不是包导出面, 而是传递依赖链:
+`core.concepts.command → message → message.contents.images` 里 `try: from anthropic.types import Base64ImageSourceParam`。
+`import anthropic.types` 单独 = 0.69s。修掉后 `import ghoshell_moss` 应降到几十 ms。
+
+- `Base64ImageSourceParam` 是 dict 的 TypedDict 子类, 调用返回普通 dict, 与 `dict`
+  运行时逐字节等价。替换为 `Base64ImageSourceParam = dict` 或 `total=False` 本地 TypedDict 即可。
+- BaseModel 每实例 `__init__` 成本不变 (schema 类定义时一次性构建, 与注解 import 来源无关)。
+- 注意: 当前行为因环境不一致 — anthropic 装了严格校验 source 三 key, 没装则宽松。
+  代码用法是宽松的 (`source.get("media_type")`), 统一为宽松 (total=False / dict)。
+- 次要清扫 (不在普遍热路径): `ghosts/atom/_meta.py`、`agents/memento_pydantic_agent/factory.py`
+  的模块级 anthropic import。
+
+### 决策 7: Script 不回归, 事件分级原语已存在
+
+- 记账与入网是两个正交轴 (§UU 文件真相 vs 网络真相)。channel accept 需要入网
+  (presence + mesh 观察者), 不入网不触发 accept, 成立。
+- "publish event 被淹没"来源是 mesh 事件订阅, 已惰性 (opt-in by usage)。
+  worker 只入网+provide channel 不调 `network()` 就不会被淹没。
+- 拉取日志原语已存在: `mesh.recent_events(limit)` / `mesh.cell_events(address, limit)`,
+  `CellEvent.refetch` 二元。事件级别/两事件面可选, 非必需。
+- Script 不回归。若未来要避免短命进程的网格 churn 再议, 但启动成本不是理由。
+
+### 决策 8: 真正要盯的是 mesh accept 的 provider 上线感知
+
+- `channels/matrix_channel.py` 的 mesh channel: `accept`/`reject`/`set_auto_accept`/`events`。
+- accept 治理的是**通用资源信任**, 不只 channel (`mesh.accept(address)` 建 proxy)。
+- 待验证: 当 cell provider 上线 (liveness PUT + presence announce + CellEvent "channel added"),
+  mesh 侧 accept 感知链路不重不丢、不被淹没。

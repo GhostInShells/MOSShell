@@ -2,17 +2,23 @@ import base64
 import io
 import mimetypes
 import pathlib
-from typing import Optional
+from typing import Optional, TypedDict
 
 from PIL import Image
 from typing_extensions import Self
 from ghoshell_moss.message.contents.abcd import ContentModel
-try:
-    from anthropic.types import Base64ImageSourceParam
-except ImportError:
-    Base64ImageSourceParam = dict
 
 __all__ = ["Base64Image"]
+
+
+class Base64ImageSourceParam(TypedDict, total=False):
+    """
+    Anthropic Base64ImageSourceParam 协议的本地拷贝.
+    不 import anthropic — 那会拖进整个 SDK (启动 +0.69s). 运行时行为与 dict 等价.
+    """
+    type: str
+    media_type: str
+    data: str
 
 
 class Base64Image(ContentModel):

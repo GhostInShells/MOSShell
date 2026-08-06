@@ -7,6 +7,7 @@
   installed — commands with no dependency are not shown.
 """
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -151,13 +152,25 @@ def _call(
     return agent.run_sync(prompt).output
 
 
+_GHOST_EXTRA_AVAILABLE: bool | None = None
+
+
+def _ghost_extra_available() -> bool:
+    """[ghost] extra 是否安装 — find_spec 轻量检查, 不 import (避免拖进 pydantic-ai + anthropic 全套).
+
+    进程内缓存 (模块私有 flag), 重入无副作用, 只查一次.
+    """
+    global _GHOST_EXTRA_AVAILABLE
+    if _GHOST_EXTRA_AVAILABLE is None:
+        _GHOST_EXTRA_AVAILABLE = (
+            importlib.util.find_spec("pydantic_ai") is not None
+            and importlib.util.find_spec("anthropic") is not None
+        )
+    return _GHOST_EXTRA_AVAILABLE
+
+
 # ── call / test — require the `ghost` extra (pydantic-ai). No dependency → hidden. ──
-try:
-    from ghoshell_moss.depends import depend_ghost
-    depend_ghost()
-except ImportError:
-    pass
-else:
+if _ghost_extra_available():
 
     @llms_app.command(
         name="call",
