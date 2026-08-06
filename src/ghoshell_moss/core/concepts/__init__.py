@@ -40,4 +40,16 @@ from .shell import (
     InterpreterKind,
     MOSShell,
 )
+from .shell_context import (
+    ContextSnapshot,
+    InterpreterStatus,
+    InterpreterStopped,
+    ShellContext,
+    ShellEvent,
+    TaskDone,
+    Tracer,
+    WarmDelta,
+    WarmUnit,
+    project_events,
+)
 from .topic import *

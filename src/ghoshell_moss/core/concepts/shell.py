@@ -3,7 +3,7 @@
 """
 
 import asyncio
-from typing import Callable, Protocol
+from typing import Callable
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Literal, Optional, AsyncIterable, Generic, TypeVar, Any
@@ -11,6 +11,7 @@ from ghoshell_container import IoCContainer
 from ghoshell_moss.core.concepts.channel import Channel, ChannelFullPath, ChannelMeta, ChannelRuntime
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken
 from ghoshell_moss.core.concepts.interpreter import Interpreter, Interpretation
+from ghoshell_moss.core.concepts.shell_context import Tracer
 from ghoshell_moss.core.concepts.topic import TopicService
 from ghoshell_moss.message import Message
 
@@ -472,38 +473,3 @@ class MOSShell(Generic[MAIN_CHANNEL], ABC):
         ...
 
 
-class Tracer(Protocol):
-    """对 shell 运行时的观察模块. shell 关键生命周期节点回调它.
-
-    fire and forget: shell 遍历 tracers 时, is_closed() 或 not is_running() 都会跳过,
-    异常会被 shell 捕获并记 log, 不影响主流程.
-
-    实现要点:
-    - 所有 on_xxx 方法必须线程安全 (可能被 shell 线程 / channel 线程调用).
-    - 方法体保持轻量, 不阻塞 shell 主流程.
-    - is_closed()=True 是终态, 表示 tracer 已终结; shell 不再 fire.
-    """
-
-    def is_running(self) -> bool:
-        """是否处于活跃接收状态. False 时 shell 跳过本次 fire (可用于暂停)."""
-        ...
-
-    def is_closed(self) -> bool:
-        """是否已关闭. True 时 shell 永久跳过, 未来可能被 GC."""
-        ...
-
-    def on_task_pushed(self, task: CommandTask) -> None:
-        """一个 command task 被 push 到 shell 时回调."""
-        ...
-
-    def on_task_done(self, task: CommandTask) -> None:
-        """一个 command task 完成时回调 (成功 / 失败 / 取消 都算 done)."""
-        ...
-
-    def on_interpreter_stopped(self, interpreter: Interpreter) -> None:
-        """一个 interpreter close 完成时回调.
-
-        可从 ``interpreter.exception()`` 拿到编译期异常 (INTERPRET_ERROR),
-        从 ``interpreter.interpretation()`` 拿到最终 Interpretation 快照.
-        """
-        ...
