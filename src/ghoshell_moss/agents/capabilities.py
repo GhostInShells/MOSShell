@@ -211,9 +211,12 @@ def _real_file_view(cwd: Path):
 
 
 def _real_file_list(cwd: Path):
-    """Factory for file_list — directory listing with sizes and types."""
+    """Factory for file_list — resolves + enforces cwd boundary here, delegates
+    the listing itself to the FileEditor contract (single implementation)."""
 
     def _list(path: str = ".") -> str:
+        from ghoshell_moss.core.file_editor import DefaultFileEditor
+
         target = Path(path)
         if not target.is_absolute():
             target = cwd / target
@@ -222,28 +225,12 @@ def _real_file_list(cwd: Path):
             target.relative_to(cwd)
         except ValueError:
             return f"Error: {path!r} is outside the working directory {cwd}"
-        if not target.exists():
-            return f"Error: {path} does not exist"
-        if not target.is_dir():
-            return f"Error: {path} is not a directory"
-        entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name))
-        if not entries:
-            return f"Directory: {path}\n(empty)"
-        lines: list[str] = [f"Directory: {path}"]
-        for e in entries:
-            kind = "dir" if e.is_dir() else "symlink" if e.is_symlink() else "file"
-            try:
-                size = e.stat().st_size
-            except OSError:
-                size = 0
-            if size < 1024:
-                size_str = f"{size}B"
-            elif size < 1024 * 1024:
-                size_str = f"{size / 1024:.1f}K"
-            else:
-                size_str = f"{size / (1024 * 1024):.1f}M"
-            lines.append(f"  {e.name:<40} {size_str:>8}  {kind}")
-        return "\n".join(lines)
+        editor = DefaultFileEditor(workspace_root=cwd)
+        try:
+            result = editor.file_list(target)
+            return result.output
+        except Exception as e:
+            return f"Error: {e}"
 
     return _list
 

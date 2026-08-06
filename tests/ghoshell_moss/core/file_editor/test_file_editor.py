@@ -452,3 +452,194 @@ class TestMaxFileSize:
         with pytest.raises(FileValidationError) as ei:
             ed.view(p)
         assert "too large" in ei.value.reason.lower()
+
+
+# -- file_list (v2 read-side) ----------------------------------------------
+
+class TestFileList:
+    """即时目录列表 — 无 bash sandbox 的文件发现原语."""
+
+    def _populated(self, tmp_path: Path) -> Path:
+        d = tmp_path / "tree"
+        d.mkdir()
+        (d / "a.py").write_text("x\n")
+        (d / "sub").mkdir()
+        (d / ".dot").write_text("dot\n")
+        return d
+
+    def test_list_directory(self, editor: DefaultFileEditor, tmp_path: Path):
+        d = self._populated(tmp_path)
+        r = editor.file_list(d)
+        assert isinstance(r, FileEditorResult)
+        assert r.prev_exist is True
+        assert "a.py" in r.output
+        assert "sub" in r.output
+        assert ".dot" in r.output  # dotfiles included
+        assert "file" in r.output
+        assert "dir" in r.output
+
+    def test_dirs_sorted_first(self, editor: DefaultFileEditor, tmp_path: Path):
+        d = self._populated(tmp_path)
+        r = editor.file_list(d)
+        # "sub" (dir) appears before "a.py" (file) in the listing
+        assert r.output.index("sub") < r.output.index("a.py")
+
+    def test_empty_directory(self, editor: DefaultFileEditor, tmp_path: Path):
+        r = editor.file_list(tmp_path)
+        assert "(empty)" in r.output
+
+    def test_relative_resolved_against_workspace_root(self, tmp_path: Path):
+        d = self._populated(tmp_path)
+        ed = DefaultFileEditor(workspace_root=d)
+        r = ed.file_list(".")
+        assert "a.py" in r.output
+
+    def test_file_path_rejected(self, editor: DefaultFileEditor, tmp_path: Path):
+        f = tmp_path / "single.txt"
+        f.write_text("hi\n")
+        with pytest.raises(ParameterInvalidError) as ei:
+            editor.file_list(f)
+        assert ei.value.parameter == "path"
+
+    def test_missing_path(self, editor: DefaultFileEditor, tmp_path: Path):
+        with pytest.raises(FileValidationError):
+            editor.file_list(tmp_path / "nope")
+
+
+# -- glob (v2 read-side) ---------------------------------------------------
+
+class TestGlob:
+    """glob 模式文件发现 — pathlib 语义, 支持 ** 递归."""
+
+    def _populated(self, tmp_path: Path) -> Path:
+        d = tmp_path / "tree"
+        (d / "a.py").mkdir(parents=True)
+        (d / "a.py" / "one.py").write_text("x\n")
+        (d / "b.txt").write_text("hi\n")
+        (d / "sub").mkdir()
+        (d / "sub" / "two.py").write_text("y\n")
+        return d
+
+    def test_glob_relative(self, tmp_path: Path):
+        d = self._populated(tmp_path)
+        ed = DefaultFileEditor(workspace_root=d)
+        r = ed.glob("*.txt")
+        assert isinstance(r, FileEditorResult)
+        assert "b.txt" in r.output
+        assert "one.py" not in r.output  # only top-level *.txt
+
+    def test_glob_recursive(self, tmp_path: Path):
+        d = self._populated(tmp_path)
+        ed = DefaultFileEditor(workspace_root=d)
+        r = ed.glob("**/*.py")
+        assert "one.py" in r.output
+        assert "two.py" in r.output
+
+    def test_glob_absolute_pattern(self, editor: DefaultFileEditor, tmp_path: Path):
+        d = self._populated(tmp_path)
+        r = editor.glob(str(d / "**/*.py"))
+        assert "one.py" in r.output
+        assert "two.py" in r.output
+
+    def test_glob_no_match(self, editor: DefaultFileEditor, tmp_path: Path):
+        r = editor.glob(str(tmp_path / "**/*.xyz"))
+        assert "(none)" in r.output
+
+    def test_glob_empty_pattern(self, editor: DefaultFileEditor):
+        with pytest.raises(ParameterMissingError):
+            editor.glob("")
+
+    def test_glob_output_absolute_paths(self, tmp_path: Path):
+        d = self._populated(tmp_path)
+        ed = DefaultFileEditor(workspace_root=d)
+        r = ed.glob("**/*.py")
+        # paths are absolute so results can feed back into view/str_replace
+        for line in r.output.splitlines():
+            if line.startswith("  "):
+                assert Path(line.strip()).is_absolute()
+
+
+# -- grep (v2 read-side) ---------------------------------------------------
+
+class TestGrep:
+    """单文件正则行检索 — 可扩展 kwargs."""
+
+    def _file(self, tmp_path: Path, text: str = "alpha\nbeta one\nbeta two\n") -> Path:
+        p = tmp_path / "greptext.txt"
+        p.write_text(text)
+        return p
+
+    def test_grep_basic(self, editor: DefaultFileEditor, tmp_path: Path):
+        f = self._file(tmp_path)
+        r = editor.grep("beta", f)
+        assert isinstance(r, FileEditorResult)
+        assert r.path == str(f.resolve())
+        assert "2: beta one" in r.output
+        assert "3: beta two" in r.output
+        assert "1: alpha" not in r.output
+
+    def test_grep_case_sensitive_by_default(
+        self, editor: DefaultFileEditor, tmp_path: Path
+    ):
+        f = self._file(tmp_path, text="alpha\nBeta\nbeta\n")
+        r = editor.grep("BETA", f)
+        assert "(no matches)" in r.output  # "BETA" != "Beta"/"beta" under case_sensitive
+
+    def test_grep_case_insensitive(
+        self, editor: DefaultFileEditor, tmp_path: Path
+    ):
+        f = self._file(tmp_path, text="alpha\nBeta\nbeta\n")
+        r = editor.grep("BETA", f, case_sensitive=False)
+        assert "2: Beta" in r.output
+        assert "3: beta" in r.output
+
+    def test_grep_max_results_truncation(
+        self, editor: DefaultFileEditor, tmp_path: Path
+    ):
+        f = self._file(tmp_path, text="".join(f"line {i} has token\n" for i in range(10)))
+        r = editor.grep("token", f, max_results=3)
+        assert "1: line 0 has token" in r.output
+        assert "4: line 3 has token" not in r.output
+        assert "more omitted" in r.output
+
+    def test_grep_unknown_option_rejected(
+        self, editor: DefaultFileEditor, tmp_path: Path
+    ):
+        f = self._file(tmp_path)
+        with pytest.raises(ParameterInvalidError) as ei:
+            editor.grep("beta", f, recursive=True)  # future kwarg, not yet
+        assert ei.value.parameter == "options"
+
+    def test_grep_empty_pattern(self, editor: DefaultFileEditor, tmp_path: Path):
+        f = self._file(tmp_path)
+        with pytest.raises(ParameterMissingError):
+            editor.grep("", f)
+
+    def test_grep_invalid_regex(self, editor: DefaultFileEditor, tmp_path: Path):
+        f = self._file(tmp_path)
+        with pytest.raises(ParameterInvalidError) as ei:
+            editor.grep("(", f)
+        assert ei.value.parameter == "pattern"
+
+    def test_grep_binary_rejected(self, editor: DefaultFileEditor, tmp_path: Path):
+        bp = tmp_path / "bin"
+        bp.write_bytes(b"\x00\x01\x02hello")
+        with pytest.raises(FileValidationError):
+            editor.grep("hello", bp)
+
+    def test_grep_directory_rejected(
+        self, editor: DefaultFileEditor, tmp_path: Path
+    ):
+        with pytest.raises(ParameterInvalidError):
+            editor.grep("x", tmp_path)
+
+    def test_grep_missing_path(self, editor: DefaultFileEditor, tmp_path: Path):
+        with pytest.raises(FileValidationError):
+            editor.grep("x", tmp_path / "no.txt")
+
+    def test_grep_relative_resolved_against_workspace_root(self, tmp_path: Path):
+        f = self._file(tmp_path)
+        ed = DefaultFileEditor(workspace_root=tmp_path)
+        r = ed.grep("beta", "greptext.txt")
+        assert "2: beta one" in r.output
+        assert "3: beta two" in r.output

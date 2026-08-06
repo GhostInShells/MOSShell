@@ -9,11 +9,18 @@ insert / undo_edit — 语义骑 Anthropic text_editor 血统, 契约不做加�
 2. FileEditorResult — 结果 dataclass (path + old_content + new_content + output).
 3. 异常层 — FileEditorError 基类 + 4 个具体错误.
 
+承担的读侧 (v2 追加, 供无 bash 的 sandbox):
+
+- file_list — 即时目录列表 (非递归, name/size/kind).
+- glob — glob 模式文件发现 (pathlib 语义, 支持 ** 递归).
+- grep — 单文件正则行检索, 可扩展 kwargs.
+
 不承担的:
 
-- 目录列表 — 用 bash / glob (预训练先验独立). view(dir) 抛
-  ParameterInvalidError.
+- view(dir) — 目录列表走 file_list, view 仍只收文件路径 (K7 不复活).
 - 二进制文件读写 — 抛 FileValidationError. 未来若要 read binary 独立立项.
+- 有 bash 的场景 — 上述三个动词不是给有 bash 的 channel 用的, 收益在
+  sandbox 无 bash 的场景 (memento agent 等). 契约做加法, 用不用随消费者.
 - 空间边界强制 — workspace_root 只做相对路径 hint (与 Grounds 的 root
   故意分裂: file editor 不假设 Ground 存在).
 - 并发/异步 — sync 接口. 想 async 的 caller 自己 asyncio.to_thread.
@@ -183,6 +190,70 @@ class FileEditor(ABC):
 
         文件过大或二进制抛 FileValidationError. 路径不存在抛
         ParameterInvalidError.
+        """
+        ...
+
+    @abstractmethod
+    def file_list(
+        self,
+        path: str | Path = ".",
+    ) -> FileEditorResult:
+        """列出目录的即时子项 (非递归).
+
+        v2 追加 — 供无 bash 的 sandbox 做目录发现. 有 bash 的 channel 不需要
+        暴露它 (bash/glob 先验更通用); 契约做加法, 用不用随消费者.
+
+        - path: 目录路径. 相对路径按 workspace_root (未设则进程 cwd) 解析,
+          绝对路径原样. 指向文件抛 ParameterInvalidError (读文件用 view),
+          不存在抛 FileValidationError.
+        - 输出: 每行一条 ``name  size  kind``. kind ∈ file/dir/symlink,
+          size 人类可读 (B/K/M), dirs 排序在前, 含 dotfile.
+        - 不做空间边界强制 (K4: 那是上层 / Grounds 的职责).
+        """
+        ...
+
+    @abstractmethod
+    def glob(
+        self,
+        pattern: str,
+    ) -> FileEditorResult:
+        """glob 模式匹配文件发现 (pathlib.glob 语义).
+
+        v2 追加 — 与 file_list 同为无 bash sandbox 的文件发现原语.
+
+        - pattern: ``*.py`` / ``**/*.py`` (递归). 相对 → base = workspace_root
+          (未设则进程 cwd); 绝对模式 (``/x/y/**/*.py``) 接受.
+          **不支持 brace 展开** (``*.{py,txt}``, pathlib 限制) — docstring
+          提示模型用 ``**/*.py`` 风格.
+        - 输出: 匹配的绝对路径, 每行一条, 上限 100 + ``(N more omitted)`` 注.
+        - 空 pattern 抛 ParameterMissingError. 零匹配正常返回空列表消息.
+        """
+        ...
+
+    @abstractmethod
+    def grep(
+        self,
+        pattern: str,
+        path: str | Path,
+        **options: object,
+    ) -> FileEditorResult:
+        """单文件正则行检索.
+
+        v2 追加 — 无 bash sandbox 的内容搜索原语. **可扩展 kwargs**: 签名收
+        ``**options``, 实现定义已识别键, 未来加键不破坏签名. 未知键抛
+        ParameterInvalidError (配置错误要响).
+
+        已识别 (默认):
+        - ``case_sensitive: bool = True`` — False 时忽略大小写.
+        - ``max_results: int = 100`` — 返回匹配行上限, 超出注省略.
+
+        未来候选 (docstring 预留, 不实现): recursive / context / include_binary /
+        regex.
+
+        - pattern: 正则 (re.search 语义). 空抛 ParameterMissingError.
+        - path: 目标文件. 相对/绝对同 file_list. 目录抛 ParameterInvalidError,
+          不存在 / 二进制 / 非 utf-8 抛 FileValidationError.
+        - 输出: ``lineno: line`` 每行一条, 上限 max_results.
         """
         ...
 
