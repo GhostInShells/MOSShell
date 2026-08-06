@@ -1,19 +1,55 @@
 ---
 created: 2026-06-03
 depends: []
-description: typer_channel 包装 moss 自身 CLI 为 Channel，注册为 App，通过 MCP 暴露给 Ghost。 验收：Claude
-  Code 通过 MCP 连接 moss-as-mcp，调用 moss codex get-interface 成功。
+description: 'moss 自举 channel 重构: bundled moss_cli channel (python -m ghoshell_moss.cli + matrix
+  Subprocesses) + 受限 file view 配套 + default mode 降级 wireup。原 typer 反射方案废弃。'
 milestone: null
 priority: P1
-status: completed
-status_note: App implemented at .moss_ws/apps/tools/moss_self and verified via MCP
-title: Moss Self Channel — Typer CLI 反射为 Channel，实现 moss 命令自举
-updated: '2026-06-11'
+status: in-progress
+status_note: '重开 2026-08-06: typer 反射方案废弃(typer_channel.py 删除, 无独立 feature); 新方向 =
+  bundled channel moss_cli (python -m + matrix Subprocesses) + 受限 file view 配套 + default
+  mode 降级 wireup'
+title: Moss Self Channel — 自举 channel: moss_cli (python -m + Subprocesses) + default mode 降级
+updated: '2026-08-06'
 ---
 
 # Moss Self Channel
 
-> 用 typer_channel 把 moss 自己包成 channel → 注册为 App → MCP 暴露 → Ghost 能用 moss 命令开发 moss。
+> 一个 bundled channel `moss_cli`,把 moss 自身 CLI 以"去授权"形态暴露给 ghost:`python -m ghoshell_moss.cli` + matrix Subprocesses。
+> 配套受限 file view channel,构成 default mode 降级后的最小开箱面。
+
+## 当前方向 (2026-08-06 重开)
+
+原 typer 反射方案废弃。apps → nodes 是**计划内升级**(`.moss_ws/apps` 0.1 删除,`moss apps` → `moss nodes`),
+moss_self 本就在 node-migration 第一梯队迁移清单里,原设计讨论时已考虑 nodes。但本轮重定义选择了**不同形态**:
+不做 node,做 bundled channel,服务于 default mode 降级。
+驱动因素:typer_channel 泛化方案质量演进未达预期(维护一个未被清晰理解的方案成本高),且本 feature
+重新定位为开箱模式的去授权 CLI 暴露——开箱模式不含 bash,以"channel 即授权"暴露 CLI。
+
+**新决策**:
+
+1. **channel 名 `moss_cli`**,单命令 `exec(text__)`,极简提示。
+   - **拒绝**"按 import path 反射、把 CLI 子命令逐个注册成 channel command"——反射复杂度回潮,与极简矛盾。
+   - **拒绝** node 形态——它是 bundled channel,定义在 `src/ghoshell_moss/channels/`。
+2. **执行**:`python -m ghoshell_moss.cli --ai <args>`(`cli/__main__.py` → `main_entry`,无 PATH 依赖),
+   经 matrix `Subprocesses`(IoC `CommandUtil.get_contract(Subprocesses)`),**不裸 asyncio subprocess**。
+   已确认 Subprocesses 不传 `cell_address`(`_build_env` = `os.environ.copy()` + extra_env)。
+3. **cwd**:project 根,经 Project 抽象寻址。不用 `MOSS_WORKSPACE` 环境变量推导(环境变量因果未治理)。
+4. **instruction**:嵌入 `src/ghoshell_moss/cli/start.md`——同步安全,无 build-time subprocess。
+   原方案同步函数里跑 `subprocess.run` 有阻塞事件循环风险。备选:first-frame 提示 `exec moss start`。
+5. **`codex eval` 命令级拒绝**(不注册),CLI 代码保留。
+6. **受限 file view 配套 channel**(default mode 用):基于 file_editor 层(file_editor 正在增加
+   `glob`/`list_dir`/`grep`),只读 + project-cwd 授权范围,命令级路径拒绝即足够,不做沙箱。
+7. **default mode 降级 wireup**:stub 模板 + 本地同步,剥离 Speech/AppStore/MCP/terminal/fractal,
+   只剩系统原语 + `moss_cli` + file view。降级后仅需两个 anthropic 配置即可运行。
+
+**访问路径两轨并存**:MCP(`moss-as-mcp` 由外部 agent 触达)是**开发期验证**;bundled channel 挂
+default mode 主树是 ghost 的**运行时使用**。二者不冲突,是不同相位。终局:meta-mode 成熟后
+ghost 自我运行时开发,外部 agent 路径自然退出,问题溶解。
+
+**待定**:命令名(暂定 `exec`);受限 file view 依赖 file_editor 的 list_dir/glob/grep 落地。
+
+**连带治理**:`app-system-cli` FEATURE 标 dropped(apps → nodes)。
 
 ## Motivation
 
@@ -32,6 +68,10 @@ ghost 通过 MCP 调 moss 命令，用 moss 的工具体系开发 moss 自身。
 - MCP 暴露：`moss-as-mcp`
 
 ## Key Decisions
+
+> ⚠️ 以下 1-4 是**原始设计决策**(2026-06-03),已被上方"当前方向"推翻,保留作继承记录。
+> 核心反转:build-time get_group 反射(→ `--ai all-commands` 权威树)、typer_channel 泛化(→ 删除)、
+> 交付形态 App 外置(→ bundled channel)。访问路径不是切换,是两轨并存:MCP 开发期验证 + 进程内运行时使用。
 
 ### 1. 两层架构：build-time 反射 + runtime subprocess
 

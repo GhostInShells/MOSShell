@@ -4,10 +4,11 @@ depends: []
 description: moss apps init 命令 + app_stub 脚手架 + 文档，完成 AI 自迭代闭环的基础设施。
 milestone: null
 priority: P1
-status: completed
-status_note: init/start/stop/list 全链路 MCP 验证通过，核心功能交付
+status: dropped
+status_note: 'apps 体系被 nodes 取代: .moss_ws/apps 0.1 整体删除, moss apps CLI 废弃, 功能收敛到 moss
+  nodes'
 title: App System CLI
-updated: '2026-05-19'
+updated: '2026-08-06'
 ---
 
 # App System CLI
