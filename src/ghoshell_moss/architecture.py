@@ -77,6 +77,14 @@ import ghoshell_moss.core.speech as speech_impl
 import ghoshell_moss.cli as cli
 
 # ============================================================================
+# LLMs — 模型配置与调用引擎 (model func)
+# ghoshell_moss.llms
+# ============================================================================
+
+import ghoshell_moss.llms.client as llms_client
+import ghoshell_moss.llms.funcs as llms_funcs
+
+# ============================================================================
 # Protocol — 系统协议
 # ============================================================================
 
