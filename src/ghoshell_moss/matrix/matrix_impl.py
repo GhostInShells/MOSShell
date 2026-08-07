@@ -657,7 +657,8 @@ class MatrixImpl(Matrix):
         """
         sync 阶段: 注册全部 provider, 返回未 bootstrap 的 container.
 
-        次序: project providers → matrix 实例 set → adapter driver 装配 →
+        次序: project providers (MOSS.manifests) → matrix 实例 set →
+        MATRIX.manifests (环境能力, mode 激活时) → adapter driver 装配 →
         matrix default providers → matrix 契约校验.
         """
         container = self.project.container
@@ -670,6 +671,17 @@ class MatrixImpl(Matrix):
         container.set(MatrixNetworkAdapter, self._adapter)
         container.set(Cell, self._runtime_info.cell)
         container.set(CellAddress, self._runtime_info.cell.address)
+
+        # -- MATRIX.manifests: mode 环境能力 (mode 激活时, 初始全空) -- #
+        if not self._env.no_mode:
+            mode = self._project.current_mode()
+            if mode is not None:
+                mode.bootstrap()
+                matrix_m = mode.matrix_manifests()
+                for p in matrix_m.providers():
+                    if p.is_error():
+                        continue
+                    container.register(p.value())
 
         # -- adapter driver-specific 装配 -- #
         # bind_ioc: 通常注册 lazy provider (如 zenoh.Session), 捕捉 adapter 引用,

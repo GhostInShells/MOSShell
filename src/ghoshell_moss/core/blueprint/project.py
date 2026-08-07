@@ -34,12 +34,14 @@ __all__ = [
     'Project',
     'HOST_MODE_MANIFESTS_PACKAGE',
     'HOST_MODE_FILE',
+    'MODE_MATRIX_MANIFESTS_PACKAGE',
 ]
 
 T = TypeVar('T')
 
 HOST_MODE_MANIFESTS_PACKAGE = 'HOST'
 HOST_MODE_FILE = 'HOST.md'
+MODE_MATRIX_MANIFESTS_PACKAGE = 'MATRIX.manifests'
 
 
 class HostModeMeta(BaseModel):
@@ -470,6 +472,16 @@ class HostMode(ABC):
     def manifests(self) -> HostModeManifests:
         """
         模式自己的资源声明.
+        """
+        ...
+
+    @abstractmethod
+    def matrix_manifests(self) -> ProjectManifest:
+        """
+        mode 级环境能力声明 — MATRIX.manifests.
+
+        扫描 mode 包下的 MATRIX.manifests, 承载跨 cell 共享的环境能力
+        (如音频 provider). 初始全空, mode 按需追加.
         """
         ...
 

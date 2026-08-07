@@ -51,8 +51,9 @@ manifest_app = typer.Typer(
 _Context = tuple[
     Project,          # project
     HostMode | None,  # current mode (None if no_mode)
-    ProjectManifest,   # global (MOSS.manifests)
-    HostModeManifests | None,  # mode effective view (None if no mode)
+    ProjectManifest,   # MOSS.manifests (通讯必需)
+    ProjectManifest,   # MATRIX.manifests (环境能力, None if no_mode)
+    HostModeManifests | None,  # HOST (mode 专属, None if no_mode)
 ]
 
 
@@ -71,15 +72,18 @@ def _get_context() -> _Context:
 
     matrix_mf = ScannedProjectManifest()
 
+    matrix_env_mf = None
     mode_mf = None
     if mode is not None:
         try:
             mode.bootstrap()
+            matrix_env_mf = mode.matrix_manifests()
             mode_mf = mode.manifests()
         except Exception:
+            matrix_env_mf = None
             mode_mf = None
 
-    return project, mode, matrix_mf, mode_mf
+    return project, mode, matrix_mf, matrix_env_mf, mode_mf
 
 
 def _display_context_header(project: Project, mode: HostMode | None) -> None:
@@ -240,7 +244,7 @@ def list_providers(
     ),
 ):
     """List IoC providers discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_raw = list(matrix_mf.providers())
     mode_raw = list(mode_mf.providers()) if mode_mf else []
@@ -358,7 +362,7 @@ def list_configs(
     detail: bool = typer.Option(False, "--detail", "-d", help="Show full schema and defaults."),
 ):
     """List configuration models discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_raw = list(matrix_mf.configs())
     mode_raw = list(mode_mf.configs()) if mode_mf else []
@@ -455,7 +459,7 @@ def list_topics(
     search: str = typer.Argument("", help="Search pattern for topic name or type."),
 ):
     """List event topic schemas discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_raw = list(matrix_mf.topics())
     mode_raw = list(mode_mf.topics()) if mode_mf else []
@@ -533,7 +537,7 @@ def list_signals(
     search: str = typer.Argument("", help="Search pattern for signal name or description."),
 ):
     """List signal schemas discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_raw = list(matrix_mf.signals())
     mode_raw = list(mode_mf.signals()) if mode_mf else []
@@ -590,7 +594,7 @@ def _display_single_manifest_detail(manifest: Manifest, layer: str) -> None:
 @manifest_app.command(name="parameters")
 def show_parameters():
     """Show the parameter schema (single-value, mode-overrides-matrix)."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_param = matrix_mf.parameters()
     echo("")
@@ -641,7 +645,7 @@ def list_resources(
     search: str = typer.Argument("", help="Search pattern for scheme, host, or description."),
 ):
     """List resource storage declarations discovered from manifests."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     matrix_raw = list(matrix_mf.resources())
     mode_raw = list(mode_mf.resources()) if mode_mf else []
@@ -674,7 +678,7 @@ def list_resources(
 @manifest_app.command(name="channel")
 def show_channel():
     """Show the __main__ channel (mode only)."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     if mode is None or mode_mf is None:
         print_error("Channel is mode-scoped. No active mode.")
@@ -733,7 +737,7 @@ def list_nuclei(
     search: str = typer.Argument("", help="Search pattern for nucleus name, description, or signal."),
 ):
     """List nucleus factories (mode only)."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     if mode is None or mode_mf is None:
         print_error("Nuclei are mode-scoped. No active mode.")
@@ -767,7 +771,7 @@ def list_nuclei(
 @manifest_app.command(name="ctml-versions")
 def list_ctml_versions():
     """List CTML versions available in this project."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, _, mode_mf = _get_context()
 
     versions = project.ctml_versions()
     if not versions:
@@ -792,19 +796,28 @@ def list_ctml_versions():
 @manifest_app.command(name="explain")
 def explain_manifests():
     """Self-describe the manifest system — the single source of truth."""
-    project, mode, matrix_mf, mode_mf = _get_context()
+    project, mode, matrix_mf, matrix_env_mf, mode_mf = _get_context()
     _display_context_header(project, mode)
 
     echo("")
     echo(matrix_mf.explain())
 
+    if matrix_env_mf is not None:
+        echo("")
+        echo(matrix_env_mf.explain())
     if mode_mf is not None:
         echo("")
         echo(mode_mf.explain())
+
+    if mode is not None:
         echo("")
+        pkg_list = [matrix_mf.root_package()]
+        if matrix_env_mf is not None:
+            pkg_list.append(matrix_env_mf.root_package())
+        pkg_list.append(mode_mf.root_package())
         print_info(
             f"当前模式 '{mode.name}' 的有效视图 = "
-            f"{matrix_mf.root_package()} (全局) + {mode_mf.root_package()} (模式追加)"
+            f"{' (通讯必需) + '.join(pkg_list[:-1])} (环境能力) + {pkg_list[-1]} (mode 专属)"
         )
     else:
         _display_no_mode_hint()
