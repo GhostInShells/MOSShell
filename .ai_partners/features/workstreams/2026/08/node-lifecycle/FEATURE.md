@@ -3,7 +3,7 @@ title: Node Lifecycle — 身份、入口、验证与记忆
 status: in-progress
 priority: P1
 created: 2026-08-04
-updated: 2026-08-06
+updated: 2026-08-07
 depends: []
 milestone: 0.1.0
 description: >-
@@ -138,3 +138,57 @@ node 启动后空转，失败只在 stderr 和 bounded FIFO 里，不进模型�
 - accept 治理的是**通用资源信任**, 不只 channel (`mesh.accept(address)` 建 proxy)。
 - 待验证: 当 cell provider 上线 (liveness PUT + presence announce + CellEvent "channel added"),
   mesh 侧 accept 感知链路不重不丢、不被淹没。
+
+## 调研增补 (2026-08-07) — 事件分级与 MatrixOperator 方向
+
+> 人类架构师 + ds-v4-pro。task 6 验证了 mesh accept 感知链路, 并和另一会话的
+> MatrixOperator 草稿 (`core/blueprint/matrix_operator.py`) 对撞, 收敛出分级方向。
+
+### 验证结论 (task 6)
+
+- **CellEventNucleus 已注册默认 mode**: `moss manifests nuclei` 确认
+  `cell_event_nucleus` (cell_event signal), 声明在 `.moss/modes/default/src/HOST/nuclei/__init__.py`。
+- **链路**: cell provider 上线 → publish CellEvent → mesh events_wildcard → event_queue
+  (maxsize 10000) → `_event_consumer_loop` (每事件写 buffer + refetch 拉 presence + 建/撤 proxy)
+  → `_fire_on_event` → mesh channel `_dispatch_event` → send_signal → CellEventNucleus
+  → background_notice impulse → ghost articulate 循环。
+- **三个缺口**:
+  a. transition 硬编码 READY (`matrix_channel.py:469`) — CRASHED/EXITED 无法区分。
+  b. CellEventNucleus 单槽覆盖 (`cell_event_nucleus.py:129`) — 一次 articulate 周期
+     多个事件 peek 只见最后。
+  c. mesh 事件队列满丢 (`zenoh_mesh.py:534`) — maxsize 10000, 极端洪峰才丢。
+
+### 决策 9: 事件分级 + MatrixOperator 方向
+
+- **MatrixOperator 草稿** (`core/blueprint/matrix_operator.py`): `CellServerMeta{address, protocol}` /
+  `CellServer` / `CellClient` / `MatrixOperator` (serve/client/get_servers/get_protocols/
+  on_server_start/on_server_stop)。人类架构师另一会话推进, 本会话仅对撞判断。
+- **关键判断**: "提供了某种资源" **不属 transition 枚举** — 是 `protocol` 维度
+  (`CellServerMeta.protocol`), 与 cell 生命周期正交。枚举收敛: 不加 RESOURCE_ADDED。
+- **event 改造成非公开函数, 只暴露 cell 生命周期**。复杂协议 (pub/sub/queryable)
+  不再由 matrix 原生提供, 走 CellServer/CellClient。协议流量不产生 ghost signal。
+- **分级面收敛到生命周期事件**:
+
+  | 事件 | 进历史 | 优先级 | primitive |
+  |---|---|---|---|
+  | `on_server_start(protocol)` (新资源上线) | 是 | NOTICE(1) | notify |
+  | cell CRASH | 是 + 注意 | WARNING(2) | notify |
+  | `on_server_stop(protocol)` (资源下线) | 否 | BACKGROUND(-1) | background_notice |
+  | cell EXITED | 否 | BACKGROUND(-1) | background_notice |
+
+- **cell event 通道优先级上限 WARNING**; 更高需求 (急停/强制) 走 direct signal
+  (interrupt/FATAL 反射弧), 不走 publish event。
+- **拉面** (ghost 主动拉取): `mesh.events` / `cell_events` 加 transition 过滤, 低/高两通道。
+- **与 MatrixOperator 的关系**: 分级那步 (加 transition + priority override) 是
+  MatrixOperator 的先行件, 方向一致不浪费; MatrixOperator 是更大重构 (channel duplex/
+  topic/session 变协议层), 待另一会话定熟语义再动。
+
+### Pending (本会话提出, 未设计)
+
+- **project ioc 拆分**: Matrix 下注册的 MOSS manifests 实为 Project manifests。
+  应为 Project 注册全局 IoC + 自己的 logger, Matrix 只补默认依赖。
+  涉及 `matrix_impl._prepare_container` 装配次序。属 matrix/project 治理, 可另开 workstream。
+- **Matrix.discover 单例承诺是假的**: docstring 说进程级单例, 实现每次新建。
+  Host.discover 目前坏 (`factory._create_host` raise NotImplementedError)。
+- **depend_* 与 find_spec**: find_spec 谓词应集中 `depends.py` (`available(module)`),
+  硬门与显示判断分层; ghost/agent 模块级 `from pydantic_ai import` 需 lazy 化。
