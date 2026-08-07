@@ -105,6 +105,7 @@ class Matrix(ABC):
             return _instance
         env = env or Environment.discover()
         project = create_project(env)
+        project.bootstrap()
         _instance = create_matrix(env, project)
         return _instance
 

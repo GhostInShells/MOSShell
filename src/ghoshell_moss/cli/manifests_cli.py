@@ -809,3 +809,140 @@ def explain_manifests():
     else:
         _display_no_mode_hint()
     _print_hint()
+
+
+# ---------------------------------------------------------------------------
+# contracts — live IoC container view (not manifest scan)
+# ---------------------------------------------------------------------------
+
+@manifest_app.command(name="contracts")
+def show_contracts(
+    search: str = typer.Argument(
+        "",
+        help="Contract name or import path pattern. Exact match shows source.",
+    ),
+    json_mode: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON array.",
+    ),
+):
+    """
+    List all bound IoC contracts from the live Matrix container.
+
+    Unlike other manifest commands, this queries the live Matrix instance
+    (Matrix.discover -> container.contracts), not the static manifest scans.
+    Pass a contract name to read its source code.
+    """
+    from ghoshell_moss.core.blueprint.matrix import Matrix
+
+    try:
+        matrix = Matrix.discover()
+    except Exception as e:
+        print_error(f"Failed to discover Matrix: {e}")
+        raise typer.Exit(code=1)
+
+    contracts = sorted(
+        matrix.container.contracts(),
+        key=lambda c: (c.__module__, c.__name__),
+    )
+
+    if json_mode:
+        _show_contracts_json(contracts)
+    elif search:
+        _show_contract_detail(contracts, search)
+    else:
+        _show_contracts_table(contracts)
+
+
+def _show_contracts_table(contracts: list[type]) -> None:
+    from ghoshell_common.helpers import generate_import_path
+
+    rows = []
+    for ct in contracts:
+        import_path = generate_import_path(ct)
+        try:
+            source_file = _inspect.getfile(ct)
+        except (TypeError, OSError):
+            source_file = "—"  # em dash — builtin / C extension
+        rows.append([ct.__name__, import_path, source_file])
+
+    print_simple_table(
+        data=rows,
+        headers=["Contract", "Import Path", "Source File"],
+        title="IoC Contracts (live container)",
+    )
+
+
+def _show_contract_detail(contracts: list[type], search: str) -> None:
+    from ghoshell_common.helpers import generate_import_path
+
+    matches = [
+        ct for ct in contracts
+        if search.lower() in ct.__name__.lower()
+        or search.lower() in generate_import_path(ct).lower()
+    ]
+
+    if not matches:
+        available = ", ".join(sorted({c.__name__ for c in contracts}))
+        print_error(
+            f"Contract matching '{search}' not found. Available: {available}"
+        )
+        raise typer.Exit(code=1)
+
+    # single exact name match -> show source
+    exact_names = [ct for ct in matches if ct.__name__ == search]
+    if len(exact_names) == 1:
+        ct = exact_names[0]
+        import_path = generate_import_path(ct)
+        try:
+            source_file = _inspect.getfile(ct)
+        except (TypeError, OSError):
+            source_file = str(None)
+
+        print_simple_panel(
+            f"Name: {ct.__name__}\n"
+            f"Import: {import_path}\n"
+            f"Source: {source_file}",
+            title=f"Contract: {ct.__name__}",
+        )
+        echo("")
+
+        try:
+            source = _inspect.getsource(ct)
+            from .utils import print_code
+            print_code(source)
+        except (TypeError, OSError) as e:
+            print_warning(f"Cannot read source (builtin / C extension): {e}")
+        return
+
+    # multiple or fuzzy match -> filtered table
+    rows = []
+    for ct in matches:
+        import_path = generate_import_path(ct)
+        try:
+            source_file = _inspect.getfile(ct)
+        except (TypeError, OSError):
+            source_file = "—"
+        rows.append([ct.__name__, import_path, source_file])
+    print_simple_table(
+        data=rows,
+        headers=["Contract", "Import Path", "Source File"],
+        title=f"IoC Contracts matching '{search}' ({len(matches)} results)",
+    )
+
+
+def _show_contracts_json(contracts: list[type]) -> None:
+    from ghoshell_common.helpers import generate_import_path
+
+    result = []
+    for ct in contracts:
+        try:
+            source_file = _inspect.getfile(ct)
+        except (TypeError, OSError):
+            source_file = None
+        result.append({
+            "name": ct.__name__,
+            "import_path": generate_import_path(ct),
+            "source_file": source_file,
+        })
+    echo(json.dumps(result, indent=2))
