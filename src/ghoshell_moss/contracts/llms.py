@@ -534,6 +534,9 @@ class BenchmarkMeta(BaseModel):
         default="",
         description="benchmark 级缺省 instruction; case 未指定 instruction 时使用",
     )
+    result_type: str = Field(
+        description="产物结构 — module:attr 指向 BaseModel 类, 逐 case 的结构化输出类型",
+    )
     cases_file: str | None = Field(
         default=None,
         description="case.jsonl 路径, 相对运行 cwd 解析",
@@ -643,12 +646,14 @@ class LLMFuncs(ABC):
     async def run_benchmark(
             self,
             meta: BenchmarkMeta,
+            model: ResolvedModel,
             *,
             cwd: Path | None = None,
             output_file: Path | None = None,
     ) -> BenchmarkRecord:
-        """运行一个 benchmark: 从 ``meta.cases_file`` (相对 cwd) 读用例, 逐条 call, 汇总.
+        """运行一个 benchmark: 用 ``model`` 逐条跑 ``meta.cases_file`` 的用例, 汇总.
 
+        ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
         ``cwd`` 默认当前进程工作目录 — case 的 prompt/instruction 文件路径相对它解析。
         ``output_file`` 给定则结果写为 jsonl。
         """

@@ -7,6 +7,7 @@
   installed — commands with no dependency are not shown.
 """
 
+import asyncio
 import importlib.util
 import os
 from pathlib import Path
@@ -152,6 +153,87 @@ def _call(
     return agent.run_sync(prompt).output
 
 
+def _call_structured(
+        resolved: ResolvedModel,
+        *,
+        prompt: str,
+        response_model: str,
+        instruction: str | None,
+        json_output: bool,
+        verbose: bool,
+        repeat: int,
+) -> None:
+    """Structured call via model-func engine (PydanticAIFuncs).
+
+    ``response_model`` is module:attr pointing to a BaseModel subclass.
+    ``instruction`` is auto-read from file if it is an existing path.
+    """
+    import json as _json
+
+    from ghoshell_common.helpers import import_from_path
+    from ghoshell_moss.llms.funcs import PydanticAIFuncs
+
+    result_type = import_from_path(response_model)
+    inst = _read_instruction(instruction)
+    funcs = PydanticAIFuncs()
+
+    async def _run() -> list[dict]:
+        results = []
+        for _ in range(repeat):
+            r = await funcs.call(
+                instruction=inst,
+                prompt=prompt,
+                result_type=result_type,
+                model=resolved,
+            )
+            results.append(r.model_dump(exclude_none=True))
+        return results
+
+    items = asyncio.run(_run())
+    if repeat == 1 and not json_output:
+        _print_single_result(items[0], verbose)
+    elif repeat == 1 and json_output:
+        echo(_json.dumps(items[0], indent=2, ensure_ascii=False))
+    elif json_output:
+        echo(_json.dumps(items, indent=2, ensure_ascii=False))
+    elif verbose:
+        for i, item in enumerate(items):
+            print_info(f"[{i + 1}/{repeat}]")
+            _print_single_result(item, verbose)
+    else:
+        for item in items:
+            echo(item.get("content", "") or str(item["result"]))
+
+
+def _print_single_result(item: dict, verbose: bool) -> None:
+    """Print a single LLMFuncResult dict — structured then optional verbose."""
+    result = item.get("result")
+    content = item.get("content")
+    if result:
+        echo(str(result))
+    elif content:
+        echo(content)
+    if verbose:
+        print_simple_table(
+            [
+                [
+                    _fmt_usage(item.get("usage")),
+                    f"{item.get('cast', 0):.2f}s",
+                    str(item.get("retries", 0)),
+                ]
+            ],
+            headers=["usage", "elapsed", "retries"],
+        )
+
+
+def _fmt_usage(usage: dict | None) -> str:
+    if not usage:
+        return "-"
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    return f"in={inp} out={out}"
+
+
 _GHOST_EXTRA_AVAILABLE: bool | None = None
 
 
@@ -172,6 +254,18 @@ def _ghost_extra_available() -> bool:
 # ── call / test — require the `ghost` extra (pydantic-ai). No dependency → hidden. ──
 if _ghost_extra_available():
 
+    def _read_instruction(value: str | None) -> str:
+        """If value is a file path that exists, read it; otherwise return as-is."""
+        if not value:
+            return ""
+        candidate = Path(value)
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        return value
+
     @llms_app.command(
         name="call",
         short_help="Send a one-shot prompt to a configured model.",
@@ -187,19 +281,59 @@ if _ghost_extra_available():
                 False, "--no-fallback",
                 help="Strict mode — raise if provider/model not found (no silent fallback to default).",
             ),
+            instruction: str = typer.Option(
+                None, "--instruction", "-i",
+                help="Instruction (system prompt) — string or file path. File is auto-read.",
+            ),
+            json_output: bool = typer.Option(
+                False, "--json", "-j",
+                help="Output result as JSON (structured response).",
+            ),
+            verbose: bool = typer.Option(
+                False, "--verbose", "-v",
+                help="Show usage, timing, and retries alongside output.",
+            ),
+            response_model: str = typer.Option(
+                None, "--response-model", "-r",
+                help="module:attr of a BaseModel for structured output (e.g. mypkg.models:Score).",
+            ),
+            repeat: int = typer.Option(
+                1, "-n",
+                help="Number of in-process repetitions.",
+            ),
     ) -> None:
-        """One-shot LLM call for debugging. Resolves config internally — never prints secrets."""
+        """One-shot LLM call. Prompt + optional instruction and structured output.
+
+        Without ``-r``: plain-text call (built-in). With ``-r``: structured
+        call via model-func engine — instruction + prompt -> BaseModel result.
+        ``-n`` > 1 repeats in-process. ``-i`` auto-reads a file if the value
+        is an existing path.
+        """
         conf = _load_config()
         resolved = _resolve_for_call(
             conf.resolve(),
             provider=provider, model=model, tag=tag, no_fallback=no_fallback,
         )
         try:
-            output = _call(resolved, prompt, temperature=temperature, max_output_tokens=max_output_tokens)
+            if response_model:
+                _call_structured(
+                    resolved,
+                    prompt=prompt,
+                    response_model=response_model,
+                    instruction=instruction,
+                    json_output=json_output,
+                    verbose=verbose,
+                    repeat=repeat,
+                )
+            else:
+                output = _call(
+                    resolved, prompt,
+                    temperature=temperature, max_output_tokens=max_output_tokens,
+                )
+                echo(output)
         except Exception as e:
             print_error(f"call failed: {e}")
             raise typer.Exit(code=1)
-        echo(output)
 
     @llms_app.command(
         name="test",

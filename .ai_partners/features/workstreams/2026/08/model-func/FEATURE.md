@@ -134,7 +134,8 @@ CLI 是 ghost 的接口，不是开发者便利——CLI 化等于给 ghost 上�
 ## TODO
 
 - [x] contract 设计（review 模式：AI 出方案，人类 review）— 2026-08-06 定稿
-- [ ] 引擎实现（pydantic-ai）
-- [ ] IoC 定义（依赖 LLMConfig）
-- [ ] CLI `moss llms call` 参数扩展
+- [x] 引擎实现（pydantic-ai）— `llms/funcs.py` PydanticAIFuncs: call + run_benchmark
+- [x] CLI `moss llms call` 参数扩展 — `-i/-j/-v/-r/-n`
+- [ ] IoC 定义（引擎不需要 — call 直接收 ResolvedModel, CLI 直接 new PydanticAIFuncs）
+- [ ] 引擎测试（FunctionModel 模拟）
 - [ ] 样例：话说完检测（单 token 多分类打分）
