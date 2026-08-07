@@ -46,11 +46,10 @@ host = [
     "uvloop>=0.22.1",
     "websockets>=15.0.1",
     "httpx>=0.28.0",
-    "fastmcp>=3.1.1",
     "loadenv>=0.1.1",
 ]
 ghost = [
-    "pydantic-ai>=1.90.0",
+    "pydantic-ai-slim[anthropic,openai]>=1.90.0",
     "anthropic>=0.84.0",
 ]
 
@@ -96,7 +95,7 @@ dev = [
     "pytest>=8.3.5",
     "pytest-asyncio>=1.1.0",
     "anyio>=4.10.0",
-    "mcp>=1.21.0",
+    "mcp>=2.0.0",
     "fastapi>=0.121.1",
     "uvicorn>=0.37.0",
     "mdformat>=1.0.0",

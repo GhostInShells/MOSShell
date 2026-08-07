@@ -130,6 +130,10 @@ CLI 是 ghost 的接口，不是开发者便利——CLI 化等于给 ghost 上�
   `BenchmarkRecord`(run+results)。markdown/jsonl io 标 NotImplementedError。
 - 决策：`BenchmarkRun.model` 必须无密钥（持久化安全）；`run_benchmark` 带 `cwd`
   解析 case 文件路径。
+- 2026-08-08 依赖升级：`pydantic-ai` → `pydantic-ai-slim[anthropic,openai]`，
+  去除 fastmcp-slim → mcp<2.0 传递依赖锁，mcp 2.0.0 独立升级不冲突。
+  59 tests 全过（43 contract + 15 funcs + 1），回归基线在
+  `.ai_partners/regressions/llms/REGRESSION.md`。
 
 ## TODO
 
