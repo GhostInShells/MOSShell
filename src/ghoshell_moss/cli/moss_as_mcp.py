@@ -1,6 +1,6 @@
 from typing import Literal, Iterable, Optional
 import asyncio
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ContentBlock, TextContent, ImageContent
 
 from ghoshell_moss.message import Message, Text, Base64Image
@@ -21,7 +21,7 @@ import click
 MAX_WAIT_BUDGET = 30.0
 
 
-class FastMCPMessageAdapter:
+class MCPMessageAdapter:
 
     @classmethod
     def parse_message_to_blocks(cls, messages: Iterable[Message]) -> Iterable[ContentBlock]:
@@ -60,7 +60,7 @@ def _events_to_messages(events: list[ShellEvent], status: InterpreterStatus) -> 
     return project_events(events, status)
 
 
-def bootstrap(state: ServerState, mcp: FastMCP):
+def bootstrap(state: ServerState, mcp: MCPServer):
     # 会话地基 (2 工具): 协议指令 + 拉模式能力面. 无 A/B, 是任何会话都不能少的.
 
     @mcp.tool()
@@ -79,7 +79,7 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         if not state.toolset:
             return [TextContent(type='text', text="System not ready.")]
         msgs = await state.toolset.moss_dynamic_messages(refresh=True, max_wait=5.0)
-        return list(FastMCPMessageAdapter.parse_message_to_blocks(msgs))
+        return list(MCPMessageAdapter.parse_message_to_blocks(msgs))
 
     # --- CTML 交互动词 (5 个) --- #
     # 所有动词共用同一个投影尾段 _drain_and_project: 拉 watcher 累计事件 + 当下 shell status.
@@ -91,7 +91,7 @@ def bootstrap(state: ServerState, mcp: FastMCP):
         events = state.watcher.drain()
         status = state.watcher.status()
         messages = _events_to_messages(events, status)
-        return list(FastMCPMessageAdapter.parse_message_to_blocks(messages))
+        return list(MCPMessageAdapter.parse_message_to_blocks(messages))
 
     async def _spawn_interpreter(kind: str, logos: str) -> tuple[asyncio.Event, asyncio.Event]:
         """起 interpreter task, 返回 (compiled, stopped) 两个生命周期信号 Event.
@@ -228,11 +228,7 @@ def main_entry(
         port: int = 20773,
 ) -> None:
     """启动 MOSS MCP 服务端"""
-    mcp = FastMCP(
-        server_name,
-        host=host,
-        port=port,
-    )
+    mcp = MCPServer(server_name)
     moss_host = Host(env=_bootstrap_env(mode, scope, network))
     state = ServerState()
     # 注册对应的工具.
@@ -255,13 +251,13 @@ def main_entry(
                     'Moss MCP toolset started with params: %r',
                     params,
                 )
-                # 启动 MCP Server (FastMCP 内部会处理进程阻塞)
+                # 启动 MCP Server transport
                 if transport == 'sse':
-                    await mcp.run_sse_async()
+                    await mcp.run_sse_async(host=host, port=port)
                 elif transport == 'std':
                     await mcp.run_stdio_async()
                 elif transport == 'streamable_http':
-                    await mcp.run_streamable_http_async()
+                    await mcp.run_streamable_http_async(host=host, port=port)
                 else:
                     raise click.BadParameter(f"transport {transport} not supported")
 

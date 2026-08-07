@@ -128,7 +128,7 @@ class TestMCPResultToObserve:
     def test_text_content(self):
         result = mcp_types.CallToolResult(
             content=[mcp_types.TextContent(type="text", text="hello world")],
-            isError=False,
+            is_error=False,
         )
         obs = mcp_result_to_observe(result, server="test", tool="echo")
         assert isinstance(obs, Observe)
@@ -139,8 +139,8 @@ class TestMCPResultToObserve:
 
     def test_image_content(self):
         result = mcp_types.CallToolResult(
-            content=[mcp_types.ImageContent(type="image", data="base64data", mimeType="image/png")],
-            isError=False,
+            content=[mcp_types.ImageContent(type="image", data="base64data", mime_type="image/png")],
+            is_error=False,
         )
         obs = mcp_result_to_observe(result, server="test", tool="screenshot")
         contents = list(obs.messages[0].as_contents())
@@ -151,9 +151,9 @@ class TestMCPResultToObserve:
         result = mcp_types.CallToolResult(
             content=[
                 mcp_types.TextContent(type="text", text="analysis"),
-                mcp_types.ImageContent(type="image", data="imgdata", mimeType="image/jpeg"),
+                mcp_types.ImageContent(type="image", data="imgdata", mime_type="image/jpeg"),
             ],
-            isError=False,
+            is_error=False,
         )
         obs = mcp_result_to_observe(result, server="test", tool="analyze")
         assert len(obs.messages) == 2
@@ -161,7 +161,7 @@ class TestMCPResultToObserve:
     def test_error_result(self):
         result = mcp_types.CallToolResult(
             content=[mcp_types.TextContent(type="text", text="file not found")],
-            isError=True,
+            is_error=True,
         )
         obs = mcp_result_to_observe(result, server="test", tool="read")
         msg = obs.messages[0].to_content_string()
@@ -169,7 +169,7 @@ class TestMCPResultToObserve:
         assert "file not found" in msg
 
     def test_empty_content(self):
-        result = mcp_types.CallToolResult(content=[], isError=False)
+        result = mcp_types.CallToolResult(content=[], is_error=False)
         obs = mcp_result_to_observe(result, server="test", tool="noop")
         assert isinstance(obs, Observe)
         assert obs.messages == []
@@ -467,7 +467,7 @@ class TestContextMessagesWithSchema:
             mcp_types.Tool(
                 name="echo",
                 description="回显输入文本。",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "description": "the text to echo"},
@@ -478,7 +478,7 @@ class TestContextMessagesWithSchema:
             mcp_types.Tool(
                 name="noop",
                 description="无参数工具。",
-                inputSchema={"type": "object", "properties": {}},
+                input_schema={"type": "object", "properties": {}},
             ),
         ]
         session = MCPServerSession(config=MCPServerConfig(name="test", command="python"))

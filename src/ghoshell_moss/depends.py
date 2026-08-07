@@ -23,6 +23,12 @@ def depend_host():
     except ImportError:
         raise ImportError("install ghoshell_moss[host]")
 
+def depend_mcp():
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        raise ImportError("mcp not installed. run: uv sync --all-extras")
+
 def depend_ghost():
     try:
         import pydantic_ai, anthropic  # noqa: F401

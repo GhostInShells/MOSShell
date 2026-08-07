@@ -30,7 +30,7 @@ try:
     from mcp.client.sse import sse_client
     from mcp.client.streamable_http import streamable_http_client
 except ImportError:
-    raise ImportError("mcp hub requires ghoshell-moss[mcp]. run: uv sync --all-extras")
+    raise ImportError("mcp not installed. run: uv sync --all-extras")
 
 __all__ = ['MCPHubChannel', 'build_mcp_hub_channel', 'MCPHubState',
            'MCPServerConfig', 'MCPHubConfig', 'MCPServerSession',
@@ -128,7 +128,7 @@ class MCPServerSession:
             transport = await self._exit_stack.enter_async_context(
                 streamable_http_client(cfg.url)
             )
-            read, write, _ = transport
+            read, write = transport
             return read, write
         raise ValueError(f"unsupported transport: {cfg.transport}")
 
@@ -171,7 +171,7 @@ def mcp_result_to_observe(
     tool: str,
 ) -> Observe:
     """将 MCP CallToolResult 转为 Observe，只保留 text + image 两种 content。"""
-    if result.isError:
+    if result.is_error:
         text_parts = []
         for c in result.content:
             if isinstance(c, mcp_types.TextContent):
@@ -185,7 +185,7 @@ def mcp_result_to_observe(
         elif isinstance(c, mcp_types.ImageContent):
             messages.append(
                 Message.new(name=f"{server}/{tool}").with_content(
-                    Base64Image.from_base64(media_type=c.mimeType, data=c.data)
+                    Base64Image.from_base64(media_type=c.mime_type, data=c.data)
                 )
             )
     return Observe(messages=messages)
@@ -448,7 +448,7 @@ class MCPHubState(ChannelState):
                 for tool in session.tools:
                     desc = (tool.description or '').split('\n')[0][:120]
                     lines.append(f"  - `{tool.name}`: {desc}")
-                    params = render_input_schema(tool.inputSchema)
+                    params = render_input_schema(tool.input_schema)
                     if params:
                         lines.append(f"    params: {params}")
             elif session.error:
