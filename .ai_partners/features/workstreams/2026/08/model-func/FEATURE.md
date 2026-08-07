@@ -143,3 +143,15 @@ CLI 是 ghost 的接口，不是开发者便利——CLI 化等于给 ghost 上�
 - [x] IoC 定义（引擎不需要容器；导出点见 `architecture.py`）
 - [x] 引擎测试 — 15 mock + CLI smoke + 7 cases 真实 benchmark 全链路闭环
 - [x] 样例：话说完检测（单 token 多分类打分）— example/ 目录, 7 cases 全链路闭环通过
+- [x] benchmarks 体系 — `.ai_partners/benchmarks/` 约定, utterance-end-detection 首发
+- [x] 依赖升级 — pydantic-ai-slim[anthropic,openai] + mcp 2.0.0, 消除 fastmcp-slim 传递冲突
+
+## Next
+
+**Prompt protocol** — 扩充 model func 的入参从纯字符串到结构化 content block:
+
+- ``@ 文件路径`` — instruction/prompt 从文件读取 → content block 协议
+- 二进制理解 — 图片 base64 化、文件内容 → model-native content types
+- 描述文件 — 文件元信息注入 prompt（filename, mime, size）
+
+这一层做好后, model func 可以独立拆为 moss 的 skill / 开源衍生项目 — 它已经是一个完整的"模型结构化调用 + benchmark"工具链。
