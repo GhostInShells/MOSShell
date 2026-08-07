@@ -5,13 +5,15 @@ description: 解释器级宏展开：command 返回值 (Macro | str) 标记为 m
   tokens 注入，形成时序上的 CTML 展开。取代仅主轨可用的 CommandStackResult 机制。
 milestone: null
 priority: P1
-status: in-progress
+status: completed
 status_note: |-
   design converged in three dialogue rounds (07-25/26 + 08-06). 08-06: naming settled
   as macro, scope-wrap dropped, Macro object return protocol, macro_id/parent_macro_id disambiguation,
-  depth cap 100, executed_logos excludes macro self-tokens, Macro-store ChannelModule as verifier
+  depth cap 100, executed_logos excludes macro self-tokens, Macro-store ChannelModule as verifier.
+  08-08: implemented + tested — @macro in CTML meta-instruction, MacroStoreModule channel,
+  6 channel tests + 2 proxy tests + 5 protocol tests, usage patterns recorded below.
 title: Macro Expansion (Logos)
-updated: '2026-08-06'
+updated: '2026-08-08'
 ---
 
 # Logos Expansion
@@ -239,6 +241,41 @@ D8 的"免费摊平轨迹"毒化结晶化：轨迹含 `<macro/>`，存成新宏 
 
 - 不 worktree，直接在当前目录做。字段/对象层无破坏性；主循环层每帧 review、结对编程。
 - 人类同步开工部分字段/对象层改动，由模型 review。
+
+## 使用场景 (2026-08-08)
+
+宏机制落地后的应用方向，按成熟度排序：
+
+1. **CTML 学习** — 标准的宏用法。把成功执行过的 CTML 序列固化成命名宏，
+   重复动作序列结晶成单 token。程序性记忆在 Shell 层实现，而非 Agent 层
+   prompt 模拟。
+
+2. **CTML 函数化** — f-string 生成 CTML，返回值即宏。f-string 优势是可以快速
+   定义变量；约束是"零导入"。进一步可以用 module sandbox（memento-agent 就是
+   这套）驱动生成——生成逻辑放进 sandbox，模型只调一个宏命令。
+
+3. **channel 交给 agent 托管** — 筹备已久的命题。把 root tag（现在是 ctml）
+   改成 scope 这套更简单——嵌套 shell 封装成 command，外部不见细节，对它发
+   prompt，它吐 logos，logos 以挂载点为根解释执行。分形 Shell。
+
+4. **新的高阶语法** — 随机、循环、if/else 等。但大概率直接用 python sandbox
+   生成 CTML 更容易——语法糖不进解释器，进生成器。
+
+5. **条件反射** — 高阶做法。通道监控条件，条件触发时自动展开对应 CTML，
+   让 Shell 层具备"刺激→反应"能力，不需要模型每帧决策。
+
+6. **文件读取/存储超长 CTML** — 最适合编辑超长演出。未解决的难题是 CDATA
+   转义——超长 CTML 落盘再读回，转义边界不清晰。
+
+### 为什么是现在做？
+
+channel scope 实现后，宏可以跨 proxy、任何 channel 都能用，原则上不破坏时序；
+而之前 primitives 最大的问题是不能脱离 main channel。
+
+但宏不如 primitives 的点：**宏会阻塞解释器**（D5 的时序代价）——展开是解释期的
+同步计算，logos command 应当快，慢逻辑放进展开产物里执行。
+
+> 一个原创的 xml 时序规划语法 + 流式解释。不够完美、不够成熟，但做出来了。
 
 ## Implementation Notes
 

@@ -43,6 +43,8 @@ def make_interfaces(channel_meta: ChannelMeta, *, dynamic: bool = True, sustain:
             blocks.append("@nonblocking")
         if cmd_meta.always_observe:
             blocks.append("@observe")
+        if cmd_meta.macro:
+            blocks.append("@macro")
         blocks.append(cmd_meta.interface)
 
     # with not available commands

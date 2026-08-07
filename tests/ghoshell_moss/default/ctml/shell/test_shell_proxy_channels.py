@@ -597,3 +597,88 @@ async def test_refresh_metas_stale_protection_skips_redundant_refresh():
         await shell.refresh_metas(stale_time=0.1)
         # 不会有新的刷新结果.
         assert len(invoked) == 3
+
+
+# -- 宏展开 proxy -- #
+
+
+@pytest.mark.asyncio
+async def test_proxy_macro_expansion():
+    """宏展开跨 proxy — 主轨 macro 展开到 proxy channel 的命令."""
+    from ghoshell_moss.channels.macro_store import MacroStoreModule
+
+    provider_main = PyChannel(name="provider")
+    provider, proxy = create_thread_bridge('proxy')
+
+    calls = []
+
+    @provider_main.build.command()
+    async def say(text: str = ""):
+        calls.append(text)
+
+    shell = new_ctml_shell()
+    shell.main_channel.import_channels(proxy)
+    shell.main_channel.with_module(MacroStoreModule())
+
+    async with provider.arun(provider_main):
+        async with shell:
+            await shell.wait_connected("proxy")
+            async with shell.interpreter_in_ctx() as i:
+                i.feed(
+                    '<macro_save label="greet">'
+                    '<![CDATA[<proxy:say text="hello from proxy"/>]]>'
+                    '</macro_save>\n'
+                    '<macro label="greet"/>\n'
+                )
+                i.commit()
+                tasks = await i.wait_tasks(timeout=2)
+                i.raise_exception()
+
+    assert calls == ["hello from proxy"]
+    # 验证 macro_id: 展开的 proxy 命令带 macro_id
+    say_tasks = [t for t in tasks.values() if t.caller_name() == "proxy:say"]
+    assert len(say_tasks) == 1
+    assert say_tasks[0].macro_id is not None
+
+
+@pytest.mark.asyncio
+async def test_proxy_macro_nested():
+    """嵌套宏跨 proxy — outer→inner→proxy:mark."""
+    from ghoshell_moss.channels.macro_store import MacroStoreModule
+
+    provider_main = PyChannel(name="provider")
+    provider, proxy = create_thread_bridge('proxy')
+
+    calls = []
+
+    @provider_main.build.command()
+    async def mark():
+        calls.append("marked")
+
+    shell = new_ctml_shell()
+    shell.main_channel.import_channels(proxy)
+    shell.main_channel.with_module(MacroStoreModule())
+
+    async with provider.arun(provider_main):
+        async with shell:
+            await shell.wait_connected("proxy")
+            async with shell.interpreter_in_ctx() as i:
+                i.feed(
+                    '<macro_save label="inner">'
+                    '<![CDATA[<proxy:mark/>]]>'
+                    '</macro_save>\n'
+                    '<macro_save label="outer">'
+                    '<![CDATA[<macro label="inner"/>]]>'
+                    '</macro_save>\n'
+                    '<macro label="outer"/>\n'
+                )
+                i.commit()
+                tasks = await i.wait_tasks(timeout=2)
+                i.raise_exception()
+
+    assert calls == ["marked"]
+    # macro_id 沿展开链传递到 proxy 命令
+    mark_tasks = [t for t in tasks.values() if t.caller_name() == "proxy:mark"]
+    assert len(mark_tasks) == 1
+    assert mark_tasks[0].macro_id is not None
+    assert mark_tasks[0].from_macro_id is not None
