@@ -1,16 +1,13 @@
 ---
 created: 2026-06-03
 depends: []
-description: 'moss 自举 channel 重构: bundled moss_cli channel (python -m ghoshell_moss.cli + matrix
-  Subprocesses) + 受限 file view 配套 + default mode 降级 wireup。原 typer 反射方案废弃。'
+description: 'moss 自举 channel 重构: bundled moss_cli channel (python -m ghoshell_moss.cli + matrix Subprocesses) + 受限 file view 配套 + default mode 降级 wireup。原 typer 反射方案废弃。'
 milestone: null
 priority: P1
-status: in-progress
-status_note: '重开 2026-08-06: typer 反射方案废弃(typer_channel.py 删除, 无独立 feature); 新方向 =
-  bundled channel moss_cli (python -m + matrix Subprocesses) + 受限 file view 配套 + default
-  mode 降级 wireup'
-title: Moss Self Channel — 自举 channel: moss_cli (python -m + Subprocesses) + default mode 降级
-updated: '2026-08-06'
+status: completed
+status_note: '实现完成 2026-08-07: moss_cli bundled channel + default mode 轻注入 + MCP dog fooding 全链路验证通过; 受限 file view 配套 defer 到独立任务'
+title: 'Moss Self Channel — 自举 channel: moss_cli (python -m + Subprocesses) + default mode 降级'
+updated: '2026-08-07'
 ---
 
 # Moss Self Channel
@@ -35,19 +32,20 @@ moss_self 本就在 node-migration 第一梯队迁移清单里,原设计讨论�
    经 matrix `Subprocesses`(IoC `CommandUtil.get_contract(Subprocesses)`),**不裸 asyncio subprocess**。
    已确认 Subprocesses 不传 `cell_address`(`_build_env` = `os.environ.copy()` + extra_env)。
 3. **cwd**:project 根,经 Project 抽象寻址。不用 `MOSS_WORKSPACE` 环境变量推导(环境变量因果未治理)。
-4. **instruction**:嵌入 `src/ghoshell_moss/cli/start.md`——同步安全,无 build-time subprocess。
-   原方案同步函数里跑 `subprocess.run` 有阻塞事件循环风险。备选:first-frame 提示 `exec moss start`。
-5. **`codex eval` 命令级拒绝**(不注册),CLI 代码保留。
-6. **受限 file view 配套 channel**(default mode 用):基于 file_editor 层(file_editor 正在增加
-   `glob`/`list_dir`/`grep`),只读 + project-cwd 授权范围,命令级路径拒绝即足够,不做沙箱。
-7. **default mode 降级 wireup**:stub 模板 + 本地同步,剥离 Speech/AppStore/MCP/terminal/fractal,
-   只剩系统原语 + `moss_cli` + file view。降级后仅需两个 anthropic 配置即可运行。
+4. **instruction**:极简静态提示 + 第一帧 `exec moss start`。弃用嵌入 start.md——包资源耦合 +
+   444 行 token 成本。同步函数,无 build-time subprocess。
+5. **`codex eval` 从 CLI 注册移除**(`codex_cli.py` 的 `@codex_app.command("eval")` 注释掉,代码保留)。
+   去授权在 typer 注册层,不在 channel——无 channel 级 deny。
+6. **受限 file view 配套 channel**:defer 到独立任务。底座 file_editor 的 list_dir/glob/grep 已落地,
+   本 feature 不接。
+7. **default mode 降级 wireup**:✅ 完成(live `.moss/modes/default` + stub 模板),剥离
+   Speech/AppStore/terminal/fractal/MCP,只剩系统原语 + `moss_cli`。降级后仅需两个 anthropic 配置。
 
 **访问路径两轨并存**:MCP(`moss-as-mcp` 由外部 agent 触达)是**开发期验证**;bundled channel 挂
 default mode 主树是 ghost 的**运行时使用**。二者不冲突,是不同相位。终局:meta-mode 成熟后
 ghost 自我运行时开发,外部 agent 路径自然退出,问题溶解。
 
-**待定**:命令名(暂定 `exec`);受限 file view 依赖 file_editor 的 list_dir/glob/grep 落地。
+**已定**:命令名 `exec`。**defer**:受限 file view(见 #6)。
 
 **连带治理**:`app-system-cli` FEATURE 标 dropped(apps → nodes)。
 

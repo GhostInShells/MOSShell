@@ -32,7 +32,7 @@ from ghoshell_moss.contracts.subprocesses import (
 from ghoshell_moss.contracts.logger import get_moss_logger
 from ghoshell_moss.core.subprocesses._utils import killpg as _kill_process_group_util
 
-__all__ = ["SubprocessesImpl"]
+__all__ = ["SubprocessesImpl", "Subprocesses"]
 
 _MAX_EXECUTED_HISTORY = 200
 _SHUTDOWN_GRACE = 3.0
