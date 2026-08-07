@@ -1,9 +1,10 @@
 import asyncio
 from typing import AsyncIterable
 
-from ghoshell_moss.core import CTMLShell, InterpretError
+from ghoshell_moss.core import CTMLShell, InterpretError, new_ctml_shell
 from ghoshell_moss.core.ctml import ctml_shell_test
 from ghoshell_moss.core.blueprint.channel_builder import new_channel
+from ghoshell_moss.core.concepts.command import MacroResult
 import pytest
 
 """
@@ -1627,3 +1628,131 @@ async def test_end_to_end_assistant_greeting_and_question():
     # 验证打招呼阶段正确执行
     assert "smiling" in interaction_log
     assert "spoke: Hello" in interaction_log
+
+
+# --- 宏展开 (logos expansion) 协议 --- #
+# macro 概念可能进入 CTML 约定: meta.macro=True 的命令, 返回值 (str | MacroResult) 被解释为 logos,
+# 在调用点原位展开. 协议承诺:
+# 1. 换根: 宏内裸名解析到宏所在 channel, 与 inline 写入等价;
+# 2. 展开产物是普通 task, 模型无法区分;
+# 3. 展开 task 带 macro_id 消歧 (call_id 撞车), 宏 task 自身不带;
+# 4. executed_logos 只含摊平后的展开产物, 宏自身 tokens 排除 (可结晶, 不自指).
+
+
+@pytest.mark.asyncio
+async def test_ctml_macro_expansion():
+    """宏协议基础: 返回 logos 在调用点展开, 换根解析, 展开产物是普通 task."""
+    a_chan = new_channel(name="a")
+    calls = []
+
+    @a_chan.build.command(macro=True)
+    async def run_greeting(name: str = "world") -> str:
+        return f"<say text='hello {name}'/>"
+
+    @a_chan.build.command()
+    async def say(text: str = ""):
+        calls.append(text)
+
+    tasks = await ctml_shell_test(a_chan, ctml="<a:run_greeting name='moss'/>")
+    # 换根: 宏内裸 <say/> 解析成 a:say, 与 inline 写入等价.
+    assert calls == ["hello moss"]
+    callers = {t.caller_name() for t in tasks}
+    assert callers == {"a:run_greeting", "a:say"}
+    # macro_id 消歧: 展开 task 带 macro_id, 宏 task 自身不带.
+    macro_task = [t for t in tasks if t.caller_name() == "a:run_greeting"][0]
+    expanded = [t for t in tasks if t.caller_name() == "a:say"][0]
+    assert macro_task.macro_id is None
+    assert expanded.macro_id == "1"
+    assert expanded.from_macro_id is None
+
+
+@pytest.mark.asyncio
+async def test_ctml_macro_result_object():
+    """宏命令返回 MacroResult: 解释器展开 logos, 模型侧展示 result."""
+    a_chan = new_channel(name="a")
+    calls = []
+
+    @a_chan.build.command(macro=True)
+    async def greet() -> MacroResult:
+        return MacroResult(logos="<say/>", result="greeting sent")
+
+    @a_chan.build.command()
+    async def say():
+        calls.append("hi")
+
+    tasks = await ctml_shell_test(a_chan, ctml="<a:greet/>")
+    assert calls == ["hi"]
+    # 模型侧看到 result 而非 logos.
+    greet_task = [t for t in tasks if t.caller_name() == "a:greet"][0]
+    assert greet_task.task_result().result == "greeting sent"
+    assert greet_task.task_result().logos == "<say/>"
+
+
+@pytest.mark.asyncio
+async def test_ctml_macro_nested():
+    """嵌套宏: 展开产物里的宏命令递归展开, macro_id 沿展开链传递."""
+    a_chan = new_channel(name="a")
+    calls = []
+
+    @a_chan.build.command(macro=True)
+    async def outer() -> str:
+        return "<inner/>"
+
+    @a_chan.build.command(macro=True)
+    async def inner() -> str:
+        return "<mark/>"
+
+    @a_chan.build.command()
+    async def mark():
+        calls.append("marked")
+
+    tasks = await ctml_shell_test(a_chan, ctml="<a:outer/>")
+    assert calls == ["marked"]
+    inner_task = [t for t in tasks if t.caller_name() == "a:inner"][0]
+    mark_task = [t for t in tasks if t.caller_name() == "a:mark"][0]
+    # outer(模型输出, 无 macro_id) → batch 1 → inner; inner → batch 2 → mark.
+    assert inner_task.macro_id == "1"
+    assert inner_task.from_macro_id is None
+    assert mark_task.macro_id == "2"
+    assert mark_task.from_macro_id == "1"
+
+
+@pytest.mark.asyncio
+async def test_ctml_macro_self_reference_depth_cap():
+    """自引用宏靠递归深度上限兜底 (MAX_MACRO_DEPTH), 超过抛 InterpretError."""
+    a_chan = new_channel(name="a")
+
+    @a_chan.build.command(macro=True)
+    async def loop_forever() -> str:
+        return "<loop_forever/>"
+
+    with pytest.raises(InterpretError):
+        await ctml_shell_test(a_chan, ctml="<a:loop_forever/>", timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_ctml_macro_executed_logos_flattened():
+    """宏自身 tokens 不进 executed_logos (D13), 摊平轨迹只含展开产物, 可直接结晶."""
+    calls = []
+
+    def builder(shell):
+        @shell.main_channel.build.command(macro=True)
+        async def greet() -> str:
+            return "<say/>"
+
+        @shell.main_channel.build.command()
+        async def say():
+            calls.append("hi")
+
+    shell = new_ctml_shell()
+    builder(shell)
+    async with shell:
+        interpreter = await shell.interpreter(clear_after_exit=True)
+        async with interpreter:
+            interpreter.feed("<greet/>")
+            interpreter.commit()
+            await interpreter.wait_tasks(throw=True)
+        logos = interpreter.interpretation().executed_logos()
+    assert calls == ["hi"]
+    assert "<greet" not in logos
+    assert "<say" in logos

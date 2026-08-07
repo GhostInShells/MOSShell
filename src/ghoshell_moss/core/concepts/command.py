@@ -78,6 +78,7 @@ __all__ = [
     "TaskScope",
     "CommandFunc",
     "CommandTaskContextKey",
+    "MacroResult",
 ]
 
 RESULT = TypeVar("RESULT")
@@ -181,6 +182,10 @@ class CommandToken(BaseModel):
         return self.content
 
 
+CommandLogos = str
+"""可以解释成 CommandToken 的字符串, 中文 '道', 同时是 言说/行动的道路/理性决策 等含义. 未找到等价技术术语. """
+
+
 class CommandDeltaArgName(str, Enum):
     """
     Command 体系里的特殊通道参数.
@@ -244,6 +249,7 @@ class CommandMeta(BaseModel):
     name: str = Field(description="the name of the command")
     description: str = Field(default="", description="the description of the command")
     dynamic: bool = Field(default=False, description="whether this command is dynamic or not")
+    macro: bool = Field(default=False, description="whether this command returns command token language")
     available: bool = Field(
         default=True,
         description="whether this command is available",
@@ -558,6 +564,7 @@ class PyCommand(CliCommand):
             with_json_schema: bool = False,
             timeout: Optional[float] = None,
             visible: bool = True,
+            macro: bool = False,
     ):
         """
         :param func: origin coroutine function
@@ -576,6 +583,7 @@ class PyCommand(CliCommand):
         :param always_observe: shall always observe the command result
         :param delta_types: don't set it if you do not know why
         :param visible: if the command is visible to model
+        :param macro: if the command is macro, return command logos
         """
         self._chan = chan
         self._func_name = func.__name__
@@ -619,6 +627,7 @@ class PyCommand(CliCommand):
                 # only first delta_arg type. and not allow more than 1
                 break
         self._delta_arg = delta_arg
+        self._macro = macro
 
     def name(self) -> str:
         return self._name
@@ -699,6 +708,7 @@ class PyCommand(CliCommand):
         # 标记 meta 是否是动态变更的.
         meta.dynamic = self._is_dynamic_itf
         meta.priority = self._priority
+        meta.macro = self._macro
 
         if self._with_json_schema and self._func is not None:
             try:
@@ -793,6 +803,15 @@ class ObserveError(Exception):
         return Observe.new(self.message)
 
 
+class MacroResult(BaseModel):
+    """Command 可以显式声明返回值是 macro 展开后的结果. 让给模型的数据和给解释器的数据不一样"""
+    logos: CommandLogos = Field(description="macro 返回的 command logos")
+    result: str | None = Field(default=None, description="展示给模型的数据, 为 None 时直接展示 CommandLogos")
+
+    def display(self) -> str:
+        return self.result if self.result is not None else self.logos
+
+
 class CommandTaskResult(BaseModel):
     """
     Command Task 的标准返回值.
@@ -813,9 +832,21 @@ class CommandTaskResult(BaseModel):
     caller: str | None = Field(
         default=None, description="生成 CommandTask 的 caller name. 通常不用设置. 在 resolve 时自动添加."
     )
-
+    from_macro_id: str | None = Field(
+        default=None,
+        description="生成 command task 的 macro id",
+    )
+    macro_id: str | None = Field(
+        default=None,
+        description="当前 Command Task 自身的 macro id",
+    )
+    logos: CommandLogos | None = Field(
+        default=None,
+        description="如果是通过 macro Result 构建的, logos 会独立传输"
+    )
     output: list[Message] = Field(
-        default_factory=list, description="对外部输出的消息体, 通常不用设置 role / name, 让 Agent 去设置. "
+        default_factory=list,
+        description="对外部输出的消息体, 通常不用设置 role / name. 模型本身看不到这部分消息. "
     )
     messages: list[Message] = Field(
         default_factory=list,
@@ -833,6 +864,22 @@ class CommandTaskResult(BaseModel):
     )
 
     @classmethod
+    def new(cls, value: Any) -> 'CommandTaskResult':
+        if isinstance(value, CommandTaskResult):
+            return cls.from_serializable(value)
+        elif isinstance(value, Observe):
+            return cls.from_observe(value)
+        elif isinstance(value, MacroResult):
+            return cls(
+                result=value.result,
+                logos=value.logos,
+            )
+        else:
+            return cls(
+                result=value,
+            )
+
+    @classmethod
     def from_observe(cls, observe: "Observe") -> Self:
         """create task result from Observe instance"""
         return cls(
@@ -841,11 +888,24 @@ class CommandTaskResult(BaseModel):
             observe=True,
         )
 
+    def macro_result(self) -> MacroResult | None:
+        if self.logos is None:
+            return None
+        return MacroResult(logos=self.logos, result=self.result)
+
     def to_observe(self) -> Observe | None:
         """ to Observe object if self is from Observe instance"""
         if self.observe:
             return Observe(messages=self.messages.copy() if len(self.messages) > 0 else [])
         return None
+
+    def to_raw_result(self) -> Any:
+        if macro_result := self.macro_result():
+            return macro_result
+        elif observe := self.to_observe():
+            return observe
+        else:
+            return self.result
 
     def serializable_copy(self) -> Self:
         """return a copy that serializable"""
@@ -860,9 +920,9 @@ class CommandTaskResult(BaseModel):
     def from_serializable(cls, value: Self | None) -> Self:
         if value is None:
             return None
-        if not isinstance(value.result, str):
+        elif not isinstance(value.result, str):
             return value
-        if not value.serialized:
+        elif not value.serialized:
             return value
         content = value.result
         try:
@@ -883,6 +943,10 @@ class CommandTaskResult(BaseModel):
             serialized_content = repr(self.result)
         return serialized_content, True
 
+    def is_empty_result(self) -> bool:
+        # 空 logos (返回了空串的 void 宏) 视为空结果: 不展开、不显示.
+        return (self.logos is None or self.logos == "") and self.result is None and len(self.messages) == 0
+
     def as_messages(
             self,
             *,
@@ -896,12 +960,22 @@ class CommandTaskResult(BaseModel):
         Anthropic 消息协议更可怕, 不支持 role.
         所以要在现有的协议基础上支持异步的, 多个 command 返回的 command result, 就考虑用最基础的类型, 字符串 xml 包裹.
         """
-        if self.result is None and len(self.messages) == 0:
+        attrs = {'at': str(self.created)}
+        name = name or self.caller or None
+        if name and self.from_macro_id:
+            name = f"macro:{self.from_macro_id}#{name}"
+        if self.macro_id is not None:
+            attrs['macro_id'] = self.macro_id
+        if self.is_empty_result():
             return []
         result_message = None
-        name = name or self.caller or None
+
         # 先把结果序列化.
-        if with_serialized_result and self.result is not None:
+        if self.logos is not None:
+            result_message = Message.new(tag='result').with_content(
+                self.result if self.result is not None else self.logos,
+            )
+        elif with_serialized_result and self.result is not None:
             # 保留 name.
             serialized_content, ok = self.serialize_result()
             if serialized_content:
@@ -918,7 +992,7 @@ class CommandTaskResult(BaseModel):
             messages.append(message)
         return [
             Message.new(
-                tag='command', name=name, timestamp=False, attributes={'at': str(self.created)}
+                tag='command', name=name, timestamp=False, attributes=attrs,
             ).with_messages(*messages),
         ]
         # return messages
@@ -1014,6 +1088,8 @@ class CommandTask(Generic[RESULT], ABC):
         self.done_at: Optional[str] = None
         """最后产生结果的 fail/cancel/resolve 函数被调用的代码位置."""
         self.call_id: str = str(call_id) if call_id is not None else ""
+        self.macro_id: str | None = None
+        self.from_macro_id: str | None = None
         CommandTask.instances_count += 1
 
     def __del__(self):
@@ -1518,27 +1594,16 @@ class BaseCommandTask(Generic[RESULT], CommandTask[RESULT]):
                 errmsg,
             )
 
-    def resolve(self, result: RESULT | CommandTaskResult | Observe) -> None:
+    def resolve(self, result: RESULT | CommandTaskResult | Observe | MacroResult) -> None:
         if self.__done_event.is_set():
             return
-        if isinstance(result, Observe):
-            # 转化 Observe 为 CommandTaskResult
-            task_result = CommandTaskResult.from_observe(result)
-            result = None
-        # 如果数据类型不是 CommandTaskResult, 需要转化一次.
-        elif result and isinstance(result, CommandTaskResult):
-            task_result = result
-            if task_result.serialized:
-                task_result = CommandTaskResult.from_serializable(task_result)
-            result = task_result.result
-        else:
-            task_result = CommandTaskResult(
-                result=result,
-            )
+        task_result = CommandTaskResult.new(value=result)
         #  必须设置 caller name.
         task_result.caller = self.caller_name()
+        task_result.from_macro_id = self.from_macro_id
+        task_result.macro_id = self.macro_id
         self.__task_result = task_result
-        self._set_result(result, "done", 0, None)
+        self._set_result(task_result.to_raw_result(), "done", 0, None)
 
     def task_result(self) -> Optional[CommandTaskResult]:
         if not self.__done_event.is_set():

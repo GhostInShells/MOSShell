@@ -56,6 +56,9 @@ CommandFunction = Union[Callable[..., Coroutine], Callable[..., Any]]
 用于描述一个本地的 python 函数 (或者类的 method) 可以被注册到 Channel 中变成一个 command. 
 """
 
+MacroFunction = Union[Callable[..., Coroutine[None, None, str]], Callable[..., str]]
+"""宏, 能够生成新的 Command Token 语法字符串的函数"""
+
 MessageType = Message | str | Image.Image
 MessageFunction = Union[
     Callable[[], Coroutine[None, None, list[MessageType]]],
@@ -290,6 +293,7 @@ def new_command(
         always_observe: bool = False,
         timeout: Optional[float] = None,
         visible: bool = True,
+        macro: bool = False,
 ) -> Command:
     """
     定义一个 Command. 逻辑与 Builder.command 相同.
@@ -310,6 +314,7 @@ def new_command(
         always_observe=always_observe,
         timeout=timeout,
         visible=visible,
+        macro=macro,
     )
 
 
@@ -417,6 +422,7 @@ class Builder(ABC):
         """
         pass
 
+
     @abstractmethod
     def command(
             self,
@@ -436,6 +442,7 @@ class Builder(ABC):
             always_observe: bool = False,
             timeout: float | None = None,
             visible: bool = True,
+            macro: bool = False,
     ) -> Callable[[CommandFunction], CommandFunction | Command]:
         """
         decorator
@@ -471,9 +478,10 @@ class Builder(ABC):
                 高级功能, 不理解的情况下请不要改动它.
 
         :param return_command: 为真的话, 返回的不是原函数, 而是一个可以视作该函数的 Command 对象. 通常用于测试.
-        :param always_observe: 为 True 的话, 不需要特别声明, command 的返回值总是会标记需要下一轮观察思考.
+        :param always_observe: 为 True 的话, 不需要特别返回 Observe 对象, command 的返回值总是会标记需要下一轮观察思考.
         :param timeout: if not None, set default timeout for the command.
         :param visible: 命令是否对模型可见. 不可见, 通常因为这个命令是模型认知协议的一部分, 以至于可以省略它.
+        :param macro: 命令返回值是用来生成 Command 的语法字符串, 比如 CTML 字符串.
 
         CommandFunction 最佳实践是:
         >>> # 原始函数是 async, 从而有能力根据真实运行的时间, 阻塞 Channel 后续命令.

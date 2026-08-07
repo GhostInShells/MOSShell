@@ -6,7 +6,7 @@ from typing_extensions import Self
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import Timeleft
 from ghoshell_moss.message import unique_id
-from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta, Channel
 from ghoshell_moss.core.concepts.command import Command, CommandTask, CommandToken, CommandTaskContextKey
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.interpreter import (
@@ -14,9 +14,8 @@ from ghoshell_moss.core.concepts.interpreter import (
     CommandTokenParser,
     TextTokenParser,
     Interpreter,
-    Interpretation, _TaskId,
+    Interpretation,
 )
-from ghoshell_moss.contracts.speech import Speech
 from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.core.ctml.elements import CommandTaskElementContext
 from ghoshell_moss.core.ctml.versions import get_moss_ctml_meta_instruction
@@ -31,6 +30,7 @@ __all__ = [
     "CTMLInterpreter",
 ]
 
+_TaskId = str
 DEFAULT_META_PROMPT = get_moss_ctml_meta_instruction()
 
 _Title = str
@@ -344,14 +344,15 @@ class CTMLInterpreter(Interpreter):
     def on_task_done(self, *callbacks: CommandTaskCallback) -> None:
         self._on_task_done_callbacks.extend(callbacks)
 
-    def text_token_parser(self) -> TextTokenParser:
+    def text_token_parser(self, *, stream_id: str | None = None) -> TextTokenParser:
         """
         实现无副作用的 TokenParser 返回.
+        :param stream_id: 覆盖 stream id. 宏展开时传 lineage, 保证展开 token 的 cid 独立于主流.
         """
         # create token parser
         return CTML2CommandTokenParser(
             callback=None,
-            stream_id=self.id,
+            stream_id=stream_id or self.id,
             root_tag=self._root_tag,
             tokens_replacement=self._token_replacement,
             attr_parsers=self._ctml_attr_parser,
@@ -450,6 +451,59 @@ class CTMLInterpreter(Interpreter):
         finally:
             # 主循环如果发生错误, interpreter 会终止. 这时并不会结束所有的任务.
             self._parsing_loop_done.set()
+
+    async def parse_macro_logos(
+            self,
+            logos: str,
+            *,
+            root_channel: ChannelFullPath = '',
+            macro_id: str = '',
+            caller: str = '',
+            lineage: str = '',
+    ) -> list[CommandToken]:
+        try:
+            return await asyncio.to_thread(
+                self._parse_macro_logos, logos, root_channel=root_channel, lineage=lineage,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._logger.exception(
+                "%s Interpreter micro parsing loop from %r, caller %r, failed: %s",
+                self._log_prefix,
+                macro_id, caller,
+                e,
+            )
+            err = InterpretError(f"parse logos from macro `macro:{macro_id}#{caller}` failed: {e}")
+            self._set_interpreter_error(err)
+            raise e
+
+    def _parse_macro_logos(
+            self,
+            logos: str,
+            *,
+            root_channel: ChannelFullPath = '',
+            lineage: str = '',
+    ) -> list[CommandToken]:
+        tokens = []
+        # 展开 token 必须绑定独立的 stream_id (lineage), 否则与主流 token 的 cid 撞车,
+        # task 依赖 cid 去重 (managing_tasks / compiled_tasks 等).
+        stream_id = lineage or unique_id()
+
+        def _append_token(token: CommandToken):
+            if token is None:
+                return
+            if token.name == self._root_tag:
+                return
+            token.chan = Channel.join_channel_path(root_channel, token.chan)
+            tokens.append(token)
+
+        parser = self.text_token_parser(stream_id=stream_id)
+        parser.with_callback(_append_token)
+        with parser:
+            parser.feed(logos)
+            parser.commit()
+        return tokens
 
     async def __aenter__(self) -> Self:
         await self.start()

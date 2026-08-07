@@ -5,11 +5,11 @@
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Iterable, AsyncIterable
+from typing import Optional, Callable, Iterable, AsyncIterable, AsyncIterator
 from typing_extensions import Self
 from ghoshell_moss.core.concepts.errors import CommandErrorCode, InterpretError
 from ghoshell_moss.core.concepts.command import CommandTask, CommandToken
-from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta
+from ghoshell_moss.core.concepts.channel import ChannelFullPath, ChannelMeta, Channel
 from ghoshell_moss.core.concepts.tools import CommandAsTool
 from ghoshell_moss.message import Message
 from ghoshell_common.contracts import LoggerItf
@@ -29,6 +29,9 @@ __all__ = [
 
 CommandTokenCallback = Callable[[CommandToken | None], None]
 CommandTaskCallback = Callable[[CommandTask | None], None]
+
+# 宏展开的递归深度上限. 对齐 loop 原语 100 次上限: 用宏实现的 loop, N 次迭代即深度 N.
+MAX_MACRO_DEPTH = 100
 
 
 class TextTokenParser(ABC):
@@ -204,7 +207,10 @@ class Interpretation(BaseModel):
             self.pending_tasks.pop(task_id)
         # 注册执行成功的 tokens.
         if task.success():
-            self.executed_inputs.append(task.tokens)
+            # D13: 宏任务自身的 tokens 不进 executed_inputs —— 它被展开成 body, 摊平轨迹只含展开产物,
+            # 否则含 <macro/> 的轨迹存成新宏 body 会自指.
+            if not task.meta.macro:
+                self.executed_inputs.append(task.tokens)
             self.success_tasks[task_id] = task.caller_name()
         # 记录 cancel 类别的.
         elif CommandErrorCode.is_cancelled(task.errcode):
@@ -436,7 +442,7 @@ class Interpreter(ABC):
         interpreter 持有的 Token 解析器. 将文本输入解析成 command token, 同时将 command token 解析成 command task.
         command task 会自动回调 interpreter 执行.
 
-        >>> def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
+        >>> async def example(interpreter: Interpreter, deltas: AsyncIterable[str]) -> None:
         >>>     with interpreter.text_token_parser() as parser:
         >>>         async for delta in deltas:
         >>>             parser.feed(delta)
@@ -615,6 +621,20 @@ class Interpreter(ABC):
         """
         pass
 
+    @abstractmethod
+    async def parse_macro_logos(
+            self,
+            logos: str,
+            *,
+            root_channel: ChannelFullPath = '',
+            macro_id: str = '',
+            caller: str = '',
+            lineage: str = '',
+    ) -> list[CommandToken]:
+        """在 interpreter 的声明周期中解析给定字符串, 生成 CommandToken.
+        lineage: 展开 token 的 stream_id 血统链, 用于 cid 唯一性 (task 多处依赖 cid 去重). 为空时由实现生成."""
+        ...
+
     # --- tools 兼容.  --- #
 
     @abstractmethod
@@ -706,6 +726,8 @@ class Interpreter(ABC):
     ):
         """
         可以运行在协程中, 解析输入的 tokens 流, 返回 Command Tasks. 用毒丸做判断.
+        命中 `meta.macro` 的 task 时, 暂停拉取 → await 宏任务 → 将返回值 (MacroResult | str) 的 logos
+        换根解析成 token 流, 喂回同一个 parser 原位展开. 递归展开受 MAX_MACRO_DEPTH 深度限制.
         raise InterpreterError
         """
         parser = self.command_token_parser()
@@ -715,6 +737,67 @@ class Interpreter(ABC):
                 return False
 
             stopped = empty_stopped
+        # 单次解释自增: 展开批次 id + lineage (stream_id) 来源, 保证展开 token 的 cid 独立.
+        macro_counter = 0
+
+        async def expand_macro(task: CommandTask, depth: int) -> None:
+            nonlocal macro_counter
+            if stopped():
+                return
+            # await 宏任务. 0.2s wait_for 轮询, stopped() 可打断.
+            while not stopped():
+                try:
+                    await asyncio.wait_for(task.wait(throw=False), 0.2)
+                    break
+                except asyncio.TimeoutError:
+                    continue
+            if stopped():
+                return
+            if not task.success():
+                if task.cancelled() or CommandErrorCode.is_cancelled(task.errcode):
+                    # 取消: 非 interpreter error, 跳过展开.
+                    return
+                err = task.exception() or RuntimeError(f"macro command failed: {task.caller_name()}")
+                # D15: 宏任务执行失败 (非取消) → interpreter error.
+                raise InterpretError(f"macro `{task.caller_name()}` failed: {err}")
+            tr = task.task_result()
+            if tr is None:
+                return
+            # 归一化为 logos 串: MacroResult.logos 优先, 否则裸 str.
+            if tr.logos is not None:
+                logos = tr.logos
+            elif isinstance(tr.result, str):
+                logos = tr.result
+            else:
+                return  # 非 logos 承载, 不展开.
+            if not logos:
+                return  # 空串 void 宏, 不展开.
+            if depth >= MAX_MACRO_DEPTH:
+                # 自引用宏靠深度上限兜底.
+                raise InterpretError(f"macro recursion depth exceeded: {depth} >= {MAX_MACRO_DEPTH}")
+            macro_counter += 1
+            macro_id = macro_counter
+            # 换根解析 (阻塞, 内部卸载到线程). 解析失败已在实现侧归属 interpreter error.
+            tokens = await self.parse_macro_logos(
+                logos,
+                root_channel=task.chan,
+                macro_id=str(macro_id),
+                caller=task.caller_name(),
+                lineage=f"m{macro_id}",
+            )
+            # 注入: 展开 token 在流序上先于后续模型 token (循环此刻持有 queue, 天然不拉取).
+            for token in tokens:
+                tasks = parser.on_token(token)
+                if tasks is not None:
+                    for t in tasks:
+                        t.macro_id = str(macro_id)
+                        t.from_macro_id = task.macro_id
+                        t.on_compiled()
+                        task_callback(t)
+                        if t.meta.macro:
+                            await expand_macro(t, depth + 1)
+                await asyncio.sleep(0.0)
+
         try:
             with parser:
                 while not stopped() and not parser.is_end():
@@ -729,6 +812,8 @@ class Interpreter(ABC):
                         for task in tasks:
                             task.on_compiled()
                             task_callback(task)
+                            if task.meta.macro:
+                                await expand_macro(task, 0)
                     await asyncio.sleep(0.0)
         except asyncio.CancelledError:
             raise

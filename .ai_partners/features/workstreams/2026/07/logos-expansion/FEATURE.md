@@ -1,15 +1,17 @@
 ---
 created: 2026-07-26
 depends: []
-description: 解释器级 logos 展开：command 返回值标记为 logos 时，在解释循环中原位解析为 command tokens 注入，形成时序上的
-  CTML 展开。取代仅主轨可用的 CommandStackResult 机制。
+description: 解释器级宏展开：command 返回值 (Macro | str) 标记为 macro 时，在解释循环中原位解析为 command
+  tokens 注入，形成时序上的 CTML 展开。取代仅主轨可用的 CommandStackResult 机制。
 milestone: null
 priority: P1
-status: design-locked
-status_note: design converged in two dialogue rounds; token-injection approach, create_scoped_logos
-  seam, naming settled as logos
-title: Logos Expansion
-updated: '2026-07-26'
+status: in-progress
+status_note: |-
+  design converged in three dialogue rounds (07-25/26 + 08-06). 08-06: naming settled
+  as macro, scope-wrap dropped, Macro object return protocol, macro_id/parent_macro_id disambiguation,
+  depth cap 100, executed_logos excludes macro self-tokens, Macro-store ChannelModule as verifier
+title: Macro Expansion (Logos)
+updated: '2026-08-06'
 ---
 
 # Logos Expansion
@@ -163,6 +165,80 @@ meta 上留呈现 flag。注意 `Interpretation.executed_inputs` 按 task 成功
 `task.tokens`——展开 task 的 tokens 自然出现在 `executed_logos()` 中，免费
 得到摊平后的可重放 CTML，闭合学习回路：成功宏运行留下摊平轨迹 → 存储 →
 结晶成新宏。
+
+## 二次收敛 (2026-08-06)
+
+> 人类工程师 + 模型第三轮碰撞后的收敛结论。以下条目覆盖/替换上文 D1-D8 中的对应决策。
+
+### D9. 命名：logos → macro（`CommandMeta.macro: bool`）
+
+D7 定名 logos 被推翻。人类确认改名为 **macro**——对齐解释器语义更直观，四件套命令名即 macro 家族。`create_scoped_logos` 相应改名 `create_scoped_macro`。项目本体论中 logos 仍指"模型输出的流"，但宏机制这一特定能力用 macro。workstream 目录名 `logos-expansion` 保留（历史轨迹），术语在文档/代码内统一为 macro。
+
+### D10. 展开不套 scope：展开 token 是平级普通 task
+
+D1/D4 的 `<chan:_>` scope 包裹取消。展开 token 直接喂回 parser，作为普通命令 task——更像"宏展开为 body"：
+
+- 自闭合宏 task 在 END 时交付、解析树在父级 → 展开是真兄弟；
+- 带内容/子命令的宏 task 提前交付、解析树在宏 element 内 → 展开落成宏的 body（降级语义，仍可执行）。
+- 裸 `<say/>` 名字解析靠**换根**：嵌套 parser 加 `root_chan=宏所在channel`（`chan = chan or root_chan`，顶层 `.` 前缀按 root_chan 相对解析）。
+- D3 的"只能自己和子 channel"解析期约束放松为两层：
+  - **(i) 基态自由形态**：出界合法性由 channel scope 运行时检查兜底；
+  - **(ii) 解析优化**：注入前对 token 列表预校验，任何 chan 非宏 channel 或后代 → 显式报错"你不该在这里用 ctml"。
+
+### D11. Macro 对象：返回值协议 `Macro | str`
+
+- 定义 `Macro` 对象作为递归传递物。宏命令返回 `Macro` 或 `str`。
+- `CommandTaskResult.new_from(any)` 接管 `resolve` 的裸实例化（原 1534 行）：value 为 Macro → `result = macro.result`；为 str → 原样。
+- `Macro.result` 为空 → 模型不显示宏命令的返回值。
+- 展开侧只读 `task.result()` 字符串，不感知 Macro 对象——**Macro 是纯返回值协议**，展开逻辑不关心返回值怎么包装。
+- 宏的最佳形态是 python f-string + 记忆（检索/模板/状态查询）。复杂逻辑进宏没有可执行路径，第二轮调用 token 开销反而更高。
+
+### D12. call_id 撞车消歧：`CommandTask.macro_id` / `parent_macro_id`
+
+模型输出的 `<a:A _cid="1"/>` 与宏展开的同名 `<a:A _cid="1"/>` 都有返回值时，模型无法区分。消歧：
+
+- `CommandTask` 新增 `macro_id: int | None` 与 `parent_macro_id: int | None`。
+- macro_id 是**单次解释的自增计数**（解析循环内局部计数器，随解释天然重置）。递归时新 batch 得新 id，`parent_macro_id` = 产生它的宏命令自身的 macro_id。
+- 渲染到消息面：展开 task 的 caller 形如 `macro:{id}#{chan}:{name}:{caller}`。现阶段用 `macro="1"` 标记自身宏身份——token 测试先跑通，渲染打磨后置。
+- 回溯线**不放 task.context**——放 task 字段 + CommandTaskResult 渲染。
+
+### D13. executed_logos 排除宏自身 tokens
+
+D8 的"免费摊平轨迹"毒化结晶化：轨迹含 `<macro/>`，存成新宏 body 会自指。改为：
+
+- `Interpretation.on_done_task` 对 `meta.macro` 的成功 task **跳过 tokens 追加**；
+- executed_logos 只含展开 task 的 tokens → 真"摊平后的可重放 CTML"，可直接结晶。
+
+### D14. 递归深度上限 100，不做横向总量
+
+- 深度 = 展开嵌套层数（= parent_macro_id 链长），解析循环显式维护整数。
+- 默认上限 **100**，对齐 loop 原语——loop 用宏实现时，N 次迭代即深度 N。
+- 自引用宏靠深度上限兜底（真无限递归跑到 100 被掐，同 loop 原语行为）。
+- 不做展开 task 总量预算。
+
+### D15. 异常归属
+
+| 场景 | 归属 |
+|---|---|
+| 宏任务执行失败（非取消） | interpreter error（停解释） |
+| S 解析失败（预校验拦截） | interpreter error（**覆盖 D4** 的"归宏 observe"） |
+| 递归超限 | interpreter error（同解析失败） |
+| 展开产物运行时失败 | 普通命令失败（D4 保留） |
+| 取消（close/clear/打断） | 非 interpreter error，跳过展开 |
+
+### D16. 验证载体：Macro 存储 ChannelModule
+
+实现一个 ChannelModule 作为端到端 dogfood + 程序性记忆基座的第一个消费者：
+
+- 四命令：`macro(label)`（macro flag，返回存储的 ctml） / `macro_save(label, desc, ctml)` / `macro_read(label)` / `macro_list`。
+- 入参 `dir: Path | None`；`dir=None` 默认**内存存储**——channels 体系动态，落盘宏在别的 runtime 引用不到当时存在的 channel。
+- 绑定 main_channel（PrimeChannel），用 `ctml_shell_test` 直接单测。
+- `macro(label)` 与 inline 写入等价构成 oracle（上文 D 测试策略）。
+
+### D17. 工作模式
+
+- 不 worktree，直接在当前目录做。字段/对象层无破坏性；主循环层每帧 review、结对编程。
+- 人类同步开工部分字段/对象层改动，由模型 review。
 
 ## Implementation Notes
 
