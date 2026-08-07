@@ -6,7 +6,7 @@ from ghoshell_moss.contracts.resource import ResourceStorageMeta
 from ghoshell_moss.core.blueprint.mindflow import SignalSchema, NucleusMeta
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.blueprint.project import Manifest, ProjectManifest
-from ghoshell_moss.core.blueprint.environment import MATRIX_MANIFESTS_PACKAGE
+from ghoshell_moss.core.blueprint.environment import PROJECT_MANIFESTS_PACKAGE
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.project.manifests.providers import search_provider_manifests
 from ghoshell_moss.project.manifests.configs import search_config_manifests
@@ -25,7 +25,7 @@ class ScannedProjectManifest(ProjectManifest):
     每个方法委托给对应的 scanner, 从约定的子包路径发现.
     """
 
-    def __init__(self, root_package: str = MATRIX_MANIFESTS_PACKAGE):
+    def __init__(self, root_package: str = PROJECT_MANIFESTS_PACKAGE):
         self._root = root_package
 
     def root_package(self) -> str:

@@ -60,7 +60,7 @@ __all__ = [
     'WORKSPACE_CELL_RUNTIME_DIR',
     'DEFAULT_NODES_DIR',
 
-    'MATRIX_MANIFESTS_PACKAGE',
+    'PROJECT_MANIFESTS_PACKAGE',
     'GHOST_MANIFESTS_PACKAGE',
 
     'MOSS_NAME_PATTERN',
@@ -126,7 +126,7 @@ NONE_GHOST_NAME = "none"
 ENV_CELL_ADDRESS_KEY = 'MOSS_CELL_ADDRESS'
 ENV_PARENT_CELL_ADDRESS_KEY = 'MOSS_PARENT_CELL_ADDRESS'
 
-MATRIX_MANIFESTS_PACKAGE = 'MOSS.manifests'
+PROJECT_MANIFESTS_PACKAGE = 'MOSS.manifests'
 GHOST_MANIFESTS_PACKAGE = 'MOSS.ghosts'
 
 # 与运行配置项有关的 Env Key
@@ -195,7 +195,7 @@ class MossMeta(BaseModel):
         pattern=MOSS_NAME_PATTERN,
     )
     matrix_manifest_package: str = Field(
-        default=MATRIX_MANIFESTS_PACKAGE,
+        default=PROJECT_MANIFESTS_PACKAGE,
     )
     system_project: str = Field(
         default='',

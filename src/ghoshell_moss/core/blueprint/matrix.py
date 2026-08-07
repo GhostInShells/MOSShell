@@ -20,7 +20,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
-from ghoshell_moss.contracts import Workspace, ResourceRegistry
+from ghoshell_moss.contracts import Workspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ManagedProcess, ProcessMeta
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 from ghoshell_container import IoCContainer
@@ -146,16 +146,17 @@ class Matrix(ABC):
         from ghoshell_moss.contracts.configs import ConfigStore
         from ghoshell_moss.contracts.resource import ResourceRegistry
         import logging
-
-        return Contracts.new(
+        contracts = [
             # 1. blueprint 架构基建
             Project, Environment, Matrix, Cell, CellAddress,
             # 2. session 配套
             Session, TopicService, QAManager,
             # 3. contracts 配套
             Workspace, Subprocesses, JobSupervisor, LoggerItf, logging.Logger,
-            ConfigStore, ResourceRegistry,
-        )
+            ConfigStore, ResourceRegistry
+        ]
+
+        return Contracts.new(*contracts)
 
     # -- 身份 -- #
 
@@ -212,6 +213,11 @@ class Matrix(ABC):
         配置、资产、运行时数据. configs() 读取 cell 自己目录下的 configs/.
         """
         ...
+
+    @property
+    @abstractmethod
+    def configs(self) -> ConfigStore:
+        return self.project.configs
 
     @property
     @abstractmethod
