@@ -39,7 +39,7 @@ from ghoshell_moss.project.manifests.resources import (
     ResourceManifest,
     search_resource_manifests,
 )
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
 from ghoshell_moss.core.concepts.topic import TopicSchema
 from ghoshell_moss.core.blueprint.parameter import ParameterSchema
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta, SignalSchema
@@ -628,7 +628,7 @@ class TestSearchResourceManifests:
 class TestScannedMatrixManifest:
     def test_all_stub_manifests_have_values(self):
         """stub manifests 根包扫描: 每个类别都有值，无异常."""
-        m = ScannedMatrixManifest(STUB_MANIFESTS_ROOT)
+        m = ScannedProjectManifest(STUB_MANIFESTS_ROOT)
 
         providers = list(m.providers())
         assert len(providers) >= 1

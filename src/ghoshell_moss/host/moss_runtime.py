@@ -101,7 +101,7 @@ class MossRuntimeImpl(MossRuntime):
         self._system_prompter: _MossSystemPrompterImpl = self._build_system_prompter()
 
         # --- prepare shell --- #
-        # main channel 从 mode.manifests().channel() 单 Manifest 拿 (§ZZ-1 ModeManifests
+        # main channel 从 mode.manifests().channel() 单 Manifest 拿 (HostModeManifests
         # 由 MossRuntime 承接). 无声明用默认空白 main 兜底.
         manifests_main = self._discover_main_channel()
         if manifests_main is None:
@@ -244,7 +244,7 @@ class MossRuntimeImpl(MossRuntime):
     def _discover_main_channel(self):
         """从 mode.manifests().channel() 拿 main channel Manifest.
 
-        新 ABC (§ZZ-1 ModeManifests): channel() -> Manifest[PrimeChannel] 单值.
+        新 ABC (HostModeManifests): channel() -> Manifest[PrimeChannel] 单值.
         老 API .channels().values() 已废, 老代码 next(...) 迭代形态一并作废.
         """
         try:

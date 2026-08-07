@@ -13,12 +13,10 @@ from pathlib import Path
 from typing import Coroutine, Iterable, Type, Callable
 from typing_extensions import Self
 
-from ghoshell_container import Container, IoCContainer, Provider
+from ghoshell_container import IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, LocalWorkspace, ConfigStore, ConfigInstanceRegisterBootstrapper, \
-    ResourceRegistry
-from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ResourceRegistry
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
@@ -57,7 +55,6 @@ class MatrixImpl(Matrix):
             adapter: MatrixNetworkAdapter,
             network: NetworkMetadata,
             logger: logging.Logger | None = None,
-            container: IoCContainer | None = None,
     ):
         # runtime_info 是 Matrix 唯一的身份真相载体 — cell + pid/pgid/start_time
         # 全部由 caller (factory worker path / Host concrete) 显式构建后传入.
@@ -90,7 +87,7 @@ class MatrixImpl(Matrix):
         self._event_loop: asyncio.AbstractEventLoop | None = None
 
         # -- container -- #
-        self._container: IoCContainer = self._prepare_container(container)
+        self._container: IoCContainer = self._prepare_container()
 
         # -- 网络三件, __aenter__ async 阶段填 -- #
         self._presence: CellPresence | None = None  # adapter.new_presence 产物
@@ -656,36 +653,25 @@ class MatrixImpl(Matrix):
     # 装配: IoC 两阶段 (§ZZ-5)
     # ==================================================================
 
-    def _prepare_container(self, container: IoCContainer | None) -> Container:
+    def _prepare_container(self) -> IoCContainer:
         """
         sync 阶段: 注册全部 provider, 返回未 bootstrap 的 container.
 
-        §ZZ-5 装配次序: set (5 个已在实例) → matrix_manifests providers →
-        matrix default providers → adapter.bind_ioc → adapter.default_providers →
-        logger default → (caller 负责 bootstrap).
+        次序: project providers → matrix 实例 set → adapter driver 装配 →
+        matrix default providers → matrix 契约校验.
         """
-        container = container or Container(name=self.this.address)
-
-        # -- 5 个"实例已在"直接 set -- #
+        container = self.project.container
+        # -- matrix 自身实例 -- #
         container.set(Matrix, self)
         container.set(MatrixImpl, self)
         container.set(Environment, self._env)
         container.set(Project, self._project)
         container.set(Workspace, self._project.workspace)
         container.set(MatrixNetworkAdapter, self._adapter)
+        container.set(Cell, self._runtime_info.cell)
+        container.set(CellAddress, self._runtime_info.cell.address)
 
-        # -- matrix_manifests().providers 全 register (workspace baseline, §ZZ-2) -- #
-        matrix_manifests = self._project.matrix_manifests()
-        for provider_manifest in matrix_manifests.providers():
-            if provider_manifest.is_error():
-                self._logger.warning(
-                    "%s skip provider manifest with error: %s (%s)",
-                    self._log_prefix, provider_manifest.name(), provider_manifest.error(),
-                )
-                continue
-            container.register(provider_manifest.value())
-
-        # -- adapter driver-specific 装配 (§ZZ-5) -- #
+        # -- adapter driver-specific 装配 -- #
         # bind_ioc: 通常注册 lazy provider (如 zenoh.Session), 捕捉 adapter 引用,
         # 首次 fetch 时读 adapter._session (那时 adapter.__aenter__ 已完成).
         self._adapter.bind_ioc(container)
@@ -694,52 +680,26 @@ class MatrixImpl(Matrix):
                 continue
             container.register(provider)
 
-        # -- matrix default providers — if not bound (§ZZ-2 兜底) -- #
+        # -- matrix default providers — if not bound (default 兜底) -- #
         for provider in self._default_providers():
             if container.bound(provider.contract()):
                 continue
             container.register(provider)
 
-        # -- configs -- #
-        configs = []
-        for config_manifest in matrix_manifests.configs():
-            if config_manifest.is_error():
-                self._logger.warning(
-                    '%s skip config with error: %s (%s)',
-                    self._log_prefix, config_manifest.name(), config_manifest.error(),
-                )
-                continue
-            configs.append(config_manifest.value())
-        if len(configs) > 0:
-            bootstrapper = ConfigInstanceRegisterBootstrapper(*configs)
-            container.add_bootstrapper(bootstrapper)
-
-        # -- resources (matrix_manifests.resources → bootstrapper) -- #
-        for resource_manifest in matrix_manifests.resources():
-            if resource_manifest.is_error():
-                continue
-            storage_factory = resource_manifest.value()
-            bootstrapper = ResourceStorageFactoryBootstrapper(storage_factory)
-            container.add_bootstrapper(bootstrapper)
+        # -- matrix 装配契约校验 — 缺失任何一项即构造失败 (fail-fast) -- #
+        self.contracts().validate(container)
 
         return container
 
     def _default_providers(self) -> Iterable[Provider]:
         """
-        matrix 层的 default 接线 (§ZZ-2 default 兜底).
+        matrix 层的 default 接线 (default 兜底).
 
-        workspace 用户在 MatrixManifest 里显式覆写即可覆盖.
-        driver-specific 的 default (topic/session/zenoh.Session) 归 adapter.
+        仅剩 logger. 协议 default (topic/session/qa) 归 adapter;
+        子进程/任务等 project 级能力归 Project._default_providers.
         """
-        from ghoshell_moss.matrix.providers.configs_provider import EnvConfigStoreProvider
         from ghoshell_moss.matrix.providers.logger_provider import MatrixLoggerProvider
-        from ghoshell_moss.matrix.providers.subprocesses_provider import MatrixSubprocessesProvider
-        from ghoshell_moss.matrix.providers.job_supervisor_provider import MatrixJobSupervisorProvider
-
-        yield MatrixSubprocessesProvider()
-        yield MatrixJobSupervisorProvider()
         yield MatrixLoggerProvider()
-        yield EnvConfigStoreProvider()
 
     # ==================================================================
     # 生命周期 (承 host/matrix.py __aenter__/__aexit__ 骨架, 表面按 §ZZ-5)
@@ -753,6 +713,8 @@ class MatrixImpl(Matrix):
 
         # -- sync 阶段 -- #
         self._exit_stack.__enter__()
+        # bootstrap project first
+        self._exit_stack.enter_context(self._project)
 
         # 本 cell 生命周期先落地 (§UU-6 单写者原则):
         #   1. singleton → workspace.lock() 争抢 (host 一律 singleton)
@@ -767,12 +729,6 @@ class MatrixImpl(Matrix):
             self._runtime_info,
             kill=self._kill_orphan_cell,
         )
-
-        self._exit_stack.enter_context(
-            self._container_lifecycle_ctx()
-        )
-        # container.bootstrap 已在 _container_lifecycle_ctx 里完成.
-
         # pull LoggerItf from IoC 覆写 (§ZZ-6): 有覆写就用, 没有保 self._logger 兜底
         pulled = self._container.get(LoggerItf)
         if pulled is not None:
@@ -838,15 +794,6 @@ class MatrixImpl(Matrix):
             self._closing_event.set()
             raise
 
-    @contextlib.contextmanager
-    def _container_lifecycle_ctx(self):
-        """container.bootstrap + shutdown 反卷."""
-        self._container.bootstrap()
-        try:
-            yield
-        finally:
-            self._container.shutdown()
-
     async def _cancel_channel_provider_tasks(self) -> None:
         task = self._channel_provider_task
         self._channel_provider_task = None
@@ -910,3 +857,5 @@ class MatrixImpl(Matrix):
         # sync stack 反卷 (container shutdown + enter_cell_lifecycle finally 触发 —
         # runtime file 删除在此)
         self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
+        # discover 缓存复位 — 已关闭的 matrix 不再被 Matrix.discover() 返回.
+        Matrix.reset_discover_instance(self)

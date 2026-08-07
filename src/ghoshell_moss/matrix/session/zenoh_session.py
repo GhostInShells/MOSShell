@@ -33,7 +33,7 @@ import asyncio
 __all__ = [
     'MossSessionWithZenoh',
     'SimpleOutputBuffer',
-    'ProjectZenohSession',
+    'MatrixZenohSession',
 ]
 
 
@@ -354,7 +354,7 @@ class MossSessionWithZenoh(Session):
         self._logger.info("%s session closed", self._log_prefix)
 
 
-class ProjectZenohSession(MossSessionWithZenoh):
+class MatrixZenohSession(MossSessionWithZenoh):
 
     def __init__(
             self,

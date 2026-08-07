@@ -11,17 +11,21 @@
 # Mode 通过 from MOSS.manifests.providers import * 继承全局。
 
 from ghoshell_moss.matrix.providers import (
-    ProjectZenohSessionProvider,
+    MatrixZenohSessionProvider,
     ZenohTopicServiceProvider,
-    EnvConfigStoreProvider,
     MatrixLoggerProvider,
     ZenohQAManagerProvider,
+)
+from ghoshell_moss.project.providers import (
+    EnvConfigStoreProvider,
+    ProjectSubprocessesProvider,
+    ProjectJobSupervisorProvider,
 )
 
 from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
 
 # zenoh session provider
-moss_session_provider = ProjectZenohSessionProvider()
+moss_session_provider = MatrixZenohSessionProvider()
 
 # file-based config store
 config_store_provider = EnvConfigStoreProvider()
@@ -37,3 +41,7 @@ resources_provider = InMemoryResourceRegistryProvider()
 
 # zenoh QA exchange (cross-process ask/answer)
 qa_manager_provider = ZenohQAManagerProvider()
+
+subprocess_provider = ProjectSubprocessesProvider()
+
+job_supervisor_provider = ProjectJobSupervisorProvider()

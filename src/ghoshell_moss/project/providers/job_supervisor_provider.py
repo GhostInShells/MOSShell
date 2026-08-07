@@ -1,9 +1,9 @@
-"""MatrixJobSupervisorProvider — matrix baseline default (§ZZ-2).
+"""ProjectJobSupervisorProvider — project baseline default.
 
-matrix 层承接 JobSupervisor 的接线, 不再走 host layer. singleton=True: 一个
-根实例住 IoC. 消费者拿到后调用 ``.new()`` 派生隔离 peer (§XX-4 判决).
+project 层承接 JobSupervisor 的接线. singleton=True: 一个根实例住 IoC,
+消费者拿到后调用 ``.new()`` 派生隔离 peer.
 
-底层依赖 Subprocesses (由 MatrixSubprocessesProvider 提供), factory 内 fetch 组合.
+底层依赖 Subprocesses (由 ProjectSubprocessesProvider 提供), factory 内 fetch 组合.
 """
 
 from typing import Type
@@ -15,10 +15,10 @@ from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.subprocesses import Subprocesses
 from ghoshell_moss.core.job_supervisor._impl import JobSupervisorImpl
 
-__all__ = ["MatrixJobSupervisorProvider"]
+__all__ = ["ProjectJobSupervisorProvider"]
 
 
-class MatrixJobSupervisorProvider(Provider[JobSupervisor]):
+class ProjectJobSupervisorProvider(Provider[JobSupervisor]):
 
     def singleton(self) -> bool:
         return True

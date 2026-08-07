@@ -91,15 +91,70 @@ class Matrix(ABC):
             env: Environment | None = None,
     ) -> Self:
         """
-        获取 Matrix 进程级单例. 开发时可专注于提供的 API, 不关心如何构建 Matrix.
+        获取当前进程的 Matrix 实例.
+
+        进程内同 cell 身份只建一个 (防止重复入网 / workspace 锁争抢).
+        `async with` 退出后再次 discover 会新建 — 不返回已关闭的 matrix.
+        开发时可专注于提供的 API, 不关心如何构建 Matrix.
         """
         # 反范式实现抽象可执行. 在你需要了解细节时, 可以追踪到真实的工厂代码.
         # 工厂函数可 patch.
         from ghoshell_moss.factory import create_matrix, create_project
+        global _instance
+        if _instance is not None:
+            return _instance
         env = env or Environment.discover()
         project = create_project(env)
-        project.bootstrap()
-        return create_matrix(env, project)
+        _instance = create_matrix(env, project)
+        return _instance
+
+    @classmethod
+    def reset_discover_instance(cls, instance: 'Matrix') -> None:
+        """矩阵退出后复位 discover 缓存 — 已关闭的实例不再被后续 discover 返回."""
+        global _instance
+        if _instance is instance:
+            _instance = None
+
+    def contracts(self) -> 'Contracts':
+        """
+        matrix 承诺的 IoC 依赖集合 — 装配时 (MatrixImpl.__init__) 校验.
+
+        缺失任何一项即构造失败, 新增基建依赖进这个集合.
+        环境里没有会造成 fail-fast, 不等到首次 force_fetch 才暴露.
+
+        三类:
+        1. blueprint 架构基建 — Project/Environment/Matrix, 加 Cell/CellAddress
+           (matrix 在 __init__ 直接 set, 实例已知)
+        2. session 配套 — Session/TopicService/QAManager.
+           Cache/Parameter 不走 IoC — Session 直接暴露 session.cache/session.parameters.
+        3. contracts 配套 — Workspace/Subprocesses/JobSupervisor/LoggerItf/
+           logging.Logger/ConfigStore/ResourceRegistry. 不含 FileEditor (依赖 cwd,
+           matrix 级暴露越权), 不含 asr/audio 等重能力.
+        """
+        from ghoshell_container import Contracts
+        from ghoshell_common.contracts import LoggerItf
+        from ghoshell_moss.core.blueprint.project import Project
+        from ghoshell_moss.core.blueprint.environment import Environment
+        from ghoshell_moss.core.blueprint.cell import Cell, CellAddress
+        from ghoshell_moss.core.blueprint.session import Session
+        from ghoshell_moss.core.concepts.topic import TopicService
+        from ghoshell_moss.core.concepts.qa import QAManager
+        from ghoshell_moss.contracts.workspace import Workspace
+        from ghoshell_moss.contracts.subprocesses import Subprocesses
+        from ghoshell_moss.contracts.job_supervisor import JobSupervisor
+        from ghoshell_moss.contracts.configs import ConfigStore
+        from ghoshell_moss.contracts.resource import ResourceRegistry
+        import logging
+
+        return Contracts.new(
+            # 1. blueprint 架构基建
+            Project, Environment, Matrix, Cell, CellAddress,
+            # 2. session 配套
+            Session, TopicService, QAManager,
+            # 3. contracts 配套
+            Workspace, Subprocesses, JobSupervisor, LoggerItf, logging.Logger,
+            ConfigStore, ResourceRegistry,
+        )
 
     # -- 身份 -- #
 
@@ -449,3 +504,6 @@ class Matrix(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         ...
+
+
+_instance: Matrix | None = None

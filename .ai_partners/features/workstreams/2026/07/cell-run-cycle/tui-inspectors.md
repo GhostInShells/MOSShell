@@ -85,7 +85,7 @@ def _create_repl_inspectors(self) -> dict[str, object]:
     return {
         "matrix": MatrixInspector(moss.matrix),
         "manifests": ManifestsInspector(
-            moss.project.matrix_manifests(),
+            moss.project.project_manifests(),
             mode.manifests() if mode else None,
         ),
         "moss": MOSSRuntimeInspector(moss, self.console),

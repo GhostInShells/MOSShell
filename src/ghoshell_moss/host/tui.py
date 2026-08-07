@@ -682,7 +682,7 @@ class MossHostTUI(Generic[RUNTIME], ABC):
 
         # 1. matrix baseline
         try:
-            mm = project.matrix_manifests()
+            mm = project.project_manifests()
             for it in (mm.providers, mm.configs, mm.topics, mm.signals, mm.resources):
                 for m in it():
                     if m.is_error():

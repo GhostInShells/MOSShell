@@ -85,8 +85,8 @@ def build_terminal_channel(
     in that signature. Call ``build_terminal_channel(...)`` at declaration
     time to get a factory, hand the factory to ``import_channels``.
 
-    Resolves Subprocesses from the container (matrix environments register a
-    per-Matrix singleton via MatrixSubprocessesProvider); falls back to a
+    Resolves Subprocesses from the container (project environments register a
+    per-Project singleton via ProjectSubprocessesProvider); falls back to a
     private SubprocessesImpl whose lifecycle the channel then manages itself.
 
     Default cwd resolution (highest → lowest priority):

@@ -29,7 +29,7 @@ import logging
 __all__ = [
     'HostModeMeta',
     'HostMode',
-    'Manifest', 'ModeManifests', 'MatrixManifest',
+    'Manifest', 'HostModeManifests', 'ProjectManifest',
     'NetworkConfig', 'NetworkMetadata',
     'Project',
     'HOST_MODE_MANIFESTS_PACKAGE',
@@ -250,6 +250,11 @@ class Manifest(Generic[T], ABC):
         ...
 
     @abstractmethod
+    def source(self) -> str:
+        """发现相关的 source code."""
+        ...
+
+    @abstractmethod
     def value(self) -> T:
         """找到的值. 仅在 is_error() 为 False 时有效. """
         ...
@@ -280,7 +285,7 @@ class Manifest(Generic[T], ABC):
         ...
 
 
-class MatrixManifest(ABC):
+class ProjectManifest(ABC):
     """全局基线声明 — 扫描一个 Python 包的子包，发现所有能力声明."""
 
     @abstractmethod
@@ -337,8 +342,8 @@ class MatrixManifest(ABC):
         yield from []
 
 
-class ModeManifests(ABC):
-    """Mode 专属声明 — 继承 Matrix 全局基线，追加 mode 特有内容."""
+class HostModeManifests(ABC):
+    """Host Mode 专属声明 — 继承 Matrix 全局基线，追加 mode 特有内容."""
 
     @abstractmethod
     def root_package(self) -> str:
@@ -462,7 +467,7 @@ class HostMode(ABC):
         ...
 
     @abstractmethod
-    def manifests(self) -> ModeManifests:
+    def manifests(self) -> HostModeManifests:
         """
         模式自己的资源声明.
         """
@@ -486,15 +491,6 @@ class Project(ABC):
     project 目录本身的内容对 MOSS 是动态可变的 (ghost 自管理的领地),
     目录 category 永不进内核 API (TT-7).
     """
-
-    # -- TT-7 保名判决: "Project" 不是名字被占, 而是治理域句柄的正名.
-    #    保名条件 = 契约按治理域句柄语义改写 (本 docstring) + category 禁入.
-    # -- TT-9 三目录松耦合: workspace = 治理真相存放地; project = 被治理领地
-    #    (薄句柄, 挂 Matrix 一级); cell 目录 = 代码出处 (治理归属仍是启动方).
-    #    cwd 只是发现起点, 不承载语义.
-    # -- A/B 动机: A 目录运行时拉起 B 目录 cell — B 只是代码出处,
-    #    治理归属 (日志/runtime/身份/网络) 全归 A. systemd 同构
-    #    (ExecStart 指向任意路径, journal/cgroup 归 init 域).
 
     @property
     def id(self) -> str:
@@ -563,7 +559,6 @@ class Project(ABC):
         from ghoshell_moss.factory import create_project
         env = env or Environment.discover()
         project = create_project(env)
-        project.bootstrap()
         return project
 
     def bootstrap(self):
@@ -591,6 +586,14 @@ class Project(ABC):
         if log_config_file.exists():
             config_logger_from_yaml(str(log_config_file.absolute()))
         self._ensure_log_file_handler()
+        container = self.container
+        container.bootstrap()
+
+    @property
+    @abstractmethod
+    def container(self) -> IoCContainer:
+        """project level ioc container"""
+        ...
 
     # --- manifests --- #
 
@@ -657,11 +660,11 @@ class Project(ABC):
         ...
 
     @abstractmethod
-    def matrix_manifests(self) -> MatrixManifest:
+    def project_manifests(self) -> ProjectManifest:
         """
-        workspace 级基线声明 (§ZZ-2, MOSS.manifests 包扫描产物).
+        workspace 级基线声明 (MOSS.manifests 包扫描产物).
 
-        matrix 层承接 MatrixManifest 而非 ModeManifests, 落实依赖分发轴:
+        project 层承接 ProjectManifest 而非 HostModeManifests, 落实依赖分发轴:
         `pip install ghoshell_moss[matrix]` = cell 最小依赖, 不含 mode 层重依赖
         (mindflow / nuclei / audio / ml). MossRuntime 才承接 mode.manifests()
         叠加 mode 专属.
@@ -852,3 +855,14 @@ class Project(ABC):
         存储临时文件的位置. 约定在 runtime/tmp 下.
         """
         return self.workspace.runtime().sub_storage('tmp').abspath()
+
+    def __enter__(self) -> 'Project':
+        self.bootstrap()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_val is not None:
+                self.logger.exception(exc_val)
+        finally:
+            self.container.shutdown()

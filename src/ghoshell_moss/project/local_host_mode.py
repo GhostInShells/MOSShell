@@ -3,9 +3,9 @@ import logging
 
 from ghoshell_moss.contracts import Workspace
 from ghoshell_moss.core.blueprint.environment import Environment
-from ghoshell_moss.core.blueprint.project import HostMode, HostModeMeta, ModeManifests
+from ghoshell_moss.core.blueprint.project import HostMode, HostModeMeta, HostModeManifests
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.project.manifests.mode_impl import ScannedModeManifests
+from ghoshell_moss.project.manifests.mode_impl import ScannedHostModeManifests
 
 __all__ = ['LocalHostMode']
 
@@ -30,7 +30,7 @@ class LocalHostMode(HostMode):
         self._logger = logger
 
         # 懒加载: 仅当 bootstrap() 调用后, manifests 才可用.
-        self._manifests: ModeManifests | None = None
+        self._manifests: HostModeManifests | None = None
 
     # -- 基础属性 -- #
 
@@ -67,8 +67,8 @@ class LocalHostMode(HostMode):
 
     # -- 能力声明 -- #
 
-    def manifests(self) -> ModeManifests:
+    def manifests(self) -> HostModeManifests:
         self._check_bootstrapped()
         if self._manifests is None:
-            self._manifests = ScannedModeManifests()
+            self._manifests = ScannedHostModeManifests()
         return self._manifests

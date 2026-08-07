@@ -2,20 +2,24 @@ import signal
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from ghoshell_container import IoCContainer, Container, Provider
+
 from ghoshell_moss.contracts import Workspace
 from ghoshell_moss.core.blueprint.cell import CellRuntimeInfo, NodeManager
 from ghoshell_moss.core.blueprint.ghost import GhostMeta
 from ghoshell_moss.core.blueprint.project import (
-    Project, HostMode, Manifest, MatrixManifest, HostModeMeta, HOST_MODE_FILE,
+    Project, HostMode, Manifest, ProjectManifest, HostModeMeta, HOST_MODE_FILE,
 )
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.contracts.workspace import LocalWorkspace
-from ghoshell_moss.core.subprocesses._utils import killpg
+from ghoshell_moss.core.subprocesses import killpg
 from ghoshell_moss.project.node_manager import ProjectNodeManager
 from ghoshell_moss.project.local_host_mode import LocalHostMode
 from ghoshell_moss.project.manifests.ghosts import search_ghost_manifests
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
 from ghoshell_moss.project.manifests.base import ScannedManifest
+from ghoshell_moss.contracts import ConfigInstanceRegisterBootstrapper
+from ghoshell_moss.contracts.resource import ResourceStorageFactoryBootstrapper
 
 __all__ = ['LocalProject']
 
@@ -27,9 +31,10 @@ class LocalProject(Project):
         self._workspace = LocalWorkspace(self._env.workspace_path)
 
         self._nodes: NodeManager | None = None
-        self._ghosts_cache: dict[str, tuple[Path, GhostMeta]] | None = None
+        self._ghosts_cache: dict[str, tuple[Path, GhostMeta | Exception]] | None = None
         self._modes_cache: dict[str, tuple[Path, Manifest[HostModeMeta]]] | None = None
-        self._matrix_manifests: MatrixManifest | None = None
+        self._project_manifests: ProjectManifest | None = None
+        self._container: IoCContainer | None = None
 
     @property
     def env(self) -> Environment:
@@ -38,6 +43,72 @@ class LocalProject(Project):
     @property
     def workspace(self) -> Workspace:
         return self._workspace
+
+    @property
+    def container(self) -> IoCContainer:
+        if self._container is not None:
+            return self._container
+        container = Container(name=f"moss/project/{self.env.project_name}/{self.env.project_id}")
+        self._container = container
+        container.set(Environment, self._env)
+        container.set(Project, self)
+        container.set(Workspace, self.workspace)
+
+        project_manifests = self.project_manifests()
+        for manifest in project_manifests.providers():
+            if manifest.is_error():
+                raise RuntimeError(f"Project provider manifest error: {manifest.error()} at {manifest.found_at()}")
+            provider = manifest.value()
+            if not isinstance(provider, Provider):
+                raise RuntimeError(f"Project provider manifest `{provider}` is not a Provider at {manifest.found_at()}")
+            # override default providers
+            container.register(provider)
+
+        for provider in self._default_providers():
+            contract = provider.contract()
+            if not container.bound(contract):
+                container.register(provider)
+
+        # -- configs -- #
+        configs = []
+        for config_manifest in project_manifests.configs():
+            if config_manifest.is_error():
+                raise RuntimeError(
+                    "Config Manifest error: %s at %s" % (config_manifest.error(), config_manifest.found_at())
+                )
+            configs.append(config_manifest.value())
+        if len(configs) > 0:
+            bootstrapper = ConfigInstanceRegisterBootstrapper(*configs)
+            container.add_bootstrapper(bootstrapper)
+
+        # -- resources (project_manifests.resources → bootstrapper) -- #
+        for resource_manifest in project_manifests.resources():
+            if resource_manifest.is_error():
+                raise RuntimeError(
+                    "Resource Manifest error: %s at %s" % (resource_manifest.error(), resource_manifest.found_at()),
+                )
+            storage_factory = resource_manifest.value()
+            bootstrapper = ResourceStorageFactoryBootstrapper(storage_factory)
+            container.add_bootstrapper(bootstrapper)
+
+        return container
+
+    def _default_providers(self) -> Iterable[Provider]:
+        """
+        project 层的 default 接线 (default 兜底).
+
+        workspace 用户在 ProjectManifest.providers 里显式覆写即可覆盖.
+        driver-specific 的 default (topic/session/zenoh.Session) 归 adapter.
+        """
+        from ghoshell_moss.project.providers.configs_provider import EnvConfigStoreProvider
+        from ghoshell_moss.project.providers.subprocesses_provider import ProjectSubprocessesProvider
+        from ghoshell_moss.project.providers.job_supervisor_provider import ProjectJobSupervisorProvider
+        from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
+
+        yield ProjectSubprocessesProvider()
+        yield ProjectJobSupervisorProvider()
+        yield EnvConfigStoreProvider()
+        yield InMemoryResourceRegistryProvider()
 
     # -- ghosts -- #
 
@@ -123,7 +194,8 @@ class LocalProject(Project):
             try:
                 mode = self.current_mode()
                 node_dirs = mode.nodes_discover_paths() if mode else self._env.node_dirs()
-            except Exception:
+            except Exception as e:
+                self.logger.exception("Failed to discover nodes: %s", e)
                 node_dirs = self._env.node_dirs()
             self._nodes = ProjectNodeManager(self._env, node_dirs=node_dirs)
         return self._nodes
@@ -153,11 +225,11 @@ class LocalProject(Project):
 
     # -- matrix manifests -- #
 
-    def matrix_manifests(self) -> MatrixManifest:
+    def project_manifests(self) -> ProjectManifest:
         # 单例缓存 — scanner 是 lazy generator, 重复构造无副作用, 但缓存避免
         # 每次 fetch 都重新扫包.
-        if self._matrix_manifests is None:
-            self._matrix_manifests = ScannedMatrixManifest(
+        if self._project_manifests is None:
+            self._project_manifests = ScannedProjectManifest(
                 self._env.moss_meta.matrix_manifest_package,
             )
-        return self._matrix_manifests
+        return self._project_manifests

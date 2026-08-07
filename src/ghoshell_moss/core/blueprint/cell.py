@@ -60,6 +60,7 @@ __all__ = [
     'ProjectRelativePath',
     'MatchPattern',
     'NodeLauncher',
+    'enter_cell_lifecycle',
 ]
 
 CellRole = Literal['host', 'node']

@@ -41,7 +41,7 @@ class _GhostStateBase(REPLState):
             ),
             "matrix": MatrixInspector(moss.matrix),
             "manifests": ManifestsInspector(
-                moss.project.matrix_manifests(),
+                moss.project.project_manifests(),
                 mode.manifests() if mode else None,
             ),
         }

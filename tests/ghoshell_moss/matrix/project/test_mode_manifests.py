@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from ghoshell_moss.core.blueprint.mindflow import NucleusMeta
-from ghoshell_moss.core.blueprint.project import Manifest, ModeManifests
+from ghoshell_moss.core.blueprint.project import Manifest, HostModeManifests
 from ghoshell_moss.core.blueprint.states_channel import PrimeChannel
 from ghoshell_moss.project.manifests.channels import (
     ChannelManifest,
     search_main_channel,
 )
-from ghoshell_moss.project.manifests.mode_impl import ScannedModeManifests
+from ghoshell_moss.project.manifests.mode_impl import ScannedHostModeManifests
 
 # -- stub 路径
 STUB_MODE_ROOT = 'ghoshell_moss.stubs.workspace.modes.default.src.HOST'
@@ -73,18 +73,18 @@ class TestSearchMainChannel:
 
 class TestScannedModeManifests:
     def test_is_mode_manifests_instance(self):
-        m = ScannedModeManifests(STUB_MODE_ROOT)
-        assert isinstance(m, ModeManifests)
+        m = ScannedHostModeManifests(STUB_MODE_ROOT)
+        assert isinstance(m, HostModeManifests)
 
     def test_channel_found(self):
-        m = ScannedModeManifests(STUB_MODE_ROOT)
+        m = ScannedHostModeManifests(STUB_MODE_ROOT)
         ch = m.channel()
         assert not ch.is_error()
         assert ch.name() == '__main__'
 
     def test_nuclei_finds_default_instances(self):
         """stub mode nuclei/__init__.py 声明的默认 NucleusMeta 实例可被扫描到."""
-        m = ScannedModeManifests(STUB_MODE_ROOT)
+        m = ScannedHostModeManifests(STUB_MODE_ROOT)
         results = list(m.nuclei())
         assert len(results) >= 1
         for r in results:
@@ -92,7 +92,7 @@ class TestScannedModeManifests:
 
     def test_providers_inherited_from_matrix(self):
         """继承自 ScannedMatrixManifest 的 providers 和 signals 正常工作."""
-        m = ScannedModeManifests(STUB_MODE_ROOT)
+        m = ScannedHostModeManifests(STUB_MODE_ROOT)
         providers = list(m.providers())
         assert len(providers) >= 1
         for p in providers:
@@ -100,7 +100,7 @@ class TestScannedModeManifests:
 
     def test_package_not_exists_is_tolerant(self):
         """不存在的 mode 包返回合法的 ModeManifests，Iterable 方法返回空列表."""
-        m = ScannedModeManifests('nonexistent.mode.pkg')
+        m = ScannedHostModeManifests('nonexistent.mode.pkg')
         assert m.channel().is_error()
         assert list(m.nuclei()) == []
         assert list(m.resources()) == []

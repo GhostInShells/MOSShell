@@ -1,18 +1,17 @@
 """
 moss manifests — workspace static declarations.
 
-Queries the manifest system via Project (not Host): MatrixManifest for global
-baseline (MOSS.manifests) and ModeManifests for the active mode's effective
+Queries the manifest system via Project (not Host): ProjectManifest for global
+baseline (MOSS.manifests) and HostModeManifests for the active mode's effective
 view (HOST, which extends MOSS.manifests via Python import).
 
-Each command shows two tables when a mode is active; a single Matrix table
+Each command shows two tables when a mode is active; a single project table
 when no mode is active.  Context header (mode/network/ghost) only appears in
 ``explain`` — list commands show just their data.
 """
 
 import inspect as _inspect
 import json
-from pathlib import Path
 from typing import Iterable
 
 import typer
@@ -24,8 +23,8 @@ from ghoshell_moss.core.blueprint.environment import (
     DEFAULT_NETWORK_NAME,
     DEFAULT_NETWORK_SCOPE,
 )
-from ghoshell_moss.core.blueprint.project import Manifest, Project, MatrixManifest, ModeManifests, HostMode
-from ghoshell_moss.project.manifests.impl import ScannedMatrixManifest
+from ghoshell_moss.core.blueprint.project import Manifest, Project, ProjectManifest, HostModeManifests, HostMode
+from ghoshell_moss.project.manifests.impl import ScannedProjectManifest
 
 from .utils import (
     print_simple_table, print_simple_panel,
@@ -52,15 +51,15 @@ manifest_app = typer.Typer(
 _Context = tuple[
     Project,          # project
     HostMode | None,  # current mode (None if no_mode)
-    MatrixManifest,   # global (MOSS.manifests)
-    ModeManifests | None,  # mode effective view (None if no mode)
+    ProjectManifest,   # global (MOSS.manifests)
+    HostModeManifests | None,  # mode effective view (None if no mode)
 ]
 
 
 def _get_context() -> _Context:
     """Resolve the current Project and manifests context.
 
-    Returns (project, mode, matrix_manifests, mode_manifests).
+    Returns (project, mode, project_manifests, mode_manifests).
     mode / mode_manifests are None when no mode is active.
     """
     project = Project.discover()
@@ -70,7 +69,7 @@ def _get_context() -> _Context:
     except Exception:
         mode = None
 
-    matrix_mf = ScannedMatrixManifest()
+    matrix_mf = ScannedProjectManifest()
 
     mode_mf = None
     if mode is not None:
@@ -290,6 +289,7 @@ def _config_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
             continue
         cfg = m.value()
         # extract field names:type from json_schema
+        schema = None
         try:
             schema = cfg.to_config_schema()
             props = schema.json_schema.get("properties", {})
@@ -298,7 +298,7 @@ def _config_rows(manifests: Iterable[Manifest]) -> tuple[list[list[str]], int]:
             ) if props else "—"
         except Exception:
             fields = "—"
-        desc = schema.description if schema.description else (m.description() or "—")
+        desc = schema.description if schema and schema.description else (m.description() or "—")
         rows.append([
             m.name(),
             fields[:120],

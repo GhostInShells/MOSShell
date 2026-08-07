@@ -187,7 +187,7 @@ class GhostRuntimeImpl(GhostRuntime):
         """收集 matrix 和 mode 两层的 manifests, 用于 nuclei 发现."""
         # matrix 层
         try:
-            yield self._moss_runtime.matrix.project.matrix_manifests()
+            yield self._moss_runtime.matrix.project.project_manifests()
         except Exception:
             self.moss.logger.exception(
                 "%s failed to load matrix manifests, skipping matrix nuclei",

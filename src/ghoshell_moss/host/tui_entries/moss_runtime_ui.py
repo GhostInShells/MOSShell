@@ -29,7 +29,7 @@ class MOSSRuntimeREPLState(REPLState):
         return {
             "matrix": MatrixInspector(moss.matrix),
             "manifests": ManifestsInspector(
-                moss.project.matrix_manifests(),
+                moss.project.project_manifests(),
                 mode.manifests() if mode else None,
             ),
             "moss": MOSSRuntimeInspector(moss, self.console),

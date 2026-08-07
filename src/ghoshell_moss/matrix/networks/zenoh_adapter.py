@@ -31,9 +31,6 @@ from ghoshell_moss.matrix.networks.zenoh_network import (
 )
 from ghoshell_moss.matrix.networks.zenoh_presence import ZenohCellPresence
 from ghoshell_moss.matrix.networks.zenoh_mesh import ZenohCellNetwork
-from ghoshell_moss.matrix.providers.topic_provider import ZenohTopicServiceProvider
-from ghoshell_moss.matrix.providers.moss_session_provider import ProjectZenohSessionProvider
-from ghoshell_moss.matrix.providers.qa_provider import ZenohQAManagerProvider
 from ghoshell_moss.tools.zenoh_helper import MatrixNamespace
 
 __all__ = ['ZenohAdapter']
@@ -221,11 +218,9 @@ class ZenohAdapter(MatrixNetworkAdapter):
             )
 
     def default_providers(self) -> Iterable[Provider]:
-        """zenoh driver 的默认 provider — TopicService / Session (§ZZ-5).
+        """zenoh driver 的默认 provider — TopicService / Session.
 
-        matrix 以 "if not bound" 兜底装配, workspace 用户在 MatrixManifest.providers
+        matrix 以 "if not bound" 兜底装配, workspace 用户在 ProjectManifest.providers
         里显式覆写即可覆盖.
         """
-        yield ZenohTopicServiceProvider()
-        yield ProjectZenohSessionProvider()
-        yield ZenohQAManagerProvider()
+        yield from []
