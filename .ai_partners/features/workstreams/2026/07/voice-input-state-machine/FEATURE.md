@@ -727,6 +727,18 @@ channel 保留在同包（`host/listener/channel.py`），不独立为 `channels
    一直显示 0（基建 provider 也看不见），是 manifests CLI 重建时就有的设计缺口。删除了环境细节单测
    `test_providers_inherited_from_matrix`（断言 stub mode 声明 ≥1 provider，属实现状态非协议契约）。
 
+### `moss audio contracts` 命令（执行路径第 4 步，已落地）
+
+`src/ghoshell_moss/cli/audio_cli.py` + 注册进 `main.py`（`depend_matrix` 守卫内）。
+
+- 以 cli 身份 `Matrix.new("audio_cli", category='cli')` 声明为 node，**只建容器不 join 网络**
+  （~0.22s，contracts 只需注册可用性）。全 sync，无需 asyncio。
+- 对每个槽位调 `container.get_provider(contract)` 打印 **Provider 类**（注册可用性），**不实例化实现**
+  ——不触发重 import、无副作用。tts/speech/player 已注册；capture/asr 返回 None 标 TODO
+  （capture 在 HOST 待迁移，asr 无 provider / 抽象待 listener 重构）。
+- 顺带修复 meta-help 解析器：单命令组（`registered_commands` 恰 1 个）时 typer `get_command`
+  返回 `TyperCommand` 非 Group，`_show_command_help` 此前对 `help <group> <cmd>` 报错。
+
 ### 待办（下轮）
 
 - **capture 必须迁到 project 级**。capture 放 HOST 一开始就是错的——`Matrix.new` 路径看不到 HOST。

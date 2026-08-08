@@ -12,7 +12,7 @@ from ghoshell_moss.cli import (
     codex_cli, project_cli, manifests_cli,
     ctml_cli, howto_cli, features_cli, docs_cli,
     start_cli, modes_cli, ghosts_cli, nodes_cli, networks_cli,
-    ground_cli, memento_cli, llms_cli,
+    ground_cli, memento_cli, llms_cli, audio_cli,
 )
 from ghoshell_moss.depends import depend_matrix
 from typer.main import get_command
@@ -54,6 +54,7 @@ else:
     app.add_typer(nodes_cli.nodes_app, name="nodes", short_help="Discover, create, launch, and maintain node cells")
     app.add_typer(networks_cli.networks_app, name="networks", short_help="List and inspect available network configurations")
     app.add_typer(manifests_cli.manifest_app, name="manifests", short_help="MOSS workspace manifest tools")
+    app.add_typer(audio_cli.audio_app, name="audio", short_help="Audio capability probing — capture, playback, TTS, ASR")
 
 
 @app.callback(invoke_without_command=True)
@@ -539,9 +540,14 @@ def _find_command(typer_app, name: str):
 def _show_command_help(typer_app, cmd_name: str, cmd_info):
     """Show Click-level help for a specific command."""
     try:
-        click_group = get_command(typer_app)
-        ctx = _click.Context(click_group, info_name=click_group.name)
-        sub_cmd = click_group.get_command(ctx, cmd_name)
+        click_command = get_command(typer_app)
+        if not hasattr(click_command, "get_command"):
+            # 单命令组: get_command 返回命令本体 (TyperCommand), 非 Group.
+            ctx = _click.Context(click_command, info_name=cmd_name)
+            echo(ctx.get_help())
+            return
+        ctx = _click.Context(click_command, info_name=click_command.name)
+        sub_cmd = click_command.get_command(ctx, cmd_name)
         if sub_cmd is None:
             print_warning(f"Cannot resolve Click command: {cmd_name}")
             return
