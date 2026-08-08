@@ -23,6 +23,9 @@ from ghoshell_moss.project.providers import (
 )
 
 from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistryProvider
+from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
+from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
+from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
 
 # zenoh session provider
 moss_session_provider = MatrixZenohSessionProvider()
@@ -45,3 +48,14 @@ qa_manager_provider = ZenohQAManagerProvider()
 subprocess_provider = ProjectSubprocessesProvider()
 
 job_supervisor_provider = ProjectJobSupervisorProvider()
+
+# -- 音频/语音基线能力 (实现留 host 作为依赖路径, 模块顶层无重 import) -- #
+
+# text-to-speech
+tts_service_provider = TTSServiceProvider()
+
+# speech service
+speech_service_provider = TTSSpeechServiceProvider()
+
+# audio player
+player_service_provider = AudioPlayerProvider()

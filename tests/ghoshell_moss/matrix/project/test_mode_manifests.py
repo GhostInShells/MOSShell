@@ -90,14 +90,6 @@ class TestScannedModeManifests:
         for r in results:
             assert not r.is_error()
 
-    def test_providers_inherited_from_matrix(self):
-        """继承自 ScannedMatrixManifest 的 providers 和 signals 正常工作."""
-        m = ScannedHostModeManifests(STUB_MODE_ROOT)
-        providers = list(m.providers())
-        assert len(providers) >= 1
-        for p in providers:
-            assert not p.is_error()
-
     def test_package_not_exists_is_tolerant(self):
         """不存在的 mode 包返回合法的 ModeManifests，Iterable 方法返回空列表."""
         m = ScannedHostModeManifests('nonexistent.mode.pkg')

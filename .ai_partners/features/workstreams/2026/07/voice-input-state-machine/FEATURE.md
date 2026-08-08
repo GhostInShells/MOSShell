@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'Round 1 代码落地：host/listener/ 核心 + nodes/sensors/listener/ 薄壳 + host.voice → host.listener 重命名 (2026-08-06)'
+status_note: 'Round 1 代码落地 + 音频 provider project 级迁移 (2026-08-09)：speech 三件套 (tts/speech/player) 迁到 MOSS.manifests.providers，为 moss audio CLI 做准备；capture 下轮迁。'
 priority: P0
 created: 2026-07-28
-updated: 2026-08-06
+updated: 2026-08-09
 depends:
   - audio-capture
   - node-migration
@@ -692,14 +692,54 @@ channel 保留在同包（`host/listener/channel.py`），不独立为 `channels
 
 1. 重命名 + FEATURE.md 修改 ← 本轮
 2. 音频输入/输出依赖统一为 `moss[host]`，关联节点不做独立 venv
-3. 相关能力 provider 进 mode，包括音频输入/输出，作为基线能力
+3. 相关能力 provider 进 **project 级 `MOSS.manifests.providers`**（基线能力，2026-08-09 修订）——
+   原计划"进 mode"，但 CLI 走 `Matrix.new` 只加载 project + MATRIX manifests、不加载 HOST/mode。
+   作为基线能力的 provider 必须进 project 级才能被 CLI 经 `Matrix.new` 看见。实现留在 host 作为依赖路径。
 4. 配套做全套无状态机调试工具：play / 音频采样 / tts / asr，根据 mode 配置项来，CLI 作为 moss 无关的底层调试工具
 5. 做 UI 无关的独立 listen node
 6. 最后做完整的交互模式与可视化
 
 ---
 
+## 2026-08-09 会话决策 — 音频 provider project 级迁移 (为 CLI 准备)
 
+> 结对编程：人类架构师 + deepseek-v4-flash。对齐后动手——"执行计划以人的说法为准，FEATURE.md 里记录的是上一个模型实例的理解"。
+
+### 背景
+
+`moss audio contracts`（第一个 CLI 调试命令）需要经 `Matrix.new` 遍历核心音频抽象
+(capture / player / speech / tts / asr)，打印 `contract -> instance | importError`。
+但 `Matrix.new` 只加载 **project (MOSS.manifests) + MATRIX.manifests**，不加载 HOST/mode 层——
+此前 speech 三件套声明在 HOST.providers，`Matrix.new` 看不到。
+
+### 迁移内容（本轮完成）
+
+1. **speech 三件套声明迁到 project 级**：`TTSServiceProvider` / `TTSSpeechServiceProvider` /
+   `AudioPlayerProvider` 从 HOST.providers 移到 `MOSS.manifests.providers`（`.moss` + `stubs` 同步）。
+   实现文件留在 `ghoshell_moss/host/providers/`（host 作为依赖路径，不建 `ghoshell_moss.audio`）。
+2. **`audio_player_provider` 转 lazy**：`MiniAudioStreamPlayer` 和 `MatrixAudioTransport` 都移进 factory——
+   `MatrixAudioTransport` 看似 light，但 `host/listener/capture/__init__.py` 顶层 import `miniaudio_capture`，
+   顶层引用会经包 init 拉 miniaudio。全部 4 个 provider 模块顶层 import 链已轻（probe 验证无 miniaudio/websockets/httpx）。
+3. **HOST 层移除**：default / system_test 各留 `AudioCaptureProvider`；stubs HOST providers 变空 header + 注释。
+   避免 mode 后注册重复覆盖。
+4. **manifest CLI 可见性修复**：`Project.discover()` 注册 workspace source 到 sys.path——discover 即自足，
+   项目级 manifests 无需 bootstrap 可被 `scan_package` 发现。此前 `moss manifests providers` 对 MOSS.manifests
+   一直显示 0（基建 provider 也看不见），是 manifests CLI 重建时就有的设计缺口。删除了环境细节单测
+   `test_providers_inherited_from_matrix`（断言 stub mode 声明 ≥1 provider，属实现状态非协议契约）。
+
+### 待办（下轮）
+
+- **capture 必须迁到 project 级**。capture 放 HOST 一开始就是错的——`Matrix.new` 路径看不到 HOST。
+  本轮按 scope 只走 speech，capture 暂留 HOST，下轮连同 listener 抽象一起处理。
+  此前会话的崩溃点就发生在这个操作上，迁移时先对齐再做。
+
+### 关键认知（避免未来重蹈覆辙）
+
+- **"不全局 import" 指 provider 模块顶层不拉重依赖**（concrete import 隔离），abstract import 隔离意义不大。
+- **三层 manifest 加载范围**：`Matrix.new`/CLI = project + MATRIX；Host runtime 额外叠加 HOST。
+  作为基线能力的 provider 必须进 project 级才能被无 Host 的 CLI 看见。
+
+---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*
 *基础调研: audio-capture FEATURE.md (DeepSeek V4 + Claude Opus 4.7) — 已完成的音频感知全链路*
 *碰撞记录: 本会话对话 — 分层拓扑推演、交互模式收敛、安全边界讨论*

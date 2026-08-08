@@ -571,6 +571,11 @@ class Project(ABC):
         from ghoshell_moss.factory import create_project
         env = env or Environment.discover()
         project = create_project(env)
+        # 注册 workspace source 到 sys.path — 项目级 manifests (MOSS.manifests)
+        # 无需 bootstrap 即可被 scan_package 发现. bootstrap 会再次幂等.
+        source_path = str(project.workspace_source_dir)
+        if source_path not in sys.path:
+            sys.path.append(source_path)
         return project
 
     def bootstrap(self):

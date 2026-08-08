@@ -2,8 +2,6 @@ from ghoshell_moss.contracts.speech import StreamAudioPlayer
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore
 from ghoshell_moss.core.blueprint.matrix import Matrix
-from ghoshell_moss.host.listener.capture.matrix_audio_transport import MatrixAudioTransport
-from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
 from ghoshell_container import IoCContainer, Provider
 from pydantic import Field
 
@@ -31,6 +29,9 @@ class AudioPlayerProvider(Provider[StreamAudioPlayer]):
         return False
 
     def factory(self, con: IoCContainer) -> StreamAudioPlayer:
+        from ghoshell_moss.host.listener.capture.matrix_audio_transport import MatrixAudioTransport
+        from ghoshell_moss.host.speech.player.miniaudio_player import MiniAudioStreamPlayer
+
         store = con.force_fetch(ConfigStore)
         conf = store.get_or_create(AudioPlayerConfig())
         logger = con.force_fetch(LoggerItf)
