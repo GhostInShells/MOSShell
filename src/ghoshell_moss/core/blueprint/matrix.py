@@ -23,7 +23,7 @@ from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
 from ghoshell_moss.contracts import Workspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ManagedProcess, ProcessMeta
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
-from ghoshell_container import IoCContainer
+from ghoshell_container import IoCContainer, Contracts
 from pathlib import Path
 import asyncio
 import logging
@@ -110,6 +110,30 @@ class Matrix(ABC):
         return _instance
 
     @classmethod
+    def new(
+            cls,
+            node_name: str,
+            *,
+            description: str = '',
+            category: str = '',
+            env: Environment | None = None,
+    ) -> Self:
+        """在运行时环境中, 用指明的方式定义一个 Node, 用它获得 matrix 实例"""
+        from ghoshell_moss.factory import create_matrix, create_project
+        from ghoshell_moss.core.blueprint.cell import NodeManifest, build_cell_from_node, CellRuntimeInfo
+        global _instance
+        if _instance is not None:
+            raise RuntimeError(f"The Matrix is already running: %s", _instance.this)
+        env = env or Environment.discover()
+        node = NodeManifest.new(node_name, description=description, category=category)
+        cell = build_cell_from_node(env, node)
+        runtime_info = CellRuntimeInfo.from_cell(cell)
+        project = create_project(env)
+        project.bootstrap()
+        _instance = create_matrix(env, project, runtime_info)
+        return _instance
+
+    @classmethod
     def reset_discover_instance(cls, instance: 'Matrix') -> None:
         """矩阵退出后复位 discover 缓存 — 已关闭的实例不再被后续 discover 返回."""
         global _instance
@@ -132,7 +156,6 @@ class Matrix(ABC):
            logging.Logger/ConfigStore/ResourceRegistry. 不含 FileEditor (依赖 cwd,
            matrix 级暴露越权), 不含 asr/audio 等重能力.
         """
-        from ghoshell_container import Contracts
         from ghoshell_common.contracts import LoggerItf
         from ghoshell_moss.core.blueprint.project import Project
         from ghoshell_moss.core.blueprint.environment import Environment
@@ -204,6 +227,10 @@ class Matrix(ABC):
         return Path(self.this.home)
 
     @property
+    def cell_home(self) -> Path:
+        return self.cell_workspace.root().abspath()
+
+    @property
     @abstractmethod
     def cell_workspace(self) -> Workspace:
         """
@@ -215,7 +242,6 @@ class Matrix(ABC):
         ...
 
     @property
-    @abstractmethod
     def configs(self) -> ConfigStore:
         return self.project.configs
 

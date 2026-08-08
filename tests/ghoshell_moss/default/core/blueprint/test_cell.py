@@ -36,7 +36,7 @@ from ghoshell_moss.core.blueprint.cell import (
     NodeScriptCategory,
     ROLES,
     build_host_cell,
-    build_node_from_manifest,
+    build_cell_from_node,
     make_address,
     normalize,
     parse_address,
@@ -358,7 +358,7 @@ class TestBuildHelpers:
             name='cam',
             file=str(manifest_dir / NodeManifest.MANIFEST_FILENAME),
         )
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         assert cell.role == NODE_ROLE
         assert cell.name == 'cam'
         assert cell.home == str(manifest_dir.resolve())
@@ -368,7 +368,7 @@ class TestBuildHelpers:
     def test_build_node_home_fallback_when_file_missing(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         manifest = NodeManifest(name='cam', category='sensors')  # file=''
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         # 无 file → 临时 workspace 在 env.cell_runtimes_dir/{fullname}
         expected = (env.cell_runtimes_dir / cell.fullname).resolve()
         assert cell.home == str(expected)
@@ -376,14 +376,14 @@ class TestBuildHelpers:
     def test_build_node_uid_per_call(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         manifest = NodeManifest(name='cam')
-        c1 = build_node_from_manifest(env, manifest)
-        c2 = build_node_from_manifest(env, manifest)
+        c1 = build_cell_from_node(env, manifest)
+        c2 = build_cell_from_node(env, manifest)
         assert c1.uid != c2.uid, "每次 spawn 独立 uid, 保证 address 全局唯一"
 
     def test_build_node_alias_overrides_name(self, tmp_path: Path):
         env = _mock_env(tmp_path)
         manifest = NodeManifest(name='cam')
-        cell = build_node_from_manifest(env, manifest, name='cam_alias')
+        cell = build_cell_from_node(env, manifest, name='cam_alias')
         assert cell.name == 'cam_alias'
 
     def test_build_host_uses_moss_meta(self, tmp_path: Path):

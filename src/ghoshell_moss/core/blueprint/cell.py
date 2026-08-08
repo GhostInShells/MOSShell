@@ -41,7 +41,7 @@ __all__ = [
     'normalize',
     'make_address',
     'parse_address',
-    'build_node_from_manifest',
+    'build_cell_from_node',
     'build_host_cell',
     'discover_this_node',
     'ExecSpec',
@@ -353,6 +353,21 @@ class NodeManifest(BaseModel):
         exec_spec = ExecSpec(command=sys.executable, args=' '.join(sys.argv))
         return cls.from_script(script_file, exec_spec=exec_spec)
 
+    @classmethod
+    def new(
+            cls,
+            name: str,
+            *,
+            description: str = '',
+            category: str = '',
+    ) -> 'NodeManifest':
+        """在当前进程中创建一个 node manifest"""
+        manifest = cls.from_proc()
+        manifest.name = name
+        manifest.description = description
+        manifest.category = category
+        return manifest
+
 
 class CellRuntimeInfo(BaseModel):
     """
@@ -384,6 +399,10 @@ class CellRuntimeInfo(BaseModel):
     cell: Cell = Field(
         description="cell 运行时用于重建和广播的数据.",
     )
+
+    @classmethod
+    def from_cell(cls, cell: Cell) -> 'CellRuntimeInfo':
+        return cls(address=cell.address, cell=cell)
 
     @classmethod
     def filename(cls, address: CellAddress, *, suffix: str = SUFFIX_JSON) -> str:
@@ -533,7 +552,7 @@ class NodeLauncher:
             manifest: NodeManifest,
     ) -> 'NodeLauncher':
         """筹备运行一个 Cell 节点. """
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         cwd = manifest.cwd
         # pid/pgid 留 0, 由 spawner 起进程后回填.
         runtime_info = CellRuntimeInfo(address=cell.address, cell=cell)
@@ -602,7 +621,7 @@ def normalize(name_or_address: str) -> str:
             replace('.', '_').replace('-', '_'))
 
 
-def build_node_from_manifest(
+def build_cell_from_node(
         env: Environment,
         manifest: 'NodeManifest',
         *,
@@ -682,7 +701,7 @@ def discover_this_node(
         cell_runtime_info = CellRuntimeInfo.read_from_runtime_dir(env.cell_runtimes_dir, address)
     if cell_runtime_info is None:
         manifest = NodeManifest.from_proc()
-        cell = build_node_from_manifest(env, manifest)
+        cell = build_cell_from_node(env, manifest)
         cell_runtime_info = CellRuntimeInfo(
             address=address or cell.address,
             pid=env.pid,

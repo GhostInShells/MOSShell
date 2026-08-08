@@ -16,7 +16,7 @@ from typing_extensions import Self
 from ghoshell_container import IoCContainer, Provider
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts import Workspace, LocalWorkspace, ResourceRegistry
+from ghoshell_moss.contracts import Workspace, LocalWorkspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ProcessMeta, CaptureSpec
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
 
@@ -66,6 +66,8 @@ class MatrixImpl(Matrix):
             )
         self._env = env
         self._project = project
+        # set to current.
+        runtime_info.pid = self._env.pid
         self._runtime_info = runtime_info
         self._adapter = adapter
         self._network_metadata = network

@@ -1,6 +1,6 @@
 from typing import Callable
 
-from ghoshell_moss.core.blueprint.cell import Cell
+from ghoshell_moss.core.blueprint.cell import Cell, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.host import MossHost
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
@@ -24,7 +24,7 @@ def _create_project(env: Environment) -> Project:
     return LocalProject(env)
 
 
-def _create_matrix(env: Environment, project: Project) -> Matrix:
+def _create_matrix(env: Environment, project: Project, cell: CellRuntimeInfo | None = None) -> Matrix:
     """
     Matrix.discover() 走的 patch escape hatch — worker path 专用.
 
@@ -39,7 +39,7 @@ def _create_matrix(env: Environment, project: Project) -> Matrix:
     from ghoshell_moss.core.blueprint.cell import discover_this_node
     from ghoshell_moss.matrix.matrix_impl import MatrixImpl
 
-    runtime_info = discover_this_node(env)
+    runtime_info = cell or discover_this_node(env)
     adapter, network = resolve_matrix_adapter(env, project, cell=runtime_info.cell)
     return MatrixImpl(
         env=env,
@@ -81,8 +81,6 @@ def resolve_matrix_adapter(
 
     Host.new_matrix (concrete) 与 factory._create_matrix (worker) 共同调用,
     保证两条路径拿到的 adapter/network 完全一致.
-
-    :param cell: 决定 is_host 参数 (adapter driver-specific 构造需要).
     :return: (adapter 实例, network 元信息) — 未 __aenter__.
     """
     # register_adapter 副作用触发 (未来分驱动时按 driver 名条件 import)
@@ -102,6 +100,6 @@ def resolve_matrix_adapter(
 
 create_host: Callable[[Environment, Project], MossHost] = _create_host
 
-create_matrix: Callable[[Environment, Project], Matrix] = _create_matrix
+create_matrix: Callable[[Environment, Project, CellRuntimeInfo | None], Matrix] = _create_matrix
 
 create_project: Callable[[Environment], Project] = _create_project
