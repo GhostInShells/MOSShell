@@ -11,7 +11,7 @@ cell 经由它持有身份、暴露膜、观察网络、拉起并治理新的进
 客户端 — mesh 只是它投影的来源之一.
 """
 import dataclasses
-from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias
+from typing import Literal, Callable, Awaitable, Any, Coroutine, Protocol, TypeAlias, Type
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -20,6 +20,7 @@ from ghoshell_moss.core.blueprint.session import Session
 from ghoshell_moss.core.blueprint.cell import Cell, CellNetwork, CellAddress, CellRuntimeInfo
 from ghoshell_moss.core.blueprint.environment import Environment
 from ghoshell_moss.core.blueprint.project import Project, NetworkMetadata
+from ghoshell_moss.core.blueprint.service import ServiceOperator, ServiceClient, ServiceServer
 from ghoshell_moss.contracts import Workspace, ResourceRegistry, ConfigStore
 from ghoshell_moss.contracts.subprocesses import Subprocesses, ManagedProcess, ProcessMeta
 from ghoshell_moss.contracts.job_supervisor import JobSupervisor
@@ -338,6 +339,8 @@ class Matrix(ABC):
         """
         ...
 
+    # -- 子进程管理 -- #
+
     @property
     @abstractmethod
     def processes(self) -> Subprocesses:
@@ -363,14 +366,39 @@ class Matrix(ABC):
         """
         pass
 
+    # -- Matrix 网络通讯协议底座 -- #
+
     @property
     @abstractmethod
     def session(self) -> Session:
         """
-        通讯总线 — Matrix 最重要的原件, 永不出首页.
-        五种通讯原语 (topic / stream / signal / ...) 是 Network 内部 Cell 之间通讯的桥梁.
+        面向 Matrix 全网的通讯总线
+        五种通讯原语 (topic / stream / signal / ...) 是 Network 内部一切实现之间的通讯桥梁.
         """
         pass
+
+    # @abstractmethod
+    async def service_operator(self) -> ServiceOperator:
+        """
+        Matrix cell 之间的服务化通讯底座, 由 Cell 提供 Service, 其它 Cell 可以访问.
+        屏蔽 Cell 之间点对点和一对多的通讯底层复杂度 (生命周期同步, 通讯层协议 --zenoh 等-- 屏蔽)
+        方便在此基础上快速搭建业务层协议.
+        """
+        ...
+
+    async def serve_service(self, service_cls: Type[ServiceServer]) -> ServiceServer:
+        """通过 Service Server 的 Facade 或 Adapter 启动它, 注册到 Matrix 生命周期中. """
+        server = service_cls.new(self)
+        await self.add_lifecycle_object(server)
+        return server
+
+    async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClient:
+        """通过 Service Client 的 Facade 或 Adapter 启动它, 注册到 Matrix 生命周期中. """
+        client = client_cls.new(self)
+        await self.add_lifecycle_object(client)
+        return client
+
+    # -- 基础模块 -- #
 
     @property
     @abstractmethod
@@ -394,9 +422,6 @@ class Matrix(ABC):
     def resources(self) -> ResourceRegistry:
         """
         跨 scheme+host 的资源路由层 (VFS).
-
-        cell 通过它注册/查询/访问资源存储. 底层由 manifests 声明的
-        ResourceStorageFactory 在 bootstrap 时注册到 IoC 容器.
         """
         ...
 
