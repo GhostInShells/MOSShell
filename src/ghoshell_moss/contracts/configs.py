@@ -56,7 +56,7 @@ class ConfigType(BaseModel, ABC):
 
     def to_yaml(self) -> str:
         from ghoshell_common.helpers import yaml_pretty_dump
-        data = self.model_dump(exclude_none=True)
+        data = self.model_dump(exclude_none=True, mode='json')
         return yaml_pretty_dump(data)
 
     def resolve(self, environ: dict[str, str] | None = None) -> Self:

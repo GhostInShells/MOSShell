@@ -2,8 +2,8 @@ from typing import Literal
 from ghoshell_moss.contracts.speech import TTS
 from ghoshell_moss.contracts.logger import LoggerItf
 from ghoshell_moss.contracts.configs import ConfigType, ConfigStore
-from ghoshell_moss.host.speech.volcengine_tts import VolcengineTTSConf, VolcengineTTS
-from ghoshell_moss.host.speech.mimo_tts import MiMoTTSConf, MiMoTTS
+from ghoshell_moss.host.speech.volcengine_tts.config import VolcengineTTSConf
+from ghoshell_moss.host.speech.mimo_tts.config import MiMoTTSConf
 from ghoshell_container import IoCContainer, Provider, INSTANCE
 from pydantic import Field
 
@@ -62,6 +62,7 @@ class TTSServiceProvider(Provider[TTS]):
             con: IoCContainer,
             conf: VolcengineTTSConf,
     ) -> TTS:
+        from ghoshell_moss.host.speech.volcengine_tts.tts import VolcengineTTS
         logger = con.force_fetch(LoggerItf)
         return VolcengineTTS(
             conf=conf,
@@ -73,6 +74,7 @@ class TTSServiceProvider(Provider[TTS]):
             con: IoCContainer,
             conf: MiMoTTSConf,
     ) -> TTS:
+        from ghoshell_moss.host.speech.mimo_tts.tts import MiMoTTS
         logger = con.force_fetch(LoggerItf)
         return MiMoTTS(
             conf=conf,
