@@ -207,7 +207,7 @@ class ZenohOperator(ServiceOperator):
             query_key = keys.query_key(key)
             try:
                 replies = await asyncio.to_thread(
-                    self._session.get, query_key, payload,
+                    lambda: self._session.get(query_key, payload=payload),
                 )
                 for reply in replies:
                     if reply.ok:

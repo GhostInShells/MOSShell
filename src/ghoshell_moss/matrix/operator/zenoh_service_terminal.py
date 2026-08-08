@@ -94,7 +94,6 @@ class ZenohServiceTerminal(ServiceProvider):
 
         # -- zenoh handles -------------------------------------------------
         self._liveness_token: zenoh.LivelinessToken | None = None
-        self._queryable: zenoh.Queryable | None = None
         self._publishers: dict[str, zenoh.Publisher] = {}
 
         # -- handler registries --------------------------------------------
@@ -131,8 +130,17 @@ class ZenohServiceTerminal(ServiceProvider):
             )
         self._query_handlers[key] = handler
 
+        # declare a per-key queryable — wildcard queryable matching is
+        # not guaranteed across zenoh versions; explicit keys are safe.
+        query_key = self._keys.query_key(key)
+        q = self._session.declare_queryable(query_key, self._on_query)
+
         def _close() -> None:
             self._query_handlers.pop(key, None)
+            try:
+                q.undeclare()
+            except RuntimeError:
+                pass
 
         return _ZenohHandle(key, _close)
 
@@ -189,15 +197,8 @@ class ZenohServiceTerminal(ServiceProvider):
         self._query_queue = janus.Queue(maxsize=_QUERY_QUEUE_MAXSIZE)
         self._listen_queue = janus.Queue(maxsize=_LISTEN_QUEUE_MAXSIZE)
 
-        # -- wildcard queryable FIRST (TOCTOU: subscriber must see queryable) --
-        queryable_wildcard = self._keys.query_prefix + '**'
-        self._queryable = self._session.declare_queryable(
-            queryable_wildcard,
-            self._on_query,
-        )
-
-        # -- auto-register meta handler (replies with ServiceMeta) ---------
-        self._query_handlers[_META_KEY] = self._meta_handler
+        # -- auto-register meta queryable FIRST (TOCTOU: before liveness) ---
+        self.queryable(_META_KEY, self._meta_handler)
 
         # -- liveness token -----------------------------------------------
         self._liveness_token = self._session.liveliness().declare_token(
@@ -236,13 +237,6 @@ class ZenohServiceTerminal(ServiceProvider):
                 except RuntimeError:
                     pass
                 self._liveness_token = None
-
-            if self._queryable is not None:
-                try:
-                    self._queryable.undeclare()
-                except RuntimeError:
-                    pass
-                self._queryable = None
 
             for pub in list(self._publishers.values()):
                 try:

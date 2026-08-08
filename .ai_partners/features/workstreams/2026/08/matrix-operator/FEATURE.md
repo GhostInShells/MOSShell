@@ -220,9 +220,11 @@ async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClien
   ```
   blueprint/service.py          ← ABC (零 zenoh 依赖)
   matrix/operator/               ← zenoh 实现层
+    _utils.py                    ← ServiceKeyspace + ServiceKeyExpr (key 表达式单一来源)
     zenoh_operator.py            ← ZenohOperator (implements ServiceOperator)
-    zenoh_service_provider.py    ← ZenohServiceProvider (implements ServiceProvider)
-  matrix/services/               ← 具体业务 service
+    zenoh_service_terminal.py    ← ZenohServiceTerminal (implements ServiceProvider)
+  services/                      ← 一级 package, 具体业务 service
+    counter.py                   ← V1 disposable validation case
     webview/                     ← webview service kind (后续)
     resource/                    ← resource service kind (后续)
   ```
@@ -239,3 +241,39 @@ async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClien
   consumer sub 收到 → QML 红点更新. 页面只调标准 API, 不知道 screen 的存在.
 - **命名纪律**: 全链路无 `server`/`protocol` 泄漏. `kind` 替代 `protocol`, `service`
   替代 `server`. operator 概念保留在 `ServiceOperator` 类名中 (接线员隐喻).
+
+## V1 Validation (2026-08-09)
+
+**Attempt**: counter_service + counter_caller system test nodes on system_test mode.
+
+**Result**: counter_caller discovered the counter service (liveness + meta query OK)
+but `get("counter", "inc", ...)` returned empty — per-key queryable not reached.
+
+**Root cause hypothesis**: cell address format inconsistency between the two paths
+operator depends on:
+
+1. **Discovery path** (liveness listener): `address_from_cell_key()` strips
+   `{cells_ns}/` prefix → returns address suffix. This address flows into
+   `ServiceMeta.address` via the meta queryable response.
+
+2. **Query path** (zenoh get): `ServiceKeyExpr.query_key()` constructs
+   `{services_ns}/{normalize(meta['address'])}/{kind}/query/{key}`.
+
+If the cell layer exposes two different address formats — a truncated one in
+one path (e.g. `counter_service`) and a full one in another (e.g.
+`node/counter_service/01KZ...`) — the query key won't match the terminal's
+declared queryable key, and zenoh routes the query into empty space.
+
+**Fix required in cell layer**: `CellAddress` must be consistent across all
+zenoh key paths (liveness token, queryable declaration, event publishing).
+The operator itself is correct — it uses the same `ServiceKeyExpr` to both
+declare queryables and build query keys from discovered meta.
+
+**Per-key queryable fix**: initial implementation used a wildcard queryable
+(`{prefix}/**`), which may not be supported across zenoh versions. Changed to
+per-key `declare_queryable()` calls in `queryable()`. The wildcard approach
+can be revisited once the address consistency issue is resolved and zenoh
+wildcard queryable support is verified.
+
+**Files**: `.moss/system_test_nodes/counter_service/` and `counter_caller/`
+are ready for re-validation once the cell address issue is fixed.
