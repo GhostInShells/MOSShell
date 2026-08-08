@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 from ghoshell_common.contracts import LoggerItf
 
-from ghoshell_moss.contracts.speech import AudioFormat, StreamAudioPlayer
+from ghoshell_moss.contracts.speech import AudioFormat, PlaybackSample, StreamAudioPlayer
 from ghoshell_moss.core.helpers.asyncio_utils import ThreadSafeEvent
 from ghoshell_common.helpers import Timeleft
 
@@ -50,18 +50,39 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         self._estimated_end_time = 0.0
         self._closed = False
 
-        # 使用线程安全的队列进行线程间通信
-        self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue()
+        # 使用线程安全的队列进行线程间通信. 每项是 (resampled_pcm, stream_id, fragment_id).
+        self._audio_queue: queue.Queue[tuple[np.ndarray, str, str] | None] = queue.Queue()
         self._thread = None
         self._stop_event = threading.Event()
         self._on_play_callbacks = []
         self._on_play_done_callbacks = []
+
+        # 实际播放可感知观察者 — 全局注册, 非永久挂载.
+        # stream 生命周期由治理层管理; 无观察者时不计算 PlaybackSample.
+        self._playback_observers: list[Callable[[PlaybackSample], None]] = []
 
     def on_play(self, callback: Callable[[np.ndarray], None]) -> None:
         self._on_play_callbacks.append(callback)
 
     def on_play_done(self, callback: Callable[[], None]) -> None:
         self._on_play_done_callbacks.append(callback)
+
+    def observe(
+            self,
+            callback: Callable[[PlaybackSample], None],
+    ) -> Callable[[], None]:
+        """注册一个实际播放可感知观察者 (全局, 非 stream 作用域).
+
+        stream 生命周期由治理层管理; 无观察者时不计算 PlaybackSample.
+        """
+        if callback not in self._playback_observers:
+            self._playback_observers.append(callback)
+
+        def _unsubscribe() -> None:
+            if callback in self._playback_observers:
+                self._playback_observers.remove(callback)
+
+        return _unsubscribe
 
     async def start(self) -> None:
         """启动音频播放器"""
@@ -135,6 +156,8 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         audio_type: AudioFormat,
         rate: int,
         channels: int = 1,
+        stream_id: str = "",
+        fragment_id: str = "",
     ) -> float:
         """添加音频片段到播放队列, 返回一个期望的终结时间."""
         if self._closed:
@@ -158,7 +181,7 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         resampled_audio_data = self.resample(audio_data, origin_rate=rate, target_rate=self.sample_rate)
 
         # 添加到线程安全队列
-        self._audio_queue.put_nowait(resampled_audio_data)
+        self._audio_queue.put_nowait((resampled_audio_data, stream_id, fragment_id))
         if self._play_done_event.is_set():
             self.logger.debug("%s player start to playing audio", self._log_prefix)
             self._play_done_event.clear()
@@ -235,20 +258,22 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     continue
                 try:
                     # 从队列获取音频数据（阻塞调用，但有超时）
-                    audio_data = audio_queue.get(timeout=0.2)
+                    item = audio_queue.get(timeout=0.2)
                 except queue.Empty:
                     # 队列为空，继续循环
                     continue
 
-                if audio_data is None:
+                if item is None:
                     # 收到停止信号
                     # 通过下一个循环判断应该怎么处理.
                     continue
+                audio_data, stream_id, fragment_id = item
                 self._play_done_event.clear()
                 # 写入音频数据（期望是阻塞调用）
                 self._audio_stream_write(audio_data)
                 for callback in self._on_play_callbacks:
                     callback(audio_data)
+                self._dispatch_playback_sample(audio_data, stream_id, fragment_id)
 
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)
@@ -256,3 +281,53 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             # 清理资源
             self._audio_stream_stop()
             self.logger.info("%s audio stream stopped", self._log_prefix)
+
+    def _dispatch_playback_sample(self, audio_data: np.ndarray, stream_id: str, fragment_id: str) -> None:
+        """在音频真正写入设备的时刻, 计算并分发 PlaybackSample.
+
+        轻量数据结构 — rms/peak/三频段能量摘要, 不携带原始 PCM.
+        若无观察者注册, 直接跳过 — 不计算频谱 (优化点).
+        """
+        if not self._playback_observers:
+            return
+        duration = len(audio_data) / self.sample_rate if self.sample_rate else 0.0
+        sample = self._compute_playback_sample(
+            audio_data, stream_id=stream_id, fragment_id=fragment_id, duration=duration
+        )
+        for callback in list(self._playback_observers):
+            callback(sample)
+
+    @staticmethod
+    def _compute_playback_sample(
+        audio_data: np.ndarray,
+        *,
+        stream_id: str,
+        fragment_id: str,
+        duration: float,
+    ) -> PlaybackSample:
+        """从 resampled int16 PCM 计算轻量频谱摘要."""
+        f32 = audio_data.astype(np.float64) / 32768.0
+        if len(f32) == 0:
+            return PlaybackSample(stream_id=stream_id, fragment_id=fragment_id, duration=duration)
+        rms = float(np.sqrt(np.mean(f32**2)))
+        rms_db = 20.0 * np.log10(max(rms, 1e-10))
+        peak = float(np.max(np.abs(f32)))
+
+        fft = np.abs(np.fft.rfft(f32))
+        n = len(fft)
+        if n >= 6:
+            bass = 20.0 * np.log10(max(float(np.mean(fft[: n // 6])), 1e-10))
+            mid = 20.0 * np.log10(max(float(np.mean(fft[n // 6 : 2 * n // 3])), 1e-10))
+            high = 20.0 * np.log10(max(float(np.mean(fft[2 * n // 3 :])), 1e-10))
+        else:
+            bass = mid = high = rms_db
+
+        return PlaybackSample(
+            stream_id=stream_id,
+            fragment_id=fragment_id,
+            timestamp=time.time(),
+            duration=duration,
+            rms_db=round(rms_db, 1),
+            peak=round(peak, 3),
+            bands={"bass": round(bass, 1), "mid": round(mid, 1), "high": round(high, 1)},
+        )

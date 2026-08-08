@@ -1,7 +1,7 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'Round 1 代码落地 + 音频 provider project 级迁移 (2026-08-09)：speech 三件套 (tts/speech/player) 迁到 MOSS.manifests.providers，为 moss audio CLI 做准备；capture 下轮迁。'
+status_note: 'Round 1 代码落地 + 音频 provider project 级迁移 + player 实际播放可感知 (2026-08-09)：speech 三件套迁到 MOSS.manifests.providers；PlaybackSample + observe 全局订阅落地（拼接身份 fragment_id）；capture 下轮迁。'
 priority: P0
 created: 2026-07-28
 updated: 2026-08-09
@@ -743,6 +743,46 @@ channel 保留在同包（`host/listener/channel.py`），不独立为 `channels
 
 - **capture 必须迁到 project 级**。capture 放 HOST 一开始就是错的——`Matrix.new` 路径看不到 HOST。
   本轮按 scope 只走 speech，capture 暂留 HOST，下轮连同 listener 抽象一起处理。
+
+## 2026-08-09 会话决策 — player 实际播放可感知 (PlaybackSample + observe)
+
+> 结对编程：人类架构师 + deepseek-v4-flash。这是对"不满意的 audio topic"的两层拆分：
+> **第一层 (本轮)** = player 实际播放的可感知走回调，**第二层 (可选下一步)** = 如何消费
+> （用 topic 广播？）——技术上独立的决定，本轮不做。CLI 锚点：`moss audio echo`
+> （听 n 秒 → 播 n 秒 → CLI 画文本波形），两层最终都会出现在 CLI 里。
+
+### 设计修正（align 后落地，推翻了我最初的实现）
+
+我最初把 `observe` 做成 **stream 作用域 + 自动移除**（`_stream_pending` 计数，
+stream 片段播完即摘除观察者）。用户 review 指出这是过度设计，修正为：
+
+1. **player 不做 stream 生命周期追踪**。stream 真正的生命周期在**治理层**——明确知道
+   它的 speech 或外层控制 `clear()` 的节点。player 只提供简单订阅（`observe` 返回
+   unsubscribe），何时结束由治理层管理。
+2. **observe 是全局的，不是 stream 作用域**。stream 身份放进**数据**里（PlaybackSample
+   携带 stream_id），不做成注册作用域——否则逼 player 维护按 stream 的内部状态。
+3. **新增 fragment_id（拼接身份）**。发送方在 `add()` 传入（通常是自增整数），消费方
+   对齐回调判断哪些片段拼接到一起，方便存储。这是链路里更关键的一环——形如
+   `speech_storage` 专门负责拼接动作。
+4. **优化点**：无观察者注册时不计算 PlaybackSample（跳过频谱计算）。
+
+### 落地内容
+
+- `contracts/speech.py`：
+  - `PlaybackSample`（pydantic model，可序列化，未来可广播为 topic）：`stream_id /
+    fragment_id / timestamp / duration / rms_db / peak / bands{bass,mid,high}`。
+  - `StreamAudioPlayer.add(chunk, ..., stream_id="", fragment_id="")`。
+  - `StreamAudioPlayer.observe(callback) -> Callable[[], None]`（全局订阅，返回 unsubscribe）。
+- `core/speech/base_player.py`：队列项改为 `(pcm, stream_id, fragment_id)` 元组；
+  `_audio_worker` 写设备后 `_dispatch_playback_sample`（真正写入时刻，非入队时刻）；
+  `_compute_playback_sample` 计算轻量频谱摘要（rms/peak/3-band）。无观察者时跳过。
+- 测试 `tests/ghoshell_moss/host/speech/test_player_playback_sample.py`：触发、拼接身份
+  透传、全局观察、unsubscribe、无观察者不崩溃、多观察者。host+default 1282 全绿。
+
+### 下一步（待定，不是本轮 scope）
+
+- **第二层消费**：PlaybackSample 是否广播为 topic、怎么广播——独立决定。
+- **CLI `audio echo`**：听 n 秒 → 播 n 秒 → 文本波形图，同时消费两层。
   此前会话的崩溃点就发生在这个操作上，迁移时先对齐再做。
 
 ### 关键认知（避免未来重蹈覆辙）

@@ -17,6 +17,7 @@ __all__ = [
     "Speech",
     "SpeechStream",
     "StreamAudioPlayer",
+    "PlaybackSample",
     "TTS",
     "TTSItem",
     "TTSAudioCallback",
@@ -286,6 +287,23 @@ class AudioFormat(Enum):
     PCM_F32LE = "float32le"
 
 
+class PlaybackSample(BaseModel):
+    """Player 实际播放的可感知样本 — 轻量, 可序列化, 未来可广播为 topic.
+
+    不是原始 PCM. 携带拼接身份 (stream_id + fragment_id) + 时间 + 频谱摘要,
+    足够渲染波形/频谱图, 也足够消费方 (如 speech_storage) 对齐回调拼接片段.
+    计算发生在音频真正写入设备的时刻 (_audio_worker 写路径), 不是 add 入队时刻.
+    """
+
+    stream_id: str = ""
+    fragment_id: str = ""
+    timestamp: float = 0.0
+    duration: float = 0.0
+    rms_db: float = 0.0
+    peak: float = 0.0
+    bands: dict[str, float] = Field(default_factory=lambda: {"bass": -96.0, "mid": -96.0, "high": -96.0})
+
+
 class StreamAudioPlayer(ABC):
     """
     音频播放的极简抽象.
@@ -331,13 +349,37 @@ class StreamAudioPlayer(ABC):
             audio_type: AudioFormat,
             rate: int,
             channels: int = 1,
+            stream_id: str = "",
+            fragment_id: str = "",
     ) -> float:
         """
         添加音频片段. 关于音频的参数, 用来方便做转码 (根据底层实现判断转码的必要性)
 
         注意: 这个接口是非阻塞的, 通常会立刻返回. 方便提前把流式的音频片段都 buffer 好.
 
+        :param stream_id: 可选的流标识. 相同 stream_id 的片段属于同一个播放流,
+            消费方 (如 speech_storage) 用它分组拼接. 缺省为空串.
+        :param fragment_id: 可选的片段身份 (通常是自增整数). 发送方传入, 消费方
+            用它对齐 observe() 回调, 判断哪些片段拼接到一起. 缺省为空串.
         :return: 返回一个 second 为单位的时间戳, 每一个音频片段插入后, 会根据音频播放的时间计算一个新的播放结束时间.
+        """
+        pass
+
+    @abstractmethod
+    def observe(
+            self,
+            callback: Callable[[PlaybackSample], None],
+    ) -> Callable[[], None]:
+        """
+        注册一个实际播放可感知观察者 (全局, 非 stream 作用域).
+
+        callback 会在任何音频片段真正写入设备时被调用, 携带轻量 PlaybackSample —
+        其中 stream_id / fragment_id 与 add() 时传入的一致, 供消费方对齐拼接.
+
+        返回一个 unsubscribe 函数, 调用后观察者被移除. stream 的生命周期不属于
+        player — 何时结束由明确知道它的治理层 (speech 或外层控制 clear 的节点) 管理.
+
+        优化: 若无任何观察者注册, player 不会计算 PlaybackSample (跳过频谱计算).
         """
         pass
 
