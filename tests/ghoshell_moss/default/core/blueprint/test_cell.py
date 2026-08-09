@@ -25,6 +25,7 @@ from pydantic import ValidationError
 
 from ghoshell_moss.core.blueprint.cell import (
     Cell,
+    CellAddressCodec,
     CellEvent,
     CellRuntimeInfo,
     DuplicatedError,
@@ -500,8 +501,188 @@ class TestAddress:
 class TestNormalize:
 
     def test_replaces_all_separators(self):
-        # 覆盖 / \ . - 四种分隔符, 输出可作 filename + python identifier.
-        assert normalize('worker/cam.front-1\\sub') == 'worker_cam_front_1_sub'
+        assert normalize('worker/cam.front-1\\sub') == 'worker__cam__front__1__sub'
+
+    def test_normalize_roundtrip_via_from_normalized(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        norm = normalize(addr)
+        assert norm == f'{NODE_ROLE}__cam__uid8'
+        back = CellAddressCodec.from_normalized(norm)
+        assert back.address == addr
+
+
+# ── CellAddressCodec ─────────────────────────────────────────────────
+
+
+class TestCellAddressCodec:
+
+    # -- construct / validate
+
+    def test_construct_valid_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.address == addr
+
+    def test_construct_invalid_raises_value_error(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec('not-an-address')
+
+    def test_construct_no_validate(self):
+        c = CellAddressCodec('not/an/addr', validate=False)
+        assert c.address == 'not/an/addr'
+
+    # -- parts / role / name / uid
+
+    def test_parts_role_name_uid(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.parts == (NODE_ROLE, 'cam', 'uid8')
+        assert c.role == NODE_ROLE
+        assert c.name == 'cam'
+        assert c.uid == 'uid8'
+
+    # -- short
+
+    def test_short_name_uid_prefix(self):
+        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
+        c = CellAddressCodec(addr)
+        assert c.short == 'counter_service_01KZHB'
+
+    def test_short_different_uid_yield_different_shorts(self):
+        a = make_address(NODE_ROLE, 'cam', 'AAAABBBBCC')
+        b = make_address(NODE_ROLE, 'cam', 'ZZZZBBBBCC')
+        assert CellAddressCodec(a).short != CellAddressCodec(b).short
+
+    # -- dot_address / from_dot_address
+
+    def test_dot_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.dot_address == f'{NODE_ROLE}.cam.uid8'
+
+    def test_dot_address_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec.from_dot_address(CellAddressCodec(addr).dot_address)
+        assert c.address == addr
+
+    # -- normalized / from_normalized
+
+    def test_normalized(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.normalized == f'{NODE_ROLE}__cam__uid8'
+
+    def test_from_normalized_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec.from_normalized(CellAddressCodec(addr).normalized)
+        assert c.address == addr
+
+    def test_from_normalized_rejects_invalid(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.from_normalized('too__many__segments__here')
+
+    # -- make / parse / normalize (class-level)
+
+    def test_make_valid(self):
+        c = CellAddressCodec.make(NODE_ROLE, 'cam', 'uid8')
+        assert c.address == f'{NODE_ROLE}/cam/uid8'
+        assert type(c) is CellAddressCodec
+
+    def test_make_rejects_empty_name(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.make(NODE_ROLE, '', 'uid')
+
+    def test_make_rejects_unknown_role(self):
+        with pytest.raises(ValueError):
+            CellAddressCodec.make('bridge', 'x', 'uid')
+
+    def test_parse_roundtrip(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert CellAddressCodec.parse(addr) == (NODE_ROLE, 'cam', 'uid8')
+
+    def test_normalize_classmethod(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert CellAddressCodec.normalize(addr) == f'{NODE_ROLE}__cam__uid8'
+
+    # -- match
+
+    def test_match_exact_address(self):
+        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
+        c = CellAddressCodec(addr)
+        assert c.match(addr)
+
+    def test_match_exact_short(self):
+        addr = make_address(NODE_ROLE, 'counter_service', '01KZHB7G8Q')
+        c = CellAddressCodec(addr)
+        assert c.match(c.short)                    # counter_service_01KZHB
+
+    def test_match_exact_name(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.match('cam')
+
+    def test_match_uid_prefix_ge_3(self):
+        addr = make_address(NODE_ROLE, 'cam', 'ABCDEFGH')
+        c = CellAddressCodec(addr)
+        assert c.match('ABC')                      # uid prefix ≥3
+        assert not c.match('AB')                   # uid prefix <3 —门槛
+
+    def test_match_address_prefix_ge_3(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        c = CellAddressCodec(addr)
+        assert c.match(f'{NODE_ROLE}/cam')         # role/name, ≥3
+        assert not c.match('no')                   # <3
+
+    def test_match_empty_query(self):
+        c = CellAddressCodec(make_address(NODE_ROLE, 'cam', 'uid8'))
+        assert not c.match('')
+
+    # -- suggest
+
+    def test_suggest_finds_by_uid_prefix(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAAABBBB'),
+            make_address(NODE_ROLE, 'sensor', 'BBBBCCCC'),
+            make_address(NODE_ROLE, 'motor', 'AAAACCCC'),
+        ]
+        hits = CellAddressCodec.suggest('AAAA', addrs)
+        assert len(hits) == 2
+        assert addrs[0] in hits
+        assert addrs[2] in hits
+
+    def test_suggest_prefers_exact_name(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAA'),
+            make_address(NODE_ROLE, 'camera', 'BBB'),
+        ]
+        # 'cam' exact name match → higher score than 'camera' substring
+        hits = CellAddressCodec.suggest('cam', addrs)
+        assert hits[0] == addrs[0]
+
+    def test_suggest_empty_query(self):
+        addrs = [make_address(NODE_ROLE, 'cam', 'AAA')]
+        assert CellAddressCodec.suggest('', addrs) == []
+
+    def test_suggest_limit(self):
+        addrs = [
+            make_address(NODE_ROLE, 'cam', 'AAA'),
+            make_address(NODE_ROLE, 'cam', 'BBB'),
+            make_address(NODE_ROLE, 'cam', 'CCC'),
+            make_address(NODE_ROLE, 'cam', 'DDD'),
+        ]
+        assert len(CellAddressCodec.suggest('cam', addrs, limit=2)) == 2
+
+    # -- __str__ / __repr__
+
+    def test_str_returns_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        assert str(CellAddressCodec(addr)) == addr
+
+    def test_repr_contains_address(self):
+        addr = make_address(NODE_ROLE, 'cam', 'uid8')
+        r = repr(CellAddressCodec(addr))
+        assert 'CellAddressCodec' in r
+        assert addr in r
 
 
 # ── DuplicatedError ──────────────────────────────────────────────────

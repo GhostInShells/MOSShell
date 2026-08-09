@@ -580,18 +580,7 @@ def make_address(role: CellRole, name: CellName, uid: str) -> str:
     :param name: address[1] 治理域路径
     :param uid: address[-1] 唯一性来源, 短随机字符串.
     """
-    if not name:
-        raise ValueError(
-            f'address must have at least one middle segment (kind={role!r}, uid={uid!r})'
-        )
-    elif not uid:
-        raise ValueError(f'address uid must be non-empty (kind={role!r})')
-    elif role not in ROLES:
-        raise ValueError(f'address role must be in ROLES {ROLES}')
-    for seg in (role, name, uid):
-        if '/' in seg:
-            raise ValueError(f'address segment must not contain "/": {seg!r}')
-    return '/'.join([role, name, uid])
+    return CellAddressCodec.make(role, name, uid).address
 
 
 def parse_address(address: CellAddress) -> tuple[CellRole, CellName, str]:
@@ -600,25 +589,182 @@ def parse_address(address: CellAddress) -> tuple[CellRole, CellName, str]:
 
     :raise ValueError: address 段数 < 3 或 kind 不在 CellRole 值域.
     """
-    parts = address.split('/')
-    if len(parts) != 3:
-        raise ValueError(
-            f'address must have at least 3 segments (kind/middle+/uid), got {address!r}'
-        )
-    role, name, uid = parts
-    if role not in ROLES:
-        raise ValueError(
-            f'address[0] must be in CellRole {ROLES}, got {role!r}'
-        )
-    elif not name or not uid:
-        raise ValueError(f'address {address} parts should not be empty')
-    return role, name, uid  # type: ignore[return-value]
+    return CellAddressCodec.parse(address)
 
 
 def normalize(name_or_address: str) -> str:
     """将名称或 address 归一化为可作文件名 / python 标识符的形式."""
-    return (name_or_address.replace('/', '_').replace('\\', '_').
-            replace('.', '_').replace('-', '_'))
+    return CellAddressCodec.normalize(name_or_address)
+
+
+class CellAddressCodec:
+    """CellAddress (str) 的形式转换与校验.
+
+    address 保持 str 表示 (type alias), 本类提供唯一的转换/展示/匹配入口.
+    持有 address 的类型 (Cell / CellHandle / CellEvent) 通过 ``.addr``
+    暴露本类实例, 不再各自手工解析 address 字符串.
+    """
+
+    SHORT_UID_LEN = 6
+
+    def __init__(self, address: CellAddress, *, validate: bool = True) -> None:
+        self.address: CellAddress = address
+        self._parts: tuple[CellRole, CellName, str] | None = None
+        if validate:
+            self._parts = self.parse(address)
+
+    @property
+    def parts(self) -> tuple[CellRole, CellName, str]:
+        if self._parts is None:
+            self._parts = self.parse(self.address)
+        return self._parts
+
+    @property
+    def role(self) -> CellRole:
+        return self.parts[0]
+
+    @property
+    def name(self) -> CellName:
+        return self.parts[1]
+
+    @property
+    def uid(self) -> str:
+        return self.parts[2]
+
+    # -- 别名 -------------------------------------------------
+
+    @property
+    def short(self) -> str:
+        """short 形态: ``name_uid[:6]``, 全链统一的地址短标."""
+        return f'{self.name}_{self.uid[:CellAddressCodec.SHORT_UID_LEN]}'
+
+    @property
+    def dot_address(self) -> str:
+        """点分隔形式: ``role.name.uid``."""
+        return self.address.replace('/', '.')
+
+    @classmethod
+    def from_dot_address(cls, dot_address: str) -> 'CellAddressCodec':
+        """从点分隔形式反向构造 (尽力)."""
+        return cls(dot_address.replace('.', '/'), validate=True)
+
+    @property
+    def normalized(self) -> str:
+        """文件系统安全形式: ``/`` ``.`` ``-`` 替换为 ``__``."""
+        return self.normalize(self.address)
+
+    @classmethod
+    def from_normalized(cls, normalized: str) -> 'CellAddressCodec':
+        """从 normalize 输出反向构造 (尽力). validate 失败即 ValueError."""
+        return cls(normalized.replace('__', '/'), validate=True)
+
+    # -- from / to ---------------------------------------------
+
+    @classmethod
+    def make(cls, role: CellRole, name: CellName, uid: str) -> 'CellAddressCodec':
+        """从三段构造 address (role/name/uid)."""
+        if not name:
+            raise ValueError(
+                f'address must have at least one middle segment (kind={role!r}, uid={uid!r})'
+            )
+        elif not uid:
+            raise ValueError(f'address uid must be non-empty (kind={role!r})')
+        elif role not in ROLES:
+            raise ValueError(f'address role must be in ROLES {ROLES}')
+        for seg in (role, name, uid):
+            if '/' in seg:
+                raise ValueError(f'address segment must not contain "/": {seg!r}')
+        return cls('/'.join([role, name, uid]))
+
+    @classmethod
+    def parse(cls, address: CellAddress) -> tuple[CellRole, CellName, str]:
+        """反查三段 (role, name, uid)."""
+        parts = address.split('/')
+        if len(parts) != 3:
+            raise ValueError(
+                f'address must have at least 3 segments (kind/middle+/uid), got {address!r}'
+            )
+        role, name, uid = parts
+        if role not in ROLES:
+            raise ValueError(
+                f'address[0] must be in CellRole {ROLES}, got {role!r}'
+            )
+        elif not name or not uid:
+            raise ValueError(f'address {address} parts should not be empty')
+        return role, name, uid  # type: ignore[return-value]
+
+    @classmethod
+    def normalize(cls, name_or_address: str) -> str:
+        """归一化为文件系统安全名: ``/`` ``.`` ``-`` → ``__``."""
+        return (name_or_address.replace('/', '__').replace('\\', '__').
+                replace('.', '__').replace('-', '__'))
+
+    def __str__(self) -> str:
+        return self.address
+
+    def __repr__(self) -> str:
+        return f'CellAddressCodec({self.address})'
+
+    # -- 匹配 -------------------------------------------------
+
+    def match(self, query: str) -> bool:
+        """query 是否命中本 address.
+
+        五路, 按优先级: 精确全名 → 精确 short → 精确 name 段 → uid 前缀
+        (≥3 字符) → address 前缀 (≥3 字符). 空串/单双字符不命中 —
+        语义门槛避免误匹配.
+        """
+        if not query:
+            return False
+        if query == self.address:
+            return True
+        if query == self.short:
+            return True
+        if query == self.name:
+            return True
+        if len(query) >= 3:
+            if self.uid.startswith(query):
+                return True
+            if self.address.startswith(query):
+                return True
+        return False
+
+    @classmethod
+    def suggest(
+            cls,
+            query: str,
+            candidates: Iterable[CellAddress],
+            *,
+            limit: int = 3,
+    ) -> list[CellAddress]:
+        """did you want? — 从候选里收集近似命中 (name 前缀/子串, uid 前缀).
+
+        用于解析失败/歧义时的兜底提示, 让模糊输入变成可纠正的对话.
+        返回候选的 address 全名列表.
+        """
+        if not query:
+            return []
+        q = query.lower()
+        scored: list[tuple[int, CellAddress]] = []
+        for addr in candidates:
+            try:
+                _, name, uid = parse_address(addr)
+            except ValueError:
+                continue
+            nl, ul = name.lower(), uid.lower()
+            score = 0
+            if ul.startswith(q):
+                score += 3
+            if nl == q:
+                score += 4
+            elif nl.startswith(q):
+                score += 2
+            elif q in nl:
+                score += 1
+            if score:
+                scored.append((score, addr))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [addr for _, addr in scored[:limit]]
 
 
 def build_cell_from_node(
