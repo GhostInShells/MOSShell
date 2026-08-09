@@ -157,5 +157,8 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
 
     def _audio_stream_stop(self):
         if self._playback is not None:
-            self._playback.stop()
+            try:
+                self._playback.stop()
+            except Exception:
+                pass  # miniaudio 内部线程可能已因 generator 返回而自行停止
             self._playback = None

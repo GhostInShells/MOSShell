@@ -278,8 +278,11 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)
         finally:
-            # 清理资源
-            self._audio_stream_stop()
+            # 清理资源 — miniaudio 等实现可能在 stop() 时因内部线程已退出而抛异常.
+            try:
+                self._audio_stream_stop()
+            except Exception:
+                self.logger.exception("%s error during stream stop", self._log_prefix)
             self.logger.info("%s audio stream stopped", self._log_prefix)
 
     def _dispatch_playback_sample(self, audio_data: np.ndarray, stream_id: str, fragment_id: str) -> None:

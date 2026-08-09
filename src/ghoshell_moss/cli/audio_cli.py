@@ -19,11 +19,11 @@ import typer
 from ghoshell_container import INSTANCE
 
 from ghoshell_moss.cli.utils import (
-    console,
     echo,
     is_ai_mode,
     print_error,
     print_info,
+    print_simple_panel,
     print_simple_table,
     print_success,
     print_warning,
@@ -169,7 +169,6 @@ def _report_playback_sample(observed, total: float) -> None:
             f"rms={s.rms_db:.1f}dB peak={s.peak:.3f} pcm={pcm_sz}B @{s.sample_rate}Hz"
         )
         return
-    from rich.panel import Panel
     from rich.text import Text
 
     t = Text()
@@ -179,7 +178,7 @@ def _report_playback_sample(observed, total: float) -> None:
     lvl = int((max(-60.0, min(0.0, s.rms_db)) + 60.0) / 60.0 * bar_w)
     t.append("rms  " + "█" * lvl + "░" * (bar_w - lvl) + "\n", style="yellow")
     t.append(f"pcm={pcm_sz}B @{s.sample_rate}Hz", style="dim")
-    console.print(Panel(t, title="playback sample", border_style="cyan"))
+    print_simple_panel(t, title="playback sample")
 
 
 def _spectrum_bins(sample, n_bins: int = 10) -> list[float]:
@@ -235,14 +234,13 @@ def _report_spectrogram(observed, total: float) -> None:
             dbs = [s.rms_db for s in observed]
             echo(f"fragments: {len(observed)}  rms range=[{min(dbs):.1f}, {max(dbs):.1f}] dB")
         return
-    from rich.panel import Panel
     from rich.text import Text
 
     t = Text()
     t.append(f"fragments: {len(observed)}  ", style="dim")
     t.append(f"duration: {total:.2f}s\n")
     t.append(spectro, style="yellow")
-    console.print(Panel(t, title="playback spectrogram", border_style="cyan"))
+    print_simple_panel(t, title="playback spectrogram")
 
 
 @audio_app.command("play")
@@ -255,19 +253,33 @@ def play(
     Human 模式: 播放中实时波形面板 (进度 + rms 波形). --ai 模式: 单帧样本摘要.
     """
     matrix = Matrix.new("audio_play", category="cli")
-    matrix.run(lambda m: _async_play(m, seconds=seconds, file=file))
+    result = matrix.run(lambda m: _async_play(m, seconds=seconds, file=file))
+
+    # 输出渲染在 matrix.run 返回之后 — 避免 asyncio 事件循环/worker 线程干扰 stdout.
+    if result is None:
+        return
+    source, total, observed, interrupted = result
+    if interrupted:
+        print_warning("interrupted — playback stopped")
+    else:
+        print_success(f"playback finished: {source} {total:.2f}s")
+    if is_ai_mode():
+        _report_playback_sample(observed, total)
+    else:
+        _report_spectrogram(observed, total)
 
 
-async def _async_play(matrix, *, seconds: float, file: Optional[Path]) -> None:
+async def _async_play(matrix, *, seconds: float, file: Optional[Path]):
+    """收集播放数据, 返回 (source, total, observed, interrupted). 不做输出渲染."""
     player = matrix.container.get(StreamAudioPlayer)
     if player is None:
         print_error("StreamAudioPlayer not registered — run `moss audio contracts` to see what's available.")
-        return
+        return None
 
     if file is not None:
         if not file.exists():
             print_error(f"file not found: {file}")
-            return
+            return None
         pcm, rate = _read_wav(file)
         source = str(file)
     else:
@@ -276,7 +288,7 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path]) -> None:
         source = "tune"
     if len(pcm) == 0:
         print_warning("no audio to play")
-        return
+        return None
     total = len(pcm) / rate
 
     observed: list = []
@@ -286,7 +298,6 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path]) -> None:
     try:
         stream_id = f"cli-{int(time.time())}"
         if is_ai_mode():
-            # --ai 等价 -w 关闭: 整段单次 add, 单帧样本摘要.
             player.add(
                 pcm,
                 audio_type=AudioFormat.PCM_S16LE,
@@ -298,18 +309,10 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path]) -> None:
         else:
             await _spectrogram_play(player, pcm, rate, stream_id, observed)
     except asyncio.CancelledError:
-        # 用户 Ctrl+C — 经 matrix.run 生命周期以 CancelledError 送达, 立即掐断播放.
         interrupted = True
         await player.clear()
     finally:
         unsub()
         await player.close()
 
-    if interrupted:
-        print_warning("interrupted — playback stopped")
-    else:
-        print_success(f"playback finished: {source} {total:.2f}s")
-    if is_ai_mode():
-        _report_playback_sample(observed, total)
-    else:
-        _report_spectrogram(observed, total)
+    return source, total, observed, interrupted
