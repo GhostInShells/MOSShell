@@ -3,7 +3,7 @@ title: Dolores Ghost
 status: draft
 priority: P1
 created: 2026-07-13
-updated: 2026-07-23
+updated: 2026-08-09
 depends: [momento-mori]
 milestone: 0.1.0
 description: >-
@@ -172,6 +172,89 @@ GroundSet: ghost_home (自身认知) + project_root (MOSS 项目认知).
 - **独立思维模块: 并行化身 + 关键帧自测.** 思维模块从 ghost runtime 中独立出来,
   支持 fork 并行化身 (一个 moment 多条思维链) 和 checkpoint 关键帧自测
   (思维链中途 snapshot 评估). 设计细节施工时展开.
+
+## 连续自驱 — 醒×续 选型与故障恢复 (2026-08-09 讨论收敛)
+
+> 人类架构师 + 模型 (deepseek-v4-flash) 的连续自驱选型讨论. 自驱是一期核心命题,
+> 本节记录收敛轨迹, 施工时以此为准, 细节在开发中展开.
+
+### 选型: 醒 × 续 两维度
+
+自驱不是单一命题, 是 **醒 (wake) × 续 (continue) 两维度的乘积**:
+
+| 维度 | 问题 | 一期方案 |
+|---|---|---|
+| 醒 | 下一轮思考从哪来 | task nucleus 低优 signal 驱动 + 状态保留 |
+| 续 | 同轮 articulate 能否不中断 | articulator 锁死权限命令 |
+
+- **醒 = task nucleus (方案4).** 自驱的本质是"有任务在推进", 状态保留在 nucleus
+  里 = 自驱有内存. IdleNucleus (方案1) 是无状态退化形, 被 task nucleus 超集覆盖
+  (空闲 = 一个低优 idle task). 最优雅的形式是 topic/signal + 自定义 loop 逻辑,
+  但一期关心的不是默认实现, 是 ghost 可修改的语法本身.
+- **续 = articulator 锁死权限命令 (方案3).** agent 用 command 控制自注意力提权、
+  故障验证状态、或抛超异常让机体 pause (pause 模块已做). **不动 articulator 生命周期,
+  自驱命令是 channel 表面的一份子** — 这正是 "ghost 可以修改的语法本身". 一期可
+  只提供语法, 不开放 ghost 自改自己.
+- **砍掉 next() flag (方案2).** 与 raise_observe 语义重叠, 是 attention 内推进的
+  细粒度操控, 不是自驱时钟. 一期不做 attention 接口手术.
+- **反身语法必须机械到不需要预训练.** 模型预训练分布里没有"操纵自己注意力仲裁器"
+  的样本, 反身操作认知负担极高. 语法必须极简、语义直接 (屏蔽/降权/关掉), 模型只
+  调用, 不理解内部. 一期只做 pull 容错 (低反身), 屏蔽语法留二期.
+
+### 故障恢复与快速 compact
+
+- **快速 compact 前提 = commit 持续提交 × compact agent 分段输入.** memento §12
+  里 compact 本质是移动 detail cursor; commit 持续提交让 compact agent 每轮只处理
+  最近一小段 staging. 两个前提互相咬合, 只提 commit 侧不完整.
+- **致命故障 (弱网/tokens 超标) 需要 ghost runtime 级保护**, 优先级层级:
+  `estop > retry (免疫普通 impulse, 不免疫 estop) > normal impulse preemption`.
+  estop 连 retry 都能停, 否则 estop 失效.
+- **上下文崩溃是最致命故障** — 协议脏数据导致无法重新进入 agent 调用. 办法:
+  压缩所有 commit, 故障轮 commit 以故障方式压缩掉, 不允许重载展开.
+
+### task 状态机
+
+标准系统收敛到同一核心: `pending → running → {done | failed | cancelled}`.
+现成证据: CommandTaskState (command.py:87) + MCP tasks (SEP-2663).
+
+MOSS 两条独有轴 (别家没有):
+
+1. **waiting (input_required)** — 双工态. task 执行中需要等外部输入 (端侧数据 /
+   ghost 决策). task 在等"下一轮思考的输入"时就是 waiting.
+2. **interrupted (preempted)** — 抢占暂停态, ≠ cancelled, 可恢复. mindflow 特有,
+   别家无抢占故无此态. **interrupted 永远不是终态.**
+
+- done 是唯一干净终态; failed/cancelled 是 dirty 终态.
+- retryable 是 task 的**字段 (policy 不是 state)**, 不是新状态 — 弱网重试与普通
+  失败靠它区分.
+- **task ack 走 matrix 协议** (matrix-operator 的 service kind). task 状态活在
+  mesh 上 (zenoh query/pub-sub), ghost 是投影消费者; ack 投递/确认/持久化是矩阵
+  职责, ghost 自身状态异常时 ack 不丢. nucleus 与端侧共享同一协议.
+
+### 坏 impulse 落点: perspectives, 不是 percepts
+
+坏 impulse 是 **mindflow 内部状态异常**, 不是外部世界事件. 落点必须区分:
+
+- **percepts** = 外部输入, source-keyed. 放这里会诱导 ghost "收到外部信号, 该
+  响应" — 但 ghost 无运行时修改 mindflow 的能力 (重启不了), 会被诱导去做做不到
+  的事.
+- **perspectives** = 系统层内观快照 (moss_dynamic / safemode / Mindflow 自解释).
+  放这里正确传达: "感知系统里有异常, 认知到它存在, 但这不是要响应的外部事件,
+  你改变不了它." 与 mindflow-channel "自解释走 instruction 不走 context_messages"
+  同构.
+
+**两层设计** (不冲突):
+- 认知层: 坏 impulse 帧内可见 (perspective), 不落盘 (`Moment.for_saving` 清空
+  perspectives).
+- 轨迹层: 坏 impulse 升级为致命故障 (articulator 崩溃/超时/协议脏数据) 才落
+  故障 commit (L3 + faulted, 可文本读不可上下文展开).
+
+### 与既有决策的关系
+
+- 互不矛盾: interleaved thinking (thinking 期不哑) 是"续"的候选实现形态;
+  mindflow-channel 提供感知反身面; memento 提供快速 compact 前提.
+- 本次讨论把自驱从"一个命题"拆成"醒 × 续"两个独立维度, 落点分别在 task nucleus
+  和 articulator 命令面.
 
 ## Interleaved Thinking — 候选方案 (未测试, 施工时验证)
 
