@@ -11,6 +11,7 @@ implementer 只写 ``async def handler(query) -> bytes``, 永远不碰 zenoh 线
 
 import asyncio
 import json
+import threading
 import time
 from typing import Callable, Awaitable
 
@@ -169,18 +170,44 @@ class ZenohServiceTerminal(ServiceProvider):
         listen_key = self._keys.listen_key(key)
         self._listen_handlers[key] = handler
 
-        # declare subscriber (callback runs in zenoh thread)
-        sub = self._session.declare_subscriber(
-            listen_key,
-            self._on_listen_sample,
+        # no-callback subscriber: blocking iteration on a daemon thread
+        # feeds the existing _listen_queue.  _consume_listen (started in
+        # __aenter__) drains the queue and calls the handler.
+        sub = self._session.declare_subscriber(listen_key)
+
+        def _reader() -> None:
+            try:
+                for sample in sub:
+                    if sample.kind != zenoh.SampleKind.PUT:
+                        continue
+                    key_expr = str(sample.key_expr)
+                    biz_key = key_expr[len(self._keys.listen_prefix):]
+                    try:
+                        self._listen_queue.sync_q.put_nowait((sample, biz_key))
+                    except janus.SyncQueueFull:
+                        self._logger.error(
+                            "listen queue full, dropping: key=%s", biz_key,
+                        )
+                    except janus.SyncQueueShutDown:
+                        return
+            except zenoh.ZError:
+                pass  # subscriber undeclared — normal
+
+        t = threading.Thread(
+            target=_reader, daemon=True,
+            name=f"listen-{self._keys.kind}-{key}",
         )
+        t.start()
 
         def _close() -> None:
             self._listen_handlers.pop(key, None)
             try:
                 sub.undeclare()
-            except RuntimeError:
-                pass
+            except Exception:
+                self._logger.info(
+                    "listen subscriber already undeclared: kind=%s key=%s",
+                    self._keys.kind, key,
+                )
 
         return _ZenohHandle(key, _close)
 
@@ -230,19 +257,26 @@ class ZenohServiceTerminal(ServiceProvider):
         self._listen_task = None
 
         # undeclare all zenoh handles (sync → to_thread)
-        async def _undeclare():
+        def _undeclare():
             if self._liveness_token is not None:
                 try:
                     self._liveness_token.undeclare()
-                except RuntimeError:
-                    pass
+                except Exception:
+                    self._logger.info(
+                        "liveness token already undeclared (session likely closed): "
+                        "address=%s kind=%s",
+                        self._keys.address, self._keys.kind,
+                    )
                 self._liveness_token = None
 
             for pub in list(self._publishers.values()):
                 try:
                     pub.undeclare()
-                except RuntimeError:
-                    pass
+                except Exception:
+                    self._logger.info(
+                        "publisher already undeclared: kind=%s",
+                        self._keys.kind,
+                    )
             self._publishers.clear()
 
         await asyncio.to_thread(_undeclare)
@@ -323,23 +357,19 @@ class ZenohServiceTerminal(ServiceProvider):
                     "query handler error: address=%s kind=%s key=%s",
                     self._keys.address, self._keys.kind, business_key,
                 )
+                # reply an error so the caller doesn't hang until timeout
+                try:
+                    query.reply(
+                        query.key_expr,
+                        json.dumps({'error': 'handler error'}).encode(),
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "error reply failed: address=%s kind=%s key=%s",
+                        self._keys.address, self._keys.kind, business_key,
+                    )
 
-    # -- listen bridge (zenoh thread → asyncio) --------------------------
-
-    def _on_listen_sample(self, sample: zenoh.Sample) -> None:
-        """zenoh thread: extract business key, enqueue sample."""
-        if sample.kind != zenoh.SampleKind.PUT:
-            return
-        key_expr = str(sample.key_expr)
-        business_key = key_expr[len(self._keys.listen_prefix):]
-        try:
-            self._listen_queue.sync_q.put_nowait((sample, business_key))
-        except janus.SyncQueueFull:
-            self._logger.error(
-                "listen queue full, dropping: key=%s", business_key,
-            )
-        except janus.SyncQueueShutDown:
-            pass
+    # -- listen bridge (background thread → queue → asyncio) ----------
 
     async def _consume_listen(self) -> None:
         """asyncio: dequeue sample, run async handler."""

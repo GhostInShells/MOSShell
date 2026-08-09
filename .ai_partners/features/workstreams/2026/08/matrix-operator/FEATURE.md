@@ -2,13 +2,13 @@
 created: 2026-08-07
 depends: []
 description: 'Matrix 层 cell 级服务化通讯接线层. ServiceOperator 封装 zenoh queryable/pub/sub
-  + 生命周期治理, 暴露 ServiceDeclaration/ServiceProvider/ServiceClient 三分体.
-  二级抽象 (webview/resource/channel) 各自定义自己的 service kind 与元数据,
-  operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
+  + 生命周期治理, 暴露 ServiceDeclaration/ServiceProvider/ServiceClient 三分体. 二级抽象 (webview/resource/channel)
+  各自定义自己的 service kind 与元数据, operator 永不装线. 关键词: "统一无聊层, 特别化有趣层".'
 milestone: v0.1.0
 priority: P0
-status: in-progress
-status_note: 'blueprint converged (service.py), directory topology settled, ready for zenoh implementation'
+status: completed
+status_note: operator-level counter unit tests all pass; janus.Queue bridge for all
+  callbacks; webview badge design deferred to screen-node
 title: Matrix Service — cell 级服务化通讯接线层
 updated: '2026-08-09'
 ---
@@ -244,36 +244,54 @@ async def connect_service(self, client_cls: Type[ServiceClient]) -> ServiceClien
 
 ## V1 Validation (2026-08-09)
 
-**Attempt**: counter_service + counter_caller system test nodes on system_test mode.
+**system_test/node attempt** (first): counter_service + counter_caller
+on system_test mode.  Discovery (liveness + meta) OK, but `get("counter",
+"inc")` returned empty.  Root cause: cell address format inconsistency
+(short/long name coexistence in cell layer — another session handles this).
 
-**Result**: counter_caller discovered the counter service (liveness + meta query OK)
-but `get("counter", "inc", ...)` returned empty — per-key queryable not reached.
+**operator-level unit test** (this round): `tests/ghoshell_moss/services/
+test_counter.py` — two ZenohOperators on a single zenoh session, no
+Matrix harness.  `CounterServer.from_operator(op)` construction seam
+exposed for testability.
 
-**Root cause hypothesis**: cell address format inconsistency between the two paths
-operator depends on:
+**Result**: discovery, query (inc stateful + echo params round-trip +
+aggregate), pub/sub transport, on_service_start/stop lifecycle — all pass.
+Operator is confirmed correct; V1 system-test `get` failure is isolated to
+cell/matrix layer.
 
-1. **Discovery path** (liveness listener): `address_from_cell_key()` strips
-   `{cells_ns}/` prefix → returns address suffix. This address flows into
-   `ServiceMeta.address` via the meta queryable response.
+**Real bugs discovered and fixed during this round:**
 
-2. **Query path** (zenoh get): `ServiceKeyExpr.query_key()` constructs
-   `{services_ns}/{normalize(meta['address'])}/{kind}/query/{key}`.
+| Bug | Location | Symptom |
+|---|---|---|
+| `session.get` returns blocking iterator, `asyncio.to_thread` only wrapped the call | `zenoh_operator._fetch_meta`, `_query_one` | event-loop blocked on iteration; hang |
+| `_undeclare()` was `async def` passed to `asyncio.to_thread` (expects sync) | `zenoh_service_terminal.__aexit__` | liveness token never undeclared; stop callback never fired |
+| `query.payload` attribute access on TypedDict | `counter._on_echo` | AttributeError → no reply → caller timeout |
+| subscriber callback (`declare_subscriber(key, cb)`) not fired on single-session pub | `zenoh_operator.sub`, `zenoh_service_terminal.listen` | pub/sub samples never delivered |
 
-If the cell layer exposes two different address formats — a truncated one in
-one path (e.g. `counter_service`) and a full one in another (e.g.
-`node/counter_service/01KZ...`) — the query key won't match the terminal's
-declared queryable key, and zenoh routes the query into empty space.
+**Root cause fix — subscriber pattern**: zenoh `declare_subscriber` with
+callback is unreliable on single sessions.  Switched to `declare_subscriber(key)`
+(no callback) + daemon-thread iterator `for sample in sub:` + `janus.Queue`
+bridge — matching the proven `ZenohTopicSubscriber` pattern in
+`matrix/topics/zenoh_topics.py`.
 
-**Fix required in cell layer**: `CellAddress` must be consistent across all
-zenoh key paths (liveness token, queryable declaration, event publishing).
-The operator itself is correct — it uses the same `ServiceKeyExpr` to both
-declare queryables and build query keys from discovered meta.
+**Performance guard**: added `_QUERY_TIMEOUT = 5.0` to bound thread hold
+time on `session.get` misses.  `_fetch_meta` log promoted from DEBUG to
+WARNING.  Error-reply on handler failure (no more timeout-only failure mode).
 
-**Per-key queryable fix**: initial implementation used a wildcard queryable
-(`{prefix}/**`), which may not be supported across zenoh versions. Changed to
-per-key `declare_queryable()` calls in `queryable()`. The wildcard approach
-can be revisited once the address consistency issue is resolved and zenoh
-wildcard queryable support is verified.
+### V2 Webview Protocol — design decisions
 
-**Files**: `.moss/system_test_nodes/counter_service/` and `counter_caller/`
-are ready for re-validation once the cell address issue is fixed.
+Two-usage badge split (discussed 2026-08-09):
+
+- **用法 1 状态机** (红绿灰呼吸灯): cross-kind 通用协议，mesh 承载。Provider pub
+  `state`，消费方 sub 渲染呼吸灯。不是 webview 专属。
+- **用法 2 事件信号** (badge 数字): 面向人类的提醒。渲染侧本地化（page → screen,
+  screen-node S2 已实现），不写 mesh。真正需要 mesh 事件的是第三方推送。
+
+**WebViewDeclaration**: url / title / description / icon (可缺省)，不设 `id`
+（身份 = address，Sample envelope 自带）。
+
+**分层顺序**: operator 声明式 → screen 迭代 → 页面。协议设计以"对 screen 产生
+什么自动效果"为驱动。
+
+**理论最小实现**: 本期不做 webview 服务实现，交给 screen-node 完善。本期交付：
+operator 级 counter 单测（证明 operator 正确）+ 上述 bug 修复。

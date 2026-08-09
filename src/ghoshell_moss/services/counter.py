@@ -5,12 +5,14 @@ Used by the V1 validation plan in FEATURE.md to prove the operator surface
 is learnable from a single howto + this file alone.
 """
 
+from typing import Awaitable, Callable
 from typing_extensions import Self
 
 from ghoshell_moss.core.blueprint.service import (
     ServiceDeclaration,
     ServiceServer,
     ServiceProvider,
+    ServiceOperator,
     Query,
 )
 from ghoshell_moss.core.blueprint.matrix import Matrix
@@ -27,10 +29,19 @@ class CounterDeclaration(ServiceDeclaration):
 
 
 class CounterServer(ServiceServer):
-    """Lifecycle wrapper: provide + register queryable handlers."""
+    """Lifecycle wrapper: provide + register queryable handlers.
 
-    def __init__(self, matrix: Matrix, declaration: CounterDeclaration):
-        self._matrix = matrix
+    Constructed either from a matrix (``new``) or directly from an operator
+    (``from_operator``) — the operator seam lets unit tests drive the service
+    without a full Matrix/node harness.
+    """
+
+    def __init__(
+            self,
+            operator_factory: Callable[[], Awaitable[ServiceOperator]],
+            declaration: CounterDeclaration,
+    ):
+        self._operator_factory = operator_factory
         self._declaration = declaration
         self._provider: ServiceProvider | None = None
         self._counter = 0
@@ -47,10 +58,19 @@ class CounterServer(ServiceServer):
 
     @classmethod
     def new(cls, matrix: Matrix) -> Self:
-        return cls(matrix, CounterDeclaration())
+        return cls(lambda: matrix.service_operator(), CounterDeclaration())
+
+    @classmethod
+    def from_operator(cls, operator: ServiceOperator) -> Self:
+        """Construct against an already-built operator (test seam)."""
+
+        async def _get() -> ServiceOperator:
+            return operator
+
+        return cls(_get, CounterDeclaration())
 
     async def __aenter__(self) -> Self:
-        op = await self._matrix.service_operator()
+        op = await self._operator_factory()
         self._provider = await op.provide(self._declaration)
 
         self._provider.queryable('inc', self._on_inc)
@@ -66,4 +86,4 @@ class CounterServer(ServiceServer):
         return str(self._counter).encode()
 
     async def _on_echo(self, query: Query) -> bytes:
-        return query.payload or b''
+        return query['payload'] or b''
