@@ -176,6 +176,7 @@ async def render_walk(
 
     - 站立位置 header 作为 body item
     - $CWD 锚 pins 展开为 pin items
+    - 法链 (law) 在 walk 时默认只列路径, 不展开内容 — 根部已看过
     - 其余 pins 折叠为 body item (TOC)
     """
     anchor = Anchor(ground=ground_root, cwd=cwd)
@@ -203,36 +204,69 @@ async def render_walk(
     folded = [p for p in pins if p not in cwd_pins]
 
     if cwd_pins:
-        tasks = {p.label: observe(p, anchor) for p in cwd_pins}
-        results = await asyncio.gather(*tasks.values())
-        observations = dict(zip(tasks.keys(), results))
-        for p in cwd_pins:
-            obs = observations.get(p.label)
-            shadow = shadows.get(p.label, PinShadow())
-            stale = (
-                not p.is_cwd_anchored
-                and shadow.hash is not None
-                and obs is not None
-                and obs.exists
-                and obs.hash != shadow.hash
-            )
-            missing = obs is not None and not obs.exists
+        # 法链在 walk 时默认只列路径 — 根部已展示过内容
+        law_compact = [p for p in cwd_pins if isinstance(p, LawPin) and not p.always_show]
+        law_full = [p for p in cwd_pins if isinstance(p, LawPin) and p.always_show]
+        other = [p for p in cwd_pins if not isinstance(p, LawPin)]
 
-            content, at_children = _build_pin_content(p, anchor, obs)
-            if stale:
-                content = content + "\n[changed on disk]"
-            if missing:
-                content = "[missing]"
-
+        for p in law_compact:
+            law_files = collect_law_files(anchor, p.arguments.filename)
+            n = len(law_files)
+            if law_files:
+                rels = [
+                    str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
+                    for f in law_files
+                ]
+                content = "\n".join(rels)
+                brief = f"{n} files"
+            else:
+                content = "(no files)"
+                brief = ""
             items.append(FrameItem(
                 kind=p.verb,
                 label=p.label,
-                content=content.rstrip() if content.strip() else content,
-                brief=_pin_brief(p, obs, content),
-                truncated=_pin_truncated(p, content),
-                meta=_pin_meta(p, obs, anchor),
-                children=at_children,
+                content=content,
+                brief=brief,
+                meta={
+                    "filename": p.arguments.filename,
+                    "files": n,
+                    "budget": p.arguments.budget,
+                    "lines": p.arguments.lines,
+                },
             ))
+
+        full_pins = law_full + other
+        if full_pins:
+            tasks = {p.label: observe(p, anchor) for p in full_pins}
+            results = await asyncio.gather(*tasks.values())
+            observations = dict(zip(tasks.keys(), results))
+            for p in full_pins:
+                obs = observations.get(p.label)
+                shadow = shadows.get(p.label, PinShadow())
+                stale = (
+                    not p.is_cwd_anchored
+                    and shadow.hash is not None
+                    and obs is not None
+                    and obs.exists
+                    and obs.hash != shadow.hash
+                )
+                missing = obs is not None and not obs.exists
+
+                content, at_children = _build_pin_content(p, anchor, obs)
+                if stale:
+                    content = content + "\n[changed on disk]"
+                if missing:
+                    content = "[missing]"
+
+                items.append(FrameItem(
+                    kind=p.verb,
+                    label=p.label,
+                    content=content.rstrip() if content.strip() else content,
+                    brief=_pin_brief(p, obs, content),
+                    truncated=_pin_truncated(p, content),
+                    meta=_pin_meta(p, obs, anchor),
+                    children=at_children,
+                ))
 
     if folded:
         toc_lines = [f"pins@{display} (moss ground frame {rel_doc.removesuffix('/GROUND.md') or '.'}):"]
@@ -629,7 +663,7 @@ def _fmt_text_brief(text: str) -> str:
 def _is_status_content(content: str) -> bool:
     """非内容块 — 状态 / 错误 / 哨兵消息, 不应展示摘要."""
     c = content.strip()
-    return (c.startswith("[") or c.startswith("error:") or not c)
+    return (c.startswith("[") or c.startswith("(") or c.startswith("error:") or not c)
 
 
 def _pin_brief(pin: Pin, obs: Observation | None, content: str) -> str:
@@ -698,7 +732,17 @@ def render_items(items: list[FrameItem], *, ground_path: str | None = None) -> s
 
 
 def _render_item(out: list[str], item: FrameItem) -> None:
-    """递归渲染一个 item 及其 children."""
+    """递归渲染一个 item 及其 children.
+
+    空内容 (status-only, 如 "(no matches)") 无 children 时塌缩为
+    单行, 节省垂直空间.
+    """
+    if _is_status_content(item.content) and not item.children:
+        out.append("---")
+        out.append(f"{_item_open_line(item)}  {item.content.strip()}")
+        out.append("---")
+        return
+
     # open marker
     out.append("---")
     out.append(_item_open_line(item))

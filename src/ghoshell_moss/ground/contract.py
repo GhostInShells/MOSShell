@@ -218,6 +218,10 @@ class Pin(BaseModel):
         max_length=280,
         description="短评注 — 一行 '为什么盯这个'. 长解说走 body.",
     )
+    always_show: bool = Field(
+        default=False,
+        description="walk / --template 模式下也不折叠 — 永远展开内容. 默认折叠.",
+    )
 
     model_config = {"extra": "ignore"}
 

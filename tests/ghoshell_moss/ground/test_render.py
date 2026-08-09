@@ -296,7 +296,7 @@ class TestLawPinRender:
         assert items[0].truncated
         assert "[truncated at 30 chars]" in items[0].content
 
-    def test_walk_expands_law_pin(self, tmp_path):
+    def test_walk_shows_law_paths_not_content(self, tmp_path):
         root = tmp_path.resolve()
         (root / "GROUND.md").write_text("# g\n")
         (root / "CLAUDE.md").write_text("# root law\n")
@@ -310,10 +310,37 @@ class TestLawPinRender:
             pins=[pin],
             shadows={},
         ))
-        # law pin 是位置依赖 pin — walk 时展开为 pin item, 非折叠 TOC
+        # law pin 在 walk 时只列路径, 不展开内容 — 根部已展示过
+        pin_items = [i for i in items if i.kind == "law"]
+        assert len(pin_items) == 1
+        # 内容只是文件路径, 不含文件内文
+        assert pin_items[0].content == "CLAUDE.md\nsub/CLAUDE.md"
+        assert "# sub law" not in pin_items[0].content
+        assert "# root law" not in pin_items[0].content
+
+    def test_walk_law_always_show_expands_content(self, tmp_path):
+        """always_show=True 的 law pin 在 walk 时仍然展开完整内容."""
+        root = tmp_path.resolve()
+        (root / "GROUND.md").write_text("# g\n")
+        (root / "CLAUDE.md").write_text("# root law\n")
+        (root / "sub").mkdir()
+        (root / "sub" / "CLAUDE.md").write_text("# sub law\n")
+        pin = LawPin(
+            label="l",
+            arguments=LawArguments(filename="CLAUDE.md"),
+            always_show=True,
+        )
+        items = run(render_walk(
+            cwd=root / "sub",
+            ground_root=root,
+            doc_path=root / "GROUND.md",
+            pins=[pin],
+            shadows={},
+        ))
         pin_items = [i for i in items if i.kind == "law"]
         assert len(pin_items) == 1
         assert "sub law" in pin_items[0].content
+        assert "root law" in pin_items[0].content
 
 
 # -- frame rendering (integration) -----------------------------------------
