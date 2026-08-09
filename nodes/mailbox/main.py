@@ -19,7 +19,7 @@ from ghoshell_moss_contrib.nodes.mailbox import MailboxBridge, serve_mailbox
 
 async def main(matrix: Matrix) -> None:
     bridge = MailboxBridge()
-    await serve_mailbox(matrix, bridge)
+    await serve_mailbox(matrix, bridge, port=20774)
 
 
 if __name__ == "__main__":

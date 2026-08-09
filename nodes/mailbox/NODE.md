@@ -4,23 +4,27 @@ description: 'Ghost-MCP communication bridge — external agents send messages v
 category: bridges
 singleton: true
 exec:
-  command: .venv/bin/python
+  command: python
   args: main.py
 ---
 
 ## Protocol
 
-External MCP agent sends a message → you receive a NotifySignal with a
-`task_id`.  The signal body looks like:
+External MCP agents send messages to you. Each message arrives as a
+NotifySignal carrying a `task_id` — the id is always shown in the signal's
+description, and its exact value is the handle for replying.
 
-    [mailbox:abc123def456] user message here
+To reply, emit CTML with the `reply` command, using open-close form and
+the exact task_id:
 
-To reply, emit CTML:
+    <mailbox:reply task_id="abc123def456">your reply here</mailbox:reply>
 
-    mailbox:reply(id=abc123def456, content=your reply here)
+If your reply contains XML-like characters (`<`, `&`, ...), wrap it in
+CDATA so it is not parsed as tags:
 
-The agent will receive your reply on its next poll.
+    <mailbox:reply task_id="abc123def456"><![CDATA[<b>bold</b> & more]]></mailbox:reply>
 
 - Always include the exact `task_id` from the signal.
 - One reply per task_id.  The agent may send follow-ups as new tasks.
 - The reply content is plain text — the agent sees it verbatim.
+- `reply` is a confirmation command — no need to keep reasoning about it.

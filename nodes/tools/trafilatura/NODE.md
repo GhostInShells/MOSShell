@@ -4,7 +4,7 @@ description: 'Local web content extraction via trafilatura — fetch URL and ext
 category: tools
 singleton: true
 exec:
-  command: .venv/bin/python
+  command: python
   args: main.py
 ---
 

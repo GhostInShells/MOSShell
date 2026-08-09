@@ -174,6 +174,7 @@ Layer 4 — Assembly:
 Parallel threads:
 - feature: realtime-voice-interaction-logos
 - feature: voice-input-state-machine
+- feature: mcp-fusion-point (MCP 位置 + node as mcp server；mailbox 验证用例实机闭环)
 - (g1-restart — feature to be created)
 
 Infrastructure carry-over from beta1:
@@ -185,7 +186,7 @@ Infrastructure carry-over from beta1:
 
 Operational log in milestones/:
 
-(planned — to be created as reached)
+- [2026-08-10 — MCP Mailbox 双向桥首次实机闭环](milestones/2026-08-10-mailbox-first-real-machine-bridge.md) — external agent (Claude Code) ↔ echo ghost 跨宿主双向对话走通；修复 6 个实机 bug，暴露 MCP poll vs MOSS push 不对称
 
 ## Retrospective
 

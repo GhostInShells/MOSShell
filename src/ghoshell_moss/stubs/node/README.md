@@ -39,6 +39,9 @@ Edit the files in this directory to change the node's behavior:
 
   NODE.md       — node manifest: name, description, exec command, singleton flag,
                   and the instruction body the model reads at runtime.
+                  exec.command: 'python' resolves to the spawner's sys.executable —
+                  the default for nodes sharing the MOSS environment. Only use an
+                  absolute interpreter path when the node needs its own venv.
                   Reference: moss codex get-interface ghoshell_moss.core.blueprint.cell:NodeManifest
 
   main.py       — node entry point. Build channels, register into Matrix.

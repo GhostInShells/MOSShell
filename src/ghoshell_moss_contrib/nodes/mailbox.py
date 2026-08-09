@@ -142,10 +142,10 @@ async def serve_mailbox(
         """
         env = bridge.create(message)
         signal = NotifySignalMeta().to_signal(
-            Message.of_text(f"[mailbox:{env.task_id}] {message}"),
+            Message.new().with_content(f"[mailbox:{env.task_id}] {message}"),
             description=(
                 f"mailbox message — reply with CTML: "
-                f"mailbox:reply(id={env.task_id}, content=your reply)"
+                f"<mailbox:reply task_id=\"{env.task_id}\">your reply</mailbox:reply>"
             ),
         )
         matrix.session.add_signal(signal)
@@ -175,23 +175,39 @@ async def serve_mailbox(
             return reply
         return f"[waiting] no reply yet for {task_id}"
 
+    @mcp.tool()
+    async def wait_reply(task_id: str, timeout: float = 60.0) -> str:
+        """Block until the ghost replies to task_id, or timeout seconds pass.
+
+        Returns the reply content when ready, or a pending status on
+        timeout.  The wait is event-driven (no busy polling) — the MCP
+        server holds the request until the ghost's reply arrives.
+        """
+        reply = await bridge.wait(task_id, timeout=timeout)
+        if reply is not None:
+            return reply
+        return f"[pending] no reply within {timeout}s for {task_id}"
+
     # -- Matrix channel (ghost side) -----------------------------------------
 
     chan = new_channel(
         name="mailbox",
         description=(
             "Reply to MCP agent messages. "
-            "Call reply(id, content) with the task_id from the agent's signal."
+            "Call reply(task_id, text__) — open-close form with the "
+            "task_id from the agent's signal."
         ),
     )
 
-    @chan.build.command(always_observe=True)
-    async def reply(task_id: str, content: str) -> str:
+    @chan.build.command(always_observe=False)
+    async def reply(task_id: str, text__: str) -> str:
         """Reply to an MCP agent message by task_id.
 
         The task_id comes from the [mailbox:xxx] prefix in the signal body.
+        Use open-close form so the body is free-form text: wrap XML-like
+        content in <![CDATA[ ... ]]> — no attribute escaping needed.
         """
-        ok = bridge.post(task_id, content)
+        ok = bridge.post(task_id, text__)
         if ok:
             return f"[mailbox] reply delivered for {task_id}"
         return f"[mailbox] unknown task_id: {task_id}"

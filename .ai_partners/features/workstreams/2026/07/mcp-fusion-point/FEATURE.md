@@ -3,7 +3,7 @@ title: MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 status: converging
 priority: P1
 created: 2026-07-31
-updated: 2026-08-09
+updated: 2026-08-10
 depends:
   - mcp-hub-channel
   - speech-protocol-alignment
@@ -17,8 +17,10 @@ description: >-
 # MCP Fusion Point — 寻找 MCP 与 MOSS 的合适融合点
 
 > 状态：draft → converging。RPC 底座裁决与 MCP 位置已收敛，node run as mcp server 机制
-> 敲定，mailbox bridge 验证用例已实现。CLI 体系（`moss mcp`）与协议翻译层方向已明确，
-> 待实现。讨论轨迹见 `discuss/` + `design/`。
+> 敲定，mailbox bridge 验证用例已实现并于 2026-08-10 首次实机闭环（external agent ↔
+> echo ghost 双向对话走通）。CLI 体系（`moss mcp`）与协议翻译层方向已明确，待实现。
+> 实机发现 6 个 bug 已修复、暴露 MCP poll vs MOSS push 不对称，后续三点方向见决策 10。
+> 讨论轨迹见 `discuss/` + `design/`。
 > 用 `moss features set-status mcp-fusion-point <status> -m "note"` 更新状态。
 
 ## Motivation
@@ -102,14 +104,15 @@ presence 双写。详见 `design/mcp-node-server.md` 中"坑（糖要封装的�
 
 ### 6. mailbox bridge — 验证用例已实现（2026-08-09）
 
-双向 request-reply 桥接验证：外部 agent 通过 MCP send/pull 工具与 ghost 通信，
-ghost 通过 CTML `mailbox:reply(id, content)` 显式回复。
+双向 request-reply 桥接验证：外部 agent 通过 MCP send/pull/wait_reply 工具与
+ghost 通信，ghost 通过 CTML `mailbox:reply(task_id, text__)` 显式回复。
 
 - **核心**：`MailboxBridge` — agent 侧 `create/wait/check`，ghost 侧 `post`
 - **位置**：`ghoshell_moss_contrib.nodes.mailbox` — openbox node，懒加载 mcp 依赖
 - **node**：`nodes/mailbox/main.py` — 薄壳入口
-- **协议**：send 返回 task_id（兼容 MCP Tasks 语义），pull 轮询结果
-- **测试**：14 tests（12 unit + 2 MCP 集成），53/53 全绿
+- **协议**：send 返回 task_id（兼容 MCP Tasks 语义），pull 轮询结果，
+  wait_reply 阻塞等回复（事件驱动，2026-08-10 实机新增）
+- **测试**：14 tests（12 unit + 2 MCP 集成），全绿
 
 mailbox 不走 `session.on_output` 监听——ghost 必须显式调用 `mailbox:reply`。
 这是 request-reply 模式，不是 ghost monitor。
@@ -153,3 +156,35 @@ MOSS (mindflow + shell) 是 MCP 的超集，融合时把 MCP 最新版协议翻�
 3. **协议翻译层** — tasks/tools 的通用桥，不重写只翻译
 
 下一步优先：端到端验证 `Matrix.new` 轻量入网 + `serve_mcp` + ghost 实际对话。
+
+### 10. mailbox 首次实机闭环（2026-08-10）
+
+external agent (Claude Code) ↔ echo ghost 跨宿主双向 request-reply 首次在真实
+进程中走通。里程碑见
+`stages/2026-08-v0.1.0/milestones/2026-08-10-mailbox-first-real-machine-bridge.md`。
+
+**实机发现的 bug（全部已修复）**：
+
+1. `Message.of_text` 旧 API 已删 — 改用 `Message.new().with_content(...)`
+2. exec.command `.venv/bin/python` 相对路径从 cell.home 解析失败 —
+   `NodeLauncher` 只把 `command == 'python'` 换成 `sys.executable`；改回 `python`
+3. 创建体系未解释 `python` 机制 — stub NODE.md/README 补注释（python =
+   spawner 的 sys.executable，独立 venv 才写绝对路径）
+4. `reply` 误标 `always_observe=True` → ghost 反复驱动 — 实机确认后改 `False`
+5. `reply(content=)` 属性传参，回复带裸露 `<` 触发 CTML parse error 整个 dispatch
+   取消（真实事故）— 改 `reply(task_id, text__)` open-close + CDATA，实机免疫
+6. pull 式 API 无法阻塞等回复 — 新增 `wait_reply(task_id, timeout)`，事件驱动阻塞
+
+**暴露的架构不对称**：MOSS 内 push（signal → mindflow）vs MCP 外 poll（pull）。
+echo 能"看到" agent 的消息，agent 看不到 echo 主动说话。`wait_reply` 是伪造
+共享"现在"的补丁——印证"MCP 传达不了时间流"的判断。
+
+**后续三点（未完成）**：
+
+1. **CLI 化**：mailbox 机制整体从 `ghoshell_moss_contrib` 嵌入 `ghoshell_moss.mcp`
+   做系统级实现（`matrix.serve_mcp` 原语 + `moss mcp serve-mailbox`），不再作为
+   独立 contrib node。
+2. **mcp channel 名字自解释**：当前 `ghost-mailbox` / `matrix.mesh.mailbox_01KZKQ`
+   不够直观，需命名规范。
+3. **signal 优先级**：send 的 signal 实机中持续打断 echo 说一半的话，优先级可能
+   过高，需调整打断策略。
