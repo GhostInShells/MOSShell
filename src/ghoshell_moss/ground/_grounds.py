@@ -54,6 +54,7 @@ class DefaultGroundSet(GroundSet):
         label: str | None = None,
         doc: str | Path | None = None,
         template: str | None = None,
+        override: bool = False,
     ) -> Ground:
         dir_path = Path(dir)
         if not dir_path.is_absolute():
@@ -89,9 +90,14 @@ class DefaultGroundSet(GroundSet):
         )
         convention = contents.convention
 
-        # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先
-        body = contents.body or template_body
-        pins = contents.pins if contents.pins else template_pins
+        # 模板的 body/pins 与本地 GROUND.md 合并: 本地优先.
+        # override=True (预览): 模板定义全权接管, 忽略现有 GROUND.md.
+        if override:
+            body = template_body
+            pins = template_pins
+        else:
+            body = contents.body or template_body
+            pins = contents.pins if contents.pins else template_pins
 
         # label 分配
         base = label if label else dir_abs.name

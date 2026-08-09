@@ -12,9 +12,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, load_l0
 
-__all__ = ["collect_chain"]
+__all__ = ["collect_chain", "collect_law_files"]
 
 
 def collect_chain(
@@ -43,6 +44,20 @@ def collect_chain(
             blocks.append(f"<!-- from: {d / DEFAULT_L0_FILENAME} -->\n\n{body}")
 
     return "\n\n".join(blocks)
+
+
+def collect_law_files(anchor: Anchor, filename: str) -> list[Path]:
+    """law pin 的收集逻辑 — 从 cwd 向上到 ground root, 收集存在的 filename 文件.
+
+    - 边界 = ground root (不越出场, SPEC §8 subtree confinement).
+    - cwd 在场根外 → 只收 cwd 一个 (与 _walk_upward 同语义).
+    - 返回 root-first 顺序 (父级向下展示), 供渲染直接消费.
+    """
+    cwd = anchor.cwd.resolve()
+    ground = anchor.ground.resolve()
+    dirs = _walk_upward(cwd, ground)
+    dirs.reverse()  # root-first
+    return [d / filename for d in dirs if (d / filename).is_file()]
 
 
 def _default_boundary() -> Path:

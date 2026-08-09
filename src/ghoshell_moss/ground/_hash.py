@@ -17,11 +17,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
+from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
     FrontmatterPin,
     GlobPin,
+    LawPin,
     LsPin,
     Pin,
     PathOutsideRootError,
@@ -104,6 +106,8 @@ def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
         return _observe_ls(pin, anchor)
     if isinstance(pin, ExecPin):
         return _observe_exec(pin, anchor)
+    if isinstance(pin, LawPin):
+        return _observe_law(pin, anchor)
     raise TypeError(f"unknown pin type: {type(pin).__name__}")
 
 
@@ -301,23 +305,21 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     args = pin.arguments
     ref = args.ref
 
-    # 授权检查: 拒绝绝对路径 / 跨场跳出
+    # 授权检查: 拒绝绝对路径 / 跨场跳出 (安全拒绝, 非文件缺失)
     if Path(ref).is_absolute() or ".." in Path(ref).parts:
-        return Observation(exists=False)
+        return _exec_rejected("[outside ground]")
 
     resolved = (anchor.ground / ref).resolve()
-    # 必须在场根子树内
     try:
         resolved.relative_to(anchor.ground.resolve())
     except ValueError:
-        return Observation(exists=False)
+        return _exec_rejected("[outside ground]")
 
     if not resolved.is_file():
         return Observation(exists=False)
 
-    # +x 位检查 (Windows: os.access 语义有差异, 但至少 X_OK 不 crash)
     if not os.access(resolved, os.X_OK):
-        return Observation(exists=False)
+        return _exec_rejected("[not executable]")
 
     env = dict(os.environ)
     env["GROUND"] = str(anchor.ground)
@@ -364,6 +366,45 @@ def _observe_exec(pin: ExecPin, anchor: Anchor) -> Observation:
     return Observation(
         exists=True, hash=digest, payload=payload,
         size=len(payload), unit="chars",
+    )
+
+
+def _observe_law(pin: LawPin, anchor: Anchor) -> Observation:
+    """law pin 观察 — 收集 cwd 向上到 ground root 的约定文件清单.
+
+    内容由渲染层读取 (render-time, 与 file/glob 同构). 观察只对
+    文件集合做 hash — 位置依赖, 不参与 stale 对账 (tracks_changes=False).
+    """
+    files = collect_law_files(anchor, pin.arguments.filename)
+    if not files:
+        return Observation(
+            exists=True, mtime=None, hash=_EMPTY_HASH,
+            size=0, unit="entries",
+        )
+
+    rels: list[str] = []
+    latest: float | None = None
+    for f in files:
+        rels.append(str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f))
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if latest is None or st.st_mtime > latest:
+            latest = st.st_mtime
+
+    digest = hashlib.sha256("\n".join(rels).encode("utf-8")).hexdigest()
+    return Observation(
+        exists=True, mtime=latest, hash=digest,
+        size=len(files), unit="entries",
+    )
+
+
+def _exec_rejected(message: str) -> Observation:
+    """exec 授权拒绝 — 不是文件缺失, 是安全策略拒绝."""
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    return Observation(
+        exists=True, hash=digest, payload=message, size=0, unit="",
     )
 
 

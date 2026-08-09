@@ -16,6 +16,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
+    LawArguments,
+    LawPin,
     LsArguments,
     LsPin,
 )
@@ -221,11 +223,10 @@ class TestExecPinObservation:
             arguments=ExecArguments(ref=str(tmp_path / "hi.sh")),
         )
         obs = observe_sync(pin, anchor)
-        # 绝对路径 = 授权拒绝, 报 missing
-        assert obs.exists is False
+        assert obs.exists is True
+        assert obs.payload == "[outside ground]"
 
     def test_rejects_parent_traversal(self, tmp_path):
-        # 场外脚本
         outer = tmp_path.parent / "outer.sh"
         outer.write_text("#!/bin/sh\necho leaked\n")
         outer.chmod(0o755)
@@ -236,7 +237,8 @@ class TestExecPinObservation:
                 arguments=ExecArguments(ref="../outer.sh"),
             )
             obs = observe_sync(pin, anchor)
-            assert obs.exists is False
+            assert obs.exists is True
+            assert obs.payload == "[outside ground]"
         finally:
             outer.unlink(missing_ok=True)
 
@@ -249,11 +251,12 @@ class TestExecPinObservation:
     def test_no_exec_bit_is_missing(self, tmp_path):
         script = tmp_path / "no-x.sh"
         script.write_text("#!/bin/sh\necho hi\n")
-        # 无 +x
+        # 无 +x — 安全拒绝, 非文件缺失
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
         pin = ExecPin(label="x", arguments=ExecArguments(ref="no-x.sh"))
         obs = observe_sync(pin, anchor)
-        assert obs.exists is False
+        assert obs.exists is True
+        assert obs.payload == "[not executable]"
 
     def test_nonzero_exit_visible(self, tmp_path):
         self._make_script(
@@ -289,6 +292,45 @@ class TestExecPinObservation:
         # macOS 有 /private prefix, 用 resolve 对齐
         assert str(tmp_path.resolve()) in obs.payload
         assert "deep" not in obs.payload.strip().split("\n")[-1]
+
+
+class TestLawPinObservation:
+    """law pin — 从 cwd 向上收集约定文件, 观察只对文件集合做 hash."""
+
+    def _make_tree(self, tmp_path) -> Path:
+        (tmp_path / "CLAUDE.md").write_text("# root\n")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "CLAUDE.md").write_text("# sub\n")
+        return tmp_path.resolve()
+
+    def test_at_root_collects_only_root(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+        assert obs.size == 1
+        assert obs.unit == "entries"
+        assert obs.hash == _sha256_text("CLAUDE.md")
+
+    def test_from_subdir_collects_root_first(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root / "sub")
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+        assert obs.size == 2
+        # root-first: 场根在前, cwd 在后
+        assert obs.hash == _sha256_text("CLAUDE.md\nsub/CLAUDE.md")
+
+    def test_no_matching_file_renders_empty(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="AGENT.md"))
+        obs = observe_sync(pin, anchor)
+        assert obs.exists is True
+        assert obs.size == 0
+        assert obs.hash == hashlib.sha256(b"").hexdigest()
 
 
 class TestParseRange:

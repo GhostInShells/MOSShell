@@ -25,6 +25,7 @@ from ghoshell_moss.ground.contract import (
     FrontmatterArguments,
     GlobArguments,
     GroundConvention,
+    LawArguments,
     LsArguments,
     Pin,
 )
@@ -52,6 +53,7 @@ _ARG_CLASSES: dict[str, type] = {
     "frontmatter": FrontmatterArguments,
     "ls": LsArguments,
     "exec": ExecArguments,
+    "law": LawArguments,
 }
 
 

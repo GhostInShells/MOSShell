@@ -239,6 +239,48 @@ payload is stored on the `Observation`; the frame renders the stored
 payload rather than re-executing. One frame = at most one process
 per pin.
 
+### 5.6 `law` — convention-file law chain (compatibility)
+
+| Key | Type | Required | Semantics |
+|-----|------|----------|-----------|
+| `filename` | string | yes | Convention file name (e.g. `CLAUDE.md`, `AGENT.md`). Collected from `$CWD` upward. |
+| `budget` | int | no | Total char limit across collected law. Truncates with marker (§4.1). |
+| `lines` | int | no | Total line limit across collected law. Truncates with marker. |
+
+**Semantics**: this pin pulls *documents*, so the argument is a
+**filename**, not a path. From the current `$CWD`, it walks upward
+collecting every occurrence of `filename`, stopping at the ground
+root (`$GROUND`) — the boundary is the ground, never `$HOME`. The
+chain renders parent-first (root → cwd), each file as an independent
+result block labeled with its path relative to the ground root.
+
+`law` is the compatibility mechanism for foreign project conventions
+(CLAUDE.md, AGENT.md): the ground declares a `law` pin pointing at
+the foreign filename, and MOSS reads it — the foreign project's own
+files are never modified or renamed.
+
+**Positional view**: `law` depends on `$CWD`. Walking into a
+subdirectory re-collects the chain from the new position. It does
+not participate in stale marking — its content is a standing-position
+view, not a disk-tracked target.
+
+**`@`-reference expansion**: each collected file's body may contain
+`@`-references (§6.2), resolved relative to that file's own directory.
+Only one level is expanded — the resolved content is not re-scanned.
+Fenced code blocks are skipped.
+
+Note: the one-level cap is intentional — law files are external
+convention documents (CLAUDE.md, AGENT.md), and their `@`-references
+are resolved more conservatively than body `@`-references (§6.2, which
+allow up to 3 levels). Body `@` is the field author's own narrative;
+law `@` crosses a trust boundary.
+
+**Expansion**: the collected bodies, root-first, labeled by relative
+path, subject to `budget` / `lines` truncation.
+
+**Failure modes**: no matching file in the range renders an empty
+result (not an error).
+
 ## 6. Frame
 
 A **frame** is the rendered form of a ground — body and pin results
@@ -423,8 +465,10 @@ A compliant implementation must:
 - Read and write pins per §4 with the fixed envelope; preserve unknown
   verbs and arguments keys
 - Support per-pin `budget` / `limit` / `max_depth` parameters per §4.1
-- Handle all four known pin types per §5, rendering failure modes
+- Handle all six known pin types per §5, rendering failure modes
   into results
+- Support `law` upward collection per §5.6 — bounded by the ground
+  root, root-first display, one-level `@`-expansion, truncation
 - Support `frontmatter` in both single-file and pattern modes (§5.3)
 - Render human-readable file sizes, omit raw `mtime` (§6.1)
 - Expand `@`-references per §6.2 with cycle detection, depth cap, and

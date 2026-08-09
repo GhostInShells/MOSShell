@@ -116,6 +116,71 @@ async def _run_one_with_template(root: Path, coro_fn, template: str):
         await coro_fn(gs, ground)
 
 
+async def _template_preview(root: Path, template: str) -> None:
+    """只读模板预览 — 用模板的 body + pins 渲染 frame, 不写 GROUND.md.
+
+    兼容场景: 一个只有 CLAUDE.md 的 Claude 项目, 看它作为
+    claude-project 场会长什么样, 而不落任何盘.
+
+    从子目录预览时, 先向上搜寻模板的约定文件 (law pin 的 filename),
+    找到祖先场根, 再 walk 进去 — 保证 law 链不会因 boundary 太窄而空.
+    """
+    from ghoshell_moss.ground._render import render_items, render_walk
+    from ghoshell_moss.ground._l0 import load_l0
+
+    workspace = _probe_workspace(root)
+    gs = DefaultGroundSet(workspace_root=workspace)
+
+    names = [t.name for t in gs.templates()]
+    if template not in names:
+        print_error(f"template '{template}' not found")
+        if names:
+            print_info("available templates: " + ", ".join(names))
+        else:
+            print_info("no templates found (.grounds/ empty or missing)")
+        raise typer.Exit(code=2)
+
+    # 找出模板的 law filename(s), 向上搜寻真实的场根边界
+    tmpl_info = gs._find_template(template)
+    law_filenames: set[str] = set()
+    if tmpl_info is not None:
+        try:
+            tmpl_data = load_l0(tmpl_info.path.parent, filename=tmpl_info.path.name)
+            for p in tmpl_data.pins:
+                if hasattr(p, 'verb') and p.verb == 'law':
+                    law_filenames.add(p.arguments.filename)
+        except Exception:
+            pass
+
+    # 搜寻有约定文件的祖先目录做场根
+    ground_root = root.resolve()
+    if law_filenames:
+        current = ground_root.parent
+        while current != current.parent:
+            if any((current / fname).is_file() for fname in law_filenames):
+                ground_root = current
+            current = current.parent
+
+    ground = await gs.open(ground_root, template=template, override=True)
+
+    if root.resolve() == ground_root:
+        text = await ground.context()
+    else:
+        # 子目录预览: walk 从 root 在场根内
+        items = await render_walk(
+            cwd=root,
+            ground_root=ground_root,
+            doc_path=ground_root / DEFAULT_L0_FILENAME,
+            pins=ground.pins(),
+            shadows={},
+            label=ground.convention.label,
+        )
+        text = render_items(items, ground_path=str(ground_root))
+
+    echo(text)
+    # 只读: 不 close → 不触发 sediment → GROUND.md 不落盘
+
+
 # -- spec -----------------------------------------------------------------
 
 
@@ -170,12 +235,13 @@ def cmd_init(
         _run_async(_run_one_with_template(root, _op, template))
         print_success(f"initialized {target} from template '{template}'")
     else:
+        dir_name = root.resolve().name
         body = (
-            "# <label>\n"
+            f"# {dir_name}\n"
             "\n"
             "Ground body — free-form markdown.  Pins are declared in\n"
             "frontmatter above.  Available verbs: file, glob, frontmatter,\n"
-            "ls, exec.  Run `moss ground verbs` for argument reference.\n"
+            "ls, exec, law.  Run `moss ground verbs` for argument reference.\n"
             "Edit this file, then `moss ground validate` to check.\n"
         )
         dump_l0_pins(root, [], body=body)
@@ -234,6 +300,11 @@ _VERB_HELP: dict[str, dict[str, str]] = {
         "timeout": "seconds. default 10, max 60.",
         "budget": "stdout char limit.",
     },
+    "law": {
+        "filename": "convention filename (CLAUDE.md, AGENT.md...). Collected upward from cwd to ground root (required).",
+        "budget": "total char limit across collected law, truncates with marker.",
+        "lines": "total line limit across collected law, truncates with marker.",
+    },
 }
 
 
@@ -254,6 +325,10 @@ def cmd_frame(
     path: Path | None = typer.Argument(
         None, help="Directory to view from (defaults to cwd)."
     ),
+    template: str | None = typer.Option(
+        None, "--template", "-t",
+        help="Read-only preview using a template's body + pins (no GROUND.md written).",
+    ),
 ) -> None:
     """Render the ground view for a directory.
 
@@ -261,8 +336,15 @@ def cmd_frame(
     - No GROUND.md but an ancestor has one: walk mode — law pointer,
       cwd listing, $CWD-anchored pins expanded, other pins folded to TOC.
     - No ground up to $HOME: hint to init.
+    - --template <name>: read-only preview — open with the template's body
+      and pins, render, and do NOT write GROUND.md. Useful to see what a
+      convention ground (e.g. claude-project) would show in this directory.
     """
     root = _resolve_root(path)
+
+    if template is not None:
+        asyncio.run(_template_preview(root, template))
+        return
 
     if (root / DEFAULT_L0_FILENAME).is_file():
         # 场根模式
@@ -281,13 +363,13 @@ def cmd_frame(
 
     # 场内移动模式 — 法来自祖先场根, 编辑权留在场根, 这里只有视角
     async def _walk_op() -> None:
-        from ghoshell_moss.ground._render import render_walk
+        from ghoshell_moss.ground._render import render_walk, render_items
 
         doc_path = ground_root / DEFAULT_L0_FILENAME
         workspace = _probe_workspace(root)
         async with DefaultGroundSet(workspace_root=workspace) as gs:
             ground = await gs.open(root, doc=doc_path)
-            text = await render_walk(
+            items = await render_walk(
                 cwd=root,
                 ground_root=ground_root,
                 doc_path=doc_path,
@@ -295,7 +377,7 @@ def cmd_frame(
                 shadows={},
                 label=ground.convention.label,
             )
-            echo(text)
+            echo(render_items(items, ground_path=str(ground_root)))
 
     asyncio.run(_walk_op())
 
@@ -390,8 +472,9 @@ def cmd_observe(
 def _pin_target_display(pin, anchor) -> str:
     """Resolved absolute path/spec — makes MISSING self-explanatory."""
     from ghoshell_moss.ground._addr import resolve_path
+    from ghoshell_moss.ground._chain import collect_law_files
     from ghoshell_moss.ground.contract import (
-        ExecPin, FilePin, FrontmatterPin, GlobPin, LsPin,
+        ExecPin, FilePin, FrontmatterPin, GlobPin, LawPin, LsPin,
     )
 
     try:
@@ -404,6 +487,11 @@ def _pin_target_display(pin, anchor) -> str:
             # missing 时用户一眼看清是哪个文件缺
             resolved = (anchor.ground / pin.arguments.ref).resolve()
             return str(resolved)
+        if isinstance(pin, LawPin):
+            files = collect_law_files(anchor, pin.arguments.filename)
+            if not files:
+                return f"{pin.arguments.filename} (none from cwd up to ground root)"
+            return f"{pin.arguments.filename} x{len(files)} (cwd → ground root)"
     except Exception as e:
         return f"[unresolved: {e}]"
     return "-"
@@ -443,6 +531,7 @@ _REQUIRED_ARGS: dict[str, frozenset[str]] = {
     "frontmatter": frozenset({"path"}),
     "ls": frozenset({"path"}),
     "exec": frozenset({"ref"}),
+    "law": frozenset({"filename"}),
 }
 _KNOWN_VERBS = frozenset(_REQUIRED_ARGS.keys())
 
@@ -482,12 +571,22 @@ def cmd_validate(
             raise typer.Exit(code=2)
     else:
         fm_data = {}
+        # 文件以 --- 开头但正则没匹配 → 大概率是未闭合 frontmatter
+        if text.lstrip().startswith("---"):
+            warnings.append(
+                "file starts with '---' but no closing '---' found — "
+                "frontmatter may be unclosed; all pins will be ignored"
+            )
         # no frontmatter is valid for bare-directory ground
 
     # --- pins ---
     pins_data = fm_data.get("pins")
     if pins_data is None:
-        print_info("no pins in frontmatter — valid")
+        if warnings:
+            for w in warnings:
+                print_info(f"[WARN] {w}")
+        else:
+            print_info("no pins in frontmatter — valid")
         return
 
     if not isinstance(pins_data, list):

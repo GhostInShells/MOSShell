@@ -13,10 +13,12 @@ from ghoshell_moss.ground._render import (
     _content_file,
     _content_frontmatter,
     _content_glob,
+    _content_law,
     _content_ls,
     _fmt_size,
     _render_result_block,
     render_context,
+    render_walk,
 )
 from ghoshell_moss.ground._hash import Observation, PinShadow
 from ghoshell_moss.ground.contract import (
@@ -26,6 +28,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
+    LawArguments,
+    LawPin,
     LsArguments,
     LsPin,
 )
@@ -220,6 +224,98 @@ class TestContentFrontmatterSingle:
         assert "error" in result
 
 
+# -- law pin rendering ------------------------------------------------------
+
+
+class TestLawPinRender:
+    """law pin — 文件名向上收集, root-first, 一层 @-展开, 截断."""
+
+    def _tree(self, tmp_path) -> Path:
+        (tmp_path / "CLAUDE.md").write_text("# root\n\nroot body\n")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "CLAUDE.md").write_text("# sub\n\nsub body\n")
+        return tmp_path.resolve()
+
+    def test_at_root_renders_only_root(self, tmp_path):
+        root = self._tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        out = _content_law(pin, anchor)
+        assert "-- CLAUDE.md" in out
+        assert "root body" in out
+        assert "sub body" not in out
+
+    def test_walk_renders_root_first_chain(self, tmp_path):
+        root = self._tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root / "sub")
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        out = _content_law(pin, anchor)
+        # 父级向下: root 块在前, cwd 块在后
+        assert out.index("-- CLAUDE.md") < out.index("-- sub/CLAUDE.md")
+        assert "root body" in out
+        assert "sub body" in out
+
+    def test_no_matching_file(self, tmp_path):
+        root = self._tree(tmp_path)
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="AGENT.md"))
+        assert _content_law(pin, anchor) == "(no files)"
+
+    def test_one_level_at_expansion(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "CLAUDE.md").write_text("# root\n\nsee @notes.md here\n")
+        (root / "notes.md").write_text("NOTES CONTENT\n")
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        # @-ref 在 children 里, 不在 content 里展开
+        from ghoshell_moss.ground._render import _build_law_with_at
+        content, children = _build_law_with_at(pin, anchor)
+        assert "@notes.md" in content
+        assert any("NOTES CONTENT" in c.content for c in children)
+
+    def test_lines_cap(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "CLAUDE.md").write_text("l1\nl2\nl3\nl4\n")
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", lines=2))
+        items = run(render_context(
+            body="", pins=[pin], shadows={}, anchor=anchor,
+        ))
+        assert len(items) == 1
+        assert items[0].truncated
+        assert "[truncated at 2 lines]" in items[0].content
+
+    def test_budget_cap(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "CLAUDE.md").write_text("a" * 100)
+        anchor = Anchor(ground=root, cwd=root)
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md", budget=30))
+        items = run(render_context(
+            body="", pins=[pin], shadows={}, anchor=anchor,
+        ))
+        assert items[0].truncated
+        assert "[truncated at 30 chars]" in items[0].content
+
+    def test_walk_expands_law_pin(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "GROUND.md").write_text("# g\n")
+        (root / "CLAUDE.md").write_text("# root law\n")
+        (root / "sub").mkdir()
+        (root / "sub" / "CLAUDE.md").write_text("# sub law\n")
+        pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
+        items = run(render_walk(
+            cwd=root / "sub",
+            ground_root=root,
+            doc_path=root / "GROUND.md",
+            pins=[pin],
+            shadows={},
+        ))
+        # law pin 是位置依赖 pin — walk 时展开为 pin item, 非折叠 TOC
+        pin_items = [i for i in items if i.kind == "law"]
+        assert len(pin_items) == 1
+        assert "sub law" in pin_items[0].content
+
+
 # -- frame rendering (integration) -----------------------------------------
 
 
@@ -234,8 +330,8 @@ class TestFrameBudget:
             label="readme",
             arguments=FileArguments(path="readme.md", budget=50),
         )
-        result = run(render_context(
+        items = run(render_context(
             body="", pins=[pin], shadows={}, anchor=anchor,
         ))
-        assert "[truncated at 50 chars]" in result
-        assert "ground:pin:readme" in result
+        assert items[0].truncated
+        assert "[truncated at 50 chars]" in items[0].content

@@ -14,8 +14,9 @@ from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
 from ghoshell_moss.ground._hash import PinShadow, observe_sync
 from ghoshell_moss.ground._l0 import DEFAULT_L0_FILENAME, dump_l0_pins, load_l0
-from ghoshell_moss.ground._render import render_context
+from ghoshell_moss.ground._render import render_context, render_items
 from ghoshell_moss.ground.contract import (
+    FrameItem,
     Ground,
     GroundConvention,
     GlobPin,
@@ -118,6 +119,11 @@ class DefaultGround(Ground):
     # -- 渲染 -------------------------------------------------------------
 
     async def context(self) -> str:
+        items = await self.frame_items()
+        return render_items(items, ground_path=str(self._root))
+
+    async def frame_items(self) -> list[FrameItem]:
+        """返回当前帧的 FrameItem 列表 — 供 --json / 定制渲染消费."""
         return await render_context(
             body=self._body,
             pins=list(self._pins.values()),

@@ -12,6 +12,8 @@ from ghoshell_moss.ground.contract import (
     FrontmatterPin,
     GlobArguments,
     GlobPin,
+    LawArguments,
+    LawPin,
     LsArguments,
     LsPin,
     Pin,
@@ -208,6 +210,22 @@ class TestDumpL0:
         assert "verb: file" in text
         assert "path: a.py" in text  # inside arguments
         assert "range: 1-5" in text  # inside arguments
+
+    def test_law_pin_roundtrip(self, tmp_path):
+        dump_l0_pins(
+            tmp_path,
+            [LawPin(label="claude", arguments=LawArguments(filename="CLAUDE.md", budget=500, lines=20))],
+        )
+        text = (tmp_path / DEFAULT_L0_FILENAME).read_text()
+        assert "verb: law" in text
+        assert "filename: CLAUDE.md" in text
+        loaded = load_l0(tmp_path)
+        assert len(loaded.pins) == 1
+        pin = loaded.pins[0]
+        assert isinstance(pin, LawPin)
+        assert pin.arguments.filename == "CLAUDE.md"
+        assert pin.arguments.budget == 500
+        assert pin.arguments.lines == 20
 
 
 class TestL0Contents:

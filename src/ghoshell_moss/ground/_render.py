@@ -17,20 +17,24 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
+from ghoshell_moss.ground._chain import collect_law_files
 from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe, parse_range
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
+    FrameItem,
     FrontmatterPin,
     GlobPin,
+    LawPin,
     LsPin,
     Pin,
 )
 
-__all__ = ["render_context", "render_meta", "render_walk"]
+__all__ = ["render_context", "render_meta", "render_walk", "render_items"]
 
 
 async def render_context(
@@ -38,43 +42,65 @@ async def render_context(
     pins: list[Pin],
     shadows: dict[str, PinShadow],
     anchor: Anchor,
-) -> str:
-    """Render a frame: body + pin result blocks.
+) -> list[FrameItem]:
+    """Render a frame → list[FrameItem].
 
-    All IO-heavy segments (pin observation) run in parallel via asyncio.gather.
+    Body 和 pin 结果各成一个 FrameItem. @-ref 展开结果作为 children
+    嵌套在父 item 内. 所有 pin 观察并行 (asyncio.gather).
     """
-    lines: list[str] = []
+    items: list[FrameItem] = []
 
-    # ---- body (verbatim) -----------------------------------------------
+    # ---- body item ------------------------------------------------------
     if body.strip():
-        lines.append(body.rstrip())
-        lines.append("")
+        body_content, body_children = _build_body_with_at(body, anchor.ground)
+        items.append(FrameItem(
+            kind="body",
+            label="body",
+            content=body_content.rstrip(),
+            brief=_fmt_text_brief(body_content),
+            children=body_children,
+        ))
 
     # ---- observe all pins (parallel) -----------------------------------
     if not pins:
-        return "\n".join(lines).rstrip() + "\n"
+        return items
 
     tasks = {p.label: observe(p, anchor) for p in pins}
     results = await asyncio.gather(*tasks.values())
     observations: dict[str, Observation] = dict(zip(tasks.keys(), results))
 
-    # ---- result blocks --------------------------------------------------
+    # ---- pin items -----------------------------------------------------
     for p in pins:
         obs = observations.get(p.label)
         shadow = shadows.get(p.label, PinShadow())
 
+        # 位置依赖 pin (law) 不做 stale 对账
         stale = (
-            shadow.hash is not None
+            not p.is_cwd_anchored
+            and shadow.hash is not None
             and obs is not None
             and obs.exists
             and obs.hash != shadow.hash
         )
         missing = obs is not None and not obs.exists
 
-        lines.append(_render_result_block(p, obs, stale, missing, anchor))
-        lines.append("")
+        content, at_children = _build_pin_content(p, anchor, obs)
+        if stale:
+            content = content + "\n[changed on disk]"
+        if missing:
+            content = "[missing]"
 
-    return "\n".join(lines).rstrip() + "\n"
+        items.append(FrameItem(
+            kind=p.verb,
+            label=p.label,
+            content=content.rstrip() if content.strip() else content,
+            brief=_pin_brief(p, obs, content),
+            truncated=_pin_truncated(p, content),
+            meta=_pin_meta(p, obs, anchor),
+            children=at_children,
+        ))
+
+    return items
 
 
 def render_meta(
@@ -129,7 +155,7 @@ def render_meta(
 
 
 def _pin_target_raw(pin: Pin) -> str:
-    """Pin 的目标路径原文 (锚判定用). exec 无位置概念, 返回空."""
+    """Pin 的目标路径原文 (锚判定用). exec/law 无路径概念, 返回空."""
     if isinstance(pin, GlobPin):
         return pin.arguments.path
     if isinstance(pin, (FilePin, FrontmatterPin, LsPin)):
@@ -145,30 +171,36 @@ async def render_walk(
     shadows: dict[str, PinShadow],
     *,
     label: str | None = None,
-) -> str:
-    """场内移动视图 — cwd 无 GROUND.md, 法来自祖先场根.
+) -> list[FrameItem]:
+    """场内移动视图 → list[FrameItem].
 
-    编辑权在场根, 这里只有视角:
-    - 法链位置提示 (一行指回场根, 不重复 body)
-    - $CWD 锚 pins 对当前目录展开 (场教的注视习惯)
-    - 其余 pins 折叠为 TOC (场根的注视留在场根)
-
-    不再有内建 ls — 若场希望站立位置有目录列表, 用 ``ls $CWD`` pin 声明.
-    观感由场决定, 不由 harness 塞入.
+    - 站立位置 header 作为 body item
+    - $CWD 锚 pins 展开为 pin items
+    - 其余 pins 折叠为 body item (TOC)
     """
     anchor = Anchor(ground=ground_root, cwd=cwd)
     rel_doc = os.path.relpath(doc_path, cwd)
-    rel_cwd = os.path.relpath(cwd, ground_root)
     display = label or ground_root.name
 
-    lines: list[str] = []
-    lines.append(f"ground: {display}  (law: {rel_doc})")
-    lines.append(f"cwd: $GROUND/{rel_cwd}")
-    lines.append("")
+    items: list[FrameItem] = []
 
-    # $CWD 锚 pins 展开; 其余折叠
-    cwd_pins = [p for p in pins if anchor_kind(_pin_target_raw(p)) == "cwd"]
-    folded = [p for p in pins if anchor_kind(_pin_target_raw(p)) != "cwd"]
+    # walk header
+    items.append(FrameItem(
+        kind="body",
+        label="walk",
+        content=(
+            f"ground: {display}  (law: {doc_path})\n"
+            f"cwd: {cwd}"
+        ),
+        brief="",
+    ))
+
+    # $CWD 锚 pins 展开 (含位置依赖的 law); 其余折叠
+    cwd_pins = [
+        p for p in pins
+        if p.is_cwd_anchored or anchor_kind(_pin_target_raw(p)) == "cwd"
+    ]
+    folded = [p for p in pins if p not in cwd_pins]
 
     if cwd_pins:
         tasks = {p.label: observe(p, anchor) for p in cwd_pins}
@@ -178,22 +210,43 @@ async def render_walk(
             obs = observations.get(p.label)
             shadow = shadows.get(p.label, PinShadow())
             stale = (
-                shadow.hash is not None
+                not p.is_cwd_anchored
+                and shadow.hash is not None
                 and obs is not None
                 and obs.exists
                 and obs.hash != shadow.hash
             )
             missing = obs is not None and not obs.exists
-            lines.append(_render_result_block(p, obs, stale, missing, anchor))
-            lines.append("")
+
+            content, at_children = _build_pin_content(p, anchor, obs)
+            if stale:
+                content = content + "\n[changed on disk]"
+            if missing:
+                content = "[missing]"
+
+            items.append(FrameItem(
+                kind=p.verb,
+                label=p.label,
+                content=content.rstrip() if content.strip() else content,
+                brief=_pin_brief(p, obs, content),
+                truncated=_pin_truncated(p, content),
+                meta=_pin_meta(p, obs, anchor),
+                children=at_children,
+            ))
 
     if folded:
-        lines.append(f"pins@{display} (moss ground frame {rel_doc.removesuffix('/GROUND.md') or '.'}):")
+        toc_lines = [f"pins@{display} (moss ground frame {rel_doc.removesuffix('/GROUND.md') or '.'}):"]
         for p in folded:
             desc = f"  # {p.description}" if p.description else ""
-            lines.append(f"  {p.label}:{p.verb}({_pin_kwargs(p)}){desc}")
+            toc_lines.append(f"  {p.label}:{p.verb}({_pin_kwargs(p)}){desc}")
+        items.append(FrameItem(
+            kind="body",
+            label="folded",
+            content="\n".join(toc_lines),
+            brief="",
+        ))
 
-    return "\n".join(lines).rstrip() + "\n"
+    return items
 
 
 # -- result block ---------------------------------------------------------
@@ -250,6 +303,29 @@ def _content_exec(pin: ExecPin, obs: Observation | None) -> str:
     if obs is None or obs.payload is None:
         return "[not yet observed]"
     return _apply_budget(obs.payload, pin.arguments.budget)
+
+
+def _content_law(pin: LawPin, anchor: Anchor) -> str:
+    """law pin 渲染 — 从 cwd 向上收集约定文件, root-first 展示.
+
+    每文件一块, ``-- {rel}`` 标注相对场根的路径. 不做 @-展开 —
+    展开交给 ``_build_law_children`` 生成子 FrameItem.
+    也不做截断 — 截断由上层 FrameItem 组装时统一处理.
+    """
+    files = collect_law_files(anchor, pin.arguments.filename)
+    if not files:
+        return "(no files)"
+
+    blocks: list[str] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            text = "(unreadable)"
+        rel = str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
+        blocks.append(f"-- {rel}\n{text.rstrip()}")
+
+    return "\n\n".join(blocks)
 
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
@@ -429,7 +505,256 @@ def _content_ls(pin: LsPin, anchor: Anchor) -> str:
     return result
 
 
-# -- meta helpers ---------------------------------------------------------
+# -- FrameItem construction ------------------------------------------------
+
+
+def _build_body_with_at(body: str, ground_dir: Path) -> tuple[str, list[FrameItem]]:
+    """Body → (raw_content, @-children). @ref 保留在文本, 解析结果在 children."""
+    children: list[FrameItem] = []
+    for at_ref in _scan_at_refs(body):
+        resolved = _resolve_at_ref(at_ref, ground_dir)
+        if resolved is not None:
+            children.append(FrameItem(
+                kind="@",
+                label=at_ref,
+                content=resolved,
+                brief=_fmt_text_brief(resolved),
+                meta={"from": "GROUND.md"},
+            ))
+    return body, children
+
+
+def _build_pin_content(
+    pin: Pin, anchor: Anchor, obs: Observation | None,
+) -> tuple[str, list[FrameItem]]:
+    """Pin → (content, @-children). 按 pin 类型分发."""
+    if isinstance(pin, ExecPin):
+        return _content_exec(pin, obs), []
+    if isinstance(pin, LawPin):
+        content, children = _build_law_with_at(pin, anchor)
+        if pin.arguments.lines is not None:
+            content = _apply_lines_cap(content, pin.arguments.lines)
+        if pin.arguments.budget is not None:
+            content = _apply_budget(content, pin.arguments.budget)
+        return content, children
+    # file / glob / frontmatter / ls — 无 @-展开
+    return _render_pin_content(pin, anchor, obs), []
+
+
+def _build_law_with_at(pin: LawPin, anchor: Anchor) -> tuple[str, list[FrameItem]]:
+    """Law pin: 收集文件内容 + 每文件的 @-ref 解析为子 FrameItem.
+
+    @ref 保留在原文不展开, 解析结果放在 children. 每文件有独立 base_dir.
+    """
+    files = collect_law_files(anchor, pin.arguments.filename)
+    if not files:
+        return "(no files)", []
+
+    blocks: list[str] = []
+    children: list[FrameItem] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            text = "(unreadable)"
+        rel = str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
+        blocks.append(f"-- {rel}\n{text.rstrip()}")
+
+        for at_ref in _scan_at_refs(text):
+            resolved = _resolve_at_ref(at_ref, f.parent)
+            if resolved is not None:
+                children.append(FrameItem(
+                    kind="@",
+                    label=at_ref,
+                    content=resolved,
+                    brief=_fmt_text_brief(resolved),
+                    meta={"from": str(rel)},
+                ))
+
+    content = "\n\n".join(blocks)
+    return content, children
+
+
+# -- @-reference scanning ---------------------------------------------------
+
+
+def _scan_at_refs(text: str) -> list[str]:
+    """扫描文本中的 @-reference 路径列表 (去重, 保持出现顺序).
+
+    SPEC §6.2: @ 在行首或空白后, 后跟 [A-Za-z0-9_./-] 组成的 token.
+    fenced code block 内不识别. 不递归 — 返回的是本层 @ref 清单.
+    """
+    refs: list[str] = []
+    seen: set[str] = set()
+    in_fence = False
+    for line in text.splitlines():
+        lt = line.lstrip()
+        if lt.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for m in _AT_TOKEN_RE.finditer(line):
+            ref = m.group(2)
+            if ref.startswith('"') and ref.endswith('"') and len(ref) >= 2:
+                ref = ref[1:-1]
+            if ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+    return refs
+
+
+def _resolve_at_ref(ref: str, base_dir: Path) -> str | None:
+    """解析一个 @-reference → 文件内容. 找不到 / 不可读 → None."""
+    target = base_dir / ref
+    if not target.is_file():
+        return None
+    try:
+        return target.read_text(encoding="utf-8", errors="replace").rstrip()
+    except OSError:
+        return None
+
+
+# -- item metadata helpers ---------------------------------------------------
+
+
+def _fmt_text_brief(text: str) -> str:
+    """一行内容摘要 — 字符数和行数."""
+    chars = len(text)
+    lines = text.count("\n") + 1
+    abbrev = _fmt_size(chars).replace("B", "")
+    return f"{abbrev}, {lines} lines"
+
+
+def _is_status_content(content: str) -> bool:
+    """非内容块 — 状态 / 错误 / 哨兵消息, 不应展示摘要."""
+    c = content.strip()
+    return (c.startswith("[") or c.startswith("error:") or not c)
+
+
+def _pin_brief(pin: Pin, obs: Observation | None, content: str) -> str:
+    """Pin 的一行摘要, 适应不同 verb. 状态/错误块返回空 — 不提供噪音摘要."""
+    if _is_status_content(content):
+        return ""
+    if isinstance(pin, LawPin):
+        n = (obs.size if obs and obs.size else 0)
+        file_label = f"{n} files, " if n else ""
+        return file_label + _fmt_text_brief(content)
+    if obs and obs.size is not None:
+        size = f"{obs.size} {obs.unit}"
+        if obs.size > 0 and obs.unit == "B":
+            return _fmt_text_brief(content)
+        return f"{size}, " + _fmt_text_brief(content) if content else str(size)
+    return _fmt_text_brief(content)
+
+
+def _pin_truncated(pin: Pin, content: str) -> bool:
+    """内容是否被截断 — 通过检查 truncation markers."""
+    return "[truncated at" in content
+
+
+def _pin_meta(pin: Pin, obs: Observation | None, anchor: Anchor) -> dict:
+    """Pin 的附加上下文, 按 verb 不同."""
+    if isinstance(pin, LawPin):
+        n = obs.size if obs else 0
+        return {
+            "filename": pin.arguments.filename,
+            "files": n,
+            "budget": pin.arguments.budget,
+            "lines": pin.arguments.lines,
+        }
+    if isinstance(pin, FilePin):
+        return {"path": pin.arguments.path, "budget": pin.arguments.budget}
+    if isinstance(pin, LsPin):
+        return {"path": pin.arguments.path, "depth": pin.arguments.depth}
+    if isinstance(pin, GlobPin):
+        return {"path": pin.arguments.path}
+    if isinstance(pin, FrontmatterPin):
+        return {"path": pin.arguments.path}
+    if isinstance(pin, ExecPin):
+        return {"ref": pin.arguments.ref}
+    return {}
+
+
+# -- text serialization -----------------------------------------------------
+
+
+def render_items(items: list[FrameItem], *, ground_path: str | None = None) -> str:
+    """FrameItem 列表 → 文本 (``---`` + ``>`` 分隔符语法).
+
+    每个 top-level item 以 ``---`` 开闭, 间以空行. @-children
+    嵌套在父 item 的开闭区间内. 裸文本(不知道 ground 协议)和
+    渲染 markdown 的读者都能识别区块边界.
+    """
+    out: list[str] = []
+    if ground_path is not None:
+        out.append(f"$GROUND: {ground_path}")
+        out.append("")
+    for i, item in enumerate(items):
+        _render_item(out, item)
+        if i < len(items) - 1:
+            out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _render_item(out: list[str], item: FrameItem) -> None:
+    """递归渲染一个 item 及其 children."""
+    # open marker
+    out.append("---")
+    out.append(_item_open_line(item))
+    out.append("---")
+    out.append("")
+
+    # content
+    if item.content.strip():
+        out.append(item.content.rstrip())
+        out.append("")
+
+    # children (@-expansion sub-blocks)
+    for child in item.children:
+        _render_item(out, child)
+
+    # close marker
+    tail = item.brief
+    if item.truncated:
+        tail = f"{tail}, truncated" if tail else "truncated"
+    out.append("---")
+    out.append(_item_close_line(item, tail))
+    out.append("---")
+
+
+def _item_open_line(item: FrameItem) -> str:
+    """开头 ``>`` 行."""
+    if item.kind == "body":
+        return f"> body:{item.label}" if item.label != "body" else "> body"
+    if item.kind == "@":
+        src = item.meta.get("from", "")
+        from_part = f"  from:{src}" if src else ""
+        return f"> @{item.label}{from_part}"
+    # pin: type:label  [minimal meta]
+    extra = _item_meta_hint(item)
+    return f"> {item.kind}:{item.label}{extra}"
+
+
+def _item_close_line(item: FrameItem, tail: str) -> str:
+    """结尾 ``>`` 行."""
+    if item.kind == "body":
+        label = f"body:{item.label}" if item.label != "body" else "body"
+        return f"> {label} end  {tail}" if tail else f"> {label} end"
+    if item.kind == "@":
+        return f"> @{item.label} end  {tail}" if tail else f"> @{item.label} end"
+    return f"> {item.kind}:{item.label} end  {tail}" if tail else f"> {item.kind}:{item.label} end"
+
+
+def _item_meta_hint(item: FrameItem) -> str:
+    """Pin 开头的可选元信息, 只显示最少的 — 不加参数."""
+    if item.kind == "law":
+        n = item.meta.get("files", 0)
+        return f"  files:{n}" if n else ""
+    return ""
+
+
+# -- meta helpers (legacy) --------------------------------------------------
 
 
 def _pin_kwargs(pin: Pin) -> str:
@@ -465,6 +790,12 @@ def _pin_kwargs(pin: Pin) -> str:
             parts.append(f"timeout={pin.arguments.timeout:g}")
         if pin.arguments.budget is not None:
             parts.append(f"budget={pin.arguments.budget}")
+    elif isinstance(pin, LawPin):
+        parts.append(f'filename="{pin.arguments.filename}"')
+        if pin.arguments.budget is not None:
+            parts.append(f"budget={pin.arguments.budget}")
+        if pin.arguments.lines is not None:
+            parts.append(f"lines={pin.arguments.lines}")
     return ", ".join(parts)
 
 
@@ -486,6 +817,19 @@ def _apply_budget(text: str, budget: int | None) -> str:
     if budget is None or len(text) <= budget:
         return text
     return text[:budget] + f"\n[truncated at {budget} chars]"
+
+
+def _apply_lines_cap(text: str, lines: int | None) -> str:
+    if lines is None:
+        return text
+    ls = text.splitlines()
+    if len(ls) <= lines:
+        return text
+    return "\n".join(ls[:lines]) + f"\n[truncated at {lines} lines]"
+
+
+# @-token regex — 共用: _scan_at_refs (新) + 旧排版保留兼容.
+_AT_TOKEN_RE = re.compile(r'(^|\s)@("[^"\n]+"|[A-Za-z0-9_./-]+)')
 
 
 def _filter_keys(fm_text: str, keys: list[str] | None) -> str:

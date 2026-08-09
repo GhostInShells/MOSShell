@@ -12,6 +12,8 @@ from ghoshell_moss.ground.contract import (
     GlobArguments,
     GlobPin,
     GroundConvention,
+    LawArguments,
+    LawPin,
     LsArguments,
     LsPin,
     Pin,
@@ -56,6 +58,39 @@ class TestPinModels:
     def test_ls_pin_custom_depth(self):
         p = LsPin(label="deep", arguments=LsArguments(path="src", depth=3))
         assert p.arguments.depth == 3
+
+    def test_law_pin(self):
+        p = LawPin(label="claude", arguments=LawArguments(filename="CLAUDE.md"))
+        assert p.verb == "law"
+        assert p.arguments.filename == "CLAUDE.md"
+        assert p.arguments.budget is None
+        assert p.arguments.lines is None
+        # law 是位置依赖 pin — walk 时展开
+        assert p.is_cwd_anchored is True
+
+    def test_law_pin_with_caps(self):
+        p = LawPin(
+            label="claude",
+            arguments=LawArguments(filename="AGENT.md", budget=100, lines=10),
+        )
+        assert p.arguments.budget == 100
+        assert p.arguments.lines == 10
+
+    def test_law_pin_requires_filename(self):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            LawPin(label="claude", arguments=LawArguments())
+
+    def test_law_pin_budget_positive(self):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            LawPin(label="claude", arguments=LawArguments(filename="CLAUDE.md", budget=0))
+
+    def test_other_pins_not_cwd_anchored(self):
+        p = FilePin(label="f", arguments=FileArguments(path="a.py"))
+        assert p.is_cwd_anchored is False
 
     def test_label_too_long_rejected(self):
         import pydantic

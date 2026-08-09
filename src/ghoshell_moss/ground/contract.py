@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,16 +32,19 @@ __all__ = [
     "FrontmatterPin",
     "LsPin",
     "ExecPin",
+    "LawPin",
     "FileArguments",
     "GlobArguments",
     "FrontmatterArguments",
     "LsArguments",
     "ExecArguments",
+    "LawArguments",
     "GroundConvention",
     "UpdateResult",
     "TemplateInfo",
     "GroundError",
     "PathOutsideRootError",
+    "FrameItem",
 ]
 
 # -- constants (K54: every magic number has a name + rationale) ---------------
@@ -156,6 +160,30 @@ class ExecArguments(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class LawArguments(BaseModel):
+    """law verb 的 arguments — 约定文件法链.
+
+    参数是文件名而非路径: 从 cwd 向上逐层收集该文件 (CLAUDE.md /
+    AGENT.md 等约定文件), 到场根为止. 收集到的是每个祖先目录里的
+    body 内容, 父级向下展示.
+    """
+    filename: str = Field(
+        description="约定文件名 (CLAUDE.md, AGENT.md...). 从 cwd 向上逐层收集.",
+    )
+    budget: int | None = Field(
+        default=None,
+        ge=1,
+        description="总字符数上限, 超限 truncate.",
+    )
+    lines: int | None = Field(
+        default=None,
+        ge=1,
+        description="总行数上限, 超限 truncate.",
+    )
+
+    model_config = {"extra": "allow"}
+
+
 # -- pin verb registry -------------------------------------------------------
 
 _VERB_CLASSES: dict[str, type[Pin]] = {}
@@ -192,6 +220,11 @@ class Pin(BaseModel):
     )
 
     model_config = {"extra": "ignore"}
+
+    @property
+    def is_cwd_anchored(self) -> bool:
+        """是否随 $CWD 移动 — walk 时展开, 场根时也渲染. 默认 False."""
+        return False
 
 
 @_register("file")
@@ -236,6 +269,23 @@ class ExecPin(Pin):
 
     verb: Literal["exec"] = "exec"
     arguments: ExecArguments
+
+
+@_register("law")
+class LawPin(Pin):
+    """约定文件法链注视 — 兼容外部项目约定 (CLAUDE.md / AGENT.md).
+
+    拉的是文档, 参数是文件名而非路径: 从 cwd 向上逐层收集该文件,
+    到场根为止 (边界 = ground root). 父级向下展示, 最多一层 @ 解析,
+    有 budget/lines 截断语义. 位置依赖 cwd — walk 时随站立位置变化.
+    """
+
+    verb: Literal["law"] = "law"
+    arguments: LawArguments
+
+    @property
+    def is_cwd_anchored(self) -> bool:
+        return True
 
 
 # -- errors ------------------------------------------------------------------
@@ -398,6 +448,7 @@ class GroundSet(ABC):
         label: str | None = None,
         doc: str | Path | None = None,
         template: str | None = None,
+        override: bool = False,
     ) -> Ground:
         """打开一个场.
 
@@ -407,6 +458,8 @@ class GroundSet(ABC):
           doc ≠ dir/GROUND.md 时, law anchor 与 pin anchor 解耦 (K35 携带/属地).
         - template: .grounds/ 中的模板名. 指定时用模板的 body + pins 初始化
           Ground. 模板内容复制, 非引用.
+        - override: template 定义全权接管 (body + pins), 忽略现有 GROUND.md
+          内容. 预览场景 (`frame --template`) 用 — 模板是镜头, 不是补丁.
 
         同目录幂等 (按 dir.resolve()): 返回已 active 的 Ground, 忽略传入参数.
         """
@@ -458,3 +511,37 @@ class GroundSet(ABC):
     @abstractmethod
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """退出 GroundSet. 对全部 active 逐个 sediment, best-effort."""
+
+
+# -- FrameItem (渲染数据模型) ------------------------------------------------
+
+
+@dataclass
+class FrameItem:
+    """一帧里的一个渲染区块 — pin / body / @-reference.
+
+    Frame 生产者 (render_context / render_walk) 产出 ``list[FrameItem]``,
+    渲染器 (render_items) 消费并序列化为文本. 中间格式让 --json / 定制
+    渲染 / 截断策略等都在同一个数据结构上操作, 不碰文本.
+    """
+
+    kind: str
+    """区块类型: "body" | pin verb ("file"/"law"/...) | "@"."""
+
+    label: str
+    """区块标识: pin label | "@<path>" | "body"."""
+
+    content: str
+    """已截断的文本. @-ref 保留原文不展开, 展开结果在 children."""
+
+    brief: str = ""
+    """一行摘要: "3 files, 8.2K, 250 lines" — debug / TOC / --json 用."""
+
+    truncated: bool = False
+    """内容是否因 budget/lines 截断."""
+
+    meta: dict = field(default_factory=dict)
+    """附加上下文: {"from": "CLAUDE.md", "files": 3, ...}."""
+
+    children: list[FrameItem] = field(default_factory=list)
+    """@-reference 展开子块, 嵌套在父块的开闭区间内."""
