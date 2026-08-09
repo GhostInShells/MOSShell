@@ -1,4 +1,28 @@
-# G1 Body App — 开发说明
+# G1 Body — 开发说明
+
+Unitree G1 人形机器人身体。从 `.moss_ws/apps/bodies/g1/` 迁移到 nodes 体系。
+
+## node 结构
+
+```
+nodes/unitree/g1/
+├── control/     # 整机身体 node — 完整 G1 channel 树 (当前单 node, 组分割延后)
+├── docs/        # 硬件 / SDK / 范式技术文档
+├── scripts/     # 安全原子化验证脚本 (SDK 调研)
+└── CLAUDE.md    # AI 认知入口 — 范式真相
+```
+
+共享能力库在 `src/ghoshell_moss_contrib/unitree/g1/` (框架内建), node 只是薄壳装配。
+
+## 实机验证
+
+**macOS 不可测试** (cyclonedds 不编译)。等价代码在 G1 真机 (PC2) 验证:
+
+```bash
+moss nodes run nodes/unitree/g1/control
+```
+
+SDK (`src/unitree_sdk2_python`) gitignored, 手动 clone 到 node 环境 (见 `docs/moss-on-pc2.md`)。
 
 ## 当前状态
 

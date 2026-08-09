@@ -3,7 +3,7 @@ title: G1 Product August
 status: in-progress
 priority: P0
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-09
 depends:
   - node-migration
 milestone: v0.1.0
@@ -106,9 +106,9 @@ G1, 是可演示、可扩展的人形机器人身体产品。8月的重心全在
 
 | # | 子任务 | 状态 | 说明 |
 |---|--------|------|------|
-| 01 | SDK action 机制调研 | 待启动 | 纯读代码; 产出 arms 可打断性结论, 定 arms 时序设计 |
-| 02 | node 迁移 (category 级) | 待启动 | `nodes/bodies/g1/` 多 node + node 启动替代 mode |
-| 03 | 锁问题修复 | 待启动 | 移动命令 5-6s 阻塞根因定位与修复 |
+| 01 | SDK action 机制调研 | 进行中 | 结论已定 (2026-08-06): 双路径事实 — RPC 不可打断 / DDS 可真中断。arms 走命名 pose + DDS 平滑切换。见下方 "arms 调研结论" |
+| 02 | node 迁移 (category 级) | 进行中 | `nodes/unitree/g1/` 目录落地 (2026-08-09): 文档/脚本 git mv 完成, 单 node `control/` 已建 (NODE.md + main.py 薄壳装配)。**macOS 不可测试** — 等价代码在 G1 真机 (PC2) 验证, 不反复本地验证。大组分割 (control/voice/perception) 延后 |
+| 03 | 锁问题修复 | 进行中 | 实测未修复 (人类 2026-08-06)。07-03 线程池修复无效。假设: G1 主板侧固定处理节奏 — "一旦排队, 有稳定 n 秒等待"。待 RPC 计时诊断 |
 | 04 | idle 体系 | 待启动 | 身体呼吸感 |
 | 05 | arms 交互 | 待启动 | 两实验 → 命名 pose + 平滑切换 |
 | 06 | 视觉实装 | 待启动 | 视频线 + context messages |
@@ -118,6 +118,39 @@ G1, 是可演示、可扩展的人形机器人身体产品。8月的重心全在
 | 10 | 雷达验证 | 待启动 | (P1) |
 | 11 | g1 × 流式 GUI | 待启动 | 验收目标落地: 交付 P0 |
 | 12 | speech 输出 node 化 | 待启动 | (P1) |
+
+## arms 调研结论 (子任务 01, 2026-08-06)
+
+**双路径事实** (SDK 源码 + 实机记录 2026-06-29, scripts/sdk/21 + 26):
+
+| 路径 | 机制 | 可打断性 |
+|------|------|---------|
+| 高层 action RPC | `G1ArmActionClient.ExecuteAction(id)` — 同步 RPC | **不可打断**: 动作中发新动作 → 拒绝 (7401 占用 / 3104 超时) 或排队 (code=0 等 A 播完)。`ExecuteAction(99)` 忙时也是排队不抢占 |
+| 低层 DDS 关节控制 | `rt/arm_sdk` (LowCmd_) + weight(kNotUsedJoint=29) 接管 | **可真中断**: "DDS publish 停 = 真中断"。50Hz 自写轨迹, 每帧读 real-time q, 新目标随时重新插值 |
+
+**arms 8月路径裁定**: 命名 pose 库 + DDS 轨迹平滑切换。不依赖 (或降级) ExecuteAction RPC。
+- 可打断平滑复位 = DDS 下复位是自控轨迹, 随时可被新目标覆盖。直接解决"复位不可中断"痛点。
+- 柔性运动 = 低 kp/kd (60/1.5 偏硬 → 目标 ~20/0.5, 待标定), 碰撞能让步。
+- 命名 pose = 人类/录制定义关节目标集, LLM 只调名字。**opus "空间语义鸿沟" 裁定仍成立** — 这恰是命名 pose 的论据, 不让 LLM 写关节坐标。
+- opus "中断复位不可靠 / 首帧过渡不可估" 被 DDS 路径推翻: 复位是自控轨迹; 每帧读 LowState q 起步, 无过渡冲击。
+
+**对象模型** (2026-08-07 人类架构师修正):
+- **Pose** 不是静态目标: `当前位置 → 过渡 → 目标位置 → 保持`。保持阶段进 idle = pose 的呼吸动画。
+  固定 pose 下可设计子动作 (popping, 手指舞)。
+- **Animation** 是更重对象: `当前位置 → 起点 → 动作 → idle 恢复到 pose`, 跑完回到 pose。
+- **录制即产品**: 脱力 (低刚度接管, weight 仍持有但 kp≈0) + 语音触发 "开始/停止录制" +
+  模型读 lowstate 存关键帧/轨迹。"教 G1 一个手势"是 8 月可演示的完整交互闭环。
+  优先级: 脱力示教录制 > ExecuteAction 当录制源 (后者作为备选)。
+- **生成路径**: pose / trajectory 可模型自生成, 验证期慢放 + 停顿 + 打断触发复位。
+  **安全闸口**: 生成 pose 真机慢放前需人工审批 (参考 ghost-runtime-safemode), 全程遥控器主权 + L2+B。
+
+**柔性分层 + 感知回路** (2026-08-07):
+- 柔性需要感知闭环。arms runtime 分 state: `rigid` (正常) / `teach` (脱力录制) / `soft` (低刚度交互)。
+- 同一反馈机制 (lowstate motor_state tau / 位置偏差) 按 state 两种解释: rigid 偏差大 = 碰撞 → 停机;
+  teach 偏差大 = 示教 → 录制。arms 的感知回路以此为首个落地。
+
+**待实机确认**: kp/kd 标定、cancel 后主板行为 (锁定 vs 自动回 sport rest)、脱力 (低刚度接管) 的
+手推动手感、双臂 DDS 与 locomotion 并行的物理安全 (weight ramp 时序)。
 
 ## 验收目标 (不开发, 只验收)
 
@@ -153,15 +186,31 @@ G1, 是可演示、可扩展的人形机器人身体产品。8月的重心全在
 4. **8月核心 = 交互**。可学习 pose + 上肢平滑切换是最重要交互点; idle 呼吸感是
    "活着"的产品质感; passenger 模式保证遥控器主权下仍可交互。
 5. **node 启动替代 mode 注册 channel**。g1 从 `unitree_g1 mode` 切到
-   `moss nodes run`, 装配逻辑迁入 node 的 main.py。
+   `moss nodes run`, 装配逻辑迁入 node 的 main.py。目录: **`nodes/unitree/g1/`**
+   (2026-08-09, 非原规划 `nodes/bodies/g1/`) — g1 根放公共库 (当前 = contrib),
+   `g1/<name>/` 下才是各 node, 根目录无 NODE.md。
+6. **arms 走命名 pose + DDS 平滑切换, 降级 ExecuteAction RPC** (调研定案,
+   2026-08-06)。DDS 路径给真中断; 命名 pose 避开 LLM 关节空间幻觉。两实验
+   (可打断平滑复位 / 柔性运动) 的验证工具 = scripts/sdk/26 的 DDS 关节写法。
+7. **大组分割, 非 node 级分割** (2026-08-07, 08-09 修正 audio 归属)。状态机控制的
+   能力 (fsm + locomotion + arms) 是一组, 共享 FSM 状态, 不拆进程。**audio 归
+   control 组** — 机体扬声器输出 (说), 与 fsm/led 同进程内调用, 不属语音组; 语音组
+   (listener + asr) 是麦克风输入 (听)。感知组各自一组。跨组协调走 Ghost 编排, 组间
+   只经 Matrix 命令面。
+8. **迁移顺序: 先验证后实现**。git mv `.moss_ws/apps/bodies/g1/` → `nodes/bodies/g1/`
+   后, 先移植旧 unitree_g1 mode 的 channels.py 做前向验证 mode, 真机验证迁移成功,
+   再实现 node main.py 装配 (不急于实现 nodes)。
 
 ## Implementation Notes
 
 - **第一批推进**: 子任务 01 (SDK action 机制调研) — 纯读代码, 不依赖真机,
   产出 arms 时序设计的依据。随后 02 (node 迁移)。
-- **SDK 位置**: `.moss_ws/apps/bodies/g1/src/unitree_sdk2_python/` (gitignored,
-  手动 clone)。macOS 上读源码规划, PC2 实机验证。
-- **遗留承接**: 移动命令阻塞 (03)、arms 空骨架 (05)、listener 未闭环 (验收关联)、
-  耳机按键 evdev dormant bug — 均从历史 workstream 继承。
+- **SDK 位置**: `src/unitree_sdk2_python/` (gitignored, 手动 clone, PC2 真机)。
+  macOS 上读源码规划, PC2 实机验证。
+- **测试约束 (2026-08-09)**: **macOS 上不可测试** — cyclonedds 不编译, g1 运行时
+  代码无法本地验证。macOS 只做结构/语法/发现器验证, 等价代码在 G1 真机 (PC2) 测试。
+  不要反复尝试本地跑通 g1。
+- **遗留承接**: 移动命令阻塞 (03, 实测未修复, 待 RPC 计时诊断)、arms 空骨架 (05)、
+  listener 未闭环 (验收关联)、耳机按键 evdev dormant bug — 均从历史 workstream 继承。
 - **FEATURE.md 更新纪律**: 每个子任务启动/完成时更新状态表; 关键决策编辑本节;
   完成时 `set-status completed` 随代码 commit。

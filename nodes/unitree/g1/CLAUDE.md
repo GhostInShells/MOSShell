@@ -1,8 +1,8 @@
-# G1 Body App
+# G1 Body
 
-Unitree G1 人形机器人身体控制 App。MOSS 接入的第二个人形机器人平台。
+Unitree G1 人形机器人身体。MOSS 接入的第二个人形机器人平台。
 
-**所属 workstream**: `unitree-g1-integration`（状态追踪见 FEATURE.md，范式真相在本文件）
+**所属 workstream**: `g1-product-august`（8月产品化，状态追踪见 FEATURE.md，范式真相在本文件）
 
 ## 首次进入
 
@@ -59,21 +59,18 @@ macOS 上不需要编译 cyclonedds。`docs/` 和 `scripts/` 在 macOS 编写，
 ## 目录
 
 ```
-.moss_ws/apps/bodies/g1/
-├── APP.md               # 面向使用者/模型：能力 + CTML 调用示例
+nodes/unitree/g1/
+├── control/             # 整机身体 node — NODE.md (给运行时的 Ghost) + main.py (装配)
 ├── README.md            # 面向开发者：当前阶段 + 开发计划（会话起点）
 ├── CLAUDE.md            # 本文件 — AI 认知入口（范式真相）
-├── main.py              # 入口：构造 channel → Matrix 注册
 ├── docs/                # 技术文档（活的）
 │   ├── index.md         #   云端文档 URL 映射 + 概念索引
-│   ├── sdk-api.md       #   SDK 接口分析 (loco/arm/audio)
-│   ├── comms.md         #   DDS 通讯模型
+│   ├── sdk-topics.md    #   DDS topic 清单（实机验证）
 │   ├── hardware.md      #   硬件连接 + 网络拓扑 + PC2 环境
-│   ├── safety.md        #   急停/限位/力控/遥控器优先级
 │   ├── moss-on-pc2.md   #   MOSS 装机过程与问题日志
-│   └── channel-design.md#   Channel 体系设计（阶段 E+F 后产出）
+│   └── validation-checklist.md  # 验证命题
 ├── scripts/             # 安全原子化验证脚本，不经 MOSS channel
-└── src/                 # gitignored — unitree_sdk2_python 手动 clone
+└── src/                 # gitignored — unitree_sdk2_python 手动 clone（PC2）
 ```
 
 ## 开发阶段
