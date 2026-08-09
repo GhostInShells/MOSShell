@@ -5,11 +5,11 @@ description: Make llms config genuinely usable — Project.configs() single-sour
   construction, then a `moss llms` CLI backed by pydantic-ai. Prep for dolores.
 milestone: null
 priority: P1
-status: completed
-status_note: 'CLI core done: list/call/test, no-fallback, three protocols (anthropic+openai).
-  .env.example and stub llms.yml deferred.'
+status: in-progress
+status_note: 'Round 2 (2026-08-09): TokenCount count_tokens, effort as call param,
+  LLMFuncs project provider, CLI reads via project container force_fetch.'
 title: Llms Cli
-updated: '2026-08-03'
+updated: '2026-08-09'
 ---
 
 # Llms Cli
@@ -29,6 +29,8 @@ updated: '2026-08-03'
 
 **第一步(本次 scope)**:configs 调整 — ConfigStore 构造逻辑收口到 `Project.configs()`,
 让 CLI 只依赖 project 发现就能拉起 mode 专属 ConfigStore,不需要 Host/Matrix。
+
+**Round 2 (2026-08-09, in-progress)**:llms CLI 定位 = 环境调试工具 (与 CLI audio 同级) + 日常开发调试能力。
 
 ## Design Index
 
@@ -68,6 +70,52 @@ matrix_impl 已在 `_prepare_container` 里 `container.set(Environment, ...)` / 
 
 不把 pydantic-ai import 进核心包。client 构造放独立可复用位置,惰性 import pydantic-ai,
 CLI 与未来 Dolores/Ghost 共用。(决策细化后追加)
+
+### 5. TokenCount + count_tokens — 同步、结构化返回、tiktoken 按协议估算
+
+`LLMFuncs` 增加同步纯函数 `count_tokens(text, *, model=None, include_tokens=False) -> TokenCount`。
+`TokenCount` 是 frozen dataclass:`service` / `model` / `encoding` / `count` / `estimate` / `tokens`。
+
+- **同步 + docstring 声明性能风险**: CPU-bound BPE 分词, O(n), `include_tokens=True` 物化
+  token id 列表 (长文本有内存开销)。协程调用者必须卸载到线程池 (asyncio.to_thread /
+  run_in_executor)。风险写进 ABC docstring — 调用者是引擎无关的, 只看契约。
+- tiktoken 0.13.0 无 `count_tokens` 捷径 (已验证), 计数 = `len(encode(text))`。
+- **编码选择**: openai 协议用 `tiktoken.encoding_for_model` (gpt-4o 系 → o200k_base,
+  旧模型 → cl100k_base), 未知模型回退 o200k_base; 非 openai 协议 (anthropic/deepseek)
+  一律估算 — tiktoken 是 OpenAI 分词器, `estimate=True` 由调用方决定怎么标注。
+- 依赖: tiktoken 由 ghost extra 的 `pydantic-ai-slim[openai]` 引入, 无需新增声明。
+
+### 6. think effort 作为 call 参数, 不进 config — protocol adapter 落在 build_agent
+
+mindflow 的 effort 刻度 (no/default...max) 映射为 pydantic-ai 的 **effort 字段**。已核实
+pydantic-ai 2.5.0 同时暴露: 通用 `thinking` (bool | minimal..xhigh)、`anthropic_effort`
+(low..xhigh/max)、`openai_reasoning_effort` (none..xhigh)。这是新式统一抽象; 旧式
+`anthropic_thinking` (enabled+budget_tokens / adaptive / disabled) 仍在但不作主路径。
+
+- effort 是 `LLMFuncs.call` 的参数 (CLI `--effort`), **不进 LLMConfig**。
+- `build_agent` 按协议映射: anthropic → `anthropic_effort`; openai → `openai_reasoning_effort`。
+- **冲突处理**: client.py 硬编码 `anthropic_thinking=disabled` 作默认基线; 传了 effort 就走
+  effort 字段, 不再设 disabled thinking (两者互斥)。
+- deepseek/doubao 等 kwargs 不一致时, 在 `build_agent` 的 protocol 分派里加分支 (protocol adapter)。
+
+### 7. LLMFuncs 注册为 project 级 provider (懒加载, 无 ghost 不爆炸)
+
+`LocalProject._default_providers()` 增补 `ProjectLLMFuncsProvider` (contract=LLMFuncs,
+factory=PydanticAIFuncs, 惰性 import)。与 Subprocesses/JobSupervisor/ConfigStore/
+ResourceRegistry 并列; workspace 用户在 ProjectManifest.providers 显式覆写即可覆盖。
+fetch 时才 import pydantic-ai; 无 ghost extra 时 fetch 报干净错误, 不拖垮项目容器。
+matrix 的 contracts() 校验不含 LLMFuncs, 不 fail-fast。
+
+### 8. CLI 读配置走 project 容器, 不走 matrix; 防御边界收口
+
+list 从配置读取开始就走 `Project.discover()` + `project.bootstrap()` (幂等: 载入 env +
+container.bootstrap 触发 ConfigInstanceRegisterBootstrapper), `project.container.force_fetch(LLMConfig)`
+取配置; call/count/test 额外 `force_fetch(LLMFuncs)` 取引擎。
+
+- 比 audio CLI 轻: 无 `Matrix.new`, 无 cell 身份/网络/topic。调试工具在环境坏时也要能跑。
+- 与运行时消费者共享同一容器 source of truth。
+- **防御边界 = api_key + base_url 两个字段**。base_url 可能嵌凭据 (query/fragment),
+  保持不显示, 不引入"消毒后展示"的复杂度。protocol/model/tags 已在 ModelRef 投影里。
 
 ## Implementation Notes
 

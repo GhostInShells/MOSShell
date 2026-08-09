@@ -2,6 +2,7 @@
 
 from typing import Literal, Iterable, Type, Callable, Generic, TypeVar, Any
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, AwareDatetime
 from .configs import ConfigType
@@ -20,6 +21,8 @@ __all__ = [
     "register_converter",
     "clear_converters",
     "MessageContentConverter",
+    "Effort",
+    "TokenCount",
 ]
 
 # gemini 这么没牌面吗?
@@ -27,6 +30,9 @@ ClientProtocol = Literal["anthropic", "openai"]
 ModelTag = str
 ModelName = str
 DefaultModelTag = Literal['small_fast_model', 'flash', 'pro']
+# thinking effort 刻度 — no..max。引擎按协议映射到 pydantic-ai
+# (anthropic_effort: low..max / openai_reasoning_effort: none..xhigh)。
+Effort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 class MessageContentConverter(ABC):
@@ -621,6 +627,23 @@ class BenchmarkRecord(BaseModel):
         raise NotImplementedError('todo')
 
 
+@dataclass(frozen=True)
+class TokenCount:
+    """Token 计数结果 — 结构化返回, 含编码与服务信息.
+
+    ``count`` = ``len(encode(text))`` (tiktoken 无 count_tokens 捷径)。
+    ``estimate`` 标记非 openai 协议的估算 — tiktoken 是 OpenAI 的分词器。
+    ``tokens`` 默认 None, 显式要求 (``include_tokens=True``) 才物化。
+    """
+
+    count: int
+    service: str = ""
+    model: str = ""
+    encoding: str = ""
+    estimate: bool = False
+    tokens: tuple[int, ...] | None = None
+
+
 class LLMFuncs(ABC):
     """model func 引擎契约 — 模型调用的最小协议.
 
@@ -636,10 +659,32 @@ class LLMFuncs(ABC):
             prompt: str,
             result_type: Type[RESULT_MODEL],
             model: ResolvedModel,
+            effort: Effort | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
 
         ``model`` 由调用方解析 (``LLMConfig.get_model()``), 引擎不负责选模型。
+        ``effort`` — thinking effort 刻度 (none..max), 不进 config, 引擎按协议
+        映射到 pydantic-ai 的 effort 字段 (anthropic_effort / openai_reasoning_effort)。
+        """
+
+    @abstractmethod
+    def count_tokens(
+            self,
+            text: str,
+            *,
+            model: ResolvedModel | None = None,
+            include_tokens: bool = False,
+    ) -> TokenCount:
+        """统计字符串的 token 数 — 同步纯函数.
+
+        性能: CPU-bound BPE 分词, O(n), ``include_tokens=True`` 会物化 token
+        id 列表 (长文本有内存开销)。协程调用者必须卸载到线程池
+        (asyncio.to_thread / anyio.to_thread / run_in_executor)。
+
+        ``model`` 选择分词器; None 用引擎默认 (o200k_base)。
+        非 openai 协议的计数是估算 (tiktoken 是 OpenAI 分词器) —
+        ``TokenCount.estimate`` 携带该标志, 由调用方决定如何标注。
         """
 
     @abstractmethod

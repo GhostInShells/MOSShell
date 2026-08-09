@@ -283,6 +283,51 @@ def test_run_benchmark_missing_result_type():
         BenchmarkMeta(title="x", cases_file="c.jsonl")
 
 
+# ── unit: count_tokens (tiktoken, no mocks — pure local computation) ──
+
+
+class TestCountTokens:
+    def _resolved(self, protocol: str, model: str) -> ResolvedModel:
+        return ResolvedModel(
+            service=ServiceConfig(name="s", base_url="http://x", api_key="k", protocol=protocol),
+            model=ModelConfig(model=model),
+        )
+
+    def test_openai_gpt4o_uses_o200k(self):
+        f = PydanticAIFuncs()
+        r = f.count_tokens("hello world", model=self._resolved("openai", "gpt-4o"))
+        assert r.encoding == "o200k_base"
+        assert r.estimate is False
+        assert r.count == 2
+        assert r.service == "s"
+        assert r.model == "gpt-4o"
+
+    def test_openai_gpt4_uses_cl100k(self):
+        f = PydanticAIFuncs()
+        r = f.count_tokens("hello world", model=self._resolved("openai", "gpt-4"))
+        assert r.encoding == "cl100k_base"
+        assert r.estimate is False
+
+    def test_non_openai_is_estimate_with_fallback(self):
+        f = PydanticAIFuncs()
+        r = f.count_tokens("hello world", model=self._resolved("anthropic", "claude-sonnet-4-6"))
+        assert r.estimate is True
+        assert r.encoding == "o200k_base"  # tiktoken 不认识 → 回退
+
+    def test_no_model_is_estimate_and_blank(self):
+        f = PydanticAIFuncs()
+        r = f.count_tokens("hello world")
+        assert r.estimate is True
+        assert r.service == ""
+        assert r.model == ""
+
+    def test_include_tokens_materializes_ids(self):
+        f = PydanticAIFuncs()
+        r = f.count_tokens("hi there", model=self._resolved("openai", "gpt-4o"), include_tokens=True)
+        assert r.tokens is not None
+        assert len(r.tokens) == r.count == 2
+
+
 # ── ModelRef safety ──────────────────────────────────────────────────
 
 

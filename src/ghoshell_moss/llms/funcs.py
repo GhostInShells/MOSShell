@@ -18,11 +18,13 @@ from ghoshell_moss.contracts.llms import (
     BenchmarkMeta,
     BenchmarkRecord,
     BenchmarkRun,
+    Effort,
     LLMFuncResult,
     LLMFuncResultRecord,
     LLMFuncs,
     ModelRef,
     ResolvedModel,
+    TokenCount,
 )
 
 __all__ = ["PydanticAIFuncs"]
@@ -43,14 +45,16 @@ class PydanticAIFuncs(LLMFuncs):
         prompt: str,
         result_type: Type[RESULT_MODEL],
         model: ResolvedModel,
+        effort: Effort | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用 — build_agent + agent.run(output_type, instructions).
 
         ``model`` 必须是已 resolve 的 ResolvedModel (api_key 已解密, 仅内存).
+        ``effort`` 透传给 build_agent, 由它按协议映射到 effort 字段.
         """
         from ghoshell_moss.llms.client import build_agent
 
-        agent = build_agent(model)
+        agent = build_agent(model, effort=effort)
         start = time.perf_counter()
         result = await agent.run(
             prompt,
@@ -109,6 +113,41 @@ class PydanticAIFuncs(LLMFuncs):
         if output_file:
             _dump_record(record, output_file)
         return record
+
+    def count_tokens(
+        self,
+        text: str,
+        *,
+        model: ResolvedModel | None = None,
+        include_tokens: bool = False,
+    ) -> TokenCount:
+        """tiktoken 计数 — openai 协议精确, 非 openai 协议为估算.
+
+        ``model`` 为 None 或非 openai 协议时回退 o200k_base 并标 estimate。
+        tiktoken 惰性 import (依赖 ghost extra 的 pydantic-ai-slim[openai])。
+        """
+        import tiktoken
+
+        if model is None:
+            service, model_name, estimate = "", "", True
+            enc = tiktoken.get_encoding("o200k_base")
+        else:
+            service, model_name = model.service.name, model.model.model
+            estimate = model.client_protocol != "openai"
+            try:
+                enc = tiktoken.encoding_for_model(model_name)
+            except KeyError:
+                enc = tiktoken.get_encoding("o200k_base")
+
+        ids = enc.encode(text)
+        return TokenCount(
+            count=len(ids),
+            service=service,
+            model=model_name,
+            encoding=enc.name,
+            estimate=estimate,
+            tokens=tuple(ids) if include_tokens else None,
+        )
 
 
 # ── helpers ────────────────────────────────────────────────────────────

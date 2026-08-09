@@ -6,7 +6,7 @@ the pydantic-ai import happens only when ``build_agent()`` actually runs.
 
 from __future__ import annotations
 
-from ghoshell_moss.contracts.llms import ResolvedModel
+from ghoshell_moss.contracts.llms import Effort, ResolvedModel
 
 __all__ = ["build_agent"]
 
@@ -16,11 +16,15 @@ def build_agent(
         *,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
+        effort: Effort | None = None,
 ) -> "Agent":
     """Build a pydantic-ai Agent from a resolved model.
 
     :param resolved: ``LLMConfig.get_model()`` 的结果. 其 ``service.base_url`` /
         ``api_key`` 必须是已 resolve 的真实值 — 仅内存使用, 调用方绝不打印.
+    :param effort: thinking effort 刻度, 按协议映射 (anthropic_effort /
+        openai_reasoning_effort). None 或 "none" 表示默认 (anthropic 保持
+        extended thinking disabled).
     """
     from pydantic_ai import Agent
     from pydantic_ai.settings import ModelSettings
@@ -31,37 +35,48 @@ def build_agent(
     if max_output_tokens is not None:
         settings["max_tokens"] = max_output_tokens
     return Agent(
-        model=_build_model(resolved),
+        model=_build_model(resolved, effort=effort),
         model_settings=ModelSettings(**settings) if settings else None,
     )
 
 
-def _build_model(resolved: ResolvedModel):
+def _build_model(resolved: ResolvedModel, effort: Effort | None = None):
     protocol = resolved.client_protocol
     service = resolved.service
     model_name = resolved.model.model
 
     if protocol == "anthropic":
-        from anthropic.types.beta import BetaThinkingConfigDisabledParam
         from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelSettings
         from pydantic_ai.providers.anthropic import AnthropicProvider
+
+        kwargs: dict = {}
+        if effort and effort != "none":
+            # anthropic_effort: low/medium/high/xhigh/max — 新式统一 effort。
+            # 传了 effort 就不设 disabled thinking, 两者互斥。
+            kwargs["anthropic_effort"] = effort
+        else:
+            from anthropic.types.beta import BetaThinkingConfigDisabledParam
+            kwargs["anthropic_thinking"] = BetaThinkingConfigDisabledParam(type="disabled")
 
         return AnthropicModel(
             model_name=model_name,
             provider=AnthropicProvider(api_key=service.api_key, base_url=service.base_url),
-            # disable extended thinking by default; enable via model param if needed
-            settings=AnthropicModelSettings(
-                anthropic_thinking=BetaThinkingConfigDisabledParam(type="disabled"),
-            ),
+            settings=AnthropicModelSettings(**kwargs),
         )
 
     if protocol == "openai":
-        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
         from pydantic_ai.providers.openai import OpenAIProvider
+
+        kwargs = {}
+        if effort:
+            # openai_reasoning_effort: none/minimal/low/medium/high/xhigh
+            kwargs["openai_reasoning_effort"] = effort
 
         return OpenAIChatModel(
             model_name=model_name,
             provider=OpenAIProvider(base_url=service.base_url, api_key=service.api_key),
+            settings=OpenAIChatModelSettings(**kwargs) if kwargs else None,
         )
 
     raise ValueError(f"unsupported ClientProtocol: {protocol!r}")

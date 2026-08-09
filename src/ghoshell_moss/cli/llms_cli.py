@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-from ghoshell_moss.contracts.llms import LLMConfig, ResolvedModel, ModelRef
+from ghoshell_moss.contracts.llms import Effort, LLMConfig, LLMFuncs, ModelRef, ResolvedModel
 
 from .utils import (
     print_simple_table,
@@ -30,17 +30,29 @@ llms_app = typer.Typer(
 )
 
 
+def _project_container():
+    """Bootstrap 项目并返回容器 — 轻路径, 无 matrix/cell/网络.
+
+    Project.bootstrap() 幂等: 载入 env + container.bootstrap (触发
+    ConfigInstanceRegisterBootstrapper 注册 config 实例). 环境坏时也大概率能拉起.
+    """
+    from ghoshell_moss.core.blueprint.project import Project
+    project = Project.discover()
+    project.bootstrap()
+    return project.container
+
+
 def _load_config() -> LLMConfig:
-    """Read LLMConfig — workspace config if present, else the default. Read-only."""
+    """Read LLMConfig from the project container — else the default. Read-only."""
     try:
-        from ghoshell_moss.core.blueprint.project import Project
-        store = Project.discover().configs
-        try:
-            return store.get(LLMConfig)
-        except Exception:
-            return LLMConfig()
+        return _project_container().force_fetch(LLMConfig)
     except Exception:
         return LLMConfig()
+
+
+def _load_funcs() -> LLMFuncs:
+    """Read the LLMFuncs engine from the project container (decision A provider)."""
+    return _project_container().force_fetch(LLMFuncs)
 
 
 def _config_source_path() -> str | None:
@@ -143,12 +155,14 @@ def _call(
         *,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
+        effort: Effort | None = None,
 ) -> str:
     from ghoshell_moss.llms.client import build_agent
     agent = build_agent(
         resolved,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        effort=effort,
     )
     return agent.run_sync(prompt).output
 
@@ -162,6 +176,7 @@ def _call_structured(
         json_output: bool,
         verbose: bool,
         repeat: int,
+        effort: Effort | None = None,
 ) -> None:
     """Structured call via model-func engine (PydanticAIFuncs).
 
@@ -185,6 +200,7 @@ def _call_structured(
                 prompt=prompt,
                 result_type=result_type,
                 model=resolved,
+                effort=effort,
             )
             results.append(r.model_dump(exclude_none=True))
         return results
@@ -301,13 +317,18 @@ if _ghost_extra_available():
                 1, "-n",
                 help="Number of in-process repetitions.",
             ),
+            effort: Effort = typer.Option(
+                None, "--effort",
+                help="Thinking effort: none/minimal/low/medium/high/xhigh/max.",
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
         Without ``-r``: plain-text call (built-in). With ``-r``: structured
         call via model-func engine — instruction + prompt -> BaseModel result.
         ``-n`` > 1 repeats in-process. ``-i`` auto-reads a file if the value
-        is an existing path.
+        is an existing path. ``--effort`` maps per protocol (anthropic_effort /
+        openai_reasoning_effort).
         """
         conf = _load_config()
         resolved = _resolve_for_call(
@@ -324,11 +345,13 @@ if _ghost_extra_available():
                     json_output=json_output,
                     verbose=verbose,
                     repeat=repeat,
+                    effort=effort,
                 )
             else:
                 output = _call(
                     resolved, prompt,
                     temperature=temperature, max_output_tokens=max_output_tokens,
+                    effort=effort,
                 )
                 echo(output)
         except Exception as e:
@@ -362,3 +385,53 @@ if _ghost_extra_available():
         print_success(
             f"llms OK — {resolved.service.name}/{resolved.model.model} replied: {output!r}"
         )
+
+    @llms_app.command(
+        name="count",
+        short_help="Count tokens in a string (tiktoken estimate for non-OpenAI protocols).",
+    )
+    def count_cmd(
+            text: str = typer.Argument("", help="Text to count tokens for."),
+            file: Path = typer.Option(
+                None, "--file", "-f",
+                help="Read text from a file instead of the argument.",
+            ),
+            provider: str = typer.Option(
+                "", "--provider", help="Provider/service name (affects tokenizer).",
+            ),
+            model: str = typer.Option(
+                "", "--model", help="Exact model name (affects tokenizer).",
+            ),
+            tag: str = typer.Option(None, "--tag", help="Model tag."),
+            no_fallback: bool = typer.Option(
+                False, "--no-fallback",
+                help="Strict mode — raise if provider/model not found.",
+            ),
+            tokens: bool = typer.Option(
+                False, "--tokens", "-t",
+                help="Also print the tokenized ids.",
+            ),
+    ) -> None:
+        """Count tokens for a string. OpenAI protocols count exactly; others estimate."""
+        source = file.read_text(encoding="utf-8") if file is not None else text
+        if not source:
+            print_error("empty input — provide text or --file")
+            raise typer.Exit(code=1)
+        conf = _load_config()
+        # count 是纯本地计算, 不需要 api_key — 只解析模型选分词器, 不做 env 检查.
+        resolved = conf.resolve().get_model(
+            provider=provider, model=model, tag=tag, no_fallback=no_fallback,
+        )
+        funcs = _load_funcs()
+        result = funcs.count_tokens(source, model=resolved, include_tokens=tokens)
+
+        parts = [f"{result.count} tokens", f"encoding={result.encoding}"]
+        if result.service:
+            parts.append(f"service={result.service}")
+        if result.model:
+            parts.append(f"model={result.model}")
+        print_success(" | ".join(parts))
+        if result.estimate:
+            print_info("estimate — tiktoken is the OpenAI tokenizer (non-OpenAI protocol)")
+        if tokens and result.tokens:
+            echo(" ".join(str(t) for t in result.tokens))
