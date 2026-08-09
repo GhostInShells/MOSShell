@@ -38,6 +38,7 @@ from ghoshell_moss.core.blueprint.channel_builder import (
 from ghoshell_moss.core.blueprint.cell import (
     CellEvent,
     CellAddress,
+    CellAddressCodec,
     DuplicatedError,
 )
 from ghoshell_moss.core.blueprint.matrix import CellHandle, Matrix
@@ -69,13 +70,6 @@ def _now_ts() -> float:
     return datetime.now(timezone.utc).timestamp()
 
 
-def _uid_short(address: str) -> str:
-    # address = kind/name/uid, uid 取前 8 位作短标识
-    parts = address.split('/')
-    if len(parts) >= 3 and parts[-1]:
-        return parts[-1][:8]
-    return address
-
 
 def _fmt_uptime(seconds: float) -> str:
     s = int(seconds)
@@ -89,20 +83,14 @@ def _fmt_uptime(seconds: float) -> str:
 def _resolve_handled_address(
         target: str, handled: dict[CellAddress, CellHandle],
 ) -> CellHandle | None:
-    """target 是完整 address 或 fullname_uidprefix 短形式. 唯一匹配才返回."""
+    """target 由 CellAddressCodec.match 唯一命中才返回 (short/名段/uid前缀/全名)."""
     if not target:
         return None
     if target in handled:
         return handled[target]
-    # 尝试短形式匹配: fullname 或 uid 前缀
     matches: list[CellHandle] = []
     for addr, handle in handled.items():
-        cell = handle.runtime.cell
-        if cell.fullname == target:
-            matches.append(handle)
-        elif addr.endswith(target):
-            matches.append(handle)
-        elif cell.uid.startswith(target):
+        if CellAddressCodec(addr).match(target):
             matches.append(handle)
     if len(matches) == 1:
         return matches[0]
@@ -121,31 +109,27 @@ def _find_handle_in_all(
     if not target:
         return None
     for h in dead:
-        cell = h.runtime.cell
-        if h.address == target or cell.fullname == target or cell.uid.startswith(target):
+        if CellAddressCodec(h.address).match(target):
             return h
     return None
 
 
 def _fmt_running_row(handle: CellHandle) -> str:
-    cell = handle.runtime.cell
     meta = handle.process.meta
+    short = CellAddressCodec(handle.address).short
     uptime = _fmt_uptime(_now_ts() - meta.created)
-    return (
-        f'  {cell.fullname:<24} uid={_uid_short(handle.address)} '
-        f'uptime={uptime} pid={meta.pid}'
-    )
+    return f'  {short}  uptime={uptime} pid={meta.pid}'
 
 
 def _fmt_dead_row(handle: CellHandle) -> str:
-    cell = handle.runtime.cell
     meta = handle.process.meta
+    short = CellAddressCodec(handle.address).short
     code = meta.exit_code
     when = _fmt_uptime(_now_ts() - meta.updated)
     tail = ''
     if code not in (0, None):
-        tail = f' — nodes:read_output({cell.fullname}) for stderr'
-    return f'  {cell.fullname:<24} exit={code} ({when} ago){tail}'
+        tail = f' — nodes:read_output({short}) for stderr'
+    return f'  {short}  exit={code} ({when} ago){tail}'
 
 
 # ==== nodes channel ==============================================
@@ -266,8 +250,9 @@ def new_nodes_channel(
             CommandUtil.raise_observe(f'target not found: {e}')
         except RuntimeError as e:
             CommandUtil.raise_observe(str(e))
+        short = CellAddressCodec(handle.address).short
         return (
-            f'[{handle.address}] pid={handle.process.meta.pid} — '
+            f'[{short}] pid={handle.process.meta.pid} — '
             f'organ appears next frame under matrix.mesh once announced.'
         )
 
@@ -285,7 +270,8 @@ def new_nodes_channel(
             )
         await handle.stop(timeout=timeout)
         code = handle.process.meta.exit_code
-        return f'[{handle.address}] stopped, exit={code}'
+        short = CellAddressCodec(handle.address).short
+        return f'[{short}] stopped, exit={code}'
 
     # -- status -------------------------------------------------------
 
@@ -329,15 +315,16 @@ def new_nodes_channel(
                 f'{address!r} not found in handled or dead cells.'
             )
         output = handle.process.output
+        short = CellAddressCodec(handle.address).short
         if output is None:
-            return f'[{handle.address}] no capture buffer (spawn without CaptureSpec).'
+            return f'[{short}] no capture buffer (spawn without CaptureSpec).'
         if stream == 'stdout':
             body = output.stdout(limit=limit)
         else:
             body = output.stderr(limit=limit)
         if not body:
-            return f'[{handle.address}] {stream} empty.'
-        return f'[{handle.address}] {stream} tail:\n{body.rstrip()}'
+            return f'[{short}] {stream} empty.'
+        return f'[{short}] {stream} tail:\n{body.rstrip()}'
 
     # -- context messages --------------------------------------------
 
@@ -406,8 +393,9 @@ def _fmt_single_brief(handle: CellHandle, alive: bool) -> str:
     cell = handle.runtime.cell
     meta = handle.process.meta
     code = meta.exit_code
+    short = CellAddressCodec(handle.address).short
     lines = [
-        f'[{handle.address}] {"running" if alive else "dead"}',
+        f'[{short}] {"running" if alive else "dead"}',
         f'  fullname={cell.fullname}',
         f'  category={cell.category or "(none)"}',
         f'  pid={meta.pid}',
@@ -442,7 +430,7 @@ def new_mesh_channel(
     CellEvent 生产侧订阅 mesh.on_event 双扇出 (ring buffer + Signal)."""
 
     default_desc = (
-        'Network projection — accepted cells surface as matrix.mesh.<fullname>.'
+        'Network projection — accepted cells surface as matrix.mesh.<short>.'
     )
     chan: PrimeChannel = new_channel(name=name, description=description or default_desc)
 
@@ -468,10 +456,11 @@ def new_mesh_channel(
                 # 未来扩展 CellEvent 或 on_exit 补 exited/crashed 时再分档.
                 transition=CellTransition.READY,
             )
-            content = event.content or f'cell {event.address} updated'
+            short = CellAddressCodec(event.address).short
+            content = event.content or f'cell {short} updated'
             signal = meta.to_signal(
                 content,
-                description=f'cell_event {event.address}',
+                description=f'cell_event {short}',
             )
             CommandUtil.send_signal(signal)
         except Exception:
@@ -515,10 +504,7 @@ def new_mesh_channel(
         # add: 新 accept 的 cells
         for new_addr in target - current:
             proxy = proxies[new_addr]
-            # alias 用 cell.fullname (未来场景倒逼时可加 uid 后缀去冲突)
-            mesh_view = mesh.view()
-            cell = mesh_view.get(new_addr)
-            alias = cell.fullname if cell is not None else new_addr.replace('/', '_')
+            alias = CellAddressCodec(new_addr).short
             try:
                 chan.add_virtual_channel(proxy, alias=alias)
                 proxy_aliases[new_addr] = alias
@@ -592,8 +578,9 @@ def new_mesh_channel(
         lines = [f'[mesh:events {"@" + address if address else "all"}]']
         for ev in events:
             when = ev.created.strftime('%H:%M:%S')
+            short = ev.address_codec.short
             content = ev.content or '(no content)'
-            lines.append(f'  {when}  {ev.address}  {content}')
+            lines.append(f'  {when}  {short}  {content}')
         return '\n'.join(lines)
 
     # -- context messages --------------------------------------------
@@ -608,8 +595,9 @@ def new_mesh_channel(
         lines = [f'[mesh] recent events ({len(events)}):']
         for ev in events:
             when = ev.created.strftime('%H:%M:%S')
+            short = ev.address_codec.short
             content = ev.content or 'updated'
-            lines.append(f'  {when}  {ev.address}  {content}')
+            lines.append(f'  {when}  {short}  {content}')
         # 网络概要
         try:
             # 若 mesh 尚未惰性 fetch 过, mesh.view() 无 await 也应能返回缓存
@@ -629,7 +617,7 @@ def new_mesh_channel(
     def mesh_instruction() -> str:
         return (
             'Network cell mesh: accepted cells appear here as sub-channels '
-            '(matrix.mesh.<fullname>). accept/reject govern resource trust; '
+            '(matrix.mesh.<short>). accept/reject govern resource trust; '
             'set_auto_accept toggles the default policy. events() reads the '
             'recent event stream; live events also appear as background '
             'hints when idle.'

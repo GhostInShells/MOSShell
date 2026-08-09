@@ -41,8 +41,7 @@ import typer
 
 from ghoshell_moss.core.blueprint.project import Project
 from ghoshell_moss.core.blueprint.cell import (
-    NodeManifest, NodeLauncher, CellRuntimeInfo, ExecSpec,
-    parse_address,
+    NodeManifest, NodeLauncher, CellAddressCodec, CellRuntimeInfo, ExecSpec,
 )
 
 from .utils import (
@@ -514,23 +513,7 @@ def _forward_signals(proc: subprocess.Popen) -> None:
 
 
 def _match_address(info_address: str, query: str) -> bool:
-    """Match a query against a full cell address.
-
-    Two modes:
-      - Full address: exact match on 'role/name/uid'.
-      - UID prefix:   query matches the leading chars of the address's uid segment.
-                      Git short-hash style — operator can type a few chars of uid.
-
-    Ambiguity (multiple matches) is caller's problem — this function only judges
-    one-at-a-time. Callers should collect all matches, not break early.
-    """
-    if info_address == query:
-        return True
-    try:
-        _, _, uid = parse_address(info_address)
-    except ValueError:
-        return False
-    return bool(query) and uid.startswith(query)
+    return CellAddressCodec(info_address).match(query)
 
 
 def _find_runtime(runtime_dir: Path, query: str) -> list[CellRuntimeInfo]:
