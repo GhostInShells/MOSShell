@@ -8,6 +8,7 @@ CLI 以 cli 身份声明为 matrix node (Matrix.new), 从容器查询音频抽�
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 import wave as _wave
 from pathlib import Path
@@ -32,6 +33,7 @@ from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.asr import ASR
 from ghoshell_moss.contracts.speech import AudioFormat, Speech, StreamAudioPlayer, TTS
+from ghoshell_moss.topics.audio import AudioPlaybackTopic
 
 audio_app = typer.Typer(
     help="Audio capability probing — capture, playback, TTS, ASR.",
@@ -96,6 +98,72 @@ def _sparkline(samples, max_chars: int = 80) -> str:
         level = int((max(-60.0, min(0.0, db)) + 60.0) / 60.0 * (len(_WAVE_BARS) - 0.01))
         out.append(_WAVE_BARS[level])
     return "".join(out)
+
+
+def _render_frame(topic, first: bool = False) -> bool:
+    """Render spectrum as horizontal bars — one row per frequency bin.
+
+    Each row: [freq_label] [bar] dB_value.
+    X axis = intensity (dB), Y axis = frequency (Hz, low→high top→bottom).
+    """
+    bins = topic.spectrum_bins
+    if not bins:
+        return first
+
+    n_bins = len(bins)
+    nyquist = topic.sample_rate / 2 if topic.sample_rate else 22050
+    bin_hz = nyquist / n_bins  # Hz per bin
+
+    bar_width = 40
+    n_rows = n_bins
+
+    if not first:
+        sys.stdout.write(f"\033[{n_rows + 1}F")
+
+    for i, db in enumerate(bins):
+        freq = i * bin_hz
+        if freq >= 1000:
+            label = f"{freq / 1000:.1f}k".rjust(5)
+        else:
+            label = f"{freq:.0f}Hz".rjust(5)
+        width = int((max(-60.0, min(0.0, db)) + 60.0) / 60.0 * bar_width)
+        width = max(1, min(bar_width, width))
+        bar = "█" * width + "░" * (bar_width - width)
+        sys.stdout.write(f"\r {label} {bar} {db:+.1f}dB\n")
+
+    sys.stdout.write(f"\r       peak {topic.peak:.2f}  rms {topic.rms_db:+.1f}dB\n")
+    sys.stdout.flush()
+    return False
+
+
+async def _render_from_queue(queue: asyncio.Queue, first_frame_timeout: float = 2.0) -> bool:
+    """Pull PlaybackSample from local queue, compute spectrum, render in real-time.
+
+    Observer now fires at playback rate (BaseAudioStreamPlayer._wait_consumed),
+    so frames arrive spaced by chunk duration — no burst, no polling hack needed.
+    """
+    first = True
+    started = time.monotonic()
+    rendered = False
+
+    while True:
+        try:
+            sample = await asyncio.wait_for(queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            if not rendered and time.monotonic() - started > first_frame_timeout:
+                return False
+            continue
+
+        rendered = True
+        bins = _spectrum_bins(sample, n_bins=16)
+        frame = AudioPlaybackTopic(
+            sample_rate=sample.sample_rate,
+            rms_db=sample.rms_db,
+            peak=sample.peak,
+            spectrum_bins=bins,
+            n_spectrum_bins=16,
+        )
+        first = _render_frame(frame, first=first)
 
 
 def _fragments(pcm: np.ndarray, rate: int, frag_ms: int = 100) -> list[np.ndarray]:
@@ -202,13 +270,6 @@ def _spectrum_bins(sample, n_bins: int = 10) -> list[float]:
     return bins
 
 
-async def _spectrogram_play(player, pcm: np.ndarray, rate: int, stream_id: str, observed: list) -> None:
-    """human 模式: 按片段喂入, 逐帧收集 PlaybackSample, 播放后渲染频谱谱面."""
-    for i, frag in enumerate(_fragments(pcm, rate)):
-        player.add(frag, audio_type=AudioFormat.PCM_S16LE, rate=rate, stream_id=stream_id, fragment_id=str(i))
-    await player.wait_play_done()
-
-
 def _render_spectrogram(observed, n_bins: int = 10, max_rows: int = 40) -> str:
     """N 个频段的文本频谱谱面 — 每行一个片段, 堆叠即"跳跃的波浪线".
 
@@ -247,30 +308,32 @@ def _report_spectrogram(observed, total: float) -> None:
 def play(
     seconds: float = typer.Option(3.0, "--seconds", "-s", help="Standard tune duration in seconds (ignored when --file is given)."),
     file: Optional[Path] = typer.Option(None, "--file", "-f", help="Play a WAV file instead of the standard tune."),
+    pub_topic: bool = typer.Option(False, "--pub-topic", hidden=True, help="Publish AudioPlaybackTopic via Zenoh for remote consumers."),
 ) -> None:
     """Play a standard tune (or a WAV file) to test audible playback feel. Ctrl+C to interrupt.
 
-    Human 模式: 播放中实时波形面板 (进度 + rms 波形). --ai 模式: 单帧样本摘要.
+    Human 模式: 播放中实时频谱柱状图. --ai 模式: 单帧样本摘要.
     """
     matrix = Matrix.new("audio_play", category="cli")
-    result = matrix.run(lambda m: _async_play(m, seconds=seconds, file=file))
+    result = matrix.run(lambda m: _async_play(m, seconds=seconds, file=file, pub_topic=pub_topic))
 
-    # 输出渲染在 matrix.run 返回之后 — 避免 asyncio 事件循环/worker 线程干扰 stdout.
     if result is None:
         return
-    source, total, observed, interrupted = result
+    source, total, observed, interrupted, had_realtime = result
     if interrupted:
         print_warning("interrupted — playback stopped")
     else:
         print_success(f"playback finished: {source} {total:.2f}s")
+    if had_realtime:
+        return  # 已在播放期间实时渲染
     if is_ai_mode():
         _report_playback_sample(observed, total)
     else:
         _report_spectrogram(observed, total)
 
 
-async def _async_play(matrix, *, seconds: float, file: Optional[Path]):
-    """收集播放数据, 返回 (source, total, observed, interrupted). 不做输出渲染."""
+async def _async_play(matrix, *, seconds: float, file: Optional[Path], pub_topic: bool = False):
+    """收集播放数据; 本地 queue 桥接实时渲染, --pub-topic 时额外走 Zenoh 广播."""
     player = matrix.container.get(StreamAudioPlayer)
     if player is None:
         print_error("StreamAudioPlayer not registered — run `moss audio contracts` to see what's available.")
@@ -291,12 +354,17 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path]):
         return None
     total = len(pcm) / rate
 
+    await player.start()
+
+    if pub_topic:
+        player.enable_playback_topic()
+
+    stream_id = f"cli-{int(time.time())}"
     observed: list = []
     interrupted = False
-    await player.start()
-    unsub = player.observe(observed.append)
-    try:
-        stream_id = f"cli-{int(time.time())}"
+    had_realtime = False
+
+    async def _feed():
         if is_ai_mode():
             player.add(
                 pcm,
@@ -305,14 +373,50 @@ async def _async_play(matrix, *, seconds: float, file: Optional[Path]):
                 stream_id=stream_id,
                 fragment_id="0",
             )
-            await player.wait_play_done()
         else:
-            await _spectrogram_play(player, pcm, rate, stream_id, observed)
+            for i, frag in enumerate(_fragments(pcm, rate)):
+                player.add(
+                    frag,
+                    audio_type=AudioFormat.PCM_S16LE,
+                    rate=rate,
+                    stream_id=stream_id,
+                    fragment_id=str(i),
+                )
+        await player.wait_play_done()
+
+    try:
+        if not is_ai_mode():
+            # 本地桥: observer → call_soon_threadsafe → asyncio.Queue → render task
+            # observer 现在以播放速率触发 (_wait_consumed), 帧按 chunk 间隔到达
+            loop = asyncio.get_running_loop()
+            frame_q: asyncio.Queue = asyncio.Queue()
+
+            def _on_sample(sample):
+                loop.call_soon_threadsafe(frame_q.put_nowait, sample)
+
+            unsub = player.observe(_on_sample)
+            try:
+                feed_task = asyncio.create_task(_feed())
+                render_task = asyncio.create_task(_render_from_queue(frame_q))
+                done, pending = await asyncio.wait(
+                    [feed_task, render_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if feed_task in done:
+                    render_task.cancel()
+                    had_realtime = True
+                    if (exc := feed_task.exception()) is not None:
+                        raise exc
+                else:
+                    await feed_task
+            finally:
+                unsub()
+        else:
+            await _feed()
     except asyncio.CancelledError:
         interrupted = True
         await player.clear()
     finally:
-        unsub()
         await player.close()
 
-    return source, total, observed, interrupted
+    return source, total, observed, interrupted, had_realtime

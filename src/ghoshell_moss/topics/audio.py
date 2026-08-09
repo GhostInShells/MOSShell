@@ -10,6 +10,7 @@ from ghoshell_moss.core.concepts.topic import TopicModel
 
 __all__ = [
     "AudioRuntimeTopic",
+    "AudioPlaybackTopic",
     "SpeechTopic",
 ]
 
@@ -35,6 +36,40 @@ class AudioRuntimeTopic(TopicModel):
     @classmethod
     def default_topic_name(cls) -> str:
         return "audio/runtime"
+
+
+class AudioPlaybackTopic(TopicModel):
+    """Real-time audio playback visualization frame.
+
+    Published at ~20 Hz during active playback. Carries pre-computed
+    spectrum bins for visualizer consumers — CLI spectrogram, dashboards,
+    remote monitoring. Consumers subscribe via TopicWindow(max_size=1)
+    for latest-only display.
+
+    Published via AudioTransport alongside AudioRuntimeTopic (speaker
+    gate). Detachable: no transport = no topic, no computation overhead.
+    """
+
+    stream_id: str = ""
+    fragment_id: str = ""
+    sample_rate: int = 0
+
+    # Loudness summary
+    rms_db: float = 0.0
+    peak: float = 0.0
+
+    # Frequency spectrum — N equal-width bins across 0..Nyquist, dB values.
+    # Consumer renders directly — no need for its own FFT.
+    spectrum_bins: list[float] = Field(default_factory=list)
+    n_spectrum_bins: int = 16
+
+    @classmethod
+    def topic_type(cls) -> str:
+        return "audio/playback"
+
+    @classmethod
+    def default_topic_name(cls) -> str:
+        return "audio/playback"
 
 
 class SpeechTopic(TopicModel):

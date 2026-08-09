@@ -194,6 +194,21 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                 self._estimated_end_time += duration
         return self._estimated_end_time
 
+    def _wait_consumed(self, audio_data: np.ndarray) -> None:
+        """等待音频数据被设备消费.
+
+        默认用分片 sleep 模拟播放时钟 — 每 10ms 检查 _stop_event,
+        close() 后最多 10ms 即可响应. worker 是独立 daemon 线程, 不阻塞
+        event loop. 子类可覆写以使用设备原生回调.
+        """
+        duration = len(audio_data) / self.sample_rate if self.sample_rate else 0.0
+        if duration <= 0:
+            return
+        tick = 0.01  # 短阻塞 — close() 响应延迟上限
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            time.sleep(min(tick, max(0, deadline - time.monotonic())))
+
     def _time_to_wait(self) -> float:
         time_to_wait = (self._estimated_end_time + self._safety_delay) - time.time()
         if time_to_wait > 0.0:
@@ -269,11 +284,17 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
                     continue
                 audio_data, stream_id, fragment_id = item
                 self._play_done_event.clear()
-                # 写入音频数据（期望是阻塞调用）
+                # 写入音频数据（非阻塞 — 仅放入设备缓冲区）
                 self._audio_stream_write(audio_data)
+                # on_play 在 write 时刻触发 — 用于 TTS gate 等需要尽早知道
+                # "开始播放" 的消费者
                 for callback in self._on_play_callbacks:
                     callback(audio_data)
-                self._dispatch_playback_sample(audio_data, stream_id, fragment_id)
+                # 等待音频被设备消费 — 分片 sleep, 每 tick 检查 _stop_event
+                self._wait_consumed(audio_data)
+                # 消费时刻回调 — 但若在等待期间被 stop/close, 不发
+                if not self._stop_event.is_set():
+                    self._dispatch_playback_sample(audio_data, stream_id, fragment_id)
 
         except Exception as e:
             self.logger.exception("%s audio stream fatal error %s", self._log_prefix, e)
@@ -328,3 +349,21 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
             rms_db=round(rms_db, 1),
             peak=round(peak, 3),
         )
+
+    @staticmethod
+    def _compute_spectrum_bins(audio_data: np.ndarray, n_bins: int = 16) -> list[float]:
+        """Compute N equal-width spectrum bins from int16 PCM, returning dB values."""
+        if len(audio_data) == 0:
+            return [-96.0] * n_bins
+        f32 = audio_data.astype(np.float64) / 32768.0
+        fft = np.abs(np.fft.rfft(f32))
+        n_fft = len(fft)
+        if n_fft < n_bins * 2:
+            return [float(20.0 * np.log10(max(fft.mean(), 1e-10)))] * n_bins
+        bins = []
+        for i in range(n_bins):
+            lo = int(i * n_fft / n_bins)
+            hi = int((i + 1) * n_fft / n_bins)
+            db = 20.0 * np.log10(max(float(fft[lo:hi].mean()), 1e-10))
+            bins.append(round(db, 1))
+        return bins

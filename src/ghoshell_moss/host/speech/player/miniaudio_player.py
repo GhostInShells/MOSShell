@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 from typing import Optional
 
 from ghoshell_moss.depends import depend_host
@@ -11,7 +12,7 @@ from ghoshell_common.contracts import LoggerItf
 
 from ghoshell_moss.core.speech.base_player import BaseAudioStreamPlayer
 from ghoshell_moss.host.listener.capture.audio_transport import AudioTransport
-from ghoshell_moss.topics.audio import AudioRuntimeTopic
+from ghoshell_moss.topics.audio import AudioPlaybackTopic, AudioRuntimeTopic
 
 __all__ = ["MiniAudioStreamPlayer"]
 
@@ -46,6 +47,7 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
             safety_delay=safety_delay,
         )
         self._playback: Optional[miniaudio.PlaybackDevice] = None
+        self._transport = transport
         if transport is not None:
             self.logger.info("%s wiring speaker AudioRuntimeTopic via transport", self._log_prefix)
             self._wire_speaker_topic(transport)
@@ -65,12 +67,14 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
         def _publish_done() -> None:
             if _state["was_playing"]:
                 _state["was_playing"] = False
-                self.logger.info("%s TTS gate: publishing speaker running=False", self._log_prefix)
-                transport.pub_topic(AudioRuntimeTopic(
-                    running=False,
-                    device_name="speaker",
-                    device_explain="TTS speech output",
-                ))
+                try:
+                    transport.pub_topic(AudioRuntimeTopic(
+                        running=False,
+                        device_name="speaker",
+                        device_explain="TTS speech output",
+                    ))
+                except Exception:
+                    pass  # Matrix session may have already shut down
 
         def on_play(_data: np.ndarray) -> None:
             if _state["done_timer"] is not None:
@@ -95,6 +99,46 @@ class MiniAudioStreamPlayer(BaseAudioStreamPlayer):
 
         self.on_play(on_play)
         self.on_play_done(on_play_done)
+
+    def _wire_playback_topic(self, transport: AudioTransport) -> None:
+        """Publish AudioPlaybackTopic at ~20 Hz during active playback.
+
+        Rate-limited to avoid flooding the network on small audio chunks.
+        Spectrum bins are pre-computed — consumers render directly without
+        their own FFT. Detachable: no transport = no topic, no overhead.
+        """
+        _state = {"last_publish": 0.0}
+        _interval = 0.05  # 20 Hz
+
+        def on_play(data: np.ndarray) -> None:
+            now = time.monotonic()
+            if now - _state["last_publish"] < _interval:
+                return
+            _state["last_publish"] = now
+
+            spectrum = self._compute_spectrum_bins(data)
+            f32 = data.astype(np.float64) / 32768.0
+            rms = float(np.sqrt(np.mean(f32 ** 2)))
+            rms_db = 20.0 * np.log10(max(rms, 1e-10))
+            peak = float(np.max(np.abs(f32)))
+
+            transport.pub_topic(AudioPlaybackTopic(
+                sample_rate=self.sample_rate,
+                rms_db=round(rms_db, 1),
+                peak=round(peak, 3),
+                spectrum_bins=spectrum,
+            ))
+
+        self.on_play(on_play)
+
+    def enable_playback_topic(self) -> None:
+        """Opt-in: publish AudioPlaybackTopic at ~20 Hz via transport.
+
+        Call after start(), before feeding audio. No-op if no transport
+        was provided at construction time.
+        """
+        if self._transport is not None:
+            self._wire_playback_topic(self._transport)
 
     def _make_generator(self):
         """创建 audio generator，每次 yield 精确 frame_count 的字节。"""
