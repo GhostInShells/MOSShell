@@ -32,7 +32,7 @@ from ghoshell_moss.cli.utils import (
 from ghoshell_moss.core.blueprint.matrix import Matrix
 from ghoshell_moss.contracts.audio import AudioCaptureSource
 from ghoshell_moss.contracts.asr import ASR
-from ghoshell_moss.contracts.speech import AudioFormat, Speech, StreamAudioPlayer, TTS, TTSSpeech
+from ghoshell_moss.contracts.speech import AudioFormat, PlaybackSample, Speech, StreamAudioPlayer, TTS, TTSSpeech
 from ghoshell_moss.topics.audio import AudioPlaybackTopic
 
 audio_app = typer.Typer(
@@ -670,3 +670,234 @@ def _write_wav(path: Path, pcm: np.ndarray, sample_rate: int, channels: int = 1)
         w.setsampwidth(2)  # 16-bit
         w.setframerate(sample_rate)
         w.writeframes(pcm.astype(np.int16).tobytes())
+
+
+# --- device — list audio devices ---
+
+
+@audio_app.command("device")
+def device() -> None:
+    """List available audio input and output devices."""
+    try:
+        from ghoshell_moss.depends import depend_host
+        depend_host()
+        import miniaudio
+    except Exception:
+        print_error("miniaudio not available — install ghoshell-moss[host]")
+        return
+
+    try:
+        devs = miniaudio.Devices()
+    except Exception as e:
+        print_error(f"failed to enumerate devices: {e}")
+        return
+
+    rows = []
+    for d in devs.get_captures():
+        ch = max(f["channels"] for f in d["formats"]) if d["formats"] else "?"
+        rows.append(["input", d["name"], str(ch)])
+    for d in devs.get_playbacks():
+        ch = max(f["channels"] for f in d["formats"]) if d["formats"] else "?"
+        rows.append(["output", d["name"], str(ch)])
+
+    if not rows:
+        print_warning("no audio devices found")
+        return
+
+    print_simple_table(rows, headers=["Type", "Name", "Max Ch"], title="audio devices")
+
+
+# --- capture — record N seconds, show waveform, optionally save ---
+
+
+@audio_app.command("capture")
+def capture(
+    seconds: float = typer.Option(3.0, "--seconds", "-s", help="Capture duration in seconds."),
+    save: Optional[Path] = typer.Option(None, "--save", "-o", help="Save captured audio to WAV file."),
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern (empty for default)."),
+) -> None:
+    """Capture audio for N seconds, show waveform, optionally save to WAV."""
+    matrix = Matrix.new("audio_capture", category="cli")
+    result = matrix.run(lambda m: _async_capture(m, seconds=seconds, save=save, device=device))
+    if result is None:
+        return
+    pcm, rate, total, interrupted = result
+    if interrupted:
+        print_warning("capture interrupted")
+    else:
+        print_success(f"captured {total:.2f}s @{rate}Hz")
+    _report_capture_spectrogram(pcm, rate, total)
+
+
+async def _async_capture(matrix, *, seconds: float, save: Optional[Path], device: Optional[str]):
+    """Capture audio from the default input device."""
+    con = matrix.container
+
+    capture_source = con.get(AudioCaptureSource)
+    if capture_source is None:
+        print_error("AudioCaptureSource not registered")
+        return None
+
+    if device is not None:
+        capture_source._config.device_pattern = device
+
+    await capture_source.start()
+
+    if "not started" in capture_source.device_explain():
+        print_error("capture device not started — may be locked by another process")
+        await capture_source.close()
+        return None
+
+    print_info(f"capturing {seconds}s from {capture_source.device_explain()}...")
+
+    consumer = capture_source.new_sequential_consumer(max_queue_frames=256)
+    await consumer.start()
+
+    all_audio: list = []
+    sample_rate = capture_source._config.sample_rate
+    channels = capture_source._config.channels
+    interrupted = False
+
+    try:
+        deadline = time.monotonic() + seconds
+        async for chunk in consumer:
+            all_audio.append(chunk.samples.copy())
+            if time.monotonic() >= deadline:
+                break
+    except asyncio.CancelledError:
+        interrupted = True
+    finally:
+        await consumer.close()
+        await capture_source.close()
+
+    if not all_audio:
+        print_warning("no audio captured — is the device working?")
+        return None
+
+    combined = np.concatenate(all_audio)
+    total = len(combined) / sample_rate
+
+    if save:
+        _write_wav(save, combined, sample_rate, channels)
+        print_success(f"saved {total:.2f}s to {save}")
+
+    return combined, sample_rate, total, interrupted
+
+
+def _report_capture_spectrogram(pcm: np.ndarray, rate: int, total: float) -> None:
+    """Show spectrogram of captured audio — reuse existing rendering."""
+    frags = _fragments(pcm, rate, frag_ms=100)
+    observed = []
+    for frag in frags:
+        f32 = frag.astype(np.float64) / 32768.0
+        rms = float(np.sqrt(np.mean(f32 ** 2)))
+        rms_db = 20.0 * np.log10(max(rms, 1e-10))
+        peak = float(np.max(np.abs(f32)))
+        observed.append(PlaybackSample(
+            pcm=frag.tobytes(),
+            duration=len(frag) / rate,
+            sample_rate=rate,
+            rms_db=round(rms_db, 1),
+            peak=round(peak, 3),
+        ))
+    if is_ai_mode():
+        spectro = _render_spectrogram(observed, n_bins=10)
+        echo(spectro)
+        dbs = [s.rms_db for s in observed]
+        echo(f"fragments: {len(observed)}  rms range=[{min(dbs):.1f}, {max(dbs):.1f}] dB")
+    else:
+        _report_spectrogram(observed, total)
+
+
+# --- echo — capture N seconds, then play back with real-time spectrum ---
+
+
+@audio_app.command("echo")
+def echo_cmd(
+    seconds: float = typer.Option(3.0, "--seconds", "-s", help="Capture duration in seconds."),
+    device: Optional[str] = typer.Option(None, "--device", "-d", help="Capture device name pattern (empty for default)."),
+) -> None:
+    """Capture audio then play it back immediately with real-time spectrum."""
+    matrix = Matrix.new("audio_echo", category="cli")
+    result = matrix.run(lambda m: _async_echo(m, seconds=seconds, device=device))
+    if result is None:
+        return
+    total, interrupted = result
+    if interrupted:
+        print_warning("echo interrupted")
+    else:
+        print_success(f"echo finished: {total:.2f}s")
+
+
+async def _async_echo(matrix, *, seconds: float, device: Optional[str]):
+    """Capture audio then play back through StreamAudioPlayer."""
+    cap_result = await _async_capture(matrix, seconds=seconds, save=None, device=device)
+    if cap_result is None:
+        return None
+    pcm, rate, cap_total, interrupted = cap_result
+
+    if interrupted:
+        return cap_total, True
+
+    player = matrix.container.get(StreamAudioPlayer)
+    if player is None:
+        print_error("StreamAudioPlayer not registered")
+        return None
+
+    await player.start()
+
+    stream_id = f"cli-echo-{int(time.time())}"
+    echo_interrupted = False
+
+    try:
+        if not is_ai_mode():
+            loop = asyncio.get_running_loop()
+            frame_q: asyncio.Queue = asyncio.Queue()
+
+            def _on_sample(sample):
+                loop.call_soon_threadsafe(frame_q.put_nowait, sample)
+
+            unsub = player.observe(_on_sample)
+
+            async def _feed():
+                for i, frag in enumerate(_fragments(pcm, rate)):
+                    player.add(
+                        frag,
+                        audio_type=AudioFormat.PCM_S16LE,
+                        rate=rate,
+                        stream_id=stream_id,
+                        fragment_id=str(i),
+                    )
+                await player.wait_play_done()
+
+            try:
+                feed_task = asyncio.create_task(_feed())
+                render_task = asyncio.create_task(_render_from_queue(frame_q))
+                done, pending = await asyncio.wait(
+                    [feed_task, render_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if feed_task in done:
+                    render_task.cancel()
+                    if (exc := feed_task.exception()) is not None:
+                        raise exc
+                else:
+                    await feed_task
+            finally:
+                unsub()
+        else:
+            player.add(
+                pcm,
+                audio_type=AudioFormat.PCM_S16LE,
+                rate=rate,
+                stream_id=stream_id,
+                fragment_id="0",
+            )
+            await player.wait_play_done()
+    except asyncio.CancelledError:
+        echo_interrupted = True
+        await player.clear()
+    finally:
+        await player.close()
+
+    return cap_total, echo_interrupted

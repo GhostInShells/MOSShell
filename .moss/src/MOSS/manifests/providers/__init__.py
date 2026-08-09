@@ -26,6 +26,7 @@ from ghoshell_moss.core.resources.memory_registry import InMemoryResourceRegistr
 from ghoshell_moss.host.providers.tts_service_provider import TTSServiceProvider
 from ghoshell_moss.host.providers.speech_service_provider import TTSSpeechServiceProvider
 from ghoshell_moss.host.providers.audio_player_provider import AudioPlayerProvider
+from ghoshell_moss.host.providers.audio_capture_provider import AudioCaptureProvider
 
 # zenoh session provider
 moss_session_provider = MatrixZenohSessionProvider()
@@ -59,3 +60,6 @@ speech_service_provider = TTSSpeechServiceProvider()
 
 # audio player
 player_service_provider = AudioPlayerProvider()
+
+# audio capture source
+audio_capture_provider = AudioCaptureProvider()
