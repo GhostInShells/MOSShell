@@ -1,0 +1,12 @@
+[project]
+name = "g1-control"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ghoshell-moss[matrix]",
+    "unitree-sdk2py",
+]
+
+[tool.uv.sources]
+ghoshell-moss = { path = "../../../..", editable = true }
+unitree-sdk2py = { path = "./src/unitree_sdk2_python", editable = true }

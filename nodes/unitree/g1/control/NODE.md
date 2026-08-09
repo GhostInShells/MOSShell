@@ -4,7 +4,7 @@ description: 'Unitree G1 人形机器人整机身体 node — 运动/手臂/授�
 category: unitree
 singleton: true
 exec:
-  command: python
+  command: .venv/bin/python
   args: main.py
 ---
 
