@@ -274,10 +274,20 @@ class TestCell:
         assert _make_cell(role=HOST_ROLE, name='m').is_host is True
         assert _make_cell(role=NODE_ROLE, name='m').is_host is False
 
-    def test_unique_name_combines_fullname_and_uid_prefix(self):
+    def test_unique_name_equals_short(self):
         cell = Cell(role=NODE_ROLE, name='cam', uid='ABC12345XYZ', home='/tmp')
-        # unique_name = fullname + uid[:8]
-        assert cell.unique_name == f'cam_{"ABC12345"}'
+        assert cell.unique_name == 'cam_ABC123'
+
+    def test_address_codec_property(self):
+        cell = _make_cell(name='cam', uid='ABC12345XYZ')
+        c = cell.address_codec
+        assert isinstance(c, CellAddressCodec)
+        assert c.address == cell.address
+        assert c.short == 'cam_ABC123'
+
+    def test_address_codec_consistency_with_address(self):
+        cell = _make_cell(name='sensor', uid='ZZZZZZZZZZ')
+        assert cell.address_codec.address == cell.address
 
     def test_providing_default_empty(self):
         assert _make_cell().providing == []
@@ -451,6 +461,11 @@ class TestCellEvent:
     def test_no_terminal_field(self):
         # cell 下线由 liveness 消失承载, 不在 event 上做 terminal 标记.
         assert 'terminal' not in CellEvent.model_fields
+
+    def test_address_codec_from_event(self):
+        e = CellEvent(address='node/cam/ABC12345XYZ')
+        assert isinstance(e.address_codec, CellAddressCodec)
+        assert e.address_codec.short == 'cam_ABC123'
 
 
 # ── address 三段结构 (§ZZ-10) ─────────────────────────────────────────

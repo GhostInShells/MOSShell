@@ -163,6 +163,10 @@ class Cell(BaseModel):
         return make_address(self.role, self.name, self.uid)
 
     @property
+    def address_codec(self) -> 'CellAddressCodec':
+        return CellAddressCodec(self.address)
+
+    @property
     def fullname(self) -> str:
         if self.category:
             return '_'.join([self.category, normalize(self.name)])
@@ -178,7 +182,7 @@ class Cell(BaseModel):
 
     @property
     def unique_name(self) -> str:
-        return '_'.join([self.fullname, self.uid[:8]])
+        return self.address_codec.short
 
 
 class ExecSpec(BaseModel):
@@ -529,6 +533,10 @@ class CellEvent(BaseModel):
                     "False → 仅追加事件缓冲, 缓存不动 (纯 signal/debug).",
     )
 
+    @property
+    def address_codec(self) -> 'CellAddressCodec':
+        return CellAddressCodec(self.address)
+
 
 @dataclasses.dataclass
 class NodeLauncher:
@@ -601,7 +609,7 @@ class CellAddressCodec:
     """CellAddress (str) 的形式转换与校验.
 
     address 保持 str 表示 (type alias), 本类提供唯一的转换/展示/匹配入口.
-    持有 address 的类型 (Cell / CellHandle / CellEvent) 通过 ``.addr``
+    持有 address 的类型 (Cell / CellEvent) 通过 ``.address_codec``
     暴露本类实例, 不再各自手工解析 address 字符串.
     """
 
