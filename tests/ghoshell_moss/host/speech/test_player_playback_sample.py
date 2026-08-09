@@ -1,7 +1,7 @@
 """Stream-level playback perceptibility — observe() on StreamAudioPlayer.
 
-Tests the contract promise: a global observer fires with a lightweight
-PlaybackSample at actual play time, carrying stream_id + fragment_id that the
+Tests the contract promise: a global observer fires with a PlaybackSample
+at actual play time, carrying raw PCM bytes + stream_id + fragment_id that the
 sender passed — the splicing identity a consumer (e.g. speech_storage) uses to
 align callbacks and reconstruct which fragments belong together.
 
@@ -46,11 +46,11 @@ async def test_observe_fires_playback_sample_on_actual_play():
     assert sample.stream_id == "stream-a"
     assert sample.fragment_id == "3"
     assert sample.duration == pytest.approx(0.05, abs=0.01)
-    # 轻量结构 — 有频谱摘要, 不携带原始 PCM.
+    # 原始 PCM bytes + 响度摘要.
+    assert len(sample.pcm) > 0
+    assert sample.sample_rate == 44100
     assert sample.rms_db < 0.0  # 正弦波 rms < 0dBFS
     assert sample.peak > 0.0
-    assert set(sample.bands) == {"bass", "mid", "high"}
-    assert not hasattr(sample, "samples")
 
     await player.close()
 
@@ -143,7 +143,7 @@ async def test_observe_unsubscribe():
 
 @pytest.mark.asyncio
 async def test_no_observer_does_not_crash():
-    """无观察者时 add/wait 一切正常 — 跳过频谱计算, 无副作用."""
+    """无观察者时 add/wait 一切正常 — 跳过 pcm 拷贝与计算, 无副作用."""
     player = VirtualStreamPlayer(sample_rate=44100, channels=1)
     await player.start()
 

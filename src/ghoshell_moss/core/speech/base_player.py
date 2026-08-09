@@ -285,8 +285,8 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
     def _dispatch_playback_sample(self, audio_data: np.ndarray, stream_id: str, fragment_id: str) -> None:
         """在音频真正写入设备的时刻, 计算并分发 PlaybackSample.
 
-        轻量数据结构 — rms/peak/三频段能量摘要, 不携带原始 PCM.
-        若无观察者注册, 直接跳过 — 不计算频谱 (优化点).
+        携带原始 PCM bytes + 响度摘要 (rms_db / peak), 不预加工频谱.
+        无观察者直接跳过 — 避免不必要的 bytes 拷贝与计算.
         """
         if not self._playback_observers:
             return
@@ -297,37 +297,31 @@ class BaseAudioStreamPlayer(StreamAudioPlayer, ABC):
         for callback in list(self._playback_observers):
             callback(sample)
 
-    @staticmethod
     def _compute_playback_sample(
+        self,
         audio_data: np.ndarray,
         *,
         stream_id: str,
         fragment_id: str,
         duration: float,
     ) -> PlaybackSample:
-        """从 resampled int16 PCM 计算轻量频谱摘要."""
+        """从 resampled int16 PCM 构造 PlaybackSample: raw bytes + 响度摘要."""
         f32 = audio_data.astype(np.float64) / 32768.0
         if len(f32) == 0:
-            return PlaybackSample(stream_id=stream_id, fragment_id=fragment_id, duration=duration)
+            return PlaybackSample(
+                stream_id=stream_id, fragment_id=fragment_id, duration=duration, sample_rate=self.sample_rate,
+            )
         rms = float(np.sqrt(np.mean(f32**2)))
         rms_db = 20.0 * np.log10(max(rms, 1e-10))
         peak = float(np.max(np.abs(f32)))
 
-        fft = np.abs(np.fft.rfft(f32))
-        n = len(fft)
-        if n >= 6:
-            bass = 20.0 * np.log10(max(float(np.mean(fft[: n // 6])), 1e-10))
-            mid = 20.0 * np.log10(max(float(np.mean(fft[n // 6 : 2 * n // 3])), 1e-10))
-            high = 20.0 * np.log10(max(float(np.mean(fft[2 * n // 3 :])), 1e-10))
-        else:
-            bass = mid = high = rms_db
-
         return PlaybackSample(
+            pcm=audio_data.tobytes(),
             stream_id=stream_id,
             fragment_id=fragment_id,
             timestamp=time.time(),
             duration=duration,
+            sample_rate=self.sample_rate,
             rms_db=round(rms_db, 1),
             peak=round(peak, 3),
-            bands={"bass": round(bass, 1), "mid": round(mid, 1), "high": round(high, 1)},
         )

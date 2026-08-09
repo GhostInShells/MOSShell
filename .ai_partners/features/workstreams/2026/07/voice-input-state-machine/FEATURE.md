@@ -739,10 +739,19 @@ channel 保留在同包（`host/listener/channel.py`），不独立为 `channels
 - 顺带修复 meta-help 解析器：单命令组（`registered_commands` 恰 1 个）时 typer `get_command`
   返回 `TyperCommand` 非 Group，`_show_command_help` 此前对 `help <group> <cmd>` 报错。
 
-### 待办（下轮）
+### 待办（下轮）——按优先级
 
-- **capture 必须迁到 project 级**。capture 放 HOST 一开始就是错的——`Matrix.new` 路径看不到 HOST。
-  本轮按 scope 只走 speech，capture 暂留 HOST，下轮连同 listener 抽象一起处理。
+**当前主线：player 文章做完**（体感可验证 → 波形可见 → tts→play 链路）。capture 迁移后置。
+
+1. ~~**CLI `audio play`**~~ — completed (2026-08-09, 见下方会话决策)。
+2. ~~**波形展示**~~ — completed：`audio play --waveform` 按 100ms 片段喂入渲染文本波形
+   （human rich 面板 / `--ai` 纯文本行）。多帧波形依赖来源产出片段，与 tts→play 同构。
+3. **tts→play 链路**——把 speech 的其余概念做全：stream_id、片段存储
+   （`speech_storage` 拼接）、文本音频片段广播（PlaybackSample 是否 topic 化的第二层决定）。
+4. **audio CLI 拆分**——`audio_cli.py` 已见膨胀（contracts + play + 合成/读取/渲染 helpers）。
+   随 echo 等命令落地时拆 `cli/audio/` 子 package。
+5. **capture 迁移到 project 级**（后置）——capture 放 HOST 一开始就是错的，`Matrix.new` 路径
+   看不到 HOST。连同 listener 抽象一起处理。
 
 ## 2026-08-09 会话决策 — player 实际播放可感知 (PlaybackSample + observe)
 

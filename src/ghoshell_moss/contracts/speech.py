@@ -2,6 +2,7 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Callable, AsyncIterable
 from typing_extensions import TypedDict
@@ -287,21 +288,24 @@ class AudioFormat(Enum):
     PCM_F32LE = "float32le"
 
 
-class PlaybackSample(BaseModel):
-    """Player 实际播放的可感知样本 — 轻量, 可序列化, 未来可广播为 topic.
+@dataclass
+class PlaybackSample:
+    """Player 实际播放的可感知样本.
 
-    不是原始 PCM. 携带拼接身份 (stream_id + fragment_id) + 时间 + 频谱摘要,
-    足够渲染波形/频谱图, 也足够消费方 (如 speech_storage) 对齐回调拼接片段.
+    携带原始 PCM (int16 bytes)、拼接身份 (stream_id + fragment_id)、
+    时间/时长, 以及轻量响度摘要 (rms_db + peak). 消费方按需做 FFT / 频谱分析.
+
     计算发生在音频真正写入设备的时刻 (_audio_worker 写路径), 不是 add 入队时刻.
     """
 
+    pcm: bytes = b""
     stream_id: str = ""
     fragment_id: str = ""
     timestamp: float = 0.0
     duration: float = 0.0
+    sample_rate: int = 0
     rms_db: float = 0.0
     peak: float = 0.0
-    bands: dict[str, float] = Field(default_factory=lambda: {"bass": -96.0, "mid": -96.0, "high": -96.0})
 
 
 class StreamAudioPlayer(ABC):
@@ -373,13 +377,12 @@ class StreamAudioPlayer(ABC):
         """
         注册一个实际播放可感知观察者 (全局, 非 stream 作用域).
 
-        callback 会在任何音频片段真正写入设备时被调用, 携带轻量 PlaybackSample —
-        其中 stream_id / fragment_id 与 add() 时传入的一致, 供消费方对齐拼接.
+        callback 会在任何音频片段真正写入设备时被调用, 携带 PlaybackSample —
+        其中 pcm 为原始 int16 bytes, stream_id / fragment_id 与 add() 时传入的一致,
+        供消费方对齐拼接, 或自行按需做 FFT/频谱分析 (CLI / Screen-node / speech_storage).
 
-        返回一个 unsubscribe 函数, 调用后观察者被移除. stream 的生命周期不属于
-        player — 何时结束由明确知道它的治理层 (speech 或外层控制 clear 的节点) 管理.
-
-        优化: 若无任何观察者注册, player 不会计算 PlaybackSample (跳过频谱计算).
+        返回 unsubscribe 函数, 调用后观察者被移除. stream 生命周期不属于 player —
+        何时结束由明确知道它的治理层 (speech 或外层控制 clear 的节点) 管理.
         """
         pass
 
