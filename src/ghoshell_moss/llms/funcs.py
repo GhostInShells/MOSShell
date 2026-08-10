@@ -57,6 +57,7 @@ class PydanticAIFuncs(LLMFuncs):
         export_anchor: str | Path | None = None,
         anchor_description: str = "",
         input_anchor: Anchor | None = None,
+        thinking: str | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用 — build_agent + agent.run(output_type, instructions).
 
@@ -71,12 +72,16 @@ class PydanticAIFuncs(LLMFuncs):
         message_history 拼在本次调用之前做内观 (仅支持 CallAnchor payload,
         其它类型抛 NotImplementedError — 由强类型校验判定); 产出锚的 turns
         自动延续被消费的链条.
+        ``thinking`` — 人工插入的 thinking block (内观 A/B 实验工具), 构造
+        ``ModelResponse(parts=[ThinkingPart])`` 拼在 message_history 末尾,
+        让模型把它当作自己的既有立场而非需回复的用户输入. 以 ThinkingPart
+        进入 turns, 不进锚的语义字段.
         """
         from ghoshell_moss.llms.client import build_agent
 
         anchor_dir, base_name = _resolve_anchor_target(export_anchor)
         agent = build_agent(model, effort=effort)
-        history = _load_history(input_anchor)
+        history = _build_history(input_anchor, thinking)
 
         anchor = None
         if anchor_dir is not None:
@@ -276,6 +281,30 @@ def _load_history(anchor: Anchor | None) -> list[ModelMessage] | None:
     if not rebuilt.turns:
         return None
     return _deserialize_messages(rebuilt.turns)
+
+
+def _build_history(
+        input_anchor: Anchor | None,
+        thinking: str | None,
+) -> list[ModelMessage] | None:
+    """组装 message_history — 消费锚的 turns + 人工 thinking block.
+
+    顺序: ``[anchor turns...] + [ModelResponse(ThinkingPart)]``, 然后
+    ``agent.run`` 追加新 prompt 的 request。thinking 作为孤立 ModelResponse
+    的 ThinkingPart 注入 — 模型把它当作自己的既有立场 (内观), 而非需要
+    回复的用户输入 (外观)。无锚且无 thinking → None (冷启动)。
+    """
+    history = _load_history(input_anchor)
+    if thinking is None:
+        return history
+    from pydantic_ai.messages import ModelResponse, ThinkingPart
+
+    thinking_turn: list[ModelMessage] = [
+        ModelResponse(parts=[ThinkingPart(content=thinking)])
+    ]
+    if history is None:
+        return thinking_turn
+    return [*history, *thinking_turn]
 
 
 def _extract_text(result: AgentRunResult[Any]) -> str:

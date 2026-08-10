@@ -179,6 +179,7 @@ def _call_structured(
         effort: Effort | None = None,
         export_anchor: str | None = None,
         input_anchor: str | None = None,
+        thinking: str | None = None,
 ) -> None:
     """Structured call via model-func engine (PydanticAIFuncs).
 
@@ -191,6 +192,8 @@ def _call_structured(
     message_history (introspection). Read via ``Anchor.from_file`` — the
     data structure self-explains the protocol, the engine sees only the
     Anchor constraint.
+    ``thinking`` — manual thinking block (string or file, auto-read),
+    injected as a ModelResponse(ThinkingPart) — introspection (内观).
     """
     import json as _json
 
@@ -201,6 +204,7 @@ def _call_structured(
     result_type = import_from_path(response_model)
     inst = _read_instruction(instruction)
     anchor = Anchor.from_file(input_anchor) if input_anchor else None
+    thinking_text = _read_instruction(thinking) if thinking else None
     funcs = PydanticAIFuncs()
 
     async def _run() -> tuple[list[dict], list[str]]:
@@ -215,6 +219,7 @@ def _call_structured(
                 effort=effort,
                 export_anchor=export_anchor,
                 input_anchor=anchor,
+                thinking=thinking_text,
             )
             if r.anchor is not None:
                 if export_anchor:
@@ -343,6 +348,14 @@ if available("pydantic_ai", "anthropic"):
                     "CallAnchor refs only. Structured calls only."
                 ),
             ),
+            thinking: str = typer.Option(
+                None, "--thinking",
+                help=(
+                    "Manual thinking block (string or file, auto-read) — injected "
+                    "as a ModelResponse(ThinkingPart), introspection (内观). "
+                    "A/B vs putting the position in the prompt (外观). Structured calls only."
+                ),
+            ),
     ) -> None:
         """One-shot LLM call. Prompt + optional instruction and structured output.
 
@@ -355,6 +368,9 @@ if available("pydantic_ai", "anthropic"):
         versions live in git), or pass ``''`` for an auto uid-based name.
         ``--input-anchor`` consumes an anchor file: its turn chain becomes the
         message history of this call — the new anchor chains onto the old.
+        ``--thinking`` injects a thinking block as the model's own prior
+        reasoning (introspection) — compare against the same position fed as
+        a user prompt (external) to A/B 内观 vs 外观.
         """
         conf = _load_config()
         resolved = _resolve_for_call(
@@ -374,6 +390,7 @@ if available("pydantic_ai", "anthropic"):
                     effort=effort,
                     export_anchor=export_anchor,
                     input_anchor=input_anchor,
+                    thinking=thinking,
                 )
             else:
                 output = _call(

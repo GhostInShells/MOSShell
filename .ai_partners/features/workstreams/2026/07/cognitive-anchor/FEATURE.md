@@ -16,8 +16,10 @@ status_note: >-
   2026-08-11 deepseek-v4-flash. v4 llm func dogfooding: LLMFuncs.call 生产锚
   (CallAnchor payload, export_anchor 落盘, LLMFuncResult.anchor 携带), CLI
   moss llms call --export-anchor; 消费锚 (input_anchor 注入 history 做内观,
-  Anchor.from_file 读侧, 强类型判定 NotImplementedError), CLI --input-anchor.
-  call→.anchor.yml→from_anchor 还原 + 消费回灌闭环. 见文末 v4 追加.
+  Anchor.from_file 读侧, 强类型判定 NotImplementedError), CLI --input-anchor;
+  thinking (内观 A/B 工具, ModelResponse(ThinkingPart) 注入 history), CLI
+  --thinking. call→.anchor.yml→from_anchor 还原 + 消费/内观回灌闭环.
+  见文末 v4/v4.1/v4.2 追加.
   --
   2026-08-10 作者 + deepseek-v4-flash. v3 协议落地: Anchor 数据结构定稿
   (meta + payload), meta 顶层极简字段 uid(ULID)/name/description/ref/created/
@@ -508,10 +510,36 @@ auto 命名、无锚、还原、失败保留请求帧。
   `CallAnchor(...).to_anchor()` — 避免魔法字段 (turns 是标准序列化的
   ModelMessage dict, 不是 list[str])。
 
+## v4.2 追加: thinking — 人工插入 thinking block (内观) (2026-08-11)
+
+内观 vs 外观 的 A/B 实验工具: 同一份"立场", 外观 = 塞进 prompt (用户输入,
+模型会想回复它), 内观 = 作为 thinking block 注入 (模型把它当作自己的既有
+立场, 用它推理而非回复它)。--thinking 是内观注入。
+
+### 实现
+
+- **`LLMFuncs.call` 增 `thinking: str | None`** — `_build_history` 把
+  `ModelResponse(parts=[ThinkingPart(content=...)])` 拼在 message_history
+  末尾 (有 input_anchor 则在 anchor turns 之后), `agent.run` 随后追加新
+  prompt 的 request。thinking 以 ThinkingPart 出现在产出锚的 turns 里,
+  不进锚的语义字段。与消费锚共享 history 注入基建。
+- **CLI `moss llms call --thinking <string-or-file>`** — string 或文件
+  路径自动读, 结构化调用专属。
+- **实证**: pydantic-ai TestModel 走通 `message_history=[ModelResponse
+  (ThinkingPart)]` → `[thinking, user-prompt, text]`, 引擎产锚 turns[0] =
+  response[thinking]。
+
+### 决策
+
+- **thinking 进 interface (非 CLI-only)**: 它是调用级参数 (与 effort 同级),
+  是 anchor 协议回灌机制的半边, 不是 ground 那种纯 CLI 渲染。`--effort` 已
+  在 v4 落地。
+- **顺序: [anchor turns] + [thinking block] + [新 prompt]**: thinking 在
+  anchor 之后、新 prompt 之前 — "消费上下文后, 带着自己的立场回应"。
+  与 @ 文件协议 (item 3) 的"顺序很重要"不同: thinking 是直接参数, 不经 @。
+
 ### 未做 (后续切片)
 
-- **`--thinking`**: 人工插入 thinking block (内观 A/B 实验工具), 与消费
-  锚共享 history 注入基建。
 - **ground 进 instruction**: ground 渲染结果追加在 instruction 后 (CLI 层,
   不进 interface)。
 - **`@` 文件路径 / 二进制 (Base64Image) 语法** — prompt 协议扩充。

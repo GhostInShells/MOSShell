@@ -671,6 +671,7 @@ class LLMFuncs(ABC):
             export_anchor: str | Path | None = None,
             anchor_description: str = "",
             input_anchor: Anchor | None = None,
+            thinking: str | None = None,
     ) -> LLMFuncResult[RESULT_MODEL]:
         """单轮模型调用: instruction + prompt -> 结构化 result_type 结果.
 
@@ -689,6 +690,11 @@ class LLMFuncs(ABC):
         不匹配抛 NotImplementedError。文件 → Anchor 的读取由调用方经
         ``Anchor.from_file`` 完成 (数据结构对协议自解释), 引擎不接触路径。
         None = 冷启动。
+        ``thinking`` — 人工插入的 thinking block (内观 A/B 实验工具)。构造
+        ``ModelResponse(parts=[ThinkingPart])`` 拼在 message_history 末尾 (若
+        有 input_anchor, 在 anchor turns 之后), 让模型把这段思考当作自己的
+        既有立场 (内观), 而非需要回复的用户输入 (外观 — 那只是塞进 prompt)。
+        thinking 本身不进锚的语义字段, 它以 ThinkingPart 出现在 turns 里。
         """
 
     @abstractmethod

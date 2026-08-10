@@ -376,6 +376,107 @@ async def test_call_request_frame_anchor_cold_start(tmp_path: Path):
     assert agent.run.await_args.kwargs["message_history"] is None
 
 
+# ── thinking (内观) ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_call_thinking_injects_introspection(tmp_path: Path):
+    """thinking -> a lone ModelResponse(ThinkingPart) is the message_history.
+
+    The block is injected as the model's OWN prior reasoning (内观) — not a
+    user prompt that invites a reply (外观).
+    """
+    funcs = PydanticAIFuncs()
+    agent = _make_mock_agent(output=Score(value=5), text_parts=["ok"])
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+        await funcs.call(
+            instruction="",
+            prompt="question",
+            result_type=Score,
+            model=_make_resolved(),
+            thinking="my established position",
+        )
+    history = agent.run.await_args.kwargs["message_history"]
+    assert len(history) == 1
+    assert isinstance(history[0], ModelResponse)
+    assert [p.part_kind for p in history[0].parts] == ["thinking"]
+    assert history[0].parts[0].content == "my established position"
+
+
+@pytest.mark.asyncio
+async def test_call_thinking_chains_into_anchor(tmp_path: Path):
+    """The injected thinking block lands in the produced anchor's turns."""
+    funcs = PydanticAIFuncs()
+    result = MagicMock()
+    result.output = Score(value=7)
+    result.usage = None
+    result.all_messages.return_value = [
+        ModelResponse(parts=[ThinkingPart(content="my position")]),
+        ModelRequest(parts=[
+            SystemPromptPart(content="sys"),
+            UserPromptPart(content="question"),
+        ]),
+        ModelResponse(parts=[TextPart(content="answer")]),
+    ]
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=result)
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=agent):
+        await funcs.call(
+            instruction="sys",
+            prompt="question",
+            result_type=Score,
+            model=_make_resolved(),
+            export_anchor=tmp_path / "t",
+            thinking="my position",
+        )
+
+    meta, payload = _read_anchor(_anchor_files(tmp_path)[0])
+    turns = payload["turns"]
+    assert len(turns) == 3
+    assert turns[0]["kind"] == "response"
+    assert [p["part_kind"] for p in turns[0]["parts"]] == ["thinking"]
+    assert turns[0]["parts"][0]["content"] == "my position"
+
+
+@pytest.mark.asyncio
+async def test_call_thinking_after_anchor_history(tmp_path: Path):
+    """With input_anchor, the thinking block follows the anchor turns."""
+    funcs = PydanticAIFuncs()
+    producer = _make_mock_agent(
+        output=Score(value=8),
+        instruction="base instruction",
+        prompt="first call",
+        thinking="prior reasoning",
+        text_parts=["ok"],
+    )
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=producer):
+        produced = await funcs.call(
+            instruction="base instruction",
+            prompt="first call",
+            result_type=Score,
+            model=_make_resolved(),
+            export_anchor=tmp_path / "base",
+        )
+    assert produced.anchor is not None
+
+    consumer = _make_mock_agent(output=Score(value=9), text_parts=["done"])
+    with patch("ghoshell_moss.llms.client.build_agent", return_value=consumer):
+        await funcs.call(
+            instruction="continue",
+            prompt="follow up",
+            result_type=Score,
+            model=_make_resolved(),
+            input_anchor=produced.anchor,
+            thinking="fresh position",
+        )
+    history = consumer.run.await_args.kwargs["message_history"]
+    assert len(history) == 3
+    assert [p.part_kind for p in history[0].parts] == ["system-prompt", "user-prompt"]
+    assert [p.part_kind for p in history[1].parts] == ["thinking", "text"]
+    assert [p.part_kind for p in history[2].parts] == ["thinking"]
+    assert history[2].parts[0].content == "fresh position"
+
+
 # ── failure ────────────────────────────────────────────────────────────
 
 
