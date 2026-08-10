@@ -3,7 +3,7 @@ title: Cognitive Anchor — 认知锚
 status: draft
 priority: P2
 created: 2026-07-27
-updated: 2026-07-28
+updated: 2026-08-10
 depends:
   - momento-mori
   - ghost-ground
@@ -13,6 +13,11 @@ description: >-
   完整认知条件 (协议级快照), 使之在将来被重新激活, 与新问题碰撞产生新判断.
   不是 checkpoint (restore 到原点), 是 reference frame (供河流流动时观测变化).
 status_note: >-
+  2026-08-10 作者 + deepseek-v4-flash. v3 协议落地: Anchor 数据结构定稿
+  (meta + payload), meta 顶层极简字段 uid(ULID)/name/description/ref/created/
+  metadata, ref 唯一约定=http 地址 (curl 可还原调用), yaml --- 分节,
+  ghoshell_moss.anchor 独立成模块 (与 ground 平级). 见文末 v3 追加.
+  --
   2026-07-28 claude-fable-5 / opus-4-7. v2 协议优先重构: 锚提升为框架无关的
   通用协议 (存储/发现/读取/使用四机制), MOSS 降为实现方. channel 是载体而非
   边界. v1 的三条核心命题不变.
@@ -352,3 +357,55 @@ v1 退化态说 "Ghost channel 上暴露 create-anchor 与 replay-anchor 两条
   是实现端, 不是协议端. 协议不关心 channel.
 - Key Decision "存储位置由 Ground pin 治理" → Ground 管的是认知场中的
   pin 位置, 锚的物理存储由协议定义. 两者正交.
+
+---
+
+## v3 追加: 协议落地 — Anchor 数据结构定稿 (2026-08-10)
+
+与 llms-cli workstream 碰撞 (作者 + deepseek-v4-flash)。v2 把锚提升为
+框架无关的通用协议, v3 把协议落到可实现的极简数据结构, 并在
+`ghoshell_moss.anchor` 独立成模块 (与 `ground/` 平级, 原子可拆)。
+
+### 数据结构定稿
+
+```python
+class AnchorMeta(BaseModel):
+    uid: str          # 主键 (ULID), 放 meta 不放文件名
+    name: str         # 人类可读名称, 文件存储时作文件名 stem
+    description: str  # 一句说明
+    ref: str          # 指向 payload 结构定义的 http 地址
+    created: datetime # ISO 8601 可读时间戳
+    metadata: dict    # 逃生仓 — 自由扩展, 协议不解释
+
+class Anchor(BaseModel):
+    meta: AnchorMeta
+    payload: Any      # 协议原生数据, 结构由 meta.ref 指向的定义解释
+```
+
+### 关键决策
+
+- **`ref` 是协议唯一关键命题**: 唯一约定是指向一个 http 地址。raw /
+  分支 / 其它具体形式不约束。模型 curl 它可还原整个调用过程 —
+  这是"面向模型的代码协议化设计" (code as prompt 的协议层表达)。
+- **`uid` 主键用 ULID, 放 meta 字段, 不放文件名**: 文件名带 id 有治理
+  成本 (ls 目录时一半信息是 id)。文件名用人类可读 name, 冲突靠 uid 区分。
+  数据库存储场景也靠 uid。
+- **顶层字段极简, 能不加就不加**: uid/name/description/ref/created/
+  metadata 六个字段。不确定的塞进 metadata 逃生仓, 不占顶层。
+- **yaml `---` 分节**: 第一节 = meta (顶层字段平铺), 第二节整体 = payload。
+  读 meta 到第一个 `---` 即停, 不解析 payload; 单文件可 glob
+  (`**/*.anchor.yml`)。
+- **`dump_to_dir(dir, name, *, suffix=".anchor.yml")` 是 code-as-prompt
+  的自解释样例, 不是强约束**: 它向模型展示"怎么序列化一个锚", 而非
+  规定存储必须走它。
+- **位置 = `src/ghoshell_moss/anchor/`**: 与 ground 平级, 只含
+  SPECIFICATION.md + contract.py + `__init__.py`。协议不依赖 llms /
+  message / ground, 消费方 (llms funcs / dolores / cognitive-anchor)
+  平等 import。拆分时整目录复制即独立包。
+
+### agent-anchor 改名方向
+
+v3 与 llms-cli 碰撞确认: 锚的本质是 agent 快照, 协议按 agent 类型
+约定定义更诚实。cognitive-anchor 可改名 **agent-anchor** — 但改名
+不改变三条核心命题 (productivity-not-fidelity / 疑问结构 / 命名语义
+强制)。改名作为后续动作, 不阻塞 v3 落地。
