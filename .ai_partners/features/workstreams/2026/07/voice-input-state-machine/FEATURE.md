@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'ASR 通用契约提炼 (2026-08-10)：contracts/asr.py 扩 ASRInfo + get_info/configure, 与 TTSInfo 对称；VolcengineASRParams 分离模型可见旋钮, force_to_speech_time 从硬编码提进 config；audio CLI 拆分为 cli/audio/ 子包 (按协议探测层组织)；capture 迁 project 级, contracts 5 槽位 4 OK (asr provider 待注册).'
+status_note: 'CLI 基建完成 (2026-08-11)：ASR provider 注册 (AudioASRProvider, project 级)；moss audio asr 命令 (live 流式 / --ai / --json 三种模式, 多 turn 云端 VAD 判停, 44100→16000 采样率桥接)；ASRResult 增 error 字段 (server error 不再静默)；protocol.py 空 payload GZIP 标志修复；audio contracts 5 槽位全部 OK. 监听 CLI 基建就绪, 无独立 listener CLI — 下一阶段为 node-level voice-input 感知节点.'
 priority: P0
 created: 2026-07-28
-updated: 2026-08-10
+updated: 2026-08-11
 depends:
   - audio-capture
   - node-migration
@@ -830,6 +830,48 @@ stream 片段播完即摘除观察者）。用户 review 指出这是过度设�
 - model_name 不是 runtime 旋钮，不入 params。不同 model = 不同工厂实例，未来 ASRFactory.get(model)。
 - provider 注册延后 — 契约先立住，provider 是下游。
 - enable_ddc 在 params 但火山协议仍未发送（预存兼容，不发是因为当前 bigmodel 接口不需要）。
+
+## 2026-08-11 会话决策 — ASR Provider 注册 + CLI asr 命令
+
+> 结对编程：人类架构师 + claude-opus-4-7。Provider 注册 + CLI 命令 + 错误可观测性 + 协议修复。
+
+### 动机
+
+ASR 通用契约已在 08-10 提炼完成，但 contracts 的 asr 槽位仍是 "no provider registered"，
+CLI 的 asr 子命令尚未实现。本轮补齐这两块，使 `moss audio contracts` 五槽位全绿、
+`moss audio asr` 可用。
+
+### 交付
+
+1. **AudioASRProvider** (`host/providers/audio_asr_provider.py`) — singleton=True，
+   从 VolcengineASRConfig 解析环境变量创建 VolcengineASR。注册在 project 级
+   (`.moss/src/MOSS/manifests/providers/`)，CLI 无需 Host 即可看见。
+
+2. **`moss audio asr` 命令** (`cli/audio/asr.py`) — 三种输出模式：
+   - 人类模式：`\r` 就地更新 partial，final 换行提交，`---` 分隔 VAD turn
+   - `--ai` 模式：只输出 final + `---` 分隔符（bash 友好）
+   - `--json` 模式：每结果一行 JSON（text/is_final/elapsed/turn/error）
+   - 参数：`-t/--timeout` (默认 60s)，`-d/--device`，`-o/--save`，`--json`
+
+3. **ASRResult.error** — 新增 `error: str = ""` 字段。VolcengineASR server error 经此
+   传给 CLI 显式输出，不再仅藏于日志文件。`iter_with_silence_timeout` 遇 error 立即
+   透传，不等超时。
+
+4. **修复**：
+   - `create_audio_only_request`：空 payload 时不标 GZIP 压缩（服务端解压 EOF）
+   - bridge 跳过 `len(pcm) == 0` 的空 chunk
+   - `_audio_gen` 用 `wait_for(get(), 0.5s)` 防遗弃 waiter 污染下个 turn
+   - bridge 内 44100→16000 线性插值重采样（对齐 BaseAudioStreamPlayer.resample）
+
+### 关键决策
+
+- **CLI 不做 VAD** — 云端 VAD 判停本身就是 CLI 探测的协议行为。CLI 只收音→喂 ASR→流式显示。
+- **listener 无独立 CLI** — ASR 命令在 `moss audio` 子树下，作为协议探测面。感知节点
+  (voice-input node) 是下一阶段的事。
+- **Provider singleton=True** — VolcengineASR 每次 recognize() 独立建 WS，无累积状态，
+  单例安全。若未来有状态实现，改 False 即可。
+- **默认 60s timeout** — `-t` 是全局兜底，不设则 60s。用户停止说话后由 silence timeout
+  (5s patience) 结束 turn，新 turn 若无语音则快速过。
 
 ---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*

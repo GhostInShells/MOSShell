@@ -36,6 +36,15 @@ class TestASRResult:
         r = ASRResult(text="hello", is_final=True)
         assert r.is_final is True
 
+    def test_error_default(self):
+        r = ASRResult(text="hello")
+        assert r.error == ""
+
+    def test_error_non_empty(self):
+        r = ASRResult(text="", is_final=True, error="server error 42: bad request")
+        assert r.error == "server error 42: bad request"
+        assert r.text == ""
+
 
 class TestASRABC:
     @pytest.mark.asyncio

@@ -33,6 +33,9 @@ async def iter_with_silence_timeout(
                     result = await asyncio.wait_for(agen.__anext__(), timeout=timeout)
                 else:
                     result = await agen.__anext__()
+                if result.error:
+                    yield result
+                    break
                 if result.text:
                     last_result = result
                     timeout = patience

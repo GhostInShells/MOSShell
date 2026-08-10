@@ -154,13 +154,14 @@ class VolcengineASR(ASR):
                 response = parse_response(data)
 
                 if response.message_type == ResponseMessageType.server_error:
+                    error_msg = f"server error {response.error_code}: {response.payload}"
                     self._logger.error(
-                        "%s server error: %s, connection=%s",
+                        "%s %s, connection=%s",
                         self._log_prefix,
-                        response.error_code,
+                        error_msg,
                         connection_id,
                     )
-                    await result_queue.put(ASRResult(text="", is_final=True))
+                    await result_queue.put(ASRResult(text="", is_final=True, error=error_msg))
                     break
 
                 elif response.message_type == ResponseMessageType.server_ack:

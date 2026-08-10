@@ -125,11 +125,14 @@ def create_audio_only_request(audio: bytes, seq: int, is_last: bool = False) -> 
     seq_bytes = _Protocol.int_to_bytes(seq_value)
     payload_size = _Protocol.int_to_bytes(len(audio))
     message_flags = _Protocol.NEG_WITH_SEQUENCE if is_last else _Protocol.POS_SEQUENCE
+    # Empty payload with GZIP flag triggers "ungzip payload: EOF" on the server.
+    # Use NO_COMPRESSION when there is nothing to decompress.
+    compression = _Protocol.NO_COMPRESSION if len(audio) == 0 else _Protocol.GZIP
     header = _Protocol.get_header(
         _Protocol.AUDIO_ONLY_REQUEST,
         message_flags,
         _Protocol.NO_SERIALIZATION,
-        _Protocol.GZIP,
+        compression,
     )
     return b"".join([header, seq_bytes, payload_size, audio]), seq
 

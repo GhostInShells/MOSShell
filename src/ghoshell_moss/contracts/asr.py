@@ -23,10 +23,15 @@ __all__ = [
 
 
 class ASRResult(NamedTuple):
-    """ASR recognition result fragment."""
+    """ASR recognition result fragment.
+
+    If *error* is non-empty, the recognition encountered a server-side error
+    and the text may be empty.  Consumers should surface the error visibly.
+    """
 
     text: str
     is_final: bool = False
+    error: str = ""
 
 
 class ASRInfo(BaseModel):

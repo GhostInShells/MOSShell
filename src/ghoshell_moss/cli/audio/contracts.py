@@ -23,7 +23,7 @@ _SLOTS: list[tuple[str, Type[INSTANCE], str]] = [
     ("speech", Speech, ""),
     ("player", StreamAudioPlayer, ""),
     ("capture", AudioCaptureSource, ""),
-    ("asr", ASR, "no provider registered"),
+    ("asr", ASR, ""),
 ]
 
 
