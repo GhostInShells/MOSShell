@@ -387,6 +387,111 @@ class TestLawPinObservation:
         assert obs.hash == hashlib.sha256(b"").hexdigest()
 
 
+class TestGroundIgnore:
+    """Ground-level ignore — pathspec filter 与 GLOB_IGNORE 叠层."""
+
+    @staticmethod
+    def _spec(patterns: list[str]) -> object:
+        from pathspec import PathSpec
+        return PathSpec.from_lines("gitignore", patterns)
+
+    def test_glob_limited_filters_ignored_paths(self, tmp_path):
+        (tmp_path / "keep.py").write_text("a")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "noise.py").write_text("b")
+        spec = self._spec([".moss/"])
+        matches = glob_limited(tmp_path, "**/*.py", ignore=spec)
+        rels = {str(m.relative_to(tmp_path)) for m in matches}
+        assert "keep.py" in rels
+        assert ".moss/noise.py" not in rels
+
+    def test_glob_limited_ignore_no_effect_when_none(self, tmp_path):
+        (tmp_path / "a.py").write_text("x")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.py").write_text("y")
+        matches = glob_limited(tmp_path, "**/*.py", ignore=None)
+        rels = {str(m.relative_to(tmp_path)) for m in matches}
+        assert "a.py" in rels
+        # GLOB_IGNORE doesn't include .moss, so it passes through
+        assert ".moss/b.py" in rels
+
+    def test_glob_ignore_via_observe_sync(self, tmp_path):
+        (tmp_path / "a.py").write_text("a")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.py").write_text("b")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = GlobPin(label="g", arguments=GlobArguments(path="**/*.py"))
+        spec = self._spec([".moss/"])
+        obs = observe_sync(pin, anchor, ignore=spec)
+        assert obs.exists is True
+        assert obs.size == 1  # only a.py — .moss/ tree excluded
+        assert obs.hash == _sha256_text("a.py")
+
+    def test_frontmatter_pattern_ignore(self, tmp_path):
+        (tmp_path / "a.md").write_text("---\nid: a\n---\nbody\n")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.md").write_text("---\nid: b\n---\nbody\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="**/*.md", keys=["id"]))
+        spec = self._spec([".moss/"])
+        obs = observe_sync(pin, anchor, ignore=spec)
+        assert obs.exists is True
+        assert obs.size == 1  # only a.md, .moss/b.md excluded
+        # hash = sha256("-- a.md\nid: a")
+        assert obs.hash == _sha256_text("-- a.md\nid: a")
+
+    def test_ls_ignore_skips_ignored_dirs(self, tmp_path):
+        (tmp_path / "a.py").write_text("a")
+        (tmp_path / ".moss").mkdir()
+        (tmp_path / ".moss" / "b.py").write_text("b")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = LsPin(label="ls", arguments=LsArguments(path=".", depth=2))
+        spec = self._spec([".moss/"])
+        obs = observe_sync(pin, anchor, ignore=spec)
+        assert obs.exists is True
+        assert obs.size == 1  # only a.py — .moss/ tree excluded
+        # hash = sha256("└── a.py")
+        assert obs.hash == _sha256_text("└── a.py")
+
+    def test_ignore_file_merged(self, tmp_path):
+        (tmp_path / "keep.py").write_text("a")
+        (tmp_path / "skip_me").mkdir()
+        (tmp_path / "skip_me" / "b.py").write_text("b")
+        (tmp_path / ".groundignore").write_text("skip_me/\n")
+        anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
+        pin = GlobPin(label="g", arguments=GlobArguments(path="**/*.py"))
+        # Simulate what _make_ignore_spec does
+        from pathspec import PathSpec
+        patterns = [".moss/"]
+        ignore_file = tmp_path / ".groundignore"
+        patterns.extend(
+            ln for ln in ignore_file.read_text().splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        )
+        spec = PathSpec.from_lines("gitignore", patterns)
+        obs = observe_sync(pin, anchor, ignore=spec)
+        assert obs.exists is True
+        assert obs.size == 1  # only keep.py — skip_me/ tree excluded
+
+    def test_ignore_combined_with_max_depth(self, tmp_path):
+        """max_depth 和 ignore 同时生效 — ignore post-filter 在 depth 之后."""
+        (tmp_path / "a.py").write_text("a")
+        deep = tmp_path / "deep"
+        deep.mkdir()
+        (deep / "b.py").write_text("b")
+        deeper = deep / "deeper"
+        deeper.mkdir()
+        (deeper / "c.py").write_text("c")
+        # max_depth=1: 只有根层 .py
+        # ignore=deep/: 排除 deep 目录
+        spec = self._spec(["deep/"])
+        matches = glob_limited(tmp_path, "**/*.py", max_depth=1, ignore=spec)
+        rels = {str(m.relative_to(tmp_path)) for m in matches}
+        assert "a.py" in rels
+        assert "deep/b.py" not in rels  # depth > 1
+        assert "deep/deeper/c.py" not in rels  # depth > 1
+
+
 class TestParseRange:
     """共享 parse_range — clamp 与非法区间 (SPEC §5.1: 1-indexed N-M)."""
 

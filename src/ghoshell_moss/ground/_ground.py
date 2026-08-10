@@ -10,6 +10,8 @@ import asyncio
 from collections import OrderedDict
 from pathlib import Path
 
+from pathspec import PathSpec
+
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._chain import collect_chain
 from ghoshell_moss.ground._hash import PinShadow, observe_sync
@@ -54,6 +56,7 @@ class DefaultGround(Ground):
         self._shadows: dict[str, PinShadow] = {}
         self._body: str = ""
         self._dirty: bool = False
+        self._ignore_spec: PathSpec | None = self._make_ignore_spec()
 
     # -- 元信息 -----------------------------------------------------------
 
@@ -85,7 +88,7 @@ class DefaultGround(Ground):
 
         # 初始观察 — 建立 shadow 基线
         anchor = self._make_anchor()
-        obs = observe_sync(pin, anchor)
+        obs = observe_sync(pin, anchor, ignore=self._ignore_spec)
         self._shadows[pin.label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
         return pin
 
@@ -101,7 +104,7 @@ class DefaultGround(Ground):
         old_shadow = self._shadows.get(label, PinShadow())
 
         anchor = self._make_anchor()
-        obs = await asyncio.to_thread(observe_sync, pin, anchor)
+        obs = await asyncio.to_thread(observe_sync, pin, anchor, ignore=self._ignore_spec)
 
         changed = old_shadow.hash != obs.hash
         self._shadows[label] = PinShadow(mtime=obs.mtime, hash=obs.hash)
@@ -129,7 +132,13 @@ class DefaultGround(Ground):
             pins=list(self._pins.values()),
             shadows=dict(self._shadows),
             anchor=self._make_anchor(),
+            ignore=self._ignore_spec,
         )
+
+    @property
+    def ignore_spec(self) -> PathSpec | None:
+        """场级 ignore 规则 — 从 convention 的 ignore + ignore_file 合并."""
+        return self._ignore_spec
 
     async def chain_text(self) -> str:
         """返回法链 body (供 meta / instruction 使用)."""
@@ -146,9 +155,11 @@ class DefaultGround(Ground):
             load_l0, self._doc_path.parent, self._doc_path.name
         )
         self._body = contents.body
+        self._convention = contents.convention
         self._pins = OrderedDict(
             (p.label, p) for p in contents.pins
         )
+        self._ignore_spec = self._make_ignore_spec()
         self._shadows.clear()
         self._dirty = False
 
@@ -171,6 +182,37 @@ class DefaultGround(Ground):
             ground=self._doc_path.parent.resolve(),
             cwd=self._root,
         )
+
+    def _make_ignore_spec(self) -> PathSpec | None:
+        """Build a merged PathSpec from convention ignore + ignore_file.
+
+        Inline ``ignore`` list and file content are merged — both use
+        .gitignore syntax.  Returns None if neither is configured.
+        """
+        patterns: list[str] = []
+
+        if self._convention.ignore:
+            patterns.extend(self._convention.ignore)
+
+        if self._convention.ignore_file:
+            ignore_path = self._root / self._convention.ignore_file
+            if ignore_path.is_file():
+                try:
+                    file_patterns = ignore_path.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).splitlines()
+                    # Strip comments and blanks, but keep negation (!) lines
+                    file_patterns = [
+                        ln for ln in file_patterns
+                        if ln.strip() and not ln.strip().startswith("#")
+                    ]
+                    patterns.extend(file_patterns)
+                except OSError:
+                    pass
+
+        if not patterns:
+            return None
+        return PathSpec.from_lines("gitignore", patterns)
 
 
 # -- helpers --------------------------------------------------------------

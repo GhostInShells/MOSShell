@@ -69,8 +69,35 @@ returns an empty ground; calling `sediment` on it creates `GROUND.md`.
 | `$id` | string | Identity claim, URI-shaped. The ground *claims* an identity; resolution is upper-layer's job. Optional; any string accepted. |
 | `label` | string | Display label. Defaults to the directory basename. Collisions get `-2`, `-3` suffixes at `open` time. |
 | `pins` | list | Pin declarations per §4. Each entry has the fixed envelope: `label`, `verb`, `arguments`, `description`. |
+| `ignore` | list of strings | Field-level ignore patterns — `.gitignore` semantics, relative to ground root. All discovery pins (glob, frontmatter pattern, ls) automatically respect these rules. Optional. |
+| `ignore_file` | string | Path to a file (relative to ground root) containing additional ignore patterns, one per line. Merged with `ignore` inline list. `.gitignore` or `.groundignore` are expected names. Optional. |
 
 Implementations MUST NOT reject unknown frontmatter keys.
+
+### 3.1 Ground-Level Ignore
+
+`ignore` and `ignore_file` declare exclusion rules at the **ground level** —
+one set of rules for the entire field. All discovery pins (`glob`, `frontmatter`
+pattern, `ls`) automatically respect them; `file`, `exec`, and `law` pins are
+unaffected. No per-pin opt-in or opt-out is needed.
+
+Rules use `.gitignore` syntax (pathspec `gitignore`):
+- `dir/` — exclude directory `dir` and everything under it
+- `*.log` — exclude files matching the glob
+- `/root-only` — anchored to ground root
+- `!important.log` — negate a previous rule
+
+How rules are assembled:
+1. `ignore` list items become individual lines
+2. `ignore_file` is read (if it exists) and non-comment, non-blank lines are appended
+3. Lines are fed to a single `PathSpec` instance
+4. A path matches if `PathSpec.match_file(relpath)` returns true, where
+   `relpath` is the path relative to the pattern base (for glob) or ground
+   root (for ls walk)
+
+The hardcoded `GLOB_IGNORE` set (`.git`, `.venv`, `__pycache__`, etc.) is
+always active as a basename filter. Ground-level ignore is applied as an
+additional layer on top — both must pass for a path to be visible.
 
 ## 4. Pin Envelope
 
@@ -141,10 +168,10 @@ All path-typed arguments use the anchor syntax in §8.
 
 Matches are filtered against a built-in set of known noise
 directory basenames (`.git`, `.venv`, `__pycache__`, `node_modules`,
-etc.). `.gitignore` is not parsed — ground root and git root are
-independent. **No file content is expanded** — a `glob` matching
-thousands of files must not blow up the context window. Use `file`
-for content.
+etc.). Ground-level `ignore` rules (§3.1) apply as an additional
+filter with `.gitignore` semantics. **No file content is expanded** —
+a `glob` matching thousands of files must not blow up the context
+window. Use `file` for content.
 
 **Expansion**: matched paths with size per entry (human-readable:
 `12K`, `1.2M`). `mtime` is not rendered — use `exec` for timestamp queries.
@@ -166,10 +193,11 @@ full frontmatter block verbatim. Body is not included.
 
 **Pattern mode** (`path` contains glob characters `*`, `?`, `[`):
 matches multiple files. Each matched file's frontmatter is rendered
-as an independent result block, labeled by file path. This enables
-**progressive disclosure** — a single `frontmatter` pin reveals the
-identities and gaze declarations of all child grounds without
-opening each one.
+as an independent result block, labeled by file path. Subject to
+`max_depth` field-boundary stop and ground-level `ignore` rules (§3.1).
+This enables **progressive disclosure** — a single `frontmatter` pin
+reveals the identities and gaze declarations of all child grounds
+without opening each one.
 
 **keys** filtering: when specified, only the named frontmatter keys
 are rendered. Unknown keys are preserved. This further reduces token
@@ -192,7 +220,8 @@ error; pattern matches zero files (not an error — renders empty).
 | `max_depth` | int | no | Recursion depth cap (§4.1). Alias for `depth` — whichever is smaller wins. |
 
 Entries filtered against a built-in set of known noise basenames.
-`.gitignore` is not parsed. **No file content.**
+Ground-level `ignore` rules (§3.1) apply as an additional filter:
+ignored directories are not recursed into. **No file content.**
 
 **Expansion**: tree view with human-readable size per file
 (e.g. `12K`, `1.2M`). `mtime` is not rendered.

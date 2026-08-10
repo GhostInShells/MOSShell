@@ -19,6 +19,10 @@ import asyncio
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
@@ -42,6 +46,8 @@ async def render_context(
     pins: list[Pin],
     shadows: dict[str, PinShadow],
     anchor: Anchor,
+    *,
+    ignore: PathSpec | None = None,
 ) -> list[FrameItem]:
     """Render a frame → list[FrameItem].
 
@@ -65,7 +71,7 @@ async def render_context(
     if not pins:
         return items
 
-    tasks = {p.label: observe(p, anchor) for p in pins}
+    tasks = {p.label: observe(p, anchor, ignore=ignore) for p in pins}
     results = await asyncio.gather(*tasks.values())
     observations: dict[str, Observation] = dict(zip(tasks.keys(), results))
 
@@ -84,7 +90,7 @@ async def render_context(
         )
         missing = obs is not None and not obs.exists
 
-        content, at_children = _build_pin_content(p, anchor, obs)
+        content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
         if stale:
             content = content + "\n[changed on disk]"
         if missing:
@@ -171,6 +177,7 @@ async def render_walk(
     shadows: dict[str, PinShadow],
     *,
     label: str | None = None,
+    ignore: PathSpec | None = None,
 ) -> list[FrameItem]:
     """场内移动视图 → list[FrameItem].
 
@@ -237,7 +244,7 @@ async def render_walk(
 
         full_pins = law_full + other
         if full_pins:
-            tasks = {p.label: observe(p, anchor) for p in full_pins}
+            tasks = {p.label: observe(p, anchor, ignore=ignore) for p in full_pins}
             results = await asyncio.gather(*tasks.values())
             observations = dict(zip(tasks.keys(), results))
             for p in full_pins:
@@ -252,7 +259,7 @@ async def render_walk(
                 )
                 missing = obs is not None and not obs.exists
 
-                content, at_children = _build_pin_content(p, anchor, obs)
+                content, at_children = _build_pin_content(p, anchor, obs, ignore=ignore)
                 if stale:
                     content = content + "\n[changed on disk]"
                 if missing:
@@ -284,17 +291,21 @@ async def render_walk(
 
 
 def _render_pin_content(
-    pin: Pin, anchor: Anchor, obs: Observation | None = None
+    pin: Pin,
+    anchor: Anchor,
+    obs: Observation | None = None,
+    *,
+    ignore: PathSpec | None = None,
 ) -> str:
     """Dispatch per pin subclass."""
     if isinstance(pin, FilePin):
         return _content_file(pin, anchor)
     if isinstance(pin, GlobPin):
-        return _content_glob(pin, anchor)
+        return _content_glob(pin, anchor, ignore=ignore)
     if isinstance(pin, FrontmatterPin):
-        return _content_frontmatter(pin, anchor)
+        return _content_frontmatter(pin, anchor, ignore=ignore)
     if isinstance(pin, LsPin):
-        return _content_ls(pin, anchor)
+        return _content_ls(pin, anchor, ignore=ignore)
     if isinstance(pin, ExecPin):
         return _content_exec(pin, obs)
     return f"error: unknown pin type: {type(pin).__name__}"
@@ -335,7 +346,9 @@ def _content_file(pin: FilePin, anchor: Anchor) -> str:
     return _apply_budget(text, pin.arguments.budget)
 
 
-def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
+def _content_glob(
+    pin: GlobPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> str:
     root = anchor.ground
     pattern = pin.arguments.path
     if pattern.startswith("$"):
@@ -345,7 +358,7 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
         except (ValueError, OSError):
             return "error: invalid glob path"
 
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
     if not files:
         return "(no matches)"
@@ -372,14 +385,16 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
     return "\n".join(lines)
 
 
-def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
+def _content_frontmatter(
+    pin: FrontmatterPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> str:
     import re
 
     path_raw = pin.arguments.path
 
     # Pattern mode: path contains glob characters
     if _has_glob(path_raw):
-        return _content_frontmatter_pattern(pin, anchor)
+        return _content_frontmatter_pattern(pin, anchor, ignore=ignore)
 
     # Single-file mode
     try:
@@ -395,7 +410,9 @@ def _content_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> str:
     return _apply_budget(fm, pin.arguments.budget)
 
 
-def _content_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> str:
+def _content_frontmatter_pattern(
+    pin: FrontmatterPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> str:
     import re
 
     root = anchor.ground
@@ -407,7 +424,7 @@ def _content_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> str:
         except (ValueError, OSError):
             return "error: invalid pattern"
 
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
     files = [h for h in hits if h.is_file() and h.name != ""
              and not _path_touches_ignore(h, root)]
     if not files:
@@ -458,7 +475,9 @@ def _content_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> str:
     return result
 
 
-def _content_ls(pin: LsPin, anchor: Anchor) -> str:
+def _content_ls(
+    pin: LsPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> str:
     try:
         root_dir = resolve_path(pin.arguments.path, anchor)
     except (OSError, ValueError):
@@ -471,7 +490,8 @@ def _content_ls(pin: LsPin, anchor: Anchor) -> str:
     effective_depth = pin.arguments.depth
     if pin.arguments.max_depth is not None:
         effective_depth = min(effective_depth, pin.arguments.max_depth)
-    _walk_ls_entries(root_dir, effective_depth, "", entries)
+    _walk_ls_entries(root_dir, effective_depth, "", entries,
+                     ignore=ignore, ground_root=anchor.ground)
 
     limit = pin.arguments.limit
     total = len(entries)
@@ -507,7 +527,11 @@ def _build_body_with_at(body: str, ground_dir: Path) -> tuple[str, list[FrameIte
 
 
 def _build_pin_content(
-    pin: Pin, anchor: Anchor, obs: Observation | None,
+    pin: Pin,
+    anchor: Anchor,
+    obs: Observation | None,
+    *,
+    ignore: PathSpec | None = None,
 ) -> tuple[str, list[FrameItem]]:
     """Pin → (content, @-children). 按 pin 类型分发."""
     if isinstance(pin, ExecPin):
@@ -520,7 +544,7 @@ def _build_pin_content(
             content = _apply_budget(content, pin.arguments.budget)
         return content, children
     # file / glob / frontmatter / ls — 无 @-展开
-    return _render_pin_content(pin, anchor, obs), []
+    return _render_pin_content(pin, anchor, obs, ignore=ignore), []
 
 
 def _build_law_with_at(pin: LawPin, anchor: Anchor) -> tuple[str, list[FrameItem]]:
@@ -850,7 +874,15 @@ def _has_glob(raw: str) -> bool:
 # -- general helpers ------------------------------------------------------
 
 
-def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
+def _walk_ls_entries(
+    dir_: Path,
+    depth: int,
+    prefix: str,
+    entries: list[str],
+    *,
+    ignore: PathSpec | None = None,
+    ground_root: Path | None = None,
+) -> None:
     if depth <= 0:
         return
     try:
@@ -861,8 +893,20 @@ def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) ->
     except OSError:
         return
 
-    for i, entry in enumerate(items):
-        is_last = i == len(items) - 1
+    # 场级 ignore: 预过滤 — 被忽略的目录完全不出现在列表中
+    visible: list[Path] = []
+    for entry in items:
+        if entry.is_dir() and ignore is not None and ground_root is not None:
+            try:
+                rel = entry.relative_to(ground_root).as_posix()
+            except ValueError:
+                rel = entry.as_posix()
+            if ignore.match_file(rel + "/"):
+                continue
+        visible.append(entry)
+
+    for i, entry in enumerate(visible):
+        is_last = i == len(visible) - 1
         connector = "└── " if is_last else "├── "
         marker = "/" if entry.is_dir() else ""
         try:
@@ -873,7 +917,8 @@ def _walk_ls_entries(dir_: Path, depth: int, prefix: str, entries: list[str]) ->
         entries.append(f"{prefix}{connector}{entry.name}{marker}{size_info}")
         if entry.is_dir() and depth > 1:
             sub_prefix = prefix + ("    " if is_last else "│   ")
-            _walk_ls_entries(entry, depth - 1, sub_prefix, entries)
+            _walk_ls_entries(entry, depth - 1, sub_prefix, entries,
+                             ignore=ignore, ground_root=ground_root)
 
 
 def _is_binary(path: Path) -> bool:

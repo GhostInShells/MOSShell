@@ -58,16 +58,28 @@ _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,%d}$" % PIN_LABEL_MAX_LEN
 
 
 class GroundConvention(BaseModel):
-    """L0 frontmatter — 场的身份声明 + pins 清单.
+    """L0 frontmatter — 场的身份声明 + pins 清单 + 场级 ignore 规则.
 
     K56: frontmatter 是 MOSS 唯一的机器发明域. pins 作为机器声明的注视
     列表驻留在 frontmatter 中, body 保持纯粹的人/模型叙事域.
     未知 key 保留不拒 (extra="allow").
+
+    ignore / ignore_file 是场级规则 — 所有发现型 pin (glob, frontmatter
+    pattern, ls) 自动受约束, 无需 pin 级 opt-in. inline list 与文件引用
+    合并为最终规则集.
     """
 
     id: str | None = Field(default=None, alias="$id")
     label: str | None = None
     pins: list[dict] = Field(default_factory=list)
+    ignore: list[str] | None = Field(
+        default=None,
+        description="场级 ignore 规则清单 — .gitignore 语义, 相对场根.",
+    )
+    ignore_file: str | None = Field(
+        default=None,
+        description="场根下的 ignore 规则文件路径 (.gitignore / .groundignore).",
+    )
 
     model_config = {"extra": "allow"}
 
@@ -418,6 +430,15 @@ class Ground(ABC):
         显式调用无条件写盘; dirty 检查是 close 的职责."""
 
     # -- 法链 -----------------------------------------------------------------
+
+    @property
+    @abstractmethod
+    def ignore_spec(self) -> object | None:
+        """场级 ignore 规则 (pathspec.PathSpec | None).
+
+        所有发现型 pin 自动受约束. 由 GROUND.md frontmatter 的
+        ``ignore`` + ``ignore_file`` 合并生成.
+        """
 
     @abstractmethod
     async def chain_text(self) -> str:

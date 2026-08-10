@@ -174,6 +174,7 @@ async def _template_preview(root: Path, template: str) -> None:
             pins=ground.pins(),
             shadows={},
             label=ground.convention.label,
+            ignore=ground.ignore_spec,
         )
         text = render_items(items, ground_path=str(ground_root))
 
@@ -376,6 +377,7 @@ def cmd_frame(
                 pins=ground.pins(),
                 shadows={},
                 label=ground.convention.label,
+                ignore=ground.ignore_spec,
             )
             echo(render_items(items, ground_path=str(ground_root)))
 

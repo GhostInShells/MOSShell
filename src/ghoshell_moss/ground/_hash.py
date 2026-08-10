@@ -7,6 +7,9 @@
 - LsPin: 展开目录树 + hash 条目列表 (不读内容). 过 GLOB_IGNORE 过滤.
 
 文件不存在 → Observation(exists=False).
+
+所有发现型观察接受可选的 ``ignore: PathSpec | None`` 参数 — 场级
+ignore 规则 (.gitignore 语义), 与 GLOB_IGNORE 叠层过滤.
 """
 
 from __future__ import annotations
@@ -15,6 +18,10 @@ import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathspec import PathSpec
 
 from ghoshell_moss.ground._addr import Anchor, resolve_path, is_glob_pattern
 from ghoshell_moss.ground._chain import collect_law_files
@@ -94,24 +101,28 @@ class PinShadow:
 # -- async entry (context() 并发调用) ---------------------------------------
 
 
-async def observe(pin: Pin, anchor: Anchor) -> Observation:
+async def observe(
+    pin: Pin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     """观察 pin 当前状态. async wrapper — IO 卸载到线程池."""
-    return await asyncio.to_thread(observe_sync, pin, anchor)
+    return await asyncio.to_thread(observe_sync, pin, anchor, ignore=ignore)
 
 
 # -- sync entry (pin() / update() 内置观察) ---------------------------------
 
 
-def observe_sync(pin: Pin, anchor: Anchor) -> Observation:
+def observe_sync(
+    pin: Pin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     """同步观察, 按 pin 子类分发."""
     if isinstance(pin, FilePin):
         return _observe_file(pin, anchor)
     if isinstance(pin, GlobPin):
-        return _observe_glob(pin, anchor)
+        return _observe_glob(pin, anchor, ignore=ignore)
     if isinstance(pin, FrontmatterPin):
-        return _observe_frontmatter(pin, anchor)
+        return _observe_frontmatter(pin, anchor, ignore=ignore)
     if isinstance(pin, LsPin):
-        return _observe_ls(pin, anchor)
+        return _observe_ls(pin, anchor, ignore=ignore)
     if isinstance(pin, ExecPin):
         return _observe_exec(pin, anchor)
     if isinstance(pin, LawPin):
@@ -162,7 +173,9 @@ def _observe_file(pin: FilePin, anchor: Anchor) -> Observation:
     )
 
 
-def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
+def _observe_glob(
+    pin: GlobPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     root = anchor.ground
     pattern = pin.arguments.path
 
@@ -172,7 +185,7 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
         pattern = str(resolved.relative_to(root)) if resolved.is_relative_to(root) else str(resolved)
 
     matches: list[Path] = []
-    for hit in glob_limited(root, pattern, max_depth=pin.arguments.max_depth):
+    for hit in glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore):
         if not hit.is_file():
             continue
         if _path_touches_ignore(hit, root):
@@ -201,12 +214,14 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
     )
 
 
-def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
+def _observe_frontmatter(
+    pin: FrontmatterPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     path_raw = pin.arguments.path
 
     # Pattern mode
     if _has_glob(path_raw):
-        return _observe_frontmatter_pattern(pin, anchor)
+        return _observe_frontmatter_pattern(pin, anchor, ignore=ignore)
 
     # Single-file mode
     target = resolve_path(path_raw, anchor)
@@ -228,13 +243,15 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
     )
 
 
-def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observation:
+def _observe_frontmatter_pattern(
+    pin: FrontmatterPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     root = anchor.ground
     pattern = pin.arguments.path
     if pattern.startswith("$"):
         resolved = resolve_path(pattern, anchor)
         pattern = str(resolved.relative_to(root))
-    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth, ignore=ignore)
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
@@ -272,7 +289,9 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
     )
 
 
-def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
+def _observe_ls(
+    pin: LsPin, anchor: Anchor, *, ignore: PathSpec | None = None,
+) -> Observation:
     root_dir = resolve_path(pin.arguments.path, anchor)
     if not root_dir.is_dir():
         return Observation(exists=False)
@@ -282,7 +301,8 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
         effective_depth = min(effective_depth, pin.arguments.max_depth)
 
     entries: list[str] = []
-    _walk_ls(root_dir, depth=effective_depth, prefix="", entries=entries)
+    _walk_ls(root_dir, depth=effective_depth, prefix="", entries=entries,
+             ignore=ignore, ground_root=anchor.ground)
 
     if not entries:
         return Observation(
@@ -430,8 +450,9 @@ def glob_limited(
     pattern: str,
     *,
     max_depth: int | None = None,
+    ignore: PathSpec | None = None,
 ) -> list[Path]:
-    """Resolve a glob pattern against ``root``, applying max_depth.
+    """Resolve a glob pattern against ``root``, applying max_depth and ignore.
 
     ``pattern`` is relative to ``root`` (callers resolve anchors first).
 
@@ -445,6 +466,10 @@ def glob_limited(
     ground discovery does not penetrate fields.
 
     When ``max_depth`` is None, recursion is unbounded (plain glob).
+
+    ``ignore`` is an optional PathSpec — matches against the path
+    relative to ``base`` are excluded (field-level ignore, .gitignore semantics).
+    Applied as post-filter after max_depth pruning.
     """
     parts = pattern.split("/")
     base_parts: list[str] = []
@@ -464,19 +489,31 @@ def glob_limited(
         # all parts are static — concrete path, no glob
         return [base]
     matches = sorted(base.glob(rel))
-    if max_depth is None:
+    if max_depth is None and ignore is None:
         return matches
-    matches = [m for m in matches if len(m.relative_to(base).parts) <= max_depth]
-    matched_dirs = {m.parent for m in matches} - {base}
-    if matched_dirs:
-        matches = [
-            m for m in matches
-            if not any(
-                m.parent.is_relative_to(d) and m.parent != d
-                for d in matched_dirs
-            )
-        ]
+    if max_depth is not None:
+        matches = [m for m in matches if len(m.relative_to(base).parts) <= max_depth]
+        matched_dirs = {m.parent for m in matches} - {base}
+        if matched_dirs:
+            matches = [
+                m for m in matches
+                if not any(
+                    m.parent.is_relative_to(d) and m.parent != d
+                    for d in matched_dirs
+                )
+            ]
+    if ignore is not None:
+        matches = [m for m in matches if not _spec_match(ignore, m, base)]
     return matches
+
+
+def _spec_match(spec: PathSpec, path: Path, root: Path) -> bool:
+    """True if *path* (relative to *root*) matches the ignore spec.
+
+    pathspec uses forward-slash relative paths (POSIX).  On macOS the
+    Path is already POSIX internally — ``as_posix()`` is safe.
+    """
+    return spec.match_file(path.relative_to(root).as_posix())
 
 
 def parse_range(raw: str, total_lines: int) -> tuple[int, int]:
@@ -497,7 +534,15 @@ def parse_range(raw: str, total_lines: int) -> tuple[int, int]:
     return start, end
 
 
-def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
+def _walk_ls(
+    dir_: Path,
+    depth: int,
+    prefix: str,
+    entries: list[str],
+    *,
+    ignore: PathSpec | None = None,
+    ground_root: Path | None = None,
+) -> None:
     if depth <= 0:
         return
     try:
@@ -508,14 +553,27 @@ def _walk_ls(dir_: Path, depth: int, prefix: str, entries: list[str]) -> None:
     except OSError:
         return
 
-    for i, entry in enumerate(items):
-        is_last = i == len(items) - 1
+    # 场级 ignore: 预过滤 — 被忽略的目录完全不出现在列表中
+    visible: list[Path] = []
+    for entry in items:
+        if entry.is_dir() and ignore is not None and ground_root is not None:
+            try:
+                rel = entry.relative_to(ground_root).as_posix()
+            except ValueError:
+                rel = entry.as_posix()
+            if ignore.match_file(rel + "/"):
+                continue
+        visible.append(entry)
+
+    for i, entry in enumerate(visible):
+        is_last = i == len(visible) - 1
         connector = "└── " if is_last else "├── "
         marker = "/" if entry.is_dir() else ""
         entries.append(f"{prefix}{connector}{entry.name}{marker}")
         if entry.is_dir() and depth > 1:
             sub_prefix = prefix + ("    " if is_last else "│   ")
-            _walk_ls(entry, depth - 1, sub_prefix, entries)
+            _walk_ls(entry, depth - 1, sub_prefix, entries,
+                     ignore=ignore, ground_root=ground_root)
 
 
 def _is_binary(path: Path) -> bool:

@@ -3,7 +3,7 @@ title: Ghost Ground — Ghost 的认知场
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-08-10
+updated: 2026-08-11
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -17,6 +17,13 @@ description: >-
   validate 六命令, contract + concrete 全部落地, 154 测试通过, 两轮 dogfood
   验收. CTML channel 落点见 ground-channel workstream (薄 channel 设计).
 status_note: >-
+  2026-08-11 deepseek-v4-flash. 动机追认: ground 的数据模型 (body + pins + dir/cwd
+  锚定 + frame 渲染) 本身就可以作为一个 compact 工具. Body = compact 叙事文本,
+  pins = 对账锚点 (指向被改动文件, hash 验证). Frame 天然是双层表面: body 回答
+  "当时发生了什么", pins 回答 "现在这些文件还在那个状态吗". 不需要额外的时间轴
+  原语 — compact 自己的时序也是靠叙事顺序表达的. 这个洞察是 ground 的动机之一,
+  在基本做完了才记录.
+  --
   2026-08-10 claude-opus-4-7. SPEC 对齐实现大修: frame 格式从 HTML comment 改写为
   ``---`` / ``>`` 区块, @-expansion 降为单层, 删除三层 + 24k 预算声明 (未实现).
   exec 拒绝信息分开声明 [missing]/[not executable]/[outside ground].
@@ -589,6 +596,7 @@ L2 之间的互相发现使 L3 不存在.
 - **frontmatter keys 筛选** — K64 提及, 具体 key 语义事后 dogfooding 定.
 - **pin bash** — 本轮讨论过, 设计面大 (安全/超时/输出预算), 单独立项.
 - **file exists verb** — 轻量 stat 检查, K65 budget 实现后评估是否需要.
+- **hash/stale 机制删除** — 2026-08-11 确认过期. Ground 收敛为静态上下文后, hash 对比 + stale 标记 (`[changed on disk]`) 无意义. Observation.hash / PinShadow / _EMPTY_HASH 待删; UpdateResult 的 changed/old_hash/new_hash 需重定义. 不要和 ignore 机制混在同一 commit.
 
 ## 与关联基建的交叉
 
