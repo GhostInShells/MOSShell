@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ghoshell_moss.ground._addr import Anchor
-from ghoshell_moss.ground._hash import Observation, PinShadow, observe, observe_sync, parse_range
+from ghoshell_moss.ground._hash import Observation, PinShadow, glob_limited, observe, observe_sync, parse_range
 from ghoshell_moss.ground.contract import (
     ExecArguments,
     ExecPin,
@@ -99,12 +99,14 @@ class TestFrontmatterPinObservation:
         assert obs.exists is True
         assert obs.hash == _sha256_text("title: test")
 
-    def test_no_frontmatter_falls_back_to_full_text(self, tmp_path):
+    def test_no_frontmatter_hashes_empty(self, tmp_path):
         (tmp_path / "f.md").write_text("just body, no frontmatter")
         anchor = Anchor(ground=tmp_path.resolve(), cwd=tmp_path.resolve())
         pin = FrontmatterPin(label="fm", arguments=FrontmatterArguments(path="f.md"))
         obs = observe_sync(pin, anchor)
         assert obs.exists is True
+        # 无 frontmatter → 空 payload hash, 与 render 的 "no frontmatter found" 对齐
+        assert obs.hash == hashlib.sha256(b"").hexdigest()
 
 
 class TestLsPinObservation:
@@ -141,6 +143,58 @@ class TestBinaryDetection:
         pin = FilePin(label="t", arguments=FileArguments(path="a.py"))
         obs = observe_sync(pin, anchor)
         assert obs.is_binary is False
+
+
+class TestGlobLimited:
+    """glob_limited — max_depth 深度上限 + 场边界 (SPEC §4.1)."""
+
+    def _field_tree(self, tmp_path):
+        root = tmp_path.resolve()
+        (root / "GROUND.md").write_text("# root\n")
+        features = root / "features"
+        features.mkdir()
+        (features / "GROUND.md").write_text("# features\n")
+        deep = features / "deep"
+        deep.mkdir()
+        (deep / "GROUND.md").write_text("# deep inside features\n")
+        a_dir = root / "a"
+        a_dir.mkdir()
+        b_dir = a_dir / "b"
+        b_dir.mkdir()
+        (b_dir / "GROUND.md").write_text("# b (not a field parent)\n")
+        return root
+
+    def test_max_depth_limits_depth(self, tmp_path):
+        """depth cap: matches deeper than max_depth excluded."""
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "**/GROUND.md", max_depth=2)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "GROUND.md" in paths              # depth 1
+        assert "features/GROUND.md" in paths     # depth 2
+        assert "features/deep/GROUND.md" not in paths  # depth 3 > 2
+        assert "a/b/GROUND.md" not in paths            # depth 3 > 2
+
+    def test_field_boundary_stops_at_match(self, tmp_path):
+        """field boundary: features 有 match, 其子目录不下钻."""
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "**/GROUND.md", max_depth=3)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "GROUND.md" in paths              # 根场自身
+        assert "features/GROUND.md" in paths     # 子场, depth 2 ≤ 3
+        # features/deep/GROUND.md: depth 3 ≤ 3, 但 features 是场边界 → 不下钻 → 不在列表中
+        assert "features/deep/GROUND.md" not in paths
+        # a/b/GROUND.md: depth 3 ≤ 3, a 不是场边界 → 保留
+        assert "a/b/GROUND.md" in paths
+
+    def test_no_max_depth_is_unbounded(self, tmp_path):
+        """max_depth=None: 无限制 (与 plain glob 等价)."""
+        root = self._field_tree(tmp_path)
+        matches = glob_limited(root, "**/GROUND.md", max_depth=None)
+        paths = {str(m.relative_to(root)) for m in matches}
+        assert "GROUND.md" in paths
+        assert "features/GROUND.md" in paths
+        assert "features/deep/GROUND.md" in paths  # 无 depth cap, 无 boundary stop
+        assert "a/b/GROUND.md" in paths
 
 
 class TestGlobIgnore:

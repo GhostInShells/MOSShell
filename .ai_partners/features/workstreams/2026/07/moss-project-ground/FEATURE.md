@@ -88,10 +88,19 @@ Project ground 是额外的发现层, 不替代它们. 它在模型通过 MCP �
 - **[2026-07-25] bash pin → exec pin (授权收窄)** —
   `run: <inline shell>` 是标准授权泄漏, GROUND.md 变 RCE 载体.
   改为 `exec` verb: `ref` 指向场根子树内可执行文件, 类比 `.zshrc` 函数.
-  绝对路径 / `../` / 缺 `+x` 一律 `[missing]`. shebang 决定解释器.
-  执行 cwd = `$GROUND`, env 注入 `GROUND` + `CWD`. 场作者背书 = Makefile 级信任.
-  arguments 极简: `{ref, timeout, budget}`, 无 `at` (executor 自知家在场根),
-  无 `run` (禁止内联).
+  shebang 决定解释器. 执行 cwd = `$GROUND`, env 注入 `GROUND` + `CWD`.
+  场作者背书 = Makefile 级信任. arguments 极简: `{ref, timeout, budget}`,
+  无 `at` (executor 自知家在场根), 无 `run` (禁止内联).
+- **[2026-08-10] exec 拒绝信息区分 (修正 2026-07-25)** —
+  原决策 "绝对路径 / `../` / 缺 `+x` 一律 `[missing]`" 被实现推翻了:
+  三类情况各自渲染不同标记 — `[missing]` (文件不存在), `[not executable]`
+  (无 +x), `[outside ground]` (授权拒绝). 区分让住客可诊断可修复;
+  pin 的 ref 是场作者自己声明的, 不存在信息泄漏问题.
+- **[2026-08-10] max_depth 实现落地** —
+  glob / frontmatter pattern 模式的 `max_depth` 参数正式实现 (SPEC §4.1):
+  递归深度上限 + 场边界停止 (某层出现 match 后不下钻该子树).
+  对 `**/GROUND.md` 场发现即 "不穿透场" — 发现子场后不深入子场内部.
+  `ls` 的 observe 同步修复 effective_depth, 前端 frontmatter 无 fm 的 observe 对齐 render.
 - **[2026-07-25] Walk 模式硬编码 ls 删除** —
   同一 pin 通过 `$CWD` 锚在 field-root / walk 两态给出不同视图,
   场教的注视习惯由 pin 承担, 不由 harness 塞入. features/GROUND.md

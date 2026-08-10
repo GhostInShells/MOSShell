@@ -15,8 +15,6 @@
 """
 
 from ghoshell_moss.ground.contract import (
-    AT_BUDGET,
-    AT_MAX_DEPTH,
     PIN_LABEL_MAX_LEN,
     ExecArguments,
     ExecPin,
@@ -68,8 +66,6 @@ __all__ = [
     "GroundError",
     "PathOutsideRootError",
     # constants
-    "AT_BUDGET",
-    "AT_MAX_DEPTH",
     "PIN_LABEL_MAX_LEN",
     # concrete
     "DefaultGroundSet",

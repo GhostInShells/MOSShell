@@ -10,13 +10,12 @@ import pytest
 from ghoshell_moss.ground._addr import Anchor
 from ghoshell_moss.ground._render import (
     _apply_budget,
+    _build_law_with_at,
     _content_file,
     _content_frontmatter,
     _content_glob,
-    _content_law,
     _content_ls,
     _fmt_size,
-    _render_result_block,
     render_context,
     render_walk,
 )
@@ -78,29 +77,6 @@ class TestApplyBudget:
     def test_exact_budget(self):
         result = _apply_budget("12345678", budget=8)
         assert result == "12345678"
-
-
-# -- result block ----------------------------------------------------------
-
-
-class TestRenderResultBlock:
-    @pytest.fixture
-    def anchor(self, tmp_path):
-        (tmp_path / "hello.txt").write_text("hello")
-        return Anchor(ground=tmp_path, cwd=tmp_path)
-
-    def test_stale_mark(self, anchor):
-        pin = FilePin(label="f", arguments=FileArguments(path="hello.txt"))
-        obs = Observation(exists=True, hash="abc123")
-        result = _render_result_block(pin, obs, stale=True, missing=False, anchor=anchor)
-        assert "[changed on disk]" in result
-        assert "hello" in result
-
-    def test_missing_mark(self, anchor):
-        pin = FilePin(label="f", arguments=FileArguments(path="nonexistent.py"))
-        obs = Observation(exists=False)
-        result = _render_result_block(pin, obs, stale=False, missing=True, anchor=anchor)
-        assert "[missing]" in result
 
 
 # -- glob content (size formatting, no mtime) ------------------------------
@@ -240,7 +216,7 @@ class TestLawPinRender:
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
-        out = _content_law(pin, anchor)
+        out = _build_law_with_at(pin, anchor)[0]
         assert "-- CLAUDE.md" in out
         assert "root body" in out
         assert "sub body" not in out
@@ -249,7 +225,7 @@ class TestLawPinRender:
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root / "sub")
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
-        out = _content_law(pin, anchor)
+        out = _build_law_with_at(pin, anchor)[0]
         # 父级向下: root 块在前, cwd 块在后
         assert out.index("-- CLAUDE.md") < out.index("-- sub/CLAUDE.md")
         assert "root body" in out
@@ -259,7 +235,7 @@ class TestLawPinRender:
         root = self._tree(tmp_path)
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="AGENT.md"))
-        assert _content_law(pin, anchor) == "(no files)"
+        assert _build_law_with_at(pin, anchor)[0] == "(no files)"
 
     def test_one_level_at_expansion(self, tmp_path):
         root = tmp_path.resolve()
@@ -268,7 +244,6 @@ class TestLawPinRender:
         anchor = Anchor(ground=root, cwd=root)
         pin = LawPin(label="l", arguments=LawArguments(filename="CLAUDE.md"))
         # @-ref 在 children 里, 不在 content 里展开
-        from ghoshell_moss.ground._render import _build_law_with_at
         content, children = _build_law_with_at(pin, anchor)
         assert "@notes.md" in content
         assert any("NOTES CONTENT" in c.content for c in children)

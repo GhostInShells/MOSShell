@@ -82,6 +82,7 @@ Every pin uses a **fixed envelope** — the same fields regardless of verb:
 | `verb` | yes | Pin type: `file`, `glob`, `frontmatter`, `ls`, or future verbs. |
 | `arguments` | no | Keyword arguments for the verb. Default `{}`. Schema depends on `verb` (§5). |
 | `description` | no | One-line marginalia. Long exposition belongs in body. |
+| `always_show` | no | Boolean, default `false`. In walk mode, pins whose paths are `$CWD`-anchored expand; others fold to a compact view. A pin with `always_show: true` always expands full content — relevant for `law` pins where compact mode shows path list only.
 
 The envelope is **monomorphic** — polymorphism is quarantined inside
 `arguments`. Tools that don't understand a verb can still parse, list,
@@ -92,6 +93,10 @@ reports the verb as unknown. They do not affect other pins.
 
 **Unknown arguments keys**: preserved on rewrite, not rejected.
 Validation may warn; it must not fail.
+
+**Unknown envelope keys**: dropped on rewrite — the envelope is fixed.
+Only `label`, `verb`, `arguments`, `description`, and `always_show`
+survive a round-trip through the runtime.
 
 **Label conflict**: adding a pin with an existing `label` overwrites
 the old entry (idempotent overwrite).
@@ -105,10 +110,10 @@ are declared once here and referenced by each verb's schema in §5:
 |-------|------|-----------|
 | `budget` | int | Content character limit. When exceeded, output is truncated with a `[truncated at N chars]` marker. Applies to content-emitting verbs (`file`, `frontmatter`, `exec`). |
 | `limit` | int | Entry count limit. When exceeded, output is truncated with a marker showing `N of M` entries. Applies to list-emitting verbs (`glob`, `ls`, `frontmatter` with pattern). |
-| `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). |
+| `max_depth` | int | Recursive discovery depth. Once a match is found at a given level, subdirectories of that match are not recursed into. Applies to pattern-emitting verbs (`frontmatter` with pattern, `ls`, `glob` with `**`). When absent, recursion is unbounded and no boundary-stopping applies. |
 
-All three are optional. When absent, no limit is applied (implementation
-defaults may apply). Each verb declares which of these it supports in §5.
+All three are optional. When absent, no limit is applied. Each verb
+declares which of these it supports in §5.
 
 ## 5. Known Pin Types
 
@@ -134,9 +139,12 @@ All path-typed arguments use the anchor syntax in §8.
 | `limit` | int | no | Entry count limit (§4.1). Default: implementation-defined. |
 | `max_depth` | int | no | Recursion depth cap for `**` patterns (§4.1). |
 
-Matches are filtered through `.gitignore`. **No file content is
-expanded** — a `glob` matching thousands of files must not blow up
-the context window. Use `file` for content.
+Matches are filtered against a built-in set of known noise
+directory basenames (`.git`, `.venv`, `__pycache__`, `node_modules`,
+etc.). `.gitignore` is not parsed — ground root and git root are
+independent. **No file content is expanded** — a `glob` matching
+thousands of files must not blow up the context window. Use `file`
+for content.
 
 **Expansion**: matched paths with size per entry (human-readable:
 `12K`, `1.2M`). `mtime` is not rendered — use `exec` for timestamp queries.
@@ -183,7 +191,8 @@ error; pattern matches zero files (not an error — renders empty).
 | `limit` | int | no | Entry count limit (§4.1). |
 | `max_depth` | int | no | Recursion depth cap (§4.1). Alias for `depth` — whichever is smaller wins. |
 
-Entries filtered through `.gitignore`. **No file content.**
+Entries filtered against a built-in set of known noise basenames.
+`.gitignore` is not parsed. **No file content.**
 
 **Expansion**: tree view with human-readable size per file
 (e.g. `12K`, `1.2M`). `mtime` is not rendered.
@@ -229,10 +238,12 @@ not to the protocol.
 
 **Failure modes** — visible, not silent:
 
+- File does not exist: renders `[missing]`.
+- File exists but lacks executable bit (+x): renders `[not executable]`.
+- Absolute path or `..` escaping the ground subtree: renders `[outside ground]`.
 - Non-zero exit: output is followed by `[exit N]` and up to 5 lines
   of stderr tail.
 - Timeout: partial stdout is followed by `[timeout after Ns]`.
-- Missing / not executable / outside subtree: renders as `[missing]`.
 
 **Observation**: `exec` is a compute-on-observe verb. The captured
 payload is stored on the `Observation`; the frame renders the stored
@@ -269,11 +280,9 @@ view, not a disk-tracked target.
 Only one level is expanded — the resolved content is not re-scanned.
 Fenced code blocks are skipped.
 
-Note: the one-level cap is intentional — law files are external
-convention documents (CLAUDE.md, AGENT.md), and their `@`-references
-are resolved more conservatively than body `@`-references (§6.2, which
-allow up to 3 levels). Body `@` is the field author's own narrative;
-law `@` crosses a trust boundary.
+`@`-expansion for law files is single-level — the resolved content
+is not re-scanned. Both body and law `@`-references share this
+one-level semantics (§6.2).
 
 **Expansion**: the collected bodies, root-first, labeled by relative
 path, subject to `budget` / `lines` truncation.
@@ -297,24 +306,82 @@ The frame is a **derived view** — `GROUND.md` is authoritative.
 is available through a separate `meta` command, keeping the frame
 focused on content for consumers that don't need ground protocol.
 
-### 6.1 Pin Result Blocks
+### 6.1 Frame Layout
 
-Each pin result is delimited by HTML comment markers:
+A frame is a sequence of blocks delimited by `---` lines. Each block
+has an open line, content, and a close line. The first line of the
+frame is the `$GROUND` path:
 
 ```
-<!-- ground:pin:<label> -->
-<pin observation content>
-<!-- /ground:pin:<label> -->
+$GROUND: <absolute path to ground root>
+
+---
+> body
+---
+
+<body content>
+
+---
+> body end  <brief>
+---
 ```
 
-The markers are machine-readable signals that do not collide with
-user markdown.
+**Block opening**: `> <kind>:<label>` — where `kind` is `body`, a
+pin verb name (`file`, `glob`, `frontmatter`, `ls`, `exec`, `law`),
+or `@` for an expanded reference.
 
-Content rendered inside each block is verb-specific (§5). Content
-output follows these rules:
+**Block closing**: `> <kind>:<label> end  <brief>` — followed by a
+brief summary of the block content (character count, line count,
+entry count).
 
-- **No line numbers** — line numbers are for human debugging, not
-  model consumption.
+Blocks are separated by blank lines.
+
+#### Status-only blocks
+
+When a pin observation produces a status message without content
+(no matches, missing, empty), the block collapses to a single line
+between `---` fences:
+
+```
+---
+> file:focus  [missing]
+---
+```
+
+Status messages include `[missing]`, `[not executable]`,
+`[outside ground]`, `(no matches)`, `(no files)`, `(empty)`,
+`[not yet observed]`.
+
+#### Walk mode
+
+When the frame is rendered from a directory inside a ground but not
+at the ground root itself, `kind` includes a walk suffix:
+
+```
+$GROUND: <ground root>
+
+---
+> body:walk
+---
+
+ground: <label>  (law: <ground root>/GROUND.md)
+cwd: <current directory>
+
+---
+> body:walk end
+---
+```
+
+In walk mode:
+- `$CWD`-anchored pins expand their full content;
+- pins anchored at `$GROUND` (not `$CWD`) fold to a TOC listing
+  their labels, verbs, and arguments inside a `> body:folded` block;
+- `law` pins show path lists only by default (compact form);
+  `always_show: true` restores full content expansion.
+
+#### Content output rules
+
+- **No line numbers** — line numbers are for human debugging.
 - **No raw mtime** — timestamps are shell-domain. Models that need
   them call `exec`.
 - **Human-readable sizes** — file sizes render as `12K` / `1.2M` /
@@ -338,12 +405,9 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
 **Expansion rules**:
 
 - Resolves against `$GROUND` by default; explicit anchors (§8) allowed
-- **Cycle detection**: each doc expanded at most once per chain
-- **Depth cap**: max 3 levels of nested `@`-references
-- **Budget cap**: 24000 chars total (implementation may override).
-  When exceeded, remaining `@`-blocks are skipped with a warning.
-  **Pin expansions are not subject to this budget** — pin content is
-  governed by per-pin `budget` parameters (§4.1).
+- **Single-level**: one level of `@`-expansion is applied; resolved
+  content is not re-scanned. This applies to both body and `law`-pin
+  `@`-references — there is no recursive chain.
 
 **Failure modes**: doc not found; path escapes anchor subtree.
 
@@ -351,7 +415,7 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
 
 ### 7.1 open / close
 
-`Grounds.open(dir, *, label=None, doc=None, template=None) -> Ground`
+`Grounds.open(dir, *, label=None, doc=None, template=None, override=False) -> Ground`
 
 - `dir` — ground root (pin anchor). Must be a directory.
 - `label` — short identifier, derived from `dir` basename if omitted
@@ -362,6 +426,11 @@ Quoted form for paths with special characters: `@"path with spaces.md"`.
   the ground is initialized with the template's body and pins. The
   template is **copied**, not referenced — subsequent pin/unpin/update
   operations do not affect the template file.
+- `override` — boolean, default `false`. When `template` is also given,
+  the template's body and pins take full control, ignoring any existing
+  `GROUND.md` content. Used for read-only preview
+  (`moss ground frame --template`) — the template is a lens, not a patch.
+  When `override` is `false`, existing `GROUND.md` content takes priority.
 
 `open` is idempotent by resolved path. `close(label)` triggers
 `sediment` (writes pins back to `GROUND.md`) and removes the
@@ -405,7 +474,7 @@ pin for structural listing.
 A ground inherits body content from `GROUND.md` files in ancestor
 directories, root-first, up to `$HOME`. The chain carries body only —
 no frontmatter, no pins. `@`-references in chain bodies are expanded
-in-place (subject to §6.2 caps).
+in-place, one level deep (§6.2).
 
 Chain content is destined for the channel's instruction slot — the
 stable, cache-friendly context distinct from the volatile frame.
@@ -413,6 +482,26 @@ The frame renders only the ground's own body and pins.
 
 The chain reads `GROUND.md` only. To reference foreign conventions,
 use `@`-references with an explicit `$HOME` anchor.
+
+### 7.6 Walk Mode — Field Interior Navigation
+
+When the frame is rendered with `$CWD` set to a directory inside the
+ground but not at the ground root, the frame enters **walk mode**.
+
+In walk mode, the nearest ancestor `GROUND.md` provides the ground root
+and pins. The `$CWD`-anchored pins expand full content in the current
+context, while `$GROUND`-anchored pins fold to a table of contents.
+This gives a per-directory view — pins declared at the field root
+with `$CWD` anchor paths follow the viewer through the field.
+
+Walk mode is initiated by:
+- CLI: `moss ground frame <subdirectory>` — when the subdirectory has
+  no `GROUND.md` but an ancestor does.
+- CTML channel: `walk(dir)` verb.
+
+The walk frame header (§6.1) displays the ground identity, law anchor,
+and current working directory. No new ground is opened — the law
+anchor remains at the discovered `GROUND.md`.
 
 ## 8. Path Resolution
 
@@ -443,11 +532,12 @@ The CLI is a diagnostic and bootstrapping surface, deliberately small:
 |---------|---------|
 | `moss ground spec` | Print this specification |
 | `moss ground init [dir] [--template <name>]` | Scaffold GROUND.md, optionally from a template |
-| `moss ground frame [dir]` | Render the ground's frame (body + pins) |
+| `moss ground templates` | List available templates from `.grounds/` |
+| `moss ground verbs` | List known pin verbs and their arguments |
+| `moss ground frame [dir] [--template <name>]` | Render the frame. With `--template`, open read-only preview using the template's body and pins (no GROUND.md written). When `dir` is inside a ground but not at its root, enters walk mode (§7.6). |
 | `moss ground meta [dir]` | Show ground identity, law chain, and pin TOC |
 | `moss ground observe [dir]` | Run pin observations; emit per-pin diagnostics |
-| `moss ground validate [dir]` | Validate format and pin definitions |
-| `moss ground templates` | List available templates from `.grounds/` |
+| `moss ground validate [dir]` | Validate GROUND.md format and pin definitions |
 
 No `pin` / `unpin` / `update` subcommands — `GROUND.md` is a plain
 markdown file; direct editing is the fastest path.
@@ -471,8 +561,7 @@ A compliant implementation must:
   root, root-first display, one-level `@`-expansion, truncation
 - Support `frontmatter` in both single-file and pattern modes (§5.3)
 - Render human-readable file sizes, omit raw `mtime` (§6.1)
-- Expand `@`-references per §6.2 with cycle detection, depth cap, and
-  budget cap
+- Expand `@`-references per §6.2 (single-level, no recursion)
 - Resolve paths per §8 with per-anchor subtree confinement
 - Implement the law chain per §7.5
 - Never persist observation shadow to `GROUND.md`
@@ -493,8 +582,9 @@ On initialization, the ground runtime scans these paths for templates:
 3. Ghost-carried templates (implementation-defined path)
 
 The three sources are merged into a single template catalog.
-**Project-local templates take priority** over machine-global ones
-with the same name.
+Priority order (highest wins): ghost-carried > project-local >
+machine-global. Templates with the same name are resolved by
+this priority.
 
 Template name = path relative to `.grounds/`, minus `.md` extension:
 `.grounds/python-project.md` → name `python-project`

@@ -29,7 +29,15 @@ from ghoshell_moss.ground.contract import (
     PathOutsideRootError,
 )
 
-__all__ = ["Observation", "PinShadow", "observe", "observe_sync", "GLOB_IGNORE", "parse_range"]
+__all__ = [
+    "Observation",
+    "PinShadow",
+    "observe",
+    "observe_sync",
+    "glob_limited",
+    "GLOB_IGNORE",
+    "parse_range",
+]
 
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
@@ -164,14 +172,10 @@ def _observe_glob(pin: GlobPin, anchor: Anchor) -> Observation:
         pattern = str(resolved.relative_to(root)) if resolved.is_relative_to(root) else str(resolved)
 
     matches: list[Path] = []
-    for hit in sorted(root.glob(pattern)):
+    for hit in glob_limited(root, pattern, max_depth=pin.arguments.max_depth):
         if not hit.is_file():
             continue
         if _path_touches_ignore(hit, root):
-            continue
-        try:
-            hit.relative_to(root)
-        except ValueError:
             continue
         matches.append(hit)
 
@@ -212,10 +216,11 @@ def _observe_frontmatter(pin: FrontmatterPin, anchor: Anchor) -> Observation:
     except FileNotFoundError:
         return Observation(exists=False)
 
-    # 提取 frontmatter 块: ---\n...\n---
+    # 提取 frontmatter 块: ---\n...\n---. 无 frontmatter → 空 payload:
+    # hash 稳定 (不跟踪 body), 与渲染层的 "no frontmatter found" 对齐.
     import re
     fm_match = re.match(r"\A---\s*\n(.*?)\n---", text, re.DOTALL)
-    payload = fm_match.group(1) if fm_match else text
+    payload = fm_match.group(1) if fm_match else ""
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return Observation(
         exists=True, mtime=mtime, hash=digest,
@@ -229,7 +234,7 @@ def _observe_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> Observa
     if pattern.startswith("$"):
         resolved = resolve_path(pattern, anchor)
         pattern = str(resolved.relative_to(root))
-    hits = sorted(root.glob(pattern))
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
 
     if not files:
@@ -272,8 +277,12 @@ def _observe_ls(pin: LsPin, anchor: Anchor) -> Observation:
     if not root_dir.is_dir():
         return Observation(exists=False)
 
+    effective_depth = pin.arguments.depth
+    if pin.arguments.max_depth is not None:
+        effective_depth = min(effective_depth, pin.arguments.max_depth)
+
     entries: list[str] = []
-    _walk_ls(root_dir, depth=pin.arguments.depth, prefix="", entries=entries)
+    _walk_ls(root_dir, depth=effective_depth, prefix="", entries=entries)
 
     if not entries:
         return Observation(
@@ -414,6 +423,60 @@ def _exec_rejected(message: str) -> Observation:
 def _has_glob(raw: str) -> bool:
     unescaped = raw.replace("\\$", "$")
     return any(c in unescaped for c in "*?[")
+
+
+def glob_limited(
+    root: Path,
+    pattern: str,
+    *,
+    max_depth: int | None = None,
+) -> list[Path]:
+    """Resolve a glob pattern against ``root``, applying max_depth.
+
+    ``pattern`` is relative to ``root`` (callers resolve anchors first).
+
+    When ``max_depth`` is set (SPEC §4.1):
+    - depth cap: matches deeper than ``max_depth`` items below the
+      pattern's static base are excluded;
+    - boundary stop: a directory that directly contains a match is a
+      boundary — its subdirectories are excluded.
+
+    For field-marker patterns this makes a field a discovery boundary:
+    ground discovery does not penetrate fields.
+
+    When ``max_depth`` is None, recursion is unbounded (plain glob).
+    """
+    parts = pattern.split("/")
+    base_parts: list[str] = []
+    idx = 0
+    for i, seg in enumerate(parts):
+        if _has_glob(seg):
+            idx = i
+            break
+        base_parts.append(seg)
+    else:
+        idx = len(parts)
+    base = root.joinpath(*base_parts) if base_parts else root
+    rel = "/".join(parts[idx:])
+    if not base.is_dir():
+        return []
+    if not rel:
+        # all parts are static — concrete path, no glob
+        return [base]
+    matches = sorted(base.glob(rel))
+    if max_depth is None:
+        return matches
+    matches = [m for m in matches if len(m.relative_to(base).parts) <= max_depth]
+    matched_dirs = {m.parent for m in matches} - {base}
+    if matched_dirs:
+        matches = [
+            m for m in matches
+            if not any(
+                m.parent.is_relative_to(d) and m.parent != d
+                for d in matched_dirs
+            )
+        ]
+    return matches
 
 
 def parse_range(raw: str, total_lines: int) -> tuple[int, int]:

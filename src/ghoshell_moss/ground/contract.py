@@ -47,16 +47,11 @@ __all__ = [
     "FrameItem",
 ]
 
-# -- constants (K54: every magic number has a name + rationale) ---------------
+# -- constants ----------------------------------------------------------------
 
-# 1-byte length prefix + 64-char namespace convention; "看着够用" (K54).
+# 1-byte length prefix + 64-char namespace convention.
 PIN_LABEL_MAX_LEN = 63
 _PIN_LABEL_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{0,%d}$" % PIN_LABEL_MAX_LEN)
-
-# @-expansion: max nesting depth. 深了模型读不动, 浅了引用链断裂.
-AT_MAX_DEPTH = 3
-# @-expansion: total char budget. 24k = ~8k tokens, 留 75% 给 pins + 对话.
-AT_BUDGET = 24_000
 
 
 # -- frontmatter -------------------------------------------------------------

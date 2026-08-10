@@ -3,7 +3,7 @@ title: Ghost Ground — Ghost 的认知场
 status: in-progress
 priority: P0
 created: 2026-06-10
-updated: 2026-08-06
+updated: 2026-08-10
 renamed_from: Project Manager
 depends:
   - momento-mori
@@ -17,6 +17,15 @@ description: >-
   validate 六命令, contract + concrete 全部落地, 154 测试通过, 两轮 dogfood
   验收. CTML channel 落点见 ground-channel workstream (薄 channel 设计).
 status_note: >-
+  2026-08-10 claude-opus-4-7. SPEC 对齐实现大修: frame 格式从 HTML comment 改写为
+  ``---`` / ``>`` 区块, @-expansion 降为单层, 删除三层 + 24k 预算声明 (未实现).
+  exec 拒绝信息分开声明 [missing]/[not executable]/[outside ground].
+  max_depth 实现落地 (SPEC §4.1): 递归深度上限 + 场边界停止, glob/frontmatter
+  pattern 模式 + ls observe 均生效. always_show / override 参数补入 SPEC.
+  walk 模式独立章节. verbs 命令补入 CLI 表. GLOB_IGNORE vs .gitignore 纠正.
+  dead code (_render_result_block / _content_law / AT_BUDGET / AT_MAX_DEPTH) 删除.
+  172 测试通过.
+  --
   2026-08-06 deepseek-v4-flash. CLI P1 修复落地: init --template 不存在报错
   (open 抛 KeyError) / range "0-N" 统一 parse_range (validate 拒绝非法, frame 明确
   报错) / ExecPin+ExecArguments 导出补齐. 154 测试通过. 基线判断: 协议 + CLI 层可建

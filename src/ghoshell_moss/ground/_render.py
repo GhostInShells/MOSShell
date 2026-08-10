@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ghoshell_moss.ground._addr import Anchor, anchor_kind, resolve_path
 from ghoshell_moss.ground._chain import collect_law_files
-from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, observe, parse_range
+from ghoshell_moss.ground._hash import GLOB_IGNORE, Observation, PinShadow, glob_limited, observe, parse_range
 from ghoshell_moss.ground.contract import (
     ExecPin,
     FilePin,
@@ -283,35 +283,6 @@ async def render_walk(
     return items
 
 
-# -- result block ---------------------------------------------------------
-
-
-def _render_result_block(
-    pin: Pin,
-    obs: Observation | None,
-    stale: bool,
-    missing: bool,
-    anchor: Anchor,
-) -> str:
-    """HTML-comment-delimited pin observation block."""
-    if missing:
-        content = "[missing]"
-    elif stale:
-        content = _render_pin_content(pin, anchor, obs) + "\n[changed on disk]"
-    elif obs is not None and obs.exists:
-        content = _render_pin_content(pin, anchor, obs)
-    elif obs is not None and not obs.exists:
-        content = "[missing]"
-    else:
-        content = "[not yet observed]"
-
-    return (
-        f"<!-- ground:pin:{pin.label} -->\n"
-        f"{content}\n"
-        f"<!-- /ground:pin:{pin.label} -->"
-    )
-
-
 def _render_pin_content(
     pin: Pin, anchor: Anchor, obs: Observation | None = None
 ) -> str:
@@ -337,29 +308,6 @@ def _content_exec(pin: ExecPin, obs: Observation | None) -> str:
     if obs is None or obs.payload is None:
         return "[not yet observed]"
     return _apply_budget(obs.payload, pin.arguments.budget)
-
-
-def _content_law(pin: LawPin, anchor: Anchor) -> str:
-    """law pin 渲染 — 从 cwd 向上收集约定文件, root-first 展示.
-
-    每文件一块, ``-- {rel}`` 标注相对场根的路径. 不做 @-展开 —
-    展开交给 ``_build_law_children`` 生成子 FrameItem.
-    也不做截断 — 截断由上层 FrameItem 组装时统一处理.
-    """
-    files = collect_law_files(anchor, pin.arguments.filename)
-    if not files:
-        return "(no files)"
-
-    blocks: list[str] = []
-    for f in files:
-        try:
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):
-            text = "(unreadable)"
-        rel = str(f.relative_to(anchor.ground)) if f.is_relative_to(anchor.ground) else str(f)
-        blocks.append(f"-- {rel}\n{text.rstrip()}")
-
-    return "\n\n".join(blocks)
 
 
 def _content_file(pin: FilePin, anchor: Anchor) -> str:
@@ -397,7 +345,7 @@ def _content_glob(pin: GlobPin, anchor: Anchor) -> str:
         except (ValueError, OSError):
             return "error: invalid glob path"
 
-    hits = sorted(root.glob(pattern))
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
     files = [h for h in hits if h.is_file() and not _path_touches_ignore(h, root)]
     if not files:
         return "(no matches)"
@@ -459,7 +407,7 @@ def _content_frontmatter_pattern(pin: FrontmatterPin, anchor: Anchor) -> str:
         except (ValueError, OSError):
             return "error: invalid pattern"
 
-    hits = sorted(root.glob(pattern))
+    hits = glob_limited(root, pattern, max_depth=pin.arguments.max_depth)
     files = [h for h in hits if h.is_file() and h.name != ""
              and not _path_touches_ignore(h, root)]
     if not files:
