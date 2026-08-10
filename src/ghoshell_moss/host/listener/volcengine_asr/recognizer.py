@@ -8,9 +8,9 @@ import websockets
 from ghoshell_common.contracts import LoggerItf
 from ghoshell_common.helpers import uuid
 
-from ghoshell_moss.contracts.asr import ASR, ASRResult
+from ghoshell_moss.contracts.asr import ASR, ASRInfo, ASRResult
 
-from .config import VolcengineASRConfig
+from .config import VolcengineASRConfig, VolcengineASRParams
 from .protocol import (
     ResponseMessageType,
     connect,
@@ -36,6 +36,21 @@ class VolcengineASR(ASR):
         self._logger = logger or logging.getLogger("moss")
         self._log_prefix = "[VolcengineASR]"
         self._closed = False
+
+    # ── ASR contract: get_info / configure / recognize / close ──
+
+    def get_info(self) -> ASRInfo:
+        return ASRInfo(
+            sample_rate=self._config.sample_rate,
+            bits=self._config.bits,
+            channel=self._config.channel,
+            model=self._config.model_name,
+            params_schema=VolcengineASRParams.model_json_schema(),
+            params=self._config.params.model_dump(),
+        )
+
+    def configure(self, params: dict) -> None:
+        self._config.params = VolcengineASRParams.model_validate(params)
 
     async def recognize(
         self,

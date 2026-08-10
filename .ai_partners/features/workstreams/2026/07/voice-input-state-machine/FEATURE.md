@@ -1,10 +1,10 @@
 ---
 title: Voice Input State Machine — 语音输入全状态机与交互模式
 status: in-progress
-status_note: 'Round 1 代码落地 + 音频 provider project 级迁移 + player 实际播放可感知 (2026-08-09)：speech 三件套迁到 MOSS.manifests.providers；PlaybackSample + observe 全局订阅落地（拼接身份 fragment_id）；capture 下轮迁。'
+status_note: 'ASR 通用契约提炼 (2026-08-10)：contracts/asr.py 扩 ASRInfo + get_info/configure, 与 TTSInfo 对称；VolcengineASRParams 分离模型可见旋钮, force_to_speech_time 从硬编码提进 config；audio CLI 拆分为 cli/audio/ 子包 (按协议探测层组织)；capture 迁 project 级, contracts 5 槽位 4 OK (asr provider 待注册).'
 priority: P0
 created: 2026-07-28
-updated: 2026-08-09
+updated: 2026-08-10
 depends:
   - audio-capture
   - node-migration
@@ -799,6 +799,37 @@ stream 片段播完即摘除观察者）。用户 review 指出这是过度设�
 - **"不全局 import" 指 provider 模块顶层不拉重依赖**（concrete import 隔离），abstract import 隔离意义不大。
 - **三层 manifest 加载范围**：`Matrix.new`/CLI = project + MATRIX；Host runtime 额外叠加 HOST。
   作为基线能力的 provider 必须进 project 级才能被无 Host 的 CLI 看见。
+
+## 2026-08-10 会话决策 — ASR 通用内核契约提炼
+
+> 结对编程：人类架构师 + deepseek-v4-flash。从 volcengine 实现提炼可迁移重实现的通用内核。
+
+### 动机
+现有 contracts/asr.py 只有薄 ASR ABC + ASRResult(text, is_final)。配置面（凭据、端点、音频格式、
+调参）全焊在 VolcengineASRConfig 里 — 任何非 volcengine 重实现、provider 注册、CLI asr 工具
+都无法脱离 VolcengineASRConfig 工作。TTS 侧有对称的 TTSInfo + TTSBatch + TTSItem，ASR 侧没有。
+
+### 提炼的内核
+
+1. **ASRInfo** — 镜像 TTSInfo 的反射面。sample_rate/bits/channel/model（音频输入契约 + 模型身份）+
+   params_schema/params（可调行为参数的 json schema 与当前值，各实现暴露自己的 params BaseModel，
+   契约只背 dict）。模型先 get_info() 自解释，再 configure() 调行为旋钮。
+
+2. **ASR.configure(params: dict)** — 会话级调参，作用于下一次 recognize()。校验与取值空间
+   留给各实现的 params BaseModel。火山引擎：每次 recognize() 新建 WS + init 下发全参 → configure()
+   只换 self._config.params，下次连接自然携带新参数，协议零改动。
+
+3. **VolcengineASRParams** — 火山引擎专属行为参数：end_window_size, force_to_speech_time（从
+   硬编码 1000 提进 config）, enable_punc, enable_ddc。model_name 不在此列 — 模型身份每实例
+   固定，模型选择由工厂/provider 负责（让有状态实现自己切换 model 会协议冲突）。
+
+4. **controller 不再硬编码 16000** — VoiceControllerImpl 的采样率从 asr.get_info().sample_rate
+   推导，ASR 创建移至 __init__（get_info() 先于 capture 以便 capture 取对采样率）。
+
+### 不做
+- model_name 不是 runtime 旋钮，不入 params。不同 model = 不同工厂实例，未来 ASRFactory.get(model)。
+- provider 注册延后 — 契约先立住，provider 是下游。
+- enable_ddc 在 params 但火山协议仍未发送（预存兼容，不发是因为当前 bigmodel 接口不需要）。
 
 ---
 *架构设计: claude-fable-5 (opus-4-7) 与人类架构师, 2026-07-28*

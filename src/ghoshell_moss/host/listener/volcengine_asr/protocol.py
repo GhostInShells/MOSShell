@@ -94,9 +94,9 @@ def create_init_request(uid: str, config: VolcengineASRConfig) -> tuple[bytes, i
         },
         "request": {
             "model_name": config.model_name,
-            "enable_punc": config.enable_punc,
-            "end_window_size": config.end_window_size,
-            "force_to_speech_time": 1000,
+            "enable_punc": config.params.enable_punc,
+            "end_window_size": config.params.end_window_size,
+            "force_to_speech_time": config.params.force_to_speech_time,
             "show_utterances": True,
         },
     }

@@ -1,15 +1,23 @@
 import numpy as np
 import pytest
 
-from ghoshell_moss.contracts.asr import ASR, ASRResult
+from ghoshell_moss.contracts.asr import ASR, ASRInfo, ASRResult
 
 
 class MockASR(ASR):
     """A mock ASR for testing the ABC default methods."""
 
-    def __init__(self, results: list[ASRResult]):
+    def __init__(self, results: list[ASRResult], *, info: ASRInfo | None = None):
         self._results = results
         self._closed = False
+        self._info = info or ASRInfo()
+        self._params: dict = {}
+
+    def get_info(self) -> ASRInfo:
+        return self._info
+
+    def configure(self, params: dict) -> None:
+        self._params = params
 
     async def recognize(self, audio_chunks):
         for r in self._results:

@@ -19,8 +19,7 @@ from ghoshell_moss.host.listener.contracts import (
 )
 from ghoshell_moss.host.listener.handlers import EventBus
 from ghoshell_moss.host.listener.state import VoiceStateMachine
-
-_ASR_SAMPLE_RATE = 16000
+from ghoshell_moss.host.listener.volcengine_asr import VolcengineASR, VolcengineASRConfig, VolcengineASRParams
 
 __all__ = ["VoiceControllerImpl"]
 
@@ -42,12 +41,21 @@ class VoiceControllerImpl(VoiceController):
         self._log = logger or logging.getLogger("moss.voice.controller")
         self._bus = EventBus()
         self._state = VoiceStateMachine(config, self._bus, logger=self._log)
-        self._capture = VoiceCapture(config.device, sample_rate=_ASR_SAMPLE_RATE, logger=self._log)
         self._config = config
         self._gate_check = gate_check or (lambda: False)
         self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=64)
         self._task: asyncio.Task | None = None
         self._started = False
+
+        # ASR 是耳朵的契约实现 — 采样率从 get_info() 取, 不硬编码
+        self._asr = VolcengineASR(
+            config=VolcengineASRConfig(
+                params=VolcengineASRParams(end_window_size=self._config.asr_end_window_ms),
+            ),
+            logger=self._log,
+        )
+        self._asr_info = self._asr.get_info()
+        self._capture = VoiceCapture(config.device, sample_rate=self._asr_info.sample_rate, logger=self._log)
 
     # ── VoiceController ──
 
@@ -73,6 +81,7 @@ class VoiceControllerImpl(VoiceController):
             self._task = None
         self._capture.stop()
         self._state.stop()
+        await self._asr.close()
         self._log.info("VoiceController stopped")
 
     async def set_mode(self, mode: VoiceMode) -> None:
@@ -88,7 +97,7 @@ class VoiceControllerImpl(VoiceController):
     def snapshot(self) -> VoiceNodeRuntime:
         return self._state.snapshot(
             capture_device=self._capture.device_info(),
-            capture_rate=_ASR_SAMPLE_RATE,
+            capture_rate=self._asr_info.sample_rate,
         )
 
     # ── main loop ──
@@ -96,15 +105,6 @@ class VoiceControllerImpl(VoiceController):
     async def _run(self) -> None:
         """Main recognition loop — capture → ASR → state machine → dispatch."""
         from ghoshell_moss.host.listener._asr_helpers import iter_with_silence_timeout
-        from ghoshell_moss.host.listener.volcengine_asr import VolcengineASR, VolcengineASRConfig
-
-        asr = VolcengineASR(
-            config=VolcengineASRConfig(
-                sample_rate=_ASR_SAMPLE_RATE,
-                end_window_size=self._config.asr_end_window_ms,
-            ),
-            logger=self._log,
-        )
 
         try:
             while self._started:
@@ -119,7 +119,7 @@ class VoiceControllerImpl(VoiceController):
                 # New utterance — feed raw PCM to ASR, wrap results with silence timeout
                 utterance_id = uuid.uuid4().hex[:12]
                 audio_gen = self._queue_generator()
-                async for result in iter_with_silence_timeout(asr.recognize(audio_gen), self._log):
+                async for result in iter_with_silence_timeout(self._asr.recognize(audio_gen), self._log):
                     if not result.text:
                         continue
                     self._log.info("ASR %s: %s", "final" if result.is_final else "partial", result.text)
@@ -133,8 +133,6 @@ class VoiceControllerImpl(VoiceController):
             self._log.info("Controller loop cancelled")
         except Exception:
             self._log.exception("Controller loop error")
-        finally:
-            await asr.close()
 
     def _drain_queue(self) -> None:
         """Discard stale audio buffered between utterances."""

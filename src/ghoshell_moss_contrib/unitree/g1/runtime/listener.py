@@ -857,11 +857,11 @@ async def _asr_supervisor(pcm_queue: janus.Queue, cfg: _ListenerConfig) -> None:
     VolcengineASR.recognize() 是 per-utterance — 一次调用消费一段音频直到服务端 is_final.
     我们在外层无限循环, 一句话一句话地开 recognize, 中间 janus 缓冲不丢.
     """
-    from ghoshell_moss.host.listener.volcengine_asr import VolcengineASR, VolcengineASRConfig
+    from ghoshell_moss.host.listener.volcengine_asr import VolcengineASR, VolcengineASRConfig, VolcengineASRParams
 
     asr_cfg = VolcengineASRConfig(
         sample_rate=cfg.asr_sample_rate,
-        end_window_size=cfg.end_window_ms,
+        params=VolcengineASRParams(end_window_size=cfg.end_window_ms),
     )
     asr = VolcengineASR(config=asr_cfg, logger=logger)
     backoff = _WS_RETRY_MIN
